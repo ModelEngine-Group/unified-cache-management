@@ -22,53 +22,68 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 #
+# Usage:
+# 1. Select model/mode and set worker_number/layer_number below.
+#    GLM defaults to 16/78; MiniMax to 8/62; DSV4 to 8 and ignores layer_number.
+# 2. Tune the workload and optional SDMA/CPU-affinity switches as needed.
+# 3. Run this script with python3.
 import multiprocessing
 import os
 import secrets
 import signal
+import subprocess
 import sys
 import time
 
 import torch
 
-from ucm.store.pipeline.connector import UcmPipelineStore
-
 store_pipeline = "Cache|Fake"
 device_type = "npu"
 
-# ======================== Benchmark configuration =========================
-block_number = 100
-dump_epoch_number = 16
-load_epoch_number = 16
-warmup_epoch_number = 5
-epoch_interval_ms = 15
-cache_sdma_direct = True
-worker_cpu_affinity_enable = True
-
 # =========================== User configuration ===========================
+# Model profile: glm-5.2, minimax-m2.7, or dsv4.
 model_name = "glm-5.2"
+# True uses layerwise transfer; False uses non-layerwise. DSV4 ignores it.
+use_layerwise = True
+# Worker process/NPU count: GLM defaults to 16; MiniMax/DSV4 default to 8.
+worker_number = 16
+# Only used by GLM/MiniMax non-layerwise transfers: GLM=78, MiniMax=62.
+layer_number = 78
 
-# Fill tensor_size_list with the per-layer tensor byte sizes of the target
-# deployment before running a profile. MLA worker 0 writes the shared block
-# ids and every worker loads them; GQA workers use their own block ids.
+# ======================== Benchmark configuration =========================
+# Number of cache blocks transferred in each epoch.
+block_number = 100
+# Number of measured dump epochs.
+dump_epoch_number = 16
+# Number of measured load epochs.
+load_epoch_number = 128
+# Warmup epochs excluded from the final statistics.
+warmup_epoch_number = 5
+# Pause between adjacent epochs, in milliseconds.
+epoch_interval_ms = 15
+# Enable Cache SDMA Direct transfers.
+cache_sdma_direct = False
+# Bind each worker and its UCM store threads to NUMA-local CPU cores.
+worker_cpu_affinity_enable = False
+
+# MLA writes once from worker 0 and all workers load the same block ids, while
+# GQA workers use their own block ids. GLM and MiniMax support layerwise and
+# non-layerwise transfers; DSV4 always uses non-layerwise transfers.
 MODEL_PROFILES = {
     "glm-5.2": {
         "worker_mode": "mla",
-        "worker_number": 16,
         "share_buffer_enable": True,
-        "tensor_size_list": [131072, 32768, 16384],
+        "layer_tensor_size_list": [131072, 16384, 32768],
     },
     "minimax-m2.7": {
         "worker_mode": "gqa",
-        "worker_number": 8,
         "share_buffer_enable": False,
-        "tensor_size_list": [32768, 32768],
+        "layer_tensor_size_list": [32768, 32768],
     },
     "dsv4": {
         "worker_mode": "mla",
-        "worker_number": 8,
         "share_buffer_enable": True,
-        "tensor_size_list": [
+        "full_tensor_size_list": [
             131072,
             16384,
             256,
@@ -156,6 +171,18 @@ MODEL_PROFILES = {
     },
 }
 
+
+def resolve_tensor_size_list(profile):
+    layer_tensor_sizes = profile.get("layer_tensor_size_list")
+    if use_layerwise and layer_tensor_sizes is not None:
+        return layer_tensor_sizes
+
+    full_tensor_sizes = profile.get("full_tensor_size_list")
+    if full_tensor_sizes is not None:
+        return full_tensor_sizes
+    return profile["layer_tensor_size_list"] * layer_number
+
+
 model_profile = MODEL_PROFILES.get(model_name)
 if model_profile is None:
     available_models = ", ".join(MODEL_PROFILES)
@@ -163,25 +190,197 @@ if model_profile is None:
         f"unsupported model {model_name!r}; choose one of: {available_models}"
     )
 worker_mode = model_profile["worker_mode"]
-worker_number = model_profile["worker_number"]
 share_buffer_enable = model_profile["share_buffer_enable"]
-tensor_size_list = model_profile["tensor_size_list"]
+tensor_size_list = resolve_tensor_size_list(model_profile)
 shard_size = (sum(tensor_size_list) + 4095) // 4096 * 4096
+effective_use_layerwise = (
+    use_layerwise and model_profile.get("layer_tensor_size_list") is not None
+)
+transfer_mode = "layerwise" if effective_use_layerwise else "non-layerwise"
+bytes_per_block = sum(tensor_size_list)
+bytes_per_epoch = bytes_per_block * block_number
+dump_worker_number = worker_number if worker_mode == "gqa" else 1
+total_dump_bytes = (
+    bytes_per_epoch
+    * (warmup_epoch_number + dump_epoch_number)
+    * dump_worker_number
+)
 
 
-def make_worker_cpu_core_groups():
-    if not worker_cpu_affinity_enable:
-        return [[] for _ in range(worker_number)]
-    available_cpu_cores = sorted(os.sched_getaffinity(0))
-    if len(available_cpu_cores) < worker_number:
+def parse_cpu_list(cpu_list: str):
+    cpu_cores = []
+    for part in cpu_list.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start, end = map(int, part.split("-", 1))
+            cpu_cores.extend(range(min(start, end), max(start, end) + 1))
+        else:
+            cpu_cores.append(int(part))
+    return list(dict.fromkeys(cpu_cores))
+
+
+def split_cpu_cores(cpu_cores, group_number):
+    base, extra = divmod(len(cpu_cores), group_number)
+    groups = []
+    start = 0
+    for group_id in range(group_number):
+        group_size = base + (group_id < extra)
+        groups.append(cpu_cores[start : start + group_size])
+        start += group_size
+    return groups
+
+
+def get_visible_npu_ids():
+    visible_devices = os.getenv("ASCEND_RT_VISIBLE_DEVICES") or os.getenv(
+        "ASCEND_VISIBLE_DEVICES"
+    )
+    npu_ids = (
+        parse_cpu_list(visible_devices)
+        if visible_devices
+        else list(range(worker_number))
+    )
+    if len(npu_ids) < worker_number:
         raise RuntimeError(
-            f"worker_number={worker_number} exceeds available CPU core number "
-            f"{len(available_cpu_cores)}"
+            f"worker_number={worker_number} exceeds visible NPU number "
+            f"{len(npu_ids)}"
         )
+    return npu_ids[:worker_number]
+
+
+def get_topology_cpu_pools(npu_ids, available_cpu_cores):
+    command_env = os.environ.copy()
+    command_env.update({"LC_ALL": "C", "LANG": "C", "LC_MESSAGES": "C"})
+    try:
+        result = subprocess.run(
+            ["npu-smi", "info", "-t", "topo"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=command_env,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        print(f"warning: failed to query NPU CPU affinity: {error}")
+        return None
+    if result.returncode != 0:
+        print(
+            "warning: npu-smi topology query failed, falling back to lscpu "
+            f"NUMA mapping: {result.stderr.strip()}"
+        )
+        return None
+
+    npu_affinities = {}
+    logic_npu_id = 0
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("NPU"):
+            continue
+        affinity = line.split()[-1]
+        if affinity != "Affinity":
+            npu_affinities[logic_npu_id] = parse_cpu_list(affinity)
+        logic_npu_id += 1
+
+    allowed_cpu_cores = set(available_cpu_cores)
+    cpu_pools = [
+        sorted(allowed_cpu_cores.intersection(npu_affinities.get(npu_id, [])))
+        for npu_id in npu_ids
+    ]
+    if any(not cpu_pool for cpu_pool in cpu_pools):
+        print(
+            "warning: incomplete NPU CPU affinity, falling back to lscpu "
+            "NUMA mapping"
+        )
+        return None
+    return cpu_pools
+
+
+def get_fallback_numa_cpu_pools(available_cpu_cores):
+    command_env = os.environ.copy()
+    command_env.update({"LC_ALL": "C", "LANG": "C", "LC_MESSAGES": "C"})
+    try:
+        result = subprocess.run(
+            ["lscpu", "-e=CPU,NODE"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=command_env,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError(f"failed to query CPU NUMA topology: {error}") from error
+    if result.returncode != 0:
+        raise RuntimeError(f"lscpu NUMA query failed: {result.stderr.strip()}")
+
+    allowed_cpu_cores = set(available_cpu_cores)
+    numa_cpu_cores = {}
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) != 2 or not all(part.lstrip("-").isdigit() for part in parts):
+            continue
+        cpu_id, numa_id = map(int, parts)
+        if numa_id >= 0 and cpu_id in allowed_cpu_cores:
+            numa_cpu_cores.setdefault(numa_id, []).append(cpu_id)
+    if not numa_cpu_cores:
+        raise RuntimeError("no available NUMA-local CPU cores found")
+
+    numa_ids = sorted(numa_cpu_cores)
     return [
-        available_cpu_cores[worker_id::worker_number]
+        sorted(numa_cpu_cores[numa_ids[worker_id * len(numa_ids) // worker_number]])
         for worker_id in range(worker_number)
     ]
+
+
+def make_cpu_affinity_core_groups():
+    if not worker_cpu_affinity_enable:
+        empty_groups = [[] for _ in range(worker_number)]
+        return empty_groups, empty_groups
+    available_cpu_cores = sorted(os.sched_getaffinity(0))
+    if len(available_cpu_cores) < worker_number * 2:
+        raise RuntimeError(
+            f"NUMA-aware affinity requires at least two CPU cores per worker: "
+            f"worker_number={worker_number}, available={len(available_cpu_cores)}"
+        )
+    npu_ids = get_visible_npu_ids()
+    npu_cpu_pools = get_topology_cpu_pools(npu_ids, available_cpu_cores)
+    affinity_source = "npu-smi topo"
+    if npu_cpu_pools is None:
+        npu_cpu_pools = get_fallback_numa_cpu_pools(available_cpu_cores)
+        affinity_source = "lscpu NUMA fallback"
+
+    grouped_worker_ids = {}
+    for worker_id, cpu_pool in enumerate(npu_cpu_pools):
+        grouped_worker_ids.setdefault(tuple(cpu_pool), []).append(worker_id)
+
+    worker_cpu_core_groups = [[] for _ in range(worker_number)]
+    store_cpu_core_groups = [[] for _ in range(worker_number)]
+    assigned_cpu_cores = set()
+    for cpu_pool, worker_ids in grouped_worker_ids.items():
+        per_worker_pools = split_cpu_cores(list(cpu_pool), len(worker_ids))
+        for worker_id, per_worker_pool in zip(worker_ids, per_worker_pools):
+            if len(per_worker_pool) < 2:
+                raise RuntimeError(
+                    f"NPU {npu_ids[worker_id]} has fewer than two available "
+                    f"CPU cores: {per_worker_pool}"
+                )
+            overlap = assigned_cpu_cores.intersection(per_worker_pool)
+            if overlap:
+                raise RuntimeError(
+                    f"overlapping CPU affinity cores detected for worker "
+                    f"{worker_id}: {sorted(overlap)}"
+                )
+            assigned_cpu_cores.update(per_worker_pool)
+            middle = max(1, len(per_worker_pool) // 2)
+            worker_cpu_core_groups[worker_id] = per_worker_pool[:middle]
+            store_cpu_core_groups[worker_id] = per_worker_pool[middle:]
+            print(
+                f"CPU affinity plan: source={affinity_source}, "
+                f"worker={worker_id}, npu={npu_ids[worker_id]}, "
+                f"worker_cores={worker_cpu_core_groups[worker_id]}, "
+                f"store_cores={store_cpu_core_groups[worker_id]}"
+            )
+    return worker_cpu_core_groups, store_cpu_core_groups
 
 
 def setup_device(device_id: int):
@@ -201,9 +400,14 @@ def synchronize_device():
         torch.npu.synchronize()
 
 
-def create_worker(
-    unique_id: str, device_id: int, cpu_affinity_cores
-) -> UcmPipelineStore:
+def configure_ucm_logging():
+    os.environ["UCM_LOG_LEVEL"] = "info"
+    os.environ["UC_LOGGER_LEVEL"] = "info"
+
+
+def create_cache_worker(
+    pipeline_store_cls, unique_id: str, device_id: int, store_cpu_affinity_cores
+):
     config = {}
     config["store_pipeline"] = store_pipeline
     config["unique_id"] = unique_id
@@ -219,9 +423,31 @@ def create_worker(
     config["cache_sdma_direct_launch_granularity"] = "shard"
     config["timeout_ms"] = 30000
     config["device_id"] = device_id
-    if cpu_affinity_cores:
-        config["cpu_affinity_cores"] = cpu_affinity_cores
-    return UcmPipelineStore(config)
+    if store_cpu_affinity_cores:
+        config["cpu_affinity_cores"] = store_cpu_affinity_cores
+    return pipeline_store_cls(config)
+
+
+def create_cache_scheduler(
+    pipeline_store_cls, unique_id: str, store_cpu_affinity_cores
+):
+    config = {}
+    config["store_pipeline"] = store_pipeline
+    config["cache_load_backend_only"] = True
+    config["unique_id"] = unique_id
+    # Keep scheduler tensor sizes and shard size unset so the C++ defaults are
+    # used; an empty Python list is parsed as vector<any> and fails any_cast.
+    config["block_size"] = shard_size
+    config["share_buffer_enable"] = share_buffer_enable
+    config["io_direct"] = True
+    config["cache_buffer_capacity_gb"] = 8
+    config["cache_sdma_direct"] = cache_sdma_direct
+    config["cache_sdma_direct_launch_granularity"] = "shard"
+    config["timeout_ms"] = 30000
+    config["device_id"] = -1
+    if store_cpu_affinity_cores:
+        config["cpu_affinity_cores"] = store_cpu_affinity_cores
+    return pipeline_store_cls(config)
 
 
 def make_tensors(device: str):
@@ -281,6 +507,20 @@ def load(
     return cost
 
 
+def wait_backend_ready(scheduler, block_ids, timeout_s=60, poll_interval_s=0.001):
+    deadline = time.perf_counter() + timeout_s
+    while True:
+        founds = scheduler.lookup(block_ids)
+        if bool(founds.all()):
+            return
+        if time.perf_counter() >= deadline:
+            ready_count = int(founds.sum())
+            raise TimeoutError(
+                f"backend ready timeout: ready={ready_count}/{len(block_ids)}"
+            )
+        time.sleep(poll_interval_s)
+
+
 def print_result(
     direction: str,
     epoch: int,
@@ -338,31 +578,61 @@ def worker_loop(
     device_id: int,
     barrier: multiprocessing.Barrier,
     unique_id: str,
-    cpu_affinity_cores,
+    worker_cpu_affinity_cores,
+    store_cpu_affinity_cores,
     block_id_records,
+    backend_block_ids,
     dump_cost_records,
     load_cost_records,
     completed_worker_number,
 ):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     signal.signal(signal.SIGTSTP, signal.SIG_IGN)
-    if cpu_affinity_cores:
-        os.sched_setaffinity(0, cpu_affinity_cores)
-    os.environ["UC_LOGGER_LEVEL"] = "warning"
+    if worker_cpu_affinity_cores:
+        os.sched_setaffinity(0, worker_cpu_affinity_cores)
+    configure_ucm_logging()
+
+    # Import UCM inside the spawned worker so its async logger owns a live
+    # logging thread in this process.
+    from ucm.logger import init_logger  # pylint: disable=import-outside-toplevel
+    from ucm.store.pipeline.connector import (  # pylint: disable=import-outside-toplevel
+        UcmPipelineStore,
+    )
+
+    logger = init_logger(__name__)
+    logger.info(
+        "Cache Fake benchmark worker %d initialized UC logging at info level.",
+        device_id,
+    )
     device = setup_device(device_id)
-    worker = create_worker(unique_id, device_id, cpu_affinity_cores)
+    worker = create_cache_worker(
+        UcmPipelineStore, unique_id, device_id, store_cpu_affinity_cores
+    )
+    scheduler = (
+        create_cache_scheduler(
+            UcmPipelineStore, unique_id, store_cpu_affinity_cores
+        )
+        if device_id == 0
+        else None
+    )
     print(
-        f"{store_pipeline} one-layer benchmark: device={device}, "
-        f"model={model_name}, worker_mode={worker_mode}, "
+        f"{store_pipeline} benchmark: device={device}, "
+        f"model={model_name}, transfer_mode={transfer_mode}, "
+        f"worker_mode={worker_mode}, layer_number={layer_number}, "
         f"worker_number={worker_number}, "
-        f"block_number={block_number}, tensor_size_list={tensor_size_list}, "
+        f"block_number={block_number}, tensor_number={len(tensor_size_list)}, "
+        f"tensor_size_list={tensor_size_list}, "
+        f"bytes_per_block={bytes_per_block}, bytes_per_epoch={bytes_per_epoch}, "
+        f"total_dump_bytes={total_dump_bytes}, "
         f"shard_size={shard_size}, dtype={torch.bfloat16}, "
         f"warmup_epoch_number={warmup_epoch_number}, "
         f"epoch_interval_ms={epoch_interval_ms}, "
         f"cache_sdma_direct={cache_sdma_direct}, "
         f"share_buffer_enable={share_buffer_enable}, "
         f"worker_cpu_affinity_enable={worker_cpu_affinity_enable}, "
-        f"cpu_affinity_cores={cpu_affinity_cores}"
+        f"worker_cpu_affinity_cores={worker_cpu_affinity_cores}, "
+        f"store_cpu_affinity_cores={store_cpu_affinity_cores}, "
+        f"multiprocessing_start_method={multiprocessing.get_start_method()}"
     )
 
     barrier.wait()
@@ -376,6 +646,10 @@ def worker_loop(
         barrier.wait()
         if record_idx + 1 < len(block_id_records):
             time.sleep(epoch_interval_ms / 1000)
+
+    if device_id == 0:
+        wait_backend_ready(scheduler, backend_block_ids)
+    barrier.wait()
 
     total_load_epoch_number = warmup_epoch_number + load_epoch_number
     for load_idx in range(total_load_epoch_number):
@@ -441,34 +715,52 @@ if __name__ == "__main__":
             f"{model_name} tensor_size_list is empty; fill it in MODEL_PROFILES "
             "before running the benchmark"
         )
-    barrier = multiprocessing.Barrier(worker_number)
+    configure_ucm_logging()
+    process_context = multiprocessing.get_context("spawn")
+    barrier = process_context.Barrier(worker_number)
     unique_id = secrets.token_hex(8)
     shared_block_id_records = make_block_id_records()
-    worker_cpu_core_groups = make_worker_cpu_core_groups()
-    dump_cost_records = multiprocessing.Array(
+    worker_block_id_records = (
+        [shared_block_id_records] * worker_number
+        if worker_mode == "mla"
+        else [make_block_id_records() for _ in range(worker_number)]
+    )
+    backend_block_id_records = (
+        shared_block_id_records
+        if worker_mode == "mla"
+        else [
+            block_ids
+            for block_id_records in worker_block_id_records
+            for block_ids in block_id_records
+        ]
+    )
+    backend_block_ids = [
+        block_id
+        for block_ids in backend_block_id_records
+        for block_id in block_ids
+    ]
+    worker_cpu_core_groups, store_cpu_core_groups = make_cpu_affinity_core_groups()
+    dump_cost_records = process_context.Array(
         "d", worker_number * dump_epoch_number, lock=False
     )
-    load_cost_records = multiprocessing.Array(
+    load_cost_records = process_context.Array(
         "d", worker_number * load_epoch_number, lock=False
     )
-    completed_worker_number = multiprocessing.Value("i", 0)
+    completed_worker_number = process_context.Value("i", 0)
     workers = []
     signal.signal(signal.SIGTSTP, stop_on_suspend)
     try:
         for device_id in range(worker_number):
-            block_id_records = (
-                shared_block_id_records
-                if worker_mode == "mla"
-                else make_block_id_records()
-            )
-            process = multiprocessing.Process(
+            process = process_context.Process(
                 target=worker_loop,
                 args=(
                     device_id,
                     barrier,
                     unique_id,
                     worker_cpu_core_groups[device_id],
-                    block_id_records,
+                    store_cpu_core_groups[device_id],
+                    worker_block_id_records[device_id],
+                    backend_block_ids if device_id == 0 else None,
                     dump_cost_records,
                     load_cost_records,
                     completed_worker_number,
