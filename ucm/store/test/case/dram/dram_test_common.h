@@ -28,16 +28,16 @@
 #include <cstdint>
 #include <memory>
 #include "detail/types_helper.h"
-#include "dram/cc/entry.h"
+#include "dram/cc/drampool/entry.h"
 
 namespace UC::Test::Dram {
 
 using Clock = std::chrono::system_clock;
 using TimePoint = Clock::time_point;
 
-using UC::DramStore::Entry;
-using UC::DramStore::EntryPtr;
-using UC::DramStore::EntryStatus;
+using UC::DramPool::Entry;
+using UC::DramPool::EntryPtr;
+using UC::DramPool::EntryStatus;
 
 inline EntryPtr MakeEntry(UC::Detail::BlockId key, uint32_t position = 0,
                           TimePoint lifeTimeout = TimePoint{},
