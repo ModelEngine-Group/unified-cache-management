@@ -578,7 +578,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         )
         if config.get("posix_capacity_gb", None) is not None:
             config["posix_capacity_gb"] = int(config["posix_capacity_gb"]) // 2
-        self._apply_sdma_direct_launch_granularity(config)
         return name, module_path, config
 
     @staticmethod

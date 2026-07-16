@@ -33,11 +33,13 @@ class PromqlEvaluator:
         start_ms: int,
         end_ms: int,
         tag_filters: Mapping[str, str] | None = None,
+        instant_counters: bool = False,
     ):
         self.store = store
         self.start_ms = start_ms
         self.end_ms = end_ms
         self.tag_filters = tag_filters or {}
+        self.instant_counters = instant_counters
 
     def evaluate(self, expr: str) -> Vector:
         return self._eval(_strip_outer_parens(_clean_expr(expr)))
@@ -95,11 +97,16 @@ class PromqlEvaluator:
             samples = self.store.samples_for_series(
                 int(series["id"]), self.start_ms, self.end_ms
             )
-            delta = _counter_delta(samples)
-            if delta is None:
-                continue
-            elapsed = max((samples[-1][0] - samples[0][0]) / 1000.0, 0.001)
-            value = delta / elapsed if rate else delta
+            if self.instant_counters:
+                if not samples:
+                    continue
+                value = samples[-1][1]
+            else:
+                delta = _counter_delta(samples)
+                if delta is None:
+                    continue
+                elapsed = max((samples[-1][0] - samples[0][0]) / 1000.0, 0.001)
+                value = delta / elapsed if rate else delta
             vector[_key(labels)] = VectorPoint(labels, value)
         return vector
 

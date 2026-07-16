@@ -64,10 +64,10 @@
       "aggregate": "avg"
     },
     {
-      "name": "posix_store_load_fraction",
+      "name": "cache_backend_load_ratio",
       "type": "promql",
-      "expr": "sum by () (rate(ucm:cache_load_backend_shards_total[$__rate_interval])) / sum by () (rate(ucm:cache_load_shards_total[$__rate_interval]))",
-      "value": "fraction",
+      "expr": "sum by () (rate(ucm:posix_lookup_hit_blocks_total[$__rate_interval])) / (sum by () (rate(ucm:cache_lookup_hit_blocks_total[$__rate_interval])) + sum by () (rate(ucm:posix_lookup_hit_blocks_total[$__rate_interval])))",
+      "value": "ratio",
       "unit": "ratio",
       "aggregate": "avg"
     },

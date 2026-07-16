@@ -105,6 +105,14 @@ _COUNTER_METRICS = [
         ),
     ),
     (
+        "posix_lookup_query_blocks_total",
+        "Total blocks submitted to Posix lookup",
+    ),
+    (
+        "posix_lookup_hit_blocks_total",
+        "Blocks found by Posix lookup",
+    ),
+    (
         "posix_aio_timeout_total",
         "Number of Posix AIO task or submit timeouts",
     ),
