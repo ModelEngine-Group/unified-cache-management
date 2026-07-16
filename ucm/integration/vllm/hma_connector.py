@@ -82,6 +82,7 @@ class KVCacheGroupLayout:
         self.kvcaches = dict(sorted(kvcaches.items(), key=self._sort_key))
         self.base_ptrs: np.ndarray
         self.block_strides: np.ndarray
+        self.buffer_sizes: np.ndarray
         self.tensor_token_strides: np.ndarray
         self.tensor_sizes_per_token: np.ndarray
         self.tensor_block_sizes: np.ndarray
@@ -97,6 +98,7 @@ class KVCacheGroupLayout:
 
         ptrs: list[int] = []
         strides: list[int] = []
+        buffer_sizes: list[int] = []
         tensor_token_strides: list[int] = []
         tensor_sizes_per_token: list[int] = []
         tensor_block_sizes: list[int] = []
@@ -108,8 +110,19 @@ class KVCacheGroupLayout:
             layer_name: str,
         ) -> None:
             ptrs.append(t[0].data_ptr())
-            strides.append(t.stride(0) * t.element_size())
+            block_stride = t.stride(0) * t.element_size()
+            strides.append(block_stride)
             tensor_size = math.prod([t.shape[i] for i in size_dims]) * t.element_size()
+            # GPU buffer sizes for GPUDirect RDMA registration in store.
+            # Total buffer size = number of blocks (shape[0]) times bytes per block stride.
+            buffer_size = int(t.shape[0]) * int(block_stride)
+            if buffer_size > np.iinfo(np.uint64).max:
+                raise OverflowError(
+                    "GPU KV buffer size exceeds uint64: "
+                    f"blocks={int(t.shape[0])}, block_stride={block_stride}, "
+                    f"size={buffer_size}, max={np.iinfo(np.uint64).max}"
+                )
+            buffer_sizes.append(buffer_size)
             token_dim = 1
             tensor_block_size = int(t.shape[token_dim])
             tensor_token_strides.append(t.stride(token_dim) * t.element_size())
@@ -166,6 +179,7 @@ class KVCacheGroupLayout:
 
         self.base_ptrs = np.asarray(ptrs, dtype=np.uint64)
         self.block_strides = np.asarray(strides, dtype=np.uint64)
+        self.buffer_sizes = np.asarray(buffer_sizes, dtype=np.uint64)
         self.tensor_token_strides = np.asarray(tensor_token_strides, dtype=np.uint64)
         self.tensor_sizes_per_token = np.asarray(
             tensor_sizes_per_token, dtype=np.uint64
@@ -184,6 +198,7 @@ class KVCacheGroupLayout:
         logger.info(
             f"KV cache group layout: views={len(self.kvcaches)}, "
             f"ptrs={len(ptrs)}, "
+            f"buffer_bytes={sum(int(size) for size in self.buffer_sizes)}, "
             f"tensor_block_sizes={sorted(set(tensor_block_sizes))}"
         )
 
@@ -511,6 +526,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         """Create the backing store used for full-attention rows."""
 
         tensor_size_list = None
+        gpu_kv_buffer_config = None
         if self._role == KVConnectorRole.WORKER:
             if group_layouts is None:
                 raise RuntimeError("Worker FA store needs layouts.")
@@ -518,10 +534,15 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 group_layouts,
                 self.fa_group_ids,
             )
+            gpu_kv_buffer_config = self._gpu_kv_buffer_config(
+                group_layouts,
+                self.fa_group_ids,
+            )
         return self._create_store(
             "FA",
             "fa",
             tensor_size_list,
+            gpu_kv_buffer_config,
             cpu_affinity_cores,
         )
 
@@ -533,6 +554,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         """Create the backing store used for window-tail rows."""
 
         tensor_size_list = None
+        gpu_kv_buffer_config = None
         if self._role == KVConnectorRole.WORKER:
             if group_layouts is None:
                 raise RuntimeError("Worker WA store needs layouts.")
@@ -540,10 +562,15 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 group_layouts,
                 self.window_group_ids,
             )
+            gpu_kv_buffer_config = self._gpu_kv_buffer_config(
+                group_layouts,
+                self.window_group_ids,
+            )
         return self._create_store(
             "WA",
             "wa",
             tensor_size_list,
+            gpu_kv_buffer_config,
             cpu_affinity_cores,
         )
 
@@ -602,6 +629,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         label: str,
         store_suffix: str,
         tensor_size_list: Optional[list[int]],
+        gpu_kv_buffer_config: Optional[tuple[list[int], list[int]]] = None,
         cpu_affinity_cores: Optional[list[int]] = None,
     ) -> UcmKVStoreBaseV1:
         """Instantiate one UCM store with worker tensor layout metadata."""
@@ -624,6 +652,21 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 )
             # MLA stores aggregate TP shards under one logical rank group.
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
+            if gpu_kv_buffer_config is not None:
+                gpu_kv_buffer_addrs, gpu_kv_buffer_sizes = gpu_kv_buffer_config
+                if not gpu_kv_buffer_addrs or not gpu_kv_buffer_sizes:
+                    raise RuntimeError(
+                        f"Worker FAWA {label} store needs non-empty GPU KV "
+                        "buffer addresses and sizes."
+                    )
+                config["gpu_kv_buffer_addrs"] = gpu_kv_buffer_addrs
+                config["gpu_kv_buffer_sizes"] = gpu_kv_buffer_sizes
+                logger.debug(
+                    f"register FAWA {label} GPU KV buffers: "
+                    f"count={len(gpu_kv_buffer_addrs)}, "
+                    f"bytes={sum(int(size) for size in gpu_kv_buffer_sizes)}, "
+                    f"first_5={[(addr, size) for addr, size in zip(gpu_kv_buffer_addrs[:5], gpu_kv_buffer_sizes[:5])]}"
+                )
             if cpu_affinity_cores:
                 config["cpu_affinity_cores"] = list(cpu_affinity_cores)
         else:
@@ -644,6 +687,16 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             tensor_sizes = [int(size) for size in tensor_size_list]
             summary["tensor_count"] = len(tensor_sizes)
             summary["tensor_bytes"] = sum(tensor_sizes)
+        gpu_kv_buffer_addrs = summary.pop("gpu_kv_buffer_addrs", None)
+        gpu_kv_buffer_sizes = summary.pop("gpu_kv_buffer_sizes", None)
+        assert (gpu_kv_buffer_addrs is None) == (
+            gpu_kv_buffer_sizes is None
+        ), "GPU KV buffer addresses and sizes must be both None or both non-None"
+        if gpu_kv_buffer_addrs is not None:
+            summary["gpu_kv_buffer_count"] = len(gpu_kv_buffer_addrs)
+            summary["gpu_kv_buffer_bytes"] = sum(
+                int(size) for size in gpu_kv_buffer_sizes
+            )
         return summary
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
@@ -711,6 +764,36 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             )
             raise RuntimeError(f"Worker FAWA {group_label} layout is empty.")
         return tensor_size_list
+
+    @staticmethod
+    def _gpu_kv_buffer_config(
+        group_layouts: dict[int, KVCacheGroupLayout],
+        group_ids: tuple[int, ...],
+    ) -> tuple[list[int], list[int]]:
+        gpu_kv_buffer_set: set[tuple[int, int]] = set()
+        gpu_kv_buffer_addrs: list[int] = []
+        gpu_kv_buffer_sizes: list[int] = []
+        for group_id in group_ids:
+            layout = group_layouts.get(group_id)
+            if layout is None:
+                logger.warning(
+                    f"Skip GPU KV buffer registration for group_id={group_id}: "
+                    "no KV cache layout was registered."
+                )
+                continue
+            buffer_addrs = layout.base_ptrs.reshape(-1).tolist()
+            buffer_sizes = layout.buffer_sizes.reshape(-1).tolist()
+            assert len(buffer_addrs) == len(
+                buffer_sizes
+            ), "KV cache buffer addresses and sizes must have the same length."
+            for addr, size in zip(buffer_addrs, buffer_sizes):
+                key = (addr, size)
+                if key in gpu_kv_buffer_set:
+                    continue
+                gpu_kv_buffer_set.add((addr, size))
+                gpu_kv_buffer_addrs.append(addr)
+                gpu_kv_buffer_sizes.append(size)
+        return gpu_kv_buffer_addrs, gpu_kv_buffer_sizes
 
     @fawa_latency_metric(
         "fawa_scheduler_lookup_external_hit_blocks_ms",
