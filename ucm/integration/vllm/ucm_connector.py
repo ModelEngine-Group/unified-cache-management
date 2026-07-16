@@ -519,13 +519,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         tp_size = vllm_config.parallel_config.tensor_parallel_size
         return [RequestHasher(vllm_config, rank_id) for rank_id in range(1, tp_size)]
 
-    def _apply_sdma_direct_launch_granularity(self, config: dict[str, Any]) -> None:
-        if "cache_sdma_direct_launch_granularity" in config:
-            return
-        config["cache_sdma_direct_launch_granularity"] = (
-            "task" if self.use_layerwise else "shard"
-        )
-
     def _record_load_error(self, metric_name: str, block_ids: Any) -> None:
         invalid_blocks = set(block_ids)
         new_invalid_blocks = invalid_blocks - self._invalid_block_ids
@@ -668,8 +661,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         config["posix_gc_enable"] = (
             self._role != KVConnectorRole.WORKER and dp_rank == 0
         )
-        self._apply_sdma_direct_launch_granularity(config)
-
         logger.info(f"create {name} with config: {config}")
         return UcmConnectorFactoryV1.create_connector(name, config, module_path)
 
