@@ -202,9 +202,7 @@ bytes_per_block = sum(tensor_size_list)
 bytes_per_epoch = bytes_per_block * block_number
 dump_worker_number = worker_number if worker_mode == "gqa" else 1
 total_dump_bytes = (
-    bytes_per_epoch
-    * (warmup_epoch_number + dump_epoch_number)
-    * dump_worker_number
+    bytes_per_epoch * (warmup_epoch_number + dump_epoch_number) * dump_worker_number
 )
 
 
@@ -610,9 +608,7 @@ def worker_loop(
         UcmPipelineStore, unique_id, device_id, store_cpu_affinity_cores
     )
     scheduler = (
-        create_cache_scheduler(
-            UcmPipelineStore, unique_id, store_cpu_affinity_cores
-        )
+        create_cache_scheduler(UcmPipelineStore, unique_id, store_cpu_affinity_cores)
         if device_id == 0
         else None
     )
@@ -736,9 +732,7 @@ if __name__ == "__main__":
         ]
     )
     backend_block_ids = [
-        block_id
-        for block_ids in backend_block_id_records
-        for block_id in block_ids
+        block_id for block_ids in backend_block_id_records for block_id in block_ids
     ]
     worker_cpu_core_groups, store_cpu_core_groups = make_cpu_affinity_core_groups()
     dump_cost_records = process_context.Array(
@@ -788,11 +782,7 @@ if __name__ == "__main__":
             time.sleep(0.1)
         if completed_worker_number.value != worker_number:
             failed = next(
-                (
-                    process
-                    for process in workers
-                    if process.exitcode not in (None, 0)
-                ),
+                (process for process in workers if process.exitcode not in (None, 0)),
                 None,
             )
             if failed is not None:
