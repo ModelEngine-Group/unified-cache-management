@@ -1,0 +1,47 @@
+# DramPool runtime configuration.
+#
+# Launch parameters stay on the command line:
+#   --addr, --nics, --pool-size-gb, --kvcache-block-sizes,
+#   --kvcache-block-proportions, and --ttl-minutes.
+
+transport:
+  device_id: 0
+  # Cluster-wide request-channel to transport-endpoint routing.
+  endpoints:
+    - two_sided: "127.0.0.1:9000"
+      one_sided: "127.0.0.1:4501"
+    - two_sided: "127.0.0.1:9001"
+      one_sided: "127.0.0.1:4502"
+
+queue:
+  request_depth: 65536
+  completion_depth: 65536
+
+request_receiver:
+  idle_wait_us: 100
+
+poller:
+  drain_budget: 64
+  scan_budget: 64
+  max_pending: 1048576
+
+gc:
+  enabled: true
+  interval_ms: 1000
+
+metadata:
+  # A lookup hit protects the entry from eviction for this duration.
+  lease_time_ms: 5000
+  # Fraction selected by ratio-based eviction policies; range: [0, 1].
+  default_evict_ratio: 0.0
+  # Keep internal metadata eviction deferred until buffer reclamation is wired.
+  evict_period_ms: 31536000000
+
+operation:
+  timeout_ms: 5000
+
+logger:
+  level: info
+  dir: ./logs
+  max_files: 10
+  max_size_mb: 5
