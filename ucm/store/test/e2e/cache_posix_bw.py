@@ -428,7 +428,7 @@ def create_cache_worker(
     config["shard_size"] = shard_size
     config["block_size"] = shard_size
     config["share_buffer_enable"] = share_buffer_enable
-    config["cache_buffer_capacity_gb"] = 8
+    config["cache_buffer_capacity_gb"] = 32
     config["cache_stream_number"] = 4
     config["cache_sdma_direct"] = cache_sdma_direct
     config["cache_sdma_direct_launch_granularity"] = "shard"
@@ -455,7 +455,7 @@ def create_cache_scheduler(
     # used; an empty Python list is parsed as vector<any> and fails any_cast.
     config["block_size"] = shard_size
     config["share_buffer_enable"] = share_buffer_enable
-    config["cache_buffer_capacity_gb"] = 8
+    config["cache_buffer_capacity_gb"] = 32
     config["cache_sdma_direct"] = cache_sdma_direct
     config["cache_sdma_direct_launch_granularity"] = "shard"
     config["timeout_ms"] = 30000
