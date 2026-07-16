@@ -151,6 +151,11 @@ Top-level parameters (outside `ucm_connector_config`):
   Whether to use layerwise loading/saving of KV cache blocks.  
   Enabled by default for `UCMConnector`.
 
+* **layerwise_transfer_group_size** *(optional, default: 1)*
+  Number of layers combined into one layerwise load/dump task. Any positive
+  integer is supported; the final group may contain fewer layers. This option
+  only applies when `use_layerwise` is enabled.
+
 * **hit_ratio** *(optional)*  
   When set, limits the number of hit tokens to `hit_ratio × num_prompt_tokens`.  
   Useful for controlling the proportion of cached tokens that are actually loaded.

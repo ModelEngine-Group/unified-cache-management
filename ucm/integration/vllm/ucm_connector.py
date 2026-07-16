@@ -1335,8 +1335,28 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         kv_cache_config: Optional["KVCacheConfig"] = None,
     ):
         super().__init__(vllm_config, role, kv_cache_config)
-        # {layer_id: {request_id: Task}}
+        # {layer_group_index: {request_id: Task}}
         self.load_tasks: dict[int, dict[str, Task]] = defaultdict(dict)
+        group_size_config = self.launch_config.get("layerwise_transfer_group_size", 1)
+        try:
+            if isinstance(group_size_config, bool):
+                raise ValueError
+            self.layerwise_transfer_group_size = int(group_size_config)
+            if (
+                self.layerwise_transfer_group_size <= 0
+                or self.layerwise_transfer_group_size != float(group_size_config)
+            ):
+                raise ValueError
+        except (TypeError, ValueError, OverflowError):
+            logger.warning(
+                "Invalid layerwise_transfer_group_size=%r; fallback to 1.",
+                group_size_config,
+            )
+            self.layerwise_transfer_group_size = 1
+        self._layer_groups: list[tuple[int, ...]] = []
+        self._layer_id_to_group_index: dict[int, int] = {}
+        self._submitted_load_groups: set[int] = set()
+        self._completed_load_groups: set[int] = set()
         self.use_layerwise = True
         self.is_save = False
         self.need_load = False
@@ -1357,7 +1377,10 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self._mtp_layer_start: Optional[int] = None
         self._mtp_layer_end: Optional[int] = None
         self._init_mtp_layerwise_dump_state()
-        logger.info("Init UCMLayerWiseConnector.")
+        logger.info(
+            "Init UCMLayerWiseConnector with layerwise_transfer_group_size=%d.",
+            self.layerwise_transfer_group_size,
+        )
 
     def _get_full_hit_recompute_tokens(self) -> int:
         if not self.use_layerwise:
@@ -1461,19 +1484,53 @@ class UCMLayerWiseConnector(UCMDirectConnector):
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         super().register_kv_caches(kv_caches)
         self._refresh_mtp_layer_range()
+        self._build_layer_groups()
+
+    def _build_layer_groups(self) -> None:
+        """Split local layers into transfer groups, keeping MTP layers isolated."""
+        self._layer_groups = []
+        pending_group: list[int] = []
+
+        def flush_pending_group() -> None:
+            if pending_group:
+                self._layer_groups.append(tuple(pending_group))
+                pending_group.clear()
+
+        for layer_id in self.layer_ids:
+            # MTP layers can be revisited during speculative decode. Keep their
+            # existing per-layer deferred-dump lifecycle instead of batching
+            # them with base-model layers.
+            if self._is_mtp_layer(layer_id):
+                flush_pending_group()
+                self._layer_groups.append((layer_id,))
+                continue
+            pending_group.append(layer_id)
+            if len(pending_group) == self.layerwise_transfer_group_size:
+                flush_pending_group()
+        flush_pending_group()
+
+        self._layer_id_to_group_index = {
+            layer_id: group_index
+            for group_index, layer_group in enumerate(self._layer_groups)
+            for layer_id in layer_group
+        }
+        logger.info(
+            "Layerwise transfer groups: group_size=%d, groups=%s",
+            self.layerwise_transfer_group_size,
+            self._layer_groups,
+        )
 
     def _submit_layerwise_dump_task(
         self,
-        layer_id: int,
+        layer_ids: tuple[int, ...],
         total_ucm_block_ids: list[bytes],
         total_vllm_block_ids: list[int],
         dump_request_ids: set[str],
     ) -> None:
-        """Submit a layerwise dump and attach it to the existing async lifecycle."""
+        """Submit one dump task containing all shards in a layer group."""
         if not dump_request_ids:
             return
 
-        local_layer_id = layer_id - self.first_layer_id
         if self.dump_total_ptrs is None:
             self.dump_total_ptrs = self.kv_cache_layout.extract_block_addrs(
                 total_vllm_block_ids, layer_first=True
@@ -1481,11 +1538,19 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
         event_handle = 0
         try:
-            layer_ptrs = np.ascontiguousarray(self.dump_total_ptrs[local_layer_id])
-            shard_indexs = [layer_id] * len(total_ucm_block_ids)
+            local_rows = [layer_id - self.first_layer_id for layer_id in layer_ids]
+            group_ptrs = np.ascontiguousarray(
+                self.dump_total_ptrs[local_rows].reshape(
+                    len(layer_ids) * len(total_ucm_block_ids), -1
+                )
+            )
+            group_ucm_block_ids = total_ucm_block_ids * len(layer_ids)
+            shard_indexs = [
+                layer_id for layer_id in layer_ids for _ in total_ucm_block_ids
+            ]
             event_handle = self._get_dump_event_handle()
             task = self.store.dump_data(
-                total_ucm_block_ids, shard_indexs, layer_ptrs, event_handle
+                group_ucm_block_ids, shard_indexs, group_ptrs, event_handle
             )
             self._pending_dump_tasks.append(
                 PendingDumpTask(
@@ -1496,7 +1561,8 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             )
         except Exception as e:
             logger.error(
-                f"submit dump task for layer {layer_id} failed. {type(e).__name__}: {e}"
+                f"submit dump task for layers {layer_ids} failed. "
+                f"{type(e).__name__}: {e}"
             )
             self._record_counter("connector_dump_submit_errors_total")
             if self.enable_event_sync and event_handle and self.device is not None:
@@ -1516,29 +1582,42 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 dump_request_ids,
             ) = deferred_mtp_dumps[layer_id]
             self._submit_layerwise_dump_task(
-                layer_id,
+                (layer_id,),
                 total_ucm_block_ids,
                 total_vllm_block_ids,
                 dump_request_ids,
             )
 
-    def _submit_request_load_tasks_for_layer(
+    def _submit_request_load_tasks_for_group(
         self,
-        layer_id: int,
-        local_row: int,
+        group_index: int,
         metadata: "UCMConnectorMetadata",
     ) -> None:
+        if group_index in self._submitted_load_groups:
+            return
+        layer_ids = self._layer_groups[group_index]
         for request_id, ucm_block_ids, total_ptrs in self.request_data:
             if request_id in self._failure_req_ids:
                 continue
             try:
-                shard_indexs = [layer_id] * len(ucm_block_ids)
-                layer_ptrs = total_ptrs[local_row]
-                task = self.store.load_data(ucm_block_ids, shard_indexs, layer_ptrs)
-                self.load_tasks[layer_id][request_id] = task
+                local_rows = [layer_id - self.first_layer_id for layer_id in layer_ids]
+                group_ptrs = np.ascontiguousarray(
+                    total_ptrs[local_rows].reshape(
+                        len(layer_ids) * len(ucm_block_ids), -1
+                    )
+                )
+                group_ucm_block_ids = ucm_block_ids * len(layer_ids)
+                shard_indexs = [
+                    layer_id for layer_id in layer_ids for _ in ucm_block_ids
+                ]
+                task = self.store.load_data(
+                    group_ucm_block_ids, shard_indexs, group_ptrs
+                )
+                self.load_tasks[group_index][request_id] = task
             except Exception as e:
                 logger.error(
-                    f"request {request_id} submit load task for layer {layer_id} error. {type(e).__name__}: {e}"
+                    f"request {request_id} submit load task for layers "
+                    f"{layer_ids} error. {type(e).__name__}: {e}"
                 )
                 self._record_load_error(
                     "connector_load_submit_errors_total",
@@ -1547,11 +1626,14 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 )
                 self._failure_req_ids.add(request_id)
                 self._connector_worker_meta.mark_failed(request_id)
+        self._submitted_load_groups.add(group_index)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         self._layerwise_batch_start = time.perf_counter()
         metadata = self._get_connector_metadata()
         self.load_tasks.clear()
+        self._submitted_load_groups.clear()
+        self._completed_load_groups.clear()
         self.request_data.clear()
         self._failure_req_ids.clear()
         self.need_load = False
@@ -1572,9 +1654,9 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             )
             self.request_data.append((request_id, ucm_block_ids, total_ptrs))
 
-        if self.need_load:
+        if self.need_load and self._layer_groups:
             first_submit_start = time.perf_counter()
-            self._submit_request_load_tasks_for_layer(self.first_layer_id, 0, metadata)
+            self._submit_request_load_tasks_for_group(0, metadata)
             first_submit_end = time.perf_counter()
             n_reqs = len(self.request_data) - len(self._failure_req_ids)
             ucmmetrics.update_stats(
@@ -1594,12 +1676,15 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             return
         metadata = self._get_connector_metadata()
         current_layer_id = self.layer_name_to_id[layer_name]
+        group_index = self._layer_id_to_group_index[current_layer_id]
+        if group_index in self._completed_load_groups:
+            return
 
         wait_start = time.perf_counter()
 
         # Pop before wait so MTP / rollback paths that revisit the same layer_name
         # do not call store.wait() again on already-completed handles.
-        layer_tasks = self.load_tasks.pop(current_layer_id, {})
+        layer_tasks = self.load_tasks.pop(group_index, {})
         n_tasks = len(layer_tasks)
         for request_id, task in layer_tasks.items():
             try:
@@ -1617,14 +1702,12 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 self._failure_req_ids.add(request_id)
 
         wait_end = time.perf_counter()
+        self._completed_load_groups.add(group_index)
 
-        next_layer_id = current_layer_id + 1
-        has_next = next_layer_id in self.layer_ids
+        next_group_index = group_index + 1
+        has_next = next_group_index < len(self._layer_groups)
         if has_next:
-            next_local_row = next_layer_id - self.first_layer_id
-            self._submit_request_load_tasks_for_layer(
-                next_layer_id, next_local_row, metadata
-            )
+            self._submit_request_load_tasks_for_group(next_group_index, metadata)
 
         blocking_ms = (wait_end - wait_start) * 1000
         self._layerwise_batch_wait_blocking_total_ms += blocking_ms
@@ -1659,8 +1742,11 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         submit_start = time.perf_counter()
         total_ucm_block_ids, total_vllm_block_ids = [], []
         dump_request_ids: set[str] = set()
+        group_dump_handled = False
         layer_id = self.layer_name_to_id[layer_name]
         local_layer_id = layer_id - self.first_layer_id
+        group_index = self._layer_id_to_group_index[layer_id]
+        layer_group = self._layer_groups[group_index]
         for request_id, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
                 continue
@@ -1674,7 +1760,8 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             total_ucm_block_ids.extend(ucm_block_ids)
             total_vllm_block_ids.extend(vllm_block_ids)
 
-        if dump_request_ids:
+        if dump_request_ids and layer_id == layer_group[-1]:
+            group_dump_handled = True
             if self._is_mtp_layer(layer_id):
                 self._deferred_mtp_dumps[layer_id] = (
                     list(total_ucm_block_ids),
@@ -1687,12 +1774,12 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 )
             else:
                 self._submit_layerwise_dump_task(
-                    layer_id,
+                    layer_group,
                     total_ucm_block_ids,
                     total_vllm_block_ids,
                     dump_request_ids,
                 )
-        if self.is_save:
+        if group_dump_handled:
             submit_end = time.perf_counter()
             ucmmetrics.update_stats(
                 {"layerwise_save_submit_ms": (submit_end - submit_start) * 1000}
