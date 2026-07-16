@@ -983,23 +983,7 @@ def test_ucm_connector_prefers_lite_when_lite_and_fawa_are_both_enabled(monkeypa
             return True
 
     monkeypatch.setattr(UCMConnector, "_setup_ucm_metrics", lambda *args: None)
-    monkeypatch.setattr(
-        ucm_connector_module,
-        "use_hybrid_linear_attention_layout",
-        lambda kv_cache_config: False,
-    )
     monkeypatch.setattr(ucm_connector_module, "UCMLiteConnector", FakeInnerConnector)
-    monkeypatch.setattr(ucm_connector_module, "UCMMockConnector", FakeInnerConnector)
-    monkeypatch.setattr(ucm_connector_module, "UCMCPConnector", FakeInnerConnector)
-    monkeypatch.setattr(
-        ucm_connector_module, "UCMLayerWiseConnector", FakeInnerConnector
-    )
-    monkeypatch.setattr(
-        ucm_connector_module,
-        "UCMHybridLinearAttentionConnector",
-        FakeInnerConnector,
-    )
-    monkeypatch.setattr(ucm_connector_module, "UCMDirectConnector", FakeInnerConnector)
     monkeypatch.setitem(
         sys.modules,
         "ucm.integration.vllm.hma_connector",
