@@ -71,6 +71,10 @@ void DumpQueue::Submit(TaskPtr task, WaiterPtr waiter)
 
 void DumpQueue::DispatchStage(std::promise<Status>& started)
 {
+    auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_dump_disp");
+    if (nameStatus.Failure()) {
+        UC_WARN("Failed({}) to set UCM dump dispatcher name.", nameStatus);
+    }
     CopyStream stream;
     auto s = cacheSdmaDirect_ ? stream.SetupSdmaDirect(deviceId_, useGdr_)
                               : stream.Setup(deviceId_, streamNumber_, useGdr_);
@@ -192,6 +196,8 @@ Status DumpQueue::DeviceToHostAsync(CopyStream& stream, void** device, void* hos
 
 void DumpQueue::BackendDumpStage()
 {
+    auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_dump_back");
+    if (nameStatus.Failure()) { UC_WARN("Failed({}) to set UCM dump backend name.", nameStatus); }
     if (!cpuAffinityCores_.empty()) {
         auto s = CpuAffinity::SetCpuAffinity4CurrentThread(cpuAffinityCores_);
         if (s.Failure()) { UC_WARN("Failed({}) to set affinity.", s); }

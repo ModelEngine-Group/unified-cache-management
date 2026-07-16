@@ -17,7 +17,10 @@ from vllm.model_executor.models.utils import extract_layer_index
 from vllm.v1.core.sched.output import SchedulerOutput
 
 from ucm.integration.vllm.device import create_device
-from ucm.integration.vllm.ucm_connector import UCMDirectConnector
+from ucm.integration.vllm.ucm_connector import (
+    UCMDirectConnector,
+    _use_ucm_connector_cpu_affinity,
+)
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmetrics
 from ucm.sparse.utils import round_up
@@ -648,7 +651,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self.kv_caches = kv_caches
         self.device = create_device()
 
-        enable_affinity = os.getenv("VLLM_CPU_AFFINITY") == "1"
+        enable_affinity = _use_ucm_connector_cpu_affinity()
         worker_cores, store_cores = (
             self.device.split_cores(self.local_rank)
             if enable_affinity
@@ -1336,21 +1339,32 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if wa_dump_keys:
             event_handle = self._get_dump_event_handle()
             window_ptrs = np.vstack(wa_ptr_rows)
-            if dump_request_ids not in self.tp_dump_tasks:
-                self.tp_dump_tasks[dump_request_ids] = []
             try:
-                self.tp_dump_tasks[dump_request_ids].append(
-                    self._submit_dump_task(
-                        "WA",
-                        self.wa_store,
-                        wa_dump_keys,
-                        window_ptrs,
-                        event_handle,
-                    )
+                # Sliding-window blocks can be released and reused by the next
+                # allocate_slots() call while the request is still running.
+                # Wait for the WA dump here so the store no longer references
+                # those source blocks when wait_for_save() returns.
+                wa_dump_task = self._submit_dump_task(
+                    "WA",
+                    self.wa_store,
+                    wa_dump_keys,
+                    window_ptrs,
+                    event_handle,
                 )
+                try:
+                    wa_dump_task.store.wait(wa_dump_task.task)
+                except Exception as e:
+                    logger.error(
+                        "Synchronous FAWA WA dump task failed; external cache "
+                        f"may miss. keys={wa_dump_task.key_count}, "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    self._record_counter("connector_dump_wait_errors_total")
+                finally:
+                    self.device.destroy_event_handle(wa_dump_task.event_handle)
             except Exception as e:
                 self.device.destroy_event_handle(event_handle)
-                logger.error(f"dump FAWA kv cache failed. {type(e).__name__}: {e}")
+                logger.error(f"dump FAWA WA kv cache failed. {type(e).__name__}: {e}")
                 self._record_counter("connector_dump_submit_errors_total")
 
     def _poll_completed_dump_tasks(self) -> None:

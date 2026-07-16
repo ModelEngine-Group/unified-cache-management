@@ -1,7 +1,12 @@
+from ucm.integration.vllm.patch.common.kv_cache_get_free_block import (
+    register_get_free_block_patches,
+)
 from ucm.integration.vllm.patch.utils import patch_or_inject, when_imported
 from ucm.logger import init_logger
 
 logger = init_logger(__name__)
+
+register_get_free_block_patches()
 
 
 @when_imported("vllm.v1.metrics.stats")
@@ -47,6 +52,11 @@ def patch_core_sched_scheduler(mod):
         mod.Scheduler,
         "_mamba_block_aligned_split",
         scheduler.Scheduler._mamba_block_aligned_split,
+    )
+    patch_or_inject(
+        mod.Scheduler,
+        "_update_requests_with_invalid_blocks",
+        scheduler.Scheduler._update_requests_with_invalid_blocks,
     )
 
 

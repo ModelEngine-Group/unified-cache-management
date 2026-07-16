@@ -32,6 +32,7 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 #include "logger/logger.h"
+#include "thread/cpu_affinity.h"
 #include "time/now_time.h"
 
 namespace UC::PosixStore {
@@ -177,12 +178,13 @@ Status AioImpl::Setup(size_t timeoutMs)
         "submitTimeoutMs={}.",
         queueDepth_, epollTimeoutMs_, sweepIntervalMs_, submitTimeoutMs_);
     auto ret = AioSetup(queueDepth_, &ctx_);
+    auto eno = errno;
     if (ret != 0) {
-        UC_ERROR("Failed({}) to call AioSetup.", ret);
-        return Status::Error(std::to_string(ret));
+        UC_ERROR("Failed(ret={}, errno={}, message={}) to call AioSetup.", ret, eno, strerror(eno));
+        return Status{eno, std::string(strerror(eno))};
     }
     eventFd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    auto eno = errno;
+    eno = errno;
     if (eventFd_ < 0) {
         UC_ERROR("Failed({}) to call eventfd.", eno);
         return Status::Error(std::string(strerror(eno)));
@@ -242,6 +244,10 @@ Status AioImpl::WriteAsync(Io&& io)
 
 void AioImpl::CompletionLoop()
 {
+    auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_posix_aio");
+    if (nameStatus.Failure()) {
+        UC_WARN("Failed({}) to set UCM posix AIO thread name.", nameStatus);
+    }
     std::vector<epoll_event> epollEvents(128);
     std::vector<io_event> aioEvents(batchCompleteSize);
     while (!stop_) {
