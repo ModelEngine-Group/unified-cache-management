@@ -3,6 +3,7 @@ import hashlib
 import math
 import os
 import pickle
+import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -77,6 +78,13 @@ _CACHE_STORE_DEFAULT_UNSHARED_BUFFER_CAPACITY_GB = 32
 _CACHE_STORE_COMPACT_CAPACITY_THRESHOLD_GB = 32
 _CACHE_STORE_MIN_BUFFER_NUMBER = 1024
 _CACHE_STORE_DEFAULT_LOAD_EXCLUSIVE_BUFFER_NUMBER = 1024
+_DP_ENGINE_ID_SUFFIX_RE = re.compile(r"_dp\d+$")
+
+
+def _strip_dp_suffix_from_engine_id(engine_id: str) -> str:
+    if not isinstance(engine_id, str):
+        return engine_id
+    return _DP_ENGINE_ID_SUFFIX_RE.sub("", engine_id)
 
 
 def _normalize_tensor_size_list(tensor_size_list: Any) -> list[int]:
@@ -470,7 +478,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.requests_meta: dict[str, RequestMeta] = {}
 
         ucm_config = Config(vllm_config.kv_transfer_config)
-        self.engine_id = vllm_config.kv_transfer_config.engine_id
+        self.engine_id = _strip_dp_suffix_from_engine_id(
+            vllm_config.kv_transfer_config.engine_id
+        )
         self.launch_config = ucm_config.get_config()
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         self.enable_event_sync = self.launch_config.get("enable_event_sync", True)
@@ -2042,7 +2052,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         )
         self.connector: KVConnectorBase_V1
         ucm_config = Config(vllm_config.kv_transfer_config)
-        self.engine_id = vllm_config.kv_transfer_config.engine_id
+        self.engine_id = _strip_dp_suffix_from_engine_id(
+            vllm_config.kv_transfer_config.engine_id
+        )
         self.launch_config = ucm_config.get_config()
         self._worker_rank = (
             get_world_group().rank
