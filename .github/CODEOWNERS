@@ -1,7 +1,7 @@
 # See https://help.github.com/articles/about-codeowners/
 # for more info about CODEOWNERS file
 
-* @mag1c-h @ygwpz @FangRun2 @Tarrei
+* @mag1c-h @ygwpz @Wwwzff @FangRun2 @Tarrei
 /.github @Wwwzff @Infinite666 @ygwpz @mag1c-h @FangRun2 @Tarrei
 
 /ucm/sparse @wuhuxiao @wangwenxin0312 @Infinite666 @ygwpz @mag1c-h
