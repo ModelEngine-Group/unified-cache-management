@@ -21,9 +21,7 @@ request_receiver:
   idle_wait_us: 100
 
 poller:
-  drain_budget: 64
-  scan_budget: 64
-  max_pending: 1048576
+  pending_depth: 64
 
 gc:
   enabled: true

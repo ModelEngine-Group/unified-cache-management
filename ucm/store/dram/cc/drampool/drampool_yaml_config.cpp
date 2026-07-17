@@ -54,9 +54,7 @@ constexpr const char* kRequiredRuntimeConfigKeys[] = {
     "queue.request_depth",
     "queue.completion_depth",
     "request_receiver.idle_wait_us",
-    "poller.drain_budget",
-    "poller.scan_budget",
-    "poller.max_pending",
+    "poller.pending_depth",
     "gc.enabled",
     "gc.interval_ms",
     "metadata.lease_time_ms",
@@ -275,14 +273,8 @@ Status ApplyRuntimeConfigValue(DramPoolConfig& config, const std::string& key,
     if (key == "request_receiver.idle_wait_us") {
         return ParseUint32Value(key, value, config.requestReceiverIdleWaitUs);
     }
-    if (key == "poller.drain_budget") {
-        return ParseUint32Value(key, value, config.pollerDrainBudget);
-    }
-    if (key == "poller.scan_budget") {
-        return ParseUint32Value(key, value, config.pollerScanBudget);
-    }
-    if (key == "poller.max_pending") {
-        return ParseUint32Value(key, value, config.pollerMaxPending);
+    if (key == "poller.pending_depth") {
+        return ParseUint32Value(key, value, config.pollerPendingDepth);
     }
     if (key == "gc.enabled") { return ParseBoolValue(key, value, config.gcEnabled); }
     if (key == "gc.interval_ms") { return ParseUint32Value(key, value, config.gcIntervalMs); }
@@ -335,13 +327,8 @@ Status ValidateRuntimeConfig(const DramPoolConfig& config)
     if (config.requestReceiverIdleWaitUs == 0) {
         return Status::InvalidParam("request_receiver.idle_wait_us must be greater than zero");
     }
-    if (config.pollerDrainBudget == 0 || config.pollerScanBudget == 0 ||
-        config.pollerMaxPending == 0) {
-        return Status::InvalidParam("poller values must be greater than zero");
-    }
-    if (config.pollerMaxPending < config.pollerDrainBudget ||
-        config.pollerMaxPending < config.pollerScanBudget) {
-        return Status::InvalidParam("poller.max_pending must cover both poller budgets");
+    if (config.pollerPendingDepth == 0) {
+        return Status::InvalidParam("poller.pending_depth must be greater than zero");
     }
     if (config.gcEnabled && config.gcIntervalMs == 0) {
         return Status::InvalidParam("gc.interval_ms must be greater than zero when GC is enabled");

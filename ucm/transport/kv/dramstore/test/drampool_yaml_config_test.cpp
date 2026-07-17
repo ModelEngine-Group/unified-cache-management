@@ -48,9 +48,7 @@ queue:
 request_receiver:
   idle_wait_us: 100
 poller:
-  drain_budget: 64
-  scan_budget: 64
-  max_pending: 1048576
+  pending_depth: 64
 gc:
   enabled: true
   interval_ms: 1000
@@ -113,9 +111,7 @@ TEST(DramPoolRuntimeYamlTest, LoadsEveryRuntimeFieldAndPreservesLaunchFields)
     EXPECT_EQ(config.requestQueueDepth, 65536U);
     EXPECT_EQ(config.completionQueueDepth, 65536U);
     EXPECT_EQ(config.requestReceiverIdleWaitUs, 100U);
-    EXPECT_EQ(config.pollerDrainBudget, 64U);
-    EXPECT_EQ(config.pollerScanBudget, 64U);
-    EXPECT_EQ(config.pollerMaxPending, 1048576U);
+    EXPECT_EQ(config.pollerPendingDepth, 64U);
     EXPECT_TRUE(config.gcEnabled);
     EXPECT_EQ(config.gcIntervalMs, 1000U);
     EXPECT_EQ(config.metadataLeaseTimeMs, 5000U);
@@ -183,8 +179,8 @@ INSTANTIATE_TEST_SUITE_P(
         InvalidYamlCase{"NegativeDevice", "device_id: 0", "device_id: -1", "must not be negative"},
         InvalidYamlCase{"QueueTooShallow", "request_depth: 65536", "request_depth: 1",
                         "at least 2"},
-        InvalidYamlCase{"PollerBudgetExceedsPending", "max_pending: 1048576", "max_pending: 1",
-                        "cover both"},
+        InvalidYamlCase{"ZeroPollerPendingDepth", "pending_depth: 64", "pending_depth: 0",
+                        "greater than zero"},
         InvalidYamlCase{"EnabledGcHasZeroInterval", "interval_ms: 1000", "interval_ms: 0",
                         "when GC is enabled"},
         InvalidYamlCase{"EvictRatioAboveOne", "default_evict_ratio: 0.0",
