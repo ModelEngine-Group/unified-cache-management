@@ -1305,6 +1305,131 @@ class UCMDirectConnector(KVConnectorBase_V1):
         return async_finished_req_ids or None, None
 
 
+class UCMInferenceDurationMonitorConnector(UCMDirectConnector):
+    """No-I/O connector for measuring one inference step's wall-clock duration.
+
+    It records the interval from ``start_load_kv`` to ``wait_for_save`` while
+    deliberately bypassing all external-cache lookup, load, and dump work.
+    """
+
+    def __init__(
+        self,
+        vllm_config: "VllmConfig",
+        role: KVConnectorRole,
+        kv_cache_config: Optional["KVCacheConfig"] = None,
+    ):
+        # Avoid UCMDirectConnector's scheduler-side store creation. The worker
+        # side is kept store-free by register_kv_caches below as well.
+        self._defer_scheduler_store = True
+        super().__init__(vllm_config, role, kv_cache_config)
+        self._inference_start_time: Optional[float] = None
+        self._hbm_hit_tokens_by_request: dict[str, int] = {}
+        self._monitor_step = 0
+        logger.info("Init UCMInferenceDurationMonitorConnector (no KV I/O).")
+
+    def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
+        """Keep layer metadata only; do not create a store or register buffers."""
+        self.kv_caches = kv_caches
+        self.device = create_device()
+        if self.device is None:
+            raise RuntimeError(
+                "Unsupported device platform for inference duration monitoring."
+            )
+        self.layer_name_to_id = {
+            name: extract_layer_index(name) for name in kv_caches.keys()
+        }
+        self.layer_ids = sorted(set(self.layer_name_to_id.values()))
+        if self.layer_ids:
+            self.first_layer_id = self.layer_ids[0]
+
+    def get_num_new_matched_tokens(
+        self,
+        request: "Request",
+        num_computed_tokens: int,
+    ) -> tuple[int, bool]:
+        # Preserve vLLM's local-HBM prefix information for monitoring, while
+        # disabling all external-cache reuse and real I/O.
+        request_tokens = getattr(request, "num_tokens", None)
+        if request_tokens is None:
+            request_tokens = len(getattr(request, "all_token_ids", ()))
+        self._hbm_hit_tokens_by_request[request.request_id] = min(
+            max(int(num_computed_tokens), 0), max(int(request_tokens), 0)
+        )
+        return 0, False
+
+    @staticmethod
+    def _scheduled_request_ids(scheduler_output: SchedulerOutput) -> list[str]:
+        request_ids = [
+            request.req_id for request in scheduler_output.scheduled_new_reqs
+        ]
+        cached_reqs = scheduler_output.scheduled_cached_reqs
+        if isinstance(cached_reqs, list):
+            request_ids.extend(request.req_id for request in cached_reqs)
+        else:
+            request_ids.extend(getattr(cached_reqs, "req_ids", ()))
+        return request_ids
+
+    def build_connector_meta(
+        self, scheduler_output: SchedulerOutput
+    ) -> KVConnectorMetadata:
+        self._monitor_step += 1
+        request_ids = self._scheduled_request_ids(scheduler_output)
+        scheduled_tokens = sum(
+            int(tokens)
+            for tokens in getattr(scheduler_output, "num_scheduled_tokens", {}).values()
+        )
+        total_hbm_hit_tokens = sum(
+            self._hbm_hit_tokens_by_request.get(request_id, 0)
+            for request_id in request_ids
+        )
+        hbm_hit_reqs = sum(
+            self._hbm_hit_tokens_by_request.get(request_id, 0) > 0
+            for request_id in request_ids
+        )
+        logger.info(
+            "HBM prefix scheduler stats: step=%d, rank=%d, "
+            "scheduled_reqs=%d, new_reqs=%d, hbm_hit_reqs=%d, "
+            "hbm_hit_tokens=%d, scheduled_tokens=%d",
+            self._monitor_step,
+            self._vllm_config.parallel_config.rank,
+            len(request_ids),
+            len(scheduler_output.scheduled_new_reqs),
+            hbm_hit_reqs,
+            total_hbm_hit_tokens,
+            scheduled_tokens,
+        )
+        for request_id in getattr(scheduler_output, "finished_req_ids", ()):
+            self._hbm_hit_tokens_by_request.pop(request_id, None)
+        return UCMConnectorMetadata({}, scheduler_output.preempted_req_ids or set())
+
+    def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
+        del forward_context, kwargs
+        # Device kernels are asynchronous. Start timing only after the previous
+        # device work has completed so the interval belongs to this inference step.
+        self.device.synchronize()
+        self._inference_start_time = time.perf_counter()
+
+    def wait_for_layer_load(self, layer_name: str) -> None:
+        del layer_name
+
+    def save_kv_layer(self, *args, **kwargs) -> None:
+        del args, kwargs
+
+    def wait_for_save(self) -> None:
+        if self._inference_start_time is None:
+            return
+        # Include all kernels launched by this inference step before publishing
+        # the duration, rather than measuring CPU-side launch time only.
+        self.device.synchronize()
+        elapsed_ms = (time.perf_counter() - self._inference_start_time) * 1000
+        self._inference_start_time = None
+        ucmmetrics.update_stats({"inference_monitor_start_to_save_ms": elapsed_ms})
+        logger.info(
+            "Inference duration monitor: start_load_kv_to_wait_for_save_ms=%.3f",
+            elapsed_ms,
+        )
+
+
 class UCMLayerWiseConnector(UCMDirectConnector):
     """
     This Connector means overlap:
@@ -2066,6 +2191,12 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             self.connector = UCMLiteConnector(vllm_config, role, kv_cache_config)
             return
 
+        use_inference_duration_monitor = (
+            self.launch_config.get("use_inference_duration_monitor", False)
+            if self.launch_config is not None
+            else False
+        )
+
         pp_enabled = self._vllm_config.parallel_config.pipeline_parallel_size > 1
         if pp_enabled and not use_layerwise:
             raise RuntimeError(
@@ -2101,7 +2232,11 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             and self.launch_config.get("hybrid_linear_attention_layerwise", True)
         )
 
-        if UCMFAWAConnector.can_handle_kv_cache_config(kv_cache_config):
+        if use_inference_duration_monitor:
+            self.connector = UCMInferenceDurationMonitorConnector(
+                vllm_config, role, kv_cache_config
+            )
+        elif UCMFAWAConnector.can_handle_kv_cache_config(kv_cache_config):
             self.connector = UCMFAWAConnector(vllm_config, role, kv_cache_config)
         elif use_ratio_rate:
             self.connector = UCMMockConnector(vllm_config, role, kv_cache_config)

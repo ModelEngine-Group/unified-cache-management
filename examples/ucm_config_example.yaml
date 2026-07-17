@@ -41,6 +41,12 @@ wa_dump_block_wise: true
 
 # Whether to use layerwise loading/saving (optional, default: True for UCMConnector)
 use_layerwise: true
+
+# Enable the no-I/O inference-duration monitor. When true, UCM always selects
+# the monitoring connector and reports the wall-clock interval from
+# start_load_kv to wait_for_save. All cache lookup, load, and dump work is
+# skipped.
+use_inference_duration_monitor: false
 # hit_ratio: 0.9
 
 # Whether to record requests' traces (optional, default: False)
