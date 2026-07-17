@@ -1,6 +1,7 @@
 import hashlib
 import logging
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -19,6 +20,47 @@ if TYPE_CHECKING:
     from sglang.srt.mem_cache.memory_pool_host import HostKVCache
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_storage_backends(storage_backends: Any) -> List[str]:
+    if isinstance(storage_backends, str):
+        return [path for path in storage_backends.split(":") if path]
+    if isinstance(storage_backends, Sequence) and not isinstance(
+        storage_backends, (str, bytes)
+    ):
+        return [str(path) for path in storage_backends if str(path)]
+    raise ValueError(
+        "storage_backends must be a ':' separated string or a non-empty sequence"
+    )
+
+
+def _safe_dir_segment(value: Any) -> str:
+    raw = str(getattr(value, "value", value))
+    safe = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in raw)
+    return safe or "store"
+
+
+def _storage_backends_for_store(base_backends: List[str], store_dir: str) -> List[str]:
+    backends = []
+    for backend in base_backends:
+        path = Path(backend) / store_dir
+        path.mkdir(parents=True, exist_ok=True)
+        backends.append(str(path))
+    logger.info(
+        "SGLang UCM store directory prepared: store_dir=%s, backends=%s",
+        store_dir,
+        backends,
+    )
+    return backends
+
+
+def _config_for_store_dir(config: Dict[str, Any], store_dir: str) -> Dict[str, Any]:
+    cfg = dict(config)
+    cfg["storage_backends"] = _storage_backends_for_store(
+        _normalize_storage_backends(config["storage_backends"]),
+        store_dir,
+    )
+    return cfg
 
 
 def _load_extra_config_from_yaml_env() -> Optional[Dict[str, Any]]:
@@ -86,16 +128,29 @@ class UnifiedCacheStoreConfig:
 
         cfg = dict(ucm_cfg)
         cfg["store_pipeline"] = "Posix"
-        cfg["storage_backends"] = [
-            path for path in cfg["storage_backends"].split(":") if path
-        ]
+        cfg["storage_backends"] = _normalize_storage_backends(cfg["storage_backends"])
         cfg["device_id"] = get_world_group().local_rank
         cfg["tensor_size"] = tensor_size
         cfg["shard_size"] = block_size
         cfg["block_size"] = block_size
         cfg["stream_number"] = 8
+        logger.info(
+            "Loaded SGLang UCM config: connector=%s, module=%s, model=%s, "
+            "is_mla=%s, tensor_size=%s, block_size=%s, base_backends=%s",
+            name,
+            module_path,
+            storage_config.model_name,
+            storage_config.is_mla_model,
+            tensor_size,
+            block_size,
+            cfg["storage_backends"],
+        )
 
-        return UnifiedCacheStoreConfig(module_path=module_path, name=name, config=cfg)
+        return UnifiedCacheStoreConfig(
+            module_path=module_path,
+            name=name,
+            config=cfg,
+        )
 
 
 class SglangUcmConnector:
@@ -125,20 +180,32 @@ class SglangUcmConnector:
         cls,
         storage_config: "HiCacheStorageConfig",
         mem_pool_host: "HostKVCache",
+        store_dir: Optional[str] = None,
     ) -> "SglangUcmConnector":
         if mem_pool_host is None:
             raise ValueError("mem_pool_host must be provided for UnifiedCache")
         ucm_store_config = UnifiedCacheStoreConfig.load_from_config(
             storage_config, mem_pool_host
         )
+        store_config = (
+            _config_for_store_dir(ucm_store_config.config, store_dir)
+            if store_dir is not None
+            else ucm_store_config.config
+        )
+        logger.info(
+            "Creating SGLang UCM store: connector=%s, store_dir=%s, backends=%s",
+            ucm_store_config.name,
+            store_dir,
+            store_config["storage_backends"],
+        )
         store = UcmConnectorFactoryV1.create_connector(
-            ucm_store_config.name, ucm_store_config.config, ucm_store_config.module_path
+            ucm_store_config.name, store_config, ucm_store_config.module_path
         )
         return cls(
             store,
             mem_pool_host,
             storage_config,
-            ucm_store_config.config["storage_backends"],
+            store_config["storage_backends"],
         )
 
     def _encode_key(self, key: str) -> bytes:
@@ -243,3 +310,8 @@ class SglangUcmConnector:
 
     def get_stats(self):
         return None
+
+    def close(self) -> None:
+        close = getattr(self.store, "close", None)
+        if callable(close):
+            close()
