@@ -35,7 +35,7 @@
 #include "eviction_policy.h"
 #include "logger/logger.h"
 
-namespace UC::DramStore {
+namespace UC::DramPool {
 
 /**
  * @brief Eviction policy that removes least-recently-used entries first.
@@ -105,6 +105,6 @@ private:
     std::unordered_map<BlockId, ListIter, UC::Detail::BlockIdHasher> index_;
 };
 
-}  // namespace UC::DramStore
+}  // namespace UC::DramPool
 
 #endif

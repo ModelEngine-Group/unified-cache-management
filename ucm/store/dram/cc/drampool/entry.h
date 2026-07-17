@@ -30,7 +30,7 @@
 #include "thread/lock.h"
 #include "type/types.h"
 
-namespace UC::DramStore {
+namespace UC::DramPool {
 
 using Spinlock = UC::SpinLock;
 using RwLock = UC::RwLock;
@@ -121,6 +121,6 @@ struct Entry {
 
 using EntryPtr = std::shared_ptr<Entry>;
 
-}  // namespace UC::DramStore
+}  // namespace UC::DramPool
 
 #endif

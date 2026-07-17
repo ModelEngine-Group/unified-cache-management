@@ -24,10 +24,11 @@
 #include <chrono>
 #include <gtest/gtest.h>
 #include <limits>
-#include "dram/cc/lru_eviction_policy.h"
-#include "dram_test_common.h"
+#include "dram/cc/drampool/lru_eviction_policy.h"
+#include "dram/dram_test_common.h"
 
-using UC::DramStore::LruEvictionPolicy;
+using UC::Status;
+using UC::DramPool::LruEvictionPolicy;
 using UC::Test::Dram::Clock;
 using UC::Test::Dram::EntryStatus;
 using UC::Test::Dram::KeyFromHex;
@@ -50,14 +51,14 @@ TEST_F(UCLruEvictionPolicyTest, AddKeyDuplicateReturnsDuplicateKey)
 {
     auto key = KeyFromHex("a1");
     ASSERT_TRUE(policy_.AddKey(key, MakeEntry(key)).Success());
-    ASSERT_FALSE(policy_.AddKey(key, MakeEntry(key)).Success());
+    ASSERT_EQ(policy_.AddKey(key, MakeEntry(key)), Status::DuplicateKey());
 }
 
 TEST_F(UCLruEvictionPolicyTest, AddKeyNullptrReturnsInvalidParam)
 {
     auto key = KeyFromHex("a1");
     auto st = policy_.AddKey(key, nullptr);
-    ASSERT_FALSE(st.Success());
+    ASSERT_EQ(st, Status::InvalidParam());
 }
 
 TEST_F(UCLruEvictionPolicyTest, DeleteKeyReturnsOkAndSecondIsNotFound)
@@ -65,13 +66,13 @@ TEST_F(UCLruEvictionPolicyTest, DeleteKeyReturnsOkAndSecondIsNotFound)
     auto key = KeyFromHex("a1");
     ASSERT_TRUE(policy_.AddKey(key, MakeEntry(key)).Success());
     ASSERT_TRUE(policy_.DeleteKey(key).Success());
-    ASSERT_FALSE(policy_.DeleteKey(key).Success());
+    ASSERT_EQ(policy_.DeleteKey(key), Status::NotFound());
 }
 
 TEST_F(UCLruEvictionPolicyTest, AccessKeyReturnsNotFoundForMissingKey)
 {
     auto key = KeyFromHex("a1");
-    ASSERT_FALSE(policy_.AccessKey(key).Success());
+    ASSERT_EQ(policy_.AccessKey(key), Status::NotFound());
 }
 
 TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsEmptyWhenNoEntries)
