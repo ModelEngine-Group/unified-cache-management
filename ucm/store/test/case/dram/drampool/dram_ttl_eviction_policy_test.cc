@@ -98,7 +98,7 @@ TEST_F(UCTtlEvictionPolicyTest, GetEvictionResultsEvictsExpiredReadyEntry)
     ASSERT_TRUE(policy_.AddKey(k1, MakeEntry(k1, 0, past_)).Success());
     auto victims = policy_.GetEvictionResults(1.0);
     ASSERT_EQ(victims.size(), 1UL);
-    EXPECT_EQ(victims[0], k1);
+    EXPECT_EQ(victims[0]->key, k1);
 }
 
 TEST_F(UCTtlEvictionPolicyTest, GetEvictionResultsSkipsNonReadyAndContinues)
@@ -118,7 +118,7 @@ TEST_F(UCTtlEvictionPolicyTest, GetEvictionResultsSkipsNonReadyAndContinues)
             .Success());
     auto victims = policy_.GetEvictionResults(1.0);
     ASSERT_EQ(victims.size(), 1UL);
-    EXPECT_EQ(victims[0], kExpiredReady);
+    EXPECT_EQ(victims[0]->key, kExpiredReady);
 }
 
 TEST_F(UCTtlEvictionPolicyTest, GetEvictionResultsSkipsNonZeroRefCnt)

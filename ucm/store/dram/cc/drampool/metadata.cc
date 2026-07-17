@@ -23,6 +23,7 @@
  * */
 #include "metadata.h"
 #include <cstdlib>
+#include <stdexcept>
 #include "logger/logger.h"
 #include "pos_eviction_policy.h"
 #include "ttl_eviction_policy.h"
@@ -137,13 +138,13 @@ std::size_t ShardMetadata::GetKeyCnt() const noexcept
     return metadata_.size();
 }
 
-std::vector<BlockId> ShardMetadata::EvictPeriodic(double evict_ratio)
+std::vector<EntryPtr> ShardMetadata::EvictPeriodic(double evict_ratio)
 {
     ReadOnlyGuard lock(mtx_);
     return periodicEvictor_->GetEvictionResults(evict_ratio);
 }
 
-std::vector<BlockId> ShardMetadata::EvictDeep(double evict_ratio)
+std::vector<EntryPtr> ShardMetadata::EvictDeep(double evict_ratio)
 {
     ReadOnlyGuard lock(mtx_);
     return deepEvictor_->GetEvictionResults(evict_ratio);
@@ -153,31 +154,43 @@ Status MetadataManager::StoreBegin(const BlockId& key, EntryPtr entry)
 {
     auto idx = ShardIdx(key);
     entry->shard = static_cast<uint32_t>(idx);
-    // TODO: integrate BufferManager allocation for entry.
-    Status st = Status::OK();
-    if (!st.Success()) {
+    auto st = bufferManager_.Allocate(entry->size, entry->buffer);
+    if (st == Status::NoSpace()) {
+        // TODO: Maybe the random shard doesn't have the data of current size
         EvictOneShard(*shards_[rand() % kShardCnt]);
-        // TODO: retry BufferManager allocation, update st.
-        if (!st.Success()) { EvictOneShard(*shards_[rand() % kShardCnt], true); }
+        st = bufferManager_.Allocate(entry->size, entry->buffer);
     }
-    return shards_[idx]->StoreBegin(key, std::move(entry));
-}
-
-void MetadataManager::EvictLoop()
-{
-    while (true) {
-        std::unique_lock<std::mutex> lock(cvMtx_);
-        cv_.wait_for(lock, evictPeriod_, [this] { return stop_.load(); });
-        if (stop_.load()) { return; }
-        for (auto& s : shards_) { EvictOneShard(*s); }
+    if (st == Status::NoSpace()) {
+        EvictOneShard(*shards_[rand() % kShardCnt], true);
+        st = bufferManager_.Allocate(entry->size, entry->buffer);
     }
+    if (!st.Success()) {
+        UC_ERROR("StoreBegin: Allocate for size {} failed, status {}.", entry->size, st.ToString());
+        return Status::Error();
+    }
+    const auto bufSize = entry->size;
+    const auto bufSlot = entry->buffer.slot;
+    st = shards_[idx]->StoreBegin(key, std::move(entry));
+    if (!st.Success()) {
+        auto freeSt = bufferManager_.Free(bufSize, bufSlot);
+        if (!freeSt.Success()) {
+            UC_ERROR("StoreBegin: Free slot {} failed, status {}.", bufSlot, freeSt.ToString());
+        }
+    }
+    return st;
 }
 
 void MetadataManager::EvictOneShard(ShardMetadata& s, bool deep)
 {
     auto victims = deep ? s.EvictDeep(defaultEvictRatio_) : s.EvictPeriodic(defaultEvictRatio_);
-    // TODO: integrate BufferManager release for victim entries.
-    for (const auto& k : victims) { s.Delete(k); }
+    for (const auto& entry : victims) {
+        auto st = bufferManager_.Free(entry->size, entry->buffer.slot);
+        if (!st.Success()) {
+            UC_ERROR("EvictOneShard: Free slot {} failed, status {}.", entry->buffer.slot,
+                     st.ToString());
+        }
+        s.Delete(entry->key);
+    }
 }
 
 }  // namespace UC::DramPool

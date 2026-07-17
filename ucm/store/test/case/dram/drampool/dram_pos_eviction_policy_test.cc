@@ -106,8 +106,8 @@ TEST_F(UCPosEvictionPolicyTest, GetEvictionResultsRespectsEvictRatio)
     ASSERT_TRUE(policy_.AddKey(k4, MakeEntry(k4, 4, past_)).Success());
     auto victims = policy_.GetEvictionResults(0.5);
     ASSERT_EQ(victims.size(), 2UL);
-    EXPECT_EQ(victims[0], k4);
-    EXPECT_EQ(victims[1], k3);
+    EXPECT_EQ(victims[0]->key, k4);
+    EXPECT_EQ(victims[1]->key, k3);
 }
 
 TEST_F(UCPosEvictionPolicyTest, GetEvictionResultsOrdersByPositionDescending)
@@ -120,9 +120,9 @@ TEST_F(UCPosEvictionPolicyTest, GetEvictionResultsOrdersByPositionDescending)
     ASSERT_TRUE(policy_.AddKey(kMid, MakeEntry(kMid, 2, past_)).Success());
     auto victims = policy_.GetEvictionResults(1.0);
     ASSERT_EQ(victims.size(), 3UL);
-    EXPECT_EQ(victims[0], kHigh);
-    EXPECT_EQ(victims[1], kMid);
-    EXPECT_EQ(victims[2], kLow);
+    EXPECT_EQ(victims[0]->key, kHigh);
+    EXPECT_EQ(victims[1]->key, kMid);
+    EXPECT_EQ(victims[2]->key, kLow);
 }
 
 TEST_F(UCPosEvictionPolicyTest, GetEvictionResultsTiebreaksByLifeTimeoutAscending)
@@ -133,8 +133,8 @@ TEST_F(UCPosEvictionPolicyTest, GetEvictionResultsTiebreaksByLifeTimeoutAscendin
     ASSERT_TRUE(policy_.AddKey(kEarlier, MakeEntry(kEarlier, 5, past_)).Success());
     auto victims = policy_.GetEvictionResults(1.0);
     ASSERT_EQ(victims.size(), 2UL);
-    EXPECT_EQ(victims[0], kEarlier);
-    EXPECT_EQ(victims[1], kLater);
+    EXPECT_EQ(victims[0]->key, kEarlier);
+    EXPECT_EQ(victims[1]->key, kLater);
 }
 
 TEST_F(UCPosEvictionPolicyTest, GetEvictionResultsSkipsNonReadyAndContinues)
@@ -146,7 +146,7 @@ TEST_F(UCPosEvictionPolicyTest, GetEvictionResultsSkipsNonReadyAndContinues)
     ASSERT_TRUE(policy_.AddKey(kReady, MakeEntry(kReady, 1, past_, EntryStatus::READY)).Success());
     auto victims = policy_.GetEvictionResults(1.0);
     ASSERT_EQ(victims.size(), 1UL);
-    EXPECT_EQ(victims[0], kReady);
+    EXPECT_EQ(victims[0]->key, kReady);
 }
 
 TEST_F(UCPosEvictionPolicyTest, GetEvictionResultsSkipsNonZeroRefCnt)

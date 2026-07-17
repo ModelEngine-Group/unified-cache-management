@@ -4,12 +4,18 @@ if(BUILD_UNIT_TESTS)
     if(NOT BUILD_UCM_ASU)
         list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX ".*[/\\\\]asu[/\\\\].*")
     endif()
+    if(NOT RUNTIME_ENVIRONMENT STREQUAL "ascend")
+        list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX ".*[/\\\\]dram[/\\\\].*")
+    endif()
     add_executable(ucmstore.test ${UCMSTORE_TEST_SOURCE_FILES})
     target_include_directories(ucmstore.test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/case)
     target_link_libraries(ucmstore.test PRIVATE
-        posixstore cachestore fakestore pcstore dramstore
+        posixstore cachestore fakestore pcstore
         gtest_main gtest gmock
     )
+    if(RUNTIME_ENVIRONMENT STREQUAL "ascend")
+        target_link_libraries(ucmstore.test PRIVATE dramstore)
+    endif()
     if(BUILD_UCM_ASU)
         target_link_libraries(ucmstore.test PRIVATE asu_client asu_ascend_deps)
         target_compile_definitions(ucmstore.test PRIVATE ASU_BUILD_TESTS)

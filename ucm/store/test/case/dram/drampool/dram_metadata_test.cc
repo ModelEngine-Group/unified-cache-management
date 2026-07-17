@@ -21,6 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <acl/acl.h>
 #include <chrono>
 #include <gtest/gtest.h>
 #include <memory>
@@ -33,6 +34,7 @@
 
 using UC::Status;
 using UC::Detail::BlockId;
+using UC::DramPool::BufferManager;
 using UC::DramPool::EntryPtr;
 using UC::DramPool::EntryStatus;
 using UC::DramPool::EvictionPolicyType;
@@ -41,6 +43,7 @@ using UC::DramPool::MetadataManager;
 using UC::DramPool::ShardMetadata;
 using UC::Test::Dram::Clock;
 using UC::Test::Dram::KeyFromHex;
+using UC::Test::Dram::MakeBufferManager;
 using UC::Test::Dram::MakeEntry;
 using UC::Test::Dram::TimePoint;
 
@@ -48,10 +51,9 @@ namespace {
 MetadataConfig MakeConfig(EvictionPolicyType periodic = EvictionPolicyType::TTL,
                           EvictionPolicyType deep = EvictionPolicyType::POSITION,
                           std::chrono::milliseconds leaseTime = std::chrono::milliseconds(100),
-                          double defaultEvictRatio = 1.0,
-                          std::chrono::milliseconds evictPeriod = std::chrono::seconds(60))
+                          double defaultEvictRatio = 1.0)
 {
-    return MetadataConfig{periodic, deep, leaseTime, defaultEvictRatio, evictPeriod};
+    return MetadataConfig{periodic, deep, leaseTime, defaultEvictRatio};
 }
 }  // namespace
 
@@ -281,13 +283,26 @@ TEST_F(UCShardMetadataTest, FullLifecycleStoreStoreEndLoadExist)
 
 class UCMetadataManagerTest : public testing::Test {
 protected:
+    static void SetUpTestSuite()
+    {
+        aclInit(nullptr);
+        aclrtSetDevice(0);
+    }
+
+    static void TearDownTestSuite()
+    {
+        aclrtResetDevice(0);
+        aclFinalize();
+    }
+
     const TimePoint past_ = Clock::now() - std::chrono::seconds(10);
     const TimePoint future_ = Clock::now() + std::chrono::seconds(10);
+    std::unique_ptr<BufferManager> mgr_ = MakeBufferManager();
 };
 
 TEST_F(UCMetadataManagerTest, SameKeyGoesToSameShard)
 {
-    MetadataManager mgr(MakeConfig());
+    MetadataManager mgr(MakeConfig(), *mgr_);
     auto k = KeyFromHex("a1");
     auto e1 = MakeEntry(k, 0, future_, EntryStatus::INITIALIZED);
     EXPECT_TRUE(mgr.StoreBegin(k, e1).Success());
@@ -300,7 +315,7 @@ TEST_F(UCMetadataManagerTest, SameKeyGoesToSameShard)
 
 TEST_F(UCMetadataManagerTest, DifferentKeysMayHitDifferentShards)
 {
-    MetadataManager mgr(MakeConfig());
+    MetadataManager mgr(MakeConfig(), *mgr_);
     std::set<uint32_t> shards;
     for (int i = 0; i < 10; ++i) {
         auto k = KeyFromHex(("a" + std::to_string(i)).c_str());
@@ -313,7 +328,7 @@ TEST_F(UCMetadataManagerTest, DifferentKeysMayHitDifferentShards)
 
 TEST_F(UCMetadataManagerTest, PerKeyOpsDispatchAndRoundtrip)
 {
-    MetadataManager mgr(MakeConfig());
+    MetadataManager mgr(MakeConfig(), *mgr_);
     auto k = KeyFromHex("a1");
     auto entry = MakeEntry(k, 0, future_, EntryStatus::INITIALIZED);
     EXPECT_TRUE(mgr.StoreBegin(k, entry).Success());
@@ -338,7 +353,7 @@ TEST_F(UCMetadataManagerTest, PerKeyOpsDispatchAndRoundtrip)
 
 TEST_F(UCMetadataManagerTest, GetKeyCntAggregatesAcrossShards)
 {
-    MetadataManager mgr(MakeConfig());
+    MetadataManager mgr(MakeConfig(), *mgr_);
     EXPECT_EQ(mgr.GetKeyCnt(), 0U);
     std::vector<BlockId> keys;
     for (int i = 0; i < 10; ++i) {

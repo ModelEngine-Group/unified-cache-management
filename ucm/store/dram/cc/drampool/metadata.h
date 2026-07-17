@@ -25,16 +25,13 @@
 #define UNIFIEDCACHE_DRAM_STORE_CC_METADATA_H
 
 #include <array>
-#include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstddef>
 #include <memory>
-#include <mutex>
-#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include "buffer_manager.h"
 #include "entry.h"
 #include "eviction_policy.h"
 #include "status/status.h"
@@ -46,7 +43,6 @@ struct MetadataConfig {
     EvictionPolicyType deepType;
     std::chrono::milliseconds leaseTime;
     double defaultEvictRatio;
-    std::chrono::milliseconds evictPeriod;
 };
 
 /**
@@ -123,13 +119,13 @@ public:
     std::size_t GetKeyCnt() const noexcept;
 
     /**
-     * @brief Run the eviction policy and return the victim keys.
+     * @brief Run the eviction policy and return the victim entries.
      *        Read-locks the shard.
      * @param evict_ratio Fraction of eligible entries to evict, in [0, 1].
-     * @return Keys selected for eviction.
+     * @return Entries selected for eviction.
      */
-    std::vector<BlockId> EvictPeriodic(double evict_ratio);
-    std::vector<BlockId> EvictDeep(double evict_ratio);
+    std::vector<EntryPtr> EvictPeriodic(double evict_ratio);
+    std::vector<EntryPtr> EvictDeep(double evict_ratio);
 
 private:
     mutable RwLock mtx_;
@@ -147,20 +143,10 @@ private:
  */
 class MetadataManager {
 public:
-    explicit MetadataManager(const MetadataConfig& config)
-        : defaultEvictRatio_(config.defaultEvictRatio),
-          evictPeriod_(config.evictPeriod),
-          stop_(false)
+    explicit MetadataManager(const MetadataConfig& config, BufferManager& bufferManager)
+        : shards_{}, bufferManager_(bufferManager), defaultEvictRatio_(config.defaultEvictRatio)
     {
         for (auto& s : shards_) { s = std::make_unique<ShardMetadata>(config); }
-        evictThread_ = std::thread([this] { EvictLoop(); });
-    }
-
-    ~MetadataManager()
-    {
-        stop_.store(true);
-        cv_.notify_all();
-        if (evictThread_.joinable()) { evictThread_.join(); }
     }
 
     MetadataManager(const MetadataManager&) = delete;
@@ -184,6 +170,11 @@ public:
         return total;
     }
 
+    void PerformEvict()
+    {
+        for (auto& s : shards_) { EvictOneShard(*s); }
+    }
+
 private:
     static std::size_t ShardIdx(const BlockId& key)
     {
@@ -191,19 +182,14 @@ private:
     }
     ShardMetadata& ShardOf(const BlockId& key) { return *shards_[ShardIdx(key)]; }
     const ShardMetadata& ShardOf(const BlockId& key) const { return *shards_[ShardIdx(key)]; }
-    void EvictLoop();
     void EvictOneShard(ShardMetadata& s, bool deep = false);
 
     static constexpr std::size_t kShardCnt = 1024;
     std::array<std::unique_ptr<ShardMetadata>, kShardCnt> shards_;
 
-    // For eviction logic
+    BufferManager& bufferManager_;
+
     double defaultEvictRatio_;
-    std::chrono::milliseconds evictPeriod_;
-    std::atomic<bool> stop_;
-    std::mutex cvMtx_;
-    std::condition_variable cv_;
-    std::thread evictThread_;
 };
 
 }  // namespace UC::DramPool

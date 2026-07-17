@@ -51,9 +51,9 @@ struct PosEntryCmp {
  */
 class PosEvictionPolicy : public OrderedEvictionPolicy<PosEntryCmp> {
 public:
-    std::vector<BlockId> GetEvictionResults(double evict_ratio) override
+    std::vector<EntryPtr> GetEvictionResults(double evict_ratio) override
     {
-        std::vector<BlockId> victims;
+        std::vector<EntryPtr> victims;
         const auto now = std::chrono::system_clock::now();
         std::size_t target =
             static_cast<std::size_t>(static_cast<double>(entries_.size()) * evict_ratio);
@@ -61,7 +61,7 @@ public:
         for (const auto& entry : entries_) {
             if (victims.size() >= target) { break; }
             if (!entry->TryMarkEvicting(now)) { continue; }
-            victims.push_back(entry->key);
+            victims.push_back(entry);
         }
         if (!victims.empty()) {
             UC_INFO("PosEvictionPolicy evict {} of {} entries.", victims.size(), entries_.size());
