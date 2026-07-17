@@ -39,7 +39,7 @@
 #include "eviction_policy.h"
 #include "status/status.h"
 
-namespace UC::DramStore {
+namespace UC::DramPool {
 
 struct MetadataConfig {
     EvictionPolicyType periodicType;
@@ -80,10 +80,11 @@ public:
     /**
      * @brief Begin a load: increment the entry's refCnt and notify both
      *        eviction policies of the access. Read-locks the shard.
+     * @param entry [out] Receives the entry associated with the key on success.
      * @return Status::OK() on success; Status::NotFound() if the key is
      *         missing; Status::Error() if the entry is not READY.
      */
-    Status LoadBegin(const BlockId& key);
+    Status LoadBegin(const BlockId& key, EntryPtr& entry);
 
     /**
      * @brief End a load: decrement the entry's refCnt. Read-locks the shard.
@@ -167,7 +168,10 @@ public:
 
     Status StoreBegin(const BlockId& key, EntryPtr entry);
     Status StoreEnd(const BlockId& key) { return ShardOf(key).StoreEnd(key); }
-    Status LoadBegin(const BlockId& key) { return ShardOf(key).LoadBegin(key); }
+    Status LoadBegin(const BlockId& key, EntryPtr& entry)
+    {
+        return ShardOf(key).LoadBegin(key, entry);
+    }
     Status LoadEnd(const BlockId& key) { return ShardOf(key).LoadEnd(key); }
     bool Exist(const BlockId& key) { return ShardOf(key).Exist(key); }
     bool Query(const BlockId& key) const { return ShardOf(key).Query(key); }
@@ -202,6 +206,6 @@ private:
     std::thread evictThread_;
 };
 
-}  // namespace UC::DramStore
+}  // namespace UC::DramPool
 
 #endif

@@ -27,7 +27,7 @@
 #include "pos_eviction_policy.h"
 #include "ttl_eviction_policy.h"
 
-namespace UC::DramStore {
+namespace UC::DramPool {
 namespace {
 std::unique_ptr<EvictionPolicy> CreateEvictionPolicy(EvictionPolicyType type)
 {
@@ -53,8 +53,8 @@ Status ShardMetadata::StoreBegin(const BlockId& key, EntryPtr entry)
 {
     ReadWriteGuard lock(mtx_);
     if (metadata_.find(key) != metadata_.end()) {
-        UC_INFO("ShardMetadata StoreBegin: key already exists, skip.");
-        return Status::OK();
+        UC_INFO("ShardMetadata StoreBegin: key already exists.");
+        return Status::DuplicateKey();
     }
     if (entry == nullptr || !entry->IsInitial()) {
         UC_ERROR("ShardMetadata StoreBegin: entry not in initial state.");
@@ -84,15 +84,16 @@ Status ShardMetadata::StoreEnd(const BlockId& key)
     return entry->TryMarkReady() ? Status::OK() : Status::Error();
 }
 
-Status ShardMetadata::LoadBegin(const BlockId& key)
+Status ShardMetadata::LoadBegin(const BlockId& key, EntryPtr& entry)
 {
     ReadOnlyGuard lock(mtx_);
     auto it = metadata_.find(key);
     if (it == metadata_.end()) { return Status::NotFound(); }
-    auto& entry = it->second;
-    if (!entry->TryIncRef()) { return Status::Error(); }
+    auto& existingEntry = it->second;
+    if (!existingEntry->TryIncRef()) { return Status::Error(); }
     periodicEvictor_->AccessKey(key);
     deepEvictor_->AccessKey(key);
+    entry = existingEntry;
     return Status::OK();
 }
 
@@ -179,4 +180,4 @@ void MetadataManager::EvictOneShard(ShardMetadata& s, bool deep)
     for (const auto& k : victims) { s.Delete(k); }
 }
 
-}  // namespace UC::DramStore
+}  // namespace UC::DramPool
