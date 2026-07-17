@@ -110,7 +110,7 @@ private:
     CompletionQueue completionQueue_;
     std::unique_ptr<transport::TransportManager> transportManager_;
     std::unique_ptr<transport::TcpMessageChannel> tcpMessageChannel_;
-    BufferManagerList bufferManagers_;
+    BufferPoolList bufferPools_;
     std::unique_ptr<UC::DramPool::MetadataManager> metadataManager_;
     std::unique_ptr<ProtocolManager> protocolManager_;
     std::unique_ptr<DramPoolRuntime> runtime_;

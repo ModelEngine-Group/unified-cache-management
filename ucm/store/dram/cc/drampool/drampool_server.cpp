@@ -28,10 +28,10 @@
 #include <string>
 #include <type_traits>
 #include <utility>
-#include "buffer_manager.h"
 #include "core/transport_manager.h"
 #include "logger/logger.h"
 #include "metadata.h"
+#include "pool/buffer_pool.h"
 #include "task_worker.h"
 #include "two_sided/tcp/tcp_message_channel.h"
 
@@ -159,15 +159,15 @@ Status DramPoolServer::InitializeAclRuntime()
 
 Status DramPoolServer::InitMemoryPool()
 {
-    constexpr char kBufferManagerNamePrefix[] = "drampool-kvcache-";
+    constexpr char kBufferPoolNamePrefix[] = "drampool-kvcache-";
     for (std::size_t index = 0; index < g_config.poolBlockSizes.size(); ++index) {
-        auto bufferManager = std::make_unique<UC::ASU::BufferManager>();
-        const auto status = bufferManager->Init(
-            kBufferManagerNamePrefix + std::to_string(index), UC::ASU::MemoryType::HOST,
+        auto bufferPool = std::make_unique<UC::BufferPool>();
+        const auto status = bufferPool->Init(
+            kBufferPoolNamePrefix + std::to_string(index), UC::BufferPool::MemoryType::HOST,
             static_cast<std::size_t>(g_config.poolBlockSizes[index]),
-            static_cast<std::size_t>(g_config.poolSlotCounts[index]), nullptr);
-        if (!status.ok()) { return Status::Error("BufferManager::Init failed: " + status.message); }
-        bufferManagers_.push_back(std::move(bufferManager));
+            static_cast<std::size_t>(g_config.poolSlotCounts[index]));
+        if (status.Failure()) { return status; }
+        bufferPools_.push_back(std::move(bufferPool));
     }
     return Status::OK();
 }
@@ -215,7 +215,7 @@ Status DramPoolServer::StartTransportService()
     if (!transportManager_) {
         return Status::InvalidParam("DramPool transport manager is not initialized");
     }
-    if (bufferManagers_.empty()) { return Status::InvalidParam("memory pool is not initialized"); }
+    if (bufferPools_.empty()) { return Status::InvalidParam("memory pool is not initialized"); }
     const auto localControlId = g_config.addr.ToString();
     const auto localEndpoint = g_config.twoSidedToOneSided.find(localControlId);
     if (localEndpoint == g_config.twoSidedToOneSided.end()) {
@@ -269,13 +269,13 @@ Status DramPoolServer::CreateRuntimeContext()
     if (!metadataManager_ || !protocolManager_ || !transportManager_) {
         return Status::InvalidParam("DramPool runtime dependencies are not initialized");
     }
-    if (bufferManagers_.empty()) {
-        return Status::InvalidParam("DramPool buffer managers are not initialized");
+    if (bufferPools_.empty()) {
+        return Status::InvalidParam("DramPool buffer pools are not initialized");
     }
     try {
-        runtime_ = std::make_unique<DramPoolRuntime>(*metadataManager_, bufferManagers_,
-                                                     *transportManager_, *protocolManager_,
-                                                     requestQueue_, completionQueue_);
+        runtime_ =
+            std::make_unique<DramPoolRuntime>(*metadataManager_, bufferPools_, *transportManager_,
+                                              *protocolManager_, requestQueue_, completionQueue_);
     } catch (const std::exception& error) {
         return Status::Error(std::string{"failed to create DramPool runtime: "} + error.what());
     }
@@ -505,7 +505,7 @@ void DramPoolServer::ResetInitializedComponents()
     protocolManager_.reset();
     metadataManager_.reset();
     tcpMessageChannel_.reset();
-    bufferManagers_.clear();
+    bufferPools_.clear();
     transportManager_.reset();
     if (aclRuntimeOwned_) {
         (void)aclrtResetDevice(g_config.transportDeviceId);
