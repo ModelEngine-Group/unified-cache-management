@@ -53,6 +53,8 @@ gc:
   enabled: true
   interval_ms: 1000
 metadata:
+  periodic_eviction_policy: TTL
+  deep_eviction_policy: POSITION
   lease_time_ms: 5000
   default_evict_ratio: 0.0
   evict_period_ms: 31536000000
@@ -114,6 +116,8 @@ TEST(DramPoolRuntimeYamlTest, LoadsEveryRuntimeFieldAndPreservesLaunchFields)
     EXPECT_EQ(config.pollerPendingDepth, 64U);
     EXPECT_TRUE(config.gcEnabled);
     EXPECT_EQ(config.gcIntervalMs, 1000U);
+    EXPECT_EQ(config.metadataPeriodicEvictionPolicy, EvictionPolicyType::TTL);
+    EXPECT_EQ(config.metadataDeepEvictionPolicy, EvictionPolicyType::POSITION);
     EXPECT_EQ(config.metadataLeaseTimeMs, 5000U);
     EXPECT_DOUBLE_EQ(config.metadataDefaultEvictRatio, 0.0);
     EXPECT_EQ(config.metadataEvictPeriodMs, 31'536'000'000ULL);
@@ -122,6 +126,22 @@ TEST(DramPoolRuntimeYamlTest, LoadsEveryRuntimeFieldAndPreservesLaunchFields)
     EXPECT_EQ(config.logDir, "./logs");
     EXPECT_EQ(config.logMaxFiles, 10U);
     EXPECT_EQ(config.logMaxSizeMb, 5U);
+}
+
+TEST(DramPoolRuntimeYamlTest, LoadsConfiguredEvictionPoliciesCaseInsensitively)
+{
+    auto yamlText = ReplaceOnce(ValidRuntimeYaml(), "periodic_eviction_policy: TTL",
+                                "periodic_eviction_policy: position");
+    yamlText = ReplaceOnce(std::move(yamlText), "deep_eviction_policy: POSITION",
+                           "deep_eviction_policy: ttl");
+    auto config = LaunchConfig();
+    RuntimeYamlFile yaml(yamlText);
+
+    const auto status = ParseYamlConfig(yaml.Path().string(), config);
+
+    ASSERT_TRUE(status.Success()) << status.ToString();
+    EXPECT_EQ(config.metadataPeriodicEvictionPolicy, EvictionPolicyType::POSITION);
+    EXPECT_EQ(config.metadataDeepEvictionPolicy, EvictionPolicyType::TTL);
 }
 
 TEST(DramPoolRuntimeYamlTest, RejectsMissingUnknownAndDuplicateKeys)
@@ -183,6 +203,10 @@ INSTANTIATE_TEST_SUITE_P(
                         "greater than zero"},
         InvalidYamlCase{"EnabledGcHasZeroInterval", "interval_ms: 1000", "interval_ms: 0",
                         "when GC is enabled"},
+        InvalidYamlCase{"UnsupportedPeriodicEvictionPolicy", "periodic_eviction_policy: TTL",
+                        "periodic_eviction_policy: LRU", "unsupported eviction policy"},
+        InvalidYamlCase{"UnsupportedDeepEvictionPolicy", "deep_eviction_policy: POSITION",
+                        "deep_eviction_policy: LFU", "unsupported eviction policy"},
         InvalidYamlCase{"EvictRatioAboveOne", "default_evict_ratio: 0.0",
                         "default_evict_ratio: 1.1", "must be in [0, 1]"},
         InvalidYamlCase{"UnsupportedLogLevel", "level: info", "level: verbose", "unsupported"},

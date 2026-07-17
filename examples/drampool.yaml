@@ -28,6 +28,10 @@ gc:
   interval_ms: 1000
 
 metadata:
+  # Policy used by periodic eviction; supported values: TTL, POSITION.
+  periodic_eviction_policy: TTL
+  # Policy used by deep eviction; supported values: TTL, POSITION.
+  deep_eviction_policy: POSITION
   # A lookup hit protects the entry from eviction for this duration.
   lease_time_ms: 5000
   # Fraction selected by ratio-based eviction policies; range: [0, 1].

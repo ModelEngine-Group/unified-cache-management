@@ -291,6 +291,8 @@ TEST(DramPoolRuntimeConfigTest, LoadsRepositoryExample)
     EXPECT_EQ(config.completionQueueDepth, 65536U);
     EXPECT_EQ(config.requestReceiverIdleWaitUs, 100U);
     EXPECT_EQ(config.pollerPendingDepth, 64U);
+    EXPECT_EQ(config.metadataPeriodicEvictionPolicy, EvictionPolicyType::TTL);
+    EXPECT_EQ(config.metadataDeepEvictionPolicy, EvictionPolicyType::POSITION);
     EXPECT_EQ(config.metadataLeaseTimeMs, 5000U);
     EXPECT_DOUBLE_EQ(config.metadataDefaultEvictRatio, 0.0);
     EXPECT_EQ(config.metadataEvictPeriodMs, 31'536'000'000ULL);

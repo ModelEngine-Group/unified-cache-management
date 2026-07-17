@@ -176,8 +176,8 @@ Status DramPoolServer::InitMetadata()
 {
     // Metadata eviction settings come from the process-wide runtime configuration.
     const UC::DramPool::MetadataConfig config{
-        UC::DramPool::EvictionPolicyType::TTL,
-        UC::DramPool::EvictionPolicyType::POSITION,
+        g_config.metadataPeriodicEvictionPolicy,
+        g_config.metadataDeepEvictionPolicy,
         std::chrono::milliseconds(g_config.metadataLeaseTimeMs),
         g_config.metadataDefaultEvictRatio,
         std::chrono::milliseconds(g_config.metadataEvictPeriodMs),

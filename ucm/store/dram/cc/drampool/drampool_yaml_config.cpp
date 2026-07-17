@@ -57,6 +57,8 @@ constexpr const char* kRequiredRuntimeConfigKeys[] = {
     "poller.pending_depth",
     "gc.enabled",
     "gc.interval_ms",
+    "metadata.periodic_eviction_policy",
+    "metadata.deep_eviction_policy",
     "metadata.lease_time_ms",
     "metadata.default_evict_ratio",
     "metadata.evict_period_ms",
@@ -204,6 +206,21 @@ Status ParseBoolValue(const std::string& key, const std::string& value, bool& ou
     return Status::InvalidParam("invalid YAML boolean for {}", key);
 }
 
+Status ParseEvictionPolicyValue(const std::string& key, const std::string& value,
+                                EvictionPolicyType& output)
+{
+    const auto normalized = ToLower(value);
+    if (normalized == "ttl") {
+        output = EvictionPolicyType::TTL;
+        return Status::OK();
+    }
+    if (normalized == "position") {
+        output = EvictionPolicyType::POSITION;
+        return Status::OK();
+    }
+    return Status::InvalidParam("unsupported eviction policy for {}: {}", key, value);
+}
+
 Status ApplyEndpointEntryValue(EndpointEntry& entry, const std::string& key,
                                const std::string& value, std::uint32_t lineNumber)
 {
@@ -278,6 +295,12 @@ Status ApplyRuntimeConfigValue(DramPoolConfig& config, const std::string& key,
     }
     if (key == "gc.enabled") { return ParseBoolValue(key, value, config.gcEnabled); }
     if (key == "gc.interval_ms") { return ParseUint32Value(key, value, config.gcIntervalMs); }
+    if (key == "metadata.periodic_eviction_policy") {
+        return ParseEvictionPolicyValue(key, value, config.metadataPeriodicEvictionPolicy);
+    }
+    if (key == "metadata.deep_eviction_policy") {
+        return ParseEvictionPolicyValue(key, value, config.metadataDeepEvictionPolicy);
+    }
     if (key == "metadata.lease_time_ms") {
         return ParseUint64Value(key, value, config.metadataLeaseTimeMs);
     }

@@ -28,6 +28,7 @@
 #include <unordered_map>
 #include <vector>
 #include "core/transport.h"
+#include "eviction_policy.h"
 #include "status/status.h"
 
 namespace UC::DramPool {
@@ -68,6 +69,8 @@ struct DramPoolConfig {
     std::uint32_t gcIntervalMs{1000};
 
     // MetadataManager internals are loaded from the runtime YAML file.
+    EvictionPolicyType metadataPeriodicEvictionPolicy{EvictionPolicyType::TTL};
+    EvictionPolicyType metadataDeepEvictionPolicy{EvictionPolicyType::POSITION};
     std::uint64_t metadataLeaseTimeMs{5000};
     double metadataDefaultEvictRatio{0.0};
     std::uint64_t metadataEvictPeriodMs{365ULL * 24ULL * 60ULL * 60ULL * 1000ULL};
