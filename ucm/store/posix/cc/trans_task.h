@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_POSIX_STORE_CC_TRANS_TASK_H
 
 #include <atomic>
+#include "status/status.h"
 #include "type/types.h"
 
 namespace UC::PosixStore {
@@ -35,9 +36,25 @@ public:
     Detail::TaskHandle id{0};
     Type type{Type::DUMP};
     Detail::TaskDesc desc;
+    std::atomic<int32_t> failureStatus{Status::OK().Underlying()};
 
 public:
     TransTask(Type type, Detail::TaskDesc desc) : id{NextId()}, type{type}, desc{std::move(desc)} {}
+    TransTask(TransTask&& other) noexcept
+        : id{other.id}, type{other.type}, desc{std::move(other.desc)},
+          failureStatus{other.failureStatus.load()}
+    {
+    }
+    void Fail(const Status& status)
+    {
+        auto expected = Status::OK().Underlying();
+        failureStatus.compare_exchange_strong(expected, status.Underlying());
+    }
+    Status FailureStatus() const
+    {
+        const auto status = failureStatus.load();
+        return status == Status::OK().Underlying() ? Status::Error() : Status{status, {}};
+    }
 
 private:
     static size_t NextId() noexcept

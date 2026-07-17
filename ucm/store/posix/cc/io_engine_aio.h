@@ -74,6 +74,7 @@ public:
 
 private:
     bool IsAio() const override { return true; }
+    Status FailureStatus(const TaskPtr& task) const override { return task->FailureStatus(); }
     template <bool dump>
     static void UpdateWaitMetrics(double wait)
     {
@@ -101,12 +102,14 @@ private:
         blockOperator_.Submit(BlockOperator::CommitTask{std::move(id), success});
     }
     template <bool dump>
-    void OnIoCallback(const Detail::TaskHandle& tid, WaiterPtr w, int32_t fd, bool last,
+    void OnIoCallback(const TaskPtr& task, WaiterPtr w, int32_t fd, bool last,
                       const Detail::BlockId& id, const AioImpl::Result& result)
     {
+        const auto tid = task->id;
         if (result.error != 0) {
             UC_ERROR("Failed({}) to do io on block({}).", result.error, id);
             if (result.error != ECANCELED) { IncrementIoErrorMetric(); }
+            task->Fail(Status::Error());
             failureSet_.Insert(tid);
         }
         ::close(fd);
@@ -116,12 +119,14 @@ private:
         w->Done();
     }
     template <bool dump>
-    void OnOpenCallback(const Detail::TaskHandle& tid, WaiterPtr w, const Detail::Shard& shard,
+    void OnOpenCallback(const TaskPtr& task, WaiterPtr w, const Detail::Shard& shard,
                         const BlockOperator::OpenResult& result)
     {
+        const auto tid = task->id;
         const auto last = shard.index + 1 == nShardPerBlock_;
         const auto& id = shard.owner;
-        auto handleFailure = [this, tid, w, last, id](int32_t fd) {
+        auto handleFailure = [this, task, tid, w, last, id](int32_t fd, Status status) {
+            task->Fail(status);
             failureSet_.Insert(tid);
             if (fd >= 0) { ::close(fd); }
             if constexpr (dump) {
@@ -132,7 +137,8 @@ private:
         if (result.error != 0) {
             UC_ERROR("Failed({}) to do open on block({}).", result.error, shard.owner);
             if (result.error != ECANCELED) { IncrementOpenErrorMetric(); }
-            handleFailure(result.fd);
+            auto status = !dump && result.error == ENOENT ? Status::NotFound() : Status::Error();
+            handleFailure(result.fd, status);
             return;
         }
         if (failureSet_.Contains(tid)) {
@@ -149,8 +155,8 @@ private:
         io.length = shardSize_;
         io.buffer = shard.addrs.front();
         io.tag = tid;
-        io.callback = [this, tid, w, fd = result.fd, last, id](AioImpl::Result ioResult) {
-            OnIoCallback<dump>(tid, w, fd, last, id, ioResult);
+        io.callback = [this, task, w, fd = result.fd, last, id](AioImpl::Result ioResult) {
+            OnIoCallback<dump>(task, w, fd, last, id, ioResult);
         };
         auto status = dump ? aio_.WriteAsync(std::move(io)) : aio_.ReadAsync(std::move(io));
         if (status.Failure()) {
@@ -159,7 +165,7 @@ private:
             } else {
                 IncrementIoErrorMetric();
             }
-            handleFailure(result.fd);
+            handleFailure(result.fd, status);
         }
     }
     template <bool dump>
@@ -177,7 +183,7 @@ private:
             task.flags = flags;
             task.tag = t->id;
             task.callback = [this, t, w, i](BlockOperator::OpenResult result) {
-                OnOpenCallback<dump>(t->id, w, t->desc[i], result);
+                OnOpenCallback<dump>(t, w, t->desc[i], result);
             };
             tasks.push_back(std::move(task));
         }

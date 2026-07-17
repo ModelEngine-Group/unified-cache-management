@@ -228,7 +228,9 @@ class UCMBlendConnector(UCMDirectConnector):
     ) -> Tuple[int, int]:
 
         # first perform prefix cache lookup
-        pc_lookup_results = self.store.lookup(prefix_block_hashes)
+        pc_lookup_results = self._rank_consistency.lookup_all(
+            self.store, prefix_block_hashes
+        )
         pc_hit_blocks = 0
         chunk_hit_blocks = 0
 
@@ -241,7 +243,9 @@ class UCMBlendConnector(UCMDirectConnector):
             return pc_hit_blocks, chunk_hit_blocks
 
         # then perform chunk cache lookup
-        chunk_lookup_results = self.store.lookup(req_chunks_hashes[pc_hit_blocks:])
+        chunk_lookup_results = self._rank_consistency.lookup_all(
+            self.store, req_chunks_hashes[pc_hit_blocks:]
+        )
         chunk_hit_blocks = sum(chunk_lookup_results)
 
         chunk_lookup_results = pc_lookup_results[:pc_hit_blocks] + chunk_lookup_results

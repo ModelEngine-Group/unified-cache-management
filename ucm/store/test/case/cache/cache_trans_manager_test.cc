@@ -88,6 +88,69 @@ TEST_F(UCCacheTransManagerTest, DumpThenLoad)
     finish.Wait();
 }
 
+TEST_F(UCCacheTransManagerTest, BackendNotFoundIsPreserved)
+{
+    using namespace UC::CacheStore;
+    UC::Test::Detail::MockStore backend;
+    EXPECT_CALL(backend, Load).WillOnce(testing::Invoke(NextId));
+    EXPECT_CALL(backend, Wait).WillOnce(testing::Return(UC::Status::NotFound()));
+
+    Config config;
+    config.storeBackend = &backend;
+    config.tensorSizes = {4096};
+    config.shardSize = 4096;
+    config.blockSize = config.shardSize;
+    config.deviceId = 0;
+    config.bufferCapacity = config.shardSize * 2049;
+    config.uniqueId = rd.RandomString(10);
+    config.shareBufferEnable = false;
+
+    TransBuffer buffer;
+    ASSERT_EQ(buffer.Setup(config), UC::Status::OK());
+    TransManager transMgr;
+    ASSERT_EQ(transMgr.Setup(config, &buffer), UC::Status::OK());
+
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    UC::Test::Detail::DataGenerator data{1, config.blockSize};
+    UC::Detail::TaskDesc desc{{block, 0, {data.Buffer()}}};
+    auto handle = transMgr.Submit({TransTask::Type::LOAD, std::move(desc)});
+    ASSERT_TRUE(handle.HasValue());
+    EXPECT_EQ(transMgr.Wait(handle.Value()), UC::Status::NotFound());
+    EXPECT_TRUE(buffer.Exist(block, 0));
+}
+
+TEST_F(UCCacheTransManagerTest, BackendSubmitNotFoundIsPreserved)
+{
+    using namespace UC::CacheStore;
+    UC::Test::Detail::MockStore backend;
+    EXPECT_CALL(backend, Load).WillOnce(testing::Invoke([](UC::Detail::TaskDesc) {
+        return UC::Expected<UC::Detail::TaskHandle>{UC::Status::NotFound()};
+    }));
+
+    Config config;
+    config.storeBackend = &backend;
+    config.tensorSizes = {4096};
+    config.shardSize = 4096;
+    config.blockSize = config.shardSize;
+    config.deviceId = 0;
+    config.bufferCapacity = config.shardSize * 2049;
+    config.uniqueId = rd.RandomString(10);
+    config.shareBufferEnable = false;
+
+    TransBuffer buffer;
+    ASSERT_EQ(buffer.Setup(config), UC::Status::OK());
+    TransManager transMgr;
+    ASSERT_EQ(transMgr.Setup(config, &buffer), UC::Status::OK());
+
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    UC::Test::Detail::DataGenerator data{1, config.blockSize};
+    UC::Detail::TaskDesc desc{{block, 0, {data.Buffer()}}};
+    auto handle = transMgr.Submit({TransTask::Type::LOAD, std::move(desc)});
+    ASSERT_TRUE(handle.HasValue());
+    EXPECT_EQ(transMgr.Wait(handle.Value()), UC::Status::NotFound());
+    EXPECT_TRUE(buffer.Exist(block, 0));
+}
+
 TEST_F(UCCacheTransManagerTest, DumpThenLoadWithLayerWise)
 {
     using namespace UC::Test::Detail;

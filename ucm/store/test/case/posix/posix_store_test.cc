@@ -224,6 +224,16 @@ TEST_F(UCPosixStoreTest, DumpThenLoad)
     s = store.Wait(handle2.Value());
     ASSERT_EQ(s, UC::Status::OK());
     ASSERT_EQ(data1.Compare(data2), 0);
+
+    ASSERT_EQ(store.CheckHealth(), UC::Status::OK());
+    auto missingBlock = UC::Test::Detail::TypesHelper::MakeBlockId(
+        "ffffffffffffffffffffffffffffffff");
+    UC::Detail::TaskDesc missingDesc;
+    missingDesc.brief = "LoadMissing";
+    missingDesc.push_back(UC::Detail::Shard{missingBlock, 0, {data2.Buffer()}});
+    auto missingHandle = store.Load(missingDesc);
+    ASSERT_TRUE(missingHandle.HasValue());
+    ASSERT_EQ(store.Wait(missingHandle.Value()), UC::Status::NotFound());
 }
 
 TEST_F(UCPosixStoreTest, DumpThenLoadWithIoDirect)
@@ -273,6 +283,20 @@ TEST_F(UCPosixStoreTest, DumpThenLoadWithIoDirect)
     ASSERT_EQ(*(size_t*)buffer1, *(size_t*)buffer2);
     free(buffer1);
     free(buffer2);
+}
+
+TEST_F(UCPosixStoreTest, AioMissingLoadReturnsNotFound)
+{
+    using namespace UC::PosixStore;
+    PosixStore store;
+    ASSERT_EQ(store.Setup(MakeAioConfig(Path(), 1000)), UC::Status::OK());
+
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto buffer = MakeAlignedBuffer(0);
+    ASSERT_NE(buffer, nullptr);
+    auto handle = store.Load(MakeDumpDesc("AioMissingLoad", block, buffer.get()));
+    ASSERT_TRUE(handle.HasValue());
+    EXPECT_EQ(store.Wait(handle.Value()), UC::Status::NotFound());
 }
 
 TEST_F(UCPosixStoreTest, AioWaitTimesOutWhenOpenStalls)

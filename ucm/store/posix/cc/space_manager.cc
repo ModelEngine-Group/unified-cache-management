@@ -22,8 +22,10 @@
  * SOFTWARE.
  * */
 #include "space_manager.h"
+#include <atomic>
 #include "logger/logger.h"
 #include "posix_file.h"
+#include "type/random_block_id.h"
 
 namespace UC::PosixStore {
 
@@ -64,6 +66,23 @@ Expected<std::vector<uint8_t>> SpaceManager::Lookup(const Detail::BlockId* block
     const auto index = res.Value();
     for (ssize_t i = 0; i <= index; ++i) { results[i] = true; }
     return results;
+}
+
+Status SpaceManager::CheckHealth()
+{
+    const auto block = Detail::RandomBlockId();
+    PosixFile file(layout_.DataFilePath(block, true));
+    auto status =
+        file.Open(PosixFile::OpenFlag::CREATE | PosixFile::OpenFlag::READ_WRITE);
+    if (status.Failure()) { return status; }
+
+    constexpr uint64_t expected = 0x55434d4845414c54ULL;
+    uint64_t actual = 0;
+    status = file.Write(&expected, sizeof(expected), 0);
+    if (status.Success()) { status = file.Read(&actual, sizeof(actual), 0); }
+    auto cleanup = file.Remove();
+    if (status.Success() && actual != expected) { status = Status::Error("health data mismatch"); }
+    return status.Failure() ? status : cleanup;
 }
 
 Expected<ssize_t> SpaceManager::LookupOnPrefix(const Detail::BlockId* blocks, size_t num)

@@ -70,6 +70,7 @@ public:
     {
         spaceMgr_.Prefetch(blocks, num);
     }
+    Status CheckHealth() override { return spaceMgr_.CheckHealth(); }
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
         if (!transEnable_) { return Status::Error("transfer is not enable"); }

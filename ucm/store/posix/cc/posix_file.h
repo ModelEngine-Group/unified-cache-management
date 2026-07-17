@@ -61,7 +61,7 @@ public:
     Status Access(const int32_t mode);
     Status Open(const uint32_t flags);
     void Close();
-    void Remove();
+    Status Remove();
     Status Read(void* buffer, size_t size, off64_t offset);
     Status Write(const void* buffer, size_t size, off64_t offset);
 };

@@ -84,6 +84,7 @@ Status PosixFile::Open(const uint32_t flags)
     auto eno = errno;
     if (handle_ < 0) [[unlikely]] {
         if (eno == EEXIST) { return Status::DuplicateKey(); }
+        if (eno == ENOENT) { return Status::NotFound(); }
         return Status::OsApiError(std::to_string(eno));
     }
     return Status::OK();
@@ -95,7 +96,13 @@ void PosixFile::Close()
     handle_ = -1;
 }
 
-void PosixFile::Remove() { remove(path_.c_str()); }
+Status PosixFile::Remove()
+{
+    auto ret = remove(path_.c_str());
+    auto eno = errno;
+    if (ret == 0 || eno == ENOENT) { return Status::OK(); }
+    return Status::OsApiError(std::to_string(eno));
+}
 
 Status PosixFile::Read(void* buffer, size_t size, off64_t offset)
 {

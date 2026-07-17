@@ -48,7 +48,7 @@ TEST_F(UCPosixFileTest, FileCreateAndRemove)
     PosixFile file(this->Path() + "file");
     ASSERT_EQ(file.Access(PosixFile::AccessMode::EXIST), UC::Status::NotFound());
     auto flags = PosixFile::OpenFlag::WRITE_ONLY;
-    ASSERT_EQ(file.Open(flags), UC::Status::OsApiError());
+    ASSERT_EQ(file.Open(flags), UC::Status::NotFound());
     flags |= PosixFile::OpenFlag::CREATE;
     ASSERT_EQ(file.Open(flags), UC::Status::OK());
     flags |= PosixFile::OpenFlag::EXCL;
@@ -56,7 +56,7 @@ TEST_F(UCPosixFileTest, FileCreateAndRemove)
     ASSERT_EQ(file.Access(PosixFile::AccessMode::EXIST), UC::Status::OK());
     ASSERT_EQ(file.Access(PosixFile::AccessMode::READ), UC::Status::OK());
     ASSERT_EQ(file.Access(PosixFile::AccessMode::WRITE), UC::Status::OK());
-    file.Remove();
+    ASSERT_EQ(file.Remove(), UC::Status::OK());
     ASSERT_EQ(file.Access(PosixFile::AccessMode::EXIST), UC::Status::NotFound());
 }
 
@@ -77,7 +77,7 @@ TEST_F(UCPosixFileTest, FileWriteAndRead)
     ASSERT_EQ(file.Open(PosixFile::OpenFlag::READ_ONLY), UC::Status::OK());
     ASSERT_EQ(file.Read(data1.Buffer(), data1.Size(), 0), UC::Status::OK());
     file.Close();
-    file.Remove();
+    ASSERT_EQ(file.Remove(), UC::Status::OK());
     ASSERT_EQ(file.Access(PosixFile::AccessMode::EXIST), UC::Status::NotFound());
     EXPECT_EQ(data0.Compare(data1), 0);
 }

@@ -27,8 +27,14 @@
 #include "detail/types_helper.h"
 #include "posix/cc/posix_file.h"
 #include "posix/cc/space_manager.h"
+#include "type/random_block_id.h"
 
 class UCPosixSpaceManagerTest : public UC::Test::Detail::PathBase {};
+
+TEST(RandomBlockIdTest, GeneratesDistinctIds)
+{
+    EXPECT_NE(UC::Detail::RandomBlockId(), UC::Detail::RandomBlockId());
+}
 
 TEST_F(UCPosixSpaceManagerTest, SetStorageBackends)
 {
