@@ -74,6 +74,7 @@ private:
     Status CreateRuntimeContext();
 
     Status StartTransportService();
+    Status RegisterBufferPools();
     Status StartTcpMessageChannel();
     Status StartCompletionPoller();
     Status StartTaskWorker();
@@ -86,6 +87,7 @@ private:
     void MarkInflightTransportsFailed();
     void StopCompletionPoller();
     void StopGCThread();
+    void UnregisterBufferPools();
     void StopTransportService();
 
     void RequestReceiveLoop();
@@ -111,6 +113,7 @@ private:
     std::unique_ptr<transport::TransportManager> transportManager_;
     std::unique_ptr<transport::TcpMessageChannel> tcpMessageChannel_;
     BufferPoolList bufferPools_;
+    std::vector<transport::MemoryHandle> bufferPoolMemoryHandles_;
     std::unique_ptr<UC::DramPool::MetadataManager> metadataManager_;
     std::unique_ptr<ProtocolManager> protocolManager_;
     std::unique_ptr<DramPoolRuntime> runtime_;

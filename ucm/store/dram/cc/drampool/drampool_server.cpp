@@ -239,10 +239,32 @@ Status DramPoolServer::StartTransportService()
     if (status != transport::Status::Ok) {
         return ToUcStatus(status, "TransportManager::InstallTransport");
     }
+    if (auto registerStatus = RegisterBufferPools(); registerStatus.Failure()) {
+        return registerStatus;
+    }
     // Accept metadata exchanges initiated by DramStore. DramPool peer routing remains
     // static and does not actively call ExchangeMetadata().
     status = transportManager_->Init();
     if (status != transport::Status::Ok) { return ToUcStatus(status, "TransportManager::Init"); }
+    return Status::OK();
+}
+
+Status DramPoolServer::RegisterBufferPools()
+{
+    bufferPoolMemoryHandles_.reserve(bufferPools_.size());
+    for (const auto& bufferPool : bufferPools_) {
+        transport::MemoryRegion memory;
+        memory.addr = bufferPool->GetLocalAddr();
+        memory.length = bufferPool->GetTotalSize();
+        memory.type = transport::MemoryType::Host;
+
+        transport::MemoryHandle handle = transport::kInvalidMemoryHandle;
+        const auto status = transportManager_->RegisterMemory(memory, handle);
+        if (status != transport::Status::Ok) {
+            return ToUcStatus(status, "TransportManager::RegisterMemory");
+        }
+        bufferPoolMemoryHandles_.push_back(handle);
+    }
     return Status::OK();
 }
 
@@ -395,11 +417,24 @@ void DramPoolServer::StopGCThread()
 void DramPoolServer::StopTransportService()
 {
     if (transportManager_) {
+        UnregisterBufferPools();
         const auto status = transportManager_->Shutdown();
         if (status != transport::Status::Ok) {
             UC_ERROR_UNLIMITED("DramPool TransportManager shutdown failed");
         }
     }
+}
+
+void DramPoolServer::UnregisterBufferPools()
+{
+    for (auto iter = bufferPoolMemoryHandles_.rbegin(); iter != bufferPoolMemoryHandles_.rend();
+         ++iter) {
+        const auto status = transportManager_->UnregisterMemory(*iter);
+        if (status != transport::Status::Ok) {
+            UC_ERROR_UNLIMITED("DramPool buffer pool memory unregister failed, handle={}", *iter);
+        }
+    }
+    bufferPoolMemoryHandles_.clear();
 }
 
 void DramPoolServer::TaskWorkerLoop()
@@ -505,6 +540,7 @@ void DramPoolServer::ResetInitializedComponents()
     protocolManager_.reset();
     metadataManager_.reset();
     tcpMessageChannel_.reset();
+    bufferPoolMemoryHandles_.clear();
     bufferPools_.clear();
     transportManager_.reset();
     if (aclRuntimeOwned_) {
