@@ -228,10 +228,11 @@ TEST(DramPoolConfigTest, ParsesLaunchOptions)
         "1",
         "3",
         "--ttl-minutes=30",
+        "--config=/tmp/drampool-custom.yaml",
     };
     DramPoolConfig config;
 
-    const auto status = ParseCommandLine(15, const_cast<char**>(argv), config);
+    const auto status = ParseCommandLine(16, const_cast<char**>(argv), config);
 
     ASSERT_TRUE(status.Success()) << status.ToString();
     EXPECT_EQ(config.addr.host, "127.0.0.1");
@@ -242,6 +243,7 @@ TEST(DramPoolConfigTest, ParsesLaunchOptions)
     EXPECT_EQ(config.poolBlockProportions, (std::vector<std::uint32_t>{1, 3}));
     EXPECT_EQ(config.poolSlotCounts, (std::vector<std::uint32_t>{8'388'608, 12'582'912}));
     EXPECT_EQ(config.defaultDumpTtlMs, 30U * kMillisecondsPerMinute);
+    EXPECT_EQ(config.runtimeConfigPath, "/tmp/drampool-custom.yaml");
 }
 
 TEST(DramPoolConfigTest, DefaultsBlockProportionsAndTtl)
@@ -257,6 +259,8 @@ TEST(DramPoolConfigTest, DefaultsBlockProportionsAndTtl)
     ASSERT_TRUE(status.Success()) << status.ToString();
     EXPECT_EQ(config.poolBlockProportions, (std::vector<std::uint32_t>{1, 1}));
     EXPECT_EQ(config.defaultDumpTtlMs, kDefaultDumpTtlMs);
+    EXPECT_EQ(config.runtimeConfigPath, kDefaultDramPoolRuntimeConfigPath);
+    EXPECT_NE(BuildUsage("drampool").find("--config <PATH>"), std::string::npos);
 }
 
 TEST(DramPoolConfigTest, ResolvesGiBSlotCountsWithAlignedStride)
@@ -319,9 +323,34 @@ TEST(DramPoolConfigTest, RejectsInvalidCommandLines)
         EXPECT_TRUE(ParseCommandLine(7, const_cast<char**>(argv), config).Failure());
     }
     {
-        const char* argv[] = {"drampool", "--config", "legacy.conf"};
+        const char* argv[] = {"drampool", "--config"};
         DramPoolConfig config;
-        EXPECT_TRUE(ParseCommandLine(3, const_cast<char**>(argv), config).Failure());
+        EXPECT_TRUE(ParseCommandLine(2, const_cast<char**>(argv), config).Failure());
+    }
+    {
+        const char* argv[] = {
+            "drampool",
+            "--addr=127.0.0.1:9000",
+            "--nics=mlx5_0",
+            "--pool-size-gb=1",
+            "--kvcache-block-sizes=4096",
+            "--config=first.yaml",
+            "--config=second.yaml",
+        };
+        DramPoolConfig config;
+        const auto status = ParseCommandLine(7, const_cast<char**>(argv), config);
+        EXPECT_TRUE(status.Failure());
+        EXPECT_NE(status.ToString().find("--config may be specified once"), std::string::npos);
+    }
+    {
+        const char* argv[] = {
+            "drampool",         "--addr=127.0.0.1:9000",      "--nics=mlx5_0",
+            "--pool-size-gb=1", "--kvcache-block-sizes=4096", "--config=   ",
+        };
+        DramPoolConfig config;
+        const auto status = ParseCommandLine(6, const_cast<char**>(argv), config);
+        EXPECT_TRUE(status.Failure());
+        EXPECT_NE(status.ToString().find("--config must not be blank"), std::string::npos);
     }
     {
         const char* argv[] = {
@@ -491,7 +520,7 @@ TEST(DramPoolDaemonTest, ReturnsForInvalidArguments)
     const std::vector<std::vector<const char*>> cases = {
         {"drampool"},
         {"drampool", "--help"},
-        {"drampool", "--config", "legacy.conf"},
+        {"drampool", "--config"},
     };
     for (const auto& arguments : cases) {
         std::vector<char*> argv;
@@ -519,20 +548,40 @@ TEST(DramPoolDaemonTest, ReturnsWhenRuntimeYamlIsMissing)
     std::filesystem::remove(emptyDirectory);
 }
 
+TEST(DramPoolDaemonTest, ReturnsWhenConfiguredRuntimeYamlIsMissing)
+{
+    const auto missingPath =
+        (std::filesystem::temp_directory_path() / "drampool_missing_explicit.yaml").string();
+    std::vector<std::string> arguments = {
+        "drampool",       "--addr", "127.0.0.1:19000",       "--nics", "mlx5_0",
+        "--pool-size-gb", "1",      "--kvcache-block-sizes", "4096",   "--config",
+        missingPath,
+    };
+    std::vector<char*> argv;
+    argv.reserve(arguments.size());
+    for (auto& argument : arguments) { argv.push_back(argument.data()); }
+    DramPoolDaemon daemon;
+
+    EXPECT_EQ(daemon.Run(static_cast<int>(argv.size()), argv.data()), 1);
+    EXPECT_EQ(g_config.runtimeConfigPath, missingPath);
+}
+
 #if defined(UCM_DRAMPOOL_RUNTIME_INTEGRATION_TESTS) && !defined(_WIN32)
 TEST(DramPoolDaemonTest, RunsUntilSigtermAndShutsDownCleanly)
 {
     const auto servicePort = FindAvailableTcpPort();
     const auto oneSidedPort = FindDistinctTcpPort(servicePort);
     const auto runtimeDirectory = CreateDaemonRuntimeDirectory(servicePort, oneSidedPort);
+    const auto runtimeConfigPath = (runtimeDirectory / "examples" / "drampool.yaml").string();
     const auto child = ::fork();
     ASSERT_GE(child, 0);
     if (child == 0) {
         std::filesystem::current_path(runtimeDirectory);
         const auto serviceEndpoint = "127.0.0.1:" + std::to_string(servicePort);
         std::vector<std::string> arguments = {
-            "drampool",       "--addr", serviceEndpoint,         "--nics", "mlx5_0",
-            "--pool-size-gb", "1",      "--kvcache-block-sizes", "4096",
+            "drampool",        "--addr", serviceEndpoint,         "--nics", "mlx5_0",
+            "--pool-size-gb",  "1",      "--kvcache-block-sizes", "4096",   "--config",
+            runtimeConfigPath,
         };
         std::vector<char*> argv;
         argv.reserve(arguments.size());

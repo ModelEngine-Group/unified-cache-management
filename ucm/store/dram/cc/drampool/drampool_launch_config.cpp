@@ -28,6 +28,7 @@
 #include <utility>
 #include <vector>
 #include "drampool_config.h"
+#include "drampool_config_utils.h"
 
 namespace UC::DramPool {
 namespace {
@@ -35,37 +36,13 @@ namespace {
 // Must match the fixed slot layout used by BufferManager.
 constexpr std::size_t kSlotAlignment = 64;
 
+using detail::ParseUint32;
+using detail::ParseUint64;
+using detail::Trim;
+
 bool IsLongOption(const std::string& value)
 {
     return value.size() > 2 && value.rfind("--", 0) == 0;
-}
-
-std::string Trim(const std::string& value)
-{
-    const auto begin = value.find_first_not_of(" \t\r\n");
-    if (begin == std::string::npos) { return ""; }
-    const auto end = value.find_last_not_of(" \t\r\n");
-    return value.substr(begin, end - begin + 1);
-}
-
-std::uint64_t ParseUint64(const std::string& value)
-{
-    if (value.empty() || value.front() == '-') {
-        throw std::invalid_argument("expected an unsigned integer");
-    }
-    std::size_t parsed = 0;
-    const auto number = std::stoull(value, &parsed, 0);
-    if (parsed != value.size()) { throw std::invalid_argument("trailing characters"); }
-    return number;
-}
-
-std::uint32_t ParseUint32(const std::string& value)
-{
-    const auto number = ParseUint64(value);
-    if (number > std::numeric_limits<std::uint32_t>::max()) {
-        throw std::out_of_range("uint32 overflow");
-    }
-    return static_cast<std::uint32_t>(number);
 }
 
 Status ReadSingleValue(const std::string& option, bool hasInlineValue,
@@ -265,6 +242,9 @@ std::string BuildUsage(const char* program)
            "  --pool-size-gb <SIZE>              Local DRAM capacity contributed to the pool.\n"
            "  --kvcache-block-sizes <SIZE>...    Supported fixed KVCache block sizes.\n"
            "Optional options:\n"
+           "  --config <PATH>                    Runtime YAML path; defaults to " +
+           kDefaultDramPoolRuntimeConfigPath +
+           ".\n"
            "  --kvcache-block-proportions <P>... Relative capacity per block size; defaults to "
            "1:1.\n"
            "  --ttl-minutes <MINUTES>            Absolute block lifetime; defaults to 120.\n";
@@ -280,6 +260,7 @@ Status ParseCommandLine(int argc, char** argv, DramPoolConfig& config)
     bool hasBlockSizes = false;
     bool hasBlockProportions = false;
     bool hasTtl = false;
+    bool hasConfig = false;
 
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index] == nullptr ? "" : argv[index];
@@ -296,6 +277,15 @@ Status ParseCommandLine(int argc, char** argv, DramPoolConfig& config)
         std::vector<std::string> values;
         auto status = Status::OK();
 
+        if (option == "--config") {
+            if (hasConfig) { return Status::InvalidParam("--config may be specified once"); }
+            status = ReadSingleValue(option, hasInlineValue, inlineValue, argc, argv, index, value);
+            if (status.Failure()) { return status; }
+            if (Trim(value).empty()) { return Status::InvalidParam("--config must not be blank"); }
+            config.runtimeConfigPath = std::move(value);
+            hasConfig = true;
+            continue;
+        }
         if (option == "--addr") {
             if (hasAddr) { return Status::InvalidParam("--addr may be specified once"); }
             status = ReadSingleValue(option, hasInlineValue, inlineValue, argc, argv, index, value);

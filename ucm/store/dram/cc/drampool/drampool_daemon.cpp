@@ -38,7 +38,7 @@ int DramPoolDaemon::Run(int argc, char** argv)
         std::cerr << status.ToString() << "\n" << BuildUsage(argc > 0 ? argv[0] : "drampool");
         return 1;
     }
-    status = ParseYamlConfig(kDefaultDramPoolRuntimeConfigPath, g_config);
+    status = ParseYamlConfig(g_config.runtimeConfigPath, g_config);
     if (status.Failure()) {
         std::cerr << status.ToString() << "\n";
         return 1;

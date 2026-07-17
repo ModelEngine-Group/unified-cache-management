@@ -79,6 +79,7 @@ std::string ReplaceOnce(std::string text, const std::string& from, const std::st
 DramPoolConfig LaunchConfig()
 {
     DramPoolConfig config;
+    config.runtimeConfigPath = "launch-selected.yaml";
     config.addr.host = "127.0.0.1";
     config.addr.port = 9000;
     config.poolSizeGb = 7;
@@ -103,6 +104,7 @@ TEST(DramPoolRuntimeYamlTest, LoadsEveryRuntimeFieldAndPreservesLaunchFields)
     const auto status = ParseYamlConfig(yaml.Path().string(), config);
 
     ASSERT_TRUE(status.Success()) << status.ToString();
+    EXPECT_EQ(config.runtimeConfigPath, "launch-selected.yaml");
     EXPECT_EQ(config.addr.port, 9000U);
     EXPECT_EQ(config.poolSizeGb, 7U);
     EXPECT_EQ(config.nics, (std::vector<std::string>{"mlx5_0"}));

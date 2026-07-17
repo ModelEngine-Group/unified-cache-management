@@ -33,9 +33,12 @@
 #include <utility>
 #include <vector>
 #include "drampool_config.h"
+#include "drampool_config_utils.h"
 
 namespace UC::DramPool {
 namespace {
+
+using detail::Trim;
 
 struct YamlSection {
     std::size_t indent{0};
@@ -68,14 +71,6 @@ constexpr const char* kRequiredRuntimeConfigKeys[] = {
     "logger.max_files",
     "logger.max_size_mb",
 };
-
-std::string Trim(const std::string& value)
-{
-    const auto begin = value.find_first_not_of(" \t\r\n");
-    if (begin == std::string::npos) { return ""; }
-    const auto end = value.find_last_not_of(" \t\r\n");
-    return value.substr(begin, end - begin + 1);
-}
 
 std::string ToLower(std::string value)
 {
@@ -130,15 +125,7 @@ Status ParseYamlScalar(const std::string& key, std::string value, std::string& o
 Status ParseUint32Value(const std::string& key, const std::string& value, std::uint32_t& output)
 {
     try {
-        if (value.empty() || value.front() == '-') {
-            throw std::invalid_argument("expected an unsigned integer");
-        }
-        std::size_t parsed = 0;
-        const auto number = std::stoull(value, &parsed, 0);
-        if (parsed != value.size() || number > std::numeric_limits<std::uint32_t>::max()) {
-            throw std::out_of_range("outside uint32 range");
-        }
-        output = static_cast<std::uint32_t>(number);
+        output = detail::ParseUint32(value);
     } catch (const std::exception& error) {
         return Status::InvalidParam("invalid YAML value for {}: {}", key, error.what());
     }
@@ -148,13 +135,7 @@ Status ParseUint32Value(const std::string& key, const std::string& value, std::u
 Status ParseUint64Value(const std::string& key, const std::string& value, std::uint64_t& output)
 {
     try {
-        if (value.empty() || value.front() == '-') {
-            throw std::invalid_argument("expected an unsigned integer");
-        }
-        std::size_t parsed = 0;
-        const auto number = std::stoull(value, &parsed, 0);
-        if (parsed != value.size()) { throw std::invalid_argument("unexpected trailing data"); }
-        output = number;
+        output = detail::ParseUint64(value);
     } catch (const std::exception& error) {
         return Status::InvalidParam("invalid YAML value for {}: {}", key, error.what());
     }

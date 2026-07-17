@@ -41,6 +41,7 @@ inline constexpr std::uint64_t kDefaultDumpTtlMs = kDefaultTtlMinutes * kMillise
 inline constexpr char kDefaultDramPoolRuntimeConfigPath[] = "examples/drampool.yaml";
 
 struct DramPoolConfig {
+    std::string runtimeConfigPath{kDefaultDramPoolRuntimeConfigPath};
     // Northbound KV control endpoint supplied by --addr.
     transport::Endpoint addr{};
     std::vector<std::string> nics{};

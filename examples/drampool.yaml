@@ -2,7 +2,7 @@
 #
 # Launch parameters stay on the command line:
 #   --addr, --nics, --pool-size-gb, --kvcache-block-sizes,
-#   --kvcache-block-proportions, and --ttl-minutes.
+#   --kvcache-block-proportions, --ttl-minutes, and --config.
 
 transport:
   device_id: 0
