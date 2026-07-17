@@ -675,12 +675,70 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         tensor_size_lists.append(sizes)
         block_stride_lists.append(sizes)
 
+    def _append_ascend_attn_only_layout(
+        self,
+        raw_tensor,
+        shared_ptrs: list[int],
+        attn_specs: list[FullAttentionSpec],
+        base_ptrs: list[list[int]],
+        buffer_size_rows: list[list[int]],
+        tensor_size_lists: list[list[int]],
+        block_stride_lists: list[list[int]],
+    ) -> None:
+        """Component-major layout for attention-only tensors on Ascend.
+
+        Ascend forces attention-only tensors (e.g. MTP draft layers in a
+        hybrid model) to use the same ``[conv_padding, K, V]``
+        component-major format as genuine hybrid tensors, even though
+        they carry no mamba state.  This method reconstructs the
+        three-slice layout from the attention component sizes and the
+        page size, producing a *tensor_size_list* identical to hybrid
+        rows so that both block-level and layerwise stores see a uniform
+        shard schema.
+
+        Slice equivalence with ``_append_ascend_component_major_layout``:
+          conv_padding == conv_size
+            (page_size - k_size - v_size == mamba_page_size_padded
+             - attn_page_size == conv_block_page_size)
+          k_size     == middle_size  (== max(k_size, ssm_size),
+            because Ascend block_size alignment guarantees
+            k_size >= ssm_size)
+          v_size     == tail_size    (arithmetic identity)
+        """
+        k_size, v_size = self._attention_component_sizes(attn_specs[0])
+        page_size = raw_tensor.size // self.num_blocks
+        conv_padding_size = page_size - k_size - v_size
+        if conv_padding_size <= 0:
+            self._append_contiguous_page_layout(
+                raw_tensor,
+                shared_ptrs,
+                base_ptrs,
+                buffer_size_rows,
+                tensor_size_lists,
+                block_stride_lists,
+            )
+            return
+
+        base = min(shared_ptrs)
+        sizes = [conv_padding_size, k_size, v_size]
+        offsets = [
+            0,
+            conv_padding_size * self.num_blocks,
+            (conv_padding_size + k_size) * self.num_blocks,
+        ]
+        base_ptrs.append([base + offset for offset in offsets])
+        buffer_size_rows.append([size * self.num_blocks for size in sizes])
+        tensor_size_lists.append(sizes)
+        block_stride_lists.append(sizes)
+
     def _build_layout(self, kvcaches):
         base_ptrs = []
         buffer_size_rows = []
         tensor_size_lists = []
         block_stride_lists = []
         self.layer_name_to_row: dict[str, int] = {}
+
+        is_npu = current_platform.device_type == "npu"
 
         for raw_tensor in self.kv_cache_config.kv_cache_tensors:
             if not raw_tensor.shared_by:
@@ -699,24 +757,30 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             row_id = len(base_ptrs)
             mamba_specs = [s for s in shared_specs if isinstance(s, MambaSpec)]
             attn_specs = [s for s in shared_specs if isinstance(s, FullAttentionSpec)]
-            if not mamba_specs or not attn_specs:
-                self._append_contiguous_page_layout(
+
+            # CUDA: all tensors use per-block contiguous page layout.
+            # Ascend: tensors are component-major ([conv, K/V-or-ssm, V-or-pad]).
+            #   - hybrid (mamba+attn)   → _append_ascend_component_major_layout
+            #   - attn-only (e.g. MTP)  → _append_ascend_attn_only_layout
+            #     (Ascend forces the same [conv_padding, K, V] format even
+            #     without a mamba spec, so the tensor_size_list matches
+            #     hybrid rows and layerwise shard checks pass.)
+            #   - others (mamba-only, etc.) → contiguous page fallback
+            if is_npu and mamba_specs and attn_specs:
+                self._append_ascend_component_major_layout(
                     raw_tensor,
                     shared_ptrs,
+                    mamba_specs,
+                    attn_specs,
                     base_ptrs,
                     buffer_size_rows,
                     tensor_size_lists,
                     block_stride_lists,
                 )
-                for layer_name in raw_tensor.shared_by:
-                    self.layer_name_to_row[layer_name] = row_id
-                continue
-
-            if current_platform.device_type == "npu":
-                self._append_ascend_component_major_layout(
+            elif is_npu and attn_specs:
+                self._append_ascend_attn_only_layout(
                     raw_tensor,
                     shared_ptrs,
-                    mamba_specs,
                     attn_specs,
                     base_ptrs,
                     buffer_size_rows,
@@ -1325,9 +1389,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self.launch_config = copy.deepcopy(self.launch_config)
         self.launch_config["use_layerwise"] = True
         self.use_layerwise = True
-        self.load_tasks: dict[int, list[tuple[Task, tuple[str, ...]]]] = defaultdict(
-            list
-        )
+        self.load_tasks: dict[int, dict[str, Task]] = defaultdict(dict)
         self.dump_tasks: dict[int, list[PendingDumpTask]] = defaultdict(list)
         self.request_data: list[tuple[str, list[bytes], list[int]]] = []
         self._failure_req_ids: set[str] = set()
@@ -1348,10 +1410,40 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self.need_load = False
         self._layerwise_batch_start: Optional[float] = None
         self._layerwise_prev_wait_end: Optional[float] = None
+        # MTP draft layers can be revisited several times in one speculative
+        # decode batch (1 draft prefill + num_speculative_steps-1 multi-step
+        # decode calls).  Each visit triggers save_kv_layer for the MTP row;
+        # deferring the dump and keeping only the last snapshot avoids
+        # duplicate I/O and ensures the most complete KV cache is persisted.
+        self._deferred_mtp_row_dumps: dict[
+            int, tuple[list[bytes], list[int], set[str]]
+        ] = {}
+        self._is_mtp = False
+        self._init_mtp_layerwise_dump_state()
         logger.info(
             "Init UCMHybridLinearAttentionLayerWiseConnector "
             f"with prefetch_rows={self._load_prefetch_rows}."
         )
+
+    def _init_mtp_layerwise_dump_state(self) -> None:
+        """Detect whether MTP is enabled."""
+        speculative_config = getattr(self._vllm_config, "speculative_config", None)
+        if speculative_config is None:
+            return
+
+        mtp_method = getattr(speculative_config, "method", None)
+        self._is_mtp = mtp_method == "mtp" or (
+            isinstance(mtp_method, str) and mtp_method.endswith("_mtp")
+        )
+
+    def _is_mtp_layer(self, layer_name: str) -> bool:
+        """Check whether a layer belongs to the MTP draft model.
+
+        Uses the layer name (contains 'mtp') instead of layer_id, because
+        extract_layer_index('mtp.layers.0...') returns 0 (the index within
+        the MTP model), not the global layer index (e.g. 64).
+        """
+        return self._is_mtp and "mtp" in layer_name
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         if has_ucm_sparse() and os.getenv("VLLM_HASH_ATTENTION") == "1":
@@ -1424,45 +1516,35 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
     def _mark_load_failed(
         self,
         metadata: "UCMConnectorMetadata",
-        request_ids: tuple[str, ...],
+        request_id: str,
     ) -> None:
-        for request_id in request_ids:
-            request_meta = metadata.request_meta.get(request_id)
-            if request_meta is not None:
-                self._invalid_block_ids.update(request_meta.load_block_ids[1])
-            self._failure_req_ids.add(request_id)
-            self._connector_worker_meta.mark_failed(request_id)
+        request_meta = metadata.request_meta.get(request_id)
+        if request_meta is not None:
+            self._invalid_block_ids.update(request_meta.load_block_ids[1])
+        self._failure_req_ids.add(request_id)
+        self._connector_worker_meta.mark_failed(request_id)
 
     def _submit_request_load_tasks_for_row(
         self,
         row_id: int,
         metadata: "UCMConnectorMetadata",
     ) -> None:
-        total_ucm_block_ids: list[bytes] = []
-        all_vllm_block_ids: list[int] = []
-        request_ids: list[str] = []
         for request_id, ucm_block_ids, vllm_block_ids in self.request_data:
             if request_id in self._failure_req_ids:
                 continue
-            total_ucm_block_ids.extend(ucm_block_ids)
-            all_vllm_block_ids.extend(vllm_block_ids)
-            request_ids.append(request_id)
-        if not total_ucm_block_ids:
-            self._submitted_load_rows.add(row_id)
-            return
-        try:
-            row_ptrs = self.kv_cache_layout.extract_block_addrs_for_row(
-                all_vllm_block_ids, row_id
-            )
-            shard_indexs = [row_id] * len(total_ucm_block_ids)
-            task = self.store.load_data(total_ucm_block_ids, shard_indexs, row_ptrs)
-            self.load_tasks[row_id].append((task, tuple(request_ids)))
-        except Exception as e:
-            logger.error(
-                f"submit hybrid layerwise row {row_id} load task error. "
-                f"{type(e).__name__}: {e}"
-            )
-            self._mark_load_failed(metadata, tuple(request_ids))
+            try:
+                row_ptrs = self.kv_cache_layout.extract_block_addrs_for_row(
+                    vllm_block_ids, row_id
+                )
+                shard_indexs = [row_id] * len(ucm_block_ids)
+                task = self.store.load_data(ucm_block_ids, shard_indexs, row_ptrs)
+                self.load_tasks[row_id][request_id] = task
+            except Exception as e:
+                logger.error(
+                    f"request {request_id} submit load task for row {row_id} "
+                    f"error. {type(e).__name__}: {e}"
+                )
+                self._mark_load_failed(metadata, request_id)
         self._submitted_load_rows.add(row_id)
 
     def _submit_request_load_tasks_for_row_once(
@@ -1474,14 +1556,19 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             return
         self._submit_request_load_tasks_for_row(row_id, metadata)
 
-    def _submit_prefetch_rows(
-        self,
-        start_idx: int,
-        metadata: "UCMConnectorMetadata",
-    ) -> None:
-        end_idx = min(start_idx + self._load_prefetch_rows, len(self.row_ids))
-        for idx in range(start_idx, end_idx):
-            self._submit_request_load_tasks_for_row_once(self.row_ids[idx], metadata)
+    def _wait_row_load(self, row_id: int, metadata: "UCMConnectorMetadata") -> int:
+        """Pop and wait for a row's per-request load tasks, marking failures."""
+        row_tasks = self.load_tasks.pop(row_id, {})
+        for request_id, task in row_tasks.items():
+            try:
+                self.store.wait(task)
+            except Exception as e:
+                logger.error(
+                    f"request {request_id} wait row {row_id} "
+                    f"load failed. {type(e).__name__}: {e}"
+                )
+                self._mark_load_failed(metadata, request_id)
+        return len(row_tasks)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         self._layerwise_batch_start = time.perf_counter()
@@ -1493,6 +1580,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self._failure_req_ids.clear()
         self._submitted_load_rows.clear()
         self._dump_transfer_data = None
+        self._deferred_mtp_row_dumps.clear()
         self.need_load = False
 
         for request_id, request in metadata.request_meta.items():
@@ -1513,7 +1601,14 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             self.request_data.append((request_id, ucm_block_ids, vllm_block_ids))
 
         if self.need_load and self.row_ids:
-            self._submit_prefetch_rows(0, metadata)
+            # Submit row 0 + prefetch rows, then synchronously wait for
+            # row 0.  vLLM only calls wait_for_layer_load at the
+            # full_attn layer (last layer of each row), so row 0 must
+            # be loaded here before the first linear_attn layer begins.
+            num_submit = min(self._load_prefetch_rows + 1, len(self.row_ids))
+            for idx in range(num_submit):
+                self._submit_request_load_tasks_for_row_once(idx, metadata)
+            self._wait_row_load(0, metadata)
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         if not self._connector_metadata or not self.need_load:
@@ -1524,34 +1619,25 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         if row_id is None:
             return
 
-        self._submit_request_load_tasks_for_row_once(row_id, metadata)
+        # wait_for_layer_load is only called at the full_attn layer
+        # (last layer of the current row).  Wait for the NEXT row so
+        # its first layers (linear_attn) have KV cache loaded before
+        # their forward begins.
+        next_row_id = row_id + 1
+        if next_row_id >= len(self.row_ids):
+            return
+
+        self._submit_request_load_tasks_for_row_once(next_row_id, metadata)
 
         wait_start = time.perf_counter()
-
-        row_tasks = self.load_tasks.pop(row_id, [])
-        n_tasks = len(row_tasks)
-        for task, request_ids in row_tasks:
-            try:
-                self.store.wait(task)
-            except Exception as e:
-                logger.error(
-                    f"requests {list(request_ids)} wait {layer_name} load failed. "
-                    f"{type(e).__name__}: {e}"
-                )
-                self._mark_load_failed(metadata, request_ids)
-
+        n_tasks = self._wait_row_load(next_row_id, metadata)
         wait_end = time.perf_counter()
 
-        try:
-            current_row_idx = self.row_ids.index(row_id)
-        except ValueError:
-            current_row_idx = -1
-        next_row_idx = current_row_idx + self._load_prefetch_rows
-        has_next = 0 <= next_row_idx < len(self.row_ids)
-        if has_next:
-            self._submit_request_load_tasks_for_row_once(
-                self.row_ids[next_row_idx], metadata
-            )
+        # Prefetch rows ahead of the one we just waited for.
+        prefetch_start = next_row_id + 1
+        prefetch_end = min(prefetch_start + self._load_prefetch_rows, len(self.row_ids))
+        for idx in range(prefetch_start, prefetch_end):
+            self._submit_request_load_tasks_for_row_once(idx, metadata)
 
         blocking_ms = (wait_end - wait_start) * 1000
         stats: dict[str, float] = {
@@ -1562,7 +1648,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             stats["layerwise_inter_wait_interval_ms"] = (
                 wait_start - self._layerwise_prev_wait_end
             ) * 1000
-        if has_next:
+        if prefetch_start < prefetch_end:
             submit_end = time.perf_counter()
             stats["layerwise_next_layer_submit_ms"] = (submit_end - wait_end) * 1000
         ucmmetrics.update_stats(stats)
@@ -1598,6 +1684,19 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             return
 
         self.is_save = True
+
+        if self._is_mtp_layer(layer_name):
+            # Defer: MTP layers are revisited N times per speculative decode
+            # step (1 draft prefill + num_speculative_steps-1 multi-step
+            # decode).  Each visit overwrites this entry so only the last
+            # (most complete) snapshot is flushed in wait_for_save.
+            self._deferred_mtp_row_dumps[row_id] = (
+                list(total_ucm_block_ids),
+                list(total_vllm_block_ids),
+                set(dump_request_ids),
+            )
+            return
+
         row_ptrs = self.kv_cache_layout.extract_block_addrs_for_row(
             total_vllm_block_ids, row_id
         )
@@ -1648,6 +1747,37 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             total_vllm_block_ids.extend(vllm_block_ids)
         return total_ucm_block_ids, total_vllm_block_ids, dump_request_ids
 
+    def _flush_deferred_mtp_dumps(self) -> None:
+        """Submit the last saved snapshot for each deferred MTP row."""
+        if not self._deferred_mtp_row_dumps:
+            return
+
+        deferred = self._deferred_mtp_row_dumps
+        self._deferred_mtp_row_dumps = {}
+        for row_id, (ucm_ids, vllm_ids, req_ids) in deferred.items():
+            try:
+                row_ptrs = self.kv_cache_layout.extract_block_addrs_for_row(
+                    vllm_ids, row_id
+                )
+                row_ptrs = np.ascontiguousarray(row_ptrs)
+                shard_indexs = [row_id] * len(ucm_ids)
+                event_handle = self._get_dump_event_handle()
+                task = self.store.dump_data(
+                    ucm_ids, shard_indexs, row_ptrs, event_handle
+                )
+                self.dump_tasks[row_id].append(
+                    PendingDumpTask(
+                        task=task,
+                        request_ids=set(req_ids),
+                        event_handle=event_handle,
+                    )
+                )
+            except Exception as e:
+                logger.error(
+                    f"submit deferred MTP row {row_id} dump task failed. "
+                    f"{type(e).__name__}: {e}"
+                )
+
     def wait_for_save(self) -> None:
         if not self.is_save:
             total_end = time.perf_counter()
@@ -1656,6 +1786,8 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                 ucmmetrics.update_stats({"layerwise_batch_total_ms": batch_total_ms})
                 self._layerwise_batch_start = None
             return
+
+        self._flush_deferred_mtp_dumps()
 
         total_start = time.perf_counter()
         for row_id in self.row_ids:
