@@ -365,11 +365,11 @@ class PendingDumpTask:
 class RequestHasher:
     """hash(md5) request to generate ucm block id"""
 
-    def __init__(self, vllm_config, rank_id, namespace: str = ""):
+    def __init__(self, vllm_config, rank_id):
         meta = (
             f"{vllm_config.model_config.model}:"
             f"{vllm_config.parallel_config.tensor_parallel_size}:"
-            f"{vllm_config.model_config.dtype}:{rank_id}:{namespace}"
+            f"{vllm_config.model_config.dtype}:{rank_id}"
         )
         self.meta_bytes = meta.encode("utf-8")
 
@@ -487,11 +487,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             if not defer_scheduler_store:
                 self.store = self._create_store(None)
         else:
-            self.request_hasher = RequestHasher(
-                vllm_config,
-                self.tp_rank % self.tp_size,
-                self._request_hash_namespace(),
-            )
+            self.request_hasher = RequestHasher(vllm_config, self.tp_rank % self.tp_size)
             self._connector_worker_meta = UCMWorkerMetadata()
 
         self.persist_token_threshold = self.launch_config.get(
@@ -530,9 +526,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 "connector_load_invalid_blocks_total": float(len(new_invalid_blocks)),
             }
         )
-
-    def _request_hash_namespace(self) -> str:
-        return str(self.launch_config.get("request_hash_namespace", ""))
 
     def generate_hash(
         self, block_size: int, token_ids: List[int], parent_block_hash_value: bytes
