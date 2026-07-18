@@ -487,7 +487,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
             if not defer_scheduler_store:
                 self.store = self._create_store(None)
         else:
-            self.request_hasher = RequestHasher(vllm_config, self.tp_rank % self.tp_size)
+            self.request_hasher = RequestHasher(
+                vllm_config, self.tp_rank % self.tp_size
+            )
             self._connector_worker_meta = UCMWorkerMetadata()
 
         self.persist_token_threshold = self.launch_config.get(

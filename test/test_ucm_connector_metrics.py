@@ -398,8 +398,7 @@ def test_other_rank_hashers_match_worker_hashes():
     rank0_block_id = b"rank-0-block-id"
 
     assert [hasher(rank0_block_id) for hasher in hashers] == [
-        RequestHasher(vllm_config, rank_id)(rank0_block_id)
-        for rank_id in range(1, 3)
+        RequestHasher(vllm_config, rank_id)(rank0_block_id) for rank_id in range(1, 3)
     ]
 
 
