@@ -363,18 +363,7 @@ class PendingDumpTask:
 
 
 class RequestHasher:
-    """hash(md5) request to generate ucm block id.
-
-    The hash meta includes the speculative-decoding configuration (method +
-    num_speculative_tokens) because the KV-cache layout for hybrid linear-
-    attention models depends on ``num_speculative_tokens``: the conv_state's
-    state_len is ``conv_kernel - 1 + num_speculative_tokens`` (see
-    ``MambaStateShapeCalculator``), so different spec-token counts produce
-    different conv_state sizes, different page/shard sizes, and therefore
-    incompatible on-disk block files.  Without this discriminator, a file
-    dumped with one speculative setting could be loaded under a different
-    setting, causing offset/size mismatches.
-    """
+    """hash(md5) request to generate ucm block id"""
 
     def __init__(self, vllm_config, rank_id):
         speculative_config = getattr(vllm_config, "speculative_config", None)

@@ -53,27 +53,7 @@ logger = init_logger(__name__)
 
 @dataclass
 class HLARequestMeta(RequestMeta):
-    """RequestMeta extended with per-group block tracking for hybrid models.
-
-    The inherited fields (``ucm_block_ids``, ``hbm_hit_block_num``,
-    ``total_hit_block_num``, ``num_token_ids``, ``vllm_block_ids``,
-    ``token_processed``) keep their original semantics and mirror the
-    full-attention group exactly, so dispatch/load/save paths inherited from
-    :class:`UCMDirectConnector` keep working.
-
-    The two new fields are 2D lists indexed by the original
-    ``kv_cache_config.kv_cache_groups`` order (i.e. ``[group_id]``):
-    - ``group_ucm_block_ids[gid]``: full block hashes obtained by hashing
-      ``request.all_token_ids`` with group ``gid``'s own block size and
-      chain seed. ``group_ucm_block_ids[full_attn_group_id]`` equals the
-      inherited ``ucm_block_ids``.
-    - ``group_vllm_block_ids[gid]``: per-group VLLM physical block ids; this
-      is initialized as an empty list per group here, then filled from the
-      scheduler allocation snapshot by :meth:`UCMHybridLinearAttentionConnector.update_state_after_alloc`
-      and maintained by :meth:`UCMHybridLinearAttentionConnector._generate_hla_dispatch_meta`.
-      HLA dispatch later slices these per-group tables to build the flattened
-      load/dump pairs consumed by the inherited I/O path.
-    """
+    """RequestMeta extended with per-group block tracking for hybrid models."""
 
     group_ucm_block_ids: list[list[bytes]] = field(default_factory=list)
     group_vllm_block_ids: list[list[int]] = field(default_factory=list)
@@ -124,9 +104,7 @@ def extend_non_null(
     src_ucm_block_ids: list[bytes],
     src_vllm_block_ids: list[int],
 ) -> None:
-    # Mamba align mode pads req block tables with vLLM's null block
-    # (block_id=0). These are metadata placeholders, not physical pages
-    # that should be loaded from or dumped to the store.
+    # Skip vLLM null blocks (block_id=0) used as mamba-align placeholders.
     for ucm_block_id, vllm_block_id in zip(src_ucm_block_ids, src_vllm_block_ids):
         if vllm_block_id == 0:
             continue
@@ -151,22 +129,7 @@ class GroupInfo:
 
 
 class KVCacheGroupManager:
-    """Group-aware hashing and lookup for hybrid (HLA) connectors.
-
-    Splits ``kv_cache_config.kv_cache_groups`` into full-attention groups
-    (one or more) and mamba-align state groups, derives a per-group hash
-    chain seed, and exposes a two-stage lookup that:
-
-    1. For every full-attention group, hashes ``request.all_token_ids`` with
-       that group's block size and runs ``store.lookup_on_prefix`` on the
-       blocks beyond its own ``hbm_hit_block_num``. The candidate hits (in
-       tokens) are min'd across full-attn groups and rounded down to
-       ``lcm_block_size``.
-    2. For each mamba-align state group, derives a single state hash from
-       the primary full-attention prefix and verifies it exists in the
-       store. If any state group fails this check, the whole external hit
-       is downgraded to zero.
-    """
+    """Group-aware hashing and two-stage lookup for hybrid (HLA) connectors."""
 
     def __init__(
         self,
@@ -175,10 +138,7 @@ class KVCacheGroupManager:
         base_seed: bytes,
     ) -> None:
         self.request_hasher = request_hasher
-        # Indexed by original group_id; positions match
-        # ``kv_cache_config.kv_cache_groups``.
         self.groups_by_id: list[GroupInfo] = []
-        # All full-attention groups (non-mamba-align). Order follows group_id.
         self.full_attn_groups: list[GroupInfo] = []
         self.state_groups: list[GroupInfo] = []
 
@@ -205,10 +165,7 @@ class KVCacheGroupManager:
             "kv_cache_config.kv_cache_groups."
         )
 
-        # Resume points must be aligned to the LCM of every group's
-        # block_size so that per-group block accounting (including each
-        # full-attn group's lookup result and every state group's tail slice)
-        # lands on a clean block boundary.
+        # Resume points must align to the LCM of all group block_sizes.
         all_block_sizes = [g.block_size for g in self.groups_by_id]
         self.lcm_block_size: int = math.lcm(*all_block_sizes)
 
@@ -223,9 +180,6 @@ class KVCacheGroupManager:
                 f"UCMHybridLinearAttentionConnector only supports mamba-align "
                 f"state groups."
             )
-            # Mamba-align state occupies exactly one block per checkpoint.
-            # ``block_size <= lcm_block_size`` is already guaranteed by the
-            # LCM construction above.
 
         logger.info(
             "KVCacheGroupManager initialized: "
@@ -245,10 +199,7 @@ class KVCacheGroupManager:
     ) -> list[bytes]:
         """Hash ``token_ids`` into per-block ids using ``group``'s chain seed."""
         if group.is_mamba_align:
-            # In mamba-align mode vLLM pads the per-request block table with
-            # block_id=0 and only keeps the current state block as a real
-            # physical page. Hashing every logical token block here would
-            # create keys for pages that can never be loaded or dumped.
+            # mamba-align pads block table with null blocks; no per-block hash.
             return [b""] * (len(token_ids) // group.block_size)
 
         ret: list[bytes] = []
@@ -265,12 +216,7 @@ class KVCacheGroupManager:
         return ret
 
     def compute_all_group_block_ids(self, token_ids: list[int]) -> list[list[bytes]]:
-        """Compute full block hashes for every group, indexed by group_id.
-
-        ``ret[gid]`` covers all aligned blocks of ``token_ids`` using group
-        ``gid``'s ``block_size`` and chain seed. The trailing partial block
-        (if any) is dropped, matching :meth:`compute_block_hashes`.
-        """
+        """Compute full block hashes for every group, indexed by group_id."""
         return [self.compute_block_hashes(g, token_ids) for g in self.groups_by_id]
 
     def compute_mamba_align_state_hash(
@@ -279,13 +225,7 @@ class KVCacheGroupManager:
         seq_len: int,
         group_block_ids: list[list[bytes]],
     ) -> Optional[bytes]:
-        """Derive the hash for the real mamba-align state page at ``seq_len``.
-
-        The mamba state represents the whole prefix up to ``seq_len`` instead
-        of a normal KV block. We derive its key from the primary full-attention
-        prefix hash, so the state key still changes with every prefix token but
-        we do not need to materialize hashes for mamba's leading null blocks.
-        """
+        """Derive the mamba-align state hash at ``seq_len`` from the prefix hash."""
         if seq_len <= 0 or seq_len % self.lcm_block_size != 0:
             return None
         primary = self.full_attn_groups[0]
@@ -383,9 +323,7 @@ class KVCacheGroupManager:
         if external_hit_tokens <= 0:
             return 0, 0, []
 
-        # Stage 2: sequential backward scan for mamba-align state.
-        # Check one LCM boundary at a time from total_hit_tokens downwards.
-        # Stop at the first position where ALL state groups are present.
+        # Stage 2: backward scan for mamba state at LCM boundaries.
         total_hit_tokens = num_computed_tokens + external_hit_tokens
 
         if not self.state_groups:
@@ -420,10 +358,7 @@ class KVCacheGroupManager:
         if external_hit_tokens <= 0:
             return 0, 0, []
 
-        # Collect mamba state hashes for all LCM boundaries from the first
-        # boundary (lcm_block_size) to best_pos (inclusive) for GC heat
-        # update.  This covers both HBM positions (below num_computed_tokens,
-        # not checked by the sequential scan) and external positions.
+        # Collect mamba state hashes for GC heat update.
         mamba_prefetch_hashes: list[bytes] = []
         for pos in range(
             self.lcm_block_size,
@@ -506,10 +441,6 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         tensor_size_lists: list[list[int]],
         block_stride_lists: list[list[int]],
     ) -> None:
-        # MTP can add attention-only raw tensors next to hybrid attention+Mamba
-        # tensors.  Those rows naturally have a different number of physical
-        # slices, so keep the UCM schema flattened instead of forcing a
-        # rectangular layer-by-slice matrix.
         self.row_slices: list[slice] = []
         self.row_tensor_size_lists: list[list[int]] = [
             [int(size) for size in row] for row in tensor_size_lists
@@ -685,39 +616,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         tensor_size_lists: list[list[int]],
         block_stride_lists: list[list[int]],
     ) -> None:
-        """Component-major layout for attention-only tensors on Ascend.
-
-        Ascend forces attention-only tensors (e.g. MTP draft layers in a
-        hybrid model) to use the same ``[conv_padding, K, V]``
-        component-major format as genuine hybrid tensors, even though
-        they carry no mamba state.  This method reconstructs the
-        three-slice layout from the attention component sizes and the
-        page size, producing a *tensor_size_list* identical to hybrid
-        rows so that both block-level and layerwise stores see a uniform
-        shard schema.
-
-        Slice equivalence with ``_append_ascend_component_major_layout``:
-          conv_padding == conv_size
-            (page_size - k_size - v_size == mamba_page_size_padded
-             - attn_page_size == conv_block_page_size)
-          k_size     == middle_size  (== max(k_size, ssm_size),
-            because Ascend block_size alignment guarantees
-            k_size >= ssm_size)
-          v_size     == tail_size    (arithmetic identity)
-
-        Base-pointer correction:
-          Unlike hybrid rows where ``min(shared_ptrs)`` happens to be the
-          raw buffer base (mamba layers contribute a ``conv_state`` view at
-          offset 0), attention-only tensors have no mamba layer.  Their
-          smallest shared pointer is the K-cache view's ``data_ptr()``,
-          which vllm-ascend slices *after* the conv-padding region
-          (``raw_k_tensor[conv_block_padding_size:]``).  Using this as
-          ``base`` would shift every computed address by
-          ``conv_padding_size * num_blocks`` bytes, causing the V
-          component of high block ids to read beyond the raw buffer and
-          crash the NPU with error 507001.  We subtract the padding
-          offset so ``base`` lands on the true raw buffer start.
-        """
+        """Component-major [conv_padding, K, V] layout for Ascend attn-only tensors."""
         k_size, v_size = self._attention_component_sizes(attn_specs[0])
         page_size = raw_tensor.size // self.num_blocks
         conv_padding_size = page_size - k_size - v_size
@@ -732,10 +631,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             )
             return
 
-        # min(shared_ptrs) is the K-cache view's data_ptr, which vllm-ascend
-        # slices past the conv-padding region.  Subtract the padding span
-        # to recover the raw buffer base so offsets [0, conv*K, (conv+K)*K]
-        # land on the correct [conv_padding, K, V] regions.
+        # K-cache view starts past conv_padding; subtract to get raw base.
         base = min(shared_ptrs) - conv_padding_size * self.num_blocks
         sizes = [conv_padding_size, k_size, v_size]
         offsets = [
@@ -775,14 +671,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             mamba_specs = [s for s in shared_specs if isinstance(s, MambaSpec)]
             attn_specs = [s for s in shared_specs if isinstance(s, FullAttentionSpec)]
 
-            # CUDA: all tensors use per-block contiguous page layout.
-            # Ascend: tensors are component-major ([conv, K/V-or-ssm, V-or-pad]).
-            #   - hybrid (mamba+attn)   → _append_ascend_component_major_layout
-            #   - attn-only (e.g. MTP)  → _append_ascend_attn_only_layout
-            #     (Ascend forces the same [conv_padding, K, V] format even
-            #     without a mamba spec, so the tensor_size_list matches
-            #     hybrid rows and layerwise shard checks pass.)
-            #   - others (mamba-only, etc.) → contiguous page fallback
+            # Ascend: hybrid → component_major, attn-only → attn_only, else contiguous.
             if is_npu and mamba_specs and attn_specs:
                 self._append_ascend_component_major_layout(
                     raw_tensor,
@@ -881,11 +770,6 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 base_seed=self._seed,
             )
             lcm_block_size = self.group_manager.lcm_block_size
-            # Override the inherited ``block_size`` (which comes from
-            # ``cache_config.block_size``) so prefix accounting in this class
-            # is consistent with every group's block boundaries — vLLM's
-            # hybrid scheduler aligns ``num_computed_tokens`` to the LCM of
-            # all groups' block_size, and so do we.
             self.block_size = lcm_block_size
             self.hash_block_size = lcm_block_size
 
@@ -923,12 +807,8 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             f"num_computed_tokens={num_computed_tokens} is not aligned to "
             f"lcm_block_size={lcm_block_size}"
         )
-        # ``hbm_hit_block_num`` and ``total_hit_block_num`` are tracked in
-        # LCM-block units in HLA mode; per-group block ids/counts are derived
-        # from these via each group's own block_size when needed.
         hbm_hit_block_num = num_computed_tokens // lcm_block_size
 
-        # Skip persistence if token count is below the threshold.
         if self.persist_token_threshold > request.num_tokens:
             logger.info_once(
                 f"Skip persistence: req {request.request_id}, "
@@ -937,12 +817,9 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             )
             return 0, False
 
-        # Hash once per group so dump path can later reuse the same block ids.
         group_ucm_block_ids = self.group_manager.compute_all_group_block_ids(
             request.all_token_ids
         )
-        # Legacy ``ucm_block_ids`` mirrors the first full-attn group (by
-        # group_id order) for callers that still consume the flat list.
         primary_full_attn = self.group_manager.full_attn_groups[0]
         primary_block_ids = group_ucm_block_ids[primary_full_attn.group_id]
 
@@ -967,22 +844,17 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
         total_hit_block_num = hbm_hit_block_num + external_hit_lcm_blocks
 
-        # GC heat update: a request with any cache hit is a hot request —
-        # update heat for ALL hit blocks (including HBM-hit prefix) to
-        # prevent GC eviction on any rank.
+        # GC heat update for all hit blocks across ranks.
         total_hit_tokens = total_hit_block_num * lcm_block_size
         hbm_hit_full_attn = num_computed_tokens // primary_full_attn.block_size
         total_hit_full_attn = total_hit_tokens // primary_full_attn.block_size
         all_hit_full_attn = primary_block_ids[0:total_hit_full_attn]
-        # Rank 0: HBM full-attn blocks were not checked by lookup_on_prefix;
-        # mamba positions below best_pos were not checked by the sequential
-        # scan.  Prefetch updates heat for existing entries (no-op if absent).
+        # Rank 0: prefetch updates heat for HBM-attn and mamba blocks not checked by lookup.
         hbm_full_attn = primary_block_ids[0:hbm_hit_full_attn]
         if hbm_full_attn:
             self.store.prefetch(hbm_full_attn)
         if mamba_prefetch_hashes:
             self.store.prefetch(mamba_prefetch_hashes)
-        # Other ranks: all hit full-attn blocks + mamba hashes, re-hashed.
         self._prefetch_other_rank_hashes(all_hit_full_attn + mamba_prefetch_hashes)
 
         logger.info_once(
@@ -1001,9 +873,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 },
             )
 
-        # When all the tokens are cached in ssd or hbm, we need to recompute
-        # the last token. This branch will be removed once vLLM scheduler
-        # provides a better solution in the future.
+        # Recompute last token when fully cached (vLLM needs logits).
         num_total_hit_tokens = total_hit_block_num * lcm_block_size
         if num_total_hit_tokens == request.num_tokens and external_hit_tokens > 0:
             external_hit_tokens -= 1
@@ -1044,33 +914,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         request_id: str = "",
         incoming_block_ids_are_full: bool = False,
     ) -> RequestDispatchMeta:
-        """Build a flat (ucm, vllm) block id pair list across all groups.
-
-        The output ``RequestDispatchMeta`` keeps the same shape as the
-        non-HLA path (``tuple[list[bytes], list[int]]``) so that
-        ``start_load_kv`` / ``wait_for_save`` and the underlying store APIs
-        do not need to know about groups. Per-group slices are concatenated
-        in ascending ``group_id`` order, with ``ucm_block_ids[k]`` and
-        ``vllm_block_ids[k]`` always referring to the same block.
-
-        Layout per group within ``[token_processed, token_processed + new_tokens)``:
-        - **load** (only when ``external_hit_blocks > 0`` and ``need_load``):
-          - full-attn group: load blocks covering tokens
-            ``[hbm_hit_tokens, total_hit_tokens)`` via ``extend_non_null``.
-          - mamba-align state group: load the single state block at
-            ``total_hit_tokens`` via ``append_mamba_align_state_block``.
-            The state represents the entire prefix and is reloaded each
-            resume because older blocks are evicted by the scheduler.
-        - **dump** of ``[token_processed, token_processed + new_tokens)``:
-          - full-attn group: every newly-completed full block (the
-            ``lookup_on_prefix`` chain needs every prefix block to be
-            present).
-          - mamba-align state group: the state block at each LCM boundary
-            reached in this range, via ``append_mamba_align_state_block``.
-            Lookup always resumes at LCM boundaries and stage-2 only
-            inspects state hashes at those points, so blocks between
-            boundaries would be dead weight in the store.
-        """
+        """Build a flat (ucm, vllm) block id pair list across all groups."""
         assert self.group_manager is not None
         groups_by_id = self.group_manager.groups_by_id
         num_groups = self.group_manager.num_groups
@@ -1089,12 +933,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             elif not existing_vllm_block_ids:
                 req_meta.group_vllm_block_ids[gid] = incoming_vllm_block_ids
             elif incoming_vllm_block_ids:
-                # update_state_after_alloc() usually gives us the full block
-                # table before build_connector_meta(). If that happened, the
-                # scheduler's "new" block ids are already the suffix of the
-                # full table and must not be appended again. If the connector is
-                # used with an older scheduler path that did not call
-                # update_state_after_alloc(), append as a fallback.
+                # Avoid double-append when update_state_after_alloc already set full table.
                 suffix_len = len(incoming_vllm_block_ids)
                 if existing_vllm_block_ids[-suffix_len:] != incoming_vllm_block_ids:
                     existing_vllm_block_ids.extend(incoming_vllm_block_ids)
@@ -1115,10 +954,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             state_idx = max((seq_len - 1) // group.block_size, 0)
             vllm_state_idx = state_idx
             if reason == "load":
-                # For resumed mamba-align requests, vLLM keeps the cached
-                # prefix state at ``state_idx`` and allocates a fresh running
-                # state block at the tail of the block table. UCM must read
-                # the prefix hash but write into that current running block.
+                # Write into the running state block, not the cached prefix block.
                 block_ids = req_meta.group_vllm_block_ids[gid]
                 for i in range(len(block_ids) - 1, -1, -1):
                     if block_ids[i] != 0:
@@ -1187,18 +1023,11 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             dump_tok_end = min(
                 req_meta.token_processed + new_tokens, req_meta.num_token_ids
             )
-            # LCM boundaries B with ``dump_tok_start < B <= dump_tok_end``.
-            # State groups only need the tail at these boundaries because lookup
-            # always resumes at LCM boundaries (see
-            # ``lookup_external_hit_tokens`` stage 2).
             first_lcm_b = (dump_tok_start // lcm_block_size + 1) * lcm_block_size
             last_lcm_b = (dump_tok_end // lcm_block_size) * lcm_block_size
 
             for gid, group in enumerate(groups_by_id):
                 if group.is_full_attention:
-                    # Dump every newly completed block: ``lookup_on_prefix``
-                    # walks the full prefix chain so any gap would truncate
-                    # future hits.
                     start_blk = dump_tok_start // group.block_size
                     end_blk = dump_tok_end // group.block_size
                     if start_blk >= end_blk:
@@ -1210,10 +1039,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                         req_meta.group_vllm_block_ids[gid][start_blk:end_blk],
                     )
                 else:
-                    # Mamba-align state: dump only the state block at each LCM
-                    # boundary reached in this range. Consecutive boundaries'
-                    # tails do not overlap and we can extend the lists without
-                    # dedup.
+                    # Dump mamba state at each LCM boundary in range.
                     if first_lcm_b > last_lcm_b:
                         continue
                     b = first_lcm_b
@@ -1427,11 +1253,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self.need_load = False
         self._layerwise_batch_start: Optional[float] = None
         self._layerwise_prev_wait_end: Optional[float] = None
-        # MTP draft layers can be revisited several times in one speculative
-        # decode batch (1 draft prefill + num_speculative_steps-1 multi-step
-        # decode calls).  Each visit triggers save_kv_layer for the MTP row;
-        # deferring the dump and keeping only the last snapshot avoids
-        # duplicate I/O and ensures the most complete KV cache is persisted.
+        # MTP save_kv_layer is called N times per decode step; defer & keep last.
         self._deferred_mtp_row_dumps: dict[
             int, tuple[list[bytes], list[int], set[str]]
         ] = {}
@@ -1454,12 +1276,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         )
 
     def _is_mtp_layer(self, layer_name: str) -> bool:
-        """Check whether a layer belongs to the MTP draft model.
-
-        Uses the layer name (contains 'mtp') instead of layer_id, because
-        extract_layer_index('mtp.layers.0...') returns 0 (the index within
-        the MTP model), not the global layer index (e.g. 64).
-        """
+        """Check whether a layer belongs to the MTP draft model."""
         return self._is_mtp and "mtp" in layer_name
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
@@ -1618,10 +1435,8 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             self.request_data.append((request_id, ucm_block_ids, vllm_block_ids))
 
         if self.need_load and self.row_ids:
-            # Submit row 0 + prefetch rows, then synchronously wait for
-            # row 0.  vLLM only calls wait_for_layer_load at the
-            # full_attn layer (last layer of each row), so row 0 must
-            # be loaded here before the first linear_attn layer begins.
+            # vLLM only calls wait_for_layer_load at full_attn (last layer of
+            # each row), so row 0 must be loaded here before linear_attn begins.
             num_submit = min(self._load_prefetch_rows + 1, len(self.row_ids))
             for idx in range(num_submit):
                 self._submit_request_load_tasks_for_row_once(idx, metadata)
@@ -1636,10 +1451,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         if row_id is None:
             return
 
-        # wait_for_layer_load is only called at the full_attn layer
-        # (last layer of the current row).  Wait for the NEXT row so
-        # its first layers (linear_attn) have KV cache loaded before
-        # their forward begins.
+        # Wait for NEXT row so its linear_attn layers have KV loaded.
         next_row_id = row_id + 1
         if next_row_id >= len(self.row_ids):
             return
@@ -1650,7 +1462,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         n_tasks = self._wait_row_load(next_row_id, metadata)
         wait_end = time.perf_counter()
 
-        # Prefetch rows ahead of the one we just waited for.
+        # Prefetch rows ahead.
         prefetch_start = next_row_id + 1
         prefetch_end = min(prefetch_start + self._load_prefetch_rows, len(self.row_ids))
         for idx in range(prefetch_start, prefetch_end):
@@ -1703,10 +1515,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self.is_save = True
 
         if self._is_mtp_layer(layer_name):
-            # Defer: MTP layers are revisited N times per speculative decode
-            # step (1 draft prefill + num_speculative_steps-1 multi-step
-            # decode).  Each visit overwrites this entry so only the last
-            # (most complete) snapshot is flushed in wait_for_save.
+            # Defer: last snapshot wins (MTP revisited N times per decode step).
             self._deferred_mtp_row_dumps[row_id] = (
                 list(total_ucm_block_ids),
                 list(total_vllm_block_ids),
