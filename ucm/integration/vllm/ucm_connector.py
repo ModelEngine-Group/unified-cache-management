@@ -537,6 +537,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.direct_submit_by_layer = bool(
             self.launch_config.get("direct_submit_by_layer", False)
         )
+        if self.direct_submit_by_layer and bool(
+            self.launch_config.get("use_layerwise", False)
+        ):
+            raise ValueError(
+                "direct_submit_by_layer cannot be enabled with use_layerwise"
+            )
         self._skip_null_vllm_blocks = False
         assert len(self.connector_configs) > 0, "no storage connector name in config."
 
@@ -943,9 +949,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
         dump_ucm_block_ids, dump_vllm_block_ids = [], []
         if need_load:
             hbm_hit_chunk_num = hbm_hit_block_num // self.blocks_per_chunk
-            total_hit_chunk_num = (
-                total_hit_block_num + self.blocks_per_chunk - 1
-            ) // self.blocks_per_chunk
+            # Only load chunks confirmed by the external lookup. A partial
+            # local-HBM hit does not make the containing UCM chunk available.
+            total_hit_chunk_num = total_hit_block_num // self.blocks_per_chunk
             load_ucm_block_ids = ucm_block_ids[
                 hbm_hit_chunk_num
                 * self.cp_world_size : total_hit_chunk_num
@@ -1066,15 +1072,30 @@ class UCMDirectConnector(KVConnectorBase_V1):
             layer_first=True,
         )
         tasks = []
-        for local_layer_id, layer_id in enumerate(self.layer_ids):
-            tasks.append(
-                self._submit_direct_layer_load_task(
-                    layer_id,
-                    local_layer_id,
-                    ucm_block_ids,
-                    total_ptrs,
+        try:
+            for local_layer_id, layer_id in enumerate(self.layer_ids):
+                tasks.append(
+                    self._submit_direct_layer_load_task(
+                        layer_id,
+                        local_layer_id,
+                        ucm_block_ids,
+                        total_ptrs,
+                    )
                 )
-            )
+        except Exception:
+            # A later layer can fail after earlier asynchronous loads have
+            # already been submitted. Drain those tasks before propagating the
+            # error so they cannot keep writing into the KV buffer during
+            # recomputation or forward execution.
+            for task in tasks:
+                try:
+                    self.store.wait(task)
+                except Exception as wait_error:
+                    logger.error(
+                        "wait for partially submitted layer load failed. "
+                        f"{type(wait_error).__name__}: {wait_error}"
+                    )
+            raise
         return tasks
 
     def _submit_direct_layer_load_task(
