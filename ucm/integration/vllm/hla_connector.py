@@ -704,6 +704,19 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             because Ascend block_size alignment guarantees
             k_size >= ssm_size)
           v_size     == tail_size    (arithmetic identity)
+
+        Base-pointer correction:
+          Unlike hybrid rows where ``min(shared_ptrs)`` happens to be the
+          raw buffer base (mamba layers contribute a ``conv_state`` view at
+          offset 0), attention-only tensors have no mamba layer.  Their
+          smallest shared pointer is the K-cache view's ``data_ptr()``,
+          which vllm-ascend slices *after* the conv-padding region
+          (``raw_k_tensor[conv_block_padding_size:]``).  Using this as
+          ``base`` would shift every computed address by
+          ``conv_padding_size * num_blocks`` bytes, causing the V
+          component of high block ids to read beyond the raw buffer and
+          crash the NPU with error 507001.  We subtract the padding
+          offset so ``base`` lands on the true raw buffer start.
         """
         k_size, v_size = self._attention_component_sizes(attn_specs[0])
         page_size = raw_tensor.size // self.num_blocks
@@ -719,7 +732,11 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             )
             return
 
-        base = min(shared_ptrs)
+        # min(shared_ptrs) is the K-cache view's data_ptr, which vllm-ascend
+        # slices past the conv-padding region.  Subtract the padding span
+        # to recover the raw buffer base so offsets [0, conv*K, (conv+K)*K]
+        # land on the correct [conv_padding, K, V] regions.
+        base = min(shared_ptrs) - conv_padding_size * self.num_blocks
         sizes = [conv_padding_size, k_size, v_size]
         offsets = [
             0,
