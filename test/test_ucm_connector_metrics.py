@@ -361,6 +361,7 @@ from ucm.default_metrics_config import DEFAULT_METRICS_CONFIG
 from ucm.integration.vllm.metrics import UCMConnectorStats, UCMPromMetrics
 from ucm.integration.vllm.ucm_connector import (
     PendingDumpTask,
+    RequestHasher,
     UCMConnector,
     UCMDirectConnector,
 )
@@ -383,6 +384,23 @@ def _metric_types():
         FakeCounter: FakeCounter,
         FakeHistogram: FakeHistogram,
     }
+
+
+def test_other_rank_hashers_match_worker_hashes():
+    connector = object.__new__(UCMDirectConnector)
+    connector.is_mla = False
+    vllm_config = SimpleNamespace(
+        model_config=SimpleNamespace(model="model-a", dtype="bf16"),
+        parallel_config=SimpleNamespace(tensor_parallel_size=3),
+    )
+
+    hashers = connector._make_other_rank_hashers(vllm_config)
+    rank0_block_id = b"rank-0-block-id"
+
+    assert [hasher(rank0_block_id) for hasher in hashers] == [
+        RequestHasher(vllm_config, rank_id)(rank0_block_id)
+        for rank_id in range(1, 3)
+    ]
 
 
 def _strip_yaml_comment(line):
