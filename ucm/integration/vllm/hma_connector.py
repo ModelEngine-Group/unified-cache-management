@@ -305,7 +305,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     """
 
     DEFAULT_HASH_BLOCK_SIZE = 256
-    ASCEND_DEFAULT_HASH_BLOCK_SIZE = 512
+    ASCEND_SUPPORTED_VLLM_BLOCK_SIZES = frozenset({32, 64, 128})
+    ASCEND_C4_COMPRESS_RATIO = 4
 
     def __init__(
         self,
@@ -355,6 +356,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         logger.info(
             f"FAWA KV group config: fa_groups={self.fa_group_ids}, "
             f"window_groups={self.window_group_ids}, "
+            f"hash_block_size={self.hash_block_size}, "
             f"is_ascend_layout={self.is_ascend_layout}, "
             f"group_metas={group_meta_summary}"
         )
@@ -408,12 +410,24 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         npu_support = ASCEND_REQUIRED_SPECS.issubset(spec_names)
         return npu_support
 
+    @classmethod
+    def _get_ascend_hash_block_size(cls, block_size: int) -> int:
+        """Return the canonical token span of one Ascend C4 cache block."""
+
+        if block_size not in cls.ASCEND_SUPPORTED_VLLM_BLOCK_SIZES:
+            supported = sorted(cls.ASCEND_SUPPORTED_VLLM_BLOCK_SIZES)
+            raise ValueError(
+                f"Unsupported DeepSeek V4 Ascend block size {block_size}; "
+                f"expected one of {supported}."
+            )
+        return block_size * cls.ASCEND_C4_COMPRESS_RATIO
+
     def _init_group_metas(self) -> None:
         """Classify FA/WA groups and compute their logical segment sizes."""
 
         if self.can_handle_ascend_kv_cache_config(self._kv_cache_config):
             self.is_ascend_layout = True
-            self.hash_block_size = self.ASCEND_DEFAULT_HASH_BLOCK_SIZE
+            self.hash_block_size = self._get_ascend_hash_block_size(self.block_size)
 
         groups = self._kv_cache_config.kv_cache_groups
         self.fa_group_ids, self.window_group_ids = [], []
@@ -465,7 +479,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         logger.info_once(
             f"max token_block_size of all groups: {self.max_token_block_size}"
         )
-        assert self.max_token_block_size % self.DEFAULT_HASH_BLOCK_SIZE == 0
+        if self.max_token_block_size % self.hash_block_size != 0:
+            raise ValueError(
+                f"Maximum token block size {self.max_token_block_size} must be "
+                f"divisible by hash block size {self.hash_block_size}."
+            )
         # get file size for block gc
         if len(layer_compress_ratios) < 61:
             # for dsv4 flash
@@ -487,9 +505,15 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
         # TODO we should get file size in worker thread
         if self.is_ascend_layout:
-            self.file_size["FA"] = (
-                131072 + 16384 + 256
-            ) * num_c4a_layers + 4096 * num_c128a_layers
+            # One C4 row consumes a complete physical block. One C128 row
+            # consumes block_size / 32 physical tokens, so both contributions
+            # scale linearly with the configured vLLM block size.
+            c4a_bytes_per_block_token = 1024 + 128 + 2
+            c128a_bytes_per_block_token = 32
+            self.file_size["FA"] = self.block_size * (
+                c4a_bytes_per_block_token * num_c4a_layers
+                + c128a_bytes_per_block_token * num_c128a_layers
+            )
             self.file_size["WA"] = (
                 131072 * num_total_layers + (32768 + 8192) * num_c4a_layers
             )
