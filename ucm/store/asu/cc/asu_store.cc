@@ -467,6 +467,13 @@ public:
         return ConvertStatus(result.status);
     }
 
+    bool NeedRegisterKVCaches() const override { return true; }
+
+    Status RegisterKVCaches(const KVCacheRegistration*, std::size_t) override
+    {
+        return Status::OK();
+    }
+
 private:
     using SubmitFunc = AsuStatus (AsuBackend::*)(const std::vector<UC::ASU::KVBuffer>&,
                                                  UC::ASU::TaskId&);

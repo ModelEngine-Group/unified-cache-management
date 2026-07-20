@@ -24,11 +24,20 @@
 #ifndef UNIFIEDCACHE_STORE_V1_H
 #define UNIFIEDCACHE_STORE_V1_H
 
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
 #include "status/status.h"
 #include "type/dictionary.h"
 #include "type/types.h"
 
 namespace UC {
+
+struct KVCacheRegistration {
+    std::uintptr_t addr{0};
+    std::size_t size{0};
+};
 
 /**
  * @brief Abstract interface for a key-value store that supports
@@ -146,6 +155,11 @@ public:
      *         describing the failure.
      */
     virtual Status Wait(Detail::TaskHandle taskId) = 0;
+
+    virtual bool NeedRegisterKVCaches() const = 0;
+
+    virtual Status RegisterKVCaches(const KVCacheRegistration* registrations,
+                                    std::size_t count) = 0;
 
 protected:
     /**

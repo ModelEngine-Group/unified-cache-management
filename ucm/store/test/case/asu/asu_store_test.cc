@@ -704,3 +704,14 @@ TEST(UCAsuStoreTest, UsesNonLayerwiseGqaKeyValueOffsets)
         EXPECT_EQ(state->lastStoreEntries[index].offset, expectedOffsets[index]);
     }
 }
+
+TEST(UCAsuStoreTest, KvCacheRegistrationIsCurrentlyNoOp)
+{
+    UC::AsuStore::AsuStore store;
+    const UC::KVCacheRegistration registrations[]{
+        {0x1000, 1024}
+    };
+
+    EXPECT_TRUE(store.NeedRegisterKVCaches());
+    EXPECT_TRUE(store.RegisterKVCaches(registrations, std::size(registrations)).Success());
+}
