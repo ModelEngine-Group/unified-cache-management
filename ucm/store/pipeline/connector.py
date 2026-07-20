@@ -92,9 +92,7 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
         builder = UcmPipelineStoreBuilder.get(config["store_pipeline"])
         if builder is None:
             raise ValueError(f"unknown store pipeline: {config['store_pipeline']}")
-        store_config = copy.deepcopy(config)
-        store_config.pop("store_health", None)
-        builder(store_config, self.store_)
+        builder(config, self.store_)
 
     def cc_store(self) -> int:
         return self.store_.Self()
