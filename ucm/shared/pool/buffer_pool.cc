@@ -69,12 +69,14 @@ Status BufferPool::BufferRegion::Create(MemoryType type, std::size_t size,
     const auto allocationSize = size + alignment - 1;
     auto setRegion = [&region, alignment](std::shared_ptr<void> owner, void* localAddr,
                                          void* deviceAddr) -> Status {
+        // Align up local addr
         void* alignedLocalAddr = nullptr;
         std::size_t offset = 0;
         if (!owner || !AlignAddress(localAddr, alignment, alignedLocalAddr, offset)) {
             return Status::Error("failed to align buffer region");
         }
 
+        // Align up device addr
         void* alignedDeviceAddr = nullptr;
         std::size_t deviceOffset = 0;
         if (!AlignAddress(deviceAddr, alignment, alignedDeviceAddr, deviceOffset) ||
