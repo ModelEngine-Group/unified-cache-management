@@ -27,6 +27,7 @@ from ucm.integration.vllm.hma_connector import (
 )
 from ucm.integration.vllm.rank_consistency import RankConsistencyManager
 from ucm.integration.vllm.ucm_connector import (
+    RequestMeta,
     UCMConnector,
     UCMConnectorMetadata,
     UCMDirectConnector,
@@ -402,6 +403,43 @@ class HybridRankConsistencyTest(unittest.TestCase):
 
         self.assertEqual(req_meta.total_hit_block_num, 2)
         self.assertEqual(req_meta.token_processed, 128)
+
+    def test_missing_load_regenerates_dump_blocks_on_next_step(self):
+        ucm_block_ids = [bytes([index]) * 16 for index in range(1, 5)]
+        vllm_block_ids = [11, 12, 13, 14]
+        req_meta = RequestMeta(
+            ucm_block_ids=ucm_block_ids,
+            hbm_hit_block_num=1,
+            total_hit_block_num=3,
+            num_token_ids=64,
+            vllm_block_ids=vllm_block_ids,
+            token_processed=64,
+        )
+        connector = object.__new__(UCMDirectConnector)
+        connector.block_size = 16
+        connector.cp_world_size = 1
+        attach_rank_consistency(connector, scheduler_side=True)
+        connector.requests_meta = {"req": req_meta}
+        output = SimpleNamespace(
+            kv_connector_worker_meta=UCMWorkerMetadata(
+                load_failed_reqs={"req"},
+                missing_reqs={"req"},
+            )
+        )
+
+        connector.update_connector_output(output)
+        dispatch_meta = connector._generate_dispatch_meta(
+            req_meta,
+            new_tokens=48,
+            vllm_block_ids=[],
+            need_load=False,
+        )
+
+        self.assertEqual(dispatch_meta.load_block_ids, ([], []))
+        self.assertEqual(
+            dispatch_meta.dump_block_ids,
+            (ucm_block_ids[1:], vllm_block_ids[1:]),
+        )
 
     def test_direct_first_inconsistent_key_still_tracks_request_for_dump(self):
         missing = b"m" * 16
