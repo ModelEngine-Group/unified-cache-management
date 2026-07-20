@@ -43,11 +43,11 @@ class UnifiedCacheStore(HiCacheStorage):
 
     def register_mem_pool_host(self, mem_pool_host: HostKVCache):
         super().register_mem_pool_host(mem_pool_host)
-        if mem_pool_host.layout != "page_first":
-            raise ValueError(
-                "UnifiedCacheStore currently requires --hicache-mem-layout page_first, "
-                f"got {mem_pool_host.layout!r}."
-            )
+        # if mem_pool_host.layout != "page_first":
+        #     raise ValueError(
+        #         "UnifiedCacheStore currently requires --hicache-mem-layout page_first, "
+        #         f"got {mem_pool_host.layout!r}."
+        #     )
 
         self.mem_pool_host = mem_pool_host
         if self.connector is None:

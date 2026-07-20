@@ -63,6 +63,7 @@ private:
     bool useGdr_{false};
     bool cacheSdmaDirect_{false};
     std::string sdmaDirectLaunchGranularity_{kSdmaDirectLaunchShard};
+    bool useHostBuffer_{false};
     std::vector<ssize_t> cpuAffinityCores_{};
     SpscRingQueue<TaskPair> waiting_;
     SpscRingQueue<ShardTask> running_;
@@ -87,6 +88,8 @@ private:
     void RecordH2dSyncMetrics(double h2dSyncMs) const;
     void ClearSdmaDirectHolders() noexcept;
     bool UseSdmaDirectTaskLaunch() const noexcept;
+    Status HostToHostScatter(void* hostSrc, void** hostDst);
+    Status ValidateHostAddrs(const Detail::Shard& shard) const;
 };
 
 }  // namespace UC::CacheStore
