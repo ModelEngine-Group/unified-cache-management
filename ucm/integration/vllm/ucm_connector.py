@@ -365,11 +365,17 @@ class PendingDumpTask:
 class RequestHasher:
     """hash(md5) request to generate ucm block id"""
 
-    def __init__(self, vllm_config, rank_id, namespace: str = ""):
+    def __init__(self, vllm_config, rank_id):
+        speculative_config = getattr(vllm_config, "speculative_config", None)
+        spec_info = ""
+        if speculative_config is not None:
+            spec_method = getattr(speculative_config, "method", "") or ""
+            spec_tokens = getattr(speculative_config, "num_speculative_tokens", 0)
+            spec_info = f":{spec_method}:{spec_tokens}"
         meta = (
             f"{vllm_config.model_config.model}:"
             f"{vllm_config.parallel_config.tensor_parallel_size}:"
-            f"{vllm_config.model_config.dtype}:{rank_id}:{namespace}"
+            f"{vllm_config.model_config.dtype}:{rank_id}{spec_info}"
         )
         self.meta_bytes = meta.encode("utf-8")
 
@@ -490,7 +496,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.request_hasher = RequestHasher(
                 vllm_config,
                 self.tp_rank % self.tp_size,
-                self._request_hash_namespace(),
             )
             self._connector_worker_meta = UCMWorkerMetadata()
 
@@ -530,9 +535,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 "connector_load_invalid_blocks_total": float(len(new_invalid_blocks)),
             }
         )
-
-    def _request_hash_namespace(self) -> str:
-        return str(self.launch_config.get("request_hash_namespace", ""))
 
     def generate_hash(
         self, block_size: int, token_ids: List[int], parent_block_hash_value: bytes
