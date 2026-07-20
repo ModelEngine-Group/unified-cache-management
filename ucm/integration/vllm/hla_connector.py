@@ -829,10 +829,29 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         primary_full_attn = self.group_manager.full_attn_groups[0]
         primary_block_ids = group_ucm_block_ids[primary_full_attn.group_id]
 
+        # Pre-lookup reduction: leave at least recompute_tokens for vLLM to
+        # recompute, so the batch isn't dispatched as uniform decode into FULL
+        # cudagraph. For hybrid this also avoids looking up the last block(s)
+        # whose mamba state may not be valid in HBM at dump time.
+        recompute_tokens = self._get_full_hit_recompute_tokens()
+        max_hit_lcm_blocks = max(
+            0, (request.num_tokens - recompute_tokens) // lcm_block_size
+        )
+        total_lcm_blocks = request.num_tokens // lcm_block_size
+
+        if max_hit_lcm_blocks < total_lcm_blocks:
+            lookup_block_ids = []
+            for gid, group in enumerate(self.group_manager.groups_by_id):
+                ids = group_ucm_block_ids[gid]
+                group_max = max_hit_lcm_blocks * (lcm_block_size // group.block_size)
+                lookup_block_ids.append(ids[:group_max])
+        else:
+            lookup_block_ids = group_ucm_block_ids
+
         external_hit_tokens, external_hit_lcm_blocks, mamba_prefetch_hashes = (
             self.group_manager.lookup_external_hit_tokens(
                 num_computed_tokens,
-                group_ucm_block_ids,
+                lookup_block_ids,
                 lambda block_ids: self._rank_consistency.lookup_on_prefix(
                     self.store, block_ids
                 ),
@@ -870,13 +889,6 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             self.store.prefetch(mamba_prefetch_hashes)
         self._prefetch_other_rank_hashes(all_hit_full_attn + mamba_prefetch_hashes)
 
-        logger.info_once(
-            f"request_id: {request.request_id}, "
-            f"total_lcm_blocks: {request.num_tokens // lcm_block_size}, "
-            f"hit hbm: {hbm_hit_block_num}, "
-            f"hit external: {external_hit_lcm_blocks}, "
-            f"total_tokens: {len(request.all_token_ids)}"
-        )
         if len(primary_block_ids) > 0:
             ucmmetrics.update_stats(
                 {
@@ -886,10 +898,18 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 },
             )
 
-        # Recompute last token when fully cached (vLLM needs logits).
+        # No post-lookup workaround: pre-lookup truncation already ensures
+        # total_hit_tokens == external_hit_tokens, and the mamba state at
+        # total_hit_tokens is a position the store actually verified.
         num_total_hit_tokens = total_hit_block_num * lcm_block_size
-        if num_total_hit_tokens == request.num_tokens and external_hit_tokens > 0:
-            external_hit_tokens -= 1
+
+        logger.info_once(
+            f"request_id: {request.request_id}, "
+            f"total_lcm_blocks: {request.num_tokens // lcm_block_size}, "
+            f"hit hbm: {hbm_hit_block_num}, "
+            f"hit external: {total_hit_block_num - hbm_hit_block_num}, "
+            f"total_tokens: {len(request.all_token_ids)}"
+        )
 
         self.requests_meta[request.request_id] = HLARequestMeta(
             ucm_block_ids=primary_block_ids,
@@ -1052,19 +1072,20 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                         req_meta.group_vllm_block_ids[gid][start_blk:end_blk],
                     )
                 else:
-                    # Dump mamba state at each LCM boundary in range.
-                    if first_lcm_b > last_lcm_b:
+                    # Only dump when the chunk ends exactly at an LCM
+                    # boundary, so the state at last_lcm_b is the running
+                    # state. If dump_tok_end is not aligned, the HBM slot
+                    # at last_lcm_b may have been overwritten by the mamba
+                    # kernel's running state update for the partial block.
+                    if dump_tok_end != last_lcm_b or last_lcm_b < first_lcm_b:
                         continue
-                    b = first_lcm_b
-                    while b <= last_lcm_b:
-                        append_mamba_align_state_block(
-                            dump_ucm_block_ids,
-                            dump_vllm_block_ids,
-                            gid,
-                            b,
-                            "dump",
-                        )
-                        b += lcm_block_size
+                    append_mamba_align_state_block(
+                        dump_ucm_block_ids,
+                        dump_vllm_block_ids,
+                        gid,
+                        last_lcm_b,
+                        "dump",
+                    )
             req_meta.token_processed += new_tokens
 
         return RequestDispatchMeta(

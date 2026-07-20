@@ -844,7 +844,26 @@ class UCMDirectConnector(KVConnectorBase_V1):
         return self.block_size
 
     def _get_full_hit_recompute_tokens(self) -> int:
-        return 1
+        cached = getattr(self, "_recompute_tokens", None)
+        if cached is not None:
+            return cached
+        if not self.use_layerwise:
+            cached = 1
+        else:
+            speculative_config = getattr(self._vllm_config, "speculative_config", None)
+            if speculative_config is None:
+                cached = 2
+            else:
+                spec_token_num = getattr(
+                    speculative_config, "num_speculative_tokens", 0
+                )
+                try:
+                    spec_token_num = int(spec_token_num)
+                except (TypeError, ValueError):
+                    spec_token_num = 0
+                cached = max(spec_token_num, 0) + 2
+        self._recompute_tokens = cached
+        return cached
 
     @staticmethod
     def _record_counter(name: str, value: float = 1.0) -> None:
@@ -1124,14 +1143,15 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         external_hit_tokens = external_hit_blocks * self.block_size
 
-        # When all the tokens are cached in ssd or hbm, recompute enough tokens
-        # to keep layerwise loads on the prefill path when speculative decode is
-        # enabled. This branch will be removed once vLLM scheduler provides a
-        # better solution in the future.
+        # Ensure vLLM recomputes enough tokens to avoid FULL cudagraph
+        # (which skips layerwise hooks). To be removed when vLLM scheduler
+        # handles this natively.
         num_total_hit_tokens = total_hit_block_num * self.block_size
-        if num_total_hit_tokens == request.num_tokens:
-            recompute_tokens = self._get_full_hit_recompute_tokens()
-            if external_hit_tokens < recompute_tokens:
+        recompute_tokens = self._get_full_hit_recompute_tokens()
+        actual_recompute_tokens = request.num_tokens - num_total_hit_tokens
+        if actual_recompute_tokens < recompute_tokens:
+            deficit = recompute_tokens - actual_recompute_tokens
+            if external_hit_tokens < deficit:
                 logger.error(
                     f"Full UCM cache hit fallback would make external hit tokens negative: "
                     f"request_id: {request.request_id}, "
@@ -1140,14 +1160,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     f"num_total_hit_tokens: {num_total_hit_tokens}, "
                     f"request_tokens: {request.num_tokens}"
                 )
-            external_hit_tokens = max(0, external_hit_tokens - recompute_tokens)
+            external_hit_tokens = max(0, external_hit_tokens - deficit)
 
         self.requests_meta[request.request_id] = RequestMeta(
             ucm_block_ids=ucm_block_ids,
             hbm_hit_block_num=hbm_hit_block_num,
             total_hit_block_num=total_hit_block_num,
             num_token_ids=len(request.all_token_ids),
-            token_processed=num_total_hit_tokens,
+            token_processed=hbm_hit_block_num * self.block_size + external_hit_tokens,
         )
 
         return external_hit_tokens, False
@@ -1729,26 +1749,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self._mtp_layer_end: Optional[int] = None
         self._init_mtp_layerwise_dump_state()
         logger.info("Init UCMLayerWiseConnector.")
-
-    def _get_full_hit_recompute_tokens(self) -> int:
-        if not self.use_layerwise:
-            return super()._get_full_hit_recompute_tokens()
-
-        speculative_config = getattr(self._vllm_config, "speculative_config", None)
-        if speculative_config is None:
-            return 2
-
-        spec_token_num = getattr(speculative_config, "num_speculative_tokens", 0)
-        try:
-            spec_token_num = int(spec_token_num)
-        except (TypeError, ValueError):
-            logger.warning(
-                f"Invalid speculative token count: {spec_token_num}. "
-                "Fallback to recomputing two tokens on full layerwise UCM cache hit."
-            )
-            spec_token_num = 0
-
-        return max(spec_token_num, 0) + 2
 
     def _layerwise_batch_stats(
         self, total_end: float, save_tail_ms: Optional[float] = None
