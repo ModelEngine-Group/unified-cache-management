@@ -73,36 +73,6 @@ Status DecodePeerAdvertisement(const Metadata& in, PeerAdvertisement& advertisem
     return offset == in.size() ? Status::Ok : Status::InvalidArgument;
 }
 
-bool SameMemoryRegion(const MemoryRegion& left, const MemoryRegion& right)
-{
-    return left.addr == right.addr && left.length == right.length && left.type == right.type &&
-           left.device_id == right.device_id;
-}
-
-bool MemoryRange(const MemoryRegion& memory, uint64_t* begin, uint64_t* end)
-{
-    const auto range_begin = detail::PtrToU64(memory.addr);
-    if (memory.length > std::numeric_limits<uint64_t>::max() - range_begin) { return false; }
-    if (begin != nullptr) { *begin = range_begin; }
-    if (end != nullptr) { *end = range_begin + memory.length; }
-    return true;
-}
-
-bool MemoryRegionOverlaps(const MemoryRegion& left, const MemoryRegion& right)
-{
-    if (left.type != right.type || left.device_id != right.device_id) { return false; }
-
-    uint64_t left_begin = 0;
-    uint64_t left_end = 0;
-    uint64_t right_begin = 0;
-    uint64_t right_end = 0;
-    if (!MemoryRange(left, &left_begin, &left_end) ||
-        !MemoryRange(right, &right_begin, &right_end)) {
-        return true;
-    }
-    return left_begin < right_end && right_begin < left_end;
-}
-
 bool TransportForDirect(OperationDirect direct, TransportProtocol& protocol)
 {
     if (direct != OperationDirect::RemoteDeviceHost) { return false; }
@@ -167,7 +137,6 @@ Status TransportManager::Shutdown()
         if (status != Status::Ok && result == Status::Ok) { result = status; }
     }
     memories_.clear();
-    next_memory_handle_ = 1;
     transfers_.clear();
     next_transfer_handle_ = 1;
     protocol_map_.clear();
@@ -251,19 +220,14 @@ Status TransportManager::RegisterMemory(const MemoryRegion& memory, MemoryHandle
 {
     handle = kInvalidMemoryHandle;
     if (memory.addr == nullptr || memory.length == 0) { return Status::InvalidArgument; }
-    if (!MemoryRange(memory, nullptr, nullptr)) { return Status::InvalidArgument; }
+    const auto address = detail::PtrToU64(memory.addr);
+    if (memory.length > std::numeric_limits<uint64_t>::max() - address) {
+        return Status::InvalidArgument;
+    }
     if (transports_.empty()) { return Status::Failed; }
 
-    for (const auto& item : memories_) {
-        if (SameMemoryRegion(item.second.region, memory)) {
-            handle = item.first;
-            return Status::Ok;
-        }
-        if (MemoryRegionOverlaps(item.second.region, memory)) { return Status::InvalidArgument; }
-    }
-
-    MemoryRecord record;
-    record.region = memory;
+    auto record = std::make_unique<MemoryRecord>();
+    record->region = memory;
     for (const auto& item : transports_) {
         MemoryHandle transport_handle = kInvalidMemoryHandle;
         auto status = item.transport->RegisterMemory(memory, transport_handle);
@@ -278,9 +242,9 @@ Status TransportManager::RegisterMemory(const MemoryRegion& memory, MemoryHandle
                 detail::PtrToU64(memory.addr), memory.length);
             continue;
         }
-        record.transport_handles.emplace(item.protocol, transport_handle);
+        record->transport_handles.emplace(item.protocol, transport_handle);
     }
-    if (record.transport_handles.empty()) {
+    if (record->transport_handles.empty()) {
         UC_ERROR(
             "transport manager register memory failed: no transport accepted addr=0x{:x} "
             "length={}",
@@ -288,8 +252,7 @@ Status TransportManager::RegisterMemory(const MemoryRegion& memory, MemoryHandle
         return Status::Failed;
     }
 
-    handle = next_memory_handle_++;
-    if (handle == kInvalidMemoryHandle) { handle = next_memory_handle_++; }
+    handle = reinterpret_cast<MemoryHandle>(record.get());
     memories_.emplace(handle, std::move(record));
     return Status::Ok;
 }
@@ -301,7 +264,7 @@ Status TransportManager::UnregisterMemory(MemoryHandle handle)
     const auto it = memories_.find(handle);
     if (it == memories_.end()) { return Status::Failed; }
 
-    for (const auto& item : it->second.transport_handles) {
+    for (const auto& item : it->second->transport_handles) {
         const auto transport_it = protocol_map_.find(item.first);
         if (transport_it == protocol_map_.end()) {
             UC_ERROR("transport manager unregister memory failed protocol={} handle={}",

@@ -1,19 +1,24 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
-#include <map>
+#include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
-#include "acl/acl.h"
+#include <vector>
 #include "core/transport.h"
 #include "core/transport_init_attrs.h"
-#include "hixl/hixl.h"
+#include "hixl/hixl_types.h"
 
 namespace transport {
 
-struct HixlTransportMetadata {
-    std::string local_engine;
+class HixlInstance;
+
+struct HixlInstanceInfo {
+    Endpoint endpoint;
+    int32_t device_id = -1;
 };
 
 class HixlTransport final : public Transport {
@@ -25,8 +30,8 @@ public:
     HixlTransport& operator=(const HixlTransport&) = delete;
 
     TransportProtocol Protocol() const override;
-    Status Init(const InitAttrs& options) override;
-    Status Init(const HixlInitAttrs& options);
+    Status Init(const InitAttrs& attrs) override;
+    Status Init(const HixlInitAttrs& attrs);
     Status Shutdown() override;
     Status RegisterMemory(const MemoryRegion& memory, MemoryHandle& handle) override;
     Status UnregisterMemory(MemoryHandle handle) override;
@@ -40,31 +45,36 @@ public:
 
 private:
     struct Peer {
-        std::string remote_engine;
-        Metadata metadata;
+        std::vector<HixlInstanceInfo> instances;
+        size_t local_index = SIZE_MAX;
         bool connected = false;
     };
 
     struct LocalMemoryRecord {
         MemoryRegion region;
-        hixl::MemHandle native_handle = nullptr;
+        std::unordered_map<size_t, hixl::MemHandle> native_handles;
     };
 
-    bool ValidateMemory(uint64_t address, uint64_t length) const;
-    Status BuildTransfer(const Operation& batch, std::vector<hixl::TransferOpDesc>& descs);
+    struct PendingTransfer {
+        size_t instance_index = SIZE_MAX;
+        hixl::TransferReq request = nullptr;
+    };
 
-    std::string local_engine_;
-    std::map<std::string, std::string> options_;
-    aclrtContext context_ = nullptr;
-    int device_id_ = -1;
+    Status ValidateTransferLocked(const Operation& batch, size_t instance_index) const;
+    Status BuildRouteLocked(const ManagerID& manager_id, Peer& peer);
+    Status DisconnectRoute(const Peer& peer, bool ignore_failure);
+
     int32_t connect_timeout_ms_ = 1000;
     int32_t transfer_timeout_ms_ = 1000;
+    std::vector<std::unique_ptr<HixlInstance>> instances_;
     std::unordered_map<ManagerID, Peer> peers_;
-    hixl::Hixl hixl_;
-    std::unordered_map<uint64_t, LocalMemoryRecord> memories_;
-    std::unordered_map<TransferHandle, hixl::TransferReq> pending_transfers_;
+    std::unordered_map<MemoryHandle, std::unique_ptr<LocalMemoryRecord>> memories_;
+    std::unordered_map<TransferHandle, PendingTransfer> pending_transfers_;
     TransferHandle next_transfer_handle_ = 1;
-    mutable std::recursive_mutex mutex_;
+    mutable std::shared_mutex lifecycle_mutex_;
+    mutable std::shared_mutex peers_mutex_;
+    mutable std::shared_mutex memories_mutex_;
+    mutable std::mutex pending_mutex_;
 };
 
 }  // namespace transport

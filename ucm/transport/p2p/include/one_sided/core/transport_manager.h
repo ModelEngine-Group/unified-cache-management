@@ -66,8 +66,7 @@ private:
     mutable std::recursive_mutex peer_mutex_;
     std::unordered_map<TransportProtocol, Transport*> protocol_map_;
     std::vector<InstalledTransport> transports_;
-    std::unordered_map<MemoryHandle, MemoryRecord> memories_;
-    MemoryHandle next_memory_handle_ = 1;
+    std::unordered_map<MemoryHandle, std::unique_ptr<MemoryRecord>> memories_;
     std::unordered_map<TransferHandle, TransferRecord> transfers_;
     TransferHandle next_transfer_handle_ = 1;
 };
