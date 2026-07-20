@@ -55,6 +55,8 @@ public:
     BufferPool(const BufferPool&) = delete;
     BufferPool& operator=(const BufferPool&) = delete;
 
+    // slot_alignment applies to the slot stride and offsets from the pool base, not to base
+    // addresses.
     Status Init(std::string name, MemoryType type, std::size_t slot_capacity, std::size_t slot_num,
                 bool enable_zero = false, std::size_t slot_alignment = kDefaultSlotAlignment);
     Status Allocate(Slot& slot);
@@ -73,8 +75,7 @@ public:
 
 private:
     struct BufferRegion {
-        static Status Create(MemoryType type, std::size_t size, std::size_t alignment,
-                             BufferRegion& region);
+        static Status Create(MemoryType type, std::size_t size, BufferRegion& region);
 
         explicit operator bool() const { return owner != nullptr; }
         void Reset();
