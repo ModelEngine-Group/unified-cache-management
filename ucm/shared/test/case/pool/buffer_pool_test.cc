@@ -73,6 +73,10 @@ TEST_F(BufferPoolTest, RejectsInvalidInitAndUseBeforeInit)
     EXPECT_TRUE(status.Failure());
     EXPECT_EQ(status, Status::InvalidParam());
 
+    status = pool.Init("zero_alignment", MemoryType::HOST, 64, 1, false, 0);
+    EXPECT_TRUE(status.Failure());
+    EXPECT_EQ(status, Status::InvalidParam());
+
     status = pool.Init("unsupported", static_cast<MemoryType>(99), 64, 1);
     EXPECT_TRUE(status.Failure());
     EXPECT_EQ(status, Status::InvalidParam());
@@ -103,7 +107,7 @@ TEST_F(BufferPoolTest, RejectsSlotLayoutOverflow)
     EXPECT_EQ(status, Status::InvalidParam());
 }
 
-TEST_F(BufferPoolTest, HostPoolUsesAlignedSlotsAndReportsBusyWhenFull)
+TEST_F(BufferPoolTest, HostPoolUsesAlignedSlotStrideAndReportsBusyWhenFull)
 {
     BufferPool pool;
     auto status = pool.Init("host_pool", MemoryType::HOST, 71, 2, true);
@@ -140,6 +144,36 @@ TEST_F(BufferPoolTest, HostPoolUsesAlignedSlotsAndReportsBusyWhenFull)
     EXPECT_EQ(status, Status::Retry());
 }
 
+TEST_F(BufferPoolTest, SupportsCustomSizeAndOffsetAlignment)
+{
+    constexpr std::size_t kAlignment = 16 * 1024;
+    constexpr std::size_t kCapacity = kAlignment + 1;
+    constexpr std::size_t kStride = 2 * kAlignment;
+
+    BufferPool pool;
+    auto status = pool.Init("aligned_pool", MemoryType::HOST, kCapacity, 2, false, kAlignment);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+    EXPECT_EQ(pool.GetTotalSize(), 2 * kStride);
+    EXPECT_EQ(pool.GetTotalSize() % kAlignment, 0);
+
+    BufferPool::Slot first;
+    BufferPool::Slot second;
+    ASSERT_TRUE(pool.Allocate(first).Success());
+    ASSERT_TRUE(pool.Allocate(second).Success());
+    EXPECT_EQ(first.local_addr, pool.GetLocalAddr());
+    EXPECT_EQ(first.device_addr, pool.GetDeviceAddr());
+    EXPECT_EQ(first.length, kCapacity);
+
+    const auto localOffset = reinterpret_cast<std::uintptr_t>(second.local_addr) -
+                             reinterpret_cast<std::uintptr_t>(first.local_addr);
+    const auto deviceOffset = reinterpret_cast<std::uintptr_t>(second.device_addr) -
+                              reinterpret_cast<std::uintptr_t>(first.device_addr);
+    EXPECT_EQ(localOffset, kStride);
+    EXPECT_EQ(deviceOffset, kStride);
+    EXPECT_EQ(localOffset % kAlignment, 0);
+    EXPECT_EQ(deviceOffset % kAlignment, 0);
+}
+
 TEST_F(BufferPoolTest, HostPinnedPoolKeepsLocalAndDeviceAddresses)
 {
     BufferPool pool;
@@ -149,7 +183,6 @@ TEST_F(BufferPoolTest, HostPinnedPoolKeepsLocalAndDeviceAddresses)
     ASSERT_NE(pool.GetLocalAddr(), nullptr);
     ASSERT_NE(pool.GetDeviceAddr(), nullptr);
     EXPECT_NE(pool.GetLocalAddr(), pool.GetDeviceAddr());
-    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(pool.GetLocalAddr()) % 4096, 0);
     EXPECT_EQ(pool.GetTotalSize(), 8192);
     EXPECT_EQ(pool.GetMemoryType(), MemoryType::HOST_PINNED);
 

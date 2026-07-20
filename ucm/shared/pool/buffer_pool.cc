@@ -29,18 +29,13 @@
 #include "trans/ascend/ascend_buffer.h"
 
 namespace UC {
-namespace {
 
-constexpr std::size_t kSlotAddressAlignment = 64;
-
-}  // namespace
-
-bool BufferPool::ComputeSlotStride(std::size_t capacity, std::size_t& stride)
+bool BufferPool::ComputeSlotStride(std::size_t capacity, std::size_t alignment, std::size_t& stride)
 {
     constexpr auto kMaxSize = std::numeric_limits<std::size_t>::max();
-    if (capacity == 0 || capacity > kMaxSize - (kSlotAddressAlignment - 1)) { return false; }
+    if (capacity == 0 || alignment == 0 || capacity > kMaxSize - (alignment - 1)) { return false; }
 
-    stride = (capacity + kSlotAddressAlignment - 1) / kSlotAddressAlignment * kSlotAddressAlignment;
+    stride = (capacity + alignment - 1) / alignment * alignment;
     return true;
 }
 
@@ -87,15 +82,16 @@ void BufferPool::BufferRegion::Reset()
 }
 
 Status BufferPool::Init(std::string name, MemoryType type, std::size_t slot_capacity,
-                        std::size_t slot_num, bool enable_zero)
+                        std::size_t slot_num, bool enable_zero, std::size_t slot_alignment)
 {
     if (region_) { return Status::InvalidParam(name + " already initialized"); }
-    if (slot_capacity == 0 || slot_num == 0) {
-        return Status::InvalidParam(name + ": slot_capacity and slot_num must be non-zero");
+    if (slot_capacity == 0 || slot_num == 0 || slot_alignment == 0) {
+        return Status::InvalidParam(
+            name + ": slot_capacity, slot_num and slot_alignment must be non-zero");
     }
 
     std::size_t slotStride = 0;
-    if (!ComputeSlotStride(slot_capacity, slotStride) ||
+    if (!ComputeSlotStride(slot_capacity, slot_alignment, slotStride) ||
         slot_num > std::numeric_limits<std::size_t>::max() / slotStride ||
         slot_num >= std::numeric_limits<IndexPool::Index>::max()) {
         return Status::InvalidParam(name + ": slot layout size overflow");
