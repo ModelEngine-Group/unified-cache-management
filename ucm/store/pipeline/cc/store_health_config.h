@@ -29,7 +29,7 @@
 namespace UC::PipelineStore {
 
 struct StoreHealthConfig : BreakerConfig {
-    bool enabled{false};
+    bool enabled{true};
 
     Status Validate() const
     {

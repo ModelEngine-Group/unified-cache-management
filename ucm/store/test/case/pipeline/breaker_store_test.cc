@@ -255,6 +255,7 @@ TEST(UCBreakerStoreTest, HealthyOperationsPassThroughWithoutChangingWindow)
 TEST(UCBreakerStoreTest, ValidatesStoreHealthConfig)
 {
     PipelineStore::StoreHealthConfig config;
+    EXPECT_TRUE(config.enabled);
     EXPECT_TRUE(config.Validate().Success());
 
     config.failureThreshold = config.healthWindowSize + 1;
