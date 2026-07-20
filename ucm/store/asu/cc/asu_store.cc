@@ -188,6 +188,7 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
     // Set for all backends including fake
     const auto kvNsIndex = config.uniqueId.find("_fawa_wa") == std::string::npos ? 0 : 1;
     transportConfig.attrs["kv_ns_id"] = std::to_string(config.kvNsIds[kvNsIndex]);
+    if (!config.asuLocalIp.empty()) { transportConfig.attrs["localIp"] = config.asuLocalIp; }
 
     if (!config.asuIps.empty()) {
         UC::ASU::AsuEndpoint endpoint;
@@ -489,6 +490,7 @@ private:
         inConfig.Get("asu_view_service_addrs", config.viewServiceAddrs);
         inConfig.GetNumbers("asu_ids", config.asuIds);
         inConfig.Get("asu_ips", config.asuIps);
+        inConfig.Get("asu_local_ip", config.asuLocalIp);
         inConfig.Get("asu_name_prefix", config.asuNamePrefix);
         inConfig.GetNumbers("kv_ns_ids", config.kvNsIds);
         ssize_t asuPort = 0;
@@ -615,10 +617,6 @@ private:
         const auto shardsPerBlock = config.blockSize / config.shardSize;
         if (shardsPerBlock > 1 && config.tensorLayout == "gqa" && config.tensorSizes.size() != 2) {
             return Status::InvalidParam("invalid layerwise gqa tensor size count({})",
-                                        config.tensorSizes.size());
-        }
-        if (shardsPerBlock > 1 && config.tensorLayout == "mla" && config.tensorSizes.size() != 1) {
-            return Status::InvalidParam("invalid layerwise mla tensor size count({})",
                                         config.tensorSizes.size());
         }
         return Status::OK();

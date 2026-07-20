@@ -67,10 +67,10 @@ public:
     {
         return {};
     }
-    Status RegisterMemory(ConnectionHandle, const std::vector<RegisterMemoryDesc>&,
-                          std::vector<MemHandle>& handles) override
+    Status RegisterMemory(const std::vector<RegisterMemoryDesc>&,
+                          std::vector<MRHandle>& handles) override
     {
-        handles.push_back(reinterpret_cast<MemHandle>(static_cast<uintptr_t>(1)));
+        handles.push_back(reinterpret_cast<MRHandle>(static_cast<uintptr_t>(1)));
         return Status::OK();
     }
     std::vector<Status> UnregisterMemory(const std::vector<UnregisterMemoryDesc>&) override
@@ -82,7 +82,7 @@ public:
         return Status::OK();
     }
     std::vector<Status> FreeThread(const std::vector<ThreadHandle>&) override { return {}; }
-    Status GetMemTokenId(MemHandle, uint32_t& tokenId) override
+    Status GetMemTokenId(MRHandle, uint32_t& tokenId) override
     {
         tokenId = 1;
         return Status::OK();
@@ -305,7 +305,7 @@ TEST_F(SqeRequestTest, SubmitBatchRetrieveUsesRetrieveOpcodeAndRequest)
     EXPECT_EQ(PackedBatchEntryMrKey(sqe, 1), std::uint32_t{0x76540001});
 }
 
-TEST_F(SqeRequestTest, SubmitBatchStoreRejectsUnregisteredEntryBuffer)
+TEST_F(SqeRequestTest, SubmitBatchStoreUsesDefaultMrKeyForUnregisteredEntryBuffer)
 {
     auto entries = MakeEntries(1);
     IoScheduler::ScheduledIoBatch subBatch{
@@ -316,10 +316,11 @@ TEST_F(SqeRequestTest, SubmitBatchStoreRejectsUnregisteredEntryBuffer)
     const auto status = transport_->SubmitEntrySubBatchRequest(TransportOpType::BATCH_STORE,
                                                                subBatch, subBatchContext);
 
-    EXPECT_EQ(status.code, StatusCode::BUFFER_NOT_REGISTERED);
-    EXPECT_EQ(subBatchContext.state, TransportSubBatchState::COMPLETED);
-    ASSERT_EQ(subBatchContext.entryStatus.size(), entries.size());
-    EXPECT_EQ(subBatchContext.entryStatus[0].code, StatusCode::BUFFER_NOT_REGISTERED);
+    EXPECT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(subBatchContext.state, TransportSubBatchState::PENDING);
+    const auto* sqe = reinterpret_cast<const std::uint32_t*>(subBatchContext.sendSge.local_addr);
+    ASSERT_NE(sqe, nullptr);
+    EXPECT_EQ(PackedBatchEntryMrKey(sqe, 0), std::uint32_t{1});
 }
 
 TEST_F(SqeRequestTest, SubmitDeleteCopiesKeysAndBuildsFlagBackedRequest)

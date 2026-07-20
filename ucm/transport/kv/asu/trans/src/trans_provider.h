@@ -12,7 +12,6 @@ class TransProvider {
 public:
     using ConnectionHandle = void*;
     using ThreadHandle = void*;
-    using MemHandle = void*;
 
     virtual ~TransProvider() = default;
 
@@ -42,13 +41,11 @@ public:
         uintptr_t localAddr{0};
     };
 
-    virtual Status RegisterMemory(ConnectionHandle connectionHandle,
-                                  const std::vector<RegisterMemoryDesc>& memoryDescs,
-                                  std::vector<MemHandle>& memoryHandles) = 0;
+    virtual Status RegisterMemory(const std::vector<RegisterMemoryDesc>& memoryDescs,
+                                  std::vector<MRHandle>& mrHandles) = 0;
 
     struct UnregisterMemoryDesc {
-        ConnectionHandle connectionHandle;
-        MemHandle memoryHandle;
+        MRHandle mrHandle;
     };
 
     virtual std::vector<Status> UnregisterMemory(
@@ -59,7 +56,7 @@ public:
 
     virtual std::vector<Status> FreeThread(const std::vector<ThreadHandle>& threads) = 0;
 
-    virtual Status GetMemTokenId(MemHandle memHandle, uint32_t& tokenId) = 0;
+    virtual Status GetMemTokenId(MRHandle mrHandle, uint32_t& tokenId) = 0;
 };
 
 }  // namespace UC::ASU

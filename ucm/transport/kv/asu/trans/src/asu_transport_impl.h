@@ -30,6 +30,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include "asu_transport/asu_transport.h"
 #include "buffer_manager.h"
@@ -121,11 +122,6 @@ private:
 
     void SetTransProvider(std::unique_ptr<TransProvider> provider);
 
-    struct RegisteredRegionState {
-        TransProvider::ConnectionHandle connectionHandle{nullptr};
-        TransProvider::MemHandle memHandle{nullptr};
-    };
-
     TransportConfig config_;
     IoScheduler ioScheduler_;
     std::unique_ptr<TransProvider> transProvider_;
@@ -144,11 +140,8 @@ private:
     std::atomic<std::uint16_t> nextRequestCid_{1};
 
     std::mutex registeredRegionsMu_;
-    std::atomic<MRHandle> nextMrHandle_{1};
     std::unordered_map<MRHandle, RegisteredMemory> registeredRegions_;
-    std::unordered_map<MRHandle, RegisteredRegionState> registeredRegionStates_;
-    std::unordered_map<MRHandle, std::shared_ptr<ConnectionChannel>>
-        registeredRegionConnectionLeases_;
+    std::unordered_set<MRHandle> ownedRegisteredRegionHandles_;
 };
 
 }  // namespace UC::ASU

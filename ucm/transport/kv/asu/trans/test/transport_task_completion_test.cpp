@@ -59,10 +59,10 @@ public:
     {
         return {};
     }
-    Status RegisterMemory(ConnectionHandle, const std::vector<RegisterMemoryDesc>&,
-                          std::vector<MemHandle>& handles) override
+    Status RegisterMemory(const std::vector<RegisterMemoryDesc>&,
+                          std::vector<MRHandle>& handles) override
     {
-        handles.push_back(reinterpret_cast<MemHandle>(static_cast<uintptr_t>(1)));
+        handles.push_back(reinterpret_cast<MRHandle>(static_cast<uintptr_t>(1)));
         return Status::OK();
     }
     std::vector<Status> UnregisterMemory(const std::vector<UnregisterMemoryDesc>&) override
@@ -74,7 +74,7 @@ public:
         return Status::OK();
     }
     std::vector<Status> FreeThread(const std::vector<ThreadHandle>&) override { return {}; }
-    Status GetMemTokenId(MemHandle, uint32_t& tokenId) override
+    Status GetMemTokenId(MRHandle, uint32_t& tokenId) override
     {
         tokenId = 1;
         return Status::OK();

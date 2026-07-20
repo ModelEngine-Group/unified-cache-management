@@ -45,6 +45,11 @@ struct CacheKeyHasher {
     }
 };
 
+UC::ASU::MRHandle MakeTestMrHandle(std::uintptr_t value)
+{
+    return reinterpret_cast<UC::ASU::MRHandle>(value);
+}
+
 struct FakeAsuBackendState {
     std::vector<UC::ASU::QueryMode> queryModes;
     std::vector<UC::AsuStore::Config> initConfigs;
@@ -573,6 +578,53 @@ TEST(UCAsuStoreTest, UsesLayerwiseMlaTensorOffsets)
               reinterpret_cast<std::uint64_t>(buffer.data()));
     EXPECT_EQ(state->lastStoreEntries[0].buffer.region.size, std::size_t{512});
     EXPECT_EQ(state->lastStoreEntries[0].offset, std::uint32_t{1024});
+}
+
+TEST(UCAsuStoreTest, UsesMultiSegmentLayerwiseMlaTensorOffsets)
+{
+    constexpr std::size_t shardIndex = 2;
+    constexpr std::size_t alignment = UC::ASU::kAsuAlignmentBytes;
+    constexpr std::size_t alignedShardSize = alignment * 2;
+
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeBackend(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_mode", std::string{"transport"});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("tensor_layout", std::string{"mla"});
+    config.SetNumber("tensor_size", std::size_t{0});
+    config.Set("tensor_size_list", std::vector<ssize_t>{128, 64});
+    config.SetNumber("shard_size", std::size_t{192});
+    config.SetNumber("block_size", std::size_t{576});
+
+    auto status = store.Setup(config);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+
+    std::array<std::byte, alignment> mainCache{};
+    std::array<std::byte, alignment> ropeCache{};
+    const std::array<void*, 2> buffers{mainCache.data(), ropeCache.data()};
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("e1b2c3d4e5f6789012345678901234ab");
+    UC::Detail::TaskDesc task;
+    task.brief = "asu-store-test";
+    task.push_back(UC::Detail::Shard{
+        block, shardIndex, {buffers[0], buffers[1]}
+    });
+
+    auto dump = store.Dump(task);
+    ASSERT_TRUE(dump.HasValue()) << dump.Error().ToString();
+    ASSERT_EQ(state->lastStoreEntries.size(), buffers.size());
+
+    const std::array<std::uint32_t, 2> expectedOffsets{
+        shardIndex * alignedShardSize,
+        shardIndex * alignedShardSize + alignment,
+    };
+    for (std::size_t index = 0; index < buffers.size(); ++index) {
+        EXPECT_EQ(state->lastStoreEntries[index].buffer.region.addr,
+                  reinterpret_cast<std::uint64_t>(buffers[index]));
+        EXPECT_EQ(state->lastStoreEntries[index].buffer.region.size, alignment);
+        EXPECT_EQ(state->lastStoreEntries[index].offset, expectedOffsets[index]);
+    }
 }
 
 TEST(UCAsuStoreTest, AlignsTensorSizeAndDerivesShardBlockSize)

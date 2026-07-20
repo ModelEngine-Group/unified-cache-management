@@ -350,8 +350,6 @@ Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regio
         RegisteredMemory registeredRegion;
         registeredRegion.region = regions[index];
         registeredRegion.handle = results[index].handle;
-        registeredRegion.lkey = results[index].lkey;
-        registeredRegion.rkey = results[index].rkey;
         registeredRegion.tokenId = results[index].tokenId;
         registeredRegions.emplace_back(registeredRegion);
     }
@@ -917,8 +915,6 @@ Status AsuClientImpl::BindRegisteredResources(AsuId asuId,
         RegisteredMemory registeredRegion;
         registeredRegion.region = resource.region;
         registeredRegion.handle = resource.result.handle;
-        registeredRegion.lkey = resource.result.lkey;
-        registeredRegion.rkey = resource.result.rkey;
         registeredRegion.tokenId = resource.result.tokenId;
         registeredRegions.emplace_back(registeredRegion);
     }
