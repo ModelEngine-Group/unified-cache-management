@@ -153,6 +153,11 @@ class KVCacheLayout:
         self.buffer_sizes: np.ndarray  # (n_layers, n_ptrs)
         self.tensor_size_lists: np.ndarray  # (n_layers, n_tensor_sizes)
         self.block_stride_lists: np.ndarray  # (n_layers, n_tensor_strides)
+        # True where the (layer, ptr) slot is real; False where zero-padded
+        # (ghost). Ghost slots get a zero base_ptr (so their computed address is
+        # masked to 0) but a column-broadcast tensor_size, letting the store's
+        # single tensorSizes_ cover every layer including the widest one.
+        self.valid_mask: np.ndarray  # (n_layers, n_ptrs) bool
         self.use_layerwise = ucm_config.get("use_layerwise", False)
         self.kv_cache_config = kv_cache_config
         self.vllm_config = vllm_config
@@ -212,9 +217,31 @@ class KVCacheLayout:
             stride_rows[local_layer_id].extend(strides)
             buffer_size_rows[local_layer_id].extend(buffer_sizes)
 
+        # Layers may hold a different number of tensors (e.g. some layers carry
+        # an extra rope/k_index tensor). Pad every row to the widest one with 0
+        # so np.asarray yields a regular 2D array. The padded (ghost) slots are
+        # handled by masking their computed address to 0 (extract_block_addrs)
+        # so the C++ copy streams skip them via addr==nullptr.
+        max_ptrs = max((len(r) for r in raw_ptr_rows), default=0)
+        for rows in (raw_ptr_rows, stride_rows, buffer_size_rows):
+            for r in rows:
+                r.extend([0] * (max_ptrs - len(r)))
+
         self.base_ptrs = np.asarray(raw_ptr_rows, dtype=np.uint64)
         self.tensor_size_lists = np.asarray(stride_rows, dtype=np.uint64)
         self.buffer_sizes = np.asarray(buffer_size_rows, dtype=np.uint64)
+        # base_ptr is 0 only for padding (real device addresses are never 0),
+        # so base_ptr != 0 precisely marks the real (layer, ptr) slots.
+        self.valid_mask = self.base_ptrs != 0
+        # Column-broadcast tensor sizes: within a column all real strides are
+        # equal (same num_head/head_dim/block_size across layers), so fill each
+        # ghost (0) slot with its column's real value. This keeps shard_size /
+        # tensor_size_list consistent across layers so the store's single
+        # tensorSizes_ fits every layer (incl. the widest) in the layerwise path.
+        col_vals = self.tensor_size_lists.max(axis=0)  # (max_ptrs,)
+        self.tensor_size_lists = np.where(
+            self.valid_mask, self.tensor_size_lists, col_vals[None, :]
+        ).astype(np.uint64)
         self.block_stride_lists = self.tensor_size_lists
 
         logger.info(
@@ -227,23 +254,34 @@ class KVCacheLayout:
         vllm_block_ids_np = np.array(vllm_block_ids, np.uint64)
         if layer_first:
             # (n_layers, num_blocks, n_ptrs)
-            return (
+            addrs = (
                 self.block_stride_lists[:, None, :] * vllm_block_ids_np[None, :, None]
                 + self.base_ptrs[:, None, :]
             )
-        return (
+            if not self.valid_mask.all():
+                # zero out ghost (padded) slots so the C++ copy stream skips
+                # them via addr==nullptr (size is non-zero after col-broadcast).
+                addrs = addrs * self.valid_mask[:, None, :].astype(np.uint64)
+            return addrs
+        addrs = (
             vllm_block_ids_np[:, None, None] * self.block_stride_lists[None, :, :]
             + self.base_ptrs[None, :, :]
         )  # (num_blocks, n_layers, n_ptrs)
+        if not self.valid_mask.all():
+            addrs = addrs * self.valid_mask[None, :, :].astype(np.uint64)
+        return addrs
 
     def extract_block_addrs_for_row(
         self, vllm_block_ids: List[int], row_id: int
     ) -> np.ndarray:
         vllm_block_ids_np = np.asarray(vllm_block_ids, dtype=np.uint64)
-        return (
+        addrs = (
             vllm_block_ids_np[:, None] * self.block_stride_lists[row_id][None, :]
             + self.base_ptrs[row_id][None, :]
         )
+        if not self.valid_mask[row_id].all():
+            addrs = addrs * self.valid_mask[row_id][None, :].astype(np.uint64)
+        return addrs
 
     @property
     def tensor_size_list(self) -> list[int]:
