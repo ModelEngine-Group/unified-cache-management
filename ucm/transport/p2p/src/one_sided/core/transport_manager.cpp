@@ -8,7 +8,9 @@
 #include <vector>
 #include "common/metadata_codec.h"
 #include "control/metadata_channel.h"
+#ifdef UCM_P2P_HAS_HIXL
 #include "hixl/hixl_transport.h"
+#endif
 #include "logger/logger.h"
 
 namespace transport {
@@ -123,7 +125,11 @@ Status TransportManager::InstallTransport(TransportProtocol protocol, const Init
 
 TransportPtr TransportManager::CreateTransport(TransportProtocol protocol) const
 {
+#ifdef UCM_P2P_HAS_HIXL
     if (protocol == TransportProtocol::Hixl) { return std::make_shared<HixlTransport>(); }
+#else
+    (void)protocol;
+#endif
     return nullptr;
 }
 
