@@ -21,8 +21,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-#ifndef UNIFIEDCACHE_PIPELINE_BREAKER_STORE_H
-#define UNIFIEDCACHE_PIPELINE_BREAKER_STORE_H
+#ifndef UNIFIEDCACHE_PIPELINE_HEALTH_BREAKER_STORE_H
+#define UNIFIEDCACHE_PIPELINE_HEALTH_BREAKER_STORE_H
 
 #include <atomic>
 #include <chrono>
@@ -36,17 +36,17 @@
 
 namespace UC::PipelineStore {
 
-struct BreakerConfig {
+struct HealthBreakerConfig {
     std::chrono::milliseconds healthCheckInterval{std::chrono::seconds(5)};
     std::chrono::milliseconds healthCheckTimeout{std::chrono::seconds(3)};
     size_t healthWindowSize{8};
     size_t failureThreshold{2};
 };
 
-class BreakerStore : public StoreV1 {
+class HealthBreakerStore : public StoreV1 {
 public:
-    BreakerStore(StoreV1* store, std::string storeId, BreakerConfig config);
-    ~BreakerStore() override;
+    HealthBreakerStore(StoreV1* store, std::string storeId, HealthBreakerConfig config);
+    ~HealthBreakerStore() override;
 
     Status Start();
     void Stop();
@@ -71,7 +71,7 @@ private:
 
     StoreV1* store_;
     std::string storeId_;
-    BreakerConfig config_;
+    HealthBreakerConfig config_;
     std::atomic<bool> enabled_{true};
     mutable std::mutex healthMutex_;
     std::deque<bool> healthResults_;

@@ -73,6 +73,7 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
                     "ucm_connector_name": "UcmPipelineStore",
                     "ucm_connector_config": {
                         "store_pipeline": "Cache|Posix",
+                        "store_health": {"enabled": True},
                         "storage_backends": data_dir,
                         "waiting_queue_depth": 200000,
                     },

@@ -24,12 +24,12 @@
 #ifndef UNIFIEDCACHE_PIPELINE_STORE_HEALTH_CONFIG_H
 #define UNIFIEDCACHE_PIPELINE_STORE_HEALTH_CONFIG_H
 
-#include "breaker_store.h"
+#include "health_breaker_store.h"
 
 namespace UC::PipelineStore {
 
-struct StoreHealthConfig : BreakerConfig {
-    bool enabled{true};
+struct StoreHealthConfig : HealthBreakerConfig {
+    bool enabled{false};
 
     Status Validate() const
     {

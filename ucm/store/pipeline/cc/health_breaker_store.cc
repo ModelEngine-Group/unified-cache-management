@@ -21,12 +21,13 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-#include "breaker_store.h"
+#include "health_breaker_store.h"
 #include "logger/logger.h"
 
 namespace UC::PipelineStore {
 
-BreakerStore::BreakerStore(StoreV1* store, std::string storeId, BreakerConfig config)
+HealthBreakerStore::HealthBreakerStore(StoreV1* store, std::string storeId,
+                                       HealthBreakerConfig config)
     : store_(store),
       storeId_(std::move(storeId)),
       config_(config),
@@ -34,30 +35,30 @@ BreakerStore::BreakerStore(StoreV1* store, std::string storeId, BreakerConfig co
 {
 }
 
-BreakerStore::~BreakerStore() { Stop(); }
+HealthBreakerStore::~HealthBreakerStore() { Stop(); }
 
-Status BreakerStore::Start()
+Status HealthBreakerStore::Start()
 {
-    if (!store_) { return Status::InvalidParam("breaker store target is null"); }
+    if (!store_) { return Status::InvalidParam("health breaker store target is null"); }
     if (config_.healthWindowSize == 0 || config_.failureThreshold == 0 ||
         config_.failureThreshold > config_.healthWindowSize ||
         config_.healthCheckInterval.count() <= 0 || config_.healthCheckTimeout.count() <= 0 ||
         config_.healthCheckTimeout >= config_.healthCheckInterval) {
-        return Status::InvalidParam("invalid breaker config");
+        return Status::InvalidParam("invalid health breaker config");
     }
     std::lock_guard<std::mutex> lock(stopMutex_);
     if (probeThread_.joinable()) { return Status::OK(); }
     stop_ = false;
     try {
-        probeThread_ = std::thread(&BreakerStore::ProbeLoop, this);
+        probeThread_ = std::thread(&HealthBreakerStore::ProbeLoop, this);
     } catch (const std::exception& e) {
-        return Status::Error(fmt::format("failed({}) to start breaker probe", e.what()));
+        return Status::Error(fmt::format("failed({}) to start health breaker probe", e.what()));
     }
     UC_INFO("Started store health breaker({}).", storeId_);
     return Status::OK();
 }
 
-void BreakerStore::Stop()
+void HealthBreakerStore::Stop()
 {
     {
         std::lock_guard<std::mutex> lock(stopMutex_);
@@ -70,63 +71,63 @@ void BreakerStore::Stop()
     }
 }
 
-size_t BreakerStore::FailureCount() const
+size_t HealthBreakerStore::FailureCount() const
 {
     std::lock_guard<std::mutex> lock(healthMutex_);
     return failureCount_;
 }
 
-size_t BreakerStore::SampleCount() const
+size_t HealthBreakerStore::SampleCount() const
 {
     std::lock_guard<std::mutex> lock(healthMutex_);
     return healthResults_.size();
 }
 
-Status BreakerStore::Setup(const Detail::Dictionary&) { return Status::OK(); }
+Status HealthBreakerStore::Setup(const Detail::Dictionary&) { return Status::OK(); }
 
-std::string BreakerStore::Readme() const { return "Breaker(" + storeId_ + ")"; }
+std::string HealthBreakerStore::Readme() const { return "HealthBreakerStore(" + storeId_ + ")"; }
 
-Expected<std::vector<uint8_t>> BreakerStore::Lookup(const Detail::BlockId* blocks, size_t num)
+Expected<std::vector<uint8_t>> HealthBreakerStore::Lookup(const Detail::BlockId* blocks, size_t num)
 {
     if (!Enabled()) { return std::vector<uint8_t>(num, 0); }
     return store_->Lookup(blocks, num);
 }
 
-Expected<ssize_t> BreakerStore::LookupOnPrefix(const Detail::BlockId* blocks, size_t num)
+Expected<ssize_t> HealthBreakerStore::LookupOnPrefix(const Detail::BlockId* blocks, size_t num)
 {
     if (!Enabled()) { return static_cast<ssize_t>(-1); }
     return store_->LookupOnPrefix(blocks, num);
 }
 
-void BreakerStore::Prefetch(const Detail::BlockId* blocks, size_t num)
+void HealthBreakerStore::Prefetch(const Detail::BlockId* blocks, size_t num)
 {
     if (Enabled()) { store_->Prefetch(blocks, num); }
 }
 
-Status BreakerStore::CheckHealth()
+Status HealthBreakerStore::CheckHealth()
 {
     auto status = healthCheck_.Run([this] { return store_->CheckHealth(); });
     RecordHealth(status.Success());
     return status;
 }
 
-Expected<Detail::TaskHandle> BreakerStore::Load(Detail::TaskDesc task)
+Expected<Detail::TaskHandle> HealthBreakerStore::Load(Detail::TaskDesc task)
 {
     if (!Enabled()) { return Status::StoreUnhealthy(storeId_); }
     return store_->Load(std::move(task));
 }
 
-Expected<Detail::TaskHandle> BreakerStore::Dump(Detail::TaskDesc task)
+Expected<Detail::TaskHandle> HealthBreakerStore::Dump(Detail::TaskDesc task)
 {
     if (!Enabled()) { return Status::StoreUnhealthy(storeId_); }
     return store_->Dump(std::move(task));
 }
 
-Expected<bool> BreakerStore::Check(Detail::TaskHandle taskId) { return store_->Check(taskId); }
+Expected<bool> HealthBreakerStore::Check(Detail::TaskHandle taskId) { return store_->Check(taskId); }
 
-Status BreakerStore::Wait(Detail::TaskHandle taskId) { return store_->Wait(taskId); }
+Status HealthBreakerStore::Wait(Detail::TaskHandle taskId) { return store_->Wait(taskId); }
 
-void BreakerStore::RecordHealth(bool healthy)
+void HealthBreakerStore::RecordHealth(bool healthy)
 {
     bool oldEnabled = false;
     bool newEnabled = false;
@@ -169,7 +170,7 @@ void BreakerStore::RecordHealth(bool healthy)
     }
 }
 
-void BreakerStore::ProbeLoop()
+void HealthBreakerStore::ProbeLoop()
 {
     std::unique_lock<std::mutex> lock(stopMutex_);
     auto delay = config_.healthCheckInterval;

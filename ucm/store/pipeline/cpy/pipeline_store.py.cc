@@ -25,7 +25,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <stdexcept>
-#include "breaker_store.h"
+#include "health_breaker_store.h"
 #include "config_parser.h"
 #include "library_loader.h"
 #include "store_health_config.h"
@@ -77,7 +77,7 @@ class PipelineStore {
 
     std::list<StoreLoader> loaders_;
     std::list<std::shared_ptr<StoreV1>> stores_;
-    std::list<std::shared_ptr<BreakerStore>> breakers_;
+    std::list<std::shared_ptr<HealthBreakerStore>> healthBreakerStores_;
     StoreV1* entry_{nullptr};
     StoreHealthConfig healthConfig_;
 
@@ -146,8 +146,8 @@ public:
     }
     ~PipelineStore()
     {
-        for (auto& breaker : breakers_) { breaker->Stop(); }
-        breakers_.clear();
+        for (auto& healthBreakerStore : healthBreakerStores_) { healthBreakerStore->Stop(); }
+        healthBreakerStores_.clear();
         while (!stores_.empty()) { stores_.pop_back(); }
     }
     void Stack(const std::string& name, const std::string& path, const py::dict& dict)
@@ -167,11 +167,11 @@ public:
         if (healthConfig_.enabled) {
             const auto storeId =
                 "pipeline/" + std::to_string(stores_.size() - 1) + ":" + stores_.back()->Readme();
-            auto breaker =
-                std::make_shared<BreakerStore>(stores_.back().get(), storeId, healthConfig_);
-            ThrowIfFailed(breaker->Start());
-            breakers_.push_back(std::move(breaker));
-            entry_ = breakers_.back().get();
+            auto healthBreakerStore =
+                std::make_shared<HealthBreakerStore>(stores_.back().get(), storeId, healthConfig_);
+            ThrowIfFailed(healthBreakerStore->Start());
+            healthBreakerStores_.push_back(std::move(healthBreakerStore));
+            entry_ = healthBreakerStores_.back().get();
         }
     }
     uintptr_t Self() const { return (uintptr_t)(void*)StoreBack(); }
