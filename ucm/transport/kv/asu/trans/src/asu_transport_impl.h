@@ -121,6 +121,7 @@ private:
     void BuildResult(const TransportTaskContext& ctx, TaskResult& result);
 
     void SetTransProvider(std::unique_ptr<TransProvider> provider);
+    Status UnregisterOwnedRegionHandles(const std::vector<MRHandle>& handles);
 
     TransportConfig config_;
     IoScheduler ioScheduler_;

@@ -207,16 +207,12 @@ Status AsuTransportImpl::Shutdown()
     }
     {
         std::lock_guard<std::mutex> lock(registeredRegionsMu_);
-        std::vector<TransProvider::UnregisterMemoryDesc> descs;
-        descs.reserve(ownedRegisteredRegionHandles_.size());
-        for (auto handle : ownedRegisteredRegionHandles_) {
-            descs.push_back(TransProvider::UnregisterMemoryDesc{handle});
-        }
-        if (!descs.empty() && transProvider_) {
-            const auto statuses = transProvider_->UnregisterMemory(descs);
-            for (const auto& status : statuses) {
-                if (!status.ok() && finalStatus.ok()) { finalStatus = status; }
-            }
+        std::vector<MRHandle> handles;
+        handles.reserve(ownedRegisteredRegionHandles_.size());
+        for (auto handle : ownedRegisteredRegionHandles_) { handles.push_back(handle); }
+        if (!handles.empty() && transProvider_) {
+            const auto status = UnregisterOwnedRegionHandles(handles);
+            if (!status.ok() && finalStatus.ok()) { finalStatus = status; }
         }
         registeredRegions_.clear();
         ownedRegisteredRegionHandles_.clear();
@@ -346,62 +342,72 @@ Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& region
 {
     results.clear();
     results.reserve(regions.size());
+    if (regions.empty()) { return Status::OK(); }
 
     std::lock_guard<std::mutex> lock(registeredRegionsMu_);
-    bool hasFailure = false;
-    std::vector<MRHandle> registeredHandles;
-    std::vector<TransProvider::UnregisterMemoryDesc> registeredDescs;
-    registeredHandles.reserve(regions.size());
-    registeredDescs.reserve(regions.size());
+    std::vector<TransProvider::RegisterMemoryDesc> registerDescs;
+    registerDescs.reserve(regions.size());
     for (const auto& region : regions) {
         const auto memType = region.memoryType == MemoryType::ASCEND_DEVICE
                                  ? TransProvider::MemType::MEM_DEVICE
                                  : TransProvider::MemType::MEM_HOST;
-        std::vector<TransProvider::RegisterMemoryDesc> descs{
-            {memType, static_cast<std::uintptr_t>(region.addr),
-             static_cast<std::size_t>(region.size)}
-        };
-        std::vector<MRHandle> mrHandles;
-        auto status = transProvider_->RegisterMemory(descs, mrHandles);
-        if (!status.ok() || mrHandles.empty()) {
-            hasFailure = true;
-            results.emplace_back(RegisterResult{
-                status.ok() ? Status::Error(StatusCode::INTERNAL_ERROR,
-                                            "transport register memory returned no handle")
-                            : status,
-                kInvalidMRHandle});
-            break;
-        }
-
-        auto handle = mrHandles[0];
-        uint32_t tokenId{0};
-        status = transProvider_->GetMemTokenId(mrHandles[0], tokenId);
-        if (!status.ok()) {
-            hasFailure = true;
-            (void)transProvider_->UnregisterMemory(
-                {TransProvider::UnregisterMemoryDesc{mrHandles[0]}});
-            results.emplace_back(RegisterResult{status, kInvalidMRHandle});
-            break;
-        }
-
-        RegisteredMemory regMem;
-        regMem.region = region;
-        regMem.handle = handle;
-        regMem.tokenId = tokenId;  // Only UB is supported for the current version.
-        registeredRegions_[handle] = regMem;
-        ownedRegisteredRegionHandles_.insert(handle);
-        registeredHandles.emplace_back(handle);
-        registeredDescs.push_back(TransProvider::UnregisterMemoryDesc{mrHandles[0]});
-        results.emplace_back(RegisterResult{Status::OK(), handle, tokenId});
+        registerDescs.push_back({memType, static_cast<std::uintptr_t>(region.addr),
+                                 static_cast<std::size_t>(region.size)});
     }
-    if (hasFailure) {
-        if (!registeredDescs.empty()) { (void)transProvider_->UnregisterMemory(registeredDescs); }
-        for (auto handle : registeredHandles) {
-            registeredRegions_.erase(handle);
-            ownedRegisteredRegionHandles_.erase(handle);
+
+    std::vector<MRHandle> mrHandles;
+    auto status = transProvider_->RegisterMemory(registerDescs, mrHandles);
+    if (!status.ok()) {
+        ownedRegisteredRegionHandles_.insert(mrHandles.begin(), mrHandles.end());
+        const auto cleanupStatus = UnregisterOwnedRegionHandles(mrHandles);
+        results.assign(regions.size(), RegisterResult{status, kInvalidMRHandle});
+        const auto clearedStatus = Status::Error(
+            StatusCode::PARTIAL_FAILED, "registration was cleared after batch registration failed");
+        for (std::size_t index = 0; index < std::min(mrHandles.size(), results.size()); ++index) {
+            results[index].status = clearedStatus;
         }
         return Status::Error(StatusCode::PARTIAL_FAILED,
-                             "one or more memory regions failed to register");
+                             cleanupStatus.ok()
+                                 ? "one or more memory regions failed to register"
+                                 : "memory region registration failed and cleanup was incomplete");
+    }
+    if (mrHandles.size() != regions.size()) {
+        status = Status::Error(StatusCode::INTERNAL_ERROR,
+                               "register result count does not match region count");
+        ownedRegisteredRegionHandles_.insert(mrHandles.begin(), mrHandles.end());
+        const auto cleanupStatus = UnregisterOwnedRegionHandles(mrHandles);
+        results.assign(regions.size(), RegisterResult{status, kInvalidMRHandle});
+        return Status::Error(StatusCode::PARTIAL_FAILED,
+                             cleanupStatus.ok()
+                                 ? status.message
+                                 : "register result count mismatch and cleanup was incomplete");
+    }
+
+    std::vector<std::uint32_t> tokenIds(regions.size());
+    for (std::size_t index = 0; index < mrHandles.size(); ++index) {
+        status = transProvider_->GetMemTokenId(mrHandles[index], tokenIds[index]);
+        if (status.ok()) { continue; }
+
+        ownedRegisteredRegionHandles_.insert(mrHandles.begin(), mrHandles.end());
+        const auto cleanupStatus = UnregisterOwnedRegionHandles(mrHandles);
+        const auto rolledBackStatus = Status::Error(
+            StatusCode::PARTIAL_FAILED, "registration was cleared after token lookup failed");
+        results.assign(regions.size(), RegisterResult{rolledBackStatus, kInvalidMRHandle});
+        results[index].status = status;
+        return Status::Error(StatusCode::PARTIAL_FAILED,
+                             cleanupStatus.ok()
+                                 ? "one or more memory region token lookups failed"
+                                 : "memory region token lookup failed and cleanup was incomplete");
+    }
+
+    for (std::size_t index = 0; index < regions.size(); ++index) {
+        RegisteredMemory registeredMemory;
+        registeredMemory.region = regions[index];
+        registeredMemory.handle = mrHandles[index];
+        registeredMemory.tokenId = tokenIds[index];
+        registeredRegions_[mrHandles[index]] = registeredMemory;
+        ownedRegisteredRegionHandles_.insert(mrHandles[index]);
+        results.emplace_back(RegisterResult{Status::OK(), mrHandles[index], tokenIds[index]});
     }
     return Status::OK();
 }
@@ -423,26 +429,45 @@ Status AsuTransportImpl::BindRegisteredRegions(const std::vector<RegisteredMemor
 Status AsuTransportImpl::UnregisterRegions(const std::vector<MRHandle>& handles)
 {
     std::lock_guard<std::mutex> lock(registeredRegionsMu_);
-    std::vector<TransProvider::UnregisterMemoryDesc> descs;
-    descs.reserve(handles.size());
+    std::vector<MRHandle> ownedHandles;
+    ownedHandles.reserve(handles.size());
     for (auto handle : handles) {
         if (handle == kInvalidMRHandle) { continue; }
         if (ownedRegisteredRegionHandles_.find(handle) == ownedRegisteredRegionHandles_.end()) {
             continue;
         }
-        descs.push_back(TransProvider::UnregisterMemoryDesc{handle});
+        ownedHandles.push_back(handle);
+    }
+    return UnregisterOwnedRegionHandles(ownedHandles);
+}
+
+Status AsuTransportImpl::UnregisterOwnedRegionHandles(const std::vector<MRHandle>& handles)
+{
+    if (handles.empty()) { return Status::OK(); }
+
+    std::vector<TransProvider::UnregisterMemoryDesc> unregisterDescs;
+    unregisterDescs.reserve(handles.size());
+    for (const auto handle : handles) {
+        unregisterDescs.push_back(TransProvider::UnregisterMemoryDesc{handle});
     }
 
-    if (!descs.empty()) {
-        const auto statuses = transProvider_->UnregisterMemory(descs);
-        for (const auto& status : statuses) {
-            if (!status.ok()) { return status; }
+    const auto statuses = transProvider_->UnregisterMemory(unregisterDescs);
+    Status failure = statuses.size() == handles.size()
+                         ? Status::OK()
+                         : Status::Error(StatusCode::INTERNAL_ERROR,
+                                         "unregister result count does not match handle count");
+    for (std::size_t index = 0; index < handles.size(); ++index) {
+        if (index < statuses.size() && statuses[index].ok()) {
+            registeredRegions_.erase(handles[index]);
+            ownedRegisteredRegionHandles_.erase(handles[index]);
+        } else if (failure.ok()) {
+            failure = index < statuses.size()
+                          ? statuses[index]
+                          : Status::Error(StatusCode::INTERNAL_ERROR,
+                                          "unregister result count does not match handle count");
         }
     }
-
-    for (auto handle : handles) { registeredRegions_.erase(handle); }
-    for (auto handle : handles) { ownedRegisteredRegionHandles_.erase(handle); }
-    return Status::OK();
+    return failure;
 }
 
 std::uint16_t AsuTransportImpl::AllocateRequestCid()

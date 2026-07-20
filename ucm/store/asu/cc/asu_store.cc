@@ -30,12 +30,12 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include "asu_client/asu_client.h"
-#include "asu_transport/asu_transport.h"
 #include "logger/logger.h"
 #include "ucmstore_v1.h"
 
@@ -281,71 +281,14 @@ public:
         return client_->Wait(taskId, timeoutMs, result);
     }
 
+    AsuStatus RegisterRegions(const std::vector<UC::ASU::MemoryRegion>& regions,
+                              std::vector<UC::ASU::RegisterResult>& results) override
+    {
+        return client_->RegisterRegions(regions, results);
+    }
+
 private:
     std::unique_ptr<UC::ASU::AsuClient> client_;
-};
-
-class TransportBackend final : public AsuBackend {
-public:
-    AsuStatus Init(const Config& config) override
-    {
-        transport_ = UC::ASU::CreateAsuTransport();
-        if (!transport_) {
-            return AsuStatus::Error(AsuStatusCode::INTERNAL_ERROR,
-                                    "ASU transport factory returned null");
-        }
-        return transport_->Init(BuildTransportConfig(config, 0));
-    }
-
-    AsuStatus Init(const std::string& configPath) override
-    {
-        transport_ = UC::ASU::CreateAsuTransport();
-        if (!transport_) {
-            return AsuStatus::Error(AsuStatusCode::INTERNAL_ERROR,
-                                    "ASU transport factory returned null");
-        }
-        return transport_->Init(configPath);
-    }
-
-    AsuStatus Shutdown() override { return transport_ ? transport_->Shutdown() : AsuStatus::OK(); }
-
-    AsuStatus Query(const std::vector<UC::ASU::CacheKey>& keys,
-                    const UC::ASU::QueryOptions& options, UC::ASU::QueryResult& result) override
-    {
-        return transport_->Query(keys, options, result);
-    }
-
-    AsuStatus LoadAsync(const std::vector<UC::ASU::KVBuffer>& entries,
-                        UC::ASU::TaskId& taskId) override
-    {
-        return transport_->LoadAsync(entries, taskId);
-    }
-
-    AsuStatus StoreAsync(const std::vector<UC::ASU::KVBuffer>& entries,
-                         UC::ASU::TaskId& taskId) override
-    {
-        return transport_->StoreAsync(entries, taskId);
-    }
-
-    AsuStatus DeleteAsync(const std::vector<UC::ASU::CacheKey>& keys,
-                          UC::ASU::TaskId& taskId) override
-    {
-        return transport_->DeleteAsync(keys, taskId);
-    }
-
-    AsuStatus Check(UC::ASU::TaskId taskId, UC::ASU::TaskResult& result) override
-    {
-        return transport_->Check(taskId, result);
-    }
-
-    AsuStatus Wait(UC::ASU::TaskId taskId, std::uint64_t timeoutMs,
-                   UC::ASU::TaskResult& result) override
-    {
-        return transport_->Wait(taskId, timeoutMs, result);
-    }
-
-private:
-    std::unique_ptr<UC::ASU::AsuTransport> transport_;
 };
 
 class AsuStore final : public StoreV1 {
@@ -426,6 +369,48 @@ public:
         (void)num;
     }
 
+    bool NeedRegisterKVCaches() const override { return true; }
+
+    Status RegisterKVCaches(const UC::KVCacheRegistration* registrations,
+                            std::size_t count) override
+    {
+        if (!backend_) { return Status::Error("ASU backend is not initialized"); }
+
+        const auto memoryType = ConfiguredMemoryType();
+        std::vector<UC::ASU::MemoryRegion> regions;
+        regions.reserve(count);
+        for (std::size_t index = 0; index < count; ++index) {
+            if (registrations[index].addr == 0 || registrations[index].size == 0) { continue; }
+            UC::ASU::MemoryRegion region;
+            region.memoryType = memoryType;
+            region.addr = static_cast<std::uint64_t>(registrations[index].addr);
+            region.size = static_cast<std::uint64_t>(registrations[index].size);
+            region.deviceId = config_.deviceId;
+            regions.emplace_back(region);
+        }
+        if (regions.empty()) { return Status::OK(); }
+
+        std::vector<UC::ASU::RegisterResult> results;
+        auto status = backend_->RegisterRegions(regions, results);
+        if (!status.ok()) {
+            LogAsuStatus("register persistent regions", status);
+            return ConvertStatus(status);
+        }
+        std::vector<RegisteredPersistentRegion> registered;
+        registered.reserve(regions.size());
+        for (std::size_t index = 0; index < regions.size(); ++index) {
+            registered.emplace_back(
+                RegisteredPersistentRegion{regions[index], results[index].handle});
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(persistentRegionsMu_);
+            persistentRegions_ = std::move(registered);
+        }
+        UC_INFO("ASU registered {} persistent KV cache region(s).", regions.size());
+        return Status::OK();
+    }
+
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
         return Submit(std::move(task), &AsuBackend::LoadAsync);
@@ -466,13 +451,6 @@ public:
         }
         LogAsuStatus("task result wait", result.status);
         return ConvertStatus(result.status);
-    }
-
-    bool NeedRegisterKVCaches() const override { return true; }
-
-    Status RegisterKVCaches(const KVCacheRegistration*, std::size_t) override
-    {
-        return Status::OK();
     }
 
 private:
@@ -627,7 +605,8 @@ private:
 #ifdef ASU_BUILD_TESTS
         if (backendFactory_) { return backendFactory_(config); }
 #endif
-        if (config.mode == "transport") { return std::make_unique<TransportBackend>(); }
+        // Keep asu_mode for configuration validation, but route all store operations through
+        // the ASU client backend.
         return std::make_unique<ClientBackend>();
     }
 
@@ -744,10 +723,7 @@ private:
     {
         std::vector<UC::ASU::KVBuffer> entries;
         entries.reserve(task.size() * config_.tensorSizes.size());
-        const auto memoryType = config_.memoryType.empty()
-                                    ? (config_.deviceId >= 0 ? UC::ASU::MemoryType::ASCEND_DEVICE
-                                                             : UC::ASU::MemoryType::HOST)
-                                    : ParseMemoryType(config_.memoryType);
+        const auto memoryType = ConfiguredMemoryType();
 
         for (const auto& shard : task) {
             if (shard.index >= ShardsPerBlock()) {
@@ -765,7 +741,10 @@ private:
                     reinterpret_cast<std::uint64_t>(shard.addrs[tensorIndex]);
                 entry.buffer.region.size = config_.tensorSizes[tensorIndex];
                 entry.buffer.region.deviceId = config_.deviceId;
-                entry.buffer.handle = UC::ASU::kInvalidMRHandle;
+                entry.buffer.handle = FindPersistentHandle(entry.buffer.region);
+                if (entry.buffer.handle == UC::ASU::kInvalidMRHandle) {
+                    return Status::Error("ASU KV buffer is outside registered persistent regions");
+                }
                 entry.offset = static_cast<std::uint32_t>(tensorOffsets[tensorIndex]);
                 entries.emplace_back(std::move(entry));
             }
@@ -793,9 +772,37 @@ private:
         UC_INFO("Set AsuStore::FakeBackendPath to {}.", config.fakeBackendPath);
     }
 
+    UC::ASU::MemoryType ConfiguredMemoryType() const
+    {
+        return config_.memoryType.empty()
+                   ? (config_.deviceId >= 0 ? UC::ASU::MemoryType::ASCEND_DEVICE
+                                            : UC::ASU::MemoryType::HOST)
+                   : ParseMemoryType(config_.memoryType);
+    }
+
+    UC::ASU::MRHandle FindPersistentHandle(const UC::ASU::MemoryRegion& region) const
+    {
+        std::lock_guard<std::mutex> lock(persistentRegionsMu_);
+        for (const auto& persistent : persistentRegions_) {
+            if (region.addr < persistent.region.addr || region.size > persistent.region.size) {
+                continue;
+            }
+            const auto offset = region.addr - persistent.region.addr;
+            if (offset <= persistent.region.size - region.size) { return persistent.handle; }
+        }
+        return UC::ASU::kInvalidMRHandle;
+    }
+
+    struct RegisteredPersistentRegion {
+        UC::ASU::MemoryRegion region;
+        UC::ASU::MRHandle handle{UC::ASU::kInvalidMRHandle};
+    };
+
     Config config_;
     TensorLayout tensorLayout_{TensorLayout::MLA};
     std::unique_ptr<AsuBackend> backend_;
+    mutable std::mutex persistentRegionsMu_;
+    std::vector<RegisteredPersistentRegion> persistentRegions_;
 #ifdef ASU_BUILD_TESTS
     BackendFactory backendFactory_;
 #endif
