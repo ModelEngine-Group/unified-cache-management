@@ -73,6 +73,10 @@ TEST_F(BufferPoolTest, RejectsInvalidInitAndUseBeforeInit)
     EXPECT_TRUE(status.Failure());
     EXPECT_EQ(status, Status::InvalidParam());
 
+    status = pool.Init("zero_alignment", MemoryType::HOST, 64, 1, false, 0);
+    EXPECT_TRUE(status.Failure());
+    EXPECT_EQ(status, Status::InvalidParam());
+
     status = pool.Init("unsupported", static_cast<MemoryType>(99), 64, 1);
     EXPECT_TRUE(status.Failure());
     EXPECT_EQ(status, Status::InvalidParam());
@@ -138,6 +142,35 @@ TEST_F(BufferPoolTest, HostPoolUsesAlignedSlotsAndReportsBusyWhenFull)
     status = pool.Allocate(third);
     EXPECT_TRUE(status.Failure());
     EXPECT_EQ(status, Status::Retry());
+}
+
+TEST_F(BufferPoolTest, SupportsCustomAddressAndSlotAlignment)
+{
+    constexpr std::size_t kAlignment = 16 * 1024;
+    constexpr std::size_t kCapacity = kAlignment + 1;
+    constexpr std::size_t kStride = 2 * kAlignment;
+
+    BufferPool pool;
+    auto status = pool.Init("aligned_pool", MemoryType::HOST, kCapacity, 2, false, kAlignment);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(pool.GetLocalAddr()) % kAlignment,
+              std::uintptr_t{0});
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(pool.GetDeviceAddr()) % kAlignment,
+              std::uintptr_t{0});
+
+    BufferPool::Slot first;
+    BufferPool::Slot second;
+    ASSERT_TRUE(pool.Allocate(first).Success());
+    ASSERT_TRUE(pool.Allocate(second).Success());
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(first.local_addr) % kAlignment,
+              std::uintptr_t{0});
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.local_addr) % kAlignment,
+              std::uintptr_t{0});
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.device_addr) % kAlignment,
+              std::uintptr_t{0});
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.local_addr) -
+                  reinterpret_cast<std::uintptr_t>(first.local_addr),
+              kStride);
 }
 
 TEST_F(BufferPoolTest, HostPinnedPoolKeepsLocalAndDeviceAddresses)

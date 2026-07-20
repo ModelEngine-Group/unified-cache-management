@@ -31,49 +31,85 @@
 namespace UC {
 namespace {
 
-constexpr std::size_t kSlotAddressAlignment = 64;
-
-}  // namespace
-
-bool BufferPool::ComputeSlotStride(std::size_t capacity, std::size_t& stride)
+bool AlignAddress(void* address, std::size_t alignment, void*& aligned, std::size_t& offset)
 {
-    constexpr auto kMaxSize = std::numeric_limits<std::size_t>::max();
-    if (capacity == 0 || capacity > kMaxSize - (kSlotAddressAlignment - 1)) { return false; }
+    if (address == nullptr || alignment == 0) { return false; }
 
-    stride = (capacity + kSlotAddressAlignment - 1) / kSlotAddressAlignment * kSlotAddressAlignment;
+    const auto value = reinterpret_cast<std::uintptr_t>(address);
+    const auto remainder = value % alignment;
+    offset = remainder == 0 ? 0 : alignment - remainder;
+    if (value > std::numeric_limits<std::uintptr_t>::max() - offset) { return false; }
+
+    aligned = reinterpret_cast<void*>(value + offset);
     return true;
 }
 
-Status BufferPool::BufferRegion::Create(MemoryType type, std::size_t size, BufferRegion& region)
+}  // namespace
+
+bool BufferPool::ComputeSlotStride(std::size_t capacity, std::size_t alignment,
+                                   std::size_t& stride)
 {
+    constexpr auto kMaxSize = std::numeric_limits<std::size_t>::max();
+    if (capacity == 0 || alignment == 0 || capacity > kMaxSize - (alignment - 1)) {
+        return false;
+    }
+
+    stride = (capacity + alignment - 1) / alignment * alignment;
+    return true;
+}
+
+Status BufferPool::BufferRegion::Create(MemoryType type, std::size_t size,
+                                        std::size_t alignment, BufferRegion& region)
+{
+    constexpr auto kMaxSize = std::numeric_limits<std::size_t>::max();
+    if (alignment == 0 || size > kMaxSize - (alignment - 1)) {
+        return Status::InvalidParam("buffer region size overflow");
+    }
+
+    const auto allocationSize = size + alignment - 1;
+    auto setRegion = [&region, alignment](std::shared_ptr<void> owner, void* localAddr,
+                                         void* deviceAddr) -> Status {
+        void* alignedLocalAddr = nullptr;
+        std::size_t offset = 0;
+        if (!owner || !AlignAddress(localAddr, alignment, alignedLocalAddr, offset)) {
+            return Status::Error("failed to align buffer region");
+        }
+
+        void* alignedDeviceAddr = nullptr;
+        std::size_t deviceOffset = 0;
+        if (!AlignAddress(deviceAddr, alignment, alignedDeviceAddr, deviceOffset) ||
+            deviceOffset != offset) {
+            return Status::Error("local and device addresses cannot share requested alignment");
+        }
+
+        region.owner = std::move(owner);
+        region.local_addr = alignedLocalAddr;
+        region.device_addr = alignedDeviceAddr;
+        return Status::OK();
+    };
+
     Trans::AscendBuffer ascendBuffer;
     switch (type) {
         case MemoryType::HOST: {
-            auto owner = ascendBuffer.MakeHostBuffer(size);
+            auto owner = ascendBuffer.MakeHostBuffer(allocationSize);
             if (!owner) { return Status::Error("failed to allocate host memory"); }
-            region.owner = std::move(owner);
-            region.local_addr = region.owner.get();
-            region.device_addr = region.owner.get();
-            return Status::OK();
+            auto* address = owner.get();
+            return setRegion(std::move(owner), address, address);
         }
         case MemoryType::HOST_PINNED: {
             void* deviceAddr = nullptr;
-            auto owner = ascendBuffer.MakeHostPinnedBuffer(size, &deviceAddr);
+            auto owner = ascendBuffer.MakeHostPinnedBuffer(allocationSize, &deviceAddr);
             if (!owner || !deviceAddr) {
                 return Status::Error("failed to allocate host-pinned memory");
             }
-            region.owner = std::move(owner);
-            region.local_addr = region.owner.get();
-            region.device_addr = deviceAddr;
-            return Status::OK();
+            auto* localAddr = owner.get();
+            return setRegion(std::move(owner), localAddr, deviceAddr);
         }
         case MemoryType::ASCEND_DEVICE: {
-            auto owner = ascendBuffer.MakeDeviceBuffer(size);
+            auto owner = ascendBuffer.MakeDeviceBuffer(allocationSize);
             if (!owner) { return Status::Error("failed to allocate device memory"); }
-            region.owner = std::move(owner);
-            region.local_addr = region.owner.get();
-            region.device_addr = region.owner.get();
-            return Status::OK();
+            auto* address = owner.get();
+            return setRegion(std::move(owner), address, address);
         }
         default: return Status::InvalidParam("unsupported memory type");
     }
@@ -87,15 +123,16 @@ void BufferPool::BufferRegion::Reset()
 }
 
 Status BufferPool::Init(std::string name, MemoryType type, std::size_t slot_capacity,
-                        std::size_t slot_num, bool enable_zero)
+                        std::size_t slot_num, bool enable_zero, std::size_t slot_alignment)
 {
     if (region_) { return Status::InvalidParam(name + " already initialized"); }
-    if (slot_capacity == 0 || slot_num == 0) {
-        return Status::InvalidParam(name + ": slot_capacity and slot_num must be non-zero");
+    if (slot_capacity == 0 || slot_num == 0 || slot_alignment == 0) {
+        return Status::InvalidParam(
+            name + ": slot_capacity, slot_num and slot_alignment must be non-zero");
     }
 
     std::size_t slotStride = 0;
-    if (!ComputeSlotStride(slot_capacity, slotStride) ||
+    if (!ComputeSlotStride(slot_capacity, slot_alignment, slotStride) ||
         slot_num > std::numeric_limits<std::size_t>::max() / slotStride ||
         slot_num >= std::numeric_limits<IndexPool::Index>::max()) {
         return Status::InvalidParam(name + ": slot layout size overflow");
@@ -103,7 +140,7 @@ Status BufferPool::Init(std::string name, MemoryType type, std::size_t slot_capa
 
     BufferRegion region;
     const auto total = slotStride * slot_num;
-    auto status = BufferRegion::Create(type, total, region);
+    auto status = BufferRegion::Create(type, total, slot_alignment, region);
     if (status.Failure()) { return status; }
 
     name_ = std::move(name);
