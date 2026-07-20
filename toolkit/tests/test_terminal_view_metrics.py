@@ -6,13 +6,16 @@ import math
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 TOOLKIT_ROOT = Path(__file__).resolve().parents[1]
 ROOT = TOOLKIT_ROOT / "ucm_toolkit" / "tools" / "metrics_view"
 sys.path.insert(0, str(ROOT))
 
+from terminal_view_metrics import cli, collector
 from terminal_view_metrics.cli import DEFAULT_DB, main
 from terminal_view_metrics.config import (
     list_preset_configs,
@@ -577,7 +580,7 @@ vllm:prompt_tokens_total{model_name="llama"} 1900
         self.assertEqual(len(rows), 1)
         self.assertAlmostEqual(rows[0].values["tokens_per_s"], 10.0)
 
-    def test_collect_without_config_stores_all_scraped_metrics(self):
+    def test_collect_cycle_without_config_stores_all_scraped_metrics(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             metrics_path = tmp_path / "metrics.txt"
@@ -592,21 +595,37 @@ vllm:prompt_tokens_total{model_name="llama"} 1900
                 encoding="utf-8",
             )
 
-            result = main(
-                [
-                    "collect",
-                    "--once",
-                    "--url",
-                    metrics_path.as_uri(),
-                    "--db",
-                    str(db_path),
-                ]
-            )
-
             with MetricsStore(db_path) as store:
-                self.assertEqual(result, 0)
+                failures = collector.collect_cycle(
+                    [metrics_path.as_uri()], store, 1_700_000_000_000, 5.0
+                )
                 self.assertEqual(len(store.list_series("ucm:load_bytes_total")), 1)
                 self.assertEqual(len(store.list_series("external_metric_total")), 1)
+            self.assertEqual(failures, [])
+
+    def test_add_url_label_replaces_upstream_label_without_mutating_sample(self):
+        samples = parse_prometheus_text('metric_total{url="upstream"} 1')
+
+        labeled = collector.add_url_label(samples, "http://prefill/metrics")
+
+        self.assertEqual(samples[0].labels["url"], "upstream")
+        self.assertEqual(labeled[0].labels["url"], "http://prefill/metrics")
+
+    def test_scrape_urls_keeps_successes_and_reports_each_failed_url(self):
+        def scrape(url, _timeout):
+            if "decode" in url:
+                raise OSError("decode unavailable")
+            return 'metric_total{instance="prefill"} 1'
+
+        urls = ["http://prefill/metrics", "http://decode/metrics"]
+        with patch.object(collector, "scrape_url", side_effect=scrape):
+            samples, failures = collector.scrape_urls(urls, 5.0)
+
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0].labels["url"], urls[0])
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0][0], urls[1])
+        self.assertIsInstance(failures[0][1], OSError)
 
     def test_store_allows_different_metrics_with_same_labels(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -802,7 +821,7 @@ vllm:num_requests_running{worker_id="1"} 5
                 "posix_store_dump_bandwidth_gbps",
                 "prefix_cache_hit_rate",
                 "external_prefix_cache_hit_rate",
-                "posix_store_load_fraction",
+                "cache_backend_load_ratio",
             },
         )
         histograms = {
@@ -841,8 +860,8 @@ vllm:num_requests_running{worker_id="1"} 5
                 "vllm:prefix_cache_hits_total",
                 "vllm:prefix_cache_queries_total",
                 "vllm:external_prefix_cache_hits_total",
-                "ucm:cache_load_backend_shards_total",
-                "ucm:cache_load_shards_total",
+                "ucm:cache_lookup_hit_blocks_total",
+                "ucm:posix_lookup_hit_blocks_total",
             }.issubset(metric_names_for_scrape(config))
         )
         self.assertFalse(
@@ -924,8 +943,9 @@ vllm:request_prefill_time_seconds_sum 1
 vllm:request_prefill_time_seconds_count 5
 vllm:request_decode_time_seconds_sum 4
 vllm:request_decode_time_seconds_count 5
-ucm:cache_load_backend_shards_total 6
-ucm:cache_load_shards_total 10
+ucm:cache_lookup_hit_blocks_total 10
+ucm:cache_lookup_miss_blocks_total 10
+ucm:posix_lookup_hit_blocks_total 5
 """
                     ),
                     t0,
@@ -965,8 +985,9 @@ vllm:request_prefill_time_seconds_sum 6
 vllm:request_prefill_time_seconds_count 9
 vllm:request_decode_time_seconds_sum 14
 vllm:request_decode_time_seconds_count 9
-ucm:cache_load_backend_shards_total 16
-ucm:cache_load_shards_total 30
+ucm:cache_lookup_hit_blocks_total 30
+ucm:cache_lookup_miss_blocks_total 30
+ucm:posix_lookup_hit_blocks_total 15
 """
                     ),
                     t1,
@@ -1002,7 +1023,7 @@ ucm:cache_load_shards_total 30
         self.assertAlmostEqual(
             values["external_prefix_cache_hit_rate"]["hit_rate"], 0.2
         )
-        self.assertAlmostEqual(values["posix_store_load_fraction"]["fraction"], 0.5)
+        self.assertAlmostEqual(values["cache_backend_load_ratio"]["ratio"], 1.0 / 3.0)
         self.assertAlmostEqual(values["total_requests"]["requests"], 4.0)
         for removed in (
             "prompt_tokens_per_s",
@@ -1020,8 +1041,62 @@ ucm:cache_load_shards_total 30
         ):
             self.assertNotIn(removed, values)
 
+    def test_cache_backend_load_ratio_uses_posix_hit_share_across_ranks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with MetricsStore(Path(tmp) / "metrics.db") as store:
+                t0 = parse_time_ms("2026-06-25T10:00:00")
+                t1 = t0 + 10_000
+                store.write_samples(
+                    parse_prometheus_text(
+                        """
+ucm:cache_lookup_hit_blocks_total{worker_id="0"} 0
+ucm:cache_lookup_miss_blocks_total{worker_id="0"} 0
+ucm:cache_lookup_hit_blocks_total{worker_id="1"} 0
+ucm:cache_lookup_miss_blocks_total{worker_id="1"} 0
+ucm:posix_lookup_hit_blocks_total{worker_id="0"} 0
+ucm:cache_load_backend_shards_total{worker_id="0"} 0
+ucm:cache_load_backend_shards_total{worker_id="1"} 0
+ucm:cache_load_shards_total{worker_id="0"} 0
+ucm:cache_load_shards_total{worker_id="1"} 0
+"""
+                    ),
+                    t0,
+                )
+                store.write_samples(
+                    parse_prometheus_text(
+                        """
+ucm:cache_lookup_hit_blocks_total{worker_id="0"} 0
+ucm:cache_lookup_miss_blocks_total{worker_id="0"} 10
+ucm:cache_lookup_hit_blocks_total{worker_id="1"} 0
+ucm:cache_lookup_miss_blocks_total{worker_id="1"} 10
+ucm:posix_lookup_hit_blocks_total{worker_id="0"} 10
+ucm:cache_load_backend_shards_total{worker_id="0"} 10
+ucm:cache_load_backend_shards_total{worker_id="1"} 0
+ucm:cache_load_shards_total{worker_id="0"} 10
+ucm:cache_load_shards_total{worker_id="1"} 10
+"""
+                    ),
+                    t1,
+                )
+
+                rows = QueryEngine(store).query_config(
+                    load_config("metrics_lite"),
+                    10,
+                    start_ms=t0,
+                    aggr_by_seconds=10,
+                )
+                values = {row.metric: row.values for row in rows}
+
+        self.assertAlmostEqual(values["cache_backend_load_ratio"]["ratio"], 1.0)
+
     def test_default_db_uses_tmp_ucm_metrics_db(self):
         self.assertEqual(DEFAULT_DB, "/tmp/ucm_metrics.db")
+
+    def test_default_process_files_use_tmp_paths(self):
+        self.assertEqual(cli.DEFAULT_PID_FILE, "/tmp/ucm_metrics.pid")
+        self.assertEqual(
+            getattr(cli, "DEFAULT_LOG_FILE", None), "/tmp/terminal_metrics.log"
+        )
 
     def test_cli_help_describes_start_time_as_local_iso_time(self):
         output = io.StringIO()
@@ -1039,9 +1114,135 @@ ucm:cache_load_shards_total 30
                 main(["--help"])
 
         self.assertEqual(raised.exception.code, 0)
+        self.assertNotIn("\n    collect ", output.getvalue())
         removed_command = "".join(["t", "op"])
         self.assertNotIn(f"query,{removed_command}", output.getvalue())
         self.assertNotIn("Refresh a terminal table", output.getvalue())
+
+    def test_start_passes_multiple_urls_to_private_worker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            pid_path = tmp_path / "metrics.pid"
+            log_path = tmp_path / "metrics.log"
+            urls = ["http://prefill/metrics", "http://decode/metrics"]
+            process = SimpleNamespace(pid=1234)
+            with patch.object(cli.subprocess, "Popen", return_value=process) as popen:
+                result = main(
+                    [
+                        "start",
+                        "--url",
+                        urls[0],
+                        "--url",
+                        urls[1],
+                        "--pid-file",
+                        str(pid_path),
+                        "--log-file",
+                        str(log_path),
+                    ]
+                )
+
+            command = popen.call_args.args[0]
+            popen.call_args.kwargs["stdout"].close()
+            self.assertEqual(result, 0)
+            self.assertIn("__collect_worker", command)
+            self.assertEqual(
+                [
+                    command[index + 1]
+                    for index, item in enumerate(command)
+                    if item == "--url"
+                ],
+                urls,
+            )
+
+    def test_check_multiple_urls_can_filter_by_source_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config_path = tmp_path / "metrics.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "metrics": [
+                            {
+                                "name": "metric_total",
+                                "type": "gauge",
+                                "aggregate": "sum",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            prefill_path = tmp_path / "prefill.txt"
+            decode_path = tmp_path / "decode.txt"
+            prefill_path.write_text("metric_total 1", encoding="utf-8")
+            decode_path.write_text("metric_total 2", encoding="utf-8")
+            prefill_url = prefill_path.as_uri()
+
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = main(
+                    [
+                        "check",
+                        "--url",
+                        prefill_url,
+                        "--url",
+                        decode_path.as_uri(),
+                        "--config",
+                        str(config_path),
+                        "--tag",
+                        f"url={prefill_url}",
+                        "--format",
+                        "json",
+                    ]
+                )
+
+            rows = json.loads(output.getvalue())
+            self.assertEqual(result, 0)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["values"]["value"], 1.0)
+
+    def test_check_url_failure_returns_error_without_partial_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config_path = tmp_path / "metrics.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "metrics": [
+                            {
+                                "name": "metric_total",
+                                "type": "gauge",
+                                "aggregate": "sum",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            metrics_path = tmp_path / "metrics.txt"
+            metrics_path.write_text("metric_total 1", encoding="utf-8")
+            output = io.StringIO()
+            errors = io.StringIO()
+
+            try:
+                with redirect_stdout(output), redirect_stderr(errors):
+                    result = main(
+                        [
+                            "check",
+                            "--url",
+                            metrics_path.as_uri(),
+                            "--url",
+                            (tmp_path / "missing.txt").as_uri(),
+                            "--config",
+                            str(config_path),
+                        ]
+                    )
+            except Exception as exc:
+                self.fail(f"check raised instead of returning an error: {exc}")
+
+            self.assertEqual(result, 1)
+            self.assertEqual(output.getvalue(), "")
+            self.assertIn("missing.txt", errors.getvalue())
 
     def test_cli_query_can_anchor_window_by_start_time(self):
         with tempfile.TemporaryDirectory() as tmp:

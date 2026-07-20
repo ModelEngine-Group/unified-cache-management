@@ -367,7 +367,6 @@ from ucm.integration.vllm.ucm_connector import (
     UCMConnectorMetadata,
     UCMDirectConnector,
     UCMLayerWiseConnector,
-    UCMLiteConnector,
     UCMWorkerMetadata,
 )
 from ucm.metrics_config import (
@@ -532,8 +531,11 @@ def _vllm_config(config=None, launch_config=None):
     return SimpleNamespace(
         kv_transfer_config=SimpleNamespace(
             kv_connector="UCM",
+            engine_id="engine-0",
             launch_config=launch_config,
-        )
+        ),
+        parallel_config=SimpleNamespace(pipeline_parallel_size=1),
+        scheduler_config=SimpleNamespace(disable_hybrid_kv_cache_manager=True),
     )
 
 
@@ -595,6 +597,17 @@ def test_config_definitions_register_enable_list_and_metric_names():
 
 def test_default_metrics_config_matches_example_yaml():
     assert DEFAULT_METRICS_CONFIG == _load_example_metrics_config_without_yaml()
+
+
+def test_posix_lookup_metrics_record_queries_and_returned_hits():
+    source = (
+        REPO_ROOT / "ucm" / "store" / "posix" / "cc" / "posix_store.cc"
+    ).read_text(encoding="utf-8")
+
+    assert 'NAME_TO_METRIC_ID("posix_lookup_query_blocks_total")' in source
+    assert 'NAME_TO_METRIC_ID("posix_lookup_hit_blocks_total")' in source
+    assert source.count("RecordLookupQueries(") == 3
+    assert source.count("RecordLookupHits(") == 3
 
 
 def test_launch_metrics_config_defaults_to_builtin_metrics_when_path_is_missing():
@@ -987,6 +1000,32 @@ def test_ucm_connector_metrics_registration_is_owned_by_outer_connector():
     assert isinstance(prom, UCMPromMetrics)
     assert isinstance(stats, UCMConnectorStats)
     assert stats.data["counters_by_rank"]["0"]["load_bytes_total"] == 1.0
+
+
+def test_ucm_connector_prefers_lite_when_lite_and_fawa_are_both_enabled(monkeypatch):
+    class FakeInnerConnector(KVConnectorBase_V1):
+        pass
+
+    class FakeFawaConnector(KVConnectorBase_V1):
+        @classmethod
+        def can_handle_kv_cache_config(cls, kv_cache_config):
+            return True
+
+    monkeypatch.setattr(UCMConnector, "_setup_ucm_metrics", lambda *args: None)
+    monkeypatch.setattr(ucm_connector_module, "UCMLiteConnector", FakeInnerConnector)
+    monkeypatch.setitem(
+        sys.modules,
+        "ucm.integration.vllm.hma_connector",
+        SimpleNamespace(UCMFAWAConnector=FakeFawaConnector),
+    )
+
+    connector = UCMConnector(
+        _vllm_config(launch_config={"use_lite": True}),
+        KVConnectorRole.SCHEDULER,
+        kv_cache_config=object(),
+    )
+
+    assert type(connector.connector) is FakeInnerConnector
 
 
 def test_ucm_connector_drains_dispatcher_vllm_connector_snapshot():
@@ -1595,27 +1634,6 @@ def test_disabled_consistency_manager_uses_original_load_failure_cleanup():
     connector.update_connector_output(output)
 
     assert "req-1" not in connector.requests_meta
-
-
-def test_lite_connector_preserves_consistency_manager_config():
-    captured = {}
-
-    def fake_direct_init(self, vllm_config, role, kv_cache_config=None):
-        captured.update(vllm_config.kv_transfer_config.kv_connector_extra_config)
-
-    config = SimpleNamespace(
-        kv_transfer_config=SimpleNamespace(
-            launch_config={"use_consistency_manager": False}
-        )
-    )
-    original_init = UCMDirectConnector.__init__
-    UCMDirectConnector.__init__ = fake_direct_init
-    try:
-        UCMLiteConnector(config, KVConnectorRole.WORKER)
-    finally:
-        UCMDirectConnector.__init__ = original_init
-
-    assert captured["use_consistency_manager"] is False
 
 
 def test_scheduler_clears_rank0_dump_success_before_marking_missing():
@@ -2442,3 +2460,23 @@ def test_pipeline_dashboard_orders_cache_bandwidth_rows():
     assert panels["Cache Load H2D Duration"]["gridPos"]["y"] == 73
     assert "Cache Dump D2H Duration (include wait compute)" in panels
     assert "Cache Dump D2H Duration" not in panels
+
+
+def test_pipeline_dashboard_cache_backend_load_ratio_uses_hit_source_share():
+    dashboard = json.loads(
+        (REPO_ROOT / "examples" / "metrics" / "grafana_pipeline_store.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    panel = next(
+        panel
+        for panel in dashboard["panels"]
+        if panel["title"] == "Cache Backend Load Ratio"
+    )
+    expression = panel["targets"][0]["expr"]
+
+    assert expression.count("ucm:posix_lookup_hit_blocks_total") == 2
+    assert expression.count("ucm:cache_lookup_hit_blocks_total") == 1
+    assert "cache_load_backend_shards_total" not in expression
+    assert "cache_load_shards_total" not in expression
+    assert "returned hit blocks" in panel["description"]

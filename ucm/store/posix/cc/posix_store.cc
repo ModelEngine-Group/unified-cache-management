@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <fmt/ranges.h>
 #include "logger/logger.h"
+#include "metrics_api.h"
 #include "posix_file.h"
 #include "space_manager.h"
 #include "trans_manager.h"
@@ -64,14 +65,26 @@ public:
     std::string Readme() const override { return "PosixStore"; }
     Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override
     {
+        RecordLookupQueries(num);
         auto res = spaceMgr_.Lookup(blocks, num);
-        if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
+        if (!res) [[unlikely]] {
+            UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num);
+            return res;
+        }
+        size_t hitCount = 0;
+        for (const auto hit : res.Value()) { hitCount += static_cast<size_t>(hit != 0); }
+        RecordLookupHits(hitCount);
         return res;
     }
     Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override
     {
+        RecordLookupQueries(num);
         auto res = spaceMgr_.LookupOnPrefix(blocks, num);
-        if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
+        if (!res) [[unlikely]] {
+            UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num);
+            return res;
+        }
+        RecordLookupHits(static_cast<size_t>(res.Value() + 1));
         return res;
     }
     void Prefetch(const Detail::BlockId* blocks, size_t num) override
@@ -132,6 +145,18 @@ public:
     }
 
 private:
+    static void RecordLookupQueries(size_t count)
+    {
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_lookup_query_blocks_total"),
+                                 static_cast<double>(count));
+    }
+
+    static void RecordLookupHits(size_t hitCount)
+    {
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_lookup_hit_blocks_total"),
+                                 static_cast<double>(hitCount));
+    }
+
     Config ParseConfig(const Detail::Dictionary& inConfig)
     {
         Config config;

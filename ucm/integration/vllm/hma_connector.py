@@ -78,8 +78,16 @@ class KVCacheGroupLayout:
     order and records enough stride metadata to address arbitrary block rows.
     """
 
-    def __init__(self, kvcaches: dict[str, torch.Tensor]) -> None:
+    def __init__(
+        self,
+        kvcaches: dict[str, torch.Tensor],
+        *,
+        is_ascend_layout: bool = False,
+        expected_block_size: Optional[int] = None,
+    ) -> None:
         self.kvcaches = dict(sorted(kvcaches.items(), key=self._sort_key))
+        self.is_ascend_layout = is_ascend_layout
+        self.expected_block_size = expected_block_size
         self.base_ptrs: np.ndarray
         self.block_strides: np.ndarray
         self.tensor_token_strides: np.ndarray
@@ -91,6 +99,36 @@ class KVCacheGroupLayout:
     def _sort_key(item: tuple[str, torch.Tensor]) -> tuple[int, str]:
         name, _ = item
         return (extract_layer_index(name), name)
+
+    def _is_combined_kv_4d(
+        self,
+        shape: Sequence[int],
+        layer_name: str,
+    ) -> bool:
+        """Classify a 4-D cache without confusing block_size=2 with K/V."""
+
+        if self.is_ascend_layout:
+            if (
+                self.expected_block_size is not None
+                and shape[1] != self.expected_block_size
+            ):
+                raise ValueError(
+                    f"Ascend KV cache tensor block size mismatch for {layer_name}: "
+                    f"shape={tuple(shape)}, expected={self.expected_block_size}."
+                )
+            return False
+
+        is_combined_kv = shape[1] == 2
+        token_dim = 2 if is_combined_kv else 1
+        if (
+            self.expected_block_size is not None
+            and shape[token_dim] != self.expected_block_size
+        ):
+            raise ValueError(
+                f"GPU KV cache tensor block size mismatch for {layer_name}: "
+                f"shape={tuple(shape)}, expected={self.expected_block_size}."
+            )
+        return is_combined_kv
 
     def _build_layout(self) -> None:
         """Flatten registered KV tensors into store-compatible pointer rows."""
@@ -131,7 +169,7 @@ class KVCacheGroupLayout:
                 handle_tensor(tensor[0], (-3, -2, -1), layer_name)
                 handle_tensor(tensor[1], (-3, -2, -1), layer_name)
             elif tensor.dim() == 4:
-                if tensor.shape[1] == 2:
+                if self._is_combined_kv_4d(tensor.shape, layer_name):
                     # GPU kernels may register [num_blocks, 2, block_size, ...];
                     # split the K/V axis before reading the token dimension.
                     handle_tensor(tensor[:, 0], (-2, -1), layer_name)
@@ -305,7 +343,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     """
 
     DEFAULT_HASH_BLOCK_SIZE = 256
-    ASCEND_DEFAULT_HASH_BLOCK_SIZE = 512
+    ASCEND_SUPPORTED_VLLM_BLOCK_SIZES = frozenset({32, 64, 128})
+    ASCEND_C4_COMPRESS_RATIO = 4
 
     def __init__(
         self,
@@ -321,6 +360,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             raise RuntimeError("FAWA connector requires kv_cache_config.")
 
         self.is_ascend_layout = False
+        self.ascend_base_block_size: Optional[int] = None
         self.fa_group_ids, self.window_group_ids = [], []
         self.group_metas: dict[int, KVCacheGroupMeta] = {}
         self.file_size = {}
@@ -355,6 +395,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         logger.info(
             f"FAWA KV group config: fa_groups={self.fa_group_ids}, "
             f"window_groups={self.window_group_ids}, "
+            f"hash_block_size={self.hash_block_size}, "
+            f"ascend_base_block_size={self.ascend_base_block_size}, "
             f"is_ascend_layout={self.is_ascend_layout}, "
             f"group_metas={group_meta_summary}"
         )
@@ -411,12 +453,53 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         npu_support = ASCEND_REQUIRED_SPECS.issubset(spec_names)
         return npu_support
 
+    @classmethod
+    def _get_ascend_base_block_size(cls, kv_cache_config: "KVCacheConfig") -> int:
+        """Read the user-scale block size from the Ascend C4 FA group.
+
+        The scheduler mutates ``vllm_config.cache_config.block_size`` to the
+        smallest hybrid-group block size, while workers retain the configured
+        value. The C4 full-attention group is present in both roles and keeps
+        the original 32/64/128 block size, so it is the stable source here.
+        """
+
+        c4_block_sizes = set()
+        for group in kv_cache_config.kv_cache_groups:
+            kv_cache_spec = group.kv_cache_spec
+            nested_specs = getattr(kv_cache_spec, "kv_cache_specs", None)
+            spec = next(iter(nested_specs.values())) if nested_specs else kv_cache_spec
+            if (
+                getattr(spec, "sliding_window", None) is None
+                and getattr(spec, "compress_ratio", 1) == cls.ASCEND_C4_COMPRESS_RATIO
+            ):
+                c4_block_sizes.add(kv_cache_spec.block_size)
+
+        if len(c4_block_sizes) != 1:
+            raise ValueError(
+                "Expected exactly one Ascend C4 full-attention block size, "
+                f"got {sorted(c4_block_sizes)}."
+            )
+        block_size = c4_block_sizes.pop()
+
+        if block_size not in cls.ASCEND_SUPPORTED_VLLM_BLOCK_SIZES:
+            supported = sorted(cls.ASCEND_SUPPORTED_VLLM_BLOCK_SIZES)
+            raise ValueError(
+                f"Unsupported DeepSeek V4 Ascend block size {block_size}; "
+                f"expected one of {supported}."
+            )
+        return block_size
+
     def _init_group_metas(self) -> None:
         """Classify FA/WA groups and compute their logical segment sizes."""
 
         if self.can_handle_ascend_kv_cache_config(self._kv_cache_config):
             self.is_ascend_layout = True
-            self.hash_block_size = self.ASCEND_DEFAULT_HASH_BLOCK_SIZE
+            self.ascend_base_block_size = self._get_ascend_base_block_size(
+                self._kv_cache_config
+            )
+            self.hash_block_size = (
+                self.ascend_base_block_size * self.ASCEND_C4_COMPRESS_RATIO
+            )
 
         groups = self._kv_cache_config.kv_cache_groups
         self.fa_group_ids, self.window_group_ids = [], []
@@ -468,7 +551,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         logger.info_once(
             f"max token_block_size of all groups: {self.max_token_block_size}"
         )
-        assert self.max_token_block_size % self.DEFAULT_HASH_BLOCK_SIZE == 0
+        if self.max_token_block_size % self.hash_block_size != 0:
+            raise ValueError(
+                f"Maximum token block size {self.max_token_block_size} must be "
+                f"divisible by hash block size {self.hash_block_size}."
+            )
         # get file size for block gc
         if len(layer_compress_ratios) < 61:
             # for dsv4 flash
@@ -490,9 +577,17 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
         # TODO we should get file size in worker thread
         if self.is_ascend_layout:
-            self.file_size["FA"] = (
-                131072 + 16384 + 256
-            ) * num_c4a_layers + 4096 * num_c128a_layers
+            if self.ascend_base_block_size is None:
+                raise RuntimeError("Ascend base block size was not initialized.")
+            # One C4 row consumes a complete physical block. One C128 row
+            # consumes block_size / 32 physical tokens, so both contributions
+            # scale linearly with the configured vLLM block size.
+            c4a_bytes_per_block_token = 1024 + 128 + 2
+            c128a_bytes_per_block_token = 32
+            self.file_size["FA"] = self.ascend_base_block_size * (
+                c4a_bytes_per_block_token * num_c4a_layers
+                + c128a_bytes_per_block_token * num_c128a_layers
+            )
             self.file_size["WA"] = (
                 131072 * num_total_layers + (32768 + 8192) * num_c4a_layers
             )
@@ -581,7 +676,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         )
         if config.get("posix_capacity_gb", None) is not None:
             config["posix_capacity_gb"] = int(config["posix_capacity_gb"]) // 2
-        self._apply_sdma_direct_launch_granularity(config)
         return name, module_path, config
 
     @staticmethod
@@ -668,7 +762,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     group_caches[layer_name] = kv_caches[layer_name]
                 else:
                     group_caches[layer_name] = tuple(kv_caches[layer_name])
-            layout = KVCacheGroupLayout(group_caches)
+            layout = KVCacheGroupLayout(
+                group_caches,
+                is_ascend_layout=self.is_ascend_layout,
+                expected_block_size=group_spec.kv_cache_spec.block_size,
+            )
             self.group_layouts[group_id] = layout
 
         self.store = self._create_fa_store(self.group_layouts, store_cores)
