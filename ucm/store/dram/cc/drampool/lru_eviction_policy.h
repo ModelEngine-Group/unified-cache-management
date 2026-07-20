@@ -75,9 +75,9 @@ public:
         return Status::OK();
     }
 
-    std::vector<BlockId> GetEvictionResults(double evictRatio) override
+    std::vector<EntryPtr> GetEvictionResults(double evictRatio) override
     {
-        std::vector<BlockId> victims;
+        std::vector<EntryPtr> victims;
         if (!std::isfinite(evictRatio) || evictRatio <= 0.0 || index_.empty()) { return victims; }
 
         const double boundedRatio = std::min(evictRatio, 1.0);
@@ -88,7 +88,7 @@ public:
         for (auto it = lruList_.rbegin(); it != lruList_.rend() && victims.size() < target; ++it) {
             const auto& entry = *it;
             if (!entry->TryMarkEvicting(now)) { continue; }
-            victims.push_back(entry->key);
+            victims.push_back(entry);
         }
 
         if (!victims.empty()) {

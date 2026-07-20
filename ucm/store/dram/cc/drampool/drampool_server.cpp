@@ -159,15 +159,16 @@ Status DramPoolServer::InitializeAclRuntime()
 
 Status DramPoolServer::InitMemoryPool()
 {
-    constexpr char kBufferPoolNamePrefix[] = "drampool-kvcache-";
+    std::vector<std::pair<std::size_t, std::size_t>> slots;
+    slots.reserve(g_config.poolBlockSizes.size());
     for (std::size_t index = 0; index < g_config.poolBlockSizes.size(); ++index) {
-        auto bufferPool = std::make_unique<UC::BufferPool>();
-        const auto status = bufferPool->Init(
-            kBufferPoolNamePrefix + std::to_string(index), UC::BufferPool::MemoryType::HOST,
-            static_cast<std::size_t>(g_config.poolBlockSizes[index]),
-            static_cast<std::size_t>(g_config.poolSlotCounts[index]));
-        if (status.Failure()) { return status; }
-        bufferPools_.push_back(std::move(bufferPool));
+        slots.emplace_back(static_cast<std::size_t>(g_config.poolBlockSizes[index]),
+                           static_cast<std::size_t>(g_config.poolSlotCounts[index]));
+    }
+    try {
+        bufferManager_ = std::make_unique<BufferManager>(slots);
+    } catch (const std::exception& error) {
+        return Status::Error(std::string{"DramPool buffer manager init failed: "} + error.what());
     }
     return Status::OK();
 }
@@ -180,9 +181,8 @@ Status DramPoolServer::InitMetadata()
         g_config.metadataDeepEvictionPolicy,
         std::chrono::milliseconds(g_config.metadataLeaseTimeMs),
         g_config.metadataDefaultEvictRatio,
-        std::chrono::milliseconds(g_config.metadataEvictPeriodMs),
     };
-    metadataManager_ = std::make_unique<UC::DramPool::MetadataManager>(config);
+    metadataManager_ = std::make_unique<UC::DramPool::MetadataManager>(config, *bufferManager_);
     return Status::OK();
 }
 
@@ -215,7 +215,6 @@ Status DramPoolServer::StartTransportService()
     if (!transportManager_) {
         return Status::InvalidParam("DramPool transport manager is not initialized");
     }
-    if (bufferPools_.empty()) { return Status::InvalidParam("memory pool is not initialized"); }
     const auto localControlId = g_config.addr.ToString();
     const auto localEndpoint = g_config.twoSidedToOneSided.find(localControlId);
     if (localEndpoint == g_config.twoSidedToOneSided.end()) {
@@ -251,13 +250,9 @@ Status DramPoolServer::StartTransportService()
 
 Status DramPoolServer::RegisterBufferPools()
 {
-    bufferPoolMemoryHandles_.reserve(bufferPools_.size());
-    for (const auto& bufferPool : bufferPools_) {
-        transport::MemoryRegion memory;
-        memory.addr = bufferPool->GetLocalAddr();
-        memory.length = bufferPool->GetTotalSize();
-        memory.type = transport::MemoryType::Host;
-
+    const auto& regions = bufferManager_->MemoryRegions();
+    bufferPoolMemoryHandles_.reserve(regions.size());
+    for (const auto& memory : regions) {
         transport::MemoryHandle handle = transport::kInvalidMemoryHandle;
         const auto status = transportManager_->RegisterMemory(memory, handle);
         if (status != transport::Status::Ok) {
@@ -291,13 +286,10 @@ Status DramPoolServer::CreateRuntimeContext()
     if (!metadataManager_ || !protocolManager_ || !transportManager_) {
         return Status::InvalidParam("DramPool runtime dependencies are not initialized");
     }
-    if (bufferPools_.empty()) {
-        return Status::InvalidParam("DramPool buffer pools are not initialized");
-    }
     try {
-        runtime_ =
-            std::make_unique<DramPoolRuntime>(*metadataManager_, bufferPools_, *transportManager_,
-                                              *protocolManager_, requestQueue_, completionQueue_);
+        runtime_ = std::make_unique<DramPoolRuntime>(*metadataManager_, *bufferManager_,
+                                                     *transportManager_, *protocolManager_,
+                                                     requestQueue_, completionQueue_);
     } catch (const std::exception& error) {
         return Status::Error(std::string{"failed to create DramPool runtime: "} + error.what());
     }
@@ -521,11 +513,7 @@ void DramPoolServer::GCThreadLoop()
     while (true) {
         std::unique_lock<std::mutex> waitLock(stopWaitMutex_);
         if (stopWaitCv_.wait_for(waitLock, interval, stopRequested)) { break; }
-        waitLock.unlock();
-        // TODO: Run periodic eviction after MetadataManager exposes a production API
-        // that returns each victim Entry (including its buffer slot). GC must release
-        // the BufferManager slot before removing the metadata entry; the current
-        // metadata eviction path only returns keys and does not release DRAM buffers.
+        metadataManager_->PerformEvict();
     }
     UC_INFO_UNLIMITED("DramPool GCThread stopped");
 }
@@ -541,7 +529,7 @@ void DramPoolServer::ResetInitializedComponents()
     metadataManager_.reset();
     tcpMessageChannel_.reset();
     bufferPoolMemoryHandles_.clear();
-    bufferPools_.clear();
+    bufferManager_.Reset();
     transportManager_.reset();
     if (aclRuntimeOwned_) {
         (void)aclrtResetDevice(g_config.transportDeviceId);

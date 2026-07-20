@@ -31,6 +31,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "buffer_manager.h"
 #include "completion_poller.h"
 #include "drampool_config.h"
 #include "drampool_types.h"
@@ -112,7 +113,7 @@ private:
     CompletionQueue completionQueue_;
     std::unique_ptr<transport::TransportManager> transportManager_;
     std::unique_ptr<transport::TcpMessageChannel> tcpMessageChannel_;
-    BufferPoolList bufferPools_;
+    std::unique_ptr<BufferManager> bufferManager_;
     std::vector<transport::MemoryHandle> bufferPoolMemoryHandles_;
     std::unique_ptr<UC::DramPool::MetadataManager> metadataManager_;
     std::unique_ptr<ProtocolManager> protocolManager_;

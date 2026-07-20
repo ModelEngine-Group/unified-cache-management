@@ -48,14 +48,14 @@ struct TtlEntryCmp {
  */
 class TtlEvictionPolicy : public OrderedEvictionPolicy<TtlEntryCmp> {
 public:
-    std::vector<BlockId> GetEvictionResults(double /*evict_ratio*/) override
+    std::vector<EntryPtr> GetEvictionResults(double /*evict_ratio*/) override
     {
-        std::vector<BlockId> victims;
+        std::vector<EntryPtr> victims;
         const auto now = std::chrono::system_clock::now();
         for (const auto& entry : entries_) {
             if (entry->lifeTimeout > now) { break; }
             if (!entry->TryMarkEvicting(now)) { continue; }
-            victims.push_back(entry->key);
+            victims.push_back(entry);
         }
         if (!victims.empty()) {
             UC_INFO("TtlEvictionPolicy evict {} of {} entries.", victims.size(), entries_.size());

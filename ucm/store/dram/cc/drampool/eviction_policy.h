@@ -92,10 +92,10 @@ public:
      * @param evict_ratio Hint ratio in [0.0, 1.0] indicating the fraction
      *                     of entries to consider for eviction. Concrete
      *                     policies may ignore this hint.
-     * @return Vector of block identifiers selected as eviction victims.
+     * @return Vector of entries selected as eviction victims.
      *         The ordering is policy-defined.
      */
-    virtual std::vector<BlockId> GetEvictionResults(double evict_ratio) = 0;
+    virtual std::vector<EntryPtr> GetEvictionResults(double evict_ratio) = 0;
 };
 
 /**

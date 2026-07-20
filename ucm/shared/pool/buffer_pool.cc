@@ -132,7 +132,7 @@ Status BufferPool::Allocate(Slot& slot)
 
     const auto idx = index_pool_.Acquire();
     if (idx == IndexPool::npos) {
-        return Status(Status::Retry().Underlying(), name_ + ": no free slots");
+        return Status(Status::NoSpace().Underlying(), name_ + ": no free slots");
     }
 
     const auto offset = static_cast<std::size_t>(idx) * slot_stride_;

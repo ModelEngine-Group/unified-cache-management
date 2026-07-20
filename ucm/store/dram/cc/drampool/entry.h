@@ -27,6 +27,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include "buffer.h"
 #include "thread/lock.h"
 #include "type/types.h"
 
@@ -55,9 +56,8 @@ struct Entry {
     uint32_t shard{0};
 
     // Attributes for buffer
-    uint32_t slot{0};
-    void* addr{nullptr};
     std::size_t size{0};
+    Buffer buffer;
 
     // Mutable attributes guarded by Spinlock
     Spinlock lock;

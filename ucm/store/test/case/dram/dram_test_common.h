@@ -27,7 +27,10 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <utility>
+#include <vector>
 #include "detail/types_helper.h"
+#include "dram/cc/drampool/buffer_manager.h"
 #include "dram/cc/drampool/entry.h"
 
 namespace UC::Test::Dram {
@@ -35,6 +38,7 @@ namespace UC::Test::Dram {
 using Clock = std::chrono::system_clock;
 using TimePoint = Clock::time_point;
 
+using UC::DramPool::BufferManager;
 using UC::DramPool::Entry;
 using UC::DramPool::EntryPtr;
 using UC::DramPool::EntryStatus;
@@ -42,7 +46,7 @@ using UC::DramPool::EntryStatus;
 inline EntryPtr MakeEntry(UC::Detail::BlockId key, uint32_t position = 0,
                           TimePoint lifeTimeout = TimePoint{},
                           EntryStatus status = EntryStatus::READY, uint32_t refCnt = 0,
-                          TimePoint leaseTimeout = TimePoint{})
+                          TimePoint leaseTimeout = TimePoint{}, std::size_t size = 64)
 {
     auto e = std::make_shared<Entry>();
     e->key = key;
@@ -51,12 +55,21 @@ inline EntryPtr MakeEntry(UC::Detail::BlockId key, uint32_t position = 0,
     e->status = status;
     e->refCnt = refCnt;
     e->leaseTimeout = leaseTimeout;
+    e->size = size;
     return e;
 }
 
 inline UC::Detail::BlockId KeyFromHex(const char* hex)
 {
     return UC::Test::Detail::TypesHelper::MakeBlockId(hex);
+}
+
+inline std::unique_ptr<BufferManager> MakeBufferManager(
+    std::vector<std::pair<std::size_t, std::size_t>> slots = {
+        {64, 16}
+})
+{
+    return std::make_unique<BufferManager>(std::move(slots));
 }
 
 }  // namespace UC::Test::Dram

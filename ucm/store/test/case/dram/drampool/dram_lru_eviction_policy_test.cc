@@ -107,7 +107,7 @@ TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsEvictsOldestEntryFirst)
 
     auto victims = policy_.GetEvictionResults(0.34);
     ASSERT_EQ(victims.size(), 1UL);
-    EXPECT_EQ(victims[0], k1);
+    EXPECT_EQ(victims[0]->key, k1);
 }
 
 TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsRespectsEvictRatio)
@@ -123,8 +123,8 @@ TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsRespectsEvictRatio)
 
     auto victims = policy_.GetEvictionResults(0.5);
     ASSERT_EQ(victims.size(), 2UL);
-    EXPECT_EQ(victims[0], k1);
-    EXPECT_EQ(victims[1], k2);
+    EXPECT_EQ(victims[0]->key, k1);
+    EXPECT_EQ(victims[1]->key, k2);
 }
 
 TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsClampsRatioAboveOne)
@@ -136,8 +136,8 @@ TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsClampsRatioAboveOne)
 
     auto victims = policy_.GetEvictionResults(1.5);
     ASSERT_EQ(victims.size(), 2UL);
-    EXPECT_EQ(victims[0], k1);
-    EXPECT_EQ(victims[1], k2);
+    EXPECT_EQ(victims[0]->key, k1);
+    EXPECT_EQ(victims[1]->key, k2);
 }
 
 TEST_F(UCLruEvictionPolicyTest, AccessKeyMovesEntryToRecent)
@@ -152,7 +152,7 @@ TEST_F(UCLruEvictionPolicyTest, AccessKeyMovesEntryToRecent)
 
     auto victims = policy_.GetEvictionResults(0.34);
     ASSERT_EQ(victims.size(), 1UL);
-    EXPECT_EQ(victims[0], k2);
+    EXPECT_EQ(victims[0]->key, k2);
 }
 
 TEST_F(UCLruEvictionPolicyTest, DeleteKeyPreservesLruOrder)
@@ -167,7 +167,7 @@ TEST_F(UCLruEvictionPolicyTest, DeleteKeyPreservesLruOrder)
 
     auto victims = policy_.GetEvictionResults(0.5);
     ASSERT_EQ(victims.size(), 1UL);
-    EXPECT_EQ(victims[0], k1);
+    EXPECT_EQ(victims[0]->key, k1);
 }
 
 TEST_F(UCLruEvictionPolicyTest, DeleteKeyAllowsReinsert)
@@ -179,7 +179,7 @@ TEST_F(UCLruEvictionPolicyTest, DeleteKeyAllowsReinsert)
 
     auto victims = policy_.GetEvictionResults(1.0);
     ASSERT_EQ(victims.size(), 1UL);
-    EXPECT_EQ(victims[0], key);
+    EXPECT_EQ(victims[0]->key, key);
 }
 
 TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsSkipsNonReadyAndContinues)
@@ -193,7 +193,7 @@ TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsSkipsNonReadyAndContinues)
 
     auto victims = policy_.GetEvictionResults(1.0);
     ASSERT_EQ(victims.size(), 1UL);
-    EXPECT_EQ(victims[0], kReady);
+    EXPECT_EQ(victims[0]->key, kReady);
 }
 
 TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsSkipsNonZeroRefCnt)
@@ -207,7 +207,7 @@ TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsSkipsNonZeroRefCnt)
 
     auto victims = policy_.GetEvictionResults(1.0);
     ASSERT_EQ(victims.size(), 1UL);
-    EXPECT_EQ(victims[0], kReady);
+    EXPECT_EQ(victims[0]->key, kReady);
 }
 
 TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsSkipsLeasedEntry)
@@ -221,7 +221,7 @@ TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsSkipsLeasedEntry)
 
     auto victims = policy_.GetEvictionResults(1.0);
     ASSERT_EQ(victims.size(), 1UL);
-    EXPECT_EQ(victims[0], kReady);
+    EXPECT_EQ(victims[0]->key, kReady);
 }
 
 TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsEmptyWhenAllEntriesIneligible)
@@ -250,6 +250,6 @@ TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsMarksVictimsAsDeleting)
 
     auto victims = policy_.GetEvictionResults(1.0);
     ASSERT_EQ(victims.size(), 1UL);
-    EXPECT_EQ(victims[0], key);
+    EXPECT_EQ(victims[0]->key, key);
     EXPECT_EQ(entry->status, EntryStatus::DELETING);
 }
