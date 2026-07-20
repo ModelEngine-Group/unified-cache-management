@@ -78,8 +78,16 @@ class KVCacheGroupLayout:
     order and records enough stride metadata to address arbitrary block rows.
     """
 
-    def __init__(self, kvcaches: dict[str, torch.Tensor]) -> None:
+    def __init__(
+        self,
+        kvcaches: dict[str, torch.Tensor],
+        *,
+        is_ascend_layout: bool = False,
+        expected_block_size: Optional[int] = None,
+    ) -> None:
         self.kvcaches = dict(sorted(kvcaches.items(), key=self._sort_key))
+        self.is_ascend_layout = is_ascend_layout
+        self.expected_block_size = expected_block_size
         self.base_ptrs: np.ndarray
         self.block_strides: np.ndarray
         self.tensor_token_strides: np.ndarray
@@ -91,6 +99,36 @@ class KVCacheGroupLayout:
     def _sort_key(item: tuple[str, torch.Tensor]) -> tuple[int, str]:
         name, _ = item
         return (extract_layer_index(name), name)
+
+    def _is_combined_kv_4d(
+        self,
+        shape: Sequence[int],
+        layer_name: str,
+    ) -> bool:
+        """Classify a 4-D cache without confusing block_size=2 with K/V."""
+
+        if self.is_ascend_layout:
+            if (
+                self.expected_block_size is not None
+                and shape[1] != self.expected_block_size
+            ):
+                raise ValueError(
+                    f"Ascend KV cache tensor block size mismatch for {layer_name}: "
+                    f"shape={tuple(shape)}, expected={self.expected_block_size}."
+                )
+            return False
+
+        is_combined_kv = shape[1] == 2
+        token_dim = 2 if is_combined_kv else 1
+        if (
+            self.expected_block_size is not None
+            and shape[token_dim] != self.expected_block_size
+        ):
+            raise ValueError(
+                f"GPU KV cache tensor block size mismatch for {layer_name}: "
+                f"shape={tuple(shape)}, expected={self.expected_block_size}."
+            )
+        return is_combined_kv
 
     def _build_layout(self) -> None:
         """Flatten registered KV tensors into store-compatible pointer rows."""
@@ -131,7 +169,7 @@ class KVCacheGroupLayout:
                 handle_tensor(tensor[0], (-3, -2, -1), layer_name)
                 handle_tensor(tensor[1], (-3, -2, -1), layer_name)
             elif tensor.dim() == 4:
-                if tensor.shape[1] == 2:
+                if self._is_combined_kv_4d(tensor.shape, layer_name):
                     # GPU kernels may register [num_blocks, 2, block_size, ...];
                     # split the K/V axis before reading the token dimension.
                     handle_tensor(tensor[:, 0], (-2, -1), layer_name)
@@ -688,7 +726,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     group_caches[layer_name] = kv_caches[layer_name]
                 else:
                     group_caches[layer_name] = tuple(kv_caches[layer_name])
-            layout = KVCacheGroupLayout(group_caches)
+            layout = KVCacheGroupLayout(
+                group_caches,
+                is_ascend_layout=self.is_ascend_layout,
+                expected_block_size=group_spec.kv_cache_spec.block_size,
+            )
             self.group_layouts[group_id] = layout
 
         self.store = self._create_fa_store(self.group_layouts, store_cores)
