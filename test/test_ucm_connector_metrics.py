@@ -274,7 +274,6 @@ def _install_stubs():
             item for array in arrays for item in list(array)
         ],
         asarray=lambda values, dtype=None: values,
-        ascontiguousarray=lambda values: values,
         arange=lambda *args, **kwargs: list(range(*args)),
         isscalar=lambda value: isinstance(value, (int, float, bool, str, bytes)),
     )
@@ -360,14 +359,10 @@ _install_stubs()
 import ucm.integration.vllm.ucm_connector as ucm_connector_module
 from ucm.default_metrics_config import DEFAULT_METRICS_CONFIG
 from ucm.integration.vllm.metrics import UCMConnectorStats, UCMPromMetrics
-from ucm.integration.vllm.rank_consistency import RankConsistencyManager
 from ucm.integration.vllm.ucm_connector import (
     PendingDumpTask,
     UCMConnector,
-    UCMConnectorMetadata,
     UCMDirectConnector,
-    UCMLayerWiseConnector,
-    UCMWorkerMetadata,
 )
 from ucm.metrics_config import (
     consumer_enabled,
@@ -380,19 +375,6 @@ from ucm.metrics_config import (
     vllm_connector_prefix,
 )
 from ucm.metrics_dispatcher import get_metrics_dispatcher
-
-
-def _attach_rank_consistency(connector, *, scheduler_side=False, enabled=True):
-    if not scheduler_side:
-        connector._connector_worker_meta = UCMWorkerMetadata(
-            is_mla=getattr(connector, "is_mla", False)
-        )
-    manager = RankConsistencyManager(
-        is_scheduler=scheduler_side,
-        use_consistency_manager=enabled,
-    )
-    connector._rank_consistency = manager
-    return manager
 
 
 def _metric_types():
@@ -1178,14 +1160,9 @@ def test_direct_connector_get_finished_records_async_durations():
     _reset_fakes()
     import ucm.integration.vllm.ucm_connector as ucm_connector_module
 
-    task = object()
-
     class Store:
         def __init__(self):
             self.waited = []
-
-        def dump_data(self, block_ids, shard_indices, ptrs, event_handle):
-            return task
 
         def wait(self, task):
             self.waited.append(task)
@@ -1199,12 +1176,9 @@ def test_direct_connector_get_finished_records_async_durations():
 
     connector = object.__new__(UCMDirectConnector)
     connector.store = Store()
-    connector.tp_rank = 0
     connector.enable_event_sync = True
     connector.device = Device()
-    manager = _attach_rank_consistency(connector)
-    task = manager.submit_dump(connector.store, {"req-1": set()}, [], [], [], 0)
-    assert task is not None
+    task = object()
     pending = PendingDumpTask(
         task=task,
         request_ids={"req-1"},
@@ -1241,8 +1215,6 @@ def test_direct_connector_poll_records_zero_completion_wait_duration():
     _reset_fakes()
     import ucm.integration.vllm.ucm_connector as ucm_connector_module
 
-    task = object()
-
     class Store:
         def __init__(self):
             self.checked = []
@@ -1252,20 +1224,14 @@ def test_direct_connector_poll_records_zero_completion_wait_duration():
             self.checked.append(task)
             return True
 
-        def dump_data(self, block_ids, shard_indices, ptrs, event_handle):
-            return task
-
         def wait(self, task):
             self.waited.append(task)
 
     connector = object.__new__(UCMDirectConnector)
     connector.store = Store()
-    connector.tp_rank = 0
     connector.enable_event_sync = False
     connector.device = None
-    manager = _attach_rank_consistency(connector)
-    task = manager.submit_dump(connector.store, {"req-1": set()}, [], [], [], 0)
-    assert task is not None
+    task = object()
     connector._pending_dump_tasks = [
         PendingDumpTask(
             task=task,
@@ -1290,379 +1256,6 @@ def test_direct_connector_poll_records_zero_completion_wait_duration():
             "save_duration": 100.0,
             "save_completion_wait_duration": 0.0,
         }
-    ]
-
-
-def test_create_store_does_not_inject_global_rank():
-    captured = []
-
-    class Factory:
-        @staticmethod
-        def create_connector(name, config, module_path):
-            captured.append(config)
-            return object()
-
-    class Flat:
-        def __init__(self, values):
-            self.values = values
-
-        def reshape(self, *shape):
-            return self
-
-        def tolist(self):
-            return list(self.values)
-
-    common = {
-        "connector_configs": [
-            {"ucm_connector_name": "Fake", "ucm_connector_config": {}}
-        ],
-        "is_mla": False,
-        "engine_id": "engine",
-        "blocks_per_chunk": 1,
-        "tp_size": 2,
-        "use_layerwise": False,
-        "block_size": 16,
-        "element_size": 2,
-        "head_size": 8,
-        "num_layers": 2,
-        "num_head": 4,
-        "_vllm_config": SimpleNamespace(
-            parallel_config=SimpleNamespace(rank=7, data_parallel_rank=0)
-        ),
-    }
-    layout = SimpleNamespace(
-        tensor_size_list=Flat([8]),
-        shard_size=8,
-        block_size=16,
-        base_ptrs=Flat([100]),
-        buffer_sizes=Flat([8]),
-    )
-    original_factory = ucm_connector_module.UcmConnectorFactoryV1
-    ucm_connector_module.UcmConnectorFactoryV1 = Factory
-    try:
-        worker = object.__new__(UCMDirectConnector)
-        worker.__dict__.update(common)
-        worker._role = KVConnectorRole.WORKER
-        worker.local_rank = 0
-        worker._create_store(layout)
-
-        scheduler = object.__new__(UCMDirectConnector)
-        scheduler.__dict__.update(common)
-        scheduler._role = KVConnectorRole.SCHEDULER
-        scheduler.local_rank = -1
-        scheduler._create_store(None)
-    finally:
-        ucm_connector_module.UcmConnectorFactoryV1 = original_factory
-
-    assert "rank" not in captured[0]
-    assert "rank" not in captured[1]
-
-
-def test_worker_metadata_unions_mla_dump_successes():
-    left = UCMWorkerMetadata(is_mla=True)
-    right = UCMWorkerMetadata(is_mla=True)
-    left.dump_succeeded_blocks.update({b"a" * 16, b"b" * 16})
-    right.dump_succeeded_blocks.update({b"b" * 16, b"c" * 16})
-
-    result = left.aggregate(right)
-
-    assert result.dump_succeeded_blocks == {
-        b"a" * 16,
-        b"b" * 16,
-        b"c" * 16,
-    }
-    assert not hasattr(UCMWorkerMetadata, "mark_dump_failed")
-    assert not hasattr(UCMWorkerMetadata, "mark_dump_succeeded")
-
-
-def test_worker_metadata_intersects_non_mla_dump_successes():
-    left = UCMWorkerMetadata(is_mla=False)
-    right = UCMWorkerMetadata(is_mla=False)
-    left.dump_succeeded_blocks.update({b"a" * 16, b"b" * 16})
-    right.dump_succeeded_blocks.update({b"b" * 16, b"c" * 16})
-
-    result = left.aggregate(right)
-
-    assert result.dump_succeeded_blocks == {b"b" * 16}
-
-
-def test_non_rank0_dump_result_is_reported():
-    class Store:
-        def dump_data(self, block_ids, shard_indices, ptrs, event_handle):
-            return object()
-
-        def wait(self, task):
-            return None
-
-    connector = object.__new__(UCMDirectConnector)
-    connector.store = Store()
-    connector.enable_event_sync = False
-    connector.device = None
-    connector.tp_rank = 1
-    connector.is_mla = False
-    connector.request_hasher = lambda block_id: block_id
-    manager = _attach_rank_consistency(connector)
-    blocks = {"req-1": {b"a" * 16, b"b" * 16}}
-    task = manager.submit_dump(
-        connector.store, blocks, list(blocks["req-1"]), [0, 0], [], 0
-    )
-    pending = PendingDumpTask(task=task, request_ids={"req-1"})
-
-    connector._wait_pending_dump_task(pending)
-    manager.finish_dump({"req-1"})
-
-    assert connector.build_connector_worker_meta().dump_succeeded_blocks == {
-        b"a" * 16,
-        b"b" * 16,
-    }
-
-
-def test_failed_rank0_dump_does_not_report_success():
-    class Store:
-        def dump_data(self, block_ids, shard_indices, ptrs, event_handle):
-            return object()
-
-        def wait(self, task):
-            raise RuntimeError("dump failed")
-
-    connector = object.__new__(UCMDirectConnector)
-    connector.store = Store()
-    connector.enable_event_sync = False
-    connector.device = None
-    connector.tp_rank = 0
-    manager = _attach_rank_consistency(connector)
-    blocks = {"req-1": {b"a" * 16, b"b" * 16}}
-    task = manager.submit_dump(
-        connector.store, blocks, list(blocks["req-1"]), [0, 0], [], 0
-    )
-    pending = PendingDumpTask(task=task, request_ids={"req-1"})
-
-    with pytest.raises(RuntimeError, match="dump failed"):
-        connector._wait_pending_dump_task(pending)
-    manager.finish_dump({"req-1"})
-
-    assert connector.build_connector_worker_meta().dump_succeeded_blocks == set()
-
-
-def test_successful_rank0_dump_reports_every_covered_block():
-    class Store:
-        def dump_data(self, block_ids, shard_indices, ptrs, event_handle):
-            return object()
-
-        def wait(self, task):
-            return None
-
-    connector = object.__new__(UCMDirectConnector)
-    connector.store = Store()
-    connector.enable_event_sync = False
-    connector.device = None
-    connector.tp_rank = 0
-    manager = _attach_rank_consistency(connector)
-    blocks = {"req-1": {b"a" * 16, b"b" * 16}}
-    task = manager.submit_dump(
-        connector.store, blocks, list(blocks["req-1"]), [0, 0], [], 0
-    )
-    pending = PendingDumpTask(task=task, request_ids={"req-1"})
-
-    connector._wait_pending_dump_task(pending)
-    manager.finish_dump({"req-1"})
-
-    meta = connector.build_connector_worker_meta()
-    assert meta.dump_succeeded_blocks == {
-        b"a" * 16,
-        b"b" * 16,
-    }
-
-
-def test_rank0_layerwise_dump_requires_every_task_to_succeed():
-    class Store:
-        def dump_data(self, block_ids, shard_indices, ptrs, event_handle):
-            return ptrs
-
-        def wait(self, task):
-            if task == "failed-layer":
-                raise RuntimeError("dump failed")
-
-    connector = object.__new__(UCMDirectConnector)
-    connector.store = Store()
-    connector.enable_event_sync = False
-    connector.device = None
-    connector.tp_rank = 0
-    manager = _attach_rank_consistency(connector)
-    blocks = {"req-1": {b"a" * 16}}
-    successful = manager.submit_dump(
-        connector.store, blocks, [b"a" * 16], [0], "successful-layer", 0
-    )
-    failed = manager.submit_dump(
-        connector.store, blocks, [b"a" * 16], [0], "failed-layer", 0
-    )
-
-    connector._wait_pending_dump_task(PendingDumpTask(successful, {"req-1"}))
-    with pytest.raises(RuntimeError, match="dump failed"):
-        connector._wait_pending_dump_task(PendingDumpTask(failed, {"req-1"}))
-    manager.finish_dump({"req-1"})
-
-    assert connector.build_connector_worker_meta().dump_succeeded_blocks == set()
-
-
-def test_direct_dump_submit_failure_does_not_report_rank0_success():
-    rank0_blocks = [b"a" * 16, b"b" * 16]
-    metadata = UCMConnectorMetadata(
-        request_meta={
-            "req-1": SimpleNamespace(
-                dump_block_ids=(rank0_blocks, [1, 2]),
-            )
-        }
-    )
-
-    class Store:
-        def dump_data(self, block_ids, shard_indices, ptrs, event_handle):
-            raise RuntimeError("submit failed")
-
-    class Layout:
-        def extract_block_addrs(self, block_ids):
-            return SimpleNamespace(
-                shape=(2, 1),
-                reshape=lambda *shape: [[1], [2]],
-            )
-
-    connector = object.__new__(UCMDirectConnector)
-    connector._poll_pending_dump_tasks = lambda: None
-    connector._get_connector_metadata = lambda: metadata
-    connector._get_dump_event_handle = lambda: 0
-    connector._pending_dump_tasks = []
-    connector._async_dump_req_ids = set()
-    connector.tp_rank = 0
-    connector.is_mla = False
-    connector._skip_null_vllm_blocks = False
-    connector.enable_event_sync = False
-    connector.device = None
-    connector.store = Store()
-    connector.kv_cache_layout = Layout()
-    manager = _attach_rank_consistency(connector)
-
-    connector.wait_for_save()
-    manager.finish_dump({"req-1"})
-
-    assert rank0_blocks == [b"a" * 16, b"b" * 16]
-    assert connector.build_connector_worker_meta().dump_succeeded_blocks == set()
-
-
-def test_layerwise_dump_submit_failure_does_not_report_rank0_success():
-    class Store:
-        def dump_data(self, block_ids, shard_indices, ptrs, event_handle):
-            raise RuntimeError("submit failed")
-
-    connector = object.__new__(UCMLayerWiseConnector)
-    connector.first_layer_id = 0
-    connector.dump_total_ptrs = [[[1], [2]]]
-    connector._get_dump_event_handle = lambda: 0
-    connector._pending_dump_tasks = []
-    connector.tp_rank = 0
-    connector.tp_size = 1
-    connector.is_mla = False
-    connector.enable_event_sync = False
-    connector.device = None
-    connector.store = Store()
-    connector._record_counter = lambda name: None
-    manager = _attach_rank_consistency(connector)
-    connector._get_connector_metadata = lambda: UCMConnectorMetadata(
-        request_meta={
-            "req-1": SimpleNamespace(dump_block_ids=([b"a" * 16, b"b" * 16], [1, 2]))
-        }
-    )
-
-    connector._submit_layerwise_dump_task(
-        0,
-        [b"rank1-a", b"rank1-b"],
-        [1, 2],
-        {"req-1"},
-    )
-    manager.finish_dump({"req-1"})
-
-    assert connector.build_connector_worker_meta().dump_succeeded_blocks == set()
-
-
-def test_build_worker_meta_preserves_load_failures_and_adds_dump_successes():
-    connector = object.__new__(UCMDirectConnector)
-    connector._connector_worker_meta = UCMWorkerMetadata(
-        is_mla=False, load_failed_reqs={"req-1"}
-    )
-    connector._rank_consistency = SimpleNamespace(
-        enabled=True,
-        update_worker_meta=lambda meta: meta.dump_succeeded_blocks.add(b"a" * 16),
-    )
-
-    meta = connector.build_connector_worker_meta()
-
-    assert meta is not None
-    assert meta.load_failed_reqs == {"req-1"}
-    assert meta.dump_succeeded_blocks == {b"a" * 16}
-    assert connector._connector_worker_meta.load_failed_reqs == set()
-
-
-def test_disabled_consistency_manager_omits_empty_worker_metadata():
-    connector = object.__new__(UCMDirectConnector)
-    connector._connector_worker_meta = UCMWorkerMetadata(is_mla=False)
-    connector._rank_consistency = SimpleNamespace(
-        enabled=False,
-        update_worker_meta=lambda meta: None,
-    )
-
-    assert connector.build_connector_worker_meta() is None
-
-
-def test_disabled_consistency_manager_uses_original_load_failure_cleanup():
-    connector = object.__new__(UCMDirectConnector)
-    connector._rank_consistency = SimpleNamespace(
-        enabled=False,
-        apply_worker_meta=lambda meta: None,
-    )
-    connector.requests_meta = {
-        "req-1": SimpleNamespace(
-            hbm_hit_block_num=1,
-            total_hit_block_num=3,
-            token_processed=48,
-        )
-    }
-    output = SimpleNamespace(
-        kv_connector_worker_meta=UCMWorkerMetadata(
-            load_failed_reqs={"req-1"},
-        )
-    )
-
-    connector.update_connector_output(output)
-
-    assert "req-1" not in connector.requests_meta
-
-
-def test_scheduler_clears_rank0_dump_success_before_marking_missing():
-    calls = []
-
-    class Tracker:
-        def clear_dumped(self, block_ids):
-            calls.append(("cleared", block_ids))
-
-        def mark_missing(self, block_ids):
-            calls.append(("missing", block_ids))
-
-    block = b"b" * 16
-    meta = UCMWorkerMetadata(
-        missing_reqs={"load"},
-        missing_blocks={block},
-        dump_succeeded_blocks={block},
-    )
-    connector = object.__new__(UCMDirectConnector)
-    manager = _attach_rank_consistency(connector, scheduler_side=True)
-    manager._tracker = Tracker()
-    connector.requests_meta = {}
-    output = SimpleNamespace(kv_connector_worker_meta=meta)
-
-    connector.update_connector_output(output)
-
-    assert calls == [
-        ("cleared", {block}),
-        ("missing", {block}),
     ]
 
 

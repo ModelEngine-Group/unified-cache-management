@@ -71,9 +71,7 @@ void TransQueue::Push(TaskPtr task, WaiterPtr waiter)
 {
     waiter->Set(task->desc.size());
     std::list<IoUnit> ios;
-    for (auto&& shard : task->desc) {
-        ios.emplace_back<IoUnit>({task, std::move(shard), waiter});
-    }
+    for (auto&& shard : task->desc) { ios.emplace_back<IoUnit>({task, std::move(shard), waiter}); }
     ios.front().firstIo = true;
     if (task->type == TransTask::Type::DUMP) {
         dumpPool_.Push(ios);

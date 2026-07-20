@@ -48,7 +48,8 @@ class RankConsistencyTracker:
     def __init__(self) -> None:
         self._inconsistent: set[bytes] = set()
 
-    def mark_missing(self, rank0_block_ids: set[bytes]) -> None:
+    def mark_missing(self, rank0_block_ids: set[bytes]) -> int:
+        added = 0
         evicted = 0
         for block_id in rank0_block_ids:
             if block_id in self._inconsistent:
@@ -57,6 +58,7 @@ class RankConsistencyTracker:
                 self._inconsistent.pop()
                 evicted += 1
             self._inconsistent.add(block_id)
+            added += 1
         if evicted:
             logger.warning_limit(
                 "Rank consistency tracker reached its %d-block limit; "
@@ -64,9 +66,15 @@ class RankConsistencyTracker:
                 self._MAX_INCONSISTENT_BLOCKS,
                 evicted,
             )
+        return added
 
-    def clear_dumped(self, rank0_block_ids: set[bytes]) -> None:
+    def clear_dumped(self, rank0_block_ids: set[bytes]) -> int:
+        before = len(self._inconsistent)
         self._inconsistent -= rank0_block_ids
+        return before - len(self._inconsistent)
+
+    def __len__(self) -> int:
+        return len(self._inconsistent)
 
     def __contains__(self, block_id: bytes) -> bool:
         return block_id in self._inconsistent
@@ -241,8 +249,19 @@ class RankConsistencyManager:
         """Apply reported dump successes and load misses on the scheduler."""
         if self._tracker is None:
             return
-        self._tracker.clear_dumped(worker_meta.dump_succeeded_blocks)
-        self._tracker.mark_missing(worker_meta.missing_blocks)
+        total_before = len(self._tracker)
+        cleared = self._tracker.clear_dumped(worker_meta.dump_succeeded_blocks)
+        added = self._tracker.mark_missing(worker_meta.missing_blocks)
+        total_after = len(self._tracker)
+        if added or cleared:
+            logger.warning_limit(
+                "Rank consistency invalid block set changed after worker metadata "
+                "aggregation: added=%d, cleared=%d, total_before=%d, total_after=%d",
+                added,
+                cleared,
+                total_before,
+                total_after,
+            )
 
     def _mark_load_context_missing(
         self, block_ids_by_request: dict[str, list[bytes]]

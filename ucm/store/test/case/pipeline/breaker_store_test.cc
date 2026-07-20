@@ -29,6 +29,7 @@
 #include <mutex>
 #include <vector>
 #include "detail/mock_store.h"
+#include "logger/logger.h"
 #include "store_health_config.h"
 
 namespace UC::Test {
@@ -86,6 +87,34 @@ TEST(UCBreakerStoreTest, TripsEarlyAndRecoversAfterFullSuccessWindow)
     EXPECT_TRUE(breaker.Enabled());
     EXPECT_EQ(breaker.FailureCount(), 0);
     EXPECT_EQ(breaker.SampleCount(), 5);
+}
+
+TEST(UCBreakerStoreTest, LogsWindowOnEveryStateTransition)
+{
+    StrictMock<Detail::MockStore> store;
+    auto config = TestConfig();
+    config.healthWindowSize = 3;
+    config.failureThreshold = 2;
+    BreakerStore breaker(&store, "cache-0", config);
+
+    testing::internal::CaptureStdout();
+    EXPECT_CALL(store, CheckHealth())
+        .WillOnce(Return(Status::Error()))
+        .WillOnce(Return(Status::Error()))
+        .WillRepeatedly(Return(Status::OK()));
+    EXPECT_TRUE(breaker.CheckHealth().Failure());
+    EXPECT_TRUE(breaker.CheckHealth().Failure());
+    EXPECT_TRUE(breaker.CheckHealth().Success());
+    EXPECT_TRUE(breaker.CheckHealth().Success());
+    EXPECT_TRUE(breaker.CheckHealth().Success());
+    UC::Logger::Flush();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const auto output = testing::internal::GetCapturedStdout();
+
+    EXPECT_THAT(output, testing::HasSubstr("transitioned to UNHEALTHY"));
+    EXPECT_THAT(output, testing::HasSubstr("window=[failure, failure]"));
+    EXPECT_THAT(output, testing::HasSubstr("transitioned to HEALTHY"));
+    EXPECT_THAT(output, testing::HasSubstr("window=[success, success, success]"));
 }
 
 TEST(UCBreakerStoreTest, SlidingWindowEvictsOldFailure)

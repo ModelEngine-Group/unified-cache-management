@@ -41,7 +41,9 @@ public:
 public:
     TransTask(Type type, Detail::TaskDesc desc) : id{NextId()}, type{type}, desc{std::move(desc)} {}
     TransTask(TransTask&& other) noexcept
-        : id{other.id}, type{other.type}, desc{std::move(other.desc)},
+        : id{other.id},
+          type{other.type},
+          desc{std::move(other.desc)},
           failureStatus{other.failureStatus.load()}
     {
     }

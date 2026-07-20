@@ -132,6 +132,7 @@ void BreakerStore::RecordHealth(bool healthy)
     bool newEnabled = false;
     size_t failureCount = 0;
     size_t sampleCount = 0;
+    std::string healthWindow;
     {
         std::lock_guard<std::mutex> lock(healthMutex_);
         if (healthResults_.size() == config_.healthWindowSize) {
@@ -152,11 +153,18 @@ void BreakerStore::RecordHealth(bool healthy)
         enabled_.store(newEnabled, std::memory_order_release);
         failureCount = failureCount_;
         sampleCount = healthResults_.size();
+        if (oldEnabled != newEnabled) {
+            for (bool result : healthResults_) {
+                if (!healthWindow.empty()) { healthWindow += ", "; }
+                healthWindow += result ? "success" : "failure";
+            }
+        }
     }
     if (oldEnabled != newEnabled) {
-        UC_WARN(
-            "Store health breaker({}) transitioned to {}, samples={}, failures={}, threshold={}.",
-            storeId_, newEnabled ? "HEALTHY" : "UNHEALTHY", sampleCount, failureCount,
+        UC_WARN_UNLIMITED(
+            "Store health breaker({}) transitioned to {}, window=[{}], samples={}, failures={}, "
+            "threshold={}.",
+            storeId_, newEnabled ? "HEALTHY" : "UNHEALTHY", healthWindow, sampleCount, failureCount,
             config_.failureThreshold);
     }
 }

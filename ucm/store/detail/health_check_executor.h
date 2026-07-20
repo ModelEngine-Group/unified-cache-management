@@ -62,9 +62,10 @@ public:
             std::lock_guard<std::mutex> runLock(runMutex_);
             ReapFinished();
             if (workers_.size() >= kMaxInFlight) {
-                UC_WARN("Health check executor reached max threads, rejecting probe with Timeout, "
-                        "in-flight={}.",
-                        workers_.size());
+                UC_WARN(
+                    "Health check executor reached max threads, rejecting probe with Timeout, "
+                    "in-flight={}.",
+                    workers_.size());
                 return Status::Timeout();
             }
             try {

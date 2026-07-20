@@ -112,7 +112,9 @@ TEST_F(UCCacheTransManagerTest, BackendNotFoundIsPreserved)
 
     auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
     UC::Test::Detail::DataGenerator data{1, config.blockSize};
-    UC::Detail::TaskDesc desc{{block, 0, {data.Buffer()}}};
+    UC::Detail::TaskDesc desc{
+        {block, 0, {data.Buffer()}}
+    };
     auto handle = transMgr.Submit({TransTask::Type::LOAD, std::move(desc)});
     ASSERT_TRUE(handle.HasValue());
     EXPECT_EQ(transMgr.Wait(handle.Value()), UC::Status::NotFound());
@@ -144,7 +146,9 @@ TEST_F(UCCacheTransManagerTest, BackendSubmitNotFoundIsPreserved)
 
     auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
     UC::Test::Detail::DataGenerator data{1, config.blockSize};
-    UC::Detail::TaskDesc desc{{block, 0, {data.Buffer()}}};
+    UC::Detail::TaskDesc desc{
+        {block, 0, {data.Buffer()}}
+    };
     auto handle = transMgr.Submit({TransTask::Type::LOAD, std::move(desc)});
     ASSERT_TRUE(handle.HasValue());
     EXPECT_EQ(transMgr.Wait(handle.Value()), UC::Status::NotFound());
