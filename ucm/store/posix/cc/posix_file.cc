@@ -134,4 +134,12 @@ Status PosixFile::Write(const void* buffer, size_t size, off64_t offset)
     return Status::OK();
 }
 
+Status PosixFile::Sync()
+{
+    auto ret = fsync(handle_);
+    auto eno = errno;
+    if (ret != 0) [[unlikely]] { return Status::OsApiError(std::to_string(eno)); }
+    return Status::OK();
+}
+
 }  // namespace UC::PosixStore

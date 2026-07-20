@@ -27,6 +27,7 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -226,14 +227,39 @@ TEST_F(UCPosixStoreTest, DumpThenLoad)
     ASSERT_EQ(data1.Compare(data2), 0);
 
     ASSERT_EQ(store.CheckHealth(), UC::Status::OK());
-    auto missingBlock = UC::Test::Detail::TypesHelper::MakeBlockId(
-        "ffffffffffffffffffffffffffffffff");
+    auto missingBlock =
+        UC::Test::Detail::TypesHelper::MakeBlockId("ffffffffffffffffffffffffffffffff");
     UC::Detail::TaskDesc missingDesc;
     missingDesc.brief = "LoadMissing";
     missingDesc.push_back(UC::Detail::Shard{missingBlock, 0, {data2.Buffer()}});
     auto missingHandle = store.Load(missingDesc);
     ASSERT_TRUE(missingHandle.HasValue());
     ASSERT_EQ(store.Wait(missingHandle.Value()), UC::Status::NotFound());
+}
+
+TEST_F(UCPosixStoreTest, CheckHealthWithoutDirectIoOnTemporaryFilesystem)
+{
+    using namespace UC::PosixStore;
+    const auto path =
+        std::filesystem::temp_directory_path() / ("ucm_posix_health_" + std::to_string(::getpid()));
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() { std::filesystem::remove_all(path); }
+    } cleanup{path};
+    std::filesystem::create_directories(path);
+
+    UC::Detail::Dictionary config;
+    config.SetNumber("device_id", -1);
+    config.Set("storage_backends", std::vector<std::string>{path.string()});
+    constexpr size_t dataSize = 4096;
+    config.SetNumber("tensor_size", dataSize);
+    config.SetNumber("shard_size", dataSize);
+    config.SetNumber("block_size", dataSize);
+    config.Set("io_direct", false);
+    PosixStore store;
+
+    ASSERT_EQ(store.Setup(config), UC::Status::OK());
+    EXPECT_EQ(store.CheckHealth(), UC::Status::OK());
 }
 
 TEST_F(UCPosixStoreTest, DumpThenLoadWithIoDirect)

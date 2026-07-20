@@ -22,9 +22,9 @@
  * SOFTWARE.
  * */
 #include <list>
-#include <stdexcept>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <stdexcept>
 #include "breaker_store.h"
 #include "config_parser.h"
 #include "library_loader.h"
@@ -165,8 +165,8 @@ public:
         stores_.push_back(std::move(store));
         entry_ = stores_.back().get();
         if (healthConfig_.enabled) {
-            const auto storeId = "pipeline/" + std::to_string(stores_.size() - 1) + ":" +
-                                 stores_.back()->Readme();
+            const auto storeId =
+                "pipeline/" + std::to_string(stores_.size() - 1) + ":" + stores_.back()->Readme();
             auto breaker =
                 std::make_shared<BreakerStore>(stores_.back().get(), storeId, healthConfig_);
             ThrowIfFailed(breaker->Start());

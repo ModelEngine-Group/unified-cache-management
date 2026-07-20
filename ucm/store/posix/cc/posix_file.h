@@ -64,6 +64,7 @@ public:
     Status Remove();
     Status Read(void* buffer, size_t size, off64_t offset);
     Status Write(const void* buffer, size_t size, off64_t offset);
+    Status Sync();
 };
 
 }  // namespace UC::PosixStore

@@ -31,6 +31,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include "health_check_executor.h"
 #include "ucmstore_v1.h"
 
 namespace UC::PipelineStore {
@@ -38,8 +39,8 @@ namespace UC::PipelineStore {
 struct BreakerConfig {
     std::chrono::milliseconds healthCheckInterval{std::chrono::seconds(5)};
     std::chrono::milliseconds healthCheckTimeout{std::chrono::seconds(3)};
-    size_t healthWindowSize{5};
-    size_t failureThreshold{3};
+    size_t healthWindowSize{8};
+    size_t failureThreshold{2};
 };
 
 class BreakerStore : public StoreV1 {
@@ -79,6 +80,7 @@ private:
     std::condition_variable stopCv_;
     bool stop_{false};
     std::thread probeThread_;
+    Detail::HealthCheckExecutor healthCheck_;
 };
 
 }  // namespace UC::PipelineStore

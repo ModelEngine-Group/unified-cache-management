@@ -57,7 +57,6 @@ public:
     Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num);
     Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num);
     void Prefetch(const Detail::BlockId* blocks, size_t num);
-    Status CheckHealth();
     const SpaceLayout* GetLayout() const { return &layout_; }
 
 private:

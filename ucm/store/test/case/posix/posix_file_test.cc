@@ -73,6 +73,7 @@ TEST_F(UCPosixFileTest, FileWriteAndRead)
     constexpr auto flags = PosixFile::OpenFlag::WRITE_ONLY | PosixFile::OpenFlag::CREATE;
     ASSERT_EQ(file.Open(flags), UC::Status::OK());
     ASSERT_EQ(file.Write(data0.Buffer(), data0.Size(), 0), UC::Status::OK());
+    ASSERT_EQ(file.Sync(), UC::Status::OK());
     file.Close();
     ASSERT_EQ(file.Open(PosixFile::OpenFlag::READ_ONLY), UC::Status::OK());
     ASSERT_EQ(file.Read(data1.Buffer(), data1.Size(), 0), UC::Status::OK());

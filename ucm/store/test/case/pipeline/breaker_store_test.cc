@@ -21,10 +21,13 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+#include "breaker_store.h"
+#include <array>
+#include <condition_variable>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include <array>
-#include "breaker_store.h"
+#include <mutex>
+#include <vector>
 #include "detail/mock_store.h"
 #include "store_health_config.h"
 
@@ -32,6 +35,7 @@ namespace UC::Test {
 
 using PipelineStore::BreakerConfig;
 using PipelineStore::BreakerStore;
+using testing::Invoke;
 using testing::Return;
 using testing::StrictMock;
 
@@ -50,7 +54,6 @@ BreakerConfig TestConfig()
     config.healthWindowSize = 5;
     config.failureThreshold = 3;
     config.healthCheckInterval = std::chrono::hours(1);
-    config.healthCheckTimeout = std::chrono::seconds(1);
     return config;
 }
 
@@ -101,6 +104,75 @@ TEST(UCBreakerStoreTest, SlidingWindowEvictsOldFailure)
     EXPECT_EQ(breaker.FailureCount(), 0);
     EXPECT_EQ(breaker.SampleCount(), 5);
     EXPECT_TRUE(breaker.Enabled());
+}
+
+TEST(UCBreakerStoreTest, AppliesTimeoutBeforeStart)
+{
+    StrictMock<Detail::MockStore> store;
+    auto config = TestConfig();
+    config.healthCheckTimeout = std::chrono::milliseconds(10);
+    config.healthWindowSize = 1;
+    config.failureThreshold = 1;
+    BreakerStore breaker(&store, "cache-0", config);
+
+    EXPECT_CALL(store, CheckHealth()).WillOnce(Invoke([] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        return Status::OK();
+    }));
+
+    EXPECT_EQ(breaker.CheckHealth(), Status::Timeout());
+    EXPECT_FALSE(breaker.Enabled());
+}
+
+TEST(UCBreakerStoreTest, TimesOutSlowStoreCheck)
+{
+    StrictMock<Detail::MockStore> store;
+    auto config = TestConfig();
+    config.healthCheckTimeout = std::chrono::milliseconds(10);
+    config.healthWindowSize = 1;
+    config.failureThreshold = 1;
+    BreakerStore breaker(&store, "cache-0", config);
+
+    EXPECT_CALL(store, CheckHealth()).WillOnce(Invoke([] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        return Status::OK();
+    }));
+    ASSERT_TRUE(breaker.Start().Success());
+
+    EXPECT_EQ(breaker.CheckHealth(), Status::Timeout());
+    EXPECT_FALSE(breaker.Enabled());
+    breaker.Stop();
+}
+
+TEST(UCBreakerStoreTest, ProbeIntervalIncludesHealthCheckTime)
+{
+    StrictMock<Detail::MockStore> store;
+    auto config = TestConfig();
+    config.healthCheckInterval = std::chrono::milliseconds(100);
+    config.healthCheckTimeout = std::chrono::milliseconds(90);
+    BreakerStore breaker(&store, "cache-0", config);
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::vector<std::chrono::steady_clock::time_point> starts;
+
+    EXPECT_CALL(store, CheckHealth()).WillRepeatedly(Invoke([&] {
+        {
+            std::lock_guard<std::mutex> lock{mutex};
+            starts.push_back(std::chrono::steady_clock::now());
+        }
+        cv.notify_all();
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        return Status::OK();
+    }));
+    ASSERT_TRUE(breaker.Start().Success());
+    {
+        std::unique_lock<std::mutex> lock{mutex};
+        ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(1), [&] { return starts.size() >= 3; }));
+    }
+    breaker.Stop();
+
+    ASSERT_GE(starts.size(), 3);
+    EXPECT_LT(starts[2] - starts[0], std::chrono::milliseconds(300));
 }
 
 TEST(UCBreakerStoreTest, UnhealthyOperationMatrix)
@@ -159,6 +231,9 @@ TEST(UCBreakerStoreTest, ValidatesStoreHealthConfig)
     config.failureThreshold = config.healthWindowSize + 1;
     EXPECT_EQ(config.Validate(), Status::InvalidParam());
     config.failureThreshold = config.healthWindowSize;
+    config.healthCheckInterval = std::chrono::milliseconds(0);
+    EXPECT_EQ(config.Validate(), Status::InvalidParam());
+    config.healthCheckInterval = std::chrono::milliseconds(10);
     config.healthCheckTimeout = config.healthCheckInterval;
     EXPECT_EQ(config.Validate(), Status::InvalidParam());
 }

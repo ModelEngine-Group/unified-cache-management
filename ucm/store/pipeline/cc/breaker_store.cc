@@ -27,7 +27,10 @@
 namespace UC::PipelineStore {
 
 BreakerStore::BreakerStore(StoreV1* store, std::string storeId, BreakerConfig config)
-    : store_(store), storeId_(std::move(storeId)), config_(config)
+    : store_(store),
+      storeId_(std::move(storeId)),
+      config_(config),
+      healthCheck_(config.healthCheckTimeout)
 {
 }
 
@@ -38,7 +41,8 @@ Status BreakerStore::Start()
     if (!store_) { return Status::InvalidParam("breaker store target is null"); }
     if (config_.healthWindowSize == 0 || config_.failureThreshold == 0 ||
         config_.failureThreshold > config_.healthWindowSize ||
-        config_.healthCheckInterval.count() <= 0 || config_.healthCheckTimeout.count() <= 0) {
+        config_.healthCheckInterval.count() <= 0 || config_.healthCheckTimeout.count() <= 0 ||
+        config_.healthCheckTimeout >= config_.healthCheckInterval) {
         return Status::InvalidParam("invalid breaker config");
     }
     std::lock_guard<std::mutex> lock(stopMutex_);
@@ -101,11 +105,7 @@ void BreakerStore::Prefetch(const Detail::BlockId* blocks, size_t num)
 
 Status BreakerStore::CheckHealth()
 {
-    const auto start = std::chrono::steady_clock::now();
-    auto status = store_->CheckHealth();
-    if (std::chrono::steady_clock::now() - start > config_.healthCheckTimeout) {
-        status = Status::Timeout();
-    }
+    auto status = healthCheck_.Run([this] { return store_->CheckHealth(); });
     RecordHealth(status.Success());
     return status;
 }
@@ -154,19 +154,26 @@ void BreakerStore::RecordHealth(bool healthy)
         sampleCount = healthResults_.size();
     }
     if (oldEnabled != newEnabled) {
-        UC_WARN("Store health breaker({}) transitioned to {}, samples={}, failures={}, threshold={}.",
-                storeId_, newEnabled ? "HEALTHY" : "UNHEALTHY", sampleCount, failureCount,
-                config_.failureThreshold);
+        UC_WARN(
+            "Store health breaker({}) transitioned to {}, samples={}, failures={}, threshold={}.",
+            storeId_, newEnabled ? "HEALTHY" : "UNHEALTHY", sampleCount, failureCount,
+            config_.failureThreshold);
     }
 }
 
 void BreakerStore::ProbeLoop()
 {
     std::unique_lock<std::mutex> lock(stopMutex_);
-    while (!stopCv_.wait_for(lock, config_.healthCheckInterval, [this] { return stop_; })) {
+    auto delay = config_.healthCheckInterval;
+    while (!stopCv_.wait_for(lock, delay, [this] { return stop_; })) {
         lock.unlock();
+        const auto start = std::chrono::steady_clock::now();
         CheckHealth();
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start);
         lock.lock();
+        delay = elapsed < config_.healthCheckInterval ? config_.healthCheckInterval - elapsed
+                                                      : std::chrono::milliseconds{0};
     }
 }
 
