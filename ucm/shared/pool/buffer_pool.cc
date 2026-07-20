@@ -46,20 +46,17 @@ bool AlignAddress(void* address, std::size_t alignment, void*& aligned, std::siz
 
 }  // namespace
 
-bool BufferPool::ComputeSlotStride(std::size_t capacity, std::size_t alignment,
-                                   std::size_t& stride)
+bool BufferPool::ComputeSlotStride(std::size_t capacity, std::size_t alignment, std::size_t& stride)
 {
     constexpr auto kMaxSize = std::numeric_limits<std::size_t>::max();
-    if (capacity == 0 || alignment == 0 || capacity > kMaxSize - (alignment - 1)) {
-        return false;
-    }
+    if (capacity == 0 || alignment == 0 || capacity > kMaxSize - (alignment - 1)) { return false; }
 
     stride = (capacity + alignment - 1) / alignment * alignment;
     return true;
 }
 
-Status BufferPool::BufferRegion::Create(MemoryType type, std::size_t size,
-                                        std::size_t alignment, BufferRegion& region)
+Status BufferPool::BufferRegion::Create(MemoryType type, std::size_t size, std::size_t alignment,
+                                        BufferRegion& region)
 {
     constexpr auto kMaxSize = std::numeric_limits<std::size_t>::max();
     if (alignment == 0 || size > kMaxSize - (alignment - 1)) {
@@ -68,7 +65,7 @@ Status BufferPool::BufferRegion::Create(MemoryType type, std::size_t size,
 
     const auto allocationSize = size + alignment - 1;
     auto setRegion = [&region, alignment](std::shared_ptr<void> owner, void* localAddr,
-                                         void* deviceAddr) -> Status {
+                                          void* deviceAddr) -> Status {
         // Align up local addr
         void* alignedLocalAddr = nullptr;
         std::size_t offset = 0;

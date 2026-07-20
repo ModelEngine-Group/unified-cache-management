@@ -162,12 +162,9 @@ TEST_F(BufferPoolTest, SupportsCustomAddressAndSlotAlignment)
     BufferPool::Slot second;
     ASSERT_TRUE(pool.Allocate(first).Success());
     ASSERT_TRUE(pool.Allocate(second).Success());
-    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(first.local_addr) % kAlignment,
-              std::uintptr_t{0});
-    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.local_addr) % kAlignment,
-              std::uintptr_t{0});
-    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.device_addr) % kAlignment,
-              std::uintptr_t{0});
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(first.local_addr) % kAlignment, std::uintptr_t{0});
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.local_addr) % kAlignment, std::uintptr_t{0});
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.device_addr) % kAlignment, std::uintptr_t{0});
     EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.local_addr) -
                   reinterpret_cast<std::uintptr_t>(first.local_addr),
               kStride);

@@ -56,8 +56,7 @@ public:
     BufferPool& operator=(const BufferPool&) = delete;
 
     Status Init(std::string name, MemoryType type, std::size_t slot_capacity, std::size_t slot_num,
-                bool enable_zero = false,
-                std::size_t slot_alignment = kDefaultSlotAlignment);
+                bool enable_zero = false, std::size_t slot_alignment = kDefaultSlotAlignment);
     Status Allocate(Slot& slot);
     Status Free(std::uint32_t slot_index);
     void Reset();
@@ -85,8 +84,7 @@ private:
         void* device_addr{nullptr};
     };
 
-    static bool ComputeSlotStride(std::size_t capacity, std::size_t alignment,
-                                  std::size_t& stride);
+    static bool ComputeSlotStride(std::size_t capacity, std::size_t alignment, std::size_t& stride);
     Status ZeroMemory(void* ptr, std::size_t size) const;
 
     std::string name_;
