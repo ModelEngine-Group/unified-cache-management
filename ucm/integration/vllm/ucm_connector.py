@@ -430,6 +430,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
     cross-rank consistency metadata.
     """
 
+    @staticmethod
+    def _consistency_manager_enabled(launch_config: dict, is_mla: bool) -> bool:
+        return launch_config.get("use_consistency_manager", not is_mla)
+
     def __init__(
         self,
         vllm_config: "VllmConfig",
@@ -517,8 +521,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         self._rank_consistency = RankConsistencyManager(
             is_scheduler=role == KVConnectorRole.SCHEDULER,
-            use_consistency_manager=self.launch_config.get(
-                "use_consistency_manager", True
+            use_consistency_manager=self._consistency_manager_enabled(
+                self.launch_config, self.is_mla
             ),
         )
 
