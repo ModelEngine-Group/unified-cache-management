@@ -11,18 +11,18 @@
 /ucm/sparse/kvcomp @leideng @pengwwang @wuhuxiao @Infinite666 @ygwpz @mag1c-h
 /ucm/sparse/kvstar @saki-daisuki @summer-ai007 @xwLearnsLLM @wuhuxiao @Infinite666 @ygwpz @mag1c-h
 
-/ucm/store @mag1c-h @ygwpz
+/ucm/store @mag1c-h @ygwpz @Wwwzff
 /ucm/store/asu @mag1c-h @nrj868 @Infinite666 @Wwwzff
 /ucm/store/dram @mag1c-h @nrj868 @Infinite666 @Wwwzff
-/ucm/store/dramstore @harrisonyhq @mag1c-h @ygwpz
-/ucm/store/localstore @mag1c-h @ygwpz
-/ucm/store/mooncakestore @chinesezyc @mag1c-h @ygwpz
-/ucm/store/nfsstore @mag1c-h @ygwpz
+/ucm/store/dramstore @harrisonyhq @mag1c-h @ygwpz @Wwwzff
+/ucm/store/localstore @mag1c-h @ygwpz @Wwwzff
+/ucm/store/mooncakestore @chinesezyc @mag1c-h @ygwpz @Wwwzff
+/ucm/store/nfsstore @mag1c-h @ygwpz @Wwwzff
 /ucm/store/test @mag1c-h @ygwpz @nrj868 @Infinite666 @Wwwzff
 
 /ucm/transport @mag1c-h @nrj868 @Infinite666 @Wwwzff
 
-/ucm/integration @qyh111 @harrisonyhq @ygwpz @mag1c-h @Infinite666
+/ucm/integration @qyh111 @harrisonyhq @ygwpz @mag1c-h @Infinite666 @Wwwzff
 
 /ucm/pd @flesher0813 @ygwpz @mag1c-h
 

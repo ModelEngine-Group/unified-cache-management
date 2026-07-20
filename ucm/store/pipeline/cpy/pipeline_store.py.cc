@@ -168,6 +168,12 @@ public:
         }
         ThrowIfFailed(status);
     }
+    bool NeedRegisterKVCaches() const { return StoreBack()->NeedRegisterKVCaches(); }
+    void RegisterKVCaches(const pybind11::buffer& registrations)
+    {
+        BufferArrayView<KVCacheRegistration> registrationArr{registrations};
+        ThrowIfFailed(StoreBack()->RegisterKVCaches(registrationArr.data, registrationArr.num));
+    }
 };
 
 }  // namespace UC::PipelineStore
@@ -192,4 +198,7 @@ PYBIND11_MODULE(ucmpipelinestore, m)
           py::arg("addrs").noconvert(), py::arg("prerequisite_handle") = 0);
     s.def("Check", &PipelineStore::Check);
     s.def("Wait", &PipelineStore::Wait);
+    s.def("NeedRegisterKVCaches", &PipelineStore::NeedRegisterKVCaches);
+    s.def("RegisterKVCaches", &PipelineStore::RegisterKVCaches,
+          py::arg("registrations").noconvert());
 }
