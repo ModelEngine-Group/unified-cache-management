@@ -675,6 +675,21 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             config["posix_capacity_gb"] = int(config["posix_capacity_gb"]) // 2
         return name, module_path, config
 
+    def _set_default_shm_buffer_capacity(self, config: dict[str, object]) -> None:
+        if not bool(config.get("share_buffer_enable", False)):
+            return
+        if config.get("cache_buffer_capacity_gb") is not None:
+            return
+
+        # HMA creates two shared-buffer stores, FA and WA, so split the direct
+        # connector's 128GB shared-buffer default evenly between them.
+        config["cache_buffer_capacity_gb"] = 128 // 2
+        logger.info(
+            f"Set FAWA cache_buffer_capacity_gb to "
+            f"{config['cache_buffer_capacity_gb']}GB by splitting the direct "
+            "shared-buffer default 128GB across FA/WA stores."
+        )
+
     @staticmethod
     def _namespace_storage_backends(
         config: dict[str, object],
@@ -702,6 +717,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         """Instantiate one UCM store with worker tensor layout metadata."""
 
         name, module_path, config = self._base_store_config(store_suffix)
+        self._set_default_shm_buffer_capacity(config)
         if self._role == KVConnectorRole.WORKER:
             if tensor_size_list is None:
                 raise RuntimeError(f"Worker FAWA {label} store needs tensor sizes.")
