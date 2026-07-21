@@ -25,9 +25,7 @@ def wrap_full_attention_cache_hit_lookup(original_method):
 
     @wraps(original_method)
     def wrapped(coordinator, *args, **kwargs):
-        hit_blocks_by_group, hit_length = original_method(
-            coordinator, *args, **kwargs
-        )
+        hit_blocks_by_group, hit_length = original_method(coordinator, *args, **kwargs)
         _truncate_full_attention_groups(
             coordinator,
             hit_blocks_by_group,
