@@ -133,6 +133,8 @@ public:
         return Status::OK();
     }
 
+    Status UnbindRegisteredRegions(const std::vector<MRHandle>&) override { return Status::OK(); }
+
     Status UnregisterRegions(const std::vector<MRHandle>&) override { return Status::OK(); }
 
 private:

@@ -27,6 +27,22 @@ public:
         return Status::OK();
     }
 
+    // placeholder
+    Status BindMemory(const std::vector<RegisteredMemory>& regions,
+                      std::vector<MRHandle>& mrHandles) override
+    {
+        mrHandles.clear();
+        mrHandles.reserve(regions.size());
+        for (const auto& region : regions) { mrHandles.push_back(region.handle); }
+        return Status::OK();
+    }
+
+    // placeholder
+    std::vector<Status> UnbindMemory(const std::vector<UnbindMemoryDesc>& handles) override
+    {
+        return std::vector<Status>(handles.size(), Status::OK());
+    }
+
     std::vector<Status> UnregisterMemory(const std::vector<UnregisterMemoryDesc>& handles) override
     {
         return std::vector<Status>(handles.size(), Status::OK());

@@ -66,6 +66,15 @@ public:
     virtual Status RegisterMemory(const std::vector<RegisterMemoryDesc>& memoryDescs,
                                   std::vector<MRHandle>& mrHandles) = 0;
 
+    virtual Status BindMemory(const std::vector<RegisteredMemory>& regions,
+                              std::vector<MRHandle>& mrHandles) = 0;
+
+    struct UnbindMemoryDesc {
+        MRHandle mrHandle;
+    };
+
+    virtual std::vector<Status> UnbindMemory(const std::vector<UnbindMemoryDesc>& memoryDescs) = 0;
+
     struct UnregisterMemoryDesc {
         MRHandle mrHandle;
     };

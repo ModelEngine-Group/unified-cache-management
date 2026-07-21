@@ -53,6 +53,11 @@ public:
     Status RegisterMemory(const std::vector<RegisterMemoryDesc>& memoryDescs,
                           std::vector<MRHandle>& mrHandles) override;
 
+    Status BindMemory(const std::vector<::UC::ASU::RegisteredMemory>& regions,
+                      std::vector<MRHandle>& mrHandles) override;
+
+    std::vector<Status> UnbindMemory(const std::vector<UnbindMemoryDesc>& handles) override;
+
     std::vector<Status> UnregisterMemory(const std::vector<UnregisterMemoryDesc>& handles) override;
 
     Status AllocThread(uint32_t, const std::vector<uint32_t>&, std::vector<ThreadHandle>&) override;
