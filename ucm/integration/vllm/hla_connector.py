@@ -403,7 +403,13 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         vllm_config: "VllmConfig",
         kv_cache_config: "KVCacheConfig",
     ):
-        super().__init__(kvcaches, ucm_config, vllm_config, kv_cache_config)
+        super().__init__(
+            kvcaches,
+            ucm_config,
+            vllm_config,
+            kv_cache_config,
+            vllm_config.cache_config.block_size,
+        )
 
     @staticmethod
     def _dtype_size(dtype: torch.dtype) -> int:

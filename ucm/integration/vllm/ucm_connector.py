@@ -227,6 +227,7 @@ class KVCacheLayout:
         ucm_config: dict,
         vllm_config: "VllmConfig",
         kv_cache_config: "KVCacheConfig",
+        chunk_size: int,
     ) -> None:
         # each row is a layer, each column is a tensor_size/ptr in the layer (e.g., k, v, rope, k_index)
         self.base_ptrs: np.ndarray  # (n_layers, n_ptrs）
@@ -234,8 +235,13 @@ class KVCacheLayout:
         self.tensor_size_lists: np.ndarray  # (n_layers, n_tensor_sizes)
         self.block_stride_lists: np.ndarray  # (n_layers, n_tensor_strides)
         self.use_layerwise = ucm_config.get("use_layerwise", False)
+        self.use_layer_shards = self.use_layerwise or bool(
+            ucm_config.get("direct_submit_by_layer", False)
+        )
         self.kv_cache_config = kv_cache_config
         self.vllm_config = vllm_config
+        self.chunk_size = chunk_size
+        self.blocks_per_chunk = chunk_size // vllm_config.cache_config.block_size
         self.pp_size = self.vllm_config.parallel_config.pipeline_parallel_size
         self.num_hidden_layers = getattr(
             self.vllm_config.model_config.hf_text_config, "num_hidden_layers", 0
@@ -302,34 +308,91 @@ class KVCacheLayout:
         )
 
     def extract_block_addrs(
-        self, vllm_block_ids: List[int], layer_first: bool = False
+        self,
+        vllm_block_ids: List[int],
+        layer_first: bool = False,
     ) -> np.ndarray:
         vllm_block_ids_np = np.array(vllm_block_ids, np.uint64)
         if layer_first:
             # (n_layers, num_blocks, n_ptrs)
-            return (
+            ptrs = (
                 self.block_stride_lists[:, None, :] * vllm_block_ids_np[None, :, None]
                 + self.base_ptrs[:, None, :]
             )
-        return (
-            vllm_block_ids_np[:, None, None] * self.block_stride_lists[None, :, :]
-            + self.base_ptrs[None, :, :]
-        )  # (num_blocks, n_layers, n_ptrs)
+        else:
+            # (num_blocks, n_layers, n_ptrs)
+            ptrs = (
+                vllm_block_ids_np[:, None, None] * self.block_stride_lists[None, :, :]
+                + self.base_ptrs[None, :, :]
+            )
+
+        if self.blocks_per_chunk == 1:
+            return ptrs
+
+        if len(vllm_block_ids) % self.blocks_per_chunk != 0:
+            raise ValueError(
+                "vLLM block ids must be aligned to chunk_size: "
+                f"num_vllm_blocks={len(vllm_block_ids)}, "
+                f"chunk_size={self.chunk_size}, "
+                f"blocks_per_chunk={self.blocks_per_chunk}"
+            )
+
+        chunk_count = len(vllm_block_ids) // self.blocks_per_chunk
+        if layer_first:
+            num_layers, _, num_ptrs = ptrs.shape
+            return np.ascontiguousarray(
+                ptrs.reshape(
+                    num_layers,
+                    chunk_count,
+                    self.blocks_per_chunk,
+                    num_ptrs,
+                ).reshape(num_layers, chunk_count, -1)
+            )
+
+        _, num_layers, num_ptrs = ptrs.shape
+        return np.ascontiguousarray(
+            ptrs.reshape(
+                chunk_count,
+                self.blocks_per_chunk,
+                num_layers,
+                num_ptrs,
+            ).reshape(chunk_count, -1)
+        )
 
     def extract_block_addrs_for_row(
         self, vllm_block_ids: List[int], row_id: int
     ) -> np.ndarray:
         vllm_block_ids_np = np.asarray(vllm_block_ids, dtype=np.uint64)
-        return (
+        ptrs = (
             vllm_block_ids_np[:, None] * self.block_stride_lists[row_id][None, :]
             + self.base_ptrs[row_id][None, :]
+        )
+        if self.blocks_per_chunk == 1:
+            return ptrs
+
+        if len(vllm_block_ids) % self.blocks_per_chunk != 0:
+            raise ValueError(
+                "vLLM block ids must be aligned to chunk_size: "
+                f"num_vllm_blocks={len(vllm_block_ids)}, "
+                f"chunk_size={self.chunk_size}, "
+                f"blocks_per_chunk={self.blocks_per_chunk}"
+            )
+
+        chunk_count = len(vllm_block_ids) // self.blocks_per_chunk
+        _, num_ptrs = ptrs.shape
+        return np.ascontiguousarray(
+            ptrs.reshape(
+                chunk_count,
+                self.blocks_per_chunk,
+                num_ptrs,
+            ).reshape(chunk_count, -1)
         )
 
     @property
     def tensor_size_list(self) -> list[int]:
         return (
             self.tensor_size_lists.reshape(-1).tolist()
-            if not self.use_layerwise
+            if not self.use_layer_shards
             else self.tensor_size_lists[0].tolist()
         )
 
@@ -337,7 +400,7 @@ class KVCacheLayout:
     def shard_size(self) -> int:
         return int(
             self.tensor_size_lists.sum()
-            if not self.use_layerwise
+            if not self.use_layer_shards
             else self.tensor_size_lists[0].sum()
         )
 
@@ -477,10 +540,24 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.enable_record_traces = self.launch_config.get(
             "enable_record_traces", False
         )
+        self.direct_submit_by_layer = bool(
+            self.launch_config.get("direct_submit_by_layer", False)
+        )
+        if self.direct_submit_by_layer and bool(
+            self.launch_config.get("use_layerwise", False)
+        ):
+            raise ValueError(
+                "direct_submit_by_layer cannot be enabled with use_layerwise"
+            )
         self._skip_null_vllm_blocks = False
         assert len(self.connector_configs) > 0, "no storage connector name in config."
 
-        self.chunk_size = self.block_size
+        self.chunk_size = int(self.launch_config.get("chunk_size", self.block_size))
+        if self.chunk_size <= 0 or self.chunk_size % self.block_size != 0:
+            raise ValueError(
+                "chunk_size must be a positive multiple of vLLM block_size: "
+                f"chunk_size={self.chunk_size}, block_size={self.block_size}"
+            )
         self.blocks_per_chunk = self.chunk_size // self.block_size
         self._other_rank_hashers: list[RequestHasher] = []
 
@@ -508,8 +585,15 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self._async_dump_req_ids: set[str] = set()
         self._pending_dump_tasks: list[PendingDumpTask] = []
         self.cp_world_size = 1
-        self.hash_block_size = self.block_size
+        self.hash_block_size = self.chunk_size
         self.block_size *= self.cp_world_size
+        logger.info(
+            "Configured UCM block aggregation: "
+            f"chunk_size={self.chunk_size}, "
+            f"vllm_block_size={self._vllm_config.cache_config.block_size}, "
+            f"blocks_per_chunk={self.blocks_per_chunk}, "
+            f"direct_submit_by_layer={self.direct_submit_by_layer}"
+        )
 
     def _get_full_hit_recompute_tokens(self) -> int:
         return 1
@@ -663,6 +747,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         config["posix_gc_enable"] = (
             self._role != KVConnectorRole.WORKER and dp_rank == 0
         )
+
         logger.info(f"create {name} with config: {config}")
         return UcmConnectorFactoryV1.create_connector(name, config, module_path)
 
@@ -687,6 +772,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.launch_config,
             self._vllm_config,
             self._kv_cache_config,
+            self.chunk_size,
         )
         self.block_data_size = self.kv_cache_layout.block_size
         self.layer_name_to_id = self.kv_cache_layout.layer_name_to_id
@@ -734,6 +820,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
     ) -> tuple[int, bool]:
         assert num_computed_tokens % self.block_size == 0
         hbm_hit_block_num = num_computed_tokens // self.block_size
+        hbm_hit_chunk_num = num_computed_tokens // self.chunk_size
 
         ucm_block_ids = self.generate_hash(
             self.hash_block_size, request.all_token_ids, self._seed
@@ -760,7 +847,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             )
             return 0, False
 
-        external_block_ids = ucm_block_ids[hbm_hit_block_num * self.cp_world_size :]
+        external_block_ids = ucm_block_ids[hbm_hit_chunk_num * self.cp_world_size :]
         external_hit_blocks = 0
         if external_block_ids:
             try:
@@ -777,11 +864,19 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 )
                 self._record_counter("connector_lookup_errors_total")
 
+        external_hit_tokens = 0
+        if external_hit_blocks > 0:
+            remainder = num_computed_tokens % self.chunk_size
+            external_hit_tokens = external_hit_blocks * self.chunk_size - remainder
+        total_hit_tokens = num_computed_tokens + external_hit_tokens
+        total_hit_block_num = total_hit_tokens // self.block_size
+
         logger.info_once(
             f"request_id: {request.request_id}, "
-            f"total_blocks_num: {len(ucm_block_ids)}, "
-            f"hit hbm: {hbm_hit_block_num * self.cp_world_size}, "
-            f"hit external: {external_hit_blocks * self.cp_world_size}"
+            f"total_chunks_num: {len(ucm_block_ids)}, "
+            f"chunk_size: {self.chunk_size}, "
+            f"hit hbm blocks: {hbm_hit_block_num * self.cp_world_size}, "
+            f"hit external chunks: {external_hit_blocks * self.cp_world_size}"
         )
 
         if not external_block_ids:
@@ -794,10 +889,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 / len(ucm_block_ids)
             },
         )
-
-        total_hit_block_num = hbm_hit_block_num + external_hit_blocks
-
-        external_hit_tokens = external_hit_blocks * self.block_size
 
         # When all the tokens are cached in ssd or hbm, recompute enough tokens
         # to keep layerwise loads on the prefill path when speculative decode is
@@ -859,20 +950,28 @@ class UCMDirectConnector(KVConnectorBase_V1):
         load_ucm_block_ids, load_vllm_block_ids = [], []
         dump_ucm_block_ids, dump_vllm_block_ids = [], []
         if need_load:
+            hbm_hit_chunk_num = hbm_hit_block_num // self.blocks_per_chunk
+            # Only load chunks confirmed by the external lookup. A partial
+            # local-HBM hit does not make the containing UCM chunk available.
+            total_hit_chunk_num = total_hit_block_num // self.blocks_per_chunk
             load_ucm_block_ids = ucm_block_ids[
-                hbm_hit_block_num
-                * self.cp_world_size : total_hit_block_num
+                hbm_hit_chunk_num
+                * self.cp_world_size : total_hit_chunk_num
                 * self.cp_world_size
             ]
-            load_vllm_block_ids = vllm_block_ids[hbm_hit_block_num:total_hit_block_num]
+            start_block = hbm_hit_chunk_num * self.blocks_per_chunk
+            end_block = total_hit_chunk_num * self.blocks_per_chunk
+            load_vllm_block_ids = vllm_block_ids[start_block:end_block]
 
         if req_meta.token_processed < req_meta.num_token_ids:
-            start_idx = req_meta.token_processed // self.block_size
-            end_idx = (req_meta.token_processed + new_tokens) // self.block_size
+            start_chunk = req_meta.token_processed // self.chunk_size
+            end_chunk = (req_meta.token_processed + new_tokens) // self.chunk_size
             dump_ucm_block_ids = ucm_block_ids[
-                start_idx * self.cp_world_size : end_idx * self.cp_world_size
+                start_chunk * self.cp_world_size : end_chunk * self.cp_world_size
             ]
-            dump_vllm_block_ids = req_meta.vllm_block_ids[start_idx:end_idx]
+            start_block = start_chunk * self.blocks_per_chunk
+            end_block = end_chunk * self.blocks_per_chunk
+            dump_vllm_block_ids = req_meta.vllm_block_ids[start_block:end_block]
             req_meta.token_processed += new_tokens
             if req_meta.token_processed > req_meta.num_token_ids:
                 logger.warning(
@@ -881,7 +980,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     f"({req_meta.num_token_ids}). Truncating dump_vllm_block_ids "
                     f"to the length of dump_ucm_block_ids."
                 )
-                dump_vllm_block_ids = dump_vllm_block_ids[: len(dump_ucm_block_ids)]
+                dump_vllm_block_ids = dump_vllm_block_ids[
+                    : len(dump_ucm_block_ids) * self.blocks_per_chunk
+                ]
 
         return RequestDispatchMeta(
             (load_ucm_block_ids, load_vllm_block_ids),
@@ -963,11 +1064,122 @@ class UCMDirectConnector(KVConnectorBase_V1):
             if len(dispatch_meta.dump_block_ids[0]) > 0
         )
 
+    def _submit_direct_layer_load_tasks(
+        self,
+        ucm_block_ids: list[bytes],
+        vllm_block_ids: list[int],
+    ) -> list[Task]:
+        total_ptrs = self.kv_cache_layout.extract_block_addrs(
+            vllm_block_ids,
+            layer_first=True,
+        )
+        tasks = []
+        try:
+            for local_layer_id, layer_id in enumerate(self.layer_ids):
+                tasks.append(
+                    self._submit_direct_layer_load_task(
+                        layer_id,
+                        local_layer_id,
+                        ucm_block_ids,
+                        total_ptrs,
+                    )
+                )
+        except Exception:
+            # A later layer can fail after earlier asynchronous loads have
+            # already been submitted. Drain those tasks before propagating the
+            # error so they cannot keep writing into the KV buffer during
+            # recomputation or forward execution.
+            for task in tasks:
+                try:
+                    self.store.wait(task)
+                except Exception as wait_error:
+                    logger.error(
+                        "wait for partially submitted layer load failed. "
+                        f"{type(wait_error).__name__}: {wait_error}"
+                    )
+            raise
+        return tasks
+
+    def _submit_direct_layer_load_task(
+        self,
+        layer_id: int,
+        local_layer_id: int,
+        ucm_block_ids: list[bytes],
+        total_ptrs: np.ndarray,
+    ) -> Task:
+        layer_ptrs = np.ascontiguousarray(total_ptrs[local_layer_id])
+        shard_indexs = [layer_id] * len(ucm_block_ids)
+        return self.store.load_data(ucm_block_ids, shard_indexs, layer_ptrs)
+
+    def _submit_direct_layer_dump_tasks(
+        self,
+        total_ucm_block_ids: list[bytes],
+        total_vllm_block_ids: list[int],
+        dump_request_ids: set[str],
+        wait_for_save_start_ms: float,
+    ) -> bool:
+        total_ptrs = self.kv_cache_layout.extract_block_addrs(
+            total_vllm_block_ids,
+            layer_first=True,
+        )
+        for local_layer_id, layer_id in enumerate(self.layer_ids):
+            if not self._submit_direct_layer_dump_task(
+                layer_id,
+                local_layer_id,
+                total_ucm_block_ids,
+                total_ptrs,
+                dump_request_ids,
+                wait_for_save_start_ms,
+            ):
+                return False
+
+        return True
+
+    def _submit_direct_layer_dump_task(
+        self,
+        layer_id: int,
+        local_layer_id: int,
+        total_ucm_block_ids: list[bytes],
+        total_ptrs: np.ndarray,
+        dump_request_ids: set[str],
+        wait_for_save_start_ms: float = 0.0,
+    ) -> bool:
+        event_handle = 0
+        try:
+            layer_ptrs = np.ascontiguousarray(total_ptrs[local_layer_id])
+            shard_indexs = [layer_id] * len(total_ucm_block_ids)
+            event_handle = self._get_dump_event_handle()
+            task = self.store.dump_data(
+                total_ucm_block_ids,
+                shard_indexs,
+                layer_ptrs,
+                event_handle,
+            )
+        except Exception as e:
+            logger.error(
+                f"submit layer dump task for layer {layer_id} failed. "
+                f"{type(e).__name__}: {e}"
+            )
+            self._record_counter("connector_dump_submit_errors_total")
+            if self.enable_event_sync and event_handle and self.device is not None:
+                self.device.destroy_event_handle(event_handle)
+            return False
+
+        self._pending_dump_tasks.append(
+            PendingDumpTask(
+                task=task,
+                request_ids=set(dump_request_ids),
+                event_handle=event_handle,
+                wait_for_save_start_ms=wait_for_save_start_ms,
+            )
+        )
+        return True
+
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
 
-        request_to_task: dict[str, Task] = {}
+        request_to_tasks: dict[str, list[Task]] = {}
         is_load = False
         num_loaded_block = 0
         num_loaded_request = 0
@@ -977,31 +1189,51 @@ class UCMDirectConnector(KVConnectorBase_V1):
             if len(request.load_block_ids[0]) == 0:
                 continue
             is_load = True
-            num_loaded_block += len(request.load_block_ids[0])
+            request_load_blocks = len(request.load_block_ids[0]) * self.blocks_per_chunk
+            num_loaded_block += request_load_blocks
             num_loaded_request += 1
 
             ucm_block_ids, vllm_block_ids = request.load_block_ids
-            if self._skip_null_vllm_blocks:
+            if self._skip_null_vllm_blocks and self.blocks_per_chunk == 1:
                 ucm_block_ids, vllm_block_ids = _drop_null_vllm_blocks(
                     ucm_block_ids,
                     vllm_block_ids,
                     f"UCM load request {request_id}",
                 )
                 if len(ucm_block_ids) == 0:
-                    num_loaded_block -= len(request.load_block_ids[0])
+                    num_loaded_block -= request_load_blocks
                     num_loaded_request -= 1
                     continue
-                num_loaded_block -= len(request.load_block_ids[0]) - len(ucm_block_ids)
+                num_loaded_block -= request_load_blocks - (
+                    len(ucm_block_ids) * self.blocks_per_chunk
+                )
+            elif self._skip_null_vllm_blocks:
+                logger.warning_once(
+                    "Skip null vLLM block filtering when chunk_size is larger "
+                    "than block_size."
+                )
             if self.tp_rank != 0 and not self.is_mla:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
             try:
-                total_ptrs = self.kv_cache_layout.extract_block_addrs(vllm_block_ids)
-                total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
-                shard_indexs = [0] * len(ucm_block_ids)
-                task = self.store.load_data(ucm_block_ids, shard_indexs, total_ptrs)
-                request_to_task[request_id] = task
-                request_to_load_blocks[request_id] = len(ucm_block_ids)
+                if self.direct_submit_by_layer:
+                    tasks = self._submit_direct_layer_load_tasks(
+                        ucm_block_ids,
+                        vllm_block_ids,
+                    )
+                else:
+                    total_ptrs = self.kv_cache_layout.extract_block_addrs(
+                        vllm_block_ids
+                    )
+                    total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
+                    shard_indexs = [0] * len(ucm_block_ids)
+                    tasks = [
+                        self.store.load_data(ucm_block_ids, shard_indexs, total_ptrs)
+                    ]
+                request_to_tasks[request_id] = tasks
+                request_to_load_blocks[request_id] = (
+                    len(ucm_block_ids) * self.blocks_per_chunk
+                )
             except Exception as e:
                 logger.error(
                     f"request {request_id} submit load task error. {type(e).__name__}: {e}"
@@ -1012,21 +1244,26 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     + metadata.request_meta[request_id].dump_block_ids[1],
                 )
                 self._connector_worker_meta.mark_failed(request_id)
-                num_loaded_block -= len(ucm_block_ids)
+                num_loaded_block -= len(ucm_block_ids) * self.blocks_per_chunk
 
-        for request_id, task in request_to_task.items():
-            try:
-                self.store.wait(task)
-            except Exception as e:
-                logger.error(
-                    f"request {request_id} wait load task error. {type(e).__name__}: {e}"
-                )
-                self._record_load_error(
-                    "connector_load_wait_errors_total",
-                    metadata.request_meta[request_id].load_block_ids[1]
-                    + metadata.request_meta[request_id].dump_block_ids[1],
-                )
-                self._connector_worker_meta.mark_failed(request_id)
+        for request_id, tasks in request_to_tasks.items():
+            request_failed = False
+            for task in tasks:
+                try:
+                    self.store.wait(task)
+                except Exception as e:
+                    logger.error(
+                        f"request {request_id} wait load task error. "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    self._record_load_error(
+                        "connector_load_wait_errors_total",
+                        metadata.request_meta[request_id].load_block_ids[1]
+                        + metadata.request_meta[request_id].dump_block_ids[1],
+                    )
+                    self._connector_worker_meta.mark_failed(request_id)
+                    request_failed = True
+            if request_failed:
                 num_loaded_block -= request_to_load_blocks.get(request_id, 0)
 
         load_end_time = time.perf_counter() * 1000
@@ -1171,7 +1408,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 continue
 
             ucm_block_ids, vllm_block_ids = request.dump_block_ids
-            if self._skip_null_vllm_blocks:
+            if self._skip_null_vllm_blocks and self.blocks_per_chunk == 1:
                 ucm_block_ids, vllm_block_ids = _drop_null_vllm_blocks(
                     ucm_block_ids,
                     vllm_block_ids,
@@ -1179,9 +1416,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 )
                 if len(ucm_block_ids) == 0:
                     continue
+            elif self._skip_null_vllm_blocks:
+                logger.warning_once(
+                    "Skip null vLLM block filtering when chunk_size is larger "
+                    "than block_size."
+                )
             is_save = True
             dump_request_ids.add(request_id)
-            num_saved_block += len(ucm_block_ids)
+            num_saved_block += len(ucm_block_ids) * self.blocks_per_chunk
             num_saved_request += 1
             if self.tp_rank != 0:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
@@ -1190,23 +1432,44 @@ class UCMDirectConnector(KVConnectorBase_V1):
             total_vllm_block_ids.extend(vllm_block_ids)
 
         if is_save:
-            event_handle = 0
-            try:
-                total_ptrs = self.kv_cache_layout.extract_block_addrs(
-                    total_vllm_block_ids
-                )
-                total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
-                shard_indexs = [0] * len(total_ucm_block_ids)
-                event_handle = self._get_dump_event_handle()
-                task = self.store.dump_data(
-                    total_ucm_block_ids, shard_indexs, total_ptrs, event_handle
-                )
-            except Exception as e:
-                logger.error(f"dump kv cache failed. {type(e).__name__}: {e}")
-                if self.enable_event_sync and event_handle and self.device is not None:
-                    self.device.destroy_event_handle(event_handle)
-                return
+            if self.direct_submit_by_layer:
+                if not self._submit_direct_layer_dump_tasks(
+                    total_ucm_block_ids,
+                    total_vllm_block_ids,
+                    dump_request_ids,
+                    wait_for_save_start_ms,
+                ):
+                    return
+            else:
+                event_handle = 0
+                try:
+                    total_ptrs = self.kv_cache_layout.extract_block_addrs(
+                        total_vllm_block_ids
+                    )
+                    total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
+                    shard_indexs = [0] * len(total_ucm_block_ids)
+                    event_handle = self._get_dump_event_handle()
+                    task = self.store.dump_data(
+                        total_ucm_block_ids, shard_indexs, total_ptrs, event_handle
+                    )
+                except Exception as e:
+                    logger.error(f"dump kv cache failed. {type(e).__name__}: {e}")
+                    if (
+                        self.enable_event_sync
+                        and event_handle
+                        and self.device is not None
+                    ):
+                        self.device.destroy_event_handle(event_handle)
+                    return
 
+                self._pending_dump_tasks.append(
+                    PendingDumpTask(
+                        task=task,
+                        request_ids=set(dump_request_ids),
+                        event_handle=event_handle,
+                        wait_for_save_start_ms=wait_for_save_start_ms,
+                    )
+                )
             save_bytes = num_saved_block * self.block_data_size
             save_stats = {
                 "save_requests_num": num_saved_request,
@@ -1214,14 +1477,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 "save_bytes_total": save_bytes,
             }
             ucmmetrics.update_stats(save_stats)
-            self._pending_dump_tasks.append(
-                PendingDumpTask(
-                    task=task,
-                    request_ids=set(dump_request_ids),
-                    event_handle=event_handle,
-                    wait_for_save_start_ms=wait_for_save_start_ms,
-                )
-            )
 
     @staticmethod
     def _non_negative_ms(value: float) -> float:
@@ -1478,31 +1733,17 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         local_layer_id = layer_id - self.first_layer_id
         if self.dump_total_ptrs is None:
             self.dump_total_ptrs = self.kv_cache_layout.extract_block_addrs(
-                total_vllm_block_ids, layer_first=True
+                total_vllm_block_ids,
+                layer_first=True,
             )
 
-        event_handle = 0
-        try:
-            layer_ptrs = np.ascontiguousarray(self.dump_total_ptrs[local_layer_id])
-            shard_indexs = [layer_id] * len(total_ucm_block_ids)
-            event_handle = self._get_dump_event_handle()
-            task = self.store.dump_data(
-                total_ucm_block_ids, shard_indexs, layer_ptrs, event_handle
-            )
-            self._pending_dump_tasks.append(
-                PendingDumpTask(
-                    task=task,
-                    request_ids=set(dump_request_ids),
-                    event_handle=event_handle,
-                )
-            )
-        except Exception as e:
-            logger.error(
-                f"submit dump task for layer {layer_id} failed. {type(e).__name__}: {e}"
-            )
-            self._record_counter("connector_dump_submit_errors_total")
-            if self.enable_event_sync and event_handle and self.device is not None:
-                self.device.destroy_event_handle(event_handle)
+        self._submit_direct_layer_dump_task(
+            layer_id,
+            local_layer_id,
+            total_ucm_block_ids,
+            self.dump_total_ptrs,
+            dump_request_ids,
+        )
 
     def _flush_deferred_mtp_dumps(self) -> None:
         """Submit the last saved metadata snapshot for each deferred MTP layer."""
@@ -1534,9 +1775,12 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             if request_id in self._failure_req_ids:
                 continue
             try:
-                shard_indexs = [layer_id] * len(ucm_block_ids)
-                layer_ptrs = total_ptrs[local_row]
-                task = self.store.load_data(ucm_block_ids, shard_indexs, layer_ptrs)
+                task = self._submit_direct_layer_load_task(
+                    layer_id,
+                    local_row,
+                    ucm_block_ids,
+                    total_ptrs,
+                )
                 self.load_tasks[layer_id][request_id] = task
             except Exception as e:
                 logger.error(
@@ -1667,9 +1911,22 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             if len(request.dump_block_ids[0]) == 0:
                 continue
 
+            ucm_block_ids, vllm_block_ids = request.dump_block_ids
+            if self._skip_null_vllm_blocks and self.blocks_per_chunk == 1:
+                ucm_block_ids, vllm_block_ids = _drop_null_vllm_blocks(
+                    ucm_block_ids,
+                    vllm_block_ids,
+                    f"UCM layerwise dump request {request_id}",
+                )
+                if len(ucm_block_ids) == 0:
+                    continue
+            elif self._skip_null_vllm_blocks:
+                logger.warning_once(
+                    "Skip null vLLM block filtering when chunk_size is larger "
+                    "than block_size."
+                )
             self.is_save = True
             dump_request_ids.add(request_id)
-            ucm_block_ids, vllm_block_ids = request.dump_block_ids
             if self.tp_rank % self.tp_size != 0 and local_layer_id == 0:
                 for i, ucm_block_id in enumerate(ucm_block_ids):
                     ucm_block_ids[i] = self.request_hasher(ucm_block_id)
@@ -1888,7 +2145,8 @@ class UCMMockConnector(UCMDirectConnector):
         expect_hit_tokens = int(self._hit_ratio * request.num_prompt_tokens)
         if hit_tokens <= expect_hit_tokens:
             return hit_tokens, False
-        expect_hit_block_num = expect_hit_tokens // self.block_size
+        expect_hit_chunk_num = expect_hit_tokens // self.chunk_size
+        expect_hit_block_num = expect_hit_chunk_num * self.blocks_per_chunk
         request_meta = self.requests_meta[request.request_id]
         request_meta.total_hit_block_num = expect_hit_block_num
         request_meta.hbm_hit_block_num = min(
