@@ -64,8 +64,8 @@ Status CopyStream::Setup(std::int32_t device_id, std::size_t stream_number)
 
     streams_.resize(stream_number, nullptr);
     for (auto& stream : streams_) {
-        auto ret = aclrtCreateStreamWithConfig(&stream, 0,
-                                          ACL_STREAM_FAST_LAUNCH | ACL_STREAM_FAST_SYNC);
+        auto ret =
+            aclrtCreateStreamWithConfig(&stream, 0, ACL_STREAM_FAST_LAUNCH | ACL_STREAM_FAST_SYNC);
         if (ret != ACL_SUCCESS) [[unlikely]] {
             Reset();
             return AclStatus("aclrtCreateStreamWithConfig", ret);
@@ -84,8 +84,8 @@ aclrtStream CopyStream::NextStream() noexcept
 }
 
 Status CopyStream::DeviceToDeviceAsync(aclrtStream stream, void* destination,
-                                       std::size_t destination_capacity,
-                                       const void* source, std::size_t size)
+                                       std::size_t destination_capacity, const void* source,
+                                       std::size_t size)
 {
     if (stream == nullptr || destination == nullptr || source == nullptr || size == 0 ||
         size > destination_capacity) {
