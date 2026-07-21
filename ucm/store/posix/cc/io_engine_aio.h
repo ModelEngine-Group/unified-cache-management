@@ -106,10 +106,12 @@ private:
                       const Detail::BlockId& id, const AioImpl::Result& result)
     {
         const auto tid = task->id;
-        if (result.error != 0) {
-            UC_ERROR("Failed({}) to do io on block({}).", result.error, id);
+        const auto shortIo = result.error == 0 && result.nBytes != static_cast<ssize_t>(shardSize_);
+        if (result.error != 0 || shortIo) {
+            UC_ERROR("Failed(error={}, bytes={}/{}) to do io on block({}).", result.error,
+                     result.nBytes, shardSize_, id);
             if (result.error != ECANCELED) { IncrementIoErrorMetric(); }
-            task->Fail(Status::Error());
+            task->Fail(!dump && shortIo ? Status::NotFound() : Status::Error());
             failureSet_.Insert(tid);
         }
         ::close(fd);

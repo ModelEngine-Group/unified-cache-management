@@ -113,9 +113,8 @@ Status PosixFile::Read(void* buffer, size_t size, off64_t offset)
         nBytes = read(handle_, buffer, size);
     }
     auto eno = errno;
-    if (nBytes != static_cast<ssize_t>(size)) [[unlikely]] {
-        return Status::OsApiError(std::to_string(eno));
-    }
+    if (nBytes < 0) [[unlikely]] { return Status::OsApiError(std::to_string(eno)); }
+    if (nBytes != static_cast<ssize_t>(size)) [[unlikely]] { return Status::NotFound(); }
     return Status::OK();
 }
 

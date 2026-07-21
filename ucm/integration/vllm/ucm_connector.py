@@ -1833,6 +1833,14 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 class UCMCPConnector(UCMLayerWiseConnector):
     _defer_scheduler_store = True
 
+    @staticmethod
+    def _consistency_manager_enabled(launch_config: dict, is_mla: bool) -> bool:
+        if launch_config.get("use_consistency_manager", False):
+            raise ValueError(
+                "Rank consistency manager is not supported by UCMCPConnector."
+            )
+        return False
+
     def __init__(
         self,
         vllm_config: "VllmConfig",

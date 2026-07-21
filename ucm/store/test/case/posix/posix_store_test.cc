@@ -59,6 +59,20 @@ UC::Detail::Dictionary MakeAioConfig(const std::string& path, size_t timeoutMs =
     return config;
 }
 
+UC::Detail::Dictionary MakePsyncConfig(const std::string& path)
+{
+    UC::Detail::Dictionary config;
+    config.SetNumber("device_id", 0);
+    config.Set("storage_backends", std::vector<std::string>{path});
+    config.SetNumber("tensor_size", AIO_TEST_DATA_SIZE);
+    config.SetNumber("shard_size", AIO_TEST_DATA_SIZE);
+    config.SetNumber("block_size", AIO_TEST_DATA_SIZE);
+    config.Set("posix_io_engine", std::string("psync"));
+    config.Set("io_direct", false);
+    config.SetNumber("data_dir_shard_bytes", size_t(0));
+    return config;
+}
+
 BufferPtr MakeAlignedBuffer(size_t marker)
 {
     void* buffer = nullptr;
@@ -323,6 +337,60 @@ TEST_F(UCPosixStoreTest, AioMissingLoadReturnsNotFound)
     auto handle = store.Load(MakeDumpDesc("AioMissingLoad", block, buffer.get()));
     ASSERT_TRUE(handle.HasValue());
     EXPECT_EQ(store.Wait(handle.Value()), UC::Status::NotFound());
+}
+
+TEST_F(UCPosixStoreTest, PsyncTruncatedLoadReturnsNotFound)
+{
+    using namespace UC::PosixStore;
+    PosixStore store;
+    ASSERT_EQ(store.Setup(MakePsyncConfig(Path())), UC::Status::OK());
+
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto source = MakeAlignedBuffer(1);
+    auto target = MakeAlignedBuffer(0);
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(target, nullptr);
+    auto dump = store.Dump(MakeDumpDesc("PsyncTruncatedDump", block, source.get()));
+    ASSERT_TRUE(dump.HasValue());
+    ASSERT_EQ(store.Wait(dump.Value()), UC::Status::OK());
+
+    Config layoutConfig;
+    layoutConfig.storageBackends = {Path()};
+    layoutConfig.dataDirShardBytes = 0;
+    SpaceLayout layout;
+    ASSERT_EQ(layout.Setup(layoutConfig), UC::Status::OK());
+    std::filesystem::resize_file(layout.DataFilePath(block, false), AIO_TEST_DATA_SIZE / 2);
+
+    auto load = store.Load(MakeDumpDesc("PsyncTruncatedLoad", block, target.get()));
+    ASSERT_TRUE(load.HasValue());
+    EXPECT_EQ(store.Wait(load.Value()), UC::Status::NotFound());
+}
+
+TEST_F(UCPosixStoreTest, AioTruncatedLoadReturnsNotFound)
+{
+    using namespace UC::PosixStore;
+    PosixStore store;
+    ASSERT_EQ(store.Setup(MakeAioConfig(Path(), 1000)), UC::Status::OK());
+
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto source = MakeAlignedBuffer(1);
+    auto target = MakeAlignedBuffer(0);
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(target, nullptr);
+    auto dump = store.Dump(MakeDumpDesc("AioTruncatedDump", block, source.get()));
+    ASSERT_TRUE(dump.HasValue());
+    ASSERT_EQ(store.Wait(dump.Value()), UC::Status::OK());
+
+    Config layoutConfig;
+    layoutConfig.storageBackends = {Path()};
+    layoutConfig.dataDirShardBytes = 0;
+    SpaceLayout layout;
+    ASSERT_EQ(layout.Setup(layoutConfig), UC::Status::OK());
+    std::filesystem::resize_file(layout.DataFilePath(block, false), AIO_TEST_DATA_SIZE / 2);
+
+    auto load = store.Load(MakeDumpDesc("AioTruncatedLoad", block, target.get()));
+    ASSERT_TRUE(load.HasValue());
+    EXPECT_EQ(store.Wait(load.Value()), UC::Status::NotFound());
 }
 
 TEST_F(UCPosixStoreTest, AioWaitTimesOutWhenOpenStalls)
