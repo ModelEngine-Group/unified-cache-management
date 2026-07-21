@@ -33,17 +33,17 @@ Status AclStatus(const char* operation, aclError error)
     return Status::Error(std::string(operation) + " failed: " + std::to_string(error));
 }
 
-Status ValidateCurrentContext(std::int32_t expected_device_id)
+Status ValidateCurrentContext(std::int32_t expectedDeviceId)
 {
     aclrtContext context = nullptr;
     auto ret = aclrtGetCurrentContext(&context);
     if (ret != ACL_SUCCESS) { return AclStatus("aclrtGetCurrentContext", ret); }
     if (context == nullptr) { return Status::Error("current ACL context is null"); }
 
-    std::int32_t current_device_id = -1;
-    ret = aclrtGetDevice(&current_device_id);
+    std::int32_t currentDeviceId = -1;
+    ret = aclrtGetDevice(&currentDeviceId);
     if (ret != ACL_SUCCESS) { return AclStatus("aclrtGetDevice", ret); }
-    if (current_device_id != expected_device_id) {
+    if (currentDeviceId != expectedDeviceId) {
         return Status::InvalidParam("current ACL context device does not match device_id");
     }
     return Status::OK();
@@ -53,16 +53,16 @@ Status ValidateCurrentContext(std::int32_t expected_device_id)
 
 CopyStream::~CopyStream() { Reset(); }
 
-Status CopyStream::Setup(std::int32_t device_id, std::size_t stream_number)
+Status CopyStream::Setup(std::int32_t deviceId, std::size_t streamNumber)
 {
     if (!streams_.empty()) { return Status::Error(); }
-    if (device_id < 0 || stream_number == 0) {
+    if (deviceId < 0 || streamNumber == 0) {
         return Status::InvalidParam("invalid delegator copy stream config");
     }
-    auto status = ValidateCurrentContext(device_id);
+    auto status = ValidateCurrentContext(deviceId);
     if (status.Failure()) { return status; }
 
-    streams_.resize(stream_number, nullptr);
+    streams_.resize(streamNumber, nullptr);
     for (auto& stream : streams_) {
         auto ret =
             aclrtCreateStreamWithConfig(&stream, 0, ACL_STREAM_FAST_LAUNCH | ACL_STREAM_FAST_SYNC);
@@ -78,20 +78,20 @@ aclrtStream CopyStream::NextStream() noexcept
 {
     if (streams_.empty()) { return nullptr; }
 
-    auto stream = streams_[next_stream_];
-    next_stream_ = (next_stream_ + 1) % streams_.size();
+    auto stream = streams_[nextStream_];
+    nextStream_ = (nextStream_ + 1) % streams_.size();
     return stream;
 }
 
 Status CopyStream::DeviceToDeviceAsync(aclrtStream stream, void* destination,
-                                       std::size_t destination_capacity, const void* source,
+                                       std::size_t destinationCapacity, const void* source,
                                        std::size_t size)
 {
     if (stream == nullptr || destination == nullptr || source == nullptr || size == 0 ||
-        size > destination_capacity) {
+        size > destinationCapacity) {
         return Status::InvalidParam("invalid delegator D2D copy");
     }
-    const auto ret = aclrtMemcpyAsync(destination, destination_capacity, source, size,
+    const auto ret = aclrtMemcpyAsync(destination, destinationCapacity, source, size,
                                       ACL_MEMCPY_DEVICE_TO_DEVICE, stream);
     return ret == ACL_SUCCESS ? Status::OK() : AclStatus("aclrtMemcpyAsync", ret);
 }
@@ -126,7 +126,7 @@ void CopyStream::Reset()
         }
     }
     streams_.clear();
-    next_stream_ = 0;
+    nextStream_ = 0;
 }
 
 }  // namespace UC::Delegator

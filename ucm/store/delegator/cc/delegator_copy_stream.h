@@ -39,12 +39,12 @@ public:
     CopyStream(const CopyStream&) = delete;
     CopyStream& operator=(const CopyStream&) = delete;
 
-    // Validates that the caller's current ACL context belongs to device_id. The caller must keep
+    // Validates that the caller's current ACL context belongs to deviceId. The caller must keep
     // that context current for this object's lifetime.
-    Status Setup(std::int32_t device_id, std::size_t stream_number);
+    Status Setup(std::int32_t deviceId, std::size_t streamNumber);
     aclrtStream NextStream() noexcept;
     Status DeviceToDeviceAsync(aclrtStream stream, void* destination,
-                               std::size_t destination_capacity, const void* source,
+                               std::size_t destinationCapacity, const void* source,
                                std::size_t size);
     Status Synchronize(aclrtStream stream);
     Status SynchronizeAll();
@@ -54,7 +54,7 @@ private:
     void Reset();
 
     std::vector<aclrtStream> streams_;
-    std::size_t next_stream_{0};
+    std::size_t nextStream_{0};
 };
 
 }  // namespace UC::Delegator
