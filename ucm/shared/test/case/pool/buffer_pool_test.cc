@@ -141,7 +141,7 @@ TEST_F(BufferPoolTest, HostPoolUsesAlignedSlotStrideAndReportsBusyWhenFull)
 
     status = pool.Allocate(third);
     EXPECT_TRUE(status.Failure());
-    EXPECT_EQ(status, Status::Retry());
+    EXPECT_EQ(status, Status::NoSpace());
 }
 
 TEST_F(BufferPoolTest, SupportsCustomSizeAndOffsetAlignment)
@@ -163,6 +163,10 @@ TEST_F(BufferPoolTest, SupportsCustomSizeAndOffsetAlignment)
     EXPECT_EQ(first.local_addr, pool.GetLocalAddr());
     EXPECT_EQ(first.device_addr, pool.GetDeviceAddr());
     EXPECT_EQ(first.length, kCapacity);
+    EXPECT_EQ(first.offset, std::size_t{0});
+    EXPECT_EQ(second.offset, kStride);
+    EXPECT_EQ(static_cast<char*>(pool.GetLocalAddr()) + second.offset, second.local_addr);
+    EXPECT_EQ(static_cast<char*>(pool.GetDeviceAddr()) + second.offset, second.device_addr);
 
     const auto localOffset = reinterpret_cast<std::uintptr_t>(second.local_addr) -
                              reinterpret_cast<std::uintptr_t>(first.local_addr);
@@ -246,6 +250,7 @@ TEST_F(BufferPoolTest, FreeZeroesAndReusesHostSlot)
     ASSERT_TRUE(pool.Allocate(second).Success());
     EXPECT_EQ(second.local_addr, first.local_addr);
     EXPECT_EQ(second.slot_index, first.slot_index);
+    EXPECT_EQ(second.offset, first.offset);
 
     const auto* bytes = static_cast<const std::uint8_t*>(second.local_addr);
     for (std::size_t i = 0; i < kSlotStride; ++i) { EXPECT_EQ(bytes[i], 0); }

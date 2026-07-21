@@ -27,7 +27,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <gtest/gtest.h>
-#include "delegator/cc/delegator_buffer_manager.h"
+#include "pool/buffer_pool.h"
 
 namespace UC::Delegator {
 namespace {
@@ -71,13 +71,15 @@ TEST_F(CopyStreamTest, CopiesDeviceMemoryAsynchronously)
 {
     constexpr std::size_t kCopySize = 256;
 
-    BufferManager manager;
-    ASSERT_TRUE(manager.Init(kCopySize, 2).Success());
+    BufferPool pool;
+    ASSERT_TRUE(pool.Init("delegator_copy_stream_test", BufferPool::MemoryType::ASCEND_DEVICE,
+                          kCopySize, 2)
+                    .Success());
 
     BufferPool::Slot source;
     BufferPool::Slot destination;
-    ASSERT_TRUE(manager.Acquire(source).Success());
-    ASSERT_TRUE(manager.Acquire(destination).Success());
+    ASSERT_TRUE(pool.Allocate(source).Success());
+    ASSERT_TRUE(pool.Allocate(destination).Success());
 
     std::array<std::uint8_t, kCopySize> input{};
     std::array<std::uint8_t, kCopySize> output{};

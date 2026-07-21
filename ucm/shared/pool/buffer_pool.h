@@ -47,6 +47,7 @@ public:
         void* device_addr{nullptr};
         std::size_t length{0};
         std::uint32_t slot_index{UINT32_MAX};
+        std::size_t offset{0};  // Byte offset from both pool base addresses.
     };
 
     BufferPool() = default;

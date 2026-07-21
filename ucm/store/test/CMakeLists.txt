@@ -18,7 +18,12 @@ if(BUILD_UNIT_TESTS)
         target_link_libraries(ucmstore.test PRIVATE dramstore)
     endif()
     if(BUILD_UCM_ASU)
-        target_link_libraries(ucmstore.test PRIVATE asu_client delegator asu_ascend_deps)
+        target_link_libraries(ucmstore.test PRIVATE
+            asu_client
+            delegator
+            buffer_pool
+            asu_ascend_deps
+        )
         target_compile_definitions(ucmstore.test PRIVATE ASU_BUILD_TESTS)
     endif()
     gtest_discover_tests(ucmstore.test)

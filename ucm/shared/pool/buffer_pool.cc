@@ -136,6 +136,7 @@ Status BufferPool::Allocate(Slot& slot)
     slot.device_addr = static_cast<char*>(region_.device_addr) + offset;
     slot.length = slot_capacity_;
     slot.slot_index = idx;
+    slot.offset = offset;
     return Status::OK();
 }
 
