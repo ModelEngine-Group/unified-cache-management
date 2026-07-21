@@ -1326,7 +1326,6 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             tensor_size_list_override=row_tensor_size_list,
             shard_size_override=row_shard_size,
             block_size_override=row_shard_size * (max(self.row_ids) + 1),
-            compact_cache_buffer_capacity=True,
         )
 
         row_to_layers: dict[int, list[str]] = defaultdict(list)
