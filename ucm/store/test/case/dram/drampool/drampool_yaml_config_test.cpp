@@ -49,6 +49,9 @@ request_receiver:
   idle_wait_us: 100
 poller:
   pending_depth: 64
+flag_buffer:
+  capacity_mb: 64
+  slot_size_bytes: 64
 gc:
   enabled: true
   interval_ms: 1000
@@ -116,6 +119,9 @@ TEST(DramPoolRuntimeYamlTest, LoadsEveryRuntimeFieldAndPreservesLaunchFields)
     EXPECT_EQ(config.completionQueueDepth, 65536U);
     EXPECT_EQ(config.requestReceiverIdleWaitUs, 100U);
     EXPECT_EQ(config.pollerPendingDepth, 64U);
+    EXPECT_EQ(config.flagBufferCapacityMb, 64U);
+    EXPECT_EQ(config.flagBufferSlotSizeBytes, 64U);
+    EXPECT_EQ(config.flagBufferSlotCount, 1'048'576U);
     EXPECT_TRUE(config.gcEnabled);
     EXPECT_EQ(config.gcIntervalMs, 1000U);
     EXPECT_EQ(config.metadataPeriodicEvictionPolicy, EvictionPolicyType::TTL);
@@ -203,6 +209,10 @@ INSTANTIATE_TEST_SUITE_P(
                         "at least 2"},
         InvalidYamlCase{"ZeroPollerPendingDepth", "pending_depth: 64", "pending_depth: 0",
                         "greater than zero"},
+        InvalidYamlCase{"ZeroFlagBufferCapacity", "capacity_mb: 64", "capacity_mb: 0",
+                        "must be greater than zero"},
+        InvalidYamlCase{"ZeroFlagBufferSlotSize", "slot_size_bytes: 64", "slot_size_bytes: 0",
+                        "must be greater than zero"},
         InvalidYamlCase{"EnabledGcHasZeroInterval", "interval_ms: 1000", "interval_ms: 0",
                         "when GC is enabled"},
         InvalidYamlCase{"UnsupportedPeriodicEvictionPolicy", "periodic_eviction_policy: TTL",
