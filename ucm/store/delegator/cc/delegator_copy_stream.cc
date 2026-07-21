@@ -22,6 +22,7 @@
  * SOFTWARE.
  */
 #include "delegator_copy_stream.h"
+#include <algorithm>
 #include <string>
 
 namespace UC::Delegator {
@@ -95,14 +96,23 @@ Status CopyStream::DeviceToDeviceAsync(aclrtStream stream, void* destination,
     return ret == ACL_SUCCESS ? Status::OK() : AclStatus("aclrtMemcpyAsync", ret);
 }
 
-Status CopyStream::Synchronize()
+Status CopyStream::Synchronize(aclrtStream stream)
+{
+    if (stream == nullptr ||
+        std::find(streams_.begin(), streams_.end(), stream) == streams_.end()) {
+        return Status::InvalidParam("stream is not owned by CopyStream");
+    }
+
+    const auto ret = aclrtSynchronizeStream(stream);
+    return ret == ACL_SUCCESS ? Status::OK() : AclStatus("aclrtSynchronizeStream", ret);
+}
+
+Status CopyStream::SynchronizeAll()
 {
     auto result = Status::OK();
     for (const auto stream : streams_) {
-        const auto ret = aclrtSynchronizeStream(stream);
-        if (ret != ACL_SUCCESS) {
-            result = AclStatus("aclrtSynchronizeStream", ret);
-        }
+        auto status = Synchronize(stream);
+        if (result.Success() && status.Failure()) { result = status; }
     }
     return result;
 }

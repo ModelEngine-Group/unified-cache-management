@@ -65,6 +65,8 @@ TEST_F(CopyStreamTest, CreatesAndCyclesStreams)
     EXPECT_NE(second, nullptr);
     EXPECT_NE(first, second);
     EXPECT_EQ(streams.NextStream(), first);
+    EXPECT_TRUE(streams.Synchronize(first).Success());
+    EXPECT_TRUE(streams.SynchronizeAll().Success());
     EXPECT_EQ(streams.Setup(0, 1), Status::Error());
 }
 
@@ -93,12 +95,12 @@ TEST_F(CopyStreamTest, CopiesDeviceMemoryAsynchronously)
               ACL_SUCCESS);
 
     CopyStream streams;
-    ASSERT_TRUE(streams.Setup(0, 1).Success());
-    ASSERT_TRUE(streams.DeviceToDeviceAsync(streams.NextStream(), destination.device_addr,
-                                            destination.length, source.device_addr,
-                                            input.size())
+    ASSERT_TRUE(streams.Setup(0, 2).Success());
+    const auto stream = streams.NextStream();
+    ASSERT_TRUE(streams.DeviceToDeviceAsync(stream, destination.device_addr, destination.length,
+                                            source.device_addr, input.size())
                     .Success());
-    ASSERT_TRUE(streams.Synchronize().Success());
+    ASSERT_TRUE(streams.Synchronize(stream).Success());
 
     ASSERT_EQ(aclrtMemcpy(output.data(), output.size(), destination.device_addr, input.size(),
                          ACL_MEMCPY_DEVICE_TO_HOST),
@@ -111,10 +113,13 @@ TEST_F(CopyStreamTest, RejectsInvalidConfigurationAndCopies)
     CopyStream streams;
     EXPECT_EQ(streams.Setup(-1, 1), Status::InvalidParam());
     EXPECT_EQ(streams.Setup(0, 0), Status::InvalidParam());
+    EXPECT_EQ(streams.Synchronize(nullptr), Status::InvalidParam());
 
     auto stream = reinterpret_cast<aclrtStream>(std::uintptr_t{1});
     auto* source = reinterpret_cast<void*>(std::uintptr_t{1});
     auto* destination = reinterpret_cast<void*>(std::uintptr_t{2});
+
+    EXPECT_EQ(streams.Synchronize(stream), Status::InvalidParam());
 
     EXPECT_EQ(streams.DeviceToDeviceAsync(nullptr, destination, 1, source, 1),
               Status::InvalidParam());
