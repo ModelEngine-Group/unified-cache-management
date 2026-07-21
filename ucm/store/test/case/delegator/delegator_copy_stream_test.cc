@@ -75,9 +75,9 @@ TEST_F(CopyStreamTest, CopiesDeviceMemoryAsynchronously)
     constexpr std::size_t kCopySize = 256;
 
     BufferPool pool;
-    ASSERT_TRUE(pool.Init("delegator_copy_stream_test", BufferPool::MemoryType::ASCEND_DEVICE,
-                          kCopySize, 2)
-                    .Success());
+    ASSERT_TRUE(
+        pool.Init("delegator_copy_stream_test", BufferPool::MemoryType::ASCEND_DEVICE, kCopySize, 2)
+            .Success());
 
     BufferPool::Slot source;
     BufferPool::Slot destination;
@@ -86,24 +86,23 @@ TEST_F(CopyStreamTest, CopiesDeviceMemoryAsynchronously)
 
     std::array<std::uint8_t, kCopySize> input{};
     std::array<std::uint8_t, kCopySize> output{};
-    for (std::size_t i = 0; i < input.size(); ++i) {
-        input[i] = static_cast<std::uint8_t>(i);
-    }
+    for (std::size_t i = 0; i < input.size(); ++i) { input[i] = static_cast<std::uint8_t>(i); }
 
     ASSERT_EQ(aclrtMemcpy(source.device_addr, source.length, input.data(), input.size(),
-                         ACL_MEMCPY_HOST_TO_DEVICE),
+                          ACL_MEMCPY_HOST_TO_DEVICE),
               ACL_SUCCESS);
 
     CopyStream streams;
     ASSERT_TRUE(streams.Setup(0, 2).Success());
     const auto stream = streams.NextStream();
-    ASSERT_TRUE(streams.DeviceToDeviceAsync(stream, destination.device_addr, destination.length,
-                                            source.device_addr, input.size())
+    ASSERT_TRUE(streams
+                    .DeviceToDeviceAsync(stream, destination.device_addr, destination.length,
+                                         source.device_addr, input.size())
                     .Success());
     ASSERT_TRUE(streams.Synchronize(stream).Success());
 
     ASSERT_EQ(aclrtMemcpy(output.data(), output.size(), destination.device_addr, input.size(),
-                         ACL_MEMCPY_DEVICE_TO_HOST),
+                          ACL_MEMCPY_DEVICE_TO_HOST),
               ACL_SUCCESS);
     EXPECT_EQ(output, input);
 }
@@ -123,8 +122,7 @@ TEST_F(CopyStreamTest, RejectsInvalidConfigurationAndCopies)
 
     EXPECT_EQ(streams.DeviceToDeviceAsync(nullptr, destination, 1, source, 1),
               Status::InvalidParam());
-    EXPECT_EQ(streams.DeviceToDeviceAsync(stream, nullptr, 1, source, 1),
-              Status::InvalidParam());
+    EXPECT_EQ(streams.DeviceToDeviceAsync(stream, nullptr, 1, source, 1), Status::InvalidParam());
     EXPECT_EQ(streams.DeviceToDeviceAsync(stream, destination, 1, nullptr, 1),
               Status::InvalidParam());
     EXPECT_EQ(streams.DeviceToDeviceAsync(stream, destination, 1, source, 0),
