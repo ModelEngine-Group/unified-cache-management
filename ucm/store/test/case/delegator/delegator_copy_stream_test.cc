@@ -55,6 +55,7 @@ TEST_F(CopyStreamTest, CreatesAndCyclesStreams)
     CopyStream streams;
     EXPECT_EQ(streams.NextStream(), nullptr);
 
+    EXPECT_EQ(streams.Setup(1, 1), Status::InvalidParam());
     ASSERT_TRUE(streams.Setup(0, 2).Success());
     EXPECT_EQ(streams.Size(), std::size_t{2});
 
@@ -64,7 +65,7 @@ TEST_F(CopyStreamTest, CreatesAndCyclesStreams)
     EXPECT_NE(second, nullptr);
     EXPECT_NE(first, second);
     EXPECT_EQ(streams.NextStream(), first);
-    EXPECT_EQ(streams.Setup(0, 1), Status::DuplicateKey());
+    EXPECT_EQ(streams.Setup(0, 1), Status::Error());
 }
 
 TEST_F(CopyStreamTest, CopiesDeviceMemoryAsynchronously)
@@ -105,7 +106,7 @@ TEST_F(CopyStreamTest, CopiesDeviceMemoryAsynchronously)
     EXPECT_EQ(output, input);
 }
 
-TEST(CopyStreamUnitTest, RejectsInvalidConfigurationAndCopies)
+TEST_F(CopyStreamTest, RejectsInvalidConfigurationAndCopies)
 {
     CopyStream streams;
     EXPECT_EQ(streams.Setup(-1, 1), Status::InvalidParam());

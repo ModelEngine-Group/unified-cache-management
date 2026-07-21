@@ -39,8 +39,9 @@ public:
     CopyStream(const CopyStream&) = delete;
     CopyStream& operator=(const CopyStream&) = delete;
 
+    // Validates that the caller's current ACL context belongs to device_id. The caller must keep
+    // that context current for this object's lifetime.
     Status Setup(std::int32_t device_id, std::size_t stream_number);
-    Status BindDevice() const;
     aclrtStream NextStream() noexcept;
     Status DeviceToDeviceAsync(aclrtStream stream, void* destination,
                                std::size_t destination_capacity, const void* source,
@@ -52,7 +53,6 @@ private:
     void Reset();
 
     std::vector<aclrtStream> streams_;
-    std::int32_t device_id_{-1};
     std::size_t next_stream_{0};
 };
 

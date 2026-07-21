@@ -32,19 +32,33 @@ Status AclStatus(const char* operation, aclError error)
     return Status::Error(std::string(operation) + " failed: " + std::to_string(error));
 }
 
+Status ValidateCurrentContext(std::int32_t expected_device_id)
+{
+    aclrtContext context = nullptr;
+    auto ret = aclrtGetCurrentContext(&context);
+    if (ret != ACL_SUCCESS) { return AclStatus("aclrtGetCurrentContext", ret); }
+    if (context == nullptr) { return Status::Error("current ACL context is null"); }
+
+    std::int32_t current_device_id = -1;
+    ret = aclrtGetDevice(&current_device_id);
+    if (ret != ACL_SUCCESS) { return AclStatus("aclrtGetDevice", ret); }
+    if (current_device_id != expected_device_id) {
+        return Status::InvalidParam("current ACL context device does not match device_id");
+    }
+    return Status::OK();
+}
+
 }  // namespace
 
 CopyStream::~CopyStream() { Reset(); }
 
 Status CopyStream::Setup(std::int32_t device_id, std::size_t stream_number)
 {
-    if (!streams_.empty()) { return Status::DuplicateKey(); }
+    if (!streams_.empty()) { return Status::Error(); }
     if (device_id < 0 || stream_number == 0) {
         return Status::InvalidParam("invalid delegator copy stream config");
     }
-
-    device_id_ = device_id;
-    auto status = BindDevice();
+    auto status = ValidateCurrentContext(device_id);
     if (status.Failure()) { return status; }
 
     streams_.resize(stream_number, nullptr);
@@ -57,12 +71,6 @@ Status CopyStream::Setup(std::int32_t device_id, std::size_t stream_number)
         }
     }
     return Status::OK();
-}
-
-Status CopyStream::BindDevice() const
-{
-    const auto ret = aclrtSetDevice(device_id_);
-    return ret == ACL_SUCCESS ? Status::OK() : AclStatus("aclrtSetDevice", ret);
 }
 
 aclrtStream CopyStream::NextStream() noexcept
@@ -101,12 +109,13 @@ Status CopyStream::Synchronize()
 
 void CopyStream::Reset()
 {
-    if (device_id_ >= 0) { (void)BindDevice(); }
     for (const auto stream : streams_) {
-        if (stream != nullptr) { (void)aclrtDestroyStream(stream); }
+        if (stream != nullptr) {
+            (void)aclrtSynchronizeStream(stream);
+            (void)aclrtDestroyStream(stream);
+        }
     }
     streams_.clear();
-    device_id_ = -1;
     next_stream_ = 0;
 }
 
