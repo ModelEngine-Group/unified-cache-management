@@ -1,13 +1,13 @@
 import hashlib
 import logging
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import torch
 import yaml
-import time
 from sglang.srt.distributed.parallel_state import get_world_group
 
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
@@ -20,6 +20,47 @@ if TYPE_CHECKING:
     from sglang.srt.mem_cache.memory_pool_host import HostKVCache
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_storage_backends(storage_backends: Any) -> List[str]:
+    if isinstance(storage_backends, str):
+        return [path for path in storage_backends.split(":") if path]
+    if isinstance(storage_backends, Sequence) and not isinstance(
+        storage_backends, (str, bytes)
+    ):
+        return [str(path) for path in storage_backends if str(path)]
+    raise ValueError(
+        "storage_backends must be a ':' separated string or a non-empty sequence"
+    )
+
+
+def _safe_dir_segment(value: Any) -> str:
+    raw = str(getattr(value, "value", value))
+    safe = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in raw)
+    return safe or "store"
+
+
+def _storage_backends_for_store(base_backends: List[str], store_dir: str) -> List[str]:
+    backends = []
+    for backend in base_backends:
+        path = Path(backend) / store_dir
+        path.mkdir(parents=True, exist_ok=True)
+        backends.append(str(path))
+    logger.info(
+        "SGLang UCM store directory prepared: store_dir=%s, backends=%s",
+        store_dir,
+        backends,
+    )
+    return backends
+
+
+def _config_for_store_dir(config: Dict[str, Any], store_dir: str) -> Dict[str, Any]:
+    cfg = dict(config)
+    cfg["storage_backends"] = _storage_backends_for_store(
+        _normalize_storage_backends(config["storage_backends"]),
+        store_dir,
+    )
+    return cfg
 
 
 def _load_extra_config_from_yaml_env() -> Optional[Dict[str, Any]]:
@@ -49,7 +90,7 @@ class UnifiedCacheStoreConfig:
 
     @staticmethod
     def load_from_config(
-        storage_config: "HiCacheStorageConfig", mem_pool_host: "HostKVCache"
+        storage_config: "HiCacheStorageConfig", mem_pool_host: "HostKVCache", store_dir: Optional[str] = None
     ) -> "UnifiedCacheStoreConfig":
         extra = dict(getattr(storage_config, "extra_config", None) or {})
         if "kv_connector_extra_config" not in extra:
@@ -86,29 +127,36 @@ class UnifiedCacheStoreConfig:
             )
 
         cfg = dict(ucm_cfg)
-        if mem_pool_host.layout == "page_first_kv_split":
-            cfg["store_pipeline"] = "Cache|Posix"
-            k_size = mem_pool_host.layer_num * mem_pool_host.kv_lora_rank * mem_pool_host.dtype.itemsize * page_size
-            v_size = mem_pool_host.layer_num * mem_pool_host.qk_rope_head_dim * mem_pool_host.dtype.itemsize * page_size
-            cfg["tensor_size_list"] = [k_size, v_size]
-            safe_model_name = "-".join(storage_config.model_name.split("/")) if storage_config.model_name else ""
-            cfg["unique_id"] = f"sglang{safe_model_name}"
-            cfg["cache_buffer_capacity_gb"] = 64
-            cfg["io_direct"] = True
-            cfg["cache_use_host_buffer"] = True
-        else:
-            cfg["store_pipeline"] = "Posix"
-            cfg["tensor_size"] = tensor_size
-
-        cfg["storage_backends"] = [
-            path for path in cfg["storage_backends"].split(":") if path
-        ]
+        cfg["store_pipeline"] = "Cache|Posix"
+        cfg["storage_backends"] = _normalize_storage_backends(cfg["storage_backends"])
         cfg["device_id"] = get_world_group().local_rank
+        cfg["tensor_size_list"] = [tensor_size]
+        cfg["tensor_size"] = tensor_size
+        safe_model_name = "-".join(storage_config.model_name.split("/")) if storage_config.model_name else ""
+        cfg["unique_id"] = f"sglang{safe_model_name}" if store_dir is None else f"sglang{safe_model_name}_{store_dir}"
+        cfg["cache_buffer_capacity_gb"] = 64
+        cfg["io_direct"] = True
+        cfg["cache_use_host_buffer"] = True
         cfg["shard_size"] = block_size
         cfg["block_size"] = block_size
         cfg["stream_number"] = 8
+        logger.info(
+            "Loaded SGLang UCM config: connector=%s, module=%s, model=%s, "
+            "is_mla=%s, tensor_size=%s, block_size=%s, base_backends=%s",
+            name,
+            module_path,
+            storage_config.model_name,
+            storage_config.is_mla_model,
+            tensor_size,
+            block_size,
+            cfg["storage_backends"],
+        )
 
-        return UnifiedCacheStoreConfig(module_path=module_path, name=name, config=cfg)
+        return UnifiedCacheStoreConfig(
+            module_path=module_path,
+            name=name,
+            config=cfg,
+        )
 
 
 class SglangUcmConnector:
@@ -119,10 +167,6 @@ class SglangUcmConnector:
         storage_config: "HiCacheStorageConfig",
         storage_backends: List[str],
     ):
-        page_size = mem_pool_host.page_size
-        page_bytes = page_size * mem_pool_host.get_size_per_token()
-        tensor_size = page_bytes if storage_config.is_mla_model else page_bytes // 2
-        self.block_data_size = tensor_size * (1 if storage_config.is_mla_model else 2)
         self.store = store
         self.mem_pool_host = mem_pool_host
         self.storage_backends = storage_backends
@@ -135,10 +179,6 @@ class SglangUcmConnector:
         self.tp_rank = storage_config.tp_rank
         self.tp_size = storage_config.tp_size
 
-        self.is_kv_split = mem_pool_host.layout == "page_first_kv_split"
-        if self.is_kv_split:
-            self.k_size_per_token = mem_pool_host.layer_num * mem_pool_host.kv_lora_rank * self.dtype.itemsize
-            self.v_size_per_token = mem_pool_host.layer_num * mem_pool_host.qk_rope_head_dim * self.dtype.itemsize
         self.config_suffix = self._build_config_suffix()
 
     @classmethod
@@ -146,20 +186,32 @@ class SglangUcmConnector:
         cls,
         storage_config: "HiCacheStorageConfig",
         mem_pool_host: "HostKVCache",
+        store_dir: Optional[str] = None,
     ) -> "SglangUcmConnector":
         if mem_pool_host is None:
             raise ValueError("mem_pool_host must be provided for UnifiedCache")
         ucm_store_config = UnifiedCacheStoreConfig.load_from_config(
-            storage_config, mem_pool_host
+            storage_config, mem_pool_host, store_dir
+        )
+        store_config = (
+            _config_for_store_dir(ucm_store_config.config, store_dir)
+            if store_dir is not None
+            else ucm_store_config.config
+        )
+        logger.info(
+            "Creating SGLang UCM store: connector=%s, store_dir=%s, backends=%s",
+            ucm_store_config.name,
+            store_dir,
+            store_config["storage_backends"],
         )
         store = UcmConnectorFactoryV1.create_connector(
-            ucm_store_config.name, ucm_store_config.config, ucm_store_config.module_path
+            ucm_store_config.name, store_config, ucm_store_config.module_path
         )
         return cls(
             store,
             mem_pool_host,
             storage_config,
-            ucm_store_config.config["storage_backends"],
+            store_config["storage_backends"],
         )
 
     def _encode_key(self, key: str) -> bytes:
@@ -179,28 +231,6 @@ class SglangUcmConnector:
 
     def _get_physical_keys(self, logical_keys: List[str]) -> List[str]:
         return [self._get_physical_key(key) for key in logical_keys]
-
-    def _generate_task_split(
-        self,
-        encoded_keys: List[bytes],
-        host_indices: torch.Tensor,
-    ):
-        if not encoded_keys:
-            return [], [], []
-        shard_index_list = [0] * len(encoded_keys)
-        block_ids = []
-        ptr_list = []
-        k_buffer_data_ptr = self.mem_pool_host.k_buffer.data_ptr()
-        v_buffer_data_ptr = self.mem_pool_host.v_buffer.data_ptr()
-        key_index = 0
-        indices = host_indices.tolist()
-        for index in range(0, len(indices), self.page_size):
-            k_ptr = k_buffer_data_ptr + indices[index] * self.k_size_per_token
-            v_ptr = v_buffer_data_ptr + indices[index] * self.v_size_per_token
-            block_ids.append(encoded_keys[key_index])
-            key_index += 1
-            ptr_list.append([k_ptr, v_ptr])
-        return block_ids, shard_index_list, ptr_list
 
     def _generate_task(
         self,
@@ -230,33 +260,17 @@ class SglangUcmConnector:
             return []
 
         encoded_keys = self._encode_keys(self._get_physical_keys(keys))
-        if self.is_kv_split:
-            key_list, shard_index_list, ptr_list = self._generate_task_split(encoded_keys, host_indices)
-        else:
-            key_list, shard_index_list, ptr_list = self._generate_task(encoded_keys, host_indices)
+        key_list, shard_index_list, ptr_list = self._generate_task(
+            encoded_keys, host_indices
+        )
 
-        load_start_time = time.perf_counter() * 1000
         task = self.store.load_data(key_list, shard_index_list, ptr_list)
         try:
             self.store.wait(task)
-            load_end_time = time.perf_counter() * 1000
         except RuntimeError as e:
             logger.error(f"UnifiedCache load KVCache failed: {e}")
             return [False] * len(keys)
-        load_speed = (
-            len(keys)
-            * self.block_data_size
-            / (load_end_time - load_start_time)
-            / 1024
-            / 1024
-        )  # GB/s
 
-        logger.info(
-            f"UnifiedCache load completed for {len(keys)} keys, "
-            f"total size: {len(keys) * self.block_data_size / 1024 / 1024:.2f} MB, "
-            f"time: {load_end_time - load_start_time:.2f} ms, "
-            f"speed: {load_speed:.2f} GB/s"
-        )
         return [True] * len(keys)
 
     def batch_set_v1(
@@ -269,32 +283,17 @@ class SglangUcmConnector:
             return []
 
         encoded_keys = self._encode_keys(self._get_physical_keys(keys))
-        if self.is_kv_split:
-            key_list, shard_index_list, ptr_list = self._generate_task_split(encoded_keys, host_indices)
-        else:
-            key_list, shard_index_list, ptr_list = self._generate_task(encoded_keys, host_indices)
-        dump_start_time = time.perf_counter() * 1000
+        key_list, shard_index_list, ptr_list = self._generate_task(
+            encoded_keys, host_indices
+        )
+
         task = self.store.dump_data(key_list, shard_index_list, ptr_list)
         try:
             self.store.wait(task)
         except RuntimeError as e:
             logger.error(f"UnifiedCache dump KVCache failed: {e}")
             return [False] * len(keys)
-        dump_end_time = time.perf_counter() * 1000
-        dump_speed = (
-            len(keys)
-            * self.block_data_size
-            / (dump_end_time - dump_start_time)
-            / 1024
-            / 1024
-        )  # GB/s
 
-        logger.info(
-            f"UnifiedCache dump completed for {len(keys)} keys, "
-            f"total size: {len(keys) * self.block_data_size / 1024 / 1024:.2f} MB, "
-            f"time: {dump_end_time - dump_start_time:.2f} ms, "
-            f"speed: {dump_speed:.2f} GB/s"
-        )
         return [True] * len(keys)
 
     def exists(self, key: str) -> bool:
@@ -317,3 +316,8 @@ class SglangUcmConnector:
 
     def get_stats(self):
         return None
+
+    def close(self) -> None:
+        close = getattr(self.store, "close", None)
+        if callable(close):
+            close()
