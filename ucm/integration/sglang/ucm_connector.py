@@ -110,7 +110,14 @@ class UnifiedCacheStoreConfig:
             )
 
         page_size = mem_pool_host.page_size
-        page_bytes = page_size * mem_pool_host.get_size_per_token()
+        if hasattr(mem_pool_host, "get_size_per_token") and callable(mem_pool_host.get_size_per_token):
+            page_bytes = page_size * mem_pool_host.get_size_per_token()
+        elif hasattr(mem_pool_host, "size_per_token"):
+            page_bytes = page_size * mem_pool_host.size_per_token
+        else:
+            raise ValueError(
+                "mem_pool_host must have either get_size_per_token() method or size_per_token attribute"
+            )
         tensor_size = page_bytes if storage_config.is_mla_model else page_bytes // 2
         block_size = tensor_size * (1 if storage_config.is_mla_model else 2)
 
