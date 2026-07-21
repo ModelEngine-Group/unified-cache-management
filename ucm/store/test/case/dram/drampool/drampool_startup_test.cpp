@@ -203,9 +203,14 @@ std::filesystem::path CreateDaemonRuntimeDirectory(std::uint16_t servicePort,
 
 std::filesystem::path RepositoryRuntimeConfigPath()
 {
-    auto path = std::filesystem::path{__FILE__}.parent_path();
-    for (int depth = 0; depth < 5; ++depth) { path = path.parent_path(); }
-    return path / "examples" / "drampool.yaml";
+    auto directory = std::filesystem::absolute(__FILE__).parent_path();
+    while (!directory.empty()) {
+        const auto configPath = directory / "examples" / "drampool.yaml";
+        if (std::filesystem::exists(configPath)) { return configPath; }
+        if (directory == directory.root_path()) { break; }
+        directory = directory.parent_path();
+    }
+    return "examples/drampool.yaml";
 }
 
 }  // namespace
