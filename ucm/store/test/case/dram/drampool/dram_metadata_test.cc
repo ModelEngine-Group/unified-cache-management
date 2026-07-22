@@ -281,6 +281,57 @@ TEST_F(UCShardMetadataTest, FullLifecycleStoreStoreEndLoadExist)
     EXPECT_EQ(entry->refCnt, 0U);
 }
 
+TEST_F(UCShardMetadataTest, TryDeleteReturnsOkAndMarksDeleting)
+{
+    ShardMetadata md(MakeConfig());
+    auto k = KeyFromHex("a1");
+    auto entry = MakeEntry(k, 0, past_, EntryStatus::INITIALIZED);
+    md.StoreBegin(k, entry);
+    EntryPtr out;
+    EXPECT_TRUE(md.TryDelete(k, out).Success());
+    EXPECT_EQ(out.get(), entry.get());
+    EXPECT_EQ(entry->status, EntryStatus::DELETING);
+    EXPECT_EQ(md.GetKeyCnt(), 1UL);
+}
+
+TEST_F(UCShardMetadataTest, TryDeleteReturnsNotFoundWhenMissing)
+{
+    ShardMetadata md(MakeConfig());
+    EntryPtr out;
+    EXPECT_EQ(md.TryDelete(KeyFromHex("a1"), out), Status::NotFound());
+    EXPECT_EQ(out, nullptr);
+}
+
+TEST_F(UCShardMetadataTest, TryDeleteFailsWhenAlreadyDeleting)
+{
+    ShardMetadata md(MakeConfig());
+    auto k = KeyFromHex("a1");
+    auto entry = MakeEntry(k, 0, past_, EntryStatus::INITIALIZED);
+    md.StoreBegin(k, entry);
+    EntryPtr first;
+    ASSERT_TRUE(md.TryDelete(k, first).Success());
+    EntryPtr second;
+    EXPECT_EQ(md.TryDelete(k, second), Status::Error());
+    EXPECT_EQ(second, nullptr);
+    EXPECT_EQ(first->status, EntryStatus::DELETING);
+}
+
+TEST_F(UCShardMetadataTest, TryDeleteFailsWhenRefCntNonZero)
+{
+    ShardMetadata md(MakeConfig());
+    auto k = KeyFromHex("a1");
+    auto entry = MakeEntry(k, 0, past_, EntryStatus::INITIALIZED);
+    md.StoreBegin(k, entry);
+    md.StoreEnd(k);
+    EntryPtr loaded;
+    ASSERT_TRUE(md.LoadBegin(k, loaded).Success());
+    ASSERT_EQ(entry->refCnt, 1U);
+    EntryPtr out;
+    EXPECT_EQ(md.TryDelete(k, out), Status::Error());
+    EXPECT_EQ(out, nullptr);
+    EXPECT_EQ(entry->status, EntryStatus::READY);
+}
+
 class UCMetadataManagerTest : public testing::Test {
 protected:
     static void SetUpTestSuite()
