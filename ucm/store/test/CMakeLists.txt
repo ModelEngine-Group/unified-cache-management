@@ -3,6 +3,7 @@ if(BUILD_UNIT_TESTS)
     file(GLOB_RECURSE UCMSTORE_TEST_SOURCE_FILES "./case/*.cc")
     if(NOT BUILD_UCM_ASU)
         list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX ".*[/\\\\]asu[/\\\\].*")
+        list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX ".*[/\\\\]delegator[/\\\\].*")
     endif()
     if(NOT RUNTIME_ENVIRONMENT STREQUAL "ascend")
         list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX ".*[/\\\\]dram[/\\\\].*")
@@ -17,7 +18,12 @@ if(BUILD_UNIT_TESTS)
         target_link_libraries(ucmstore.test PRIVATE dramstore)
     endif()
     if(BUILD_UCM_ASU)
-        target_link_libraries(ucmstore.test PRIVATE asu_client asu_ascend_deps)
+        target_link_libraries(ucmstore.test PRIVATE
+            asu_client
+            delegator
+            buffer_pool
+            asu_ascend_deps
+        )
         target_compile_definitions(ucmstore.test PRIVATE ASU_BUILD_TESTS)
     endif()
     gtest_discover_tests(ucmstore.test)
