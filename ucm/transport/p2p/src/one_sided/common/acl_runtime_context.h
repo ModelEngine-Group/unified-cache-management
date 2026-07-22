@@ -18,7 +18,7 @@ public:
 private:
     aclrtContext context_ = nullptr;
     aclrtContext previous_ = nullptr;
-    Status status_ = Status::Ok;
+    Status status_ = Status::OK();
 };
 
 }  // namespace transport

@@ -36,7 +36,7 @@ Status HixlInstance::Initialize(const std::map<std::string, std::string>& option
     std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (initialized_) { return Status::Ok; }
+        if (initialized_) { return Status::OK(); }
         stopping_ = false;
     }
     if (worker_.joinable()) { worker_.join(); }
@@ -45,7 +45,7 @@ Status HixlInstance::Initialize(const std::map<std::string, std::string>& option
     auto initialize_future = initialize_result.get_future();
     worker_ = std::thread(&HixlInstance::WorkerMain, this, options, std::move(initialize_result));
     const auto status = initialize_future.get();
-    if (status != Status::Ok && worker_.joinable()) { worker_.join(); }
+    if (status != Status::OK() && worker_.joinable()) { worker_.join(); }
     return status;
 }
 
@@ -55,7 +55,7 @@ Status HixlInstance::Run(Task task)
     auto result = queued.get_future();
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!initialized_ || stopping_) { return Status::Failed; }
+        if (!initialized_ || stopping_) { return Status::Error(); }
         tasks_.push_back(std::move(queued));
     }
     cv_.notify_one();
@@ -66,7 +66,7 @@ Status HixlInstance::Run(Task task)
     } catch (...) {
         UC_ERROR("[Transport][HIXL] worker task failed with unknown exception");
     }
-    return Status::Failed;
+    return Status::Error();
 }
 
 void HixlInstance::Finalize()
@@ -88,7 +88,7 @@ void HixlInstance::WorkerMain(std::map<std::string, std::string> options,
     if (set_device_status != ACL_ERROR_NONE) {
         UC_ERROR("[Transport][HIXL] set device failed: aclrtSetDevice({}) returned {}", device_id_,
                  static_cast<int>(set_device_status));
-        initialize_result.set_value(Status::Failed);
+        initialize_result.set_value(Status::Error());
         return;
     }
 
@@ -104,13 +104,13 @@ void HixlInstance::WorkerMain(std::map<std::string, std::string> options,
         if (init_status != hixl::SUCCESS) {
             UC_ERROR("[Transport][HIXL] init failed: Initialize(\"{}\") returned {}", local_engine,
                      static_cast<int>(init_status));
-            initialize_result.set_value(Status::Failed);
+            initialize_result.set_value(Status::Error());
         } else {
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 initialized_ = true;
             }
-            initialize_result.set_value(Status::Ok);
+            initialize_result.set_value(Status::OK());
             ProcessTasks(engine);
             engine.Finalize();
         }
@@ -157,11 +157,11 @@ Status HixlInstance::RegisterMemory(const MemoryRegion& memory, hixl::MemHandle&
                 "RegisterMem(addr=0x{:x}, length={}) returned {}",
                 local_endpoint_.ToString(), device_id_, reinterpret_cast<uintptr_t>(memory.addr),
                 memory.length, static_cast<int>(native_status));
-            return Status::Failed;
+            return Status::Error();
         }
-        return Status::Ok;
+        return Status::OK();
     });
-    if (status == Status::Ok) { handle = native_handle; }
+    if (status == Status::OK()) { handle = native_handle; }
     return status;
 }
 
@@ -174,9 +174,9 @@ Status HixlInstance::UnregisterMemory(hixl::MemHandle handle)
                 "[Transport][HIXL] unregister memory failed: engine={} DeregisterMem(handle={}) "
                 "returned {}",
                 local_endpoint_.ToString(), handle, static_cast<int>(native_status));
-            return Status::Failed;
+            return Status::Error();
         }
-        return Status::Ok;
+        return Status::OK();
     });
 }
 
@@ -189,9 +189,9 @@ Status HixlInstance::Connect(const std::string& remote_engine, int32_t timeout_m
                 "[Transport][HIXL] connect failed: local_engine=\"{}\" remote_engine=\"{}\" "
                 "returned {}",
                 local_endpoint_.ToString(), remote_engine, static_cast<int>(native_status));
-            return Status::Failed;
+            return Status::Error();
         }
-        return Status::Ok;
+        return Status::OK();
     });
 }
 
@@ -202,9 +202,9 @@ Status HixlInstance::Disconnect(const std::string& remote_engine, int32_t timeou
         if (native_status != hixl::SUCCESS) {
             UC_WARN("[Transport][HIXL] disconnect returned: Disconnect(\"{}\") returned {}",
                     remote_engine, static_cast<int>(native_status));
-            return Status::Failed;
+            return Status::Error();
         }
-        return Status::Ok;
+        return Status::OK();
     });
 }
 
@@ -221,9 +221,9 @@ Status HixlInstance::TransferSync(const std::string& remote_engine, Opcode opcod
                 "[Transport][HIXL] operation failed: TransferSync(\"{}\", ops={}, timeout_ms={}) "
                 "returned {}",
                 remote_engine, descs.size(), timeout_ms, static_cast<int>(native_status));
-            return Status::Failed;
+            return Status::Error();
         }
-        return Status::Ok;
+        return Status::OK();
     });
 }
 
@@ -242,11 +242,11 @@ Status HixlInstance::TransferAsync(const std::string& remote_engine, Opcode opco
                 "[Transport][HIXL] async operation failed: TransferAsync(\"{}\", ops={}) returned "
                 "{} request={}",
                 remote_engine, descs.size(), static_cast<int>(native_status), native_request);
-            return Status::Failed;
+            return Status::Error();
         }
-        return Status::Ok;
+        return Status::OK();
     });
-    if (status == Status::Ok) { request = native_request; }
+    if (status == Status::OK()) { request = native_request; }
     return status;
 }
 
@@ -259,7 +259,7 @@ Status HixlInstance::GetTransferStatus(hixl::TransferReq request, TransferStatus
         if (native_status != hixl::SUCCESS) {
             UC_ERROR("[Transport][HIXL] get transfer status failed: req={} returned {}", request,
                      static_cast<int>(native_status));
-            return Status::Failed;
+            return Status::Error();
         }
         switch (native_transfer_status) {
             case hixl::TransferStatus::WAITING: status = TransferStatus::Waiting; break;
@@ -267,7 +267,7 @@ Status HixlInstance::GetTransferStatus(hixl::TransferReq request, TransferStatus
             case hixl::TransferStatus::FAILED:
             case hixl::TransferStatus::TIMEOUT: status = TransferStatus::Failed; break;
         }
-        return Status::Ok;
+        return Status::OK();
     });
 }
 

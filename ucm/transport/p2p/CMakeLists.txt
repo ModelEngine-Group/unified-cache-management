@@ -118,6 +118,8 @@ target_include_directories(ucm_p2p_transport
 )
 target_compile_definitions(ucm_p2p_transport PRIVATE SPDLOG_FMT_EXTERNAL)
 target_link_libraries(ucm_p2p_transport
+    PUBLIC
+        infra_status
     PRIVATE
         infra_logger
         pthread
@@ -157,4 +159,8 @@ install(DIRECTORY include/
     DESTINATION ${P2P_INSTALL_REL_PATH}/include
     COMPONENT ucm
     FILES_MATCHING PATTERN "*.h"
+)
+install(FILES ${UCM_ROOT_DIR}/ucm/shared/infra/status/status.h
+    DESTINATION ${P2P_INSTALL_REL_PATH}/include/status
+    COMPONENT ucm
 )

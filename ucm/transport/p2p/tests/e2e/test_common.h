@@ -12,17 +12,13 @@ namespace transport::test {
 
 inline const char* statusName(Status status)
 {
-    switch (status) {
-        case Status::Ok: return "Ok";
-        case Status::InvalidArgument: return "InvalidArgument";
-        case Status::Failed: return "Failed";
-    }
-    return "Unknown";
+    if (status.Success()) { return "Ok"; }
+    return status == Status::InvalidParam() ? "InvalidArgument" : "Failed";
 }
 
 inline bool expectOk(Status status, const char* step)
 {
-    if (status == Status::Ok) { return true; }
+    if (status == Status::OK()) { return true; }
     std::cerr << step << " failed: " << statusName(status) << '\n';
     return false;
 }
@@ -69,7 +65,7 @@ inline bool sendTextWithRetry(TcpMessageChannel& tcp, const Endpoint& peer, cons
                               int attempts, int interval_ms, const char* step)
 {
     for (int attempt = 1; attempt <= attempts; ++attempt) {
-        if (tcp.Send(peer, text.data(), text.size()) == Status::Ok) { return true; }
+        if (tcp.Send(peer, text.data(), text.size()) == Status::OK()) { return true; }
         std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
     }
     std::cerr << step << " failed\n";
@@ -80,7 +76,7 @@ inline bool receiveText(TcpMessageChannel& tcp, Endpoint& peer, std::string& tex
 {
     Metadata data;
     const auto status = tcp.Receive(peer, data);
-    if (status != Status::Ok) {
+    if (status != Status::OK()) {
         std::cerr << step << " failed: " << statusName(status) << '\n';
         return false;
     }

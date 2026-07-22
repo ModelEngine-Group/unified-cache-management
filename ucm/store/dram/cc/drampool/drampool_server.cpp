@@ -235,16 +235,14 @@ Status DramPoolServer::StartTransportService()
     attrs.connect_timeout_ms = static_cast<std::int32_t>(g_config.opTimeoutMs);
     attrs.transfer_timeout_ms = static_cast<std::int32_t>(g_config.opTimeoutMs);
     auto status = transportManager_->InstallTransport(transport::TransportProtocol::Hixl, attrs);
-    if (status != transport::Status::Ok) {
-        return ToUcStatus(status, "TransportManager::InstallTransport");
-    }
+    if (status.Failure()) { return status; }
     if (auto registerStatus = RegisterBufferPools(); registerStatus.Failure()) {
         return registerStatus;
     }
     // Accept metadata exchanges initiated by DramStore. DramPool peer routing remains
     // static and does not actively call ExchangeMetadata().
     status = transportManager_->Init();
-    if (status != transport::Status::Ok) { return ToUcStatus(status, "TransportManager::Init"); }
+    if (status.Failure()) { return status; }
     return Status::OK();
 }
 
@@ -255,9 +253,7 @@ Status DramPoolServer::RegisterBufferPools()
     for (const auto& memory : regions) {
         transport::MemoryHandle handle = transport::kInvalidMemoryHandle;
         const auto status = transportManager_->RegisterMemory(memory, handle);
-        if (status != transport::Status::Ok) {
-            return ToUcStatus(status, "TransportManager::RegisterMemory");
-        }
+        if (status.Failure()) { return status; }
         bufferPoolMemoryHandles_.push_back(handle);
     }
     return Status::OK();
@@ -270,9 +266,7 @@ Status DramPoolServer::StartTcpMessageChannel()
     }
 
     const auto channelStatus = tcpMessageChannel_->Init(g_config.addr);
-    if (channelStatus != transport::Status::Ok) {
-        return ToUcStatus(channelStatus, "TcpMessageChannel::Init");
-    }
+    if (channelStatus.Failure()) { return channelStatus; }
     {
         std::lock_guard<std::mutex> waitGuard(requestReceiverWaitMutex_);
         tcpMessageChannelReady_ = true;
@@ -365,7 +359,7 @@ void DramPoolServer::StopTcpMessageChannel()
     }
     if (tcpMessageChannel_) {
         const auto status = tcpMessageChannel_->Shutdown();
-        if (status != transport::Status::Ok) {
+        if (status.Failure()) {
             UC_ERROR_UNLIMITED("DramPool TCP message channel shutdown failed");
         }
     }
@@ -411,9 +405,7 @@ void DramPoolServer::StopTransportService()
     if (transportManager_) {
         UnregisterBufferPools();
         const auto status = transportManager_->Shutdown();
-        if (status != transport::Status::Ok) {
-            UC_ERROR_UNLIMITED("DramPool TransportManager shutdown failed");
-        }
+        if (status.Failure()) { UC_ERROR_UNLIMITED("DramPool TransportManager shutdown failed"); }
     }
 }
 
@@ -422,7 +414,7 @@ void DramPoolServer::UnregisterBufferPools()
     for (auto iter = bufferPoolMemoryHandles_.rbegin(); iter != bufferPoolMemoryHandles_.rend();
          ++iter) {
         const auto status = transportManager_->UnregisterMemory(*iter);
-        if (status != transport::Status::Ok) {
+        if (status.Failure()) {
             UC_ERROR_UNLIMITED("DramPool buffer pool memory unregister failed, handle={}", *iter);
         }
     }
@@ -450,7 +442,7 @@ void DramPoolServer::RequestReceiveLoop()
         transport::Metadata received;
         const auto receiveStatus = tcpMessageChannel_->Receive(controlPeer, received);
         if (requestReceiverStop_.load(std::memory_order_acquire)) { break; }
-        if (receiveStatus != transport::Status::Ok) {
+        if (receiveStatus.Failure()) {
             UC_ERROR("RequestReceiver TCP message channel stopped unexpectedly");
             break;
         }

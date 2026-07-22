@@ -93,9 +93,7 @@ Status TaskWorker::ProcessOneRequest(RequestTaskPtr task)
 
 Status TaskWorker::EnsurePeerReady(const transport::ManagerID& targetOneSidedId)
 {
-    return ToUcStatus(
-        runtime_.transport.Connect(transport::TransportProtocol::Hixl, targetOneSidedId),
-        "TransportManager::Connect");
+    return runtime_.transport.Connect(transport::TransportProtocol::Hixl, targetOneSidedId);
 }
 
 Status TaskWorker::ProcessDump(const KvDumpRequest& request,
@@ -156,7 +154,7 @@ Status TaskWorker::ProcessDump(const KvDumpRequest& request,
 
     TransportHandle handle = transport::kInvalidTransferHandle;
     const auto submit_status = runtime_.transport.ExecuteAsync(operation, handle);
-    if (submit_status != transport::Status::Ok || handle == transport::kInvalidTransferHandle) {
+    if (submit_status.Failure() || handle == transport::kInvalidTransferHandle) {
         UC_ERROR("Dump SubmitAsync failed, items={}", transfer_items.size());
         DeleteItemsMetadata(transfer_items);
         for (const auto& item : transfer_items) {
@@ -226,7 +224,7 @@ Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
 
     TransportHandle handle = transport::kInvalidTransferHandle;
     const auto submit_status = runtime_.transport.ExecuteAsync(operation, handle);
-    if (submit_status != transport::Status::Ok || handle == transport::kInvalidTransferHandle) {
+    if (submit_status.Failure() || handle == transport::kInvalidTransferHandle) {
         UC_ERROR("Load SubmitAsync failed, items={}", transfer_items.size());
         LoadEndItems(transfer_items);
         for (const auto& item : transfer_items) {

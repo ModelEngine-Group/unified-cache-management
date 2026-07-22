@@ -4,9 +4,11 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "status/status.h"
 
 namespace transport {
 
+using Status = UC::Status;
 using ManagerID = std::string;
 using MemoryHandle = uint64_t;
 using TransferHandle = uint64_t;
@@ -25,12 +27,6 @@ struct Endpoint {
 enum class Opcode {
     Read,
     Write,
-};
-
-enum class Status {
-    Ok,
-    InvalidArgument,
-    Failed,
 };
 
 enum class TransportProtocol : uint32_t {

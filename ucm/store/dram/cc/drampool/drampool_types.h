@@ -47,15 +47,6 @@ using RequestQueue = UC::SpscRingQueue<RequestTaskPtr>;
 
 using TransportHandle = transport::TransferHandle;
 
-inline Status ToUcStatus(transport::Status status, const char* operation)
-{
-    if (status == transport::Status::Ok) { return Status::OK(); }
-    if (status == transport::Status::InvalidArgument) {
-        return Status::InvalidParam("{}: invalid transport argument", operation);
-    }
-    return Status::Error(std::string{operation} + ": transport operation failed");
-}
-
 struct TransferItem {
     // State needed to settle one item after the batch reaches terminal.
     std::uint16_t index_in_request{0};

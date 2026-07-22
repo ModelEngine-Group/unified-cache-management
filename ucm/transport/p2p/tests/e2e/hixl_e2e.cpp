@@ -197,7 +197,7 @@ bool exchangeMetadataWithRetry(TransportManager& manager, const ManagerID& manag
                                const Config& config)
 {
     for (int attempt = 1; attempt <= config.wait_attempts; ++attempt) {
-        if (manager.ExchangeMetadata(manager_id) == Status::Ok) { return true; }
+        if (manager.ExchangeMetadata(manager_id) == Status::OK()) { return true; }
         std::this_thread::sleep_for(std::chrono::milliseconds(config.wait_interval_ms));
     }
     return false;

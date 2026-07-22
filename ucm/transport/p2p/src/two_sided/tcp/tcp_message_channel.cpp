@@ -43,19 +43,19 @@ void CloseSocket(Socket socket)
 Status EncodeMessage(const Endpoint& local, const void* data, size_t length, Metadata& frame)
 {
     frame.clear();
-    if (local.host.size() > UINT32_MAX) { return Status::InvalidArgument; }
+    if (local.host.size() > UINT32_MAX) { return Status::InvalidParam(); }
     const auto header_size = kEncodedEndpointOverhead + local.host.size();
     if (header_size > kMaxFrameSize || length > kMaxFrameSize - header_size) {
-        return Status::InvalidArgument;
+        return Status::InvalidParam();
     }
     if (!detail::AppendString(frame, local.host) || !detail::AppendU16(frame, local.port)) {
-        return Status::InvalidArgument;
+        return Status::InvalidParam();
     }
     if (length != 0) {
         const auto* bytes = static_cast<const uint8_t*>(data);
         frame.insert(frame.end(), bytes, bytes + length);
     }
-    return Status::Ok;
+    return Status::OK();
 }
 
 bool DecodeMessage(const Metadata& frame, Endpoint& peer, Metadata& data)
@@ -75,25 +75,25 @@ Status SendAll(Socket socket, const void* data, size_t length)
     while (length > 0) {
         const auto chunk = static_cast<int>(std::min<size_t>(length, 64 * 1024));
         const int sent = ::send(socket, cursor, chunk, MSG_NOSIGNAL);
-        if (sent <= 0) { return Status::Failed; }
+        if (sent <= 0) { return Status::Error(); }
         cursor += sent;
         length -= static_cast<size_t>(sent);
     }
-    return Status::Ok;
+    return Status::OK();
 }
 
 Status SendFrame(Socket socket, const Metadata& data)
 {
-    if (socket == kInvalidSocket || data.size() > UINT32_MAX) { return Status::InvalidArgument; }
+    if (socket == kInvalidSocket || data.size() > UINT32_MAX) { return Status::InvalidParam(); }
     const uint32_t network_length = htonl(static_cast<uint32_t>(data.size()));
     auto status = SendAll(socket, &network_length, sizeof(network_length));
-    if (status != Status::Ok || data.empty()) { return status; }
+    if (status != Status::OK() || data.empty()) { return status; }
     return SendAll(socket, data.data(), data.size());
 }
 
 Status ConnectSocket(const Endpoint& endpoint, Socket& socket)
 {
-    if (endpoint.host.empty() || endpoint.port == 0) { return Status::InvalidArgument; }
+    if (endpoint.host.empty() || endpoint.port == 0) { return Status::InvalidParam(); }
 
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
@@ -102,16 +102,16 @@ Status ConnectSocket(const Endpoint& endpoint, Socket& socket)
     addrinfo* results = nullptr;
     const auto port = std::to_string(endpoint.port);
     if (getaddrinfo(endpoint.host.c_str(), port.c_str(), &hints, &results) != 0) {
-        return Status::Failed;
+        return Status::Error();
     }
 
-    Status status = Status::Failed;
+    Status status = Status::Error();
     for (auto* item = results; item != nullptr; item = item->ai_next) {
         const auto candidate = ::socket(item->ai_family, item->ai_socktype, item->ai_protocol);
         if (candidate == kInvalidSocket) { continue; }
         if (::connect(candidate, item->ai_addr, static_cast<int>(item->ai_addrlen)) == 0) {
             socket = candidate;
-            status = Status::Ok;
+            status = Status::OK();
             break;
         }
         CloseSocket(candidate);
@@ -122,7 +122,7 @@ Status ConnectSocket(const Endpoint& endpoint, Socket& socket)
 
 Status ListenSocket(const Endpoint& endpoint, int backlog, Socket& socket)
 {
-    if (endpoint.port == 0 || backlog <= 0) { return Status::InvalidArgument; }
+    if (endpoint.port == 0 || backlog <= 0) { return Status::InvalidParam(); }
 
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
@@ -132,9 +132,9 @@ Status ListenSocket(const Endpoint& endpoint, int backlog, Socket& socket)
     addrinfo* results = nullptr;
     const auto port = std::to_string(endpoint.port);
     const char* host = endpoint.host.empty() ? nullptr : endpoint.host.c_str();
-    if (getaddrinfo(host, port.c_str(), &hints, &results) != 0) { return Status::Failed; }
+    if (getaddrinfo(host, port.c_str(), &hints, &results) != 0) { return Status::Error(); }
 
-    Status status = Status::Failed;
+    Status status = Status::Error();
     for (auto* item = results; item != nullptr; item = item->ai_next) {
         const auto candidate = ::socket(item->ai_family, item->ai_socktype, item->ai_protocol);
         if (candidate == kInvalidSocket) { continue; }
@@ -147,7 +147,7 @@ Status ListenSocket(const Endpoint& endpoint, int backlog, Socket& socket)
         if (::bind(candidate, item->ai_addr, static_cast<int>(item->ai_addrlen)) == 0 &&
             ::listen(candidate, backlog) == 0) {
             socket = candidate;
-            status = Status::Ok;
+            status = Status::OK();
             break;
         }
         CloseSocket(candidate);
@@ -169,11 +169,11 @@ Status ReceiveAvailableFrames(Socket socket, Metadata& buffer, std::vector<Metad
         }
         if (received == 0) {
             closed = true;
-            return Status::Ok;
+            return Status::OK();
         }
         if (errno == EAGAIN || errno == EWOULDBLOCK) { break; }
         if (errno == EINTR) { continue; }
-        return Status::Failed;
+        return Status::Error();
     }
 
     size_t offset = 0;
@@ -182,7 +182,7 @@ Status ReceiveAvailableFrames(Socket socket, Metadata& buffer, std::vector<Metad
         std::copy_n(buffer.data() + offset, sizeof(network_length),
                     reinterpret_cast<uint8_t*>(&network_length));
         const auto length = ntohl(network_length);
-        if (length > max_frame_size) { return Status::InvalidArgument; }
+        if (length > max_frame_size) { return Status::InvalidParam(); }
         if (buffer.size() - offset - sizeof(uint32_t) < length) { break; }
         const auto payload_begin = offset + sizeof(uint32_t);
         frames.emplace_back(buffer.begin() + static_cast<ptrdiff_t>(payload_begin),
@@ -192,7 +192,7 @@ Status ReceiveAvailableFrames(Socket socket, Metadata& buffer, std::vector<Metad
     if (offset != 0) {
         buffer.erase(buffer.begin(), buffer.begin() + static_cast<ptrdiff_t>(offset));
     }
-    return Status::Ok;
+    return Status::OK();
 }
 
 }  // namespace
@@ -238,18 +238,18 @@ TcpMessageChannel::TcpMessageChannel() = default;
 
 TcpMessageChannel::~TcpMessageChannel()
 {
-    if (Shutdown() != Status::Ok) {}
+    if (Shutdown() != Status::OK()) {}
 }
 
 Status TcpMessageChannel::StartIoThread()
 {
-    if (io_thread_.joinable()) { return Status::Ok; }
+    if (io_thread_.joinable()) { return Status::OK(); }
     std::promise<Status> startup;
     auto startup_result = startup.get_future();
     io_thread_ = std::thread(
         [this, startup = std::move(startup)]() mutable { RunEventLoop(std::move(startup)); });
     const auto status = startup_result.get();
-    if (status != Status::Ok && io_thread_.joinable()) { io_thread_.join(); }
+    if (status != Status::OK() && io_thread_.joinable()) { io_thread_.join(); }
     return status;
 }
 
@@ -257,7 +257,7 @@ void TcpMessageChannel::RunEventLoop(std::promise<Status> startup)
 {
     const int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd < 0) {
-        startup.set_value(Status::Failed);
+        startup.set_value(Status::Error());
         return;
     }
 
@@ -268,7 +268,7 @@ void TcpMessageChannel::RunEventLoop(std::promise<Status> startup)
     }
     if (active_listen_socket == kInvalidSocket) {
         ::close(epoll_fd);
-        startup.set_value(Status::Failed);
+        startup.set_value(Status::Error());
         return;
     }
 
@@ -277,11 +277,11 @@ void TcpMessageChannel::RunEventLoop(std::promise<Status> startup)
     event.data.fd = active_listen_socket;
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, active_listen_socket, &event) != 0) {
         ::close(epoll_fd);
-        startup.set_value(Status::Failed);
+        startup.set_value(Status::Error());
         return;
     }
 
-    startup.set_value(Status::Ok);
+    startup.set_value(Status::OK());
     std::unordered_set<Socket> registered;
     while (true) {
         {
@@ -349,7 +349,7 @@ void TcpMessageChannel::HandleConnectionEvent(int epoll_fd, std::unordered_set<S
 {
     std::vector<Metadata> frames;
     bool closed = false;
-    Status receive_status = Status::Ok;
+    Status receive_status = Status::OK();
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = connections_.find(socket);
@@ -357,7 +357,7 @@ void TcpMessageChannel::HandleConnectionEvent(int epoll_fd, std::unordered_set<S
         receive_status = ReceiveAvailableFrames(socket, it->second.receive_buffer, frames,
                                                 kMaxFrameSize, closed);
     }
-    if (receive_status != Status::Ok || closed) {
+    if (receive_status != Status::OK() || closed) {
         RemoveConnection(epoll_fd, registered, socket);
         return;
     }
@@ -415,13 +415,13 @@ bool TcpMessageChannel::BindPeerLocked(Socket socket, const Endpoint& peer)
 
 Status TcpMessageChannel::Init(const Endpoint& local)
 {
-    if (local.host.empty() || local.port == 0) { return Status::InvalidArgument; }
+    if (local.host.empty() || local.port == 0) { return Status::InvalidParam(); }
     const auto shutdown_status = Shutdown();
-    if (shutdown_status != Status::Ok) { return shutdown_status; }
+    if (shutdown_status != Status::OK()) { return shutdown_status; }
 
     Socket listen_socket = kInvalidSocket;
     auto status = ListenSocket(local, kListenBacklog, listen_socket);
-    if (status != Status::Ok) { return status; }
+    if (status != Status::OK()) { return status; }
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -431,7 +431,7 @@ Status TcpMessageChannel::Init(const Endpoint& local)
     }
 
     status = StartIoThread();
-    if (status != Status::Ok) { Shutdown(); }
+    if (status != Status::OK()) { Shutdown(); }
     return status;
 }
 
@@ -439,7 +439,7 @@ Status TcpMessageChannel::Send(const Endpoint& peer, const void* data, size_t le
 {
     if (peer.host.empty() || peer.port == 0 || (data == nullptr && length != 0) ||
         length > UINT32_MAX) {
-        return Status::InvalidArgument;
+        return Status::InvalidParam();
     }
 
     Endpoint local;
@@ -448,7 +448,7 @@ Status TcpMessageChannel::Send(const Endpoint& peer, const void* data, size_t le
     std::shared_ptr<std::mutex> send_mutex;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (stopping_ || listen_socket_ == kInvalidSocket) { return Status::Failed; }
+        if (stopping_ || listen_socket_ == kInvalidSocket) { return Status::Error(); }
         local = local_;
         peer_id = peer.ToString();
         auto peer_it = peer_sockets_.find(peer_id);
@@ -466,12 +466,12 @@ Status TcpMessageChannel::Send(const Endpoint& peer, const void* data, size_t le
     if (socket == kInvalidSocket) {
         Socket connected = kInvalidSocket;
         auto status = ConnectSocket(peer, connected);
-        if (status != Status::Ok) { return status; }
+        if (status != Status::OK()) { return status; }
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (stopping_) {
                 CloseSocket(connected);
-                return Status::Failed;
+                return Status::Error();
             }
             Connection connection;
             connection.socket = connected;
@@ -484,16 +484,16 @@ Status TcpMessageChannel::Send(const Endpoint& peer, const void* data, size_t le
         }
     }
 
-    if (socket == kInvalidSocket || !send_mutex) { return Status::Failed; }
+    if (socket == kInvalidSocket || !send_mutex) { return Status::Error(); }
 
     Metadata frame;
     auto status = EncodeMessage(local, data, length, frame);
-    if (status != Status::Ok) { return status; }
+    if (status != Status::OK()) { return status; }
     {
         std::lock_guard<std::mutex> send_lock(*send_mutex);
         status = SendFrame(socket, frame);
     }
-    if (status != Status::Ok) {
+    if (status != Status::OK()) {
         std::lock_guard<std::mutex> lock(mutex_);
         CloseSocketLocked(socket);
     }
@@ -504,12 +504,12 @@ Status TcpMessageChannel::Receive(Endpoint& peer, Metadata& data)
 {
     std::unique_lock<std::mutex> lock(mutex_);
     receive_cv_.wait(lock, [this]() { return stopping_ || !receive_queue_.empty(); });
-    if (receive_queue_.empty()) { return Status::Failed; }
+    if (receive_queue_.empty()) { return Status::Error(); }
     auto message = std::move(receive_queue_.front());
     receive_queue_.pop_front();
     peer = std::move(message.peer);
     data = std::move(message.data);
-    return Status::Ok;
+    return Status::OK();
 }
 
 Status TcpMessageChannel::Shutdown()
@@ -524,7 +524,7 @@ Status TcpMessageChannel::Shutdown()
         io_thread = std::move(io_thread_);
     }
     if (io_thread.joinable()) { io_thread.join(); }
-    return Status::Ok;
+    return Status::OK();
 }
 
 }  // namespace transport
