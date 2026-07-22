@@ -58,6 +58,8 @@ constexpr const char* kRequiredRuntimeConfigKeys[] = {
     "queue.completion_depth",
     "request_receiver.idle_wait_us",
     "poller.pending_depth",
+    "flag_buffer.capacity_mb",
+    "flag_buffer.slot_size_bytes",
     "gc.enabled",
     "gc.interval_ms",
     "metadata.periodic_eviction_policy",
@@ -274,6 +276,12 @@ Status ApplyRuntimeConfigValue(DramPoolConfig& config, const std::string& key,
     if (key == "poller.pending_depth") {
         return ParseUint32Value(key, value, config.pollerPendingDepth);
     }
+    if (key == "flag_buffer.capacity_mb") {
+        return ParseUint64Value(key, value, config.flagBufferCapacityMb);
+    }
+    if (key == "flag_buffer.slot_size_bytes") {
+        return ParseUint64Value(key, value, config.flagBufferSlotSizeBytes);
+    }
     if (key == "gc.enabled") { return ParseBoolValue(key, value, config.gcEnabled); }
     if (key == "gc.interval_ms") { return ParseUint32Value(key, value, config.gcIntervalMs); }
     if (key == "metadata.periodic_eviction_policy") {
@@ -305,7 +313,7 @@ Status ApplyRuntimeConfigValue(DramPoolConfig& config, const std::string& key,
     return Status::InvalidParam("unknown DramPool runtime YAML key: {}", key);
 }
 
-Status ValidateRuntimeConfig(const DramPoolConfig& config)
+Status ValidateRuntimeConfig(DramPoolConfig& config)
 {
     if (config.twoSidedToOneSided.empty()) {
         return Status::InvalidParam("transport.endpoints must not be empty");
@@ -334,6 +342,31 @@ Status ValidateRuntimeConfig(const DramPoolConfig& config)
     if (config.pollerPendingDepth == 0) {
         return Status::InvalidParam("poller.pending_depth must be greater than zero");
     }
+    if (config.flagBufferCapacityMb == 0 || config.flagBufferSlotSizeBytes == 0) {
+        return Status::InvalidParam(
+            "flag_buffer.capacity_mb and flag_buffer.slot_size_bytes must be greater than zero");
+    }
+    if (config.flagBufferCapacityMb > std::numeric_limits<std::uint64_t>::max() / kBytesPerMiB) {
+        return Status::InvalidParam("flag_buffer.capacity_mb is too large");
+    }
+    const auto capacityBytes = config.flagBufferCapacityMb * kBytesPerMiB;
+    if (capacityBytes > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()) ||
+        config.flagBufferSlotSizeBytes >
+            static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()) ||
+        config.flagBufferSlotSizeBytes >
+            std::numeric_limits<std::uint64_t>::max() - (kFlagBufferSlotAlignment - 1)) {
+        return Status::InvalidParam("flag_buffer layout exceeds addressable process memory");
+    }
+    const auto slotStride = (config.flagBufferSlotSizeBytes + kFlagBufferSlotAlignment - 1) /
+                            kFlagBufferSlotAlignment * kFlagBufferSlotAlignment;
+    const auto slotCount = capacityBytes / slotStride;
+    if (slotCount < config.pollerPendingDepth ||
+        slotCount >= std::numeric_limits<std::uint32_t>::max()) {
+        return Status::InvalidParam(
+            "flag_buffer capacity must provide at least poller.pending_depth slots and fit "
+            "the BufferPool index range");
+    }
+    config.flagBufferSlotCount = static_cast<std::uint32_t>(slotCount);
     if (config.gcEnabled && config.gcIntervalMs == 0) {
         return Status::InvalidParam("gc.interval_ms must be greater than zero when GC is enabled");
     }

@@ -23,6 +23,7 @@
  * */
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -35,6 +36,8 @@ namespace UC::DramPool {
 
 inline constexpr std::uint32_t kDefaultPollerPendingDepth = 64;
 inline constexpr std::uint64_t kBytesPerGiB = 1024ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t kBytesPerMiB = 1024ULL * 1024ULL;
+inline constexpr std::size_t kFlagBufferSlotAlignment = 64;
 inline constexpr std::uint64_t kMillisecondsPerMinute = 60'000;
 inline constexpr std::uint64_t kDefaultTtlMinutes = 120;
 inline constexpr std::uint64_t kDefaultDumpTtlMs = kDefaultTtlMinutes * kMillisecondsPerMinute;
@@ -65,6 +68,12 @@ struct DramPoolConfig {
     std::uint32_t requestReceiverIdleWaitUs{100};
 
     std::uint32_t pollerPendingDepth{kDefaultPollerPendingDepth};
+
+    // Local staging pool used only for response/flag RDMA writes.
+    std::uint64_t flagBufferCapacityMb{64};
+    std::uint64_t flagBufferSlotSizeBytes{64};
+    // Resolved by ParseYamlConfig from capacity and slot layout.
+    std::uint32_t flagBufferSlotCount{0};
 
     bool gcEnabled{true};
     std::uint32_t gcIntervalMs{1000};
