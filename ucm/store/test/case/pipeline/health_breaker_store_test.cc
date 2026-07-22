@@ -70,6 +70,23 @@ void Trip(HealthBreakerStore& breaker, Detail::MockStore& store)
 
 }  // namespace
 
+TEST(UCHealthBreakerStoreTest, LogsFailedProbeStatus)
+{
+    StrictMock<Detail::MockStore> store;
+    HealthBreakerStore breaker(&store, "posix-0", TestConfig());
+
+    testing::internal::CaptureStdout();
+    EXPECT_CALL(store, CheckHealth())
+        .WillOnce(Return(Status::OsApiError("health probe write failed")));
+    EXPECT_TRUE(breaker.CheckHealth().Failure());
+    UC::Logger::Flush();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const auto output = testing::internal::GetCapturedStdout();
+
+    EXPECT_THAT(output, testing::HasSubstr("Store health check(posix-0) failed"));
+    EXPECT_THAT(output, testing::HasSubstr("health probe write failed"));
+}
+
 TEST(UCHealthBreakerStoreTest, TripsEarlyAndRecoversAfterFullSuccessWindow)
 {
     StrictMock<Detail::MockStore> store;
@@ -185,7 +202,13 @@ TEST(UCHealthBreakerStoreTest, AppliesTimeoutBeforeStart)
         return Status::OK();
     }));
 
+    testing::internal::CaptureStdout();
     EXPECT_EQ(breaker.CheckHealth(), Status::Timeout());
+    UC::Logger::Flush();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const auto output = testing::internal::GetCapturedStdout();
+
+    EXPECT_THAT(output, testing::HasSubstr("Store health check(cache-0) timed out after 10 ms"));
     EXPECT_FALSE(breaker.Enabled());
 }
 
