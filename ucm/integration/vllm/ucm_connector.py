@@ -198,56 +198,7 @@ class KVCacheLayout:
         }
         self.first_layer_id = next(iter(self.layer_name_to_id.values()))
         self.num_blocks = self.kv_cache_config.num_blocks
-        self._log_kv_cache_config()
         self._build_layout(kvcaches)
-
-    def _log_kv_cache_config(self) -> None:
-        logger.debug(f"kv_cache_config: {self.kv_cache_config!r}")
-
-        kv_cache_groups = getattr(self.kv_cache_config, "kv_cache_groups", [])
-        kv_cache_tensors = getattr(self.kv_cache_config, "kv_cache_tensors", [])
-        layer_specs = {}
-        for group in kv_cache_groups:
-            group_spec = getattr(group, "kv_cache_spec", None)
-            per_layer_specs = getattr(group_spec, "kv_cache_specs", None)
-            if isinstance(per_layer_specs, dict):
-                layer_specs.update(per_layer_specs)
-                continue
-            for layer_name in getattr(group, "layer_names", []):
-                layer_specs[layer_name] = group_spec
-
-        sparse_layer_count = 0
-        sfa_c8_counts = {False: 0, True: 0}
-        indexer_layer_count = 0
-        li_c8_layer_ids = {False: [], True: []}
-        for layer_name, spec in layer_specs.items():
-            sparse_head_dim = getattr(spec, "sparse_head_dim", None)
-            if sparse_head_dim is None or len(sparse_head_dim) != 3:
-                continue
-
-            sparse_layer_count += 1
-            sfa_c8_counts[bool(getattr(spec, "cache_sparse_sfa_c8", False))] += 1
-            if sparse_head_dim[2] <= 0:
-                continue
-
-            indexer_layer_count += 1
-            li_c8_enabled = bool(getattr(spec, "cache_sparse_li_c8", False))
-            try:
-                layer_id = extract_layer_index(layer_name)
-            except (AssertionError, AttributeError, IndexError, TypeError, ValueError):
-                layer_id = layer_name
-            li_c8_layer_ids[li_c8_enabled].append(layer_id)
-
-        tensor_sizes = [getattr(tensor, "size", None) for tensor in kv_cache_tensors]
-        logger.info(
-            "KV cache config summary: "
-            f"num_blocks={self.num_blocks}, groups={len(kv_cache_groups)}, "
-            f"tensor_sizes={tensor_sizes}, sparse_layers={sparse_layer_count}, "
-            f"effective_sfa_c8_counts={sfa_c8_counts}, "
-            f"indexer_layers={indexer_layer_count}, "
-            f"li_c8_enabled_layer_ids={li_c8_layer_ids[True]}, "
-            f"li_c8_disabled_layer_ids={li_c8_layer_ids[False]}"
-        )
 
     def _build_layout(self, kvcaches):
 

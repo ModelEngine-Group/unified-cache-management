@@ -41,9 +41,6 @@ class FakeLogger:
     def info(self, *_args, **_kwargs):
         self.messages.append(_args[0] % _args[1:] if len(_args) > 1 else _args[0])
 
-    def debug(self, *_args, **_kwargs):
-        self.messages.append(_args[0] % _args[1:] if len(_args) > 1 else _args[0])
-
 
 def _extract_layer_index(name: str) -> int:
     match = re.search(r"layers\.(\d+)", name)
@@ -77,11 +74,7 @@ def _load_kv_cache_layout_class():
 KVCacheLayout = _load_kv_cache_layout_class()
 
 
-def _build_layout(
-    row_strides: list[list[int]],
-    use_layerwise: bool,
-    kv_cache_config=None,
-):
+def _build_layout(row_strides: list[list[int]], use_layerwise: bool):
     next_ptr = 0x1000
     kvcaches = {}
     for layer_id, strides in enumerate(row_strides):
@@ -97,7 +90,7 @@ def _build_layout(
             hf_text_config=SimpleNamespace(num_hidden_layers=len(row_strides))
         ),
     )
-    kv_cache_config = kv_cache_config or SimpleNamespace(num_blocks=2)
+    kv_cache_config = SimpleNamespace(num_blocks=2)
     return KVCacheLayout(
         kvcaches,
         {"use_layerwise": use_layerwise},
@@ -183,51 +176,6 @@ class KVCacheLayoutTest(unittest.TestCase):
         self.assertIn("padded_layers=1", padding_log)
         self.assertIn("ghost_slots=2", padding_log)
         self.assertIn("tensor_counts_per_layer=[3, 1]", padding_log)
-
-    def test_logs_effective_sparse_c8_config_per_indexer_layer(self):
-        sfa_c8_li_c8_spec = SimpleNamespace(
-            sparse_head_dim=(656, 0, 128),
-            cache_sparse_sfa_c8=True,
-            cache_sparse_li_c8=True,
-        )
-        sfa_c8_bf16_li_spec = SimpleNamespace(
-            sparse_head_dim=(656, 0, 128),
-            cache_sparse_sfa_c8=True,
-            cache_sparse_li_c8=False,
-        )
-        kv_cache_config = SimpleNamespace(
-            num_blocks=2,
-            kv_cache_tensors=[SimpleNamespace(size=1024)],
-            kv_cache_groups=[
-                SimpleNamespace(
-                    layer_names=["model.layers.0.self_attn"],
-                    kv_cache_spec=sfa_c8_bf16_li_spec,
-                ),
-                SimpleNamespace(
-                    layer_names=["model.layers.1.self_attn"],
-                    kv_cache_spec=sfa_c8_li_c8_spec,
-                ),
-            ],
-        )
-        logger = FakeLogger()
-        previous_logger = KVCacheLayout.__init__.__globals__["logger"]
-        KVCacheLayout.__init__.__globals__["logger"] = logger
-        try:
-            _build_layout(
-                [[8, 4], [8, 4]],
-                use_layerwise=True,
-                kv_cache_config=kv_cache_config,
-            )
-        finally:
-            KVCacheLayout.__init__.__globals__["logger"] = previous_logger
-
-        summary_log = next(
-            message for message in logger.messages if "config summary" in message
-        )
-        self.assertIn("tensor_sizes=[1024]", summary_log)
-        self.assertIn("effective_sfa_c8_counts={False: 0, True: 2}", summary_log)
-        self.assertIn("li_c8_enabled_layer_ids=[1]", summary_log)
-        self.assertIn("li_c8_disabled_layer_ids=[0]", summary_log)
 
 
 if __name__ == "__main__":
