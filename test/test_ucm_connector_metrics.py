@@ -1718,6 +1718,7 @@ def test_ucm_overview_copies_vllm_panels_and_adds_block_hit_and_health_views():
         "group": "A",
         "mode": "normal",
     }
+    assert hit_rate["maxDataPoints"] == 60
     assert hit_rate["options"]["tooltip"]["mode"] == "multi"
     hit_targets = {
         target["legendFormat"]: target["expr"] for target in hit_rate["targets"]
