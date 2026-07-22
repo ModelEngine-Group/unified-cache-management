@@ -132,7 +132,10 @@ Expected<Detail::TaskHandle> HealthBreakerStore::Dump(Detail::TaskDesc task)
     return store_->Dump(std::move(task));
 }
 
-Expected<bool> HealthBreakerStore::Check(Detail::TaskHandle taskId) { return store_->Check(taskId); }
+Expected<bool> HealthBreakerStore::Check(Detail::TaskHandle taskId)
+{
+    return store_->Check(taskId);
+}
 
 Status HealthBreakerStore::Wait(Detail::TaskHandle taskId) { return store_->Wait(taskId); }
 
@@ -198,8 +201,7 @@ void HealthBreakerStore::RecordEffectiveHealth()
     if (storeId_.find(":PosixStore") != std::string::npos) {
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_store_health"), Enabled() ? 1.0 : 0.0);
     } else if (storeId_.find(":MooncakeStore") != std::string::npos) {
-        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_store_health"),
-                                 Enabled() ? 1.0 : 0.0);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_store_health"), Enabled() ? 1.0 : 0.0);
     }
 }
 
