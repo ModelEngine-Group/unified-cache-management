@@ -56,6 +56,10 @@ class PromqlEvaluator:
                 raise ValueError(f"clamp_min expects 2 args: {expr}")
             return _vector_clamp_min(self._eval(args[0]), float(args[1]))
 
+        call = _function_args(expr, "positive_or_nan")
+        if call is not None:
+            return _vector_positive_or_nan(self._eval(call))
+
         call = _function_args(expr, "histogram_quantile")
         if call is not None:
             args = _split_top_level(call, ",")
@@ -333,6 +337,13 @@ def _vector_binary(left: Vector, right: Vector, op: str) -> Vector:
 def _vector_clamp_min(vector: Vector, minimum: float) -> Vector:
     return {
         key: VectorPoint(point.labels, max(point.value, minimum))
+        for key, point in vector.items()
+    }
+
+
+def _vector_positive_or_nan(vector: Vector) -> Vector:
+    return {
+        key: VectorPoint(point.labels, point.value if point.value > 0 else math.nan)
         for key, point in vector.items()
     }
 

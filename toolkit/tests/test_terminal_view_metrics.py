@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT))
 from terminal_view_metrics import cli, collector
 from terminal_view_metrics.cli import DEFAULT_DB, main
 from terminal_view_metrics.config import (
+    iter_grouped_specs,
     list_preset_configs,
     load_config,
     metric_names_for_scrape,
@@ -782,6 +783,68 @@ vllm:num_requests_running{worker_id="1"} 5
             },
         )
 
+    def test_promql_expr_expands_config_params(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with MetricsStore(Path(tmp) / "metrics.db") as store:
+                t0 = parse_time_ms("2026-06-25T10:00:00")
+                t1 = t0 + 10_000
+                store.write_samples(
+                    parse_prometheus_text("ucm:cache_load_backend_shards_total 2"),
+                    t0,
+                )
+                store.write_samples(
+                    parse_prometheus_text("ucm:cache_load_backend_shards_total 7"),
+                    t1,
+                )
+
+                config = {
+                    "params": {"tp_size": 2},
+                    "metrics": [
+                        {
+                            "name": "mla_backend_shards",
+                            "type": "promql",
+                            "expr": "${tp_size} * sum by () (rate(ucm:cache_load_backend_shards_total[$__rate_interval]))",
+                            "value": "rate",
+                            "aggregate": "sum",
+                        }
+                    ],
+                }
+
+                rows = QueryEngine(store).query_config(
+                    config,
+                    10,
+                    start_ms=t0,
+                    aggr_by_seconds=10,
+                )
+
+        self.assertEqual(
+            metric_names_for_scrape(config), {"ucm:cache_load_backend_shards_total"}
+        )
+        self.assertAlmostEqual(rows[0].values["rate"], 1.0)
+
+    def test_grouped_specs_expand_config_params(self):
+        config = {
+            "params": {"tp_size": 2},
+            "groups": [
+                {
+                    "name": "mla",
+                    "metrics": [
+                        {
+                            "name": "backend",
+                            "type": "promql",
+                            "expr": "${tp_size} * backend_total",
+                            "aggregate": "sum",
+                        }
+                    ],
+                }
+            ],
+        }
+
+        group, spec = next(iter_grouped_specs(config))
+
+        self.assertEqual(group, "mla")
+        self.assertEqual(spec["expr"], "2 * backend_total")
+
     def test_metrics_lite_preset_tracks_remote_tool_datapoints(self):
         config = load_config("metrics_lite")
         metric_names = {metric["name"] for metric in config["metrics"]}
@@ -821,6 +884,9 @@ vllm:num_requests_running{worker_id="1"} 5
                 "posix_store_dump_bandwidth_gbps",
                 "prefix_cache_hit_rate",
                 "external_prefix_cache_hit_rate",
+                "hbm_hit_rate",
+                "cache_hit_rate",
+                "posix_hit_rate",
                 "cache_backend_load_ratio",
             },
         )
@@ -860,7 +926,12 @@ vllm:num_requests_running{worker_id="1"} 5
                 "vllm:prefix_cache_hits_total",
                 "vllm:prefix_cache_queries_total",
                 "vllm:external_prefix_cache_hits_total",
+                "ucm:total_prefix_query_tokens_total",
+                "ucm:gpu_hbm_hit_tokens_total",
                 "ucm:cache_lookup_hit_blocks_total",
+                "ucm:cache_lookup_miss_blocks_total",
+                "ucm:cache_load_backend_shards_total",
+                "ucm:cache_load_shards_total",
                 "ucm:posix_lookup_hit_blocks_total",
             }.issubset(metric_names_for_scrape(config))
         )
@@ -891,7 +962,8 @@ vllm:num_requests_running{worker_id="1"} 5
 
     def test_preset_configs_use_explicit_aggregate_without_group_by(self):
         self.assertEqual(
-            [path.name for path in list_preset_configs()], ["metrics_lite.json"]
+            [path.name for path in list_preset_configs()],
+            ["metrics_lite.json", "metrics_lite_mla.json"],
         )
         for path in list_preset_configs():
             config = load_config(path)
@@ -945,7 +1017,12 @@ vllm:request_decode_time_seconds_sum 4
 vllm:request_decode_time_seconds_count 5
 ucm:cache_lookup_hit_blocks_total 10
 ucm:cache_lookup_miss_blocks_total 10
+ucm:total_prefix_query_tokens_total 100
+ucm:gpu_hbm_hit_tokens_total 25
+ucm:posix_lookup_query_blocks_total 20
 ucm:posix_lookup_hit_blocks_total 5
+ucm:cache_load_backend_shards_total 2
+ucm:cache_load_shards_total 10
 """
                     ),
                     t0,
@@ -987,7 +1064,12 @@ vllm:request_decode_time_seconds_sum 14
 vllm:request_decode_time_seconds_count 9
 ucm:cache_lookup_hit_blocks_total 30
 ucm:cache_lookup_miss_blocks_total 30
+ucm:total_prefix_query_tokens_total 300
+ucm:gpu_hbm_hit_tokens_total 85
+ucm:posix_lookup_query_blocks_total 120
 ucm:posix_lookup_hit_blocks_total 15
+ucm:cache_load_backend_shards_total 7
+ucm:cache_load_shards_total 35
 """
                     ),
                     t1,
@@ -1023,6 +1105,9 @@ ucm:posix_lookup_hit_blocks_total 15
         self.assertAlmostEqual(
             values["external_prefix_cache_hit_rate"]["hit_rate"], 0.2
         )
+        self.assertAlmostEqual(values["hbm_hit_rate"]["hit_rate"], 0.3)
+        self.assertAlmostEqual(values["cache_hit_rate"]["hit_rate"], 0.35)
+        self.assertAlmostEqual(values["posix_hit_rate"]["hit_rate"], 0.0875)
         self.assertAlmostEqual(values["cache_backend_load_ratio"]["ratio"], 1.0 / 3.0)
         self.assertAlmostEqual(values["total_requests"]["requests"], 4.0)
         for removed in (
@@ -1088,6 +1173,103 @@ ucm:cache_load_shards_total{worker_id="1"} 10
                 values = {row.metric: row.values for row in rows}
 
         self.assertAlmostEqual(values["cache_backend_load_ratio"]["ratio"], 1.0)
+
+    def test_metrics_lite_mla_preset_computes_tp_adjusted_posix_hit_rate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with MetricsStore(Path(tmp) / "metrics.db") as store:
+                t0 = parse_time_ms("2026-06-25T10:00:00")
+                t1 = t0 + 10_000
+                store.write_samples(
+                    parse_prometheus_text(
+                        """
+ucm:cache_lookup_hit_blocks_total 10
+ucm:cache_lookup_miss_blocks_total 10
+ucm:total_prefix_query_tokens_total 100
+ucm:gpu_hbm_hit_tokens_total 25
+ucm:cache_load_backend_shards_total 2
+ucm:cache_load_shards_total 10
+"""
+                    ),
+                    t0,
+                )
+                store.write_samples(
+                    parse_prometheus_text(
+                        """
+ucm:cache_lookup_hit_blocks_total 30
+ucm:cache_lookup_miss_blocks_total 30
+ucm:total_prefix_query_tokens_total 300
+ucm:gpu_hbm_hit_tokens_total 85
+ucm:cache_load_backend_shards_total 7
+ucm:cache_load_shards_total 75
+"""
+                    ),
+                    t1,
+                )
+
+                config = load_config("metrics_lite_mla")
+                rows = QueryEngine(store).query_config(
+                    config,
+                    10,
+                    start_ms=t0,
+                    aggr_by_seconds=10,
+                )
+                values = {row.metric: row.values for row in rows}
+
+        self.assertEqual(config["params"]["tp_size"], 8)
+        self.assertAlmostEqual(values["hbm_hit_rate"]["hit_rate"], 0.3)
+        self.assertAlmostEqual(values["cache_hit_rate"]["hit_rate"], 0.35)
+        self.assertAlmostEqual(values["posix_hit_rate"]["hit_rate"], 0.56)
+
+    def test_metrics_lite_preset_skips_posix_hit_rate_when_denominator_is_non_positive(
+        self,
+    ):
+        for config_name, load_shards in (
+            ("metrics_lite", 5),
+            ("metrics_lite_mla", 35),
+        ):
+            with self.subTest(config=config_name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    with MetricsStore(Path(tmp) / "metrics.db") as store:
+                        t0 = parse_time_ms("2026-06-25T10:00:00")
+                        t1 = t0 + 10_000
+                        store.write_samples(
+                            parse_prometheus_text(
+                                """
+ucm:cache_lookup_hit_blocks_total 10
+ucm:cache_lookup_miss_blocks_total 10
+ucm:total_prefix_query_tokens_total 100
+ucm:gpu_hbm_hit_tokens_total 25
+ucm:cache_load_backend_shards_total 2
+ucm:cache_load_shards_total 10
+"""
+                            ),
+                            t0,
+                        )
+                        store.write_samples(
+                            parse_prometheus_text(
+                                f"""
+ucm:cache_lookup_hit_blocks_total 30
+ucm:cache_lookup_miss_blocks_total 30
+ucm:total_prefix_query_tokens_total 300
+ucm:gpu_hbm_hit_tokens_total 85
+ucm:cache_load_backend_shards_total 7
+ucm:cache_load_shards_total {load_shards}
+"""
+                            ),
+                            t1,
+                        )
+
+                        rows = QueryEngine(store).query_config(
+                            load_config(config_name),
+                            10,
+                            start_ms=t0,
+                            aggr_by_seconds=10,
+                        )
+                        values = {row.metric: row.values for row in rows}
+
+                self.assertAlmostEqual(values["hbm_hit_rate"]["hit_rate"], 0.3)
+                self.assertAlmostEqual(values["cache_hit_rate"]["hit_rate"], 0.35)
+                self.assertNotIn("posix_hit_rate", values)
 
     def test_default_db_uses_tmp_ucm_metrics_db(self):
         self.assertEqual(DEFAULT_DB, "/tmp/ucm_metrics.db")

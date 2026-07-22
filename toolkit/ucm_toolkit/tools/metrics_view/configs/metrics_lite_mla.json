@@ -1,5 +1,8 @@
 {
-  "title": "Metrics Lite",
+  "title": "Metrics Lite MLA",
+  "params": {
+    "tp_size": 8
+  },
   "metrics": [
     {
       "name": "total_requests",
@@ -82,7 +85,7 @@
     {
       "name": "posix_hit_rate",
       "type": "promql",
-      "expr": "((sum by () (rate(ucm:cache_lookup_hit_blocks_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:cache_lookup_hit_blocks_total[$__rate_interval])) + sum by () (rate(ucm:cache_lookup_miss_blocks_total[$__rate_interval])), 1e-9)) * (1 - (sum by () (rate(ucm:gpu_hbm_hit_tokens_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:total_prefix_query_tokens_total[$__rate_interval])), 1e-9)))) * (sum by () (rate(ucm:cache_load_backend_shards_total[$__rate_interval])) / positive_or_nan(sum by () (rate(ucm:cache_load_shards_total[$__rate_interval])) - sum by () (rate(ucm:cache_load_backend_shards_total[$__rate_interval]))))",
+      "expr": "((sum by () (rate(ucm:cache_lookup_hit_blocks_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:cache_lookup_hit_blocks_total[$__rate_interval])) + sum by () (rate(ucm:cache_lookup_miss_blocks_total[$__rate_interval])), 1e-9)) * (1 - (sum by () (rate(ucm:gpu_hbm_hit_tokens_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:total_prefix_query_tokens_total[$__rate_interval])), 1e-9)))) * ((${tp_size} * sum by () (rate(ucm:cache_load_backend_shards_total[$__rate_interval]))) / positive_or_nan(sum by () (rate(ucm:cache_load_shards_total[$__rate_interval])) - (${tp_size} * sum by () (rate(ucm:cache_load_backend_shards_total[$__rate_interval])))))",
       "value": "hit_rate",
       "unit": "ratio",
       "aggregate": "avg"

@@ -48,14 +48,15 @@ def resolve_config_path(path_or_name: str | Path) -> Path:
 
 def metric_specs(config: dict) -> list[dict]:
     prefix = str(config.get("metric_prefix", ""))
+    params = _config_params(config)
     specs: list[dict] = []
     groups = config.get("groups")
     if isinstance(groups, list):
         for group in groups:
             for metric in group.get("metrics", []):
-                specs.append(_normalize_metric(metric, prefix))
+                specs.append(_normalize_metric(metric, prefix, params))
     for metric in config.get("metrics", []):
-        specs.append(_normalize_metric(metric, prefix))
+        specs.append(_normalize_metric(metric, prefix, params))
     return specs
 
 
@@ -104,22 +105,33 @@ def parse_time_ms(value: str | int | float) -> int:
 
 
 def iter_grouped_specs(config: dict) -> Iterator[tuple[str, dict]]:
+    prefix = str(config.get("metric_prefix", ""))
+    params = _config_params(config)
     for group in config.get("groups", []):
         group_name = group.get("name", "")
         for metric in group.get("metrics", []):
-            yield group_name, _normalize_metric(
-                metric, str(config.get("metric_prefix", ""))
-            )
+            yield group_name, _normalize_metric(metric, prefix, params)
     for metric in config.get("metrics", []):
-        yield "", _normalize_metric(metric, str(config.get("metric_prefix", "")))
+        yield "", _normalize_metric(metric, prefix, params)
 
 
-def _normalize_metric(metric: dict, prefix: str) -> dict:
+def _config_params(config: dict) -> dict[str, str]:
+    params = config.get("params", {})
+    if params is None:
+        return {}
+    if not isinstance(params, dict):
+        raise ValueError("Config params must be an object")
+    return {str(key): str(value) for key, value in params.items()}
+
+
+def _normalize_metric(metric: dict, prefix: str, params: dict[str, str]) -> dict:
     spec = dict(metric)
     name = spec["name"]
     if prefix and ":" not in name and not name.startswith(prefix):
         name = f"{prefix}{name}"
     spec["name"] = name
+    if "expr" in spec:
+        spec["expr"] = _expand_params(str(spec["expr"]), params)
     aggregate = spec.get("aggregate")
     if aggregate not in {"sum", "avg"}:
         raise ValueError(f"Metric {name} requires aggregate to be 'sum' or 'avg'")
@@ -127,6 +139,14 @@ def _normalize_metric(metric: dict, prefix: str) -> dict:
         spec["avg"] = True
         spec["quantiles"] = list(DEFAULT_HISTOGRAM_QUANTILES)
     return spec
+
+
+def _expand_params(expr: str, params: dict[str, str]) -> str:
+    return re.sub(
+        r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}",
+        lambda match: params.get(match.group(1), match.group(0)),
+        expr,
+    )
 
 
 def _numeric_time_ms(value: float) -> int:
