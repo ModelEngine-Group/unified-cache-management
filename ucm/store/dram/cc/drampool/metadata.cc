@@ -132,6 +132,17 @@ Status ShardMetadata::Delete(const BlockId& key)
     return Status::OK();
 }
 
+Status ShardMetadata::TryDelete(const BlockId& key, EntryPtr& entry)
+{
+    ReadOnlyGuard lock(mtx_);
+    auto it = metadata_.find(key);
+    if (it == metadata_.end()) { return Status::NotFound(); }
+    auto& existingEntry = it->second;
+    if (!existingEntry->TryMarkDeleting()) { return Status::Error(); }
+    entry = existingEntry;
+    return Status::OK();
+}
+
 std::size_t ShardMetadata::GetKeyCnt() const noexcept
 {
     ReadOnlyGuard lock(mtx_);
@@ -148,6 +159,18 @@ std::vector<EntryPtr> ShardMetadata::EvictDeep(double evict_ratio)
 {
     ReadOnlyGuard lock(mtx_);
     return deepEvictor_->GetEvictionResults(evict_ratio);
+}
+
+Status MetadataManager::Delete(const BlockId& key)
+{
+    EntryPtr entry;
+    auto st = ShardOf(key).TryDelete(key, entry);
+    if (!st.Success()) { return st; }
+    auto freeSt = bufferManager_.Free(entry->size, entry->buffer.slot);
+    if (!freeSt.Success()) {
+        UC_ERROR("Delete: Free slot {} failed, status {}.", entry->buffer.slot, freeSt.ToString());
+    }
+    return ShardOf(key).Delete(key);
 }
 
 Status MetadataManager::StoreBegin(const BlockId& key, EntryPtr entry)

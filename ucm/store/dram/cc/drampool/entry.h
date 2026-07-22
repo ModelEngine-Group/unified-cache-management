@@ -75,6 +75,15 @@ struct Entry {
         return status == EntryStatus::INITIALIZED && refCnt == 0;
     }
 
+    bool TryMarkDeleting()
+    {
+        SpinLockGuard guard(lock);
+        if (status == EntryStatus::DELETING) { return false; }
+        if (refCnt != 0) { return false; }
+        status = EntryStatus::DELETING;
+        return true;
+    }
+
     bool TryMarkEvicting(std::chrono::system_clock::time_point now)
     {
         SpinLockGuard guard(lock);

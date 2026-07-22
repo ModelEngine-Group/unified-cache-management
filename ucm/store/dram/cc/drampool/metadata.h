@@ -114,6 +114,16 @@ public:
     Status Delete(const BlockId& key);
 
     /**
+     * @brief Attempt to mark the entry for deletion under a read lock.
+     * @param key BlockId to look up.
+     * @param entry [out] Receives the entry on success.
+     * @return Status::OK() on success; Status::NotFound() if the key is
+     *         missing; Status::Error() if the entry cannot transition to
+     *         DELETING (already DELETING or refCnt != 0).
+     */
+    Status TryDelete(const BlockId& key, EntryPtr& entry);
+
+    /**
      * @brief Return the number of keys tracked by this shard. Read-locks.
      */
     std::size_t GetKeyCnt() const noexcept;
@@ -161,7 +171,7 @@ public:
     Status LoadEnd(const BlockId& key) { return ShardOf(key).LoadEnd(key); }
     bool Exist(const BlockId& key) { return ShardOf(key).Exist(key); }
     bool Query(const BlockId& key) const { return ShardOf(key).Query(key); }
-    Status Delete(const BlockId& key) { return ShardOf(key).Delete(key); }
+    Status Delete(const BlockId& key);
 
     std::size_t GetKeyCnt() const noexcept
     {
