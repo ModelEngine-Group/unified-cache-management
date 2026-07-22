@@ -67,6 +67,8 @@ public:
 
 private:
     void RecordHealth(bool healthy);
+    void RecordProbeMetrics(bool healthy);
+    void RecordEffectiveHealth();
     void ProbeLoop();
 
     StoreV1* store_;

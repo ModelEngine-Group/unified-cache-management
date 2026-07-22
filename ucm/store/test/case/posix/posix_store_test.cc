@@ -274,6 +274,7 @@ TEST_F(UCPosixStoreTest, CheckHealthWithoutDirectIoOnTemporaryFilesystem)
 
     ASSERT_EQ(store.Setup(config), UC::Status::OK());
     EXPECT_EQ(store.CheckHealth(), UC::Status::OK());
+    EXPECT_EQ(store.CheckHealth(), UC::Status::OK());
 }
 
 TEST_F(UCPosixStoreTest, DumpThenLoadWithIoDirect)

@@ -35,6 +35,7 @@
 #include "client_service.h"
 #include "global_config.h"
 #include "logger/logger.h"
+#include "metrics_api.h"
 #include "trans_manager.h"
 #include "transfer_engine.h"
 #include "type/random_block_id.h"
@@ -68,6 +69,7 @@ class MooncakeStore : public StoreV1 {
     TransManager transMgr_;
     Config config_;
     bool transEnable_{false};
+    const std::string healthKey_{HealthKey()};
 
     std::shared_ptr<mooncake::Client> rpcClient_;
 
@@ -155,6 +157,10 @@ public:
             }
         }
 
+        const auto hitCount = firstMiss < 0 ? num : static_cast<size_t>(firstMiss);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_lookup_hit_blocks_total"),
+                                 static_cast<double>(hitCount));
+
         if (firstMiss == -1) { return static_cast<ssize_t>(num) - 1; }
 
         if (config_.storeBackend) {
@@ -176,7 +182,6 @@ public:
 
     Status CheckHealth() override
     {
-        const auto key = HealthKey();
         constexpr std::array<char, 8> expected{'U', 'C', 'M', 'H', 'E', 'A', 'L', 'T'};
         std::array<char, expected.size()> actual{};
 
@@ -186,10 +191,10 @@ public:
             std::vector<std::span<const char>> parts{
                 {expected.data(), expected.size()}
             };
-            auto rc = client->put_parts(key, std::move(parts));
+            auto rc = client->put_parts(healthKey_, std::move(parts));
             if (rc != 0) { return Status::Error("mooncake health put failed"); }
-            auto buffer = client->get_buffer(key);
-            auto cleanup = client->remove(key);
+            auto buffer = client->get_buffer(healthKey_);
+            auto cleanup = client->remove(healthKey_);
             if (!buffer || buffer->size() != expected.size() ||
                 std::memcmp(buffer->ptr(), expected.data(), expected.size()) != 0) {
                 return Status::Error("mooncake health data mismatch");
@@ -200,13 +205,13 @@ public:
         std::vector<mooncake::Slice> source{
             {const_cast<char*>(expected.data()), expected.size()}
         };
-        auto put = rpcClient_->Put(key, source, mooncake::ReplicateConfig{});
+        auto put = rpcClient_->Put(healthKey_, source, mooncake::ReplicateConfig{});
         if (!put.has_value()) { return MooncakeError(put.error()); }
         std::vector<mooncake::Slice> target{
             {actual.data(), actual.size()}
         };
-        auto get = rpcClient_->Get(key, target);
-        auto cleanup = rpcClient_->Remove(key);
+        auto get = rpcClient_->Get(healthKey_, target);
+        auto cleanup = rpcClient_->Remove(healthKey_);
         if (!get.has_value()) { return MooncakeError(get.error()); }
         if (actual != expected) { return Status::Error("mooncake health data mismatch"); }
         return cleanup.has_value() ? Status::OK() : MooncakeError(cleanup.error());

@@ -23,6 +23,7 @@
  */
 #include "health_breaker_store.h"
 #include "logger/logger.h"
+#include "metrics_api.h"
 
 namespace UC::PipelineStore {
 
@@ -54,6 +55,7 @@ Status HealthBreakerStore::Start()
     } catch (const std::exception& e) {
         return Status::Error(fmt::format("failed({}) to start health breaker probe", e.what()));
     }
+    RecordEffectiveHealth();
     UC_INFO("Started store health breaker({}).", storeId_);
     return Status::OK();
 }
@@ -108,6 +110,7 @@ Status HealthBreakerStore::CheckHealth()
 {
     auto status = healthCheck_.Run([this] { return store_->CheckHealth(); });
     RecordHealth(status.Success());
+    RecordProbeMetrics(status.Success());
     return status;
 }
 
@@ -167,6 +170,30 @@ void HealthBreakerStore::RecordHealth(bool healthy)
             "threshold={}.",
             storeId_, newEnabled ? "HEALTHY" : "UNHEALTHY", healthWindow, sampleCount, failureCount,
             config_.failureThreshold);
+    }
+}
+
+void HealthBreakerStore::RecordProbeMetrics(bool healthy)
+{
+    if (storeId_.find(":PosixStore") != std::string::npos) {
+        UC::Metrics::UpdateStats(healthy ? NAME_TO_METRIC_ID("posix_healthy_count_total")
+                                         : NAME_TO_METRIC_ID("posix_unhealthy_count_total"),
+                                 1.0);
+    } else if (storeId_.find(":MooncakeStore") != std::string::npos) {
+        UC::Metrics::UpdateStats(healthy ? NAME_TO_METRIC_ID("mooncake_healthy_count_total")
+                                         : NAME_TO_METRIC_ID("mooncake_unhealthy_count_total"),
+                                 1.0);
+    }
+    RecordEffectiveHealth();
+}
+
+void HealthBreakerStore::RecordEffectiveHealth()
+{
+    if (storeId_.find(":PosixStore") != std::string::npos) {
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_store_health"), Enabled() ? 1.0 : 0.0);
+    } else if (storeId_.find(":MooncakeStore") != std::string::npos) {
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_store_health"),
+                                 Enabled() ? 1.0 : 0.0);
     }
 }
 

@@ -30,6 +30,7 @@
 #include <vector>
 #include "detail/mock_store.h"
 #include "logger/logger.h"
+#include "metrics_api.h"
 #include "store_health_config.h"
 
 namespace UC::Test {
@@ -133,6 +134,41 @@ TEST(UCHealthBreakerStoreTest, SlidingWindowEvictsOldFailure)
     EXPECT_EQ(breaker.FailureCount(), 0);
     EXPECT_EQ(breaker.SampleCount(), 5);
     EXPECT_TRUE(breaker.Enabled());
+}
+
+TEST(UCHealthBreakerStoreTest, RecordsPosixProbeResultsAndEffectiveBreakerState)
+{
+    UC::Metrics::SetUp();
+    UC::Metrics::CreateStats("posix_healthy_count_total", "counter");
+    UC::Metrics::CreateStats("posix_unhealthy_count_total", "counter");
+    UC::Metrics::CreateStats("posix_store_health", "gauge");
+    UC::Metrics::GetAllStatsAndClear();
+
+    StrictMock<Detail::MockStore> store;
+    auto config = TestConfig();
+    config.healthWindowSize = 1;
+    config.failureThreshold = 1;
+    HealthBreakerStore breaker(&store, "pipeline/0:PosixStore", config);
+
+    EXPECT_CALL(store, CheckHealth())
+        .WillOnce(Return(Status::Error()))
+        .WillOnce(Return(Status::OK()));
+    EXPECT_TRUE(breaker.CheckHealth().Failure());
+    auto failedStats = UC::Metrics::GetAllStatsAndClear();
+    auto& failedCounters = std::get<0>(failedStats);
+    auto& failedGauges = std::get<1>(failedStats);
+    EXPECT_EQ(failedCounters.at("posix_unhealthy_count_total"), 1);
+    EXPECT_EQ(failedCounters.count("posix_healthy_count_total"), 0);
+    ASSERT_EQ(failedGauges.count("posix_store_health"), 1);
+    EXPECT_EQ(failedGauges.at("posix_store_health"), 0);
+
+    EXPECT_TRUE(breaker.CheckHealth().Success());
+    auto healthyStats = UC::Metrics::GetAllStatsAndClear();
+    auto& healthyCounters = std::get<0>(healthyStats);
+    auto& healthyGauges = std::get<1>(healthyStats);
+    EXPECT_EQ(healthyCounters.at("posix_healthy_count_total"), 1);
+    EXPECT_EQ(healthyCounters.count("posix_unhealthy_count_total"), 0);
+    EXPECT_EQ(healthyGauges.at("posix_store_health"), 1);
 }
 
 TEST(UCHealthBreakerStoreTest, AppliesTimeoutBeforeStart)

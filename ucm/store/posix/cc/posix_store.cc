@@ -41,6 +41,7 @@ class PosixStore : public StoreV1 {
     TransManager transMgr_;
     bool transEnable_{false};
     bool ioDirect_{false};
+    const Detail::BlockId healthBlockId_{Detail::RandomBlockId()};
 
 public:
     Status Setup(const Detail::Dictionary& inConfig) override
@@ -97,8 +98,7 @@ public:
         alignas(kHealthIoSize) std::array<uint8_t, kHealthIoSize> actual{};
         expected.fill(0x5a);
 
-        const auto block = Detail::RandomBlockId();
-        PosixFile file{spaceMgr_.GetLayout()->DataFilePath(block, true)};
+        PosixFile file{spaceMgr_.GetLayout()->DataFilePath(healthBlockId_, true)};
         auto flags = PosixFile::OpenFlag::CREATE | PosixFile::OpenFlag::READ_WRITE;
         if (ioDirect_) { flags |= PosixFile::OpenFlag::DIRECT; }
         auto status = file.Open(flags);

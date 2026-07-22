@@ -2357,8 +2357,8 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         )
         return external_hit_tokens, need_load
 
-    @staticmethod
     def _record_prefix_cache_token_metrics(
+        self,
         request: "Request",
         num_computed_tokens: int,
         external_hit_tokens: int,
@@ -2373,11 +2373,14 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             max(int(external_hit_tokens), 0),
             max(total_tokens - gpu_hbm_hit_tokens, 0),
         )
+        block_size = max(int(self.get_block_size()), 1)
         ucmmetrics.update_stats(
             {
                 "total_prefix_query_tokens_total": total_tokens,
                 "gpu_hbm_hit_tokens_total": gpu_hbm_hit_tokens,
                 "ucm_hit_tokens_total": ucm_hit_tokens,
+                "total_prefix_query_blocks_total": total_tokens // block_size,
+                "gpu_hbm_hit_blocks_total": gpu_hbm_hit_tokens // block_size,
             }
         )
 
