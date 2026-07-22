@@ -82,7 +82,7 @@
     {
       "name": "posix_hit_rate",
       "type": "promql",
-      "expr": "(sum by () (rate(vllm:external_prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:prefix_cache_queries_total[$__rate_interval])), 1e-9)) * (1 - (clamp_min(sum by () (rate(ucm:cache_load_shards_total[$__rate_interval])) - sum by () (rate(ucm:cache_load_backend_shards_total[$__rate_interval])), 0) / clamp_min(sum by () (rate(ucm:cache_load_shards_total[$__rate_interval])), 1e-9)))",
+      "expr": "(sum by () (rate(vllm:external_prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:prefix_cache_queries_total[$__rate_interval])), 1e-9)) * clamp_max(sum by () (rate(ucm:cache_load_backend_shards_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:cache_load_shards_total[$__rate_interval])), 1e-9), 1)",
       "value": "hit_rate",
       "unit": "ratio",
       "aggregate": "avg"

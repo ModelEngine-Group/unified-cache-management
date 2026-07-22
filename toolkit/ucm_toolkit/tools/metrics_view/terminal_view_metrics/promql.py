@@ -56,6 +56,13 @@ class PromqlEvaluator:
                 raise ValueError(f"clamp_min expects 2 args: {expr}")
             return _vector_clamp_min(self._eval(args[0]), float(args[1]))
 
+        call = _function_args(expr, "clamp_max")
+        if call is not None:
+            args = _split_top_level(call, ",")
+            if len(args) != 2:
+                raise ValueError(f"clamp_max expects 2 args: {expr}")
+            return _vector_clamp_max(self._eval(args[0]), float(args[1]))
+
         call = _function_args(expr, "positive_or_nan")
         if call is not None:
             return _vector_positive_or_nan(self._eval(call))
@@ -337,6 +344,13 @@ def _vector_binary(left: Vector, right: Vector, op: str) -> Vector:
 def _vector_clamp_min(vector: Vector, minimum: float) -> Vector:
     return {
         key: VectorPoint(point.labels, max(point.value, minimum))
+        for key, point in vector.items()
+    }
+
+
+def _vector_clamp_max(vector: Vector, maximum: float) -> Vector:
+    return {
+        key: VectorPoint(point.labels, min(point.value, maximum))
         for key, point in vector.items()
     }
 

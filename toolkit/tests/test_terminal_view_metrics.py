@@ -1223,6 +1223,48 @@ ucm:cache_load_shards_total 110
         self.assertAlmostEqual(values["cache_hit_rate"]["hit_rate"], 0.12)
         self.assertAlmostEqual(values["posix_hit_rate"]["hit_rate"], 0.08)
 
+    def test_metrics_lite_preset_does_not_attribute_missing_load_delta_to_posix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with MetricsStore(Path(tmp) / "metrics.db") as store:
+                t0 = parse_time_ms("2026-06-25T10:00:00")
+                t1 = t0 + 10_000
+                store.write_samples(
+                    parse_prometheus_text(
+                        """
+vllm:prefix_cache_queries_total 50
+vllm:external_prefix_cache_hits_total 10
+ucm:cache_load_backend_shards_total 0
+ucm:cache_load_shards_total 0
+"""
+                    ),
+                    t0,
+                )
+                store.write_samples(
+                    parse_prometheus_text(
+                        """
+vllm:prefix_cache_queries_total 100
+vllm:external_prefix_cache_hits_total 20
+ucm:cache_load_backend_shards_total 0
+ucm:cache_load_shards_total 0
+"""
+                    ),
+                    t1,
+                )
+
+                rows = QueryEngine(store).query_config(
+                    load_config("metrics_lite"),
+                    10,
+                    start_ms=t0,
+                    aggr_by_seconds=10,
+                )
+                values = {row.metric: row.values for row in rows}
+
+        self.assertAlmostEqual(
+            values["external_prefix_cache_hit_rate"]["hit_rate"], 0.2
+        )
+        self.assertAlmostEqual(values["cache_hit_rate"]["hit_rate"], 0.0)
+        self.assertAlmostEqual(values["posix_hit_rate"]["hit_rate"], 0.0)
+
     def test_metrics_lite_preset_clamps_hit_rate_shares_when_backend_exhausts_load(
         self,
     ):
