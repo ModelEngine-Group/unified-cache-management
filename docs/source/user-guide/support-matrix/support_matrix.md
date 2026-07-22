@@ -38,7 +38,7 @@ This information serves as a reference for evaluating framework compatibility in
 | MiniMax-M2.5 | ✅ | ✅ | ✅ |
 | MiniMax-M2.7 | ✅ | ✅ | ✅ |
 | MiniMax-M3 | ❌ | ❌ | ❌ |
-| Kimi-K2.5 | ❌ | ❌ | ❌ |
+| Kimi-K2.5 | ✅ | ✅ | ✅ |
 
 > **Note**: The table lists a selected set of representative models.
 > See [**Prefix Cache**](../prefix-cache/index.md) for more details.
