@@ -1733,7 +1733,7 @@ def test_ucm_overview_copies_vllm_panels_and_adds_block_hit_and_health_views():
     for legend, metric in expected_hits.items():
         assert metric in hit_targets[legend]
         assert "ucm:total_prefix_query_blocks_total" in hit_targets[legend]
-        assert hit_targets[legend].count("or vector(0)") == 2
+        assert "or vector(0)" not in hit_targets[legend]
 
     pie = panels["Store Health"]
     assert pie["type"] == "piechart"
@@ -1753,7 +1753,7 @@ def test_ucm_overview_copies_vllm_panels_and_adds_block_hit_and_health_views():
     assert '"Total"' not in detail_expr
     assert "and on(job, instance)" not in detail_expr
     assert "up{" not in detail_expr
-    assert "or vector(0)" in detail_expr
+    assert "or vector(0)" not in detail_expr
     assert any(item["id"] == "groupingToMatrix" for item in details["transformations"])
 
     trend = panels["Healthy and Unhealthy Store Count"]
