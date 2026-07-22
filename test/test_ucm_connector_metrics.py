@@ -1741,12 +1741,19 @@ def test_ucm_overview_copies_vllm_panels_and_adds_block_hit_and_health_views():
         "Healthy",
         "Unhealthy",
     }
+    for target in pie["targets"]:
+        assert "and on(job, instance)" in target["expr"]
+        assert 'up{job=~"$job", instance="$instance"} == 1' in target["expr"]
+        assert "or vector(0)" in target["expr"]
     details = panels["Store Health Details"]
     assert details["type"] == "table"
     detail_expr = "\n".join(target["expr"] for target in details["targets"])
     assert '"Posix"' in detail_expr
     assert '"Mooncake"' in detail_expr
     assert '"Total"' not in detail_expr
+    assert "and on(job, instance)" in detail_expr
+    assert 'up{job=~"$job", instance="$instance"} == 1' in detail_expr
+    assert "or vector(0)" in detail_expr
     assert any(item["id"] == "groupingToMatrix" for item in details["transformations"])
 
     trend = panels["Healthy and Unhealthy Store Count"]
@@ -1754,6 +1761,10 @@ def test_ucm_overview_copies_vllm_panels_and_adds_block_hit_and_health_views():
         "Healthy",
         "Unhealthy",
     }
+    for target in trend["targets"]:
+        assert "and on(job, instance)" in target["expr"]
+        assert 'up{job=~"$job", instance="$instance"} == 1' in target["expr"]
+        assert "or vector(0)" not in target["expr"]
     details_row = panels["Store Probe Details"]
     assert details_row["type"] == "row"
     assert details_row["collapsed"] is True

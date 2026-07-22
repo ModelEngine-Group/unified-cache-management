@@ -271,7 +271,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "(sum(ucm:posix_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0)) + (sum(ucm:mooncake_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0))",
+          "expr": "(sum(ucm:posix_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"} and on(job, instance) (up{job=~\"$job\", instance=\"$instance\"} == 1)) or vector(0)) + (sum(ucm:mooncake_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"} and on(job, instance) (up{job=~\"$job\", instance=\"$instance\"} == 1)) or vector(0))",
           "legendFormat": "Healthy",
           "range": false,
           "refId": "A",
@@ -283,7 +283,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "clamp_min((count(ucm:posix_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0)) - (sum(ucm:posix_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0)), 0) + clamp_min((count(ucm:mooncake_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0)) - (sum(ucm:mooncake_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0)), 0)",
+          "expr": "(count((ucm:posix_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"} == 0) and on(job, instance) (up{job=~\"$job\", instance=\"$instance\"} == 1)) or vector(0)) + (count((ucm:mooncake_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"} == 0) and on(job, instance) (up{job=~\"$job\", instance=\"$instance\"} == 1)) or vector(0))",
           "legendFormat": "Unhealthy",
           "range": false,
           "refId": "B",
@@ -349,7 +349,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "label_replace(label_replace(((sum(ucm:posix_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0))), \"store\", \"Posix\", \"__name__\", \".*\"), \"state\", \"Healthy\", \"__name__\", \".*\") or\nlabel_replace(label_replace((clamp_min((count(ucm:posix_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0)) - (sum(ucm:posix_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0)), 0)), \"store\", \"Posix\", \"__name__\", \".*\"), \"state\", \"Unhealthy\", \"__name__\", \".*\") or\nlabel_replace(label_replace(((sum(ucm:mooncake_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0))), \"store\", \"Mooncake\", \"__name__\", \".*\"), \"state\", \"Healthy\", \"__name__\", \".*\") or\nlabel_replace(label_replace((clamp_min((count(ucm:mooncake_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0)) - (sum(ucm:mooncake_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0)), 0)), \"store\", \"Mooncake\", \"__name__\", \".*\"), \"state\", \"Unhealthy\", \"__name__\", \".*\")",
+          "expr": "label_replace(label_replace((sum(ucm:posix_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"} and on(job, instance) (up{job=~\"$job\", instance=\"$instance\"} == 1)) or vector(0)), \"store\", \"Posix\", \"__name__\", \".*\"), \"state\", \"Healthy\", \"__name__\", \".*\") or\nlabel_replace(label_replace((count((ucm:posix_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"} == 0) and on(job, instance) (up{job=~\"$job\", instance=\"$instance\"} == 1)) or vector(0)), \"store\", \"Posix\", \"__name__\", \".*\"), \"state\", \"Unhealthy\", \"__name__\", \".*\") or\nlabel_replace(label_replace((sum(ucm:mooncake_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"} and on(job, instance) (up{job=~\"$job\", instance=\"$instance\"} == 1)) or vector(0)), \"store\", \"Mooncake\", \"__name__\", \".*\"), \"state\", \"Healthy\", \"__name__\", \".*\") or\nlabel_replace(label_replace((count((ucm:mooncake_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"} == 0) and on(job, instance) (up{job=~\"$job\", instance=\"$instance\"} == 1)) or vector(0)), \"store\", \"Mooncake\", \"__name__\", \".*\"), \"state\", \"Unhealthy\", \"__name__\", \".*\")",
           "legendFormat": "{{store}} {{state}}",
           "range": false,
           "refId": "A",
@@ -711,7 +711,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "(sum({__name__=~\"ucm:(posix|mooncake)_store_health\", model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0))",
+          "expr": "sum({__name__=~\"ucm:(posix|mooncake)_store_health\", model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"} and on(job, instance) (up{job=~\"$job\", instance=\"$instance\"} == 1))",
           "legendFormat": "Healthy",
           "range": true,
           "refId": "A"
@@ -722,7 +722,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "clamp_min((count({__name__=~\"ucm:(posix|mooncake)_store_health\", model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0)) - (sum({__name__=~\"ucm:(posix|mooncake)_store_health\", model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0)), 0)",
+          "expr": "count(({__name__=~\"ucm:(posix|mooncake)_store_health\", model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"} == 0) and on(job, instance) (up{job=~\"$job\", instance=\"$instance\"} == 1))",
           "legendFormat": "Unhealthy",
           "range": true,
           "refId": "B"
