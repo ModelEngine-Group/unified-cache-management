@@ -68,6 +68,16 @@ void Trip(HealthBreakerStore& breaker, Detail::MockStore& store)
     EXPECT_FALSE(breaker.Enabled());
 }
 
+size_t CountSubstring(const std::string& value, const std::string& needle)
+{
+    size_t count = 0;
+    for (size_t pos = value.find(needle); pos != std::string::npos;
+         pos = value.find(needle, pos + needle.size())) {
+        ++count;
+    }
+    return count;
+}
+
 }  // namespace
 
 TEST(UCHealthBreakerStoreTest, LogsFailedProbeStatus)
@@ -77,13 +87,14 @@ TEST(UCHealthBreakerStoreTest, LogsFailedProbeStatus)
 
     testing::internal::CaptureStdout();
     EXPECT_CALL(store, CheckHealth())
-        .WillOnce(Return(Status::OsApiError("health probe write failed")));
-    EXPECT_TRUE(breaker.CheckHealth().Failure());
+        .Times(4)
+        .WillRepeatedly(Return(Status::OsApiError("health probe write failed")));
+    for (size_t i = 0; i < 4; ++i) { EXPECT_TRUE(breaker.CheckHealth().Failure()); }
     UC::Logger::Flush();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     const auto output = testing::internal::GetCapturedStdout();
 
-    EXPECT_THAT(output, testing::HasSubstr("Store health check(posix-0) failed"));
+    EXPECT_EQ(CountSubstring(output, "Store health check(posix-0) failed"), 4);
     EXPECT_THAT(output, testing::HasSubstr("health probe write failed"));
 }
 
@@ -197,18 +208,18 @@ TEST(UCHealthBreakerStoreTest, AppliesTimeoutBeforeStart)
     config.failureThreshold = 1;
     HealthBreakerStore breaker(&store, "cache-0", config);
 
-    EXPECT_CALL(store, CheckHealth()).WillOnce(Invoke([] {
+    EXPECT_CALL(store, CheckHealth()).Times(4).WillRepeatedly(Invoke([] {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         return Status::OK();
     }));
 
     testing::internal::CaptureStdout();
-    EXPECT_EQ(breaker.CheckHealth(), Status::Timeout());
+    for (size_t i = 0; i < 4; ++i) { EXPECT_EQ(breaker.CheckHealth(), Status::Timeout()); }
     UC::Logger::Flush();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     const auto output = testing::internal::GetCapturedStdout();
 
-    EXPECT_THAT(output, testing::HasSubstr("Store health check(cache-0) timed out after 10 ms"));
+    EXPECT_EQ(CountSubstring(output, "Store health check(cache-0) timed out after 10 ms"), 4);
     EXPECT_FALSE(breaker.Enabled());
 }
 

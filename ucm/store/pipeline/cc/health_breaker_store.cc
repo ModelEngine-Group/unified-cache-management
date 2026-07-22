@@ -110,10 +110,10 @@ Status HealthBreakerStore::CheckHealth()
 {
     auto status = healthCheck_.Run([this] { return store_->CheckHealth(); });
     if (status == Status::Timeout()) {
-        UC_WARN("Store health check({}) timed out after {} ms.", storeId_,
-                config_.healthCheckTimeout.count());
+        UC_WARN_UNLIMITED("Store health check({}) timed out after {} ms.", storeId_,
+                          config_.healthCheckTimeout.count());
     } else if (status.Failure()) {
-        UC_WARN("Store health check({}) failed({}).", storeId_, status);
+        UC_WARN_UNLIMITED("Store health check({}) failed({}).", storeId_, status);
     }
     RecordHealth(status.Success());
     RecordProbeMetrics(status.Success());

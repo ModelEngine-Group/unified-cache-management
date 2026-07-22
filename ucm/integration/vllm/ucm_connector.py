@@ -1053,7 +1053,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 # after completion and removes the task from the store.
                 self._wait_pending_dump_task(pending_dump_task)
             except Exception as e:
-                logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
+                logger.error_limit(
+                    f"wait for dump kv cache failed. {type(e).__name__}: {e}"
+                )
 
         self._pending_dump_tasks = remaining_tasks
 
@@ -1070,7 +1072,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
             try:
                 self._wait_pending_dump_task(pending_dump_task)
             except Exception as e:
-                logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
+                logger.error_limit(
+                    f"wait for dump kv cache failed. {type(e).__name__}: {e}"
+                )
         self._pending_dump_tasks = remaining_tasks
 
     def handle_preemptions(
@@ -1263,7 +1267,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     try:
                         self._wait_pending_dump_task(pending_dump_task)
                     except Exception as e:
-                        logger.error(
+                        logger.error_limit(
                             f"wait for dump kv cache failed. {type(e).__name__}: {e}"
                         )
                 else:

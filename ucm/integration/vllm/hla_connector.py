@@ -1209,7 +1209,9 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             self._rank_consistency.wait_dump(task)
             save_end_time = time.perf_counter() * 1000
         except Exception as e:
-            logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
+            logger.error_limit(
+                f"wait for dump kv cache failed. {type(e).__name__}: {e}"
+            )
             self._rank_consistency.finish_dump(set(block_ids_by_request))
             return
         finally:
@@ -1686,7 +1688,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                 try:
                     self._rank_consistency.wait_dump(pending_dump_task.task)
                 except Exception as e:
-                    logger.error(
+                    logger.error_limit(
                         f"wait for dump kv cache failed. " f"{type(e).__name__}: {e}"
                     )
         self._rank_consistency.finish_dump(dump_request_ids)
