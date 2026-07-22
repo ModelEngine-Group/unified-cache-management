@@ -1742,8 +1742,8 @@ def test_ucm_overview_copies_vllm_panels_and_adds_block_hit_and_health_views():
         "Unhealthy",
     }
     for target in pie["targets"]:
-        assert "and on(job, instance)" in target["expr"]
-        assert 'up{job=~"$job", instance="$instance"} == 1' in target["expr"]
+        assert "and on(job, instance)" not in target["expr"]
+        assert "up{" not in target["expr"]
         assert "or vector(0)" in target["expr"]
     details = panels["Store Health Details"]
     assert details["type"] == "table"
@@ -1751,8 +1751,8 @@ def test_ucm_overview_copies_vllm_panels_and_adds_block_hit_and_health_views():
     assert '"Posix"' in detail_expr
     assert '"Mooncake"' in detail_expr
     assert '"Total"' not in detail_expr
-    assert "and on(job, instance)" in detail_expr
-    assert 'up{job=~"$job", instance="$instance"} == 1' in detail_expr
+    assert "and on(job, instance)" not in detail_expr
+    assert "up{" not in detail_expr
     assert "or vector(0)" in detail_expr
     assert any(item["id"] == "groupingToMatrix" for item in details["transformations"])
 
@@ -1762,8 +1762,8 @@ def test_ucm_overview_copies_vllm_panels_and_adds_block_hit_and_health_views():
         "Unhealthy",
     }
     for target in trend["targets"]:
-        assert "and on(job, instance)" in target["expr"]
-        assert 'up{job=~"$job", instance="$instance"} == 1' in target["expr"]
+        assert "and on(job, instance)" not in target["expr"]
+        assert "up{" not in target["expr"]
         assert "or vector(0)" not in target["expr"]
     details_row = panels["Store Probe Details"]
     assert details_row["type"] == "row"
