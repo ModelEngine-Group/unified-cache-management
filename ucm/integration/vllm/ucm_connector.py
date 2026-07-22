@@ -3,6 +3,7 @@ import hashlib
 import math
 import os
 import pickle
+import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -71,14 +72,6 @@ from ucm.sparse.state import has_ucm_sparse
 
 logger = init_logger(__name__)
 
-_GIB = 1 << 30
-_CACHE_BUFFER_CAPACITY_KEY = "cache_buffer_capacity_gb"
-_CACHE_STORE_DEFAULT_BUFFER_CAPACITY_GB = 256
-_CACHE_STORE_DEFAULT_UNSHARED_BUFFER_CAPACITY_GB = 32
-_CACHE_STORE_COMPACT_CAPACITY_THRESHOLD_GB = 32
-_CACHE_STORE_MIN_BUFFER_NUMBER = 1024
-_CACHE_STORE_DEFAULT_LOAD_EXCLUSIVE_BUFFER_NUMBER = 1024
-
 
 def _normalize_tensor_size_list(tensor_size_list: Any) -> list[int]:
     if isinstance(tensor_size_list, np.ndarray):
@@ -86,79 +79,6 @@ def _normalize_tensor_size_list(tensor_size_list: Any) -> list[int]:
     if isinstance(tensor_size_list, (list, tuple)):
         return [int(v) for v in tensor_size_list]
     return [int(tensor_size_list)]
-
-
-def _cache_store_required_capacity_gb(
-    config: dict[str, Any],
-    shard_size: int,
-) -> tuple[int, int]:
-    try:
-        load_exclusive_buffer_number = int(
-            config.get(
-                "cache_load_exclusive_buffer_number",
-                _CACHE_STORE_DEFAULT_LOAD_EXCLUSIVE_BUFFER_NUMBER,
-            )
-        )
-    except (TypeError, ValueError):
-        load_exclusive_buffer_number = _CACHE_STORE_DEFAULT_LOAD_EXCLUSIVE_BUFFER_NUMBER
-
-    required_buffer_number = max(
-        _CACHE_STORE_MIN_BUFFER_NUMBER,
-        load_exclusive_buffer_number * 2,
-    )
-    required_capacity_bytes = int(shard_size) * required_buffer_number
-    return math.ceil(required_capacity_bytes / _GIB), required_buffer_number
-
-
-def _ensure_cache_store_buffer_capacity(
-    config: dict[str, Any], shard_size: int
-) -> None:
-    if shard_size <= 0:
-        return
-
-    required_capacity_gb, required_buffer_number = _cache_store_required_capacity_gb(
-        config, shard_size
-    )
-    required_capacity_bytes = required_capacity_gb * _GIB
-
-    configured_capacity = config.get(_CACHE_BUFFER_CAPACITY_KEY)
-    if configured_capacity is None:
-        share_buffer_enable = bool(config.get("share_buffer_enable", True))
-        current_capacity_gb = (
-            _CACHE_STORE_DEFAULT_BUFFER_CAPACITY_GB
-            if share_buffer_enable
-            else _CACHE_STORE_DEFAULT_UNSHARED_BUFFER_CAPACITY_GB
-        )
-        source = "default"
-    else:
-        try:
-            current_capacity_gb = int(configured_capacity)
-        except (TypeError, ValueError):
-            logger.warning(
-                f"Invalid {_CACHE_BUFFER_CAPACITY_KEY}={configured_capacity}; "
-                "skip automatic capacity adjustment."
-            )
-            return
-        source = "configured"
-
-    if current_capacity_gb * _GIB >= required_capacity_bytes:
-        return
-    if required_capacity_gb <= _CACHE_STORE_COMPACT_CAPACITY_THRESHOLD_GB:
-        logger.warning(
-            f"{_CACHE_BUFFER_CAPACITY_KEY}={source} {current_capacity_gb}GB "
-            f"is smaller than required {required_capacity_gb}GB for "
-            f"shard_size={shard_size}, required_buffer_number={required_buffer_number}; "
-            "keep it unchanged because the required capacity does not exceed "
-            f"{_CACHE_STORE_COMPACT_CAPACITY_THRESHOLD_GB}GB."
-        )
-        return
-
-    config[_CACHE_BUFFER_CAPACITY_KEY] = required_capacity_gb
-    logger.warning(
-        f"Increase {_CACHE_BUFFER_CAPACITY_KEY} from {source} "
-        f"{current_capacity_gb}GB to {required_capacity_gb}GB for "
-        f"shard_size={shard_size}, required_buffer_number={required_buffer_number}."
-    )
 
 
 def _short_list(values: list[int], limit: int = 12) -> list[int]:
@@ -495,7 +415,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.requests_meta: dict[str, RequestMeta] = {}
 
         ucm_config = Config(vllm_config.kv_transfer_config)
-        self.engine_id = vllm_config.kv_transfer_config.engine_id
+        dp_engine_id_suffix = re.compile(r"_dp\d+$")
+        self.engine_id = dp_engine_id_suffix.sub(
+            "", vllm_config.kv_transfer_config.engine_id
+        )
         self.launch_config = ucm_config.get_config()
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         self.enable_event_sync = self.launch_config.get("enable_event_sync", True)
@@ -591,6 +514,15 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         return ret
 
+    def _set_default_shm_buffer_capacity(self, config: dict[str, Any]) -> None:
+        if not bool(config.get("share_buffer_enable", False)):
+            return
+        if config.get("cache_buffer_capacity_gb") is not None:
+            return
+
+        config["cache_buffer_capacity_gb"] = 128
+        logger.info("Set cache_buffer_capacity_gb to 128GB for shared-buffer store.")
+
     def _create_store(
         self,
         kv_cache_layout: Optional[KVCacheLayout],
@@ -598,7 +530,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         shard_size_override: Optional[int] = None,
         block_size_override: Optional[int] = None,
         unique_id_suffix: str = "",
-        compact_cache_buffer_capacity: bool = False,
     ) -> UcmKVStoreBaseV1:
         if len(self.connector_configs) != 1:
             raise RuntimeError(
@@ -611,6 +542,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         module_path = self.connector_configs[0].get("ucm_connector_module_path", None)
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
         config.setdefault("share_buffer_enable", self.is_mla)
+        self._set_default_shm_buffer_capacity(config)
         if "storage_backends" in config:
             backends = [path for path in config["storage_backends"].split(":")]
             config["storage_backends"] = backends
@@ -635,42 +567,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
             )
             config["shard_size"] = shard_size * self.blocks_per_chunk
             config["block_size"] = block_size * self.blocks_per_chunk
-            if compact_cache_buffer_capacity:
-                required_capacity_gb, required_buffer_number = (
-                    _cache_store_required_capacity_gb(config, config["shard_size"])
-                )
-                configured_capacity = config.get(_CACHE_BUFFER_CAPACITY_KEY)
-                if configured_capacity is None:
-                    config[_CACHE_BUFFER_CAPACITY_KEY] = (
-                        _CACHE_STORE_COMPACT_CAPACITY_THRESHOLD_GB
-                    )
-                    logger.info(
-                        f"Set {_CACHE_BUFFER_CAPACITY_KEY} to "
-                        f"{config[_CACHE_BUFFER_CAPACITY_KEY]}GB "
-                        f"for compact segmented shard_size={config['shard_size']}, "
-                        f"required_buffer_number={required_buffer_number}."
-                    )
-                else:
-                    try:
-                        configured_capacity_gb = int(configured_capacity)
-                    except (TypeError, ValueError):
-                        configured_capacity_gb = 0
-                    if (
-                        configured_capacity_gb
-                        > _CACHE_STORE_COMPACT_CAPACITY_THRESHOLD_GB
-                    ):
-                        config[_CACHE_BUFFER_CAPACITY_KEY] = max(
-                            _CACHE_STORE_COMPACT_CAPACITY_THRESHOLD_GB,
-                            required_capacity_gb,
-                        )
-                        logger.info(
-                            f"Adjust {_CACHE_BUFFER_CAPACITY_KEY} from "
-                            f"{configured_capacity_gb}GB to "
-                            f"{config[_CACHE_BUFFER_CAPACITY_KEY]}GB "
-                            f"for compact segmented shard_size={config['shard_size']}, "
-                            f"required_buffer_number={required_buffer_number}."
-                        )
-            _ensure_cache_store_buffer_capacity(config, config["shard_size"])
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
             buffer_addrs = kv_cache_layout.base_ptrs.reshape(-1).tolist()
             buffer_sizes = kv_cache_layout.buffer_sizes.reshape(-1).tolist()
@@ -2159,7 +2055,10 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         )
         self.connector: KVConnectorBase_V1
         ucm_config = Config(vllm_config.kv_transfer_config)
-        self.engine_id = vllm_config.kv_transfer_config.engine_id
+        dp_engine_id_suffix = re.compile(r"_dp\d+$")
+        self.engine_id = dp_engine_id_suffix.sub(
+            "", vllm_config.kv_transfer_config.engine_id
+        )
         self.launch_config = ucm_config.get_config()
         self._worker_rank = (
             get_world_group().rank

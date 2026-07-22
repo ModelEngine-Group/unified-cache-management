@@ -8,7 +8,6 @@
 # for backward compatibility.
 
 # Connector name (e.g., "UcmNfsStore", "UcmPipelineStore")
-# Default cache_buffer_capacity_gb for CacheStore is 256GB.When use models like MLA you should make sure that /dev/shm has enough space, or you can set this parameter to a smaller value.
 # One important detail is that when multiple DP instances run on the same node, each of them creates its own CacheStore.
 ucm_connectors:
   - ucm_connector_name: "UcmPipelineStore"
@@ -16,7 +15,6 @@ ucm_connectors:
       store_pipeline: "Cache|Posix"
       storage_backends: "/mnt/test"
       io_direct: false
-      # cache_buffer_capacity_gb: 256
       # posix_capacity_gb: 1024
 
       # Enable GPUDirect RDMA transfers for CacheStore/PcStore H2D and D2H copies.
