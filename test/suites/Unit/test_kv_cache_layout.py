@@ -8,7 +8,6 @@ from typing import List, Tuple
 
 import numpy as np
 
-
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CONNECTOR_PATH = REPO_ROOT / "ucm" / "integration" / "vllm" / "ucm_connector.py"
 
@@ -36,8 +35,11 @@ class FakeTorch:
 
 
 class FakeLogger:
+    def __init__(self):
+        self.messages = []
+
     def info(self, *_args, **_kwargs):
-        pass
+        self.messages.append(_args[0] % _args[1:] if len(_args) > 1 else _args[0])
 
 
 def _extract_layer_index(name: str) -> int:
@@ -156,6 +158,23 @@ class KVCacheLayoutTest(unittest.TestCase):
                 [[83968, 16384, 256], [83968, 32768], [83968]],
                 use_layerwise=True,
             )
+
+    def test_layerwise_layout_logs_padding_details(self):
+        logger = FakeLogger()
+        previous_logger = KVCacheLayout.__init__.__globals__["logger"]
+        KVCacheLayout.__init__.__globals__["logger"] = logger
+        try:
+            _build_layout([[8, 4, 2], [8]], use_layerwise=True)
+        finally:
+            KVCacheLayout.__init__.__globals__["logger"] = previous_logger
+
+        padding_log = next(
+            message for message in logger.messages if "uses padding" in message
+        )
+        self.assertIn("max_tensors_per_layer=3", padding_log)
+        self.assertIn("padded_layers=1", padding_log)
+        self.assertIn("ghost_slots=2", padding_log)
+        self.assertIn("tensor_counts_per_layer=[3, 1]", padding_log)
 
 
 if __name__ == "__main__":

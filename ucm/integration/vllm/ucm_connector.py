@@ -72,6 +72,34 @@ from ucm.sparse.state import has_ucm_sparse
 logger = init_logger(__name__)
 
 
+def _validate_layerwise_sparse_c8_config(
+    vllm_config: "VllmConfig", launch_config: dict
+) -> None:
+    use_layerwise = bool((launch_config or {}).get("use_layerwise", False))
+    if not use_layerwise:
+        return
+
+    additional_config = getattr(vllm_config, "additional_config", None) or {}
+    enable_sparse_sfa_c8 = bool(additional_config.get("enable_sparse_sfa_c8", False))
+    enable_sparse_li_c8 = bool(additional_config.get("enable_sparse_li_c8", False))
+    if enable_sparse_sfa_c8 == enable_sparse_li_c8:
+        return
+
+    raise ValueError(
+        "Invalid UCM layerwise KV cache configuration: `use_layerwise: true` "
+        "is set in ucm_config.yaml, but the C8 options from "
+        "`--additional-config` are inconsistent. Layerwise mode currently "
+        "requires `enable_sparse_sfa_c8` and `enable_sparse_li_c8` to have "
+        "the same value. Supported combinations are (false, false) and "
+        "(true, true); received "
+        f"(enable_sparse_sfa_c8={enable_sparse_sfa_c8}, "
+        f"enable_sparse_li_c8={enable_sparse_li_c8}). Either set "
+        "`use_layerwise: false` in ucm_config.yaml, or configure both C8 "
+        "options to the same boolean value. Non-layerwise mode supports all "
+        "four C8 combinations."
+    )
+
+
 def _normalize_tensor_size_list(tensor_size_list: Any) -> list[int]:
     if isinstance(tensor_size_list, np.ndarray):
         return [int(v) for v in tensor_size_list.reshape(-1).tolist()]
@@ -243,6 +271,16 @@ class KVCacheLayout:
         max_ptrs = max((len(r) for r in raw_ptr_rows), default=0)
         if max_ptrs == 0:
             raise ValueError("KV cache layout must contain at least one tensor")
+        tensor_counts_per_layer = [len(row) for row in raw_ptr_rows]
+        ghost_slots = sum(max_ptrs - count for count in tensor_counts_per_layer)
+        if ghost_slots > 0:
+            padded_layers = sum(count < max_ptrs for count in tensor_counts_per_layer)
+            logger.info(
+                "Layerwise KV cache layout uses padding: "
+                f"num_layers={num_rows}, max_tensors_per_layer={max_ptrs}, "
+                f"padded_layers={padded_layers}, ghost_slots={ghost_slots}, "
+                f"tensor_counts_per_layer={tensor_counts_per_layer}"
+            )
         for rows in (raw_ptr_rows, stride_rows, buffer_size_rows):
             for r in rows:
                 r.extend([0] * (max_ptrs - len(r)))
@@ -375,10 +413,14 @@ class RequestHasher:
             spec_method = getattr(speculative_config, "method", "") or ""
             spec_tokens = getattr(speculative_config, "num_speculative_tokens", 0)
             spec_info = f":{spec_method}:{spec_tokens}"
+        additional_config = getattr(vllm_config, "additional_config", None) or {}
+        sparse_sfa_c8 = bool(additional_config.get("enable_sparse_sfa_c8", False))
+        sparse_li_c8 = bool(additional_config.get("enable_sparse_li_c8", False))
+        sparse_c8_info = f":sfa_c8={int(sparse_sfa_c8)}:li_c8={int(sparse_li_c8)}"
         meta = (
             f"{vllm_config.model_config.model}:"
             f"{vllm_config.parallel_config.tensor_parallel_size}:"
-            f"{vllm_config.model_config.dtype}:{rank_id}{spec_info}"
+            f"{vllm_config.model_config.dtype}:{rank_id}{spec_info}{sparse_c8_info}"
         )
         self.meta_bytes = meta.encode("utf-8")
 
@@ -478,6 +520,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             "", vllm_config.kv_transfer_config.engine_id
         )
         self.launch_config = ucm_config.get_config()
+        _validate_layerwise_sparse_c8_config(vllm_config, self.launch_config)
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         self.enable_event_sync = self.launch_config.get("enable_event_sync", True)
         self.enable_record_traces = self.launch_config.get(
@@ -2038,6 +2081,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         self._setup_ucm_metrics(vllm_config, role)
         logger.info(f"self.launch_config: {self.launch_config}")
 
+        _validate_layerwise_sparse_c8_config(vllm_config, self.launch_config)
         use_layerwise = (
             self.launch_config.get("use_layerwise", False)
             if self.launch_config is not None
