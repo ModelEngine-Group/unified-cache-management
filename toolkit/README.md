@@ -116,6 +116,11 @@ MHA/GQA 模型使用 `metrics_lite`；MLA 模型使用 `metrics_lite_mla`。`met
 ucm-toolkit run metrics-view list-configs
 ```
 
+### 后台采集和查询
+
+推荐使用 `start` / `stop` 方式后台采集 metrics。后台采集会把多次样本写入 SQLite，
+因此后续可以查询指定时间范围内的数据，并按 `--aggr-by` 做分段聚合。
+
 后台启动采集：
 
 ```bash
@@ -136,17 +141,8 @@ ucm-toolkit run metrics-view status
 ucm-toolkit run metrics-view stop
 ```
 
-默认数据库、PID 和日志分别为 `/tmp/ucm_metrics.db`、`/tmp/ucm_metrics.pid`
-和 `/tmp/terminal_metrics.log`，因此切换工作目录后仍可以执行 `status` 和 `stop`。
-如需同时运行多个采集进程，必须分别指定不同的 `--db`、`--pid-file` 和
-`--log-file`。
-
-推荐使用 `start` / `stop` 方式采集 metrics。后台采集会把多次样本写入 SQLite，
-因此后续可以查询指定时间范围内的数据，并按 `--aggr-by` 做分段聚合。
-
 按时间窗口查询。推荐使用 `--aggr-by`，例如 `--window 10m --aggr-by 1m`
-会展示这个 10 分钟窗口内每 1 分钟的聚合结果；histogram 指标会显示
-`p50`、`p90`、`p99` 和 `avg`。
+会展示最新10分钟的数据，每分钟输出一份结果。
 
 ```bash
 ucm-toolkit run metrics-view query \
@@ -154,7 +150,7 @@ ucm-toolkit run metrics-view query \
   --aggr-by 1m
 ```
 
-查询固定历史窗口并按 Prometheus label 过滤：
+query也支持使用 --tag 按 Prometheus label 过滤：
 
 ```bash
 ucm-toolkit run metrics-view query \
@@ -166,7 +162,12 @@ ucm-toolkit run metrics-view query \
   --tag worker_id=0
 ```
 
-即时检查当前 `/metrics`：
+默认数据库、PID 和日志分别为 `/tmp/ucm_metrics.db`、`/tmp/ucm_metrics.pid`
+和 `/tmp/terminal_metrics.log`，因此切换工作目录后仍可以执行 `status` 和 `stop`。
+如需同时运行多个采集进程，必须分别指定不同的 `--db`、`--pid-file` 和
+`--log-file`。
+
+### 使用check查看启动以来的统计：
 
 ```bash
 ucm-toolkit run metrics-view check \
