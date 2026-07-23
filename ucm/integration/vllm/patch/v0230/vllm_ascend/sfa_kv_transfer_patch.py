@@ -57,10 +57,14 @@ def forward(
     o_proj_full_param_handles = None
     # Prefill/mixed DSA-CP computes o_proj with a temporary full weight.
     # Decode keeps the original TP path and only exchanges activations.
-    full_gather_o_proj_enabled = self.enable_dsa_cp_with_o_proj_tp and attn_metadata.attn_state not in {
-        AscendAttentionState.DecodeOnly,
-        AscendAttentionState.SpecDecoding,
-    }
+    full_gather_o_proj_enabled = (
+        self.enable_dsa_cp_with_o_proj_tp
+        and attn_metadata.attn_state
+        not in {
+            AscendAttentionState.DecodeOnly,
+            AscendAttentionState.SpecDecoding,
+        }
+    )
 
     if self.enable_sfa_prolog_v3 and attn_metadata.attn_state in (
         AscendAttentionState.DecodeOnly,
@@ -75,7 +79,9 @@ def forward(
             f"got token_x={hidden_states.shape[0]} and cache_index={slot_mapping.numel()}."
         )
         if self.has_indexer:
-            k_li, k_li_scale = self.indexer_select_pre_process(x=hidden_states, cos=cos, sin=sin)
+            k_li, k_li_scale = self.indexer_select_pre_process(
+                x=hidden_states, cos=cos, sin=sin
+            )
         else:
             k_li, k_li_scale = None, None
 
@@ -92,7 +98,8 @@ def forward(
         )
     # run mlapo ops when dsa-cp is disabled, and ensure that num_tokens satisfies the count limitation
     elif self.enable_mlapo and (
-        get_ascend_device_type() == AscendDeviceType.A5 or num_input_tokens <= MLAPO_MAX_SUPPORTED_TOKENS
+        get_ascend_device_type() == AscendDeviceType.A5
+        or num_input_tokens <= MLAPO_MAX_SUPPORTED_TOKENS
     ):
         hidden_states = torch.ops.vllm.maybe_all_gather_and_maybe_unpad(
             hidden_states.contiguous(), need_gather_q_kv
@@ -149,14 +156,18 @@ def forward(
             kv_slots = slot_mapping_cp
         else:
             kv_slots = slot_mapping_sfa
-        kv_outputs = self.exec_kv(kv_no_split, cos, sin, kv_cache, kv_slots, attn_metadata)
+        kv_outputs = self.exec_kv(
+            kv_no_split, cos, sin, kv_cache, kv_slots, attn_metadata
+        )
         k_pe, k_nope = kv_outputs[:2]
         knope_scale = kv_outputs[2] if len(kv_outputs) == 3 else None
 
         if (
             self.enable_sparse_sfa_c8
             and not self.enable_dsa_cp
-            and (get_ascend_device_type() != AscendDeviceType.A5 or not self.has_indexer)
+            and (
+                get_ascend_device_type() != AscendDeviceType.A5 or not self.has_indexer
+            )
         ):
             assert k_pe is not None
             assert k_nope is not None
@@ -201,7 +212,9 @@ def forward(
             if kv_ag_handle is not None:
                 kv_ag_handles.append(kv_ag_handle)
 
-            if self.has_indexer and (self.enable_sparse_sfa_c8 or self.enable_sparse_li_c8):
+            if self.has_indexer and (
+                self.enable_sparse_sfa_c8 or self.enable_sparse_li_c8
+            ):
                 assert k_li is not None
                 k_li, kv_ag_handle = all_gather_async(
                     k_li,
@@ -239,7 +252,10 @@ def forward(
                     output=self.o_proj_full_gather_pool,
                 )
                 o_proj_full_param_handles = []
-                for param_name, param in self.o_proj_tp_input_sharded_quant_params.items():
+                for (
+                    param_name,
+                    param,
+                ) in self.o_proj_tp_input_sharded_quant_params.items():
                     _, param_handle = all_gather_async(
                         param,
                         get_tp_group(),
@@ -282,7 +298,9 @@ def forward(
                         value=k_pe[: attn_metadata.num_actual_tokens],
                         key_cache=kv_cache[0],
                         value_cache=kv_cache[1],
-                        slot_mapping=slot_mapping_sfa[: attn_metadata.num_actual_tokens],
+                        slot_mapping=slot_mapping_sfa[
+                            : attn_metadata.num_actual_tokens
+                        ],
                     )
 
         # DCP's prefill path may all-gather only the blocks referenced by
@@ -346,14 +364,19 @@ def forward(
         notify_kv_cache_written(self.layer_name or "")
 
     if self.enable_dsa_cp and attn_metadata.dsa_cp_context is not None:
-        topk_num_tokens = attn_metadata.dsa_cp_context.local_end_with_pad - attn_metadata.dsa_cp_context.local_start
+        topk_num_tokens = (
+            attn_metadata.dsa_cp_context.local_end_with_pad
+            - attn_metadata.dsa_cp_context.local_start
+        )
     else:
         topk_num_tokens = num_input_tokens or hidden_states.shape[0]
     if self.skip_topk:
         topk_indices = self._get_indexcache_topk_indices(topk_num_tokens)
     else:
         if not self.has_indexer:
-            raise RuntimeError(f"skip_topk is False but indexer is None. layer_name={self.layer_name}.")
+            raise RuntimeError(
+                f"skip_topk is False but indexer is None. layer_name={self.layer_name}."
+            )
         assert q_c is not None
         topk_indices = self.indexer_select_post_process(
             x=hidden_states,
