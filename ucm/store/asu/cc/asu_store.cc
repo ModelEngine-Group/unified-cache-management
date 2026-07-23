@@ -29,6 +29,7 @@
 #include <cstddef>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <numeric>
@@ -473,7 +474,10 @@ private:
         inConfig.GetNumbers("kv_ns_ids", config.kvNsIds);
         ssize_t asuPort = 0;
         inConfig.GetNumber("asu_port", asuPort);
-        config.asuPort = static_cast<std::uint16_t>(std::max<ssize_t>(0, asuPort));
+        if (asuPort > 0 &&
+            static_cast<std::uint64_t>(asuPort) <= std::numeric_limits<std::uint16_t>::max()) {
+            config.asuPort = static_cast<std::uint16_t>(asuPort);
+        }
         inConfig.GetNumber("asu_default_wait_timeout_ms", config.defaultWaitTimeoutMs);
         inConfig.GetNumber("asu_query_timeout_ms", config.queryTimeoutMs);
         inConfig.GetNumber("asu_load_timeout_ms", config.loadTimeoutMs);
@@ -544,6 +548,15 @@ private:
         if (config.configPath.empty() && config.asuIds.empty()) {
             return Status::InvalidParam("invalid asu_ids");
         }
+        if (std::any_of(config.asuIds.begin(), config.asuIds.end(),
+                        [](ssize_t asuId) { return asuId < 0; })) {
+            return Status::InvalidParam("asu_ids must not contain negative values");
+        }
+        auto sortedAsuIds = config.asuIds;
+        std::sort(sortedAsuIds.begin(), sortedAsuIds.end());
+        if (std::adjacent_find(sortedAsuIds.begin(), sortedAsuIds.end()) != sortedAsuIds.end()) {
+            return Status::InvalidParam("asu_ids must not contain duplicate values");
+        }
         if (config.mode == "transport") {
             if (config.configPath.empty() && config.asuIds.size() != 1) {
                 return Status::InvalidParam("transport mode requires exactly one asu_id");
@@ -555,11 +568,25 @@ private:
         if (!config.asuIps.empty() && config.asuIps.size() != config.asuIds.size()) {
             return Status::InvalidParam("asu_ips size must match asu_ids size");
         }
-        if (config.uniqueId.find("_fawa_") != std::string::npos && config.kvNsIds.size() != 2) {
-            return Status::InvalidParam("FAWA requires exactly two kv_ns_ids");
+        if (!config.asuIps.empty() && config.asuPort == 0) {
+            return Status::InvalidParam("asu_port must be in range [1, 65535] when asu_ips is set");
+        }
+        if (config.configPath.empty()) {
+            const auto expectedKvNsCount = config.uniqueId.find("_fawa_") == std::string::npos
+                                               ? std::size_t{1}
+                                               : std::size_t{2};
+            if (config.kvNsIds.size() != expectedKvNsCount) {
+                return Status::InvalidParam("kv_ns_ids must contain exactly {} value(s)",
+                                            expectedKvNsCount);
+            }
         }
         if (config.transProviderType == UC::ASU::TransProviderType::UNSUPPORTED) {
             return Status::Unsupported();
+        }
+        if (config.configPath.empty() &&
+            config.transProviderType == UC::ASU::TransProviderType::AIV && config.deviceId < 0) {
+            return Status::InvalidParam(
+                "device_id is required when asu_trans_provider_backend is aiv");
         }
         if (config.transProviderType == UC::ASU::TransProviderType::FAKE &&
             !config.configPath.empty()) {
@@ -573,6 +600,13 @@ private:
         if (!config.role.empty() && config.role != "scheduler" && config.role != "worker") {
             return Status::InvalidParam("invalid role({})", config.role);
         }
+        if (config.maxInflightTasks > std::numeric_limits<std::uint32_t>::max()) {
+            return Status::InvalidParam("asu_max_inflight_tasks exceeds uint32 range");
+        }
+        if (!config.memoryType.empty() && config.memoryType != "host" &&
+            config.memoryType != "host_pinned" && config.memoryType != "ascend_device") {
+            return Status::InvalidParam("invalid asu_memory_type({})", config.memoryType);
+        }
 
         // Scheduler config check done
         if (config.role == "scheduler") { return Status::OK(); }
@@ -584,6 +618,9 @@ private:
         }
         if (config.shardSize == 0) { return Status::InvalidParam("invalid shard size"); }
         if (config.blockSize == 0) { return Status::InvalidParam("invalid block size"); }
+        if (config.blockSize > std::numeric_limits<std::uint32_t>::max()) {
+            return Status::InvalidParam("block size exceeds uint32 offset range");
+        }
         const auto tensorSum =
             std::accumulate(config.tensorSizes.begin(), config.tensorSizes.end(), std::size_t{0});
         if (tensorSum == 0 || tensorSum > config.shardSize) {

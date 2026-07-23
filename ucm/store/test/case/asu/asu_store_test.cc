@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <fstream>
 #include <gtest/gtest.h>
+#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -315,6 +316,104 @@ TEST(UCAsuStoreTest, ParsesKvNamespaces)
         EXPECT_EQ(state->initConfigs.back().kvNsIds, (std::vector<std::uint32_t>{100U, 101U}));
         auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
         EXPECT_EQ(transportConfig.attrs.at("kv_ns_id"), std::to_string(expected));
+    }
+}
+
+TEST(UCAsuStoreTest, RejectsMissingKvNamespaces)
+{
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("kv_ns_ids", std::vector<ssize_t>{});
+
+    EXPECT_TRUE(store.Setup(config).Failure());
+}
+
+TEST(UCAsuStoreTest, RejectsUnexpectedKvNamespaceCount)
+{
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("kv_ns_ids", std::vector<ssize_t>{100, 101});
+
+    EXPECT_TRUE(store.Setup(config).Failure());
+}
+
+TEST(UCAsuStoreTest, RejectsInvalidAsuIds)
+{
+    for (const auto& asuIds : std::vector<std::vector<ssize_t>>{
+             {-1},
+             {1001, 1001}
+    }) {
+        UC::AsuStore::AsuStore store;
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", asuIds);
+
+        EXPECT_TRUE(store.Setup(config).Failure());
+    }
+}
+
+TEST(UCAsuStoreTest, RejectsInvalidAsuPort)
+{
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+    config.SetNumber("asu_port", 65536);
+
+    EXPECT_TRUE(store.Setup(config).Failure());
+}
+
+TEST(UCAsuStoreTest, RejectsTransportIntegerOverflow)
+{
+    {
+        UC::AsuStore::AsuStore store;
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.SetNumber("asu_max_inflight_tasks",
+                         std::uint64_t{std::numeric_limits<std::uint32_t>::max()} + 1);
+
+        EXPECT_TRUE(store.Setup(config).Failure());
+    }
+    {
+        UC::AsuStore::AsuStore store;
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.SetNumber("block_size",
+                         std::uint64_t{std::numeric_limits<std::uint32_t>::max()} + 1);
+
+        EXPECT_TRUE(store.Setup(config).Failure());
+    }
+}
+
+TEST(UCAsuStoreTest, RejectsInvalidMemoryType)
+{
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_memory_type", std::string{"device"});
+
+    EXPECT_TRUE(store.Setup(config).Failure());
+}
+
+TEST(UCAsuStoreTest, AivRequiresDeviceIdAndDeviceIp)
+{
+    {
+        UC::AsuStore::AsuStore store;
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.Set("asu_trans_provider_backend", std::string{"aiv"});
+
+        EXPECT_TRUE(store.Setup(config).Failure());
+    }
+    {
+        UC::AsuStore::AsuStore store;
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.Set("asu_trans_provider_backend", std::string{"aiv"});
+        config.SetNumber("device_id", 0);
+
+        EXPECT_TRUE(store.Setup(config).Failure());
     }
 }
 
