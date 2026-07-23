@@ -54,8 +54,12 @@ public:
         size_t offset = 0;
         for (size_t i = 0; i < sizes.size(); ++i) {
             auto* pHost = static_cast<void*>(static_cast<int8_t*>(host) + offset);
-            auto s = HostToDeviceAsync(pHost, device[i], sizes[i]);
-            if (s.Failure()) [[unlikely]] { return s; }
+            // skip zero-padded ghost slots (addr==nullptr or size==0) but
+            // still advance offset so the host layout matches tensorSizes_.
+            if (sizes[i] != 0 && device[i] != nullptr) {
+                auto s = HostToDeviceAsync(pHost, device[i], sizes[i]);
+                if (s.Failure()) [[unlikely]] { return s; }
+            }
             offset += sizes[i];
         }
         return Status::OK();
@@ -78,8 +82,12 @@ public:
         size_t offset = 0;
         for (size_t i = 0; i < sizes.size(); ++i) {
             auto* pHost = static_cast<void*>(static_cast<int8_t*>(host) + offset);
-            auto s = DeviceToHostAsync(device[i], pHost, sizes[i]);
-            if (s.Failure()) [[unlikely]] { return s; }
+            // skip zero-padded ghost slots (addr==nullptr or size==0) but
+            // still advance offset so the host layout matches tensorSizes_.
+            if (sizes[i] != 0 && device[i] != nullptr) {
+                auto s = DeviceToHostAsync(device[i], pHost, sizes[i]);
+                if (s.Failure()) [[unlikely]] { return s; }
+            }
             offset += sizes[i];
         }
         return Status::OK();
