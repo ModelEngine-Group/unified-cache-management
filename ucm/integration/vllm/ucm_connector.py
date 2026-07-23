@@ -496,9 +496,24 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
             )
 
         c8_layers = [layer for layer in layers if layer.scale is not None]
-        needs_split = bool(c8_layers)
+        bf16_layers = [
+            layer
+            for layer in layers
+            if layer.indexer is not None and layer.scale is None
+        ]
 
-        if needs_split:
+        if c8_layers and bf16_layers:
+            layout_mode = "mixed"
+        elif c8_layers:
+            layout_mode = "li_c8"
+        elif bf16_layers:
+            layout_mode = "bf16"
+        else:
+            raise ValueError(
+                "Shared Indexer KV cache layout did not find any full " "Indexer layer."
+            )
+
+        if c8_layers:
             index_chunk_size = self._validate_uniform_sizes(
                 [layer.indexer.bytes_per_block for layer in c8_layers],
                 "C8 Indexer block size",
@@ -509,20 +524,17 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
                 "LI C8 scale block size",
                 row_layer_ids,
             )
+        if layout_mode == "mixed":
             slot_sizes = base_sizes + [
                 index_chunk_size,
                 index_chunk_size,
                 scale_size,
             ]
+        elif layout_mode == "li_c8":
+            slot_sizes = base_sizes + [index_chunk_size, scale_size]
         else:
-            indexer_layers = [layer for layer in layers if layer.indexer is not None]
-            if not indexer_layers:
-                raise ValueError(
-                    "Shared Indexer KV cache layout did not find any full "
-                    "Indexer layer."
-                )
             indexer_size = self._validate_uniform_sizes(
-                [layer.indexer.bytes_per_block for layer in indexer_layers],
+                [layer.indexer.bytes_per_block for layer in bf16_layers],
                 "BF16 Indexer block size",
                 row_layer_ids,
             )
@@ -534,11 +546,26 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
                 self._whole_tensor_segment(tensor) for tensor in layer.sfa_tensors
             ]
 
-            if not needs_split:
+            if layout_mode == "bf16":
                 if layer.indexer is not None:
                     segments.append(self._whole_tensor_segment(layer.indexer))
                 else:
                     segments.append(self._ghost_segment(indexer_size))
+            elif layout_mode == "li_c8":
+                if layer.scale is not None:
+                    segments.extend(
+                        [
+                            self._whole_tensor_segment(layer.indexer),
+                            self._whole_tensor_segment(layer.scale),
+                        ]
+                    )
+                else:
+                    segments.extend(
+                        [
+                            self._ghost_segment(index_chunk_size),
+                            self._ghost_segment(scale_size),
+                        ]
+                    )
             elif layer.scale is not None:
                 segments.extend(
                     [
@@ -606,6 +633,7 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
         logger.info(
             "Shared Indexer layerwise KV cache layout: "
             f"sfa_c8={sfa_c8}, li_c8={li_c8}, "
+            f"layout_mode={layout_mode}, "
             f"slot_sizes={slot_sizes}, "
             f"layer_types={[self._layer_type(layer) for layer in layers]}"
         )

@@ -230,6 +230,37 @@ class KVCacheLayoutTest(unittest.TestCase):
         self.assertEqual(layout.base_ptrs[1, 1], 0)
         self.assertEqual(layout.block_stride_lists[1, 1], 0)
 
+    def test_shared_indexer_all_li_c8_uses_compact_w8a8_layout(self):
+        layout = _build_layout(
+            [
+                [83968, 16384, 256],
+                [83968],
+                [83968, 16384, 256],
+            ],
+            use_layerwise=True,
+            shared_indexer=True,
+            enable_sparse_sfa_c8=True,
+            enable_sparse_li_c8=True,
+        )
+
+        expected_sizes = [83968, 16384, 256]
+        self.assertEqual(layout.tensor_size_list, expected_sizes)
+        self.assertEqual(layout.base_ptrs.shape, (3, 3))
+        self.assertEqual(
+            layout.tensor_size_lists.tolist(),
+            [expected_sizes, expected_sizes, expected_sizes],
+        )
+
+        self.assertTrue(np.all(layout.base_ptrs[1, 1:] == 0))
+        self.assertTrue(np.all(layout.block_stride_lists[1, 1:] == 0))
+        self.assertTrue(np.all(layout.buffer_sizes[1, 1:] == 0))
+
+        indexer_ptr = int(layout.base_ptrs[0, 1])
+        scale_ptr = int(layout.base_ptrs[0, 2])
+        block_one_addrs = layout.extract_block_addrs([1], layer_first=True)
+        self.assertEqual(block_one_addrs[0, 0, 1], indexer_ptr + 16384)
+        self.assertEqual(block_one_addrs[0, 0, 2], scale_ptr + 256)
+
     def test_shared_indexer_li_c8_splits_bf16_indexer(self):
         layout = _build_layout(
             [
