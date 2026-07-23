@@ -18,7 +18,7 @@ using Socket = int;
 constexpr Socket kInvalidSocket = -1;
 
 struct ControlMetadataResponse {
-    Status status = Status::Ok;
+    Status status = Status::OK();
     Metadata local_metadata;
 };
 
@@ -27,9 +27,11 @@ constexpr int kListenBacklog = 16;
 Status EncodeControlMetadataResponse(const ControlMetadataResponse& response, Metadata& out)
 {
     out.clear();
-    detail::AppendU32(out, static_cast<uint32_t>(response.status));
-    if (!detail::AppendMetadata(out, response.local_metadata)) { return Status::InvalidArgument; }
-    return Status::Ok;
+    const uint32_t status =
+        response.status.Success() ? 0 : (response.status == Status::InvalidParam() ? 1 : 2);
+    detail::AppendU32(out, status);
+    if (!detail::AppendMetadata(out, response.local_metadata)) { return Status::InvalidParam(); }
+    return Status::OK();
 }
 
 Status DecodeControlMetadataResponse(const Metadata& in, ControlMetadataResponse& response)
@@ -38,10 +40,15 @@ Status DecodeControlMetadataResponse(const Metadata& in, ControlMetadataResponse
     uint32_t status = 0;
     if (!detail::ReadU32(in, offset, status) ||
         !detail::ReadMetadata(in, offset, response.local_metadata) || offset != in.size()) {
-        return Status::InvalidArgument;
+        return Status::InvalidParam();
     }
-    response.status = static_cast<Status>(status);
-    return Status::Ok;
+    switch (status) {
+        case 0: response.status = Status::OK(); break;
+        case 1: response.status = Status::InvalidParam(); break;
+        case 2: response.status = Status::Error(); break;
+        default: return Status::InvalidParam();
+    }
+    return Status::OK();
 }
 
 Status SendAll(Socket socket, const void* data, size_t length)
@@ -50,11 +57,11 @@ Status SendAll(Socket socket, const void* data, size_t length)
     while (length > 0) {
         const auto chunk = static_cast<int>(std::min<size_t>(length, 64 * 1024));
         const int sent = send(socket, cursor, chunk, 0);
-        if (sent <= 0) { return Status::Failed; }
+        if (sent <= 0) { return Status::Error(); }
         cursor += sent;
         length -= static_cast<size_t>(sent);
     }
-    return Status::Ok;
+    return Status::OK();
 }
 
 Status RecvAll(Socket socket, void* data, size_t length)
@@ -63,11 +70,11 @@ Status RecvAll(Socket socket, void* data, size_t length)
     while (length > 0) {
         const auto chunk = static_cast<int>(std::min<size_t>(length, 64 * 1024));
         const int received = recv(socket, cursor, chunk, 0);
-        if (received <= 0) { return Status::Failed; }
+        if (received <= 0) { return Status::Error(); }
         cursor += received;
         length -= static_cast<size_t>(received);
     }
-    return Status::Ok;
+    return Status::OK();
 }
 
 void CloseSocket(Socket socket)
@@ -83,24 +90,24 @@ void CloseSocket(Socket socket)
 Status SendFrame(Socket socket, const void* data, size_t length)
 {
     if (socket == kInvalidSocket || (data == nullptr && length != 0) || length > UINT32_MAX) {
-        return Status::InvalidArgument;
+        return Status::InvalidParam();
     }
     const uint32_t network_length = htonl(static_cast<uint32_t>(length));
     auto status = SendAll(socket, &network_length, sizeof(network_length));
-    if (status != Status::Ok || length == 0) { return status; }
+    if (status != Status::OK() || length == 0) { return status; }
     return SendAll(socket, data, length);
 }
 
 Status ReceiveFrame(Socket socket, Metadata& metadata, size_t max_length)
 {
-    if (socket == kInvalidSocket) { return Status::InvalidArgument; }
+    if (socket == kInvalidSocket) { return Status::InvalidParam(); }
     uint32_t network_length = 0;
     auto status = RecvAll(socket, &network_length, sizeof(network_length));
-    if (status != Status::Ok) { return status; }
+    if (status != Status::OK()) { return status; }
     const auto length = ntohl(network_length);
-    if (length > max_length) { return Status::InvalidArgument; }
+    if (length > max_length) { return Status::InvalidParam(); }
     metadata.assign(length, 0);
-    return length == 0 ? Status::Ok : RecvAll(socket, metadata.data(), metadata.size());
+    return length == 0 ? Status::OK() : RecvAll(socket, metadata.data(), metadata.size());
 }
 
 }  // namespace
@@ -153,18 +160,18 @@ Status MetadataChannel::Init(const Endpoint& endpoint, MetadataRequestHandler ha
         metadata_request_handler_ = std::move(handler);
     }
     auto status = Listen(endpoint);
-    if (status != Status::Ok) {
+    if (status != Status::OK()) {
         Close();
         return status;
     }
     status = StartAccepting();
-    if (status != Status::Ok) { Close(); }
+    if (status != Status::OK()) { Close(); }
     return status;
 }
 
 Status MetadataChannel::Listen(const Endpoint& endpoint)
 {
-    if (endpoint.port == 0) { return Status::InvalidArgument; }
+    if (endpoint.port == 0) { return Status::InvalidParam(); }
     UC_DEBUG("transport tcp listen begin endpoint={}:{} backlog={}", endpoint.host, endpoint.port,
              kListenBacklog);
     addrinfo hints{};
@@ -178,10 +185,10 @@ Status MetadataChannel::Listen(const Endpoint& endpoint)
     if (getaddrinfo(host, port.c_str(), &hints, &results) != 0) {
         UC_ERROR("transport tcp listen getaddrinfo failed endpoint={}:{}", endpoint.host,
                  endpoint.port);
-        return Status::Failed;
+        return Status::Error();
     }
 
-    Status status = Status::Failed;
+    Status status = Status::Error();
     for (auto* item = results; item != nullptr; item = item->ai_next) {
         SocketHandle candidate(socket(item->ai_family, item->ai_socktype, item->ai_protocol));
         if (!candidate.Valid()) { continue; }
@@ -195,7 +202,7 @@ Status MetadataChannel::Listen(const Endpoint& endpoint)
             const auto socket = candidate.Get();
             listen_socket_.Reset(candidate.Release());
             endpoint_ = endpoint;
-            status = Status::Ok;
+            status = Status::OK();
             UC_DEBUG("transport tcp listen ok endpoint={}:{} socket={}", endpoint.host,
                      endpoint.port, socket);
             break;
@@ -203,7 +210,7 @@ Status MetadataChannel::Listen(const Endpoint& endpoint)
     }
 
     freeaddrinfo(results);
-    if (status != Status::Ok) {
+    if (status != Status::OK()) {
         UC_ERROR("transport tcp listen failed endpoint={}:{}", endpoint.host, endpoint.port);
     }
     return status;
@@ -211,26 +218,26 @@ Status MetadataChannel::Listen(const Endpoint& endpoint)
 
 Status MetadataChannel::AcceptSocket(SocketHandle& socket)
 {
-    if (!listen_socket_.Valid()) { return Status::InvalidArgument; }
+    if (!listen_socket_.Valid()) { return Status::InvalidParam(); }
 
     const auto accepted = ::accept(listen_socket_.Get(), nullptr, nullptr);
     if (accepted == kInvalidSocket) {
         if (stop_accept_.load(std::memory_order_relaxed)) {
             UC_DEBUG("transport tcp accept stopped");
-            return Status::Failed;
+            return Status::Error();
         }
         UC_ERROR("transport tcp accept failed");
-        return Status::Failed;
+        return Status::Error();
     }
 
     socket.Reset(accepted);
     UC_DEBUG("transport tcp accept ok socket={}", accepted);
-    return Status::Ok;
+    return Status::OK();
 }
 
 Status MetadataChannel::Connect(const Endpoint& endpoint)
 {
-    if (endpoint.host.empty() || endpoint.port == 0) { return Status::InvalidArgument; }
+    if (endpoint.host.empty() || endpoint.port == 0) { return Status::InvalidParam(); }
     UC_DEBUG("transport tcp connect begin endpoint={}:{}", endpoint.host, endpoint.port);
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
@@ -241,17 +248,17 @@ Status MetadataChannel::Connect(const Endpoint& endpoint)
     if (getaddrinfo(endpoint.host.c_str(), port.c_str(), &hints, &results) != 0) {
         UC_ERROR("transport tcp connect getaddrinfo failed endpoint={}:{}", endpoint.host,
                  endpoint.port);
-        return Status::Failed;
+        return Status::Error();
     }
 
-    Status status = Status::Failed;
+    Status status = Status::Error();
     for (auto* item = results; item != nullptr; item = item->ai_next) {
         SocketHandle candidate(socket(item->ai_family, item->ai_socktype, item->ai_protocol));
         if (!candidate.Valid()) { continue; }
         if (::connect(candidate.Get(), item->ai_addr, static_cast<int>(item->ai_addrlen)) == 0) {
             const auto socket = candidate.Get();
             socket_.Reset(candidate.Release());
-            status = Status::Ok;
+            status = Status::OK();
             UC_DEBUG("transport tcp connect ok endpoint={}:{} socket={}", endpoint.host,
                      endpoint.port, socket);
             break;
@@ -259,7 +266,7 @@ Status MetadataChannel::Connect(const Endpoint& endpoint)
     }
 
     freeaddrinfo(results);
-    if (status != Status::Ok) {
+    if (status != Status::OK()) {
         UC_ERROR("transport tcp connect failed endpoint={}:{}", endpoint.host, endpoint.port);
     }
     return status;
@@ -270,31 +277,31 @@ Status MetadataChannel::ExchangeMetadata(const Endpoint& endpoint, const Metadat
 {
     MetadataChannel channel;
     auto status = channel.Connect(endpoint);
-    if (status != Status::Ok) { return status; }
+    if (status != Status::OK()) { return status; }
 
     status = SendFrame(channel.socket_.Get(), metadata.data(), metadata.size());
-    if (status != Status::Ok) { return status; }
+    if (status != Status::OK()) { return status; }
 
     Metadata response_frame;
     status = ReceiveFrame(channel.socket_.Get(), response_frame, max_receive_frame_size_);
-    if (status != Status::Ok) { return status; }
+    if (status != Status::OK()) { return status; }
     ControlMetadataResponse response;
     status = DecodeControlMetadataResponse(response_frame, response);
-    if (status != Status::Ok || response.status != Status::Ok) {
-        return status == Status::Ok ? response.status : status;
+    if (status != Status::OK() || response.status != Status::OK()) {
+        return status == Status::OK() ? response.status : status;
     }
     remote_metadata = std::move(response.local_metadata);
-    return Status::Ok;
+    return Status::OK();
 }
 
 Status MetadataChannel::StartAccepting()
 {
-    if (!listen_socket_.Valid()) { return Status::InvalidArgument; }
+    if (!listen_socket_.Valid()) { return Status::InvalidParam(); }
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!metadata_request_handler_) { return Status::InvalidArgument; }
-        if (accept_thread_.joinable()) { return Status::Ok; }
+        if (!metadata_request_handler_) { return Status::InvalidParam(); }
+        if (accept_thread_.joinable()) { return Status::OK(); }
         stop_accept_.store(false, std::memory_order_relaxed);
     }
 
@@ -302,12 +309,12 @@ Status MetadataChannel::StartAccepting()
         while (!stop_accept_.load(std::memory_order_relaxed)) {
             SocketHandle accepted_socket;
             const auto status = AcceptSocket(accepted_socket);
-            if (status != Status::Ok) { continue; }
+            if (status != Status::OK()) { continue; }
 
             Metadata request_frame;
             const auto receive_status =
                 ReceiveFrame(accepted_socket.Get(), request_frame, max_receive_frame_size_);
-            if (receive_status != Status::Ok) { continue; }
+            if (receive_status != Status::OK()) { continue; }
 
             MetadataRequestHandler metadata_handler;
             {
@@ -317,17 +324,18 @@ Status MetadataChannel::StartAccepting()
             Metadata local_metadata;
             const auto metadata_status = metadata_handler
                                              ? metadata_handler(request_frame, local_metadata)
-                                             : Status::InvalidArgument;
+                                             : Status::InvalidParam();
             ControlMetadataResponse metadata_response{metadata_status, std::move(local_metadata)};
             Metadata response_payload;
-            if (EncodeControlMetadataResponse(metadata_response, response_payload) == Status::Ok) {
+            if (EncodeControlMetadataResponse(metadata_response, response_payload) ==
+                Status::OK()) {
                 const auto send_status = SendFrame(accepted_socket.Get(), response_payload.data(),
                                                    response_payload.size());
-                if (send_status != Status::Ok) { continue; }
+                if (send_status != Status::OK()) { continue; }
             }
         }
     });
-    return Status::Ok;
+    return Status::OK();
 }
 
 void MetadataChannel::Close()
