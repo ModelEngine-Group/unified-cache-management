@@ -66,12 +66,6 @@ enum class LookupResult : std::uint8_t {
 static_assert(static_cast<std::uint8_t>(DumpLoadResult::Failed) <= 0x0FU,
               "Dump/Load result codes must fit in 4 bits");
 
-enum class InflightPhase : std::uint8_t {
-    Polling = 0,
-    // The transfer must still reach terminal, but its request result is forced to failure.
-    DrainingAsFailed = 1,
-};
-
 enum class CompletionStage : std::uint8_t {
     PollDataTransfer = 0,
     SubmitResponse = 1,
@@ -85,7 +79,7 @@ struct CompletionRecord {
     TransportHandle data_handle{transport::kInvalidTransferHandle};
     std::vector<TransferItem> transfer_items;
     std::uint64_t submit_ms{0};
-    InflightPhase phase{InflightPhase::Polling};
+    bool disconnect_attempted{false};
 
     // State needed to construct the request's sole response.
     KvOpcode opcode{KvOpcode::None};

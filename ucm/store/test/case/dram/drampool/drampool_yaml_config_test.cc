@@ -209,6 +209,8 @@ INSTANTIATE_TEST_SUITE_P(
                         "at least 2"},
         InvalidYamlCase{"ZeroPollerPendingDepth", "pending_depth: 64", "pending_depth: 0",
                         "greater than zero"},
+        InvalidYamlCase{"PollerDepthExceedsFlagBufferSlots", "pending_depth: 64",
+                        "pending_depth: 2000000", "at least poller.pending_depth slots"},
         InvalidYamlCase{"ZeroFlagBufferCapacity", "capacity_mb: 64", "capacity_mb: 0",
                         "must be greater than zero"},
         InvalidYamlCase{"ZeroFlagBufferSlotSize", "slot_size_bytes: 64", "slot_size_bytes: 0",
