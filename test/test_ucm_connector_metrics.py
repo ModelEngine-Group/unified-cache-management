@@ -1695,16 +1695,18 @@ def test_grafana_dashboards_use_isolated_vllm_ucm_identity():
                 assert link["tags"] == [GRAFANA_VLLM_UCM_TAG]
 
 
-def test_ucm_overview_copies_vllm_panels_and_adds_block_hit_and_health_views():
+def test_ucm_overview_keeps_vllm_summary_and_adds_block_hit_and_health_views():
     metrics_dir = REPO_ROOT / "examples" / "metrics"
     source = json.loads((metrics_dir / "grafana_vllm.json").read_text(encoding="utf-8"))
     dashboard = json.loads(
         (metrics_dir / "grafana_ucm_overview.json").read_text(encoding="utf-8")
     )
-    source_titles = {panel["title"] for panel in source["panels"]}
+    source_titles = [panel["title"] for panel in source["panels"]]
     panels = {panel["title"]: panel for panel in dashboard["panels"]}
 
-    assert source_titles <= set(panels)
+    summary_end = source_titles.index("Prefix Cache Query Breakdown") + 1
+    assert set(source_titles[:summary_end]) <= set(panels)
+    assert set(source_titles[summary_end:]).isdisjoint(panels)
     assert panels["Total Input Tokens"]["gridPos"]["y"] == 0
     assert panels["Total Output Tokens"]["gridPos"]["y"] == 0
 
