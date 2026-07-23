@@ -43,6 +43,28 @@ class PosixStore : public StoreV1 {
     bool ioDirect_{false};
     const Detail::BlockId healthBlockId_{Detail::RandomBlockId()};
 
+    Status CheckPathHealth(const std::string& path)
+    {
+        alignas(kHealthIoSize) std::array<uint8_t, kHealthIoSize> expected{};
+        alignas(kHealthIoSize) std::array<uint8_t, kHealthIoSize> actual{};
+        expected.fill(0x5a);
+
+        PosixFile file{path};
+        auto flags = PosixFile::OpenFlag::CREATE | PosixFile::OpenFlag::READ_WRITE;
+        if (ioDirect_) { flags |= PosixFile::OpenFlag::DIRECT; }
+        auto status = file.Open(flags);
+        if (status.Failure()) { return status; }
+        status = file.Write(expected.data(), expected.size(), 0);
+        if (status.Success() && !ioDirect_) { status = file.Sync(); }
+        if (status.Success()) { status = file.Read(actual.data(), actual.size(), 0); }
+        file.Close();
+        auto cleanup = file.Remove();
+        if (status.Success() && actual != expected) {
+            status = Status::Error("health data mismatch");
+        }
+        return status.Failure() ? status : cleanup;
+    }
+
 public:
     Status Setup(const Detail::Dictionary& inConfig) override
     {
@@ -94,24 +116,12 @@ public:
     }
     Status CheckHealth() override
     {
-        alignas(kHealthIoSize) std::array<uint8_t, kHealthIoSize> expected{};
-        alignas(kHealthIoSize) std::array<uint8_t, kHealthIoSize> actual{};
-        expected.fill(0x5a);
-
-        PosixFile file{spaceMgr_.GetLayout()->DataFilePath(healthBlockId_, true)};
-        auto flags = PosixFile::OpenFlag::CREATE | PosixFile::OpenFlag::READ_WRITE;
-        if (ioDirect_) { flags |= PosixFile::OpenFlag::DIRECT; }
-        auto status = file.Open(flags);
-        if (status.Failure()) { return status; }
-        status = file.Write(expected.data(), expected.size(), 0);
-        if (status.Success() && !ioDirect_) { status = file.Sync(); }
-        if (status.Success()) { status = file.Read(actual.data(), actual.size(), 0); }
-        file.Close();
-        auto cleanup = file.Remove();
-        if (status.Success() && actual != expected) {
-            status = Status::Error("health data mismatch");
+        auto result = Status::OK();
+        for (const auto& path : spaceMgr_.GetLayout()->HealthCheckPaths(healthBlockId_, true)) {
+            auto status = CheckPathHealth(path);
+            if (result.Success() && status.Failure()) { result = status; }
         }
-        return status.Failure() ? status : cleanup;
+        return result;
     }
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {

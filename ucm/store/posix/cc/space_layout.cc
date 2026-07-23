@@ -88,7 +88,23 @@ Status SpaceLayout::Setup(const Config& config)
 
 std::string SpaceLayout::DataFilePath(const Detail::BlockId& blockId, bool activated) const
 {
-    const auto& backend = StorageBackend(blockId);
+    return DataFilePath(StorageBackend(blockId), blockId, activated);
+}
+
+std::vector<std::string> SpaceLayout::HealthCheckPaths(const Detail::BlockId& blockId,
+                                                       bool activated) const
+{
+    std::vector<std::string> paths;
+    paths.reserve(storageBackends_.size());
+    for (const auto& backend : storageBackends_) {
+        paths.emplace_back(DataFilePath(backend, blockId, activated));
+    }
+    return paths;
+}
+
+std::string SpaceLayout::DataFilePath(const std::string& backend, const Detail::BlockId& blockId,
+                                      bool activated) const
+{
     const auto& file = DataFileName(blockId);
     const auto& shard = dataDirShard_ ? FileShardName(file) : DATA_ROOT;
     if (!activated) { return fmt::format("{}{}/{}", backend, shard, file); }

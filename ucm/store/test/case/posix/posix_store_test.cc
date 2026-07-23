@@ -277,6 +277,32 @@ TEST_F(UCPosixStoreTest, CheckHealthWithoutDirectIoOnTemporaryFilesystem)
     EXPECT_EQ(store.CheckHealth(), UC::Status::OK());
 }
 
+TEST_F(UCPosixStoreTest, CheckHealthCoversAllStorageBackends)
+{
+    using namespace UC::PosixStore;
+    const auto mount0 = std::filesystem::path{Path()} / "mount0";
+    const auto mount1 = std::filesystem::path{Path()} / "mount1";
+    std::filesystem::create_directories(mount0);
+    std::filesystem::create_directories(mount1 / "data");
+
+    auto config = MakePsyncConfig(mount0.string());
+    config.Set("storage_backends", std::vector<std::string>{mount0.string(), mount1.string()});
+    PosixStore store;
+    ASSERT_EQ(store.Setup(config), UC::Status::OK());
+    ASSERT_EQ(store.CheckHealth(), UC::Status::OK());
+
+    const auto checkUnavailable = [&store](const std::filesystem::path& mount) {
+        auto unavailable = mount;
+        unavailable += ".unavailable";
+        std::filesystem::rename(mount, unavailable);
+        auto status = store.CheckHealth();
+        std::filesystem::rename(unavailable, mount);
+        return status;
+    };
+    EXPECT_TRUE(checkUnavailable(mount0).Failure());
+    EXPECT_TRUE(checkUnavailable(mount1).Failure());
+}
+
 TEST_F(UCPosixStoreTest, DumpThenLoadWithIoDirect)
 {
     using namespace UC::PosixStore;
