@@ -386,16 +386,6 @@ TEST(UCAsuStoreTest, RejectsTransportIntegerOverflow)
     }
 }
 
-TEST(UCAsuStoreTest, RejectsInvalidMemoryType)
-{
-    UC::AsuStore::AsuStore store;
-    auto config = MakeBaseConfig();
-    config.Set("asu_ids", std::vector<ssize_t>{1001});
-    config.Set("asu_memory_type", std::string{"device"});
-
-    EXPECT_TRUE(store.Setup(config).Failure());
-}
-
 TEST(UCAsuStoreTest, AivRequiresDeviceIdAndDeviceIp)
 {
     {

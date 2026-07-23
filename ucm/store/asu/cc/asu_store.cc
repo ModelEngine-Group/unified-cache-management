@@ -131,14 +131,6 @@ UC::ASU::TransProviderType ParseTransProviderBackend(std::string backend)
     return UC::ASU::TransProviderType::UNSUPPORTED;
 }
 
-UC::ASU::MemoryType ParseMemoryType(const std::string& memoryType)
-{
-    if (memoryType == "host") { return UC::ASU::MemoryType::HOST; }
-    if (memoryType == "host_pinned") { return UC::ASU::MemoryType::HOST_PINNED; }
-    if (memoryType == "ascend_device") { return UC::ASU::MemoryType::ASCEND_DEVICE; }
-    return UC::ASU::MemoryType::ASCEND_DEVICE;
-}
-
 bool TryGetStringLike(const Detail::Dictionary& inConfig, const std::string& key,
                       std::string& value)
 {
@@ -377,13 +369,12 @@ public:
     {
         if (!backend_) { return Status::Error("ASU backend is not initialized"); }
 
-        const auto memoryType = ConfiguredMemoryType();
         std::vector<UC::ASU::MemoryRegion> regions;
         regions.reserve(count);
         for (std::size_t index = 0; index < count; ++index) {
             if (registrations[index].addr == 0 || registrations[index].size == 0) { continue; }
             UC::ASU::MemoryRegion region;
-            region.memoryType = memoryType;
+            region.memoryType = UC::ASU::MemoryType::ASCEND_DEVICE;
             region.addr = static_cast<std::uint64_t>(registrations[index].addr);
             region.size = static_cast<std::uint64_t>(registrations[index].size);
             region.deviceId = config_.deviceId;
@@ -487,7 +478,6 @@ private:
         inConfig.GetNumber("shard_size", config.shardSize);
         inConfig.GetNumber("block_size", config.blockSize);
         inConfig.GetNumber("device_id", config.deviceId);
-        inConfig.Get("asu_memory_type", config.memoryType);
         inConfig.Get("tensor_layout", config.tensorLayout);
         std::string providerBackend;
         if (TryGetStringLike(inConfig, "asu_trans_provider_backend", providerBackend)) {
@@ -603,11 +593,6 @@ private:
         if (config.maxInflightTasks > std::numeric_limits<std::uint32_t>::max()) {
             return Status::InvalidParam("asu_max_inflight_tasks exceeds uint32 range");
         }
-        if (!config.memoryType.empty() && config.memoryType != "host" &&
-            config.memoryType != "host_pinned" && config.memoryType != "ascend_device") {
-            return Status::InvalidParam("invalid asu_memory_type({})", config.memoryType);
-        }
-
         // Scheduler config check done
         if (config.role == "scheduler") { return Status::OK(); }
 
@@ -760,7 +745,6 @@ private:
     {
         std::vector<UC::ASU::KVBuffer> entries;
         entries.reserve(task.size() * config_.tensorSizes.size());
-        const auto memoryType = ConfiguredMemoryType();
 
         for (const auto& shard : task) {
             if (shard.index >= ShardsPerBlock()) {
@@ -773,7 +757,7 @@ private:
             for (std::size_t tensorIndex = 0; tensorIndex < shard.addrs.size(); ++tensorIndex) {
                 UC::ASU::KVBuffer entry;
                 entry.key = MakeAsuKey(shard.owner);
-                entry.buffer.region.memoryType = memoryType;
+                entry.buffer.region.memoryType = UC::ASU::MemoryType::ASCEND_DEVICE;
                 entry.buffer.region.addr =
                     reinterpret_cast<std::uint64_t>(shard.addrs[tensorIndex]);
                 entry.buffer.region.size = config_.tensorSizes[tensorIndex];
@@ -807,14 +791,6 @@ private:
         UC_INFO("Set AsuStore::TransProviderBackend to {}.",
                 TransProviderBackendName(config.transProviderType));
         UC_INFO("Set AsuStore::FakeBackendPath to {}.", config.fakeBackendPath);
-    }
-
-    UC::ASU::MemoryType ConfiguredMemoryType() const
-    {
-        return config_.memoryType.empty()
-                   ? (config_.deviceId >= 0 ? UC::ASU::MemoryType::ASCEND_DEVICE
-                                            : UC::ASU::MemoryType::HOST)
-                   : ParseMemoryType(config_.memoryType);
     }
 
     UC::ASU::MRHandle FindPersistentHandle(const UC::ASU::MemoryRegion& region) const
