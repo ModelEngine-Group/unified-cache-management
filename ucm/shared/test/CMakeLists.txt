@@ -7,7 +7,7 @@ if(BUILD_UNIT_TESTS)
     add_executable(ucmshared.test ${UCMSHARED_TEST_SOURCE_FILES})
     target_include_directories(ucmshared.test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/case)
     target_link_libraries(ucmshared.test PRIVATE
-        trans metrics infra_logger
+        trans metrics infra_logger offset_allocator
         gtest_main gtest
     )
     if(RUNTIME_ENVIRONMENT STREQUAL "ascend")

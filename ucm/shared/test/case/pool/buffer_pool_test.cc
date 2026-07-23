@@ -30,26 +30,14 @@
 #include <limits>
 #include <thread>
 #include <vector>
+#include "pool/pool_test_base.h"
 
 namespace UC {
 namespace {
 
 using MemoryType = BufferPool::MemoryType;
 
-class BufferPoolTest : public ::testing::Test {
-protected:
-    static void SetUpTestSuite()
-    {
-        aclInit(nullptr);
-        aclrtSetDevice(0);
-    }
-
-    static void TearDownTestSuite()
-    {
-        aclrtResetDevice(0);
-        aclFinalize();
-    }
-};
+class BufferPoolTest : public Test::PoolTestBase {};
 
 TEST_F(BufferPoolTest, RejectsInvalidInitAndUseBeforeInit)
 {
