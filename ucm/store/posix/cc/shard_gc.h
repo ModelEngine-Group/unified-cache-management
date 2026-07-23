@@ -47,6 +47,7 @@ struct ShardTaskContext {
     std::shared_ptr<Latch> waiter;
     std::atomic<size_t>* sampledFiles{nullptr};
     std::atomic<bool>* gcLimited{nullptr};
+    std::atomic<size_t>* deletedFiles{nullptr};
 };
 
 class ShardGarbageCollector {
@@ -59,8 +60,8 @@ public:
 
 private:
     Status ValidateAndInitCapacity();
-    bool Execute();
-    std::tuple<bool, size_t, size_t> ShouldTrigger();
+    bool Execute(size_t& deletedFiles);
+    std::tuple<bool, size_t, size_t, size_t, size_t> ShouldTrigger();
     void ProcessTask(ShardTaskContext& ctx);
     void GCCheckLoop();
     void StopBackgroundCheck();
