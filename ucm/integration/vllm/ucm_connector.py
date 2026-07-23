@@ -72,6 +72,34 @@ from ucm.sparse.state import has_ucm_sparse
 logger = init_logger(__name__)
 
 
+def _validate_layerwise_sparse_c8_config(
+    vllm_config: "VllmConfig", launch_config: dict
+) -> None:
+    use_layerwise = bool((launch_config or {}).get("use_layerwise", False))
+    if not use_layerwise:
+        return
+
+    additional_config = getattr(vllm_config, "additional_config", None) or {}
+    enable_sparse_sfa_c8 = bool(additional_config.get("enable_sparse_sfa_c8", False))
+    enable_sparse_li_c8 = bool(additional_config.get("enable_sparse_li_c8", False))
+    if enable_sparse_sfa_c8 == enable_sparse_li_c8:
+        return
+
+    raise ValueError(
+        "Invalid UCM layerwise KV cache configuration: `use_layerwise: true` "
+        "is set in ucm_config.yaml, but the C8 options from "
+        "`--additional-config` are inconsistent. Layerwise mode currently "
+        "requires `enable_sparse_sfa_c8` and `enable_sparse_li_c8` to have "
+        "the same value. Supported combinations are (false, false) and "
+        "(true, true); received "
+        f"(enable_sparse_sfa_c8={enable_sparse_sfa_c8}, "
+        f"enable_sparse_li_c8={enable_sparse_li_c8}). Either set "
+        "`use_layerwise: false` in ucm_config.yaml, or configure both C8 "
+        "options to the same boolean value. Non-layerwise mode supports all "
+        "four C8 combinations."
+    )
+
+
 def _normalize_tensor_size_list(tensor_size_list: Any) -> list[int]:
     if isinstance(tensor_size_list, np.ndarray):
         return [int(v) for v in tensor_size_list.reshape(-1).tolist()]
@@ -148,11 +176,14 @@ class KVCacheLayout:
         vllm_config: "VllmConfig",
         kv_cache_config: "KVCacheConfig",
     ) -> None:
-        # each row is a layer, each column is a tensor_size/ptr in the layer (e.g., k, v, rope, k_index)
-        self.base_ptrs: np.ndarray  # (n_layers, n_ptrs）
-        self.buffer_sizes: np.ndarray  # (n_layers, n_ptrs)
-        self.tensor_size_lists: np.ndarray  # (n_layers, n_tensor_sizes)
-        self.block_stride_lists: np.ndarray  # (n_layers, n_tensor_strides)
+        # Direct mode stores only real tensors in flat arrays. Layerwise mode
+        # stores a padded [layer, tensor_slot] matrix because the store uses one
+        # tensor-size list for every layer.
+        self.base_ptrs: np.ndarray
+        self.buffer_sizes: np.ndarray
+        self.tensor_size_lists: np.ndarray
+        self.block_stride_lists: np.ndarray
+        self.valid_mask: np.ndarray
         self.use_layerwise = ucm_config.get("use_layerwise", False)
         self.kv_cache_config = kv_cache_config
         self.vllm_config = vllm_config
@@ -175,6 +206,7 @@ class KVCacheLayout:
         raw_ptr_rows = [[] for _ in range(num_rows)]
         stride_rows = [[] for _ in range(num_rows)]
         buffer_size_rows = [[] for _ in range(num_rows)]
+        row_layer_ids = [None for _ in range(num_rows)]
 
         for layer_name, kv_layer in kvcaches.items():
             ptrs = []
@@ -208,13 +240,86 @@ class KVCacheLayout:
                 raise TypeError(f"Unsupported kv cache type: {type(kv_layer)}")
 
             local_layer_id = self.layer_name_to_id[layer_name] - self.first_layer_id
+            row_layer_ids[local_layer_id] = self.layer_name_to_id[layer_name]
             raw_ptr_rows[local_layer_id].extend(ptrs)
             stride_rows[local_layer_id].extend(strides)
             buffer_size_rows[local_layer_id].extend(buffer_sizes)
 
+        if not self.use_layerwise:
+            # A direct transfer copies one whole KV-cache block. Keep only real
+            # tensors and flatten all layers into that block; padding would add
+            # fake tensors to the store metadata and copy path.
+            self.base_ptrs = np.asarray(
+                [ptr for row in raw_ptr_rows for ptr in row], dtype=np.uint64
+            )
+            self.tensor_size_lists = np.asarray(
+                [stride for row in stride_rows for stride in row], dtype=np.uint64
+            )
+            self.buffer_sizes = np.asarray(
+                [size for row in buffer_size_rows for size in row], dtype=np.uint64
+            )
+            self.block_stride_lists = self.tensor_size_lists
+            self.valid_mask = np.ones(self.base_ptrs.shape, dtype=bool)
+            logger.info(
+                f"base_ptrs: {self.base_ptrs.shape}, "
+                f"tensor_size_lists: {self.tensor_size_lists.shape}"
+            )
+            return
+
+        # A layerwise transfer uses one fixed tensor-size list for all layers.
+        # Pad shorter rows to the widest row, then verify that every real tensor
+        # in a column has the same block stride. This derives compatibility from
+        # the actual tensor layout without exposing model-specific C8 flags.
+        max_ptrs = max((len(r) for r in raw_ptr_rows), default=0)
+        if max_ptrs == 0:
+            raise ValueError("KV cache layout must contain at least one tensor")
+        tensor_counts_per_layer = [len(row) for row in raw_ptr_rows]
+        ghost_slots = sum(max_ptrs - count for count in tensor_counts_per_layer)
+        if ghost_slots > 0:
+            padded_layers = sum(count < max_ptrs for count in tensor_counts_per_layer)
+            logger.info(
+                "Layerwise KV cache layout uses padding: "
+                f"num_layers={num_rows}, max_tensors_per_layer={max_ptrs}, "
+                f"padded_layers={padded_layers}, ghost_slots={ghost_slots}, "
+                f"tensor_counts_per_layer={tensor_counts_per_layer}"
+            )
+        for rows in (raw_ptr_rows, stride_rows, buffer_size_rows):
+            for r in rows:
+                r.extend([0] * (max_ptrs - len(r)))
+
         self.base_ptrs = np.asarray(raw_ptr_rows, dtype=np.uint64)
         self.tensor_size_lists = np.asarray(stride_rows, dtype=np.uint64)
         self.buffer_sizes = np.asarray(buffer_size_rows, dtype=np.uint64)
+        self.valid_mask = self.base_ptrs != 0
+
+        column_strides = np.zeros(max_ptrs, dtype=np.uint64)
+        for column_id in range(max_ptrs):
+            real_strides = self.tensor_size_lists[
+                self.valid_mask[:, column_id], column_id
+            ]
+            unique_strides = np.unique(real_strides)
+            if unique_strides.size != 1:
+                stride_to_layer_ids = {}
+                for row_id in np.flatnonzero(self.valid_mask[:, column_id]):
+                    stride = int(self.tensor_size_lists[row_id, column_id])
+                    stride_to_layer_ids.setdefault(stride, []).append(
+                        row_layer_ids[row_id]
+                    )
+                raise ValueError(
+                    "Invalid KV cache layout for `use_layerwise: true` in "
+                    "ucm_config.yaml: all real tensors in column "
+                    f"{column_id} must have an identical block stride, but got "
+                    f"{unique_strides.tolist()}; stride_to_layer_ids="
+                    f"{dict(stride_to_layer_ids)}. Set `use_layerwise: false` or "
+                    "make the tensor layout consistent across layers."
+                )
+            column_strides[column_id] = unique_strides[0]
+
+        # Ghost slots use the canonical column stride in store metadata, while
+        # their computed addresses remain zero and are skipped by copy streams.
+        self.tensor_size_lists = np.broadcast_to(
+            column_strides, self.base_ptrs.shape
+        ).copy()
         self.block_stride_lists = self.tensor_size_lists
 
         logger.info(
@@ -225,25 +330,50 @@ class KVCacheLayout:
         self, vllm_block_ids: List[int], layer_first: bool = False
     ) -> np.ndarray:
         vllm_block_ids_np = np.array(vllm_block_ids, np.uint64)
+        if not self.use_layerwise:
+            if layer_first:
+                raise ValueError(
+                    "layer_first=True requires a layerwise KV cache layout"
+                )
+            return (
+                vllm_block_ids_np[:, None] * self.block_stride_lists[None, :]
+                + self.base_ptrs[None, :]
+            )
+
         if layer_first:
             # (n_layers, num_blocks, n_ptrs)
-            return (
+            addrs = (
                 self.block_stride_lists[:, None, :] * vllm_block_ids_np[None, :, None]
                 + self.base_ptrs[:, None, :]
             )
-        return (
+            if not self.valid_mask.all():
+                # zero out ghost (padded) slots so the C++ copy stream skips
+                # them via addr==nullptr (size is non-zero after col-broadcast).
+                addrs = addrs * self.valid_mask[:, None, :].astype(np.uint64)
+            return addrs
+        addrs = (
             vllm_block_ids_np[:, None, None] * self.block_stride_lists[None, :, :]
             + self.base_ptrs[None, :, :]
         )  # (num_blocks, n_layers, n_ptrs)
+        if not self.valid_mask.all():
+            addrs = addrs * self.valid_mask[None, :, :].astype(np.uint64)
+        return addrs
 
     def extract_block_addrs_for_row(
         self, vllm_block_ids: List[int], row_id: int
     ) -> np.ndarray:
+        if not self.use_layerwise:
+            raise ValueError(
+                "Row address extraction requires a layerwise KV cache layout"
+            )
         vllm_block_ids_np = np.asarray(vllm_block_ids, dtype=np.uint64)
-        return (
+        addrs = (
             vllm_block_ids_np[:, None] * self.block_stride_lists[row_id][None, :]
             + self.base_ptrs[row_id][None, :]
         )
+        if not self.valid_mask[row_id].all():
+            addrs = addrs * self.valid_mask[row_id][None, :].astype(np.uint64)
+        return addrs
 
     @property
     def tensor_size_list(self) -> list[int]:
@@ -292,10 +422,14 @@ class RequestHasher:
             spec_method = getattr(speculative_config, "method", "") or ""
             spec_tokens = getattr(speculative_config, "num_speculative_tokens", 0)
             spec_info = f":{spec_method}:{spec_tokens}"
+        additional_config = getattr(vllm_config, "additional_config", None) or {}
+        sparse_sfa_c8 = bool(additional_config.get("enable_sparse_sfa_c8", False))
+        sparse_li_c8 = bool(additional_config.get("enable_sparse_li_c8", False))
+        sparse_c8_info = f":sfa_c8={int(sparse_sfa_c8)}:li_c8={int(sparse_li_c8)}"
         meta = (
             f"{vllm_config.model_config.model}:"
             f"{vllm_config.parallel_config.tensor_parallel_size}:"
-            f"{vllm_config.model_config.dtype}:{rank_id}{spec_info}"
+            f"{vllm_config.model_config.dtype}:{rank_id}{spec_info}{sparse_c8_info}"
         )
         self.meta_bytes = meta.encode("utf-8")
 
@@ -395,6 +529,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             "", vllm_config.kv_transfer_config.engine_id
         )
         self.launch_config = ucm_config.get_config()
+        _validate_layerwise_sparse_c8_config(vllm_config, self.launch_config)
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         self.enable_event_sync = self.launch_config.get("enable_event_sync", True)
         self.enable_record_traces = self.launch_config.get(
@@ -539,6 +674,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
             gpu_kv_buffer_addrs = []
             gpu_kv_buffer_sizes = []
             for addr, size in zip(buffer_addrs, buffer_sizes):
+                # Layerwise padding is store metadata only. Never register a
+                # ghost (nullptr, zero-sized) slot as a real device buffer.
+                if int(addr) == 0 or int(size) == 0:
+                    continue
                 key = (int(addr), int(size))
                 if key in gpu_kv_buffer_set:
                     continue
@@ -1951,6 +2090,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         self._setup_ucm_metrics(vllm_config, role)
         logger.info(f"self.launch_config: {self.launch_config}")
 
+        _validate_layerwise_sparse_c8_config(vllm_config, self.launch_config)
         use_layerwise = (
             self.launch_config.get("use_layerwise", False)
             if self.launch_config is not None

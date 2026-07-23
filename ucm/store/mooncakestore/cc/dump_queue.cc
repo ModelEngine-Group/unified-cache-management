@@ -303,19 +303,11 @@ void DumpQueue::BackendDumpStage()
 Status DumpQueue::DeviceToHostGatherAsync(std::shared_ptr<Trans::Stream> stream, void** device,
                                           void* host)
 {
-    const auto number = tensorSizes_.size();
-    for (size_t i = 0, offset = 0; i < number; i++) {
-        auto pDevice = device[i];
-        auto pHost = (void*)(((int8_t*)host) + offset);
-        auto size = tensorSizes_[i];
-        auto s = stream->DeviceToHostAsync(pDevice, pHost, size);
-        if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to do D2H({}) batch({}/{}) async.", s, size, i, number);
-            return s;
-        }
-        offset += size;
+    auto s = stream->DeviceToHostAsync(device, host, tensorSizes_);
+    if (s.Failure()) [[unlikely]] {
+        UC_ERROR("Failed({}) to do D2H gather async for {} tensors.", s, tensorSizes_.size());
     }
-    return Status::OK();
+    return s;
 }
 
 size_t DumpQueue::BlockBytes() const

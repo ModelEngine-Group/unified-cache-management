@@ -323,19 +323,11 @@ void ShareLoadQueue::HandleBackendComplete(BlockTask& task, Trans::Stream& strea
 
 Status ShareLoadQueue::HostToDeviceScatterAsync(Trans::Stream& stream, void* host, void** device)
 {
-    const auto number = tensorSizes_.size();
-    for (size_t i = 0, offset = 0; i < number; i++) {
-        auto pHost = (void*)(((int8_t*)host) + offset);
-        auto pDevice = device[i];
-        auto size = tensorSizes_[i];
-        auto s = stream.HostToDeviceAsync(pHost, pDevice, size);
-        if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to do H2D({}) batch({}/{}) async.", s, size, i, number);
-            return s;
-        }
-        offset += size;
+    auto s = stream.HostToDeviceAsync(host, device, tensorSizes_);
+    if (s.Failure()) [[unlikely]] {
+        UC_ERROR("Failed({}) to do H2D scatter async for {} tensors.", s, tensorSizes_.size());
     }
-    return Status::OK();
+    return s;
 }
 
 size_t ShareLoadQueue::BlockBytes() const
