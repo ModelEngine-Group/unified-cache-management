@@ -45,12 +45,16 @@ class StubTransProvider : public TransProvider {
 public:
     std::uint32_t registerCount{0};
     std::uint32_t registerCallCount{0};
+    std::uint32_t bindCount{0};
+    std::uint32_t unbindCount{0};
     std::uint32_t unregisterCount{0};
     std::uint32_t failRegisterAt{0};
     std::uint32_t tokenLookupCount{0};
     std::uint32_t failTokenLookupAt{0};
     std::uint32_t failUnregisterAt{0};
     bool failUnregister{false};
+    std::vector<MRHandle> unboundHandles;
+    std::vector<MRHandle> unregisteredHandles;
 
     Status CreateConnection(const std::string&, const std::string&, uint32_t, uint32_t qpNum,
                             uint32_t, std::vector<ConnectionHandle>& handles) override
@@ -90,12 +94,35 @@ public:
         return Status::OK();
     }
 
+    Status BindMemory(const std::vector<RegisteredMemory>& regions,
+                      std::vector<MRHandle>& handles) override
+    {
+        handles.clear();
+        handles.reserve(regions.size());
+        for (std::size_t index = 0; index < regions.size(); ++index) {
+            ++bindCount;
+            handles.push_back(
+                reinterpret_cast<MRHandle>(static_cast<std::uintptr_t>(1000 + bindCount)));
+        }
+        return Status::OK();
+    }
+
+    std::vector<Status> UnbindMemory(const std::vector<UnbindMemoryDesc>& descs) override
+    {
+        for (const auto& desc : descs) {
+            ++unbindCount;
+            unboundHandles.push_back(desc.mrHandle);
+        }
+        return std::vector<Status>(descs.size(), Status::OK());
+    }
+
     std::vector<Status> UnregisterMemory(const std::vector<UnregisterMemoryDesc>& descs) override
     {
         std::vector<Status> statuses;
         statuses.reserve(descs.size());
         for (std::size_t index = 0; index < descs.size(); ++index) {
             ++unregisterCount;
+            unregisteredHandles.push_back(descs[index].mrHandle);
             if (failUnregister || (failUnregisterAt != 0 && unregisterCount == failUnregisterAt)) {
                 statuses.emplace_back(
                     Status::Error(StatusCode::INTERNAL_ERROR, "stub unregister failed"));
@@ -230,6 +257,44 @@ TEST(AsuTransportRegisterTest, RegisterDeviceRegionDoesNotRequireConnection)
     ASSERT_EQ(results.size(), std::size_t{1});
     EXPECT_TRUE(results[0].status.ok()) << results[0].status.message;
     EXPECT_EQ(providerPtr->registerCount, std::uint32_t{1});
+}
+
+TEST(AsuTransportRegisterTest, BoundRegionsUnbindLocalMemoryWithoutUnregisteringOwnerMemory)
+{
+    auto provider = std::make_unique<StubTransProvider>();
+    auto* providerPtr = provider.get();
+
+    AsuTransportImpl transport;
+    transport.SetTransProvider(std::move(provider));
+
+    RegisteredMemory region;
+    region.region.memoryType = MemoryType::ASCEND_DEVICE;
+    region.region.addr = 0x1000;
+    region.region.size = 4096;
+    region.handle = reinterpret_cast<MRHandle>(std::uintptr_t{7});
+    region.tokenId = 23;
+
+    std::vector<RegisterResult> results;
+    auto status = transport.BindRegisteredRegions({region}, results);
+
+    ASSERT_TRUE(status.ok()) << status.message;
+    ASSERT_EQ(results.size(), std::size_t{1});
+    EXPECT_EQ(results[0].handle, region.handle);
+    EXPECT_EQ(results[0].tokenId, region.tokenId);
+    EXPECT_EQ(providerPtr->bindCount, std::uint32_t{1});
+    ASSERT_EQ(transport.registeredRegions_.size(), std::size_t{1});
+    const auto localHandle = transport.registeredRegions_.at(region.handle).handle;
+    EXPECT_NE(localHandle, region.handle);
+
+    status = transport.UnbindRegisteredRegions({region.handle});
+
+    EXPECT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(providerPtr->unbindCount, std::uint32_t{1});
+    EXPECT_EQ(providerPtr->unboundHandles, std::vector<MRHandle>({localHandle}));
+    EXPECT_EQ(providerPtr->unregisterCount, std::uint32_t{0});
+    EXPECT_TRUE(providerPtr->unregisteredHandles.empty());
+    EXPECT_TRUE(transport.registeredRegions_.empty());
+    EXPECT_TRUE(transport.ownedRegisteredRegionHandles_.empty());
 }
 
 TEST(AsuTransportRegisterTest, RegisterRegionsReturnsAllResultsAfterBatchFailure)

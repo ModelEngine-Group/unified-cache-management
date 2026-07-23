@@ -118,6 +118,8 @@ public:
     virtual Status BindRegisteredRegions(const std::vector<RegisteredMemory>& regions,
                                          std::vector<RegisterResult>& results) = 0;
 
+    virtual Status UnbindRegisteredRegions(const std::vector<MRHandle>& handles) = 0;
+
     virtual Status UnregisterRegions(const std::vector<MRHandle>& handles) = 0;
 };
 

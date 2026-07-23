@@ -521,6 +521,30 @@ Status FakeTransProvider::RegisterMemory(const std::vector<RegisterMemoryDesc>& 
     return Status::OK();
 }
 
+Status FakeTransProvider::BindMemory(const std::vector<::UC::ASU::RegisteredMemory>& regions,
+                                     std::vector<MRHandle>& mrHandles)
+{
+    mrHandles.clear();
+    mrHandles.reserve(regions.size());
+    std::lock_guard<std::mutex> lock(registeredMemoryMu_);
+    for (const auto& region : regions) {
+        auto handle = nextMrHandle_.fetch_add(1, std::memory_order_relaxed);
+        if (handle == 0) { handle = nextMrHandle_.fetch_add(1, std::memory_order_relaxed); }
+        auto mrHandle = reinterpret_cast<MRHandle>(handle);
+        registeredMemories_[mrHandle] =
+            RegisteredMemory{region.region.addr, region.region.addr, region.region.size};
+        mrHandles.push_back(mrHandle);
+    }
+    return Status::OK();
+}
+
+std::vector<Status> FakeTransProvider::UnbindMemory(const std::vector<UnbindMemoryDesc>& handles)
+{
+    std::lock_guard<std::mutex> lock(registeredMemoryMu_);
+    for (const auto& desc : handles) { registeredMemories_.erase(desc.mrHandle); }
+    return std::vector<Status>(handles.size(), Status::OK());
+}
+
 std::vector<Status> FakeTransProvider::UnregisterMemory(
     const std::vector<UnregisterMemoryDesc>& handles)
 {

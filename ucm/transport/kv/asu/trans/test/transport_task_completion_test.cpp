@@ -65,6 +65,18 @@ public:
         handles.push_back(reinterpret_cast<MRHandle>(static_cast<uintptr_t>(1)));
         return Status::OK();
     }
+    Status BindMemory(const std::vector<RegisteredMemory>& regions,
+                      std::vector<MRHandle>& handles) override
+    {
+        handles.clear();
+        for (const auto& region : regions) { handles.push_back(region.handle); }
+        return Status::OK();
+    }
+
+    std::vector<Status> UnbindMemory(const std::vector<UnbindMemoryDesc>& handles) override
+    {
+        return std::vector<Status>(handles.size(), Status::OK());
+    }
     std::vector<Status> UnregisterMemory(const std::vector<UnregisterMemoryDesc>&) override
     {
         return {};

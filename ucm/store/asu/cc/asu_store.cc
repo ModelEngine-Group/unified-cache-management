@@ -193,7 +193,7 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
     if (!config.asuIps.empty()) {
         UC::ASU::AsuEndpoint endpoint;
         endpoint.ip = config.asuIps[index];
-        endpoint.port = config.asuPort;
+        endpoint.port = config.asuPorts[index];
         endpoint.deviceId = config.deviceId;
         transportConfig.endpoints.emplace_back(std::move(endpoint));
     }
@@ -471,9 +471,16 @@ private:
         inConfig.Get("asu_local_ip", config.asuLocalIp);
         inConfig.Get("asu_name_prefix", config.asuNamePrefix);
         inConfig.GetNumbers("kv_ns_ids", config.kvNsIds);
-        ssize_t asuPort = 0;
-        inConfig.GetNumber("asu_port", asuPort);
-        config.asuPort = static_cast<std::uint16_t>(std::max<ssize_t>(0, asuPort));
+        std::vector<ssize_t> asuPorts;
+        try {
+            inConfig.GetNumbers("asu_port", asuPorts);
+        } catch (const std::bad_any_cast&) {
+            asuPorts.clear();
+        }
+        config.asuPorts.reserve(asuPorts.size());
+        for (const auto port : asuPorts) {
+            config.asuPorts.emplace_back(static_cast<std::uint16_t>(std::max<ssize_t>(0, port)));
+        }
         inConfig.GetNumber("asu_default_wait_timeout_ms", config.defaultWaitTimeoutMs);
         inConfig.GetNumber("asu_query_timeout_ms", config.queryTimeoutMs);
         inConfig.GetNumber("asu_load_timeout_ms", config.loadTimeoutMs);
@@ -554,6 +561,9 @@ private:
         }
         if (!config.asuIps.empty() && config.asuIps.size() != config.asuIds.size()) {
             return Status::InvalidParam("asu_ips size must match asu_ids size");
+        }
+        if (config.configPath.empty() && config.asuPorts.size() != config.asuIds.size()) {
+            return Status::InvalidParam("asu_port size must match asu_ids size");
         }
         if (config.uniqueId.find("_fawa_") != std::string::npos && config.kvNsIds.size() != 2) {
             return Status::InvalidParam("FAWA requires exactly two kv_ns_ids");

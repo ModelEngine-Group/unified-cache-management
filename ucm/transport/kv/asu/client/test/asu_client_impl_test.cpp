@@ -58,6 +58,7 @@ struct TestState {
     std::unordered_map<AsuId, QueryResult> prefixQueryResults;
     std::vector<AsuId> registerCalls;
     std::vector<AsuId> bindCalls;
+    std::vector<AsuId> unbindCalls;
     std::unordered_map<AsuId, std::vector<RegisteredMemory>> boundRegions;
     std::vector<AsuId> unregisterCalls;
     std::vector<AsuId> queryCalls;
@@ -241,6 +242,12 @@ public:
     Status UnregisterRegions(const std::vector<MRHandle>&) override
     {
         state_->unregisterCalls.emplace_back(config_.asuId);
+        return Status::OK();
+    }
+
+    Status UnbindRegisteredRegions(const std::vector<MRHandle>&) override
+    {
+        state_->unbindCalls.emplace_back(config_.asuId);
         return Status::OK();
     }
 
@@ -1163,6 +1170,45 @@ TEST(AsuClientImplTest, MemoryRegister_BindFailureIncludesAsuContext)
     EXPECT_NE(status.message.find("region_count=1"), std::string::npos);
 }
 
+TEST(AsuClientImplTest, MemoryRegister_BindFailureRollsBackFollowersThenOwner)
+{
+    class FailingBindTransport final : public FakeTransport {
+    public:
+        explicit FailingBindTransport(std::shared_ptr<TestState> state)
+            : FakeTransport(state), state_(std::move(state))
+        {
+        }
+
+        Status BindRegisteredRegions(const std::vector<RegisteredMemory>&,
+                                     std::vector<RegisterResult>&) override
+        {
+            state_->bindCalls.emplace_back(30);
+            return Status::Error(StatusCode::CONNECTION_ERROR, "fake bind failure");
+        }
+
+    private:
+        std::shared_ptr<TestState> state_;
+    };
+
+    auto state = std::make_shared<TestState>();
+    auto client = CreateAsuClient([state] {
+        ++state->createdTransports;
+        if (state->createdTransports == 3) {
+            return std::unique_ptr<AsuTransport>(new FailingBindTransport(state));
+        }
+        return std::unique_ptr<AsuTransport>(new FakeTransport(state));
+    });
+    ASSERT_TRUE(client->Init(MakeConfig({10, 20, 30})).ok());
+
+    std::vector<RegisterResult> results;
+    auto status = client->RegisterRegions({MemoryRegion{}}, results);
+
+    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
+    EXPECT_EQ(state->bindCalls, std::vector<AsuId>({20, 30}));
+    EXPECT_EQ(state->unbindCalls, std::vector<AsuId>({20}));
+    EXPECT_EQ(state->unregisterCalls, std::vector<AsuId>({10}));
+}
+
 TEST(AsuClientImplTest, MemoryRegister_SuccessfulBindWithMismatchedResultCountFails)
 {
     class MismatchedBindTransport final : public FakeTransport {
@@ -1311,6 +1357,24 @@ TEST(AsuClientImplTest, MemoryRegister_UnregisterRemovesCachedResourceBeforeFutu
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
     EXPECT_TRUE(state->bindCalls.empty());
+}
+
+TEST(AsuClientImplTest, MemoryRegister_UnregisterUnbindsFollowersThenUnregistersFirstTransport)
+{
+    auto state = std::make_shared<TestState>();
+    auto client = CreateAsuClient(MakeFactory(state));
+    ASSERT_TRUE(client->Init(MakeConfig({30, 10, 20})).ok());
+
+    std::vector<RegisterResult> results;
+    auto status = client->RegisterRegions({MemoryRegion{}}, results);
+    ASSERT_TRUE(status.ok()) << status.message;
+    ASSERT_EQ(results.size(), std::size_t{1});
+
+    status = client->UnregisterRegions({results[0].handle});
+
+    EXPECT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(state->unbindCalls, std::vector<AsuId>({30, 20}));
+    EXPECT_EQ(state->unregisterCalls, std::vector<AsuId>({10}));
 }
 
 TEST(AsuClientImplTest, Task_CheckRemovesTaskAfterCompletion)

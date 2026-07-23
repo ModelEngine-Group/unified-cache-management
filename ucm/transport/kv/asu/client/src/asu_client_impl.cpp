@@ -355,6 +355,7 @@ Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regio
     }
 
     Status finalStatus = Status::OK();
+    std::vector<std::pair<AsuId, std::shared_ptr<AsuTransport>>> boundTransports;
     for (std::size_t asuIndex = 1; asuIndex < snapshot->asuIds.size(); ++asuIndex) {
         auto iter = snapshot->transports.find(snapshot->asuIds[asuIndex]);
         if (iter == snapshot->transports.end()) {
@@ -375,24 +376,44 @@ Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regio
                             "asuIndex=" + std::to_string(asuIndex) +
                                 " asuId=" + std::to_string(snapshot->asuIds[asuIndex]) +
                                 " region_count=" + std::to_string(registeredRegions.size()));
-        } else if (status.ok() && childResults.size() != registeredRegions.size() &&
-                   finalStatus.ok()) {
-            finalStatus =
-                WithContext(PartialFailed("one or more asu region bindings failed"),
-                            "asuIndex=" + std::to_string(asuIndex) +
-                                " asuId=" + std::to_string(snapshot->asuIds[asuIndex]) +
-                                " region_count=" + std::to_string(registeredRegions.size()) +
-                                " result_count=" + std::to_string(childResults.size()));
+        } else if (status.ok()) {
+            boundTransports.emplace_back(snapshot->asuIds[asuIndex], iter->second);
+            if (childResults.size() != registeredRegions.size() && finalStatus.ok()) {
+                finalStatus =
+                    WithContext(PartialFailed("one or more asu region bindings failed"),
+                                "asuIndex=" + std::to_string(asuIndex) +
+                                    " asuId=" + std::to_string(snapshot->asuIds[asuIndex]) +
+                                    " region_count=" + std::to_string(registeredRegions.size()) +
+                                    " result_count=" + std::to_string(childResults.size()));
+            }
         }
     }
 
-    if (finalStatus.ok()) {
-        std::lock_guard<std::mutex> lock{mutex_};
-        for (std::size_t index = 0; index < regions.size(); ++index) {
-            registeredResources_.emplace_back(RegisteredResource{regions[index], results[index]});
+    if (!finalStatus.ok()) {
+        std::vector<MRHandle> handles;
+        handles.reserve(results.size());
+        for (const auto& result : results) { handles.emplace_back(result.handle); }
+
+        for (auto iter = boundTransports.rbegin(); iter != boundTransports.rend(); ++iter) {
+            auto rollbackStatus = iter->second->UnbindRegisteredRegions(handles);
+            if (!rollbackStatus.ok()) {
+                UC_ERROR("Rollback bound ASU regions failed, asuId={}: {}", iter->first,
+                         rollbackStatus.message);
+            }
         }
+        auto rollbackStatus = firstIter->second->UnregisterRegions(handles);
+        if (!rollbackStatus.ok()) {
+            UC_ERROR("Rollback owner ASU regions failed, asuId={}: {}", snapshot->asuIds.front(),
+                     rollbackStatus.message);
+        }
+        return finalStatus;
     }
-    return finalStatus;
+
+    std::lock_guard<std::mutex> lock{mutex_};
+    for (std::size_t index = 0; index < regions.size(); ++index) {
+        registeredResources_.emplace_back(RegisteredResource{regions[index], results[index]});
+    }
+    return Status::OK();
 }
 
 Status AsuClientImpl::SubmitAsync(ClientOpType opType, const std::vector<KVBuffer>& entries,
@@ -796,13 +817,41 @@ Status AsuClientImpl::UnregisterRegionsOnce(const std::vector<MRHandle>& handles
     if (!snapshot) { return NotInitialized(); }
 
     Status finalStatus = Status::OK();
-    for (const auto& item : snapshot->transports) {
-        auto status = item.second->UnregisterRegions(handles);
+    for (std::size_t asuIndex = snapshot->asuIds.size(); asuIndex > 1; --asuIndex) {
+        const auto id = snapshot->asuIds[asuIndex - 1];
+        const auto iter = snapshot->transports.find(id);
+        if (iter == snapshot->transports.end()) {
+            if (finalStatus.ok()) {
+                finalStatus = WithContext(
+                    Status::Error(StatusCode::NOT_FOUND, "bound asu transport not found"),
+                    "asuId=" + std::to_string(id));
+            }
+            continue;
+        }
+        auto status = iter->second->UnbindRegisteredRegions(handles);
         if (!status.ok() && finalStatus.ok()) {
             MarkRefreshIfNeeded(status, needRefresh);
-            finalStatus =
-                WithContext(status, "asuId=" + std::to_string(item.first) +
-                                        " handle_count=" + std::to_string(handles.size()));
+            finalStatus = WithContext(status, "asuId=" + std::to_string(id) + " handle_count=" +
+                                                  std::to_string(handles.size()));
+        }
+    }
+
+    if (!snapshot->asuIds.empty()) {
+        const auto id = snapshot->asuIds.front();
+        const auto iter = snapshot->transports.find(id);
+        if (iter == snapshot->transports.end()) {
+            if (finalStatus.ok()) {
+                finalStatus = WithContext(
+                    Status::Error(StatusCode::NOT_FOUND, "first asu transport not found"),
+                    "asuId=" + std::to_string(id));
+            }
+        } else {
+            auto status = iter->second->UnregisterRegions(handles);
+            if (!status.ok() && finalStatus.ok()) {
+                MarkRefreshIfNeeded(status, needRefresh);
+                finalStatus = WithContext(status, "asuId=" + std::to_string(id) + " handle_count=" +
+                                                      std::to_string(handles.size()));
+            }
         }
     }
     if (finalStatus.ok()) {
@@ -1007,8 +1056,11 @@ Status AsuClientImpl::ShutdownSnapshotTransports(const std::shared_ptr<ViewSnaps
 {
     if (!snapshot) { return Status::OK(); }
     Status finalStatus = Status::OK();
-    for (auto& item : snapshot->transports) {
-        auto status = item.second->Shutdown();
+    for (std::size_t asuIndex = snapshot->asuIds.size(); asuIndex > 0; --asuIndex) {
+        const auto id = snapshot->asuIds[asuIndex - 1];
+        const auto iter = snapshot->transports.find(id);
+        if (iter == snapshot->transports.end()) { continue; }
+        auto status = iter->second->Shutdown();
         if (!status.ok() && finalStatus.ok()) { finalStatus = status; }
     }
     return finalStatus;

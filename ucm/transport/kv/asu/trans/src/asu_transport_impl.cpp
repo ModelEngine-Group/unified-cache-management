@@ -207,6 +207,19 @@ Status AsuTransportImpl::Shutdown()
     }
     {
         std::lock_guard<std::mutex> lock(registeredRegionsMu_);
+        std::vector<MRHandle> boundHandles;
+        boundHandles.reserve(registeredRegions_.size());
+        for (const auto& item : registeredRegions_) {
+            if (ownedRegisteredRegionHandles_.find(item.first) ==
+                ownedRegisteredRegionHandles_.end()) {
+                boundHandles.push_back(item.first);
+            }
+        }
+        if (!boundHandles.empty() && transProvider_) {
+            const auto status = UnbindRegionHandles(boundHandles);
+            if (!status.ok() && finalStatus.ok()) { finalStatus = status; }
+        }
+
         std::vector<MRHandle> handles;
         handles.reserve(ownedRegisteredRegionHandles_.size());
         for (auto handle : ownedRegisteredRegionHandles_) { handles.push_back(handle); }
@@ -419,11 +432,98 @@ Status AsuTransportImpl::BindRegisteredRegions(const std::vector<RegisteredMemor
     results.reserve(regions.size());
 
     std::lock_guard<std::mutex> lock(registeredRegionsMu_);
-    for (const auto& region : regions) {
-        registeredRegions_[region.handle] = region;
-        results.emplace_back(RegisterResult{Status::OK(), region.handle, region.tokenId});
+    const auto rollbackBoundMemory = [this](const std::vector<MRHandle>& handles) {
+        if (handles.empty()) { return; }
+
+        std::vector<TransProvider::UnbindMemoryDesc> unbindDescs;
+        unbindDescs.reserve(handles.size());
+        for (auto handle : handles) { unbindDescs.push_back({handle}); }
+
+        const auto statuses = transProvider_->UnbindMemory(unbindDescs);
+        if (statuses.size() != handles.size()) {
+            UC_ERROR("Rollback bound memory result count mismatch, handle_count={} result_count={}",
+                     handles.size(), statuses.size());
+        }
+        for (std::size_t index = 0; index < std::min(handles.size(), statuses.size()); ++index) {
+            if (!statuses[index].ok()) {
+                UC_ERROR("Rollback bound memory failed, handle={} code={} message={}",
+                         handles[index], static_cast<int>(statuses[index].code),
+                         statuses[index].message);
+            }
+        }
+    };
+
+    std::vector<MRHandle> localHandles;
+    auto status = transProvider_->BindMemory(regions, localHandles);
+    if (!status.ok()) {
+        rollbackBoundMemory(localHandles);
+        return status;
+    }
+    if (localHandles.size() != regions.size()) {
+        rollbackBoundMemory(localHandles);
+        return Status::Error(StatusCode::INTERNAL_ERROR,
+                             "bind result count does not match region count");
+    }
+
+    std::vector<std::uint32_t> tokenIds(regions.size());
+    for (std::size_t index = 0; index < localHandles.size(); ++index) {
+        status = transProvider_->GetMemTokenId(localHandles[index], tokenIds[index]);
+        if (status.ok()) { continue; }
+
+        rollbackBoundMemory(localHandles);
+        return status;
+    }
+
+    for (std::size_t index = 0; index < regions.size(); ++index) {
+        auto localRegion = regions[index];
+        localRegion.handle = localHandles[index];
+        localRegion.tokenId = tokenIds[index];
+        registeredRegions_[regions[index].handle] = localRegion;
+        results.emplace_back(
+            RegisterResult{Status::OK(), regions[index].handle, regions[index].tokenId});
     }
     return Status::OK();
+}
+
+Status AsuTransportImpl::UnbindRegisteredRegions(const std::vector<MRHandle>& handles)
+{
+    std::lock_guard<std::mutex> lock(registeredRegionsMu_);
+    return UnbindRegionHandles(handles);
+}
+
+Status AsuTransportImpl::UnbindRegionHandles(const std::vector<MRHandle>& handles)
+{
+    std::vector<MRHandle> canonicalHandles;
+    std::vector<TransProvider::UnbindMemoryDesc> unbindDescs;
+    canonicalHandles.reserve(handles.size());
+    unbindDescs.reserve(handles.size());
+    for (auto handle : handles) {
+        const auto iter = registeredRegions_.find(handle);
+        if (iter == registeredRegions_.end() ||
+            ownedRegisteredRegionHandles_.find(handle) != ownedRegisteredRegionHandles_.end()) {
+            continue;
+        }
+        canonicalHandles.push_back(handle);
+        unbindDescs.push_back({iter->second.handle});
+    }
+    if (unbindDescs.empty()) { return Status::OK(); }
+
+    const auto statuses = transProvider_->UnbindMemory(unbindDescs);
+    Status failure = statuses.size() == canonicalHandles.size()
+                         ? Status::OK()
+                         : Status::Error(StatusCode::INTERNAL_ERROR,
+                                         "unbind result count does not match handle count");
+    for (std::size_t index = 0; index < canonicalHandles.size(); ++index) {
+        if (index < statuses.size() && statuses[index].ok()) {
+            registeredRegions_.erase(canonicalHandles[index]);
+        } else if (failure.ok()) {
+            failure = index < statuses.size()
+                          ? statuses[index]
+                          : Status::Error(StatusCode::INTERNAL_ERROR,
+                                          "unbind result count does not match handle count");
+        }
+    }
+    return failure;
 }
 
 Status AsuTransportImpl::UnregisterRegions(const std::vector<MRHandle>& handles)

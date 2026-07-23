@@ -88,6 +88,8 @@ public:
     Status BindRegisteredRegions(const std::vector<RegisteredMemory>& regions,
                                  std::vector<RegisterResult>& results) override;
 
+    Status UnbindRegisteredRegions(const std::vector<MRHandle>& handles) override;
+
     Status UnregisterRegions(const std::vector<MRHandle>& handles) override;
 
 private:
@@ -121,6 +123,7 @@ private:
     void BuildResult(const TransportTaskContext& ctx, TaskResult& result);
 
     void SetTransProvider(std::unique_ptr<TransProvider> provider);
+    Status UnbindRegionHandles(const std::vector<MRHandle>& handles);
     Status UnregisterOwnedRegionHandles(const std::vector<MRHandle>& handles);
 
     TransportConfig config_;

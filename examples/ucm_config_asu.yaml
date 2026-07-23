@@ -15,6 +15,10 @@ ucm_connectors:
       # Non-FAWA models use one ASU namespace. For DeepSeek V4 / FAWA,
       # replace this with: kv_ns_ids: [100, 101]  # [FA, WA]
       kv_ns_ids: [100]
+      # Ports map to asu_ids/asu_ips by index.
+      asu_ips: ["127.0.0.1", "127.0.0.1"]
+      asu_port: [19001, 19002]
+      device_id: 0
 
       # ASU client routing. Keep the default close to kv-test's fake_backend config.
       asu_router_type: "RING_HASH"
