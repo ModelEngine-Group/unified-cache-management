@@ -40,6 +40,7 @@ private:
 public:
     Status Setup(const Config& config);
     std::string DataFilePath(const Detail::BlockId& blockId, bool activated) const;
+    std::vector<std::string> HealthCheckPaths(const Detail::BlockId& blockId, bool activated) const;
     Status CommitFile(const Detail::BlockId& blockId, bool success) const;
     Status RemoveFile(const Detail::BlockId& blockId) const;
     std::vector<std::string> SampleShards(double sampleRatio) const;
@@ -53,6 +54,8 @@ private:
     Status AddFirstStorageBackend(const std::string& path);
     Status AddSecondaryStorageBackend(const std::string& path);
     std::string StorageBackend(const Detail::BlockId& blockId) const;
+    std::string DataFilePath(const std::string& backend, const Detail::BlockId& blockId,
+                             bool activated) const;
     std::string FileShardName(const std::string& fileName) const
     {
         return fileName.substr(0, dataDirShardBytes_);

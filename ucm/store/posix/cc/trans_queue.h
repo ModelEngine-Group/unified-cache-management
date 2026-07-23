@@ -40,7 +40,7 @@ class TransQueue {
 
 private:
     struct IoUnit {
-        Detail::TaskHandle owner;
+        TaskPtr task;
         Detail::Shard shard;
         std::shared_ptr<Latch> waiter;
         bool firstIo{false};

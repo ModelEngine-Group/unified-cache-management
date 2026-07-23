@@ -21,6 +21,8 @@ ucm_connectors:
       # This requires an RDMA-capable NIC, a working GPUDirect RDMA environment,
       # and building UCM with ENABLE_GDR=1.
       use_gdr: false
+      store_health:
+        enabled: true
 
 # When you use UcmNfsStore, you should set enable_event_sync to false.
 enable_event_sync: true

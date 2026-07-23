@@ -38,6 +38,8 @@ public:
             auto keyObj = item.first;
             auto valObj = item.second;
             std::string key = pybind11::cast<std::string>(keyObj);
+            // PipelineStore consumes this section; concrete stores never receive it.
+            if (key == "store_health") { continue; }
             if (TryParseScalar(dictionary, key, valObj)) { continue; }
             if (pybind11::isinstance<pybind11::list>(valObj) &&
                 TryParseList(dictionary, key, pybind11::cast<pybind11::list>(valObj))) {

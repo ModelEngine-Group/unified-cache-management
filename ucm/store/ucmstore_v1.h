@@ -108,6 +108,13 @@ public:
     virtual void Prefetch(const Detail::BlockId* blocks, size_t num) = 0;
 
     /**
+     * @brief Check whether this store's own read/write path is healthy.
+     *
+     * Overrides must use bounded I/O and clean up any temporary data they create.
+     */
+    virtual Status CheckHealth() { return Status::OK(); }
+
+    /**
      * @brief Start an asynchronous load (storage → device) transfer.
      *
      * @param task Description of shards to be loaded.

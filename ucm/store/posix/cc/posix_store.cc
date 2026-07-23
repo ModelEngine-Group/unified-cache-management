@@ -21,19 +21,49 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <array>
+#include <cstdint>
 #include <fmt/ranges.h>
 #include "logger/logger.h"
 #include "metrics_api.h"
+#include "posix_file.h"
 #include "space_manager.h"
 #include "trans_manager.h"
+#include "type/random_block_id.h"
 #include "ucmstore_v1.h"
 
 namespace UC::PosixStore {
 
 class PosixStore : public StoreV1 {
+    static constexpr size_t kHealthIoSize = 4096;
+
     SpaceManager spaceMgr_;
     TransManager transMgr_;
     bool transEnable_{false};
+    bool ioDirect_{false};
+    const Detail::BlockId healthBlockId_{Detail::RandomBlockId()};
+
+    Status CheckPathHealth(const std::string& path)
+    {
+        alignas(kHealthIoSize) std::array<uint8_t, kHealthIoSize> expected{};
+        alignas(kHealthIoSize) std::array<uint8_t, kHealthIoSize> actual{};
+        expected.fill(0x5a);
+
+        PosixFile file{path};
+        auto flags = PosixFile::OpenFlag::CREATE | PosixFile::OpenFlag::READ_WRITE;
+        if (ioDirect_) { flags |= PosixFile::OpenFlag::DIRECT; }
+        auto status = file.Open(flags);
+        if (status.Failure()) { return status; }
+        status = file.Write(expected.data(), expected.size(), 0);
+        if (status.Success() && !ioDirect_) { status = file.Sync(); }
+        if (status.Success()) { status = file.Read(actual.data(), actual.size(), 0); }
+        file.Close();
+        auto cleanup = file.Remove();
+        if (status.Success() && actual != expected) {
+            status = Status::Error("health data mismatch");
+        }
+        return status.Failure() ? status : cleanup;
+    }
 
 public:
     Status Setup(const Detail::Dictionary& inConfig) override
@@ -47,6 +77,7 @@ public:
         s = spaceMgr_.Setup(config);
         if (s.Failure()) [[unlikely]] { return s; }
         transEnable_ = config.deviceId >= 0;
+        ioDirect_ = config.ioDirect;
         if (transEnable_) {
             s = transMgr_.Setup(config, spaceMgr_.GetLayout());
             if (s.Failure()) [[unlikely]] { return s; }
@@ -82,6 +113,15 @@ public:
     void Prefetch(const Detail::BlockId* blocks, size_t num) override
     {
         spaceMgr_.Prefetch(blocks, num);
+    }
+    Status CheckHealth() override
+    {
+        auto result = Status::OK();
+        for (const auto& path : spaceMgr_.GetLayout()->HealthCheckPaths(healthBlockId_, true)) {
+            auto status = CheckPathHealth(path);
+            if (result.Success() && status.Failure()) { result = status; }
+        }
+        return result;
     }
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {

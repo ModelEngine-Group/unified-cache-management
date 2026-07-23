@@ -24,13 +24,26 @@
 #include <list>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <stdexcept>
 #include "config_parser.h"
+#include "health_breaker_store.h"
 #include "library_loader.h"
+#include "store_health_config.h"
 #include "ucmstore_v1.h"
 
 namespace py = pybind11;
 
 namespace UC::PipelineStore {
+
+class StoreNotFoundError : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+class StoreUnhealthyError : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
 
 class PipelineStore {
     using StoreLoader = LibraryLoader<StoreV1>;
@@ -64,11 +77,44 @@ class PipelineStore {
 
     std::list<StoreLoader> loaders_;
     std::list<std::shared_ptr<StoreV1>> stores_;
+    std::list<std::shared_ptr<HealthBreakerStore>> healthBreakerStores_;
+    StoreV1* entry_{nullptr};
+    StoreHealthConfig healthConfig_;
 
-    StoreV1* StoreBack() const { return !stores_.empty() ? stores_.back().get() : nullptr; }
+    StoreV1* StoreBack() const { return entry_; }
+    [[noreturn]] static void ThrowError(const Status& s)
+    {
+        if (s == Status::NotFound()) { throw StoreNotFoundError{s.ToString()}; }
+        if (s == Status::StoreUnhealthy()) { throw StoreUnhealthyError{s.ToString()}; }
+        throw std::runtime_error{s.ToString()};
+    }
     static void ThrowIfFailed(const Status& s)
     {
-        if (s.Failure()) [[unlikely]] { throw std::runtime_error{s.ToString()}; }
+        if (s.Success()) { return; }
+        ThrowError(s);
+    }
+    static StoreHealthConfig ParseHealthConfig(const py::dict& config)
+    {
+        StoreHealthConfig result;
+        auto readSeconds = [&config](const char* name, auto defaultValue) {
+            if (!config.contains(name)) { return defaultValue; }
+            auto seconds = py::cast<double>(config[name]);
+            return std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::duration<double>(seconds));
+        };
+        if (config.contains("enabled")) { result.enabled = py::cast<bool>(config["enabled"]); }
+        result.healthCheckInterval =
+            readSeconds("health_check_interval_s", result.healthCheckInterval);
+        result.healthCheckTimeout =
+            readSeconds("health_check_timeout_s", result.healthCheckTimeout);
+        if (config.contains("health_window_size")) {
+            result.healthWindowSize = py::cast<size_t>(config["health_window_size"]);
+        }
+        if (config.contains("failure_threshold")) {
+            result.failureThreshold = py::cast<size_t>(config["failure_threshold"]);
+        }
+        ThrowIfFailed(result.Validate());
+        return result;
     }
     static Detail::TaskDesc MakeTaskDesc(const pybind11::buffer& ids,
                                          const pybind11::buffer& indexes,
@@ -94,14 +140,21 @@ class PipelineStore {
     }
 
 public:
+    explicit PipelineStore(const py::dict& healthConfig = {})
+        : healthConfig_{ParseHealthConfig(healthConfig)}
+    {
+    }
     ~PipelineStore()
     {
+        for (auto& healthBreakerStore : healthBreakerStores_) { healthBreakerStore->Stop(); }
+        healthBreakerStores_.clear();
         while (!stores_.empty()) { stores_.pop_back(); }
     }
     void Stack(const std::string& name, const std::string& path, const py::dict& dict)
     {
+        py::dict storeDict(dict);
         Detail::Dictionary config;
-        ThrowIfFailed(ConfigParser::Parse(config, dict));
+        ThrowIfFailed(ConfigParser::Parse(config, storeDict));
         config.Set<StoreV1*>("store_backend", StoreBack());
         StoreLoader loader{path, "Make" + name + "Store"};
         ThrowIfFailed(loader.LoadLibrary());
@@ -110,6 +163,16 @@ public:
         ThrowIfFailed(store->Setup(config));
         loaders_.push_back(std::move(loader));
         stores_.push_back(std::move(store));
+        entry_ = stores_.back().get();
+        if (healthConfig_.enabled) {
+            const auto storeId =
+                "pipeline/" + std::to_string(stores_.size() - 1) + ":" + stores_.back()->Readme();
+            auto healthBreakerStore =
+                std::make_shared<HealthBreakerStore>(stores_.back().get(), storeId, healthConfig_);
+            ThrowIfFailed(healthBreakerStore->Start());
+            healthBreakerStores_.push_back(std::move(healthBreakerStore));
+            entry_ = healthBreakerStores_.back().get();
+        }
     }
     uintptr_t Self() const { return (uintptr_t)(void*)StoreBack(); }
     pybind11::bytes Lookup(const pybind11::buffer& ids)
@@ -120,14 +183,14 @@ public:
             auto& v = res.Value();
             return pybind11::bytes(reinterpret_cast<const char*>(v.data()), v.size());
         }
-        throw std::runtime_error{res.Error().ToString()};
+        ThrowError(res.Error());
     }
     ssize_t LookupOnPrefix(const pybind11::buffer& ids)
     {
         BufferArrayView<Detail::BlockId> idArr{ids};
         auto res = StoreBack()->LookupOnPrefix(idArr.data, idArr.num);
         if (res) { return res.Value(); }
-        throw std::runtime_error{res.Error().ToString()};
+        ThrowError(res.Error());
     }
     void Prefetch(const pybind11::buffer& ids)
     {
@@ -141,7 +204,7 @@ public:
         desc.brief = "Load";
         auto res = StoreBack()->Load(std::move(desc));
         if (res) { return res.Value(); }
-        throw std::runtime_error{res.Error().ToString()};
+        ThrowError(res.Error());
     }
     Detail::TaskHandle Dump(const pybind11::buffer& ids, const pybind11::buffer& indexes,
                             const pybind11::buffer& addrs, uintptr_t prerequisite_handle = 0)
@@ -151,13 +214,13 @@ public:
         desc.prerequisiteHandle = prerequisite_handle;
         auto res = StoreBack()->Dump(desc);
         if (res) { return res.Value(); }
-        throw std::runtime_error{res.Error().ToString()};
+        ThrowError(res.Error());
     }
     bool Check(Detail::TaskHandle taskId)
     {
         auto res = StoreBack()->Check(taskId);
         if (res) { return res.Value(); }
-        throw std::runtime_error{res.Error().ToString()};
+        ThrowError(res.Error());
     }
     void Wait(Detail::TaskHandle taskId)
     {
@@ -179,8 +242,13 @@ PYBIND11_MODULE(ucmpipelinestore, m)
     m.attr("version") = UCM_PROJECT_VERSION;
     m.attr("commit_id") = UCM_COMMIT_ID;
     m.attr("build_type") = UCM_BUILD_TYPE;
+    auto errors = py::module_::import("ucm.store.pipeline.errors");
+    py::register_exception<StoreNotFoundError>(m, "StoreNotFoundError",
+                                               errors.attr("StoreNotFoundError").ptr());
+    py::register_exception<StoreUnhealthyError>(m, "StoreUnhealthyError",
+                                                errors.attr("StoreUnhealthyError").ptr());
     auto s = py::class_<PipelineStore, std::unique_ptr<PipelineStore>>(m, "PipelineStore");
-    s.def(py::init<>());
+    s.def(py::init<const py::dict&>(), py::arg("store_health") = py::dict());
     s.def("Stack", &PipelineStore::Stack);
     s.def("Self", &PipelineStore::Self);
     s.def("Lookup", &PipelineStore::Lookup, py::arg("ids").noconvert());

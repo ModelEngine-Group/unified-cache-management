@@ -22,6 +22,8 @@ ucm_connectors:
       io_direct: true
       posix_io_engine: "aio"
       share_buffer_capacity_gb: 64
+      store_health:
+        enabled: true
 
 # prerequisiteHandle requires event sync to ensure NPU compute finishes
 # before Mooncake reads device memory for dump.

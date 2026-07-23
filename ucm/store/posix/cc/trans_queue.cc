@@ -62,7 +62,8 @@ Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const Spac
 void TransQueue::OnIoUnitTimeout(IoUnit& ios)
 {
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_io_timeout_total"), 1.0);
-    if (!failureSet_->Contains(ios.owner)) { failureSet_->Insert(ios.owner); }
+    ios.task->Fail(Status::Timeout());
+    if (!failureSet_->Contains(ios.task->id)) { failureSet_->Insert(ios.task->id); }
     ios.waiter->Done();
 }
 
@@ -70,9 +71,7 @@ void TransQueue::Push(TaskPtr task, WaiterPtr waiter)
 {
     waiter->Set(task->desc.size());
     std::list<IoUnit> ios;
-    for (auto&& shard : task->desc) {
-        ios.emplace_back<IoUnit>({task->id, std::move(shard), waiter});
-    }
+    for (auto&& shard : task->desc) { ios.emplace_back<IoUnit>({task, std::move(shard), waiter}); }
     ios.front().firstIo = true;
     if (task->type == TransTask::Type::DUMP) {
         dumpPool_.Push(ios);
@@ -86,25 +85,32 @@ void TransQueue::Cancel(TaskPtr task)
     auto& pool = task->type == TransTask::Type::DUMP ? dumpPool_ : loadPool_;
     const auto tid = task->id;
     pool.TraverseWaitQueue(
-        [this, tid](IoUnit& ios) { return ios.owner == tid || ios.waiter->IsTimeout(timeoutMs_); },
+        [this, tid](IoUnit& ios) {
+            return ios.task->id == tid || ios.waiter->IsTimeout(timeoutMs_);
+        },
         [this](IoUnit& ios) { OnIoUnitTimeout(ios); },
-        [this, tid](IoUnit& ios) { return ios.owner > tid && !ios.waiter->IsTimeout(timeoutMs_); });
+        [this, tid](IoUnit& ios) {
+            return ios.task->id > tid && !ios.waiter->IsTimeout(timeoutMs_);
+        });
 }
 
 void TransQueue::LoadWorker(IoUnit& ios)
 {
     if (ios.firstIo) {
         auto wait = NowTime::Now() - ios.waiter->startTp;
-        UC_DEBUG("Posix load task({}) start running, wait {:.3f}ms.", ios.owner, wait * 1e3);
+        UC_DEBUG("Posix load task({}) start running, wait {:.3f}ms.", ios.task->id, wait * 1e3);
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_load_queue_wait_duration_ms"),
                                  wait * 1e3);
     }
-    if (failureSet_->Contains(ios.owner)) {
+    if (failureSet_->Contains(ios.task->id)) {
         ios.waiter->Done();
         return;
     }
     auto s = S2H(ios);
-    if (s.Failure()) [[unlikely]] { failureSet_->Insert(ios.owner); }
+    if (s.Failure()) [[unlikely]] {
+        ios.task->Fail(s);
+        failureSet_->Insert(ios.task->id);
+    }
     ios.waiter->Done();
 }
 
@@ -112,11 +118,11 @@ void TransQueue::DumpWorker(IoUnit& ios)
 {
     if (ios.firstIo) {
         auto wait = NowTime::Now() - ios.waiter->startTp;
-        UC_DEBUG("Posix dump task({}) start running, wait {:.3f}ms.", ios.owner, wait * 1e3);
+        UC_DEBUG("Posix dump task({}) start running, wait {:.3f}ms.", ios.task->id, wait * 1e3);
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_dump_queue_wait_duration_ms"),
                                  wait * 1e3);
     }
-    if (failureSet_->Contains(ios.owner)) {
+    if (failureSet_->Contains(ios.task->id)) {
         ios.waiter->Done();
         return;
     }
@@ -124,7 +130,10 @@ void TransQueue::DumpWorker(IoUnit& ios)
     if (ios.shard.index + 1 == nShardPerBlock_) {
         layout_->CommitFile(ios.shard.owner, s.Success());
     }
-    if (s.Failure()) [[unlikely]] { failureSet_->Insert(ios.owner); }
+    if (s.Failure()) [[unlikely]] {
+        ios.task->Fail(s);
+        failureSet_->Insert(ios.task->id);
+    }
     ios.waiter->Done();
 }
 

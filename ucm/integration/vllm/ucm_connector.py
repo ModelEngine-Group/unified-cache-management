@@ -38,6 +38,7 @@ from ucm.integration.vllm.metrics import (
     UCMConnectorStats,
     UCMPromMetrics,
 )
+from ucm.integration.vllm.rank_consistency import RankConsistencyManager
 from ucm.logger import init_logger
 from ucm.metrics_config import (
     MULTIPROC_CONSUMER,
@@ -445,21 +446,37 @@ class RequestHasher:
 
 @dataclass
 class UCMWorkerMetadata(KVConnectorWorkerMetadata):
-    """Worker -> Scheduler metadata for tracking failed load requests.
+    """Worker-to-scheduler metadata for load failures and Dump success."""
 
-    This class stores and aggregates IDs of load requests that failed on the worker.
-    """
-
+    is_mla: bool = False
     load_failed_reqs: set[str] = field(default_factory=set)
+    missing_reqs: set[str] = field(default_factory=set)
+    missing_blocks: set[bytes] = field(default_factory=set)
+    dump_succeeded_blocks: set[bytes] = field(default_factory=set)
 
     def mark_failed(self, req_id: str) -> None:
         """Record a failed load request from this worker."""
         self.load_failed_reqs.add(req_id)
 
+    def mark_missing(self, req_id: str, rank0_block_ids: list[bytes]) -> None:
+        self.missing_reqs.add(req_id)
+        self.missing_blocks.update(rank0_block_ids)
+
     def aggregate(self, other: Any) -> Any:
         assert isinstance(other, UCMWorkerMetadata)
+        assert self.is_mla == other.is_mla
 
         self.load_failed_reqs.update(other.load_failed_reqs)
+        self.missing_reqs.update(other.missing_reqs)
+        self.missing_blocks.update(other.missing_blocks)
+        # TODO: Support PP-aware Dump success aggregation.
+        # for mla, blocks can only be dumped by 1 rank, for FAWA, the dump is distributed across ranks
+        # for non-mla, blocks should be dumped by all ranks
+        # so for mla, aggregation logic is union, for non-mla, aggregation is intersection
+        if self.is_mla:
+            self.dump_succeeded_blocks.update(other.dump_succeeded_blocks)
+        else:
+            self.dump_succeeded_blocks.intersection_update(other.dump_succeeded_blocks)
         return self
 
 
@@ -467,7 +484,15 @@ class UCMDirectConnector(KVConnectorBase_V1):
     """
     This connector means synchronize:
     load -> forward -> save
+
+    Store operations that participate in rank consistency must use
+    RankConsistencyManager. It owns StoreNotFoundError classification and
+    cross-rank consistency metadata.
     """
+
+    @staticmethod
+    def _consistency_manager_enabled(launch_config: dict, is_mla: bool) -> bool:
+        return launch_config.get("use_consistency_manager", not is_mla)
 
     def __init__(
         self,
@@ -555,7 +580,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 vllm_config,
                 self.tp_rank % self.tp_size,
             )
-            self._connector_worker_meta = UCMWorkerMetadata()
+            self._connector_worker_meta = UCMWorkerMetadata(is_mla=self.is_mla)
+
+        self._rank_consistency = RankConsistencyManager(
+            is_scheduler=role == KVConnectorRole.SCHEDULER,
+            use_consistency_manager=self._consistency_manager_enabled(
+                self.launch_config, self.is_mla
+            ),
+        )
 
         self.persist_token_threshold = self.launch_config.get(
             "persist_token_threshold", 0
@@ -568,6 +600,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.cp_world_size = 1
         self.hash_block_size = self.block_size
         self.block_size *= self.cp_world_size
+
+    def get_block_size(self) -> int:
+        return self.block_size
 
     def _get_full_hit_recompute_tokens(self) -> int:
         return 1
@@ -800,7 +835,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if external_block_ids:
             try:
                 external_hit_hashes = (
-                    self.store.lookup_on_prefix(external_block_ids) + 1
+                    self._rank_consistency.lookup_on_prefix(
+                        self.store, external_block_ids
+                    )
+                    + 1
                 )
                 self._prefetch_other_rank_hashes(
                     external_block_ids[:external_hit_hashes]
@@ -1027,19 +1065,28 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     num_loaded_request -= 1
                     continue
                 num_loaded_block -= len(request.load_block_ids[0]) - len(ucm_block_ids)
+            store_block_ids = ucm_block_ids
             if self.tp_rank != 0 and not self.is_mla:
-                for i, ucm_block_id in enumerate(ucm_block_ids):
-                    ucm_block_ids[i] = self.request_hasher(ucm_block_id)
+                store_block_ids = [
+                    self.request_hasher(block_id) for block_id in ucm_block_ids
+                ]
             try:
                 total_ptrs = self.kv_cache_layout.extract_block_addrs(vllm_block_ids)
                 total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
                 shard_indexs = [0] * len(ucm_block_ids)
-                task = self.store.load_data(ucm_block_ids, shard_indexs, total_ptrs)
+                task = self._rank_consistency.submit_load(
+                    self.store,
+                    {request_id: ucm_block_ids},
+                    store_block_ids,
+                    shard_indexs,
+                    total_ptrs,
+                )
                 request_to_task[request_id] = task
                 request_to_load_blocks[request_id] = len(ucm_block_ids)
             except Exception as e:
                 logger.error(
-                    f"request {request_id} submit load task error. {type(e).__name__}: {e}"
+                    f"request {request_id} submit load task error. "
+                    f"{type(e).__name__}: {e}"
                 )
                 self._record_load_error(
                     "connector_load_submit_errors_total",
@@ -1051,10 +1098,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         for request_id, task in request_to_task.items():
             try:
-                self.store.wait(task)
+                self._rank_consistency.wait_load(task)
             except Exception as e:
                 logger.error(
-                    f"request {request_id} wait load task error. {type(e).__name__}: {e}"
+                    f"request {request_id} wait load task error. "
+                    f"{type(e).__name__}: {e}"
                 )
                 self._record_load_error(
                     "connector_load_wait_errors_total",
@@ -1103,10 +1151,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def _wait_pending_dump_task(self, pending_dump_task: PendingDumpTask) -> None:
         wait_start_ms = time.perf_counter() * 1000
         try:
-            self.store.wait(pending_dump_task.task)
-        except Exception:
-            raise
-        else:
+            self._rank_consistency.wait_dump(pending_dump_task.task)
             wait_end_ms = time.perf_counter() * 1000
             stats = {}
             if pending_dump_task.wait_for_save_start_ms > 0:
@@ -1147,7 +1192,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 # after completion and removes the task from the store.
                 self._wait_pending_dump_task(pending_dump_task)
             except Exception as e:
-                logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
+                logger.error_limit(
+                    f"wait for dump kv cache failed. {type(e).__name__}: {e}"
+                )
 
         self._pending_dump_tasks = remaining_tasks
 
@@ -1164,7 +1211,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
             try:
                 self._wait_pending_dump_task(pending_dump_task)
             except Exception as e:
-                logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
+                logger.error_limit(
+                    f"wait for dump kv cache failed. {type(e).__name__}: {e}"
+                )
         self._pending_dump_tasks = remaining_tasks
 
     def handle_preemptions(
@@ -1201,6 +1250,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         num_saved_request = 0
         total_ucm_block_ids, total_vllm_block_ids = [], []
         dump_request_ids: set[str] = set()
+        block_ids_by_request: dict[str, set[bytes]] = {}
         for request_id, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
                 continue
@@ -1216,12 +1266,15 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     continue
             is_save = True
             dump_request_ids.add(request_id)
+            block_ids_by_request[request_id] = set(ucm_block_ids)
             num_saved_block += len(ucm_block_ids)
             num_saved_request += 1
+            store_block_ids = ucm_block_ids
             if self.tp_rank != 0:
-                for i, ucm_block_id in enumerate(ucm_block_ids):
-                    ucm_block_ids[i] = self.request_hasher(ucm_block_id)
-            total_ucm_block_ids.extend(ucm_block_ids)
+                store_block_ids = [
+                    self.request_hasher(block_id) for block_id in ucm_block_ids
+                ]
+            total_ucm_block_ids.extend(store_block_ids)
             total_vllm_block_ids.extend(vllm_block_ids)
 
         if is_save:
@@ -1233,8 +1286,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
                 shard_indexs = [0] * len(total_ucm_block_ids)
                 event_handle = self._get_dump_event_handle()
-                task = self.store.dump_data(
-                    total_ucm_block_ids, shard_indexs, total_ptrs, event_handle
+                task = self._rank_consistency.submit_dump(
+                    self.store,
+                    block_ids_by_request,
+                    total_ucm_block_ids,
+                    shard_indexs,
+                    total_ptrs,
+                    event_handle,
                 )
             except Exception as e:
                 logger.error(f"dump kv cache failed. {type(e).__name__}: {e}")
@@ -1281,11 +1339,15 @@ class UCMDirectConnector(KVConnectorBase_V1):
         return res
 
     def build_connector_worker_meta(self) -> UCMWorkerMetadata | None:
-        """Return load failed request IDs since the last call."""
-        if not self._connector_worker_meta.load_failed_reqs:
+        """Return worker events accumulated since the last call."""
+        if (
+            not self._rank_consistency.enabled
+            and not self._connector_worker_meta.load_failed_reqs
+        ):
             return None
+        self._rank_consistency.update_worker_meta(self._connector_worker_meta)
         meta = self._connector_worker_meta
-        self._connector_worker_meta = UCMWorkerMetadata()
+        self._connector_worker_meta = UCMWorkerMetadata(is_mla=meta.is_mla)
         return meta
 
     def update_connector_output(self, connector_output: KVConnectorOutput):
@@ -1294,9 +1356,23 @@ class UCMDirectConnector(KVConnectorBase_V1):
             return
         if not isinstance(meta, UCMWorkerMetadata):
             return
+        self._rank_consistency.apply_worker_meta(meta)
         for req_id in meta.load_failed_reqs:
-            logger.info(f"Request {req_id} failed to load, skip caching.")
-            self.requests_meta.pop(req_id, None)
+            req_meta = self.requests_meta.get(req_id)
+            if req_id in meta.missing_reqs and req_meta is not None:
+                # for block missing, try to fall back to recompute and continue dump to fix it
+                logger.info(
+                    f"Request {req_id} loaded an incomplete UCM block; "
+                    "recompute and dump it."
+                )
+                req_meta.total_hit_block_num = req_meta.hbm_hit_block_num
+                req_meta.token_processed = (
+                    req_meta.hbm_hit_block_num * self.get_block_size()
+                )
+            else:
+                # for other failure, pop metadata so won't dump for the request
+                logger.info(f"Request {req_id} failed to load, skip caching.")
+                self.requests_meta.pop(req_id, None)
 
     def request_finished(
         self,
@@ -1330,13 +1406,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     try:
                         self._wait_pending_dump_task(pending_dump_task)
                     except Exception as e:
-                        logger.error(
+                        logger.error_limit(
                             f"wait for dump kv cache failed. {type(e).__name__}: {e}"
                         )
                 else:
                     remaining_tasks.append(pending_dump_task)
             self._pending_dump_tasks = remaining_tasks
 
+        self._rank_consistency.finish_dump(async_finished_req_ids)
         self._async_dump_req_ids.difference_update(async_finished_req_ids)
 
         return async_finished_req_ids or None, None
@@ -1378,7 +1455,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self.is_save = False
         self.need_load = False
         self.dump_total_ptrs: np.ndarray | None = None
-        self.request_data: list[tuple[str, list, np.ndarray]] = []
+        self.request_data: list[tuple[str, list, list, np.ndarray]] = []
         self._failure_req_ids: set[str] = set()
         self._layerwise_prev_wait_end: Optional[float] = None
         self._layerwise_batch_start: Optional[float] = None
@@ -1386,9 +1463,14 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         # MTP layers can be revisited several times in one speculative decode
         # batch. Keep only the last metadata snapshot for each MTP layer and
         # submit its dump after the layerwise forward finishes.
-        self._deferred_mtp_dumps: dict[int, tuple[list[bytes], list[int], set[str]]] = (
-            {}
-        )
+        self._deferred_mtp_dumps: dict[
+            int,
+            tuple[
+                list[bytes],
+                list[int],
+                set[str],
+            ],
+        ] = {}
         self._is_mtp = False
         self._num_mtp_layers = 0
         self._mtp_layer_start: Optional[int] = None
@@ -1510,6 +1592,11 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         if not dump_request_ids:
             return
 
+        metadata = self._get_connector_metadata()
+        block_ids_by_request = {
+            request_id: set(metadata.request_meta[request_id].dump_block_ids[0])
+            for request_id in dump_request_ids
+        }
         local_layer_id = layer_id - self.first_layer_id
         if self.dump_total_ptrs is None:
             self.dump_total_ptrs = self.kv_cache_layout.extract_block_addrs(
@@ -1521,8 +1608,13 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             layer_ptrs = np.ascontiguousarray(self.dump_total_ptrs[local_layer_id])
             shard_indexs = [layer_id] * len(total_ucm_block_ids)
             event_handle = self._get_dump_event_handle()
-            task = self.store.dump_data(
-                total_ucm_block_ids, shard_indexs, layer_ptrs, event_handle
+            task = self._rank_consistency.submit_dump(
+                self.store,
+                block_ids_by_request,
+                total_ucm_block_ids,
+                shard_indexs,
+                layer_ptrs,
+                event_handle,
             )
             self._pending_dump_tasks.append(
                 PendingDumpTask(
@@ -1565,17 +1657,29 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         local_row: int,
         metadata: "UCMConnectorMetadata",
     ) -> None:
-        for request_id, ucm_block_ids, total_ptrs in self.request_data:
+        for (
+            request_id,
+            ucm_block_ids,
+            store_block_ids,
+            total_ptrs,
+        ) in self.request_data:
             if request_id in self._failure_req_ids:
                 continue
             try:
                 shard_indexs = [layer_id] * len(ucm_block_ids)
                 layer_ptrs = total_ptrs[local_row]
-                task = self.store.load_data(ucm_block_ids, shard_indexs, layer_ptrs)
+                task = self._rank_consistency.submit_load(
+                    self.store,
+                    {request_id: ucm_block_ids},
+                    store_block_ids,
+                    shard_indexs,
+                    layer_ptrs,
+                )
                 self.load_tasks[layer_id][request_id] = task
             except Exception as e:
                 logger.error(
-                    f"request {request_id} submit load task for layer {layer_id} error. {type(e).__name__}: {e}"
+                    f"request {request_id} submit load task for layer {layer_id} "
+                    f"error. {type(e).__name__}: {e}"
                 )
                 self._record_load_error(
                     "connector_load_submit_errors_total",
@@ -1600,14 +1704,19 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 continue
 
             self.need_load = True
-            ucm_block_ids, vllm_block_ids = request.load_block_ids
+            ucm_block_ids = list(request.load_block_ids[0])
+            vllm_block_ids = list(request.load_block_ids[1])
+            store_block_ids = ucm_block_ids
             if self.tp_rank % self.tp_size != 0 and not self.is_mla:
-                for i, ucm_block_id in enumerate(ucm_block_ids):
-                    ucm_block_ids[i] = self.request_hasher(ucm_block_id)
+                store_block_ids = [
+                    self.request_hasher(block_id) for block_id in ucm_block_ids
+                ]
             total_ptrs = self.kv_cache_layout.extract_block_addrs(
                 vllm_block_ids, layer_first=True
             )
-            self.request_data.append((request_id, ucm_block_ids, total_ptrs))
+            self.request_data.append(
+                (request_id, ucm_block_ids, store_block_ids, total_ptrs)
+            )
 
         if self.need_load:
             first_submit_start = time.perf_counter()
@@ -1640,10 +1749,11 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         n_tasks = len(layer_tasks)
         for request_id, task in layer_tasks.items():
             try:
-                self.store.wait(task)
+                self._rank_consistency.wait_load(task)
             except Exception as e:
                 logger.error(
-                    f"request {request_id} wait {layer_name} load failed. {type(e).__name__}: {e}"
+                    f"request {request_id} wait {layer_name} load failed. "
+                    f"{type(e).__name__}: {e}"
                 )
                 self._record_load_error(
                     "connector_load_wait_errors_total",
@@ -1697,7 +1807,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         total_ucm_block_ids, total_vllm_block_ids = [], []
         dump_request_ids: set[str] = set()
         layer_id = self.layer_name_to_id[layer_name]
-        local_layer_id = layer_id - self.first_layer_id
         for request_id, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
                 continue
@@ -1705,10 +1814,12 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             self.is_save = True
             dump_request_ids.add(request_id)
             ucm_block_ids, vllm_block_ids = request.dump_block_ids
-            if self.tp_rank % self.tp_size != 0 and local_layer_id == 0:
-                for i, ucm_block_id in enumerate(ucm_block_ids):
-                    ucm_block_ids[i] = self.request_hasher(ucm_block_id)
-            total_ucm_block_ids.extend(ucm_block_ids)
+            store_block_ids = ucm_block_ids
+            if self.tp_rank % self.tp_size != 0:
+                store_block_ids = [
+                    self.request_hasher(block_id) for block_id in ucm_block_ids
+                ]
+            total_ucm_block_ids.extend(store_block_ids)
             total_vllm_block_ids.extend(vllm_block_ids)
 
         if dump_request_ids:
@@ -1761,6 +1872,16 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
 
 class UCMCPConnector(UCMLayerWiseConnector):
+    _defer_scheduler_store = True
+
+    @staticmethod
+    def _consistency_manager_enabled(launch_config: dict, is_mla: bool) -> bool:
+        if launch_config.get("use_consistency_manager", False):
+            raise ValueError(
+                "Rank consistency manager is not supported by UCMCPConnector."
+            )
+        return False
+
     def __init__(
         self,
         vllm_config: "VllmConfig",
@@ -2161,6 +2282,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         else:
             self.connector = UCMDirectConnector(vllm_config, role, kv_cache_config)
 
+    def get_block_size(self) -> int:
+        return self.connector.get_block_size()
+
     def _setup_ucm_metrics(self, vllm_config: "VllmConfig", role: KVConnectorRole):
         self._vllm_metrics_enabled = False
         self._vllm_metric_definitions = []
@@ -2276,8 +2400,8 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         )
         return external_hit_tokens, need_load
 
-    @staticmethod
     def _record_prefix_cache_token_metrics(
+        self,
         request: "Request",
         num_computed_tokens: int,
         external_hit_tokens: int,
@@ -2292,11 +2416,14 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             max(int(external_hit_tokens), 0),
             max(total_tokens - gpu_hbm_hit_tokens, 0),
         )
+        block_size = max(int(self.get_block_size()), 1)
         ucmmetrics.update_stats(
             {
                 "total_prefix_query_tokens_total": total_tokens,
                 "gpu_hbm_hit_tokens_total": gpu_hbm_hit_tokens,
                 "ucm_hit_tokens_total": ucm_hit_tokens,
+                "total_prefix_query_blocks_total": total_tokens // block_size,
+                "gpu_hbm_hit_blocks_total": gpu_hbm_hit_tokens // block_size,
             }
         )
 
