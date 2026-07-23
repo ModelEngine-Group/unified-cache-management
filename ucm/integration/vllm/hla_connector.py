@@ -796,7 +796,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         self.kv_caches = kv_caches
         self.kv_cache_layout = self._create_kv_cache_layout(self.kv_caches)
-        self.store = self._create_store(self.kv_cache_layout)
+        self.store = self._create_store(kv_cache_layout=self.kv_cache_layout)
         self.block_data_size = self.kv_cache_layout.block_size
         self.device = create_device()
 
@@ -1349,7 +1349,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self.device = create_device()
 
         self.store = self._create_store(
-            self.kv_cache_layout,
+            kv_cache_layout=self.kv_cache_layout,
             tensor_size_list_override=row_tensor_size_list,
             shard_size_override=row_shard_size,
             block_size_override=row_shard_size * (max(self.row_ids) + 1),
