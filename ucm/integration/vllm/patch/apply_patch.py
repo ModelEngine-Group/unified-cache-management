@@ -224,10 +224,11 @@ def apply_all_patches() -> None:
             case "0.23.0":
                 logger.info(
                     "UCM patching vllm-ascend 0.23.0 for hybrid cache "
-                    "recovery and CPU affinity..."
+                    "recovery, CPU affinity, and SFA KV transfer..."
                 )
                 import ucm.integration.vllm.patch.v0230.vllm_ascend.ascend_hybrid_cache_patch
                 import ucm.integration.vllm.patch.v0230.vllm_ascend.cpu_binding_patch
+                import ucm.integration.vllm.patch.v0230.vllm_ascend.sfa_kv_transfer_patch
             case _:
                 pass
 
