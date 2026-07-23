@@ -102,8 +102,13 @@ ucm-toolkit clean TOOL --dry-run
 
 默认数据库为 `/tmp/ucm_metrics.db`。采集端默认保存抓到的全部 metrics；查询端默认使用内置
 `metrics_lite` 配置，只展示常用的请求数、延迟、cache hit、layerwise wait
-blocking 时间和 cache/posix store load/dump 带宽等指标。当前内置 config 只保留
-`metrics_lite`。
+blocking 时间和 cache/posix store load/dump 带宽等指标。当前内置 config 包含
+`metrics_lite` 和 `metrics_lite_mla`。
+
+命中率指标需要按模型类型选择对应 config，才能得到正确的 cache/posix 拆分结果。普通
+MHA/GQA 模型使用 `metrics_lite`；MLA 模型使用 `metrics_lite_mla`。`metrics_lite_mla`
+中的 `params.tp_size` 默认是 `8`，如果服务启动时使用的 TP 不是 8，需要先把配置文件里的
+`tp_size` 改成实际值，再通过 `--config metrics_lite_mla` 或 `--config <配置文件路径>` 查询。
 
 列出内置配置：
 

@@ -48,22 +48,6 @@
       "aggregate": "avg"
     },
     {
-      "name": "prefix_cache_hit_rate",
-      "type": "promql",
-      "expr": "sum by () (rate(vllm:prefix_cache_hits_total[$__rate_interval])) / sum by () (rate(vllm:prefix_cache_queries_total[$__rate_interval]))",
-      "value": "hit_rate",
-      "unit": "ratio",
-      "aggregate": "avg"
-    },
-    {
-      "name": "external_prefix_cache_hit_rate",
-      "type": "promql",
-      "expr": "(sum by () (rate(vllm:external_prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:external_prefix_cache_queries_total[$__rate_interval])), 1e-9)) * clamp_min(1 - (sum by () (rate(ucm:gpu_hbm_hit_tokens_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:total_prefix_query_tokens_total[$__rate_interval])), 1e-9)), 0)",
-      "value": "hit_rate",
-      "unit": "ratio",
-      "aggregate": "avg"
-    },
-    {
       "name": "hbm_hit_rate",
       "type": "promql",
       "expr": "sum by () (rate(ucm:gpu_hbm_hit_tokens_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:total_prefix_query_tokens_total[$__rate_interval])), 1e-9)",
@@ -84,14 +68,6 @@
       "type": "promql",
       "expr": "((sum by () (rate(vllm:external_prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:external_prefix_cache_queries_total[$__rate_interval])), 1e-9)) * clamp_min(1 - (sum by () (rate(ucm:gpu_hbm_hit_tokens_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:total_prefix_query_tokens_total[$__rate_interval])), 1e-9)), 0)) * clamp_max(sum by () (rate(ucm:cache_load_backend_shards_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:cache_load_shards_total[$__rate_interval])), 1e-9), 1)",
       "value": "hit_rate",
-      "unit": "ratio",
-      "aggregate": "avg"
-    },
-    {
-      "name": "cache_backend_load_ratio",
-      "type": "promql",
-      "expr": "sum by () (rate(ucm:posix_lookup_hit_blocks_total[$__rate_interval])) / (sum by () (rate(ucm:cache_lookup_hit_blocks_total[$__rate_interval])) + sum by () (rate(ucm:posix_lookup_hit_blocks_total[$__rate_interval])))",
-      "value": "ratio",
       "unit": "ratio",
       "aggregate": "avg"
     },
