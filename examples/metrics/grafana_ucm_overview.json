@@ -179,7 +179,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Current effective HealthBreaker state across configured Posix and Mooncake Store instances.",
+      "description": "展示当前 Posix 和 Mooncake Store 实例的 HealthBreaker 生效状态。每种 Store 的实例总数为 (1（Scheduler 个数）+ tp_size（Worker 个数）) × dp_size。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -298,7 +298,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Healthy and fused instance counts for each Store type.",
+      "description": "按 Store 类型展示健康和已熔断的实例数量。每种 Store 的实例总数为 (1（Scheduler 个数）+ tp_size（Worker 个数）) × dp_size。",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -621,7 +621,7 @@
               "type": "linear"
             },
             "showPoints": "never",
-            "spanNulls": 60000,
+            "spanNulls": true,
             "stacking": {
               "group": "A",
               "mode": "none"
@@ -746,7 +746,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "description": "Successful and failed Posix health probes per second.",
+          "description": "Successful and failed Posix health probes in each automatically sized time interval.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -776,7 +776,7 @@
                   "type": "linear"
                 },
                 "showPoints": "never",
-                "spanNulls": 60000,
+                "spanNulls": true,
                 "stacking": {
                   "group": "A",
                   "mode": "none"
@@ -803,7 +803,7 @@
                   }
                 ]
               },
-              "unit": "ops",
+              "unit": "short",
               "min": 0
             },
             "overrides": [
@@ -866,7 +866,7 @@
                 "uid": "${DS_PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "sum(rate(ucm:posix_healthy_count_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+              "expr": "sum(increase(ucm:posix_healthy_count_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
               "legendFormat": "Healthy",
               "range": true,
               "refId": "A"
@@ -877,7 +877,7 @@
                 "uid": "${DS_PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "sum(rate(ucm:posix_unhealthy_count_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+              "expr": "sum(increase(ucm:posix_unhealthy_count_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
               "legendFormat": "Unhealthy",
               "range": true,
               "refId": "B"
@@ -891,7 +891,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "description": "Successful and failed Mooncake health probes per second.",
+          "description": "Successful and failed Mooncake health probes in each automatically sized time interval.",
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -921,7 +921,7 @@
                   "type": "linear"
                 },
                 "showPoints": "never",
-                "spanNulls": 60000,
+                "spanNulls": true,
                 "stacking": {
                   "group": "A",
                   "mode": "none"
@@ -948,7 +948,7 @@
                   }
                 ]
               },
-              "unit": "ops",
+              "unit": "short",
               "min": 0
             },
             "overrides": [
@@ -1011,7 +1011,7 @@
                 "uid": "${DS_PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "sum(rate(ucm:mooncake_healthy_count_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+              "expr": "sum(increase(ucm:mooncake_healthy_count_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
               "legendFormat": "Healthy",
               "range": true,
               "refId": "A"
@@ -1022,7 +1022,7 @@
                 "uid": "${DS_PROMETHEUS}"
               },
               "editorMode": "code",
-              "expr": "sum(rate(ucm:mooncake_unhealthy_count_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+              "expr": "sum(increase(ucm:mooncake_unhealthy_count_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
               "legendFormat": "Unhealthy",
               "range": true,
               "refId": "B"

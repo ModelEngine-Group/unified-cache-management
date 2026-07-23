@@ -1739,6 +1739,9 @@ def test_ucm_overview_keeps_vllm_summary_and_adds_block_hit_and_health_views():
 
     pie = panels["Store Health"]
     assert pie["type"] == "piechart"
+    assert (
+        "(1（Scheduler 个数）+ tp_size（Worker 个数）) × dp_size" in pie["description"]
+    )
     assert {target["legendFormat"] for target in pie["targets"]} == {
         "Healthy",
         "Unhealthy",
@@ -1749,6 +1752,10 @@ def test_ucm_overview_keeps_vllm_summary_and_adds_block_hit_and_health_views():
         assert "or vector(0)" in target["expr"]
     details = panels["Store Health Details"]
     assert details["type"] == "table"
+    assert (
+        "(1（Scheduler 个数）+ tp_size（Worker 个数）) × dp_size"
+        in details["description"]
+    )
     detail_expr = "\n".join(target["expr"] for target in details["targets"])
     assert '"Posix"' in detail_expr
     assert '"Mooncake"' in detail_expr
@@ -1767,12 +1774,21 @@ def test_ucm_overview_keeps_vllm_summary_and_adds_block_hit_and_health_views():
         assert "and on(job, instance)" not in target["expr"]
         assert "up{" not in target["expr"]
         assert "or vector(0)" not in target["expr"]
+    assert trend["fieldConfig"]["defaults"]["custom"]["spanNulls"] is True
     details_row = panels["Store Probe Details"]
     assert details_row["type"] == "row"
     assert details_row["collapsed"] is True
     nested = {panel["title"]: panel for panel in details_row["panels"]}
     assert set(nested) == {"Posix Health Probes", "Mooncake Health Probes"}
     assert all(len(panel["targets"]) == 2 for panel in nested.values())
+    for panel in nested.values():
+        defaults = panel["fieldConfig"]["defaults"]
+        assert defaults["custom"]["spanNulls"] is True
+        assert defaults["unit"] == "short"
+        for target in panel["targets"]:
+            assert "sum(increase(" in target["expr"]
+            assert "[$__rate_interval]" in target["expr"]
+            assert "sum(rate(" not in target["expr"]
 
 
 def test_ucm_dashboards_use_engine_and_worker_rank_filters():
