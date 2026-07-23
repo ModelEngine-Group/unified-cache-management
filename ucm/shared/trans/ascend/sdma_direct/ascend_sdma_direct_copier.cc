@@ -135,11 +135,10 @@ Status AscendSdmaDirectCopier::BuildHostToDeviceSpecs(const void* hostDevicePtr,
     specs.reserve(specs.size() + sizes.size());
     size_t offset = 0;
     for (size_t i = 0; i < sizes.size(); ++i) {
-        if (sizes[i] == 0 || devices[i] == nullptr) {
-            return Status::InvalidParam("invalid Cache SDMA Direct H2D tensor({})", i);
+        if (sizes[i] != 0 && devices[i] != nullptr) {
+            auto* src = static_cast<const std::byte*>(hostDevicePtr) + offset;
+            specs.push_back({devices[i], src, sizes[i]});
         }
-        auto* src = static_cast<const std::byte*>(hostDevicePtr) + offset;
-        specs.push_back({devices[i], src, sizes[i]});
         offset += sizes[i];
     }
     return Status::OK();
@@ -157,11 +156,10 @@ Status AscendSdmaDirectCopier::BuildDeviceToHostSpecs(void** devices, void* host
     specs.reserve(specs.size() + sizes.size());
     size_t offset = 0;
     for (size_t i = 0; i < sizes.size(); ++i) {
-        if (sizes[i] == 0 || devices[i] == nullptr) {
-            return Status::InvalidParam("invalid Cache SDMA Direct D2H tensor({})", i);
+        if (sizes[i] != 0 && devices[i] != nullptr) {
+            auto* dst = static_cast<std::byte*>(hostDevicePtr) + offset;
+            specs.push_back({dst, devices[i], sizes[i]});
         }
-        auto* dst = static_cast<std::byte*>(hostDevicePtr) + offset;
-        specs.push_back({dst, devices[i], sizes[i]});
         offset += sizes[i];
     }
     return Status::OK();
