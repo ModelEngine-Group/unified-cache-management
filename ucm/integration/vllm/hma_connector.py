@@ -617,10 +617,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 self.fa_group_ids,
             )
         return self._create_store(
-            "FA",
-            "fa",
-            tensor_size_list,
-            cpu_affinity_cores,
+            label="FA",
+            store_suffix="fa",
+            tensor_size_list=tensor_size_list,
+            cpu_affinity_cores=cpu_affinity_cores,
         )
 
     def _create_wa_store(
@@ -639,10 +639,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 self.window_group_ids,
             )
         return self._create_store(
-            "WA",
-            "wa",
-            tensor_size_list,
-            cpu_affinity_cores,
+            label="WA",
+            store_suffix="wa",
+            tensor_size_list=tensor_size_list,
+            cpu_affinity_cores=cpu_affinity_cores,
         )
 
     def _base_store_config(

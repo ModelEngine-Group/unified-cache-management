@@ -900,6 +900,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def _create_store(
         self,
         kv_cache_layout: Optional[KVCacheLayout],
+        cpu_affinity_cores: Optional[list[int]] = None,
         tensor_size_list_override: Optional[list[int]] = None,
         shard_size_override: Optional[int] = None,
         block_size_override: Optional[int] = None,
@@ -960,6 +961,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 gpu_kv_buffer_sizes.append(key[1])
             config["gpu_kv_buffer_addrs"] = gpu_kv_buffer_addrs
             config["gpu_kv_buffer_sizes"] = gpu_kv_buffer_sizes
+            if cpu_affinity_cores:
+                config["cpu_affinity_cores"] = list(cpu_affinity_cores)
         else:
             config_base = self.block_size * self.element_size * self.head_size
             config["block_size"] = (
@@ -1018,7 +1021,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
             else (None, None)
         )
 
-        self.store = self._create_store(self.kv_cache_layout, store_cores)
+        self.store = self._create_store(
+            kv_cache_layout=self.kv_cache_layout,
+            cpu_affinity_cores=store_cores,
+        )
 
         if worker_cores:
             try:
