@@ -639,6 +639,114 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
         )
 
 
+class AscendMiniMaxM3Layout(KVCacheLayout):
+    """Ascend MiniMax-M3 layerwise KV cache layout.
+
+    MiniMax-M3 uses a heterogeneous KV layout on Ascend: the first dense
+    layers have normal K/V tensors, while later sparse layers store a larger K
+    tensor. Expose every layer as three logical components so the layerwise
+    path can address both layouts through one shape:
+
+    - dense layer:  [K, V, null]
+    - sparse layer: [K first half, K second half, V]
+
+    All three logical components have the same copy size. Dense layers keep
+    the third component as a padding hole in the store row.
+    """
+
+    @classmethod
+    def supports(cls, vllm_config: "VllmConfig", ucm_config: dict) -> bool:
+        text_config = getattr(vllm_config.model_config.hf_config, "text_config", None)
+        return (
+            bool(ucm_config.get("use_layerwise", False))
+            and getattr(current_platform, "device_type", None) == "npu"
+            and hasattr(text_config, "sparse_attention_config")
+        )
+
+    def _build_layout(self, kvcaches):
+        num_rows = len(set(self.layer_name_to_id.values()))
+        raw_ptr_rows = [[] for _ in range(num_rows)]
+        stride_rows = [[] for _ in range(num_rows)]
+        buffer_size_rows = [[] for _ in range(num_rows)]
+        block_stride_rows = [[] for _ in range(num_rows)]
+
+        for layer_name, kv_layer in kvcaches.items():
+            if not isinstance(kv_layer, (tuple, list)) or len(kv_layer) < 2:
+                raise TypeError(
+                    "AscendMiniMaxM3Layout expects split K/V tensors for "
+                    f"{layer_name}, got {type(kv_layer)}"
+                )
+
+            k_tensor = kv_layer[0]
+            v_tensor = kv_layer[1]
+            if not isinstance(k_tensor, torch.Tensor) or not isinstance(
+                v_tensor, torch.Tensor
+            ):
+                raise TypeError(
+                    "AscendMiniMaxM3Layout expects torch.Tensor K/V entries "
+                    f"for {layer_name}"
+                )
+            if k_tensor.dim() < 2 or v_tensor.dim() < 2:
+                raise ValueError(
+                    "Unsupported MiniMax-M3 KV cache tensor shape for "
+                    f"{layer_name}: k={k_tensor.shape}, v={v_tensor.shape}"
+                )
+
+            k_stride = k_tensor.stride(0) * k_tensor.element_size()
+            v_stride = v_tensor.stride(0) * v_tensor.element_size()
+            if v_stride <= 0 or k_stride % v_stride != 0:
+                raise ValueError(
+                    "Unsupported MiniMax-M3 KV stride: "
+                    f"layer={layer_name}, k_stride={k_stride}, v_stride={v_stride}"
+                )
+            k_buffer_size = int(k_tensor.shape[0]) * k_stride
+            v_buffer_size = int(v_tensor.shape[0]) * v_stride
+
+            global_layer_id = self.layer_name_to_id[layer_name]
+            local_layer_id = global_layer_id - self.first_layer_id
+            if global_layer_id < 3:
+                ptrs = [k_tensor[0].data_ptr(), v_tensor[0].data_ptr(), 0]
+                tensor_sizes = [k_stride, v_stride, v_stride]
+                buffer_sizes = [k_buffer_size, v_buffer_size, 0]
+                block_strides = [k_stride, v_stride, 0]
+            else:
+                k_first_size = v_stride
+                k_second_size = k_stride - k_first_size
+                if k_second_size != v_stride:
+                    raise ValueError(
+                        "Unsupported MiniMax-M3 sparse KV split: "
+                        f"layer={layer_name}, k_stride={k_stride}, v_stride={v_stride}"
+                    )
+                ptrs = [
+                    k_tensor[0].data_ptr(),
+                    k_tensor[0].data_ptr() + k_first_size,
+                    v_tensor[0].data_ptr(),
+                ]
+                tensor_sizes = [k_first_size, k_second_size, v_stride]
+                buffer_sizes = [
+                    k_first_size * int(k_tensor.shape[0]),
+                    k_second_size * int(k_tensor.shape[0]),
+                    v_buffer_size,
+                ]
+                block_strides = [k_stride, k_stride, v_stride]
+
+            raw_ptr_rows[local_layer_id].extend(ptrs)
+            stride_rows[local_layer_id].extend(tensor_sizes)
+            buffer_size_rows[local_layer_id].extend(buffer_sizes)
+            block_stride_rows[local_layer_id].extend(block_strides)
+
+        self.base_ptrs = np.asarray(raw_ptr_rows, dtype=np.uint64)
+        self.tensor_size_lists = np.asarray(stride_rows, dtype=np.uint64)
+        self.buffer_sizes = np.asarray(buffer_size_rows, dtype=np.uint64)
+        self.block_stride_lists = np.asarray(block_stride_rows, dtype=np.uint64)
+
+        logger.info(
+            "Ascend MiniMax-M3 layout: "
+            f"base_ptrs={self.base_ptrs.shape}, "
+            f"tensor_size_lists={self.tensor_size_lists.shape}"
+        )
+
+
 @dataclass
 class UCMConnectorMetadata(KVConnectorMetadata):
     request_meta: dict[str, RequestDispatchMeta] = field(default_factory=dict)
@@ -999,7 +1107,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
             if SharedIndexerKVCacheLayout.supports(
                 self._vllm_config, self.launch_config
             )
-            else KVCacheLayout
+            else (
+                AscendMiniMaxM3Layout
+                if AscendMiniMaxM3Layout.supports(self._vllm_config, self.launch_config)
+                else KVCacheLayout
+            )
         )
         self.kv_cache_layout = layout_cls(
             self.kv_caches,
