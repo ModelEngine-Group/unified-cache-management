@@ -189,9 +189,10 @@ ring_hash.virtual_node_count=128
 
 transport.asu_ids=1,2,3
 transport.provider_type=FAKE
-asu_info.1=protocol=TCP,local.comm_id=127.0.0.1,port=19001,local.logical_device_id=0
-asu_info.2=protocol=TCP,local.comm_id=127.0.0.1,port=19002,local.logical_device_id=0
-asu_info.3=protocol=TCP,local.comm_id=127.0.0.1,port=19003,local.logical_device_id=0
+transport.device_id=0
+asu_info.1=protocol=TCP,local.comm_id=127.0.0.1,port=19001
+asu_info.2=protocol=TCP,local.comm_id=127.0.0.1,port=19002
+asu_info.3=protocol=TCP,local.comm_id=127.0.0.1,port=19003
 
 kv.key_prefix=kv-test-key-
 kv.seed=20260530
@@ -224,6 +225,7 @@ These fields are parsed by the ASU client config parser:
 | `default_wait_timeout_ms` | Default wait timeout in milliseconds. |
 | `transport.asu_ids` | ASU ids. |
 | `transport.provider_type` | Transport provider used by `AsuTransportImpl`. Supported values are `AICPU`, `FAKE`, and `AIV`. The selected provider must also be enabled in CMake. The aliases `transport.provider_backend`, `transport.trans_provider_type`, and `transport.trans_provider_backend` are also accepted. |
+| `transport.device_id` | Local logical device id used to initialize the transport provider. |
 | `asu_info.<id>` | Endpoint config for one ASU. |
 | `hash_table.type` | Router hash table type. |
 | `ring_hash.virtual_node_count` | Ring hash virtual node count. |

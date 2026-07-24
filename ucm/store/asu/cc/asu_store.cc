@@ -171,6 +171,7 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
     UC::ASU::TransportConfig transportConfig;
     transportConfig.asuId = static_cast<UC::ASU::AsuId>(config.asuIds[index]);
     transportConfig.asuName = config.asuNamePrefix + "-" + std::to_string(config.asuIds[index]);
+    transportConfig.deviceId = config.deviceId;
     transportConfig.queryTimeoutMs = config.queryTimeoutMs;
     transportConfig.loadTimeoutMs = config.loadTimeoutMs;
     transportConfig.storeTimeoutMs = config.storeTimeoutMs;
@@ -181,17 +182,17 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
     // Set for all backends including fake
     const auto kvNsIndex = config.uniqueId.find("_fawa_wa") == std::string::npos ? 0 : 1;
     transportConfig.attrs["kv_ns_id"] = std::to_string(config.kvNsIds[kvNsIndex]);
-    if (!config.asuLocalIp.empty()) { transportConfig.attrs["localIp"] = config.asuLocalIp; }
+    if (!config.localIp.empty()) { transportConfig.attrs["localIp"] = config.localIp; }
 
     if (!config.asuIps.empty()) {
         UC::ASU::AsuEndpoint endpoint;
         endpoint.ip = config.asuIps[index];
         endpoint.port = config.asuPort;
-        endpoint.deviceId = config.deviceId;
         transportConfig.endpoints.emplace_back(std::move(endpoint));
     }
     if (config.transProviderType == UC::ASU::TransProviderType::FAKE) {
         const auto fakeDeviceId = config.deviceId >= 0 ? config.deviceId : 0;
+        transportConfig.deviceId = fakeDeviceId;
         transportConfig.attrs.try_emplace("kernel_count", "1");
         transportConfig.attrs.try_emplace("quiet_count", "1");
         transportConfig.attrs.try_emplace("dtype", "0");
@@ -207,7 +208,6 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
             endpoint.ip = "fake_backend";
             endpoint.port = 19001;
             endpoint.protocol = UC::ASU::Protocol::TCP;
-            endpoint.deviceId = fakeDeviceId;
             transportConfig.endpoints.emplace_back(std::move(endpoint));
         }
     }
@@ -460,7 +460,7 @@ private:
         inConfig.Get("asu_view_service_addrs", config.viewServiceAddrs);
         inConfig.GetNumbers("asu_ids", config.asuIds);
         inConfig.Get("asu_ips", config.asuIps);
-        inConfig.Get("asu_local_ip", config.asuLocalIp);
+        inConfig.Get("asu_local_ip", config.localIp);
         inConfig.Get("asu_name_prefix", config.asuNamePrefix);
         inConfig.GetNumbers("kv_ns_ids", config.kvNsIds);
         ssize_t asuPort = 0;

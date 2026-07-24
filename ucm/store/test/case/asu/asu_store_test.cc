@@ -386,7 +386,7 @@ TEST(UCAsuStoreTest, RejectsTransportIntegerOverflow)
     }
 }
 
-TEST(UCAsuStoreTest, AivRequiresDeviceIdAndDeviceIp)
+TEST(UCAsuStoreTest, AivRequiresDeviceId)
 {
     {
         UC::AsuStore::AsuStore store;
@@ -398,12 +398,13 @@ TEST(UCAsuStoreTest, AivRequiresDeviceIdAndDeviceIp)
     }
     {
         UC::AsuStore::AsuStore store;
+        UseFakeBackend(store);
         auto config = MakeBaseConfig();
         config.Set("asu_ids", std::vector<ssize_t>{1001});
         config.Set("asu_trans_provider_backend", std::string{"aiv"});
         config.SetNumber("device_id", 0);
 
-        EXPECT_TRUE(store.Setup(config).Failure());
+        EXPECT_TRUE(store.Setup(config).Success());
     }
 }
 
@@ -412,14 +413,46 @@ TEST(UCAsuStoreTest, PropagatesKvNamespaceToEveryTransport)
     UC::AsuStore::Config config;
     config.asuIds = {1001, 1002};
     config.kvNsIds = {100};
+    config.deviceId = 3;
+    config.localIp = "192.168.0.3";
     config.transProviderType = UC::ASU::TransProviderType::FAKE;
 
     for (std::size_t index = 0; index < config.asuIds.size(); ++index) {
         auto transportConfig = UC::AsuStore::BuildTransportConfig(config, index);
+        EXPECT_EQ(transportConfig.deviceId, 3);
+        EXPECT_EQ(transportConfig.attrs.at("localIp"), "192.168.0.3");
         auto iter = transportConfig.attrs.find("kv_ns_id");
         ASSERT_NE(iter, transportConfig.attrs.end());
         EXPECT_EQ(iter->second, "100");
     }
+}
+
+TEST(UCAsuStoreTest, SchedulerUsesConfiguredDeviceId)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeBackend(store);
+    auto config = MakeBaseConfig();
+    config.Set("role", std::string{"scheduler"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("device_id", 5);
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+    EXPECT_EQ(state->initConfigs.back().deviceId, 5);
+}
+
+TEST(UCAsuStoreTest, WorkerUsesLocalRankDeviceId)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeBackend(store);
+    auto config = MakeBaseConfig();
+    config.Set("role", std::string{"worker"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("device_id", 2);
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+    EXPECT_EQ(state->initConfigs.back().deviceId, 2);
 }
 
 TEST(UCAsuStoreTest, TransportModeSmoke)
