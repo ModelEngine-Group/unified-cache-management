@@ -25,9 +25,9 @@
 
 /benchmarks @flesher0813 @ygwpz @mag1c-h
 
-/docker @harrisonyhq @ygwpz @mag1c-h
+/docker @harrisonyhq @ygwpz @mag1c-h @SuperMarioYL
 
-/docs @flesher0813 @ygwpz @mag1c-h @FangRun2 @Tarrei @Infinite666
+/docs @flesher0813 @ygwpz @mag1c-h @FangRun2 @Tarrei @Infinite666 @SuperMarioYL
 /docs/source/user-guide/sparse-attention/esa.md @wangwenxin0312 @Infinite666 @flesher0813 @ygwpz @mag1c-h @FangRun2 @Tarrei
 /docs/source/user-guide/sparse-attention/gsa.md @Zbm1996 @zbb200819 @yxkyong @HaoLi980405 @flesher0813 @ygwpz @mag1c-h @FangRun2 @Tarrei
 /docs/source/user-guide/sparse-attention/kvcomp.md @leideng @pengwwang @flesher0813 @ygwpz @mag1c-h @FangRun2 @Tarrei
@@ -35,4 +35,8 @@
 
 /examples @harrisonyhq @ygwpz @mag1c-h @Infinite666
 
-/test @Wwwzff @ygwpz @mag1c-h
+/test @Wwwzff @ygwpz @mag1c-h @SuperMarioYL
+
+/toolkit @SuperMarioYL
+
+/scripts @SuperMarioYL
