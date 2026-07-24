@@ -36,7 +36,7 @@ On a 4-node A3 cluster (each node with 8×910C, each 910C is a dual-910B co-pack
 2. **At 20 concurrency, 64K is the sweet-spot length**, with TTFT reduced by 78.6% and throughput improved by 92.4%. Once the request length exceeds the HBM capacity threshold (approximately 235,008 / (20/8) = 94K tokens), the TTFT reduction and throughput gain attenuate due to insufficient HBM space. **Deployment recommendation**: at a fixed concurrency of 20, keep the request length strictly within 94K tokens to ensure optimal performance.
 3. **128K ultra-long context**: concurrency 8 is the sweet-spot concurrency; beyond this threshold, the caching benefit diminishes. At concurrency 10, TTFT can still drop by 66.1% with an 83.5% throughput gain; when concurrency rises from 10 to 20, both the TTFT reduction and throughput gain decline simultaneously. **Deployment recommendation**: when inferring 128K ultra-long-context requests, keep the concurrency at no more than 8 to avoid triggering the underlying preemption mechanism.
 
-Note: The current Decode instance has a per-DP GPU KV Cache Size of 235,008 tokens. Each DP can carry only a single concurrent 128K + 1K request, so the absolute concurrency upper bound of the 8 DP instances is 8. During vLLM inference, the KV cache of all requests in a single batch must fit entirely within the HBM. If the memory space is insufficient, the system triggers the request preemption mechanism: it forcibly releases the memory occupied by other requests; when those requests are rescheduled, they must redo the Decode computation. This repeated preemption-and-recompute overhead causes throughput degradation under high concurrency. In addition, when too many requests queue up at a Decode instance, the request waiting time increases directly, which in turn degrades the Time-To-First-Token (TTFT). Therefore, comparison data beyond the physical hardware boundary cannot truthfully reflect the performance of the caching mechanism itself.
+> **Note**: The current Decode instance has a per-DP GPU KV Cache Size of 235,008 tokens. Each DP can carry only a single concurrent 128K + 1K request, so the absolute concurrency upper bound of the 8 DP instances is 8. During vLLM inference, the KV cache of all requests in a single batch must fit entirely within the HBM. If the memory space is insufficient, the system triggers the request preemption mechanism: it forcibly releases the memory occupied by other requests; when those requests are rescheduled, they must redo the Decode computation. This repeated preemption-and-recompute overhead causes throughput degradation under high concurrency. In addition, when too many requests queue up at a Decode instance, the request waiting time increases directly, which in turn degrades the Time-To-First-Token (TTFT). Therefore, comparison data beyond the physical hardware boundary cannot truthfully reflect the performance of the caching mechanism itself.
 
 ## 2. Test Environment Overview
 
@@ -118,7 +118,7 @@ pip install -v -e . --no-build-isolation
 cd ..
 ```
 
-**Note:** For the Atlas A2 series, set `PLATFORM=ascend`.
+> **Note:** For the Atlas A2 series, set `PLATFORM=ascend`.
 
 Enable UCM by importing the patch via an environment variable:
 
@@ -159,7 +159,7 @@ persist_token_threshold: 0
 
 * **io_direct** *(optional, default: false)*:
   Whether to enable Direct I/O. For the Posix store, when enabled, reads and writes to disk files bypass the OS page cache.
-* **cache_buffer_capacity_gb** *(optional, default: 256)*
+* **cache_buffer_capacity_gb** *(optional, default: 128)*
   - GQA models (Qwen3, GLM-4.7, etc.): default 32GB per card; if configured, it represents the DRAM memory occupied per card.
   - MLA models (DeepSeek V3/R1, GLM-5, etc.): 192 / (number of DPs per node).
   - DeepSeek V4: for a single A3 node with TP8DP2, 48 is recommended; for a single A2 node with TP8DP2, 96 is recommended.
