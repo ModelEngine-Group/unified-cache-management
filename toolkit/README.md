@@ -100,15 +100,14 @@ ucm-toolkit clean TOOL --dry-run
 `metrics-view` 用于在没有 Prometheus/Grafana 的环境中，从 Prometheus/OpenMetrics
 `/metrics` 接口采集原始样本到 SQLite，并在终端查询聚合后的 UCM/vLLM 指标。
 
-默认数据库为 `/tmp/ucm_metrics.db`。采集端默认保存抓到的全部 metrics；查询端默认使用内置
-`metrics_lite` 配置，只展示常用的请求数、延迟、cache hit、layerwise wait
-blocking 时间和 cache/posix store load/dump 带宽等指标。当前内置 config 包含
-`metrics_lite` 和 `metrics_lite_mla`。
+命中率指标需要按模型类型和 TP 选择对应 config，才能得到正确的 cache/posix 拆分结果。
 
-命中率指标需要按模型类型选择对应 config，才能得到正确的 cache/posix 拆分结果。普通
-MHA/GQA 模型使用 `metrics_lite`；MLA 模型使用 `metrics_lite_mla`。`metrics_lite_mla`
-中的 `params.tp_size` 默认是 `8`，如果服务启动时使用的 TP 不是 8，需要先把配置文件里的
-`tp_size` 改成实际值，再通过 `--config metrics_lite_mla` 或 `--config <配置文件路径>` 查询。
+| 模型类型 | TP | --config |
+| --- | --- | --- |
+| MLA | 2 | `metrics_lite_mla_tp2` |
+| MLA | 4 | `metrics_lite_mla_tp4` |
+| MLA | 8 | `metrics_lite_mla` |
+| MHA/GQA | 任意 | `metrics_lite` |
 
 列出内置配置：
 
@@ -116,12 +115,48 @@ MHA/GQA 模型使用 `metrics_lite`；MLA 模型使用 `metrics_lite_mla`。`met
 ucm-toolkit run metrics-view list-configs
 ```
 
+
+### 使用check查看启动以来的统计：
+
+`check` 会直接拉取一次当前 `/metrics` 快照并输出总聚合值，获取的是从服务启动到现在的总计值。
+
+输入示例
+
+```bash
+ucm-toolkit run metrics-view check \
+  --url http://127.0.0.1:35325/metrics \
+  --config metrics_lite_mla
+```
+
+输出示例：
+
+```text
+metric                           values                                   unit
+-------------------------------  ---------------------------------------  -----
+total_requests                   requests=1.000
+e2e_request_latency_s            p50=0.150 p90=0.270 p99=0.297 avg=0.060  s
+ttft_s                           p50=0.150 p90=0.270 p99=0.297 avg=0.060  s
+tpot_s                           p50=0.005 p90=0.009 p99=0.010 avg=0.000  s
+hbm_hit_rate                     hit_rate=0.333                           ratio
+cache_hit_rate                   hit_rate=0.333                           ratio
+posix_hit_rate                   hit_rate=0.333                           ratio
+cache_store_load_bandwidth_gbps  gbps=0.001                               GB/s
+cache_store_dump_bandwidth_gbps  gbps=0.000                               GB/s
+posix_store_load_bandwidth_gbps  gbps=2.949e-04                           GB/s
+posix_store_dump_bandwidth_gbps  gbps=0.000                               GB/s
+```
+
+使用check的话gbps不具备参考性，因为逻辑是总数据传输量/时间，不是瞬时值。需要看到合理的带宽需要使用如下 `start` 的方式来后台持续拉取metrics.
+
+
 ### 后台采集和查询
 
 推荐使用 `start` / `stop` 方式后台采集 metrics。后台采集会把多次样本写入 SQLite，
-因此后续可以查询指定时间范围内的数据，并按 `--aggr-by` 做分段聚合。
+因此后续可以查询指定时间范围内的数据。
 
 后台启动采集：
+
+采集的时候无需配置config
 
 ```bash
 ucm-toolkit run metrics-view start \
@@ -142,12 +177,14 @@ ucm-toolkit run metrics-view stop
 ```
 
 按时间窗口查询。推荐使用 `--aggr-by`，例如 `--window 10m --aggr-by 1m`
-会展示最新10分钟的数据，每分钟输出一份结果。
+会展示最新10分钟的数据，每分钟聚合一份结果。
+要获取正确的分层命中率，需要给到合适的config：
 
 ```bash
 ucm-toolkit run metrics-view query \
   --window 10m \
-  --aggr-by 1m
+  --aggr-by 1m \
+  --config metrics_lite_mla
 ```
 
 query也支持使用 --tag 按 Prometheus label 过滤：
@@ -166,22 +203,6 @@ ucm-toolkit run metrics-view query \
 和 `/tmp/terminal_metrics.log`，因此切换工作目录后仍可以执行 `status` 和 `stop`。
 如需同时运行多个采集进程，必须分别指定不同的 `--db`、`--pid-file` 和
 `--log-file`。
-
-### 使用check查看启动以来的统计：
-
-```bash
-ucm-toolkit run metrics-view check \
-  --url http://prefill:8000/metrics \
-  --url http://decode:8000/metrics
-```
-
-`check` 会尝试所有 URL；任一 URL 失败时命令返回失败，并且不输出不完整的聚合结果。
-
-`check` 只拉取一次 metrics，不写入 SQLite。它会按 `metrics_lite` 或 `--config`
-指定的配置输出当前快照的总聚合值；counter 和 histogram 的累计序列只能表示目标服务启动或指标 reset
-以来的累计值，gauge 则表示当前瞬时值。`check` 无法获取某个时间段内的数据，也不能按时间窗口计算增量。
-需要查看时间范围内的数据时，必须使用 `start` / `stop` 方式将样本写入 SQLite，
-然后通过 `query` 查询 SQLite 中的样本。
 
 如果需要使用其它数据库文件，可以显式指定 `--db`：
 

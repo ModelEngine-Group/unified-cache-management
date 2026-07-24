@@ -958,7 +958,12 @@ vllm:num_requests_running{worker_id="1"} 5
     def test_preset_configs_use_explicit_aggregate_without_group_by(self):
         self.assertEqual(
             [path.name for path in list_preset_configs()],
-            ["metrics_lite.json", "metrics_lite_mla.json"],
+            [
+                "metrics_lite.json",
+                "metrics_lite_mla.json",
+                "metrics_lite_mla_tp2.json",
+                "metrics_lite_mla_tp4.json",
+            ],
         )
         for path in list_preset_configs():
             config = load_config(path)
@@ -969,6 +974,11 @@ vllm:num_requests_running{worker_id="1"} 5
                 if metric.get("type") == "histogram":
                     self.assertTrue(metric.get("avg"), path.name)
                     self.assertEqual(metric.get("quantiles"), [0.5, 0.9, 0.99])
+
+    def test_metrics_lite_mla_presets_use_named_tp_sizes(self):
+        self.assertEqual(load_config("metrics_lite_mla_tp2")["params"]["tp_size"], 2)
+        self.assertEqual(load_config("metrics_lite_mla_tp4")["params"]["tp_size"], 4)
+        self.assertEqual(load_config("metrics_lite_mla")["params"]["tp_size"], 8)
 
     def test_metrics_lite_preset_computes_remote_tool_values(self):
         with tempfile.TemporaryDirectory() as tmp:
