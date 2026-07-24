@@ -207,7 +207,7 @@ TEST(AsuTransportRegisterTest, RegisterRegionsReturnsPartialFailedAndRollsBackSu
     EXPECT_EQ(providerPtr->registerCallCount, std::uint32_t{1});
     EXPECT_EQ(providerPtr->unregisterCount, std::uint32_t{1});
     EXPECT_TRUE(transport.registeredRegions_.empty());
-    EXPECT_TRUE(transport.ownedRegisteredRegionHandles_.empty());
+    EXPECT_FALSE(transport.ownsRegisteredRegionHandles_);
 }
 
 TEST(AsuTransportRegisterTest, RegisterDeviceRegionDoesNotRequireConnection)
@@ -230,6 +230,31 @@ TEST(AsuTransportRegisterTest, RegisterDeviceRegionDoesNotRequireConnection)
     ASSERT_EQ(results.size(), std::size_t{1});
     EXPECT_TRUE(results[0].status.ok()) << results[0].status.message;
     EXPECT_EQ(providerPtr->registerCount, std::uint32_t{1});
+    EXPECT_TRUE(transport.ownsRegisteredRegionHandles_);
+}
+
+TEST(AsuTransportRegisterTest, BoundRegionsAreNotOwnedByTransport)
+{
+    auto provider = std::make_unique<StubTransProvider>();
+    auto* providerPtr = provider.get();
+
+    AsuTransportImpl transport;
+    transport.SetTransProvider(std::move(provider));
+
+    RegisteredMemory region;
+    region.handle = MRHandle{1};
+    std::vector<RegisterResult> results;
+    ASSERT_TRUE(transport.BindRegisteredRegions({region}, results).ok());
+
+    EXPECT_FALSE(transport.ownsRegisteredRegionHandles_);
+    EXPECT_TRUE(transport.UnregisterRegions({region.handle}).ok());
+    EXPECT_EQ(providerPtr->unregisterCount, std::uint32_t{0});
+    EXPECT_EQ(transport.registeredRegions_.size(), std::size_t{1});
+
+    EXPECT_TRUE(transport.Shutdown().ok());
+    EXPECT_EQ(providerPtr->unregisterCount, std::uint32_t{0});
+    EXPECT_TRUE(transport.registeredRegions_.empty());
+    EXPECT_FALSE(transport.ownsRegisteredRegionHandles_);
 }
 
 TEST(AsuTransportRegisterTest, RegisterRegionsReturnsAllResultsAfterBatchFailure)
@@ -262,7 +287,7 @@ TEST(AsuTransportRegisterTest, RegisterRegionsReturnsAllResultsAfterBatchFailure
     EXPECT_EQ(providerPtr->registerCount, std::uint32_t{2});
     EXPECT_EQ(providerPtr->unregisterCount, std::uint32_t{1});
     EXPECT_TRUE(transport.registeredRegions_.empty());
-    EXPECT_TRUE(transport.ownedRegisteredRegionHandles_.empty());
+    EXPECT_FALSE(transport.ownsRegisteredRegionHandles_);
 }
 
 TEST(AsuTransportRegisterTest, RegisterRegionsClearsBatchWhenTokenLookupFails)
@@ -294,7 +319,7 @@ TEST(AsuTransportRegisterTest, RegisterRegionsClearsBatchWhenTokenLookupFails)
     EXPECT_EQ(providerPtr->registerCount, std::uint32_t{3});
     EXPECT_EQ(providerPtr->unregisterCount, std::uint32_t{3});
     EXPECT_TRUE(transport.registeredRegions_.empty());
-    EXPECT_TRUE(transport.ownedRegisteredRegionHandles_.empty());
+    EXPECT_FALSE(transport.ownsRegisteredRegionHandles_);
 }
 
 TEST(AsuTransportRegisterTest, RegisterRegionsRetainsHandlesWhenBatchCleanupFails)
@@ -321,17 +346,15 @@ TEST(AsuTransportRegisterTest, RegisterRegionsRetainsHandlesWhenBatchCleanupFail
     ASSERT_EQ(results.size(), std::size_t{2});
     EXPECT_EQ(results[0].status.code, StatusCode::PARTIAL_FAILED);
     EXPECT_EQ(results[0].handle, kInvalidMRHandle);
-    EXPECT_TRUE(transport.registeredRegions_.empty());
-    EXPECT_EQ(transport.ownedRegisteredRegionHandles_.size(), std::size_t{1});
-    EXPECT_EQ(transport.ownedRegisteredRegionHandles_.count(
-                  reinterpret_cast<MRHandle>(std::uintptr_t{1})),
-              std::size_t{1});
+    EXPECT_EQ(transport.registeredRegions_.size(), std::size_t{1});
+    EXPECT_TRUE(transport.ownsRegisteredRegionHandles_);
 
     providerPtr->failUnregister = false;
     const auto cleanupStatus =
         transport.UnregisterRegions({reinterpret_cast<MRHandle>(std::uintptr_t{1})});
     EXPECT_TRUE(cleanupStatus.ok()) << cleanupStatus.message;
-    EXPECT_TRUE(transport.ownedRegisteredRegionHandles_.empty());
+    EXPECT_TRUE(transport.registeredRegions_.empty());
+    EXPECT_FALSE(transport.ownsRegisteredRegionHandles_);
 }
 
 TEST(AsuTransportRegisterTest, UnregisterRegionsRetainsOnlyHandlesThatFailToUnregister)
@@ -356,13 +379,12 @@ TEST(AsuTransportRegisterTest, UnregisterRegionsRetainsOnlyHandlesThatFailToUnre
 
     EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
     EXPECT_EQ(transport.registeredRegions_.size(), std::size_t{1});
-    EXPECT_EQ(transport.ownedRegisteredRegionHandles_.size(), std::size_t{1});
     EXPECT_EQ(transport.registeredRegions_.count(results[0].handle), std::size_t{0});
     EXPECT_EQ(transport.registeredRegions_.count(results[1].handle), std::size_t{1});
 
     EXPECT_TRUE(transport.UnregisterRegions({results[1].handle}).ok());
     EXPECT_TRUE(transport.registeredRegions_.empty());
-    EXPECT_TRUE(transport.ownedRegisteredRegionHandles_.empty());
+    EXPECT_FALSE(transport.ownsRegisteredRegionHandles_);
 }
 
 TEST(AsuTransportRegisterTest, ShutdownUnregistersRegisteredRegions)
@@ -390,7 +412,7 @@ TEST(AsuTransportRegisterTest, ShutdownUnregistersRegisteredRegions)
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(providerPtr->unregisterCount, std::uint32_t{2});
     EXPECT_TRUE(transport.registeredRegions_.empty());
-    EXPECT_TRUE(transport.ownedRegisteredRegionHandles_.empty());
+    EXPECT_FALSE(transport.ownsRegisteredRegionHandles_);
 }
 
 TEST(AsuSubmitFlowTest, SendSubBatchBuffersReportsSendFailures)

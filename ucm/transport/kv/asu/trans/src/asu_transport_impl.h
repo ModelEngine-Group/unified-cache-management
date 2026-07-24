@@ -30,7 +30,6 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 #include "asu_transport/asu_transport.h"
 #include "buffer_manager.h"
@@ -142,7 +141,7 @@ private:
 
     std::mutex registeredRegionsMu_;
     std::unordered_map<MRHandle, RegisteredMemory> registeredRegions_;
-    std::unordered_set<MRHandle> ownedRegisteredRegionHandles_;
+    bool ownsRegisteredRegionHandles_{false};
 };
 
 }  // namespace UC::ASU

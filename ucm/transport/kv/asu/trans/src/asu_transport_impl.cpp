@@ -206,15 +206,17 @@ Status AsuTransportImpl::Shutdown()
     }
     {
         std::lock_guard<std::mutex> lock(registeredRegionsMu_);
-        std::vector<MRHandle> handles;
-        handles.reserve(ownedRegisteredRegionHandles_.size());
-        for (auto handle : ownedRegisteredRegionHandles_) { handles.push_back(handle); }
-        if (!handles.empty() && transProvider_) {
-            const auto status = UnregisterOwnedRegionHandles(handles);
-            if (!status.ok() && finalStatus.ok()) { finalStatus = status; }
+        if (ownsRegisteredRegionHandles_) {
+            std::vector<MRHandle> handles;
+            handles.reserve(registeredRegions_.size());
+            for (const auto& item : registeredRegions_) { handles.push_back(item.first); }
+            if (!handles.empty() && transProvider_) {
+                const auto status = UnregisterOwnedRegionHandles(handles);
+                if (!status.ok() && finalStatus.ok()) { finalStatus = status; }
+            }
         }
         registeredRegions_.clear();
-        ownedRegisteredRegionHandles_.clear();
+        ownsRegisteredRegionHandles_ = false;
     }
     flagBufferManager_.Shutdown();
     sendBufferManager_.Shutdown();
@@ -355,9 +357,19 @@ Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& region
     }
 
     std::vector<MRHandle> mrHandles;
+    auto trackReturnedHandles = [&]() {
+        for (std::size_t index = 0; index < mrHandles.size(); ++index) {
+            RegisteredMemory registeredMemory;
+            if (index < regions.size()) { registeredMemory.region = regions[index]; }
+            registeredMemory.handle = mrHandles[index];
+            registeredRegions_[mrHandles[index]] = registeredMemory;
+        }
+        if (!mrHandles.empty()) { ownsRegisteredRegionHandles_ = true; }
+    };
+
     auto status = transProvider_->RegisterMemory(registerDescs, mrHandles);
     if (!status.ok()) {
-        ownedRegisteredRegionHandles_.insert(mrHandles.begin(), mrHandles.end());
+        trackReturnedHandles();
         const auto cleanupStatus = UnregisterOwnedRegionHandles(mrHandles);
         results.assign(regions.size(), RegisterResult{status, kInvalidMRHandle});
         const auto clearedStatus = Status::Error(
@@ -373,7 +385,7 @@ Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& region
     if (mrHandles.size() != regions.size()) {
         status = Status::Error(StatusCode::INTERNAL_ERROR,
                                "register result count does not match region count");
-        ownedRegisteredRegionHandles_.insert(mrHandles.begin(), mrHandles.end());
+        trackReturnedHandles();
         const auto cleanupStatus = UnregisterOwnedRegionHandles(mrHandles);
         results.assign(regions.size(), RegisterResult{status, kInvalidMRHandle});
         return Status::Error(StatusCode::PARTIAL_FAILED,
@@ -387,7 +399,7 @@ Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& region
         status = transProvider_->GetMemTokenId(mrHandles[index], tokenIds[index]);
         if (status.ok()) { continue; }
 
-        ownedRegisteredRegionHandles_.insert(mrHandles.begin(), mrHandles.end());
+        trackReturnedHandles();
         const auto cleanupStatus = UnregisterOwnedRegionHandles(mrHandles);
         const auto rolledBackStatus = Status::Error(
             StatusCode::PARTIAL_FAILED, "registration was cleared after token lookup failed");
@@ -405,9 +417,9 @@ Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& region
         registeredMemory.handle = mrHandles[index];
         registeredMemory.tokenId = tokenIds[index];
         registeredRegions_[mrHandles[index]] = registeredMemory;
-        ownedRegisteredRegionHandles_.insert(mrHandles[index]);
         results.emplace_back(RegisterResult{Status::OK(), mrHandles[index], tokenIds[index]});
     }
+    ownsRegisteredRegionHandles_ = true;
     return Status::OK();
 }
 
@@ -428,13 +440,12 @@ Status AsuTransportImpl::BindRegisteredRegions(const std::vector<RegisteredMemor
 Status AsuTransportImpl::UnregisterRegions(const std::vector<MRHandle>& handles)
 {
     std::lock_guard<std::mutex> lock(registeredRegionsMu_);
+    if (!ownsRegisteredRegionHandles_) { return Status::OK(); }
     std::vector<MRHandle> ownedHandles;
     ownedHandles.reserve(handles.size());
     for (auto handle : handles) {
         if (handle == kInvalidMRHandle) { continue; }
-        if (ownedRegisteredRegionHandles_.find(handle) == ownedRegisteredRegionHandles_.end()) {
-            continue;
-        }
+        if (registeredRegions_.find(handle) == registeredRegions_.end()) { continue; }
         ownedHandles.push_back(handle);
     }
     return UnregisterOwnedRegionHandles(ownedHandles);
@@ -458,7 +469,6 @@ Status AsuTransportImpl::UnregisterOwnedRegionHandles(const std::vector<MRHandle
     for (std::size_t index = 0; index < handles.size(); ++index) {
         if (index < statuses.size() && statuses[index].ok()) {
             registeredRegions_.erase(handles[index]);
-            ownedRegisteredRegionHandles_.erase(handles[index]);
         } else if (failure.ok()) {
             failure = index < statuses.size()
                           ? statuses[index]
@@ -466,6 +476,7 @@ Status AsuTransportImpl::UnregisterOwnedRegionHandles(const std::vector<MRHandle
                                           "unregister result count does not match handle count");
         }
     }
+    ownsRegisteredRegionHandles_ = !registeredRegions_.empty();
     return failure;
 }
 
