@@ -85,14 +85,6 @@ def _has_shared_indexer_layers(vllm_config: "VllmConfig") -> bool:
     )
 
 
-def _normalize_tensor_size_list(tensor_size_list: Any) -> list[int]:
-    if isinstance(tensor_size_list, np.ndarray):
-        return [int(v) for v in tensor_size_list.reshape(-1).tolist()]
-    if isinstance(tensor_size_list, (list, tuple)):
-        return [int(v) for v in tensor_size_list]
-    return [int(tensor_size_list)]
-
-
 def _short_list(values: list[int], limit: int = 12) -> list[int]:
     return values[:limit]
 
@@ -338,19 +330,6 @@ class KVCacheLayout:
             vllm_block_ids_np[:, None, None] * self.block_stride_lists[None, :, :]
             + self.base_ptrs[None, :, :]
         )  # (num_blocks, n_layers, n_ptrs)
-
-    def extract_block_addrs_for_row(
-        self, vllm_block_ids: List[int], row_id: int
-    ) -> np.ndarray:
-        if not self.use_layerwise:
-            raise ValueError(
-                "Row address extraction requires a layerwise KV cache layout"
-            )
-        vllm_block_ids_np = np.asarray(vllm_block_ids, dtype=np.uint64)
-        return (
-            vllm_block_ids_np[:, None] * self.block_stride_lists[row_id][None, :]
-            + self.base_ptrs[row_id][None, :]
-        )
 
     @property
     def tensor_size_list(self) -> list[int]:
@@ -1109,10 +1088,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self,
         kv_cache_layout: Optional[KVCacheLayout],
         cpu_affinity_cores: Optional[list[int]] = None,
-        tensor_size_list_override: Optional[list[int]] = None,
-        shard_size_override: Optional[int] = None,
-        block_size_override: Optional[int] = None,
-        unique_id_suffix: str = "",
     ) -> UcmKVStoreBaseV1:
         if len(self.connector_configs) != 1:
             raise RuntimeError(
@@ -1129,27 +1104,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if "storage_backends" in config:
             backends = [path for path in config["storage_backends"].split(":")]
             config["storage_backends"] = backends
-        config["unique_id"] = f"{self.engine_id}{unique_id_suffix}"
+        config["unique_id"] = f"{self.engine_id}"
         if self._role == KVConnectorRole.WORKER:
             config["device_id"] = self.local_rank
-            tensor_size_list = _normalize_tensor_size_list(
-                tensor_size_list_override
-                if tensor_size_list_override is not None
-                else kv_cache_layout.tensor_size_list
+            config["tensor_size_list"] = (
+                kv_cache_layout.tensor_size_list * self.blocks_per_chunk
             )
-            config["tensor_size_list"] = tensor_size_list * self.blocks_per_chunk
-            shard_size = (
-                shard_size_override
-                if shard_size_override is not None
-                else kv_cache_layout.shard_size
-            )
-            block_size = (
-                block_size_override
-                if block_size_override is not None
-                else kv_cache_layout.block_size
-            )
-            config["shard_size"] = shard_size * self.blocks_per_chunk
-            config["block_size"] = block_size * self.blocks_per_chunk
+            config["shard_size"] = kv_cache_layout.shard_size * self.blocks_per_chunk
+            config["block_size"] = kv_cache_layout.block_size * self.blocks_per_chunk
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
             buffer_addrs = kv_cache_layout.base_ptrs.reshape(-1).tolist()
             buffer_sizes = kv_cache_layout.buffer_sizes.reshape(-1).tolist()
