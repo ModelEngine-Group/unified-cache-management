@@ -30,6 +30,7 @@
 #include <unordered_map>
 #include <vector>
 #include "asu_client/asu_client.h"
+#include "asu_transport/types.h"
 #include "client_task_manager.h"
 #include "view_server.h"
 
@@ -90,12 +91,6 @@ public:
 private:
     using ClientTaskContextPtr = std::shared_ptr<ClientTaskContext>;
 
-    // RegisteredResource keeps memory metadata that must be rebound after refresh.
-    struct RegisteredResource {
-        MemoryRegion region;
-        RegisterResult result;
-    };
-
     // Submits one entry-based client task through the refresh-retry wrapper.
     Status SubmitAsync(ClientOpType opType, const std::vector<KVBuffer>& entries, TaskId& taskId);
     // Builds and dispatches one entry-based task attempt on the current snapshot.
@@ -132,8 +127,8 @@ private:
     // Creates and initializes a transport for one ASU.
     Status BuildTransport(AsuId asuId, const AsuInfo& asuInfo,
                           std::shared_ptr<AsuTransport>& transport);
-    // Binds remembered registered resources to a transport.
-    Status BindRegisteredResources(AsuId asuId, const std::shared_ptr<AsuTransport>& transport);
+    // Binds remembered registered regions to a transport.
+    Status BindRegisteredRegions(AsuId asuId, const std::shared_ptr<AsuTransport>& transport);
     // Returns the current immutable snapshot if initialized.
     std::shared_ptr<ViewSnapshot> GetSnapshot() const;
 
@@ -182,8 +177,8 @@ private:
     std::shared_ptr<ViewServer> viewServer_;
     // Transport configs indexed by ASU id for snapshot construction.
     std::unordered_map<AsuId, TransportConfig> transportConfigs_;
-    // Resources registered on the current view and rebound to newly added transports.
-    std::vector<RegisteredResource> registeredResources_;
+    // Regions registered on the current view and rebound to newly added transports.
+    std::vector<RegisteredMemory> registeredRegions_;
     // Current immutable routing and transport snapshot.
     std::shared_ptr<ViewSnapshot> snapshot_;
     // Transports removed from the active snapshot but still needed by old tasks.

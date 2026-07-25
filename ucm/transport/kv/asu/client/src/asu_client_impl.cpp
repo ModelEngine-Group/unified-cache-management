@@ -156,7 +156,7 @@ Status AsuClientImpl::Shutdown()
         config_ = AsuClientConfig{};
         viewServer_.reset();
         transportConfigs_.clear();
-        registeredResources_.clear();
+        registeredRegions_.clear();
         initialized_ = false;
     }
 
@@ -386,10 +386,11 @@ Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regio
         }
     }
 
+    // Remember registered regions for future transport bindings
     if (finalStatus.ok()) {
         std::lock_guard<std::mutex> lock{mutex_};
         for (std::size_t index = 0; index < regions.size(); ++index) {
-            registeredResources_.emplace_back(RegisteredResource{regions[index], results[index]});
+            registeredRegions_.emplace_back(registeredRegions[index]);
         }
     }
     return finalStatus;
@@ -807,13 +808,13 @@ Status AsuClientImpl::UnregisterRegionsOnce(const std::vector<MRHandle>& handles
     }
     if (finalStatus.ok()) {
         std::lock_guard<std::mutex> lock{mutex_};
-        registeredResources_.erase(
-            std::remove_if(registeredResources_.begin(), registeredResources_.end(),
-                           [&handles](const RegisteredResource& resource) {
-                               return std::find(handles.begin(), handles.end(),
-                                                resource.result.handle) != handles.end();
+        registeredRegions_.erase(
+            std::remove_if(registeredRegions_.begin(), registeredRegions_.end(),
+                           [&handles](const RegisteredMemory& region) {
+                               return std::find(handles.begin(), handles.end(), region.handle) !=
+                                      handles.end();
                            }),
-            registeredResources_.end());
+            registeredRegions_.end());
     }
     return finalStatus;
 }
@@ -843,11 +844,11 @@ Status AsuClientImpl::BuildSnapshot(const GlobalView& view,
                                                " asuId=" + std::to_string(asuId));
             }
 
-            status = BindRegisteredResources(asuId, transport);
+            status = BindRegisteredRegions(asuId, transport);
             if (!status.ok()) {
                 transport->Shutdown();
                 return WithContext(
-                    status, "bind registered resources during view refresh, asuIndex=" +
+                    status, "bind registered regions during view refresh, asuIndex=" +
                                 std::to_string(asuIndex) + " asuId=" + std::to_string(asuId));
             }
         }
@@ -899,31 +900,21 @@ Status AsuClientImpl::BuildTransport(AsuId asuId, const AsuInfo& asuInfo,
     return Status::OK();
 }
 
-Status AsuClientImpl::BindRegisteredResources(AsuId asuId,
-                                              const std::shared_ptr<AsuTransport>& transport)
+Status AsuClientImpl::BindRegisteredRegions(AsuId asuId,
+                                            const std::shared_ptr<AsuTransport>& transport)
 {
-    std::vector<RegisteredResource> resources;
+    std::vector<RegisteredMemory> registeredRegions;
     {
         std::lock_guard<std::mutex> lock{mutex_};
-        resources = registeredResources_;
+        registeredRegions = registeredRegions_;
     }
-    if (resources.empty()) { return Status::OK(); }
-
-    std::vector<RegisteredMemory> registeredRegions;
-    registeredRegions.reserve(resources.size());
-    for (const auto& resource : resources) {
-        RegisteredMemory registeredRegion;
-        registeredRegion.region = resource.region;
-        registeredRegion.handle = resource.result.handle;
-        registeredRegion.tokenId = resource.result.tokenId;
-        registeredRegions.emplace_back(registeredRegion);
-    }
+    if (registeredRegions.empty()) { return Status::OK(); }
 
     std::vector<RegisterResult> results;
     auto status = transport->BindRegisteredRegions(registeredRegions, results);
     if (!status.ok()) {
         return WithContext(status, "asuId=" + std::to_string(asuId) +
-                                       " resource_count=" + std::to_string(resources.size()));
+                                       " region_count=" + std::to_string(registeredRegions.size()));
     }
     return Status::OK();
 }
