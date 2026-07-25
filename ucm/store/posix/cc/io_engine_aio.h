@@ -157,6 +157,7 @@ private:
         io.length = shardSize_;
         io.buffer = shard.addrs.front();
         io.tag = tid;
+        io.cacheLifeHolder = shard.cacheLifeHolder;
         io.callback = [this, task, w, fd = result.fd, last, id](AioImpl::Result ioResult) {
             OnIoCallback<dump>(task, w, fd, last, id, ioResult);
         };

@@ -312,7 +312,8 @@ private:
                                       config_.tensorSizeList.begin() + count);
 
             out.shards.push_back(TransShard{std::move(key), shard.owner, shard.index,
-                                            std::move(addrs), std::move(sizes)});
+                                            std::move(addrs), std::move(sizes),
+                                            shard.cacheLifeHolder});
         }
     }
 

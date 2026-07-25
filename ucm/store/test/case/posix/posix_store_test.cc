@@ -59,7 +59,7 @@ UC::Detail::Dictionary MakeAioConfig(const std::string& path, size_t timeoutMs =
     return config;
 }
 
-UC::Detail::Dictionary MakePsyncConfig(const std::string& path)
+UC::Detail::Dictionary MakePsyncConfig(const std::string& path, size_t timeoutMs = 30000)
 {
     UC::Detail::Dictionary config;
     config.SetNumber("device_id", 0);
@@ -69,6 +69,7 @@ UC::Detail::Dictionary MakePsyncConfig(const std::string& path)
     config.SetNumber("block_size", AIO_TEST_DATA_SIZE);
     config.Set("posix_io_engine", std::string("psync"));
     config.Set("io_direct", false);
+    config.SetNumber("timeout_ms", timeoutMs);
     config.SetNumber("data_dir_shard_bytes", size_t(0));
     return config;
 }
@@ -527,6 +528,97 @@ TEST(UCAioImplTest, SubmitEagainHonorsDeadline)
     ASSERT_EQ(status, UC::Status::Timeout());
     ASSERT_GE(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 20);
     ASSERT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 1000);
+}
+
+TEST_F(UCPosixStoreTest, AioRetainsShardLifetimeUntilCompletionCallbackReturns)
+{
+    using namespace UC::PosixStore;
+    AioImpl aio;
+    ASSERT_EQ(aio.Setup(1000), UC::Status::OK());
+    auto path = Path() + "/aio-lifetime";
+    auto fd = ::open(path.c_str(), O_CREAT | O_RDWR | O_TRUNC, 0600);
+    ASSERT_GE(fd, 0);
+    auto source = MakeAlignedBuffer(9);
+    auto target = MakeAlignedBuffer(0);
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(target, nullptr);
+    ASSERT_EQ(::write(fd, source.get(), AIO_TEST_DATA_SIZE),
+              static_cast<ssize_t>(AIO_TEST_DATA_SIZE));
+
+    std::promise<void> callbackEntered;
+    std::promise<void> allowCallback;
+    auto allowCallbackFuture = allowCallback.get_future().share();
+    auto cacheLifeHolder = std::make_shared<int>(1);
+    std::weak_ptr<int> weakLifetime = cacheLifeHolder;
+    AioImpl::Io io;
+    io.fd = fd;
+    io.offset = 0;
+    io.length = AIO_TEST_DATA_SIZE;
+    io.buffer = target.get();
+    io.cacheLifeHolder = cacheLifeHolder;
+    io.callback = [&](AioImpl::Result result) {
+        EXPECT_EQ(result.error, 0);
+        callbackEntered.set_value();
+        allowCallbackFuture.wait();
+    };
+    ASSERT_EQ(aio.ReadAsync(std::move(io)), UC::Status::OK());
+    cacheLifeHolder.reset();
+    callbackEntered.get_future().wait();
+
+    EXPECT_FALSE(weakLifetime.expired());
+    allowCallback.set_value();
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (!weakLifetime.expired() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    EXPECT_TRUE(weakLifetime.expired());
+    ::close(fd);
+}
+
+TEST_F(UCPosixStoreTest, PsyncRetainsShardLifetimeAfterWaitTimeout)
+{
+    using namespace UC::PosixStore;
+    PosixStore store;
+    ASSERT_EQ(store.Setup(MakePsyncConfig(Path(), 50)), UC::Status::OK());
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    Config layoutConfig;
+    layoutConfig.storageBackends = {Path()};
+    layoutConfig.dataDirShardBytes = 0;
+    SpaceLayout layout;
+    ASSERT_EQ(layout.Setup(layoutConfig), UC::Status::OK());
+    auto path = layout.DataFilePath(block, false);
+    std::filesystem::create_directories(std::filesystem::path(path).parent_path());
+    ASSERT_EQ(::mkfifo(path.c_str(), 0600), 0);
+    auto target = MakeAlignedBuffer(0);
+    ASSERT_NE(target, nullptr);
+    auto cacheLifeHolder = std::make_shared<int>(1);
+    std::weak_ptr<int> weakLifetime = cacheLifeHolder;
+    auto desc = MakeDumpDesc("PsyncLifetime", block, target.get());
+    desc[0].cacheLifeHolder = cacheLifeHolder;
+    auto handle = store.Load(std::move(desc));
+    ASSERT_TRUE(handle.HasValue());
+    cacheLifeHolder.reset();
+
+    ASSERT_EQ(store.Wait(handle.Value()), UC::Status::Timeout());
+    EXPECT_FALSE(weakLifetime.expired());
+
+    auto source = MakeAlignedBuffer(7);
+    ASSERT_NE(source, nullptr);
+    std::thread writer([&] {
+        auto writerFd = ::open(path.c_str(), O_WRONLY);
+        EXPECT_GE(writerFd, 0);
+        if (writerFd >= 0) {
+            EXPECT_EQ(::write(writerFd, source.get(), AIO_TEST_DATA_SIZE),
+                      static_cast<ssize_t>(AIO_TEST_DATA_SIZE));
+            ::close(writerFd);
+        }
+    });
+    writer.join();
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (!weakLifetime.expired() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    EXPECT_TRUE(weakLifetime.expired());
 }
 
 TEST_F(UCPosixStoreTest, AioQueuedTasksTimeOutWhileOpenWorkerIsStuck)

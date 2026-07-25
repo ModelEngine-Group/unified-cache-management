@@ -47,11 +47,10 @@ class LoadQueue {
         TaskPtr task;
         Detail::Shard shard;
         TransBuffer::Handle bufferHandle;
-        Detail::TaskHandle backendTaskHandle;
+        Detail::TaskHandle backendTaskHandle{0};
         WaiterPtr waiter;
         bool launchBoundary{false};
     };
-
 private:
     alignas(64) std::atomic_bool stop_{false};
     TaskIdSet* failureSet_{nullptr};
@@ -63,6 +62,7 @@ private:
     bool useGdr_{false};
     bool cacheSdmaDirect_{false};
     std::string sdmaDirectLaunchGranularity_{kSdmaDirectLaunchShard};
+    size_t timeoutMs_{0};
     std::vector<ssize_t> cpuAffinityCores_{};
     SpscRingQueue<TaskPair> waiting_;
     SpscRingQueue<ShardTask> running_;
@@ -84,6 +84,7 @@ private:
     Status HostToDeviceAsync(CopyStream& stream, void* host, void** device);
     Status HostToDeviceTaskAsync(CopyStream& stream, std::vector<ShardTask>& tasks);
     Status FlushSdmaDirectTaskBatch(CopyStream& stream);
+    Status SynchronizeAndClearHolders(CopyStream& stream);
     void RecordH2dSyncMetrics(double h2dSyncMs) const;
     void ClearSdmaDirectHolders() noexcept;
     bool UseSdmaDirectTaskLaunch() const noexcept;
