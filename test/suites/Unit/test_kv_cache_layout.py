@@ -258,6 +258,31 @@ class KVCacheLayoutTest(unittest.TestCase):
 
         self.assertTrue(supported)
 
+    def test_cuda_tensor_role_pattern_mapping_is_extensible(self):
+        class ExtendedCUDAKVCacheLayout(SharedIndexerKVCacheLayout):
+            CUDA_TENSOR_ROLE_PATTERNS = {
+                "indexer": (
+                    *SharedIndexerKVCacheLayout.CUDA_TENSOR_ROLE_PATTERNS["indexer"],
+                    re.compile(
+                        r"(?:^|[._])selector[._]cache(?:[._]|$)",
+                        re.IGNORECASE,
+                    ),
+                ),
+            }
+
+        self.assertEqual(
+            SharedIndexerKVCacheLayout._cuda_cache_role(
+                "model.layers.0.self_attn.indexer.k_cache"
+            ),
+            "indexer",
+        )
+        self.assertEqual(
+            SharedIndexerKVCacheLayout._cuda_cache_role(
+                "model.layers.0.self_attn.attn"
+            ),
+            "attention",
+        )
+
     def test_cuda_shared_indexer_uses_semantic_order_and_padding(self):
         layer_2_indexer = "model.layers.2.router.shared_indexer.cache_storage"
         layer_0_indexer = "model.layers.0.self_attn.indexer.k_cache"

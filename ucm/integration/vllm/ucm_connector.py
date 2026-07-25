@@ -383,6 +383,16 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
     mask behavior to the generic KV cache layout.
     """
 
+    CUDA_TENSOR_ROLE_PATTERNS = {
+        "indexer": (
+            re.compile(
+                r"(?:^|[._])indexer(?:[._]|$)",
+                re.IGNORECASE,
+            ),
+        ),
+    }
+    CUDA_DEFAULT_TENSOR_ROLE = "attention"
+
     @classmethod
     def supports(cls, vllm_config: "VllmConfig", ucm_config: dict) -> bool:
         device_type = getattr(current_platform, "device_type", None)
@@ -444,15 +454,9 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
             return "bf16"
         return "shared"
 
-    @staticmethod
-    def _cuda_cache_role(layer_name: str) -> str:
-        """Classify a CUDA KV cache by semantic path components.
-
-        CUDA model integrations do not expose a stable, shared cache-name
-        suffix. Treat any path component named ``indexer`` as the Indexer
-        cache; the remaining registered cache for that decoder layer is its
-        Attention cache.
-        """
+    @classmethod
+    def _cuda_cache_role(cls, layer_name: str) -> str:
+        """Classify a CUDA cache using the extensible role-pattern mapping."""
         path_components = [
             component
             for component in re.split(r"[^a-zA-Z0-9]+", layer_name.lower())
@@ -462,17 +466,15 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
             if component == "layers" and path_components[index + 1].isdigit():
                 path_components = path_components[index + 2 :]
                 break
-        return "indexer" if "indexer" in path_components else "attention"
+        semantic_name = ".".join(path_components)
+        for role, patterns in cls.CUDA_TENSOR_ROLE_PATTERNS.items():
+            if any(pattern.search(semantic_name) for pattern in patterns):
+                return role
+        return cls.CUDA_DEFAULT_TENSOR_ROLE
 
     @staticmethod
     def _cuda_tensor_info(layer_name: str, tensor: torch.Tensor) -> KVCacheTensorInfo:
         """Describe one CUDA tensor and verify block-contiguous storage."""
-        if tensor.dim() != 3:
-            raise ValueError(
-                "CUDA Shared Indexer KV cache tensors must have shape "
-                "[num_blocks, block_size, head_size]: "
-                f"layer={layer_name}, shape={tuple(tensor.shape)}."
-            )
 
         bytes_per_block = int(tensor.stride(0)) * int(tensor.element_size())
         payload_size = math.prod(int(size) for size in tensor.shape[1:]) * int(
