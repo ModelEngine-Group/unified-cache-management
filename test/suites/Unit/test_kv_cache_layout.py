@@ -47,6 +47,33 @@ class FakeTensor:
         return math.prod(self.shape[dimension + 1 :])
 
 
+class FakeCombinedTensor:
+    def __init__(
+        self,
+        ptr: int,
+        block_stride: int,
+        num_blocks: int = 2,
+        element_size: int = 1,
+    ):
+        component_buffer_size = num_blocks * block_stride
+        self._components = tuple(
+            FakeTensor(
+                ptr + component_id * component_buffer_size,
+                block_stride,
+                num_blocks=num_blocks,
+                element_size=element_size,
+            )
+            for component_id in range(2)
+        )
+        self.shape = (2, *self._components[0].shape)
+
+    def __getitem__(self, index):
+        return self._components[index]
+
+    def dim(self):
+        return len(self.shape)
+
+
 class FakeTorch:
     Tensor = FakeTensor
 
@@ -141,18 +168,29 @@ def _build_layout(
     return layout_cls(kvcaches, ucm_config, vllm_config, kv_cache_config)
 
 
-def _build_cuda_shared_layout(entries: list[tuple[str, int, int]]):
+def _build_cuda_shared_layout(
+    entries: list[tuple[str, int, int] | tuple[str, int, int, int]],
+):
     next_ptr = 0x100000
     kvcaches = {}
     tensor_ptrs = {}
-    for layer_name, block_stride, element_size in entries:
+    for entry in entries:
+        layer_name, block_stride, element_size, *dimension_values = entry
+        dimensions = dimension_values[0] if dimension_values else 3
         tensor_ptrs[layer_name] = next_ptr
-        kvcaches[layer_name] = FakeTensor(
-            next_ptr,
-            block_stride,
-            element_size=element_size,
-            dimensions=3,
-        )
+        if dimensions == 5:
+            kvcaches[layer_name] = FakeCombinedTensor(
+                next_ptr,
+                block_stride,
+                element_size=element_size,
+            )
+        else:
+            kvcaches[layer_name] = FakeTensor(
+                next_ptr,
+                block_stride,
+                element_size=element_size,
+                dimensions=dimensions,
+            )
         next_ptr += 0x100000
 
     layer_ids = {_extract_layer_index(name) for name in kvcaches}
@@ -264,7 +302,7 @@ class KVCacheLayoutTest(unittest.TestCase):
                 "indexer": (
                     *SharedIndexerKVCacheLayout.CUDA_TENSOR_ROLE_PATTERNS["indexer"],
                     re.compile(
-                        r"(?:^|[._])selector[._]cache(?:[._]|$)",
+                        r"(?:^|\.)selector\.cache(?:\.|$)",
                         re.IGNORECASE,
                     ),
                 ),
@@ -284,7 +322,7 @@ class KVCacheLayoutTest(unittest.TestCase):
         )
 
     def test_cuda_shared_indexer_uses_semantic_order_and_padding(self):
-        layer_2_indexer = "model.layers.2.router.shared_indexer.cache_storage"
+        layer_2_indexer = "model.layers.2.router.indexer.cache_storage"
         layer_0_indexer = "model.layers.0.self_attn.indexer.k_cache"
         layer_0_attention = "model.layers.0.self_attn.attn"
         layer_1_attention = "model.layers.1.mla.kv_storage"
@@ -338,6 +376,55 @@ class KVCacheLayoutTest(unittest.TestCase):
             tensor_ptrs[layer_0_indexer] + 8448,
         )
         self.assertEqual(block_one_addrs[1, 0, 1], 0)
+
+    def test_cuda_combined_5d_attention_splits_kv_segments(self):
+        layer_0_indexer = "model.layers.0.self_attn.indexer.k_cache"
+        layer_0_attention = "model.layers.0.self_attn.attn"
+        layer_1_attention = "model.layers.1.self_attn.attn"
+        entries = [
+            (layer_0_indexer, 1024, 1),
+            (layer_0_attention, 4096, 2, 5),
+            (layer_1_attention, 4096, 2, 5),
+        ]
+        layout, tensor_ptrs = _build_cuda_shared_layout(entries)
+
+        expected_sizes = [4096, 4096, 1024]
+        self.assertEqual(layout.tensor_size_list, expected_sizes)
+        self.assertEqual(layout.shard_size, sum(expected_sizes))
+        self.assertEqual(layout.base_ptrs.shape, (2, 3))
+        self.assertEqual(
+            layout.tensor_size_lists.tolist(),
+            [expected_sizes, expected_sizes],
+        )
+
+        layer_0_attention_ptr = tensor_ptrs[layer_0_attention]
+        layer_0_value_ptr = layer_0_attention_ptr + 2 * 4096
+        self.assertEqual(
+            layout.base_ptrs[0].tolist(),
+            [
+                layer_0_attention_ptr,
+                layer_0_value_ptr,
+                tensor_ptrs[layer_0_indexer],
+            ],
+        )
+        self.assertEqual(layout.block_stride_lists[0].tolist(), expected_sizes)
+        self.assertEqual(layout.base_ptrs[1, 2], 0)
+        self.assertEqual(layout.block_stride_lists[1, 2], 0)
+
+        block_one_addrs = layout.extract_block_addrs([1], layer_first=True)
+        self.assertEqual(
+            int(block_one_addrs[0, 0, 0]),
+            layer_0_attention_ptr + 4096,
+        )
+        self.assertEqual(
+            int(block_one_addrs[0, 0, 1]),
+            layer_0_value_ptr + 4096,
+        )
+        self.assertEqual(
+            int(block_one_addrs[0, 0, 2]),
+            tensor_ptrs[layer_0_indexer] + 1024,
+        )
+        self.assertEqual(block_one_addrs[1, 0, 2], 0)
 
     def test_shared_indexer_li_c8_disabled_uses_padding_without_mask(self):
         layout = _build_layout(

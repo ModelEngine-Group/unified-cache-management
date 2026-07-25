@@ -386,7 +386,7 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
     CUDA_TENSOR_ROLE_PATTERNS = {
         "indexer": (
             re.compile(
-                r"(?:^|[._])indexer(?:[._]|$)",
+                r"(?:^|\.)indexer(?:\.|$)",
                 re.IGNORECASE,
             ),
         ),
@@ -458,9 +458,7 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
     def _cuda_cache_role(cls, layer_name: str) -> str:
         """Classify a CUDA cache using the extensible role-pattern mapping."""
         path_components = [
-            component
-            for component in re.split(r"[^a-zA-Z0-9]+", layer_name.lower())
-            if component
+            component for component in layer_name.lower().split(".") if component
         ]
         for index, component in enumerate(path_components[:-1]):
             if component == "layers" and path_components[index + 1].isdigit():
@@ -473,25 +471,44 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
         return cls.CUDA_DEFAULT_TENSOR_ROLE
 
     @staticmethod
-    def _cuda_tensor_info(layer_name: str, tensor: torch.Tensor) -> KVCacheTensorInfo:
-        """Describe one CUDA tensor and verify block-contiguous storage."""
+    def _cuda_tensor_infos(
+        layer_name: str,
+        tensor: torch.Tensor,
+        role: str,
+    ) -> tuple[KVCacheTensorInfo, ...]:
+        """Describe block-first CUDA tensors, splitting combined K/V caches."""
+        if tensor.dim() == 5:
+            if role != "attention" or tensor.shape[0] != 2:
+                raise ValueError(
+                    "CUDA 5D combined KV cache must be an Attention tensor "
+                    "with shape [2, num_blocks, ...]: "
+                    f"layer={layer_name}, role={role}, shape={tuple(tensor.shape)}."
+                )
+            component_tensors = (tensor[0], tensor[1])
+        else:
+            component_tensors = (tensor,)
 
-        bytes_per_block = int(tensor.stride(0)) * int(tensor.element_size())
-        payload_size = math.prod(int(size) for size in tensor.shape[1:]) * int(
-            tensor.element_size()
-        )
-        if bytes_per_block != payload_size:
-            raise ValueError(
-                "CUDA Shared Indexer KV cache requires contiguous blocks: "
-                f"layer={layer_name}, block_stride={bytes_per_block}, "
-                f"payload_size={payload_size}."
+        tensor_infos = []
+        for component in component_tensors:
+            bytes_per_block = int(component.stride(0)) * int(component.element_size())
+            payload_size = math.prod(int(size) for size in component.shape[1:]) * int(
+                component.element_size()
             )
+            if bytes_per_block != payload_size:
+                raise ValueError(
+                    "CUDA Shared Indexer KV cache requires contiguous blocks: "
+                    f"layer={layer_name}, block_stride={bytes_per_block}, "
+                    f"payload_size={payload_size}."
+                )
 
-        return KVCacheTensorInfo(
-            ptr=int(tensor.data_ptr()),
-            bytes_per_block=bytes_per_block,
-            buffer_size=int(tensor.shape[0]) * bytes_per_block,
-        )
+            tensor_infos.append(
+                KVCacheTensorInfo(
+                    ptr=int(component.data_ptr()),
+                    bytes_per_block=bytes_per_block,
+                    buffer_size=int(component.shape[0]) * bytes_per_block,
+                )
+            )
+        return tuple(tensor_infos)
 
     def _build_segment_rows(
         self,
@@ -617,7 +634,9 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
         Layers without an independent Indexer keep the same copy schema by
         receiving a metadata-only ghost segment in the Indexer slot.
         """
-        layer_tensors: dict[int, dict[str, Optional[KVCacheTensorInfo]]] = {}
+        layer_tensors: dict[int, dict[str, Optional[tuple[KVCacheTensorInfo, ...]]]] = (
+            {}
+        )
         for layer_name, tensor in kvcaches.items():
             layer_id = self.layer_name_to_id[layer_name]
             layer = layer_tensors.setdefault(
@@ -631,7 +650,7 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
                     f"Duplicate CUDA Shared Indexer {slot} cache for "
                     f"layer {layer_id}: {layer_name}."
                 )
-            layer[slot] = self._cuda_tensor_info(layer_name, tensor)
+            layer[slot] = self._cuda_tensor_infos(layer_name, tensor, slot)
 
         row_layer_ids = sorted(layer_tensors)
         self.first_layer_id = row_layer_ids[0]
@@ -644,20 +663,22 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
                     "CUDA Shared Indexer KV cache layer has no Attention "
                     f"tensor: layer={layer_id}."
                 )
+            indexer_tensors = layer_tensors[layer_id]["indexer"]
+            if indexer_tensors is not None and len(indexer_tensors) != 1:
+                raise ValueError(
+                    "CUDA Shared Indexer layer must have one Indexer tensor: "
+                    f"layer={layer_id}, count={len(indexer_tensors)}."
+                )
             layers.append(
                 SharedIndexerLayerInfo(
                     layer_id=layer_id,
-                    sfa_tensors=(attention,),
-                    indexer=layer_tensors[layer_id]["indexer"],
+                    sfa_tensors=attention,
+                    indexer=indexer_tensors[0] if indexer_tensors else None,
                     scale=None,
                 )
             )
 
-        attention_size = self._validate_uniform_sizes(
-            [layer.sfa_tensors[0].bytes_per_block for layer in layers],
-            "CUDA Attention block size",
-            [layer.layer_id for layer in layers],
-        )
+        attention_sizes = [tensor.bytes_per_block for tensor in layers[0].sfa_tensors]
         indexer_layers = [layer for layer in layers if layer.indexer is not None]
         if not indexer_layers:
             raise ValueError(
@@ -676,7 +697,7 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
         self._set_segment_rows(segment_rows)
         logger.info(
             "CUDA Shared Indexer layerwise KV cache layout: "
-            f"slot_sizes={[attention_size, indexer_size]}, "
+            f"slot_sizes={attention_sizes + [indexer_size]}, "
             f"layer_types={[self._layer_type(layer) for layer in layers]}"
         )
 
