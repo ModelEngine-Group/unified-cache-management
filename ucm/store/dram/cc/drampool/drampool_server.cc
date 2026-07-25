@@ -129,7 +129,6 @@ void DramPoolServer::Stop()
     // Close ingress, stop its receiver, then let TaskWorker drain accepted tasks.
     StopRequestReceiver();
     StopTaskWorker();
-    DisconnectInflightTransfers();
     StopCompletionPoller();
     StopGCThread();
     StopTransportService();
@@ -406,11 +405,6 @@ void DramPoolServer::StopTaskWorker()
 {
     taskWorkerStop_.store(true, std::memory_order_release);
     if (taskWorkerThread_.joinable()) { taskWorkerThread_.join(); }
-}
-
-void DramPoolServer::DisconnectInflightTransfers()
-{
-    if (completionPoller_) { completionPoller_->SetDisconnectAllTransfers(); }
 }
 
 void DramPoolServer::StopCompletionPoller()

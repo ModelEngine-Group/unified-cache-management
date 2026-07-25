@@ -86,7 +86,6 @@ private:
     void StopTcpMessageChannel();
     void StopRequestReceiver();
     void StopTaskWorker();
-    void DisconnectInflightTransfers();
     void StopCompletionPoller();
     void StopGCThread();
     void StopTransportService();
@@ -115,7 +114,7 @@ private:
     std::unique_ptr<transport::TcpMessageChannel> tcpMessageChannel_;
     std::unique_ptr<BufferManager> bufferManager_;
     std::unique_ptr<UC::BufferPool> flagBufferPool_;
-    std::unique_ptr<UC::DramPool::MetadataManager> metadataManager_;
+    std::unique_ptr<MetadataManager> metadataManager_;
     std::unique_ptr<ProtocolManager> protocolManager_;
     std::unique_ptr<DramPoolRuntime> runtime_;
     std::unique_ptr<TaskWorker> taskWorker_;

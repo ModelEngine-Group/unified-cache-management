@@ -2,7 +2,25 @@
  * MIT License
  *
  * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
- */
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
 #include <acl/acl.h>
 #include <atomic>
 #include <chrono>
@@ -140,7 +158,7 @@ TEST_F(CompletionPollerTest, FillPendingWindowHonorsConfiguredDepthAndQueueOrder
         completionQueue_.Push(std::move(record));
     }
 
-    EXPECT_EQ(poller_->FillPendingWindow(), 2U);
+    poller_->FillPendingWindow();
     ASSERT_EQ(poller_->pending_.size(), 2U);
     EXPECT_EQ(poller_->pending_[0].response_addr, 1U);
     EXPECT_EQ(poller_->pending_[1].response_addr, 2U);
@@ -155,7 +173,7 @@ TEST_F(CompletionPollerTest, FillPendingWindowDoesNothingWhenDepthIsZero)
     g_config.pollerPendingDepth = 0;
     completionQueue_.Push(MakeResponseRecord());
 
-    EXPECT_EQ(poller_->FillPendingWindow(), 0U);
+    poller_->FillPendingWindow();
     EXPECT_TRUE(poller_->pending_.empty());
     CompletionRecord remaining;
     EXPECT_TRUE(completionQueue_.TryPop(remaining));
@@ -207,15 +225,7 @@ TEST_F(CompletionPollerTest, RunWithStopSetDrainsAllQueuedFailures)
     EXPECT_TRUE(poller_->pending_.empty());
     CompletionRecord remaining;
     EXPECT_FALSE(completionQueue_.TryPop(remaining));
-    EXPECT_TRUE(poller_->disconnectAllTransfers_.load(std::memory_order_acquire));
-}
-
-TEST_F(CompletionPollerTest, SetDisconnectAllTransfersIsIdempotent)
-{
-    EXPECT_FALSE(poller_->disconnectAllTransfers_.load(std::memory_order_acquire));
-    poller_->SetDisconnectAllTransfers();
-    poller_->SetDisconnectAllTransfers();
-    EXPECT_TRUE(poller_->disconnectAllTransfers_.load(std::memory_order_acquire));
+    EXPECT_TRUE(poller_->disconnectAllTransfers_);
 }
 
 TEST_F(CompletionPollerTest, DataStatusApiFailureAbortsDumpAndAdvancesToResponse)
@@ -357,34 +367,6 @@ TEST_F(CompletionPollerTest, OperationTimeoutHandlesBoundaryAndClockRollback)
     EXPECT_FALSE(poller_->OperationTimedOut(record, 999));
     EXPECT_FALSE(poller_->OperationTimedOut(record, 1'099));
     EXPECT_TRUE(poller_->OperationTimedOut(record, 1'100));
-}
-
-TEST_F(CompletionPollerTest, DisconnectFailureKeepsTransferPendingForRetry)
-{
-    CompletionRecord record;
-    record.peer_one_sided_id = kUnavailablePeer;
-    record.transfer_items = {
-        TransferItem{0, KeyFromHex("c1")}
-    };
-
-    poller_->DisconnectPeer(record, 7, "data");
-
-    EXPECT_FALSE(record.disconnect_attempted);
-    EXPECT_EQ(record.transfer_items.size(), 1U);
-    EXPECT_EQ(record.stage, CompletionStage::PollDataTransfer);
-}
-
-TEST_F(CompletionPollerTest, DisconnectFailureDoesNotBlockShutdown)
-{
-    CompletionRecord record;
-    record.peer_one_sided_id = kUnavailablePeer;
-    poller_->SetDisconnectAllTransfers();
-
-    poller_->DisconnectPeer(record, 7, "data");
-
-    EXPECT_TRUE(poller_->shutdownDrainBlocked_);
-    const std::atomic_bool stop{true};
-    poller_->Run(stop);
 }
 
 TEST_F(CompletionPollerTest, SubmitResponseRejectsMissingPeerAndUnknownOpcode)

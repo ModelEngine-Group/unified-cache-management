@@ -167,7 +167,7 @@ Status TaskWorker::ProcessDump(const KvDumpRequest& request,
     record.stage = CompletionStage::PollDataTransfer;
     record.opcode = KvOpcode::Dump;
     record.data_handle = handle;
-    record.response_addr = request.resp_addr;
+    record.remote_resp_addr = request.resp_addr;
     record.peer_one_sided_id = peerOneSidedId;
     record.results = std::move(results);
     record.transfer_items = std::move(transfer_items);
@@ -237,7 +237,7 @@ Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
     record.stage = CompletionStage::PollDataTransfer;
     record.opcode = KvOpcode::Load;
     record.data_handle = handle;
-    record.response_addr = request.resp_addr;
+    record.remote_resp_addr = request.resp_addr;
     record.peer_one_sided_id = peerOneSidedId;
     record.results = std::move(results);
     record.transfer_items = std::move(transfer_items);
@@ -289,7 +289,7 @@ Status TaskWorker::QueueResponse(KvOpcode opcode, std::uint64_t responseAddr,
     CompletionRecord record;
     record.stage = CompletionStage::SubmitResponse;
     record.opcode = opcode;
-    record.response_addr = responseAddr;
+    record.remote_resp_addr = responseAddr;
     record.peer_one_sided_id = peerOneSidedId;
     record.results = std::move(results);
     return SubmitCompletion(std::move(record));
