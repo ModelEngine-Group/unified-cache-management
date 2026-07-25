@@ -193,68 +193,101 @@ Status AsuClientImpl::QueryOnce(const std::vector<CacheKey>& keys, const QueryOp
     auto snapshot = GetSnapshot();
     if (!snapshot) { return NotInitialized(); }
 
-    if (options.mode == QueryMode::PREFIX) {
-        Status finalStatus = Status::OK();
-        for (const auto& item : snapshot->transports) {
-            QueryResult childResult;
-            auto status = item.second->Query(keys, options, childResult);
-            if (!status.ok()) {
-                MarkRefreshIfNeeded(status, needRefresh);
-                finalStatus = WithContext(PartialFailed("one or more asu prefix queries failed"),
-                                          "asuId=" + std::to_string(item.first));
-                continue;
-            }
-            if (childResult.exists.size() != keys.size()) {
-                return Status::Error(
-                    StatusCode::INTERNAL_ERROR,
-                    "prefix query result size mismatch, asuId=" + std::to_string(item.first) +
-                        " expected=" + std::to_string(keys.size()) +
-                        " actual=" + std::to_string(childResult.exists.size()));
-            }
-            result.prefixHitKeys += childResult.prefixHitKeys;
-            for (std::size_t index = 0;
-                 index < result.exists.size() && index < childResult.exists.size(); ++index) {
-                result.exists[index] = result.exists[index] || childResult.exists[index];
-            }
-        }
-        return finalStatus;
-    }
-
+    const auto timeoutMs =
+        options.timeoutMs == 0 ? config_.defaultWaitTimeoutMs : options.timeoutMs;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    auto transportOptions = options;
+    transportOptions.mode = QueryMode::PER_KEY;
     auto routes = snapshot->router->RouteKeys(ToRouterKeys(keys));
+    std::vector<PendingQuery> pendingQueries;
+    pendingQueries.reserve(routes.size());
+    bool anyFailed = false;
+
     for (const auto& route : routes) {
         auto transportIter = snapshot->transports.find(route.first);
         if (transportIter == snapshot->transports.end()) {
             auto status = Status::Error(StatusCode::NOT_FOUND, "routed asu transport not found");
             MarkRefreshIfNeeded(status, needRefresh);
-            return WithContext(status, "asuId=" + std::to_string(route.first));
+            UC_ERROR("ASU client query dispatch failed: asuId={} key_count={} code={} message={}.",
+                     route.first, route.second.size(), static_cast<int>(status.code),
+                     status.message);
+            anyFailed = true;
+            continue;
         }
 
-        std::vector<CacheKey> childKeys;
-        childKeys.reserve(route.second.size());
-        for (auto index : route.second) { childKeys.emplace_back(keys[index]); }
+        PendingQuery pending;
+        pending.asuId = route.first;
+        pending.transport = transportIter->second;
+        pending.originalIndices = route.second;
+        pending.keys.reserve(route.second.size());
+        for (auto index : route.second) { pending.keys.emplace_back(keys[index]); }
 
-        QueryResult childResult;
-        auto status = transportIter->second->Query(childKeys, options, childResult);
+        auto status = pending.transport->QueryAsync(pending.keys, transportOptions, pending.taskId);
         if (!status.ok()) {
             MarkRefreshIfNeeded(status, needRefresh);
-            return WithContext(status, "asuId=" + std::to_string(route.first) +
-                                           " key_count=" + std::to_string(childKeys.size()));
-        }
-        if (childResult.exists.size() != childKeys.size()) {
-            return Status::Error(
-                StatusCode::INTERNAL_ERROR,
-                "query result size mismatch, asuId=" + std::to_string(route.first) +
-                    " expected=" + std::to_string(childKeys.size()) +
-                    " actual=" + std::to_string(childResult.exists.size()));
+            UC_ERROR("ASU client query dispatch failed: asuId={} key_count={} code={} message={}.",
+                     pending.asuId, pending.keys.size(), static_cast<int>(status.code),
+                     status.message);
+            anyFailed = true;
+            continue;
         }
 
-        for (std::size_t index = 0; index < route.second.size(); ++index) {
-            result.exists[route.second[index]] = childResult.exists[index];
+        pendingQueries.emplace_back(std::move(pending));
+    }
+
+    for (auto& pending : pendingQueries) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            UC_ERROR(
+                "ASU client query wait timed out before transport wait: asuId={} key_count={}.",
+                pending.asuId, pending.keys.size());
+            anyFailed = true;
+            continue;
+        }
+
+        const auto remainingMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+        const auto waitMs = static_cast<std::uint64_t>(std::max<std::int64_t>(1, remainingMs));
+        TaskResult taskResult;
+        auto status = pending.transport->Wait(pending.taskId, waitMs, taskResult);
+        if (!status.ok()) {
+            MarkRefreshIfNeeded(status, needRefresh);
+            UC_ERROR("ASU client query wait failed: asuId={} key_count={} code={} message={}.",
+                     pending.asuId, pending.keys.size(), static_cast<int>(status.code),
+                     status.message);
+            anyFailed = true;
+            continue;
+        }
+        if (!taskResult.status.ok()) {
+            MarkRefreshIfNeeded(taskResult.status, needRefresh);
+            UC_ERROR("ASU client query result failed: asuId={} key_count={} code={} message={}.",
+                     pending.asuId, pending.keys.size(), static_cast<int>(taskResult.status.code),
+                     taskResult.status.message);
+            anyFailed = true;
+            continue;
+        }
+        if (!taskResult.queryResult.has_value()) {
+            UC_ERROR("ASU client query result is missing: asuId={} key_count={}.", pending.asuId,
+                     pending.keys.size());
+            anyFailed = true;
+            continue;
+        }
+
+        const auto& childResult = *taskResult.queryResult;
+        if (childResult.exists.size() != pending.keys.size()) {
+            UC_ERROR("ASU client query result size mismatch: asuId={} expected={} actual={}.",
+                     pending.asuId, pending.keys.size(), childResult.exists.size());
+            anyFailed = true;
+            continue;
+        }
+
+        for (std::size_t index = 0; index < pending.originalIndices.size(); ++index) {
+            result.exists[pending.originalIndices[index]] = childResult.exists[index];
         }
         result.prefixHitKeys += childResult.prefixHitKeys;
     }
 
-    return Status::OK();
+    return anyFailed ? PartialFailed("one or more asu queries failed") : Status::OK();
 }
 
 Status AsuClientImpl::LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)

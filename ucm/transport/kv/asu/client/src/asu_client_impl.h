@@ -90,6 +90,13 @@ public:
 
 private:
     using ClientTaskContextPtr = std::shared_ptr<ClientTaskContext>;
+    struct PendingQuery {
+        AsuId asuId{0};
+        std::shared_ptr<AsuTransport> transport;
+        std::vector<CacheKey> keys;
+        std::vector<std::size_t> originalIndices;
+        TaskId taskId{kInvalidTaskId};
+    };
 
     // Submits one entry-based client task through the refresh-retry wrapper.
     Status SubmitAsync(ClientOpType opType, const std::vector<KVBuffer>& entries, TaskId& taskId);
