@@ -415,6 +415,28 @@ TEST(AsuTransportRegisterTest, ShutdownUnregistersRegisteredRegions)
     EXPECT_FALSE(transport.ownsRegisteredRegionHandles_);
 }
 
+TEST(AsuTransportRegisterTest, ShutdownIgnoresUnregisterFailureWithoutRetry)
+{
+    auto provider = std::make_unique<StubTransProvider>();
+    auto* providerPtr = provider.get();
+
+    AsuTransportImpl transport;
+    transport.SetTransProvider(std::move(provider));
+
+    std::vector<RegisterResult> results;
+    ASSERT_TRUE(transport.RegisterRegions({MemoryRegion{}}, results).ok());
+    providerPtr->failUnregister = true;
+
+    EXPECT_TRUE(transport.Shutdown().ok());
+    EXPECT_EQ(providerPtr->unregisterCount, std::uint32_t{1});
+    EXPECT_TRUE(transport.registeredRegions_.empty());
+    EXPECT_FALSE(transport.ownsRegisteredRegionHandles_);
+
+    providerPtr->failUnregister = false;
+    EXPECT_TRUE(transport.Shutdown().ok());
+    EXPECT_EQ(providerPtr->unregisterCount, std::uint32_t{1});
+}
+
 TEST(AsuSubmitFlowTest, SendSubBatchBuffersReportsSendFailures)
 {
     g_sendStatuses = {

@@ -212,7 +212,12 @@ Status AsuTransportImpl::Shutdown()
             for (const auto& item : registeredRegions_) { handles.push_back(item.first); }
             if (!handles.empty() && transProvider_) {
                 const auto status = UnregisterOwnedRegionHandles(handles);
-                if (!status.ok() && finalStatus.ok()) { finalStatus = status; }
+                if (!status.ok()) {
+                    UC_ERROR(
+                        "Transport shutdown ignored memory unregister failure: code={} "
+                        "message={}",
+                        static_cast<int>(status.code), status.message);
+                }
             }
         }
         registeredRegions_.clear();
