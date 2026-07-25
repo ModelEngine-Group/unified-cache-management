@@ -306,21 +306,22 @@ Status AsuClientImpl::Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& r
 }
 
 Status AsuClientImpl::RegisterRegions(const std::vector<MemoryRegion>& regions,
-                                      std::vector<RegisterResult>& results)
+                                      std::vector<RegisteredMemory>& registeredRegions)
 {
     bool needRefresh = false;
-    auto status = RegisterRegionsOnce(regions, results, needRefresh);
+    auto status = RegisterRegionsOnce(regions, registeredRegions, needRefresh);
     if (needRefresh) { RequestBackgroundRefresh(); }
     return status;
 }
 
 Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regions,
-                                          std::vector<RegisterResult>& results, bool& needRefresh)
+                                          std::vector<RegisteredMemory>& registeredRegions,
+                                          bool& needRefresh)
 {
     auto snapshot = GetSnapshot();
     if (!snapshot) { return NotInitialized(); }
 
-    results.clear();
+    registeredRegions.clear();
     if (snapshot->transports.empty()) { return Status::OK(); }
 
     auto firstIter = snapshot->transports.find(snapshot->asuIds.front());
@@ -330,28 +331,18 @@ Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regio
         return WithContext(status, "asuIndex=0 asuId=" + std::to_string(snapshot->asuIds.front()));
     }
 
-    auto status = firstIter->second->RegisterRegions(regions, results);
+    auto status = firstIter->second->RegisterRegions(regions, registeredRegions);
     if (!status.ok()) {
         MarkRefreshIfNeeded(status, needRefresh);
         return WithContext(status, "asuIndex=0 asuId=" + std::to_string(snapshot->asuIds.front()) +
                                        " region_count=" + std::to_string(regions.size()));
     }
-    if (results.size() != regions.size()) {
+    if (registeredRegions.size() != regions.size()) {
         return WithContext(Status::Error(StatusCode::INTERNAL_ERROR,
                                          "register result count does not match region count"),
                            "asuIndex=0 asuId=" + std::to_string(snapshot->asuIds.front()) +
                                " region_count=" + std::to_string(regions.size()) +
-                               " result_count=" + std::to_string(results.size()));
-    }
-
-    std::vector<RegisteredMemory> registeredRegions;
-    registeredRegions.reserve(regions.size());
-    for (std::size_t index = 0; index < regions.size(); ++index) {
-        RegisteredMemory registeredRegion;
-        registeredRegion.region = regions[index];
-        registeredRegion.handle = results[index].handle;
-        registeredRegion.tokenId = results[index].tokenId;
-        registeredRegions.emplace_back(registeredRegion);
+                               " result_count=" + std::to_string(registeredRegions.size()));
     }
 
     Status finalStatus = Status::OK();
@@ -366,8 +357,7 @@ Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regio
             continue;
         }
 
-        std::vector<RegisterResult> childResults;
-        status = iter->second->BindRegisteredRegions(registeredRegions, childResults);
+        status = iter->second->BindRegisteredRegions(registeredRegions);
         if (!status.ok() && finalStatus.ok()) {
             MarkRefreshIfNeeded(status, needRefresh);
             finalStatus =
@@ -375,23 +365,14 @@ Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regio
                             "asuIndex=" + std::to_string(asuIndex) +
                                 " asuId=" + std::to_string(snapshot->asuIds[asuIndex]) +
                                 " region_count=" + std::to_string(registeredRegions.size()));
-        } else if (status.ok() && childResults.size() != registeredRegions.size() &&
-                   finalStatus.ok()) {
-            finalStatus =
-                WithContext(PartialFailed("one or more asu region bindings failed"),
-                            "asuIndex=" + std::to_string(asuIndex) +
-                                " asuId=" + std::to_string(snapshot->asuIds[asuIndex]) +
-                                " region_count=" + std::to_string(registeredRegions.size()) +
-                                " result_count=" + std::to_string(childResults.size()));
         }
     }
 
-    // Remember registered regions for future transport bindings
+    // Remember registered regions for future transport bindings.
     if (finalStatus.ok()) {
         std::lock_guard<std::mutex> lock{mutex_};
-        for (std::size_t index = 0; index < regions.size(); ++index) {
-            registeredRegions_.emplace_back(registeredRegions[index]);
-        }
+        registeredRegions_.insert(registeredRegions_.end(), registeredRegions.begin(),
+                                  registeredRegions.end());
     }
     return finalStatus;
 }
@@ -910,8 +891,7 @@ Status AsuClientImpl::BindRegisteredRegions(AsuId asuId,
     }
     if (registeredRegions.empty()) { return Status::OK(); }
 
-    std::vector<RegisterResult> results;
-    auto status = transport->BindRegisteredRegions(registeredRegions, results);
+    auto status = transport->BindRegisteredRegions(registeredRegions);
     if (!status.ok()) {
         return WithContext(status, "asuId=" + std::to_string(asuId) +
                                        " region_count=" + std::to_string(registeredRegions.size()));

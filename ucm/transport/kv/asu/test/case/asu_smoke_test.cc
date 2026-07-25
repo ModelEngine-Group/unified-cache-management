@@ -114,22 +114,17 @@ public:
     }
 
     Status RegisterRegions(const std::vector<MemoryRegion>& regions,
-                           std::vector<RegisterResult>& results) override
+                           std::vector<RegisteredMemory>& registeredRegions) override
     {
-        results.clear();
+        registeredRegions.clear();
         for (std::size_t i = 0; i < regions.size(); ++i) {
-            results.emplace_back(RegisterResult{Status::OK(), MakeTestMrHandle(i + 1)});
+            registeredRegions.emplace_back(RegisteredMemory{regions[i], MakeTestMrHandle(i + 1)});
         }
         return Status::OK();
     }
 
-    Status BindRegisteredRegions(const std::vector<RegisteredMemory>& regions,
-                                 std::vector<RegisterResult>& results) override
+    Status BindRegisteredRegions(const std::vector<RegisteredMemory>&) override
     {
-        results.clear();
-        for (const auto& region : regions) {
-            results.emplace_back(RegisterResult{Status::OK(), region.handle});
-        }
         return Status::OK();
     }
 

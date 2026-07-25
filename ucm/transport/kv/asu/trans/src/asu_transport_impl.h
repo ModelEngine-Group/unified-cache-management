@@ -82,10 +82,9 @@ public:
     Status Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result) override;
 
     Status RegisterRegions(const std::vector<MemoryRegion>& regions,
-                           std::vector<RegisterResult>& results) override;
+                           std::vector<RegisteredMemory>& registeredRegions) override;
 
-    Status BindRegisteredRegions(const std::vector<RegisteredMemory>& regions,
-                                 std::vector<RegisterResult>& results) override;
+    Status BindRegisteredRegions(const std::vector<RegisteredMemory>& regions) override;
 
     Status UnregisterRegions(const std::vector<MRHandle>& handles) override;
 

@@ -195,15 +195,11 @@ TEST(AsuTransportRegisterTest, RegisterRegionsReturnsPartialFailedAndRollsBackSu
     regions[1].addr = 0x2000;
     regions[1].size = 4096;
 
-    std::vector<RegisterResult> results;
-    auto status = transport.RegisterRegions(regions, results);
+    std::vector<RegisteredMemory> registeredRegions;
+    auto status = transport.RegisterRegions(regions, registeredRegions);
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
-    ASSERT_EQ(results.size(), std::size_t{2});
-    EXPECT_EQ(results[0].status.code, StatusCode::PARTIAL_FAILED);
-    EXPECT_EQ(results[0].handle, kInvalidMRHandle);
-    EXPECT_EQ(results[1].status.code, StatusCode::INTERNAL_ERROR);
-    EXPECT_EQ(results[1].handle, kInvalidMRHandle);
+    EXPECT_TRUE(registeredRegions.empty());
     EXPECT_EQ(providerPtr->registerCallCount, std::uint32_t{1});
     EXPECT_EQ(providerPtr->unregisterCount, std::uint32_t{1});
     EXPECT_TRUE(transport.registeredRegions_.empty());
@@ -223,12 +219,13 @@ TEST(AsuTransportRegisterTest, RegisterDeviceRegionDoesNotRequireConnection)
     region.addr = 0x1000;
     region.size = 4096;
 
-    std::vector<RegisterResult> results;
-    const auto status = transport.RegisterRegions({region}, results);
+    std::vector<RegisteredMemory> registeredRegions;
+    const auto status = transport.RegisterRegions({region}, registeredRegions);
 
     EXPECT_TRUE(status.ok()) << status.message;
-    ASSERT_EQ(results.size(), std::size_t{1});
-    EXPECT_TRUE(results[0].status.ok()) << results[0].status.message;
+    ASSERT_EQ(registeredRegions.size(), std::size_t{1});
+    EXPECT_EQ(registeredRegions[0].region.addr, region.addr);
+    EXPECT_NE(registeredRegions[0].handle, kInvalidMRHandle);
     EXPECT_EQ(providerPtr->registerCount, std::uint32_t{1});
     EXPECT_TRUE(transport.ownsRegisteredRegionHandles_);
 }
@@ -243,8 +240,7 @@ TEST(AsuTransportRegisterTest, BoundRegionsAreNotOwnedByTransport)
 
     RegisteredMemory region;
     region.handle = MRHandle{1};
-    std::vector<RegisterResult> results;
-    ASSERT_TRUE(transport.BindRegisteredRegions({region}, results).ok());
+    ASSERT_TRUE(transport.BindRegisteredRegions({region}).ok());
 
     EXPECT_FALSE(transport.ownsRegisteredRegionHandles_);
     EXPECT_TRUE(transport.UnregisterRegions({region.handle}).ok());
@@ -257,7 +253,7 @@ TEST(AsuTransportRegisterTest, BoundRegionsAreNotOwnedByTransport)
     EXPECT_FALSE(transport.ownsRegisteredRegionHandles_);
 }
 
-TEST(AsuTransportRegisterTest, RegisterRegionsReturnsAllResultsAfterBatchFailure)
+TEST(AsuTransportRegisterTest, RegisterRegionsReturnsNoRegionsAfterBatchFailure)
 {
     auto provider = std::make_unique<StubTransProvider>();
     auto* providerPtr = provider.get();
@@ -274,15 +270,11 @@ TEST(AsuTransportRegisterTest, RegisterRegionsReturnsAllResultsAfterBatchFailure
     regions[2].addr = 0x3000;
     regions[2].size = 4096;
 
-    std::vector<RegisterResult> results;
-    auto status = transport.RegisterRegions(regions, results);
+    std::vector<RegisteredMemory> registeredRegions;
+    auto status = transport.RegisterRegions(regions, registeredRegions);
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
-    ASSERT_EQ(results.size(), std::size_t{3});
-    EXPECT_EQ(results[0].status.code, StatusCode::PARTIAL_FAILED);
-    EXPECT_EQ(results[0].handle, kInvalidMRHandle);
-    EXPECT_EQ(results[1].status.code, StatusCode::INTERNAL_ERROR);
-    EXPECT_EQ(results[2].status.code, StatusCode::INTERNAL_ERROR);
+    EXPECT_TRUE(registeredRegions.empty());
     EXPECT_EQ(providerPtr->registerCallCount, std::uint32_t{1});
     EXPECT_EQ(providerPtr->registerCount, std::uint32_t{2});
     EXPECT_EQ(providerPtr->unregisterCount, std::uint32_t{1});
@@ -307,14 +299,11 @@ TEST(AsuTransportRegisterTest, RegisterRegionsClearsBatchWhenTokenLookupFails)
     regions[2].addr = 0x3000;
     regions[2].size = 4096;
 
-    std::vector<RegisterResult> results;
-    const auto status = transport.RegisterRegions(regions, results);
+    std::vector<RegisteredMemory> registeredRegions;
+    const auto status = transport.RegisterRegions(regions, registeredRegions);
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
-    ASSERT_EQ(results.size(), regions.size());
-    EXPECT_EQ(results[0].status.code, StatusCode::PARTIAL_FAILED);
-    EXPECT_EQ(results[1].status.code, StatusCode::INTERNAL_ERROR);
-    EXPECT_EQ(results[2].status.code, StatusCode::PARTIAL_FAILED);
+    EXPECT_TRUE(registeredRegions.empty());
     EXPECT_EQ(providerPtr->registerCallCount, std::uint32_t{1});
     EXPECT_EQ(providerPtr->registerCount, std::uint32_t{3});
     EXPECT_EQ(providerPtr->unregisterCount, std::uint32_t{3});
@@ -338,14 +327,12 @@ TEST(AsuTransportRegisterTest, RegisterRegionsRetainsHandlesWhenBatchCleanupFail
     regions[1].addr = 0x2000;
     regions[1].size = 4096;
 
-    std::vector<RegisterResult> results;
-    const auto status = transport.RegisterRegions(regions, results);
+    std::vector<RegisteredMemory> registeredRegions;
+    const auto status = transport.RegisterRegions(regions, registeredRegions);
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     EXPECT_NE(status.message.find("cleanup was incomplete"), std::string::npos);
-    ASSERT_EQ(results.size(), std::size_t{2});
-    EXPECT_EQ(results[0].status.code, StatusCode::PARTIAL_FAILED);
-    EXPECT_EQ(results[0].handle, kInvalidMRHandle);
+    EXPECT_TRUE(registeredRegions.empty());
     EXPECT_EQ(transport.registeredRegions_.size(), std::size_t{1});
     EXPECT_TRUE(transport.ownsRegisteredRegionHandles_);
 
@@ -371,18 +358,19 @@ TEST(AsuTransportRegisterTest, UnregisterRegionsRetainsOnlyHandlesThatFailToUnre
     regions[1].addr = 0x2000;
     regions[1].size = 4096;
 
-    std::vector<RegisterResult> results;
-    ASSERT_TRUE(transport.RegisterRegions(regions, results).ok());
+    std::vector<RegisteredMemory> registeredRegions;
+    ASSERT_TRUE(transport.RegisterRegions(regions, registeredRegions).ok());
     providerPtr->failUnregisterAt = 2;
 
-    const auto status = transport.UnregisterRegions({results[0].handle, results[1].handle});
+    const auto status =
+        transport.UnregisterRegions({registeredRegions[0].handle, registeredRegions[1].handle});
 
     EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
     EXPECT_EQ(transport.registeredRegions_.size(), std::size_t{1});
-    EXPECT_EQ(transport.registeredRegions_.count(results[0].handle), std::size_t{0});
-    EXPECT_EQ(transport.registeredRegions_.count(results[1].handle), std::size_t{1});
+    EXPECT_EQ(transport.registeredRegions_.count(registeredRegions[0].handle), std::size_t{0});
+    EXPECT_EQ(transport.registeredRegions_.count(registeredRegions[1].handle), std::size_t{1});
 
-    EXPECT_TRUE(transport.UnregisterRegions({results[1].handle}).ok());
+    EXPECT_TRUE(transport.UnregisterRegions({registeredRegions[1].handle}).ok());
     EXPECT_TRUE(transport.registeredRegions_.empty());
     EXPECT_FALSE(transport.ownsRegisteredRegionHandles_);
 }
@@ -401,10 +389,10 @@ TEST(AsuTransportRegisterTest, ShutdownUnregistersRegisteredRegions)
     regions[1].addr = 0x2000;
     regions[1].size = 4096;
 
-    std::vector<RegisterResult> results;
-    auto status = transport.RegisterRegions(regions, results);
+    std::vector<RegisteredMemory> registeredRegions;
+    auto status = transport.RegisterRegions(regions, registeredRegions);
     ASSERT_TRUE(status.ok()) << status.message;
-    ASSERT_EQ(results.size(), std::size_t{2});
+    ASSERT_EQ(registeredRegions.size(), std::size_t{2});
     ASSERT_EQ(transport.registeredRegions_.size(), std::size_t{2});
 
     status = transport.Shutdown();
@@ -423,8 +411,8 @@ TEST(AsuTransportRegisterTest, ShutdownIgnoresUnregisterFailureWithoutRetry)
     AsuTransportImpl transport;
     transport.SetTransProvider(std::move(provider));
 
-    std::vector<RegisterResult> results;
-    ASSERT_TRUE(transport.RegisterRegions({MemoryRegion{}}, results).ok());
+    std::vector<RegisteredMemory> registeredRegions;
+    ASSERT_TRUE(transport.RegisterRegions({MemoryRegion{}}, registeredRegions).ok());
     providerPtr->failUnregister = true;
 
     EXPECT_TRUE(transport.Shutdown().ok());

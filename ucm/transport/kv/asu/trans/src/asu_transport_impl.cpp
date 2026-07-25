@@ -344,10 +344,10 @@ Status AsuTransportImpl::Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult
 }
 
 Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& regions,
-                                         std::vector<RegisterResult>& results)
+                                         std::vector<RegisteredMemory>& registeredRegions)
 {
-    results.clear();
-    results.reserve(regions.size());
+    registeredRegions.clear();
+    registeredRegions.reserve(regions.size());
     if (regions.empty()) { return Status::OK(); }
 
     std::lock_guard<std::mutex> lock(registeredRegionsMu_);
@@ -376,12 +376,6 @@ Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& region
     if (!status.ok()) {
         trackReturnedHandles();
         const auto cleanupStatus = UnregisterOwnedRegionHandles(mrHandles);
-        results.assign(regions.size(), RegisterResult{status, kInvalidMRHandle});
-        const auto clearedStatus = Status::Error(
-            StatusCode::PARTIAL_FAILED, "registration was cleared after batch registration failed");
-        for (std::size_t index = 0; index < std::min(mrHandles.size(), results.size()); ++index) {
-            results[index].status = clearedStatus;
-        }
         return Status::Error(StatusCode::PARTIAL_FAILED,
                              cleanupStatus.ok()
                                  ? "one or more memory regions failed to register"
@@ -392,7 +386,6 @@ Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& region
                                "register result count does not match region count");
         trackReturnedHandles();
         const auto cleanupStatus = UnregisterOwnedRegionHandles(mrHandles);
-        results.assign(regions.size(), RegisterResult{status, kInvalidMRHandle});
         return Status::Error(StatusCode::PARTIAL_FAILED,
                              cleanupStatus.ok()
                                  ? status.message
@@ -406,10 +399,6 @@ Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& region
 
         trackReturnedHandles();
         const auto cleanupStatus = UnregisterOwnedRegionHandles(mrHandles);
-        const auto rolledBackStatus = Status::Error(
-            StatusCode::PARTIAL_FAILED, "registration was cleared after token lookup failed");
-        results.assign(regions.size(), RegisterResult{rolledBackStatus, kInvalidMRHandle});
-        results[index].status = status;
         return Status::Error(StatusCode::PARTIAL_FAILED,
                              cleanupStatus.ok()
                                  ? "one or more memory region token lookups failed"
@@ -422,23 +411,16 @@ Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& region
         registeredMemory.handle = mrHandles[index];
         registeredMemory.tokenId = tokenIds[index];
         registeredRegions_[mrHandles[index]] = registeredMemory;
-        results.emplace_back(RegisterResult{Status::OK(), mrHandles[index], tokenIds[index]});
+        registeredRegions.emplace_back(registeredMemory);
     }
     ownsRegisteredRegionHandles_ = true;
     return Status::OK();
 }
 
-Status AsuTransportImpl::BindRegisteredRegions(const std::vector<RegisteredMemory>& regions,
-                                               std::vector<RegisterResult>& results)
+Status AsuTransportImpl::BindRegisteredRegions(const std::vector<RegisteredMemory>& regions)
 {
-    results.clear();
-    results.reserve(regions.size());
-
     std::lock_guard<std::mutex> lock(registeredRegionsMu_);
-    for (const auto& region : regions) {
-        registeredRegions_[region.handle] = region;
-        results.emplace_back(RegisterResult{Status::OK(), region.handle, region.tokenId});
-    }
+    for (const auto& region : regions) { registeredRegions_[region.handle] = region; }
     return Status::OK();
 }
 

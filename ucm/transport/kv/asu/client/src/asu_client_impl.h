@@ -84,7 +84,7 @@ public:
 
     // Registers regions and remembers successful resources for future views.
     Status RegisterRegions(const std::vector<MemoryRegion>& regions,
-                           std::vector<RegisterResult>& results) override;
+                           std::vector<RegisteredMemory>& registeredRegions) override;
     // Unregisters regions and forgets successful resources.
     Status UnregisterRegions(const std::vector<MRHandle>& handles) override;
 
@@ -117,7 +117,7 @@ private:
                      QueryResult& result, bool& needRefresh);
     // Performs one register operation on the current snapshot.
     Status RegisterRegionsOnce(const std::vector<MemoryRegion>& regions,
-                               std::vector<RegisterResult>& results, bool& needRefresh);
+                               std::vector<RegisteredMemory>& registeredRegions, bool& needRefresh);
     // Performs one unregister operation on the current snapshot.
     Status UnregisterRegionsOnce(const std::vector<MRHandle>& handles, bool& needRefresh);
 

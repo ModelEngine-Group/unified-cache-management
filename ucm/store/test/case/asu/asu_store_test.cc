@@ -149,16 +149,17 @@ public:
         return Check(taskId, result);
     }
 
-    UC::ASU::Status RegisterRegions(const std::vector<UC::ASU::MemoryRegion>& regions,
-                                    std::vector<UC::ASU::RegisterResult>& results) override
+    UC::ASU::Status RegisterRegions(
+        const std::vector<UC::ASU::MemoryRegion>& regions,
+        std::vector<UC::ASU::RegisteredMemory>& registeredRegions) override
     {
-        results.clear();
-        results.reserve(regions.size());
+        registeredRegions.clear();
+        registeredRegions.reserve(regions.size());
         state_->registeredRegions.insert(state_->registeredRegions.end(), regions.begin(),
                                          regions.end());
         for (std::size_t index = 0; index < regions.size(); ++index) {
-            results.emplace_back(
-                UC::ASU::RegisterResult{UC::ASU::Status::OK(), MakeTestMrHandle(nextMrHandle_++)});
+            registeredRegions.emplace_back(
+                UC::ASU::RegisteredMemory{regions[index], MakeTestMrHandle(nextMrHandle_++)});
         }
         return UC::ASU::Status::OK();
     }

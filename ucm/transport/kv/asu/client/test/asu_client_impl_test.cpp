@@ -215,26 +215,22 @@ public:
     }
 
     Status RegisterRegions(const std::vector<MemoryRegion>& regions,
-                           std::vector<RegisterResult>& results) override
+                           std::vector<RegisteredMemory>& registeredRegions) override
     {
         state_->registerCalls.emplace_back(config_.asuId);
-        results.clear();
+        registeredRegions.clear();
         for (std::size_t index = 0; index < regions.size(); ++index) {
-            results.emplace_back(RegisterResult{Status::OK(), MakeTestMrHandle(500 + index),
-                                                900 + static_cast<std::uint32_t>(index)});
+            registeredRegions.emplace_back(
+                RegisteredMemory{regions[index], MakeTestMrHandle(500 + index),
+                                 900 + static_cast<std::uint32_t>(index)});
         }
         return Status::OK();
     }
 
-    Status BindRegisteredRegions(const std::vector<RegisteredMemory>& regions,
-                                 std::vector<RegisterResult>& results) override
+    Status BindRegisteredRegions(const std::vector<RegisteredMemory>& regions) override
     {
         state_->bindCalls.emplace_back(config_.asuId);
         state_->boundRegions[config_.asuId] = regions;
-        results.clear();
-        for (const auto& region : regions) {
-            results.emplace_back(RegisterResult{Status::OK(), region.handle, region.tokenId});
-        }
         return Status::OK();
     }
 
@@ -482,7 +478,7 @@ TEST(AsuClientImplTest, Input_EmptyRegisterReturnsEmptyResults)
     auto client = CreateAsuClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
 
-    std::vector<RegisterResult> results;
+    std::vector<RegisteredMemory> results;
     auto status = client->RegisterRegions({}, results);
 
     EXPECT_TRUE(status.ok()) << status.message;
@@ -978,7 +974,7 @@ TEST(AsuClientImplTest, MemoryRegister_RegisterRegionsRegistersFirstTransportAnd
     auto client = CreateAsuClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10, 20, 30})).ok());
 
-    std::vector<RegisterResult> results;
+    std::vector<RegisteredMemory> results;
     auto status = client->RegisterRegions({MemoryRegion{}, MemoryRegion{}}, results);
 
     EXPECT_TRUE(status.ok()) << status.message;
@@ -1007,20 +1003,11 @@ TEST(AsuClientImplTest, MemoryRegister_PartialRegisterFailureDoesNotBindFollower
         {
         }
 
-        Status RegisterRegions(const std::vector<MemoryRegion>& regions,
-                               std::vector<RegisterResult>& results) override
+        Status RegisterRegions(const std::vector<MemoryRegion>&,
+                               std::vector<RegisteredMemory>& registeredRegions) override
         {
             state_->registerCalls.emplace_back(10);
-            results.clear();
-            results.reserve(regions.size());
-            if (!regions.empty()) {
-                results.emplace_back(RegisterResult{Status::OK(), MakeTestMrHandle(500), 900});
-            }
-            if (regions.size() > 1) {
-                results.emplace_back(RegisterResult{
-                    Status::Error(StatusCode::INTERNAL_ERROR, "fake region register failure"),
-                    kInvalidMRHandle});
-            }
+            registeredRegions.clear();
             return Status::Error(StatusCode::PARTIAL_FAILED,
                                  "one or more memory regions failed to register");
         }
@@ -1039,7 +1026,7 @@ TEST(AsuClientImplTest, MemoryRegister_PartialRegisterFailureDoesNotBindFollower
     });
     ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
 
-    std::vector<RegisterResult> results;
+    std::vector<RegisteredMemory> results;
     auto status = client->RegisterRegions({MemoryRegion{}, MemoryRegion{}}, results);
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
@@ -1047,9 +1034,7 @@ TEST(AsuClientImplTest, MemoryRegister_PartialRegisterFailureDoesNotBindFollower
     EXPECT_NE(status.message.find("asuId=10"), std::string::npos);
     EXPECT_EQ(state->registerCalls, std::vector<AsuId>({10}));
     EXPECT_TRUE(state->bindCalls.empty());
-    ASSERT_EQ(results.size(), std::size_t{2});
-    EXPECT_TRUE(results[0].status.ok()) << results[0].status.message;
-    EXPECT_EQ(results[1].status.code, StatusCode::INTERNAL_ERROR);
+    EXPECT_TRUE(results.empty());
 }
 
 TEST(AsuClientImplTest, MemoryRegister_FirstRegisterFailureIncludesAsuContext)
@@ -1062,7 +1047,7 @@ TEST(AsuClientImplTest, MemoryRegister_FirstRegisterFailureIncludesAsuContext)
         }
 
         Status RegisterRegions(const std::vector<MemoryRegion>&,
-                               std::vector<RegisterResult>&) override
+                               std::vector<RegisteredMemory>&) override
         {
             return Status::Error(StatusCode::BUFFER_NOT_REGISTERED, "fake register failure");
         }
@@ -1084,7 +1069,7 @@ TEST(AsuClientImplTest, MemoryRegister_FirstRegisterFailureIncludesAsuContext)
         MakeViewServerFactory(viewServer));
     ASSERT_TRUE(client->Init(config).ok());
 
-    std::vector<RegisterResult> results;
+    std::vector<RegisteredMemory> results;
     auto status = client->RegisterRegions({MemoryRegion{}}, results);
 
     EXPECT_EQ(status.code, StatusCode::BUFFER_NOT_REGISTERED);
@@ -1105,9 +1090,9 @@ TEST(AsuClientImplTest, MemoryRegister_SuccessWithMismatchedResultCountReturnsIn
         }
 
         Status RegisterRegions(const std::vector<MemoryRegion>&,
-                               std::vector<RegisterResult>& results) override
+                               std::vector<RegisteredMemory>& registeredRegions) override
         {
-            results.clear();
+            registeredRegions.clear();
             return Status::OK();
         }
     };
@@ -1119,7 +1104,7 @@ TEST(AsuClientImplTest, MemoryRegister_SuccessWithMismatchedResultCountReturnsIn
     });
     ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
 
-    std::vector<RegisterResult> results;
+    std::vector<RegisteredMemory> results;
     auto status = client->RegisterRegions({MemoryRegion{}}, results);
 
     EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
@@ -1138,8 +1123,7 @@ TEST(AsuClientImplTest, MemoryRegister_BindFailureIncludesAsuContext)
         {
         }
 
-        Status BindRegisteredRegions(const std::vector<RegisteredMemory>&,
-                                     std::vector<RegisterResult>&) override
+        Status BindRegisteredRegions(const std::vector<RegisteredMemory>&) override
         {
             return Status::Error(StatusCode::CONNECTION_ERROR, "fake bind failure");
         }
@@ -1155,49 +1139,13 @@ TEST(AsuClientImplTest, MemoryRegister_BindFailureIncludesAsuContext)
     });
     ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
 
-    std::vector<RegisterResult> results;
+    std::vector<RegisteredMemory> results;
     auto status = client->RegisterRegions({MemoryRegion{}}, results);
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     EXPECT_NE(status.message.find("asuIndex=1"), std::string::npos);
     EXPECT_NE(status.message.find("asuId=20"), std::string::npos);
     EXPECT_NE(status.message.find("region_count=1"), std::string::npos);
-}
-
-TEST(AsuClientImplTest, MemoryRegister_SuccessfulBindWithMismatchedResultCountFails)
-{
-    class MismatchedBindTransport final : public FakeTransport {
-    public:
-        explicit MismatchedBindTransport(std::shared_ptr<TestState> state)
-            : FakeTransport(std::move(state))
-        {
-        }
-
-        Status BindRegisteredRegions(const std::vector<RegisteredMemory>&,
-                                     std::vector<RegisterResult>& results) override
-        {
-            results.clear();
-            return Status::OK();
-        }
-    };
-
-    auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient([state] {
-        ++state->createdTransports;
-        if (state->createdTransports == 2) {
-            return std::unique_ptr<AsuTransport>(new MismatchedBindTransport(state));
-        }
-        return std::unique_ptr<AsuTransport>(new FakeTransport(state));
-    });
-    ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
-
-    std::vector<RegisterResult> results;
-    auto status = client->RegisterRegions({MemoryRegion{}}, results);
-
-    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
-    EXPECT_NE(status.message.find("asuIndex=1"), std::string::npos);
-    EXPECT_NE(status.message.find("region_count=1"), std::string::npos);
-    EXPECT_NE(status.message.find("result_count=0"), std::string::npos);
 }
 
 TEST(AsuClientImplTest, MemoryRegister_BindFailureDoesNotCacheResource)
@@ -1209,8 +1157,7 @@ TEST(AsuClientImplTest, MemoryRegister_BindFailureDoesNotCacheResource)
         {
         }
 
-        Status BindRegisteredRegions(const std::vector<RegisteredMemory>&,
-                                     std::vector<RegisterResult>&) override
+        Status BindRegisteredRegions(const std::vector<RegisteredMemory>&) override
         {
             state_->bindCalls.emplace_back(20);
             return Status::Error(StatusCode::CONNECTION_ERROR, "fake bind failure");
@@ -1239,7 +1186,7 @@ TEST(AsuClientImplTest, MemoryRegister_BindFailureDoesNotCacheResource)
         MakeViewServerFactory(viewServer));
     ASSERT_TRUE(client->Init(config).ok());
 
-    std::vector<RegisterResult> results;
+    std::vector<RegisteredMemory> results;
     auto status = client->RegisterRegions({MemoryRegion{}}, results);
     ASSERT_EQ(status.code, StatusCode::PARTIAL_FAILED);
 
@@ -1296,7 +1243,7 @@ TEST(AsuClientImplTest, MemoryRegister_UnregisterRemovesCachedResourceBeforeFutu
         std::make_unique<AsuClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
     ASSERT_TRUE(client->Init(config).ok());
 
-    std::vector<RegisterResult> results;
+    std::vector<RegisteredMemory> results;
     auto status = client->RegisterRegions({MemoryRegion{}}, results);
     ASSERT_TRUE(status.ok()) << status.message;
     ASSERT_EQ(results.size(), std::size_t{1});
@@ -1591,7 +1538,7 @@ TEST(AsuClientImplTest, SnapshotRefresh_ReusesExistingTransportAndBindsResources
         std::make_unique<AsuClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
     ASSERT_TRUE(client->Init(config).ok());
 
-    std::vector<RegisterResult> results;
+    std::vector<RegisteredMemory> results;
     auto status = client->RegisterRegions({MemoryRegion{}}, results);
     ASSERT_TRUE(status.ok()) << status.message;
     state->failFirstQuery = true;
