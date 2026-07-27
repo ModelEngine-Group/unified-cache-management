@@ -21,47 +21,25 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_DRAM_STORE_CC_INTERFACES_H
-#define UNIFIEDCACHE_DRAM_STORE_CC_INTERFACES_H
-
+#include <cstdlib>
+#include "logger/logger.h"
 #include "messages.h"
-#include "status/status.h"
 
 namespace UC::Dram {
 
-// Command interface
-class INodeCommandSink {
-public:
-    virtual ~INodeCommandSink() = default;
-    virtual Status Post(NodeId nodeId, NodeCommand&& command) = 0;
-};
-
-class ITransportCommandSink {
-public:
-    virtual ~ITransportCommandSink() = default;
-    virtual Status Post(NodeId nodeId, TransportCommand&& command) = 0;
-};
-
-class IReplyWatcher {
-public:
-    virtual ~IReplyWatcher() = default;
-    virtual Status Watch(WatchReply watch) = 0;
-    virtual void Unwatch(const ReplySlot& slot) = 0;
-};
-
-// Event interface
-class ITaskEventSink {
-public:
-    virtual ~ITaskEventSink() = default;
-    virtual bool TryPost(TaskEvent&& event) = 0;
-};
-
-class INodeEventSink {
-public:
-    virtual ~INodeEventSink() = default;
-    virtual bool TryPost(NodeId nodeId, NodeEvent&& event) = 0;
-};
+[[noreturn]] void AbortDramStore(const Status& status) noexcept
+{
+    try {
+        UC_ERROR_UNLIMITED(
+            "DramStore encountered a fatal runtime failure: {}. "
+            "Terminating the process to preserve reliable event delivery and "
+            "remote-memory safety.",
+            status);
+        UC::Logger::Flush();
+    } catch (...) {
+        // Diagnostics are best effort; fail-stop semantics still require termination.
+    }
+    std::abort();
+}
 
 }  // namespace UC::Dram
-
-#endif

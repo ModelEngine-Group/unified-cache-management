@@ -24,7 +24,7 @@
 #ifndef UNIFIEDCACHE_DRAM_STORE_CC_MESSAGES_H
 #define UNIFIEDCACHE_DRAM_STORE_CC_MESSAGES_H
 
-#include <memory>
+#include <functional>
 #include <string>
 #include <variant>
 #include <vector>
@@ -33,7 +33,6 @@
 
 namespace UC::Dram {
 
-// Node Command, send by TaskEngine to Node
 struct SubmitRequest {
     Request request;
 };
@@ -42,11 +41,16 @@ struct CancelTaskRequests {
     TaskId taskId{};
 };
 
-struct BeginNodeShutdown {};
+using NodeCommand = std::variant<SubmitRequest, CancelTaskRequests>;
 
-using NodeCommand = std::variant<SubmitRequest, CancelTaskRequests, BeginNodeShutdown>;
+struct RequestCompleted {
+    TaskId taskId{};
+    RequestId requestId{0};
+    NodeId nodeId{0};
+    Status status{Status::OK()};
+    std::vector<EntryResult> entryResults;
+};
 
-// Transport Command, send by Node to Transport
 struct Transmit {
     RequestToken token;
     std::vector<std::uint8_t> payload;
@@ -56,8 +60,7 @@ struct Connect {
     NodeId nodeId{0};
     LaneId laneId{kDefaultLaneId};
     ConnectionEpoch epoch{0};
-    std::string remote_manager_id;
-    std::shared_ptr<const MemoryKey> memoryKeys;
+    std::string transportManagerId;
 };
 
 struct FenceEpoch {
@@ -68,25 +71,6 @@ struct FenceEpoch {
 
 using TransportCommand = std::variant<Transmit, Connect, FenceEpoch>;
 
-// ReplyPoller
-struct WatchReply {
-    RequestToken token;
-    ReplySlot slot;
-    OpType op{OpType::LOOKUP};
-    std::size_t entryCount{0};
-};
-
-// Task Event, send by Node to TaskEngine
-struct RequestCompleted {
-    TaskId taskId{};
-    RequestId requestId{0};
-    NodeId nodeId{0};
-    Status status{Status::OK()};
-    std::vector<EntryResult> entryResults;
-};
-using TaskEvent = RequestCompleted;
-
-// Node Event, send by Node to TaskEngine
 struct TransmitCompleted {
     RequestToken token;
     Status status{Status::OK()};
@@ -114,6 +98,24 @@ struct ReplyObserved {
 
 using NodeEvent = std::variant<TransmitCompleted, ConnectCompleted, FenceCompleted, ReplyObserved>;
 
+// Shared fail-stop path for violations that make reliable event delivery or
+// remote-memory safety impossible to prove.
+[[noreturn]] void AbortDramStore(const Status& status) noexcept;
+
+// Commands are consumed only when the submitter returns Status::OK().
+using NodeCommandSubmitter = std::function<Status(NodeId, NodeCommand&)>;
+using TransportCommandSubmitter = std::function<Status(TransportCommand&)>;
+
+// Completions and events are reliable facts. Returning means the receiver has
+// accepted ownership; inability to deliver is a fatal runtime invariant failure.
+using TaskCompletionPublisher = std::function<void(RequestCompleted)>;
+using NodeEventPublisher = std::function<void(NodeId, NodeEvent)>;
+
+using ReplySlotAcquirer =
+    std::function<Expected<ReplySlot>(const RequestToken&, OpType, std::size_t)>;
+using ReplySlotReleaser = std::function<Status(const RequestToken&, const ReplySlot&)>;
+using AvailabilityNotifier = std::function<void()>;
+
 }  // namespace UC::Dram
 
-#endif
+#endif  // UNIFIEDCACHE_DRAM_STORE_CC_MESSAGES_H
