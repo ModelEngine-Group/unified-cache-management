@@ -8,6 +8,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(UCM_ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
 option(BUILD_UCM_STORE "build ucm store module." ON)
+option(BUILD_UCM_DRAMPOOL "build DramPool daemon." ON)
 option(BUILD_UCM_SPARSE "build ucm sparse module." OFF)
 option(BUILD_UCM_ASU "build ucm ASU transport module." OFF)
 option(BUILD_UCM_MINDIE "build ucm MindIE integration module." OFF)

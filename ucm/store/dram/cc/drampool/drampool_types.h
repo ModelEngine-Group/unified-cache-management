@@ -2,7 +2,25 @@
  * MIT License
  *
  * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
- */
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
 #pragma once
 
 #include <chrono>
@@ -66,12 +84,6 @@ enum class LookupResult : std::uint8_t {
 static_assert(static_cast<std::uint8_t>(DumpLoadResult::Failed) <= 0x0FU,
               "Dump/Load result codes must fit in 4 bits");
 
-enum class InflightPhase : std::uint8_t {
-    Polling = 0,
-    // The transfer must still reach terminal, but its request result is forced to failure.
-    DrainingAsFailed = 1,
-};
-
 enum class CompletionStage : std::uint8_t {
     PollDataTransfer = 0,
     SubmitResponse = 1,
@@ -85,17 +97,16 @@ struct CompletionRecord {
     TransportHandle data_handle{transport::kInvalidTransferHandle};
     std::vector<TransferItem> transfer_items;
     std::uint64_t submit_ms{0};
-    InflightPhase phase{InflightPhase::Polling};
 
     // State needed to construct the request's sole response.
     KvOpcode opcode{KvOpcode::None};
-    std::uint64_t response_addr{0};
+    std::uint64_t remote_resp_addr{0};
     transport::ManagerID peer_one_sided_id;
     std::vector<std::uint8_t> results;
 
     // Ownership held from response submission until its handle reaches terminal.
     TransportHandle response_handle{transport::kInvalidTransferHandle};
-    UC::BufferPool::Slot resp_buffer;
+    UC::BufferPool::Slot local_resp_slot;
 };
 
 using CompletionQueue = UC::SpscRingQueue<CompletionRecord>;

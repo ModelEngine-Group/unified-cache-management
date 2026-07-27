@@ -1,3 +1,26 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -209,6 +232,8 @@ INSTANTIATE_TEST_SUITE_P(
                         "at least 2"},
         InvalidYamlCase{"ZeroPollerPendingDepth", "pending_depth: 64", "pending_depth: 0",
                         "greater than zero"},
+        InvalidYamlCase{"PollerDepthExceedsFlagBufferSlots", "pending_depth: 64",
+                        "pending_depth: 2000000", "at least poller.pending_depth slots"},
         InvalidYamlCase{"ZeroFlagBufferCapacity", "capacity_mb: 64", "capacity_mb: 0",
                         "must be greater than zero"},
         InvalidYamlCase{"ZeroFlagBufferSlotSize", "slot_size_bytes: 64", "slot_size_bytes: 0",
