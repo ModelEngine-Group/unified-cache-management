@@ -61,6 +61,9 @@ struct DramPoolConfig {
     // Cluster-wide routing from the request channel address to the transport identity.
     std::unordered_map<std::string, transport::ManagerID> twoSidedToOneSided{};
 
+    // Zero disables the HTTP health endpoint.
+    std::uint16_t healthPort{0};
+
     // Bounded handoff from RequestReceiveLoop to TaskWorker.
     std::uint32_t requestQueueDepth{65536};
     // Bounded handoff from TaskWorker to CompletionPoller.

@@ -21,24 +21,26 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include <algorithm>
-#include <cctype>
-#include <cmath>
-#include <exception>
 #include <fstream>
 #include <limits>
-#include <stdexcept>
 #include <string>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 #include "drampool_config.h"
-#include "drampool_config_utils.h"
+#include "parse_utils.h"
 
 namespace UC::DramPool {
 namespace {
 
-using detail::Trim;
+using Dram::ParseBool;
+using Dram::ParseDouble;
+using Dram::ParseInt32;
+using Dram::ParseUint16;
+using Dram::ParseUint32;
+using Dram::ParseUint64;
+using Dram::ToLower;
+using Dram::Trim;
 
 struct YamlSection {
     std::size_t indent{0};
@@ -73,14 +75,6 @@ constexpr const char* kRequiredRuntimeConfigKeys[] = {
     "logger.max_files",
     "logger.max_size_mb",
 };
-
-std::string ToLower(std::string value)
-{
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char character) {
-        return static_cast<char>(std::tolower(character));
-    });
-    return value;
-}
 
 std::string BuildSectionPath(const std::vector<YamlSection>& sections)
 {
@@ -122,71 +116,6 @@ Status ParseYamlScalar(const std::string& key, std::string value, std::string& o
     }
     output = std::move(value);
     return Status::OK();
-}
-
-Status ParseUint32Value(const std::string& key, const std::string& value, std::uint32_t& output)
-{
-    try {
-        output = detail::ParseUint32(value);
-    } catch (const std::exception& error) {
-        return Status::InvalidParam("invalid YAML value for {}: {}", key, error.what());
-    }
-    return Status::OK();
-}
-
-Status ParseUint64Value(const std::string& key, const std::string& value, std::uint64_t& output)
-{
-    try {
-        output = detail::ParseUint64(value);
-    } catch (const std::exception& error) {
-        return Status::InvalidParam("invalid YAML value for {}: {}", key, error.what());
-    }
-    return Status::OK();
-}
-
-Status ParseDoubleValue(const std::string& key, const std::string& value, double& output)
-{
-    try {
-        std::size_t parsed = 0;
-        const auto number = std::stod(value, &parsed);
-        if (parsed != value.size() || !std::isfinite(number)) {
-            throw std::invalid_argument("expected a finite number");
-        }
-        output = number;
-    } catch (const std::exception& error) {
-        return Status::InvalidParam("invalid YAML value for {}: {}", key, error.what());
-    }
-    return Status::OK();
-}
-
-Status ParseInt32Value(const std::string& key, const std::string& value, std::int32_t& output)
-{
-    try {
-        std::size_t parsed = 0;
-        const auto number = std::stoll(value, &parsed, 0);
-        if (parsed != value.size() || number < std::numeric_limits<std::int32_t>::min() ||
-            number > std::numeric_limits<std::int32_t>::max()) {
-            throw std::out_of_range("outside int32 range");
-        }
-        output = static_cast<std::int32_t>(number);
-    } catch (const std::exception& error) {
-        return Status::InvalidParam("invalid YAML value for {}: {}", key, error.what());
-    }
-    return Status::OK();
-}
-
-Status ParseBoolValue(const std::string& key, const std::string& value, bool& output)
-{
-    const auto normalized = ToLower(value);
-    if (normalized == "true" || normalized == "yes" || normalized == "on" || normalized == "1") {
-        output = true;
-        return Status::OK();
-    }
-    if (normalized == "false" || normalized == "no" || normalized == "off" || normalized == "0") {
-        output = false;
-        return Status::OK();
-    }
-    return Status::InvalidParam("invalid YAML boolean for {}", key);
 }
 
 Status ParseEvictionPolicyValue(const std::string& key, const std::string& value,
@@ -261,26 +190,33 @@ Status CommitEndpointEntry(EndpointEntry& entry, DramPoolConfig& config,
 Status ApplyRuntimeConfigValue(DramPoolConfig& config, const std::string& key,
                                const std::string& value)
 {
+    if (key == "health.port") {
+        return ParseUint16(value, config.healthPort);
+    }
     if (key == "queue.request_depth") {
-        return ParseUint32Value(key, value, config.requestQueueDepth);
+        return ParseUint32(value, config.requestQueueDepth);
     }
     if (key == "queue.completion_depth") {
-        return ParseUint32Value(key, value, config.completionQueueDepth);
+        return ParseUint32(value, config.completionQueueDepth);
     }
     if (key == "request_receiver.idle_wait_us") {
-        return ParseUint32Value(key, value, config.requestReceiverIdleWaitUs);
+        return ParseUint32(value, config.requestReceiverIdleWaitUs);
     }
     if (key == "poller.pending_depth") {
-        return ParseUint32Value(key, value, config.pollerPendingDepth);
+        return ParseUint32(value, config.pollerPendingDepth);
     }
     if (key == "flag_buffer.capacity_mb") {
-        return ParseUint64Value(key, value, config.flagBufferCapacityMb);
+        return ParseUint64(value, config.flagBufferCapacityMb);
     }
     if (key == "flag_buffer.slot_size_bytes") {
-        return ParseUint64Value(key, value, config.flagBufferSlotSizeBytes);
+        return ParseUint64(value, config.flagBufferSlotSizeBytes);
     }
-    if (key == "gc.enabled") { return ParseBoolValue(key, value, config.gcEnabled); }
-    if (key == "gc.interval_ms") { return ParseUint32Value(key, value, config.gcIntervalMs); }
+    if (key == "gc.enabled") {
+        return ParseBool(value, config.gcEnabled);
+    }
+    if (key == "gc.interval_ms") {
+        return ParseUint32(value, config.gcIntervalMs);
+    }
     if (key == "metadata.periodic_eviction_policy") {
         return ParseEvictionPolicyValue(key, value, config.metadataPeriodicEvictionPolicy);
     }
@@ -288,15 +224,17 @@ Status ApplyRuntimeConfigValue(DramPoolConfig& config, const std::string& key,
         return ParseEvictionPolicyValue(key, value, config.metadataDeepEvictionPolicy);
     }
     if (key == "metadata.lease_time_ms") {
-        return ParseUint64Value(key, value, config.metadataLeaseTimeMs);
+        return ParseUint64(value, config.metadataLeaseTimeMs);
     }
     if (key == "metadata.default_evict_ratio") {
-        return ParseDoubleValue(key, value, config.metadataDefaultEvictRatio);
+        return ParseDouble(value, config.metadataDefaultEvictRatio);
     }
     if (key == "metadata.evict_period_ms") {
-        return ParseUint64Value(key, value, config.metadataEvictPeriodMs);
+        return ParseUint64(value, config.metadataEvictPeriodMs);
     }
-    if (key == "operation.timeout_ms") { return ParseUint32Value(key, value, config.opTimeoutMs); }
+    if (key == "operation.timeout_ms") {
+        return ParseUint32(value, config.opTimeoutMs);
+    }
     if (key == "logger.level") {
         config.logLevel = ToLower(value);
         return Status::OK();
@@ -305,8 +243,12 @@ Status ApplyRuntimeConfigValue(DramPoolConfig& config, const std::string& key,
         config.logDir = value;
         return Status::OK();
     }
-    if (key == "logger.max_files") { return ParseUint32Value(key, value, config.logMaxFiles); }
-    if (key == "logger.max_size_mb") { return ParseUint32Value(key, value, config.logMaxSizeMb); }
+    if (key == "logger.max_files") {
+        return ParseUint32(value, config.logMaxFiles);
+    }
+    if (key == "logger.max_size_mb") {
+        return ParseUint32(value, config.logMaxSizeMb);
+    }
     return Status::InvalidParam("unknown DramPool runtime YAML key: {}", key);
 }
 
@@ -475,7 +417,7 @@ Status ParseYamlConfig(const std::string& path, DramPoolConfig& config)
                 auto status = ParseYamlScalar("transport.device_ids", itemToken, itemValue);
                 if (status.Failure()) { return status; }
                 std::int32_t deviceId = 0;
-                status = ParseInt32Value("transport.device_ids", itemValue, deviceId);
+                status = ParseInt32(itemValue, deviceId);
                 if (status.Failure()) { return status; }
                 loadedConfig.transportDeviceIds.push_back(deviceId);
                 continue;
