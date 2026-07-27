@@ -42,6 +42,8 @@ bool ApplyTransportIoNumConfigField(TransportConfig& config, const std::string& 
                                     const std::string& value);
 bool ApplyTransportProviderConfigField(TransportConfig& config, const std::string& key,
                                        const std::string& value);
+bool ApplyTransportDeviceConfigField(TransportConfig& config, const std::string& key,
+                                     const std::string& value);
 bool TryParseAsuInfoKey(const std::string& key, AsuId& asuId);
 bool TryGetTransportAttrKey(const std::string& key, std::string& attrKey);
 
