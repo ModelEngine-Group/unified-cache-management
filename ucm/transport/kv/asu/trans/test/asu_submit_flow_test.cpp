@@ -311,7 +311,7 @@ TEST(AsuTransportRegisterTest, RegisterRegionsClearsBatchWhenTokenLookupFails)
     EXPECT_FALSE(transport.ownsRegisteredRegionHandles_);
 }
 
-TEST(AsuTransportRegisterTest, RegisterRegionsRetainsHandlesWhenBatchCleanupFails)
+TEST(AsuTransportRegisterTest, RegisterRegionsDoesNotTrackHandlesWhenBatchCleanupFails)
 {
     auto provider = std::make_unique<StubTransProvider>();
     auto* providerPtr = provider.get();
@@ -333,13 +333,15 @@ TEST(AsuTransportRegisterTest, RegisterRegionsRetainsHandlesWhenBatchCleanupFail
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     EXPECT_NE(status.message.find("cleanup was incomplete"), std::string::npos);
     EXPECT_TRUE(registeredRegions.empty());
-    EXPECT_EQ(transport.registeredRegions_.size(), std::size_t{1});
-    EXPECT_TRUE(transport.ownsRegisteredRegionHandles_);
+    EXPECT_TRUE(transport.registeredRegions_.empty());
+    EXPECT_FALSE(transport.ownsRegisteredRegionHandles_);
+    EXPECT_EQ(providerPtr->unregisterCount, std::uint32_t{1});
 
     providerPtr->failUnregister = false;
     const auto cleanupStatus =
         transport.UnregisterRegions({reinterpret_cast<MRHandle>(std::uintptr_t{1})});
     EXPECT_TRUE(cleanupStatus.ok()) << cleanupStatus.message;
+    EXPECT_EQ(providerPtr->unregisterCount, std::uint32_t{1});
     EXPECT_TRUE(transport.registeredRegions_.empty());
     EXPECT_FALSE(transport.ownsRegisteredRegionHandles_);
 }

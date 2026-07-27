@@ -362,19 +362,9 @@ Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& region
     }
 
     std::vector<MRHandle> mrHandles;
-    auto trackReturnedHandles = [&]() {
-        for (std::size_t index = 0; index < mrHandles.size(); ++index) {
-            RegisteredMemory registeredMemory;
-            if (index < regions.size()) { registeredMemory.region = regions[index]; }
-            registeredMemory.handle = mrHandles[index];
-            registeredRegions_[mrHandles[index]] = registeredMemory;
-        }
-        if (!mrHandles.empty()) { ownsRegisteredRegionHandles_ = true; }
-    };
 
     auto status = transProvider_->RegisterMemory(registerDescs, mrHandles);
     if (!status.ok()) {
-        trackReturnedHandles();
         const auto cleanupStatus = UnregisterOwnedRegionHandles(mrHandles);
         return Status::Error(StatusCode::PARTIAL_FAILED,
                              cleanupStatus.ok()
@@ -384,7 +374,6 @@ Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& region
     if (mrHandles.size() != regions.size()) {
         status = Status::Error(StatusCode::INTERNAL_ERROR,
                                "register result count does not match region count");
-        trackReturnedHandles();
         const auto cleanupStatus = UnregisterOwnedRegionHandles(mrHandles);
         return Status::Error(StatusCode::PARTIAL_FAILED,
                              cleanupStatus.ok()
@@ -397,7 +386,6 @@ Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& region
         status = transProvider_->GetMemTokenId(mrHandles[index], tokenIds[index]);
         if (status.ok()) { continue; }
 
-        trackReturnedHandles();
         const auto cleanupStatus = UnregisterOwnedRegionHandles(mrHandles);
         return Status::Error(StatusCode::PARTIAL_FAILED,
                              cleanupStatus.ok()
