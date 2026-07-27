@@ -21,7 +21,8 @@ void PatchFakeBackendTransportConfig(UC::ASU::TransportConfig& config,
                                      const KvTestFakeBackendConfig& fakeConfig)
 {
     const auto fakeBackendDeviceId =
-        config.endpoints.empty() ? kFakeBackendAclDeviceId : config.endpoints.front().deviceId;
+        config.deviceId < 0 ? kFakeBackendAclDeviceId : config.deviceId;
+    config.deviceId = fakeBackendDeviceId;
     config.providerType = UC::ASU::TransProviderType::FAKE;
     config.attrs.try_emplace("kernel_count", "1");
     config.attrs.try_emplace("quiet_count", "1");
@@ -38,7 +39,6 @@ void PatchFakeBackendTransportConfig(UC::ASU::TransportConfig& config,
         endpoint.ip = "fake_backend";
         endpoint.port = 19001;
         endpoint.protocol = UC::ASU::Protocol::TCP;
-        endpoint.deviceId = fakeBackendDeviceId;
         config.endpoints.emplace_back(std::move(endpoint));
     }
 }

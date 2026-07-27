@@ -41,6 +41,12 @@ BUILD_UCM_ASU_PROVIDER_AIV = os.getenv("BUILD_UCM_ASU_PROVIDER_AIV", "0") not in
     "false",
     "False",
 )
+BUILD_UCM_ASU_PROVIDER_AICPU = os.getenv("BUILD_UCM_ASU_PROVIDER_AICPU", "0") not in (
+    "",
+    "0",
+    "false",
+    "False",
+)
 
 
 def get_abi_flag_from_env() -> str:
@@ -71,14 +77,14 @@ def print_platform_warning():
         RESET = "\033[0m"
 
         warning_msg = f"""
-{RED}{'=' * 80}
+{RED}{"=" * 80}
 {BOLD}⚠️  WARNING: PLATFORM environment variable is not set! ⚠️{RESET}
-{RED}{'=' * 80}{RESET}
+{RED}{"=" * 80}{RESET}
 {YELLOW}Please set PLATFORM to one of: cuda, ascend, ascend-a3, musa, maca{RESET}
 Example:
   {BOLD}export PLATFORM=cuda{RESET}    # For CUDA platform
 {YELLOW}In CI scenarios only, you don't need to specify PLATFORM. If it's not a CI scenario, please uninstall and then reinstall with PLATFORM specified.{RESET}
-{RED}{'=' * 80}{RESET}
+{RED}{"=" * 80}{RESET}
 """
         # Use write and flush to ensure output even without -v flag
         sys.stderr.write(warning_msg)
@@ -175,6 +181,10 @@ class CMakeBuild(build_ext):
             cmake_args += ["-DBUILD_UCM_SPARSE=ON"]
         if BUILD_UCM_ASU:
             cmake_args += ["-DBUILD_UCM_ASU=ON"]
+        if BUILD_UCM_ASU_PROVIDER_AIV:
+            cmake_args += ["-DBUILD_UCM_ASU_PROVIDER_AIV=ON"]
+        if BUILD_UCM_ASU_PROVIDER_AICPU:
+            cmake_args += ["-DBUILD_UCM_ASU_PROVIDER_AICPU=ON"]
 
         match PLATFORM:
             case "cuda":

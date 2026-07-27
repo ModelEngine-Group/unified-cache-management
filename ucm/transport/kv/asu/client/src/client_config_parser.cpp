@@ -140,6 +140,9 @@ Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& confi
             if (ApplyTransportProviderConfigField(transportConfig, field.first, field.second)) {
                 continue;
             }
+            if (ApplyTransportDeviceConfigField(transportConfig, field.first, field.second)) {
+                continue;
+            }
             transportConfig.attrs.emplace(field);
         }
 

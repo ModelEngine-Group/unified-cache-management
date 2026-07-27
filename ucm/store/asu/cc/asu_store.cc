@@ -29,6 +29,7 @@
 #include <cstddef>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <numeric>
@@ -130,14 +131,6 @@ UC::ASU::TransProviderType ParseTransProviderBackend(std::string backend)
     return UC::ASU::TransProviderType::UNSUPPORTED;
 }
 
-UC::ASU::MemoryType ParseMemoryType(const std::string& memoryType)
-{
-    if (memoryType == "host") { return UC::ASU::MemoryType::HOST; }
-    if (memoryType == "host_pinned") { return UC::ASU::MemoryType::HOST_PINNED; }
-    if (memoryType == "ascend_device") { return UC::ASU::MemoryType::ASCEND_DEVICE; }
-    return UC::ASU::MemoryType::ASCEND_DEVICE;
-}
-
 bool TryGetStringLike(const Detail::Dictionary& inConfig, const std::string& key,
                       std::string& value)
 {
@@ -178,6 +171,7 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
     UC::ASU::TransportConfig transportConfig;
     transportConfig.asuId = static_cast<UC::ASU::AsuId>(config.asuIds[index]);
     transportConfig.asuName = config.asuNamePrefix + "-" + std::to_string(config.asuIds[index]);
+    transportConfig.deviceId = config.deviceId;
     transportConfig.queryTimeoutMs = config.queryTimeoutMs;
     transportConfig.loadTimeoutMs = config.loadTimeoutMs;
     transportConfig.storeTimeoutMs = config.storeTimeoutMs;
@@ -188,17 +182,17 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
     // Set for all backends including fake
     const auto kvNsIndex = config.uniqueId.find("_fawa_wa") == std::string::npos ? 0 : 1;
     transportConfig.attrs["kv_ns_id"] = std::to_string(config.kvNsIds[kvNsIndex]);
-    if (!config.asuLocalIp.empty()) { transportConfig.attrs["localIp"] = config.asuLocalIp; }
+    if (!config.localIp.empty()) { transportConfig.attrs["localIp"] = config.localIp; }
 
     if (!config.asuIps.empty()) {
         UC::ASU::AsuEndpoint endpoint;
         endpoint.ip = config.asuIps[index];
         endpoint.port = config.asuPort;
-        endpoint.deviceId = config.deviceId;
         transportConfig.endpoints.emplace_back(std::move(endpoint));
     }
     if (config.transProviderType == UC::ASU::TransProviderType::FAKE) {
         const auto fakeDeviceId = config.deviceId >= 0 ? config.deviceId : 0;
+        transportConfig.deviceId = fakeDeviceId;
         transportConfig.attrs.try_emplace("kernel_count", "1");
         transportConfig.attrs.try_emplace("quiet_count", "1");
         transportConfig.attrs.try_emplace("dtype", "0");
@@ -214,7 +208,6 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
             endpoint.ip = "fake_backend";
             endpoint.port = 19001;
             endpoint.protocol = UC::ASU::Protocol::TCP;
-            endpoint.deviceId = fakeDeviceId;
             transportConfig.endpoints.emplace_back(std::move(endpoint));
         }
     }
@@ -376,13 +369,12 @@ public:
     {
         if (!backend_) { return Status::Error("ASU backend is not initialized"); }
 
-        const auto memoryType = ConfiguredMemoryType();
         std::vector<UC::ASU::MemoryRegion> regions;
         regions.reserve(count);
         for (std::size_t index = 0; index < count; ++index) {
             if (registrations[index].addr == 0 || registrations[index].size == 0) { continue; }
             UC::ASU::MemoryRegion region;
-            region.memoryType = memoryType;
+            region.memoryType = UC::ASU::MemoryType::ASCEND_DEVICE;
             region.addr = static_cast<std::uint64_t>(registrations[index].addr);
             region.size = static_cast<std::uint64_t>(registrations[index].size);
             region.deviceId = config_.deviceId;
@@ -468,12 +460,15 @@ private:
         inConfig.Get("asu_view_service_addrs", config.viewServiceAddrs);
         inConfig.GetNumbers("asu_ids", config.asuIds);
         inConfig.Get("asu_ips", config.asuIps);
-        inConfig.Get("asu_local_ip", config.asuLocalIp);
+        inConfig.Get("asu_local_ip", config.localIp);
         inConfig.Get("asu_name_prefix", config.asuNamePrefix);
         inConfig.GetNumbers("kv_ns_ids", config.kvNsIds);
         ssize_t asuPort = 0;
         inConfig.GetNumber("asu_port", asuPort);
-        config.asuPort = static_cast<std::uint16_t>(std::max<ssize_t>(0, asuPort));
+        if (asuPort > 0 &&
+            static_cast<std::uint64_t>(asuPort) <= std::numeric_limits<std::uint16_t>::max()) {
+            config.asuPort = static_cast<std::uint16_t>(asuPort);
+        }
         inConfig.GetNumber("asu_default_wait_timeout_ms", config.defaultWaitTimeoutMs);
         inConfig.GetNumber("asu_query_timeout_ms", config.queryTimeoutMs);
         inConfig.GetNumber("asu_load_timeout_ms", config.loadTimeoutMs);
@@ -483,7 +478,6 @@ private:
         inConfig.GetNumber("shard_size", config.shardSize);
         inConfig.GetNumber("block_size", config.blockSize);
         inConfig.GetNumber("device_id", config.deviceId);
-        inConfig.Get("asu_memory_type", config.memoryType);
         inConfig.Get("tensor_layout", config.tensorLayout);
         std::string providerBackend;
         if (TryGetStringLike(inConfig, "asu_trans_provider_backend", providerBackend)) {
@@ -544,6 +538,15 @@ private:
         if (config.configPath.empty() && config.asuIds.empty()) {
             return Status::InvalidParam("invalid asu_ids");
         }
+        if (std::any_of(config.asuIds.begin(), config.asuIds.end(),
+                        [](ssize_t asuId) { return asuId < 0; })) {
+            return Status::InvalidParam("asu_ids must not contain negative values");
+        }
+        auto sortedAsuIds = config.asuIds;
+        std::sort(sortedAsuIds.begin(), sortedAsuIds.end());
+        if (std::adjacent_find(sortedAsuIds.begin(), sortedAsuIds.end()) != sortedAsuIds.end()) {
+            return Status::InvalidParam("asu_ids must not contain duplicate values");
+        }
         if (config.mode == "transport") {
             if (config.configPath.empty() && config.asuIds.size() != 1) {
                 return Status::InvalidParam("transport mode requires exactly one asu_id");
@@ -555,11 +558,25 @@ private:
         if (!config.asuIps.empty() && config.asuIps.size() != config.asuIds.size()) {
             return Status::InvalidParam("asu_ips size must match asu_ids size");
         }
-        if (config.uniqueId.find("_fawa_") != std::string::npos && config.kvNsIds.size() != 2) {
-            return Status::InvalidParam("FAWA requires exactly two kv_ns_ids");
+        if (!config.asuIps.empty() && config.asuPort == 0) {
+            return Status::InvalidParam("asu_port must be in range [1, 65535] when asu_ips is set");
+        }
+        if (config.configPath.empty()) {
+            const auto expectedKvNsCount = config.uniqueId.find("_fawa_") == std::string::npos
+                                               ? std::size_t{1}
+                                               : std::size_t{2};
+            if (config.kvNsIds.size() != expectedKvNsCount) {
+                return Status::InvalidParam("kv_ns_ids must contain exactly {} value(s)",
+                                            expectedKvNsCount);
+            }
         }
         if (config.transProviderType == UC::ASU::TransProviderType::UNSUPPORTED) {
             return Status::Unsupported();
+        }
+        if (config.configPath.empty() &&
+            config.transProviderType == UC::ASU::TransProviderType::AIV && config.deviceId < 0) {
+            return Status::InvalidParam(
+                "device_id is required when asu_trans_provider_backend is aiv");
         }
         if (config.transProviderType == UC::ASU::TransProviderType::FAKE &&
             !config.configPath.empty()) {
@@ -573,7 +590,9 @@ private:
         if (!config.role.empty() && config.role != "scheduler" && config.role != "worker") {
             return Status::InvalidParam("invalid role({})", config.role);
         }
-
+        if (config.maxInflightTasks > std::numeric_limits<std::uint32_t>::max()) {
+            return Status::InvalidParam("asu_max_inflight_tasks exceeds uint32 range");
+        }
         // Scheduler config check done
         if (config.role == "scheduler") { return Status::OK(); }
 
@@ -584,6 +603,9 @@ private:
         }
         if (config.shardSize == 0) { return Status::InvalidParam("invalid shard size"); }
         if (config.blockSize == 0) { return Status::InvalidParam("invalid block size"); }
+        if (config.blockSize > std::numeric_limits<std::uint32_t>::max()) {
+            return Status::InvalidParam("block size exceeds uint32 offset range");
+        }
         const auto tensorSum =
             std::accumulate(config.tensorSizes.begin(), config.tensorSizes.end(), std::size_t{0});
         if (tensorSum == 0 || tensorSum > config.shardSize) {
@@ -723,7 +745,6 @@ private:
     {
         std::vector<UC::ASU::KVBuffer> entries;
         entries.reserve(task.size() * config_.tensorSizes.size());
-        const auto memoryType = ConfiguredMemoryType();
 
         for (const auto& shard : task) {
             if (shard.index >= ShardsPerBlock()) {
@@ -736,7 +757,7 @@ private:
             for (std::size_t tensorIndex = 0; tensorIndex < shard.addrs.size(); ++tensorIndex) {
                 UC::ASU::KVBuffer entry;
                 entry.key = MakeAsuKey(shard.owner);
-                entry.buffer.region.memoryType = memoryType;
+                entry.buffer.region.memoryType = UC::ASU::MemoryType::ASCEND_DEVICE;
                 entry.buffer.region.addr =
                     reinterpret_cast<std::uint64_t>(shard.addrs[tensorIndex]);
                 entry.buffer.region.size = config_.tensorSizes[tensorIndex];
@@ -770,14 +791,6 @@ private:
         UC_INFO("Set AsuStore::TransProviderBackend to {}.",
                 TransProviderBackendName(config.transProviderType));
         UC_INFO("Set AsuStore::FakeBackendPath to {}.", config.fakeBackendPath);
-    }
-
-    UC::ASU::MemoryType ConfiguredMemoryType() const
-    {
-        return config_.memoryType.empty()
-                   ? (config_.deviceId >= 0 ? UC::ASU::MemoryType::ASCEND_DEVICE
-                                            : UC::ASU::MemoryType::HOST)
-                   : ParseMemoryType(config_.memoryType);
     }
 
     UC::ASU::MRHandle FindPersistentHandle(const UC::ASU::MemoryRegion& region) const

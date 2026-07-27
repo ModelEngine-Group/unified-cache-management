@@ -18,7 +18,7 @@ struct Config {
     std::vector<std::string> viewServiceAddrs;
     std::vector<ssize_t> asuIds;
     std::vector<std::string> asuIps;
-    std::string asuLocalIp;
+    std::string localIp;
     std::string asuNamePrefix{"asu"};
     std::vector<std::uint32_t> kvNsIds;
     std::uint16_t asuPort{0};
@@ -32,7 +32,6 @@ struct Config {
     std::size_t shardSize{0};
     std::size_t blockSize{0};
     std::int32_t deviceId{-1};
-    std::string memoryType;
     std::string tensorLayout;
     UC::ASU::TransProviderType transProviderType{UC::ASU::TransProviderType::AICPU};
     std::string fakeBackendPath;

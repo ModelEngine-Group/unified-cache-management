@@ -38,7 +38,6 @@ struct AsuEndpoint {
     std::uint16_t port{0};
     Protocol protocol{Protocol::ROCE};
     std::int32_t numaNode{-1};
-    std::int32_t deviceId{-1};
     std::string hcaName;
     std::uint8_t hcaPort{1};
     std::unordered_map<std::string, std::string> attrs;
@@ -48,6 +47,8 @@ struct TransportConfig {
     // TODO: 拆分Config，按逻辑模块细化
     std::string asuName;
     AsuId asuId{0};
+    // Local logical device ID used by the transport provider.
+    std::int32_t deviceId{-1};
     std::vector<AsuEndpoint> endpoints;
 
     TransProviderType providerType{TransProviderType::AICPU};

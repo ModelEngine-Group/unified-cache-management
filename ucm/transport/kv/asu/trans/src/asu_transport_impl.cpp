@@ -112,8 +112,7 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
 #endif
             case TransProviderType::AIV:
 #ifdef UCM_ASU_ENABLE_AIV_PROVIDER
-                transProvider_ = std::make_unique<AIVTransProviderAdapter>(
-                    config_.endpoints.empty() ? -1 : config_.endpoints.front().deviceId);
+                transProvider_ = std::make_unique<AIVTransProviderAdapter>(config_.deviceId);
                 break;
 #else
                 return Status::Error(

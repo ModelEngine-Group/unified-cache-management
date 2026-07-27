@@ -378,7 +378,7 @@ Status CompleteFakeBackendRequest(const FakeTransProviderConfig& config, const v
 FakeTransProviderConfig MakeFakeTransProviderConfig(const TransportConfig& config)
 {
     FakeTransProviderConfig fakeConfig;
-    fakeConfig.deviceId = config.endpoints.empty() ? 0 : config.endpoints.front().deviceId;
+    fakeConfig.deviceId = config.deviceId < 0 ? 0 : config.deviceId;
     auto pathIter = config.attrs.find("fake_backend.path");
     if (pathIter != config.attrs.end() && !pathIter->second.empty()) {
         fakeConfig.storePath = pathIter->second;
