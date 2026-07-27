@@ -1,4 +1,4 @@
-#include "two_sided/tcp/tcp_message_channel.h"
+#include "channels/tcp/tcp_message_channel.h"
 #include <algorithm>
 #include <arpa/inet.h>
 #include <cerrno>

@@ -60,10 +60,10 @@ private:
     Status HandleMetadataExchange(const ManagerID& manager_id, const Metadata& remote_metadata,
                                   Metadata& local_metadata);
     Status HandleControlRequest(const Metadata& request, Metadata& response);
-    Status CoordinateConnection(ControlOperation operation, TransportProtocol protocol,
-                                const ManagerID& manager_id);
-    Status ApplyConnection(ControlOperation operation, TransportProtocol protocol,
-                           const ManagerID& manager_id);
+    Status CoordinateConnectionWithPeer(ControlOperation operation, TransportProtocol protocol,
+                                        const ManagerID& manager_id);
+    Status ApplyConnectionLocally(ControlOperation operation, TransportProtocol protocol,
+                                  const ManagerID& manager_id);
     Endpoint LocalEndpoint() const;
     Status ParseManagerID(const ManagerID& manager_id, Endpoint& endpoint) const;
 

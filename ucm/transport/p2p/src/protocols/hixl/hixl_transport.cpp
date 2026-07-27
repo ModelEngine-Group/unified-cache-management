@@ -1,4 +1,4 @@
-#include "hixl/hixl_transport.h"
+#include "protocols/hixl/hixl_transport.h"
 #include <arpa/inet.h>
 #include <limits>
 #include <netdb.h>
@@ -9,8 +9,8 @@
 #include <utility>
 #include <vector>
 #include "common/binary_codec.h"
-#include "hixl/hixl_instance.h"
 #include "logger/logger.h"
+#include "protocols/hixl/hixl_instance.h"
 
 namespace transport {
 namespace {
@@ -383,8 +383,8 @@ Status HixlTransport::Connect(const ManagerID& manager_id)
         return Status::InvalidParam();
     }
 
+    const auto remote_engine = peer.instances.front().endpoint.ToString();
     if (role_ != HixlRole::Server && peer.role != HixlRole::Client) {
-        const auto remote_engine = peer.instances.front().endpoint.ToString();
         const auto status =
             instances_[peer.local_index]->Connect(remote_engine, connect_timeout_ms_);
         if (status != Status::OK()) { return status; }

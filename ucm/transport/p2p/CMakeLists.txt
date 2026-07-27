@@ -83,20 +83,20 @@ find_library(P2P_METADEF_LIBRARY
 )
 
 set(P2P_TRANSPORT_SOURCES
-    src/one_sided/common/binary_codec.cpp
-    src/one_sided/control/control_channel.cpp
-    src/one_sided/control/control_protocol.cpp
-    src/one_sided/core/transport_manager.cpp
-    src/two_sided/tcp/tcp_message_channel.cpp
+    src/common/binary_codec.cpp
+    src/control/control_channel.cpp
+    src/control/control_protocol.cpp
+    src/core/transport_manager.cpp
+    src/channels/tcp/tcp_message_channel.cpp
 )
 
 set(P2P_HIXL_AVAILABLE OFF)
 if(P2P_HIXL_INCLUDE_DIR AND P2P_HIXL_LIBRARY AND P2P_METADEF_LIBRARY)
     set(P2P_HIXL_AVAILABLE ON)
     list(APPEND P2P_TRANSPORT_SOURCES
-        src/one_sided/common/acl_runtime_context.cpp
-        src/one_sided/hixl/hixl_instance.cpp
-        src/one_sided/hixl/hixl_transport.cpp
+        src/common/acl_runtime_context.cpp
+        src/protocols/hixl/hixl_instance.cpp
+        src/protocols/hixl/hixl_transport.cpp
     )
     message(STATUS "P2P HIXL transport backend is enabled")
 else()
@@ -110,11 +110,9 @@ add_library(ucm_p2p_transport SHARED ${P2P_TRANSPORT_SOURCES})
 target_include_directories(ucm_p2p_transport
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/one_sided>
         $<INSTALL_INTERFACE:ucm/transport/p2p/include>
-        $<INSTALL_INTERFACE:ucm/transport/p2p/include/one_sided>
     PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/one_sided
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${UCM_ROOT_DIR}/ucm/shared/infra
 )
 target_compile_definitions(ucm_p2p_transport PRIVATE SPDLOG_FMT_EXTERNAL)
@@ -160,8 +158,4 @@ install(DIRECTORY include/
     DESTINATION ${P2P_INSTALL_REL_PATH}/include
     COMPONENT ucm
     FILES_MATCHING PATTERN "*.h"
-)
-install(FILES ${UCM_ROOT_DIR}/ucm/shared/infra/status/status.h
-    DESTINATION ${P2P_INSTALL_REL_PATH}/include/status
-    COMPONENT ucm
 )

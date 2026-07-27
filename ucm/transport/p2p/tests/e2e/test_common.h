@@ -5,8 +5,8 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include "channels/tcp/tcp_message_channel.h"
 #include "core/transport.h"
-#include "two_sided/tcp/tcp_message_channel.h"
 
 namespace transport::test {
 

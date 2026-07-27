@@ -12,6 +12,9 @@ using Status = UC::Status;
 using ManagerID = std::string;
 using MemoryHandle = uint64_t;
 using TransferHandle = uint64_t;
+// Opaque transport-specific bytes exchanged between peers for route, endpoint,
+// and registered-memory discovery. The manager and control channel must not
+// interpret the contents.
 using Metadata = std::vector<uint8_t>;
 
 constexpr MemoryHandle kInvalidMemoryHandle = 0;

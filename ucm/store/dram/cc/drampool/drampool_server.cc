@@ -29,12 +29,12 @@
 #include <string>
 #include <type_traits>
 #include <utility>
+#include "channels/tcp/tcp_message_channel.h"
 #include "core/transport_manager.h"
 #include "logger/logger.h"
 #include "metadata.h"
 #include "pool/buffer_pool.h"
 #include "task_worker.h"
-#include "two_sided/tcp/tcp_message_channel.h"
 
 namespace UC::DramPool {
 namespace {

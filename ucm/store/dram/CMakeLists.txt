@@ -13,8 +13,7 @@ endif()
 add_library(dramstore SHARED ${UCM_DRAM_STORE_CC_SOURCE_FILES})
 target_include_directories(dramstore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cc)
 target_include_directories(dramstore PUBLIC
-    ${CMAKE_SOURCE_DIR}/ucm/transport/p2p/include
-    ${CMAKE_SOURCE_DIR}/ucm/transport/p2p/include/one_sided)
+    ${CMAKE_SOURCE_DIR}/ucm/transport/p2p/include)
 target_include_directories(dramstore PUBLIC ${CMAKE_SOURCE_DIR}/ucm/shared)
 
 target_link_libraries(dramstore PUBLIC storeintf infra_logger infra_thread kv_common buffer_pool)

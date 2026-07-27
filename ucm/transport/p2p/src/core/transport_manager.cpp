@@ -10,7 +10,7 @@
 #include "control/control_channel.h"
 #include "control/control_protocol.h"
 #ifdef UCM_P2P_HAS_HIXL
-#include "hixl/hixl_transport.h"
+#include "protocols/hixl/hixl_transport.h"
 #endif
 #include "logger/logger.h"
 
@@ -246,8 +246,8 @@ Status TransportManager::HandleControlRequest(const Metadata& request, Metadata&
     UC_INFO("transport manager received {} request protocol={} peer={}",
             control_request.operation == ControlOperation::Connect ? "connect" : "disconnect",
             static_cast<uint32_t>(*control_request.protocol), control_request.manager_id);
-    return ApplyConnection(control_request.operation, *control_request.protocol,
-                           control_request.manager_id);
+    return ApplyConnectionLocally(control_request.operation, *control_request.protocol,
+                                  control_request.manager_id);
 }
 
 Status TransportManager::RegisterMemory(const MemoryRegion& memory, MemoryHandle& handle)
@@ -334,16 +334,17 @@ Status TransportManager::FindTransport(Operation& batch, Transport*& transport)
 
 Status TransportManager::Connect(TransportProtocol protocol, const ManagerID& manager_id)
 {
-    return CoordinateConnection(ControlOperation::Connect, protocol, manager_id);
+    return CoordinateConnectionWithPeer(ControlOperation::Connect, protocol, manager_id);
 }
 
 Status TransportManager::Disconnect(TransportProtocol protocol, const ManagerID& manager_id)
 {
-    return CoordinateConnection(ControlOperation::Disconnect, protocol, manager_id);
+    return CoordinateConnectionWithPeer(ControlOperation::Disconnect, protocol, manager_id);
 }
 
-Status TransportManager::ApplyConnection(ControlOperation operation, TransportProtocol protocol,
-                                         const ManagerID& manager_id)
+Status TransportManager::ApplyConnectionLocally(ControlOperation operation,
+                                                TransportProtocol protocol,
+                                                const ManagerID& manager_id)
 {
     std::lock_guard<std::recursive_mutex> lock(peer_mutex_);
     if (shutting_down_ && operation == ControlOperation::Connect) { return Status::Error(); }
@@ -365,9 +366,9 @@ Status TransportManager::ApplyConnection(ControlOperation operation, TransportPr
     return Status::OK();
 }
 
-Status TransportManager::CoordinateConnection(ControlOperation operation,
-                                              TransportProtocol protocol,
-                                              const ManagerID& manager_id)
+Status TransportManager::CoordinateConnectionWithPeer(ControlOperation operation,
+                                                      TransportProtocol protocol,
+                                                      const ManagerID& manager_id)
 {
     Endpoint endpoint;
     if (ParseManagerID(manager_id, endpoint) != Status::OK() || !control_) {
@@ -380,7 +381,7 @@ Status TransportManager::CoordinateConnection(ControlOperation operation,
         EncodeControlRequest(ControlRequest{operation, protocol, manager_id_, {}}, request);
     if (status != Status::OK()) { return status; }
 
-    const auto local_status = ApplyConnection(operation, protocol, manager_id);
+    const auto local_status = ApplyConnectionLocally(operation, protocol, manager_id);
     if (operation == ControlOperation::Connect && local_status != Status::OK()) {
         UC_ERROR("transport manager local connect failed protocol={} peer={} status={}",
                  static_cast<uint32_t>(protocol), manager_id, local_status.Underlying());
@@ -396,7 +397,7 @@ Status TransportManager::CoordinateConnection(ControlOperation operation,
                  remote_status.Underlying());
         if (operation == ControlOperation::Connect && remote_status != Status::OK()) {
             const auto rollback_status =
-                ApplyConnection(ControlOperation::Disconnect, protocol, manager_id);
+                ApplyConnectionLocally(ControlOperation::Disconnect, protocol, manager_id);
             UC_WARN("transport manager rolled back local connect protocol={} peer={} status={}",
                     static_cast<uint32_t>(protocol), manager_id, rollback_status.Underlying());
         }
