@@ -22,7 +22,11 @@
  * SOFTWARE.
  * */
 #include "drampool_server.h"
+
+#if defined(UCM_DRAMPOOL_RUNTIME_ASCEND)
 #include <acl/acl.h>
+#endif
+
 #include <chrono>
 #include <exception>
 #include <random>
@@ -34,6 +38,7 @@
 #include "metadata.h"
 #include "pool/buffer_pool.h"
 #include "task_worker.h"
+#include "trans/device.h"
 #include "two_sided/tcp/tcp_message_channel.h"
 
 namespace UC::DramPool {
@@ -84,7 +89,7 @@ Status DramPoolServer::Init()
     // Build runtime dependencies without starting transport services or listeners.
     auto rollback = MakeScopeExit([this]() { ResetInitializedComponents(); });
     try {
-        if (auto status = InitializeAclRuntime(); status.Failure()) { return status; }
+        if (auto status = InitializeDeviceRuntime(); status.Failure()) { return status; }
         if (auto status = InitMemoryPool(); status.Failure()) { return status; }
         if (auto status = InitFlagBufferPool(); status.Failure()) { return status; }
         if (auto status = InitMetadata(); status.Failure()) { return status; }
@@ -139,34 +144,41 @@ void DramPoolServer::Stop()
     state_ = ServerState::Stopped;
 }
 
-Status DramPoolServer::InitializeAclRuntime()
+Status DramPoolServer::InitializeDeviceRuntime()
 {
     if (g_config.transportDeviceIds.empty()) {
         return Status::InvalidParam("transport.device_ids must not be empty");
     }
     std::mt19937 generator(std::random_device{}());
-    std::uniform_int_distribution<std::size_t> distribution(0,
-                                                            g_config.transportDeviceIds.size() - 1);
+    std::uniform_int_distribution<std::size_t> distribution(
+        0, g_config.transportDeviceIds.size() - 1);
     const auto deviceId = g_config.transportDeviceIds[distribution(generator)];
 
+#if defined(UCM_DRAMPOOL_RUNTIME_ASCEND)
     const auto initStatus = aclInit(nullptr);
     if (initStatus == ACL_SUCCESS) {
         aclRuntimeOwned_ = true;
     } else if (initStatus != ACL_ERROR_REPEAT_INITIALIZE) {
         return Status::Error("aclInit failed: " + std::to_string(initStatus));
     }
+#endif
 
-    const auto setDeviceStatus = aclrtSetDevice(deviceId);
-    if (setDeviceStatus == ACL_SUCCESS) {
+    UC::Trans::Device device;
+    const auto setupStatus = device.Setup(deviceId);
+    if (setupStatus.Success()) {
+#if defined(UCM_DRAMPOOL_RUNTIME_ASCEND)
         aclDeviceId_ = deviceId;
+#endif
         return Status::OK();
     }
 
+#if defined(UCM_DRAMPOOL_RUNTIME_ASCEND)
     if (aclRuntimeOwned_) {
         (void)aclFinalize();
         aclRuntimeOwned_ = false;
     }
-    return Status::Error("aclrtSetDevice failed: " + std::to_string(setDeviceStatus));
+#endif
+    return Status::Error("device runtime setup failed: " + setupStatus.ToString());
 }
 
 Status DramPoolServer::InitMemoryPool()
@@ -545,11 +557,13 @@ void DramPoolServer::ResetInitializedComponents()
     flagBufferPool_.reset();
     bufferManager_.reset();
     transportManager_.reset();
+#if defined(UCM_DRAMPOOL_RUNTIME_ASCEND)
     if (aclRuntimeOwned_) {
         if (aclDeviceId_) { (void)aclrtResetDevice(*aclDeviceId_); }
         (void)aclFinalize();
         aclRuntimeOwned_ = false;
     }
+#endif
     aclDeviceId_.reset();
 }
 

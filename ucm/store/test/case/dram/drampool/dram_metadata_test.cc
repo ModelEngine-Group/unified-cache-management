@@ -21,7 +21,9 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#if defined(UCM_TEST_RUNTIME_ASCEND)
 #include <acl/acl.h>
+#endif
 #include <chrono>
 #include <gtest/gtest.h>
 #include <memory>
@@ -31,6 +33,7 @@
 #include "dram/cc/drampool/entry.h"
 #include "dram/cc/drampool/metadata.h"
 #include "dram/dram_test_common.h"
+#include "trans/device.h"
 
 using UC::Status;
 using UC::Detail::BlockId;
@@ -336,14 +339,21 @@ class UCMetadataManagerTest : public testing::Test {
 protected:
     static void SetUpTestSuite()
     {
-        aclInit(nullptr);
-        aclrtSetDevice(0);
+#if defined(UCM_TEST_RUNTIME_ASCEND)
+        ASSERT_EQ(aclInit(nullptr), ACL_SUCCESS);
+#endif
+
+        UC::Trans::Device device;
+        const auto status = device.Setup(0);
+        ASSERT_TRUE(status.Success()) << status.ToString();
     }
 
     static void TearDownTestSuite()
     {
+#if defined(UCM_TEST_RUNTIME_ASCEND)
         aclrtResetDevice(0);
         aclFinalize();
+#endif
     }
 
     const TimePoint past_ = Clock::now() - std::chrono::seconds(10);

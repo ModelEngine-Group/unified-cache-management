@@ -67,7 +67,7 @@ private:
         Stopped,
     };
 
-    Status InitializeAclRuntime();
+    Status InitializeDeviceRuntime();
     Status InitMemoryPool();
     Status InitFlagBufferPool();
     Status InitMetadata();

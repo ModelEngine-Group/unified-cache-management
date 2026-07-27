@@ -1,4 +1,5 @@
-if(NOT RUNTIME_ENVIRONMENT STREQUAL "ascend")
+if(NOT (RUNTIME_ENVIRONMENT STREQUAL "ascend"
+        OR RUNTIME_ENVIRONMENT STREQUAL "simu"))
     return()
 endif()
 
@@ -90,7 +91,10 @@ set(P2P_TRANSPORT_SOURCES
 )
 
 set(P2P_HIXL_AVAILABLE OFF)
-if(P2P_HIXL_INCLUDE_DIR AND P2P_HIXL_LIBRARY AND P2P_METADEF_LIBRARY)
+if(RUNTIME_ENVIRONMENT STREQUAL "ascend"
+   AND P2P_HIXL_INCLUDE_DIR
+   AND P2P_HIXL_LIBRARY
+   AND P2P_METADEF_LIBRARY)
     set(P2P_HIXL_AVAILABLE ON)
     list(APPEND P2P_TRANSPORT_SOURCES
         src/one_sided/common/acl_runtime_context.cpp
@@ -98,10 +102,15 @@ if(P2P_HIXL_INCLUDE_DIR AND P2P_HIXL_LIBRARY AND P2P_METADEF_LIBRARY)
         src/one_sided/hixl/hixl_transport.cpp
     )
     message(STATUS "P2P HIXL transport backend is enabled")
-else()
+elseif(RUNTIME_ENVIRONMENT STREQUAL "ascend")
     message(STATUS
         "P2P HIXL transport backend is disabled: "
         "hixl/hixl.h, libcann_hixl, or libmetadef was not found"
+    )
+else()
+    message(STATUS
+        "P2P HIXL transport backend is disabled for "
+        "RUNTIME_ENVIRONMENT=${RUNTIME_ENVIRONMENT}"
     )
 endif()
 

@@ -21,7 +21,9 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#if defined(UCM_TEST_RUNTIME_ASCEND)
 #include <acl/acl.h>
+#endif
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -39,6 +41,7 @@
 #include "dram/dram_test_common.h"
 #include "pool/buffer_pool.h"
 #include "status/status.h"
+#include "trans/device.h"
 
 // Match the white-box style used by the other DramPool unit tests. This keeps test access in
 // this translation unit and does not add test-only seams to production code.
@@ -65,14 +68,20 @@ class CompletionPollerTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite()
     {
+#if defined(UCM_TEST_RUNTIME_ASCEND)
         ASSERT_EQ(aclInit(nullptr), ACL_SUCCESS);
-        ASSERT_EQ(aclrtSetDevice(0), ACL_SUCCESS);
+#endif
+        UC::Trans::Device device;
+        const auto status = device.Setup(0);
+        ASSERT_TRUE(status.Success()) << status.ToString();
     }
 
     static void TearDownTestSuite()
     {
+#if defined(UCM_TEST_RUNTIME_ASCEND)
         EXPECT_EQ(aclrtResetDevice(0), ACL_SUCCESS);
         EXPECT_EQ(aclFinalize(), ACL_SUCCESS);
+#endif
     }
 
     void SetUp() override
@@ -203,7 +212,6 @@ TEST_F(CompletionPollerTest, PollPendingRemovesEveryTerminalFailureAndInvalidSta
     poller_->pending_.push_back(std::move(responseRecord));
     poller_->pending_.push_back(std::move(invalidRecord));
     poller_->PollPendingCompletions();
-
     EXPECT_TRUE(poller_->pending_.empty());
     BufferPool::Slot reused;
     ASSERT_TRUE(flagBufferPool_.Allocate(reused).Success());

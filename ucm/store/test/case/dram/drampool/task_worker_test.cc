@@ -21,7 +21,9 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#if defined(UCM_TEST_RUNTIME_ASCEND)
 #include <acl/acl.h>
+#endif
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -37,6 +39,7 @@
 #include "kv_protocol.h"
 #include "metadata.h"
 #include "status/status.h"
+#include "trans/device.h"
 
 // Keep white-box access entirely in the test translation unit. Production code uses the real
 // TransportManager directly and exposes no test-only interface.
@@ -65,14 +68,20 @@ class TaskWorkerTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite()
     {
+#if defined(UCM_TEST_RUNTIME_ASCEND)
         ASSERT_EQ(aclInit(nullptr), ACL_SUCCESS);
-        ASSERT_EQ(aclrtSetDevice(0), ACL_SUCCESS);
+#endif
+        UC::Trans::Device device;
+        const auto status = device.Setup(0);
+        ASSERT_TRUE(status.Success()) << status.ToString();
     }
 
     static void TearDownTestSuite()
     {
+#if defined(UCM_TEST_RUNTIME_ASCEND)
         EXPECT_EQ(aclrtResetDevice(0), ACL_SUCCESS);
         EXPECT_EQ(aclFinalize(), ACL_SUCCESS);
+#endif
     }
 
     void SetUp() override

@@ -21,6 +21,10 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#if defined(UCM_TEST_RUNTIME_ASCEND)
+#include <acl/acl.h>
+#endif
+#include "trans/device.h"
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -36,6 +40,27 @@
 
 namespace UC::Dram {
 namespace {
+
+class ReplyServicePollingTest : public ::testing::Test {
+protected:
+    static void SetUpTestSuite()
+    {
+#if defined(UCM_TEST_RUNTIME_ASCEND)
+        ASSERT_EQ(aclInit(nullptr), ACL_SUCCESS);
+#endif
+        UC::Trans::Device device;
+        const auto status = device.Setup(0);
+        ASSERT_TRUE(status.Success()) << status.ToString();
+    }
+
+    static void TearDownTestSuite()
+    {
+#if defined(UCM_TEST_RUNTIME_ASCEND)
+        EXPECT_EQ(aclrtResetDevice(0), ACL_SUCCESS);
+        EXPECT_EQ(aclFinalize(), ACL_SUCCESS);
+#endif
+    }
+};
 
 Status PackReply(const ReplySlot& slot, DramPool::KvOpcode opcode,
                  std::vector<std::uint8_t> results)
@@ -76,7 +101,7 @@ private:
     std::optional<NodeEvent> event_;
 };
 
-TEST(ReplyServicePollingTest, PublishesObservedReplyAndKeepsLeaseUntilActorRelease)
+TEST_F(ReplyServicePollingTest, PublishesObservedReplyAndKeepsLeaseUntilActorRelease)
 {
     EventCollector collector;
     auto created = ReplyService::Create(ReplyService::Options{
@@ -85,7 +110,7 @@ TEST(ReplyServicePollingTest, PublishesObservedReplyAndKeepsLeaseUntilActorRelea
         std::chrono::microseconds{50},
         [&collector](NodeId node, NodeEvent event) { collector.Publish(node, std::move(event)); },
     });
-    ASSERT_TRUE(created);
+    ASSERT_TRUE(created) << created.Error().ToString();
     auto service = std::move(created).Value();
     ASSERT_TRUE(service->Start().Success());
 
@@ -114,7 +139,7 @@ TEST(ReplyServicePollingTest, PublishesObservedReplyAndKeepsLeaseUntilActorRelea
     EXPECT_TRUE(service->Shutdown().Success());
 }
 
-TEST(ReplyServicePollingTest, ReusesSlotWhilePreviousReplyEventIsBeingPublished)
+TEST_F(ReplyServicePollingTest, ReusesSlotWhilePreviousReplyEventIsBeingPublished)
 {
     std::mutex mutex;
     std::condition_variable changed;
@@ -195,7 +220,7 @@ TEST(ReplyServicePollingTest, ReusesSlotWhilePreviousReplyEventIsBeingPublished)
     EXPECT_TRUE(shutdown.Success());
 }
 
-TEST(ReplyServicePollingTest, RejectsShutdownWithActiveLease)
+TEST_F(ReplyServicePollingTest, RejectsShutdownWithActiveLease)
 {
     auto created = ReplyService::Create(ReplyService::Options{
         64,
@@ -211,8 +236,12 @@ TEST(ReplyServicePollingTest, RejectsShutdownWithActiveLease)
     EXPECT_TRUE(service->Shutdown().Failure());
 }
 
-TEST(ReplyServicePollingTest, EventPublisherExceptionIsFatal)
+TEST_F(ReplyServicePollingTest, EventPublisherExceptionIsFatal)
 {
+#if defined(UCM_TEST_RUNTIME_ASCEND)
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+#endif
+
     EXPECT_DEATH(
         {
             std::promise<void> publishAttempted;
