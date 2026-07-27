@@ -83,8 +83,9 @@ find_library(P2P_METADEF_LIBRARY
 )
 
 set(P2P_TRANSPORT_SOURCES
-    src/one_sided/common/metadata_codec.cpp
-    src/one_sided/control/metadata_channel.cpp
+    src/one_sided/common/binary_codec.cpp
+    src/one_sided/control/control_channel.cpp
+    src/one_sided/control/control_protocol.cpp
     src/one_sided/core/transport_manager.cpp
     src/two_sided/tcp/tcp_message_channel.cpp
 )

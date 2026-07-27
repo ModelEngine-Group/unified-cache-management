@@ -6,8 +6,9 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include "common/metadata_codec.h"
-#include "control/metadata_channel.h"
+#include "common/binary_codec.h"
+#include "control/control_channel.h"
+#include "control/control_protocol.h"
 #ifdef UCM_P2P_HAS_HIXL
 #include "hixl/hixl_transport.h"
 #endif
@@ -22,7 +23,6 @@ struct TransportMetadataRecord {
 };
 
 struct PeerAdvertisement {
-    Endpoint endpoint;
     std::vector<TransportMetadataRecord> records;
 };
 
@@ -31,15 +31,13 @@ Status EncodePeerAdvertisement(const PeerAdvertisement& advertisement, Metadata&
     if (advertisement.records.size() > UINT32_MAX) { return Status::InvalidParam(); }
 
     out.clear();
-    if (!detail::AppendString(out, advertisement.endpoint.host) ||
-        !detail::AppendU32(out, static_cast<uint32_t>(advertisement.endpoint.port)) ||
-        !detail::AppendU32(out, static_cast<uint32_t>(advertisement.records.size()))) {
+    if (!detail::AppendU32(out, static_cast<uint32_t>(advertisement.records.size()))) {
         return Status::InvalidParam();
     }
 
     for (const auto& record : advertisement.records) {
         if (!detail::AppendU32(out, static_cast<uint32_t>(record.protocol)) ||
-            !detail::AppendMetadata(out, record.metadata)) {
+            !detail::AppendBytes(out, record.metadata)) {
             return Status::InvalidParam();
         }
     }
@@ -49,14 +47,8 @@ Status EncodePeerAdvertisement(const PeerAdvertisement& advertisement, Metadata&
 Status DecodePeerAdvertisement(const Metadata& in, PeerAdvertisement& advertisement)
 {
     size_t offset = 0;
-    uint32_t remote_port = 0;
     uint32_t count = 0;
-    if (!detail::ReadString(in, offset, advertisement.endpoint.host) ||
-        !detail::ReadU32(in, offset, remote_port) || !detail::ReadU32(in, offset, count) ||
-        remote_port > UINT16_MAX) {
-        return Status::InvalidParam();
-    }
-    advertisement.endpoint.port = static_cast<uint16_t>(remote_port);
+    if (!detail::ReadU32(in, offset, count)) { return Status::InvalidParam(); }
 
     advertisement.records.clear();
     advertisement.records.reserve(count);
@@ -64,8 +56,7 @@ Status DecodePeerAdvertisement(const Metadata& in, PeerAdvertisement& advertisem
         TransportMetadataRecord record;
         uint32_t protocol = 0;
         if (!detail::ReadU32(in, offset, protocol) ||
-            !detail::ReadMetadata(in, offset, record.metadata) ||
-            protocol != static_cast<uint32_t>(TransportProtocol::Hixl)) {
+            !detail::ReadBytes(in, offset, record.metadata)) {
             return Status::InvalidParam();
         }
         record.protocol = static_cast<TransportProtocol>(protocol);
@@ -97,10 +88,10 @@ Status TransportManager::Init()
         return Status::InvalidParam();
     }
     if (control_) { return Status::OK(); }
-    control_ = std::make_shared<MetadataChannel>();
-    auto status = control_->Init(
-        LocalEndpoint(), [this](const Metadata& remote_metadata, Metadata& local_metadata) {
-            return HandleMetadataExchange(ManagerID{}, remote_metadata, local_metadata);
+    control_ = std::make_shared<ControlChannel>();
+    auto status =
+        control_->Init(LocalEndpoint(), [this](const Metadata& request, Metadata& response) {
+            return HandleControlRequest(request, response);
         });
     if (status != Status::OK()) {
         control_.reset();
@@ -135,16 +126,35 @@ TransportPtr TransportManager::CreateTransport(TransportProtocol protocol) const
 
 Status TransportManager::Shutdown()
 {
+    Status result = Status::OK();
+    std::vector<std::pair<TransportProtocol, ManagerID>> connections;
+    {
+        std::lock_guard<std::recursive_mutex> lock(peer_mutex_);
+        shutting_down_ = true;
+        connections.assign(connections_.begin(), connections_.end());
+    }
+    for (const auto& connection : connections) {
+        const auto status = CoordinateConnectionWithPeer(ControlOperation::Disconnect,
+                                                         connection.first, connection.second);
+        if (status != Status::OK() && result == Status::OK()) { result = status; }
+    }
+
     if (control_) { control_->Close(); }
 
-    Status result = Status::OK();
     for (auto& item : transports_) {
         const auto status = item.transport->Shutdown();
         if (status != Status::OK() && result == Status::OK()) { result = status; }
     }
     memories_.clear();
-    transfers_.clear();
-    next_transfer_handle_ = 1;
+    {
+        std::lock_guard<std::mutex> lock(transfers_mutex_);
+        transfers_.clear();
+        next_transfer_handle_ = 1;
+    }
+    {
+        std::lock_guard<std::recursive_mutex> lock(peer_mutex_);
+        connections_.clear();
+    }
     protocol_map_.clear();
     transports_.clear();
     return result;
@@ -162,7 +172,12 @@ Status TransportManager::ExchangeMetadata(const ManagerID& manager_id)
     status = ExportLocalMetadata(manager_id, local);
     if (status != Status::OK()) { return status; }
     Metadata remote;
-    status = control_->ExchangeMetadata(endpoint, local, remote);
+    Metadata request;
+    status = EncodeControlRequest(ControlRequest{ControlOperation::ExchangeMetadata, std::nullopt,
+                                                 manager_id_, std::move(local)},
+                                  request);
+    if (status != Status::OK()) { return status; }
+    status = control_->Request(endpoint, request, remote);
     if (status == Status::OK()) { status = ImportMetadata(remote, manager_id); }
     return status;
 }
@@ -172,7 +187,6 @@ Status TransportManager::ExportLocalMetadata(const ManagerID& manager_id, Metada
     if (transports_.size() > UINT32_MAX) { return Status::InvalidParam(); }
 
     PeerAdvertisement advertisement;
-    advertisement.endpoint = LocalEndpoint();
     advertisement.records.reserve(transports_.size());
     for (const auto& item : transports_) {
         Metadata metadata;
@@ -186,21 +200,22 @@ Status TransportManager::ExportLocalMetadata(const ManagerID& manager_id, Metada
 
 Status TransportManager::ImportMetadata(const Metadata& metadata, const ManagerID& manager_id)
 {
-    if (metadata.size() < sizeof(uint32_t)) { return Status::InvalidParam(); }
+    Endpoint endpoint;
+    if (ParseManagerID(manager_id, endpoint) != Status::OK() ||
+        metadata.size() < sizeof(uint32_t)) {
+        return Status::InvalidParam();
+    }
 
     PeerAdvertisement advertisement;
     const auto decode_status = DecodePeerAdvertisement(metadata, advertisement);
     if (decode_status != Status::OK()) { return decode_status; }
-
-    const auto remote_manager_id = advertisement.endpoint.ToString();
-    if (!manager_id.empty() && manager_id != remote_manager_id) { return Status::InvalidParam(); }
 
     std::lock_guard<std::recursive_mutex> lock(peer_mutex_);
     for (const auto& record : advertisement.records) {
         const auto it = protocol_map_.find(record.protocol);
         if (it == protocol_map_.end()) { continue; }
 
-        const auto status = it->second->ImportMetadata(remote_manager_id, record.metadata);
+        const auto status = it->second->ImportMetadata(manager_id, record.metadata);
         if (status != Status::OK()) { return status; }
     }
 
@@ -211,15 +226,28 @@ Status TransportManager::HandleMetadataExchange(const ManagerID& manager_id,
                                                 const Metadata& remote_metadata,
                                                 Metadata& local_metadata)
 {
-    PeerAdvertisement advertisement;
-    const auto decode_status = DecodePeerAdvertisement(remote_metadata, advertisement);
-    if (decode_status != Status::OK()) { return decode_status; }
-
-    const auto remote_manager_id = advertisement.endpoint.ToString();
-    const auto& expected_manager_id = manager_id.empty() ? remote_manager_id : manager_id;
-    const auto status = ImportMetadata(remote_metadata, expected_manager_id);
+    const auto status = ImportMetadata(remote_metadata, manager_id);
     if (status != Status::OK()) { return status; }
-    return ExportLocalMetadata(remote_manager_id, local_metadata);
+    return ExportLocalMetadata(manager_id, local_metadata);
+}
+
+Status TransportManager::HandleControlRequest(const Metadata& request, Metadata& response)
+{
+    ControlRequest control_request{};
+    auto status = DecodeControlRequest(request, control_request);
+    if (status != Status::OK()) { return status; }
+
+    if (control_request.operation == ControlOperation::ExchangeMetadata) {
+        return HandleMetadataExchange(control_request.manager_id, control_request.payload,
+                                      response);
+    }
+    if (!control_request.protocol.has_value()) { return Status::InvalidParam(); }
+
+    UC_INFO("transport manager received {} request protocol={} peer={}",
+            control_request.operation == ControlOperation::Connect ? "connect" : "disconnect",
+            static_cast<uint32_t>(*control_request.protocol), control_request.manager_id);
+    return ApplyConnection(control_request.operation, *control_request.protocol,
+                           control_request.manager_id);
 }
 
 Status TransportManager::RegisterMemory(const MemoryRegion& memory, MemoryHandle& handle)
@@ -306,20 +334,78 @@ Status TransportManager::FindTransport(Operation& batch, Transport*& transport)
 
 Status TransportManager::Connect(TransportProtocol protocol, const ManagerID& manager_id)
 {
-    Endpoint endpoint;
-    if (ParseManagerID(manager_id, endpoint) != Status::OK()) { return Status::InvalidParam(); }
-    const auto it = protocol_map_.find(protocol);
-    if (it == protocol_map_.end()) { return Status::InvalidParam(); }
-    return it->second->Connect(manager_id);
+    return CoordinateConnection(ControlOperation::Connect, protocol, manager_id);
 }
 
 Status TransportManager::Disconnect(TransportProtocol protocol, const ManagerID& manager_id)
 {
+    return CoordinateConnection(ControlOperation::Disconnect, protocol, manager_id);
+}
+
+Status TransportManager::ApplyConnection(ControlOperation operation, TransportProtocol protocol,
+                                         const ManagerID& manager_id)
+{
+    std::lock_guard<std::recursive_mutex> lock(peer_mutex_);
+    if (shutting_down_ && operation == ControlOperation::Connect) { return Status::Error(); }
+
     Endpoint endpoint;
     if (ParseManagerID(manager_id, endpoint) != Status::OK()) { return Status::InvalidParam(); }
     const auto it = protocol_map_.find(protocol);
     if (it == protocol_map_.end()) { return Status::InvalidParam(); }
-    return it->second->Disconnect(manager_id);
+    const auto status = operation == ControlOperation::Connect ? it->second->Connect(manager_id)
+                                                               : it->second->Disconnect(manager_id);
+    if (status != Status::OK()) { return status; }
+
+    const auto connection = std::make_pair(protocol, manager_id);
+    if (operation == ControlOperation::Connect) {
+        connections_.insert(connection);
+    } else {
+        connections_.erase(connection);
+    }
+    return Status::OK();
+}
+
+Status TransportManager::CoordinateConnection(ControlOperation operation,
+                                              TransportProtocol protocol,
+                                              const ManagerID& manager_id)
+{
+    Endpoint endpoint;
+    if (ParseManagerID(manager_id, endpoint) != Status::OK() || !control_) {
+        return Status::InvalidParam();
+    }
+    if (protocol_map_.find(protocol) == protocol_map_.end()) { return Status::InvalidParam(); }
+
+    Metadata request;
+    auto status =
+        EncodeControlRequest(ControlRequest{operation, protocol, manager_id_, {}}, request);
+    if (status != Status::OK()) { return status; }
+
+    const auto local_status = ApplyConnection(operation, protocol, manager_id);
+    if (operation == ControlOperation::Connect && local_status != Status::OK()) {
+        UC_ERROR("transport manager local connect failed protocol={} peer={} status={}",
+                 static_cast<uint32_t>(protocol), manager_id, local_status.Underlying());
+        return local_status;
+    }
+
+    Metadata ack;
+    const auto remote_status = control_->Request(endpoint, request, ack);
+    if (local_status != Status::OK() || remote_status != Status::OK()) {
+        UC_ERROR("transport manager coordinated {} failed protocol={} peer={} local={} remote={}",
+                 operation == ControlOperation::Connect ? "connect" : "disconnect",
+                 static_cast<uint32_t>(protocol), manager_id, local_status.Underlying(),
+                 remote_status.Underlying());
+        if (operation == ControlOperation::Connect && remote_status != Status::OK()) {
+            const auto rollback_status =
+                ApplyConnection(ControlOperation::Disconnect, protocol, manager_id);
+            UC_WARN("transport manager rolled back local connect protocol={} peer={} status={}",
+                    static_cast<uint32_t>(protocol), manager_id, rollback_status.Underlying());
+        }
+        return local_status != Status::OK() ? local_status : remote_status;
+    }
+    UC_INFO("transport manager coordinated {} success protocol={} peer={}",
+            operation == ControlOperation::Connect ? "connect" : "disconnect",
+            static_cast<uint32_t>(protocol), manager_id);
+    return Status::OK();
 }
 
 Status TransportManager::ExecuteSync(const Operation& batch)
@@ -345,21 +431,29 @@ Status TransportManager::ExecuteAsync(const Operation& batch, TransferHandle& ha
         return status == Status::OK() ? Status::Error() : status;
     }
 
-    handle = next_transfer_handle_++;
-    if (handle == kInvalidTransferHandle) { handle = next_transfer_handle_++; }
-    transfers_.emplace(handle, TransferRecord{transport, transport_handle});
+    {
+        std::lock_guard<std::mutex> lock(transfers_mutex_);
+        handle = next_transfer_handle_++;
+        if (handle == kInvalidTransferHandle) { handle = next_transfer_handle_++; }
+        transfers_.emplace(handle, TransferRecord{transport, transport_handle});
+    }
     return Status::OK();
 }
 
 Status TransportManager::GetStatus(TransferHandle handle, TransferStatus& transfer_status)
 {
     if (handle == kInvalidTransferHandle) { return Status::InvalidParam(); }
-    const auto it = transfers_.find(handle);
-    if (it == transfers_.end() || it->second.transport == nullptr) { return Status::Error(); }
-    const auto status =
-        it->second.transport->GetStatus(it->second.transport_handle, transfer_status);
+    TransferRecord record;
+    {
+        std::lock_guard<std::mutex> lock(transfers_mutex_);
+        const auto it = transfers_.find(handle);
+        if (it == transfers_.end() || it->second.transport == nullptr) { return Status::Error(); }
+        record = it->second;
+    }
+    const auto status = record.transport->GetStatus(record.transport_handle, transfer_status);
     if (status != Status::OK() || transfer_status != TransferStatus::Waiting) {
-        transfers_.erase(it);
+        std::lock_guard<std::mutex> lock(transfers_mutex_);
+        transfers_.erase(handle);
     }
     return status;
 }

@@ -1,4 +1,4 @@
-#include "common/metadata_codec.h"
+#include "common/binary_codec.h"
 #include <climits>
 
 namespace transport::detail {
@@ -76,7 +76,7 @@ bool ReadU8(const Metadata& input, size_t& offset, uint8_t& value)
     return true;
 }
 
-bool AppendMetadata(Metadata& out, const Metadata& value)
+bool AppendBytes(Metadata& out, const Metadata& value)
 {
     if (value.size() > UINT32_MAX) { return false; }
     AppendU32(out, static_cast<uint32_t>(value.size()));
@@ -84,7 +84,7 @@ bool AppendMetadata(Metadata& out, const Metadata& value)
     return true;
 }
 
-bool ReadMetadata(const Metadata& input, size_t& offset, Metadata& value)
+bool ReadBytes(const Metadata& input, size_t& offset, Metadata& value)
 {
     uint32_t size = 0;
     if (!ReadU32(input, offset, size) || offset > input.size() || input.size() - offset < size) {

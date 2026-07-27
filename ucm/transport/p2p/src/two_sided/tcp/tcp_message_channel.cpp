@@ -17,7 +17,7 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
-#include "common/metadata_codec.h"
+#include "common/binary_codec.h"
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
