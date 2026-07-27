@@ -679,6 +679,21 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
             )
 
         attention_sizes = [tensor.bytes_per_block for tensor in layers[0].sfa_tensors]
+        incompatible_attention_layers = {}
+        for layer in layers[1:]:
+            current_attention_sizes = [
+                tensor.bytes_per_block for tensor in layer.sfa_tensors
+            ]
+            if current_attention_sizes != attention_sizes:
+                incompatible_attention_layers[layer.layer_id] = current_attention_sizes
+        if incompatible_attention_layers:
+            raise ValueError(
+                "CUDA Shared Indexer layers must have the same Attention slot "
+                "count and per-block sizes: "
+                f"expected={attention_sizes} from layer {layers[0].layer_id}, "
+                f"incompatible_layers={incompatible_attention_layers}."
+            )
+
         indexer_layers = [layer for layer in layers if layer.indexer is not None]
         if not indexer_layers:
             raise ValueError(

@@ -426,6 +426,36 @@ class KVCacheLayoutTest(unittest.TestCase):
         )
         self.assertEqual(block_one_addrs[1, 0, 2], 0)
 
+    def test_cuda_shared_indexer_rejects_attention_size_mismatch(self):
+        entries = [
+            ("model.layers.0.self_attn.indexer.k_cache", 8448, 1),
+            ("model.layers.0.self_attn.attn", 73728, 2),
+            ("model.layers.1.self_attn.attn", 65536, 2),
+        ]
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"same Attention slot count and per-block sizes.*"
+            r"expected=\[73728\] from layer 0.*"
+            r"incompatible_layers=\{1: \[65536\]\}",
+        ):
+            _build_cuda_shared_layout(entries)
+
+    def test_cuda_shared_indexer_rejects_attention_slot_count_mismatch(self):
+        entries = [
+            ("model.layers.0.self_attn.indexer.k_cache", 1024, 1),
+            ("model.layers.0.self_attn.attn", 4096, 2, 5),
+            ("model.layers.1.self_attn.attn", 4096, 2),
+        ]
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"same Attention slot count and per-block sizes.*"
+            r"expected=\[4096, 4096\] from layer 0.*"
+            r"incompatible_layers=\{1: \[4096\]\}",
+        ):
+            _build_cuda_shared_layout(entries)
+
     def test_shared_indexer_li_c8_disabled_uses_padding_without_mask(self):
         layout = _build_layout(
             [[131072, 16384, 32768], [131072, 16384]],
