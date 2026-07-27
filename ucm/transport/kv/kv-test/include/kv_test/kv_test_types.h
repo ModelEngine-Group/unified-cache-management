@@ -207,7 +207,7 @@ struct BufferSet {
     std::vector<UC::ASU::MemoryRegion> regions;
     std::vector<UC::ASU::KVBuffer> entries;
     std::vector<std::size_t> entryRegionIndexes;
-    std::vector<UC::ASU::RegisterResult> registerResults;
+    std::vector<UC::ASU::RegisteredMemory> registeredRegions;
 };
 
 struct BenchLatencyStats {

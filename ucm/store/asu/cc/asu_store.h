@@ -57,8 +57,9 @@ public:
     virtual UC::ASU::Status Check(UC::ASU::TaskId taskId, UC::ASU::TaskResult& result) = 0;
     virtual UC::ASU::Status Wait(UC::ASU::TaskId taskId, std::uint64_t timeoutMs,
                                  UC::ASU::TaskResult& result) = 0;
-    virtual UC::ASU::Status RegisterRegions(const std::vector<UC::ASU::MemoryRegion>& regions,
-                                            std::vector<UC::ASU::RegisterResult>& results) = 0;
+    virtual UC::ASU::Status RegisterRegions(
+        const std::vector<UC::ASU::MemoryRegion>& regions,
+        std::vector<UC::ASU::RegisteredMemory>& registeredRegions) = 0;
 };
 
 }  // namespace UC::AsuStore

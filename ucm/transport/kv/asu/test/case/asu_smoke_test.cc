@@ -26,6 +26,7 @@
 #include <cstring>
 #include <gtest/gtest.h>
 #include <string_view>
+#include <unordered_map>
 #include "asu_client_impl.h"
 
 namespace UC::ASU {
@@ -71,9 +72,18 @@ public:
         return Status::OK();
     }
 
-    Status QueryAsync(const std::vector<CacheKey>&, const QueryOptions&, TaskId& taskId) override
+    Status QueryAsync(const std::vector<CacheKey>& keys, const QueryOptions& options,
+                      TaskId& taskId) override
     {
-        taskId = 0;
+        QueryResult queryResult;
+        auto status = Query(keys, options, queryResult);
+        if (!status.ok()) {
+            taskId = kInvalidTaskId;
+            return status;
+        }
+
+        taskId = nextTaskId_++;
+        queryResults_[taskId] = std::move(queryResult);
         return Status::OK();
     }
 
@@ -103,6 +113,11 @@ public:
             return Status::Error(StatusCode::TASK_NOT_FOUND, "task not found");
         }
         result.status = Status::OK();
+        auto queryIter = queryResults_.find(taskId);
+        if (queryIter != queryResults_.end()) {
+            result.queryResult = queryIter->second;
+            return Status::OK();
+        }
         result.entryStatus.assign(1, Status::OK());
         result.queryResult.reset();
         return Status::OK();
@@ -114,22 +129,17 @@ public:
     }
 
     Status RegisterRegions(const std::vector<MemoryRegion>& regions,
-                           std::vector<RegisterResult>& results) override
+                           std::vector<RegisteredMemory>& registeredRegions) override
     {
-        results.clear();
+        registeredRegions.clear();
         for (std::size_t i = 0; i < regions.size(); ++i) {
-            results.emplace_back(RegisterResult{Status::OK(), MakeTestMrHandle(i + 1)});
+            registeredRegions.emplace_back(RegisteredMemory{regions[i], MakeTestMrHandle(i + 1)});
         }
         return Status::OK();
     }
 
-    Status BindRegisteredRegions(const std::vector<RegisteredMemory>& regions,
-                                 std::vector<RegisterResult>& results) override
+    Status BindRegisteredRegions(const std::vector<RegisteredMemory>&) override
     {
-        results.clear();
-        for (const auto& region : regions) {
-            results.emplace_back(RegisterResult{Status::OK(), region.handle});
-        }
         return Status::OK();
     }
 
@@ -139,6 +149,7 @@ private:
     TransportConfig config_;
     bool initialized_{false};
     TaskId nextTaskId_{1000};
+    std::unordered_map<TaskId, QueryResult> queryResults_;
 };
 
 AsuClientConfig MakeClientConfig()

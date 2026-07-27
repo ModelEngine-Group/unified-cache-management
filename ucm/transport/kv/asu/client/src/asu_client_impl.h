@@ -30,6 +30,7 @@
 #include <unordered_map>
 #include <vector>
 #include "asu_client/asu_client.h"
+#include "asu_transport/types.h"
 #include "client_task_manager.h"
 #include "view_server.h"
 
@@ -83,17 +84,18 @@ public:
 
     // Registers regions and remembers successful resources for future views.
     Status RegisterRegions(const std::vector<MemoryRegion>& regions,
-                           std::vector<RegisterResult>& results) override;
+                           std::vector<RegisteredMemory>& registeredRegions) override;
     // Unregisters regions and forgets successful resources.
     Status UnregisterRegions(const std::vector<MRHandle>& handles) override;
 
 private:
     using ClientTaskContextPtr = std::shared_ptr<ClientTaskContext>;
-
-    // RegisteredResource keeps memory metadata that must be rebound after refresh.
-    struct RegisteredResource {
-        MemoryRegion region;
-        RegisterResult result;
+    struct PendingQuery {
+        AsuId asuId{0};
+        std::shared_ptr<AsuTransport> transport;
+        std::vector<CacheKey> keys;
+        std::vector<std::size_t> originalIndices;
+        TaskId taskId{kInvalidTaskId};
     };
 
     // Submits one entry-based client task through the refresh-retry wrapper.
@@ -122,7 +124,7 @@ private:
                      QueryResult& result, bool& needRefresh);
     // Performs one register operation on the current snapshot.
     Status RegisterRegionsOnce(const std::vector<MemoryRegion>& regions,
-                               std::vector<RegisterResult>& results, bool& needRefresh);
+                               std::vector<RegisteredMemory>& registeredRegions, bool& needRefresh);
     // Performs one unregister operation on the current snapshot.
     Status UnregisterRegionsOnce(const std::vector<MRHandle>& handles, bool& needRefresh);
 
@@ -132,8 +134,8 @@ private:
     // Creates and initializes a transport for one ASU.
     Status BuildTransport(AsuId asuId, const AsuInfo& asuInfo,
                           std::shared_ptr<AsuTransport>& transport);
-    // Binds remembered registered resources to a transport.
-    Status BindRegisteredResources(AsuId asuId, const std::shared_ptr<AsuTransport>& transport);
+    // Binds remembered registered regions to a transport.
+    Status BindRegisteredRegions(AsuId asuId, const std::shared_ptr<AsuTransport>& transport);
     // Returns the current immutable snapshot if initialized.
     std::shared_ptr<ViewSnapshot> GetSnapshot() const;
 
@@ -182,8 +184,8 @@ private:
     std::shared_ptr<ViewServer> viewServer_;
     // Transport configs indexed by ASU id for snapshot construction.
     std::unordered_map<AsuId, TransportConfig> transportConfigs_;
-    // Resources registered on the current view and rebound to newly added transports.
-    std::vector<RegisteredResource> registeredResources_;
+    // Regions registered on the current view and rebound to newly added transports.
+    std::vector<RegisteredMemory> registeredRegions_;
     // Current immutable routing and transport snapshot.
     std::shared_ptr<ViewSnapshot> snapshot_;
     // Transports removed from the active snapshot but still needed by old tasks.

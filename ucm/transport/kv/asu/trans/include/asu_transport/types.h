@@ -160,13 +160,8 @@ struct KVBuffer {
     std::uint32_t offset{0};  // target buffer offset
 };
 
-struct RegisterResult {
-    Status status;
-    MRHandle handle{kInvalidMRHandle};
-    std::uint32_t tokenId{0};
-};
-
-struct RegisteredMemory {  // 用于绑定已注册的内存
+// Describes a registered memory region returned by registration or reused for binding.
+struct RegisteredMemory {
     MemoryRegion region;
     MRHandle handle{kInvalidMRHandle};
     std::uint32_t tokenId{0};

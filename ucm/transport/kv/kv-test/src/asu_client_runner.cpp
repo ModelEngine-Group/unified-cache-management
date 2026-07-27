@@ -169,24 +169,19 @@ Status AsuClientRunner::RegisterBuffers(BufferSet& buffers)
         }
     }
 
-    buffers.registerResults.clear();
-    auto status = client_->RegisterRegions(buffers.regions, buffers.registerResults);
+    buffers.registeredRegions.clear();
+    auto status = client_->RegisterRegions(buffers.regions, buffers.registeredRegions);
     if (!status.ok()) { return ToKvTestStatus(status, "register buffers"); }
-    if (buffers.registerResults.size() != buffers.regions.size()) {
+    if (buffers.registeredRegions.size() != buffers.regions.size()) {
         return Status::Error(kExitInvalidArgument,
                              "register buffer result count does not match region count");
-    }
-
-    for (std::size_t index = 0; index < buffers.registerResults.size(); ++index) {
-        const auto& result = buffers.registerResults[index];
-        if (!result.status.ok()) { return ToKvTestStatus(result.status, "register buffer entry"); }
     }
 
     for (std::size_t entryIndex = 0; entryIndex < buffers.entries.size(); ++entryIndex) {
         const auto regionIndex = buffers.entryRegionIndexes.empty()
                                      ? entryIndex
                                      : buffers.entryRegionIndexes[entryIndex];
-        buffers.entries[entryIndex].buffer.handle = buffers.registerResults[regionIndex].handle;
+        buffers.entries[entryIndex].buffer.handle = buffers.registeredRegions[regionIndex].handle;
     }
 
     return Status::Success();
@@ -197,11 +192,12 @@ Status AsuClientRunner::UnregisterBuffers(const BufferSet& buffers)
     if (client_ == nullptr) { return Status::Success(); }
 
     std::vector<UC::ASU::MRHandle> handles;
-    handles.reserve(buffers.registerResults.size());
+    handles.reserve(buffers.registeredRegions.size());
     std::unordered_set<UC::ASU::MRHandle> seen;
-    for (const auto& result : buffers.registerResults) {
-        if (result.handle != UC::ASU::kInvalidMRHandle && seen.insert(result.handle).second) {
-            handles.push_back(result.handle);
+    for (const auto& registeredRegion : buffers.registeredRegions) {
+        if (registeredRegion.handle != UC::ASU::kInvalidMRHandle &&
+            seen.insert(registeredRegion.handle).second) {
+            handles.push_back(registeredRegion.handle);
         }
     }
     if (handles.empty()) { return Status::Success(); }

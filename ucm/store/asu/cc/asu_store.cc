@@ -275,9 +275,9 @@ public:
     }
 
     AsuStatus RegisterRegions(const std::vector<UC::ASU::MemoryRegion>& regions,
-                              std::vector<UC::ASU::RegisterResult>& results) override
+                              std::vector<UC::ASU::RegisteredMemory>& registeredRegions) override
     {
-        return client_->RegisterRegions(regions, results);
+        return client_->RegisterRegions(regions, registeredRegions);
     }
 
 private:
@@ -382,8 +382,8 @@ public:
         }
         if (regions.empty()) { return Status::OK(); }
 
-        std::vector<UC::ASU::RegisterResult> results;
-        auto status = backend_->RegisterRegions(regions, results);
+        std::vector<UC::ASU::RegisteredMemory> registeredRegions;
+        auto status = backend_->RegisterRegions(regions, registeredRegions);
         if (!status.ok()) {
             LogAsuStatus("register persistent regions", status);
             return ConvertStatus(status);
@@ -391,8 +391,8 @@ public:
         std::vector<RegisteredPersistentRegion> registered;
         registered.reserve(regions.size());
         for (std::size_t index = 0; index < regions.size(); ++index) {
-            registered.emplace_back(
-                RegisteredPersistentRegion{regions[index], results[index].handle});
+            registered.emplace_back(RegisteredPersistentRegion{registeredRegions[index].region,
+                                                               registeredRegions[index].handle});
         }
 
         {

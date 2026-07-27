@@ -30,7 +30,6 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 #include "asu_transport/asu_transport.h"
 #include "buffer_manager.h"
@@ -83,10 +82,9 @@ public:
     Status Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result) override;
 
     Status RegisterRegions(const std::vector<MemoryRegion>& regions,
-                           std::vector<RegisterResult>& results) override;
+                           std::vector<RegisteredMemory>& registeredRegions) override;
 
-    Status BindRegisteredRegions(const std::vector<RegisteredMemory>& regions,
-                                 std::vector<RegisterResult>& results) override;
+    Status BindRegisteredRegions(const std::vector<RegisteredMemory>& regions) override;
 
     Status UnregisterRegions(const std::vector<MRHandle>& handles) override;
 
@@ -142,7 +140,7 @@ private:
 
     std::mutex registeredRegionsMu_;
     std::unordered_map<MRHandle, RegisteredMemory> registeredRegions_;
-    std::unordered_set<MRHandle> ownedRegisteredRegionHandles_;
+    bool ownsRegisteredRegionHandles_{false};
 };
 
 }  // namespace UC::ASU
