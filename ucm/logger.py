@@ -37,13 +37,13 @@ Environment Variables:
                           (default: true, see logger_patch)
 
     UCM_LOG_RATE_LIMIT_ENABLE: Enable/disable rate limiting (default: true)
-    UCM_LOG_RATE_LIMIT_WINDOW_MS: Time window in milliseconds (default: 60000 = 60s)
+    UCM_LOG_RATE_LIMIT_WINDOW_MS: Time window in milliseconds (default: 10000 = 10s)
     UCM_LOG_RATE_LIMIT_MAX_LOGS: Max logs per window (default: 3, max: 3)
 
 Usage:
     logger = init_logger(__name__)
 
-    # Rate-limited logging (60s window, max 3 logs per location)
+    # Rate-limited logging (10s window, max 3 logs per location)
     logger.info_limit("Processing request %s", req_id)
 
     # One-time logging (cached by lru_cache)
@@ -167,6 +167,10 @@ def _warning_limit(logger: logging.Logger, msg: str, *args) -> None:
     logger.warning(msg, *args, stacklevel=3, extra=_RATE_LIMIT_EXTRA)
 
 
+def _error_limit(logger: logging.Logger, msg: str, *args) -> None:
+    logger.error(msg, *args, stacklevel=3, extra=_RATE_LIMIT_EXTRA)
+
+
 def _get_log_config():
     """Read log file configuration from environment variables."""
     log_path = os.getenv("UCM_LOG_PATH", "log")
@@ -210,6 +214,7 @@ def _bind_convenience_methods(logger: logging.Logger) -> logging.Logger:
     logger.debug_limit = MethodType(_debug_limit, logger)
     logger.info_limit = MethodType(_info_limit, logger)
     logger.warning_limit = MethodType(_warning_limit, logger)
+    logger.error_limit = MethodType(_error_limit, logger)
     logger._ucm_methods_bound = True
     return logger
 

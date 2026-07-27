@@ -71,6 +71,8 @@ ucm_connectors:
   - ucm_connector_name: "UcmPipelineStore"
     ucm_connector_config:
       store_pipeline: "Cache|Posix"
+      store_health:
+        enabled: true
       storage_backends: "/mnt/test"
       io_direct: false
       # cache_buffer_capacity_gb: 256
@@ -106,6 +108,11 @@ persist_token_threshold: 0
 ### Optional Parameters
 
 Parameters inside `ucm_connector_config`:
+
+* **store_health.enabled** *(optional, default: false)*
+  Whether to wrap each Store in the Pipeline with `HealthBreakerStore`.
+  Set it to `true` to enable automatic health probing, circuit breaking, and recovery.
+  This setting does not control a Breaker explicitly added as a Store by a custom Pipeline implementation.
 
 * **io_direct** (optional, default: `false`):  
   Whether to enable direct I/O. For Posix Store, this bypasses the OS page cache when reading/writing files to disk.
@@ -209,6 +216,8 @@ ucm_connectors:
   - ucm_connector_name: "UcmPipelineStore"
     ucm_connector_config:
       store_pipeline: "Cache|Posix"
+      store_health:
+        enabled: true
       storage_backends: "/mnt/test"
       io_direct: false
       # cache_buffer_capacity_gb: 256

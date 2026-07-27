@@ -164,6 +164,7 @@ Open `http://<your-host>:3000`, add a Prometheus data source pointing to
 
 | File | Use case |
 |------|----------|
+| `examples/metrics/grafana_ucm_overview.json` | Unified vLLM/UCM overview: token volume, per-layer block hit rates, Store health distribution and probe trends. |
 | `examples/metrics/grafana_connector.json` | Connector-level activity: hit rate, request/block sizes, end-to-end load/save durations and speeds. |
 | `examples/metrics/grafana_pipeline_store.json` | Cache Store and Posix Store diagnosis: task breakdowns, queue wait, transfer duration, bandwidth, backend load ratio. |
 | `examples/metrics/grafana_layerwise.json` | `use_layerwise=true` diagnosis: `wait_for_layer_load()` blocking, inter-call interval, and asynchronous dump submit diagnostics. |

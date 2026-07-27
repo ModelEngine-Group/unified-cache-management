@@ -22,6 +22,7 @@
  * SOFTWARE.
  * */
 #include "space_manager.h"
+#include <atomic>
 #include "logger/logger.h"
 #include "posix_file.h"
 

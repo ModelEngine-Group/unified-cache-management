@@ -4,7 +4,7 @@ import os
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Callable, List, Optional
 
 import numpy as np
 import torch
@@ -39,7 +39,7 @@ from ucm.integration.vllm.ucm_connector import (
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmetrics
 from ucm.sparse.state import has_ucm_sparse
-from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
+from ucm.store.ucmstore_v1 import Task
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
@@ -253,8 +253,9 @@ class KVCacheGroupManager:
     def lookup_external_hit_tokens(
         self,
         num_computed_tokens: int,
-        store: "UcmKVStoreBaseV1",
         group_block_ids: list[list[bytes]],
+        lookup_on_prefix: Callable[[list[bytes]], int],
+        lookup_all: Callable[[list[bytes]], list[bool]],
     ) -> tuple[int, int, list[bytes]]:
         """Two-stage HLA lookup using precomputed per-group hashes.
 
@@ -303,7 +304,7 @@ class KVCacheGroupManager:
                 candidates.append(0)
                 continue
             try:
-                fa_hit_blocks = store.lookup_on_prefix(fa_external) + 1
+                fa_hit_blocks = lookup_on_prefix(fa_external) + 1
             except Exception as e:
                 logger.error(
                     f"full-attn group {fa.group_id} lookup error. "
@@ -342,7 +343,7 @@ class KVCacheGroupManager:
                 )
                 pos_hashes.append(state_hash if state_hash is not None else b"")
             try:
-                results = store.lookup(pos_hashes)
+                results = lookup_all(pos_hashes)
             except Exception as e:
                 logger.error(
                     f"mamba-align state lookup error at pos={pos}. "
@@ -777,6 +778,11 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             f"UCMHybridLinearAttentionConnector initialized with use_layerwise={self.use_layerwise}"
         )
 
+    def get_block_size(self) -> int:
+        if self.group_manager is not None:
+            return self.group_manager.lcm_block_size
+        return self.block_size
+
     def _create_kv_cache_layout(
         self, kv_caches: dict[str, torch.Tensor]
     ) -> KVCacheLayout:
@@ -790,7 +796,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         self.kv_caches = kv_caches
         self.kv_cache_layout = self._create_kv_cache_layout(self.kv_caches)
-        self.store = self._create_store(self.kv_cache_layout)
+        self.store = self._create_store(kv_cache_layout=self.kv_cache_layout)
         self.block_data_size = self.kv_cache_layout.block_size
         self.device = create_device()
 
@@ -823,9 +829,35 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         primary_full_attn = self.group_manager.full_attn_groups[0]
         primary_block_ids = group_ucm_block_ids[primary_full_attn.group_id]
 
+        # Pre-lookup reduction: leave at least recompute_tokens for vLLM to
+        # recompute, so the batch isn't dispatched as uniform decode into FULL
+        # cudagraph. For hybrid this also avoids looking up the last block(s)
+        # whose mamba state may not be valid in HBM at dump time.
+        recompute_tokens = self._get_full_hit_recompute_tokens()
+        max_hit_lcm_blocks = max(
+            0, (request.num_tokens - recompute_tokens) // lcm_block_size
+        )
+        total_lcm_blocks = request.num_tokens // lcm_block_size
+
+        if max_hit_lcm_blocks < total_lcm_blocks:
+            lookup_block_ids = []
+            for gid, group in enumerate(self.group_manager.groups_by_id):
+                ids = group_ucm_block_ids[gid]
+                group_max = max_hit_lcm_blocks * (lcm_block_size // group.block_size)
+                lookup_block_ids.append(ids[:group_max])
+        else:
+            lookup_block_ids = group_ucm_block_ids
+
         external_hit_tokens, external_hit_lcm_blocks, mamba_prefetch_hashes = (
             self.group_manager.lookup_external_hit_tokens(
-                num_computed_tokens, self.store, group_ucm_block_ids
+                num_computed_tokens,
+                lookup_block_ids,
+                lambda block_ids: self._rank_consistency.lookup_on_prefix(
+                    self.store, block_ids
+                ),
+                lambda block_ids: self._rank_consistency.lookup_all(
+                    self.store, block_ids
+                ),
             )
         )
 
@@ -857,13 +889,6 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             self.store.prefetch(mamba_prefetch_hashes)
         self._prefetch_other_rank_hashes(all_hit_full_attn + mamba_prefetch_hashes)
 
-        logger.info_once(
-            f"request_id: {request.request_id}, "
-            f"total_lcm_blocks: {request.num_tokens // lcm_block_size}, "
-            f"hit hbm: {hbm_hit_block_num}, "
-            f"hit external: {external_hit_lcm_blocks}, "
-            f"total_tokens: {len(request.all_token_ids)}"
-        )
         if len(primary_block_ids) > 0:
             ucmmetrics.update_stats(
                 {
@@ -873,10 +898,18 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 },
             )
 
-        # Recompute last token when fully cached (vLLM needs logits).
+        # No post-lookup workaround: pre-lookup truncation already ensures
+        # total_hit_tokens == external_hit_tokens, and the mamba state at
+        # total_hit_tokens is a position the store actually verified.
         num_total_hit_tokens = total_hit_block_num * lcm_block_size
-        if num_total_hit_tokens == request.num_tokens and external_hit_tokens > 0:
-            external_hit_tokens -= 1
+
+        logger.info_once(
+            f"request_id: {request.request_id}, "
+            f"total_lcm_blocks: {request.num_tokens // lcm_block_size}, "
+            f"hit hbm: {hbm_hit_block_num}, "
+            f"hit external: {total_hit_block_num - hbm_hit_block_num}, "
+            f"total_tokens: {len(request.all_token_ids)}"
+        )
 
         self.requests_meta[request.request_id] = HLARequestMeta(
             ucm_block_ids=primary_block_ids,
@@ -1039,19 +1072,20 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                         req_meta.group_vllm_block_ids[gid][start_blk:end_blk],
                     )
                 else:
-                    # Dump mamba state at each LCM boundary in range.
-                    if first_lcm_b > last_lcm_b:
+                    # Only dump when the chunk ends exactly at an LCM
+                    # boundary, so the state at last_lcm_b is the running
+                    # state. If dump_tok_end is not aligned, the HBM slot
+                    # at last_lcm_b may have been overwritten by the mamba
+                    # kernel's running state update for the partial block.
+                    if dump_tok_end != last_lcm_b or last_lcm_b < first_lcm_b:
                         continue
-                    b = first_lcm_b
-                    while b <= last_lcm_b:
-                        append_mamba_align_state_block(
-                            dump_ucm_block_ids,
-                            dump_vllm_block_ids,
-                            gid,
-                            b,
-                            "dump",
-                        )
-                        b += lcm_block_size
+                    append_mamba_align_state_block(
+                        dump_ucm_block_ids,
+                        dump_vllm_block_ids,
+                        gid,
+                        last_lcm_b,
+                        "dump",
+                    )
             req_meta.token_processed += new_tokens
 
         return RequestDispatchMeta(
@@ -1144,6 +1178,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
         total_ucm_block_ids: list[bytes] = []
         total_vllm_block_ids: list[int] = []
+        block_ids_by_request: dict[str, set[bytes]] = {}
         num_saved_block = 0
         num_saved_request = 0
         for request_id, request in metadata.request_meta.items():
@@ -1159,6 +1194,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 )
                 if len(ucm_block_ids) == 0:
                     continue
+            block_ids_by_request[request_id] = set(ucm_block_ids)
             num_saved_block += len(ucm_block_ids)
             num_saved_request += 1
             ucm_block_ids = self._rank_scoped_ucm_block_ids(ucm_block_ids)
@@ -1175,25 +1211,35 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             shard_indexs = [0] * len(total_ucm_block_ids)
             event_handle = self._get_dump_event_handle()
             save_start_time = time.perf_counter() * 1000
-            task = self.store.dump_data(
-                total_ucm_block_ids, shard_indexs, total_ptrs, event_handle
+            task = self._rank_consistency.submit_dump(
+                self.store,
+                block_ids_by_request,
+                total_ucm_block_ids,
+                shard_indexs,
+                total_ptrs,
+                event_handle,
             )
         except Exception as e:
             logger.error(f"dump kv cache failed. {type(e).__name__}: {e}")
             if self.enable_event_sync and event_handle and self.device is not None:
                 self.device.destroy_event_handle(event_handle)
+            self._rank_consistency.finish_dump(set(block_ids_by_request))
             return
 
         try:
-            self.store.wait(task)
+            self._rank_consistency.wait_dump(task)
             save_end_time = time.perf_counter() * 1000
         except Exception as e:
-            logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
+            logger.error_limit(
+                f"wait for dump kv cache failed. {type(e).__name__}: {e}"
+            )
+            self._rank_consistency.finish_dump(set(block_ids_by_request))
             return
         finally:
             if self.enable_event_sync and event_handle and self.device is not None:
                 self.device.destroy_event_handle(event_handle)
 
+        self._rank_consistency.finish_dump(set(block_ids_by_request))
         save_bytes = num_saved_block * self.block_data_size
         save_speed = save_bytes / max(save_end_time - save_start_time, 1) / 1024 / 1024
         ucmmetrics.update_stats(
@@ -1234,10 +1280,12 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self.use_layerwise = True
         self.load_tasks: dict[int, dict[str, Task]] = defaultdict(dict)
         self.dump_tasks: dict[int, list[PendingDumpTask]] = defaultdict(list)
-        self.request_data: list[tuple[str, list[bytes], list[int]]] = []
+        self.request_data: list[tuple[str, list[bytes], list[bytes], list[int]]] = []
         self._failure_req_ids: set[str] = set()
         self._submitted_load_rows: set[int] = set()
-        self._dump_transfer_data: tuple[list[bytes], list[int], set[str]] | None = None
+        self._dump_transfer_data: (
+            tuple[list[bytes], list[int], set[str], dict[str, set[bytes]]] | None
+        ) = None
         prefetch_rows_config = self.launch_config.get(
             "hybrid_layerwise_prefetch_rows", 2
         )
@@ -1322,7 +1370,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self.device = create_device()
 
         self.store = self._create_store(
-            self.kv_cache_layout,
+            kv_cache_layout=self.kv_cache_layout,
             tensor_size_list_override=row_tensor_size_list,
             shard_size_override=row_shard_size,
             block_size_override=row_shard_size * (max(self.row_ids) + 1),
@@ -1362,15 +1410,26 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         row_id: int,
         metadata: "UCMConnectorMetadata",
     ) -> None:
-        for request_id, ucm_block_ids, vllm_block_ids in self.request_data:
+        for (
+            request_id,
+            ucm_block_ids,
+            store_block_ids,
+            vllm_block_ids,
+        ) in self.request_data:
             if request_id in self._failure_req_ids:
                 continue
             try:
                 row_ptrs = self.kv_cache_layout.extract_block_addrs_for_row(
                     vllm_block_ids, row_id
                 )
-                shard_indexs = [row_id] * len(ucm_block_ids)
-                task = self.store.load_data(ucm_block_ids, shard_indexs, row_ptrs)
+                shard_indexs = [row_id] * len(store_block_ids)
+                task = self._rank_consistency.submit_load(
+                    self.store,
+                    {request_id: ucm_block_ids},
+                    store_block_ids,
+                    shard_indexs,
+                    row_ptrs,
+                )
                 self.load_tasks[row_id][request_id] = task
             except Exception as e:
                 logger.error(
@@ -1394,7 +1453,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         row_tasks = self.load_tasks.pop(row_id, {})
         for request_id, task in row_tasks.items():
             try:
-                self.store.wait(task)
+                self._rank_consistency.wait_load(task)
             except Exception as e:
                 logger.error(
                     f"request {request_id} wait row {row_id} "
@@ -1430,8 +1489,10 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                 if len(ucm_block_ids) == 0:
                     continue
             self.need_load = True
-            ucm_block_ids = self._rank_scoped_ucm_block_ids(ucm_block_ids)
-            self.request_data.append((request_id, ucm_block_ids, vllm_block_ids))
+            store_block_ids = self._rank_scoped_ucm_block_ids(ucm_block_ids)
+            self.request_data.append(
+                (request_id, ucm_block_ids, store_block_ids, vllm_block_ids)
+            )
 
         if self.need_load and self.row_ids:
             # vLLM only calls wait_for_layer_load at full_attn (last layer of
@@ -1504,9 +1565,12 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         assert isinstance(metadata, UCMConnectorMetadata)
         if self._dump_transfer_data is None:
             self._dump_transfer_data = self._build_dump_transfer_data(metadata, row_id)
-        total_ucm_block_ids, total_vllm_block_ids, dump_request_ids = (
-            self._dump_transfer_data
-        )
+        (
+            total_ucm_block_ids,
+            total_vllm_block_ids,
+            dump_request_ids,
+            block_ids_by_request,
+        ) = self._dump_transfer_data
 
         if not total_ucm_block_ids:
             return
@@ -1529,8 +1593,13 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         try:
             row_ptrs = np.ascontiguousarray(row_ptrs)
             event_handle = self._get_dump_event_handle()
-            task = self.store.dump_data(
-                total_ucm_block_ids, shard_indexs, row_ptrs, event_handle
+            task = self._rank_consistency.submit_dump(
+                self.store,
+                block_ids_by_request,
+                total_ucm_block_ids,
+                shard_indexs,
+                row_ptrs,
+                event_handle,
             )
             self.dump_tasks[row_id].append(
                 PendingDumpTask(
@@ -1549,10 +1618,11 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self,
         metadata: "UCMConnectorMetadata",
         row_id: int,
-    ) -> tuple[list[bytes], list[int], set[str]]:
+    ) -> tuple[list[bytes], list[int], set[str], dict[str, set[bytes]]]:
         total_ucm_block_ids: list[bytes] = []
         total_vllm_block_ids: list[int] = []
         dump_request_ids: set[str] = set()
+        block_ids_by_request: dict[str, set[bytes]] = {}
         for request_id, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
                 continue
@@ -1567,10 +1637,16 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                 )
                 if len(ucm_block_ids) == 0:
                     continue
+            block_ids_by_request[request_id] = set(ucm_block_ids)
             ucm_block_ids = self._rank_scoped_ucm_block_ids(ucm_block_ids)
             total_ucm_block_ids.extend(ucm_block_ids)
             total_vllm_block_ids.extend(vllm_block_ids)
-        return total_ucm_block_ids, total_vllm_block_ids, dump_request_ids
+        return (
+            total_ucm_block_ids,
+            total_vllm_block_ids,
+            dump_request_ids,
+            block_ids_by_request,
+        )
 
     def _flush_deferred_mtp_dumps(self) -> None:
         """Submit the last saved snapshot for each deferred MTP row."""
@@ -1579,6 +1655,9 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
 
         deferred = self._deferred_mtp_row_dumps
         self._deferred_mtp_row_dumps = {}
+        block_ids_by_request = (
+            self._dump_transfer_data[3] if self._dump_transfer_data is not None else {}
+        )
         for row_id, (ucm_ids, vllm_ids, req_ids) in deferred.items():
             try:
                 row_ptrs = self.kv_cache_layout.extract_block_addrs_for_row(
@@ -1587,8 +1666,13 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                 row_ptrs = np.ascontiguousarray(row_ptrs)
                 shard_indexs = [row_id] * len(ucm_ids)
                 event_handle = self._get_dump_event_handle()
-                task = self.store.dump_data(
-                    ucm_ids, shard_indexs, row_ptrs, event_handle
+                task = self._rank_consistency.submit_dump(
+                    self.store,
+                    block_ids_by_request,
+                    ucm_ids,
+                    shard_indexs,
+                    row_ptrs,
+                    event_handle,
                 )
                 self.dump_tasks[row_id].append(
                     PendingDumpTask(
@@ -1612,17 +1696,23 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                 self._layerwise_batch_start = None
             return
 
+        dump_request_ids = (
+            self._dump_transfer_data[2]
+            if self._dump_transfer_data is not None
+            else set()
+        )
         self._flush_deferred_mtp_dumps()
 
         total_start = time.perf_counter()
         for row_id in self.row_ids:
             for pending_dump_task in self.dump_tasks.pop(row_id, []):
                 try:
-                    self.store.wait(pending_dump_task.task)
+                    self._rank_consistency.wait_dump(pending_dump_task.task)
                 except Exception as e:
-                    logger.error(
+                    logger.error_limit(
                         f"wait for dump kv cache failed. " f"{type(e).__name__}: {e}"
                     )
+        self._rank_consistency.finish_dump(dump_request_ids)
         total_end = time.perf_counter()
         stats: dict[str, float] = {
             "layerwise_save_tail_total_ms": (total_end - total_start) * 1000,

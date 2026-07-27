@@ -22,18 +22,23 @@
  * SOFTWARE.
  * */
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <numeric>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
 #include "client_service.h"
 #include "global_config.h"
 #include "logger/logger.h"
+#include "metrics_api.h"
 #include "trans_manager.h"
 #include "transfer_engine.h"
+#include "type/random_block_id.h"
 #include "ucmstore_v1.h"
 
 namespace UC::MooncakeStore {
@@ -54,12 +59,17 @@ std::string BlockIdToKey(const Detail::BlockId& block)
     return out;
 }
 
+std::string HealthKey() { return "__ucm_health_" + BlockIdToKey(Detail::RandomBlockId()); }
+
+Status MooncakeError(mooncake::ErrorCode error) { return Status::Error(mooncake::toString(error)); }
+
 }  // namespace
 
 class MooncakeStore : public StoreV1 {
     TransManager transMgr_;
     Config config_;
     bool transEnable_{false};
+    const std::string healthKey_{HealthKey()};
 
     std::shared_ptr<mooncake::Client> rpcClient_;
 
@@ -147,6 +157,10 @@ public:
             }
         }
 
+        const auto hitCount = firstMiss < 0 ? num : static_cast<size_t>(firstMiss);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_lookup_hit_blocks_total"),
+                                 static_cast<double>(hitCount));
+
         if (firstMiss == -1) { return static_cast<ssize_t>(num) - 1; }
 
         if (config_.storeBackend) {
@@ -164,6 +178,43 @@ public:
     void Prefetch(const Detail::BlockId* blocks, size_t num) override
     {
         if (config_.storeBackend) { config_.storeBackend->Prefetch(blocks, num); }
+    }
+
+    Status CheckHealth() override
+    {
+        constexpr std::array<char, 8> expected{'U', 'C', 'M', 'H', 'E', 'A', 'L', 'T'};
+        std::array<char, expected.size()> actual{};
+
+        if (transEnable_) {
+            auto client = transMgr_.GetRealClient();
+            if (!client) { return Status::Error("mooncake client is not available"); }
+            std::vector<std::span<const char>> parts{
+                {expected.data(), expected.size()}
+            };
+            auto rc = client->put_parts(healthKey_, std::move(parts));
+            if (rc != 0) { return Status::Error("mooncake health put failed"); }
+            auto buffer = client->get_buffer(healthKey_);
+            auto cleanup = client->remove(healthKey_);
+            if (!buffer || buffer->size() != expected.size() ||
+                std::memcmp(buffer->ptr(), expected.data(), expected.size()) != 0) {
+                return Status::Error("mooncake health data mismatch");
+            }
+            return cleanup == 0 ? Status::OK() : Status::Error("mooncake health remove failed");
+        }
+
+        std::vector<mooncake::Slice> source{
+            {const_cast<char*>(expected.data()), expected.size()}
+        };
+        auto put = rpcClient_->Put(healthKey_, source, mooncake::ReplicateConfig{});
+        if (!put.has_value()) { return MooncakeError(put.error()); }
+        std::vector<mooncake::Slice> target{
+            {actual.data(), actual.size()}
+        };
+        auto get = rpcClient_->Get(healthKey_, target);
+        auto cleanup = rpcClient_->Remove(healthKey_);
+        if (!get.has_value()) { return MooncakeError(get.error()); }
+        if (actual != expected) { return Status::Error("mooncake health data mismatch"); }
+        return cleanup.has_value() ? Status::OK() : MooncakeError(cleanup.error());
     }
 
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
