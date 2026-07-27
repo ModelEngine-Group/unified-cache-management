@@ -1,16 +1,20 @@
 set(UCM_DRAM_STORE_CC_SOURCE_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/cc/dram_store.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/cc/kv_protocol.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/cc/config.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/cc/dram_fatal.cc
 )
 add_library(dramstore SHARED ${UCM_DRAM_STORE_CC_SOURCE_FILES})
 target_include_directories(dramstore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cc)
 target_include_directories(dramstore PUBLIC
     ${CMAKE_SOURCE_DIR}/ucm/transport/p2p/include/one_sided)
-target_link_libraries(dramstore PUBLIC storeintf infra_logger infra_thread buffer_pool)
+target_include_directories(dramstore PUBLIC ${CMAKE_SOURCE_DIR}/ucm/shared)
+
+target_link_libraries(dramstore PUBLIC storeintf infra_logger infra_thread kv_common)
 file(RELATIVE_PATH INSTALL_REL_PATH ${UCM_ROOT_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
 install(TARGETS dramstore LIBRARY DESTINATION ${INSTALL_REL_PATH} COMPONENT ucm)
 
-if(BUILD_UCM_DRAMPOOL)
+if(BUILD_UCM_DRAMPOOL AND RUNTIME_ENVIRONMENT STREQUAL "ascend")
     set(DRAMPOOL_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/cc/drampool)
     add_library(drampool_core STATIC
         ${DRAMPOOL_SOURCE_DIR}/completion_poller.cc
