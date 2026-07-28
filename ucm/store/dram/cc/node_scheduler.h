@@ -21,39 +21,48 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_DRAM_STORE_CC_CONFIG_H
-#define UNIFIEDCACHE_DRAM_STORE_CC_CONFIG_H
+#ifndef UNIFIEDCACHE_DRAM_STORE_CC_NODE_SCHEDULER_H
+#define UNIFIEDCACHE_DRAM_STORE_CC_NODE_SCHEDULER_H
 
-#include <cstddef>
-#include <cstdint>
-#include <string>
+#include <atomic>
+#include <memory>
+#include <unordered_map>
 #include <vector>
-#include "kv_common/router.h"
+#include "messages.h"
 #include "status/status.h"
-#include "type/dictionary.h"
-#include "types.h"
 
 namespace UC::Dram {
 
-struct DramConfig {
-    std::string localControlHost;
-    std::uint16_t localControlPort{0};
-    std::string localHost;
-    std::string localTransportManagerId;
-    std::int32_t transportDeviceId{0};
-    UC::KV::RouterType routerType{UC::KV::RouterType::RING_HASH_FULL_SPREAD};
-    std::size_t maxIoEntries{65536};
-    NodeSchedulerConfig nodeScheduler;
-    TransportRuntimeConfig transportRuntime;
-    TimeoutConfig taskTimeouts;
-    std::size_t replySlotCount{0};
-    std::uint32_t replySlotSize{0};
-    std::vector<std::uint64_t> ioLengths;
+class NodeScheduler final {
+public:
+    NodeScheduler(NodeSchedulerConfig config, NodeDependencies dependencies);
+    ~NodeScheduler();
 
-    static Expected<DramConfig> Parse(const Detail::Dictionary& dictionary);
-    Status Validate() const;
+    NodeScheduler(const NodeScheduler&) = delete;
+    NodeScheduler& operator=(const NodeScheduler&) = delete;
+
+    Status Start();
+    Status Shutdown();
+
+    // Consumes on success during runtime.
+    Status Post(Request& request);
+    // Reliable during runtime. Events concurrent with terminal Shutdown may be discarded.
+    void Publish(NodeId nodeId, NodeEvent event);
+
+private:
+    struct Runner;
+
+    Runner& GetRunner(NodeId nodeId) const noexcept;
+    void RunActors(Runner& runner) noexcept;
+    void JoinAll();
+
+    NodeSchedulerConfig config_;
+    NodeDependencies dependencies_;
+    std::unordered_map<NodeId, Runner*> nodes_;
+    std::vector<std::unique_ptr<Runner>> runners_;
+    std::atomic<bool> acceptingMessages_{false};
 };
 
 }  // namespace UC::Dram
 
-#endif  // UNIFIEDCACHE_DRAM_STORE_CC_CONFIG_H
+#endif  // UNIFIEDCACHE_DRAM_STORE_CC_NODE_SCHEDULER_H

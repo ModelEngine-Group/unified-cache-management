@@ -34,7 +34,9 @@ TEST(BoundedQueueTest, FailedPushPreservesCallerOwnership)
     auto first = std::make_unique<int>(7);
     auto second = std::make_unique<int>(9);
 
+    EXPECT_EQ(queue.Available(), std::size_t{1});
     EXPECT_TRUE(queue.Push(first));
+    EXPECT_EQ(queue.Available(), std::size_t{0});
     EXPECT_EQ(first, nullptr);
     EXPECT_FALSE(queue.Push(second));
     ASSERT_NE(second, nullptr);
@@ -44,6 +46,7 @@ TEST(BoundedQueueTest, FailedPushPreservesCallerOwnership)
     ASSERT_NE(value, nullptr);
     EXPECT_EQ(*value, 7);
     EXPECT_TRUE(queue.Empty());
+    EXPECT_EQ(queue.Available(), std::size_t{1});
 }
 
 }  // namespace

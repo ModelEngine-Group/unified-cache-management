@@ -49,6 +49,7 @@ public:
 
     bool Empty() const noexcept { return size_ == 0; }
     bool Full() const noexcept { return size_ == slots_.size(); }
+    std::size_t Available() const noexcept { return slots_.size() - size_; }
 
     bool Push(T& value) noexcept
     {
