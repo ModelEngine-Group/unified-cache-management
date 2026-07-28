@@ -25,6 +25,7 @@
 #include <acl/acl.h>
 #include <chrono>
 #include <exception>
+#include <random>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -140,6 +141,14 @@ void DramPoolServer::Stop()
 
 Status DramPoolServer::InitializeAclRuntime()
 {
+    if (g_config.transportDeviceIds.empty()) {
+        return Status::InvalidParam("transport.device_ids must not be empty");
+    }
+    std::mt19937 generator(std::random_device{}());
+    std::uniform_int_distribution<std::size_t> distribution(0,
+                                                            g_config.transportDeviceIds.size() - 1);
+    const auto deviceId = g_config.transportDeviceIds[distribution(generator)];
+
     const auto initStatus = aclInit(nullptr);
     if (initStatus == ACL_SUCCESS) {
         aclRuntimeOwned_ = true;
@@ -147,8 +156,11 @@ Status DramPoolServer::InitializeAclRuntime()
         return Status::Error("aclInit failed: " + std::to_string(initStatus));
     }
 
-    const auto setDeviceStatus = aclrtSetDevice(g_config.transportDeviceId);
-    if (setDeviceStatus == ACL_SUCCESS) { return Status::OK(); }
+    const auto setDeviceStatus = aclrtSetDevice(deviceId);
+    if (setDeviceStatus == ACL_SUCCESS) {
+        aclDeviceId_ = deviceId;
+        return Status::OK();
+    }
 
     if (aclRuntimeOwned_) {
         (void)aclFinalize();
@@ -244,10 +256,13 @@ Status DramPoolServer::StartTransportService()
         return status;
     }
     attrs.ip = managerEndpoint.host;
-    transport::HixlInitAttrs::Instance instance;
-    instance.port = -1;
-    instance.device_id = g_config.transportDeviceId;
-    attrs.instances.push_back(std::move(instance));
+    attrs.instances.reserve(g_config.transportDeviceIds.size());
+    for (const auto deviceId : g_config.transportDeviceIds) {
+        transport::HixlInitAttrs::Instance instance;
+        instance.port = -1;
+        instance.device_id = deviceId;
+        attrs.instances.push_back(std::move(instance));
+    }
     attrs.connect_timeout_ms = static_cast<std::int32_t>(g_config.opTimeoutMs);
     attrs.transfer_timeout_ms = static_cast<std::int32_t>(g_config.opTimeoutMs);
     auto status = transportManager_->InstallTransport(transport::TransportProtocol::Hixl, attrs);
@@ -531,10 +546,11 @@ void DramPoolServer::ResetInitializedComponents()
     bufferManager_.reset();
     transportManager_.reset();
     if (aclRuntimeOwned_) {
-        (void)aclrtResetDevice(g_config.transportDeviceId);
+        if (aclDeviceId_) { (void)aclrtResetDevice(*aclDeviceId_); }
         (void)aclFinalize();
         aclRuntimeOwned_ = false;
     }
+    aclDeviceId_.reset();
 }
 
 }  // namespace UC::DramPool

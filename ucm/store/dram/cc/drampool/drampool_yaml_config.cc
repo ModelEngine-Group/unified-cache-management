@@ -53,7 +53,7 @@ struct EndpointEntry {
 };
 
 constexpr const char* kRequiredRuntimeConfigKeys[] = {
-    "transport.device_id",
+    "transport.device_ids",
     "queue.request_depth",
     "queue.completion_depth",
     "request_receiver.idle_wait_us",
@@ -261,9 +261,6 @@ Status CommitEndpointEntry(EndpointEntry& entry, DramPoolConfig& config,
 Status ApplyRuntimeConfigValue(DramPoolConfig& config, const std::string& key,
                                const std::string& value)
 {
-    if (key == "transport.device_id") {
-        return ParseInt32Value(key, value, config.transportDeviceId);
-    }
     if (key == "queue.request_depth") {
         return ParseUint32Value(key, value, config.requestQueueDepth);
     }
@@ -330,8 +327,18 @@ Status ValidateRuntimeConfig(DramPoolConfig& config)
                 "transport endpoint cannot be both two_sided and one_sided: {}", endpoint.second);
         }
     }
-    if (config.transportDeviceId < 0) {
-        return Status::InvalidParam("transport.device_id must not be negative");
+    if (config.transportDeviceIds.empty()) {
+        return Status::InvalidParam("transport.device_ids must not be empty");
+    }
+    std::unordered_set<std::int32_t> deviceIds;
+    for (const auto deviceId : config.transportDeviceIds) {
+        if (deviceId < 0) {
+            return Status::InvalidParam("transport.device_ids must not contain negative values");
+        }
+        if (!deviceIds.insert(deviceId).second) {
+            return Status::InvalidParam("transport.device_ids contains duplicate device ID: {}",
+                                        deviceId);
+        }
     }
     if (config.requestQueueDepth < 2 || config.completionQueueDepth < 2) {
         return Status::InvalidParam("queue depths must be at least 2");
@@ -426,6 +433,7 @@ Status ParseYamlConfig(const std::string& path, DramPoolConfig& config)
 
     // Keep the caller's launch configuration intact if YAML parsing fails.
     DramPoolConfig loadedConfig = config;
+    loadedConfig.transportDeviceIds.clear();
     loadedConfig.twoSidedToOneSided.clear();
     std::vector<YamlSection> sections;
     std::unordered_set<std::string> configuredKeys;
@@ -457,6 +465,21 @@ Status ParseYamlConfig(const std::string& path, DramPoolConfig& config)
         }
 
         if (content.rfind("- ", 0) == 0) {
+            if (sectionPath == "transport.device_ids") {
+                auto itemToken = Trim(content.substr(2));
+                if (itemToken.empty()) {
+                    return Status::InvalidParam("empty transport.device_ids entry at line {}",
+                                                lineNumber);
+                }
+                std::string itemValue;
+                auto status = ParseYamlScalar("transport.device_ids", itemToken, itemValue);
+                if (status.Failure()) { return status; }
+                std::int32_t deviceId = 0;
+                status = ParseInt32Value("transport.device_ids", itemValue, deviceId);
+                if (status.Failure()) { return status; }
+                loadedConfig.transportDeviceIds.push_back(deviceId);
+                continue;
+            }
             if (sectionPath != "transport.endpoints") {
                 return Status::InvalidParam("YAML sequence is unsupported at line {}", lineNumber);
             }
@@ -496,9 +519,12 @@ Status ParseYamlConfig(const std::string& path, DramPoolConfig& config)
         }
         if (!hasScalar) {
             sections.push_back(YamlSection{indent, key});
-            if (BuildSectionPath(sections) == "transport.endpoints") {
-                endpointsSectionSeen = true;
+            const auto newSectionPath = BuildSectionPath(sections);
+            if (newSectionPath == "transport.device_ids" &&
+                !configuredKeys.insert(newSectionPath).second) {
+                return Status::InvalidParam("duplicate YAML key: {}", newSectionPath);
             }
+            if (newSectionPath == "transport.endpoints") { endpointsSectionSeen = true; }
             continue;
         }
 

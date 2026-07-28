@@ -57,7 +57,7 @@ struct DramPoolConfig {
     std::uint64_t defaultDumpTtlMs{kDefaultDumpTtlMs};
 
     // Transport internals are loaded from the runtime YAML file.
-    std::int32_t transportDeviceId{0};
+    std::vector<std::int32_t> transportDeviceIds{0};
     // Cluster-wide routing from the request channel address to the transport identity.
     std::unordered_map<std::string, transport::ManagerID> twoSidedToOneSided{};
 
