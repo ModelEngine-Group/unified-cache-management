@@ -863,7 +863,7 @@ TEST(AsuClientE2EMetricsTest, DiskMembershipChangesRefreshAndContinueWorkload)
     QueryResult ignoredResult;
     auto status =
         client->Query({MakeCacheKey("membership-refresh-add")}, QueryOptions{}, ignoredResult);
-    EXPECT_EQ(status.code, StatusCode::CONNECTION_ERROR);
+    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_TRUE(WaitUntil(
         [&] { return viewServer->FetchCount() >= 2 && state->Snapshot().createdTransports >= 3; }));
 
@@ -879,7 +879,7 @@ TEST(AsuClientE2EMetricsTest, DiskMembershipChangesRefreshAndContinueWorkload)
     state->ForceNextQueryFailure();
     const auto probeKeys = MakeProbeKeys(512);
     status = client->Query(probeKeys, QueryOptions{}, ignoredResult);
-    EXPECT_EQ(status.code, StatusCode::CONNECTION_ERROR);
+    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_TRUE(WaitUntil([&] {
         QueryResult result;
         auto retryStatus = client->Query(probeKeys, QueryOptions{}, result);

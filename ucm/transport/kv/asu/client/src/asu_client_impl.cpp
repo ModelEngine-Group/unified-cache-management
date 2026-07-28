@@ -877,7 +877,7 @@ Status AsuClientImpl::RefreshView()
     std::shared_ptr<ViewSnapshot> oldSnapshot;
     {
         std::lock_guard<std::mutex> lock{mutex_};
-        if (!initialized_) { return NotInitialized(); }
+        if (!initialized_ && !refreshInProgress_) { return NotInitialized(); }
         config = config_;
         viewServer = viewServer_;
         oldSnapshot = snapshot_;
@@ -891,7 +891,7 @@ Status AsuClientImpl::RefreshView()
     if (!status.ok()) { return status; }
     {
         std::lock_guard<std::mutex> lock{mutex_};
-        if (!initialized_) { return NotInitialized(); }
+        if (!initialized_ && !refreshInProgress_) { return NotInitialized(); }
         if (snapshot_ != nullptr && !viewServer->ShouldPublishView(snapshot_->view, view)) {
             return Status::OK();
         }
@@ -903,7 +903,7 @@ Status AsuClientImpl::RefreshView()
 
     {
         std::lock_guard<std::mutex> lock{mutex_};
-        if (!initialized_) { return NotInitialized(); }
+        if (!initialized_ && !refreshInProgress_) { return NotInitialized(); }
         if (snapshot_ != nullptr && !viewServer->ShouldPublishView(snapshot_->view, view)) {
             return Status::OK();
         }
@@ -922,27 +922,30 @@ Status AsuClientImpl::RefreshView()
 
 void AsuClientImpl::RequestBackgroundRefresh()
 {
-    bool shouldStart = false;
+    std::thread completedThread;
     {
         std::lock_guard<std::mutex> lock{mutex_};
         if (!initialized_ || refreshInProgress_) { return; }
+        completedThread = std::move(refreshThread_);
         refreshInProgress_ = true;
-        shouldStart = true;
+        refreshThread_ = std::thread([this] {
+            (void)RefreshView();
+            std::lock_guard<std::mutex> lock{mutex_};
+            refreshInProgress_ = false;
+        });
     }
 
-    if (!shouldStart) { return; }
-    if (refreshThread_.joinable()) { refreshThread_.join(); }
-
-    refreshThread_ = std::thread([this] {
-        (void)RefreshView();
-        std::lock_guard<std::mutex> lock{mutex_};
-        refreshInProgress_ = false;
-    });
+    if (completedThread.joinable()) { completedThread.join(); }
 }
 
 void AsuClientImpl::JoinBackgroundRefresh()
 {
-    if (refreshThread_.joinable()) { refreshThread_.join(); }
+    std::thread refreshThread;
+    {
+        std::lock_guard<std::mutex> lock{mutex_};
+        refreshThread = std::move(refreshThread_);
+    }
+    if (refreshThread.joinable()) { refreshThread.join(); }
 }
 
 Status AsuClientImpl::ShutdownSnapshotTransports(const std::shared_ptr<ViewSnapshot>& snapshot)

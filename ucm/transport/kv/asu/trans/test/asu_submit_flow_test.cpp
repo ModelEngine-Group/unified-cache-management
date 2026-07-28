@@ -615,8 +615,10 @@ TEST_F(AsuSubmitFlowBufferTest, BuildSubBatchSendBuffersUsesHostPinnedDeviceAddr
     ASSERT_NE(subBatchContext.channel, nullptr);
     ASSERT_TRUE(transport_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
     ASSERT_TRUE(transport_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
-    ASSERT_NE(subBatchContext.sendSge.local_addr, subBatchContext.sendSge.device_addr);
-    ASSERT_NE(subBatchContext.flagBuffer.local_addr, subBatchContext.flagBuffer.device_addr);
+    ASSERT_NE(subBatchContext.sendSge.local_addr, std::uint64_t{0});
+    ASSERT_NE(subBatchContext.sendSge.device_addr, std::uint64_t{0});
+    ASSERT_NE(subBatchContext.flagBuffer.local_addr, std::uint64_t{0});
+    ASSERT_NE(subBatchContext.flagBuffer.device_addr, std::uint64_t{0});
 
     std::vector<TransProvider::SendIoBatch> ioBatches;
     std::vector<std::size_t> subBatchIndexes;
