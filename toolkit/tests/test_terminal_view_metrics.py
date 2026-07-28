@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT))
 from terminal_view_metrics import cli, collector
 from terminal_view_metrics.cli import DEFAULT_DB, main
 from terminal_view_metrics.config import (
+    apply_config_param_overrides,
     iter_grouped_specs,
     list_preset_configs,
     load_config,
@@ -456,6 +457,45 @@ ucm:load_duration_bucket{worker_id="0",le="+Inf"} 100
             self.assertEqual(result, 0)
             self.assertIn("total_requests", output.getvalue())
             self.assertIn("requests=4.000", output.getvalue())
+
+    def test_cli_query_overrides_config_param(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config_path = tmp_path / "metrics.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "params": {"tp_size": 8},
+                        "metrics": [
+                            {
+                                "name": "scaled_metric",
+                                "type": "promql",
+                                "expr": "${tp_size} * metric_total",
+                                "aggregate": "sum",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(cli, "QueryEngine") as query_engine:
+                query_engine.return_value.query_config.return_value = []
+                result = main(
+                    [
+                        "query",
+                        "--db",
+                        str(tmp_path / "metrics.db"),
+                        "--config",
+                        str(config_path),
+                        "--config-param",
+                        "tp_size=2",
+                    ]
+                )
+
+            config = query_engine.return_value.query_config.call_args.kwargs["config"]
+            self.assertEqual(result, 0)
+            self.assertEqual(metric_specs(config)[0]["expr"], "2 * metric_total")
 
     def test_cli_query_filters_rows_by_tag(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -960,9 +1000,6 @@ vllm:num_requests_running{worker_id="1"} 5
             [path.name for path in list_preset_configs()],
             [
                 "metrics_lite.json",
-                "metrics_lite_mla.json",
-                "metrics_lite_mla_tp2.json",
-                "metrics_lite_mla_tp4.json",
             ],
         )
         for path in list_preset_configs():
@@ -975,10 +1012,8 @@ vllm:num_requests_running{worker_id="1"} 5
                     self.assertTrue(metric.get("avg"), path.name)
                     self.assertEqual(metric.get("quantiles"), [0.5, 0.9, 0.99])
 
-    def test_metrics_lite_mla_presets_use_named_tp_sizes(self):
-        self.assertEqual(load_config("metrics_lite_mla_tp2")["params"]["tp_size"], 2)
-        self.assertEqual(load_config("metrics_lite_mla_tp4")["params"]["tp_size"], 4)
-        self.assertEqual(load_config("metrics_lite_mla")["params"]["tp_size"], 8)
+    def test_metrics_lite_preset_defaults_to_tp1(self):
+        self.assertEqual(load_config("metrics_lite")["params"]["tp_size"], 1)
 
     def test_metrics_lite_preset_computes_remote_tool_values(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1129,7 +1164,7 @@ ucm:cache_load_shards_total 35
         ):
             self.assertNotIn(removed, values)
 
-    def test_metrics_lite_mla_preset_computes_tp_adjusted_posix_hit_rate(self):
+    def test_metrics_lite_preset_computes_tp_adjusted_posix_hit_rate(self):
         with tempfile.TemporaryDirectory() as tmp:
             with MetricsStore(Path(tmp) / "metrics.db") as store:
                 t0 = parse_time_ms("2026-06-25T10:00:00")
@@ -1167,7 +1202,10 @@ ucm:cache_load_shards_total 110
                     t1,
                 )
 
-                config = load_config("metrics_lite_mla")
+                config = apply_config_param_overrides(
+                    load_config("metrics_lite"),
+                    ["tp_size=8"],
+                )
                 rows = QueryEngine(store).query_config(
                     config,
                     10,
@@ -1176,7 +1214,7 @@ ucm:cache_load_shards_total 110
                 )
                 values = {row.metric: row.values for row in rows}
 
-        self.assertEqual(config["params"]["tp_size"], 8)
+        self.assertEqual(config["params"]["tp_size"], "8")
         self.assertAlmostEqual(values["hbm_hit_rate"]["hit_rate"], 0.3)
         self.assertAlmostEqual(values["cache_hit_rate"]["hit_rate"], 0.168)
         self.assertAlmostEqual(values["posix_hit_rate"]["hit_rate"], 0.112)
@@ -1275,11 +1313,11 @@ ucm:cache_load_shards_total 10
     def test_metrics_lite_preset_clamps_hit_rate_shares_when_backend_exhausts_load(
         self,
     ):
-        for config_name, load_shards in (
-            ("metrics_lite", 5),
-            ("metrics_lite_mla", 35),
+        for tp_size, load_shards in (
+            (1, 5),
+            (8, 35),
         ):
-            with self.subTest(config=config_name):
+            with self.subTest(tp_size=tp_size):
                 with tempfile.TemporaryDirectory() as tmp:
                     with MetricsStore(Path(tmp) / "metrics.db") as store:
                         t0 = parse_time_ms("2026-06-25T10:00:00")
@@ -1318,7 +1356,10 @@ ucm:cache_load_shards_total {load_shards}
                         )
 
                         rows = QueryEngine(store).query_config(
-                            load_config(config_name),
+                            apply_config_param_overrides(
+                                load_config("metrics_lite"),
+                                [f"tp_size={tp_size}"],
+                            ),
                             10,
                             start_ms=t0,
                             aggr_by_seconds=10,
@@ -1440,6 +1481,47 @@ ucm:cache_load_shards_total {load_shards}
             self.assertEqual(result, 0)
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["values"]["value"], 1.0)
+
+    def test_check_overrides_config_param(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "metrics.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "params": {"tp_size": 8},
+                        "metrics": [
+                            {
+                                "name": "scaled_metric",
+                                "type": "promql",
+                                "expr": "${tp_size} * metric_total",
+                                "aggregate": "sum",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                patch.object(cli, "scrape_urls", return_value=([], [])),
+                patch.object(cli, "SnapshotQueryEngine") as query_engine,
+            ):
+                query_engine.return_value.query_config.return_value = []
+                result = main(
+                    [
+                        "check",
+                        "--url",
+                        "http://localhost/metrics",
+                        "--config",
+                        str(config_path),
+                        "--config-param",
+                        "tp_size=4",
+                    ]
+                )
+
+            config = query_engine.return_value.query_config.call_args.args[0]
+            self.assertEqual(result, 0)
+            self.assertEqual(metric_specs(config)[0]["expr"], "4 * metric_total")
 
     def test_check_url_failure_returns_error_without_partial_output(self):
         with tempfile.TemporaryDirectory() as tmp:

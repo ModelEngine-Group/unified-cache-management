@@ -100,14 +100,12 @@ ucm-toolkit clean TOOL --dry-run
 `metrics-view` 用于在没有 Prometheus/Grafana 的环境中，从 Prometheus/OpenMetrics
 `/metrics` 接口采集原始样本到 SQLite，并在终端查询聚合后的 UCM/vLLM 指标。
 
-命中率指标需要按模型类型和 TP 选择对应 config，才能得到正确的 cache/posix 拆分结果。
+要获取正确的分层kv cache 命中率数据，需要根据模型设置参数，其中GQA/MHA 模型无需设置，直接使用默认值；MLA 模型使用 `--config-param tp_size=<实际TP>` 设置服务实际 TP。
 
-| 模型类型 | TP | --config |
-| --- | --- | --- |
-| MLA | 2 | `metrics_lite_mla_tp2` |
-| MLA | 4 | `metrics_lite_mla_tp4` |
-| MLA | 8 | `metrics_lite_mla` |
-| MHA/GQA | 任意 | `metrics_lite` |
+| 模型类型 | 参数 |
+| --- | --- |
+| GQA/MHA | 使用默认值 |
+| MLA | 传入 `--config-param tp_size=<实际TP>` |
 
 列出内置配置：
 
@@ -120,12 +118,13 @@ ucm-toolkit run metrics-view list-configs
 
 `check` 会直接拉取一次当前 `/metrics` 快照并输出总聚合值，获取的是从服务启动到现在的总计值。
 
-输入示例
+输入示例，以mla模型tp=8为例：
 
 ```bash
 ucm-toolkit run metrics-view check \
   --url http://127.0.0.1:35325/metrics \
-  --config metrics_lite_mla
+  --config metrics_lite \
+  --config-param tp_size=8
 ```
 
 输出示例：
@@ -178,13 +177,14 @@ ucm-toolkit run metrics-view stop
 
 按时间窗口查询。推荐使用 `--aggr-by`，例如 `--window 10m --aggr-by 1m`
 会展示最新10分钟的数据，每分钟聚合一份结果。
-要获取正确的分层命中率，需要给到合适的config：
+MLA 模型需要按实际 TP 覆盖配置参数：
 
 ```bash
 ucm-toolkit run metrics-view query \
   --window 10m \
   --aggr-by 1m \
-  --config metrics_lite_mla
+  --config metrics_lite \
+  --config-param tp_size=8
 ```
 
 query也支持使用 --tag 按 Prometheus label 过滤：

@@ -30,6 +30,27 @@ def load_config(path: str | Path) -> dict:
     return config
 
 
+def apply_config_param_overrides(config: dict, items: list[str]) -> dict:
+    if not items:
+        return config
+    params = config.get("params", {})
+    if not isinstance(params, dict):
+        raise ValueError("Config params must be an object")
+    updated_params = dict(params)
+    for item in items:
+        if "=" not in item:
+            raise ValueError(f"--config-param expects KEY=VALUE, got: {item}")
+        key, value = (part.strip() for part in item.split("=", 1))
+        if not key or not value:
+            raise ValueError(f"--config-param expects KEY=VALUE, got: {item}")
+        if key not in updated_params:
+            raise ValueError(f"Config parameter not found: {key}")
+        updated_params[key] = value
+    updated_config = dict(config)
+    updated_config["params"] = updated_params
+    return updated_config
+
+
 def resolve_config_path(path_or_name: str | Path) -> Path:
     path = Path(path_or_name)
     if path.exists():
