@@ -87,21 +87,39 @@ public:
         return Status::OK();
     }
 
-    Status LoadAsync(const std::vector<KVBuffer>&, TaskId& taskId) override
+    Status LoadAsync(const std::vector<KVBuffer>&, TaskId& taskId,
+                     TaskCompletionCallback onComplete) override
     {
         taskId = nextTaskId_++;
+        if (onComplete) {
+            TaskResult result;
+            result.status = Status::OK();
+            onComplete(std::move(result));
+        }
         return Status::OK();
     }
 
-    Status StoreAsync(const std::vector<KVBuffer>&, TaskId& taskId) override
+    Status StoreAsync(const std::vector<KVBuffer>&, TaskId& taskId,
+                      TaskCompletionCallback onComplete) override
     {
         taskId = nextTaskId_++;
+        if (onComplete) {
+            TaskResult result;
+            result.status = Status::OK();
+            onComplete(std::move(result));
+        }
         return Status::OK();
     }
 
-    Status DeleteAsync(const std::vector<CacheKey>&, TaskId& taskId) override
+    Status DeleteAsync(const std::vector<CacheKey>&, TaskId& taskId,
+                       TaskCompletionCallback onComplete) override
     {
         taskId = nextTaskId_++;
+        if (onComplete) {
+            TaskResult result;
+            result.status = Status::OK();
+            onComplete(std::move(result));
+        }
         return Status::OK();
     }
 

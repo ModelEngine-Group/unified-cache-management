@@ -307,5 +307,161 @@ TEST_F(TransportTaskCompletionTest, TryFinalizeAggregatesSuccessAndFailure)
     EXPECT_TRUE(successCtx.finalStatus.ok());
 }
 
+TEST_F(TransportTaskCompletionTest, NotifyCompletionPassesResultOnce)
+{
+    TransportTaskContext ctx;
+    std::uint32_t callbackCount = 0;
+    TaskResult callbackResult;
+    ctx.onComplete = [&callbackCount, &callbackResult](TaskResult result) {
+        ++callbackCount;
+        callbackResult = std::move(result);
+    };
+    TaskResult result;
+    result.status = Status::Error(StatusCode::IO_ERROR, "fake completion error");
+    result.entryStatus = {Status::Error(StatusCode::NOT_FOUND, "fake entry error")};
+
+    EXPECT_TRUE(ctx.NotifyCompletion(result));
+    EXPECT_FALSE(ctx.NotifyCompletion(std::move(result)));
+
+    EXPECT_EQ(callbackCount, std::uint32_t{1});
+    EXPECT_EQ(callbackResult.status.code, StatusCode::IO_ERROR);
+    ASSERT_EQ(callbackResult.entryStatus.size(), std::size_t{1});
+    EXPECT_EQ(callbackResult.entryStatus[0].code, StatusCode::NOT_FOUND);
+    EXPECT_TRUE(ctx.completionNotified.load(std::memory_order_acquire));
+}
+
+TEST_F(TransportTaskCompletionTest, NotifyTaskCompletionRemovesTaskAfterCallback)
+{
+    TaskId taskId = kInvalidTaskId;
+    bool callbackInvoked = false;
+    bool taskPresentDuringCallback = false;
+    auto ctx = std::make_unique<TransportTaskContext>();
+    ctx->onComplete = [&](TaskResult) {
+        callbackInvoked = true;
+        taskPresentDuringCallback = transport_->taskManager_.Get(taskId) != nullptr;
+    };
+    ASSERT_TRUE(transport_->taskManager_.Submit(std::move(ctx), taskId).ok());
+    auto submittedCtx = transport_->taskManager_.Get(taskId);
+    ASSERT_NE(submittedCtx, nullptr);
+
+    transport_->NotifyTaskCompletion(submittedCtx);
+
+    EXPECT_TRUE(callbackInvoked);
+    EXPECT_TRUE(taskPresentDuringCallback);
+    EXPECT_EQ(transport_->taskManager_.Get(taskId), nullptr);
+}
+
+TEST_F(TransportTaskCompletionTest, NotifyTaskCompletionKeepsTaskWithoutCallback)
+{
+    TaskId taskId = kInvalidTaskId;
+    auto ctx = std::make_unique<TransportTaskContext>();
+    ctx->finalStatus = Status::OK();
+    ctx->entryStatus = {Status::OK()};
+    ASSERT_TRUE(transport_->taskManager_.Submit(std::move(ctx), taskId).ok());
+    auto submittedCtx = transport_->taskManager_.Get(taskId);
+    ASSERT_NE(submittedCtx, nullptr);
+    submittedCtx->state.store(TransportTaskState::COMPLETED, std::memory_order_release);
+
+    transport_->NotifyTaskCompletion(submittedCtx);
+
+    EXPECT_NE(transport_->taskManager_.Get(taskId), nullptr);
+
+    TaskResult result;
+    EXPECT_TRUE(transport_->Wait(taskId, 1, result).ok());
+    EXPECT_TRUE(result.status.ok());
+    ASSERT_EQ(result.entryStatus.size(), std::size_t{1});
+    EXPECT_TRUE(result.entryStatus[0].ok());
+    EXPECT_EQ(transport_->taskManager_.Get(taskId), nullptr);
+}
+
+TEST_F(TransportTaskCompletionTest, CancelInvokesCallbackOutsideTaskLock)
+{
+    TaskId taskId = kInvalidTaskId;
+    bool callbackInvoked = false;
+    bool taskLockAvailable = false;
+    auto ctx = std::make_unique<TransportTaskContext>();
+    auto* rawCtx = ctx.get();
+    ctx->onComplete = [&](TaskResult result) {
+        callbackInvoked = result.status.code == StatusCode::CANCELED;
+        taskLockAvailable = rawCtx->waitMu.try_lock();
+        if (taskLockAvailable) { rawCtx->waitMu.unlock(); }
+    };
+    ASSERT_TRUE(transport_->taskManager_.Submit(std::move(ctx), taskId).ok());
+
+    EXPECT_TRUE(transport_->Cancel(taskId).ok());
+
+    EXPECT_TRUE(callbackInvoked);
+    EXPECT_TRUE(taskLockAvailable);
+    EXPECT_EQ(transport_->taskManager_.Get(taskId), nullptr);
+}
+
+TEST_F(TransportTaskCompletionTest, FailedSubmissionDoesNotInvokeCallback)
+{
+    std::vector<KVBuffer> entries(1);
+    TaskId taskId = 123;
+    std::uint32_t callbackCount = 0;
+
+    const auto status =
+        transport_->LoadAsync(entries, taskId, [&callbackCount](TaskResult) { ++callbackCount; });
+
+    EXPECT_EQ(status.code, StatusCode::NOT_INITIALIZED);
+    EXPECT_EQ(taskId, kInvalidTaskId);
+    EXPECT_EQ(callbackCount, std::uint32_t{0});
+}
+
+TEST_F(TransportTaskCompletionTest, CancelReleasesResourcesBeforeInvokingCallbackOnce)
+{
+    TaskId taskId = kInvalidTaskId;
+    std::uint32_t callbackCount = 0;
+    bool resourcesReleased = false;
+    auto ctx = std::make_unique<TransportTaskContext>();
+    ctx->subBatchContexts.resize(1);
+    auto& subBatchContext = ctx->subBatchContexts[0];
+    ASSERT_TRUE(transport_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
+    ASSERT_TRUE(transport_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
+    auto* rawCtx = ctx.get();
+    ctx->onComplete = [&](TaskResult result) {
+        ++callbackCount;
+        resourcesReleased = result.status.code == StatusCode::CANCELED &&
+                            rawCtx->subBatchContexts[0].sendSge.slot_index == UINT32_MAX &&
+                            rawCtx->subBatchContexts[0].flagBuffer.slot_index == UINT32_MAX;
+    };
+    ASSERT_TRUE(transport_->taskManager_.Submit(std::move(ctx), taskId).ok());
+
+    EXPECT_TRUE(transport_->Cancel(taskId).ok());
+    EXPECT_EQ(transport_->Cancel(taskId).code, StatusCode::TASK_NOT_FOUND);
+
+    EXPECT_EQ(callbackCount, std::uint32_t{1});
+    EXPECT_TRUE(resourcesReleased);
+    EXPECT_EQ(transport_->taskManager_.Get(taskId), nullptr);
+}
+
+TEST_F(TransportTaskCompletionTest, ShutdownReleasesResourcesBeforeInvokingCallbackOnce)
+{
+    TaskId taskId = kInvalidTaskId;
+    std::uint32_t callbackCount = 0;
+    bool resourcesReleased = false;
+    auto ctx = std::make_unique<TransportTaskContext>();
+    ctx->subBatchContexts.resize(1);
+    auto& subBatchContext = ctx->subBatchContexts[0];
+    ASSERT_TRUE(transport_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
+    ASSERT_TRUE(transport_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
+    auto* rawCtx = ctx.get();
+    ctx->onComplete = [&](TaskResult result) {
+        ++callbackCount;
+        resourcesReleased = result.status.code == StatusCode::CANCELED &&
+                            rawCtx->subBatchContexts[0].sendSge.slot_index == UINT32_MAX &&
+                            rawCtx->subBatchContexts[0].flagBuffer.slot_index == UINT32_MAX;
+    };
+    ASSERT_TRUE(transport_->taskManager_.Submit(std::move(ctx), taskId).ok());
+
+    EXPECT_TRUE(transport_->Shutdown().ok());
+    EXPECT_TRUE(transport_->Shutdown().ok());
+
+    EXPECT_EQ(callbackCount, std::uint32_t{1});
+    EXPECT_TRUE(resourcesReleased);
+    EXPECT_EQ(transport_->taskManager_.Get(taskId), nullptr);
+}
+
 }  // namespace
 }  // namespace UC::ASU

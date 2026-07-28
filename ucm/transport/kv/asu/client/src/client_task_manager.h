@@ -54,7 +54,6 @@ enum class ClientTaskState {
     PENDING = 0,
     INFLIGHT = 1,
     COMPLETED = 2,
-    CANCELED = 3,
 };
 
 enum class ClientOpType {
@@ -67,20 +66,27 @@ struct ClientTaskContext {
     TaskId taskId{kInvalidTaskId};
     ClientOpType opType{ClientOpType::LOAD};
     std::shared_ptr<ViewSnapshot> viewSnapshot;
+    std::vector<KVBuffer> entries;
+    std::vector<CacheKey> keys;
     std::vector<ClientSubTask> subTasks;
     std::vector<Status> entryStatus;
 
+    std::atomic<std::size_t> remainingSubTasks{0};
     std::atomic<ClientTaskState> state{ClientTaskState::PENDING};
     Status finalStatus{Status::OK()};
 
-    // TODO: move to transport completion-driven notification when transport exposes callbacks.
     std::mutex waitMu;
     std::condition_variable cv;
 
     bool Done() const
     {
-        auto s = state.load(std::memory_order_acquire);
-        return s == ClientTaskState::COMPLETED || s == ClientTaskState::CANCELED;
+        auto currentState = state.load(std::memory_order_acquire);
+        return currentState == ClientTaskState::COMPLETED;
+    }
+
+    bool AllSubTasksCompleted() const
+    {
+        return remainingSubTasks.load(std::memory_order_acquire) == 0;
     }
 };
 

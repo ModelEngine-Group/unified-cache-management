@@ -26,6 +26,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -172,5 +173,7 @@ struct TaskResult {
     std::vector<Status> entryStatus;
     std::optional<QueryResult> queryResult;
 };
+
+using TaskCompletionCallback = std::function<void(TaskResult)>;
 
 }  // namespace UC::ASU

@@ -23,6 +23,8 @@
  * */
 #pragma once
 
+#include <condition_variable>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -98,21 +100,26 @@ private:
         TaskId taskId{kInvalidTaskId};
     };
 
-    // Submits one entry-based client task through the refresh-retry wrapper.
+    // Creates and queues one entry-based client task.
     Status SubmitAsync(ClientOpType opType, const std::vector<KVBuffer>& entries, TaskId& taskId);
-    // Builds and dispatches one entry-based task attempt on the current snapshot.
-    Status SubmitAsyncOnce(ClientOpType opType, const std::vector<KVBuffer>& entries,
-                           TaskId& taskId, bool& needRefresh);
-    // Submits one key-based client task through the refresh-retry wrapper.
+    // Creates and queues one key-based client task.
     Status SubmitAsync(ClientOpType opType, const std::vector<CacheKey>& keys, TaskId& taskId);
-    // Builds and dispatches one key-based task attempt on the current snapshot.
-    Status SubmitAsyncOnce(ClientOpType opType, const std::vector<CacheKey>& keys, TaskId& taskId,
-                           bool& needRefresh);
 
+    // Routes and dispatches one queued client task.
+    void ProcessTask(const ClientTaskContextPtr& ctx);
+    // Builds transport subtasks for one queued client task.
+    Status BuildSubTasks(const ClientTaskContextPtr& ctx);
+    // Runs queued tasks until shutdown and the queue are both complete.
+    void WorkerLoop();
+    // Completes a task that failed before transport dispatch.
+    static void CompleteTaskWithError(const ClientTaskContextPtr& ctx, const Status& status);
     // Sends each subtask to its routed transport and records transport task ids.
     Status DispatchTask(const ClientTaskContextPtr& ctx);
-    // Polls transport subtasks and copies completed entry statuses back by original index.
-    bool PollTask(const ClientTaskContextPtr& ctx);
+    // Writes one transport callback result into its client subtask.
+    static void CompleteSubTask(const ClientTaskContextPtr& ctx, std::size_t subTaskIndex,
+                                TaskResult result);
+    // Aggregates subtask state after the shared completion count reaches zero.
+    static void FinalizeTask(const ClientTaskContextPtr& ctx);
     // Converts a client task context into the public task result shape.
     Status BuildResult(const ClientTaskContextPtr& ctx, TaskResult& result);
     // Waits for one client task context until completion or timeout.
@@ -157,10 +164,6 @@ private:
     static std::vector<AsuId> GetSortedAsuIds(const GlobalView& view);
     // Parses client config from a file path supplied through the public interface.
     static Status LoadConfig(const std::string& configPath, AsuClientConfig& config);
-    // Returns whether all child statuses are terminal.
-    static bool IsTaskComplete(const TaskResult& result);
-    // Returns whether one task status is terminal.
-    static bool IsTaskStatusComplete(const Status& status);
     // Adds context to a status message.
     static Status WithContext(Status status, const std::string& context);
     // Builds the standard not-initialized status.
@@ -168,6 +171,12 @@ private:
 
     // Tracks aggregate client tasks returned through public TaskId values.
     ClientTaskManager taskManager_;
+    // Protects the client worker queue and shutdown acceptance boundary.
+    std::mutex taskQueueMu_;
+    std::condition_variable taskQueueCv_;
+    std::deque<ClientTaskContextPtr> taskQueue_;
+    bool stopWorker_{true};
+    std::thread worker_;
     // Creates ASU transports; tests inject fake transports through this hook.
     TransportFactory transportFactory_;
     // Creates the external view server during Init.

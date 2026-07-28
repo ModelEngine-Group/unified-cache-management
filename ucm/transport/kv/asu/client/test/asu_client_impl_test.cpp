@@ -2,10 +2,12 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <future>
 #include <gtest/gtest.h>
 #include <iostream>
 #include <memory>
@@ -49,6 +51,14 @@ struct TestState {
     std::size_t storeDispatchAttempts{0};
     bool failFirstDelete{false};
     bool firstDeleteFailed{false};
+    bool deferCompletionCallbacks{false};
+    bool blockStoreDispatch{false};
+    bool storeDispatchStarted{false};
+    bool releaseStoreDispatch{false};
+    std::mutex storeDispatchMu;
+    std::condition_variable storeDispatchCv;
+    std::mutex completionMu;
+    std::condition_variable completionCv;
     std::unordered_map<AsuId, Status> queryFailures;
     std::unordered_map<AsuId, Status> queryWaitFailures;
     std::unordered_map<AsuId, Status> loadFailures;
@@ -73,6 +83,8 @@ struct TestState {
     std::vector<AsuId> waitCalls;
     std::vector<AsuId> cancelCalls;
     std::unordered_map<AsuId, TaskId> childTaskIds;
+    std::unordered_map<AsuId, TaskCompletionCallback> pendingCompletionCallbacks;
+    std::size_t completionCallbackCount{0};
 };
 
 class FakeTransport : public AsuTransport {
@@ -145,7 +157,8 @@ public:
         return Status::OK();
     }
 
-    Status LoadAsync(const std::vector<KVBuffer>&, TaskId& taskId) override
+    Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                     TaskCompletionCallback onComplete) override
     {
         if (state_->failFirstLoad && !state_->firstLoadFailed) {
             state_->firstLoadFailed = true;
@@ -157,11 +170,19 @@ public:
         state_->loadCalls.emplace_back(config_.asuId);
         taskId = 1000 + config_.asuId;
         state_->childTaskIds[config_.asuId] = taskId;
+        Complete(entries.size(), std::move(onComplete));
         return Status::OK();
     }
 
-    Status StoreAsync(const std::vector<KVBuffer>&, TaskId& taskId) override
+    Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                      TaskCompletionCallback onComplete) override
     {
+        if (state_->blockStoreDispatch) {
+            std::unique_lock<std::mutex> lock{state_->storeDispatchMu};
+            state_->storeDispatchStarted = true;
+            state_->storeDispatchCv.notify_all();
+            state_->storeDispatchCv.wait(lock, [this] { return state_->releaseStoreDispatch; });
+        }
         if (state_->failFirstStore && !state_->firstStoreFailed) {
             state_->firstStoreFailed = true;
             return Status::Error(StatusCode::CONNECTION_ERROR, "fake store connection error");
@@ -175,10 +196,12 @@ public:
         state_->storeCalls.emplace_back(config_.asuId);
         taskId = 2000 + config_.asuId;
         state_->childTaskIds[config_.asuId] = taskId;
+        Complete(entries.size(), std::move(onComplete));
         return Status::OK();
     }
 
-    Status DeleteAsync(const std::vector<CacheKey>&, TaskId& taskId) override
+    Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
+                       TaskCompletionCallback onComplete) override
     {
         if (state_->failFirstDelete && !state_->firstDeleteFailed) {
             state_->firstDeleteFailed = true;
@@ -190,6 +213,7 @@ public:
         state_->deleteCalls.emplace_back(config_.asuId);
         taskId = 3000 + config_.asuId;
         state_->childTaskIds[config_.asuId] = taskId;
+        Complete(keys.size(), std::move(onComplete));
         return Status::OK();
     }
 
@@ -266,6 +290,30 @@ public:
     }
 
 private:
+    void Complete(std::size_t entryCount, TaskCompletionCallback onComplete)
+    {
+        if (!onComplete) { return; }
+        if (state_->deferCompletionCallbacks) {
+            {
+                std::lock_guard<std::mutex> lock{state_->completionMu};
+                state_->pendingCompletionCallbacks[config_.asuId] = std::move(onComplete);
+            }
+            state_->completionCv.notify_all();
+            return;
+        }
+
+        ++state_->completionCallbackCount;
+        TaskResult result;
+        auto statusIter = state_->checkResultStatus.find(config_.asuId);
+        result.status =
+            statusIter == state_->checkResultStatus.end() ? Status::OK() : statusIter->second;
+        auto entryIter = state_->checkEntryStatus.find(config_.asuId);
+        result.entryStatus = entryIter == state_->checkEntryStatus.end()
+                                 ? std::vector<Status>(entryCount, result.status)
+                                 : entryIter->second;
+        onComplete(std::move(result));
+    }
+
     static Status NotInitialized()
     {
         return Status::Error(StatusCode::NOT_INITIALIZED, "fake transport is not initialized");
@@ -277,6 +325,31 @@ private:
     TaskId nextQueryTaskId_{4000};
     std::unordered_map<TaskId, TaskResult> queryTasks_;
 };
+
+bool InvokePendingCompletion(const std::shared_ptr<TestState>& state, AsuId asuId,
+                             TaskResult result)
+{
+    TaskCompletionCallback callback;
+    {
+        std::lock_guard<std::mutex> lock{state->completionMu};
+        auto callbackIter = state->pendingCompletionCallbacks.find(asuId);
+        if (callbackIter == state->pendingCompletionCallbacks.end()) { return false; }
+        callback = std::move(callbackIter->second);
+        state->pendingCompletionCallbacks.erase(callbackIter);
+    }
+    ++state->completionCallbackCount;
+    callback(std::move(result));
+    return true;
+}
+
+bool WaitForPendingCompletion(const std::shared_ptr<TestState>& state, AsuId asuId)
+{
+    std::unique_lock<std::mutex> lock{state->completionMu};
+    return state->completionCv.wait_for(lock, std::chrono::milliseconds(100), [&] {
+        return state->pendingCompletionCallbacks.find(asuId) !=
+               state->pendingCompletionCallbacks.end();
+    });
+}
 
 class FakeViewServer final : public ViewServer {
 public:
@@ -332,6 +405,17 @@ bool WaitForFetchCount(const std::shared_ptr<FakeViewServer>& viewServer,
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     return false;
+}
+
+Status CheckUntilComplete(AsuClient& client, TaskId taskId, TaskResult& result)
+{
+    Status status;
+    for (std::uint32_t attempt = 0; attempt < 100; ++attempt) {
+        status = client.Check(taskId, result);
+        if (status.code != StatusCode::IN_PROGRESS) { return status; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return status;
 }
 
 ViewServerFactory MakeViewServerFactory(const std::shared_ptr<ViewServer>& viewServer)
@@ -473,12 +557,12 @@ TEST(AsuClientImplTest, Input_EmptyStoreCreatesCompletableEmptyTask)
     auto status = client->StoreAsync({}, taskId);
     ASSERT_TRUE(status.ok()) << status.message;
     EXPECT_NE(taskId, kInvalidTaskId);
-    EXPECT_TRUE(state->storeCalls.empty());
 
     TaskResult result;
-    status = client->Check(taskId, result);
+    status = client->Wait(taskId, 100, result);
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_TRUE(result.entryStatus.empty());
+    EXPECT_TRUE(state->storeCalls.empty());
 }
 
 TEST(AsuClientImplTest, Input_EmptyDeleteCreatesCompletableEmptyTask)
@@ -491,12 +575,12 @@ TEST(AsuClientImplTest, Input_EmptyDeleteCreatesCompletableEmptyTask)
     auto status = client->DeleteAsync({}, taskId);
     ASSERT_TRUE(status.ok()) << status.message;
     EXPECT_NE(taskId, kInvalidTaskId);
-    EXPECT_TRUE(state->deleteCalls.empty());
 
     TaskResult result;
-    status = client->Check(taskId, result);
+    status = client->Wait(taskId, 100, result);
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_TRUE(result.entryStatus.empty());
+    EXPECT_TRUE(state->deleteCalls.empty());
 }
 
 TEST(AsuClientImplTest, Input_EmptyRegisterReturnsEmptyResults)
@@ -583,6 +667,8 @@ TEST(AsuClientImplTest, Routing_UsesRouterConfigFromClientConfigAttrs)
         taskId);
 
     ASSERT_TRUE(status.ok()) << status.message;
+    TaskResult result;
+    ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
     EXPECT_EQ(state->storeCalls, std::vector<AsuId>({10}));
 }
 
@@ -819,7 +905,7 @@ TEST(AsuClientImplTest, BackgroundRefresh_QueryReturnsPartialFailedWhenViewFetch
     EXPECT_EQ(state->createdTransports, std::uint32_t{1});
 }
 
-TEST(AsuClientImplTest, BackgroundRefresh_LoadReturnsErrorWithoutRetry)
+TEST(AsuClientImplTest, BackgroundRefresh_LoadRecordsDispatchErrorWithoutRetry)
 {
     auto state = std::make_shared<TestState>();
     state->failFirstLoad = true;
@@ -841,14 +927,19 @@ TEST(AsuClientImplTest, BackgroundRefresh_LoadReturnsErrorWithoutRetry)
     },
         taskId);
 
-    EXPECT_EQ(status.code, StatusCode::CONNECTION_ERROR);
-    EXPECT_EQ(taskId, kInvalidTaskId);
+    ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_NE(taskId, kInvalidTaskId);
+    TaskResult result;
+    status = client->Wait(taskId, 100, result);
+    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
+    ASSERT_EQ(result.entryStatus.size(), std::size_t{1});
+    EXPECT_EQ(result.entryStatus[0].code, StatusCode::CONNECTION_ERROR);
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
     EXPECT_TRUE(state->loadCalls.empty());
 }
 
-TEST(AsuClientImplTest, BackgroundRefresh_StoreReturnsErrorWithoutRetry)
+TEST(AsuClientImplTest, BackgroundRefresh_StoreRecordsDispatchErrorWithoutRetry)
 {
     auto state = std::make_shared<TestState>();
     state->failFirstStore = true;
@@ -870,14 +961,19 @@ TEST(AsuClientImplTest, BackgroundRefresh_StoreReturnsErrorWithoutRetry)
     },
         taskId);
 
-    EXPECT_EQ(status.code, StatusCode::CONNECTION_ERROR);
-    EXPECT_EQ(taskId, kInvalidTaskId);
+    ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_NE(taskId, kInvalidTaskId);
+    TaskResult result;
+    status = client->Wait(taskId, 100, result);
+    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
+    ASSERT_EQ(result.entryStatus.size(), std::size_t{1});
+    EXPECT_EQ(result.entryStatus[0].code, StatusCode::CONNECTION_ERROR);
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
     EXPECT_TRUE(state->storeCalls.empty());
 }
 
-TEST(AsuClientImplTest, BackgroundRefresh_DeleteReturnsErrorWithoutRetry)
+TEST(AsuClientImplTest, BackgroundRefresh_DeleteRecordsDispatchErrorWithoutRetry)
 {
     auto state = std::make_shared<TestState>();
     state->failFirstDelete = true;
@@ -895,8 +991,13 @@ TEST(AsuClientImplTest, BackgroundRefresh_DeleteReturnsErrorWithoutRetry)
     TaskId taskId = kInvalidTaskId;
     auto status = client->DeleteAsync({MakeCacheKey("k05")}, taskId);
 
-    EXPECT_EQ(status.code, StatusCode::CONNECTION_ERROR);
-    EXPECT_EQ(taskId, kInvalidTaskId);
+    ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_NE(taskId, kInvalidTaskId);
+    TaskResult result;
+    status = client->Wait(taskId, 100, result);
+    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
+    ASSERT_EQ(result.entryStatus.size(), std::size_t{1});
+    EXPECT_EQ(result.entryStatus[0].code, StatusCode::CONNECTION_ERROR);
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
     EXPECT_TRUE(state->deleteCalls.empty());
@@ -1256,17 +1357,95 @@ TEST(AsuClientImplTest, Task_CheckRemovesTaskAfterCompletion)
     ASSERT_TRUE(status.ok()) << status.message;
 
     TaskResult result;
-    status = client->Check(taskId, result);
+    status = CheckUntilComplete(*client, taskId, result);
     ASSERT_TRUE(status.ok()) << status.message;
 
     status = client->Check(taskId, result);
     EXPECT_EQ(status.code, StatusCode::TASK_NOT_FOUND);
 }
 
-TEST(AsuClientImplTest, Task_CheckKeepsInProgressTaskUntilCompletion)
+TEST(ClientTaskContextTest, SubTaskCompletionDoesNotReplaceLifecycleState)
+{
+    ClientTaskContext ctx;
+    ctx.remainingSubTasks.store(1, std::memory_order_release);
+    ctx.state.store(ClientTaskState::INFLIGHT, std::memory_order_release);
+
+    EXPECT_FALSE(ctx.AllSubTasksCompleted());
+    EXPECT_FALSE(ctx.Done());
+
+    ctx.remainingSubTasks.fetch_sub(1, std::memory_order_acq_rel);
+
+    EXPECT_TRUE(ctx.AllSubTasksCompleted());
+    EXPECT_FALSE(ctx.Done());
+
+    ctx.state.store(ClientTaskState::COMPLETED, std::memory_order_release);
+    EXPECT_TRUE(ctx.Done());
+}
+
+TEST(AsuClientImplTest, Task_PassesOneCompletionCallbackPerTransportSubTask)
 {
     auto state = std::make_shared<TestState>();
-    state->checkResultStatus[10] = Status::Error(StatusCode::IN_PROGRESS, "fake in progress");
+    auto client = CreateAsuClient(MakeFactory(state));
+    ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
+    auto entries = BuildRoutedEntries({10, 20});
+    ASSERT_EQ(entries.size(), std::size_t{2});
+
+    TaskId taskId = kInvalidTaskId;
+    auto status = client->StoreAsync(entries, taskId);
+
+    ASSERT_TRUE(status.ok()) << status.message;
+
+    TaskResult result;
+    EXPECT_TRUE(client->Wait(taskId, 100, result).ok());
+    EXPECT_EQ(state->completionCallbackCount, std::size_t{2});
+    EXPECT_TRUE(state->checkCalls.empty());
+    EXPECT_TRUE(state->waitCalls.empty());
+}
+
+TEST(AsuClientImplTest, Task_SubmitReturnsWhileWorkerDispatchIsBlocked)
+{
+    auto state = std::make_shared<TestState>();
+    state->blockStoreDispatch = true;
+    auto client = CreateAsuClient(MakeFactory(state));
+    ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
+
+    TaskId taskId = kInvalidTaskId;
+    auto submit = std::async(std::launch::async, [&] {
+        return client->StoreAsync(
+            {
+                KVBuffer{MakeCacheKey("k05"), {}}
+        },
+            taskId);
+    });
+
+    bool dispatchStarted = false;
+    {
+        std::unique_lock<std::mutex> lock{state->storeDispatchMu};
+        dispatchStarted = state->storeDispatchCv.wait_for(
+            lock, std::chrono::milliseconds(100), [&] { return state->storeDispatchStarted; });
+    }
+    const bool submitReturned =
+        submit.wait_for(std::chrono::milliseconds(100)) == std::future_status::ready;
+    {
+        std::lock_guard<std::mutex> lock{state->storeDispatchMu};
+        state->releaseStoreDispatch = true;
+    }
+    state->storeDispatchCv.notify_all();
+
+    auto status = submit.get();
+    ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_TRUE(dispatchStarted);
+    EXPECT_TRUE(submitReturned);
+    EXPECT_NE(taskId, kInvalidTaskId);
+
+    TaskResult result;
+    EXPECT_TRUE(client->Wait(taskId, 100, result).ok());
+}
+
+TEST(AsuClientImplTest, Task_CheckUsesClientStateUntilCompletionCallback)
+{
+    auto state = std::make_shared<TestState>();
+    state->deferCompletionCallbacks = true;
     auto client = CreateAsuClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
 
@@ -1281,10 +1460,16 @@ TEST(AsuClientImplTest, Task_CheckKeepsInProgressTaskUntilCompletion)
     TaskResult result;
     status = client->Check(taskId, result);
     EXPECT_EQ(status.code, StatusCode::IN_PROGRESS);
+    EXPECT_TRUE(state->checkCalls.empty());
 
-    state->checkResultStatus.erase(10);
+    ASSERT_TRUE(WaitForPendingCompletion(state, 10));
+    TaskResult completionResult;
+    completionResult.status = Status::OK();
+    completionResult.entryStatus = {Status::OK()};
+    ASSERT_TRUE(InvokePendingCompletion(state, 10, std::move(completionResult)));
     status = client->Check(taskId, result);
     ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_TRUE(state->checkCalls.empty());
 
     status = client->Check(taskId, result);
     EXPECT_EQ(status.code, StatusCode::TASK_NOT_FOUND);
@@ -1314,7 +1499,7 @@ TEST(AsuClientImplTest, Task_CheckRefreshesViewOnRefreshableChildFailure)
     ASSERT_TRUE(status.ok()) << status.message;
 
     TaskResult result;
-    status = client->Check(taskId, result);
+    status = client->Wait(taskId, 100, result);
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_TRUE(WaitForFetchCount(viewServer, 2));
@@ -1327,25 +1512,38 @@ TEST(AsuClientImplTest, Task_PartialDispatchFailureCancelsDispatchedSubtasks)
     auto state = std::make_shared<TestState>();
     state->failStoreAfterFirstDispatch = true;
     auto client = CreateAsuClient(MakeFactory(state));
-    ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
-    auto keyForAsu10 = FindKeyForAsu({10, 20}, 10);
-    auto keyForAsu20 = FindKeyForAsu({10, 20}, 20);
-    ASSERT_NE(keyForAsu10, CacheKey{});
-    ASSERT_NE(keyForAsu20, CacheKey{});
+    const std::vector<AsuId> asuIds{10, 20, 30};
+    ASSERT_TRUE(client->Init(MakeConfig(asuIds)).ok());
+    auto entries = BuildRoutedEntries(asuIds);
+    ASSERT_EQ(entries.size(), asuIds.size());
 
     TaskId taskId = kInvalidTaskId;
-    auto status = client->StoreAsync(
-        {
-            KVBuffer{keyForAsu10, {}},
-            KVBuffer{keyForAsu20, {}}
-    },
-        taskId);
+    auto status = client->StoreAsync(entries, taskId);
 
-    EXPECT_EQ(status.code, StatusCode::CONNECTION_ERROR);
-    EXPECT_EQ(taskId, kInvalidTaskId);
+    ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_NE(taskId, kInvalidTaskId);
+
+    TaskResult result;
+    status = client->Wait(taskId, 100, result);
+    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_EQ(state->storeCalls.size(), std::size_t{1});
     ASSERT_EQ(state->cancelCalls.size(), std::size_t{1});
     EXPECT_EQ(state->cancelCalls[0], state->storeCalls[0]);
+    EXPECT_EQ(state->completionCallbackCount, std::size_t{1});
+    ASSERT_EQ(result.entryStatus.size(), std::size_t{3});
+    EXPECT_EQ(std::count_if(result.entryStatus.begin(), result.entryStatus.end(),
+                            [](const Status& entryStatus) { return entryStatus.ok(); }),
+              1);
+    EXPECT_EQ(std::count_if(result.entryStatus.begin(), result.entryStatus.end(),
+                            [](const Status& entryStatus) {
+                                return entryStatus.code == StatusCode::CONNECTION_ERROR;
+                            }),
+              1);
+    EXPECT_EQ(std::count_if(result.entryStatus.begin(), result.entryStatus.end(),
+                            [](const Status& entryStatus) {
+                                return entryStatus.code == StatusCode::CANCELED;
+                            }),
+              1);
 }
 
 TEST(AsuClientImplTest, Task_WaitRemovesTaskAfterCompletion)
@@ -1372,32 +1570,9 @@ TEST(AsuClientImplTest, Task_WaitRemovesTaskAfterCompletion)
 
 TEST(AsuClientImplTest, Task_WaitTimeoutKeepsTaskForLaterCompletion)
 {
-    class TimeoutOnceTransport final : public FakeTransport {
-    public:
-        explicit TimeoutOnceTransport(std::shared_ptr<TestState> state)
-            : FakeTransport(std::move(state))
-        {
-        }
-
-        Status Wait(TaskId, std::uint64_t, TaskResult& result) override
-        {
-            if (!timedOut_) {
-                timedOut_ = true;
-                result.status = Status::Error(StatusCode::TIMEOUT, "fake wait timeout");
-                return result.status;
-            }
-            return FakeTransport::Check(1000, result);
-        }
-
-    private:
-        bool timedOut_{false};
-    };
-
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient([state] {
-        ++state->createdTransports;
-        return std::unique_ptr<AsuTransport>(new TimeoutOnceTransport(state));
-    });
+    state->deferCompletionCallbacks = true;
+    auto client = CreateAsuClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
 
     TaskId taskId = 0;
@@ -1409,11 +1584,24 @@ TEST(AsuClientImplTest, Task_WaitTimeoutKeepsTaskForLaterCompletion)
     ASSERT_TRUE(status.ok()) << status.message;
 
     TaskResult result;
-    status = client->Wait(taskId, 10, result);
+    status = client->Wait(taskId, 100, result);
     EXPECT_EQ(status.code, StatusCode::TIMEOUT);
+    EXPECT_TRUE(state->waitCalls.empty());
 
-    status = client->Wait(taskId, 10, result);
+    ASSERT_TRUE(WaitForPendingCompletion(state, 10));
+    TaskResult completionResult;
+    completionResult.status = Status::OK();
+    completionResult.entryStatus = {Status::OK()};
+    bool completionInvoked = false;
+    std::thread completionThread([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        completionInvoked = InvokePendingCompletion(state, 10, std::move(completionResult));
+    });
+    status = client->Wait(taskId, 100, result);
+    completionThread.join();
+    EXPECT_TRUE(completionInvoked);
     EXPECT_TRUE(status.ok()) << status.message;
+    EXPECT_TRUE(state->waitCalls.empty());
 
     status = client->Check(taskId, result);
     EXPECT_EQ(status.code, StatusCode::TASK_NOT_FOUND);
@@ -1438,7 +1626,7 @@ TEST(AsuClientImplTest, Task_CheckKeepsEntryStatusInOriginalOrderAcrossAsus)
     ASSERT_TRUE(status.ok()) << status.message;
 
     TaskResult result;
-    status = client->Check(taskId, result);
+    status = client->Wait(taskId, 100, result);
 
     EXPECT_TRUE(status.ok()) << status.message;
     ASSERT_EQ(result.entryStatus.size(), std::size_t{3});
@@ -1466,7 +1654,7 @@ TEST(AsuClientImplTest, Task_LoadKeepsEntryStatusInOriginalOrderAcrossAsus)
     ASSERT_TRUE(status.ok()) << status.message;
 
     TaskResult result;
-    status = client->Check(taskId, result);
+    status = client->Wait(taskId, 100, result);
 
     EXPECT_TRUE(status.ok()) << status.message;
     ASSERT_EQ(result.entryStatus.size(), std::size_t{3});
@@ -1497,7 +1685,7 @@ TEST(AsuClientImplTest, Task_DeleteKeepsEntryStatusInOriginalOrderAcrossAsus)
     ASSERT_TRUE(status.ok()) << status.message;
 
     TaskResult result;
-    status = client->Check(taskId, result);
+    status = client->Wait(taskId, 100, result);
 
     EXPECT_TRUE(status.ok()) << status.message;
     ASSERT_EQ(result.entryStatus.size(), std::size_t{3});
@@ -1557,7 +1745,6 @@ TEST(AsuClientImplTest,
     },
         taskId);
     ASSERT_TRUE(status.ok()) << status.message;
-    ASSERT_EQ(state->storeCalls, std::vector<AsuId>({20}));
 
     state->failFirstQuery = true;
     QueryResult queryResult;
@@ -1567,9 +1754,10 @@ TEST(AsuClientImplTest,
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
     TaskResult taskResult;
-    status = client->Check(taskId, taskResult);
+    status = CheckUntilComplete(*client, taskId, taskResult);
     EXPECT_TRUE(status.ok()) << status.message;
-    EXPECT_EQ(state->checkCalls, std::vector<AsuId>({20}));
+    EXPECT_TRUE(state->checkCalls.empty());
+    ASSERT_EQ(state->storeCalls, std::vector<AsuId>({20}));
 
     status = client->StoreAsync(
         {
@@ -1577,6 +1765,8 @@ TEST(AsuClientImplTest,
     },
         taskId);
     EXPECT_TRUE(status.ok()) << status.message;
+    TaskResult secondTaskResult;
+    EXPECT_TRUE(client->Wait(taskId, 100, secondTaskResult).ok());
     EXPECT_EQ(state->storeCalls, std::vector<AsuId>({20, 10}));
 }
 

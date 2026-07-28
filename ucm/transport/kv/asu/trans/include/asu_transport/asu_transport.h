@@ -104,9 +104,12 @@ public:
     virtual Status QueryAsync(const std::vector<CacheKey>& keys, const QueryOptions& options,
                               TaskId& taskId) = 0;
 
-    virtual Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) = 0;
-    virtual Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) = 0;
-    virtual Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId) = 0;
+    virtual Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                             TaskCompletionCallback onComplete) = 0;
+    virtual Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                              TaskCompletionCallback onComplete) = 0;
+    virtual Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
+                               TaskCompletionCallback onComplete) = 0;
 
     // Best-effort cancellation, does not interrupt underlying UB/RoCE IO
     virtual Status Cancel(TaskId taskId) = 0;

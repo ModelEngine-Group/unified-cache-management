@@ -103,6 +103,8 @@ struct TransportTaskContext {
     std::vector<Status> entryStatus;
     std::vector<TransportSubBatchContext> subBatchContexts;
     std::uint32_t completedSubBatchCount{0};
+    TaskCompletionCallback onComplete;
+    std::atomic<bool> completionNotified{false};
 
     std::atomic<TransportTaskState> state{TransportTaskState::PENDING};
     Status finalStatus{Status::OK()};
@@ -113,6 +115,7 @@ struct TransportTaskContext {
     std::condition_variable cv;
 
     bool Done() const;
+    bool NotifyCompletion(TaskResult result);
     Status BuildFinalStatus() const;
     void InitializeTerminalSubBatchCount();
     void TryFinalizeFromSubBatches();

@@ -386,7 +386,8 @@ public:
         return SubmitCompletedTask(*state_, std::move(result), taskId);
     }
 
-    Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) override
+    Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                     TaskCompletionCallback onComplete) override
     {
         std::lock_guard<std::mutex> lock{state_->mutex};
         auto status = CheckReadyLocked();
@@ -417,10 +418,14 @@ public:
             std::copy(iter->second.begin(), iter->second.end(), data);
             entryStatus.emplace_back(Status::OK());
         }
-        return SubmitCompletedTask(*state_, BuildTaskResult(entryStatus), taskId);
+        auto result = BuildTaskResult(entryStatus);
+        status = SubmitCompletedTask(*state_, result, taskId);
+        if (status.ok() && onComplete) { onComplete(std::move(result)); }
+        return status;
     }
 
-    Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) override
+    Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                      TaskCompletionCallback onComplete) override
     {
         std::lock_guard<std::mutex> lock{state_->mutex};
         auto status = CheckReadyLocked();
@@ -444,10 +449,14 @@ public:
             store[entry.key] = std::vector<std::uint8_t>(data, data + entry.buffer.region.size);
             entryStatus.emplace_back(Status::OK());
         }
-        return SubmitCompletedTask(*state_, BuildTaskResult(entryStatus), taskId);
+        auto result = BuildTaskResult(entryStatus);
+        status = SubmitCompletedTask(*state_, result, taskId);
+        if (status.ok() && onComplete) { onComplete(std::move(result)); }
+        return status;
     }
 
-    Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId) override
+    Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
+                       TaskCompletionCallback onComplete) override
     {
         std::lock_guard<std::mutex> lock{state_->mutex};
         auto status = CheckReadyLocked();
@@ -468,7 +477,10 @@ public:
                 entryStatus.emplace_back(Status::OK());
             }
         }
-        return SubmitCompletedTask(*state_, BuildTaskResult(entryStatus), taskId);
+        auto result = BuildTaskResult(entryStatus);
+        status = SubmitCompletedTask(*state_, result, taskId);
+        if (status.ok() && onComplete) { onComplete(std::move(result)); }
+        return status;
     }
 
     Status Cancel(TaskId) override { return Status::Error(StatusCode::UNSUPPORTED, "unsupported"); }

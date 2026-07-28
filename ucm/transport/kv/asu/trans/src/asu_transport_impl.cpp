@@ -187,11 +187,13 @@ Status AsuTransportImpl::Shutdown()
     Status finalStatus = Status::OK();
     for (const auto& ctx : taskManager_.GetAll()) {
         if (ctx == nullptr) { continue; }
-        std::lock_guard<std::mutex> lock(ctx->waitMu);
+        std::unique_lock<std::mutex> lock(ctx->waitMu);
         if (ctx->Done()) { continue; }
         ctx->finalStatus = Status::Error(StatusCode::CANCELED, "transport shutdown canceled task");
         ReleaseAllSubBatchResources(ctx->subBatchContexts);
         ctx->state.store(TransportTaskState::CANCELED, std::memory_order_release);
+        lock.unlock();
+        NotifyTaskCompletion(ctx);
         ctx->cv.notify_all();
     }
 
@@ -270,30 +272,36 @@ Status AsuTransportImpl::QueryAsync(const std::vector<CacheKey>& keys, const Que
     return SubmitAsync(std::move(ctx), taskId);
 }
 
-Status AsuTransportImpl::LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
+Status AsuTransportImpl::LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                                   TaskCompletionCallback onComplete)
 {
     auto ctx = std::make_unique<TransportTaskContext>();
     ctx->opType = TransportOpType::BATCH_LOAD;
     ctx->entries = BatchView<KVBuffer>{entries.data(), entries.size()};
     ctx->entryStatus.assign(entries.size(), Status::OK());
+    ctx->onComplete = std::move(onComplete);
     return SubmitAsync(std::move(ctx), taskId);
 }
 
-Status AsuTransportImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
+Status AsuTransportImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                                    TaskCompletionCallback onComplete)
 {
     auto ctx = std::make_unique<TransportTaskContext>();
     ctx->opType = TransportOpType::BATCH_STORE;
     ctx->entries = BatchView<KVBuffer>{entries.data(), entries.size()};
     ctx->entryStatus.assign(entries.size(), Status::OK());
+    ctx->onComplete = std::move(onComplete);
     return SubmitAsync(std::move(ctx), taskId);
 }
 
-Status AsuTransportImpl::DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId)
+Status AsuTransportImpl::DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
+                                     TaskCompletionCallback onComplete)
 {
     auto ctx = std::make_unique<TransportTaskContext>();
     ctx->opType = TransportOpType::DELETE;
     ctx->keys = BatchView<CacheKey>{keys.data(), keys.size()};
     ctx->entryStatus.assign(keys.size(), Status::OK());
+    ctx->onComplete = std::move(onComplete);
     return SubmitAsync(std::move(ctx), taskId);
 }
 
@@ -302,11 +310,13 @@ Status AsuTransportImpl::Cancel(TaskId taskId)
     auto ctx = taskManager_.Get(taskId);
     if (!ctx) { return Status::Error(StatusCode::TASK_NOT_FOUND, "transport task not found"); }
 
-    std::lock_guard<std::mutex> lock(ctx->waitMu);
+    std::unique_lock<std::mutex> lock(ctx->waitMu);
     if (ctx->Done()) { return Status::OK(); }
     ctx->finalStatus = Status::Error(StatusCode::CANCELED, "transport task canceled");
     ReleaseAllSubBatchResources(ctx->subBatchContexts);
     ctx->state.store(TransportTaskState::CANCELED, std::memory_order_release);
+    lock.unlock();
+    NotifyTaskCompletion(ctx);
     ctx->cv.notify_all();
     return Status::OK();
 }
@@ -551,7 +561,8 @@ void AsuTransportImpl::ProcessTask(const TransportTaskContextPtr& ctx)
         SendSubBatchBuffers(subBatchContexts, ioBatches, subBatchIndexes);
     }
 
-    std::lock_guard<std::mutex> lock(ctx->waitMu);
+    bool done = false;
+    std::unique_lock<std::mutex> lock(ctx->waitMu);
     if (ctx->state.load(std::memory_order_acquire) == TransportTaskState::CANCELED) {
         UC_DEBUG("AsuTransportImpl::ProcessTask canceled during process task_id={} sub_batches={}",
                  ctx->taskId, subBatchContexts.size());
@@ -574,15 +585,21 @@ void AsuTransportImpl::ProcessTask(const TransportTaskContextPtr& ctx)
         if (subBatchContext.status.ok()) { continue; }
         ReleaseSubBatchResources(subBatchContext);
     }
+    done = ctx->Done();
+    lock.unlock();
 
-    if (ctx->Done()) { ctx->cv.notify_all(); }
+    if (done) {
+        NotifyTaskCompletion(ctx);
+        ctx->cv.notify_all();
+    }
 }
 
 void AsuTransportImpl::PollTaskCompletions(const TransportTaskContextPtr& ctx)
 {
     if (!ctx) { return; }
 
-    std::lock_guard<std::mutex> lock(ctx->waitMu);
+    bool done = false;
+    std::unique_lock<std::mutex> lock(ctx->waitMu);
     if (ctx->state.load(std::memory_order_acquire) != TransportTaskState::INFLIGHT) { return; }
     if (ctx->subBatchContexts.empty()) { return; }
 
@@ -660,7 +677,12 @@ void AsuTransportImpl::PollTaskCompletions(const TransportTaskContextPtr& ctx)
         CompleteSubBatch(*ctx, subBatchContext, status);
     }
     ctx->TryFinalizeFromSubBatches();
-    if (ctx->Done()) { ctx->cv.notify_all(); }
+    done = ctx->Done();
+    lock.unlock();
+    if (done) {
+        NotifyTaskCompletion(ctx);
+        ctx->cv.notify_all();
+    }
 }
 
 void AsuTransportImpl::BuildResult(const TransportTaskContext& ctx, TaskResult& result)
@@ -681,6 +703,13 @@ void AsuTransportImpl::BuildResult(const TransportTaskContext& ctx, TaskResult& 
     if (ctx.opType == TransportOpType::QUERY) {
         result.queryResult = BuildQueryResultFromEntryStatus(result.entryStatus);
     }
+}
+
+void AsuTransportImpl::NotifyTaskCompletion(const TransportTaskContextPtr& ctx)
+{
+    TaskResult result;
+    BuildResult(*ctx, result);
+    if (ctx->NotifyCompletion(std::move(result))) { (void)taskManager_.Remove(ctx->taskId); }
 }
 
 void AsuTransportImpl::SetTransProvider(std::unique_ptr<TransProvider> provider)
