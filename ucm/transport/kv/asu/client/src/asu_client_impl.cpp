@@ -872,13 +872,11 @@ Status AsuClientImpl::BindRegisteredRegions(AsuId asuId,
 
 Status AsuClientImpl::RefreshView()
 {
-    AsuClientConfig config;
     std::shared_ptr<ViewServer> viewServer;
     std::shared_ptr<ViewSnapshot> oldSnapshot;
     {
         std::lock_guard<std::mutex> lock{mutex_};
         if (!initialized_ && !refreshInProgress_) { return NotInitialized(); }
-        config = config_;
         viewServer = viewServer_;
         oldSnapshot = snapshot_;
     }

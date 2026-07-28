@@ -24,6 +24,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -103,6 +104,7 @@ struct TransportTaskContext {
     std::vector<Status> entryStatus;
     std::vector<TransportSubBatchContext> subBatchContexts;
     std::uint32_t completedSubBatchCount{0};
+    std::chrono::steady_clock::time_point deadline{std::chrono::steady_clock::time_point::max()};
     TaskCompletionCallback onComplete;
     std::atomic<bool> completionNotified{false};
 

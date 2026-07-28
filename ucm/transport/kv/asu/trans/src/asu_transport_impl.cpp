@@ -53,6 +53,12 @@ namespace {
 
 constexpr std::size_t kFlagBufferHeaderCopySize = kCqeDwordCount * sizeof(std::uint32_t);
 
+std::chrono::steady_clock::time_point TaskDeadline(std::uint64_t timeoutMs)
+{
+    if (timeoutMs == 0) { return std::chrono::steady_clock::time_point::max(); }
+    return std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+}
+
 Status CopyDeviceToHost(const ScatterGatherEntry& sge, void* host, std::size_t size)
 {
     if (size > sge.length) {
@@ -187,12 +193,21 @@ Status AsuTransportImpl::Shutdown()
     Status finalStatus = Status::OK();
     for (const auto& ctx : taskManager_.GetAll()) {
         if (ctx == nullptr) { continue; }
-        std::unique_lock<std::mutex> lock(ctx->waitMu);
-        if (ctx->Done()) { continue; }
-        ctx->finalStatus = Status::Error(StatusCode::CANCELED, "transport shutdown canceled task");
-        ReleaseAllSubBatchResources(ctx->subBatchContexts);
-        ctx->state.store(TransportTaskState::CANCELED, std::memory_order_release);
-        lock.unlock();
+        {
+            std::lock_guard<std::mutex> lock(ctx->waitMu);
+            if (ctx->Done()) { continue; }
+            const auto canceledStatus =
+                Status::Error(StatusCode::CANCELED, "transport shutdown canceled task");
+            std::fill(ctx->entryStatus.begin(), ctx->entryStatus.end(), canceledStatus);
+            for (auto& subBatchContext : ctx->subBatchContexts) {
+                if (subBatchContext.state != TransportSubBatchState::PENDING) { continue; }
+                std::fill(subBatchContext.entryStatus.begin(), subBatchContext.entryStatus.end(),
+                          canceledStatus);
+            }
+            ctx->finalStatus = canceledStatus;
+            ReleaseAllSubBatchResources(ctx->subBatchContexts);
+            ctx->state.store(TransportTaskState::CANCELED, std::memory_order_release);
+        }
         NotifyTaskCompletion(ctx);
         ctx->cv.notify_all();
     }
@@ -279,6 +294,7 @@ Status AsuTransportImpl::LoadAsync(const std::vector<KVBuffer>& entries, TaskId&
     ctx->opType = TransportOpType::BATCH_LOAD;
     ctx->entries = BatchView<KVBuffer>{entries.data(), entries.size()};
     ctx->entryStatus.assign(entries.size(), Status::OK());
+    ctx->deadline = TaskDeadline(config_.loadTimeoutMs);
     ctx->onComplete = std::move(onComplete);
     return SubmitAsync(std::move(ctx), taskId);
 }
@@ -290,6 +306,7 @@ Status AsuTransportImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId
     ctx->opType = TransportOpType::BATCH_STORE;
     ctx->entries = BatchView<KVBuffer>{entries.data(), entries.size()};
     ctx->entryStatus.assign(entries.size(), Status::OK());
+    ctx->deadline = TaskDeadline(config_.storeTimeoutMs);
     ctx->onComplete = std::move(onComplete);
     return SubmitAsync(std::move(ctx), taskId);
 }
@@ -310,12 +327,20 @@ Status AsuTransportImpl::Cancel(TaskId taskId)
     auto ctx = taskManager_.Get(taskId);
     if (!ctx) { return Status::Error(StatusCode::TASK_NOT_FOUND, "transport task not found"); }
 
-    std::unique_lock<std::mutex> lock(ctx->waitMu);
-    if (ctx->Done()) { return Status::OK(); }
-    ctx->finalStatus = Status::Error(StatusCode::CANCELED, "transport task canceled");
-    ReleaseAllSubBatchResources(ctx->subBatchContexts);
-    ctx->state.store(TransportTaskState::CANCELED, std::memory_order_release);
-    lock.unlock();
+    {
+        std::lock_guard<std::mutex> lock(ctx->waitMu);
+        if (ctx->Done()) { return Status::OK(); }
+        const auto canceledStatus = Status::Error(StatusCode::CANCELED, "transport task canceled");
+        std::fill(ctx->entryStatus.begin(), ctx->entryStatus.end(), canceledStatus);
+        for (auto& subBatchContext : ctx->subBatchContexts) {
+            if (subBatchContext.state != TransportSubBatchState::PENDING) { continue; }
+            std::fill(subBatchContext.entryStatus.begin(), subBatchContext.entryStatus.end(),
+                      canceledStatus);
+        }
+        ctx->finalStatus = canceledStatus;
+        ReleaseAllSubBatchResources(ctx->subBatchContexts);
+        ctx->state.store(TransportTaskState::CANCELED, std::memory_order_release);
+    }
     NotifyTaskCompletion(ctx);
     ctx->cv.notify_all();
     return Status::OK();
@@ -339,16 +364,18 @@ Status AsuTransportImpl::Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult
     auto ctx = taskManager_.Get(taskId);
     if (!ctx) { return Status::Error(StatusCode::TASK_NOT_FOUND, "transport task not found"); }
 
-    std::unique_lock<std::mutex> lock(ctx->waitMu);
-    const bool done = timeoutMs == 0 ? (ctx->cv.wait(lock, [ctx] { return ctx->Done(); }), true)
-                                     : ctx->cv.wait_for(lock, std::chrono::milliseconds(timeoutMs),
-                                                        [ctx] { return ctx->Done(); });
-    BuildResult(*ctx, result);
-    if (!done) {
-        result.status = Status::Error(StatusCode::TIMEOUT, "transport task wait timeout");
-        return result.status;
+    {
+        std::unique_lock<std::mutex> lock(ctx->waitMu);
+        const bool done = timeoutMs == 0
+                              ? (ctx->cv.wait(lock, [ctx] { return ctx->Done(); }), true)
+                              : ctx->cv.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                                                 [ctx] { return ctx->Done(); });
+        BuildResult(*ctx, result);
+        if (!done) {
+            result.status = Status::Error(StatusCode::TIMEOUT, "transport task wait timeout");
+            return result.status;
+        }
     }
-    lock.unlock();
     taskManager_.Remove(taskId);
     return Status::OK();
 }
@@ -562,31 +589,33 @@ void AsuTransportImpl::ProcessTask(const TransportTaskContextPtr& ctx)
     }
 
     bool done = false;
-    std::unique_lock<std::mutex> lock(ctx->waitMu);
-    if (ctx->state.load(std::memory_order_acquire) == TransportTaskState::CANCELED) {
-        UC_DEBUG("AsuTransportImpl::ProcessTask canceled during process task_id={} sub_batches={}",
-                 ctx->taskId, subBatchContexts.size());
-        ReleaseAllSubBatchResources(subBatchContexts);
-        ctx->cv.notify_all();
-        return;
-    }
+    {
+        std::lock_guard<std::mutex> lock(ctx->waitMu);
+        if (ctx->state.load(std::memory_order_acquire) == TransportTaskState::CANCELED) {
+            UC_DEBUG(
+                "AsuTransportImpl::ProcessTask canceled during process task_id={} sub_batches={}",
+                ctx->taskId, subBatchContexts.size());
+            ReleaseAllSubBatchResources(subBatchContexts);
+            ctx->cv.notify_all();
+            return;
+        }
 
-    if (hasSubBatches) { ctx->subBatchContexts = std::move(subBatchContexts); }
-    ctx->InitializeTerminalSubBatchCount();
-    ctx->TryFinalizeFromSubBatches();
-    UC_DEBUG(
-        "AsuTransportImpl::ProcessTask submitted task_id={} op_type={} entries={} keys={} "
-        "sub_batches={} done={} code={} message={}",
-        ctx->taskId, static_cast<int>(ctx->opType), ctx->entries.size, ctx->keys.size,
-        ctx->subBatchContexts.size(), ctx->Done(), static_cast<int>(ctx->finalStatus.code),
-        ctx->finalStatus.message);
+        if (hasSubBatches) { ctx->subBatchContexts = std::move(subBatchContexts); }
+        ctx->InitializeTerminalSubBatchCount();
+        ctx->TryFinalizeFromSubBatches();
+        UC_DEBUG(
+            "AsuTransportImpl::ProcessTask submitted task_id={} op_type={} entries={} keys={} "
+            "sub_batches={} done={} code={} message={}",
+            ctx->taskId, static_cast<int>(ctx->opType), ctx->entries.size, ctx->keys.size,
+            ctx->subBatchContexts.size(), ctx->Done(), static_cast<int>(ctx->finalStatus.code),
+            ctx->finalStatus.message);
 
-    for (auto& subBatchContext : ctx->subBatchContexts) {
-        if (subBatchContext.status.ok()) { continue; }
-        ReleaseSubBatchResources(subBatchContext);
+        for (auto& subBatchContext : ctx->subBatchContexts) {
+            if (subBatchContext.status.ok()) { continue; }
+            ReleaseSubBatchResources(subBatchContext);
+        }
+        done = ctx->Done();
     }
-    done = ctx->Done();
-    lock.unlock();
 
     if (done) {
         NotifyTaskCompletion(ctx);
@@ -599,86 +628,106 @@ void AsuTransportImpl::PollTaskCompletions(const TransportTaskContextPtr& ctx)
     if (!ctx) { return; }
 
     bool done = false;
-    std::unique_lock<std::mutex> lock(ctx->waitMu);
-    if (ctx->state.load(std::memory_order_acquire) != TransportTaskState::INFLIGHT) { return; }
-    if (ctx->subBatchContexts.empty()) { return; }
+    {
+        std::lock_guard<std::mutex> lock(ctx->waitMu);
+        if (ctx->state.load(std::memory_order_acquire) != TransportTaskState::INFLIGHT) { return; }
+        if (ctx->subBatchContexts.empty()) { return; }
 
-    for (auto& subBatchContext : ctx->subBatchContexts) {
-        if (subBatchContext.state != TransportSubBatchState::PENDING) { continue; }
+        if (std::chrono::steady_clock::now() >= ctx->deadline) {
+            const auto timeoutStatus =
+                Status::Error(StatusCode::TIMEOUT, "transport task execution timeout");
+            std::fill(ctx->entryStatus.begin(), ctx->entryStatus.end(), timeoutStatus);
+            for (auto& subBatchContext : ctx->subBatchContexts) {
+                if (subBatchContext.state != TransportSubBatchState::PENDING) { continue; }
 
-        auto completeWithError = [this, &ctx, &subBatchContext](const Status& status) {
-            std::fill(subBatchContext.entryStatus.begin(), subBatchContext.entryStatus.end(),
-                      status);
-            CompleteSubBatch(*ctx, subBatchContext, status);
-        };
-
-        std::uint16_t completedCid = 0;
-        const void* responseData = nullptr;
-        std::array<std::uint8_t, kFlagBufferHeaderCopySize> flagHeader{};
-        std::vector<std::uint8_t> flagBuffer;
-        if (subBatchContext.flagBuffer.memory_type == MemoryType::ASCEND_DEVICE) {
-            auto status =
-                CopyDeviceToHost(subBatchContext.flagBuffer, flagHeader.data(), flagHeader.size());
-            if (!status.ok()) {
-                // Without a readable header, this sub-batch cannot be polled or unpacked.
-                UC_ERROR("Copy flag buffer header from device failed cid={} code={} message={}",
-                         subBatchContext.cid, static_cast<int>(status.code), status.message);
-                completeWithError(status);
-                continue;
+                std::fill(subBatchContext.entryStatus.begin(), subBatchContext.entryStatus.end(),
+                          timeoutStatus);
+                CompleteSubBatch(*ctx, subBatchContext, timeoutStatus);
             }
-            responseData = flagHeader.data();
+            ctx->finalStatus = timeoutStatus;
+            ctx->state.store(TransportTaskState::COMPLETED, std::memory_order_release);
         } else {
-            responseData = reinterpret_cast<void*>(subBatchContext.flagBuffer.local_addr);
-        }
+            for (auto& subBatchContext : ctx->subBatchContexts) {
+                if (subBatchContext.state != TransportSubBatchState::PENDING) { continue; }
 
-        if (const auto status = protocolManager_->PollResponseCid(responseData, completedCid);
-            !status.ok()) {
-            continue;
-        }
-        if (completedCid == 0 || completedCid != subBatchContext.cid) { continue; }
+                auto completeWithError = [this, &ctx, &subBatchContext](const Status& status) {
+                    std::fill(subBatchContext.entryStatus.begin(),
+                              subBatchContext.entryStatus.end(), status);
+                    CompleteSubBatch(*ctx, subBatchContext, status);
+                };
 
-        if (subBatchContext.flagBuffer.memory_type == MemoryType::ASCEND_DEVICE) {
-            // The header matched; copy the full CQE before unpacking entry status.
-            flagBuffer.resize(subBatchContext.flagBuffer.length);
-            auto status =
-                CopyDeviceToHost(subBatchContext.flagBuffer, flagBuffer.data(), flagBuffer.size());
-            if (!status.ok()) {
-                // The matched CQE cannot be decoded without the complete flag buffer.
-                UC_ERROR("Copy flag buffer from device failed cid={} code={} message={}",
-                         subBatchContext.cid, static_cast<int>(status.code), status.message);
-                completeWithError(status);
-                continue;
+                std::uint16_t completedCid = 0;
+                const void* responseData = nullptr;
+                std::array<std::uint8_t, kFlagBufferHeaderCopySize> flagHeader{};
+                std::vector<std::uint8_t> flagBuffer;
+                if (subBatchContext.flagBuffer.memory_type == MemoryType::ASCEND_DEVICE) {
+                    auto status = CopyDeviceToHost(subBatchContext.flagBuffer, flagHeader.data(),
+                                                   flagHeader.size());
+                    if (!status.ok()) {
+                        // Without a readable header, this sub-batch cannot be polled or unpacked.
+                        UC_ERROR(
+                            "Copy flag buffer header from device failed cid={} code={} message={}",
+                            subBatchContext.cid, static_cast<int>(status.code), status.message);
+                        completeWithError(status);
+                        continue;
+                    }
+                    responseData = flagHeader.data();
+                } else {
+                    responseData = reinterpret_cast<void*>(subBatchContext.flagBuffer.local_addr);
+                }
+
+                if (const auto status =
+                        protocolManager_->PollResponseCid(responseData, completedCid);
+                    !status.ok()) {
+                    continue;
+                }
+                if (completedCid == 0 || completedCid != subBatchContext.cid) { continue; }
+
+                if (subBatchContext.flagBuffer.memory_type == MemoryType::ASCEND_DEVICE) {
+                    // The header matched; copy the full CQE before unpacking entry status.
+                    flagBuffer.resize(subBatchContext.flagBuffer.length);
+                    auto status = CopyDeviceToHost(subBatchContext.flagBuffer, flagBuffer.data(),
+                                                   flagBuffer.size());
+                    if (!status.ok()) {
+                        // The matched CQE cannot be decoded without the complete flag buffer.
+                        UC_ERROR("Copy flag buffer from device failed cid={} code={} message={}",
+                                 subBatchContext.cid, static_cast<int>(status.code),
+                                 status.message);
+                        completeWithError(status);
+                        continue;
+                    }
+                    responseData = flagBuffer.data();
+                }
+
+                KvResponse response;
+                const auto batchNumber =
+                    static_cast<std::uint16_t>(subBatchContext.entryStatus.size());
+                if (const auto status = protocolManager_->UnpackResponse(
+                        responseData, ToKvOpcode(subBatchContext.opType), batchNumber, response);
+                    !status.ok()) {
+                    completeWithError(status);
+                    continue;
+                }
+
+                subBatchContext.status = KvResponseStatusToSubBatchStatus(response.status);
+                FillEntryStatusFromCqeResult(response, subBatchContext);
+
+                const bool queryResultBufferStatus =
+                    subBatchContext.opType == TransportOpType::QUERY &&
+                    subBatchContext.status.code == StatusCode::ASU_CQE_CHECK_RESULT_BUFFER;
+                const auto status = subBatchContext.status.ok() || queryResultBufferStatus
+                                        ? Status::OK()
+                                        : subBatchContext.status;
+                if (status.code == StatusCode::ASU_CQE_INTERNAL_ERROR ||
+                    status.code == StatusCode::ASU_CQE_IO_TIMEOUT) {
+                    connManager_->ReportFailure(subBatchContext.channel);
+                }
+                CompleteSubBatch(*ctx, subBatchContext, status);
             }
-            responseData = flagBuffer.data();
+            ctx->TryFinalizeFromSubBatches();
         }
-
-        KvResponse response;
-        const auto batchNumber = static_cast<std::uint16_t>(subBatchContext.entryStatus.size());
-        if (const auto status = protocolManager_->UnpackResponse(
-                responseData, ToKvOpcode(subBatchContext.opType), batchNumber, response);
-            !status.ok()) {
-            completeWithError(status);
-            continue;
-        }
-
-        subBatchContext.status = KvResponseStatusToSubBatchStatus(response.status);
-        FillEntryStatusFromCqeResult(response, subBatchContext);
-
-        const bool queryResultBufferStatus =
-            subBatchContext.opType == TransportOpType::QUERY &&
-            subBatchContext.status.code == StatusCode::ASU_CQE_CHECK_RESULT_BUFFER;
-        const auto status = subBatchContext.status.ok() || queryResultBufferStatus
-                                ? Status::OK()
-                                : subBatchContext.status;
-        if (status.code == StatusCode::ASU_CQE_INTERNAL_ERROR ||
-            status.code == StatusCode::ASU_CQE_IO_TIMEOUT) {
-            connManager_->ReportFailure(subBatchContext.channel);
-        }
-        CompleteSubBatch(*ctx, subBatchContext, status);
+        done = ctx->Done();
     }
-    ctx->TryFinalizeFromSubBatches();
-    done = ctx->Done();
-    lock.unlock();
     if (done) {
         NotifyTaskCompletion(ctx);
         ctx->cv.notify_all();
