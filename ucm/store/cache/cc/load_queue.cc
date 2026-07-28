@@ -46,6 +46,7 @@ Status LoadQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     useGdr_ = config.useGdr;
     cacheSdmaDirect_ = config.cacheSdmaDirect;
     sdmaDirectLaunchGranularity_ = config.sdmaDirectLaunchGranularity;
+    timeoutMs_ = config.timeoutMs;
     cpuAffinityCores_ = config.cpuAffinityCores;
     waiting_.Setup(config.waitingQueueDepth);
     running_.Setup(config.runningQueueDepth);
@@ -106,18 +107,32 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
         shardTask.bufferHandle = buffer_->Get(shard.owner, shard.index, true, true);
         shardTask.backendTaskHandle = 0;
         if (shardTask.bufferHandle.Owner() && !shardTask.bufferHandle.Ready()) {
-            Detail::TaskDesc backendTask{
-                Detail::Shard{shard.owner, shard.index, {shardTask.bufferHandle.Data()}}
-            };
+            Detail::Shard backendShard{shard.owner, shard.index, {shardTask.bufferHandle.Data()}};
+            // Keep the cache buffer referenced until the backend task releases the shard.
+            backendShard.cacheLifeHolder =
+                std::make_shared<TransBuffer::Handle>(shardTask.bufferHandle);
+            Detail::TaskDesc backendTask{std::move(backendShard)};
             backendTask.brief = "Backend2Cache";
             auto res = backend_->Load(std::move(backendTask));
             if (!res) [[unlikely]] {
                 UC_ERROR("Failed({}) to submit load task({}) to backend.", res.Error(), task->id);
                 UC::Metrics::UpdateStats(
                     NAME_TO_METRIC_ID("cache_backend_load_submit_errors_total"), 1.0);
+                shardTask.bufferHandle.MarkFailed(res.Error());
                 task->Fail(res.Error());
                 failureSet_->Insert(task->id);
-                waiter->Done();
+                if (taskLaunch) {
+                    // cleanup logic is in TransferOneTask, ensure sdma task enter it
+                    for (auto& readyTask : readyTasks) { running_.Push(std::move(readyTask)); }
+                    for (auto& pendingTask : pendingTasks) {
+                        running_.Push(std::move(pendingTask));
+                    }
+                }
+                // if failed, do not submit following shards, let this shard be last one
+                shardTask.task = task;
+                shardTask.shard = std::move(shard);
+                shardTask.waiter = waiter;
+                running_.Push(std::move(shardTask));
                 return;
             }
             shardTask.backendTaskHandle = res.Value();
@@ -181,19 +196,18 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
 {
     auto parentTask = task.task;
     const auto taskHandle = parentTask->id;
-    if (failureSet_->Contains(taskHandle)) {
-        if (task.waiter) {
-            ClearSdmaDirectHolders();
-            task.waiter->Done();
-        }
-        return;
-    }
     auto s = Status::OK();
     auto waiter = task.waiter;
+    // no loop, only for easier coding, use break to skip some actions
     do {
         auto tpBackendWait = NowTime::Now();
         s = WaitBackendTaskReady(task);
         if (s.Failure()) [[unlikely]] { break; }
+        // if parent task has failed, skip h2d
+        if (failureSet_->Contains(taskHandle)) {
+            s = parentTask->FailureStatus();
+            break;
+        }
         auto tpBackendReady = NowTime::Now();
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_shard_backend_wait_ms"),
                                  (tpBackendReady - tpBackendWait) * 1e3);
@@ -207,8 +221,7 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_errors_total"), 1.0);
                 break;
             }
-            if (waiter) { waiter->Done(); }
-            return;
+            break;
         }
 
         if (cacheSdmaDirect_) {
@@ -263,19 +276,31 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
         }
     } while (0);
     if (s.Failure()) [[unlikely]] {
-        parentTask->Fail(s);
-        failureSet_->Insert(taskHandle);
+        if (task.bufferHandle && task.bufferHandle.Owner() &&
+            task.bufferHandle.GetState() == TransBuffer::State::LOADING) {
+            task.bufferHandle.MarkFailed(s);
+        }
+        if (!failureSet_->Contains(taskHandle)) {
+            parentTask->Fail(s);
+            failureSet_->Insert(taskHandle);
+        }
+        auto syncStatus = SynchronizeAndClearHolders(stream);
+        if (syncStatus.Failure()) {
+            UC_ERROR("Failed({}) to synchronize stream for failed task({}).", syncStatus,
+                     taskHandle);
+        }
     }
-    if (UseSdmaDirectTaskLaunch()) { ClearSdmaDirectHolders(); }
     if (waiter) { waiter->Done(); }
 }
 
 Status LoadQueue::WaitBackendTaskReady(ShardTask& task)
 {
     if (task.backendTaskHandle != 0) {
-        auto s = backend_->Wait(task.backendTaskHandle);
+        auto backendTaskHandle = task.backendTaskHandle;
+        task.backendTaskHandle = 0;
+        auto s = backend_->Wait(backendTaskHandle);
         if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to wait backend({}) for task({}).", s, task.backendTaskHandle,
+            UC_ERROR("Failed({}) to wait backend({}) for task({}).", s, backendTaskHandle,
                      task.task->id);
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_backend_load_wait_errors_total"),
                                      1.0);
@@ -284,11 +309,20 @@ Status LoadQueue::WaitBackendTaskReady(ShardTask& task)
         task.bufferHandle.MarkReady();
         return Status::OK();
     }
-    while (!task.bufferHandle.Ready()) {
+    // add timeout for the wait, in case the state transfer has error
+    const auto deadline = NowTime::Now() + static_cast<double>(timeoutMs_) / 1000.0;
+    for (;;) {
+        auto state = task.bufferHandle.GetState();
+        if (state == TransBuffer::State::READY) { return Status::OK(); }
+        if (state == TransBuffer::State::FAILED) { return task.bufferHandle.FailureStatus(); }
         if (failureSet_->Contains(task.task->id)) { return task.task->FailureStatus(); }
+        if (timeoutMs_ != 0 && NowTime::Now() >= deadline) {
+            UC_ERROR("Timed out waiting for shared buffer for task({}) after {} ms.", task.task->id,
+                     timeoutMs_);
+            return Status::Timeout();
+        }
         std::this_thread::yield();
     }
-    return Status::OK();
 }
 
 Status LoadQueue::HostToDeviceAsync(CopyStream& stream, void* host, void** device)
@@ -327,6 +361,16 @@ Status LoadQueue::FlushSdmaDirectTaskBatch(CopyStream& stream)
     auto h2dSyncMs = (NowTime::Now() - tpH2dSyncStart) * 1e3;
     RecordH2dSyncMetrics(h2dSyncMs);
     ClearSdmaDirectHolders();
+    return s;
+}
+
+Status LoadQueue::SynchronizeAndClearHolders(CopyStream& stream)
+{
+    auto tpH2dSyncStart = NowTime::Now();
+    auto s = stream.Synchronize();
+    auto h2dSyncMs = (NowTime::Now() - tpH2dSyncStart) * 1e3;
+    RecordH2dSyncMetrics(h2dSyncMs);
+    if (!holder_.empty()) { ClearSdmaDirectHolders(); }
     return s;
 }
 

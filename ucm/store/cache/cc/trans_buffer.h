@@ -41,6 +41,8 @@ class TransBuffer {
     bool bypassHitOnLoad_{false};
 
 public:
+    enum class State : uint8_t { LOADING, READY, FAILED };
+
     class Handle {
     public:
         Handle() = default;
@@ -85,7 +87,10 @@ public:
             return nullptr;
         }
         bool Ready() const { return buf_->Ready(pos_); };
+        State GetState() const { return buf_->GetState(pos_); }
+        Status FailureStatus() const { return buf_->FailureStatus(pos_); }
         void MarkReady() { buf_->MarkReady(pos_); };
+        void MarkFailed(const Status& status) { buf_->MarkFailed(pos_, status); }
 
     private:
         friend class TransBuffer;
@@ -120,7 +125,10 @@ private:
     void Acquire(Index pos);
     void Release(Index pos);
     bool Ready(Index pos);
+    State GetState(Index pos);
+    Status FailureStatus(Index pos);
     void MarkReady(Index pos);
+    void MarkFailed(Index pos, const Status& status);
     void MarkNotReady(Index pos);
 };
 

@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <functional>
 #include <linux/aio_abi.h>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -60,6 +61,7 @@ public:
         void* buffer;
         Callback callback;
         uint64_t tag{0};
+        std::shared_ptr<void> cacheLifeHolder;
     };
     using SweepFn = std::function<void()>;
 

@@ -211,7 +211,9 @@ Status AioImpl::Setup(size_t timeoutMs)
 Status AioImpl::ReadAsync(Io&& io)
 {
     auto cb = std::make_unique<struct iocb>();
-    auto data = std::make_unique<Callback>(std::move(io.callback));
+    auto data = std::make_unique<Callback>(
+        [callback = std::move(io.callback), cacheLifeHolder = std::move(io.cacheLifeHolder)](
+            Result result) mutable { callback(result); });
     AioPrepareRead(cb.get(), io.fd, io.buffer, io.length, io.offset);
     cb->aio_data = (uintptr_t)(void*)data.get();
     Track(io.tag, cb.get());
@@ -228,7 +230,9 @@ Status AioImpl::ReadAsync(Io&& io)
 Status AioImpl::WriteAsync(Io&& io)
 {
     auto cb = std::make_unique<struct iocb>();
-    auto data = std::make_unique<Callback>(std::move(io.callback));
+    auto data = std::make_unique<Callback>(
+        [callback = std::move(io.callback), cacheLifeHolder = std::move(io.cacheLifeHolder)](
+            Result result) mutable { callback(result); });
     AioPrepareWrite(cb.get(), io.fd, io.buffer, io.length, io.offset);
     cb->aio_data = (uintptr_t)(void*)data.get();
     Track(io.tag, cb.get());

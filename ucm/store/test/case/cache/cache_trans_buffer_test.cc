@@ -22,6 +22,8 @@
  * SOFTWARE.
  * */
 #include <gtest/gtest.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include "cache/cc/trans_buffer.h"
 #include "detail/random.h"
 #include "detail/types_helper.h"
@@ -142,6 +144,165 @@ TEST_P(UCCacheTransBufferTest, BackendOnlyLoadCoalescesInFlightEntry)
     ASSERT_TRUE(waiter);
     ASSERT_FALSE(waiter.Owner());
     ASSERT_EQ(owner.Data(), waiter.Data());
+}
+
+TEST_P(UCCacheTransBufferTest, SharesFailureWithReferencedHandles)
+{
+    UC::CacheStore::TransBuffer transBuffer;
+    UC::CacheStore::Config config;
+    config.uniqueId = rd.RandomString(10);
+    config.shardSize = 32768;
+    config.bufferCapacity = config.shardSize * 32768;
+    config.shareBufferEnable = GetParam();
+    config.deviceId = 0;
+    config.loadExclusiveBufferNumber = 0;
+    auto s = transBuffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
+    constexpr size_t shardIdx = 0;
+    auto owner = transBuffer.Get(blockId, shardIdx, true, true);
+    auto waiter = transBuffer.Get(blockId, shardIdx, true, true);
+
+    owner.MarkFailed(UC::Status::NotFound());
+
+    ASSERT_EQ(owner.FailureStatus(), UC::Status::NotFound());
+    ASSERT_EQ(waiter.FailureStatus(), UC::Status::NotFound());
+    ASSERT_FALSE(waiter.Ready());
+    ASSERT_TRUE(transBuffer.Exist(blockId, shardIdx));
+}
+
+TEST_P(UCCacheTransBufferTest, KeepsFailureUntilReferencedHandlesAreReleased)
+{
+    UC::CacheStore::TransBuffer transBuffer;
+    UC::CacheStore::Config config;
+    config.uniqueId = rd.RandomString(10);
+    config.shardSize = 32768;
+    config.bufferCapacity = config.shardSize * 32768;
+    config.shareBufferEnable = GetParam();
+    config.deviceId = 0;
+    config.loadExclusiveBufferNumber = 0;
+    auto s = transBuffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
+    constexpr size_t shardIdx = 0;
+    auto owner = transBuffer.Get(blockId, shardIdx, true, true);
+    auto waiter = transBuffer.Get(blockId, shardIdx, true, true);
+    owner.MarkFailed(UC::Status::NotFound());
+    owner = {};
+
+    auto lateWaiter = transBuffer.Get(blockId, shardIdx, true, true);
+
+    ASSERT_FALSE(lateWaiter.Owner());
+    ASSERT_EQ(lateWaiter.FailureStatus(), UC::Status::NotFound());
+}
+
+TEST_P(UCCacheTransBufferTest, RetriesFailureAfterAllHandlesAreReleased)
+{
+    UC::CacheStore::TransBuffer transBuffer;
+    UC::CacheStore::Config config;
+    config.uniqueId = rd.RandomString(10);
+    config.shardSize = 32768;
+    config.bufferCapacity = config.shardSize * 32768;
+    config.shareBufferEnable = GetParam();
+    config.deviceId = 0;
+    config.loadExclusiveBufferNumber = 0;
+    auto s = transBuffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
+    constexpr size_t shardIdx = 0;
+    void* failedAddr = nullptr;
+    {
+        auto owner = transBuffer.Get(blockId, shardIdx, true, true);
+        failedAddr = owner.Data();
+        owner.MarkFailed(UC::Status::NotFound());
+    }
+
+    auto retry = transBuffer.Get(blockId, shardIdx, true, true);
+
+    ASSERT_TRUE(retry.Owner());
+    ASSERT_EQ(retry.GetState(), UC::CacheStore::TransBuffer::State::LOADING);
+    ASSERT_FALSE(retry.Ready());
+    ASSERT_EQ(retry.Data(), failedAddr);
+}
+
+TEST(UCCacheTransBufferSharedTest, SharesFailureAcrossBufferMappings)
+{
+    UC::Test::Detail::Random rd;
+    UC::CacheStore::Config config;
+    config.uniqueId = rd.RandomString(10);
+    config.shardSize = 32768;
+    config.bufferCapacity = config.shardSize * 32768;
+    config.shareBufferEnable = true;
+    config.deviceId = 0;
+    config.loadExclusiveBufferNumber = 0;
+    UC::CacheStore::TransBuffer ownerBuffer;
+    auto s = ownerBuffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    UC::CacheStore::TransBuffer waiterBuffer;
+    s = waiterBuffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
+    constexpr size_t shardIdx = 0;
+    auto owner = ownerBuffer.Get(blockId, shardIdx, true, true);
+    auto waiter = waiterBuffer.Get(blockId, shardIdx, true, true);
+
+    owner.MarkFailed(UC::Status::NotFound());
+
+    ASSERT_FALSE(waiter.Owner());
+    ASSERT_EQ(waiter.FailureStatus(), UC::Status::NotFound());
+}
+
+TEST(UCCacheTransBufferSharedTest, SharesFailureAcrossProcesses)
+{
+    UC::Test::Detail::Random rd;
+    UC::CacheStore::Config config;
+    config.uniqueId = rd.RandomString(10);
+    config.shardSize = 32768;
+    config.bufferCapacity = config.shardSize * 32768;
+    config.shareBufferEnable = true;
+    config.deviceId = 0;
+    config.loadExclusiveBufferNumber = 0;
+    UC::CacheStore::TransBuffer transBuffer;
+    auto s = transBuffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
+    constexpr size_t shardIdx = 0;
+    auto owner = transBuffer.Get(blockId, shardIdx, true, true);
+    int childReady[2];
+    int failureReady[2];
+    ASSERT_EQ(pipe(childReady), 0);
+    ASSERT_EQ(pipe(failureReady), 0);
+    auto pid = fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        close(childReady[0]);
+        close(failureReady[1]);
+        bool success = false;
+        {
+            auto waiter = transBuffer.Get(blockId, shardIdx, true, true);
+            char signal = 1;
+            if (write(childReady[1], &signal, sizeof(signal)) != sizeof(signal) ||
+                read(failureReady[0], &signal, sizeof(signal)) != sizeof(signal)) {
+                _exit(1);
+            }
+            success = !waiter.Owner() &&
+                      waiter.GetState() == UC::CacheStore::TransBuffer::State::FAILED &&
+                      waiter.FailureStatus() == UC::Status::NotFound();
+        }
+        _exit(success ? 0 : 1);
+    }
+    close(childReady[1]);
+    close(failureReady[0]);
+    char signal = 0;
+    ASSERT_EQ(read(childReady[0], &signal, sizeof(signal)), sizeof(signal));
+    owner.MarkFailed(UC::Status::NotFound());
+    ASSERT_EQ(write(failureReady[1], &signal, sizeof(signal)), sizeof(signal));
+    int childStatus = 0;
+    ASSERT_EQ(waitpid(pid, &childStatus, 0), pid);
+    ASSERT_TRUE(WIFEXITED(childStatus));
+    ASSERT_EQ(WEXITSTATUS(childStatus), 0);
+    close(childReady[0]);
+    close(failureReady[1]);
 }
 
 TEST_P(UCCacheTransBufferTest, GetReservedNode)

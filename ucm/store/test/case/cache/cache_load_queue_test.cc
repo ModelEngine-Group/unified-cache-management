@@ -154,3 +154,250 @@ TEST_F(UCCacheLoadQueueTest, LoadWhileBackendWaitFailed)
     waiter->Wait();
     ASSERT_TRUE(failureSet.Contains(task->id));
 }
+
+TEST_F(UCCacheLoadQueueTest, SharedFailureStopsNonOwnerWait)
+{
+    using namespace UC::CacheStore;
+    using namespace testing;
+    UC::Test::Detail::MockStore backend;
+    EXPECT_CALL(backend, Load).Times(0);
+    UC::HashSet<UC::Detail::TaskHandle> failureSet;
+    Config config;
+    config.storeBackend = &backend;
+    size_t tensorSize = 32768;
+    config.tensorSizes = {tensorSize};
+    config.shardSize = tensorSize;
+    config.blockSize = config.shardSize;
+    config.deviceId = 0;
+    config.bufferCapacity = config.shardSize * 1024;
+    config.uniqueId = rd.RandomString(10);
+    config.shareBufferEnable = true;
+    TransBuffer buffer;
+    LoadQueue loadQ;
+    auto s = buffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    s = loadQ.Setup(config, &failureSet, &buffer);
+    ASSERT_EQ(s, UC::Status::OK());
+    auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
+    constexpr size_t shardIdx = 0;
+    auto owner = buffer.Get(blockId, shardIdx, true, true);
+    UC::Test::Detail::DataGenerator data{1, config.blockSize};
+    data.Generate();
+    UC::Detail::TaskDesc desc{
+        {blockId, shardIdx, {data.Buffer()}}
+    };
+    auto task = std::make_shared<TransTask>(TransTask::Type::LOAD, desc);
+    auto waiter = std::make_shared<UC::Latch>();
+    loadQ.Submit(task, waiter);
+
+    owner.MarkFailed(UC::Status::NotFound());
+
+    ASSERT_TRUE(waiter->WaitForDuration(1000));
+    ASSERT_TRUE(failureSet.Contains(task->id));
+    ASSERT_EQ(task->FailureStatus(), UC::Status::NotFound());
+}
+
+TEST_F(UCCacheLoadQueueTest, NonOwnerWaitTimesOut)
+{
+    using namespace UC::CacheStore;
+    using namespace testing;
+    UC::Test::Detail::MockStore backend;
+    EXPECT_CALL(backend, Load).Times(0);
+    UC::HashSet<UC::Detail::TaskHandle> failureSet;
+    Config config;
+    config.storeBackend = &backend;
+    size_t tensorSize = 32768;
+    config.tensorSizes = {tensorSize};
+    config.shardSize = tensorSize;
+    config.blockSize = config.shardSize;
+    config.deviceId = 0;
+    config.bufferCapacity = config.shardSize * 1024;
+    config.uniqueId = rd.RandomString(10);
+    config.shareBufferEnable = true;
+    config.timeoutMs = 50;
+    TransBuffer buffer;
+    LoadQueue loadQ;
+    auto s = buffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    s = loadQ.Setup(config, &failureSet, &buffer);
+    ASSERT_EQ(s, UC::Status::OK());
+    auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
+    constexpr size_t shardIdx = 0;
+    auto owner = buffer.Get(blockId, shardIdx, true, true);
+    UC::Test::Detail::DataGenerator data{1, config.blockSize};
+    data.Generate();
+    UC::Detail::TaskDesc desc{
+        {blockId, shardIdx, {data.Buffer()}}
+    };
+    auto task = std::make_shared<TransTask>(TransTask::Type::LOAD, desc);
+    auto waiter = std::make_shared<UC::Latch>();
+    loadQ.Submit(task, waiter);
+
+    ASSERT_TRUE(waiter->WaitForDuration(1000));
+    ASSERT_TRUE(failureSet.Contains(task->id));
+    ASSERT_EQ(task->FailureStatus(), UC::Status::Timeout());
+    ASSERT_EQ(owner.GetState(), TransBuffer::State::LOADING);
+}
+
+TEST_F(UCCacheLoadQueueTest, PublishesBackendSubmitFailure)
+{
+    using namespace UC::CacheStore;
+    using namespace testing;
+    std::promise<void> submitEntered;
+    std::promise<void> allowSubmitFailure;
+    auto allowSubmitFailureFuture = allowSubmitFailure.get_future().share();
+    UC::Test::Detail::MockStore backend;
+    EXPECT_CALL(backend, Load)
+        .WillOnce(Invoke([&](UC::Detail::TaskDesc) -> UC::Expected<UC::Detail::TaskHandle> {
+            submitEntered.set_value();
+            allowSubmitFailureFuture.wait();
+            return UC::Status::NotFound();
+        }));
+    UC::HashSet<UC::Detail::TaskHandle> failureSet;
+    Config config;
+    config.storeBackend = &backend;
+    size_t tensorSize = 32768;
+    config.tensorSizes = {tensorSize};
+    config.shardSize = tensorSize;
+    config.blockSize = config.shardSize;
+    config.deviceId = 0;
+    config.bufferCapacity = config.shardSize * 1024;
+    config.uniqueId = rd.RandomString(10);
+    config.shareBufferEnable = true;
+    TransBuffer buffer;
+    LoadQueue loadQ;
+    auto s = buffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    s = loadQ.Setup(config, &failureSet, &buffer);
+    ASSERT_EQ(s, UC::Status::OK());
+    auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
+    constexpr size_t shardIdx = 0;
+    UC::Test::Detail::DataGenerator data{1, config.blockSize};
+    data.Generate();
+    UC::Detail::TaskDesc desc{
+        {blockId, shardIdx, {data.Buffer()}}
+    };
+    auto task = std::make_shared<TransTask>(TransTask::Type::LOAD, desc);
+    auto waiter = std::make_shared<UC::Latch>();
+    loadQ.Submit(task, waiter);
+    submitEntered.get_future().wait();
+    auto observer = buffer.Get(blockId, shardIdx, true, true);
+
+    allowSubmitFailure.set_value();
+
+    ASSERT_TRUE(waiter->WaitForDuration(1000));
+    ASSERT_EQ(observer.FailureStatus(), UC::Status::NotFound());
+    ASSERT_EQ(task->FailureStatus(), UC::Status::NotFound());
+}
+
+TEST_F(UCCacheLoadQueueTest, PublishesBackendWaitFailure)
+{
+    using namespace UC::CacheStore;
+    using namespace testing;
+    std::promise<void> waitEntered;
+    std::promise<void> allowWaitFailure;
+    auto allowWaitFailureFuture = allowWaitFailure.get_future().share();
+    UC::Test::Detail::MockStore backend;
+    EXPECT_CALL(backend, Load).WillOnce(Invoke(NextId));
+    EXPECT_CALL(backend, Wait).WillOnce(Invoke([&](UC::Detail::TaskHandle) {
+        waitEntered.set_value();
+        allowWaitFailureFuture.wait();
+        return UC::Status::NotFound();
+    }));
+    UC::HashSet<UC::Detail::TaskHandle> failureSet;
+    Config config;
+    config.storeBackend = &backend;
+    size_t tensorSize = 32768;
+    config.tensorSizes = {tensorSize};
+    config.shardSize = tensorSize;
+    config.blockSize = config.shardSize;
+    config.deviceId = 0;
+    config.bufferCapacity = config.shardSize * 1024;
+    config.uniqueId = rd.RandomString(10);
+    config.shareBufferEnable = true;
+    TransBuffer buffer;
+    LoadQueue loadQ;
+    auto s = buffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    s = loadQ.Setup(config, &failureSet, &buffer);
+    ASSERT_EQ(s, UC::Status::OK());
+    auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
+    constexpr size_t shardIdx = 0;
+    UC::Test::Detail::DataGenerator data{1, config.blockSize};
+    data.Generate();
+    UC::Detail::TaskDesc desc{
+        {blockId, shardIdx, {data.Buffer()}}
+    };
+    auto task = std::make_shared<TransTask>(TransTask::Type::LOAD, desc);
+    auto waiter = std::make_shared<UC::Latch>();
+    loadQ.Submit(task, waiter);
+    waitEntered.get_future().wait();
+    auto observer = buffer.Get(blockId, shardIdx, true, true);
+
+    allowWaitFailure.set_value();
+
+    ASSERT_TRUE(waiter->WaitForDuration(1000));
+    ASSERT_EQ(observer.FailureStatus(), UC::Status::NotFound());
+    ASSERT_EQ(task->FailureStatus(), UC::Status::NotFound());
+}
+
+TEST_F(UCCacheLoadQueueTest, WaitsForSubmittedShardAfterParentFailure)
+{
+    using namespace UC::CacheStore;
+    using namespace testing;
+    std::promise<void> loadEntered;
+    std::promise<void> allowLoad;
+    auto allowLoadFuture = allowLoad.get_future().share();
+    std::promise<void> waitEntered;
+    std::promise<void> allowWait;
+    auto allowWaitFuture = allowWait.get_future().share();
+    size_t tensorSize = 32768;
+    UC::Test::Detail::MockStore backend;
+    EXPECT_CALL(backend, Load).WillOnce(Invoke([&](UC::Detail::TaskDesc) {
+        loadEntered.set_value();
+        allowLoadFuture.wait();
+        return NextId();
+    }));
+    EXPECT_CALL(backend, Wait).WillOnce(Invoke([&](UC::Detail::TaskHandle) {
+        waitEntered.set_value();
+        allowWaitFuture.wait();
+        return UC::Status::OK();
+    }));
+    UC::HashSet<UC::Detail::TaskHandle> failureSet;
+    Config config;
+    config.storeBackend = &backend;
+    config.tensorSizes = {tensorSize};
+    config.shardSize = tensorSize;
+    config.blockSize = config.shardSize;
+    config.deviceId = 0;
+    config.bufferCapacity = config.shardSize * 1024;
+    config.uniqueId = rd.RandomString(10);
+    config.shareBufferEnable = true;
+    TransBuffer buffer;
+    LoadQueue loadQ;
+    auto s = buffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    s = loadQ.Setup(config, &failureSet, &buffer);
+    ASSERT_EQ(s, UC::Status::OK());
+    auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
+    UC::Test::Detail::DataGenerator data{1, config.blockSize};
+    data.Generate();
+    UC::Detail::TaskDesc desc{
+        {blockId, 0, {data.Buffer()}},
+    };
+    auto task = std::make_shared<TransTask>(TransTask::Type::LOAD, desc);
+    auto waiter = std::make_shared<UC::Latch>();
+    loadQ.Submit(task, waiter);
+    loadEntered.get_future().wait();
+    task->Fail(UC::Status::NotFound());
+    failureSet.Insert(task->id);
+    allowLoad.set_value();
+    waitEntered.get_future().wait();
+    auto finishedBeforeSubmittedShard = waiter->WaitForDuration(100);
+    allowWait.set_value();
+    auto finishedAfterSubmittedShard = waiter->WaitForDuration(1000);
+
+    ASSERT_FALSE(finishedBeforeSubmittedShard);
+    ASSERT_TRUE(finishedAfterSubmittedShard);
+    ASSERT_EQ(task->FailureStatus(), UC::Status::NotFound());
+}

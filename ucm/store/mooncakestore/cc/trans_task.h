@@ -40,6 +40,7 @@ struct TransShard {
     size_t index;
     std::vector<void*> addrs;
     std::vector<size_t> sizes;
+    std::shared_ptr<void> cacheLifeHolder;
 };
 
 struct TransTask {

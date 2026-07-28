@@ -139,7 +139,10 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
             }
             copiedShards++;
         }
-        backendTaskDesc.push_back(Detail::Shard{shard.owner, shard.index, {handle.Data()}});
+        Detail::Shard backendShard{shard.owner, shard.index, {handle.Data()}};
+        // Keep the cache buffer referenced until the backend task releases the shard.
+        backendShard.cacheLifeHolder = std::make_shared<TransBuffer::Handle>(handle);
+        backendTaskDesc.push_back(std::move(backendShard));
         dumpCtx.bufferHandles.push_back(std::move(handle));
     }
     auto tpMakeBuffer = NowTime::Now();

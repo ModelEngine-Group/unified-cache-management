@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_STORE_DETAIL_TYPE_TYPES_H
 
 #include <array>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -51,6 +52,7 @@ struct Shard {
     BlockId owner;            /* Parent block identifier */
     std::size_t index;        /* Shard index inside the block */
     std::vector<void*> addrs; /* Device-side buffer addresses */
+    std::shared_ptr<void> cacheLifeHolder{};
 };
 
 /**
