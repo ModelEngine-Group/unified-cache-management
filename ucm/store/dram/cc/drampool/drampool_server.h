@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include "buffer_manager.h"
@@ -119,6 +120,7 @@ private:
     std::unique_ptr<DramPoolRuntime> runtime_;
     std::unique_ptr<TaskWorker> taskWorker_;
     std::unique_ptr<CompletionPoller> completionPoller_;
+    std::optional<std::int32_t> aclDeviceId_;
     bool aclRuntimeOwned_{false};
 
     ServerState state_{ServerState::New};
