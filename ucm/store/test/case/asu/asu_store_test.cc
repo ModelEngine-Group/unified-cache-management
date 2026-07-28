@@ -217,9 +217,7 @@ UC::Detail::Dictionary MakeBaseConfig()
     config.SetNumber("shard_size", std::size_t{64});
     config.SetNumber("block_size", std::size_t{64});
     config.SetNumber("asu_default_wait_timeout_ms", std::uint64_t{1000});
-    config.SetNumber("asu_query_timeout_ms", std::uint64_t{1000});
-    config.SetNumber("asu_load_timeout_ms", std::uint64_t{1000});
-    config.SetNumber("asu_store_timeout_ms", std::uint64_t{1000});
+    config.SetNumber("asu_timeout_ms", std::uint64_t{1000});
     config.SetNumber("asu_max_inflight_tasks", std::uint64_t{16});
     config.Set("kv_ns_ids", std::vector<ssize_t>{100});
     return config;
@@ -318,6 +316,21 @@ TEST(UCAsuStoreTest, ParsesKvNamespaces)
         auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
         EXPECT_EQ(transportConfig.attrs.at("kv_ns_id"), std::to_string(expected));
     }
+}
+
+TEST(UCAsuStoreTest, ParsesOperationTimeout)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeBackend(store);
+    auto config = MakeBaseConfig();
+    config.SetNumber("asu_timeout_ms", std::uint64_t{321});
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+    EXPECT_EQ(state->initConfigs.back().timeoutMs, 321);
+
+    auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+    EXPECT_EQ(transportConfig.timeoutMs, 321);
 }
 
 TEST(UCAsuStoreTest, RejectsMissingKvNamespaces)

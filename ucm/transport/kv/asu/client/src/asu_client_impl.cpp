@@ -222,7 +222,7 @@ Status AsuClientImpl::QueryOnce(const std::vector<CacheKey>& keys, const QueryOp
         auto transportIter = snapshot->transports.find(route.first);
         if (transportIter == snapshot->transports.end()) {
             auto status = Status::Error(StatusCode::NOT_FOUND, "routed asu transport not found");
-            MarkRefreshIfNeeded(status, needRefresh);
+            needRefresh |= IsRefreshNeeded(status);
             UC_ERROR("ASU client query dispatch failed: asuId={} key_count={} code={} message={}.",
                      route.first, route.second.size(), static_cast<int>(status.code),
                      status.message);
@@ -239,7 +239,7 @@ Status AsuClientImpl::QueryOnce(const std::vector<CacheKey>& keys, const QueryOp
 
         auto status = pending.transport->QueryAsync(pending.keys, transportOptions, pending.taskId);
         if (!status.ok()) {
-            MarkRefreshIfNeeded(status, needRefresh);
+            needRefresh |= IsRefreshNeeded(status);
             UC_ERROR("ASU client query dispatch failed: asuId={} key_count={} code={} message={}.",
                      pending.asuId, pending.keys.size(), static_cast<int>(status.code),
                      status.message);
@@ -266,7 +266,7 @@ Status AsuClientImpl::QueryOnce(const std::vector<CacheKey>& keys, const QueryOp
         TaskResult taskResult;
         auto status = pending.transport->Wait(pending.taskId, waitMs, taskResult);
         if (!status.ok()) {
-            MarkRefreshIfNeeded(status, needRefresh);
+            needRefresh |= IsRefreshNeeded(status);
             UC_ERROR("ASU client query wait failed: asuId={} key_count={} code={} message={}.",
                      pending.asuId, pending.keys.size(), static_cast<int>(status.code),
                      status.message);
@@ -274,7 +274,7 @@ Status AsuClientImpl::QueryOnce(const std::vector<CacheKey>& keys, const QueryOp
             continue;
         }
         if (!taskResult.status.ok()) {
-            MarkRefreshIfNeeded(taskResult.status, needRefresh);
+            needRefresh |= IsRefreshNeeded(taskResult.status);
             UC_ERROR("ASU client query result failed: asuId={} key_count={} code={} message={}.",
                      pending.asuId, pending.keys.size(), static_cast<int>(taskResult.status.code),
                      taskResult.status.message);
@@ -380,13 +380,13 @@ Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regio
     auto firstIter = snapshot->transports.find(snapshot->asuIds.front());
     if (firstIter == snapshot->transports.end()) {
         auto status = Status::Error(StatusCode::NOT_FOUND, "first asu transport not found");
-        MarkRefreshIfNeeded(status, needRefresh);
+        needRefresh |= IsRefreshNeeded(status);
         return WithContext(status, "asuIndex=0 asuId=" + std::to_string(snapshot->asuIds.front()));
     }
 
     auto status = firstIter->second->RegisterRegions(regions, registeredRegions);
     if (!status.ok()) {
-        MarkRefreshIfNeeded(status, needRefresh);
+        needRefresh |= IsRefreshNeeded(status);
         return WithContext(status, "asuIndex=0 asuId=" + std::to_string(snapshot->asuIds.front()) +
                                        " region_count=" + std::to_string(regions.size()));
     }
@@ -403,7 +403,7 @@ Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regio
         auto iter = snapshot->transports.find(snapshot->asuIds[asuIndex]);
         if (iter == snapshot->transports.end()) {
             auto status = Status::Error(StatusCode::NOT_FOUND, "bound asu transport not found");
-            MarkRefreshIfNeeded(status, needRefresh);
+            needRefresh |= IsRefreshNeeded(status);
             finalStatus = WithContext(PartialFailed("one or more asu region bindings failed"),
                                       "asuIndex=" + std::to_string(asuIndex) +
                                           " asuId=" + std::to_string(snapshot->asuIds[asuIndex]));
@@ -412,7 +412,7 @@ Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regio
 
         status = iter->second->BindRegisteredRegions(registeredRegions);
         if (!status.ok() && finalStatus.ok()) {
-            MarkRefreshIfNeeded(status, needRefresh);
+            needRefresh |= IsRefreshNeeded(status);
             finalStatus =
                 WithContext(PartialFailed("one or more asu region bindings failed"),
                             "asuIndex=" + std::to_string(asuIndex) +
@@ -527,9 +527,7 @@ void AsuClientImpl::ProcessTask(const ClientTaskContextPtr& ctx)
         status = DispatchTask(ctx);
     }
 
-    bool needRefresh = false;
-    MarkRefreshIfNeeded(status, needRefresh);
-    if (needRefresh) { RequestBackgroundRefresh(); }
+    if (IsRefreshNeeded(status)) { RequestBackgroundRefresh(); }
 }
 
 Status AsuClientImpl::BuildSubTasks(const ClientTaskContextPtr& ctx)
@@ -752,7 +750,7 @@ Status AsuClientImpl::UnregisterRegionsOnce(const std::vector<MRHandle>& handles
     for (const auto& item : snapshot->transports) {
         auto status = item.second->UnregisterRegions(handles);
         if (!status.ok() && finalStatus.ok()) {
-            MarkRefreshIfNeeded(status, needRefresh);
+            needRefresh |= IsRefreshNeeded(status);
             finalStatus =
                 WithContext(status, "asuId=" + std::to_string(item.first) +
                                         " handle_count=" + std::to_string(handles.size()));
@@ -980,9 +978,9 @@ std::shared_ptr<ViewSnapshot> AsuClientImpl::GetSnapshot() const
     return snapshot_;
 }
 
-void AsuClientImpl::MarkRefreshIfNeeded(const Status& status, bool& needRefresh) const
+bool AsuClientImpl::IsRefreshNeeded(const Status& status) const
 {
-    if (viewServer_ != nullptr && viewServer_->ShouldRefreshView(status)) { needRefresh = true; }
+    return viewServer_ != nullptr && viewServer_->ShouldRefreshView(status);
 }
 
 std::vector<AsuId> AsuClientImpl::GetSortedAsuIds(const GlobalView& view)

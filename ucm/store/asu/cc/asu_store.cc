@@ -172,9 +172,7 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
     transportConfig.asuId = static_cast<UC::ASU::AsuId>(config.asuIds[index]);
     transportConfig.asuName = config.asuNamePrefix + "-" + std::to_string(config.asuIds[index]);
     transportConfig.deviceId = config.deviceId;
-    transportConfig.queryTimeoutMs = config.queryTimeoutMs;
-    transportConfig.loadTimeoutMs = config.loadTimeoutMs;
-    transportConfig.storeTimeoutMs = config.storeTimeoutMs;
+    transportConfig.timeoutMs = config.timeoutMs;
     transportConfig.maxInflightTasks = static_cast<std::uint32_t>(config.maxInflightTasks);
     transportConfig.maxInflightBytes = config.maxInflightBytes;
     transportConfig.providerType = config.transProviderType;
@@ -329,7 +327,7 @@ public:
     {
         UC::ASU::QueryOptions options;
         options.mode = UC::ASU::QueryMode::PER_KEY;
-        options.timeoutMs = config_.queryTimeoutMs;
+        options.timeoutMs = config_.timeoutMs;
         return QueryBlocks(blocks, num, options);
     }
 
@@ -339,7 +337,7 @@ public:
 
         UC::ASU::QueryOptions options;
         options.mode = UC::ASU::QueryMode::PREFIX;
-        options.timeoutMs = config_.queryTimeoutMs;
+        options.timeoutMs = config_.timeoutMs;
 
         auto keys = BuildBlockKeys(blocks, num);
         UC::ASU::QueryResult queryResult;
@@ -470,9 +468,7 @@ private:
             config.asuPort = static_cast<std::uint16_t>(asuPort);
         }
         inConfig.GetNumber("asu_default_wait_timeout_ms", config.defaultWaitTimeoutMs);
-        inConfig.GetNumber("asu_query_timeout_ms", config.queryTimeoutMs);
-        inConfig.GetNumber("asu_load_timeout_ms", config.loadTimeoutMs);
-        inConfig.GetNumber("asu_store_timeout_ms", config.storeTimeoutMs);
+        inConfig.GetNumber("asu_timeout_ms", config.timeoutMs);
         inConfig.GetNumber("asu_max_inflight_tasks", config.maxInflightTasks);
         inConfig.GetNumber("asu_max_inflight_bytes", config.maxInflightBytes);
         inConfig.GetNumber("shard_size", config.shardSize);

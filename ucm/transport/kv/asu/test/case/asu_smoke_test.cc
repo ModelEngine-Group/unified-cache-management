@@ -180,13 +180,13 @@ AsuClientConfig MakeClientConfig()
     first.asuName = "asu-smoke-0";
     first.asuId = 1001;
     first.maxInflightTasks = 64;
-    first.queryTimeoutMs = 100;
+    first.timeoutMs = 100;
 
     TransportConfig second;
     second.asuName = "asu-smoke-1";
     second.asuId = 1002;
     second.maxInflightTasks = 64;
-    second.queryTimeoutMs = 100;
+    second.timeoutMs = 100;
 
     config.transportConfigs = {first, second};
     return config;

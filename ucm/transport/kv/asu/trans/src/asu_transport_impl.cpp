@@ -269,7 +269,7 @@ Status AsuTransportImpl::Query(const std::vector<CacheKey>& keys, const QueryOpt
     if (!status.ok()) { return status; }
 
     TaskResult taskResult;
-    const auto timeoutMs = options.timeoutMs == 0 ? config_.queryTimeoutMs : options.timeoutMs;
+    const auto timeoutMs = options.timeoutMs == 0 ? config_.timeoutMs : options.timeoutMs;
     status = Wait(taskId, timeoutMs, taskResult);
     if (!status.ok()) { return status; }
     if (taskResult.queryResult.has_value()) { result = *taskResult.queryResult; }
@@ -284,6 +284,8 @@ Status AsuTransportImpl::QueryAsync(const std::vector<CacheKey>& keys, const Que
     ctx->keys = BatchView<CacheKey>{keys.data(), keys.size()};
     ctx->queryOptions = options;
     ctx->entryStatus.assign(keys.size(), Status::OK());
+    const auto timeoutMs = options.timeoutMs == 0 ? config_.timeoutMs : options.timeoutMs;
+    ctx->deadline = TaskDeadline(timeoutMs);
     return SubmitAsync(std::move(ctx), taskId);
 }
 
@@ -294,7 +296,7 @@ Status AsuTransportImpl::LoadAsync(const std::vector<KVBuffer>& entries, TaskId&
     ctx->opType = TransportOpType::BATCH_LOAD;
     ctx->entries = BatchView<KVBuffer>{entries.data(), entries.size()};
     ctx->entryStatus.assign(entries.size(), Status::OK());
-    ctx->deadline = TaskDeadline(config_.loadTimeoutMs);
+    ctx->deadline = TaskDeadline(config_.timeoutMs);
     ctx->onComplete = std::move(onComplete);
     return SubmitAsync(std::move(ctx), taskId);
 }
@@ -306,7 +308,7 @@ Status AsuTransportImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId
     ctx->opType = TransportOpType::BATCH_STORE;
     ctx->entries = BatchView<KVBuffer>{entries.data(), entries.size()};
     ctx->entryStatus.assign(entries.size(), Status::OK());
-    ctx->deadline = TaskDeadline(config_.storeTimeoutMs);
+    ctx->deadline = TaskDeadline(config_.timeoutMs);
     ctx->onComplete = std::move(onComplete);
     return SubmitAsync(std::move(ctx), taskId);
 }
@@ -318,6 +320,7 @@ Status AsuTransportImpl::DeleteAsync(const std::vector<CacheKey>& keys, TaskId& 
     ctx->opType = TransportOpType::DELETE;
     ctx->keys = BatchView<CacheKey>{keys.data(), keys.size()};
     ctx->entryStatus.assign(keys.size(), Status::OK());
+    ctx->deadline = TaskDeadline(config_.timeoutMs);
     ctx->onComplete = std::move(onComplete);
     return SubmitAsync(std::move(ctx), taskId);
 }

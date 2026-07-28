@@ -64,9 +64,7 @@ struct TransportConfig {
     std::uint32_t maxLoadInflight{512};
     std::uint32_t maxStoreInflight{256};
 
-    std::uint64_t queryTimeoutMs{5};
-    std::uint64_t loadTimeoutMs{100};
-    std::uint64_t storeTimeoutMs{100};
+    std::uint64_t timeoutMs{100};
 
     bool enableDeviceDirect{true};
     bool enableHostFallback{false};

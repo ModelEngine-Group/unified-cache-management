@@ -158,8 +158,8 @@ private:
     // Waits for tracked client tasks before transport shutdown.
     Status DrainTasksBeforeShutdown(std::uint64_t waitTimeoutMs);
 
-    // Marks whether a status suggests the published snapshot should be refreshed.
-    void MarkRefreshIfNeeded(const Status& status, bool& needRefresh) const;
+    // Returns whether a status suggests the published snapshot should be refreshed.
+    bool IsRefreshNeeded(const Status& status) const;
     // Extracts sorted ASU ids from a view.
     static std::vector<AsuId> GetSortedAsuIds(const GlobalView& view);
     // Parses client config from a file path supplied through the public interface.
