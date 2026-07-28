@@ -91,7 +91,6 @@ public:
     Status UnregisterRegions(const std::vector<MRHandle>& handles) override;
 
 private:
-    using ClientTaskContextPtr = std::shared_ptr<ClientTaskContext>;
     struct PendingQuery {
         AsuId asuId{0};
         std::shared_ptr<AsuTransport> transport;
@@ -105,26 +104,8 @@ private:
     // Creates and queues one key-based client task.
     Status SubmitAsync(ClientOpType opType, const std::vector<CacheKey>& keys, TaskId& taskId);
 
-    // Routes and dispatches one queued client task.
-    void ProcessTask(const ClientTaskContextPtr& ctx);
-    // Builds transport subtasks for one queued client task.
-    Status BuildSubTasks(const ClientTaskContextPtr& ctx);
     // Runs queued tasks until shutdown and the queue are both complete.
     void WorkerLoop();
-    // Completes a task that failed before transport dispatch.
-    static void CompleteTaskWithError(const ClientTaskContextPtr& ctx, const Status& status);
-    // Sends each subtask to its routed transport and records transport task ids.
-    Status DispatchTask(const ClientTaskContextPtr& ctx);
-    // Writes one transport callback result into its client subtask.
-    static void CompleteSubTask(const ClientTaskContextPtr& ctx, std::size_t subTaskIndex,
-                                TaskResult result);
-    // Aggregates subtask state after the shared completion count reaches zero.
-    static void FinalizeTask(const ClientTaskContextPtr& ctx);
-    // Converts a client task context into the public task result shape.
-    Status BuildResult(const ClientTaskContextPtr& ctx, TaskResult& result);
-    // Waits for one client task context until completion or timeout.
-    Status WaitTaskContext(const ClientTaskContextPtr& ctx, std::uint64_t timeoutMs,
-                           TaskResult& result);
 
     // Performs one query attempt on the current snapshot.
     Status QueryOnce(const std::vector<CacheKey>& keys, const QueryOptions& options,
@@ -155,8 +136,6 @@ private:
 
     // Shuts down transports owned by a snapshot.
     Status ShutdownSnapshotTransports(const std::shared_ptr<ViewSnapshot>& snapshot);
-    // Waits for tracked client tasks before transport shutdown.
-    Status DrainTasksBeforeShutdown(std::uint64_t waitTimeoutMs);
 
     // Returns whether a status suggests the published snapshot should be refreshed.
     bool IsRefreshNeeded(const Status& status) const;

@@ -26,6 +26,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -78,21 +79,35 @@ struct ClientTaskContext {
     std::mutex waitMu;
     std::condition_variable cv;
 
-    bool Done() const
-    {
-        auto currentState = state.load(std::memory_order_acquire);
-        return currentState == ClientTaskState::COMPLETED;
-    }
-
-    bool AllSubTasksCompleted() const
-    {
-        return remainingSubTasks.load(std::memory_order_acquire) == 0;
-    }
+    bool Done() const;
+    bool AllSubTasksCompleted() const;
 };
+
+using ClientTaskContextPtr = std::shared_ptr<ClientTaskContext>;
 
 class ClientTaskManager : public TaskManagerBase<ClientTaskContext, ClientTaskState> {
 public:
     ClientTaskManager() : TaskManagerBase(ClientTaskState::PENDING, "client") {}
+
+    Status Check(TaskId taskId, TaskResult& result);
+    Status Wait(TaskId taskId, std::uint64_t waitTimeoutMs, TaskResult& result);
+    Status Drain(std::uint64_t waitTimeoutMs);
+    Status Process(const ClientTaskContextPtr& task);
+
+    static void CompleteWithError(const ClientTaskContextPtr& task, const Status& status);
+    static void CompleteSubTask(const ClientTaskContextPtr& task, std::size_t subTaskIndex,
+                                TaskResult result);
+    static void CompleteUndispatchedSubTasks(const ClientTaskContextPtr& task,
+                                             std::size_t firstSubTaskIndex,
+                                             const Status& dispatchStatus);
+    static void Finalize(const ClientTaskContextPtr& task);
+
+private:
+    static Status BuildSubTasks(const ClientTaskContextPtr& task);
+    static Status DispatchTask(const ClientTaskContextPtr& task);
+    static Status BuildResult(const ClientTaskContextPtr& task, TaskResult& result);
+    static Status WaitContext(const ClientTaskContextPtr& task, std::uint64_t waitTimeoutMs,
+                              TaskResult& result);
 };
 
 }  // namespace UC::ASU

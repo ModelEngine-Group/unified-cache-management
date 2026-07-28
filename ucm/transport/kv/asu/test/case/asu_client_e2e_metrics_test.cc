@@ -338,8 +338,8 @@ public:
                                             "fake ASU transport is not initialized");
     }
 
-    Status Query(const std::vector<CacheKey>& keys, const QueryOptions& options,
-                 QueryResult& result) override
+    Status RunQuery(const std::vector<CacheKey>& keys, const QueryOptions& options,
+                    QueryResult& result)
     {
         std::lock_guard<std::mutex> lock{state_->mutex};
         auto status = CheckReadyLocked();
@@ -372,7 +372,7 @@ public:
                       TaskId& taskId) override
     {
         QueryResult queryResult;
-        auto status = Query(keys, options, queryResult);
+        auto status = RunQuery(keys, options, queryResult);
         if (!status.ok()) {
             taskId = kInvalidTaskId;
             return status;
@@ -485,7 +485,7 @@ public:
 
     Status Cancel(TaskId) override { return Status::Error(StatusCode::UNSUPPORTED, "unsupported"); }
 
-    Status Check(TaskId taskId, TaskResult& result) override
+    Status GetTaskResult(TaskId taskId, TaskResult& result)
     {
         std::lock_guard<std::mutex> lock{state_->mutex};
         auto iter = state_->tasks.find(taskId);
@@ -498,7 +498,7 @@ public:
 
     Status Wait(TaskId taskId, std::uint64_t, TaskResult& result) override
     {
-        return Check(taskId, result);
+        return GetTaskResult(taskId, result);
     }
 
     Status RegisterRegions(const std::vector<MemoryRegion>& regions,

@@ -64,8 +64,7 @@ public:
 
     Status CheckHealth() override { return Status::OK(); }
 
-    Status Query(const std::vector<CacheKey>& keys, const QueryOptions&,
-                 QueryResult& result) override
+    Status RunQuery(const std::vector<CacheKey>& keys, const QueryOptions&, QueryResult& result)
     {
         result.exists.assign(keys.size(), true);
         result.prefixHitKeys = 0;
@@ -76,7 +75,7 @@ public:
                       TaskId& taskId) override
     {
         QueryResult queryResult;
-        auto status = Query(keys, options, queryResult);
+        auto status = RunQuery(keys, options, queryResult);
         if (!status.ok()) {
             taskId = kInvalidTaskId;
             return status;
@@ -125,7 +124,7 @@ public:
 
     Status Cancel(TaskId) override { return Status::OK(); }
 
-    Status Check(TaskId taskId, TaskResult& result) override
+    Status GetTaskResult(TaskId taskId, TaskResult& result)
     {
         if (taskId == kInvalidTaskId) {
             return Status::Error(StatusCode::TASK_NOT_FOUND, "task not found");
@@ -143,7 +142,7 @@ public:
 
     Status Wait(TaskId taskId, std::uint64_t, TaskResult& result) override
     {
-        return Check(taskId, result);
+        return GetTaskResult(taskId, result);
     }
 
     Status RegisterRegions(const std::vector<MemoryRegion>& regions,

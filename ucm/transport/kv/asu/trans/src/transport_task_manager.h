@@ -123,9 +123,14 @@ struct TransportTaskContext {
     void TryFinalizeFromSubBatches();
 };
 
+using TransportTaskContextPtr = std::shared_ptr<TransportTaskContext>;
+
 class TransportTaskManager : public TaskManagerBase<TransportTaskContext, TransportTaskState> {
 public:
     TransportTaskManager() : TaskManagerBase(TransportTaskState::PENDING, "transport") {}
+
+    void NotifyCompletion(const TransportTaskContextPtr& task);
+    static void BuildResult(const TransportTaskContext& task, TaskResult& result);
 };
 
 }  // namespace UC::ASU

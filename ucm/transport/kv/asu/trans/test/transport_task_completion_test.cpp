@@ -365,7 +365,7 @@ TEST_F(TransportTaskCompletionTest, NotifyCompletionPassesResultOnce)
     EXPECT_TRUE(ctx.completionNotified.load(std::memory_order_acquire));
 }
 
-TEST_F(TransportTaskCompletionTest, NotifyTaskCompletionRemovesTaskAfterCallback)
+TEST_F(TransportTaskCompletionTest, TaskManagerNotifyCompletionRemovesTaskAfterCallback)
 {
     TaskId taskId = kInvalidTaskId;
     bool callbackInvoked = false;
@@ -379,14 +379,14 @@ TEST_F(TransportTaskCompletionTest, NotifyTaskCompletionRemovesTaskAfterCallback
     auto submittedCtx = transport_->taskManager_.Get(taskId);
     ASSERT_NE(submittedCtx, nullptr);
 
-    transport_->NotifyTaskCompletion(submittedCtx);
+    transport_->taskManager_.NotifyCompletion(submittedCtx);
 
     EXPECT_TRUE(callbackInvoked);
     EXPECT_TRUE(taskPresentDuringCallback);
     EXPECT_EQ(transport_->taskManager_.Get(taskId), nullptr);
 }
 
-TEST_F(TransportTaskCompletionTest, NotifyTaskCompletionKeepsTaskWithoutCallback)
+TEST_F(TransportTaskCompletionTest, TaskManagerNotifyCompletionKeepsTaskWithoutCallback)
 {
     TaskId taskId = kInvalidTaskId;
     auto ctx = std::make_unique<TransportTaskContext>();
@@ -397,7 +397,7 @@ TEST_F(TransportTaskCompletionTest, NotifyTaskCompletionKeepsTaskWithoutCallback
     ASSERT_NE(submittedCtx, nullptr);
     submittedCtx->state.store(TransportTaskState::COMPLETED, std::memory_order_release);
 
-    transport_->NotifyTaskCompletion(submittedCtx);
+    transport_->taskManager_.NotifyCompletion(submittedCtx);
 
     EXPECT_NE(transport_->taskManager_.Get(taskId), nullptr);
 

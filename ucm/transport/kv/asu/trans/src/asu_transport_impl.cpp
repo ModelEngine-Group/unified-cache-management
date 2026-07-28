@@ -75,6 +75,52 @@ Status CopyDeviceToHost(const ScatterGatherEntry& sge, void* host, std::size_t s
 
 }  // namespace
 
+void AsuTransportImpl::ReleaseSubBatchResources(TransportSubBatchContext& subBatchContext)
+{
+    if (subBatchContext.sendSge.slot_index != UINT32_MAX) {
+        const auto slotIndex = subBatchContext.sendSge.slot_index;
+        auto status = sendBufferManager_.Free(slotIndex);
+        if (!status.ok()) {
+            UC_ERROR("Failed to release sub-batch send buffer slot({}): {}", slotIndex,
+                     status.message);
+        }
+        subBatchContext.sendSge = {};
+    }
+
+    if (subBatchContext.flagBuffer.slot_index != UINT32_MAX) {
+        const auto slotIndex = subBatchContext.flagBuffer.slot_index;
+        auto status = flagBufferManager_.Free(slotIndex);
+        if (!status.ok()) {
+            UC_ERROR("Failed to release sub-batch flag buffer slot({}): {}", slotIndex,
+                     status.message);
+        }
+        subBatchContext.flagBuffer = {};
+    }
+
+    if (subBatchContext.channel != nullptr) {
+        subBatchContext.channel->ReleaseInflight();
+        subBatchContext.channel = nullptr;
+    }
+}
+
+void AsuTransportImpl::ReleaseAllSubBatchResources(
+    std::vector<TransportSubBatchContext>& subBatchContexts)
+{
+    for (auto& subBatchContext : subBatchContexts) { ReleaseSubBatchResources(subBatchContext); }
+}
+
+void AsuTransportImpl::CompleteSubBatch(TransportTaskContext& task,
+                                        TransportSubBatchContext& subBatchContext,
+                                        const Status& status)
+{
+    if (subBatchContext.state != TransportSubBatchState::PENDING) { return; }
+
+    ReleaseSubBatchResources(subBatchContext);
+    subBatchContext.state = TransportSubBatchState::COMPLETED;
+    subBatchContext.status = status;
+    ++task.completedSubBatchCount;
+}
+
 AsuTransportImpl::~AsuTransportImpl() { Shutdown(); }
 
 Status AsuTransportImpl::Init(const std::string& configPath)
@@ -208,7 +254,7 @@ Status AsuTransportImpl::Shutdown()
             ReleaseAllSubBatchResources(ctx->subBatchContexts);
             ctx->state.store(TransportTaskState::CANCELED, std::memory_order_release);
         }
-        NotifyTaskCompletion(ctx);
+        taskManager_.NotifyCompletion(ctx);
         ctx->cv.notify_all();
     }
 
@@ -259,21 +305,6 @@ Status AsuTransportImpl::CheckHealth()
         return Status::Error(StatusCode::NOT_INITIALIZED, "transport worker is not running");
     }
     return Status::OK();
-}
-
-Status AsuTransportImpl::Query(const std::vector<CacheKey>& keys, const QueryOptions& options,
-                               QueryResult& result)
-{
-    TaskId taskId{kInvalidTaskId};
-    auto status = QueryAsync(keys, options, taskId);
-    if (!status.ok()) { return status; }
-
-    TaskResult taskResult;
-    const auto timeoutMs = options.timeoutMs == 0 ? config_.timeoutMs : options.timeoutMs;
-    status = Wait(taskId, timeoutMs, taskResult);
-    if (!status.ok()) { return status; }
-    if (taskResult.queryResult.has_value()) { result = *taskResult.queryResult; }
-    return taskResult.status;
 }
 
 Status AsuTransportImpl::QueryAsync(const std::vector<CacheKey>& keys, const QueryOptions& options,
@@ -344,36 +375,23 @@ Status AsuTransportImpl::Cancel(TaskId taskId)
         ReleaseAllSubBatchResources(ctx->subBatchContexts);
         ctx->state.store(TransportTaskState::CANCELED, std::memory_order_release);
     }
-    NotifyTaskCompletion(ctx);
+    taskManager_.NotifyCompletion(ctx);
     ctx->cv.notify_all();
-    return Status::OK();
-}
-
-Status AsuTransportImpl::Check(TaskId taskId, TaskResult& result)
-{
-    auto ctx = taskManager_.Get(taskId);
-    if (!ctx) { return Status::Error(StatusCode::TASK_NOT_FOUND, "transport task not found"); }
-
-    std::lock_guard<std::mutex> lock(ctx->waitMu);
-    BuildResult(*ctx, result);
-    if (!ctx->Done()) {
-        result.status = Status::Error(StatusCode::IN_PROGRESS, "transport task in progress");
-    }
     return Status::OK();
 }
 
 Status AsuTransportImpl::Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result)
 {
-    auto ctx = taskManager_.Get(taskId);
-    if (!ctx) { return Status::Error(StatusCode::TASK_NOT_FOUND, "transport task not found"); }
+    auto task = taskManager_.Get(taskId);
+    if (!task) { return Status::Error(StatusCode::TASK_NOT_FOUND, "transport task not found"); }
 
     {
-        std::unique_lock<std::mutex> lock(ctx->waitMu);
+        std::unique_lock<std::mutex> lock(task->waitMu);
         const bool done = timeoutMs == 0
-                              ? (ctx->cv.wait(lock, [ctx] { return ctx->Done(); }), true)
-                              : ctx->cv.wait_for(lock, std::chrono::milliseconds(timeoutMs),
-                                                 [ctx] { return ctx->Done(); });
-        BuildResult(*ctx, result);
+                              ? (task->cv.wait(lock, [task] { return task->Done(); }), true)
+                              : task->cv.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                                                  [task] { return task->Done(); });
+        TransportTaskManager::BuildResult(*task, result);
         if (!done) {
             result.status = Status::Error(StatusCode::TIMEOUT, "transport task wait timeout");
             return result.status;
@@ -621,7 +639,7 @@ void AsuTransportImpl::ProcessTask(const TransportTaskContextPtr& ctx)
     }
 
     if (done) {
-        NotifyTaskCompletion(ctx);
+        taskManager_.NotifyCompletion(ctx);
         ctx->cv.notify_all();
     }
 }
@@ -732,36 +750,9 @@ void AsuTransportImpl::PollTaskCompletions(const TransportTaskContextPtr& ctx)
         done = ctx->Done();
     }
     if (done) {
-        NotifyTaskCompletion(ctx);
+        taskManager_.NotifyCompletion(ctx);
         ctx->cv.notify_all();
     }
-}
-
-void AsuTransportImpl::BuildResult(const TransportTaskContext& ctx, TaskResult& result)
-{
-    result.status = ctx.finalStatus;
-    result.entryStatus = ctx.entryStatus;
-    if (!ctx.subBatchContexts.empty()) {
-        std::size_t resultIndex = 0;
-        for (const auto& subBatchContext : ctx.subBatchContexts) {
-            for (const auto& status : subBatchContext.entryStatus) {
-                if (resultIndex >= result.entryStatus.size()) { break; }
-                result.entryStatus[resultIndex++] = status;
-            }
-        }
-    }
-
-    result.queryResult.reset();
-    if (ctx.opType == TransportOpType::QUERY) {
-        result.queryResult = BuildQueryResultFromEntryStatus(result.entryStatus);
-    }
-}
-
-void AsuTransportImpl::NotifyTaskCompletion(const TransportTaskContextPtr& ctx)
-{
-    TaskResult result;
-    BuildResult(*ctx, result);
-    if (ctx->NotifyCompletion(std::move(result))) { (void)taskManager_.Remove(ctx->taskId); }
 }
 
 void AsuTransportImpl::SetTransProvider(std::unique_ptr<TransProvider> provider)

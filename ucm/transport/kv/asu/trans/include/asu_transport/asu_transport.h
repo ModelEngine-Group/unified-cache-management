@@ -97,8 +97,6 @@ public:
     virtual Status Shutdown() = 0;
     virtual Status CheckHealth() = 0;
 
-    virtual Status Query(const std::vector<CacheKey>& keys, const QueryOptions& options,
-                         QueryResult& result) = 0;
     virtual Status QueryAsync(const std::vector<CacheKey>& keys, const QueryOptions& options,
                               TaskId& taskId) = 0;
 
@@ -111,7 +109,6 @@ public:
 
     // Best-effort cancellation, does not interrupt underlying UB/RoCE IO
     virtual Status Cancel(TaskId taskId) = 0;
-    virtual Status Check(TaskId taskId, TaskResult& result) = 0;
     virtual Status Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result) = 0;
 
     virtual Status RegisterRegions(const std::vector<MemoryRegion>& regions,

@@ -1,4 +1,6 @@
 #include "transport_task_manager.h"
+#include <utility>
+#include "asu_response_status.h"
 
 namespace UC::ASU {
 
@@ -15,6 +17,69 @@ bool TransportTaskContext::NotifyCompletion(TaskResult result)
     }
     onComplete(std::move(result));
     return true;
+}
+
+Status TransportTaskContext::BuildFinalStatus() const
+{
+    for (const auto& subBatchContext : subBatchContexts) {
+        if (!subBatchContext.status.ok()) {
+            return Status::Error(StatusCode::PARTIAL_FAILED, "transport task partially failed");
+        }
+    }
+
+    return Status::OK();
+}
+
+void TransportTaskContext::InitializeTerminalSubBatchCount()
+{
+    // At submit completion time, terminal sub-batches are usually submit/send failures.
+    completedSubBatchCount = 0;
+    for (const auto& subBatchContext : subBatchContexts) {
+        if (subBatchContext.state != TransportSubBatchState::COMPLETED) { continue; }
+
+        ++completedSubBatchCount;
+    }
+}
+
+void TransportTaskContext::TryFinalizeFromSubBatches()
+{
+    if (subBatchContexts.empty()) {
+        finalStatus = Status::Error(StatusCode::PARTIAL_FAILED, "transport task partially failed");
+        state.store(TransportTaskState::COMPLETED, std::memory_order_release);
+        return;
+    }
+
+    if (completedSubBatchCount != static_cast<std::uint32_t>(subBatchContexts.size())) { return; }
+
+    finalStatus = BuildFinalStatus();
+    state.store(TransportTaskState::COMPLETED, std::memory_order_release);
+}
+
+void TransportTaskManager::NotifyCompletion(const TransportTaskContextPtr& task)
+{
+    TaskResult result;
+    BuildResult(*task, result);
+    if (task->NotifyCompletion(std::move(result))) { (void)Remove(task->taskId); }
+}
+
+void TransportTaskManager::BuildResult(const TransportTaskContext& task, TaskResult& result)
+{
+    result.status = task.finalStatus;
+    result.entryStatus = task.entryStatus;
+    if (!task.subBatchContexts.empty()) {
+        std::size_t resultIndex = 0;
+        for (const auto& subBatchContext : task.subBatchContexts) {
+            for (const auto& status : subBatchContext.entryStatus) {
+                if (resultIndex >= result.entryStatus.size()) { break; }
+                result.entryStatus[resultIndex++] = status;
+            }
+        }
+    }
+
+    result.queryResult.reset();
+    if (task.opType == TransportOpType::QUERY) {
+        result.queryResult = BuildQueryResultFromEntryStatus(result.entryStatus);
+    }
 }
 
 }  // namespace UC::ASU

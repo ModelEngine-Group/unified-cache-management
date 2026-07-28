@@ -113,8 +113,8 @@ public:
 
     Status CheckHealth() override { return initialized_ ? Status::OK() : NotInitialized(); }
 
-    Status Query(const std::vector<CacheKey>& keys, const QueryOptions& options,
-                 QueryResult& result) override
+    virtual Status RunQuery(const std::vector<CacheKey>& keys, const QueryOptions& options,
+                            QueryResult& result)
     {
         if (!initialized_) { return NotInitialized(); }
         if (state_->failFirstQuery && !state_->firstQueryFailed) {
@@ -143,7 +143,7 @@ public:
                       TaskId& taskId) override
     {
         QueryResult queryResult;
-        auto status = Query(keys, options, queryResult);
+        auto status = RunQuery(keys, options, queryResult);
         if (!status.ok()) {
             taskId = kInvalidTaskId;
             return status;
@@ -223,7 +223,7 @@ public:
         return Status::OK();
     }
 
-    Status Check(TaskId taskId, TaskResult& result) override
+    Status GetTaskResult(TaskId taskId, TaskResult& result)
     {
         state_->checkCalls.emplace_back(config_.asuId);
         auto statusIter = state_->checkResultStatus.find(config_.asuId);
@@ -260,7 +260,7 @@ public:
             queryTasks_.erase(queryTaskIter);
             return Status::OK();
         }
-        return Check(taskId, result);
+        return GetTaskResult(taskId, result);
     }
 
     Status RegisterRegions(const std::vector<MemoryRegion>& regions,
@@ -731,8 +731,8 @@ TEST(AsuClientImplTest, Query_PerKeyResultSizeMismatchReturnsPartialFailed)
         {
         }
 
-        Status Query(const std::vector<CacheKey>&, const QueryOptions&,
-                     QueryResult& result) override
+        Status RunQuery(const std::vector<CacheKey>&, const QueryOptions&,
+                        QueryResult& result) override
         {
             result.exists.clear();
             result.prefixHitKeys = 0;

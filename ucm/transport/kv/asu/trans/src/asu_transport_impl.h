@@ -42,8 +42,6 @@
 
 namespace UC::ASU {
 
-using TransportTaskContextPtr = std::shared_ptr<TransportTaskContext>;
-
 inline KvOpcode ToKvOpcode(TransportOpType opType)
 {
     switch (opType) {
@@ -69,8 +67,6 @@ public:
 
     Status CheckHealth() override;
 
-    Status Query(const std::vector<CacheKey>& keys, const QueryOptions& options,
-                 QueryResult& result) override;
     Status QueryAsync(const std::vector<CacheKey>& keys, const QueryOptions& options,
                       TaskId& taskId) override;
     Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
@@ -81,7 +77,6 @@ public:
                        TaskCompletionCallback onComplete) override;
 
     Status Cancel(TaskId taskId) override;
-    Status Check(TaskId taskId, TaskResult& result) override;
     Status Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result) override;
 
     Status RegisterRegions(const std::vector<MemoryRegion>& regions,
@@ -119,8 +114,6 @@ private:
                           const Status& status);
 
     void PollTaskCompletions(const TransportTaskContextPtr& ctx);
-    void BuildResult(const TransportTaskContext& ctx, TaskResult& result);
-    void NotifyTaskCompletion(const TransportTaskContextPtr& ctx);
 
     void SetTransProvider(std::unique_ptr<TransProvider> provider);
     Status UnregisterOwnedRegionHandles(const std::vector<MRHandle>& handles);
