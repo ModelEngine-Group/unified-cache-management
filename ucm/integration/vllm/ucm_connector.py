@@ -835,8 +835,9 @@ class RequestHasher:
         sparse_sfa_c8 = bool(additional_config.get("enable_sparse_sfa_c8", False))
         sparse_li_c8 = bool(additional_config.get("enable_sparse_li_c8", False))
         sparse_c8_info = f":sfa_c8={int(sparse_sfa_c8)}:li_c8={int(sparse_li_c8)}"
+        model_name=vllm_config.model_config.model.split('/')[-1]
         meta = (
-            f"{vllm_config.model_config.model}:"
+            f"{model_name}:"
             f"{vllm_config.parallel_config.tensor_parallel_size}:"
             f"{vllm_config.model_config.dtype}:{rank_id}{spec_info}{sparse_c8_info}"
         )
