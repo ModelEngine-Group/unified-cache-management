@@ -22,11 +22,11 @@
  * SOFTWARE.
  * */
 #include "pool/buffer_pool.h"
-#include <acl/acl.h>
 #include <cstring>
 #include <limits>
 #include <utility>
-#include "trans/ascend/ascend_buffer.h"
+#include "trans/detail/reserved_buffer.h"
+#include "trans/device.h"
 
 namespace UC {
 
@@ -41,10 +41,11 @@ bool BufferPool::ComputeSlotStride(std::size_t capacity, std::size_t alignment, 
 
 Status BufferPool::BufferRegion::Create(MemoryType type, std::size_t size, BufferRegion& region)
 {
-    Trans::AscendBuffer ascendBuffer;
+    auto buffer = UC::Trans::Device{}.MakeBuffer();
+    if (!buffer) { return Status::Error("failed to create runtime buffer"); }
     switch (type) {
         case MemoryType::HOST: {
-            auto owner = ascendBuffer.MakeHostBuffer(size);
+            auto owner = buffer->MakeHostBuffer(size);
             if (!owner) { return Status::Error("failed to allocate host memory"); }
             region.owner = std::move(owner);
             region.local_addr = region.owner.get();
@@ -53,7 +54,7 @@ Status BufferPool::BufferRegion::Create(MemoryType type, std::size_t size, Buffe
         }
         case MemoryType::HOST_PINNED: {
             void* deviceAddr = nullptr;
-            auto owner = ascendBuffer.MakeHostPinnedBuffer(size, &deviceAddr);
+            auto owner = buffer->MakeHostPinnedBuffer(size, &deviceAddr);
             if (!owner || !deviceAddr) {
                 return Status::Error("failed to allocate host-pinned memory");
             }
@@ -63,7 +64,7 @@ Status BufferPool::BufferRegion::Create(MemoryType type, std::size_t size, Buffe
             return Status::OK();
         }
         case MemoryType::ASCEND_DEVICE: {
-            auto owner = ascendBuffer.MakeDeviceBuffer(size);
+            auto owner = buffer->MakeDeviceBuffer(size);
             if (!owner) { return Status::Error("failed to allocate device memory"); }
             region.owner = std::move(owner);
             region.local_addr = region.owner.get();
@@ -182,9 +183,8 @@ bool BufferPool::IsValidPointer(const void* ptr) const
 Status BufferPool::ZeroMemory(void* ptr, std::size_t size) const
 {
     if (memory_type_ == MemoryType::ASCEND_DEVICE) {
-        if (aclrtMemset(ptr, size, 0, size) != ACL_SUCCESS) {
-            return Status::Error(name_ + ": failed to zero device memory");
-        }
+        const auto status = UC::Trans::ZeroDeviceMemory(ptr, size);
+        if (status.Failure()) { return Status::Error(name_ + ": failed to zero device memory"); }
     } else {
         std::memset(ptr, 0, size);
     }

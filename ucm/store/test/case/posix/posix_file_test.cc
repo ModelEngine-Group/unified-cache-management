@@ -30,7 +30,9 @@ class UCPosixFileTest : public UC::Test::Detail::PathBase {};
 TEST_F(UCPosixFileTest, DirCreateAndRemove)
 {
     using namespace UC::PosixStore;
-    system((std::string("rm -rf ") + this->Path()).c_str());
+    if (system((std::string("rm -rf ") + this->Path()).c_str())) {
+        FAIL() << "Failed to remove existing directory";
+    }
     PosixFile dir(this->Path());
     ASSERT_EQ(dir.Access(PosixFile::AccessMode::EXIST), UC::Status::NotFound());
     ASSERT_EQ(dir.MkDir(), UC::Status::OK());

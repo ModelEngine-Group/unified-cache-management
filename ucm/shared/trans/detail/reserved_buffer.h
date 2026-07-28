@@ -24,7 +24,9 @@
 #ifndef UNIFIEDCACHE_TRANS_RESERVED_BUFFER_H
 #define UNIFIEDCACHE_TRANS_RESERVED_BUFFER_H
 
+#include <cstddef>
 #include <fmt/format.h>
+#include <memory>
 #include "indexer.h"
 #include "trans/buffer.h"
 
@@ -104,6 +106,8 @@ public:
         return this->MakeHostBuffer(size);
     }
 };
+
+Status ZeroDeviceMemory(void* ptr, std::size_t size);
 
 }  // namespace UC::Trans
 

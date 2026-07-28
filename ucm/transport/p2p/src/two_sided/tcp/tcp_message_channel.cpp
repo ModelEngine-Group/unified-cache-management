@@ -357,7 +357,7 @@ void TcpMessageChannel::HandleConnectionEvent(int epoll_fd, std::unordered_set<S
         receive_status = ReceiveAvailableFrames(socket, it->second.receive_buffer, frames,
                                                 kMaxFrameSize, closed);
     }
-    if (receive_status != Status::OK() || closed) {
+    if (receive_status != Status::OK()) {
         RemoveConnection(epoll_fd, registered, socket);
         return;
     }
@@ -384,7 +384,7 @@ void TcpMessageChannel::HandleConnectionEvent(int epoll_fd, std::unordered_set<S
         }
         receive_cv_.notify_one();
     }
-    if (drop_socket) { RemoveConnection(epoll_fd, registered, socket); }
+    if (closed || drop_socket) { RemoveConnection(epoll_fd, registered, socket); }
 }
 
 void TcpMessageChannel::RemoveConnection(int epoll_fd, std::unordered_set<Socket>& registered,
