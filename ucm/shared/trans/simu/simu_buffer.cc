@@ -75,4 +75,10 @@ Status Buffer::RegisterHostBuffer(void* host, size_t size, void** pDevice)
 
 void Buffer::UnregisterHostBuffer(void* host) {}
 
-} // namespace UC::Trans
+Status ZeroDeviceMemory(void* ptr, std::size_t size)
+{
+    std::memset(ptr, 0, size);
+    return Status::OK();
+}
+
+}  // namespace UC::Trans

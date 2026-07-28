@@ -3,14 +3,24 @@ set(UCM_DRAM_STORE_CC_SOURCE_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/cc/kv_protocol.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/cc/config.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/cc/dram_fatal.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/cc/transport_executor.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/cc/reply_service.cc
 )
+if(RUNTIME_ENVIRONMENT STREQUAL "ascend")
+    list(APPEND UCM_DRAM_STORE_CC_SOURCE_FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/cc/transport_manager_backend.cc)
+endif()
 add_library(dramstore SHARED ${UCM_DRAM_STORE_CC_SOURCE_FILES})
 target_include_directories(dramstore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cc)
 target_include_directories(dramstore PUBLIC
+    ${CMAKE_SOURCE_DIR}/ucm/transport/p2p/include
     ${CMAKE_SOURCE_DIR}/ucm/transport/p2p/include/one_sided)
 target_include_directories(dramstore PUBLIC ${CMAKE_SOURCE_DIR}/ucm/shared)
 
-target_link_libraries(dramstore PUBLIC storeintf infra_logger infra_thread kv_common)
+target_link_libraries(dramstore PUBLIC storeintf infra_logger infra_thread kv_common buffer_pool)
+if(RUNTIME_ENVIRONMENT STREQUAL "ascend")
+    target_link_libraries(dramstore PUBLIC ucm_p2p_transport)
+endif()
 file(RELATIVE_PATH INSTALL_REL_PATH ${UCM_ROOT_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
 install(TARGETS dramstore LIBRARY DESTINATION ${INSTALL_REL_PATH} COMPONENT ucm)
 

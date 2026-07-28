@@ -38,12 +38,18 @@ public:
         std::string testCaseName = info->test_case_name();
         std::string testName = info->name();
         this->path_ = "./" + testCaseName + "_" + testName + "_" + this->rd_.RandomString(20) + "/";
-        system((std::string("rm -rf ") + this->path_).c_str());
-        system((std::string("mkdir -p ") + this->path_).c_str());
+        if (system((std::string("rm -rf ") + this->path_).c_str())) {
+            FAIL() << "Failed to remove existing directory";
+        }
+        if (system((std::string("mkdir -p ") + this->path_).c_str())) {
+            FAIL() << "Failed to create test directory";
+        }
     }
     void TearDown() override
     {
-        system((std::string("rm -rf ") + this->path_).c_str());
+        if (system((std::string("rm -rf ") + this->path_).c_str())) {
+            FAIL() << "Failed to remove test directory";
+        }
         testing::Test::TearDown();
     }
     std::string Path() const { return this->path_; }
