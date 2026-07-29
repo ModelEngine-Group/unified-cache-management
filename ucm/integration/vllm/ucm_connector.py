@@ -838,6 +838,7 @@ class RequestHasher:
         model_name = vllm_config.model_config.model.split("/")[-1]
         meta = (
             f"{model_name}:"
+            f"{model_name}:"
             f"{vllm_config.parallel_config.tensor_parallel_size}:"
             f"{vllm_config.model_config.dtype}:{rank_id}{spec_info}{sparse_c8_info}"
         )
