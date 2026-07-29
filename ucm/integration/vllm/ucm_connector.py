@@ -1,10 +1,12 @@
 ﻿import copy
+import glob
 import hashlib
 import math
 import os
 import pickle
 import re
 import time
+import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, List, Optional, Tuple
@@ -123,6 +125,45 @@ def _use_ucm_connector_cpu_affinity() -> bool:
     return (
         os.getenv("VLLM_CPU_AFFINITY") == "1"
         and getattr(current_platform, "device_type", None) != "npu"
+    )
+
+
+def _worker_generate_unique_id() -> str:
+    """Worker-side: broadcast a uuid and write to a per-instance file."""
+    world_group = get_world_group()
+    if world_group.rank_in_group == 0:
+        now = time.time()
+        for f in glob.glob("/dev/shm/ucm_uniqueid_*"):
+            try:
+                if now - os.path.getmtime(f) > 600:
+                    os.remove(f)
+            except OSError:
+                pass
+        local_uid = uuid.uuid4().hex
+    else:
+        local_uid = None
+    uid = world_group.broadcast_object(local_uid, src=0)
+    path = f"/dev/shm/ucm_uniqueid_{os.getppid()}"
+    tmp = f"{path}.tmp.{os.getpid()}"
+    with open(tmp, "w") as f:
+        f.write(uid)
+    os.replace(tmp, path)
+    return uid
+
+
+def _scheduler_read_unique_id() -> str:
+    """Scheduler-side: read the uuid from the per-instance file."""
+    for pid in (os.getpid(), os.getppid()):
+        path = f"/dev/shm/ucm_uniqueid_{pid}"
+        try:
+            with open(path) as f:
+                uid = f.read().strip()
+            if uid:
+                return uid
+        except FileNotFoundError:
+            continue
+    raise RuntimeError(
+        "scheduler-side UCM initialization failed: unique_id file not found"
     )
 
 
@@ -957,18 +998,27 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.requests_meta: dict[str, RequestMeta] = {}
 
         ucm_config = Config(vllm_config.kv_transfer_config)
-        dp_engine_id_suffix = re.compile(r"_dp\d+$")
-        self.engine_id = dp_engine_id_suffix.sub(
-            "", vllm_config.kv_transfer_config.engine_id
-        )
+        self.engine_id = vllm_config.kv_transfer_config.engine_id.rsplit("_dp", 1)[0]
         self.launch_config = ucm_config.get_config()
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
+        assert len(self.connector_configs) > 0, "no storage connector name in config."
+        share_buffer_enable = (
+            self.connector_configs[0]
+            .get("ucm_connector_config", {})
+            .get("share_buffer_enable", self.is_mla)
+        )
+        if share_buffer_enable:
+            if role == KVConnectorRole.WORKER:
+                self.unique_id = _worker_generate_unique_id()
+            else:
+                self.unique_id = _scheduler_read_unique_id()
+        else:
+            self.unique_id = self.engine_id
         self.enable_event_sync = self.launch_config.get("enable_event_sync", True)
         self.enable_record_traces = self.launch_config.get(
             "enable_record_traces", False
         )
         self._skip_null_vllm_blocks = False
-        assert len(self.connector_configs) > 0, "no storage connector name in config."
 
         self.chunk_size = self.block_size
         self.blocks_per_chunk = self.chunk_size // self.block_size
@@ -979,7 +1029,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             self.request_hasher = RequestHasher(vllm_config, 0)
             self._other_rank_hashers = self._make_other_rank_hashers(vllm_config)
             self._seed = self.request_hasher("UCM_HASH_SEED")
-            # init scheduler-size connector
+            # init scheduler-side connector
             if not defer_scheduler_store:
                 self.store = self._create_store(None)
         else:
@@ -1104,7 +1154,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if "storage_backends" in config:
             backends = [path for path in config["storage_backends"].split(":")]
             config["storage_backends"] = backends
-        config["unique_id"] = f"{self.engine_id}"
+        config["unique_id"] = f"{self.unique_id}"
         if self._role == KVConnectorRole.WORKER:
             config["device_id"] = self.local_rank
             config["tensor_size_list"] = (
@@ -2333,7 +2383,7 @@ class UCMCPConnector(UCMLayerWiseConnector):
             self.request_hasher = RequestHasher(vllm_config, 0)
             self._other_rank_hashers = self._make_other_rank_hashers(vllm_config)
             self._seed = self.request_hasher("UCM_HASH_SEED")
-            # init scheduler-size connector
+            # init scheduler-side connector
             self.store = self._create_store(None)
         else:
             self.request_hasher = RequestHasher(vllm_config, self.tp_rank)
@@ -2601,10 +2651,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         )
         self.connector: KVConnectorBase_V1
         ucm_config = Config(vllm_config.kv_transfer_config)
-        dp_engine_id_suffix = re.compile(r"_dp\d+$")
-        self.engine_id = dp_engine_id_suffix.sub(
-            "", vllm_config.kv_transfer_config.engine_id
-        )
+        self.engine_id = vllm_config.kv_transfer_config.engine_id.rsplit("_dp", 1)[0]
         self.launch_config = ucm_config.get_config()
         self._worker_rank = (
             get_world_group().rank

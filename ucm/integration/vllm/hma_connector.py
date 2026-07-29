@@ -380,9 +380,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self.load_tokens_threshold = self.launch_config.get("load_tokens_threshold", 0)
 
         if role == KVConnectorRole.SCHEDULER:
-            self.store = self._create_fa_store(None)
-            self.fa_store = self.store
+            self.fa_store = self._create_fa_store(None)
             self.wa_store = self._create_wa_store(None)
+
         group_meta_summary = tuple(
             {
                 "group_id": meta.group_id,
@@ -668,7 +668,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             config["storage_backends"] = [
                 path for path in config["storage_backends"].split(":")
             ]
-        config["unique_id"] = f"{self.engine_id}_fawa_{store_suffix}"
+        config["unique_id"] = f"{self.unique_id}_fawa_{store_suffix}"
         self._namespace_storage_backends(config, store_suffix)
         dp_rank = self._vllm_config.parallel_config.data_parallel_rank
         config["posix_gc_enable"] = (
