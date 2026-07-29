@@ -52,7 +52,8 @@ struct ScatterGatherEntry;
 
 class ConnectionManager {
 public:
-    ConnectionManager(TransProvider& provider, const std::string& localIp, std::uint32_t timeout);
+    ConnectionManager(TransProvider& provider, const std::string& localIp, std::uint32_t timeout,
+                      std::uint32_t maxErrorCount = 2);
     ~ConnectionManager();
 
     Status AddGroup(const AsuEndpoint& endpoint, std::uint32_t qp_num);
@@ -62,6 +63,7 @@ public:
     std::shared_ptr<ConnectionChannel> GetActiveConnection();
     void SetRoutingPolicy(RoutingPolicy policy);
     void ReportFailure(const std::shared_ptr<ConnectionChannel>& channel);
+    void ReportSuccess(const std::shared_ptr<ConnectionChannel>& channel);
 
     void StartRecoverLoop();
     void StopRecoverLoop();
@@ -81,7 +83,6 @@ private:
     std::atomic<std::uint32_t> rrIndex_{0};
     RoutingPolicy routingPolicy_{RoutingPolicy::ROUND_ROBIN};
     static constexpr std::uint32_t kMaxInflightPerChannel = 256;
-    static constexpr std::uint32_t kFailureThreshold = 2;
     static constexpr std::uint64_t kRecoverIntervalMs = 100;
 
     std::thread recoverWorker_;
@@ -93,6 +94,7 @@ private:
     TransProvider& provider_;
     std::string localIp_;
     std::uint32_t timeout_;
+    std::uint32_t maxErrorCount_;
 
     void RecoverLoop();
     void RebuildChannelCache();

@@ -173,6 +173,7 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
     transportConfig.asuName = config.asuNamePrefix + "-" + std::to_string(config.asuIds[index]);
     transportConfig.deviceId = config.deviceId;
     transportConfig.timeoutMs = config.timeoutMs;
+    transportConfig.maxErrorCount = static_cast<std::uint32_t>(config.maxErrorCount);
     transportConfig.maxInflightTasks = static_cast<std::uint32_t>(config.maxInflightTasks);
     transportConfig.maxInflightBytes = config.maxInflightBytes;
     transportConfig.providerType = config.transProviderType;
@@ -469,6 +470,7 @@ private:
         }
         inConfig.GetNumber("asu_default_wait_timeout_ms", config.defaultWaitTimeoutMs);
         inConfig.GetNumber("asu_timeout_ms", config.timeoutMs);
+        inConfig.GetNumber("asu_max_error_count", config.maxErrorCount);
         inConfig.GetNumber("asu_max_inflight_tasks", config.maxInflightTasks);
         inConfig.GetNumber("asu_max_inflight_bytes", config.maxInflightBytes);
         inConfig.GetNumber("shard_size", config.shardSize);
@@ -585,6 +587,10 @@ private:
         }
         if (!config.role.empty() && config.role != "scheduler" && config.role != "worker") {
             return Status::InvalidParam("invalid role({})", config.role);
+        }
+        if (config.maxErrorCount == 0 ||
+            config.maxErrorCount > std::numeric_limits<std::uint32_t>::max()) {
+            return Status::InvalidParam("asu_max_error_count must be in uint32 range and nonzero");
         }
         if (config.maxInflightTasks > std::numeric_limits<std::uint32_t>::max()) {
             return Status::InvalidParam("asu_max_inflight_tasks exceeds uint32 range");

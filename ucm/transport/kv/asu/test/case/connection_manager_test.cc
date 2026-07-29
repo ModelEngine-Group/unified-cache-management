@@ -23,9 +23,11 @@
  * */
 #include "connection_manager.h"
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <gtest/gtest.h>
 #include <set>
+#include <thread>
 #include <vector>
 #include "connection_internal.h"
 #include "trans_provider.h"
@@ -113,6 +115,7 @@ TEST(ConnectionChannelTest, InitialStateIsActiveWithZeroCounters)
 
     EXPECT_EQ(ch.GetState(), ChannelState::ACTIVE);
     EXPECT_EQ(ch.GetInflightCount(), 0u);
+    EXPECT_EQ(ch.GetErrorCount(), 0u);
     EXPECT_EQ(ch.GetChannelId(), 0u);
     EXPECT_EQ(ch.GetGroup(), &group);
     EXPECT_EQ(ch.GetConnection(), handle);
@@ -145,6 +148,19 @@ TEST(ConnectionChannelTest, FetchAddErrorCountAccumulates)
 
     old = ch.FetchAddErrorCount(3);
     EXPECT_EQ(old, 2u);
+}
+
+TEST(ConnectionChannelTest, ErrorCountAccumulatesAndResets)
+{
+    ConnectionGroup group(0, MakeEndpoint());
+    ConnectionChannel ch(0, &group, nullptr, nullptr);
+
+    EXPECT_EQ(ch.FetchAddErrorCount(1), 0u);
+    EXPECT_EQ(ch.FetchAddErrorCount(1), 1u);
+    EXPECT_EQ(ch.GetErrorCount(), 2u);
+
+    ch.ResetErrorCount();
+    EXPECT_EQ(ch.GetErrorCount(), 0u);
 }
 
 TEST(ConnectionChannelTest, MarkForDrainTransitionsActiveToDraining)
@@ -376,6 +392,72 @@ TEST(ConnectionManagerTest, ReportFailureAtThresholdMarksForDrain)
     mgr.ReportFailure(ch);
     mgr.ReportFailure(ch);
     EXPECT_EQ(ch->GetState(), ChannelState::DRAINING);
+}
+
+TEST(ConnectionManagerTest, ReportFailureUsesConfiguredThreshold)
+{
+    StubTransProvider provider;
+    ConnectionManager mgr(provider, "", 5000, 3);
+    ASSERT_TRUE(mgr.AddGroup(MakeEndpoint(), 1).ok());
+
+    auto ch = mgr.SelectConnection();
+    ASSERT_NE(ch, nullptr);
+
+    mgr.ReportFailure(ch);
+    mgr.ReportFailure(ch);
+    EXPECT_EQ(ch->GetErrorCount(), 2u);
+    EXPECT_EQ(ch->GetState(), ChannelState::ACTIVE);
+
+    mgr.ReportFailure(ch);
+    EXPECT_EQ(ch->GetErrorCount(), 3u);
+    EXPECT_EQ(ch->GetState(), ChannelState::DRAINING);
+}
+
+TEST(ConnectionManagerTest, SuccessfulCompletionResetsErrorCount)
+{
+    StubTransProvider provider;
+    ConnectionManager mgr(provider, "", 5000, 3);
+    ASSERT_TRUE(mgr.AddGroup(MakeEndpoint(), 1).ok());
+
+    auto ch = mgr.SelectConnection();
+    ASSERT_NE(ch, nullptr);
+
+    mgr.ReportFailure(ch);
+    mgr.ReportFailure(ch);
+    mgr.ReportSuccess(ch);
+    EXPECT_EQ(ch->GetErrorCount(), 0u);
+
+    mgr.ReportFailure(ch);
+    mgr.ReportFailure(ch);
+    EXPECT_EQ(ch->GetState(), ChannelState::ACTIVE);
+}
+
+TEST(ConnectionManagerTest, FailureThresholdRecreatesConnection)
+{
+    g_createCount = 0;
+    g_deleteCount = 0;
+    StubTransProvider provider;
+    ConnectionManager mgr(provider, "", 5000, 1);
+    ASSERT_TRUE(mgr.AddGroup(MakeEndpoint(), 1).ok());
+    mgr.StartRecoverLoop();
+
+    auto oldChannel = mgr.SelectConnection();
+    ASSERT_NE(oldChannel, nullptr);
+    oldChannel->ReleaseInflight();
+    mgr.ReportFailure(oldChannel);
+    oldChannel.reset();
+
+    std::shared_ptr<ConnectionChannel> newChannel;
+    for (std::uint32_t attempt = 0; attempt < 100 && newChannel == nullptr; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        newChannel = mgr.GetActiveConnection();
+    }
+    mgr.StopRecoverLoop();
+
+    ASSERT_NE(newChannel, nullptr);
+    EXPECT_EQ(newChannel->GetChannelId(), std::uint32_t{1});
+    EXPECT_EQ(g_createCount.load(), 2);
+    EXPECT_EQ(g_deleteCount.load(), 1);
 }
 
 TEST(ConnectionManagerTest, ShutdownClearsAllResources)

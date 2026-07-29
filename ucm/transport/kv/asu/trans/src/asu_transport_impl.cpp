@@ -139,6 +139,9 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
         return Status::OK();
     }
     config_ = config;
+    if (config_.maxErrorCount == 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT, "maxErrorCount must be greater than 0");
+    }
     ioScheduler_ = IoScheduler(config_);
 
     if (!transProvider_) {
@@ -193,7 +196,8 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
     }
 
     connManager_.reset();
-    connManager_ = std::make_unique<ConnectionManager>(*transProvider_, localIp, timeout);
+    connManager_ = std::make_unique<ConnectionManager>(*transProvider_, localIp, timeout,
+                                                       config_.maxErrorCount);
 
     std::uint32_t qp_num = config_.queryQpNum + config_.loadQpNum + config_.storeQpNum;
     UC_DEBUG("AsuTransportImpl::Init endpoints={} qp_num={}", config_.endpoints.size(), qp_num);
@@ -663,6 +667,7 @@ void AsuTransportImpl::PollTaskCompletions(const TransportTaskContextPtr& ctx)
 
                 std::fill(subBatchContext.entryStatus.begin(), subBatchContext.entryStatus.end(),
                           timeoutStatus);
+                connManager_->ReportFailure(subBatchContext.channel);
                 CompleteSubBatch(*ctx, subBatchContext, timeoutStatus);
             }
             ctx->finalStatus = timeoutStatus;
@@ -742,6 +747,8 @@ void AsuTransportImpl::PollTaskCompletions(const TransportTaskContextPtr& ctx)
                 if (status.code == StatusCode::ASU_CQE_INTERNAL_ERROR ||
                     status.code == StatusCode::ASU_CQE_IO_TIMEOUT) {
                     connManager_->ReportFailure(subBatchContext.channel);
+                } else {
+                    connManager_->ReportSuccess(subBatchContext.channel);
                 }
                 CompleteSubBatch(*ctx, subBatchContext, status);
             }

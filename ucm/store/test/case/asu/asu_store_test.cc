@@ -333,6 +333,21 @@ TEST(UCAsuStoreTest, ParsesOperationTimeout)
     EXPECT_EQ(transportConfig.timeoutMs, 321);
 }
 
+TEST(UCAsuStoreTest, PropagatesMaxErrorCountToTransport)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeBackend(store);
+    auto config = MakeBaseConfig();
+    config.SetNumber("asu_max_error_count", std::uint64_t{7});
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+    EXPECT_EQ(state->initConfigs.back().maxErrorCount, std::uint64_t{7});
+
+    auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+    EXPECT_EQ(transportConfig.maxErrorCount, std::uint32_t{7});
+}
+
 TEST(UCAsuStoreTest, RejectsMissingKvNamespaces)
 {
     UC::AsuStore::AsuStore store;
@@ -380,6 +395,23 @@ TEST(UCAsuStoreTest, RejectsInvalidAsuPort)
 
 TEST(UCAsuStoreTest, RejectsTransportIntegerOverflow)
 {
+    {
+        UC::AsuStore::AsuStore store;
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.SetNumber("asu_max_error_count", std::uint64_t{0});
+
+        EXPECT_TRUE(store.Setup(config).Failure());
+    }
+    {
+        UC::AsuStore::AsuStore store;
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.SetNumber("asu_max_error_count",
+                         std::uint64_t{std::numeric_limits<std::uint32_t>::max()} + 1);
+
+        EXPECT_TRUE(store.Setup(config).Failure());
+    }
     {
         UC::AsuStore::AsuStore store;
         auto config = MakeBaseConfig();

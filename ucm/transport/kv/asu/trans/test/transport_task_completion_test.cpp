@@ -114,6 +114,16 @@ protected:
     std::unique_ptr<AsuTransportImpl> transport_;
 };
 
+TEST_F(TransportTaskCompletionTest, InitRejectsZeroMaxErrorCount)
+{
+    TransportConfig config;
+    config.maxErrorCount = 0;
+
+    const auto status = transport_->Init(config);
+
+    EXPECT_EQ(status.code, StatusCode::INVALID_ARGUMENT);
+}
+
 TEST_F(TransportTaskCompletionTest, InitializeCountsAlreadyTerminalSubBatches)
 {
     TransportTaskContext ctx;
@@ -170,6 +180,12 @@ TEST_F(TransportTaskCompletionTest, PollTaskCompletionsReadsDeviceFlagBuffer)
                           kTestBufferSlotNum, provider)
                     .ok());
     deviceTransport.protocolManager_ = std::make_unique<ProtocolManager>();
+    deviceTransport.connManager_ = std::make_unique<ConnectionManager>(*provider, "", 5000, 2);
+    ASSERT_TRUE(deviceTransport.connManager_->AddGroup(AsuEndpoint{}, 1).ok());
+    auto channel = deviceTransport.connManager_->SelectConnection();
+    ASSERT_NE(channel, nullptr);
+    deviceTransport.connManager_->ReportFailure(channel);
+    ASSERT_EQ(channel->GetErrorCount(), std::uint32_t{1});
 
     auto ctx = std::make_shared<TransportTaskContext>();
     ctx->state.store(TransportTaskState::INFLIGHT, std::memory_order_release);
@@ -180,6 +196,7 @@ TEST_F(TransportTaskCompletionTest, PollTaskCompletionsReadsDeviceFlagBuffer)
     subBatchContext.cid = 123;
     subBatchContext.opType = TransportOpType::BATCH_STORE;
     subBatchContext.entryStatus.assign(2, Status::OK());
+    subBatchContext.channel = channel;
     ASSERT_TRUE(
         deviceTransport.flagBufferManager_
             .Allocate((kCqeDwordCount + 1) * sizeof(std::uint32_t), subBatchContext.flagBuffer)
@@ -204,10 +221,52 @@ TEST_F(TransportTaskCompletionTest, PollTaskCompletionsReadsDeviceFlagBuffer)
     EXPECT_TRUE(subBatchContext.entryStatus[0].ok());
     EXPECT_TRUE(subBatchContext.entryStatus[1].ok());
     EXPECT_EQ(subBatchContext.flagBuffer.slot_index, UINT32_MAX);
+    EXPECT_EQ(channel->GetErrorCount(), std::uint32_t{0});
+}
+
+TEST_F(TransportTaskCompletionTest, FailureCqeAccumulatesWithoutSuccessReset)
+{
+    auto* provider = transport_->transProvider_.get();
+    transport_->protocolManager_ = std::make_unique<ProtocolManager>();
+    transport_->connManager_ = std::make_unique<ConnectionManager>(*provider, "", 5000, 3);
+    ASSERT_TRUE(transport_->connManager_->AddGroup(AsuEndpoint{}, 1).ok());
+    auto channel = transport_->connManager_->SelectConnection();
+    ASSERT_NE(channel, nullptr);
+    transport_->connManager_->ReportFailure(channel);
+    ASSERT_EQ(channel->GetErrorCount(), std::uint32_t{1});
+
+    auto ctx = std::make_shared<TransportTaskContext>();
+    ctx->state.store(TransportTaskState::INFLIGHT, std::memory_order_release);
+    ctx->subBatchContexts.resize(1);
+
+    auto& subBatchContext = ctx->subBatchContexts[0];
+    subBatchContext.cid = 123;
+    subBatchContext.opType = TransportOpType::BATCH_STORE;
+    subBatchContext.entryStatus.assign(1, Status::OK());
+    subBatchContext.channel = channel;
+    ASSERT_TRUE(
+        transport_->flagBufferManager_
+            .Allocate((kCqeDwordCount + 1) * sizeof(std::uint32_t), subBatchContext.flagBuffer)
+            .ok());
+
+    auto* cqe = reinterpret_cast<std::uint32_t*>(subBatchContext.flagBuffer.local_addr);
+    cqe[3] = subBatchContext.cid | (0x716U << 17);
+
+    transport_->PollTaskCompletions(ctx);
+
+    EXPECT_EQ(channel->GetErrorCount(), std::uint32_t{2});
+    EXPECT_EQ(channel->GetState(), ChannelState::ACTIVE);
+    EXPECT_EQ(subBatchContext.status.code, StatusCode::ASU_CQE_IO_TIMEOUT);
 }
 
 TEST_F(TransportTaskCompletionTest, PollTaskCompletionsTimesOutAndReleasesResources)
 {
+    auto* provider = transport_->transProvider_.get();
+    transport_->connManager_ = std::make_unique<ConnectionManager>(*provider, "", 5000, 2);
+    ASSERT_TRUE(transport_->connManager_->AddGroup(AsuEndpoint{}, 1).ok());
+    auto channel = transport_->connManager_->SelectConnection();
+    ASSERT_NE(channel, nullptr);
+
     auto ctx = std::make_shared<TransportTaskContext>();
     ctx->taskId = 1;
     ctx->state.store(TransportTaskState::INFLIGHT, std::memory_order_release);
@@ -218,6 +277,7 @@ TEST_F(TransportTaskCompletionTest, PollTaskCompletionsTimesOutAndReleasesResour
     auto& subBatchContext = ctx->subBatchContexts[0];
     subBatchContext.opType = TransportOpType::BATCH_STORE;
     subBatchContext.entryStatus.assign(2, Status::OK());
+    subBatchContext.channel = channel;
     ASSERT_TRUE(transport_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
     ASSERT_TRUE(transport_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
 
@@ -238,6 +298,35 @@ TEST_F(TransportTaskCompletionTest, PollTaskCompletionsTimesOutAndReleasesResour
     EXPECT_EQ(callbackResult.entryStatus[1].code, StatusCode::TIMEOUT);
     EXPECT_EQ(subBatchContext.sendSge.slot_index, UINT32_MAX);
     EXPECT_EQ(subBatchContext.flagBuffer.slot_index, UINT32_MAX);
+    EXPECT_EQ(channel->GetErrorCount(), std::uint32_t{1});
+    EXPECT_EQ(channel->GetState(), ChannelState::ACTIVE);
+}
+
+TEST_F(TransportTaskCompletionTest, ExecutionTimeoutCountsEachSubBatch)
+{
+    auto* provider = transport_->transProvider_.get();
+    transport_->connManager_ = std::make_unique<ConnectionManager>(*provider, "", 5000, 2);
+    ASSERT_TRUE(transport_->connManager_->AddGroup(AsuEndpoint{}, 1).ok());
+    auto channel = transport_->connManager_->SelectConnection();
+    ASSERT_NE(channel, nullptr);
+    auto sameChannel = transport_->connManager_->SelectConnection();
+    ASSERT_EQ(sameChannel, channel);
+
+    auto ctx = std::make_shared<TransportTaskContext>();
+    ctx->state.store(TransportTaskState::INFLIGHT, std::memory_order_release);
+    ctx->deadline = std::chrono::steady_clock::now();
+    ctx->entryStatus.assign(2, Status::OK());
+    ctx->subBatchContexts.resize(2);
+    for (auto& subBatchContext : ctx->subBatchContexts) {
+        subBatchContext.channel = channel;
+        subBatchContext.entryStatus.assign(1, Status::OK());
+    }
+
+    transport_->PollTaskCompletions(ctx);
+
+    EXPECT_EQ(channel->GetErrorCount(), std::uint32_t{2});
+    EXPECT_EQ(channel->GetState(), ChannelState::DRAINING);
+    EXPECT_EQ(channel->GetInflightCount(), std::uint32_t{0});
 }
 
 TEST_F(TransportTaskCompletionTest, ReleaseSubBatchResourcesPreservesSubBatchStatus)
