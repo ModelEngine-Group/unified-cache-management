@@ -4,7 +4,7 @@ import os
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, List, Optional
 
 import numpy as np
 import torch
@@ -35,11 +35,13 @@ from ucm.integration.vllm.ucm_connector import (
     _drop_null_vllm_blocks,
     _record_counter,
     _short_list,
+    _use_ucm_connector_cpu_affinity,
 )
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmetrics
 from ucm.sparse.state import has_ucm_sparse
-from ucm.store.ucmstore_v1 import Task
+from ucm.store.factory_v1 import UcmConnectorFactoryV1
+from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
@@ -110,6 +112,14 @@ def extend_non_null(
             continue
         dst_ucm_block_ids.append(ucm_block_id)
         dst_vllm_block_ids.append(vllm_block_id)
+
+
+def _normalize_tensor_size_list(tensor_size_list: Any) -> list[int]:
+    if isinstance(tensor_size_list, np.ndarray):
+        return [int(v) for v in tensor_size_list.reshape(-1).tolist()]
+    if isinstance(tensor_size_list, (list, tuple)):
+        return [int(v) for v in tensor_size_list]
+    return [int(tensor_size_list)]
 
 
 @dataclass
@@ -793,12 +803,111 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             self._kv_cache_config,
         )
 
+    def _create_store(
+        self,
+        kv_cache_layout: Optional[KVCacheLayout],
+        cpu_affinity_cores: Optional[list[int]] = None,
+        tensor_size_list_override: Optional[list[int]] = None,
+        shard_size_override: Optional[int] = None,
+        block_size_override: Optional[int] = None,
+        unique_id_suffix: str = "",
+    ) -> UcmKVStoreBaseV1:
+        if len(self.connector_configs) != 1:
+            raise RuntimeError(
+                f"Expected exactly one connector config, "
+                f"but got {len(self.connector_configs)}: "
+                f"{self.connector_configs}"
+            )
+
+        name = self.connector_configs[0]["ucm_connector_name"]
+        module_path = self.connector_configs[0].get("ucm_connector_module_path", None)
+        config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
+        config.setdefault("share_buffer_enable", self.is_mla)
+        self._set_default_shm_buffer_capacity(config)
+        if "storage_backends" in config:
+            backends = [path for path in config["storage_backends"].split(":")]
+            config["storage_backends"] = backends
+        config["unique_id"] = f"{self.engine_id}{unique_id_suffix}"
+        if self._role == KVConnectorRole.WORKER:
+            config["device_id"] = self.local_rank
+            tensor_size_list = _normalize_tensor_size_list(
+                tensor_size_list_override
+                if tensor_size_list_override is not None
+                else kv_cache_layout.tensor_size_list
+            )
+            config["tensor_size_list"] = tensor_size_list * self.blocks_per_chunk
+            shard_size = (
+                shard_size_override
+                if shard_size_override is not None
+                else kv_cache_layout.shard_size
+            )
+            block_size = (
+                block_size_override
+                if block_size_override is not None
+                else kv_cache_layout.block_size
+            )
+            config["shard_size"] = shard_size * self.blocks_per_chunk
+            config["block_size"] = block_size * self.blocks_per_chunk
+            config["local_rank_size"] = self.tp_size if self.is_mla else 1
+            buffer_addrs = kv_cache_layout.base_ptrs.reshape(-1).tolist()
+            buffer_sizes = kv_cache_layout.buffer_sizes.reshape(-1).tolist()
+            gpu_kv_buffer_set = set()
+            gpu_kv_buffer_addrs = []
+            gpu_kv_buffer_sizes = []
+            for addr, size in zip(buffer_addrs, buffer_sizes):
+                # Layerwise padding is store metadata only. Never register a
+                # ghost (nullptr, zero-sized) slot as a real device buffer.
+                if int(addr) == 0 or int(size) == 0:
+                    continue
+                key = (int(addr), int(size))
+                if key in gpu_kv_buffer_set:
+                    continue
+                gpu_kv_buffer_set.add(key)
+                gpu_kv_buffer_addrs.append(key[0])
+                gpu_kv_buffer_sizes.append(key[1])
+            config["gpu_kv_buffer_addrs"] = gpu_kv_buffer_addrs
+            config["gpu_kv_buffer_sizes"] = gpu_kv_buffer_sizes
+            if cpu_affinity_cores:
+                config["cpu_affinity_cores"] = list(cpu_affinity_cores)
+        else:
+            config_base = self.block_size * self.element_size * self.head_size
+            config["block_size"] = (
+                config_base
+                * self.num_layers
+                * (1 if self.is_mla else self.num_head * 2)
+                * self.blocks_per_chunk
+            )
+        dp_rank = self._vllm_config.parallel_config.data_parallel_rank
+        config["posix_gc_enable"] = (
+            self._role != KVConnectorRole.WORKER and dp_rank == 0
+        )
+        logger.info(f"create {name} with config: {config}")
+        return UcmConnectorFactoryV1.create_connector(name, config, module_path)
+
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         self.kv_caches = kv_caches
         self.kv_cache_layout = self._create_kv_cache_layout(self.kv_caches)
-        self.store = self._create_store(self.kv_cache_layout)
         self.block_data_size = self.kv_cache_layout.block_size
         self.device = create_device()
+
+        enable_affinity = _use_ucm_connector_cpu_affinity()
+        worker_cores, store_cores = (
+            self.device.split_cores(self.local_rank)
+            if enable_affinity
+            else (None, None)
+        )
+
+        self.store = self._create_store(
+            kv_cache_layout=self.kv_cache_layout,
+            cpu_affinity_cores=store_cores,
+        )
+
+        if worker_cores:
+            try:
+                os.sched_setaffinity(0, worker_cores)
+                logger.info(f"[VLLM CPU Affinity] Worker bound to cores {worker_cores}")
+            except Exception as e:
+                logger.warning(f"Failed to bind worker: {e}")
 
     def get_num_new_matched_tokens(
         self, request: "Request", num_computed_tokens: int
@@ -829,10 +938,29 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         primary_full_attn = self.group_manager.full_attn_groups[0]
         primary_block_ids = group_ucm_block_ids[primary_full_attn.group_id]
 
+        # Pre-lookup reduction: leave at least recompute_tokens for vLLM to
+        # recompute, so the batch isn't dispatched as uniform decode into FULL
+        # cudagraph. For hybrid this also avoids looking up the last block(s)
+        # whose mamba state may not be valid in HBM at dump time.
+        recompute_tokens = self._get_full_hit_recompute_tokens()
+        max_hit_lcm_blocks = max(
+            0, (request.num_tokens - recompute_tokens) // lcm_block_size
+        )
+        total_lcm_blocks = request.num_tokens // lcm_block_size
+
+        if max_hit_lcm_blocks < total_lcm_blocks:
+            lookup_block_ids = []
+            for gid, group in enumerate(self.group_manager.groups_by_id):
+                ids = group_ucm_block_ids[gid]
+                group_max = max_hit_lcm_blocks * (lcm_block_size // group.block_size)
+                lookup_block_ids.append(ids[:group_max])
+        else:
+            lookup_block_ids = group_ucm_block_ids
+
         external_hit_tokens, external_hit_lcm_blocks, mamba_prefetch_hashes = (
             self.group_manager.lookup_external_hit_tokens(
                 num_computed_tokens,
-                group_ucm_block_ids,
+                lookup_block_ids,
                 lambda block_ids: self._rank_consistency.lookup_on_prefix(
                     self.store, block_ids
                 ),
@@ -870,13 +998,6 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             self.store.prefetch(mamba_prefetch_hashes)
         self._prefetch_other_rank_hashes(all_hit_full_attn + mamba_prefetch_hashes)
 
-        logger.info_once(
-            f"request_id: {request.request_id}, "
-            f"total_lcm_blocks: {request.num_tokens // lcm_block_size}, "
-            f"hit hbm: {hbm_hit_block_num}, "
-            f"hit external: {external_hit_lcm_blocks}, "
-            f"total_tokens: {len(request.all_token_ids)}"
-        )
         if len(primary_block_ids) > 0:
             ucmmetrics.update_stats(
                 {
@@ -886,10 +1007,18 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 },
             )
 
-        # Recompute last token when fully cached (vLLM needs logits).
+        # No post-lookup workaround: pre-lookup truncation already ensures
+        # total_hit_tokens == external_hit_tokens, and the mamba state at
+        # total_hit_tokens is a position the store actually verified.
         num_total_hit_tokens = total_hit_block_num * lcm_block_size
-        if num_total_hit_tokens == request.num_tokens and external_hit_tokens > 0:
-            external_hit_tokens -= 1
+
+        logger.info_once(
+            f"request_id: {request.request_id}, "
+            f"total_lcm_blocks: {request.num_tokens // lcm_block_size}, "
+            f"hit hbm: {hbm_hit_block_num}, "
+            f"hit external: {total_hit_block_num - hbm_hit_block_num}, "
+            f"total_tokens: {len(request.all_token_ids)}"
+        )
 
         self.requests_meta[request.request_id] = HLARequestMeta(
             ucm_block_ids=primary_block_ids,
@@ -1052,19 +1181,20 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                         req_meta.group_vllm_block_ids[gid][start_blk:end_blk],
                     )
                 else:
-                    # Dump mamba state at each LCM boundary in range.
-                    if first_lcm_b > last_lcm_b:
+                    # Only dump when the chunk ends exactly at an LCM
+                    # boundary, so the state at last_lcm_b is the running
+                    # state. If dump_tok_end is not aligned, the HBM slot
+                    # at last_lcm_b may have been overwritten by the mamba
+                    # kernel's running state update for the partial block.
+                    if dump_tok_end != last_lcm_b or last_lcm_b < first_lcm_b:
                         continue
-                    b = first_lcm_b
-                    while b <= last_lcm_b:
-                        append_mamba_align_state_block(
-                            dump_ucm_block_ids,
-                            dump_vllm_block_ids,
-                            gid,
-                            b,
-                            "dump",
-                        )
-                        b += lcm_block_size
+                    append_mamba_align_state_block(
+                        dump_ucm_block_ids,
+                        dump_vllm_block_ids,
+                        gid,
+                        last_lcm_b,
+                        "dump",
+                    )
             req_meta.token_processed += new_tokens
 
         return RequestDispatchMeta(
@@ -1348,12 +1478,27 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
 
         self.device = create_device()
 
+        enable_affinity = _use_ucm_connector_cpu_affinity()
+        worker_cores, store_cores = (
+            self.device.split_cores(self.local_rank)
+            if enable_affinity
+            else (None, None)
+        )
+
         self.store = self._create_store(
-            self.kv_cache_layout,
+            kv_cache_layout=self.kv_cache_layout,
+            cpu_affinity_cores=store_cores,
             tensor_size_list_override=row_tensor_size_list,
             shard_size_override=row_shard_size,
             block_size_override=row_shard_size * (max(self.row_ids) + 1),
         )
+
+        if worker_cores:
+            try:
+                os.sched_setaffinity(0, worker_cores)
+                logger.info(f"[VLLM CPU Affinity] Worker bound to cores {worker_cores}")
+            except Exception as e:
+                logger.warning(f"Failed to bind worker: {e}")
 
         row_to_layers: dict[int, list[str]] = defaultdict(list)
         for layer_name, row_id in self.layer_name_to_row.items():

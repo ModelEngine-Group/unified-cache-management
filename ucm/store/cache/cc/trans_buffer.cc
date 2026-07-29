@@ -53,14 +53,16 @@ struct BufferMetaNode {
     size_t hash;
     size_t prev;
     size_t next;
-    bool ready;
+    TransBuffer::State state;
+    int32_t errorCode;
     void Init()
     {
         reference = 0;
         hash = invalidIndex;
         prev = invalidIndex;
         next = invalidIndex;
-        ready = false;
+        state = TransBuffer::State::LOADING;
+        errorCode = Status::OK().Underlying();
     }
 };
 
@@ -254,7 +256,7 @@ protected:
         bool TryLock() { return pthread_spin_trylock(&lock) == 0; }
         void Unlock() { pthread_spin_unlock(&lock); }
     };
-    static constexpr size_t sharedBufferMagic = (('S' << 16) | ('b' << 8) | 1);
+    static constexpr size_t sharedBufferMagic = (('S' << 16) | ('b' << 8) | 2);
     struct BufferHeader {
         std::atomic<size_t> magic;
         ShareLock lock;
@@ -569,6 +571,10 @@ size_t TransBuffer::FindAt(size_t iBucket, const Detail::BlockId& blockId, size_
         strategy_->NodeLock(iNode);
         if (meta->block == blockId && meta->shard == shardIdx) {
             owner = meta->reference == 0;
+            if (owner && meta->state == State::FAILED) {
+                meta->state = State::LOADING;
+                meta->errorCode = Status::OK().Underlying();
+            }
             ++meta->reference;
             strategy_->NodeUnlock(iNode);
             break;
@@ -606,7 +612,8 @@ size_t TransBuffer::Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_
         ++meta->reference;
         meta->block = blockId;
         meta->shard = shardIdx;
-        meta->ready = false;
+        meta->state = State::LOADING;
+        meta->errorCode = Status::OK().Underlying();
         strategy_->NodeUnlock(iNode);
         return iNode;
     }
@@ -668,25 +675,55 @@ void TransBuffer::Release(Index pos)
     strategy_->NodeUnlock(pos);
 }
 
-bool TransBuffer::Ready(Index pos)
+bool TransBuffer::Ready(Index pos) { return GetState(pos) == State::READY; }
+
+TransBuffer::State TransBuffer::GetState(Index pos)
 {
     strategy_->NodeLock(pos);
-    auto ready = strategy_->MetaAt(pos)->ready;
+    auto state = strategy_->MetaAt(pos)->state;
     strategy_->NodeUnlock(pos);
-    return ready;
+    return state;
+}
+
+Status TransBuffer::FailureStatus(Index pos)
+{
+    strategy_->NodeLock(pos);
+    auto errorCode = strategy_->MetaAt(pos)->errorCode;
+    strategy_->NodeUnlock(pos);
+    if (errorCode == Status::OK().Underlying()) {
+        return Status::Error("shared buffer failed without an error status");
+    }
+    return Status{errorCode, {}};
 }
 
 void TransBuffer::MarkReady(Index pos)
 {
     strategy_->NodeLock(pos);
-    strategy_->MetaAt(pos)->ready = true;
+    auto meta = strategy_->MetaAt(pos);
+    if (meta->state == State::LOADING) {
+        meta->state = State::READY;
+        meta->errorCode = Status::OK().Underlying();
+    }
+    strategy_->NodeUnlock(pos);
+}
+
+void TransBuffer::MarkFailed(Index pos, const Status& status)
+{
+    strategy_->NodeLock(pos);
+    auto meta = strategy_->MetaAt(pos);
+    if (meta->state == State::LOADING) {
+        meta->state = State::FAILED;
+        meta->errorCode = status.Underlying();
+    }
     strategy_->NodeUnlock(pos);
 }
 
 void TransBuffer::MarkNotReady(Index pos)
 {
     strategy_->NodeLock(pos);
-    strategy_->MetaAt(pos)->ready = false;
+    auto meta = strategy_->MetaAt(pos);
+    meta->state = State::LOADING;
+    meta->errorCode = Status::OK().Underlying();
     strategy_->NodeUnlock(pos);
 }
 

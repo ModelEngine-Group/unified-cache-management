@@ -85,19 +85,6 @@ def _has_shared_indexer_layers(vllm_config: "VllmConfig") -> bool:
     )
 
 
-def _supports_ascend_shared_indexer_layout(vllm_config: "VllmConfig") -> bool:
-    is_ascend = getattr(current_platform, "device_type", None) == "npu"
-    return is_ascend and _has_shared_indexer_layers(vllm_config)
-
-
-def _normalize_tensor_size_list(tensor_size_list: Any) -> list[int]:
-    if isinstance(tensor_size_list, np.ndarray):
-        return [int(v) for v in tensor_size_list.reshape(-1).tolist()]
-    if isinstance(tensor_size_list, (list, tuple)):
-        return [int(v) for v in tensor_size_list]
-    return [int(tensor_size_list)]
-
-
 def _short_list(values: list[int], limit: int = 12) -> list[int]:
     return values[:limit]
 
@@ -344,19 +331,6 @@ class KVCacheLayout:
             + self.base_ptrs[None, :, :]
         )  # (num_blocks, n_layers, n_ptrs)
 
-    def extract_block_addrs_for_row(
-        self, vllm_block_ids: List[int], row_id: int
-    ) -> np.ndarray:
-        if not self.use_layerwise:
-            raise ValueError(
-                "Row address extraction requires a layerwise KV cache layout"
-            )
-        vllm_block_ids_np = np.asarray(vllm_block_ids, dtype=np.uint64)
-        return (
-            vllm_block_ids_np[:, None] * self.block_stride_lists[row_id][None, :]
-            + self.base_ptrs[row_id][None, :]
-        )
-
     @property
     def tensor_size_list(self) -> list[int]:
         return (
@@ -388,10 +362,23 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
     mask behavior to the generic KV cache layout.
     """
 
+    CUDA_TENSOR_ROLE_PATTERNS = {
+        "indexer": (
+            re.compile(
+                r"(?:^|\.)indexer(?:\.|$)",
+                re.IGNORECASE,
+            ),
+        ),
+    }
+    CUDA_DEFAULT_TENSOR_ROLE = "attention"
+
     @classmethod
     def supports(cls, vllm_config: "VllmConfig", ucm_config: dict) -> bool:
-        return bool(ucm_config.get("use_layerwise", False)) and (
-            _supports_ascend_shared_indexer_layout(vllm_config)
+        device_type = getattr(current_platform, "device_type", None)
+        return (
+            bool(ucm_config.get("use_layerwise", False))
+            and device_type in ("npu", "cuda")
+            and _has_shared_indexer_layers(vllm_config)
         )
 
     @staticmethod
@@ -446,11 +433,270 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
             return "bf16"
         return "shared"
 
+    @classmethod
+    def _cuda_cache_role(cls, layer_name: str) -> str:
+        """Classify a CUDA cache using the extensible role-pattern mapping."""
+        path_components = [
+            component for component in layer_name.lower().split(".") if component
+        ]
+        for index, component in enumerate(path_components[:-1]):
+            if component == "layers" and path_components[index + 1].isdigit():
+                path_components = path_components[index + 2 :]
+                break
+        semantic_name = ".".join(path_components)
+        for role, patterns in cls.CUDA_TENSOR_ROLE_PATTERNS.items():
+            if any(pattern.search(semantic_name) for pattern in patterns):
+                return role
+        return cls.CUDA_DEFAULT_TENSOR_ROLE
+
+    @staticmethod
+    def _cuda_tensor_infos(
+        layer_name: str,
+        tensor: torch.Tensor,
+        role: str,
+    ) -> tuple[KVCacheTensorInfo, ...]:
+        """Describe block-first CUDA tensors, splitting combined K/V caches."""
+        if tensor.dim() == 5:
+            if role != "attention" or tensor.shape[0] != 2:
+                raise ValueError(
+                    "CUDA 5D combined KV cache must be an Attention tensor "
+                    "with shape [2, num_blocks, ...]: "
+                    f"layer={layer_name}, role={role}, shape={tuple(tensor.shape)}."
+                )
+            component_tensors = (tensor[0], tensor[1])
+        else:
+            component_tensors = (tensor,)
+
+        tensor_infos = []
+        for component in component_tensors:
+            bytes_per_block = int(component.stride(0)) * int(component.element_size())
+            payload_size = math.prod(int(size) for size in component.shape[1:]) * int(
+                component.element_size()
+            )
+            if bytes_per_block != payload_size:
+                raise ValueError(
+                    "CUDA Shared Indexer KV cache requires contiguous blocks: "
+                    f"layer={layer_name}, block_stride={bytes_per_block}, "
+                    f"payload_size={payload_size}."
+                )
+
+            tensor_infos.append(
+                KVCacheTensorInfo(
+                    ptr=int(component.data_ptr()),
+                    bytes_per_block=bytes_per_block,
+                    buffer_size=int(component.shape[0]) * bytes_per_block,
+                )
+            )
+        return tuple(tensor_infos)
+
+    def _build_segment_rows(
+        self,
+        layers: list[SharedIndexerLayerInfo],
+        layout_mode: str,
+        *,
+        indexer_size: int = 0,
+        index_chunk_size: int = 0,
+        scale_size: int = 0,
+    ) -> list[list[KVCacheSegment]]:
+        """Build fixed-width rows shared by CUDA and Ascend layouts."""
+        segment_rows = []
+        for layer in layers:
+            segments = [
+                self._whole_tensor_segment(tensor) for tensor in layer.sfa_tensors
+            ]
+
+            if layout_mode == "bf16":
+                if layer.indexer is not None:
+                    segments.append(self._whole_tensor_segment(layer.indexer))
+                else:
+                    segments.append(self._ghost_segment(indexer_size))
+            elif layout_mode == "li_c8":
+                if layer.scale is not None:
+                    segments.extend(
+                        [
+                            self._whole_tensor_segment(layer.indexer),
+                            self._whole_tensor_segment(layer.scale),
+                        ]
+                    )
+                else:
+                    segments.extend(
+                        [
+                            self._ghost_segment(index_chunk_size),
+                            self._ghost_segment(scale_size),
+                        ]
+                    )
+            elif layout_mode == "mixed" and layer.scale is not None:
+                segments.extend(
+                    [
+                        self._real_segment(
+                            ptr=layer.indexer.ptr,
+                            copy_size=index_chunk_size,
+                            block_stride=layer.indexer.bytes_per_block,
+                            buffer_size=layer.indexer.buffer_size,
+                        ),
+                        self._ghost_segment(index_chunk_size),
+                        self._whole_tensor_segment(layer.scale),
+                    ]
+                )
+            elif layout_mode == "mixed" and layer.indexer is not None:
+                if layer.indexer.bytes_per_block != 2 * index_chunk_size:
+                    raise ValueError(
+                        "Cannot split BF16 Indexer tensor into two C8-sized "
+                        f"segments: bf16_size={layer.indexer.bytes_per_block}, "
+                        f"c8_size={index_chunk_size}."
+                    )
+                segments.extend(
+                    [
+                        self._real_segment(
+                            ptr=layer.indexer.ptr,
+                            copy_size=index_chunk_size,
+                            block_stride=layer.indexer.bytes_per_block,
+                            buffer_size=layer.indexer.buffer_size,
+                        ),
+                        self._real_segment(
+                            ptr=layer.indexer.ptr + index_chunk_size,
+                            copy_size=index_chunk_size,
+                            block_stride=layer.indexer.bytes_per_block,
+                            buffer_size=0,
+                        ),
+                        self._ghost_segment(scale_size),
+                    ]
+                )
+            elif layout_mode == "mixed":
+                segments.extend(
+                    [
+                        self._ghost_segment(index_chunk_size),
+                        self._ghost_segment(index_chunk_size),
+                        self._ghost_segment(scale_size),
+                    ]
+                )
+            else:
+                raise ValueError(
+                    f"Unsupported Shared Indexer layout mode: {layout_mode}."
+                )
+            segment_rows.append(segments)
+        return segment_rows
+
+    def _set_segment_rows(self, segment_rows: list[list[KVCacheSegment]]) -> None:
+        """Materialize segment metadata in the arrays consumed by the Store."""
+        self.base_ptrs = np.asarray(
+            [[segment.ptr for segment in row] for row in segment_rows],
+            dtype=np.uint64,
+        )
+        self.tensor_size_lists = np.asarray(
+            [[segment.copy_size for segment in row] for row in segment_rows],
+            dtype=np.uint64,
+        )
+        self.block_stride_lists = np.asarray(
+            [[segment.block_stride for segment in row] for row in segment_rows],
+            dtype=np.uint64,
+        )
+        self.buffer_sizes = np.asarray(
+            [[segment.buffer_size for segment in row] for row in segment_rows],
+            dtype=np.uint64,
+        )
+
     def _build_layout(self, kvcaches):
+        """Dispatch platform-specific collection into the shared row builder."""
         if not self.use_layerwise:
             super()._build_layout(kvcaches)
             return
 
+        if getattr(current_platform, "device_type", None) == "cuda":
+            self._build_cuda_layout(kvcaches)
+        else:
+            self._build_ascend_layout(kvcaches)
+
+    def _build_cuda_layout(self, kvcaches) -> None:
+        """Build CUDA rows as fixed ``[Attention, Indexer]`` shards.
+
+        Layers without an independent Indexer keep the same copy schema by
+        receiving a metadata-only ghost segment in the Indexer slot.
+        """
+        layer_tensors: dict[int, dict[str, Optional[tuple[KVCacheTensorInfo, ...]]]] = (
+            {}
+        )
+        for layer_name, tensor in kvcaches.items():
+            layer_id = self.layer_name_to_id[layer_name]
+            layer = layer_tensors.setdefault(
+                layer_id, {"attention": None, "indexer": None}
+            )
+
+            # Classification is independent of dict order and exact suffixes.
+            slot = self._cuda_cache_role(layer_name)
+            if layer[slot] is not None:
+                raise ValueError(
+                    f"Duplicate CUDA Shared Indexer {slot} cache for "
+                    f"layer {layer_id}: {layer_name}."
+                )
+            layer[slot] = self._cuda_tensor_infos(layer_name, tensor, slot)
+
+        row_layer_ids = sorted(layer_tensors)
+        self.first_layer_id = row_layer_ids[0]
+
+        layers = []
+        for layer_id in row_layer_ids:
+            attention = layer_tensors[layer_id]["attention"]
+            if attention is None:
+                raise ValueError(
+                    "CUDA Shared Indexer KV cache layer has no Attention "
+                    f"tensor: layer={layer_id}."
+                )
+            indexer_tensors = layer_tensors[layer_id]["indexer"]
+            if indexer_tensors is not None and len(indexer_tensors) != 1:
+                raise ValueError(
+                    "CUDA Shared Indexer layer must have one Indexer tensor: "
+                    f"layer={layer_id}, count={len(indexer_tensors)}."
+                )
+            layers.append(
+                SharedIndexerLayerInfo(
+                    layer_id=layer_id,
+                    sfa_tensors=attention,
+                    indexer=indexer_tensors[0] if indexer_tensors else None,
+                    scale=None,
+                )
+            )
+
+        attention_sizes = [tensor.bytes_per_block for tensor in layers[0].sfa_tensors]
+        incompatible_attention_layers = {}
+        for layer in layers[1:]:
+            current_attention_sizes = [
+                tensor.bytes_per_block for tensor in layer.sfa_tensors
+            ]
+            if current_attention_sizes != attention_sizes:
+                incompatible_attention_layers[layer.layer_id] = current_attention_sizes
+        if incompatible_attention_layers:
+            raise ValueError(
+                "CUDA Shared Indexer layers must have the same Attention slot "
+                "count and per-block sizes: "
+                f"expected={attention_sizes} from layer {layers[0].layer_id}, "
+                f"incompatible_layers={incompatible_attention_layers}."
+            )
+
+        indexer_layers = [layer for layer in layers if layer.indexer is not None]
+        if not indexer_layers:
+            raise ValueError(
+                "CUDA Shared Indexer KV cache layout did not find any "
+                "independent Indexer layer."
+            )
+        indexer_size = self._validate_uniform_sizes(
+            [layer.indexer.bytes_per_block for layer in indexer_layers],
+            "CUDA Indexer block size",
+            [layer.layer_id for layer in indexer_layers],
+        )
+
+        segment_rows = self._build_segment_rows(
+            layers, layout_mode="bf16", indexer_size=indexer_size
+        )
+        self._set_segment_rows(segment_rows)
+        logger.info(
+            "CUDA Shared Indexer layerwise KV cache layout: "
+            f"slot_sizes={attention_sizes + [indexer_size]}, "
+            f"layer_types={[self._layer_type(layer) for layer in layers]}"
+        )
+
+    def _build_ascend_layout(self, kvcaches) -> None:
+        """Build the existing Ascend SFA C8/BF16/mixed layerwise layout."""
         tensor_rows, row_layer_ids = self._collect_tensor_rows(kvcaches)
         if not tensor_rows or not tensor_rows[0]:
             raise ValueError("KV cache layout must contain at least one tensor")
@@ -513,6 +759,9 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
                 "Shared Indexer KV cache layout did not find any full " "Indexer layer."
             )
 
+        indexer_size = 0
+        index_chunk_size = 0
+        scale_size = 0
         if c8_layers:
             index_chunk_size = self._validate_uniform_sizes(
                 [layer.indexer.bytes_per_block for layer in c8_layers],
@@ -540,95 +789,14 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
             )
             slot_sizes = base_sizes + [indexer_size]
 
-        segment_rows = []
-        for layer in layers:
-            segments = [
-                self._whole_tensor_segment(tensor) for tensor in layer.sfa_tensors
-            ]
-
-            if layout_mode == "bf16":
-                if layer.indexer is not None:
-                    segments.append(self._whole_tensor_segment(layer.indexer))
-                else:
-                    segments.append(self._ghost_segment(indexer_size))
-            elif layout_mode == "li_c8":
-                if layer.scale is not None:
-                    segments.extend(
-                        [
-                            self._whole_tensor_segment(layer.indexer),
-                            self._whole_tensor_segment(layer.scale),
-                        ]
-                    )
-                else:
-                    segments.extend(
-                        [
-                            self._ghost_segment(index_chunk_size),
-                            self._ghost_segment(scale_size),
-                        ]
-                    )
-            elif layer.scale is not None:
-                segments.extend(
-                    [
-                        self._real_segment(
-                            ptr=layer.indexer.ptr,
-                            copy_size=index_chunk_size,
-                            block_stride=layer.indexer.bytes_per_block,
-                            buffer_size=layer.indexer.buffer_size,
-                        ),
-                        self._ghost_segment(index_chunk_size),
-                        self._whole_tensor_segment(layer.scale),
-                    ]
-                )
-            elif layer.indexer is not None:
-                if layer.indexer.bytes_per_block != 2 * index_chunk_size:
-                    raise ValueError(
-                        "Cannot split BF16 Indexer tensor into two C8-sized "
-                        f"segments: bf16_size={layer.indexer.bytes_per_block}, "
-                        f"c8_size={index_chunk_size}."
-                    )
-                segments.extend(
-                    [
-                        self._real_segment(
-                            ptr=layer.indexer.ptr,
-                            copy_size=index_chunk_size,
-                            block_stride=layer.indexer.bytes_per_block,
-                            buffer_size=layer.indexer.buffer_size,
-                        ),
-                        self._real_segment(
-                            ptr=layer.indexer.ptr + index_chunk_size,
-                            copy_size=index_chunk_size,
-                            block_stride=layer.indexer.bytes_per_block,
-                            buffer_size=0,
-                        ),
-                        self._ghost_segment(scale_size),
-                    ]
-                )
-            else:
-                segments.extend(
-                    [
-                        self._ghost_segment(index_chunk_size),
-                        self._ghost_segment(index_chunk_size),
-                        self._ghost_segment(scale_size),
-                    ]
-                )
-            segment_rows.append(segments)
-
-        self.base_ptrs = np.asarray(
-            [[segment.ptr for segment in row] for row in segment_rows],
-            dtype=np.uint64,
+        segment_rows = self._build_segment_rows(
+            layers,
+            layout_mode,
+            indexer_size=indexer_size,
+            index_chunk_size=index_chunk_size,
+            scale_size=scale_size,
         )
-        self.tensor_size_lists = np.asarray(
-            [[segment.copy_size for segment in row] for row in segment_rows],
-            dtype=np.uint64,
-        )
-        self.block_stride_lists = np.asarray(
-            [[segment.block_stride for segment in row] for row in segment_rows],
-            dtype=np.uint64,
-        )
-        self.buffer_sizes = np.asarray(
-            [[segment.buffer_size for segment in row] for row in segment_rows],
-            dtype=np.uint64,
-        )
+        self._set_segment_rows(segment_rows)
 
         logger.info(
             "Shared Indexer layerwise KV cache layout: "
@@ -844,7 +1012,26 @@ class UCMDirectConnector(KVConnectorBase_V1):
         return self.block_size
 
     def _get_full_hit_recompute_tokens(self) -> int:
-        return 1
+        cached = getattr(self, "_recompute_tokens", None)
+        if cached is not None:
+            return cached
+        if not self.use_layerwise:
+            cached = 1
+        else:
+            speculative_config = getattr(self._vllm_config, "speculative_config", None)
+            if speculative_config is None:
+                cached = 2
+            else:
+                spec_token_num = getattr(
+                    speculative_config, "num_speculative_tokens", 0
+                )
+                try:
+                    spec_token_num = int(spec_token_num)
+                except (TypeError, ValueError):
+                    spec_token_num = 0
+                cached = max(spec_token_num, 0) + 2
+        self._recompute_tokens = cached
+        return cached
 
     @staticmethod
     def _record_counter(name: str, value: float = 1.0) -> None:
@@ -900,10 +1087,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def _create_store(
         self,
         kv_cache_layout: Optional[KVCacheLayout],
-        tensor_size_list_override: Optional[list[int]] = None,
-        shard_size_override: Optional[int] = None,
-        block_size_override: Optional[int] = None,
-        unique_id_suffix: str = "",
+        cpu_affinity_cores: Optional[list[int]] = None,
     ) -> UcmKVStoreBaseV1:
         if len(self.connector_configs) != 1:
             raise RuntimeError(
@@ -920,27 +1104,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if "storage_backends" in config:
             backends = [path for path in config["storage_backends"].split(":")]
             config["storage_backends"] = backends
-        config["unique_id"] = f"{self.engine_id}{unique_id_suffix}"
+        config["unique_id"] = f"{self.engine_id}"
         if self._role == KVConnectorRole.WORKER:
             config["device_id"] = self.local_rank
-            tensor_size_list = _normalize_tensor_size_list(
-                tensor_size_list_override
-                if tensor_size_list_override is not None
-                else kv_cache_layout.tensor_size_list
+            config["tensor_size_list"] = (
+                kv_cache_layout.tensor_size_list * self.blocks_per_chunk
             )
-            config["tensor_size_list"] = tensor_size_list * self.blocks_per_chunk
-            shard_size = (
-                shard_size_override
-                if shard_size_override is not None
-                else kv_cache_layout.shard_size
-            )
-            block_size = (
-                block_size_override
-                if block_size_override is not None
-                else kv_cache_layout.block_size
-            )
-            config["shard_size"] = shard_size * self.blocks_per_chunk
-            config["block_size"] = block_size * self.blocks_per_chunk
+            config["shard_size"] = kv_cache_layout.shard_size * self.blocks_per_chunk
+            config["block_size"] = kv_cache_layout.block_size * self.blocks_per_chunk
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
             buffer_addrs = kv_cache_layout.base_ptrs.reshape(-1).tolist()
             buffer_sizes = kv_cache_layout.buffer_sizes.reshape(-1).tolist()
@@ -960,6 +1131,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 gpu_kv_buffer_sizes.append(key[1])
             config["gpu_kv_buffer_addrs"] = gpu_kv_buffer_addrs
             config["gpu_kv_buffer_sizes"] = gpu_kv_buffer_sizes
+            if cpu_affinity_cores:
+                config["cpu_affinity_cores"] = list(cpu_affinity_cores)
         else:
             config_base = self.block_size * self.element_size * self.head_size
             config["block_size"] = (
@@ -1018,7 +1191,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
             else (None, None)
         )
 
-        self.store = self._create_store(self.kv_cache_layout, store_cores)
+        self.store = self._create_store(
+            kv_cache_layout=self.kv_cache_layout,
+            cpu_affinity_cores=store_cores,
+        )
 
         if worker_cores:
             try:
@@ -1118,14 +1294,15 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         external_hit_tokens = external_hit_blocks * self.block_size
 
-        # When all the tokens are cached in ssd or hbm, recompute enough tokens
-        # to keep layerwise loads on the prefill path when speculative decode is
-        # enabled. This branch will be removed once vLLM scheduler provides a
-        # better solution in the future.
+        # Ensure vLLM recomputes enough tokens to avoid FULL cudagraph
+        # (which skips layerwise hooks). To be removed when vLLM scheduler
+        # handles this natively.
         num_total_hit_tokens = total_hit_block_num * self.block_size
-        if num_total_hit_tokens == request.num_tokens:
-            recompute_tokens = self._get_full_hit_recompute_tokens()
-            if external_hit_tokens < recompute_tokens:
+        recompute_tokens = self._get_full_hit_recompute_tokens()
+        actual_recompute_tokens = request.num_tokens - num_total_hit_tokens
+        if actual_recompute_tokens < recompute_tokens:
+            deficit = recompute_tokens - actual_recompute_tokens
+            if external_hit_tokens < deficit:
                 logger.error(
                     f"Full UCM cache hit fallback would make external hit tokens negative: "
                     f"request_id: {request.request_id}, "
@@ -1134,14 +1311,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     f"num_total_hit_tokens: {num_total_hit_tokens}, "
                     f"request_tokens: {request.num_tokens}"
                 )
-            external_hit_tokens = max(0, external_hit_tokens - recompute_tokens)
+            external_hit_tokens = max(0, external_hit_tokens - deficit)
 
         self.requests_meta[request.request_id] = RequestMeta(
             ucm_block_ids=ucm_block_ids,
             hbm_hit_block_num=hbm_hit_block_num,
             total_hit_block_num=total_hit_block_num,
             num_token_ids=len(request.all_token_ids),
-            token_processed=num_total_hit_tokens,
+            token_processed=hbm_hit_block_num * self.block_size + external_hit_tokens,
         )
 
         return external_hit_tokens, False
@@ -1723,26 +1900,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self._mtp_layer_end: Optional[int] = None
         self._init_mtp_layerwise_dump_state()
         logger.info("Init UCMLayerWiseConnector.")
-
-    def _get_full_hit_recompute_tokens(self) -> int:
-        if not self.use_layerwise:
-            return super()._get_full_hit_recompute_tokens()
-
-        speculative_config = getattr(self._vllm_config, "speculative_config", None)
-        if speculative_config is None:
-            return 2
-
-        spec_token_num = getattr(speculative_config, "num_speculative_tokens", 0)
-        try:
-            spec_token_num = int(spec_token_num)
-        except (TypeError, ValueError):
-            logger.warning(
-                f"Invalid speculative token count: {spec_token_num}. "
-                "Fallback to recomputing two tokens on full layerwise UCM cache hit."
-            )
-            spec_token_num = 0
-
-        return max(spec_token_num, 0) + 2
 
     def _layerwise_batch_stats(
         self, total_end: float, save_tail_ms: Optional[float] = None
