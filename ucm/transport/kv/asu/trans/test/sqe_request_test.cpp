@@ -219,8 +219,9 @@ TEST_F(SqeRequestTest, SubmitBatchStoreAllocatesFlagBufferAndBuildsRequest)
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::PENDING);
     EXPECT_TRUE(subBatchContext.status.ok());
     EXPECT_NE(subBatchContext.sendSge.local_addr, std::uint64_t{0});
-    EXPECT_NE(subBatchContext.sendSge.local_addr, subBatchContext.sendSge.device_addr);
-    EXPECT_NE(subBatchContext.flagBuffer.local_addr, subBatchContext.flagBuffer.device_addr);
+    EXPECT_NE(subBatchContext.sendSge.device_addr, std::uint64_t{0});
+    EXPECT_NE(subBatchContext.flagBuffer.local_addr, std::uint64_t{0});
+    EXPECT_NE(subBatchContext.flagBuffer.device_addr, std::uint64_t{0});
 
     const auto* packedSqe =
         reinterpret_cast<const std::uint32_t*>(subBatchContext.sendSge.local_addr);

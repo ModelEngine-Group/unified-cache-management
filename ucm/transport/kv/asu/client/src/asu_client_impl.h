@@ -23,6 +23,8 @@
  * */
 #pragma once
 
+#include <condition_variable>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -89,7 +91,6 @@ public:
     Status UnregisterRegions(const std::vector<MRHandle>& handles) override;
 
 private:
-    using ClientTaskContextPtr = std::shared_ptr<ClientTaskContext>;
     struct PendingQuery {
         AsuId asuId{0};
         std::shared_ptr<AsuTransport> transport;
@@ -98,26 +99,13 @@ private:
         TaskId taskId{kInvalidTaskId};
     };
 
-    // Submits one entry-based client task through the refresh-retry wrapper.
+    // Creates and queues one entry-based client task.
     Status SubmitAsync(ClientOpType opType, const std::vector<KVBuffer>& entries, TaskId& taskId);
-    // Builds and dispatches one entry-based task attempt on the current snapshot.
-    Status SubmitAsyncOnce(ClientOpType opType, const std::vector<KVBuffer>& entries,
-                           TaskId& taskId, bool& needRefresh);
-    // Submits one key-based client task through the refresh-retry wrapper.
+    // Creates and queues one key-based client task.
     Status SubmitAsync(ClientOpType opType, const std::vector<CacheKey>& keys, TaskId& taskId);
-    // Builds and dispatches one key-based task attempt on the current snapshot.
-    Status SubmitAsyncOnce(ClientOpType opType, const std::vector<CacheKey>& keys, TaskId& taskId,
-                           bool& needRefresh);
 
-    // Sends each subtask to its routed transport and records transport task ids.
-    Status DispatchTask(const ClientTaskContextPtr& ctx);
-    // Polls transport subtasks and copies completed entry statuses back by original index.
-    bool PollTask(const ClientTaskContextPtr& ctx);
-    // Converts a client task context into the public task result shape.
-    Status BuildResult(const ClientTaskContextPtr& ctx, TaskResult& result);
-    // Waits for one client task context until completion or timeout.
-    Status WaitTaskContext(const ClientTaskContextPtr& ctx, std::uint64_t timeoutMs,
-                           TaskResult& result);
+    // Runs queued tasks until shutdown and the queue are both complete.
+    void WorkerLoop();
 
     // Performs one query attempt on the current snapshot.
     Status QueryOnce(const std::vector<CacheKey>& keys, const QueryOptions& options,
@@ -148,19 +136,13 @@ private:
 
     // Shuts down transports owned by a snapshot.
     Status ShutdownSnapshotTransports(const std::shared_ptr<ViewSnapshot>& snapshot);
-    // Waits for tracked client tasks before transport shutdown.
-    Status DrainTasksBeforeShutdown(std::uint64_t waitTimeoutMs);
 
-    // Marks whether a status suggests the published snapshot should be refreshed.
-    void MarkRefreshIfNeeded(const Status& status, bool& needRefresh) const;
+    // Returns whether a status suggests the published snapshot should be refreshed.
+    bool IsRefreshNeeded(const Status& status) const;
     // Extracts sorted ASU ids from a view.
     static std::vector<AsuId> GetSortedAsuIds(const GlobalView& view);
     // Parses client config from a file path supplied through the public interface.
     static Status LoadConfig(const std::string& configPath, AsuClientConfig& config);
-    // Returns whether all child statuses are terminal.
-    static bool IsTaskComplete(const TaskResult& result);
-    // Returns whether one task status is terminal.
-    static bool IsTaskStatusComplete(const Status& status);
     // Adds context to a status message.
     static Status WithContext(Status status, const std::string& context);
     // Builds the standard not-initialized status.
@@ -168,6 +150,12 @@ private:
 
     // Tracks aggregate client tasks returned through public TaskId values.
     ClientTaskManager taskManager_;
+    // Protects the client worker queue and shutdown acceptance boundary.
+    std::mutex taskQueueMu_;
+    std::condition_variable taskQueueCv_;
+    std::deque<ClientTaskContextPtr> taskQueue_;
+    bool stopWorker_{true};
+    std::thread worker_;
     // Creates ASU transports; tests inject fake transports through this hook.
     TransportFactory transportFactory_;
     // Creates the external view server during Init.

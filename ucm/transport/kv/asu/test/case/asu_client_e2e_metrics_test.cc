@@ -338,8 +338,8 @@ public:
                                             "fake ASU transport is not initialized");
     }
 
-    Status Query(const std::vector<CacheKey>& keys, const QueryOptions& options,
-                 QueryResult& result) override
+    Status RunQuery(const std::vector<CacheKey>& keys, const QueryOptions& options,
+                    QueryResult& result)
     {
         std::lock_guard<std::mutex> lock{state_->mutex};
         auto status = CheckReadyLocked();
@@ -372,7 +372,7 @@ public:
                       TaskId& taskId) override
     {
         QueryResult queryResult;
-        auto status = Query(keys, options, queryResult);
+        auto status = RunQuery(keys, options, queryResult);
         if (!status.ok()) {
             taskId = kInvalidTaskId;
             return status;
@@ -386,7 +386,8 @@ public:
         return SubmitCompletedTask(*state_, std::move(result), taskId);
     }
 
-    Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) override
+    Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                     TaskCompletionCallback onComplete) override
     {
         std::lock_guard<std::mutex> lock{state_->mutex};
         auto status = CheckReadyLocked();
@@ -417,10 +418,14 @@ public:
             std::copy(iter->second.begin(), iter->second.end(), data);
             entryStatus.emplace_back(Status::OK());
         }
-        return SubmitCompletedTask(*state_, BuildTaskResult(entryStatus), taskId);
+        auto result = BuildTaskResult(entryStatus);
+        status = SubmitCompletedTask(*state_, result, taskId);
+        if (status.ok() && onComplete) { onComplete(std::move(result)); }
+        return status;
     }
 
-    Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) override
+    Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                      TaskCompletionCallback onComplete) override
     {
         std::lock_guard<std::mutex> lock{state_->mutex};
         auto status = CheckReadyLocked();
@@ -444,10 +449,14 @@ public:
             store[entry.key] = std::vector<std::uint8_t>(data, data + entry.buffer.region.size);
             entryStatus.emplace_back(Status::OK());
         }
-        return SubmitCompletedTask(*state_, BuildTaskResult(entryStatus), taskId);
+        auto result = BuildTaskResult(entryStatus);
+        status = SubmitCompletedTask(*state_, result, taskId);
+        if (status.ok() && onComplete) { onComplete(std::move(result)); }
+        return status;
     }
 
-    Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId) override
+    Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
+                       TaskCompletionCallback onComplete) override
     {
         std::lock_guard<std::mutex> lock{state_->mutex};
         auto status = CheckReadyLocked();
@@ -468,12 +477,15 @@ public:
                 entryStatus.emplace_back(Status::OK());
             }
         }
-        return SubmitCompletedTask(*state_, BuildTaskResult(entryStatus), taskId);
+        auto result = BuildTaskResult(entryStatus);
+        status = SubmitCompletedTask(*state_, result, taskId);
+        if (status.ok() && onComplete) { onComplete(std::move(result)); }
+        return status;
     }
 
     Status Cancel(TaskId) override { return Status::Error(StatusCode::UNSUPPORTED, "unsupported"); }
 
-    Status Check(TaskId taskId, TaskResult& result) override
+    Status GetTaskResult(TaskId taskId, TaskResult& result)
     {
         std::lock_guard<std::mutex> lock{state_->mutex};
         auto iter = state_->tasks.find(taskId);
@@ -486,7 +498,7 @@ public:
 
     Status Wait(TaskId taskId, std::uint64_t, TaskResult& result) override
     {
-        return Check(taskId, result);
+        return GetTaskResult(taskId, result);
     }
 
     Status RegisterRegions(const std::vector<MemoryRegion>& regions,
@@ -851,7 +863,7 @@ TEST(AsuClientE2EMetricsTest, DiskMembershipChangesRefreshAndContinueWorkload)
     QueryResult ignoredResult;
     auto status =
         client->Query({MakeCacheKey("membership-refresh-add")}, QueryOptions{}, ignoredResult);
-    EXPECT_EQ(status.code, StatusCode::CONNECTION_ERROR);
+    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_TRUE(WaitUntil(
         [&] { return viewServer->FetchCount() >= 2 && state->Snapshot().createdTransports >= 3; }));
 
@@ -867,7 +879,7 @@ TEST(AsuClientE2EMetricsTest, DiskMembershipChangesRefreshAndContinueWorkload)
     state->ForceNextQueryFailure();
     const auto probeKeys = MakeProbeKeys(512);
     status = client->Query(probeKeys, QueryOptions{}, ignoredResult);
-    EXPECT_EQ(status.code, StatusCode::CONNECTION_ERROR);
+    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_TRUE(WaitUntil([&] {
         QueryResult result;
         auto retryStatus = client->Query(probeKeys, QueryOptions{}, result);

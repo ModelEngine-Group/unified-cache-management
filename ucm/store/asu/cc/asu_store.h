@@ -23,9 +23,7 @@ struct Config {
     std::vector<std::uint32_t> kvNsIds;
     std::uint16_t asuPort{0};
     std::uint64_t defaultWaitTimeoutMs{100};
-    std::uint64_t queryTimeoutMs{5};
-    std::uint64_t loadTimeoutMs{100};
-    std::uint64_t storeTimeoutMs{100};
+    std::uint64_t timeoutMs{100};
     std::uint64_t maxInflightTasks{1024};
     std::uint64_t maxInflightBytes{1ULL << 30};
     std::vector<std::size_t> tensorSizes;

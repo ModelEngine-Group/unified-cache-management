@@ -484,12 +484,12 @@ TEST_F(BufferManagerTest, HostPinnedRegistersDeviceAddress)
     ASSERT_TRUE(mgr.Allocate(64, sge).ok());
     ASSERT_NE(sge.local_addr, 0);
     ASSERT_NE(sge.device_addr, 0);
-    ASSERT_NE(sge.local_addr, sge.device_addr);
     ASSERT_EQ(sge.local_addr % 4096, 0);
     ASSERT_EQ(provider.lastAddr, sge.device_addr);
     ASSERT_EQ(provider.lastLocalAddr, sge.local_addr);
 
-    // The CPU writes through addr while HCOMM and remote RDMA use device_addr.
+    // The CPU writes through local_addr while HCOMM and remote RDMA use device_addr.
+    // ACL simulators may map both roles to the same numeric address.
     std::memset(reinterpret_cast<void*>(sge.local_addr), 0x5A, sge.length);
     ASSERT_EQ(*reinterpret_cast<unsigned char*>(sge.local_addr), 0x5A);
 }

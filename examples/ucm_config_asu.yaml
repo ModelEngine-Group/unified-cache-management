@@ -33,9 +33,7 @@ ucm_connectors:
 
       # ASU wait and operation timeouts.
       asu_default_wait_timeout_ms: 5000
-      asu_query_timeout_ms: 5000
-      asu_load_timeout_ms: 5000
-      asu_store_timeout_ms: 5000
+      asu_timeout_ms: 5000
       asu_max_inflight_tasks: 1024
 
 enable_event_sync: true

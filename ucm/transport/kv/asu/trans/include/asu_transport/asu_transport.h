@@ -64,9 +64,7 @@ struct TransportConfig {
     std::uint32_t maxLoadInflight{512};
     std::uint32_t maxStoreInflight{256};
 
-    std::uint64_t queryTimeoutMs{5};
-    std::uint64_t loadTimeoutMs{100};
-    std::uint64_t storeTimeoutMs{100};
+    std::uint64_t timeoutMs{100};
 
     bool enableDeviceDirect{true};
     bool enableHostFallback{false};
@@ -99,18 +97,18 @@ public:
     virtual Status Shutdown() = 0;
     virtual Status CheckHealth() = 0;
 
-    virtual Status Query(const std::vector<CacheKey>& keys, const QueryOptions& options,
-                         QueryResult& result) = 0;
     virtual Status QueryAsync(const std::vector<CacheKey>& keys, const QueryOptions& options,
                               TaskId& taskId) = 0;
 
-    virtual Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) = 0;
-    virtual Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) = 0;
-    virtual Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId) = 0;
+    virtual Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                             TaskCompletionCallback onComplete) = 0;
+    virtual Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                              TaskCompletionCallback onComplete) = 0;
+    virtual Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
+                               TaskCompletionCallback onComplete) = 0;
 
     // Best-effort cancellation, does not interrupt underlying UB/RoCE IO
     virtual Status Cancel(TaskId taskId) = 0;
-    virtual Status Check(TaskId taskId, TaskResult& result) = 0;
     virtual Status Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result) = 0;
 
     virtual Status RegisterRegions(const std::vector<MemoryRegion>& regions,
