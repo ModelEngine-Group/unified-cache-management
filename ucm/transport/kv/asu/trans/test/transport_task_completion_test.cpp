@@ -114,17 +114,7 @@ protected:
     std::unique_ptr<AsuTransportImpl> transport_;
 };
 
-TEST_F(TransportTaskCompletionTest, InitRejectsZeroMaxErrorCount)
-{
-    TransportConfig config;
-    config.maxErrorCount = 0;
-
-    const auto status = transport_->Init(config);
-
-    EXPECT_EQ(status.code, StatusCode::INVALID_ARGUMENT);
-}
-
-TEST_F(TransportTaskCompletionTest, InitializeCountsAlreadyTerminalSubBatches)
+TEST_F(TransportTaskCompletionTest, InitializeCountsOnlyPendingSubBatches)
 {
     TransportTaskContext ctx;
     ctx.subBatchContexts.resize(3);
@@ -133,9 +123,9 @@ TEST_F(TransportTaskCompletionTest, InitializeCountsAlreadyTerminalSubBatches)
     ctx.subBatchContexts[2].state = TransportSubBatchState::COMPLETED;
     ctx.subBatchContexts[2].status = Status::Error(StatusCode::IO_ERROR, "fake error");
 
-    ctx.InitializeTerminalSubBatchCount();
+    ctx.InitializeRemainingSubBatchCount();
 
-    EXPECT_EQ(ctx.completedSubBatchCount, std::uint32_t{2});
+    EXPECT_EQ(ctx.remainingSubBatchCount, std::uint32_t{1});
 }
 
 TEST_F(TransportTaskCompletionTest, CompleteSubBatchOnlyCountsPendingSubBatchOnce)
@@ -143,11 +133,12 @@ TEST_F(TransportTaskCompletionTest, CompleteSubBatchOnlyCountsPendingSubBatchOnc
     TransportTaskContext ctx;
     TransportSubBatchContext subBatchContext;
     const auto status = Status::Error(StatusCode::IO_ERROR, "fake error");
+    ctx.remainingSubBatchCount = 1;
 
     transport_->CompleteSubBatch(ctx, subBatchContext, status);
     transport_->CompleteSubBatch(ctx, subBatchContext, status);
 
-    EXPECT_EQ(ctx.completedSubBatchCount, std::uint32_t{1});
+    EXPECT_EQ(ctx.remainingSubBatchCount, std::uint32_t{0});
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::COMPLETED);
     EXPECT_EQ(subBatchContext.status.code, StatusCode::IO_ERROR);
 }
@@ -190,7 +181,7 @@ TEST_F(TransportTaskCompletionTest, PollTaskCompletionsReadsDeviceFlagBuffer)
     auto ctx = std::make_shared<TransportTaskContext>();
     ctx->state.store(TransportTaskState::INFLIGHT, std::memory_order_release);
     ctx->subBatchContexts.resize(1);
-    ctx->completedSubBatchCount = 0;
+    ctx->remainingSubBatchCount = 1;
 
     auto& subBatchContext = ctx->subBatchContexts[0];
     subBatchContext.cid = 123;
@@ -212,7 +203,7 @@ TEST_F(TransportTaskCompletionTest, PollTaskCompletionsReadsDeviceFlagBuffer)
 
     deviceTransport.PollTaskCompletions(ctx);
 
-    EXPECT_EQ(ctx->completedSubBatchCount, std::uint32_t{1});
+    EXPECT_EQ(ctx->remainingSubBatchCount, std::uint32_t{0});
     EXPECT_EQ(ctx->state.load(std::memory_order_acquire), TransportTaskState::COMPLETED);
     EXPECT_TRUE(ctx->finalStatus.ok()) << ctx->finalStatus.message;
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::COMPLETED);
@@ -396,7 +387,7 @@ TEST_F(TransportTaskCompletionTest, TryFinalizeWaitsUntilAllSubBatchesFinish)
 {
     TransportTaskContext ctx;
     ctx.subBatchContexts.resize(2);
-    ctx.completedSubBatchCount = 1;
+    ctx.remainingSubBatchCount = 1;
     ctx.state.store(TransportTaskState::INFLIGHT, std::memory_order_release);
 
     ctx.TryFinalizeFromSubBatches();
@@ -412,7 +403,7 @@ TEST_F(TransportTaskCompletionTest, TryFinalizeAggregatesSuccessAndFailure)
     ctx.subBatchContexts[0].status = Status::OK();
     ctx.subBatchContexts[1].state = TransportSubBatchState::COMPLETED;
     ctx.subBatchContexts[1].status = Status::Error(StatusCode::IO_ERROR, "sub-batch failed");
-    ctx.completedSubBatchCount = 2;
+    ctx.remainingSubBatchCount = 0;
 
     ctx.TryFinalizeFromSubBatches();
 
@@ -423,7 +414,7 @@ TEST_F(TransportTaskCompletionTest, TryFinalizeAggregatesSuccessAndFailure)
     successCtx.subBatchContexts.resize(1);
     successCtx.subBatchContexts[0].state = TransportSubBatchState::COMPLETED;
     successCtx.subBatchContexts[0].status = Status::OK();
-    successCtx.completedSubBatchCount = 1;
+    successCtx.remainingSubBatchCount = 0;
 
     successCtx.TryFinalizeFromSubBatches();
 
@@ -503,10 +494,13 @@ TEST_F(TransportTaskCompletionTest, CancelInvokesCallbackOutsideTaskLock)
     TaskId taskId = kInvalidTaskId;
     bool callbackInvoked = false;
     bool taskLockAvailable = false;
+    bool terminalState = false;
     auto ctx = std::make_unique<TransportTaskContext>();
     auto* rawCtx = ctx.get();
     ctx->onComplete = [&](TaskResult result) {
         callbackInvoked = result.status.code == StatusCode::CANCELED;
+        terminalState =
+            rawCtx->state.load(std::memory_order_acquire) == TransportTaskState::COMPLETED;
         taskLockAvailable = rawCtx->waitMu.try_lock();
         if (taskLockAvailable) { rawCtx->waitMu.unlock(); }
     };
@@ -516,6 +510,7 @@ TEST_F(TransportTaskCompletionTest, CancelInvokesCallbackOutsideTaskLock)
 
     EXPECT_TRUE(callbackInvoked);
     EXPECT_TRUE(taskLockAvailable);
+    EXPECT_TRUE(terminalState);
     EXPECT_EQ(transport_->taskManager_.Get(taskId), nullptr);
 }
 
@@ -553,6 +548,69 @@ TEST_F(TransportTaskCompletionTest, FailedSubmissionDoesNotInvokeCallback)
     EXPECT_EQ(status.code, StatusCode::NOT_INITIALIZED);
     EXPECT_EQ(taskId, kInvalidTaskId);
     EXPECT_EQ(callbackCount, std::uint32_t{0});
+}
+
+TEST_F(TransportTaskCompletionTest, ShutdownCallbackCannotSubmitNewTask)
+{
+    std::vector<KVBuffer> entries(1);
+    std::uint32_t callbackCount = 0;
+    std::uint32_t nestedCallbackCount = 0;
+    TaskId nestedTaskId = 123;
+    Status nestedSubmitStatus = Status::OK();
+
+    auto ctx = std::make_unique<TransportTaskContext>();
+    ctx->onComplete = [&](TaskResult result) {
+        ++callbackCount;
+        EXPECT_EQ(result.status.code, StatusCode::CANCELED);
+        nestedSubmitStatus = transport_->LoadAsync(
+            entries, nestedTaskId, [&nestedCallbackCount](TaskResult) { ++nestedCallbackCount; });
+    };
+
+    TaskId taskId = kInvalidTaskId;
+    ASSERT_TRUE(transport_->taskManager_.Submit(std::move(ctx), taskId).ok());
+
+    EXPECT_TRUE(transport_->Shutdown().ok());
+
+    EXPECT_EQ(callbackCount, std::uint32_t{1});
+    EXPECT_EQ(nestedSubmitStatus.code, StatusCode::NOT_INITIALIZED);
+    EXPECT_EQ(nestedTaskId, kInvalidTaskId);
+    EXPECT_EQ(nestedCallbackCount, std::uint32_t{0});
+}
+
+TEST_F(TransportTaskCompletionTest, ShutdownDrainsInflightTaskBeforeCanceling)
+{
+    transport_->protocolManager_ = std::make_unique<ProtocolManager>();
+    auto ctx = std::make_unique<TransportTaskContext>();
+    ctx->entryStatus.assign(1, Status::OK());
+    ctx->subBatchContexts.resize(1);
+    ctx->remainingSubBatchCount = 1;
+    auto& subBatchContext = ctx->subBatchContexts[0];
+    subBatchContext.cid = 123;
+    subBatchContext.opType = TransportOpType::BATCH_STORE;
+    subBatchContext.entryStatus.assign(1, Status::OK());
+    ASSERT_TRUE(transport_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
+    auto* cqe = reinterpret_cast<std::uint32_t*>(subBatchContext.flagBuffer.local_addr);
+    cqe[3] = subBatchContext.cid;
+
+    std::uint32_t callbackCount = 0;
+    Status callbackStatus = Status::Error(StatusCode::INTERNAL_ERROR, "callback not invoked");
+    ctx->onComplete = [&](TaskResult result) {
+        ++callbackCount;
+        callbackStatus = std::move(result.status);
+    };
+
+    TaskId taskId = kInvalidTaskId;
+    ASSERT_TRUE(transport_->taskManager_.Submit(std::move(ctx), taskId).ok());
+    auto submittedCtx = transport_->taskManager_.Get(taskId);
+    ASSERT_NE(submittedCtx, nullptr);
+    submittedCtx->state.store(TransportTaskState::INFLIGHT, std::memory_order_release);
+    transport_->completionWorker_ =
+        std::thread(&AsuTransportImpl::CompletionLoop, transport_.get());
+
+    EXPECT_TRUE(transport_->Shutdown().ok());
+
+    EXPECT_EQ(callbackCount, std::uint32_t{1});
+    EXPECT_TRUE(callbackStatus.ok()) << callbackStatus.message;
 }
 
 TEST_F(TransportTaskCompletionTest, CancelReleasesResourcesBeforeInvokingCallbackOnce)

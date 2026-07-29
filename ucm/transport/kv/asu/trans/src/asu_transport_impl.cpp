@@ -118,7 +118,7 @@ void AsuTransportImpl::CompleteSubBatch(TransportTaskContext& task,
     ReleaseSubBatchResources(subBatchContext);
     subBatchContext.state = TransportSubBatchState::COMPLETED;
     subBatchContext.status = status;
-    ++task.completedSubBatchCount;
+    --task.remainingSubBatchCount;
 }
 
 AsuTransportImpl::~AsuTransportImpl() { Shutdown(); }
@@ -231,7 +231,9 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
 
     auto queueDepth = std::max<std::size_t>(2, static_cast<std::size_t>(config_.maxInflightTasks));
     executeQueue_.Setup(queueDepth + 1);
-    stop_.store(false, std::memory_order_release);
+    stopWorker_.store(false, std::memory_order_release);
+    stopCompletionWorker_.store(false, std::memory_order_release);
+    acceptingTasks_.store(true, std::memory_order_release);
     worker_ = std::thread(&AsuTransportImpl::WorkerLoop, this);
     completionWorker_ = std::thread(&AsuTransportImpl::CompletionLoop, this);
     UC_DEBUG("AsuTransportImpl::Init OK: queueDepth={}", queueDepth);
@@ -241,6 +243,31 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
 Status AsuTransportImpl::Shutdown()
 {
     Status finalStatus = Status::OK();
+    {
+        std::lock_guard<std::mutex> lock(producerMu_);
+        acceptingTasks_.store(false, std::memory_order_release);
+        stopWorker_.store(true, std::memory_order_release);
+    }
+
+    if (worker_.joinable()) { worker_.join(); }
+
+    if (completionWorker_.joinable() && config_.timeoutMs != 0) {
+        bool hasInflightTask = false;
+        for (const auto& ctx : taskManager_.GetAll()) {
+            if (ctx != nullptr &&
+                ctx->state.load(std::memory_order_acquire) == TransportTaskState::INFLIGHT) {
+                hasInflightTask = true;
+                break;
+            }
+        }
+        if (hasInflightTask) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(config_.timeoutMs));
+        }
+    }
+
+    stopCompletionWorker_.store(true, std::memory_order_release);
+    if (completionWorker_.joinable()) { completionWorker_.join(); }
+
     for (const auto& ctx : taskManager_.GetAll()) {
         if (ctx == nullptr) { continue; }
         {
@@ -256,18 +283,11 @@ Status AsuTransportImpl::Shutdown()
             }
             ctx->finalStatus = canceledStatus;
             ReleaseAllSubBatchResources(ctx->subBatchContexts);
-            ctx->state.store(TransportTaskState::CANCELED, std::memory_order_release);
+            ctx->state.store(TransportTaskState::COMPLETED, std::memory_order_release);
         }
         taskManager_.NotifyCompletion(ctx);
         ctx->cv.notify_all();
     }
-
-    stop_.store(true, std::memory_order_release);
-    if (worker_.joinable()) {
-        UC_DEBUG("AsuTransportImpl::Shutdown stopping worker thread");
-        worker_.join();
-    }
-    if (completionWorker_.joinable()) { completionWorker_.join(); }
     for (const auto& ctx : taskManager_.GetAll()) {
         if (ctx != nullptr) { (void)taskManager_.Remove(ctx->taskId); }
     }
@@ -377,7 +397,7 @@ Status AsuTransportImpl::Cancel(TaskId taskId)
         }
         ctx->finalStatus = canceledStatus;
         ReleaseAllSubBatchResources(ctx->subBatchContexts);
-        ctx->state.store(TransportTaskState::CANCELED, std::memory_order_release);
+        ctx->state.store(TransportTaskState::COMPLETED, std::memory_order_release);
     }
     taskManager_.NotifyCompletion(ctx);
     ctx->cv.notify_all();
@@ -526,9 +546,10 @@ std::uint16_t AsuTransportImpl::AllocateRequestCid()
 
 Status AsuTransportImpl::SubmitAsync(std::unique_ptr<TransportTaskContext> ctx, TaskId& taskId)
 {
-    if (!worker_.joinable()) {
+    std::lock_guard<std::mutex> lock(producerMu_);
+    if (!acceptingTasks_.load(std::memory_order_acquire) || !worker_.joinable()) {
         taskId = kInvalidTaskId;
-        return Status::Error(StatusCode::NOT_INITIALIZED, "transport worker is not running");
+        return Status::Error(StatusCode::NOT_INITIALIZED, "transport is not accepting tasks");
     }
 
     auto status = taskManager_.Submit(std::move(ctx), taskId);
@@ -540,7 +561,6 @@ Status AsuTransportImpl::SubmitAsync(std::unique_ptr<TransportTaskContext> ctx, 
         return Status::Error(StatusCode::INTERNAL_ERROR, "transport task disappeared after submit");
     }
 
-    std::lock_guard<std::mutex> lock(producerMu_);
     if (!executeQueue_.TryPush(std::move(rawCtx))) {
         taskManager_.Remove(taskId);
         taskId = kInvalidTaskId;
@@ -551,7 +571,7 @@ Status AsuTransportImpl::SubmitAsync(std::unique_ptr<TransportTaskContext> ctx, 
 
 void AsuTransportImpl::WorkerLoop()
 {
-    executeQueue_.ConsumerLoop(stop_, [this](TransportTaskContextPtr ctx) {
+    executeQueue_.ConsumerLoop(stopWorker_, [this](TransportTaskContextPtr ctx) {
         if (!ctx) { return; }
         ProcessTask(ctx);
     });
@@ -559,7 +579,7 @@ void AsuTransportImpl::WorkerLoop()
 
 void AsuTransportImpl::CompletionLoop()
 {
-    while (!stop_.load(std::memory_order_acquire)) {
+    while (!stopCompletionWorker_.load(std::memory_order_acquire)) {
         for (const auto& ctx : taskManager_.GetAll()) { PollTaskCompletions(ctx); }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
@@ -594,9 +614,6 @@ void AsuTransportImpl::ProcessTask(const TransportTaskContextPtr& ctx)
     TransportTaskState expected = TransportTaskState::PENDING;
     if (!ctx->state.compare_exchange_strong(expected, TransportTaskState::INFLIGHT,
                                             std::memory_order_acq_rel)) {
-        if (ctx->state.load(std::memory_order_acquire) == TransportTaskState::CANCELED) {
-            ctx->cv.notify_all();
-        }
         return;
     }
 
@@ -616,17 +633,16 @@ void AsuTransportImpl::ProcessTask(const TransportTaskContextPtr& ctx)
     bool done = false;
     {
         std::lock_guard<std::mutex> lock(ctx->waitMu);
-        if (ctx->state.load(std::memory_order_acquire) == TransportTaskState::CANCELED) {
+        if (ctx->Done()) {
             UC_DEBUG(
                 "AsuTransportImpl::ProcessTask canceled during process task_id={} sub_batches={}",
                 ctx->taskId, subBatchContexts.size());
             ReleaseAllSubBatchResources(subBatchContexts);
-            ctx->cv.notify_all();
             return;
         }
 
         if (hasSubBatches) { ctx->subBatchContexts = std::move(subBatchContexts); }
-        ctx->InitializeTerminalSubBatchCount();
+        ctx->InitializeRemainingSubBatchCount();
         ctx->TryFinalizeFromSubBatches();
         UC_DEBUG(
             "AsuTransportImpl::ProcessTask submitted task_id={} op_type={} entries={} keys={} "

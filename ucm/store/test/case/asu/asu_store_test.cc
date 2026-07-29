@@ -323,6 +323,7 @@ TEST(UCAsuStoreTest, ParsesOperationTimeout)
     UC::AsuStore::AsuStore store;
     auto state = UseFakeBackend(store);
     auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
     config.SetNumber("asu_timeout_ms", std::uint64_t{321});
 
     ASSERT_TRUE(store.Setup(config).Success());
