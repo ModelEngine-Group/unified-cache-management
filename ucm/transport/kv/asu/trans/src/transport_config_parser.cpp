@@ -151,6 +151,8 @@ Status LoadTransportConfig(const std::string& configPath, TransportConfig& confi
             }
         } else if (key == "timeoutMs" || key == "timeout_ms") {
             config.timeoutMs = ParseConfigUint64(value);
+        } else if (key == "maxErrorCount" || key == "max_error_count") {
+            config.maxErrorCount = static_cast<std::uint32_t>(ParseConfigUint64(value));
         } else if (key == "maxInflightTasks" || key == "max_inflight_tasks") {
             config.maxInflightTasks = static_cast<std::uint32_t>(ParseConfigUint64(value));
         } else if (key == "maxInflightBytes" || key == "max_inflight_bytes") {

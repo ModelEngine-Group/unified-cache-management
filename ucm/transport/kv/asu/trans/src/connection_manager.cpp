@@ -30,8 +30,8 @@
 namespace UC::ASU {
 
 ConnectionManager::ConnectionManager(TransProvider& provider, const std::string& localIp,
-                                     std::uint32_t timeout)
-    : provider_(provider), localIp_(localIp), timeout_(timeout)
+                                     std::uint32_t timeout, std::uint32_t maxErrorCount)
+    : provider_(provider), localIp_(localIp), timeout_(timeout), maxErrorCount_(maxErrorCount)
 {
 }
 
@@ -131,18 +131,19 @@ void ConnectionManager::ReportFailure(const std::shared_ptr<ConnectionChannel>& 
 {
     if (channel == nullptr) { return; }
     if (shuttingDown_.load(std::memory_order_acquire)) { return; }
-    auto old_count = channel->FetchAddErrorCount(1);
+    auto oldCount = channel->FetchAddErrorCount(1);
     UC_DEBUG("ConnectionManager::ReportFailure ch_id={} group_id={} error_count={} threshold={}",
-             channel->GetChannelId(), channel->GetGroup()->GetGroupId(), old_count + 1,
-             kFailureThreshold);
-    if (old_count + 1 < kFailureThreshold) {
+             channel->GetChannelId(), channel->GetGroup()->GetGroupId(), oldCount + 1,
+             maxErrorCount_);
+    if (oldCount + 1 < maxErrorCount_) {
         UC_DEBUG("ConnectionManager::ReportFailure below threshold, skip drain");
         return;
     }
 
     if (!channel->MarkForDrain()) {
         UC_DEBUG(
-            "ConnectionManager::ReportFailure MarkForDrain CAS failed (already draining/failed)");
+            "ConnectionManager::ReportFailure MarkForDrain CAS failed "
+            "(already draining/failed)");
         return;
     }
 
@@ -157,6 +158,12 @@ void ConnectionManager::ReportFailure(const std::shared_ptr<ConnectionChannel>& 
         }
         drainList_.push_back(channel);
     }
+}
+
+void ConnectionManager::ReportSuccess(const std::shared_ptr<ConnectionChannel>& channel)
+{
+    if (channel == nullptr) { return; }
+    channel->ResetErrorCount();
 }
 
 void ConnectionManager::StartRecoverLoop()

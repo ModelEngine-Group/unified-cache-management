@@ -54,6 +54,8 @@ public:
     TransProvider::ConnectionHandle GetConnection() const { return handle_; }
 
     std::uint32_t FetchAddErrorCount(std::uint32_t val);
+    std::uint32_t GetErrorCount() const;
+    void ResetErrorCount();
 
     // Test helper to set state directly
     void SetState(ChannelState s) { state.store(s, std::memory_order_release); }

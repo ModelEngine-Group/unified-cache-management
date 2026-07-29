@@ -65,6 +65,7 @@ struct TransportConfig {
     std::uint32_t maxStoreInflight{256};
 
     std::uint64_t timeoutMs{100};
+    std::uint32_t maxErrorCount{2};
 
     bool enableDeviceDirect{true};
     bool enableHostFallback{false};
