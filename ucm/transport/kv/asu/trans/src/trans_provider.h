@@ -15,6 +15,7 @@ public:
 
     virtual ~TransProvider() = default;
 
+    // On success, connectionHandles contains exactly qpNum handles. On failure, it is empty.
     virtual Status CreateConnection(const std::string& localIp, const std::string& remoteIp,
                                     uint32_t port, uint32_t qpNum, uint32_t timeout,
                                     std::vector<ConnectionHandle>& connectionHandles) = 0;
