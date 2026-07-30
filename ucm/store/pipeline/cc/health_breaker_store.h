@@ -37,7 +37,7 @@
 namespace UC::PipelineStore {
 
 struct HealthBreakerConfig {
-    std::chrono::milliseconds healthCheckInterval{std::chrono::seconds(5)};
+    std::chrono::milliseconds healthCheckInterval{std::chrono::seconds(10)};
     std::chrono::milliseconds healthCheckTimeout{std::chrono::seconds(3)};
     size_t healthWindowSize{8};
     size_t failureThreshold{2};

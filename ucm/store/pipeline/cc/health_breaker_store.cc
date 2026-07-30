@@ -225,8 +225,7 @@ void HealthBreakerStore::ProbeLoop()
         UC_WARN("Failed({}) to set UCM health monitor thread name.", nameStatus);
     }
     std::unique_lock<std::mutex> lock(stopMutex_);
-    auto delay =
-        config_.healthCheckInterval + RandomProbeDelay(config_.healthCheckInterval);
+    auto delay = config_.healthCheckInterval + RandomProbeDelay(config_.healthCheckInterval);
     while (!stopCv_.wait_for(lock, delay, [this] { return stop_; })) {
         lock.unlock();
         const auto start = std::chrono::steady_clock::now();
