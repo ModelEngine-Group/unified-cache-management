@@ -20,11 +20,13 @@ def allocate(self) -> None:
         # cluster assignment, but partition the cluster so UCM I/O workers do
         # not contend with the vLLM worker threads when affinity is enabled.
         self.assign_ucm = {}
+        self.assign_ucm_health = {}
         for npu, cpu_pool in self.npu_cpu_pool.items():
             assign_cpu_roles(self, npu, cpu_pool, [], [])
         return
 
     self.assign_ucm = {}
+    self.assign_ucm_health = {}
     reserve_irq_cpus = self._reserve_irq_cpus()
     min_cpus_per_npu = self._min_cpus_per_npu()
     for npu, cpu_pool in self.npu_cpu_pool.items():
