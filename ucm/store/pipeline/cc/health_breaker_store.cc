@@ -24,6 +24,7 @@
 #include "health_breaker_store.h"
 #include "logger/logger.h"
 #include "metrics_api.h"
+#include "thread/cpu_affinity.h"
 
 namespace UC::PipelineStore {
 
@@ -207,6 +208,10 @@ void HealthBreakerStore::RecordEffectiveHealth()
 
 void HealthBreakerStore::ProbeLoop()
 {
+    auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_health_mon");
+    if (nameStatus.Failure()) {
+        UC_WARN("Failed({}) to set UCM health monitor thread name.", nameStatus);
+    }
     std::unique_lock<std::mutex> lock(stopMutex_);
     auto delay = config_.healthCheckInterval;
     while (!stopCv_.wait_for(lock, delay, [this] { return stop_; })) {
