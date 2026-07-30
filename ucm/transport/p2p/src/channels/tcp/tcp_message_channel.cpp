@@ -1,4 +1,4 @@
-#include "two_sided/tcp/tcp_message_channel.h"
+#include "channels/tcp/tcp_message_channel.h"
 #include <algorithm>
 #include <arpa/inet.h>
 #include <cerrno>
@@ -17,7 +17,7 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
-#include "common/metadata_codec.h"
+#include "common/binary_codec.h"
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0

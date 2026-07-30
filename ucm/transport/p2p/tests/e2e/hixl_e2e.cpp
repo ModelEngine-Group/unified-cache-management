@@ -36,6 +36,13 @@ int envInt(const char* name, int fallback)
     return end != nullptr && *end == '\0' ? static_cast<int>(value) : fallback;
 }
 
+bool envBool(const char* name, bool fallback)
+{
+    const char* text = std::getenv(name);
+    if (text == nullptr || *text == '\0') { return fallback; }
+    return std::strcmp(text, "1") == 0 || std::strcmp(text, "true") == 0;
+}
+
 int32_t envHixlPort(const char* name, int32_t fallback)
 {
     const char* text = std::getenv(name);
@@ -96,6 +103,7 @@ struct Config {
     int transfer_timeout_ms = envInt("HIXL_TEST_TRANSFER_TIMEOUT_MS", 30000);
     int wait_attempts = envInt("HIXL_TEST_WAIT_ATTEMPTS", 600);
     int wait_interval_ms = envInt("HIXL_TEST_WAIT_RETRY_MS", 100);
+    bool skip_transfer = envBool("HIXL_TEST_SKIP_TRANSFER", false);
 };
 
 class AclRuntime {
@@ -164,6 +172,7 @@ HixlInitAttrs makeHixlAttrs(const Config& config, bool server)
 {
     HixlInitAttrs attrs;
     attrs.ip = config.local_host;
+    attrs.role = server ? HixlRole::Server : HixlRole::Client;
     const auto device_ids =
         server ? std::vector<int>{config.server_device_id} : config.client_device_ids;
     const auto base_port = server ? config.server_hixl_port : config.client_hixl_port;
@@ -364,7 +373,8 @@ int runServer()
     device_region.length = kLen;
     device_region.type = MemoryType::Device;
     device_region.device_id = config.server_device_id;
-    if (!test::expectOk(manager.RegisterMemory(device_region, device_memory.handle),
+    if (!config.skip_transfer &&
+        !test::expectOk(manager.RegisterMemory(device_region, device_memory.handle),
                         "server register device memory")) {
         return 1;
     }
@@ -396,6 +406,7 @@ int runServer()
         done != "DONE") {
         return 1;
     }
+    std::cerr << "[HIXL e2e server] client DONE received\n";
 
     unsigned char back[16] = {};
     if (!test::expectTrue(aclrtMemcpy(back, sizeof(back), device_memory.address, sizeof(back),
@@ -407,10 +418,12 @@ int runServer()
     for (int i = 0; i < 16; ++i) { std::cout << int(back[i]) << " "; }
     std::cout << "\n";
 
+    std::cerr << "[HIXL e2e server] manager Shutdown begin\n";
     if (!test::expectOk(manager.Shutdown(), "server shutdown manager") ||
         !test::expectOk(control.Shutdown(), "server shutdown standalone TCP")) {
         return 1;
     }
+    std::cerr << "[HIXL e2e server] manager Shutdown success\n";
     aclrtFree(device_memory.address);
     return 0;
 }
@@ -466,8 +479,8 @@ int runClient()
     host_region.length = kLen;
     host_region.type = MemoryType::Host;
     MemoryHandle host_handle = kInvalidMemoryHandle;
-    if (!test::expectOk(manager.RegisterMemory(host_region, host_handle),
-                        "client register host memory")) {
+    if (!config.skip_transfer && !test::expectOk(manager.RegisterMemory(host_region, host_handle),
+                                                 "client register host memory")) {
         return 1;
     }
 
@@ -496,8 +509,12 @@ int runClient()
         return 1;
     }
 
+    if (config.skip_transfer) {
+        std::cout << "[A] skipping data transfer for connection lifecycle validation\n";
+    }
     bool verify_ok = true;
-    for (const auto& remote_device : remote_devices) {
+    for (const auto& remote_device :
+         config.skip_transfer ? std::vector<RemoteDeviceAddress>{} : remote_devices) {
         Operation batch;
         batch.target_manager = peer_manager_id;
         batch.direct = OperationDirect::RemoteDeviceHost;
@@ -547,16 +564,15 @@ int runClient()
                     verify_ok;
     }
 
-    if (!test::sendTextWithRetry(control, peerEndpoint(config, false), "DONE", config.wait_attempts,
+    if (!test::expectOk(manager.Shutdown(), "client shutdown manager and disconnects HIXL peer") ||
+        !test::sendTextWithRetry(control, peerEndpoint(config, false), "DONE", config.wait_attempts,
                                  config.wait_interval_ms,
                                  "client sends completion over standalone TCP")) {
         return 1;
     }
 
-    if (!test::expectOk(manager.Shutdown(), "client shutdown manager") ||
-        !test::expectOk(control.Shutdown(), "client shutdown standalone TCP")) {
-        return 1;
-    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(config.wait_interval_ms));
+    if (!test::expectOk(control.Shutdown(), "client shutdown standalone TCP")) { return 1; }
     aclrtFreeHost(host);
     return verify_ok ? 0 : 1;
 }

@@ -12,6 +12,9 @@ using Status = UC::Status;
 using ManagerID = std::string;
 using MemoryHandle = uint64_t;
 using TransferHandle = uint64_t;
+// Opaque transport-specific bytes exchanged between peers for route, endpoint,
+// and registered-memory discovery. The manager and control channel must not
+// interpret the contents.
 using Metadata = std::vector<uint8_t>;
 
 constexpr MemoryHandle kInvalidMemoryHandle = 0;
@@ -21,7 +24,7 @@ struct Endpoint {
     std::string host = "127.0.0.1";
     uint16_t port = 0;
 
-    std::string ToString() const { return host + ":" + std::to_string(port); }
+    std::string ToString() const { return port == 0 ? host : host + ":" + std::to_string(port); }
 };
 
 enum class Opcode {

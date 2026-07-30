@@ -46,6 +46,7 @@ public:
 private:
     struct Peer {
         std::vector<HixlInstanceInfo> instances;
+        HixlRole role = HixlRole::Bidirectional;
         size_t local_index = SIZE_MAX;
         bool connected = false;
     };
@@ -66,6 +67,7 @@ private:
 
     int32_t connect_timeout_ms_ = 1000;
     int32_t transfer_timeout_ms_ = 1000;
+    HixlRole role_ = HixlRole::Bidirectional;
     std::vector<std::unique_ptr<HixlInstance>> instances_;
     std::unordered_map<ManagerID, Peer> peers_;
     std::unordered_map<MemoryHandle, std::unique_ptr<LocalMemoryRecord>> memories_;
