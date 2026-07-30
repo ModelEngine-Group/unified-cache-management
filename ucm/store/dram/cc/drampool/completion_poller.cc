@@ -51,7 +51,6 @@ void CompletionPoller::Run(const std::atomic_bool& stop)
         FillPendingWindow();
 
         const bool stopRequested = stop.load(std::memory_order_acquire);
-        if (stopRequested) { disconnectAllTransfers_ = true; }
 
         if (pending_.empty()) {
             if (stopRequested) { break; }
@@ -130,13 +129,16 @@ bool CompletionPoller::PollDataTransfer(CompletionRecord& record)
     }
 
     if (transportStatus == transport::TransferStatus::Waiting) {
-        if (!disconnectAllTransfers_ && !OperationTimedOut(record, SteadyNowMs())) { return false; }
-
-        DisconnectPeer(record.peer_one_sided_id, record.data_handle);
-        SettleDataTransfer(record, transport::TransferStatus::Failed);
-        record.data_handle = transport::kInvalidTransferHandle;
-        record.stage = CompletionStage::SubmitResponse;
-        return true;
+        // A timeout is diagnostic only. The transfer may still own its handle and buffers, and
+        // DramStore is solely responsible for initiating connection teardown.
+        if (!record.timeout_reported && OperationTimedOut(record, SteadyNowMs())) {
+            record.timeout_reported = true;
+            UC_ERROR(
+                "CompletionPoller data transfer timed out, peer={}, handle={}, timeout_ms={}; "
+                "waiting for Store-initiated disconnect or terminal transport status",
+                record.peer_one_sided_id, record.data_handle, g_config.opTimeoutMs);
+        }
+        return false;
     }
 
     // A terminal GetStatus releases the data handle before business state is settled.
@@ -185,6 +187,7 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
 
     record.response_handle = handle;
     record.submit_ms = SteadyNowMs();
+    record.timeout_reported = false;
     record.results.clear();
     record.stage = CompletionStage::PollResponseTransfer;
     return false;
@@ -198,12 +201,15 @@ bool CompletionPoller::PollResponseTransfer(CompletionRecord& record)
         // GetStatus removes failed handles, so the response source buffer is no longer in use.
         UC_ERROR("CompletionPoller response GetStatus failed, handle={}", record.response_handle);
     } else if (transportStatus == transport::TransferStatus::Waiting) {
-        if (!disconnectAllTransfers_ && !OperationTimedOut(record, SteadyNowMs())) { return false; }
-
-        DisconnectPeer(record.peer_one_sided_id, record.response_handle);
-        record.response_handle = transport::kInvalidTransferHandle;
-        ReleaseResponseBuffer(runtime_.flagBufferPool, record);
-        return true;
+        // Keep the response source buffer alive until transport reports a terminal state.
+        if (!record.timeout_reported && OperationTimedOut(record, SteadyNowMs())) {
+            record.timeout_reported = true;
+            UC_ERROR(
+                "CompletionPoller response transfer timed out, peer={}, handle={}, timeout_ms={}; "
+                "waiting for Store-initiated disconnect or terminal transport status",
+                record.peer_one_sided_id, record.response_handle, g_config.opTimeoutMs);
+        }
+        return false;
     } else if (transportStatus != transport::TransferStatus::Completed) {
         UC_ERROR("CompletionPoller response transfer failed, handle={}", record.response_handle);
     }
@@ -262,17 +268,6 @@ bool CompletionPoller::OperationTimedOut(const CompletionRecord& record, std::ui
 {
     if (nowMs < record.submit_ms) { return false; }
     return nowMs - record.submit_ms >= g_config.opTimeoutMs;
-}
-
-void CompletionPoller::DisconnectPeer(const transport::ManagerID& peer, TransportHandle handle)
-{
-    UC_ERROR("CompletionPoller disconnecting peer to fail in-flight transfer, peer={}, handle={}",
-             peer, handle);
-    const auto status = runtime_.transport.Disconnect(transport::TransportProtocol::Hixl, peer);
-    if (status.Failure()) {
-        UC_ERROR("CompletionPoller disconnect peer failed, peer={}, handle={}, error={}", peer,
-                 handle, status);
-    }
 }
 
 }  // namespace UC::DramPool

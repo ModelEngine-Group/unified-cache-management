@@ -38,7 +38,6 @@ public:
 
 private:
     Status ProcessOneRequest(RequestTaskPtr task);
-    Status EnsurePeerReady(const transport::ManagerID& targetOneSidedId);
     Status ProcessDump(const KvDumpRequest& request, const transport::ManagerID& peerOneSidedId);
     Status ProcessLoad(const KvLoadRequest& request, const transport::ManagerID& peerOneSidedId);
     Status ProcessLookup(const KvLookupRequest& request,

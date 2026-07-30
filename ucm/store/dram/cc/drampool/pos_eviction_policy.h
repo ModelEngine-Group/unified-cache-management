@@ -24,6 +24,7 @@
 #ifndef UNIFIEDCACHE_DRAM_STORE_CC_POS_EVICTION_POLICY_H
 #define UNIFIEDCACHE_DRAM_STORE_CC_POS_EVICTION_POLICY_H
 
+#include <algorithm>
 #include <chrono>
 #include <vector>
 #include "entry.h"
@@ -54,10 +55,11 @@ public:
     std::vector<EntryPtr> GetEvictionResults(double evict_ratio) override
     {
         std::vector<EntryPtr> victims;
+        if (evict_ratio == 0.0 || entries_.empty()) { return victims; }
+
         const auto now = std::chrono::system_clock::now();
-        std::size_t target =
-            static_cast<std::size_t>(static_cast<double>(entries_.size()) * evict_ratio);
-        if (target > entries_.size()) { target = entries_.size(); }
+        const auto target = std::max<std::size_t>(
+            1, static_cast<std::size_t>(static_cast<double>(entries_.size()) * evict_ratio));
         for (const auto& entry : entries_) {
             if (victims.size() >= target) { break; }
             if (!entry->TryMarkEvicting(now)) { continue; }

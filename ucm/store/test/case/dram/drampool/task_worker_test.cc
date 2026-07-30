@@ -167,11 +167,16 @@ TEST_F(TaskWorkerTest, RejectsMalformedTasksBeforeTransport)
     ExpectNoCompletion();
 }
 
-TEST_F(TaskWorkerTest, RealTransportManagerRejectsUnavailablePeer)
+TEST_F(TaskWorkerTest, ProcessesRequestWithoutInitiatingPeerConnection)
 {
     TaskWorker worker(*runtime_);
-    EXPECT_TRUE(worker.EnsurePeerReady(kTargetManager).Failure());
-    ExpectNoCompletion();
+    auto task = std::make_unique<RequestTask>();
+    task->peer_one_sided_id = kTargetManager;
+    task->request = std::make_unique<KvLookupRequest>();
+    task->request->opcode = KvOpcode::Lookup;
+
+    EXPECT_TRUE(worker.ProcessOneRequest(std::move(task)).Success());
+    EXPECT_EQ(PopCompletion().peer_one_sided_id, kTargetManager);
 }
 
 TEST_F(TaskWorkerTest, LookupReturnsHitAndMiss)
