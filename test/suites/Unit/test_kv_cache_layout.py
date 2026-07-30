@@ -96,6 +96,7 @@ def _load_layout_symbols():
     source = CONNECTOR_PATH.read_text(encoding="utf-8-sig")
     tree = ast.parse(source)
     selected_names = {
+        "_get_store_io_sizes",
         "_has_shared_indexer_layers",
         "KVCacheSegment",
         "KVCacheTensorInfo",
@@ -126,6 +127,7 @@ def _load_layout_symbols():
 
 
 LAYOUT_SYMBOLS = _load_layout_symbols()
+get_store_io_sizes = LAYOUT_SYMBOLS["_get_store_io_sizes"]
 KVCacheLayout = LAYOUT_SYMBOLS["KVCacheLayout"]
 SharedIndexerKVCacheLayout = LAYOUT_SYMBOLS["SharedIndexerKVCacheLayout"]
 
@@ -222,6 +224,24 @@ def _build_cuda_shared_layout(
 
 
 class KVCacheLayoutTest(unittest.TestCase):
+    def test_store_io_sizes_align_unconditionally(self):
+        shard_size, block_size = get_store_io_sizes(
+            116992,
+            9242368,
+        )
+
+        self.assertEqual(shard_size, 118784)
+        self.assertEqual(block_size, 9383936)
+
+    def test_store_io_sizes_preserve_aligned_layout(self):
+        shard_size, block_size = get_store_io_sizes(
+            118784,
+            9383936,
+        )
+
+        self.assertEqual(shard_size, 118784)
+        self.assertEqual(block_size, 9383936)
+
     def test_direct_layout_flattens_only_real_tensors(self):
         layout = _build_layout(
             [[8, 4, 2], [8]],
