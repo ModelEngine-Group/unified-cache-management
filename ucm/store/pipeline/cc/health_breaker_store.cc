@@ -31,11 +31,10 @@ namespace UC::PipelineStore {
 
 namespace {
 
-std::chrono::milliseconds RandomInitialProbeDelay(std::chrono::milliseconds interval)
+std::chrono::milliseconds RandomProbeDelay(std::chrono::milliseconds interval)
 {
     thread_local std::mt19937 generator{std::random_device{}()};
-    std::uniform_int_distribution<std::chrono::milliseconds::rep> distribution{interval.count() / 2,
-                                                                               interval.count()};
+    std::uniform_int_distribution<std::chrono::milliseconds::rep> distribution{0, interval.count()};
     return std::chrono::milliseconds{distribution(generator)};
 }
 
@@ -226,7 +225,8 @@ void HealthBreakerStore::ProbeLoop()
         UC_WARN("Failed({}) to set UCM health monitor thread name.", nameStatus);
     }
     std::unique_lock<std::mutex> lock(stopMutex_);
-    auto delay = RandomInitialProbeDelay(config_.healthCheckInterval);
+    auto delay =
+        config_.healthCheckInterval + RandomProbeDelay(config_.healthCheckInterval);
     while (!stopCv_.wait_for(lock, delay, [this] { return stop_; })) {
         lock.unlock();
         const auto start = std::chrono::steady_clock::now();
