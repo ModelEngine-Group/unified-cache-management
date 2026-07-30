@@ -132,7 +132,6 @@ private:
 
     std::thread worker_;
     std::thread completionWorker_;
-    std::atomic_bool acceptingTasks_{false};
     std::atomic_bool stopWorker_{false};
     std::atomic_bool stopCompletionWorker_{false};
     std::atomic<std::uint16_t> nextRequestCid_{1};

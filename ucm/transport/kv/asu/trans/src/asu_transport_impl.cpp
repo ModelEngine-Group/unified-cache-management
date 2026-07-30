@@ -233,7 +233,6 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
     executeQueue_.Setup(queueDepth + 1);
     stopWorker_.store(false, std::memory_order_release);
     stopCompletionWorker_.store(false, std::memory_order_release);
-    acceptingTasks_.store(true, std::memory_order_release);
     worker_ = std::thread(&AsuTransportImpl::WorkerLoop, this);
     completionWorker_ = std::thread(&AsuTransportImpl::CompletionLoop, this);
     UC_DEBUG("AsuTransportImpl::Init OK: queueDepth={}", queueDepth);
@@ -245,7 +244,6 @@ Status AsuTransportImpl::Shutdown()
     Status finalStatus = Status::OK();
     {
         std::lock_guard<std::mutex> lock(producerMu_);
-        acceptingTasks_.store(false, std::memory_order_release);
         stopWorker_.store(true, std::memory_order_release);
     }
 
@@ -547,7 +545,7 @@ std::uint16_t AsuTransportImpl::AllocateRequestCid()
 Status AsuTransportImpl::SubmitAsync(std::unique_ptr<TransportTaskContext> ctx, TaskId& taskId)
 {
     std::lock_guard<std::mutex> lock(producerMu_);
-    if (!acceptingTasks_.load(std::memory_order_acquire) || !worker_.joinable()) {
+    if (stopWorker_.load(std::memory_order_acquire) || !worker_.joinable()) {
         taskId = kInvalidTaskId;
         return Status::Error(StatusCode::NOT_INITIALIZED, "transport is not accepting tasks");
     }
