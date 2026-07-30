@@ -91,6 +91,32 @@ def _short_list(values: list[int], limit: int = 12) -> list[int]:
     return values[:limit]
 
 
+def _get_store_io_sizes(
+    logical_shard_size: int,
+    logical_block_size: int,
+    alignment: int = 4096,
+) -> tuple[int, int]:
+    """Return aligned physical Store sizes."""
+    if alignment <= 0:
+        raise ValueError(f"Store I/O alignment must be positive, got {alignment}.")
+    if logical_shard_size <= 0 or logical_block_size <= 0:
+        raise ValueError(
+            "Store shard_size and block_size must be positive, "
+            f"got shard_size={logical_shard_size}, "
+            f"block_size={logical_block_size}."
+        )
+    shard_count, remainder = divmod(logical_block_size, logical_shard_size)
+    if remainder:
+        raise ValueError(
+            "Store block_size must be divisible by shard_size, "
+            f"got shard_size={logical_shard_size}, "
+            f"block_size={logical_block_size}."
+        )
+
+    physical_shard_size = (logical_shard_size + alignment - 1) // alignment * alignment
+    return physical_shard_size, physical_shard_size * shard_count
+
+
 def _drop_null_vllm_blocks(
     ucm_block_ids: list[bytes],
     vllm_block_ids: list[int],
@@ -1158,11 +1184,24 @@ class UCMDirectConnector(KVConnectorBase_V1):
         config["unique_id"] = f"{self.unique_id}"
         if self._role == KVConnectorRole.WORKER:
             config["device_id"] = self.local_rank
-            config["tensor_size_list"] = (
-                kv_cache_layout.tensor_size_list * self.blocks_per_chunk
+            tensor_size_list = kv_cache_layout.tensor_size_list * self.blocks_per_chunk
+            logical_shard_size = kv_cache_layout.shard_size * self.blocks_per_chunk
+            logical_block_size = kv_cache_layout.block_size * self.blocks_per_chunk
+            store_shard_size, store_block_size = _get_store_io_sizes(
+                logical_shard_size,
+                logical_block_size,
             )
-            config["shard_size"] = kv_cache_layout.shard_size * self.blocks_per_chunk
-            config["block_size"] = kv_cache_layout.block_size * self.blocks_per_chunk
+            config["tensor_size_list"] = tensor_size_list
+            config["shard_size"] = store_shard_size
+            config["block_size"] = store_block_size
+            if store_shard_size != logical_shard_size:
+                logger.info(
+                    "Pad Store sizes for I/O alignment: "
+                    f"logical_shard_size={logical_shard_size}, "
+                    f"store_shard_size={store_shard_size}, "
+                    f"logical_block_size={logical_block_size}, "
+                    f"store_block_size={store_block_size}."
+                )
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
             buffer_addrs = kv_cache_layout.base_ptrs.reshape(-1).tolist()
             buffer_sizes = kv_cache_layout.buffer_sizes.reshape(-1).tolist()
