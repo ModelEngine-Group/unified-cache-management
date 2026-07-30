@@ -53,7 +53,6 @@ enum class TransportTaskState {
     PENDING = 0,
     INFLIGHT = 1,
     COMPLETED = 2,
-    CANCELED = 3,
 };
 
 enum class TransportSubBatchState {
@@ -103,7 +102,7 @@ struct TransportTaskContext {
     QueryResult queryResult;
     std::vector<Status> entryStatus;
     std::vector<TransportSubBatchContext> subBatchContexts;
-    std::uint32_t completedSubBatchCount{0};
+    std::uint32_t remainingSubBatchCount{0};
     std::chrono::steady_clock::time_point deadline{std::chrono::steady_clock::time_point::max()};
     TaskCompletionCallback onComplete;
     std::atomic<bool> completionNotified{false};
@@ -119,7 +118,7 @@ struct TransportTaskContext {
     bool Done() const;
     bool NotifyCompletion(TaskResult result);
     Status BuildFinalStatus() const;
-    void InitializeTerminalSubBatchCount();
+    void InitializeRemainingSubBatchCount();
     void TryFinalizeFromSubBatches();
 };
 

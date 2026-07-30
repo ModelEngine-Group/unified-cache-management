@@ -40,15 +40,15 @@ static std::atomic<int> g_createCount{0};
 
 class StubTransProvider : public TransProvider {
 public:
-    std::uint32_t forceReturnCount = 0;
+    Status createStatus{Status::OK()};
 
     Status CreateConnection(const std::string&, const std::string&, uint32_t, uint32_t qpNum,
                             uint32_t, std::vector<ConnectionHandle>& handles) override
     {
         g_createCount.fetch_add(1);
         handles.clear();
-        std::uint32_t count = (forceReturnCount > 0) ? forceReturnCount : qpNum;
-        for (std::uint32_t i = 0; i < count; ++i) {
+        if (!createStatus.ok()) { return createStatus; }
+        for (std::uint32_t i = 0; i < qpNum; ++i) {
             handles.push_back(reinterpret_cast<ConnectionHandle>(
                 static_cast<uintptr_t>(g_createCount.load() * 100 + i + 1)));
         }
@@ -278,15 +278,16 @@ TEST(ConnectionManagerTest, AddGroupCreatesGroupWithChannels)
     EXPECT_EQ(mgr.TotalInflightCount(), 0);
 }
 
-TEST(ConnectionManagerTest, AddGroupFailsWhenCreateFnReturnsWrongCount)
+TEST(ConnectionManagerTest, AddGroupReturnsProviderCreateError)
 {
     StubTransProvider provider;
-    provider.forceReturnCount = 1;
+    provider.createStatus = Status::Error(StatusCode::IO_ERROR, "provider create failure");
     ConnectionManager mgr(provider, "", 5000);
 
-    auto status = mgr.AddGroup(MakeEndpoint(), 3);
-    EXPECT_FALSE(status.ok());
-    EXPECT_EQ(status.code, StatusCode::CONNECTION_ERROR);
+    const auto status = mgr.AddGroup(MakeEndpoint(), 3);
+
+    EXPECT_EQ(status.code, StatusCode::IO_ERROR);
+    EXPECT_EQ(status.message, "provider create failure");
 }
 
 TEST(ConnectionManagerTest, AddGroupFailsAfterShutdown)
@@ -347,7 +348,6 @@ TEST(ConnectionManagerTest, SelectConnectionLeastLoadedPicksLowestInflight)
 TEST(ConnectionManagerTest, SelectConnectionReturnsNullptrWhenNoChannels)
 {
     StubTransProvider provider;
-    provider.forceReturnCount = 0;
     ConnectionManager mgr(provider, "", 5000);
 
     auto ch = mgr.SelectConnection();
