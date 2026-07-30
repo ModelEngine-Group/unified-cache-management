@@ -288,9 +288,23 @@ class KVCacheLayout:
             row_layer_ids[local_layer_id] = self.layer_name_to_id[layer_name]
             if isinstance(kv_layer, torch.Tensor):
                 if kv_layer.dim() == 5:
-                    # [2, num_blocks, block_size, num_head, head_dim]
-                    handle_tensor(kv_layer[0], (-3, -2, -1))
-                    handle_tensor(kv_layer[1], (-3, -2, -1))
+                    num_blocks_first = kv_layer.shape[0] != 2 and kv_layer.shape[1] == 2
+                    if num_blocks_first:
+                        # CUDA: [num_blocks, 2, block_size, num_head, head_dim].
+                        # K and V are contiguous within each block, so expose
+                        # the complete block as one store segment.
+                        handle_tensor(kv_layer, (-4, -3, -2, -1))
+                    elif kv_layer.shape[0] == 2:
+                        # [2, num_blocks, block_size, num_head, head_dim].
+                        # K and V are stored in separate contiguous buffers.
+                        handle_tensor(kv_layer[0], (-3, -2, -1))
+                        handle_tensor(kv_layer[1], (-3, -2, -1))
+                    else:
+                        raise ValueError(
+                            "Unsupported 5D KV cache layout: expected "
+                            "[num_blocks, 2, ...] or [2, num_blocks, ...] "
+                            f"but got {tuple(kv_layer.shape)}"
+                        )
                 elif kv_layer.dim() == 3:
                     # [num_blocks, block_size, head_dim]
                     handle_tensor(kv_layer, (-2, -1))
