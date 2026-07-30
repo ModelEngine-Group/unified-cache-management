@@ -28,12 +28,45 @@
 
 namespace UC::Trans {
 
+Status Device::Init()
+{
+    const auto ret = aclInit(nullptr);
+    if (ret == ACL_SUCCESS) {
+        deviceRuntimeOwned_ = true;
+        return Status::OK();
+    }
+    if (ret == ACL_ERROR_REPEAT_INITIALIZE) { return Status::OK(); }
+    return Status{ret, std::to_string(ret)};
+}
+
 Status Device::Setup(int32_t deviceId)
 {
     if (deviceId < 0) { return Status::Error(fmt::format("invalid device id({})", deviceId)); }
     auto ret = aclrtSetDevice(deviceId);
-    if (ret == ACL_SUCCESS) { return Status::OK(); }
+    if (ret == ACL_SUCCESS) {
+        deviceId_ = deviceId;
+        return Status::OK();
+    }
     return Status{ret, std::to_string(ret)};
+}
+
+Status Device::Reset()
+{
+    if (!deviceRuntimeOwned_) { return Status::OK(); }
+    if (deviceId_ < 0) { return Status::OK(); }
+    const auto ret = aclrtResetDevice(deviceId_);
+    if (ret != ACL_SUCCESS) { return Status{ret, std::to_string(ret)}; }
+    deviceId_ = -1;
+    return Status::OK();
+}
+
+Status Device::Finalize()
+{
+    if (!deviceRuntimeOwned_) { return Status::OK(); }
+    const auto ret = aclFinalize();
+    if (ret != ACL_SUCCESS) { return Status{ret, std::to_string(ret)}; }
+    deviceRuntimeOwned_ = false;
+    return Status::OK();
 }
 
 std::unique_ptr<Stream> Device::MakeStream()

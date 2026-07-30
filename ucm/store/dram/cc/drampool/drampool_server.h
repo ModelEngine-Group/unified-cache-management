@@ -28,7 +28,6 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <thread>
 #include "buffer_manager.h"
@@ -38,6 +37,7 @@
 #include "kv_protocol.h"
 #include "pool/buffer_pool.h"
 #include "status/status.h"
+#include "trans/device.h"
 
 namespace transport {
 class TcpMessageChannel;
@@ -120,8 +120,7 @@ private:
     std::unique_ptr<DramPoolRuntime> runtime_;
     std::unique_ptr<TaskWorker> taskWorker_;
     std::unique_ptr<CompletionPoller> completionPoller_;
-    std::optional<std::int32_t> aclDeviceId_;
-    bool aclRuntimeOwned_{false};
+    Trans::Device device_;
 
     ServerState state_{ServerState::New};
     std::mutex requestReceiverWaitMutex_;

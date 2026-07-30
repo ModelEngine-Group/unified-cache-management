@@ -28,11 +28,31 @@
 #include <thread>
 #include <vector>
 #include "reply_service.h"
+#include "trans/device.h"
 
 namespace UC::Dram {
 namespace {
 
 constexpr std::uint32_t kSlotSize = 64;
+
+class ReplyServiceTest : public ::testing::Test {
+protected:
+    static void SetUpTestSuite()
+    {
+        auto status = device_.Init();
+        ASSERT_TRUE(status.Success()) << status.ToString();
+        status = device_.Setup(0);
+        ASSERT_TRUE(status.Success()) << status.ToString();
+    }
+
+    static void TearDownTestSuite()
+    {
+        EXPECT_TRUE(device_.Reset().Success());
+        EXPECT_TRUE(device_.Finalize().Success());
+    }
+
+    inline static Trans::Device device_;
+};
 
 RequestToken Token(NodeId node, RequestId request)
 {
@@ -50,7 +70,7 @@ Expected<std::unique_ptr<ReplyService>> CreateService(std::size_t slots,
     });
 }
 
-TEST(ReplyServiceTest, SharesSlotsAcrossRequestsAndValidatesOwnership)
+TEST_F(ReplyServiceTest, SharesSlotsAcrossRequestsAndValidatesOwnership)
 {
     auto created = CreateService(3);
     ASSERT_TRUE(created);
@@ -96,7 +116,7 @@ TEST(ReplyServiceTest, SharesSlotsAcrossRequestsAndValidatesOwnership)
     EXPECT_TRUE(service->Shutdown().Success());
 }
 
-TEST(ReplyServiceTest, RejectsReplyPayloadLargerThanSlot)
+TEST_F(ReplyServiceTest, RejectsReplyPayloadLargerThanSlot)
 {
     auto created = CreateService(1, 1);
     ASSERT_TRUE(created);
@@ -106,7 +126,7 @@ TEST(ReplyServiceTest, RejectsReplyPayloadLargerThanSlot)
     EXPECT_TRUE(service->Shutdown().Success());
 }
 
-TEST(ReplyServiceTest, ShutdownStopsNewLeases)
+TEST_F(ReplyServiceTest, ShutdownStopsNewLeases)
 {
     auto created = CreateService(1);
     ASSERT_TRUE(created);
@@ -116,7 +136,7 @@ TEST(ReplyServiceTest, ShutdownStopsNewLeases)
     EXPECT_FALSE(service->Acquire(Token(1, 1), OpType::LOOKUP, 1));
 }
 
-TEST(ReplyServiceTest, SupportsConcurrentLeases)
+TEST_F(ReplyServiceTest, SupportsConcurrentLeases)
 {
     constexpr std::size_t kSlotCount = 8;
     constexpr std::size_t kOwnerCount = 8;

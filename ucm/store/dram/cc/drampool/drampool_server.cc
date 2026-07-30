@@ -23,10 +23,6 @@
  * */
 #include "drampool_server.h"
 
-#if defined(UCM_DRAMPOOL_RUNTIME_ASCEND)
-#include <acl/acl.h>
-#endif
-
 #include <chrono>
 #include <exception>
 #include <random>
@@ -154,31 +150,16 @@ Status DramPoolServer::InitializeDeviceRuntime()
         0, g_config.transportDeviceIds.size() - 1);
     const auto deviceId = g_config.transportDeviceIds[distribution(generator)];
 
-#if defined(UCM_DRAMPOOL_RUNTIME_ASCEND)
-    const auto initStatus = aclInit(nullptr);
-    if (initStatus == ACL_SUCCESS) {
-        aclRuntimeOwned_ = true;
-    } else if (initStatus != ACL_ERROR_REPEAT_INITIALIZE) {
-        return Status::Error("aclInit failed: " + std::to_string(initStatus));
+    auto status = device_.Init();
+    if (status.Failure()) {
+        return Status::Error("device runtime initialization failed: " + status.ToString());
     }
-#endif
+    status = device_.Setup(deviceId);
+    if (status.Success()) { return Status::OK(); }
 
-    UC::Trans::Device device;
-    const auto setupStatus = device.Setup(deviceId);
-    if (setupStatus.Success()) {
-#if defined(UCM_DRAMPOOL_RUNTIME_ASCEND)
-        aclDeviceId_ = deviceId;
-#endif
-        return Status::OK();
-    }
-
-#if defined(UCM_DRAMPOOL_RUNTIME_ASCEND)
-    if (aclRuntimeOwned_) {
-        (void)aclFinalize();
-        aclRuntimeOwned_ = false;
-    }
-#endif
-    return Status::Error("device runtime setup failed: " + setupStatus.ToString());
+    (void)device_.Reset();
+    (void)device_.Finalize();
+    return Status::Error("device runtime setup failed: " + status.ToString());
 }
 
 Status DramPoolServer::InitMemoryPool()
@@ -557,14 +538,8 @@ void DramPoolServer::ResetInitializedComponents()
     flagBufferPool_.reset();
     bufferManager_.reset();
     transportManager_.reset();
-#if defined(UCM_DRAMPOOL_RUNTIME_ASCEND)
-    if (aclRuntimeOwned_) {
-        if (aclDeviceId_) { (void)aclrtResetDevice(*aclDeviceId_); }
-        (void)aclFinalize();
-        aclRuntimeOwned_ = false;
-    }
-#endif
-    aclDeviceId_.reset();
+    (void)device_.Reset();
+    (void)device_.Finalize();
 }
 
 }  // namespace UC::DramPool

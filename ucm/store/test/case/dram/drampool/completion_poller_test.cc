@@ -21,9 +21,6 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#if defined(UCM_TEST_RUNTIME_ASCEND)
-#include <acl/acl.h>
-#endif
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -68,21 +65,19 @@ class CompletionPollerTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite()
     {
-#if defined(UCM_TEST_RUNTIME_ASCEND)
-        ASSERT_EQ(aclInit(nullptr), ACL_SUCCESS);
-#endif
-        UC::Trans::Device device;
-        const auto status = device.Setup(0);
+        auto status = device_.Init();
+        ASSERT_TRUE(status.Success()) << status.ToString();
+        status = device_.Setup(0);
         ASSERT_TRUE(status.Success()) << status.ToString();
     }
 
     static void TearDownTestSuite()
     {
-#if defined(UCM_TEST_RUNTIME_ASCEND)
-        EXPECT_EQ(aclrtResetDevice(0), ACL_SUCCESS);
-        EXPECT_EQ(aclFinalize(), ACL_SUCCESS);
-#endif
+        EXPECT_TRUE(device_.Reset().Success());
+        EXPECT_TRUE(device_.Finalize().Success());
     }
+
+    inline static UC::Trans::Device device_;
 
     void SetUp() override
     {

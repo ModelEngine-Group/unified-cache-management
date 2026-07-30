@@ -30,10 +30,6 @@
 #include <limits>
 #include <thread>
 #include <vector>
-#if defined(UCM_TEST_RUNTIME_ASCEND)
-#include <acl/acl.h>
-#endif
-
 namespace UC {
 namespace {
 
@@ -43,22 +39,19 @@ class BufferPoolTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite()
     {
-#if defined(UCM_TEST_RUNTIME_ASCEND)
-        ASSERT_EQ(aclInit(nullptr), ACL_SUCCESS);
-#endif
-
-        Trans::Device device;
-        const auto status = device.Setup(0);
+        auto status = device_.Init();
+        ASSERT_TRUE(status.Success()) << status.ToString();
+        status = device_.Setup(0);
         ASSERT_TRUE(status.Success()) << status.ToString();
     }
 
     static void TearDownTestSuite()
     {
-#if defined(UCM_TEST_RUNTIME_ASCEND)
-        aclrtResetDevice(0);
-        aclFinalize();
-#endif
+        EXPECT_TRUE(device_.Reset().Success());
+        EXPECT_TRUE(device_.Finalize().Success());
     }
+
+    inline static Trans::Device device_;
 };
 
 TEST_F(BufferPoolTest, RejectsInvalidInitAndUseBeforeInit)
@@ -200,9 +193,7 @@ TEST_F(BufferPoolTest, HostPinnedPoolKeepsLocalAndDeviceAddresses)
 
     ASSERT_NE(pool.GetLocalAddr(), nullptr);
     ASSERT_NE(pool.GetDeviceAddr(), nullptr);
-#if defined(UCM_TEST_RUNTIME_ASCEND)
     EXPECT_NE(pool.GetLocalAddr(), pool.GetDeviceAddr());
-#endif
     EXPECT_EQ(pool.GetTotalSize(), 8192);
     EXPECT_EQ(pool.GetMemoryType(), MemoryType::HOST_PINNED);
 

@@ -164,16 +164,6 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
         return true;
     }
 
-    if (packedSize > record.local_resp_slot.length) {
-        const auto slotLength = record.local_resp_slot.length;
-        ReleaseResponseBuffer(runtime_.flagBufferPool, record);
-        UC_ERROR(
-            "CompletionPoller response size exceeds flag buffer slot, opcode={}, size={}, "
-            "slot_length={}",
-            static_cast<int>(record.opcode), packedSize, slotLength);
-        return true;
-    }
-
     const auto len = static_cast<std::uint32_t>(packedSize);
 
     const auto protocolStatus = runtime_.protocol.PackResponse(
