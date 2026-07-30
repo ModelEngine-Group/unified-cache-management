@@ -827,7 +827,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         if "storage_backends" in config:
             backends = [path for path in config["storage_backends"].split(":")]
             config["storage_backends"] = backends
-        config["unique_id"] = f"{self.engine_id}{unique_id_suffix}"
+        config["unique_id"] = f"{self.unique_id}{unique_id_suffix}"
         if self._role == KVConnectorRole.WORKER:
             config["device_id"] = self.local_rank
             tensor_size_list = _normalize_tensor_size_list(
