@@ -31,11 +31,11 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
-#include "asu_transport_impl.h"
 #include "buffer_manager.h"
 #include "connection_manager.h"
 #include "kv_protocol.h"
 #include "logger.h"
+#include "transport_task_executor.h"
 
 namespace UC::ASU {
 
@@ -333,9 +333,9 @@ std::unique_ptr<SqeRequest> BuildSqeRequest(
 
 }  // namespace
 
-Status AsuTransportImpl::SubmitEntrySubBatchRequest(TransportOpType opType,
-                                                    const IoScheduler::ScheduledIoBatch& subBatch,
-                                                    TransportSubBatchContext& subBatchContext)
+Status TransportTaskExecutor::SubmitEntrySubBatchRequest(
+    TransportOpType opType, const IoScheduler::ScheduledIoBatch& subBatch,
+    TransportSubBatchContext& subBatchContext)
 {
     const auto source = SubBatchRequestSource::FromEntries(subBatch.entries);
     subBatchContext.entryStatus.assign(subBatch.entries.size, Status::OK());
@@ -361,9 +361,9 @@ Status AsuTransportImpl::SubmitEntrySubBatchRequest(TransportOpType opType,
                                subBatchContext);
 }
 
-Status AsuTransportImpl::SubmitKeySubBatchRequest(TransportOpType opType,
-                                                  const IoScheduler::ScheduledKeyBatch& subBatch,
-                                                  TransportSubBatchContext& subBatchContext)
+Status TransportTaskExecutor::SubmitKeySubBatchRequest(
+    TransportOpType opType, const IoScheduler::ScheduledKeyBatch& subBatch,
+    TransportSubBatchContext& subBatchContext)
 {
     const auto source = SubBatchRequestSource::FromKeys(subBatch.keys);
     subBatchContext.entryStatus.assign(subBatch.keys.size, Status::OK());
@@ -379,7 +379,7 @@ Status AsuTransportImpl::SubmitKeySubBatchRequest(TransportOpType opType,
                                subBatchContext);
 }
 
-Status AsuTransportImpl::SubmitKeepAliveRequest(TransportSubBatchContext& subBatchContext)
+Status TransportTaskExecutor::SubmitKeepAliveRequest(TransportSubBatchContext& subBatchContext)
 {
     const auto opType = TransportOpType::KEEP_ALIVE;
     const auto source = SubBatchRequestSource::KeepAlive();

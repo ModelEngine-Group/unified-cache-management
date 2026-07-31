@@ -171,7 +171,8 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersReadsSendCountsFromAttrs)
     subBatchContexts[0].state = TransportSubBatchState::PENDING;
     subBatchContexts[0].entryStatus.assign(1, Status::OK());
 
-    const auto status = transport.SendSubBatchBuffers(subBatchContexts, ioBatches, subBatchIndexes);
+    const auto status =
+        transport.taskExecutor_->SendSubBatchBuffers(subBatchContexts, ioBatches, subBatchIndexes);
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(g_kernelCount, std::uint32_t{3});
@@ -463,7 +464,8 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersReportsSendFailures)
     subBatchContexts[1].channel = channel1;
     subBatchContexts[1].entryStatus.assign(1, Status::OK());
 
-    const auto status = transport.SendSubBatchBuffers(subBatchContexts, ioBatches, subBatchIndexes);
+    const auto status =
+        transport.taskExecutor_->SendSubBatchBuffers(subBatchContexts, ioBatches, subBatchIndexes);
 
     EXPECT_EQ(status.code, StatusCode::CONNECTION_ERROR);
     EXPECT_EQ(channel0->GetState(), ChannelState::DRAINING);
@@ -489,8 +491,8 @@ TEST_F(AsuSubmitFlowBufferTest, BuildSubBatchSendBuffersReleasesPreFailedSubBatc
 
     std::vector<TransProvider::SendIoBatch> ioBatches;
     std::vector<std::size_t> subBatchIndexes;
-    const auto status =
-        transport_->BuildSubBatchSendBuffers(subBatchContexts, ioBatches, subBatchIndexes);
+    const auto status = transport_->taskExecutor_->BuildSubBatchSendBuffers(
+        subBatchContexts, ioBatches, subBatchIndexes);
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     EXPECT_TRUE(ioBatches.empty());
@@ -524,8 +526,8 @@ TEST_F(AsuSubmitFlowBufferTest, BuildSubBatchSendBuffersMarksMissingFlagBufferFa
 
     std::vector<TransProvider::SendIoBatch> ioBatches;
     std::vector<std::size_t> subBatchIndexes;
-    const auto status =
-        transport_->BuildSubBatchSendBuffers(subBatchContexts, ioBatches, subBatchIndexes);
+    const auto status = transport_->taskExecutor_->BuildSubBatchSendBuffers(
+        subBatchContexts, ioBatches, subBatchIndexes);
 
     EXPECT_EQ(status.code, StatusCode::NOT_INITIALIZED);
     EXPECT_TRUE(ioBatches.empty());
@@ -562,8 +564,8 @@ TEST_F(AsuSubmitFlowBufferTest, BuildSubBatchSendBuffersRejectsZeroSendLength)
 
     std::vector<TransProvider::SendIoBatch> ioBatches;
     std::vector<std::size_t> subBatchIndexes;
-    const auto status =
-        transport_->BuildSubBatchSendBuffers(subBatchContexts, ioBatches, subBatchIndexes);
+    const auto status = transport_->taskExecutor_->BuildSubBatchSendBuffers(
+        subBatchContexts, ioBatches, subBatchIndexes);
 
     EXPECT_EQ(status.code, StatusCode::NOT_INITIALIZED);
     EXPECT_TRUE(ioBatches.empty());
@@ -586,8 +588,8 @@ TEST_F(AsuSubmitFlowBufferTest, BuildSubBatchSendBuffersRejectsMissingChannel)
 
     std::vector<TransProvider::SendIoBatch> ioBatches;
     std::vector<std::size_t> subBatchIndexes;
-    const auto status =
-        transport_->BuildSubBatchSendBuffers(subBatchContexts, ioBatches, subBatchIndexes);
+    const auto status = transport_->taskExecutor_->BuildSubBatchSendBuffers(
+        subBatchContexts, ioBatches, subBatchIndexes);
 
     EXPECT_EQ(status.code, StatusCode::NOT_INITIALIZED);
     EXPECT_TRUE(ioBatches.empty());
@@ -622,8 +624,8 @@ TEST_F(AsuSubmitFlowBufferTest, BuildSubBatchSendBuffersUsesHostPinnedDeviceAddr
 
     std::vector<TransProvider::SendIoBatch> ioBatches;
     std::vector<std::size_t> subBatchIndexes;
-    const auto status =
-        transport_->BuildSubBatchSendBuffers(subBatchContexts, ioBatches, subBatchIndexes);
+    const auto status = transport_->taskExecutor_->BuildSubBatchSendBuffers(
+        subBatchContexts, ioBatches, subBatchIndexes);
 
     ASSERT_TRUE(status.ok()) << status.message;
     ASSERT_EQ(ioBatches.size(), std::size_t{1});
@@ -656,7 +658,8 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersFailsAllSentSubBatchesWhenStatusCount
     subBatchContexts[1].state = TransportSubBatchState::PENDING;
     subBatchContexts[1].entryStatus.assign(1, Status::OK());
 
-    const auto status = transport.SendSubBatchBuffers(subBatchContexts, ioBatches, subBatchIndexes);
+    const auto status =
+        transport.taskExecutor_->SendSubBatchBuffers(subBatchContexts, ioBatches, subBatchIndexes);
 
     EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
     EXPECT_EQ(subBatchContexts[0].state, TransportSubBatchState::COMPLETED);
