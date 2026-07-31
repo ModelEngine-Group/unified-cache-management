@@ -29,11 +29,7 @@
 
 namespace UC::Trans {
 
-Status Device::Init(bool* runtimeOwned)
-{
-    if (runtimeOwned != nullptr) { *runtimeOwned = true; }
-    return Status::OK();
-}
+Status Device::Init() { return Status::OK(); }
 
 Status Device::Setup(int32_t deviceId)
 {

@@ -149,11 +149,12 @@ Status DramPoolServer::InitializeDeviceRuntime()
                                                             g_config.transportDeviceIds.size() - 1);
     const auto deviceId = g_config.transportDeviceIds[distribution(generator)];
 
-    auto status = device_.Init(&deviceRuntimeOwned_);
-    if (status.Failure()) {
-        return Status::Error("device runtime initialization failed: " + status.ToString());
+    const auto initStatus = device_.Init();
+    deviceRuntimeOwned_ = initStatus.Success();
+    if (!deviceRuntimeOwned_ && initStatus != Status::DuplicateKey()) {
+        return Status::Error("device runtime initialization failed: " + initStatus.ToString());
     }
-    status = device_.Setup(deviceId);
+    auto status = device_.Setup(deviceId);
     if (status.Success()) {
         deviceId_ = deviceId;
         return Status::OK();

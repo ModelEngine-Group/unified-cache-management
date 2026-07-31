@@ -28,15 +28,11 @@
 
 namespace UC::Trans {
 
-Status Device::Init(bool* runtimeOwned)
+Status Device::Init()
 {
-    if (runtimeOwned != nullptr) { *runtimeOwned = false; }
     const auto ret = aclInit(nullptr);
-    if (ret == ACL_SUCCESS) {
-        if (runtimeOwned != nullptr) { *runtimeOwned = true; }
-        return Status::OK();
-    }
-    if (ret == ACL_ERROR_REPEAT_INITIALIZE) { return Status::OK(); }
+    if (ret == ACL_SUCCESS) { return Status::OK(); }
+    if (ret == ACL_ERROR_REPEAT_INITIALIZE) { return Status::DuplicateKey(); }
     return Status{ret, std::to_string(ret)};
 }
 

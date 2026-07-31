@@ -66,18 +66,22 @@ protected:
     static void SetUpTestSuite()
     {
         auto status = device_.Init();
-        ASSERT_TRUE(status.Success()) << status.ToString();
+        deviceRuntimeOwned_ = status.Success();
+        ASSERT_TRUE(deviceRuntimeOwned_ || status == Status::DuplicateKey()) << status.ToString();
         status = device_.Setup(0);
         ASSERT_TRUE(status.Success()) << status.ToString();
     }
 
     static void TearDownTestSuite()
     {
+        if (!deviceRuntimeOwned_) { return; }
         EXPECT_TRUE(device_.Reset(0).Success());
         EXPECT_TRUE(device_.Finalize().Success());
+        deviceRuntimeOwned_ = false;
     }
 
     inline static UC::Trans::Device device_;
+    inline static bool deviceRuntimeOwned_{false};
 
     void SetUp() override
     {

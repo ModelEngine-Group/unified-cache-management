@@ -31,7 +31,7 @@ namespace UC::Trans {
 
 class Device {
 public:
-    Status Init(bool* runtimeOwned = nullptr);
+    Status Init();
     Status Setup(int32_t deviceId);
     Status Reset(int32_t deviceId);
     Status Finalize();
