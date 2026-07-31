@@ -65,8 +65,8 @@ Status TaskWorker::ProcessOneRequest(RequestTaskPtr task)
     if (!task || !task->request || task->peer_one_sided_id.empty()) {
         return Status::InvalidParam("TaskWorker got an invalid request task");
     }
-    const auto peerStatus = EnsurePeerReady(task->peer_one_sided_id);
-    if (peerStatus.Failure()) { return peerStatus; }
+    // By the time a request reaches DramPool, the store-initiated Connect control request
+    // must already have established the local route.
     const auto& peerOneSidedId = task->peer_one_sided_id;
     const auto& request = task->request;
     switch (request->opcode) {
@@ -89,11 +89,6 @@ Status TaskWorker::ProcessOneRequest(RequestTaskPtr task)
         case KvOpcode::None: break;
     }
     return Status::InvalidParam("TaskWorker got invalid opcode");
-}
-
-Status TaskWorker::EnsurePeerReady(const transport::ManagerID& targetOneSidedId)
-{
-    return runtime_.transport.Connect(transport::TransportProtocol::Hixl, targetOneSidedId);
 }
 
 Status TaskWorker::ProcessDump(const KvDumpRequest& request,

@@ -46,11 +46,9 @@ private:
     bool PollResponseTransfer(CompletionRecord& record);
     void SettleDataTransfer(CompletionRecord& record, transport::TransferStatus terminalStatus);
     bool OperationTimedOut(const CompletionRecord& record, std::uint64_t nowMs) const;
-    void DisconnectPeer(const transport::ManagerID& peer, TransportHandle handle);
 
     DramPoolRuntime& runtime_;
     std::deque<CompletionRecord> pending_;
-    bool disconnectAllTransfers_{false};
 };
 
 }  // namespace UC::DramPool
