@@ -241,7 +241,19 @@ public:
     AsuStatus Query(const std::vector<UC::ASU::CacheKey>& keys,
                     const UC::ASU::QueryOptions& options, UC::ASU::QueryResult& result) override
     {
-        return client_->Query(keys, options, result);
+        UC::ASU::TaskId taskId = UC::ASU::kInvalidTaskId;
+        auto status = client_->QueryAsync(keys, options, taskId);
+        if (!status.ok()) { return status; }
+
+        UC::ASU::TaskResult taskResult;
+        status = client_->Wait(taskId, options.timeoutMs, taskResult);
+        if (taskResult.queryResult.has_value()) {
+            result = std::move(*taskResult.queryResult);
+        } else if (status.ok()) {
+            return AsuStatus::Error(UC::ASU::StatusCode::INTERNAL_ERROR,
+                                    "client query result is missing");
+        }
+        return status;
     }
 
     AsuStatus LoadAsync(const std::vector<UC::ASU::KVBuffer>& entries,
