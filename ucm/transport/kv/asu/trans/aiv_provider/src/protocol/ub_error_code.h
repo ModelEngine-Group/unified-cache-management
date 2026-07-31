@@ -1,0 +1,107 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
+
+#pragma once
+
+#include <cstdint>
+
+namespace umc::comm {
+
+enum class UbErrorCode : int32_t {
+    Ok = 0,
+
+    HccpV2LoadLibraryFailed = 1001,
+    HccpV2TsdOpenFailed = 1002,
+    HccpV2RaInitFailed = 1003,
+    HccpV2RaCtxInitFailed = 1004,
+    HccpV2QpCreateFailed = 1005,
+    HccpV2LmemRegisterFailed = 1006,
+    HccpV2QpImportFailed = 1007,
+    HccpV2RmemImportFailed = 1008,
+    HccpV2QpBindFailed = 1009,
+    HccpV2CqCreateFailed = 1010,
+    HccpV2ChanCreateFailed = 1011,
+    HccpV2TokenIdAllocFailed = 1012,
+    HccpV2HandleInvalid = 1013,
+    HccpV2UboeNotAvailable = 1014,  // RaGetTpInfoListAsync(flag.bs.uboe=1) 返回空或错
+
+    OobConnectFailed = 2001,
+    OobNegotiateFailed = 2002,
+    OobStaticYamlNotFound = 2003,
+    OobStaticYamlMalformed = 2004,
+    OobCmProtocolMismatch = 2005,
+    OobCmVersionRejected = 2006,  // major 不匹配
+    OobTransportClosed = 2007,
+    OobTimeout = 2008,
+
+    UdmaSqRingFull = 3001,
+    UdmaCqPollTimeout = 3002,
+    UdmaSignalInvalidMagic = 3003,
+    UdmaSignalVersionMismatch = 3004,
+    UdmaQuietTimeout = 3005,
+    UdmaInvalidOpcode = 3006,
+
+    KvStripeFull = 4001,
+    KvTaskNotFound = 4002,
+    KvBlockNotFound = 4003,
+    KvNamespaceInvalid = 4004,
+    KvConnNotFound = 4005,      // transport facade: SendIoItem.connectionHandle 反查失败
+    KvMemHandleInvalid = 4006,  // transport facade: UnregisterMemoryDesc 引用不存在的 mem handle
+    KvSendBatchEmpty = 4007,  // deprecated: 旧 transport::Send 空 batch；SendTaskDescs 现返回空结果
+    KvTaskDescInvalid = 4008,       // TaskDesc magic/version/op 非法
+    KvTaskChecksumMismatch = 4009,  // TaskDesc checksum 校验失败
+    KvTaskAddrOutOfRange = 4010,    // TaskDesc client/storage 地址越界
+
+    UrmaNotAvailable = 5001,  // stub backend 上所有调用
+    UrmaInitFailed = 5002,
+    UrmaJettyCreateFailed = 5003,
+    UrmaSegRegisterFailed = 5004,
+    UrmaPostWrFailed = 5005,
+    UrmaPostRecvFailed = 5006,     // urma_post_jetty_recv_wr 失败
+    UrmaPollJfcFailed = 5007,      // urma_poll_jfc 返回错误
+    UrmaImportJettyFailed = 5008,  // urma_import_jetty / advise 失败
+    UrmaReadFailed = 5009,         // urma_read 失败
+    UrmaWriteFailed = 5010,        // urma_write 失败
+    UrmaTpListFailed = 5011,       // urma_get_tp_list 失败
+
+    InternalAssertionFailed = 9001,
+    NotImplemented = 9002,
+    InvalidArgument = 9003,
+};
+
+constexpr int32_t ToInt(UbErrorCode c) { return static_cast<int32_t>(c); }
+
+constexpr UbErrorCode FromInt(int32_t v) { return static_cast<UbErrorCode>(v); }
+
+}  // namespace umc::comm
+
+#ifdef __CCE__
+#define UB_ERR_OK 0
+#define UB_ERR_UDMA_SQ_RING_FULL 3001
+#define UB_ERR_UDMA_CQ_POLL_TIMEOUT 3002
+#define UB_ERR_UDMA_SIGNAL_INVALID_MAGIC 3003
+#define UB_ERR_UDMA_SIGNAL_VERSION_MISMATCH 3004
+#define UB_ERR_UDMA_QUIET_TIMEOUT 3005
+#define UB_ERR_UDMA_INVALID_OPCODE 3006
+#endif
