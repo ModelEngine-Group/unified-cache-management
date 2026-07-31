@@ -47,7 +47,7 @@ protected:
 
     static void TearDownTestSuite()
     {
-        EXPECT_TRUE(device_.Reset().Success());
+        EXPECT_TRUE(device_.Reset(0).Success());
         EXPECT_TRUE(device_.Finalize().Success());
     }
 

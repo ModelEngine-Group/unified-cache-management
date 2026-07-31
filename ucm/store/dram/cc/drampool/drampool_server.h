@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include "buffer_manager.h"
@@ -121,6 +122,8 @@ private:
     std::unique_ptr<TaskWorker> taskWorker_;
     std::unique_ptr<CompletionPoller> completionPoller_;
     Trans::Device device_;
+    std::optional<std::int32_t> deviceId_;
+    bool deviceRuntimeOwned_{false};
 
     ServerState state_{ServerState::New};
     std::mutex requestReceiverWaitMutex_;

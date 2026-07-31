@@ -31,18 +31,14 @@ namespace UC::Trans {
 
 class Device {
 public:
-    Status Init();
+    Status Init(bool* runtimeOwned = nullptr);
     Status Setup(int32_t deviceId);
-    Status Reset();
+    Status Reset(int32_t deviceId);
     Status Finalize();
     std::unique_ptr<Stream> MakeStream();
     std::shared_ptr<Stream> MakeSharedStream();
     std::unique_ptr<Stream> MakeSMStream();
     std::unique_ptr<Buffer> MakeBuffer();
-
-private:
-    int32_t deviceId_{-1};
-    bool deviceRuntimeOwned_{false};
 };
 
 }  // namespace UC::Trans

@@ -29,22 +29,25 @@
 
 namespace UC::Trans {
 
-Status Device::Init() { return Status::OK(); }
+Status Device::Init(bool* runtimeOwned)
+{
+    if (runtimeOwned != nullptr) { *runtimeOwned = true; }
+    return Status::OK();
+}
 
 Status Device::Setup(int32_t deviceId)
 {
     auto ret = cudaSetDevice(deviceId);
     if (ret != cudaSuccess) { return Status{ret, cudaGetErrorString(ret)}; }
-    deviceId_ = deviceId;
     return Status::OK();
 }
 
-Status Device::Reset()
+Status Device::Reset(int32_t deviceId)
 {
-    if (deviceId_ < 0) { return Status::OK(); }
-    const auto ret = cudaDeviceReset();
+    auto ret = cudaSetDevice(deviceId);
     if (ret != cudaSuccess) { return Status{ret, cudaGetErrorString(ret)}; }
-    deviceId_ = -1;
+    ret = cudaDeviceReset();
+    if (ret != cudaSuccess) { return Status{ret, cudaGetErrorString(ret)}; }
     return Status::OK();
 }
 
@@ -95,4 +98,4 @@ std::unique_ptr<Buffer> Device::MakeBuffer()
     }
 }
 
-} // namespace UC::Trans
+}  // namespace UC::Trans

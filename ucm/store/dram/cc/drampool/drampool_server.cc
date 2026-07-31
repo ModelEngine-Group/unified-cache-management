@@ -149,15 +149,20 @@ Status DramPoolServer::InitializeDeviceRuntime()
                                                             g_config.transportDeviceIds.size() - 1);
     const auto deviceId = g_config.transportDeviceIds[distribution(generator)];
 
-    auto status = device_.Init();
+    auto status = device_.Init(&deviceRuntimeOwned_);
     if (status.Failure()) {
         return Status::Error("device runtime initialization failed: " + status.ToString());
     }
     status = device_.Setup(deviceId);
-    if (status.Success()) { return Status::OK(); }
+    if (status.Success()) {
+        deviceId_ = deviceId;
+        return Status::OK();
+    }
 
-    (void)device_.Reset();
-    (void)device_.Finalize();
+    if (deviceRuntimeOwned_) {
+        (void)device_.Finalize();
+        deviceRuntimeOwned_ = false;
+    }
     return Status::Error("device runtime setup failed: " + status.ToString());
 }
 
@@ -538,8 +543,12 @@ void DramPoolServer::ResetInitializedComponents()
     flagBufferPool_.reset();
     bufferManager_.reset();
     transportManager_.reset();
-    (void)device_.Reset();
-    (void)device_.Finalize();
+    if (deviceRuntimeOwned_) {
+        if (deviceId_) { (void)device_.Reset(*deviceId_); }
+        (void)device_.Finalize();
+        deviceRuntimeOwned_ = false;
+    }
+    deviceId_.reset();
 }
 
 }  // namespace UC::DramPool

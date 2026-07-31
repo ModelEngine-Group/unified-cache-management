@@ -28,18 +28,21 @@
 
 namespace UC::Trans {
 
-Status Device::Init() { return Status::OK(); }
+Status Device::Init(bool* runtimeOwned)
+{
+    if (runtimeOwned != nullptr) { *runtimeOwned = true; }
+    return Status::OK();
+}
 
 Status Device::Setup(int32_t deviceId)
 {
     if (deviceId < 0) { return Status::Error(fmt::format("invalid device id({})", deviceId)); }
-    deviceId_ = deviceId;
     return Status::OK();
 }
 
-Status Device::Reset()
+Status Device::Reset(int32_t deviceId)
 {
-    deviceId_ = -1;
+    if (deviceId < 0) { return Status::Error(fmt::format("invalid device id({})", deviceId)); }
     return Status::OK();
 }
 
