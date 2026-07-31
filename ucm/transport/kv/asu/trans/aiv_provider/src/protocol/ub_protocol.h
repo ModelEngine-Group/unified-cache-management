@@ -30,23 +30,23 @@
 namespace umc::comm {
 
 enum kv_protocol_opcode_t : uint8_t {
-    UB_PROTO = 0,  // 新仓唯一支持
+    UB_PROTO = 0,
 };
 
 enum kv_cm_op_t : uint8_t {
     KV_CM_OP_INVALID = 0,
     KV_CM_OP_DISC = 3,
     KV_CM_OP_KEEPALIVE = 4,
-    KV_CM_OP_MR_REGISTER = 5,  // v1.4：Send/Recv 模型，发布业务 MR 可导出 seg
-    KV_CM_OP_MR_REG_ACK = 6,   // v1.4：server 对 MR_REGISTER 的确认
+    KV_CM_OP_MR_REGISTER = 5,
+    KV_CM_OP_MR_REG_ACK = 6,
 };
 
 constexpr uint8_t kKvCmMajorVersionV1 = 1;
-constexpr uint8_t kKvCmMinorVersionV1 = 0;    // 仅 EID 寻址（UBC 单超节点）
-constexpr uint8_t kKvCmMinorVersionV1_1 = 1;  // 追加 net_addr（UBoE / scale-out）
-constexpr uint8_t kKvCmMinorVersionV1_2 = 2;  // 追加 MAMI/EXP active TP 块（tpHandle/tag/psn）
-constexpr uint8_t kKvCmMinorVersionV1_3 = 3;  // 追加 UBoE+RM 离散 jetty 标识（uasid/jetty_id/...）
-constexpr uint8_t kKvCmMinorVersionV1_4 = 4;  // 追加 MR_REGISTER 帧（Send/Recv 业务 MR 导出）
+constexpr uint8_t kKvCmMinorVersionV1 = 0;
+constexpr uint8_t kKvCmMinorVersionV1_1 = 1;
+constexpr uint8_t kKvCmMinorVersionV1_2 = 2;
+constexpr uint8_t kKvCmMinorVersionV1_3 = 3;
+constexpr uint8_t kKvCmMinorVersionV1_4 = 4;
 constexpr uint8_t kKvCmMinorVersionCur = kKvCmMinorVersionV1_4;
 
 enum kv_cm_net_addr_kind : uint8_t {
@@ -58,7 +58,7 @@ enum kv_cm_net_addr_kind : uint8_t {
 #pragma pack(push, 1)
 struct kv_cm_hdr {
     uint8_t major_version;  // [0,1)   == kKvCmMajorVersionV1
-    uint8_t minor_version;  // [1,2)   ∈ {0, 1}，参 kKvCmMinorVersion*
+    uint8_t minor_version;  // [1,2)   kKvCmMinorVersionV1..kKvCmMinorVersionCur
     uint8_t op;             // [2,3)   kv_cm_op_t
     uint8_t protocol;       // [3,4)   kv_protocol_opcode_t == UB_PROTO
     uint32_t msg_len;       // [4,8)   总报文长度（含 hdr）；LE
@@ -94,12 +94,12 @@ struct kv_cm_conn_ub_info {
     uint32_t rm_uasid;         // [280,284)  RaCtxQpCreate 出参 QpCreateInfo.ub.uasid
     uint32_t rm_jetty_id;      // [284,288)  QpCreateInfo.ub.id（= urma_jetty_id_t.id）
     uint8_t rm_jetty_type;     // [288,289)  TARGET_TYPE_JETTY(1)
-    uint8_t rm_jetty_num;      // [289,290)  当前固定 1
+    uint8_t rm_jetty_num;      // [289,290)  must be 1
     uint8_t conn_mode;         // [290,291)  0=Rc(默认) / 1=Rm
     uint8_t rm_rsv[5];         // [291,296)  对齐预留
 };
 #pragma pack(pop)
-static_assert(sizeof(kv_cm_conn_ub_info) == 296, "kv_cm_conn_ub_info must be 296 bytes (v1.3)");
+static_assert(sizeof(kv_cm_conn_ub_info) == 296, "kv_cm_conn_ub_info must be 296 bytes");
 static_assert(offsetof(kv_cm_conn_ub_info, qp_key_raw) == 16, "");
 static_assert(offsetof(kv_cm_conn_ub_info, mem_key_raw) == 81, "");
 static_assert(offsetof(kv_cm_conn_ub_info, token_id) == 210, "");

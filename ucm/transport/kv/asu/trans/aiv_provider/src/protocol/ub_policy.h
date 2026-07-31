@@ -30,9 +30,9 @@
 namespace umc::comm {
 
 enum class OobTransportKind : int32_t {
-    StaticConfig = 0,  // 默认主路径：读 storage_endpoints.yaml
-    RaSocket = 1,      // 备路径：通过 hccp 内部 TCP 通道
-    Tcp = 2,           // 调试 / loopback
+    StaticConfig = 0,
+    RaSocket = 1,
+    Tcp = 2,
 };
 
 enum class TransportProfile : int32_t {

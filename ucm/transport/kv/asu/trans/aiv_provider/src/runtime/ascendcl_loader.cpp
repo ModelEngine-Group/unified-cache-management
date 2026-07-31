@@ -189,9 +189,7 @@ UbStatus DlAscendcl::AclrtMalloc(void** devPtr, std::size_t size, AclrtMallocPol
 
 UbStatus DlAscendcl::AclrtFree(void* devPtr)
 {
-    if (!Loaded() || FreeSlot() == nullptr) {
-        return UbStatus::Ok();  // 没装载就当 noop 回收，不 fatal
-    }
+    if (!Loaded() || FreeSlot() == nullptr) { return UbStatus::Ok(); }
     int rc = FreeSlot()(devPtr);
     if (rc != 0) { UB_LOG_WARN("aclrtFree rc=%d", rc); }
     return UbStatus::Ok();
@@ -328,11 +326,11 @@ UbStatus DlAscendcl::AclrtLaunchKernelWithHostArgs(void* funcHandle, uint32_t bl
         } value;
     };
     static_assert(sizeof(LaunchKernelAttr) == 20, "aclrtLaunchKernelAttr ABI drift");
-    constexpr int32_t kAttrSchemMode = 1;                 // ACL_RT_LAUNCH_KERNEL_ATTR_SCHEM_MODE
-    constexpr int32_t kAttrTimeoutUs = 8;                 // ACL_RT_LAUNCH_KERNEL_ATTR_TIMEOUT_US
-    constexpr int32_t kAttrEngineType = 3;                // ACL_RT_LAUNCH_KERNEL_ATTR_ENGINE_TYPE
-    constexpr int32_t kEngineAiv = 1;                     // ACL_RT_ENGINE_TYPE_AIV
-    constexpr uint32_t kAivTimeoutUs = 1091u * 1000000u;  // 对齐 hccl AIV_TIMEOUT_DEFAULT_US
+    constexpr int32_t kAttrSchemMode = 1;   // ACL_RT_LAUNCH_KERNEL_ATTR_SCHEM_MODE
+    constexpr int32_t kAttrTimeoutUs = 8;   // ACL_RT_LAUNCH_KERNEL_ATTR_TIMEOUT_US
+    constexpr int32_t kAttrEngineType = 3;  // ACL_RT_LAUNCH_KERNEL_ATTR_ENGINE_TYPE
+    constexpr int32_t kEngineAiv = 1;       // ACL_RT_ENGINE_TYPE_AIV
+    constexpr uint32_t kAivTimeoutUs = 1091u * 1000000u;
     LaunchKernelAttr attrs[3]{};
     attrs[0].id = kAttrSchemMode;
     attrs[0].value.schemMode = 1;
@@ -413,9 +411,7 @@ UbStatus DlAscendcl::AclrtLaunchKernelWithDeviceArgs(void* funcHandle, uint32_t 
 
 UbStatus DlAscendcl::AclrtSynchronizeStream(void* stream)
 {
-    if (!Loaded() || SyncSlot() == nullptr) {
-        return UbStatus::Ok();  // 符号缺失 / 未装载 → noop（无 CANN 时不阻断流程）
-    }
+    if (!Loaded() || SyncSlot() == nullptr) { return UbStatus::Ok(); }
     int rc = SyncSlot()(stream);
     if (rc != 0) {
         return UbStatus(UbErrorCode::HccpV2LoadLibraryFailed,
@@ -426,9 +422,7 @@ UbStatus DlAscendcl::AclrtSynchronizeStream(void* stream)
 
 UbStatus DlAscendcl::AclrtSynchronizeStreamWithTimeout(void* stream, int32_t timeoutMs)
 {
-    if (!Loaded()) {
-        return UbStatus::Ok();  // 无 CANN → noop
-    }
+    if (!Loaded()) { return UbStatus::Ok(); }
     if (SyncTimeoutSlot() != nullptr) {
         int rc = SyncTimeoutSlot()(stream, timeoutMs);
         if (rc != 0) {

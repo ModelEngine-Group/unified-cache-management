@@ -41,7 +41,7 @@ enum class UdmaOpcode : uint32_t {
     SendWithInv = 2,
     Write = 3,
     WriteWithImm = 4,
-    WriteWithNotify = 5,  // ★ put_signal 用这个
+    WriteWithNotify = 5,
     Read = 6,
     Cas = 7,
     AtomicSwap = 8,
@@ -52,8 +52,8 @@ enum class UdmaOpcode : uint32_t {
 };
 
 #pragma pack(push, 1)
-struct UdmaEid {      // 对照 HccpEid (16B)
-    uint8_t raw[16];  // network order, IPv4→IPv6 mapping
+struct UdmaEid {
+    uint8_t raw[16];
 };
 #pragma pack(pop)
 static_assert(sizeof(UdmaEid) == 16, "UdmaEid must be 16 bytes");
@@ -62,7 +62,7 @@ static_assert(sizeof(UdmaEid) == 16, "UdmaEid must be 16 bytes");
 struct UdmaWqCtx {
     uint32_t wqn;           // [0,4)
     uint64_t bufAddr;       // [8,16)   ring buffer 首地址（device VA）
-    uint32_t wqeShiftSize;  // [16,20)  log2(wqebbSize) 通常 = 6
+    uint32_t wqeShiftSize;  // [16,20)  log2(wqebbSize)
     uint32_t depth;         // [20,24)  ring depth
     uint64_t headAddr;      // [24,32)  Producer Index addr
     uint64_t tailAddr;      // [32,40)  Consumer Index addr
@@ -90,7 +90,7 @@ static_assert(offsetof(UdmaWqCtx, amoAddr) == 72, "");
 struct UdmaCqCtx {
     uint32_t cqn;           // [0,4)
     uint64_t bufAddr;       // [8,16)
-    uint32_t cqeShiftSize;  // [16,20)  log2(cqeSize) 通常 = 6
+    uint32_t cqeShiftSize;  // [16,20)  log2(cqeSize)
     uint32_t depth;         // [20,24)
     uint64_t headAddr;      // [24,32)
     uint64_t tailAddr;      // [32,40)
@@ -169,14 +169,14 @@ static_assert(offsetof(UdmaSqeCtx, rmtAddrHOrTokenValue) == 44, "");
 
 struct UdmaAivInfo {
     uint32_t qpNum;          // [0,4)   per-peer QP 数
-    uint32_t peerCount;      // [4,8)   远端 peer 数（含 self 占位）
+    uint32_t peerCount;      // [4,8)   peer slots, including self
     uint64_t sqPtr;          // [8,16)  UdmaWqCtx[peerCount * qpNum]
-    uint64_t rqPtr;          // [16,24) UdmaWqCtx[peerCount * qpNum]（A5 上 rq 通常占位）
+    uint64_t rqPtr;          // [16,24) UdmaWqCtx[peerCount * qpNum]
     uint64_t scqPtr;         // [24,32) UdmaCqCtx[peerCount * qpNum]
     uint64_t rcqPtr;         // [32,40) UdmaCqCtx[...]
     uint64_t memPtr;         // [40,48) UdmaSegInfo[peerCount * qpNum]
     uint64_t signalSlotPtr;  // [48,56) UbSignalSlot[peerCount * stripeCount]
-    uint64_t flagSlotPtr;    // [56,64) 兼容 GET 路径完成 flag（NPU 本地）
+    uint64_t flagSlotPtr;    // [56,64) completion flags
 };
 static_assert(sizeof(UdmaAivInfo) == 64, "UdmaAivInfo must be 64 bytes");
 static_assert(offsetof(UdmaAivInfo, qpNum) == 0, "");

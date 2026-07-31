@@ -160,7 +160,7 @@ struct CtxInitAttr {
         } rdma;
         struct {
             uint32_t eidIndex;
-            uint32_t resv0;  // ★ 必须有：与 hcomm hccp_ctx.h CtxInitAttr.ub 对齐，
+            uint32_t resv0;
             HccpEid eid;
         } ub;
     };

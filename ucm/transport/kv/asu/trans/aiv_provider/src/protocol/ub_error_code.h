@@ -66,14 +66,14 @@ enum class UbErrorCode : int32_t {
     KvTaskNotFound = 4002,
     KvBlockNotFound = 4003,
     KvNamespaceInvalid = 4004,
-    KvConnNotFound = 4005,      // transport facade: SendIoItem.connectionHandle 反查失败
-    KvMemHandleInvalid = 4006,  // transport facade: UnregisterMemoryDesc 引用不存在的 mem handle
-    KvSendBatchEmpty = 4007,  // deprecated: 旧 transport::Send 空 batch；SendTaskDescs 现返回空结果
+    KvConnNotFound = 4005,
+    KvMemHandleInvalid = 4006,
+    KvSendBatchEmpty = 4007,
     KvTaskDescInvalid = 4008,       // TaskDesc magic/version/op 非法
     KvTaskChecksumMismatch = 4009,  // TaskDesc checksum 校验失败
     KvTaskAddrOutOfRange = 4010,    // TaskDesc client/storage 地址越界
 
-    UrmaNotAvailable = 5001,  // stub backend 上所有调用
+    UrmaNotAvailable = 5001,
     UrmaInitFailed = 5002,
     UrmaJettyCreateFailed = 5003,
     UrmaSegRegisterFailed = 5004,

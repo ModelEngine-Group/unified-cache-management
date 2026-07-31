@@ -26,28 +26,28 @@
 
 #include <cstddef>
 #include <cstdint>
-#include "src/protocol/ub_protocol.h"  // kv_cm_conn_ub_info
+#include "src/protocol/ub_protocol.h"
 
 namespace umc::comm {
 
 #define XRT_NEG_MSG_VERSION 1
 #define XRT_MAX_NEG_PRI_SIZE 128
-#define XRT_NEG_CAP_REQ_PRIVATE_LEN 4   // spec 表1：major+minor+kato
-#define XRT_NEG_CAP_RSP_PRIVATE_LEN 36  // spec 表2：富能力字段
+#define XRT_NEG_CAP_REQ_PRIVATE_LEN 4
+#define XRT_NEG_CAP_RSP_PRIVATE_LEN 36
 
 enum xrt_rdma_neg_cmd_t : uint8_t {
-    XRT_RDMA_NEG_CONN_AUTH = 0,    // 段2：协商能力（双向）
-    XRT_RDMA_NEG_CONN_REQ = 1,     // 段3：client → server 交换本端 UB 4 元组
-    XRT_RDMA_NEG_CONN_RSP = 2,     // 段3：server → client 交换对端 UB 4 元组
-    XRT_RDMA_NEG_CONN_DONE = 3,    // 段3：client → server 收尾（空 body）
-    XRT_RDMA_NEG_CONN_FIN = 4,     // 关闭连接（预留）
-    XRT_RDMA_NEG_CONN_HCCP = 128,  // 段1：HCCP rasocket 握手 tag 命令字
+    XRT_RDMA_NEG_CONN_AUTH = 0,
+    XRT_RDMA_NEG_CONN_REQ = 1,
+    XRT_RDMA_NEG_CONN_RSP = 2,
+    XRT_RDMA_NEG_CONN_DONE = 3,
+    XRT_RDMA_NEG_CONN_FIN = 4,
+    XRT_RDMA_NEG_CONN_HCCP = 128,
 };
 
 #pragma pack(push, 1)
 
 struct xrt_rdma_neg_head_t {
-    uint32_t crc;    // [ 0, 4)  spec 表0
+    uint32_t crc;    // [ 0, 4)
     uint8_t ver;     // [ 4, 5)  = XRT_NEG_MSG_VERSION (=1)
     uint8_t cmd;     // [ 5, 6)  xrt_rdma_neg_cmd_t
     uint8_t pad[6];  // [ 6,12)  = 0
@@ -66,7 +66,7 @@ struct xrt_neg_cap_req {
     uint16_t kato;          // [ 2, 4)  心跳/连接老化时间(s)，0=关闭
 };
 #pragma pack(pop)
-static_assert(sizeof(xrt_neg_cap_req) == 4, "xrt_neg_cap_req must be 4 bytes (spec 表1)");
+static_assert(sizeof(xrt_neg_cap_req) == 4, "xrt_neg_cap_req must be 4 bytes");
 static_assert(offsetof(xrt_neg_cap_req, kato) == 2, "");
 
 #pragma pack(push, 1)
@@ -90,7 +90,7 @@ struct xrt_neg_cap_rsp {
     uint32_t controller_cap;      // [32,36)  BIT0：delete 非立即数携带 key；其余预留
 };
 #pragma pack(pop)
-static_assert(sizeof(xrt_neg_cap_rsp) == 36, "xrt_neg_cap_rsp must be 36 bytes (spec 表2)");
+static_assert(sizeof(xrt_neg_cap_rsp) == 36, "xrt_neg_cap_rsp must be 36 bytes");
 static_assert(offsetof(xrt_neg_cap_rsp, queue_num) == 2, "");
 static_assert(offsetof(xrt_neg_cap_rsp, sr_mdts) == 12, "");
 static_assert(offsetof(xrt_neg_cap_rsp, bsr_mdts) == 16, "");
@@ -124,8 +124,7 @@ struct xrt_rdma_neg_conn_fin_t {
     uint32_t remote_qpn;  // [4,8)  对端 qpn（UB 下可填对端 jetty_id）
 };
 #pragma pack(pop)
-static_assert(sizeof(xrt_rdma_neg_conn_fin_t) == 8,
-              "xrt_rdma_neg_conn_fin_t must be 8 bytes (spec 表5)");
+static_assert(sizeof(xrt_rdma_neg_conn_fin_t) == 8, "xrt_rdma_neg_conn_fin_t must be 8 bytes");
 
 #define XRT_MAX_NEG_BODY_SIZE 304
 
@@ -136,7 +135,7 @@ struct xrt_rdma_neg_msg_t {
         uint8_t raw[XRT_MAX_NEG_BODY_SIZE];
         xrt_rdma_neg_conn_auth_t conn_auth;  // CONN_AUTH（双向，private_data 承载 cap_req/cap_rsp）
         xrt_rdma_neg_conn_ub_t conn_ub;      // CONN_REQ / CONN_RSP
-        xrt_rdma_neg_conn_fin_t conn_fin;    // CONN_FIN（断链，spec 表5）
+        xrt_rdma_neg_conn_fin_t conn_fin;    // CONN_FIN
     } body;
 };
 #pragma pack(pop)
