@@ -48,7 +48,17 @@ public:
             return Status::Error(StatusCode::INVALID_ARGUMENT, taskName_ + " task context is null");
         }
 
-        auto sharedCtx = std::shared_ptr<Context>(std::move(ctx));
+        return Submit(std::shared_ptr<Context>(std::move(ctx)), taskId);
+    }
+
+    Status Submit(const std::shared_ptr<Context>& ctx, TaskId& taskId)
+    {
+        if (!ctx) {
+            taskId = kInvalidTaskId;
+            return Status::Error(StatusCode::INVALID_ARGUMENT, taskName_ + " task context is null");
+        }
+
+        auto sharedCtx = ctx;
         sharedCtx->state.store(initialState_, std::memory_order_release);
 
         std::lock_guard<std::mutex> lock(mutex_);
