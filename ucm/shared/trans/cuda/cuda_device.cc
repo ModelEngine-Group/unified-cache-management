@@ -38,11 +38,9 @@ Status Device::Setup(int32_t deviceId)
     return Status::OK();
 }
 
-Status Device::Reset(int32_t deviceId)
+Status Device::Reset(int32_t)
 {
-    auto ret = cudaSetDevice(deviceId);
-    if (ret != cudaSuccess) { return Status{ret, cudaGetErrorString(ret)}; }
-    ret = cudaDeviceReset();
+    const auto ret = cudaDeviceReset();
     if (ret != cudaSuccess) { return Status{ret, cudaGetErrorString(ret)}; }
     return Status::OK();
 }
