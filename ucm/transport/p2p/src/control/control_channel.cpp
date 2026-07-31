@@ -1,4 +1,4 @@
-#include "control/metadata_channel.h"
+#include "control/control_channel.h"
 #include <algorithm>
 #include <arpa/inet.h>
 #include <cstring>
@@ -8,7 +8,7 @@
 #include <thread>
 #include <unistd.h>
 #include <utility>
-#include "common/metadata_codec.h"
+#include "common/binary_codec.h"
 #include "logger/logger.h"
 
 namespace transport {
@@ -17,29 +17,29 @@ namespace {
 using Socket = int;
 constexpr Socket kInvalidSocket = -1;
 
-struct ControlMetadataResponse {
+struct ControlResponse {
     Status status = Status::OK();
-    Metadata local_metadata;
+    Metadata payload;
 };
 
 constexpr int kListenBacklog = 16;
 
-Status EncodeControlMetadataResponse(const ControlMetadataResponse& response, Metadata& out)
+Status EncodeControlResponse(const ControlResponse& response, Metadata& out)
 {
     out.clear();
     const uint32_t status =
         response.status.Success() ? 0 : (response.status == Status::InvalidParam() ? 1 : 2);
     detail::AppendU32(out, status);
-    if (!detail::AppendMetadata(out, response.local_metadata)) { return Status::InvalidParam(); }
+    if (!detail::AppendBytes(out, response.payload)) { return Status::InvalidParam(); }
     return Status::OK();
 }
 
-Status DecodeControlMetadataResponse(const Metadata& in, ControlMetadataResponse& response)
+Status DecodeControlResponse(const Metadata& in, ControlResponse& response)
 {
     size_t offset = 0;
     uint32_t status = 0;
-    if (!detail::ReadU32(in, offset, status) ||
-        !detail::ReadMetadata(in, offset, response.local_metadata) || offset != in.size()) {
+    if (!detail::ReadU32(in, offset, status) || !detail::ReadBytes(in, offset, response.payload) ||
+        offset != in.size()) {
         return Status::InvalidParam();
     }
     switch (status) {
@@ -112,52 +112,50 @@ Status ReceiveFrame(Socket socket, Metadata& metadata, size_t max_length)
 
 }  // namespace
 
-MetadataChannel::SocketHandle::SocketHandle() : socket_(kInvalidSocket) {}
+ControlChannel::SocketHandle::SocketHandle() : socket_(kInvalidSocket) {}
 
-MetadataChannel::SocketHandle::SocketHandle(int socket) : socket_(socket) {}
+ControlChannel::SocketHandle::SocketHandle(int socket) : socket_(socket) {}
 
-MetadataChannel::SocketHandle::~SocketHandle() { Reset(); }
+ControlChannel::SocketHandle::~SocketHandle() { Reset(); }
 
-MetadataChannel::SocketHandle::SocketHandle(SocketHandle&& other) noexcept
-    : socket_(other.Release())
+ControlChannel::SocketHandle::SocketHandle(SocketHandle&& other) noexcept : socket_(other.Release())
 {
 }
 
-MetadataChannel::SocketHandle& MetadataChannel::SocketHandle::operator=(
-    SocketHandle&& other) noexcept
+ControlChannel::SocketHandle& ControlChannel::SocketHandle::operator=(SocketHandle&& other) noexcept
 {
     if (this != &other) { Reset(other.Release()); }
     return *this;
 }
 
-bool MetadataChannel::SocketHandle::Valid() const { return socket_ != kInvalidSocket; }
+bool ControlChannel::SocketHandle::Valid() const { return socket_ != kInvalidSocket; }
 
-int MetadataChannel::SocketHandle::Get() const { return socket_; }
+int ControlChannel::SocketHandle::Get() const { return socket_; }
 
-int MetadataChannel::SocketHandle::Release()
+int ControlChannel::SocketHandle::Release()
 {
     const auto socket = socket_;
     socket_ = kInvalidSocket;
     return socket;
 }
 
-void MetadataChannel::SocketHandle::Reset(int socket)
+void ControlChannel::SocketHandle::Reset(int socket)
 {
     if (socket_ == socket) { return; }
     CloseSocket(socket_);
     socket_ = socket;
 }
 
-MetadataChannel::MetadataChannel() = default;
+ControlChannel::ControlChannel() = default;
 
-MetadataChannel::~MetadataChannel() { Close(); }
+ControlChannel::~ControlChannel() { Close(); }
 
-Status MetadataChannel::Init(const Endpoint& endpoint, MetadataRequestHandler handler)
+Status ControlChannel::Init(const Endpoint& endpoint, RequestHandler handler)
 {
     Close();
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        metadata_request_handler_ = std::move(handler);
+        request_handler_ = std::move(handler);
     }
     auto status = Listen(endpoint);
     if (status != Status::OK()) {
@@ -169,7 +167,7 @@ Status MetadataChannel::Init(const Endpoint& endpoint, MetadataRequestHandler ha
     return status;
 }
 
-Status MetadataChannel::Listen(const Endpoint& endpoint)
+Status ControlChannel::Listen(const Endpoint& endpoint)
 {
     if (endpoint.port == 0) { return Status::InvalidParam(); }
     UC_DEBUG("transport tcp listen begin endpoint={}:{} backlog={}", endpoint.host, endpoint.port,
@@ -216,7 +214,7 @@ Status MetadataChannel::Listen(const Endpoint& endpoint)
     return status;
 }
 
-Status MetadataChannel::AcceptSocket(SocketHandle& socket)
+Status ControlChannel::AcceptSocket(SocketHandle& socket)
 {
     if (!listen_socket_.Valid()) { return Status::InvalidParam(); }
 
@@ -235,7 +233,7 @@ Status MetadataChannel::AcceptSocket(SocketHandle& socket)
     return Status::OK();
 }
 
-Status MetadataChannel::Connect(const Endpoint& endpoint)
+Status ControlChannel::Connect(const Endpoint& endpoint)
 {
     if (endpoint.host.empty() || endpoint.port == 0) { return Status::InvalidParam(); }
     UC_DEBUG("transport tcp connect begin endpoint={}:{}", endpoint.host, endpoint.port);
@@ -272,35 +270,35 @@ Status MetadataChannel::Connect(const Endpoint& endpoint)
     return status;
 }
 
-Status MetadataChannel::ExchangeMetadata(const Endpoint& endpoint, const Metadata& metadata,
-                                         Metadata& remote_metadata)
+Status ControlChannel::Request(const Endpoint& endpoint, const Metadata& request,
+                               Metadata& response)
 {
-    MetadataChannel channel;
+    ControlChannel channel;
     auto status = channel.Connect(endpoint);
     if (status != Status::OK()) { return status; }
 
-    status = SendFrame(channel.socket_.Get(), metadata.data(), metadata.size());
+    status = SendFrame(channel.socket_.Get(), request.data(), request.size());
     if (status != Status::OK()) { return status; }
 
     Metadata response_frame;
     status = ReceiveFrame(channel.socket_.Get(), response_frame, max_receive_frame_size_);
     if (status != Status::OK()) { return status; }
-    ControlMetadataResponse response;
-    status = DecodeControlMetadataResponse(response_frame, response);
-    if (status != Status::OK() || response.status != Status::OK()) {
-        return status == Status::OK() ? response.status : status;
+    ControlResponse decoded_response;
+    status = DecodeControlResponse(response_frame, decoded_response);
+    if (status != Status::OK() || decoded_response.status != Status::OK()) {
+        return status == Status::OK() ? decoded_response.status : status;
     }
-    remote_metadata = std::move(response.local_metadata);
+    response = std::move(decoded_response.payload);
     return Status::OK();
 }
 
-Status MetadataChannel::StartAccepting()
+Status ControlChannel::StartAccepting()
 {
     if (!listen_socket_.Valid()) { return Status::InvalidParam(); }
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!metadata_request_handler_) { return Status::InvalidParam(); }
+        if (!request_handler_) { return Status::InvalidParam(); }
         if (accept_thread_.joinable()) { return Status::OK(); }
         stop_accept_.store(false, std::memory_order_relaxed);
     }
@@ -316,19 +314,17 @@ Status MetadataChannel::StartAccepting()
                 ReceiveFrame(accepted_socket.Get(), request_frame, max_receive_frame_size_);
             if (receive_status != Status::OK()) { continue; }
 
-            MetadataRequestHandler metadata_handler;
+            RequestHandler handler;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
-                metadata_handler = metadata_request_handler_;
+                handler = request_handler_;
             }
-            Metadata local_metadata;
-            const auto metadata_status = metadata_handler
-                                             ? metadata_handler(request_frame, local_metadata)
-                                             : Status::InvalidParam();
-            ControlMetadataResponse metadata_response{metadata_status, std::move(local_metadata)};
+            Metadata response;
+            const auto request_status =
+                handler ? handler(request_frame, response) : Status::InvalidParam();
+            ControlResponse control_response{request_status, std::move(response)};
             Metadata response_payload;
-            if (EncodeControlMetadataResponse(metadata_response, response_payload) ==
-                Status::OK()) {
+            if (EncodeControlResponse(control_response, response_payload) == Status::OK()) {
                 const auto send_status = SendFrame(accepted_socket.Get(), response_payload.data(),
                                                    response_payload.size());
                 if (send_status != Status::OK()) { continue; }
@@ -338,7 +334,7 @@ Status MetadataChannel::StartAccepting()
     return Status::OK();
 }
 
-void MetadataChannel::Close()
+void ControlChannel::Close()
 {
     UC_DEBUG("transport tcp close socket={} listen_socket={}", socket_.Get(), listen_socket_.Get());
     stop_accept_.store(true, std::memory_order_relaxed);

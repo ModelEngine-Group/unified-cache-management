@@ -61,6 +61,14 @@ using UC::Test::Dram::MakeEntry;
 
 std::uint8_t ResultCode(DumpLoadResult result) { return static_cast<std::uint8_t>(result); }
 
+bool MarkTimeoutReportedForTest(CompletionPoller& poller, CompletionRecord& record,
+                                std::uint64_t nowMs)
+{
+    if (record.timeout_reported || !poller.OperationTimedOut(record, nowMs)) { return false; }
+    record.timeout_reported = true;
+    return true;
+}
+
 class CompletionPollerTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite()
@@ -229,7 +237,6 @@ TEST_F(CompletionPollerTest, RunWithStopSetDrainsAllQueuedFailures)
     EXPECT_TRUE(poller_->pending_.empty());
     CompletionRecord remaining;
     EXPECT_FALSE(completionQueue_.TryPop(remaining));
-    EXPECT_TRUE(poller_->disconnectAllTransfers_);
 }
 
 TEST_F(CompletionPollerTest, DataStatusApiFailureAbortsDumpAndAdvancesToResponse)
@@ -366,11 +373,16 @@ TEST_F(CompletionPollerTest, OperationTimeoutHandlesBoundaryAndClockRollback)
 {
     CompletionRecord record;
     record.submit_ms = 1'000;
+    record.peer_one_sided_id = kUnavailablePeer;
     g_config.opTimeoutMs = 100;
 
     EXPECT_FALSE(poller_->OperationTimedOut(record, 999));
     EXPECT_FALSE(poller_->OperationTimedOut(record, 1'099));
     EXPECT_TRUE(poller_->OperationTimedOut(record, 1'100));
+    EXPECT_FALSE(MarkTimeoutReportedForTest(*poller_, record, 1'099));
+    EXPECT_TRUE(MarkTimeoutReportedForTest(*poller_, record, 1'100));
+    EXPECT_TRUE(record.timeout_reported);
+    EXPECT_FALSE(MarkTimeoutReportedForTest(*poller_, record, 1'200));
 }
 
 TEST_F(CompletionPollerTest, SubmitResponseRejectsMissingPeerAndUnknownOpcode)

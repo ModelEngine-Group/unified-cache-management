@@ -1,4 +1,4 @@
-#include "hixl/hixl_instance.h"
+#include "protocols/hixl/hixl_instance.h"
 #include <acl/acl.h>
 #include <exception>
 #include <utility>

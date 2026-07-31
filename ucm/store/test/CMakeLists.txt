@@ -13,6 +13,10 @@ if(BUILD_UNIT_TESTS)
         list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX ".*[/\\\\]dram[/\\\\].*")
     endif()
     add_executable(ucmstore.test ${UCMSTORE_TEST_SOURCE_FILES})
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "12" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "13")
+        set_source_files_properties(case/dram/kv_protocol_test.cc
+            PROPERTIES COMPILE_OPTIONS "-Wno-nonnull")
+    endif()
     target_include_directories(ucmstore.test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/case)
     target_link_libraries(ucmstore.test PRIVATE
         posixstore cachestore fakestore pcstore

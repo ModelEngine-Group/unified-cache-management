@@ -110,6 +110,19 @@ TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsEvictsOldestEntryFirst)
     EXPECT_EQ(victims[0]->key, k1);
 }
 
+TEST_F(UCLruEvictionPolicyTest, SmallPositiveRatioEvictsAtLeastOneEntry)
+{
+    auto k1 = KeyFromHex("a1");
+    auto k2 = KeyFromHex("a2");
+    ASSERT_TRUE(policy_.AddKey(k1, MakeEntry(k1)).Success());
+    ASSERT_TRUE(policy_.AddKey(k2, MakeEntry(k2)).Success());
+
+    auto victims = policy_.GetEvictionResults(0.1);
+
+    ASSERT_EQ(victims.size(), 1UL);
+    EXPECT_EQ(victims[0]->key, k1);
+}
+
 TEST_F(UCLruEvictionPolicyTest, GetEvictionResultsRespectsEvictRatio)
 {
     auto k1 = KeyFromHex("a1");

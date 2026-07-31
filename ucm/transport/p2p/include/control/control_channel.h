@@ -10,22 +10,20 @@
 
 namespace transport {
 
-class MetadataChannel final {
+class ControlChannel final {
 public:
-    using MetadataRequestHandler =
-        std::function<Status(const Metadata& remote_metadata, Metadata& local_metadata)>;
+    using RequestHandler = std::function<Status(const Metadata& request, Metadata& response)>;
 
-    MetadataChannel();
-    ~MetadataChannel();
+    ControlChannel();
+    ~ControlChannel();
 
-    MetadataChannel(const MetadataChannel&) = delete;
-    MetadataChannel& operator=(const MetadataChannel&) = delete;
-    MetadataChannel(MetadataChannel&&) = delete;
-    MetadataChannel& operator=(MetadataChannel&&) = delete;
+    ControlChannel(const ControlChannel&) = delete;
+    ControlChannel& operator=(const ControlChannel&) = delete;
+    ControlChannel(ControlChannel&&) = delete;
+    ControlChannel& operator=(ControlChannel&&) = delete;
 
-    Status Init(const Endpoint& endpoint, MetadataRequestHandler handler);
-    Status ExchangeMetadata(const Endpoint& endpoint, const Metadata& metadata,
-                            Metadata& remote_metadata);
+    Status Init(const Endpoint& endpoint, RequestHandler handler);
+    Status Request(const Endpoint& endpoint, const Metadata& request, Metadata& response);
     void Close();
 
 private:
@@ -61,7 +59,7 @@ private:
     std::thread accept_thread_;
     std::atomic<bool> stop_accept_{false};
     uint32_t max_receive_frame_size_ = 4 * 1024 * 1024;
-    MetadataRequestHandler metadata_request_handler_;
+    RequestHandler request_handler_;
 };
 
 }  // namespace transport

@@ -3,10 +3,12 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include "control/metadata_channel.h"
+#include "control/control_channel.h"
+#include "control/control_protocol.h"
 #include "core/transport.h"
 #include "core/transport_init_attrs.h"
 
@@ -57,16 +59,24 @@ private:
     Status ImportMetadata(const Metadata& metadata, const ManagerID& manager_id);
     Status HandleMetadataExchange(const ManagerID& manager_id, const Metadata& remote_metadata,
                                   Metadata& local_metadata);
+    Status HandleControlRequest(const Metadata& request, Metadata& response);
+    Status CoordinateConnectionWithPeer(ControlOperation operation, TransportProtocol protocol,
+                                        const ManagerID& manager_id);
+    Status ApplyConnectionLocally(ControlOperation operation, TransportProtocol protocol,
+                                  const ManagerID& manager_id);
     Endpoint LocalEndpoint() const;
     Status ParseManagerID(const ManagerID& manager_id, Endpoint& endpoint) const;
 
     ManagerID manager_id_;
     Endpoint local_endpoint_;
-    std::shared_ptr<MetadataChannel> control_;
+    std::shared_ptr<ControlChannel> control_;
     mutable std::recursive_mutex peer_mutex_;
+    std::set<std::pair<TransportProtocol, ManagerID>> connections_;
+    bool shutting_down_ = false;
     std::unordered_map<TransportProtocol, Transport*> protocol_map_;
     std::vector<InstalledTransport> transports_;
     std::unordered_map<MemoryHandle, std::unique_ptr<MemoryRecord>> memories_;
+    std::mutex transfers_mutex_;
     std::unordered_map<TransferHandle, TransferRecord> transfers_;
     TransferHandle next_transfer_handle_ = 1;
 };

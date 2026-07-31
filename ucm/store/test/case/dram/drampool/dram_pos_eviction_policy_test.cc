@@ -82,6 +82,27 @@ TEST_F(UCPosEvictionPolicyTest, GetEvictionResultsEmptyWhenNoEntries)
     EXPECT_TRUE(policy_.GetEvictionResults(1.0).empty());
 }
 
+TEST_F(UCPosEvictionPolicyTest, GetEvictionResultsEmptyWhenEvictRatioIsZero)
+{
+    auto key = KeyFromHex("a1");
+    ASSERT_TRUE(policy_.AddKey(key, MakeEntry(key, 1, past_)).Success());
+
+    EXPECT_TRUE(policy_.GetEvictionResults(0.0).empty());
+}
+
+TEST_F(UCPosEvictionPolicyTest, SmallPositiveRatioEvictsAtLeastOneEntry)
+{
+    auto k1 = KeyFromHex("a1");
+    auto k2 = KeyFromHex("a2");
+    ASSERT_TRUE(policy_.AddKey(k1, MakeEntry(k1, 1, past_)).Success());
+    ASSERT_TRUE(policy_.AddKey(k2, MakeEntry(k2, 2, past_)).Success());
+
+    auto victims = policy_.GetEvictionResults(0.1);
+
+    ASSERT_EQ(victims.size(), 1UL);
+    EXPECT_EQ(victims[0]->key, k2);
+}
+
 TEST_F(UCPosEvictionPolicyTest, GetEvictionResultsEvictsAllAtFullRatio)
 {
     auto k1 = KeyFromHex("a1");

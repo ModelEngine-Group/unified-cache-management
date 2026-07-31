@@ -52,6 +52,13 @@ std::uint32_t ConnectionChannel::FetchAddErrorCount(std::uint32_t val)
     return errorCount.fetch_add(val, std::memory_order_relaxed);
 }
 
+std::uint32_t ConnectionChannel::GetErrorCount() const
+{
+    return errorCount.load(std::memory_order_relaxed);
+}
+
+void ConnectionChannel::ResetErrorCount() { errorCount.store(0, std::memory_order_relaxed); }
+
 void ConnectionChannel::IncrementInflight()
 {
     inflightCount.fetch_add(1, std::memory_order_acq_rel);

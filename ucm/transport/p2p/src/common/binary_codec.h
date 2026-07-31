@@ -20,8 +20,8 @@ bool AppendU16(Metadata& out, uint16_t value);
 bool ReadU16(const Metadata& input, size_t& offset, uint16_t& value);
 bool AppendU8(Metadata& out, uint8_t value);
 bool ReadU8(const Metadata& input, size_t& offset, uint8_t& value);
-bool AppendMetadata(Metadata& out, const Metadata& value);
-bool ReadMetadata(const Metadata& input, size_t& offset, Metadata& value);
+bool AppendBytes(Metadata& out, const Metadata& value);
+bool ReadBytes(const Metadata& input, size_t& offset, Metadata& value);
 bool AppendString(Metadata& out, const std::string& value);
 bool ReadString(const Metadata& input, size_t& offset, std::string& value);
 

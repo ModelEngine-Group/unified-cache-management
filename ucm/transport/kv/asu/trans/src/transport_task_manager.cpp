@@ -6,8 +6,7 @@ namespace UC::ASU {
 
 bool TransportTaskContext::Done() const
 {
-    auto s = state.load(std::memory_order_acquire);
-    return s == TransportTaskState::COMPLETED || s == TransportTaskState::CANCELED;
+    return state.load(std::memory_order_acquire) == TransportTaskState::COMPLETED;
 }
 
 bool TransportTaskContext::NotifyCompletion(TaskResult result)
@@ -30,14 +29,11 @@ Status TransportTaskContext::BuildFinalStatus() const
     return Status::OK();
 }
 
-void TransportTaskContext::InitializeTerminalSubBatchCount()
+void TransportTaskContext::InitializeRemainingSubBatchCount()
 {
-    // At submit completion time, terminal sub-batches are usually submit/send failures.
-    completedSubBatchCount = 0;
+    remainingSubBatchCount = 0;
     for (const auto& subBatchContext : subBatchContexts) {
-        if (subBatchContext.state != TransportSubBatchState::COMPLETED) { continue; }
-
-        ++completedSubBatchCount;
+        if (subBatchContext.state == TransportSubBatchState::PENDING) { ++remainingSubBatchCount; }
     }
 }
 
@@ -49,7 +45,7 @@ void TransportTaskContext::TryFinalizeFromSubBatches()
         return;
     }
 
-    if (completedSubBatchCount != static_cast<std::uint32_t>(subBatchContexts.size())) { return; }
+    if (remainingSubBatchCount != 0) { return; }
 
     finalStatus = BuildFinalStatus();
     state.store(TransportTaskState::COMPLETED, std::memory_order_release);

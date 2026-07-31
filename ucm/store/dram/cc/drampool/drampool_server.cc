@@ -29,13 +29,13 @@
 #include <string>
 #include <type_traits>
 #include <utility>
+#include "channels/tcp/tcp_message_channel.h"
 #include "core/transport_manager.h"
 #include "logger/logger.h"
 #include "metadata.h"
 #include "pool/buffer_pool.h"
 #include "task_worker.h"
 #include "trans/device.h"
-#include "two_sided/tcp/tcp_message_channel.h"
 
 namespace UC::DramPool {
 namespace {
@@ -240,8 +240,8 @@ Status DramPoolServer::StartTransportService()
         return Status::InvalidParam("local static transport endpoint is not configured");
     }
     transport::HixlInitAttrs attrs;
-    // A -1 port lets HIXL allocate its internal endpoint without occupying the
-    // TransportManager metadata listener port.
+    // DramPool actively connects to DramStore. Client HIXL instances use a
+    // host-only engine ID and therefore do not open an HIXL listening port.
     transport::Endpoint managerEndpoint;
     if (auto status = ParseDramPoolEndpoint("transport local one_sided", localEndpoint->second,
                                             managerEndpoint);
@@ -249,6 +249,7 @@ Status DramPoolServer::StartTransportService()
         return status;
     }
     attrs.ip = managerEndpoint.host;
+    attrs.role = transport::HixlRole::Client;
     attrs.instances.reserve(g_config.transportDeviceIds.size());
     for (const auto deviceId : g_config.transportDeviceIds) {
         transport::HixlInitAttrs::Instance instance;

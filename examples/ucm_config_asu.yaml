@@ -31,9 +31,10 @@ ucm_connectors:
       # asu_fake_backend_path: "./asu-fake-backend-store"
       # asu_fake_backend_latency_ms: 1
 
-      # ASU wait and operation timeouts.
+      # ASU wait, operation timeout, and connection recovery.
       asu_default_wait_timeout_ms: 5000
       asu_timeout_ms: 5000
+      asu_max_error_count: 2
       asu_max_inflight_tasks: 1024
 
 enable_event_sync: true

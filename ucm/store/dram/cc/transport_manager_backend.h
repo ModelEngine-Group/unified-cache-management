@@ -30,9 +30,9 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "channels/tcp/tcp_message_channel.h"
 #include "core/transport_manager.h"
 #include "transport_executor.h"
-#include "two_sided/tcp/tcp_message_channel.h"
 #include "types.h"
 
 namespace UC::Dram {
