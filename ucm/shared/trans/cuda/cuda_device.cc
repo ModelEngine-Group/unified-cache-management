@@ -29,12 +29,23 @@
 
 namespace UC::Trans {
 
+Status Device::Init() { return Status::OK(); }
+
 Status Device::Setup(int32_t deviceId)
 {
     auto ret = cudaSetDevice(deviceId);
     if (ret != cudaSuccess) { return Status{ret, cudaGetErrorString(ret)}; }
     return Status::OK();
 }
+
+Status Device::Reset(int32_t)
+{
+    const auto ret = cudaDeviceReset();
+    if (ret != cudaSuccess) { return Status{ret, cudaGetErrorString(ret)}; }
+    return Status::OK();
+}
+
+Status Device::Finalize() { return Status::OK(); }
 
 std::unique_ptr<Stream> Device::MakeStream()
 {
@@ -81,4 +92,4 @@ std::unique_ptr<Buffer> Device::MakeBuffer()
     }
 }
 
-} // namespace UC::Trans
+}  // namespace UC::Trans

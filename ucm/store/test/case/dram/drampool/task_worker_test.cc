@@ -21,7 +21,6 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include <acl/acl.h>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -37,6 +36,7 @@
 #include "kv_protocol.h"
 #include "metadata.h"
 #include "status/status.h"
+#include "trans/device.h"
 
 // Keep white-box access entirely in the test translation unit. Production code uses the real
 // TransportManager directly and exposes no test-only interface.
@@ -65,15 +65,23 @@ class TaskWorkerTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite()
     {
-        ASSERT_EQ(aclInit(nullptr), ACL_SUCCESS);
-        ASSERT_EQ(aclrtSetDevice(0), ACL_SUCCESS);
+        auto status = device_.Init();
+        deviceRuntimeOwned_ = status.Success();
+        ASSERT_TRUE(deviceRuntimeOwned_ || status == Status::DuplicateKey()) << status.ToString();
+        status = device_.Setup(0);
+        ASSERT_TRUE(status.Success()) << status.ToString();
     }
 
     static void TearDownTestSuite()
     {
-        EXPECT_EQ(aclrtResetDevice(0), ACL_SUCCESS);
-        EXPECT_EQ(aclFinalize(), ACL_SUCCESS);
+        if (!deviceRuntimeOwned_) { return; }
+        EXPECT_TRUE(device_.Reset(0).Success());
+        EXPECT_TRUE(device_.Finalize().Success());
+        deviceRuntimeOwned_ = false;
     }
+
+    inline static UC::Trans::Device device_;
+    inline static bool deviceRuntimeOwned_{false};
 
     void SetUp() override
     {

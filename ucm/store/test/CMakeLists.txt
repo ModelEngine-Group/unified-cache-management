@@ -42,6 +42,9 @@ if(BUILD_UNIT_TESTS)
     if(TARGET drampool_core)
         target_link_libraries(ucmstore.test PRIVATE drampool_core)
     endif()
+    if(RUNTIME_ENVIRONMENT STREQUAL "ascend")
+        target_compile_definitions(ucmstore.test PRIVATE UCM_TEST_RUNTIME_ASCEND=1)
+    endif()
     if(BUILD_UCM_ASU)
         target_link_libraries(ucmstore.test PRIVATE
             asu_client
