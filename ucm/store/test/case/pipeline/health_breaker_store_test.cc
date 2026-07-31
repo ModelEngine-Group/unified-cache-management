@@ -23,10 +23,15 @@
  */
 #include "health_breaker_store.h"
 #include <array>
+#include <chrono>
 #include <condition_variable>
+#include <filesystem>
+#include <fstream>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <mutex>
+#include <string>
+#include <thread>
 #include <vector>
 #include "detail/mock_store.h"
 #include "logger/logger.h"
@@ -78,7 +83,36 @@ size_t CountSubstring(const std::string& value, const std::string& needle)
     return count;
 }
 
+size_t CountThreadsNamed(const std::string& expected)
+{
+    size_t count = 0;
+    for (const auto& entry : std::filesystem::directory_iterator("/proc/self/task")) {
+        std::ifstream comm(entry.path() / "comm");
+        std::string name;
+        std::getline(comm, name);
+        if (name == expected) { ++count; }
+    }
+    return count;
+}
+
 }  // namespace
+
+TEST(UCHealthBreakerStoreTest, ProbeLoopUsesUcmThreadName)
+{
+    StrictMock<Detail::MockStore> store;
+    HealthBreakerStore breaker(&store, "cache-0", TestConfig());
+    const auto before = CountThreadsNamed("ucm_health_mon");
+
+    ASSERT_TRUE(breaker.Start().Success());
+    auto count = before;
+    for (size_t i = 0; i < 100 && count == before; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        count = CountThreadsNamed("ucm_health_mon");
+    }
+    breaker.Stop();
+
+    EXPECT_EQ(count, before + 1);
+}
 
 TEST(UCHealthBreakerStoreTest, LogsFailedProbeStatus)
 {

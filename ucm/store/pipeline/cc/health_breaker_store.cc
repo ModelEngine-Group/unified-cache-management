@@ -22,10 +22,23 @@
  * SOFTWARE.
  */
 #include "health_breaker_store.h"
+#include <random>
 #include "logger/logger.h"
 #include "metrics_api.h"
+#include "thread/cpu_affinity.h"
 
 namespace UC::PipelineStore {
+
+namespace {
+
+std::chrono::milliseconds RandomProbeDelay(std::chrono::milliseconds interval)
+{
+    thread_local std::mt19937 generator{std::random_device{}()};
+    std::uniform_int_distribution<std::chrono::milliseconds::rep> distribution{0, interval.count()};
+    return std::chrono::milliseconds{distribution(generator)};
+}
+
+}  // namespace
 
 HealthBreakerStore::HealthBreakerStore(StoreV1* store, std::string storeId,
                                        HealthBreakerConfig config)
@@ -207,8 +220,12 @@ void HealthBreakerStore::RecordEffectiveHealth()
 
 void HealthBreakerStore::ProbeLoop()
 {
+    auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_health_mon");
+    if (nameStatus.Failure()) {
+        UC_WARN("Failed({}) to set UCM health monitor thread name.", nameStatus);
+    }
     std::unique_lock<std::mutex> lock(stopMutex_);
-    auto delay = config_.healthCheckInterval;
+    auto delay = config_.healthCheckInterval + RandomProbeDelay(config_.healthCheckInterval);
     while (!stopCv_.wait_for(lock, delay, [this] { return stop_; })) {
         lock.unlock();
         const auto start = std::chrono::steady_clock::now();

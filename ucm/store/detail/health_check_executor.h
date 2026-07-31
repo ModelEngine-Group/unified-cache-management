@@ -70,6 +70,7 @@ public:
             }
             try {
                 if (workers_.capacity() < kMaxInFlight) { workers_.reserve(kMaxInFlight); }
+                // Linux threads inherit the creating monitor thread's CPU affinity.
                 workers_.push_back(Worker{
                     state, std::thread([state, check = std::move(check)]() mutable {
                         auto status = Status::Error();

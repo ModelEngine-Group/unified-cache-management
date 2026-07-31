@@ -8,6 +8,7 @@ from vllm.logger import logger
 from ucm.integration.vllm.patch.utils import patch_or_inject
 
 _UCM_THREAD_PREFIX = "ucm_"
+_UCM_HEALTH_THREAD_NAME = "ucm_health_mon"
 _TASK_ROOT = Path("/proc/self/task")
 
 
@@ -70,6 +71,20 @@ def _task_snapshot() -> list[tuple[int, str]]:
     return tasks
 
 
+def _split_health_cores(ucm_cores: list[int]) -> tuple[list[int], list[int]]:
+    if len(ucm_cores) < 2:
+        return ucm_cores, ucm_cores
+    return ucm_cores[:-1], ucm_cores[-1:]
+
+
+def _ucm_thread_cores(
+    name: str, ucm_cores: list[int], health_cores: list[int]
+) -> list[int]:
+    if name == _UCM_HEALTH_THREAD_NAME and health_cores:
+        return health_cores
+    return ucm_cores
+
+
 def assign_cpu_roles(
     self,
     npu: int,
@@ -81,9 +96,12 @@ def assign_cpu_roles(
         worker_cores, ucm_cores = _split_contiguous_halves(main)
         if ucm_cores:
             main = worker_cores
+        ucm_cores, health_cores = _split_health_cores(ucm_cores)
         self.assign_ucm[npu] = ucm_cores
+        self.assign_ucm_health[npu] = health_cores
     else:
         self.assign_ucm[npu] = []
+        self.assign_ucm_health[npu] = []
 
     self.assign_main[npu] = main
     self.assign_acl[npu] = acl
@@ -92,6 +110,7 @@ def assign_cpu_roles(
 
 def allocate(self) -> None:
     self.assign_ucm = {}
+    self.assign_ucm_health = {}
 
     import vllm_ascend.cpu_binding as cpu_binding
 
@@ -113,13 +132,17 @@ def print_plan(self) -> None:
     current_npu = self.device_info.running_npu_list[self.rank_id]
     main = " ".join(map(str, self.assign_main[current_npu]))
     ucm = " ".join(map(str, getattr(self, "assign_ucm", {}).get(current_npu, [])))
+    ucm_health = " ".join(
+        map(str, getattr(self, "assign_ucm_health", {}).get(current_npu, []))
+    )
     acl = " ".join(map(str, self.assign_acl[current_npu]))
     rel = str(self.assign_rel[current_npu]) if self.assign_rel[current_npu] else ""
     cpu_logger.info(
-        "NPU%s: main=[%s]  ucm=[%s]  acl=[%s]  release=[%s]",
+        "NPU%s: main=[%s]  ucm=[%s]  ucm_health=[%s]  acl=[%s]  release=[%s]",
         current_npu,
         main,
         ucm,
+        ucm_health,
         acl,
         rel,
     )
@@ -135,17 +158,30 @@ def bind_threads(self) -> None:
     self.bind(main_pid, self.assign_main[current_npu], True)
 
     ucm_cores = getattr(self, "assign_ucm", {}).get(current_npu, [])
-    if _ucm_affinity_enabled() and ucm_cores:
+    health_cores = getattr(self, "assign_ucm_health", {}).get(current_npu, [])
+    if _ucm_affinity_enabled() and (ucm_cores or health_cores):
         bound_ucm = 0
+        bound_health = 0
         for tid, name in _task_snapshot():
             if not name.startswith(_UCM_THREAD_PREFIX):
                 continue
-            self.bind(str(tid), ucm_cores, False)
-            bound_ucm += 1
+            cores = _ucm_thread_cores(name, ucm_cores, health_cores)
+            if not cores:
+                continue
+            self.bind(str(tid), cores, False)
+            if name == _UCM_HEALTH_THREAD_NAME:
+                bound_health += 1
+            else:
+                bound_ucm += 1
         _logger().info(
             "[UCM CPU Affinity] vllm-ascend bound %s UCM tasks to cores %s",
             bound_ucm,
             ucm_cores,
+        )
+        _logger().info(
+            "[UCM CPU Affinity] vllm-ascend bound %s health tasks to cores %s",
+            bound_health,
+            health_cores,
         )
 
     for acl_thread in threads_map.get(main_pid, {}).get("acl_thread", []):
