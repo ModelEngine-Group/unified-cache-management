@@ -21,7 +21,6 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "trans/device.h"
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -34,6 +33,7 @@
 #include <stdexcept>
 #include <vector>
 #include "reply_service.h"
+#include "trans/device.h"
 
 namespace UC::Dram {
 namespace {

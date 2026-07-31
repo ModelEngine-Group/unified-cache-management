@@ -22,7 +22,6 @@
  * SOFTWARE.
  * */
 #include "pool/buffer_pool.h"
-#include "trans/device.h"
 #include <array>
 #include <atomic>
 #include <cstring>
@@ -30,6 +29,7 @@
 #include <limits>
 #include <thread>
 #include <vector>
+#include "trans/device.h"
 namespace UC {
 namespace {
 
@@ -221,8 +221,7 @@ TEST_F(BufferPoolTest, DevicePoolZeroesReleasedSlot)
     ASSERT_NE(stream, nullptr);
 
     BufferPool pool;
-    auto status =
-        pool.Init("device_pool", MemoryType::ASCEND_DEVICE, kSlotCapacity, 1, true);
+    auto status = pool.Init("device_pool", MemoryType::ASCEND_DEVICE, kSlotCapacity, 1, true);
     ASSERT_TRUE(status.Success()) << status.ToString();
     EXPECT_EQ(pool.GetLocalAddr(), pool.GetDeviceAddr());
     EXPECT_EQ(pool.GetTotalSize(), kSlotStride);
@@ -233,8 +232,7 @@ TEST_F(BufferPoolTest, DevicePoolZeroesReleasedSlot)
 
     std::array<std::uint8_t, kSlotStride> dirty;
     dirty.fill(0xAB);
-    ASSERT_TRUE(
-        stream->HostToDevice(dirty.data(), first.device_addr, kSlotStride).Success());
+    ASSERT_TRUE(stream->HostToDevice(dirty.data(), first.device_addr, kSlotStride).Success());
 
     ASSERT_TRUE(pool.Free(first.slot_index).Success());
 
@@ -244,8 +242,7 @@ TEST_F(BufferPoolTest, DevicePoolZeroesReleasedSlot)
     EXPECT_EQ(second.slot_index, first.slot_index);
 
     std::array<std::uint8_t, kSlotStride> host{};
-    ASSERT_TRUE(
-        stream->DeviceToHost(second.device_addr, host.data(), kSlotStride).Success());
+    ASSERT_TRUE(stream->DeviceToHost(second.device_addr, host.data(), kSlotStride).Success());
 
     for (const auto value : host) { EXPECT_EQ(value, 0); }
 }

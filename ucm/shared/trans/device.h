@@ -45,6 +45,6 @@ private:
     bool deviceRuntimeOwned_{false};
 };
 
-} // namespace UC::Trans
+}  // namespace UC::Trans
 
 #endif

@@ -22,7 +22,6 @@
  * SOFTWARE.
  * */
 #include "drampool_server.h"
-
 #include <chrono>
 #include <exception>
 #include <random>
@@ -146,8 +145,8 @@ Status DramPoolServer::InitializeDeviceRuntime()
         return Status::InvalidParam("transport.device_ids must not be empty");
     }
     std::mt19937 generator(std::random_device{}());
-    std::uniform_int_distribution<std::size_t> distribution(
-        0, g_config.transportDeviceIds.size() - 1);
+    std::uniform_int_distribution<std::size_t> distribution(0,
+                                                            g_config.transportDeviceIds.size() - 1);
     const auto deviceId = g_config.transportDeviceIds[distribution(generator)];
 
     auto status = device_.Init();
