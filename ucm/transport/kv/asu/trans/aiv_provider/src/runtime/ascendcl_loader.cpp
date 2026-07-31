@@ -345,7 +345,7 @@ UbStatus DlAscendcl::AclrtLaunchKernelWithHostArgs(void* funcHandle, uint32_t bl
     } cfg{attrs, 3};
     UB_LOG_DEBUG(
         "DlAscendcl launch: api=aclrtLaunchKernelWithHostArgs func=%p blockDim=%u stream=%p "
-        "hostArgs=%p argsSize=%zu attrs=[schem=1,timeoutUs=%u,engine=AIV]",
+        "hostArgs=%p argsSize=%zu attrs=[scheme=1,timeoutUs=%u,engine=AIV]",
         funcHandle, blockDim, stream, hostArgs, argsSize, kAivTimeoutUs);
     int rc = LaunchHostArgsSlot()(funcHandle, blockDim, stream, &cfg, hostArgs, argsSize,
                                   /*ph=*/nullptr, /*phNum=*/0);
@@ -399,7 +399,7 @@ UbStatus DlAscendcl::AclrtLaunchKernelWithDeviceArgs(void* funcHandle, uint32_t 
     } cfg{attrs, 3};
     UB_LOG_DEBUG(
         "DlAscendcl launch: api=aclrtLaunchKernelV2 func=%p blockDim=%u stream=%p "
-        "deviceArgs=%p argsSize=%zu attrs=[schem=1,timeoutUs=%u,engine=AIV]",
+        "deviceArgs=%p argsSize=%zu attrs=[scheme=1,timeoutUs=%u,engine=AIV]",
         funcHandle, blockDim, stream, deviceArgs, argsSize, kAivTimeoutUs);
     int rc = LaunchKernelV2Slot()(funcHandle, blockDim, deviceArgs, argsSize, &cfg, stream);
     if (rc != 0) {
