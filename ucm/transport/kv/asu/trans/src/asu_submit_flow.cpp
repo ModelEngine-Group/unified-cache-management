@@ -55,18 +55,18 @@ Status TransportTaskExecutor::SubmitTaskRequests(
     Status status = Status::OK();
 
     if (IsEntryBatchOp(ctx.opType)) {
+        const auto opType = NormalizeTransportOpType(ctx.opType);
         if (ctx.entries.empty()) {
             UC_ERROR("Submit entry batch failed: entry batch is empty");
             return Status::Error(StatusCode::INVALID_ARGUMENT, "entry batch is empty");
         }
         const auto entries = BatchView<KVBuffer>{ctx.entries.data(), ctx.entries.size()};
-        const auto subBatches = ioScheduler_.SplitForAsu(entries, ctx.opType);
+        const auto subBatches = ioScheduler_.SplitForAsu(entries, opType);
         subBatchContexts.reserve(subBatches.size());
         for (std::size_t index = 0; index < subBatches.size(); ++index) {
             const auto& subBatch = subBatches[index];
             auto& subBatchContext = subBatchContexts.emplace_back();
-            auto subBatchStatus =
-                SubmitEntrySubBatchRequest(ctx.opType, subBatch, subBatchContext);
+            auto subBatchStatus = SubmitEntrySubBatchRequest(opType, subBatch, subBatchContext);
             subBatchContext.status = subBatchStatus;
             if (!subBatchStatus.ok()) {
                 UC_ERROR("Submit entry sub-batch failed index={} batch_size={} code={} message={}",
