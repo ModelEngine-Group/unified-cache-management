@@ -32,7 +32,7 @@ def _load_symbols():
     module = ast.Module(body=selected_nodes, type_ignores=[])
     ast.fix_missing_locations(module)
     namespace = {
-        "_UCM_HEALTH_THREAD_PREFIX": "ucm_health_",
+        "_UCM_HEALTH_THREAD_NAME": "ucm_health_mon",
         "os": os,
     }
     exec(compile(module, str(PATCH_PATH), "exec"), namespace)
@@ -77,9 +77,9 @@ class CpuBindingAffinityPatchTest(unittest.TestCase):
         self.assertEqual(allocator.assign_ucm[0], [3])
         self.assertEqual(allocator.assign_ucm_health[0], [3])
 
-    def test_only_health_threads_use_health_cores(self):
+    def test_only_health_monitor_uses_health_cores(self):
         self.assertEqual(ucm_thread_cores("ucm_health_mon", [5, 6], [7]), [7])
-        self.assertEqual(ucm_thread_cores("ucm_health_exec", [5, 6], [7]), [7])
+        self.assertEqual(ucm_thread_cores("ucm_health_mon_old", [5, 6], [7]), [5, 6])
         self.assertEqual(ucm_thread_cores("ucm_load_disp", [5, 6], [7]), [5, 6])
 
 

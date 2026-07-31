@@ -22,7 +22,6 @@
  * SOFTWARE.
  */
 #include "health_check_executor.h"
-#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -32,20 +31,6 @@
 #include <vector>
 
 namespace UC::Test {
-
-TEST(UCHealthCheckExecutorTest, UsesUcmThreadName)
-{
-    Detail::HealthCheckExecutor executor{std::chrono::milliseconds(100)};
-    std::array<char, 16> name{};
-
-    EXPECT_TRUE(executor
-                    .Run([&] {
-                        EXPECT_EQ(pthread_getname_np(pthread_self(), name.data(), name.size()), 0);
-                        return Status::OK();
-                    })
-                    .Success());
-    EXPECT_STREQ(name.data(), "ucm_health_exec");
-}
 
 TEST(UCHealthCheckExecutorTest, ReturnsStoreResult)
 {
