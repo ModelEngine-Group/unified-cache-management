@@ -53,6 +53,7 @@ struct BufferMetaNode {
     size_t hash;
     size_t prev;
     size_t next;
+    size_t freeNext;
     TransBuffer::State state;
     int32_t errorCode;
     void Init()
@@ -61,6 +62,7 @@ struct BufferMetaNode {
         hash = invalidIndex;
         prev = invalidIndex;
         next = invalidIndex;
+        freeNext = invalidIndex;
         state = TransBuffer::State::LOADING;
         errorCode = Status::OK().Underlying();
     }
@@ -90,6 +92,7 @@ public:
     virtual void NodeUnlock(size_t iNode) = 0;
     virtual size_t& FirstAt(size_t iBucket) = 0;
     virtual size_t FetchNode(bool allowReserved) = 0;
+    virtual void ReturnNode(size_t iNode) = 0;
     virtual void* DataAt(size_t iNode) = 0;
     virtual void* DeviceDataAt(size_t iNode) = 0;
     virtual BufferMetaNode* MetaAt(size_t iNode) = 0;
@@ -137,6 +140,8 @@ class LocalBufferStrategy : public BufferStrategy {
     std::shared_ptr<void> data_;
     std::byte* dataOnDevice_{nullptr};
     bool registeredMappedHost_{false};
+    size_t freeListHead_{invalidIndex};
+    LocalLock freeListLock_;
 
 public:
     LocalBufferStrategy(int32_t deviceId, size_t nodeSize, size_t totalSize, size_t reservedNumber,
@@ -159,8 +164,8 @@ public:
         try {
             nodeLocks_ = std::make_unique<LocalLock[]>(nNode);
             meta_ = std::make_unique<BufferMetaNode[]>(nNode);
-            for (size_t i = 0; i < nHashTableBucket; i++) { bucketLocks_[i].Init(); }
-            for (size_t i = 0; i < nNode; i++) { nodeLocks_[i].Init(); }
+        for (size_t i = 0; i < nHashTableBucket; i++) { bucketLocks_[i].Init(); }
+        for (size_t i = 0; i < nNode; i++) { nodeLocks_[i].Init(); }
         } catch (const std::exception& e) {
             UC_ERROR("Failed({}) to alloc buffer.", e.what());
             return Status::Error(e.what());
@@ -203,6 +208,12 @@ public:
         header_.freeHead = 0;
         header_.nodeSize = nodeSize;
         header_.nNode = nNode;
+        freeListHead_ = invalidIndex;
+        for (size_t i = 0; i < nNode; i++) {
+            meta_[i].freeNext = freeListHead_;
+            freeListHead_ = i;
+        }
+        freeListLock_.Init();
         return Status::OK();
     }
     void BucketLock(size_t iBucket) override { bucketLocks_[iBucket].Lock(); }
@@ -213,9 +224,23 @@ public:
     size_t& FirstAt(size_t iBucket) override { return header_.buckets[iBucket]; }
     size_t FetchNode(bool allowReserved) override
     {
-        const auto limit = header_.nNode - (allowReserved ? 0 : base_.reservedNumber);
-        if (header_.freeHead >= limit) { header_.freeHead = 0; }
-        return header_.freeHead++;
+        freeListLock_.Lock();
+        if (freeListHead_ == invalidIndex) {
+            freeListLock_.Unlock();
+            return invalidIndex;
+        }
+        auto iNode = freeListHead_;
+        freeListHead_ = meta_[iNode].freeNext;
+        meta_[iNode].freeNext = invalidIndex;
+        freeListLock_.Unlock();
+        return iNode;
+    }
+    void ReturnNode(size_t iNode) override
+    {
+        freeListLock_.Lock();
+        meta_[iNode].freeNext = freeListHead_;
+        freeListHead_ = iNode;
+        freeListLock_.Unlock();
     }
     void* DataAt(size_t iNode) override
     {
@@ -261,7 +286,7 @@ protected:
         std::atomic<size_t> magic;
         ShareLock lock;
         size_t nNode;
-        size_t freeHead;
+        size_t freeListHead;
         size_t buckets[nHashTableBucket];
         ShareMutex bucketLocks[nHashTableBucket];
         ShareLock nodeLocks[0];
@@ -362,6 +387,11 @@ protected:
             header_->nodeLocks[i].Init();
             meta_[i].Init();
         }
+        header_->freeListHead = invalidIndex;
+        for (size_t i = 0; i < nNode_; i++) {
+            meta_[i].freeNext = header_->freeListHead;
+            header_->freeListHead = i;
+        }
         header_->magic = sharedBufferMagic;
         return Status::OK();
     }
@@ -447,12 +477,23 @@ public:
     size_t& FirstAt(size_t iBucket) override { return header_->buckets[iBucket]; }
     size_t FetchNode(bool allowReserved) override
     {
-        const auto limit = header_->nNode - (allowReserved ? 0 : base_.reservedNumber);
         header_->lock.Lock();
-        if (header_->freeHead >= limit) { header_->freeHead = 0; }
-        const auto iNode = header_->freeHead++;
+        if (header_->freeListHead == invalidIndex) {
+            header_->lock.Unlock();
+            return invalidIndex;
+        }
+        auto iNode = header_->freeListHead;
+        header_->freeListHead = meta_[iNode].freeNext;
+        meta_[iNode].freeNext = invalidIndex;
         header_->lock.Unlock();
         return iNode;
+    }
+    void ReturnNode(size_t iNode) override
+    {
+        header_->lock.Lock();
+        meta_[iNode].freeNext = header_->freeListHead;
+        header_->freeListHead = iNode;
+        header_->lock.Unlock();
     }
     void* DataAt(size_t iNode) override { return data_ + nodeSize_ * iNode; }
     void* DeviceDataAt(size_t iNode) override { return dataOnDevice_ + nodeSize_ * iNode; }
@@ -591,10 +632,16 @@ size_t TransBuffer::Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_
 {
     for (;;) {
         auto iNode = strategy_->FetchNode(allowReserved);
+        if (iNode == invalidIndex) {
+            std::this_thread::yield();
+            continue;
+        }
         auto meta = strategy_->MetaAt(iNode);
         strategy_->NodeLock(iNode);
         if (meta->reference > 0) {
             strategy_->NodeUnlock(iNode);
+            strategy_->ReturnNode(iNode);
+            std::this_thread::yield();
             continue;
         }
         const auto oldBucket = meta->hash;
@@ -602,6 +649,8 @@ size_t TransBuffer::Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_
             if (oldBucket != invalidIndex) {
                 if (!strategy_->BucketTryLock(oldBucket)) {
                     strategy_->NodeUnlock(iNode);
+                    strategy_->ReturnNode(iNode);
+                    std::this_thread::yield();
                     continue;
                 }
                 Remove(oldBucket, iNode);
@@ -671,7 +720,12 @@ void TransBuffer::Acquire(Index pos)
 void TransBuffer::Release(Index pos)
 {
     strategy_->NodeLock(pos);
-    --strategy_->MetaAt(pos)->reference;
+    auto& ref = strategy_->MetaAt(pos)->reference;
+    if (--ref == 0) {
+        strategy_->NodeUnlock(pos);
+        strategy_->ReturnNode(pos);
+        return;
+    }
     strategy_->NodeUnlock(pos);
 }
 
