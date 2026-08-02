@@ -254,11 +254,18 @@ class UCMBlendConnector(UCMDirectConnector):
             chunk_meta.store_hits = chunk_lookup_results[
                 chunk_meta.start_blk_idx : chunk_meta.end_blk_idx
             ]
-        first_chunk_meta = req_chunks_meta[0]
-        first_chunk_meta.update_meta_partial_pc(pc_hit_blocks, self.block_size)
-        # remove total pc hit chunk
-        if first_chunk_meta.chunk_tokens_len == 0:
-            req_chunks_meta.pop(0)
+        # A prefix-cache hit run can span more than the first chunk, so trim
+        # every chunk it overlaps (clamped per chunk), not only chunk 0.
+        remaining_pc_hit_blocks = pc_hit_blocks
+        while remaining_pc_hit_blocks > 0 and req_chunks_meta:
+            chunk_meta = req_chunks_meta[0]
+            trim = min(remaining_pc_hit_blocks, chunk_meta.chunk_blks_len)
+            chunk_meta.update_meta_partial_pc(trim, self.block_size)
+            remaining_pc_hit_blocks -= trim
+            if chunk_meta.chunk_tokens_len == 0:
+                req_chunks_meta.pop(0)
+            else:
+                break
 
         return pc_hit_blocks, chunk_hit_blocks
 
