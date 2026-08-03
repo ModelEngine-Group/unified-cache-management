@@ -250,8 +250,9 @@ UbErrorCode DlHccpV2Api::LoadLibrary()
 
 UbErrorCode DlHccpV2Api::CleanUpLibrary()
 {
-    std::lock_guard<std::mutex> lock(gMutex);
-    CleanUpLibraryUnlocked();
+    // Calls use resolved function pointers without a per-call lock. Keep the
+    // successfully loaded libraries resident for the process lifetime. The
+    // unlocked helper remains only for a failed LoadLibrary rollback.
     return UbErrorCode::Ok;
 }
 

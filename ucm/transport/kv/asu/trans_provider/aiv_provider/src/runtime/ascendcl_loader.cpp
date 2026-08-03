@@ -41,9 +41,9 @@ void*& DlAscendcl::Handle()
     static void* h = nullptr;
     return h;
 }
-bool& DlAscendcl::Loaded()
+std::atomic_bool& DlAscendcl::Loaded()
 {
-    static bool b = false;
+    static std::atomic_bool b{false};
     return b;
 }
 DlAscendcl::MallocFunc& DlAscendcl::MallocSlot()
@@ -76,6 +76,11 @@ DlAscendcl::CreateStreamFunc& DlAscendcl::CreateStreamSlot()
     static CreateStreamFunc f = nullptr;
     return f;
 }
+DlAscendcl::DestroyStreamFunc& DlAscendcl::DestroyStreamSlot()
+{
+    static DestroyStreamFunc f = nullptr;
+    return f;
+}
 DlAscendcl::BinLoadFileFunc& DlAscendcl::BinLoadFileSlot()
 {
     static BinLoadFileFunc f = nullptr;
@@ -91,6 +96,11 @@ DlAscendcl::BinGetFuncFunc& DlAscendcl::BinGetFuncSlot()
     static BinGetFuncFunc f = nullptr;
     return f;
 }
+DlAscendcl::BinUnloadFunc& DlAscendcl::BinUnloadSlot()
+{
+    static BinUnloadFunc f = nullptr;
+    return f;
+}
 DlAscendcl::LaunchKernelV2Func& DlAscendcl::LaunchKernelV2Slot()
 {
     static LaunchKernelV2Func f = nullptr;
@@ -102,19 +112,19 @@ DlAscendcl::LaunchHostArgsFunc& DlAscendcl::LaunchHostArgsSlot()
     return f;
 }
 
-bool DlAscendcl::IsLoaded() { return Loaded(); }
+bool DlAscendcl::IsLoaded() { return Loaded().load(std::memory_order_acquire); }
 
 UbStatus DlAscendcl::LoadLibrary()
 {
     std::lock_guard<std::mutex> lk(Mu());
-    if (Loaded()) return UbStatus::Ok();
+    if (Loaded().load(std::memory_order_relaxed)) return UbStatus::Ok();
 
     void* h = dlopen("libascendcl.so", RTLD_NOW | RTLD_GLOBAL);
     if (h == nullptr) {
         const char* error = dlerror();
         UB_LOG_WARN(
             "dlopen libascendcl.so failed: {}; "
-            "device-side H2D paths will fall back to no-op",
+            "device operations are unavailable",
             error != nullptr ? error : "(no info)");
         return UbStatus(UbErrorCode::HccpV2LoadLibraryFailed, "libascendcl.so not available");
     }
@@ -142,35 +152,25 @@ UbStatus DlAscendcl::LoadLibrary()
     SyncTimeoutSlot() =
         reinterpret_cast<SyncTimeoutFunc>(dlsym(h, "aclrtSynchronizeStreamWithTimeout"));
     CreateStreamSlot() = reinterpret_cast<CreateStreamFunc>(dlsym(h, "aclrtCreateStream"));
+    DestroyStreamSlot() = reinterpret_cast<DestroyStreamFunc>(dlsym(h, "aclrtDestroyStream"));
     BinLoadFileSlot() = reinterpret_cast<BinLoadFileFunc>(dlsym(h, "aclrtBinaryLoadFromFile"));
     BinLoadDataSlot() = reinterpret_cast<BinLoadDataFunc>(dlsym(h, "aclrtBinaryLoadFromData"));
     BinGetFuncSlot() = reinterpret_cast<BinGetFuncFunc>(dlsym(h, "aclrtBinaryGetFunction"));
+    void* binUnload = dlsym(h, "aclrtBinaryUnLoad");
+    if (binUnload == nullptr) { binUnload = dlsym(h, "aclrtBinaryUnload"); }
+    BinUnloadSlot() = reinterpret_cast<BinUnloadFunc>(binUnload);
     LaunchKernelV2Slot() = reinterpret_cast<LaunchKernelV2Func>(dlsym(h, "aclrtLaunchKernelV2"));
     LaunchHostArgsSlot() =
         reinterpret_cast<LaunchHostArgsFunc>(dlsym(h, "aclrtLaunchKernelWithHostArgs"));
-    Loaded() = true;
+    Loaded().store(true, std::memory_order_release);
     UB_LOG_DEBUG("DlAscendcl: libascendcl.so loaded ok");
     return UbStatus::Ok();
 }
 
 void DlAscendcl::CleanUpLibrary()
 {
-    std::lock_guard<std::mutex> lk(Mu());
-    if (!Loaded()) return;
-    if (Handle()) dlclose(Handle());
-    Handle() = nullptr;
-    MallocSlot() = nullptr;
-    FreeSlot() = nullptr;
-    MemcpySlot() = nullptr;
-    SyncSlot() = nullptr;
-    SyncTimeoutSlot() = nullptr;
-    CreateStreamSlot() = nullptr;
-    BinLoadFileSlot() = nullptr;
-    BinLoadDataSlot() = nullptr;
-    BinGetFuncSlot() = nullptr;
-    LaunchKernelV2Slot() = nullptr;
-    LaunchHostArgsSlot() = nullptr;
-    Loaded() = false;
+    // Calls use resolved function pointers without a per-call lock. Keep the
+    // successfully loaded library resident for the process lifetime.
 }
 
 UbStatus DlAscendcl::AclrtMalloc(void** devPtr, std::size_t size, AclrtMallocPolicy policy)
@@ -192,9 +192,16 @@ UbStatus DlAscendcl::AclrtMalloc(void** devPtr, std::size_t size, AclrtMallocPol
 
 UbStatus DlAscendcl::AclrtFree(void* devPtr)
 {
-    if (!Loaded() || FreeSlot() == nullptr) { return UbStatus::Ok(); }
+    if (devPtr == nullptr) { return UbStatus::Ok(); }
+    if (!Loaded() || FreeSlot() == nullptr) {
+        return UbStatus(UbErrorCode::HccpV2LoadLibraryFailed,
+                        "aclrtFree unavailable: ascendcl not loaded");
+    }
     int rc = FreeSlot()(devPtr);
-    if (rc != 0) { UB_LOG_WARN("aclrtFree rc={}", rc); }
+    if (rc != 0) {
+        return UbStatus(UbErrorCode::HccpV2LoadLibraryFailed,
+                        "aclrtFree failed rc=" + std::to_string(rc));
+    }
     return UbStatus::Ok();
 }
 
@@ -227,8 +234,7 @@ UbStatus DlAscendcl::AclrtCreateStream(void** stream)
         if (st.IsError()) return st;
     }
     if (CreateStreamSlot() == nullptr) {
-        UB_LOG_WARN("DlAscendcl::AclrtCreateStream symbol missing; keep stream=null");
-        return UbStatus::Ok();
+        return UbStatus(UbErrorCode::HccpV2LoadLibraryFailed, "aclrtCreateStream symbol missing");
     }
     UB_LOG_DEBUG("DlAscendcl::AclrtCreateStream call aclrtCreateStream");
     int rc = CreateStreamSlot()(stream);
@@ -237,6 +243,20 @@ UbStatus DlAscendcl::AclrtCreateStream(void** stream)
         *stream = nullptr;
         return UbStatus(UbErrorCode::HccpV2LoadLibraryFailed,
                         "aclrtCreateStream failed rc=" + std::to_string(rc));
+    }
+    return UbStatus::Ok();
+}
+
+UbStatus DlAscendcl::AclrtDestroyStream(void* stream)
+{
+    if (stream == nullptr) { return UbStatus::Ok(); }
+    if (!Loaded() || DestroyStreamSlot() == nullptr) {
+        return UbStatus(UbErrorCode::HccpV2LoadLibraryFailed, "aclrtDestroyStream unavailable");
+    }
+    int rc = DestroyStreamSlot()(stream);
+    if (rc != 0) {
+        return UbStatus(UbErrorCode::HccpV2LoadLibraryFailed,
+                        "aclrtDestroyStream failed rc=" + std::to_string(rc));
     }
     return UbStatus::Ok();
 }
@@ -303,6 +323,20 @@ UbStatus DlAscendcl::AclrtBinaryGetFunction(void* binHandle, const char* kernelN
         return UbStatus(UbErrorCode::HccpV2LoadLibraryFailed,
                         std::string("aclrtBinaryGetFunction('") + kernelName +
                             "') failed rc=" + std::to_string(rc));
+    }
+    return UbStatus::Ok();
+}
+
+UbStatus DlAscendcl::AclrtBinaryUnload(void* binHandle)
+{
+    if (binHandle == nullptr) { return UbStatus::Ok(); }
+    if (!Loaded() || BinUnloadSlot() == nullptr) {
+        return UbStatus(UbErrorCode::HccpV2LoadLibraryFailed, "aclrtBinaryUnload unavailable");
+    }
+    int rc = BinUnloadSlot()(binHandle);
+    if (rc != 0) {
+        return UbStatus(UbErrorCode::HccpV2LoadLibraryFailed,
+                        "aclrtBinaryUnload failed rc=" + std::to_string(rc));
     }
     return UbStatus::Ok();
 }
@@ -414,7 +448,9 @@ UbStatus DlAscendcl::AclrtLaunchKernelWithDeviceArgs(void* funcHandle, uint32_t 
 
 UbStatus DlAscendcl::AclrtSynchronizeStream(void* stream)
 {
-    if (!Loaded() || SyncSlot() == nullptr) { return UbStatus::Ok(); }
+    if (!Loaded() || SyncSlot() == nullptr) {
+        return UbStatus(UbErrorCode::HccpV2LoadLibraryFailed, "aclrtSynchronizeStream unavailable");
+    }
     int rc = SyncSlot()(stream);
     if (rc != 0) {
         return UbStatus(UbErrorCode::HccpV2LoadLibraryFailed,
@@ -425,7 +461,10 @@ UbStatus DlAscendcl::AclrtSynchronizeStream(void* stream)
 
 UbStatus DlAscendcl::AclrtSynchronizeStreamWithTimeout(void* stream, int32_t timeoutMs)
 {
-    if (!Loaded()) { return UbStatus::Ok(); }
+    if (!Loaded()) {
+        return UbStatus(UbErrorCode::HccpV2LoadLibraryFailed,
+                        "aclrtSynchronizeStreamWithTimeout unavailable");
+    }
     if (SyncTimeoutSlot() != nullptr) {
         int rc = SyncTimeoutSlot()(stream, timeoutMs);
         if (rc != 0) {
@@ -436,7 +475,8 @@ UbStatus DlAscendcl::AclrtSynchronizeStreamWithTimeout(void* stream, int32_t tim
         }
         return UbStatus::Ok();
     }
-    return AclrtSynchronizeStream(stream);
+    return UbStatus(UbErrorCode::HccpV2LoadLibraryFailed,
+                    "aclrtSynchronizeStreamWithTimeout symbol missing");
 }
 
 }  // namespace umc::kv::dl

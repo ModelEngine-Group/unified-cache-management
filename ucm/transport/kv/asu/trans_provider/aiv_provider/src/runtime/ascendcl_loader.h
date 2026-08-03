@@ -24,6 +24,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -58,12 +59,14 @@ public:
     static ::umc::comm::UbStatus AclrtSynchronizeStream(void* stream);
     static ::umc::comm::UbStatus AclrtSynchronizeStreamWithTimeout(void* stream, int32_t timeoutMs);
     static ::umc::comm::UbStatus AclrtCreateStream(void** stream);
+    static ::umc::comm::UbStatus AclrtDestroyStream(void* stream);
 
     static ::umc::comm::UbStatus AclrtBinaryLoadFromFile(const char* binPath, void** binHandle);
     static ::umc::comm::UbStatus AclrtBinaryLoadFromData(const void* data, std::size_t len,
                                                          void** binHandle);
     static ::umc::comm::UbStatus AclrtBinaryGetFunction(void* binHandle, const char* kernelName,
                                                         void** funcHandle);
+    static ::umc::comm::UbStatus AclrtBinaryUnload(void* binHandle);
     static ::umc::comm::UbStatus AclrtLaunchKernelWithHostArgs(void* funcHandle, uint32_t blockDim,
                                                                void* stream, void* hostArgs,
                                                                std::size_t argsSize);
@@ -75,16 +78,18 @@ public:
 private:
     static std::mutex& Mu();
     static void*& Handle();  // dlopen handle
-    static bool& Loaded();
+    static std::atomic_bool& Loaded();
     using MallocFunc = int (*)(void**, std::size_t, int);
     using FreeFunc = int (*)(void*);
     using MemcpyFunc = int (*)(void*, std::size_t, const void*, std::size_t, int);
     using SyncFunc = int (*)(void*);
     using SyncTimeoutFunc = int (*)(void*, int32_t);
     using CreateStreamFunc = int (*)(void**);
+    using DestroyStreamFunc = int (*)(void*);
     using BinLoadFileFunc = int (*)(const char*, void*, void**);
     using BinLoadDataFunc = int (*)(const void*, std::size_t, void*, void**);
     using BinGetFuncFunc = int (*)(void*, const char*, void**);
+    using BinUnloadFunc = int (*)(void*);
     using LaunchKernelV2Func = int (*)(void*, uint32_t, const void*, std::size_t, void*, void*);
     using LaunchHostArgsFunc = int (*)(void*, uint32_t, void*, void*, void*, std::size_t, void*,
                                        std::size_t);
@@ -94,9 +99,11 @@ private:
     static SyncFunc& SyncSlot();
     static SyncTimeoutFunc& SyncTimeoutSlot();
     static CreateStreamFunc& CreateStreamSlot();
+    static DestroyStreamFunc& DestroyStreamSlot();
     static BinLoadFileFunc& BinLoadFileSlot();
     static BinLoadDataFunc& BinLoadDataSlot();
     static BinGetFuncFunc& BinGetFuncSlot();
+    static BinUnloadFunc& BinUnloadSlot();
     static LaunchKernelV2Func& LaunchKernelV2Slot();
     static LaunchHostArgsFunc& LaunchHostArgsSlot();
 };

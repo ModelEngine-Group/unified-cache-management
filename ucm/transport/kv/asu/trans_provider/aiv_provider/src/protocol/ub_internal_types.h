@@ -117,7 +117,7 @@ struct UdmaSegInfo {
     uint32_t tpn;             // [4,8)
     uint32_t tid;             // [8,12)
     uint32_t rmtTokenValue;   // [12,16)
-    uint32_t len;             // [16,20)
+    uint64_t len;             // [16,24)
     uint64_t addr;            // [24,32)  seg base addr
     uint64_t eidAddr;         // [32,40)
 };

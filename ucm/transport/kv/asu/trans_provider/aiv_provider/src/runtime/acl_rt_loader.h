@@ -24,6 +24,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -82,7 +83,7 @@ private:
 
     static std::mutex& Mu();
     static void*& Handle();
-    static bool& Loaded();
+    static std::atomic_bool& Loaded();
     static MallocFunc& MallocSlot();
     static FreeFunc& FreeSlot();
     static MemsetFunc& MemsetSlot();

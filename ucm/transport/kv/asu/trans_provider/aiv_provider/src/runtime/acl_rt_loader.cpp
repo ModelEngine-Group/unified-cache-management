@@ -39,9 +39,9 @@ void*& DlAclRt::Handle()
     static void* h = nullptr;
     return h;
 }
-bool& DlAclRt::Loaded()
+std::atomic_bool& DlAclRt::Loaded()
 {
-    static bool b = false;
+    static std::atomic_bool b{false};
     return b;
 }
 DlAclRt::MallocFunc& DlAclRt::MallocSlot()
@@ -100,12 +100,12 @@ DlAclRt::SetCtxFunc& DlAclRt::SetCtxSlot()
     return f;
 }
 
-bool DlAclRt::IsLoaded() { return Loaded(); }
+bool DlAclRt::IsLoaded() { return Loaded().load(std::memory_order_acquire); }
 
 UbStatus DlAclRt::LoadLibrary()
 {
     std::lock_guard<std::mutex> lk(Mu());
-    if (Loaded()) return UbStatus::Ok();
+    if (Loaded().load(std::memory_order_relaxed)) return UbStatus::Ok();
 
     void* h = dlopen("libascendcl.so", RTLD_NOW | RTLD_GLOBAL);
     if (h == nullptr) {
@@ -153,29 +153,15 @@ UbStatus DlAclRt::LoadLibrary()
     GetPhyIdSlot() = reinterpret_cast<GetPhyIdFunc>(gp);
     GetCtxSlot() = reinterpret_cast<GetCtxFunc>(gc);
     SetCtxSlot() = reinterpret_cast<SetCtxFunc>(sc);
-    Loaded() = true;
+    Loaded().store(true, std::memory_order_release);
     UB_LOG_DEBUG("DlAclRt: libascendcl.so loaded ok");
     return UbStatus::Ok();
 }
 
 void DlAclRt::CleanUpLibrary()
 {
-    std::lock_guard<std::mutex> lk(Mu());
-    if (!Loaded()) return;
-    if (Handle()) dlclose(Handle());
-    Handle() = nullptr;
-    MallocSlot() = nullptr;
-    FreeSlot() = nullptr;
-    MemsetSlot() = nullptr;
-    MemcpySlot() = nullptr;
-    SetDeviceSlot() = nullptr;
-    ResetDeviceSlot() = nullptr;
-    InitSlot() = nullptr;
-    FinalizeSlot() = nullptr;
-    GetPhyIdSlot() = nullptr;
-    GetCtxSlot() = nullptr;
-    SetCtxSlot() = nullptr;
-    Loaded() = false;
+    // Calls use resolved function pointers without a per-call lock. Keep the
+    // successfully loaded library resident for the process lifetime.
 }
 
 UbStatus DlAclRt::SetDevice(int32_t deviceId)
