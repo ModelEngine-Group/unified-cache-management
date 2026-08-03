@@ -122,6 +122,7 @@ def get_supported_versions() -> list[str]:
         "0.20.2",
         "0.21.0",
         "0.22.1",
+        "0.23.0",
     ]
 
 
@@ -148,7 +149,13 @@ def apply_all_patches() -> None:
         ascend_version = get_vllm_ascend_version()
         # UCM PATCH: vllm-ascend registers UCMConnector as an alias for the
         # concrete UCMConnectorV1 class used by MultiConnector metrics.
-        if ascend_version in {"0.18.0", "0.19.1", "0.20.2", "0.22.1"}:
+        if ascend_version in {
+            "0.18.0",
+            "0.19.1",
+            "0.20.2",
+            "0.22.1",
+            "0.23.0",
+        }:
             logger.info("UCM patching vllm-ascend UCM connector metrics alias...")
             import ucm.integration.vllm.patch.ucm_connector_registration_patch
 
@@ -168,17 +175,11 @@ def apply_all_patches() -> None:
             case "0.19.1":
                 logger.info("UCM patching vllm for pc...")
                 import ucm.integration.vllm.patch.v0191.vllm.pc_patch
-            case "0.20.2":
-                logger.info("UCM patching vllm 0.20.2 for load-failure recovery...")
-                import ucm.integration.vllm.patch.v0202.vllm.load_failure_patch
-            case "0.21.0":
-                logger.info("UCM patching vllm 0.21.0 for load-failure recovery...")
-                import ucm.integration.vllm.patch.v0202.vllm.load_failure_patch
             case _:
                 pass
 
         major, minor, *_ = version.split(".")
-        if (int(major), int(minor)) >= (0, 21):
+        if (int(major), int(minor)) >= (0, 18):
             logger.info("UCM patching vllm for load-failure recovery...")
             import ucm.integration.vllm.patch.load_failure_patch
 
@@ -220,6 +221,14 @@ def apply_all_patches() -> None:
                 )
                 import ucm.integration.vllm.patch.v0221.vllm_ascend.ascend_hybrid_cache_patch
                 import ucm.integration.vllm.patch.v0221.vllm_ascend.cpu_binding_patch
+            case "0.23.0":
+                logger.info(
+                    "UCM patching vllm-ascend 0.23.0 for hybrid cache "
+                    "recovery, CPU affinity, and SFA KV transfer..."
+                )
+                import ucm.integration.vllm.patch.v0230.vllm_ascend.ascend_hybrid_cache_patch
+                import ucm.integration.vllm.patch.v0230.vllm_ascend.cpu_binding_patch
+                import ucm.integration.vllm.patch.v0230.vllm_ascend.sfa_kv_transfer_patch
             case _:
                 pass
 

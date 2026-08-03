@@ -37,6 +37,8 @@ from ucm.store.pipeline import ucmpipelinestore
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 
 _preloaded_libraries: Dict[Path, ctypes.CDLL] = {}
+StoreNotFoundError = ucmpipelinestore.StoreNotFoundError
+StoreUnhealthyError = ucmpipelinestore.StoreUnhealthyError
 
 
 def _preload_library(path: Path) -> None:
@@ -85,7 +87,8 @@ class UcmPipelineStoreTransTask(Task):
 class UcmPipelineStore(UcmKVStoreBaseV1):
     def __init__(self, config: Dict[str, object]) -> None:
         super().__init__(config)
-        self.store_ = ucmpipelinestore.PipelineStore()
+        health_config = copy.deepcopy(config.get("store_health", {}))
+        self.store_ = ucmpipelinestore.PipelineStore(health_config)
         builder = UcmPipelineStoreBuilder.get(config["store_pipeline"])
         if builder is None:
             raise ValueError(f"unknown store pipeline: {config['store_pipeline']}")

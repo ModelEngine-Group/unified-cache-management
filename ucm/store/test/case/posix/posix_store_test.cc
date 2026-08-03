@@ -27,6 +27,7 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -54,6 +55,20 @@ UC::Detail::Dictionary MakeAioConfig(const std::string& path, size_t timeoutMs =
     config.SetNumber("timeout_ms", timeoutMs);
     config.SetNumber("posix_open_concurrency", openConcurrency);
     config.SetNumber("posix_commit_concurrency", size_t(1));
+    config.SetNumber("data_dir_shard_bytes", size_t(0));
+    return config;
+}
+
+UC::Detail::Dictionary MakePsyncConfig(const std::string& path)
+{
+    UC::Detail::Dictionary config;
+    config.SetNumber("device_id", 0);
+    config.Set("storage_backends", std::vector<std::string>{path});
+    config.SetNumber("tensor_size", AIO_TEST_DATA_SIZE);
+    config.SetNumber("shard_size", AIO_TEST_DATA_SIZE);
+    config.SetNumber("block_size", AIO_TEST_DATA_SIZE);
+    config.Set("posix_io_engine", std::string("psync"));
+    config.Set("io_direct", false);
     config.SetNumber("data_dir_shard_bytes", size_t(0));
     return config;
 }
@@ -224,6 +239,68 @@ TEST_F(UCPosixStoreTest, DumpThenLoad)
     s = store.Wait(handle2.Value());
     ASSERT_EQ(s, UC::Status::OK());
     ASSERT_EQ(data1.Compare(data2), 0);
+
+    ASSERT_EQ(store.CheckHealth(), UC::Status::OK());
+    auto missingBlock =
+        UC::Test::Detail::TypesHelper::MakeBlockId("ffffffffffffffffffffffffffffffff");
+    UC::Detail::TaskDesc missingDesc;
+    missingDesc.brief = "LoadMissing";
+    missingDesc.push_back(UC::Detail::Shard{missingBlock, 0, {data2.Buffer()}});
+    auto missingHandle = store.Load(missingDesc);
+    ASSERT_TRUE(missingHandle.HasValue());
+    ASSERT_EQ(store.Wait(missingHandle.Value()), UC::Status::NotFound());
+}
+
+TEST_F(UCPosixStoreTest, CheckHealthWithoutDirectIoOnTemporaryFilesystem)
+{
+    using namespace UC::PosixStore;
+    const auto path =
+        std::filesystem::temp_directory_path() / ("ucm_posix_health_" + std::to_string(::getpid()));
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() { std::filesystem::remove_all(path); }
+    } cleanup{path};
+    std::filesystem::create_directories(path);
+
+    UC::Detail::Dictionary config;
+    config.SetNumber("device_id", -1);
+    config.Set("storage_backends", std::vector<std::string>{path.string()});
+    constexpr size_t dataSize = 4096;
+    config.SetNumber("tensor_size", dataSize);
+    config.SetNumber("shard_size", dataSize);
+    config.SetNumber("block_size", dataSize);
+    config.Set("io_direct", false);
+    PosixStore store;
+
+    ASSERT_EQ(store.Setup(config), UC::Status::OK());
+    EXPECT_EQ(store.CheckHealth(), UC::Status::OK());
+    EXPECT_EQ(store.CheckHealth(), UC::Status::OK());
+}
+
+TEST_F(UCPosixStoreTest, CheckHealthCoversAllStorageBackends)
+{
+    using namespace UC::PosixStore;
+    const auto mount0 = std::filesystem::path{Path()} / "mount0";
+    const auto mount1 = std::filesystem::path{Path()} / "mount1";
+    std::filesystem::create_directories(mount0);
+    std::filesystem::create_directories(mount1 / "data");
+
+    auto config = MakePsyncConfig(mount0.string());
+    config.Set("storage_backends", std::vector<std::string>{mount0.string(), mount1.string()});
+    PosixStore store;
+    ASSERT_EQ(store.Setup(config), UC::Status::OK());
+    ASSERT_EQ(store.CheckHealth(), UC::Status::OK());
+
+    const auto checkUnavailable = [&store](const std::filesystem::path& mount) {
+        auto unavailable = mount;
+        unavailable += ".unavailable";
+        std::filesystem::rename(mount, unavailable);
+        auto status = store.CheckHealth();
+        std::filesystem::rename(unavailable, mount);
+        return status;
+    };
+    EXPECT_TRUE(checkUnavailable(mount0).Failure());
+    EXPECT_TRUE(checkUnavailable(mount1).Failure());
 }
 
 TEST_F(UCPosixStoreTest, DumpThenLoadWithIoDirect)
@@ -273,6 +350,74 @@ TEST_F(UCPosixStoreTest, DumpThenLoadWithIoDirect)
     ASSERT_EQ(*(size_t*)buffer1, *(size_t*)buffer2);
     free(buffer1);
     free(buffer2);
+}
+
+TEST_F(UCPosixStoreTest, AioMissingLoadReturnsNotFound)
+{
+    using namespace UC::PosixStore;
+    PosixStore store;
+    ASSERT_EQ(store.Setup(MakeAioConfig(Path(), 1000)), UC::Status::OK());
+
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto buffer = MakeAlignedBuffer(0);
+    ASSERT_NE(buffer, nullptr);
+    auto handle = store.Load(MakeDumpDesc("AioMissingLoad", block, buffer.get()));
+    ASSERT_TRUE(handle.HasValue());
+    EXPECT_EQ(store.Wait(handle.Value()), UC::Status::NotFound());
+}
+
+TEST_F(UCPosixStoreTest, PsyncTruncatedLoadReturnsNotFound)
+{
+    using namespace UC::PosixStore;
+    PosixStore store;
+    ASSERT_EQ(store.Setup(MakePsyncConfig(Path())), UC::Status::OK());
+
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto source = MakeAlignedBuffer(1);
+    auto target = MakeAlignedBuffer(0);
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(target, nullptr);
+    auto dump = store.Dump(MakeDumpDesc("PsyncTruncatedDump", block, source.get()));
+    ASSERT_TRUE(dump.HasValue());
+    ASSERT_EQ(store.Wait(dump.Value()), UC::Status::OK());
+
+    Config layoutConfig;
+    layoutConfig.storageBackends = {Path()};
+    layoutConfig.dataDirShardBytes = 0;
+    SpaceLayout layout;
+    ASSERT_EQ(layout.Setup(layoutConfig), UC::Status::OK());
+    std::filesystem::resize_file(layout.DataFilePath(block, false), AIO_TEST_DATA_SIZE / 2);
+
+    auto load = store.Load(MakeDumpDesc("PsyncTruncatedLoad", block, target.get()));
+    ASSERT_TRUE(load.HasValue());
+    EXPECT_EQ(store.Wait(load.Value()), UC::Status::NotFound());
+}
+
+TEST_F(UCPosixStoreTest, AioTruncatedLoadReturnsNotFound)
+{
+    using namespace UC::PosixStore;
+    PosixStore store;
+    ASSERT_EQ(store.Setup(MakeAioConfig(Path(), 1000)), UC::Status::OK());
+
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto source = MakeAlignedBuffer(1);
+    auto target = MakeAlignedBuffer(0);
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(target, nullptr);
+    auto dump = store.Dump(MakeDumpDesc("AioTruncatedDump", block, source.get()));
+    ASSERT_TRUE(dump.HasValue());
+    ASSERT_EQ(store.Wait(dump.Value()), UC::Status::OK());
+
+    Config layoutConfig;
+    layoutConfig.storageBackends = {Path()};
+    layoutConfig.dataDirShardBytes = 0;
+    SpaceLayout layout;
+    ASSERT_EQ(layout.Setup(layoutConfig), UC::Status::OK());
+    std::filesystem::resize_file(layout.DataFilePath(block, false), AIO_TEST_DATA_SIZE / 2);
+
+    auto load = store.Load(MakeDumpDesc("AioTruncatedLoad", block, target.get()));
+    ASSERT_TRUE(load.HasValue());
+    EXPECT_EQ(store.Wait(load.Value()), UC::Status::NotFound());
 }
 
 TEST_F(UCPosixStoreTest, AioWaitTimesOutWhenOpenStalls)

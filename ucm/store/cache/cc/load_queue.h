@@ -44,7 +44,7 @@ class LoadQueue {
     using TaskPair = std::pair<TaskPtr, WaiterPtr>;
     using TaskIdSet = HashSet<Detail::TaskHandle>;
     struct ShardTask {
-        Detail::TaskHandle taskHandle;
+        TaskPtr task;
         Detail::Shard shard;
         TransBuffer::Handle bufferHandle;
         Detail::TaskHandle backendTaskHandle;

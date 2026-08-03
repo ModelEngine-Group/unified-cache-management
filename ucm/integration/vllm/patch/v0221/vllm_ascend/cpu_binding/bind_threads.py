@@ -9,6 +9,7 @@ from ucm.integration.vllm.patch.cpu_binding_affinity_patch import (
 
 def allocate(self) -> None:
     self.assign_ucm = {}
+    self.assign_ucm_health = {}
 
     reserve_irq_cpus = self._reserve_irq_cpus()
     min_cpus_per_npu = self._min_cpus_per_npu()

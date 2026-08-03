@@ -115,6 +115,8 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
                 UC_ERROR("Failed({}) to submit load task({}) to backend.", res.Error(), task->id);
                 UC::Metrics::UpdateStats(
                     NAME_TO_METRIC_ID("cache_backend_load_submit_errors_total"), 1.0);
+                shardTask.bufferHandle.MarkFailed(res.Error());
+                task->Fail(res.Error());
                 failureSet_->Insert(task->id);
                 waiter->Done();
                 return;
@@ -122,7 +124,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
             shardTask.backendTaskHandle = res.Value();
             backendSubmitCount++;
         }
-        shardTask.taskHandle = task->id;
+        shardTask.task = task;
         shardTask.shard = std::move(shard);
         if (taskLaunch) {
             if (shardTask.bufferHandle.Ready()) {
@@ -178,7 +180,9 @@ void LoadQueue::TransferStage(std::promise<Status>& started)
 
 void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
 {
-    if (failureSet_->Contains(task.taskHandle)) {
+    auto parentTask = task.task;
+    const auto taskHandle = parentTask->id;
+    if (failureSet_->Contains(taskHandle)) {
         if (task.waiter) {
             ClearSdmaDirectHolders();
             task.waiter->Done();
@@ -186,7 +190,6 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
         return;
     }
     auto s = Status::OK();
-    const auto taskHandle = task.taskHandle;
     auto waiter = task.waiter;
     do {
         auto tpBackendWait = NowTime::Now();
@@ -213,7 +216,7 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
             s = HostToDeviceAsync(stream, task.bufferHandle.DeviceData(), task.shard.addrs.data());
             auto tpH2dSubmitted = NowTime::Now();
             if (s.Failure()) [[unlikely]] {
-                UC_ERROR("Failed({}) to do H2D for task({}).", s, task.taskHandle);
+                UC_ERROR("Failed({}) to do H2D for task({}).", s, taskHandle);
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_errors_total"), 1.0);
                 break;
             }
@@ -229,7 +232,7 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
             RecordH2dSyncMetrics(h2dSyncMs);
             holder_.clear();
             if (s.Failure()) [[unlikely]] {
-                UC_ERROR("Failed({}) to sync on stream for task({}).", s, task.taskHandle);
+                UC_ERROR("Failed({}) to sync on stream for task({}).", s, taskHandle);
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_errors_total"), 1.0);
                 break;
             }
@@ -239,7 +242,7 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
         s = HostToDeviceAsync(stream, task.bufferHandle.Data(), task.shard.addrs.data());
         auto tpH2dSubmitted = NowTime::Now();
         if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to do H2D for task({}).", s, task.taskHandle);
+            UC_ERROR("Failed({}) to do H2D for task({}).", s, taskHandle);
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_errors_total"), 1.0);
             break;
         }
@@ -255,12 +258,15 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
         RecordH2dSyncMetrics(h2dSyncMs);
         holder_.clear();
         if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to sync on stream for task({}).", s, task.taskHandle);
+            UC_ERROR("Failed({}) to sync on stream for task({}).", s, taskHandle);
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_errors_total"), 1.0);
             break;
         }
     } while (0);
-    if (s.Failure()) [[unlikely]] { failureSet_->Insert(taskHandle); }
+    if (s.Failure()) [[unlikely]] {
+        parentTask->Fail(s);
+        failureSet_->Insert(taskHandle);
+    }
     if (UseSdmaDirectTaskLaunch()) { ClearSdmaDirectHolders(); }
     if (waiter) { waiter->Done(); }
 }
@@ -271,19 +277,22 @@ Status LoadQueue::WaitBackendTaskReady(ShardTask& task)
         auto s = backend_->Wait(task.backendTaskHandle);
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to wait backend({}) for task({}).", s, task.backendTaskHandle,
-                     task.taskHandle);
+                     task.task->id);
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_backend_load_wait_errors_total"),
                                      1.0);
+            task.bufferHandle.MarkFailed(s);
             return s;
         }
         task.bufferHandle.MarkReady();
         return Status::OK();
     }
-    while (!task.bufferHandle.Ready()) {
-        if (failureSet_->Contains(task.taskHandle)) { return Status::Error(); }
+    for (;;) {
+        auto state = task.bufferHandle.GetState();
+        if (state == TransBuffer::State::READY) { return Status::OK(); }
+        if (state == TransBuffer::State::FAILED) { return task.bufferHandle.FailureStatus(); }
+        if (failureSet_->Contains(task.task->id)) { return task.task->FailureStatus(); }
         std::this_thread::yield();
     }
-    return Status::OK();
 }
 
 Status LoadQueue::HostToDeviceAsync(CopyStream& stream, void* host, void** device)

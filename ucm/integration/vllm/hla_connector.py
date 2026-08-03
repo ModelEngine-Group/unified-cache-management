@@ -4,7 +4,7 @@ import os
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, List, Optional
 
 import numpy as np
 import torch
@@ -35,10 +35,12 @@ from ucm.integration.vllm.ucm_connector import (
     _drop_null_vllm_blocks,
     _record_counter,
     _short_list,
+    _use_ucm_connector_cpu_affinity,
 )
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmetrics
 from ucm.sparse.state import has_ucm_sparse
+from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 
 if TYPE_CHECKING:
@@ -53,27 +55,7 @@ logger = init_logger(__name__)
 
 @dataclass
 class HLARequestMeta(RequestMeta):
-    """RequestMeta extended with per-group block tracking for hybrid models.
-
-    The inherited fields (``ucm_block_ids``, ``hbm_hit_block_num``,
-    ``total_hit_block_num``, ``num_token_ids``, ``vllm_block_ids``,
-    ``token_processed``) keep their original semantics and mirror the
-    full-attention group exactly, so dispatch/load/save paths inherited from
-    :class:`UCMDirectConnector` keep working.
-
-    The two new fields are 2D lists indexed by the original
-    ``kv_cache_config.kv_cache_groups`` order (i.e. ``[group_id]``):
-    - ``group_ucm_block_ids[gid]``: full block hashes obtained by hashing
-      ``request.all_token_ids`` with group ``gid``'s own block size and
-      chain seed. ``group_ucm_block_ids[full_attn_group_id]`` equals the
-      inherited ``ucm_block_ids``.
-    - ``group_vllm_block_ids[gid]``: per-group VLLM physical block ids; this
-      is initialized as an empty list per group here, then filled from the
-      scheduler allocation snapshot by :meth:`UCMHybridLinearAttentionConnector.update_state_after_alloc`
-      and maintained by :meth:`UCMHybridLinearAttentionConnector._generate_hla_dispatch_meta`.
-      HLA dispatch later slices these per-group tables to build the flattened
-      load/dump pairs consumed by the inherited I/O path.
-    """
+    """RequestMeta extended with per-group block tracking for hybrid models."""
 
     group_ucm_block_ids: list[list[bytes]] = field(default_factory=list)
     group_vllm_block_ids: list[list[int]] = field(default_factory=list)
@@ -124,14 +106,20 @@ def extend_non_null(
     src_ucm_block_ids: list[bytes],
     src_vllm_block_ids: list[int],
 ) -> None:
-    # Mamba align mode pads req block tables with vLLM's null block
-    # (block_id=0). These are metadata placeholders, not physical pages
-    # that should be loaded from or dumped to the store.
+    # Skip vLLM null blocks (block_id=0) used as mamba-align placeholders.
     for ucm_block_id, vllm_block_id in zip(src_ucm_block_ids, src_vllm_block_ids):
         if vllm_block_id == 0:
             continue
         dst_ucm_block_ids.append(ucm_block_id)
         dst_vllm_block_ids.append(vllm_block_id)
+
+
+def _normalize_tensor_size_list(tensor_size_list: Any) -> list[int]:
+    if isinstance(tensor_size_list, np.ndarray):
+        return [int(v) for v in tensor_size_list.reshape(-1).tolist()]
+    if isinstance(tensor_size_list, (list, tuple)):
+        return [int(v) for v in tensor_size_list]
+    return [int(tensor_size_list)]
 
 
 @dataclass
@@ -151,22 +139,7 @@ class GroupInfo:
 
 
 class KVCacheGroupManager:
-    """Group-aware hashing and lookup for hybrid (HLA) connectors.
-
-    Splits ``kv_cache_config.kv_cache_groups`` into full-attention groups
-    (one or more) and mamba-align state groups, derives a per-group hash
-    chain seed, and exposes a two-stage lookup that:
-
-    1. For every full-attention group, hashes ``request.all_token_ids`` with
-       that group's block size and runs ``store.lookup_on_prefix`` on the
-       blocks beyond its own ``hbm_hit_block_num``. The candidate hits (in
-       tokens) are min'd across full-attn groups and rounded down to
-       ``lcm_block_size``.
-    2. For each mamba-align state group, derives a single state hash from
-       the primary full-attention prefix and verifies it exists in the
-       store. If any state group fails this check, the whole external hit
-       is downgraded to zero.
-    """
+    """Group-aware hashing and two-stage lookup for hybrid (HLA) connectors."""
 
     def __init__(
         self,
@@ -175,10 +148,7 @@ class KVCacheGroupManager:
         base_seed: bytes,
     ) -> None:
         self.request_hasher = request_hasher
-        # Indexed by original group_id; positions match
-        # ``kv_cache_config.kv_cache_groups``.
         self.groups_by_id: list[GroupInfo] = []
-        # All full-attention groups (non-mamba-align). Order follows group_id.
         self.full_attn_groups: list[GroupInfo] = []
         self.state_groups: list[GroupInfo] = []
 
@@ -205,10 +175,7 @@ class KVCacheGroupManager:
             "kv_cache_config.kv_cache_groups."
         )
 
-        # Resume points must be aligned to the LCM of every group's
-        # block_size so that per-group block accounting (including each
-        # full-attn group's lookup result and every state group's tail slice)
-        # lands on a clean block boundary.
+        # Resume points must align to the LCM of all group block_sizes.
         all_block_sizes = [g.block_size for g in self.groups_by_id]
         self.lcm_block_size: int = math.lcm(*all_block_sizes)
 
@@ -223,9 +190,6 @@ class KVCacheGroupManager:
                 f"UCMHybridLinearAttentionConnector only supports mamba-align "
                 f"state groups."
             )
-            # Mamba-align state occupies exactly one block per checkpoint.
-            # ``block_size <= lcm_block_size`` is already guaranteed by the
-            # LCM construction above.
 
         logger.info(
             "KVCacheGroupManager initialized: "
@@ -245,10 +209,7 @@ class KVCacheGroupManager:
     ) -> list[bytes]:
         """Hash ``token_ids`` into per-block ids using ``group``'s chain seed."""
         if group.is_mamba_align:
-            # In mamba-align mode vLLM pads the per-request block table with
-            # block_id=0 and only keeps the current state block as a real
-            # physical page. Hashing every logical token block here would
-            # create keys for pages that can never be loaded or dumped.
+            # mamba-align pads block table with null blocks; no per-block hash.
             return [b""] * (len(token_ids) // group.block_size)
 
         ret: list[bytes] = []
@@ -265,12 +226,7 @@ class KVCacheGroupManager:
         return ret
 
     def compute_all_group_block_ids(self, token_ids: list[int]) -> list[list[bytes]]:
-        """Compute full block hashes for every group, indexed by group_id.
-
-        ``ret[gid]`` covers all aligned blocks of ``token_ids`` using group
-        ``gid``'s ``block_size`` and chain seed. The trailing partial block
-        (if any) is dropped, matching :meth:`compute_block_hashes`.
-        """
+        """Compute full block hashes for every group, indexed by group_id."""
         return [self.compute_block_hashes(g, token_ids) for g in self.groups_by_id]
 
     def compute_mamba_align_state_hash(
@@ -279,13 +235,7 @@ class KVCacheGroupManager:
         seq_len: int,
         group_block_ids: list[list[bytes]],
     ) -> Optional[bytes]:
-        """Derive the hash for the real mamba-align state page at ``seq_len``.
-
-        The mamba state represents the whole prefix up to ``seq_len`` instead
-        of a normal KV block. We derive its key from the primary full-attention
-        prefix hash, so the state key still changes with every prefix token but
-        we do not need to materialize hashes for mamba's leading null blocks.
-        """
+        """Derive the mamba-align state hash at ``seq_len`` from the prefix hash."""
         if seq_len <= 0 or seq_len % self.lcm_block_size != 0:
             return None
         primary = self.full_attn_groups[0]
@@ -313,8 +263,9 @@ class KVCacheGroupManager:
     def lookup_external_hit_tokens(
         self,
         num_computed_tokens: int,
-        store: "UcmKVStoreBaseV1",
         group_block_ids: list[list[bytes]],
+        lookup_on_prefix: Callable[[list[bytes]], int],
+        lookup_all: Callable[[list[bytes]], list[bool]],
     ) -> tuple[int, int, list[bytes]]:
         """Two-stage HLA lookup using precomputed per-group hashes.
 
@@ -363,7 +314,7 @@ class KVCacheGroupManager:
                 candidates.append(0)
                 continue
             try:
-                fa_hit_blocks = store.lookup_on_prefix(fa_external) + 1
+                fa_hit_blocks = lookup_on_prefix(fa_external) + 1
             except Exception as e:
                 logger.error(
                     f"full-attn group {fa.group_id} lookup error. "
@@ -383,9 +334,7 @@ class KVCacheGroupManager:
         if external_hit_tokens <= 0:
             return 0, 0, []
 
-        # Stage 2: sequential backward scan for mamba-align state.
-        # Check one LCM boundary at a time from total_hit_tokens downwards.
-        # Stop at the first position where ALL state groups are present.
+        # Stage 2: backward scan for mamba state at LCM boundaries.
         total_hit_tokens = num_computed_tokens + external_hit_tokens
 
         if not self.state_groups:
@@ -404,7 +353,7 @@ class KVCacheGroupManager:
                 )
                 pos_hashes.append(state_hash if state_hash is not None else b"")
             try:
-                results = store.lookup(pos_hashes)
+                results = lookup_all(pos_hashes)
             except Exception as e:
                 logger.error(
                     f"mamba-align state lookup error at pos={pos}. "
@@ -420,10 +369,7 @@ class KVCacheGroupManager:
         if external_hit_tokens <= 0:
             return 0, 0, []
 
-        # Collect mamba state hashes for all LCM boundaries from the first
-        # boundary (lcm_block_size) to best_pos (inclusive) for GC heat
-        # update.  This covers both HBM positions (below num_computed_tokens,
-        # not checked by the sequential scan) and external positions.
+        # Collect mamba state hashes for GC heat update.
         mamba_prefetch_hashes: list[bytes] = []
         for pos in range(
             self.lcm_block_size,
@@ -506,10 +452,6 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         tensor_size_lists: list[list[int]],
         block_stride_lists: list[list[int]],
     ) -> None:
-        # MTP can add attention-only raw tensors next to hybrid attention+Mamba
-        # tensors.  Those rows naturally have a different number of physical
-        # slices, so keep the UCM schema flattened instead of forcing a
-        # rectangular layer-by-slice matrix.
         self.row_slices: list[slice] = []
         self.row_tensor_size_lists: list[list[int]] = [
             [int(size) for size in row] for row in tensor_size_lists
@@ -675,12 +617,52 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         tensor_size_lists.append(sizes)
         block_stride_lists.append(sizes)
 
+    def _append_ascend_attn_only_layout(
+        self,
+        raw_tensor,
+        shared_ptrs: list[int],
+        attn_specs: list[FullAttentionSpec],
+        base_ptrs: list[list[int]],
+        buffer_size_rows: list[list[int]],
+        tensor_size_lists: list[list[int]],
+        block_stride_lists: list[list[int]],
+    ) -> None:
+        """Component-major [conv_padding, K, V] layout for Ascend attn-only tensors."""
+        k_size, v_size = self._attention_component_sizes(attn_specs[0])
+        page_size = raw_tensor.size // self.num_blocks
+        conv_padding_size = page_size - k_size - v_size
+        if conv_padding_size <= 0:
+            self._append_contiguous_page_layout(
+                raw_tensor,
+                shared_ptrs,
+                base_ptrs,
+                buffer_size_rows,
+                tensor_size_lists,
+                block_stride_lists,
+            )
+            return
+
+        # K-cache view starts past conv_padding; subtract to get raw base.
+        base = min(shared_ptrs) - conv_padding_size * self.num_blocks
+        sizes = [conv_padding_size, k_size, v_size]
+        offsets = [
+            0,
+            conv_padding_size * self.num_blocks,
+            (conv_padding_size + k_size) * self.num_blocks,
+        ]
+        base_ptrs.append([base + offset for offset in offsets])
+        buffer_size_rows.append([size * self.num_blocks for size in sizes])
+        tensor_size_lists.append(sizes)
+        block_stride_lists.append(sizes)
+
     def _build_layout(self, kvcaches):
         base_ptrs = []
         buffer_size_rows = []
         tensor_size_lists = []
         block_stride_lists = []
         self.layer_name_to_row: dict[str, int] = {}
+
+        is_npu = current_platform.device_type == "npu"
 
         for raw_tensor in self.kv_cache_config.kv_cache_tensors:
             if not raw_tensor.shared_by:
@@ -699,24 +681,23 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             row_id = len(base_ptrs)
             mamba_specs = [s for s in shared_specs if isinstance(s, MambaSpec)]
             attn_specs = [s for s in shared_specs if isinstance(s, FullAttentionSpec)]
-            if not mamba_specs or not attn_specs:
-                self._append_contiguous_page_layout(
+
+            # Ascend: hybrid → component_major, attn-only → attn_only, else contiguous.
+            if is_npu and mamba_specs and attn_specs:
+                self._append_ascend_component_major_layout(
                     raw_tensor,
                     shared_ptrs,
+                    mamba_specs,
+                    attn_specs,
                     base_ptrs,
                     buffer_size_rows,
                     tensor_size_lists,
                     block_stride_lists,
                 )
-                for layer_name in raw_tensor.shared_by:
-                    self.layer_name_to_row[layer_name] = row_id
-                continue
-
-            if current_platform.device_type == "npu":
-                self._append_ascend_component_major_layout(
+            elif is_npu and attn_specs:
+                self._append_ascend_attn_only_layout(
                     raw_tensor,
                     shared_ptrs,
-                    mamba_specs,
                     attn_specs,
                     base_ptrs,
                     buffer_size_rows,
@@ -800,17 +781,17 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 base_seed=self._seed,
             )
             lcm_block_size = self.group_manager.lcm_block_size
-            # Override the inherited ``block_size`` (which comes from
-            # ``cache_config.block_size``) so prefix accounting in this class
-            # is consistent with every group's block boundaries — vLLM's
-            # hybrid scheduler aligns ``num_computed_tokens`` to the LCM of
-            # all groups' block_size, and so do we.
             self.block_size = lcm_block_size
             self.hash_block_size = lcm_block_size
 
         logger.info(
             f"UCMHybridLinearAttentionConnector initialized with use_layerwise={self.use_layerwise}"
         )
+
+    def get_block_size(self) -> int:
+        if self.group_manager is not None:
+            return self.group_manager.lcm_block_size
+        return self.block_size
 
     def _create_kv_cache_layout(
         self, kv_caches: dict[str, torch.Tensor]
@@ -822,12 +803,111 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             self._kv_cache_config,
         )
 
+    def _create_store(
+        self,
+        kv_cache_layout: Optional[KVCacheLayout],
+        cpu_affinity_cores: Optional[list[int]] = None,
+        tensor_size_list_override: Optional[list[int]] = None,
+        shard_size_override: Optional[int] = None,
+        block_size_override: Optional[int] = None,
+        unique_id_suffix: str = "",
+    ) -> UcmKVStoreBaseV1:
+        if len(self.connector_configs) != 1:
+            raise RuntimeError(
+                f"Expected exactly one connector config, "
+                f"but got {len(self.connector_configs)}: "
+                f"{self.connector_configs}"
+            )
+
+        name = self.connector_configs[0]["ucm_connector_name"]
+        module_path = self.connector_configs[0].get("ucm_connector_module_path", None)
+        config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
+        config.setdefault("share_buffer_enable", self.is_mla)
+        self._set_default_shm_buffer_capacity(config)
+        if "storage_backends" in config:
+            backends = [path for path in config["storage_backends"].split(":")]
+            config["storage_backends"] = backends
+        config["unique_id"] = f"{self.unique_id}{unique_id_suffix}"
+        if self._role == KVConnectorRole.WORKER:
+            config["device_id"] = self.local_rank
+            tensor_size_list = _normalize_tensor_size_list(
+                tensor_size_list_override
+                if tensor_size_list_override is not None
+                else kv_cache_layout.tensor_size_list
+            )
+            config["tensor_size_list"] = tensor_size_list * self.blocks_per_chunk
+            shard_size = (
+                shard_size_override
+                if shard_size_override is not None
+                else kv_cache_layout.shard_size
+            )
+            block_size = (
+                block_size_override
+                if block_size_override is not None
+                else kv_cache_layout.block_size
+            )
+            config["shard_size"] = shard_size * self.blocks_per_chunk
+            config["block_size"] = block_size * self.blocks_per_chunk
+            config["local_rank_size"] = self.tp_size if self.is_mla else 1
+            buffer_addrs = kv_cache_layout.base_ptrs.reshape(-1).tolist()
+            buffer_sizes = kv_cache_layout.buffer_sizes.reshape(-1).tolist()
+            gpu_kv_buffer_set = set()
+            gpu_kv_buffer_addrs = []
+            gpu_kv_buffer_sizes = []
+            for addr, size in zip(buffer_addrs, buffer_sizes):
+                # Layerwise padding is store metadata only. Never register a
+                # ghost (nullptr, zero-sized) slot as a real device buffer.
+                if int(addr) == 0 or int(size) == 0:
+                    continue
+                key = (int(addr), int(size))
+                if key in gpu_kv_buffer_set:
+                    continue
+                gpu_kv_buffer_set.add(key)
+                gpu_kv_buffer_addrs.append(key[0])
+                gpu_kv_buffer_sizes.append(key[1])
+            config["gpu_kv_buffer_addrs"] = gpu_kv_buffer_addrs
+            config["gpu_kv_buffer_sizes"] = gpu_kv_buffer_sizes
+            if cpu_affinity_cores:
+                config["cpu_affinity_cores"] = list(cpu_affinity_cores)
+        else:
+            config_base = self.block_size * self.element_size * self.head_size
+            config["block_size"] = (
+                config_base
+                * self.num_layers
+                * (1 if self.is_mla else self.num_head * 2)
+                * self.blocks_per_chunk
+            )
+        dp_rank = self._vllm_config.parallel_config.data_parallel_rank
+        config["posix_gc_enable"] = (
+            self._role != KVConnectorRole.WORKER and dp_rank == 0
+        )
+        logger.info(f"create {name} with config: {config}")
+        return UcmConnectorFactoryV1.create_connector(name, config, module_path)
+
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         self.kv_caches = kv_caches
         self.kv_cache_layout = self._create_kv_cache_layout(self.kv_caches)
-        self.store = self._create_store(self.kv_cache_layout)
         self.block_data_size = self.kv_cache_layout.block_size
         self.device = create_device()
+
+        enable_affinity = _use_ucm_connector_cpu_affinity()
+        worker_cores, store_cores = (
+            self.device.split_cores(self.local_rank)
+            if enable_affinity
+            else (None, None)
+        )
+
+        self.store = self._create_store(
+            kv_cache_layout=self.kv_cache_layout,
+            cpu_affinity_cores=store_cores,
+        )
+
+        if worker_cores:
+            try:
+                os.sched_setaffinity(0, worker_cores)
+                logger.info(f"[VLLM CPU Affinity] Worker bound to cores {worker_cores}")
+            except Exception as e:
+                logger.warning(f"Failed to bind worker: {e}")
 
     def get_num_new_matched_tokens(
         self, request: "Request", num_computed_tokens: int
@@ -842,12 +922,8 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             f"num_computed_tokens={num_computed_tokens} is not aligned to "
             f"lcm_block_size={lcm_block_size}"
         )
-        # ``hbm_hit_block_num`` and ``total_hit_block_num`` are tracked in
-        # LCM-block units in HLA mode; per-group block ids/counts are derived
-        # from these via each group's own block_size when needed.
         hbm_hit_block_num = num_computed_tokens // lcm_block_size
 
-        # Skip persistence if token count is below the threshold.
         if self.persist_token_threshold > request.num_tokens:
             logger.info_once(
                 f"Skip persistence: req {request.request_id}, "
@@ -856,18 +932,41 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             )
             return 0, False
 
-        # Hash once per group so dump path can later reuse the same block ids.
         group_ucm_block_ids = self.group_manager.compute_all_group_block_ids(
             request.all_token_ids
         )
-        # Legacy ``ucm_block_ids`` mirrors the first full-attn group (by
-        # group_id order) for callers that still consume the flat list.
         primary_full_attn = self.group_manager.full_attn_groups[0]
         primary_block_ids = group_ucm_block_ids[primary_full_attn.group_id]
 
+        # Pre-lookup reduction: leave at least recompute_tokens for vLLM to
+        # recompute, so the batch isn't dispatched as uniform decode into FULL
+        # cudagraph. For hybrid this also avoids looking up the last block(s)
+        # whose mamba state may not be valid in HBM at dump time.
+        recompute_tokens = self._get_full_hit_recompute_tokens()
+        max_hit_lcm_blocks = max(
+            0, (request.num_tokens - recompute_tokens) // lcm_block_size
+        )
+        total_lcm_blocks = request.num_tokens // lcm_block_size
+
+        if max_hit_lcm_blocks < total_lcm_blocks:
+            lookup_block_ids = []
+            for gid, group in enumerate(self.group_manager.groups_by_id):
+                ids = group_ucm_block_ids[gid]
+                group_max = max_hit_lcm_blocks * (lcm_block_size // group.block_size)
+                lookup_block_ids.append(ids[:group_max])
+        else:
+            lookup_block_ids = group_ucm_block_ids
+
         external_hit_tokens, external_hit_lcm_blocks, mamba_prefetch_hashes = (
             self.group_manager.lookup_external_hit_tokens(
-                num_computed_tokens, self.store, group_ucm_block_ids
+                num_computed_tokens,
+                lookup_block_ids,
+                lambda block_ids: self._rank_consistency.lookup_on_prefix(
+                    self.store, block_ids
+                ),
+                lambda block_ids: self._rank_consistency.lookup_all(
+                    self.store, block_ids
+                ),
             )
         )
 
@@ -886,31 +985,19 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
         total_hit_block_num = hbm_hit_block_num + external_hit_lcm_blocks
 
-        # GC heat update: a request with any cache hit is a hot request —
-        # update heat for ALL hit blocks (including HBM-hit prefix) to
-        # prevent GC eviction on any rank.
+        # GC heat update for all hit blocks across ranks.
         total_hit_tokens = total_hit_block_num * lcm_block_size
         hbm_hit_full_attn = num_computed_tokens // primary_full_attn.block_size
         total_hit_full_attn = total_hit_tokens // primary_full_attn.block_size
         all_hit_full_attn = primary_block_ids[0:total_hit_full_attn]
-        # Rank 0: HBM full-attn blocks were not checked by lookup_on_prefix;
-        # mamba positions below best_pos were not checked by the sequential
-        # scan.  Prefetch updates heat for existing entries (no-op if absent).
+        # Rank 0: prefetch updates heat for HBM-attn and mamba blocks not checked by lookup.
         hbm_full_attn = primary_block_ids[0:hbm_hit_full_attn]
         if hbm_full_attn:
             self.store.prefetch(hbm_full_attn)
         if mamba_prefetch_hashes:
             self.store.prefetch(mamba_prefetch_hashes)
-        # Other ranks: all hit full-attn blocks + mamba hashes, re-hashed.
         self._prefetch_other_rank_hashes(all_hit_full_attn + mamba_prefetch_hashes)
 
-        logger.info_once(
-            f"request_id: {request.request_id}, "
-            f"total_lcm_blocks: {request.num_tokens // lcm_block_size}, "
-            f"hit hbm: {hbm_hit_block_num}, "
-            f"hit external: {external_hit_lcm_blocks}, "
-            f"total_tokens: {len(request.all_token_ids)}"
-        )
         if len(primary_block_ids) > 0:
             ucmmetrics.update_stats(
                 {
@@ -920,12 +1007,18 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 },
             )
 
-        # When all the tokens are cached in ssd or hbm, we need to recompute
-        # the last token. This branch will be removed once vLLM scheduler
-        # provides a better solution in the future.
+        # No post-lookup workaround: pre-lookup truncation already ensures
+        # total_hit_tokens == external_hit_tokens, and the mamba state at
+        # total_hit_tokens is a position the store actually verified.
         num_total_hit_tokens = total_hit_block_num * lcm_block_size
-        if num_total_hit_tokens == request.num_tokens and external_hit_tokens > 0:
-            external_hit_tokens -= 1
+
+        logger.info_once(
+            f"request_id: {request.request_id}, "
+            f"total_lcm_blocks: {request.num_tokens // lcm_block_size}, "
+            f"hit hbm: {hbm_hit_block_num}, "
+            f"hit external: {total_hit_block_num - hbm_hit_block_num}, "
+            f"total_tokens: {len(request.all_token_ids)}"
+        )
 
         self.requests_meta[request.request_id] = HLARequestMeta(
             ucm_block_ids=primary_block_ids,
@@ -963,33 +1056,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         request_id: str = "",
         incoming_block_ids_are_full: bool = False,
     ) -> RequestDispatchMeta:
-        """Build a flat (ucm, vllm) block id pair list across all groups.
-
-        The output ``RequestDispatchMeta`` keeps the same shape as the
-        non-HLA path (``tuple[list[bytes], list[int]]``) so that
-        ``start_load_kv`` / ``wait_for_save`` and the underlying store APIs
-        do not need to know about groups. Per-group slices are concatenated
-        in ascending ``group_id`` order, with ``ucm_block_ids[k]`` and
-        ``vllm_block_ids[k]`` always referring to the same block.
-
-        Layout per group within ``[token_processed, token_processed + new_tokens)``:
-        - **load** (only when ``external_hit_blocks > 0`` and ``need_load``):
-          - full-attn group: load blocks covering tokens
-            ``[hbm_hit_tokens, total_hit_tokens)`` via ``extend_non_null``.
-          - mamba-align state group: load the single state block at
-            ``total_hit_tokens`` via ``append_mamba_align_state_block``.
-            The state represents the entire prefix and is reloaded each
-            resume because older blocks are evicted by the scheduler.
-        - **dump** of ``[token_processed, token_processed + new_tokens)``:
-          - full-attn group: every newly-completed full block (the
-            ``lookup_on_prefix`` chain needs every prefix block to be
-            present).
-          - mamba-align state group: the state block at each LCM boundary
-            reached in this range, via ``append_mamba_align_state_block``.
-            Lookup always resumes at LCM boundaries and stage-2 only
-            inspects state hashes at those points, so blocks between
-            boundaries would be dead weight in the store.
-        """
+        """Build a flat (ucm, vllm) block id pair list across all groups."""
         assert self.group_manager is not None
         groups_by_id = self.group_manager.groups_by_id
         num_groups = self.group_manager.num_groups
@@ -1008,12 +1075,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             elif not existing_vllm_block_ids:
                 req_meta.group_vllm_block_ids[gid] = incoming_vllm_block_ids
             elif incoming_vllm_block_ids:
-                # update_state_after_alloc() usually gives us the full block
-                # table before build_connector_meta(). If that happened, the
-                # scheduler's "new" block ids are already the suffix of the
-                # full table and must not be appended again. If the connector is
-                # used with an older scheduler path that did not call
-                # update_state_after_alloc(), append as a fallback.
+                # Avoid double-append when update_state_after_alloc already set full table.
                 suffix_len = len(incoming_vllm_block_ids)
                 if existing_vllm_block_ids[-suffix_len:] != incoming_vllm_block_ids:
                     existing_vllm_block_ids.extend(incoming_vllm_block_ids)
@@ -1034,10 +1096,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             state_idx = max((seq_len - 1) // group.block_size, 0)
             vllm_state_idx = state_idx
             if reason == "load":
-                # For resumed mamba-align requests, vLLM keeps the cached
-                # prefix state at ``state_idx`` and allocates a fresh running
-                # state block at the tail of the block table. UCM must read
-                # the prefix hash but write into that current running block.
+                # Write into the running state block, not the cached prefix block.
                 block_ids = req_meta.group_vllm_block_ids[gid]
                 for i in range(len(block_ids) - 1, -1, -1):
                     if block_ids[i] != 0:
@@ -1106,18 +1165,11 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             dump_tok_end = min(
                 req_meta.token_processed + new_tokens, req_meta.num_token_ids
             )
-            # LCM boundaries B with ``dump_tok_start < B <= dump_tok_end``.
-            # State groups only need the tail at these boundaries because lookup
-            # always resumes at LCM boundaries (see
-            # ``lookup_external_hit_tokens`` stage 2).
             first_lcm_b = (dump_tok_start // lcm_block_size + 1) * lcm_block_size
             last_lcm_b = (dump_tok_end // lcm_block_size) * lcm_block_size
 
             for gid, group in enumerate(groups_by_id):
                 if group.is_full_attention:
-                    # Dump every newly completed block: ``lookup_on_prefix``
-                    # walks the full prefix chain so any gap would truncate
-                    # future hits.
                     start_blk = dump_tok_start // group.block_size
                     end_blk = dump_tok_end // group.block_size
                     if start_blk >= end_blk:
@@ -1129,22 +1181,20 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                         req_meta.group_vllm_block_ids[gid][start_blk:end_blk],
                     )
                 else:
-                    # Mamba-align state: dump only the state block at each LCM
-                    # boundary reached in this range. Consecutive boundaries'
-                    # tails do not overlap and we can extend the lists without
-                    # dedup.
-                    if first_lcm_b > last_lcm_b:
+                    # Only dump when the chunk ends exactly at an LCM
+                    # boundary, so the state at last_lcm_b is the running
+                    # state. If dump_tok_end is not aligned, the HBM slot
+                    # at last_lcm_b may have been overwritten by the mamba
+                    # kernel's running state update for the partial block.
+                    if dump_tok_end != last_lcm_b or last_lcm_b < first_lcm_b:
                         continue
-                    b = first_lcm_b
-                    while b <= last_lcm_b:
-                        append_mamba_align_state_block(
-                            dump_ucm_block_ids,
-                            dump_vllm_block_ids,
-                            gid,
-                            b,
-                            "dump",
-                        )
-                        b += lcm_block_size
+                    append_mamba_align_state_block(
+                        dump_ucm_block_ids,
+                        dump_vllm_block_ids,
+                        gid,
+                        last_lcm_b,
+                        "dump",
+                    )
             req_meta.token_processed += new_tokens
 
         return RequestDispatchMeta(
@@ -1237,6 +1287,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
         total_ucm_block_ids: list[bytes] = []
         total_vllm_block_ids: list[int] = []
+        block_ids_by_request: dict[str, set[bytes]] = {}
         num_saved_block = 0
         num_saved_request = 0
         for request_id, request in metadata.request_meta.items():
@@ -1252,6 +1303,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 )
                 if len(ucm_block_ids) == 0:
                     continue
+            block_ids_by_request[request_id] = set(ucm_block_ids)
             num_saved_block += len(ucm_block_ids)
             num_saved_request += 1
             ucm_block_ids = self._rank_scoped_ucm_block_ids(ucm_block_ids)
@@ -1268,25 +1320,35 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             shard_indexs = [0] * len(total_ucm_block_ids)
             event_handle = self._get_dump_event_handle()
             save_start_time = time.perf_counter() * 1000
-            task = self.store.dump_data(
-                total_ucm_block_ids, shard_indexs, total_ptrs, event_handle
+            task = self._rank_consistency.submit_dump(
+                self.store,
+                block_ids_by_request,
+                total_ucm_block_ids,
+                shard_indexs,
+                total_ptrs,
+                event_handle,
             )
         except Exception as e:
             logger.error(f"dump kv cache failed. {type(e).__name__}: {e}")
             if self.enable_event_sync and event_handle and self.device is not None:
                 self.device.destroy_event_handle(event_handle)
+            self._rank_consistency.finish_dump(set(block_ids_by_request))
             return
 
         try:
-            self.store.wait(task)
+            self._rank_consistency.wait_dump(task)
             save_end_time = time.perf_counter() * 1000
         except Exception as e:
-            logger.error(f"wait for dump kv cache failed. {type(e).__name__}: {e}")
+            logger.error_limit(
+                f"wait for dump kv cache failed. {type(e).__name__}: {e}"
+            )
+            self._rank_consistency.finish_dump(set(block_ids_by_request))
             return
         finally:
             if self.enable_event_sync and event_handle and self.device is not None:
                 self.device.destroy_event_handle(event_handle)
 
+        self._rank_consistency.finish_dump(set(block_ids_by_request))
         save_bytes = num_saved_block * self.block_data_size
         save_speed = save_bytes / max(save_end_time - save_start_time, 1) / 1024 / 1024
         ucmmetrics.update_stats(
@@ -1325,14 +1387,14 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self.launch_config = copy.deepcopy(self.launch_config)
         self.launch_config["use_layerwise"] = True
         self.use_layerwise = True
-        self.load_tasks: dict[int, list[tuple[Task, tuple[str, ...]]]] = defaultdict(
-            list
-        )
+        self.load_tasks: dict[int, dict[str, Task]] = defaultdict(dict)
         self.dump_tasks: dict[int, list[PendingDumpTask]] = defaultdict(list)
-        self.request_data: list[tuple[str, list[bytes], list[int]]] = []
+        self.request_data: list[tuple[str, list[bytes], list[bytes], list[int]]] = []
         self._failure_req_ids: set[str] = set()
         self._submitted_load_rows: set[int] = set()
-        self._dump_transfer_data: tuple[list[bytes], list[int], set[str]] | None = None
+        self._dump_transfer_data: (
+            tuple[list[bytes], list[int], set[str], dict[str, set[bytes]]] | None
+        ) = None
         prefetch_rows_config = self.launch_config.get(
             "hybrid_layerwise_prefetch_rows", 2
         )
@@ -1348,10 +1410,31 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self.need_load = False
         self._layerwise_batch_start: Optional[float] = None
         self._layerwise_prev_wait_end: Optional[float] = None
+        # MTP save_kv_layer is called N times per decode step; defer & keep last.
+        self._deferred_mtp_row_dumps: dict[
+            int, tuple[list[bytes], list[int], set[str]]
+        ] = {}
+        self._is_mtp = False
+        self._init_mtp_layerwise_dump_state()
         logger.info(
             "Init UCMHybridLinearAttentionLayerWiseConnector "
             f"with prefetch_rows={self._load_prefetch_rows}."
         )
+
+    def _init_mtp_layerwise_dump_state(self) -> None:
+        """Detect whether MTP is enabled."""
+        speculative_config = getattr(self._vllm_config, "speculative_config", None)
+        if speculative_config is None:
+            return
+
+        mtp_method = getattr(speculative_config, "method", None)
+        self._is_mtp = mtp_method == "mtp" or (
+            isinstance(mtp_method, str) and mtp_method.endswith("_mtp")
+        )
+
+    def _is_mtp_layer(self, layer_name: str) -> bool:
+        """Check whether a layer belongs to the MTP draft model."""
+        return self._is_mtp and "mtp" in layer_name
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         if has_ucm_sparse() and os.getenv("VLLM_HASH_ATTENTION") == "1":
@@ -1395,13 +1478,27 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
 
         self.device = create_device()
 
+        enable_affinity = _use_ucm_connector_cpu_affinity()
+        worker_cores, store_cores = (
+            self.device.split_cores(self.local_rank)
+            if enable_affinity
+            else (None, None)
+        )
+
         self.store = self._create_store(
-            self.kv_cache_layout,
+            kv_cache_layout=self.kv_cache_layout,
+            cpu_affinity_cores=store_cores,
             tensor_size_list_override=row_tensor_size_list,
             shard_size_override=row_shard_size,
             block_size_override=row_shard_size * (max(self.row_ids) + 1),
-            compact_cache_buffer_capacity=True,
         )
+
+        if worker_cores:
+            try:
+                os.sched_setaffinity(0, worker_cores)
+                logger.info(f"[VLLM CPU Affinity] Worker bound to cores {worker_cores}")
+            except Exception as e:
+                logger.warning(f"Failed to bind worker: {e}")
 
         row_to_layers: dict[int, list[str]] = defaultdict(list)
         for layer_name, row_id in self.layer_name_to_row.items():
@@ -1424,45 +1521,46 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
     def _mark_load_failed(
         self,
         metadata: "UCMConnectorMetadata",
-        request_ids: tuple[str, ...],
+        request_id: str,
     ) -> None:
-        for request_id in request_ids:
-            request_meta = metadata.request_meta.get(request_id)
-            if request_meta is not None:
-                self._invalid_block_ids.update(request_meta.load_block_ids[1])
-            self._failure_req_ids.add(request_id)
-            self._connector_worker_meta.mark_failed(request_id)
+        request_meta = metadata.request_meta.get(request_id)
+        if request_meta is not None:
+            self._invalid_block_ids.update(request_meta.load_block_ids[1])
+        self._failure_req_ids.add(request_id)
+        self._connector_worker_meta.mark_failed(request_id)
 
     def _submit_request_load_tasks_for_row(
         self,
         row_id: int,
         metadata: "UCMConnectorMetadata",
     ) -> None:
-        total_ucm_block_ids: list[bytes] = []
-        all_vllm_block_ids: list[int] = []
-        request_ids: list[str] = []
-        for request_id, ucm_block_ids, vllm_block_ids in self.request_data:
+        for (
+            request_id,
+            ucm_block_ids,
+            store_block_ids,
+            vllm_block_ids,
+        ) in self.request_data:
             if request_id in self._failure_req_ids:
                 continue
-            total_ucm_block_ids.extend(ucm_block_ids)
-            all_vllm_block_ids.extend(vllm_block_ids)
-            request_ids.append(request_id)
-        if not total_ucm_block_ids:
-            self._submitted_load_rows.add(row_id)
-            return
-        try:
-            row_ptrs = self.kv_cache_layout.extract_block_addrs_for_row(
-                all_vllm_block_ids, row_id
-            )
-            shard_indexs = [row_id] * len(total_ucm_block_ids)
-            task = self.store.load_data(total_ucm_block_ids, shard_indexs, row_ptrs)
-            self.load_tasks[row_id].append((task, tuple(request_ids)))
-        except Exception as e:
-            logger.error(
-                f"submit hybrid layerwise row {row_id} load task error. "
-                f"{type(e).__name__}: {e}"
-            )
-            self._mark_load_failed(metadata, tuple(request_ids))
+            try:
+                row_ptrs = self.kv_cache_layout.extract_block_addrs_for_row(
+                    vllm_block_ids, row_id
+                )
+                shard_indexs = [row_id] * len(store_block_ids)
+                task = self._rank_consistency.submit_load(
+                    self.store,
+                    {request_id: ucm_block_ids},
+                    store_block_ids,
+                    shard_indexs,
+                    row_ptrs,
+                )
+                self.load_tasks[row_id][request_id] = task
+            except Exception as e:
+                logger.error(
+                    f"request {request_id} submit load task for row {row_id} "
+                    f"error. {type(e).__name__}: {e}"
+                )
+                self._mark_load_failed(metadata, request_id)
         self._submitted_load_rows.add(row_id)
 
     def _submit_request_load_tasks_for_row_once(
@@ -1474,14 +1572,19 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             return
         self._submit_request_load_tasks_for_row(row_id, metadata)
 
-    def _submit_prefetch_rows(
-        self,
-        start_idx: int,
-        metadata: "UCMConnectorMetadata",
-    ) -> None:
-        end_idx = min(start_idx + self._load_prefetch_rows, len(self.row_ids))
-        for idx in range(start_idx, end_idx):
-            self._submit_request_load_tasks_for_row_once(self.row_ids[idx], metadata)
+    def _wait_row_load(self, row_id: int, metadata: "UCMConnectorMetadata") -> int:
+        """Pop and wait for a row's per-request load tasks, marking failures."""
+        row_tasks = self.load_tasks.pop(row_id, {})
+        for request_id, task in row_tasks.items():
+            try:
+                self._rank_consistency.wait_load(task)
+            except Exception as e:
+                logger.error(
+                    f"request {request_id} wait row {row_id} "
+                    f"load failed. {type(e).__name__}: {e}"
+                )
+                self._mark_load_failed(metadata, request_id)
+        return len(row_tasks)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         self._layerwise_batch_start = time.perf_counter()
@@ -1493,6 +1596,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self._failure_req_ids.clear()
         self._submitted_load_rows.clear()
         self._dump_transfer_data = None
+        self._deferred_mtp_row_dumps.clear()
         self.need_load = False
 
         for request_id, request in metadata.request_meta.items():
@@ -1509,11 +1613,18 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                 if len(ucm_block_ids) == 0:
                     continue
             self.need_load = True
-            ucm_block_ids = self._rank_scoped_ucm_block_ids(ucm_block_ids)
-            self.request_data.append((request_id, ucm_block_ids, vllm_block_ids))
+            store_block_ids = self._rank_scoped_ucm_block_ids(ucm_block_ids)
+            self.request_data.append(
+                (request_id, ucm_block_ids, store_block_ids, vllm_block_ids)
+            )
 
         if self.need_load and self.row_ids:
-            self._submit_prefetch_rows(0, metadata)
+            # vLLM only calls wait_for_layer_load at full_attn (last layer of
+            # each row), so row 0 must be loaded here before linear_attn begins.
+            num_submit = min(self._load_prefetch_rows + 1, len(self.row_ids))
+            for idx in range(num_submit):
+                self._submit_request_load_tasks_for_row_once(idx, metadata)
+            self._wait_row_load(0, metadata)
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         if not self._connector_metadata or not self.need_load:
@@ -1524,34 +1635,22 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         if row_id is None:
             return
 
-        self._submit_request_load_tasks_for_row_once(row_id, metadata)
+        # Wait for NEXT row so its linear_attn layers have KV loaded.
+        next_row_id = row_id + 1
+        if next_row_id >= len(self.row_ids):
+            return
+
+        self._submit_request_load_tasks_for_row_once(next_row_id, metadata)
 
         wait_start = time.perf_counter()
-
-        row_tasks = self.load_tasks.pop(row_id, [])
-        n_tasks = len(row_tasks)
-        for task, request_ids in row_tasks:
-            try:
-                self.store.wait(task)
-            except Exception as e:
-                logger.error(
-                    f"requests {list(request_ids)} wait {layer_name} load failed. "
-                    f"{type(e).__name__}: {e}"
-                )
-                self._mark_load_failed(metadata, request_ids)
-
+        n_tasks = self._wait_row_load(next_row_id, metadata)
         wait_end = time.perf_counter()
 
-        try:
-            current_row_idx = self.row_ids.index(row_id)
-        except ValueError:
-            current_row_idx = -1
-        next_row_idx = current_row_idx + self._load_prefetch_rows
-        has_next = 0 <= next_row_idx < len(self.row_ids)
-        if has_next:
-            self._submit_request_load_tasks_for_row_once(
-                self.row_ids[next_row_idx], metadata
-            )
+        # Prefetch rows ahead.
+        prefetch_start = next_row_id + 1
+        prefetch_end = min(prefetch_start + self._load_prefetch_rows, len(self.row_ids))
+        for idx in range(prefetch_start, prefetch_end):
+            self._submit_request_load_tasks_for_row_once(idx, metadata)
 
         blocking_ms = (wait_end - wait_start) * 1000
         stats: dict[str, float] = {
@@ -1562,7 +1661,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             stats["layerwise_inter_wait_interval_ms"] = (
                 wait_start - self._layerwise_prev_wait_end
             ) * 1000
-        if has_next:
+        if prefetch_start < prefetch_end:
             submit_end = time.perf_counter()
             stats["layerwise_next_layer_submit_ms"] = (submit_end - wait_end) * 1000
         ucmmetrics.update_stats(stats)
@@ -1590,14 +1689,27 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         assert isinstance(metadata, UCMConnectorMetadata)
         if self._dump_transfer_data is None:
             self._dump_transfer_data = self._build_dump_transfer_data(metadata, row_id)
-        total_ucm_block_ids, total_vllm_block_ids, dump_request_ids = (
-            self._dump_transfer_data
-        )
+        (
+            total_ucm_block_ids,
+            total_vllm_block_ids,
+            dump_request_ids,
+            block_ids_by_request,
+        ) = self._dump_transfer_data
 
         if not total_ucm_block_ids:
             return
 
         self.is_save = True
+
+        if self._is_mtp_layer(layer_name):
+            # Defer: last snapshot wins (MTP revisited N times per decode step).
+            self._deferred_mtp_row_dumps[row_id] = (
+                list(total_ucm_block_ids),
+                list(total_vllm_block_ids),
+                set(dump_request_ids),
+            )
+            return
+
         row_ptrs = self.kv_cache_layout.extract_block_addrs_for_row(
             total_vllm_block_ids, row_id
         )
@@ -1605,8 +1717,13 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         try:
             row_ptrs = np.ascontiguousarray(row_ptrs)
             event_handle = self._get_dump_event_handle()
-            task = self.store.dump_data(
-                total_ucm_block_ids, shard_indexs, row_ptrs, event_handle
+            task = self._rank_consistency.submit_dump(
+                self.store,
+                block_ids_by_request,
+                total_ucm_block_ids,
+                shard_indexs,
+                row_ptrs,
+                event_handle,
             )
             self.dump_tasks[row_id].append(
                 PendingDumpTask(
@@ -1625,10 +1742,11 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self,
         metadata: "UCMConnectorMetadata",
         row_id: int,
-    ) -> tuple[list[bytes], list[int], set[str]]:
+    ) -> tuple[list[bytes], list[int], set[str], dict[str, set[bytes]]]:
         total_ucm_block_ids: list[bytes] = []
         total_vllm_block_ids: list[int] = []
         dump_request_ids: set[str] = set()
+        block_ids_by_request: dict[str, set[bytes]] = {}
         for request_id, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
                 continue
@@ -1643,10 +1761,55 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                 )
                 if len(ucm_block_ids) == 0:
                     continue
+            block_ids_by_request[request_id] = set(ucm_block_ids)
             ucm_block_ids = self._rank_scoped_ucm_block_ids(ucm_block_ids)
             total_ucm_block_ids.extend(ucm_block_ids)
             total_vllm_block_ids.extend(vllm_block_ids)
-        return total_ucm_block_ids, total_vllm_block_ids, dump_request_ids
+        return (
+            total_ucm_block_ids,
+            total_vllm_block_ids,
+            dump_request_ids,
+            block_ids_by_request,
+        )
+
+    def _flush_deferred_mtp_dumps(self) -> None:
+        """Submit the last saved snapshot for each deferred MTP row."""
+        if not self._deferred_mtp_row_dumps:
+            return
+
+        deferred = self._deferred_mtp_row_dumps
+        self._deferred_mtp_row_dumps = {}
+        block_ids_by_request = (
+            self._dump_transfer_data[3] if self._dump_transfer_data is not None else {}
+        )
+        for row_id, (ucm_ids, vllm_ids, req_ids) in deferred.items():
+            try:
+                row_ptrs = self.kv_cache_layout.extract_block_addrs_for_row(
+                    vllm_ids, row_id
+                )
+                row_ptrs = np.ascontiguousarray(row_ptrs)
+                shard_indexs = [row_id] * len(ucm_ids)
+                event_handle = self._get_dump_event_handle()
+                task = self._rank_consistency.submit_dump(
+                    self.store,
+                    block_ids_by_request,
+                    ucm_ids,
+                    shard_indexs,
+                    row_ptrs,
+                    event_handle,
+                )
+                self.dump_tasks[row_id].append(
+                    PendingDumpTask(
+                        task=task,
+                        request_ids=set(req_ids),
+                        event_handle=event_handle,
+                    )
+                )
+            except Exception as e:
+                logger.error(
+                    f"submit deferred MTP row {row_id} dump task failed. "
+                    f"{type(e).__name__}: {e}"
+                )
 
     def wait_for_save(self) -> None:
         if not self.is_save:
@@ -1657,15 +1820,23 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                 self._layerwise_batch_start = None
             return
 
+        dump_request_ids = (
+            self._dump_transfer_data[2]
+            if self._dump_transfer_data is not None
+            else set()
+        )
+        self._flush_deferred_mtp_dumps()
+
         total_start = time.perf_counter()
         for row_id in self.row_ids:
             for pending_dump_task in self.dump_tasks.pop(row_id, []):
                 try:
-                    self.store.wait(pending_dump_task.task)
+                    self._rank_consistency.wait_dump(pending_dump_task.task)
                 except Exception as e:
-                    logger.error(
+                    logger.error_limit(
                         f"wait for dump kv cache failed. " f"{type(e).__name__}: {e}"
                     )
+        self._rank_consistency.finish_dump(dump_request_ids)
         total_end = time.perf_counter()
         stats: dict[str, float] = {
             "layerwise_save_tail_total_ms": (total_end - total_start) * 1000,

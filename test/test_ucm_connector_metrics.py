@@ -669,10 +669,28 @@ def test_scheduler_side_metrics_are_configured_for_vllm_connector():
         "total_prefix_query_tokens_total",
         "gpu_hbm_hit_tokens_total",
         "ucm_hit_tokens_total",
+        "total_prefix_query_blocks_total",
+        "gpu_hbm_hit_blocks_total",
         "connector_lookup_errors_total",
         "fawa_scheduler_lookup_external_hit_blocks_ms",
         "fawa_scheduler_get_num_new_matched_tokens_ms",
     } <= definitions
+
+
+def test_store_health_and_mooncake_lookup_metrics_are_configured():
+    config = load_launch_metrics_config({})
+    definitions = {
+        definition.name: definition.metric_type
+        for definition in get_metric_definitions(config)
+    }
+
+    assert definitions["mooncake_lookup_hit_blocks_total"] == "counter"
+    assert definitions["posix_healthy_count_total"] == "counter"
+    assert definitions["posix_unhealthy_count_total"] == "counter"
+    assert definitions["mooncake_healthy_count_total"] == "counter"
+    assert definitions["mooncake_unhealthy_count_total"] == "counter"
+    assert definitions["posix_store_health"] == "gauge"
+    assert definitions["mooncake_store_health"] == "gauge"
 
 
 def test_dispatcher_fans_out_single_core_drain_to_independent_consumers():
@@ -1079,7 +1097,8 @@ def test_ucm_connector_records_prefix_cache_token_counters():
     _reset_fakes()
     connector = object.__new__(UCMConnector)
     connector.connector = SimpleNamespace(
-        get_num_new_matched_tokens=lambda request, num_computed_tokens: (384, False)
+        get_num_new_matched_tokens=lambda request, num_computed_tokens: (384, False),
+        get_block_size=lambda: 128,
     )
     request = SimpleNamespace(num_tokens=2048)
 
@@ -1090,8 +1109,20 @@ def test_ucm_connector_records_prefix_cache_token_counters():
             "total_prefix_query_tokens_total": 2048,
             "gpu_hbm_hit_tokens_total": 512,
             "ucm_hit_tokens_total": 384,
+            "total_prefix_query_blocks_total": 16,
+            "gpu_hbm_hit_blocks_total": 4,
         }
     ]
+
+
+def test_mooncake_lookup_records_direct_hits_before_backend_descent():
+    source = (
+        REPO_ROOT / "ucm" / "store" / "mooncakestore" / "cc" / "mooncake_store.cc"
+    ).read_text(encoding="utf-8")
+
+    metric = 'NAME_TO_METRIC_ID("mooncake_lookup_hit_blocks_total")'
+    assert metric in source
+    assert source.index(metric) < source.index("config_.storeBackend->LookupOnPrefix")
 
 
 def test_vllm_ascend_scheduler_patch_collects_scheduler_only_stats():
@@ -1632,6 +1663,10 @@ def test_grafana_dashboards_use_isolated_vllm_ucm_identity():
             "vLLM (UCM Metrics)",
             "ucm-vllm-overview",
         ),
+        "grafana_ucm_overview.json": (
+            "UCM-Overview",
+            "ucm-vllm-ucm-overview",
+        ),
     }
     old_uids = {
         "ucm-connector-overview",
@@ -1658,6 +1693,102 @@ def test_grafana_dashboards_use_isolated_vllm_ucm_identity():
             if link.get("type") == "dashboards":
                 assert link["title"] == "Other UCM vLLM metrics dashboards"
                 assert link["tags"] == [GRAFANA_VLLM_UCM_TAG]
+
+
+def test_ucm_overview_keeps_vllm_summary_and_adds_block_hit_and_health_views():
+    metrics_dir = REPO_ROOT / "examples" / "metrics"
+    source = json.loads((metrics_dir / "grafana_vllm.json").read_text(encoding="utf-8"))
+    dashboard = json.loads(
+        (metrics_dir / "grafana_ucm_overview.json").read_text(encoding="utf-8")
+    )
+    source_titles = [panel["title"] for panel in source["panels"]]
+    panels = {panel["title"]: panel for panel in dashboard["panels"]}
+
+    summary_end = source_titles.index("Prefix Cache Query Breakdown") + 1
+    assert set(source_titles[:summary_end]) <= set(panels)
+    assert set(source_titles[summary_end:]).isdisjoint(panels)
+    assert panels["Total Input Tokens"]["gridPos"]["y"] == 0
+    assert panels["Total Output Tokens"]["gridPos"]["y"] == 0
+
+    hit_rate = panels["KV Cache Block Hit Rate by Store"]
+    assert hit_rate["type"] == "timeseries"
+    assert hit_rate["fieldConfig"]["defaults"]["unit"] == "percentunit"
+    assert hit_rate["fieldConfig"]["defaults"]["min"] == 0
+    assert hit_rate["fieldConfig"]["defaults"]["max"] == 1
+    assert hit_rate["fieldConfig"]["defaults"]["custom"]["drawStyle"] == "bars"
+    assert hit_rate["fieldConfig"]["defaults"]["custom"]["stacking"] == {
+        "group": "A",
+        "mode": "normal",
+    }
+    assert hit_rate["maxDataPoints"] == 60
+    assert hit_rate["options"]["tooltip"]["mode"] == "multi"
+    hit_targets = {
+        target["legendFormat"]: target["expr"] for target in hit_rate["targets"]
+    }
+    assert set(hit_targets) == {"HBM", "Cache", "Mooncake", "Posix"}
+    expected_hits = {
+        "HBM": "ucm:gpu_hbm_hit_blocks_total",
+        "Cache": "ucm:cache_lookup_hit_blocks_total",
+        "Mooncake": "ucm:mooncake_lookup_hit_blocks_total",
+        "Posix": "ucm:posix_lookup_hit_blocks_total",
+    }
+    for legend, metric in expected_hits.items():
+        assert metric in hit_targets[legend]
+        assert "ucm:total_prefix_query_blocks_total" in hit_targets[legend]
+        assert "or vector(0)" not in hit_targets[legend]
+
+    pie = panels["Store Health"]
+    assert pie["type"] == "piechart"
+    assert (
+        "(1（Scheduler 个数）+ tp_size（Worker 个数）) × dp_size" in pie["description"]
+    )
+    assert {target["legendFormat"] for target in pie["targets"]} == {
+        "Healthy",
+        "Unhealthy",
+    }
+    for target in pie["targets"]:
+        assert "and on(job, instance)" not in target["expr"]
+        assert "up{" not in target["expr"]
+        assert "or vector(0)" in target["expr"]
+    details = panels["Store Health Details"]
+    assert details["type"] == "table"
+    assert (
+        "(1（Scheduler 个数）+ tp_size（Worker 个数）) × dp_size"
+        in details["description"]
+    )
+    detail_expr = "\n".join(target["expr"] for target in details["targets"])
+    assert '"Posix"' in detail_expr
+    assert '"Mooncake"' in detail_expr
+    assert '"Total"' not in detail_expr
+    assert "and on(job, instance)" not in detail_expr
+    assert "up{" not in detail_expr
+    assert "or vector(0)" not in detail_expr
+    assert any(item["id"] == "groupingToMatrix" for item in details["transformations"])
+
+    trend = panels["Healthy and Unhealthy Store Count"]
+    assert {target["legendFormat"] for target in trend["targets"]} == {
+        "Healthy",
+        "Unhealthy",
+    }
+    for target in trend["targets"]:
+        assert "and on(job, instance)" not in target["expr"]
+        assert "up{" not in target["expr"]
+        assert "or vector(0)" not in target["expr"]
+    assert trend["fieldConfig"]["defaults"]["custom"]["spanNulls"] is True
+    details_row = panels["Store Probe Details"]
+    assert details_row["type"] == "row"
+    assert details_row["collapsed"] is True
+    nested = {panel["title"]: panel for panel in details_row["panels"]}
+    assert set(nested) == {"Posix Health Probes", "Mooncake Health Probes"}
+    assert all(len(panel["targets"]) == 2 for panel in nested.values())
+    for panel in nested.values():
+        defaults = panel["fieldConfig"]["defaults"]
+        assert defaults["custom"]["spanNulls"] is True
+        assert defaults["unit"] == "short"
+        for target in panel["targets"]:
+            assert "sum(increase(" in target["expr"]
+            assert "[$__rate_interval]" in target["expr"]
+            assert "sum(rate(" not in target["expr"]
 
 
 def test_ucm_dashboards_use_engine_and_worker_rank_filters():
@@ -1739,9 +1870,12 @@ def test_ucm_dashboards_use_engine_and_worker_rank_filters():
                 assert "sum by (model_name)" in expr
 
 
-def test_mooncake_dashboard_covers_configured_mooncake_metrics():
+def test_mooncake_dashboards_cover_configured_mooncake_metrics():
     dashboard_path = REPO_ROOT / "examples" / "metrics" / "grafana_mooncake.json"
     dashboard_text = dashboard_path.read_text(encoding="utf-8")
+    overview_text = (
+        REPO_ROOT / "examples" / "metrics" / "grafana_ucm_overview.json"
+    ).read_text(encoding="utf-8")
     dashboard = json.loads(dashboard_text)
     panels = {panel["title"]: panel for panel in dashboard["panels"]}
 
@@ -1768,7 +1902,9 @@ def test_mooncake_dashboard_covers_configured_mooncake_metrics():
     }
     referenced = {
         re.sub(r"_(bucket|sum|count)$", "", metric)
-        for metric in re.findall(r"ucm:(mooncake_[A-Za-z0-9_]+)", dashboard_text)
+        for metric in re.findall(
+            r"ucm:(mooncake_[A-Za-z0-9_]+)", dashboard_text + overview_text
+        )
     }
 
     assert configured_mooncake <= referenced
@@ -2020,6 +2156,17 @@ def test_mooncake_store_links_metrics_target_for_metrics_api_includes():
     assert '#include "metrics_api.h"' in mooncake_sources
     assert re.search(
         r"target_link_libraries\(\s*mooncakestore\s+PUBLIC[\s\S]*?\bmetrics\b",
+        cmake_text,
+    )
+
+
+def test_health_breaker_store_links_metrics_target_for_metrics_api_includes():
+    cmake_text = (
+        REPO_ROOT / "ucm" / "store" / "pipeline" / "CMakeLists.txt"
+    ).read_text(encoding="utf-8")
+
+    assert re.search(
+        r"target_link_libraries\(\s*healthbreakerstore\s+PUBLIC[\s\S]*?\bmetrics\b",
         cmake_text,
     )
 

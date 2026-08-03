@@ -57,6 +57,7 @@ getting-started/troubleshooting
 :caption: User Guide
 :maxdepth: 1
 user-guide/support-matrix/support_matrix
+user-guide/best-practices/index
 user-guide/prefix-cache/index
 user-guide/sparse-attention/index
 user-guide/pd-disaggregation/index

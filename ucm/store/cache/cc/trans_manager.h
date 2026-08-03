@@ -49,6 +49,7 @@ public:
     }
 
 protected:
+    Status FailureStatus(const TaskPtr& task) const override { return task->FailureStatus(); }
     void Dispatch(TaskPtr t, WaiterPtr w) override
     {
         const auto id = t->id;

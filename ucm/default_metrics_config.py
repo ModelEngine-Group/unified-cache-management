@@ -113,6 +113,14 @@ _COUNTER_METRICS = [
         "Blocks found by Posix lookup",
     ),
     (
+        "posix_healthy_count_total",
+        "Number of successful Posix health probes",
+    ),
+    (
+        "posix_unhealthy_count_total",
+        "Number of failed Posix health probes",
+    ),
+    (
         "posix_aio_timeout_total",
         "Number of Posix AIO task or submit timeouts",
     ),
@@ -135,6 +143,18 @@ _COUNTER_METRICS = [
     (
         "mooncake_dump_blocks_total",
         "Total blocks dumped through the Mooncake stage",
+    ),
+    (
+        "mooncake_lookup_hit_blocks_total",
+        "Blocks found directly by Mooncake lookup before backend descent",
+    ),
+    (
+        "mooncake_healthy_count_total",
+        "Number of successful Mooncake health probes",
+    ),
+    (
+        "mooncake_unhealthy_count_total",
+        "Number of failed Mooncake health probes",
     ),
     (
         "mooncake_load_bytes_total",
@@ -249,6 +269,14 @@ _COUNTER_METRICS = [
         "Prefix cache tokens hit by the UCM connector",
     ),
     (
+        "total_prefix_query_blocks_total",
+        "Total full prefix blocks queried through the UCM connector",
+    ),
+    (
+        "gpu_hbm_hit_blocks_total",
+        "Full prefix blocks already hit in GPU or HBM before UCM lookup",
+    ),
+    (
         "connector_lookup_errors_total",
         "Number of connector lookup errors treated as cache misses",
     ),
@@ -281,6 +309,16 @@ _GAUGE_METRICS = [
     (
         "cache_lookup_hit_rate",
         "Instantaneous Cache stage hit rate from the most recent lookup call",
+        {"multiprocess_mode": 'livemostrecent'},
+    ),
+    (
+        "posix_store_health",
+        "Effective Posix health breaker state, where 1 is enabled and 0 is fused",
+        {"multiprocess_mode": 'livemostrecent'},
+    ),
+    (
+        "mooncake_store_health",
+        "Effective Mooncake health breaker state, where 1 is enabled and 0 is fused",
         {"multiprocess_mode": 'livemostrecent'},
     ),
 ]
