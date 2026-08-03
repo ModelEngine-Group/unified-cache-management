@@ -38,6 +38,7 @@
 #include "kv_protocol.h"
 #include "pool/buffer_pool.h"
 #include "status/status.h"
+#include "trans/device.h"
 
 namespace transport {
 class TcpMessageChannel;
@@ -67,7 +68,7 @@ private:
         Stopped,
     };
 
-    Status InitializeAclRuntime();
+    Status InitializeDeviceRuntime();
     Status InitMemoryPool();
     Status InitFlagBufferPool();
     Status InitMetadata();
@@ -120,8 +121,9 @@ private:
     std::unique_ptr<DramPoolRuntime> runtime_;
     std::unique_ptr<TaskWorker> taskWorker_;
     std::unique_ptr<CompletionPoller> completionPoller_;
-    std::optional<std::int32_t> aclDeviceId_;
-    bool aclRuntimeOwned_{false};
+    Trans::Device device_;
+    std::optional<std::int32_t> deviceId_;
+    bool deviceRuntimeOwned_{false};
 
     ServerState state_{ServerState::New};
     std::mutex requestReceiverWaitMutex_;

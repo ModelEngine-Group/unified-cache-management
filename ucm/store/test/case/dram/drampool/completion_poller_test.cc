@@ -21,7 +21,6 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include <acl/acl.h>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -39,6 +38,7 @@
 #include "dram/dram_test_common.h"
 #include "pool/buffer_pool.h"
 #include "status/status.h"
+#include "trans/device.h"
 
 // Match the white-box style used by the other DramPool unit tests. This keeps test access in
 // this translation unit and does not add test-only seams to production code.
@@ -73,15 +73,23 @@ class CompletionPollerTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite()
     {
-        ASSERT_EQ(aclInit(nullptr), ACL_SUCCESS);
-        ASSERT_EQ(aclrtSetDevice(0), ACL_SUCCESS);
+        auto status = device_.Init();
+        deviceRuntimeOwned_ = status.Success();
+        ASSERT_TRUE(deviceRuntimeOwned_ || status == Status::DuplicateKey()) << status.ToString();
+        status = device_.Setup(0);
+        ASSERT_TRUE(status.Success()) << status.ToString();
     }
 
     static void TearDownTestSuite()
     {
-        EXPECT_EQ(aclrtResetDevice(0), ACL_SUCCESS);
-        EXPECT_EQ(aclFinalize(), ACL_SUCCESS);
+        if (!deviceRuntimeOwned_) { return; }
+        EXPECT_TRUE(device_.Reset(0).Success());
+        EXPECT_TRUE(device_.Finalize().Success());
+        deviceRuntimeOwned_ = false;
     }
+
+    inline static UC::Trans::Device device_;
+    inline static bool deviceRuntimeOwned_{false};
 
     void SetUp() override
     {
@@ -211,7 +219,6 @@ TEST_F(CompletionPollerTest, PollPendingRemovesEveryTerminalFailureAndInvalidSta
     poller_->pending_.push_back(std::move(responseRecord));
     poller_->pending_.push_back(std::move(invalidRecord));
     poller_->PollPendingCompletions();
-
     EXPECT_TRUE(poller_->pending_.empty());
     BufferPool::Slot reused;
     ASSERT_TRUE(flagBufferPool_.Allocate(reused).Success());

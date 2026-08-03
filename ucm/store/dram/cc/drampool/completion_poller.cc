@@ -152,13 +152,21 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
 {
     const auto packedSize =
         runtime_.protocol.GetPackedResponseSize(record.opcode, record.results.size());
-    const auto len = static_cast<std::uint32_t>(packedSize);
     auto allocateStatus = runtime_.flagBufferPool.Allocate(record.local_resp_slot);
     if (allocateStatus.Failure()) {
-        UC_WARN("CompletionPoller flag buffer pool full, opcode={}, error={}, retrying next round",
+        if (allocateStatus.Underlying() == Status::NoSpace().Underlying()) {
+            UC_WARN(
+                "CompletionPoller flag buffer pool full, opcode={}, error={}, retrying next round",
                 static_cast<int>(record.opcode), allocateStatus);
-        return false;
+            return false;
+        }
+
+        UC_ERROR("CompletionPoller flag buffer allocation failed, opcode={}, error={}",
+                 static_cast<int>(record.opcode), allocateStatus);
+        return true;
     }
+
+    const auto len = static_cast<std::uint32_t>(packedSize);
 
     const auto protocolStatus = runtime_.protocol.PackResponse(
         record.local_resp_slot.local_addr, record.opcode, KvResponse{record.results});

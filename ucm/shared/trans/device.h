@@ -31,13 +31,16 @@ namespace UC::Trans {
 
 class Device {
 public:
+    Status Init();
     Status Setup(int32_t deviceId);
+    Status Reset(int32_t deviceId);
+    Status Finalize();
     std::unique_ptr<Stream> MakeStream();
     std::shared_ptr<Stream> MakeSharedStream();
     std::unique_ptr<Stream> MakeSMStream();
     std::unique_ptr<Buffer> MakeBuffer();
 };
 
-} // namespace UC::Trans
+}  // namespace UC::Trans
 
 #endif

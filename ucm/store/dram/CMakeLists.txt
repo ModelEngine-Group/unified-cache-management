@@ -23,7 +23,7 @@ endif()
 file(RELATIVE_PATH INSTALL_REL_PATH ${UCM_ROOT_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
 install(TARGETS dramstore LIBRARY DESTINATION ${INSTALL_REL_PATH} COMPONENT ucm)
 
-if(BUILD_UCM_DRAMPOOL AND RUNTIME_ENVIRONMENT STREQUAL "ascend")
+if(BUILD_UCM_DRAMPOOL)
     set(DRAMPOOL_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/cc/drampool)
     add_library(drampool_core STATIC
         ${DRAMPOOL_SOURCE_DIR}/completion_poller.cc
@@ -50,7 +50,6 @@ if(BUILD_UCM_DRAMPOOL AND RUNTIME_ENVIRONMENT STREQUAL "ascend")
             trans
             dramstore
     )
-
     add_executable(drampool ${DRAMPOOL_SOURCE_DIR}/main.cc)
     target_link_libraries(drampool PRIVATE drampool_core)
     install(TARGETS drampool RUNTIME DESTINATION bin COMPONENT ucm)
