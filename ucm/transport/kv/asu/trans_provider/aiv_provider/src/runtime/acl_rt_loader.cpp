@@ -109,16 +109,19 @@ UbStatus DlAclRt::LoadLibrary()
 
     void* h = dlopen("libascendcl.so", RTLD_NOW | RTLD_GLOBAL);
     if (h == nullptr) {
+        const char* error = dlerror();
         UB_LOG_WARN(
             "DlAclRt: dlopen libascendcl.so failed: %s; "
             "device-side AivInfo allocation needs CANN runtime",
-            dlerror() ? dlerror() : "(no info)");
+            error != nullptr ? error : "(no info)");
         return UbStatus(UbErrorCode::HccpV2LoadLibraryFailed, "libascendcl.so not available");
     }
     auto resolve = [&](const char* name, void** outPtr) -> bool {
         void* sym = dlsym(h, name);
         if (sym == nullptr) {
-            UB_LOG_ERROR("DlAclRt: dlsym %s failed: %s", name, dlerror() ? dlerror() : "(no info)");
+            const char* error = dlerror();
+            UB_LOG_ERROR("DlAclRt: dlsym %s failed: %s", name,
+                         error != nullptr ? error : "(no info)");
             return false;
         }
         *outPtr = sym;

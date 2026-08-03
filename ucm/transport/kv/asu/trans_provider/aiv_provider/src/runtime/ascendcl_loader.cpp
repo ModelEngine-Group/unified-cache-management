@@ -111,16 +111,18 @@ UbStatus DlAscendcl::LoadLibrary()
 
     void* h = dlopen("libascendcl.so", RTLD_NOW | RTLD_GLOBAL);
     if (h == nullptr) {
+        const char* error = dlerror();
         UB_LOG_WARN(
             "dlopen libascendcl.so failed: %s; "
             "device-side H2D paths will fall back to no-op",
-            dlerror() ? dlerror() : "(no info)");
+            error != nullptr ? error : "(no info)");
         return UbStatus(UbErrorCode::HccpV2LoadLibraryFailed, "libascendcl.so not available");
     }
     auto resolve = [&](const char* name, void** outPtr) -> bool {
         void* sym = dlsym(h, name);
         if (sym == nullptr) {
-            UB_LOG_ERROR("dlsym %s failed: %s", name, dlerror() ? dlerror() : "(no info)");
+            const char* error = dlerror();
+            UB_LOG_ERROR("dlsym %s failed: %s", name, error != nullptr ? error : "(no info)");
             return false;
         }
         *outPtr = sym;
@@ -161,6 +163,7 @@ void DlAscendcl::CleanUpLibrary()
     FreeSlot() = nullptr;
     MemcpySlot() = nullptr;
     SyncSlot() = nullptr;
+    SyncTimeoutSlot() = nullptr;
     CreateStreamSlot() = nullptr;
     BinLoadFileSlot() = nullptr;
     BinLoadDataSlot() = nullptr;

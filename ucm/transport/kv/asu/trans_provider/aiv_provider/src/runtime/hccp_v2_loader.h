@@ -221,6 +221,8 @@ public:
     static int RaCtxDeinit(void* ctx) { return gRaCtxDeinit(ctx); }
 
 private:
+    static void CleanUpLibraryUnlocked();
+
     static std::mutex gMutex;
     static bool gLoaded;
 

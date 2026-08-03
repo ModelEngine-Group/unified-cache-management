@@ -89,8 +89,9 @@ bool LoadSymAlt(Func& slot, void* handle, const char* primary, const char* fallb
     void* sym = dlsym(handle, primary);
     if (sym == nullptr) { sym = dlsym(handle, fallback); }
     if (sym == nullptr) {
+        const char* error = dlerror();
         UB_LOG_ERROR("dlsym failed for both '%s' and '%s': %s", primary, fallback,
-                     dlerror() ? dlerror() : "(null)");
+                     error != nullptr ? error : "(null)");
         slot = nullptr;
         return false;
     }
@@ -220,7 +221,7 @@ UbErrorCode DlHccpV2Api::LoadLibrary()
         UB_LOG_ERROR(
             "DlHccpV2Api::LoadLibrary failed: one or more dlsym lookups returned null. "
             "CANN 9.0 may be required; current build will not run on this machine.");
-        CleanUpLibrary();
+        CleanUpLibraryUnlocked();
         return UbErrorCode::HccpV2LoadLibraryFailed;
     }
 
@@ -250,9 +251,15 @@ UbErrorCode DlHccpV2Api::LoadLibrary()
 UbErrorCode DlHccpV2Api::CleanUpLibrary()
 {
     std::lock_guard<std::mutex> lock(gMutex);
+    CleanUpLibraryUnlocked();
+    return UbErrorCode::Ok;
+}
+
+void DlHccpV2Api::CleanUpLibraryUnlocked()
+{
     if (!gLoaded && !gHcclV1LibraryHandler && !gHcclLibraryHandler && !gRaLibraryHandler &&
         !gTsdLibraryHandler) {
-        return UbErrorCode::Ok;
+        return;
     }
 
     gTsdProcessOpen = nullptr;
@@ -310,7 +317,6 @@ UbErrorCode DlHccpV2Api::CleanUpLibrary()
     close_one(gHcclV1LibraryHandler, "libhccl.so");
 
     gLoaded = false;
-    return UbErrorCode::Ok;
 }
 
 bool DlHccpV2Api::IsLoaded()
