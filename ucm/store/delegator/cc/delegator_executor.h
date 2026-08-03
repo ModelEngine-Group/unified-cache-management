@@ -55,9 +55,9 @@ public:
     static constexpr std::size_t kDefaultStreamNumber = 4;
 
     static Expected<std::unique_ptr<Executor>> Create(
-        std::shared_ptr<StoreV1> backend, std::vector<std::size_t> tensor_sizes,
-        std::int32_t device_id, std::size_t slot_num,
-        std::size_t stream_number = kDefaultStreamNumber);
+        std::shared_ptr<StoreV1> backend, std::vector<std::size_t> tensorSizes,
+        std::int32_t deviceId, std::size_t slotNum,
+        std::size_t streamNumber = kDefaultStreamNumber);
     ~Executor();
 
     Executor(const Executor&) = delete;
@@ -69,8 +69,8 @@ public:
     void Shutdown();
 
 private:
-    Executor(std::shared_ptr<StoreV1> backend, std::vector<std::size_t> tensor_sizes,
-             std::int32_t device_id, std::size_t slot_num, std::size_t stream_number);
+    Executor(std::shared_ptr<StoreV1> backend, std::vector<std::size_t> tensorSizes,
+             std::int32_t deviceId, std::size_t slotNum, std::size_t streamNumber);
 
     struct TaskContext {
         Detail::TaskHandle id{NextId()};
@@ -100,20 +100,20 @@ private:
 
     struct QueuedShardContext {
         std::shared_ptr<TaskContext> task;
-        std::size_t shard_index{0};
+        std::size_t shardIndex{0};
     };
 
     // Always owned by a TransferGroup, which records the shard's parent task.
     struct InFlightShardContext {
-        std::size_t shard_index{0};
+        std::size_t shardIndex{0};
         BufferPool::Slot slot;
     };
 
     struct TransferGroup {
         std::shared_ptr<TaskContext> task;
         std::vector<InFlightShardContext> shards;
-        Detail::TaskHandle transfer_task{0};
-        bool transfer_pending{false};
+        Detail::TaskHandle transferTask{0};
+        bool transferPending{false};
         std::optional<Status> error;
     };
 
@@ -122,7 +122,7 @@ private:
     };
 
     Status ValidateTask(const Detail::TaskDesc& task, Operation operation) const;
-    Status Start(std::size_t payload_size, std::size_t slot_num);
+    Status Start(std::size_t payloadSize, std::size_t slotNum);
     Expected<Detail::TaskDesc> MakeBackendTask(const TransferGroup& group) const;
 
     Status GatherAsync(const TransferGroup& group, CopyStream& streams);
@@ -143,33 +143,33 @@ private:
     void DumpLoop(std::promise<Status>& started);
     void LoadLoop(std::promise<Status>& started);
 
-    BufferPool buffer_pool_;
+    BufferPool bufferPool_;
     std::shared_ptr<StoreV1> backend_;
-    std::vector<std::size_t> tensor_sizes_;
-    std::int32_t device_id_{-1};
-    std::size_t stream_number_{0};
+    std::vector<std::size_t> tensorSizes_;
+    std::int32_t deviceId_{-1};
+    std::size_t streamNumber_{0};
 
     std::shared_mutex taskMapMutex_;  // Protects tasks_ only.
-    std::mutex sched_mutex_;
-    std::condition_variable slots_ready_;
-    std::condition_variable shutdown_completed_;
+    std::mutex schedMutex_;
+    std::condition_variable slotsReady_;
+    std::condition_variable shutdownCompleted_;
 
-    std::deque<QueuedShardContext> dump_queue_;
-    std::deque<QueuedShardContext> load_queue_;
+    std::deque<QueuedShardContext> dumpQueue_;
+    std::deque<QueuedShardContext> loadQueue_;
     std::unordered_map<Detail::TaskHandle, std::shared_ptr<TaskContext>> tasks_;
 
-    std::size_t slot_num_{0};
-    std::size_t available_slots_{0};
-    std::size_t outstanding_shards_{0};
-    std::size_t queued_load_shards_{0};
-    std::size_t queued_dump_shards_{0};
-    std::size_t in_flight_load_shards_{0};
-    std::size_t in_flight_dump_shards_{0};
+    std::size_t slotNum_{0};
+    std::size_t availableSlots_{0};
+    std::size_t outstandingShards_{0};
+    std::size_t queuedLoadShards_{0};
+    std::size_t queuedDumpShards_{0};
+    std::size_t inFlightLoadShards_{0};
+    std::size_t inFlightDumpShards_{0};
 
-    bool shutdown_started_{false};
-    bool shutdown_complete_{false};
-    std::thread dump_thread_;
-    std::thread load_thread_;
+    bool shutdownStarted_{false};
+    bool shutdownComplete_{false};
+    std::thread dumpThread_;
+    std::thread loadThread_;
 };
 
 }  // namespace UC::Delegator

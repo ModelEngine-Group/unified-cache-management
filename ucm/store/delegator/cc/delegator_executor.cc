@@ -73,32 +73,32 @@ Status BindDevice(std::int32_t deviceId)
 }  // namespace
 
 Expected<std::unique_ptr<Executor>> Executor::Create(std::shared_ptr<StoreV1> backend,
-                                                     std::vector<std::size_t> tensor_sizes,
-                                                     std::int32_t device_id, std::size_t slot_num,
-                                                     std::size_t stream_number)
+                                                     std::vector<std::size_t> tensorSizes,
+                                                     std::int32_t deviceId, std::size_t slotNum,
+                                                     std::size_t streamNumber)
 {
-    if (backend == nullptr || device_id < 0 || slot_num == 0 || stream_number == 0 ||
-        tensor_sizes.empty()) {
+    if (backend == nullptr || deviceId < 0 || slotNum == 0 || streamNumber == 0 ||
+        tensorSizes.empty()) {
         return Status::InvalidParam("invalid delegator executor config");
     }
 
     std::size_t payloadSize = 0;
-    for (const auto size : tensor_sizes) {
+    for (const auto size : tensorSizes) {
         if (size == 0 || size > std::numeric_limits<std::size_t>::max() - payloadSize) {
             return Status::InvalidParam("invalid delegator tensor sizes");
         }
         payloadSize += size;
     }
 
-    auto status = ValidateCurrentDevice(device_id);
+    auto status = ValidateCurrentDevice(deviceId);
     if (status.Failure()) { return status; }
 
     auto executor = std::unique_ptr<Executor>{new (std::nothrow) Executor(
-        std::move(backend), std::move(tensor_sizes), device_id, slot_num, stream_number)};
+        std::move(backend), std::move(tensorSizes), deviceId, slotNum, streamNumber)};
     if (!executor) { return Status::OutOfMemory(); }
 
     try {
-        status = executor->Start(payloadSize, slot_num);
+        status = executor->Start(payloadSize, slotNum);
     } catch (const std::bad_alloc&) {
         return Status::OutOfMemory();
     } catch (const std::system_error& error) {
@@ -109,37 +109,37 @@ Expected<std::unique_ptr<Executor>> Executor::Create(std::shared_ptr<StoreV1> ba
     return executor;
 }
 
-Executor::Executor(std::shared_ptr<StoreV1> backend, std::vector<std::size_t> tensor_sizes,
-                   std::int32_t device_id, std::size_t slot_num, std::size_t stream_number)
+Executor::Executor(std::shared_ptr<StoreV1> backend, std::vector<std::size_t> tensorSizes,
+                   std::int32_t deviceId, std::size_t slotNum, std::size_t streamNumber)
     : backend_{std::move(backend)},
-      tensor_sizes_{std::move(tensor_sizes)},
-      device_id_{device_id},
-      stream_number_{std::min(stream_number, slot_num)}
+      tensorSizes_{std::move(tensorSizes)},
+      deviceId_{deviceId},
+      streamNumber_{std::min(streamNumber, slotNum)}
 {
 }
 
-Status Executor::Start(std::size_t payload_size, std::size_t slot_num)
+Status Executor::Start(std::size_t payloadSize, std::size_t slotNum)
 {
-    auto status = buffer_pool_.Init("delegator_buffer_pool", BufferPool::MemoryType::ASCEND_DEVICE,
-                                    payload_size, slot_num, false, kBufferAlignment);
+    auto status = bufferPool_.Init("delegator_buffer_pool", BufferPool::MemoryType::ASCEND_DEVICE,
+                                   payloadSize, slotNum, false, kBufferAlignment);
     if (status.Failure()) { return status; }
-    slot_num_ = slot_num;
+    slotNum_ = slotNum;
     if (backend_->NeedRegisterKVCaches()) {
         const KVCacheRegistration registration{
-            reinterpret_cast<std::uintptr_t>(buffer_pool_.GetDeviceAddr()),
-            buffer_pool_.GetTotalSize()};
+            reinterpret_cast<std::uintptr_t>(bufferPool_.GetDeviceAddr()),
+            bufferPool_.GetTotalSize()};
         status = backend_->RegisterKVCaches(&registration, 1);
         if (status.Failure()) { return status; }
     }
-    available_slots_ = slot_num;
+    availableSlots_ = slotNum;
 
     std::promise<Status> dumpStarted;
     std::promise<Status> loadStarted;
     auto dumpStartedFuture = dumpStarted.get_future();
     auto loadStartedFuture = loadStarted.get_future();
     try {
-        dump_thread_ = std::thread(&Executor::DumpLoop, this, std::ref(dumpStarted));
-        load_thread_ = std::thread(&Executor::LoadLoop, this, std::ref(loadStarted));
+        dumpThread_ = std::thread(&Executor::DumpLoop, this, std::ref(dumpStarted));
+        loadThread_ = std::thread(&Executor::LoadLoop, this, std::ref(loadStarted));
     } catch (...) {
         Shutdown();
         return Status::Error();
@@ -164,15 +164,15 @@ Expected<Detail::TaskDesc> Executor::MakeBackendTask(const TransferGroup& group)
     try {
         task.reserve(group.shards.size());
         for (const auto& shard : group.shards) {
-            const auto& source = group.task->desc[shard.shard_index];
+            const auto& source = group.task->desc[shard.shardIndex];
             Detail::Shard backendShard;
             backendShard.owner = source.owner;
             backendShard.index = source.index;
-            backendShard.addrs.reserve(tensor_sizes_.size());
+            backendShard.addrs.reserve(tensorSizes_.size());
 
             auto* address = static_cast<std::byte*>(shard.slot.device_addr);
             std::size_t offset = 0;
-            for (const auto size : tensor_sizes_) {
+            for (const auto size : tensorSizes_) {
                 backendShard.addrs.push_back(address + offset);
                 offset += size;
             }
@@ -189,13 +189,13 @@ Status Executor::ValidateTask(const Detail::TaskDesc& task, Operation operation)
     if (operation != Operation::LOAD && operation != Operation::DUMP) {
         return Status::InvalidParam("invalid delegator operation");
     }
-    if (task.empty() || tensor_sizes_.empty()) {
+    if (task.empty() || tensorSizes_.empty()) {
         return Status::InvalidParam("empty delegator task");
     }
     // Verify that the submitted task matches the tensor layout configured for this executor.
     for (std::size_t shardIndex = 0; shardIndex < task.size(); ++shardIndex) {
         const auto& addrs = task[shardIndex].addrs;
-        if (addrs.size() != tensor_sizes_.size()) {
+        if (addrs.size() != tensorSizes_.size()) {
             return Status::InvalidParam("invalid delegator shard({}) address count", shardIndex);
         }
         for (const auto* addr : addrs) {
@@ -210,7 +210,7 @@ Status Executor::ValidateTask(const Detail::TaskDesc& task, Operation operation)
 Status Executor::GatherAsync(const TransferGroup& group, CopyStream& streams)
 {
     for (const auto& shard : group.shards) {
-        const auto& desc = group.task->desc[shard.shard_index];
+        const auto& desc = group.task->desc[shard.shardIndex];
         const auto stream = streams.NextStream();
         if (group.task->desc.prerequisiteHandle != 0) {
             const auto status = streams.WaitEvent(
@@ -220,11 +220,11 @@ Status Executor::GatherAsync(const TransferGroup& group, CopyStream& streams)
         auto* destination = static_cast<std::byte*>(shard.slot.device_addr);
         std::size_t offset = 0;
         for (std::size_t index = 0; index < desc.addrs.size(); ++index) {
-            const auto status = streams.DeviceToDeviceAsync(
-                stream, destination + offset, shard.slot.length - offset, desc.addrs[index],
-                tensor_sizes_[index]);
+            const auto status = streams.DeviceToDeviceAsync(stream, destination + offset,
+                                                            shard.slot.length - offset,
+                                                            desc.addrs[index], tensorSizes_[index]);
             if (status.Failure()) { return status; }
-            offset += tensor_sizes_[index];
+            offset += tensorSizes_[index];
         }
     }
     return Status::OK();
@@ -233,16 +233,16 @@ Status Executor::GatherAsync(const TransferGroup& group, CopyStream& streams)
 Status Executor::ScatterAsync(const TransferGroup& group, CopyStream& streams)
 {
     for (const auto& shard : group.shards) {
-        const auto& desc = group.task->desc[shard.shard_index];
+        const auto& desc = group.task->desc[shard.shardIndex];
         const auto stream = streams.NextStream();
         const auto* source = static_cast<const std::byte*>(shard.slot.device_addr);
         std::size_t offset = 0;
         for (std::size_t index = 0; index < desc.addrs.size(); ++index) {
             const auto status =
-                streams.DeviceToDeviceAsync(stream, desc.addrs[index], tensor_sizes_[index],
-                                            source + offset, tensor_sizes_[index]);
+                streams.DeviceToDeviceAsync(stream, desc.addrs[index], tensorSizes_[index],
+                                            source + offset, tensorSizes_[index]);
             if (status.Failure()) { return status; }
-            offset += tensor_sizes_[index];
+            offset += tensorSizes_[index];
         }
     }
     return Status::OK();
@@ -252,7 +252,7 @@ std::string Executor::DescribeShards(const TransferGroup& group) const
 {
     std::string result;
     for (const auto& shard : group.shards) {
-        const auto& desc = group.task->desc[shard.shard_index];
+        const auto& desc = group.task->desc[shard.shardIndex];
         if (!result.empty()) { result += ", "; }
         result += fmt::format("{{owner={:02x},index={},slot={}}}", fmt::join(desc.owner, ""),
                               desc.index, shard.slot.slot_index);
@@ -274,11 +274,11 @@ void Executor::LogTaskCompletion(const TaskContext& task) const
 
 void Executor::AssertSchedulerInvariantsLocked() const
 {
-    assert(available_slots_ + in_flight_load_shards_ + in_flight_dump_shards_ == slot_num_);
-    assert(outstanding_shards_ == queued_load_shards_ + queued_dump_shards_ +
-                                      in_flight_load_shards_ + in_flight_dump_shards_);
-    assert(load_queue_.size() == queued_load_shards_);
-    assert(dump_queue_.size() == queued_dump_shards_);
+    assert(availableSlots_ + inFlightLoadShards_ + inFlightDumpShards_ == slotNum_);
+    assert(outstandingShards_ ==
+           queuedLoadShards_ + queuedDumpShards_ + inFlightLoadShards_ + inFlightDumpShards_);
+    assert(loadQueue_.size() == queuedLoadShards_);
+    assert(dumpQueue_.size() == queuedDumpShards_);
 }
 
 Expected<Detail::TaskHandle> Executor::Submit(Detail::TaskDesc task, Operation operation)
@@ -299,15 +299,15 @@ Expected<Detail::TaskHandle> Executor::Submit(Detail::TaskDesc task, Operation o
     const auto handle = taskContext->id;
     {
         // Keep the whole publish atomic against Shutdown.
-        std::lock_guard<std::mutex> schedLock(sched_mutex_);
-        if (shutdown_started_) { return Status::Error(); }
+        std::lock_guard<std::mutex> schedLock(schedMutex_);
+        if (shutdownStarted_) { return Status::Error(); }
         AssertSchedulerInvariantsLocked();
         const auto count = taskContext->desc.size();
-        if (count > std::numeric_limits<std::size_t>::max() - outstanding_shards_) {
+        if (count > std::numeric_limits<std::size_t>::max() - outstandingShards_) {
             return Status::OutOfMemory();
         }
 
-        auto& queue = operation == Operation::LOAD ? load_queue_ : dump_queue_;
+        auto& queue = operation == Operation::LOAD ? loadQueue_ : dumpQueue_;
         if (count > queue.max_size() - queue.size()) { return Status::OutOfMemory(); }
 
         const auto previousQueueSize = queue.size();
@@ -330,14 +330,14 @@ Expected<Detail::TaskHandle> Executor::Submit(Detail::TaskDesc task, Operation o
             return Status::OutOfMemory();
         }
 
-        outstanding_shards_ += count;
-        auto& queued = operation == Operation::LOAD ? queued_load_shards_ : queued_dump_shards_;
+        outstandingShards_ += count;
+        auto& queued = operation == Operation::LOAD ? queuedLoadShards_ : queuedDumpShards_;
         queued += count;
         AssertSchedulerInvariantsLocked();
     }
     UC_INFO_UNLIMITED("Delegator {} task({},{}) submitted, shards={}.", OperationName(operation),
                       handle, taskContext->desc.brief, taskContext->desc.size());
-    slots_ready_.notify_all();
+    slotsReady_.notify_all();
     return Detail::TaskHandle{handle};
 }
 
@@ -376,10 +376,10 @@ Status Executor::Wait(Detail::TaskHandle task)
 Expected<Executor::TransferBatch> Executor::AcquireBatch(Operation operation)
 {
     assert(operation == Operation::LOAD || operation == Operation::DUMP);
-    auto& queue = operation == Operation::LOAD ? load_queue_ : dump_queue_;
+    auto& queue = operation == Operation::LOAD ? loadQueue_ : dumpQueue_;
     TransferBatch batch;
     std::vector<QueuedShardContext> reservedShards;
-    const auto batchCapacity = slot_num_;
+    const auto batchCapacity = slotNum_;
     try {
         batch.groups.reserve(batchCapacity);
         reservedShards.reserve(batchCapacity);
@@ -388,11 +388,11 @@ Expected<Executor::TransferBatch> Executor::AcquireBatch(Operation operation)
     }
 
     const auto canReserve = [this, operation]() {
-        if (available_slots_ == 0) { return false; }
+        if (availableSlots_ == 0) { return false; }
         // LOAD is admitted whenever a queued shard and a slot are available.
-        if (operation == Operation::LOAD) { return queued_load_shards_ != 0; }
+        if (operation == Operation::LOAD) { return queuedLoadShards_ != 0; }
         // DUMP is admitted only when no LOAD shard is queued or in flight.
-        return queued_dump_shards_ != 0 && queued_load_shards_ == 0 && in_flight_load_shards_ == 0;
+        return queuedDumpShards_ != 0 && queuedLoadShards_ == 0 && inFlightLoadShards_ == 0;
     };
 
     // Keep trying until a non-empty batch can be returned or shutdown begins.
@@ -402,22 +402,21 @@ Expected<Executor::TransferBatch> Executor::AcquireBatch(Operation operation)
         while (reservedShards.size() < batchCapacity) {
             std::optional<QueuedShardContext> cancelledShard;
             {
-                std::unique_lock<std::mutex> lock(sched_mutex_);
+                std::unique_lock<std::mutex> lock(schedMutex_);
 
                 // Wait only for the first shard; do not wait to fill a partial batch.
                 if (reservedShards.empty()) {
-                    slots_ready_.wait(
-                        lock, [this, &canReserve]() { return shutdown_started_ || canReserve(); });
+                    slotsReady_.wait(
+                        lock, [this, &canReserve]() { return shutdownStarted_ || canReserve(); });
                 }
-                if (shutdown_started_) {
+                if (shutdownStarted_) {
                     if (reservedShards.empty()) { return Status::Error(); }
                     break;
                 }
 
-                auto& queued =
-                    operation == Operation::LOAD ? queued_load_shards_ : queued_dump_shards_;
+                auto& queued = operation == Operation::LOAD ? queuedLoadShards_ : queuedDumpShards_;
                 auto& inFlight =
-                    operation == Operation::LOAD ? in_flight_load_shards_ : in_flight_dump_shards_;
+                    operation == Operation::LOAD ? inFlightLoadShards_ : inFlightDumpShards_;
                 while (reservedShards.size() < batchCapacity && canReserve()) {
                     assert(!queue.empty());
                     if (queue.empty()) { std::terminate(); }
@@ -430,14 +429,14 @@ Expected<Executor::TransferBatch> Executor::AcquireBatch(Operation operation)
                     --queued;
 
                     if (shard.task->failed.load(std::memory_order_acquire)) {
-                        assert(outstanding_shards_ != 0);
-                        --outstanding_shards_;
+                        assert(outstandingShards_ != 0);
+                        --outstandingShards_;
                         cancelledShard = std::move(shard);
                         break;
                     }
 
                     ++inFlight;
-                    --available_slots_;
+                    --availableSlots_;
                     reservedShards.push_back(std::move(shard));
                 }
                 AssertSchedulerInvariantsLocked();
@@ -445,7 +444,7 @@ Expected<Executor::TransferBatch> Executor::AcquireBatch(Operation operation)
 
             if (cancelledShard) {
                 CompleteTaskShards(cancelledShard->task, 1, Status::OK());
-                slots_ready_.notify_all();
+                slotsReady_.notify_all();
                 continue;
             }
             break;
@@ -489,14 +488,14 @@ Expected<Executor::TransferBatch> Executor::AcquireBatch(Operation operation)
                 }
 
                 BufferPool::Slot slot;
-                const auto status = buffer_pool_.Allocate(slot);
+                const auto status = bufferPool_.Allocate(slot);
                 if (status.Failure()) {
                     DiscardShard(reservedShard, status, ShardStage::IN_FLIGHT);
                     continue;
                 }
 
                 InFlightShardContext inFlightShard;
-                inFlightShard.shard_index = reservedShard.shard_index;
+                inFlightShard.shardIndex = reservedShard.shardIndex;
                 inFlightShard.slot = std::move(slot);
                 group.shards.push_back(std::move(inFlightShard));
             }
@@ -530,7 +529,7 @@ void Executor::ReleaseBatch(TransferBatch& batch)
         if (!validGroup) { std::terminate(); }
 
         for (const auto& shard : group.shards) {
-            const auto freeStatus = buffer_pool_.Free(shard.slot.slot_index);
+            const auto freeStatus = bufferPool_.Free(shard.slot.slot_index);
             if (!group.error && freeStatus.Failure()) { group.error = freeStatus; }
         }
         count += group.shards.size();
@@ -545,17 +544,16 @@ void Executor::ReleaseBatch(TransferBatch& batch)
 
     // Phase 2: publish the released slots only after task completion state is visible.
     {
-        std::lock_guard<std::mutex> lock(sched_mutex_);
-        auto& inFlight =
-            operation == Operation::LOAD ? in_flight_load_shards_ : in_flight_dump_shards_;
+        std::lock_guard<std::mutex> lock(schedMutex_);
+        auto& inFlight = operation == Operation::LOAD ? inFlightLoadShards_ : inFlightDumpShards_;
         assert(inFlight >= count);
-        assert(outstanding_shards_ >= count);
+        assert(outstandingShards_ >= count);
         inFlight -= count;
-        available_slots_ += count;
-        outstanding_shards_ -= count;
+        availableSlots_ += count;
+        outstandingShards_ -= count;
         AssertSchedulerInvariantsLocked();
     }
-    slots_ready_.notify_all();
+    slotsReady_.notify_all();
 }
 
 void Executor::CompleteTaskShards(const std::shared_ptr<TaskContext>& task, std::size_t count,
@@ -580,25 +578,25 @@ void Executor::DiscardShard(const QueuedShardContext& shard, const Status& statu
 {
     CompleteTaskShards(shard.task, 1, status);
     {
-        std::lock_guard<std::mutex> lock(sched_mutex_);
+        std::lock_guard<std::mutex> lock(schedMutex_);
         auto& queued =
-            shard.task->operation == Operation::LOAD ? queued_load_shards_ : queued_dump_shards_;
-        auto& inFlight = shard.task->operation == Operation::LOAD ? in_flight_load_shards_
-                                                                  : in_flight_dump_shards_;
-        assert(outstanding_shards_ != 0);
+            shard.task->operation == Operation::LOAD ? queuedLoadShards_ : queuedDumpShards_;
+        auto& inFlight =
+            shard.task->operation == Operation::LOAD ? inFlightLoadShards_ : inFlightDumpShards_;
+        assert(outstandingShards_ != 0);
         if (stage == ShardStage::QUEUED) {
             assert(queued != 0);
             --queued;
         } else {
             assert(inFlight != 0);
             --inFlight;
-            ++available_slots_;
+            ++availableSlots_;
         }
-        --outstanding_shards_;
+        --outstandingShards_;
         AssertSchedulerInvariantsLocked();
     }
 
-    slots_ready_.notify_all();
+    slotsReady_.notify_all();
 }
 
 void Executor::DrainQueue(std::deque<QueuedShardContext>& queue)
@@ -615,8 +613,8 @@ void Executor::DumpLoop(std::promise<Status>& started)
 {
     // Init
     CopyStream streams;
-    auto status = BindDevice(device_id_);
-    if (status.Success()) { status = streams.Setup(device_id_, stream_number_); }
+    auto status = BindDevice(deviceId_);
+    if (status.Success()) { status = streams.Setup(deviceId_, streamNumber_); }
     started.set_value(status);
     if (status.Failure()) { return; }
 
@@ -671,12 +669,12 @@ void Executor::DumpLoop(std::promise<Status>& started)
             }
             auto submitted = backend_->Dump(std::move(backendTask).Value());
             if (submitted) {
-                group.transfer_task = std::move(submitted).Value();
-                group.transfer_pending = true;
+                group.transferTask = std::move(submitted).Value();
+                group.transferPending = true;
                 UC_DEBUG_UNLIMITED(
                     "Delegator DUMP task({},{}) stage=backend_submitted, backend_task={}, "
                     "shards={}.",
-                    group.task->id, group.task->desc.brief, group.transfer_task,
+                    group.task->id, group.task->desc.brief, group.transferTask,
                     group.shards.size());
             } else {
                 group.error = submitted.Error();
@@ -687,22 +685,22 @@ void Executor::DumpLoop(std::promise<Status>& started)
         }
 
         for (auto& group : batch.groups) {
-            if (!group.transfer_pending) { continue; }
-            const auto waitStatus = backend_->Wait(group.transfer_task);
+            if (!group.transferPending) { continue; }
+            const auto waitStatus = backend_->Wait(group.transferTask);
             if (waitStatus.Failure()) {
                 group.error = waitStatus;
                 UC_ERROR_UNLIMITED(
                     "Delegator DUMP task({},{}) stage=backend_wait failed, backend_task={}, "
                     "status={}.",
-                    group.task->id, group.task->desc.brief, group.transfer_task, waitStatus);
+                    group.task->id, group.task->desc.brief, group.transferTask, waitStatus);
             } else {
                 UC_DEBUG_UNLIMITED(
                     "Delegator DUMP task({},{}) stage=backend_complete, backend_task={}, "
                     "shards={}.",
-                    group.task->id, group.task->desc.brief, group.transfer_task,
+                    group.task->id, group.task->desc.brief, group.transferTask,
                     group.shards.size());
             }
-            group.transfer_pending = false;
+            group.transferPending = false;
         }
 
         ReleaseBatch(batch);
@@ -713,8 +711,8 @@ void Executor::LoadLoop(std::promise<Status>& started)
 {
     // Init
     CopyStream streams;
-    auto status = BindDevice(device_id_);
-    if (status.Success()) { status = streams.Setup(device_id_, stream_number_); }
+    auto status = BindDevice(deviceId_);
+    if (status.Success()) { status = streams.Setup(deviceId_, streamNumber_); }
     started.set_value(status);
     if (status.Failure()) { return; }
 
@@ -739,13 +737,13 @@ void Executor::LoadLoop(std::promise<Status>& started)
             }
             auto submitted = backend_->Load(std::move(backendTask).Value());
             if (submitted) {
-                group.transfer_task = std::move(submitted).Value();
-                group.transfer_pending = true;
+                group.transferTask = std::move(submitted).Value();
+                group.transferPending = true;
                 ++pendingGroupCount;
                 UC_DEBUG_UNLIMITED(
                     "Delegator LOAD task({},{}) stage=backend_submitted, backend_task={}, "
                     "shards={}.",
-                    group.task->id, group.task->desc.brief, group.transfer_task,
+                    group.task->id, group.task->desc.brief, group.transferTask,
                     group.shards.size());
             } else {
                 group.error = submitted.Error();
@@ -757,31 +755,30 @@ void Executor::LoadLoop(std::promise<Status>& started)
 
         while (pendingGroupCount != 0) {
             for (auto& group : batch.groups) {
-                if (!group.transfer_pending) { continue; }
+                if (!group.transferPending) { continue; }
 
-                auto completed = backend_->Check(group.transfer_task);
+                auto completed = backend_->Check(group.transferTask);
                 if (!completed) {
                     group.error = completed.Error();
                     UC_ERROR_UNLIMITED(
                         "Delegator LOAD task({},{}) stage=backend_check failed, "
                         "backend_task={}, status={}.",
-                        group.task->id, group.task->desc.brief, group.transfer_task, *group.error);
+                        group.task->id, group.task->desc.brief, group.transferTask, *group.error);
                 } else if (!completed.Value()) {
                     continue;
                 } else {
-                    const auto waitStatus = backend_->Wait(group.transfer_task);
+                    const auto waitStatus = backend_->Wait(group.transferTask);
                     if (waitStatus.Failure()) {
                         group.error = waitStatus;
                         UC_ERROR_UNLIMITED(
                             "Delegator LOAD task({},{}) stage=backend_wait failed, "
                             "backend_task={}, status={}.",
-                            group.task->id, group.task->desc.brief, group.transfer_task,
-                            waitStatus);
+                            group.task->id, group.task->desc.brief, group.transferTask, waitStatus);
                     } else {
                         UC_DEBUG_UNLIMITED(
                             "Delegator LOAD task({},{}) stage=backend_complete, "
                             "backend_task={}, shards={}.",
-                            group.task->id, group.task->desc.brief, group.transfer_task,
+                            group.task->id, group.task->desc.brief, group.transferTask,
                             group.shards.size());
                         const auto scatterStatus = ScatterAsync(group, streams);
                         if (scatterStatus.Failure()) {
@@ -792,7 +789,7 @@ void Executor::LoadLoop(std::promise<Status>& started)
                         }
                     }
                 }
-                group.transfer_pending = false;
+                group.transferPending = false;
                 --pendingGroupCount;
             }
         }
@@ -822,31 +819,31 @@ void Executor::LoadLoop(std::promise<Status>& started)
 void Executor::Shutdown()
 {
     {
-        std::unique_lock<std::mutex> lock(sched_mutex_);
-        if (shutdown_started_) {
-            shutdown_completed_.wait(lock, [this]() { return shutdown_complete_; });
+        std::unique_lock<std::mutex> lock(schedMutex_);
+        if (shutdownStarted_) {
+            shutdownCompleted_.wait(lock, [this]() { return shutdownComplete_; });
             return;
         }
-        shutdown_started_ = true;
-        slots_ready_.notify_all();
+        shutdownStarted_ = true;
+        slotsReady_.notify_all();
     }
 
-    if (dump_thread_.joinable()) { dump_thread_.join(); }
-    if (load_thread_.joinable()) { load_thread_.join(); }
+    if (dumpThread_.joinable()) { dumpThread_.join(); }
+    if (loadThread_.joinable()) { loadThread_.join(); }
 
     // Workers are gone; we are now the sole consumer of both queues.
-    DrainQueue(dump_queue_);
-    DrainQueue(load_queue_);
-    if (buffer_pool_.IsInitialized()) {
+    DrainQueue(dumpQueue_);
+    DrainQueue(loadQueue_);
+    if (bufferPool_.IsInitialized()) {
         // Assumption: Executor is created, used, and destroyed under the same ACL device context.
-        buffer_pool_.Reset();
+        bufferPool_.Reset();
     }
 
     {
-        std::lock_guard<std::mutex> lock(sched_mutex_);
-        shutdown_complete_ = true;
+        std::lock_guard<std::mutex> lock(schedMutex_);
+        shutdownComplete_ = true;
     }
-    shutdown_completed_.notify_all();
+    shutdownCompleted_.notify_all();
 }
 
 }  // namespace UC::Delegator
