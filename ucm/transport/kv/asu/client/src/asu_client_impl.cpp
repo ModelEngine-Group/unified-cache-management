@@ -43,55 +43,12 @@ Status PartialFailed(const std::string& message)
     return Status::Error(StatusCode::PARTIAL_FAILED, message);
 }
 
-const char* ClientOpTypeName(ClientOpType opType)
-{
-    switch (opType) {
-        case ClientOpType::LOAD: return "load";
-        case ClientOpType::STORE: return "store";
-        case ClientOpType::DELETE: return "delete";
-        default: return "unknown";
-    }
-}
-
-std::size_t SubTaskItemCount(const ClientSubTask& subTask)
-{
-    return subTask.entries.empty() ? subTask.keys.size() : subTask.entries.size();
-}
-
-std::string SubTaskContext(const ClientTaskContext& ctx, const ClientSubTask& subTask)
-{
-    return "client_task_id=" + std::to_string(ctx.taskId) + " op=" + ClientOpTypeName(ctx.opType) +
-           " asuId=" + std::to_string(subTask.asuId) +
-           " trans_task_id=" + std::to_string(subTask.transTaskId) +
-           " item_count=" + std::to_string(SubTaskItemCount(subTask));
-}
-
-std::string FirstFailedSubTaskContext(const ClientTaskContext& ctx)
-{
-    for (const auto& subTask : ctx.subTasks) {
-        if (!subTask.failed) { continue; }
-
-        return SubTaskContext(ctx, subTask) +
-               " code=" + std::to_string(static_cast<int>(subTask.status.code)) +
-               " message=" + subTask.status.message;
-    }
-    return "client_task_id=" + std::to_string(ctx.taskId) + " op=" + ClientOpTypeName(ctx.opType);
-}
-
 std::vector<UC::KV::CacheKey> ToRouterKeys(const std::vector<CacheKey>& keys)
 {
     std::vector<UC::KV::CacheKey> routerKeys;
     routerKeys.reserve(keys.size());
     for (const auto& key : keys) { routerKeys.emplace_back(std::string(CacheKeyView(key))); }
     return routerKeys;
-}
-
-std::vector<UC::KV::CacheKey> ExtractEntryKeys(const std::vector<KVBuffer>& entries)
-{
-    std::vector<UC::KV::CacheKey> keys;
-    keys.reserve(entries.size());
-    for (const auto& entry : entries) { keys.emplace_back(std::string(CacheKeyView(entry.key))); }
-    return keys;
 }
 
 AsuClientImpl::AsuClientImpl(TransportFactory transportFactory, ViewServerFactory viewServerFactory)
@@ -136,6 +93,11 @@ Status AsuClientImpl::Init(const AsuClientConfig& config)
     status = BuildSnapshot(view, nullptr, nextSnapshot);
     if (!status.ok()) { return status; }
 
+    {
+        std::lock_guard<std::mutex> lock{taskQueueMu_};
+        stopWorker_ = false;
+    }
+    worker_ = std::thread(&AsuClientImpl::WorkerLoop, this);
     snapshot_ = std::move(nextSnapshot);
     initialized_ = true;
     return Status::OK();
@@ -143,25 +105,35 @@ Status AsuClientImpl::Init(const AsuClientConfig& config)
 
 Status AsuClientImpl::Shutdown()
 {
+    std::uint64_t waitTimeoutMs = 0;
+    {
+        std::lock_guard<std::mutex> lock{mutex_};
+        initialized_ = false;
+        waitTimeoutMs = config_.defaultWaitTimeoutMs;
+    }
     JoinBackgroundRefresh();
+
+    {
+        std::lock_guard<std::mutex> lock{taskQueueMu_};
+        stopWorker_ = true;
+    }
+    taskQueueCv_.notify_all();
+    if (worker_.joinable()) { worker_.join(); }
 
     std::shared_ptr<ViewSnapshot> snapshot;
     std::vector<std::shared_ptr<AsuTransport>> retiredTransports;
-    std::uint64_t waitTimeoutMs = 0;
     {
         std::lock_guard<std::mutex> lock{mutex_};
         snapshot = std::move(snapshot_);
         retiredTransports = std::move(retiredTransports_);
-        waitTimeoutMs = config_.defaultWaitTimeoutMs;
         config_ = AsuClientConfig{};
         viewServer_.reset();
         transportConfigs_.clear();
-        registeredResources_.clear();
-        initialized_ = false;
+        registeredRegions_.clear();
     }
 
     Status finalStatus = Status::OK();
-    auto drainStatus = DrainTasksBeforeShutdown(waitTimeoutMs);
+    auto drainStatus = taskManager_.Drain(waitTimeoutMs);
     if (!drainStatus.ok()) { finalStatus = drainStatus; }
     if (snapshot) {
         auto shutdownStatus = ShutdownSnapshotTransports(snapshot);
@@ -193,68 +165,101 @@ Status AsuClientImpl::QueryOnce(const std::vector<CacheKey>& keys, const QueryOp
     auto snapshot = GetSnapshot();
     if (!snapshot) { return NotInitialized(); }
 
-    if (options.mode == QueryMode::PREFIX) {
-        Status finalStatus = Status::OK();
-        for (const auto& item : snapshot->transports) {
-            QueryResult childResult;
-            auto status = item.second->Query(keys, options, childResult);
-            if (!status.ok()) {
-                MarkRefreshIfNeeded(status, needRefresh);
-                finalStatus = WithContext(PartialFailed("one or more asu prefix queries failed"),
-                                          "asuId=" + std::to_string(item.first));
-                continue;
-            }
-            if (childResult.exists.size() != keys.size()) {
-                return Status::Error(
-                    StatusCode::INTERNAL_ERROR,
-                    "prefix query result size mismatch, asuId=" + std::to_string(item.first) +
-                        " expected=" + std::to_string(keys.size()) +
-                        " actual=" + std::to_string(childResult.exists.size()));
-            }
-            result.prefixHitKeys += childResult.prefixHitKeys;
-            for (std::size_t index = 0;
-                 index < result.exists.size() && index < childResult.exists.size(); ++index) {
-                result.exists[index] = result.exists[index] || childResult.exists[index];
-            }
-        }
-        return finalStatus;
-    }
-
+    const auto timeoutMs =
+        options.timeoutMs == 0 ? config_.defaultWaitTimeoutMs : options.timeoutMs;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    auto transportOptions = options;
+    transportOptions.mode = QueryMode::PER_KEY;
     auto routes = snapshot->router->RouteKeys(ToRouterKeys(keys));
+    std::vector<PendingQuery> pendingQueries;
+    pendingQueries.reserve(routes.size());
+    bool anyFailed = false;
+
     for (const auto& route : routes) {
         auto transportIter = snapshot->transports.find(route.first);
         if (transportIter == snapshot->transports.end()) {
             auto status = Status::Error(StatusCode::NOT_FOUND, "routed asu transport not found");
-            MarkRefreshIfNeeded(status, needRefresh);
-            return WithContext(status, "asuId=" + std::to_string(route.first));
+            needRefresh |= IsRefreshNeeded(status);
+            UC_ERROR("ASU client query dispatch failed: asuId={} key_count={} code={} message={}.",
+                     route.first, route.second.size(), static_cast<int>(status.code),
+                     status.message);
+            anyFailed = true;
+            continue;
         }
 
-        std::vector<CacheKey> childKeys;
-        childKeys.reserve(route.second.size());
-        for (auto index : route.second) { childKeys.emplace_back(keys[index]); }
+        PendingQuery pending;
+        pending.asuId = route.first;
+        pending.transport = transportIter->second;
+        pending.originalIndices = route.second;
+        pending.keys.reserve(route.second.size());
+        for (auto index : route.second) { pending.keys.emplace_back(keys[index]); }
 
-        QueryResult childResult;
-        auto status = transportIter->second->Query(childKeys, options, childResult);
+        auto status = pending.transport->QueryAsync(pending.keys, transportOptions, pending.taskId);
         if (!status.ok()) {
-            MarkRefreshIfNeeded(status, needRefresh);
-            return WithContext(status, "asuId=" + std::to_string(route.first) +
-                                           " key_count=" + std::to_string(childKeys.size()));
-        }
-        if (childResult.exists.size() != childKeys.size()) {
-            return Status::Error(
-                StatusCode::INTERNAL_ERROR,
-                "query result size mismatch, asuId=" + std::to_string(route.first) +
-                    " expected=" + std::to_string(childKeys.size()) +
-                    " actual=" + std::to_string(childResult.exists.size()));
+            needRefresh |= IsRefreshNeeded(status);
+            UC_ERROR("ASU client query dispatch failed: asuId={} key_count={} code={} message={}.",
+                     pending.asuId, pending.keys.size(), static_cast<int>(status.code),
+                     status.message);
+            anyFailed = true;
+            continue;
         }
 
-        for (std::size_t index = 0; index < route.second.size(); ++index) {
-            result.exists[route.second[index]] = childResult.exists[index];
+        pendingQueries.emplace_back(std::move(pending));
+    }
+
+    for (auto& pending : pendingQueries) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            UC_ERROR(
+                "ASU client query wait timed out before transport wait: asuId={} key_count={}.",
+                pending.asuId, pending.keys.size());
+            anyFailed = true;
+            continue;
+        }
+
+        const auto remainingMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+        const auto waitMs = static_cast<std::uint64_t>(std::max<std::int64_t>(1, remainingMs));
+        TaskResult taskResult;
+        auto status = pending.transport->Wait(pending.taskId, waitMs, taskResult);
+        if (!status.ok()) {
+            needRefresh |= IsRefreshNeeded(status);
+            UC_ERROR("ASU client query wait failed: asuId={} key_count={} code={} message={}.",
+                     pending.asuId, pending.keys.size(), static_cast<int>(status.code),
+                     status.message);
+            anyFailed = true;
+            continue;
+        }
+        if (!taskResult.status.ok()) {
+            needRefresh |= IsRefreshNeeded(taskResult.status);
+            UC_ERROR("ASU client query result failed: asuId={} key_count={} code={} message={}.",
+                     pending.asuId, pending.keys.size(), static_cast<int>(taskResult.status.code),
+                     taskResult.status.message);
+            anyFailed = true;
+            continue;
+        }
+        if (!taskResult.queryResult.has_value()) {
+            UC_ERROR("ASU client query result is missing: asuId={} key_count={}.", pending.asuId,
+                     pending.keys.size());
+            anyFailed = true;
+            continue;
+        }
+
+        const auto& childResult = *taskResult.queryResult;
+        if (childResult.exists.size() != pending.keys.size()) {
+            UC_ERROR("ASU client query result size mismatch: asuId={} expected={} actual={}.",
+                     pending.asuId, pending.keys.size(), childResult.exists.size());
+            anyFailed = true;
+            continue;
+        }
+
+        for (std::size_t index = 0; index < pending.originalIndices.size(); ++index) {
+            result.exists[pending.originalIndices[index]] = childResult.exists[index];
         }
         result.prefixHitKeys += childResult.prefixHitKeys;
     }
 
-    return Status::OK();
+    return anyFailed ? PartialFailed("one or more asu queries failed") : Status::OK();
 }
 
 Status AsuClientImpl::LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
@@ -274,84 +279,65 @@ Status AsuClientImpl::DeleteAsync(const std::vector<CacheKey>& keys, TaskId& tas
 
 Status AsuClientImpl::Check(TaskId taskId, TaskResult& result)
 {
-    auto ctx = taskManager_.Get(taskId);
-    if (ctx != nullptr) {
-        PollTask(ctx);
-        auto status = BuildResult(ctx, result);
-        if (IsTaskComplete(result)) { (void)taskManager_.Remove(taskId); }
-        if (viewServer_ != nullptr &&
-            (viewServer_->ShouldRefreshView(status) || viewServer_->ShouldRefreshView(result))) {
-            RequestBackgroundRefresh();
-        }
-        return status;
+    auto status = taskManager_.Check(taskId, result);
+    if (status.code == StatusCode::TASK_NOT_FOUND) { return status; }
+    if (viewServer_ != nullptr &&
+        (viewServer_->ShouldRefreshView(status) || viewServer_->ShouldRefreshView(result))) {
+        RequestBackgroundRefresh();
     }
-
-    return Status::Error(StatusCode::TASK_NOT_FOUND, "task not found");
+    return status;
 }
 
 Status AsuClientImpl::Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result)
 {
-    auto ctx = taskManager_.Get(taskId);
-    if (ctx != nullptr) {
-        auto status = WaitTaskContext(ctx, timeoutMs, result);
-        if (IsTaskComplete(result)) { (void)taskManager_.Remove(taskId); }
-        if (viewServer_ != nullptr &&
-            (viewServer_->ShouldRefreshView(status) || viewServer_->ShouldRefreshView(result))) {
-            RequestBackgroundRefresh();
-        }
-        return status;
+    const auto waitMs = timeoutMs == 0 ? config_.defaultWaitTimeoutMs : timeoutMs;
+    auto status = taskManager_.Wait(taskId, waitMs, result);
+    if (status.code == StatusCode::TASK_NOT_FOUND) { return status; }
+    if (viewServer_ != nullptr &&
+        (viewServer_->ShouldRefreshView(status) || viewServer_->ShouldRefreshView(result))) {
+        RequestBackgroundRefresh();
     }
-
-    return Status::Error(StatusCode::TASK_NOT_FOUND, "task not found");
+    return status;
 }
 
 Status AsuClientImpl::RegisterRegions(const std::vector<MemoryRegion>& regions,
-                                      std::vector<RegisterResult>& results)
+                                      std::vector<RegisteredMemory>& registeredRegions)
 {
     bool needRefresh = false;
-    auto status = RegisterRegionsOnce(regions, results, needRefresh);
+    auto status = RegisterRegionsOnce(regions, registeredRegions, needRefresh);
     if (needRefresh) { RequestBackgroundRefresh(); }
     return status;
 }
 
 Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regions,
-                                          std::vector<RegisterResult>& results, bool& needRefresh)
+                                          std::vector<RegisteredMemory>& registeredRegions,
+                                          bool& needRefresh)
 {
     auto snapshot = GetSnapshot();
     if (!snapshot) { return NotInitialized(); }
 
-    results.clear();
+    registeredRegions.clear();
     if (snapshot->transports.empty()) { return Status::OK(); }
 
     auto firstIter = snapshot->transports.find(snapshot->asuIds.front());
     if (firstIter == snapshot->transports.end()) {
         auto status = Status::Error(StatusCode::NOT_FOUND, "first asu transport not found");
-        MarkRefreshIfNeeded(status, needRefresh);
+        needRefresh |= IsRefreshNeeded(status);
         return WithContext(status, "asuIndex=0 asuId=" + std::to_string(snapshot->asuIds.front()));
     }
 
-    auto status = firstIter->second->RegisterRegions(regions, results);
+    auto status = firstIter->second->RegisterRegions(regions, registeredRegions);
     if (!status.ok()) {
-        MarkRefreshIfNeeded(status, needRefresh);
+        needRefresh |= IsRefreshNeeded(status);
         return WithContext(status, "asuIndex=0 asuId=" + std::to_string(snapshot->asuIds.front()) +
                                        " region_count=" + std::to_string(regions.size()));
     }
-    if (results.size() != regions.size()) {
+    if (registeredRegions.size() != regions.size()) {
         return WithContext(Status::Error(StatusCode::INTERNAL_ERROR,
                                          "register result count does not match region count"),
                            "asuIndex=0 asuId=" + std::to_string(snapshot->asuIds.front()) +
                                " region_count=" + std::to_string(regions.size()) +
-                               " result_count=" + std::to_string(results.size()));
-    }
-
-    std::vector<RegisteredMemory> registeredRegions;
-    registeredRegions.reserve(regions.size());
-    for (std::size_t index = 0; index < regions.size(); ++index) {
-        RegisteredMemory registeredRegion;
-        registeredRegion.region = regions[index];
-        registeredRegion.handle = results[index].handle;
-        registeredRegion.tokenId = results[index].tokenId;
-        registeredRegions.emplace_back(registeredRegion);
+                               " result_count=" + std::to_string(registeredRegions.size()));
     }
 
     Status finalStatus = Status::OK();
@@ -359,53 +345,35 @@ Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regio
         auto iter = snapshot->transports.find(snapshot->asuIds[asuIndex]);
         if (iter == snapshot->transports.end()) {
             auto status = Status::Error(StatusCode::NOT_FOUND, "bound asu transport not found");
-            MarkRefreshIfNeeded(status, needRefresh);
+            needRefresh |= IsRefreshNeeded(status);
             finalStatus = WithContext(PartialFailed("one or more asu region bindings failed"),
                                       "asuIndex=" + std::to_string(asuIndex) +
                                           " asuId=" + std::to_string(snapshot->asuIds[asuIndex]));
             continue;
         }
 
-        std::vector<RegisterResult> childResults;
-        status = iter->second->BindRegisteredRegions(registeredRegions, childResults);
+        status = iter->second->BindRegisteredRegions(registeredRegions);
         if (!status.ok() && finalStatus.ok()) {
-            MarkRefreshIfNeeded(status, needRefresh);
+            needRefresh |= IsRefreshNeeded(status);
             finalStatus =
                 WithContext(PartialFailed("one or more asu region bindings failed"),
                             "asuIndex=" + std::to_string(asuIndex) +
                                 " asuId=" + std::to_string(snapshot->asuIds[asuIndex]) +
                                 " region_count=" + std::to_string(registeredRegions.size()));
-        } else if (status.ok() && childResults.size() != registeredRegions.size() &&
-                   finalStatus.ok()) {
-            finalStatus =
-                WithContext(PartialFailed("one or more asu region bindings failed"),
-                            "asuIndex=" + std::to_string(asuIndex) +
-                                " asuId=" + std::to_string(snapshot->asuIds[asuIndex]) +
-                                " region_count=" + std::to_string(registeredRegions.size()) +
-                                " result_count=" + std::to_string(childResults.size()));
         }
     }
 
+    // Remember registered regions for future transport bindings.
     if (finalStatus.ok()) {
         std::lock_guard<std::mutex> lock{mutex_};
-        for (std::size_t index = 0; index < regions.size(); ++index) {
-            registeredResources_.emplace_back(RegisteredResource{regions[index], results[index]});
-        }
+        registeredRegions_.insert(registeredRegions_.end(), registeredRegions.begin(),
+                                  registeredRegions.end());
     }
     return finalStatus;
 }
 
 Status AsuClientImpl::SubmitAsync(ClientOpType opType, const std::vector<KVBuffer>& entries,
                                   TaskId& taskId)
-{
-    bool needRefresh = false;
-    auto status = SubmitAsyncOnce(opType, entries, taskId, needRefresh);
-    if (needRefresh) { RequestBackgroundRefresh(); }
-    return status;
-}
-
-Status AsuClientImpl::SubmitAsyncOnce(ClientOpType opType, const std::vector<KVBuffer>& entries,
-                                      TaskId& taskId, bool& needRefresh)
 {
     auto snapshot = GetSnapshot();
     if (!snapshot || !snapshot->router || snapshot->transports.empty()) {
@@ -422,28 +390,8 @@ Status AsuClientImpl::SubmitAsyncOnce(ClientOpType opType, const std::vector<KVB
     auto ctx = std::make_unique<ClientTaskContext>();
     ctx->opType = opType;
     ctx->viewSnapshot = snapshot;
-    const auto count = entries.size();
-    ctx->entryStatus.assign(count, Status::OK());
-
-    auto routes = snapshot->router->RouteKeys(ExtractEntryKeys(entries));
-    for (const auto& route : routes) {
-        if (snapshot->transports.find(route.first) == snapshot->transports.end()) {
-            auto status = Status::Error(StatusCode::NOT_FOUND, "routed asu transport not found");
-            MarkRefreshIfNeeded(status, needRefresh);
-            taskId = kInvalidTaskId;
-            return WithContext(status, "asuId=" + std::to_string(route.first));
-        }
-
-        ClientSubTask subTask;
-        subTask.asuId = route.first;
-        subTask.entries.reserve(route.second.size());
-        subTask.originalIndices.reserve(route.second.size());
-        for (auto index : route.second) {
-            subTask.entries.push_back(entries[index]);
-            subTask.originalIndices.push_back(index);
-        }
-        ctx->subTasks.push_back(std::move(subTask));
-    }
+    ctx->entries = entries;
+    ctx->entryStatus.assign(entries.size(), Status::OK());
 
     auto status = taskManager_.Submit(std::move(ctx), taskId);
     if (!status.ok()) { return status; }
@@ -454,29 +402,21 @@ Status AsuClientImpl::SubmitAsyncOnce(ClientOpType opType, const std::vector<KVB
         return Status::Error(StatusCode::INTERNAL_ERROR, "client task disappeared after submit");
     }
 
-    status = DispatchTask(rawCtx);
-    if (!status.ok()) {
-        MarkRefreshIfNeeded(status, needRefresh);
-        taskManager_.Remove(taskId);
-        taskId = kInvalidTaskId;
-        return status;
+    {
+        std::lock_guard<std::mutex> lock{taskQueueMu_};
+        if (stopWorker_) {
+            (void)taskManager_.Remove(taskId);
+            taskId = kInvalidTaskId;
+            return NotInitialized();
+        }
+        taskQueue_.emplace_back(std::move(rawCtx));
     }
-
-    rawCtx->state.store(ClientTaskState::INFLIGHT, std::memory_order_release);
+    taskQueueCv_.notify_one();
     return Status::OK();
 }
 
 Status AsuClientImpl::SubmitAsync(ClientOpType opType, const std::vector<CacheKey>& keys,
                                   TaskId& taskId)
-{
-    bool needRefresh = false;
-    auto status = SubmitAsyncOnce(opType, keys, taskId, needRefresh);
-    if (needRefresh) { RequestBackgroundRefresh(); }
-    return status;
-}
-
-Status AsuClientImpl::SubmitAsyncOnce(ClientOpType opType, const std::vector<CacheKey>& keys,
-                                      TaskId& taskId, bool& needRefresh)
 {
     auto snapshot = GetSnapshot();
     if (!snapshot || !snapshot->router || snapshot->transports.empty()) {
@@ -492,27 +432,8 @@ Status AsuClientImpl::SubmitAsyncOnce(ClientOpType opType, const std::vector<Cac
     auto ctx = std::make_unique<ClientTaskContext>();
     ctx->opType = opType;
     ctx->viewSnapshot = snapshot;
+    ctx->keys = keys;
     ctx->entryStatus.assign(keys.size(), Status::OK());
-
-    auto routes = snapshot->router->RouteKeys(ToRouterKeys(keys));
-    for (const auto& route : routes) {
-        if (snapshot->transports.find(route.first) == snapshot->transports.end()) {
-            auto status = Status::Error(StatusCode::NOT_FOUND, "routed asu transport not found");
-            MarkRefreshIfNeeded(status, needRefresh);
-            taskId = kInvalidTaskId;
-            return WithContext(status, "asuId=" + std::to_string(route.first));
-        }
-
-        ClientSubTask subTask;
-        subTask.asuId = route.first;
-        subTask.keys.reserve(route.second.size());
-        subTask.originalIndices.reserve(route.second.size());
-        for (auto index : route.second) {
-            subTask.keys.push_back(keys[index]);
-            subTask.originalIndices.push_back(index);
-        }
-        ctx->subTasks.push_back(std::move(subTask));
-    }
 
     auto status = taskManager_.Submit(std::move(ctx), taskId);
     if (!status.ok()) { return status; }
@@ -523,263 +444,36 @@ Status AsuClientImpl::SubmitAsyncOnce(ClientOpType opType, const std::vector<Cac
         return Status::Error(StatusCode::INTERNAL_ERROR, "client task disappeared after submit");
     }
 
-    status = DispatchTask(rawCtx);
-    if (!status.ok()) {
-        MarkRefreshIfNeeded(status, needRefresh);
-        taskManager_.Remove(taskId);
-        taskId = kInvalidTaskId;
-        return status;
+    {
+        std::lock_guard<std::mutex> lock{taskQueueMu_};
+        if (stopWorker_) {
+            (void)taskManager_.Remove(taskId);
+            taskId = kInvalidTaskId;
+            return NotInitialized();
+        }
+        taskQueue_.emplace_back(std::move(rawCtx));
     }
-
-    rawCtx->state.store(ClientTaskState::INFLIGHT, std::memory_order_release);
+    taskQueueCv_.notify_one();
     return Status::OK();
 }
 
-Status AsuClientImpl::DispatchTask(const ClientTaskContextPtr& ctx)
+void AsuClientImpl::WorkerLoop()
 {
-    auto snapshot = ctx == nullptr ? nullptr : ctx->viewSnapshot;
-    if (!snapshot) {
-        return Status::Error(StatusCode::NOT_INITIALIZED, "client view is not ready");
-    }
-
-    for (auto& subTask : ctx->subTasks) {
-        auto transIter = snapshot->transports.find(subTask.asuId);
-        if (transIter == snapshot->transports.end()) {
-            return Status::Error(StatusCode::NOT_FOUND, "routed ASU transport not found");
-        }
-
-        Status status;
-        if (ctx->opType == ClientOpType::LOAD) {
-            status = transIter->second->LoadAsync(subTask.entries, subTask.transTaskId);
-        } else if (ctx->opType == ClientOpType::STORE) {
-            status = transIter->second->StoreAsync(subTask.entries, subTask.transTaskId);
-        } else {
-            status = transIter->second->DeleteAsync(subTask.keys, subTask.transTaskId);
-        }
-        if (!status.ok()) {
-            for (auto& dispatchedSubTask : ctx->subTasks) {
-                if (&dispatchedSubTask == &subTask) { break; }
-                if (dispatchedSubTask.transTaskId == kInvalidTaskId) { continue; }
-
-                auto dispatchedTransIter = snapshot->transports.find(dispatchedSubTask.asuId);
-                if (dispatchedTransIter == snapshot->transports.end()) { continue; }
-                (void)dispatchedTransIter->second->Cancel(dispatchedSubTask.transTaskId);
-                dispatchedSubTask.completed = true;
-                dispatchedSubTask.failed = true;
-            }
-            return WithContext(status, "asuId=" + std::to_string(subTask.asuId));
-        }
-    }
-    return Status::OK();
-}
-bool AsuClientImpl::PollTask(const ClientTaskContextPtr& ctx)
-{
-    auto snapshot = ctx == nullptr ? nullptr : ctx->viewSnapshot;
-    if (!ctx || ctx->Done()) { return true; }
-    std::lock_guard<std::mutex> lock(ctx->waitMu);
-    if (ctx->Done()) { return true; }
-    if (!snapshot || ctx->state.load(std::memory_order_acquire) != ClientTaskState::INFLIGHT) {
-        return false;
-    }
-
-    bool allDone = true;
-    bool anyFailed = false;
-    for (auto& subTask : ctx->subTasks) {
-        if (subTask.completed) {
-            anyFailed = anyFailed || subTask.failed;
-            continue;
-        }
-
-        auto transIter = snapshot->transports.find(subTask.asuId);
-        if (transIter == snapshot->transports.end()) {
-            subTask.completed = true;
-            subTask.failed = true;
-            subTask.status = Status::Error(StatusCode::NOT_FOUND, "routed asu transport not found");
-            UC_ERROR("ASU client subtask check failed: {} code={} message={}.",
-                     SubTaskContext(*ctx, subTask), static_cast<int>(subTask.status.code),
-                     subTask.status.message);
-            anyFailed = true;
-            continue;
-        }
-
-        TaskResult subResult;
-        auto status = transIter->second->Check(subTask.transTaskId, subResult);
-        if (!status.ok()) {
-            subTask.completed = true;
-            subTask.failed = true;
-            subTask.status = status;
-            UC_ERROR("ASU client subtask check failed: {} code={} message={}.",
-                     SubTaskContext(*ctx, subTask), static_cast<int>(status.code), status.message);
-            anyFailed = true;
-            continue;
-        }
-        if (subResult.status.code == StatusCode::IN_PROGRESS) {
-            allDone = false;
-            continue;
-        }
-        subTask.completed = true;
-        if (!subResult.status.ok()) {
-            subTask.failed = true;
-            subTask.status = subResult.status;
-            UC_ERROR("ASU client subtask result failed after check: {} code={} message={}.",
-                     SubTaskContext(*ctx, subTask), static_cast<int>(subResult.status.code),
-                     subResult.status.message);
-            anyFailed = true;
-        } else {
-            subTask.status = Status::OK();
-        }
-
-        const auto& originalIndices = subTask.originalIndices;
-        for (std::size_t i = 0; i < originalIndices.size() && i < subResult.entryStatus.size();
-             ++i) {
-            ctx->entryStatus[originalIndices[i]] = subResult.entryStatus[i];
-        }
-    }
-
-    if (allDone) {
-        ctx->finalStatus =
-            anyFailed
-                ? Status::Error(StatusCode::PARTIAL_FAILED,
-                                "client task partially failed: " + FirstFailedSubTaskContext(*ctx))
-                : Status::OK();
-        ctx->state.store(ClientTaskState::COMPLETED, std::memory_order_release);
-        ctx->cv.notify_all();
-        return true;
-    }
-    return false;
-}
-Status AsuClientImpl::BuildResult(const ClientTaskContextPtr& ctx, TaskResult& result)
-{
-    result.status = ctx->Done() ? ctx->finalStatus
-                                : Status::Error(StatusCode::IN_PROGRESS, "client task in progress");
-    result.entryStatus = ctx->entryStatus;
-    result.queryResult.reset();
-    return result.status;
-}
-
-Status AsuClientImpl::WaitTaskContext(const ClientTaskContextPtr& ctx, std::uint64_t timeoutMs,
-                                      TaskResult& result)
-{
-    if (ctx == nullptr) {
-        return Status::Error(StatusCode::TASK_NOT_FOUND, "client task not found");
-    }
-
-    const auto waitMs = timeoutMs == 0 ? config_.defaultWaitTimeoutMs : timeoutMs;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(waitMs);
-    auto snapshot = ctx->viewSnapshot;
-
-    std::unique_lock<std::mutex> lock(ctx->waitMu);
-    while (!ctx->Done()) {
-        if (!snapshot || ctx->state.load(std::memory_order_acquire) != ClientTaskState::INFLIGHT) {
-            if (std::chrono::steady_clock::now() >= deadline) {
-                BuildResult(ctx, result);
-                result.status = Status::Error(
-                    StatusCode::TIMEOUT,
-                    "client task wait timeout before inflight: client_task_id=" +
-                        std::to_string(ctx->taskId) + " op=" + ClientOpTypeName(ctx->opType) +
-                        " wait_ms=" + std::to_string(waitMs));
-                UC_ERROR(
-                    "ASU client task wait timeout before inflight: client_task_id={} op={} "
-                    "wait_ms={}.",
-                    ctx->taskId, ClientOpTypeName(ctx->opType), waitMs);
-                return result.status;
-            }
-            ctx->cv.wait_until(lock, deadline);
-            continue;
-        }
-
-        bool allDone = true;
-        bool anyFailed = false;
-        for (auto& subTask : ctx->subTasks) {
-            anyFailed = anyFailed || subTask.failed;
-            if (subTask.completed) { continue; }
-
-            auto transIter = snapshot->transports.find(subTask.asuId);
-            if (transIter == snapshot->transports.end()) {
-                subTask.completed = true;
-                subTask.failed = true;
-                subTask.status =
-                    Status::Error(StatusCode::NOT_FOUND, "routed asu transport not found");
-                UC_ERROR("ASU client subtask wait failed: {} code={} message={}.",
-                         SubTaskContext(*ctx, subTask), static_cast<int>(subTask.status.code),
-                         subTask.status.message);
-                anyFailed = true;
+    while (true) {
+        ClientTaskContextPtr ctx;
+        {
+            std::unique_lock<std::mutex> lock{taskQueueMu_};
+            taskQueueCv_.wait(lock, [this] { return stopWorker_ || !taskQueue_.empty(); });
+            if (taskQueue_.empty()) {
+                if (stopWorker_) { return; }
                 continue;
             }
-
-            const auto now = std::chrono::steady_clock::now();
-            if (now >= deadline) {
-                BuildResult(ctx, result);
-                result.status = Status::Error(StatusCode::TIMEOUT,
-                                              "client task wait timeout before subtask wait: " +
-                                                  SubTaskContext(*ctx, subTask) +
-                                                  " wait_ms=" + std::to_string(waitMs));
-                UC_ERROR("ASU client task wait timeout before subtask wait: {} wait_ms={}.",
-                         SubTaskContext(*ctx, subTask), waitMs);
-                return result.status;
-            }
-            const auto remainingMs =
-                std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
-            const auto subTimeoutMs =
-                static_cast<std::uint64_t>(std::max<std::int64_t>(1, remainingMs));
-
-            TaskResult subResult;
-            auto status = transIter->second->Wait(subTask.transTaskId, subTimeoutMs, subResult);
-
-            if (status.code == StatusCode::TIMEOUT) {
-                BuildResult(ctx, result);
-                subTask.status = status;
-                result.status = Status::Error(
-                    StatusCode::TIMEOUT,
-                    "client task transport wait timeout: " + SubTaskContext(*ctx, subTask) +
-                        " sub_timeout_ms=" + std::to_string(subTimeoutMs) +
-                        " message=" + status.message);
-                UC_ERROR("ASU client transport wait timeout: {} sub_timeout_ms={} message={}.",
-                         SubTaskContext(*ctx, subTask), subTimeoutMs, status.message);
-                return result.status;
-            }
-            if (status.code == StatusCode::IN_PROGRESS ||
-                subResult.status.code == StatusCode::IN_PROGRESS) {
-                allDone = false;
-                continue;
-            }
-            subTask.completed = true;
-            if (!status.ok() || !subResult.status.ok()) {
-                subTask.failed = true;
-                subTask.status = !status.ok() ? status : subResult.status;
-                UC_ERROR(
-                    "ASU client subtask result failed after wait: {} wait_status_code={} "
-                    "wait_message={} result_status_code={} result_message={}.",
-                    SubTaskContext(*ctx, subTask), static_cast<int>(status.code), status.message,
-                    static_cast<int>(subResult.status.code), subResult.status.message);
-                anyFailed = true;
-            } else {
-                subTask.status = Status::OK();
-            }
-
-            const auto& originalIndices = subTask.originalIndices;
-            for (std::size_t i = 0; i < originalIndices.size() && i < subResult.entryStatus.size();
-                 ++i) {
-                ctx->entryStatus[originalIndices[i]] = subResult.entryStatus[i];
-            }
+            ctx = std::move(taskQueue_.front());
+            taskQueue_.pop_front();
         }
-
-        for (const auto& subTask : ctx->subTasks) {
-            allDone = allDone && subTask.completed;
-            anyFailed = anyFailed || subTask.failed;
-        }
-        if (allDone) {
-            ctx->finalStatus = anyFailed ? Status::Error(StatusCode::PARTIAL_FAILED,
-                                                         "client task partially failed: " +
-                                                             FirstFailedSubTaskContext(*ctx))
-                                         : Status::OK();
-            ctx->state.store(ClientTaskState::COMPLETED, std::memory_order_release);
-            ctx->cv.notify_all();
-            break;
-        }
+        auto status = taskManager_.Process(ctx);
+        if (IsRefreshNeeded(status)) { RequestBackgroundRefresh(); }
     }
-
-    return BuildResult(ctx, result);
 }
 
 Status AsuClientImpl::UnregisterRegions(const std::vector<MRHandle>& handles)
@@ -799,7 +493,7 @@ Status AsuClientImpl::UnregisterRegionsOnce(const std::vector<MRHandle>& handles
     for (const auto& item : snapshot->transports) {
         auto status = item.second->UnregisterRegions(handles);
         if (!status.ok() && finalStatus.ok()) {
-            MarkRefreshIfNeeded(status, needRefresh);
+            needRefresh |= IsRefreshNeeded(status);
             finalStatus =
                 WithContext(status, "asuId=" + std::to_string(item.first) +
                                         " handle_count=" + std::to_string(handles.size()));
@@ -807,13 +501,13 @@ Status AsuClientImpl::UnregisterRegionsOnce(const std::vector<MRHandle>& handles
     }
     if (finalStatus.ok()) {
         std::lock_guard<std::mutex> lock{mutex_};
-        registeredResources_.erase(
-            std::remove_if(registeredResources_.begin(), registeredResources_.end(),
-                           [&handles](const RegisteredResource& resource) {
-                               return std::find(handles.begin(), handles.end(),
-                                                resource.result.handle) != handles.end();
+        registeredRegions_.erase(
+            std::remove_if(registeredRegions_.begin(), registeredRegions_.end(),
+                           [&handles](const RegisteredMemory& region) {
+                               return std::find(handles.begin(), handles.end(), region.handle) !=
+                                      handles.end();
                            }),
-            registeredResources_.end());
+            registeredRegions_.end());
     }
     return finalStatus;
 }
@@ -843,11 +537,11 @@ Status AsuClientImpl::BuildSnapshot(const GlobalView& view,
                                                " asuId=" + std::to_string(asuId));
             }
 
-            status = BindRegisteredResources(asuId, transport);
+            status = BindRegisteredRegions(asuId, transport);
             if (!status.ok()) {
                 transport->Shutdown();
                 return WithContext(
-                    status, "bind registered resources during view refresh, asuIndex=" +
+                    status, "bind registered regions during view refresh, asuIndex=" +
                                 std::to_string(asuIndex) + " asuId=" + std::to_string(asuId));
             }
         }
@@ -899,44 +593,31 @@ Status AsuClientImpl::BuildTransport(AsuId asuId, const AsuInfo& asuInfo,
     return Status::OK();
 }
 
-Status AsuClientImpl::BindRegisteredResources(AsuId asuId,
-                                              const std::shared_ptr<AsuTransport>& transport)
+Status AsuClientImpl::BindRegisteredRegions(AsuId asuId,
+                                            const std::shared_ptr<AsuTransport>& transport)
 {
-    std::vector<RegisteredResource> resources;
+    std::vector<RegisteredMemory> registeredRegions;
     {
         std::lock_guard<std::mutex> lock{mutex_};
-        resources = registeredResources_;
+        registeredRegions = registeredRegions_;
     }
-    if (resources.empty()) { return Status::OK(); }
+    if (registeredRegions.empty()) { return Status::OK(); }
 
-    std::vector<RegisteredMemory> registeredRegions;
-    registeredRegions.reserve(resources.size());
-    for (const auto& resource : resources) {
-        RegisteredMemory registeredRegion;
-        registeredRegion.region = resource.region;
-        registeredRegion.handle = resource.result.handle;
-        registeredRegion.tokenId = resource.result.tokenId;
-        registeredRegions.emplace_back(registeredRegion);
-    }
-
-    std::vector<RegisterResult> results;
-    auto status = transport->BindRegisteredRegions(registeredRegions, results);
+    auto status = transport->BindRegisteredRegions(registeredRegions);
     if (!status.ok()) {
         return WithContext(status, "asuId=" + std::to_string(asuId) +
-                                       " resource_count=" + std::to_string(resources.size()));
+                                       " region_count=" + std::to_string(registeredRegions.size()));
     }
     return Status::OK();
 }
 
 Status AsuClientImpl::RefreshView()
 {
-    AsuClientConfig config;
     std::shared_ptr<ViewServer> viewServer;
     std::shared_ptr<ViewSnapshot> oldSnapshot;
     {
         std::lock_guard<std::mutex> lock{mutex_};
-        if (!initialized_) { return NotInitialized(); }
-        config = config_;
+        if (!initialized_ && !refreshInProgress_) { return NotInitialized(); }
         viewServer = viewServer_;
         oldSnapshot = snapshot_;
     }
@@ -949,7 +630,7 @@ Status AsuClientImpl::RefreshView()
     if (!status.ok()) { return status; }
     {
         std::lock_guard<std::mutex> lock{mutex_};
-        if (!initialized_) { return NotInitialized(); }
+        if (!initialized_ && !refreshInProgress_) { return NotInitialized(); }
         if (snapshot_ != nullptr && !viewServer->ShouldPublishView(snapshot_->view, view)) {
             return Status::OK();
         }
@@ -961,7 +642,7 @@ Status AsuClientImpl::RefreshView()
 
     {
         std::lock_guard<std::mutex> lock{mutex_};
-        if (!initialized_) { return NotInitialized(); }
+        if (!initialized_ && !refreshInProgress_) { return NotInitialized(); }
         if (snapshot_ != nullptr && !viewServer->ShouldPublishView(snapshot_->view, view)) {
             return Status::OK();
         }
@@ -980,27 +661,30 @@ Status AsuClientImpl::RefreshView()
 
 void AsuClientImpl::RequestBackgroundRefresh()
 {
-    bool shouldStart = false;
+    std::thread completedThread;
     {
         std::lock_guard<std::mutex> lock{mutex_};
         if (!initialized_ || refreshInProgress_) { return; }
+        completedThread = std::move(refreshThread_);
         refreshInProgress_ = true;
-        shouldStart = true;
+        refreshThread_ = std::thread([this] {
+            (void)RefreshView();
+            std::lock_guard<std::mutex> lock{mutex_};
+            refreshInProgress_ = false;
+        });
     }
 
-    if (!shouldStart) { return; }
-    if (refreshThread_.joinable()) { refreshThread_.join(); }
-
-    refreshThread_ = std::thread([this] {
-        (void)RefreshView();
-        std::lock_guard<std::mutex> lock{mutex_};
-        refreshInProgress_ = false;
-    });
+    if (completedThread.joinable()) { completedThread.join(); }
 }
 
 void AsuClientImpl::JoinBackgroundRefresh()
 {
-    if (refreshThread_.joinable()) { refreshThread_.join(); }
+    std::thread refreshThread;
+    {
+        std::lock_guard<std::mutex> lock{mutex_};
+        refreshThread = std::move(refreshThread_);
+    }
+    if (refreshThread.joinable()) { refreshThread.join(); }
 }
 
 Status AsuClientImpl::ShutdownSnapshotTransports(const std::shared_ptr<ViewSnapshot>& snapshot)
@@ -1014,22 +698,6 @@ Status AsuClientImpl::ShutdownSnapshotTransports(const std::shared_ptr<ViewSnaps
     return finalStatus;
 }
 
-Status AsuClientImpl::DrainTasksBeforeShutdown(std::uint64_t waitTimeoutMs)
-{
-    Status finalStatus = Status::OK();
-    for (const auto& ctx : taskManager_.GetAll()) {
-        if (ctx == nullptr) { continue; }
-
-        if (!ctx->Done()) {
-            TaskResult result;
-            auto status = WaitTaskContext(ctx, waitTimeoutMs, result);
-            if (!status.ok() && finalStatus.ok()) { finalStatus = status; }
-        }
-        (void)taskManager_.Remove(ctx->taskId);
-    }
-    return finalStatus;
-}
-
 std::shared_ptr<ViewSnapshot> AsuClientImpl::GetSnapshot() const
 {
     std::lock_guard<std::mutex> lock{mutex_};
@@ -1037,9 +705,9 @@ std::shared_ptr<ViewSnapshot> AsuClientImpl::GetSnapshot() const
     return snapshot_;
 }
 
-void AsuClientImpl::MarkRefreshIfNeeded(const Status& status, bool& needRefresh) const
+bool AsuClientImpl::IsRefreshNeeded(const Status& status) const
 {
-    if (viewServer_ != nullptr && viewServer_->ShouldRefreshView(status)) { needRefresh = true; }
+    return viewServer_ != nullptr && viewServer_->ShouldRefreshView(status);
 }
 
 std::vector<AsuId> AsuClientImpl::GetSortedAsuIds(const GlobalView& view)
@@ -1058,18 +726,6 @@ std::vector<AsuId> AsuClientImpl::GetSortedAsuIds(const GlobalView& view)
 Status AsuClientImpl::LoadConfig(const std::string& configPath, AsuClientConfig& config)
 {
     return LoadAsuClientConfig(configPath, config);
-}
-
-bool AsuClientImpl::IsTaskComplete(const TaskResult& result)
-{
-    if (!IsTaskStatusComplete(result.status)) { return false; }
-    return std::all_of(result.entryStatus.begin(), result.entryStatus.end(),
-                       [](const Status& status) { return IsTaskStatusComplete(status); });
-}
-
-bool AsuClientImpl::IsTaskStatusComplete(const Status& status)
-{
-    return status.code != StatusCode::IN_PROGRESS && status.code != StatusCode::TIMEOUT;
 }
 
 Status AsuClientImpl::WithContext(Status status, const std::string& context)

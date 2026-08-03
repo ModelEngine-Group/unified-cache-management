@@ -24,7 +24,9 @@
 #include <acl/acl.h>
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <gtest/gtest.h>
 #include <memory>
 #include <string>
@@ -42,6 +44,23 @@
 namespace UC::ASU {
 
 namespace {
+
+TEST(TransportConfigParserTest, LoadsMaxErrorCount)
+{
+    constexpr const char* kConfigPath = "asu_transport_max_error_count_test.conf";
+    {
+        std::ofstream configFile{kConfigPath};
+        ASSERT_TRUE(configFile.is_open());
+        configFile << "max_error_count=7\n";
+    }
+
+    TransportConfig config;
+    auto status = LoadTransportConfig(kConfigPath, config);
+    std::remove(kConfigPath);
+
+    ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(config.maxErrorCount, std::uint32_t{7});
+}
 
 CacheKey MakeCacheKey(std::string_view text)
 {
@@ -219,8 +238,9 @@ TEST_F(SqeRequestTest, SubmitBatchStoreAllocatesFlagBufferAndBuildsRequest)
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::PENDING);
     EXPECT_TRUE(subBatchContext.status.ok());
     EXPECT_NE(subBatchContext.sendSge.local_addr, std::uint64_t{0});
-    EXPECT_NE(subBatchContext.sendSge.local_addr, subBatchContext.sendSge.device_addr);
-    EXPECT_NE(subBatchContext.flagBuffer.local_addr, subBatchContext.flagBuffer.device_addr);
+    EXPECT_NE(subBatchContext.sendSge.device_addr, std::uint64_t{0});
+    EXPECT_NE(subBatchContext.flagBuffer.local_addr, std::uint64_t{0});
+    EXPECT_NE(subBatchContext.flagBuffer.device_addr, std::uint64_t{0});
 
     const auto* packedSqe =
         reinterpret_cast<const std::uint32_t*>(subBatchContext.sendSge.local_addr);

@@ -22,7 +22,6 @@
  * SOFTWARE.
  * */
 #include "pool/variable_buffer_pool.h"
-#include <acl/acl.h>
 #include <array>
 #include <atomic>
 #include <cstdint>

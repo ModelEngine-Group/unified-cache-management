@@ -262,7 +262,7 @@ Status PrepareBenchBuffers(BenchBufferSlot& slot, std::uint64_t begin, std::size
 
 Status BindRegisteredBuffers(BufferSet& buffers)
 {
-    if (buffers.registerResults.size() != buffers.regions.size()) {
+    if (buffers.registeredRegions.size() != buffers.regions.size()) {
         return Status::Error(kExitInvalidArgument,
                              "registered buffer result count does not match region count");
     }
@@ -270,11 +270,11 @@ Status BindRegisteredBuffers(BufferSet& buffers)
         const auto regionIndex = buffers.entryRegionIndexes.empty()
                                      ? entryIndex
                                      : buffers.entryRegionIndexes[entryIndex];
-        if (regionIndex >= buffers.registerResults.size()) {
+        if (regionIndex >= buffers.registeredRegions.size()) {
             return Status::Error(kExitInvalidArgument,
                                  "registered buffer region index out of range");
         }
-        buffers.entries[entryIndex].buffer.handle = buffers.registerResults[regionIndex].handle;
+        buffers.entries[entryIndex].buffer.handle = buffers.registeredRegions[regionIndex].handle;
     }
     return Status::Success();
 }
@@ -303,10 +303,10 @@ Status UnregisterBenchDeviceBuffers(AsuClientRunner& clientRunner, BenchBufferPo
     Status finalStatus = Status::Success();
     for (auto& slot : pool) {
         auto& buffers = slot.buffers;
-        if (buffers.registerResults.empty()) { continue; }
+        if (buffers.registeredRegions.empty()) { continue; }
         auto status = clientRunner.UnregisterBuffers(buffers);
         if (finalStatus.Ok() && !status.Ok()) { finalStatus = status; }
-        buffers.registerResults.clear();
+        buffers.registeredRegions.clear();
     }
     return finalStatus;
 }

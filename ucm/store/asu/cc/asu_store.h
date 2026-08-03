@@ -18,21 +18,19 @@ struct Config {
     std::vector<std::string> viewServiceAddrs;
     std::vector<ssize_t> asuIds;
     std::vector<std::string> asuIps;
-    std::string asuLocalIp;
+    std::string localIp;
     std::string asuNamePrefix{"asu"};
     std::vector<std::uint32_t> kvNsIds;
     std::uint16_t asuPort{0};
     std::uint64_t defaultWaitTimeoutMs{100};
-    std::uint64_t queryTimeoutMs{5};
-    std::uint64_t loadTimeoutMs{100};
-    std::uint64_t storeTimeoutMs{100};
+    std::uint64_t timeoutMs{100};
+    std::uint64_t maxErrorCount{2};
     std::uint64_t maxInflightTasks{1024};
     std::uint64_t maxInflightBytes{1ULL << 30};
     std::vector<std::size_t> tensorSizes;
     std::size_t shardSize{0};
     std::size_t blockSize{0};
     std::int32_t deviceId{-1};
-    std::string memoryType;
     std::string tensorLayout;
     UC::ASU::TransProviderType transProviderType{UC::ASU::TransProviderType::AICPU};
     std::string fakeBackendPath;
@@ -58,8 +56,9 @@ public:
     virtual UC::ASU::Status Check(UC::ASU::TaskId taskId, UC::ASU::TaskResult& result) = 0;
     virtual UC::ASU::Status Wait(UC::ASU::TaskId taskId, std::uint64_t timeoutMs,
                                  UC::ASU::TaskResult& result) = 0;
-    virtual UC::ASU::Status RegisterRegions(const std::vector<UC::ASU::MemoryRegion>& regions,
-                                            std::vector<UC::ASU::RegisterResult>& results) = 0;
+    virtual UC::ASU::Status RegisterRegions(
+        const std::vector<UC::ASU::MemoryRegion>& regions,
+        std::vector<UC::ASU::RegisteredMemory>& registeredRegions) = 0;
 };
 
 }  // namespace UC::AsuStore

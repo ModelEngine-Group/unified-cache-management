@@ -81,8 +81,8 @@ public:
         if (!std::isfinite(evictRatio) || evictRatio <= 0.0 || index_.empty()) { return victims; }
 
         const double boundedRatio = std::min(evictRatio, 1.0);
-        const auto target =
-            static_cast<std::size_t>(static_cast<double>(index_.size()) * boundedRatio);
+        const auto target = std::max<std::size_t>(
+            1, static_cast<std::size_t>(static_cast<double>(index_.size()) * boundedRatio));
         const auto now = std::chrono::system_clock::now();
 
         for (auto it = lruList_.rbegin(); it != lruList_.rend() && victims.size() < target; ++it) {

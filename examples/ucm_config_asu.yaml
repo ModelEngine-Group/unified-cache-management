@@ -1,4 +1,4 @@
-# UCM ASU fake backend example for vLLM / vLLM-Ascend software integration tests.
+# UCM ASU AIV backend example for vLLM / vLLM-Ascend integration.
 #
 # Use with:
 # kv_connector_extra_config={"UCM_CONFIG_FILE": "/workspace/unified-cache-management/examples/ucm_config_asu.yaml"}
@@ -8,28 +8,33 @@ ucm_connectors:
     ucm_connector_config:
       store_pipeline: "ASU"
       asu_mode: "client"
-      asu_client_id: "ucm-vllm-asu-fake"
-      asu_ids: [1, 2]
-      asu_trans_provider_backend: "fake"
+      asu_client_id: "ucm-vllm-asu-aiv"
+      asu_ids: [1]
+      asu_trans_provider_backend: "aiv"
 
       # Non-FAWA models use one ASU namespace. For DeepSeek V4 / FAWA,
       # replace this with: kv_ns_ids: [100, 101]  # [FA, WA]
       kv_ns_ids: [100]
 
-      # ASU client routing. Keep the default close to kv-test's fake_backend config.
+      # cpu ip where mock server runs
+      asu_ips: ["223.223.8.11"]
+      asu_port: 19001
+      # Used by the scheduler. Worker processes overwrite it with local_rank.
+      device_id: 0
+
+      # ASU client routing.
       asu_router_type: "RING_HASH"
       asu_ring_hash_virtual_node_count: 128
 
       # Local software backend. This uses normal AsuClient + AsuTransportImpl submit/CQE paths
       # and replaces the missing device Send/backend execution with local files.
-      asu_fake_backend_path: "./asu-fake-backend-store"
-      asu_fake_backend_latency_ms: 1
+      # asu_fake_backend_path: "./asu-fake-backend-store"
+      # asu_fake_backend_latency_ms: 1
 
-      # ASU wait and operation timeouts.
+      # ASU wait, operation timeout, and connection recovery.
       asu_default_wait_timeout_ms: 5000
-      asu_query_timeout_ms: 5000
-      asu_load_timeout_ms: 5000
-      asu_store_timeout_ms: 5000
+      asu_timeout_ms: 5000
+      asu_max_error_count: 2
       asu_max_inflight_tasks: 1024
 
 enable_event_sync: true

@@ -28,15 +28,17 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
-#include <vector>
 #include "buffer_manager.h"
 #include "completion_poller.h"
 #include "drampool_config.h"
 #include "drampool_types.h"
 #include "kv_protocol.h"
+#include "pool/buffer_pool.h"
 #include "status/status.h"
+#include "trans/device.h"
 
 namespace transport {
 class TcpMessageChannel;
@@ -66,8 +68,9 @@ private:
         Stopped,
     };
 
-    Status InitializeAclRuntime();
+    Status InitializeDeviceRuntime();
     Status InitMemoryPool();
+    Status InitFlagBufferPool();
     Status InitMetadata();
     Status InitProtocol();
     Status InitQueues();
@@ -85,10 +88,8 @@ private:
     void StopTcpMessageChannel();
     void StopRequestReceiver();
     void StopTaskWorker();
-    void MarkInflightTransportsFailed();
     void StopCompletionPoller();
     void StopGCThread();
-    void UnregisterBufferPools();
     void StopTransportService();
 
     void RequestReceiveLoop();
@@ -114,13 +115,15 @@ private:
     std::unique_ptr<transport::TransportManager> transportManager_;
     std::unique_ptr<transport::TcpMessageChannel> tcpMessageChannel_;
     std::unique_ptr<BufferManager> bufferManager_;
-    std::vector<transport::MemoryHandle> bufferPoolMemoryHandles_;
-    std::unique_ptr<UC::DramPool::MetadataManager> metadataManager_;
+    std::unique_ptr<UC::BufferPool> flagBufferPool_;
+    std::unique_ptr<MetadataManager> metadataManager_;
     std::unique_ptr<ProtocolManager> protocolManager_;
     std::unique_ptr<DramPoolRuntime> runtime_;
     std::unique_ptr<TaskWorker> taskWorker_;
     std::unique_ptr<CompletionPoller> completionPoller_;
-    bool aclRuntimeOwned_{false};
+    Trans::Device device_;
+    std::optional<std::int32_t> deviceId_;
+    bool deviceRuntimeOwned_{false};
 
     ServerState state_{ServerState::New};
     std::mutex requestReceiverWaitMutex_;

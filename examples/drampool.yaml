@@ -5,7 +5,8 @@
 #   --kvcache-block-proportions, --ttl-minutes, and --config.
 
 transport:
-  device_id: 0
+  device_ids:
+    - 0
   # Cluster-wide request-channel to transport-endpoint routing.
   endpoints:
     - two_sided: "127.0.0.1:9000"

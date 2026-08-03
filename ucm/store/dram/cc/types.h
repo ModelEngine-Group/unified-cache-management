@@ -27,6 +27,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 #include "pool/buffer_pool.h"
@@ -44,6 +45,7 @@ using ReplySlot = BufferPool::Slot;
 inline constexpr LaneId kDefaultLaneId = 0;
 inline constexpr RequestId kInvalidRequestId = 0;
 inline constexpr ConnectionEpoch kInvalidConnectionEpoch = 0;
+inline constexpr std::size_t kMaxProtocolBatchEntries = std::numeric_limits<std::uint16_t>::max();
 
 enum class OpType : std::uint8_t {
     LOOKUP = 0,
@@ -51,17 +53,9 @@ enum class OpType : std::uint8_t {
     LOAD,
 };
 
-enum class TaskState : std::uint8_t {
-    PREPARING = 0,
-    RUNNING,
-    DRAINING_FAILURE,
-    SUCCEEDED,
-    FAILED,
-};
-
 enum class RequestState : std::uint8_t {
     PENDING = 0,
-    SENDING,
+    TRANSMITTING,
     INFLIGHT,
     WAITING_FENCE,
 };
@@ -82,15 +76,9 @@ struct BufferRef {
 
 struct IoEntry {
     Detail::BlockId blockId{};
-    std::string key;
-    std::uint32_t layer{0};
+    std::uint32_t shardId{0};
     BufferRef buffer;
     std::size_t originalIndex{0};
-};
-
-struct DramTask {
-    OpType op{OpType::LOOKUP};
-    std::vector<IoEntry> entries;
 };
 
 struct EntryResult {
@@ -125,46 +113,42 @@ struct RequestToken {
     }
 };
 
-// Memory key
-struct LayerKey {
-    std::uint32_t layerId{0};
-    std::uint32_t rkey{0};
-};
-
-struct MemoryKey {
-    std::vector<LayerKey> layerKeys;
-    std::uint32_t replyKey{0};
-};
-
-// Node
 struct NodeEndpoint {
     NodeId nodeId{0};
-    // Endpoint
+    std::string controlHost;
+    std::uint16_t controlPort{0};
+    std::string transportManagerId;
 };
 
 struct NodeLimits {
     std::size_t maxPendingRequests{0};
     std::size_t maxInflightRequests{0};
+    std::size_t maxPendingEntries{0};
     std::size_t maxBatchEntries{0};
 };
 
-// Store Config
 struct TimeoutConfig {
-    std::chrono::milliseconds lookup{100};
-    std::chrono::milliseconds dump{100};
-    std::chrono::milliseconds load{100};
+    std::chrono::milliseconds lookup{0};
+    std::chrono::milliseconds dump{0};
+    std::chrono::milliseconds load{0};
 };
 
-struct RuntimeConfig {
+struct TaskLimits {
+    std::size_t maxLiveTasks{1024};
+    std::size_t maxLiveEntries{65536};
+};
+
+struct NodeSchedulerConfig {
     std::vector<NodeEndpoint> nodes;
-    NodeLimits nodeLimits;
-    TimeoutConfig timeouts;
-    std::chrono::milliseconds reconnectBackoff{0};
-    std::size_t actorThreadCount{1};
-    std::size_t transportThreadCount{1};
-    std::size_t eventQueueCapacity{1};
+    NodeLimits limits;
+    std::chrono::milliseconds reconnectInterval{0};
+    std::size_t runnerCount{1};
+};
+
+struct TransportRuntimeConfig {
+    std::size_t workerCount{1};
 };
 
 }  // namespace UC::Dram
 
-#endif
+#endif  // UNIFIEDCACHE_DRAM_STORE_CC_TYPES_H

@@ -149,12 +149,10 @@ Status LoadTransportConfig(const std::string& configPath, TransportConfig& confi
             for (const auto& endpointValue : SplitConfigValue(value, ';')) {
                 config.endpoints.emplace_back(ParseTransportEndpoint(endpointValue));
             }
-        } else if (key == "queryTimeoutMs" || key == "query_timeout_ms") {
-            config.queryTimeoutMs = ParseConfigUint64(value);
-        } else if (key == "loadTimeoutMs" || key == "load_timeout_ms") {
-            config.loadTimeoutMs = ParseConfigUint64(value);
-        } else if (key == "storeTimeoutMs" || key == "store_timeout_ms") {
-            config.storeTimeoutMs = ParseConfigUint64(value);
+        } else if (key == "timeoutMs" || key == "timeout_ms") {
+            config.timeoutMs = ParseConfigUint64(value);
+        } else if (key == "maxErrorCount" || key == "max_error_count") {
+            config.maxErrorCount = static_cast<std::uint32_t>(ParseConfigUint64(value));
         } else if (key == "maxInflightTasks" || key == "max_inflight_tasks") {
             config.maxInflightTasks = static_cast<std::uint32_t>(ParseConfigUint64(value));
         } else if (key == "maxInflightBytes" || key == "max_inflight_bytes") {
@@ -164,6 +162,8 @@ Status LoadTransportConfig(const std::string& configPath, TransportConfig& confi
         } else if (ApplyTransportIoNumConfigField(config, key, value)) {
             continue;
         } else if (ApplyTransportProviderConfigField(config, key, value)) {
+            continue;
+        } else if (ApplyTransportDeviceConfigField(config, key, value)) {
             continue;
         } else {
             config.attrs[key] = value;

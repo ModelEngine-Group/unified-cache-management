@@ -22,7 +22,6 @@
  * SOFTWARE.
  * */
 #include "pool/buffer_pool.h"
-#include <acl/acl.h>
 #include <array>
 #include <atomic>
 #include <cstring>
@@ -31,7 +30,6 @@
 #include <thread>
 #include <vector>
 #include "pool/pool_test_base.h"
-
 namespace UC {
 namespace {
 
@@ -168,6 +166,10 @@ TEST_F(BufferPoolTest, SupportsCustomSizeAndOffsetAlignment)
 
 TEST_F(BufferPoolTest, HostPinnedPoolKeepsLocalAndDeviceAddresses)
 {
+#if !defined(UCM_TEST_RUNTIME_ASCEND)
+    GTEST_SKIP() << "Host-pinned memory is not supported by the simu backend";
+#endif
+
     BufferPool pool;
     auto status = pool.Init("pinned_pool", MemoryType::HOST_PINNED, 4096, 2);
     ASSERT_TRUE(status.Success()) << status.ToString();
@@ -197,6 +199,10 @@ TEST_F(BufferPoolTest, DevicePoolZeroesReleasedSlot)
     constexpr std::size_t kSlotCapacity = 71;
     constexpr std::size_t kSlotStride = 128;
 
+    Trans::Device device;
+    auto stream = device.MakeStream();
+    ASSERT_NE(stream, nullptr);
+
     BufferPool pool;
     auto status = pool.Init("device_pool", MemoryType::ASCEND_DEVICE, kSlotCapacity, 1, true);
     ASSERT_TRUE(status.Success()) << status.ToString();
@@ -206,7 +212,11 @@ TEST_F(BufferPoolTest, DevicePoolZeroesReleasedSlot)
 
     BufferPool::Slot first;
     ASSERT_TRUE(pool.Allocate(first).Success());
-    ASSERT_EQ(aclrtMemset(first.local_addr, kSlotStride, 0xAB, kSlotStride), ACL_SUCCESS);
+
+    std::array<std::uint8_t, kSlotStride> dirty;
+    dirty.fill(0xAB);
+    ASSERT_TRUE(stream->HostToDevice(dirty.data(), first.device_addr, kSlotStride).Success());
+
     ASSERT_TRUE(pool.Free(first.slot_index).Success());
 
     BufferPool::Slot second;
@@ -215,9 +225,8 @@ TEST_F(BufferPoolTest, DevicePoolZeroesReleasedSlot)
     EXPECT_EQ(second.slot_index, first.slot_index);
 
     std::array<std::uint8_t, kSlotStride> host{};
-    ASSERT_EQ(aclrtMemcpy(host.data(), host.size(), second.local_addr, kSlotStride,
-                          ACL_MEMCPY_DEVICE_TO_HOST),
-              ACL_SUCCESS);
+    ASSERT_TRUE(stream->DeviceToHost(second.device_addr, host.data(), kSlotStride).Success());
+
     for (const auto value : host) { EXPECT_EQ(value, 0); }
 }
 

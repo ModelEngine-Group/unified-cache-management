@@ -30,8 +30,8 @@
 namespace UC::ASU {
 
 ConnectionManager::ConnectionManager(TransProvider& provider, const std::string& localIp,
-                                     std::uint32_t timeout)
-    : provider_(provider), localIp_(localIp), timeout_(timeout)
+                                     std::uint32_t timeout, std::uint32_t maxErrorCount)
+    : provider_(provider), localIp_(localIp), timeout_(timeout), maxErrorCount_(maxErrorCount)
 {
 }
 
@@ -47,20 +47,14 @@ Status ConnectionManager::AddGroup(const AsuEndpoint& endpoint, std::uint32_t qp
     std::vector<TransProvider::ConnectionHandle> handles;
     auto createStatus =
         provider_.CreateConnection(localIp_, endpoint.ip, endpoint.port, qp_num, timeout_, handles);
-    if (!createStatus.ok() || handles.size() != qp_num) {
-        UC_DEBUG("ConnectionManager::AddGroup FAILED: got {} handles, expected {}", handles.size(),
-                 qp_num);
-        if (!handles.empty()) { provider_.DeleteConnections(handles); }
-        return Status::Error(StatusCode::CONNECTION_ERROR,
-                             "CreateConnection returned wrong number of handles");
-    }
+    if (!createStatus.ok()) { return createStatus; }
 
     {
         std::lock_guard<std::mutex> cacheLock(channelCacheMu_);
         std::unique_lock<std::shared_mutex> lock(structureMu_);
         auto gid = static_cast<std::uint32_t>(groups_.size());
         auto group = std::make_unique<ConnectionGroup>(gid, endpoint);
-        for (auto& handle : handles) { group->AddChannel(std::move(handle), &provider_); }
+        for (auto handle : handles) { group->AddChannel(handle, &provider_); }
         groups_.push_back(std::move(group));
 
         for (const auto& channel : groups_.back()->GetChannels()) {
@@ -131,18 +125,19 @@ void ConnectionManager::ReportFailure(const std::shared_ptr<ConnectionChannel>& 
 {
     if (channel == nullptr) { return; }
     if (shuttingDown_.load(std::memory_order_acquire)) { return; }
-    auto old_count = channel->FetchAddErrorCount(1);
+    auto oldCount = channel->FetchAddErrorCount(1);
     UC_DEBUG("ConnectionManager::ReportFailure ch_id={} group_id={} error_count={} threshold={}",
-             channel->GetChannelId(), channel->GetGroup()->GetGroupId(), old_count + 1,
-             kFailureThreshold);
-    if (old_count + 1 < kFailureThreshold) {
+             channel->GetChannelId(), channel->GetGroup()->GetGroupId(), oldCount + 1,
+             maxErrorCount_);
+    if (oldCount + 1 < maxErrorCount_) {
         UC_DEBUG("ConnectionManager::ReportFailure below threshold, skip drain");
         return;
     }
 
     if (!channel->MarkForDrain()) {
         UC_DEBUG(
-            "ConnectionManager::ReportFailure MarkForDrain CAS failed (already draining/failed)");
+            "ConnectionManager::ReportFailure MarkForDrain CAS failed "
+            "(already draining/failed)");
         return;
     }
 
@@ -157,6 +152,12 @@ void ConnectionManager::ReportFailure(const std::shared_ptr<ConnectionChannel>& 
         }
         drainList_.push_back(channel);
     }
+}
+
+void ConnectionManager::ReportSuccess(const std::shared_ptr<ConnectionChannel>& channel)
+{
+    if (channel == nullptr) { return; }
+    channel->ResetErrorCount();
 }
 
 void ConnectionManager::StartRecoverLoop()
@@ -196,7 +197,7 @@ void ConnectionManager::RecoverLoop()
             auto createStatus =
                 provider_.CreateConnection(localIp_, ep.ip, ep.port, 1, timeout_, new_handles);
 
-            if (!createStatus.ok() || new_handles.empty()) {
+            if (!createStatus.ok()) {
                 UC_DEBUG(
                     "ConnectionManager::RecoverLoop RebuildChannel FAILED, keep in drain_list for "
                     "retry group_id={}",
@@ -209,7 +210,7 @@ void ConnectionManager::RecoverLoop()
             {
                 std::unique_lock<std::shared_mutex> lock(structureMu_);
                 grp->RemoveChannel(channel.get());
-                auto new_ch = grp->AddChannel(std::move(new_handles[0]), &provider_);
+                auto new_ch = grp->AddChannel(new_handles[0], &provider_);
                 UC_DEBUG(
                     "ConnectionManager::RecoverLoop RebuildChannel OK: new_ch_id={} group_id={}",
                     new_ch->GetChannelId(), gid);

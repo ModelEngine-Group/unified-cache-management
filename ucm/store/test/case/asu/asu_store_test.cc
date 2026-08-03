@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <fstream>
 #include <gtest/gtest.h>
+#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -148,16 +149,17 @@ public:
         return Check(taskId, result);
     }
 
-    UC::ASU::Status RegisterRegions(const std::vector<UC::ASU::MemoryRegion>& regions,
-                                    std::vector<UC::ASU::RegisterResult>& results) override
+    UC::ASU::Status RegisterRegions(
+        const std::vector<UC::ASU::MemoryRegion>& regions,
+        std::vector<UC::ASU::RegisteredMemory>& registeredRegions) override
     {
-        results.clear();
-        results.reserve(regions.size());
+        registeredRegions.clear();
+        registeredRegions.reserve(regions.size());
         state_->registeredRegions.insert(state_->registeredRegions.end(), regions.begin(),
                                          regions.end());
         for (std::size_t index = 0; index < regions.size(); ++index) {
-            results.emplace_back(
-                UC::ASU::RegisterResult{UC::ASU::Status::OK(), MakeTestMrHandle(nextMrHandle_++)});
+            registeredRegions.emplace_back(
+                UC::ASU::RegisteredMemory{regions[index], MakeTestMrHandle(nextMrHandle_++)});
         }
         return UC::ASU::Status::OK();
     }
@@ -215,9 +217,7 @@ UC::Detail::Dictionary MakeBaseConfig()
     config.SetNumber("shard_size", std::size_t{64});
     config.SetNumber("block_size", std::size_t{64});
     config.SetNumber("asu_default_wait_timeout_ms", std::uint64_t{1000});
-    config.SetNumber("asu_query_timeout_ms", std::uint64_t{1000});
-    config.SetNumber("asu_load_timeout_ms", std::uint64_t{1000});
-    config.SetNumber("asu_store_timeout_ms", std::uint64_t{1000});
+    config.SetNumber("asu_timeout_ms", std::uint64_t{1000});
     config.SetNumber("asu_max_inflight_tasks", std::uint64_t{16});
     config.Set("kv_ns_ids", std::vector<ssize_t>{100});
     return config;
@@ -318,19 +318,188 @@ TEST(UCAsuStoreTest, ParsesKvNamespaces)
     }
 }
 
+TEST(UCAsuStoreTest, ParsesOperationTimeout)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeBackend(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("asu_timeout_ms", std::uint64_t{321});
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+    EXPECT_EQ(state->initConfigs.back().timeoutMs, 321);
+
+    auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+    EXPECT_EQ(transportConfig.timeoutMs, 321);
+}
+
+TEST(UCAsuStoreTest, PropagatesMaxErrorCountToTransport)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeBackend(store);
+    auto config = MakeBaseConfig();
+    config.SetNumber("asu_max_error_count", std::uint64_t{7});
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+    EXPECT_EQ(state->initConfigs.back().maxErrorCount, std::uint64_t{7});
+
+    auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+    EXPECT_EQ(transportConfig.maxErrorCount, std::uint32_t{7});
+}
+
+TEST(UCAsuStoreTest, RejectsMissingKvNamespaces)
+{
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("kv_ns_ids", std::vector<ssize_t>{});
+
+    EXPECT_TRUE(store.Setup(config).Failure());
+}
+
+TEST(UCAsuStoreTest, RejectsUnexpectedKvNamespaceCount)
+{
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("kv_ns_ids", std::vector<ssize_t>{100, 101});
+
+    EXPECT_TRUE(store.Setup(config).Failure());
+}
+
+TEST(UCAsuStoreTest, RejectsInvalidAsuIds)
+{
+    for (const auto& asuIds : std::vector<std::vector<ssize_t>>{
+             {-1},
+             {1001, 1001}
+    }) {
+        UC::AsuStore::AsuStore store;
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", asuIds);
+
+        EXPECT_TRUE(store.Setup(config).Failure());
+    }
+}
+
+TEST(UCAsuStoreTest, RejectsInvalidAsuPort)
+{
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+    config.SetNumber("asu_port", 65536);
+
+    EXPECT_TRUE(store.Setup(config).Failure());
+}
+
+TEST(UCAsuStoreTest, RejectsTransportIntegerOverflow)
+{
+    {
+        UC::AsuStore::AsuStore store;
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.SetNumber("asu_max_error_count", std::uint64_t{0});
+
+        EXPECT_TRUE(store.Setup(config).Failure());
+    }
+    {
+        UC::AsuStore::AsuStore store;
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.SetNumber("asu_max_error_count",
+                         std::uint64_t{std::numeric_limits<std::uint32_t>::max()} + 1);
+
+        EXPECT_TRUE(store.Setup(config).Failure());
+    }
+    {
+        UC::AsuStore::AsuStore store;
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.SetNumber("asu_max_inflight_tasks",
+                         std::uint64_t{std::numeric_limits<std::uint32_t>::max()} + 1);
+
+        EXPECT_TRUE(store.Setup(config).Failure());
+    }
+    {
+        UC::AsuStore::AsuStore store;
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.SetNumber("block_size",
+                         std::uint64_t{std::numeric_limits<std::uint32_t>::max()} + 1);
+
+        EXPECT_TRUE(store.Setup(config).Failure());
+    }
+}
+
+TEST(UCAsuStoreTest, AivRequiresDeviceId)
+{
+    {
+        UC::AsuStore::AsuStore store;
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.Set("asu_trans_provider_backend", std::string{"aiv"});
+
+        EXPECT_TRUE(store.Setup(config).Failure());
+    }
+    {
+        UC::AsuStore::AsuStore store;
+        UseFakeBackend(store);
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.Set("asu_trans_provider_backend", std::string{"aiv"});
+        config.SetNumber("device_id", 0);
+
+        EXPECT_TRUE(store.Setup(config).Success());
+    }
+}
+
 TEST(UCAsuStoreTest, PropagatesKvNamespaceToEveryTransport)
 {
     UC::AsuStore::Config config;
     config.asuIds = {1001, 1002};
     config.kvNsIds = {100};
+    config.deviceId = 3;
+    config.localIp = "192.168.0.3";
     config.transProviderType = UC::ASU::TransProviderType::FAKE;
 
     for (std::size_t index = 0; index < config.asuIds.size(); ++index) {
         auto transportConfig = UC::AsuStore::BuildTransportConfig(config, index);
+        EXPECT_EQ(transportConfig.deviceId, 3);
+        EXPECT_EQ(transportConfig.attrs.at("localIp"), "192.168.0.3");
         auto iter = transportConfig.attrs.find("kv_ns_id");
         ASSERT_NE(iter, transportConfig.attrs.end());
         EXPECT_EQ(iter->second, "100");
     }
+}
+
+TEST(UCAsuStoreTest, SchedulerUsesConfiguredDeviceId)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeBackend(store);
+    auto config = MakeBaseConfig();
+    config.Set("role", std::string{"scheduler"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("device_id", 5);
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+    EXPECT_EQ(state->initConfigs.back().deviceId, 5);
+}
+
+TEST(UCAsuStoreTest, WorkerUsesLocalRankDeviceId)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeBackend(store);
+    auto config = MakeBaseConfig();
+    config.Set("role", std::string{"worker"});
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("device_id", 2);
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+    EXPECT_EQ(state->initConfigs.back().deviceId, 2);
 }
 
 TEST(UCAsuStoreTest, TransportModeSmoke)

@@ -21,7 +21,6 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include <acl/acl.h>
 #include <chrono>
 #include <gtest/gtest.h>
 #include <memory>
@@ -31,6 +30,7 @@
 #include "dram/cc/drampool/entry.h"
 #include "dram/cc/drampool/metadata.h"
 #include "dram/dram_test_common.h"
+#include "trans/device.h"
 
 using UC::Status;
 using UC::Detail::BlockId;
@@ -336,15 +336,23 @@ class UCMetadataManagerTest : public testing::Test {
 protected:
     static void SetUpTestSuite()
     {
-        aclInit(nullptr);
-        aclrtSetDevice(0);
+        auto status = device_.Init();
+        deviceRuntimeOwned_ = status.Success();
+        ASSERT_TRUE(deviceRuntimeOwned_ || status == Status::DuplicateKey()) << status.ToString();
+        status = device_.Setup(0);
+        ASSERT_TRUE(status.Success()) << status.ToString();
     }
 
     static void TearDownTestSuite()
     {
-        aclrtResetDevice(0);
-        aclFinalize();
+        if (!deviceRuntimeOwned_) { return; }
+        EXPECT_TRUE(device_.Reset(0).Success());
+        EXPECT_TRUE(device_.Finalize().Success());
+        deviceRuntimeOwned_ = false;
     }
+
+    inline static UC::Trans::Device device_;
+    inline static bool deviceRuntimeOwned_{false};
 
     const TimePoint past_ = Clock::now() - std::chrono::seconds(10);
     const TimePoint future_ = Clock::now() + std::chrono::seconds(10);

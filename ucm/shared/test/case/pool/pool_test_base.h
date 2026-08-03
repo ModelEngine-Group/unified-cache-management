@@ -23,8 +23,8 @@
  * */
 #pragma once
 
-#include <acl/acl.h>
 #include <gtest/gtest.h>
+#include "trans/device.h"
 
 namespace UC::Test {
 
@@ -32,15 +32,23 @@ class PoolTestBase : public ::testing::Test {
 protected:
     static void SetUpTestSuite()
     {
-        aclInit(nullptr);
-        aclrtSetDevice(0);
+        auto status = device_.Init();
+        deviceRuntimeOwned_ = status.Success();
+        ASSERT_TRUE(deviceRuntimeOwned_ || status == Status::DuplicateKey()) << status.ToString();
+        status = device_.Setup(0);
+        ASSERT_TRUE(status.Success()) << status.ToString();
     }
 
     static void TearDownTestSuite()
     {
-        aclrtResetDevice(0);
-        aclFinalize();
+        if (!deviceRuntimeOwned_) { return; }
+        EXPECT_TRUE(device_.Reset(0).Success());
+        EXPECT_TRUE(device_.Finalize().Success());
+        deviceRuntimeOwned_ = false;
     }
+
+    inline static Trans::Device device_;
+    inline static bool deviceRuntimeOwned_{false};
 };
 
 }  // namespace UC::Test

@@ -46,9 +46,6 @@ void ApplyTransportEndpointField(AsuEndpoint& endpoint, const std::string& key,
         endpoint.protocol = ParseConfigProtocol(value);
     } else if (key == "numa_node" || key == "numaNode") {
         endpoint.numaNode = static_cast<std::int32_t>(ParseConfigUint64(value));
-    } else if (key == "device_id" || key == "deviceId" || key == "local.logical_device_id" ||
-               key == "localLogicalDeviceId") {
-        endpoint.deviceId = static_cast<std::int32_t>(ParseConfigUint64(value));
     } else if (key == "hca_name" || key == "hcaName") {
         endpoint.hcaName = value;
     } else if (key == "hca_port" || key == "hcaPort") {
@@ -70,8 +67,6 @@ void ApplyClientViewEndpointField(AsuEndpoint& endpoint, const std::string& key,
         endpoint.port = static_cast<std::uint16_t>(ParseConfigUint64(value));
     } else if (key == "local.comm_id" || key == "localCommId") {
         endpoint.ip = value;
-    } else if (key == "local.logical_device_id" || key == "localLogicalDeviceId") {
-        endpoint.deviceId = static_cast<std::int32_t>(ParseConfigUint64(value));
     } else if (key == "tc") {
         SetEndpointAttr(endpoint, "tc", value);
     } else if (key == "sl") {
@@ -180,6 +175,16 @@ bool ApplyTransportProviderConfigField(TransportConfig& config, const std::strin
         return false;
     }
     return true;
+}
+
+bool ApplyTransportDeviceConfigField(TransportConfig& config, const std::string& key,
+                                     const std::string& value)
+{
+    if (key == "deviceId" || key == "device_id") {
+        config.deviceId = static_cast<std::int32_t>(ParseConfigUint64(value));
+        return true;
+    }
+    return false;
 }
 
 bool TryParseAsuInfoKey(const std::string& key, AsuId& asuId)

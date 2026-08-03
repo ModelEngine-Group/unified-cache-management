@@ -38,7 +38,6 @@ struct AsuEndpoint {
     std::uint16_t port{0};
     Protocol protocol{Protocol::ROCE};
     std::int32_t numaNode{-1};
-    std::int32_t deviceId{-1};
     std::string hcaName;
     std::uint8_t hcaPort{1};
     std::unordered_map<std::string, std::string> attrs;
@@ -48,6 +47,8 @@ struct TransportConfig {
     // TODO: 拆分Config，按逻辑模块细化
     std::string asuName;
     AsuId asuId{0};
+    // Local logical device ID used by the transport provider.
+    std::int32_t deviceId{-1};
     std::vector<AsuEndpoint> endpoints;
 
     TransProviderType providerType{TransProviderType::AICPU};
@@ -63,9 +64,8 @@ struct TransportConfig {
     std::uint32_t maxLoadInflight{512};
     std::uint32_t maxStoreInflight{256};
 
-    std::uint64_t queryTimeoutMs{5};
-    std::uint64_t loadTimeoutMs{100};
-    std::uint64_t storeTimeoutMs{100};
+    std::uint64_t timeoutMs{100};
+    std::uint32_t maxErrorCount{2};
 
     bool enableDeviceDirect{true};
     bool enableHostFallback{false};
@@ -98,25 +98,24 @@ public:
     virtual Status Shutdown() = 0;
     virtual Status CheckHealth() = 0;
 
-    virtual Status Query(const std::vector<CacheKey>& keys, const QueryOptions& options,
-                         QueryResult& result) = 0;
     virtual Status QueryAsync(const std::vector<CacheKey>& keys, const QueryOptions& options,
                               TaskId& taskId) = 0;
 
-    virtual Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) = 0;
-    virtual Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) = 0;
-    virtual Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId) = 0;
+    virtual Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                             TaskCompletionCallback onComplete) = 0;
+    virtual Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                              TaskCompletionCallback onComplete) = 0;
+    virtual Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
+                               TaskCompletionCallback onComplete) = 0;
 
     // Best-effort cancellation, does not interrupt underlying UB/RoCE IO
     virtual Status Cancel(TaskId taskId) = 0;
-    virtual Status Check(TaskId taskId, TaskResult& result) = 0;
     virtual Status Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result) = 0;
 
     virtual Status RegisterRegions(const std::vector<MemoryRegion>& regions,
-                                   std::vector<RegisterResult>& results) = 0;
+                                   std::vector<RegisteredMemory>& registeredRegions) = 0;
 
-    virtual Status BindRegisteredRegions(const std::vector<RegisteredMemory>& regions,
-                                         std::vector<RegisterResult>& results) = 0;
+    virtual Status BindRegisteredRegions(const std::vector<RegisteredMemory>& regions) = 0;
 
     virtual Status UnregisterRegions(const std::vector<MRHandle>& handles) = 0;
 };

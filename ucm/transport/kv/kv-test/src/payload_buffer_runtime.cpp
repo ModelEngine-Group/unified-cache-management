@@ -28,7 +28,7 @@ std::int32_t ResolveFakeBackendPayloadDeviceId(const KvTestConfig& config)
     if (deviceIter != transportConfig.attrs.end() && !deviceIter->second.empty()) {
         return static_cast<std::int32_t>(std::stol(deviceIter->second));
     }
-    if (!transportConfig.endpoints.empty()) { return transportConfig.endpoints.front().deviceId; }
+    if (transportConfig.deviceId >= 0) { return transportConfig.deviceId; }
     return kDefaultPayloadAclDeviceId;
 }
 
@@ -46,9 +46,7 @@ std::int32_t ResolvePayloadDeviceId(const KvTestConfig& config)
     }
 
     for (const auto& transportConfig : config.asuClientConfig.transportConfigs) {
-        for (const auto& endpoint : transportConfig.endpoints) {
-            if (endpoint.deviceId >= 0) { return endpoint.deviceId; }
-        }
+        if (transportConfig.deviceId >= 0) { return transportConfig.deviceId; }
     }
     return kDefaultPayloadAclDeviceId;
 }

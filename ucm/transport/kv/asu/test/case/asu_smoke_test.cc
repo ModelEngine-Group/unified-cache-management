@@ -26,6 +26,7 @@
 #include <cstring>
 #include <gtest/gtest.h>
 #include <string_view>
+#include <unordered_map>
 #include "asu_client_impl.h"
 
 namespace UC::ASU {
@@ -63,46 +64,77 @@ public:
 
     Status CheckHealth() override { return Status::OK(); }
 
-    Status Query(const std::vector<CacheKey>& keys, const QueryOptions&,
-                 QueryResult& result) override
+    Status RunQuery(const std::vector<CacheKey>& keys, const QueryOptions&, QueryResult& result)
     {
         result.exists.assign(keys.size(), true);
         result.prefixHitKeys = 0;
         return Status::OK();
     }
 
-    Status QueryAsync(const std::vector<CacheKey>&, const QueryOptions&, TaskId& taskId) override
+    Status QueryAsync(const std::vector<CacheKey>& keys, const QueryOptions& options,
+                      TaskId& taskId) override
     {
-        taskId = 0;
+        QueryResult queryResult;
+        auto status = RunQuery(keys, options, queryResult);
+        if (!status.ok()) {
+            taskId = kInvalidTaskId;
+            return status;
+        }
+
+        taskId = nextTaskId_++;
+        queryResults_[taskId] = std::move(queryResult);
         return Status::OK();
     }
 
-    Status LoadAsync(const std::vector<KVBuffer>&, TaskId& taskId) override
+    Status LoadAsync(const std::vector<KVBuffer>&, TaskId& taskId,
+                     TaskCompletionCallback onComplete) override
     {
         taskId = nextTaskId_++;
+        if (onComplete) {
+            TaskResult result;
+            result.status = Status::OK();
+            onComplete(std::move(result));
+        }
         return Status::OK();
     }
 
-    Status StoreAsync(const std::vector<KVBuffer>&, TaskId& taskId) override
+    Status StoreAsync(const std::vector<KVBuffer>&, TaskId& taskId,
+                      TaskCompletionCallback onComplete) override
     {
         taskId = nextTaskId_++;
+        if (onComplete) {
+            TaskResult result;
+            result.status = Status::OK();
+            onComplete(std::move(result));
+        }
         return Status::OK();
     }
 
-    Status DeleteAsync(const std::vector<CacheKey>&, TaskId& taskId) override
+    Status DeleteAsync(const std::vector<CacheKey>&, TaskId& taskId,
+                       TaskCompletionCallback onComplete) override
     {
         taskId = nextTaskId_++;
+        if (onComplete) {
+            TaskResult result;
+            result.status = Status::OK();
+            onComplete(std::move(result));
+        }
         return Status::OK();
     }
 
     Status Cancel(TaskId) override { return Status::OK(); }
 
-    Status Check(TaskId taskId, TaskResult& result) override
+    Status GetTaskResult(TaskId taskId, TaskResult& result)
     {
         if (taskId == kInvalidTaskId) {
             return Status::Error(StatusCode::TASK_NOT_FOUND, "task not found");
         }
         result.status = Status::OK();
+        auto queryIter = queryResults_.find(taskId);
+        if (queryIter != queryResults_.end()) {
+            result.queryResult = queryIter->second;
+            return Status::OK();
+        }
         result.entryStatus.assign(1, Status::OK());
         result.queryResult.reset();
         return Status::OK();
@@ -110,26 +142,21 @@ public:
 
     Status Wait(TaskId taskId, std::uint64_t, TaskResult& result) override
     {
-        return Check(taskId, result);
+        return GetTaskResult(taskId, result);
     }
 
     Status RegisterRegions(const std::vector<MemoryRegion>& regions,
-                           std::vector<RegisterResult>& results) override
+                           std::vector<RegisteredMemory>& registeredRegions) override
     {
-        results.clear();
+        registeredRegions.clear();
         for (std::size_t i = 0; i < regions.size(); ++i) {
-            results.emplace_back(RegisterResult{Status::OK(), MakeTestMrHandle(i + 1)});
+            registeredRegions.emplace_back(RegisteredMemory{regions[i], MakeTestMrHandle(i + 1)});
         }
         return Status::OK();
     }
 
-    Status BindRegisteredRegions(const std::vector<RegisteredMemory>& regions,
-                                 std::vector<RegisterResult>& results) override
+    Status BindRegisteredRegions(const std::vector<RegisteredMemory>&) override
     {
-        results.clear();
-        for (const auto& region : regions) {
-            results.emplace_back(RegisterResult{Status::OK(), region.handle});
-        }
         return Status::OK();
     }
 
@@ -139,6 +166,7 @@ private:
     TransportConfig config_;
     bool initialized_{false};
     TaskId nextTaskId_{1000};
+    std::unordered_map<TaskId, QueryResult> queryResults_;
 };
 
 AsuClientConfig MakeClientConfig()
@@ -151,13 +179,13 @@ AsuClientConfig MakeClientConfig()
     first.asuName = "asu-smoke-0";
     first.asuId = 1001;
     first.maxInflightTasks = 64;
-    first.queryTimeoutMs = 100;
+    first.timeoutMs = 100;
 
     TransportConfig second;
     second.asuName = "asu-smoke-1";
     second.asuId = 1002;
     second.maxInflightTasks = 64;
-    second.queryTimeoutMs = 100;
+    second.timeoutMs = 100;
 
     config.transportConfigs = {first, second};
     return config;

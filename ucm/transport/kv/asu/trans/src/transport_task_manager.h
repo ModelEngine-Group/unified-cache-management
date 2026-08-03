@@ -24,6 +24,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -52,7 +53,6 @@ enum class TransportTaskState {
     PENDING = 0,
     INFLIGHT = 1,
     COMPLETED = 2,
-    CANCELED = 3,
 };
 
 enum class TransportSubBatchState {
@@ -102,7 +102,10 @@ struct TransportTaskContext {
     QueryResult queryResult;
     std::vector<Status> entryStatus;
     std::vector<TransportSubBatchContext> subBatchContexts;
-    std::uint32_t completedSubBatchCount{0};
+    std::uint32_t remainingSubBatchCount{0};
+    std::chrono::steady_clock::time_point deadline{std::chrono::steady_clock::time_point::max()};
+    TaskCompletionCallback onComplete;
+    std::atomic<bool> completionNotified{false};
 
     std::atomic<TransportTaskState> state{TransportTaskState::PENDING};
     Status finalStatus{Status::OK()};
@@ -113,14 +116,20 @@ struct TransportTaskContext {
     std::condition_variable cv;
 
     bool Done() const;
+    bool NotifyCompletion(TaskResult result);
     Status BuildFinalStatus() const;
-    void InitializeTerminalSubBatchCount();
+    void InitializeRemainingSubBatchCount();
     void TryFinalizeFromSubBatches();
 };
+
+using TransportTaskContextPtr = std::shared_ptr<TransportTaskContext>;
 
 class TransportTaskManager : public TaskManagerBase<TransportTaskContext, TransportTaskState> {
 public:
     TransportTaskManager() : TaskManagerBase(TransportTaskState::PENDING, "transport") {}
+
+    void NotifyCompletion(const TransportTaskContextPtr& task);
+    static void BuildResult(const TransportTaskContext& task, TaskResult& result);
 };
 
 }  // namespace UC::ASU
