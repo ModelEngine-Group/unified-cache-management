@@ -82,6 +82,15 @@ public:
     }
 };
 
+void CreateTaskExecutor(AsuTransportImpl& transport)
+{
+    transport.taskExecutor_ = std::make_unique<TransportTaskExecutor>(
+        transport.config_, transport.ioScheduler_, transport.transProvider_,
+        transport.sendBufferManager_, transport.flagBufferManager_, transport.protocolManager_,
+        transport.connManager_, transport.nextRequestCid_, transport.registeredRegionsMu_,
+        transport.registeredRegions_);
+}
+
 class TransportTaskCompletionTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite()
@@ -109,6 +118,7 @@ protected:
             transport_->flagBufferManager_.Init("test flag buffer", MemoryType::HOST,
                                                 kTestBufferSlotSize, kTestBufferSlotNum, provider);
         ASSERT_TRUE(status.ok()) << status.message;
+        CreateTaskExecutor(*transport_);
     }
 
     std::unique_ptr<AsuTransportImpl> transport_;
@@ -122,6 +132,19 @@ TEST_F(TransportTaskCompletionTest, InitRejectsZeroMaxErrorCount)
     const auto status = transport_->Init(config);
 
     EXPECT_EQ(status.code, StatusCode::INVALID_ARGUMENT);
+}
+
+TEST_F(TransportTaskCompletionTest, TaskExecutorFollowsInitializedTransportLifetime)
+{
+    AsuTransportImpl transport;
+    EXPECT_EQ(transport.taskExecutor_, nullptr);
+    transport.SetTransProvider(std::make_unique<StubTransProvider>());
+
+    ASSERT_TRUE(transport.Init(TransportConfig{}).ok());
+    EXPECT_NE(transport.taskExecutor_, nullptr);
+
+    EXPECT_TRUE(transport.Shutdown().ok());
+    EXPECT_EQ(transport.taskExecutor_, nullptr);
 }
 
 TEST_F(TransportTaskCompletionTest, InitializeCountsOnlyPendingSubBatches)
@@ -182,6 +205,7 @@ TEST_F(TransportTaskCompletionTest, PollTaskCompletionsReadsDeviceFlagBuffer)
                     .ok());
     deviceTransport.protocolManager_ = std::make_unique<ProtocolManager>();
     deviceTransport.connManager_ = std::make_unique<ConnectionManager>(*provider, "", 5000, 2);
+    CreateTaskExecutor(deviceTransport);
     ASSERT_TRUE(deviceTransport.connManager_->AddGroup(AsuEndpoint{}, 1).ok());
     auto channel = deviceTransport.connManager_->SelectConnection();
     ASSERT_NE(channel, nullptr);

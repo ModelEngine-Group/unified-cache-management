@@ -124,6 +124,15 @@ public:
     }
 };
 
+void CreateTaskExecutor(AsuTransportImpl& transport)
+{
+    transport.taskExecutor_ = std::make_unique<TransportTaskExecutor>(
+        transport.config_, transport.ioScheduler_, transport.transProvider_,
+        transport.sendBufferManager_, transport.flagBufferManager_, transport.protocolManager_,
+        transport.connManager_, transport.nextRequestCid_, transport.registeredRegionsMu_,
+        transport.registeredRegions_);
+}
+
 class AsuSubmitFlowBufferTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite()
@@ -141,6 +150,7 @@ protected:
     {
         transport_ = std::make_unique<AsuTransportImpl>();
         transport_->SetTransProvider(std::make_unique<StubTransProvider>());
+        CreateTaskExecutor(*transport_);
     }
 
     std::unique_ptr<AsuTransportImpl> transport_;
@@ -162,6 +172,7 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersReadsSendCountsFromAttrs)
         {"kernel_count", "3"},
         {"quiet_count",  "7"},
     };
+    CreateTaskExecutor(transport);
 
     TransProvider::SendIoBatch ioBatch{nullptr, nullptr, nullptr, 0};
     std::vector<TransProvider::SendIoBatch> ioBatches = {ioBatch};
@@ -441,6 +452,7 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersReportsSendFailures)
         {"kernel_count", "3"},
         {"quiet_count",  "7"},
     };
+    CreateTaskExecutor(transport);
 
     transport.connManager_ =
         std::make_unique<ConnectionManager>(*transport.transProvider_, "", 5000);
@@ -645,6 +657,7 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersFailsAllSentSubBatchesWhenStatusCount
         {"kernel_count", "3"},
         {"quiet_count",  "7"},
     };
+    CreateTaskExecutor(transport);
 
     std::vector<TransProvider::SendIoBatch> ioBatches = {
         TransProvider::SendIoBatch{nullptr, nullptr, nullptr, 0},

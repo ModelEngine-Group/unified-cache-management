@@ -55,13 +55,7 @@ std::chrono::steady_clock::time_point TaskDeadline(std::uint64_t timeoutMs)
 
 }  // namespace
 
-AsuTransportImpl::AsuTransportImpl()
-    : taskExecutor_(std::make_unique<TransportTaskExecutor>(
-          config_, ioScheduler_, transProvider_, sendBufferManager_, flagBufferManager_,
-          protocolManager_, connManager_, nextRequestCid_, registeredRegionsMu_,
-          registeredRegions_))
-{
-}
+AsuTransportImpl::AsuTransportImpl() = default;
 
 AsuTransportImpl::~AsuTransportImpl() { Shutdown(); }
 
@@ -170,6 +164,9 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
         return status;
     }
     protocolManager_ = std::make_unique<ProtocolManager>();
+    taskExecutor_ = std::make_unique<TransportTaskExecutor>(
+        config_, ioScheduler_, transProvider_, sendBufferManager_, flagBufferManager_,
+        protocolManager_, connManager_, nextRequestCid_, registeredRegionsMu_, registeredRegions_);
     auto queueDepth = std::max<std::size_t>(2, static_cast<std::size_t>(config_.maxInflightTasks));
     executeQueue_.Setup(queueDepth + 1);
     stopWorker_.store(false, std::memory_order_release);
@@ -217,6 +214,7 @@ Status AsuTransportImpl::Shutdown()
     for (const auto& ctx : taskManager_.GetAll()) {
         if (ctx != nullptr) { (void)taskManager_.Remove(ctx->taskId); }
     }
+    taskExecutor_.reset();
     {
         std::lock_guard<std::mutex> lock(registeredRegionsMu_);
         if (ownsRegisteredRegionHandles_) {
