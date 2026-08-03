@@ -264,8 +264,8 @@ void Executor::LogTaskCompletion(const TaskContext& task) const
 {
     const auto* operation = OperationName(task.operation);
     if (task.error) {
-        UC_ERROR("Delegator {} task({},{}) failed, shards={}, status={}.", operation,
-                           task.id, task.desc.brief, task.desc.size(), *task.error);
+        UC_ERROR("Delegator {} task({},{}) failed, shards={}, status={}.", operation, task.id,
+                 task.desc.brief, task.desc.size(), *task.error);
         return;
     }
     UC_INFO_UNLIMITED("Delegator {} task({},{}) completed, shards={}.", operation, task.id,
@@ -516,7 +516,7 @@ void Executor::ReleaseBatch(TransferBatch& batch)
 {
     assert(!batch.groups.empty());
     assert(batch.groups.front().task);
-    
+
     const auto operation = batch.groups.front().task->operation;
     assert(operation == Operation::LOAD || operation == Operation::DUMP);
 
@@ -631,7 +631,7 @@ void Executor::DumpLoop(std::promise<Status>& started)
             if (gatherStatus.Failure()) {
                 group.error = gatherStatus;
                 UC_ERROR("Delegator DUMP task({},{}) stage=gather failed, status={}.",
-                                   group.task->id, group.task->desc.brief, gatherStatus);
+                         group.task->id, group.task->desc.brief, gatherStatus);
             }
         }
 
@@ -640,9 +640,8 @@ void Executor::DumpLoop(std::promise<Status>& started)
             for (auto& group : batch.groups) {
                 if (!group.error) {
                     group.error = syncStatus;
-                    UC_ERROR(
-                        "Delegator DUMP task({},{}) stage=gather_sync failed, status={}.",
-                        group.task->id, group.task->desc.brief, syncStatus);
+                    UC_ERROR("Delegator DUMP task({},{}) stage=gather_sync failed, status={}.",
+                             group.task->id, group.task->desc.brief, syncStatus);
                 }
             }
         } else {
@@ -661,9 +660,8 @@ void Executor::DumpLoop(std::promise<Status>& started)
             auto backendTask = MakeBackendTask(group);
             if (!backendTask) {
                 group.error = backendTask.Error();
-                UC_ERROR(
-                    "Delegator DUMP task({},{}) stage=backend_task_build failed, status={}.",
-                    group.task->id, group.task->desc.brief, *group.error);
+                UC_ERROR("Delegator DUMP task({},{}) stage=backend_task_build failed, status={}.",
+                         group.task->id, group.task->desc.brief, *group.error);
                 continue;
             }
             auto submitted = backend_->Dump(std::move(backendTask).Value());
@@ -677,9 +675,8 @@ void Executor::DumpLoop(std::promise<Status>& started)
                     group.shards.size());
             } else {
                 group.error = submitted.Error();
-                UC_ERROR(
-                    "Delegator DUMP task({},{}) stage=backend_submit failed, status={}.",
-                    group.task->id, group.task->desc.brief, *group.error);
+                UC_ERROR("Delegator DUMP task({},{}) stage=backend_submit failed, status={}.",
+                         group.task->id, group.task->desc.brief, *group.error);
             }
         }
 
@@ -729,9 +726,8 @@ void Executor::LoadLoop(std::promise<Status>& started)
             auto backendTask = MakeBackendTask(group);
             if (!backendTask) {
                 group.error = backendTask.Error();
-                UC_ERROR(
-                    "Delegator LOAD task({},{}) stage=backend_task_build failed, status={}.",
-                    group.task->id, group.task->desc.brief, *group.error);
+                UC_ERROR("Delegator LOAD task({},{}) stage=backend_task_build failed, status={}.",
+                         group.task->id, group.task->desc.brief, *group.error);
                 continue;
             }
             auto submitted = backend_->Load(std::move(backendTask).Value());
@@ -746,9 +742,8 @@ void Executor::LoadLoop(std::promise<Status>& started)
                     group.shards.size());
             } else {
                 group.error = submitted.Error();
-                UC_ERROR(
-                    "Delegator LOAD task({},{}) stage=backend_submit failed, status={}.",
-                    group.task->id, group.task->desc.brief, *group.error);
+                UC_ERROR("Delegator LOAD task({},{}) stage=backend_submit failed, status={}.",
+                         group.task->id, group.task->desc.brief, *group.error);
             }
         }
 
@@ -782,9 +777,8 @@ void Executor::LoadLoop(std::promise<Status>& started)
                         const auto scatterStatus = ScatterAsync(group, streams);
                         if (scatterStatus.Failure()) {
                             group.error = scatterStatus;
-                            UC_ERROR(
-                                "Delegator LOAD task({},{}) stage=scatter failed, status={}.",
-                                group.task->id, group.task->desc.brief, scatterStatus);
+                            UC_ERROR("Delegator LOAD task({},{}) stage=scatter failed, status={}.",
+                                     group.task->id, group.task->desc.brief, scatterStatus);
                         }
                     }
                 }
@@ -797,9 +791,8 @@ void Executor::LoadLoop(std::promise<Status>& started)
             for (auto& group : batch.groups) {
                 if (!group.error) {
                     group.error = syncStatus;
-                    UC_ERROR(
-                        "Delegator LOAD task({},{}) stage=scatter_sync failed, status={}.",
-                        group.task->id, group.task->desc.brief, syncStatus);
+                    UC_ERROR("Delegator LOAD task({},{}) stage=scatter_sync failed, status={}.",
+                             group.task->id, group.task->desc.brief, syncStatus);
                 }
             }
         } else {
