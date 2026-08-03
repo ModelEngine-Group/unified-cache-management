@@ -90,7 +90,7 @@ bool LoadSymAlt(Func& slot, void* handle, const char* primary, const char* fallb
     if (sym == nullptr) { sym = dlsym(handle, fallback); }
     if (sym == nullptr) {
         const char* error = dlerror();
-        UB_LOG_ERROR("dlsym failed for both '%s' and '%s': %s", primary, fallback,
+        UB_LOG_ERROR("dlsym failed for both '{}' and '{}': {}", primary, fallback,
                      error != nullptr ? error : "(null)");
         slot = nullptr;
         return false;
@@ -122,7 +122,7 @@ void* DlOpenOrLog(const char* name)
     void* handle = dlopen(name, RTLD_NOW);
     if (handle == nullptr) {
         UB_LOG_ERROR(
-            "dlopen failed for '%s': %s. Source scripts/env.sh, or add Ascend "
+            "dlopen failed for '{}': {}. Source scripts/env.sh, or add Ascend "
             "driver lib path to LD_LIBRARY_PATH.",
             name, dlerror());
     }
@@ -242,7 +242,7 @@ UbErrorCode DlHccpV2Api::LoadLibrary()
                              "ra_socket_get_vnic_ip_infos");
 
     gLoaded = true;
-    UB_LOG_DEBUG("DlHccpV2Api: loaded 4 SO + 32 core symbols + RaSocket=%s + VnicIp=%s",
+    UB_LOG_DEBUG("DlHccpV2Api: loaded 4 SO + 32 core symbols + RaSocket={} + VnicIp={}",
                  sockOk ? "available" : "unavailable(fallback to TCP/StaticConfig)",
                  vnicIpOk ? "available" : "unavailable(fallback to RaGetIfaddrs)");
     return UbErrorCode::Ok;
@@ -306,7 +306,7 @@ void DlHccpV2Api::CleanUpLibraryUnlocked()
 
     auto close_one = [](void*& h, const char* name) {
         if (h) {
-            if (dlclose(h) != 0) { UB_LOG_WARN("dlclose(%s) failed: %s", name, dlerror()); }
+            if (dlclose(h) != 0) { UB_LOG_WARN("dlclose({}) failed: {}", name, dlerror()); }
             h = nullptr;
         }
     };

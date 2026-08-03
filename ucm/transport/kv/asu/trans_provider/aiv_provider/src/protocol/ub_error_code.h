@@ -44,14 +44,14 @@ enum class UbErrorCode : int32_t {
     HccpV2ChanCreateFailed = 1011,
     HccpV2TokenIdAllocFailed = 1012,
     HccpV2HandleInvalid = 1013,
-    HccpV2UboeNotAvailable = 1014,  // RaGetTpInfoListAsync(flag.bs.uboe=1) 返回空或错
+    HccpV2UboeNotAvailable = 1014,
 
     OobConnectFailed = 2001,
     OobNegotiateFailed = 2002,
     OobStaticYamlNotFound = 2003,
     OobStaticYamlMalformed = 2004,
     OobCmProtocolMismatch = 2005,
-    OobCmVersionRejected = 2006,  // major 不匹配
+    OobCmVersionRejected = 2006,
     OobTransportClosed = 2007,
     OobTimeout = 2008,
 
@@ -69,21 +69,21 @@ enum class UbErrorCode : int32_t {
     KvConnNotFound = 4005,
     KvMemHandleInvalid = 4006,
     KvSendBatchEmpty = 4007,
-    KvTaskDescInvalid = 4008,       // TaskDesc magic/version/op 非法
-    KvTaskChecksumMismatch = 4009,  // TaskDesc checksum 校验失败
-    KvTaskAddrOutOfRange = 4010,    // TaskDesc client/storage 地址越界
+    KvTaskDescInvalid = 4008,
+    KvTaskChecksumMismatch = 4009,
+    KvTaskAddrOutOfRange = 4010,
 
     UrmaNotAvailable = 5001,
     UrmaInitFailed = 5002,
     UrmaJettyCreateFailed = 5003,
     UrmaSegRegisterFailed = 5004,
     UrmaPostWrFailed = 5005,
-    UrmaPostRecvFailed = 5006,     // urma_post_jetty_recv_wr 失败
-    UrmaPollJfcFailed = 5007,      // urma_poll_jfc 返回错误
-    UrmaImportJettyFailed = 5008,  // urma_import_jetty / advise 失败
-    UrmaReadFailed = 5009,         // urma_read 失败
-    UrmaWriteFailed = 5010,        // urma_write 失败
-    UrmaTpListFailed = 5011,       // urma_get_tp_list 失败
+    UrmaPostRecvFailed = 5006,
+    UrmaPollJfcFailed = 5007,
+    UrmaImportJettyFailed = 5008,
+    UrmaReadFailed = 5009,
+    UrmaWriteFailed = 5010,
+    UrmaTpListFailed = 5011,
 
     InternalAssertionFailed = 9001,
     NotImplemented = 9002,

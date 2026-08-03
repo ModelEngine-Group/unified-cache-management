@@ -30,9 +30,9 @@
 
 namespace umc::comm {
 
-constexpr uint16_t kTaskDescMagicU16 = 0x5A7A;  // 与 kUbSignalMagicU16(0x7A5A) 区分
+constexpr uint16_t kTaskDescMagicU16 = 0x5A7A;
 constexpr uint8_t kTaskDescVersionV1 = 1;
-constexpr uint16_t kMaxTaskBatchEntries = 256;  // 覆盖 UCM data/key batch entry 上限
+constexpr uint16_t kMaxTaskBatchEntries = 256;
 
 enum kv_task_op_t : uint8_t {
     TASK_OP_INVALID = 0x00,
@@ -52,33 +52,32 @@ enum kv_task_status_t : uint16_t {
 };
 
 constexpr uint32_t TASK_FLAG_NONE = 0x0;
-constexpr uint32_t TASK_FLAG_NEED_NOTIFY = 0x1;  // 需要 server 回写 completion flag
+constexpr uint32_t TASK_FLAG_NEED_NOTIFY = 0x1;
 
 #pragma pack(push, 1)
 struct TaskDesc {
-    uint16_t magic;              // [  0,  2)  == kTaskDescMagicU16
-    uint8_t version;             // [  2,  3)  == kTaskDescVersionV1
-    uint8_t op;                  // [  3,  4)  kv_task_op_t
-    uint32_t client_id;          // [  4,  8)  发起方 client 标识（多 client 路由）
-    uint64_t task_id;            // [  8, 16)  completion correlation id
-    uint64_t block_id;           // [ 16, 24)  KV block key
-    uint64_t storage_offset;     // [ 24, 32)  server dataRegion 内偏移
-    uint32_t kvnsid;             // [ 32, 36)  KV namespace id（完整 32-bit）
-    uint32_t length;             // [ 36, 40)  传输字节数
-    uint32_t flags;              // [ 40, 44)  TASK_FLAG_*
-    uint32_t client_data_mr_id;  // [ 44, 48)  client 业务数据 MR 序号
-    uint64_t client_data_addr;   // [ 48, 56)  client 业务数据 VA（server read/write 目标）
-    uint32_t client_data_rkey;   // [ 56, 60)  client 数据 MR token/rkey
-    uint32_t client_flag_rkey;   // [ 60, 64)  client flag MR token/rkey
-    uint64_t
-        client_flag_addr;  // [ 64, 72)  client completion flag VA（server WriteWithNotify 目标）
-    uint32_t client_jetty_uasid;  // [ 72, 76)  client jetty uasid（server import_jetty 用）
+    uint16_t magic;               // [  0,  2)  == kTaskDescMagicU16
+    uint8_t version;              // [  2,  3)  == kTaskDescVersionV1
+    uint8_t op;                   // [  3,  4)  kv_task_op_t
+    uint32_t client_id;           // [  4,  8)
+    uint64_t task_id;             // [  8, 16)  completion correlation id
+    uint64_t block_id;            // [ 16, 24)  KV block key
+    uint64_t storage_offset;      // [ 24, 32)
+    uint32_t kvnsid;              // [ 32, 36)
+    uint32_t length;              // [ 36, 40)
+    uint32_t flags;               // [ 40, 44)  TASK_FLAG_*
+    uint32_t client_data_mr_id;   // [ 44, 48)
+    uint64_t client_data_addr;    // [ 48, 56)
+    uint32_t client_data_rkey;    // [ 56, 60)
+    uint32_t client_flag_rkey;    // [ 60, 64)  client flag MR token/rkey
+    uint64_t client_flag_addr;    // [ 64, 72)
+    uint32_t client_jetty_uasid;  // [ 72, 76)
     uint32_t client_jetty_id;     // [ 76, 80)  client jetty id
-    uint64_t user_cookie;         // [ 80, 88)  业务透传，原样回填到 CompletionMsg
-    uint32_t checksum;            // [ 88, 92)  TaskDesc 前 88 字节的校验（0=不校验）
-    uint16_t batch_index;         // [ 92, 94)  entry 在 batch 内序号（0-based）
-    uint16_t batch_total;         // [ 94, 96)  batch entry 总数（0/1=单条，>1=UCM batch 聚合）
-    uint8_t reserved[32];         // [ 96,128)  对齐预留
+    uint64_t user_cookie;         // [ 80, 88)
+    uint32_t checksum;            // [ 88, 92)
+    uint16_t batch_index;         // [ 92, 94)
+    uint16_t batch_total;         // [ 94, 96)
+    uint8_t reserved[32];         // [ 96,128)
 };
 #pragma pack(pop)
 static_assert(sizeof(TaskDesc) == 128, "TaskDesc must be 128 bytes");
@@ -108,11 +107,11 @@ static_assert(offsetof(TaskDesc, reserved) == 96, "");
 #pragma pack(push, 1)
 struct TaskBatchEntry {
     uint64_t block_id;           // [ 0, 8)  KV block key
-    uint64_t storage_offset;     // [ 8,16)  server dataRegion 内偏移
-    uint64_t client_data_addr;   // [16,24)  client 业务数据 VA
-    uint32_t length;             // [24,28)  传输字节数；DELETE/EXIST 为 0
-    uint32_t client_data_mr_id;  // [28,32)  client 业务 MR 序号；无数据 op 为 0
-    uint32_t client_data_rkey;   // [32,36)  client 数据 MR token/rkey；无数据 op 为 0
+    uint64_t storage_offset;     // [ 8,16)
+    uint64_t client_data_addr;   // [16,24)
+    uint32_t length;             // [24,28)
+    uint32_t client_data_mr_id;  // [28,32)
+    uint32_t client_data_rkey;   // [32,36)
     uint32_t reserved;           // [36,40)
 };
 #pragma pack(pop)
@@ -130,15 +129,15 @@ constexpr size_t kMaxTaskBatchPayloadBytes =
 
 #pragma pack(push, 1)
 struct CompletionMsg {
-    uint16_t magic;        // [ 0, 2)  == kUbSignalMagicU16（flag-poll 兼容）
+    uint16_t magic;        // [ 0, 2)
     uint8_t version;       // [ 2, 3)  == kUbSignalVersionV1
     uint8_t _pad0;         // [ 3, 4)
     uint16_t status;       // [ 4, 6)  kv_task_status_t
     uint16_t _pad1;        // [ 6, 8)
     uint64_t task_id;      // [ 8,16)
-    uint32_t bytes;        // [16,20)  实际搬运字节数
-    uint32_t error_code;   // [20,24)  UbErrorCode（失败时）
-    uint64_t user_cookie;  // [24,32)  原样回填 TaskDesc.user_cookie
+    uint32_t bytes;        // [16,20)
+    uint32_t error_code;   // [20,24)
+    uint64_t user_cookie;  // [24,32)
 };
 #pragma pack(pop)
 static_assert(sizeof(CompletionMsg) == 32, "CompletionMsg must be 32 bytes");
@@ -169,7 +168,7 @@ inline uint32_t ComputeTaskDescChecksum(const TaskDesc& t)
     for (size_t i = 0; i < offsetof(TaskDesc, checksum); ++i) {
         sum += static_cast<uint32_t>(p[i]) * (static_cast<uint32_t>(i) + 1u);
     }
-    return sum == 0 ? 1u : sum;  // 避免与"未填(0)"混淆
+    return sum == 0 ? 1u : sum;
 }
 
 inline bool IsValidTaskDesc(const TaskDesc& t)

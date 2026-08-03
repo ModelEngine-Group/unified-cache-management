@@ -61,7 +61,7 @@ static_assert(sizeof(UdmaEid) == 16, "UdmaEid must be 16 bytes");
 #pragma pack(push, 8)
 struct UdmaWqCtx {
     uint32_t wqn;           // [0,4)
-    uint64_t bufAddr;       // [8,16)   ring buffer 首地址（device VA）
+    uint64_t bufAddr;       // [8,16)
     uint32_t wqeShiftSize;  // [16,20)  log2(wqebbSize)
     uint32_t depth;         // [20,24)  ring depth
     uint64_t headAddr;      // [24,32)  Producer Index addr
@@ -111,7 +111,7 @@ static_assert(offsetof(UdmaCqCtx, dbAddr) == 48, "");
 #pragma pack(push, 8)
 struct UdmaSegInfo {
     uint8_t tokenValueValid;  // [0,1)
-    uint8_t rmtJettyType;     // [1,2)   2 bits 实际，pad 到 byte
+    uint8_t rmtJettyType;     // [1,2)
     uint8_t targetHint;       // [2,3)
     uint8_t _pad0;            // [3,4)
     uint32_t tpn;             // [4,8)
@@ -119,7 +119,7 @@ struct UdmaSegInfo {
     uint32_t rmtTokenValue;   // [12,16)
     uint32_t len;             // [16,20)
     uint64_t addr;            // [24,32)  seg base addr
-    uint64_t eidAddr;         // [32,40)  device 上 HccpEid table 槽位
+    uint64_t eidAddr;         // [32,40)
 };
 #pragma pack(pop)
 static_assert(sizeof(UdmaSegInfo) == 40, "UdmaSegInfo must be 40 bytes");
@@ -168,7 +168,7 @@ static_assert(offsetof(UdmaSqeCtx, rmtAddrLOrTokenId) == 40, "");
 static_assert(offsetof(UdmaSqeCtx, rmtAddrHOrTokenValue) == 44, "");
 
 struct UdmaAivInfo {
-    uint32_t qpNum;          // [0,4)   per-peer QP 数
+    uint32_t qpNum;          // [0,4)
     uint32_t peerCount;      // [4,8)   peer slots, including self
     uint64_t sqPtr;          // [8,16)  UdmaWqCtx[peerCount * qpNum]
     uint64_t rqPtr;          // [16,24) UdmaWqCtx[peerCount * qpNum]

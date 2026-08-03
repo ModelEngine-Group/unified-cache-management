@@ -111,7 +111,7 @@ UbStatus DlAclRt::LoadLibrary()
     if (h == nullptr) {
         const char* error = dlerror();
         UB_LOG_WARN(
-            "DlAclRt: dlopen libascendcl.so failed: %s; "
+            "DlAclRt: dlopen libascendcl.so failed: {}; "
             "device-side AivInfo allocation needs CANN runtime",
             error != nullptr ? error : "(no info)");
         return UbStatus(UbErrorCode::HccpV2LoadLibraryFailed, "libascendcl.so not available");
@@ -120,7 +120,7 @@ UbStatus DlAclRt::LoadLibrary()
         void* sym = dlsym(h, name);
         if (sym == nullptr) {
             const char* error = dlerror();
-            UB_LOG_ERROR("DlAclRt: dlsym %s failed: %s", name,
+            UB_LOG_ERROR("DlAclRt: dlsym {} failed: {}", name,
                          error != nullptr ? error : "(no info)");
             return false;
         }
@@ -205,7 +205,7 @@ UbStatus DlAclRt::ResetDevice(int32_t deviceId)
     if (!Loaded() || ResetDeviceSlot() == nullptr) return UbStatus::Ok();
     int rc = ResetDeviceSlot()(deviceId);
     if (rc != 0) {
-        UB_LOG_ERROR("DlAclRt: aclrtResetDevice(%d) rc=%d", deviceId, rc);
+        UB_LOG_ERROR("DlAclRt: aclrtResetDevice({}) rc={}", deviceId, rc);
         return UbStatus(UbErrorCode::HccpV2LoadLibraryFailed,
                         "aclrtResetDevice failed rc=" + std::to_string(rc));
     }
@@ -221,7 +221,7 @@ UbStatus DlAclRt::Finalize()
     }
     int rc = fn();
     if (rc != 0) {
-        UB_LOG_ERROR("DlAclRt: aclFinalize rc=%d", rc);
+        UB_LOG_ERROR("DlAclRt: aclFinalize rc={}", rc);
         return UbStatus(UbErrorCode::HccpV2LoadLibraryFailed,
                         "aclFinalize failed rc=" + std::to_string(rc));
     }
@@ -287,8 +287,8 @@ UbStatus DlAclRt::GetPhyDevIdByLogicDevId(int32_t logicDevId, int32_t* phyDevId)
     if (fn == nullptr) {
         *phyDevId = logicDevId;
         UB_LOG_WARN(
-            "DlAclRt: aclrtGetPhyDevIdByLogicDevId 不可用，phyId 回落为 logicId=%d；"
-            "多卡 / 非连续 phyId 布局下 HCCP RaInit 可能 -ENODEV，建议升级 CANN",
+            "DlAclRt: aclrtGetPhyDevIdByLogicDevId is unavailable; using logicId={} as phyId. "
+            "HCCP RaInit may return -ENODEV for multi-device or non-contiguous phyId layouts",
             logicDevId);
         return UbStatus::Ok();
     }
@@ -323,7 +323,7 @@ UbStatus DlAclRt::Free(void* devPtr)
     if (!Loaded() || FreeSlot() == nullptr) return UbStatus::Ok();
     int rc = FreeSlot()(devPtr);
     if (rc != 0) {
-        UB_LOG_ERROR("DlAclRt: aclrtFree rc=%d", rc);
+        UB_LOG_ERROR("DlAclRt: aclrtFree rc={}", rc);
         return UbStatus(UbErrorCode::HccpV2LoadLibraryFailed,
                         "aclrtFree failed rc=" + std::to_string(rc));
     }

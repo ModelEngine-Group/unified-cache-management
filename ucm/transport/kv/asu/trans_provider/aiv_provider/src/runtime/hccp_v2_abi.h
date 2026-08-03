@@ -69,10 +69,10 @@ enum DrvHdcServiceType : int {
 };
 
 struct RaInitConfig {
-    unsigned int phyId;           // 物理设备 id（第三方网卡填 0）
-    HccpNetworkMode nicPosition;  // 工作模式
-    DrvHdcServiceType hdcType;    // HDC 服务类型（V2 用 HDC_SERVICE_TYPE_RDMA_V2）
-    bool enableHdcAsync;          // 是否启用异步 HDC session
+    unsigned int phyId;
+    HccpNetworkMode nicPosition;
+    DrvHdcServiceType hdcType;
+    bool enableHdcAsync;
 };
 
 struct MemKey {
@@ -113,15 +113,15 @@ struct ProcOpenArgs {
     uint64_t pathLen;
     ProcExtParam* extParamList;
     uint64_t extParamCnt;
-    pid_t* subPid;  // 出参
+    pid_t* subPid;
 };
 
 union HccpEid {
     uint8_t raw[16];
     struct {
-        uint64_t reserved;  // IPv4 mapped to IPv6 时 == 0
-        uint32_t prefix;    // == 0
-        uint32_t addr;      // == IPv4 address
+        uint64_t reserved;
+        uint32_t prefix;  // == 0
+        uint32_t addr;    // == IPv4 address
     } in4;
     struct {
         uint64_t subnetPrefix;
@@ -762,9 +762,9 @@ static_assert(offsetof(InterfaceInfo, scopeId) == 4, "InterfaceInfo.scopeId ABI 
 static_assert(offsetof(InterfaceInfo, ifAddr) == 8, "InterfaceInfo.ifAddr ABI mismatch");
 static_assert(offsetof(InterfaceInfo, ifName) == 28, "InterfaceInfo.ifName ABI mismatch");
 
-constexpr int SOCK_EAGAIN = 128201;       // 无数据，重试（同 OTHERS/ROCE 区分）
-constexpr int SOCK_CLOSE = 128203;        // device 异常关闭心跳
-constexpr int SOCK_ESOCKCLOSED = 128207;  // socket 已关闭
+constexpr int SOCK_EAGAIN = 128201;
+constexpr int SOCK_CLOSE = 128203;
+constexpr int SOCK_ESOCKCLOSED = 128207;
 constexpr int HCCP_SOCKET_CONNECTED = 1;  // SocketInfoT.status: 1=connected
 
 enum IdType {
@@ -783,8 +783,8 @@ static_assert(offsetof(IpInfo, ip) == 4, "IpInfo.ip ABI mismatch");
 static_assert(offsetof(IpInfo, resv) == 20, "IpInfo.resv ABI mismatch");
 
 struct Rdev {
-    unsigned int phyId;  // 物理设备 id
-    int family;          // AF_INET / AF_INET6
+    unsigned int phyId;
+    int family;  // AF_INET / AF_INET6
     HccpIpAddr localIp;
 };
 
@@ -792,13 +792,13 @@ struct SocketConnectInfoT {
     void* socketHandle;
     HccpIpAddr remoteIp;
     unsigned int port;
-    char tag[HCCP_SOCK_CONN_TAG_SIZE];  // 必须 '\0' 结尾
+    char tag[HCCP_SOCK_CONN_TAG_SIZE];
 };
 
 struct SocketCloseInfoT {
     void* socketHandle;
     void* fdHandle;
-    int disuseLinger;  // 0:use default linger; 其它:disuse
+    int disuseLinger;
 };
 
 struct SocketInfoT {

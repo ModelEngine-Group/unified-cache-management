@@ -226,10 +226,10 @@ private:
     static std::mutex gMutex;
     static bool gLoaded;
 
-    static void* gHcclV1LibraryHandler;  // libhccl.so       (依赖 preload)
-    static void* gHcclLibraryHandler;    // libhccl_v2.so    (HCCP V2 主体)
-    static void* gRaLibraryHandler;      // libra.so         (RA 路由)
-    static void* gTsdLibraryHandler;     // libtsdclient.so  (HDC 通道)
+    static void* gHcclV1LibraryHandler;
+    static void* gHcclLibraryHandler;
+    static void* gRaLibraryHandler;
+    static void* gTsdLibraryHandler;
 
     static TsdProcessOpenFunc gTsdProcessOpen;
     static TsdProcessCloseFunc gTsdProcessClose;

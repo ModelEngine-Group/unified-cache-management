@@ -51,7 +51,7 @@ struct xrt_rdma_neg_head_t {
     uint8_t ver;     // [ 4, 5)  = XRT_NEG_MSG_VERSION (=1)
     uint8_t cmd;     // [ 5, 6)  xrt_rdma_neg_cmd_t
     uint8_t pad[6];  // [ 6,12)  = 0
-    uint32_t len;    // [12,16)  body 长度
+    uint32_t len;    // [12,16)
 };
 #pragma pack(pop)
 static_assert(sizeof(xrt_rdma_neg_head_t) == 16, "xrt_rdma_neg_head_t must be 16 bytes");
@@ -61,9 +61,9 @@ static_assert(offsetof(xrt_rdma_neg_head_t, len) == 12, "");
 
 #pragma pack(push, 1)
 struct xrt_neg_cap_req {
-    uint8_t major_version;  // [ 0, 1)  KV 协议大版本 = 1
-    uint8_t minor_version;  // [ 1, 2)  KV 协议小版本 = 0
-    uint16_t kato;          // [ 2, 4)  心跳/连接老化时间(s)，0=关闭
+    uint8_t major_version;  // [ 0, 1)
+    uint8_t minor_version;  // [ 1, 2)
+    uint16_t kato;          // [ 2, 4)
 };
 #pragma pack(pop)
 static_assert(sizeof(xrt_neg_cap_req) == 4, "xrt_neg_cap_req must be 4 bytes");
@@ -73,21 +73,21 @@ static_assert(offsetof(xrt_neg_cap_req, kato) == 2, "");
 struct xrt_neg_cap_rsp {
     uint8_t major_version;        // [ 0, 1)  = 1
     uint8_t minor_version;        // [ 1, 2)  = 0
-    uint16_t queue_num;           // [ 2, 4)  单 KV 连接支持的队列数量
-    uint16_t adminq_depth;        // [ 4, 6)  adminQ 深度（0=未实现，只有 ioQ）
-    uint16_t ioq_depth;           // [ 6, 8)  io 队列深度（命令并发）
-    uint16_t ioq_key_batch;       // [ 8,10)  单队列 key 并发数(store/retrieve)
-    uint16_t total_key_batch;     // [10,12)  单连接 key 并发数(store/retrieve)
-    uint32_t sr_mdts;             // [12,16)  store/retrieve 单命令数据大小(KB)
-    uint32_t bsr_mdts;            // [16,20)  batch s/r 单 key 数据大小(KB)
-    uint16_t store_key_batch;     // [20,22)  单 batch store key 并发数
-    uint16_t retrieve_key_batch;  // [22,24)  单 batch retrieve key 并发数
-    uint16_t delete_key_batch;    // [24,26)  单 delete key 并发数
-    uint16_t exist_key_batch;     // [26,28)  单 exist key 并发数
-    uint8_t key_length;           // [28,29)  key 长度(B)，最大 16
-    uint8_t pad;                  // [29,30)  字节对齐 = 0
-    uint16_t controller_id;       // [30,32)  UB 场景 controller id（IO 下发携带）
-    uint32_t controller_cap;      // [32,36)  BIT0：delete 非立即数携带 key；其余预留
+    uint16_t queue_num;           // [ 2, 4)
+    uint16_t adminq_depth;        // [ 4, 6)
+    uint16_t ioq_depth;           // [ 6, 8)
+    uint16_t ioq_key_batch;       // [ 8,10)
+    uint16_t total_key_batch;     // [10,12)
+    uint32_t sr_mdts;             // [12,16)
+    uint32_t bsr_mdts;            // [16,20)
+    uint16_t store_key_batch;     // [20,22)
+    uint16_t retrieve_key_batch;  // [22,24)
+    uint16_t delete_key_batch;    // [24,26)
+    uint16_t exist_key_batch;     // [26,28)
+    uint8_t key_length;           // [28,29)
+    uint8_t pad;                  // [29,30)
+    uint16_t controller_id;       // [30,32)
+    uint32_t controller_cap;      // [32,36)
 };
 #pragma pack(pop)
 static_assert(sizeof(xrt_neg_cap_rsp) == 36, "xrt_neg_cap_rsp must be 36 bytes");
@@ -100,10 +100,10 @@ static_assert(offsetof(xrt_neg_cap_rsp, controller_cap) == 32, "");
 
 #pragma pack(push, 1)
 struct xrt_rdma_neg_conn_auth_t {
-    uint32_t cap;                                // [  0,  4)  传输层能力协商（预留 = 0）
+    uint32_t cap;                                // [  0,  4)
     uint8_t rsv[24];                             // [  4, 28)
-    uint32_t private_len;                        // [ 28, 32)  有效 cap 长度(req=4/rsp=36)
-    uint8_t private_data[XRT_MAX_NEG_PRI_SIZE];  // [ 32,160)  承载 xrt_neg_cap_req/rsp
+    uint32_t private_len;                        // [ 28, 32)
+    uint8_t private_data[XRT_MAX_NEG_PRI_SIZE];  // [ 32,160)
 };
 #pragma pack(pop)
 static_assert(sizeof(xrt_rdma_neg_conn_auth_t) == 160,
@@ -113,15 +113,15 @@ static_assert(offsetof(xrt_rdma_neg_conn_auth_t, private_data) == 32, "");
 
 #pragma pack(push, 1)
 struct xrt_rdma_neg_conn_ub_t {
-    kv_cm_conn_ub_info ub_info;  // 本端/对端 UB jetty 4 元组（EID/QpKey/MemKey/token/UBoE/RM）
+    kv_cm_conn_ub_info ub_info;
 };
 #pragma pack(pop)
 static_assert(sizeof(xrt_rdma_neg_conn_ub_t) == 296, "xrt_rdma_neg_conn_ub_t must be 296 bytes");
 
 #pragma pack(push, 1)
 struct xrt_rdma_neg_conn_fin_t {
-    uint32_t local_qpn;   // [0,4)  发起端本地 qpn（UB 下可填 jetty_id）
-    uint32_t remote_qpn;  // [4,8)  对端 qpn（UB 下可填对端 jetty_id）
+    uint32_t local_qpn;   // [0,4)
+    uint32_t remote_qpn;  // [4,8)
 };
 #pragma pack(pop)
 static_assert(sizeof(xrt_rdma_neg_conn_fin_t) == 8, "xrt_rdma_neg_conn_fin_t must be 8 bytes");
@@ -133,9 +133,9 @@ struct xrt_rdma_neg_msg_t {
     xrt_rdma_neg_head_t head;
     union {
         uint8_t raw[XRT_MAX_NEG_BODY_SIZE];
-        xrt_rdma_neg_conn_auth_t conn_auth;  // CONN_AUTH（双向，private_data 承载 cap_req/cap_rsp）
-        xrt_rdma_neg_conn_ub_t conn_ub;      // CONN_REQ / CONN_RSP
-        xrt_rdma_neg_conn_fin_t conn_fin;    // CONN_FIN
+        xrt_rdma_neg_conn_auth_t conn_auth;
+        xrt_rdma_neg_conn_ub_t conn_ub;    // CONN_REQ / CONN_RSP
+        xrt_rdma_neg_conn_fin_t conn_fin;  // CONN_FIN
     } body;
 };
 #pragma pack(pop)

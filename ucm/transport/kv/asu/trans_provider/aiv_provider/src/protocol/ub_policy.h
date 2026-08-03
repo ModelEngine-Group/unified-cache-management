@@ -36,19 +36,19 @@ enum class OobTransportKind : int32_t {
 };
 
 enum class TransportProfile : int32_t {
-    Ubc = 0,   // 单超节点 / SuperPod 内：直连 UB 总线，nicPosition=NETWORK_OFFLINE
-    Uboe = 1,  // 跨超节点 / scale-out：UB over Ethernet，nicPosition=NETWORK_PEER_ONLINE
+    Ubc = 0,
+    Uboe = 1,
 };
 
 enum class JettyConnMode : int32_t {
-    Rc = 0,  // CONN_RC：默认，需 QpBind，用 token（UBC 域内）
-    Rm = 1,  // CONN_RM：单边，免 QpBind，可免 token（UBoE scale-out）
+    Rc = 0,
+    Rm = 1,
 };
 
 enum class UbTpType : uint32_t {
-    Rtp = 0,  // 面向连接可靠传输；UBoE / scale-out（NETWORK_PEER_ONLINE）用
-    Ctp = 1,  // 链路层可靠的轻量传输；UBC 域内直连（NETWORK_OFFLINE）用
-    Utp = 2,  // 无连接，主要给单向 messaging 用
+    Rtp = 0,
+    Ctp = 1,
+    Utp = 2,
 };
 
 struct UbLocalNetAddr {

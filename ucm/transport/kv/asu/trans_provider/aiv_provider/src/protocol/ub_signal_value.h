@@ -30,10 +30,10 @@
 namespace umc::comm {
 
 #pragma pack(push, 1)
-struct UbSignalValue {   // 8 字节 doorbell payload —— 中性外壳
+struct UbSignalValue {
     uint16_t magic;      // [0,2)  == kUbSignalMagicU16 (0x7A5A)
     uint8_t version;     // [2,3)  == kUbSignalVersionV1 (1)
-    uint8_t payload[5];  // [3,8)  业务定义，UB 协议层不解释
+    uint8_t payload[5];  // [3,8)
 };
 #pragma pack(pop)
 
@@ -43,9 +43,9 @@ static_assert(offsetof(UbSignalValue, version) == 2, "");
 static_assert(offsetof(UbSignalValue, payload) == 3, "");
 
 #pragma pack(push, 1)
-struct UbSignalSlot {        // 64 字节 cacheline，对端 seg 上的接收槽
-    uint64_t signal;         // [0,8)   raw 64-bit；前 16 bit 必须 == kUbSignalMagic
-    uint8_t bizPayload[56];  // [8,64)  业务定义
+struct UbSignalSlot {
+    uint64_t signal;         // [0,8)
+    uint8_t bizPayload[56];  // [8,64)
 };
 #pragma pack(pop)
 

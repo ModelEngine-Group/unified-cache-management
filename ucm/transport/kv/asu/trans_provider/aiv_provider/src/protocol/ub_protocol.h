@@ -50,9 +50,9 @@ constexpr uint8_t kKvCmMinorVersionV1_4 = 4;
 constexpr uint8_t kKvCmMinorVersionCur = kKvCmMinorVersionV1_4;
 
 enum kv_cm_net_addr_kind : uint8_t {
-    KV_NET_ADDR_NONE = 0,   // UBC：纯 EID 寻址；下面 net_addr 字段全 0
-    KV_NET_ADDR_UBOE4 = 1,  // UBoE + IPv4 (低 32 位填到 hccp_eid_raw 的 IPv4-mapped 区)
-    KV_NET_ADDR_UBOE6 = 2,  // UBoE + IPv6 (full 16B 已在 hccp_eid_raw)
+    KV_NET_ADDR_NONE = 0,
+    KV_NET_ADDR_UBOE4 = 1,
+    KV_NET_ADDR_UBOE6 = 2,
 };
 
 #pragma pack(push, 1)
@@ -61,9 +61,9 @@ struct kv_cm_hdr {
     uint8_t minor_version;  // [1,2)   kKvCmMinorVersionV1..kKvCmMinorVersionCur
     uint8_t op;             // [2,3)   kv_cm_op_t
     uint8_t protocol;       // [3,4)   kv_protocol_opcode_t == UB_PROTO
-    uint32_t msg_len;       // [4,8)   总报文长度（含 hdr）；LE
-    uint32_t request_id;    // [8,12)  resp 需 echo；MR_REGISTER 中为 opaque Lane Token
-    uint8_t rsv[4];         // [12,16) 编码端 0；解码端忽略
+    uint32_t msg_len;       // [4,8)
+    uint32_t request_id;    // [8,12)
+    uint8_t rsv[4];         // [12,16)
 };
 #pragma pack(pop)
 static_assert(sizeof(kv_cm_hdr) == 16, "kv_cm_hdr must be 16 bytes");
@@ -91,12 +91,12 @@ struct kv_cm_conn_ub_info {
     uint64_t mami_tag;         // [264,272)
     uint32_t mami_tx_psn;      // [272,276)
     uint32_t mami_rx_psn;      // [276,280)
-    uint32_t rm_uasid;         // [280,284)  RaCtxQpCreate 出参 QpCreateInfo.ub.uasid
+    uint32_t rm_uasid;         // [280,284)
     uint32_t rm_jetty_id;      // [284,288)  QpCreateInfo.ub.id（= urma_jetty_id_t.id）
     uint8_t rm_jetty_type;     // [288,289)  TARGET_TYPE_JETTY(1)
     uint8_t rm_jetty_num;      // [289,290)  must be 1
-    uint8_t conn_mode;         // [290,291)  0=Rc(默认) / 1=Rm
-    uint8_t rm_rsv[5];         // [291,296)  对齐预留
+    uint8_t conn_mode;         // [290,291)
+    uint8_t rm_rsv[5];         // [291,296)
 };
 #pragma pack(pop)
 static_assert(sizeof(kv_cm_conn_ub_info) == 296, "kv_cm_conn_ub_info must be 296 bytes");
@@ -145,7 +145,7 @@ constexpr uint32_t kKvCmMaxMrPerRegister = 8;
 struct kv_cm_mr_register {
     kv_cm_hdr hdr;                             // [   0,  16)
     uint32_t client_id;                        // [  16,  20)  == TaskDesc.client_id
-    uint32_t mr_count;                         // [  20,  24)  有效段数 ∈ [0, kKvCmMaxMrPerRegister]
+    uint32_t mr_count;                         // [  20,  24)
     kv_cm_mr_seg segs[kKvCmMaxMrPerRegister];  // [  24,1304)
 };
 #pragma pack(pop)

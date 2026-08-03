@@ -113,7 +113,7 @@ UbStatus DlAscendcl::LoadLibrary()
     if (h == nullptr) {
         const char* error = dlerror();
         UB_LOG_WARN(
-            "dlopen libascendcl.so failed: %s; "
+            "dlopen libascendcl.so failed: {}; "
             "device-side H2D paths will fall back to no-op",
             error != nullptr ? error : "(no info)");
         return UbStatus(UbErrorCode::HccpV2LoadLibraryFailed, "libascendcl.so not available");
@@ -122,7 +122,7 @@ UbStatus DlAscendcl::LoadLibrary()
         void* sym = dlsym(h, name);
         if (sym == nullptr) {
             const char* error = dlerror();
-            UB_LOG_ERROR("dlsym %s failed: %s", name, error != nullptr ? error : "(no info)");
+            UB_LOG_ERROR("dlsym {} failed: {}", name, error != nullptr ? error : "(no info)");
             return false;
         }
         *outPtr = sym;
@@ -194,7 +194,7 @@ UbStatus DlAscendcl::AclrtFree(void* devPtr)
 {
     if (!Loaded() || FreeSlot() == nullptr) { return UbStatus::Ok(); }
     int rc = FreeSlot()(devPtr);
-    if (rc != 0) { UB_LOG_WARN("aclrtFree rc=%d", rc); }
+    if (rc != 0) { UB_LOG_WARN("aclrtFree rc={}", rc); }
     return UbStatus::Ok();
 }
 
@@ -220,7 +220,7 @@ UbStatus DlAscendcl::AclrtCreateStream(void** stream)
 {
     if (stream == nullptr) { return UbStatus(UbErrorCode::InvalidArgument, "stream out ptr null"); }
     *stream = nullptr;
-    UB_LOG_DEBUG("DlAscendcl::AclrtCreateStream enter: loaded=%d slot=%p", Loaded() ? 1 : 0,
+    UB_LOG_DEBUG("DlAscendcl::AclrtCreateStream enter: loaded={} slot={}", Loaded() ? 1 : 0,
                  reinterpret_cast<void*>(CreateStreamSlot()));
     if (!Loaded()) {
         auto st = LoadLibrary();
@@ -232,7 +232,7 @@ UbStatus DlAscendcl::AclrtCreateStream(void** stream)
     }
     UB_LOG_DEBUG("DlAscendcl::AclrtCreateStream call aclrtCreateStream");
     int rc = CreateStreamSlot()(stream);
-    UB_LOG_DEBUG("DlAscendcl::AclrtCreateStream returned: rc=%d stream=%p", rc, *stream);
+    UB_LOG_DEBUG("DlAscendcl::AclrtCreateStream returned: rc={} stream={}", rc, *stream);
     if (rc != 0) {
         *stream = nullptr;
         return UbStatus(UbErrorCode::HccpV2LoadLibraryFailed,
@@ -324,8 +324,8 @@ UbStatus DlAscendcl::AclrtLaunchKernelWithHostArgs(void* funcHandle, uint32_t bl
             struct {
                 uint32_t timeoutLow;
                 uint32_t timeoutHigh;
-            } timeoutUs;      // ATTR_TIMEOUT_US
-            uint32_t rsv[4];  // 锁定 union 尺寸 = 16B
+            } timeoutUs;  // ATTR_TIMEOUT_US
+            uint32_t rsv[4];
         } value;
     };
     static_assert(sizeof(LaunchKernelAttr) == 20, "aclrtLaunchKernelAttr ABI drift");
@@ -347,8 +347,8 @@ UbStatus DlAscendcl::AclrtLaunchKernelWithHostArgs(void* funcHandle, uint32_t bl
         std::size_t numAttrs;
     } cfg{attrs, 3};
     UB_LOG_DEBUG(
-        "DlAscendcl launch: api=aclrtLaunchKernelWithHostArgs func=%p blockDim=%u stream=%p "
-        "hostArgs=%p argsSize=%zu attrs=[scheme=1,timeoutUs=%u,engine=AIV]",
+        "DlAscendcl launch: api=aclrtLaunchKernelWithHostArgs func={} blockDim={} stream={} "
+        "hostArgs={} argsSize={} attrs=[scheme=1,timeoutUs={},engine=AIV]",
         funcHandle, blockDim, stream, hostArgs, argsSize, kAivTimeoutUs);
     int rc = LaunchHostArgsSlot()(funcHandle, blockDim, stream, &cfg, hostArgs, argsSize,
                                   /*ph=*/nullptr, /*phNum=*/0);
@@ -401,8 +401,8 @@ UbStatus DlAscendcl::AclrtLaunchKernelWithDeviceArgs(void* funcHandle, uint32_t 
         std::size_t numAttrs;
     } cfg{attrs, 3};
     UB_LOG_DEBUG(
-        "DlAscendcl launch: api=aclrtLaunchKernelV2 func=%p blockDim=%u stream=%p "
-        "deviceArgs=%p argsSize=%zu attrs=[scheme=1,timeoutUs=%u,engine=AIV]",
+        "DlAscendcl launch: api=aclrtLaunchKernelV2 func={} blockDim={} stream={} "
+        "deviceArgs={} argsSize={} attrs=[scheme=1,timeoutUs={},engine=AIV]",
         funcHandle, blockDim, stream, deviceArgs, argsSize, kAivTimeoutUs);
     int rc = LaunchKernelV2Slot()(funcHandle, blockDim, deviceArgs, argsSize, &cfg, stream);
     if (rc != 0) {
@@ -432,7 +432,7 @@ UbStatus DlAscendcl::AclrtSynchronizeStreamWithTimeout(void* stream, int32_t tim
             return UbStatus(UbErrorCode::UdmaCqPollTimeout,
                             "aclrtSynchronizeStreamWithTimeout(timeoutMs=" +
                                 std::to_string(timeoutMs) + ") failed rc=" + std::to_string(rc) +
-                                "（device kernel 可能 hang，建议 reset device）");
+                                " (device kernel may be hung; reset the device)");
         }
         return UbStatus::Ok();
     }
