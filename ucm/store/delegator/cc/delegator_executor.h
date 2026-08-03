@@ -32,6 +32,8 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -39,36 +41,9 @@
 #include "delegator_copy_stream.h"
 #include "detail/type/types.h"
 #include "pool/buffer_pool.h"
+#include "ucmstore_v1.h"
 
 namespace UC::Delegator {
-
-struct TransferBuffer {
-    Detail::BlockId owner;
-    std::size_t index{0};
-    BufferPool::Slot slot;
-};
-
-struct TransferRegion {
-    void* local_addr{nullptr};
-    void* device_addr{nullptr};
-    std::size_t size{0};
-    BufferPool::MemoryType memory_type{BufferPool::MemoryType::ASCEND_DEVICE};
-    std::int32_t device_id{-1};
-};
-
-class TransferEndpoint {
-public:
-    virtual ~TransferEndpoint() = default;
-
-    virtual Status SetupTransferRegion(const TransferRegion& region) = 0;
-    virtual void ResetTransferRegion() noexcept = 0;
-    virtual Expected<Detail::TaskHandle> SubmitLoad(
-        const std::vector<TransferBuffer>& buffers) = 0;
-    virtual Expected<Detail::TaskHandle> SubmitDump(
-        const std::vector<TransferBuffer>& buffers) = 0;
-    virtual Expected<bool> Check(Detail::TaskHandle task) = 0;
-    virtual Status Wait(Detail::TaskHandle task) = 0;
-};
 
 enum class Operation {
     LOAD,
@@ -80,7 +55,7 @@ public:
     static constexpr std::size_t kDefaultStreamNumber = 4;
 
     static Expected<std::unique_ptr<Executor>> Create(
-        std::unique_ptr<TransferEndpoint> endpoint, std::vector<std::size_t> tensor_sizes,
+        std::shared_ptr<StoreV1> backend, std::vector<std::size_t> tensor_sizes,
         std::int32_t device_id, std::size_t slot_num,
         std::size_t stream_number = kDefaultStreamNumber);
     ~Executor();
@@ -94,16 +69,18 @@ public:
     void Shutdown();
 
 private:
-    Executor(std::unique_ptr<TransferEndpoint> endpoint,
-             std::vector<std::size_t> tensor_sizes,
+    Executor(std::shared_ptr<StoreV1> backend, std::vector<std::size_t> tensor_sizes,
              std::int32_t device_id, std::size_t slot_num, std::size_t stream_number);
 
     struct TaskContext {
         Detail::TaskHandle id{NextId()};
         Detail::TaskDesc desc;
         Operation operation{Operation::LOAD};
+        
+        std::mutex stateMutex;  // Protects remaining and error.
         std::size_t remaining{0};
         std::optional<Status> error;
+        
         std::atomic<bool> failed{false};
         std::condition_variable completed;
 
@@ -146,15 +123,20 @@ private:
 
     Status ValidateTask(const Detail::TaskDesc& task, Operation operation) const;
     Status Start(std::size_t payload_size, std::size_t slot_num);
+    Expected<Detail::TaskDesc> MakeBackendTask(const TransferGroup& group) const;
 
     Status GatherAsync(const TransferGroup& group, CopyStream& streams);
     Status ScatterAsync(const TransferGroup& group, CopyStream& streams);
+    std::string DescribeShards(const TransferGroup& group) const;
+    void LogTaskCompletion(const TaskContext& task) const;
 
     Expected<TransferBatch> AcquireBatch(Operation operation);
     void ReleaseBatch(TransferBatch& batch);
 
-    void RecordShardCompletion(const QueuedShardContext& shard, const Status& status);
+    void CompleteTaskShards(const std::shared_ptr<TaskContext>& task, std::size_t count,
+                            const Status& status);
     void DiscardShard(const QueuedShardContext& shard, const Status& status, ShardStage stage);
+    // Called only after all worker threads have stopped, when Shutdown is the sole queue consumer.
     void DrainQueue(std::deque<QueuedShardContext>& queue);
     void AssertSchedulerInvariantsLocked() const;
 
@@ -162,12 +144,12 @@ private:
     void LoadLoop(std::promise<Status>& started);
 
     BufferPool buffer_pool_;
-    std::unique_ptr<TransferEndpoint> endpoint_;
+    std::shared_ptr<StoreV1> backend_;
     std::vector<std::size_t> tensor_sizes_;
     std::int32_t device_id_{-1};
     std::size_t stream_number_{0};
 
-    std::mutex tasks_mutex_;
+    std::shared_mutex taskMapMutex_;  // Protects tasks_ only.
     std::mutex sched_mutex_;
     std::condition_variable slots_ready_;
     std::condition_variable shutdown_completed_;
@@ -186,8 +168,6 @@ private:
 
     bool shutdown_started_{false};
     bool shutdown_complete_{false};
-    bool transfer_region_ready_{false};
-
     std::thread dump_thread_;
     std::thread load_thread_;
 };

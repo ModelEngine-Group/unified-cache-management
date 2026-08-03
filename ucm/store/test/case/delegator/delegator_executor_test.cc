@@ -25,6 +25,7 @@
 #include <acl/acl.h>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -67,39 +68,54 @@ public:
     }
 };
 
-class FakeTransferEndpoint final : public TransferEndpoint {
+class FakeStore final : public StoreV1 {
 public:
     struct Call {
         Operation operation;
         std::vector<std::size_t> shards;
     };
 
-    explicit FakeTransferEndpoint(std::size_t payload_size) : payload_size_{payload_size} {}
+    explicit FakeStore(std::size_t payload_size) : payload_size_{payload_size} {}
 
-    Status SetupTransferRegion(const TransferRegion& region) override
+    Status Setup(const Detail::Dictionary&) override { return Status::OK(); }
+
+    std::string Readme() const override { return "FakeStore"; }
+
+    Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId*, size_t num) override
     {
-        if (region.device_addr == nullptr || region.size == 0) {
+        return std::vector<uint8_t>(num, false);
+    }
+
+    Expected<ssize_t> LookupOnPrefix(const Detail::BlockId*, size_t) override { return -1; }
+
+    void Prefetch(const Detail::BlockId*, size_t) override {}
+
+    bool NeedRegisterKVCaches() const override { return true; }
+
+    Status RegisterKVCaches(const KVCacheRegistration* registrations, std::size_t count) override
+    {
+        if (registrations == nullptr || count != 1 || registrations[0].addr == 0 ||
+            registrations[0].size == 0) {
             return Status::InvalidParam();
         }
+        registration_base_ = registrations[0].addr;
+        registration_size_ = registrations[0].size;
         return Status::OK();
     }
 
-    void ResetTransferRegion() noexcept override {}
-
-    Expected<Detail::TaskHandle> SubmitLoad(
-        const std::vector<TransferBuffer>& buffers) override
+    Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
-        if (buffers.empty()) { return Status::InvalidParam(); }
+        if (task.empty()) { return Status::InvalidParam(); }
 
         std::vector<std::size_t> batch;
         std::vector<std::vector<std::uint8_t>> data;
-        batch.reserve(buffers.size());
-        data.reserve(buffers.size());
+        batch.reserve(task.size());
+        data.reserve(task.size());
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            for (const auto& buffer : buffers) {
-                batch.push_back(buffer.index);
-                load_submissions_.push_back(buffer.index);
+            for (const auto& shard : task) {
+                batch.push_back(shard.index);
+                load_submissions_.push_back(shard.index);
             }
             calls_.push_back(Call{Operation::LOAD, batch});
             if (std::find(batch.begin(), batch.end(), fail_load_index_) != batch.end()) {
@@ -108,49 +124,69 @@ public:
             for (const auto index : batch) { data.push_back(stored_[index]); }
         }
 
-        for (std::size_t index = 0; index < buffers.size(); ++index) {
+        for (std::size_t index = 0; index < task.size(); ++index) {
             if (data[index].size() != payload_size_) {
                 return Status::InvalidParam("missing fake load data");
             }
-            const auto ret = aclrtMemcpy(buffers[index].slot.device_addr, payload_size_,
-                                         data[index].data(),
-                                         data[index].size(), ACL_MEMCPY_HOST_TO_DEVICE);
+            if (task[index].addrs.empty()) { return Status::InvalidParam(); }
+            const auto ret =
+                aclrtMemcpy(task[index].addrs.front(), payload_size_, data[index].data(),
+                            data[index].size(), ACL_MEMCPY_HOST_TO_DEVICE);
             if (ret != ACL_SUCCESS) { return Status::Error("fake load copy failed"); }
         }
-        return NewTask(false, Status::OK(), buffers.front().index);
+        const auto groupIndex = task.front().index;
+        const auto waitStatus = groupIndex == fail_load_wait_index_
+                                    ? Status::Error("injected load wait failure")
+                                    : Status::OK();
+        return NewTask(false, waitStatus, groupIndex);
     }
 
-    Expected<Detail::TaskHandle> SubmitDump(
-        const std::vector<TransferBuffer>& buffers) override
+    Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override
     {
-        if (buffers.empty()) { return Status::InvalidParam(); }
+        if (task.empty()) { return Status::InvalidParam(); }
 
         std::vector<std::size_t> batch;
-        batch.reserve(buffers.size());
-        for (const auto& buffer : buffers) {
+        batch.reserve(task.size());
+        for (const auto& shard : task) {
+            if (shard.addrs.empty()) { return Status::InvalidParam(); }
             std::vector<std::uint8_t> data(payload_size_);
-            const auto ret = aclrtMemcpy(data.data(), data.size(), buffer.slot.device_addr,
-                                         data.size(), ACL_MEMCPY_DEVICE_TO_HOST);
+            const auto ret = aclrtMemcpy(data.data(), data.size(), shard.addrs.front(), data.size(),
+                                         ACL_MEMCPY_DEVICE_TO_HOST);
             if (ret != ACL_SUCCESS) { return Status::Error("fake store copy failed"); }
-            batch.push_back(buffer.index);
+            batch.push_back(shard.index);
 
             std::lock_guard<std::mutex> lock(mutex_);
-            stored_[buffer.index] = std::move(data);
-            dump_slots_.push_back(buffer.slot);
+            stored_[shard.index] = std::move(data);
+            const auto address = reinterpret_cast<std::uintptr_t>(shard.addrs.front());
+            if (address < registration_base_ ||
+                address - registration_base_ > registration_size_ - payload_size_) {
+                return Status::InvalidParam("fake store address is outside registered region");
+            }
+            BufferPool::Slot slot;
+            slot.local_addr = shard.addrs.front();
+            slot.device_addr = shard.addrs.front();
+            slot.length = payload_size_;
+            slot.offset = address - registration_base_;
+            dump_slots_.push_back(slot);
+            std::vector<std::uintptr_t> addresses;
+            addresses.reserve(shard.addrs.size());
+            for (const auto* addr : shard.addrs) {
+                addresses.push_back(reinterpret_cast<std::uintptr_t>(addr));
+            }
+            dump_addresses_.push_back(std::move(addresses));
         }
         {
             std::lock_guard<std::mutex> lock(mutex_);
             calls_.push_back(Call{Operation::DUMP, batch});
             store_batches_.push_back(std::move(batch));
         }
-        const auto groupIndex = buffers.front().index;
+        const auto groupIndex = task.front().index;
         if (groupIndex == fail_dump_submit_index_) {
             return Status::Error("injected dump submission failure");
         }
-        const auto waitStatus =
-            fail_first_store_ || groupIndex == fail_dump_wait_index_
-                ? Status::Error("injected store failure")
-                : Status::OK();
+        const auto waitStatus = fail_first_store_ || groupIndex == fail_dump_wait_index_
+                                    ? Status::Error("injected store failure")
+                                    : Status::OK();
         return NewTask(true, waitStatus, groupIndex);
     }
 
@@ -183,7 +219,6 @@ public:
         if (entry.group_index == fail_load_check_index_) {
             return Status::Error("injected load check failure");
         }
-        if (entry.status.Failure()) { return entry.status; }
         return true;
     }
 
@@ -260,8 +295,15 @@ public:
         return dump_slots_;
     }
 
+    std::vector<std::vector<std::uintptr_t>> DumpAddresses()
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return dump_addresses_;
+    }
+
     std::size_t fail_load_index_{std::numeric_limits<std::size_t>::max()};
     std::size_t fail_load_check_index_{std::numeric_limits<std::size_t>::max()};
+    std::size_t fail_load_wait_index_{std::numeric_limits<std::size_t>::max()};
     std::size_t fail_dump_submit_index_{std::numeric_limits<std::size_t>::max()};
     std::size_t fail_dump_wait_index_{std::numeric_limits<std::size_t>::max()};
     bool fail_first_store_{false};
@@ -293,6 +335,8 @@ private:
     }
 
     std::size_t payload_size_;
+    std::uintptr_t registration_base_{0};
+    std::size_t registration_size_{0};
     std::mutex mutex_;
     std::condition_variable wait_entered_;
     std::condition_variable wait_released_;
@@ -304,6 +348,7 @@ private:
     std::vector<std::size_t> checked_load_groups_;
     std::vector<Call> calls_;
     std::vector<BufferPool::Slot> dump_slots_;
+    std::vector<std::vector<std::uintptr_t>> dump_addresses_;
     bool block_first_store_{false};
     bool block_first_load_{false};
     bool blocked_load_assigned_{false};
@@ -312,47 +357,12 @@ private:
     bool release_load_{false};
 };
 
-class TransferEndpointRef final : public TransferEndpoint {
-public:
-    explicit TransferEndpointRef(TransferEndpoint& endpoint) : endpoint_{endpoint} {}
-
-    Status SetupTransferRegion(const TransferRegion& region) override
-    {
-        return endpoint_.SetupTransferRegion(region);
-    }
-
-    void ResetTransferRegion() noexcept override { endpoint_.ResetTransferRegion(); }
-
-    Expected<Detail::TaskHandle> SubmitLoad(
-        const std::vector<TransferBuffer>& buffers) override
-    {
-        return endpoint_.SubmitLoad(buffers);
-    }
-
-    Expected<Detail::TaskHandle> SubmitDump(
-        const std::vector<TransferBuffer>& buffers) override
-    {
-        return endpoint_.SubmitDump(buffers);
-    }
-
-    Expected<bool> Check(Detail::TaskHandle task) override
-    {
-        return endpoint_.Check(task);
-    }
-
-    Status Wait(Detail::TaskHandle task) override { return endpoint_.Wait(task); }
-
-private:
-    TransferEndpoint& endpoint_;
-};
-
 Expected<std::unique_ptr<Executor>> CreateTestExecutor(
-    FakeTransferEndpoint& endpoint, std::vector<std::size_t> tensor_sizes,
-    std::int32_t device_id, std::size_t slot_num,
-    std::size_t stream_number = Executor::kDefaultStreamNumber)
+    FakeStore& store, std::vector<std::size_t> tensor_sizes, std::int32_t device_id,
+    std::size_t slot_num, std::size_t stream_number = Executor::kDefaultStreamNumber)
 {
-    return Executor::Create(std::make_unique<TransferEndpointRef>(endpoint),
-                            std::move(tensor_sizes), device_id, slot_num,
+    auto backend = std::shared_ptr<StoreV1>(&store, [](StoreV1*) {});
+    return Executor::Create(std::move(backend), std::move(tensor_sizes), device_id, slot_num,
                             stream_number);
 }
 
@@ -378,8 +388,8 @@ DeviceShard MakeShard(std::size_t index, std::uint8_t first_value = 0)
     (void)aclrtMemcpy(shard.second.get(), second.size(), second.data(), second.size(),
                       ACL_MEMCPY_HOST_TO_DEVICE);
     shard.desc = Detail::Shard{
-        {                  },
-        index, { shard.first.get(), shard.second.get()}
+        {},
+        index, {shard.first.get(), shard.second.get()}
     };
     return shard;
 }
@@ -417,9 +427,32 @@ bool WaitForShardData(const DeviceShard& shard, const std::array<std::uint8_t, 8
     return false;
 }
 
+bool WaitForTaskNotFound(Executor& executor, Detail::TaskHandle task)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto checked = executor.Check(task);
+        if (!checked && checked.Error() == Status::NotFound()) { return true; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+}
+
+bool WaitForTaskCompletion(Executor& executor, Detail::TaskHandle task)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto checked = executor.Check(task);
+        if (checked && checked.Value()) { return true; }
+        if (!checked) { return false; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+}
+
 TEST_F(ExecutorTest, DumpBatchUsesAvailableSlotsAndOneStoreBatch)
 {
-    FakeTransferEndpoint store(8);
+    FakeStore store(8);
     auto created = CreateTestExecutor(store, {3, 5}, 0, 3, 2);
     ASSERT_TRUE(created);
     auto executor = std::move(created).Value();
@@ -432,8 +465,8 @@ TEST_F(ExecutorTest, DumpBatchUsesAvailableSlotsAndOneStoreBatch)
     ASSERT_TRUE(task);
     ASSERT_TRUE(executor->Wait(task.Value()).Success());
     EXPECT_EQ(store.StoreBatches(), (std::vector<std::vector<std::size_t>>{
-                                          {0, 1, 2},
-                                          {3, 4 }
+                                        {0, 1, 2},
+                                        {3, 4}
     }));
 
     const auto slots = store.DumpSlots();
@@ -446,11 +479,18 @@ TEST_F(ExecutorTest, DumpBatchUsesAvailableSlotsAndOneStoreBatch)
     }
     std::sort(firstBatchOffsets.begin(), firstBatchOffsets.end());
     EXPECT_EQ(firstBatchOffsets, (std::vector<std::size_t>{0, 16 * 1024, 32 * 1024}));
+
+    const auto addresses = store.DumpAddresses();
+    ASSERT_EQ(addresses.size(), std::size_t{5});
+    for (const auto& shardAddresses : addresses) {
+        ASSERT_EQ(shardAddresses.size(), std::size_t{2});
+        EXPECT_EQ(shardAddresses[1] - shardAddresses[0], std::size_t{3});
+    }
 }
 
 TEST_F(ExecutorTest, LoadScattersCompletedGroupsWhileFirstIsPending)
 {
-    FakeTransferEndpoint store(8);
+    FakeStore store(8);
     store.BlockFirstLoad();
     store.BlockFirstStore();
     store.SetData(0, {1, 2, 3, 4, 5, 6, 7, 8});
@@ -497,7 +537,7 @@ TEST_F(ExecutorTest, LoadScattersCompletedGroupsWhileFirstIsPending)
 
 TEST_F(ExecutorTest, LoadSubmitFailureDoesNotScatterGroup)
 {
-    FakeTransferEndpoint store(8);
+    FakeStore store(8);
     store.SetData(0, {1, 2, 3, 4, 5, 6, 7, 8});
     store.SetData(1, {11, 12, 13, 14, 15, 16, 17, 18});
     store.SetData(2, {21, 22, 23, 24, 25, 26, 27, 28});
@@ -521,7 +561,7 @@ TEST_F(ExecutorTest, LoadSubmitFailureDoesNotScatterGroup)
 
 TEST_F(ExecutorTest, LoadCheckFailureDoesNotScatterGroup)
 {
-    FakeTransferEndpoint store(8);
+    FakeStore store(8);
     store.fail_load_check_index_ = 0;
     std::vector<DeviceShard> shards;
     for (std::size_t index = 0; index < 3; ++index) {
@@ -546,9 +586,25 @@ TEST_F(ExecutorTest, LoadCheckFailureDoesNotScatterGroup)
     EXPECT_EQ(ReadShard(shards[2]), (std::array<std::uint8_t, 8>{}));
 }
 
+TEST_F(ExecutorTest, LoadWaitFailureDoesNotScatterGroup)
+{
+    FakeStore store(8);
+    store.fail_load_wait_index_ = 0;
+    store.SetData(0, {1, 2, 3, 4, 5, 6, 7, 8});
+    std::vector<DeviceShard> shards{MakeEmptyShard(0)};
+    auto created = CreateTestExecutor(store, {3, 5}, 0, 1, 1);
+    ASSERT_TRUE(created);
+    auto executor = std::move(created).Value();
+
+    auto task = executor->Submit(MakeTask(shards), Operation::LOAD);
+    ASSERT_TRUE(task);
+    EXPECT_TRUE(executor->Wait(task.Value()).Failure());
+    EXPECT_EQ(ReadShard(shards[0]), (std::array<std::uint8_t, 8>{}));
+}
+
 TEST_F(ExecutorTest, LoadSubmitFailureDoesNotCancelNextTransferGroup)
 {
-    FakeTransferEndpoint store(8);
+    FakeStore store(8);
     store.BlockFirstStore();
     store.fail_load_index_ = 0;
     store.SetData(2, {21, 22, 23, 24, 25, 26, 27, 28});
@@ -582,7 +638,7 @@ TEST_F(ExecutorTest, LoadSubmitFailureDoesNotCancelNextTransferGroup)
 
 TEST_F(ExecutorTest, LoadCheckFailureDoesNotFailNextTransferGroup)
 {
-    FakeTransferEndpoint store(8);
+    FakeStore store(8);
     store.BlockFirstStore();
     store.fail_load_check_index_ = 0;
     store.SetData(0, {1, 2, 3, 4, 5, 6, 7, 8});
@@ -617,7 +673,7 @@ TEST_F(ExecutorTest, LoadCheckFailureDoesNotFailNextTransferGroup)
 
 TEST_F(ExecutorTest, FailureStopsLaterDumpBatchesAndReleasesSlots)
 {
-    FakeTransferEndpoint store(8);
+    FakeStore store(8);
     store.fail_first_store_ = true;
     std::vector<DeviceShard> shards{MakeShard(0), MakeShard(1), MakeShard(2), MakeShard(3)};
     auto created = CreateTestExecutor(store, {3, 5}, 0, 2, 2);
@@ -628,7 +684,7 @@ TEST_F(ExecutorTest, FailureStopsLaterDumpBatchesAndReleasesSlots)
     ASSERT_TRUE(task);
     EXPECT_TRUE(executor->Wait(task.Value()).Failure());
     EXPECT_EQ(store.StoreBatches(), (std::vector<std::vector<std::size_t>>{
-                                          {0, 1}
+                                        {0, 1}
     }));
 
     store.fail_first_store_ = false;
@@ -637,14 +693,14 @@ TEST_F(ExecutorTest, FailureStopsLaterDumpBatchesAndReleasesSlots)
     ASSERT_TRUE(recovery);
     EXPECT_TRUE(executor->Wait(recovery.Value()).Success());
     EXPECT_EQ(store.StoreBatches(), (std::vector<std::vector<std::size_t>>{
-                                          {0, 1},
-                                          {4, 5}
+                                        {0, 1},
+                                        {4, 5}
     }));
 }
 
 TEST_F(ExecutorTest, DumpTransferGroupsSubmitSeparatelyAndIsolateStoreFailures)
 {
-    FakeTransferEndpoint store(8);
+    FakeStore store(8);
     store.BlockFirstLoad();
     store.BlockFirstStore();
     store.fail_dump_submit_index_ = 0;
@@ -657,8 +713,8 @@ TEST_F(ExecutorTest, DumpTransferGroupsSubmitSeparatelyAndIsolateStoreFailures)
     ASSERT_TRUE(created);
     auto executor = std::move(created).Value();
 
-    std::vector<DeviceShard> blockerShards{
-        MakeEmptyShard(100), MakeEmptyShard(101), MakeEmptyShard(102)};
+    std::vector<DeviceShard> blockerShards{MakeEmptyShard(100), MakeEmptyShard(101),
+                                           MakeEmptyShard(102)};
     auto blocker = executor->Submit(MakeTask(blockerShards), Operation::LOAD);
     ASSERT_TRUE(blocker);
     const auto loadCheckSeen = store.WaitForLoadGroupCheck(100);
@@ -680,11 +736,7 @@ TEST_F(ExecutorTest, DumpTransferGroupsSubmitSeparatelyAndIsolateStoreFailures)
     const auto storeWaitSeen = store.WaitForStoreWait();
     if (!storeWaitSeen) { store.ReleaseStore(); }
     ASSERT_TRUE(storeWaitSeen);
-    EXPECT_EQ(store.StoreBatches(), (std::vector<std::vector<std::size_t>>{
-                                          {0},
-                                          {1},
-                                          {2}
-    }));
+    EXPECT_EQ(store.StoreBatches(), (std::vector<std::vector<std::size_t>>{{0}, {1}, {2}}));
     store.ReleaseStore();
 
     EXPECT_TRUE(executor->Wait(submitFailed.Value()).Failure());
@@ -694,7 +746,7 @@ TEST_F(ExecutorTest, DumpTransferGroupsSubmitSeparatelyAndIsolateStoreFailures)
 
 TEST_F(ExecutorTest, LoadRunsBeforeNextDumpBatch)
 {
-    FakeTransferEndpoint store(8);
+    FakeStore store(8);
     store.BlockFirstStore();
     store.SetData(4, {41, 42, 43, 44, 45, 46, 47, 48});
     std::vector<DeviceShard> dumpShards{MakeShard(0), MakeShard(1), MakeShard(2), MakeShard(3)};
@@ -721,7 +773,7 @@ TEST_F(ExecutorTest, LoadRunsBeforeNextDumpBatch)
 
 TEST_F(ExecutorTest, DumpWaitDoesNotBlockLoadWorker)
 {
-    FakeTransferEndpoint store(8);
+    FakeStore store(8);
     store.BlockFirstStore();
     store.SetData(1, {11, 12, 13, 14, 15, 16, 17, 18});
     std::vector<DeviceShard> dumpShards{MakeShard(0)};
@@ -759,9 +811,112 @@ TEST_F(ExecutorTest, DumpWaitDoesNotBlockLoadWorker)
               (std::array<std::uint8_t, 8>{11, 12, 13, 14, 15, 16, 17, 18}));
 }
 
+TEST_F(ExecutorTest, WaitClaimsHandleAndDoesNotBlockOtherTaskQueries)
+{
+    FakeStore store(8);
+    store.BlockFirstStore();
+    store.SetData(1, {11, 12, 13, 14, 15, 16, 17, 18});
+    std::vector<DeviceShard> dumpShards{MakeShard(0)};
+    std::vector<DeviceShard> loadShards{MakeEmptyShard(1)};
+    auto created = CreateTestExecutor(store, {3, 5}, 0, 2, 2);
+    ASSERT_TRUE(created);
+    auto executor = std::move(created).Value();
+
+    auto dump = executor->Submit(MakeTask(dumpShards), Operation::DUMP);
+    ASSERT_TRUE(dump);
+    const auto dumpHandle = dump.Value();
+    ASSERT_TRUE(store.WaitForStoreWait());
+
+    auto waitStatus = Status::Error();
+    std::thread waiter(
+        [&executor, dumpHandle, &waitStatus]() { waitStatus = executor->Wait(dumpHandle); });
+
+    const bool handleClaimed = WaitForTaskNotFound(*executor, dumpHandle);
+    const auto secondWaitStatus = handleClaimed ? executor->Wait(dumpHandle) : Status::Error();
+    auto load = executor->Submit(MakeTask(loadShards), Operation::LOAD);
+    const bool loadCompleted = load && WaitForTaskCompletion(*executor, load.Value());
+
+    store.ReleaseStore();
+    waiter.join();
+
+    ASSERT_TRUE(handleClaimed);
+    EXPECT_EQ(secondWaitStatus, Status::NotFound());
+    ASSERT_TRUE(load);
+    EXPECT_TRUE(loadCompleted);
+    EXPECT_TRUE(waitStatus.Success());
+    EXPECT_TRUE(executor->Wait(load.Value()).Success());
+}
+
+TEST_F(ExecutorTest, ConcurrentChecksObserveIncompleteTask)
+{
+    constexpr std::size_t threadCount = 8;
+    constexpr std::size_t checksPerThread = 100;
+
+    FakeStore store(8);
+    store.BlockFirstStore();
+    std::vector<DeviceShard> shards{MakeShard(0)};
+    auto created = CreateTestExecutor(store, {3, 5}, 0, 1, 1);
+    ASSERT_TRUE(created);
+    auto executor = std::move(created).Value();
+
+    auto task = executor->Submit(MakeTask(shards), Operation::DUMP);
+    ASSERT_TRUE(task);
+    const auto taskHandle = task.Value();
+    ASSERT_TRUE(store.WaitForStoreWait());
+
+    std::atomic<bool> checksValid{true};
+    std::vector<std::thread> checkers;
+    checkers.reserve(threadCount);
+    for (std::size_t index = 0; index < threadCount; ++index) {
+        checkers.emplace_back([&executor, taskHandle, &checksValid]() {
+            for (std::size_t check = 0; check < checksPerThread; ++check) {
+                auto result = executor->Check(taskHandle);
+                if (!result || result.Value()) {
+                    checksValid.store(false, std::memory_order_relaxed);
+                    return;
+                }
+            }
+        });
+    }
+    for (auto& checker : checkers) { checker.join(); }
+
+    store.ReleaseStore();
+    EXPECT_TRUE(checksValid.load(std::memory_order_relaxed));
+    EXPECT_TRUE(executor->Wait(taskHandle).Success());
+}
+
+TEST_F(ExecutorTest, ClaimedWaitReturnsCancellationAfterShutdown)
+{
+    FakeStore store(8);
+    store.BlockFirstStore();
+    std::vector<DeviceShard> shards{MakeShard(0), MakeShard(1), MakeShard(2)};
+    auto created = CreateTestExecutor(store, {3, 5}, 0, 1, 1);
+    ASSERT_TRUE(created);
+    auto executor = std::move(created).Value();
+
+    auto task = executor->Submit(MakeTask(shards), Operation::DUMP);
+    ASSERT_TRUE(task);
+    const auto taskHandle = task.Value();
+    ASSERT_TRUE(store.WaitForStoreWait());
+
+    auto waitStatus = Status::OK();
+    std::thread waiter(
+        [&executor, taskHandle, &waitStatus]() { waitStatus = executor->Wait(taskHandle); });
+    const bool handleClaimed = WaitForTaskNotFound(*executor, taskHandle);
+
+    std::thread shutdown([&executor]() { executor->Shutdown(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    store.ReleaseStore();
+    shutdown.join();
+    waiter.join();
+
+    EXPECT_TRUE(handleClaimed);
+    EXPECT_TRUE(waitStatus.Failure());
+}
+
 TEST_F(ExecutorTest, TaskLargerThanSlotCountCompletesAcrossBatches)
 {
-    FakeTransferEndpoint store(8);
+    FakeStore store(8);
     std::vector<DeviceShard> shards{MakeShard(0), MakeShard(1)};
     auto created = CreateTestExecutor(store, {3, 5}, 0, 1, 1);
     ASSERT_TRUE(created);
@@ -770,14 +925,13 @@ TEST_F(ExecutorTest, TaskLargerThanSlotCountCompletesAcrossBatches)
     auto task = executor->Submit(MakeTask(shards), Operation::DUMP);
     ASSERT_TRUE(task);
     EXPECT_TRUE(executor->Wait(task.Value()).Success());
-    EXPECT_EQ(store.StoreBatches(),
-              (std::vector<std::vector<std::size_t>>{{0}, {1}}));
+    EXPECT_EQ(store.StoreBatches(), (std::vector<std::vector<std::size_t>>{{0}, {1}}));
 }
 
 TEST_F(ExecutorTest, AcceptsTasksWhileAllSlotsAreBusy)
 {
     constexpr std::size_t taskCount = 32;
-    FakeTransferEndpoint store(8);
+    FakeStore store(8);
     store.BlockFirstStore();
     auto created = CreateTestExecutor(store, {3, 5}, 0, 1, 1);
     ASSERT_TRUE(created);
@@ -810,14 +964,12 @@ TEST_F(ExecutorTest, AcceptsTasksWhileAllSlotsAreBusy)
 
     ASSERT_TRUE(allSubmitted);
     ASSERT_EQ(handles.size(), taskCount);
-    for (const auto handle : handles) {
-        EXPECT_TRUE(executor->Wait(handle).Success());
-    }
+    for (const auto handle : handles) { EXPECT_TRUE(executor->Wait(handle).Success()); }
 }
 
 TEST_F(ExecutorTest, ShutdownDrainsCurrentBatchAndCancelsLaterBatches)
 {
-    FakeTransferEndpoint store(8);
+    FakeStore store(8);
     store.BlockFirstStore();
     std::vector<DeviceShard> shards{MakeShard(0), MakeShard(1), MakeShard(2)};
     auto created = CreateTestExecutor(store, {3, 5}, 0, 1, 1);
@@ -838,7 +990,7 @@ TEST_F(ExecutorTest, ShutdownDrainsCurrentBatchAndCancelsLaterBatches)
 
 TEST_F(ExecutorTest, CreateRejectsInvalidConfiguration)
 {
-    FakeTransferEndpoint store(8);
+    FakeStore store(8);
 
     auto noSlots = CreateTestExecutor(store, {3, 5}, 0, 0);
     ASSERT_FALSE(noSlots);

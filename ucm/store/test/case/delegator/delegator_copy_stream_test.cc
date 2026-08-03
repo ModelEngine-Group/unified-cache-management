@@ -115,10 +115,14 @@ TEST_F(CopyStreamTest, RejectsInvalidConfigurationAndCopies)
     EXPECT_EQ(streams.Synchronize(nullptr), Status::InvalidParam());
 
     auto stream = reinterpret_cast<aclrtStream>(std::uintptr_t{1});
+    auto event = reinterpret_cast<aclrtEvent>(std::uintptr_t{1});
     auto* source = reinterpret_cast<void*>(std::uintptr_t{1});
     auto* destination = reinterpret_cast<void*>(std::uintptr_t{2});
 
     EXPECT_EQ(streams.Synchronize(stream), Status::InvalidParam());
+    EXPECT_EQ(streams.WaitEvent(nullptr, event), Status::InvalidParam());
+    EXPECT_EQ(streams.WaitEvent(stream, nullptr), Status::InvalidParam());
+    EXPECT_EQ(streams.WaitEvent(stream, event), Status::InvalidParam());
 
     EXPECT_EQ(streams.DeviceToDeviceAsync(nullptr, destination, 1, source, 1),
               Status::InvalidParam());
