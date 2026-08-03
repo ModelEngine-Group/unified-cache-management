@@ -76,11 +76,11 @@ private:
         Detail::TaskHandle id{NextId()};
         Detail::TaskDesc desc;
         Operation operation{Operation::LOAD};
-        
+
         std::mutex stateMutex;  // Protects remaining and error.
         std::size_t remaining{0};
         std::optional<Status> error;
-        
+
         std::atomic<bool> failed{false};
         std::condition_variable completed;
 
