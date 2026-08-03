@@ -3,3 +3,4 @@ add_library(offset_allocator STATIC
 )
 
 target_include_directories(offset_allocator PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+target_link_libraries(offset_allocator PRIVATE infra_logger)

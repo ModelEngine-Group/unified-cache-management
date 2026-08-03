@@ -1,4 +1,5 @@
 add_library(buffer_pool STATIC
+    buffer_region.cc
     buffer_pool.cc
     variable_buffer_pool.cc
 )

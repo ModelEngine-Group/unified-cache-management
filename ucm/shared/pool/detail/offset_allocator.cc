@@ -25,9 +25,6 @@
  */
 #include "pool/detail/offset_allocator.h"
 #include <cassert>
-#ifdef DEBUG_VERBOSE
-#include <cstdio>
-#endif
 
 #ifdef _MSC_VER
 #include <intrin.h>
@@ -36,6 +33,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include "logger/logger.h"
 
 namespace OffsetAllocator {
 
@@ -124,7 +122,7 @@ uint32 findLowestSetBitAfter(uint32 bitMask, uint32 startBitIndex)
     const uint32 maskBeforeStartIndex = (1U << startBitIndex) - 1;
     const uint32 maskAfterStartIndex = ~maskBeforeStartIndex;
     const uint32 bitsAfter = bitMask & maskAfterStartIndex;
-    if (bitsAfter == 0) { return Allocation::NO_SPACE; }
+    if (bitsAfter == 0) { return NO_SPACE; }
     return tzcnt_nonzero(bitsAfter);
 }
 
@@ -137,7 +135,7 @@ Allocator::Allocator(uint32 size, uint32 maxAllocs)
     if (maxAllocs > static_cast<uint32>(std::numeric_limits<NodeIndex>::max())) {
         throw std::invalid_argument("maxAllocs exceeds NodeIndex range");
     }
-    reset();
+    Reset();
 }
 
 Allocator::~Allocator()
@@ -146,8 +144,10 @@ Allocator::~Allocator()
     delete[] m_freeNodes;
 }
 
-void Allocator::reset()
+void Allocator::Reset()
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
+
     // Allocate replacements first so allocation failure leaves the current state intact.
     auto newNodes = std::make_unique<Node[]>(m_maxAllocs);
     auto newFreeNodes = std::make_unique<NodeIndex[]>(m_maxAllocs);
@@ -168,16 +168,19 @@ void Allocator::reset()
     for (uint32 index = 0; index < NUM_LEAF_BINS; ++index) { m_binIndices[index] = Node::unused; }
 
     // Initially the complete storage is one free node.
-    insertNodeIntoBin(m_size, 0);
+    InsertNodeIntoBin(m_size, 0);
 }
 
-Allocation Allocator::allocate(uint32 size)
+Allocation Allocator::Allocate(uint32 size)
 {
     // Zero-sized allocations would consume metadata while repeatedly returning offset zero.
     if (size == 0 || size > m_size) {
-        return {Allocation::NO_SPACE, Allocation::NO_SPACE_METADATA};
+        return {NO_SPACE, NO_SPACE_NODE_INDEX};
     }
-    uint32 binIndex = Allocation::NO_SPACE;
+
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    uint32 binIndex = NO_SPACE;
     NodeIndex nodeIndex = Node::unused;
     if (m_freeOffset == 0) {
         // Metadata exhausted: only an exact-fit node can be allocated without splitting.
@@ -198,17 +201,17 @@ Allocation Allocator::allocate(uint32 size)
         const uint32 minLeafBinIndex = minBinIndex & LEAF_BINS_INDEX_MASK;
 
         uint32 topBinIndex = minTopBinIndex;
-        uint32 leafBinIndex = Allocation::NO_SPACE;
+        uint32 leafBinIndex = NO_SPACE;
         if (m_usedBinsTop & (1U << topBinIndex)) {
             leafBinIndex = findLowestSetBitAfter(m_usedBins[topBinIndex], minLeafBinIndex);
         }
-        if (leafBinIndex == Allocation::NO_SPACE) {
+        if (leafBinIndex == NO_SPACE) {
             topBinIndex = findLowestSetBitAfter(m_usedBinsTop, minTopBinIndex + 1);
-            if (topBinIndex != Allocation::NO_SPACE) {
+            if (topBinIndex != NO_SPACE) {
                 leafBinIndex = tzcnt_nonzero(m_usedBins[topBinIndex]);
             }
         }
-        if (topBinIndex != Allocation::NO_SPACE && leafBinIndex != Allocation::NO_SPACE) {
+        if (topBinIndex != NO_SPACE && leafBinIndex != NO_SPACE) {
             binIndex = (topBinIndex << TOP_BINS_INDEX_SHIFT) | leafBinIndex;
             nodeIndex = m_binIndices[binIndex];
         }
@@ -231,28 +234,26 @@ Allocation Allocator::allocate(uint32 size)
         }
     }
 
-    if (nodeIndex == Node::unused) { return {Allocation::NO_SPACE, Allocation::NO_SPACE_METADATA}; }
+    if (nodeIndex == Node::unused) { return {NO_SPACE, NO_SPACE_NODE_INDEX}; }
 
     Node& node = m_nodes[nodeIndex];
     const uint32 nodeTotalSize = node.dataSize;
-    if (nodeTotalSize < size) { return {Allocation::NO_SPACE, Allocation::NO_SPACE_METADATA}; }
+    if (nodeTotalSize < size) { return {NO_SPACE, NO_SPACE_NODE_INDEX}; }
 
     const uint32 remainderSize = nodeTotalSize - size;
     // Only splitting a free region consumes a spare metadata node.
     if (remainderSize > 0 && m_freeOffset == 0) {
-        return {Allocation::NO_SPACE, Allocation::NO_SPACE_METADATA};
+        return {NO_SPACE, NO_SPACE_NODE_INDEX};
     }
 
     node.dataSize = size;
     node.used = true;
-    unlinkNodeFromBin(binIndex, nodeIndex);
+    UnlinkNodeFromBin(binIndex, nodeIndex);
     m_freeStorage -= nodeTotalSize;
-#ifdef DEBUG_VERBOSE
-    std::printf("Free storage: %u (-%u) (allocate)\n", m_freeStorage, nodeTotalSize);
-#endif
+    UC_DEBUG("Free storage: {} (-{}) (allocate)", m_freeStorage, nodeTotalSize);
 
     if (remainderSize > 0) {
-        const NodeIndex newNodeIndex = insertNodeIntoBin(remainderSize, node.dataOffset + size);
+        const NodeIndex newNodeIndex = InsertNodeIntoBin(remainderSize, node.dataOffset + size);
         if (node.neighborNext != Node::unused) {
             m_nodes[node.neighborNext].neighborPrev = newNodeIndex;
         }
@@ -264,7 +265,7 @@ Allocation Allocator::allocate(uint32 size)
     return {node.dataOffset, static_cast<NodeIndex>(nodeIndex)};
 }
 
-void Allocator::unlinkNodeFromBin(uint32 binIndex, NodeIndex nodeIndex)
+void Allocator::UnlinkNodeFromBin(uint32 binIndex, NodeIndex nodeIndex)
 {
     Node& node = m_nodes[nodeIndex];
     if (node.binListPrev != Node::unused) {
@@ -288,15 +289,18 @@ void Allocator::unlinkNodeFromBin(uint32 binIndex, NodeIndex nodeIndex)
     }
 }
 
-bool Allocator::free(Allocation allocation)
+bool Allocator::Free(Allocation allocation)
 {
-    // Validate the caller-owned handle before using metadata as an array index.
-    if (!m_nodes || allocation.metadata == Allocation::NO_SPACE_METADATA ||
-        static_cast<uint32>(allocation.metadata) >= m_maxAllocs) {
+    // Validate the caller-owned handle before using its node index as an array index.
+    if (allocation.nodeIndex == NO_SPACE_NODE_INDEX ||
+        static_cast<uint32>(allocation.nodeIndex) >= m_maxAllocs) {
         return false;
     }
 
-    const NodeIndex nodeIndex = allocation.metadata;
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (!m_nodes) { return false; }
+
+    const NodeIndex nodeIndex = allocation.nodeIndex;
     Node& node = m_nodes[nodeIndex];
     if (!node.used || node.dataOffset != allocation.offset) { return false; }
 
@@ -307,7 +311,7 @@ bool Allocator::free(Allocation allocation)
         Node& previousNode = m_nodes[node.neighborPrev];
         offset = previousNode.dataOffset;
         size += previousNode.dataSize;
-        removeNodeFromBin(node.neighborPrev);
+        RemoveNodeFromBin(node.neighborPrev);
         assert(previousNode.neighborNext == nodeIndex);
         node.neighborPrev = previousNode.neighborPrev;
     }
@@ -315,7 +319,7 @@ bool Allocator::free(Allocation allocation)
     if (node.neighborNext != Node::unused && !m_nodes[node.neighborNext].used) {
         Node& nextNode = m_nodes[node.neighborNext];
         size += nextNode.dataSize;
-        removeNodeFromBin(node.neighborNext);
+        RemoveNodeFromBin(node.neighborNext);
         assert(nextNode.neighborPrev == nodeIndex);
         node.neighborNext = nextNode.neighborNext;
     }
@@ -323,13 +327,11 @@ bool Allocator::free(Allocation allocation)
     const NodeIndex neighborNext = node.neighborNext;
     const NodeIndex neighborPrev = node.neighborPrev;
 
-#ifdef DEBUG_VERBOSE
-    std::printf("Putting node %u into freelist[%u] (free)\n", static_cast<uint32>(nodeIndex),
-                m_freeOffset + 1);
-#endif
+    UC_DEBUG("Putting node {} into freelist[{}] (free)", static_cast<uint32>(nodeIndex),
+             m_freeOffset + 1);
     m_freeNodes[++m_freeOffset] = nodeIndex;
 
-    const NodeIndex combinedNodeIndex = insertNodeIntoBin(size, offset);
+    const NodeIndex combinedNodeIndex = InsertNodeIntoBin(size, offset);
 
     if (neighborNext != Node::unused) {
         m_nodes[combinedNodeIndex].neighborNext = neighborNext;
@@ -343,7 +345,7 @@ bool Allocator::free(Allocation allocation)
     return true;
 }
 
-NodeIndex Allocator::insertNodeIntoBin(uint32 size, uint32 dataOffset)
+NodeIndex Allocator::InsertNodeIntoBin(uint32 size, uint32 dataOffset)
 {
     assert(m_freeOffset > 0);
     const uint32 binIndex = SmallFloat::uintToFloatRoundDown(size);
@@ -357,10 +359,8 @@ NodeIndex Allocator::insertNodeIntoBin(uint32 size, uint32 dataOffset)
 
     const NodeIndex topNodeIndex = m_binIndices[binIndex];
     const NodeIndex nodeIndex = m_freeNodes[m_freeOffset--];
-#ifdef DEBUG_VERBOSE
-    std::printf("Getting node %u from freelist[%u]\n", static_cast<uint32>(nodeIndex),
-                m_freeOffset + 1);
-#endif
+    UC_DEBUG("Getting node {} from freelist[{}]", static_cast<uint32>(nodeIndex),
+             m_freeOffset + 1);
     Node newNode;
     newNode.dataOffset = dataOffset;
     newNode.dataSize = size;
@@ -370,14 +370,12 @@ NodeIndex Allocator::insertNodeIntoBin(uint32 size, uint32 dataOffset)
     m_binIndices[binIndex] = nodeIndex;
 
     m_freeStorage += size;
-#ifdef DEBUG_VERBOSE
-    std::printf("Free storage: %u (+%u) (insertNodeIntoBin)\n", m_freeStorage, size);
-#endif
+    UC_DEBUG("Free storage: {} (+{}) (insertNodeIntoBin)", m_freeStorage, size);
 
     return nodeIndex;
 }
 
-void Allocator::removeNodeFromBin(NodeIndex nodeIndex)
+void Allocator::RemoveNodeFromBin(NodeIndex nodeIndex)
 {
     Node& node = m_nodes[nodeIndex];
 
@@ -402,30 +400,32 @@ void Allocator::removeNodeFromBin(NodeIndex nodeIndex)
         }
     }
 
-#ifdef DEBUG_VERBOSE
-    std::printf("Putting node %u into freelist[%u] (removeNodeFromBin)\n",
-                static_cast<uint32>(nodeIndex), m_freeOffset + 1);
-#endif
+    UC_DEBUG("Putting node {} into freelist[{}] (removeNodeFromBin)",
+             static_cast<uint32>(nodeIndex), m_freeOffset + 1);
     m_freeNodes[++m_freeOffset] = nodeIndex;
     m_freeStorage -= node.dataSize;
-#ifdef DEBUG_VERBOSE
-    std::printf("Free storage: %u (-%u) (removeNodeFromBin)\n", m_freeStorage, node.dataSize);
-#endif
+    UC_DEBUG("Free storage: {} (-{}) (removeNodeFromBin)", m_freeStorage, node.dataSize);
 }
 
-uint32 Allocator::allocationSize(Allocation allocation) const
+uint32 Allocator::GetAllocationSize(Allocation allocation) const
 {
-    if (allocation.metadata == Allocation::NO_SPACE_METADATA || !m_nodes ||
-        static_cast<uint32>(allocation.metadata) >= m_maxAllocs) {
+    if (allocation.nodeIndex == NO_SPACE_NODE_INDEX ||
+        static_cast<uint32>(allocation.nodeIndex) >= m_maxAllocs) {
         return 0;
     }
-    const Node& node = m_nodes[allocation.metadata];
+
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (!m_nodes) { return 0; }
+
+    const Node& node = m_nodes[allocation.nodeIndex];
     if (!node.used || node.dataOffset != allocation.offset) { return 0; }
     return node.dataSize;
 }
 
-StorageReport Allocator::storageReport() const
+StorageReport Allocator::GetStorageReport() const
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
+
     uint32 largestFreeRegion = 0;
     const uint32 freeStorage = m_freeStorage;
 
@@ -440,8 +440,10 @@ StorageReport Allocator::storageReport() const
     return {freeStorage, largestFreeRegion};
 }
 
-StorageReportFull Allocator::storageReportFull() const
+StorageReportFull Allocator::GetStorageReportFull() const
 {
+    std::lock_guard<std::mutex> lock(m_mutex);
+
     StorageReportFull report{};
     for (uint32 index = 0; index < NUM_LEAF_BINS; ++index) {
         uint32 count = 0;

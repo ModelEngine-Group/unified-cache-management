@@ -26,8 +26,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <mutex>
 #include <string>
+#include "pool/buffer_region.h"
 #include "pool/detail/offset_allocator.h"
 #include "status/status.h"
 
@@ -46,25 +46,38 @@ class VariableBufferPool {
     static constexpr std::size_t kDefaultAllocationAlignment = 64;
 
 public:
-    enum class MemoryType {
-        HOST = 0,
-        HOST_PINNED = 1,
-        ASCEND_DEVICE = 2,
-    };
+    using MemoryType = BufferMemoryType;
 
-    struct AllocationHandle {
-        OffsetAllocator::Allocation allocation;
-        // Metadata required by OffsetAllocator to release this block.
+    class BufferHandle {
+    public:
+        BufferHandle() = default;
+        BufferHandle(const BufferHandle&) = default;
+        BufferHandle& operator=(const BufferHandle&) = default;
+        BufferHandle(BufferHandle&&) = default;
+        BufferHandle& operator=(BufferHandle&&) = default;
 
-        std::size_t requested_size{0};
-        std::size_t allocated_size{0};
+        std::size_t GetRequestedSize() const { return requested_size_; }
+        std::size_t GetAllocatedSize() const { return allocated_size_; }
+        std::size_t GetOffset() const { return offset_; }
+        void* GetLocalAddr() const { return local_addr_; }
+        void* GetDeviceAddr() const { return device_addr_; }
+
+    private:
+        friend class VariableBufferPool;
+
+        const VariableBufferPool* owner_{nullptr};
+        OffsetAllocator::Allocation allocation_;
+        // Offset and node index required by OffsetAllocator to release this block.
+
+        std::size_t requested_size_{0};
+        std::size_t allocated_size_{0};
         // Number of bytes reserved after alignment.
 
-        std::size_t offset{0};
+        std::size_t offset_{0};
         // Byte offset from both pool base addresses.
 
-        void* local_addr{nullptr};
-        void* device_addr{nullptr};
+        void* local_addr_{nullptr};
+        void* device_addr_{nullptr};
     };
 
     VariableBufferPool() = default;
@@ -78,8 +91,8 @@ public:
                 std::uint32_t metadata_node_capacity, bool enable_zero = false,
                 std::size_t allocation_alignment = kDefaultAllocationAlignment);
 
-    Status Allocate(std::size_t requested_size, AllocationHandle& handle);
-    Status Free(const AllocationHandle& handle);
+    Status Allocate(std::size_t requested_size, BufferHandle& handle);
+    Status Free(const BufferHandle& handle);
     void Reset();
 
     bool IsInitialized() const { return static_cast<bool>(region_) && allocator_ != nullptr; }
@@ -91,17 +104,6 @@ public:
     void* GetDeviceAddr() const { return region_.device_addr; }
 
 private:
-    struct BufferRegion {
-        static Status Create(MemoryType memory_type, std::size_t size, BufferRegion& region);
-
-        explicit operator bool() const { return owner != nullptr; }
-        void Reset();
-
-        std::shared_ptr<void> owner;
-        void* local_addr{nullptr};
-        void* device_addr{nullptr};
-    };
-
     static bool ComputeAllocationLayout(std::size_t requested_size,
                                         std::size_t allocation_alignment,
                                         std::size_t& allocated_size, std::uint32_t& required_units);
@@ -115,14 +117,12 @@ private:
     bool enable_zero_{false};
     // Whether released memory is cleared before it becomes reusable.
 
-    BufferRegion region_;
+    PoolDetail::BufferRegion region_;
     // One contiguous backing region owned by this pool.
 
     std::unique_ptr<OffsetAllocator::Allocator> allocator_;
     // Manages variable-size offsets after Init provides the region size.
 
-    std::mutex mutex_;
-    // Serializes OffsetAllocator metadata updates within this pool.
 };
 
 }  // namespace UC

@@ -22,12 +22,11 @@
  * SOFTWARE.
  * */
 #include "pool/variable_buffer_pool.h"
-#include <acl/acl.h>
 #include <cstring>
 #include <limits>
 #include <new>
 #include <utility>
-#include "trans/ascend/ascend_buffer.h"
+#include "trans/detail/reserved_buffer.h"
 
 namespace UC {
 
@@ -51,49 +50,6 @@ bool VariableBufferPool::ComputeAllocationLayout(std::size_t requested_size,
     return true;
 }
 
-Status VariableBufferPool::BufferRegion::Create(MemoryType memory_type, std::size_t size,
-                                                BufferRegion& region)
-{
-    Trans::AscendBuffer ascendBuffer;
-    switch (memory_type) {
-        case MemoryType::HOST: {
-            auto owner = ascendBuffer.MakeHostBuffer(size);
-            if (!owner) { return Status::Error("failed to allocate host memory"); }
-            region.owner = std::move(owner);
-            region.local_addr = region.owner.get();
-            region.device_addr = region.owner.get();
-            return Status::OK();
-        }
-        case MemoryType::HOST_PINNED: {
-            void* deviceAddr = nullptr;
-            auto owner = ascendBuffer.MakeHostPinnedBuffer(size, &deviceAddr);
-            if (!owner || !deviceAddr) {
-                return Status::Error("failed to allocate host-pinned memory");
-            }
-            region.owner = std::move(owner);
-            region.local_addr = region.owner.get();
-            region.device_addr = deviceAddr;
-            return Status::OK();
-        }
-        case MemoryType::ASCEND_DEVICE: {
-            auto owner = ascendBuffer.MakeDeviceBuffer(size);
-            if (!owner) { return Status::Error("failed to allocate device memory"); }
-            region.owner = std::move(owner);
-            region.local_addr = region.owner.get();
-            region.device_addr = region.owner.get();
-            return Status::OK();
-        }
-        default: return Status::InvalidParam("unsupported memory type");
-    }
-}
-
-void VariableBufferPool::BufferRegion::Reset()
-{
-    owner.reset();
-    local_addr = nullptr;
-    device_addr = nullptr;
-}
-
 Status VariableBufferPool::Init(std::string name, MemoryType memory_type,
                                 std::size_t total_capacity, std::uint32_t metadata_node_capacity,
                                 bool enable_zero, std::size_t allocation_alignment)
@@ -113,8 +69,8 @@ Status VariableBufferPool::Init(std::string name, MemoryType memory_type,
         return Status::InvalidParam(name + ": metadata_node_capacity is out of range");
     }
 
-    BufferRegion region;
-    auto status = BufferRegion::Create(memory_type, alignedCapacity, region);
+    PoolDetail::BufferRegion region;
+    auto status = PoolDetail::BufferRegion::Create(memory_type, alignedCapacity, region);
     if (status.Failure()) { return status; }
 
     std::unique_ptr<OffsetAllocator::Allocator> allocator;
@@ -143,9 +99,8 @@ Status VariableBufferPool::Init(std::string name, MemoryType memory_type,
     return Status::OK();
 }
 
-Status VariableBufferPool::Allocate(std::size_t requested_size, AllocationHandle& handle)
+Status VariableBufferPool::Allocate(std::size_t requested_size, BufferHandle& handle)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
     if (!IsInitialized()) { return Status::Error("buffer pool not initialized"); }
 
     std::size_t allocatedSize = 0;
@@ -155,61 +110,47 @@ Status VariableBufferPool::Allocate(std::size_t requested_size, AllocationHandle
         return Status::InvalidParam(name_ + ": requested_size is invalid or too large");
     }
 
-    const auto allocation = allocator_->allocate(requiredUnits);
-    if (allocation.offset == OffsetAllocator::Allocation::NO_SPACE) {
+    const auto allocation = allocator_->Allocate(requiredUnits);
+    if (allocation.offset == OffsetAllocator::NO_SPACE) {
         return Status(Status::NoSpace().Underlying(), name_ + ": no suitable free region");
     }
 
     const auto byteOffset = static_cast<std::size_t>(allocation.offset) * allocation_alignment_;
-    AllocationHandle result;
-    result.allocation = allocation;
-    result.requested_size = requested_size;
-    result.allocated_size = allocatedSize;
-    result.offset = byteOffset;
-    result.local_addr = static_cast<char*>(region_.local_addr) + byteOffset;
-    result.device_addr = static_cast<char*>(region_.device_addr) + byteOffset;
+    BufferHandle result;
+    result.owner_ = this;
+    result.allocation_ = allocation;
+    result.requested_size_ = requested_size;
+    result.allocated_size_ = allocatedSize;
+    result.offset_ = byteOffset;
+    result.local_addr_ = static_cast<char*>(region_.local_addr) + byteOffset;
+    result.device_addr_ = static_cast<char*>(region_.device_addr) + byteOffset;
     handle = result;
     return Status::OK();
 }
 
-Status VariableBufferPool::Free(const AllocationHandle& handle)
+Status VariableBufferPool::Free(const BufferHandle& handle)
 {
-    std::size_t allocatedSize = 0;
-    void* localAddress = nullptr;
-    bool enableZero = false;
+    if (!IsInitialized()) { return Status::Error("buffer pool not initialized"); }
+    if (handle.owner_ != this) {
+        return Status::InvalidParam(name_ + ": allocation handle belongs to another pool");
+    }
 
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (!IsInitialized()) { return Status::Error("buffer pool not initialized"); }
-
-        const auto allocatedUnits = allocator_->allocationSize(handle.allocation);
-        if (allocatedUnits == 0) {
+    if (!enable_zero_) {
+        if (!allocator_->Free(handle.allocation_)) {
             return Status::InvalidParam(name_ + ": invalid allocation handle");
         }
+        return Status::OK();
+    }
 
-        const auto byteOffset =
-            static_cast<std::size_t>(handle.allocation.offset) * allocation_alignment_;
-        allocatedSize = static_cast<std::size_t>(allocatedUnits) * allocation_alignment_;
-        if (byteOffset > total_capacity_ || allocatedSize > total_capacity_ - byteOffset) {
-            return Status::InvalidParam(name_ + ": allocation is outside the buffer region");
-        }
-
-        localAddress = static_cast<char*>(region_.local_addr) + byteOffset;
-        enableZero = enable_zero_;
-        if (!enableZero) {
-            if (!allocator_->free(handle.allocation)) {
-                return Status::InvalidParam(name_ + ": invalid allocation handle");
-            }
-            return Status::OK();
-        }
+    if (allocator_->GetAllocationSize(handle.allocation_) == 0) {
+        return Status::InvalidParam(name_ + ": invalid allocation handle");
     }
 
     // Keep the block allocated while clearing. On failure, the caller retains the live handle.
-    auto status = ZeroMemory(localAddress, allocatedSize);
+    auto status = ZeroMemory(handle.local_addr_, handle.allocated_size_);
     if (status.Failure()) { return status; }
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!allocator_->free(handle.allocation)) {
+    if (!allocator_->Free(handle.allocation_)) {
         return Status::InvalidParam(name_ + ": invalid allocation handle");
     }
     return Status::OK();
@@ -229,9 +170,8 @@ void VariableBufferPool::Reset()
 Status VariableBufferPool::ZeroMemory(void* address, std::size_t size) const
 {
     if (memory_type_ == MemoryType::ASCEND_DEVICE) {
-        if (aclrtMemset(address, size, 0, size) != ACL_SUCCESS) {
-            return Status::Error(name_ + ": failed to zero device memory");
-        }
+        const auto status = Trans::ZeroDeviceMemory(address, size);
+        if (status.Failure()) { return Status::Error(name_ + ": failed to zero device memory"); }
     } else {
         std::memset(address, 0, size);
     }

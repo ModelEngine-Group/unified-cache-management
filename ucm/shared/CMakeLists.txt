@@ -1,7 +1,8 @@
 add_subdirectory(vendor)
 add_subdirectory(infra)
 add_subdirectory(trans)
-if(RUNTIME_ENVIRONMENT STREQUAL "ascend" OR BUILD_UNIT_TESTS)
+if(RUNTIME_ENVIRONMENT STREQUAL "ascend" OR RUNTIME_ENVIRONMENT STREQUAL "simu"
+   OR BUILD_UNIT_TESTS)
     add_subdirectory(pool/detail)
 endif()
 if(RUNTIME_ENVIRONMENT STREQUAL "ascend" OR RUNTIME_ENVIRONMENT STREQUAL "simu")

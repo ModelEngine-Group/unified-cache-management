@@ -26,6 +26,7 @@
 #pragma once
 
 #include <limits>
+#include <mutex>
 
 namespace OffsetAllocator {
 
@@ -47,13 +48,12 @@ static constexpr uint32 BINS_PER_LEAF = 8;
 static constexpr uint32 TOP_BINS_INDEX_SHIFT = 3;
 static constexpr uint32 LEAF_BINS_INDEX_MASK = 0x7;
 static constexpr uint32 NUM_LEAF_BINS = NUM_TOP_BINS * BINS_PER_LEAF;
+static constexpr uint32 NO_SPACE = 0xffffffff;
+static constexpr NodeIndex NO_SPACE_NODE_INDEX = std::numeric_limits<NodeIndex>::max();
 
 struct Allocation {
-    static constexpr uint32 NO_SPACE = 0xffffffff;
-    static constexpr NodeIndex NO_SPACE_METADATA = std::numeric_limits<NodeIndex>::max();
-
     uint32 offset = NO_SPACE;
-    NodeIndex metadata = NO_SPACE_METADATA;
+    NodeIndex nodeIndex = NO_SPACE_NODE_INDEX;
 };
 
 struct StorageReport {
@@ -77,23 +77,23 @@ public:
 
     Allocator(const Allocator&) = delete;
     Allocator& operator=(const Allocator&) = delete;
-    // Allocator ownership remains bound to the arena that provides synchronization.
+    // Object lifetime remains externally synchronized.
     Allocator(Allocator&&) = delete;
     Allocator& operator=(Allocator&&) = delete;
 
-    void reset();
+    void Reset();
 
-    Allocation allocate(uint32 size);
-    bool free(Allocation allocation);
+    Allocation Allocate(uint32 size);
+    bool Free(Allocation allocation);
 
-    uint32 allocationSize(Allocation allocation) const;
-    StorageReport storageReport() const;
-    StorageReportFull storageReportFull() const;
+    uint32 GetAllocationSize(Allocation allocation) const;
+    StorageReport GetStorageReport() const;
+    StorageReportFull GetStorageReportFull() const;
 
 private:
-    NodeIndex insertNodeIntoBin(uint32 size, uint32 dataOffset);
-    void unlinkNodeFromBin(uint32 binIndex, NodeIndex nodeIndex);
-    void removeNodeFromBin(NodeIndex nodeIndex);
+    NodeIndex InsertNodeIntoBin(uint32 size, uint32 dataOffset);
+    void UnlinkNodeFromBin(uint32 binIndex, NodeIndex nodeIndex);
+    void RemoveNodeFromBin(NodeIndex nodeIndex);
 
     struct Node {
         static constexpr NodeIndex unused = std::numeric_limits<NodeIndex>::max();
@@ -118,6 +118,7 @@ private:
     Node* m_nodes;
     NodeIndex* m_freeNodes;
     uint32 m_freeOffset;
+    mutable std::mutex m_mutex;
 };
 
 }  // namespace OffsetAllocator

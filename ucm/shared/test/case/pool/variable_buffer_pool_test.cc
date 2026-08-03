@@ -42,7 +42,7 @@ class VariableBufferPoolTest : public Test::PoolTestBase {};
 TEST_F(VariableBufferPoolTest, RejectsInvalidInitAndUseBeforeInit)
 {
     VariableBufferPool pool;
-    VariableBufferPool::AllocationHandle handle;
+    VariableBufferPool::BufferHandle handle;
 
     EXPECT_EQ(pool.Allocate(64, handle), Status::Error());
     EXPECT_EQ(pool.Allocate(0, handle), Status::Error());
@@ -104,29 +104,31 @@ TEST_F(VariableBufferPoolTest, AllocatesDifferentAlignedSizes)
         EXPECT_EQ(initialBytes[index], 0);
     }
 
-    VariableBufferPool::AllocationHandle first;
-    VariableBufferPool::AllocationHandle second;
-    VariableBufferPool::AllocationHandle third;
-    VariableBufferPool::AllocationHandle exhausted;
+    VariableBufferPool::BufferHandle first;
+    VariableBufferPool::BufferHandle second;
+    VariableBufferPool::BufferHandle third;
+    VariableBufferPool::BufferHandle exhausted;
     ASSERT_TRUE(pool.Allocate(1, first).Success());
     ASSERT_TRUE(pool.Allocate(65, second).Success());
     ASSERT_TRUE(pool.Allocate(128, third).Success());
 
-    EXPECT_EQ(first.requested_size, std::size_t{1});
-    EXPECT_EQ(first.allocated_size, std::size_t{64});
-    EXPECT_EQ(first.offset, std::size_t{0});
-    EXPECT_EQ(second.requested_size, std::size_t{65});
-    EXPECT_EQ(second.allocated_size, std::size_t{128});
-    EXPECT_EQ(second.offset, std::size_t{64});
-    EXPECT_EQ(third.allocated_size, std::size_t{128});
-    EXPECT_EQ(third.offset, std::size_t{192});
-    EXPECT_EQ(first.local_addr, static_cast<char*>(pool.GetLocalAddr()) + first.offset);
-    EXPECT_EQ(first.device_addr, static_cast<char*>(pool.GetDeviceAddr()) + first.offset);
-    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.local_addr) -
-                  reinterpret_cast<std::uintptr_t>(first.local_addr),
+    EXPECT_EQ(first.GetRequestedSize(), std::size_t{1});
+    EXPECT_EQ(first.GetAllocatedSize(), std::size_t{64});
+    EXPECT_EQ(first.GetOffset(), std::size_t{0});
+    EXPECT_EQ(second.GetRequestedSize(), std::size_t{65});
+    EXPECT_EQ(second.GetAllocatedSize(), std::size_t{128});
+    EXPECT_EQ(second.GetOffset(), std::size_t{64});
+    EXPECT_EQ(third.GetAllocatedSize(), std::size_t{128});
+    EXPECT_EQ(third.GetOffset(), std::size_t{192});
+    EXPECT_EQ(first.GetLocalAddr(),
+              static_cast<char*>(pool.GetLocalAddr()) + first.GetOffset());
+    EXPECT_EQ(first.GetDeviceAddr(),
+              static_cast<char*>(pool.GetDeviceAddr()) + first.GetOffset());
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.GetLocalAddr()) -
+                  reinterpret_cast<std::uintptr_t>(first.GetLocalAddr()),
               std::uintptr_t{64});
-    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(third.local_addr) -
-                  reinterpret_cast<std::uintptr_t>(second.local_addr),
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(third.GetLocalAddr()) -
+                  reinterpret_cast<std::uintptr_t>(second.GetLocalAddr()),
               std::uintptr_t{128});
     EXPECT_EQ(pool.Allocate(1, exhausted), Status::NoSpace());
 }
@@ -137,28 +139,32 @@ TEST_F(VariableBufferPoolTest, SupportsCustomAllocationAlignment)
     ASSERT_TRUE(pool.Init("custom_alignment", MemoryType::HOST, 500, 16, false, 256).Success());
     EXPECT_EQ(pool.GetTotalSize(), std::size_t{512});
 
-    VariableBufferPool::AllocationHandle first;
-    VariableBufferPool::AllocationHandle second;
-    VariableBufferPool::AllocationHandle exhausted;
+    VariableBufferPool::BufferHandle first;
+    VariableBufferPool::BufferHandle second;
+    VariableBufferPool::BufferHandle exhausted;
     ASSERT_TRUE(pool.Allocate(1, first).Success());
     ASSERT_TRUE(pool.Allocate(200, second).Success());
 
-    EXPECT_EQ(first.allocated_size, std::size_t{256});
-    EXPECT_EQ(first.offset, std::size_t{0});
-    EXPECT_EQ(second.allocated_size, std::size_t{256});
-    EXPECT_EQ(second.offset, std::size_t{256});
+    EXPECT_EQ(first.GetAllocatedSize(), std::size_t{256});
+    EXPECT_EQ(first.GetOffset(), std::size_t{0});
+    EXPECT_EQ(second.GetAllocatedSize(), std::size_t{256});
+    EXPECT_EQ(second.GetOffset(), std::size_t{256});
     EXPECT_EQ(pool.Allocate(1, exhausted), Status::NoSpace());
 
     ASSERT_TRUE(pool.Free(second).Success());
     ASSERT_TRUE(pool.Free(first).Success());
-    VariableBufferPool::AllocationHandle complete;
+    VariableBufferPool::BufferHandle complete;
     ASSERT_TRUE(pool.Allocate(500, complete).Success());
-    EXPECT_EQ(complete.allocated_size, std::size_t{512});
-    EXPECT_EQ(complete.offset, std::size_t{0});
+    EXPECT_EQ(complete.GetAllocatedSize(), std::size_t{512});
+    EXPECT_EQ(complete.GetOffset(), std::size_t{0});
 }
 
 TEST_F(VariableBufferPoolTest, HostPinnedPoolKeepsLocalAndDeviceAddresses)
 {
+#if !defined(UCM_TEST_RUNTIME_ASCEND)
+    GTEST_SKIP() << "Host-pinned memory is not supported by the simu backend";
+#endif
+
     VariableBufferPool pool;
     ASSERT_TRUE(pool.Init("pinned", MemoryType::HOST_PINNED, 4096, 16).Success());
 
@@ -168,40 +174,46 @@ TEST_F(VariableBufferPoolTest, HostPinnedPoolKeepsLocalAndDeviceAddresses)
     EXPECT_EQ(pool.GetMemoryType(), MemoryType::HOST_PINNED);
     EXPECT_EQ(reinterpret_cast<std::uintptr_t>(pool.GetLocalAddr()) % 4096, std::uintptr_t{0});
 
-    VariableBufferPool::AllocationHandle first;
-    VariableBufferPool::AllocationHandle second;
+    VariableBufferPool::BufferHandle first;
+    VariableBufferPool::BufferHandle second;
     ASSERT_TRUE(pool.Allocate(65, first).Success());
     ASSERT_TRUE(pool.Allocate(129, second).Success());
-    EXPECT_EQ(first.local_addr, pool.GetLocalAddr());
-    EXPECT_EQ(first.device_addr, pool.GetDeviceAddr());
-    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.local_addr) -
-                  reinterpret_cast<std::uintptr_t>(first.local_addr),
+    EXPECT_EQ(first.GetLocalAddr(), pool.GetLocalAddr());
+    EXPECT_EQ(first.GetDeviceAddr(), pool.GetDeviceAddr());
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.GetLocalAddr()) -
+                  reinterpret_cast<std::uintptr_t>(first.GetLocalAddr()),
               std::uintptr_t{128});
-    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.device_addr) -
-                  reinterpret_cast<std::uintptr_t>(first.device_addr),
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.GetDeviceAddr()) -
+                  reinterpret_cast<std::uintptr_t>(first.GetDeviceAddr()),
               std::uintptr_t{128});
 }
 
 TEST_F(VariableBufferPoolTest, DevicePoolZeroesReleasedAllocation)
 {
     constexpr std::size_t allocationSize = 128;
+    Trans::Device device;
+    auto stream = device.MakeStream();
+    ASSERT_NE(stream, nullptr);
+
     VariableBufferPool pool;
     ASSERT_TRUE(pool.Init("device", MemoryType::ASCEND_DEVICE, allocationSize, 8, true).Success());
     EXPECT_EQ(pool.GetMemoryType(), MemoryType::ASCEND_DEVICE);
     EXPECT_EQ(pool.GetLocalAddr(), pool.GetDeviceAddr());
 
-    VariableBufferPool::AllocationHandle first;
+    VariableBufferPool::BufferHandle first;
     ASSERT_TRUE(pool.Allocate(65, first).Success());
-    ASSERT_EQ(aclrtMemset(first.local_addr, allocationSize, 0xAB, allocationSize), ACL_SUCCESS);
+    std::array<std::uint8_t, allocationSize> dirty;
+    dirty.fill(0xAB);
+    ASSERT_TRUE(
+        stream->HostToDevice(dirty.data(), first.GetDeviceAddr(), allocationSize).Success());
     ASSERT_TRUE(pool.Free(first).Success());
 
-    VariableBufferPool::AllocationHandle second;
+    VariableBufferPool::BufferHandle second;
     ASSERT_TRUE(pool.Allocate(65, second).Success());
-    EXPECT_EQ(second.local_addr, first.local_addr);
+    EXPECT_EQ(second.GetLocalAddr(), first.GetLocalAddr());
     std::array<std::uint8_t, allocationSize> host{};
-    ASSERT_EQ(aclrtMemcpy(host.data(), host.size(), second.local_addr, allocationSize,
-                          ACL_MEMCPY_DEVICE_TO_HOST),
-              ACL_SUCCESS);
+    ASSERT_TRUE(
+        stream->DeviceToHost(second.GetDeviceAddr(), host.data(), allocationSize).Success());
     for (const auto value : host) { EXPECT_EQ(value, 0); }
 }
 
@@ -210,10 +222,10 @@ TEST_F(VariableBufferPoolTest, CoalescesFragmentedAdjacentAllocations)
     VariableBufferPool pool;
     ASSERT_TRUE(pool.Init("coalesce", MemoryType::HOST, 256, 16).Success());
 
-    VariableBufferPool::AllocationHandle first;
-    VariableBufferPool::AllocationHandle second;
-    VariableBufferPool::AllocationHandle third;
-    VariableBufferPool::AllocationHandle fourth;
+    VariableBufferPool::BufferHandle first;
+    VariableBufferPool::BufferHandle second;
+    VariableBufferPool::BufferHandle third;
+    VariableBufferPool::BufferHandle fourth;
     ASSERT_TRUE(pool.Allocate(64, first).Success());
     ASSERT_TRUE(pool.Allocate(64, second).Success());
     ASSERT_TRUE(pool.Allocate(64, third).Success());
@@ -222,13 +234,13 @@ TEST_F(VariableBufferPoolTest, CoalescesFragmentedAdjacentAllocations)
     ASSERT_TRUE(pool.Free(first).Success());
     ASSERT_TRUE(pool.Free(third).Success());
 
-    VariableBufferPool::AllocationHandle fragmented;
+    VariableBufferPool::BufferHandle fragmented;
     EXPECT_EQ(pool.Allocate(128, fragmented), Status::NoSpace());
 
     ASSERT_TRUE(pool.Free(second).Success());
-    VariableBufferPool::AllocationHandle merged;
+    VariableBufferPool::BufferHandle merged;
     ASSERT_TRUE(pool.Allocate(128, merged).Success());
-    EXPECT_EQ(merged.local_addr, first.local_addr);
+    EXPECT_EQ(merged.GetLocalAddr(), first.GetLocalAddr());
 }
 
 TEST_F(VariableBufferPoolTest, FreeZeroesAndReusesHostMemory)
@@ -236,16 +248,16 @@ TEST_F(VariableBufferPoolTest, FreeZeroesAndReusesHostMemory)
     VariableBufferPool pool;
     ASSERT_TRUE(pool.Init("zero", MemoryType::HOST, 128, 8, true).Success());
 
-    VariableBufferPool::AllocationHandle first;
+    VariableBufferPool::BufferHandle first;
     ASSERT_TRUE(pool.Allocate(65, first).Success());
-    std::memset(first.local_addr, 0xAB, first.allocated_size);
+    std::memset(first.GetLocalAddr(), 0xAB, first.GetAllocatedSize());
     ASSERT_TRUE(pool.Free(first).Success());
 
-    VariableBufferPool::AllocationHandle second;
+    VariableBufferPool::BufferHandle second;
     ASSERT_TRUE(pool.Allocate(65, second).Success());
-    EXPECT_EQ(second.local_addr, first.local_addr);
-    const auto* bytes = static_cast<const std::uint8_t*>(second.local_addr);
-    for (std::size_t i = 0; i < second.allocated_size; ++i) { EXPECT_EQ(bytes[i], 0); }
+    EXPECT_EQ(second.GetLocalAddr(), first.GetLocalAddr());
+    const auto* bytes = static_cast<const std::uint8_t*>(second.GetLocalAddr());
+    for (std::size_t i = 0; i < second.GetAllocatedSize(); ++i) { EXPECT_EQ(bytes[i], 0); }
 }
 
 TEST_F(VariableBufferPoolTest, FreePreservesHostMemoryWhenZeroingDisabled)
@@ -253,16 +265,16 @@ TEST_F(VariableBufferPoolTest, FreePreservesHostMemoryWhenZeroingDisabled)
     VariableBufferPool pool;
     ASSERT_TRUE(pool.Init("preserve", MemoryType::HOST, 128, 8).Success());
 
-    VariableBufferPool::AllocationHandle first;
+    VariableBufferPool::BufferHandle first;
     ASSERT_TRUE(pool.Allocate(65, first).Success());
-    std::memset(first.local_addr, 0xAB, first.allocated_size);
+    std::memset(first.GetLocalAddr(), 0xAB, first.GetAllocatedSize());
     ASSERT_TRUE(pool.Free(first).Success());
 
-    VariableBufferPool::AllocationHandle second;
+    VariableBufferPool::BufferHandle second;
     ASSERT_TRUE(pool.Allocate(65, second).Success());
-    EXPECT_EQ(second.local_addr, first.local_addr);
-    const auto* bytes = static_cast<const std::uint8_t*>(second.local_addr);
-    for (std::size_t i = 0; i < second.allocated_size; ++i) { EXPECT_EQ(bytes[i], 0xAB); }
+    EXPECT_EQ(second.GetLocalAddr(), first.GetLocalAddr());
+    const auto* bytes = static_cast<const std::uint8_t*>(second.GetLocalAddr());
+    for (std::size_t i = 0; i < second.GetAllocatedSize(); ++i) { EXPECT_EQ(bytes[i], 0xAB); }
 }
 
 TEST_F(VariableBufferPoolTest, AllowsExactFitWhenMetadataIsExhausted)
@@ -270,15 +282,15 @@ TEST_F(VariableBufferPoolTest, AllowsExactFitWhenMetadataIsExhausted)
     VariableBufferPool pool;
     ASSERT_TRUE(pool.Init("metadata_exact", MemoryType::HOST, 128, 3).Success());
 
-    VariableBufferPool::AllocationHandle first;
-    VariableBufferPool::AllocationHandle second;
+    VariableBufferPool::BufferHandle first;
+    VariableBufferPool::BufferHandle second;
     ASSERT_TRUE(pool.Allocate(64, first).Success());
     ASSERT_TRUE(pool.Allocate(64, second).Success());
-    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.local_addr) -
-                  reinterpret_cast<std::uintptr_t>(first.local_addr),
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.GetLocalAddr()) -
+                  reinterpret_cast<std::uintptr_t>(first.GetLocalAddr()),
               std::uintptr_t{64});
 
-    VariableBufferPool::AllocationHandle exhausted;
+    VariableBufferPool::BufferHandle exhausted;
     EXPECT_EQ(pool.Allocate(1, exhausted), Status::NoSpace());
     EXPECT_TRUE(pool.Free(second).Success());
     EXPECT_TRUE(pool.Free(first).Success());
@@ -289,19 +301,19 @@ TEST_F(VariableBufferPoolTest, RejectsSplitWhenMetadataIsExhaustedWithoutCorrupt
     VariableBufferPool pool;
     ASSERT_TRUE(pool.Init("metadata_split", MemoryType::HOST, 192, 3).Success());
 
-    VariableBufferPool::AllocationHandle first;
+    VariableBufferPool::BufferHandle first;
     ASSERT_TRUE(pool.Allocate(64, first).Success());
-    VariableBufferPool::AllocationHandle split;
+    VariableBufferPool::BufferHandle split;
     EXPECT_EQ(pool.Allocate(64, split), Status::NoSpace());
 
-    VariableBufferPool::AllocationHandle exact;
+    VariableBufferPool::BufferHandle exact;
     ASSERT_TRUE(pool.Allocate(128, exact).Success());
     EXPECT_TRUE(pool.Free(exact).Success());
     EXPECT_TRUE(pool.Free(first).Success());
 
-    VariableBufferPool::AllocationHandle complete;
+    VariableBufferPool::BufferHandle complete;
     ASSERT_TRUE(pool.Allocate(192, complete).Success());
-    EXPECT_EQ(complete.local_addr, pool.GetLocalAddr());
+    EXPECT_EQ(complete.GetLocalAddr(), pool.GetLocalAddr());
 }
 
 TEST_F(VariableBufferPoolTest, FailedAllocationDoesNotOverwriteHandle)
@@ -309,38 +321,37 @@ TEST_F(VariableBufferPoolTest, FailedAllocationDoesNotOverwriteHandle)
     VariableBufferPool pool;
     ASSERT_TRUE(pool.Init("preserve_handle", MemoryType::HOST, 64, 8).Success());
 
-    VariableBufferPool::AllocationHandle live;
+    VariableBufferPool::BufferHandle live;
     ASSERT_TRUE(pool.Allocate(64, live).Success());
     auto output = live;
 
     EXPECT_EQ(pool.Allocate(1, output), Status::NoSpace());
-    EXPECT_EQ(output.allocation.offset, live.allocation.offset);
-    EXPECT_EQ(output.allocation.metadata, live.allocation.metadata);
-    EXPECT_EQ(output.requested_size, live.requested_size);
-    EXPECT_EQ(output.allocated_size, live.allocated_size);
-    EXPECT_EQ(output.offset, live.offset);
-    EXPECT_EQ(output.local_addr, live.local_addr);
-    EXPECT_EQ(output.device_addr, live.device_addr);
+    EXPECT_EQ(output.GetRequestedSize(), live.GetRequestedSize());
+    EXPECT_EQ(output.GetAllocatedSize(), live.GetAllocatedSize());
+    EXPECT_EQ(output.GetOffset(), live.GetOffset());
+    EXPECT_EQ(output.GetLocalAddr(), live.GetLocalAddr());
+    EXPECT_EQ(output.GetDeviceAddr(), live.GetDeviceAddr());
 
     ASSERT_TRUE(pool.Free(live).Success());
     EXPECT_EQ(pool.Allocate(128, output), Status::NoSpace());
-    EXPECT_EQ(output.local_addr, live.local_addr);
+    EXPECT_EQ(output.GetLocalAddr(), live.GetLocalAddr());
 }
 
-TEST_F(VariableBufferPoolTest, RejectsInvalidAndRepeatedFree)
+TEST_F(VariableBufferPoolTest, RejectsInvalidCrossPoolAndRepeatedFree)
 {
     VariableBufferPool pool;
     ASSERT_TRUE(pool.Init("validation", MemoryType::HOST, 128, 8).Success());
 
-    VariableBufferPool::AllocationHandle empty;
+    VariableBufferPool::BufferHandle empty;
     EXPECT_EQ(pool.Free(empty), Status::InvalidParam());
 
-    VariableBufferPool::AllocationHandle handle;
+    VariableBufferPool::BufferHandle handle;
     ASSERT_TRUE(pool.Allocate(64, handle).Success());
 
-    auto invalid = handle;
-    ++invalid.allocation.offset;
-    EXPECT_EQ(pool.Free(invalid), Status::InvalidParam());
+    VariableBufferPool otherPool;
+    ASSERT_TRUE(otherPool.Init("other", MemoryType::HOST, 128, 8).Success());
+    EXPECT_EQ(otherPool.Free(handle), Status::InvalidParam());
+
     EXPECT_TRUE(pool.Free(handle).Success());
     EXPECT_EQ(pool.Free(handle), Status::InvalidParam());
 }
@@ -356,7 +367,7 @@ TEST_F(VariableBufferPoolTest, ResetAllowsReinitialization)
     EXPECT_EQ(pool.GetLocalAddr(), nullptr);
     EXPECT_EQ(pool.GetDeviceAddr(), nullptr);
     EXPECT_EQ(pool.GetTotalSize(), std::size_t{0});
-    VariableBufferPool::AllocationHandle handle;
+    VariableBufferPool::BufferHandle handle;
     EXPECT_EQ(pool.Allocate(64, handle), Status::Error());
     EXPECT_EQ(pool.Free(handle), Status::Error());
     EXPECT_TRUE(pool.Init("second", MemoryType::HOST, 65, 8).Success());
@@ -374,13 +385,13 @@ TEST_F(VariableBufferPoolTest, ConcurrentAllocateAndFree)
 
     auto worker = [&pool, &failed]() {
         for (int i = 0; i < kOpsPerThread; ++i) {
-            VariableBufferPool::AllocationHandle handle;
+            VariableBufferPool::BufferHandle handle;
             auto status = pool.Allocate(64 + static_cast<std::size_t>(i % 4) * 64, handle);
             if (status.Failure()) {
                 failed = true;
                 return;
             }
-            std::memset(handle.local_addr, 0xAB, handle.allocated_size);
+            std::memset(handle.GetLocalAddr(), 0xAB, handle.GetAllocatedSize());
             status = pool.Free(handle);
             if (status.Failure()) {
                 failed = true;
@@ -406,13 +417,13 @@ TEST_F(VariableBufferPoolTest, ConcurrentAllocateAndFreeWithZeroing)
 
     auto worker = [&pool, &failed]() {
         for (int operation = 0; operation < operationsPerThread; ++operation) {
-            VariableBufferPool::AllocationHandle handle;
+            VariableBufferPool::BufferHandle handle;
             auto status = pool.Allocate(64 + static_cast<std::size_t>(operation % 4) * 64, handle);
             if (status.Failure()) {
                 failed = true;
                 return;
             }
-            std::memset(handle.local_addr, 0xAB, handle.allocated_size);
+            std::memset(handle.GetLocalAddr(), 0xAB, handle.GetAllocatedSize());
             status = pool.Free(handle);
             if (status.Failure()) {
                 failed = true;
