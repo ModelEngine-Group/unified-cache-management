@@ -138,7 +138,7 @@ private:
     void DiscardShard(const QueuedShardContext& shard, const Status& status, ShardStage stage);
     // Called only after all worker threads have stopped, when Shutdown is the sole queue consumer.
     void DrainQueue(std::deque<QueuedShardContext>& queue);
-    void AssertSchedulerInvariantsLocked() const;
+    void CheckSchedulerInvariantsLocked() const;
 
     void DumpLoop(std::promise<Status>& started);
     void LoadLoop(std::promise<Status>& started);
@@ -160,11 +160,11 @@ private:
 
     std::size_t slotNum_{0};
     std::size_t availableSlots_{0};
-    std::size_t outstandingShards_{0};
-    std::size_t queuedLoadShards_{0};
-    std::size_t queuedDumpShards_{0};
-    std::size_t inFlightLoadShards_{0};
-    std::size_t inFlightDumpShards_{0};
+    std::size_t outstandingShardNum_{0};
+    std::size_t queuedLoadShardNum_{0};
+    std::size_t queuedDumpShardNum_{0};
+    std::size_t inFlightLoadShardNum_{0};
+    std::size_t inFlightDumpShardNum_{0};
 
     bool shutdownStarted_{false};
     bool shutdownComplete_{false};

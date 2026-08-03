@@ -264,7 +264,7 @@ void Executor::LogTaskCompletion(const TaskContext& task) const
 {
     const auto* operation = OperationName(task.operation);
     if (task.error) {
-        UC_ERROR_UNLIMITED("Delegator {} task({},{}) failed, shards={}, status={}.", operation,
+        UC_ERROR("Delegator {} task({},{}) failed, shards={}, status={}.", operation,
                            task.id, task.desc.brief, task.desc.size(), *task.error);
         return;
     }
@@ -272,13 +272,21 @@ void Executor::LogTaskCompletion(const TaskContext& task) const
                       task.desc.brief, task.desc.size());
 }
 
-void Executor::AssertSchedulerInvariantsLocked() const
+void Executor::CheckSchedulerInvariantsLocked() const
 {
-    assert(availableSlots_ + inFlightLoadShards_ + inFlightDumpShards_ == slotNum_);
-    assert(outstandingShards_ ==
-           queuedLoadShards_ + queuedDumpShards_ + inFlightLoadShards_ + inFlightDumpShards_);
-    assert(loadQueue_.size() == queuedLoadShards_);
-    assert(dumpQueue_.size() == queuedDumpShards_);
+    const bool valid =
+        availableSlots_ + inFlightLoadShardNum_ + inFlightDumpShardNum_ == slotNum_ &&
+        outstandingShardNum_ == queuedLoadShardNum_ + queuedDumpShardNum_ + inFlightLoadShardNum_ +
+                                    inFlightDumpShardNum_ &&
+        loadQueue_.size() == queuedLoadShardNum_ && dumpQueue_.size() == queuedDumpShardNum_;
+    if (valid) { return; }
+
+    UC_ERROR(
+        "Delegator scheduler invariant violated: slots={}/{}, outstanding={}, queued(load/dump)="
+        "{}/{}, in_flight(load/dump)={}/{}, queue(load/dump)={}/{}.",
+        availableSlots_, slotNum_, outstandingShardNum_, queuedLoadShardNum_, queuedDumpShardNum_,
+        inFlightLoadShardNum_, inFlightDumpShardNum_, loadQueue_.size(), dumpQueue_.size());
+    assert(valid);
 }
 
 Expected<Detail::TaskHandle> Executor::Submit(Detail::TaskDesc task, Operation operation)
@@ -301,9 +309,9 @@ Expected<Detail::TaskHandle> Executor::Submit(Detail::TaskDesc task, Operation o
         // Keep the whole publish atomic against Shutdown.
         std::lock_guard<std::mutex> schedLock(schedMutex_);
         if (shutdownStarted_) { return Status::Error(); }
-        AssertSchedulerInvariantsLocked();
+        CheckSchedulerInvariantsLocked();
         const auto count = taskContext->desc.size();
-        if (count > std::numeric_limits<std::size_t>::max() - outstandingShards_) {
+        if (count > std::numeric_limits<std::size_t>::max() - outstandingShardNum_) {
             return Status::OutOfMemory();
         }
 
@@ -330,10 +338,10 @@ Expected<Detail::TaskHandle> Executor::Submit(Detail::TaskDesc task, Operation o
             return Status::OutOfMemory();
         }
 
-        outstandingShards_ += count;
-        auto& queued = operation == Operation::LOAD ? queuedLoadShards_ : queuedDumpShards_;
-        queued += count;
-        AssertSchedulerInvariantsLocked();
+        outstandingShardNum_ += count;
+        auto& queuedNum = operation == Operation::LOAD ? queuedLoadShardNum_ : queuedDumpShardNum_;
+        queuedNum += count;
+        CheckSchedulerInvariantsLocked();
     }
     UC_INFO_UNLIMITED("Delegator {} task({},{}) submitted, shards={}.", OperationName(operation),
                       handle, taskContext->desc.brief, taskContext->desc.size());
@@ -390,9 +398,9 @@ Expected<Executor::TransferBatch> Executor::AcquireBatch(Operation operation)
     const auto canReserve = [this, operation]() {
         if (availableSlots_ == 0) { return false; }
         // LOAD is admitted whenever a queued shard and a slot are available.
-        if (operation == Operation::LOAD) { return queuedLoadShards_ != 0; }
+        if (operation == Operation::LOAD) { return queuedLoadShardNum_ != 0; }
         // DUMP is admitted only when no LOAD shard is queued or in flight.
-        return queuedDumpShards_ != 0 && queuedLoadShards_ == 0 && inFlightLoadShards_ == 0;
+        return queuedDumpShardNum_ != 0 && queuedLoadShardNum_ == 0 && inFlightLoadShardNum_ == 0;
     };
 
     // Keep trying until a non-empty batch can be returned or shutdown begins.
@@ -414,32 +422,26 @@ Expected<Executor::TransferBatch> Executor::AcquireBatch(Operation operation)
                     break;
                 }
 
-                auto& queued = operation == Operation::LOAD ? queuedLoadShards_ : queuedDumpShards_;
-                auto& inFlight =
-                    operation == Operation::LOAD ? inFlightLoadShards_ : inFlightDumpShards_;
+                auto& queuedNum =
+                    operation == Operation::LOAD ? queuedLoadShardNum_ : queuedDumpShardNum_;
+                auto& inFlightNum =
+                    operation == Operation::LOAD ? inFlightLoadShardNum_ : inFlightDumpShardNum_;
                 while (reservedShards.size() < batchCapacity && canReserve()) {
-                    assert(!queue.empty());
-                    if (queue.empty()) { std::terminate(); }
-
                     auto shard = std::move(queue.front());
                     queue.pop_front();
-                    assert(shard.task);
-                    if (!shard.task) { std::terminate(); }
-                    assert(queued != 0);
-                    --queued;
+                    --queuedNum;
 
                     if (shard.task->failed.load(std::memory_order_acquire)) {
-                        assert(outstandingShards_ != 0);
-                        --outstandingShards_;
+                        --outstandingShardNum_;
                         cancelledShard = std::move(shard);
                         break;
                     }
 
-                    ++inFlight;
+                    ++inFlightNum;
                     --availableSlots_;
                     reservedShards.push_back(std::move(shard));
                 }
-                AssertSchedulerInvariantsLocked();
+                CheckSchedulerInvariantsLocked();
             }
 
             if (cancelledShard) {
@@ -513,20 +515,16 @@ Expected<Executor::TransferBatch> Executor::AcquireBatch(Operation operation)
 void Executor::ReleaseBatch(TransferBatch& batch)
 {
     assert(!batch.groups.empty());
-    if (batch.groups.empty()) { std::terminate(); }
-
     assert(batch.groups.front().task);
-    if (!batch.groups.front().task) { std::terminate(); }
+    
     const auto operation = batch.groups.front().task->operation;
     assert(operation == Operation::LOAD || operation == Operation::DUMP);
-    if (operation != Operation::LOAD && operation != Operation::DUMP) { std::terminate(); }
 
     std::size_t count = 0;
     for (auto& group : batch.groups) {
         const bool validGroup =
             group.task && !group.shards.empty() && group.task->operation == operation;
         assert(validGroup);
-        if (!validGroup) { std::terminate(); }
 
         for (const auto& shard : group.shards) {
             const auto freeStatus = bufferPool_.Free(shard.slot.slot_index);
@@ -545,13 +543,14 @@ void Executor::ReleaseBatch(TransferBatch& batch)
     // Phase 2: publish the released slots only after task completion state is visible.
     {
         std::lock_guard<std::mutex> lock(schedMutex_);
-        auto& inFlight = operation == Operation::LOAD ? inFlightLoadShards_ : inFlightDumpShards_;
-        assert(inFlight >= count);
-        assert(outstandingShards_ >= count);
-        inFlight -= count;
+        auto& inFlightNum =
+            operation == Operation::LOAD ? inFlightLoadShardNum_ : inFlightDumpShardNum_;
+        assert(inFlightNum >= count);
+        assert(outstandingShardNum_ >= count);
+        inFlightNum -= count;
         availableSlots_ += count;
-        outstandingShards_ -= count;
-        AssertSchedulerInvariantsLocked();
+        outstandingShardNum_ -= count;
+        CheckSchedulerInvariantsLocked();
     }
     slotsReady_.notify_all();
 }
@@ -579,21 +578,21 @@ void Executor::DiscardShard(const QueuedShardContext& shard, const Status& statu
     CompleteTaskShards(shard.task, 1, status);
     {
         std::lock_guard<std::mutex> lock(schedMutex_);
-        auto& queued =
-            shard.task->operation == Operation::LOAD ? queuedLoadShards_ : queuedDumpShards_;
-        auto& inFlight =
-            shard.task->operation == Operation::LOAD ? inFlightLoadShards_ : inFlightDumpShards_;
-        assert(outstandingShards_ != 0);
+        auto& queuedNum =
+            shard.task->operation == Operation::LOAD ? queuedLoadShardNum_ : queuedDumpShardNum_;
+        auto& inFlightNum = shard.task->operation == Operation::LOAD ? inFlightLoadShardNum_
+                                                                     : inFlightDumpShardNum_;
+        assert(outstandingShardNum_ != 0);
         if (stage == ShardStage::QUEUED) {
-            assert(queued != 0);
-            --queued;
+            assert(queuedNum != 0);
+            --queuedNum;
         } else {
-            assert(inFlight != 0);
-            --inFlight;
+            assert(inFlightNum != 0);
+            --inFlightNum;
             ++availableSlots_;
         }
-        --outstandingShards_;
-        AssertSchedulerInvariantsLocked();
+        --outstandingShardNum_;
+        CheckSchedulerInvariantsLocked();
     }
 
     slotsReady_.notify_all();
@@ -631,7 +630,7 @@ void Executor::DumpLoop(std::promise<Status>& started)
             const auto gatherStatus = GatherAsync(group, streams);
             if (gatherStatus.Failure()) {
                 group.error = gatherStatus;
-                UC_ERROR_UNLIMITED("Delegator DUMP task({},{}) stage=gather failed, status={}.",
+                UC_ERROR("Delegator DUMP task({},{}) stage=gather failed, status={}.",
                                    group.task->id, group.task->desc.brief, gatherStatus);
             }
         }
@@ -641,7 +640,7 @@ void Executor::DumpLoop(std::promise<Status>& started)
             for (auto& group : batch.groups) {
                 if (!group.error) {
                     group.error = syncStatus;
-                    UC_ERROR_UNLIMITED(
+                    UC_ERROR(
                         "Delegator DUMP task({},{}) stage=gather_sync failed, status={}.",
                         group.task->id, group.task->desc.brief, syncStatus);
                 }
@@ -662,7 +661,7 @@ void Executor::DumpLoop(std::promise<Status>& started)
             auto backendTask = MakeBackendTask(group);
             if (!backendTask) {
                 group.error = backendTask.Error();
-                UC_ERROR_UNLIMITED(
+                UC_ERROR(
                     "Delegator DUMP task({},{}) stage=backend_task_build failed, status={}.",
                     group.task->id, group.task->desc.brief, *group.error);
                 continue;
@@ -678,7 +677,7 @@ void Executor::DumpLoop(std::promise<Status>& started)
                     group.shards.size());
             } else {
                 group.error = submitted.Error();
-                UC_ERROR_UNLIMITED(
+                UC_ERROR(
                     "Delegator DUMP task({},{}) stage=backend_submit failed, status={}.",
                     group.task->id, group.task->desc.brief, *group.error);
             }
@@ -689,7 +688,7 @@ void Executor::DumpLoop(std::promise<Status>& started)
             const auto waitStatus = backend_->Wait(group.transferTask);
             if (waitStatus.Failure()) {
                 group.error = waitStatus;
-                UC_ERROR_UNLIMITED(
+                UC_ERROR(
                     "Delegator DUMP task({},{}) stage=backend_wait failed, backend_task={}, "
                     "status={}.",
                     group.task->id, group.task->desc.brief, group.transferTask, waitStatus);
@@ -730,7 +729,7 @@ void Executor::LoadLoop(std::promise<Status>& started)
             auto backendTask = MakeBackendTask(group);
             if (!backendTask) {
                 group.error = backendTask.Error();
-                UC_ERROR_UNLIMITED(
+                UC_ERROR(
                     "Delegator LOAD task({},{}) stage=backend_task_build failed, status={}.",
                     group.task->id, group.task->desc.brief, *group.error);
                 continue;
@@ -747,7 +746,7 @@ void Executor::LoadLoop(std::promise<Status>& started)
                     group.shards.size());
             } else {
                 group.error = submitted.Error();
-                UC_ERROR_UNLIMITED(
+                UC_ERROR(
                     "Delegator LOAD task({},{}) stage=backend_submit failed, status={}.",
                     group.task->id, group.task->desc.brief, *group.error);
             }
@@ -760,7 +759,7 @@ void Executor::LoadLoop(std::promise<Status>& started)
                 auto completed = backend_->Check(group.transferTask);
                 if (!completed) {
                     group.error = completed.Error();
-                    UC_ERROR_UNLIMITED(
+                    UC_ERROR(
                         "Delegator LOAD task({},{}) stage=backend_check failed, "
                         "backend_task={}, status={}.",
                         group.task->id, group.task->desc.brief, group.transferTask, *group.error);
@@ -770,7 +769,7 @@ void Executor::LoadLoop(std::promise<Status>& started)
                     const auto waitStatus = backend_->Wait(group.transferTask);
                     if (waitStatus.Failure()) {
                         group.error = waitStatus;
-                        UC_ERROR_UNLIMITED(
+                        UC_ERROR(
                             "Delegator LOAD task({},{}) stage=backend_wait failed, "
                             "backend_task={}, status={}.",
                             group.task->id, group.task->desc.brief, group.transferTask, waitStatus);
@@ -783,7 +782,7 @@ void Executor::LoadLoop(std::promise<Status>& started)
                         const auto scatterStatus = ScatterAsync(group, streams);
                         if (scatterStatus.Failure()) {
                             group.error = scatterStatus;
-                            UC_ERROR_UNLIMITED(
+                            UC_ERROR(
                                 "Delegator LOAD task({},{}) stage=scatter failed, status={}.",
                                 group.task->id, group.task->desc.brief, scatterStatus);
                         }
@@ -798,7 +797,7 @@ void Executor::LoadLoop(std::promise<Status>& started)
             for (auto& group : batch.groups) {
                 if (!group.error) {
                     group.error = syncStatus;
-                    UC_ERROR_UNLIMITED(
+                    UC_ERROR(
                         "Delegator LOAD task({},{}) stage=scatter_sync failed, status={}.",
                         group.task->id, group.task->desc.brief, syncStatus);
                 }
