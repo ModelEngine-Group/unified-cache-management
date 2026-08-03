@@ -55,7 +55,7 @@ inline Status ParseUint64(const std::string& value, std::uint64_t& output)
 
 inline Status ParseUint32(const std::string& value, std::uint32_t& output)
 {
-    std::uint64_t number;
+    std::uint64_t number = 0;
     auto status = ParseUint64(value, number);
     if (status.Failure()) { return status; }
     if (number > std::numeric_limits<std::uint32_t>::max()) {
@@ -67,7 +67,7 @@ inline Status ParseUint32(const std::string& value, std::uint32_t& output)
 
 inline Status ParseUint16(const std::string& value, std::uint16_t& output)
 {
-    std::uint64_t number;
+    std::uint64_t number = 0;
     auto status = ParseUint64(value, number);
     if (status.Failure()) { return status; }
     if (number > std::numeric_limits<std::uint16_t>::max()) {
@@ -95,7 +95,7 @@ inline Status ParseInt64(const std::string& value, std::int64_t& output)
 
 inline Status ParseInt32(const std::string& value, std::int32_t& output)
 {
-    std::int64_t number;
+    std::int64_t number = 0;
     auto status = ParseInt64(value, number);
     if (status.Failure()) { return status; }
     if (number < std::numeric_limits<std::int32_t>::min() ||
@@ -108,7 +108,7 @@ inline Status ParseInt32(const std::string& value, std::int32_t& output)
 
 inline Status ParseInt16(const std::string& value, std::int16_t& output)
 {
-    std::int64_t number;
+    std::int64_t number = 0;
     auto status = ParseInt64(value, number);
     if (status.Failure()) { return status; }
     if (number < std::numeric_limits<std::int16_t>::min() ||

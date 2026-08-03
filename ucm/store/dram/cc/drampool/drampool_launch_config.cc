@@ -215,8 +215,11 @@ Status ParseDramPoolEndpoint(const std::string& name, const std::string& value,
     if (separator == std::string::npos || separator == 0 || separator + 1 >= normalized.size()) {
         return Status::InvalidParam("{} must be <IP>:<PORT>", name);
     }
-    std::uint16_t port;
-    if (Dram::ParseUint16(normalized.substr(separator + 1), port).Failure() || port == 0) {
+    std::uint16_t port = 0;
+    if (Dram::ParseUint16(normalized.substr(separator + 1), port).Failure()) {
+        return Status::InvalidParam("{} must have a valid port", name);
+    }
+    if (port == 0) {
         return Status::InvalidParam("{} must have a valid port", name);
     }
     endpoint.host = normalized.substr(0, separator);
