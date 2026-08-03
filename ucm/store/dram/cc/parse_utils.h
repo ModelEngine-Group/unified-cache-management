@@ -6,8 +6,8 @@
 #pragma once
 
 #include <algorithm>
-#include <cerrno>
 #include <cctype>
+#include <cerrno>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -42,9 +42,7 @@ inline Status ParseUint64(const std::string& value, std::uint64_t& output)
     char* end = nullptr;
     errno = 0;
     const auto number = std::strtoull(value.c_str(), &end, 0);
-    if (errno == ERANGE) {
-        return Status::InvalidParam("uint64 overflow");
-    }
+    if (errno == ERANGE) { return Status::InvalidParam("uint64 overflow"); }
     if (end == value.c_str() || *end != '\0') {
         return Status::InvalidParam("expected an unsigned integer");
     }
@@ -137,13 +135,11 @@ inline Status ParseDouble(const std::string& value, double& output)
 inline Status ParseBool(const std::string& value, bool& output)
 {
     const auto normalized = ToLower(value);
-    if (normalized == "true" || normalized == "yes" || normalized == "on" ||
-        normalized == "1") {
+    if (normalized == "true" || normalized == "yes" || normalized == "on" || normalized == "1") {
         output = true;
         return Status::OK();
     }
-    if (normalized == "false" || normalized == "no" || normalized == "off" ||
-        normalized == "0") {
+    if (normalized == "false" || normalized == "no" || normalized == "off" || normalized == "0") {
         output = false;
         return Status::OK();
     }

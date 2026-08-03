@@ -40,8 +40,7 @@ namespace {
 
 constexpr int kListenBacklog = 16;
 constexpr std::size_t kMaxRequestBytes = 4096;
-constexpr std::chrono::steady_clock::duration kIoPollInterval =
-    std::chrono::milliseconds(100);
+constexpr std::chrono::steady_clock::duration kIoPollInterval = std::chrono::milliseconds(100);
 constexpr auto kClientRequestTimeout = std::chrono::seconds(1);
 constexpr std::string_view kHeaderTerminator = "\r\n\r\n";
 constexpr std::string_view kHealthResponse =
@@ -71,9 +70,8 @@ int CreateListenSocket(const std::string& ip, std::uint16_t port)
 
     int listenSocket = -1;
     for (auto* address = addresses; address != nullptr; address = address->ai_next) {
-        const int socket =
-            ::socket(address->ai_family, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
-                     address->ai_protocol);
+        const int socket = ::socket(address->ai_family, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
+                                    address->ai_protocol);
         if (socket < 0) { continue; }
 
         int reuseAddress = 1;
@@ -118,8 +116,7 @@ void SendHealthResponse(int socket, const std::atomic_bool& stopping)
     std::string_view remaining = kHealthResponse;
     const auto deadline = std::chrono::steady_clock::now() + kClientRequestTimeout;
     while (!remaining.empty()) {
-        const auto sent =
-            ::send(socket, remaining.data(), remaining.size(), MSG_NOSIGNAL);
+        const auto sent = ::send(socket, remaining.data(), remaining.size(), MSG_NOSIGNAL);
         if (sent > 0) {
             remaining.remove_prefix(static_cast<std::size_t>(sent));
             continue;
@@ -135,10 +132,7 @@ void SendHealthResponse(int socket, const std::atomic_bool& stopping)
 
 }  // namespace
 
-HealthServer::~HealthServer()
-{
-    Stop();
-}
+HealthServer::~HealthServer() { Stop(); }
 
 Status HealthServer::Start()
 {
@@ -147,9 +141,7 @@ Status HealthServer::Start()
         return Status::OK();
     }
     const int socket = CreateListenSocket(g_config.addr.host, g_config.healthPort);
-    if (socket < 0) {
-        return Status::OsApiError("failed to listen on DramPool health endpoint");
-    }
+    if (socket < 0) { return Status::OsApiError("failed to listen on DramPool health endpoint"); }
 
     listenSocket_ = socket;
     stopping_.store(false, std::memory_order_release);
@@ -238,8 +230,7 @@ void HealthServer::HandleClient(int clientSocket) noexcept
             request.append(buffer, static_cast<std::size_t>(received));
             continue;
         }
-        if (received < 0 &&
-            (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
+        if (received < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
             continue;
         }
         return;

@@ -21,6 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include "health_server.h"
 #include <arpa/inet.h>
 #include <chrono>
 #include <cstdint>
@@ -32,7 +33,6 @@
 #include <unistd.h>
 #include <utility>
 #include "drampool_config.h"
-#include "health_server.h"
 
 namespace UC::DramPool {
 namespace {

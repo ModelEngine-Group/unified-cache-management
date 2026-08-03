@@ -219,9 +219,7 @@ Status ParseDramPoolEndpoint(const std::string& name, const std::string& value,
     if (Dram::ParseUint16(normalized.substr(separator + 1), port).Failure()) {
         return Status::InvalidParam("{} must have a valid port", name);
     }
-    if (port == 0) {
-        return Status::InvalidParam("{} must have a valid port", name);
-    }
+    if (port == 0) { return Status::InvalidParam("{} must have a valid port", name); }
     endpoint.host = normalized.substr(0, separator);
     endpoint.port = port;
     return Status::OK();
@@ -355,8 +353,8 @@ Status ParseCommandLine(int argc, char** argv, DramPoolConfig& config)
             if (Dram::ParseUint64(value, ttlMinutes).Failure()) {
                 return Status::InvalidParam("invalid {} value: {}", option, value);
             }
-            if (ttlMinutes == 0 || ttlMinutes > std::numeric_limits<std::uint64_t>::max() /
-                                                    kMillisecondsPerMinute) {
+            if (ttlMinutes == 0 ||
+                ttlMinutes > std::numeric_limits<std::uint64_t>::max() / kMillisecondsPerMinute) {
                 return Status::InvalidParam("--ttl-minutes must be a positive value");
             }
             config.defaultDumpTtlMs = ttlMinutes * kMillisecondsPerMinute;

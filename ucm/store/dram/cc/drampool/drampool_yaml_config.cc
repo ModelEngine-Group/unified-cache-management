@@ -190,51 +190,35 @@ Status CommitEndpointEntry(EndpointEntry& entry, DramPoolConfig& config,
 Status ApplyRuntimeConfigValue(DramPoolConfig& config, const std::string& key,
                                const std::string& value)
 {
-    if (key == "health.port") {
-        return ParseUint16(value, config.healthPort);
-    }
-    if (key == "queue.request_depth") {
-        return ParseUint32(value, config.requestQueueDepth);
-    }
-    if (key == "queue.completion_depth") {
-        return ParseUint32(value, config.completionQueueDepth);
-    }
+    if (key == "health.port") { return ParseUint16(value, config.healthPort); }
+    if (key == "queue.request_depth") { return ParseUint32(value, config.requestQueueDepth); }
+    if (key == "queue.completion_depth") { return ParseUint32(value, config.completionQueueDepth); }
     if (key == "request_receiver.idle_wait_us") {
         return ParseUint32(value, config.requestReceiverIdleWaitUs);
     }
-    if (key == "poller.pending_depth") {
-        return ParseUint32(value, config.pollerPendingDepth);
-    }
+    if (key == "poller.pending_depth") { return ParseUint32(value, config.pollerPendingDepth); }
     if (key == "flag_buffer.capacity_mb") {
         return ParseUint64(value, config.flagBufferCapacityMb);
     }
     if (key == "flag_buffer.slot_size_bytes") {
         return ParseUint64(value, config.flagBufferSlotSizeBytes);
     }
-    if (key == "gc.enabled") {
-        return ParseBool(value, config.gcEnabled);
-    }
-    if (key == "gc.interval_ms") {
-        return ParseUint32(value, config.gcIntervalMs);
-    }
+    if (key == "gc.enabled") { return ParseBool(value, config.gcEnabled); }
+    if (key == "gc.interval_ms") { return ParseUint32(value, config.gcIntervalMs); }
     if (key == "metadata.periodic_eviction_policy") {
         return ParseEvictionPolicyValue(key, value, config.metadataPeriodicEvictionPolicy);
     }
     if (key == "metadata.deep_eviction_policy") {
         return ParseEvictionPolicyValue(key, value, config.metadataDeepEvictionPolicy);
     }
-    if (key == "metadata.lease_time_ms") {
-        return ParseUint64(value, config.metadataLeaseTimeMs);
-    }
+    if (key == "metadata.lease_time_ms") { return ParseUint64(value, config.metadataLeaseTimeMs); }
     if (key == "metadata.default_evict_ratio") {
         return ParseDouble(value, config.metadataDefaultEvictRatio);
     }
     if (key == "metadata.evict_period_ms") {
         return ParseUint64(value, config.metadataEvictPeriodMs);
     }
-    if (key == "operation.timeout_ms") {
-        return ParseUint32(value, config.opTimeoutMs);
-    }
+    if (key == "operation.timeout_ms") { return ParseUint32(value, config.opTimeoutMs); }
     if (key == "logger.level") {
         config.logLevel = ToLower(value);
         return Status::OK();
@@ -243,12 +227,8 @@ Status ApplyRuntimeConfigValue(DramPoolConfig& config, const std::string& key,
         config.logDir = value;
         return Status::OK();
     }
-    if (key == "logger.max_files") {
-        return ParseUint32(value, config.logMaxFiles);
-    }
-    if (key == "logger.max_size_mb") {
-        return ParseUint32(value, config.logMaxSizeMb);
-    }
+    if (key == "logger.max_files") { return ParseUint32(value, config.logMaxFiles); }
+    if (key == "logger.max_size_mb") { return ParseUint32(value, config.logMaxSizeMb); }
     return Status::InvalidParam("unknown DramPool runtime YAML key: {}", key);
 }
 
