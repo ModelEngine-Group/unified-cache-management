@@ -39,6 +39,7 @@ struct AsuClientConfig {
     std::vector<TransportConfig> transportConfigs;
 
     std::uint64_t defaultWaitTimeoutMs{100};
+    std::uint64_t timeoutMs{100};
     std::unordered_map<std::string, std::string> attrs;
 };
 

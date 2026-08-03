@@ -222,6 +222,7 @@ public:
         asuConfig.clientId = config.clientId;
         asuConfig.viewServiceAddrs = config.viewServiceAddrs;
         asuConfig.defaultWaitTimeoutMs = config.defaultWaitTimeoutMs;
+        asuConfig.timeoutMs = config.timeoutMs;
         asuConfig.attrs = config.clientAttrs;
         asuConfig.transportConfigs.reserve(config.asuIds.size());
         for (std::size_t i = 0; i < config.asuIds.size(); ++i) {
@@ -603,6 +604,9 @@ private:
         if (config.maxErrorCount == 0 ||
             config.maxErrorCount > std::numeric_limits<std::uint32_t>::max()) {
             return Status::InvalidParam("asu_max_error_count must be in uint32 range and nonzero");
+        }
+        if (config.timeoutMs == 0) {
+            return Status::InvalidParam("asu_timeout_ms must be greater than zero");
         }
         if (config.maxInflightTasks > std::numeric_limits<std::uint32_t>::max()) {
             return Status::InvalidParam("asu_max_inflight_tasks exceeds uint32 range");

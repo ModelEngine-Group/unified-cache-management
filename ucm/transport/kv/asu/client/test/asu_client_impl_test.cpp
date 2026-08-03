@@ -75,6 +75,7 @@ struct TestState {
     std::vector<AsuId> loadCalls;
     std::vector<AsuId> storeCalls;
     std::vector<AsuId> deleteCalls;
+    std::unordered_map<AsuId, std::uint64_t> deleteTimeouts;
     std::vector<AsuId> cancelCalls;
     std::unordered_map<AsuId, TaskId> childTaskIds;
     std::unordered_map<AsuId, TaskCompletionCallback> pendingCompletionCallbacks;
@@ -211,6 +212,7 @@ public:
                 if (failureIter != state_->deleteFailures.end()) { return failureIter->second; }
 
                 state_->deleteCalls.emplace_back(config_.asuId);
+                state_->deleteTimeouts[config_.asuId] = task->timeoutMs;
                 task->taskId = 3000 + config_.asuId;
                 state_->childTaskIds[config_.asuId] = task->taskId;
                 Complete(task->keys.size(), std::move(task->onComplete));
@@ -1680,7 +1682,9 @@ TEST(AsuClientImplTest, Task_DeleteKeepsEntryStatusInOriginalOrderAcrossAsus)
     state->checkEntryStatus[20] = {Status::Error(StatusCode::IO_ERROR, "delete entry on asu 20")};
     state->checkEntryStatus[30] = {Status::Error(StatusCode::NOT_FOUND, "delete entry on asu 30")};
     auto client = CreateAsuClient(MakeFactory(state));
-    ASSERT_TRUE(client->Init(MakeConfig({10, 20, 30})).ok());
+    auto config = MakeConfig({10, 20, 30});
+    config.timeoutMs = 321;
+    ASSERT_TRUE(client->Init(config).ok());
     auto entries = BuildRoutedEntries({30, 10, 20});
     ASSERT_EQ(entries.size(), std::size_t{3});
     ASSERT_NE(entries[0].key, CacheKey{});
@@ -1702,6 +1706,9 @@ TEST(AsuClientImplTest, Task_DeleteKeepsEntryStatusInOriginalOrderAcrossAsus)
     EXPECT_EQ(result.entryStatus[0].code, StatusCode::NOT_FOUND);
     EXPECT_EQ(result.entryStatus[1].code, StatusCode::OK);
     EXPECT_EQ(result.entryStatus[2].code, StatusCode::IO_ERROR);
+    EXPECT_EQ(state->deleteTimeouts[10], std::uint64_t{321});
+    EXPECT_EQ(state->deleteTimeouts[20], std::uint64_t{321});
+    EXPECT_EQ(state->deleteTimeouts[30], std::uint64_t{321});
 }
 
 TEST(AsuClientImplTest, SnapshotRefresh_ReusesExistingTransportAndBindsResourcesToAddedAsu)

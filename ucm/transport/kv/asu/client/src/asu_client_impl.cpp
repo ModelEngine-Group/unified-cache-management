@@ -157,7 +157,7 @@ Status AsuClientImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId& t
 
 Status AsuClientImpl::DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId)
 {
-    return SubmitAsync(ClientOpType::DELETE, keys, 0, taskId);
+    return SubmitAsync(ClientOpType::DELETE, keys, config_.timeoutMs, taskId);
 }
 
 Status AsuClientImpl::Check(TaskId taskId, TaskResult& result)
