@@ -268,8 +268,8 @@ void Executor::LogTaskCompletion(const TaskContext& task) const
                  task.desc.brief, task.desc.size(), *task.error);
         return;
     }
-    UC_INFO("Delegator {} task({},{}) completed, shards={}.", operation, task.id,
-                      task.desc.brief, task.desc.size());
+    UC_INFO("Delegator {} task({},{}) completed, shards={}.", operation, task.id, task.desc.brief,
+            task.desc.size());
 }
 
 void Executor::CheckSchedulerInvariantsLocked() const
@@ -343,8 +343,8 @@ Expected<Detail::TaskHandle> Executor::Submit(Detail::TaskDesc task, Operation o
         queuedNum += count;
         CheckSchedulerInvariantsLocked();
     }
-    UC_INFO("Delegator {} task({},{}) submitted, shards={}.", OperationName(operation),
-                      handle, taskContext->desc.brief, taskContext->desc.size());
+    UC_INFO("Delegator {} task({},{}) submitted, shards={}.", OperationName(operation), handle,
+            taskContext->desc.brief, taskContext->desc.size());
     slotsReady_.notify_all();
     return Detail::TaskHandle{handle};
 }
@@ -623,7 +623,7 @@ void Executor::DumpLoop(std::promise<Status>& started)
         for (auto& group : batch.groups) {
             if (Logger::isEnabledFor(Logger::Level::DEBUG)) {
                 UC_DEBUG("Delegator DUMP task({},{}) processing KVCache shards=[{}].",
-                                   group.task->id, group.task->desc.brief, DescribeShards(group));
+                         group.task->id, group.task->desc.brief, DescribeShards(group));
             }
             const auto gatherStatus = GatherAsync(group, streams);
             if (gatherStatus.Failure()) {
@@ -645,9 +645,8 @@ void Executor::DumpLoop(std::promise<Status>& started)
         } else {
             for (const auto& group : batch.groups) {
                 if (!group.error) {
-                    UC_DEBUG(
-                        "Delegator DUMP task({},{}) stage=gather_complete, shards={}.",
-                        group.task->id, group.task->desc.brief, group.shards.size());
+                    UC_DEBUG("Delegator DUMP task({},{}) stage=gather_complete, shards={}.",
+                             group.task->id, group.task->desc.brief, group.shards.size());
                 }
             }
         }
@@ -719,7 +718,7 @@ void Executor::LoadLoop(std::promise<Status>& started)
         for (auto& group : batch.groups) {
             if (Logger::isEnabledFor(Logger::Level::DEBUG)) {
                 UC_DEBUG("Delegator LOAD task({},{}) processing KVCache shards=[{}].",
-                                   group.task->id, group.task->desc.brief, DescribeShards(group));
+                         group.task->id, group.task->desc.brief, DescribeShards(group));
             }
             auto backendTask = MakeBackendTask(group);
             if (!backendTask) {
@@ -796,9 +795,8 @@ void Executor::LoadLoop(std::promise<Status>& started)
         } else {
             for (const auto& group : batch.groups) {
                 if (!group.error) {
-                    UC_DEBUG(
-                        "Delegator LOAD task({},{}) stage=scatter_complete, shards={}.",
-                        group.task->id, group.task->desc.brief, group.shards.size());
+                    UC_DEBUG("Delegator LOAD task({},{}) stage=scatter_complete, shards={}.",
+                             group.task->id, group.task->desc.brief, group.shards.size());
                 }
             }
         }
