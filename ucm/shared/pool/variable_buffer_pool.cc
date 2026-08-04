@@ -69,8 +69,8 @@ Status VariableBufferPool::Init(std::string name, MemoryType memory_type,
         return Status::InvalidParam(name + ": metadata_node_capacity is out of range");
     }
 
-    PoolDetail::BufferRegion region;
-    auto status = PoolDetail::BufferRegion::Create(memory_type, alignedCapacity, region);
+    BufferRegion region;
+    auto status = BufferRegion::Create(memory_type, alignedCapacity, region);
     if (status.Failure()) { return status; }
 
     std::unique_ptr<OffsetAllocator::Allocator> allocator;
@@ -140,10 +140,6 @@ Status VariableBufferPool::Free(const BufferHandle& handle)
             return Status::InvalidParam(name_ + ": invalid allocation handle");
         }
         return Status::OK();
-    }
-
-    if (allocator_->GetAllocationSize(handle.allocation_) == 0) {
-        return Status::InvalidParam(name_ + ": invalid allocation handle");
     }
 
     // Keep the block allocated while clearing. On failure, the caller retains the live handle.

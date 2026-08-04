@@ -25,7 +25,7 @@
 #include <utility>
 #include "trans/device.h"
 
-namespace UC::PoolDetail {
+namespace UC {
 
 Status BufferRegion::Create(BufferMemoryType type, std::size_t size, BufferRegion& region)
 {
@@ -71,4 +71,4 @@ void BufferRegion::Reset()
     device_addr = nullptr;
 }
 
-}  // namespace UC::PoolDetail
+}  // namespace UC

@@ -117,7 +117,7 @@ private:
     bool enable_zero_{false};
     // Whether released memory is cleared before it becomes reusable.
 
-    PoolDetail::BufferRegion region_;
+    BufferRegion region_;
     // One contiguous backing region owned by this pool.
 
     std::unique_ptr<OffsetAllocator::Allocator> allocator_;

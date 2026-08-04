@@ -146,7 +146,7 @@ Allocator::~Allocator()
 
 void Allocator::Reset()
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::unique_lock<std::shared_mutex> lock(m_mutex);
 
     // Allocate replacements first so allocation failure leaves the current state intact.
     auto newNodes = std::make_unique<Node[]>(m_maxAllocs);
@@ -176,7 +176,7 @@ Allocation Allocator::Allocate(uint32 size)
     // Zero-sized allocations would consume metadata while repeatedly returning offset zero.
     if (size == 0 || size > m_size) { return {NO_SPACE, NO_SPACE_NODE_INDEX}; }
 
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::unique_lock<std::shared_mutex> lock(m_mutex);
 
     uint32 binIndex = NO_SPACE;
     NodeIndex nodeIndex = Node::unused;
@@ -291,7 +291,7 @@ bool Allocator::Free(Allocation allocation)
         return false;
     }
 
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::unique_lock<std::shared_mutex> lock(m_mutex);
     if (!m_nodes) { return false; }
 
     const NodeIndex nodeIndex = allocation.nodeIndex;
@@ -407,7 +407,7 @@ uint32 Allocator::GetAllocationSize(Allocation allocation) const
         return 0;
     }
 
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::shared_lock<std::shared_mutex> lock(m_mutex);
     if (!m_nodes) { return 0; }
 
     const Node& node = m_nodes[allocation.nodeIndex];
@@ -417,7 +417,7 @@ uint32 Allocator::GetAllocationSize(Allocation allocation) const
 
 StorageReport Allocator::GetStorageReport() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::shared_lock<std::shared_mutex> lock(m_mutex);
 
     uint32 largestFreeRegion = 0;
     const uint32 freeStorage = m_freeStorage;
@@ -435,7 +435,7 @@ StorageReport Allocator::GetStorageReport() const
 
 StorageReportFull Allocator::GetStorageReportFull() const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::shared_lock<std::shared_mutex> lock(m_mutex);
 
     StorageReportFull report{};
     for (uint32 index = 0; index < NUM_LEAF_BINS; ++index) {

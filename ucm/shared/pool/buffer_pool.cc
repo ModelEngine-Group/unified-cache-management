@@ -55,9 +55,9 @@ Status BufferPool::Init(std::string name, MemoryType type, std::size_t slot_capa
         return Status::InvalidParam(name + ": slot layout size overflow");
     }
 
-    PoolDetail::BufferRegion region;
+    BufferRegion region;
     const auto total = slotStride * slot_num;
-    auto status = PoolDetail::BufferRegion::Create(type, total, region);
+    auto status = BufferRegion::Create(type, total, region);
     if (status.Failure()) { return status; }
 
     name_ = std::move(name);

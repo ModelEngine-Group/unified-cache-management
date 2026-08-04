@@ -81,7 +81,7 @@ private:
     MemoryType memory_type_{MemoryType::HOST};
     bool enable_zero_{false};
 
-    PoolDetail::BufferRegion region_;
+    BufferRegion region_;
     IndexPool index_pool_;
 };
 

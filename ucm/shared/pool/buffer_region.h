@@ -35,8 +35,6 @@ enum class BufferMemoryType {
     ASCEND_DEVICE = 2,
 };
 
-namespace PoolDetail {
-
 struct BufferRegion {
     static Status Create(BufferMemoryType type, std::size_t size, BufferRegion& region);
 
@@ -48,5 +46,4 @@ struct BufferRegion {
     void* device_addr{nullptr};
 };
 
-}  // namespace PoolDetail
 }  // namespace UC

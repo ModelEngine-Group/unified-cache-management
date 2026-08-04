@@ -2,20 +2,16 @@ if(BUILD_UNIT_TESTS)
     include(GoogleTest)
     file(GLOB_RECURSE UCMSHARED_TEST_SOURCE_FILES "./case/*.cc")
     if(NOT (RUNTIME_ENVIRONMENT STREQUAL "ascend" OR RUNTIME_ENVIRONMENT STREQUAL "simu"))
-        set(UCMSHARED_POOL_DETAIL_TEST_SOURCE_FILES ${UCMSHARED_TEST_SOURCE_FILES})
-        list(FILTER UCMSHARED_POOL_DETAIL_TEST_SOURCE_FILES INCLUDE REGEX
-            ".*[/\\\\]pool[/\\\\]detail[/\\\\].*")
         list(FILTER UCMSHARED_TEST_SOURCE_FILES EXCLUDE REGEX ".*[/\\\\]pool[/\\\\].*")
-        list(APPEND UCMSHARED_TEST_SOURCE_FILES ${UCMSHARED_POOL_DETAIL_TEST_SOURCE_FILES})
     endif()
     add_executable(ucmshared.test ${UCMSHARED_TEST_SOURCE_FILES})
     target_include_directories(ucmshared.test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/case)
     target_link_libraries(ucmshared.test PRIVATE
-        trans metrics infra_logger offset_allocator
+        trans metrics infra_logger
         gtest_main gtest
     )
     if(RUNTIME_ENVIRONMENT STREQUAL "ascend" OR RUNTIME_ENVIRONMENT STREQUAL "simu")
-        target_link_libraries(ucmshared.test PRIVATE buffer_pool)
+        target_link_libraries(ucmshared.test PRIVATE buffer_pool offset_allocator)
     endif()
     if(RUNTIME_ENVIRONMENT STREQUAL "ascend")
         target_compile_definitions(ucmshared.test PRIVATE UCM_TEST_RUNTIME_ASCEND=1)

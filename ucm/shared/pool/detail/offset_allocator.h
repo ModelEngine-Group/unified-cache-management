@@ -27,6 +27,7 @@
 
 #include <limits>
 #include <mutex>
+#include <shared_mutex>
 
 namespace OffsetAllocator {
 
@@ -118,7 +119,7 @@ private:
     Node* m_nodes;
     NodeIndex* m_freeNodes;
     uint32 m_freeOffset;
-    mutable std::mutex m_mutex;
+    mutable std::shared_mutex m_mutex;
 };
 
 }  // namespace OffsetAllocator
