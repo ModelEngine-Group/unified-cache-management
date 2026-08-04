@@ -62,8 +62,7 @@ UbErrorCode DefaultHccpV2Disposer(HandleKind kind, void* handle, const HandleAss
         }
         case HandleKind::kInvalid:
         default:
-            UB_LOG_WARN("HccpV2Handle::Reset called with invalid kind={}",
-                        static_cast<int>(kind));
+            UB_LOG_WARN("HccpV2Handle::Reset called with invalid kind={}", static_cast<int>(kind));
             return UbErrorCode::HccpV2HandleInvalid;
     }
 
