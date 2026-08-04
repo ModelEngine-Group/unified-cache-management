@@ -25,8 +25,8 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <string>
+#include "pool/buffer_region.h"
 #include "status/status.h"
 #include "thread/index_pool.h"
 
@@ -36,11 +36,7 @@ class BufferPool {
     static constexpr std::size_t kDefaultSlotAlignment = 64;
 
 public:
-    enum class MemoryType {
-        HOST = 0,
-        HOST_PINNED = 1,
-        ASCEND_DEVICE = 2,
-    };
+    using MemoryType = BufferMemoryType;
 
     struct Slot {
         void* local_addr{nullptr};
@@ -75,17 +71,6 @@ public:
     MemoryType GetMemoryType() const { return memory_type_; }
 
 private:
-    struct BufferRegion {
-        static Status Create(MemoryType type, std::size_t size, BufferRegion& region);
-
-        explicit operator bool() const { return owner != nullptr; }
-        void Reset();
-
-        std::shared_ptr<void> owner;
-        void* local_addr{nullptr};
-        void* device_addr{nullptr};
-    };
-
     static bool ComputeSlotStride(std::size_t capacity, std::size_t alignment, std::size_t& stride);
     Status ZeroMemory(void* ptr, std::size_t size) const;
 
