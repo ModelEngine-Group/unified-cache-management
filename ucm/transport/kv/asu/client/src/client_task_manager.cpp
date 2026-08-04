@@ -340,7 +340,14 @@ Status ClientTaskManager::DispatchTask(const ClientTaskPtr& task)
                 if (!dispatchedTask || dispatchedTask->taskId == kInvalidTaskId) { continue; }
                 auto dispatchedTransport = dispatchedTask->transport.lock();
                 if (dispatchedTransport) {
-                    (void)dispatchedTransport->Cancel(dispatchedTask->taskId);
+                    const auto cancelStatus = dispatchedTransport->Cancel(dispatchedTask->taskId);
+                    if (!cancelStatus.ok() && cancelStatus.code != StatusCode::TASK_NOT_FOUND) {
+                        UC_WARN(
+                            "Failed to cancel dispatched transport task: asuId={} taskId={} "
+                            "code={} message={}",
+                            dispatchedTask->asuId, dispatchedTask->taskId,
+                            static_cast<int>(cancelStatus.code), cancelStatus.message);
+                    }
                 }
             }
 

@@ -554,7 +554,11 @@ void AsuClientImpl::RequestBackgroundRefresh()
         completedThread = std::move(refreshThread_);
         refreshInProgress_ = true;
         refreshThread_ = std::thread([this] {
-            (void)RefreshView();
+            const auto status = RefreshView();
+            if (!status.ok()) {
+                UC_WARN("Background view refresh failed: code={} message={}",
+                        static_cast<int>(status.code), status.message);
+            }
             std::lock_guard<std::mutex> lock{mutex_};
             refreshInProgress_ = false;
         });

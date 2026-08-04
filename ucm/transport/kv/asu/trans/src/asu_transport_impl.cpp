@@ -141,7 +141,13 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
         auto s = connManager_->AddGroup(ep, qp_num);
         if (!s.ok()) {
             UC_DEBUG("AsuTransportImpl::Init AddGroup FAILED: {}", s.message);
-            (void)Shutdown();
+            const auto shutdownStatus = Shutdown();
+            if (!shutdownStatus.ok()) {
+                UC_WARN(
+                    "AsuTransportImpl::Init cleanup failed after AddGroup failure: code={} "
+                    "message={}",
+                    static_cast<int>(shutdownStatus.code), shutdownStatus.message);
+            }
             return s;
         }
     }
@@ -152,7 +158,13 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
                                           config_.sendBufferSlotSize, config_.sendBufferSlotNum,
                                           transProvider_.get());
     if (!status.ok()) {
-        (void)Shutdown();
+        const auto shutdownStatus = Shutdown();
+        if (!shutdownStatus.ok()) {
+            UC_WARN(
+                "AsuTransportImpl::Init cleanup failed after send buffer initialization "
+                "failure: code={} message={}",
+                static_cast<int>(shutdownStatus.code), shutdownStatus.message);
+        }
         return status;
     }
 
@@ -160,7 +172,13 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
                                      config_.flagBufferSlotSize, config_.flagBufferSlotNum,
                                      transProvider_.get());
     if (!status.ok()) {
-        (void)Shutdown();
+        const auto shutdownStatus = Shutdown();
+        if (!shutdownStatus.ok()) {
+            UC_WARN(
+                "AsuTransportImpl::Init cleanup failed after flag buffer initialization "
+                "failure: code={} message={}",
+                static_cast<int>(shutdownStatus.code), shutdownStatus.message);
+        }
         return status;
     }
     protocolManager_ = std::make_unique<ProtocolManager>();
