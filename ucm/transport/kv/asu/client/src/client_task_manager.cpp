@@ -132,7 +132,7 @@ Status ClientTaskManager::Wait(TaskId taskId, std::uint64_t waitTimeoutMs, TaskR
     if (!task) { return Status::Error(StatusCode::TASK_NOT_FOUND, "task not found"); }
 
     auto status = WaitContext(task, waitTimeoutMs, result);
-    if (status.code != StatusCode::TIMEOUT) { (void)Remove(taskId); }
+    (void)Remove(taskId);
     return status;
 }
 

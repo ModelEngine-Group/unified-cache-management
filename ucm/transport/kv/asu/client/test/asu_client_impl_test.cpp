@@ -1582,7 +1582,7 @@ TEST(AsuClientImplTest, Task_WaitRemovesTaskAfterCompletion)
     EXPECT_EQ(status.code, StatusCode::TASK_NOT_FOUND);
 }
 
-TEST(AsuClientImplTest, Task_WaitTimeoutKeepsTaskForLaterCompletion)
+TEST(AsuClientImplTest, Task_WaitTimeoutRemovesTask)
 {
     auto state = std::make_shared<TestState>();
     state->deferCompletionCallbacks = true;
@@ -1601,22 +1601,14 @@ TEST(AsuClientImplTest, Task_WaitTimeoutKeepsTaskForLaterCompletion)
     status = client->Wait(taskId, 100, result);
     EXPECT_EQ(status.code, StatusCode::TIMEOUT);
 
+    status = client->Check(taskId, result);
+    EXPECT_EQ(status.code, StatusCode::TASK_NOT_FOUND);
+
     ASSERT_TRUE(WaitForPendingCompletion(state, 10));
     TaskResult completionResult;
     completionResult.status = Status::OK();
     completionResult.entryStatus = {Status::OK()};
-    bool completionInvoked = false;
-    std::thread completionThread([&] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        completionInvoked = InvokePendingCompletion(state, 10, std::move(completionResult));
-    });
-    status = client->Wait(taskId, 100, result);
-    completionThread.join();
-    EXPECT_TRUE(completionInvoked);
-    EXPECT_TRUE(status.ok()) << status.message;
-
-    status = client->Check(taskId, result);
-    EXPECT_EQ(status.code, StatusCode::TASK_NOT_FOUND);
+    EXPECT_TRUE(InvokePendingCompletion(state, 10, std::move(completionResult)));
 }
 
 TEST(AsuClientImplTest, Task_CheckKeepsEntryStatusInOriginalOrderAcrossAsus)
