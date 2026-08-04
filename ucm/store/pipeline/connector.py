@@ -25,6 +25,7 @@
 import array
 import copy
 import ctypes
+import importlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,12 +34,9 @@ from typing import Callable, Dict, List
 import numpy as np
 import torch
 
-from ucm.store.pipeline import ucmpipelinestore
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 
 _preloaded_libraries: Dict[Path, ctypes.CDLL] = {}
-StoreNotFoundError = ucmpipelinestore.StoreNotFoundError
-StoreUnhealthyError = ucmpipelinestore.StoreUnhealthyError
 
 
 def _preload_library(path: Path) -> None:
@@ -55,6 +53,12 @@ def _preload_library(path: Path) -> None:
 
 def _preload_metrics(store_dir: Path) -> None:
     _preload_library(store_dir.parent / "shared/metrics/libmetrics.so")
+
+
+_preload_metrics(Path(__file__).resolve().parent.parent)
+ucmpipelinestore = importlib.import_module("ucm.store.pipeline.ucmpipelinestore")
+StoreNotFoundError = ucmpipelinestore.StoreNotFoundError
+StoreUnhealthyError = ucmpipelinestore.StoreUnhealthyError
 
 
 class UcmPipelineStoreBuilder:
