@@ -51,7 +51,9 @@ TEST(TransportConfigParserTest, LoadsMaxErrorCount)
     {
         std::ofstream configFile{kConfigPath};
         ASSERT_TRUE(configFile.is_open());
-        configFile << "max_error_count=7\n";
+        configFile << "max_error_count=7\n"
+                   << "kernel_count=1\n"
+                   << "quiet_count=1\n";
     }
 
     TransportConfig config;

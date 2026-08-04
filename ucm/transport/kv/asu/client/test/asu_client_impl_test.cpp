@@ -725,7 +725,7 @@ TEST(AsuClientImplTest, QueryAsync_CompletesThroughTransportCallback)
     EXPECT_EQ(result.queryResult->exists, std::vector<std::uint8_t>({1}));
 }
 
-TEST(AsuClientImplTest, Query_PerKeyDispatchFailureCompletesOtherTransports)
+TEST(AsuClientImplTest, Query_PerKeyDispatchFailureCancelsOtherTransports)
 {
     auto state = std::make_shared<TestState>();
     state->queryFailures[20] = Status::Error(StatusCode::IO_ERROR, "fake per-key query failure");
@@ -738,7 +738,7 @@ TEST(AsuClientImplTest, Query_PerKeyDispatchFailureCompletesOtherTransports)
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     EXPECT_EQ(result.exists, std::vector<std::uint8_t>({0, 0}));
-    ExpectSameAsuSet(state->queryCalls, {10, 20});
+    ExpectSameAsuSet(state->queryCalls, {20});
 }
 
 TEST(AsuClientImplTest, Query_PerKeyResultSizeMismatchReturnsPartialFailed)

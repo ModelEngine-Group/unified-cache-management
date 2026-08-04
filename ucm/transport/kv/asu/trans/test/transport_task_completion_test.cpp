@@ -313,7 +313,7 @@ TEST_F(TransportTaskCompletionTest, PollTaskCompletionsTimesOutAndReleasesResour
         callbackResult = std::move(result);
     };
 
-    transport_->taskExecutor_->Poll(ctx);
+    if (transport_->taskExecutor_->Poll(ctx)) { transport_->taskManager_.NotifyCompletion(ctx); }
 
     EXPECT_EQ(callbackCount, std::size_t{1});
     EXPECT_EQ(ctx->state.load(std::memory_order_acquire), TransportTaskState::COMPLETED);
