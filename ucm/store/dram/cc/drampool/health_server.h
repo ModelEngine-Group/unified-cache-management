@@ -24,21 +24,29 @@
 #pragma once
 
 #include <atomic>
+#include <thread>
 #include "status/status.h"
 
 namespace UC::DramPool {
 
-class DramPoolDaemon {
+class HealthServer final {
 public:
-    int Run(int argc, char** argv);
+    HealthServer() = default;
+    ~HealthServer();
+
+    HealthServer(const HealthServer&) = delete;
+    HealthServer& operator=(const HealthServer&) = delete;
+
+    Status Start();
+    void Stop() noexcept;
 
 private:
-    Status SetupLogger();
-    Status SetupSignals();
-    void WaitForShutdown();
+    void Run() noexcept;
+    void HandleClient(int clientSocket) noexcept;
 
-    static void HandleSignal(int signum);
-    inline static std::atomic_bool shutdownRequested_{false};
+    std::atomic_bool stopping_{true};
+    int listenSocket_{-1};
+    std::thread worker_;
 };
 
 }  // namespace UC::DramPool

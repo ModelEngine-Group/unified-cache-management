@@ -23,22 +23,32 @@
  * */
 #pragma once
 
-#include <atomic>
-#include "status/status.h"
+#include <gtest/gtest.h>
+#include "trans/device.h"
 
-namespace UC::DramPool {
+namespace UC::Test {
 
-class DramPoolDaemon {
-public:
-    int Run(int argc, char** argv);
+class PoolTestBase : public ::testing::Test {
+protected:
+    static void SetUpTestSuite()
+    {
+        auto status = device_.Init();
+        deviceRuntimeOwned_ = status.Success();
+        ASSERT_TRUE(deviceRuntimeOwned_ || status == Status::DuplicateKey()) << status.ToString();
+        status = device_.Setup(0);
+        ASSERT_TRUE(status.Success()) << status.ToString();
+    }
 
-private:
-    Status SetupLogger();
-    Status SetupSignals();
-    void WaitForShutdown();
+    static void TearDownTestSuite()
+    {
+        if (!deviceRuntimeOwned_) { return; }
+        EXPECT_TRUE(device_.Reset(0).Success());
+        EXPECT_TRUE(device_.Finalize().Success());
+        deviceRuntimeOwned_ = false;
+    }
 
-    static void HandleSignal(int signum);
-    inline static std::atomic_bool shutdownRequested_{false};
+    inline static Trans::Device device_;
+    inline static bool deviceRuntimeOwned_{false};
 };
 
-}  // namespace UC::DramPool
+}  // namespace UC::Test

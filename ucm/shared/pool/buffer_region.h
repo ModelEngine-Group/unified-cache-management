@@ -23,22 +23,27 @@
  * */
 #pragma once
 
-#include <atomic>
+#include <cstddef>
+#include <memory>
 #include "status/status.h"
 
-namespace UC::DramPool {
+namespace UC {
 
-class DramPoolDaemon {
-public:
-    int Run(int argc, char** argv);
-
-private:
-    Status SetupLogger();
-    Status SetupSignals();
-    void WaitForShutdown();
-
-    static void HandleSignal(int signum);
-    inline static std::atomic_bool shutdownRequested_{false};
+enum class BufferMemoryType {
+    HOST = 0,
+    HOST_PINNED = 1,
+    ASCEND_DEVICE = 2,
 };
 
-}  // namespace UC::DramPool
+struct BufferRegion {
+    static Status Create(BufferMemoryType type, std::size_t size, BufferRegion& region);
+
+    explicit operator bool() const { return owner != nullptr; }
+    void Reset();
+
+    std::shared_ptr<void> owner;
+    void* local_addr{nullptr};
+    void* device_addr{nullptr};
+};
+
+}  // namespace UC
