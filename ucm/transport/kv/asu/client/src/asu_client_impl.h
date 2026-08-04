@@ -79,7 +79,7 @@ public:
     Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId) override;
 
     // Checks an aggregate task.
-    Status Check(TaskId taskId, TaskResult& result) override;
+    bool Check(TaskId taskId) override;
     // Waits for an aggregate task.
     Status Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result) override;
 

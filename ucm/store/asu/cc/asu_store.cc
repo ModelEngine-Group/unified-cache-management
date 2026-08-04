@@ -275,10 +275,7 @@ public:
         return client_->DeleteAsync(keys, taskId);
     }
 
-    AsuStatus Check(UC::ASU::TaskId taskId, UC::ASU::TaskResult& result) override
-    {
-        return client_->Check(taskId, result);
-    }
+    bool Check(UC::ASU::TaskId taskId) override { return client_->Check(taskId); }
 
     AsuStatus Wait(UC::ASU::TaskId taskId, std::uint64_t timeoutMs,
                    UC::ASU::TaskResult& result) override
@@ -432,16 +429,7 @@ public:
 
     Expected<bool> Check(Detail::TaskHandle taskId) override
     {
-        UC::ASU::TaskResult result;
-        auto status = backend_->Check(static_cast<UC::ASU::TaskId>(taskId), result);
-        if (!status.ok()) {
-            LogAsuStatus("check task", status);
-            return ConvertStatus(status);
-        }
-        if (!result.status.ok() && result.status.code != AsuStatusCode::IN_PROGRESS) {
-            LogAsuStatus("task result check", result.status);
-        }
-        return result.status.code != AsuStatusCode::IN_PROGRESS;
+        return backend_->Check(static_cast<UC::ASU::TaskId>(taskId));
     }
 
     Status Wait(Detail::TaskHandle taskId) override

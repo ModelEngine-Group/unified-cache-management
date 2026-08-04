@@ -35,7 +35,7 @@ class ClientTaskManager : public TaskManagerBase<ClientTask, ClientTaskState> {
 public:
     ClientTaskManager() : TaskManagerBase(ClientTaskState::PENDING, "client") {}
 
-    Status Check(TaskId taskId, TaskResult& result);
+    bool Check(TaskId taskId);
     Status Wait(TaskId taskId, std::uint64_t waitTimeoutMs, TaskResult& result);
     Status Drain(std::uint64_t waitTimeoutMs);
     Status Process(const ClientTaskPtr& task);

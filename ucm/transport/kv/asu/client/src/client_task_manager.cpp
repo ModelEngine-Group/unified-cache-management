@@ -110,20 +110,10 @@ bool ClientTask::AllTransportTasksCompleted() const
     return remainingTransportTasks.load(std::memory_order_acquire) == 0;
 }
 
-Status ClientTaskManager::Check(TaskId taskId, TaskResult& result)
+bool ClientTaskManager::Check(TaskId taskId)
 {
     auto task = Get(taskId);
-    if (!task) { return Status::Error(StatusCode::TASK_NOT_FOUND, "task not found"); }
-
-    Status status;
-    bool done = false;
-    {
-        std::lock_guard<std::mutex> lock(task->waitMu);
-        status = BuildResult(task, result);
-        done = task->Done();
-    }
-    if (done) { (void)Remove(taskId); }
-    return status;
+    return !task || task->Done();
 }
 
 Status ClientTaskManager::Wait(TaskId taskId, std::uint64_t waitTimeoutMs, TaskResult& result)

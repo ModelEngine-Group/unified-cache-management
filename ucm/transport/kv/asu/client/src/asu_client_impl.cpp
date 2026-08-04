@@ -160,16 +160,7 @@ Status AsuClientImpl::DeleteAsync(const std::vector<CacheKey>& keys, TaskId& tas
     return SubmitAsync(ClientOpType::DELETE, keys, config_.timeoutMs, taskId);
 }
 
-Status AsuClientImpl::Check(TaskId taskId, TaskResult& result)
-{
-    auto status = taskManager_.Check(taskId, result);
-    if (status.code == StatusCode::TASK_NOT_FOUND) { return status; }
-    if (viewServer_ != nullptr &&
-        (viewServer_->ShouldRefreshView(status) || viewServer_->ShouldRefreshView(result))) {
-        RequestBackgroundRefresh();
-    }
-    return status;
-}
+bool AsuClientImpl::Check(TaskId taskId) { return taskManager_.Check(taskId); }
 
 Status AsuClientImpl::Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result)
 {
