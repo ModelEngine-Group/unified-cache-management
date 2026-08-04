@@ -23,22 +23,17 @@
  * */
 #include <cstddef>
 #include <limits>
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 #include "drampool_config.h"
-#include "drampool_config_utils.h"
+#include "parse_utils.h"
 
 namespace UC::DramPool {
 namespace {
 
 // Must match the fixed slot layout used by BufferManager.
 constexpr std::size_t kSlotAlignment = 64;
-
-using detail::ParseUint32;
-using detail::ParseUint64;
-using detail::Trim;
 
 bool IsLongOption(const std::string& value)
 {
@@ -86,12 +81,14 @@ Status ReadListValues(const std::string& option, bool hasInlineValue,
 
 Status ParseBlockSizes(const std::vector<std::string>& values, std::vector<std::uint64_t>& sizes)
 {
-    try {
-        sizes.clear();
-        sizes.reserve(values.size());
-        for (const auto& value : values) { sizes.emplace_back(ParseUint64(value)); }
-    } catch (const std::exception& error) {
-        return Status::InvalidParam("invalid --kvcache-block-sizes value: {}", error.what());
+    sizes.clear();
+    sizes.reserve(values.size());
+    for (const auto& value : values) {
+        std::uint64_t size;
+        if (Dram::ParseUint64(value, size).Failure()) {
+            return Status::InvalidParam("invalid --kvcache-block-sizes value: {}", value);
+        }
+        sizes.push_back(size);
     }
     return Status::OK();
 }
@@ -99,12 +96,14 @@ Status ParseBlockSizes(const std::vector<std::string>& values, std::vector<std::
 Status ParseBlockProportions(const std::vector<std::string>& values,
                              std::vector<std::uint32_t>& proportions)
 {
-    try {
-        proportions.clear();
-        proportions.reserve(values.size());
-        for (const auto& value : values) { proportions.emplace_back(ParseUint32(value)); }
-    } catch (const std::exception& error) {
-        return Status::InvalidParam("invalid --kvcache-block-proportions value: {}", error.what());
+    proportions.clear();
+    proportions.reserve(values.size());
+    for (const auto& value : values) {
+        std::uint32_t proportion;
+        if (Dram::ParseUint32(value, proportion).Failure()) {
+            return Status::InvalidParam("invalid --kvcache-block-proportions value: {}", value);
+        }
+        proportions.push_back(proportion);
     }
     return Status::OK();
 }
@@ -112,7 +111,9 @@ Status ParseBlockProportions(const std::vector<std::string>& values,
 Status ValidateNics(const std::vector<std::string>& nics)
 {
     for (const auto& nic : nics) {
-        if (Trim(nic).empty()) { return Status::InvalidParam("--nics contains an empty name"); }
+        if (Dram::Trim(nic).empty()) {
+            return Status::InvalidParam("--nics contains an empty name");
+        }
     }
     return Status::OK();
 }
@@ -207,25 +208,20 @@ Status CalculatePoolSlotCounts(DramPoolConfig& config)
 Status ParseDramPoolEndpoint(const std::string& name, const std::string& value,
                              transport::Endpoint& endpoint)
 {
-    const auto normalized = Trim(value);
+    const auto normalized = Dram::Trim(value);
     if (normalized.empty()) { return Status::InvalidParam("{} is required", name); }
 
     const auto separator = normalized.rfind(':');
     if (separator == std::string::npos || separator == 0 || separator + 1 >= normalized.size()) {
         return Status::InvalidParam("{} must be <IP>:<PORT>", name);
     }
-    try {
-        std::size_t parsed = 0;
-        const auto port = std::stoul(normalized.substr(separator + 1), &parsed, 10);
-        if (parsed != normalized.size() - separator - 1 || port == 0 ||
-            port > std::numeric_limits<std::uint16_t>::max()) {
-            return Status::InvalidParam("{} must have a valid port", name);
-        }
-        endpoint.host = normalized.substr(0, separator);
-        endpoint.port = static_cast<std::uint16_t>(port);
-    } catch (const std::exception&) {
+    std::uint16_t port = 0;
+    if (Dram::ParseUint16(normalized.substr(separator + 1), port).Failure()) {
         return Status::InvalidParam("{} must have a valid port", name);
     }
+    if (port == 0) { return Status::InvalidParam("{} must have a valid port", name); }
+    endpoint.host = normalized.substr(0, separator);
+    endpoint.port = port;
     return Status::OK();
 }
 
@@ -281,7 +277,9 @@ Status ParseCommandLine(int argc, char** argv, DramPoolConfig& config)
             if (hasConfig) { return Status::InvalidParam("--config may be specified once"); }
             status = ReadSingleValue(option, hasInlineValue, inlineValue, argc, argv, index, value);
             if (status.Failure()) { return status; }
-            if (Trim(value).empty()) { return Status::InvalidParam("--config must not be blank"); }
+            if (Dram::Trim(value).empty()) {
+                return Status::InvalidParam("--config must not be blank");
+            }
             config.runtimeConfigPath = std::move(value);
             hasConfig = true;
             continue;
@@ -313,10 +311,8 @@ Status ParseCommandLine(int argc, char** argv, DramPoolConfig& config)
             }
             status = ReadSingleValue(option, hasInlineValue, inlineValue, argc, argv, index, value);
             if (status.Failure()) { return status; }
-            try {
-                config.poolSizeGb = ParseUint64(value);
-            } catch (const std::exception& error) {
-                return Status::InvalidParam("invalid --pool-size-gb value: {}", error.what());
+            if (Dram::ParseUint64(value, config.poolSizeGb).Failure()) {
+                return Status::InvalidParam("invalid {} value: {}", option, value);
             }
             status = ValidatePoolSize(config.poolSizeGb);
             if (status.Failure()) { return status; }
@@ -353,16 +349,15 @@ Status ParseCommandLine(int argc, char** argv, DramPoolConfig& config)
             if (hasTtl) { return Status::InvalidParam("--ttl-minutes may be specified once"); }
             status = ReadSingleValue(option, hasInlineValue, inlineValue, argc, argv, index, value);
             if (status.Failure()) { return status; }
-            try {
-                const auto ttlMinutes = ParseUint64(value);
-                if (ttlMinutes == 0 || ttlMinutes > std::numeric_limits<std::uint64_t>::max() /
-                                                        kMillisecondsPerMinute) {
-                    return Status::InvalidParam("--ttl-minutes must be a positive value");
-                }
-                config.defaultDumpTtlMs = ttlMinutes * kMillisecondsPerMinute;
-            } catch (const std::exception& error) {
-                return Status::InvalidParam("invalid --ttl-minutes value: {}", error.what());
+            std::uint64_t ttlMinutes;
+            if (Dram::ParseUint64(value, ttlMinutes).Failure()) {
+                return Status::InvalidParam("invalid {} value: {}", option, value);
             }
+            if (ttlMinutes == 0 ||
+                ttlMinutes > std::numeric_limits<std::uint64_t>::max() / kMillisecondsPerMinute) {
+                return Status::InvalidParam("--ttl-minutes must be a positive value");
+            }
+            config.defaultDumpTtlMs = ttlMinutes * kMillisecondsPerMinute;
             hasTtl = true;
             continue;
         }

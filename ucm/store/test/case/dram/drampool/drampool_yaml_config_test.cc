@@ -140,6 +140,7 @@ TEST(DramPoolRuntimeYamlTest, LoadsEveryRuntimeFieldAndPreservesLaunchFields)
     EXPECT_EQ(config.twoSidedToOneSided.at("127.0.0.1:9000"), "127.0.0.1:4501");
     EXPECT_EQ(config.twoSidedToOneSided.at("127.0.0.1:9001"), "127.0.0.1:4502");
     EXPECT_EQ(config.transportDeviceIds, (std::vector<std::int32_t>{0, 2}));
+    EXPECT_EQ(config.healthPort, 0U);
     EXPECT_EQ(config.requestQueueDepth, 65536U);
     EXPECT_EQ(config.completionQueueDepth, 65536U);
     EXPECT_EQ(config.requestReceiverIdleWaitUs, 100U);
@@ -159,6 +160,30 @@ TEST(DramPoolRuntimeYamlTest, LoadsEveryRuntimeFieldAndPreservesLaunchFields)
     EXPECT_EQ(config.logDir, "./logs");
     EXPECT_EQ(config.logMaxFiles, 10U);
     EXPECT_EQ(config.logMaxSizeMb, 5U);
+}
+
+TEST(DramPoolRuntimeYamlTest, LoadsOptionalHealthPort)
+{
+    auto config = LaunchConfig();
+    RuntimeYamlFile yaml(ValidRuntimeYaml() + "health:\n  port: 8080\n");
+
+    const auto status = ParseYamlConfig(yaml.Path().string(), config);
+
+    ASSERT_TRUE(status.Success()) << status.ToString();
+    EXPECT_EQ(config.healthPort, 8080U);
+}
+
+TEST(DramPoolRuntimeYamlTest, RejectsInvalidHealthPort)
+{
+    for (const auto* value : {"-1", "not-a-port", "65536"}) {
+        auto config = LaunchConfig();
+        RuntimeYamlFile yaml(ValidRuntimeYaml() + "health:\n  port: " + value + "\n");
+
+        const auto status = ParseYamlConfig(yaml.Path().string(), config);
+
+        EXPECT_TRUE(status.Failure()) << value;
+        EXPECT_EQ(config.healthPort, 0U);
+    }
 }
 
 TEST(DramPoolRuntimeYamlTest, LoadsConfiguredEvictionPoliciesCaseInsensitively)

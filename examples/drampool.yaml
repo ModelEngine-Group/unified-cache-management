@@ -14,6 +14,10 @@ transport:
     - two_sided: "127.0.0.1:9001"
       one_sided: "127.0.0.1:4502"
 
+# Set a nonzero port to expose GET /health on the IP supplied by --addr.
+health:
+  port: 0
+
 queue:
   request_depth: 65536
   completion_depth: 65536
