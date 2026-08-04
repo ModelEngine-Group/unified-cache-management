@@ -137,10 +137,9 @@ Status AsuClientImpl::Shutdown()
     return finalStatus;
 }
 
-Status AsuClientImpl::QueryAsync(const std::vector<CacheKey>& keys, const QueryOptions& options,
-                                 TaskId& taskId)
+Status AsuClientImpl::QueryAsync(const std::vector<CacheKey>& keys, TaskId& taskId)
 {
-    auto status = SubmitAsync(ClientOpType::QUERY, keys, options.timeoutMs, taskId);
+    auto status = SubmitAsync(ClientOpType::QUERY, keys, taskId);
     if (IsRefreshNeeded(status)) { RequestBackgroundRefresh(); }
     return status;
 }
@@ -157,7 +156,7 @@ Status AsuClientImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId& t
 
 Status AsuClientImpl::DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId)
 {
-    return SubmitAsync(ClientOpType::DELETE, keys, config_.timeoutMs, taskId);
+    return SubmitAsync(ClientOpType::DELETE, keys, taskId);
 }
 
 bool AsuClientImpl::Check(TaskId taskId) { return taskManager_.Check(taskId); }
@@ -290,7 +289,7 @@ Status AsuClientImpl::SubmitAsync(ClientOpType opType, const std::vector<KVBuffe
 }
 
 Status AsuClientImpl::SubmitAsync(ClientOpType opType, const std::vector<CacheKey>& keys,
-                                  std::uint64_t timeoutMs, TaskId& taskId)
+                                  TaskId& taskId)
 {
     auto snapshot = GetSnapshot();
     if (!snapshot || !snapshot->router || snapshot->transports.empty()) {
@@ -310,7 +309,6 @@ Status AsuClientImpl::SubmitAsync(ClientOpType opType, const std::vector<CacheKe
     ctx->keys = keys;
     ctx->entryStatus.assign(keys.size(), Status::OK());
     ctx->queryResult.exists.assign(opType == ClientOpType::QUERY ? keys.size() : 0, 0);
-    ctx->timeoutMs = timeoutMs;
 
     auto status = taskManager_.Submit(std::move(ctx), taskId);
     if (!status.ok()) { return status; }

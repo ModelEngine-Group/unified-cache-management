@@ -69,8 +69,7 @@ public:
     Status Shutdown() override;
 
     // Submits query operations to routed transports.
-    Status QueryAsync(const std::vector<CacheKey>& keys, const QueryOptions& options,
-                      TaskId& taskId) override;
+    Status QueryAsync(const std::vector<CacheKey>& keys, TaskId& taskId) override;
     // Submits load operations to routed transports.
     Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) override;
     // Submits store operations to routed transports.
@@ -93,8 +92,7 @@ private:
     // Creates and queues one entry-based client task.
     Status SubmitAsync(ClientOpType opType, const std::vector<KVBuffer>& entries, TaskId& taskId);
     // Creates and queues one key-based client task.
-    Status SubmitAsync(ClientOpType opType, const std::vector<CacheKey>& keys,
-                       std::uint64_t timeoutMs, TaskId& taskId);
+    Status SubmitAsync(ClientOpType opType, const std::vector<CacheKey>& keys, TaskId& taskId);
 
     // Runs queued tasks until shutdown and the queue are both complete.
     void WorkerLoop();

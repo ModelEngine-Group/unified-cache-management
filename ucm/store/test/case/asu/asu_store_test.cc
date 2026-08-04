@@ -51,31 +51,27 @@ UC::ASU::MRHandle MakeTestMrHandle(std::uintptr_t value)
     return reinterpret_cast<UC::ASU::MRHandle>(value);
 }
 
-struct FakeAsuBackendState {
-    std::vector<UC::ASU::QueryMode> queryModes;
+struct FakeAsuClientState {
     std::vector<UC::AsuStore::Config> initConfigs;
     std::vector<UC::ASU::KVBuffer> lastLoadEntries;
     std::vector<UC::ASU::KVBuffer> lastStoreEntries;
     std::vector<UC::ASU::MemoryRegion> registeredRegions;
 };
 
-class FakeAsuBackend final : public UC::AsuStore::AsuBackend {
+class FakeAsuClient final : public UC::ASU::AsuClient {
 public:
-    explicit FakeAsuBackend(std::shared_ptr<FakeAsuBackendState> state) : state_(std::move(state))
-    {
-    }
+    explicit FakeAsuClient(std::shared_ptr<FakeAsuClientState> state) : state_(std::move(state)) {}
 
-    UC::ASU::Status Init(const UC::AsuStore::Config& config) override
+    UC::ASU::Status Init(const UC::ASU::AsuClientConfig& config) override
     {
-        config_ = config;
-        state_->initConfigs.emplace_back(config);
+        (void)config;
         initialized_ = true;
         return UC::ASU::Status::OK();
     }
 
     UC::ASU::Status Init(const std::string& configPath) override
     {
-        configPath_ = configPath;
+        (void)configPath;
         initialized_ = true;
         return UC::ASU::Status::OK();
     }
@@ -86,23 +82,26 @@ public:
         return UC::ASU::Status::OK();
     }
 
-    UC::ASU::Status Query(const std::vector<UC::ASU::CacheKey>& keys,
-                          const UC::ASU::QueryOptions& options,
-                          UC::ASU::QueryResult& result) override
+    UC::ASU::Status QueryAsync(const std::vector<UC::ASU::CacheKey>& keys,
+                               UC::ASU::TaskId& taskId) override
     {
         if (!initialized_) { return NotInitialized(); }
 
-        state_->queryModes.emplace_back(options.mode);
+        UC::ASU::TaskResult taskResult;
+        taskResult.status = UC::ASU::Status::OK();
+        taskResult.entryStatus.assign(keys.size(), UC::ASU::Status::OK());
+        UC::ASU::QueryResult result;
         result.exists.clear();
         result.exists.reserve(keys.size());
         for (const auto& key : keys) { result.exists.emplace_back(storedKeys_.count(key) != 0); }
         result.prefixHitKeys = 0;
-        if (options.mode == UC::ASU::QueryMode::PREFIX) {
-            for (auto exists : result.exists) {
-                if (exists == 0) { break; }
-                ++result.prefixHitKeys;
-            }
+        for (auto exists : result.exists) {
+            if (exists == 0) { break; }
+            ++result.prefixHitKeys;
         }
+        taskResult.queryResult = std::move(result);
+        taskId = nextTaskId_++;
+        taskResults_.emplace(taskId, std::move(taskResult));
         return UC::ASU::Status::OK();
     }
 
@@ -168,6 +167,12 @@ public:
         return UC::ASU::Status::OK();
     }
 
+    UC::ASU::Status UnregisterRegions(const std::vector<UC::ASU::MRHandle>& handles) override
+    {
+        (void)handles;
+        return UC::ASU::Status::OK();
+    }
+
 private:
     UC::ASU::Status Submit(const std::vector<UC::ASU::KVBuffer>& entries, UC::ASU::TaskId& taskId)
     {
@@ -189,12 +194,10 @@ private:
     static UC::ASU::Status NotInitialized()
     {
         return UC::ASU::Status::Error(UC::ASU::StatusCode::NOT_INITIALIZED,
-                                      "fake ASU backend is not initialized");
+                                      "fake ASU client is not initialized");
     }
 
-    UC::AsuStore::Config config_;
-    std::string configPath_;
-    std::shared_ptr<FakeAsuBackendState> state_;
+    std::shared_ptr<FakeAsuClientState> state_;
     bool initialized_{false};
     UC::ASU::TaskId nextTaskId_{1};
     std::uintptr_t nextMrHandle_{1};
@@ -202,11 +205,13 @@ private:
     std::unordered_map<UC::ASU::TaskId, UC::ASU::TaskResult> taskResults_;
 };
 
-std::shared_ptr<FakeAsuBackendState> UseFakeBackend(UC::AsuStore::AsuStore& store)
+std::shared_ptr<FakeAsuClientState> UseFakeClient(UC::AsuStore::AsuStore& store)
 {
-    auto state = std::make_shared<FakeAsuBackendState>();
-    store.SetBackendFactory(
-        [state](const UC::AsuStore::Config&) { return std::make_unique<FakeAsuBackend>(state); });
+    auto state = std::make_shared<FakeAsuClientState>();
+    store.SetClientFactory([state](const UC::AsuStore::Config& config) {
+        state->initConfigs.emplace_back(config);
+        return std::make_unique<FakeAsuClient>(state);
+    });
     return state;
 }
 
@@ -221,6 +226,7 @@ UC::Detail::Dictionary MakeBaseConfig()
     config.SetNumber("shard_size", std::size_t{64});
     config.SetNumber("block_size", std::size_t{64});
     config.SetNumber("asu_default_wait_timeout_ms", std::uint64_t{1000});
+    config.SetNumber("asu_query_timeout_ms", std::uint64_t{500});
     config.SetNumber("asu_timeout_ms", std::uint64_t{1000});
     config.SetNumber("asu_max_inflight_tasks", std::uint64_t{16});
     config.Set("kv_ns_ids", std::vector<ssize_t>{100});
@@ -293,7 +299,7 @@ TEST(UCAsuStoreTest, ParsesKvNamespaces)
 {
     {
         UC::AsuStore::AsuStore store;
-        auto state = UseFakeBackend(store);
+        auto state = UseFakeClient(store);
         auto config = MakeBaseConfig();
         config.Set("asu_ids", std::vector<ssize_t>{1001});
         ASSERT_TRUE(store.Setup(config).Success());
@@ -309,7 +315,7 @@ TEST(UCAsuStoreTest, ParsesKvNamespaces)
     };
     for (const auto& [suffix, expected] : cases) {
         UC::AsuStore::AsuStore store;
-        auto state = UseFakeBackend(store);
+        auto state = UseFakeClient(store);
         auto config = MakeBaseConfig();
         config.Set("asu_ids", std::vector<ssize_t>{1001});
         config.Set("unique_id", std::string{"engine_fawa_"} + suffix);
@@ -325,7 +331,7 @@ TEST(UCAsuStoreTest, ParsesKvNamespaces)
 TEST(UCAsuStoreTest, ParsesOperationTimeout)
 {
     UC::AsuStore::AsuStore store;
-    auto state = UseFakeBackend(store);
+    auto state = UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("asu_ids", std::vector<ssize_t>{1001});
     config.SetNumber("asu_timeout_ms", std::uint64_t{321});
@@ -348,11 +354,35 @@ TEST(UCAsuStoreTest, RejectsZeroOperationTimeout)
     EXPECT_TRUE(store.Setup(config).Failure());
 }
 
+TEST(UCAsuStoreTest, ParsesQueryTimeout)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("asu_query_timeout_ms", std::uint64_t{321});
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+    EXPECT_EQ(state->initConfigs.back().queryTimeoutMs, 321);
+}
+
+TEST(UCAsuStoreTest, RejectsZeroQueryTimeout)
+{
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("asu_query_timeout_ms", std::uint64_t{0});
+
+    EXPECT_TRUE(store.Setup(config).Failure());
+}
+
 TEST(UCAsuStoreTest, PropagatesMaxErrorCountToTransport)
 {
     UC::AsuStore::AsuStore store;
-    auto state = UseFakeBackend(store);
+    auto state = UseFakeClient(store);
     auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
     config.SetNumber("asu_max_error_count", std::uint64_t{7});
 
     ASSERT_TRUE(store.Setup(config).Success());
@@ -459,7 +489,7 @@ TEST(UCAsuStoreTest, AivRequiresDeviceId)
     }
     {
         UC::AsuStore::AsuStore store;
-        UseFakeBackend(store);
+        UseFakeClient(store);
         auto config = MakeBaseConfig();
         config.Set("asu_ids", std::vector<ssize_t>{1001});
         config.Set("asu_trans_provider_backend", std::string{"aiv"});
@@ -491,7 +521,7 @@ TEST(UCAsuStoreTest, PropagatesKvNamespaceToEveryTransport)
 TEST(UCAsuStoreTest, SchedulerUsesConfiguredDeviceId)
 {
     UC::AsuStore::AsuStore store;
-    auto state = UseFakeBackend(store);
+    auto state = UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("role", std::string{"scheduler"});
     config.Set("asu_ids", std::vector<ssize_t>{1001});
@@ -505,7 +535,7 @@ TEST(UCAsuStoreTest, SchedulerUsesConfiguredDeviceId)
 TEST(UCAsuStoreTest, WorkerUsesLocalRankDeviceId)
 {
     UC::AsuStore::AsuStore store;
-    auto state = UseFakeBackend(store);
+    auto state = UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("role", std::string{"worker"});
     config.Set("asu_ids", std::vector<ssize_t>{1001});
@@ -519,7 +549,7 @@ TEST(UCAsuStoreTest, WorkerUsesLocalRankDeviceId)
 TEST(UCAsuStoreTest, TransportModeSmoke)
 {
     UC::AsuStore::AsuStore store;
-    UseFakeBackend(store);
+    UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
@@ -534,7 +564,7 @@ TEST(UCAsuStoreTest, TransportModeSmoke)
 TEST(UCAsuStoreTest, ClientModeSmoke)
 {
     UC::AsuStore::AsuStore store;
-    UseFakeBackend(store);
+    UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1", "127.0.0.2"});
     config.Set("asu_ids", std::vector<ssize_t>{1001, 1002});
@@ -548,7 +578,7 @@ TEST(UCAsuStoreTest, ClientModeSmoke)
 TEST(UCAsuStoreTest, AllowsQueryOnlyConfigWithoutTensorSizes)
 {
     UC::AsuStore::AsuStore store;
-    UseFakeBackend(store);
+    UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.SetNumber("tensor_size", std::size_t{0});
     config.Set("asu_ids", std::vector<ssize_t>{1001});
@@ -564,7 +594,7 @@ TEST(UCAsuStoreTest, AllowsQueryOnlyConfigWithoutTensorSizes)
 TEST(UCAsuStoreTest, SchedulerRoleSkipsTransferLayoutValidation)
 {
     UC::AsuStore::AsuStore store;
-    auto state = UseFakeBackend(store);
+    auto state = UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("role", std::string{"scheduler"});
     config.Set("asu_ids", std::vector<ssize_t>{1001});
@@ -594,7 +624,7 @@ TEST(UCAsuStoreTest, WorkerRoleRequiresTensorSizes)
 TEST(UCAsuStoreTest, UsesPersistentRegionHandleBeforeSubmitAndKeepsItAfterWait)
 {
     UC::AsuStore::AsuStore store;
-    auto state = UseFakeBackend(store);
+    auto state = UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
     config.Set("asu_ids", std::vector<ssize_t>{1001});
@@ -616,7 +646,7 @@ TEST(UCAsuStoreTest, UsesPersistentRegionHandleBeforeSubmitAndKeepsItAfterWait)
 TEST(UCAsuStoreTest, PersistentRegionHandleIsSharedByEntriesAndNotReleasedPerTask)
 {
     UC::AsuStore::AsuStore store;
-    auto state = UseFakeBackend(store);
+    auto state = UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
     config.Set("asu_ids", std::vector<ssize_t>{1001});
@@ -653,7 +683,7 @@ TEST(UCAsuStoreTest, PersistentRegionHandleIsSharedByEntriesAndNotReleasedPerTas
 TEST(UCAsuStoreTest, ResolvesEachEntryToItsContainingPersistentRegion)
 {
     UC::AsuStore::AsuStore store;
-    auto state = UseFakeBackend(store);
+    auto state = UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
     config.Set("asu_ids", std::vector<ssize_t>{1001});
@@ -686,10 +716,10 @@ TEST(UCAsuStoreTest, ResolvesEachEntryToItsContainingPersistentRegion)
     EXPECT_NE(state->lastStoreEntries[0].buffer.handle, state->lastStoreEntries[1].buffer.handle);
 }
 
-TEST(UCAsuStoreTest, LookupOnPrefixUsesPrefixQueryMode)
+TEST(UCAsuStoreTest, LookupOnPrefixReturnsLastContiguousHit)
 {
     UC::AsuStore::AsuStore store;
-    auto state = UseFakeBackend(store);
+    auto state = UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1", "127.0.0.2"});
     config.Set("asu_ids", std::vector<ssize_t>{1001, 1002});
@@ -709,8 +739,6 @@ TEST(UCAsuStoreTest, LookupOnPrefixUsesPrefixQueryMode)
     auto prefix = store.LookupOnPrefix(blocks.data(), blocks.size());
     ASSERT_TRUE(prefix.HasValue()) << prefix.Error().ToString();
     ASSERT_EQ(prefix.Value(), 0);
-    ASSERT_FALSE(state->queryModes.empty());
-    EXPECT_EQ(state->queryModes.back(), UC::ASU::QueryMode::PREFIX);
 }
 
 TEST(UCAsuStoreTest, ClientModeConfigPathSmoke)
@@ -725,7 +753,7 @@ TEST(UCAsuStoreTest, ClientModeConfigPathSmoke)
     }
 
     UC::AsuStore::AsuStore store;
-    UseFakeBackend(store);
+    UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("asu_config_path", std::string{kConfigPath});
     auto setupStatus = store.Setup(config);
@@ -750,7 +778,7 @@ TEST(UCAsuStoreTest, TransportModeConfigPathSmoke)
     }
 
     UC::AsuStore::AsuStore store;
-    UseFakeBackend(store);
+    UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_config_path", std::string{kConfigPath});
@@ -783,7 +811,7 @@ TEST(UCAsuStoreTest, RejectsOddMultiTensorLayout)
 TEST(UCAsuStoreTest, UsesNonLayerwiseMlaTensorOffsets)
 {
     UC::AsuStore::AsuStore store;
-    auto state = UseFakeBackend(store);
+    auto state = UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
@@ -831,7 +859,7 @@ TEST(UCAsuStoreTest, UsesNonLayerwiseMlaTensorOffsets)
 TEST(UCAsuStoreTest, UsesHmaTensorOffsetsInConnectorOrder)
 {
     UC::AsuStore::AsuStore store;
-    auto state = UseFakeBackend(store);
+    auto state = UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
@@ -873,7 +901,7 @@ TEST(UCAsuStoreTest, UsesHmaTensorOffsetsInConnectorOrder)
 TEST(UCAsuStoreTest, UsesLayerwiseMlaTensorOffsets)
 {
     UC::AsuStore::AsuStore store;
-    auto state = UseFakeBackend(store);
+    auto state = UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
@@ -912,7 +940,7 @@ TEST(UCAsuStoreTest, UsesMultiSegmentLayerwiseMlaTensorOffsets)
     constexpr std::size_t alignedShardSize = alignment * 2;
 
     UC::AsuStore::AsuStore store;
-    auto state = UseFakeBackend(store);
+    auto state = UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
@@ -960,7 +988,7 @@ TEST(UCAsuStoreTest, UsesMultiSegmentLayerwiseMlaTensorOffsets)
 TEST(UCAsuStoreTest, AlignsTensorSizeAndDerivesShardBlockSize)
 {
     UC::AsuStore::AsuStore store;
-    auto state = UseFakeBackend(store);
+    auto state = UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
@@ -1000,7 +1028,7 @@ TEST(UCAsuStoreTest, AlignsTensorSizeAndDerivesShardBlockSize)
 TEST(UCAsuStoreTest, AllowsMultipleShardsPerBlock)
 {
     UC::AsuStore::AsuStore store;
-    UseFakeBackend(store);
+    UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
@@ -1014,7 +1042,7 @@ TEST(UCAsuStoreTest, AllowsMultipleShardsPerBlock)
 TEST(UCAsuStoreTest, UsesLayerwiseGqaKeyValueOffsets)
 {
     UC::AsuStore::AsuStore store;
-    auto state = UseFakeBackend(store);
+    auto state = UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
@@ -1056,7 +1084,7 @@ TEST(UCAsuStoreTest, UsesLayerwiseGqaKeyValueOffsets)
 TEST(UCAsuStoreTest, UsesNonLayerwiseGqaKeyValueOffsets)
 {
     UC::AsuStore::AsuStore store;
-    auto state = UseFakeBackend(store);
+    auto state = UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
@@ -1098,7 +1126,7 @@ TEST(UCAsuStoreTest, UsesNonLayerwiseGqaKeyValueOffsets)
 TEST(UCAsuStoreTest, RegistersKvCacheRegions)
 {
     UC::AsuStore::AsuStore store;
-    auto state = UseFakeBackend(store);
+    auto state = UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("asu_ids", std::vector<ssize_t>{1001});
     ASSERT_TRUE(store.Setup(config).Success());

@@ -24,6 +24,7 @@ struct Config {
     std::uint16_t asuPort{0};
     std::uint64_t defaultWaitTimeoutMs{100};
     std::uint64_t timeoutMs{100};
+    std::uint64_t queryTimeoutMs{500};
     std::uint64_t maxErrorCount{2};
     std::uint64_t maxInflightTasks{1024};
     std::uint64_t maxInflightBytes{1ULL << 30};
@@ -36,29 +37,6 @@ struct Config {
     std::string fakeBackendPath;
     std::uint64_t fakeBackendLatencyMs{1};
     std::unordered_map<std::string, std::string> clientAttrs;
-};
-
-class AsuBackend {
-public:
-    virtual ~AsuBackend() = default;
-    virtual UC::ASU::Status Init(const Config& config) = 0;
-    virtual UC::ASU::Status Init(const std::string& configPath) = 0;
-    virtual UC::ASU::Status Shutdown() = 0;
-    virtual UC::ASU::Status Query(const std::vector<UC::ASU::CacheKey>& keys,
-                                  const UC::ASU::QueryOptions& options,
-                                  UC::ASU::QueryResult& result) = 0;
-    virtual UC::ASU::Status LoadAsync(const std::vector<UC::ASU::KVBuffer>& entries,
-                                      UC::ASU::TaskId& taskId) = 0;
-    virtual UC::ASU::Status StoreAsync(const std::vector<UC::ASU::KVBuffer>& entries,
-                                       UC::ASU::TaskId& taskId) = 0;
-    virtual UC::ASU::Status DeleteAsync(const std::vector<UC::ASU::CacheKey>& keys,
-                                        UC::ASU::TaskId& taskId) = 0;
-    virtual bool Check(UC::ASU::TaskId taskId) = 0;
-    virtual UC::ASU::Status Wait(UC::ASU::TaskId taskId, std::uint64_t timeoutMs,
-                                 UC::ASU::TaskResult& result) = 0;
-    virtual UC::ASU::Status RegisterRegions(
-        const std::vector<UC::ASU::MemoryRegion>& regions,
-        std::vector<UC::ASU::RegisteredMemory>& registeredRegions) = 0;
 };
 
 }  // namespace UC::AsuStore
