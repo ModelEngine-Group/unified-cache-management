@@ -39,6 +39,7 @@
 #include "src/ub/log.h"
 #include "src/ub/oob/codec/cm_codec.h"
 #include "src/ub/oob/codec/xrt_neg_codec.h"
+#include "src/ub/oob/neg_log.h"
 
 namespace umc::comm::oob {
 
@@ -120,48 +121,6 @@ bool RaRecvAll(const void* fd, void* buf, std::size_t len, uint32_t timeoutMs)
         return false;
     }
     return recvd == len;
-}
-
-void LogCapReq(const char* tag, const xrt_rdma_neg_msg_t& msg, const xrt_neg_cap_req& cap)
-{
-    UB_LOG_DEBUG(
-        "NEG_PROTO {} head{{crc=0x{:08x} ver={} cmd={} len={}}} "
-        "cap_req{{major={} minor={} kato={} private_len={}}}",
-        tag, msg.head.crc, msg.head.ver, msg.head.cmd, msg.head.len, cap.major_version,
-        cap.minor_version, cap.kato, msg.body.conn_auth.private_len);
-}
-
-void LogCapRsp(const char* tag, const xrt_rdma_neg_msg_t& msg, const xrt_neg_cap_rsp& cap)
-{
-    UB_LOG_DEBUG(
-        "NEG_PROTO {} head{{crc=0x{:08x} ver={} cmd={} len={}}} "
-        "cap_rsp{{major={} minor={} controller_id={} queue_num={} ioq_depth={} "
-        "sr_mdts={}KB key_length={} controller_cap=0x{:x} private_len={}}}",
-        tag, msg.head.crc, msg.head.ver, msg.head.cmd, msg.head.len, cap.major_version,
-        cap.minor_version, cap.controller_id, cap.queue_num, cap.ioq_depth, cap.sr_mdts,
-        cap.key_length, cap.controller_cap, msg.body.conn_auth.private_len);
-}
-
-void LogUbInfo(const char* tag, const xrt_rdma_neg_msg_t& msg, const kv_cm_conn_ub_info& info)
-{
-    UB_LOG_DEBUG(
-        "NEG_PROTO {} head{{crc=0x{:08x} ver={} cmd={} len={}}} "
-        "ub_info{{eid0=0x{:02x} eid15=0x{:02x} qp_key_size={} mem_key_size={} "
-        "token_id={} token_value={} remote_addr=0x{:x} remote_size={} "
-        "net_addr_kind={} vlan={} rm_uasid={} rm_jetty_id={} conn_mode={}}}",
-        tag, msg.head.crc, msg.head.ver, msg.head.cmd, msg.head.len,
-        static_cast<unsigned>(info.hccp_eid_raw[0]), static_cast<unsigned>(info.hccp_eid_raw[15]),
-        info.qp_key_size, info.mem_key_size, info.token_id, info.token_value,
-        static_cast<unsigned long long>(info.remote_addr),
-        static_cast<unsigned long long>(info.remote_size), info.net_addr_kind,
-        static_cast<unsigned long long>(info.uboe_vlan), info.rm_uasid, info.rm_jetty_id,
-        info.conn_mode);
-}
-
-void LogHeadOnly(const char* tag, const xrt_rdma_neg_msg_t& msg)
-{
-    UB_LOG_DEBUG("NEG_PROTO {} head{{crc=0x{:08x} ver={} cmd={} len={}}}", tag, msg.head.crc,
-                 msg.head.ver, msg.head.cmd, msg.head.len);
 }
 
 }  // namespace
@@ -441,7 +400,7 @@ UbStatus RaSocketOobTransport::NegotiateV2(void* fdHandle, RemoteEndpointSet* ou
     xrt_neg_cap_req clientNeg{};
     clientNeg.major_version = 1;
     clientNeg.minor_version = 0;
-    clientNeg.kato = static_cast<uint16_t>(cfg_.kato);
+    clientNeg.kato = cfg_.kato;
 
     kv_cm_conn_ub_info clientUbInfo{};
     cm::FillUbInfo(&clientUbInfo, cfg_.local);

@@ -589,7 +589,6 @@ UbStatus UbV2ResourceManager::AcquireLocalTpHandle(const UdmaEid& localEid, cons
     if (req != nullptr) {
         constexpr int kPollTimeoutMs = 5000;
         const auto start = std::chrono::steady_clock::now();
-        bool done = false;
         while (true) {
             int result = 0;
             int qrc = v2::DlHccpV2Api::RaGetAsyncReqResult(req, &result);
@@ -617,7 +616,6 @@ UbStatus UbV2ResourceManager::AcquireLocalTpHandle(const UdmaEid& localEid, cons
                     return UbStatus(UbErrorCode::HccpV2UboeNotAvailable,
                                     "RaGetTpInfoListAsync async result error");
                 }
-                done = true;
                 break;
             }
             if (qrc != v2::HCCP_OTHERS_EAGAIN) {
@@ -639,7 +637,6 @@ UbStatus UbV2ResourceManager::AcquireLocalTpHandle(const UdmaEid& localEid, cons
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
-        (void)done;
     }
 
     if (num == 0) {

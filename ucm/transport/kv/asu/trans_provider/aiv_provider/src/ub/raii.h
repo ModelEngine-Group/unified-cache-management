@@ -62,7 +62,7 @@ public:
     HccpV2Handle(HccpV2Handle&& o) noexcept { Steal(std::move(o)); }
     HccpV2Handle& operator=(HccpV2Handle&& o) noexcept = delete;
 
-    ~HccpV2Handle() { (void)Dispose(); }
+    ~HccpV2Handle() { (void)Reset(); }
 
     void* Raw() const { return handle_; }
     HandleKind Kind() const { return kind_; }
@@ -86,7 +86,6 @@ public:
     }
 
 private:
-    UbErrorCode Dispose();
     void Steal(HccpV2Handle&& o)
     {
         kind_ = o.kind_;

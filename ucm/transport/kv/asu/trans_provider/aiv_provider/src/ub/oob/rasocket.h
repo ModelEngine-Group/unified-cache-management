@@ -43,7 +43,7 @@ public:
         uint32_t connectTimeoutMs{5000};
         uint32_t ioTimeoutMs{5000};
         TcpClientLocalEndpoint local;
-        uint32_t kato{5000};
+        uint16_t kato{5000};
         uint16_t cmdDepth{1024};
     };
 

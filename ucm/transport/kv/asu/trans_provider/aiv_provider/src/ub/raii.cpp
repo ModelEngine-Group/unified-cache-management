@@ -62,7 +62,7 @@ UbErrorCode DefaultHccpV2Disposer(HandleKind kind, void* handle, const HandleAss
         }
         case HandleKind::kInvalid:
         default:
-            UB_LOG_WARN("HccpV2Handle::Dispose called with invalid kind={}",
+            UB_LOG_WARN("HccpV2Handle::Reset called with invalid kind={}",
                         static_cast<int>(kind));
             return UbErrorCode::HccpV2HandleInvalid;
     }
@@ -84,17 +84,6 @@ HandleDisposer& DisposerRef()
 }
 
 }  // namespace
-
-UbErrorCode HccpV2Handle::Dispose()
-{
-    if (handle_ == nullptr) { return UbErrorCode::Ok; }
-    const UbErrorCode result = DisposerRef()(kind_, handle_, assoc_);
-    if (result == UbErrorCode::Ok) {
-        handle_ = nullptr;
-        kind_ = HandleKind::kInvalid;
-    }
-    return result;
-}
 
 UbErrorCode HccpV2Handle::Reset()
 {
