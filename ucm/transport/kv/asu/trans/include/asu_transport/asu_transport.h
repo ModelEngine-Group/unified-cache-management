@@ -33,6 +33,8 @@
 
 namespace UC::ASU {
 
+struct TransportTask;
+
 struct AsuEndpoint {
     std::string ip;
     std::uint16_t port{0};
@@ -89,6 +91,15 @@ struct TransportConfig {
     std::unordered_map<std::string, std::string> attrs;
 };
 
+template <typename T>
+struct BatchView {
+    const T* data{nullptr};
+    std::size_t size{0};
+
+    const T& operator[](std::size_t i) const noexcept { return data[i]; }
+    bool empty() const noexcept { return size == 0; }
+};
+
 class AsuTransport {
 public:
     virtual ~AsuTransport() = default;
@@ -98,19 +109,10 @@ public:
     virtual Status Shutdown() = 0;
     virtual Status CheckHealth() = 0;
 
-    virtual Status QueryAsync(const std::vector<CacheKey>& keys, const QueryOptions& options,
-                              TaskId& taskId) = 0;
-
-    virtual Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
-                             TaskCompletionCallback onComplete) = 0;
-    virtual Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
-                              TaskCompletionCallback onComplete) = 0;
-    virtual Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
-                               TaskCompletionCallback onComplete) = 0;
+    virtual Status Submit(const std::shared_ptr<TransportTask>& task) = 0;
 
     // Best-effort cancellation, does not interrupt underlying UB/RoCE IO
     virtual Status Cancel(TaskId taskId) = 0;
-    virtual Status Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result) = 0;
 
     virtual Status RegisterRegions(const std::vector<MemoryRegion>& regions,
                                    std::vector<RegisteredMemory>& registeredRegions) = 0;

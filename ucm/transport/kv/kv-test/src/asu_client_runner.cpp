@@ -262,7 +262,18 @@ Status AsuClientRunner::Exist(const std::vector<UC::ASU::CacheKey>& keys, std::u
     UC::ASU::QueryOptions options;
     options.mode = UC::ASU::QueryMode::PER_KEY;
     options.timeoutMs = timeoutMs;
-    auto status = client_->Query(keys, options, result.queryResult);
+    UC::ASU::TaskId taskId = UC::ASU::kInvalidTaskId;
+    auto status = client_->QueryAsync(keys, options, taskId);
+    if (status.ok()) {
+        UC::ASU::TaskResult taskResult;
+        status = client_->Wait(taskId, timeoutMs, taskResult);
+        if (taskResult.queryResult.has_value()) {
+            result.queryResult = std::move(*taskResult.queryResult);
+        } else if (status.ok()) {
+            status = UC::ASU::Status::Error(UC::ASU::StatusCode::INTERNAL_ERROR,
+                                            "client query result is missing");
+        }
+    }
     if (!status.ok()) {
         result.status = ToKvTestStatus(status, "exist");
         return result.status;

@@ -38,27 +38,14 @@
 #include "kv_protocol.h"
 #include "template/spsc_ring_queue.h"
 #include "trans_provider.h"
+#include "transport_task_executor.h"
 #include "transport_task_manager.h"
 
 namespace UC::ASU {
 
-inline KvOpcode ToKvOpcode(TransportOpType opType)
-{
-    switch (opType) {
-        case TransportOpType::LOAD: return KvOpcode::Retrieve;
-        case TransportOpType::STORE: return KvOpcode::Store;
-        case TransportOpType::BATCH_LOAD: return KvOpcode::BatchRetrieve;
-        case TransportOpType::BATCH_STORE: return KvOpcode::BatchStore;
-        case TransportOpType::DELETE: return KvOpcode::Delete;
-        case TransportOpType::QUERY: return KvOpcode::Exist;
-        case TransportOpType::KEEP_ALIVE: return KvOpcode::KeepAlive;
-    }
-    return KvOpcode::KeepAlive;
-}
-
 class AsuTransportImpl final : public AsuTransport {
 public:
-    AsuTransportImpl() = default;
+    AsuTransportImpl();
     ~AsuTransportImpl() override;
 
     Status Init(const TransportConfig& config) override;
@@ -67,17 +54,9 @@ public:
 
     Status CheckHealth() override;
 
-    Status QueryAsync(const std::vector<CacheKey>& keys, const QueryOptions& options,
-                      TaskId& taskId) override;
-    Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
-                     TaskCompletionCallback onComplete) override;
-    Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
-                      TaskCompletionCallback onComplete) override;
-    Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
-                       TaskCompletionCallback onComplete) override;
+    Status Submit(const TransportTaskPtr& task) override;
 
     Status Cancel(TaskId taskId) override;
-    Status Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result) override;
 
     Status RegisterRegions(const std::vector<MemoryRegion>& regions,
                            std::vector<RegisteredMemory>& registeredRegions) override;
@@ -87,33 +66,9 @@ public:
     Status UnregisterRegions(const std::vector<MRHandle>& handles) override;
 
 private:
-    std::uint16_t AllocateRequestCid();
-    Status SubmitAsync(std::unique_ptr<TransportTaskContext> ctx, TaskId& taskId);
+    Status SubmitTask(const TransportTaskPtr& task);
     void WorkerLoop();
     void CompletionLoop();
-    void ProcessTask(const TransportTaskContextPtr& ctx);
-    Status AssignSubBatchConnections(std::vector<TransportSubBatchContext>& subBatchContexts);
-    Status SubmitTaskRequests(const TransportTaskContext& ctx,
-                              std::vector<TransportSubBatchContext>& subBatchContexts);
-    Status BuildSubBatchSendBuffers(std::vector<TransportSubBatchContext>& subBatchContexts,
-                                    std::vector<TransProvider::SendIoBatch>& ioBatches,
-                                    std::vector<std::size_t>& subBatchIndexes);
-    Status SendSubBatchBuffers(std::vector<TransportSubBatchContext>& subBatchContexts,
-                               const std::vector<TransProvider::SendIoBatch>& ioBatches,
-                               const std::vector<std::size_t>& subBatchIndexes);
-    Status SubmitEntrySubBatchRequest(TransportOpType opType,
-                                      const IoScheduler::ScheduledIoBatch& subBatch,
-                                      TransportSubBatchContext& subBatchContext);
-    Status SubmitKeySubBatchRequest(TransportOpType opType,
-                                    const IoScheduler::ScheduledKeyBatch& subBatch,
-                                    TransportSubBatchContext& subBatchContext);
-    Status SubmitKeepAliveRequest(TransportSubBatchContext& subBatchContext);
-    void ReleaseSubBatchResources(TransportSubBatchContext& subBatchContext);
-    void ReleaseAllSubBatchResources(std::vector<TransportSubBatchContext>& subBatchContexts);
-    void CompleteSubBatch(TransportTaskContext& ctx, TransportSubBatchContext& subBatchContext,
-                          const Status& status);
-
-    void PollTaskCompletions(const TransportTaskContextPtr& ctx);
 
     void SetTransProvider(std::unique_ptr<TransProvider> provider);
     Status UnregisterOwnedRegionHandles(const std::vector<MRHandle>& handles);
@@ -126,19 +81,21 @@ private:
     std::unique_ptr<ProtocolManager> protocolManager_;
 
     std::unique_ptr<ConnectionManager> connManager_;
+    std::atomic<std::uint16_t> nextRequestCid_{1};
+
+    std::mutex registeredRegionsMu_;
+    std::unordered_map<MRHandle, RegisteredMemory> registeredRegions_;
+    bool ownsRegisteredRegionHandles_{false};
+
+    std::unique_ptr<TransportTaskExecutor> taskExecutor_;
     TransportTaskManager taskManager_;
-    UC::SpscRingQueue<TransportTaskContextPtr> executeQueue_;
+    UC::SpscRingQueue<TransportTaskPtr> executeQueue_;
     std::mutex producerMu_;
 
     std::thread worker_;
     std::thread completionWorker_;
     std::atomic_bool stopWorker_{false};
     std::atomic_bool stopCompletionWorker_{false};
-    std::atomic<std::uint16_t> nextRequestCid_{1};
-
-    std::mutex registeredRegionsMu_;
-    std::unordered_map<MRHandle, RegisteredMemory> registeredRegions_;
-    bool ownsRegisteredRegionHandles_{false};
 };
 
 }  // namespace UC::ASU

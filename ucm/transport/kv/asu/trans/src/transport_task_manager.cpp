@@ -4,12 +4,14 @@
 
 namespace UC::ASU {
 
-bool TransportTaskContext::Done() const
+TransportTask::TransportTask() : subBatchContexts(std::make_shared<TransportSubBatchList>()) {}
+
+bool TransportTask::Done() const
 {
     return state.load(std::memory_order_acquire) == TransportTaskState::COMPLETED;
 }
 
-bool TransportTaskContext::NotifyCompletion(TaskResult result)
+bool TransportTask::NotifyCompletion(TaskResult result)
 {
     if (!onComplete || completionNotified.exchange(true, std::memory_order_acq_rel)) {
         return false;
@@ -18,9 +20,9 @@ bool TransportTaskContext::NotifyCompletion(TaskResult result)
     return true;
 }
 
-Status TransportTaskContext::BuildFinalStatus() const
+Status TransportTask::BuildFinalStatus() const
 {
-    for (const auto& subBatchContext : subBatchContexts) {
+    for (const auto& subBatchContext : *subBatchContexts) {
         if (!subBatchContext.status.ok()) {
             return Status::Error(StatusCode::PARTIAL_FAILED, "transport task partially failed");
         }
@@ -29,17 +31,17 @@ Status TransportTaskContext::BuildFinalStatus() const
     return Status::OK();
 }
 
-void TransportTaskContext::InitializeRemainingSubBatchCount()
+void TransportTask::InitializeRemainingSubBatchCount()
 {
     remainingSubBatchCount = 0;
-    for (const auto& subBatchContext : subBatchContexts) {
+    for (const auto& subBatchContext : *subBatchContexts) {
         if (subBatchContext.state == TransportSubBatchState::PENDING) { ++remainingSubBatchCount; }
     }
 }
 
-void TransportTaskContext::TryFinalizeFromSubBatches()
+void TransportTask::TryFinalizeFromSubBatches()
 {
-    if (subBatchContexts.empty()) {
+    if (subBatchContexts->empty()) {
         finalStatus = Status::Error(StatusCode::PARTIAL_FAILED, "transport task partially failed");
         state.store(TransportTaskState::COMPLETED, std::memory_order_release);
         return;
@@ -51,20 +53,21 @@ void TransportTaskContext::TryFinalizeFromSubBatches()
     state.store(TransportTaskState::COMPLETED, std::memory_order_release);
 }
 
-void TransportTaskManager::NotifyCompletion(const TransportTaskContextPtr& task)
+void TransportTaskManager::NotifyCompletion(const TransportTaskPtr& task)
 {
     TaskResult result;
     BuildResult(*task, result);
-    if (task->NotifyCompletion(std::move(result))) { (void)Remove(task->taskId); }
+    (void)task->NotifyCompletion(std::move(result));
+    (void)Remove(task->taskId);
 }
 
-void TransportTaskManager::BuildResult(const TransportTaskContext& task, TaskResult& result)
+void TransportTaskManager::BuildResult(const TransportTask& task, TaskResult& result)
 {
     result.status = task.finalStatus;
     result.entryStatus = task.entryStatus;
-    if (!task.subBatchContexts.empty()) {
+    if (!task.subBatchContexts->empty()) {
         std::size_t resultIndex = 0;
-        for (const auto& subBatchContext : task.subBatchContexts) {
+        for (const auto& subBatchContext : *task.subBatchContexts) {
             for (const auto& status : subBatchContext.entryStatus) {
                 if (resultIndex >= result.entryStatus.size()) { break; }
                 result.entryStatus[resultIndex++] = status;
