@@ -23,63 +23,17 @@
  * */
 #pragma once
 
-#include <atomic>
-#include <chrono>
-#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <mutex>
-#include <string>
 #include <vector>
-#include "asu_transport/types.h"
+#include "asu_transport/asu_transport.h"
 #include "buffer_manager.h"
 #include "connection_manager.h"
+#include "task_context.h"
 #include "task_manager_base.h"
 
 namespace UC::ASU {
-
-enum class TransportOpType {
-    QUERY = 0,
-    LOAD = 1,
-    STORE = 2,
-    BATCH_LOAD = 3,
-    BATCH_STORE = 4,
-    DELETE = 5,
-    KEEP_ALIVE = 6,
-};
-
-enum class TransportTaskState {
-    PENDING = 0,
-    INFLIGHT = 1,
-    COMPLETED = 2,
-};
-
-enum class TransportSubBatchState {
-    PENDING = 0,
-    COMPLETED = 1,
-};
-
-inline bool IsEntryBatchOp(TransportOpType opType)
-{
-    return opType == TransportOpType::BATCH_LOAD || opType == TransportOpType::BATCH_STORE;
-}
-
-inline bool IsKeyBatchOp(TransportOpType opType)
-{
-    return opType == TransportOpType::DELETE || opType == TransportOpType::QUERY;
-}
-
-inline bool IsKeepAliveOp(TransportOpType opType) { return opType == TransportOpType::KEEP_ALIVE; }
-
-template <typename T>
-struct BatchView {
-    const T* data{nullptr};
-    std::size_t size{0};
-
-    const T& operator[](std::size_t i) const noexcept { return data[i]; }
-    bool empty() const noexcept { return size == 0; }
-};
 
 struct TransportSubBatchContext {
     std::uint16_t cid{0};
@@ -93,43 +47,12 @@ struct TransportSubBatchContext {
     std::vector<Status> entryStatus;
 };
 
-struct TransportTaskContext {
-    TaskId taskId{kInvalidTaskId};
-    TransportOpType opType{TransportOpType::QUERY};
-    BatchView<CacheKey> keys;
-    BatchView<KVBuffer> entries;
-    QueryOptions queryOptions;
-    QueryResult queryResult;
-    std::vector<Status> entryStatus;
-    std::vector<TransportSubBatchContext> subBatchContexts;
-    std::uint32_t remainingSubBatchCount{0};
-    std::chrono::steady_clock::time_point deadline{std::chrono::steady_clock::time_point::max()};
-    TaskCompletionCallback onComplete;
-    std::atomic<bool> completionNotified{false};
-
-    std::atomic<TransportTaskState> state{TransportTaskState::PENDING};
-    Status finalStatus{Status::OK()};
-
-    std::vector<MRHandle> mrHandles;
-
-    std::mutex waitMu;
-    std::condition_variable cv;
-
-    bool Done() const;
-    bool NotifyCompletion(TaskResult result);
-    Status BuildFinalStatus() const;
-    void InitializeRemainingSubBatchCount();
-    void TryFinalizeFromSubBatches();
-};
-
-using TransportTaskContextPtr = std::shared_ptr<TransportTaskContext>;
-
-class TransportTaskManager : public TaskManagerBase<TransportTaskContext, TransportTaskState> {
+class TransportTaskManager : public TaskManagerBase<TransportTask, TransportTaskState> {
 public:
     TransportTaskManager() : TaskManagerBase(TransportTaskState::PENDING, "transport") {}
 
-    void NotifyCompletion(const TransportTaskContextPtr& task);
-    static void BuildResult(const TransportTaskContext& task, TaskResult& result);
+    void NotifyCompletion(const TransportTaskPtr& task);
+    static void BuildResult(const TransportTask& task, TaskResult& result);
 };
 
 }  // namespace UC::ASU

@@ -24,9 +24,9 @@
 #include <algorithm>
 #include <cstdint>
 #include <utility>
-#include "asu_transport_impl.h"
 #include "connection_internal.h"
 #include "logger.h"
+#include "transport_task_executor.h"
 
 namespace UC::ASU {
 
@@ -49,22 +49,24 @@ void SetSubBatchSendFailed(TransportSubBatchContext& subBatchContext, const Stat
 
 }  // namespace
 
-Status AsuTransportImpl::SubmitTaskRequests(const TransportTaskContext& ctx,
-                                            std::vector<TransportSubBatchContext>& subBatchContexts)
+Status TransportTaskExecutor::SubmitTaskRequests(
+    const TransportTask& ctx, std::vector<TransportSubBatchContext>& subBatchContexts)
 {
     Status status = Status::OK();
 
     if (IsEntryBatchOp(ctx.opType)) {
+        const auto opType = NormalizeTransportOpType(ctx.opType);
         if (ctx.entries.empty()) {
             UC_ERROR("Submit entry batch failed: entry batch is empty");
             return Status::Error(StatusCode::INVALID_ARGUMENT, "entry batch is empty");
         }
-        const auto subBatches = ioScheduler_.SplitForAsu(ctx.entries, ctx.opType);
+        const auto entries = BatchView<KVBuffer>{ctx.entries.data(), ctx.entries.size()};
+        const auto subBatches = ioScheduler_.SplitForAsu(entries, opType);
         subBatchContexts.reserve(subBatches.size());
         for (std::size_t index = 0; index < subBatches.size(); ++index) {
             const auto& subBatch = subBatches[index];
             auto& subBatchContext = subBatchContexts.emplace_back();
-            auto subBatchStatus = SubmitEntrySubBatchRequest(ctx.opType, subBatch, subBatchContext);
+            auto subBatchStatus = SubmitEntrySubBatchRequest(opType, subBatch, subBatchContext);
             subBatchContext.status = subBatchStatus;
             if (!subBatchStatus.ok()) {
                 UC_ERROR("Submit entry sub-batch failed index={} batch_size={} code={} message={}",
@@ -78,7 +80,8 @@ Status AsuTransportImpl::SubmitTaskRequests(const TransportTaskContext& ctx,
             UC_ERROR("Submit key batch failed: key batch is empty");
             return Status::Error(StatusCode::INVALID_ARGUMENT, "key batch is empty");
         }
-        const auto subBatches = ioScheduler_.SplitForAsu(ctx.keys, ctx.opType);
+        const auto keys = BatchView<CacheKey>{ctx.keys.data(), ctx.keys.size()};
+        const auto subBatches = ioScheduler_.SplitForAsu(keys, ctx.opType);
         subBatchContexts.reserve(subBatches.size());
         for (std::size_t index = 0; index < subBatches.size(); ++index) {
             const auto& subBatch = subBatches[index];
@@ -108,7 +111,7 @@ Status AsuTransportImpl::SubmitTaskRequests(const TransportTaskContext& ctx,
     return status;
 }
 
-Status AsuTransportImpl::BuildSubBatchSendBuffers(
+Status TransportTaskExecutor::BuildSubBatchSendBuffers(
     std::vector<TransportSubBatchContext>& subBatchContexts,
     std::vector<TransProvider::SendIoBatch>& ioBatches, std::vector<std::size_t>& subBatchIndexes)
 {
@@ -161,7 +164,7 @@ Status AsuTransportImpl::BuildSubBatchSendBuffers(
     return status;
 }
 
-Status AsuTransportImpl::SendSubBatchBuffers(
+Status TransportTaskExecutor::SendSubBatchBuffers(
     std::vector<TransportSubBatchContext>& subBatchContexts,
     const std::vector<TransProvider::SendIoBatch>& ioBatches,
     const std::vector<std::size_t>& subBatchIndexes)

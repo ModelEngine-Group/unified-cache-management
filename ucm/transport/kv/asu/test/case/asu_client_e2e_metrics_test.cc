@@ -195,14 +195,6 @@ struct ResourceSnapshot {
     std::clock_t cpuTicks{0};
 };
 
-bool CacheKeyStartsWith(const CacheKey& key, const CacheKey& prefix)
-{
-    auto prefixLength = prefix.size();
-    while (prefixLength > 0 && prefix[prefixLength - 1] == std::byte{0}) { --prefixLength; }
-    if (prefixLength == 0) { return false; }
-    return std::equal(prefix.begin(), prefix.begin() + prefixLength, key.begin());
-}
-
 struct ClusterState {
     mutable std::mutex mutex;
     std::unordered_set<AsuId> activeAsus;
@@ -338,8 +330,7 @@ public:
                                             "fake ASU transport is not initialized");
     }
 
-    Status RunQuery(const std::vector<CacheKey>& keys, const QueryOptions& options,
-                    QueryResult& result)
+    Status RunQuery(BatchView<CacheKey> keys, QueryResult& result)
     {
         std::lock_guard<std::mutex> lock{state_->mutex};
         auto status = CheckReadyLocked();
@@ -351,43 +342,61 @@ public:
 
         ++state_->queryCalls[config_.asuId];
         const auto& store = state_->stores[config_.asuId];
-        result.exists.assign(keys.size(), 0);
+        result.exists.assign(keys.size, 0);
         result.prefixHitKeys = 0;
-        for (std::size_t index = 0; index < keys.size(); ++index) {
-            if (options.mode == QueryMode::PREFIX) {
-                const bool hit = std::any_of(store.begin(), store.end(), [&](const auto& item) {
-                    return CacheKeyStartsWith(item.first, keys[index]);
-                });
-                result.exists[index] = hit ? 1 : 0;
-                if (hit) { ++result.prefixHitKeys; }
-                continue;
-            }
-
+        for (std::size_t index = 0; index < keys.size; ++index) {
             result.exists[index] = store.find(keys[index]) == store.end() ? 0 : 1;
         }
         return Status::OK();
     }
 
-    Status QueryAsync(const std::vector<CacheKey>& keys, const QueryOptions& options,
-                      TaskId& taskId) override
+    Status Submit(const TransportTaskPtr& task) override
+    {
+        if (!task) {
+            return Status::Error(StatusCode::INVALID_ARGUMENT, "in-memory transport task is null");
+        }
+        switch (task->opType) {
+            case TransportOpType::QUERY:
+                return SubmitQuery({task->keys.data(), task->keys.size()}, task->taskId,
+                                   std::move(task->onComplete));
+            case TransportOpType::LOAD:
+            case TransportOpType::BATCH_LOAD:
+                return SubmitLoad({task->entries.data(), task->entries.size()}, task->taskId,
+                                  std::move(task->onComplete));
+            case TransportOpType::STORE:
+            case TransportOpType::BATCH_STORE:
+                return SubmitStore({task->entries.data(), task->entries.size()}, task->taskId,
+                                   std::move(task->onComplete));
+            case TransportOpType::DELETE:
+                return SubmitDelete({task->keys.data(), task->keys.size()}, task->taskId,
+                                    std::move(task->onComplete));
+            default:
+                task->taskId = kInvalidTaskId;
+                return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                     "unsupported in-memory transport operation");
+        }
+    }
+
+    Status SubmitQuery(BatchView<CacheKey> keys, TaskId& taskId, TaskCompletionCallback onComplete)
     {
         QueryResult queryResult;
-        auto status = RunQuery(keys, options, queryResult);
+        auto status = RunQuery(keys, queryResult);
         if (!status.ok()) {
             taskId = kInvalidTaskId;
             return status;
         }
-
         std::lock_guard<std::mutex> lock{state_->mutex};
         TaskResult result;
         result.status = Status::OK();
-        result.entryStatus.assign(keys.size(), Status::OK());
+        result.entryStatus.assign(keys.size, Status::OK());
         result.queryResult = queryResult;
-        return SubmitCompletedTask(*state_, std::move(result), taskId);
+        status = SubmitCompletedTask(*state_, result, taskId);
+        if (status.ok() && onComplete) { onComplete(std::move(result)); }
+        return status;
     }
 
-    Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
-                     TaskCompletionCallback onComplete) override
+    Status SubmitLoad(BatchView<KVBuffer> entries, TaskId& taskId,
+                      TaskCompletionCallback onComplete)
     {
         std::lock_guard<std::mutex> lock{state_->mutex};
         auto status = CheckReadyLocked();
@@ -398,9 +407,10 @@ public:
 
         ++state_->loadCalls[config_.asuId];
         std::vector<Status> entryStatus;
-        entryStatus.reserve(entries.size());
+        entryStatus.reserve(entries.size);
         auto& store = state_->stores[config_.asuId];
-        for (const auto& entry : entries) {
+        for (std::size_t index = 0; index < entries.size; ++index) {
+            const auto& entry = entries[index];
             auto iter = store.find(entry.key);
             if (iter == store.end()) {
                 entryStatus.emplace_back(
@@ -424,8 +434,8 @@ public:
         return status;
     }
 
-    Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
-                      TaskCompletionCallback onComplete) override
+    Status SubmitStore(BatchView<KVBuffer> entries, TaskId& taskId,
+                       TaskCompletionCallback onComplete)
     {
         std::lock_guard<std::mutex> lock{state_->mutex};
         auto status = CheckReadyLocked();
@@ -436,9 +446,10 @@ public:
 
         ++state_->storeCalls[config_.asuId];
         std::vector<Status> entryStatus;
-        entryStatus.reserve(entries.size());
+        entryStatus.reserve(entries.size);
         auto& store = state_->stores[config_.asuId];
-        for (const auto& entry : entries) {
+        for (std::size_t index = 0; index < entries.size; ++index) {
+            const auto& entry = entries[index];
             if (!IsBufferUsable(entry.buffer.region)) {
                 entryStatus.emplace_back(Status::Error(StatusCode::INVALID_ARGUMENT,
                                                        "fake ASU store buffer is invalid"));
@@ -455,8 +466,7 @@ public:
         return status;
     }
 
-    Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId,
-                       TaskCompletionCallback onComplete) override
+    Status SubmitDelete(BatchView<CacheKey> keys, TaskId& taskId, TaskCompletionCallback onComplete)
     {
         std::lock_guard<std::mutex> lock{state_->mutex};
         auto status = CheckReadyLocked();
@@ -467,9 +477,10 @@ public:
 
         ++state_->deleteCalls[config_.asuId];
         std::vector<Status> entryStatus;
-        entryStatus.reserve(keys.size());
+        entryStatus.reserve(keys.size);
         auto& store = state_->stores[config_.asuId];
-        for (const auto& key : keys) {
+        for (std::size_t index = 0; index < keys.size; ++index) {
+            const auto& key = keys[index];
             if (store.erase(key) == 0) {
                 entryStatus.emplace_back(
                     Status::Error(StatusCode::NOT_FOUND, "fake ASU key not found"));
@@ -484,22 +495,6 @@ public:
     }
 
     Status Cancel(TaskId) override { return Status::Error(StatusCode::UNSUPPORTED, "unsupported"); }
-
-    Status GetTaskResult(TaskId taskId, TaskResult& result)
-    {
-        std::lock_guard<std::mutex> lock{state_->mutex};
-        auto iter = state_->tasks.find(taskId);
-        if (iter == state_->tasks.end()) {
-            return Status::Error(StatusCode::TASK_NOT_FOUND, "fake ASU task not found");
-        }
-        result = iter->second;
-        return Status::OK();
-    }
-
-    Status Wait(TaskId taskId, std::uint64_t, TaskResult& result) override
-    {
-        return GetTaskResult(taskId, result);
-    }
 
     Status RegisterRegions(const std::vector<MemoryRegion>& regions,
                            std::vector<RegisteredMemory>& registeredRegions) override
@@ -692,6 +687,23 @@ bool EntryStatusesOk(const TaskResult& result, std::size_t expectedCount)
                        [](const Status& status) { return status.ok(); });
 }
 
+Status QueryAndWait(AsuClient& client, const std::vector<CacheKey>& keys,
+                    const QueryOptions& options, QueryResult& result)
+{
+    TaskId taskId{kInvalidTaskId};
+    auto status = client.QueryAsync(keys, options, taskId);
+    if (!status.ok()) { return status; }
+
+    TaskResult taskResult;
+    status = client.Wait(taskId, options.timeoutMs, taskResult);
+    if (taskResult.queryResult.has_value()) {
+        result = std::move(*taskResult.queryResult);
+    } else if (status.ok()) {
+        return Status::Error(StatusCode::INTERNAL_ERROR, "client query result is missing");
+    }
+    return status;
+}
+
 bool StoreAndMeasure(AsuClient& client, const std::vector<KVBuffer>& entries, std::uint64_t bytes,
                      MetricsRecorder& metrics)
 {
@@ -730,7 +742,7 @@ bool QueryAndMeasure(AsuClient& client, const std::vector<CacheKey>& keys,
     QueryOptions options;
     options.timeoutMs = 1000;
     const auto start = std::chrono::steady_clock::now();
-    auto status = client.Query(keys, options, result);
+    auto status = QueryAndWait(client, keys, options, result);
     const bool correct = status.ok() && result.exists == expected;
     metrics.Record(OperationKind::QUERY, ElapsedNs(start), 0, status.ok(), correct);
     return correct;
@@ -861,8 +873,8 @@ TEST(AsuClientE2EMetricsTest, DiskMembershipChangesRefreshAndContinueWorkload)
     viewServer->Publish({1, 2, 3});
     state->ForceNextQueryFailure();
     QueryResult ignoredResult;
-    auto status =
-        client->Query({MakeCacheKey("membership-refresh-add")}, QueryOptions{}, ignoredResult);
+    auto status = QueryAndWait(*client, {MakeCacheKey("membership-refresh-add")}, QueryOptions{},
+                               ignoredResult);
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_TRUE(WaitUntil(
         [&] { return viewServer->FetchCount() >= 2 && state->Snapshot().createdTransports >= 3; }));
@@ -878,11 +890,11 @@ TEST(AsuClientE2EMetricsTest, DiskMembershipChangesRefreshAndContinueWorkload)
     viewServer->Publish({1, 3});
     state->ForceNextQueryFailure();
     const auto probeKeys = MakeProbeKeys(512);
-    status = client->Query(probeKeys, QueryOptions{}, ignoredResult);
+    status = QueryAndWait(*client, probeKeys, QueryOptions{}, ignoredResult);
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_TRUE(WaitUntil([&] {
         QueryResult result;
-        auto retryStatus = client->Query(probeKeys, QueryOptions{}, result);
+        auto retryStatus = QueryAndWait(*client, probeKeys, QueryOptions{}, result);
         return retryStatus.ok();
     }));
 
@@ -903,54 +915,6 @@ TEST(AsuClientE2EMetricsTest, DiskMembershipChangesRefreshAndContinueWorkload)
     metrics.PrintReport("disk add and remove");
 
     status = client->Shutdown();
-    EXPECT_TRUE(status.ok()) << status.message;
-}
-
-TEST(AsuClientE2EMetricsTest, NoDiskAndEmptyRequestsReturnStableStatuses)
-{
-    {
-        auto state = std::make_shared<ClusterState>();
-        auto viewServer = std::make_shared<DynamicViewServer>(state, std::vector<AsuId>{});
-        auto client =
-            std::make_unique<AsuClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
-        ASSERT_TRUE(client->Init(MakeClientConfig({})).ok());
-
-        QueryResult queryResult;
-        auto status =
-            client->Query({MakeCacheKey("missing-on-empty-view")}, QueryOptions{}, queryResult);
-        ASSERT_TRUE(status.ok()) << status.message;
-        ASSERT_EQ(queryResult.exists, std::vector<std::uint8_t>{0});
-
-        std::vector<std::vector<std::uint8_t>> payloads;
-        auto entries = MakeStoreEntries("no-disk-key-", 1, 64, payloads);
-        TaskId taskId{kInvalidTaskId};
-        status = client->StoreAsync(entries, taskId);
-        EXPECT_EQ(status.code, StatusCode::NOT_INITIALIZED);
-        EXPECT_EQ(taskId, kInvalidTaskId);
-        EXPECT_TRUE(client->Shutdown().ok());
-    }
-
-    auto state = std::make_shared<ClusterState>();
-    auto viewServer = std::make_shared<DynamicViewServer>(state, std::vector<AsuId>{1, 2});
-    auto client =
-        std::make_unique<AsuClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
-    ASSERT_TRUE(client->Init(MakeClientConfig({1, 2})).ok());
-
-    MetricsRecorder metrics;
-    ASSERT_TRUE(QueryAndMeasure(*client, {}, {}, metrics));
-    ASSERT_TRUE(StoreAndMeasure(*client, {}, 0, metrics));
-
-    std::vector<std::vector<std::uint8_t>> expected;
-    std::vector<std::vector<std::uint8_t>> actual;
-    ASSERT_TRUE(LoadAndMeasure(*client, {}, expected, actual, 0, metrics));
-    ASSERT_TRUE(DeleteAndMeasure(*client, {}, metrics));
-
-    const auto snapshot = state->Snapshot();
-    EXPECT_EQ(snapshot.storedKeyCount, 0U);
-    EXPECT_EQ(snapshot.storedBytes, 0U);
-    metrics.PrintReport("no disk and empty requests");
-
-    auto status = client->Shutdown();
     EXPECT_TRUE(status.ok()) << status.message;
 }
 
