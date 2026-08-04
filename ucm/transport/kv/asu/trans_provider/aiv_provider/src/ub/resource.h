@@ -62,6 +62,8 @@ struct LocalJettyHandle {
     uint32_t tokenValue{0};
 
     uint32_t uasid{0};
+    uint32_t txPsn{0};
+    uint64_t tag{0};
 
     void* segBaseVa{nullptr};
     uint64_t segSize{0};

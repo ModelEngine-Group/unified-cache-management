@@ -834,6 +834,8 @@ UbStatus UbV2ResourceManager::CreateLocalJetty(uint32_t jettyId, const LocalSegS
 
     out->uasid = qpOut.ub.uasid;
     if (isRm) { out->jettyId = qpOut.ub.id; }
+    out->txPsn = static_cast<uint32_t>(::random());
+    out->tag = 0;
 
     UB_LOG_DEBUG(
         "CreateLocalJetty ok: connMode={} jettyId={}(uasid={} id={}) "
@@ -1037,9 +1039,9 @@ UbStatus UbV2ResourceManager::ImportRemoteJetty(const LocalJettyHandle& local,
     }
     out->tpLease = std::move(tpLease);
 
-    const uint32_t localTxPsn = static_cast<uint32_t>(::random());
-    const uint32_t rxPsn = 0;
-    const uint64_t tag = 0;
+    const uint32_t localTxPsn = local.txPsn;
+    const uint32_t rxPsn = remote.peerTxPsn;
+    const uint64_t tag = remote.tag;
 
     v2::QpImportInfoT qpImp{};
     if (isRm) {
