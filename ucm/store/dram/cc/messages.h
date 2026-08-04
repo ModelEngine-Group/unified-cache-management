@@ -33,16 +33,6 @@
 
 namespace UC::Dram {
 
-struct SubmitRequest {
-    Request request;
-};
-
-struct CancelTaskRequests {
-    TaskId taskId{};
-};
-
-using NodeCommand = std::variant<SubmitRequest, CancelTaskRequests>;
-
 struct RequestCompleted {
     TaskId taskId{};
     RequestId requestId{0};
@@ -102,19 +92,24 @@ using NodeEvent = std::variant<TransmitCompleted, ConnectCompleted, FenceComplet
 // remote-memory safety impossible to prove.
 [[noreturn]] void AbortDramStore(const Status& status) noexcept;
 
-// Commands are consumed only when the submitter returns Status::OK().
-using NodeCommandSubmitter = std::function<Status(NodeId, NodeCommand&)>;
+// Requests and commands are consumed only when the submitter returns Status::OK().
+using RequestSubmitter = std::function<Status(Request&)>;
 using TransportCommandSubmitter = std::function<Status(TransportCommand&)>;
 
-// Completions and events are reliable facts. Returning means the receiver has
-// accepted ownership; inability to deliver is a fatal runtime invariant failure.
-using TaskCompletionPublisher = std::function<void(RequestCompleted)>;
+// Completions and events are reliable runtime facts. terminal shutdown may discard them.
+using TaskCompletionPublisher = std::function<void(std::vector<RequestCompleted>&)>;
 using NodeEventPublisher = std::function<void(NodeId, NodeEvent)>;
 
 using ReplySlotAcquirer =
     std::function<Expected<ReplySlot>(const RequestToken&, OpType, std::size_t)>;
 using ReplySlotReleaser = std::function<Status(const RequestToken&, const ReplySlot&)>;
-using AvailabilityNotifier = std::function<void()>;
+
+struct NodeDependencies {
+    TaskCompletionPublisher publishCompletion;
+    TransportCommandSubmitter submitTransport;
+    ReplySlotAcquirer acquireReplySlot;
+    ReplySlotReleaser releaseReplySlot;
+};
 
 }  // namespace UC::Dram
 
