@@ -122,7 +122,6 @@ private:
 
     std::unique_ptr<OffsetAllocator::Allocator> allocator_;
     // Manages variable-size offsets after Init provides the region size.
-
 };
 
 }  // namespace UC

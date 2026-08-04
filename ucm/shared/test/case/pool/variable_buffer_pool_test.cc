@@ -120,10 +120,8 @@ TEST_F(VariableBufferPoolTest, AllocatesDifferentAlignedSizes)
     EXPECT_EQ(second.GetOffset(), std::size_t{64});
     EXPECT_EQ(third.GetAllocatedSize(), std::size_t{128});
     EXPECT_EQ(third.GetOffset(), std::size_t{192});
-    EXPECT_EQ(first.GetLocalAddr(),
-              static_cast<char*>(pool.GetLocalAddr()) + first.GetOffset());
-    EXPECT_EQ(first.GetDeviceAddr(),
-              static_cast<char*>(pool.GetDeviceAddr()) + first.GetOffset());
+    EXPECT_EQ(first.GetLocalAddr(), static_cast<char*>(pool.GetLocalAddr()) + first.GetOffset());
+    EXPECT_EQ(first.GetDeviceAddr(), static_cast<char*>(pool.GetDeviceAddr()) + first.GetOffset());
     EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.GetLocalAddr()) -
                   reinterpret_cast<std::uintptr_t>(first.GetLocalAddr()),
               std::uintptr_t{64});

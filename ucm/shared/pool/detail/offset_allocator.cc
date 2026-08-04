@@ -33,7 +33,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
-#include "logger/logger.h"
+#include "logger.h"
 
 namespace OffsetAllocator {
 
@@ -174,9 +174,7 @@ void Allocator::Reset()
 Allocation Allocator::Allocate(uint32 size)
 {
     // Zero-sized allocations would consume metadata while repeatedly returning offset zero.
-    if (size == 0 || size > m_size) {
-        return {NO_SPACE, NO_SPACE_NODE_INDEX};
-    }
+    if (size == 0 || size > m_size) { return {NO_SPACE, NO_SPACE_NODE_INDEX}; }
 
     std::lock_guard<std::mutex> lock(m_mutex);
 
@@ -207,9 +205,7 @@ Allocation Allocator::Allocate(uint32 size)
         }
         if (leafBinIndex == NO_SPACE) {
             topBinIndex = findLowestSetBitAfter(m_usedBinsTop, minTopBinIndex + 1);
-            if (topBinIndex != NO_SPACE) {
-                leafBinIndex = tzcnt_nonzero(m_usedBins[topBinIndex]);
-            }
+            if (topBinIndex != NO_SPACE) { leafBinIndex = tzcnt_nonzero(m_usedBins[topBinIndex]); }
         }
         if (topBinIndex != NO_SPACE && leafBinIndex != NO_SPACE) {
             binIndex = (topBinIndex << TOP_BINS_INDEX_SHIFT) | leafBinIndex;
@@ -242,9 +238,7 @@ Allocation Allocator::Allocate(uint32 size)
 
     const uint32 remainderSize = nodeTotalSize - size;
     // Only splitting a free region consumes a spare metadata node.
-    if (remainderSize > 0 && m_freeOffset == 0) {
-        return {NO_SPACE, NO_SPACE_NODE_INDEX};
-    }
+    if (remainderSize > 0 && m_freeOffset == 0) { return {NO_SPACE, NO_SPACE_NODE_INDEX}; }
 
     node.dataSize = size;
     node.used = true;
@@ -359,8 +353,7 @@ NodeIndex Allocator::InsertNodeIntoBin(uint32 size, uint32 dataOffset)
 
     const NodeIndex topNodeIndex = m_binIndices[binIndex];
     const NodeIndex nodeIndex = m_freeNodes[m_freeOffset--];
-    UC_DEBUG("Getting node {} from freelist[{}]", static_cast<uint32>(nodeIndex),
-             m_freeOffset + 1);
+    UC_DEBUG("Getting node {} from freelist[{}]", static_cast<uint32>(nodeIndex), m_freeOffset + 1);
     Node newNode;
     newNode.dataOffset = dataOffset;
     newNode.dataSize = size;

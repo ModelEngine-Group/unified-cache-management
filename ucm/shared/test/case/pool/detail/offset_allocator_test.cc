@@ -459,8 +459,8 @@ TEST(OffsetAllocatorTest, ConcurrentAllocateAndFree)
         for (int operation = 0; operation < operationsPerThread; ++operation) {
             const uint32 size = static_cast<uint32>(operation % 4 + 1);
             const auto allocation = allocator.Allocate(size);
-            if (allocation.offset == NO_SPACE ||
-                allocator.GetAllocationSize(allocation) != size || !allocator.Free(allocation)) {
+            if (allocation.offset == NO_SPACE || allocator.GetAllocationSize(allocation) != size ||
+                !allocator.Free(allocation)) {
                 failed = true;
                 return;
             }
