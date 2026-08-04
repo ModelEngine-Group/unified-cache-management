@@ -22,8 +22,11 @@
  * SOFTWARE.
  * */
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -187,49 +190,86 @@ Status CommitEndpointEntry(EndpointEntry& entry, DramPoolConfig& config,
     return Status::OK();
 }
 
+using RuntimeConfigParser = std::function<Status(DramPoolConfig&, const std::string&)>;
+
+template <typename T>
+RuntimeConfigParser BindConfigParser(Status (*parser)(const std::string&, T&),
+                                     T DramPoolConfig::* member)
+{
+    return [parser, member](DramPoolConfig& config, const std::string& value) {
+        return parser(value, config.*member);
+    };
+}
+
+template <typename T>
+RuntimeConfigParser BindConfigParser(Status (*parser)(const std::string&, const std::string&, T&),
+                                     std::string key, T DramPoolConfig::* member)
+{
+    return
+        [parser, key = std::move(key), member](DramPoolConfig& config, const std::string& value) {
+            return parser(key, value, config.*member);
+        };
+}
+
+Status ParseStringValue(const std::string& value, std::string& output)
+{
+    output = value;
+    return Status::OK();
+}
+
+Status ParseLowerStringValue(const std::string& value, std::string& output)
+{
+    output = ToLower(value);
+    return Status::OK();
+}
+
+const std::unordered_map<std::string_view, RuntimeConfigParser>& GetRuntimeConfigParsers()
+{
+    static const std::unordered_map<std::string_view, RuntimeConfigParser> parsers = {
+        {"health.port", BindConfigParser(ParseUint16, &DramPoolConfig::healthPort)},
+        {"queue.request_depth", BindConfigParser(ParseUint32, &DramPoolConfig::requestQueueDepth)},
+        {"queue.completion_depth",
+         BindConfigParser(ParseUint32, &DramPoolConfig::completionQueueDepth)},
+        {"request_receiver.idle_wait_us",
+         BindConfigParser(ParseUint32, &DramPoolConfig::requestReceiverIdleWaitUs)},
+        {"poller.pending_depth",
+         BindConfigParser(ParseUint32, &DramPoolConfig::pollerPendingDepth)},
+        {"flag_buffer.capacity_mb",
+         BindConfigParser(ParseUint64, &DramPoolConfig::flagBufferCapacityMb)},
+        {"flag_buffer.slot_size_bytes",
+         BindConfigParser(ParseUint64, &DramPoolConfig::flagBufferSlotSizeBytes)},
+        {"gc.enabled", BindConfigParser(ParseBool, &DramPoolConfig::gcEnabled)},
+        {"gc.interval_ms", BindConfigParser(ParseUint32, &DramPoolConfig::gcIntervalMs)},
+        {"metadata.periodic_eviction_policy",
+         BindConfigParser(ParseEvictionPolicyValue, "metadata.periodic_eviction_policy",
+         &DramPoolConfig::metadataPeriodicEvictionPolicy)},
+        {"metadata.deep_eviction_policy",
+         BindConfigParser(ParseEvictionPolicyValue, "metadata.deep_eviction_policy",
+         &DramPoolConfig::metadataDeepEvictionPolicy)},
+        {"metadata.lease_time_ms",
+         BindConfigParser(ParseUint64, &DramPoolConfig::metadataLeaseTimeMs)},
+        {"metadata.default_evict_ratio",
+         BindConfigParser(ParseDouble, &DramPoolConfig::metadataDefaultEvictRatio)},
+        {"metadata.evict_period_ms",
+         BindConfigParser(ParseUint64, &DramPoolConfig::metadataEvictPeriodMs)},
+        {"operation.timeout_ms", BindConfigParser(ParseUint32, &DramPoolConfig::opTimeoutMs)},
+        {"logger.level", BindConfigParser(ParseLowerStringValue, &DramPoolConfig::logLevel)},
+        {"logger.dir", BindConfigParser(ParseStringValue, &DramPoolConfig::logDir)},
+        {"logger.max_files", BindConfigParser(ParseUint32, &DramPoolConfig::logMaxFiles)},
+        {"logger.max_size_mb", BindConfigParser(ParseUint32, &DramPoolConfig::logMaxSizeMb)}
+    };
+    return parsers;
+}
+
 Status ApplyRuntimeConfigValue(DramPoolConfig& config, const std::string& key,
                                const std::string& value)
 {
-    if (key == "health.port") { return ParseUint16(value, config.healthPort); }
-    if (key == "queue.request_depth") { return ParseUint32(value, config.requestQueueDepth); }
-    if (key == "queue.completion_depth") { return ParseUint32(value, config.completionQueueDepth); }
-    if (key == "request_receiver.idle_wait_us") {
-        return ParseUint32(value, config.requestReceiverIdleWaitUs);
+    const auto& parsers = GetRuntimeConfigParsers();
+    const auto parser = parsers.find(std::string_view{key});
+    if (parser == parsers.end()) {
+        return Status::InvalidParam("unknown DramPool runtime YAML key: {}", key);
     }
-    if (key == "poller.pending_depth") { return ParseUint32(value, config.pollerPendingDepth); }
-    if (key == "flag_buffer.capacity_mb") {
-        return ParseUint64(value, config.flagBufferCapacityMb);
-    }
-    if (key == "flag_buffer.slot_size_bytes") {
-        return ParseUint64(value, config.flagBufferSlotSizeBytes);
-    }
-    if (key == "gc.enabled") { return ParseBool(value, config.gcEnabled); }
-    if (key == "gc.interval_ms") { return ParseUint32(value, config.gcIntervalMs); }
-    if (key == "metadata.periodic_eviction_policy") {
-        return ParseEvictionPolicyValue(key, value, config.metadataPeriodicEvictionPolicy);
-    }
-    if (key == "metadata.deep_eviction_policy") {
-        return ParseEvictionPolicyValue(key, value, config.metadataDeepEvictionPolicy);
-    }
-    if (key == "metadata.lease_time_ms") { return ParseUint64(value, config.metadataLeaseTimeMs); }
-    if (key == "metadata.default_evict_ratio") {
-        return ParseDouble(value, config.metadataDefaultEvictRatio);
-    }
-    if (key == "metadata.evict_period_ms") {
-        return ParseUint64(value, config.metadataEvictPeriodMs);
-    }
-    if (key == "operation.timeout_ms") { return ParseUint32(value, config.opTimeoutMs); }
-    if (key == "logger.level") {
-        config.logLevel = ToLower(value);
-        return Status::OK();
-    }
-    if (key == "logger.dir") {
-        config.logDir = value;
-        return Status::OK();
-    }
-    if (key == "logger.max_files") { return ParseUint32(value, config.logMaxFiles); }
-    if (key == "logger.max_size_mb") { return ParseUint32(value, config.logMaxSizeMb); }
-    return Status::InvalidParam("unknown DramPool runtime YAML key: {}", key);
+    return parser->second(config, value);
 }
 
 Status ValidateRuntimeConfig(DramPoolConfig& config)
