@@ -11,7 +11,7 @@ if(BUILD_UNIT_TESTS)
         gtest_main gtest
     )
     if(RUNTIME_ENVIRONMENT STREQUAL "ascend" OR RUNTIME_ENVIRONMENT STREQUAL "simu")
-        target_link_libraries(ucmshared.test PRIVATE buffer_pool)
+        target_link_libraries(ucmshared.test PRIVATE buffer_pool offset_allocator)
     endif()
     if(RUNTIME_ENVIRONMENT STREQUAL "ascend")
         target_compile_definitions(ucmshared.test PRIVATE UCM_TEST_RUNTIME_ASCEND=1)

@@ -51,7 +51,9 @@ TEST(TransportConfigParserTest, LoadsMaxErrorCount)
     {
         std::ofstream configFile{kConfigPath};
         ASSERT_TRUE(configFile.is_open());
-        configFile << "max_error_count=7\n";
+        configFile << "max_error_count=7\n"
+                   << "kernel_count=1\n"
+                   << "quiet_count=1\n";
     }
 
     TransportConfig config;
@@ -107,6 +109,15 @@ public:
         return Status::OK();
     }
 };
+
+void CreateTaskExecutor(AsuTransportImpl& transport)
+{
+    transport.taskExecutor_ = std::make_unique<TransportTaskExecutor>(
+        transport.config_, transport.ioScheduler_, transport.transProvider_,
+        transport.sendBufferManager_, transport.flagBufferManager_, transport.protocolManager_,
+        transport.connManager_, transport.nextRequestCid_, transport.registeredRegionsMu_,
+        transport.registeredRegions_);
+}
 
 constexpr std::size_t kFlagBufferHeaderSize = 16;
 constexpr std::size_t kTestSendBufferSlotSize = 4096;
@@ -189,6 +200,7 @@ protected:
                                                      kTestSendBufferSlotNum, provider);
         ASSERT_TRUE(status.ok()) << status.message;
         transport_->protocolManager_ = std::make_unique<ProtocolManager>();
+        CreateTaskExecutor(*transport_);
     }
 
     std::unique_ptr<AsuTransportImpl> transport_;
@@ -228,8 +240,8 @@ TEST_F(SqeRequestTest, SubmitBatchStoreAllocatesFlagBufferAndBuildsRequest)
     transport_->nextRequestCid_.store(41, std::memory_order_relaxed);
     BindEntries(*transport_, entries, 0xABCD0000);
 
-    const auto status = transport_->SubmitEntrySubBatchRequest(TransportOpType::BATCH_STORE,
-                                                               subBatch, subBatchContext);
+    const auto status = transport_->taskExecutor_->SubmitEntrySubBatchRequest(
+        TransportOpType::BATCH_STORE, subBatch, subBatchContext);
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(subBatchContext.flagBuffer.length, kFlagBufferHeaderSize + (entries.size() + 1) / 2);
@@ -274,6 +286,7 @@ TEST_F(SqeRequestTest, SubmitBatchStorePacksSqeIntoDeviceSendBuffer)
                           kTestSendBufferSlotNum, provider)
                     .ok());
     deviceTransport.protocolManager_ = std::make_unique<ProtocolManager>();
+    CreateTaskExecutor(deviceTransport);
 
     auto entries = MakeEntries(3);
     BindEntries(deviceTransport, entries, 0x12340000);
@@ -282,8 +295,8 @@ TEST_F(SqeRequestTest, SubmitBatchStorePacksSqeIntoDeviceSendBuffer)
     };
     TransportSubBatchContext subBatchContext;
 
-    const auto status = deviceTransport.SubmitEntrySubBatchRequest(TransportOpType::BATCH_STORE,
-                                                                   subBatch, subBatchContext);
+    const auto status = deviceTransport.taskExecutor_->SubmitEntrySubBatchRequest(
+        TransportOpType::BATCH_STORE, subBatch, subBatchContext);
 
     ASSERT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(subBatchContext.sendSge.memory_type, MemoryType::ASCEND_DEVICE);
@@ -309,8 +322,8 @@ TEST_F(SqeRequestTest, SubmitBatchRetrieveUsesRetrieveOpcodeAndRequest)
     transport_->nextRequestCid_.store(9, std::memory_order_relaxed);
     BindEntries(*transport_, entries, 0x76540000);
 
-    const auto status = transport_->SubmitEntrySubBatchRequest(TransportOpType::BATCH_LOAD,
-                                                               subBatch, subBatchContext);
+    const auto status = transport_->taskExecutor_->SubmitEntrySubBatchRequest(
+        TransportOpType::BATCH_LOAD, subBatch, subBatchContext);
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(subBatchContext.opType, TransportOpType::BATCH_LOAD);
@@ -333,8 +346,8 @@ TEST_F(SqeRequestTest, SubmitBatchStoreUsesDefaultMrKeyForUnregisteredEntryBuffe
     };
     TransportSubBatchContext subBatchContext;
 
-    const auto status = transport_->SubmitEntrySubBatchRequest(TransportOpType::BATCH_STORE,
-                                                               subBatch, subBatchContext);
+    const auto status = transport_->taskExecutor_->SubmitEntrySubBatchRequest(
+        TransportOpType::BATCH_STORE, subBatch, subBatchContext);
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::PENDING);
@@ -354,8 +367,8 @@ TEST_F(SqeRequestTest, SubmitDeleteCopiesKeysAndBuildsFlagBackedRequest)
     TransportSubBatchContext subBatchContext;
     transport_->nextRequestCid_.store(55, std::memory_order_relaxed);
 
-    const auto status =
-        transport_->SubmitKeySubBatchRequest(TransportOpType::DELETE, subBatch, subBatchContext);
+    const auto status = transport_->taskExecutor_->SubmitKeySubBatchRequest(
+        TransportOpType::DELETE, subBatch, subBatchContext);
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(subBatchContext.opType, TransportOpType::DELETE);
@@ -379,8 +392,8 @@ TEST_F(SqeRequestTest, SubmitExistReadsScAttribute)
     TransportSubBatchContext subBatchContext;
     transport_->nextRequestCid_.store(13, std::memory_order_relaxed);
 
-    const auto status =
-        transport_->SubmitKeySubBatchRequest(TransportOpType::QUERY, subBatch, subBatchContext);
+    const auto status = transport_->taskExecutor_->SubmitKeySubBatchRequest(
+        TransportOpType::QUERY, subBatch, subBatchContext);
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(subBatchContext.opType, TransportOpType::QUERY);
@@ -404,8 +417,8 @@ TEST_F(SqeRequestTest, SubmitExistDisablesSeekControlWhenScDisabled)
     };
     TransportSubBatchContext subBatchContext;
 
-    const auto status =
-        transport_->SubmitKeySubBatchRequest(TransportOpType::QUERY, subBatch, subBatchContext);
+    const auto status = transport_->taskExecutor_->SubmitKeySubBatchRequest(
+        TransportOpType::QUERY, subBatch, subBatchContext);
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_FALSE(subBatchContext.useSeekControl);
@@ -427,9 +440,10 @@ TEST_F(SqeRequestTest, AllocationFailureMarksWholeSubBatchFailed)
                           kTestSendBufferSlotNum)
                     .ok());
     uninitializedFlagTransport.protocolManager_ = std::make_unique<ProtocolManager>();
+    CreateTaskExecutor(uninitializedFlagTransport);
     BindEntries(uninitializedFlagTransport, entries, 0x45670000);
 
-    const auto status = uninitializedFlagTransport.SubmitEntrySubBatchRequest(
+    const auto status = uninitializedFlagTransport.taskExecutor_->SubmitEntrySubBatchRequest(
         TransportOpType::BATCH_STORE, subBatch, subBatchContext);
 
     EXPECT_EQ(status.code, StatusCode::NOT_INITIALIZED);
@@ -448,7 +462,7 @@ TEST_F(SqeRequestTest, SubmitKeepAliveBuildsFlagBackedRequest)
     TransportSubBatchContext subBatchContext;
     transport_->nextRequestCid_.store(77, std::memory_order_relaxed);
 
-    const auto status = transport_->SubmitKeepAliveRequest(subBatchContext);
+    const auto status = transport_->taskExecutor_->SubmitKeepAliveRequest(subBatchContext);
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(subBatchContext.cid, std::uint16_t{77});

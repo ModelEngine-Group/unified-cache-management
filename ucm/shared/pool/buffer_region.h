@@ -24,35 +24,26 @@
 #pragma once
 
 #include <cstddef>
-#include <cstdint>
 #include <memory>
-#include <vector>
-#include "asu_transport/asu_transport.h"
-#include "buffer_manager.h"
-#include "connection_manager.h"
-#include "task_context.h"
-#include "task_manager_base.h"
+#include "status/status.h"
 
-namespace UC::ASU {
+namespace UC {
 
-struct TransportSubBatchContext {
-    std::uint16_t cid{0};
-    TransportOpType opType{TransportOpType::QUERY};
-    TransportSubBatchState state{TransportSubBatchState::PENDING};
-    Status status{Status::OK()};
-    std::shared_ptr<ConnectionChannel> channel;
-    bool useSeekControl{false};
-    ScatterGatherEntry sendSge;
-    ScatterGatherEntry flagBuffer;
-    std::vector<Status> entryStatus;
+enum class BufferMemoryType {
+    HOST = 0,
+    HOST_PINNED = 1,
+    ASCEND_DEVICE = 2,
 };
 
-class TransportTaskManager : public TaskManagerBase<TransportTask, TransportTaskState> {
-public:
-    TransportTaskManager() : TaskManagerBase(TransportTaskState::PENDING, "transport") {}
+struct BufferRegion {
+    static Status Create(BufferMemoryType type, std::size_t size, BufferRegion& region);
 
-    void NotifyCompletion(const TransportTaskPtr& task);
-    static void BuildResult(const TransportTask& task, TaskResult& result);
+    explicit operator bool() const { return owner != nullptr; }
+    void Reset();
+
+    std::shared_ptr<void> owner;
+    void* local_addr{nullptr};
+    void* device_addr{nullptr};
 };
 
-}  // namespace UC::ASU
+}  // namespace UC

@@ -334,6 +334,16 @@ TEST(UCAsuStoreTest, ParsesOperationTimeout)
     EXPECT_EQ(transportConfig.timeoutMs, 321);
 }
 
+TEST(UCAsuStoreTest, RejectsZeroOperationTimeout)
+{
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("asu_timeout_ms", std::uint64_t{0});
+
+    EXPECT_TRUE(store.Setup(config).Failure());
+}
+
 TEST(UCAsuStoreTest, PropagatesMaxErrorCountToTransport)
 {
     UC::AsuStore::AsuStore store;

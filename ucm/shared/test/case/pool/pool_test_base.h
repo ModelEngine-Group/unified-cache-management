@@ -23,36 +23,32 @@
  * */
 #pragma once
 
-#include <cstddef>
-#include <cstdint>
-#include <memory>
-#include <vector>
-#include "asu_transport/asu_transport.h"
-#include "buffer_manager.h"
-#include "connection_manager.h"
-#include "task_context.h"
-#include "task_manager_base.h"
+#include <gtest/gtest.h>
+#include "trans/device.h"
 
-namespace UC::ASU {
+namespace UC::Test {
 
-struct TransportSubBatchContext {
-    std::uint16_t cid{0};
-    TransportOpType opType{TransportOpType::QUERY};
-    TransportSubBatchState state{TransportSubBatchState::PENDING};
-    Status status{Status::OK()};
-    std::shared_ptr<ConnectionChannel> channel;
-    bool useSeekControl{false};
-    ScatterGatherEntry sendSge;
-    ScatterGatherEntry flagBuffer;
-    std::vector<Status> entryStatus;
+class PoolTestBase : public ::testing::Test {
+protected:
+    static void SetUpTestSuite()
+    {
+        auto status = device_.Init();
+        deviceRuntimeOwned_ = status.Success();
+        ASSERT_TRUE(deviceRuntimeOwned_ || status == Status::DuplicateKey()) << status.ToString();
+        status = device_.Setup(0);
+        ASSERT_TRUE(status.Success()) << status.ToString();
+    }
+
+    static void TearDownTestSuite()
+    {
+        if (!deviceRuntimeOwned_) { return; }
+        EXPECT_TRUE(device_.Reset(0).Success());
+        EXPECT_TRUE(device_.Finalize().Success());
+        deviceRuntimeOwned_ = false;
+    }
+
+    inline static Trans::Device device_;
+    inline static bool deviceRuntimeOwned_{false};
 };
 
-class TransportTaskManager : public TaskManagerBase<TransportTask, TransportTaskState> {
-public:
-    TransportTaskManager() : TaskManagerBase(TransportTaskState::PENDING, "transport") {}
-
-    void NotifyCompletion(const TransportTaskPtr& task);
-    static void BuildResult(const TransportTask& task, TaskResult& result);
-};
-
-}  // namespace UC::ASU
+}  // namespace UC::Test
