@@ -268,7 +268,7 @@ void Executor::LogTaskCompletion(const TaskContext& task) const
                  task.desc.brief, task.desc.size(), *task.error);
         return;
     }
-    UC_INFO_UNLIMITED("Delegator {} task({},{}) completed, shards={}.", operation, task.id,
+    UC_INFO("Delegator {} task({},{}) completed, shards={}.", operation, task.id,
                       task.desc.brief, task.desc.size());
 }
 
@@ -343,7 +343,7 @@ Expected<Detail::TaskHandle> Executor::Submit(Detail::TaskDesc task, Operation o
         queuedNum += count;
         CheckSchedulerInvariantsLocked();
     }
-    UC_INFO_UNLIMITED("Delegator {} task({},{}) submitted, shards={}.", OperationName(operation),
+    UC_INFO("Delegator {} task({},{}) submitted, shards={}.", OperationName(operation),
                       handle, taskContext->desc.brief, taskContext->desc.size());
     slotsReady_.notify_all();
     return Detail::TaskHandle{handle};
@@ -622,7 +622,7 @@ void Executor::DumpLoop(std::promise<Status>& started)
 
         for (auto& group : batch.groups) {
             if (Logger::isEnabledFor(Logger::Level::DEBUG)) {
-                UC_DEBUG_UNLIMITED("Delegator DUMP task({},{}) processing KVCache shards=[{}].",
+                UC_DEBUG("Delegator DUMP task({},{}) processing KVCache shards=[{}].",
                                    group.task->id, group.task->desc.brief, DescribeShards(group));
             }
             const auto gatherStatus = GatherAsync(group, streams);
@@ -645,7 +645,7 @@ void Executor::DumpLoop(std::promise<Status>& started)
         } else {
             for (const auto& group : batch.groups) {
                 if (!group.error) {
-                    UC_DEBUG_UNLIMITED(
+                    UC_DEBUG(
                         "Delegator DUMP task({},{}) stage=gather_complete, shards={}.",
                         group.task->id, group.task->desc.brief, group.shards.size());
                 }
@@ -666,7 +666,7 @@ void Executor::DumpLoop(std::promise<Status>& started)
             if (submitted) {
                 group.transferTask = std::move(submitted).Value();
                 group.transferPending = true;
-                UC_DEBUG_UNLIMITED(
+                UC_DEBUG(
                     "Delegator DUMP task({},{}) stage=backend_submitted, backend_task={}, "
                     "shards={}.",
                     group.task->id, group.task->desc.brief, group.transferTask,
@@ -688,7 +688,7 @@ void Executor::DumpLoop(std::promise<Status>& started)
                     "status={}.",
                     group.task->id, group.task->desc.brief, group.transferTask, waitStatus);
             } else {
-                UC_DEBUG_UNLIMITED(
+                UC_DEBUG(
                     "Delegator DUMP task({},{}) stage=backend_complete, backend_task={}, "
                     "shards={}.",
                     group.task->id, group.task->desc.brief, group.transferTask,
@@ -718,7 +718,7 @@ void Executor::LoadLoop(std::promise<Status>& started)
         std::size_t pendingGroupCount = 0;
         for (auto& group : batch.groups) {
             if (Logger::isEnabledFor(Logger::Level::DEBUG)) {
-                UC_DEBUG_UNLIMITED("Delegator LOAD task({},{}) processing KVCache shards=[{}].",
+                UC_DEBUG("Delegator LOAD task({},{}) processing KVCache shards=[{}].",
                                    group.task->id, group.task->desc.brief, DescribeShards(group));
             }
             auto backendTask = MakeBackendTask(group);
@@ -733,7 +733,7 @@ void Executor::LoadLoop(std::promise<Status>& started)
                 group.transferTask = std::move(submitted).Value();
                 group.transferPending = true;
                 ++pendingGroupCount;
-                UC_DEBUG_UNLIMITED(
+                UC_DEBUG(
                     "Delegator LOAD task({},{}) stage=backend_submitted, backend_task={}, "
                     "shards={}.",
                     group.task->id, group.task->desc.brief, group.transferTask,
@@ -767,7 +767,7 @@ void Executor::LoadLoop(std::promise<Status>& started)
                             "backend_task={}, status={}.",
                             group.task->id, group.task->desc.brief, group.transferTask, waitStatus);
                     } else {
-                        UC_DEBUG_UNLIMITED(
+                        UC_DEBUG(
                             "Delegator LOAD task({},{}) stage=backend_complete, "
                             "backend_task={}, shards={}.",
                             group.task->id, group.task->desc.brief, group.transferTask,
@@ -796,7 +796,7 @@ void Executor::LoadLoop(std::promise<Status>& started)
         } else {
             for (const auto& group : batch.groups) {
                 if (!group.error) {
-                    UC_DEBUG_UNLIMITED(
+                    UC_DEBUG(
                         "Delegator LOAD task({},{}) stage=scatter_complete, shards={}.",
                         group.task->id, group.task->desc.brief, group.shards.size());
                 }
