@@ -378,15 +378,13 @@ bool WaitForFetchCount(const std::shared_ptr<FakeViewServer>& viewServer,
     return false;
 }
 
-Status CheckUntilComplete(AsuClient& client, TaskId taskId, TaskResult& result)
+bool CheckUntilComplete(AsuClient& client, TaskId taskId)
 {
-    Status status;
     for (std::uint32_t attempt = 0; attempt < 100; ++attempt) {
-        status = client.Check(taskId, result);
-        if (status.code != StatusCode::IN_PROGRESS) { return status; }
+        if (client.Check(taskId)) { return true; }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    return status;
+    return false;
 }
 
 ViewServerFactory MakeViewServerFactory(const std::shared_ptr<ViewServer>& viewServer)
@@ -479,9 +477,7 @@ TEST(AsuClientImplTest, Lifecycle_OperationsBeforeInitReturnExpectedErrors)
         taskId);
     EXPECT_EQ(status.code, StatusCode::NOT_INITIALIZED);
 
-    TaskResult taskResult;
-    status = client->Check(1, taskResult);
-    EXPECT_EQ(status.code, StatusCode::TASK_NOT_FOUND);
+    EXPECT_TRUE(client->Check(1));
 }
 
 TEST(AsuClientImplTest, Lifecycle_InitTwiceReturnsResourceBusy)
@@ -515,9 +511,7 @@ TEST(AsuClientImplTest, Lifecycle_ShutdownClearsTasksAndRejectsFutureOperations)
     status = QueryAndWait(*client, {MakeCacheKey("k05")}, QueryOptions{}, queryResult);
     EXPECT_EQ(status.code, StatusCode::NOT_INITIALIZED);
 
-    TaskResult taskResult;
-    status = client->Check(taskId, taskResult);
-    EXPECT_EQ(status.code, StatusCode::TASK_NOT_FOUND);
+    EXPECT_TRUE(client->Check(taskId));
 }
 
 TEST(AsuClientImplTest, Input_EmptyQueryReturnsEmptyResult)
@@ -708,9 +702,7 @@ TEST(AsuClientImplTest, QueryAsync_CompletesThroughTransportCallback)
     ASSERT_TRUE(status.ok()) << status.message;
     ASSERT_NE(taskId, kInvalidTaskId);
 
-    TaskResult result;
-    status = client->Check(taskId, result);
-    EXPECT_EQ(status.code, StatusCode::IN_PROGRESS);
+    EXPECT_FALSE(client->Check(taskId));
 
     ASSERT_TRUE(WaitForPendingCompletion(state, 10));
     TaskResult completionResult;
@@ -719,6 +711,7 @@ TEST(AsuClientImplTest, QueryAsync_CompletesThroughTransportCallback)
     completionResult.queryResult = QueryResult{{1}, 0};
     ASSERT_TRUE(InvokePendingCompletion(state, 10, std::move(completionResult)));
 
+    TaskResult result;
     status = client->Wait(taskId, 100, result);
     ASSERT_TRUE(status.ok()) << status.message;
     ASSERT_TRUE(result.queryResult.has_value());
@@ -1360,7 +1353,7 @@ TEST(AsuClientImplTest, MemoryRegister_UnregisterRemovesCachedResourceBeforeFutu
     EXPECT_TRUE(state->bindCalls.empty());
 }
 
-TEST(AsuClientImplTest, Task_CheckRemovesTaskAfterCompletion)
+TEST(AsuClientImplTest, Task_CheckKeepsTaskForWait)
 {
     auto state = std::make_shared<TestState>();
     auto client = CreateAsuClient(MakeFactory(state));
@@ -1374,11 +1367,14 @@ TEST(AsuClientImplTest, Task_CheckRemovesTaskAfterCompletion)
         taskId);
     ASSERT_TRUE(status.ok()) << status.message;
 
+    ASSERT_TRUE(CheckUntilComplete(*client, taskId));
+    EXPECT_TRUE(client->Check(taskId));
+
     TaskResult result;
-    status = CheckUntilComplete(*client, taskId, result);
+    status = client->Wait(taskId, 100, result);
     ASSERT_TRUE(status.ok()) << status.message;
 
-    status = client->Check(taskId, result);
+    status = client->Wait(taskId, 100, result);
     EXPECT_EQ(status.code, StatusCode::TASK_NOT_FOUND);
 }
 
@@ -1473,23 +1469,24 @@ TEST(AsuClientImplTest, Task_CheckUsesClientStateUntilCompletionCallback)
         taskId);
     ASSERT_TRUE(status.ok()) << status.message;
 
-    TaskResult result;
-    status = client->Check(taskId, result);
-    EXPECT_EQ(status.code, StatusCode::IN_PROGRESS);
+    EXPECT_FALSE(client->Check(taskId));
 
     ASSERT_TRUE(WaitForPendingCompletion(state, 10));
     TaskResult completionResult;
     completionResult.status = Status::OK();
     completionResult.entryStatus = {Status::OK()};
     ASSERT_TRUE(InvokePendingCompletion(state, 10, std::move(completionResult)));
-    status = client->Check(taskId, result);
+    EXPECT_TRUE(client->Check(taskId));
+
+    TaskResult result;
+    status = client->Wait(taskId, 100, result);
     ASSERT_TRUE(status.ok()) << status.message;
 
-    status = client->Check(taskId, result);
+    status = client->Wait(taskId, 100, result);
     EXPECT_EQ(status.code, StatusCode::TASK_NOT_FOUND);
 }
 
-TEST(AsuClientImplTest, Task_CheckRefreshesViewOnRefreshableChildFailure)
+TEST(AsuClientImplTest, Task_CheckThenWaitHandlesRefreshableChildFailure)
 {
     auto state = std::make_shared<TestState>();
     state->checkResultStatus[10] = Status::Error(StatusCode::IO_ERROR, "fake child io error");
@@ -1511,6 +1508,10 @@ TEST(AsuClientImplTest, Task_CheckRefreshesViewOnRefreshableChildFailure)
     },
         taskId);
     ASSERT_TRUE(status.ok()) << status.message;
+
+    ASSERT_TRUE(CheckUntilComplete(*client, taskId));
+    EXPECT_TRUE(client->Check(taskId));
+    EXPECT_EQ(viewServer->FetchCount(), std::size_t{1});
 
     TaskResult result;
     status = client->Wait(taskId, 100, result);
@@ -1601,8 +1602,7 @@ TEST(AsuClientImplTest, Task_WaitTimeoutRemovesTask)
     status = client->Wait(taskId, 100, result);
     EXPECT_EQ(status.code, StatusCode::TIMEOUT);
 
-    status = client->Check(taskId, result);
-    EXPECT_EQ(status.code, StatusCode::TASK_NOT_FOUND);
+    EXPECT_TRUE(client->Check(taskId));
 
     ASSERT_TRUE(WaitForPendingCompletion(state, 10));
     TaskResult completionResult;
@@ -1763,7 +1763,8 @@ TEST(AsuClientImplTest,
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
     TaskResult taskResult;
-    status = CheckUntilComplete(*client, taskId, taskResult);
+    ASSERT_TRUE(CheckUntilComplete(*client, taskId));
+    status = client->Wait(taskId, 100, taskResult);
     EXPECT_TRUE(status.ok()) << status.message;
     ASSERT_EQ(state->storeCalls, std::vector<AsuId>({20}));
 

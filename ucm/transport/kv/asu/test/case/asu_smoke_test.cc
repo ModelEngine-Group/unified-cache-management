@@ -192,9 +192,7 @@ void ExpectCompleted(AsuClient& client, TaskId taskId, std::size_t entryCount)
         EXPECT_TRUE(entryStatus.ok()) << entryStatus.message;
     }
 
-    TaskResult checkResult;
-    status = client.Check(taskId, checkResult);
-    ASSERT_EQ(status.code, StatusCode::TASK_NOT_FOUND);
+    ASSERT_TRUE(client.Check(taskId));
 }
 
 Status QueryAndWait(AsuClient& client, const std::vector<CacheKey>& keys,
