@@ -42,7 +42,7 @@ struct DramConfig {
     std::string localTransportManagerId;
     std::int32_t transportDeviceId{0};
     UC::KV::RouterType routerType{UC::KV::RouterType::RING_HASH_FULL_SPREAD};
-    TaskLimits taskLimits;
+    std::size_t maxIoEntries{65536};
     NodeSchedulerConfig nodeScheduler;
     TransportRuntimeConfig transportRuntime;
     TimeoutConfig taskTimeouts;

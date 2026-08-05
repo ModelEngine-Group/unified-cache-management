@@ -48,28 +48,23 @@ Detail::Dictionary BaseConfig(bool includeIoLengths = true)
     return config;
 }
 
-TEST(DramConfigTest, KeepsOnlyTaskAndEntryBudgets)
+TEST(DramConfigTest, KeepsOnlyGlobalIoEntryBudget)
 {
     auto input = BaseConfig();
-    input.SetNumber("max_tasks", 17);
-    input.SetNumber("max_io_items", 23);
+    input.SetNumber("max_io_entries", 23);
     auto parsed = DramConfig::Parse(input);
     ASSERT_TRUE(parsed);
-    const auto& config = parsed.Value();
-    EXPECT_EQ(config.taskLimits.maxLiveTasks, std::size_t{17});
-    EXPECT_EQ(config.taskLimits.maxLiveEntries, std::size_t{23});
+    EXPECT_EQ(parsed.Value().maxIoEntries, std::size_t{23});
 }
 
 TEST(DramConfigTest, DerivesNodeAndReplyCapacitiesFromGlobalEntryBudget)
 {
     auto input = BaseConfig();
-    input.SetNumber("max_io_items", 7);
+    input.SetNumber("max_io_entries", 7);
     auto parsed = DramConfig::Parse(input);
     ASSERT_TRUE(parsed);
     const auto& config = parsed.Value();
-    EXPECT_EQ(config.nodeScheduler.limits.maxPendingRequests, std::size_t{7});
     EXPECT_EQ(config.nodeScheduler.limits.maxInflightRequests, std::size_t{7});
-    EXPECT_EQ(config.nodeScheduler.limits.maxPendingEntries, std::size_t{7});
     EXPECT_EQ(config.nodeScheduler.limits.maxBatchEntries, std::size_t{7});
     EXPECT_EQ(config.replySlotCount, std::size_t{14});
     EXPECT_EQ(config.replySlotSize, std::uint32_t{5});
@@ -81,9 +76,7 @@ TEST(DramConfigTest, CapsDerivedNodeAndReplyCapacities)
     auto parsed = DramConfig::Parse(input);
     ASSERT_TRUE(parsed);
     const auto& config = parsed.Value();
-    EXPECT_EQ(config.nodeScheduler.limits.maxPendingRequests, std::size_t{1024});
     EXPECT_EQ(config.nodeScheduler.limits.maxInflightRequests, std::size_t{128});
-    EXPECT_EQ(config.nodeScheduler.limits.maxPendingEntries, std::size_t{65536});
     EXPECT_EQ(config.nodeScheduler.limits.maxBatchEntries, std::size_t{128});
     EXPECT_EQ(config.replySlotCount, std::size_t{256});
     EXPECT_EQ(config.replySlotSize, std::uint32_t{65});
@@ -137,6 +130,23 @@ TEST(DramConfigTest, RejectsMalformedControlEndpointsAndEmptyManagerIds)
     auto remote = BaseConfig();
     remote.Set("node_transport_manager_ids", std::vector<std::string>{"", "127.0.0.1:9100"});
     EXPECT_FALSE(DramConfig::Parse(remote));
+}
+
+TEST(DramConfigTest, RejectsInvalidSchedulerBoundaries)
+{
+    auto zeroBudget = BaseConfig();
+    zeroBudget.SetNumber("max_io_entries", 0);
+    EXPECT_FALSE(DramConfig::Parse(zeroBudget));
+
+    auto duplicateNodes = BaseConfig();
+    duplicateNodes.Set("node_ids", std::vector<ssize_t>{7, 7});
+    EXPECT_FALSE(DramConfig::Parse(duplicateNodes));
+
+    auto emptyNodes = BaseConfig();
+    emptyNodes.Set("node_ids", std::vector<ssize_t>{});
+    emptyNodes.Set("node_control_endpoints", std::vector<std::string>{});
+    emptyNodes.Set("node_transport_manager_ids", std::vector<std::string>{});
+    EXPECT_FALSE(DramConfig::Parse(emptyNodes));
 }
 
 TEST(DramConfigTest, ParsesControlEndpointsAndStoresManagerIds)

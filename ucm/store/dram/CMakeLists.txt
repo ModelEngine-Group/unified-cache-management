@@ -5,6 +5,8 @@ set(UCM_DRAM_STORE_CC_SOURCE_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/cc/dram_fatal.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/cc/transport_executor.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/cc/reply_service.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/cc/node_actor.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/cc/node_scheduler.cc
 )
 if(RUNTIME_ENVIRONMENT STREQUAL "ascend")
     list(APPEND UCM_DRAM_STORE_CC_SOURCE_FILES
@@ -31,6 +33,7 @@ if(BUILD_UCM_DRAMPOOL)
         ${DRAMPOOL_SOURCE_DIR}/drampool_launch_config.cc
         ${DRAMPOOL_SOURCE_DIR}/drampool_server.cc
         ${DRAMPOOL_SOURCE_DIR}/drampool_yaml_config.cc
+        ${DRAMPOOL_SOURCE_DIR}/health_server.cc
         ${DRAMPOOL_SOURCE_DIR}/metadata.cc
         ${DRAMPOOL_SOURCE_DIR}/task_worker.cc
     )

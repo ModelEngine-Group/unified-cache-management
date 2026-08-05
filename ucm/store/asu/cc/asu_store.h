@@ -53,7 +53,7 @@ public:
                                        UC::ASU::TaskId& taskId) = 0;
     virtual UC::ASU::Status DeleteAsync(const std::vector<UC::ASU::CacheKey>& keys,
                                         UC::ASU::TaskId& taskId) = 0;
-    virtual UC::ASU::Status Check(UC::ASU::TaskId taskId, UC::ASU::TaskResult& result) = 0;
+    virtual bool Check(UC::ASU::TaskId taskId) = 0;
     virtual UC::ASU::Status Wait(UC::ASU::TaskId taskId, std::uint64_t timeoutMs,
                                  UC::ASU::TaskResult& result) = 0;
     virtual UC::ASU::Status RegisterRegions(

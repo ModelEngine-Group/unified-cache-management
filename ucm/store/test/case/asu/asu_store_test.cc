@@ -128,8 +128,18 @@ public:
         return Submit(keys.size(), taskId);
     }
 
-    UC::ASU::Status Check(UC::ASU::TaskId taskId, UC::ASU::TaskResult& result) override
+    bool Check(UC::ASU::TaskId taskId) override
     {
+        if (!initialized_) { return true; }
+        auto iter = taskResults_.find(taskId);
+        return iter == taskResults_.end() ||
+               iter->second.status.code != UC::ASU::StatusCode::IN_PROGRESS;
+    }
+
+    UC::ASU::Status Wait(UC::ASU::TaskId taskId, std::uint64_t timeoutMs,
+                         UC::ASU::TaskResult& result) override
+    {
+        (void)timeoutMs;
         if (!initialized_) { return NotInitialized(); }
 
         auto iter = taskResults_.find(taskId);
@@ -139,14 +149,8 @@ public:
         }
 
         result = iter->second;
-        return UC::ASU::Status::OK();
-    }
-
-    UC::ASU::Status Wait(UC::ASU::TaskId taskId, std::uint64_t timeoutMs,
-                         UC::ASU::TaskResult& result) override
-    {
-        (void)timeoutMs;
-        return Check(taskId, result);
+        taskResults_.erase(iter);
+        return result.status;
     }
 
     UC::ASU::Status RegisterRegions(
@@ -332,6 +336,16 @@ TEST(UCAsuStoreTest, ParsesOperationTimeout)
 
     auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
     EXPECT_EQ(transportConfig.timeoutMs, 321);
+}
+
+TEST(UCAsuStoreTest, RejectsZeroOperationTimeout)
+{
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("asu_timeout_ms", std::uint64_t{0});
+
+    EXPECT_TRUE(store.Setup(config).Failure());
 }
 
 TEST(UCAsuStoreTest, PropagatesMaxErrorCountToTransport)

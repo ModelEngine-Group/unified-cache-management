@@ -38,7 +38,6 @@ namespace UC::Dram {
 namespace {
 
 constexpr std::size_t kTargetBatchEntries = 128;
-constexpr std::size_t kMaxPendingRequestsPerNode = 1024;
 constexpr std::size_t kMaxInflightRequestsPerNode = 128;
 
 std::size_t MaxReplySize(std::size_t entryCount)
@@ -210,22 +209,13 @@ Expected<DramConfig> DramConfig::Parse(const Detail::Dictionary& dictionary)
                              controlPort, std::move(transportManagerIds[index])});
         }
 
-        const std::pair<const char*, std::size_t*> capacities[] = {
-            {"max_tasks",    &result.taskLimits.maxLiveTasks  },
-            {"max_io_items", &result.taskLimits.maxLiveEntries},
-        };
-        for (const auto& [key, target] : capacities) {
-            status = OptionalSize(dictionary, key, target);
-            if (status.Failure()) { return status; }
-        }
+        status = OptionalSize(dictionary, "max_io_entries", &result.maxIoEntries);
+        if (status.Failure()) { return status; }
 
-        const auto maxPending =
-            std::min(result.taskLimits.maxLiveEntries, kMaxPendingRequestsPerNode);
-        const auto maxInflight = std::min(maxPending, kMaxInflightRequestsPerNode);
-        const auto maxBatch = std::min(
-            {result.taskLimits.maxLiveEntries, kTargetBatchEntries, kMaxProtocolBatchEntries});
-        result.nodeScheduler.limits =
-            NodeLimits{maxPending, maxInflight, result.taskLimits.maxLiveEntries, maxBatch};
+        const auto maxInflight = std::min(result.maxIoEntries, kMaxInflightRequestsPerNode);
+        const auto maxBatch =
+            std::min({result.maxIoEntries, kTargetBatchEntries, kMaxProtocolBatchEntries});
+        result.nodeScheduler.limits = NodeLimits{maxInflight, maxBatch};
         result.nodeScheduler.runnerCount = DerivedWorkerCount(result.nodeScheduler.nodes.size());
         result.transportRuntime.workerCount = DerivedWorkerCount(result.nodeScheduler.nodes.size());
 
@@ -283,23 +273,16 @@ Status DramConfig::Validate() const
         }
     }
     const auto& limits = nodeScheduler.limits;
-    if (taskLimits.maxLiveTasks == 0 || taskLimits.maxLiveEntries == 0 ||
-        limits.maxPendingRequests == 0 || limits.maxInflightRequests == 0 ||
-        limits.maxPendingEntries == 0 || limits.maxBatchEntries == 0 || replySlotCount == 0 ||
-        replySlotSize == 0 || nodeScheduler.runnerCount == 0 || transportRuntime.workerCount == 0) {
+    if (maxIoEntries == 0 || limits.maxInflightRequests == 0 || limits.maxBatchEntries == 0 ||
+        replySlotCount == 0 || replySlotSize == 0 || nodeScheduler.runnerCount == 0 ||
+        transportRuntime.workerCount == 0) {
         return Status::InvalidParam("DramStore capacities must be positive");
     }
-    if (limits.maxInflightRequests > limits.maxPendingRequests ||
-        limits.maxBatchEntries > limits.maxPendingEntries ||
-        limits.maxBatchEntries > taskLimits.maxLiveEntries ||
+    if (limits.maxBatchEntries > maxIoEntries ||
         limits.maxBatchEntries > kMaxProtocolBatchEntries) {
         return Status::InvalidParam("DramStore capacity relationship is invalid");
     }
-    constexpr auto maxSize = std::numeric_limits<std::size_t>::max();
-    if (limits.maxInflightRequests > (maxSize - 2) / 2 ||
-        nodeScheduler.nodes.size() > maxSize / (limits.maxInflightRequests + 2)) {
-        return Status::InvalidParam("derived DramStore queue capacity is out of range");
-    }
+
     if (replySlotCount < nodeScheduler.nodes.size() * limits.maxInflightRequests) {
         return Status::InvalidParam(
             "reply slots must cover every node's maximum inflight requests");

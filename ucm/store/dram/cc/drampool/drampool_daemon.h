@@ -24,8 +24,6 @@
 #pragma once
 
 #include <atomic>
-#include "drampool_config.h"
-#include "drampool_server.h"
 #include "status/status.h"
 
 namespace UC::DramPool {

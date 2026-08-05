@@ -39,6 +39,7 @@ struct AsuClientConfig {
     std::vector<TransportConfig> transportConfigs;
 
     std::uint64_t defaultWaitTimeoutMs{100};
+    std::uint64_t timeoutMs{100};
     std::unordered_map<std::string, std::string> attrs;
 };
 
@@ -50,14 +51,14 @@ public:
     virtual Status Init(const std::string& configPath) = 0;
     virtual Status Shutdown() = 0;
 
-    virtual Status Query(const std::vector<CacheKey>& keys, const QueryOptions& options,
-                         QueryResult& result) = 0;
-
+    virtual Status QueryAsync(const std::vector<CacheKey>& keys, const QueryOptions& options,
+                              TaskId& taskId) = 0;
     virtual Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) = 0;
     virtual Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) = 0;
     virtual Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId) = 0;
 
-    virtual Status Check(TaskId taskId, TaskResult& result) = 0;
+    // Returns false only while the task is still in progress. Wait retrieves the final result.
+    virtual bool Check(TaskId taskId) = 0;
     virtual Status Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result) = 0;
 
     virtual Status RegisterRegions(const std::vector<MemoryRegion>& regions,

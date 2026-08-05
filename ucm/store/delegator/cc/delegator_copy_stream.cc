@@ -96,6 +96,17 @@ Status CopyStream::DeviceToDeviceAsync(aclrtStream stream, void* destination,
     return ret == ACL_SUCCESS ? Status::OK() : AclStatus("aclrtMemcpyAsync", ret);
 }
 
+Status CopyStream::WaitEvent(aclrtStream stream, aclrtEvent event)
+{
+    if (stream == nullptr || event == nullptr ||
+        std::find(streams_.begin(), streams_.end(), stream) == streams_.end()) {
+        return Status::InvalidParam("invalid delegator stream event");
+    }
+
+    const auto ret = aclrtStreamWaitEvent(stream, event);
+    return ret == ACL_SUCCESS ? Status::OK() : AclStatus("aclrtStreamWaitEvent", ret);
+}
+
 Status CopyStream::Synchronize(aclrtStream stream)
 {
     if (stream == nullptr ||

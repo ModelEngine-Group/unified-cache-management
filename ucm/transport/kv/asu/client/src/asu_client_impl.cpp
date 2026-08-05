@@ -23,8 +23,6 @@
  * */
 #include "asu_client_impl.h"
 #include <algorithm>
-#include <chrono>
-#include <functional>
 #include <limits>
 #include <thread>
 #include <utility>
@@ -41,14 +39,6 @@ constexpr std::uint32_t kMaxShutdownDrainAttempts = 64;
 Status PartialFailed(const std::string& message)
 {
     return Status::Error(StatusCode::PARTIAL_FAILED, message);
-}
-
-std::vector<UC::KV::CacheKey> ToRouterKeys(const std::vector<CacheKey>& keys)
-{
-    std::vector<UC::KV::CacheKey> routerKeys;
-    routerKeys.reserve(keys.size());
-    for (const auto& key : keys) { routerKeys.emplace_back(std::string(CacheKeyView(key))); }
-    return routerKeys;
 }
 
 AsuClientImpl::AsuClientImpl(TransportFactory transportFactory, ViewServerFactory viewServerFactory)
@@ -147,119 +137,12 @@ Status AsuClientImpl::Shutdown()
     return finalStatus;
 }
 
-Status AsuClientImpl::Query(const std::vector<CacheKey>& keys, const QueryOptions& options,
-                            QueryResult& result)
+Status AsuClientImpl::QueryAsync(const std::vector<CacheKey>& keys, const QueryOptions& options,
+                                 TaskId& taskId)
 {
-    bool needRefresh = false;
-    auto status = QueryOnce(keys, options, result, needRefresh);
-    if (needRefresh) { RequestBackgroundRefresh(); }
+    auto status = SubmitAsync(ClientOpType::QUERY, keys, options.timeoutMs, taskId);
+    if (IsRefreshNeeded(status)) { RequestBackgroundRefresh(); }
     return status;
-}
-
-Status AsuClientImpl::QueryOnce(const std::vector<CacheKey>& keys, const QueryOptions& options,
-                                QueryResult& result, bool& needRefresh)
-{
-    result.exists.assign(keys.size(), 0);
-    result.prefixHitKeys = 0;
-
-    auto snapshot = GetSnapshot();
-    if (!snapshot) { return NotInitialized(); }
-
-    const auto timeoutMs =
-        options.timeoutMs == 0 ? config_.defaultWaitTimeoutMs : options.timeoutMs;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
-    auto transportOptions = options;
-    transportOptions.mode = QueryMode::PER_KEY;
-    auto routes = snapshot->router->RouteKeys(ToRouterKeys(keys));
-    std::vector<PendingQuery> pendingQueries;
-    pendingQueries.reserve(routes.size());
-    bool anyFailed = false;
-
-    for (const auto& route : routes) {
-        auto transportIter = snapshot->transports.find(route.first);
-        if (transportIter == snapshot->transports.end()) {
-            auto status = Status::Error(StatusCode::NOT_FOUND, "routed asu transport not found");
-            needRefresh |= IsRefreshNeeded(status);
-            UC_ERROR("ASU client query dispatch failed: asuId={} key_count={} code={} message={}.",
-                     route.first, route.second.size(), static_cast<int>(status.code),
-                     status.message);
-            anyFailed = true;
-            continue;
-        }
-
-        PendingQuery pending;
-        pending.asuId = route.first;
-        pending.transport = transportIter->second;
-        pending.originalIndices = route.second;
-        pending.keys.reserve(route.second.size());
-        for (auto index : route.second) { pending.keys.emplace_back(keys[index]); }
-
-        auto status = pending.transport->QueryAsync(pending.keys, transportOptions, pending.taskId);
-        if (!status.ok()) {
-            needRefresh |= IsRefreshNeeded(status);
-            UC_ERROR("ASU client query dispatch failed: asuId={} key_count={} code={} message={}.",
-                     pending.asuId, pending.keys.size(), static_cast<int>(status.code),
-                     status.message);
-            anyFailed = true;
-            continue;
-        }
-
-        pendingQueries.emplace_back(std::move(pending));
-    }
-
-    for (auto& pending : pendingQueries) {
-        const auto now = std::chrono::steady_clock::now();
-        if (now >= deadline) {
-            UC_ERROR(
-                "ASU client query wait timed out before transport wait: asuId={} key_count={}.",
-                pending.asuId, pending.keys.size());
-            anyFailed = true;
-            continue;
-        }
-
-        const auto remainingMs =
-            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
-        const auto waitMs = static_cast<std::uint64_t>(std::max<std::int64_t>(1, remainingMs));
-        TaskResult taskResult;
-        auto status = pending.transport->Wait(pending.taskId, waitMs, taskResult);
-        if (!status.ok()) {
-            needRefresh |= IsRefreshNeeded(status);
-            UC_ERROR("ASU client query wait failed: asuId={} key_count={} code={} message={}.",
-                     pending.asuId, pending.keys.size(), static_cast<int>(status.code),
-                     status.message);
-            anyFailed = true;
-            continue;
-        }
-        if (!taskResult.status.ok()) {
-            needRefresh |= IsRefreshNeeded(taskResult.status);
-            UC_ERROR("ASU client query result failed: asuId={} key_count={} code={} message={}.",
-                     pending.asuId, pending.keys.size(), static_cast<int>(taskResult.status.code),
-                     taskResult.status.message);
-            anyFailed = true;
-            continue;
-        }
-        if (!taskResult.queryResult.has_value()) {
-            UC_ERROR("ASU client query result is missing: asuId={} key_count={}.", pending.asuId,
-                     pending.keys.size());
-            anyFailed = true;
-            continue;
-        }
-
-        const auto& childResult = *taskResult.queryResult;
-        if (childResult.exists.size() != pending.keys.size()) {
-            UC_ERROR("ASU client query result size mismatch: asuId={} expected={} actual={}.",
-                     pending.asuId, pending.keys.size(), childResult.exists.size());
-            anyFailed = true;
-            continue;
-        }
-
-        for (std::size_t index = 0; index < pending.originalIndices.size(); ++index) {
-            result.exists[pending.originalIndices[index]] = childResult.exists[index];
-        }
-        result.prefixHitKeys += childResult.prefixHitKeys;
-    }
-
-    return anyFailed ? PartialFailed("one or more asu queries failed") : Status::OK();
 }
 
 Status AsuClientImpl::LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
@@ -274,19 +157,10 @@ Status AsuClientImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId& t
 
 Status AsuClientImpl::DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId)
 {
-    return SubmitAsync(ClientOpType::DELETE, keys, taskId);
+    return SubmitAsync(ClientOpType::DELETE, keys, config_.timeoutMs, taskId);
 }
 
-Status AsuClientImpl::Check(TaskId taskId, TaskResult& result)
-{
-    auto status = taskManager_.Check(taskId, result);
-    if (status.code == StatusCode::TASK_NOT_FOUND) { return status; }
-    if (viewServer_ != nullptr &&
-        (viewServer_->ShouldRefreshView(status) || viewServer_->ShouldRefreshView(result))) {
-        RequestBackgroundRefresh();
-    }
-    return status;
-}
+bool AsuClientImpl::Check(TaskId taskId) { return taskManager_.Check(taskId); }
 
 Status AsuClientImpl::Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result)
 {
@@ -387,7 +261,7 @@ Status AsuClientImpl::SubmitAsync(ClientOpType opType, const std::vector<KVBuffe
                              "entries submit only supports load/store");
     }
 
-    auto ctx = std::make_unique<ClientTaskContext>();
+    auto ctx = std::make_unique<ClientTask>();
     ctx->opType = opType;
     ctx->viewSnapshot = snapshot;
     ctx->entries = entries;
@@ -416,7 +290,7 @@ Status AsuClientImpl::SubmitAsync(ClientOpType opType, const std::vector<KVBuffe
 }
 
 Status AsuClientImpl::SubmitAsync(ClientOpType opType, const std::vector<CacheKey>& keys,
-                                  TaskId& taskId)
+                                  std::uint64_t timeoutMs, TaskId& taskId)
 {
     auto snapshot = GetSnapshot();
     if (!snapshot || !snapshot->router || snapshot->transports.empty()) {
@@ -424,16 +298,19 @@ Status AsuClientImpl::SubmitAsync(ClientOpType opType, const std::vector<CacheKe
         return Status::Error(StatusCode::NOT_INITIALIZED, "client has no ASU transports");
     }
 
-    if (opType != ClientOpType::DELETE) {
+    if (opType != ClientOpType::QUERY && opType != ClientOpType::DELETE) {
         taskId = kInvalidTaskId;
-        return Status::Error(StatusCode::INVALID_ARGUMENT, "keys submit only supports delete");
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "keys submit only supports query/delete");
     }
 
-    auto ctx = std::make_unique<ClientTaskContext>();
+    auto ctx = std::make_unique<ClientTask>();
     ctx->opType = opType;
     ctx->viewSnapshot = snapshot;
     ctx->keys = keys;
     ctx->entryStatus.assign(keys.size(), Status::OK());
+    ctx->queryResult.exists.assign(opType == ClientOpType::QUERY ? keys.size() : 0, 0);
+    ctx->timeoutMs = timeoutMs;
 
     auto status = taskManager_.Submit(std::move(ctx), taskId);
     if (!status.ok()) { return status; }
@@ -460,7 +337,7 @@ Status AsuClientImpl::SubmitAsync(ClientOpType opType, const std::vector<CacheKe
 void AsuClientImpl::WorkerLoop()
 {
     while (true) {
-        ClientTaskContextPtr ctx;
+        ClientTaskPtr ctx;
         {
             std::unique_lock<std::mutex> lock{taskQueueMu_};
             taskQueueCv_.wait(lock, [this] { return stopWorker_ || !taskQueue_.empty(); });
@@ -668,7 +545,11 @@ void AsuClientImpl::RequestBackgroundRefresh()
         completedThread = std::move(refreshThread_);
         refreshInProgress_ = true;
         refreshThread_ = std::thread([this] {
-            (void)RefreshView();
+            const auto status = RefreshView();
+            if (!status.ok()) {
+                UC_WARN("Background view refresh failed: code={} message={}",
+                        static_cast<int>(status.code), status.message);
+            }
             std::lock_guard<std::mutex> lock{mutex_};
             refreshInProgress_ = false;
         });

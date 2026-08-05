@@ -39,49 +39,6 @@ bool BufferPool::ComputeSlotStride(std::size_t capacity, std::size_t alignment, 
     return true;
 }
 
-Status BufferPool::BufferRegion::Create(MemoryType type, std::size_t size, BufferRegion& region)
-{
-    auto buffer = UC::Trans::Device{}.MakeBuffer();
-    if (!buffer) { return Status::Error("failed to create runtime buffer"); }
-    switch (type) {
-        case MemoryType::HOST: {
-            auto owner = buffer->MakeHostBuffer(size);
-            if (!owner) { return Status::Error("failed to allocate host memory"); }
-            region.owner = std::move(owner);
-            region.local_addr = region.owner.get();
-            region.device_addr = region.owner.get();
-            return Status::OK();
-        }
-        case MemoryType::HOST_PINNED: {
-            void* deviceAddr = nullptr;
-            auto owner = buffer->MakeHostPinnedBuffer(size, &deviceAddr);
-            if (!owner || !deviceAddr) {
-                return Status::Error("failed to allocate host-pinned memory");
-            }
-            region.owner = std::move(owner);
-            region.local_addr = region.owner.get();
-            region.device_addr = deviceAddr;
-            return Status::OK();
-        }
-        case MemoryType::ASCEND_DEVICE: {
-            auto owner = buffer->MakeDeviceBuffer(size);
-            if (!owner) { return Status::Error("failed to allocate device memory"); }
-            region.owner = std::move(owner);
-            region.local_addr = region.owner.get();
-            region.device_addr = region.owner.get();
-            return Status::OK();
-        }
-        default: return Status::InvalidParam("unsupported memory type");
-    }
-}
-
-void BufferPool::BufferRegion::Reset()
-{
-    owner.reset();
-    local_addr = nullptr;
-    device_addr = nullptr;
-}
-
 Status BufferPool::Init(std::string name, MemoryType type, std::size_t slot_capacity,
                         std::size_t slot_num, bool enable_zero, std::size_t slot_alignment)
 {

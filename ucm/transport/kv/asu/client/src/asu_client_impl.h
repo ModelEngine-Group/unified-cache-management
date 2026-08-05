@@ -68,10 +68,9 @@ public:
     // Gracefully drains tracked client tasks and releases resources.
     Status Shutdown() override;
 
-    // Queries key existence and schedules background refresh on refreshable failures.
-    Status Query(const std::vector<CacheKey>& keys, const QueryOptions& options,
-                 QueryResult& result) override;
-
+    // Submits query operations to routed transports.
+    Status QueryAsync(const std::vector<CacheKey>& keys, const QueryOptions& options,
+                      TaskId& taskId) override;
     // Submits load operations to routed transports.
     Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) override;
     // Submits store operations to routed transports.
@@ -80,7 +79,7 @@ public:
     Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId) override;
 
     // Checks an aggregate task.
-    Status Check(TaskId taskId, TaskResult& result) override;
+    bool Check(TaskId taskId) override;
     // Waits for an aggregate task.
     Status Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result) override;
 
@@ -91,25 +90,15 @@ public:
     Status UnregisterRegions(const std::vector<MRHandle>& handles) override;
 
 private:
-    struct PendingQuery {
-        AsuId asuId{0};
-        std::shared_ptr<AsuTransport> transport;
-        std::vector<CacheKey> keys;
-        std::vector<std::size_t> originalIndices;
-        TaskId taskId{kInvalidTaskId};
-    };
-
     // Creates and queues one entry-based client task.
     Status SubmitAsync(ClientOpType opType, const std::vector<KVBuffer>& entries, TaskId& taskId);
     // Creates and queues one key-based client task.
-    Status SubmitAsync(ClientOpType opType, const std::vector<CacheKey>& keys, TaskId& taskId);
+    Status SubmitAsync(ClientOpType opType, const std::vector<CacheKey>& keys,
+                       std::uint64_t timeoutMs, TaskId& taskId);
 
     // Runs queued tasks until shutdown and the queue are both complete.
     void WorkerLoop();
 
-    // Performs one query attempt on the current snapshot.
-    Status QueryOnce(const std::vector<CacheKey>& keys, const QueryOptions& options,
-                     QueryResult& result, bool& needRefresh);
     // Performs one register operation on the current snapshot.
     Status RegisterRegionsOnce(const std::vector<MemoryRegion>& regions,
                                std::vector<RegisteredMemory>& registeredRegions, bool& needRefresh);
@@ -153,7 +142,7 @@ private:
     // Protects the client worker queue and shutdown acceptance boundary.
     std::mutex taskQueueMu_;
     std::condition_variable taskQueueCv_;
-    std::deque<ClientTaskContextPtr> taskQueue_;
+    std::deque<ClientTaskPtr> taskQueue_;
     bool stopWorker_{true};
     std::thread worker_;
     // Creates ASU transports; tests inject fake transports through this hook.

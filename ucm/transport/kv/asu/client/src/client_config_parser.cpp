@@ -77,6 +77,8 @@ Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& confi
             config.attrs["view.config_path"] = value;
         } else if (key == "defaultWaitTimeoutMs" || key == "default_wait_timeout_ms") {
             config.defaultWaitTimeoutMs = ParseConfigUint64(value);
+        } else if (key == "timeoutMs" || key == "timeout_ms") {
+            config.timeoutMs = ParseConfigUint64(value);
         } else if (key == "router.type" || key == "routerType" || key == "hashTable.type" ||
                    key == "hash_table.type") {
             auto type = value;
@@ -130,6 +132,7 @@ Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& confi
     }
 
     for (auto& transportConfig : config.transportConfigs) {
+        transportConfig.timeoutMs = config.timeoutMs;
         for (const auto& field : transportFields) {
             if (ApplyTransportBufferConfigField(transportConfig, field.first, field.second)) {
                 continue;

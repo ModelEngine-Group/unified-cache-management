@@ -64,86 +64,58 @@ public:
 
     Status CheckHealth() override { return Status::OK(); }
 
-    Status RunQuery(const std::vector<CacheKey>& keys, const QueryOptions&, QueryResult& result)
+    Status RunQuery(BatchView<CacheKey> keys, QueryResult& result)
     {
-        result.exists.assign(keys.size(), true);
+        result.exists.assign(keys.size, true);
         result.prefixHitKeys = 0;
         return Status::OK();
     }
 
-    Status QueryAsync(const std::vector<CacheKey>& keys, const QueryOptions& options,
-                      TaskId& taskId) override
+    Status Submit(const TransportTaskPtr& task) override
     {
-        QueryResult queryResult;
-        auto status = RunQuery(keys, options, queryResult);
-        if (!status.ok()) {
-            taskId = kInvalidTaskId;
-            return status;
+        if (!task) {
+            return Status::Error(StatusCode::INVALID_ARGUMENT, "stub transport task is null");
+        }
+        if (task->opType == TransportOpType::QUERY) {
+            QueryResult queryResult;
+            auto status = RunQuery({task->keys.data(), task->keys.size()}, queryResult);
+            if (!status.ok()) {
+                task->taskId = kInvalidTaskId;
+                return status;
+            }
+
+            task->taskId = nextTaskId_++;
+            if (task->onComplete) {
+                TaskResult result;
+                result.status = Status::OK();
+                result.entryStatus.assign(task->keys.size(), Status::OK());
+                result.queryResult = std::move(queryResult);
+                task->onComplete(std::move(result));
+            }
+            return Status::OK();
         }
 
-        taskId = nextTaskId_++;
-        queryResults_[taskId] = std::move(queryResult);
-        return Status::OK();
-    }
-
-    Status LoadAsync(const std::vector<KVBuffer>&, TaskId& taskId,
-                     TaskCompletionCallback onComplete) override
-    {
-        taskId = nextTaskId_++;
-        if (onComplete) {
-            TaskResult result;
-            result.status = Status::OK();
-            onComplete(std::move(result));
+        switch (task->opType) {
+            case TransportOpType::LOAD:
+            case TransportOpType::STORE:
+            case TransportOpType::BATCH_LOAD:
+            case TransportOpType::BATCH_STORE:
+            case TransportOpType::DELETE: break;
+            default:
+                task->taskId = kInvalidTaskId;
+                return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                     "unsupported stub transport operation");
         }
-        return Status::OK();
-    }
-
-    Status StoreAsync(const std::vector<KVBuffer>&, TaskId& taskId,
-                      TaskCompletionCallback onComplete) override
-    {
-        taskId = nextTaskId_++;
-        if (onComplete) {
+        task->taskId = nextTaskId_++;
+        if (task->onComplete) {
             TaskResult result;
             result.status = Status::OK();
-            onComplete(std::move(result));
-        }
-        return Status::OK();
-    }
-
-    Status DeleteAsync(const std::vector<CacheKey>&, TaskId& taskId,
-                       TaskCompletionCallback onComplete) override
-    {
-        taskId = nextTaskId_++;
-        if (onComplete) {
-            TaskResult result;
-            result.status = Status::OK();
-            onComplete(std::move(result));
+            task->onComplete(std::move(result));
         }
         return Status::OK();
     }
 
     Status Cancel(TaskId) override { return Status::OK(); }
-
-    Status GetTaskResult(TaskId taskId, TaskResult& result)
-    {
-        if (taskId == kInvalidTaskId) {
-            return Status::Error(StatusCode::TASK_NOT_FOUND, "task not found");
-        }
-        result.status = Status::OK();
-        auto queryIter = queryResults_.find(taskId);
-        if (queryIter != queryResults_.end()) {
-            result.queryResult = queryIter->second;
-            return Status::OK();
-        }
-        result.entryStatus.assign(1, Status::OK());
-        result.queryResult.reset();
-        return Status::OK();
-    }
-
-    Status Wait(TaskId taskId, std::uint64_t, TaskResult& result) override
-    {
-        return GetTaskResult(taskId, result);
-    }
 
     Status RegisterRegions(const std::vector<MemoryRegion>& regions,
                            std::vector<RegisteredMemory>& registeredRegions) override
@@ -166,7 +138,6 @@ private:
     TransportConfig config_;
     bool initialized_{false};
     TaskId nextTaskId_{1000};
-    std::unordered_map<TaskId, QueryResult> queryResults_;
 };
 
 AsuClientConfig MakeClientConfig()
@@ -221,9 +192,24 @@ void ExpectCompleted(AsuClient& client, TaskId taskId, std::size_t entryCount)
         EXPECT_TRUE(entryStatus.ok()) << entryStatus.message;
     }
 
-    TaskResult checkResult;
-    status = client.Check(taskId, checkResult);
-    ASSERT_EQ(status.code, StatusCode::TASK_NOT_FOUND);
+    ASSERT_TRUE(client.Check(taskId));
+}
+
+Status QueryAndWait(AsuClient& client, const std::vector<CacheKey>& keys,
+                    const QueryOptions& options, QueryResult& result)
+{
+    TaskId taskId{kInvalidTaskId};
+    auto status = client.QueryAsync(keys, options, taskId);
+    if (!status.ok()) { return status; }
+
+    TaskResult taskResult;
+    status = client.Wait(taskId, options.timeoutMs, taskResult);
+    if (taskResult.queryResult.has_value()) {
+        result = std::move(*taskResult.queryResult);
+    } else if (status.ok()) {
+        return Status::Error(StatusCode::INTERNAL_ERROR, "client query result is missing");
+    }
+    return status;
 }
 
 }  // namespace
@@ -256,7 +242,7 @@ TEST(AsuSmokeTest, ClientAsyncTasksCompleteEndToEnd)
     QueryOptions queryOptions;
     queryOptions.timeoutMs = 500;
     QueryResult queryResult;
-    status = client->Query(keys, queryOptions, queryResult);
+    status = QueryAndWait(*client, keys, queryOptions, queryResult);
     ASSERT_TRUE(status.ok()) << status.message;
     ASSERT_EQ(queryResult.exists.size(), keys.size());
 

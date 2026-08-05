@@ -222,6 +222,7 @@ public:
         asuConfig.clientId = config.clientId;
         asuConfig.viewServiceAddrs = config.viewServiceAddrs;
         asuConfig.defaultWaitTimeoutMs = config.defaultWaitTimeoutMs;
+        asuConfig.timeoutMs = config.timeoutMs;
         asuConfig.attrs = config.clientAttrs;
         asuConfig.transportConfigs.reserve(config.asuIds.size());
         for (std::size_t i = 0; i < config.asuIds.size(); ++i) {
@@ -241,7 +242,19 @@ public:
     AsuStatus Query(const std::vector<UC::ASU::CacheKey>& keys,
                     const UC::ASU::QueryOptions& options, UC::ASU::QueryResult& result) override
     {
-        return client_->Query(keys, options, result);
+        UC::ASU::TaskId taskId = UC::ASU::kInvalidTaskId;
+        auto status = client_->QueryAsync(keys, options, taskId);
+        if (!status.ok()) { return status; }
+
+        UC::ASU::TaskResult taskResult;
+        status = client_->Wait(taskId, options.timeoutMs, taskResult);
+        if (taskResult.queryResult.has_value()) {
+            result = std::move(*taskResult.queryResult);
+        } else if (status.ok()) {
+            return AsuStatus::Error(UC::ASU::StatusCode::INTERNAL_ERROR,
+                                    "client query result is missing");
+        }
+        return status;
     }
 
     AsuStatus LoadAsync(const std::vector<UC::ASU::KVBuffer>& entries,
@@ -262,10 +275,7 @@ public:
         return client_->DeleteAsync(keys, taskId);
     }
 
-    AsuStatus Check(UC::ASU::TaskId taskId, UC::ASU::TaskResult& result) override
-    {
-        return client_->Check(taskId, result);
-    }
+    bool Check(UC::ASU::TaskId taskId) override { return client_->Check(taskId); }
 
     AsuStatus Wait(UC::ASU::TaskId taskId, std::uint64_t timeoutMs,
                    UC::ASU::TaskResult& result) override
@@ -419,16 +429,7 @@ public:
 
     Expected<bool> Check(Detail::TaskHandle taskId) override
     {
-        UC::ASU::TaskResult result;
-        auto status = backend_->Check(static_cast<UC::ASU::TaskId>(taskId), result);
-        if (!status.ok()) {
-            LogAsuStatus("check task", status);
-            return ConvertStatus(status);
-        }
-        if (!result.status.ok() && result.status.code != AsuStatusCode::IN_PROGRESS) {
-            LogAsuStatus("task result check", result.status);
-        }
-        return result.status.code != AsuStatusCode::IN_PROGRESS;
+        return backend_->Check(static_cast<UC::ASU::TaskId>(taskId));
     }
 
     Status Wait(Detail::TaskHandle taskId) override
@@ -591,6 +592,9 @@ private:
         if (config.maxErrorCount == 0 ||
             config.maxErrorCount > std::numeric_limits<std::uint32_t>::max()) {
             return Status::InvalidParam("asu_max_error_count must be in uint32 range and nonzero");
+        }
+        if (config.timeoutMs == 0) {
+            return Status::InvalidParam("asu_timeout_ms must be greater than zero");
         }
         if (config.maxInflightTasks > std::numeric_limits<std::uint32_t>::max()) {
             return Status::InvalidParam("asu_max_inflight_tasks exceeds uint32 range");

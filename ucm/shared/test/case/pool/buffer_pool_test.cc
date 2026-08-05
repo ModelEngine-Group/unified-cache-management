@@ -29,34 +29,13 @@
 #include <limits>
 #include <thread>
 #include <vector>
-#include "trans/device.h"
+#include "pool/pool_test_base.h"
 namespace UC {
 namespace {
 
 using MemoryType = BufferPool::MemoryType;
 
-class BufferPoolTest : public ::testing::Test {
-protected:
-    static void SetUpTestSuite()
-    {
-        auto status = device_.Init();
-        deviceRuntimeOwned_ = status.Success();
-        ASSERT_TRUE(deviceRuntimeOwned_ || status == Status::DuplicateKey()) << status.ToString();
-        status = device_.Setup(0);
-        ASSERT_TRUE(status.Success()) << status.ToString();
-    }
-
-    static void TearDownTestSuite()
-    {
-        if (!deviceRuntimeOwned_) { return; }
-        EXPECT_TRUE(device_.Reset(0).Success());
-        EXPECT_TRUE(device_.Finalize().Success());
-        deviceRuntimeOwned_ = false;
-    }
-
-    inline static Trans::Device device_;
-    inline static bool deviceRuntimeOwned_{false};
-};
+class BufferPoolTest : public Test::PoolTestBase {};
 
 TEST_F(BufferPoolTest, RejectsInvalidInitAndUseBeforeInit)
 {

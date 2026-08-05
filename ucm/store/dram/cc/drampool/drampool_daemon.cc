@@ -28,6 +28,9 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include "drampool_config.h"
+#include "drampool_server.h"
+#include "health_server.h"
 #include "logger/logger.h"
 
 namespace UC::DramPool {
@@ -55,6 +58,7 @@ int DramPoolDaemon::Run(int argc, char** argv)
     }
 
     DramPoolServer server;
+    HealthServer healthServer;
     status = server.Init();
     if (status.Failure()) {
         UC_ERROR_UNLIMITED("DramPool server init failed: {}", status);
@@ -66,9 +70,17 @@ int DramPoolDaemon::Run(int argc, char** argv)
         return 1;
     }
 
+    status = healthServer.Start();
+    if (status.Failure()) {
+        UC_ERROR_UNLIMITED("DramPool health server start failed: {}", status);
+        server.Stop();
+        return 1;
+    }
+
     UC_INFO_UNLIMITED("DramPool service ready, addr={}", g_config.addr.ToString());
     WaitForShutdown();
     UC_INFO_UNLIMITED("DramPool shutdown requested");
+    healthServer.Stop();
     server.Stop();
     UC::Logger::Flush();
     return 0;

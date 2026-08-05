@@ -54,19 +54,10 @@ enum class OpType : std::uint8_t {
 };
 
 enum class RequestState : std::uint8_t {
-    PENDING = 0,
-    TRANSMITTING,
+    TRANSMITTING = 0,
     INFLIGHT,
     WAITING_FENCE,
-};
-
-enum class NodeState : std::uint8_t {
-    DISCONNECTED = 0,
-    CONNECTING,
-    ACTIVE,
-    FENCING,
-    STOPPING,
-    STOPPED,
+    COMPLETED,
 };
 
 struct BufferRef {
@@ -121,9 +112,7 @@ struct NodeEndpoint {
 };
 
 struct NodeLimits {
-    std::size_t maxPendingRequests{0};
     std::size_t maxInflightRequests{0};
-    std::size_t maxPendingEntries{0};
     std::size_t maxBatchEntries{0};
 };
 
@@ -131,11 +120,6 @@ struct TimeoutConfig {
     std::chrono::milliseconds lookup{0};
     std::chrono::milliseconds dump{0};
     std::chrono::milliseconds load{0};
-};
-
-struct TaskLimits {
-    std::size_t maxLiveTasks{1024};
-    std::size_t maxLiveEntries{65536};
 };
 
 struct NodeSchedulerConfig {
