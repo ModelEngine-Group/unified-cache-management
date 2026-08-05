@@ -245,10 +245,10 @@ Expected<DramConfig> DramConfig::Parse(const Detail::Dictionary& dictionary)
                                             Milliseconds(loadTimeout)};
         result.nodeScheduler.reconnectInterval = Milliseconds(reconnectInterval);
 
-        std::vector<std::size_t> ioLengths;
-        status = NumberList(dictionary, "io_lengths", &ioLengths);
+        std::vector<std::size_t> tensorSizes;
+        status = NumberList(dictionary, "tensor_size_list", &tensorSizes);
         if (status.Failure()) { return status; }
-        result.ioLengths.assign(ioLengths.begin(), ioLengths.end());
+        result.tensorSizes.assign(tensorSizes.begin(), tensorSizes.end());
 
         status = result.Validate();
         if (status.Failure()) { return status; }
@@ -298,14 +298,7 @@ Status DramConfig::Validate() const
     if (nodeScheduler.reconnectInterval.count() <= 0) {
         return Status::InvalidParam("DramStore reconnect interval must be positive");
     }
-    if (ioLengths.empty() || ioLengths.size() > std::numeric_limits<std::uint32_t>::max()) {
-        return Status::InvalidParam("io_lengths must not be empty");
-    }
-    for (const auto length : ioLengths) {
-        if (length == 0 || length > std::numeric_limits<std::uint32_t>::max()) {
-            return Status::InvalidParam("io length is outside the protocol range");
-        }
-    }
+    if (tensorSizes.empty()) { return Status::InvalidParam("tensor_size_list must not be empty"); }
     return Status::OK();
 }
 

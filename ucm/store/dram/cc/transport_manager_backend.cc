@@ -24,6 +24,7 @@
 #include "transport_manager_backend.h"
 #include <utility>
 #include "core/transport_init_attrs.h"
+#include "logger/logger.h"
 
 namespace UC::Dram {
 
@@ -129,15 +130,19 @@ Status TransportManagerBackend::Fence(const ::UC::Dram::FenceEpoch& command) noe
     }
 }
 
-Status TransportManagerBackend::Stop() noexcept
+void TransportManagerBackend::Stop()
 {
     std::lock_guard lock(stopMutex_);
-    if (stopped_) { return Status::OK(); }
+    if (stopped_) { return; }
     const auto controlStatus = control_.Shutdown();
     const auto managerStatus = manager_.Shutdown();
     stopped_ = true;
-    if (controlStatus.Failure()) { return controlStatus; }
-    return managerStatus;
+    if (controlStatus.Failure()) {
+        UC_ERROR("DramStore transport control shutdown failed: {}", controlStatus);
+    }
+    if (managerStatus.Failure()) {
+        UC_ERROR("DramStore transport manager shutdown failed: {}", managerStatus);
+    }
 }
 
 Expected<std::shared_ptr<ITransportBackend>> CreateTransportManagerBackend(

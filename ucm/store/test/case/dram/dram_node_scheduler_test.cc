@@ -435,7 +435,7 @@ TEST(NodeSchedulerTest, ShutdownStopsNewCommands)
         SchedulerConfig({Endpoint(1)}, 1, 1, 1h),
         SchedulerDependencies([](TransportCommand&) { return Status::Retry(); }));
     ASSERT_TRUE(scheduler.Start().Success());
-    ASSERT_TRUE(scheduler.Shutdown().Success());
+    scheduler.Shutdown();
 
     auto command = MakeRequest();
     EXPECT_TRUE(scheduler.Post(command).Failure());
@@ -487,7 +487,7 @@ TEST(NodeSchedulerTest, CompletionPublisherExceptionIsFatal)
                 releaseTransmit = true;
             }
             changed.notify_all();
-            (void)scheduler.Shutdown();
+            scheduler.Shutdown();
         },
         "");
 }
@@ -512,7 +512,7 @@ TEST(NodeSchedulerTest, DisconnectedNodeQueuesRequests)
 
     auto command = MakeRequest();
     EXPECT_TRUE(scheduler.Post(command).Success());
-    EXPECT_TRUE(scheduler.Shutdown().Success());
+    scheduler.Shutdown();
 }
 
 TEST(NodeSchedulerTest, RequestsWaitForInflightCapacity)
@@ -554,7 +554,7 @@ TEST(NodeSchedulerTest, RequestsWaitForInflightCapacity)
     });
     ASSERT_TRUE(WaitUntil(mutex, changed, [&] { return transmitted.size() == 2; }));
     EXPECT_EQ(transmitted, (std::vector<RequestId>{1, 2}));
-    EXPECT_TRUE(scheduler.Shutdown().Success());
+    scheduler.Shutdown();
 }
 
 TEST(NodeSchedulerTest, DifferentRunnersRunConcurrently)
@@ -592,7 +592,7 @@ TEST(NodeSchedulerTest, DifferentRunnersRunConcurrently)
     changed.notify_all();
 
     EXPECT_TRUE(bothEntered);
-    EXPECT_TRUE(scheduler.Shutdown().Success());
+    scheduler.Shutdown();
 }
 
 TEST(NodeSchedulerTest, NodesOnTheSameRunnerRunSerially)
@@ -628,7 +628,7 @@ TEST(NodeSchedulerTest, NodesOnTheSameRunnerRunSerially)
         std::unique_lock lock(mutex);
         EXPECT_TRUE(changed.wait_for(lock, 1s, [&] { return connectCount == 2; }));
     }
-    EXPECT_TRUE(scheduler.Shutdown().Success());
+    scheduler.Shutdown();
 }
 
 TEST(NodeSchedulerTest, DisconnectedActorRetriesConnectionOnSchedule)
@@ -651,7 +651,7 @@ TEST(NodeSchedulerTest, DisconnectedActorRetriesConnectionOnSchedule)
     const bool retried = WaitUntil(mutex, changed, [&] { return attempts >= 2; });
 
     EXPECT_TRUE(retried);
-    EXPECT_TRUE(scheduler.Shutdown().Success());
+    scheduler.Shutdown();
 }
 
 TEST(NodeSchedulerTest, TransportAdmissionFailureDoesNotParkActor)
@@ -719,7 +719,7 @@ TEST(NodeSchedulerTest, TransportAdmissionFailureDoesNotParkActor)
     ASSERT_TRUE(WaitUntil(mutex, changed, [&] { return completionCount == 2; }));
     EXPECT_EQ(transmitCount, std::size_t{2});
     EXPECT_EQ(releases, std::size_t{2});
-    EXPECT_TRUE(instance.Shutdown().Success());
+    instance.Shutdown();
 }
 
 TEST(NodeSchedulerTest, ShutdownAbandonsActiveRequest)
@@ -765,7 +765,7 @@ TEST(NodeSchedulerTest, ShutdownAbandonsActiveRequest)
     auto pending = MakeRequest(2, 2);
     EXPECT_TRUE(scheduler.Post(pending).Success());
 
-    EXPECT_TRUE(scheduler.Shutdown().Success());
+    scheduler.Shutdown();
     EXPECT_FALSE(completed);
     EXPECT_EQ(transmitAttempts, std::size_t{1});
     EXPECT_EQ(releases, std::size_t{0});
@@ -778,7 +778,7 @@ TEST(NodeSchedulerTest, LateEventsAfterShutdownAreDiscarded)
         SchedulerConfig({Endpoint(1)}, 1, 1, 1ms),
         SchedulerDependencies([](TransportCommand&) { return Status::Retry(); }));
     ASSERT_TRUE(scheduler.Start().Success());
-    ASSERT_TRUE(scheduler.Shutdown().Success());
+    scheduler.Shutdown();
 
     for (std::size_t index = 0; index < 16; ++index) {
         scheduler.Publish(1, NodeEvent{
@@ -812,7 +812,7 @@ TEST(NodeSchedulerTest, HundredsOfNodesShareAFewRunners)
     const bool allAttempted = WaitUntil(mutex, changed, [&] { return attempts == kNodeCount; }, 2s);
 
     EXPECT_TRUE(allAttempted);
-    EXPECT_TRUE(scheduler.Shutdown().Success());
+    scheduler.Shutdown();
 }
 
 }  // namespace

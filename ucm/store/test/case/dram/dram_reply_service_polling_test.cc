@@ -33,33 +33,9 @@
 #include <stdexcept>
 #include <vector>
 #include "reply_service.h"
-#include "trans/device.h"
 
 namespace UC::Dram {
 namespace {
-
-class ReplyServicePollingTest : public ::testing::Test {
-protected:
-    static void SetUpTestSuite()
-    {
-        auto status = device_.Init();
-        deviceRuntimeOwned_ = status.Success();
-        ASSERT_TRUE(deviceRuntimeOwned_ || status == Status::DuplicateKey()) << status.ToString();
-        status = device_.Setup(0);
-        ASSERT_TRUE(status.Success()) << status.ToString();
-    }
-
-    static void TearDownTestSuite()
-    {
-        if (!deviceRuntimeOwned_) { return; }
-        EXPECT_TRUE(device_.Reset(0).Success());
-        EXPECT_TRUE(device_.Finalize().Success());
-        deviceRuntimeOwned_ = false;
-    }
-
-    inline static UC::Trans::Device device_;
-    inline static bool deviceRuntimeOwned_{false};
-};
 
 Status PackReply(const ReplySlot& slot, DramPool::KvOpcode opcode,
                  std::vector<std::uint8_t> results)
@@ -100,7 +76,7 @@ private:
     std::optional<NodeEvent> event_;
 };
 
-TEST_F(ReplyServicePollingTest, PublishesObservedReplyAndKeepsLeaseUntilActorRelease)
+TEST(ReplyServicePollingTest, PublishesObservedReplyAndKeepsLeaseUntilActorRelease)
 {
     EventCollector collector;
     auto created = ReplyService::Create(ReplyService::Options{
@@ -109,7 +85,7 @@ TEST_F(ReplyServicePollingTest, PublishesObservedReplyAndKeepsLeaseUntilActorRel
         std::chrono::microseconds{50},
         [&collector](NodeId node, NodeEvent event) { collector.Publish(node, std::move(event)); },
     });
-    ASSERT_TRUE(created) << created.Error().ToString();
+    ASSERT_TRUE(created);
     auto service = std::move(created).Value();
     ASSERT_TRUE(service->Start().Success());
 
@@ -135,10 +111,10 @@ TEST_F(ReplyServicePollingTest, PublishesObservedReplyAndKeepsLeaseUntilActorRel
     EXPECT_EQ(service->Available(), std::size_t{0});
     EXPECT_TRUE(service->Release(token, slot).Success());
     EXPECT_EQ(service->Available(), std::size_t{1});
-    EXPECT_TRUE(service->Shutdown().Success());
+    service->Shutdown();
 }
 
-TEST_F(ReplyServicePollingTest, ReusesSlotWhilePreviousReplyEventIsBeingPublished)
+TEST(ReplyServicePollingTest, ReusesSlotWhilePreviousReplyEventIsBeingPublished)
 {
     std::mutex mutex;
     std::condition_variable changed;
@@ -207,7 +183,7 @@ TEST_F(ReplyServicePollingTest, ReusesSlotWhilePreviousReplyEventIsBeingPublishe
     } else if (firstRelease.Failure()) {
         cleanup = service->Release(firstToken, first.Value());
     }
-    const auto shutdown = service->Shutdown();
+    service->Shutdown();
 
     EXPECT_TRUE(publishEntered);
     EXPECT_TRUE(firstRelease.Success());
@@ -216,10 +192,9 @@ TEST_F(ReplyServicePollingTest, ReusesSlotWhilePreviousReplyEventIsBeingPublishe
     EXPECT_TRUE(secondPack.Success());
     EXPECT_TRUE(secondPublished);
     EXPECT_TRUE(cleanup.Success());
-    EXPECT_TRUE(shutdown.Success());
 }
 
-TEST_F(ReplyServicePollingTest, RejectsShutdownWithActiveLease)
+TEST(ReplyServicePollingTest, AllowsShutdownWithAbandonedLease)
 {
     auto created = ReplyService::Create(ReplyService::Options{
         64,
@@ -232,15 +207,11 @@ TEST_F(ReplyServicePollingTest, RejectsShutdownWithActiveLease)
     ASSERT_TRUE(service->Start().Success());
     auto acquired = service->Acquire(RequestToken{1, kDefaultLaneId, 1, 1}, OpType::LOOKUP, 1);
     ASSERT_TRUE(acquired);
-    EXPECT_TRUE(service->Shutdown().Failure());
+    service->Shutdown();
 }
 
-TEST_F(ReplyServicePollingTest, EventPublisherExceptionIsFatal)
+TEST(ReplyServicePollingTest, EventPublisherExceptionIsFatal)
 {
-#if defined(UCM_TEST_RUNTIME_ASCEND)
-    GTEST_FLAG_SET(death_test_style, "threadsafe");
-#endif
-
     EXPECT_DEATH(
         {
             std::promise<void> publishAttempted;
@@ -264,7 +235,7 @@ TEST_F(ReplyServicePollingTest, EventPublisherExceptionIsFatal)
                     PackReply(acquired.Value(), DramPool::KvOpcode::Lookup, {1}).Success()) {
                     publishAttemptedFuture.wait();
                 }
-                (void)service->Shutdown();
+                service->Shutdown();
             }
         },
         "");
