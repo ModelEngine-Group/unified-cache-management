@@ -218,11 +218,6 @@ Status Executor::GatherAsync(const TransferGroup& group, CopyStream& streams)
     for (const auto& shard : group.shards) {
         const auto& desc = group.task->desc[shard.shardIndex];
         const auto stream = streams.NextStream();
-        if (group.task->desc.prerequisiteHandle != 0) {
-            const auto status = streams.WaitEvent(
-                stream, reinterpret_cast<aclrtEvent>(group.task->desc.prerequisiteHandle));
-            if (status.Failure()) { return status; }
-        }
         auto* destination = static_cast<std::byte*>(shard.slot.device_addr);
         std::size_t offset = 0;
         for (std::size_t index = 0; index < desc.addrs.size(); ++index) {

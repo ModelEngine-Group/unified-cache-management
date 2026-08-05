@@ -21,6 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+#include <acl/acl.h>
 #include <limits>
 #include <memory>
 #include <new>
@@ -70,6 +71,14 @@ struct Config {
     std::size_t bufferNumber{0};
     std::size_t streamNumber{Executor::kDefaultStreamNumber};
 };
+
+Status WaitPrerequisiteEvent(std::uintptr_t eventHandle)
+{
+    if (eventHandle == 0) { return Status::OK(); }
+    const auto ret = aclrtSynchronizeEvent(reinterpret_cast<aclrtEvent>(eventHandle));
+    if (ret == ACL_SUCCESS) { return Status::OK(); }
+    return Status::Error("aclrtSynchronizeEvent failed: " + std::to_string(ret));
+}
 
 Expected<Config> ParseConfig(const Detail::Dictionary& input)
 {
@@ -200,6 +209,12 @@ Expected<Detail::TaskHandle> DelegatorStore::Load(Detail::TaskDesc task)
 Expected<Detail::TaskHandle> DelegatorStore::Dump(Detail::TaskDesc task)
 {
     if (!executor_) { return Status::Unsupported(); }
+    const auto status = WaitPrerequisiteEvent(task.prerequisiteHandle);
+    if (status.Failure()) {
+        UC_ERROR("Delegator wait prerequisite event failed, status={}.", status);
+        return status;
+    }
+    task.prerequisiteHandle = 0;
     return executor_->Submit(std::move(task), Operation::DUMP);
 }
 

@@ -46,7 +46,6 @@ public:
     Status DeviceToDeviceAsync(aclrtStream stream, void* destination,
                                std::size_t destinationCapacity, const void* source,
                                std::size_t size);
-    Status WaitEvent(aclrtStream stream, aclrtEvent event);
     Status Synchronize(aclrtStream stream);
     Status SynchronizeAll();
     std::size_t Size() const { return streams_.size(); }
