@@ -31,10 +31,7 @@ extern "C" UC::StoreV1* MakeDelegatorStore();
 namespace UC::Delegator {
 namespace {
 
-std::unique_ptr<StoreV1> CreateStore()
-{
-    return std::unique_ptr<StoreV1>{MakeDelegatorStore()};
-}
+std::unique_ptr<StoreV1> CreateStore() { return std::unique_ptr<StoreV1>{MakeDelegatorStore()}; }
 
 TEST(UCDelegatorStoreTest, FactoryReturnsStoreV1)
 {
