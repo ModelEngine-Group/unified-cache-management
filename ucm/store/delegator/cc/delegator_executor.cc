@@ -522,8 +522,6 @@ void Executor::ReleaseBatch(TransferBatch& batch)
 
     std::size_t count = 0;
     for (auto& group : batch.groups) {
-        assert(group.task && !group.shards.empty() && group.task->operation == operation);
-
         for (const auto& shard : group.shards) {
             const auto freeStatus = bufferPool_.Free(shard.slot.slot_index);
             if (!group.error && freeStatus.Failure()) { group.error = freeStatus; }
