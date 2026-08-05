@@ -49,6 +49,7 @@ if(BUILD_UNIT_TESTS)
         target_link_libraries(ucmstore.test PRIVATE
             asu_client
             delegator
+            delegator_store
             buffer_pool
             asu_ascend_deps
         )

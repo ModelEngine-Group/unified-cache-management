@@ -248,6 +248,19 @@ def _asu_pipeline_builder(
     pipeline.Stack("Asu", str(store_dir / "asu/libasustore.so"), config)
 
 
+def _delegator_pipeline_builder(
+    config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
+):
+    backend = config.get("delegator_backend")
+    if backend != "ASU":
+        raise ValueError(f"unsupported delegator backend: {backend}")
+
+    store_dir = Path(__file__).resolve().parent.parent
+    pipeline.Stack(
+        "Delegator", str(store_dir / "delegator/libdelegator_store.so"), config
+    )
+
+
 UcmPipelineStoreBuilder.register("Cache|Ds3fs", _cache_ds3fs_pipeline_builder)
 UcmPipelineStoreBuilder.register("Cache|Empty", _cache_empty_pipeline_builder)
 UcmPipelineStoreBuilder.register("Cache|Posix", _cache_posix_pipeline_builder)
@@ -255,6 +268,7 @@ UcmPipelineStoreBuilder.register("Empty", _empty_pipeline_builder)
 UcmPipelineStoreBuilder.register("Fake", _fake_pipeline_builder)
 UcmPipelineStoreBuilder.register("Posix", _posix_pipeline_builder)
 UcmPipelineStoreBuilder.register("ASU", _asu_pipeline_builder)
+UcmPipelineStoreBuilder.register("Delegator", _delegator_pipeline_builder)
 UcmPipelineStoreBuilder.register(
     "Cache|Compress|Posix", _build_cache_compress_posix_pipeline
 )

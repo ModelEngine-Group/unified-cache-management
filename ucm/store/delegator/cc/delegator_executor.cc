@@ -522,7 +522,7 @@ void Executor::ReleaseBatch(TransferBatch& batch)
 
     std::size_t count = 0;
     for (auto& group : batch.groups) {
-        assert(group.task && !group.shards.empty() && group.task->operation == operation;);
+        assert(group.task && !group.shards.empty() && group.task->operation == operation);
 
         for (const auto& shard : group.shards) {
             const auto freeStatus = bufferPool_.Free(shard.slot.slot_index);
@@ -749,36 +749,31 @@ void Executor::LoadLoop(std::promise<Status>& started)
                 if (!group.transferPending) { continue; }
 
                 auto completed = backend_->Check(group.transferTask);
-                if (!completed) {
-                    group.error = completed.Error();
+                if (!completed.Value()) { continue; }
+
+                // Check(true) only means that the backend task has completed. The final
+                // success/failure status is retrieved by Wait().
+                auto waitStatus = backend_->Wait(group.transferTask);
+                if (waitStatus.Failure()) {
+                    group.error = waitStatus;
                     UC_ERROR(
-                        "Delegator LOAD task({},{}) stage=backend_check failed, "
+                        "Delegator LOAD task({},{}) stage=backend_wait failed, "
                         "backend_task={}, status={}.",
-                        group.task->id, group.task->desc.brief, group.transferTask, *group.error);
-                } else if (!completed.Value()) {
-                    continue;
+                        group.task->id, group.task->desc.brief, group.transferTask, waitStatus);
                 } else {
-                    const auto waitStatus = backend_->Wait(group.transferTask);
-                    if (waitStatus.Failure()) {
-                        group.error = waitStatus;
-                        UC_ERROR(
-                            "Delegator LOAD task({},{}) stage=backend_wait failed, "
-                            "backend_task={}, status={}.",
-                            group.task->id, group.task->desc.brief, group.transferTask, waitStatus);
-                    } else {
-                        UC_DEBUG(
-                            "Delegator LOAD task({},{}) stage=backend_complete, "
-                            "backend_task={}, shards={}.",
-                            group.task->id, group.task->desc.brief, group.transferTask,
-                            group.shards.size());
-                        const auto scatterStatus = ScatterAsync(group, streams);
-                        if (scatterStatus.Failure()) {
-                            group.error = scatterStatus;
-                            UC_ERROR("Delegator LOAD task({},{}) stage=scatter failed, status={}.",
-                                     group.task->id, group.task->desc.brief, scatterStatus);
-                        }
+                    UC_DEBUG(
+                        "Delegator LOAD task({},{}) stage=backend_complete, "
+                        "backend_task={}, shards={}.",
+                        group.task->id, group.task->desc.brief, group.transferTask,
+                        group.shards.size());
+                    const auto scatterStatus = ScatterAsync(group, streams);
+                    if (scatterStatus.Failure()) {
+                        group.error = scatterStatus;
+                        UC_ERROR("Delegator LOAD task({},{}) stage=scatter failed, status={}.",
+                                 group.task->id, group.task->desc.brief, scatterStatus);
                     }
                 }
+
                 group.transferPending = false;
                 --pendingGroupCount;
             }

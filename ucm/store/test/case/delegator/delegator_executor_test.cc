@@ -216,9 +216,6 @@ public:
             wait_entered_.notify_all();
         }
         if (entry.blocked && !release_load_) { return false; }
-        if (entry.group_index == fail_load_check_index_) {
-            return Status::Error("injected load check failure");
-        }
         return true;
     }
 
@@ -302,7 +299,6 @@ public:
     }
 
     std::size_t fail_load_index_{std::numeric_limits<std::size_t>::max()};
-    std::size_t fail_load_check_index_{std::numeric_limits<std::size_t>::max()};
     std::size_t fail_load_wait_index_{std::numeric_limits<std::size_t>::max()};
     std::size_t fail_dump_submit_index_{std::numeric_limits<std::size_t>::max()};
     std::size_t fail_dump_wait_index_{std::numeric_limits<std::size_t>::max()};
@@ -559,10 +555,10 @@ TEST_F(ExecutorTest, LoadSubmitFailureDoesNotScatterGroup)
     EXPECT_EQ(ReadShard(shards[2]), (std::array<std::uint8_t, 8>{}));
 }
 
-TEST_F(ExecutorTest, LoadCheckFailureDoesNotScatterGroup)
+TEST_F(ExecutorTest, LoadWaitFailureForBatchDoesNotScatter)
 {
     FakeStore store(8);
-    store.fail_load_check_index_ = 0;
+    store.fail_load_wait_index_ = 0;
     std::vector<DeviceShard> shards;
     for (std::size_t index = 0; index < 3; ++index) {
         shards.push_back(MakeEmptyShard(index));
@@ -636,11 +632,11 @@ TEST_F(ExecutorTest, LoadSubmitFailureDoesNotCancelNextTransferGroup)
               (std::array<std::uint8_t, 8>{21, 22, 23, 24, 25, 26, 27, 28}));
 }
 
-TEST_F(ExecutorTest, LoadCheckFailureDoesNotFailNextTransferGroup)
+TEST_F(ExecutorTest, LoadWaitFailureDoesNotFailNextTransferGroup)
 {
     FakeStore store(8);
     store.BlockFirstStore();
-    store.fail_load_check_index_ = 0;
+    store.fail_load_wait_index_ = 0;
     store.SetData(0, {1, 2, 3, 4, 5, 6, 7, 8});
     store.SetData(1, {11, 12, 13, 14, 15, 16, 17, 18});
 
