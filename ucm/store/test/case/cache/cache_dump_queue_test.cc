@@ -116,3 +116,40 @@ TEST_F(UCCacheDumpQueueTest, DumpBlockWhileBackendSubmitFailed)
     waiter->Wait();
     ASSERT_TRUE(failureSet.Contains(task->id));
 }
+
+TEST_F(UCCacheDumpQueueTest, DumpBlockWhileBackendUnhealthy)
+{
+    using namespace UC::CacheStore;
+    UC::Test::Detail::MockStore backend;
+    EXPECT_CALL(backend, Dump).WillOnce(testing::Return(UC::Status::StoreUnhealthy()));
+    UC::HashSet<UC::Detail::TaskHandle> failureSet;
+    Config config;
+    config.storeBackend = &backend;
+    size_t tensorSize = 32768;
+    config.tensorSizes = {tensorSize};
+    config.shardSize = tensorSize;
+    config.blockSize = config.shardSize;
+    config.deviceId = 0;
+    config.bufferCapacity = config.shardSize * 1024;
+    config.uniqueId = rd.RandomString(10);
+    config.shareBufferEnable = true;
+    TransBuffer buffer;
+    DumpQueue dumpQ;
+    auto s = buffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    s = dumpQ.Setup(config, &failureSet, &buffer);
+    ASSERT_EQ(s, UC::Status::OK());
+    auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
+    constexpr size_t shardIdx = 0;
+    UC::Test::Detail::DataGenerator data{1, config.blockSize};
+    data.Generate();
+    UC::Detail::TaskDesc desc{
+        {blockId, shardIdx, {data.Buffer()}}
+    };
+    auto task = std::make_shared<TransTask>(TransTask::Type::DUMP, desc);
+    auto waiter = std::make_shared<UC::Latch>();
+    dumpQ.Submit(task, waiter);
+    waiter->Wait();
+    ASSERT_TRUE(failureSet.Contains(task->id));
+    EXPECT_EQ(task->FailureStatus(), UC::Status::StoreUnhealthy());
+}

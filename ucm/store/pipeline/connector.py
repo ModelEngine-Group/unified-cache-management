@@ -91,8 +91,7 @@ class UcmPipelineStoreTransTask(Task):
 class UcmPipelineStore(UcmKVStoreBaseV1):
     def __init__(self, config: Dict[str, object]) -> None:
         super().__init__(config)
-        health_config = copy.deepcopy(config.get("store_health", {}))
-        self.store_ = ucmpipelinestore.PipelineStore(health_config)
+        self.store_ = ucmpipelinestore.PipelineStore()
         builder = UcmPipelineStoreBuilder.get(config["store_pipeline"])
         if builder is None:
             raise ValueError(f"unknown store pipeline: {config['store_pipeline']}")

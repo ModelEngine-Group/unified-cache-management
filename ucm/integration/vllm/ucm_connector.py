@@ -1706,7 +1706,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         remaining_tasks: list[PendingDumpTask] = []
         for pending_dump_task in self._pending_dump_tasks:
             try:
-                if not self.store.check(pending_dump_task.task):
+                if not self._rank_consistency.check_dump(pending_dump_task.task):
                     remaining_tasks.append(pending_dump_task)
                     continue
             except Exception as e:

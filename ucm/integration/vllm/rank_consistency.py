@@ -23,10 +23,14 @@
 from typing import Any
 
 from ucm.logger import init_logger
-from ucm.store.pipeline.errors import StoreNotFoundError
+from ucm.store.pipeline.errors import StoreNotFoundError, StoreUnhealthyError
 from ucm.store.ucmstore_v1 import UcmKVStoreBaseV1
 
 logger = init_logger(__name__)
+
+
+class _StoreUnhealthyDumpTask:
+    pass
 
 
 class RankConsistencyTracker:
@@ -107,7 +111,7 @@ class RankConsistencyManager:
             int, tuple[UcmKVStoreBaseV1, dict[str, list[bytes]]]
         ] = {}
         self._dump_task_contexts: dict[
-            int, tuple[UcmKVStoreBaseV1, dict[str, set[bytes]]]
+            int, tuple[UcmKVStoreBaseV1 | None, dict[str, set[bytes]]]
         ] = {}
         self._dump_blocks_by_request: dict[str, set[bytes]] = {}
         self._dump_failed_blocks_by_request: dict[str, set[bytes]] = {}
@@ -195,11 +199,26 @@ class RankConsistencyManager:
             )
         try:
             task = store.dump_data(block_ids, shard_indices, ptrs, event_handle)
+        except StoreUnhealthyError:
+            # handle l1 store unhealthy
+            task = _StoreUnhealthyDumpTask()
+            task_store = None
         except Exception:
             self._record_dump_failure(request_context)
             raise
-        self._dump_task_contexts[id(task)] = (store, request_context)
+        else:
+            task_store = store
+        self._dump_task_contexts[id(task)] = (task_store, request_context)
         return task
+
+    def check_dump(self, task: Any) -> bool:
+        """Poll a dump task, treating an unhealthy submission as completed."""
+        task_key = id(task)
+        if task_key not in self._dump_task_contexts:
+            raise RuntimeError("Dump task was not submitted through submit_dump().")
+        store, _ = self._dump_task_contexts[task_key]
+        # if store is none, means the store is unhealthy, do not check
+        return True if store is None else store.check(task)
 
     def wait_dump(self, task: Any) -> None:
         """Wait through the task's Store and record blocks affected by failure."""
@@ -207,8 +226,17 @@ class RankConsistencyManager:
         if task_key not in self._dump_task_contexts:
             raise RuntimeError("Dump task was not submitted through submit_dump().")
         store, request_context = self._dump_task_contexts.pop(task_key)
+        # store is None means l1 store is unhealthy
+        if store is None:
+            self._record_dump_failure(request_context)
+            return
         try:
             store.wait(task)
+        # throw StoreUnhealthyError exception means l2 store is unhealthy
+        except StoreUnhealthyError:
+            self._record_dump_failure(request_context)
+            # record failure but do not raise
+            return
         except Exception:
             self._record_dump_failure(request_context)
             raise
