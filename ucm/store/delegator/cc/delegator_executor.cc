@@ -32,11 +32,17 @@
 #include <new>
 #include <system_error>
 #include "logger/logger.h"
+#include "time/now_time.h"
 
 namespace UC::Delegator {
 namespace {
 
 constexpr std::size_t kBufferAlignment = 16 * 1024;
+
+struct TransferTiming {
+    double backendStartTp{0.0};
+    double d2dStartTp{0.0};
+};
 
 const char* OperationName(Operation operation) noexcept
 {
@@ -617,12 +623,17 @@ void Executor::DumpLoop(std::promise<Status>& started)
         auto batchResult = AcquireBatch(Operation::DUMP);
         if (!batchResult) { break; }
         auto batch = std::move(batchResult).Value();
+        std::unordered_map<Detail::TaskHandle, TransferTiming> timings;
+        timings.reserve(batch.groups.size());
 
         for (auto& group : batch.groups) {
             if (Logger::isEnabledFor(Logger::Level::DEBUG)) {
                 UC_DEBUG("Delegator DUMP task({},{}) processing KVCache shards=[{}].",
                          group.task->id, group.task->desc.brief, DescribeShards(group));
             }
+            auto& timing = timings[group.task->id];
+            // Record the start time for D2D duration calculation.
+            timing.d2dStartTp = NowTime::Now();
             const auto gatherStatus = GatherAsync(group, streams);
             if (gatherStatus.Failure()) {
                 group.error = gatherStatus;
@@ -632,6 +643,8 @@ void Executor::DumpLoop(std::promise<Status>& started)
         }
 
         const auto syncStatus = streams.SynchronizeAll();
+        // Record the end time for D2D duration calculation.
+        const auto d2dEndTp = NowTime::Now();
         if (syncStatus.Failure()) {
             for (auto& group : batch.groups) {
                 if (!group.error) {
@@ -643,8 +656,12 @@ void Executor::DumpLoop(std::promise<Status>& started)
         } else {
             for (const auto& group : batch.groups) {
                 if (!group.error) {
-                    UC_DEBUG("Delegator DUMP task({},{}) stage=gather_complete, shards={}.",
-                             group.task->id, group.task->desc.brief, group.shards.size());
+                    const auto& timing = timings.at(group.task->id);
+                    UC_DEBUG(
+                        "Delegator DUMP task({},{}) stage=gather_complete, shards={}, "
+                        "d2d_duration={:.3f}ms.",
+                        group.task->id, group.task->desc.brief, group.shards.size(),
+                        (d2dEndTp - timing.d2dStartTp) * 1e3);
                 }
             }
         }
@@ -659,15 +676,19 @@ void Executor::DumpLoop(std::promise<Status>& started)
                          group.task->id, group.task->desc.brief, *group.error);
                 continue;
             }
+            auto& timing = timings.at(group.task->id);
+            // Record the start time for backend duration calculation.
+            timing.backendStartTp = NowTime::Now();
             auto submitted = backend_->Dump(std::move(backendTask).Value());
             if (submitted) {
                 group.transferTask = std::move(submitted).Value();
                 group.transferPending = true;
+                // Calculate backend submit duration on submission.
                 UC_DEBUG(
                     "Delegator DUMP task({},{}) stage=backend_submitted, backend_task={}, "
-                    "shards={}.",
-                    group.task->id, group.task->desc.brief, group.transferTask,
-                    group.shards.size());
+                    "shards={}, submit_duration={:.3f}ms.",
+                    group.task->id, group.task->desc.brief, group.transferTask, group.shards.size(),
+                    (NowTime::Now() - timing.backendStartTp) * 1e3);
             } else {
                 group.error = submitted.Error();
                 UC_ERROR("Delegator DUMP task({},{}) stage=backend_submit failed, status={}.",
@@ -678,6 +699,9 @@ void Executor::DumpLoop(std::promise<Status>& started)
         for (auto& group : batch.groups) {
             if (!group.transferPending) { continue; }
             const auto waitStatus = backend_->Wait(group.transferTask);
+            // Record the end time for backend duration calculation.
+            const auto backendEndTp = NowTime::Now();
+            const auto& timing = timings.at(group.task->id);
             if (waitStatus.Failure()) {
                 group.error = waitStatus;
                 UC_ERROR(
@@ -687,9 +711,9 @@ void Executor::DumpLoop(std::promise<Status>& started)
             } else {
                 UC_DEBUG(
                     "Delegator DUMP task({},{}) stage=backend_complete, backend_task={}, "
-                    "shards={}.",
-                    group.task->id, group.task->desc.brief, group.transferTask,
-                    group.shards.size());
+                    "shards={}, backend_duration={:.3f}ms.",
+                    group.task->id, group.task->desc.brief, group.transferTask, group.shards.size(),
+                    (backendEndTp - timing.backendStartTp) * 1e3);
             }
             group.transferPending = false;
         }
@@ -711,6 +735,8 @@ void Executor::LoadLoop(std::promise<Status>& started)
         auto batchResult = AcquireBatch(Operation::LOAD);
         if (!batchResult) { break; }
         auto batch = std::move(batchResult).Value();
+        std::unordered_map<Detail::TaskHandle, TransferTiming> timings;
+        timings.reserve(batch.groups.size());
 
         std::size_t pendingGroupCount = 0;
         for (auto& group : batch.groups) {
@@ -718,6 +744,7 @@ void Executor::LoadLoop(std::promise<Status>& started)
                 UC_DEBUG("Delegator LOAD task({},{}) processing KVCache shards=[{}].",
                          group.task->id, group.task->desc.brief, DescribeShards(group));
             }
+            auto& timing = timings[group.task->id];
             auto backendTask = MakeBackendTask(group);
             if (!backendTask) {
                 group.error = backendTask.Error();
@@ -725,16 +752,19 @@ void Executor::LoadLoop(std::promise<Status>& started)
                          group.task->id, group.task->desc.brief, *group.error);
                 continue;
             }
+            // Record the start time for backend duration calculation.
+            timing.backendStartTp = NowTime::Now();
             auto submitted = backend_->Load(std::move(backendTask).Value());
             if (submitted) {
                 group.transferTask = std::move(submitted).Value();
                 group.transferPending = true;
                 ++pendingGroupCount;
+                // Calculate backend submit duration on submission.
                 UC_DEBUG(
                     "Delegator LOAD task({},{}) stage=backend_submitted, backend_task={}, "
-                    "shards={}.",
-                    group.task->id, group.task->desc.brief, group.transferTask,
-                    group.shards.size());
+                    "shards={}, submit_duration={:.3f}ms.",
+                    group.task->id, group.task->desc.brief, group.transferTask, group.shards.size(),
+                    (NowTime::Now() - timing.backendStartTp) * 1e3);
             } else {
                 group.error = submitted.Error();
                 UC_ERROR("Delegator LOAD task({},{}) stage=backend_submit failed, status={}.",
@@ -752,6 +782,7 @@ void Executor::LoadLoop(std::promise<Status>& started)
                 // Check(true) only means that the backend task has completed. The final
                 // success/failure status is retrieved by Wait().
                 auto waitStatus = backend_->Wait(group.transferTask);
+                auto& timing = timings.at(group.task->id);
                 if (waitStatus.Failure()) {
                     group.error = waitStatus;
                     UC_ERROR(
@@ -759,11 +790,14 @@ void Executor::LoadLoop(std::promise<Status>& started)
                         "backend_task={}, status={}.",
                         group.task->id, group.task->desc.brief, group.transferTask, waitStatus);
                 } else {
+                    // Calculate backend duration on completion.
                     UC_DEBUG(
                         "Delegator LOAD task({},{}) stage=backend_complete, "
-                        "backend_task={}, shards={}.",
+                        "backend_task={}, shards={}, backend_duration={:.3f}ms.",
                         group.task->id, group.task->desc.brief, group.transferTask,
-                        group.shards.size());
+                        group.shards.size(), (NowTime::Now() - timing.backendStartTp) * 1e3);
+                    // Record the start time for D2D duration calculation.
+                    timing.d2dStartTp = NowTime::Now();
                     const auto scatterStatus = ScatterAsync(group, streams);
                     if (scatterStatus.Failure()) {
                         group.error = scatterStatus;
@@ -777,6 +811,8 @@ void Executor::LoadLoop(std::promise<Status>& started)
             }
         }
         const auto syncStatus = streams.SynchronizeAll();
+        // Record the end time for D2D duration calculation.
+        const auto d2dEndTp = NowTime::Now();
         if (syncStatus.Failure()) {
             for (auto& group : batch.groups) {
                 if (!group.error) {
@@ -788,8 +824,12 @@ void Executor::LoadLoop(std::promise<Status>& started)
         } else {
             for (const auto& group : batch.groups) {
                 if (!group.error) {
-                    UC_DEBUG("Delegator LOAD task({},{}) stage=scatter_complete, shards={}.",
-                             group.task->id, group.task->desc.brief, group.shards.size());
+                    const auto& timing = timings.at(group.task->id);
+                    UC_DEBUG(
+                        "Delegator LOAD task({},{}) stage=scatter_complete, shards={}, "
+                        "d2d_duration={:.3f}ms.",
+                        group.task->id, group.task->desc.brief, group.shards.size(),
+                        (d2dEndTp - timing.d2dStartTp) * 1e3);
                 }
             }
         }
