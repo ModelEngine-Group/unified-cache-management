@@ -50,7 +50,9 @@ public:
     Status Wait(Detail::TaskHandle task) override;
     bool NeedRegisterKVCaches() const override { return false; }
     Status RegisterKVCaches(const KVCacheRegistration*, std::size_t) override
-    { return Status::OK(); }
+    {
+        return Status::OK();
+    }
 
 private:
     std::shared_ptr<StoreV1> backend_;
@@ -168,7 +170,9 @@ Status DelegatorStore::Setup(const Detail::Dictionary& input)
 }
 
 std::string DelegatorStore::Readme() const
-{ return backend_ ? "DelegatorStore(" + backend_->Readme() + ")" : "DelegatorStore"; }
+{
+    return backend_ ? "DelegatorStore(" + backend_->Readme() + ")" : "DelegatorStore";
+}
 
 Expected<std::vector<uint8_t>> DelegatorStore::Lookup(const Detail::BlockId* blocks, size_t num)
 {
