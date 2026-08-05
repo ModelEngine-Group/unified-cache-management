@@ -678,12 +678,6 @@ void Executor::DumpLoop(std::promise<Status>& started)
             if (submitted) {
                 group.transferTask = std::move(submitted).Value();
                 group.transferPending = true;
-                // Calculate backend submit duration on submission.
-                UC_DEBUG(
-                    "Delegator DUMP task({},{}) stage=backend_submitted, backend_task={}, "
-                    "shards={}, submit_duration={:.3f}ms.",
-                    group.task->id, group.task->desc.brief, group.transferTask, group.shards.size(),
-                    (NowTime::Now() - timing.backendStartTp) * 1e3);
             } else {
                 group.error = submitted.Error();
                 UC_ERROR("Delegator DUMP task({},{}) stage=backend_submit failed, status={}.",
@@ -754,12 +748,6 @@ void Executor::LoadLoop(std::promise<Status>& started)
                 group.transferTask = std::move(submitted).Value();
                 group.transferPending = true;
                 ++pendingGroupCount;
-                // Calculate backend submit duration on submission.
-                UC_DEBUG(
-                    "Delegator LOAD task({},{}) stage=backend_submitted, backend_task={}, "
-                    "shards={}, submit_duration={:.3f}ms.",
-                    group.task->id, group.task->desc.brief, group.transferTask, group.shards.size(),
-                    (NowTime::Now() - timing.backendStartTp) * 1e3);
             } else {
                 group.error = submitted.Error();
                 UC_ERROR("Delegator LOAD task({},{}) stage=backend_submit failed, status={}.",
