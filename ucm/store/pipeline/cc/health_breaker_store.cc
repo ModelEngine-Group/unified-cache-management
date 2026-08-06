@@ -132,10 +132,10 @@ Status HealthBreakerStore::CheckHealth()
     if (!healthCheck_) { return Status::InvalidParam("health breaker store is not set up"); }
     auto status = healthCheck_->Run([this] { return store_->CheckHealth(); });
     if (status == Status::Timeout()) {
-        UC_WARN_UNLIMITED("Store health check({}) timed out after {} ms.", storeId_,
-                          config_.healthCheckTimeout.count());
+        UC_WARN("Store health check({}) timed out after {} ms.", storeId_,
+                config_.healthCheckTimeout.count());
     } else if (status.Failure()) {
-        UC_WARN_UNLIMITED("Store health check({}) failed({}).", storeId_, status);
+        UC_WARN("Store health check({}) failed({}).", storeId_, status);
     }
     RecordHealth(status.Success());
     RecordProbeMetrics(status.Success());
@@ -196,7 +196,7 @@ void HealthBreakerStore::RecordHealth(bool healthy)
         }
     }
     if (oldEnabled != newEnabled) {
-        UC_WARN_UNLIMITED(
+        UC_WARN(
             "Store health breaker({}) transitioned to {}, window=[{}], samples={}, failures={}, "
             "threshold={}.",
             storeId_, newEnabled ? "HEALTHY" : "UNHEALTHY", healthWindow, sampleCount, failureCount,
