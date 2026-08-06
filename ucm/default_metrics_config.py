@@ -686,6 +686,11 @@ _HISTOGRAM_METRICS = [
         [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50],
     ),
     (
+        "inference_monitor_start_to_save_ms",
+        "Wall-clock time from start_load_kv to wait_for_save in the no-I/O monitor (ms)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+    ),
+    (
         "layerwise_first_layer_submit_ms",
         (
             "Time to submit first layer load tasks during start_load_kv - TTFT critical "
