@@ -151,7 +151,7 @@ TEST(AsuResponseStatusTest, QueryCheckResultBufferUsesExistEntryStatuses)
     EXPECT_EQ(queryResult.exists[0], std::uint8_t{1});
     EXPECT_EQ(queryResult.exists[1], std::uint8_t{0});
     EXPECT_EQ(queryResult.exists[2], std::uint8_t{1});
-    EXPECT_EQ(queryResult.prefixHitKeys, std::uint32_t{2});
+    EXPECT_EQ(queryResult.prefixHitKeys, std::uint32_t{1});
 }
 
 TEST(AsuResponseStatusTest, MissingResultBufferPropagatesSubBatchError)

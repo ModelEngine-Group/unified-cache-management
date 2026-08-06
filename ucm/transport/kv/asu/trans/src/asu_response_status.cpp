@@ -178,10 +178,10 @@ QueryResult BuildQueryResultFromEntryStatus(const std::vector<Status>& entryStat
     QueryResult queryResult;
     queryResult.exists.assign(entryStatus.size(), 0);
     for (std::size_t index = 0; index < entryStatus.size(); ++index) {
-        if (entryStatus[index].code != StatusCode::ASU_ENTRY_KEY_EXIST) { continue; }
-
-        queryResult.exists[index] = 1;
-        ++queryResult.prefixHitKeys;
+        queryResult.exists[index] = entryStatus[index].code == StatusCode::ASU_ENTRY_KEY_EXIST;
+        if (queryResult.prefixHitKeys == index && queryResult.exists[index] != 0) {
+            ++queryResult.prefixHitKeys;
+        }
     }
     return queryResult;
 }

@@ -278,8 +278,7 @@ Status AsuTransportImpl::Submit(const TransportTaskPtr& task)
     if (!task) { return Status::Error(StatusCode::INVALID_ARGUMENT, "transport task is null"); }
     const auto entryCount = IsEntryBatchOp(task->opType) ? task->entries.size() : task->keys.size();
     task->entryStatus.assign(entryCount, Status::OK());
-    const auto timeoutMs = task->timeoutMs == 0 ? config_.timeoutMs : task->timeoutMs;
-    task->deadline = TaskDeadline(timeoutMs);
+    task->deadline = TaskDeadline(config_.timeoutMs);
     return SubmitTask(task);
 }
 

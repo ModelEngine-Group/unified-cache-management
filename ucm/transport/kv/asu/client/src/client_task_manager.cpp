@@ -189,7 +189,6 @@ void ClientTaskManager::CompleteTransportTask(const ClientTaskPtr& task,
                 task->queryResult.exists[transportTask->originalIndices[index]] =
                     result.queryResult->exists[index];
             }
-            task->queryResult.prefixHitKeys += result.queryResult->prefixHitKeys;
         }
     }
 
@@ -232,6 +231,14 @@ void ClientTaskManager::CompleteUndispatchedTransportTasks(const ClientTaskPtr& 
 
 void ClientTaskManager::Finalize(const ClientTaskPtr& task)
 {
+    if (task->opType == ClientOpType::QUERY) {
+        task->queryResult.prefixHitKeys = 0;
+        for (auto exists : task->queryResult.exists) {
+            if (exists == 0) { break; }
+            ++task->queryResult.prefixHitKeys;
+        }
+    }
+
     const bool anyFailed =
         std::any_of(task->transportTasks.begin(), task->transportTasks.end(),
                     [](const TransportTaskPtr& transportTask) {
@@ -282,7 +289,6 @@ Status ClientTaskManager::BuildTransportTasks(const ClientTaskPtr& task)
                 transportTask->originalIndices.push_back(index);
             }
         }
-        transportTask->timeoutMs = task->timeoutMs;
         task->transportTasks.push_back(std::move(transportTask));
     }
     std::vector<KVBuffer>{}.swap(task->entries);

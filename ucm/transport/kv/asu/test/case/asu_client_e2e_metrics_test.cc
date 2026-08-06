@@ -687,15 +687,15 @@ bool EntryStatusesOk(const TaskResult& result, std::size_t expectedCount)
                        [](const Status& status) { return status.ok(); });
 }
 
-Status QueryAndWait(AsuClient& client, const std::vector<CacheKey>& keys,
-                    const QueryOptions& options, QueryResult& result)
+Status QueryAndWait(AsuClient& client, const std::vector<CacheKey>& keys, QueryResult& result,
+                    std::uint64_t timeoutMs = 0)
 {
     TaskId taskId{kInvalidTaskId};
-    auto status = client.QueryAsync(keys, options, taskId);
+    auto status = client.QueryAsync(keys, taskId);
     if (!status.ok()) { return status; }
 
     TaskResult taskResult;
-    status = client.Wait(taskId, options.timeoutMs, taskResult);
+    status = client.Wait(taskId, timeoutMs, taskResult);
     if (taskResult.queryResult.has_value()) {
         result = std::move(*taskResult.queryResult);
     } else if (status.ok()) {
@@ -739,10 +739,8 @@ bool QueryAndMeasure(AsuClient& client, const std::vector<CacheKey>& keys,
                      const std::vector<std::uint8_t>& expected, MetricsRecorder& metrics)
 {
     QueryResult result;
-    QueryOptions options;
-    options.timeoutMs = 1000;
     const auto start = std::chrono::steady_clock::now();
-    auto status = QueryAndWait(client, keys, options, result);
+    auto status = QueryAndWait(client, keys, result, 1000);
     const bool correct = status.ok() && result.exists == expected;
     metrics.Record(OperationKind::QUERY, ElapsedNs(start), 0, status.ok(), correct);
     return correct;
@@ -873,8 +871,7 @@ TEST(AsuClientE2EMetricsTest, DiskMembershipChangesRefreshAndContinueWorkload)
     viewServer->Publish({1, 2, 3});
     state->ForceNextQueryFailure();
     QueryResult ignoredResult;
-    auto status = QueryAndWait(*client, {MakeCacheKey("membership-refresh-add")}, QueryOptions{},
-                               ignoredResult);
+    auto status = QueryAndWait(*client, {MakeCacheKey("membership-refresh-add")}, ignoredResult);
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_TRUE(WaitUntil(
         [&] { return viewServer->FetchCount() >= 2 && state->Snapshot().createdTransports >= 3; }));
@@ -890,11 +887,11 @@ TEST(AsuClientE2EMetricsTest, DiskMembershipChangesRefreshAndContinueWorkload)
     viewServer->Publish({1, 3});
     state->ForceNextQueryFailure();
     const auto probeKeys = MakeProbeKeys(512);
-    status = QueryAndWait(*client, probeKeys, QueryOptions{}, ignoredResult);
+    status = QueryAndWait(*client, probeKeys, ignoredResult);
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_TRUE(WaitUntil([&] {
         QueryResult result;
-        auto retryStatus = QueryAndWait(*client, probeKeys, QueryOptions{}, result);
+        auto retryStatus = QueryAndWait(*client, probeKeys, result);
         return retryStatus.ok();
     }));
 

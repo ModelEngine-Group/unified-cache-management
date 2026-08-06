@@ -33,6 +33,7 @@ ucm_connectors:
 
       # ASU wait, operation timeout, and connection recovery.
       asu_default_wait_timeout_ms: 5000
+      asu_query_timeout_ms: 500
       asu_timeout_ms: 5000
       asu_max_error_count: 2
       asu_max_inflight_tasks: 1024
