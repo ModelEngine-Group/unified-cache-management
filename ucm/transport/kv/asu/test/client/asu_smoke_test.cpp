@@ -40,18 +40,18 @@ CacheKey MakeCacheKey(std::string_view text)
     return key;
 }
 
-MRHandle MakeTestMrHandle(std::uintptr_t value) { return static_cast<MRHandle>(value); }
-
 class StubTransport : public AsuTransport {
 public:
-    Status Init(const TransportConfig& config) override
+    Status Init(const TransportConfig& config,
+                std::shared_ptr<TransProvider> transProvider) override
     {
+        (void)transProvider;
         config_ = config;
         initialized_ = true;
         return Status::OK();
     }
 
-    Status Init(const std::string&) override
+    Status Init(const std::string&, std::shared_ptr<TransProvider>) override
     {
         return Status::Error(StatusCode::UNSUPPORTED, "stub transport config path unsupported");
     }
@@ -117,22 +117,10 @@ public:
 
     Status Cancel(TaskId) override { return Status::OK(); }
 
-    Status RegisterRegions(const std::vector<MemoryRegion>& regions,
-                           std::vector<RegisteredMemory>& registeredRegions) override
-    {
-        registeredRegions.clear();
-        for (std::size_t i = 0; i < regions.size(); ++i) {
-            registeredRegions.emplace_back(RegisteredMemory{regions[i], MakeTestMrHandle(i + 1)});
-        }
-        return Status::OK();
-    }
-
     Status BindRegisteredRegions(const std::vector<RegisteredMemory>&) override
     {
         return Status::OK();
     }
-
-    Status UnregisterRegions(const std::vector<MRHandle>&) override { return Status::OK(); }
 
 private:
     TransportConfig config_;
@@ -149,12 +137,14 @@ AsuClientConfig MakeClientConfig()
     TransportConfig first;
     first.asuName = "asu-smoke-0";
     first.asuId = 1001;
+    first.providerType = TransProviderType::FAKE;
     first.maxInflightTasks = 64;
     first.timeoutMs = 100;
 
     TransportConfig second;
     second.asuName = "asu-smoke-1";
     second.asuId = 1002;
+    second.providerType = TransProviderType::FAKE;
     second.maxInflightTasks = 64;
     second.timeoutMs = 100;
 

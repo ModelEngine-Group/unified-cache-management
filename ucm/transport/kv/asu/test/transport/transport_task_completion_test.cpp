@@ -32,9 +32,9 @@
 #define private public
 #include "asu_transport_impl.h"
 #undef private
+#include "asu_transport/trans_provider.h"
 #include "buffer_manager.h"
 #include "connection_internal.h"
-#include "trans_provider.h"
 
 namespace UC::ASU {
 namespace {
@@ -129,7 +129,7 @@ TEST_F(TransportTaskCompletionTest, InitRejectsZeroMaxErrorCount)
     TransportConfig config;
     config.maxErrorCount = 0;
 
-    const auto status = transport_->Init(config);
+    const auto status = transport_->Init(config, transport_->transProvider_);
 
     EXPECT_EQ(status.code, StatusCode::INVALID_ARGUMENT);
 }
@@ -140,7 +140,7 @@ TEST_F(TransportTaskCompletionTest, TaskExecutorFollowsInitializedTransportLifet
     EXPECT_EQ(transport.taskExecutor_, nullptr);
     transport.SetTransProvider(std::make_unique<StubTransProvider>());
 
-    ASSERT_TRUE(transport.Init(TransportConfig{}).ok());
+    ASSERT_TRUE(transport.Init(TransportConfig{}, transport.transProvider_).ok());
     EXPECT_NE(transport.taskExecutor_, nullptr);
 
     EXPECT_TRUE(transport.Shutdown().ok());

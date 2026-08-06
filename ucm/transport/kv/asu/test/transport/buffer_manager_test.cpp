@@ -27,7 +27,7 @@
 #include <gtest/gtest.h>
 #include <thread>
 #include <vector>
-#include "trans_provider.h"
+#include "asu_transport/trans_provider.h"
 
 namespace UC::ASU {
 namespace {

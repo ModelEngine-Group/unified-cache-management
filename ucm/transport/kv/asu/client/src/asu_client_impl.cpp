@@ -41,11 +41,14 @@ Status PartialFailed(const std::string& message)
     return Status::Error(StatusCode::PARTIAL_FAILED, message);
 }
 
-AsuClientImpl::AsuClientImpl(TransportFactory transportFactory, ViewServerFactory viewServerFactory)
+AsuClientImpl::AsuClientImpl(TransportFactory transportFactory, ViewServerFactory viewServerFactory,
+                             TransProviderFactory transProviderFactory)
     : transportFactory_(std::move(transportFactory)),
+      transProviderFactory_(std::move(transProviderFactory)),
       viewServerFactory_(std::move(viewServerFactory))
 {
     if (!transportFactory_) { transportFactory_ = CreateAsuTransport; }
+    if (!transProviderFactory_) { transProviderFactory_ = CreateTransProvider; }
     if (!viewServerFactory_) { viewServerFactory_ = CreateDefaultViewServer; }
 }
 
@@ -112,14 +115,19 @@ Status AsuClientImpl::Shutdown()
 
     std::shared_ptr<ViewSnapshot> snapshot;
     std::vector<std::shared_ptr<AsuTransport>> retiredTransports;
+    std::vector<std::shared_ptr<TransProvider>> transProviders;
+    std::shared_ptr<TransProvider> memoryProvider;
+    std::vector<RegisteredMemory> registeredRegions;
     {
         std::lock_guard<std::mutex> lock{mutex_};
         snapshot = std::move(snapshot_);
         retiredTransports = std::move(retiredTransports_);
+        transProviders = std::move(transProviders_);
+        memoryProvider = std::move(memoryProvider_);
+        registeredRegions = std::move(registeredRegions_);
         config_ = AsuClientConfig{};
         viewServer_.reset();
         transportConfigs_.clear();
-        registeredRegions_.clear();
     }
 
     Status finalStatus = Status::OK();
@@ -134,6 +142,11 @@ Status AsuClientImpl::Shutdown()
         auto status = transport->Shutdown();
         if (!status.ok() && finalStatus.ok()) { finalStatus = status; }
     }
+    std::vector<MRHandle> registeredHandles;
+    registeredHandles.reserve(registeredRegions.size());
+    for (const auto& region : registeredRegions) { registeredHandles.emplace_back(region.handle); }
+    auto unregisterStatus = UnregisterProviderRegions(memoryProvider, registeredHandles, false);
+    if (!unregisterStatus.ok() && finalStatus.ok()) { finalStatus = unregisterStatus; }
     return finalStatus;
 }
 
@@ -191,30 +204,64 @@ Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regio
 
     registeredRegions.clear();
     if (snapshot->transports.empty()) { return Status::OK(); }
+    if (regions.empty()) { return Status::OK(); }
 
-    auto firstIter = snapshot->transports.find(snapshot->asuIds.front());
-    if (firstIter == snapshot->transports.end()) {
-        auto status = Status::Error(StatusCode::NOT_FOUND, "first asu transport not found");
-        needRefresh |= IsRefreshNeeded(status);
-        return WithContext(status, "asuIndex=0 asuId=" + std::to_string(snapshot->asuIds.front()));
+    std::shared_ptr<TransProvider> memoryProvider;
+    {
+        std::lock_guard<std::mutex> lock{mutex_};
+        memoryProvider = memoryProvider_;
+    }
+    if (!memoryProvider) {
+        return Status::Error(StatusCode::NOT_INITIALIZED,
+                             "client business-memory provider is not initialized");
     }
 
-    auto status = firstIter->second->RegisterRegions(regions, registeredRegions);
+    std::vector<TransProvider::RegisterMemoryDesc> registerDescs;
+    registerDescs.reserve(regions.size());
+    for (const auto& region : regions) {
+        const auto memType = region.memoryType == MemoryType::ASCEND_DEVICE
+                                 ? TransProvider::MemType::MEM_DEVICE
+                                 : TransProvider::MemType::MEM_HOST;
+        registerDescs.push_back({memType, static_cast<std::uintptr_t>(region.addr),
+                                 static_cast<std::size_t>(region.size)});
+    }
+
+    std::vector<MRHandle> mrHandles;
+    auto status = memoryProvider->RegisterMemory(registerDescs, mrHandles);
     if (!status.ok()) {
-        needRefresh |= IsRefreshNeeded(status);
-        return WithContext(status, "asuIndex=0 asuId=" + std::to_string(snapshot->asuIds.front()) +
-                                       " region_count=" + std::to_string(regions.size()));
+        const auto cleanupStatus = UnregisterProviderRegions(memoryProvider, mrHandles, false);
+        return Status::Error(StatusCode::PARTIAL_FAILED,
+                             cleanupStatus.ok()
+                                 ? "one or more memory regions failed to register"
+                                 : "memory region registration failed and cleanup was incomplete");
     }
-    if (registeredRegions.size() != regions.size()) {
-        return WithContext(Status::Error(StatusCode::INTERNAL_ERROR,
-                                         "register result count does not match region count"),
-                           "asuIndex=0 asuId=" + std::to_string(snapshot->asuIds.front()) +
-                               " region_count=" + std::to_string(regions.size()) +
-                               " result_count=" + std::to_string(registeredRegions.size()));
+    if (mrHandles.size() != regions.size()) {
+        const auto cleanupStatus = UnregisterProviderRegions(memoryProvider, mrHandles, false);
+        return Status::Error(StatusCode::PARTIAL_FAILED,
+                             cleanupStatus.ok()
+                                 ? "register result count does not match region count"
+                                 : "register result count mismatch and cleanup was incomplete");
+    }
+
+    std::vector<std::uint32_t> tokenIds(regions.size());
+    for (std::size_t index = 0; index < mrHandles.size(); ++index) {
+        status = memoryProvider->GetMemTokenId(mrHandles[index], tokenIds[index]);
+        if (status.ok()) { continue; }
+
+        const auto cleanupStatus = UnregisterProviderRegions(memoryProvider, mrHandles, false);
+        return Status::Error(StatusCode::PARTIAL_FAILED,
+                             cleanupStatus.ok()
+                                 ? "one or more memory region token lookups failed"
+                                 : "memory region token lookup failed and cleanup was incomplete");
+    }
+
+    for (std::size_t index = 0; index < regions.size(); ++index) {
+        registeredRegions.emplace_back(
+            RegisteredMemory{regions[index], mrHandles[index], tokenIds[index]});
     }
 
     Status finalStatus = Status::OK();
-    for (std::size_t asuIndex = 1; asuIndex < snapshot->asuIds.size(); ++asuIndex) {
+    for (std::size_t asuIndex = 0; asuIndex < snapshot->asuIds.size(); ++asuIndex) {
         auto iter = snapshot->transports.find(snapshot->asuIds[asuIndex]);
         if (iter == snapshot->transports.end()) {
             auto status = Status::Error(StatusCode::NOT_FOUND, "bound asu transport not found");
@@ -236,11 +283,17 @@ Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regio
         }
     }
 
-    // Remember registered regions for future transport bindings.
     if (finalStatus.ok()) {
         std::lock_guard<std::mutex> lock{mutex_};
         registeredRegions_.insert(registeredRegions_.end(), registeredRegions.begin(),
                                   registeredRegions.end());
+    } else {
+        const auto cleanupStatus = UnregisterProviderRegions(memoryProvider, mrHandles, false);
+        if (!cleanupStatus.ok()) {
+            finalStatus =
+                WithContext(std::move(finalStatus), "business memory cleanup was incomplete");
+        }
+        registeredRegions.clear();
     }
     return finalStatus;
 }
@@ -364,27 +417,26 @@ Status AsuClientImpl::UnregisterRegionsOnce(const std::vector<MRHandle>& handles
     auto snapshot = GetSnapshot();
     if (!snapshot) { return NotInitialized(); }
 
-    Status finalStatus = Status::OK();
-    for (const auto& item : snapshot->transports) {
-        auto status = item.second->UnregisterRegions(handles);
-        if (!status.ok() && finalStatus.ok()) {
-            needRefresh |= IsRefreshNeeded(status);
-            finalStatus =
-                WithContext(status, "asuId=" + std::to_string(item.first) +
-                                        " handle_count=" + std::to_string(handles.size()));
+    std::shared_ptr<TransProvider> memoryProvider;
+    std::vector<MRHandle> registeredHandles;
+    {
+        std::lock_guard<std::mutex> lock{mutex_};
+        memoryProvider = memoryProvider_;
+        registeredHandles.reserve(handles.size());
+        for (auto handle : handles) {
+            if (handle == kInvalidMRHandle) { continue; }
+            auto iter = std::find_if(
+                registeredRegions_.begin(), registeredRegions_.end(),
+                [handle](const RegisteredMemory& region) { return region.handle == handle; });
+            if (iter != registeredRegions_.end()) { registeredHandles.emplace_back(handle); }
         }
     }
-    if (finalStatus.ok()) {
-        std::lock_guard<std::mutex> lock{mutex_};
-        registeredRegions_.erase(
-            std::remove_if(registeredRegions_.begin(), registeredRegions_.end(),
-                           [&handles](const RegisteredMemory& region) {
-                               return std::find(handles.begin(), handles.end(), region.handle) !=
-                                      handles.end();
-                           }),
-            registeredRegions_.end());
+    auto status = UnregisterProviderRegions(memoryProvider, registeredHandles, true);
+    if (!status.ok()) {
+        needRefresh |= IsRefreshNeeded(status);
+        return WithContext(status, "handle_count=" + std::to_string(registeredHandles.size()));
     }
-    return finalStatus;
+    return Status::OK();
 }
 
 Status AsuClientImpl::BuildSnapshot(const GlobalView& view,
@@ -453,19 +505,82 @@ Status AsuClientImpl::BuildTransport(AsuId asuId, const AsuInfo& asuInfo,
     }
     ApplyAsuInfoToTransportConfig(asuInfo, config);
 
+    std::shared_ptr<TransProvider> transProvider;
+    auto status = transProviderFactory_(config, transProvider);
+    if (!status.ok()) {
+        return WithContext(status,
+                           "create transport provider failed, asuId=" + std::to_string(asuId));
+    }
+    if (!transProvider) {
+        return Status::Error(
+            StatusCode::INTERNAL_ERROR,
+            "transport provider factory returned null, asuId=" + std::to_string(asuId));
+    }
+
     auto nextTransport = transportFactory_();
     if (!nextTransport) {
         return Status::Error(StatusCode::INTERNAL_ERROR,
                              "transport factory returned null, asuId=" + std::to_string(asuId));
     }
 
-    auto status = nextTransport->Init(config);
+    status = nextTransport->Init(config, transProvider);
     if (!status.ok()) {
         return WithContext(status, "init transport failed, asuId=" + std::to_string(asuId));
     }
 
+    {
+        std::lock_guard<std::mutex> lock{mutex_};
+        transProviders_.emplace_back(transProvider);
+        if (!memoryProvider_) { memoryProvider_ = transProvider; }
+    }
     transport = std::shared_ptr<AsuTransport>(std::move(nextTransport));
     return Status::OK();
+}
+
+Status AsuClientImpl::UnregisterProviderRegions(const std::shared_ptr<TransProvider>& transProvider,
+                                                const std::vector<MRHandle>& handles,
+                                                bool removeRegisteredRegions)
+{
+    if (handles.empty()) { return Status::OK(); }
+    if (!transProvider) {
+        return Status::Error(StatusCode::NOT_INITIALIZED,
+                             "client business-memory provider is not initialized");
+    }
+
+    std::vector<TransProvider::UnregisterMemoryDesc> unregisterDescs;
+    unregisterDescs.reserve(handles.size());
+    for (auto handle : handles) {
+        unregisterDescs.emplace_back(TransProvider::UnregisterMemoryDesc{handle});
+    }
+
+    const auto statuses = transProvider->UnregisterMemory(unregisterDescs);
+    Status failure = statuses.size() == handles.size()
+                         ? Status::OK()
+                         : Status::Error(StatusCode::INTERNAL_ERROR,
+                                         "unregister result count does not match handle count");
+    std::vector<MRHandle> unregisteredHandles;
+    for (std::size_t index = 0; index < handles.size(); ++index) {
+        if (index < statuses.size() && statuses[index].ok()) {
+            unregisteredHandles.emplace_back(handles[index]);
+        } else if (failure.ok()) {
+            failure = index < statuses.size()
+                          ? statuses[index]
+                          : Status::Error(StatusCode::INTERNAL_ERROR,
+                                          "unregister result count does not match handle count");
+        }
+    }
+    if (removeRegisteredRegions && !unregisteredHandles.empty()) {
+        std::lock_guard<std::mutex> lock{mutex_};
+        registeredRegions_.erase(
+            std::remove_if(registeredRegions_.begin(), registeredRegions_.end(),
+                           [&unregisteredHandles](const RegisteredMemory& region) {
+                               return std::find(unregisteredHandles.begin(),
+                                                unregisteredHandles.end(),
+                                                region.handle) != unregisteredHandles.end();
+                           }),
+            registeredRegions_.end());
+    }
+    return failure;
 }
 
 Status AsuClientImpl::BindRegisteredRegions(AsuId asuId,
@@ -623,9 +738,11 @@ Status AsuClientImpl::NotInitialized()
     return Status::Error(StatusCode::NOT_INITIALIZED, "asu client is not initialized");
 }
 
-std::unique_ptr<AsuClient> CreateAsuClient(TransportFactory transportFactory)
+std::unique_ptr<AsuClient> CreateAsuClient(TransportFactory transportFactory,
+                                           TransProviderFactory transProviderFactory)
 {
-    return std::make_unique<AsuClientImpl>(std::move(transportFactory), nullptr);
+    return std::make_unique<AsuClientImpl>(std::move(transportFactory), nullptr,
+                                           std::move(transProviderFactory));
 }
 
 extern "C" std::unique_ptr<AsuClient> UcmAsuCreateAsuClient(

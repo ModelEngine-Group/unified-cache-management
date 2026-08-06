@@ -48,8 +48,10 @@ public:
     AsuTransportImpl();
     ~AsuTransportImpl() override;
 
-    Status Init(const TransportConfig& config) override;
-    Status Init(const std::string& configPath) override;
+    Status Init(const TransportConfig& config,
+                std::shared_ptr<TransProvider> transProvider) override;
+    Status Init(const std::string& configPath,
+                std::shared_ptr<TransProvider> transProvider) override;
     Status Shutdown() override;
 
     Status CheckHealth() override;
@@ -58,12 +60,7 @@ public:
 
     Status Cancel(TaskId taskId) override;
 
-    Status RegisterRegions(const std::vector<MemoryRegion>& regions,
-                           std::vector<RegisteredMemory>& registeredRegions) override;
-
     Status BindRegisteredRegions(const std::vector<RegisteredMemory>& regions) override;
-
-    Status UnregisterRegions(const std::vector<MRHandle>& handles) override;
 
 private:
     Status SubmitTask(const TransportTaskPtr& task);
@@ -71,7 +68,6 @@ private:
     void CompletionLoop();
 
     void SetTransProvider(std::shared_ptr<TransProvider> provider);
-    Status UnregisterOwnedRegionHandles(const std::vector<MRHandle>& handles);
 
     TransportConfig config_;
     IoScheduler ioScheduler_;
@@ -85,7 +81,6 @@ private:
 
     std::mutex registeredRegionsMu_;
     std::unordered_map<MRHandle, RegisteredMemory> registeredRegions_;
-    bool ownsRegisteredRegionHandles_{false};
 
     std::unique_ptr<TransportTaskExecutor> taskExecutor_;
     TransportTaskManager taskManager_;

@@ -29,9 +29,9 @@
 #include <memory>
 #include <vector>
 #include "asu_transport/asu_transport.h"
+#include "asu_transport/trans_provider.h"
 #include "asu_transport/types.h"
 #include "connection_manager.h"
-#include "trans_provider.h"
 
 namespace UC::ASU {
 

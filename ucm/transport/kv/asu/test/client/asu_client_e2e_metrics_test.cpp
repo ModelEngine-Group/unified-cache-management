@@ -67,8 +67,6 @@ struct CacheKeyHasher {
     }
 };
 
-MRHandle MakeTestMrHandle(std::uintptr_t value) { return static_cast<MRHandle>(value); }
-
 enum class OperationKind {
     QUERY,
     LOAD,
@@ -299,8 +297,10 @@ class InMemoryAsuTransport final : public AsuTransport {
 public:
     explicit InMemoryAsuTransport(std::shared_ptr<ClusterState> state) : state_(std::move(state)) {}
 
-    Status Init(const TransportConfig& config) override
+    Status Init(const TransportConfig& config,
+                std::shared_ptr<TransProvider> transProvider) override
     {
+        (void)transProvider;
         std::lock_guard<std::mutex> lock{state_->mutex};
         config_ = config;
         initialized_ = true;
@@ -308,9 +308,11 @@ public:
         return Status::OK();
     }
 
-    Status Init(const std::string& configPath) override
+    Status Init(const std::string& configPath,
+                std::shared_ptr<TransProvider> transProvider) override
     {
         (void)configPath;
+        (void)transProvider;
         return Status::Error(StatusCode::UNSUPPORTED,
                              "in-memory ASU transport config path is unsupported");
     }
@@ -496,23 +498,10 @@ public:
 
     Status Cancel(TaskId) override { return Status::Error(StatusCode::UNSUPPORTED, "unsupported"); }
 
-    Status RegisterRegions(const std::vector<MemoryRegion>& regions,
-                           std::vector<RegisteredMemory>& registeredRegions) override
-    {
-        registeredRegions.clear();
-        for (std::size_t index = 0; index < regions.size(); ++index) {
-            registeredRegions.emplace_back(
-                RegisteredMemory{regions[index], MakeTestMrHandle(index + 1)});
-        }
-        return Status::OK();
-    }
-
     Status BindRegisteredRegions(const std::vector<RegisteredMemory>&) override
     {
         return Status::OK();
     }
-
-    Status UnregisterRegions(const std::vector<MRHandle>&) override { return Status::OK(); }
 
 private:
     Status CheckReadyLocked() const
@@ -590,6 +579,7 @@ AsuClientConfig MakeClientConfig(const std::vector<AsuId>& allAsuIds)
         TransportConfig transportConfig;
         transportConfig.asuId = asuId;
         transportConfig.asuName = "fake-asu-" + std::to_string(asuId);
+        transportConfig.providerType = TransProviderType::FAKE;
         transportConfig.maxInflightTasks = 1024;
         config.transportConfigs.emplace_back(std::move(transportConfig));
     }

@@ -29,6 +29,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "asu_transport/trans_provider.h"
 #include "asu_transport/types.h"
 
 namespace UC::ASU {
@@ -104,8 +105,10 @@ class AsuTransport {
 public:
     virtual ~AsuTransport() = default;
 
-    virtual Status Init(const TransportConfig& config) = 0;
-    virtual Status Init(const std::string& configPath) = 0;
+    virtual Status Init(const TransportConfig& config,
+                        std::shared_ptr<TransProvider> transProvider) = 0;
+    virtual Status Init(const std::string& configPath,
+                        std::shared_ptr<TransProvider> transProvider) = 0;
     virtual Status Shutdown() = 0;
     virtual Status CheckHealth() = 0;
 
@@ -114,12 +117,7 @@ public:
     // Best-effort cancellation, does not interrupt underlying UB/RoCE IO
     virtual Status Cancel(TaskId taskId) = 0;
 
-    virtual Status RegisterRegions(const std::vector<MemoryRegion>& regions,
-                                   std::vector<RegisteredMemory>& registeredRegions) = 0;
-
     virtual Status BindRegisteredRegions(const std::vector<RegisteredMemory>& regions) = 0;
-
-    virtual Status UnregisterRegions(const std::vector<MRHandle>& handles) = 0;
 };
 
 std::unique_ptr<AsuTransport> CreateAsuTransport();

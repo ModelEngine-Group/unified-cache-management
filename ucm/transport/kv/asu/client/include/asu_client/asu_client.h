@@ -66,7 +66,11 @@ public:
 };
 
 using TransportFactory = std::function<std::unique_ptr<AsuTransport>()>;
+using TransProviderFactory =
+    std::function<Status(const TransportConfig&, std::shared_ptr<TransProvider>&)>;
 
-std::unique_ptr<AsuClient> CreateAsuClient(TransportFactory factory = CreateAsuTransport);
+std::unique_ptr<AsuClient> CreateAsuClient(
+    TransportFactory transportFactory = CreateAsuTransport,
+    TransProviderFactory transProviderFactory = CreateTransProvider);
 
 }  // namespace UC::ASU
