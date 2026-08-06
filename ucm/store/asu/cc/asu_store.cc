@@ -220,6 +220,8 @@ UC::ASU::AsuClientConfig BuildAsuClientConfig(const Config& config)
     asuConfig.viewServiceAddrs = config.viewServiceAddrs;
     asuConfig.defaultWaitTimeoutMs = config.defaultWaitTimeoutMs;
     asuConfig.timeoutMs = config.timeoutMs;
+    asuConfig.sharedProviderMode =
+        static_cast<UC::ASU::SharedProviderMode>(config.sharedProviderMode);
     asuConfig.attrs = config.clientAttrs;
     asuConfig.transportConfigs.reserve(config.asuIds.size());
     for (std::size_t i = 0; i < config.asuIds.size(); ++i) {
@@ -414,6 +416,7 @@ private:
         }
         inConfig.Get("asu_fake_backend_path", config.fakeBackendPath);
         inConfig.GetNumber("asu_fake_backend_latency_ms", config.fakeBackendLatencyMs);
+        inConfig.GetNumber("asu_shared_provider", config.sharedProviderMode);
         ReadClientAttr(inConfig, "asu_router_type", "hash_table.type", config);
         ReadClientAttr(inConfig, "asu_ring_hash_virtual_node_count", "ring_hash.virtual_node_count",
                        config);
@@ -461,6 +464,9 @@ private:
 
     Status CheckConfig(const Config& config)
     {
+        if (config.sharedProviderMode != 0 && config.sharedProviderMode != 1) {
+            return Status::InvalidParam("asu_shared_provider must be 0 or 1");
+        }
         if (config.mode != "client" && config.mode != "transport") {
             return Status::InvalidParam("invalid asu_mode({})", config.mode);
         }

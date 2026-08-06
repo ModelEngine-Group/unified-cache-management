@@ -36,6 +36,7 @@ struct Config {
     UC::ASU::TransProviderType transProviderType{UC::ASU::TransProviderType::AICPU};
     std::string fakeBackendPath;
     std::uint64_t fakeBackendLatencyMs{1};
+    ssize_t sharedProviderMode{0};
     std::unordered_map<std::string, std::string> clientAttrs;
 };
 

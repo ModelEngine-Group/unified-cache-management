@@ -32,6 +32,8 @@
 
 namespace UC::ASU {
 
+enum class SharedProviderMode : std::uint8_t { INDEPENDENT = 0, SHARED = 1 };
+
 struct AsuClientConfig {
     std::string clientId;
     std::vector<std::string> viewServiceAddrs;
@@ -40,6 +42,7 @@ struct AsuClientConfig {
 
     std::uint64_t defaultWaitTimeoutMs{100};
     std::uint64_t timeoutMs{100};
+    SharedProviderMode sharedProviderMode{SharedProviderMode::INDEPENDENT};
     std::unordered_map<std::string, std::string> attrs;
 };
 

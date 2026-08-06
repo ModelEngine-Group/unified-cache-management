@@ -67,6 +67,10 @@ Status AsuClientImpl::Init(const AsuClientConfig& config)
     if (initialized_) {
         return Status::Error(StatusCode::RESOURCE_BUSY, "asu client has already been initialized");
     }
+    if (config.sharedProviderMode != SharedProviderMode::INDEPENDENT &&
+        config.sharedProviderMode != SharedProviderMode::SHARED) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT, "sharedProviderMode must be 0 or 1");
+    }
 
     config_ = config;
     viewServer_ = viewServerFactory_(config);
@@ -506,15 +510,22 @@ Status AsuClientImpl::BuildTransport(AsuId asuId, const AsuInfo& asuInfo,
     ApplyAsuInfoToTransportConfig(asuInfo, config);
 
     std::shared_ptr<TransProvider> transProvider;
-    auto status = transProviderFactory_(config, transProvider);
-    if (!status.ok()) {
-        return WithContext(status,
-                           "create transport provider failed, asuId=" + std::to_string(asuId));
+    if (config_.sharedProviderMode == SharedProviderMode::SHARED) {
+        std::lock_guard<std::mutex> lock{mutex_};
+        transProvider = memoryProvider_;
     }
-    if (!transProvider) {
-        return Status::Error(
-            StatusCode::INTERNAL_ERROR,
-            "transport provider factory returned null, asuId=" + std::to_string(asuId));
+    const bool createdProvider = !transProvider;
+    if (createdProvider) {
+        auto status = transProviderFactory_(config, transProvider);
+        if (!status.ok()) {
+            return WithContext(status,
+                               "create transport provider failed, asuId=" + std::to_string(asuId));
+        }
+        if (!transProvider) {
+            return Status::Error(
+                StatusCode::INTERNAL_ERROR,
+                "transport provider factory returned null, asuId=" + std::to_string(asuId));
+        }
     }
 
     auto nextTransport = transportFactory_();
@@ -523,14 +534,14 @@ Status AsuClientImpl::BuildTransport(AsuId asuId, const AsuInfo& asuInfo,
                              "transport factory returned null, asuId=" + std::to_string(asuId));
     }
 
-    status = nextTransport->Init(config, transProvider);
+    auto status = nextTransport->Init(config, transProvider);
     if (!status.ok()) {
         return WithContext(status, "init transport failed, asuId=" + std::to_string(asuId));
     }
 
     {
         std::lock_guard<std::mutex> lock{mutex_};
-        transProviders_.emplace_back(transProvider);
+        if (createdProvider) { transProviders_.emplace_back(transProvider); }
         if (!memoryProvider_) { memoryProvider_ = transProvider; }
     }
     transport = std::shared_ptr<AsuTransport>(std::move(nextTransport));

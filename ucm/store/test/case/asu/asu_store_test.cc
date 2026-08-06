@@ -438,6 +438,31 @@ TEST(UCAsuStoreTest, RejectsInvalidAsuPort)
     EXPECT_TRUE(store.Setup(config).Failure());
 }
 
+TEST(UCAsuStoreTest, ParsesSharedProviderMode)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("asu_shared_provider", 1);
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+    EXPECT_EQ(state->initConfigs.back().sharedProviderMode, 1);
+    EXPECT_EQ(UC::AsuStore::BuildAsuClientConfig(state->initConfigs.back()).sharedProviderMode,
+              UC::ASU::SharedProviderMode::SHARED);
+}
+
+TEST(UCAsuStoreTest, RejectsInvalidSharedProviderMode)
+{
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("asu_shared_provider", 2);
+
+    EXPECT_TRUE(store.Setup(config).Failure());
+}
+
 TEST(UCAsuStoreTest, RejectsTransportIntegerOverflow)
 {
     {

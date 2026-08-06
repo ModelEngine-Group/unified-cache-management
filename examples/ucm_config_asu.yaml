@@ -11,6 +11,8 @@ ucm_connectors:
       asu_client_id: "ucm-vllm-asu-aiv"
       asu_ids: [1]
       asu_trans_provider_backend: "aiv"
+      # 0 creates one provider per transport; 1 shares one provider within this client process.
+      asu_shared_provider: 0
 
       # Non-FAWA models use one ASU namespace. For DeepSeek V4 / FAWA,
       # replace this with: kv_ns_ids: [100, 101]  # [FA, WA]

@@ -40,6 +40,7 @@ struct TestState {
     std::uint32_t createdTransports{0};
     std::uint32_t createdProviders{0};
     std::unordered_map<AsuId, TransportConfig> initConfigs;
+    std::unordered_map<AsuId, TransProvider*> initProviders;
     bool failFirstQuery{false};
     bool firstQueryFailed{false};
     StatusCode firstQueryFailureCode{StatusCode::CONNECTION_ERROR};
@@ -171,6 +172,7 @@ public:
         (void)transProvider;
         config_ = config;
         state_->initConfigs[config_.asuId] = config_;
+        state_->initProviders[config_.asuId] = transProvider.get();
         initialized_ = true;
         return Status::OK();
     }
@@ -563,6 +565,71 @@ TEST(AsuClientImplTest, Lifecycle_InitTwiceReturnsResourceBusy)
     auto status = client->Init(config);
 
     EXPECT_EQ(status.code, StatusCode::RESOURCE_BUSY);
+}
+
+TEST(AsuClientImplTest, Provider_IndependentModeCreatesOneProviderPerTransport)
+{
+    auto state = std::make_shared<TestState>();
+    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+
+    ASSERT_TRUE(client->Init(MakeConfig({10, 20, 30})).ok());
+
+    EXPECT_EQ(state->createdProviders, std::uint32_t{3});
+    EXPECT_NE(state->initProviders[10], state->initProviders[20]);
+    EXPECT_NE(state->initProviders[20], state->initProviders[30]);
+}
+
+TEST(AsuClientImplTest, Provider_SharedModeUsesOneProviderForAllTransports)
+{
+    auto state = std::make_shared<TestState>();
+    auto config = MakeConfig({10, 20, 30});
+    config.sharedProviderMode = SharedProviderMode::SHARED;
+    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+
+    ASSERT_TRUE(client->Init(config).ok());
+
+    EXPECT_EQ(state->createdProviders, std::uint32_t{1});
+    EXPECT_EQ(state->initProviders[10], state->initProviders[20]);
+    EXPECT_EQ(state->initProviders[20], state->initProviders[30]);
+}
+
+TEST(AsuClientImplTest, Provider_InvalidSharedModeIsRejected)
+{
+    auto state = std::make_shared<TestState>();
+    auto config = MakeConfig({10});
+    config.sharedProviderMode = static_cast<SharedProviderMode>(2);
+    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+
+    const auto status = client->Init(config);
+
+    EXPECT_EQ(status.code, StatusCode::INVALID_ARGUMENT);
+    EXPECT_EQ(state->createdProviders, std::uint32_t{0});
+    EXPECT_EQ(state->createdTransports, std::uint32_t{0});
+}
+
+TEST(AsuClientImplTest, Provider_SharedModeReusesProviderForAddedTransport)
+{
+    auto state = std::make_shared<TestState>();
+    auto config = MakeConfig({10, 20});
+    config.sharedProviderMode = SharedProviderMode::SHARED;
+    auto viewServer = std::make_shared<FakeViewServer>(
+        std::vector<std::vector<AsuId>>{
+            {10},
+            {10, 20}
+    },
+        std::vector<std::uint64_t>{1, 2});
+    auto client = std::make_unique<AsuClientImpl>(
+        MakeFactory(state), MakeViewServerFactory(viewServer), MakeProviderFactory(state));
+    ASSERT_TRUE(client->Init(config).ok());
+
+    state->failFirstQuery = true;
+    QueryResult result;
+    EXPECT_EQ(QueryAndWait(*client, {MakeCacheKey("k05")}, result).code,
+              StatusCode::PARTIAL_FAILED);
+    ASSERT_TRUE(WaitForFetchCount(viewServer, 2));
+
+    EXPECT_EQ(state->createdProviders, std::uint32_t{1});
+    EXPECT_EQ(state->initProviders[10], state->initProviders[20]);
 }
 
 TEST(AsuClientImplTest, Lifecycle_ShutdownClearsTasksAndRejectsFutureOperations)
