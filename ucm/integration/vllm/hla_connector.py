@@ -34,6 +34,7 @@ from ucm.integration.vllm.ucm_connector import (
     UCMDirectConnector,
     _drop_null_vllm_blocks,
     _record_counter,
+    _scheduler_read_block_size,
     _short_list,
     _use_ucm_connector_cpu_affinity,
 )
@@ -848,6 +849,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             )
             config["shard_size"] = shard_size * self.blocks_per_chunk
             config["block_size"] = block_size * self.blocks_per_chunk
+            self._publish_block_size(config["block_size"])
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
             buffer_addrs = kv_cache_layout.base_ptrs.reshape(-1).tolist()
             buffer_sizes = kv_cache_layout.buffer_sizes.reshape(-1).tolist()
@@ -869,18 +871,19 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             config["gpu_kv_buffer_sizes"] = gpu_kv_buffer_sizes
             if cpu_affinity_cores:
                 config["cpu_affinity_cores"] = list(cpu_affinity_cores)
-        else:
-            config_base = self.block_size * self.element_size * self.head_size
-            config["block_size"] = (
-                config_base
-                * self.num_layers
-                * (1 if self.is_mla else self.num_head * 2)
-                * self.blocks_per_chunk
-            )
-        dp_rank = self._vllm_config.parallel_config.data_parallel_rank
-        config["posix_gc_enable"] = (
-            self._role != KVConnectorRole.WORKER and dp_rank == 0
-        )
+        elif self._gc_owner:
+            bs = _scheduler_read_block_size()
+            if bs is None:
+                config_base = self.block_size * self.element_size * self.head_size
+                bs = (
+                    config_base
+                    * self.num_layers
+                    * (1 if self.is_mla else self.num_head * 2)
+                    * self.blocks_per_chunk
+                )
+                logger.warning(f"Falling back to manual block_size estimate: {bs}")
+            config["block_size"] = bs
+        config["posix_gc_enable"] = self._gc_owner
         logger.info(f"create {name} with config: {config}")
         return UcmConnectorFactoryV1.create_connector(name, config, module_path)
 
