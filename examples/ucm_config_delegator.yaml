@@ -1,0 +1,51 @@
+# UCM ASU AIV backend example for vLLM / vLLM-Ascend integration.
+#
+# Use with:
+# kv_connector_extra_config={"UCM_CONFIG_FILE": "/workspace/unified-cache-management/examples/ucm_config_delegator.yaml"}
+
+ucm_connectors:
+  - ucm_connector_name: "UcmPipelineStore"
+    ucm_connector_config:
+      store_pipeline: "Delegator"
+      delegator_backend: "ASU"
+      # Number of registered device staging slots used by DelegatorStore.
+      delegator_buffer_number: 4
+      delegator_stream_number: 4
+
+      asu_mode: "client"
+      # asu_client_id: "ucm-vllm-asu-aiv"
+      # asu_ids: [1]
+      # asu_trans_provider_backend: "aiv"
+
+      asu_client_id: "ucm-vllm-asu-aiv"
+      asu_ids: [1]
+      asu_trans_provider_backend: "fake"
+
+      # Non-FAWA models use one ASU namespace. For DeepSeek V4 / FAWA,
+      # replace this with: kv_ns_ids: [100, 101]  # [FA, WA]
+      kv_ns_ids: [100]
+
+      # cpu ip where mock server runs
+      # asu_ips: ["223.223.8.11"]
+      # asu_port: 19001
+      # Used by the scheduler. Worker processes overwrite it with local_rank.
+      # device_id: 0
+
+      # ASU client routing.
+      asu_router_type: "RING_HASH"
+      asu_ring_hash_virtual_node_count: 128
+
+      # Local software backend. This uses normal AsuClient + AsuTransportImpl submit/CQE paths
+      # and replaces the missing device Send/backend execution with local files.
+      asu_fake_backend_path: "/mnt/test"
+      asu_fake_backend_latency_ms: 1
+
+      # ASU wait, operation timeout, and connection recovery.
+      asu_default_wait_timeout_ms: 5000
+      asu_timeout_ms: 5000
+      asu_max_error_count: 2
+      asu_max_inflight_tasks: 1024
+
+enable_event_sync: true
+use_layerwise: true
+persist_token_threshold: 0
