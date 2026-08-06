@@ -58,7 +58,7 @@ inline KvOpcode ToKvOpcode(TransportOpType opType)
 class TransportTaskExecutor {
 public:
     TransportTaskExecutor(const TransportConfig& config, IoScheduler& ioScheduler,
-                          const std::unique_ptr<TransProvider>& transProvider,
+                          const std::shared_ptr<TransProvider>& transProvider,
                           BufferManager& sendBufferManager, BufferManager& flagBufferManager,
                           const std::unique_ptr<ProtocolManager>& protocolManager,
                           const std::unique_ptr<ConnectionManager>& connectionManager,
@@ -98,7 +98,7 @@ private:
 
     const TransportConfig& config_;
     IoScheduler& ioScheduler_;
-    const std::unique_ptr<TransProvider>& transProvider_;
+    const std::shared_ptr<TransProvider>& transProvider_;
     BufferManager& sendBufferManager_;
     BufferManager& flagBufferManager_;
     const std::unique_ptr<ProtocolManager>& protocolManager_;

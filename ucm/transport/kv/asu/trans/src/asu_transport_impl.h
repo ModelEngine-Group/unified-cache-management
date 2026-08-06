@@ -32,12 +32,12 @@
 #include <unordered_map>
 #include <vector>
 #include "asu_transport/asu_transport.h"
+#include "asu_transport/trans_provider.h"
 #include "buffer_manager.h"
 #include "connection_manager.h"
 #include "io_scheduler.h"
 #include "kv_protocol.h"
 #include "template/spsc_ring_queue.h"
-#include "trans_provider.h"
 #include "transport_task_executor.h"
 #include "transport_task_manager.h"
 
@@ -70,12 +70,12 @@ private:
     void WorkerLoop();
     void CompletionLoop();
 
-    void SetTransProvider(std::unique_ptr<TransProvider> provider);
+    void SetTransProvider(std::shared_ptr<TransProvider> provider);
     Status UnregisterOwnedRegionHandles(const std::vector<MRHandle>& handles);
 
     TransportConfig config_;
     IoScheduler ioScheduler_;
-    std::unique_ptr<TransProvider> transProvider_;
+    std::shared_ptr<TransProvider> transProvider_;
     BufferManager sendBufferManager_;
     BufferManager flagBufferManager_;
     std::unique_ptr<ProtocolManager> protocolManager_;
