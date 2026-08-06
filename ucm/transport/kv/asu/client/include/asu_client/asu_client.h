@@ -51,8 +51,7 @@ public:
     virtual Status Init(const std::string& configPath) = 0;
     virtual Status Shutdown() = 0;
 
-    virtual Status QueryAsync(const std::vector<CacheKey>& keys, const QueryOptions& options,
-                              TaskId& taskId) = 0;
+    virtual Status QueryAsync(const std::vector<CacheKey>& keys, TaskId& taskId) = 0;
     virtual Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) = 0;
     virtual Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) = 0;
     virtual Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId) = 0;

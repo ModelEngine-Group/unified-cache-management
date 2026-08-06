@@ -106,8 +106,6 @@ struct TransportTask {
     std::vector<KVBuffer> entries;
     std::vector<std::size_t> originalIndices;
     std::vector<Status> entryStatus;
-    std::uint64_t timeoutMs{0};
-
     bool clientCompleted{false};
 
     std::shared_ptr<TransportSubBatchList> subBatchContexts;
@@ -140,7 +138,6 @@ struct ClientTask {
     std::vector<TransportTaskPtr> transportTasks;
     std::vector<Status> entryStatus;
     QueryResult queryResult;
-    std::uint64_t timeoutMs{0};
 
     std::atomic<std::size_t> remainingTransportTasks{0};
     std::atomic<ClientTaskState> state{ClientTaskState::PENDING};

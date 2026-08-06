@@ -213,99 +213,34 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
     return transportConfig;
 }
 
-class ClientBackend final : public AsuBackend {
-public:
-    AsuStatus Init(const Config& config) override
-    {
-        client_ = UC::ASU::CreateAsuClient();
-        UC::ASU::AsuClientConfig asuConfig;
-        asuConfig.clientId = config.clientId;
-        asuConfig.viewServiceAddrs = config.viewServiceAddrs;
-        asuConfig.defaultWaitTimeoutMs = config.defaultWaitTimeoutMs;
-        asuConfig.timeoutMs = config.timeoutMs;
-        asuConfig.attrs = config.clientAttrs;
-        asuConfig.transportConfigs.reserve(config.asuIds.size());
-        for (std::size_t i = 0; i < config.asuIds.size(); ++i) {
-            asuConfig.transportConfigs.emplace_back(BuildTransportConfig(config, i));
-        }
-        return client_->Init(asuConfig);
+UC::ASU::AsuClientConfig BuildAsuClientConfig(const Config& config)
+{
+    UC::ASU::AsuClientConfig asuConfig;
+    asuConfig.clientId = config.clientId;
+    asuConfig.viewServiceAddrs = config.viewServiceAddrs;
+    asuConfig.defaultWaitTimeoutMs = config.defaultWaitTimeoutMs;
+    asuConfig.timeoutMs = config.timeoutMs;
+    asuConfig.attrs = config.clientAttrs;
+    asuConfig.transportConfigs.reserve(config.asuIds.size());
+    for (std::size_t i = 0; i < config.asuIds.size(); ++i) {
+        asuConfig.transportConfigs.emplace_back(BuildTransportConfig(config, i));
     }
-
-    AsuStatus Init(const std::string& configPath) override
-    {
-        client_ = UC::ASU::CreateAsuClient();
-        return client_->Init(configPath);
-    }
-
-    AsuStatus Shutdown() override { return client_ ? client_->Shutdown() : AsuStatus::OK(); }
-
-    AsuStatus Query(const std::vector<UC::ASU::CacheKey>& keys,
-                    const UC::ASU::QueryOptions& options, UC::ASU::QueryResult& result) override
-    {
-        UC::ASU::TaskId taskId = UC::ASU::kInvalidTaskId;
-        auto status = client_->QueryAsync(keys, options, taskId);
-        if (!status.ok()) { return status; }
-
-        UC::ASU::TaskResult taskResult;
-        status = client_->Wait(taskId, options.timeoutMs, taskResult);
-        if (taskResult.queryResult.has_value()) {
-            result = std::move(*taskResult.queryResult);
-        } else if (status.ok()) {
-            return AsuStatus::Error(UC::ASU::StatusCode::INTERNAL_ERROR,
-                                    "client query result is missing");
-        }
-        return status;
-    }
-
-    AsuStatus LoadAsync(const std::vector<UC::ASU::KVBuffer>& entries,
-                        UC::ASU::TaskId& taskId) override
-    {
-        return client_->LoadAsync(entries, taskId);
-    }
-
-    AsuStatus StoreAsync(const std::vector<UC::ASU::KVBuffer>& entries,
-                         UC::ASU::TaskId& taskId) override
-    {
-        return client_->StoreAsync(entries, taskId);
-    }
-
-    AsuStatus DeleteAsync(const std::vector<UC::ASU::CacheKey>& keys,
-                          UC::ASU::TaskId& taskId) override
-    {
-        return client_->DeleteAsync(keys, taskId);
-    }
-
-    bool Check(UC::ASU::TaskId taskId) override { return client_->Check(taskId); }
-
-    AsuStatus Wait(UC::ASU::TaskId taskId, std::uint64_t timeoutMs,
-                   UC::ASU::TaskResult& result) override
-    {
-        return client_->Wait(taskId, timeoutMs, result);
-    }
-
-    AsuStatus RegisterRegions(const std::vector<UC::ASU::MemoryRegion>& regions,
-                              std::vector<UC::ASU::RegisteredMemory>& registeredRegions) override
-    {
-        return client_->RegisterRegions(regions, registeredRegions);
-    }
-
-private:
-    std::unique_ptr<UC::ASU::AsuClient> client_;
-};
+    return asuConfig;
+}
 
 class AsuStore final : public StoreV1 {
 public:
 #ifdef ASU_BUILD_TESTS
-    using BackendFactory = std::function<std::unique_ptr<AsuBackend>(const Config&)>;
+    using ClientFactory = std::function<std::unique_ptr<UC::ASU::AsuClient>(const Config&)>;
 
-    void SetBackendFactory(BackendFactory factory) { backendFactory_ = std::move(factory); }
+    void SetClientFactory(ClientFactory factory) { clientFactory_ = std::move(factory); }
 #endif
 
     ~AsuStore() override
     {
-        if (backend_) {
-            auto status = backend_->Shutdown();
-            if (!status.ok()) { UC_ERROR("Failed to shutdown ASU backend: {}.", status.message); }
+        if (client_) {
+            auto status = client_->Shutdown();
+            if (!status.ok()) { UC_ERROR("Failed to shutdown ASU client: {}.", status.message); }
         }
     }
 
@@ -318,13 +253,13 @@ public:
 
         tensorLayout_ = ParseTensorLayout(config.tensorLayout);
         config_ = std::move(config);
-        backend_ = CreateBackend(config_);
+        client_ = CreateClient(config_);
 
-        auto asuStatus = config_.configPath.empty() ? backend_->Init(config_)
-                                                    : backend_->Init(config_.configPath);
+        auto asuStatus = config_.configPath.empty() ? client_->Init(BuildAsuClientConfig(config_))
+                                                    : client_->Init(config_.configPath);
         if (!asuStatus.ok()) {
-            UC_ERROR("Failed to init ASU backend: {}.", asuStatus.message);
-            backend_.reset();
+            UC_ERROR("Failed to init ASU client: {}.", asuStatus.message);
+            client_.reset();
             return ConvertStatus(asuStatus);
         }
 
@@ -336,23 +271,17 @@ public:
 
     Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override
     {
-        UC::ASU::QueryOptions options;
-        options.mode = UC::ASU::QueryMode::PER_KEY;
-        options.timeoutMs = config_.timeoutMs;
-        return QueryBlocks(blocks, num, options);
+        return QueryBlocks(blocks, num);
     }
 
     Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override
     {
         if (num == 0) { return static_cast<ssize_t>(-1); }
 
-        UC::ASU::QueryOptions options;
-        options.mode = UC::ASU::QueryMode::PREFIX;
-        options.timeoutMs = config_.timeoutMs;
-
         auto keys = BuildBlockKeys(blocks, num);
         UC::ASU::QueryResult queryResult;
-        auto status = backend_->Query(keys, options, queryResult);
+        auto status = Query(keys, queryResult);
+        if (status.code == AsuStatusCode::TIMEOUT) { return static_cast<ssize_t>(-1); }
         if (!status.ok()) {
             LogAsuStatus("prefix query", status);
             return ConvertStatus(status);
@@ -376,7 +305,7 @@ public:
     Status RegisterKVCaches(const UC::KVCacheRegistration* registrations,
                             std::size_t count) override
     {
-        if (!backend_) { return Status::Error("ASU backend is not initialized"); }
+        if (!client_) { return Status::Error("ASU client is not initialized"); }
 
         std::vector<UC::ASU::MemoryRegion> regions;
         regions.reserve(count);
@@ -392,7 +321,7 @@ public:
         if (regions.empty()) { return Status::OK(); }
 
         std::vector<UC::ASU::RegisteredMemory> registeredRegions;
-        auto status = backend_->RegisterRegions(regions, registeredRegions);
+        auto status = client_->RegisterRegions(regions, registeredRegions);
         if (!status.ok()) {
             LogAsuStatus("register persistent regions", status);
             return ConvertStatus(status);
@@ -414,7 +343,7 @@ public:
 
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
-        return Submit(std::move(task), &AsuBackend::LoadAsync);
+        return Submit(std::move(task), &UC::ASU::AsuClient::LoadAsync);
     }
 
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override
@@ -424,19 +353,19 @@ public:
             LogAsuStatus("wait prerequisite event", status);
             return ConvertStatus(status);
         }
-        return Submit(std::move(task), &AsuBackend::StoreAsync);
+        return Submit(std::move(task), &UC::ASU::AsuClient::StoreAsync);
     }
 
     Expected<bool> Check(Detail::TaskHandle taskId) override
     {
-        return backend_->Check(static_cast<UC::ASU::TaskId>(taskId));
+        return client_->Check(static_cast<UC::ASU::TaskId>(taskId));
     }
 
     Status Wait(Detail::TaskHandle taskId) override
     {
         UC::ASU::TaskResult result;
-        auto status = backend_->Wait(static_cast<UC::ASU::TaskId>(taskId),
-                                     config_.defaultWaitTimeoutMs, result);
+        auto status = client_->Wait(static_cast<UC::ASU::TaskId>(taskId),
+                                    config_.defaultWaitTimeoutMs, result);
         if (!status.ok()) {
             LogAsuStatus("wait task", status);
             return ConvertStatus(status);
@@ -446,8 +375,8 @@ public:
     }
 
 private:
-    using SubmitFunc = AsuStatus (AsuBackend::*)(const std::vector<UC::ASU::KVBuffer>&,
-                                                 UC::ASU::TaskId&);
+    using SubmitFunc = AsuStatus (UC::ASU::AsuClient::*)(const std::vector<UC::ASU::KVBuffer>&,
+                                                         UC::ASU::TaskId&);
 
     Config ParseConfig(const Detail::Dictionary& inConfig)
     {
@@ -471,6 +400,7 @@ private:
         }
         inConfig.GetNumber("asu_default_wait_timeout_ms", config.defaultWaitTimeoutMs);
         inConfig.GetNumber("asu_timeout_ms", config.timeoutMs);
+        inConfig.GetNumber("asu_query_timeout_ms", config.queryTimeoutMs);
         inConfig.GetNumber("asu_max_error_count", config.maxErrorCount);
         inConfig.GetNumber("asu_max_inflight_tasks", config.maxInflightTasks);
         inConfig.GetNumber("asu_max_inflight_bytes", config.maxInflightBytes);
@@ -596,6 +526,9 @@ private:
         if (config.timeoutMs == 0) {
             return Status::InvalidParam("asu_timeout_ms must be greater than zero");
         }
+        if (config.queryTimeoutMs == 0) {
+            return Status::InvalidParam("asu_query_timeout_ms must be greater than zero");
+        }
         if (config.maxInflightTasks > std::numeric_limits<std::uint32_t>::max()) {
             return Status::InvalidParam("asu_max_inflight_tasks exceeds uint32 range");
         }
@@ -628,14 +561,12 @@ private:
         return Status::OK();
     }
 
-    std::unique_ptr<AsuBackend> CreateBackend(const Config& config)
+    std::unique_ptr<UC::ASU::AsuClient> CreateClient(const Config& config)
     {
 #ifdef ASU_BUILD_TESTS
-        if (backendFactory_) { return backendFactory_(config); }
+        if (clientFactory_) { return clientFactory_(config); }
 #endif
-        // Keep asu_mode for configuration validation, but route all store operations through
-        // the ASU client backend.
-        return std::make_unique<ClientBackend>();
+        return UC::ASU::CreateAsuClient();
     }
 
     std::size_t ShardsPerBlock() const { return config_.blockSize / config_.shardSize; }
@@ -701,15 +632,32 @@ private:
         throw std::logic_error("unhandled ASU tensor layout");
     }
 
-    Expected<std::vector<uint8_t>> QueryBlocks(const Detail::BlockId* blocks, std::size_t num,
-                                               const UC::ASU::QueryOptions& options) const
+    AsuStatus Query(const std::vector<UC::ASU::CacheKey>& keys, UC::ASU::QueryResult& result) const
+    {
+        UC::ASU::TaskId taskId = UC::ASU::kInvalidTaskId;
+        auto status = client_->QueryAsync(keys, taskId);
+        if (!status.ok()) { return status; }
+
+        UC::ASU::TaskResult taskResult;
+        status = client_->Wait(taskId, config_.queryTimeoutMs, taskResult);
+        if (taskResult.queryResult.has_value()) {
+            result = std::move(*taskResult.queryResult);
+        } else if (status.ok()) {
+            return AsuStatus::Error(UC::ASU::StatusCode::INTERNAL_ERROR,
+                                    "client query result is missing");
+        }
+        return status;
+    }
+
+    Expected<std::vector<uint8_t>> QueryBlocks(const Detail::BlockId* blocks, std::size_t num) const
     {
         std::vector<uint8_t> result(num, false);
         if (num == 0) { return result; }
 
         auto keys = BuildBlockKeys(blocks, num);
         UC::ASU::QueryResult queryResult;
-        auto status = backend_->Query(keys, options, queryResult);
+        auto status = Query(keys, queryResult);
+        if (status.code == AsuStatusCode::TIMEOUT) { return result; }
         if (!status.ok()) {
             LogAsuStatus("query blocks", status);
             return ConvertStatus(status);
@@ -739,7 +687,7 @@ private:
         if (!entries) { return entries.Error(); }
 
         UC::ASU::TaskId taskId = UC::ASU::kInvalidTaskId;
-        auto status = ((*backend_).*submit)(entries.Value(), taskId);
+        auto status = ((*client_).*submit)(entries.Value(), taskId);
         if (!status.ok()) {
             LogAsuStatus("submit task", status);
             return ConvertStatus(status);
@@ -819,11 +767,11 @@ private:
 
     Config config_;
     TensorLayout tensorLayout_{TensorLayout::MLA};
-    std::unique_ptr<AsuBackend> backend_;
+    std::unique_ptr<UC::ASU::AsuClient> client_;
     mutable std::mutex persistentRegionsMu_;
     std::vector<RegisteredPersistentRegion> persistentRegions_;
 #ifdef ASU_BUILD_TESTS
-    BackendFactory backendFactory_;
+    ClientFactory clientFactory_;
 #endif
 };
 

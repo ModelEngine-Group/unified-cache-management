@@ -259,11 +259,8 @@ Status AsuClientRunner::Exist(const std::vector<UC::ASU::CacheKey>& keys, std::u
 {
     if (client_ == nullptr) { return Status::Error(kExitInvalidArgument, "asu client is null"); }
 
-    UC::ASU::QueryOptions options;
-    options.mode = UC::ASU::QueryMode::PER_KEY;
-    options.timeoutMs = timeoutMs;
     UC::ASU::TaskId taskId = UC::ASU::kInvalidTaskId;
-    auto status = client_->QueryAsync(keys, options, taskId);
+    auto status = client_->QueryAsync(keys, taskId);
     if (status.ok()) {
         UC::ASU::TaskResult taskResult;
         status = client_->Wait(taskId, timeoutMs, taskResult);

@@ -121,16 +121,6 @@ enum class Protocol {
     TCP = 2,
 };
 
-enum class QueryMode {
-    PER_KEY = 0,
-    PREFIX = 1,
-};
-
-struct QueryOptions {
-    QueryMode mode{QueryMode::PER_KEY};
-    std::uint64_t timeoutMs{0};
-};
-
 struct QueryResult {
     std::vector<std::uint8_t> exists;
     std::uint32_t prefixHitKeys{0};

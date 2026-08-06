@@ -195,15 +195,15 @@ void ExpectCompleted(AsuClient& client, TaskId taskId, std::size_t entryCount)
     ASSERT_TRUE(client.Check(taskId));
 }
 
-Status QueryAndWait(AsuClient& client, const std::vector<CacheKey>& keys,
-                    const QueryOptions& options, QueryResult& result)
+Status QueryAndWait(AsuClient& client, const std::vector<CacheKey>& keys, QueryResult& result,
+                    std::uint64_t timeoutMs)
 {
     TaskId taskId{kInvalidTaskId};
-    auto status = client.QueryAsync(keys, options, taskId);
+    auto status = client.QueryAsync(keys, taskId);
     if (!status.ok()) { return status; }
 
     TaskResult taskResult;
-    status = client.Wait(taskId, options.timeoutMs, taskResult);
+    status = client.Wait(taskId, timeoutMs, taskResult);
     if (taskResult.queryResult.has_value()) {
         result = std::move(*taskResult.queryResult);
     } else if (status.ok()) {
@@ -239,10 +239,8 @@ TEST(AsuSmokeTest, ClientAsyncTasksCompleteEndToEnd)
 
     std::vector<CacheKey> keys{MakeCacheKey("alpha"), MakeCacheKey("beta"), MakeCacheKey("gamma"),
                                MakeCacheKey("delta")};
-    QueryOptions queryOptions;
-    queryOptions.timeoutMs = 500;
     QueryResult queryResult;
-    status = QueryAndWait(*client, keys, queryOptions, queryResult);
+    status = QueryAndWait(*client, keys, queryResult, 500);
     ASSERT_TRUE(status.ok()) << status.message;
     ASSERT_EQ(queryResult.exists.size(), keys.size());
 
