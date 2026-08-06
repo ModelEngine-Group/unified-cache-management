@@ -193,6 +193,64 @@ def _scheduler_read_unique_id() -> str:
     )
 
 
+def _worker_publish_block_size(block_size: int, dp_rank: int) -> None:
+    if dp_rank != 0 or get_world_group().rank_in_group != 0:
+        return
+
+    now = time.time()
+    for stale in glob.glob("/dev/shm/ucm_blocksize_*"):
+        try:
+            if now - os.path.getmtime(stale) > 600:
+                os.remove(stale)
+        except OSError:
+            pass
+
+    path = f"/dev/shm/ucm_blocksize_{os.getppid()}"
+    tmp = f"{path}.tmp.{os.getpid()}"
+    with open(tmp, "w") as f:
+        f.write(str(int(block_size)))
+    os.replace(tmp, path)
+    logger.info(
+        f"Published store block_size {block_size} to {path} "
+        f"(pid={os.getpid()}, ppid={os.getppid()})."
+    )
+
+
+def _scheduler_read_block_size() -> int | None:
+    for pid in (os.getpid(), os.getppid()):
+        path = f"/dev/shm/ucm_blocksize_{pid}"
+        try:
+            with open(path) as f:
+                content = f.read().strip()
+        except (FileNotFoundError, OSError):
+            continue
+        try:
+            block_size = int(content)
+        except ValueError:
+            logger.warning(
+                f"block_size file {path} holds a non-integer value "
+                f"{content!r}, fall back to manual estimate"
+            )
+            return None
+        if block_size <= 0:
+            logger.warning(
+                f"block_size file {path} holds a non-positive value "
+                f"{block_size}, fall back to manual estimate"
+            )
+            return None
+        logger.info(
+            f"Read worker-published store block_size {block_size} from {path} "
+            f"(pid={os.getpid()}, ppid={os.getppid()})."
+        )
+        return block_size
+    logger.warning(
+        "block_size file not found "
+        f"(looked for /dev/shm/ucm_blocksize_{os.getpid()} and "
+        f"/dev/shm/ucm_blocksize_{os.getppid()}), fall back to manual estimate"
+    )
+    return None
+
+
 @dataclass
 class RequestMeta:
     ucm_block_ids: list[bytes] = field(default_factory=list)
@@ -1208,6 +1266,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["tensor_size_list"] = tensor_size_list
             config["shard_size"] = store_shard_size
             config["block_size"] = store_block_size
+            self._publish_block_size(store_block_size)
             if store_shard_size != logical_shard_size:
                 logger.info(
                     "Pad Store sizes for I/O alignment: "
@@ -1237,20 +1296,37 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["gpu_kv_buffer_sizes"] = gpu_kv_buffer_sizes
             if cpu_affinity_cores:
                 config["cpu_affinity_cores"] = list(cpu_affinity_cores)
-        else:
-            config_base = self.block_size * self.element_size * self.head_size
-            config["block_size"] = (
-                config_base
-                * self.num_layers
-                * (1 if self.is_mla else self.num_head * 2)
-                * self.blocks_per_chunk
-            )
-        dp_rank = self._vllm_config.parallel_config.data_parallel_rank
-        config["posix_gc_enable"] = (
-            self._role != KVConnectorRole.WORKER and dp_rank == 0
-        )
+        elif self._gc_owner:
+            bs = _scheduler_read_block_size()
+            if bs is None:
+                config_base = self.block_size * self.element_size * self.head_size
+                bs = (
+                    config_base
+                    * self.num_layers
+                    * (1 if self.is_mla else self.num_head * 2)
+                    * self.blocks_per_chunk
+                )
+                logger.warning(f"Falling back to manual block_size estimate: {bs}")
+            config["block_size"] = bs
+        config["posix_gc_enable"] = self._gc_owner
         logger.info(f"create {name} with config: {config}")
         return UcmConnectorFactoryV1.create_connector(name, config, module_path)
+
+    @property
+    def _dp_rank(self) -> int:
+        return self._vllm_config.parallel_config.data_parallel_rank
+
+    @property
+    def _gc_owner(self) -> bool:
+        """Whether this connector's store runs block GC.
+
+        Only the DP0 scheduler does, which is also the only side that needs a
+        real block_size.
+        """
+        return self._role != KVConnectorRole.WORKER and self._dp_rank == 0
+
+    def _publish_block_size(self, block_size: int) -> None:
+        _worker_publish_block_size(block_size, self._dp_rank)
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         if has_ucm_sparse() and os.getenv("VLLM_HASH_ATTENTION") == "1":
