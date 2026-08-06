@@ -35,6 +35,8 @@ namespace py = pybind11;
 
 namespace UC::PipelineStore {
 
+constexpr Detail::TaskHandle UNHEALTHY_DUMP_TASK = 0;
+
 class StoreNotFoundError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -215,16 +217,19 @@ public:
         desc.prerequisiteHandle = prerequisite_handle;
         auto res = StoreBack()->Dump(desc);
         if (res) { return res.Value(); }
+        if (res.Error() == Status::StoreUnhealthy()) { return UNHEALTHY_DUMP_TASK; }
         ThrowError(res.Error());
     }
     bool Check(Detail::TaskHandle taskId)
     {
+        if (taskId == UNHEALTHY_DUMP_TASK) { return true; }
         auto res = StoreBack()->Check(taskId);
         if (res) { return res.Value(); }
         ThrowError(res.Error());
     }
     void Wait(Detail::TaskHandle taskId)
     {
+        if (taskId == UNHEALTHY_DUMP_TASK) { ThrowError(Status::StoreUnhealthy()); }
         auto status = Status::OK();
         {
             pybind11::gil_scoped_release release;
