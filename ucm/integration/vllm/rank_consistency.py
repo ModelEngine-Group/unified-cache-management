@@ -201,14 +201,6 @@ class RankConsistencyManager:
         self._dump_task_contexts[id(task)] = (store, request_context)
         return task
 
-    def check_dump(self, task: Any) -> bool:
-        """Poll a dump task, treating an unhealthy submission as completed."""
-        task_key = id(task)
-        if task_key not in self._dump_task_contexts:
-            raise RuntimeError("Dump task was not submitted through submit_dump().")
-        store, _ = self._dump_task_contexts[task_key]
-        return store.check(task)
-
     def wait_dump(self, task: Any) -> None:
         """Wait through the task's Store and record blocks affected by failure."""
         task_key = id(task)

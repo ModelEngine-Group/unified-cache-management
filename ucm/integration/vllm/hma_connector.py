@@ -1519,7 +1519,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 task_finished = False
 
                 try:
-                    task_finished = self._rank_consistency.check_dump(dump_task.task)
+                    task_finished = dump_task.store.check(dump_task.task)
                 except Exception as e:
                     logger.error(
                         "Check FAWA dump task failed; external cache may miss. "
