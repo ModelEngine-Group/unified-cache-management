@@ -117,7 +117,7 @@ TEST_F(ReplyServiceTest, SharesSlotsAcrossRequestsAndValidatesOwnership)
     EXPECT_TRUE(service->Release(Token(33, 4), reused.Value()).Success());
     EXPECT_TRUE(service->Release(first_token, first.Value()).Success());
     EXPECT_TRUE(service->Release(third_token, third.Value()).Success());
-    EXPECT_TRUE(service->Shutdown().Success());
+    service->Shutdown();
 }
 
 TEST_F(ReplyServiceTest, RejectsReplyPayloadLargerThanSlot)
@@ -127,7 +127,7 @@ TEST_F(ReplyServiceTest, RejectsReplyPayloadLargerThanSlot)
     auto service = std::move(created).Value();
     ASSERT_TRUE(service->Start().Success());
     EXPECT_FALSE(service->Acquire(Token(1, 1), OpType::LOOKUP, 1));
-    EXPECT_TRUE(service->Shutdown().Success());
+    service->Shutdown();
 }
 
 TEST_F(ReplyServiceTest, ShutdownStopsNewLeases)
@@ -136,7 +136,7 @@ TEST_F(ReplyServiceTest, ShutdownStopsNewLeases)
     ASSERT_TRUE(created);
     auto service = std::move(created).Value();
     ASSERT_TRUE(service->Start().Success());
-    ASSERT_TRUE(service->Shutdown().Success());
+    service->Shutdown();
     EXPECT_FALSE(service->Acquire(Token(1, 1), OpType::LOOKUP, 1));
 }
 
@@ -169,7 +169,7 @@ TEST_F(ReplyServiceTest, SupportsConcurrentLeases)
 
     EXPECT_FALSE(failed.load(std::memory_order_relaxed));
     EXPECT_EQ(service->Available(), kSlotCount);
-    EXPECT_TRUE(service->Shutdown().Success());
+    service->Shutdown();
 }
 
 }  // namespace

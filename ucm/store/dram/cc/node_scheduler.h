@@ -42,7 +42,7 @@ public:
     NodeScheduler& operator=(const NodeScheduler&) = delete;
 
     Status Start();
-    Status Shutdown();
+    void Shutdown();
 
     // Consumes on success during runtime.
     Status Post(Request& request);

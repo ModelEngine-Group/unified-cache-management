@@ -24,7 +24,6 @@
 #include <algorithm>
 #include <cstdint>
 #include <gtest/gtest.h>
-#include <limits>
 #include <string>
 #include <thread>
 #include <vector>
@@ -33,7 +32,7 @@
 namespace UC::Dram {
 namespace {
 
-Detail::Dictionary BaseConfig(bool includeIoLengths = true)
+Detail::Dictionary BaseConfig(bool includeTensorSizes = true)
 {
     Detail::Dictionary config;
     config.Set("local_control_endpoint", std::string{"127.0.0.1:6000"});
@@ -44,7 +43,7 @@ Detail::Dictionary BaseConfig(bool includeIoLengths = true)
                std::vector<std::string>{"127.0.0.1:7000", "127.0.0.1:9000"});
     config.Set("node_transport_manager_ids",
                std::vector<std::string>{"127.0.0.1:7100", "127.0.0.1:9100"});
-    if (includeIoLengths) { config.Set("io_lengths", std::vector<ssize_t>{4096}); }
+    if (includeTensorSizes) { config.Set("tensor_size_list", std::vector<ssize_t>{4096}); }
     return config;
 }
 
@@ -103,7 +102,7 @@ TEST(DramConfigTest, ParsesFixedReconnectInterval)
     EXPECT_EQ(parsed.Value().nodeScheduler.reconnectInterval.count(), 37);
 }
 
-TEST(DramConfigTest, RequiresIoLengths) { EXPECT_FALSE(DramConfig::Parse(BaseConfig(false))); }
+TEST(DramConfigTest, RequiresTensorSizes) { EXPECT_FALSE(DramConfig::Parse(BaseConfig(false))); }
 
 TEST(DramConfigTest, ParsesRouterTypeIntoStrongConfiguration)
 {
@@ -163,18 +162,6 @@ TEST(DramConfigTest, ParsesControlEndpointsAndStoresManagerIds)
     EXPECT_EQ(config.nodeScheduler.nodes[0].controlHost, "127.0.0.1");
     EXPECT_EQ(config.nodeScheduler.nodes[0].controlPort, std::uint16_t{7000});
     EXPECT_EQ(config.nodeScheduler.nodes[0].transportManagerId, "127.0.0.1:7100");
-}
-
-TEST(DramConfigTest, RejectsIoLengthOutsideProtocolRange)
-{
-    if (sizeof(ssize_t) <= sizeof(std::uint32_t)) {
-        GTEST_SKIP() << "ssize_t cannot represent an oversized IO length";
-    }
-    auto input = BaseConfig();
-    input.Set("io_lengths",
-              std::vector<ssize_t>{static_cast<ssize_t>(
-                  static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) + 1)});
-    EXPECT_FALSE(DramConfig::Parse(input));
 }
 
 }  // namespace

@@ -54,7 +54,7 @@ public:
     virtual Status Connect(const ::UC::Dram::Connect& command) noexcept = 0;
     // Success synchronously proves that the old epoch can no longer access client memory.
     virtual Status Fence(const ::UC::Dram::FenceEpoch& command) noexcept = 0;
-    virtual Status Stop() noexcept = 0;
+    virtual void Stop() = 0;
 };
 
 class TransportExecutor final {
@@ -74,7 +74,7 @@ public:
     TransportExecutor& operator=(const TransportExecutor&) = delete;
 
     Status Start();
-    Status Shutdown();
+    void Shutdown();
 
     // Consumes on success.
     Status TryPost(TransportCommand& command);

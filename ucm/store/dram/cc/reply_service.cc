@@ -25,6 +25,7 @@
 #include <atomic>
 #include <limits>
 #include <system_error>
+#include "logger/logger.h"
 
 namespace UC::Dram {
 
@@ -105,7 +106,7 @@ Status ReplyService::DecodeReply(const Lease& lease, std::vector<EntryResult>* e
     return Status::OK();
 }
 
-ReplyService::~ReplyService() { (void)Shutdown(); }
+ReplyService::~ReplyService() { Shutdown(); }
 
 ReplyMemoryRegion ReplyService::MemoryRegion() const noexcept
 {
@@ -286,7 +287,7 @@ void ReplyService::Run() noexcept
     }
 }
 
-Status ReplyService::Shutdown()
+void ReplyService::Shutdown()
 {
     acceptingLeases_.store(false, std::memory_order_release);
     wake_.notify_all();
@@ -294,9 +295,8 @@ Status ReplyService::Shutdown()
 
     std::lock_guard lock(activeLeasesMutex_);
     if (!activeLeaseIndices_.empty()) {
-        return Status::Error("ReplyService stopped with active reply leases");
+        UC_ERROR("ReplyService stopped with {} abandoned reply leases", activeLeaseIndices_.size());
     }
-    return Status::OK();
 }
 
 }  // namespace UC::Dram

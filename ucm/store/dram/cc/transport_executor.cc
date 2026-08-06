@@ -53,7 +53,7 @@ bool IsFence(const TransportCommand& command) noexcept
 
 TransportExecutor::TransportExecutor(Options options) : options_(std::move(options)) {}
 
-TransportExecutor::~TransportExecutor() { (void)Shutdown(); }
+TransportExecutor::~TransportExecutor() { Shutdown(); }
 
 void TransportExecutor::Execute(TransportCommand command) noexcept
 {
@@ -146,9 +146,6 @@ Status TransportExecutor::Start()
             if (worker->thread.joinable()) { worker->thread.join(); }
         }
         workers_.clear();
-        auto backend = std::move(options_.backend);
-        const auto stopStatus = backend->Stop();
-        if (stopStatus.Failure()) { return stopStatus; }
         return Status::Error(fmt::format("failed to start TransportExecutor: {}", error.what()));
     }
 }
@@ -189,15 +186,13 @@ Status TransportExecutor::TryPost(TransportCommand& command)
     return Status::OK();
 }
 
-Status TransportExecutor::Shutdown()
+void TransportExecutor::Shutdown()
 {
     acceptingCommands_.store(false, std::memory_order_release);
     for (auto& worker : workers_) { worker->wake.notify_all(); }
     for (auto& worker : workers_) {
         if (worker->thread.joinable()) { worker->thread.join(); }
     }
-    auto backend = std::move(options_.backend);
-    return backend ? backend->Stop() : Status::OK();
 }
 
 }  // namespace UC::Dram

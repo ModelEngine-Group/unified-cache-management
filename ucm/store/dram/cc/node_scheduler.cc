@@ -58,7 +58,7 @@ NodeScheduler::NodeScheduler(NodeSchedulerConfig config, NodeDependencies depend
 {
 }
 
-NodeScheduler::~NodeScheduler() { (void)Shutdown(); }
+NodeScheduler::~NodeScheduler() { Shutdown(); }
 
 NodeScheduler::Runner& NodeScheduler::GetRunner(NodeId nodeId) const noexcept
 {
@@ -184,7 +184,7 @@ void NodeScheduler::JoinAll()
     }
 }
 
-Status NodeScheduler::Shutdown()
+void NodeScheduler::Shutdown()
 {
     acceptingMessages_.store(false, std::memory_order_release);
     for (auto& runner : runners_) {
@@ -192,7 +192,6 @@ Status NodeScheduler::Shutdown()
         runner->wake.notify_all();
     }
     JoinAll();
-    return Status::OK();
 }
 
 }  // namespace UC::Dram

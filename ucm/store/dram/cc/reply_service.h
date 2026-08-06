@@ -65,7 +65,7 @@ public:
     ReplyService& operator=(const ReplyService&) = delete;
 
     Status Start();
-    Status Shutdown();
+    void Shutdown();
 
     Expected<ReplySlot> Acquire(const RequestToken& token, OpType op, std::size_t entryCount);
     Status Release(const RequestToken& token, const ReplySlot& slot) noexcept;

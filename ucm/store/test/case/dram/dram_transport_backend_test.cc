@@ -68,13 +68,16 @@ public:
                    : Status::OK();
     }
     Status Fence(const ::UC::Dram::FenceEpoch&) noexcept override { return Status::OK(); }
-    Status Stop() noexcept override { return Status::OK(); }
+    void Stop() override { stopCount_.fetch_add(1, std::memory_order_relaxed); }
+
+    std::size_t StopCount() const noexcept { return stopCount_.load(std::memory_order_relaxed); }
 
 private:
     std::atomic<MemoryHandle> nextRegistration_{1};
+    std::atomic<std::size_t> stopCount_{0};
 };
 
-std::shared_ptr<ITransportBackend> CreateMockTransportBackend()
+std::shared_ptr<MockTransportBackend> CreateMockTransportBackend()
 {
     return std::make_shared<MockTransportBackend>();
 }
@@ -109,15 +112,19 @@ TEST(TransportExecutorTest, PublisherIsConstructorDependency)
     TransportExecutor executor(TransportExecutor::Options{1, 1, 1, CreateMockTransportBackend(),
                                                           [](NodeId, NodeEvent) {}});
     ASSERT_TRUE(executor.Start().Success());
-    EXPECT_TRUE(executor.Shutdown().Success());
+    executor.Shutdown();
 }
 
 TEST(TransportExecutorTest, ShutdownStopsNewCommands)
 {
-    TransportExecutor executor(TransportExecutor::Options{1, 1, 1, CreateMockTransportBackend(),
-                                                          [](NodeId, NodeEvent) {}});
+    auto backend = CreateMockTransportBackend();
+    TransportExecutor executor(
+        TransportExecutor::Options{1, 1, 1, backend, [](NodeId, NodeEvent) {}});
     ASSERT_TRUE(executor.Start().Success());
-    ASSERT_TRUE(executor.Shutdown().Success());
+    executor.Shutdown();
+    EXPECT_EQ(backend->StopCount(), std::size_t{0});
+    backend->Stop();
+    EXPECT_EQ(backend->StopCount(), std::size_t{1});
 
     TransportCommand command{
         Connect{1, kDefaultLaneId, 1, TestManagerId(1234)}
@@ -135,7 +142,7 @@ TEST(TransportExecutorTest, EventPublisherExceptionIsFatal)
             (void)executor.Start();
             TransportCommand command(Connect{1, kDefaultLaneId, 1, TestManagerId(1234)});
             (void)executor.TryPost(command);
-            (void)executor.Shutdown();
+            executor.Shutdown();
         },
         "");
 }
@@ -198,7 +205,7 @@ TEST(TransportExecutorTest, RequestLimitsDeriveSeparateCommandAndFenceBudgets)
     EXPECT_EQ(commandOverflowStatus, Status::Error());
     EXPECT_TRUE(fenceStatus.Success());
     EXPECT_EQ(fenceOverflowStatus, Status::Error());
-    EXPECT_TRUE(executor.Shutdown().Success());
+    executor.Shutdown();
 }
 
 }  // namespace

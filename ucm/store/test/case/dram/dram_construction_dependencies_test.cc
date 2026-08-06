@@ -21,39 +21,25 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_DRAM_STORE_CC_CONFIG_H
-#define UNIFIEDCACHE_DRAM_STORE_CC_CONFIG_H
+#include <gtest/gtest.h>
+#include <memory>
+#include "ucmstore_v1.h"
 
-#include <cstddef>
-#include <cstdint>
-#include <string>
-#include <vector>
-#include "kv_common/router.h"
-#include "status/status.h"
-#include "type/dictionary.h"
-#include "types.h"
+extern "C" UC::StoreV1* MakeDramStore();
 
 namespace UC::Dram {
+namespace {
 
-struct DramConfig {
-    std::string localControlHost;
-    std::uint16_t localControlPort{0};
-    std::string localHost;
-    std::string localTransportManagerId;
-    std::int32_t transportDeviceId{0};
-    UC::KV::RouterType routerType{UC::KV::RouterType::RING_HASH_FULL_SPREAD};
-    std::size_t maxIoEntries{65536};
-    NodeSchedulerConfig nodeScheduler;
-    TransportRuntimeConfig transportRuntime;
-    TimeoutConfig taskTimeouts;
-    std::size_t replySlotCount{0};
-    std::uint32_t replySlotSize{0};
-    std::vector<std::uint64_t> tensorSizes;
+TEST(DramStoreConstructionTest, FactorySurvivesInvalidSetup)
+{
+    std::unique_ptr<StoreV1> store(MakeDramStore());
+    ASSERT_NE(store, nullptr);
+    EXPECT_FALSE(store->Readme().empty());
+    EXPECT_TRUE(store->NeedRegisterKVCaches());
 
-    static Expected<DramConfig> Parse(const Detail::Dictionary& dictionary);
-    Status Validate() const;
-};
+    Detail::Dictionary invalid;
+    EXPECT_TRUE(store->Setup(invalid).Failure());
+}
 
+}  // namespace
 }  // namespace UC::Dram
-
-#endif  // UNIFIEDCACHE_DRAM_STORE_CC_CONFIG_H

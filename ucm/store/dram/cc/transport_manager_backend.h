@@ -64,7 +64,7 @@ public:
     TransmitCompleted Transmit(const ::UC::Dram::Transmit& command) noexcept override;
     Status Connect(const ::UC::Dram::Connect& command) noexcept override;
     Status Fence(const ::UC::Dram::FenceEpoch& command) noexcept override;
-    Status Stop() noexcept override;
+    void Stop() override;
 
 private:
     friend Expected<std::shared_ptr<ITransportBackend>> CreateTransportManagerBackend(
