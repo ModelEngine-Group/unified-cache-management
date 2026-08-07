@@ -89,19 +89,39 @@ void ShardGarbageCollector::GCCheckLoop()
         UC_WARN("Failed({}) to set UCM posix GC check worker name.", nameStatus);
     }
     while (!stop_.load()) {
-        auto [trigger, avgFilesPerShard, threshold] = ShouldTrigger();
-        UC_INFO("GC sampling: avgFiles/shard={}, threshold={}, trigger={}", avgFilesPerShard,
-                threshold, trigger);
+        auto sampleStart = std::chrono::steady_clock::now();
+        auto [trigger, avgFilesPerShard, scannedFiles, scannedShards, threshold] = ShouldTrigger();
+        auto sampleEnd = std::chrono::steady_clock::now();
+        auto sampleMs = std::chrono::duration_cast<std::chrono::milliseconds>(sampleEnd - sampleStart).count();
+        UC_INFO("GC sampling: avgFiles/shard={}, scanned_files={}, scanned_shards={}, "
+                "threshold={}, trigger={}, sample_time_ms={}",
+                avgFilesPerShard, scannedFiles, scannedShards, threshold, trigger, sampleMs);
+        
         int rounds = 0;
+        size_t totalDeletedFiles = 0;
         while (!stop_.load() && trigger) {
-            bool gcLimited = Execute();
+            auto roundStart = std::chrono::steady_clock::now();
+            size_t deletedFiles = 0;
+            bool gcLimited = Execute(deletedFiles);
+            auto gcEnd = std::chrono::steady_clock::now();
+            auto gcMs = std::chrono::duration_cast<std::chrono::milliseconds>(gcEnd - roundStart).count();
+            
             rounds++;
+            totalDeletedFiles += deletedFiles;
+            UC_INFO("GC round {}: gc_time_ms={}, deleted_files={}", rounds, gcMs, deletedFiles);
+            
             if (gcLimited) { continue; }
-            std::tie(trigger, avgFilesPerShard, threshold) = ShouldTrigger();
+            
+            sampleStart = std::chrono::steady_clock::now();
+            std::tie(trigger, avgFilesPerShard, scannedFiles, scannedShards, threshold) = ShouldTrigger();
+            sampleEnd = std::chrono::steady_clock::now();
+            sampleMs = std::chrono::duration_cast<std::chrono::milliseconds>(sampleEnd - sampleStart).count();
+            UC_INFO("GC resample: avgFiles/shard={}, scanned_files={}, scanned_shards={}, "
+                    "threshold={}, trigger={}, sample_time_ms={}",
+                    avgFilesPerShard, scannedFiles, scannedShards, threshold, trigger, sampleMs);
         }
         if (rounds > 0) {
-            UC_INFO("GC completed: rounds={}, avgFiles/shard={}, threshold={}", rounds,
-                    avgFilesPerShard, threshold);
+            UC_INFO("GC completed: rounds={}, total_deleted_files={}", rounds, totalDeletedFiles);
         }
         {
             std::unique_lock<std::mutex> lock(gcCheckMtx_);
@@ -112,20 +132,22 @@ void ShardGarbageCollector::GCCheckLoop()
     }
 }
 
-bool ShardGarbageCollector::Execute()
+bool ShardGarbageCollector::Execute(size_t& deletedFiles)
 {
     auto waiter = std::make_shared<Latch>();
     auto shards = layout_->SampleShards(1.0);
     waiter->Set(shards.size());
     std::atomic<bool> gcLimited{false};
+    std::atomic<size_t> deletedCount{0};
     for (const auto& shard : shards) {
-        gcPool_.Push({ShardTaskContext::Type::GC, shard, waiter, nullptr, &gcLimited});
+        gcPool_.Push({ShardTaskContext::Type::GC, shard, waiter, nullptr, &gcLimited, &deletedCount});
     }
     waiter->Wait();
+    deletedFiles = deletedCount.load();
     return gcLimited.load();
 }
 
-std::tuple<bool, size_t, size_t> ShardGarbageCollector::ShouldTrigger()
+std::tuple<bool, size_t, size_t, size_t, size_t> ShardGarbageCollector::ShouldTrigger()
 {
     auto sampleShards = layout_->SampleShards(config_.posixGcShardSampleRatio);
     auto waiter = std::make_shared<Latch>();
@@ -135,11 +157,13 @@ std::tuple<bool, size_t, size_t> ShardGarbageCollector::ShouldTrigger()
         gcPool_.Push({ShardTaskContext::Type::SAMPLE, shard, waiter, &sampledFiles});
     }
     waiter->Wait();
-    size_t avgFilesPerShard = sampledFiles.load() / sampleShards.size();
+    size_t totalScannedFiles = sampledFiles.load();
+    size_t avgFilesPerShard = totalScannedFiles / sampleShards.size();
     size_t thresholdFilesPerShard = maxFileCount_ / layout_->SampleShards(1.0).size();
     size_t threshold =
         static_cast<size_t>(thresholdFilesPerShard * config_.posixGcTriggerThresholdRatio);
-    return {avgFilesPerShard >= threshold, avgFilesPerShard, threshold};
+    return {avgFilesPerShard >= threshold, avgFilesPerShard, totalScannedFiles, 
+            sampleShards.size(), threshold};
 }
 
 void ShardGarbageCollector::ProcessTask(ShardTaskContext& ctx)
@@ -151,6 +175,7 @@ void ShardGarbageCollector::ProcessTask(ShardTaskContext& ctx)
         auto filesToDelete = layout_->GetOldestFiles(ctx.shard, config_.posixGcRecyclePercent,
                                                      config_.posixGcMaxRecycleCountPerShard);
         for (const auto& blockId : filesToDelete) { layout_->RemoveFile(blockId); }
+        ctx.deletedFiles->fetch_add(filesToDelete.size(), std::memory_order_relaxed);
         if (filesToDelete.size() >= config_.posixGcMaxRecycleCountPerShard) {
             ctx.gcLimited->store(true, std::memory_order_relaxed);
         }
