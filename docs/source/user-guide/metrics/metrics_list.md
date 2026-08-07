@@ -2,7 +2,7 @@
 
 ## 3. Metrics Exported by Default
 
-The tables below use the default `ucm:` prefix. The default configuration contains 67 Counters, 3 Gauges, and 70 Histograms. Unless a metric name or description states otherwise, duration metrics use milliseconds, bandwidth metrics use GB/s, and accumulated byte counts use bytes.
+The tables below use the default `ucm:` prefix. The default configuration contains 67 Counters, 4 Gauges, and 70 Histograms. Unless a metric name or description states otherwise, duration metrics use milliseconds, bandwidth metrics use GB/s, and accumulated byte counts use bytes.
 
 ### 3.1 Counters
 
@@ -102,6 +102,7 @@ See [UCM Health Metrics](health_metrics.md) for Store health Counters, Gauges, a
 | `ucm:cache_lookup_hit_rate` | Instantaneous hit rate of the most recent Cache Lookup |
 | `ucm:posix_store_health` | Effective Posix circuit-breaker state: 1 is available and 0 is fused |
 | `ucm:mooncake_store_health` | Effective Mooncake circuit-breaker state: 1 is available and 0 is fused |
+| `ucm:posix_gc_running` | Posix garbage collection state: 1 is running and 0 is idle |
 
 ### 3.3 Histograms
 

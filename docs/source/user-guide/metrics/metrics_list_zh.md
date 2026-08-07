@@ -2,7 +2,7 @@
 
 ## 3. 默认暴露指标
 
-以下表格使用默认的 `ucm:` 前缀。默认配置包含 67 个 Counter、3 个 Gauge 和 70 个 Histogram。除非指标名称或说明另有说明，耗时指标单位为毫秒，带宽指标单位为 GB/s，累计数据量单位为字节。
+以下表格使用默认的 `ucm:` 前缀。默认配置包含 67 个 Counter、4 个 Gauge 和 70 个 Histogram。除非指标名称或说明另有说明，耗时指标单位为毫秒，带宽指标单位为 GB/s，累计数据量单位为字节。
 
 ### 3.1 Counter
 
@@ -102,6 +102,7 @@ Store 健康 Counter、Gauge 及推荐聚合方法见 [UCM 健康指标](health_
 | `ucm:cache_lookup_hit_rate` | 最近一次 Cache Lookup 的即时命中率 |
 | `ucm:posix_store_health` | Posix 熔断器有效状态：1 表示可用，0 表示已熔断 |
 | `ucm:mooncake_store_health` | Mooncake 熔断器有效状态：1 表示可用，0 表示已熔断 |
+| `ucm:posix_gc_running` | Posix GC 状态：1 表示正在运行，0 表示空闲 |
 
 ### 3.3 Histogram
 
