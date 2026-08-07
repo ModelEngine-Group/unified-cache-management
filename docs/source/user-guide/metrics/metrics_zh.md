@@ -8,6 +8,49 @@ UCM metrics 建议使用 **不短于 5 秒**的抓取和展示刷新周期，本
 
 UCM 指标的实际刷新还取决于 vLLM 的调用。UCM 会先在内部累计指标，vLLM 处理请求并调用 connector 的 `get_kv_connector_stats()` 接口后，新增数据才会同步到 vLLM 暴露的 Prometheus 指标中。**如果完全没有推理请求，vLLM 不会调用该接口，UCM 指标将不会更新**。
 
+## Metrics workflow
+
+下面以 DP=2、TP=1 为例。每个 DP 包含 1 个 worker Store 和 1 个 scheduler Store；两个 DP 分别处理各自的请求或 batch。
+
+```{mermaid}
+sequenceDiagram
+    autonumber
+    participant C as 客户端
+    participant A as vLLM API Server
+    participant S0 as DP 0 Scheduler
+    participant W0 as DP 0 Worker
+    participant S1 as DP 1 Scheduler
+    participant W1 as DP 1 Worker
+    participant M as vLLM /metrics Endpoint<br/>(位于 API Server 内)
+    participant P as Prometheus
+
+    C->>A: 发送推理请求
+    par 请求或 batch 分配给 DP 0
+        A->>S0: 调度 batch A
+        S0->>W0: 执行模型及 UCM Lookup/Load/Save
+        W0->>W0: 在 UCM 内部累计指标
+        W0->>W0: vLLM 调用 get_kv_connector_stats() 获取 UCM 累计的指标
+        W0-->>S0: 返回 worker 指标 (worker_rank=0)
+        S0->>S0: 返回 scheduler 指标 (worker_rank=scheduler)
+        S0-->>A: 上报 connector stats (engine=engine-0)
+    and 请求或 batch 分配给 DP 1
+        A->>S1: 调度 batch B
+        S1->>W1: 执行模型及 UCM Lookup/Load/Save
+        W1->>W1: 在 UCM 内部累计指标
+        W1->>W1: vLLM 调用 get_kv_connector_stats() 获取 UCM 累计的指标
+        W1-->>S1: 返回 worker 指标 (worker_rank=1)
+        S1->>S1: 返回 scheduler 指标 (worker_rank=scheduler)
+        S1-->>A: 上报 connector stats (engine=engine-1)
+    end
+    A->>M: 按指标类型更新 ucm:* series
+    P->>M: GET /metrics
+    M-->>P: 返回 vllm:* 和 ucm:* metrics
+```
+
+UCM 在发生 Lookup、Load、Save、健康探测等操作的进程中累计 Counter、Gauge 和 Histogram。vLLM 处理请求时，分别从 worker 和 scheduler 的 connector 获取 UCM 累计的指标；这些指标随各 DP 的 engine stats 返回，由 vLLM Prometheus metrics 按指标类型写入对应 series，并添加 `model_name`、`engine` 和 `worker_rank` 标签。
+
+vLLM `/metrics` endpoint 和 Prometheus registry 位于 API Server 进程内。Prometheus 直接抓取该 endpoint；API Server 的 HTTP 路由只负责返回 registry 中已经同步的数据，不会调用 `get_kv_connector_stats()`。如果没有推理请求，UCM 仍可能在内部产生新数据，但这些数据要等到下一次 vLLM 请求触发同步后才会出现在 `/metrics` 中。
+
 ## 1. 启用与关闭 Metrics
 
 ### 1.1 使用内置默认配置

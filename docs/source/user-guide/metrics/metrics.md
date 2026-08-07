@@ -8,6 +8,49 @@ Use a scrape and dashboard refresh interval of **at least 5 seconds** for UCM me
 
 The effective refresh frequency also depends on vLLM. UCM first accumulates metrics internally. New data is synchronized to the Prometheus metrics exposed by vLLM only after vLLM processes a request and calls the connector's `get_kv_connector_stats()` method. **When there are no inference requests, vLLM does not call this method and UCM metrics do not update.**
 
+## Metrics workflow
+
+The following example uses DP=2 and TP=1. Each DP contains one worker Store and one scheduler Store, and the two DPs process their own requests or batches.
+
+```{mermaid}
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant A as vLLM API Server
+    participant S0 as DP 0 Scheduler
+    participant W0 as DP 0 Worker
+    participant S1 as DP 1 Scheduler
+    participant W1 as DP 1 Worker
+    participant M as vLLM /metrics Endpoint<br/>(hosted by API Server)
+    participant P as Prometheus
+
+    C->>A: Send inference requests
+    par Request or batch assigned to DP 0
+        A->>S0: Schedule batch A
+        S0->>W0: Run the model and UCM Lookup/Load/Save
+        W0->>W0: Accumulate metrics inside UCM
+        W0->>W0: vLLM calls get_kv_connector_stats() to collect accumulated UCM metrics
+        W0-->>S0: Return worker metrics (worker_rank=0)
+        S0->>S0: Return scheduler metrics (worker_rank=scheduler)
+        S0-->>A: Report connector stats (engine=engine-0)
+    and Request or batch assigned to DP 1
+        A->>S1: Schedule batch B
+        S1->>W1: Run the model and UCM Lookup/Load/Save
+        W1->>W1: Accumulate metrics inside UCM
+        W1->>W1: vLLM calls get_kv_connector_stats() to collect accumulated UCM metrics
+        W1-->>S1: Return worker metrics (worker_rank=1)
+        S1->>S1: Return scheduler metrics (worker_rank=scheduler)
+        S1-->>A: Report connector stats (engine=engine-1)
+    end
+    A->>M: Update ucm:* series by metric type
+    P->>M: GET /metrics
+    M-->>P: Return vllm:* and ucm:* metrics
+```
+
+UCM accumulates Counters, Gauges, and Histograms in the process that performs each Lookup, Load, Save, or health probe. While processing requests, vLLM obtains the accumulated UCM metrics from the worker and scheduler connectors. These metrics return with each DP's engine stats, and vLLM Prometheus metrics write them to the corresponding series with the `model_name`, `engine`, and `worker_rank` labels.
+
+The vLLM `/metrics` endpoint and Prometheus registry reside in the API Server process. Prometheus scrapes that endpoint directly; the API Server's HTTP route only returns data that has already been synchronized to the registry and does not call `get_kv_connector_stats()`. With no inference requests, UCM may still produce new data internally, but that data appears in `/metrics` only after the next vLLM request triggers synchronization.
+
 ## 1. Enable or Disable Metrics
 
 ### 1.1 Use the Built-in Configuration
