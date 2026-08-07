@@ -235,6 +235,8 @@ if UCM_HAS_PROM_METRICS:
                 "documentation": definition.documentation,
                 "labelnames": labelnames,
             }
+            if definition.metric_type == "gauge" and definition.multiprocess_mode:
+                metric_kwargs["multiprocess_mode"] = definition.multiprocess_mode
             if definition.metric_type == "histogram":
                 metric_kwargs["buckets"] = list(definition.vllm_connector_buckets)
                 return self._histogram_cls(**metric_kwargs)

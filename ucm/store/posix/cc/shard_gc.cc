@@ -23,6 +23,7 @@
  * */
 #include "shard_gc.h"
 #include "logger/logger.h"
+#include "metrics/metrics.h"
 #include "thread/cpu_affinity.h"
 
 namespace UC::PosixStore {
@@ -93,11 +94,18 @@ void ShardGarbageCollector::GCCheckLoop()
         UC_INFO("GC sampling: avgFiles/shard={}, threshold={}, trigger={}", avgFilesPerShard,
                 threshold, trigger);
         int rounds = 0;
+        const bool gcRunning = trigger;
+        if (gcRunning) {
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_gc_running"), 1.0);
+        }
         while (!stop_.load() && trigger) {
             bool gcLimited = Execute();
             rounds++;
             if (gcLimited) { continue; }
             std::tie(trigger, avgFilesPerShard, threshold) = ShouldTrigger();
+        }
+        if (gcRunning) {
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_gc_running"), 0.0);
         }
         if (rounds > 0) {
             UC_INFO("GC completed: rounds={}, avgFiles/shard={}, threshold={}", rounds,
