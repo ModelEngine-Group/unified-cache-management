@@ -137,11 +137,10 @@ install(TARGETS asu_client asu_transport LIBRARY DESTINATION ucm/store/asu COMPO
 if(BUILD_UNIT_TESTS)
     target_compile_definitions(asu_transport PRIVATE ASU_BUILD_TESTS)
     include(GoogleTest)
-    file(GLOB_RECURSE ASU_TEST_SOURCE_FILES CONFIGURE_DEPENDS test/case/*.cc)
-    file(GLOB_RECURSE ASU_TRANSPORT_TEST_SOURCE_FILES CONFIGURE_DEPENDS trans/test/*.cpp)
-    list(APPEND ASU_TEST_SOURCE_FILES ${ASU_TRANSPORT_TEST_SOURCE_FILES})
-    file(GLOB_RECURSE ASU_CLIENT_TEST_SOURCE_FILES CONFIGURE_DEPENDS client/test/*.cpp)
-    list(APPEND ASU_TEST_SOURCE_FILES ${ASU_CLIENT_TEST_SOURCE_FILES})
+    file(GLOB ASU_TEST_SOURCE_FILES CONFIGURE_DEPENDS
+        test/client/*.cpp
+        test/transport/*.cpp
+    )
     add_executable(asu.test ${ASU_TEST_SOURCE_FILES})
     target_compile_definitions(asu.test PRIVATE ASU_BUILD_TESTS)
     target_include_directories(asu.test PRIVATE
