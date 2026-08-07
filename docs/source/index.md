@@ -62,7 +62,6 @@ user-guide/prefix-cache/index
 user-guide/sparse-attention/index
 user-guide/pd-disaggregation/index
 user-guide/metrics/metrics
-user-guide/metrics/metrics_zh
 user-guide/rerope/rerope
 :::
 
