@@ -24,7 +24,7 @@
 #include "space_manager.h"
 #include <atomic>
 #include "logger/logger.h"
-#include "metrics/metrics.h"
+#include "metrics_api.h"
 #include "posix_file.h"
 
 namespace UC::PosixStore {

@@ -23,7 +23,7 @@
  * */
 #include "shard_gc.h"
 #include "logger/logger.h"
-#include "metrics/metrics.h"
+#include "metrics_api.h"
 #include "thread/cpu_affinity.h"
 
 namespace UC::PosixStore {
