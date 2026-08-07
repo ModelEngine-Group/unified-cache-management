@@ -2768,6 +2768,14 @@ class UCMLiteConnector(KVConnectorBase_V1):
 
 
 class UCMConnector(KVConnectorBase_V1, SupportsHMA):
+    @classmethod
+    def requires_piecewise_for_cudagraph(cls, extra_config: dict[str, Any]) -> bool:
+        from ucm.integration.vllm.inference_duration_monitor_connector import (
+            inference_duration_monitor_enabled,
+        )
+
+        return inference_duration_monitor_enabled(extra_config)
+
     def __init__(
         self,
         vllm_config: "VllmConfig",
@@ -2805,6 +2813,21 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
 
         if use_lite:
             self.connector = UCMLiteConnector(vllm_config, role, kv_cache_config)
+            return
+
+        use_inference_duration_monitor = (
+            self.launch_config.get("use_inference_duration_monitor", False)
+            if self.launch_config is not None
+            else False
+        )
+        if use_inference_duration_monitor:
+            from ucm.integration.vllm.inference_duration_monitor_connector import (
+                UCMInferenceDurationMonitorConnector,
+            )
+
+            self.connector = UCMInferenceDurationMonitorConnector(
+                vllm_config, role, kv_cache_config
+            )
             return
 
         pp_enabled = self._vllm_config.parallel_config.pipeline_parallel_size > 1
