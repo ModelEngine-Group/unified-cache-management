@@ -13,7 +13,7 @@ import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from itertools import accumulate
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 from vllm.platforms import current_platform
@@ -34,6 +34,16 @@ class Device(ABC):
 
     @abstractmethod
     def synchronize(self):
+        pass
+
+    @abstractmethod
+    def record_timing_event(self) -> Any:
+        """Record a timing-enabled event on the current device stream."""
+        pass
+
+    @abstractmethod
+    def elapsed_time_ms(self, start_event: Any, end_event: Any) -> float:
+        """Return elapsed device time between two timing events in milliseconds."""
         pass
 
     @abstractmethod
@@ -116,6 +126,14 @@ class CudaDevice(Device):
 
     def synchronize(self):
         torch.cuda.current_stream().synchronize()
+
+    def record_timing_event(self) -> Any:
+        event = torch.cuda.Event(enable_timing=True)
+        event.record()
+        return event
+
+    def elapsed_time_ms(self, start_event: Any, end_event: Any) -> float:
+        return float(start_event.elapsed_time(end_event))
 
     def destroy_event_handles(self):
         self.events.clear()
@@ -249,7 +267,15 @@ class NpuDevice(Device):
             return 0
 
     def synchronize(self):
-        torch.npu.current_stream().synchronize()
+        torch.npu.synchronize()
+
+    def record_timing_event(self) -> Any:
+        event = torch.npu.Event(enable_timing=True)
+        event.record()
+        return event
+
+    def elapsed_time_ms(self, start_event: Any, end_event: Any) -> float:
+        return float(start_event.elapsed_time(end_event))
 
     def destroy_event_handles(self):
         import acl
