@@ -73,8 +73,7 @@ Status ConnectionManager::AddGroup(const AsuEndpoint& endpoint, std::uint32_t qp
             "configurations instead");
     }
     if (capabilities.ioQueueDepth != 0) {
-        maxInflightPerChannel_ =
-            std::min(maxInflightPerChannel_, capabilities.ioQueueDepth);
+        maxInflightPerChannel_ = std::min(maxInflightPerChannel_, capabilities.ioQueueDepth);
     }
 
     {
