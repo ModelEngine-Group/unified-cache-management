@@ -78,7 +78,6 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
     if (config_.maxErrorCount == 0) {
         return Status::Error(StatusCode::INVALID_ARGUMENT, "maxErrorCount must be greater than 0");
     }
-    ioScheduler_ = IoScheduler(config_);
 
     if (!transProvider_) {
         switch (config_.providerType) {
@@ -152,6 +151,42 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
         }
     }
 
+    const auto serverCapabilities = connManager_->GetServerCapabilities();
+    for (std::size_t index = 0; index < serverCapabilities.size(); ++index) {
+        const auto& capabilities = serverCapabilities[index];
+        UC_INFO(
+            "AsuTransportImpl::Init ServerKvCapabilities group={} queueNum={} ioQueueDepth={} "
+            "ioQueueKeyConcurrency={} connectionKeyConcurrency={} singleValueMaxBytes={} "
+            "batchValueMaxBytes={} batchStoreKeys={} batchLoadKeys={} deleteKeys={} "
+            "queryKeys={} keyLength={} kvCapabilities={}",
+            index, capabilities.queueNum, capabilities.ioQueueDepth,
+            capabilities.ioQueueKeyConcurrency, capabilities.connectionKeyConcurrency,
+            capabilities.singleValueMaxBytes, capabilities.batchValueMaxBytes,
+            capabilities.batchStoreKeys, capabilities.batchLoadKeys, capabilities.deleteKeys,
+            capabilities.queryKeys, capabilities.keyLength, capabilities.kvCapabilities);
+
+        if (capabilities.batchStoreKeys != 0) {
+            config_.asuBatchStoreIoNum = std::min(
+                config_.asuBatchStoreIoNum, static_cast<std::size_t>(capabilities.batchStoreKeys));
+        }
+        if (capabilities.batchLoadKeys != 0) {
+            config_.asuBatchLoadIoNum = std::min(
+                config_.asuBatchLoadIoNum, static_cast<std::size_t>(capabilities.batchLoadKeys));
+        }
+        if (capabilities.deleteKeys != 0) {
+            config_.asuDeleteIoNum =
+                std::min(config_.asuDeleteIoNum, static_cast<std::size_t>(capabilities.deleteKeys));
+        }
+        if (capabilities.queryKeys != 0) {
+            config_.asuQueryIoNum =
+                std::min(config_.asuQueryIoNum, static_cast<std::size_t>(capabilities.queryKeys));
+        }
+    }
+    UC_INFO("AsuTransportImpl::Init effective batch limits: store={} load={} delete={} query={}",
+            config_.asuBatchStoreIoNum, config_.asuBatchLoadIoNum, config_.asuDeleteIoNum,
+            config_.asuQueryIoNum);
+
+    ioScheduler_ = IoScheduler(config_);
     connManager_->StartRecoverLoop();
 
     auto status = sendBufferManager_.Init("asu send buffer", MemoryType::HOST_PINNED,

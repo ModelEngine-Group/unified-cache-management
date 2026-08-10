@@ -48,12 +48,40 @@ Status ConnectionManager::AddGroup(const AsuEndpoint& endpoint, std::uint32_t qp
     auto createStatus =
         provider_.CreateConnection(localIp_, endpoint.ip, endpoint.port, qp_num, timeout_, handles);
     if (!createStatus.ok()) { return createStatus; }
+    if (handles.empty()) {
+        return Status::Error(StatusCode::INTERNAL_ERROR, "provider returned no connection handles");
+    }
+
+    ServerKvCapabilities capabilities;
+    auto capabilityStatus = provider_.GetServerCapabilities(handles.front(), capabilities);
+    if (!capabilityStatus.ok() && capabilityStatus.code != StatusCode::UNSUPPORTED) {
+        const auto deleteStatuses = provider_.DeleteConnections(handles);
+        for (const auto& deleteStatus : deleteStatuses) {
+            if (!deleteStatus.ok()) {
+                UC_WARN(
+                    "ConnectionManager::AddGroup cleanup failed after capability query failure: "
+                    "code={} message={}",
+                    static_cast<int>(deleteStatus.code), deleteStatus.message);
+            }
+        }
+        return capabilityStatus;
+    }
+    if (capabilityStatus.code == StatusCode::UNSUPPORTED) {
+        capabilities = {};
+        UC_DEBUG(
+            "ConnectionManager::AddGroup server capability query is not supported. Use default "
+            "configurations instead");
+    }
+    if (capabilities.ioQueueDepth != 0) {
+        maxInflightPerChannel_ =
+            std::min(maxInflightPerChannel_, capabilities.ioQueueDepth);
+    }
 
     {
         std::lock_guard<std::mutex> cacheLock(channelCacheMu_);
         std::unique_lock<std::shared_mutex> lock(structureMu_);
         auto gid = static_cast<std::uint32_t>(groups_.size());
-        auto group = std::make_unique<ConnectionGroup>(gid, endpoint);
+        auto group = std::make_unique<ConnectionGroup>(gid, endpoint, capabilities);
         for (auto handle : handles) { group->AddChannel(handle, &provider_); }
         groups_.push_back(std::move(group));
 
@@ -245,12 +273,13 @@ std::shared_ptr<ConnectionChannel> ConnectionManager::SelectByRoundRobin()
     auto idx = rrIndex_.fetch_add(1, std::memory_order_relaxed);
     std::size_t total = channelCache_.size();
     std::size_t start = idx % total;
+    const auto maxInflightPerChannel = maxInflightPerChannel_;
 
     for (std::size_t i = 0; i < total; ++i) {
         std::size_t pos = (start + i) % total;
         const auto& channel = channelCache_[pos];
         if (channel->GetState() == ChannelState::ACTIVE &&
-            channel->GetInflightCount() < kMaxInflightPerChannel) {
+            channel->GetInflightCount() < maxInflightPerChannel) {
             channel->IncrementInflight();
             return channel;
         }
@@ -267,10 +296,11 @@ std::shared_ptr<ConnectionChannel> ConnectionManager::SelectByLeastLoaded()
 
     std::shared_ptr<ConnectionChannel> selected;
     std::uint32_t min_inflight = std::numeric_limits<std::uint32_t>::max();
+    const auto maxInflightPerChannel = maxInflightPerChannel_;
 
     for (const auto& channel : channelCache_) {
         auto inflight = channel->GetInflightCount();
-        if (channel->GetState() == ChannelState::ACTIVE && inflight < kMaxInflightPerChannel &&
+        if (channel->GetState() == ChannelState::ACTIVE && inflight < maxInflightPerChannel &&
             inflight < min_inflight) {
             min_inflight = inflight;
             selected = channel;
@@ -291,6 +321,15 @@ std::int64_t ConnectionManager::TotalInflightCount()
         for (const auto& channel : group->GetChannels()) { sum += channel->GetInflightCount(); }
     }
     return sum;
+}
+
+std::vector<ServerKvCapabilities> ConnectionManager::GetServerCapabilities()
+{
+    std::vector<ServerKvCapabilities> capabilities;
+    std::shared_lock<std::shared_mutex> lock(structureMu_);
+    capabilities.reserve(groups_.size());
+    for (const auto& group : groups_) { capabilities.push_back(group->GetServerCapabilities()); }
+    return capabilities;
 }
 
 }  // namespace UC::ASU

@@ -89,8 +89,9 @@ bool ConnectionChannel::MarkForDrain()
 
 // ─── ConnectionGroup ───
 
-ConnectionGroup::ConnectionGroup(std::uint32_t id, const AsuEndpoint& ep)
-    : groupId(id), endpoint(ep)
+ConnectionGroup::ConnectionGroup(std::uint32_t id, const AsuEndpoint& ep,
+                                 const ServerKvCapabilities& capabilities)
+    : groupId(id), endpoint(ep), serverCapabilities(capabilities)
 {
 }
 

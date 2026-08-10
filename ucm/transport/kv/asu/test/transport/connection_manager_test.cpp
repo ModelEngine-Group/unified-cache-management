@@ -37,10 +37,14 @@ namespace {
 
 static std::atomic<int> g_deleteCount{0};
 static std::atomic<int> g_createCount{0};
+static std::atomic<int> g_capabilityQueryCount{0};
 
 class StubTransProvider : public TransProvider {
 public:
     Status createStatus{Status::OK()};
+    Status capabilityStatus{Status::OK()};
+    ServerKvCapabilities serverCapabilities;
+    ConnectionHandle capabilityQueryHandle{nullptr};
 
     Status CreateConnection(const std::string&, const std::string&, uint32_t, uint32_t qpNum,
                             uint32_t, std::vector<ConnectionHandle>& handles) override
@@ -53,6 +57,15 @@ public:
                 static_cast<uintptr_t>(g_createCount.load() * 100 + i + 1)));
         }
         return Status::OK();
+    }
+
+    Status GetServerCapabilities(ConnectionHandle handle,
+                                 ServerKvCapabilities& capabilities) override
+    {
+        g_capabilityQueryCount.fetch_add(1);
+        capabilityQueryHandle = handle;
+        capabilities = serverCapabilities;
+        return capabilityStatus;
     }
 
     std::vector<Status> DeleteConnections(const std::vector<ConnectionHandle>& handles) override
@@ -276,6 +289,46 @@ TEST(ConnectionManagerTest, AddGroupCreatesGroupWithChannels)
     EXPECT_TRUE(status.ok()) << status.message;
 
     EXPECT_EQ(mgr.TotalInflightCount(), 0);
+}
+
+TEST(ConnectionManagerTest, AddGroupQueriesCapabilitiesOnceUsingFirstHandle)
+{
+    g_createCount = 0;
+    g_capabilityQueryCount = 0;
+    StubTransProvider provider;
+    provider.serverCapabilities.batchStoreKeys = 77;
+    ConnectionManager mgr(provider, "", 5000);
+
+    const auto status = mgr.AddGroup(MakeEndpoint(), 3);
+
+    ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(g_capabilityQueryCount.load(), 1);
+    EXPECT_EQ(provider.capabilityQueryHandle,
+              reinterpret_cast<ConnectionHandle>(static_cast<uintptr_t>(101)));
+    const auto capabilities = mgr.GetServerCapabilities();
+    ASSERT_EQ(capabilities.size(), std::size_t{1});
+    EXPECT_EQ(capabilities.front().batchStoreKeys, 77u);
+    auto channel = mgr.SelectConnection();
+    ASSERT_NE(channel, nullptr);
+    EXPECT_EQ(channel->GetGroup()->GetServerCapabilities().batchStoreKeys, 77u);
+}
+
+TEST(ConnectionManagerTest, AddGroupRollsBackConnectionsWhenCapabilityQueryFails)
+{
+    g_createCount = 0;
+    g_deleteCount = 0;
+    g_capabilityQueryCount = 0;
+    StubTransProvider provider;
+    provider.capabilityStatus = Status::Error(StatusCode::IO_ERROR, "capability query failure");
+    ConnectionManager mgr(provider, "", 5000);
+
+    const auto status = mgr.AddGroup(MakeEndpoint(), 3);
+
+    EXPECT_EQ(status.code, StatusCode::IO_ERROR);
+    EXPECT_EQ(status.message, "capability query failure");
+    EXPECT_EQ(g_capabilityQueryCount.load(), 1);
+    EXPECT_EQ(g_deleteCount.load(), 3);
+    EXPECT_EQ(mgr.SelectConnection(), nullptr);
 }
 
 TEST(ConnectionManagerTest, AddGroupReturnsProviderCreateError)
@@ -542,6 +595,7 @@ TEST(ConnectionManagerTest, SelectConnectionReturnsNullptrWhenAllChannelsAtMaxIn
 {
     g_createCount = 0;
     StubTransProvider provider;
+    provider.serverCapabilities.ioQueueDepth = 3;
     ConnectionManager mgr(provider, "", 5000);
     mgr.AddGroup(MakeEndpoint(), 2);
     mgr.SetRoutingPolicy(RoutingPolicy::ROUND_ROBIN);
@@ -551,8 +605,8 @@ TEST(ConnectionManagerTest, SelectConnectionReturnsNullptrWhenAllChannelsAtMaxIn
     ASSERT_NE(ch0, nullptr);
     ASSERT_NE(ch1, nullptr);
 
-    ch0->SetInflightCount(256);
-    ch1->SetInflightCount(256);
+    ch0->SetInflightCount(3);
+    ch1->SetInflightCount(3);
 
     auto ch = mgr.SelectConnection();
     EXPECT_EQ(ch, nullptr);

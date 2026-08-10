@@ -69,6 +69,7 @@ public:
     void StopRecoverLoop();
 
     std::int64_t TotalInflightCount();
+    std::vector<ServerKvCapabilities> GetServerCapabilities();
 
 private:
     std::vector<std::unique_ptr<ConnectionGroup>> groups_;
@@ -82,7 +83,6 @@ private:
 
     std::atomic<std::uint32_t> rrIndex_{0};
     RoutingPolicy routingPolicy_{RoutingPolicy::ROUND_ROBIN};
-    static constexpr std::uint32_t kMaxInflightPerChannel = 256;
     static constexpr std::uint64_t kRecoverIntervalMs = 100;
 
     std::thread recoverWorker_;
@@ -95,6 +95,7 @@ private:
     std::string localIp_;
     std::uint32_t timeout_;
     std::uint32_t maxErrorCount_;
+    std::uint32_t maxInflightPerChannel_{256};
 
     void RecoverLoop();
     void RebuildChannelCache();
