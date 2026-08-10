@@ -278,12 +278,16 @@ std::shared_ptr<ConnectionChannel> ConnectionManager::SelectByRoundRobin()
     for (std::size_t i = 0; i < total; ++i) {
         std::size_t pos = (start + i) % total;
         const auto& channel = channelCache_[pos];
-        if (channel->GetState() == ChannelState::ACTIVE &&
-            channel->GetInflightCount() < maxInflightPerChannel) {
+        if (channel->GetState() != ChannelState::ACTIVE) { continue; }
+        if (channel->GetInflightCount() < maxInflightPerChannel) {
             channel->IncrementInflight();
             return channel;
         }
     }
+    UC_DEBUG(
+        "ConnectionManager::SelectByRoundRobin no available channel: all ACTIVE channels "
+        "reached maximum inflight limit, max_inflight_per_channel={}",
+        maxInflightPerChannel);
     return nullptr;
 }
 
@@ -308,8 +312,15 @@ std::shared_ptr<ConnectionChannel> ConnectionManager::SelectByLeastLoaded()
         }
     }
 
-    if (selected) { selected->IncrementInflight(); }
-    return selected;
+    if (selected) {
+        selected->IncrementInflight();
+        return selected;
+    }
+    UC_DEBUG(
+        "ConnectionManager::SelectByLeastLoaded no available channel: all ACTIVE channels "
+        "reached maximum inflight limit, max_inflight_per_channel={}",
+        maxInflightPerChannel);
+    return nullptr;
 }
 
 std::int64_t ConnectionManager::TotalInflightCount()
