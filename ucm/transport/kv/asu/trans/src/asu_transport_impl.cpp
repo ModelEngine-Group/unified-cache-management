@@ -78,7 +78,6 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
     if (config_.maxErrorCount == 0) {
         return Status::Error(StatusCode::INVALID_ARGUMENT, "maxErrorCount must be greater than 0");
     }
-    ioScheduler_ = IoScheduler(config_);
 
     if (!transProvider_) {
         switch (config_.providerType) {
@@ -152,6 +151,34 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
         }
     }
 
+    const auto serverCapabilities = connManager_->GetServerCapabilities();
+    for (std::size_t index = 0; index < serverCapabilities.size(); ++index) {
+        const auto& capabilities = serverCapabilities[index];
+        UC_INFO(
+            "AsuTransportImpl::Init ServerKvCapabilities group={} queueNum={} ioQueueDepth={} "
+            "ioQueueKeyConcurrency={} connectionKeyConcurrency={} singleValueMaxBytes={} "
+            "batchValueMaxBytes={} batchStoreKeys={} batchLoadKeys={} deleteKeys={} "
+            "queryKeys={} keyLength={} kvCapabilities={}",
+            index, capabilities.queueNum, capabilities.ioQueueDepth,
+            capabilities.ioQueueKeyConcurrency, capabilities.connectionKeyConcurrency,
+            capabilities.singleValueMaxBytes, capabilities.batchValueMaxBytes,
+            capabilities.batchStoreKeys, capabilities.batchLoadKeys, capabilities.deleteKeys,
+            capabilities.queryKeys, capabilities.keyLength, capabilities.kvCapabilities);
+        auto applyCapLimit = [](auto& cfgField, auto capValue) {
+            if (capValue != 0) {
+                cfgField = std::min(cfgField, static_cast<std::size_t>(capValue));
+            }
+        };
+        applyCapLimit(config_.asuBatchStoreIoNum, capabilities.batchStoreKeys);
+        applyCapLimit(config_.asuBatchLoadIoNum, capabilities.batchLoadKeys);
+        applyCapLimit(config_.asuDeleteIoNum, capabilities.deleteKeys);
+        applyCapLimit(config_.asuQueryIoNum, capabilities.queryKeys);
+    }
+    UC_INFO("AsuTransportImpl::Init effective batch limits: store={} load={} delete={} query={}",
+            config_.asuBatchStoreIoNum, config_.asuBatchLoadIoNum, config_.asuDeleteIoNum,
+            config_.asuQueryIoNum);
+
+    ioScheduler_ = IoScheduler(config_);
     connManager_->StartRecoverLoop();
 
     auto status = sendBufferManager_.Init("asu send buffer", MemoryType::HOST_PINNED,

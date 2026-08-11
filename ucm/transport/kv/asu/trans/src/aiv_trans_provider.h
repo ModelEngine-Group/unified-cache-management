@@ -48,6 +48,12 @@ public:
         return FromImpl(impl_->DeleteConnections(connectionHandles));
     }
 
+    Status GetServerCapabilities(ConnectionHandle connectionHandle,
+                                 ServerKvCapabilities& capabilities) override
+    {
+        return FromImpl(impl_->GetServerCapabilities(connectionHandle, capabilities));
+    }
+
     std::vector<Status> Send(const std::vector<SendIoBatch>& ioBatches, uint32_t kernelCount,
                              uint32_t quietCount) override
     {

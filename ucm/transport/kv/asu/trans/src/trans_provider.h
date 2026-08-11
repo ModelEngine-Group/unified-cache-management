@@ -23,6 +23,16 @@ public:
     virtual std::vector<Status> DeleteConnections(
         const std::vector<ConnectionHandle>& connectionHandles) = 0;
 
+    // Returns provider-neutral KV limits for the server behind this connection. Providers that
+    // do not support capability discovery keep the default UNSUPPORTED result.
+    virtual Status GetServerCapabilities(ConnectionHandle connectionHandle,
+                                         ServerKvCapabilities& capabilities)
+    {
+        (void)connectionHandle;
+        capabilities = {};
+        return Status::Error(StatusCode::UNSUPPORTED, "server capability query is not supported");
+    }
+
     struct SendIoBatch {
         ConnectionHandle connectionHandle;
         void* sendBuffer;

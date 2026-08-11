@@ -74,6 +74,9 @@ public:
         const std::vector<UnregisterMemoryDesc>& memoryDescs) = 0;
 
     virtual Status GetMemTokenId(MRHandle mrHandle, uint32_t& tokenId) = 0;
+
+    virtual Status GetServerCapabilities(ConnectionHandle connectionHandle,
+                                         ServerKvCapabilities& capabilities) = 0;
 };
 
 std::unique_ptr<AIVTransport> CreateAIVTransProvider();

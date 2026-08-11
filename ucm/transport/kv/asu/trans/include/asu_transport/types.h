@@ -121,6 +121,22 @@ enum class Protocol {
     TCP = 2,
 };
 
+struct ServerKvCapabilities {
+    // A zero limit means that the provider did not advertise that capability.
+    std::uint32_t queueNum{0};
+    std::uint32_t ioQueueDepth{0};
+    std::uint32_t ioQueueKeyConcurrency{0};     // Placeholder
+    std::uint32_t connectionKeyConcurrency{0};  // Placeholder
+    std::uint64_t singleValueMaxBytes{0};
+    std::uint64_t batchValueMaxBytes{0};
+    std::uint32_t batchStoreKeys{0};
+    std::uint32_t batchLoadKeys{0};
+    std::uint32_t deleteKeys{0};
+    std::uint32_t queryKeys{0};
+    std::uint32_t keyLength{0};
+    std::uint32_t kvCapabilities{0};  // Placeholder
+};
+
 struct QueryResult {
     std::vector<std::uint8_t> exists;
     std::uint32_t prefixHitKeys{0};
