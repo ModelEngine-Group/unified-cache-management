@@ -77,6 +77,18 @@ public:
         return FromImpl(impl_->RegisterMemory(descs, mrHandles));
     }
 
+    Status BindMemory(const std::vector<BindMemoryDesc>& memoryDescs,
+                      std::vector<MRHandle>& mrHandles) override
+    {
+        std::vector<AIVTransport::BindMemoryDesc> descs;
+        descs.reserve(memoryDescs.size());
+        for (const auto& desc : memoryDescs) {
+            descs.push_back({static_cast<AIVTransport::MemType>(desc.memoryType), desc.addr,
+                             desc.size, desc.tokenId});
+        }
+        return FromImpl(impl_->BindMemory(descs, mrHandles));
+    }
+
     std::vector<Status> UnregisterMemory(
         const std::vector<UnregisterMemoryDesc>& memoryDescs) override
     {

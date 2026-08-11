@@ -57,6 +57,22 @@ public:
     virtual Status RegisterMemory(const std::vector<RegisterMemoryDesc>& memoryDescs,
                                   std::vector<MRHandle>& mrHandles) = 0;
 
+    struct BindMemoryDesc {
+        MemType memoryType;
+        uintptr_t addr;
+        size_t size;
+        std::uint32_t tokenId;
+    };
+
+    // Creates a provider-local handle for an existing shared registration.
+    virtual Status BindMemory(const std::vector<BindMemoryDesc>& memoryDescs,
+                              std::vector<MRHandle>& mrHandles)
+    {
+        (void)memoryDescs;
+        mrHandles.clear();
+        return Status::Error(StatusCode::UNSUPPORTED, "memory binding is not supported");
+    }
+
     struct UnregisterMemoryDesc {
         MRHandle mrHandle;
     };

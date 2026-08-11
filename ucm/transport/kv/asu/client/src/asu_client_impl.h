@@ -90,6 +90,11 @@ public:
     Status UnregisterRegions(const std::vector<MRHandle>& handles) override;
 
 private:
+    struct ProviderMemoryState {
+        std::shared_ptr<TransProvider> provider;
+        std::unordered_map<MRHandle, MRHandle> regionHandles;
+    };
+
     // Creates and queues one entry-based client task.
     Status SubmitAsync(ClientOpType opType, const std::vector<KVBuffer>& entries, TaskId& taskId);
     // Creates and queues one key-based client task.
@@ -110,11 +115,11 @@ private:
     // Creates and initializes a transport for one ASU.
     Status BuildTransport(AsuId asuId, const AsuInfo& asuInfo,
                           std::shared_ptr<AsuTransport>& transport);
-    // Binds remembered registered regions to a transport.
-    Status BindRegisteredRegions(AsuId asuId, const std::shared_ptr<AsuTransport>& transport);
+    Status BindProviderRegions(const std::shared_ptr<TransProvider>& transProvider,
+                               const std::vector<RegisteredMemory>& registeredRegions,
+                               std::vector<MRHandle>& localHandles);
     Status UnregisterProviderRegions(const std::shared_ptr<TransProvider>& transProvider,
-                                     const std::vector<MRHandle>& handles,
-                                     bool removeRegisteredRegions);
+                                     const std::vector<MRHandle>& handles);
     // Returns the current immutable snapshot if initialized.
     std::shared_ptr<ViewSnapshot> GetSnapshot() const;
 
@@ -155,6 +160,8 @@ private:
     ViewServerFactory viewServerFactory_;
     // mutex_ protects background refresh state and resource/view caches.
     mutable std::mutex mutex_;
+    // memoryMu_ serializes provider creation with business-memory register/bind/unregister.
+    std::mutex memoryMu_;
     // Tracks whether Init has published a usable snapshot.
     bool initialized_{false};
     // Prevents duplicate background refresh workers.
@@ -165,8 +172,8 @@ private:
     std::shared_ptr<ViewServer> viewServer_;
     // Transport configs indexed by ASU id for snapshot construction.
     std::unordered_map<AsuId, TransportConfig> transportConfigs_;
-    // Providers created for transports remain owned by the client until shutdown.
-    std::vector<std::shared_ptr<TransProvider>> transProviders_;
+    // Provider-local handles indexed by the canonical handles returned by this client.
+    std::vector<ProviderMemoryState> providerMemoryStates_;
     // Provider selected for all client business-memory registration operations.
     std::shared_ptr<TransProvider> memoryProvider_;
     // Regions registered on the current view and rebound to newly added transports.

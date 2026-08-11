@@ -27,6 +27,13 @@ public:
         return Status::OK();
     }
 
+    Status BindMemory(const std::vector<BindMemoryDesc>& memoryDescs,
+                      std::vector<MRHandle>& mrHandles) override
+    {
+        mrHandles.assign(memoryDescs.size(), kInvalidMRHandle);
+        return Status::OK();
+    }
+
     std::vector<Status> UnregisterMemory(const std::vector<UnregisterMemoryDesc>& handles) override
     {
         return std::vector<Status>(handles.size(), Status::OK());

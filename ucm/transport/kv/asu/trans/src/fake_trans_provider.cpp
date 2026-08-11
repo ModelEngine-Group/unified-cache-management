@@ -521,6 +521,22 @@ Status FakeTransProvider::RegisterMemory(const std::vector<RegisterMemoryDesc>& 
     return Status::OK();
 }
 
+Status FakeTransProvider::BindMemory(const std::vector<BindMemoryDesc>& memoryDescs,
+                                     std::vector<MRHandle>& mrHandles)
+{
+    mrHandles.clear();
+    mrHandles.reserve(memoryDescs.size());
+    std::lock_guard<std::mutex> lock(registeredMemoryMu_);
+    for (const auto& desc : memoryDescs) {
+        auto handle = nextMrHandle_.fetch_add(1, std::memory_order_relaxed);
+        if (handle == 0) { handle = nextMrHandle_.fetch_add(1, std::memory_order_relaxed); }
+        const auto mrHandle = reinterpret_cast<MRHandle>(handle);
+        registeredMemories_[mrHandle] = RegisteredMemory{desc.addr, desc.addr, desc.size};
+        mrHandles.emplace_back(mrHandle);
+    }
+    return Status::OK();
+}
+
 std::vector<Status> FakeTransProvider::UnregisterMemory(
     const std::vector<UnregisterMemoryDesc>& handles)
 {
