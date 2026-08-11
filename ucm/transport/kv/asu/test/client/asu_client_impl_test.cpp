@@ -743,6 +743,7 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
         std::ofstream configFile{kConfigPath};
         ASSERT_TRUE(configFile.is_open());
         configFile << "clientId=file-init-test\n";
+        configFile << "asu_shared_provider=1\n";
         configFile << "transport.asuIds=10,20\n";
         configFile << "transport.send_buffer_slot_size=8192\n";
         configFile << "transport.send_buffer_slot_num=2\n";
@@ -760,12 +761,15 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
     }
 
     auto state = std::make_shared<TestState>();
-    std::unique_ptr<AsuClient> client = CreateAsuClient(MakeFactory(state));
+    std::unique_ptr<AsuClient> client =
+        CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
     auto status = client->Init(kConfigPath);
     std::remove(kConfigPath);
 
     ASSERT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
+    EXPECT_EQ(state->createdProviders, std::uint32_t{1});
+    EXPECT_EQ(state->initProviders[10], state->initProviders[20]);
     ASSERT_EQ(state->initConfigs[20].endpoints.size(), std::size_t{1});
     EXPECT_EQ(state->initConfigs[20].endpoints[0].ip, "192.168.1.20");
     EXPECT_EQ(state->initConfigs[20].endpoints[0].protocol, Protocol::ROCE);
@@ -781,6 +785,52 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
         EXPECT_EQ(state->initConfigs[asuId].asuQueryIoNum, std::size_t{14});
         EXPECT_EQ(state->initConfigs[asuId].maxErrorCount, std::uint32_t{5});
     }
+}
+
+TEST(AsuClientImplTest, Lifecycle_PublicInitRejectsInvalidSharedProviderMode)
+{
+    constexpr const char* kConfigPath = "asu_client_impl_invalid_shared_provider_test.conf";
+    {
+        std::ofstream configFile{kConfigPath};
+        ASSERT_TRUE(configFile.is_open());
+        configFile << "asu_shared_provider=2\n";
+        configFile << "transport.asuIds=10,20\n";
+    }
+
+    auto state = std::make_shared<TestState>();
+    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+    const auto status = client->Init(kConfigPath);
+    std::remove(kConfigPath);
+
+    EXPECT_EQ(status.code, StatusCode::INVALID_ARGUMENT);
+    EXPECT_EQ(state->createdProviders, std::uint32_t{0});
+    EXPECT_EQ(state->createdTransports, std::uint32_t{0});
+}
+
+TEST(AsuClientImplTest, Lifecycle_PublicInitIndependentModeBindsMemoryAcrossMultipleAsus)
+{
+    constexpr const char* kConfigPath = "asu_client_impl_multi_asu_bind_test.conf";
+    {
+        std::ofstream configFile{kConfigPath};
+        ASSERT_TRUE(configFile.is_open());
+        configFile << "asu_shared_provider=0\n";
+        configFile << "transport.asuIds=10,20\n";
+    }
+
+    auto state = std::make_shared<TestState>();
+    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+    auto status = client->Init(kConfigPath);
+    std::remove(kConfigPath);
+    ASSERT_TRUE(status.ok()) << status.message;
+
+    std::vector<RegisteredMemory> registeredRegions;
+    status = client->RegisterRegions({MemoryRegion{}}, registeredRegions);
+
+    ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(state->createdProviders, std::uint32_t{2});
+    EXPECT_EQ(state->registerCalls, std::vector<AsuId>({10}));
+    EXPECT_EQ(state->providerBindCalls, std::vector<AsuId>({20}));
+    EXPECT_EQ(state->bindCalls, std::vector<AsuId>({10, 20}));
 }
 
 TEST(AsuClientImplTest, Routing_UsesRouterConfigFromClientConfigAttrs)
