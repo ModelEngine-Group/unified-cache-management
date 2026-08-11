@@ -2664,6 +2664,9 @@ class UCMLiteConnector(KVConnectorBase_V1):
 
         logger.info("Init UCMLiteConnector.")
 
+    def get_block_size(self) -> int:
+        return self.block_size
+
     def get_num_new_matched_tokens(self, request, num_computed_tokens):
         req_blocks_num = len(request.all_token_ids) // self.hash_block_size
         if req_blocks_num < 1:
