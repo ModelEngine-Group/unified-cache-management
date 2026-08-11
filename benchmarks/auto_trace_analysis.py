@@ -168,11 +168,14 @@ class LRUCache:
             self.items.popitem(last=False)
 
 
-def iter_log_files(log_dir: Path) -> list[Path]:
+def iter_log_files(log_path: Path) -> list[Path]:
+    if log_path.is_file():
+        return [log_path]
+
     patterns = ("*.log", "*.log.*", "*.log.gz")
     files: dict[Path, None] = {}
     for pattern in patterns:
-        for path in log_dir.rglob(pattern):
+        for path in log_path.rglob(pattern):
             if path.is_file():
                 files[path] = None
     return sorted(files)
@@ -208,16 +211,78 @@ def parse_is_mla(value: str) -> bool:
     return value.lower() == "true"
 
 
-def parse_trace_line(line: str, source: str) -> TraceRecord | None:
+def line_excerpt(line: str, column: int | None = None, limit: int = 500) -> str:
+    text = line.rstrip("\r\n")
+    if len(text) <= limit:
+        return repr(text)
+
+    center = len(text) // 2 if column is None else max(0, column - 1)
+    start = max(0, min(center - limit // 2, len(text) - limit))
+    end = start + limit
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(text) else ""
+    return repr(prefix + text[start:end] + suffix)
+
+
+def line_parse_error(
+    stage: str,
+    source: str,
+    line_number: int | None,
+    line: str,
+    cause: Exception | str,
+    column: int | None = None,
+) -> ValueError:
+    location = f"{source}:{line_number}" if line_number is not None else source
+    column_text = f"\n  column: {column}" if column is not None else ""
+    return ValueError(
+        "log line parse failed"
+        f"\n  stage: {stage}"
+        f"\n  source: {location}"
+        f"{column_text}"
+        f"\n  cause: {cause}"
+        f"\n  line excerpt: {line_excerpt(line, column)}"
+    )
+
+
+def parse_trace_line(
+    line: str, source: str, line_number: int | None = None
+) -> TraceRecord | None:
     match = TRACE_RE.search(line)
     if not match:
+        if "timestamp:" in line and "ucm_block_ids:" in line:
+            column = line.find("ucm_block_ids:") + 1
+            raise line_parse_error(
+                "trace.pattern_match",
+                source,
+                line_number,
+                line,
+                "trace marker found but required fields or list terminator are invalid",
+                column,
+            )
         return None
     try:
         hash_ids = ast.literal_eval(match.group("ucm_block_ids"))
-    except (SyntaxError, ValueError):
-        raise ValueError(f"failed to parse ucm_block_ids in {source}")
+    except (SyntaxError, ValueError) as exc:
+        offset = exc.offset if isinstance(exc, SyntaxError) else None
+        column = match.start("ucm_block_ids") + (offset or 1)
+        raise line_parse_error(
+            "trace.ucm_block_ids.literal_eval",
+            source,
+            line_number,
+            line,
+            exc,
+            column,
+        ) from exc
     if not isinstance(hash_ids, list):
-        raise ValueError(f"ucm_block_ids is not a list in {source}")
+        column = match.start("ucm_block_ids") + 1
+        raise line_parse_error(
+            "trace.ucm_block_ids.validation",
+            source,
+            line_number,
+            line,
+            f"expected list, got {type(hash_ids).__name__}",
+            column,
+        )
 
     system_time_match = SYSTEM_TIME_RE.search(line)
     request_id = match.group("request_id")
@@ -234,21 +299,32 @@ def parse_trace_line(line: str, source: str) -> TraceRecord | None:
     )
 
 
-def collect_log_facts(log_dir: Path) -> LogFacts:
-    if not log_dir.exists() or not log_dir.is_dir():
-        raise ValueError(f"log directory does not exist: {log_dir}")
+def collect_log_facts(log_path: Path) -> LogFacts:
+    if not log_path.exists():
+        raise ValueError(f"log scan failed: path does not exist: {log_path}")
+    if not log_path.is_file() and not log_path.is_dir():
+        raise ValueError(
+            f"log scan failed: path is not a file or directory: {log_path}"
+        )
 
-    log_files = iter_log_files(log_dir)
+    log_files = iter_log_files(log_path)
     if not log_files:
-        raise ValueError(f"no log files found in log directory: {log_dir}")
+        raise ValueError(
+            f"log scan failed: no log files found in directory: {log_path}"
+        )
+
+    print(f"Log files to parse ({len(log_files)}):")
+    for path in log_files:
+        print(f"  {path}")
+    sys.stdout.flush()
 
     records: list[TraceRecord] = []
     available_memory: list[int] = []
     tensor_parallel_sizes: list[int] = []
     for path in log_files:
         with open_log_file(path) as handle:
-            for line in handle:
-                record = parse_trace_line(line, str(path))
+            for line_number, line in enumerate(handle, start=1):
+                record = parse_trace_line(line, str(path), line_number)
                 if record is not None:
                     records.append(record)
 
@@ -260,11 +336,16 @@ def collect_log_facts(log_dir: Path) -> LogFacts:
                     tensor_parallel_sizes.append(int(match.group("value")))
 
     if not records:
-        raise ValueError("no trace records found in log files")
+        raise ValueError("log validation failed: no trace records found in log files")
     if not available_memory:
-        raise ValueError("available kv cache memory was not found in log files")
+        raise ValueError(
+            "log validation failed: available kv cache memory was not found "
+            "in log files"
+        )
     if not tensor_parallel_sizes:
-        raise ValueError("tensor_parallel_size was not found in log files")
+        raise ValueError(
+            "log validation failed: tensor_parallel_size was not found in log files"
+        )
 
     records.sort(key=lambda item: item.timestamp)
     return LogFacts(
@@ -487,7 +568,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Analyze theoretical UCM KV cache hit-rate uplift from logs."
     )
-    parser.add_argument("--log-dir", type=Path, required=True)
+    parser.add_argument(
+        "--log-dir",
+        type=Path,
+        required=True,
+        help="Log file or directory containing log files.",
+    )
     parser.add_argument(
         "--block-kv-cache-size",
         "--block-bytes",
@@ -516,10 +602,11 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("num_nodes must be >= 1")
 
 
-def build_analysis(args: argparse.Namespace) -> dict:
+def build_analysis(args: argparse.Namespace, facts: LogFacts | None = None) -> dict:
     validate_args(args)
     is_mla = parse_is_mla(args.is_mla)
-    facts = collect_log_facts(args.log_dir)
+    if facts is None:
+        facts = collect_log_facts(args.log_dir)
     tp_size = resolve_tp_size(facts)
     gpu_kv_cache_bytes = resolve_gpu_cache_bytes(facts, is_mla, tp_size)
     block_bytes = args.block_kv_cache_size
@@ -681,9 +768,10 @@ def print_summary(result: dict) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     try:
-        result = build_analysis(args)
+        facts = collect_log_facts(args.log_dir)
+        result = build_analysis(args, facts)
         if args.trace_output:
-            write_trace(collect_log_facts(args.log_dir).records, args.trace_output)
+            write_trace(facts.records, args.trace_output)
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(
