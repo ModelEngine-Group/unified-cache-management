@@ -81,6 +81,11 @@ class LogFacts:
     records: list[TraceRecord]
     available_kv_cache_memory_bytes: list[int]
     tensor_parallel_sizes: list[int]
+    parse_errors: list[str]
+
+
+class LogLineParseError(ValueError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -231,10 +236,10 @@ def line_parse_error(
     line: str,
     cause: Exception | str,
     column: int | None = None,
-) -> ValueError:
+) -> LogLineParseError:
     location = f"{source}:{line_number}" if line_number is not None else source
     column_text = f"\n  column: {column}" if column is not None else ""
-    return ValueError(
+    return LogLineParseError(
         "log line parse failed"
         f"\n  stage: {stage}"
         f"\n  source: {location}"
@@ -242,6 +247,15 @@ def line_parse_error(
         f"\n  cause: {cause}"
         f"\n  line excerpt: {line_excerpt(line, column)}"
     )
+
+
+def print_parse_error_summary(parse_errors: list[str]) -> None:
+    if not parse_errors:
+        return
+    print(f"Log line parse failures: {len(parse_errors)}", file=sys.stderr)
+    for index, error in enumerate(parse_errors, start=1):
+        print(f"\nParse failure {index}:\n{error}", file=sys.stderr)
+    sys.stderr.flush()
 
 
 def parse_trace_line(
@@ -321,10 +335,15 @@ def collect_log_facts(log_path: Path) -> LogFacts:
     records: list[TraceRecord] = []
     available_memory: list[int] = []
     tensor_parallel_sizes: list[int] = []
+    parse_errors: list[str] = []
     for path in log_files:
         with open_log_file(path) as handle:
             for line_number, line in enumerate(handle, start=1):
-                record = parse_trace_line(line, str(path), line_number)
+                try:
+                    record = parse_trace_line(line, str(path), line_number)
+                except LogLineParseError as exc:
+                    parse_errors.append(str(exc))
+                    record = None
                 if record is not None:
                     records.append(record)
 
@@ -334,6 +353,8 @@ def collect_log_facts(log_path: Path) -> LogFacts:
                     )
                 for match in TP_SIZE_RE.finditer(line):
                     tensor_parallel_sizes.append(int(match.group("value")))
+
+    print_parse_error_summary(parse_errors)
 
     if not records:
         raise ValueError("log validation failed: no trace records found in log files")
@@ -353,6 +374,7 @@ def collect_log_facts(log_path: Path) -> LogFacts:
         records=records,
         available_kv_cache_memory_bytes=available_memory,
         tensor_parallel_sizes=tensor_parallel_sizes,
+        parse_errors=parse_errors,
     )
 
 
@@ -692,6 +714,8 @@ def build_analysis(args: argparse.Namespace, facts: LogFacts | None = None) -> d
         },
         "derived": {
             "log_files": facts.log_files,
+            "parse_failure_count": len(facts.parse_errors),
+            "parse_failures": facts.parse_errors,
             "available_kv_cache_memory_bytes": facts.available_kv_cache_memory_bytes,
             "tp_size": tp_size,
             "gpu_kv_cache_bytes": gpu_kv_cache_bytes,
