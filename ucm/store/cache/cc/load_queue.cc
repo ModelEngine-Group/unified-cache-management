@@ -47,6 +47,7 @@ Status LoadQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     cacheSdmaDirect_ = config.cacheSdmaDirect;
     sdmaDirectLaunchGranularity_ = config.sdmaDirectLaunchGranularity;
     cpuAffinityCores_ = config.cpuAffinityCores;
+    localRankSize_ = config.localRankSize;
     waiting_.Setup(config.waitingQueueDepth);
     running_.Setup(config.runningQueueDepth);
     holder_.reserve(1024);
@@ -81,6 +82,21 @@ void LoadQueue::DispatchStage()
     waiting_.ConsumerLoop(stop_, &LoadQueue::DispatchOneTask, this);
 }
 
+static std::vector<size_t> RearrangeIndex(size_t n, size_t iProc, size_t nProc)
+{
+    std::vector<size_t> order;
+    order.reserve(n);
+    for (size_t r = 0; r < nProc; ++r) {
+        size_t slice = (iProc + r) % nProc;
+        for (size_t j = 0;; ++j) {
+            size_t i = slice + j * nProc;
+            if (i >= n) { break; }
+            order.push_back(i);
+        }
+    }
+    return order;
+}
+
 void LoadQueue::DispatchOneTask(TaskPair&& pair)
 {
     auto& task = pair.first;
@@ -100,8 +116,9 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
         readyTasks.reserve(nShard);
         pendingTasks.reserve(nShard);
     }
+    const auto indexes = RearrangeIndex(nShard, deviceId_, localRankSize_);
     for (size_t i = 0; i < nShard; i++) {
-        auto& shard = task->desc[i];
+        auto& shard = task->desc[indexes[i]];
         ShardTask shardTask;
         shardTask.bufferHandle = buffer_->Get(shard.owner, shard.index, true, true);
         shardTask.backendTaskHandle = 0;

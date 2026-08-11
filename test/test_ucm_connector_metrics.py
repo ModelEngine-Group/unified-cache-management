@@ -37,6 +37,7 @@ class FakeMetric:
         self.increments = []
         self.set_values = []
         self.labelvalues = ()
+        self.kwargs = kwargs
         self._init_storage()
         self.__class__.created[name] = self
 
@@ -56,6 +57,7 @@ class FakeMetric:
         child.increments = []
         child.set_values = []
         child.labelvalues = tuple(labelvalues)
+        child.kwargs = self.kwargs
         child._init_storage()
         self.children[child.labelvalues] = child
         return child
@@ -568,6 +570,7 @@ def test_config_definitions_register_enable_list_and_metric_names():
         == "ucm:cache_load_duration_ms"
     )
     assert by_name["interval_lookup_hit_rates"].vllm_connector_enabled is False
+    assert by_name["cache_lookup_hit_rate"].multiprocess_mode == ""
     assert fake_ucmmetrics.created == [
         ("load_bytes_total", "counter", ()),
         ("cache_lookup_hit_rate", "gauge", ()),
@@ -691,6 +694,7 @@ def test_store_health_and_mooncake_lookup_metrics_are_configured():
     assert definitions["mooncake_unhealthy_count_total"] == "counter"
     assert definitions["posix_store_health"] == "gauge"
     assert definitions["mooncake_store_health"] == "gauge"
+    assert definitions["posix_gc_running"] == "gauge"
 
 
 def test_dispatcher_fans_out_single_core_drain_to_independent_consumers():
@@ -925,6 +929,26 @@ def test_prom_metrics_register_vllm_connector_prefixed_metrics():
     histogram_child = histogram.children[("model-a", "0", "7")]
     assert [bucket.value for bucket in histogram_child._buckets] == [1, 2, 0]
     assert histogram_child._sum.value == 150.0
+
+
+def test_prom_health_gauges_use_latest_value_across_processes():
+    _reset_fakes()
+    UCMPromMetrics(
+        _vllm_config(),
+        _metric_types(),
+        ["model_name", "engine"],
+        {0: ["model-a", "0"]},
+    )
+
+    assert FakeGauge.created["ucm:posix_store_health"].kwargs == {
+        "multiprocess_mode": "livemostrecent"
+    }
+    assert FakeGauge.created["ucm:mooncake_store_health"].kwargs == {
+        "multiprocess_mode": "livemostrecent"
+    }
+    assert FakeGauge.created["ucm:posix_gc_running"].kwargs == {
+        "multiprocess_mode": "livemostrecent"
+    }
 
 
 def test_prom_metrics_keeps_ucm_duration_observations_in_ms():

@@ -188,6 +188,9 @@ gauge:
   - name: "mooncake_store_health"
     documentation: "Effective Mooncake health breaker state, where 1 is enabled and 0 is fused"
     multiprocess_mode: "livemostrecent"
+  - name: "posix_gc_running"
+    documentation: "Posix garbage collection state, where 1 is running and 0 is idle"
+    multiprocess_mode: "livemostrecent"
 
 # Histogram metrics configuration
 histogram:
