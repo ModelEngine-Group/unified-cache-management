@@ -35,6 +35,8 @@ namespace py = pybind11;
 
 namespace UC::PipelineStore {
 
+constexpr Detail::TaskHandle UNHEALTHY_DUMP_TASK = 0;
+
 class StoreNotFoundError : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
@@ -79,7 +81,6 @@ class PipelineStore {
     std::list<std::shared_ptr<StoreV1>> stores_;
     std::list<std::shared_ptr<HealthBreakerStore>> healthBreakerStores_;
     StoreV1* entry_{nullptr};
-    StoreHealthConfig healthConfig_;
 
     StoreV1* StoreBack() const { return entry_; }
     [[noreturn]] static void ThrowError(const Status& s)
@@ -140,10 +141,7 @@ class PipelineStore {
     }
 
 public:
-    explicit PipelineStore(const py::dict& healthConfig = {})
-        : healthConfig_{ParseHealthConfig(healthConfig)}
-    {
-    }
+    PipelineStore() = default;
     ~PipelineStore()
     {
         for (auto& healthBreakerStore : healthBreakerStores_) { healthBreakerStore->Stop(); }
@@ -153,6 +151,11 @@ public:
     void Stack(const std::string& name, const std::string& path, const py::dict& dict)
     {
         py::dict storeDict(dict);
+        py::dict healthDict;
+        if (storeDict.contains("store_health")) {
+            healthDict = py::cast<py::dict>(storeDict["store_health"]);
+        }
+        const auto healthConfig = ParseHealthConfig(healthDict);
         Detail::Dictionary config;
         ThrowIfFailed(ConfigParser::Parse(config, storeDict));
         config.Set<StoreV1*>("store_backend", StoreBack());
@@ -164,11 +167,11 @@ public:
         loaders_.push_back(std::move(loader));
         stores_.push_back(std::move(store));
         entry_ = stores_.back().get();
-        if (healthConfig_.enabled) {
+        if (healthConfig.enabled) {
             const auto storeId =
                 "pipeline/" + std::to_string(stores_.size() - 1) + ":" + stores_.back()->Readme();
-            auto healthBreakerStore =
-                std::make_shared<HealthBreakerStore>(stores_.back().get(), storeId, healthConfig_);
+            auto healthBreakerStore = std::make_shared<HealthBreakerStore>();
+            ThrowIfFailed(healthBreakerStore->Setup(stores_.back().get(), storeId, healthConfig));
             ThrowIfFailed(healthBreakerStore->Start());
             healthBreakerStores_.push_back(std::move(healthBreakerStore));
             entry_ = healthBreakerStores_.back().get();
@@ -214,16 +217,19 @@ public:
         desc.prerequisiteHandle = prerequisite_handle;
         auto res = StoreBack()->Dump(desc);
         if (res) { return res.Value(); }
+        if (res.Error() == Status::StoreUnhealthy()) { return UNHEALTHY_DUMP_TASK; }
         ThrowError(res.Error());
     }
     bool Check(Detail::TaskHandle taskId)
     {
+        if (taskId == UNHEALTHY_DUMP_TASK) { return true; }
         auto res = StoreBack()->Check(taskId);
         if (res) { return res.Value(); }
         ThrowError(res.Error());
     }
     void Wait(Detail::TaskHandle taskId)
     {
+        if (taskId == UNHEALTHY_DUMP_TASK) { ThrowError(Status::StoreUnhealthy()); }
         auto status = Status::OK();
         {
             pybind11::gil_scoped_release release;
@@ -248,7 +254,7 @@ PYBIND11_MODULE(ucmpipelinestore, m)
     py::register_exception<StoreUnhealthyError>(m, "StoreUnhealthyError",
                                                 errors.attr("StoreUnhealthyError").ptr());
     auto s = py::class_<PipelineStore, std::unique_ptr<PipelineStore>>(m, "PipelineStore");
-    s.def(py::init<const py::dict&>(), py::arg("store_health") = py::dict());
+    s.def(py::init<>());
     s.def("Stack", &PipelineStore::Stack);
     s.def("Self", &PipelineStore::Self);
     s.def("Lookup", &PipelineStore::Lookup, py::arg("ids").noconvert());

@@ -96,7 +96,10 @@ void DumpQueue::DispatchOneTask(CopyStream& stream, TaskPair&& pair)
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_queue_wait_duration_ms"), wait * 1e3);
     if (!failureSet_->Contains(task->id)) {
         auto s = DumpOneTask(stream, task);
-        if (s.Failure()) [[unlikely]] { failureSet_->Insert(task->id); }
+        if (s.Failure()) [[unlikely]] {
+            if (s == Status::StoreUnhealthy()) { task->Fail(s); }
+            failureSet_->Insert(task->id);
+        }
     }
     waiter->Done();
 }
@@ -160,9 +163,13 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
     for (auto& handle : dumpCtx.bufferHandles) { handle.MarkReady(); }
     auto res = backend_->Dump(std::move(backendTaskDesc));
     if (!res) [[unlikely]] {
-        UC_ERROR("Failed({}) to submit dump task({}) to backend.", res.Error(), task->id);
-        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_backend_dump_submit_errors_total"), 1.0);
-        return res.Error();
+        auto error = res.Error();
+        if (error != Status::StoreUnhealthy()) {
+            UC_ERROR("Failed({}) to submit dump task({}) to backend.", error, task->id);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_backend_dump_submit_errors_total"),
+                                     1.0);
+        }
+        return error;
     }
     dumpCtx.backendTaskHandle = res.Value();
     dumping_.Push(std::move(dumpCtx));

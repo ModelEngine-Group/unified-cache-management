@@ -23,7 +23,7 @@
 from typing import Any
 
 from ucm.logger import init_logger
-from ucm.store.pipeline.errors import StoreNotFoundError
+from ucm.store.pipeline.errors import StoreNotFoundError, StoreUnhealthyError
 from ucm.store.ucmstore_v1 import UcmKVStoreBaseV1
 
 logger = init_logger(__name__)
@@ -209,6 +209,9 @@ class RankConsistencyManager:
         store, request_context = self._dump_task_contexts.pop(task_key)
         try:
             store.wait(task)
+        except StoreUnhealthyError:
+            self._record_dump_failure(request_context)
+            return
         except Exception:
             self._record_dump_failure(request_context)
             raise

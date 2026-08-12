@@ -24,12 +24,18 @@
 #ifndef UNIFIEDCACHE_PIPELINE_STORE_HEALTH_CONFIG_H
 #define UNIFIEDCACHE_PIPELINE_STORE_HEALTH_CONFIG_H
 
-#include "health_breaker_store.h"
+#include <chrono>
+#include <cstddef>
+#include "status/status.h"
 
 namespace UC::PipelineStore {
 
-struct StoreHealthConfig : HealthBreakerConfig {
+struct StoreHealthConfig {
     bool enabled{false};
+    std::chrono::milliseconds healthCheckInterval{std::chrono::seconds(10)};
+    std::chrono::milliseconds healthCheckTimeout{std::chrono::seconds(3)};
+    size_t healthWindowSize{8};
+    size_t failureThreshold{2};
 
     Status Validate() const
     {

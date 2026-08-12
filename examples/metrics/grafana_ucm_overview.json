@@ -21,7 +21,7 @@
       }
     ]
   },
-  "description": "Unified vLLM and UCM service overview with cache-layer block hit rates and Store health.",
+  "description": "Unified vLLM and UCM service overview with Store health.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -392,205 +392,6 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Direct hit blocks at each cache layer divided by the same connector query-block total. Stacked height is the overall block hit rate.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.8,
-            "drawStyle": "bars",
-            "fillOpacity": 85,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 0,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": 60000,
-            "stacking": {
-              "group": "A",
-              "mode": "normal"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 0.5
-              },
-              {
-                "color": "green",
-                "value": 0.8
-              }
-            ]
-          },
-          "unit": "percentunit",
-          "min": 0,
-          "max": 1
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "HBM"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "green",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Cache"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "semi-dark-blue",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Mooncake"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "orange",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Posix"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "purple",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 8
-      },
-      "id": 26,
-      "maxDataPoints": 60,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "maxHeight": "50%",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(ucm:gpu_hbm_hit_blocks_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nclamp_min(sum(rate(ucm:total_prefix_query_blocks_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])), 1e-9)",
-          "legendFormat": "HBM",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(ucm:cache_lookup_hit_blocks_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nclamp_min(sum(rate(ucm:total_prefix_query_blocks_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])), 1e-9)",
-          "legendFormat": "Cache",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(ucm:mooncake_lookup_hit_blocks_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nclamp_min(sum(rate(ucm:total_prefix_query_blocks_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])), 1e-9)",
-          "legendFormat": "Mooncake",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(ucm:posix_lookup_hit_blocks_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nclamp_min(sum(rate(ucm:total_prefix_query_blocks_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])), 1e-9)",
-          "legendFormat": "Posix",
-          "range": true,
-          "refId": "D"
-        }
-      ],
-      "title": "KV Cache Block Hit Rate by Store",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
       "description": "Effective healthy and fused Store instance counts over time.",
       "fieldConfig": {
         "defaults": {
@@ -688,7 +489,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 16
+        "y": 8
       },
       "id": 27,
       "options": {
@@ -737,7 +538,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 24
+        "y": 16
       },
       "id": 28,
       "panels": [
@@ -843,7 +644,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 25
+            "y": 17
           },
           "id": 29,
           "options": {
@@ -988,7 +789,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 25
+            "y": 17
           },
           "id": 30,
           "options": {
@@ -1065,7 +866,7 @@
         "h": 4,
         "w": 5,
         "x": 10,
-        "y": 33
+        "y": 25
       },
       "id": 20,
       "options": {
@@ -1131,7 +932,7 @@
         "h": 4,
         "w": 5,
         "x": 15,
-        "y": 33
+        "y": 25
       },
       "id": 21,
       "options": {
@@ -1197,7 +998,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 33
+        "y": 25
       },
       "id": 22,
       "options": {
@@ -1262,7 +1063,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 37
+        "y": 29
       },
       "id": 23,
       "options": {

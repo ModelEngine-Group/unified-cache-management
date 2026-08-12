@@ -40,26 +40,14 @@ std::chrono::milliseconds RandomProbeDelay(std::chrono::milliseconds interval)
 
 }  // namespace
 
-HealthBreakerStore::HealthBreakerStore(StoreV1* store, std::string storeId,
-                                       HealthBreakerConfig config)
-    : store_(store),
-      storeId_(std::move(storeId)),
-      config_(config),
-      healthCheck_(config.healthCheckTimeout)
-{
-}
-
 HealthBreakerStore::~HealthBreakerStore() { Stop(); }
 
 Status HealthBreakerStore::Start()
 {
-    if (!store_) { return Status::InvalidParam("health breaker store target is null"); }
-    if (config_.healthWindowSize == 0 || config_.failureThreshold == 0 ||
-        config_.failureThreshold > config_.healthWindowSize ||
-        config_.healthCheckInterval.count() <= 0 || config_.healthCheckTimeout.count() <= 0 ||
-        config_.healthCheckTimeout >= config_.healthCheckInterval) {
-        return Status::InvalidParam("invalid health breaker config");
+    if (!store_ || !healthCheck_) {
+        return Status::InvalidParam("health breaker store is not set up");
     }
+    if (!config_.enabled) { return Status::InvalidParam("health breaker store is disabled"); }
     std::lock_guard<std::mutex> lock(stopMutex_);
     if (probeThread_.joinable()) { return Status::OK(); }
     stop_ = false;
@@ -98,7 +86,27 @@ size_t HealthBreakerStore::SampleCount() const
     return healthResults_.size();
 }
 
-Status HealthBreakerStore::Setup(const Detail::Dictionary&) { return Status::OK(); }
+Status HealthBreakerStore::Setup(const Detail::Dictionary&)
+{
+    return Status::InvalidParam("health breaker store requires typed setup");
+}
+
+Status HealthBreakerStore::Setup(StoreV1* store, std::string storeId,
+                                 const StoreHealthConfig& config)
+{
+    if (healthCheck_ || probeThread_.joinable()) {
+        return Status::InvalidParam("health breaker store is already set up");
+    }
+    if (!store) { return Status::InvalidParam("health breaker store target is null"); }
+    if (storeId.empty()) { return Status::InvalidParam("health breaker store id is empty"); }
+    auto status = config.Validate();
+    if (status.Failure()) { return status; }
+    store_ = store;
+    storeId_ = std::move(storeId);
+    config_ = config;
+    healthCheck_ = std::make_unique<Detail::HealthCheckExecutor>(config_.healthCheckTimeout);
+    return Status::OK();
+}
 
 std::string HealthBreakerStore::Readme() const { return "HealthBreakerStore(" + storeId_ + ")"; }
 
@@ -121,12 +129,13 @@ void HealthBreakerStore::Prefetch(const Detail::BlockId* blocks, size_t num)
 
 Status HealthBreakerStore::CheckHealth()
 {
-    auto status = healthCheck_.Run([this] { return store_->CheckHealth(); });
+    if (!healthCheck_) { return Status::InvalidParam("health breaker store is not set up"); }
+    auto status = healthCheck_->Run([this] { return store_->CheckHealth(); });
     if (status == Status::Timeout()) {
-        UC_WARN_UNLIMITED("Store health check({}) timed out after {} ms.", storeId_,
-                          config_.healthCheckTimeout.count());
+        UC_WARN("Store health check({}) timed out after {} ms.", storeId_,
+                config_.healthCheckTimeout.count());
     } else if (status.Failure()) {
-        UC_WARN_UNLIMITED("Store health check({}) failed({}).", storeId_, status);
+        UC_WARN("Store health check({}) failed({}).", storeId_, status);
     }
     RecordHealth(status.Success());
     RecordProbeMetrics(status.Success());
@@ -187,7 +196,7 @@ void HealthBreakerStore::RecordHealth(bool healthy)
         }
     }
     if (oldEnabled != newEnabled) {
-        UC_WARN_UNLIMITED(
+        UC_WARN(
             "Store health breaker({}) transitioned to {}, window=[{}], samples={}, failures={}, "
             "threshold={}.",
             storeId_, newEnabled ? "HEALTHY" : "UNHEALTHY", healthWindow, sampleCount, failureCount,

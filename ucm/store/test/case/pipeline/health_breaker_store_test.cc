@@ -36,12 +36,11 @@
 #include "detail/mock_store.h"
 #include "logger/logger.h"
 #include "metrics_api.h"
-#include "store_health_config.h"
 
 namespace UC::Test {
 
-using PipelineStore::HealthBreakerConfig;
 using PipelineStore::HealthBreakerStore;
+using PipelineStore::StoreHealthConfig;
 using testing::Invoke;
 using testing::Return;
 using testing::StrictMock;
@@ -55,13 +54,20 @@ TEST(UCHealthBreakerStoreTest, StoreV1ProvidesHealthyDefault)
 
 namespace {
 
-HealthBreakerConfig TestConfig()
+StoreHealthConfig TestConfig()
 {
-    HealthBreakerConfig config;
+    StoreHealthConfig config;
+    config.enabled = true;
     config.healthWindowSize = 5;
     config.failureThreshold = 3;
     config.healthCheckInterval = std::chrono::hours(1);
     return config;
+}
+
+Status SetupBreaker(HealthBreakerStore& breaker, StoreV1* store, const std::string& storeId,
+                    const StoreHealthConfig& config)
+{
+    return breaker.Setup(store, storeId, config);
 }
 
 void Trip(HealthBreakerStore& breaker, Detail::MockStore& store)
@@ -97,10 +103,29 @@ size_t CountThreadsNamed(const std::string& expected)
 
 }  // namespace
 
+TEST(UCHealthBreakerStoreTest, RequiresSetupBeforeUse)
+{
+    HealthBreakerStore breaker;
+
+    EXPECT_EQ(breaker.Start(), Status::InvalidParam());
+    EXPECT_EQ(breaker.CheckHealth(), Status::InvalidParam());
+}
+
+TEST(UCHealthBreakerStoreTest, SetupValidatesConfig)
+{
+    StrictMock<Detail::MockStore> store;
+    HealthBreakerStore breaker;
+    auto config = TestConfig();
+    config.healthCheckTimeout = config.healthCheckInterval;
+
+    EXPECT_EQ(SetupBreaker(breaker, &store, "cache-0", config), Status::InvalidParam());
+}
+
 TEST(UCHealthBreakerStoreTest, ProbeLoopUsesUcmThreadName)
 {
     StrictMock<Detail::MockStore> store;
-    HealthBreakerStore breaker(&store, "cache-0", TestConfig());
+    HealthBreakerStore breaker;
+    ASSERT_TRUE(SetupBreaker(breaker, &store, "cache-0", TestConfig()).Success());
     const auto before = CountThreadsNamed("ucm_health_mon");
 
     ASSERT_TRUE(breaker.Start().Success());
@@ -117,7 +142,8 @@ TEST(UCHealthBreakerStoreTest, ProbeLoopUsesUcmThreadName)
 TEST(UCHealthBreakerStoreTest, LogsFailedProbeStatus)
 {
     StrictMock<Detail::MockStore> store;
-    HealthBreakerStore breaker(&store, "posix-0", TestConfig());
+    HealthBreakerStore breaker;
+    ASSERT_TRUE(SetupBreaker(breaker, &store, "posix-0", TestConfig()).Success());
 
     testing::internal::CaptureStdout();
     EXPECT_CALL(store, CheckHealth())
@@ -128,14 +154,15 @@ TEST(UCHealthBreakerStoreTest, LogsFailedProbeStatus)
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     const auto output = testing::internal::GetCapturedStdout();
 
-    EXPECT_EQ(CountSubstring(output, "Store health check(posix-0) failed"), 4);
+    EXPECT_EQ(CountSubstring(output, "Store health check(posix-0) failed"), 3);
     EXPECT_THAT(output, testing::HasSubstr("health probe write failed"));
 }
 
 TEST(UCHealthBreakerStoreTest, TripsEarlyAndRecoversAfterFullSuccessWindow)
 {
     StrictMock<Detail::MockStore> store;
-    HealthBreakerStore breaker(&store, "cache-0", TestConfig());
+    HealthBreakerStore breaker;
+    ASSERT_TRUE(SetupBreaker(breaker, &store, "cache-0", TestConfig()).Success());
 
     Trip(breaker, store);
     EXPECT_EQ(breaker.FailureCount(), 3);
@@ -158,7 +185,8 @@ TEST(UCHealthBreakerStoreTest, LogsWindowOnEveryStateTransition)
     auto config = TestConfig();
     config.healthWindowSize = 3;
     config.failureThreshold = 2;
-    HealthBreakerStore breaker(&store, "cache-0", config);
+    HealthBreakerStore breaker;
+    ASSERT_TRUE(SetupBreaker(breaker, &store, "cache-0", config).Success());
 
     testing::internal::CaptureStdout();
     EXPECT_CALL(store, CheckHealth())
@@ -185,7 +213,8 @@ TEST(UCHealthBreakerStoreTest, SlidingWindowEvictsOldFailure)
     StrictMock<Detail::MockStore> store;
     auto config = TestConfig();
     config.failureThreshold = 5;
-    HealthBreakerStore breaker(&store, "cache-0", config);
+    HealthBreakerStore breaker;
+    ASSERT_TRUE(SetupBreaker(breaker, &store, "cache-0", config).Success());
 
     EXPECT_CALL(store, CheckHealth())
         .WillOnce(Return(Status::Error()))
@@ -210,7 +239,8 @@ TEST(UCHealthBreakerStoreTest, RecordsPosixProbeResultsAndEffectiveBreakerState)
     auto config = TestConfig();
     config.healthWindowSize = 1;
     config.failureThreshold = 1;
-    HealthBreakerStore breaker(&store, "pipeline/0:PosixStore", config);
+    HealthBreakerStore breaker;
+    ASSERT_TRUE(SetupBreaker(breaker, &store, "pipeline/0:PosixStore", config).Success());
 
     EXPECT_CALL(store, CheckHealth())
         .WillOnce(Return(Status::Error()))
@@ -240,7 +270,8 @@ TEST(UCHealthBreakerStoreTest, AppliesTimeoutBeforeStart)
     config.healthCheckTimeout = std::chrono::milliseconds(10);
     config.healthWindowSize = 1;
     config.failureThreshold = 1;
-    HealthBreakerStore breaker(&store, "cache-0", config);
+    HealthBreakerStore breaker;
+    ASSERT_TRUE(SetupBreaker(breaker, &store, "cache-0", config).Success());
 
     EXPECT_CALL(store, CheckHealth()).Times(4).WillRepeatedly(Invoke([] {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -253,7 +284,7 @@ TEST(UCHealthBreakerStoreTest, AppliesTimeoutBeforeStart)
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     const auto output = testing::internal::GetCapturedStdout();
 
-    EXPECT_EQ(CountSubstring(output, "Store health check(cache-0) timed out after 10 ms"), 4);
+    EXPECT_EQ(CountSubstring(output, "Store health check(cache-0) timed out after 10 ms"), 3);
     EXPECT_FALSE(breaker.Enabled());
 }
 
@@ -264,7 +295,8 @@ TEST(UCHealthBreakerStoreTest, TimesOutSlowStoreCheck)
     config.healthCheckTimeout = std::chrono::milliseconds(10);
     config.healthWindowSize = 1;
     config.failureThreshold = 1;
-    HealthBreakerStore breaker(&store, "cache-0", config);
+    HealthBreakerStore breaker;
+    ASSERT_TRUE(SetupBreaker(breaker, &store, "cache-0", config).Success());
 
     EXPECT_CALL(store, CheckHealth()).WillOnce(Invoke([] {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -283,7 +315,8 @@ TEST(UCHealthBreakerStoreTest, ProbeIntervalIncludesHealthCheckTime)
     auto config = TestConfig();
     config.healthCheckInterval = std::chrono::milliseconds(100);
     config.healthCheckTimeout = std::chrono::milliseconds(90);
-    HealthBreakerStore breaker(&store, "cache-0", config);
+    HealthBreakerStore breaker;
+    ASSERT_TRUE(SetupBreaker(breaker, &store, "cache-0", config).Success());
     std::mutex mutex;
     std::condition_variable cv;
     std::vector<std::chrono::steady_clock::time_point> starts;
@@ -311,7 +344,8 @@ TEST(UCHealthBreakerStoreTest, ProbeIntervalIncludesHealthCheckTime)
 TEST(UCHealthBreakerStoreTest, UnhealthyOperationMatrix)
 {
     StrictMock<Detail::MockStore> store;
-    HealthBreakerStore breaker(&store, "posix-0", TestConfig());
+    HealthBreakerStore breaker;
+    ASSERT_TRUE(SetupBreaker(breaker, &store, "posix-0", TestConfig()).Success());
     Trip(breaker, store);
 
     std::array<UC::Detail::BlockId, 2> blocks{};
@@ -337,7 +371,8 @@ TEST(UCHealthBreakerStoreTest, UnhealthyOperationMatrix)
 TEST(UCHealthBreakerStoreTest, HealthyOperationsPassThroughWithoutChangingWindow)
 {
     StrictMock<Detail::MockStore> store;
-    HealthBreakerStore breaker(&store, "cache-0", TestConfig());
+    HealthBreakerStore breaker;
+    ASSERT_TRUE(SetupBreaker(breaker, &store, "cache-0", TestConfig()).Success());
     std::array<UC::Detail::BlockId, 1> blocks{};
 
     EXPECT_CALL(store, Lookup(blocks.data(), blocks.size()))
@@ -356,23 +391,12 @@ TEST(UCHealthBreakerStoreTest, HealthyOperationsPassThroughWithoutChangingWindow
     EXPECT_EQ(breaker.FailureCount(), 0);
 }
 
-TEST(UCHealthBreakerStoreTest, ValidatesStoreHealthConfig)
+TEST(UCHealthBreakerStoreTest, StoreHealthConfigDefaults)
 {
-    PipelineStore::StoreHealthConfig config;
+    StoreHealthConfig config;
     EXPECT_FALSE(config.enabled);
-    EXPECT_TRUE(config.Validate().Success());
-
-    config.enabled = true;
-    EXPECT_TRUE(config.enabled);
-
-    config.failureThreshold = config.healthWindowSize + 1;
-    EXPECT_EQ(config.Validate(), Status::InvalidParam());
-    config.failureThreshold = config.healthWindowSize;
-    config.healthCheckInterval = std::chrono::milliseconds(0);
-    EXPECT_EQ(config.Validate(), Status::InvalidParam());
-    config.healthCheckInterval = std::chrono::milliseconds(10);
-    config.healthCheckTimeout = config.healthCheckInterval;
-    EXPECT_EQ(config.Validate(), Status::InvalidParam());
+    EXPECT_EQ(config.healthCheckInterval, std::chrono::seconds(10));
+    EXPECT_EQ(config.healthCheckTimeout, std::chrono::seconds(3));
 }
 
 }  // namespace UC::Test

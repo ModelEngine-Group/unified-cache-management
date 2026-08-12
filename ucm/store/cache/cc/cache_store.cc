@@ -115,7 +115,9 @@ public:
     Status Wait(Detail::TaskHandle taskId) override
     {
         auto s = transMgr_.Wait(taskId);
-        if (s.Failure()) [[unlikely]] { UC_ERROR("Failed({}) to wait task({}).", s, taskId); }
+        if (s.Failure() && s != Status::StoreUnhealthy()) [[unlikely]] {
+            UC_ERROR("Failed({}) to wait task({}).", s, taskId);
+        }
         return s;
     }
 
