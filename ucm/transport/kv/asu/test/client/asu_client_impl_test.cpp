@@ -587,14 +587,14 @@ TEST(AsuClientImplTest, Lifecycle_InitTwiceReturnsResourceBusy)
     EXPECT_EQ(status.code, StatusCode::RESOURCE_BUSY);
 }
 
-TEST(AsuClientImplTest, Provider_IndependentModeCreatesOneProviderPerTransport)
+TEST(AsuClientImplTest, Provider_IndependentModeCreatesMemoryProviderAndOnePerTransport)
 {
     auto state = std::make_shared<TestState>();
     auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
 
     ASSERT_TRUE(client->Init(MakeConfig({10, 20, 30})).ok());
 
-    EXPECT_EQ(state->createdProviders, std::uint32_t{3});
+    EXPECT_EQ(state->createdProviders, std::uint32_t{4});
     EXPECT_NE(state->initProviders[10], state->initProviders[20]);
     EXPECT_NE(state->initProviders[20], state->initProviders[30]);
 }
@@ -832,9 +832,9 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitIndependentModeBindsMemoryAcrossMult
     status = client->RegisterRegions({MemoryRegion{}}, registeredRegions);
 
     ASSERT_TRUE(status.ok()) << status.message;
-    EXPECT_EQ(state->createdProviders, std::uint32_t{2});
+    EXPECT_EQ(state->createdProviders, std::uint32_t{3});
     EXPECT_EQ(state->registerCalls, std::vector<AsuId>({10}));
-    EXPECT_EQ(state->providerBindCalls, std::vector<AsuId>({20}));
+    EXPECT_EQ(state->providerBindCalls, std::vector<AsuId>({10, 20}));
     EXPECT_EQ(state->bindCalls, std::vector<AsuId>({10, 20}));
 }
 
@@ -1269,7 +1269,7 @@ TEST(AsuClientImplTest, SnapshotRefresh_BuildFailureKeepsOldSnapshot)
     EXPECT_EQ(state->queryCalls, std::vector<AsuId>({10}));
 }
 
-TEST(AsuClientImplTest, MemoryRegister_RegisterRegionsRegistersFirstTransportAndBindsFollowers)
+TEST(AsuClientImplTest, MemoryRegister_RegistersMemoryProviderAndBindsAllTransports)
 {
     auto state = std::make_shared<TestState>();
     auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
@@ -1280,7 +1280,7 @@ TEST(AsuClientImplTest, MemoryRegister_RegisterRegionsRegistersFirstTransportAnd
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(state->registerCalls, std::vector<AsuId>({10}));
-    EXPECT_EQ(state->providerBindCalls, std::vector<AsuId>({20, 30}));
+    EXPECT_EQ(state->providerBindCalls, std::vector<AsuId>({10, 20, 30}));
     EXPECT_EQ(state->bindCalls, std::vector<AsuId>({10, 20, 30}));
     ASSERT_EQ(results.size(), std::size_t{2});
     EXPECT_EQ(results[0].handle, MakeTestMrHandle(500));
@@ -1320,8 +1320,8 @@ TEST(AsuClientImplTest, MemoryRegister_NewIndependentProviderBindsRememberedRegi
               StatusCode::PARTIAL_FAILED);
     ASSERT_TRUE(WaitForFetchCount(viewServer, 2));
 
-    EXPECT_EQ(state->createdProviders, std::uint32_t{2});
-    EXPECT_EQ(state->providerBindCalls, std::vector<AsuId>({20}));
+    EXPECT_EQ(state->createdProviders, std::uint32_t{3});
+    EXPECT_EQ(state->providerBindCalls, std::vector<AsuId>({10, 20}));
     ASSERT_EQ(state->boundRegions[20].size(), std::size_t{1});
     EXPECT_EQ(state->boundRegions[20][0].handle, results[0].handle);
     EXPECT_EQ(state->boundRegions[20][0].tokenId, results[0].tokenId);
@@ -1356,7 +1356,7 @@ TEST(AsuClientImplTest, MemoryRegister_ProviderBindFailureRollsBackOwner)
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     EXPECT_EQ(state->registerCalls, std::vector<AsuId>({10}));
-    EXPECT_EQ(state->providerBindCalls, std::vector<AsuId>({20}));
+    EXPECT_EQ(state->providerBindCalls, std::vector<AsuId>({10}));
     EXPECT_EQ(state->unregisterCalls, std::vector<AsuId>({10}));
     EXPECT_TRUE(state->bindCalls.empty());
     EXPECT_TRUE(results.empty());
@@ -1518,7 +1518,7 @@ TEST(AsuClientImplTest, MemoryRegister_UnregisterReleasesBoundProvidersBeforeOwn
     const auto status = client->UnregisterRegions({registeredRegions[0].handle});
 
     EXPECT_TRUE(status.ok()) << status.message;
-    EXPECT_EQ(state->unregisterCalls, std::vector<AsuId>({30, 20, 10}));
+    EXPECT_EQ(state->unregisterCalls, std::vector<AsuId>({30, 20, 10, 10}));
 }
 
 TEST(AsuClientImplTest, MemoryRegister_UnregisterRemovesCachedResourceBeforeFutureAsuIsAdded)

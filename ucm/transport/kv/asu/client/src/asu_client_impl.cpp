@@ -81,14 +81,36 @@ Status AsuClientImpl::Init(const AsuClientConfig& config)
     for (const auto& transportConfig : config.transportConfigs) {
         transportConfigs_[transportConfig.asuId] = transportConfig;
     }
+    if (config.transportConfigs.empty()) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "at least one transport config is required");
+    }
 
     GlobalView view;
     auto status = viewServer_->GetGlobalView(view);
     if (!status.ok()) { return status; }
 
+    std::shared_ptr<TransProvider> memoryProvider;
+    status = transProviderFactory_(config.transportConfigs.front(), memoryProvider);
+    if (!status.ok()) { return WithContext(status, "create business-memory provider failed"); }
+    if (!memoryProvider) {
+        return Status::Error(StatusCode::INTERNAL_ERROR,
+                             "business-memory provider factory returned null");
+    }
+    {
+        std::lock_guard<std::mutex> memoryLock{memoryMu_};
+        memoryProvider_ = std::move(memoryProvider);
+        providerMemoryStates_.push_back({memoryProvider_, {}});
+    }
+
     std::shared_ptr<ViewSnapshot> nextSnapshot;
     status = BuildSnapshot(view, nullptr, nextSnapshot);
-    if (!status.ok()) { return status; }
+    if (!status.ok()) {
+        std::lock_guard<std::mutex> memoryLock{memoryMu_};
+        providerMemoryStates_.clear();
+        memoryProvider_.reset();
+        return status;
+    }
 
     {
         std::lock_guard<std::mutex> lock{taskQueueMu_};
@@ -645,7 +667,6 @@ Status AsuClientImpl::BuildTransport(AsuId asuId, const AsuInfo& asuInfo,
         }
         providerMemoryStates_.emplace_back(std::move(providerState));
     }
-    if (!memoryProvider_) { memoryProvider_ = transProvider; }
     transport = std::shared_ptr<AsuTransport>(std::move(nextTransport));
     return Status::OK();
 }
