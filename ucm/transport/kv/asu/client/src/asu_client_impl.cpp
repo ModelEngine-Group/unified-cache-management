@@ -488,14 +488,6 @@ void AsuClientImpl::WorkerLoop()
 
 Status AsuClientImpl::UnregisterRegions(const std::vector<MRHandle>& handles)
 {
-    bool needRefresh = false;
-    auto status = UnregisterRegionsOnce(handles, needRefresh);
-    if (needRefresh) { RequestBackgroundRefresh(); }
-    return status;
-}
-
-Status AsuClientImpl::UnregisterRegionsOnce(const std::vector<MRHandle>& handles, bool& needRefresh)
-{
     auto snapshot = GetSnapshot();
     if (!snapshot) { return NotInitialized(); }
 
@@ -511,8 +503,8 @@ Status AsuClientImpl::UnregisterRegionsOnce(const std::vector<MRHandle>& handles
     }
 
     Status finalStatus = Status::OK();
-    const auto unregisterState = [this, &canonicalHandles, &finalStatus,
-                                  &needRefresh](ProviderMemoryState& state) {
+    const auto unregisterState = [this, &canonicalHandles,
+                                  &finalStatus](ProviderMemoryState& state) {
         std::vector<MRHandle> localHandles;
         std::vector<MRHandle> mappedCanonicalHandles;
         for (auto canonicalHandle : canonicalHandles) {
@@ -523,7 +515,6 @@ Status AsuClientImpl::UnregisterRegionsOnce(const std::vector<MRHandle>& handles
         }
         auto status = UnregisterProviderRegions(state.provider, localHandles);
         if (!status.ok()) {
-            needRefresh |= IsRefreshNeeded(status);
             if (finalStatus.ok()) { finalStatus = status; }
             return;
         }
@@ -563,7 +554,6 @@ Status AsuClientImpl::UnregisterRegionsOnce(const std::vector<MRHandle>& handles
             if (iter == snapshot->transports.end()) { continue; }
             auto status = iter->second->RemoveRegisteredRegions(removedHandles);
             if (status.ok()) { continue; }
-            needRefresh |= IsRefreshNeeded(status);
             if (finalStatus.ok()) {
                 finalStatus = WithContext(std::move(status), "asuId=" + std::to_string(asuId));
             }
@@ -577,7 +567,6 @@ Status AsuClientImpl::UnregisterRegionsOnce(const std::vector<MRHandle>& handles
         for (std::size_t index = 0; index < retiredTransports.size(); ++index) {
             auto status = retiredTransports[index]->RemoveRegisteredRegions(removedHandles);
             if (status.ok()) { continue; }
-            needRefresh |= IsRefreshNeeded(status);
             if (finalStatus.ok()) {
                 finalStatus = WithContext(std::move(status),
                                           "retiredTransportIndex=" + std::to_string(index));

@@ -106,9 +106,6 @@ private:
     // Performs one register operation on the current snapshot.
     Status RegisterRegionsOnce(const std::vector<MemoryRegion>& regions,
                                std::vector<RegisteredMemory>& registeredRegions, bool& needRefresh);
-    // Performs one unregister operation on the current snapshot.
-    Status UnregisterRegionsOnce(const std::vector<MRHandle>& handles, bool& needRefresh);
-
     // Builds a complete immutable snapshot for a view.
     Status BuildSnapshot(const GlobalView& view, const std::shared_ptr<ViewSnapshot>& oldSnapshot,
                          std::shared_ptr<ViewSnapshot>& snapshot);
