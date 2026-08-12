@@ -241,6 +241,7 @@ Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regio
     std::vector<MRHandle> mrHandles;
     auto status = memoryProvider_->RegisterMemory(registerDescs, mrHandles);
     if (!status.ok()) {
+        needRefresh |= IsRefreshNeeded(status);
         const auto cleanupStatus = UnregisterProviderRegions(memoryProvider_, mrHandles);
         return Status::Error(StatusCode::PARTIAL_FAILED,
                              cleanupStatus.ok()

@@ -89,9 +89,11 @@ struct TestState {
     std::size_t completionCallbackCount{0};
 };
 
-class FakeTransProvider final : public TransProvider {
+namespace {
+
+class ClientTestTransProvider final : public TransProvider {
 public:
-    FakeTransProvider(AsuId asuId, std::shared_ptr<TestState> state)
+    ClientTestTransProvider(AsuId asuId, std::shared_ptr<TestState> state)
         : asuId_(asuId), state_(std::move(state))
     {
     }
@@ -177,6 +179,8 @@ private:
     AsuId asuId_;
     std::shared_ptr<TestState> state_;
 };
+
+}  // namespace
 
 class FakeTransport : public AsuTransport {
 public:
@@ -497,7 +501,7 @@ TransProviderFactory MakeProviderFactory(const std::shared_ptr<TestState>& state
 {
     return [state](const TransportConfig& config, std::shared_ptr<TransProvider>& transProvider) {
         ++state->createdProviders;
-        transProvider = std::make_shared<FakeTransProvider>(config.asuId, state);
+        transProvider = std::make_shared<ClientTestTransProvider>(config.asuId, state);
         return Status::OK();
     };
 }
@@ -643,6 +647,7 @@ TEST(AsuClientImplTest, Provider_SharedModeReusesProviderForAddedTransport)
     EXPECT_EQ(QueryAndWait(*client, {MakeCacheKey("k05")}, result).code,
               StatusCode::PARTIAL_FAILED);
     ASSERT_TRUE(WaitForFetchCount(viewServer, 2));
+    ASSERT_TRUE(client->Shutdown().ok());
 
     EXPECT_EQ(state->createdProviders, std::uint32_t{1});
     EXPECT_EQ(state->initProviders[10], state->initProviders[20]);
@@ -732,8 +737,8 @@ TEST(AsuClientImplTest, Input_EmptyRegisterReturnsEmptyResults)
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_TRUE(results.empty());
-    EXPECT_EQ(state->registerCalls, std::vector<AsuId>({10}));
-    EXPECT_EQ(state->bindCalls, std::vector<AsuId>({10, 20}));
+    EXPECT_TRUE(state->registerCalls.empty());
+    EXPECT_TRUE(state->bindCalls.empty());
 }
 
 TEST(AsuClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
@@ -1480,7 +1485,7 @@ TEST(AsuClientImplTest, MemoryRegister_BindFailureDoesNotCacheResource)
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{3});
-    EXPECT_EQ(state->bindCalls, std::vector<AsuId>({20}));
+    EXPECT_EQ(state->bindCalls, std::vector<AsuId>({10, 20}));
 }
 
 TEST(AsuClientImplTest, MemoryRegister_UnregisterFailureIncludesAsuContext)
@@ -1902,8 +1907,8 @@ TEST(AsuClientImplTest, SnapshotRefresh_ReusesExistingTransportAndBindsResources
         {10},
         {10, 20}
     });
-    auto client =
-        std::make_unique<AsuClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    auto client = std::make_unique<AsuClientImpl>(
+        MakeFactory(state), MakeViewServerFactory(viewServer), MakeProviderFactory(state));
     ASSERT_TRUE(client->Init(config).ok());
 
     std::vector<RegisteredMemory> results;
@@ -1917,7 +1922,7 @@ TEST(AsuClientImplTest, SnapshotRefresh_ReusesExistingTransportAndBindsResources
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
-    EXPECT_EQ(state->bindCalls, std::vector<AsuId>({20}));
+    EXPECT_EQ(state->bindCalls, std::vector<AsuId>({10, 20}));
     ASSERT_EQ(state->boundRegions[20].size(), std::size_t{1});
     EXPECT_EQ(state->boundRegions[20][0].handle, MakeTestMrHandle(500));
     EXPECT_EQ(state->boundRegions[20][0].tokenId, std::uint32_t{900});
