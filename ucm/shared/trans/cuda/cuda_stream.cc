@@ -128,10 +128,7 @@ Status Trans::CudaStream::HostToDeviceAsync(void* host, void* device[], size_t s
 
 Status CudaStream::DeviceToDevice(void* source, void* destination, size_t size)
 {
-    if (source == nullptr || destination == nullptr || size == 0) {
-        return Status::InvalidParam("invalid device-to-device copy");
-    }
-    const auto ret = cudaMemcpy(destination, source, size, cudaMemcpyDeviceToDevice);
+    auto ret = cudaMemcpy(destination, source, size, cudaMemcpyDeviceToDevice);
     if (ret != cudaSuccess) [[unlikely]] { return Status{ret, cudaGetErrorString(ret)}; }
     return Status::OK();
 }
@@ -152,10 +149,7 @@ Status CudaStream::DeviceToDevice(void* source[], void* destination, size_t size
 
 Status CudaStream::DeviceToDeviceAsync(void* source, void* destination, size_t size)
 {
-    if (source == nullptr || destination == nullptr || size == 0) {
-        return Status::InvalidParam("invalid device-to-device copy");
-    }
-    const auto ret = cudaMemcpyAsync(destination, source, size, cudaMemcpyDeviceToDevice, stream_);
+    auto ret = cudaMemcpyAsync(destination, source, size, cudaMemcpyDeviceToDevice, stream_);
     if (ret != cudaSuccess) [[unlikely]] { return Status{ret, cudaGetErrorString(ret)}; }
     return Status::OK();
 }
