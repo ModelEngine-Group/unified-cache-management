@@ -117,7 +117,7 @@ public:
     // Best-effort cancellation, does not interrupt underlying UB/RoCE IO
     virtual Status Cancel(TaskId taskId) = 0;
 
-    virtual Status BindRegisteredRegions(const std::vector<RegisteredMemory>& regions) = 0;
+    virtual Status AddRegisteredRegions(const std::vector<RegisteredMemory>& regions) = 0;
 };
 
 std::unique_ptr<AsuTransport> CreateAsuTransport();

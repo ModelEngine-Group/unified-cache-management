@@ -335,7 +335,7 @@ public:
         return Status::OK();
     }
 
-    Status BindRegisteredRegions(const std::vector<RegisteredMemory>& regions) override
+    Status AddRegisteredRegions(const std::vector<RegisteredMemory>& regions) override
     {
         state_->bindCalls.emplace_back(config_.asuId);
         state_->boundRegions[config_.asuId] = regions;
@@ -1409,7 +1409,7 @@ TEST(AsuClientImplTest, MemoryRegister_BindFailureIncludesAsuContext)
         {
         }
 
-        Status BindRegisteredRegions(const std::vector<RegisteredMemory>&) override
+        Status AddRegisteredRegions(const std::vector<RegisteredMemory>&) override
         {
             return Status::Error(StatusCode::CONNECTION_ERROR, "fake bind failure");
         }
@@ -1445,7 +1445,7 @@ TEST(AsuClientImplTest, MemoryRegister_BindFailureDoesNotCacheResource)
         {
         }
 
-        Status BindRegisteredRegions(const std::vector<RegisteredMemory>&) override
+        Status AddRegisteredRegions(const std::vector<RegisteredMemory>&) override
         {
             state_->bindCalls.emplace_back(20);
             return Status::Error(StatusCode::CONNECTION_ERROR, "fake bind failure");

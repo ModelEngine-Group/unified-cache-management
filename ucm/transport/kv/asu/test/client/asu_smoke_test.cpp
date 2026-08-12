@@ -117,7 +117,7 @@ public:
 
     Status Cancel(TaskId) override { return Status::OK(); }
 
-    Status BindRegisteredRegions(const std::vector<RegisteredMemory>&) override
+    Status AddRegisteredRegions(const std::vector<RegisteredMemory>&) override
     {
         return Status::OK();
     }

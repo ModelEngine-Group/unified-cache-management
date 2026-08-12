@@ -333,7 +333,7 @@ Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regio
             continue;
         }
 
-        status = iter->second->BindRegisteredRegions(registeredRegions);
+        status = iter->second->AddRegisteredRegions(registeredRegions);
         if (!status.ok() && finalStatus.ok()) {
             needRefresh |= IsRefreshNeeded(status);
             finalStatus =
@@ -649,7 +649,7 @@ Status AsuClientImpl::BuildTransport(AsuId asuId, const AsuInfo& asuInfo,
         }
     }
     if (!registeredRegions_.empty()) {
-        status = nextTransport->BindRegisteredRegions(registeredRegions_);
+        status = nextTransport->AddRegisteredRegions(registeredRegions_);
         if (!status.ok()) {
             (void)UnregisterProviderRegions(transProvider, localHandles);
             (void)nextTransport->Shutdown();

@@ -264,7 +264,7 @@ Status AsuTransportImpl::Cancel(TaskId taskId)
     return Status::OK();
 }
 
-Status AsuTransportImpl::BindRegisteredRegions(const std::vector<RegisteredMemory>& regions)
+Status AsuTransportImpl::AddRegisteredRegions(const std::vector<RegisteredMemory>& regions)
 {
     std::lock_guard<std::mutex> lock(registeredRegionsMu_);
     for (const auto& region : regions) { registeredRegions_[region.handle] = region; }

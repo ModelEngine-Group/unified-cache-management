@@ -498,7 +498,7 @@ public:
 
     Status Cancel(TaskId) override { return Status::Error(StatusCode::UNSUPPORTED, "unsupported"); }
 
-    Status BindRegisteredRegions(const std::vector<RegisteredMemory>&) override
+    Status AddRegisteredRegions(const std::vector<RegisteredMemory>&) override
     {
         return Status::OK();
     }
