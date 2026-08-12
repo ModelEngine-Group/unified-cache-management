@@ -109,6 +109,89 @@ class AutoTraceAnalysisTest(unittest.TestCase):
             self.assertIn("Trace cache hit rate analysis", output.getvalue())
             self.assertIn("Log line parse failures: 1", errors.getvalue())
 
+    def test_shared_dram_pool_allows_hits_across_nodes(self):
+        records = [
+            auto_trace_analysis.TraceRecord(1, 1, 0, ["shared"], "trace.log"),
+            auto_trace_analysis.TraceRecord(2, 1, 0, ["shared"], "trace.log"),
+        ]
+
+        per_node = auto_trace_analysis.simulate_cache_hit_rate(
+            records,
+            gpu_capacity_blocks=0,
+            dram_capacity_blocks=1,
+            fs_capacity_blocks=0,
+            num_nodes=2,
+            random_seed=4,
+            dram_pool_mode="per-node",
+        )
+        shared = auto_trace_analysis.simulate_cache_hit_rate(
+            records,
+            gpu_capacity_blocks=0,
+            dram_capacity_blocks=1,
+            fs_capacity_blocks=0,
+            num_nodes=2,
+            random_seed=4,
+            dram_pool_mode="shared",
+        )
+
+        self.assertEqual(per_node["dram_hit_tokens"], 0)
+        self.assertEqual(shared["dram_hit_tokens"], 1)
+
+    def test_dram_pool_mode_defaults_to_per_node(self):
+        parser = auto_trace_analysis.build_arg_parser()
+        args = parser.parse_args(
+            [
+                "--log-dir",
+                "trace.log",
+                "--block-kv-cache-size",
+                "1024",
+                "--is-mla",
+                "false",
+                "--dram-pool-size-gb",
+                "1",
+                "--fs-pool-size-gb",
+                "0",
+            ]
+        )
+
+        self.assertEqual(args.dram_pool_mode, "per-node")
+
+    def test_dram_pool_total_capacity_follows_selected_mode(self):
+        parser = auto_trace_analysis.build_arg_parser()
+        common_args = [
+            "--log-dir",
+            "trace.log",
+            "--block-kv-cache-size",
+            str(auto_trace_analysis.GIB),
+            "--is-mla",
+            "false",
+            "--dram-pool-size-gb",
+            "2",
+            "--fs-pool-size-gb",
+            "0",
+            "--num-nodes",
+            "3",
+        ]
+        facts = auto_trace_analysis.LogFacts(
+            log_files=["trace.log"],
+            records=[auto_trace_analysis.TraceRecord(1, 1, 0, ["block"], "trace.log")],
+            available_kv_cache_memory_bytes=[auto_trace_analysis.GIB],
+            tensor_parallel_sizes=[1],
+            parse_errors=[],
+        )
+
+        per_node = auto_trace_analysis.build_analysis(
+            parser.parse_args(common_args), facts
+        )
+        shared = auto_trace_analysis.build_analysis(
+            parser.parse_args([*common_args, "--dram-pool-mode", "shared"]), facts
+        )
+
+        self.assertEqual(per_node["derived"]["dram_capacity_blocks"], 2)
+        self.assertEqual(per_node["derived"]["dram_total_capacity_blocks"], 6)
+        self.assertEqual(shared["derived"]["dram_capacity_blocks"], 2)
+        self.assertEqual(shared["derived"]["dram_total_capacity_blocks"], 2)
+
     def test_directory_scan_keeps_log_file_patterns(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             log_dir = Path(temp_dir)

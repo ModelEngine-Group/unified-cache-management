@@ -24,6 +24,7 @@ PREFIX_CACHE_HITS_METRICS = (
     "vllm:prefix_cache_hits_total",
     "prefix_cache_hits_total",
 )
+DRAM_POOL_MODES = ("per-node", "shared")
 
 TRACE_RE = re.compile(
     r"timestamp:\s*(?P<timestamp>\d+(?:\.\d+)?),\s*"
@@ -489,15 +490,22 @@ def simulate_cache_hit_rate(
     fs_capacity_blocks: int,
     num_nodes: int = 1,
     random_seed: int | None = 0,
+    dram_pool_mode: str = "per-node",
 ) -> dict:
     if num_nodes < 1:
         raise ValueError("num_nodes must be >= 1")
     if gpu_capacity_blocks < 0 or dram_capacity_blocks < 0 or fs_capacity_blocks < 0:
         raise ValueError("cache capacities must be >= 0")
+    if dram_pool_mode not in DRAM_POOL_MODES:
+        raise ValueError("dram_pool_mode must be one of: " + ", ".join(DRAM_POOL_MODES))
 
     rng = random.Random(random_seed)
     gpu_caches = [LRUCache(gpu_capacity_blocks) for _ in range(num_nodes)]
-    dram_caches = [LRUCache(dram_capacity_blocks) for _ in range(num_nodes)]
+    if dram_pool_mode == "shared":
+        shared_dram_cache = LRUCache(dram_capacity_blocks)
+        dram_caches = [shared_dram_cache for _ in range(num_nodes)]
+    else:
+        dram_caches = [LRUCache(dram_capacity_blocks) for _ in range(num_nodes)]
     fs_cache = LRUCache(fs_capacity_blocks)
 
     total_tokens = 0
@@ -605,6 +613,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--is-mla", choices=("true", "false"), required=True)
     parser.add_argument("--dram-pool-size-gb", type=float, required=True)
+    parser.add_argument(
+        "--dram-pool-mode",
+        choices=DRAM_POOL_MODES,
+        default="per-node",
+        help=(
+            "Interpret --dram-pool-size-gb as capacity per node or as one "
+            "shared capacity across all nodes."
+        ),
+    )
     parser.add_argument("--fs-pool-size-gb", type=float, required=True)
     parser.add_argument("--service-url")
     parser.add_argument("--metrics-timeout", type=float, default=5.0)
@@ -634,6 +651,11 @@ def build_analysis(args: argparse.Namespace, facts: LogFacts | None = None) -> d
     block_bytes = args.block_kv_cache_size
     gpu_capacity_blocks = gpu_kv_cache_bytes // block_bytes
     dram_capacity_blocks = int(args.dram_pool_size_gb * GIB) // block_bytes
+    dram_total_capacity_blocks = (
+        dram_capacity_blocks * args.num_nodes
+        if args.dram_pool_mode == "per-node"
+        else dram_capacity_blocks
+    )
     fs_capacity_blocks = int(args.fs_pool_size_gb * GIB) // block_bytes
     unique_blocks = unique_block_count(facts.records)
 
@@ -644,6 +666,7 @@ def build_analysis(args: argparse.Namespace, facts: LogFacts | None = None) -> d
         fs_capacity_blocks=unique_blocks,
         num_nodes=args.num_nodes,
         random_seed=args.random_seed,
+        dram_pool_mode=args.dram_pool_mode,
     )
     hbm = simulate_cache_hit_rate(
         records=facts.records,
@@ -652,6 +675,7 @@ def build_analysis(args: argparse.Namespace, facts: LogFacts | None = None) -> d
         fs_capacity_blocks=0,
         num_nodes=args.num_nodes,
         random_seed=args.random_seed,
+        dram_pool_mode=args.dram_pool_mode,
     )
     hbm_dram = simulate_cache_hit_rate(
         records=facts.records,
@@ -660,6 +684,7 @@ def build_analysis(args: argparse.Namespace, facts: LogFacts | None = None) -> d
         fs_capacity_blocks=0,
         num_nodes=args.num_nodes,
         random_seed=args.random_seed,
+        dram_pool_mode=args.dram_pool_mode,
     )
     hbm_dram_fs = simulate_cache_hit_rate(
         records=facts.records,
@@ -668,6 +693,7 @@ def build_analysis(args: argparse.Namespace, facts: LogFacts | None = None) -> d
         fs_capacity_blocks=fs_capacity_blocks,
         num_nodes=args.num_nodes,
         random_seed=args.random_seed,
+        dram_pool_mode=args.dram_pool_mode,
     )
     service_metrics = (
         fetch_service_hit_rate(args.service_url, args.metrics_timeout)
@@ -709,6 +735,7 @@ def build_analysis(args: argparse.Namespace, facts: LogFacts | None = None) -> d
             "block_kv_cache_size": block_bytes,
             "is_mla": is_mla,
             "dram_pool_size_gb": args.dram_pool_size_gb,
+            "dram_pool_mode": args.dram_pool_mode,
             "fs_pool_size_gb": args.fs_pool_size_gb,
             "service_url": args.service_url,
         },
@@ -721,6 +748,7 @@ def build_analysis(args: argparse.Namespace, facts: LogFacts | None = None) -> d
             "gpu_kv_cache_bytes": gpu_kv_cache_bytes,
             "gpu_capacity_blocks": gpu_capacity_blocks,
             "dram_capacity_blocks": dram_capacity_blocks,
+            "dram_total_capacity_blocks": dram_total_capacity_blocks,
             "fs_capacity_blocks": fs_capacity_blocks,
             "unique_block_count": unique_blocks,
             "num_nodes": args.num_nodes,
@@ -750,7 +778,10 @@ def print_summary(result: dict) -> None:
     )
     print("  Total HBM available KV cache size: " f"{hbm_bytes / 1024**3:.2f} GiB")
     print(f"  TP size: {derived['tp_size']}")
-    print(f"  DRAM pool size: {inputs['dram_pool_size_gb']:.2f} GiB")
+    if inputs["dram_pool_mode"] == "per-node":
+        print(f"  DRAM pool size per node: {inputs['dram_pool_size_gb']:.2f} GiB")
+    else:
+        print(f"  Shared DRAM pool size: {inputs['dram_pool_size_gb']:.2f} GiB")
     print(f"  FS pool size: {inputs['fs_pool_size_gb']:.2f} GiB")
     print(
         "  Theoretical max KV cache hit rate: "
