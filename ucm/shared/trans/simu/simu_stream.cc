@@ -151,6 +151,24 @@ Status SimuStream::HostToDeviceAsync(void* host, void* device[], size_t size, si
     return Status::OK();
 }
 
+Status SimuStream::DeviceToDevice(void* source, void* destination, size_t size)
+{
+    if (source == nullptr || destination == nullptr || size == 0) {
+        return Status::InvalidParam("invalid device-to-device copy");
+    }
+    std::memcpy(destination, source, size);
+    return Status::OK();
+}
+
+Status SimuStream::DeviceToDeviceAsync(void* source, void* destination, size_t size)
+{
+    if (source == nullptr || destination == nullptr || size == 0) {
+        return Status::InvalidParam("invalid device-to-device copy");
+    }
+    this->EnqueueTask([=] { this->DeviceToDevice(source, destination, size); });
+    return Status::OK();
+}
+
 Status SimuStream::AppendCallback(std::function<void(bool)> cb)
 {
     this->EnqueueTask([=] { cb(true); });

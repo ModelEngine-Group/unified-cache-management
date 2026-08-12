@@ -133,6 +133,16 @@ inline void HostToDeviceAsync(Stream& self, Ptr src, Ptr dst, size_t size)
     ThrowIfFailed(self.HostToDeviceAsync((void*)src, (void*)dst, size));
 }
 
+inline void DeviceToDevice(Stream& self, Ptr src, Ptr dst, size_t size)
+{
+    ThrowIfFailed(self.DeviceToDevice((void*)src, (void*)dst, size));
+}
+
+inline void DeviceToDeviceAsync(Stream& self, Ptr src, Ptr dst, size_t size)
+{
+    ThrowIfFailed(self.DeviceToDeviceAsync((void*)src, (void*)dst, size));
+}
+
 inline void HostToDeviceBatchAsync(Stream& self, py::object src, py::object dst, size_t size,
                                    size_t number)
 {
@@ -182,6 +192,8 @@ PYBIND11_MODULE(ucmtrans, m)
     s.def("HostToDeviceAsync", &HostToDeviceAsync);
     s.def("HostToDeviceBatchAsync", &HostToDeviceBatchAsync);
     s.def("HostToDeviceScatterAsync", &HostToDeviceScatterAsync);
+    s.def("DeviceToDevice", &DeviceToDevice);
+    s.def("DeviceToDeviceAsync", &DeviceToDeviceAsync);
     s.def("Synchronized", [](Stream& self) { ThrowIfFailed(self.Synchronized()); });
 
     auto d = py::class_<Device>(m, "Device");

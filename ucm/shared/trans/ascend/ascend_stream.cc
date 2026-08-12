@@ -147,6 +147,27 @@ Status AscendStream::HostToDeviceAsync(void* host, void* device[], size_t size, 
     return Status::OK();
 }
 
+Status AscendStream::DeviceToDevice(void* source, void* destination, size_t size)
+{
+    if (source == nullptr || destination == nullptr || size == 0) {
+        return Status::InvalidParam("invalid device-to-device copy");
+    }
+    const auto ret = aclrtMemcpy(destination, size, source, size, ACL_MEMCPY_DEVICE_TO_DEVICE);
+    if (ret == ACL_SUCCESS) { return Status::OK(); }
+    return Status{ret, std::to_string(ret)};
+}
+
+Status AscendStream::DeviceToDeviceAsync(void* source, void* destination, size_t size)
+{
+    if (source == nullptr || destination == nullptr || size == 0) {
+        return Status::InvalidParam("invalid device-to-device copy");
+    }
+    const auto ret =
+        aclrtMemcpyAsync(destination, size, source, size, ACL_MEMCPY_DEVICE_TO_DEVICE, stream_);
+    if (ret == ACL_SUCCESS) { return Status::OK(); }
+    return Status{ret, std::to_string(ret)};
+}
+
 using Closure = std::function<void(bool)>;
 
 static void Trampoline(void* data)
