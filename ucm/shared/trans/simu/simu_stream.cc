@@ -153,32 +153,31 @@ Status SimuStream::HostToDeviceAsync(void* host, void* device[], size_t size, si
 
 Status SimuStream::DeviceToDevice(void* source, void* destination, size_t size)
 {
-    if (source == nullptr || destination == nullptr || size == 0) {
-        return Status::InvalidParam("invalid device-to-device copy");
-    }
     std::memcpy(destination, source, size);
     return Status::OK();
 }
 
 Status SimuStream::DeviceToDevice(void* source[], void* destination[], size_t size, size_t number)
 {
-    auto s = DeviceToDeviceAsync(source, destination, size, number);
-    if (s.Failure()) { return s; }
-    return Synchronized();
+    for (size_t i = 0; i < number; i++) {
+        auto s = this->DeviceToDevice(source[i], destination[i], size);
+        if (s.Failure()) { return s; }
+    }
+    return Status::OK();
 }
 
 Status SimuStream::DeviceToDevice(void* source[], void* destination, size_t size, size_t number)
 {
-    auto s = DeviceToDeviceAsync(source, destination, size, number);
-    if (s.Failure()) { return s; }
-    return Synchronized();
+    for (size_t i = 0; i < number; i++) {
+        auto pDestination = (void*)(((int8_t*)destination) + size * i);
+        auto s = this->DeviceToDevice(source[i], pDestination, size);
+        if (s.Failure()) { return s; }
+    }
+    return Status::OK();
 }
 
 Status SimuStream::DeviceToDeviceAsync(void* source, void* destination, size_t size)
 {
-    if (source == nullptr || destination == nullptr || size == 0) {
-        return Status::InvalidParam("invalid device-to-device copy");
-    }
     this->EnqueueTask([=] { this->DeviceToDevice(source, destination, size); });
     return Status::OK();
 }
@@ -186,21 +185,14 @@ Status SimuStream::DeviceToDeviceAsync(void* source, void* destination, size_t s
 Status SimuStream::DeviceToDeviceAsync(void* source[], void* destination[], size_t size,
                                        size_t number)
 {
-    for (size_t i = 0; i < number; i++) {
-        auto s = DeviceToDeviceAsync(source[i], destination[i], size);
-        if (s.Failure()) { return s; }
-    }
+    this->EnqueueTask([=] { this->DeviceToDevice(source, destination, size, number); });
     return Status::OK();
 }
 
 Status SimuStream::DeviceToDeviceAsync(void* source[], void* destination, size_t size,
                                        size_t number)
 {
-    for (size_t i = 0; i < number; i++) {
-        auto pDestination = (void*)(((int8_t*)destination) + size * i);
-        auto s = DeviceToDeviceAsync(source[i], pDestination, size);
-        if (s.Failure()) { return s; }
-    }
+    this->EnqueueTask([=] { this->DeviceToDevice(source, destination, size, number); });
     return Status::OK();
 }
 
