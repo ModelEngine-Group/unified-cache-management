@@ -118,6 +118,7 @@ public:
     virtual Status Cancel(TaskId taskId) = 0;
 
     virtual Status AddRegisteredRegions(const std::vector<RegisteredMemory>& regions) = 0;
+    virtual Status RemoveRegisteredRegions(const std::vector<MRHandle>& handles) = 0;
 };
 
 std::unique_ptr<AsuTransport> CreateAsuTransport();

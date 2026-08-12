@@ -271,6 +271,13 @@ Status AsuTransportImpl::AddRegisteredRegions(const std::vector<RegisteredMemory
     return Status::OK();
 }
 
+Status AsuTransportImpl::RemoveRegisteredRegions(const std::vector<MRHandle>& handles)
+{
+    std::lock_guard<std::mutex> lock(registeredRegionsMu_);
+    for (auto handle : handles) { registeredRegions_.erase(handle); }
+    return Status::OK();
+}
+
 Status AsuTransportImpl::SubmitTask(const TransportTaskPtr& task)
 {
     std::lock_guard<std::mutex> lock(producerMu_);

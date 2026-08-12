@@ -61,6 +61,7 @@ public:
     Status Cancel(TaskId taskId) override;
 
     Status AddRegisteredRegions(const std::vector<RegisteredMemory>& regions) override;
+    Status RemoveRegisteredRegions(const std::vector<MRHandle>& handles) override;
 
 private:
     Status SubmitTask(const TransportTaskPtr& task);

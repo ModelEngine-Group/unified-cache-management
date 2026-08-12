@@ -121,6 +121,7 @@ public:
     {
         return Status::OK();
     }
+    Status RemoveRegisteredRegions(const std::vector<MRHandle>&) override { return Status::OK(); }
 
 private:
     TransportConfig config_;

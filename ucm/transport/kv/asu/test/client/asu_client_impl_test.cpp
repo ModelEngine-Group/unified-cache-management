@@ -70,6 +70,7 @@ struct TestState {
     std::vector<AsuId> registerCalls;
     std::vector<AsuId> providerBindCalls;
     std::vector<AsuId> bindCalls;
+    std::vector<AsuId> removeRegisteredRegionCalls;
     std::unordered_map<AsuId, std::vector<RegisteredMemory>> boundRegions;
     std::vector<AsuId> unregisterCalls;
     bool failRegister{false};
@@ -339,6 +340,19 @@ public:
     {
         state_->bindCalls.emplace_back(config_.asuId);
         state_->boundRegions[config_.asuId] = regions;
+        return Status::OK();
+    }
+
+    Status RemoveRegisteredRegions(const std::vector<MRHandle>& handles) override
+    {
+        state_->removeRegisteredRegionCalls.emplace_back(config_.asuId);
+        auto& regions = state_->boundRegions[config_.asuId];
+        regions.erase(std::remove_if(regions.begin(), regions.end(),
+                                     [&handles](const auto& region) {
+                                         return std::find(handles.begin(), handles.end(),
+                                                          region.handle) != handles.end();
+                                     }),
+                      regions.end());
         return Status::OK();
     }
 
@@ -1486,6 +1500,7 @@ TEST(AsuClientImplTest, MemoryRegister_BindFailureDoesNotCacheResource)
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{3});
     EXPECT_EQ(state->bindCalls, std::vector<AsuId>({10, 20}));
+    EXPECT_EQ(state->removeRegisteredRegionCalls, std::vector<AsuId>({10, 20}));
 }
 
 TEST(AsuClientImplTest, MemoryRegister_UnregisterFailureIncludesAsuContext)
@@ -1519,6 +1534,7 @@ TEST(AsuClientImplTest, MemoryRegister_UnregisterReleasesBoundProvidersBeforeOwn
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(state->unregisterCalls, std::vector<AsuId>({30, 20, 10, 10}));
+    EXPECT_EQ(state->removeRegisteredRegionCalls, std::vector<AsuId>({10, 20, 30}));
 }
 
 TEST(AsuClientImplTest, MemoryRegister_UnregisterRemovesCachedResourceBeforeFutureAsuIsAdded)
@@ -1542,6 +1558,7 @@ TEST(AsuClientImplTest, MemoryRegister_UnregisterRemovesCachedResourceBeforeFutu
 
     status = client->UnregisterRegions({results[0].handle});
     ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(state->removeRegisteredRegionCalls, std::vector<AsuId>({10}));
     state->bindCalls.clear();
 
     state->failFirstQuery = true;
