@@ -48,6 +48,7 @@ class MetricDefinition:
     vllm_connector_buckets: tuple[float, ...] = ()
     vllm_connector_value_scale: float = 1.0
     vllm_connector_enabled: bool = True
+    multiprocess_mode: str = ""
 
 
 def load_metrics_config(config_path: str) -> dict[str, Any]:
@@ -140,6 +141,11 @@ def get_metric_definitions(config: dict[str, Any] | None) -> list[MetricDefiniti
                     vllm_connector_buckets=tuple(vllm_connector_buckets),
                     vllm_connector_value_scale=vllm_connector_scale,
                     vllm_connector_enabled=vllm_connector_enabled,
+                    multiprocess_mode=(
+                        str(item.get("multiprocess_mode", ""))
+                        if metric_type == "gauge"
+                        else ""
+                    ),
                 )
             )
     return definitions
