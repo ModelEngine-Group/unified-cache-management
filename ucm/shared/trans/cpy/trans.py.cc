@@ -38,9 +38,7 @@ inline void ThrowIfFailed(const Status& s)
 }
 
 inline void DeviceToHost(Stream& self, Ptr src, Ptr dst, size_t size)
-{
-    ThrowIfFailed(self.DeviceToHost((void*)src, (void*)dst, size));
-}
+{ ThrowIfFailed(self.DeviceToHost((void*)src, (void*)dst, size)); }
 
 inline void DeviceToHostBatch(Stream& self, py::object src, py::object dst, size_t size,
                               size_t number)
@@ -68,9 +66,7 @@ inline void DeviceToHostGather(Stream& self, py::object src, Ptr dst, size_t siz
 }
 
 inline void DeviceToHostAsync(Stream& self, Ptr src, Ptr dst, size_t size)
-{
-    ThrowIfFailed(self.DeviceToHostAsync((void*)src, (void*)dst, size));
-}
+{ ThrowIfFailed(self.DeviceToHostAsync((void*)src, (void*)dst, size)); }
 
 inline void DeviceToHostBatchAsync(Stream& self, py::object src, py::object dst, size_t size,
                                    size_t number)
@@ -99,9 +95,7 @@ inline void DeviceToHostGatherAsync(Stream& self, py::object src, Ptr dst, size_
 }
 
 inline void HostToDevice(Stream& self, Ptr src, Ptr dst, size_t size)
-{
-    ThrowIfFailed(self.HostToDevice((void*)src, (void*)dst, size));
-}
+{ ThrowIfFailed(self.HostToDevice((void*)src, (void*)dst, size)); }
 
 inline void HostToDeviceBatch(Stream& self, py::object src, py::object dst, size_t size,
                               size_t number)
@@ -129,14 +123,10 @@ inline void HostToDeviceScatter(Stream& self, Ptr src, py::object dst, size_t si
 }
 
 inline void HostToDeviceAsync(Stream& self, Ptr src, Ptr dst, size_t size)
-{
-    ThrowIfFailed(self.HostToDeviceAsync((void*)src, (void*)dst, size));
-}
+{ ThrowIfFailed(self.HostToDeviceAsync((void*)src, (void*)dst, size)); }
 
 inline void DeviceToDevice(Stream& self, Ptr src, Ptr dst, size_t size)
-{
-    ThrowIfFailed(self.DeviceToDevice((void*)src, (void*)dst, size));
-}
+{ ThrowIfFailed(self.DeviceToDevice((void*)src, (void*)dst, size)); }
 
 inline void DeviceToDeviceBatch(Stream& self, py::object src, py::object dst, size_t size,
                                 size_t number)
@@ -152,8 +142,7 @@ inline void DeviceToDeviceBatch(Stream& self, py::object src, py::object dst, si
     }
 }
 
-inline void DeviceToDeviceGather(Stream& self, py::object src, Ptr dst, size_t size,
-                                 size_t number)
+inline void DeviceToDeviceGather(Stream& self, py::object src, Ptr dst, size_t size, size_t number)
 {
     if (py::isinstance<PtrArray>(src)) {
         auto source = static_cast<void**>(src.cast<PtrArray>().request().ptr);
@@ -165,9 +154,7 @@ inline void DeviceToDeviceGather(Stream& self, py::object src, Ptr dst, size_t s
 }
 
 inline void DeviceToDeviceAsync(Stream& self, Ptr src, Ptr dst, size_t size)
-{
-    ThrowIfFailed(self.DeviceToDeviceAsync((void*)src, (void*)dst, size));
-}
+{ ThrowIfFailed(self.DeviceToDeviceAsync((void*)src, (void*)dst, size)); }
 
 inline void DeviceToDeviceBatchAsync(Stream& self, py::object src, py::object dst, size_t size,
                                      size_t number)
@@ -221,7 +208,7 @@ inline void HostToDeviceScatterAsync(Stream& self, Ptr src, py::object dst, size
     }
 }
 
-} // namespace UC::Trans
+}  // namespace UC::Trans
 
 PYBIND11_MODULE(ucmtrans, m)
 {

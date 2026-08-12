@@ -75,6 +75,6 @@ public:
     Status Synchronized() override;
 };
 
-} // namespace UC::Trans
+}  // namespace UC::Trans
 
 #endif
