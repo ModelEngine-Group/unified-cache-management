@@ -24,6 +24,7 @@
 #include "space_manager.h"
 #include <atomic>
 #include "logger/logger.h"
+#include "metrics_api.h"
 #include "posix_file.h"
 
 namespace UC::PosixStore {
@@ -32,6 +33,7 @@ Status SpaceManager::Setup(const Config& config)
 {
     hotnessTrackerEnable_ = config.deviceId == -1;
     gcEnable_ = config.posixGcEnable && config.posixCapacityGb > 0;
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_gc_running"), 0.0);
     auto s = layout_.Setup(config);
     if (s.Failure()) [[unlikely]] { return s; }
     if (hotnessTrackerEnable_) {

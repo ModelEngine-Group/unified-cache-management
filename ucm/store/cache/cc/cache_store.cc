@@ -156,6 +156,7 @@ private:
         config.Get("use_gdr", param.useGdr);
         config.Get("cache_sdma_direct", param.cacheSdmaDirect);
         config.Get("cache_sdma_direct_launch_granularity", param.sdmaDirectLaunchGranularity);
+        config.GetNumber("local_rank_size", param.localRankSize);
         return param;
     }
     Status CheckSizeConfig(const Config& config)
@@ -212,6 +213,9 @@ private:
         if (config.streamNumber < 1 || config.streamNumber > 32) {
             return Status::InvalidParam("invalid stream number({})", config.streamNumber);
         }
+        if (config.localRankSize == 0) {
+            return Status::InvalidParam("invalid local rank size({})", config.localRankSize);
+        }
         return Status::OK();
     }
     void ShowConfig(const Config& config)
@@ -248,6 +252,7 @@ private:
         UC_INFO("Set {}::LoadExclusiveBufferNumber to {}.", ns, config.loadExclusiveBufferNumber);
         UC_INFO("Set {}::GpuKvBufferNumber to {}.", ns, config.gpuKvBufferAddrs.size());
         UC_INFO("Set {}::UseGdr to {}.", ns, config.useGdr);
+        UC_INFO("Set {}::LocalRankSize to {}.", ns, config.localRankSize);
     }
 };
 

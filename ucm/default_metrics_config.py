@@ -321,6 +321,11 @@ _GAUGE_METRICS = [
         "Effective Mooncake health breaker state, where 1 is enabled and 0 is fused",
         {"multiprocess_mode": 'livemostrecent'},
     ),
+    (
+        "posix_gc_running",
+        "Posix garbage collection state, where 1 is running and 0 is idle",
+        {"multiprocess_mode": 'livemostrecent'},
+    ),
 ]
 _HISTOGRAM_METRICS = [
     (
