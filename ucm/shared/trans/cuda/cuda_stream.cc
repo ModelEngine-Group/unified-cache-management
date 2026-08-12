@@ -136,6 +136,20 @@ Status CudaStream::DeviceToDevice(void* source, void* destination, size_t size)
     return Status::OK();
 }
 
+Status CudaStream::DeviceToDevice(void* source[], void* destination[], size_t size, size_t number)
+{
+    auto s = DeviceToDeviceAsync(source, destination, size, number);
+    if (s.Failure()) [[unlikely]] { return s; }
+    return Synchronized();
+}
+
+Status CudaStream::DeviceToDevice(void* source[], void* destination, size_t size, size_t number)
+{
+    auto s = DeviceToDeviceAsync(source, destination, size, number);
+    if (s.Failure()) [[unlikely]] { return s; }
+    return Synchronized();
+}
+
 Status CudaStream::DeviceToDeviceAsync(void* source, void* destination, size_t size)
 {
     if (source == nullptr || destination == nullptr || size == 0) {
@@ -143,6 +157,27 @@ Status CudaStream::DeviceToDeviceAsync(void* source, void* destination, size_t s
     }
     const auto ret = cudaMemcpyAsync(destination, source, size, cudaMemcpyDeviceToDevice, stream_);
     if (ret != cudaSuccess) [[unlikely]] { return Status{ret, cudaGetErrorString(ret)}; }
+    return Status::OK();
+}
+
+Status CudaStream::DeviceToDeviceAsync(void* source[], void* destination[], size_t size,
+                                       size_t number)
+{
+    for (size_t i = 0; i < number; i++) {
+        auto s = DeviceToDeviceAsync(source[i], destination[i], size);
+        if (s.Failure()) [[unlikely]] { return s; }
+    }
+    return Status::OK();
+}
+
+Status CudaStream::DeviceToDeviceAsync(void* source[], void* destination, size_t size,
+                                       size_t number)
+{
+    for (size_t i = 0; i < number; i++) {
+        auto pDestination = (void*)(((int8_t*)destination) + size * i);
+        auto s = DeviceToDeviceAsync(source[i], pDestination, size);
+        if (s.Failure()) [[unlikely]] { return s; }
+    }
     return Status::OK();
 }
 

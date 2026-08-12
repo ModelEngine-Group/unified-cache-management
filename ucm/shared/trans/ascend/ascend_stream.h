@@ -56,7 +56,13 @@ public:
     Status HostToDeviceAsync(void* host, void* device[], size_t size, size_t number) override;
 
     Status DeviceToDevice(void* source, void* destination, size_t size) override;
+    Status DeviceToDevice(void* source[], void* destination[], size_t size, size_t number) override;
+    Status DeviceToDevice(void* source[], void* destination, size_t size, size_t number) override;
     Status DeviceToDeviceAsync(void* source, void* destination, size_t size) override;
+    Status DeviceToDeviceAsync(void* source[], void* destination[], size_t size,
+                               size_t number) override;
+    Status DeviceToDeviceAsync(void* source[], void* destination, size_t size,
+                               size_t number) override;
 
     Status AppendCallback(std::function<void(bool)> cb) override;
     Status Synchronized() override;

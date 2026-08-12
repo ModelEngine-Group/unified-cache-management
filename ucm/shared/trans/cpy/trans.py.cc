@@ -138,9 +138,61 @@ inline void DeviceToDevice(Stream& self, Ptr src, Ptr dst, size_t size)
     ThrowIfFailed(self.DeviceToDevice((void*)src, (void*)dst, size));
 }
 
+inline void DeviceToDeviceBatch(Stream& self, py::object src, py::object dst, size_t size,
+                                size_t number)
+{
+    if (py::isinstance<PtrArray>(src)) {
+        auto source = static_cast<void**>(src.cast<PtrArray>().request().ptr);
+        auto destination = static_cast<void**>(dst.cast<PtrArray>().request().ptr);
+        ThrowIfFailed(self.DeviceToDevice(source, destination, size, number));
+    } else {
+        auto source = static_cast<void**>((void*)src.cast<Ptr>());
+        auto destination = static_cast<void**>((void*)dst.cast<Ptr>());
+        ThrowIfFailed(self.DeviceToDevice(source, destination, size, number));
+    }
+}
+
+inline void DeviceToDeviceGather(Stream& self, py::object src, Ptr dst, size_t size,
+                                 size_t number)
+{
+    if (py::isinstance<PtrArray>(src)) {
+        auto source = static_cast<void**>(src.cast<PtrArray>().request().ptr);
+        ThrowIfFailed(self.DeviceToDevice(source, (void*)dst, size, number));
+    } else {
+        auto source = static_cast<void**>((void*)src.cast<Ptr>());
+        ThrowIfFailed(self.DeviceToDevice(source, (void*)dst, size, number));
+    }
+}
+
 inline void DeviceToDeviceAsync(Stream& self, Ptr src, Ptr dst, size_t size)
 {
     ThrowIfFailed(self.DeviceToDeviceAsync((void*)src, (void*)dst, size));
+}
+
+inline void DeviceToDeviceBatchAsync(Stream& self, py::object src, py::object dst, size_t size,
+                                     size_t number)
+{
+    if (py::isinstance<PtrArray>(src)) {
+        auto source = static_cast<void**>(src.cast<PtrArray>().request().ptr);
+        auto destination = static_cast<void**>(dst.cast<PtrArray>().request().ptr);
+        ThrowIfFailed(self.DeviceToDeviceAsync(source, destination, size, number));
+    } else {
+        auto source = static_cast<void**>((void*)src.cast<Ptr>());
+        auto destination = static_cast<void**>((void*)dst.cast<Ptr>());
+        ThrowIfFailed(self.DeviceToDeviceAsync(source, destination, size, number));
+    }
+}
+
+inline void DeviceToDeviceGatherAsync(Stream& self, py::object src, Ptr dst, size_t size,
+                                      size_t number)
+{
+    if (py::isinstance<PtrArray>(src)) {
+        auto source = static_cast<void**>(src.cast<PtrArray>().request().ptr);
+        ThrowIfFailed(self.DeviceToDeviceAsync(source, (void*)dst, size, number));
+    } else {
+        auto source = static_cast<void**>((void*)src.cast<Ptr>());
+        ThrowIfFailed(self.DeviceToDeviceAsync(source, (void*)dst, size, number));
+    }
 }
 
 inline void HostToDeviceBatchAsync(Stream& self, py::object src, py::object dst, size_t size,
@@ -193,7 +245,11 @@ PYBIND11_MODULE(ucmtrans, m)
     s.def("HostToDeviceBatchAsync", &HostToDeviceBatchAsync);
     s.def("HostToDeviceScatterAsync", &HostToDeviceScatterAsync);
     s.def("DeviceToDevice", &DeviceToDevice);
+    s.def("DeviceToDeviceBatch", &DeviceToDeviceBatch);
+    s.def("DeviceToDeviceGather", &DeviceToDeviceGather);
     s.def("DeviceToDeviceAsync", &DeviceToDeviceAsync);
+    s.def("DeviceToDeviceBatchAsync", &DeviceToDeviceBatchAsync);
+    s.def("DeviceToDeviceGatherAsync", &DeviceToDeviceGatherAsync);
     s.def("Synchronized", [](Stream& self) { ThrowIfFailed(self.Synchronized()); });
 
     auto d = py::class_<Device>(m, "Device");

@@ -149,23 +149,52 @@ Status AscendStream::HostToDeviceAsync(void* host, void* device[], size_t size, 
 
 Status AscendStream::DeviceToDevice(void* source, void* destination, size_t size)
 {
-    if (source == nullptr || destination == nullptr || size == 0) {
-        return Status::InvalidParam("invalid device-to-device copy");
-    }
-    const auto ret = aclrtMemcpy(destination, size, source, size, ACL_MEMCPY_DEVICE_TO_DEVICE);
+    auto ret = aclrtMemcpy(destination, size, source, size, ACL_MEMCPY_DEVICE_TO_DEVICE);
     if (ret == ACL_SUCCESS) { return Status::OK(); }
     return Status{ret, std::to_string(ret)};
 }
 
+Status AscendStream::DeviceToDevice(void* source[], void* destination[], size_t size, size_t number)
+{
+    auto s = DeviceToDeviceAsync(source, destination, size, number);
+    if (s.Failure()) [[unlikely]] { return s; }
+    return Synchronized();
+}
+
+Status AscendStream::DeviceToDevice(void* source[], void* destination, size_t size, size_t number)
+{
+    auto s = DeviceToDeviceAsync(source, destination, size, number);
+    if (s.Failure()) [[unlikely]] { return s; }
+    return Synchronized();
+}
+
 Status AscendStream::DeviceToDeviceAsync(void* source, void* destination, size_t size)
 {
-    if (source == nullptr || destination == nullptr || size == 0) {
-        return Status::InvalidParam("invalid device-to-device copy");
-    }
-    const auto ret =
+    auto ret =
         aclrtMemcpyAsync(destination, size, source, size, ACL_MEMCPY_DEVICE_TO_DEVICE, stream_);
     if (ret == ACL_SUCCESS) { return Status::OK(); }
     return Status{ret, std::to_string(ret)};
+}
+
+Status AscendStream::DeviceToDeviceAsync(void* source[], void* destination[], size_t size,
+                                         size_t number)
+{
+    for (size_t i = 0; i < number; i++) {
+        auto s = DeviceToDeviceAsync(source[i], destination[i], size);
+        if (s.Failure()) [[unlikely]] { return s; }
+    }
+    return Status::OK();
+}
+
+Status AscendStream::DeviceToDeviceAsync(void* source[], void* destination, size_t size,
+                                         size_t number)
+{
+    for (size_t i = 0; i < number; i++) {
+        auto pDestination = (void*)(((int8_t*)destination) + size * i);
+        auto s = DeviceToDeviceAsync(source[i], pDestination, size);
+        if (s.Failure()) [[unlikely]] { return s; }
+    }
+    return Status::OK();
 }
 
 using Closure = std::function<void(bool)>;
