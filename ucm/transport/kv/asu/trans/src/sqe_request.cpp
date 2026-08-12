@@ -53,9 +53,9 @@ Status ResolveSqeMrKeys(const BatchView<KVBuffer>& entries,
         const auto handle = entries[index].buffer.handle;
         auto iter = registeredRegions.find(handle);
         if (iter == registeredRegions.end()) {
-            // TODO: Replace the default MR key after memory registration is supported.
-            mrKeys.emplace_back(1);
-            continue;
+            return Status::Error(
+                StatusCode::BUFFER_NOT_REGISTERED,
+                "entry buffer is not registered, entryIndex=" + std::to_string(index));
         }
         mrKeys.emplace_back(iter->second.tokenId);
     }

@@ -338,7 +338,7 @@ TEST_F(SqeRequestTest, SubmitBatchRetrieveUsesRetrieveOpcodeAndRequest)
     EXPECT_EQ(PackedBatchEntryMrKey(sqe, 1), std::uint32_t{0x76540001});
 }
 
-TEST_F(SqeRequestTest, SubmitBatchStoreUsesDefaultMrKeyForUnregisteredEntryBuffer)
+TEST_F(SqeRequestTest, SubmitBatchStoreRejectsUnregisteredEntryBuffer)
 {
     auto entries = MakeEntries(1);
     IoScheduler::ScheduledIoBatch subBatch{
@@ -349,11 +349,13 @@ TEST_F(SqeRequestTest, SubmitBatchStoreUsesDefaultMrKeyForUnregisteredEntryBuffe
     const auto status = transport_->taskExecutor_->SubmitEntrySubBatchRequest(
         TransportOpType::BATCH_STORE, subBatch, subBatchContext);
 
-    EXPECT_TRUE(status.ok()) << status.message;
-    EXPECT_EQ(subBatchContext.state, TransportSubBatchState::PENDING);
-    const auto* sqe = reinterpret_cast<const std::uint32_t*>(subBatchContext.sendSge.local_addr);
-    ASSERT_NE(sqe, nullptr);
-    EXPECT_EQ(PackedBatchEntryMrKey(sqe, 0), std::uint32_t{1});
+    EXPECT_EQ(status.code, StatusCode::BUFFER_NOT_REGISTERED);
+    EXPECT_EQ(subBatchContext.state, TransportSubBatchState::COMPLETED);
+    EXPECT_EQ(subBatchContext.status.code, StatusCode::BUFFER_NOT_REGISTERED);
+    ASSERT_EQ(subBatchContext.entryStatus.size(), entries.size());
+    EXPECT_EQ(subBatchContext.entryStatus[0].code, StatusCode::BUFFER_NOT_REGISTERED);
+    EXPECT_EQ(subBatchContext.flagBuffer.local_addr, std::uint64_t{0});
+    EXPECT_EQ(subBatchContext.sendSge.local_addr, std::uint64_t{0});
 }
 
 TEST_F(SqeRequestTest, SubmitDeleteCopiesKeysAndBuildsFlagBackedRequest)
