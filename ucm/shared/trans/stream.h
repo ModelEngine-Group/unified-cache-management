@@ -48,6 +48,17 @@ public:
     virtual Status HostToDeviceAsync(void* host[], void* device[], size_t size, size_t number) = 0;
     virtual Status HostToDeviceAsync(void* host, void* device[], size_t size, size_t number) = 0;
 
+    virtual Status DeviceToDevice(void* source, void* destination, size_t size) = 0;
+    virtual Status DeviceToDevice(void* source[], void* destination[], size_t size,
+                                  size_t number) = 0;
+    virtual Status DeviceToDevice(void* source[], void* destination, size_t size,
+                                  size_t number) = 0;
+    virtual Status DeviceToDeviceAsync(void* source, void* destination, size_t size) = 0;
+    virtual Status DeviceToDeviceAsync(void* source[], void* destination[], size_t size,
+                                       size_t number) = 0;
+    virtual Status DeviceToDeviceAsync(void* source[], void* destination, size_t size,
+                                       size_t number) = 0;
+
     virtual Status AppendCallback(std::function<void(bool)> cb) = 0;
     virtual Status Synchronized() = 0;
     virtual Status WaitEvent(void* event) = 0;

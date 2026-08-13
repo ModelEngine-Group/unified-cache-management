@@ -151,6 +151,51 @@ Status SimuStream::HostToDeviceAsync(void* host, void* device[], size_t size, si
     return Status::OK();
 }
 
+Status SimuStream::DeviceToDevice(void* source, void* destination, size_t size)
+{
+    std::memcpy(destination, source, size);
+    return Status::OK();
+}
+
+Status SimuStream::DeviceToDevice(void* source[], void* destination[], size_t size, size_t number)
+{
+    for (size_t i = 0; i < number; i++) {
+        auto s = this->DeviceToDevice(source[i], destination[i], size);
+        if (s.Failure()) { return s; }
+    }
+    return Status::OK();
+}
+
+Status SimuStream::DeviceToDevice(void* source[], void* destination, size_t size, size_t number)
+{
+    for (size_t i = 0; i < number; i++) {
+        auto pDestination = (void*)(((int8_t*)destination) + size * i);
+        auto s = this->DeviceToDevice(source[i], pDestination, size);
+        if (s.Failure()) { return s; }
+    }
+    return Status::OK();
+}
+
+Status SimuStream::DeviceToDeviceAsync(void* source, void* destination, size_t size)
+{
+    this->EnqueueTask([=] { this->DeviceToDevice(source, destination, size); });
+    return Status::OK();
+}
+
+Status SimuStream::DeviceToDeviceAsync(void* source[], void* destination[], size_t size,
+                                       size_t number)
+{
+    this->EnqueueTask([=] { this->DeviceToDevice(source, destination, size, number); });
+    return Status::OK();
+}
+
+Status SimuStream::DeviceToDeviceAsync(void* source[], void* destination, size_t size,
+                                       size_t number)
+{
+    this->EnqueueTask([=] { this->DeviceToDevice(source, destination, size, number); });
+    return Status::OK();
+}
+
 Status SimuStream::AppendCallback(std::function<void(bool)> cb)
 {
     this->EnqueueTask([=] { cb(true); });
@@ -178,4 +223,4 @@ Status SimuStream::Synchronized()
     return Status::OK();
 }
 
-} // namespace UC::Trans
+}  // namespace UC::Trans
