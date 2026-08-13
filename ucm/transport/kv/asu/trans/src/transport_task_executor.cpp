@@ -106,6 +106,27 @@ void TransportTaskExecutor::ReleaseAllSubBatchResources(
     for (auto& subBatchContext : subBatchContexts) { ReleaseSubBatchResources(subBatchContext); }
 }
 
+void TransportTaskExecutor::AbortSubBatchesBeforeSend(
+    TransportTask& task, std::vector<TransportSubBatchContext>& subBatchContexts)
+{
+    const auto canceledStatus =
+        Status::Error(StatusCode::CANCELED, "sub-batch canceled after pre-send failure");
+    std::fill(task.entryStatus.begin(), task.entryStatus.end(), canceledStatus);
+
+    bool hasFailedSubBatch = false;
+    for (auto& subBatchContext : subBatchContexts) {
+        ReleaseSubBatchResources(subBatchContext);
+        if (!subBatchContext.status.ok()) {
+            hasFailedSubBatch = true;
+        } else if (hasFailedSubBatch) {
+            std::fill(subBatchContext.entryStatus.begin(), subBatchContext.entryStatus.end(),
+                      canceledStatus);
+            subBatchContext.status = canceledStatus;
+        }
+        subBatchContext.state = TransportSubBatchState::COMPLETED;
+    }
+}
+
 void TransportTaskExecutor::CompleteSubBatch(TransportTask& task,
                                              TransportSubBatchContext& subBatchContext,
                                              const Status& status)
@@ -126,7 +147,10 @@ bool TransportTaskExecutor::Cancel(const TransportTaskPtr& task)
     std::fill(task->entryStatus.begin(), task->entryStatus.end(), canceledStatus);
     for (auto& subBatchContext : *task->subBatchContexts) {
         if (subBatchContext.state == TransportSubBatchState::COMPLETED) { continue; }
-        std::fill(subBatchContext.entryStatus.begin(), subBatchContext.entryStatus.end(), canceledStatus);
+        std::fill(subBatchContext.entryStatus.begin(), subBatchContext.entryStatus.end(),
+                  canceledStatus);
+        subBatchContext.status = canceledStatus;
+        subBatchContext.state = TransportSubBatchState::COMPLETED;
     }
     task->finalStatus = canceledStatus;
     ReleaseAllSubBatchResources(*task->subBatchContexts);
@@ -144,10 +168,7 @@ std::uint16_t TransportTaskExecutor::AllocateRequestCid()
 Status TransportTaskExecutor::AssignSubBatchConnections(
     std::vector<TransportSubBatchContext>& subBatchContexts)
 {
-    Status status = Status::OK();
     for (auto& subBatchContext : subBatchContexts) {
-        if (!subBatchContext.status.ok()) { continue; }
-
         auto channel = connManager_->SelectConnection();
         if (!channel) {
             const auto subBatchStatus =
@@ -156,13 +177,12 @@ Status TransportTaskExecutor::AssignSubBatchConnections(
                       subBatchStatus);
             subBatchContext.state = TransportSubBatchState::COMPLETED;
             subBatchContext.status = subBatchStatus;
-            if (status.ok()) { status = subBatchStatus; }
-            continue;
+            return subBatchStatus;
         }
 
         subBatchContext.channel = channel;
     }
-    return status;
+    return Status::OK();
 }
 
 bool TransportTaskExecutor::Execute(const TransportTaskPtr& task)
@@ -174,16 +194,18 @@ bool TransportTaskExecutor::Execute(const TransportTaskPtr& task)
     }
 
     std::vector<TransportSubBatchContext> subBatchContexts;
-    PrepareTaskSubBatches(*task, subBatchContexts);
+    auto status = PrepareTaskSubBatches(*task, subBatchContexts);
 
-    const bool hasSubBatches = !subBatchContexts.empty();
-    if (hasSubBatches) {
-        AssignSubBatchConnections(subBatchContexts);
+    if (status.ok()) { status = AssignSubBatchConnections(subBatchContexts); }
 
-        std::vector<TransProvider::SendIoBatch> ioBatches;
-        std::vector<std::size_t> subBatchIndexes;
-        BuildSubBatchSendBuffers(subBatchContexts, ioBatches, subBatchIndexes);
-        SendSubBatchBuffers(subBatchContexts, ioBatches, subBatchIndexes);
+    std::vector<TransProvider::SendIoBatch> ioBatches;
+    if (status.ok()) { BuildSubBatchSendBuffers(subBatchContexts, ioBatches); }
+
+    if (!status.ok()) {
+        UC_ERROR("Abort transport task before send task_id={} code={} message={}", task->taskId,
+                 static_cast<int>(status.code), status.message);
+    } else {
+        SendSubBatchBuffers(subBatchContexts, ioBatches);
     }
 
     bool done = false;
@@ -197,7 +219,8 @@ bool TransportTaskExecutor::Execute(const TransportTaskPtr& task)
             return false;
         }
 
-        if (hasSubBatches) { *task->subBatchContexts = std::move(subBatchContexts); }
+        if (!status.ok()) { AbortSubBatchesBeforeSend(*task, subBatchContexts); }
+        *task->subBatchContexts = std::move(subBatchContexts);
         task->InitializeRemainingSubBatchCount();
         task->TryFinalizeFromSubBatches();
         UC_DEBUG(
@@ -207,10 +230,6 @@ bool TransportTaskExecutor::Execute(const TransportTaskPtr& task)
             task->subBatchContexts->size(), task->Done(), static_cast<int>(task->finalStatus.code),
             task->finalStatus.message);
 
-        for (auto& subBatchContext : *task->subBatchContexts) {
-            if (subBatchContext.status.ok()) { continue; }
-            ReleaseSubBatchResources(subBatchContext);
-        }
         done = task->Done();
     }
     return done;

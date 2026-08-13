@@ -548,14 +548,25 @@ TEST_F(TransportTaskCompletionTest, CancelMarksOnlyUnfinishedEntriesCanceled)
 {
     TaskId taskId = kInvalidTaskId;
     TaskResult callbackResult;
+    bool completedSubBatchPreserved = false;
+    bool pendingSubBatchCanceled = false;
     auto ctx = std::make_unique<TransportTask>();
+    auto* rawCtx = ctx.get();
     ctx->entryStatus.assign(2, Status::OK());
     ctx->subBatchContexts->resize(2);
     (*ctx->subBatchContexts)[0].state = TransportSubBatchState::COMPLETED;
     (*ctx->subBatchContexts)[0].entryStatus = {Status::OK()};
     (*ctx->subBatchContexts)[1].state = TransportSubBatchState::PENDING;
     (*ctx->subBatchContexts)[1].entryStatus = {Status::OK()};
-    ctx->onComplete = [&](TaskResult result) { callbackResult = std::move(result); };
+    ctx->onComplete = [&](TaskResult result) {
+        const auto& completedSubBatch = (*rawCtx->subBatchContexts)[0];
+        const auto& canceledSubBatch = (*rawCtx->subBatchContexts)[1];
+        completedSubBatchPreserved = completedSubBatch.state == TransportSubBatchState::COMPLETED &&
+                                     completedSubBatch.status.ok();
+        pendingSubBatchCanceled = canceledSubBatch.state == TransportSubBatchState::COMPLETED &&
+                                  canceledSubBatch.status.code == StatusCode::CANCELED;
+        callbackResult = std::move(result);
+    };
     ASSERT_TRUE(transport_->taskManager_.Submit(std::move(ctx), taskId).ok());
 
     ASSERT_TRUE(transport_->Cancel(taskId).ok());
@@ -564,6 +575,8 @@ TEST_F(TransportTaskCompletionTest, CancelMarksOnlyUnfinishedEntriesCanceled)
     ASSERT_EQ(callbackResult.entryStatus.size(), std::size_t{2});
     EXPECT_TRUE(callbackResult.entryStatus[0].ok());
     EXPECT_EQ(callbackResult.entryStatus[1].code, StatusCode::CANCELED);
+    EXPECT_TRUE(completedSubBatchPreserved);
+    EXPECT_TRUE(pendingSubBatchCanceled);
 }
 
 TEST_F(TransportTaskCompletionTest, FailedSubmissionDoesNotInvokeCallback)
