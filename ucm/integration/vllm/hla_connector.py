@@ -1354,6 +1354,15 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         num_loaded_request = 0
         load_start_time = time.perf_counter() * 1000
         request_to_load_blocks: dict[str, int] = {}
+        all_load_ucm_ids: list[bytes] = []
+        all_load_vllm_ids: list[int] = []
+        # Ensure do_mamba_copy_block (from preprocess_mamba, compute stream)
+        # has completed before submitting load DMA (store stream).  Without
+        # this, the copy may land after the load and clobber loaded data.
+        # At this point the previous step's forward is done, so the only
+        # pending compute op is the mamba state copy — sync overhead is
+        # negligible.
+        self.device.synchronize()
         for request_id, request in metadata.request_meta.items():
             if len(request.load_block_ids[0]) == 0:
                 continue
@@ -1745,6 +1754,13 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             )
 
         if self.need_load and self.row_ids:
+            # Ensure do_mamba_copy_block (from preprocess_mamba, compute stream)
+            # has completed before submitting load DMA (store stream).  Without
+            # this, the copy may land after the load and clobber loaded data.
+            # At this point the previous step's forward is done, so the only
+            # pending compute op is the mamba state copy — sync overhead is
+            # negligible.
+            self.device.synchronize()
             # vLLM only calls wait_for_layer_load at full_attn (last layer of
             # each row), so row 0 must be loaded here before linear_attn begins.
             num_submit = min(self._load_prefetch_rows + 1, len(self.row_ids))
