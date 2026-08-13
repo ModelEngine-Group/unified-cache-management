@@ -140,7 +140,7 @@ bool BufferPool::IsValidPointer(const void* ptr) const
 Status BufferPool::ZeroMemory(void* ptr, std::size_t size) const
 {
     if (memory_type_ == MemoryType::ASCEND_DEVICE ||
-        memory_type_ == MemoryType::ASCEND_DEVICE_CPU_ACCESSIBLE) {
+        memory_type_ == MemoryType::DEVICE_MAPPED_HOST) {
         const auto status = UC::Trans::ZeroDeviceMemory(ptr, size);
         if (status.Failure()) { return Status::Error(name_ + ": failed to zero device memory"); }
     } else {

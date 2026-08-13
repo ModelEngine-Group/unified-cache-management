@@ -55,8 +55,7 @@ void ReleaseCpuAccessibleDeviceMemory(void* mappedAddress, aclrtDrvMemHandle han
 {
     auto ret = aclrtUnmapMem(mappedAddress);
     if (ret != ACL_SUCCESS) {
-        UC_ERROR("Failed to unmap CPU-accessible device memory addr={} ret={}", mappedAddress,
-                 ret);
+        UC_ERROR("Failed to unmap CPU-accessible device memory addr={} ret={}", mappedAddress, ret);
     }
     ret = aclrtReleaseMemAddress(mappedAddress);
     if (ret != ACL_SUCCESS) {
@@ -162,7 +161,11 @@ std::shared_ptr<void> Trans::AscendBuffer::MakeDeviceBuffer(size_t size)
 std::shared_ptr<void> Trans::AscendBuffer::MakeCpuAccessibleDeviceBuffer(size_t size)
 {
     int32_t deviceId = 0;
-    if (aclrtGetDevice(&deviceId) != ACL_SUCCESS) { return nullptr; }
+    auto ret = aclrtGetDevice(&deviceId);
+    if (ret != ACL_SUCCESS) {
+        UC_ERROR("aclrtGetDevice failed, size={} ret={}", size, ret);
+        return nullptr;
+    }
 
     aclrtPhysicalMemProp prop{};
     prop.handleType = ACL_MEM_HANDLE_TYPE_NONE;
@@ -172,32 +175,43 @@ std::shared_ptr<void> Trans::AscendBuffer::MakeCpuAccessibleDeviceBuffer(size_t 
     prop.location.id = static_cast<uint32_t>(deviceId);
 
     size_t granularity = 0;
-    auto ret = aclrtMemGetAllocationGranularity(
-        &prop, ACL_RT_MEM_ALLOC_GRANULARITY_MINIMUM, &granularity);
-    if (ret != ACL_SUCCESS || granularity == 0 ||
-        size > std::numeric_limits<size_t>::max() - (granularity - 1)) {
+    ret =
+        aclrtMemGetAllocationGranularity(&prop, ACL_RT_MEM_ALLOC_GRANULARITY_MINIMUM, &granularity);
+    constexpr auto maxSize = std::numeric_limits<size_t>::max();
+    if (ret != ACL_SUCCESS || granularity == 0 || size > maxSize - (granularity - 1)) {
+        UC_ERROR(
+            "Invalid device memory allocation granularity, deviceId={} size={} granularity={} "
+            "maxSize={} ret={}",
+            deviceId, size, granularity, maxSize, ret);
         return nullptr;
     }
     const auto allocationSize = (size + granularity - 1) / granularity * granularity;
 
     aclrtDrvMemHandle handle = nullptr;
     ret = aclrtMallocPhysical(&handle, allocationSize, &prop, 0);
-    if (ret != ACL_SUCCESS) { return nullptr; }
+    if (ret != ACL_SUCCESS) {
+        UC_ERROR("aclrtMallocPhysical failed, deviceId={} size={} ret={}", deviceId, allocationSize,
+                 ret);
+        return nullptr;
+    }
 
     void* mappedAddress = nullptr;
     ret = aclrtReserveMemAddress(&mappedAddress, allocationSize, 0, nullptr, 0);
     if (ret != ACL_SUCCESS) {
+        UC_ERROR("aclrtReserveMemAddress failed, size={} ret={}", allocationSize, ret);
         aclrtFreePhysical(handle);
         return nullptr;
     }
 
     ret = aclrtMapMem(mappedAddress, allocationSize, 0, handle, 0);
     if (ret != ACL_SUCCESS) {
+        UC_ERROR("aclrtMapMem failed, addr={} size={} ret={}", mappedAddress, allocationSize, ret);
         aclrtReleaseMemAddress(mappedAddress);
         aclrtFreePhysical(handle);
         return nullptr;
     }
 
+#if ACL_MAJOR_VERSION > 1 || (ACL_MAJOR_VERSION == 1 && ACL_MINOR_VERSION >= 16)
     aclrtMemAccessDesc accessDesc{};
     accessDesc.flags = ACL_RT_MEM_ACCESS_FLAGS_READWRITE;
     accessDesc.location.type = ACL_MEM_LOCATION_TYPE_HOST;
@@ -209,6 +223,14 @@ std::shared_ptr<void> Trans::AscendBuffer::MakeCpuAccessibleDeviceBuffer(size_t 
         ReleaseCpuAccessibleDeviceMemory(mappedAddress, handle);
         return nullptr;
     }
+#else
+    UC_ERROR(
+        "Unsupported ACL version {}.{}: CPU-accessible device memory requires "
+        "aclrtMemSetAccess, minimum supported ACL version is 1.16",
+        ACL_MAJOR_VERSION, ACL_MINOR_VERSION);
+    ReleaseCpuAccessibleDeviceMemory(mappedAddress, handle);
+    return nullptr;
+#endif
     return std::shared_ptr<void>(mappedAddress, [handle](void* address) {
         ReleaseCpuAccessibleDeviceMemory(address, handle);
     });

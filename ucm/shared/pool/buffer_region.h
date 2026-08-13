@@ -33,7 +33,7 @@ enum class BufferMemoryType {
     HOST = 0,
     HOST_PINNED = 1,
     ASCEND_DEVICE = 2,
-    ASCEND_DEVICE_CPU_ACCESSIBLE = 3,
+    DEVICE_MAPPED_HOST = 3,
 };
 
 struct BufferRegion {

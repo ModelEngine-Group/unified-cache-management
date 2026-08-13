@@ -244,13 +244,12 @@ TEST_F(BufferPoolTest, CpuAccessibleDevicePoolAllocatesAndZeroesReleasedSlot)
     ASSERT_NE(stream, nullptr);
 
     BufferPool pool;
-    auto status = pool.Init("cpu_accessible_device_pool",
-                            MemoryType::ASCEND_DEVICE_CPU_ACCESSIBLE,
+    auto status = pool.Init("cpu_accessible_device_pool", MemoryType::DEVICE_MAPPED_HOST,
                             kSlotCapacity, 1, true);
     ASSERT_TRUE(status.Success()) << status.ToString();
     EXPECT_EQ(pool.GetLocalAddr(), pool.GetDeviceAddr());
     EXPECT_EQ(pool.GetTotalSize(), kSlotStride);
-    EXPECT_EQ(pool.GetMemoryType(), MemoryType::ASCEND_DEVICE_CPU_ACCESSIBLE);
+    EXPECT_EQ(pool.GetMemoryType(), MemoryType::DEVICE_MAPPED_HOST);
 
     BufferPool::Slot slot;
     ASSERT_TRUE(pool.Allocate(slot).Success());
