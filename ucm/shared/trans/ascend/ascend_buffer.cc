@@ -51,6 +51,24 @@ void ReleaseHostPinnedMemory(void* registeredHost, void* allocatedHost)
     FreeHostMemory(allocatedHost);
 }
 
+void ReleaseCpuAccessibleDeviceMemory(void* mappedAddress, aclrtDrvMemHandle handle)
+{
+    auto ret = aclrtUnmapMem(mappedAddress);
+    if (ret != ACL_SUCCESS) {
+        UC_ERROR("Failed to unmap CPU-accessible device memory addr={} ret={}", mappedAddress,
+                 ret);
+    }
+    ret = aclrtReleaseMemAddress(mappedAddress);
+    if (ret != ACL_SUCCESS) {
+        UC_ERROR("Failed to release CPU-accessible device address addr={} ret={}", mappedAddress,
+                 ret);
+    }
+    ret = aclrtFreePhysical(handle);
+    if (ret != ACL_SUCCESS) {
+        UC_ERROR("Failed to free physical device memory handle={} ret={}", handle, ret);
+    }
+}
+
 }  // namespace
 
 class HostHugePages : public std::enable_shared_from_this<HostHugePages> {
@@ -139,6 +157,61 @@ std::shared_ptr<void> Trans::AscendBuffer::MakeDeviceBuffer(size_t size)
     auto ret = aclrtMalloc(&device, size, ACL_MEM_TYPE_HIGH_BAND_WIDTH);
     if (ret == ACL_SUCCESS) { return std::shared_ptr<void>(device, aclrtFree); }
     return nullptr;
+}
+
+std::shared_ptr<void> Trans::AscendBuffer::MakeCpuAccessibleDeviceBuffer(size_t size)
+{
+    int32_t deviceId = 0;
+    if (aclrtGetDevice(&deviceId) != ACL_SUCCESS) { return nullptr; }
+
+    aclrtPhysicalMemProp prop{};
+    prop.handleType = ACL_MEM_HANDLE_TYPE_NONE;
+    prop.allocationType = ACL_MEM_ALLOCATION_TYPE_PINNED;
+    prop.memAttr = ACL_HBM_MEM_NORMAL;
+    prop.location.type = ACL_MEM_LOCATION_TYPE_DEVICE;
+    prop.location.id = static_cast<uint32_t>(deviceId);
+
+    size_t granularity = 0;
+    auto ret = aclrtMemGetAllocationGranularity(
+        &prop, ACL_RT_MEM_ALLOC_GRANULARITY_MINIMUM, &granularity);
+    if (ret != ACL_SUCCESS || granularity == 0 ||
+        size > std::numeric_limits<size_t>::max() - (granularity - 1)) {
+        return nullptr;
+    }
+    const auto allocationSize = (size + granularity - 1) / granularity * granularity;
+
+    aclrtDrvMemHandle handle = nullptr;
+    ret = aclrtMallocPhysical(&handle, allocationSize, &prop, 0);
+    if (ret != ACL_SUCCESS) { return nullptr; }
+
+    void* mappedAddress = nullptr;
+    ret = aclrtReserveMemAddress(&mappedAddress, allocationSize, 0, nullptr, 0);
+    if (ret != ACL_SUCCESS) {
+        aclrtFreePhysical(handle);
+        return nullptr;
+    }
+
+    ret = aclrtMapMem(mappedAddress, allocationSize, 0, handle, 0);
+    if (ret != ACL_SUCCESS) {
+        aclrtReleaseMemAddress(mappedAddress);
+        aclrtFreePhysical(handle);
+        return nullptr;
+    }
+
+    aclrtMemAccessDesc accessDesc{};
+    accessDesc.flags = ACL_RT_MEM_ACCESS_FLAGS_READWRITE;
+    accessDesc.location.type = ACL_MEM_LOCATION_TYPE_HOST;
+    accessDesc.location.id = 0;
+    ret = aclrtMemSetAccess(mappedAddress, allocationSize, &accessDesc, 1);
+    if (ret != ACL_SUCCESS) {
+        UC_ERROR("Failed to grant host access to device memory addr={} size={} ret={}",
+                 mappedAddress, allocationSize, ret);
+        ReleaseCpuAccessibleDeviceMemory(mappedAddress, handle);
+        return nullptr;
+    }
+    return std::shared_ptr<void>(mappedAddress, [handle](void* address) {
+        ReleaseCpuAccessibleDeviceMemory(address, handle);
+    });
 }
 
 std::shared_ptr<void> Trans::AscendBuffer::MakeHostBuffer(size_t size)

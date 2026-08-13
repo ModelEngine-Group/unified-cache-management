@@ -53,6 +53,8 @@ class ReservedBuffer : public Buffer {
     }
 
 public:
+    std::shared_ptr<void> MakeCpuAccessibleDeviceBuffer(size_t) override { return nullptr; }
+
     Status MakeDeviceBuffers(size_t size, size_t number) override
     {
         auto totalSize = size * number;

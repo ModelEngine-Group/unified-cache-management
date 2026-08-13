@@ -230,6 +230,41 @@ TEST_F(BufferPoolTest, DevicePoolZeroesReleasedSlot)
     for (const auto value : host) { EXPECT_EQ(value, 0); }
 }
 
+TEST_F(BufferPoolTest, CpuAccessibleDevicePoolAllocatesAndZeroesReleasedSlot)
+{
+#if !defined(UCM_TEST_RUNTIME_ASCEND)
+    GTEST_SKIP() << "CPU-accessible device memory is not supported by the simu backend";
+#endif
+
+    constexpr std::size_t kSlotCapacity = 71;
+    constexpr std::size_t kSlotStride = 128;
+
+    Trans::Device device;
+    auto stream = device.MakeStream();
+    ASSERT_NE(stream, nullptr);
+
+    BufferPool pool;
+    auto status = pool.Init("cpu_accessible_device_pool",
+                            MemoryType::ASCEND_DEVICE_CPU_ACCESSIBLE,
+                            kSlotCapacity, 1, true);
+    ASSERT_TRUE(status.Success()) << status.ToString();
+    EXPECT_EQ(pool.GetLocalAddr(), pool.GetDeviceAddr());
+    EXPECT_EQ(pool.GetTotalSize(), kSlotStride);
+    EXPECT_EQ(pool.GetMemoryType(), MemoryType::ASCEND_DEVICE_CPU_ACCESSIBLE);
+
+    BufferPool::Slot slot;
+    ASSERT_TRUE(pool.Allocate(slot).Success());
+    std::array<std::uint8_t, kSlotStride> dirty;
+    dirty.fill(0xAB);
+    ASSERT_TRUE(stream->HostToDevice(dirty.data(), slot.device_addr, kSlotStride).Success());
+    ASSERT_TRUE(pool.Free(slot.slot_index).Success());
+
+    ASSERT_TRUE(pool.Allocate(slot).Success());
+    std::array<std::uint8_t, kSlotStride> host{};
+    ASSERT_TRUE(stream->DeviceToHost(slot.device_addr, host.data(), kSlotStride).Success());
+    for (const auto value : host) { EXPECT_EQ(value, 0); }
+}
+
 TEST_F(BufferPoolTest, FreeZeroesAndReusesHostSlot)
 {
     constexpr std::size_t kSlotStride = 128;
