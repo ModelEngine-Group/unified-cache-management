@@ -366,10 +366,9 @@ Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regio
                                           "transport memory metadata cleanup was incomplete");
             }
         }
-        for (std::size_t index = providerMemoryStates_.size(); index > 0; --index) {
-            const auto stateIndex = index - 1;
+        for (std::size_t index = providerMemoryStates_.size() - 1; index >= 0; --index) {
             const auto cleanupStatus = UnregisterProviderRegions(
-                providerMemoryStates_[stateIndex].provider, providerHandles[stateIndex]);
+                providerMemoryStates_[index].provider, providerHandles[index]);
             if (!cleanupStatus.ok()) {
                 finalStatus =
                     WithContext(std::move(finalStatus), "business memory cleanup was incomplete");
