@@ -260,6 +260,19 @@ def apply_all_patches() -> None:
             case _:
                 pass
 
+        # Mamba copy order fix: vllm-ascend >= 0.21.0 defers
+        # do_mamba_copy_block to after start_load_kv, causing it to
+        # overwrite UCM-loaded KV cache data. This patch restores
+        # the copy to before start_load_kv (matching upstream vLLM).
+        #
+        # Always import — the @when_imported hook only fires when
+        # vllm_ascend.patch.worker.patch_mamba_utils exists, and the
+        # wrapper is self-guarding (idempotency flag + offset check).
+        # This handles nightly/dev builds whose version string (e.g.
+        # 0.1.dev4128) doesn't match the release version scheme.
+        logger.info("UCM patching mamba copy order...")
+        import ucm.integration.vllm.patch.v0210.vllm_ascend.mamba_copy_order_patch
+
         logger.info("UCM patch initialization completed!")
 
     except Exception as e:
