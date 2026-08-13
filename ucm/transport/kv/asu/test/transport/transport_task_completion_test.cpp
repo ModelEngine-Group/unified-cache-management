@@ -160,14 +160,13 @@ TEST_F(TransportTaskCompletionTest, InitializeCountsOnlyPendingSubBatches)
     EXPECT_EQ(ctx.remainingSubBatchCount, std::uint32_t{1});
 }
 
-TEST_F(TransportTaskCompletionTest, CompleteSubBatchOnlyCountsPendingSubBatchOnce)
+TEST_F(TransportTaskCompletionTest, CompleteSubBatchCompletesPendingSubBatch)
 {
     TransportTask ctx;
     TransportSubBatchContext subBatchContext;
     const auto status = Status::Error(StatusCode::IO_ERROR, "fake error");
     ctx.remainingSubBatchCount = 1;
 
-    transport_->taskExecutor_->CompleteSubBatch(ctx, subBatchContext, status);
     transport_->taskExecutor_->CompleteSubBatch(ctx, subBatchContext, status);
 
     EXPECT_EQ(ctx.remainingSubBatchCount, std::uint32_t{0});

@@ -210,9 +210,7 @@ Status AsuTransportImpl::Shutdown()
 
     for (const auto& ctx : taskManager_.GetAll()) {
         if (ctx == nullptr) { continue; }
-        const auto canceledStatus =
-            Status::Error(StatusCode::CANCELED, "transport shutdown canceled task");
-        if (!taskExecutor_->Cancel(ctx, canceledStatus)) { continue; }
+        if (!taskExecutor_->Cancel(ctx)) { continue; }
         taskManager_.NotifyCompletion(ctx);
     }
     for (const auto& ctx : taskManager_.GetAll()) {
@@ -254,8 +252,7 @@ Status AsuTransportImpl::Cancel(TaskId taskId)
     auto ctx = taskManager_.Get(taskId);
     if (!ctx) { return Status::Error(StatusCode::TASK_NOT_FOUND, "transport task not found"); }
 
-    const auto canceledStatus = Status::Error(StatusCode::CANCELED, "transport task canceled");
-    if (!taskExecutor_->Cancel(ctx, canceledStatus)) { return Status::OK(); }
+    if (!taskExecutor_->Cancel(ctx)) { return Status::OK(); }
     taskManager_.NotifyCompletion(ctx);
     return Status::OK();
 }

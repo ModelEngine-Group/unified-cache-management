@@ -110,26 +110,25 @@ void TransportTaskExecutor::CompleteSubBatch(TransportTask& task,
                                              TransportSubBatchContext& subBatchContext,
                                              const Status& status)
 {
-    if (subBatchContext.state != TransportSubBatchState::PENDING) { return; }
-
     ReleaseSubBatchResources(subBatchContext);
     subBatchContext.state = TransportSubBatchState::COMPLETED;
     subBatchContext.status = status;
     --task.remainingSubBatchCount;
 }
 
-bool TransportTaskExecutor::Cancel(const TransportTaskPtr& task, const Status& status)
+bool TransportTaskExecutor::Cancel(const TransportTaskPtr& task)
 {
     if (!task) { return false; }
 
     std::lock_guard<std::mutex> lock(task->mutex);
     if (task->Done()) { return false; }
-    std::fill(task->entryStatus.begin(), task->entryStatus.end(), status);
+    const auto canceledStatus = Status::Error(StatusCode::CANCELED, "transport task canceled");
+    std::fill(task->entryStatus.begin(), task->entryStatus.end(), canceledStatus);
     for (auto& subBatchContext : *task->subBatchContexts) {
-        if (subBatchContext.state != TransportSubBatchState::PENDING) { continue; }
-        std::fill(subBatchContext.entryStatus.begin(), subBatchContext.entryStatus.end(), status);
+        if (subBatchContext.state == TransportSubBatchState::COMPLETED) { continue; }
+        std::fill(subBatchContext.entryStatus.begin(), subBatchContext.entryStatus.end(), canceledStatus);
     }
-    task->finalStatus = status;
+    task->finalStatus = canceledStatus;
     ReleaseAllSubBatchResources(*task->subBatchContexts);
     task->state.store(TransportTaskState::COMPLETED, std::memory_order_release);
     return true;
@@ -175,7 +174,7 @@ bool TransportTaskExecutor::Execute(const TransportTaskPtr& task)
     }
 
     std::vector<TransportSubBatchContext> subBatchContexts;
-    SubmitTaskRequests(*task, subBatchContexts);
+    PrepareTaskSubBatches(*task, subBatchContexts);
 
     const bool hasSubBatches = !subBatchContexts.empty();
     if (hasSubBatches) {
@@ -234,7 +233,7 @@ bool TransportTaskExecutor::Poll(const TransportTaskPtr& task)
                 Status::Error(StatusCode::TIMEOUT, "transport task execution timeout");
             std::fill(task->entryStatus.begin(), task->entryStatus.end(), timeoutStatus);
             for (auto& subBatchContext : *task->subBatchContexts) {
-                if (subBatchContext.state != TransportSubBatchState::PENDING) { continue; }
+                if (subBatchContext.state == TransportSubBatchState::COMPLETED) { continue; }
 
                 std::fill(subBatchContext.entryStatus.begin(), subBatchContext.entryStatus.end(),
                           timeoutStatus);
@@ -245,7 +244,7 @@ bool TransportTaskExecutor::Poll(const TransportTaskPtr& task)
             task->state.store(TransportTaskState::COMPLETED, std::memory_order_release);
         } else {
             for (auto& subBatchContext : *task->subBatchContexts) {
-                if (subBatchContext.state != TransportSubBatchState::PENDING) { continue; }
+                if (subBatchContext.state == TransportSubBatchState::COMPLETED) { continue; }
 
                 auto completeWithError = [this, &task, &subBatchContext](const Status& status) {
                     std::fill(subBatchContext.entryStatus.begin(),

@@ -64,17 +64,16 @@ public:
 
     bool Execute(const TransportTaskPtr& task);
     bool Poll(const TransportTaskPtr& task);
-    bool Cancel(const TransportTaskPtr& task, const Status& status);
+    bool Cancel(const TransportTaskPtr& task);
 
 private:
     std::uint16_t AllocateRequestCid();
 
-    Status SubmitTaskRequests(const TransportTask& task,
-                              std::vector<TransportSubBatchContext>& subBatchContexts);
-    Status SubmitEntrySubBatchRequest(TransportOpType opType,
-                                      const IoScheduler::ScheduledIoBatch& subBatch,
-                                      const RegisteredMrKeyMap& registeredMrKeys,
-                                      TransportSubBatchContext& subBatchContext);
+    Status PrepareTaskSubBatches(const TransportTask& task,
+                                 std::vector<TransportSubBatchContext>& subBatchContexts);
+    Status BuildEntrySubBatchRequest(TransportOpType opType,
+                                     const IoScheduler::ScheduledIoBatch& subBatch,
+                                     TransportSubBatchContext& subBatchContext);
     Status SubmitKeySubBatchRequest(TransportOpType opType,
                                     const IoScheduler::ScheduledKeyBatch& subBatch,
                                     TransportSubBatchContext& subBatchContext);
