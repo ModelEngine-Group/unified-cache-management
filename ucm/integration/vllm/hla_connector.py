@@ -780,6 +780,13 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             vllm_config=vllm_config, role=role, kv_cache_config=kv_cache_config
         )
         self._skip_null_vllm_blocks = True
+        self._dump_checksums: dict[tuple[bytes, int], float] = {}
+        self._load_checksums: dict[tuple[bytes, int], float] = {}
+        self._kv_checksum_enabled = os.getenv("UCM_KV_CHECKSUM_LOG", "0") == "1"
+        self._ptr_to_tensor: dict[int, torch.Tensor] = {}
+        self._bulk_load_ucm_ids: list[bytes] = []
+        self._bulk_load_vllm_ids: list[int] = []
+        self._bulk_post_copy_checked = False
         # group manager only lives on the scheduler side, where ``self._seed``
         # and ``self.request_hasher`` are populated by the parent ctor.
         self.group_manager: Optional[KVCacheGroupManager] = None
@@ -899,6 +906,13 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         self.block_data_size = self.kv_cache_layout.block_size
         self.device = create_device()
 
+        self._ptr_to_tensor = {}
+        for _ln, _kv in self.kv_caches.items():
+            _tensors = _kv if isinstance(_kv, (tuple, list)) else [_kv]
+            for _t in _tensors:
+                if isinstance(_t, torch.Tensor) and _t.numel() > 0:
+                    self._ptr_to_tensor[_t.data_ptr()] = _t
+
         enable_affinity = _use_ucm_connector_cpu_affinity()
         worker_cores, store_cores = (
             self.device.split_cores(self.local_rank)
@@ -917,6 +931,141 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 logger.info(f"[VLLM CPU Affinity] Worker bound to cores {worker_cores}")
             except Exception as e:
                 logger.warning(f"Failed to bind worker: {e}")
+
+    def _find_tensor_by_addr(
+        self, addr: int, size: int
+    ) -> torch.Tensor | None:
+        for base_ptr, tensor in self._ptr_to_tensor.items():
+            tensor_start = base_ptr
+            tensor_end = base_ptr + tensor.numel() * tensor.element_size()
+            if tensor_start <= addr < tensor_end:
+                if addr + size <= tensor_end:
+                    return tensor
+        return None
+
+    def _compute_block_checksum(self, vllm_block_id: int, row_id: int) -> float:
+        if vllm_block_id == 0:
+            return 0.0
+        layout = self.kv_cache_layout
+        row_slice = layout.row_slices[row_id]
+        seg_bases = layout.base_ptrs[row_slice]
+        seg_strides = layout.block_stride_lists[row_slice]
+        seg_sizes = layout.row_tensor_size_lists[row_id]
+        checksum = 0.0
+        for seg_idx in range(len(seg_sizes)):
+            addr = int(seg_bases[seg_idx]) + vllm_block_id * int(seg_strides[seg_idx])
+            size = int(seg_sizes[seg_idx])
+            if size <= 0:
+                continue
+            tensor = self._find_tensor_by_addr(addr, size)
+            if tensor is None:
+                if self._kv_checksum_enabled:
+                    logger.warning(
+                        f"[UCM_KV_CMP] ADDR_DBG row={row_id} vllm_id={vllm_block_id} "
+                        f"seg={seg_idx} addr={addr} size={size} "
+                        f"stride={int(seg_strides[seg_idx])} "
+                        f"base={int(seg_bases[seg_idx])} "
+                        f"TENSOR_NOT_FOUND"
+                    )
+                continue
+            offset = addr - tensor.data_ptr()
+            flat = tensor.view(torch.uint8).flatten()
+            seg_data = flat[offset : offset + size]
+            if seg_data.numel() > 0:
+                checksum += seg_data.float().sum().item()
+        return checksum
+
+    def _log_dump_checksums_bulk(
+        self, ucm_ids: list[bytes], vllm_ids: list[int]
+    ) -> None:
+        rank = self.tp_rank % self.tp_size
+        self.device.synchronize()
+        num_rows = len(self.kv_cache_layout.row_slices)
+        for row_id in range(num_rows):
+            for ucm_id, vllm_id in zip(ucm_ids, vllm_ids):
+                if vllm_id == 0:
+                    continue
+                cs = self._compute_block_checksum(vllm_id, row_id)
+                self._dump_checksums[(ucm_id, row_id)] = cs
+                logger.info(
+                    f"[UCM_KV_CMP] DUMP row={row_id} rank={rank} "
+                    f"vllm_id={vllm_id} ucm={ucm_id.hex()[:12]} cs={cs:.4f}"
+                )
+
+    def _log_load_checksums_bulk(
+        self, ucm_ids: list[bytes], vllm_ids: list[int]
+    ) -> None:
+        rank = self.tp_rank % self.tp_size
+        self.device.synchronize()
+        num_rows = len(self.kv_cache_layout.row_slices)
+        for row_id in range(num_rows):
+            for ucm_id, vllm_id in zip(ucm_ids, vllm_ids):
+                if vllm_id == 0:
+                    continue
+                cs = self._compute_block_checksum(vllm_id, row_id)
+                self._load_checksums[(ucm_id, row_id)] = cs
+                dump_cs = self._dump_checksums.get((ucm_id, row_id))
+                if dump_cs is not None:
+                    diff = abs(cs - dump_cs)
+                    status = (
+                        "MATCH"
+                        if diff < max(1.0, abs(dump_cs) * 1e-3)
+                        else f"MISMATCH(diff={diff:.4f})"
+                    )
+                    logger.info(
+                        f"[UCM_KV_CMP] LOAD row={row_id} rank={rank} "
+                        f"vllm_id={vllm_id} ucm={ucm_id.hex()[:12]} "
+                        f"cs={cs:.4f} dump_cs={dump_cs:.4f} {status}"
+                    )
+                else:
+                    logger.info(
+                        f"[UCM_KV_CMP] LOAD row={row_id} rank={rank} "
+                        f"vllm_id={vllm_id} ucm={ucm_id.hex()[:12]} "
+                        f"cs={cs:.4f} (no dump record)"
+                    )
+
+    def _log_post_copy_checksums_bulk(
+        self, ucm_ids: list[bytes], vllm_ids: list[int]
+    ) -> None:
+        rank = self.tp_rank % self.tp_size
+        self.device.synchronize()
+        num_rows = len(self.kv_cache_layout.row_slices)
+        for row_id in range(num_rows):
+            for ucm_id, vllm_id in zip(ucm_ids, vllm_ids):
+                if vllm_id == 0:
+                    continue
+                cs = self._compute_block_checksum(vllm_id, row_id)
+                load_cs = self._load_checksums.get((ucm_id, row_id))
+                if load_cs is not None:
+                    diff = abs(cs - load_cs)
+                    status = (
+                        "SAME"
+                        if diff < max(1.0, abs(load_cs) * 1e-3)
+                        else f"CHANGED(diff={diff:.4f})"
+                    )
+                    logger.info(
+                        f"[UCM_KV_CMP] POST_COPY row={row_id} rank={rank} "
+                        f"vllm_id={vllm_id} ucm={ucm_id.hex()[:12]} "
+                        f"cs={cs:.4f} load_cs={load_cs:.4f} {status}"
+                    )
+                else:
+                    logger.info(
+                        f"[UCM_KV_CMP] POST_COPY row={row_id} rank={rank} "
+                        f"vllm_id={vllm_id} ucm={ucm_id.hex()[:12]} "
+                        f"cs={cs:.4f} (no load record)"
+                    )
+
+    def wait_for_layer_load(self, layer_name: str) -> None:
+        if (
+            not self._kv_checksum_enabled
+            or self._bulk_post_copy_checked
+            or not self._bulk_load_ucm_ids
+        ):
+            return
+        self._bulk_post_copy_checked = True
+        self._log_post_copy_checksums_bulk(
+            self._bulk_load_ucm_ids, self._bulk_load_vllm_ids
+        )
 
     def get_num_new_matched_tokens(
         self, request: "Request", num_computed_tokens: int
@@ -1059,6 +1208,21 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 f"HLA group count {self.group_manager.num_groups}"
             )
         req_meta.group_vllm_block_ids = [list(group) for group in block_ids]
+        if os.getenv("UCM_KV_CHECKSUM_LOG", "0") == "1":
+            group_types = []
+            for gid, group in enumerate(self.group_manager.groups_by_id):
+                tag = "MLA" if group.is_full_attention else f"KDA{gid}"
+                group_types.append(tag)
+            for gid, (grp_blocks, tag) in enumerate(
+                zip(req_meta.group_vllm_block_ids, group_types)
+            ):
+                non_null = [b for b in grp_blocks if b != 0]
+                logger.info(
+                    f"[UCM_ALLOC] req={request.request_id} gid={gid} "
+                    f"type={tag} block_size={self.group_manager.groups_by_id[gid].block_size} "
+                    f"len={len(grp_blocks)} non_null={len(non_null)} "
+                    f"blocks={grp_blocks}"
+                )
 
     def _append_mamba_align_state_block(
         self,
@@ -1378,6 +1542,8 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 num_loaded_request -= 1
                 continue
             num_loaded_block -= len(request.load_block_ids[0]) - len(scoped_ucm)
+            all_load_ucm_ids.extend(scoped_ucm)
+            all_load_vllm_ids.extend(scoped_vllm)
             try:
                 ptrs = self.kv_cache_layout.extract_block_addrs(scoped_vllm)
                 ptrs = ptrs.reshape(ptrs.shape[0], -1)
@@ -1420,6 +1586,12 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 self._connector_worker_meta.mark_failed(request_id)
                 num_loaded_block -= request_to_load_blocks.get(request_id, 0)
 
+        if self._kv_checksum_enabled and all_load_ucm_ids:
+            self._bulk_load_ucm_ids = all_load_ucm_ids
+            self._bulk_load_vllm_ids = all_load_vllm_ids
+            self._bulk_post_copy_checked = False
+            self._log_load_checksums_bulk(all_load_ucm_ids, all_load_vllm_ids)
+
         if is_load:
             load_end_time = time.perf_counter() * 1000
             load_duration_ms = load_end_time - load_start_time
@@ -1461,6 +1633,9 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
         if not total_ucm_block_ids:
             return
+
+        if self._kv_checksum_enabled:
+            self._log_dump_checksums_bulk(total_ucm_block_ids, total_vllm_block_ids)
 
         event_handle = 0
         try:
@@ -1560,6 +1735,13 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         ] = {}
         self._is_mtp = False
         self._init_mtp_layerwise_dump_state()
+        self._dump_checksums: dict[tuple[bytes, int], float] = {}
+        self._row_to_layers: dict[int, list[str]] = {}
+        self._kv_checksum_enabled = os.getenv("UCM_KV_CHECKSUM_LOG", "0") == "1"
+        logger.info(
+            "Init UCMHybridLinearAttentionLayerWiseConnector "
+            f"with prefetch_rows={self._load_prefetch_rows}."
+        )
 
     def _init_mtp_layerwise_dump_state(self) -> None:
         """Detect whether MTP is enabled."""
@@ -1643,6 +1825,13 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         row_to_layers: dict[int, list[str]] = defaultdict(list)
         for layer_name, row_id in self.layer_name_to_row.items():
             row_to_layers[row_id].append(layer_name)
+        self._row_to_layers = dict(row_to_layers)
+        self._ptr_to_tensor: dict[int, torch.Tensor] = {}
+        for _ln, _kv in self.kv_caches.items():
+            _tensors = _kv if isinstance(_kv, (tuple, list)) else [_kv]
+            for _t in _tensors:
+                if isinstance(_t, torch.Tensor) and _t.numel() > 0:
+                    self._ptr_to_tensor[_t.data_ptr()] = _t
         self.row_save_layer = {
             row_id: max(
                 layer_names,
@@ -1657,6 +1846,125 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             f"row_tensor_size_list={row_tensor_size_list}, "
             f"row_save_layers={len(self.row_save_layer)}"
         )
+
+    def _compute_block_checksum(self, vllm_block_id: int, row_id: int) -> float:
+        """Read KV data from the exact same addresses the store uses.
+
+        Uses ``extract_block_addrs_for_row`` to get the raw device pointers
+        for each segment (conv / middle / tail on Ascend), then locates the
+        underlying torch tensor by matching ``data_ptr()`` and reads the
+        bytes at the computed offset.
+        """
+        if vllm_block_id == 0:
+            return 0.0
+
+        layout = self.kv_cache_layout
+        row_slice = layout.row_slices[row_id]
+        seg_bases = layout.base_ptrs[row_slice]
+        seg_strides = layout.block_stride_lists[row_slice]
+        seg_sizes = layout.row_tensor_size_lists[row_id]
+
+        checksum = 0.0
+        for seg_idx in range(len(seg_sizes)):
+            addr = int(seg_bases[seg_idx]) + vllm_block_id * int(seg_strides[seg_idx])
+            size = int(seg_sizes[seg_idx])
+            if size <= 0:
+                continue
+            tensor = self._find_tensor_by_addr(addr, size)
+            if tensor is None:
+                if self._kv_checksum_enabled:
+                    logger.warning(
+                        f"[UCM_KV_CMP] ADDR_DBG row={row_id} vllm_id={vllm_block_id} "
+                        f"seg={seg_idx} addr={addr} size={size} "
+                        f"stride={int(seg_strides[seg_idx])} "
+                        f"base={int(seg_bases[seg_idx])} "
+                        f"TENSOR_NOT_FOUND"
+                    )
+                continue
+            offset = addr - tensor.data_ptr()
+            flat = tensor.view(torch.uint8).flatten()
+            seg_data = flat[offset : offset + size]
+            if seg_data.numel() > 0:
+                checksum += seg_data.float().sum().item()
+            if self._kv_checksum_enabled and row_id == 0 and vllm_block_id <= 2:
+                logger.info(
+                    f"[UCM_KV_CMP] ADDR_DBG row={row_id} vllm_id={vllm_block_id} "
+                    f"seg={seg_idx} addr={addr} offset={offset} "
+                    f"stride={int(seg_strides[seg_idx])} size={size} "
+                    f"t_shape={list(tensor.shape)} t_dtype={tensor.dtype} "
+                    f"flat_len={flat.numel()} seg_sum={seg_data.float().sum().item():.4f}"
+                )
+        return checksum
+
+    def _find_tensor_by_addr(
+        self, addr: int, size: int
+    ) -> torch.Tensor | None:
+        """Find the kv_cache tensor whose [data_ptr, data_ptr+numel*esz)
+        range contains ``addr``."""
+        for base_ptr, tensor in self._ptr_to_tensor.items():
+            tensor_start = base_ptr
+            tensor_end = base_ptr + tensor.numel() * tensor.element_size()
+            if tensor_start <= addr < tensor_end:
+                if addr + size <= tensor_end:
+                    return tensor
+        return None
+
+    def _log_dump_checksums(
+        self,
+        ucm_ids: list[bytes],
+        vllm_ids: list[int],
+        row_id: int,
+    ) -> None:
+        """Record and log checksums for each block right before dump."""
+        # if row_id != 0:
+        #     return
+        rank = self.tp_rank % self.tp_size
+        self.device.synchronize()
+        for ucm_id, vllm_id in zip(ucm_ids, vllm_ids):
+            if vllm_id == 0:
+                continue
+            cs = self._compute_block_checksum(vllm_id, row_id)
+            self._dump_checksums[(ucm_id, row_id)] = cs
+            logger.info(
+                f"[UCM_KV_CMP] DUMP row={row_id} rank={rank} "
+                f"vllm_id={vllm_id} ucm={ucm_id.hex()[:12]} cs={cs:.4f}"
+            )
+
+    def _log_load_checksums(self, row_id: int) -> None:
+        """After load completes, compute checksums and compare with dump."""
+        # if row_id != 0:
+        #     return
+        rank = self.tp_rank % self.tp_size
+        self.device.synchronize()
+        for (
+            _req_id,
+            _ucm_ids,
+            store_ids,
+            vllm_ids,
+        ) in self.request_data:
+            for ucm_id, vllm_id in zip(store_ids, vllm_ids):
+                if vllm_id == 0:
+                    continue
+                cs = self._compute_block_checksum(vllm_id, row_id)
+                dump_cs = self._dump_checksums.get((ucm_id, row_id))
+                if dump_cs is not None:
+                    diff = abs(cs - dump_cs)
+                    status = (
+                        "MATCH"
+                        if diff < max(1.0, abs(dump_cs) * 1e-3)
+                        else f"MISMATCH(diff={diff:.4f})"
+                    )
+                    logger.info(
+                        f"[UCM_KV_CMP] LOAD row={row_id} rank={rank} "
+                        f"vllm_id={vllm_id} ucm={ucm_id.hex()[:12]} "
+                        f"cs={cs:.4f} dump_cs={dump_cs:.4f} {status}"
+                    )
+                else:
+                    logger.info(
+                        f"[UCM_KV_CMP] LOAD row={row_id} rank={rank} "
+                        f"vllm_id={vllm_id} ucm={ucm_id.hex()[:12]} "
+                        f"cs={cs:.4f} (no dump record)"
+                    )
 
     def _mark_load_failed(
         self,
@@ -1724,6 +2032,10 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                     f"load failed. {type(e).__name__}: {e}"
                 )
                 self._mark_load_failed(metadata, request_id)
+
+        if self._kv_checksum_enabled:
+            self._log_load_checksums(row_id)
+
         return len(row_tasks)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
@@ -1849,6 +2161,11 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                 set(dump_request_ids),
             )
             return
+
+        if self._kv_checksum_enabled:
+            self._log_dump_checksums(
+                total_ucm_block_ids, total_vllm_block_ids, row_id
+            )
 
         row_ptrs = self.kv_cache_layout.extract_block_addrs_for_row(
             total_vllm_block_ids, row_id
