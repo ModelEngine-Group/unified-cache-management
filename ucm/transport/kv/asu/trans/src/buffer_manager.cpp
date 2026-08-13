@@ -94,12 +94,6 @@ void BufferManager::BufferRegion::Reset()
     providerMemType = TransProvider::MemType::MEM_HOST;
 }
 
-bool IsTransportBufferReady(const ScatterGatherEntry& sge)
-{
-    return sge.local_addr != 0 && sge.device_addr != 0 && sge.length != 0 &&
-           sge.slot_index != UINT32_MAX;
-}
-
 BufferManager::~BufferManager() { Shutdown(); }
 
 void BufferManager::Shutdown()

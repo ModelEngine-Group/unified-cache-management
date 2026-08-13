@@ -49,7 +49,7 @@ void SetSubBatchSendFailed(TransportSubBatchContext& subBatchContext, const Stat
 
 }  // namespace
 
-Status TransportTaskExecutor::SubmitTaskRequests(
+Status TransportTaskExecutor::PrepareTaskSubBatches(
     const TransportTask& ctx, std::vector<TransportSubBatchContext>& subBatchContexts)
 {
     Status status = Status::OK();
@@ -69,11 +69,10 @@ Status TransportTaskExecutor::SubmitTaskRequests(
         for (std::size_t index = 0; index < subBatches.size(); ++index) {
             const auto& subBatch = subBatches[index];
             auto& subBatchContext = subBatchContexts.emplace_back();
-            auto subBatchStatus =
-                SubmitEntrySubBatchRequest(opType, subBatch, registeredMrKeys, subBatchContext);
+            auto subBatchStatus = BuildEntrySubBatchRequest(opType, subBatch, subBatchContext);
             subBatchContext.status = subBatchStatus;
             if (!subBatchStatus.ok()) {
-                UC_ERROR("Submit entry sub-batch failed index={} batch_size={} code={} message={}",
+                UC_ERROR("Build entry sub-batch request failed index={} batch_size={} code={} message={}",
                          index, subBatch.entries.size, static_cast<int>(subBatchStatus.code),
                          subBatchStatus.message);
                 if (status.ok()) { status = subBatchStatus; }
@@ -137,26 +136,6 @@ Status TransportTaskExecutor::BuildSubBatchSendBuffers(
             continue;
         }
 
-        if (subBatchContext.channel == nullptr ||
-            !IsTransportBufferReady(subBatchContext.sendSge) ||
-            !IsTransportBufferReady(subBatchContext.flagBuffer)) {
-            const auto subBatchStatus = Status::Error(StatusCode::NOT_INITIALIZED,
-                                                      "sub-batch transport buffers are not ready");
-            UC_ERROR(
-                "Sub-batch transport buffers are not ready index={} cid={} channel={} "
-                "send_local_addr={} send_device_addr={} send_length={} send_slot={} "
-                "flag_local_addr={} flag_device_addr={} flag_length={} flag_slot={}",
-                index, subBatchContext.cid, subBatchContext.channel != nullptr,
-                subBatchContext.sendSge.local_addr, subBatchContext.sendSge.device_addr,
-                subBatchContext.sendSge.length, subBatchContext.sendSge.slot_index,
-                subBatchContext.flagBuffer.local_addr, subBatchContext.flagBuffer.device_addr,
-                subBatchContext.flagBuffer.length, subBatchContext.flagBuffer.slot_index);
-            SetSubBatchSendFailed(subBatchContext, subBatchStatus);
-            if (status.ok()) { status = subBatchStatus; }
-            ReleaseSubBatchResources(subBatchContext);
-            continue;
-        }
-
         ioBatches.push_back(TransProvider::SendIoBatch{
             subBatchContext.channel->GetConnection(),
             reinterpret_cast<void*>(subBatchContext.sendSge.device_addr),
@@ -178,7 +157,6 @@ Status TransportTaskExecutor::SendSubBatchBuffers(
 
     const auto kernelCount = GetSendCountAttr(config_.attrs, "kernel_count");
     const auto quietCount = GetSendCountAttr(config_.attrs, "quiet_count");
-
     const auto sendStatuses = transProvider_->Send(ioBatches, kernelCount, quietCount);
     if (sendStatuses.size() != ioBatches.size()) {
         status = Status::Error(StatusCode::INTERNAL_ERROR,
