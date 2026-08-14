@@ -153,6 +153,7 @@ TEST(DramConfigTest, RejectsInvalidSchedulerBoundaries)
 TEST(DramConfigTest, ParsesControlEndpointsAndStoresManagerIds)
 {
     auto input = BaseConfig();
+    input.Set("role", std::string{"scheduler"});
     input.Set("local_control_endpoint", std::string{"127.0.0.1:06000"});
     auto parsed = DramConfig::Parse(input);
     ASSERT_TRUE(parsed);
@@ -166,6 +167,40 @@ TEST(DramConfigTest, ParsesControlEndpointsAndStoresManagerIds)
     EXPECT_EQ(config.nodeScheduler.nodes[0].controlPort, std::uint16_t{7000});
     EXPECT_EQ(config.nodeScheduler.nodes[0].transportManagerId, "127.0.0.1:7100");
     EXPECT_EQ(config.nodeScheduler.nodes[1].nodeId, NodeId{1});
+}
+
+TEST(DramConfigTest, UsesConfiguredPortsForScheduler)
+{
+    auto input = BaseConfig();
+    input.Set("role", std::string{"scheduler"});
+    input.SetNumber("device_id", 3);
+    auto parsed = DramConfig::Parse(input);
+    ASSERT_TRUE(parsed);
+    EXPECT_EQ(parsed.Value().localControlPort, std::uint16_t{6000});
+    EXPECT_EQ(parsed.Value().localTransportManagerId, "127.0.0.1:6100");
+}
+
+TEST(DramConfigTest, OffsetsWorkerPortsByDeviceId)
+{
+    auto input = BaseConfig();
+    input.Set("role", std::string{"worker"});
+    input.SetNumber("device_id", 3);
+    auto parsed = DramConfig::Parse(input);
+    ASSERT_TRUE(parsed);
+    EXPECT_EQ(parsed.Value().localControlPort, std::uint16_t{6004});
+    EXPECT_EQ(parsed.Value().localTransportManagerId, "127.0.0.1:6104");
+}
+
+TEST(DramConfigTest, RejectsInvalidRoleAndWorkerPortOverflow)
+{
+    auto invalidRole = BaseConfig();
+    invalidRole.Set("role", std::string{"server"});
+    EXPECT_FALSE(DramConfig::Parse(invalidRole));
+
+    auto overflow = BaseConfig();
+    overflow.Set("role", std::string{"worker"});
+    overflow.Set("local_control_endpoint", std::string{"127.0.0.1:65535"});
+    EXPECT_FALSE(DramConfig::Parse(overflow));
 }
 
 }  // namespace

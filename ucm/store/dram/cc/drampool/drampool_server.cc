@@ -510,7 +510,7 @@ void DramPoolServer::RequestReceiveLoop()
         task->peer_one_sided_id = peerIt->second;
         UC_DEBUG("RequestReceiver received request, request_id={}, opcode={}, control={}, peer={}",
                  task->request->request_id, static_cast<int>(task->request->opcode), controlPeerId,
-                 peerIt->second);
+                 task->peer_one_sided_id);
         // This bounded handoff keeps transport I/O separate from potentially slow request handling.
         bool queueFullLogged = false;
         while (!requestReceiverStop_.load(std::memory_order_acquire)) {

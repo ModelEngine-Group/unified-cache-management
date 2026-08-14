@@ -177,6 +177,22 @@ Expected<DramConfig> DramConfig::Parse(const Detail::Dictionary& dictionary)
             }
         }
 
+        std::string managerHost;
+        std::uint16_t managerPort = 0;
+        status = ParseControlEndpoint(result.localTransportManagerId, "local_transport_manager_id",
+                                      &managerHost, &managerPort);
+        if (status.Failure()) { return status; }
+        if (result.role == Role::WORKER) {
+            const auto offset = static_cast<std::uint32_t>(result.deviceId) + 1;
+            if (result.localControlPort > std::numeric_limits<std::uint16_t>::max() - offset ||
+                managerPort > std::numeric_limits<std::uint16_t>::max() - offset) {
+                return Status::InvalidParam("worker transport port is out of range");
+            }
+            result.localControlPort += static_cast<std::uint16_t>(offset);
+            managerPort += static_cast<std::uint16_t>(offset);
+        }
+        result.localTransportManagerId = fmt::format("{}:{}", managerHost, managerPort);
+
         std::vector<std::string> controlEndpoints;
         std::vector<std::string> transportManagerIds;
         if (!dictionary.Contains("node_control_endpoints") ||
