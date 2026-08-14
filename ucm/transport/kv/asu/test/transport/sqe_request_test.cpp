@@ -115,8 +115,7 @@ void CreateTaskExecutor(AsuTransportImpl& transport)
     transport.taskExecutor_ = std::make_unique<TransportTaskExecutor>(
         transport.config_, transport.ioScheduler_, transport.transProvider_,
         transport.sendBufferManager_, transport.flagBufferManager_, transport.protocolManager_,
-        transport.connManager_, transport.nextRequestCid_, transport.registeredRegionsMu_,
-        transport.registeredRegions_);
+        transport.connManager_, transport.nextRequestCid_);
 }
 
 constexpr std::size_t kFlagBufferHeaderSize = 16;
@@ -150,16 +149,15 @@ std::vector<KVBuffer> MakeEntries(std::size_t count)
     return entries;
 }
 
-void BindEntries(AsuTransportImpl& transport, const std::vector<KVBuffer>& entries,
-                 std::uint32_t tokenBase)
+RegisteredMrKeyMap MakeRegisteredMrKeys(const std::vector<KVBuffer>& entries,
+                                        std::uint32_t tokenBase)
 {
+    RegisteredMrKeyMap registeredMrKeys;
     for (std::size_t index = 0; index < entries.size(); ++index) {
-        RegisteredMemory memory;
-        memory.region = entries[index].buffer.region;
-        memory.handle = entries[index].buffer.handle;
-        memory.tokenId = tokenBase + static_cast<std::uint32_t>(index);
-        transport.registeredRegions_[memory.handle] = memory;
+        registeredMrKeys.emplace(entries[index].buffer.handle,
+                                 tokenBase + static_cast<std::uint32_t>(index));
     }
+    return registeredMrKeys;
 }
 
 std::uint32_t PackedBatchEntryMrKey(const std::uint32_t* sqe, std::size_t entryIndex)
@@ -238,10 +236,10 @@ TEST_F(SqeRequestTest, SubmitBatchStoreAllocatesFlagBufferAndBuildsRequest)
     };
     TransportSubBatchContext subBatchContext;
     transport_->nextRequestCid_.store(41, std::memory_order_relaxed);
-    BindEntries(*transport_, entries, 0xABCD0000);
+    const auto registeredMrKeys = MakeRegisteredMrKeys(entries, 0xABCD0000);
 
     const auto status = transport_->taskExecutor_->SubmitEntrySubBatchRequest(
-        TransportOpType::BATCH_STORE, subBatch, subBatchContext);
+        TransportOpType::BATCH_STORE, subBatch, registeredMrKeys, subBatchContext);
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(subBatchContext.flagBuffer.length, kFlagBufferHeaderSize + (entries.size() + 1) / 2);
@@ -289,14 +287,14 @@ TEST_F(SqeRequestTest, SubmitBatchStorePacksSqeIntoDeviceSendBuffer)
     CreateTaskExecutor(deviceTransport);
 
     auto entries = MakeEntries(3);
-    BindEntries(deviceTransport, entries, 0x12340000);
+    const auto registeredMrKeys = MakeRegisteredMrKeys(entries, 0x12340000);
     IoScheduler::ScheduledIoBatch subBatch{
         BatchView<KVBuffer>{entries.data(), entries.size()}
     };
     TransportSubBatchContext subBatchContext;
 
     const auto status = deviceTransport.taskExecutor_->SubmitEntrySubBatchRequest(
-        TransportOpType::BATCH_STORE, subBatch, subBatchContext);
+        TransportOpType::BATCH_STORE, subBatch, registeredMrKeys, subBatchContext);
 
     ASSERT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(subBatchContext.sendSge.memory_type, MemoryType::ASCEND_DEVICE);
@@ -320,10 +318,10 @@ TEST_F(SqeRequestTest, SubmitBatchRetrieveUsesRetrieveOpcodeAndRequest)
     };
     TransportSubBatchContext subBatchContext;
     transport_->nextRequestCid_.store(9, std::memory_order_relaxed);
-    BindEntries(*transport_, entries, 0x76540000);
+    const auto registeredMrKeys = MakeRegisteredMrKeys(entries, 0x76540000);
 
     const auto status = transport_->taskExecutor_->SubmitEntrySubBatchRequest(
-        TransportOpType::BATCH_LOAD, subBatch, subBatchContext);
+        TransportOpType::BATCH_LOAD, subBatch, registeredMrKeys, subBatchContext);
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(subBatchContext.opType, TransportOpType::BATCH_LOAD);
@@ -345,9 +343,10 @@ TEST_F(SqeRequestTest, SubmitBatchStoreRejectsUnregisteredEntryBuffer)
         BatchView<KVBuffer>{entries.data(), entries.size()}
     };
     TransportSubBatchContext subBatchContext;
+    const RegisteredMrKeyMap registeredMrKeys;
 
     const auto status = transport_->taskExecutor_->SubmitEntrySubBatchRequest(
-        TransportOpType::BATCH_STORE, subBatch, subBatchContext);
+        TransportOpType::BATCH_STORE, subBatch, registeredMrKeys, subBatchContext);
 
     EXPECT_EQ(status.code, StatusCode::BUFFER_NOT_REGISTERED);
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::COMPLETED);
@@ -443,10 +442,10 @@ TEST_F(SqeRequestTest, AllocationFailureMarksWholeSubBatchFailed)
                     .ok());
     uninitializedFlagTransport.protocolManager_ = std::make_unique<ProtocolManager>();
     CreateTaskExecutor(uninitializedFlagTransport);
-    BindEntries(uninitializedFlagTransport, entries, 0x45670000);
+    const auto registeredMrKeys = MakeRegisteredMrKeys(entries, 0x45670000);
 
     const auto status = uninitializedFlagTransport.taskExecutor_->SubmitEntrySubBatchRequest(
-        TransportOpType::BATCH_STORE, subBatch, subBatchContext);
+        TransportOpType::BATCH_STORE, subBatch, registeredMrKeys, subBatchContext);
 
     EXPECT_EQ(status.code, StatusCode::NOT_INITIALIZED);
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::COMPLETED);

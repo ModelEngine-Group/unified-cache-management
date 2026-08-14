@@ -129,8 +129,7 @@ void CreateTaskExecutor(AsuTransportImpl& transport)
     transport.taskExecutor_ = std::make_unique<TransportTaskExecutor>(
         transport.config_, transport.ioScheduler_, transport.transProvider_,
         transport.sendBufferManager_, transport.flagBufferManager_, transport.protocolManager_,
-        transport.connManager_, transport.nextRequestCid_, transport.registeredRegionsMu_,
-        transport.registeredRegions_);
+        transport.connManager_, transport.nextRequestCid_);
 }
 
 class AsuSubmitFlowBufferTest : public ::testing::Test {

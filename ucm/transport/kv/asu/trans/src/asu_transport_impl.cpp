@@ -170,7 +170,7 @@ Status AsuTransportImpl::Init(const TransportConfig& config,
     protocolManager_ = std::make_unique<ProtocolManager>();
     taskExecutor_ = std::make_unique<TransportTaskExecutor>(
         config_, ioScheduler_, transProvider_, sendBufferManager_, flagBufferManager_,
-        protocolManager_, connManager_, nextRequestCid_, registeredRegionsMu_, registeredRegions_);
+        protocolManager_, connManager_, nextRequestCid_);
     auto queueDepth = std::max<std::size_t>(2, static_cast<std::size_t>(config_.maxInflightTasks));
     executeQueue_.Setup(queueDepth + 1);
     stopWorker_.store(false, std::memory_order_release);
@@ -219,10 +219,6 @@ Status AsuTransportImpl::Shutdown()
         if (ctx != nullptr) { (void)taskManager_.Remove(ctx->taskId); }
     }
     taskExecutor_.reset();
-    {
-        std::lock_guard<std::mutex> lock(registeredRegionsMu_);
-        registeredRegions_.clear();
-    }
     flagBufferManager_.Shutdown();
     sendBufferManager_.Shutdown();
 
@@ -261,20 +257,6 @@ Status AsuTransportImpl::Cancel(TaskId taskId)
     const auto canceledStatus = Status::Error(StatusCode::CANCELED, "transport task canceled");
     if (!taskExecutor_->Cancel(ctx, canceledStatus)) { return Status::OK(); }
     taskManager_.NotifyCompletion(ctx);
-    return Status::OK();
-}
-
-Status AsuTransportImpl::AddRegisteredRegions(const std::vector<RegisteredMemory>& regions)
-{
-    std::lock_guard<std::mutex> lock(registeredRegionsMu_);
-    for (const auto& region : regions) { registeredRegions_[region.handle] = region; }
-    return Status::OK();
-}
-
-Status AsuTransportImpl::RemoveRegisteredRegions(const std::vector<MRHandle>& handles)
-{
-    std::lock_guard<std::mutex> lock(registeredRegionsMu_);
-    for (auto handle : handles) { registeredRegions_.erase(handle); }
     return Status::OK();
 }
 

@@ -29,7 +29,6 @@
 #include <mutex>
 #include <string>
 #include <thread>
-#include <unordered_map>
 #include <vector>
 #include "asu_transport/asu_transport.h"
 #include "asu_transport/trans_provider.h"
@@ -60,9 +59,6 @@ public:
 
     Status Cancel(TaskId taskId) override;
 
-    Status AddRegisteredRegions(const std::vector<RegisteredMemory>& regions) override;
-    Status RemoveRegisteredRegions(const std::vector<MRHandle>& handles) override;
-
 private:
     Status SubmitTask(const TransportTaskPtr& task);
     void WorkerLoop();
@@ -79,9 +75,6 @@ private:
 
     std::unique_ptr<ConnectionManager> connManager_;
     std::atomic<std::uint16_t> nextRequestCid_{1};
-
-    std::mutex registeredRegionsMu_;
-    std::unordered_map<MRHandle, RegisteredMemory> registeredRegions_;
 
     std::unique_ptr<TransportTaskExecutor> taskExecutor_;
     TransportTaskManager taskManager_;

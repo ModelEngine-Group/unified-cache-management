@@ -117,12 +117,6 @@ public:
 
     Status Cancel(TaskId) override { return Status::OK(); }
 
-    Status AddRegisteredRegions(const std::vector<RegisteredMemory>&) override
-    {
-        return Status::OK();
-    }
-    Status RemoveRegisteredRegions(const std::vector<MRHandle>&) override { return Status::OK(); }
-
 private:
     TransportConfig config_;
     bool initialized_{false};

@@ -27,8 +27,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <mutex>
-#include <unordered_map>
 #include <vector>
 #include "asu_transport/trans_provider.h"
 #include "buffer_manager.h"
@@ -62,9 +60,7 @@ public:
                           BufferManager& sendBufferManager, BufferManager& flagBufferManager,
                           const std::unique_ptr<ProtocolManager>& protocolManager,
                           const std::unique_ptr<ConnectionManager>& connectionManager,
-                          std::atomic<std::uint16_t>& nextRequestCid,
-                          std::mutex& registeredRegionsMu,
-                          const std::unordered_map<MRHandle, RegisteredMemory>& registeredRegions);
+                          std::atomic<std::uint16_t>& nextRequestCid);
 
     bool Execute(const TransportTaskPtr& task);
     bool Poll(const TransportTaskPtr& task);
@@ -77,6 +73,7 @@ private:
                               std::vector<TransportSubBatchContext>& subBatchContexts);
     Status SubmitEntrySubBatchRequest(TransportOpType opType,
                                       const IoScheduler::ScheduledIoBatch& subBatch,
+                                      const RegisteredMrKeyMap& registeredMrKeys,
                                       TransportSubBatchContext& subBatchContext);
     Status SubmitKeySubBatchRequest(TransportOpType opType,
                                     const IoScheduler::ScheduledKeyBatch& subBatch,
@@ -104,8 +101,6 @@ private:
     const std::unique_ptr<ProtocolManager>& protocolManager_;
     const std::unique_ptr<ConnectionManager>& connManager_;
     std::atomic<std::uint16_t>& nextRequestCid_;
-    std::mutex& registeredRegionsMu_;
-    const std::unordered_map<MRHandle, RegisteredMemory>& registeredRegions_;
 };
 
 }  // namespace UC::ASU

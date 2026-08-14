@@ -498,12 +498,6 @@ public:
 
     Status Cancel(TaskId) override { return Status::Error(StatusCode::UNSUPPORTED, "unsupported"); }
 
-    Status AddRegisteredRegions(const std::vector<RegisteredMemory>&) override
-    {
-        return Status::OK();
-    }
-    Status RemoveRegisteredRegions(const std::vector<MRHandle>&) override { return Status::OK(); }
-
 private:
     Status CheckReadyLocked() const
     {

@@ -36,11 +36,6 @@ namespace UC::ASU {
 
 constexpr std::uint32_t kMaxShutdownDrainAttempts = 64;
 
-Status PartialFailed(const std::string& message)
-{
-    return Status::Error(StatusCode::PARTIAL_FAILED, message);
-}
-
 AsuClientImpl::AsuClientImpl(TransportFactory transportFactory, ViewServerFactory viewServerFactory,
                              TransProviderFactory transProviderFactory)
     : transportFactory_(std::move(transportFactory)),
@@ -142,7 +137,6 @@ Status AsuClientImpl::Shutdown()
     std::shared_ptr<ViewSnapshot> snapshot;
     std::vector<std::shared_ptr<AsuTransport>> retiredTransports;
     std::vector<ProviderMemoryState> providerMemoryStates;
-    std::shared_ptr<TransProvider> memoryProvider;
     {
         std::lock_guard<std::mutex> lock{mutex_};
         snapshot = std::move(snapshot_);
@@ -154,7 +148,7 @@ Status AsuClientImpl::Shutdown()
     {
         std::lock_guard<std::mutex> lock{memoryMu_};
         providerMemoryStates = std::move(providerMemoryStates_);
-        memoryProvider = std::move(memoryProvider_);
+        memoryProvider_.reset();
         registeredRegions_.clear();
     }
 
@@ -178,13 +172,8 @@ Status AsuClientImpl::Shutdown()
         if (!status.ok() && finalStatus.ok()) { finalStatus = status; }
     };
     for (auto iter = providerMemoryStates.rbegin(); iter != providerMemoryStates.rend(); ++iter) {
-        if (iter->provider != memoryProvider) { unregisterState(*iter); }
+        unregisterState(*iter);
     }
-    auto ownerIter = std::find_if(providerMemoryStates.begin(), providerMemoryStates.end(),
-                                  [&memoryProvider](const ProviderMemoryState& state) {
-                                      return state.provider == memoryProvider;
-                                  });
-    if (ownerIter != providerMemoryStates.end()) { unregisterState(*ownerIter); }
     return finalStatus;
 }
 
@@ -307,76 +296,27 @@ Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regio
 
         for (std::size_t rollback = index; rollback > 0; --rollback) {
             const auto stateIndex = rollback - 1;
-            if (providerMemoryStates_[stateIndex].provider == memoryProvider_ ||
-                providerHandles[stateIndex].empty()) {
-                continue;
-            }
+            if (providerHandles[stateIndex].empty()) { continue; }
             (void)UnregisterProviderRegions(providerMemoryStates_[stateIndex].provider,
                                             providerHandles[stateIndex]);
         }
-        (void)UnregisterProviderRegions(memoryProvider_, mrHandles);
         registeredRegions.clear();
         return WithContext(Status::Error(StatusCode::PARTIAL_FAILED,
                                          "one or more providers failed to bind memory"),
                            "providerIndex=" + std::to_string(index) + " message=" + status.message);
     }
 
-    Status finalStatus = Status::OK();
-    std::vector<std::shared_ptr<AsuTransport>> updatedTransports;
-    for (std::size_t asuIndex = 0; asuIndex < snapshot->asuIds.size(); ++asuIndex) {
-        auto iter = snapshot->transports.find(snapshot->asuIds[asuIndex]);
-        if (iter == snapshot->transports.end()) {
-            auto status = Status::Error(StatusCode::NOT_FOUND, "bound asu transport not found");
-            needRefresh |= IsRefreshNeeded(status);
-            finalStatus = WithContext(PartialFailed("one or more asu region bindings failed"),
-                                      "asuIndex=" + std::to_string(asuIndex) +
-                                          " asuId=" + std::to_string(snapshot->asuIds[asuIndex]));
-            continue;
-        }
-
-        updatedTransports.emplace_back(iter->second);
-        status = iter->second->AddRegisteredRegions(registeredRegions);
-        if (!status.ok() && finalStatus.ok()) {
-            needRefresh |= IsRefreshNeeded(status);
-            finalStatus =
-                WithContext(PartialFailed("one or more asu region bindings failed"),
-                            "asuIndex=" + std::to_string(asuIndex) +
-                                " asuId=" + std::to_string(snapshot->asuIds[asuIndex]) +
-                                " region_count=" + std::to_string(registeredRegions.size()));
+    for (std::size_t providerIndex = 0; providerIndex < providerMemoryStates_.size();
+         ++providerIndex) {
+        auto& handleMap = providerMemoryStates_[providerIndex].regionHandles;
+        for (std::size_t regionIndex = 0; regionIndex < registeredRegions.size(); ++regionIndex) {
+            handleMap.emplace(registeredRegions[regionIndex].handle,
+                              providerHandles[providerIndex][regionIndex]);
         }
     }
-
-    if (finalStatus.ok()) {
-        for (std::size_t providerIndex = 0; providerIndex < providerMemoryStates_.size();
-             ++providerIndex) {
-            auto& handleMap = providerMemoryStates_[providerIndex].regionHandles;
-            for (std::size_t regionIndex = 0; regionIndex < registeredRegions.size();
-                 ++regionIndex) {
-                handleMap.emplace(registeredRegions[regionIndex].handle,
-                                  providerHandles[providerIndex][regionIndex]);
-            }
-        }
-        registeredRegions_.insert(registeredRegions_.end(), registeredRegions.begin(),
-                                  registeredRegions.end());
-    } else {
-        for (const auto& updatedTransport : updatedTransports) {
-            const auto cleanupStatus = updatedTransport->RemoveRegisteredRegions(mrHandles);
-            if (!cleanupStatus.ok()) {
-                finalStatus = WithContext(std::move(finalStatus),
-                                          "transport memory metadata cleanup was incomplete");
-            }
-        }
-        for (std::size_t index = providerMemoryStates_.size() - 1; index >= 0; --index) {
-            const auto cleanupStatus = UnregisterProviderRegions(
-                providerMemoryStates_[index].provider, providerHandles[index]);
-            if (!cleanupStatus.ok()) {
-                finalStatus =
-                    WithContext(std::move(finalStatus), "business memory cleanup was incomplete");
-            }
-        }
-        registeredRegions.clear();
-    }
-    return finalStatus;
+    registeredRegions_.insert(registeredRegions_.end(), registeredRegions.begin(),
+                              registeredRegions.end());
+    return Status::OK();
 }
 
 Status AsuClientImpl::SubmitAsync(ClientOpType opType, const std::vector<KVBuffer>& entries,
@@ -398,6 +338,20 @@ Status AsuClientImpl::SubmitAsync(ClientOpType opType, const std::vector<KVBuffe
     ctx->opType = opType;
     ctx->viewSnapshot = snapshot;
     ctx->entries = entries;
+    auto registeredMrKeys = std::make_shared<RegisteredMrKeyMap>();
+    {
+        std::lock_guard<std::mutex> memoryLock{memoryMu_};
+        for (const auto& entry : entries) {
+            auto iter = std::find_if(registeredRegions_.begin(), registeredRegions_.end(),
+                                     [&entry](const RegisteredMemory& region) {
+                                         return region.handle == entry.buffer.handle;
+                                     });
+            if (iter != registeredRegions_.end()) {
+                registeredMrKeys->emplace(iter->handle, iter->tokenId);
+            }
+        }
+    }
+    ctx->registeredMrKeys = std::move(registeredMrKeys);
     ctx->entryStatus.assign(entries.size(), Status::OK());
 
     auto status = taskManager_.Submit(std::move(ctx), taskId);
@@ -487,9 +441,6 @@ void AsuClientImpl::WorkerLoop()
 
 Status AsuClientImpl::UnregisterRegions(const std::vector<MRHandle>& handles)
 {
-    auto snapshot = GetSnapshot();
-    if (!snapshot) { return NotInitialized(); }
-
     std::lock_guard<std::mutex> memoryLock{memoryMu_};
     std::vector<MRHandle> canonicalHandles;
     canonicalHandles.reserve(handles.size());
@@ -523,12 +474,8 @@ Status AsuClientImpl::UnregisterRegions(const std::vector<MRHandle>& handles)
     };
 
     for (auto iter = providerMemoryStates_.rbegin(); iter != providerMemoryStates_.rend(); ++iter) {
-        if (iter->provider != memoryProvider_) { unregisterState(*iter); }
+        unregisterState(*iter);
     }
-    auto ownerIter =
-        std::find_if(providerMemoryStates_.begin(), providerMemoryStates_.end(),
-                     [this](const auto& state) { return state.provider == memoryProvider_; });
-    if (ownerIter != providerMemoryStates_.end()) { unregisterState(*ownerIter); }
 
     std::vector<MRHandle> removedHandles;
     for (auto canonicalHandle : canonicalHandles) {
@@ -547,31 +494,6 @@ Status AsuClientImpl::UnregisterRegions(const std::vector<MRHandle>& handles)
                        }),
         registeredRegions_.end());
 
-    if (!removedHandles.empty()) {
-        for (auto asuId : snapshot->asuIds) {
-            auto iter = snapshot->transports.find(asuId);
-            if (iter == snapshot->transports.end()) { continue; }
-            auto status = iter->second->RemoveRegisteredRegions(removedHandles);
-            if (status.ok()) { continue; }
-            if (finalStatus.ok()) {
-                finalStatus = WithContext(std::move(status), "asuId=" + std::to_string(asuId));
-            }
-        }
-
-        std::vector<std::shared_ptr<AsuTransport>> retiredTransports;
-        {
-            std::lock_guard<std::mutex> lock{mutex_};
-            retiredTransports = retiredTransports_;
-        }
-        for (std::size_t index = 0; index < retiredTransports.size(); ++index) {
-            auto status = retiredTransports[index]->RemoveRegisteredRegions(removedHandles);
-            if (status.ok()) { continue; }
-            if (finalStatus.ok()) {
-                finalStatus = WithContext(std::move(status),
-                                          "retiredTransportIndex=" + std::to_string(index));
-            }
-        }
-    }
     if (!finalStatus.ok()) {
         return WithContext(finalStatus, "handle_count=" + std::to_string(canonicalHandles.size()));
     }
@@ -665,9 +587,13 @@ Status AsuClientImpl::BuildTransport(AsuId asuId, const AsuInfo& asuInfo,
     if (!status.ok()) {
         return WithContext(status, "init transport failed, asuId=" + std::to_string(asuId));
     }
+    if (!createdProvider) {
+        transport = std::shared_ptr<AsuTransport>(std::move(nextTransport));
+        return Status::OK();
+    }
 
     std::vector<MRHandle> localHandles;
-    if (createdProvider && !registeredRegions_.empty()) {
+    if (!registeredRegions_.empty()) {
         status = BindProviderRegions(transProvider, registeredRegions_, localHandles);
         if (!status.ok()) {
             (void)nextTransport->Shutdown();
@@ -675,25 +601,12 @@ Status AsuClientImpl::BuildTransport(AsuId asuId, const AsuInfo& asuInfo,
                                "bind provider memory failed, asuId=" + std::to_string(asuId));
         }
     }
-    if (!registeredRegions_.empty()) {
-        status = nextTransport->AddRegisteredRegions(registeredRegions_);
-        if (!status.ok()) {
-            (void)UnregisterProviderRegions(transProvider, localHandles);
-            (void)nextTransport->Shutdown();
-            return WithContext(status,
-                               "bind transport memory failed, asuId=" + std::to_string(asuId));
-        }
+    ProviderMemoryState providerState;
+    providerState.provider = transProvider;
+    for (std::size_t index = 0; index < registeredRegions_.size(); ++index) {
+        providerState.regionHandles.emplace(registeredRegions_[index].handle, localHandles[index]);
     }
-
-    if (createdProvider) {
-        ProviderMemoryState providerState;
-        providerState.provider = transProvider;
-        for (std::size_t index = 0; index < registeredRegions_.size(); ++index) {
-            providerState.regionHandles.emplace(registeredRegions_[index].handle,
-                                                localHandles[index]);
-        }
-        providerMemoryStates_.emplace_back(std::move(providerState));
-    }
+    providerMemoryStates_.emplace_back(std::move(providerState));
     transport = std::shared_ptr<AsuTransport>(std::move(nextTransport));
     return Status::OK();
 }

@@ -65,6 +65,8 @@ public:
 
     virtual Status RegisterRegions(const std::vector<MemoryRegion>& regions,
                                    std::vector<RegisteredMemory>& registeredRegions) = 0;
+    // Handles referenced by queued or in-flight tasks must remain registered until those tasks
+    // complete.
     virtual Status UnregisterRegions(const std::vector<MRHandle>& handles) = 0;
 };
 
