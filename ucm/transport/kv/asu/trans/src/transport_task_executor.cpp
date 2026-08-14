@@ -57,11 +57,10 @@ Status CopyDeviceToHost(const ScatterGatherEntry& sge, void* host, std::size_t s
 
 TransportTaskExecutor::TransportTaskExecutor(
     const TransportConfig& config, IoScheduler& ioScheduler,
-    const std::unique_ptr<TransProvider>& transProvider, BufferManager& sendBufferManager,
+    const std::shared_ptr<TransProvider>& transProvider, BufferManager& sendBufferManager,
     BufferManager& flagBufferManager, const std::unique_ptr<ProtocolManager>& protocolManager,
     const std::unique_ptr<ConnectionManager>& connectionManager,
-    std::atomic<std::uint16_t>& nextRequestCid, std::mutex& registeredRegionsMu,
-    const std::unordered_map<MRHandle, RegisteredMemory>& registeredRegions)
+    std::atomic<std::uint16_t>& nextRequestCid)
     : config_(config),
       ioScheduler_(ioScheduler),
       transProvider_(transProvider),
@@ -69,9 +68,7 @@ TransportTaskExecutor::TransportTaskExecutor(
       flagBufferManager_(flagBufferManager),
       protocolManager_(protocolManager),
       connManager_(connectionManager),
-      nextRequestCid_(nextRequestCid),
-      registeredRegionsMu_(registeredRegionsMu),
-      registeredRegions_(registeredRegions)
+      nextRequestCid_(nextRequestCid)
 {
 }
 

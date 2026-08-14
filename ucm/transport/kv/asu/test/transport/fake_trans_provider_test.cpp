@@ -25,5 +25,22 @@ TEST(FakeTransProviderTest, RegisterMemoryReturnsUniqueHandlesAcrossCalls)
     EXPECT_EQ(uniqueHandles.count(kInvalidMRHandle), 0);
 }
 
+TEST(FakeTransProviderTest, BindMemoryCreatesProviderLocalHandles)
+{
+    FakeTransProvider provider(FakeTransProviderConfig{});
+    const std::vector<TransProvider::BindMemoryDesc> descs{
+        {TransProvider::MemType::MEM_DEVICE, 0x1000, 4096, 1},
+        {TransProvider::MemType::MEM_DEVICE, 0x2000, 4096, 1}
+    };
+
+    std::vector<MRHandle> handles;
+    ASSERT_TRUE(provider.BindMemory(descs, handles).ok());
+
+    ASSERT_EQ(handles.size(), descs.size());
+    EXPECT_NE(handles[0], kInvalidMRHandle);
+    EXPECT_NE(handles[1], kInvalidMRHandle);
+    EXPECT_NE(handles[0], handles[1]);
+}
+
 }  // namespace
 }  // namespace UC::ASU

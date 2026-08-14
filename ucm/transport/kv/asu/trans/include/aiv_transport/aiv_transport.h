@@ -66,6 +66,16 @@ public:
     virtual Status RegisterMemory(const std::vector<RegisterMemoryDesc>& memoryDescs,
                                   std::vector<MRHandle>& mrHandles) = 0;
 
+    struct BindMemoryDesc {
+        MemType memoryType;
+        uintptr_t addr;
+        size_t size;
+        uint32_t tokenId;
+    };
+
+    virtual Status BindMemory(const std::vector<BindMemoryDesc>& memoryDescs,
+                              std::vector<MRHandle>& mrHandles) = 0;
+
     struct UnregisterMemoryDesc {
         MRHandle mrHandle;
     };

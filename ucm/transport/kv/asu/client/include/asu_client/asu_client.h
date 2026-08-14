@@ -32,6 +32,8 @@
 
 namespace UC::ASU {
 
+enum class SharedProviderMode : std::uint8_t { INDEPENDENT = 0, SHARED = 1 };
+
 struct AsuClientConfig {
     std::string clientId;
     std::vector<std::string> viewServiceAddrs;
@@ -40,6 +42,7 @@ struct AsuClientConfig {
 
     std::uint64_t defaultWaitTimeoutMs{100};
     std::uint64_t timeoutMs{100};
+    SharedProviderMode sharedProviderMode{SharedProviderMode::INDEPENDENT};
     std::unordered_map<std::string, std::string> attrs;
 };
 
@@ -62,11 +65,17 @@ public:
 
     virtual Status RegisterRegions(const std::vector<MemoryRegion>& regions,
                                    std::vector<RegisteredMemory>& registeredRegions) = 0;
+    // Handles referenced by queued or in-flight tasks must remain registered until those tasks
+    // complete.
     virtual Status UnregisterRegions(const std::vector<MRHandle>& handles) = 0;
 };
 
 using TransportFactory = std::function<std::unique_ptr<AsuTransport>()>;
+using TransProviderFactory =
+    std::function<Status(const TransportConfig&, std::shared_ptr<TransProvider>&)>;
 
-std::unique_ptr<AsuClient> CreateAsuClient(TransportFactory factory = CreateAsuTransport);
+std::unique_ptr<AsuClient> CreateAsuClient(
+    TransportFactory transportFactory = CreateAsuTransport,
+    TransProviderFactory transProviderFactory = CreateTransProvider);
 
 }  // namespace UC::ASU

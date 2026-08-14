@@ -38,7 +38,9 @@ MRHandle MakeTestMrHandle(std::uintptr_t value) { return static_cast<MRHandle>(v
 
 struct TestState {
     std::uint32_t createdTransports{0};
+    std::uint32_t createdProviders{0};
     std::unordered_map<AsuId, TransportConfig> initConfigs;
+    std::unordered_map<AsuId, TransProvider*> initProviders;
     bool failFirstQuery{false};
     bool firstQueryFailed{false};
     StatusCode firstQueryFailureCode{StatusCode::CONNECTION_ERROR};
@@ -66,9 +68,14 @@ struct TestState {
     std::unordered_map<AsuId, std::vector<Status>> checkEntryStatus;
     std::unordered_map<AsuId, Status> checkResultStatus;
     std::vector<AsuId> registerCalls;
-    std::vector<AsuId> bindCalls;
-    std::unordered_map<AsuId, std::vector<RegisteredMemory>> boundRegions;
+    std::vector<AsuId> providerBindCalls;
+    RegisteredMrKeyMap submittedMrKeys;
     std::vector<AsuId> unregisterCalls;
+    bool failRegister{false};
+    bool failProviderBind{false};
+    bool returnPartialRegister{false};
+    bool mismatchRegisterResultCount{false};
+    bool failUnregister{false};
     std::vector<AsuId> queryCalls;
     std::unordered_map<AsuId, std::size_t> queryKeyCounts;
     std::unordered_map<AsuId, std::vector<CacheKey>> queryKeys;
@@ -81,21 +88,119 @@ struct TestState {
     std::size_t completionCallbackCount{0};
 };
 
+namespace {
+
+class ClientTestTransProvider final : public TransProvider {
+public:
+    ClientTestTransProvider(AsuId asuId, std::shared_ptr<TestState> state)
+        : asuId_(asuId), state_(std::move(state))
+    {
+    }
+
+    Status CreateConnection(const std::string&, const std::string&, uint32_t, uint32_t, uint32_t,
+                            std::vector<ConnectionHandle>&) override
+    {
+        return Status::OK();
+    }
+
+    std::vector<Status> DeleteConnections(const std::vector<ConnectionHandle>& handles) override
+    {
+        return std::vector<Status>(handles.size(), Status::OK());
+    }
+
+    std::vector<Status> Send(const std::vector<SendIoBatch>& ioBatches, uint32_t, uint32_t) override
+    {
+        return std::vector<Status>(ioBatches.size(), Status::OK());
+    }
+
+    Status RegisterMemory(const std::vector<RegisterMemoryDesc>& memoryDescs,
+                          std::vector<MRHandle>& mrHandles) override
+    {
+        state_->registerCalls.emplace_back(asuId_);
+        mrHandles.clear();
+        if (state_->failRegister) {
+            return Status::Error(StatusCode::BUFFER_NOT_REGISTERED, "fake register failure");
+        }
+        if (state_->returnPartialRegister) {
+            if (!memoryDescs.empty()) { mrHandles.emplace_back(MakeTestMrHandle(500)); }
+            return Status::Error(StatusCode::PARTIAL_FAILED,
+                                 "one or more memory regions failed to register");
+        }
+        auto resultCount = memoryDescs.size();
+        if (state_->mismatchRegisterResultCount && resultCount > 0) { --resultCount; }
+        for (std::size_t index = 0; index < resultCount; ++index) {
+            mrHandles.emplace_back(MakeTestMrHandle(500 + index));
+        }
+        return Status::OK();
+    }
+
+    Status BindMemory(const std::vector<BindMemoryDesc>& memoryDescs,
+                      std::vector<MRHandle>& mrHandles) override
+    {
+        state_->providerBindCalls.emplace_back(asuId_);
+        mrHandles.clear();
+        if (state_->failProviderBind) {
+            return Status::Error(StatusCode::BUFFER_NOT_REGISTERED, "fake provider bind failure");
+        }
+        for (std::size_t index = 0; index < memoryDescs.size(); ++index) {
+            mrHandles.emplace_back(MakeTestMrHandle(500 + index));
+        }
+        return Status::OK();
+    }
+
+    std::vector<Status> UnregisterMemory(
+        const std::vector<UnregisterMemoryDesc>& memoryDescs) override
+    {
+        state_->unregisterCalls.emplace_back(asuId_);
+        const auto status = state_->failUnregister
+                                ? Status::Error(StatusCode::IO_ERROR, "fake unregister failure")
+                                : Status::OK();
+        return std::vector<Status>(memoryDescs.size(), status);
+    }
+
+    Status AllocThread(uint32_t, const std::vector<uint32_t>&, std::vector<ThreadHandle>&) override
+    {
+        return Status::OK();
+    }
+
+    std::vector<Status> FreeThread(const std::vector<ThreadHandle>& threads) override
+    {
+        return std::vector<Status>(threads.size(), Status::OK());
+    }
+
+    Status GetMemTokenId(MRHandle mrHandle, uint32_t& tokenId) override
+    {
+        tokenId = 900 + static_cast<std::uint32_t>(mrHandle - MakeTestMrHandle(500));
+        return Status::OK();
+    }
+
+private:
+    AsuId asuId_;
+    std::shared_ptr<TestState> state_;
+};
+
+}  // namespace
+
 class FakeTransport : public AsuTransport {
 public:
     explicit FakeTransport(std::shared_ptr<TestState> state) : state_(std::move(state)) {}
 
-    Status Init(const TransportConfig& config) override
+    Status Init(const TransportConfig& config,
+                std::shared_ptr<TransProvider> transProvider) override
     {
+        (void)transProvider;
         config_ = config;
         state_->initConfigs[config_.asuId] = config_;
+        state_->initProviders[config_.asuId] = transProvider.get();
         initialized_ = true;
         return Status::OK();
     }
 
-    Status Init(const std::string& configPath) override
+    Status Init(const std::string& configPath,
+                std::shared_ptr<TransProvider> transProvider) override
     {
         (void)configPath;
+        (void)transProvider;
         return Status::Error(StatusCode::UNSUPPORTED, "fake transport config path is unsupported");
     }
 
@@ -139,6 +244,9 @@ public:
     {
         if (!task) {
             return Status::Error(StatusCode::INVALID_ARGUMENT, "fake transport task is null");
+        }
+        if (task->registeredMrKeys != nullptr) {
+            state_->submittedMrKeys = *task->registeredMrKeys;
         }
         switch (task->opType) {
             case TransportOpType::QUERY: {
@@ -226,32 +334,6 @@ public:
     Status Cancel(TaskId) override
     {
         state_->cancelCalls.emplace_back(config_.asuId);
-        return Status::OK();
-    }
-
-    Status RegisterRegions(const std::vector<MemoryRegion>& regions,
-                           std::vector<RegisteredMemory>& registeredRegions) override
-    {
-        state_->registerCalls.emplace_back(config_.asuId);
-        registeredRegions.clear();
-        for (std::size_t index = 0; index < regions.size(); ++index) {
-            registeredRegions.emplace_back(
-                RegisteredMemory{regions[index], MakeTestMrHandle(500 + index),
-                                 900 + static_cast<std::uint32_t>(index)});
-        }
-        return Status::OK();
-    }
-
-    Status BindRegisteredRegions(const std::vector<RegisteredMemory>& regions) override
-    {
-        state_->bindCalls.emplace_back(config_.asuId);
-        state_->boundRegions[config_.asuId] = regions;
-        return Status::OK();
-    }
-
-    Status UnregisterRegions(const std::vector<MRHandle>&) override
-    {
-        state_->unregisterCalls.emplace_back(config_.asuId);
         return Status::OK();
     }
 
@@ -396,6 +478,7 @@ AsuClientConfig MakeConfig(const std::vector<AsuId>& asuIds)
     for (auto asuId : asuIds) {
         TransportConfig transportConfig;
         transportConfig.asuId = asuId;
+        transportConfig.providerType = TransProviderType::FAKE;
         config.transportConfigs.emplace_back(std::move(transportConfig));
     }
     return config;
@@ -406,6 +489,15 @@ TransportFactory MakeFactory(const std::shared_ptr<TestState>& state)
     return [state] {
         ++state->createdTransports;
         return std::make_unique<FakeTransport>(state);
+    };
+}
+
+TransProviderFactory MakeProviderFactory(const std::shared_ptr<TestState>& state)
+{
+    return [state](const TransportConfig& config, std::shared_ptr<TransProvider>& transProvider) {
+        ++state->createdProviders;
+        transProvider = std::make_shared<ClientTestTransProvider>(config.asuId, state);
+        return Status::OK();
     };
 }
 
@@ -488,6 +580,72 @@ TEST(AsuClientImplTest, Lifecycle_InitTwiceReturnsResourceBusy)
     auto status = client->Init(config);
 
     EXPECT_EQ(status.code, StatusCode::RESOURCE_BUSY);
+}
+
+TEST(AsuClientImplTest, Provider_IndependentModeCreatesMemoryProviderAndOnePerTransport)
+{
+    auto state = std::make_shared<TestState>();
+    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+
+    ASSERT_TRUE(client->Init(MakeConfig({10, 20, 30})).ok());
+
+    EXPECT_EQ(state->createdProviders, std::uint32_t{4});
+    EXPECT_NE(state->initProviders[10], state->initProviders[20]);
+    EXPECT_NE(state->initProviders[20], state->initProviders[30]);
+}
+
+TEST(AsuClientImplTest, Provider_SharedModeUsesOneProviderForAllTransports)
+{
+    auto state = std::make_shared<TestState>();
+    auto config = MakeConfig({10, 20, 30});
+    config.sharedProviderMode = SharedProviderMode::SHARED;
+    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+
+    ASSERT_TRUE(client->Init(config).ok());
+
+    EXPECT_EQ(state->createdProviders, std::uint32_t{1});
+    EXPECT_EQ(state->initProviders[10], state->initProviders[20]);
+    EXPECT_EQ(state->initProviders[20], state->initProviders[30]);
+}
+
+TEST(AsuClientImplTest, Provider_InvalidSharedModeIsRejected)
+{
+    auto state = std::make_shared<TestState>();
+    auto config = MakeConfig({10});
+    config.sharedProviderMode = static_cast<SharedProviderMode>(2);
+    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+
+    const auto status = client->Init(config);
+
+    EXPECT_EQ(status.code, StatusCode::INVALID_ARGUMENT);
+    EXPECT_EQ(state->createdProviders, std::uint32_t{0});
+    EXPECT_EQ(state->createdTransports, std::uint32_t{0});
+}
+
+TEST(AsuClientImplTest, Provider_SharedModeReusesProviderForAddedTransport)
+{
+    auto state = std::make_shared<TestState>();
+    auto config = MakeConfig({10, 20});
+    config.sharedProviderMode = SharedProviderMode::SHARED;
+    auto viewServer = std::make_shared<FakeViewServer>(
+        std::vector<std::vector<AsuId>>{
+            {10},
+            {10, 20}
+    },
+        std::vector<std::uint64_t>{1, 2});
+    auto client = std::make_unique<AsuClientImpl>(
+        MakeFactory(state), MakeViewServerFactory(viewServer), MakeProviderFactory(state));
+    ASSERT_TRUE(client->Init(config).ok());
+
+    state->failFirstQuery = true;
+    QueryResult result;
+    EXPECT_EQ(QueryAndWait(*client, {MakeCacheKey("k05")}, result).code,
+              StatusCode::PARTIAL_FAILED);
+    ASSERT_TRUE(WaitForFetchCount(viewServer, 2));
+    ASSERT_TRUE(client->Shutdown().ok());
+
+    EXPECT_EQ(state->createdProviders, std::uint32_t{1});
+    EXPECT_EQ(state->initProviders[10], state->initProviders[20]);
 }
 
 TEST(AsuClientImplTest, Lifecycle_ShutdownClearsTasksAndRejectsFutureOperations)
@@ -574,8 +732,7 @@ TEST(AsuClientImplTest, Input_EmptyRegisterReturnsEmptyResults)
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_TRUE(results.empty());
-    EXPECT_EQ(state->registerCalls, std::vector<AsuId>({10}));
-    EXPECT_EQ(state->bindCalls, std::vector<AsuId>({20}));
+    EXPECT_TRUE(state->registerCalls.empty());
 }
 
 TEST(AsuClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
@@ -585,6 +742,7 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
         std::ofstream configFile{kConfigPath};
         ASSERT_TRUE(configFile.is_open());
         configFile << "clientId=file-init-test\n";
+        configFile << "asu_shared_provider=1\n";
         configFile << "transport.asuIds=10,20\n";
         configFile << "transport.send_buffer_slot_size=8192\n";
         configFile << "transport.send_buffer_slot_num=2\n";
@@ -595,18 +753,22 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
         configFile << "transport.delete_io_num=13\n";
         configFile << "transport.query_io_num=14\n";
         configFile << "transport.device_id=6\n";
+        configFile << "transport.provider_type=fake\n";
         configFile << "transport.max_error_count=5\n";
         configFile << "asuInfo.20=protocol=roce,placement=device,port=6000,"
                    << "local.comm_id=192.168.1.20\n";
     }
 
     auto state = std::make_shared<TestState>();
-    std::unique_ptr<AsuClient> client = CreateAsuClient(MakeFactory(state));
+    std::unique_ptr<AsuClient> client =
+        CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
     auto status = client->Init(kConfigPath);
     std::remove(kConfigPath);
 
     ASSERT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
+    EXPECT_EQ(state->createdProviders, std::uint32_t{1});
+    EXPECT_EQ(state->initProviders[10], state->initProviders[20]);
     ASSERT_EQ(state->initConfigs[20].endpoints.size(), std::size_t{1});
     EXPECT_EQ(state->initConfigs[20].endpoints[0].ip, "192.168.1.20");
     EXPECT_EQ(state->initConfigs[20].endpoints[0].protocol, Protocol::ROCE);
@@ -622,6 +784,51 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
         EXPECT_EQ(state->initConfigs[asuId].asuQueryIoNum, std::size_t{14});
         EXPECT_EQ(state->initConfigs[asuId].maxErrorCount, std::uint32_t{5});
     }
+}
+
+TEST(AsuClientImplTest, Lifecycle_PublicInitRejectsInvalidSharedProviderMode)
+{
+    constexpr const char* kConfigPath = "asu_client_impl_invalid_shared_provider_test.conf";
+    {
+        std::ofstream configFile{kConfigPath};
+        ASSERT_TRUE(configFile.is_open());
+        configFile << "asu_shared_provider=2\n";
+        configFile << "transport.asuIds=10,20\n";
+    }
+
+    auto state = std::make_shared<TestState>();
+    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+    const auto status = client->Init(kConfigPath);
+    std::remove(kConfigPath);
+
+    EXPECT_EQ(status.code, StatusCode::INVALID_ARGUMENT);
+    EXPECT_EQ(state->createdProviders, std::uint32_t{0});
+    EXPECT_EQ(state->createdTransports, std::uint32_t{0});
+}
+
+TEST(AsuClientImplTest, Lifecycle_PublicInitIndependentModeBindsMemoryAcrossMultipleAsus)
+{
+    constexpr const char* kConfigPath = "asu_client_impl_multi_asu_bind_test.conf";
+    {
+        std::ofstream configFile{kConfigPath};
+        ASSERT_TRUE(configFile.is_open());
+        configFile << "asu_shared_provider=0\n";
+        configFile << "transport.asuIds=10,20\n";
+    }
+
+    auto state = std::make_shared<TestState>();
+    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+    auto status = client->Init(kConfigPath);
+    std::remove(kConfigPath);
+    ASSERT_TRUE(status.ok()) << status.message;
+
+    std::vector<RegisteredMemory> registeredRegions;
+    status = client->RegisterRegions({MemoryRegion{}}, registeredRegions);
+
+    ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(state->createdProviders, std::uint32_t{3});
+    EXPECT_EQ(state->registerCalls, std::vector<AsuId>({10}));
+    EXPECT_EQ(state->providerBindCalls, std::vector<AsuId>({10, 20}));
 }
 
 TEST(AsuClientImplTest, Routing_UsesRouterConfigFromClientConfigAttrs)
@@ -1055,10 +1262,10 @@ TEST(AsuClientImplTest, SnapshotRefresh_BuildFailureKeepsOldSnapshot)
     EXPECT_EQ(state->queryCalls, std::vector<AsuId>({10}));
 }
 
-TEST(AsuClientImplTest, MemoryRegister_RegisterRegionsRegistersFirstTransportAndBindsFollowers)
+TEST(AsuClientImplTest, MemoryRegister_RegistersOwnerAndBindsAllIndependentProviders)
 {
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10, 20, 30})).ok());
 
     std::vector<RegisteredMemory> results;
@@ -1066,80 +1273,16 @@ TEST(AsuClientImplTest, MemoryRegister_RegisterRegionsRegistersFirstTransportAnd
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(state->registerCalls, std::vector<AsuId>({10}));
-    EXPECT_EQ(state->bindCalls, std::vector<AsuId>({20, 30}));
+    EXPECT_EQ(state->providerBindCalls, std::vector<AsuId>({10, 20, 30}));
     ASSERT_EQ(results.size(), std::size_t{2});
     EXPECT_EQ(results[0].handle, MakeTestMrHandle(500));
     EXPECT_EQ(results[1].handle, MakeTestMrHandle(501));
     EXPECT_EQ(results[0].tokenId, std::uint32_t{900});
     EXPECT_EQ(results[1].tokenId, std::uint32_t{901});
-    ASSERT_EQ(state->boundRegions[20].size(), std::size_t{2});
-    EXPECT_EQ(state->boundRegions[20][0].handle, MakeTestMrHandle(500));
-    EXPECT_EQ(state->boundRegions[20][0].tokenId, std::uint32_t{900});
-    EXPECT_EQ(state->boundRegions[20][1].handle, MakeTestMrHandle(501));
-    EXPECT_EQ(state->boundRegions[20][1].tokenId, std::uint32_t{901});
-    ASSERT_EQ(state->boundRegions[30].size(), std::size_t{2});
-    EXPECT_EQ(state->boundRegions[30][0].tokenId, std::uint32_t{900});
 }
 
-TEST(AsuClientImplTest, MemoryRegister_PartialRegisterFailureDoesNotBindFollowers)
+TEST(AsuClientImplTest, MemoryRegister_NewIndependentProviderBindsRememberedRegions)
 {
-    class PartialRegisterTransport final : public FakeTransport {
-    public:
-        explicit PartialRegisterTransport(std::shared_ptr<TestState> state)
-            : FakeTransport(state), state_(std::move(state))
-        {
-        }
-
-        Status RegisterRegions(const std::vector<MemoryRegion>&,
-                               std::vector<RegisteredMemory>& registeredRegions) override
-        {
-            state_->registerCalls.emplace_back(10);
-            registeredRegions.clear();
-            return Status::Error(StatusCode::PARTIAL_FAILED,
-                                 "one or more memory regions failed to register");
-        }
-
-    private:
-        std::shared_ptr<TestState> state_;
-    };
-
-    auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient([state] {
-        ++state->createdTransports;
-        if (state->createdTransports == 1) {
-            return std::unique_ptr<AsuTransport>(new PartialRegisterTransport(state));
-        }
-        return std::unique_ptr<AsuTransport>(new FakeTransport(state));
-    });
-    ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
-
-    std::vector<RegisteredMemory> results;
-    auto status = client->RegisterRegions({MemoryRegion{}, MemoryRegion{}}, results);
-
-    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
-    EXPECT_NE(status.message.find("asuIndex=0"), std::string::npos);
-    EXPECT_NE(status.message.find("asuId=10"), std::string::npos);
-    EXPECT_EQ(state->registerCalls, std::vector<AsuId>({10}));
-    EXPECT_TRUE(state->bindCalls.empty());
-    EXPECT_TRUE(results.empty());
-}
-
-TEST(AsuClientImplTest, MemoryRegister_FirstRegisterFailureIncludesAsuContext)
-{
-    class FailingRegisterTransport final : public FakeTransport {
-    public:
-        explicit FailingRegisterTransport(std::shared_ptr<TestState> state)
-            : FakeTransport(std::move(state))
-        {
-        }
-
-        Status RegisterRegions(const std::vector<MemoryRegion>&,
-                               std::vector<RegisteredMemory>&) override
-        {
-            return Status::Error(StatusCode::BUFFER_NOT_REGISTERED, "fake register failure");
-        }
-    };
-
     auto state = std::make_shared<TestState>();
     auto config = MakeConfig({10, 20});
     auto viewServer = std::make_shared<FakeViewServer>(
@@ -1149,112 +1292,110 @@ TEST(AsuClientImplTest, MemoryRegister_FirstRegisterFailureIncludesAsuContext)
     },
         std::vector<std::uint64_t>{1, 2});
     auto client = std::make_unique<AsuClientImpl>(
-        [state] {
-            ++state->createdTransports;
-            return std::unique_ptr<AsuTransport>(new FailingRegisterTransport(state));
-        },
-        MakeViewServerFactory(viewServer));
+        MakeFactory(state), MakeViewServerFactory(viewServer), MakeProviderFactory(state));
+    ASSERT_TRUE(client->Init(config).ok());
+
+    std::vector<RegisteredMemory> results;
+    ASSERT_TRUE(client->RegisterRegions({MemoryRegion{}}, results).ok());
+    ASSERT_EQ(results.size(), std::size_t{1});
+
+    state->failFirstQuery = true;
+    QueryResult queryResult;
+    EXPECT_EQ(QueryAndWait(*client, {MakeCacheKey("k05")}, queryResult).code,
+              StatusCode::PARTIAL_FAILED);
+    ASSERT_TRUE(WaitForFetchCount(viewServer, 2));
+
+    EXPECT_EQ(state->createdProviders, std::uint32_t{3});
+    EXPECT_EQ(state->providerBindCalls, std::vector<AsuId>({10, 20}));
+}
+
+TEST(AsuClientImplTest, MemoryRegister_PartialRegisterFailureDoesNotBindProviders)
+{
+    auto state = std::make_shared<TestState>();
+    state->returnPartialRegister = true;
+    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+    ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
+
+    std::vector<RegisteredMemory> results;
+    auto status = client->RegisterRegions({MemoryRegion{}, MemoryRegion{}}, results);
+
+    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
+    EXPECT_EQ(state->registerCalls, std::vector<AsuId>({10}));
+    EXPECT_EQ(state->unregisterCalls, std::vector<AsuId>({10}));
+    EXPECT_TRUE(results.empty());
+}
+
+TEST(AsuClientImplTest, MemoryRegister_ProviderBindFailureRollsBackOwner)
+{
+    auto state = std::make_shared<TestState>();
+    state->failProviderBind = true;
+    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+    ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
+
+    std::vector<RegisteredMemory> results;
+    const auto status = client->RegisterRegions({MemoryRegion{}}, results);
+
+    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
+    EXPECT_EQ(state->registerCalls, std::vector<AsuId>({10}));
+    EXPECT_EQ(state->providerBindCalls, std::vector<AsuId>({10}));
+    EXPECT_EQ(state->unregisterCalls, std::vector<AsuId>({10}));
+    EXPECT_TRUE(results.empty());
+}
+
+TEST(AsuClientImplTest, MemoryRegister_RegisterFailureDoesNotBindProviders)
+{
+    auto state = std::make_shared<TestState>();
+    state->failRegister = true;
+    auto config = MakeConfig({10, 20});
+    auto viewServer = std::make_shared<FakeViewServer>(
+        std::vector<std::vector<AsuId>>{
+            {10},
+            {10, 20}
+    },
+        std::vector<std::uint64_t>{1, 2});
+    auto client = std::make_unique<AsuClientImpl>(
+        MakeFactory(state), MakeViewServerFactory(viewServer), MakeProviderFactory(state));
     ASSERT_TRUE(client->Init(config).ok());
 
     std::vector<RegisteredMemory> results;
     auto status = client->RegisterRegions({MemoryRegion{}}, results);
 
-    EXPECT_EQ(status.code, StatusCode::BUFFER_NOT_REGISTERED);
-    EXPECT_NE(status.message.find("asuIndex=0"), std::string::npos);
-    EXPECT_NE(status.message.find("asuId=10"), std::string::npos);
-    EXPECT_NE(status.message.find("region_count=1"), std::string::npos);
+    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
 }
 
 TEST(AsuClientImplTest, MemoryRegister_SuccessWithMismatchedResultCountReturnsInternalError)
 {
-    class MismatchedRegisterTransport final : public FakeTransport {
-    public:
-        explicit MismatchedRegisterTransport(std::shared_ptr<TestState> state)
-            : FakeTransport(std::move(state))
-        {
-        }
-
-        Status RegisterRegions(const std::vector<MemoryRegion>&,
-                               std::vector<RegisteredMemory>& registeredRegions) override
-        {
-            registeredRegions.clear();
-            return Status::OK();
-        }
-    };
-
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient([state] {
-        ++state->createdTransports;
-        return std::unique_ptr<AsuTransport>(new MismatchedRegisterTransport(state));
-    });
-    ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
-
-    std::vector<RegisteredMemory> results;
-    auto status = client->RegisterRegions({MemoryRegion{}}, results);
-
-    EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
-    EXPECT_NE(status.message.find("asuIndex=0"), std::string::npos);
-    EXPECT_NE(status.message.find("region_count=1"), std::string::npos);
-    EXPECT_NE(status.message.find("result_count=0"), std::string::npos);
-    EXPECT_TRUE(state->bindCalls.empty());
-}
-
-TEST(AsuClientImplTest, MemoryRegister_BindFailureIncludesAsuContext)
-{
-    class FailingBindTransport final : public FakeTransport {
-    public:
-        explicit FailingBindTransport(std::shared_ptr<TestState> state)
-            : FakeTransport(std::move(state))
-        {
-        }
-
-        Status BindRegisteredRegions(const std::vector<RegisteredMemory>&) override
-        {
-            return Status::Error(StatusCode::CONNECTION_ERROR, "fake bind failure");
-        }
-    };
-
-    auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient([state] {
-        ++state->createdTransports;
-        if (state->createdTransports == 1) {
-            return std::unique_ptr<AsuTransport>(new FakeTransport(state));
-        }
-        return std::unique_ptr<AsuTransport>(new FailingBindTransport(state));
-    });
+    state->mismatchRegisterResultCount = true;
+    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
 
     std::vector<RegisteredMemory> results;
     auto status = client->RegisterRegions({MemoryRegion{}}, results);
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
-    EXPECT_NE(status.message.find("asuIndex=1"), std::string::npos);
-    EXPECT_NE(status.message.find("asuId=20"), std::string::npos);
-    EXPECT_NE(status.message.find("region_count=1"), std::string::npos);
 }
 
-TEST(AsuClientImplTest, MemoryRegister_BindFailureDoesNotCacheResource)
+TEST(AsuClientImplTest, MemoryRegister_ProviderBindFailureIncludesProviderContext)
 {
-    class FailingBindTransport final : public FakeTransport {
-    public:
-        explicit FailingBindTransport(std::shared_ptr<TestState> state)
-            : FakeTransport(state), state_(std::move(state))
-        {
-        }
-
-        Status BindRegisteredRegions(const std::vector<RegisteredMemory>&) override
-        {
-            state_->bindCalls.emplace_back(20);
-            return Status::Error(StatusCode::CONNECTION_ERROR, "fake bind failure");
-        }
-
-    private:
-        std::shared_ptr<TestState> state_;
-    };
-
     auto state = std::make_shared<TestState>();
+    state->failProviderBind = true;
+    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+    ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
+
+    std::vector<RegisteredMemory> results;
+    auto status = client->RegisterRegions({MemoryRegion{}}, results);
+
+    EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
+    EXPECT_NE(status.message.find("providerIndex=1"), std::string::npos);
+}
+
+TEST(AsuClientImplTest, MemoryRegister_ProviderBindFailureDoesNotCacheResource)
+{
+    auto state = std::make_shared<TestState>();
+    state->failProviderBind = true;
     auto config = MakeConfig({10, 20, 30});
     auto viewServer = std::make_shared<FakeViewServer>(
         std::vector<std::vector<AsuId>>{
@@ -1263,19 +1404,13 @@ TEST(AsuClientImplTest, MemoryRegister_BindFailureDoesNotCacheResource)
     },
         std::vector<std::uint64_t>{1, 2});
     auto client = std::make_unique<AsuClientImpl>(
-        [state] {
-            ++state->createdTransports;
-            if (state->createdTransports == 2) {
-                return std::unique_ptr<AsuTransport>(new FailingBindTransport(state));
-            }
-            return std::unique_ptr<AsuTransport>(new FakeTransport(state));
-        },
-        MakeViewServerFactory(viewServer));
+        MakeFactory(state), MakeViewServerFactory(viewServer), MakeProviderFactory(state));
     ASSERT_TRUE(client->Init(config).ok());
 
     std::vector<RegisteredMemory> results;
     auto status = client->RegisterRegions({MemoryRegion{}}, results);
     ASSERT_EQ(status.code, StatusCode::PARTIAL_FAILED);
+    state->failProviderBind = false;
 
     state->failFirstQuery = true;
     QueryResult queryResult;
@@ -1284,36 +1419,40 @@ TEST(AsuClientImplTest, MemoryRegister_BindFailureDoesNotCacheResource)
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{3});
-    EXPECT_EQ(state->bindCalls, std::vector<AsuId>({20}));
+    EXPECT_EQ(state->providerBindCalls, std::vector<AsuId>({10}));
 }
 
 TEST(AsuClientImplTest, MemoryRegister_UnregisterFailureIncludesAsuContext)
 {
-    class FailingUnregisterTransport final : public FakeTransport {
-    public:
-        explicit FailingUnregisterTransport(std::shared_ptr<TestState> state)
-            : FakeTransport(std::move(state))
-        {
-        }
-
-        Status UnregisterRegions(const std::vector<MRHandle>&) override
-        {
-            return Status::Error(StatusCode::IO_ERROR, "fake unregister failure");
-        }
-    };
-
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient([state] {
-        ++state->createdTransports;
-        return std::unique_ptr<AsuTransport>(new FailingUnregisterTransport(state));
-    });
+    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
 
-    auto status = client->UnregisterRegions({7});
+    std::vector<RegisteredMemory> registeredRegions;
+    ASSERT_TRUE(client->RegisterRegions({MemoryRegion{}}, registeredRegions).ok());
+    ASSERT_EQ(registeredRegions.size(), std::size_t{1});
+    state->failUnregister = true;
+
+    auto status = client->UnregisterRegions({registeredRegions[0].handle});
 
     EXPECT_EQ(status.code, StatusCode::IO_ERROR);
-    EXPECT_NE(status.message.find("asuId=10"), std::string::npos);
     EXPECT_NE(status.message.find("handle_count=1"), std::string::npos);
+}
+
+TEST(AsuClientImplTest, MemoryRegister_UnregisterReleasesBoundProvidersBeforeOwner)
+{
+    auto state = std::make_shared<TestState>();
+    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+    ASSERT_TRUE(client->Init(MakeConfig({10, 20, 30})).ok());
+
+    std::vector<RegisteredMemory> registeredRegions;
+    ASSERT_TRUE(client->RegisterRegions({MemoryRegion{}}, registeredRegions).ok());
+    state->unregisterCalls.clear();
+
+    const auto status = client->UnregisterRegions({registeredRegions[0].handle});
+
+    EXPECT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(state->unregisterCalls, std::vector<AsuId>({30, 20, 10, 10}));
 }
 
 TEST(AsuClientImplTest, MemoryRegister_UnregisterRemovesCachedResourceBeforeFutureAsuIsAdded)
@@ -1326,8 +1465,8 @@ TEST(AsuClientImplTest, MemoryRegister_UnregisterRemovesCachedResourceBeforeFutu
             {10, 20}
     },
         std::vector<std::uint64_t>{1, 2});
-    auto client =
-        std::make_unique<AsuClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    auto client = std::make_unique<AsuClientImpl>(
+        MakeFactory(state), MakeViewServerFactory(viewServer), MakeProviderFactory(state));
     ASSERT_TRUE(client->Init(config).ok());
 
     std::vector<RegisteredMemory> results;
@@ -1337,6 +1476,7 @@ TEST(AsuClientImplTest, MemoryRegister_UnregisterRemovesCachedResourceBeforeFutu
 
     status = client->UnregisterRegions({results[0].handle});
     ASSERT_TRUE(status.ok()) << status.message;
+    state->providerBindCalls.clear();
 
     state->failFirstQuery = true;
     QueryResult queryResult;
@@ -1345,7 +1485,7 @@ TEST(AsuClientImplTest, MemoryRegister_UnregisterRemovesCachedResourceBeforeFutu
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
-    EXPECT_TRUE(state->bindCalls.empty());
+    EXPECT_TRUE(state->providerBindCalls.empty());
 }
 
 TEST(AsuClientImplTest, Task_CheckKeepsTaskForWait)
@@ -1693,7 +1833,7 @@ TEST(AsuClientImplTest, Task_DeleteKeepsEntryStatusInOriginalOrderAcrossAsus)
     EXPECT_EQ(result.entryStatus[2].code, StatusCode::IO_ERROR);
 }
 
-TEST(AsuClientImplTest, SnapshotRefresh_ReusesExistingTransportAndBindsResourcesToAddedAsu)
+TEST(AsuClientImplTest, SnapshotRefresh_ReusesTransportAndBindsProviderForAddedAsu)
 {
     auto state = std::make_shared<TestState>();
     auto config = MakeConfig({10, 20});
@@ -1701,8 +1841,8 @@ TEST(AsuClientImplTest, SnapshotRefresh_ReusesExistingTransportAndBindsResources
         {10},
         {10, 20}
     });
-    auto client =
-        std::make_unique<AsuClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+    auto client = std::make_unique<AsuClientImpl>(
+        MakeFactory(state), MakeViewServerFactory(viewServer), MakeProviderFactory(state));
     ASSERT_TRUE(client->Init(config).ok());
 
     std::vector<RegisteredMemory> results;
@@ -1716,10 +1856,28 @@ TEST(AsuClientImplTest, SnapshotRefresh_ReusesExistingTransportAndBindsResources
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
-    EXPECT_EQ(state->bindCalls, std::vector<AsuId>({20}));
-    ASSERT_EQ(state->boundRegions[20].size(), std::size_t{1});
-    EXPECT_EQ(state->boundRegions[20][0].handle, MakeTestMrHandle(500));
-    EXPECT_EQ(state->boundRegions[20][0].tokenId, std::uint32_t{900});
+    EXPECT_EQ(state->providerBindCalls, std::vector<AsuId>({10, 20}));
+}
+
+TEST(AsuClientImplTest, MemoryRegister_StoreTaskCarriesRegisteredTokenMetadata)
+{
+    auto state = std::make_shared<TestState>();
+    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+    ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
+
+    std::vector<RegisteredMemory> registeredRegions;
+    ASSERT_TRUE(client->RegisterRegions({MemoryRegion{}}, registeredRegions).ok());
+    ASSERT_EQ(registeredRegions.size(), std::size_t{1});
+    KVBuffer entry{MakeCacheKey("k05"), {}};
+    entry.buffer.handle = registeredRegions[0].handle;
+
+    TaskId taskId = kInvalidTaskId;
+    ASSERT_TRUE(client->StoreAsync({entry}, taskId).ok());
+    TaskResult result;
+    ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
+
+    ASSERT_EQ(state->submittedMrKeys.size(), std::size_t{1});
+    EXPECT_EQ(state->submittedMrKeys.at(registeredRegions[0].handle), registeredRegions[0].tokenId);
 }
 
 TEST(AsuClientImplTest,

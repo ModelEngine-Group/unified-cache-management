@@ -26,7 +26,6 @@
 #include <cctype>
 #include <cstdint>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -44,20 +43,20 @@ namespace {
 constexpr std::size_t kFlagBufferHeaderSize = 16;
 
 Status ResolveSqeMrKeys(const BatchView<KVBuffer>& entries,
-                        const std::unordered_map<MRHandle, RegisteredMemory>& registeredRegions,
+                        const RegisteredMrKeyMap& registeredMrKeys,
                         std::vector<std::uint32_t>& mrKeys)
 {
     mrKeys.clear();
     mrKeys.reserve(entries.size);
     for (std::size_t index = 0; index < entries.size; ++index) {
         const auto handle = entries[index].buffer.handle;
-        auto iter = registeredRegions.find(handle);
-        if (iter == registeredRegions.end()) {
-            // TODO: Replace the default MR key after memory registration is supported.
-            mrKeys.emplace_back(1);
-            continue;
+        auto iter = registeredMrKeys.find(handle);
+        if (iter == registeredMrKeys.end()) {
+            return Status::Error(
+                StatusCode::BUFFER_NOT_REGISTERED,
+                "entry buffer is not registered, entryIndex=" + std::to_string(index));
         }
-        mrKeys.emplace_back(iter->second.tokenId);
+        mrKeys.emplace_back(iter->second);
     }
     return Status::OK();
 }
@@ -335,7 +334,7 @@ std::unique_ptr<SqeRequest> BuildSqeRequest(
 
 Status TransportTaskExecutor::SubmitEntrySubBatchRequest(
     TransportOpType opType, const IoScheduler::ScheduledIoBatch& subBatch,
-    TransportSubBatchContext& subBatchContext)
+    const RegisteredMrKeyMap& registeredMrKeys, TransportSubBatchContext& subBatchContext)
 {
     const auto source = SubBatchRequestSource::FromEntries(subBatch.entries);
     subBatchContext.entryStatus.assign(subBatch.entries.size, Status::OK());
@@ -345,11 +344,8 @@ Status TransportTaskExecutor::SubmitEntrySubBatchRequest(
     subBatchContext.cid = cid;
 
     std::vector<std::uint32_t> mrKeys;
-    {
-        std::lock_guard<std::mutex> lock(registeredRegionsMu_);
-        auto resolveStatus = ResolveSqeMrKeys(subBatch.entries, registeredRegions_, mrKeys);
-        if (!resolveStatus.ok()) { return SetSubBatchBuildFailed(subBatchContext, resolveStatus); }
-    }
+    auto resolveStatus = ResolveSqeMrKeys(subBatch.entries, registeredMrKeys, mrKeys);
+    if (!resolveStatus.ok()) { return SetSubBatchBuildFailed(subBatchContext, resolveStatus); }
 
     auto status = PrepareSubBatchRequest(opType, opcode, cid, subBatch.entries.size,
                                          flagBufferManager_, subBatchContext);

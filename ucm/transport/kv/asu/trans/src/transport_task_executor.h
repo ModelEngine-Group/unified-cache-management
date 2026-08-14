@@ -27,14 +27,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <mutex>
-#include <unordered_map>
 #include <vector>
+#include "asu_transport/trans_provider.h"
 #include "buffer_manager.h"
 #include "connection_manager.h"
 #include "io_scheduler.h"
 #include "kv_protocol.h"
-#include "trans_provider.h"
 #include "transport_task_manager.h"
 
 namespace UC::ASU {
@@ -58,13 +56,11 @@ inline KvOpcode ToKvOpcode(TransportOpType opType)
 class TransportTaskExecutor {
 public:
     TransportTaskExecutor(const TransportConfig& config, IoScheduler& ioScheduler,
-                          const std::unique_ptr<TransProvider>& transProvider,
+                          const std::shared_ptr<TransProvider>& transProvider,
                           BufferManager& sendBufferManager, BufferManager& flagBufferManager,
                           const std::unique_ptr<ProtocolManager>& protocolManager,
                           const std::unique_ptr<ConnectionManager>& connectionManager,
-                          std::atomic<std::uint16_t>& nextRequestCid,
-                          std::mutex& registeredRegionsMu,
-                          const std::unordered_map<MRHandle, RegisteredMemory>& registeredRegions);
+                          std::atomic<std::uint16_t>& nextRequestCid);
 
     bool Execute(const TransportTaskPtr& task);
     bool Poll(const TransportTaskPtr& task);
@@ -77,6 +73,7 @@ private:
                               std::vector<TransportSubBatchContext>& subBatchContexts);
     Status SubmitEntrySubBatchRequest(TransportOpType opType,
                                       const IoScheduler::ScheduledIoBatch& subBatch,
+                                      const RegisteredMrKeyMap& registeredMrKeys,
                                       TransportSubBatchContext& subBatchContext);
     Status SubmitKeySubBatchRequest(TransportOpType opType,
                                     const IoScheduler::ScheduledKeyBatch& subBatch,
@@ -98,14 +95,12 @@ private:
 
     const TransportConfig& config_;
     IoScheduler& ioScheduler_;
-    const std::unique_ptr<TransProvider>& transProvider_;
+    const std::shared_ptr<TransProvider>& transProvider_;
     BufferManager& sendBufferManager_;
     BufferManager& flagBufferManager_;
     const std::unique_ptr<ProtocolManager>& protocolManager_;
     const std::unique_ptr<ConnectionManager>& connManager_;
     std::atomic<std::uint16_t>& nextRequestCid_;
-    std::mutex& registeredRegionsMu_;
-    const std::unordered_map<MRHandle, RegisteredMemory>& registeredRegions_;
 };
 
 }  // namespace UC::ASU

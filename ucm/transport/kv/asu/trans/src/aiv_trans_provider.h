@@ -25,7 +25,7 @@
 
 #include <memory>
 #include "aiv_transport/aiv_transport.h"
-#include "trans_provider.h"
+#include "asu_transport/trans_provider.h"
 
 namespace UC::ASU {
 
@@ -75,6 +75,18 @@ public:
                 {static_cast<AIVTransport::MemType>(desc.memoryType), desc.addr, desc.size});
         }
         return FromImpl(impl_->RegisterMemory(descs, mrHandles));
+    }
+
+    Status BindMemory(const std::vector<BindMemoryDesc>& memoryDescs,
+                      std::vector<MRHandle>& mrHandles) override
+    {
+        std::vector<AIVTransport::BindMemoryDesc> descs;
+        descs.reserve(memoryDescs.size());
+        for (const auto& desc : memoryDescs) {
+            descs.push_back({static_cast<AIVTransport::MemType>(desc.memoryType), desc.addr,
+                             desc.size, desc.tokenId});
+        }
+        return FromImpl(impl_->BindMemory(descs, mrHandles));
     }
 
     std::vector<Status> UnregisterMemory(

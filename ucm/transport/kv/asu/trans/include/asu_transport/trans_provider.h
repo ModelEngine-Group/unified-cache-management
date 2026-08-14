@@ -8,6 +8,8 @@
 
 namespace UC::ASU {
 
+struct TransportConfig;
+
 class TransProvider {
 public:
     using ConnectionHandle = void*;
@@ -55,6 +57,22 @@ public:
     virtual Status RegisterMemory(const std::vector<RegisterMemoryDesc>& memoryDescs,
                                   std::vector<MRHandle>& mrHandles) = 0;
 
+    struct BindMemoryDesc {
+        MemType memoryType;
+        uintptr_t addr;
+        size_t size;
+        std::uint32_t tokenId;
+    };
+
+    // Creates a provider-local handle for an existing shared registration.
+    virtual Status BindMemory(const std::vector<BindMemoryDesc>& memoryDescs,
+                              std::vector<MRHandle>& mrHandles)
+    {
+        (void)memoryDescs;
+        mrHandles.clear();
+        return Status::Error(StatusCode::UNSUPPORTED, "memory binding is not supported");
+    }
+
     struct UnregisterMemoryDesc {
         MRHandle mrHandle;
     };
@@ -69,5 +87,8 @@ public:
 
     virtual Status GetMemTokenId(MRHandle mrHandle, uint32_t& tokenId) = 0;
 };
+
+Status CreateTransProvider(const TransportConfig& config,
+                           std::shared_ptr<TransProvider>& transProvider);
 
 }  // namespace UC::ASU

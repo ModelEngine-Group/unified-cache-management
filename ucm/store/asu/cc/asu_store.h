@@ -18,10 +18,10 @@ struct Config {
     std::vector<std::string> viewServiceAddrs;
     std::vector<ssize_t> asuIds;
     std::vector<std::string> asuIps;
+    std::vector<ssize_t> asuPorts;
     std::string localIp;
     std::string asuNamePrefix{"asu"};
     std::vector<std::uint32_t> kvNsIds;
-    std::uint16_t asuPort{0};
     std::uint64_t defaultWaitTimeoutMs{100};
     std::uint64_t timeoutMs{100};
     std::uint64_t queryTimeoutMs{500};
@@ -36,6 +36,7 @@ struct Config {
     UC::ASU::TransProviderType transProviderType{UC::ASU::TransProviderType::AICPU};
     std::string fakeBackendPath;
     std::uint64_t fakeBackendLatencyMs{1};
+    ssize_t sharedProviderMode{0};
     std::unordered_map<std::string, std::string> clientAttrs;
 };
 

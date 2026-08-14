@@ -27,7 +27,7 @@ ucm_connectors:
 
       # cpu ip where mock server runs
       # asu_ips: ["223.223.8.11"]
-      # asu_port: 19001
+      # asu_ports: [19001]
       # Used by the scheduler. Worker processes overwrite it with local_rank.
       # device_id: 0
 

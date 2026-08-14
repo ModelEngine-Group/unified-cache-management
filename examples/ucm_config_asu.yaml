@@ -9,16 +9,22 @@ ucm_connectors:
       store_pipeline: "ASU"
       asu_mode: "client"
       asu_client_id: "ucm-vllm-asu-aiv"
+      # For multiple ASUs, list every ASU here and provide asu_ips/asu_ports in the same order,
+      # for example: asu_ids: [1, 2]
       asu_ids: [1]
       asu_trans_provider_backend: "aiv"
+      # 0 creates one provider per transport; 1 shares one provider within this client process.
+      asu_shared_provider: 0
 
       # Non-FAWA models use one ASU namespace. For DeepSeek V4 / FAWA,
       # replace this with: kv_ns_ids: [100, 101]  # [FA, WA]
       kv_ns_ids: [100]
 
       # cpu ip where mock server runs
+      # Multi-ASU example: asu_ips: ["223.223.8.11", "223.223.8.12"]
+      # Multi-ASU example: asu_ports: [19001, 19002]
       asu_ips: ["223.223.8.11"]
-      asu_port: 19001
+      asu_ports: [19001]
       # Used by the scheduler. Worker processes overwrite it with local_rank.
       device_id: 0
 

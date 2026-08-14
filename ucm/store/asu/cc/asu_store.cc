@@ -186,7 +186,7 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
     if (!config.asuIps.empty()) {
         UC::ASU::AsuEndpoint endpoint;
         endpoint.ip = config.asuIps[index];
-        endpoint.port = config.asuPort;
+        endpoint.port = static_cast<std::uint16_t>(config.asuPorts[index]);
         transportConfig.endpoints.emplace_back(std::move(endpoint));
     }
     if (config.transProviderType == UC::ASU::TransProviderType::FAKE) {
@@ -220,6 +220,8 @@ UC::ASU::AsuClientConfig BuildAsuClientConfig(const Config& config)
     asuConfig.viewServiceAddrs = config.viewServiceAddrs;
     asuConfig.defaultWaitTimeoutMs = config.defaultWaitTimeoutMs;
     asuConfig.timeoutMs = config.timeoutMs;
+    asuConfig.sharedProviderMode =
+        static_cast<UC::ASU::SharedProviderMode>(config.sharedProviderMode);
     asuConfig.attrs = config.clientAttrs;
     asuConfig.transportConfigs.reserve(config.asuIds.size());
     for (std::size_t i = 0; i < config.asuIds.size(); ++i) {
@@ -389,15 +391,10 @@ private:
         inConfig.Get("asu_view_service_addrs", config.viewServiceAddrs);
         inConfig.GetNumbers("asu_ids", config.asuIds);
         inConfig.Get("asu_ips", config.asuIps);
+        inConfig.GetNumbers("asu_ports", config.asuPorts);
         inConfig.Get("asu_local_ip", config.localIp);
         inConfig.Get("asu_name_prefix", config.asuNamePrefix);
         inConfig.GetNumbers("kv_ns_ids", config.kvNsIds);
-        ssize_t asuPort = 0;
-        inConfig.GetNumber("asu_port", asuPort);
-        if (asuPort > 0 &&
-            static_cast<std::uint64_t>(asuPort) <= std::numeric_limits<std::uint16_t>::max()) {
-            config.asuPort = static_cast<std::uint16_t>(asuPort);
-        }
         inConfig.GetNumber("asu_default_wait_timeout_ms", config.defaultWaitTimeoutMs);
         inConfig.GetNumber("asu_timeout_ms", config.timeoutMs);
         inConfig.GetNumber("asu_query_timeout_ms", config.queryTimeoutMs);
@@ -414,6 +411,7 @@ private:
         }
         inConfig.Get("asu_fake_backend_path", config.fakeBackendPath);
         inConfig.GetNumber("asu_fake_backend_latency_ms", config.fakeBackendLatencyMs);
+        inConfig.GetNumber("asu_shared_provider", config.sharedProviderMode);
         ReadClientAttr(inConfig, "asu_router_type", "hash_table.type", config);
         ReadClientAttr(inConfig, "asu_ring_hash_virtual_node_count", "ring_hash.virtual_node_count",
                        config);
@@ -461,6 +459,9 @@ private:
 
     Status CheckConfig(const Config& config)
     {
+        if (config.sharedProviderMode != 0 && config.sharedProviderMode != 1) {
+            return Status::InvalidParam("asu_shared_provider must be 0 or 1");
+        }
         if (config.mode != "client" && config.mode != "transport") {
             return Status::InvalidParam("invalid asu_mode({})", config.mode);
         }
@@ -487,8 +488,14 @@ private:
         if (!config.asuIps.empty() && config.asuIps.size() != config.asuIds.size()) {
             return Status::InvalidParam("asu_ips size must match asu_ids size");
         }
-        if (!config.asuIps.empty() && config.asuPort == 0) {
-            return Status::InvalidParam("asu_port must be in range [1, 65535] when asu_ips is set");
+        if (!config.asuIps.empty() && config.asuPorts.size() != config.asuIps.size()) {
+            return Status::InvalidParam("asu_ports size must match asu_ips size");
+        }
+        if (std::any_of(config.asuPorts.begin(), config.asuPorts.end(), [](ssize_t port) {
+                return port <= 0 ||
+                       static_cast<std::uint64_t>(port) > std::numeric_limits<std::uint16_t>::max();
+            })) {
+            return Status::InvalidParam("asu_ports values must be in range [1, 65535]");
         }
         if (config.configPath.empty()) {
             const auto expectedKvNsCount = config.uniqueId.find("_fawa_") == std::string::npos

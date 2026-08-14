@@ -57,7 +57,8 @@ class AsuClientImpl final : public AsuClient {
 public:
     // Builds a client with the provided transport factory.
     explicit AsuClientImpl(TransportFactory transportFactory,
-                           ViewServerFactory viewServerFactory = nullptr);
+                           ViewServerFactory viewServerFactory = nullptr,
+                           TransProviderFactory transProviderFactory = nullptr);
     // Shuts down the client during destruction.
     ~AsuClientImpl() override;
 
@@ -89,6 +90,11 @@ public:
     Status UnregisterRegions(const std::vector<MRHandle>& handles) override;
 
 private:
+    struct ProviderMemoryState {
+        std::shared_ptr<TransProvider> provider;
+        std::unordered_map<MRHandle, MRHandle> regionHandles;
+    };
+
     // Creates and queues one entry-based client task.
     Status SubmitAsync(ClientOpType opType, const std::vector<KVBuffer>& entries, TaskId& taskId);
     // Creates and queues one key-based client task.
@@ -100,17 +106,17 @@ private:
     // Performs one register operation on the current snapshot.
     Status RegisterRegionsOnce(const std::vector<MemoryRegion>& regions,
                                std::vector<RegisteredMemory>& registeredRegions, bool& needRefresh);
-    // Performs one unregister operation on the current snapshot.
-    Status UnregisterRegionsOnce(const std::vector<MRHandle>& handles, bool& needRefresh);
-
     // Builds a complete immutable snapshot for a view.
     Status BuildSnapshot(const GlobalView& view, const std::shared_ptr<ViewSnapshot>& oldSnapshot,
                          std::shared_ptr<ViewSnapshot>& snapshot);
     // Creates and initializes a transport for one ASU.
     Status BuildTransport(AsuId asuId, const AsuInfo& asuInfo,
                           std::shared_ptr<AsuTransport>& transport);
-    // Binds remembered registered regions to a transport.
-    Status BindRegisteredRegions(AsuId asuId, const std::shared_ptr<AsuTransport>& transport);
+    Status BindProviderRegions(const std::shared_ptr<TransProvider>& transProvider,
+                               const std::vector<RegisteredMemory>& registeredRegions,
+                               std::vector<MRHandle>& localHandles);
+    Status UnregisterProviderRegions(const std::shared_ptr<TransProvider>& transProvider,
+                                     const std::vector<MRHandle>& handles);
     // Returns the current immutable snapshot if initialized.
     std::shared_ptr<ViewSnapshot> GetSnapshot() const;
 
@@ -145,10 +151,14 @@ private:
     std::thread worker_;
     // Creates ASU transports; tests inject fake transports through this hook.
     TransportFactory transportFactory_;
+    // Creates providers; tests inject fake providers through this hook.
+    TransProviderFactory transProviderFactory_;
     // Creates the external view server during Init.
     ViewServerFactory viewServerFactory_;
     // mutex_ protects background refresh state and resource/view caches.
     mutable std::mutex mutex_;
+    // memoryMu_ serializes provider creation with business-memory register/bind/unregister.
+    std::mutex memoryMu_;
     // Tracks whether Init has published a usable snapshot.
     bool initialized_{false};
     // Prevents duplicate background refresh workers.
@@ -159,8 +169,12 @@ private:
     std::shared_ptr<ViewServer> viewServer_;
     // Transport configs indexed by ASU id for snapshot construction.
     std::unordered_map<AsuId, TransportConfig> transportConfigs_;
-    // Regions registered on the current view and rebound to newly added transports.
-    std::vector<RegisteredMemory> registeredRegions_;
+    // Provider-local handles indexed by the canonical handles returned by this client.
+    std::vector<ProviderMemoryState> providerMemoryStates_;
+    // Provider selected for all client business-memory registration operations.
+    std::shared_ptr<TransProvider> memoryProvider_;
+    // Regions registered by the client and rebound to newly added providers.
+    std::unordered_map<MRHandle, RegisteredMemory> registeredRegions_;
     // Current immutable routing and transport snapshot.
     std::shared_ptr<ViewSnapshot> snapshot_;
     // Transports removed from the active snapshot but still needed by old tasks.

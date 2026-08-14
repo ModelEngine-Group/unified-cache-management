@@ -28,7 +28,7 @@
 #include <mutex>
 #include <unordered_map>
 #include "asu_transport/asu_transport.h"
-#include "trans_provider.h"
+#include "asu_transport/trans_provider.h"
 
 namespace UC::ASU {
 
@@ -52,6 +52,9 @@ public:
 
     Status RegisterMemory(const std::vector<RegisterMemoryDesc>& memoryDescs,
                           std::vector<MRHandle>& mrHandles) override;
+
+    Status BindMemory(const std::vector<BindMemoryDesc>& memoryDescs,
+                      std::vector<MRHandle>& mrHandles) override;
 
     std::vector<Status> UnregisterMemory(const std::vector<UnregisterMemoryDesc>& handles) override;
 

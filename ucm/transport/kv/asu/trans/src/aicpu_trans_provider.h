@@ -1,6 +1,6 @@
 #pragma once
 
-#include "trans_provider.h"
+#include "asu_transport/trans_provider.h"
 
 namespace UC::ASU {
 
@@ -24,6 +24,13 @@ public:
 
     Status RegisterMemory(const std::vector<RegisterMemoryDesc>&, std::vector<MRHandle>&) override
     {
+        return Status::OK();
+    }
+
+    Status BindMemory(const std::vector<BindMemoryDesc>& memoryDescs,
+                      std::vector<MRHandle>& mrHandles) override
+    {
+        mrHandles.assign(memoryDescs.size(), kInvalidMRHandle);
         return Status::OK();
     }
 

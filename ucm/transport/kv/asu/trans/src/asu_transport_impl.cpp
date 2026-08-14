@@ -29,17 +29,9 @@
 #include <string>
 #include <thread>
 #include <utility>
-#ifdef UCM_ASU_ENABLE_AICPU_PROVIDER
-#include "aicpu_trans_provider.h"
-#endif
-#ifdef UCM_ASU_ENABLE_AIV_PROVIDER
-#include "aiv_trans_provider.h"
-#endif
 #include "asu_transport/asu_transport.h"
+#include "asu_transport/trans_provider.h"
 #include "connection_manager.h"
-#ifdef UCM_ASU_ENABLE_FAKE_PROVIDER
-#include "fake_trans_provider.h"
-#endif
 #include "logger.h"
 #include "transport_config_parser.h"
 
@@ -59,15 +51,17 @@ AsuTransportImpl::AsuTransportImpl() = default;
 
 AsuTransportImpl::~AsuTransportImpl() { Shutdown(); }
 
-Status AsuTransportImpl::Init(const std::string& configPath)
+Status AsuTransportImpl::Init(const std::string& configPath,
+                              std::shared_ptr<TransProvider> transProvider)
 {
     TransportConfig config;
     auto status = LoadTransportConfig(configPath, config);
     if (!status.ok()) { return status; }
-    return Init(config);
+    return Init(config, std::move(transProvider));
 }
 
-Status AsuTransportImpl::Init(const TransportConfig& config)
+Status AsuTransportImpl::Init(const TransportConfig& config,
+                              std::shared_ptr<TransProvider> transProvider)
 {
     UC_DEBUG("AsuTransportImpl::Init start");
     if (worker_.joinable()) {
@@ -75,46 +69,11 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
         return Status::OK();
     }
     config_ = config;
+    transProvider_ = std::move(transProvider);
     if (config_.maxErrorCount == 0) {
         return Status::Error(StatusCode::INVALID_ARGUMENT, "maxErrorCount must be greater than 0");
     }
 
-    if (!transProvider_) {
-        switch (config_.providerType) {
-            case TransProviderType::AICPU:
-#ifdef UCM_ASU_ENABLE_AICPU_PROVIDER
-                transProvider_ = std::make_unique<AICPUTransProvider>();
-                break;
-#else
-                return Status::Error(
-                    StatusCode::UNSUPPORTED,
-                    "AICPU trans provider is not built; enable BUILD_UCM_ASU_PROVIDER_AICPU");
-#endif
-            case TransProviderType::FAKE:
-#ifdef UCM_ASU_ENABLE_FAKE_PROVIDER
-                transProvider_ =
-                    std::make_unique<FakeTransProvider>(MakeFakeTransProviderConfig(config_));
-                break;
-#else
-                return Status::Error(
-                    StatusCode::UNSUPPORTED,
-                    "FAKE trans provider is not built; enable BUILD_UCM_ASU_PROVIDER_FAKE");
-#endif
-            case TransProviderType::AIV:
-#ifdef UCM_ASU_ENABLE_AIV_PROVIDER
-                transProvider_ = std::make_unique<AIVTransProviderAdapter>(config_.deviceId);
-                break;
-#else
-                return Status::Error(
-                    StatusCode::UNSUPPORTED,
-                    "AIV trans provider is not built; enable BUILD_UCM_ASU_PROVIDER_AIV and set "
-                    "ASU_AIV_PROVIDER_ROOT");
-#endif
-            case TransProviderType::UNSUPPORTED:
-                return Status::Error(StatusCode::UNSUPPORTED,
-                                     "ASU trans provider backend is not supported");
-        }
-    }
     if (!transProvider_) {
         UC_ERROR("AsuTransportImpl::Init: TransProvider is null");
         return Status::Error(StatusCode::NOT_INITIALIZED, "TransProvider is null");
@@ -211,7 +170,7 @@ Status AsuTransportImpl::Init(const TransportConfig& config)
     protocolManager_ = std::make_unique<ProtocolManager>();
     taskExecutor_ = std::make_unique<TransportTaskExecutor>(
         config_, ioScheduler_, transProvider_, sendBufferManager_, flagBufferManager_,
-        protocolManager_, connManager_, nextRequestCid_, registeredRegionsMu_, registeredRegions_);
+        protocolManager_, connManager_, nextRequestCid_);
     auto queueDepth = std::max<std::size_t>(2, static_cast<std::size_t>(config_.maxInflightTasks));
     executeQueue_.Setup(queueDepth + 1);
     stopWorker_.store(false, std::memory_order_release);
@@ -260,25 +219,6 @@ Status AsuTransportImpl::Shutdown()
         if (ctx != nullptr) { (void)taskManager_.Remove(ctx->taskId); }
     }
     taskExecutor_.reset();
-    {
-        std::lock_guard<std::mutex> lock(registeredRegionsMu_);
-        if (ownsRegisteredRegionHandles_) {
-            std::vector<MRHandle> handles;
-            handles.reserve(registeredRegions_.size());
-            for (const auto& item : registeredRegions_) { handles.push_back(item.first); }
-            if (!handles.empty() && transProvider_) {
-                const auto status = UnregisterOwnedRegionHandles(handles);
-                if (!status.ok()) {
-                    UC_ERROR(
-                        "Transport shutdown ignored memory unregister failure: code={} "
-                        "message={}",
-                        static_cast<int>(status.code), status.message);
-                }
-            }
-        }
-        registeredRegions_.clear();
-        ownsRegisteredRegionHandles_ = false;
-    }
     flagBufferManager_.Shutdown();
     sendBufferManager_.Shutdown();
 
@@ -318,118 +258,6 @@ Status AsuTransportImpl::Cancel(TaskId taskId)
     if (!taskExecutor_->Cancel(ctx, canceledStatus)) { return Status::OK(); }
     taskManager_.NotifyCompletion(ctx);
     return Status::OK();
-}
-
-Status AsuTransportImpl::RegisterRegions(const std::vector<MemoryRegion>& regions,
-                                         std::vector<RegisteredMemory>& registeredRegions)
-{
-    registeredRegions.clear();
-    registeredRegions.reserve(regions.size());
-    if (regions.empty()) { return Status::OK(); }
-
-    std::lock_guard<std::mutex> lock(registeredRegionsMu_);
-    std::vector<TransProvider::RegisterMemoryDesc> registerDescs;
-    registerDescs.reserve(regions.size());
-    for (const auto& region : regions) {
-        const auto memType = region.memoryType == MemoryType::ASCEND_DEVICE
-                                 ? TransProvider::MemType::MEM_DEVICE
-                                 : TransProvider::MemType::MEM_HOST;
-        registerDescs.push_back({memType, static_cast<std::uintptr_t>(region.addr),
-                                 static_cast<std::size_t>(region.size)});
-    }
-
-    std::vector<MRHandle> mrHandles;
-
-    auto status = transProvider_->RegisterMemory(registerDescs, mrHandles);
-    if (!status.ok()) {
-        const auto cleanupStatus = UnregisterOwnedRegionHandles(mrHandles);
-        return Status::Error(StatusCode::PARTIAL_FAILED,
-                             cleanupStatus.ok()
-                                 ? "one or more memory regions failed to register"
-                                 : "memory region registration failed and cleanup was incomplete");
-    }
-    if (mrHandles.size() != regions.size()) {
-        status = Status::Error(StatusCode::INTERNAL_ERROR,
-                               "register result count does not match region count");
-        const auto cleanupStatus = UnregisterOwnedRegionHandles(mrHandles);
-        return Status::Error(StatusCode::PARTIAL_FAILED,
-                             cleanupStatus.ok()
-                                 ? status.message
-                                 : "register result count mismatch and cleanup was incomplete");
-    }
-
-    std::vector<std::uint32_t> tokenIds(regions.size());
-    for (std::size_t index = 0; index < mrHandles.size(); ++index) {
-        status = transProvider_->GetMemTokenId(mrHandles[index], tokenIds[index]);
-        if (status.ok()) { continue; }
-
-        const auto cleanupStatus = UnregisterOwnedRegionHandles(mrHandles);
-        return Status::Error(StatusCode::PARTIAL_FAILED,
-                             cleanupStatus.ok()
-                                 ? "one or more memory region token lookups failed"
-                                 : "memory region token lookup failed and cleanup was incomplete");
-    }
-
-    for (std::size_t index = 0; index < regions.size(); ++index) {
-        RegisteredMemory registeredMemory;
-        registeredMemory.region = regions[index];
-        registeredMemory.handle = mrHandles[index];
-        registeredMemory.tokenId = tokenIds[index];
-        registeredRegions_[mrHandles[index]] = registeredMemory;
-        registeredRegions.emplace_back(registeredMemory);
-    }
-    ownsRegisteredRegionHandles_ = true;
-    return Status::OK();
-}
-
-Status AsuTransportImpl::BindRegisteredRegions(const std::vector<RegisteredMemory>& regions)
-{
-    std::lock_guard<std::mutex> lock(registeredRegionsMu_);
-    for (const auto& region : regions) { registeredRegions_[region.handle] = region; }
-    return Status::OK();
-}
-
-Status AsuTransportImpl::UnregisterRegions(const std::vector<MRHandle>& handles)
-{
-    std::lock_guard<std::mutex> lock(registeredRegionsMu_);
-    if (!ownsRegisteredRegionHandles_) { return Status::OK(); }
-    std::vector<MRHandle> ownedHandles;
-    ownedHandles.reserve(handles.size());
-    for (auto handle : handles) {
-        if (handle == kInvalidMRHandle) { continue; }
-        if (registeredRegions_.find(handle) == registeredRegions_.end()) { continue; }
-        ownedHandles.push_back(handle);
-    }
-    return UnregisterOwnedRegionHandles(ownedHandles);
-}
-
-Status AsuTransportImpl::UnregisterOwnedRegionHandles(const std::vector<MRHandle>& handles)
-{
-    if (handles.empty()) { return Status::OK(); }
-
-    std::vector<TransProvider::UnregisterMemoryDesc> unregisterDescs;
-    unregisterDescs.reserve(handles.size());
-    for (const auto handle : handles) {
-        unregisterDescs.push_back(TransProvider::UnregisterMemoryDesc{handle});
-    }
-
-    const auto statuses = transProvider_->UnregisterMemory(unregisterDescs);
-    Status failure = statuses.size() == handles.size()
-                         ? Status::OK()
-                         : Status::Error(StatusCode::INTERNAL_ERROR,
-                                         "unregister result count does not match handle count");
-    for (std::size_t index = 0; index < handles.size(); ++index) {
-        if (index < statuses.size() && statuses[index].ok()) {
-            registeredRegions_.erase(handles[index]);
-        } else if (failure.ok()) {
-            failure = index < statuses.size()
-                          ? statuses[index]
-                          : Status::Error(StatusCode::INTERNAL_ERROR,
-                                          "unregister result count does not match handle count");
-        }
-    }
-    ownsRegisteredRegionHandles_ = !registeredRegions_.empty();
-    return failure;
 }
 
 Status AsuTransportImpl::SubmitTask(const TransportTaskPtr& task)
@@ -476,7 +304,7 @@ void AsuTransportImpl::CompletionLoop()
     }
 }
 
-void AsuTransportImpl::SetTransProvider(std::unique_ptr<TransProvider> provider)
+void AsuTransportImpl::SetTransProvider(std::shared_ptr<TransProvider> provider)
 {
     transProvider_ = std::move(provider);
 }

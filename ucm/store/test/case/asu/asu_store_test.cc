@@ -220,7 +220,7 @@ UC::Detail::Dictionary MakeBaseConfig()
     UC::Detail::Dictionary config;
     config.Set("asu_client_id", std::string{"asu-store-test"});
     config.Set("asu_name_prefix", std::string{"asu-store-test"});
-    config.SetNumber("asu_port", 12345);
+    config.Set("asu_ports", std::vector<ssize_t>{12345});
     config.SetNumber("device_id", -1);
     config.SetNumber("tensor_size", std::size_t{64});
     config.SetNumber("shard_size", std::size_t{64});
@@ -289,6 +289,7 @@ TEST(UCAsuStoreTest, TransportModeRejectsMultipleAsus)
     auto config = MakeBaseConfig();
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1", "127.0.0.2"});
+    config.Set("asu_ports", std::vector<ssize_t>{12345, 12346});
     config.Set("asu_ids", std::vector<ssize_t>{1001, 1002});
 
     auto status = store.Setup(config);
@@ -427,13 +428,60 @@ TEST(UCAsuStoreTest, RejectsInvalidAsuIds)
     }
 }
 
-TEST(UCAsuStoreTest, RejectsInvalidAsuPort)
+TEST(UCAsuStoreTest, RejectsInvalidAsuPorts)
+{
+    for (auto port : {ssize_t{-1}, ssize_t{0}, ssize_t{65536}}) {
+        UC::AsuStore::AsuStore store;
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+        config.Set("asu_ports", std::vector<ssize_t>{port});
+
+        EXPECT_TRUE(store.Setup(config).Failure());
+    }
+}
+
+TEST(UCAsuStoreTest, RejectsMismatchedAsuPorts)
+{
+    UC::AsuStore::AsuStore store;
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001, 1002});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1", "127.0.0.2"});
+    config.Set("asu_ports", std::vector<ssize_t>{12345});
+
+    EXPECT_TRUE(store.Setup(config).Failure());
+}
+
+TEST(UCAsuStoreTest, ParsesSharedProviderMode)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001, 1002});
+    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1", "127.0.0.2"});
+    config.Set("asu_ports", std::vector<ssize_t>{12345, 12346});
+    config.SetNumber("asu_shared_provider", 1);
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+    EXPECT_EQ(state->initConfigs.back().sharedProviderMode, 1);
+    const auto asuConfig = UC::AsuStore::BuildAsuClientConfig(state->initConfigs.back());
+    EXPECT_EQ(asuConfig.sharedProviderMode, UC::ASU::SharedProviderMode::SHARED);
+    ASSERT_EQ(asuConfig.transportConfigs.size(), std::size_t{2});
+    EXPECT_EQ(asuConfig.transportConfigs[0].asuId, UC::ASU::AsuId{1001});
+    EXPECT_EQ(asuConfig.transportConfigs[0].endpoints[0].ip, "127.0.0.1");
+    EXPECT_EQ(asuConfig.transportConfigs[0].endpoints[0].port, std::uint16_t{12345});
+    EXPECT_EQ(asuConfig.transportConfigs[1].asuId, UC::ASU::AsuId{1002});
+    EXPECT_EQ(asuConfig.transportConfigs[1].endpoints[0].ip, "127.0.0.2");
+    EXPECT_EQ(asuConfig.transportConfigs[1].endpoints[0].port, std::uint16_t{12346});
+}
+
+TEST(UCAsuStoreTest, RejectsInvalidSharedProviderMode)
 {
     UC::AsuStore::AsuStore store;
     auto config = MakeBaseConfig();
     config.Set("asu_ids", std::vector<ssize_t>{1001});
-    config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
-    config.SetNumber("asu_port", 65536);
+    config.SetNumber("asu_shared_provider", 2);
 
     EXPECT_TRUE(store.Setup(config).Failure());
 }
@@ -567,6 +615,7 @@ TEST(UCAsuStoreTest, ClientModeSmoke)
     UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1", "127.0.0.2"});
+    config.Set("asu_ports", std::vector<ssize_t>{12345, 12346});
     config.Set("asu_ids", std::vector<ssize_t>{1001, 1002});
     ASSERT_TRUE(store.Setup(config).Success());
 
@@ -722,6 +771,7 @@ TEST(UCAsuStoreTest, LookupOnPrefixReturnsLastContiguousHit)
     auto state = UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1", "127.0.0.2"});
+    config.Set("asu_ports", std::vector<ssize_t>{12345, 12346});
     config.Set("asu_ids", std::vector<ssize_t>{1001, 1002});
     ASSERT_TRUE(store.Setup(config).Success());
     std::array<std::byte, UC::ASU::kAsuAlignmentBytes> buffer{};
