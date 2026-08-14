@@ -223,6 +223,42 @@ KvBatchStoreRequest BuildBatchStoreRequest(
     return request;
 }
 
+KvStoreRequest BuildStoreRequest(const KVBuffer& entry,
+                                 const std::unordered_map<std::string, std::string>& attrs,
+                                 std::uint16_t cid, std::uint32_t mrKey)
+{
+    KvStoreRequest request;
+    request.cid = cid;
+    request.kv_ns_id = GetTransportConfigAttr<std::uint32_t>(attrs, "kv_ns_id");
+    request.dtype = GetTransportConfigAttr<std::uint8_t>(attrs, "dtype");
+    request.dspec = GetTransportConfigAttr<std::uint8_t>(attrs, "dspec");
+    request.buffer_addr = entry.buffer.region.addr;
+    request.buffer_length = static_cast<std::uint32_t>(entry.buffer.region.size);
+    request.mr_key = mrKey;
+    request.offset = entry.offset;
+    request.lr = GetTransportConfigAttr<bool>(attrs, "lr");
+    request.length = request.buffer_length / kAlignmentBytes;
+    request.key = entry.key;
+    return request;
+}
+
+KvRetrieveRequest BuildRetrieveRequest(const KVBuffer& entry,
+                                       const std::unordered_map<std::string, std::string>& attrs,
+                                       std::uint16_t cid, std::uint32_t mrKey)
+{
+    KvRetrieveRequest request;
+    request.cid = cid;
+    request.kv_ns_id = GetTransportConfigAttr<std::uint32_t>(attrs, "kv_ns_id");
+    request.buffer_addr = entry.buffer.region.addr;
+    request.buffer_length = static_cast<std::uint32_t>(entry.buffer.region.size);
+    request.mr_key = mrKey;
+    request.offset = entry.offset;
+    request.lr = GetTransportConfigAttr<bool>(attrs, "lr");
+    request.length = request.buffer_length / kAlignmentBytes;
+    request.key = entry.key;
+    return request;
+}
+
 KvBatchRetrieveRequest BuildBatchRetrieveRequest(
     const BatchView<KVBuffer>& entries, const std::unordered_map<std::string, std::string>& attrs,
     std::uint16_t cid, const ScatterGatherEntry& flagBuffer,
@@ -307,6 +343,20 @@ std::unique_ptr<SqeRequest> BuildSqeRequest(
     TransportSubBatchContext& subBatchContext)
 {
     switch (opcode) {
+        case KvOpcode::Store:
+            if (source.entries == nullptr || source.entries->size != 1 || mrKeys == nullptr ||
+                mrKeys->size() != 1) {
+                return nullptr;
+            }
+            return std::make_unique<KvStoreRequest>(
+                BuildStoreRequest(source.entries->data[0], attrs, cid, (*mrKeys)[0]));
+        case KvOpcode::Retrieve:
+            if (source.entries == nullptr || source.entries->size != 1 || mrKeys == nullptr ||
+                mrKeys->size() != 1) {
+                return nullptr;
+            }
+            return std::make_unique<KvRetrieveRequest>(
+                BuildRetrieveRequest(source.entries->data[0], attrs, cid, (*mrKeys)[0]));
         case KvOpcode::BatchRetrieve:
             if (source.entries == nullptr || mrKeys == nullptr) { return nullptr; }
             return std::make_unique<KvBatchRetrieveRequest>(

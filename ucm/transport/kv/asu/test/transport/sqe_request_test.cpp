@@ -268,6 +268,30 @@ TEST_F(SqeRequestTest, SubmitBatchStoreAllocatesFlagBufferAndBuildsRequest)
     EXPECT_EQ(PackedBatchEntryMrKey(sqe, 2), std::uint32_t{0xABCD0002});
 }
 
+TEST_F(SqeRequestTest, SubmitStoreUsesStoreOpcodeAndRequest)
+{
+    auto entries = MakeEntries(1);
+    entries[0].offset = kAlignmentBytes;
+    IoScheduler::ScheduledIoBatch subBatch{
+        BatchView<KVBuffer>{entries.data(), entries.size()}
+    };
+    TransportSubBatchContext subBatchContext;
+    const auto registeredMrKeys = MakeRegisteredMrKeys(entries, 0xABCD0000);
+
+    const auto status = transport_->taskExecutor_->BuildEntrySubBatchRequest(
+        TransportOpType::STORE, subBatch, registeredMrKeys, subBatchContext);
+
+    ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(subBatchContext.opType, TransportOpType::STORE);
+    const auto* sqe = reinterpret_cast<const std::uint32_t*>(subBatchContext.sendSge.local_addr);
+    EXPECT_EQ(sqe[0] & 0xFF, static_cast<std::uint32_t>(KvOpcode::Store));
+    EXPECT_EQ(static_cast<std::uint64_t>(sqe[6]) | (static_cast<std::uint64_t>(sqe[7]) << 32),
+              entries[0].buffer.region.addr);
+    EXPECT_EQ(sqe[8] & 0xFFFFFF, entries[0].buffer.region.size);
+    EXPECT_EQ(sqe[10], entries[0].offset);
+    EXPECT_EQ(sqe[11] & 0xFFFFFF, entries[0].buffer.region.size / kAlignmentBytes);
+}
+
 TEST_F(SqeRequestTest, SubmitBatchStorePacksSqeIntoDeviceSendBuffer)
 {
     AsuTransportImpl deviceTransport;
@@ -334,6 +358,27 @@ TEST_F(SqeRequestTest, SubmitBatchRetrieveUsesRetrieveOpcodeAndRequest)
     EXPECT_EQ(sqe[kSqeDwordCount + kBatchEntryDwordCount], entries[1].offset);
     EXPECT_EQ(PackedBatchEntryMrKey(sqe, 0), std::uint32_t{0x76540000});
     EXPECT_EQ(PackedBatchEntryMrKey(sqe, 1), std::uint32_t{0x76540001});
+}
+
+TEST_F(SqeRequestTest, SubmitLoadUsesRetrieveOpcodeAndRequest)
+{
+    auto entries = MakeEntries(1);
+    entries[0].offset = kAlignmentBytes * 4;
+    IoScheduler::ScheduledIoBatch subBatch{
+        BatchView<KVBuffer>{entries.data(), entries.size()}
+    };
+    TransportSubBatchContext subBatchContext;
+    const auto registeredMrKeys = MakeRegisteredMrKeys(entries, 0x76540000);
+
+    const auto status = transport_->taskExecutor_->BuildEntrySubBatchRequest(
+        TransportOpType::LOAD, subBatch, registeredMrKeys, subBatchContext);
+
+    ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(subBatchContext.opType, TransportOpType::LOAD);
+    const auto* sqe = reinterpret_cast<const std::uint32_t*>(subBatchContext.sendSge.local_addr);
+    EXPECT_EQ(sqe[0] & 0xFF, static_cast<std::uint32_t>(KvOpcode::Retrieve));
+    EXPECT_EQ(sqe[10], entries[0].offset);
+    EXPECT_EQ(sqe[11] & 0xFFFFFF, entries[0].buffer.region.size / kAlignmentBytes);
 }
 
 TEST_F(SqeRequestTest, SubmitBatchStoreRejectsUnregisteredEntryBuffer)

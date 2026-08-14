@@ -262,6 +262,36 @@ Status CompleteBatchStore(const FakeTransProviderConfig& config, AsuId asuId,
     return Status::OK();
 }
 
+Status CompleteStore(const FakeTransProviderConfig& config, AsuId asuId,
+                     const std::uint32_t* request, std::uint32_t* flagBuffer)
+{
+    const auto cid = static_cast<std::uint16_t>(RequestCid(request));
+    const auto bufferAddr = ReadU64(request[6], request[7]);
+    const auto bufferLength = request[8] & 0xFFFFFF;
+    const auto offset = request[10];
+    const auto key = ReadKey(request + 12);
+    const auto status = StoreBytes(config, asuId, key, offset, bufferAddr, bufferLength)
+                            ? kCqeSuccess
+                            : kCqeCheckResultBuffer;
+    PackCqeHeader(flagBuffer, cid, status);
+    return Status::OK();
+}
+
+Status CompleteRetrieve(const FakeTransProviderConfig& config, AsuId asuId,
+                        const std::uint32_t* request, std::uint32_t* flagBuffer)
+{
+    const auto cid = static_cast<std::uint16_t>(RequestCid(request));
+    const auto bufferAddr = ReadU64(request[6], request[7]);
+    const auto bufferLength = request[8] & 0xFFFFFF;
+    const auto offset = request[10];
+    const auto key = ReadKey(request + 12);
+    const auto status = LoadBytes(config, asuId, key, offset, bufferAddr, bufferLength)
+                            ? kCqeSuccess
+                            : kCqeCheckResultBuffer;
+    PackCqeHeader(flagBuffer, cid, status);
+    return Status::OK();
+}
+
 Status CompleteBatchRetrieve(const FakeTransProviderConfig& config, AsuId asuId,
                              const std::uint32_t* request, std::uint32_t* flagBuffer)
 {
@@ -333,6 +363,7 @@ std::size_t CompletionDwordCount(const std::uint32_t* request)
 {
     const auto opcode = RequestOpcode(request);
     if (opcode == KvOpcode::KeepAlive) { return kCqeDwordCount; }
+    if (opcode == KvOpcode::Store || opcode == KvOpcode::Retrieve) { return kCqeDwordCount; }
 
     const auto batchNumber = static_cast<std::uint16_t>(request[10] & 0xFFFF);
     const auto resultDwordCount =
@@ -358,6 +389,8 @@ Status CompleteFakeBackendRequest(const FakeTransProviderConfig& config, const v
     auto* flagBuffer = completion.data();
     const auto asuId = RequestAsuId(request);
     switch (RequestOpcode(request)) {
+        case KvOpcode::Store: return CompleteStore(config, asuId, request, flagBuffer);
+        case KvOpcode::Retrieve: return CompleteRetrieve(config, asuId, request, flagBuffer);
         case KvOpcode::BatchStore: return CompleteBatchStore(config, asuId, request, flagBuffer);
         case KvOpcode::BatchRetrieve:
             return CompleteBatchRetrieve(config, asuId, request, flagBuffer);
@@ -369,7 +402,7 @@ Status CompleteFakeBackendRequest(const FakeTransProviderConfig& config, const v
         }
         default:
             return Status::Error(StatusCode::UNSUPPORTED,
-                                 "fake backend only supports batch ASU operations");
+                                 "fake backend does not support this ASU operation");
     }
 }
 

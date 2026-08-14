@@ -80,13 +80,6 @@ inline bool IsEntryBatchOp(TransportOpType opType)
            opType == TransportOpType::BATCH_LOAD || opType == TransportOpType::BATCH_STORE;
 }
 
-inline TransportOpType NormalizeTransportOpType(TransportOpType opType)
-{
-    if (opType == TransportOpType::LOAD) { return TransportOpType::BATCH_LOAD; }
-    if (opType == TransportOpType::STORE) { return TransportOpType::BATCH_STORE; }
-    return opType;
-}
-
 inline bool IsKeyBatchOp(TransportOpType opType)
 {
     return opType == TransportOpType::DELETE || opType == TransportOpType::QUERY;

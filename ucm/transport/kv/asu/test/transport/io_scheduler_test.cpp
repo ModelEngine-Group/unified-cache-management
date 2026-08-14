@@ -79,13 +79,6 @@ TEST(IoSchedulerTest, GetSqeIoNumMatchesOperationKind)
     EXPECT_EQ(scheduler.GetSqeIoNum(TransportOpType::QUERY), std::size_t{6});
 }
 
-TEST(IoSchedulerTest, NormalizeLoadAndStoreToBatchOperations)
-{
-    EXPECT_EQ(NormalizeTransportOpType(TransportOpType::LOAD), TransportOpType::BATCH_LOAD);
-    EXPECT_EQ(NormalizeTransportOpType(TransportOpType::STORE), TransportOpType::BATCH_STORE);
-    EXPECT_EQ(NormalizeTransportOpType(TransportOpType::QUERY), TransportOpType::QUERY);
-}
-
 TEST(IoSchedulerTest, SplitByOperationUsesHeldConfig)
 {
     TransportConfig config;

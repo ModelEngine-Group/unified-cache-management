@@ -229,6 +229,12 @@ Status KvStoreProtocol::ValidateRequest(const KvStoreRequest& r) const
     return Status::OK();
 }
 
+Status KvStoreProtocol::UnpackCqe(const std::uint32_t* data, std::uint16_t, KvResponse& out) const
+{
+    UnpackCqeBase(data, out);
+    return Status::OK();
+}
+
 Status KvStoreProtocol::VerifyPackedBuffer(const std::uint32_t* data, std::size_t length) const
 {
     constexpr std::size_t kExpectedLength = kSqeDwordCount * sizeof(std::uint32_t);
@@ -350,6 +356,13 @@ Status KvRetrieveProtocol::ValidateRequest(const KvRetrieveRequest& r) const
     if (IsCacheKeyAllZero(r.key)) [[unlikely]] {
         return Status::Error(StatusCode::INVALID_ARGUMENT, "key is all zeros in Retrieve request");
     }
+    return Status::OK();
+}
+
+Status KvRetrieveProtocol::UnpackCqe(const std::uint32_t* data, std::uint16_t,
+                                     KvResponse& out) const
+{
+    UnpackCqeBase(data, out);
     return Status::OK();
 }
 
