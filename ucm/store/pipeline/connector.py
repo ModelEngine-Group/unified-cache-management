@@ -109,6 +109,10 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
         flat = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         return self.store_.LookupOnPrefix(flat)
 
+    def lookup_on_reverse(self, block_ids: List[bytes]) -> int:
+        flat = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
+        return self.store_.LookupOnReverse(flat)
+
     def prefetch(self, block_ids: List[bytes]) -> None:
         flat = np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         self.store_.Prefetch(flat)

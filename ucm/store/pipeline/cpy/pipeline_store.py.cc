@@ -195,6 +195,13 @@ public:
         if (res) { return res.Value(); }
         ThrowError(res.Error());
     }
+    ssize_t LookupOnReverse(const pybind11::buffer& ids)
+    {
+        BufferArrayView<Detail::BlockId> idArr{ids};
+        auto res = StoreBack()->LookupOnReverse(idArr.data, idArr.num);
+        if (res) { return res.Value(); }
+        ThrowError(res.Error());
+    }
     void Prefetch(const pybind11::buffer& ids)
     {
         BufferArrayView<Detail::BlockId> idArr{ids};
@@ -259,6 +266,7 @@ PYBIND11_MODULE(ucmpipelinestore, m)
     s.def("Self", &PipelineStore::Self);
     s.def("Lookup", &PipelineStore::Lookup, py::arg("ids").noconvert());
     s.def("LookupOnPrefix", &PipelineStore::LookupOnPrefix, py::arg("ids").noconvert());
+    s.def("LookupOnReverse", &PipelineStore::LookupOnReverse, py::arg("ids").noconvert());
     s.def("Prefetch", &PipelineStore::Prefetch, py::arg("ids").noconvert());
     s.def("Load", &PipelineStore::Load, py::arg("ids").noconvert(), py::arg("indexes").noconvert(),
           py::arg("addrs").noconvert());

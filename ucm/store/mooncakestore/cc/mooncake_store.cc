@@ -175,6 +175,44 @@ public:
         return firstMiss - 1;
     }
 
+    Expected<ssize_t> LookupOnReverse(const Detail::BlockId* blocks, size_t num) override
+    {
+        if (num == 0) { return static_cast<ssize_t>(-1); }
+
+        std::vector<std::string> keys;
+        keys.reserve(num);
+        for (size_t i = 0; i < num; ++i) { keys.push_back(BlockIdToKey(blocks[i]) + "_0"); }
+
+        auto exists = RpcBatchIsExist(keys);
+
+        ssize_t mcHitIdx = -1;
+        for (ssize_t i = static_cast<ssize_t>(num) - 1; i >= 0; --i) {
+            if (exists[i] == 1) {
+                mcHitIdx = i;
+                break;
+            }
+        }
+
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_lookup_hit_blocks_total"),
+                                 mcHitIdx >= 0 ? 1.0 : 0.0);
+
+        if (mcHitIdx == static_cast<ssize_t>(num) - 1) { return mcHitIdx; }
+
+        if (config_.storeBackend) {
+            size_t backendStart = mcHitIdx >= 0 ? static_cast<size_t>(mcHitIdx) + 1 : 0;
+            if (backendStart < num) {
+                auto backendRes = config_.storeBackend->LookupOnReverse(blocks + backendStart,
+                                                                        num - backendStart);
+                if (backendRes) {
+                    ssize_t backendHit = backendRes.Value();
+                    if (backendHit >= 0) { return static_cast<ssize_t>(backendStart) + backendHit; }
+                }
+            }
+        }
+
+        return mcHitIdx;
+    }
+
     void Prefetch(const Detail::BlockId* blocks, size_t num) override
     {
         if (config_.storeBackend) { config_.storeBackend->Prefetch(blocks, num); }

@@ -122,6 +122,12 @@ Expected<ssize_t> HealthBreakerStore::LookupOnPrefix(const Detail::BlockId* bloc
     return store_->LookupOnPrefix(blocks, num);
 }
 
+Expected<ssize_t> HealthBreakerStore::LookupOnReverse(const Detail::BlockId* blocks, size_t num)
+{
+    if (!Enabled()) { return static_cast<ssize_t>(-1); }
+    return store_->LookupOnReverse(blocks, num);
+}
+
 void HealthBreakerStore::Prefetch(const Detail::BlockId* blocks, size_t num)
 {
     if (Enabled()) { store_->Prefetch(blocks, num); }

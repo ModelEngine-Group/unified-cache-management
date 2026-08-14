@@ -135,6 +135,16 @@ Expected<ssize_t> Ds3fsStore::LookupOnPrefix(const Detail::BlockId* blocks, size
     return static_cast<ssize_t>(num) - 1;
 }
 
+Expected<ssize_t> Ds3fsStore::LookupOnReverse(const Detail::BlockId* blocks, size_t num)
+{
+    if (num == 0) { return static_cast<ssize_t>(-1); }
+    auto results = impl_->spaceMgr.Lookup(blocks, num);
+    for (ssize_t i = static_cast<ssize_t>(num) - 1; i >= 0; --i) {
+        if (results[i]) { return i; }
+    }
+    return static_cast<ssize_t>(-1);
+}
+
 void Ds3fsStore::Prefetch(const Detail::BlockId* blocks, size_t num) {}
 
 Expected<Detail::TaskHandle> Ds3fsStore::Load(Detail::TaskDesc task)
