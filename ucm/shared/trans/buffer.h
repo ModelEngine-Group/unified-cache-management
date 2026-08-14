@@ -34,6 +34,9 @@ public:
     virtual ~Buffer() = default;
 
     virtual std::shared_ptr<void> MakeDeviceBuffer(size_t size) = 0;
+    // Allocates device memory through the VMM APIs. On platforms that support CPU access to
+    // mapped device memory, the returned mapped address can also be dereferenced by the CPU.
+    virtual std::shared_ptr<void> MakeCpuAccessibleDeviceBuffer(size_t size) = 0;
     virtual Status MakeDeviceBuffers(size_t size, size_t number) = 0;
     virtual std::shared_ptr<void> GetDeviceBuffer(size_t size) = 0;
 

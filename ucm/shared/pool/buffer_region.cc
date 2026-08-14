@@ -60,6 +60,14 @@ Status BufferRegion::Create(BufferMemoryType type, std::size_t size, BufferRegio
             region.device_addr = region.owner.get();
             return Status::OK();
         }
+        case BufferMemoryType::DEVICE_MAPPED_HOST: {
+            auto owner = buffer->MakeCpuAccessibleDeviceBuffer(size);
+            if (!owner) { return Status::Error("failed to allocate CPU-accessible device memory"); }
+            region.owner = std::move(owner);
+            region.local_addr = region.owner.get();
+            region.device_addr = region.owner.get();
+            return Status::OK();
+        }
         default: return Status::InvalidParam("unsupported memory type");
     }
 }
