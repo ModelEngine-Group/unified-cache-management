@@ -345,13 +345,10 @@ Status TransportTaskExecutor::BuildEntrySubBatchRequest(
     const auto opcode = ToKvOpcode(opType);
 
     std::vector<std::uint32_t> mrKeys;
-    {
-        std::lock_guard<std::mutex> lock(registeredRegionsMu_);
-        auto resolveStatus = ResolveSqeMrKeys(subBatch.entries, registeredRegions_, mrKeys);
-        if (!resolveStatus.ok()) {
-            SetSubBatchBuildFailed(subBatchContext, resolveStatus);
-            return resolveStatus;
-        }
+    auto resolveStatus = ResolveSqeMrKeys(subBatch.entries, registeredMrKeys, mrKeys);
+    if (!resolveStatus.ok()) {
+        SetSubBatchBuildFailed(subBatchContext, resolveStatus);
+        return resolveStatus;
     }
 
     const auto cid = AllocateRequestCid();

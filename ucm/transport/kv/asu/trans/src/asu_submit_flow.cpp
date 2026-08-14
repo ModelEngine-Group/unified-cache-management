@@ -68,7 +68,7 @@ Status TransportTaskExecutor::PrepareTaskSubBatches(
             const auto& subBatch = subBatches[index];
             auto& subBatchContext = subBatchContexts.emplace_back();
             const auto subBatchStatus =
-                BuildEntrySubBatchRequest(opType, subBatch, subBatchContext);
+                BuildEntrySubBatchRequest(opType, subBatch, registeredMrKeys, subBatchContext);
             if (!subBatchStatus.ok()) {
                 UC_ERROR(
                     "Build entry sub-batch request failed index={} batch_size={} code={} "
