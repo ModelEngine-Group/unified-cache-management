@@ -173,8 +173,8 @@ private:
     std::vector<ProviderMemoryState> providerMemoryStates_;
     // Provider selected for all client business-memory registration operations.
     std::shared_ptr<TransProvider> memoryProvider_;
-    // Regions registered on the current view and rebound to newly added transports.
-    std::vector<RegisteredMemory> registeredRegions_;
+    // Regions registered by the client and rebound to newly added providers.
+    std::unordered_map<MRHandle, RegisteredMemory> registeredRegions_;
     // Current immutable routing and transport snapshot.
     std::shared_ptr<ViewSnapshot> snapshot_;
     // Transports removed from the active snapshot but still needed by old tasks.
