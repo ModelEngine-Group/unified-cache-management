@@ -46,7 +46,7 @@ struct SourceLocation {
 const char* InternSourceString(std::string&& s);
 
 class Logger {
-    static constexpr uint64_t kDefaultRateLimitWindowMs = 10000;
+    static constexpr uint64_t kDefaultRateLimitWindowMs = 60000;
     std::shared_ptr<spdlog::logger> logger_;
     std::shared_ptr<spdlog::logger> file_logger_;
     std::mutex mutex_;
