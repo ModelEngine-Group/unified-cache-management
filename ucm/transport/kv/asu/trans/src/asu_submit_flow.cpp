@@ -49,11 +49,9 @@ void SetSubBatchSendFailed(TransportSubBatchContext& subBatchContext, const Stat
 
 }  // namespace
 
-Status TransportTaskExecutor::SubmitTaskRequests(
+Status TransportTaskExecutor::PrepareTaskSubBatches(
     const TransportTask& ctx, std::vector<TransportSubBatchContext>& subBatchContexts)
 {
-    Status status = Status::OK();
-
     if (IsEntryBatchOp(ctx.opType)) {
         const auto opType = NormalizeTransportOpType(ctx.opType);
         if (ctx.entries.empty()) {
@@ -69,14 +67,15 @@ Status TransportTaskExecutor::SubmitTaskRequests(
         for (std::size_t index = 0; index < subBatches.size(); ++index) {
             const auto& subBatch = subBatches[index];
             auto& subBatchContext = subBatchContexts.emplace_back();
-            auto subBatchStatus =
-                SubmitEntrySubBatchRequest(opType, subBatch, registeredMrKeys, subBatchContext);
-            subBatchContext.status = subBatchStatus;
+            const auto subBatchStatus =
+                BuildEntrySubBatchRequest(opType, subBatch, registeredMrKeys, subBatchContext);
             if (!subBatchStatus.ok()) {
-                UC_ERROR("Submit entry sub-batch failed index={} batch_size={} code={} message={}",
-                         index, subBatch.entries.size, static_cast<int>(subBatchStatus.code),
-                         subBatchStatus.message);
-                if (status.ok()) { status = subBatchStatus; }
+                UC_ERROR(
+                    "Build entry sub-batch request failed index={} batch_size={} code={} "
+                    "message={}",
+                    index, subBatch.entries.size, static_cast<int>(subBatchStatus.code),
+                    subBatchStatus.message);
+                return subBatchStatus;
             }
         }
     } else if (IsKeyBatchOp(ctx.opType)) {
@@ -90,121 +89,78 @@ Status TransportTaskExecutor::SubmitTaskRequests(
         for (std::size_t index = 0; index < subBatches.size(); ++index) {
             const auto& subBatch = subBatches[index];
             auto& subBatchContext = subBatchContexts.emplace_back();
-            auto subBatchStatus = SubmitKeySubBatchRequest(ctx.opType, subBatch, subBatchContext);
-            subBatchContext.status = subBatchStatus;
+            const auto subBatchStatus =
+                SubmitKeySubBatchRequest(ctx.opType, subBatch, subBatchContext);
             if (!subBatchStatus.ok()) {
                 UC_ERROR("Submit key sub-batch failed index={} batch_size={} code={} message={}",
                          index, subBatch.keys.size, static_cast<int>(subBatchStatus.code),
                          subBatchStatus.message);
-                if (status.ok()) { status = subBatchStatus; }
+                return subBatchStatus;
             }
         }
     } else if (IsKeepAliveOp(ctx.opType)) {
         auto& subBatchContext = subBatchContexts.emplace_back();
-        auto subBatchStatus = SubmitKeepAliveRequest(subBatchContext);
-        subBatchContext.status = subBatchStatus;
+        const auto subBatchStatus = SubmitKeepAliveRequest(subBatchContext);
         if (!subBatchStatus.ok()) {
             UC_ERROR("Submit keep-alive request failed code={} message={}",
                      static_cast<int>(subBatchStatus.code), subBatchStatus.message);
-            if (status.ok()) { status = subBatchStatus; }
+            return subBatchStatus;
         }
     } else {
-        status = Status::Error(StatusCode::UNSUPPORTED, "transport operation is unsupported");
         UC_ERROR("Unsupported transport operation op_type={}", static_cast<int>(ctx.opType));
+        return Status::Error(StatusCode::UNSUPPORTED, "transport operation is unsupported");
     }
-    return status;
+    return Status::OK();
 }
 
-Status TransportTaskExecutor::BuildSubBatchSendBuffers(
+void TransportTaskExecutor::BuildSubBatchSendBuffers(
     std::vector<TransportSubBatchContext>& subBatchContexts,
-    std::vector<TransProvider::SendIoBatch>& ioBatches, std::vector<std::size_t>& subBatchIndexes)
+    std::vector<TransProvider::SendIoBatch>& ioBatches)
 {
-    Status status = Status::OK();
     ioBatches.reserve(subBatchContexts.size());
-    subBatchIndexes.reserve(subBatchContexts.size());
 
-    for (std::size_t index = 0; index < subBatchContexts.size(); ++index) {
-        auto& subBatchContext = subBatchContexts[index];
-        if (!subBatchContext.status.ok()) {
-            UC_ERROR("Skip sub-batch before send index={} cid={} code={} message={}", index,
-                     subBatchContext.cid, static_cast<int>(subBatchContext.status.code),
-                     subBatchContext.status.message);
-            if (status.ok()) {
-                status =
-                    Status::Error(StatusCode::PARTIAL_FAILED, "transport task partially failed");
-            }
-            ReleaseSubBatchResources(subBatchContext);
-            continue;
-        }
-
-        if (subBatchContext.channel == nullptr ||
-            !IsTransportBufferReady(subBatchContext.sendSge) ||
-            !IsTransportBufferReady(subBatchContext.flagBuffer)) {
-            const auto subBatchStatus = Status::Error(StatusCode::NOT_INITIALIZED,
-                                                      "sub-batch transport buffers are not ready");
-            UC_ERROR(
-                "Sub-batch transport buffers are not ready index={} cid={} channel={} "
-                "send_local_addr={} send_device_addr={} send_length={} send_slot={} "
-                "flag_local_addr={} flag_device_addr={} flag_length={} flag_slot={}",
-                index, subBatchContext.cid, subBatchContext.channel != nullptr,
-                subBatchContext.sendSge.local_addr, subBatchContext.sendSge.device_addr,
-                subBatchContext.sendSge.length, subBatchContext.sendSge.slot_index,
-                subBatchContext.flagBuffer.local_addr, subBatchContext.flagBuffer.device_addr,
-                subBatchContext.flagBuffer.length, subBatchContext.flagBuffer.slot_index);
-            SetSubBatchSendFailed(subBatchContext, subBatchStatus);
-            if (status.ok()) { status = subBatchStatus; }
-            ReleaseSubBatchResources(subBatchContext);
-            continue;
-        }
-
+    for (auto& subBatchContext : subBatchContexts) {
         ioBatches.push_back(TransProvider::SendIoBatch{
             subBatchContext.channel->GetConnection(),
             reinterpret_cast<void*>(subBatchContext.sendSge.device_addr),
             reinterpret_cast<void*>(subBatchContext.flagBuffer.device_addr),
             subBatchContext.sendSge.length});
-        subBatchIndexes.emplace_back(index);
     }
-
-    return status;
 }
 
-Status TransportTaskExecutor::SendSubBatchBuffers(
+void TransportTaskExecutor::SendSubBatchBuffers(
     std::vector<TransportSubBatchContext>& subBatchContexts,
-    const std::vector<TransProvider::SendIoBatch>& ioBatches,
-    const std::vector<std::size_t>& subBatchIndexes)
+    const std::vector<TransProvider::SendIoBatch>& ioBatches)
 {
-    Status status = Status::OK();
-    if (ioBatches.empty()) { return status; }
+    if (ioBatches.empty()) { return; }
 
     const auto kernelCount = GetSendCountAttr(config_.attrs, "kernel_count");
     const auto quietCount = GetSendCountAttr(config_.attrs, "quiet_count");
-
     const auto sendStatuses = transProvider_->Send(ioBatches, kernelCount, quietCount);
     if (sendStatuses.size() != ioBatches.size()) {
-        status = Status::Error(StatusCode::INTERNAL_ERROR,
-                               "transport send returned unexpected status count");
+        const auto status = Status::Error(StatusCode::INTERNAL_ERROR,
+                                          "transport send returned unexpected status count");
         UC_ERROR("Transport send returned unexpected status count expected={} actual={}",
                  ioBatches.size(), sendStatuses.size());
-        for (auto index : subBatchIndexes) {
-            auto& subBatchContext = subBatchContexts[index];
+        for (auto& subBatchContext : subBatchContexts) {
             SetSubBatchSendFailed(subBatchContext, status);
+            ReleaseSubBatchResources(subBatchContext);
         }
-        return status;
+        return;
     }
 
     for (std::size_t index = 0; index < sendStatuses.size(); ++index) {
-        auto& subBatchContext = subBatchContexts[subBatchIndexes[index]];
+        auto& subBatchContext = subBatchContexts[index];
         const auto& subBatchStatus = sendStatuses[index];
         if (subBatchStatus.ok()) { continue; }
 
-        UC_ERROR("Send sub-batch failed sub_batch_index={} cid={} code={} message={}",
-                 subBatchIndexes[index], subBatchContext.cid, static_cast<int>(subBatchStatus.code),
+        UC_ERROR("Send sub-batch failed sub_batch_index={} cid={} code={} message={}", index,
+                 subBatchContext.cid, static_cast<int>(subBatchStatus.code),
                  subBatchStatus.message);
         SetSubBatchSendFailed(subBatchContext, subBatchStatus);
         connManager_->ReportFailure(subBatchContext.channel);
-        if (status.ok()) { status = subBatchStatus; }
+        ReleaseSubBatchResources(subBatchContext);
     }
-    return status;
 }
 
 }  // namespace UC::ASU

@@ -45,8 +45,6 @@ struct ScatterGatherEntry {
     MemoryType memory_type{MemoryType::HOST};
 };
 
-bool IsTransportBufferReady(const ScatterGatherEntry& sge);
-
 class BufferManager {
 public:
     BufferManager() = default;

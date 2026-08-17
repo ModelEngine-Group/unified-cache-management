@@ -36,9 +36,9 @@
 #define private public
 #include "asu_transport_impl.h"
 #undef private
-#include "asu_transport/trans_provider.h"
 #include "buffer_manager.h"
 #include "kv_protocol.h"
+#include "trans_provider.h"
 #include "transport_config_parser.h"
 
 namespace UC::ASU {
@@ -238,7 +238,7 @@ TEST_F(SqeRequestTest, SubmitBatchStoreAllocatesFlagBufferAndBuildsRequest)
     transport_->nextRequestCid_.store(41, std::memory_order_relaxed);
     const auto registeredMrKeys = MakeRegisteredMrKeys(entries, 0xABCD0000);
 
-    const auto status = transport_->taskExecutor_->SubmitEntrySubBatchRequest(
+    const auto status = transport_->taskExecutor_->BuildEntrySubBatchRequest(
         TransportOpType::BATCH_STORE, subBatch, registeredMrKeys, subBatchContext);
 
     EXPECT_TRUE(status.ok()) << status.message;
@@ -293,7 +293,7 @@ TEST_F(SqeRequestTest, SubmitBatchStorePacksSqeIntoDeviceSendBuffer)
     };
     TransportSubBatchContext subBatchContext;
 
-    const auto status = deviceTransport.taskExecutor_->SubmitEntrySubBatchRequest(
+    const auto status = deviceTransport.taskExecutor_->BuildEntrySubBatchRequest(
         TransportOpType::BATCH_STORE, subBatch, registeredMrKeys, subBatchContext);
 
     ASSERT_TRUE(status.ok()) << status.message;
@@ -320,7 +320,7 @@ TEST_F(SqeRequestTest, SubmitBatchRetrieveUsesRetrieveOpcodeAndRequest)
     transport_->nextRequestCid_.store(9, std::memory_order_relaxed);
     const auto registeredMrKeys = MakeRegisteredMrKeys(entries, 0x76540000);
 
-    const auto status = transport_->taskExecutor_->SubmitEntrySubBatchRequest(
+    const auto status = transport_->taskExecutor_->BuildEntrySubBatchRequest(
         TransportOpType::BATCH_LOAD, subBatch, registeredMrKeys, subBatchContext);
 
     EXPECT_TRUE(status.ok()) << status.message;
@@ -345,7 +345,7 @@ TEST_F(SqeRequestTest, SubmitBatchStoreRejectsUnregisteredEntryBuffer)
     TransportSubBatchContext subBatchContext;
     const RegisteredMrKeyMap registeredMrKeys;
 
-    const auto status = transport_->taskExecutor_->SubmitEntrySubBatchRequest(
+    const auto status = transport_->taskExecutor_->BuildEntrySubBatchRequest(
         TransportOpType::BATCH_STORE, subBatch, registeredMrKeys, subBatchContext);
 
     EXPECT_EQ(status.code, StatusCode::BUFFER_NOT_REGISTERED);
@@ -444,7 +444,7 @@ TEST_F(SqeRequestTest, AllocationFailureMarksWholeSubBatchFailed)
     CreateTaskExecutor(uninitializedFlagTransport);
     const auto registeredMrKeys = MakeRegisteredMrKeys(entries, 0x45670000);
 
-    const auto status = uninitializedFlagTransport.taskExecutor_->SubmitEntrySubBatchRequest(
+    const auto status = uninitializedFlagTransport.taskExecutor_->BuildEntrySubBatchRequest(
         TransportOpType::BATCH_STORE, subBatch, registeredMrKeys, subBatchContext);
 
     EXPECT_EQ(status.code, StatusCode::NOT_INITIALIZED);
