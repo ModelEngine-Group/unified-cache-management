@@ -126,8 +126,8 @@ public:
         auto st = pool->Allocate(slot);
         if (!st.Success()) { return st; }
         buf.length = slot.length;
-        buf.slot = slot.slot_index;
-        buf.addr = slot.local_addr;
+        buf.slot = slot.slotIndex;
+        buf.addr = slot.localAddr;
         return Status::OK();
     }
 

@@ -34,7 +34,7 @@ namespace {
 
 void ReleaseResponseBuffer(BufferPool& flagBufferPool, CompletionRecord& record)
 {
-    const auto releasedSlot = record.local_resp_slot.slot_index;
+    const auto releasedSlot = record.local_resp_slot.slotIndex;
     const auto releaseStatus = flagBufferPool.Free(releasedSlot);
     record.local_resp_slot = {};
     if (releaseStatus.Failure()) {
@@ -169,7 +169,7 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
     const auto len = static_cast<std::uint32_t>(packedSize);
 
     const auto protocolStatus = runtime_.protocol.PackResponse(
-        record.local_resp_slot.local_addr, record.opcode, KvResponse{record.results});
+        record.local_resp_slot.localAddr, record.opcode, KvResponse{record.results});
     if (protocolStatus.Failure()) {
         ReleaseResponseBuffer(runtime_.flagBufferPool, record);
         UC_ERROR("CompletionPoller SubmitResponse pack failed, opcode={}, error={}",
@@ -182,7 +182,7 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
     operation.direct = transport::OperationDirect::RemoteDeviceHost;
     operation.target_manager = record.peer_one_sided_id;
     operation.ops.emplace_back(
-        transport::Segment{record.local_resp_slot.local_addr, record.remote_resp_addr, len});
+        transport::Segment{record.local_resp_slot.localAddr, record.remote_resp_addr, len});
 
     TransportHandle handle = transport::kInvalidTransferHandle;
     const auto submitStatus = runtime_.transport.ExecuteAsync(operation, handle);

@@ -43,8 +43,8 @@ struct BufferRegion {
     void Reset();
 
     std::shared_ptr<void> owner;
-    void* local_addr{nullptr};
-    void* device_addr{nullptr};
+    void* localAddr{nullptr};
+    void* deviceAddr{nullptr};
 };
 
 }  // namespace UC

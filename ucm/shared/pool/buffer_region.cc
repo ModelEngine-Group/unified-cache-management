@@ -37,8 +37,8 @@ Status BufferRegion::Create(BufferMemoryType type, std::size_t size, BufferRegio
             auto owner = buffer->MakeHostBuffer(size);
             if (!owner) { return Status::Error("failed to allocate host memory"); }
             region.owner = std::move(owner);
-            region.local_addr = region.owner.get();
-            region.device_addr = region.owner.get();
+            region.localAddr = region.owner.get();
+            region.deviceAddr = region.owner.get();
             return Status::OK();
         }
         case BufferMemoryType::HostMappedDevice: {
@@ -48,24 +48,24 @@ Status BufferRegion::Create(BufferMemoryType type, std::size_t size, BufferRegio
                 return Status::Error("failed to allocate host-pinned memory");
             }
             region.owner = std::move(owner);
-            region.local_addr = region.owner.get();
-            region.device_addr = deviceAddr;
+            region.localAddr = region.owner.get();
+            region.deviceAddr = deviceAddr;
             return Status::OK();
         }
         case BufferMemoryType::Device: {
             auto owner = buffer->MakeDeviceBuffer(size);
             if (!owner) { return Status::Error("failed to allocate device memory"); }
             region.owner = std::move(owner);
-            region.local_addr = region.owner.get();
-            region.device_addr = region.owner.get();
+            region.localAddr = region.owner.get();
+            region.deviceAddr = region.owner.get();
             return Status::OK();
         }
         case BufferMemoryType::DeviceMappedHost: {
             auto owner = buffer->MakeCpuAccessibleDeviceBuffer(size);
             if (!owner) { return Status::Error("failed to allocate CPU-accessible device memory"); }
             region.owner = std::move(owner);
-            region.local_addr = region.owner.get();
-            region.device_addr = region.owner.get();
+            region.localAddr = region.owner.get();
+            region.deviceAddr = region.owner.get();
             return Status::OK();
         }
         default: return Status::InvalidParam("unsupported memory type");
@@ -75,8 +75,8 @@ Status BufferRegion::Create(BufferMemoryType type, std::size_t size, BufferRegio
 void BufferRegion::Reset()
 {
     owner.reset();
-    local_addr = nullptr;
-    device_addr = nullptr;
+    localAddr = nullptr;
+    deviceAddr = nullptr;
 }
 
 }  // namespace UC

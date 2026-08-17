@@ -41,7 +41,7 @@ Status PackReply(const ReplySlot& slot, DramPool::KvOpcode opcode,
                  std::vector<std::uint8_t> results)
 {
     DramPool::ProtocolManager protocol;
-    return protocol.PackResponse(slot.local_addr, opcode, DramPool::KvResponse{std::move(results)});
+    return protocol.PackResponse(slot.localAddr, opcode, DramPool::KvResponse{std::move(results)});
 }
 
 class EventCollector final {
@@ -188,7 +188,7 @@ TEST(ReplyServicePollingTest, ReusesSlotWhilePreviousReplyEventIsBeingPublished)
     EXPECT_TRUE(publishEntered);
     EXPECT_TRUE(firstRelease.Success());
     ASSERT_TRUE(second);
-    EXPECT_EQ(second.Value().slot_index, first.Value().slot_index);
+    EXPECT_EQ(second.Value().slotIndex, first.Value().slotIndex);
     EXPECT_TRUE(secondPack.Success());
     EXPECT_TRUE(secondPublished);
     EXPECT_TRUE(cleanup.Success());

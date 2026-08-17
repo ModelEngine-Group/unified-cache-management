@@ -88,7 +88,7 @@ TEST_F(CopyStreamTest, CopiesDeviceMemoryAsynchronously)
     std::array<std::uint8_t, kCopySize> output{};
     for (std::size_t i = 0; i < input.size(); ++i) { input[i] = static_cast<std::uint8_t>(i); }
 
-    ASSERT_EQ(aclrtMemcpy(source.device_addr, source.length, input.data(), input.size(),
+    ASSERT_EQ(aclrtMemcpy(source.deviceAddr, source.length, input.data(), input.size(),
                           ACL_MEMCPY_HOST_TO_DEVICE),
               ACL_SUCCESS);
 
@@ -96,12 +96,12 @@ TEST_F(CopyStreamTest, CopiesDeviceMemoryAsynchronously)
     ASSERT_TRUE(streams.Setup(0, 2).Success());
     const auto stream = streams.NextStream();
     ASSERT_TRUE(streams
-                    .DeviceToDeviceAsync(stream, destination.device_addr, destination.length,
-                                         source.device_addr, input.size())
+                    .DeviceToDeviceAsync(stream, destination.deviceAddr, destination.length,
+                                         source.deviceAddr, input.size())
                     .Success());
     ASSERT_TRUE(streams.Synchronize(stream).Success());
 
-    ASSERT_EQ(aclrtMemcpy(output.data(), output.size(), destination.device_addr, input.size(),
+    ASSERT_EQ(aclrtMemcpy(output.data(), output.size(), destination.deviceAddr, input.size(),
                           ACL_MEMCPY_DEVICE_TO_HOST),
               ACL_SUCCESS);
     EXPECT_EQ(output, input);

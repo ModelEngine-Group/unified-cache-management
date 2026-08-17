@@ -58,7 +58,7 @@ Status NodeActor::EncodeRequest(const ReplySlot& replySlot, OpType op,
                                 std::vector<std::uint8_t>& payload)
 {
     const auto batchSize = static_cast<std::uint16_t>(entries.size());
-    const auto responseAddress = reinterpret_cast<std::uint64_t>(replySlot.local_addr);
+    const auto responseAddress = reinterpret_cast<std::uint64_t>(replySlot.localAddr);
     const auto pack = [this, &payload](const DramPool::KvRequest& request) {
         const auto size = protocol_.GetPackedRequestSize(request.opcode, request);
         payload.resize(size);
@@ -114,7 +114,7 @@ void NodeActor::QueueCompletion(Request request, Status status,
 
 void NodeActor::ReleaseReplySlot(RequestRecord& request)
 {
-    if (request.replySlot.local_addr == nullptr) { return; }
+    if (request.replySlot.localAddr == nullptr) { return; }
     const auto release = dependencies_.releaseReplySlot(request.token, request.replySlot);
     if (release.Failure()) {
         UC_ERROR("DramStore node {} failed to release request {} reply slot: {}",

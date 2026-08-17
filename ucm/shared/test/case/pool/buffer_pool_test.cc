@@ -113,15 +113,15 @@ TEST_F(BufferPoolTest, HostPoolUsesAlignedSlotStrideAndReportsBusyWhenFull)
     BufferPool::Slot third;
     ASSERT_TRUE(pool.Allocate(first).Success());
     ASSERT_TRUE(pool.Allocate(second).Success());
-    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.local_addr) -
-                  reinterpret_cast<std::uintptr_t>(first.local_addr),
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.localAddr) -
+                  reinterpret_cast<std::uintptr_t>(first.localAddr),
               128);
-    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.device_addr) -
-                  reinterpret_cast<std::uintptr_t>(first.device_addr),
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.deviceAddr) -
+                  reinterpret_cast<std::uintptr_t>(first.deviceAddr),
               128);
     EXPECT_EQ(first.length, 71);
-    EXPECT_TRUE(pool.IsValidPointer(first.local_addr));
-    EXPECT_FALSE(pool.IsValidPointer(static_cast<char*>(first.local_addr) + 1));
+    EXPECT_TRUE(pool.IsValidPointer(first.localAddr));
+    EXPECT_FALSE(pool.IsValidPointer(static_cast<char*>(first.localAddr) + 1));
     EXPECT_FALSE(
         pool.IsValidPointer(static_cast<char*>(pool.GetLocalAddr()) + pool.GetTotalSize()));
 
@@ -146,18 +146,18 @@ TEST_F(BufferPoolTest, SupportsCustomSizeAndOffsetAlignment)
     BufferPool::Slot second;
     ASSERT_TRUE(pool.Allocate(first).Success());
     ASSERT_TRUE(pool.Allocate(second).Success());
-    EXPECT_EQ(first.local_addr, pool.GetLocalAddr());
-    EXPECT_EQ(first.device_addr, pool.GetDeviceAddr());
+    EXPECT_EQ(first.localAddr, pool.GetLocalAddr());
+    EXPECT_EQ(first.deviceAddr, pool.GetDeviceAddr());
     EXPECT_EQ(first.length, kCapacity);
     EXPECT_EQ(first.offset, std::size_t{0});
     EXPECT_EQ(second.offset, kStride);
-    EXPECT_EQ(static_cast<char*>(pool.GetLocalAddr()) + second.offset, second.local_addr);
-    EXPECT_EQ(static_cast<char*>(pool.GetDeviceAddr()) + second.offset, second.device_addr);
+    EXPECT_EQ(static_cast<char*>(pool.GetLocalAddr()) + second.offset, second.localAddr);
+    EXPECT_EQ(static_cast<char*>(pool.GetDeviceAddr()) + second.offset, second.deviceAddr);
 
-    const auto localOffset = reinterpret_cast<std::uintptr_t>(second.local_addr) -
-                             reinterpret_cast<std::uintptr_t>(first.local_addr);
-    const auto deviceOffset = reinterpret_cast<std::uintptr_t>(second.device_addr) -
-                              reinterpret_cast<std::uintptr_t>(first.device_addr);
+    const auto localOffset = reinterpret_cast<std::uintptr_t>(second.localAddr) -
+                             reinterpret_cast<std::uintptr_t>(first.localAddr);
+    const auto deviceOffset = reinterpret_cast<std::uintptr_t>(second.deviceAddr) -
+                              reinterpret_cast<std::uintptr_t>(first.deviceAddr);
     EXPECT_EQ(localOffset, kStride);
     EXPECT_EQ(deviceOffset, kStride);
     EXPECT_EQ(localOffset % kAlignment, 0);
@@ -184,13 +184,13 @@ TEST_F(BufferPoolTest, HostPinnedPoolKeepsLocalAndDeviceAddresses)
     BufferPool::Slot second;
     ASSERT_TRUE(pool.Allocate(first).Success());
     ASSERT_TRUE(pool.Allocate(second).Success());
-    EXPECT_EQ(first.local_addr, pool.GetLocalAddr());
-    EXPECT_EQ(first.device_addr, pool.GetDeviceAddr());
-    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.local_addr) -
-                  reinterpret_cast<std::uintptr_t>(first.local_addr),
+    EXPECT_EQ(first.localAddr, pool.GetLocalAddr());
+    EXPECT_EQ(first.deviceAddr, pool.GetDeviceAddr());
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.localAddr) -
+                  reinterpret_cast<std::uintptr_t>(first.localAddr),
               4096);
-    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.device_addr) -
-                  reinterpret_cast<std::uintptr_t>(first.device_addr),
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.deviceAddr) -
+                  reinterpret_cast<std::uintptr_t>(first.deviceAddr),
               4096);
 }
 
@@ -215,17 +215,17 @@ TEST_F(BufferPoolTest, DevicePoolZeroesReleasedSlot)
 
     std::array<std::uint8_t, kSlotStride> dirty;
     dirty.fill(0xAB);
-    ASSERT_TRUE(stream->HostToDevice(dirty.data(), first.device_addr, kSlotStride).Success());
+    ASSERT_TRUE(stream->HostToDevice(dirty.data(), first.deviceAddr, kSlotStride).Success());
 
-    ASSERT_TRUE(pool.Free(first.slot_index).Success());
+    ASSERT_TRUE(pool.Free(first.slotIndex).Success());
 
     BufferPool::Slot second;
     ASSERT_TRUE(pool.Allocate(second).Success());
-    EXPECT_EQ(second.local_addr, first.local_addr);
-    EXPECT_EQ(second.slot_index, first.slot_index);
+    EXPECT_EQ(second.localAddr, first.localAddr);
+    EXPECT_EQ(second.slotIndex, first.slotIndex);
 
     std::array<std::uint8_t, kSlotStride> host{};
-    ASSERT_TRUE(stream->DeviceToHost(second.device_addr, host.data(), kSlotStride).Success());
+    ASSERT_TRUE(stream->DeviceToHost(second.deviceAddr, host.data(), kSlotStride).Success());
 
     for (const auto value : host) { EXPECT_EQ(value, 0); }
 }
@@ -255,12 +255,12 @@ TEST_F(BufferPoolTest, CpuAccessibleDevicePoolAllocatesAndZeroesReleasedSlot)
     ASSERT_TRUE(pool.Allocate(slot).Success());
     std::array<std::uint8_t, kSlotStride> dirty;
     dirty.fill(0xAB);
-    ASSERT_TRUE(stream->HostToDevice(dirty.data(), slot.device_addr, kSlotStride).Success());
-    ASSERT_TRUE(pool.Free(slot.slot_index).Success());
+    ASSERT_TRUE(stream->HostToDevice(dirty.data(), slot.deviceAddr, kSlotStride).Success());
+    ASSERT_TRUE(pool.Free(slot.slotIndex).Success());
 
     ASSERT_TRUE(pool.Allocate(slot).Success());
     std::array<std::uint8_t, kSlotStride> host{};
-    ASSERT_TRUE(stream->DeviceToHost(slot.device_addr, host.data(), kSlotStride).Success());
+    ASSERT_TRUE(stream->DeviceToHost(slot.deviceAddr, host.data(), kSlotStride).Success());
     for (const auto value : host) { EXPECT_EQ(value, 0); }
 }
 
@@ -274,16 +274,16 @@ TEST_F(BufferPoolTest, FreeZeroesAndReusesHostSlot)
 
     BufferPool::Slot first;
     ASSERT_TRUE(pool.Allocate(first).Success());
-    std::memset(first.local_addr, 0xAB, kSlotStride);
-    ASSERT_TRUE(pool.Free(first.slot_index).Success());
+    std::memset(first.localAddr, 0xAB, kSlotStride);
+    ASSERT_TRUE(pool.Free(first.slotIndex).Success());
 
     BufferPool::Slot second;
     ASSERT_TRUE(pool.Allocate(second).Success());
-    EXPECT_EQ(second.local_addr, first.local_addr);
-    EXPECT_EQ(second.slot_index, first.slot_index);
+    EXPECT_EQ(second.localAddr, first.localAddr);
+    EXPECT_EQ(second.slotIndex, first.slotIndex);
     EXPECT_EQ(second.offset, first.offset);
 
-    const auto* bytes = static_cast<const std::uint8_t*>(second.local_addr);
+    const auto* bytes = static_cast<const std::uint8_t*>(second.localAddr);
     for (std::size_t i = 0; i < kSlotStride; ++i) { EXPECT_EQ(bytes[i], 0); }
 }
 
@@ -297,15 +297,15 @@ TEST_F(BufferPoolTest, FreePreservesHostSlotWhenZeroingDisabled)
 
     BufferPool::Slot first;
     ASSERT_TRUE(pool.Allocate(first).Success());
-    std::memset(first.local_addr, 0xAB, kSlotStride);
-    ASSERT_TRUE(pool.Free(first.slot_index).Success());
+    std::memset(first.localAddr, 0xAB, kSlotStride);
+    ASSERT_TRUE(pool.Free(first.slotIndex).Success());
 
     BufferPool::Slot second;
     ASSERT_TRUE(pool.Allocate(second).Success());
-    EXPECT_EQ(second.local_addr, first.local_addr);
-    EXPECT_EQ(second.slot_index, first.slot_index);
+    EXPECT_EQ(second.localAddr, first.localAddr);
+    EXPECT_EQ(second.slotIndex, first.slotIndex);
 
-    const auto* bytes = static_cast<const std::uint8_t*>(second.local_addr);
+    const auto* bytes = static_cast<const std::uint8_t*>(second.localAddr);
     for (std::size_t i = 0; i < kSlotStride; ++i) { EXPECT_EQ(bytes[i], 0xAB); }
 }
 
@@ -349,8 +349,8 @@ TEST_F(BufferPoolTest, ConcurrentAllocateAndFree)
                 failed = true;
                 return;
             }
-            std::memset(slot.local_addr, 0xAB, slot.length);
-            status = pool.Free(slot.slot_index);
+            std::memset(slot.localAddr, 0xAB, slot.length);
+            status = pool.Free(slot.slotIndex);
             if (status.Failure()) {
                 failed = true;
                 return;

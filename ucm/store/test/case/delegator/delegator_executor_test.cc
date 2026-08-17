@@ -163,8 +163,8 @@ public:
                 return Status::InvalidParam("fake store address is outside registered region");
             }
             BufferPool::Slot slot;
-            slot.local_addr = shard.addrs.front();
-            slot.device_addr = shard.addrs.front();
+            slot.localAddr = shard.addrs.front();
+            slot.deviceAddr = shard.addrs.front();
             slot.length = payload_size_;
             slot.offset = address - registration_base_;
             dump_slots_.push_back(slot);
