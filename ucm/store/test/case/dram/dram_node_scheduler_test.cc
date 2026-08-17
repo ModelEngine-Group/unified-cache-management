@@ -281,39 +281,6 @@ TEST(NodeActorTest, SynchronousRepliesCompleteInOneBatch)
     EXPECT_EQ(completions.size(), std::size_t{2});
 }
 
-TEST(NodeActorTest, FailedRecoveryFenceIsFatal)
-{
-    std::size_t fenceAttempts = 0;
-    auto dependencies = NodeDependencies{
-        [](std::vector<RequestCompleted>&) { std::_Exit(0); },
-        [&](TransportCommand& command) {
-            if (std::get_if<FenceEpoch>(&command) != nullptr) { ++fenceAttempts; }
-            return Status::OK();
-        },
-        [](const RequestToken&, OpType, std::size_t) -> Expected<ReplySlot> {
-            static std::uint8_t replyByte = 0;
-            return ReplySlot{&replyByte, &replyByte, 1, 0};
-        },
-        [](const RequestToken&, const ReplySlot&) -> Status { std::_Exit(0); },
-    };
-    NodeActor actor(ActorConfig(1, 1ms), std::move(dependencies));
-    const auto now = std::chrono::steady_clock::now();
-    ConnectActor(actor, now);
-    SubmitToActor(actor, MakeRequest(1, 1, 1, 1, now + 1ms), now);
-    actor.Advance(now);
-    actor.Advance(now + 2ms);
-    actor.Advance(now + 3ms);
-    ASSERT_EQ(fenceAttempts, std::size_t{1});
-
-    EXPECT_DEATH(
-        actor.Handle(
-            NodeEvent{
-                FenceCompleted{1, kDefaultLaneId, 1, Status::Error("recovery fence failed")}
-    },
-            now + 2ms),
-        "");
-}
-
 TEST(NodeActorTest, ExposedTimeoutFencesActiveRequests)
 {
     std::vector<RequestCompleted> completions;

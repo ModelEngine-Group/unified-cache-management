@@ -67,6 +67,11 @@ std::shared_ptr<void> SimuBuffer::MakeHostBuffer(size_t size)
     return std::shared_ptr<void>(device, FreeMemory);
 }
 
+std::shared_ptr<void> SimuBuffer::MakeCpuAccessibleDeviceBuffer(size_t size)
+{
+    return MakeHostBuffer(size);
+}
+
 Status Buffer::RegisterHostBuffer(void* host, size_t size, void** pDevice)
 {
     if (pDevice) { *pDevice = host; }

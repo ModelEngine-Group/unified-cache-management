@@ -30,7 +30,9 @@
 #include <mutex>
 #include <thread>
 #include <utility>
+#include "logger/logger.h"
 #include "node_actor.h"
+#include "trans/device.h"
 
 namespace UC::Dram {
 namespace {
@@ -137,6 +139,18 @@ void NodeScheduler::Publish(NodeId nodeId, NodeEvent event)
 void NodeScheduler::RunActors(Runner& runner) noexcept
 {
     try {
+        UC::Trans::Device device;
+        const auto initStatus = device.Init();
+        if (initStatus.Failure() && initStatus != Status::DuplicateKey()) {
+            UC_ERROR("aclInit failed: {}", initStatus.ToString());
+            return;
+        }
+        const auto setupStatus = device.Setup(config_.deviceId);
+        if (setupStatus.Failure()) {
+            UC_ERROR("aclrtSetDevice failed: {}", setupStatus.ToString());
+            return;
+        }
+
         auto nextWakeup = TimePoint::min();
         for (;;) {
             {

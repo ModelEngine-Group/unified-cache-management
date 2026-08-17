@@ -67,6 +67,7 @@ Expected<std::unique_ptr<ReplyService>> CreateService(std::size_t slots,
                                                       std::uint32_t slotSize = kSlotSize)
 {
     return ReplyService::Create(ReplyService::Options{
+        0,
         slotSize,
         slots,
         std::chrono::microseconds{100},
@@ -103,7 +104,7 @@ TEST_F(ReplyServiceTest, SharesSlotsAcrossRequestsAndValidatesOwnership)
     EXPECT_EQ(service->Available(), std::size_t{0});
     auto exhausted = service->Acquire(Token(33, 4), OpType::LOOKUP, 1);
     ASSERT_FALSE(exhausted);
-    EXPECT_EQ(exhausted.Error(), Status::Error());
+    EXPECT_EQ(exhausted.Error(), Status::NoSpace());
 
     EXPECT_EQ(service->Release(Token(22, 999), second.Value()), Status::InvalidParam());
     EXPECT_EQ(service->Available(), std::size_t{0});

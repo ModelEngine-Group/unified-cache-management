@@ -60,6 +60,12 @@ enum class RequestState : std::uint8_t {
     COMPLETED,
 };
 
+inline const char* RequestStateToString(RequestState state) noexcept
+{
+    constexpr const char* names[] = {"TRANSMITTING", "INFLIGHT", "WAITING_FENCE", "COMPLETED"};
+    return names[static_cast<std::uint8_t>(state)];
+}
+
 struct BufferRef {
     std::uintptr_t address{0};
     std::uint64_t length{0};
@@ -127,6 +133,7 @@ struct NodeSchedulerConfig {
     NodeLimits limits;
     std::chrono::milliseconds reconnectInterval{0};
     std::size_t runnerCount{1};
+    std::int32_t deviceId{0};
 };
 
 struct TransportRuntimeConfig {

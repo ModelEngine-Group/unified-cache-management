@@ -35,12 +35,18 @@
 
 namespace UC::Dram {
 
+enum class Role {
+    WORKER,
+    SCHEDULER,
+};
+
 struct DramConfig {
     std::string localControlHost;
     std::uint16_t localControlPort{0};
     std::string localHost;
     std::string localTransportManagerId;
-    std::int32_t transportDeviceId{0};
+    std::int32_t deviceId{0};
+    Role role{Role::WORKER};
     UC::KV::RouterType routerType{UC::KV::RouterType::RING_HASH_FULL_SPREAD};
     std::size_t maxIoEntries{65536};
     NodeSchedulerConfig nodeScheduler;

@@ -29,7 +29,6 @@
 #include <fmt/format.h>
 #include <limits>
 #include <string_view>
-#include <thread>
 #include <unordered_set>
 #include <utility>
 #include "kv_protocol.h"
@@ -128,14 +127,6 @@ std::chrono::milliseconds Milliseconds(std::size_t value)
         std::min<std::size_t>(value, static_cast<std::size_t>(std::numeric_limits<Rep>::max())))};
 }
 
-std::size_t DerivedWorkerCount(std::size_t nodeCount)
-{
-    const auto hardwareThreads =
-        std::max<std::size_t>(1, static_cast<std::size_t>(std::thread::hardware_concurrency()));
-    const auto threadsPerSubsystem = std::max<std::size_t>(1, hardwareThreads / 2);
-    return std::min(nodeCount, threadsPerSubsystem);
-}
-
 }  // namespace
 
 Expected<DramConfig> DramConfig::Parse(const Detail::Dictionary& dictionary)
@@ -168,32 +159,37 @@ Expected<DramConfig> DramConfig::Parse(const Detail::Dictionary& dictionary)
             return Status::InvalidParam("unsupported router_type({})", routerType);
         }
 
-        std::size_t transportDeviceId = 0;
-        status = OptionalSize(dictionary, "transport_device_id", &transportDeviceId);
-        if (status.Failure() || transportDeviceId > static_cast<std::size_t>(
-                                                        std::numeric_limits<std::int32_t>::max())) {
-            return status.Failure() ? status
-                                    : Status::InvalidParam("transport_device_id is out of range");
+        std::size_t deviceId = 0;
+        status = OptionalSize(dictionary, "device_id", &deviceId);
+        if (status.Failure() || deviceId > 65) {
+            return status.Failure() ? status : Status::InvalidParam("device_id is out of range");
         }
-        result.transportDeviceId = static_cast<std::int32_t>(transportDeviceId);
+        result.deviceId = static_cast<std::int32_t>(deviceId);
+        result.nodeScheduler.deviceId = result.deviceId;
 
-        std::vector<std::size_t> nodeIds;
+        if (dictionary.Contains("role")) {
+            std::string roleStr;
+            dictionary.Get("role", roleStr);
+            if (roleStr == "scheduler") {
+                result.role = Role::SCHEDULER;
+            } else if (roleStr != "worker") {
+                return Status::InvalidParam("unsupported role({})", roleStr);
+            }
+        }
+
         std::vector<std::string> controlEndpoints;
         std::vector<std::string> transportManagerIds;
-        status = NumberList(dictionary, "node_ids", &nodeIds);
-        if (status.Failure()) { return status; }
         if (!dictionary.Contains("node_control_endpoints") ||
             !dictionary.Contains("node_transport_manager_ids")) {
             return Status::InvalidParam("missing DramStore node configuration arrays");
         }
         dictionary.Get("node_control_endpoints", controlEndpoints);
         dictionary.Get("node_transport_manager_ids", transportManagerIds);
-        if (nodeIds.size() != controlEndpoints.size() ||
-            nodeIds.size() != transportManagerIds.size()) {
+        if (controlEndpoints.size() != transportManagerIds.size()) {
             return Status::InvalidParam("node config arrays must have equal lengths");
         }
-        result.nodeScheduler.nodes.reserve(nodeIds.size());
-        for (std::size_t index = 0; index < nodeIds.size(); ++index) {
+        result.nodeScheduler.nodes.reserve(controlEndpoints.size());
+        for (std::size_t index = 0; index < controlEndpoints.size(); ++index) {
             const auto controlField = fmt::format("node_control_endpoints[{}]", index);
             std::string controlHost;
             std::uint16_t controlPort = 0;
@@ -205,8 +201,8 @@ Expected<DramConfig> DramConfig::Parse(const Detail::Dictionary& dictionary)
                                             index);
             }
             result.nodeScheduler.nodes.push_back(
-                NodeEndpoint{static_cast<NodeId>(nodeIds[index]), std::move(controlHost),
-                             controlPort, std::move(transportManagerIds[index])});
+                NodeEndpoint{static_cast<NodeId>(index), std::move(controlHost), controlPort,
+                             std::move(transportManagerIds[index])});
         }
 
         status = OptionalSize(dictionary, "max_io_entries", &result.maxIoEntries);
@@ -216,8 +212,20 @@ Expected<DramConfig> DramConfig::Parse(const Detail::Dictionary& dictionary)
         const auto maxBatch =
             std::min({result.maxIoEntries, kTargetBatchEntries, kMaxProtocolBatchEntries});
         result.nodeScheduler.limits = NodeLimits{maxInflight, maxBatch};
-        result.nodeScheduler.runnerCount = DerivedWorkerCount(result.nodeScheduler.nodes.size());
-        result.transportRuntime.workerCount = DerivedWorkerCount(result.nodeScheduler.nodes.size());
+        result.nodeScheduler.runnerCount = 1;
+        result.transportRuntime.workerCount = 1;
+        if (dictionary.Contains("transport_worker_count")) {
+            std::size_t wc = 0;
+            if (OptionalSize(dictionary, "transport_worker_count", &wc).Success() && wc > 0) {
+                result.transportRuntime.workerCount = wc;
+            }
+        }
+        if (dictionary.Contains("node_runner_count")) {
+            std::size_t rc = 0;
+            if (OptionalSize(dictionary, "node_runner_count", &rc).Success() && rc > 0) {
+                result.nodeScheduler.runnerCount = rc;
+            }
+        }
 
         if (maxInflight != 0 && result.nodeScheduler.nodes.size() >
                                     std::numeric_limits<std::size_t>::max() / maxInflight) {
@@ -227,9 +235,9 @@ Expected<DramConfig> DramConfig::Parse(const Detail::Dictionary& dictionary)
         result.replySlotSize = static_cast<std::uint32_t>(MaxReplySize(maxBatch));
 
         std::size_t lookupTimeout = 1000;
-        std::size_t dumpTimeout = 5000;
-        std::size_t loadTimeout = 5000;
-        std::size_t reconnectInterval = 100;
+        std::size_t dumpTimeout = 3000;
+        std::size_t loadTimeout = 3000;
+        std::size_t reconnectInterval = 3000;
         const std::pair<const char*, std::size_t*> durations[] = {
             {"lookup_timeout_ms",     &lookupTimeout    },
             {"dump_timeout_ms",       &dumpTimeout      },
@@ -246,8 +254,10 @@ Expected<DramConfig> DramConfig::Parse(const Detail::Dictionary& dictionary)
         result.nodeScheduler.reconnectInterval = Milliseconds(reconnectInterval);
 
         std::vector<std::size_t> tensorSizes;
-        status = NumberList(dictionary, "tensor_size_list", &tensorSizes);
-        if (status.Failure()) { return status; }
+        if (dictionary.Contains("tensor_size_list")) {
+            status = NumberList(dictionary, "tensor_size_list", &tensorSizes);
+            if (status.Failure()) { return status; }
+        }
         result.tensorSizes.assign(tensorSizes.begin(), tensorSizes.end());
 
         status = result.Validate();
@@ -298,7 +308,9 @@ Status DramConfig::Validate() const
     if (nodeScheduler.reconnectInterval.count() <= 0) {
         return Status::InvalidParam("DramStore reconnect interval must be positive");
     }
-    if (tensorSizes.empty()) { return Status::InvalidParam("tensor_size_list must not be empty"); }
+    if (role != Role::SCHEDULER && tensorSizes.empty()) {
+        return Status::InvalidParam("tensor_size_list must not be empty");
+    }
     return Status::OK();
 }
 

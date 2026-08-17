@@ -14,6 +14,11 @@ if(RUNTIME_ENVIRONMENT STREQUAL "ascend")
         ${CMAKE_CURRENT_SOURCE_DIR}/cc/transport_manager_backend.cc)
 endif()
 add_library(dramstore SHARED ${UCM_DRAM_STORE_CC_SOURCE_FILES})
+
+set_target_properties(dramstore PROPERTIES
+    BUILD_WITH_INSTALL_RPATH ON
+    INSTALL_RPATH "$ORIGIN"
+)
 if(RUNTIME_ENVIRONMENT STREQUAL "ascend")
     target_compile_definitions(dramstore PRIVATE UC_DRAM_ASCEND_BACKEND)
     # aclrtSynchronizeEvent in dram_store.cc needs acl/acl.h + libascendcl.
@@ -26,6 +31,7 @@ if(RUNTIME_ENVIRONMENT STREQUAL "ascend")
     )
     target_link_libraries(dramstore PRIVATE Ascend::ascendcl)
 endif()
+target_link_libraries(dramstore PRIVATE trans)
 target_include_directories(dramstore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cc)
 target_include_directories(dramstore PUBLIC
     ${CMAKE_SOURCE_DIR}/ucm/transport/p2p/include)

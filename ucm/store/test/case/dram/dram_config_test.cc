@@ -21,11 +21,9 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include <algorithm>
 #include <cstdint>
 #include <gtest/gtest.h>
 #include <string>
-#include <thread>
 #include <vector>
 #include "config.h"
 
@@ -38,7 +36,6 @@ Detail::Dictionary BaseConfig(bool includeTensorSizes = true)
     config.Set("local_control_endpoint", std::string{"127.0.0.1:6000"});
     config.Set("local_host", std::string{"127.0.0.1"});
     config.Set("local_transport_manager_id", std::string{"127.0.0.1:6100"});
-    config.Set("node_ids", std::vector<ssize_t>{7, 9});
     config.Set("node_control_endpoints",
                std::vector<std::string>{"127.0.0.1:7000", "127.0.0.1:9000"});
     config.Set("node_transport_manager_ids",
@@ -81,16 +78,22 @@ TEST(DramConfigTest, CapsDerivedNodeAndReplyCapacities)
     EXPECT_EQ(config.replySlotSize, std::uint32_t{65});
 }
 
-TEST(DramConfigTest, DerivesRuntimeWorkersFromHardwareAndNodeCount)
+TEST(DramConfigTest, OverridesWorkerCountIndependently)
 {
     auto input = BaseConfig();
+    input.SetNumber("transport_worker_count", 7);
     auto parsed = DramConfig::Parse(input);
     ASSERT_TRUE(parsed);
-    const auto hardwareThreads =
-        std::max<std::size_t>(1, static_cast<std::size_t>(std::thread::hardware_concurrency()));
-    const auto expected = std::min<std::size_t>(2, std::max<std::size_t>(1, hardwareThreads / 2));
-    EXPECT_EQ(parsed.Value().nodeScheduler.runnerCount, expected);
-    EXPECT_EQ(parsed.Value().transportRuntime.workerCount, expected);
+    EXPECT_EQ(parsed.Value().transportRuntime.workerCount, std::size_t{7});
+}
+
+TEST(DramConfigTest, OverridesRunnerCountIndependently)
+{
+    auto input = BaseConfig();
+    input.SetNumber("node_runner_count", 3);
+    auto parsed = DramConfig::Parse(input);
+    ASSERT_TRUE(parsed);
+    EXPECT_EQ(parsed.Value().nodeScheduler.runnerCount, std::size_t{3});
 }
 
 TEST(DramConfigTest, ParsesFixedReconnectInterval)
@@ -137,12 +140,11 @@ TEST(DramConfigTest, RejectsInvalidSchedulerBoundaries)
     zeroBudget.SetNumber("max_io_entries", 0);
     EXPECT_FALSE(DramConfig::Parse(zeroBudget));
 
-    auto duplicateNodes = BaseConfig();
-    duplicateNodes.Set("node_ids", std::vector<ssize_t>{7, 7});
-    EXPECT_FALSE(DramConfig::Parse(duplicateNodes));
+    auto mismatchedNodes = BaseConfig();
+    mismatchedNodes.Set("node_control_endpoints", std::vector<std::string>{"127.0.0.1:7000"});
+    EXPECT_FALSE(DramConfig::Parse(mismatchedNodes));
 
     auto emptyNodes = BaseConfig();
-    emptyNodes.Set("node_ids", std::vector<ssize_t>{});
     emptyNodes.Set("node_control_endpoints", std::vector<std::string>{});
     emptyNodes.Set("node_transport_manager_ids", std::vector<std::string>{});
     EXPECT_FALSE(DramConfig::Parse(emptyNodes));
@@ -159,9 +161,11 @@ TEST(DramConfigTest, ParsesControlEndpointsAndStoresManagerIds)
     EXPECT_EQ(config.localControlPort, std::uint16_t{6000});
     EXPECT_EQ(config.localTransportManagerId, "127.0.0.1:6100");
     ASSERT_EQ(config.nodeScheduler.nodes.size(), std::size_t{2});
+    EXPECT_EQ(config.nodeScheduler.nodes[0].nodeId, NodeId{0});
     EXPECT_EQ(config.nodeScheduler.nodes[0].controlHost, "127.0.0.1");
     EXPECT_EQ(config.nodeScheduler.nodes[0].controlPort, std::uint16_t{7000});
     EXPECT_EQ(config.nodeScheduler.nodes[0].transportManagerId, "127.0.0.1:7100");
+    EXPECT_EQ(config.nodeScheduler.nodes[1].nodeId, NodeId{1});
 }
 
 }  // namespace

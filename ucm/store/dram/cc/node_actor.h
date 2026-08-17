@@ -63,6 +63,8 @@ private:
         FENCING,
     };
 
+    static const char* NodeStateName(NodeState state) noexcept;
+
     struct RequestRecord {
         Request request;
         RequestState state{RequestState::TRANSMITTING};

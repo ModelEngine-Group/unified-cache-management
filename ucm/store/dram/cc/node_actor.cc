@@ -31,6 +31,20 @@
 namespace UC::Dram {
 namespace {
 
+// Fold shardId into the wire key for non-zero shards so multiple shards of one
+// block coexist on the same drampool node (which keys entries by BlockId alone).
+// shardId == 0 keeps the original key so lookup (always shard 0) finds the entry.
+Detail::BlockId StorageKey(const Detail::BlockId& blockId, std::uint32_t shardId)
+{
+    if (shardId == 0) { return blockId; }
+    Detail::BlockId result = blockId;
+    std::uint32_t seed = 0;
+    std::memcpy(&seed, result.data(), sizeof(seed));
+    seed ^= shardId + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+    std::memcpy(result.data(), &seed, sizeof(seed));
+    return result;
+}
+
 template <typename RequestEntry>
 void FillTransferEntries(const std::vector<IoEntry>& entries,
                          std::vector<RequestEntry>& requestEntries)
@@ -39,7 +53,8 @@ void FillTransferEntries(const std::vector<IoEntry>& entries,
     for (std::size_t index = 0; index < entries.size(); ++index) {
         const auto& source = entries[index];
         auto& target = requestEntries[index];
-        std::memcpy(target.key.data(), source.blockId.data(), source.blockId.size());
+        const auto key = StorageKey(source.blockId, source.shardId);
+        std::memcpy(target.key.data(), key.data(), key.size());
         target.addr = source.buffer.address;
         target.len = static_cast<std::uint32_t>(source.buffer.length);
         target.idx = source.shardId;
@@ -51,6 +66,12 @@ void FillTransferEntries(const std::vector<IoEntry>& entries,
 NodeActor::NodeActor(Config config, NodeDependencies dependencies)
     : config_(std::move(config)), dependencies_(std::move(dependencies))
 {
+}
+
+const char* NodeActor::NodeStateName(NodeState state) noexcept
+{
+    constexpr const char* names[] = {"DISCONNECTED", "CONNECTING", "ACTIVE", "FENCING"};
+    return names[static_cast<std::uint8_t>(state)];
 }
 
 Status NodeActor::EncodeRequest(const ReplySlot& replySlot, OpType op,
@@ -75,8 +96,8 @@ Status NodeActor::EncodeRequest(const ReplySlot& replySlot, OpType op,
             request.batch_size = batchSize;
             request.entries.resize(entries.size());
             for (std::size_t index = 0; index < entries.size(); ++index) {
-                std::memcpy(request.entries[index].key.data(), entries[index].blockId.data(),
-                            entries[index].blockId.size());
+                const auto key = StorageKey(entries[index].blockId, entries[index].shardId);
+                std::memcpy(request.entries[index].key.data(), key.data(), key.size());
             }
             return pack(request);
         }
@@ -117,8 +138,12 @@ void NodeActor::ReleaseReplySlot(RequestRecord& request)
     if (request.replySlot.localAddr == nullptr) { return; }
     const auto release = dependencies_.releaseReplySlot(request.token, request.replySlot);
     if (release.Failure()) {
-        UC_ERROR("DramStore node {} failed to release request {} reply slot: {}",
-                 config_.endpoint.nodeId, request.request.requestId, release);
+        UC_ERROR(
+            "DramStore reply slot release failed, task_id={} request_id={} op={} node_id={} "
+            "epoch={} slot_index={} status={}",
+            request.request.taskId, request.request.requestId,
+            static_cast<unsigned>(request.request.op), config_.endpoint.nodeId, request.token.epoch,
+            request.replySlot.slotIndex, release);
     }
 }
 
@@ -140,11 +165,23 @@ void NodeActor::FinalizeRequests(TimePoint now)
     if (active) { nextActionAt_ = TimePoint::max(); }
 
     bool needsFence = false;
+    std::size_t timedOutCount = 0;
+    TaskId firstTaskId = 0;
+    RequestId firstRequestId = 0;
+    RequestState firstRequestState = RequestState::COMPLETED;
     for (auto it = activeRequests_.begin(); it != activeRequests_.end();) {
         if (it->second.state != RequestState::COMPLETED) {
             if (active && it->second.IsExposed()) {
                 nextActionAt_ = std::min(nextActionAt_, it->second.request.deadline);
-                if (it->second.request.deadline <= now) { needsFence = true; }
+                if (it->second.request.deadline <= now) {
+                    if (!needsFence) {
+                        firstTaskId = it->second.request.taskId;
+                        firstRequestId = it->second.request.requestId;
+                        firstRequestState = it->second.state;
+                    }
+                    needsFence = true;
+                    ++timedOutCount;
+                }
             }
             ++it;
             continue;
@@ -155,12 +192,20 @@ void NodeActor::FinalizeRequests(TimePoint now)
     }
 
     if (needsFence) {
+        std::size_t affectedCount = 0;
         state_ = NodeState::FENCING;
         for (auto& entry : activeRequests_) {
             if (!entry.second.IsExposed()) { continue; }
+            ++affectedCount;
             entry.second.state = RequestState::WAITING_FENCE;
             entry.second.failure = Status::Timeout();
         }
+        UC_WARN(
+            "DramStore request timeout triggered node recovery, node_id={} epoch={} "
+            "timed_out_requests={} affected_requests={} pending_requests={} "
+            "first_task_id={} first_request_id={} first_request_state={}",
+            config_.endpoint.nodeId, epoch_, timedOutCount, affectedCount, pendingRequests_.size(),
+            firstTaskId, firstRequestId, RequestStateToString(firstRequestState));
         nextActionAt_ = now;
     }
 }
@@ -170,6 +215,9 @@ void NodeActor::ExpirePendingRequests(TimePoint now)
     if (pendingCheckAt_ > now) { return; }
 
     pendingCheckAt_ = TimePoint::max();
+    std::size_t expiredCount = 0;
+    TaskId firstTaskId = 0;
+    RequestId firstRequestId = 0;
     for (auto it = pendingRequests_.begin(); it != pendingRequests_.end();) {
         if (it->deadline > now) {
             pendingCheckAt_ = std::min(pendingCheckAt_, it->deadline);
@@ -178,7 +226,19 @@ void NodeActor::ExpirePendingRequests(TimePoint now)
         }
         auto request = std::move(*it);
         it = pendingRequests_.erase(it);
+        if (expiredCount == 0) {
+            firstTaskId = request.taskId;
+            firstRequestId = request.requestId;
+        }
+        ++expiredCount;
         QueueCompletion(std::move(request), Status::Timeout());
+    }
+    if (expiredCount != 0) {
+        UC_WARN(
+            "DramStore requests expired while pending, node_id={} node_state={} "
+            "expired_requests={} remaining_pending={} first_task_id={} first_request_id={}",
+            config_.endpoint.nodeId, NodeStateName(state_), expiredCount, pendingRequests_.size(),
+            firstTaskId, firstRequestId);
     }
 }
 
@@ -209,10 +269,20 @@ void NodeActor::StartRequest(Request request)
     auto inserted = activeRequests_.emplace(requestId, std::move(record));
     assert(inserted.second);
     auto& active = inserted.first->second;
+    UC_DEBUG(
+        "DramStore request dispatch, task_id={} request_id={} op={} node_id={} epoch={} "
+        "entries={}",
+        active.request.taskId, requestId, static_cast<unsigned>(active.request.op),
+        config_.endpoint.nodeId, epoch_, active.request.entries.size());
 
     auto acquired = dependencies_.acquireReplySlot(active.token, active.request.op,
                                                    active.request.entries.size());
     if (!acquired) {
+        UC_WARN(
+            "DramStore reply slot acquisition failed, task_id={} request_id={} op={} "
+            "node_id={} epoch={} entries={} status={}",
+            active.request.taskId, requestId, static_cast<unsigned>(active.request.op),
+            config_.endpoint.nodeId, epoch_, active.request.entries.size(), acquired.Error());
         active.Complete(acquired.Error());
         RetireRequest(requestId);
         return;
@@ -223,15 +293,34 @@ void NodeActor::StartRequest(Request request)
     auto status =
         EncodeRequest(active.replySlot, active.request.op, active.request.entries, payload);
     if (status.Failure()) {
+        UC_ERROR(
+            "DramStore request encoding failed, task_id={} request_id={} op={} "
+            "node_id={} epoch={} entries={} status={}",
+            active.request.taskId, requestId, static_cast<unsigned>(active.request.op),
+            config_.endpoint.nodeId, epoch_, active.request.entries.size(), status);
         active.Complete(std::move(status));
         RetireRequest(requestId);
         return;
     }
 
+    const auto payloadSize = payload.size();
     TransportCommand command{
         Transmit{active.token, std::move(payload)}
     };
     status = dependencies_.submitTransport(command);
+    if (status.Success()) {
+        UC_DEBUG(
+            "DramStore request submitted, task_id={} request_id={} op={} node_id={} "
+            "epoch={} entries={} payload_bytes={}",
+            active.request.taskId, requestId, static_cast<unsigned>(active.request.op),
+            config_.endpoint.nodeId, epoch_, active.request.entries.size(), payloadSize);
+    } else {
+        UC_WARN(
+            "DramStore request transport submission failed, task_id={} request_id={} op={} "
+            "node_id={} epoch={} entries={} payload_bytes={} status={}",
+            active.request.taskId, requestId, static_cast<unsigned>(active.request.op),
+            config_.endpoint.nodeId, epoch_, active.request.entries.size(), payloadSize, status);
+    }
     if (status.Failure() && active.state != RequestState::COMPLETED) {
         active.Complete(std::move(status));
     }
@@ -241,6 +330,11 @@ void NodeActor::StartRequest(Request request)
 void NodeActor::Handle(Request request, TimePoint now)
 {
     if (request.deadline <= now) {
+        UC_WARN(
+            "DramStore request expired before node admission, task_id={} request_id={} op={} "
+            "node_id={} node_state={}",
+            request.taskId, request.requestId, static_cast<unsigned>(request.op),
+            config_.endpoint.nodeId, NodeStateName(state_));
         QueueCompletion(std::move(request), Status::Timeout());
         return;
     }
@@ -259,15 +353,36 @@ void NodeActor::TryFence(TimePoint now)
         return;
     }
     // Submission failure leaves the runtime recovery fence pending.
+    UC_WARN(
+        "DramStore node recovery fence submission failed, node_id={} epoch={} "
+        "active_requests={} pending_requests={} status={} retry_after_ms={}",
+        config_.endpoint.nodeId, epoch_, activeRequests_.size(), pendingRequests_.size(), status,
+        config_.reconnectInterval.count());
     nextActionAt_ = now + config_.reconnectInterval;
 }
 
 void NodeActor::Handle(FenceCompleted event, TimePoint now)
 {
-    if (state_ != NodeState::FENCING || event.epoch != epoch_) { return; }
+    if (state_ != NodeState::FENCING || event.epoch != epoch_) {
+        UC_DEBUG(
+            "DramStore ignored stale fence completion, node_id={} event_epoch={} "
+            "current_epoch={} node_state={}",
+            config_.endpoint.nodeId, event.epoch, epoch_, NodeStateName(state_));
+        return;
+    }
     if (event.status.Failure()) {
-        AbortDramStore(Status::Error(fmt::format("DramStore node {} recovery fence failed: {}",
-                                                 config_.endpoint.nodeId, event.status)));
+        // A failed fence means the remote peer was unreachable (e.g. the
+        // DramPool was killed). An unreachable peer cannot access local
+        // registered memory, so the safety property a successful Disconnect
+        // would establish already holds. Fall through to DISCONNECTED and let
+        // the retry loop re-establish the connection when the remote returns.
+        UC_WARN(
+            "DramStore node recovery fence failed, node_id={} epoch={} "
+            "active_requests={} status={}; continuing with reconnect",
+            config_.endpoint.nodeId, epoch_, activeRequests_.size(), event.status);
+    } else {
+        UC_INFO("DramStore node recovery fence completed, node_id={} epoch={} active_requests={}",
+                config_.endpoint.nodeId, epoch_, activeRequests_.size());
     }
 
     for (auto& entry : activeRequests_) {
@@ -295,6 +410,10 @@ void NodeActor::TryConnect(TimePoint now)
         return;
     }
     // Connect submission failures are operational failures; retry while disconnected.
+    UC_WARN(
+        "DramStore node connect submission failed, node_id={} epoch={} status={} "
+        "retry_after_ms={}",
+        config_.endpoint.nodeId, epoch_, status, config_.reconnectInterval.count());
     nextActionAt_ = now + config_.reconnectInterval;
 }
 
@@ -303,23 +422,53 @@ void NodeActor::Handle(ReplyObserved event, TimePoint now)
     const auto found = activeRequests_.find(event.token.requestId);
     if (found == activeRequests_.end() || found->second.token != event.token ||
         found->second.state == RequestState::COMPLETED) {
+        UC_DEBUG(
+            "DramStore ignored stale reply, node_id={} request_id={} event_epoch={} "
+            "current_epoch={} node_state={}",
+            config_.endpoint.nodeId, event.token.requestId, event.token.epoch, epoch_,
+            NodeStateName(state_));
         return;
     }
     if (found->second.failure == Status::Timeout() || found->second.request.deadline <= now) {
+        UC_WARN(
+            "DramStore reply arrived after request timeout, task_id={} request_id={} op={} "
+            "node_id={} epoch={} request_state={}",
+            found->second.request.taskId, found->second.request.requestId,
+            static_cast<unsigned>(found->second.request.op), config_.endpoint.nodeId, epoch_,
+            RequestStateToString(found->second.state));
         found->second.Complete(Status::Timeout());
         return;
     }
     auto status = event.status;
     std::vector<EntryResult> entryResults;
     if (status.Success() && found->second.request.op != OpType::LOOKUP) {
+        std::size_t failedEntries = 0;
+        std::int32_t firstErrorCode = 0;
         for (const auto& result : event.entryResults) {
             if (result.code != 0) {
-                status = Status::Error("DramPool returned an item failure");
-                break;
+                if (failedEntries == 0) { firstErrorCode = result.code; }
+                ++failedEntries;
             }
+        }
+        if (failedEntries != 0) {
+            UC_WARN(
+                "DramStore request contains failed items, task_id={} request_id={} op={} "
+                "node_id={} epoch={} failed_entries={} total_entries={} first_error_code={}",
+                found->second.request.taskId, found->second.request.requestId,
+                static_cast<unsigned>(found->second.request.op), config_.endpoint.nodeId, epoch_,
+                failedEntries, event.entryResults.size(), firstErrorCode);
+            status = Status::Error("DramPool returned an item failure");
         }
     } else if (status.Success()) {
         entryResults = std::move(event.entryResults);
+    }
+    if (event.status.Failure()) {
+        UC_WARN(
+            "DramStore reply processing failed, task_id={} request_id={} op={} node_id={} "
+            "epoch={} request_state={} status={}",
+            found->second.request.taskId, found->second.request.requestId,
+            static_cast<unsigned>(found->second.request.op), config_.endpoint.nodeId, epoch_,
+            RequestStateToString(found->second.state), event.status);
     }
     found->second.Complete(std::move(status), std::move(entryResults));
 }
@@ -329,25 +478,52 @@ void NodeActor::Handle(TransmitCompleted event, TimePoint)
     const auto found = activeRequests_.find(event.token.requestId);
     if (found == activeRequests_.end() || found->second.state != RequestState::TRANSMITTING ||
         found->second.token != event.token) {
+        UC_DEBUG(
+            "DramStore ignored stale transmit completion, node_id={} request_id={} "
+            "event_epoch={} current_epoch={} node_state={}",
+            config_.endpoint.nodeId, event.token.requestId, event.token.epoch, epoch_,
+            NodeStateName(state_));
         return;
     }
     if (event.status.Success()) {
         found->second.state = RequestState::INFLIGHT;
         return;
     }
+    UC_WARN(
+        "DramStore request transmission failed, task_id={} request_id={} op={} node_id={} "
+        "epoch={} entries={} status={}",
+        found->second.request.taskId, found->second.request.requestId,
+        static_cast<unsigned>(found->second.request.op), config_.endpoint.nodeId, epoch_,
+        found->second.request.entries.size(), event.status);
     found->second.Complete(std::move(event.status));
 }
 
 void NodeActor::Handle(ConnectCompleted event, TimePoint now)
 {
-    if (event.epoch != epoch_ || state_ != NodeState::CONNECTING) { return; }
+    if (event.epoch != epoch_ || state_ != NodeState::CONNECTING) {
+        UC_DEBUG(
+            "DramStore ignored stale connect completion, node_id={} event_epoch={} "
+            "current_epoch={} node_state={}",
+            config_.endpoint.nodeId, event.epoch, epoch_, NodeStateName(state_));
+        return;
+    }
     if (event.status.Success()) {
         state_ = NodeState::ACTIVE;
         assert(activeRequests_.empty());
         nextActionAt_ = TimePoint::max();
+        UC_INFO(
+            "DramStore node connected, node_id={} epoch={} endpoint={}:{} "
+            "pending_requests={}",
+            config_.endpoint.nodeId, epoch_, config_.endpoint.controlHost,
+            config_.endpoint.controlPort, pendingRequests_.size());
     } else {
         state_ = NodeState::DISCONNECTED;
         nextActionAt_ = now + config_.reconnectInterval;
+        UC_WARN(
+            "DramStore node connect failed, node_id={} epoch={} endpoint={}:{} status={} "
+            "retry_after_ms={}",
+            config_.endpoint.nodeId, epoch_, config_.endpoint.controlHost,
+            config_.endpoint.controlPort, event.status, config_.reconnectInterval.count());
     }
 }
 
