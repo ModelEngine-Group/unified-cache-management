@@ -50,7 +50,7 @@ TEST(IoSchedulerTest, SplitEntryBatchPreservesOrderAndUsesViews)
     config.asuBatchLoadIoNum = 2;
     IoScheduler scheduler(config);
     const auto batches = scheduler.SplitForAsu(BatchView<KVBuffer>{entries.data(), entries.size()},
-                                               TransportOpType::BATCH_LOAD);
+                                               AsuOpType::BATCH_LOAD);
 
     ASSERT_EQ(batches.size(), std::size_t{3});
     EXPECT_EQ(batches[0].entries.size, std::size_t{2});
@@ -71,12 +71,12 @@ TEST(IoSchedulerTest, GetSqeIoNumMatchesOperationKind)
     config.asuQueryIoNum = 6;
     IoScheduler scheduler(config);
 
-    EXPECT_EQ(scheduler.GetSqeIoNum(TransportOpType::LOAD), std::size_t{1});
-    EXPECT_EQ(scheduler.GetSqeIoNum(TransportOpType::STORE), std::size_t{1});
-    EXPECT_EQ(scheduler.GetSqeIoNum(TransportOpType::BATCH_LOAD), std::size_t{3});
-    EXPECT_EQ(scheduler.GetSqeIoNum(TransportOpType::BATCH_STORE), std::size_t{4});
-    EXPECT_EQ(scheduler.GetSqeIoNum(TransportOpType::DELETE), std::size_t{5});
-    EXPECT_EQ(scheduler.GetSqeIoNum(TransportOpType::QUERY), std::size_t{6});
+    EXPECT_EQ(scheduler.GetSqeIoNum(AsuOpType::LOAD), std::size_t{1});
+    EXPECT_EQ(scheduler.GetSqeIoNum(AsuOpType::STORE), std::size_t{1});
+    EXPECT_EQ(scheduler.GetSqeIoNum(AsuOpType::BATCH_LOAD), std::size_t{3});
+    EXPECT_EQ(scheduler.GetSqeIoNum(AsuOpType::BATCH_STORE), std::size_t{4});
+    EXPECT_EQ(scheduler.GetSqeIoNum(AsuOpType::DELETE), std::size_t{5});
+    EXPECT_EQ(scheduler.GetSqeIoNum(AsuOpType::QUERY), std::size_t{6});
 }
 
 TEST(IoSchedulerTest, SplitByOperationUsesHeldConfig)
@@ -87,7 +87,7 @@ TEST(IoSchedulerTest, SplitByOperationUsesHeldConfig)
     std::vector<KVBuffer> entries(5);
 
     const auto batches = scheduler.SplitForAsu(BatchView<KVBuffer>{entries.data(), entries.size()},
-                                               TransportOpType::BATCH_LOAD);
+                                               AsuOpType::BATCH_LOAD);
 
     ASSERT_EQ(batches.size(), std::size_t{3});
     EXPECT_EQ(batches[0].entries.size, std::size_t{2});

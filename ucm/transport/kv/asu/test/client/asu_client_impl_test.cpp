@@ -81,7 +81,7 @@ struct TestState {
     std::unordered_map<AsuId, std::vector<CacheKey>> queryKeys;
     std::vector<AsuId> loadCalls;
     std::vector<AsuId> storeCalls;
-    std::vector<TransportOpType> submittedOpTypes;
+    std::vector<AsuOpType> submittedOpTypes;
     std::vector<AsuId> deleteCalls;
     std::vector<AsuId> cancelCalls;
     std::unordered_map<AsuId, TaskId> childTaskIds;
@@ -251,7 +251,7 @@ public:
         }
         state_->submittedOpTypes.emplace_back(task->opType);
         switch (task->opType) {
-            case TransportOpType::QUERY: {
+            case AsuOpType::QUERY: {
                 QueryResult queryResult;
                 auto status = RunQuery({task->keys.data(), task->keys.size()}, queryResult);
                 if (!status.ok()) {
@@ -270,8 +270,8 @@ public:
                 Complete(std::move(taskResult), std::move(task->onComplete));
                 return Status::OK();
             }
-            case TransportOpType::LOAD:
-            case TransportOpType::BATCH_LOAD: {
+            case AsuOpType::LOAD:
+            case AsuOpType::BATCH_LOAD: {
                 if (state_->failFirstLoad && !state_->firstLoadFailed) {
                     state_->firstLoadFailed = true;
                     return Status::Error(StatusCode::CONNECTION_ERROR,
@@ -286,8 +286,8 @@ public:
                 Complete(task->entries.size(), std::move(task->onComplete));
                 return Status::OK();
             }
-            case TransportOpType::STORE:
-            case TransportOpType::BATCH_STORE: {
+            case AsuOpType::STORE:
+            case AsuOpType::BATCH_STORE: {
                 if (state_->blockStoreDispatch) {
                     std::unique_lock<std::mutex> lock{state_->storeDispatchMu};
                     state_->storeDispatchStarted = true;
@@ -313,7 +313,7 @@ public:
                 Complete(task->entries.size(), std::move(task->onComplete));
                 return Status::OK();
             }
-            case TransportOpType::DELETE: {
+            case AsuOpType::DELETE: {
                 if (state_->failFirstDelete && !state_->firstDeleteFailed) {
                     state_->firstDeleteFailed = true;
                     return Status::Error(StatusCode::CONNECTION_ERROR,
@@ -735,10 +735,9 @@ TEST(AsuClientImplTest, Dispatch_UsesSingleProtocolForSingleEntryOperations)
                     .ok());
     ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
 
-    EXPECT_EQ(
-        state->submittedOpTypes,
-        std::vector<TransportOpType>({TransportOpType::STORE, TransportOpType::LOAD,
-                                      TransportOpType::BATCH_STORE, TransportOpType::BATCH_LOAD}));
+    EXPECT_EQ(state->submittedOpTypes,
+              std::vector<AsuOpType>({AsuOpType::STORE, AsuOpType::LOAD, AsuOpType::BATCH_STORE,
+                                      AsuOpType::BATCH_LOAD}));
 }
 
 TEST(AsuClientImplTest, Input_EmptyStoreCreatesCompletableEmptyTask)

@@ -136,7 +136,7 @@ struct SubBatchRequestSource {
     static SubBatchRequestSource KeepAlive() { return SubBatchRequestSource{}; }
 };
 
-Status PrepareSubBatchRequest(TransportOpType opType, KvOpcode opcode, std::uint16_t cid,
+Status PrepareSubBatchRequest(AsuOpType opType, KvOpcode opcode, std::uint16_t cid,
                               std::size_t batchNum, BufferManager& flagBufferManager,
                               TransportSubBatchContext& subBatchContext)
 {
@@ -387,7 +387,7 @@ std::unique_ptr<SqeRequest> BuildSqeRequest(
 }  // namespace
 
 Status TransportTaskExecutor::BuildEntrySubBatchRequest(
-    TransportOpType opType, const IoScheduler::ScheduledIoBatch& subBatch,
+    AsuOpType opType, const IoScheduler::ScheduledIoBatch& subBatch,
     const RegisteredMrKeyMap& registeredMrKeys, TransportSubBatchContext& subBatchContext)
 {
     const auto source = SubBatchRequestSource::FromEntries(subBatch.entries);
@@ -413,7 +413,7 @@ Status TransportTaskExecutor::BuildEntrySubBatchRequest(
 }
 
 Status TransportTaskExecutor::SubmitKeySubBatchRequest(
-    TransportOpType opType, const IoScheduler::ScheduledKeyBatch& subBatch,
+    AsuOpType opType, const IoScheduler::ScheduledKeyBatch& subBatch,
     TransportSubBatchContext& subBatchContext)
 {
     const auto source = SubBatchRequestSource::FromKeys(subBatch.keys);
@@ -432,7 +432,7 @@ Status TransportTaskExecutor::SubmitKeySubBatchRequest(
 
 Status TransportTaskExecutor::SubmitKeepAliveRequest(TransportSubBatchContext& subBatchContext)
 {
-    const auto opType = TransportOpType::KEEP_ALIVE;
+    const auto opType = AsuOpType::KEEP_ALIVE;
     const auto source = SubBatchRequestSource::KeepAlive();
     subBatchContext.entryStatus.assign(1, Status::OK());
     const auto opcode = ToKvOpcode(opType);

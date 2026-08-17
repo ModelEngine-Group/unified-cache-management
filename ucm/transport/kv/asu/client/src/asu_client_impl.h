@@ -100,9 +100,9 @@ private:
     };
 
     // Creates and queues one entry-based client task.
-    Status SubmitAsync(ClientOpType opType, const std::vector<KVBuffer>& entries, TaskId& taskId);
+    Status SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& entries, TaskId& taskId);
     // Creates and queues one key-based client task.
-    Status SubmitAsync(ClientOpType opType, const std::vector<CacheKey>& keys, TaskId& taskId);
+    Status SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& keys, TaskId& taskId);
 
     // Runs queued tasks until shutdown and the queue are both complete.
     void WorkerLoop();

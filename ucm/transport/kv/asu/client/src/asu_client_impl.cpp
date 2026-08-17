@@ -179,34 +179,34 @@ Status AsuClientImpl::Shutdown()
 
 Status AsuClientImpl::QueryAsync(const std::vector<CacheKey>& keys, TaskId& taskId)
 {
-    auto status = SubmitAsync(ClientOpType::QUERY, keys, taskId);
+    auto status = SubmitAsync(AsuOpType::QUERY, keys, taskId);
     if (IsRefreshNeeded(status)) { RequestBackgroundRefresh(); }
     return status;
 }
 
 Status AsuClientImpl::LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
 {
-    return SubmitAsync(ClientOpType::LOAD, entries, taskId);
+    return SubmitAsync(AsuOpType::LOAD, entries, taskId);
 }
 
 Status AsuClientImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
 {
-    return SubmitAsync(ClientOpType::STORE, entries, taskId);
+    return SubmitAsync(AsuOpType::STORE, entries, taskId);
 }
 
 Status AsuClientImpl::BatchLoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
 {
-    return SubmitAsync(ClientOpType::BATCH_LOAD, entries, taskId);
+    return SubmitAsync(AsuOpType::BATCH_LOAD, entries, taskId);
 }
 
 Status AsuClientImpl::BatchStoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
 {
-    return SubmitAsync(ClientOpType::BATCH_STORE, entries, taskId);
+    return SubmitAsync(AsuOpType::BATCH_STORE, entries, taskId);
 }
 
 Status AsuClientImpl::DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId)
 {
-    return SubmitAsync(ClientOpType::DELETE, keys, taskId);
+    return SubmitAsync(AsuOpType::DELETE, keys, taskId);
 }
 
 bool AsuClientImpl::Check(TaskId taskId) { return taskManager_.Check(taskId); }
@@ -330,7 +330,7 @@ Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regio
     return Status::OK();
 }
 
-Status AsuClientImpl::SubmitAsync(ClientOpType opType, const std::vector<KVBuffer>& entries,
+Status AsuClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& entries,
                                   TaskId& taskId)
 {
     auto snapshot = GetSnapshot();
@@ -339,8 +339,8 @@ Status AsuClientImpl::SubmitAsync(ClientOpType opType, const std::vector<KVBuffe
         return Status::Error(StatusCode::NOT_INITIALIZED, "client has no ASU transports");
     }
 
-    if (opType != ClientOpType::LOAD && opType != ClientOpType::STORE &&
-        opType != ClientOpType::BATCH_LOAD && opType != ClientOpType::BATCH_STORE) {
+    if (opType != AsuOpType::LOAD && opType != AsuOpType::STORE &&
+        opType != AsuOpType::BATCH_LOAD && opType != AsuOpType::BATCH_STORE) {
         taskId = kInvalidTaskId;
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "entries submit only supports load/store");
@@ -385,7 +385,7 @@ Status AsuClientImpl::SubmitAsync(ClientOpType opType, const std::vector<KVBuffe
     return Status::OK();
 }
 
-Status AsuClientImpl::SubmitAsync(ClientOpType opType, const std::vector<CacheKey>& keys,
+Status AsuClientImpl::SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& keys,
                                   TaskId& taskId)
 {
     auto snapshot = GetSnapshot();
@@ -394,7 +394,7 @@ Status AsuClientImpl::SubmitAsync(ClientOpType opType, const std::vector<CacheKe
         return Status::Error(StatusCode::NOT_INITIALIZED, "client has no ASU transports");
     }
 
-    if (opType != ClientOpType::QUERY && opType != ClientOpType::DELETE) {
+    if (opType != AsuOpType::QUERY && opType != AsuOpType::DELETE) {
         taskId = kInvalidTaskId;
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "keys submit only supports query/delete");
@@ -405,7 +405,7 @@ Status AsuClientImpl::SubmitAsync(ClientOpType opType, const std::vector<CacheKe
     ctx->viewSnapshot = snapshot;
     ctx->keys = keys;
     ctx->entryStatus.assign(keys.size(), Status::OK());
-    ctx->queryResult.exists.assign(opType == ClientOpType::QUERY ? keys.size() : 0, 0);
+    ctx->queryResult.exists.assign(opType == AsuOpType::QUERY ? keys.size() : 0, 0);
 
     auto status = taskManager_.Submit(std::move(ctx), taskId);
     if (!status.ok()) { return status; }

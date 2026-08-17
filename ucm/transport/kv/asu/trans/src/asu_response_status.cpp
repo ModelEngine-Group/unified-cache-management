@@ -34,15 +34,15 @@ constexpr int kAsuDeleteEntryStatusBase = 0x0200;
 constexpr int kAsuExistEntryStatusBase = 0x0300;
 constexpr int kAsuCqeStatusBase = 0x10000;
 
-StatusCode EntryStatusCode(TransportOpType opType, std::uint8_t rawResult)
+StatusCode EntryStatusCode(AsuOpType opType, std::uint8_t rawResult)
 {
-    if (opType == TransportOpType::BATCH_STORE || opType == TransportOpType::BATCH_LOAD) {
+    if (opType == AsuOpType::BATCH_STORE || opType == AsuOpType::BATCH_LOAD) {
         return static_cast<StatusCode>(kAsuBatchEntryStatusBase | rawResult);
     }
-    if (opType == TransportOpType::DELETE) {
+    if (opType == AsuOpType::DELETE) {
         return static_cast<StatusCode>(kAsuDeleteEntryStatusBase | rawResult);
     }
-    if (opType == TransportOpType::QUERY) {
+    if (opType == AsuOpType::QUERY) {
         return static_cast<StatusCode>(kAsuExistEntryStatusBase | rawResult);
     }
     return rawResult == 0 ? StatusCode::OK : StatusCode::IO_ERROR;
@@ -53,11 +53,11 @@ StatusCode CqeStatusCode(std::uint16_t rawStatus)
     return static_cast<StatusCode>(kAsuCqeStatusBase | rawStatus);
 }
 
-Status ResultBufferEntryToStatus(TransportOpType opType, std::uint8_t rawResult)
+Status ResultBufferEntryToStatus(AsuOpType opType, std::uint8_t rawResult)
 {
-    if (opType != TransportOpType::QUERY && rawResult == 0x00) { return Status::OK(); }
+    if (opType != AsuOpType::QUERY && rawResult == 0x00) { return Status::OK(); }
 
-    if (opType == TransportOpType::BATCH_STORE || opType == TransportOpType::BATCH_LOAD) {
+    if (opType == AsuOpType::BATCH_STORE || opType == AsuOpType::BATCH_LOAD) {
         switch (EntryStatusCode(opType, rawResult)) {
             case StatusCode::ASU_ENTRY_RETRY_ADVISED:
                 return Status::Error(StatusCode::ASU_ENTRY_RETRY_ADVISED,
@@ -75,7 +75,7 @@ Status ResultBufferEntryToStatus(TransportOpType opType, std::uint8_t rawResult)
         }
     }
 
-    if (opType == TransportOpType::DELETE) {
+    if (opType == AsuOpType::DELETE) {
         switch (EntryStatusCode(opType, rawResult)) {
             case StatusCode::ASU_ENTRY_DELETE_FAILED:
                 return Status::Error(StatusCode::ASU_ENTRY_DELETE_FAILED, "delete failed");
@@ -85,7 +85,7 @@ Status ResultBufferEntryToStatus(TransportOpType opType, std::uint8_t rawResult)
         }
     }
 
-    if (opType == TransportOpType::QUERY) {
+    if (opType == AsuOpType::QUERY) {
         switch (EntryStatusCode(opType, rawResult)) {
             case StatusCode::ASU_ENTRY_KEY_NOT_EXIST:
                 return Status::Error(StatusCode::ASU_ENTRY_KEY_NOT_EXIST, "key not exist");
@@ -145,7 +145,7 @@ void FillEntryStatusFromCqeResult(const KvResponse& response,
     auto& entryStatus = subBatchContext.entryStatus;
     const auto keyExist = Status::Error(StatusCode::ASU_ENTRY_KEY_EXIST, "key exist");
     const auto keyNotExist = Status::Error(StatusCode::ASU_ENTRY_KEY_NOT_EXIST, "key not exist");
-    const bool isQuery = subBatchContext.opType == TransportOpType::QUERY;
+    const bool isQuery = subBatchContext.opType == AsuOpType::QUERY;
 
     if (subBatchContext.status.ok()) {
         std::fill(entryStatus.begin(), entryStatus.end(), isQuery ? keyExist : Status::OK());

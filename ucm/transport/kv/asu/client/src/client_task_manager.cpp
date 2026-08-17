@@ -34,15 +34,16 @@ namespace UC::ASU {
 
 namespace {
 
-const char* ClientOpTypeName(ClientOpType opType)
+const char* AsuOpTypeName(AsuOpType opType)
 {
     switch (opType) {
-        case ClientOpType::QUERY: return "query";
-        case ClientOpType::LOAD: return "load";
-        case ClientOpType::STORE: return "store";
-        case ClientOpType::BATCH_LOAD: return "batch_load";
-        case ClientOpType::BATCH_STORE: return "batch_store";
-        case ClientOpType::DELETE: return "delete";
+        case AsuOpType::QUERY: return "query";
+        case AsuOpType::LOAD: return "load";
+        case AsuOpType::STORE: return "store";
+        case AsuOpType::BATCH_LOAD: return "batch_load";
+        case AsuOpType::BATCH_STORE: return "batch_store";
+        case AsuOpType::DELETE: return "delete";
+        case AsuOpType::KEEP_ALIVE: return "keep_alive";
         default: return "unknown";
     }
 }
@@ -54,8 +55,7 @@ std::size_t TransportTaskItemCount(const TransportTask& transportTask)
 
 std::string FormatTransportTaskFailure(const ClientTask& task, const TransportTask& transportTask)
 {
-    return "client_task_id=" + std::to_string(task.taskId) +
-           " op=" + ClientOpTypeName(task.opType) +
+    return "client_task_id=" + std::to_string(task.taskId) + " op=" + AsuOpTypeName(task.opType) +
            " asuId=" + std::to_string(transportTask.asuId) +
            " trans_task_id=" + std::to_string(transportTask.taskId) +
            " item_count=" + std::to_string(TransportTaskItemCount(transportTask));
@@ -70,7 +70,7 @@ std::string FirstFailedTransportTask(const ClientTask& task)
                " code=" + std::to_string(static_cast<int>(transportTask->finalStatus.code)) +
                " message=" + transportTask->finalStatus.message;
     }
-    return "client_task_id=" + std::to_string(task.taskId) + " op=" + ClientOpTypeName(task.opType);
+    return "client_task_id=" + std::to_string(task.taskId) + " op=" + AsuOpTypeName(task.opType);
 }
 
 std::vector<UC::KV::CacheKey> ToRouterKeys(const std::vector<CacheKey>& keys)
@@ -177,7 +177,7 @@ void ClientTaskManager::CompleteTransportTask(const ClientTaskPtr& task,
 
     auto completionStatus = result.status;
     bool invalidQueryResult = false;
-    if (task->opType == ClientOpType::QUERY && completionStatus.ok()) {
+    if (task->opType == AsuOpType::QUERY && completionStatus.ok()) {
         if (!result.queryResult.has_value()) {
             completionStatus =
                 Status::Error(StatusCode::INTERNAL_ERROR, "transport query result is missing");
@@ -233,7 +233,7 @@ void ClientTaskManager::CompleteUndispatchedTransportTasks(const ClientTaskPtr& 
 
 void ClientTaskManager::Finalize(const ClientTaskPtr& task)
 {
-    if (task->opType == ClientOpType::QUERY) {
+    if (task->opType == AsuOpType::QUERY) {
         task->queryResult.prefixHitKeys = 0;
         for (auto exists : task->queryResult.exists) {
             if (exists == 0) { break; }
@@ -261,7 +261,7 @@ Status ClientTaskManager::BuildTransportTasks(const ClientTaskPtr& task)
         return Status::Error(StatusCode::NOT_INITIALIZED, "client has no ASU transports");
     }
 
-    const auto routes = task->opType == ClientOpType::QUERY || task->opType == ClientOpType::DELETE
+    const auto routes = task->opType == AsuOpType::QUERY || task->opType == AsuOpType::DELETE
                             ? snapshot->router->RouteKeys(ToRouterKeys(task->keys))
                             : snapshot->router->RouteKeys(ExtractEntryKeys(task->entries));
     for (const auto& route : routes) {
@@ -279,7 +279,7 @@ Status ClientTaskManager::BuildTransportTasks(const ClientTaskPtr& task)
         transportTask->transport = snapshot->transports.at(route.first);
         transportTask->registeredMrKeys = task->registeredMrKeys;
         transportTask->originalIndices.reserve(route.second.size());
-        if (task->opType == ClientOpType::QUERY || task->opType == ClientOpType::DELETE) {
+        if (task->opType == AsuOpType::QUERY || task->opType == AsuOpType::DELETE) {
             transportTask->keys.reserve(route.second.size());
             for (auto index : route.second) {
                 transportTask->keys.push_back(std::move(task->keys[index]));
@@ -328,13 +328,7 @@ Status ClientTaskManager::DispatchTask(const ClientTaskPtr& task)
             if (!task) { return; }
             CompleteTransportTask(task, taskIndex, std::move(result));
         };
-        transportTask->opType =
-            task->opType == ClientOpType::QUERY         ? TransportOpType::QUERY
-            : task->opType == ClientOpType::LOAD        ? TransportOpType::LOAD
-            : task->opType == ClientOpType::STORE       ? TransportOpType::STORE
-            : task->opType == ClientOpType::BATCH_LOAD  ? TransportOpType::BATCH_LOAD
-            : task->opType == ClientOpType::BATCH_STORE ? TransportOpType::BATCH_STORE
-                                                        : TransportOpType::DELETE;
+        transportTask->opType = task->opType;
         auto status = transport->Submit(transportTask);
         if (!status.ok()) {
             for (std::size_t index = 0; index < taskIndex; ++index) {
@@ -368,7 +362,7 @@ Status ClientTaskManager::BuildResult(const ClientTaskPtr& task, TaskResult& res
                         ? task->finalStatus
                         : Status::Error(StatusCode::IN_PROGRESS, "client task in progress");
     result.entryStatus = task->entryStatus;
-    if (task->opType == ClientOpType::QUERY) {
+    if (task->opType == AsuOpType::QUERY) {
         result.queryResult = task->queryResult;
     } else {
         result.queryResult.reset();
@@ -388,10 +382,10 @@ Status ClientTaskManager::WaitContext(const ClientTaskPtr& task, std::uint64_t w
     if (!done) {
         result.status = Status::Error(
             StatusCode::TIMEOUT,
-            "client task wait timeout: client_task_id=" + std::to_string(task->taskId) + " op=" +
-                ClientOpTypeName(task->opType) + " wait_ms=" + std::to_string(waitTimeoutMs));
+            "client task wait timeout: client_task_id=" + std::to_string(task->taskId) +
+                " op=" + AsuOpTypeName(task->opType) + " wait_ms=" + std::to_string(waitTimeoutMs));
         UC_ERROR("ASU client task wait timeout: client_task_id={} op={} wait_ms={}.", task->taskId,
-                 ClientOpTypeName(task->opType), waitTimeoutMs);
+                 AsuOpTypeName(task->opType), waitTimeoutMs);
     }
     return result.status;
 }

@@ -76,7 +76,7 @@ void TransportTaskManager::BuildResult(const TransportTask& task, TaskResult& re
     }
 
     result.queryResult.reset();
-    if (task.opType == TransportOpType::QUERY) {
+    if (task.opType == AsuOpType::QUERY) {
         result.queryResult = BuildQueryResultFromEntryStatus(result.entryStatus);
     }
 }

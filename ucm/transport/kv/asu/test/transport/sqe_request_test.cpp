@@ -239,12 +239,12 @@ TEST_F(SqeRequestTest, SubmitBatchStoreAllocatesFlagBufferAndBuildsRequest)
     const auto registeredMrKeys = MakeRegisteredMrKeys(entries, 0xABCD0000);
 
     const auto status = transport_->taskExecutor_->BuildEntrySubBatchRequest(
-        TransportOpType::BATCH_STORE, subBatch, registeredMrKeys, subBatchContext);
+        AsuOpType::BATCH_STORE, subBatch, registeredMrKeys, subBatchContext);
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(subBatchContext.flagBuffer.length, kFlagBufferHeaderSize + (entries.size() + 1) / 2);
     EXPECT_EQ(subBatchContext.cid, std::uint32_t{41});
-    EXPECT_EQ(subBatchContext.opType, TransportOpType::BATCH_STORE);
+    EXPECT_EQ(subBatchContext.opType, AsuOpType::BATCH_STORE);
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::PENDING);
     EXPECT_TRUE(subBatchContext.status.ok());
     EXPECT_NE(subBatchContext.sendSge.local_addr, std::uint64_t{0});
@@ -279,10 +279,10 @@ TEST_F(SqeRequestTest, SubmitStoreUsesStoreOpcodeAndRequest)
     const auto registeredMrKeys = MakeRegisteredMrKeys(entries, 0xABCD0000);
 
     const auto status = transport_->taskExecutor_->BuildEntrySubBatchRequest(
-        TransportOpType::STORE, subBatch, registeredMrKeys, subBatchContext);
+        AsuOpType::STORE, subBatch, registeredMrKeys, subBatchContext);
 
     ASSERT_TRUE(status.ok()) << status.message;
-    EXPECT_EQ(subBatchContext.opType, TransportOpType::STORE);
+    EXPECT_EQ(subBatchContext.opType, AsuOpType::STORE);
     const auto* sqe = reinterpret_cast<const std::uint32_t*>(subBatchContext.sendSge.local_addr);
     EXPECT_EQ(sqe[0] & 0xFF, static_cast<std::uint32_t>(KvOpcode::Store));
     EXPECT_EQ(static_cast<std::uint64_t>(sqe[6]) | (static_cast<std::uint64_t>(sqe[7]) << 32),
@@ -318,7 +318,7 @@ TEST_F(SqeRequestTest, SubmitBatchStorePacksSqeIntoDeviceSendBuffer)
     TransportSubBatchContext subBatchContext;
 
     const auto status = deviceTransport.taskExecutor_->BuildEntrySubBatchRequest(
-        TransportOpType::BATCH_STORE, subBatch, registeredMrKeys, subBatchContext);
+        AsuOpType::BATCH_STORE, subBatch, registeredMrKeys, subBatchContext);
 
     ASSERT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(subBatchContext.sendSge.memory_type, MemoryType::ASCEND_DEVICE);
@@ -345,10 +345,10 @@ TEST_F(SqeRequestTest, SubmitBatchRetrieveUsesRetrieveOpcodeAndRequest)
     const auto registeredMrKeys = MakeRegisteredMrKeys(entries, 0x76540000);
 
     const auto status = transport_->taskExecutor_->BuildEntrySubBatchRequest(
-        TransportOpType::BATCH_LOAD, subBatch, registeredMrKeys, subBatchContext);
+        AsuOpType::BATCH_LOAD, subBatch, registeredMrKeys, subBatchContext);
 
     EXPECT_TRUE(status.ok()) << status.message;
-    EXPECT_EQ(subBatchContext.opType, TransportOpType::BATCH_LOAD);
+    EXPECT_EQ(subBatchContext.opType, AsuOpType::BATCH_LOAD);
     EXPECT_EQ(subBatchContext.cid, std::uint16_t{9});
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::PENDING);
     EXPECT_TRUE(subBatchContext.status.ok());
@@ -371,10 +371,10 @@ TEST_F(SqeRequestTest, SubmitLoadUsesRetrieveOpcodeAndRequest)
     const auto registeredMrKeys = MakeRegisteredMrKeys(entries, 0x76540000);
 
     const auto status = transport_->taskExecutor_->BuildEntrySubBatchRequest(
-        TransportOpType::LOAD, subBatch, registeredMrKeys, subBatchContext);
+        AsuOpType::LOAD, subBatch, registeredMrKeys, subBatchContext);
 
     ASSERT_TRUE(status.ok()) << status.message;
-    EXPECT_EQ(subBatchContext.opType, TransportOpType::LOAD);
+    EXPECT_EQ(subBatchContext.opType, AsuOpType::LOAD);
     const auto* sqe = reinterpret_cast<const std::uint32_t*>(subBatchContext.sendSge.local_addr);
     EXPECT_EQ(sqe[0] & 0xFF, static_cast<std::uint32_t>(KvOpcode::Retrieve));
     EXPECT_EQ(sqe[10], entries[0].offset);
@@ -391,7 +391,7 @@ TEST_F(SqeRequestTest, SubmitBatchStoreRejectsUnregisteredEntryBuffer)
     const RegisteredMrKeyMap registeredMrKeys;
 
     const auto status = transport_->taskExecutor_->BuildEntrySubBatchRequest(
-        TransportOpType::BATCH_STORE, subBatch, registeredMrKeys, subBatchContext);
+        AsuOpType::BATCH_STORE, subBatch, registeredMrKeys, subBatchContext);
 
     EXPECT_EQ(status.code, StatusCode::BUFFER_NOT_REGISTERED);
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::COMPLETED);
@@ -414,10 +414,10 @@ TEST_F(SqeRequestTest, SubmitDeleteCopiesKeysAndBuildsFlagBackedRequest)
     transport_->nextRequestCid_.store(55, std::memory_order_relaxed);
 
     const auto status = transport_->taskExecutor_->SubmitKeySubBatchRequest(
-        TransportOpType::DELETE, subBatch, subBatchContext);
+        AsuOpType::DELETE, subBatch, subBatchContext);
 
     EXPECT_TRUE(status.ok()) << status.message;
-    EXPECT_EQ(subBatchContext.opType, TransportOpType::DELETE);
+    EXPECT_EQ(subBatchContext.opType, AsuOpType::DELETE);
     EXPECT_EQ(subBatchContext.cid, std::uint16_t{55});
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::PENDING);
     EXPECT_TRUE(subBatchContext.status.ok());
@@ -439,10 +439,10 @@ TEST_F(SqeRequestTest, SubmitExistReadsScAttribute)
     transport_->nextRequestCid_.store(13, std::memory_order_relaxed);
 
     const auto status = transport_->taskExecutor_->SubmitKeySubBatchRequest(
-        TransportOpType::QUERY, subBatch, subBatchContext);
+        AsuOpType::QUERY, subBatch, subBatchContext);
 
     EXPECT_TRUE(status.ok()) << status.message;
-    EXPECT_EQ(subBatchContext.opType, TransportOpType::QUERY);
+    EXPECT_EQ(subBatchContext.opType, AsuOpType::QUERY);
     EXPECT_EQ(subBatchContext.cid, std::uint16_t{13});
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::PENDING);
     EXPECT_TRUE(subBatchContext.status.ok());
@@ -464,7 +464,7 @@ TEST_F(SqeRequestTest, SubmitExistDisablesSeekControlWhenScDisabled)
     TransportSubBatchContext subBatchContext;
 
     const auto status = transport_->taskExecutor_->SubmitKeySubBatchRequest(
-        TransportOpType::QUERY, subBatch, subBatchContext);
+        AsuOpType::QUERY, subBatch, subBatchContext);
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_FALSE(subBatchContext.useSeekControl);
@@ -490,7 +490,7 @@ TEST_F(SqeRequestTest, AllocationFailureMarksWholeSubBatchFailed)
     const auto registeredMrKeys = MakeRegisteredMrKeys(entries, 0x45670000);
 
     const auto status = uninitializedFlagTransport.taskExecutor_->BuildEntrySubBatchRequest(
-        TransportOpType::BATCH_STORE, subBatch, registeredMrKeys, subBatchContext);
+        AsuOpType::BATCH_STORE, subBatch, registeredMrKeys, subBatchContext);
 
     EXPECT_EQ(status.code, StatusCode::NOT_INITIALIZED);
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::COMPLETED);
@@ -512,7 +512,7 @@ TEST_F(SqeRequestTest, SubmitKeepAliveBuildsFlagBackedRequest)
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(subBatchContext.cid, std::uint16_t{77});
-    EXPECT_EQ(subBatchContext.opType, TransportOpType::KEEP_ALIVE);
+    EXPECT_EQ(subBatchContext.opType, AsuOpType::KEEP_ALIVE);
     EXPECT_EQ(subBatchContext.state, TransportSubBatchState::PENDING);
     EXPECT_TRUE(subBatchContext.status.ok());
     EXPECT_EQ(subBatchContext.flagBuffer.length, kFlagBufferHeaderSize + 1);
