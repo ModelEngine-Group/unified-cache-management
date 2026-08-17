@@ -26,6 +26,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -61,7 +62,7 @@ public:
         auto sharedCtx = ctx;
         sharedCtx->state.store(initialState_, std::memory_order_release);
 
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::shared_mutex> lock(mutex_);
         do {
             taskId = nextTaskId_.fetch_add(1, std::memory_order_relaxed);
         } while (taskId == kInvalidTaskId || tasks_.find(taskId) != tasks_.end());
@@ -73,7 +74,7 @@ public:
 
     std::shared_ptr<Context> Get(TaskId taskId)
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::shared_lock<std::shared_mutex> lock(mutex_);
         auto iter = tasks_.find(taskId);
         if (iter == tasks_.end()) { return nullptr; }
         return iter->second;
@@ -81,7 +82,7 @@ public:
 
     std::vector<std::shared_ptr<Context>> GetAll()
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::shared_lock<std::shared_mutex> lock(mutex_);
         std::vector<std::shared_ptr<Context>> tasks;
         tasks.reserve(tasks_.size());
         for (const auto& item : tasks_) { tasks.emplace_back(item.second); }
@@ -90,7 +91,7 @@ public:
 
     Status Remove(TaskId taskId)
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::shared_mutex> lock(mutex_);
         auto erased = tasks_.erase(taskId);
         if (erased == 0) {
             return Status::Error(StatusCode::TASK_NOT_FOUND, taskName_ + " task not found");
@@ -103,7 +104,7 @@ private:
     std::string taskName_;
     std::atomic<TaskId> nextTaskId_{1};
     // TODO: consider using a lock-free structure !
-    std::mutex mutex_;
+    std::shared_mutex mutex_;
     std::unordered_map<TaskId, std::shared_ptr<Context>> tasks_;
 };
 
