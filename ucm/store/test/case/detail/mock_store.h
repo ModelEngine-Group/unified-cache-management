@@ -37,6 +37,8 @@ public:
                 (const UC::Detail::BlockId* blocks, size_t num), (override));
     MOCK_METHOD((UC::Expected<ssize_t>), LookupOnPrefix,
                 (const UC::Detail::BlockId* blocks, size_t num), (override));
+    MOCK_METHOD((UC::Expected<ssize_t>), LookupOnReverse,
+                (const UC::Detail::BlockId* blocks, size_t num), (override));
     MOCK_METHOD(void, Prefetch, (const UC::Detail::BlockId* blocks, size_t num), (override));
     MOCK_METHOD((UC::Status), CheckHealth, (), (override));
     MOCK_METHOD((UC::Expected<UC::Detail::TaskHandle>), Load, (UC::Detail::TaskDesc task),

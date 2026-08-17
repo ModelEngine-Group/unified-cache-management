@@ -1,4 +1,4 @@
-﻿import copy
+import copy
 import math
 import os
 import time
@@ -266,7 +266,7 @@ class KVCacheGroupManager:
         num_computed_tokens: int,
         group_block_ids: list[list[bytes]],
         lookup_on_prefix: Callable[[list[bytes]], int],
-        lookup_all: Callable[[list[bytes]], list[bool]],
+        lookup_on_reverse: Callable[[list[bytes]], int],
     ) -> tuple[int, int, list[bytes]]:
         """Two-stage HLA lookup using precomputed per-group hashes.
 
@@ -279,12 +279,13 @@ class KVCacheGroupManager:
         external hit is consistent across all full-attn groups and aligns
         to the kv-cache page granularity expected by the scheduler.
 
-        Stage 2 — mamba-align state groups are checked via a sequential
-        backward scan: starting from the Stage 1 candidate position, each
-        LCM boundary is checked one at a time going backwards toward
-        ``num_computed_tokens``. The scan stops at the first position where
-        ALL state groups have their state present. If no position has all
-        states present, the external hit is downgraded to zero.
+        Stage 2 — mamba-align state groups are checked via
+        ``lookup_on_reverse``: for each state group, the state hashes at
+        all candidate LCM boundary positions (earliest-to-latest) are
+        collected and a single reverse scan finds the rightmost hit.
+        The min across state groups is the rightmost position where ALL
+        state groups' states are present. If any state group has no hit
+        at any candidate position, the external hit is downgraded to zero.
 
         Returns:
             Tuple of
@@ -335,7 +336,11 @@ class KVCacheGroupManager:
         if external_hit_tokens <= 0:
             return 0, 0, []
 
-        # Stage 2: backward scan for mamba state at LCM boundaries.
+        # Stage 2: reverse scan for mamba state at LCM boundaries.
+        # For each state group, collect state hashes at all candidate
+        # positions (earliest-to-latest) and use lookup_on_reverse to find
+        # the rightmost hit.  The min across state groups is the rightmost
+        # position where ALL states are present.
         total_hit_tokens = num_computed_tokens + external_hit_tokens
 
         if not self.state_groups:
@@ -345,26 +350,40 @@ class KVCacheGroupManager:
                 [],
             )
 
-        best_pos = num_computed_tokens
-        for pos in range(total_hit_tokens, num_computed_tokens, -self.lcm_block_size):
-            pos_hashes: list[bytes] = []
-            for sg in self.state_groups:
+        positions = list(
+            range(
+                num_computed_tokens + self.lcm_block_size,
+                total_hit_tokens + self.lcm_block_size,
+                self.lcm_block_size,
+            )
+        )
+
+        best_pos = total_hit_tokens
+        for sg in self.state_groups:
+            # Truncate to positions <= best_pos so earlier state groups
+            # can shrink the search window for subsequent ones.
+            sg_positions = [p for p in positions if p <= best_pos]
+            sg_hashes: list[bytes] = []
+            for pos in sg_positions:
                 state_hash = self.compute_mamba_align_state_hash(
                     sg, pos, group_block_ids
                 )
-                pos_hashes.append(state_hash if state_hash is not None else b"")
+                sg_hashes.append(state_hash if state_hash is not None else b"")
             try:
-                results = lookup_all(pos_hashes)
+                idx = lookup_on_reverse(sg_hashes)
             except Exception as e:
                 logger.error(
-                    f"mamba-align state lookup error at pos={pos}. "
-                    f"{type(e).__name__}: {e}"
+                    f"mamba-align state reverse lookup error for "
+                    f"group={sg.group_id}. {type(e).__name__}: {e}"
                 )
                 _record_counter("connector_lookup_errors_total")
                 return 0, 0, []
-            if all(results):
-                best_pos = pos
-                break
+            if idx < 0:
+                # This state group has no state at any candidate position.
+                return 0, 0, []
+            sg_pos = sg_positions[idx]
+            if sg_pos < best_pos:
+                best_pos = sg_pos
 
         external_hit_tokens = best_pos - num_computed_tokens
         if external_hit_tokens <= 0:
@@ -967,7 +986,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 lambda block_ids: self._rank_consistency.lookup_on_prefix(
                     self.store, block_ids
                 ),
-                lambda block_ids: self._rank_consistency.lookup_all(
+                lambda block_ids: self._rank_consistency.lookup_on_reverse(
                     self.store, block_ids
                 ),
             )

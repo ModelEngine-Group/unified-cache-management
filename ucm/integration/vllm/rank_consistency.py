@@ -122,6 +122,24 @@ class RankConsistencyManager:
             return -1
         return store.lookup_on_prefix(block_ids)
 
+    def lookup_on_reverse(self, store: UcmKVStoreBaseV1, block_ids: list[bytes]) -> int:
+        """Exclude known-missing blocks before forwarding a reverse lookup.
+
+        A known-missing block is treated as a miss so the reverse scan
+        continues to the left.  At most one re-query per known-missing hit
+        is issued; in practice the inconsistent set is small.
+        """
+        if not self.enabled:
+            return store.lookup_on_reverse(block_ids)
+        if self._tracker is None or not block_ids:
+            return store.lookup_on_reverse(block_ids)
+        result = store.lookup_on_reverse(block_ids)
+        while result >= 0 and block_ids[result] in self._tracker:
+            if result == 0:
+                return -1
+            result = store.lookup_on_reverse(block_ids[:result])
+        return result
+
     def lookup_all(self, store: UcmKVStoreBaseV1, block_ids: list[bytes]) -> list[bool]:
         """Mask known-missing blocks after forwarding an exact lookup."""
         results = store.lookup(block_ids)
