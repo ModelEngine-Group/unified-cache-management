@@ -76,7 +76,7 @@ void DumpQueue::DispatchStage(std::promise<Status>& started)
         UC_WARN("Failed({}) to set UCM dump dispatcher name.", nameStatus);
     }
     CopyStream stream;
-    auto s = cacheSdmaDirect_ ? stream.SetupSdmaDirect(deviceId_, useGdr_)
+    auto s = cacheSdmaDirect_ ? stream.SetupSdmaDirect(deviceId_, streamNumber_, useGdr_)
                               : stream.Setup(deviceId_, streamNumber_, useGdr_);
     started.set_value(s);
     if (s.Failure()) [[unlikely]] { return; }

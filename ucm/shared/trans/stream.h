@@ -64,19 +64,6 @@ public:
         }
         return Status::OK();
     }
-    virtual Status HostToDeviceAsync(const std::vector<void*>& hosts,
-                                     const std::vector<void**>& devices,
-                                     const std::vector<size_t>& sizes)
-    {
-        if (hosts.size() != devices.size()) {
-            return Status::InvalidParam("invalid H2D task copy inputs");
-        }
-        for (size_t i = 0; i < hosts.size(); ++i) {
-            auto s = HostToDeviceAsync(hosts[i], devices[i], sizes);
-            if (s.Failure()) [[unlikely]] { return s; }
-        }
-        return Status::OK();
-    }
     virtual Status DeviceToHostAsync(void* device[], void* host, const std::vector<size_t>& sizes)
     {
         size_t offset = 0;
@@ -92,20 +79,6 @@ public:
         }
         return Status::OK();
     }
-    virtual Status DeviceToHostAsync(const std::vector<void**>& devices,
-                                     const std::vector<void*>& hosts,
-                                     const std::vector<size_t>& sizes)
-    {
-        if (hosts.size() != devices.size()) {
-            return Status::InvalidParam("invalid D2H task copy inputs");
-        }
-        for (size_t i = 0; i < hosts.size(); ++i) {
-            auto s = DeviceToHostAsync(devices[i], hosts[i], sizes);
-            if (s.Failure()) [[unlikely]] { return s; }
-        }
-        return Status::OK();
-    }
-
     virtual Status AppendCallback(std::function<void(bool)> cb) = 0;
     virtual Status Synchronized() = 0;
     virtual Status WaitEvent(void* event) = 0;

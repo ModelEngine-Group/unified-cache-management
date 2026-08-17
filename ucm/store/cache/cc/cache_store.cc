@@ -161,7 +161,6 @@ private:
         config.GetNumbers("gpu_kv_buffer_sizes", param.gpuKvBufferSizes);
         config.Get("use_gdr", param.useGdr);
         config.Get("cache_sdma_direct", param.cacheSdmaDirect);
-        config.Get("cache_sdma_direct_launch_granularity", param.sdmaDirectLaunchGranularity);
         config.GetNumber("local_rank_size", param.localRankSize);
         return param;
     }
@@ -202,11 +201,6 @@ private:
             return Status::InvalidParam("Cache SDMA Direct requires RUNTIME_ENVIRONMENT=ascend-a3");
         }
 #endif
-        if (config.sdmaDirectLaunchGranularity != kSdmaDirectLaunchShard &&
-            config.sdmaDirectLaunchGranularity != kSdmaDirectLaunchTask) {
-            return Status::InvalidParam("invalid Cache SDMA Direct launch granularity({})",
-                                        config.sdmaDirectLaunchGranularity);
-        }
         auto bufferNumber = config.bufferCapacity / config.shardSize;
         if (bufferNumber < 1024 || bufferNumber < config.loadExclusiveBufferNumber * 2) {
             return Status::InvalidParam("too small buffer({}) on shard({})", config.bufferCapacity,
@@ -253,8 +247,6 @@ private:
         UC_INFO("Set {}::TimeoutMs to {}.", ns, config.timeoutMs);
         UC_INFO("Set {}::StreamNumber to {}.", ns, config.streamNumber);
         UC_INFO("Set {}::CacheSdmaDirect to {}.", ns, config.cacheSdmaDirect);
-        UC_INFO("Set {}::SdmaDirectLaunchGranularity to {}.", ns,
-                config.sdmaDirectLaunchGranularity);
         UC_INFO("Set {}::LoadExclusiveBufferNumber to {}.", ns, config.loadExclusiveBufferNumber);
         UC_INFO("Set {}::GpuKvBufferNumber to {}.", ns, config.gpuKvBufferAddrs.size());
         UC_INFO("Set {}::UseGdr to {}.", ns, config.useGdr);

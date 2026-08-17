@@ -25,7 +25,6 @@
 #define UNIFIEDCACHE_CACHE_STORE_CC_LOAD_QUEUE_H
 
 #include <future>
-#include <string>
 #include <thread>
 #include <vector>
 #include "copy_stream.h"
@@ -49,7 +48,6 @@ class LoadQueue {
         TransBuffer::Handle bufferHandle;
         Detail::TaskHandle backendTaskHandle;
         WaiterPtr waiter;
-        bool launchBoundary{false};
     };
 
 private:
@@ -62,7 +60,6 @@ private:
     size_t streamNumber_{1};
     bool useGdr_{false};
     bool cacheSdmaDirect_{false};
-    std::string sdmaDirectLaunchGranularity_{kSdmaDirectLaunchShard};
     std::vector<ssize_t> cpuAffinityCores_{};
     size_t localRankSize_{};
     SpscRingQueue<TaskPair> waiting_;
@@ -83,11 +80,7 @@ private:
     void TransferOneTask(CopyStream& stream, ShardTask&& task);
     Status WaitBackendTaskReady(ShardTask& task);
     Status HostToDeviceAsync(CopyStream& stream, void* host, void** device);
-    Status HostToDeviceTaskAsync(CopyStream& stream, std::vector<ShardTask>& tasks);
-    Status FlushSdmaDirectTaskBatch(CopyStream& stream);
     void RecordH2dSyncMetrics(double h2dSyncMs) const;
-    void ClearSdmaDirectHolders() noexcept;
-    bool UseSdmaDirectTaskLaunch() const noexcept;
 };
 
 }  // namespace UC::CacheStore
