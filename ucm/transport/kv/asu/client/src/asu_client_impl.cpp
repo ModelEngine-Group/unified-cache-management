@@ -194,6 +194,16 @@ Status AsuClientImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId& t
     return SubmitAsync(ClientOpType::STORE, entries, taskId);
 }
 
+Status AsuClientImpl::BatchLoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
+{
+    return SubmitAsync(ClientOpType::BATCH_LOAD, entries, taskId);
+}
+
+Status AsuClientImpl::BatchStoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
+{
+    return SubmitAsync(ClientOpType::BATCH_STORE, entries, taskId);
+}
+
 Status AsuClientImpl::DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId)
 {
     return SubmitAsync(ClientOpType::DELETE, keys, taskId);
@@ -329,7 +339,8 @@ Status AsuClientImpl::SubmitAsync(ClientOpType opType, const std::vector<KVBuffe
         return Status::Error(StatusCode::NOT_INITIALIZED, "client has no ASU transports");
     }
 
-    if (opType != ClientOpType::LOAD && opType != ClientOpType::STORE) {
+    if (opType != ClientOpType::LOAD && opType != ClientOpType::STORE &&
+        opType != ClientOpType::BATCH_LOAD && opType != ClientOpType::BATCH_STORE) {
         taskId = kInvalidTaskId;
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "entries submit only supports load/store");

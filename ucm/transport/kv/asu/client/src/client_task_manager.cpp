@@ -40,6 +40,8 @@ const char* ClientOpTypeName(ClientOpType opType)
         case ClientOpType::QUERY: return "query";
         case ClientOpType::LOAD: return "load";
         case ClientOpType::STORE: return "store";
+        case ClientOpType::BATCH_LOAD: return "batch_load";
+        case ClientOpType::BATCH_STORE: return "batch_store";
         case ClientOpType::DELETE: return "delete";
         default: return "unknown";
     }
@@ -327,8 +329,12 @@ Status ClientTaskManager::DispatchTask(const ClientTaskPtr& task)
             CompleteTransportTask(task, taskIndex, std::move(result));
         };
         transportTask->opType = task->opType == ClientOpType::QUERY   ? TransportOpType::QUERY
-                                : task->opType == ClientOpType::LOAD  ? TransportOpType::BATCH_LOAD
-                                : task->opType == ClientOpType::STORE ? TransportOpType::BATCH_STORE
+                                : task->opType == ClientOpType::LOAD  ? TransportOpType::LOAD
+                                : task->opType == ClientOpType::STORE ? TransportOpType::STORE
+                                : task->opType == ClientOpType::BATCH_LOAD
+                                    ? TransportOpType::BATCH_LOAD
+                                : task->opType == ClientOpType::BATCH_STORE
+                                    ? TransportOpType::BATCH_STORE
                                                                       : TransportOpType::DELETE;
         auto status = transport->Submit(transportTask);
         if (!status.ok()) {
