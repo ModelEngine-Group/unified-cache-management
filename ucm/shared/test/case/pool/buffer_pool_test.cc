@@ -164,19 +164,27 @@ TEST_F(BufferPoolTest, SupportsCustomSizeAndOffsetAlignment)
     EXPECT_EQ(deviceOffset % kAlignment, 0);
 }
 
-TEST_F(BufferPoolTest, HostPinnedPoolKeepsLocalAndDeviceAddresses)
+TEST_F(BufferPoolTest, HostMappedDevicePoolKeepsLocalAndDeviceAddresses)
 {
-#if !defined(UCM_TEST_RUNTIME_ASCEND)
-    GTEST_SKIP() << "Host-pinned memory is not supported by the simu backend";
-#endif
+    if (!SupportsHostMappedDeviceBuffer()) {
+        BufferPool unsupportedPool;
+        EXPECT_EQ(unsupportedPool.Init("unsupported_host_mapped_device_pool",
+                                       MemoryType::HostMappedDevice, 4096, 2),
+                  Status::Unsupported());
+        EXPECT_FALSE(unsupportedPool.IsInitialized());
+        return;
+    }
+
+    Trans::Device device;
+    auto stream = device.MakeStream();
+    ASSERT_NE(stream, nullptr);
 
     BufferPool pool;
-    auto status = pool.Init("pinned_pool", MemoryType::HostMappedDevice, 4096, 2);
+    auto status = pool.Init("host_mapped_device_pool", MemoryType::HostMappedDevice, 4096, 2);
     ASSERT_TRUE(status.Success()) << status.ToString();
 
     ASSERT_NE(pool.GetLocalAddr(), nullptr);
     ASSERT_NE(pool.GetDeviceAddr(), nullptr);
-    EXPECT_NE(pool.GetLocalAddr(), pool.GetDeviceAddr());
     EXPECT_EQ(pool.GetTotalSize(), 8192);
     EXPECT_EQ(pool.GetMemoryType(), MemoryType::HostMappedDevice);
 
@@ -192,6 +200,11 @@ TEST_F(BufferPoolTest, HostPinnedPoolKeepsLocalAndDeviceAddresses)
     EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.deviceAddr) -
                   reinterpret_cast<std::uintptr_t>(first.deviceAddr),
               4096);
+
+    std::memset(first.localAddr, 0xAB, first.length);
+    std::array<std::uint8_t, 4096> host{};
+    ASSERT_TRUE(stream->DeviceToHost(first.deviceAddr, host.data(), host.size()).Success());
+    for (const auto value : host) { EXPECT_EQ(value, 0xAB); }
 }
 
 TEST_F(BufferPoolTest, DevicePoolZeroesReleasedSlot)
@@ -230,11 +243,16 @@ TEST_F(BufferPoolTest, DevicePoolZeroesReleasedSlot)
     for (const auto value : host) { EXPECT_EQ(value, 0); }
 }
 
-TEST_F(BufferPoolTest, CpuAccessibleDevicePoolAllocatesAndZeroesReleasedSlot)
+TEST_F(BufferPoolTest, DeviceMappedHostPoolAllocatesAndZeroesReleasedSlot)
 {
-#if !defined(UCM_TEST_RUNTIME_ASCEND)
-    GTEST_SKIP() << "CPU-accessible device memory is not supported by the simu backend";
-#endif
+    if (!SupportsDeviceMappedHostBuffer()) {
+        BufferPool unsupportedPool;
+        EXPECT_EQ(unsupportedPool.Init("unsupported_device_mapped_host_pool",
+                                       MemoryType::DeviceMappedHost, 71, 1, true),
+                  Status::Unsupported());
+        EXPECT_FALSE(unsupportedPool.IsInitialized());
+        return;
+    }
 
     constexpr std::size_t kSlotCapacity = 71;
     constexpr std::size_t kSlotStride = 128;
@@ -244,8 +262,8 @@ TEST_F(BufferPoolTest, CpuAccessibleDevicePoolAllocatesAndZeroesReleasedSlot)
     ASSERT_NE(stream, nullptr);
 
     BufferPool pool;
-    auto status = pool.Init("cpu_accessible_device_pool", MemoryType::DeviceMappedHost,
-                            kSlotCapacity, 1, true);
+    auto status =
+        pool.Init("device_mapped_host_pool", MemoryType::DeviceMappedHost, kSlotCapacity, 1, true);
     ASSERT_TRUE(status.Success()) << status.ToString();
     EXPECT_EQ(pool.GetLocalAddr(), pool.GetDeviceAddr());
     EXPECT_EQ(pool.GetTotalSize(), kSlotStride);

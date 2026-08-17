@@ -42,10 +42,11 @@ Status BufferRegion::Create(BufferMemoryType type, std::size_t size, BufferRegio
             return Status::OK();
         }
         case BufferMemoryType::HostMappedDevice: {
+            if (!buffer->SupportsHostMappedDeviceBuffer()) { return Status::Unsupported(); }
             void* deviceAddr = nullptr;
-            auto owner = buffer->MakeHostPinnedBuffer(size, &deviceAddr);
+            auto owner = buffer->MakeHostMappedDeviceBuffer(size, &deviceAddr);
             if (!owner || !deviceAddr) {
-                return Status::Error("failed to allocate host-pinned memory");
+                return Status::Error("failed to allocate host-mapped device memory");
             }
             region.owner = std::move(owner);
             region.localAddr = region.owner.get();
@@ -61,8 +62,9 @@ Status BufferRegion::Create(BufferMemoryType type, std::size_t size, BufferRegio
             return Status::OK();
         }
         case BufferMemoryType::DeviceMappedHost: {
-            auto owner = buffer->MakeCpuAccessibleDeviceBuffer(size);
-            if (!owner) { return Status::Error("failed to allocate CPU-accessible device memory"); }
+            if (!buffer->SupportsDeviceMappedHostBuffer()) { return Status::Unsupported(); }
+            auto owner = buffer->MakeDeviceMappedHostBuffer(size);
+            if (!owner) { return Status::Error("failed to allocate device-mapped host memory"); }
             region.owner = std::move(owner);
             region.localAddr = region.owner.get();
             region.deviceAddr = region.owner.get();

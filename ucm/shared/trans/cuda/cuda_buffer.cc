@@ -42,17 +42,55 @@ std::shared_ptr<void> CudaBuffer::MakeHostBuffer(size_t size)
     return nullptr;
 }
 
+std::shared_ptr<void> CudaBuffer::MakeHostMappedDeviceBuffer(size_t size, void** pDevice)
+{
+    if (pDevice) { *pDevice = nullptr; }
+
+    void* host = nullptr;
+    auto ret = cudaHostAlloc(&host, size, cudaHostAllocMapped);
+    if (ret != cudaSuccess) { return nullptr; }
+
+    if (pDevice) {
+        void* device = nullptr;
+        ret = cudaHostGetDevicePointer(&device, host, 0);
+        if (ret != cudaSuccess) {
+            cudaFreeHost(host);
+            return nullptr;
+        }
+        *pDevice = device;
+    }
+    return std::shared_ptr<void>(host, cudaFreeHost);
+}
+
 Status Buffer::RegisterHostBuffer(void* host, size_t size, void** pDevice)
 {
-    auto ret = cudaHostRegister(host, size, cudaHostRegisterDefault);
+    if (pDevice) { *pDevice = nullptr; }
+
+    const auto flags = pDevice ? cudaHostRegisterMapped : cudaHostRegisterDefault;
+    auto ret = cudaHostRegister(host, size, flags);
     if (ret != cudaSuccess) [[unlikely]] { return Status{ret, cudaGetErrorString(ret)}; }
     if (pDevice) {
-        ret = cudaHostGetDevicePointer(pDevice, host, 0);
-        if (ret != cudaSuccess) [[unlikely]] { return Status{ret, cudaGetErrorString(ret)}; }
+        void* device = nullptr;
+        ret = cudaHostGetDevicePointer(&device, host, 0);
+        if (ret != cudaSuccess) [[unlikely]] {
+            cudaHostUnregister(host);
+            return Status{ret, cudaGetErrorString(ret)};
+        }
+        *pDevice = device;
     }
     return Status::OK();
 }
 
 void Buffer::UnregisterHostBuffer(void* host) { cudaHostUnregister(host); }
 
-} // namespace UC::Trans
+Status Memset(void* ptr, std::size_t size, std::int32_t value)
+{
+    auto ret = cudaMemset(ptr, value, size);
+    if (ret != cudaSuccess) [[unlikely]] { return Status{ret, cudaGetErrorString(ret)}; }
+
+    ret = cudaStreamSynchronize(nullptr);
+    if (ret != cudaSuccess) [[unlikely]] { return Status{ret, cudaGetErrorString(ret)}; }
+    return Status::OK();
+}
+
+}  // namespace UC::Trans

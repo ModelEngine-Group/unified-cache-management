@@ -34,17 +34,22 @@ public:
     virtual ~Buffer() = default;
 
     virtual std::shared_ptr<void> MakeDeviceBuffer(size_t size) = 0;
-    // Allocates device memory through the VMM APIs. On platforms that support CPU access to
-    // mapped device memory, the returned mapped address can also be dereferenced by the CPU.
-    virtual std::shared_ptr<void> MakeCpuAccessibleDeviceBuffer(size_t size) = 0;
     virtual Status MakeDeviceBuffers(size_t size, size_t number) = 0;
     virtual std::shared_ptr<void> GetDeviceBuffer(size_t size) = 0;
 
     virtual std::shared_ptr<void> MakeHostBuffer(size_t size) = 0;
     virtual std::shared_ptr<void> MakeHostBuffer4DirectIo(size_t size) = 0;
-    virtual std::shared_ptr<void> MakeHostPinnedBuffer(size_t size, void** pDevice = nullptr) = 0;
     virtual Status MakeHostBuffers(size_t size, size_t number) = 0;
     virtual std::shared_ptr<void> GetHostBuffer(size_t size) = 0;
+
+    // Whether MakeHostMappedDeviceBuffer is implemented by the active runtime.
+    virtual bool SupportsHostMappedDeviceBuffer() const { return false; }
+    virtual std::shared_ptr<void> MakeHostMappedDeviceBuffer(size_t size,
+                                                             void** pDevice = nullptr) = 0;
+
+    // Whether MakeDeviceMappedHostBuffer is implemented by the active runtime.
+    virtual bool SupportsDeviceMappedHostBuffer() const { return false; }
+    virtual std::shared_ptr<void> MakeDeviceMappedHostBuffer(size_t size) = 0;
 
     static Status RegisterHostBuffer(void* host, size_t size, void** pDevice = nullptr);
     static void UnregisterHostBuffer(void* host);

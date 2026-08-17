@@ -1,3 +1,5 @@
+add_subdirectory(detail)
+
 add_library(buffer_pool STATIC
     buffer_region.cc
     buffer_pool.cc

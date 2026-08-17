@@ -30,6 +30,18 @@ namespace UC::Test {
 
 class PoolTestBase : public ::testing::Test {
 protected:
+    static bool SupportsHostMappedDeviceBuffer()
+    {
+        const auto buffer = device_.MakeBuffer();
+        return buffer && buffer->SupportsHostMappedDeviceBuffer();
+    }
+
+    static bool SupportsDeviceMappedHostBuffer()
+    {
+        const auto buffer = device_.MakeBuffer();
+        return buffer && buffer->SupportsDeviceMappedHostBuffer();
+    }
+
     static void SetUpTestSuite()
     {
         auto status = device_.Init();
