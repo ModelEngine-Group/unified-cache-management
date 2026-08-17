@@ -36,9 +36,9 @@
 #define private public
 #include "asu_transport_impl.h"
 #undef private
+#include "asu_transport/trans_provider.h"
 #include "buffer_manager.h"
 #include "kv_protocol.h"
-#include "trans_provider.h"
 #include "transport_config_parser.h"
 
 namespace UC::ASU {
