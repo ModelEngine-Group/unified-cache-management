@@ -76,7 +76,7 @@ public:
         if (!task) {
             return Status::Error(StatusCode::INVALID_ARGUMENT, "stub transport task is null");
         }
-        if (task->opType == TransportOpType::QUERY) {
+        if (task->opType == AsuOpType::QUERY) {
             QueryResult queryResult;
             auto status = RunQuery({task->keys.data(), task->keys.size()}, queryResult);
             if (!status.ok()) {
@@ -96,11 +96,11 @@ public:
         }
 
         switch (task->opType) {
-            case TransportOpType::LOAD:
-            case TransportOpType::STORE:
-            case TransportOpType::BATCH_LOAD:
-            case TransportOpType::BATCH_STORE:
-            case TransportOpType::DELETE: break;
+            case AsuOpType::LOAD:
+            case AsuOpType::STORE:
+            case AsuOpType::BATCH_LOAD:
+            case AsuOpType::BATCH_STORE:
+            case AsuOpType::DELETE: break;
             default:
                 task->taskId = kInvalidTaskId;
                 return Status::Error(StatusCode::INVALID_ARGUMENT,

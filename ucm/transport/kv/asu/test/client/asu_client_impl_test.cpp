@@ -81,6 +81,7 @@ struct TestState {
     std::unordered_map<AsuId, std::vector<CacheKey>> queryKeys;
     std::vector<AsuId> loadCalls;
     std::vector<AsuId> storeCalls;
+    std::vector<AsuOpType> submittedOpTypes;
     std::vector<AsuId> deleteCalls;
     std::vector<AsuId> cancelCalls;
     std::unordered_map<AsuId, TaskId> childTaskIds;
@@ -248,8 +249,9 @@ public:
         if (task->registeredMrKeys != nullptr) {
             state_->submittedMrKeys = *task->registeredMrKeys;
         }
+        state_->submittedOpTypes.emplace_back(task->opType);
         switch (task->opType) {
-            case TransportOpType::QUERY: {
+            case AsuOpType::QUERY: {
                 QueryResult queryResult;
                 auto status = RunQuery({task->keys.data(), task->keys.size()}, queryResult);
                 if (!status.ok()) {
@@ -268,7 +270,8 @@ public:
                 Complete(std::move(taskResult), std::move(task->onComplete));
                 return Status::OK();
             }
-            case TransportOpType::BATCH_LOAD: {
+            case AsuOpType::LOAD:
+            case AsuOpType::BATCH_LOAD: {
                 if (state_->failFirstLoad && !state_->firstLoadFailed) {
                     state_->firstLoadFailed = true;
                     return Status::Error(StatusCode::CONNECTION_ERROR,
@@ -283,7 +286,8 @@ public:
                 Complete(task->entries.size(), std::move(task->onComplete));
                 return Status::OK();
             }
-            case TransportOpType::BATCH_STORE: {
+            case AsuOpType::STORE:
+            case AsuOpType::BATCH_STORE: {
                 if (state_->blockStoreDispatch) {
                     std::unique_lock<std::mutex> lock{state_->storeDispatchMu};
                     state_->storeDispatchStarted = true;
@@ -309,7 +313,7 @@ public:
                 Complete(task->entries.size(), std::move(task->onComplete));
                 return Status::OK();
             }
-            case TransportOpType::DELETE: {
+            case AsuOpType::DELETE: {
                 if (state_->failFirstDelete && !state_->firstDeleteFailed) {
                     state_->firstDeleteFailed = true;
                     return Status::Error(StatusCode::CONNECTION_ERROR,
@@ -683,6 +687,57 @@ TEST(AsuClientImplTest, Input_EmptyQueryReturnsEmptyResult)
     EXPECT_TRUE(result.exists.empty());
     EXPECT_EQ(result.prefixHitKeys, std::uint32_t{0});
     EXPECT_TRUE(state->queryCalls.empty());
+}
+
+TEST(AsuClientImplTest, Dispatch_UsesSingleProtocolForSingleEntryOperations)
+{
+    auto state = std::make_shared<TestState>();
+    auto client = CreateAsuClient(MakeFactory(state));
+    ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
+
+    TaskId taskId = kInvalidTaskId;
+    ASSERT_TRUE(client
+                    ->StoreAsync(
+                        {
+                            KVBuffer{MakeCacheKey("store-single"), {}}
+    },
+                        taskId)
+                    .ok());
+    TaskResult result;
+    ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
+
+    ASSERT_TRUE(client
+                    ->LoadAsync(
+                        {
+                            KVBuffer{MakeCacheKey("load-single"), {}}
+    },
+                        taskId)
+                    .ok());
+    ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
+
+    ASSERT_TRUE(client
+                    ->BatchStoreAsync(
+                        {
+                            KVBuffer{MakeCacheKey("store-batch-0"), {}},
+                            KVBuffer{MakeCacheKey("store-batch-1"), {}}
+    },
+                        taskId)
+                    .ok());
+    ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
+
+    ASSERT_TRUE(client
+                    ->BatchLoadAsync(
+                        {
+                            KVBuffer{MakeCacheKey("load-batch-0"), {}},
+                            KVBuffer{MakeCacheKey("load-batch-1"), {}}
+    },
+                        taskId)
+                    .ok());
+    ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
+
+    EXPECT_EQ(state->submittedOpTypes,
+              std::vector<AsuOpType>({AsuOpType::STORE, AsuOpType::LOAD, AsuOpType::BATCH_STORE,
+                                      AsuOpType::BATCH_LOAD}));
 }
 
 TEST(AsuClientImplTest, Input_EmptyStoreCreatesCompletableEmptyTask)

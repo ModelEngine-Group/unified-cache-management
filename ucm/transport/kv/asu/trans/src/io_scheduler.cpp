@@ -62,7 +62,7 @@ IoScheduler::IoScheduler(const TransportConfig& config)
 }
 
 std::vector<IoScheduler::ScheduledIoBatch> IoScheduler::SplitForAsu(
-    const BatchView<KVBuffer>& entries, TransportOpType opType) const
+    const BatchView<KVBuffer>& entries, AsuOpType opType) const
 {
     return SplitBatchView<KVBuffer, ScheduledIoBatch>(
         entries, GetSqeIoNum(opType),
@@ -70,21 +70,21 @@ std::vector<IoScheduler::ScheduledIoBatch> IoScheduler::SplitForAsu(
 }
 
 std::vector<IoScheduler::ScheduledKeyBatch> IoScheduler::SplitForAsu(
-    const BatchView<CacheKey>& keys, TransportOpType opType) const
+    const BatchView<CacheKey>& keys, AsuOpType opType) const
 {
     return SplitBatchView<CacheKey, ScheduledKeyBatch>(
         keys, GetSqeIoNum(opType),
         [](ScheduledKeyBatch& batch, BatchView<CacheKey> view) { batch.keys = view; });
 }
 
-std::size_t IoScheduler::GetSqeIoNum(TransportOpType opType) const
+std::size_t IoScheduler::GetSqeIoNum(AsuOpType opType) const
 {
-    if (opType == TransportOpType::LOAD || opType == TransportOpType::STORE) { return 1; }
+    if (opType == AsuOpType::LOAD || opType == AsuOpType::STORE) { return 1; }
     switch (opType) {
-        case TransportOpType::BATCH_LOAD: return batchLoadIoNum_;
-        case TransportOpType::BATCH_STORE: return batchStoreIoNum_;
-        case TransportOpType::DELETE: return deleteIoNum_;
-        case TransportOpType::QUERY: return queryIoNum_;
+        case AsuOpType::BATCH_LOAD: return batchLoadIoNum_;
+        case AsuOpType::BATCH_STORE: return batchStoreIoNum_;
+        case AsuOpType::DELETE: return deleteIoNum_;
+        case AsuOpType::QUERY: return queryIoNum_;
         default: return 0;
     }
 }

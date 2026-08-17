@@ -358,18 +358,18 @@ public:
             return Status::Error(StatusCode::INVALID_ARGUMENT, "in-memory transport task is null");
         }
         switch (task->opType) {
-            case TransportOpType::QUERY:
+            case AsuOpType::QUERY:
                 return SubmitQuery({task->keys.data(), task->keys.size()}, task->taskId,
                                    std::move(task->onComplete));
-            case TransportOpType::LOAD:
-            case TransportOpType::BATCH_LOAD:
+            case AsuOpType::LOAD:
+            case AsuOpType::BATCH_LOAD:
                 return SubmitLoad({task->entries.data(), task->entries.size()}, task->taskId,
                                   std::move(task->onComplete));
-            case TransportOpType::STORE:
-            case TransportOpType::BATCH_STORE:
+            case AsuOpType::STORE:
+            case AsuOpType::BATCH_STORE:
                 return SubmitStore({task->entries.data(), task->entries.size()}, task->taskId,
                                    std::move(task->onComplete));
-            case TransportOpType::DELETE:
+            case AsuOpType::DELETE:
                 return SubmitDelete({task->keys.data(), task->keys.size()}, task->taskId,
                                     std::move(task->onComplete));
             default:

@@ -345,7 +345,7 @@ public:
 
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
-        return Submit(std::move(task), &UC::ASU::AsuClient::LoadAsync);
+        return Submit(std::move(task), &UC::ASU::AsuClient::BatchLoadAsync);
     }
 
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override
@@ -355,7 +355,7 @@ public:
             LogAsuStatus("wait prerequisite event", status);
             return ConvertStatus(status);
         }
-        return Submit(std::move(task), &UC::ASU::AsuClient::StoreAsync);
+        return Submit(std::move(task), &UC::ASU::AsuClient::BatchStoreAsync);
     }
 
     Expected<bool> Check(Detail::TaskHandle taskId) override

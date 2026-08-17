@@ -40,7 +40,7 @@ TEST(AsuResponseStatusTest, SuccessfulSubBatchFillsAllEntriesOk)
 {
     KvResponse response;
     TransportSubBatchContext subBatchContext;
-    subBatchContext.opType = TransportOpType::BATCH_STORE;
+    subBatchContext.opType = AsuOpType::BATCH_STORE;
     subBatchContext.status = Status::OK();
     subBatchContext.entryStatus.assign(3, Status::Error(StatusCode::IO_ERROR, "old"));
 
@@ -55,7 +55,7 @@ TEST(AsuResponseStatusTest, CheckResultBufferFillsPerEntryBatchStatus)
     response.result_buffer = {0x00, 0x03, 0x04};
 
     TransportSubBatchContext subBatchContext;
-    subBatchContext.opType = TransportOpType::BATCH_LOAD;
+    subBatchContext.opType = AsuOpType::BATCH_LOAD;
     subBatchContext.status =
         Status::Error(StatusCode::ASU_CQE_CHECK_RESULT_BUFFER, "check result buffer");
     subBatchContext.entryStatus.assign(3, Status::OK());
@@ -73,7 +73,7 @@ TEST(AsuResponseStatusTest, QueryOkWithoutResultBufferMarksAllKeysExist)
     response.existing_key_number = 1;
 
     TransportSubBatchContext subBatchContext;
-    subBatchContext.opType = TransportOpType::QUERY;
+    subBatchContext.opType = AsuOpType::QUERY;
     subBatchContext.status = Status::OK();
     subBatchContext.entryStatus.assign(3, Status::OK());
 
@@ -93,7 +93,7 @@ TEST(AsuResponseStatusTest, QueryOkIgnoresExistingKeyNumber)
     response.existing_key_number = 2;
 
     TransportSubBatchContext subBatchContext;
-    subBatchContext.opType = TransportOpType::QUERY;
+    subBatchContext.opType = AsuOpType::QUERY;
     subBatchContext.useSeekControl = false;
     subBatchContext.status = Status::OK();
     subBatchContext.entryStatus.assign(4, Status::OK());
@@ -115,7 +115,7 @@ TEST(AsuResponseStatusTest, QueryCheckResultBufferWithoutSeekControlUsesExisting
     response.existing_key_number = 2;
 
     TransportSubBatchContext subBatchContext;
-    subBatchContext.opType = TransportOpType::QUERY;
+    subBatchContext.opType = AsuOpType::QUERY;
     subBatchContext.useSeekControl = false;
     subBatchContext.status =
         Status::Error(StatusCode::ASU_CQE_CHECK_RESULT_BUFFER, "check result buffer");
@@ -138,7 +138,7 @@ TEST(AsuResponseStatusTest, QueryCheckResultBufferUsesExistEntryStatuses)
     response.result_buffer = {0x01, 0x00, 0x01};
 
     TransportSubBatchContext subBatchContext;
-    subBatchContext.opType = TransportOpType::QUERY;
+    subBatchContext.opType = AsuOpType::QUERY;
     subBatchContext.useSeekControl = true;
     subBatchContext.status =
         Status::Error(StatusCode::ASU_CQE_CHECK_RESULT_BUFFER, "check result buffer");
@@ -158,7 +158,7 @@ TEST(AsuResponseStatusTest, MissingResultBufferPropagatesSubBatchError)
 {
     KvResponse response;
     TransportSubBatchContext subBatchContext;
-    subBatchContext.opType = TransportOpType::DELETE;
+    subBatchContext.opType = AsuOpType::DELETE;
     subBatchContext.status = Status::Error(StatusCode::ASU_CQE_RESOURCE_BUSY, "busy");
     subBatchContext.entryStatus.assign(2, Status::OK());
 

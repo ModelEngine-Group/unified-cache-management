@@ -328,7 +328,7 @@ bool TransportTaskExecutor::Poll(const TransportTaskPtr& task)
                 FillEntryStatusFromCqeResult(response, subBatchContext);
 
                 const bool queryResultBufferStatus =
-                    subBatchContext.opType == TransportOpType::QUERY &&
+                    subBatchContext.opType == AsuOpType::QUERY &&
                     subBatchContext.status.code == StatusCode::ASU_CQE_CHECK_RESULT_BUFFER;
                 const auto status = subBatchContext.status.ok() || queryResultBufferStatus
                                         ? Status::OK()

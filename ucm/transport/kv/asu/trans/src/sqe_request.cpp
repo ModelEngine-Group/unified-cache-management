@@ -136,7 +136,7 @@ struct SubBatchRequestSource {
     static SubBatchRequestSource KeepAlive() { return SubBatchRequestSource{}; }
 };
 
-Status PrepareSubBatchRequest(TransportOpType opType, KvOpcode opcode, std::uint16_t cid,
+Status PrepareSubBatchRequest(AsuOpType opType, KvOpcode opcode, std::uint16_t cid,
                               std::size_t batchNum, BufferManager& flagBufferManager,
                               TransportSubBatchContext& subBatchContext)
 {
@@ -220,6 +220,42 @@ KvBatchStoreRequest BuildBatchStoreRequest(
         entry.length = static_cast<std::uint32_t>(entries[index].buffer.region.size);
         request.entries.emplace_back(std::move(entry));
     }
+    return request;
+}
+
+KvStoreRequest BuildStoreRequest(const KVBuffer& entry,
+                                 const std::unordered_map<std::string, std::string>& attrs,
+                                 std::uint16_t cid, std::uint32_t mrKey)
+{
+    KvStoreRequest request;
+    request.cid = cid;
+    request.kv_ns_id = GetTransportConfigAttr<std::uint32_t>(attrs, "kv_ns_id");
+    request.dtype = GetTransportConfigAttr<std::uint8_t>(attrs, "dtype");
+    request.dspec = GetTransportConfigAttr<std::uint8_t>(attrs, "dspec");
+    request.buffer_addr = entry.buffer.region.addr;
+    request.buffer_length = static_cast<std::uint32_t>(entry.buffer.region.size);
+    request.mr_key = mrKey;
+    request.offset = entry.offset;
+    request.lr = GetTransportConfigAttr<bool>(attrs, "lr");
+    request.length = request.buffer_length;
+    request.key = entry.key;
+    return request;
+}
+
+KvRetrieveRequest BuildRetrieveRequest(const KVBuffer& entry,
+                                       const std::unordered_map<std::string, std::string>& attrs,
+                                       std::uint16_t cid, std::uint32_t mrKey)
+{
+    KvRetrieveRequest request;
+    request.cid = cid;
+    request.kv_ns_id = GetTransportConfigAttr<std::uint32_t>(attrs, "kv_ns_id");
+    request.buffer_addr = entry.buffer.region.addr;
+    request.buffer_length = static_cast<std::uint32_t>(entry.buffer.region.size);
+    request.mr_key = mrKey;
+    request.offset = entry.offset;
+    request.lr = GetTransportConfigAttr<bool>(attrs, "lr");
+    request.length = request.buffer_length;
+    request.key = entry.key;
     return request;
 }
 
@@ -307,6 +343,20 @@ std::unique_ptr<SqeRequest> BuildSqeRequest(
     TransportSubBatchContext& subBatchContext)
 {
     switch (opcode) {
+        case KvOpcode::Store:
+            if (source.entries == nullptr || source.entries->size != 1 || mrKeys == nullptr ||
+                mrKeys->size() != 1) {
+                return nullptr;
+            }
+            return std::make_unique<KvStoreRequest>(
+                BuildStoreRequest(source.entries->data[0], attrs, cid, (*mrKeys)[0]));
+        case KvOpcode::Retrieve:
+            if (source.entries == nullptr || source.entries->size != 1 || mrKeys == nullptr ||
+                mrKeys->size() != 1) {
+                return nullptr;
+            }
+            return std::make_unique<KvRetrieveRequest>(
+                BuildRetrieveRequest(source.entries->data[0], attrs, cid, (*mrKeys)[0]));
         case KvOpcode::BatchRetrieve:
             if (source.entries == nullptr || mrKeys == nullptr) { return nullptr; }
             return std::make_unique<KvBatchRetrieveRequest>(
@@ -337,7 +387,7 @@ std::unique_ptr<SqeRequest> BuildSqeRequest(
 }  // namespace
 
 Status TransportTaskExecutor::BuildEntrySubBatchRequest(
-    TransportOpType opType, const IoScheduler::ScheduledIoBatch& subBatch,
+    AsuOpType opType, const IoScheduler::ScheduledIoBatch& subBatch,
     const RegisteredMrKeyMap& registeredMrKeys, TransportSubBatchContext& subBatchContext)
 {
     const auto source = SubBatchRequestSource::FromEntries(subBatch.entries);
@@ -363,7 +413,7 @@ Status TransportTaskExecutor::BuildEntrySubBatchRequest(
 }
 
 Status TransportTaskExecutor::SubmitKeySubBatchRequest(
-    TransportOpType opType, const IoScheduler::ScheduledKeyBatch& subBatch,
+    AsuOpType opType, const IoScheduler::ScheduledKeyBatch& subBatch,
     TransportSubBatchContext& subBatchContext)
 {
     const auto source = SubBatchRequestSource::FromKeys(subBatch.keys);
@@ -382,7 +432,7 @@ Status TransportTaskExecutor::SubmitKeySubBatchRequest(
 
 Status TransportTaskExecutor::SubmitKeepAliveRequest(TransportSubBatchContext& subBatchContext)
 {
-    const auto opType = TransportOpType::KEEP_ALIVE;
+    const auto opType = AsuOpType::KEEP_ALIVE;
     const auto source = SubBatchRequestSource::KeepAlive();
     subBatchContext.entryStatus.assign(1, Status::OK());
     const auto opcode = ToKvOpcode(opType);

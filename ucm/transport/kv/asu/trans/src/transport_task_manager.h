@@ -37,7 +37,7 @@ namespace UC::ASU {
 
 struct TransportSubBatchContext {
     std::uint16_t cid{0};
-    TransportOpType opType{TransportOpType::QUERY};
+    AsuOpType opType{AsuOpType::QUERY};
     TransportSubBatchState state{TransportSubBatchState::PENDING};
     Status status{Status::OK()};
     std::shared_ptr<ConnectionChannel> channel;

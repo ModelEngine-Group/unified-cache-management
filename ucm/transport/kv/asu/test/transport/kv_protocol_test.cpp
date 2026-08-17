@@ -390,19 +390,22 @@ TEST_F(KvProtocolPackTest, KeepAliveProtocolPackMatchesProtocol)
     }
 }
 
-TEST_F(KvProtocolPackTest, StoreAndRetrieveUnpackCqeReturnsUnsupported)
+TEST_F(KvProtocolPackTest, StoreAndRetrieveUnpackCqe)
 {
     KvStoreProtocol store_proto;
     KvResponse resp;
     std::uint32_t cqe_data[4] = {0, 0, 0, 0};
+    cqe_data[3] = 0x1234 | (0 << 17);
     auto status = store_proto.UnpackCqe(cqe_data, 0, resp);
-    EXPECT_FALSE(status.ok());
-    EXPECT_EQ(status.code, StatusCode::UNSUPPORTED);
+    EXPECT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(resp.cid, 0x1234);
+    EXPECT_EQ(resp.status, 0);
 
     KvRetrieveProtocol retrieve_proto;
     status = retrieve_proto.UnpackCqe(cqe_data, 0, resp);
-    EXPECT_FALSE(status.ok());
-    EXPECT_EQ(status.code, StatusCode::UNSUPPORTED);
+    EXPECT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(resp.cid, 0x1234);
+    EXPECT_EQ(resp.status, 0);
 }
 
 TEST_F(KvProtocolPackTest, BatchStoreUnpackCqe)
@@ -1112,16 +1115,6 @@ TEST_F(ProtocolManagerTest, UnpackExistResponse)
     EXPECT_EQ(resp.result_buffer[0], 1);
     EXPECT_EQ(resp.result_buffer[1], 1);
     EXPECT_EQ(resp.result_buffer[2], 1);
-}
-
-TEST_F(ProtocolManagerTest, UnpackStoreReturnsUnsupported)
-{
-    std::uint32_t cqe_data[4] = {0};
-
-    KvResponse resp;
-    auto status = mgr_->UnpackResponse(cqe_data, KvOpcode::Store, 0, resp);
-    ASSERT_FALSE(status.ok());
-    EXPECT_EQ(status.code, StatusCode::UNSUPPORTED);
 }
 
 TEST_F(ProtocolManagerTest, GetPackedSizeReturnsCorrectValue)
