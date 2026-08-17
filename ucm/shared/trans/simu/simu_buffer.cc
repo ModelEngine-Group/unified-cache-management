@@ -51,6 +51,11 @@ static std::shared_ptr<void> GetBuffer(Buffers& buffers)
     return nullptr;
 }
 
+std::shared_ptr<void> SimuBuffer::MakeDeviceMappedHostBuffer(size_t size)
+{
+    return MakeHostBuffer(size);
+}
+
 std::shared_ptr<void> SimuBuffer::MakeDeviceBuffer(size_t size)
 {
     constexpr int8_t deviceInitVal = 0xd;
@@ -65,11 +70,6 @@ std::shared_ptr<void> SimuBuffer::MakeHostBuffer(size_t size)
     auto device = AllocMemory(size, hostInitVal);
     if (!device) { return nullptr; }
     return std::shared_ptr<void>(device, FreeMemory);
-}
-
-std::shared_ptr<void> SimuBuffer::MakeCpuAccessibleDeviceBuffer(size_t size)
-{
-    return MakeHostBuffer(size);
 }
 
 Status Buffer::RegisterHostBuffer(void* host, size_t size, void** pDevice)

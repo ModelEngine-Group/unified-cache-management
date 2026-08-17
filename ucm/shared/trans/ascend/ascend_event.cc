@@ -1,7 +1,7 @@
 /**
  * MIT License
  *
- * Copyright (c) 2025 Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -21,22 +21,16 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TRANS_SIMU_BUFFER_H
-#define UNIFIEDCACHE_TRANS_SIMU_BUFFER_H
-
-#include "trans/detail/reserved_buffer.h"
+#include <acl/acl.h>
+#include "trans/event.h"
 
 namespace UC::Trans {
 
-class SimuBuffer : public ReservedBuffer {
-public:
-    // Simu has no real device, so device-mapped-host memory is plain host memory.
-    bool SupportsDeviceMappedHostBuffer() const override { return true; }
-    std::shared_ptr<void> MakeDeviceMappedHostBuffer(size_t size) override;
-    std::shared_ptr<void> MakeDeviceBuffer(size_t size) override;
-    std::shared_ptr<void> MakeHostBuffer(size_t size) override;
-};
+Status Event::Synchronize() const
+{
+    if (!Valid()) { return Status::OK(); }
+    const auto ret = aclrtSynchronizeEvent(reinterpret_cast<aclrtEvent>(NativeHandle()));
+    return ret == ACL_SUCCESS ? Status::OK() : Status{ret, std::to_string(ret)};
+}
 
 }  // namespace UC::Trans
-
-#endif

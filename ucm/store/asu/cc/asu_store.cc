@@ -22,7 +22,6 @@
  * SOFTWARE.
  * */
 #include "asu_store.h"
-#include <acl/acl.h>
 #include <algorithm>
 #include <any>
 #include <cctype>
@@ -38,6 +37,7 @@
 #include <utility>
 #include "asu_client/asu_client.h"
 #include "logger/logger.h"
+#include "trans/event.h"
 #include "ucmstore_v1.h"
 
 namespace UC::AsuStore {
@@ -103,10 +103,7 @@ void LogAsuStatus(const char* operation, const AsuStatus& status)
 
 Status WaitPrerequisiteEvent(std::uintptr_t eventHandle)
 {
-    if (eventHandle == 0) { return Status::OK(); }
-    auto ret = aclrtSynchronizeEvent(reinterpret_cast<aclrtEvent>(eventHandle));
-    if (ret == ACL_SUCCESS) { return Status::OK(); }
-    return Status::Error("aclrtSynchronizeEvent failed: " + std::to_string(ret));
+    return Trans::Event{eventHandle}.Synchronize();
 }
 
 const char* TransProviderBackendName(UC::ASU::TransProviderType providerType)

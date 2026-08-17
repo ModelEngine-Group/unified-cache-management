@@ -21,7 +21,6 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-#include <acl/acl.h>
 #include <limits>
 #include <memory>
 #include <new>
@@ -30,6 +29,7 @@
 #include <vector>
 #include "delegator_executor.h"
 #include "logger/logger.h"
+#include "trans/event.h"
 #include "ucmstore_v1.h"
 
 extern "C" UC::StoreV1* MakeAsuStore();
@@ -71,14 +71,6 @@ struct Config {
     std::size_t bufferNumber{0};
     std::size_t streamNumber{Executor::kDefaultStreamNumber};
 };
-
-Status WaitPrerequisiteEvent(std::uintptr_t eventHandle)
-{
-    if (eventHandle == 0) { return Status::OK(); }
-    const auto ret = aclrtSynchronizeEvent(reinterpret_cast<aclrtEvent>(eventHandle));
-    if (ret == ACL_SUCCESS) { return Status::OK(); }
-    return Status::Error("aclrtSynchronizeEvent failed: " + std::to_string(ret));
-}
 
 Expected<Config> ParseConfig(const Detail::Dictionary& input)
 {
@@ -209,7 +201,7 @@ Expected<Detail::TaskHandle> DelegatorStore::Load(Detail::TaskDesc task)
 Expected<Detail::TaskHandle> DelegatorStore::Dump(Detail::TaskDesc task)
 {
     if (!executor_) { return Status::Unsupported(); }
-    const auto status = WaitPrerequisiteEvent(task.prerequisiteHandle);
+    const auto status = Trans::Event{task.prerequisiteHandle}.Synchronize();
     if (status.Failure()) {
         UC_ERROR("Delegator wait prerequisite event failed, status={}.", status);
         return status;

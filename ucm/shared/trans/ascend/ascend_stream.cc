@@ -225,10 +225,10 @@ Status AscendStream::Synchronized()
     return Status{ret, std::to_string(ret)};
 }
 
-Status AscendStream::WaitEvent(void* event)
+Status AscendStream::WaitEvent(const Event& event)
 {
-    if (event == nullptr) { return Status::OK(); }
-    auto ret = aclrtStreamWaitEvent(stream_, static_cast<aclrtEvent>(event));
+    if (!event.Valid()) { return Status::OK(); }
+    auto ret = aclrtStreamWaitEvent(stream_, reinterpret_cast<aclrtEvent>(event.NativeHandle()));
     if (ret != ACL_SUCCESS) [[unlikely]] { return Status{ret, std::to_string(ret)}; }
     return Status::OK();
 }

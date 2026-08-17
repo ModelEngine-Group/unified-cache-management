@@ -1,7 +1,7 @@
 /**
  * MIT License
  *
- * Copyright (c) 2025 Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -21,20 +21,30 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TRANS_SIMU_BUFFER_H
-#define UNIFIEDCACHE_TRANS_SIMU_BUFFER_H
+#ifndef UNIFIEDCACHE_TRANS_EVENT_H
+#define UNIFIEDCACHE_TRANS_EVENT_H
 
-#include "trans/detail/reserved_buffer.h"
+#include <cstdint>
+#include "status/status.h"
 
 namespace UC::Trans {
 
-class SimuBuffer : public ReservedBuffer {
+/**
+ * A non-owning view of a platform-native device event.
+ *
+ * The producer of the native handle remains responsible for keeping the event
+ * alive and destroying it. A zero handle represents no event.
+ */
+class Event {
 public:
-    // Simu has no real device, so device-mapped-host memory is plain host memory.
-    bool SupportsDeviceMappedHostBuffer() const override { return true; }
-    std::shared_ptr<void> MakeDeviceMappedHostBuffer(size_t size) override;
-    std::shared_ptr<void> MakeDeviceBuffer(size_t size) override;
-    std::shared_ptr<void> MakeHostBuffer(size_t size) override;
+    explicit Event(std::uintptr_t nativeHandle = 0) noexcept : nativeHandle_{nativeHandle} {}
+
+    Status Synchronize() const;
+    bool Valid() const noexcept { return nativeHandle_ != 0; }
+    std::uintptr_t NativeHandle() const noexcept { return nativeHandle_; }
+
+private:
+    std::uintptr_t nativeHandle_{0};
 };
 
 }  // namespace UC::Trans

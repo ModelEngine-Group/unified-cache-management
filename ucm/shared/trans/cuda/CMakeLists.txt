@@ -10,6 +10,7 @@ target_compile_options(kernel PRIVATE
 add_library(trans STATIC
     cuda_device.cc
     cuda_buffer.cc
+    cuda_event.cc
     cuda_stream.cc
     cuda_sm_stream.cc
 )

@@ -23,6 +23,7 @@ target_link_libraries(delegator_store
         delegator
     PRIVATE
         infra_logger
+        trans
         asustore
 )
 set_target_properties(delegator_store PROPERTIES

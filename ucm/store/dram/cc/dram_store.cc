@@ -39,9 +39,6 @@
 #include "transport_executor.h"
 #include "transport_manager_backend.h"
 #include "ucmstore_v1.h"
-#ifdef UC_DRAM_ASCEND_BACKEND
-#include <acl/acl.h>
-#endif
 
 namespace UC::Dram {
 
@@ -52,14 +49,7 @@ namespace UC::Dram {
 // block on the prerequisite event here, before the control message is sent.
 static Status WaitPrerequisiteEvent(std::uintptr_t eventHandle)
 {
-    if (eventHandle == 0) { return Status::OK(); }
-#ifdef UC_DRAM_ASCEND_BACKEND
-    const auto ret = aclrtSynchronizeEvent(reinterpret_cast<aclrtEvent>(eventHandle));
-    if (ret == ACL_SUCCESS) { return Status::OK(); }
-    return Status::Error("aclrtSynchronizeEvent failed: " + std::to_string(ret));
-#else
-    return Status::OK();
-#endif
+    return Trans::Event{eventHandle}.Synchronize();
 }
 
 class DramStore final : public StoreV1 {
