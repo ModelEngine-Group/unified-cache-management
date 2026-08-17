@@ -696,29 +696,49 @@ TEST(AsuClientImplTest, Dispatch_UsesSingleProtocolForSingleEntryOperations)
     ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
 
     TaskId taskId = kInvalidTaskId;
-    ASSERT_TRUE(client->StoreAsync({KVBuffer{MakeCacheKey("store-single"), {}}}, taskId).ok());
+    ASSERT_TRUE(client
+                    ->StoreAsync(
+                        {
+                            KVBuffer{MakeCacheKey("store-single"), {}}
+    },
+                        taskId)
+                    .ok());
     TaskResult result;
     ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
 
-    ASSERT_TRUE(client->LoadAsync({KVBuffer{MakeCacheKey("load-single"), {}}}, taskId).ok());
-    ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
-
-    ASSERT_TRUE(client->BatchStoreAsync({KVBuffer{MakeCacheKey("store-batch-0"), {}},
-                                         KVBuffer{MakeCacheKey("store-batch-1"), {}}},
-                                        taskId)
+    ASSERT_TRUE(client
+                    ->LoadAsync(
+                        {
+                            KVBuffer{MakeCacheKey("load-single"), {}}
+    },
+                        taskId)
                     .ok());
     ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
 
-    ASSERT_TRUE(client->BatchLoadAsync({KVBuffer{MakeCacheKey("load-batch-0"), {}},
-                                        KVBuffer{MakeCacheKey("load-batch-1"), {}}},
-                                       taskId)
+    ASSERT_TRUE(client
+                    ->BatchStoreAsync(
+                        {
+                            KVBuffer{MakeCacheKey("store-batch-0"), {}},
+                            KVBuffer{MakeCacheKey("store-batch-1"), {}}
+    },
+                        taskId)
                     .ok());
     ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
 
-    EXPECT_EQ(state->submittedOpTypes,
-              std::vector<TransportOpType>({TransportOpType::STORE, TransportOpType::LOAD,
-                                            TransportOpType::BATCH_STORE,
-                                            TransportOpType::BATCH_LOAD}));
+    ASSERT_TRUE(client
+                    ->BatchLoadAsync(
+                        {
+                            KVBuffer{MakeCacheKey("load-batch-0"), {}},
+                            KVBuffer{MakeCacheKey("load-batch-1"), {}}
+    },
+                        taskId)
+                    .ok());
+    ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
+
+    EXPECT_EQ(
+        state->submittedOpTypes,
+        std::vector<TransportOpType>({TransportOpType::STORE, TransportOpType::LOAD,
+                                      TransportOpType::BATCH_STORE, TransportOpType::BATCH_LOAD}));
 }
 
 TEST(AsuClientImplTest, Input_EmptyStoreCreatesCompletableEmptyTask)

@@ -237,7 +237,7 @@ KvStoreRequest BuildStoreRequest(const KVBuffer& entry,
     request.mr_key = mrKey;
     request.offset = entry.offset;
     request.lr = GetTransportConfigAttr<bool>(attrs, "lr");
-    request.length = request.buffer_length / kAlignmentBytes;
+    request.length = request.buffer_length;
     request.key = entry.key;
     return request;
 }
@@ -254,7 +254,7 @@ KvRetrieveRequest BuildRetrieveRequest(const KVBuffer& entry,
     request.mr_key = mrKey;
     request.offset = entry.offset;
     request.lr = GetTransportConfigAttr<bool>(attrs, "lr");
-    request.length = request.buffer_length / kAlignmentBytes;
+    request.length = request.buffer_length;
     request.key = entry.key;
     return request;
 }

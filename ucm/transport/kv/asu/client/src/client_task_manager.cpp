@@ -328,14 +328,13 @@ Status ClientTaskManager::DispatchTask(const ClientTaskPtr& task)
             if (!task) { return; }
             CompleteTransportTask(task, taskIndex, std::move(result));
         };
-        transportTask->opType = task->opType == ClientOpType::QUERY   ? TransportOpType::QUERY
-                                : task->opType == ClientOpType::LOAD  ? TransportOpType::LOAD
-                                : task->opType == ClientOpType::STORE ? TransportOpType::STORE
-                                : task->opType == ClientOpType::BATCH_LOAD
-                                    ? TransportOpType::BATCH_LOAD
-                                : task->opType == ClientOpType::BATCH_STORE
-                                    ? TransportOpType::BATCH_STORE
-                                                                      : TransportOpType::DELETE;
+        transportTask->opType =
+            task->opType == ClientOpType::QUERY         ? TransportOpType::QUERY
+            : task->opType == ClientOpType::LOAD        ? TransportOpType::LOAD
+            : task->opType == ClientOpType::STORE       ? TransportOpType::STORE
+            : task->opType == ClientOpType::BATCH_LOAD  ? TransportOpType::BATCH_LOAD
+            : task->opType == ClientOpType::BATCH_STORE ? TransportOpType::BATCH_STORE
+                                                        : TransportOpType::DELETE;
         auto status = transport->Submit(transportTask);
         if (!status.ok()) {
             for (std::size_t index = 0; index < taskIndex; ++index) {

@@ -289,7 +289,7 @@ TEST_F(SqeRequestTest, SubmitStoreUsesStoreOpcodeAndRequest)
               entries[0].buffer.region.addr);
     EXPECT_EQ(sqe[8] & 0xFFFFFF, entries[0].buffer.region.size);
     EXPECT_EQ(sqe[10], entries[0].offset);
-    EXPECT_EQ(sqe[11] & 0xFFFFFF, entries[0].buffer.region.size / kAlignmentBytes);
+    EXPECT_EQ(sqe[11] & 0xFFFFFF, entries[0].buffer.region.size);
 }
 
 TEST_F(SqeRequestTest, SubmitBatchStorePacksSqeIntoDeviceSendBuffer)
@@ -378,7 +378,7 @@ TEST_F(SqeRequestTest, SubmitLoadUsesRetrieveOpcodeAndRequest)
     const auto* sqe = reinterpret_cast<const std::uint32_t*>(subBatchContext.sendSge.local_addr);
     EXPECT_EQ(sqe[0] & 0xFF, static_cast<std::uint32_t>(KvOpcode::Retrieve));
     EXPECT_EQ(sqe[10], entries[0].offset);
-    EXPECT_EQ(sqe[11] & 0xFFFFFF, entries[0].buffer.region.size / kAlignmentBytes);
+    EXPECT_EQ(sqe[11] & 0xFFFFFF, entries[0].buffer.region.size);
 }
 
 TEST_F(SqeRequestTest, SubmitBatchStoreRejectsUnregisteredEntryBuffer)
