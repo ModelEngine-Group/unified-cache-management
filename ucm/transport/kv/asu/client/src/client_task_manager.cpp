@@ -237,13 +237,6 @@ void ClientTaskManager::Finalize(const ClientTaskPtr& task)
     if (task->finalStatus.ok()) {
         UC_DEBUG("ASU client task completed: client_task_id={} op={} transport_tasks={}.",
                  task->taskId, AsuOpTypeName(task->opType), task->transportTasks.size());
-    } else {
-        UC_ERROR(
-            "ASU client task failed: client_task_id={} op={} transport_tasks={} "
-            "failed_transport_tasks={} code={} message={}.",
-            task->taskId, AsuOpTypeName(task->opType), task->transportTasks.size(),
-            failedTransportTasks, static_cast<int>(task->finalStatus.code),
-            task->finalStatus.message);
     }
     task->state.store(ClientTaskState::COMPLETED, std::memory_order_release);
     task->cv.notify_all();
