@@ -140,7 +140,7 @@ void ClientTaskManager::CompleteWithError(const ClientTaskPtr& task, const Statu
     std::fill(task->entryStatus.begin(), task->entryStatus.end(), status);
     task->finalStatus = status;
     UC_ERROR("ASU client task failed: client_task_id={} op={} code={} message={}.", task->taskId,
-             ClientOpTypeName(task->opType), static_cast<int>(status.code), status.message);
+             AsuOpTypeName(task->opType), static_cast<int>(status.code), status.message);
     task->state.store(ClientTaskState::COMPLETED, std::memory_order_release);
     task->cv.notify_all();
 }
@@ -227,8 +227,8 @@ void ClientTaskManager::Finalize(const ClientTaskPtr& task)
         UC_ERROR(
             "ASU client transport task failed: client_task_id={} op={} asuId={} "
             "transport_task_id={} item_count={} code={} message={}.",
-            task->taskId, ClientOpTypeName(task->opType), transportTask->asuId,
-            transportTask->taskId, itemCount, static_cast<int>(transportTask->finalStatus.code),
+            task->taskId, AsuOpTypeName(task->opType), transportTask->asuId, transportTask->taskId,
+            itemCount, static_cast<int>(transportTask->finalStatus.code),
             transportTask->finalStatus.message);
     }
     task->finalStatus = failedTransportTasks == 0 ? Status::OK()
@@ -236,12 +236,12 @@ void ClientTaskManager::Finalize(const ClientTaskPtr& task)
                                                                   "client task partially failed");
     if (task->finalStatus.ok()) {
         UC_DEBUG("ASU client task completed: client_task_id={} op={} transport_tasks={}.",
-                 task->taskId, ClientOpTypeName(task->opType), task->transportTasks.size());
+                 task->taskId, AsuOpTypeName(task->opType), task->transportTasks.size());
     } else {
         UC_ERROR(
             "ASU client task failed: client_task_id={} op={} transport_tasks={} "
             "failed_transport_tasks={} code={} message={}.",
-            task->taskId, ClientOpTypeName(task->opType), task->transportTasks.size(),
+            task->taskId, AsuOpTypeName(task->opType), task->transportTasks.size(),
             failedTransportTasks, static_cast<int>(task->finalStatus.code),
             task->finalStatus.message);
     }
