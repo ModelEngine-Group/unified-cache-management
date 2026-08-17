@@ -109,7 +109,7 @@ public:
     }
 };
 
-Status ZeroDeviceMemory(void* ptr, std::size_t size);
+Status Memset(void* ptr, std::size_t size);
 
 }  // namespace UC::Trans
 

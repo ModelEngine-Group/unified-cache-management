@@ -166,7 +166,7 @@ void VariableBufferPool::Reset()
 Status VariableBufferPool::ZeroMemory(void* address, std::size_t size) const
 {
     if (memory_type_ == MemoryType::ASCEND_DEVICE) {
-        const auto status = Trans::ZeroDeviceMemory(address, size);
+        const auto status = Trans::Memset(address, size);
         if (status.Failure()) { return Status::Error(name_ + ": failed to zero device memory"); }
     } else {
         std::memset(address, 0, size);

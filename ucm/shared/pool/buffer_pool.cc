@@ -22,7 +22,6 @@
  * SOFTWARE.
  * */
 #include "pool/buffer_pool.h"
-#include <cstring>
 #include <limits>
 #include <utility>
 #include "trans/detail/reserved_buffer.h"
@@ -139,13 +138,8 @@ bool BufferPool::IsValidPointer(const void* ptr) const
 
 Status BufferPool::ZeroMemory(void* ptr, std::size_t size) const
 {
-    if (memory_type_ == MemoryType::ASCEND_DEVICE ||
-        memory_type_ == MemoryType::DEVICE_MAPPED_HOST) {
-        const auto status = UC::Trans::ZeroDeviceMemory(ptr, size);
-        if (status.Failure()) { return Status::Error(name_ + ": failed to zero device memory"); }
-    } else {
-        std::memset(ptr, 0, size);
-    }
+    const auto status = UC::Trans::Memset(ptr, size);
+    if (status.Failure()) { return Status::Error(name_ + ": failed to memset buffer"); }
     return Status::OK();
 }
 

@@ -75,7 +75,7 @@ Status Buffer::RegisterHostBuffer(void* host, size_t size, void** pDevice)
 
 void Buffer::UnregisterHostBuffer(void* host) {}
 
-Status ZeroDeviceMemory(void* ptr, std::size_t size)
+Status Memset(void* ptr, std::size_t size)
 {
     std::memset(ptr, 0, size);
     return Status::OK();
