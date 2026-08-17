@@ -126,7 +126,7 @@ Executor::Executor(std::shared_ptr<StoreV1> backend, std::vector<std::size_t> te
 
 Status Executor::Start(std::size_t payloadSize, std::size_t slotNum)
 {
-    auto status = bufferPool_.Init("delegator_buffer_pool", BufferPool::MemoryType::ASCEND_DEVICE,
+    auto status = bufferPool_.Init("delegator_buffer_pool", BufferPool::MemoryType::Device,
                                    payloadSize, slotNum, false, kBufferAlignment);
     if (status.Failure()) { return status; }
     slotNum_ = slotNum;

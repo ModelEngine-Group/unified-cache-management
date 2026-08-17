@@ -111,7 +111,7 @@ private:
     Status ZeroMemory(void* address, std::size_t size) const;
 
     std::string name_;
-    MemoryType memory_type_{MemoryType::HOST};
+    MemoryType memory_type_{MemoryType::Host};
     std::size_t total_capacity_{0};
     std::size_t allocation_alignment_{kDefaultAllocationAlignment};
     bool enable_zero_{false};

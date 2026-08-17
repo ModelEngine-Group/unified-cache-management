@@ -76,7 +76,7 @@ TEST_F(CopyStreamTest, CopiesDeviceMemoryAsynchronously)
 
     BufferPool pool;
     ASSERT_TRUE(
-        pool.Init("delegator_copy_stream_test", BufferPool::MemoryType::ASCEND_DEVICE, kCopySize, 2)
+        pool.Init("delegator_copy_stream_test", BufferPool::MemoryType::Device, kCopySize, 2)
             .Success());
 
     BufferPool::Slot source;

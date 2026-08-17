@@ -121,7 +121,7 @@ void BufferPool::Reset()
     slot_capacity_ = 0;
     slot_stride_ = 0;
     slot_num_ = 0;
-    memory_type_ = MemoryType::HOST;
+    memory_type_ = MemoryType::Host;
     enable_zero_ = false;
 }
 

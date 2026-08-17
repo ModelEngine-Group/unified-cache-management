@@ -78,7 +78,7 @@ private:
     std::size_t slot_capacity_{0};
     std::size_t slot_stride_{0};
     std::size_t slot_num_{0};
-    MemoryType memory_type_{MemoryType::HOST};
+    MemoryType memory_type_{MemoryType::Host};
     bool enable_zero_{false};
 
     BufferRegion region_;

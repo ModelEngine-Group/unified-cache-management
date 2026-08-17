@@ -157,7 +157,7 @@ void VariableBufferPool::Reset()
     allocator_.reset();
     region_.Reset();
     name_.clear();
-    memory_type_ = MemoryType::HOST;
+    memory_type_ = MemoryType::Host;
     total_capacity_ = 0;
     allocation_alignment_ = kDefaultAllocationAlignment;
     enable_zero_ = false;
@@ -165,7 +165,7 @@ void VariableBufferPool::Reset()
 
 Status VariableBufferPool::ZeroMemory(void* address, std::size_t size) const
 {
-    if (memory_type_ == MemoryType::ASCEND_DEVICE) {
+    if (memory_type_ == MemoryType::Device) {
         const auto status = Trans::Memset(address, size);
         if (status.Failure()) { return Status::Error(name_ + ": failed to zero device memory"); }
     } else {

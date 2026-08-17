@@ -45,7 +45,7 @@ Status ReplyService::Init()
         !options_.publishEvent) {
         return Status::InvalidParam("invalid ReplyService options");
     }
-    auto status = buffers_.Init("dram_reply_slots", BufferPool::MemoryType::HOST, options_.slotSize,
+    auto status = buffers_.Init("dram_reply_slots", BufferPool::MemoryType::Host, options_.slotSize,
                                 options_.slotCount, true);
     if (status.Failure()) { return status; }
     slotContexts_ = std::make_unique<SlotContext[]>(options_.slotCount);

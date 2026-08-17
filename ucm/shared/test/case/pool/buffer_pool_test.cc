@@ -51,15 +51,15 @@ TEST_F(BufferPoolTest, RejectsInvalidInitAndUseBeforeInit)
     EXPECT_TRUE(status.Failure());
     EXPECT_EQ(status, Status::Error());
 
-    status = pool.Init("zero_capacity", MemoryType::HOST, 0, 1);
+    status = pool.Init("zero_capacity", MemoryType::Host, 0, 1);
     EXPECT_TRUE(status.Failure());
     EXPECT_EQ(status, Status::InvalidParam());
 
-    status = pool.Init("zero_slots", MemoryType::HOST, 64, 0);
+    status = pool.Init("zero_slots", MemoryType::Host, 64, 0);
     EXPECT_TRUE(status.Failure());
     EXPECT_EQ(status, Status::InvalidParam());
 
-    status = pool.Init("zero_alignment", MemoryType::HOST, 64, 1, false, 0);
+    status = pool.Init("zero_alignment", MemoryType::Host, 64, 1, false, 0);
     EXPECT_TRUE(status.Failure());
     EXPECT_EQ(status, Status::InvalidParam());
 
@@ -72,9 +72,9 @@ TEST_F(BufferPoolTest, RejectsInvalidInitAndUseBeforeInit)
 TEST_F(BufferPoolTest, RejectsRepeatedInit)
 {
     BufferPool pool;
-    ASSERT_TRUE(pool.Init("first", MemoryType::HOST, 64, 1).Success());
+    ASSERT_TRUE(pool.Init("first", MemoryType::Host, 64, 1).Success());
 
-    auto status = pool.Init("second", MemoryType::HOST, 64, 1);
+    auto status = pool.Init("second", MemoryType::Host, 64, 1);
     EXPECT_TRUE(status.Failure());
     EXPECT_EQ(status, Status::InvalidParam());
 }
@@ -82,12 +82,12 @@ TEST_F(BufferPoolTest, RejectsRepeatedInit)
 TEST_F(BufferPoolTest, RejectsSlotLayoutOverflow)
 {
     BufferPool pool;
-    auto status = pool.Init("capacity_overflow", MemoryType::HOST,
+    auto status = pool.Init("capacity_overflow", MemoryType::Host,
                             std::numeric_limits<std::size_t>::max(), 2);
     EXPECT_TRUE(status.Failure());
     EXPECT_EQ(status, Status::InvalidParam());
 
-    status = pool.Init("index_overflow", MemoryType::HOST, 64,
+    status = pool.Init("index_overflow", MemoryType::Host, 64,
                        std::numeric_limits<std::uint32_t>::max());
     EXPECT_TRUE(status.Failure());
     EXPECT_EQ(status, Status::InvalidParam());
@@ -96,14 +96,14 @@ TEST_F(BufferPoolTest, RejectsSlotLayoutOverflow)
 TEST_F(BufferPoolTest, HostPoolUsesAlignedSlotStrideAndReportsBusyWhenFull)
 {
     BufferPool pool;
-    auto status = pool.Init("host_pool", MemoryType::HOST, 71, 2, true);
+    auto status = pool.Init("host_pool", MemoryType::Host, 71, 2, true);
     ASSERT_TRUE(status.Success()) << status.ToString();
     EXPECT_TRUE(pool.IsInitialized());
 
     ASSERT_NE(pool.GetLocalAddr(), nullptr);
     EXPECT_EQ(pool.GetLocalAddr(), pool.GetDeviceAddr());
     EXPECT_EQ(pool.GetTotalSize(), 256);
-    EXPECT_EQ(pool.GetMemoryType(), MemoryType::HOST);
+    EXPECT_EQ(pool.GetMemoryType(), MemoryType::Host);
 
     const auto* bytes = static_cast<const std::uint8_t*>(pool.GetLocalAddr());
     for (std::size_t i = 0; i < pool.GetTotalSize(); ++i) { EXPECT_EQ(bytes[i], 0); }
@@ -137,7 +137,7 @@ TEST_F(BufferPoolTest, SupportsCustomSizeAndOffsetAlignment)
     constexpr std::size_t kStride = 2 * kAlignment;
 
     BufferPool pool;
-    auto status = pool.Init("aligned_pool", MemoryType::HOST, kCapacity, 2, false, kAlignment);
+    auto status = pool.Init("aligned_pool", MemoryType::Host, kCapacity, 2, false, kAlignment);
     ASSERT_TRUE(status.Success()) << status.ToString();
     EXPECT_EQ(pool.GetTotalSize(), 2 * kStride);
     EXPECT_EQ(pool.GetTotalSize() % kAlignment, 0);
@@ -171,14 +171,14 @@ TEST_F(BufferPoolTest, HostPinnedPoolKeepsLocalAndDeviceAddresses)
 #endif
 
     BufferPool pool;
-    auto status = pool.Init("pinned_pool", MemoryType::HOST_PINNED, 4096, 2);
+    auto status = pool.Init("pinned_pool", MemoryType::HostMappedDevice, 4096, 2);
     ASSERT_TRUE(status.Success()) << status.ToString();
 
     ASSERT_NE(pool.GetLocalAddr(), nullptr);
     ASSERT_NE(pool.GetDeviceAddr(), nullptr);
     EXPECT_NE(pool.GetLocalAddr(), pool.GetDeviceAddr());
     EXPECT_EQ(pool.GetTotalSize(), 8192);
-    EXPECT_EQ(pool.GetMemoryType(), MemoryType::HOST_PINNED);
+    EXPECT_EQ(pool.GetMemoryType(), MemoryType::HostMappedDevice);
 
     BufferPool::Slot first;
     BufferPool::Slot second;
@@ -204,11 +204,11 @@ TEST_F(BufferPoolTest, DevicePoolZeroesReleasedSlot)
     ASSERT_NE(stream, nullptr);
 
     BufferPool pool;
-    auto status = pool.Init("device_pool", MemoryType::ASCEND_DEVICE, kSlotCapacity, 1, true);
+    auto status = pool.Init("device_pool", MemoryType::Device, kSlotCapacity, 1, true);
     ASSERT_TRUE(status.Success()) << status.ToString();
     EXPECT_EQ(pool.GetLocalAddr(), pool.GetDeviceAddr());
     EXPECT_EQ(pool.GetTotalSize(), kSlotStride);
-    EXPECT_EQ(pool.GetMemoryType(), MemoryType::ASCEND_DEVICE);
+    EXPECT_EQ(pool.GetMemoryType(), MemoryType::Device);
 
     BufferPool::Slot first;
     ASSERT_TRUE(pool.Allocate(first).Success());
@@ -244,12 +244,12 @@ TEST_F(BufferPoolTest, CpuAccessibleDevicePoolAllocatesAndZeroesReleasedSlot)
     ASSERT_NE(stream, nullptr);
 
     BufferPool pool;
-    auto status = pool.Init("cpu_accessible_device_pool", MemoryType::DEVICE_MAPPED_HOST,
+    auto status = pool.Init("cpu_accessible_device_pool", MemoryType::DeviceMappedHost,
                             kSlotCapacity, 1, true);
     ASSERT_TRUE(status.Success()) << status.ToString();
     EXPECT_EQ(pool.GetLocalAddr(), pool.GetDeviceAddr());
     EXPECT_EQ(pool.GetTotalSize(), kSlotStride);
-    EXPECT_EQ(pool.GetMemoryType(), MemoryType::DEVICE_MAPPED_HOST);
+    EXPECT_EQ(pool.GetMemoryType(), MemoryType::DeviceMappedHost);
 
     BufferPool::Slot slot;
     ASSERT_TRUE(pool.Allocate(slot).Success());
@@ -269,7 +269,7 @@ TEST_F(BufferPoolTest, FreeZeroesAndReusesHostSlot)
     constexpr std::size_t kSlotStride = 128;
 
     BufferPool pool;
-    auto status = pool.Init("reuse_pool", MemoryType::HOST, 71, 1, true);
+    auto status = pool.Init("reuse_pool", MemoryType::Host, 71, 1, true);
     ASSERT_TRUE(status.Success()) << status.ToString();
 
     BufferPool::Slot first;
@@ -292,7 +292,7 @@ TEST_F(BufferPoolTest, FreePreservesHostSlotWhenZeroingDisabled)
     constexpr std::size_t kSlotStride = 128;
 
     BufferPool pool;
-    auto status = pool.Init("reuse_without_zero", MemoryType::HOST, 71, 1);
+    auto status = pool.Init("reuse_without_zero", MemoryType::Host, 71, 1);
     ASSERT_TRUE(status.Success()) << status.ToString();
 
     BufferPool::Slot first;
@@ -312,7 +312,7 @@ TEST_F(BufferPoolTest, FreePreservesHostSlotWhenZeroingDisabled)
 TEST_F(BufferPoolTest, RejectsInvalidFree)
 {
     BufferPool pool;
-    ASSERT_TRUE(pool.Init("validation_pool", MemoryType::HOST, 64, 1).Success());
+    ASSERT_TRUE(pool.Init("validation_pool", MemoryType::Host, 64, 1).Success());
 
     auto status = pool.Free(1);
     EXPECT_TRUE(status.Failure());
@@ -322,20 +322,20 @@ TEST_F(BufferPoolTest, RejectsInvalidFree)
 TEST_F(BufferPoolTest, ResetAllowsReinitialization)
 {
     BufferPool pool;
-    ASSERT_TRUE(pool.Init("first", MemoryType::HOST, 64, 1).Success());
+    ASSERT_TRUE(pool.Init("first", MemoryType::Host, 64, 1).Success());
     pool.Reset();
 
     EXPECT_FALSE(pool.IsInitialized());
     EXPECT_EQ(pool.GetLocalAddr(), nullptr);
     EXPECT_EQ(pool.GetDeviceAddr(), nullptr);
     EXPECT_EQ(pool.GetTotalSize(), 0);
-    EXPECT_TRUE(pool.Init("second", MemoryType::HOST, 128, 2).Success());
+    EXPECT_TRUE(pool.Init("second", MemoryType::Host, 128, 2).Success());
 }
 
 TEST_F(BufferPoolTest, ConcurrentAllocateAndFree)
 {
     BufferPool pool;
-    ASSERT_TRUE(pool.Init("concurrent_pool", MemoryType::HOST, 64, 32).Success());
+    ASSERT_TRUE(pool.Init("concurrent_pool", MemoryType::Host, 64, 32).Success());
 
     constexpr int kThreadCount = 4;
     constexpr int kOpsPerThread = 500;

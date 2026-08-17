@@ -123,7 +123,7 @@ protected:
     void InitFlagBuffer(std::size_t slotSize = kFlagSlotSize, std::size_t slotCount = 1)
     {
         ASSERT_TRUE(flagBufferPool_
-                        .Init("completion_poller_test_flags", BufferPool::MemoryType::HOST,
+                        .Init("completion_poller_test_flags", BufferPool::MemoryType::Host,
                               slotSize, slotCount)
                         .Success());
     }
