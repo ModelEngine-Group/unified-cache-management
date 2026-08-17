@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_TRANS_RESERVED_BUFFER_H
 
 #include <cstddef>
+#include <cstdint>
 #include <fmt/format.h>
 #include <memory>
 #include "indexer.h"
@@ -109,7 +110,7 @@ public:
     }
 };
 
-Status Memset(void* ptr, std::size_t size);
+Status Memset(void* ptr, std::size_t size, std::int32_t value);
 
 }  // namespace UC::Trans
 

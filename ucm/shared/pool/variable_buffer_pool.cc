@@ -22,7 +22,6 @@
  * SOFTWARE.
  * */
 #include "pool/variable_buffer_pool.h"
-#include <cstring>
 #include <limits>
 #include <new>
 #include <utility>
@@ -163,12 +162,8 @@ void VariableBufferPool::Reset()
 
 Status VariableBufferPool::ZeroMemory(void* address, std::size_t size) const
 {
-    if (memoryType_ == MemoryType::Device) {
-        const auto status = Trans::Memset(address, size);
-        if (status.Failure()) { return Status::Error(name_ + ": failed to zero device memory"); }
-    } else {
-        std::memset(address, 0, size);
-    }
+    const auto status = Trans::Memset(address, size, 0);
+    if (status.Failure()) { return Status::Error(name_ + ": failed to zero memory"); }
     return Status::OK();
 }
 

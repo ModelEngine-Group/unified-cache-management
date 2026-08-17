@@ -136,7 +136,7 @@ bool BufferPool::IsValidPointer(const void* ptr) const
 
 Status BufferPool::ZeroMemory(void* ptr, std::size_t size) const
 {
-    const auto status = UC::Trans::Memset(ptr, size);
+    const auto status = UC::Trans::Memset(ptr, size, 0);
     if (status.Failure()) { return Status::Error(name_ + ": failed to memset buffer"); }
     return Status::OK();
 }
