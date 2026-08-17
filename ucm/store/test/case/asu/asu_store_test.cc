@@ -120,6 +120,18 @@ public:
         return Submit(entries, taskId);
     }
 
+    UC::ASU::Status BatchLoadAsync(const std::vector<UC::ASU::KVBuffer>& entries,
+                                   UC::ASU::TaskId& taskId) override
+    {
+        return LoadAsync(entries, taskId);
+    }
+
+    UC::ASU::Status BatchStoreAsync(const std::vector<UC::ASU::KVBuffer>& entries,
+                                    UC::ASU::TaskId& taskId) override
+    {
+        return StoreAsync(entries, taskId);
+    }
+
     UC::ASU::Status DeleteAsync(const std::vector<UC::ASU::CacheKey>& keys,
                                 UC::ASU::TaskId& taskId) override
     {

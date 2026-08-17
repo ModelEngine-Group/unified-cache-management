@@ -46,14 +46,7 @@ enum class ClientTaskState {
     COMPLETED = 2,
 };
 
-enum class ClientOpType {
-    QUERY = 0,
-    LOAD = 1,
-    STORE = 2,
-    DELETE = 3,
-};
-
-enum class TransportOpType {
+enum class AsuOpType {
     QUERY = 0,
     LOAD = 1,
     STORE = 2,
@@ -74,25 +67,18 @@ enum class TransportSubBatchState {
     COMPLETED = 1,
 };
 
-inline bool IsEntryBatchOp(TransportOpType opType)
+inline bool IsEntryBatchOp(AsuOpType opType)
 {
-    return opType == TransportOpType::LOAD || opType == TransportOpType::STORE ||
-           opType == TransportOpType::BATCH_LOAD || opType == TransportOpType::BATCH_STORE;
+    return opType == AsuOpType::LOAD || opType == AsuOpType::STORE ||
+           opType == AsuOpType::BATCH_LOAD || opType == AsuOpType::BATCH_STORE;
 }
 
-inline TransportOpType NormalizeTransportOpType(TransportOpType opType)
+inline bool IsKeyBatchOp(AsuOpType opType)
 {
-    if (opType == TransportOpType::LOAD) { return TransportOpType::BATCH_LOAD; }
-    if (opType == TransportOpType::STORE) { return TransportOpType::BATCH_STORE; }
-    return opType;
+    return opType == AsuOpType::DELETE || opType == AsuOpType::QUERY;
 }
 
-inline bool IsKeyBatchOp(TransportOpType opType)
-{
-    return opType == TransportOpType::DELETE || opType == TransportOpType::QUERY;
-}
-
-inline bool IsKeepAliveOp(TransportOpType opType) { return opType == TransportOpType::KEEP_ALIVE; }
+inline bool IsKeepAliveOp(AsuOpType opType) { return opType == AsuOpType::KEEP_ALIVE; }
 
 using TransportSubBatchList = std::vector<TransportSubBatchContext>;
 using RegisteredMrKeyMap = std::unordered_map<MRHandle, std::uint32_t>;
@@ -102,7 +88,7 @@ struct TransportTask {
 
     AsuId asuId{0};
     TaskId taskId{kInvalidTaskId};
-    TransportOpType opType{TransportOpType::QUERY};
+    AsuOpType opType{AsuOpType::QUERY};
     std::weak_ptr<AsuTransport> transport;
     std::vector<CacheKey> keys;
     std::vector<KVBuffer> entries;
@@ -133,7 +119,7 @@ using TransportTaskPtr = std::shared_ptr<TransportTask>;
 
 struct ClientTask {
     TaskId taskId{kInvalidTaskId};
-    ClientOpType opType{ClientOpType::LOAD};
+    AsuOpType opType{AsuOpType::LOAD};
     std::shared_ptr<ViewSnapshot> viewSnapshot;
     std::vector<KVBuffer> entries;
     std::shared_ptr<const RegisteredMrKeyMap> registeredMrKeys;

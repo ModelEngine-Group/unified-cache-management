@@ -220,7 +220,7 @@ Status AsuClientRunner::Store(const BufferSet& buffers, SubmitMode submitMode,
                                      timeoutMs, "store", result);
     }
 
-    return SubmitAndWaitEntries(*client_, buffers.entries, &UC::ASU::AsuClient::StoreAsync,
+    return SubmitAndWaitEntries(*client_, buffers.entries, &UC::ASU::AsuClient::BatchStoreAsync,
                                 timeoutMs, "store", result);
 }
 
@@ -238,7 +238,7 @@ Status AsuClientRunner::Retrieve(const BufferSet& buffers, SubmitMode submitMode
                                      timeoutMs, "retrieve", result);
     }
 
-    return SubmitAndWaitEntries(*client_, buffers.entries, &UC::ASU::AsuClient::LoadAsync,
+    return SubmitAndWaitEntries(*client_, buffers.entries, &UC::ASU::AsuClient::BatchLoadAsync,
                                 timeoutMs, "retrieve", result);
 }
 

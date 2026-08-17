@@ -37,16 +37,16 @@
 
 namespace UC::ASU {
 
-inline KvOpcode ToKvOpcode(TransportOpType opType)
+inline KvOpcode ToKvOpcode(AsuOpType opType)
 {
     switch (opType) {
-        case TransportOpType::LOAD: return KvOpcode::Retrieve;
-        case TransportOpType::STORE: return KvOpcode::Store;
-        case TransportOpType::BATCH_LOAD: return KvOpcode::BatchRetrieve;
-        case TransportOpType::BATCH_STORE: return KvOpcode::BatchStore;
-        case TransportOpType::DELETE: return KvOpcode::Delete;
-        case TransportOpType::QUERY: return KvOpcode::Exist;
-        case TransportOpType::KEEP_ALIVE: return KvOpcode::KeepAlive;
+        case AsuOpType::LOAD: return KvOpcode::Retrieve;
+        case AsuOpType::STORE: return KvOpcode::Store;
+        case AsuOpType::BATCH_LOAD: return KvOpcode::BatchRetrieve;
+        case AsuOpType::BATCH_STORE: return KvOpcode::BatchStore;
+        case AsuOpType::DELETE: return KvOpcode::Delete;
+        case AsuOpType::QUERY: return KvOpcode::Exist;
+        case AsuOpType::KEEP_ALIVE: return KvOpcode::KeepAlive;
     }
     return KvOpcode::KeepAlive;
 }
@@ -71,11 +71,11 @@ private:
 
     Status PrepareTaskSubBatches(const TransportTask& task,
                                  std::vector<TransportSubBatchContext>& subBatchContexts);
-    Status BuildEntrySubBatchRequest(TransportOpType opType,
+    Status BuildEntrySubBatchRequest(AsuOpType opType,
                                      const IoScheduler::ScheduledIoBatch& subBatch,
                                      const RegisteredMrKeyMap& registeredMrKeys,
                                      TransportSubBatchContext& subBatchContext);
-    Status SubmitKeySubBatchRequest(TransportOpType opType,
+    Status SubmitKeySubBatchRequest(AsuOpType opType,
                                     const IoScheduler::ScheduledKeyBatch& subBatch,
                                     TransportSubBatchContext& subBatchContext);
     Status SubmitKeepAliveRequest(TransportSubBatchContext& subBatchContext);

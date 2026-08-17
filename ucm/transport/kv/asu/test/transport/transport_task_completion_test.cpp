@@ -217,7 +217,7 @@ TEST_F(TransportTaskCompletionTest, PollTaskCompletionsReadsDeviceFlagBuffer)
 
     auto& subBatchContext = (*ctx->subBatchContexts)[0];
     subBatchContext.cid = 123;
-    subBatchContext.opType = TransportOpType::BATCH_STORE;
+    subBatchContext.opType = AsuOpType::BATCH_STORE;
     subBatchContext.entryStatus.assign(2, Status::OK());
     subBatchContext.channel = channel;
     ASSERT_TRUE(
@@ -264,7 +264,7 @@ TEST_F(TransportTaskCompletionTest, FailureCqeAccumulatesWithoutSuccessReset)
 
     auto& subBatchContext = (*ctx->subBatchContexts)[0];
     subBatchContext.cid = 123;
-    subBatchContext.opType = TransportOpType::BATCH_STORE;
+    subBatchContext.opType = AsuOpType::BATCH_STORE;
     subBatchContext.entryStatus.assign(1, Status::OK());
     subBatchContext.channel = channel;
     ASSERT_TRUE(
@@ -298,7 +298,7 @@ TEST_F(TransportTaskCompletionTest, PollTaskCompletionsTimesOutAndReleasesResour
     ctx->subBatchContexts->resize(1);
 
     auto& subBatchContext = (*ctx->subBatchContexts)[0];
-    subBatchContext.opType = TransportOpType::BATCH_STORE;
+    subBatchContext.opType = AsuOpType::BATCH_STORE;
     subBatchContext.entryStatus.assign(2, Status::OK());
     subBatchContext.channel = channel;
     ASSERT_TRUE(transport_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
@@ -586,7 +586,7 @@ TEST_F(TransportTaskCompletionTest, FailedSubmissionDoesNotInvokeCallback)
 
     auto task = std::make_shared<TransportTask>();
     task->taskId = 123;
-    task->opType = TransportOpType::BATCH_LOAD;
+    task->opType = AsuOpType::BATCH_LOAD;
     task->entries = entries;
     task->onComplete = [&callbackCount](TaskResult) { ++callbackCount; };
     const auto status = transport_->Submit(task);
@@ -606,7 +606,7 @@ TEST_F(TransportTaskCompletionTest, ShutdownCallbackCannotSubmitNewTask)
         ++callbackCount;
         EXPECT_EQ(result.status.code, StatusCode::CANCELED);
         auto nestedTask = std::make_shared<TransportTask>();
-        nestedTask->opType = TransportOpType::BATCH_LOAD;
+        nestedTask->opType = AsuOpType::BATCH_LOAD;
         nestedTask->entries.resize(1);
         nestedTask->onComplete = [&nestedCallbackCount](TaskResult) { ++nestedCallbackCount; };
         nestedSubmitStatus = transport_->Submit(nestedTask);
@@ -632,7 +632,7 @@ TEST_F(TransportTaskCompletionTest, ShutdownDrainsInflightTaskBeforeCanceling)
     ctx->remainingSubBatchCount = 1;
     auto& subBatchContext = (*ctx->subBatchContexts)[0];
     subBatchContext.cid = 123;
-    subBatchContext.opType = TransportOpType::BATCH_STORE;
+    subBatchContext.opType = AsuOpType::BATCH_STORE;
     subBatchContext.entryStatus.assign(1, Status::OK());
     ASSERT_TRUE(transport_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
     auto* cqe = reinterpret_cast<std::uint32_t*>(subBatchContext.flagBuffer.local_addr);

@@ -45,10 +45,10 @@ public:
     };
 
     std::vector<ScheduledIoBatch> SplitForAsu(const BatchView<KVBuffer>& entries,
-                                              TransportOpType opType) const;
+                                              AsuOpType opType) const;
     std::vector<ScheduledKeyBatch> SplitForAsu(const BatchView<CacheKey>& keys,
-                                               TransportOpType opType) const;
-    std::size_t GetSqeIoNum(TransportOpType opType) const;
+                                               AsuOpType opType) const;
+    std::size_t GetSqeIoNum(AsuOpType opType) const;
 
 private:
     std::size_t batchLoadIoNum_{110};

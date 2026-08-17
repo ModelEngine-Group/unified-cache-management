@@ -53,7 +53,7 @@ Status TransportTaskExecutor::PrepareTaskSubBatches(
     const TransportTask& ctx, std::vector<TransportSubBatchContext>& subBatchContexts)
 {
     if (IsEntryBatchOp(ctx.opType)) {
-        const auto opType = NormalizeTransportOpType(ctx.opType);
+        const auto opType = ctx.opType;
         if (ctx.entries.empty()) {
             UC_ERROR("Submit entry batch failed: entry batch is empty");
             return Status::Error(StatusCode::INVALID_ARGUMENT, "entry batch is empty");
