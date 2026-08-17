@@ -104,8 +104,7 @@ public:
     void* GetDeviceAddr() const { return region_.deviceAddr; }
 
 private:
-    static bool ComputeAllocationLayout(std::size_t requestedSize,
-                                        std::size_t allocationAlignment,
+    static bool ComputeAllocationLayout(std::size_t requestedSize, std::size_t allocationAlignment,
                                         std::size_t& allocatedSize, std::uint32_t& requiredUnits);
 
     Status ZeroMemory(void* address, std::size_t size) const;

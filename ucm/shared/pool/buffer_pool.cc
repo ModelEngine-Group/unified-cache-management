@@ -100,9 +100,7 @@ Status BufferPool::Allocate(Slot& slot)
 Status BufferPool::Free(std::uint32_t slotIndex)
 {
     if (!region_) { return Status::Error("buffer pool not initialized"); }
-    if (slotIndex >= slotNum_) {
-        return Status::InvalidParam(name_ + ": slot_index out of range");
-    }
+    if (slotIndex >= slotNum_) { return Status::InvalidParam(name_ + ": slot_index out of range"); }
 
     if (enableZero_) {
         auto* slot = static_cast<char*>(region_.localAddr) + slotIndex * slotStride_;

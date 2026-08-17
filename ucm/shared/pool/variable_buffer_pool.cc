@@ -50,16 +50,15 @@ bool VariableBufferPool::ComputeAllocationLayout(std::size_t requestedSize,
     return true;
 }
 
-Status VariableBufferPool::Init(std::string name, MemoryType memoryType,
-                                std::size_t totalCapacity, std::uint32_t metadataNodeCapacity,
-                                bool enableZero, std::size_t allocationAlignment)
+Status VariableBufferPool::Init(std::string name, MemoryType memoryType, std::size_t totalCapacity,
+                                std::uint32_t metadataNodeCapacity, bool enableZero,
+                                std::size_t allocationAlignment)
 {
     if (IsInitialized()) { return Status::InvalidParam(name + " already initialized"); }
 
     std::size_t alignedCapacity = 0;
     std::uint32_t totalUnits = 0;
-    if (!ComputeAllocationLayout(totalCapacity, allocationAlignment, alignedCapacity,
-                                 totalUnits)) {
+    if (!ComputeAllocationLayout(totalCapacity, allocationAlignment, alignedCapacity, totalUnits)) {
         return Status::InvalidParam(
             name + ": total_capacity or allocation_alignment is invalid or too large");
     }
@@ -75,8 +74,7 @@ Status VariableBufferPool::Init(std::string name, MemoryType memoryType,
 
     std::unique_ptr<OffsetAllocator::Allocator> allocator;
     try {
-        allocator =
-            std::make_unique<OffsetAllocator::Allocator>(totalUnits, metadataNodeCapacity);
+        allocator = std::make_unique<OffsetAllocator::Allocator>(totalUnits, metadataNodeCapacity);
     } catch (const std::bad_alloc&) {
         return Status::OutOfMemory();
     }
