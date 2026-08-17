@@ -45,7 +45,7 @@ Status ReplyService::Init()
         !options_.publishEvent) {
         return Status::InvalidParam("invalid ReplyService options");
     }
-    auto status = buffers_.Init("dram_reply_slots", BufferPool::MemoryType::HOST, options_.slotSize,
+    auto status = buffers_.Init("dram_reply_slots", BufferPool::MemoryType::Host, options_.slotSize,
                                 options_.slotCount, true);
     if (status.Failure()) { return status; }
     slotContexts_ = std::make_unique<SlotContext[]>(options_.slotCount);
@@ -74,12 +74,12 @@ std::size_t ReplyService::ReplyPayloadSize(OpType op, std::size_t entryCount) co
 
 bool ReplyService::CompletionReady(const Lease& lease) const noexcept
 {
-    if (lease.slot.local_addr == nullptr || lease.payloadSize == 0 ||
+    if (lease.slot.localAddr == nullptr || lease.payloadSize == 0 ||
         lease.payloadSize > lease.slot.length) {
         return false;
     }
     bool ready = false;
-    const auto status = protocol_.IsResponseReady(lease.slot.local_addr, ready);
+    const auto status = protocol_.IsResponseReady(lease.slot.localAddr, ready);
     if (status.Failure() || !ready) { return false; }
     std::atomic_thread_fence(std::memory_order_acquire);
     return true;
@@ -91,7 +91,7 @@ Status ReplyService::DecodeReply(const Lease& lease, std::vector<EntryResult>* e
         return Status::InvalidParam("invalid DramPool reply metadata");
     }
     DramPool::KvResponse response;
-    auto status = protocol_.UnpackResponse(lease.slot.local_addr, ToOpcode(lease.op),
+    auto status = protocol_.UnpackResponse(lease.slot.localAddr, ToOpcode(lease.op),
                                            static_cast<std::uint16_t>(lease.entryCount), response);
     if (status.Failure()) { return status; }
     if (response.results.size() != lease.entryCount) { return Status::DeserializeFailed(); }
@@ -153,32 +153,32 @@ Expected<ReplySlot> ReplyService::Acquire(const RequestToken& token, OpType op,
         return Status::Error("ReplyService slot capacity invariant violated");
     }
     if (allocated.Failure()) { return allocated; }
-    if (slot.slot_index >= options_.slotCount || slot.local_addr == nullptr || slot.length == 0 ||
-        !buffers_.IsValidPointer(slot.local_addr)) {
-        (void)buffers_.Free(slot.slot_index);
+    if (slot.slotIndex >= options_.slotCount || slot.localAddr == nullptr || slot.length == 0 ||
+        !buffers_.IsValidPointer(slot.localAddr)) {
+        (void)buffers_.Free(slot.slotIndex);
         return Status::Error("reply buffer pool returned an invalid slot");
     }
 
     {
-        auto& context = slotContexts_[slot.slot_index];
+        auto& context = slotContexts_[slot.slotIndex];
         std::lock_guard slotLock(context.mutex);
         {
             std::unique_lock registryLock(activeLeasesMutex_);
             if (!acceptingLeases_.load(std::memory_order_acquire)) {
                 registryLock.unlock();
-                const auto released = buffers_.Free(slot.slot_index);
+                const auto released = buffers_.Free(slot.slotIndex);
                 if (released.Failure()) { return released; }
                 return Status::Error("ReplyService is stopping");
             }
-            if (context.lease.has_value() || activeLeasePositions_[slot.slot_index] != kNoIndex) {
+            if (context.lease.has_value() || activeLeasePositions_[slot.slotIndex] != kNoIndex) {
                 registryLock.unlock();
-                (void)buffers_.Free(slot.slot_index);
+                (void)buffers_.Free(slot.slotIndex);
                 return Status::Error("reply buffer pool returned an invalid slot");
             }
 
             context.lease = Lease{token, slot, op, entryCount, payloadSize, false};
-            activeLeasePositions_[slot.slot_index] = activeLeaseIndices_.size();
-            activeLeaseIndices_.push_back(slot.slot_index);
+            activeLeasePositions_[slot.slotIndex] = activeLeaseIndices_.size();
+            activeLeaseIndices_.push_back(slot.slotIndex);
             ++activeLeaseVersion_;
         }
     }
@@ -189,7 +189,7 @@ Expected<ReplySlot> ReplyService::Acquire(const RequestToken& token, OpType op,
 Status ReplyService::Release(const RequestToken& token, const ReplySlot& slot) noexcept
 {
     try {
-        const auto index = static_cast<std::size_t>(slot.slot_index);
+        const auto index = static_cast<std::size_t>(slot.slotIndex);
         if (index >= options_.slotCount) {
             return Status::InvalidParam("reply slot is not leased");
         }
@@ -198,7 +198,7 @@ Status ReplyService::Release(const RequestToken& token, const ReplySlot& slot) n
         std::unique_lock slotLock(context.mutex);
         if (!context.lease.has_value()) { return Status::InvalidParam("reply slot is not leased"); }
         const auto& lease = *context.lease;
-        if (lease.token != token || lease.slot.local_addr != slot.local_addr ||
+        if (lease.token != token || lease.slot.localAddr != slot.localAddr ||
             lease.slot.length != slot.length) {
             return Status::InvalidParam("reply slot ownership mismatch");
         }
@@ -214,7 +214,7 @@ Status ReplyService::Release(const RequestToken& token, const ReplySlot& slot) n
 
         // Free may clear the complete slot. Keep only this slot locked while it
         // does so; a concurrent Acquire of the same index will wait for slotLock.
-        auto result = buffers_.Free(slot.slot_index);
+        auto result = buffers_.Free(slot.slotIndex);
         if (result.Failure()) { return result; }
 
         {

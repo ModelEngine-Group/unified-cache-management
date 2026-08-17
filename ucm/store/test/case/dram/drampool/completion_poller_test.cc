@@ -123,7 +123,7 @@ protected:
     void InitFlagBuffer(std::size_t slotSize = kFlagSlotSize, std::size_t slotCount = 1)
     {
         ASSERT_TRUE(flagBufferPool_
-                        .Init("completion_poller_test_flags", BufferPool::MemoryType::HOST,
+                        .Init("completion_poller_test_flags", BufferPool::MemoryType::Host,
                               slotSize, slotCount)
                         .Success());
     }
@@ -222,7 +222,7 @@ TEST_F(CompletionPollerTest, PollPendingRemovesEveryTerminalFailureAndInvalidSta
     EXPECT_TRUE(poller_->pending_.empty());
     BufferPool::Slot reused;
     ASSERT_TRUE(flagBufferPool_.Allocate(reused).Success());
-    EXPECT_TRUE(flagBufferPool_.Free(reused.slot_index).Success());
+    EXPECT_TRUE(flagBufferPool_.Free(reused.slotIndex).Success());
 }
 
 TEST_F(CompletionPollerTest, RunWithStopSetDrainsAllQueuedFailures)
@@ -398,7 +398,7 @@ TEST_F(CompletionPollerTest, SubmitResponseRejectsMissingPeerAndUnknownOpcode)
 
     auto unknownOpcode = MakeResponseRecord(KvOpcode::None);
     EXPECT_TRUE(poller_->SubmitResponse(unknownOpcode));
-    EXPECT_EQ(unknownOpcode.local_resp_slot.local_addr, nullptr);
+    EXPECT_EQ(unknownOpcode.local_resp_slot.localAddr, nullptr);
 }
 
 TEST_F(CompletionPollerTest, SubmitResponseRejectsAlreadyOwnedBuffer)
@@ -409,8 +409,8 @@ TEST_F(CompletionPollerTest, SubmitResponseRejectsAlreadyOwnedBuffer)
 
     EXPECT_FALSE(poller_->SubmitResponse(record));
 
-    EXPECT_NE(record.local_resp_slot.local_addr, nullptr);
-    EXPECT_TRUE(flagBufferPool_.Free(record.local_resp_slot.slot_index).Success());
+    EXPECT_NE(record.local_resp_slot.localAddr, nullptr);
+    EXPECT_TRUE(flagBufferPool_.Free(record.local_resp_slot.slotIndex).Success());
 }
 
 TEST_F(CompletionPollerTest, SubmitResponseReleasesUndersizedBuffer)
@@ -421,10 +421,10 @@ TEST_F(CompletionPollerTest, SubmitResponseReleasesUndersizedBuffer)
 
     EXPECT_TRUE(poller_->SubmitResponse(record));
 
-    EXPECT_EQ(record.local_resp_slot.local_addr, nullptr);
+    EXPECT_EQ(record.local_resp_slot.localAddr, nullptr);
     BufferPool::Slot reused;
     ASSERT_TRUE(flagBufferPool_.Allocate(reused).Success());
-    EXPECT_TRUE(flagBufferPool_.Free(reused.slot_index).Success());
+    EXPECT_TRUE(flagBufferPool_.Free(reused.slotIndex).Success());
 }
 
 TEST_F(CompletionPollerTest, SubmitResponseReleasesBufferWhenProtocolRejectsResults)
@@ -437,10 +437,10 @@ TEST_F(CompletionPollerTest, SubmitResponseReleasesBufferWhenProtocolRejectsResu
 
         EXPECT_TRUE(poller_->SubmitResponse(record));
 
-        EXPECT_EQ(record.local_resp_slot.local_addr, nullptr);
+        EXPECT_EQ(record.local_resp_slot.localAddr, nullptr);
         BufferPool::Slot reused;
         ASSERT_TRUE(flagBufferPool_.Allocate(reused).Success());
-        EXPECT_TRUE(flagBufferPool_.Free(reused.slot_index).Success());
+        EXPECT_TRUE(flagBufferPool_.Free(reused.slotIndex).Success());
     }
 }
 
@@ -451,11 +451,11 @@ TEST_F(CompletionPollerTest, SubmitResponseReleasesBufferWhenRealTransportReject
 
     EXPECT_TRUE(poller_->SubmitResponse(record));
 
-    EXPECT_EQ(record.local_resp_slot.local_addr, nullptr);
+    EXPECT_EQ(record.local_resp_slot.localAddr, nullptr);
     EXPECT_EQ(record.response_handle, transport::kInvalidTransferHandle);
     BufferPool::Slot reused;
     ASSERT_TRUE(flagBufferPool_.Allocate(reused).Success());
-    EXPECT_TRUE(flagBufferPool_.Free(reused.slot_index).Success());
+    EXPECT_TRUE(flagBufferPool_.Free(reused.slotIndex).Success());
 }
 
 TEST_F(CompletionPollerTest, SubmitResponseReturnsFalseOnNoSpaceWithoutMutatingRecord)
@@ -467,8 +467,8 @@ TEST_F(CompletionPollerTest, SubmitResponseReturnsFalseOnNoSpaceWithoutMutatingR
 
     EXPECT_FALSE(poller_->SubmitResponse(record));
 
-    EXPECT_EQ(record.local_resp_slot.local_addr, nullptr);
-    EXPECT_TRUE(flagBufferPool_.Free(occupied.slot_index).Success());
+    EXPECT_EQ(record.local_resp_slot.localAddr, nullptr);
+    EXPECT_TRUE(flagBufferPool_.Free(occupied.slotIndex).Success());
 }
 
 TEST_F(CompletionPollerTest, ResponseStatusApiFailureReleasesOwnedBuffer)
@@ -481,10 +481,10 @@ TEST_F(CompletionPollerTest, ResponseStatusApiFailureReleasesOwnedBuffer)
 
     EXPECT_TRUE(poller_->PollResponseTransfer(record));
 
-    EXPECT_EQ(record.local_resp_slot.local_addr, nullptr);
+    EXPECT_EQ(record.local_resp_slot.localAddr, nullptr);
     BufferPool::Slot reused;
     ASSERT_TRUE(flagBufferPool_.Allocate(reused).Success());
-    EXPECT_TRUE(flagBufferPool_.Free(reused.slot_index).Success());
+    EXPECT_TRUE(flagBufferPool_.Free(reused.slotIndex).Success());
 }
 
 TEST_F(CompletionPollerTest, ResponseBufferReleaseFailureIsStillTerminal)
@@ -493,7 +493,7 @@ TEST_F(CompletionPollerTest, ResponseBufferReleaseFailureIsStillTerminal)
     record.response_handle = transport::kInvalidTransferHandle;
 
     EXPECT_TRUE(poller_->PollResponseTransfer(record));
-    EXPECT_EQ(record.local_resp_slot.local_addr, nullptr);
+    EXPECT_EQ(record.local_resp_slot.localAddr, nullptr);
 }
 
 }  // namespace

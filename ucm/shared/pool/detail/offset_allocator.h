@@ -108,18 +108,18 @@ private:
         bool used = false;
     };
 
-    uint32 m_size;
-    uint32 m_maxAllocs;
-    uint32 m_freeStorage;
+    uint32 size_;
+    uint32 maxAllocs_;
+    uint32 freeStorage_;
 
-    uint32 m_usedBinsTop;
-    uint8 m_usedBins[NUM_TOP_BINS];
-    NodeIndex m_binIndices[NUM_LEAF_BINS];
+    uint32 usedBinsTop_;
+    uint8 usedBins_[NUM_TOP_BINS];
+    NodeIndex binIndices_[NUM_LEAF_BINS];
 
-    Node* m_nodes;
-    NodeIndex* m_freeNodes;
-    uint32 m_freeOffset;
-    mutable std::shared_mutex m_mutex;
+    Node* nodes_;
+    NodeIndex* freeNodes_;
+    uint32 freeOffset_;
+    mutable std::shared_mutex mutex_;
 };
 
 }  // namespace OffsetAllocator

@@ -187,7 +187,7 @@ Status DramPoolServer::InitFlagBufferPool()
 {
     auto flagBufferPool = std::make_unique<UC::BufferPool>();
     const auto status = flagBufferPool->Init(
-        "drampool_flag_buffer_pool", UC::BufferPool::MemoryType::HOST,
+        "drampool_flag_buffer_pool", UC::BufferPool::MemoryType::Host,
         static_cast<std::size_t>(g_config.flagBufferSlotSizeBytes),
         static_cast<std::size_t>(g_config.flagBufferSlotCount), false, kFlagBufferSlotAlignment);
     if (status.Failure()) {

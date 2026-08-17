@@ -47,30 +47,30 @@ TEST_F(VariableBufferPoolTest, RejectsInvalidInitAndUseBeforeInit)
     EXPECT_EQ(pool.Allocate(64, handle), Status::Error());
     EXPECT_EQ(pool.Allocate(0, handle), Status::Error());
     EXPECT_EQ(pool.Free(handle), Status::Error());
-    EXPECT_EQ(pool.Init("zero_capacity", MemoryType::HOST, 0, 16), Status::InvalidParam());
-    EXPECT_EQ(pool.Init("too_few_allocations", MemoryType::HOST, 64, 2), Status::InvalidParam());
-    EXPECT_EQ(pool.Init("capacity_overflow", MemoryType::HOST,
+    EXPECT_EQ(pool.Init("zero_capacity", MemoryType::Host, 0, 16), Status::InvalidParam());
+    EXPECT_EQ(pool.Init("too_few_allocations", MemoryType::Host, 64, 2), Status::InvalidParam());
+    EXPECT_EQ(pool.Init("capacity_overflow", MemoryType::Host,
                         std::numeric_limits<std::size_t>::max(), 16),
               Status::InvalidParam());
-    EXPECT_EQ(pool.Init("zero_alignment", MemoryType::HOST, 64, 16, false, 0),
+    EXPECT_EQ(pool.Init("zero_alignment", MemoryType::Host, 64, 16, false, 0),
               Status::InvalidParam());
-    EXPECT_EQ(pool.Init("alignment_overflow", MemoryType::HOST,
+    EXPECT_EQ(pool.Init("alignment_overflow", MemoryType::Host,
                         std::numeric_limits<std::size_t>::max() - 31, 16, false, 64),
               Status::InvalidParam());
     EXPECT_EQ(pool.Init("unsupported", static_cast<MemoryType>(99), 64, 16),
               Status::InvalidParam());
     EXPECT_FALSE(pool.IsInitialized());
 
-    ASSERT_TRUE(pool.Init("initialized", MemoryType::HOST, 64, 8).Success());
+    ASSERT_TRUE(pool.Init("initialized", MemoryType::Host, 64, 8).Success());
     EXPECT_EQ(pool.Allocate(0, handle), Status::InvalidParam());
 }
 
 TEST_F(VariableBufferPoolTest, RejectsRepeatedInit)
 {
     VariableBufferPool pool;
-    ASSERT_TRUE(pool.Init("first", MemoryType::HOST, 64, 8).Success());
+    ASSERT_TRUE(pool.Init("first", MemoryType::Host, 64, 8).Success());
 
-    EXPECT_EQ(pool.Init("second", MemoryType::HOST, 128, 8), Status::InvalidParam());
+    EXPECT_EQ(pool.Init("second", MemoryType::Host, 128, 8), Status::InvalidParam());
     EXPECT_EQ(pool.GetName(), "first");
     EXPECT_EQ(pool.GetTotalSize(), std::size_t{64});
 }
@@ -82,7 +82,7 @@ TEST_F(VariableBufferPoolTest, RejectsAllocatorUnitOverflow)
         constexpr auto unitOverflow =
             (static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()) + 1) * 64;
         VariableBufferPool pool;
-        EXPECT_EQ(pool.Init("unit_overflow", MemoryType::HOST, unitOverflow, 16),
+        EXPECT_EQ(pool.Init("unit_overflow", MemoryType::Host, unitOverflow, 16),
                   Status::InvalidParam());
         EXPECT_FALSE(pool.IsInitialized());
     }
@@ -91,11 +91,11 @@ TEST_F(VariableBufferPoolTest, RejectsAllocatorUnitOverflow)
 TEST_F(VariableBufferPoolTest, AllocatesDifferentAlignedSizes)
 {
     VariableBufferPool pool;
-    ASSERT_TRUE(pool.Init("variable", MemoryType::HOST, 257, 16, true).Success());
+    ASSERT_TRUE(pool.Init("variable", MemoryType::Host, 257, 16, true).Success());
 
     EXPECT_TRUE(pool.IsInitialized());
     EXPECT_EQ(pool.GetName(), "variable");
-    EXPECT_EQ(pool.GetMemoryType(), MemoryType::HOST);
+    EXPECT_EQ(pool.GetMemoryType(), MemoryType::Host);
     EXPECT_EQ(pool.GetTotalSize(), std::size_t{320});
     ASSERT_NE(pool.GetLocalAddr(), nullptr);
     EXPECT_EQ(pool.GetLocalAddr(), pool.GetDeviceAddr());
@@ -134,7 +134,7 @@ TEST_F(VariableBufferPoolTest, AllocatesDifferentAlignedSizes)
 TEST_F(VariableBufferPoolTest, SupportsCustomAllocationAlignment)
 {
     VariableBufferPool pool;
-    ASSERT_TRUE(pool.Init("custom_alignment", MemoryType::HOST, 500, 16, false, 256).Success());
+    ASSERT_TRUE(pool.Init("custom_alignment", MemoryType::Host, 500, 16, false, 256).Success());
     EXPECT_EQ(pool.GetTotalSize(), std::size_t{512});
 
     VariableBufferPool::BufferHandle first;
@@ -164,12 +164,12 @@ TEST_F(VariableBufferPoolTest, HostPinnedPoolKeepsLocalAndDeviceAddresses)
 #endif
 
     VariableBufferPool pool;
-    ASSERT_TRUE(pool.Init("pinned", MemoryType::HOST_PINNED, 4096, 16).Success());
+    ASSERT_TRUE(pool.Init("pinned", MemoryType::HostMappedDevice, 4096, 16).Success());
 
     ASSERT_NE(pool.GetLocalAddr(), nullptr);
     ASSERT_NE(pool.GetDeviceAddr(), nullptr);
     EXPECT_NE(pool.GetLocalAddr(), pool.GetDeviceAddr());
-    EXPECT_EQ(pool.GetMemoryType(), MemoryType::HOST_PINNED);
+    EXPECT_EQ(pool.GetMemoryType(), MemoryType::HostMappedDevice);
     EXPECT_EQ(reinterpret_cast<std::uintptr_t>(pool.GetLocalAddr()) % 4096, std::uintptr_t{0});
 
     VariableBufferPool::BufferHandle first;
@@ -194,8 +194,8 @@ TEST_F(VariableBufferPoolTest, DevicePoolZeroesReleasedAllocation)
     ASSERT_NE(stream, nullptr);
 
     VariableBufferPool pool;
-    ASSERT_TRUE(pool.Init("device", MemoryType::ASCEND_DEVICE, allocationSize, 8, true).Success());
-    EXPECT_EQ(pool.GetMemoryType(), MemoryType::ASCEND_DEVICE);
+    ASSERT_TRUE(pool.Init("device", MemoryType::Device, allocationSize, 8, true).Success());
+    EXPECT_EQ(pool.GetMemoryType(), MemoryType::Device);
     EXPECT_EQ(pool.GetLocalAddr(), pool.GetDeviceAddr());
 
     VariableBufferPool::BufferHandle first;
@@ -218,7 +218,7 @@ TEST_F(VariableBufferPoolTest, DevicePoolZeroesReleasedAllocation)
 TEST_F(VariableBufferPoolTest, CoalescesFragmentedAdjacentAllocations)
 {
     VariableBufferPool pool;
-    ASSERT_TRUE(pool.Init("coalesce", MemoryType::HOST, 256, 16).Success());
+    ASSERT_TRUE(pool.Init("coalesce", MemoryType::Host, 256, 16).Success());
 
     VariableBufferPool::BufferHandle first;
     VariableBufferPool::BufferHandle second;
@@ -244,7 +244,7 @@ TEST_F(VariableBufferPoolTest, CoalescesFragmentedAdjacentAllocations)
 TEST_F(VariableBufferPoolTest, FreeZeroesAndReusesHostMemory)
 {
     VariableBufferPool pool;
-    ASSERT_TRUE(pool.Init("zero", MemoryType::HOST, 128, 8, true).Success());
+    ASSERT_TRUE(pool.Init("zero", MemoryType::Host, 128, 8, true).Success());
 
     VariableBufferPool::BufferHandle first;
     ASSERT_TRUE(pool.Allocate(65, first).Success());
@@ -261,7 +261,7 @@ TEST_F(VariableBufferPoolTest, FreeZeroesAndReusesHostMemory)
 TEST_F(VariableBufferPoolTest, FreePreservesHostMemoryWhenZeroingDisabled)
 {
     VariableBufferPool pool;
-    ASSERT_TRUE(pool.Init("preserve", MemoryType::HOST, 128, 8).Success());
+    ASSERT_TRUE(pool.Init("preserve", MemoryType::Host, 128, 8).Success());
 
     VariableBufferPool::BufferHandle first;
     ASSERT_TRUE(pool.Allocate(65, first).Success());
@@ -278,7 +278,7 @@ TEST_F(VariableBufferPoolTest, FreePreservesHostMemoryWhenZeroingDisabled)
 TEST_F(VariableBufferPoolTest, AllowsExactFitWhenMetadataIsExhausted)
 {
     VariableBufferPool pool;
-    ASSERT_TRUE(pool.Init("metadata_exact", MemoryType::HOST, 128, 3).Success());
+    ASSERT_TRUE(pool.Init("metadata_exact", MemoryType::Host, 128, 3).Success());
 
     VariableBufferPool::BufferHandle first;
     VariableBufferPool::BufferHandle second;
@@ -297,7 +297,7 @@ TEST_F(VariableBufferPoolTest, AllowsExactFitWhenMetadataIsExhausted)
 TEST_F(VariableBufferPoolTest, RejectsSplitWhenMetadataIsExhaustedWithoutCorruption)
 {
     VariableBufferPool pool;
-    ASSERT_TRUE(pool.Init("metadata_split", MemoryType::HOST, 192, 3).Success());
+    ASSERT_TRUE(pool.Init("metadata_split", MemoryType::Host, 192, 3).Success());
 
     VariableBufferPool::BufferHandle first;
     ASSERT_TRUE(pool.Allocate(64, first).Success());
@@ -317,7 +317,7 @@ TEST_F(VariableBufferPoolTest, RejectsSplitWhenMetadataIsExhaustedWithoutCorrupt
 TEST_F(VariableBufferPoolTest, FailedAllocationDoesNotOverwriteHandle)
 {
     VariableBufferPool pool;
-    ASSERT_TRUE(pool.Init("preserve_handle", MemoryType::HOST, 64, 8).Success());
+    ASSERT_TRUE(pool.Init("preserve_handle", MemoryType::Host, 64, 8).Success());
 
     VariableBufferPool::BufferHandle live;
     ASSERT_TRUE(pool.Allocate(64, live).Success());
@@ -338,7 +338,7 @@ TEST_F(VariableBufferPoolTest, FailedAllocationDoesNotOverwriteHandle)
 TEST_F(VariableBufferPoolTest, RejectsInvalidCrossPoolAndRepeatedFree)
 {
     VariableBufferPool pool;
-    ASSERT_TRUE(pool.Init("validation", MemoryType::HOST, 128, 8).Success());
+    ASSERT_TRUE(pool.Init("validation", MemoryType::Host, 128, 8).Success());
 
     VariableBufferPool::BufferHandle empty;
     EXPECT_EQ(pool.Free(empty), Status::InvalidParam());
@@ -347,7 +347,7 @@ TEST_F(VariableBufferPoolTest, RejectsInvalidCrossPoolAndRepeatedFree)
     ASSERT_TRUE(pool.Allocate(64, handle).Success());
 
     VariableBufferPool otherPool;
-    ASSERT_TRUE(otherPool.Init("other", MemoryType::HOST, 128, 8).Success());
+    ASSERT_TRUE(otherPool.Init("other", MemoryType::Host, 128, 8).Success());
     EXPECT_EQ(otherPool.Free(handle), Status::InvalidParam());
 
     EXPECT_TRUE(pool.Free(handle).Success());
@@ -357,7 +357,7 @@ TEST_F(VariableBufferPoolTest, RejectsInvalidCrossPoolAndRepeatedFree)
 TEST_F(VariableBufferPoolTest, ResetAllowsReinitialization)
 {
     VariableBufferPool pool;
-    ASSERT_TRUE(pool.Init("first", MemoryType::HOST, 65, 8, false, 256).Success());
+    ASSERT_TRUE(pool.Init("first", MemoryType::Host, 65, 8, false, 256).Success());
     EXPECT_EQ(pool.GetTotalSize(), std::size_t{256});
     pool.Reset();
 
@@ -368,14 +368,14 @@ TEST_F(VariableBufferPoolTest, ResetAllowsReinitialization)
     VariableBufferPool::BufferHandle handle;
     EXPECT_EQ(pool.Allocate(64, handle), Status::Error());
     EXPECT_EQ(pool.Free(handle), Status::Error());
-    EXPECT_TRUE(pool.Init("second", MemoryType::HOST, 65, 8).Success());
+    EXPECT_TRUE(pool.Init("second", MemoryType::Host, 65, 8).Success());
     EXPECT_EQ(pool.GetTotalSize(), std::size_t{128});
 }
 
 TEST_F(VariableBufferPoolTest, ConcurrentAllocateAndFree)
 {
     VariableBufferPool pool;
-    ASSERT_TRUE(pool.Init("concurrent", MemoryType::HOST, 4096, 128).Success());
+    ASSERT_TRUE(pool.Init("concurrent", MemoryType::Host, 4096, 128).Success());
 
     constexpr int kThreadCount = 4;
     constexpr int kOpsPerThread = 500;
@@ -407,7 +407,7 @@ TEST_F(VariableBufferPoolTest, ConcurrentAllocateAndFree)
 TEST_F(VariableBufferPoolTest, ConcurrentAllocateAndFreeWithZeroing)
 {
     VariableBufferPool pool;
-    ASSERT_TRUE(pool.Init("concurrent_zero", MemoryType::HOST, 4096, 128, true).Success());
+    ASSERT_TRUE(pool.Init("concurrent_zero", MemoryType::Host, 4096, 128, true).Success());
 
     constexpr int threadCount = 4;
     constexpr int operationsPerThread = 200;

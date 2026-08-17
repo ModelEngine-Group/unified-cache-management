@@ -126,7 +126,7 @@ Executor::Executor(std::shared_ptr<StoreV1> backend, std::vector<std::size_t> te
 
 Status Executor::Start(std::size_t payloadSize, std::size_t slotNum)
 {
-    auto status = bufferPool_.Init("delegator_buffer_pool", BufferPool::MemoryType::ASCEND_DEVICE,
+    auto status = bufferPool_.Init("delegator_buffer_pool", BufferPool::MemoryType::Device,
                                    payloadSize, slotNum, false, kBufferAlignment);
     if (status.Failure()) { return status; }
     slotNum_ = slotNum;
@@ -176,7 +176,7 @@ Expected<Detail::TaskDesc> Executor::MakeBackendTask(const TransferGroup& group)
             backendShard.index = source.index;
             backendShard.addrs.reserve(tensorSizes_.size());
 
-            auto* address = static_cast<std::byte*>(shard.slot.device_addr);
+            auto* address = static_cast<std::byte*>(shard.slot.deviceAddr);
             std::size_t offset = 0;
             for (const auto size : tensorSizes_) {
                 backendShard.addrs.push_back(address + offset);
@@ -218,7 +218,7 @@ Status Executor::GatherAsync(const TransferGroup& group, CopyStream& streams)
     for (const auto& shard : group.shards) {
         const auto& desc = group.task->desc[shard.shardIndex];
         const auto stream = streams.NextStream();
-        auto* destination = static_cast<std::byte*>(shard.slot.device_addr);
+        auto* destination = static_cast<std::byte*>(shard.slot.deviceAddr);
         std::size_t offset = 0;
         for (std::size_t index = 0; index < desc.addrs.size(); ++index) {
             const auto status = streams.DeviceToDeviceAsync(stream, destination + offset,
@@ -236,7 +236,7 @@ Status Executor::ScatterAsync(const TransferGroup& group, CopyStream& streams)
     for (const auto& shard : group.shards) {
         const auto& desc = group.task->desc[shard.shardIndex];
         const auto stream = streams.NextStream();
-        const auto* source = static_cast<const std::byte*>(shard.slot.device_addr);
+        const auto* source = static_cast<const std::byte*>(shard.slot.deviceAddr);
         std::size_t offset = 0;
         for (std::size_t index = 0; index < desc.addrs.size(); ++index) {
             const auto status =
@@ -256,7 +256,7 @@ std::string Executor::DescribeShards(const TransferGroup& group) const
         const auto& desc = group.task->desc[shard.shardIndex];
         if (!result.empty()) { result += ", "; }
         result += fmt::format("{{owner={:02x},index={},slot={}}}", fmt::join(desc.owner, ""),
-                              desc.index, shard.slot.slot_index);
+                              desc.index, shard.slot.slotIndex);
     }
     return result;
 }
@@ -524,7 +524,7 @@ void Executor::ReleaseBatch(TransferBatch& batch)
     std::size_t count = 0;
     for (auto& group : batch.groups) {
         for (const auto& shard : group.shards) {
-            const auto freeStatus = bufferPool_.Free(shard.slot.slot_index);
+            const auto freeStatus = bufferPool_.Free(shard.slot.slotIndex);
             if (!group.error && freeStatus.Failure()) { group.error = freeStatus; }
         }
         count += group.shards.size();

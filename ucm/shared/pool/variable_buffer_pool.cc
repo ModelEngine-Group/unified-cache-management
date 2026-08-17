@@ -22,7 +22,6 @@
  * SOFTWARE.
  * */
 #include "pool/variable_buffer_pool.h"
-#include <cstring>
 #include <limits>
 #include <new>
 #include <utility>
@@ -30,67 +29,65 @@
 
 namespace UC {
 
-bool VariableBufferPool::ComputeAllocationLayout(std::size_t requested_size,
-                                                 std::size_t allocation_alignment,
-                                                 std::size_t& allocated_size,
-                                                 std::uint32_t& required_units)
+bool VariableBufferPool::ComputeAllocationLayout(std::size_t requestedSize,
+                                                 std::size_t allocationAlignment,
+                                                 std::size_t& allocatedSize,
+                                                 std::uint32_t& requiredUnits)
 {
     constexpr auto kMaxSize = std::numeric_limits<std::size_t>::max();
-    if (requested_size == 0 || allocation_alignment == 0 ||
-        requested_size > kMaxSize - (allocation_alignment - 1)) {
+    if (requestedSize == 0 || allocationAlignment == 0 ||
+        requestedSize > kMaxSize - (allocationAlignment - 1)) {
         return false;
     }
 
-    allocated_size =
-        (requested_size + allocation_alignment - 1) / allocation_alignment * allocation_alignment;
-    const auto units = allocated_size / allocation_alignment;
+    allocatedSize =
+        (requestedSize + allocationAlignment - 1) / allocationAlignment * allocationAlignment;
+    const auto units = allocatedSize / allocationAlignment;
     if (units > std::numeric_limits<std::uint32_t>::max()) { return false; }
 
-    required_units = static_cast<std::uint32_t>(units);
+    requiredUnits = static_cast<std::uint32_t>(units);
     return true;
 }
 
-Status VariableBufferPool::Init(std::string name, MemoryType memory_type,
-                                std::size_t total_capacity, std::uint32_t metadata_node_capacity,
-                                bool enable_zero, std::size_t allocation_alignment)
+Status VariableBufferPool::Init(std::string name, MemoryType memoryType, std::size_t totalCapacity,
+                                std::uint32_t metadataNodeCapacity, bool enableZero,
+                                std::size_t allocationAlignment)
 {
     if (IsInitialized()) { return Status::InvalidParam(name + " already initialized"); }
 
     std::size_t alignedCapacity = 0;
     std::uint32_t totalUnits = 0;
-    if (!ComputeAllocationLayout(total_capacity, allocation_alignment, alignedCapacity,
-                                 totalUnits)) {
+    if (!ComputeAllocationLayout(totalCapacity, allocationAlignment, alignedCapacity, totalUnits)) {
         return Status::InvalidParam(
             name + ": total_capacity or allocation_alignment is invalid or too large");
     }
-    if (metadata_node_capacity < 3 ||
-        metadata_node_capacity >
+    if (metadataNodeCapacity < 3 ||
+        metadataNodeCapacity >
             static_cast<std::uint32_t>(std::numeric_limits<OffsetAllocator::NodeIndex>::max())) {
         return Status::InvalidParam(name + ": metadata_node_capacity is out of range");
     }
 
     BufferRegion region;
-    auto status = BufferRegion::Create(memory_type, alignedCapacity, region);
+    auto status = BufferRegion::Create(memoryType, alignedCapacity, region);
     if (status.Failure()) { return status; }
 
     std::unique_ptr<OffsetAllocator::Allocator> allocator;
     try {
-        allocator =
-            std::make_unique<OffsetAllocator::Allocator>(totalUnits, metadata_node_capacity);
+        allocator = std::make_unique<OffsetAllocator::Allocator>(totalUnits, metadataNodeCapacity);
     } catch (const std::bad_alloc&) {
         return Status::OutOfMemory();
     }
 
     name_ = std::move(name);
-    memory_type_ = memory_type;
-    total_capacity_ = alignedCapacity;
-    allocation_alignment_ = allocation_alignment;
-    enable_zero_ = enable_zero;
+    memoryType_ = memoryType;
+    totalCapacity_ = alignedCapacity;
+    allocationAlignment_ = allocationAlignment;
+    enableZero_ = enableZero;
     region_ = std::move(region);
     allocator_ = std::move(allocator);
 
-    if (enable_zero_) {
-        status = ZeroMemory(region_.local_addr, total_capacity_);
+    if (enableZero_) {
+        status = ZeroMemory(region_.localAddr, totalCapacity_);
         if (status.Failure()) {
             Reset();
             return status;
@@ -99,13 +96,13 @@ Status VariableBufferPool::Init(std::string name, MemoryType memory_type,
     return Status::OK();
 }
 
-Status VariableBufferPool::Allocate(std::size_t requested_size, BufferHandle& handle)
+Status VariableBufferPool::Allocate(std::size_t requestedSize, BufferHandle& handle)
 {
     if (!IsInitialized()) { return Status::Error("buffer pool not initialized"); }
 
     std::size_t allocatedSize = 0;
     std::uint32_t requiredUnits = 0;
-    if (!ComputeAllocationLayout(requested_size, allocation_alignment_, allocatedSize,
+    if (!ComputeAllocationLayout(requestedSize, allocationAlignment_, allocatedSize,
                                  requiredUnits)) {
         return Status::InvalidParam(name_ + ": requested_size is invalid or too large");
     }
@@ -115,15 +112,15 @@ Status VariableBufferPool::Allocate(std::size_t requested_size, BufferHandle& ha
         return Status(Status::NoSpace().Underlying(), name_ + ": no suitable free region");
     }
 
-    const auto byteOffset = static_cast<std::size_t>(allocation.offset) * allocation_alignment_;
+    const auto byteOffset = static_cast<std::size_t>(allocation.offset) * allocationAlignment_;
     BufferHandle result;
     result.owner_ = this;
     result.allocation_ = allocation;
-    result.requested_size_ = requested_size;
-    result.allocated_size_ = allocatedSize;
+    result.requestedSize_ = requestedSize;
+    result.allocatedSize_ = allocatedSize;
     result.offset_ = byteOffset;
-    result.local_addr_ = static_cast<char*>(region_.local_addr) + byteOffset;
-    result.device_addr_ = static_cast<char*>(region_.device_addr) + byteOffset;
+    result.localAddr_ = static_cast<char*>(region_.localAddr) + byteOffset;
+    result.deviceAddr_ = static_cast<char*>(region_.deviceAddr) + byteOffset;
     handle = result;
     return Status::OK();
 }
@@ -135,7 +132,7 @@ Status VariableBufferPool::Free(const BufferHandle& handle)
         return Status::InvalidParam(name_ + ": allocation handle belongs to another pool");
     }
 
-    if (!enable_zero_) {
+    if (!enableZero_) {
         if (!allocator_->Free(handle.allocation_)) {
             return Status::InvalidParam(name_ + ": invalid allocation handle");
         }
@@ -143,7 +140,7 @@ Status VariableBufferPool::Free(const BufferHandle& handle)
     }
 
     // Keep the block allocated while clearing. On failure, the caller retains the live handle.
-    auto status = ZeroMemory(handle.local_addr_, handle.allocated_size_);
+    auto status = ZeroMemory(handle.localAddr_, handle.allocatedSize_);
     if (status.Failure()) { return status; }
 
     if (!allocator_->Free(handle.allocation_)) {
@@ -157,20 +154,16 @@ void VariableBufferPool::Reset()
     allocator_.reset();
     region_.Reset();
     name_.clear();
-    memory_type_ = MemoryType::HOST;
-    total_capacity_ = 0;
-    allocation_alignment_ = kDefaultAllocationAlignment;
-    enable_zero_ = false;
+    memoryType_ = MemoryType::Host;
+    totalCapacity_ = 0;
+    allocationAlignment_ = kDefaultAllocationAlignment;
+    enableZero_ = false;
 }
 
 Status VariableBufferPool::ZeroMemory(void* address, std::size_t size) const
 {
-    if (memory_type_ == MemoryType::ASCEND_DEVICE) {
-        const auto status = Trans::ZeroDeviceMemory(address, size);
-        if (status.Failure()) { return Status::Error(name_ + ": failed to zero device memory"); }
-    } else {
-        std::memset(address, 0, size);
-    }
+    const auto status = Trans::Memset(address, size, 0);
+    if (status.Failure()) { return Status::Error(name_ + ": failed to zero memory"); }
     return Status::OK();
 }
 

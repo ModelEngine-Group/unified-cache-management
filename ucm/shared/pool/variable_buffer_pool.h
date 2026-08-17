@@ -56,11 +56,11 @@ public:
         BufferHandle(BufferHandle&&) = default;
         BufferHandle& operator=(BufferHandle&&) = default;
 
-        std::size_t GetRequestedSize() const { return requested_size_; }
-        std::size_t GetAllocatedSize() const { return allocated_size_; }
+        std::size_t GetRequestedSize() const { return requestedSize_; }
+        std::size_t GetAllocatedSize() const { return allocatedSize_; }
         std::size_t GetOffset() const { return offset_; }
-        void* GetLocalAddr() const { return local_addr_; }
-        void* GetDeviceAddr() const { return device_addr_; }
+        void* GetLocalAddr() const { return localAddr_; }
+        void* GetDeviceAddr() const { return deviceAddr_; }
 
     private:
         friend class VariableBufferPool;
@@ -69,15 +69,15 @@ public:
         OffsetAllocator::Allocation allocation_;
         // Offset and node index required by OffsetAllocator to release this block.
 
-        std::size_t requested_size_{0};
-        std::size_t allocated_size_{0};
+        std::size_t requestedSize_{0};
+        std::size_t allocatedSize_{0};
         // Number of bytes reserved after alignment.
 
         std::size_t offset_{0};
         // Byte offset from both pool base addresses.
 
-        void* local_addr_{nullptr};
-        void* device_addr_{nullptr};
+        void* localAddr_{nullptr};
+        void* deviceAddr_{nullptr};
     };
 
     VariableBufferPool() = default;
@@ -86,35 +86,34 @@ public:
     VariableBufferPool(const VariableBufferPool&) = delete;
     VariableBufferPool& operator=(const VariableBufferPool&) = delete;
 
-    // allocation_alignment controls allocation sizes and offsets, not the region base address.
-    Status Init(std::string name, MemoryType memory_type, std::size_t total_capacity,
-                std::uint32_t metadata_node_capacity, bool enable_zero = false,
-                std::size_t allocation_alignment = kDefaultAllocationAlignment);
+    // allocationAlignment controls allocation sizes and offsets, not the region base address.
+    Status Init(std::string name, MemoryType memoryType, std::size_t totalCapacity,
+                std::uint32_t metadataNodeCapacity, bool enableZero = false,
+                std::size_t allocationAlignment = kDefaultAllocationAlignment);
 
-    Status Allocate(std::size_t requested_size, BufferHandle& handle);
+    Status Allocate(std::size_t requestedSize, BufferHandle& handle);
     Status Free(const BufferHandle& handle);
     void Reset();
 
     bool IsInitialized() const { return static_cast<bool>(region_) && allocator_ != nullptr; }
 
     const std::string& GetName() const { return name_; }
-    MemoryType GetMemoryType() const { return memory_type_; }
-    std::size_t GetTotalSize() const { return total_capacity_; }
-    void* GetLocalAddr() const { return region_.local_addr; }
-    void* GetDeviceAddr() const { return region_.device_addr; }
+    MemoryType GetMemoryType() const { return memoryType_; }
+    std::size_t GetTotalSize() const { return totalCapacity_; }
+    void* GetLocalAddr() const { return region_.localAddr; }
+    void* GetDeviceAddr() const { return region_.deviceAddr; }
 
 private:
-    static bool ComputeAllocationLayout(std::size_t requested_size,
-                                        std::size_t allocation_alignment,
-                                        std::size_t& allocated_size, std::uint32_t& required_units);
+    static bool ComputeAllocationLayout(std::size_t requestedSize, std::size_t allocationAlignment,
+                                        std::size_t& allocatedSize, std::uint32_t& requiredUnits);
 
     Status ZeroMemory(void* address, std::size_t size) const;
 
     std::string name_;
-    MemoryType memory_type_{MemoryType::HOST};
-    std::size_t total_capacity_{0};
-    std::size_t allocation_alignment_{kDefaultAllocationAlignment};
-    bool enable_zero_{false};
+    MemoryType memoryType_{MemoryType::Host};
+    std::size_t totalCapacity_{0};
+    std::size_t allocationAlignment_{kDefaultAllocationAlignment};
+    bool enableZero_{false};
     // Whether released memory is cleared before it becomes reusable.
 
     BufferRegion region_;

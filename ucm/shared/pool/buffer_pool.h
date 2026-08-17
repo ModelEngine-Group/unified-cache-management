@@ -39,10 +39,10 @@ public:
     using MemoryType = BufferMemoryType;
 
     struct Slot {
-        void* local_addr{nullptr};
-        void* device_addr{nullptr};
+        void* localAddr{nullptr};
+        void* deviceAddr{nullptr};
         std::size_t length{0};
-        std::uint32_t slot_index{UINT32_MAX};
+        std::uint32_t slotIndex{UINT32_MAX};
         std::size_t offset{0};  // Byte offset from both pool base addresses.
     };
 
@@ -52,37 +52,37 @@ public:
     BufferPool(const BufferPool&) = delete;
     BufferPool& operator=(const BufferPool&) = delete;
 
-    // slot_alignment applies to the slot stride and offsets from the pool base, not to base
+    // slotAlignment applies to the slot stride and offsets from the pool base, not to base
     // addresses.
-    Status Init(std::string name, MemoryType type, std::size_t slot_capacity, std::size_t slot_num,
-                bool enable_zero = false, std::size_t slot_alignment = kDefaultSlotAlignment);
+    Status Init(std::string name, MemoryType type, std::size_t slotCapacity, std::size_t slotNum,
+                bool enableZero = false, std::size_t slotAlignment = kDefaultSlotAlignment);
     Status Allocate(Slot& slot);
-    Status Free(std::uint32_t slot_index);
+    Status Free(std::uint32_t slotIndex);
     void Reset();
 
     bool IsInitialized() const { return static_cast<bool>(region_); }
     bool IsValidPointer(const void* ptr) const;
 
     const std::string& GetName() const { return name_; }
-    void* GetLocalAddr() const { return region_.local_addr; }
-    void* GetDeviceAddr() const { return region_.device_addr; }
-    std::size_t GetTotalSize() const { return slot_stride_ * slot_num_; }
-    std::size_t GetSlotCount() const { return slot_num_; }
-    MemoryType GetMemoryType() const { return memory_type_; }
+    void* GetLocalAddr() const { return region_.localAddr; }
+    void* GetDeviceAddr() const { return region_.deviceAddr; }
+    std::size_t GetTotalSize() const { return slotStride_ * slotNum_; }
+    std::size_t GetSlotCount() const { return slotNum_; }
+    MemoryType GetMemoryType() const { return memoryType_; }
 
 private:
     static bool ComputeSlotStride(std::size_t capacity, std::size_t alignment, std::size_t& stride);
     Status ZeroMemory(void* ptr, std::size_t size) const;
 
     std::string name_;
-    std::size_t slot_capacity_{0};
-    std::size_t slot_stride_{0};
-    std::size_t slot_num_{0};
-    MemoryType memory_type_{MemoryType::HOST};
-    bool enable_zero_{false};
+    std::size_t slotCapacity_{0};
+    std::size_t slotStride_{0};
+    std::size_t slotNum_{0};
+    MemoryType memoryType_{MemoryType::Host};
+    bool enableZero_{false};
 
     BufferRegion region_;
-    IndexPool index_pool_;
+    IndexPool indexPool_;
 };
 
 }  // namespace UC

@@ -30,10 +30,10 @@
 namespace UC {
 
 enum class BufferMemoryType {
-    HOST = 0,
-    HOST_PINNED = 1,
-    ASCEND_DEVICE = 2,
-    DEVICE_MAPPED_HOST = 3,
+    Host = 0,
+    HostMappedDevice = 1,
+    Device = 2,
+    DeviceMappedHost = 3,
 };
 
 struct BufferRegion {
@@ -43,8 +43,8 @@ struct BufferRegion {
     void Reset();
 
     std::shared_ptr<void> owner;
-    void* local_addr{nullptr};
-    void* device_addr{nullptr};
+    void* localAddr{nullptr};
+    void* deviceAddr{nullptr};
 };
 
 }  // namespace UC

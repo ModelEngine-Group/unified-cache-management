@@ -90,13 +90,13 @@ TEST_F(ReplyServiceTest, SharesSlotsAcrossRequestsAndValidatesOwnership)
     ASSERT_TRUE(first);
     ASSERT_TRUE(second);
     ASSERT_TRUE(third);
-    EXPECT_EQ(first.Value().slot_index, std::uint32_t{0});
-    EXPECT_EQ(second.Value().slot_index, std::uint32_t{1});
-    EXPECT_EQ(third.Value().slot_index, std::uint32_t{2});
-    EXPECT_NE(second.Value().local_addr, first.Value().local_addr);
+    EXPECT_EQ(first.Value().slotIndex, std::uint32_t{0});
+    EXPECT_EQ(second.Value().slotIndex, std::uint32_t{1});
+    EXPECT_EQ(third.Value().slotIndex, std::uint32_t{2});
+    EXPECT_NE(second.Value().localAddr, first.Value().localAddr);
     const auto replyMemory = service->MemoryRegion();
     const auto replyBegin = reinterpret_cast<std::uintptr_t>(replyMemory.address);
-    const auto secondAddress = reinterpret_cast<std::uintptr_t>(second.Value().local_addr);
+    const auto secondAddress = reinterpret_cast<std::uintptr_t>(second.Value().localAddr);
     EXPECT_GE(secondAddress, replyBegin);
     EXPECT_LT(secondAddress, replyBegin + replyMemory.length);
     EXPECT_EQ(second.Value().length, kSlotSize);
@@ -111,7 +111,7 @@ TEST_F(ReplyServiceTest, SharesSlotsAcrossRequestsAndValidatesOwnership)
 
     auto reused = service->Acquire(Token(33, 4), OpType::LOOKUP, 1);
     ASSERT_TRUE(reused);
-    EXPECT_EQ(reused.Value().slot_index, second.Value().slot_index);
+    EXPECT_EQ(reused.Value().slotIndex, second.Value().slotIndex);
     // No slot generation is required: the old token cannot release a slot after reuse.
     EXPECT_EQ(service->Release(second_token, second.Value()), Status::InvalidParam());
     EXPECT_TRUE(service->Release(Token(33, 4), reused.Value()).Success());

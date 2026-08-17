@@ -43,7 +43,7 @@ namespace UC::DramPool {
  * @brief Owns a set of BufferPool instances keyed by size.
  *
  * For each (slotSize, slotNum) pair, a BufferPool is constructed and initialized
- * with MemoryType::HOST. The pool name is derived from the size as
+ * with MemoryType::Host. The pool name is derived from the size as
  * "buffer_pool_<size>".
  */
 class BufferManager {
@@ -55,7 +55,7 @@ public:
             if (pools_.find(slotSize) != pools_.end()) { continue; }
             auto pool = std::make_unique<BufferPool>();
             auto st = pool->Init("buffer_pool_" + std::to_string(slotSize),
-                                 BufferPool::MemoryType::HOST, slotSize, slotNum);
+                                 BufferPool::MemoryType::Host, slotSize, slotNum);
             if (!st.Success()) {
                 UC_ERROR("BufferManager: Init pool for size {} failed, status {}.", slotSize,
                          st.ToString());
@@ -126,8 +126,8 @@ public:
         auto st = pool->Allocate(slot);
         if (!st.Success()) { return st; }
         buf.length = slot.length;
-        buf.slot = slot.slot_index;
-        buf.addr = slot.local_addr;
+        buf.slot = slot.slotIndex;
+        buf.addr = slot.localAddr;
         return Status::OK();
     }
 
