@@ -1,0 +1,180 @@
+site_name: Unified Cache Manager
+site_url: https://ucm.readthedocs.io/
+site_description: >-
+  Unified Cache Manager (UCM) persists LLM KVCache and replaces redundant
+  computations through multiple retrieval mechanisms.
+
+repo_url: https://github.com/ModelEngine-Group/unified-cache-management
+repo_name: ModelEngine-Group/ucm
+edit_uri: edit/develop/docs-next/docs/en/
+
+docs_dir: docs
+
+theme:
+  name: material
+  custom_dir: overrides
+  language: en
+  logo: assets/images/UCM-light.png
+  favicon: assets/images/UCM-dark.png
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.indexes
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - content.action.edit
+    - content.action.view
+  font:
+    text: Inter
+    code: JetBrains Mono
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: cyan
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: cyan
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - i18n:
+      docs_structure: folder
+      fallback_to_default: true
+      reconfigure_material: true
+      reconfigure_search: true
+      languages:
+        - locale: en
+          name: English
+          default: true
+          build: true
+        - locale: zh
+          name: 简体中文
+          build: true
+          site_name: Unified Cache Manager 中文站点
+  - search:
+      separator: '[\s\u200b\-]'
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - def_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.mark
+  - pymdownx.caret
+  - pymdownx.tilde
+  - pymdownx.keys
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.snippets
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/ModelEngine-Group/unified-cache-management
+    - icon: fontawesome/brands/docker
+      link: https://github.com/ModelEngine-Group/unified-cache-management/pkgs/container/unified-cache-manager
+  version:
+    provider: mike
+
+nav:
+  - Home: index.md
+  - User Guide:
+      - Installation: user-guide/installation.md
+      - Model Tour:
+          - GLM:
+              - GLM-5.1: user-guide/model-tour/glm/glm-5-1.md
+              - GLM-5.2: user-guide/model-tour/glm/glm-5-2.md
+              - GLM-5: user-guide/model-tour/glm/glm-5.md
+              - GLM-4.x: user-guide/model-tour/glm/glm-4x.md
+          - Qwen3:
+              - Qwen3-235B-A22B: user-guide/model-tour/qwen3/qwen3-235b-a22b.md
+              - Qwen3-32B: user-guide/model-tour/qwen3/qwen3-32b.md
+              - Qwen3-30B-A3B: user-guide/model-tour/qwen3/qwen3-moe.md
+              - Qwen2.5: user-guide/model-tour/qwen3/qwen2-5.md
+          - DeepSeek:
+              - DeepSeek-V3: user-guide/model-tour/deepseek/deepseek-v3.md
+              - DeepSeek-R1: user-guide/model-tour/deepseek/deepseek-r1.md
+              - DeepSeek-V3.2: user-guide/model-tour/deepseek/deepseek-v3-2.md
+          - MiniMax:
+              - MiniMax-M2.5: user-guide/model-tour/minimax/minimax-m2-5.md
+              - MiniMax-M2.7: user-guide/model-tour/minimax/minimax-m2-7.md
+          - Kimi:
+              - Kimi-K2: user-guide/model-tour/kimi/kimi-k2.md
+      - Engines:
+          - vLLM: user-guide/engines/vllm.md
+          - vLLM Ascend: user-guide/engines/vllm-ascend.md
+          - SGLang: user-guide/engines/sglang.md
+          - MindIE: user-guide/engines/mindie.md
+      - Deploy:
+          - Docker: user-guide/deploy/docker.md
+          - Kubernetes (Helm + Kthena): user-guide/deploy/kubernetes.md
+      - Core Capabilities & Troubleshooting:
+          - Prefix Cache:
+              - Overview: user-guide/capabilities/prefix-cache/index.md
+              - Pipeline Store: user-guide/capabilities/prefix-cache/pipeline-store.md
+              - NFS Store: user-guide/capabilities/prefix-cache/nfs-store.md
+              - DS3FS Store: user-guide/capabilities/prefix-cache/ds3fs-store.md
+              - Mooncake Store: user-guide/capabilities/prefix-cache/mooncake-store.md
+              - Compress Store: user-guide/capabilities/prefix-cache/compress-store.md
+          - Sparse Attention:
+              - Overview: user-guide/capabilities/sparse-attention/index.md
+              - GSA: user-guide/capabilities/sparse-attention/gsa.md
+              - CacheBlend: user-guide/capabilities/sparse-attention/cacheblend.md
+          - PD Disaggregation:
+              - Overview: user-guide/capabilities/pd-disaggregation/index.md
+              - Centralized PD: user-guide/capabilities/pd-disaggregation/centralized-pd.md
+              - Distributed PD: user-guide/capabilities/pd-disaggregation/distributed-pd.md
+              - Large Scale EP: user-guide/capabilities/pd-disaggregation/large-scale-ep.md
+          - ReRoPE: user-guide/capabilities/rerope.md
+          - Troubleshooting: user-guide/troubleshooting.md
+  - Developer Guide:
+      - Architecture: developer-guide/architecture.md
+      - Capability Principles:
+          - Prefix Cache Architecture: developer-guide/prefix-cache-architecture.md
+          - Sparse Attention Principles: developer-guide/sparse-attention-principles.md
+          - PD Disaggregation Design: developer-guide/pd-disaggregation-design.md
+          - ReRoPE Principle: developer-guide/rerope-principle.md
+      - Add Metrics: developer-guide/add-metrics.md
+      - Extending Store: developer-guide/extending-store.md
+      - Contribute: developer-guide/contribute.md
+  - Reference:
+      - Compatibility & Metrics:
+          - Support Matrix: reference/compatibility.md
+          - Metrics: reference/metrics.md
+          - CLI: reference/cli.md
+      - API & Parameters: reference/api-parameters.md
+  - Benchmark: benchmark/index.md
+  - Toolkit:
+      - KV Cache Calculator: toolkit/kv-cache-calculator.md
