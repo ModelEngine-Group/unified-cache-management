@@ -31,10 +31,7 @@ namespace UC::Trans {
 class CudaBuffer : public ReservedBuffer {
 public:
     std::shared_ptr<void> MakeDeviceBuffer(size_t size) override;
-    bool SupportsHostMappedDeviceBuffer() const override { return true; }
     std::shared_ptr<void> MakeHostBuffer(size_t size) override;
-    std::shared_ptr<void> MakeHostMappedDeviceBuffer(size_t size,
-                                                     void** pDevice = nullptr) override;
 };
 
 }  // namespace UC::Trans
