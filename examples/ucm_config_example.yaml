@@ -15,6 +15,9 @@ ucm_connectors:
       store_pipeline: "Cache|Posix"
       storage_backends: "/mnt/test"
       io_direct: false
+      # Disable Cache SDMA Direct explicitly. On Ascend A3 builds, this feature
+      # is enabled by default when cache_sdma_direct is not configured.
+      # cache_sdma_direct: false
       # posix_capacity_gb: 1024
 
       # Enable GPUDirect RDMA transfers for CacheStore/PcStore H2D and D2H copies.
