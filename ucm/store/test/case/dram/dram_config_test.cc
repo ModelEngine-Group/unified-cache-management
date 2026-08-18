@@ -63,7 +63,7 @@ TEST(DramConfigTest, DerivesNodeAndReplyCapacitiesFromGlobalEntryBudget)
     EXPECT_EQ(config.nodeScheduler.limits.maxInflightRequests, std::size_t{7});
     EXPECT_EQ(config.nodeScheduler.limits.maxBatchEntries, std::size_t{7});
     EXPECT_EQ(config.replySlotCount, std::size_t{14});
-    EXPECT_EQ(config.replySlotSize, std::uint32_t{5});
+    EXPECT_EQ(config.replySlotSize, std::uint32_t{13});
 }
 
 TEST(DramConfigTest, CapsDerivedNodeAndReplyCapacities)
@@ -75,7 +75,7 @@ TEST(DramConfigTest, CapsDerivedNodeAndReplyCapacities)
     EXPECT_EQ(config.nodeScheduler.limits.maxInflightRequests, std::size_t{128});
     EXPECT_EQ(config.nodeScheduler.limits.maxBatchEntries, std::size_t{128});
     EXPECT_EQ(config.replySlotCount, std::size_t{256});
-    EXPECT_EQ(config.replySlotSize, std::uint32_t{65});
+    EXPECT_EQ(config.replySlotSize, std::uint32_t{73});
 }
 
 TEST(DramConfigTest, OverridesWorkerCountIndependently)

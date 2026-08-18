@@ -51,25 +51,28 @@ enum class ResponseStatus : std::uint8_t {
 constexpr std::size_t kKvKeySize = sizeof(BlockId);
 static_assert(kKvKeySize == 16, "DramPool wire protocol requires a 16-byte BlockId");
 constexpr std::size_t kKvLoadRequestHeaderSize =
-    sizeof(std::uint8_t) + sizeof(std::uint64_t) + sizeof(std::uint16_t);
+    sizeof(std::uint8_t) + sizeof(std::uint64_t) + sizeof(std::uint64_t) + sizeof(std::uint16_t);
 constexpr std::size_t kKvLookupRequestHeaderSize =
-    sizeof(std::uint8_t) + sizeof(std::uint64_t) + sizeof(std::uint16_t);
-constexpr std::size_t kKvDumpRequestHeaderSize =
-    sizeof(std::uint8_t) + sizeof(std::uint64_t) + sizeof(std::uint32_t) + sizeof(std::uint16_t);
+    sizeof(std::uint8_t) + sizeof(std::uint64_t) + sizeof(std::uint64_t) + sizeof(std::uint16_t);
+constexpr std::size_t kKvDumpRequestHeaderSize = sizeof(std::uint8_t) + sizeof(std::uint64_t) +
+                                                 sizeof(std::uint64_t) + sizeof(std::uint32_t) +
+                                                 sizeof(std::uint16_t);
 constexpr std::size_t kKvDumpEntrySize =
     kKvKeySize + sizeof(std::uint64_t) + sizeof(std::uint32_t) + sizeof(std::uint32_t);
 constexpr std::size_t kKvLoadEntrySize =
     kKvKeySize + sizeof(std::uint64_t) + sizeof(std::uint32_t) + sizeof(std::uint32_t);
 constexpr std::size_t kKvLookupEntrySize = kKvKeySize;
-constexpr std::size_t kResponseStatusOffset = 0;
-constexpr std::size_t kResponseResultsOffset = sizeof(std::uint8_t);
+constexpr std::size_t kResponseRequestIdOffset = 0;
+constexpr std::size_t kResponseStatusOffset = sizeof(std::uint64_t);
+constexpr std::size_t kResponseResultsOffset = kResponseStatusOffset + sizeof(std::uint8_t);
 
 // Wire offsets shared by the client (pack) and server (unpack) sides.
 constexpr std::size_t kOpcodeOffset = 0;
-constexpr std::size_t kRespAddrOffset = 1;
-constexpr std::size_t kLoadLookupBatchSizeOffset = 9;
-constexpr std::size_t kDumpTtlOffset = 9;
-constexpr std::size_t kDumpBatchSizeOffset = 13;
+constexpr std::size_t kRequestIdOffset = 1;
+constexpr std::size_t kRespAddrOffset = 9;
+constexpr std::size_t kLoadLookupBatchSizeOffset = 17;
+constexpr std::size_t kDumpTtlOffset = 17;
+constexpr std::size_t kDumpBatchSizeOffset = 21;
 
 constexpr std::size_t kDumpLoadEntryKeyOffset = 0;
 constexpr std::size_t kDumpLoadEntryAddrOffset = 16;
@@ -103,6 +106,7 @@ class KvRequest {
 public:
     virtual ~KvRequest() = default;
     KvOpcode opcode{KvOpcode::None};
+    std::uint64_t request_id{0};
 };
 
 class KvDumpRequest : public KvRequest {
@@ -129,6 +133,7 @@ public:
 
 class KvResponse {
 public:
+    std::uint64_t request_id{0};
     std::vector<std::uint8_t> results;
 };
 
@@ -216,9 +221,9 @@ public:
     std::size_t GetPackedRequestSize(KvOpcode opcode, const KvRequest& req) const;
     std::size_t GetPackedResponseSize(KvOpcode opcode, std::size_t result_count) const;
     Status PackRequest(void* data, KvOpcode opcode, const KvRequest& req);
-    Status IsResponseReady(const void* data, bool& ready) const;
-    Status UnpackResponse(const void* data, KvOpcode opcode, std::uint16_t result_count,
-                          KvResponse& out);
+    Status IsResponseReady(const void* data, std::uint64_t expected_request_id, bool& ready) const;
+    Status UnpackResponse(const void* data, KvOpcode opcode, std::uint64_t expected_request_id,
+                          std::uint16_t result_count, KvResponse& out);
     // Server side
     Status UnpackRequest(const void* data, std::size_t size, std::unique_ptr<KvRequest>& out);
     Status PackResponse(void* data, KvOpcode opcode, const KvResponse& resp);

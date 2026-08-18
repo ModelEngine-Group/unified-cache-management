@@ -142,6 +142,7 @@ template <typename Request>
 Status ValidateRequestHeader(const Request& request)
 {
     const std::string protocol = ProtocolName(request.opcode);
+    if (request.request_id == 0) { return Status::InvalidParam(protocol + ": request_id is zero"); }
     if (request.resp_addr == 0) { return Status::InvalidParam(protocol + ": resp_addr is zero"); }
     if (request.batch_size == 0 || request.batch_size != request.entries.size()) {
         return Status::InvalidParam(protocol + ": batch_size(" +
@@ -152,18 +153,20 @@ Status ValidateRequestHeader(const Request& request)
     return Status::OK();
 }
 
-void PackHeader(std::uint8_t* out, KvOpcode opcode, std::uint64_t resp_addr,
-                std::uint16_t batch_size)
+void PackHeader(std::uint8_t* out, KvOpcode opcode, std::uint64_t request_id,
+                std::uint64_t resp_addr, std::uint16_t batch_size)
 {
     out[kOpcodeOffset] = static_cast<std::uint8_t>(opcode);
+    std::memcpy(out + kRequestIdOffset, &request_id, sizeof(request_id));
     std::memcpy(out + kRespAddrOffset, &resp_addr, sizeof(resp_addr));
     std::memcpy(out + kLoadLookupBatchSizeOffset, &batch_size, sizeof(batch_size));
 }
 
-void PackDumpHeader(std::uint8_t* out, KvOpcode opcode, std::uint64_t resp_addr, std::uint32_t ttl,
-                    std::uint16_t batch_size)
+void PackDumpHeader(std::uint8_t* out, KvOpcode opcode, std::uint64_t request_id,
+                    std::uint64_t resp_addr, std::uint32_t ttl, std::uint16_t batch_size)
 {
     out[kOpcodeOffset] = static_cast<std::uint8_t>(opcode);
+    std::memcpy(out + kRequestIdOffset, &request_id, sizeof(request_id));
     std::memcpy(out + kRespAddrOffset, &resp_addr, sizeof(resp_addr));
     std::memcpy(out + kDumpTtlOffset, &ttl, sizeof(ttl));
     std::memcpy(out + kDumpBatchSizeOffset, &batch_size, sizeof(batch_size));
@@ -183,6 +186,8 @@ Status UnpackCommonRequestHeader(const void* data, std::size_t size, std::size_t
     if (request.opcode != expectedOpcode) {
         return Status::InvalidParam(protocol + ": opcode mismatch");
     }
+    std::memcpy(&request.request_id, bytes + kRequestIdOffset, sizeof(request.request_id));
+    if (request.request_id == 0) { return Status::InvalidParam(protocol + ": request_id is zero"); }
     std::memcpy(&request.resp_addr, bytes + kRespAddrOffset, sizeof(request.resp_addr));
     if (request.resp_addr == 0) { return Status::InvalidParam(protocol + ": resp_addr is zero"); }
     std::memcpy(&request.batch_size, bytes + batchSizeOffset, sizeof(request.batch_size));
@@ -226,7 +231,7 @@ Status KvDumpProtocol::PackRequest(const KvRequest& req, void* target)
     if (!status.Success()) { return status; }
 
     auto* out = static_cast<std::uint8_t*>(target);
-    PackDumpHeader(out, r.opcode, r.resp_addr, r.ttl, r.batch_size);
+    PackDumpHeader(out, r.opcode, r.request_id, r.resp_addr, r.ttl, r.batch_size);
 
     for (std::size_t i = 0; i < r.entries.size(); ++i) {
         const auto& entry = r.entries[i];
@@ -241,6 +246,7 @@ Status KvDumpProtocol::UnpackResponse(const void* data, std::uint16_t result_cou
 {
     if (!data) { return Status::InvalidParam("Dump: UnpackResponse data is null"); }
     const auto* bytes = static_cast<const std::uint8_t*>(data);
+    std::memcpy(&out.request_id, bytes + kResponseRequestIdOffset, sizeof(out.request_id));
     UnpackResults(bytes + kResponseResultsOffset, result_count, kDumpLoadResultBitWidth,
                   out.results);
     return Status::OK();
@@ -290,7 +296,9 @@ Status KvDumpProtocol::UnpackRequest(const void* data, std::size_t size,
 Status KvDumpProtocol::PackResponse(void* data, const KvResponse& resp) const
 {
     if (!data) { return Status::InvalidParam("Dump: PackResponse data is null"); }
+    if (resp.request_id == 0) { return Status::InvalidParam("Dump: request_id is zero"); }
     auto* bytes = static_cast<std::uint8_t*>(data);
+    std::memcpy(bytes + kResponseRequestIdOffset, &resp.request_id, sizeof(resp.request_id));
     const auto status =
         PackResults(bytes + kResponseResultsOffset, resp.results, kDumpLoadResultBitWidth, "Dump");
     if (status.Failure()) { return status; }
@@ -326,7 +334,7 @@ Status KvLoadProtocol::PackRequest(const KvRequest& req, void* target)
     if (!status.Success()) { return status; }
 
     auto* out = static_cast<std::uint8_t*>(target);
-    PackHeader(out, r.opcode, r.resp_addr, r.batch_size);
+    PackHeader(out, r.opcode, r.request_id, r.resp_addr, r.batch_size);
 
     for (std::size_t i = 0; i < r.entries.size(); ++i) {
         const auto& entry = r.entries[i];
@@ -341,6 +349,7 @@ Status KvLoadProtocol::UnpackResponse(const void* data, std::uint16_t result_cou
 {
     if (!data) { return Status::InvalidParam("Load: UnpackResponse data is null"); }
     const auto* bytes = static_cast<const std::uint8_t*>(data);
+    std::memcpy(&out.request_id, bytes + kResponseRequestIdOffset, sizeof(out.request_id));
     UnpackResults(bytes + kResponseResultsOffset, result_count, kDumpLoadResultBitWidth,
                   out.results);
     return Status::OK();
@@ -388,7 +397,9 @@ Status KvLoadProtocol::UnpackRequest(const void* data, std::size_t size,
 Status KvLoadProtocol::PackResponse(void* data, const KvResponse& resp) const
 {
     if (!data) { return Status::InvalidParam("Load: PackResponse data is null"); }
+    if (resp.request_id == 0) { return Status::InvalidParam("Load: request_id is zero"); }
     auto* bytes = static_cast<std::uint8_t*>(data);
+    std::memcpy(bytes + kResponseRequestIdOffset, &resp.request_id, sizeof(resp.request_id));
     const auto status =
         PackResults(bytes + kResponseResultsOffset, resp.results, kDumpLoadResultBitWidth, "Load");
     if (status.Failure()) { return status; }
@@ -424,7 +435,7 @@ Status KvLookupProtocol::PackRequest(const KvRequest& req, void* target)
     if (!status.Success()) { return status; }
 
     auto* out = static_cast<std::uint8_t*>(target);
-    PackHeader(out, r.opcode, r.resp_addr, r.batch_size);
+    PackHeader(out, r.opcode, r.request_id, r.resp_addr, r.batch_size);
 
     for (std::size_t i = 0; i < r.entries.size(); ++i) {
         const auto& entry = r.entries[i];
@@ -439,6 +450,7 @@ Status KvLookupProtocol::UnpackResponse(const void* data, std::uint16_t result_c
 {
     if (!data) { return Status::InvalidParam("Lookup: UnpackResponse data is null"); }
     const auto* bytes = static_cast<const std::uint8_t*>(data);
+    std::memcpy(&out.request_id, bytes + kResponseRequestIdOffset, sizeof(out.request_id));
     UnpackResults(bytes + kResponseResultsOffset, result_count, kLookupResultBitWidth, out.results);
     return Status::OK();
 }
@@ -488,8 +500,10 @@ Status KvLookupProtocol::UnpackRequest(const void* data, std::size_t size,
 Status KvLookupProtocol::PackResponse(void* data, const KvResponse& resp) const
 {
     if (!data) { return Status::InvalidParam("Lookup: PackResponse data is null"); }
+    if (resp.request_id == 0) { return Status::InvalidParam("Lookup: request_id is zero"); }
     if (resp.results.empty()) { return Status::InvalidParam("Lookup: results must not be empty"); }
     auto* bytes = static_cast<std::uint8_t*>(data);
+    std::memcpy(bytes + kResponseRequestIdOffset, &resp.request_id, sizeof(resp.request_id));
     const auto status =
         PackResults(bytes + kResponseResultsOffset, resp.results, kLookupResultBitWidth, "Lookup");
     if (status.Failure()) { return status; }
@@ -537,28 +551,45 @@ Status ProtocolManager::PackRequest(void* data, KvOpcode opcode, const KvRequest
     return proto->PackRequest(req, data);
 }
 
-Status ProtocolManager::IsResponseReady(const void* data, bool& ready) const
+Status ProtocolManager::IsResponseReady(const void* data, std::uint64_t expected_request_id,
+                                        bool& ready) const
 {
     ready = false;
     if (!data) { return Status::InvalidParam("IsResponseReady data is null"); }
+    if (expected_request_id == 0) {
+        return Status::InvalidParam("IsResponseReady expected_request_id is zero");
+    }
 
     // The flag can be updated by remote DMA, so each poll must reload the status byte.
     const auto* bytes = static_cast<const volatile std::uint8_t*>(data);
     const auto status = static_cast<ResponseStatus>(bytes[kResponseStatusOffset]);
     switch (status) {
         case ResponseStatus::Pending: return Status::OK();
-        case ResponseStatus::Ready: ready = true; return Status::OK();
+        case ResponseStatus::Ready: {
+            std::uint64_t observedRequestId = 0;
+            std::memcpy(&observedRequestId,
+                        static_cast<const std::uint8_t*>(data) + kResponseRequestIdOffset,
+                        sizeof(observedRequestId));
+            if (observedRequestId != expected_request_id) {
+                return Status::Error("IsResponseReady request_id mismatch: expected=" +
+                                     std::to_string(expected_request_id) +
+                                     ", observed=" + std::to_string(observedRequestId));
+            }
+            ready = true;
+            return Status::OK();
+        }
         default: return Status::InvalidParam("unknown response status");
     }
 }
 
 Status ProtocolManager::UnpackResponse(const void* data, KvOpcode opcode,
+                                       std::uint64_t expected_request_id,
                                        std::uint16_t result_count, KvResponse& out)
 {
     KvProtocol* proto = GetProtocol(opcode);
     if (!proto) { return Status::InvalidParam("unknown opcode in UnpackResponse"); }
     bool ready = false;
-    const auto status = IsResponseReady(data, ready);
+    const auto status = IsResponseReady(data, expected_request_id, ready);
     if (status.Failure()) { return status; }
     if (!ready) { return Status::Retry(); }
     return proto->UnpackResponse(data, result_count, out);

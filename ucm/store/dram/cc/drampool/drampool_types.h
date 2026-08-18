@@ -92,6 +92,7 @@ enum class CompletionStage : std::uint8_t {
 
 struct CompletionRecord {
     CompletionStage stage{CompletionStage::PollDataTransfer};
+    std::uint64_t request_id{0};
 
     // State used while the request's data transfer is in flight.
     TransportHandle data_handle{transport::kInvalidTransferHandle};

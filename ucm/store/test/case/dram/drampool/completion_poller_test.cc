@@ -52,6 +52,7 @@ namespace {
 constexpr std::size_t kQueueCapacity = 16;
 constexpr std::size_t kValueLength = 16;
 constexpr std::size_t kFlagSlotSize = 64;
+constexpr std::uint64_t kRequestId = 42;
 constexpr char kUnavailablePeer[] = "127.0.0.1:29000";
 
 using UC::Test::Dram::Clock;
@@ -147,6 +148,7 @@ protected:
     {
         CompletionRecord record;
         record.stage = CompletionStage::SubmitResponse;
+        record.request_id = kRequestId;
         record.opcode = opcode;
         record.remote_resp_addr = 0x9000;
         record.peer_one_sided_id = kUnavailablePeer;

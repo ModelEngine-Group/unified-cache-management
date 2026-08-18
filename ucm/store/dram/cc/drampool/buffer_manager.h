@@ -68,7 +68,11 @@ public:
             region.type = transport::MemoryType::Host;
             memoryRegions_.push_back(region);
             pools_.emplace(slotSize, std::move(pool));
+            UC_DEBUG(
+                "BufferManager initialized BufferPool, slot_size={}, slot_count={}, total_bytes={}",
+                slotSize, slotNum, region.length);
         }
+        UC_DEBUG("BufferManager initialized BufferPools, pool_count={}", pools_.size());
     }
 
     ~BufferManager() { Reset(); }

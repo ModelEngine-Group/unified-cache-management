@@ -163,6 +163,7 @@ TEST(NodeActorTest, PacksLookupWithTargetDramPoolProtocol)
     ASSERT_TRUE(unpackStatus.Success());
     const auto* lookup = dynamic_cast<const DramPool::KvLookupRequest*>(unpacked.get());
     ASSERT_NE(lookup, nullptr);
+    EXPECT_EQ(lookup->request_id, 1U);
     ASSERT_EQ(lookup->entries.size(), std::size_t{1});
     EXPECT_EQ(lookup->entries[0].key[0], std::byte{7});
     EXPECT_EQ(lookup->resp_addr, reinterpret_cast<std::uintptr_t>(reply.data()));

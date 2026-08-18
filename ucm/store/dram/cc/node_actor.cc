@@ -74,7 +74,7 @@ const char* NodeActor::NodeStateName(NodeState state) noexcept
     return names[static_cast<std::uint8_t>(state)];
 }
 
-Status NodeActor::EncodeRequest(const ReplySlot& replySlot, OpType op,
+Status NodeActor::EncodeRequest(const ReplySlot& replySlot, RequestId requestId, OpType op,
                                 const std::vector<IoEntry>& entries,
                                 std::vector<std::uint8_t>& payload)
 {
@@ -92,6 +92,7 @@ Status NodeActor::EncodeRequest(const ReplySlot& replySlot, OpType op,
         case OpType::LOOKUP: {
             DramPool::KvLookupRequest request;
             request.opcode = DramPool::KvOpcode::Lookup;
+            request.request_id = requestId;
             request.resp_addr = responseAddress;
             request.batch_size = batchSize;
             request.entries.resize(entries.size());
@@ -104,6 +105,7 @@ Status NodeActor::EncodeRequest(const ReplySlot& replySlot, OpType op,
         case OpType::DUMP: {
             DramPool::KvDumpRequest request;
             request.opcode = DramPool::KvOpcode::Dump;
+            request.request_id = requestId;
             request.resp_addr = responseAddress;
             request.ttl = 0;
             request.batch_size = batchSize;
@@ -113,6 +115,7 @@ Status NodeActor::EncodeRequest(const ReplySlot& replySlot, OpType op,
         case OpType::LOAD: {
             DramPool::KvLoadRequest request;
             request.opcode = DramPool::KvOpcode::Load;
+            request.request_id = requestId;
             request.resp_addr = responseAddress;
             request.batch_size = batchSize;
             FillTransferEntries(entries, request.entries);
@@ -290,8 +293,8 @@ void NodeActor::StartRequest(Request request)
     active.replySlot = std::move(acquired).Value();
 
     std::vector<std::uint8_t> payload;
-    auto status =
-        EncodeRequest(active.replySlot, active.request.op, active.request.entries, payload);
+    auto status = EncodeRequest(active.replySlot, active.request.requestId, active.request.op,
+                                active.request.entries, payload);
     if (status.Failure()) {
         UC_ERROR(
             "DramStore request encoding failed, task_id={} request_id={} op={} "

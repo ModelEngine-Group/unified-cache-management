@@ -69,6 +69,8 @@ Status TaskWorker::ProcessOneRequest(RequestTaskPtr task)
     // must already have established the local route.
     const auto& peerOneSidedId = task->peer_one_sided_id;
     const auto& request = task->request;
+    UC_DEBUG("TaskWorker processing request, request_id={}, opcode={}, peer={}",
+             request->request_id, static_cast<int>(request->opcode), peerOneSidedId);
     switch (request->opcode) {
         case KvOpcode::Dump: {
             const auto* dump = dynamic_cast<const KvDumpRequest*>(request.get());
@@ -130,7 +132,8 @@ Status TaskWorker::ProcessDump(const KvDumpRequest& request,
             continue;
         }
         if (storeStatus.Failure()) {
-            UC_ERROR("Dump[{}] StoreBegin failed: {}", index, storeStatus);
+            UC_ERROR("Dump[{}] StoreBegin failed, request_id={}, error={}", index,
+                     request.request_id, storeStatus);
             // StoreBegin failures are typically resource-related after eviction retries.
             // Stop here to avoid costly allocation attempts for the remaining items.
             mark_remaining_failed(index);
@@ -144,22 +147,30 @@ Status TaskWorker::ProcessDump(const KvDumpRequest& request,
     }
 
     if (transfer_items.empty()) {
-        return QueueResponse(KvOpcode::Dump, request.resp_addr, peerOneSidedId, std::move(results));
+        UC_DEBUG("DUMP skips data transfer, request_id={}, batch_size={}", request.request_id,
+                 request.batch_size);
+        return QueueResponse(KvOpcode::Dump, request.resp_addr, peerOneSidedId, std::move(results),
+                             request.request_id);
     }
 
+    UC_DEBUG("DUMP submits data transfer, request_id={}, items={}, peer={}", request.request_id,
+             transfer_items.size(), peerOneSidedId);
     TransportHandle handle = transport::kInvalidTransferHandle;
     const auto submit_status = runtime_.transport.ExecuteAsync(operation, handle);
     if (submit_status.Failure() || handle == transport::kInvalidTransferHandle) {
-        UC_ERROR("Dump SubmitAsync failed, items={}", transfer_items.size());
+        UC_ERROR("Dump SubmitAsync failed, request_id={}, items={}, error={}", request.request_id,
+                 transfer_items.size(), submit_status);
         DeleteItemsMetadata(transfer_items);
         for (const auto& item : transfer_items) {
             results[item.index_in_request] = static_cast<std::uint8_t>(DumpLoadResult::Failed);
         }
-        return QueueResponse(KvOpcode::Dump, request.resp_addr, peerOneSidedId, std::move(results));
+        return QueueResponse(KvOpcode::Dump, request.resp_addr, peerOneSidedId, std::move(results),
+                             request.request_id);
     }
 
     CompletionRecord record;
     record.stage = CompletionStage::PollDataTransfer;
+    record.request_id = request.request_id;
     record.opcode = KvOpcode::Dump;
     record.data_handle = handle;
     record.remote_resp_addr = request.resp_addr;
@@ -167,6 +178,7 @@ Status TaskWorker::ProcessDump(const KvDumpRequest& request,
     record.results = std::move(results);
     record.transfer_items = std::move(transfer_items);
     record.submit_ms = SteadyNowMs();
+    UC_DEBUG("DUMP data transfer submitted, request_id={}, handle={}", request.request_id, handle);
     return SubmitCompletion(std::move(record));
 }
 
@@ -193,16 +205,18 @@ Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
         const auto loadStatus = runtime_.metadata.LoadBegin(entry.key, metadataEntry);
         if (loadStatus.Failure() || !metadataEntry) {
             results[index] = static_cast<std::uint8_t>(DumpLoadResult::Failed);
-            UC_ERROR("Load[{}] LoadBegin failed: {}", index, loadStatus);
+            UC_ERROR("Load[{}] LoadBegin failed, request_id={}, error={}", index,
+                     request.request_id, loadStatus);
             continue;
         }
         if (entry.len > metadataEntry->size) {
             const auto releaseStatus = runtime_.metadata.LoadEnd(entry.key);
             if (releaseStatus.Failure()) {
-                UC_ERROR("Load[{}] LoadEnd after len mismatch failed: {}", index, releaseStatus);
+                UC_ERROR("Load[{}] LoadEnd after len mismatch failed, request_id={}, error={}",
+                         index, request.request_id, releaseStatus);
             }
-            UC_ERROR("Load[{}] invalid len, requested={}, stored={}", index, entry.len,
-                     metadataEntry->size);
+            UC_ERROR("Load[{}] invalid len, request_id={}, requested={}, stored={}", index,
+                     request.request_id, entry.len, metadataEntry->size);
             results[index] = static_cast<std::uint8_t>(DumpLoadResult::Failed);
             continue;
         }
@@ -214,22 +228,30 @@ Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
     }
 
     if (transfer_items.empty()) {
-        return QueueResponse(KvOpcode::Load, request.resp_addr, peerOneSidedId, std::move(results));
+        UC_DEBUG("LOAD skips data transfer, request_id={}, batch_size={}", request.request_id,
+                 request.batch_size);
+        return QueueResponse(KvOpcode::Load, request.resp_addr, peerOneSidedId, std::move(results),
+                             request.request_id);
     }
 
+    UC_DEBUG("LOAD submits data transfer, request_id={}, items={}, peer={}", request.request_id,
+             transfer_items.size(), peerOneSidedId);
     TransportHandle handle = transport::kInvalidTransferHandle;
     const auto submit_status = runtime_.transport.ExecuteAsync(operation, handle);
     if (submit_status.Failure() || handle == transport::kInvalidTransferHandle) {
-        UC_ERROR("Load SubmitAsync failed, items={}", transfer_items.size());
+        UC_ERROR("Load SubmitAsync failed, request_id={}, items={}, error={}", request.request_id,
+                 transfer_items.size(), submit_status);
         LoadEndItems(transfer_items);
         for (const auto& item : transfer_items) {
             results[item.index_in_request] = static_cast<std::uint8_t>(DumpLoadResult::Failed);
         }
-        return QueueResponse(KvOpcode::Load, request.resp_addr, peerOneSidedId, std::move(results));
+        return QueueResponse(KvOpcode::Load, request.resp_addr, peerOneSidedId, std::move(results),
+                             request.request_id);
     }
 
     CompletionRecord record;
     record.stage = CompletionStage::PollDataTransfer;
+    record.request_id = request.request_id;
     record.opcode = KvOpcode::Load;
     record.data_handle = handle;
     record.remote_resp_addr = request.resp_addr;
@@ -237,6 +259,7 @@ Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
     record.results = std::move(results);
     record.transfer_items = std::move(transfer_items);
     record.submit_ms = SteadyNowMs();
+    UC_DEBUG("LOAD data transfer submitted, request_id={}, handle={}", request.request_id, handle);
     return SubmitCompletion(std::move(record));
 }
 
@@ -255,7 +278,10 @@ Status TaskWorker::ProcessLookup(const KvLookupRequest& request,
         }
     }
 
-    return QueueResponse(KvOpcode::Lookup, request.resp_addr, peerOneSidedId, std::move(results));
+    UC_DEBUG("LOOKUP metadata scan completed, request_id={}, batch_size={}", request.request_id,
+             request.batch_size);
+    return QueueResponse(KvOpcode::Lookup, request.resp_addr, peerOneSidedId, std::move(results),
+                         request.request_id);
 }
 
 void TaskWorker::DeleteItemsMetadata(const std::vector<TransferItem>& items)
@@ -279,10 +305,11 @@ void TaskWorker::LoadEndItems(const std::vector<TransferItem>& items)
 
 Status TaskWorker::QueueResponse(KvOpcode opcode, std::uint64_t responseAddr,
                                  const transport::ManagerID& peerOneSidedId,
-                                 std::vector<std::uint8_t>&& results)
+                                 std::vector<std::uint8_t>&& results, std::uint64_t requestId)
 {
     CompletionRecord record;
     record.stage = CompletionStage::SubmitResponse;
+    record.request_id = requestId;
     record.opcode = opcode;
     record.remote_resp_addr = responseAddr;
     record.peer_one_sided_id = peerOneSidedId;
@@ -293,6 +320,9 @@ Status TaskWorker::QueueResponse(KvOpcode opcode, std::uint64_t responseAddr,
 Status TaskWorker::SubmitCompletion(CompletionRecord&& record)
 {
     // TaskWorker is the sole producer; CompletionPoller is the sole consumer.
+    UC_DEBUG("TaskWorker queues completion, request_id={}, opcode={}, stage={}, handle={}",
+             record.request_id, static_cast<int>(record.opcode), static_cast<int>(record.stage),
+             record.data_handle);
     runtime_.completionQueue.Push(std::move(record));
     return Status::OK();
 }
