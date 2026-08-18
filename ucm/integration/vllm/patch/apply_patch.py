@@ -126,6 +126,8 @@ def get_supported_versions() -> list[str]:
         "0.24.0",
         "0.25.1",
         "0.26.0",
+        "0.27.0",
+        "0.28.0",
     ]
 
 
@@ -260,18 +262,15 @@ def apply_all_patches() -> None:
             case _:
                 pass
 
-        # Mamba copy order fix: vllm-ascend >= 0.21.0 defers
-        # do_mamba_copy_block to after start_load_kv, causing it to
-        # overwrite UCM-loaded KV cache data. This patch restores
-        # the copy to before start_load_kv (matching upstream vLLM).
-        #
-        # Always import — the @when_imported hook only fires when
-        # vllm_ascend.patch.worker.patch_mamba_utils exists, and the
-        # wrapper is self-guarding (idempotency flag + offset check).
-        # This handles nightly/dev builds whose version string (e.g.
-        # 0.1.dev4128) doesn't match the release version scheme.
-        logger.info("UCM patching mamba copy order...")
+        # Fix: vllm-ascend >= 0.21.0 defers do_mamba_copy_block to after
+        # start_load_kv, overwriting UCM-loaded data. @when_imported is
+        # self-guarding (only fires when the module exists).
         import ucm.integration.vllm.patch.v0210.vllm_ascend.mamba_copy_order_patch
+
+        # Fix: vLLM >= 0.27.0 Kimi-K3's MLA bypasses @maybe_transfer_kv_layer,
+        # so wait_for_layer_load/save_kv_layer are never called. @when_imported
+        # only fires when vllm.models.kimi_k3.nvidia.mla is imported.
+        import ucm.integration.vllm.patch.v0270.vllm.models.kimi_k3.nvidia.kimi_k3_mla_kv_hook_patch
 
         logger.info("UCM patch initialization completed!")
 

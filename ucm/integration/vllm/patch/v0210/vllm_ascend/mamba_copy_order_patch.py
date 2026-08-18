@@ -37,9 +37,7 @@ def patch_mamba_copy_order(mod):
         return
 
     if not hasattr(mamba_utils, "do_mamba_copy_block"):
-        logger.warning(
-            "Skip mamba copy order patch: do_mamba_copy_block not found"
-        )
+        logger.warning("Skip mamba copy order patch: do_mamba_copy_block not found")
         return
 
     original_preprocess = mamba_utils.preprocess_mamba
