@@ -244,26 +244,25 @@ flowchart LR
 
 Store Load Counter 由 worker 产生，YuanRong 日志指标由 scheduler 产生，两者都通过默认启用的 `vllm_connector` consumer 导出，不依赖 Prometheus multiprocess consumer。vLLM scheduler 在聚合 worker connector stats 时会调用 scheduler connector 的 `get_kv_connector_stats()`，将日志指标合并到同一上报路径。抢到主机锁的 scheduler 读取日志，不新起 exporter、不增加端口。
 
-dispatcher 将指标发送给已启用的 consumer；`vllm_connector_enabled` 可控制单个指标是否进入 connector 路径。默认配置只开启 `vllm_connector`；用户显式开启 `multiproc` 时，可为两条 consumer 配置不同前缀。Posix GC Gauge 同样由 worker 产生；Grafana 使用 `avg(...)` 展示节点逻辑占用和容量，避免多 worker 求和放大。
+dispatcher 将指标发送给已启用的 consumer；`vllm_connector_enabled` 可控制单个指标是否进入 connector 路径。默认配置只开启 `vllm_connector`；用户显式开启 `multiproc` 时，可为两条 consumer 配置不同前缀。Posix GC Gauge 同样由 worker 产生；查询时使用 `avg(...)` 聚合节点逻辑占用和容量，避免多 worker 求和放大，但主 Grafana 容量面板不展示 Posix。
 
 ## 6. Grafana 与 metrics view
 
 ### 6.1 Grafana
 
-新增一个统一的 `Prefix Cache Hit Rate by Tier` 面板：
+新增一个统一的 `KV Cache Hit Rate Breakdown` 面板，与 `Prefix Cache Query Breakdown` 同行各占一半：
 
 - `YuanRong|Posix`：HBM、YuanRong DRAM、YuanRong SSD、Posix Store。
 - `Cache|Posix`：HBM、Cache、Posix Store。
-- 同一 pipeline 不存在的 tier 不产生 series。
+- 只在对应 pipeline 的加载来源 shard Counter 有增量时产生 tier series，因此 `Cache|Posix` 场景不显示 YuanRong 曲线，`YuanRong|Posix` 场景不显示 Cache 曲线。
 - 查询先对 Counter 求和再求比例；不对 worker 命中率做平均。
 
 新增容量面板：
 
 - YuanRong DRAM used/capacity/watermark。
 - YuanRong SSD used/capacity/watermark。
-- Posix Store used/capacity/watermark。
 
-Posix 可能由多个 DP/worker 上报相同共享目录的值，Grafana 对 Posix Gauge 使用 `avg`，不能 `sum`。YuanRong 节点指标只有 leader 上报，跨 worker 聚合使用 `max` 或直接去掉 worker 维度，不能求和。
+Posix used/capacity/watermark 指标仍然保留，可通过 `/metrics` 和 metrics view 查看，但不在这两个 Grafana 容量面板中展示。YuanRong 节点指标只有 leader 上报，跨 worker 聚合使用 `max` 或直接去掉 worker 维度，不能求和。
 
 ### 6.2 Metrics view
 
@@ -343,8 +342,8 @@ yuanrong_resource_metrics_interval_sec: 15
 
 1. YuanRong `oc_hit_num` 是 worker 全局 Get 计数，并会混入 UCM 后台 dump 持久化的 `kvClient::Get`。本期不修改 YuanRong，接受 DRAM/SSD 分配结果是估算值。
 2. `l2_hit_num` 表示 OBS、SFS 或 distributed disk 等 L2 持久化读取命中，不属于本地 SSD。UCM 对象不写入 L2，因此它不参与公式，非零作为异常诊断。
-3. Load failure 是极少数情况，继续使用原始方程，将全部 `H_external` 在成功的 YuanRong/Posix shard 间分配；失败率只单独展示。
+3. Load failure 是极少数情况，继续使用原始方程，将全部 `H_external` 在成功的 YuanRong/Posix shard 间分配；失败 Counter 保留用于诊断，不在主 Grafana dashboard 展示。
 4. 保证每台机器的 YuanRong worker 只服务同一模型、同一组 UCM 实例，因此允许用其全局 hit Counter 计算该部署的层级比例。
 5. 保证候选 UCM instance 共享 host IPC namespace，并能读取同一个 `kv_resource.log` 路径，可以使用 `/dev/shm` 文件锁进行单机选主。
-6. Posix 水位只展示 GC 采样得到的逻辑占用，不增加文件系统物理 used/total。当 GC 关闭或 `posix_capacity_gb=0` 时不产生 Posix 容量 series。
+6. Posix 水位只输出 GC 采样得到的逻辑占用，不增加文件系统物理 used/total，也不在主 Grafana 容量面板展示。当 GC 关闭或 `posix_capacity_gb=0` 时不产生 Posix 容量 series。
 7. 从新版 toolkit 移植 metrics view 的必要提交，并补充本设计的查询配置和测试；不整体合并无关改动。

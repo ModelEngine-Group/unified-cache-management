@@ -6,7 +6,7 @@
 
 - `YuanRong|Posix`：展示 HBM、YuanRong DRAM、YuanRong SSD、Posix Store 命中率。
 - `Cache|Posix`：展示 HBM、Cache、Posix Store 命中率。
-- 展示 YuanRong DRAM、YuanRong SSD、Posix Store 的使用量、容量和水位。
+- 采集 YuanRong DRAM、YuanRong SSD、Posix Store 的使用量、容量和水位；Grafana 主面板只展示 YuanRong 容量数据。
 
 结果可以在 Grafana dashboard 和 UCM `metrics_view` 中查看。
 
@@ -116,7 +116,7 @@ capacity_bytes = posix_capacity_gb * GiB
 usage_ratio    = used_bytes / capacity_bytes
 ```
 
-Posix 水位是 Store 的逻辑占用估算值，不是整个文件系统的物理使用率。多个 DP/worker 可能上报同一个共享目录的值，因此 Grafana 使用 `avg` 聚合 Posix Gauge，避免重复相加。YuanRong 节点级 Gauge 由单机 leader 上报，使用 `max` 聚合。
+Posix 水位是 Store 的逻辑占用估算值，不是整个文件系统的物理使用率。多个 DP/worker 可能上报同一个共享目录的值，因此查询 Posix Gauge 时应使用 `avg` 聚合，避免重复相加；主 Grafana 容量面板不展示 Posix。YuanRong 节点级 Gauge 由单机 leader 上报，使用 `max` 聚合。
 
 ## 5. YuanRong 日志采集
 
@@ -143,9 +143,9 @@ yuanrong_resource_metrics_interval_sec: 15 # 可选，默认15s
 
 ## 6. 展示位置
 
-- Grafana `KV Cache Hit Rate Breakdown`：各层命中率及 `Total`。
-- Grafana `Store Capacity Watermark`：各层水位。
-- Grafana Store used/capacity 面板：实际使用量和容量。
+- Grafana `KV Cache Hit Rate Breakdown`：与 `Prefix Cache Query Breakdown` 同行各占一半；自动适配 `YuanRong|Posix` 和 `Cache|Posix`，无加载活动的 pipeline 不产生对应曲线，并展示 `Total`。
+- Grafana `Store Capacity Watermark`：YuanRong DRAM、SSD 水位。
+- Grafana Store used/capacity 面板：YuanRong DRAM、SSD 实际使用量和容量。
 - UCM `metrics_view`：使用相同 PromQL 公式展示分层命中率与容量指标。
 
 ## 7. 使用 metrics lite 查看指标

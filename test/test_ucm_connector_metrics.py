@@ -736,8 +736,8 @@ def test_posix_lookup_metrics_record_queries_and_returned_hits():
 
     assert 'NAME_TO_METRIC_ID("posix_lookup_query_blocks_total")' in source
     assert 'NAME_TO_METRIC_ID("posix_lookup_hit_blocks_total")' in source
-    assert source.count("RecordLookupQueries(") == 3
-    assert source.count("RecordLookupHits(") == 3
+    assert source.count("RecordLookupQueries(") == 4
+    assert source.count("RecordLookupHits(") == 4
 
 
 def test_launch_metrics_config_defaults_to_builtin_metrics_when_path_is_missing():
@@ -1360,12 +1360,16 @@ def test_direct_connector_get_finished_records_async_durations():
     _reset_fakes()
     import ucm.integration.vllm.ucm_connector as ucm_connector_module
 
-    class Store:
+    class RankConsistency:
         def __init__(self):
             self.waited = []
+            self.finished = []
 
-        def wait(self, task):
+        def wait_dump(self, task):
             self.waited.append(task)
+
+        def finish_dump(self, request_ids):
+            self.finished.append(request_ids)
 
     class Device:
         def __init__(self):
@@ -1375,7 +1379,7 @@ def test_direct_connector_get_finished_records_async_durations():
             self.destroyed.append(event_handle)
 
     connector = object.__new__(UCMDirectConnector)
-    connector.store = Store()
+    connector._rank_consistency = RankConsistency()
     connector.enable_event_sync = True
     connector.device = Device()
     task = object()
@@ -1400,7 +1404,8 @@ def test_direct_connector_get_finished_records_async_durations():
     assert skipped is None
     assert connector._pending_dump_tasks == []
     assert connector._async_dump_req_ids == set()
-    assert connector.store.waited == [task]
+    assert connector._rank_consistency.waited == [task]
+    assert connector._rank_consistency.finished == [{"req-1"}]
     assert connector.device.destroyed == [7]
     assert pending.event_handle == 0
     assert fake_ucmmetrics.updated == [
@@ -1418,17 +1423,21 @@ def test_direct_connector_poll_records_zero_completion_wait_duration():
     class Store:
         def __init__(self):
             self.checked = []
-            self.waited = []
 
         def check(self, task):
             self.checked.append(task)
             return True
 
-        def wait(self, task):
+    class RankConsistency:
+        def __init__(self):
+            self.waited = []
+
+        def wait_dump(self, task):
             self.waited.append(task)
 
     connector = object.__new__(UCMDirectConnector)
     connector.store = Store()
+    connector._rank_consistency = RankConsistency()
     connector.enable_event_sync = False
     connector.device = None
     task = object()
@@ -1450,7 +1459,7 @@ def test_direct_connector_poll_records_zero_completion_wait_duration():
 
     assert connector._pending_dump_tasks == []
     assert connector.store.checked == [task]
-    assert connector.store.waited == [task]
+    assert connector._rank_consistency.waited == [task]
     assert fake_ucmmetrics.updated == [
         {
             "save_duration": 100.0,
@@ -1577,8 +1586,16 @@ def test_connector_dashboard_direct_connector_layout_and_metrics():
         "FAWA Worker Wait Load Tasks Duration",
         "FAWA Worker Dump Duration",
     ]
+    expected_failure_titles = [
+        "Failures",
+        "Failure Counts by Type",
+        "Failure Ratio by Type",
+        "Failure Count Over Time",
+    ]
     direct_start = titles.index("Direct Connector")
-    assert titles[direct_start:] == expected_direct_titles + expected_fawa_titles
+    assert titles[direct_start:] == (
+        expected_direct_titles + expected_fawa_titles + expected_failure_titles
+    )
 
     by_title = {panel["title"]: panel for panel in panels}
     assert by_title["Direct Connector"]["type"] == "row"
@@ -1670,7 +1687,7 @@ def test_vllm_dashboard_uses_combined_prefix_cache_hit_rate_breakdown():
         "group": "A",
         "mode": "none",
     }
-    assert panel["gridPos"] == {"h": 8, "w": 24, "x": 0, "y": 36}
+    assert panel["gridPos"] == {"h": 8, "w": 12, "x": 12, "y": 4}
     assert len(panel["targets"]) == 6
 
     expected = {
@@ -1719,15 +1736,33 @@ def test_vllm_dashboard_uses_combined_prefix_cache_hit_rate_breakdown():
     )
     assert "ucm:yuanrong_l2_load_hits_total" not in json.dumps(dashboard)
 
+    targets = {target["legendFormat"]: target["expr"] for target in panel["targets"]}
+    for legend in ("YuanRong DRAM", "YuanRong SSD"):
+        assert "and on()" in targets[legend]
+        assert "ucm:yuanrong_load_success_shards_total" in targets[legend]
+        assert targets[legend].endswith(") > 0)")
+    assert "and on()" in targets["Cache"]
+    assert "ucm:cache_load_success_shards_total" in targets["Cache"]
+    assert targets["Cache"].endswith(") > 0)")
+    assert targets["Posix Store"].count("and on()") == 2
+    assert "\nor\n" in targets["Posix Store"]
+
     capacity_panel = panels["Store Capacity Watermark"]
     assert {target["legendFormat"] for target in capacity_panel["targets"]} == {
         "YuanRong DRAM",
         "YuanRong SSD",
-        "Posix Store",
     }
     assert capacity_panel["targets"][0]["expr"].startswith("max(")
     assert capacity_panel["targets"][1]["expr"].startswith("max(")
-    assert capacity_panel["targets"][2]["expr"].startswith("avg(")
+
+    used_panel = panels["Store Used and Capacity"]
+    assert {target["legendFormat"] for target in used_panel["targets"]} == {
+        "YuanRong DRAM used",
+        "YuanRong DRAM capacity",
+        "YuanRong SSD used",
+        "YuanRong SSD capacity",
+    }
+    assert "Tier Attribution Diagnostics" not in panels
 
 
 def test_vllm_dashboard_shows_time_range_token_and_prefix_totals():
@@ -1765,7 +1800,7 @@ def test_vllm_dashboard_shows_time_range_token_and_prefix_totals():
 
     pie = panels["Prefix Cache Query Breakdown"]
     assert pie["type"] == "piechart"
-    assert pie["gridPos"] == {"h": 8, "w": 24, "x": 0, "y": 4}
+    assert pie["gridPos"] == {"h": 8, "w": 12, "x": 0, "y": 4}
     assert pie["options"]["displayLabels"] == ["name", "value", "percent"]
     assert pie["options"]["legend"]["displayMode"] == "table"
     assert pie["options"]["legend"]["values"] == ["value", "percent"]
@@ -1895,7 +1930,7 @@ def test_grafana_dashboards_use_isolated_vllm_ucm_identity():
                 assert link["tags"] == [GRAFANA_VLLM_UCM_TAG]
 
 
-def test_ucm_overview_keeps_vllm_summary_and_adds_block_hit_and_health_views():
+def test_ucm_overview_keeps_vllm_summary_and_adds_health_views():
     metrics_dir = REPO_ROOT / "examples" / "metrics"
     source = json.loads((metrics_dir / "grafana_vllm.json").read_text(encoding="utf-8"))
     dashboard = json.loads(
@@ -1909,33 +1944,6 @@ def test_ucm_overview_keeps_vllm_summary_and_adds_block_hit_and_health_views():
     assert set(source_titles[summary_end:]).isdisjoint(panels)
     assert panels["Total Input Tokens"]["gridPos"]["y"] == 0
     assert panels["Total Output Tokens"]["gridPos"]["y"] == 0
-
-    hit_rate = panels["KV Cache Block Hit Rate by Store"]
-    assert hit_rate["type"] == "timeseries"
-    assert hit_rate["fieldConfig"]["defaults"]["unit"] == "percentunit"
-    assert hit_rate["fieldConfig"]["defaults"]["min"] == 0
-    assert hit_rate["fieldConfig"]["defaults"]["max"] == 1
-    assert hit_rate["fieldConfig"]["defaults"]["custom"]["drawStyle"] == "bars"
-    assert hit_rate["fieldConfig"]["defaults"]["custom"]["stacking"] == {
-        "group": "A",
-        "mode": "normal",
-    }
-    assert hit_rate["maxDataPoints"] == 60
-    assert hit_rate["options"]["tooltip"]["mode"] == "multi"
-    hit_targets = {
-        target["legendFormat"]: target["expr"] for target in hit_rate["targets"]
-    }
-    assert set(hit_targets) == {"HBM", "Cache", "Mooncake", "Posix"}
-    expected_hits = {
-        "HBM": "ucm:gpu_hbm_hit_blocks_total",
-        "Cache": "ucm:cache_lookup_hit_blocks_total",
-        "Mooncake": "ucm:mooncake_lookup_hit_blocks_total",
-        "Posix": "ucm:posix_lookup_hit_blocks_total",
-    }
-    for legend, metric in expected_hits.items():
-        assert metric in hit_targets[legend]
-        assert "ucm:total_prefix_query_blocks_total" in hit_targets[legend]
-        assert "or vector(0)" not in hit_targets[legend]
 
     pie = panels["Store Health"]
     assert pie["type"] == "piechart"
@@ -2040,6 +2048,11 @@ def test_ucm_dashboards_use_engine_and_worker_rank_filters():
         for legend in legends:
             if legend == "{{le}}":
                 continue
+            if filename == "grafana_connector.json" and legend in {
+                "{{failure_type}}",
+                "failures",
+            }:
+                continue
             assert "engine={{engine}}" not in legend
             assert "worker={{worker_rank}}" not in legend
             assert "Aggregated" not in legend
@@ -2052,7 +2065,11 @@ def test_ucm_dashboards_use_engine_and_worker_rank_filters():
                 continue
             assert 'engine=~"$engine"' in expr
             assert 'worker_rank=~"$worker_rank"' in expr
-            if "sum by (" in expr:
+            failure_aggregate = (
+                filename == "grafana_connector.json"
+                and "(errors|failure_events)_total" in expr
+            )
+            if "sum by (" in expr and not failure_aggregate:
                 assert (
                     "sum by (${perWorker:raw})" in expr
                     or "sum by (le, ${perWorker:raw})" in expr
@@ -2093,12 +2110,17 @@ def test_mooncake_dashboards_cover_configured_mooncake_metrics():
     metrics_text = (
         REPO_ROOT / "examples" / "metrics" / "metrics_configs.yaml"
     ).read_text(encoding="utf-8")
+    excluded_mooncake_metrics = {
+        "mooncake_h2d_bandwidth_gbps",
+        "mooncake_d2h_bandwidth_gbps",
+        "mooncake_lookup_hit_blocks_total",
+    }
     configured_mooncake = {
         name
         for name in re.findall(
             r'^\s*-\s+name:\s+"(mooncake_[^"]+)"', metrics_text, re.MULTILINE
         )
-        if name not in {"mooncake_h2d_bandwidth_gbps", "mooncake_d2h_bandwidth_gbps"}
+        if name not in excluded_mooncake_metrics
     }
     referenced = {
         re.sub(r"_(bucket|sum|count)$", "", metric)
