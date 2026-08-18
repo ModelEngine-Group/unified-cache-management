@@ -21,10 +21,39 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <array>
+#include <cstdint>
 #include <gtest/gtest.h>
+#include "trans/detail/reserved_buffer.h"
 #include "trans/device.h"
 
 class UCTransUnitTest : public ::testing::Test {};
+
+TEST_F(UCTransUnitTest, MemsetUsesRequestedValue)
+{
+    constexpr std::size_t size = 128;
+    constexpr std::int32_t value = 0xAB;
+
+    UC::Trans::Device device;
+    ASSERT_TRUE(device.Setup(0).Success());
+    auto buffer = device.MakeBuffer();
+    auto stream = device.MakeStream();
+    ASSERT_NE(buffer, nullptr);
+    ASSERT_NE(stream, nullptr);
+
+    auto hostBuffer = buffer->MakeHostBuffer(size);
+    ASSERT_NE(hostBuffer, nullptr);
+    ASSERT_TRUE(UC::Trans::Memset(hostBuffer.get(), size, value).Success());
+    const auto* hostBytes = static_cast<const std::uint8_t*>(hostBuffer.get());
+    for (std::size_t i = 0; i < size; ++i) { EXPECT_EQ(hostBytes[i], value); }
+
+    auto deviceBuffer = buffer->MakeDeviceBuffer(size);
+    ASSERT_NE(deviceBuffer, nullptr);
+    ASSERT_TRUE(UC::Trans::Memset(deviceBuffer.get(), size, value).Success());
+    std::array<std::uint8_t, size> copied{};
+    ASSERT_TRUE(stream->DeviceToHost(deviceBuffer.get(), copied.data(), copied.size()).Success());
+    for (const auto byte : copied) { EXPECT_EQ(byte, value); }
+}
 
 TEST_F(UCTransUnitTest, CopyDataWithCE)
 {

@@ -45,22 +45,21 @@ void* AlignUp(void* ptr, std::uintptr_t alignment)
     return reinterpret_cast<void*>((addr + alignment - 1) / alignment * alignment);
 }
 
-void ReleaseHostPinnedMemory(void* registeredHost, void* allocatedHost)
+void ReleaseHostMappedDeviceMemory(void* registeredHost, void* allocatedHost)
 {
     Buffer::UnregisterHostBuffer(registeredHost);
     FreeHostMemory(allocatedHost);
 }
 
-void ReleaseCpuAccessibleDeviceMemory(void* mappedAddress, aclrtDrvMemHandle handle)
+void ReleaseDeviceMappedHostMemory(void* mappedAddress, aclrtDrvMemHandle handle)
 {
     auto ret = aclrtUnmapMem(mappedAddress);
     if (ret != ACL_SUCCESS) {
-        UC_ERROR("Failed to unmap CPU-accessible device memory addr={} ret={}", mappedAddress, ret);
+        UC_ERROR("Failed to unmap device-mapped host memory addr={} ret={}", mappedAddress, ret);
     }
     ret = aclrtReleaseMemAddress(mappedAddress);
     if (ret != ACL_SUCCESS) {
-        UC_ERROR("Failed to release CPU-accessible device address addr={} ret={}", mappedAddress,
-                 ret);
+        UC_ERROR("Failed to release device-mapped host address addr={} ret={}", mappedAddress, ret);
     }
     ret = aclrtFreePhysical(handle);
     if (ret != ACL_SUCCESS) {
@@ -158,7 +157,7 @@ std::shared_ptr<void> Trans::AscendBuffer::MakeDeviceBuffer(size_t size)
     return nullptr;
 }
 
-std::shared_ptr<void> Trans::AscendBuffer::MakeCpuAccessibleDeviceBuffer(size_t size)
+std::shared_ptr<void> Trans::AscendBuffer::MakeDeviceMappedHostBuffer(size_t size)
 {
     int32_t deviceId = 0;
     auto ret = aclrtGetDevice(&deviceId);
@@ -220,20 +219,19 @@ std::shared_ptr<void> Trans::AscendBuffer::MakeCpuAccessibleDeviceBuffer(size_t 
     if (ret != ACL_SUCCESS) {
         UC_ERROR("Failed to grant host access to device memory addr={} size={} ret={}",
                  mappedAddress, allocationSize, ret);
-        ReleaseCpuAccessibleDeviceMemory(mappedAddress, handle);
+        ReleaseDeviceMappedHostMemory(mappedAddress, handle);
         return nullptr;
     }
 #else
     UC_ERROR(
-        "Unsupported ACL version {}.{}: CPU-accessible device memory requires "
+        "Unsupported ACL version {}.{}: device-mapped host memory requires "
         "aclrtMemSetAccess, minimum supported ACL version is 1.16",
         ACL_MAJOR_VERSION, ACL_MINOR_VERSION);
-    ReleaseCpuAccessibleDeviceMemory(mappedAddress, handle);
+    ReleaseDeviceMappedHostMemory(mappedAddress, handle);
     return nullptr;
 #endif
-    return std::shared_ptr<void>(mappedAddress, [handle](void* address) {
-        ReleaseCpuAccessibleDeviceMemory(address, handle);
-    });
+    return std::shared_ptr<void>(
+        mappedAddress, [handle](void* address) { ReleaseDeviceMappedHostMemory(address, handle); });
 }
 
 std::shared_ptr<void> Trans::AscendBuffer::MakeHostBuffer(size_t size)
@@ -244,7 +242,7 @@ std::shared_ptr<void> Trans::AscendBuffer::MakeHostBuffer(size_t size)
     return nullptr;
 }
 
-std::shared_ptr<void> Trans::AscendBuffer::MakeHostPinnedBuffer(size_t size, void** pDevice)
+std::shared_ptr<void> Trans::AscendBuffer::MakeHostMappedDeviceBuffer(size_t size, void** pDevice)
 {
     if (pDevice) { *pDevice = nullptr; }
 
@@ -261,15 +259,15 @@ std::shared_ptr<void> Trans::AscendBuffer::MakeHostPinnedBuffer(size_t size, voi
     void* device = nullptr;
     auto status = Buffer::RegisterHostBuffer(host, size, &device);
     if (status.Failure()) {
-        UC_ERROR("Failed to register host-pinned memory addr={} size={} status={}", host, size,
-                 status);
+        UC_ERROR("Failed to register host-mapped device memory addr={} size={} status={}", host,
+                 size, status);
         FreeHostMemory(allocatedHost);
         return nullptr;
     }
 
     if (pDevice) { *pDevice = device; }
     return std::shared_ptr<void>(host, [allocatedHost](void* registeredHost) {
-        ReleaseHostPinnedMemory(registeredHost, allocatedHost);
+        ReleaseHostMappedDeviceMemory(registeredHost, allocatedHost);
     });
 }
 

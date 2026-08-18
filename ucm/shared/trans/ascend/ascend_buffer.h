@@ -31,9 +31,12 @@ namespace UC::Trans {
 class AscendBuffer : public ReservedBuffer {
 public:
     std::shared_ptr<void> MakeDeviceBuffer(size_t size) override;
-    std::shared_ptr<void> MakeCpuAccessibleDeviceBuffer(size_t size) override;
+    bool SupportsHostMappedDeviceBuffer() const override { return true; }
+    bool SupportsDeviceMappedHostBuffer() const override { return true; }
+    std::shared_ptr<void> MakeDeviceMappedHostBuffer(size_t size) override;
     std::shared_ptr<void> MakeHostBuffer(size_t size) override;
-    std::shared_ptr<void> MakeHostPinnedBuffer(size_t size, void** pDevice = nullptr) override;
+    std::shared_ptr<void> MakeHostMappedDeviceBuffer(size_t size,
+                                                     void** pDevice = nullptr) override;
     std::shared_ptr<void> MakeHostBuffer4DirectIo(size_t size) override;
 };
 

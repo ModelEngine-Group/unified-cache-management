@@ -157,20 +157,27 @@ TEST_F(VariableBufferPoolTest, SupportsCustomAllocationAlignment)
     EXPECT_EQ(complete.GetOffset(), std::size_t{0});
 }
 
-TEST_F(VariableBufferPoolTest, HostPinnedPoolKeepsLocalAndDeviceAddresses)
+TEST_F(VariableBufferPoolTest, HostMappedDevicePoolKeepsLocalAndDeviceAddresses)
 {
-#if !defined(UCM_TEST_RUNTIME_ASCEND)
-    GTEST_SKIP() << "Host-pinned memory is not supported by the simu backend";
-#endif
+    if (!SupportsHostMappedDeviceBuffer()) {
+        VariableBufferPool unsupportedPool;
+        EXPECT_EQ(unsupportedPool.Init("unsupported_host_mapped_device_pool",
+                                       MemoryType::HostMappedDevice, 4096, 16),
+                  Status::Unsupported());
+        EXPECT_FALSE(unsupportedPool.IsInitialized());
+        return;
+    }
+
+    Trans::Device device;
+    auto stream = device.MakeStream();
+    ASSERT_NE(stream, nullptr);
 
     VariableBufferPool pool;
     ASSERT_TRUE(pool.Init("pinned", MemoryType::HostMappedDevice, 4096, 16).Success());
 
     ASSERT_NE(pool.GetLocalAddr(), nullptr);
     ASSERT_NE(pool.GetDeviceAddr(), nullptr);
-    EXPECT_NE(pool.GetLocalAddr(), pool.GetDeviceAddr());
     EXPECT_EQ(pool.GetMemoryType(), MemoryType::HostMappedDevice);
-    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(pool.GetLocalAddr()) % 4096, std::uintptr_t{0});
 
     VariableBufferPool::BufferHandle first;
     VariableBufferPool::BufferHandle second;
@@ -184,6 +191,27 @@ TEST_F(VariableBufferPoolTest, HostPinnedPoolKeepsLocalAndDeviceAddresses)
     EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second.GetDeviceAddr()) -
                   reinterpret_cast<std::uintptr_t>(first.GetDeviceAddr()),
               std::uintptr_t{128});
+
+    std::memset(first.GetLocalAddr(), 0xAB, first.GetAllocatedSize());
+    std::array<std::uint8_t, 128> host{};
+    ASSERT_TRUE(stream->DeviceToHost(first.GetDeviceAddr(), host.data(), host.size()).Success());
+    for (const auto value : host) { EXPECT_EQ(value, 0xAB); }
+}
+
+TEST_F(VariableBufferPoolTest, DeviceMappedHostPoolSupportMatchesBackend)
+{
+    VariableBufferPool pool;
+    const auto status =
+        pool.Init("device_mapped_host_pool", MemoryType::DeviceMappedHost, 128, 8, true);
+    if (!SupportsDeviceMappedHostBuffer()) {
+        EXPECT_EQ(status, Status::Unsupported());
+        EXPECT_FALSE(pool.IsInitialized());
+        return;
+    }
+
+    ASSERT_TRUE(status.Success()) << status.ToString();
+    EXPECT_TRUE(pool.IsInitialized());
+    EXPECT_EQ(pool.GetLocalAddr(), pool.GetDeviceAddr());
 }
 
 TEST_F(VariableBufferPoolTest, DevicePoolZeroesReleasedAllocation)
