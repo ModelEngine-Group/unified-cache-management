@@ -377,6 +377,13 @@ from ucm.metrics_config import (
     vllm_connector_prefix,
 )
 from ucm.metrics_dispatcher import get_metrics_dispatcher
+from ucm.store.yuanrongstore import resource_reporter as yuanrong_reporter_module
+from ucm.store.yuanrongstore.resource_reporter import (
+    YuanRongResourceReporter,
+    counter_deltas,
+    parse_yuanrong_resource_snapshot,
+    start_yuanrong_resource_reporter,
+)
 
 
 def _metric_types():
@@ -580,6 +587,187 @@ def test_config_definitions_register_enable_list_and_metric_names():
     ]
 
 
+def test_yuanrong_resource_snapshot_parse_and_counter_reset():
+    line = json.dumps(
+        {
+            "time": "2023-06-02T14:58:32+00:00",
+            "event": "resource_snapshot",
+            "version": "v0",
+            "metrics": {
+                "oc_hit_num": {
+                    "mem_hit_num": 13,
+                    "remote_hit_num": 5,
+                    "disk_hit_num": 7,
+                    "l2_hit_num": 0,
+                },
+                "shared_memory": {
+                    "physical_memory_usage": 25,
+                    "total_limit": 100,
+                },
+                "spill_hard_disk": {
+                    "physical_space_usage": 30,
+                    "total_limit": 200,
+                },
+            },
+        }
+    )
+
+    snapshot = parse_yuanrong_resource_snapshot(line)
+
+    assert snapshot.counters == {
+        "yuanrong_local_dram_load_hits_total": 13.0,
+        "yuanrong_remote_load_hits_total": 5.0,
+        "yuanrong_local_ssd_load_hits_total": 7.0,
+        "yuanrong_l2_load_hits_total": 0.0,
+    }
+    assert snapshot.gauges["yuanrong_dram_usage_ratio"] == 0.25
+    assert snapshot.gauges["yuanrong_ssd_usage_ratio"] == 0.15
+    assert snapshot.timestamp == 1685717912.0
+    assert counter_deltas(
+        snapshot.counters,
+        {
+            "yuanrong_local_dram_load_hits_total": 10,
+            "yuanrong_remote_load_hits_total": 8,
+            "yuanrong_local_ssd_load_hits_total": 1,
+            "yuanrong_l2_load_hits_total": 0,
+        },
+    ) == {
+        "yuanrong_local_dram_load_hits_total": 3.0,
+        "yuanrong_remote_load_hits_total": 5.0,
+        "yuanrong_local_ssd_load_hits_total": 6.0,
+        "yuanrong_l2_load_hits_total": 0.0,
+    }
+
+
+def test_yuanrong_resource_reporter_ignores_partial_tail(tmp_path):
+    complete = '{"event":"resource_snapshot","version":"v0"}'
+    log_path = tmp_path / "kv_resource.log"
+    log_path.write_bytes((complete + '\n{"event":').encode())
+    reporter = YuanRongResourceReporter(
+        str(log_path), "127.0.0.1:18481", shared_memory_dir=str(tmp_path)
+    )
+
+    assert reporter._read_latest_complete_line() == complete
+
+
+def test_yuanrong_resource_reporter_loser_exits_after_one_lock_attempt(
+    tmp_path, monkeypatch
+):
+    reporter = YuanRongResourceReporter(
+        str(tmp_path / "kv_resource.log"),
+        "127.0.0.1:18481",
+        interval_sec=60,
+        shared_memory_dir=str(tmp_path),
+    )
+    attempts = []
+    collections = []
+
+    def lose_election():
+        attempts.append(True)
+        return False
+
+    monkeypatch.setattr(reporter, "_try_become_leader", lose_election)
+    monkeypatch.setattr(reporter, "_collect_once", lambda: collections.append(True))
+
+    reporter.start()
+    reporter._thread.join(timeout=1)
+
+    assert not reporter._thread.is_alive()
+    assert attempts == [True]
+    assert collections == []
+
+
+def test_yuanrong_resource_reporter_baselines_then_emits_deltas(tmp_path):
+    _reset_fakes()
+    log_path = tmp_path / "kv_resource.log"
+
+    def write_snapshot(mem_hits, disk_hits):
+        log_path.write_text(
+            json.dumps(
+                {
+                    "time": "2023-06-02T14:58:32+00:00",
+                    "event": "resource_snapshot",
+                    "version": "v0",
+                    "metrics": {
+                        "oc_hit_num": {
+                            "mem_hit_num": mem_hits,
+                            "remote_hit_num": 3,
+                            "disk_hit_num": disk_hits,
+                            "l2_hit_num": 0,
+                        },
+                        "shared_memory": {
+                            "physical_memory_usage": 25,
+                            "total_limit": 100,
+                        },
+                        "spill_hard_disk": {
+                            "physical_space_usage": 30,
+                            "total_limit": 200,
+                        },
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    reporter = YuanRongResourceReporter(
+        str(log_path), "127.0.0.1:18481", shared_memory_dir=str(tmp_path)
+    )
+    write_snapshot(10, 4)
+    reporter._collect_once()
+    first = fake_ucmmetrics.updated[-1]
+    assert first["yuanrong_local_dram_load_hits_total"] == 0
+    assert first["yuanrong_local_ssd_load_hits_total"] == 0
+    assert first["yuanrong_dram_used_bytes"] == 25
+
+    write_snapshot(15, 6)
+    reporter._collect_once()
+    second = fake_ucmmetrics.updated[-1]
+    assert second["yuanrong_local_dram_load_hits_total"] == 5
+    assert second["yuanrong_local_ssd_load_hits_total"] == 2
+
+
+def test_yuanrong_store_starts_resource_reporter_only_for_host_store(monkeypatch):
+    created = []
+
+    class Reporter:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.started = False
+            created.append(self)
+
+        def start(self):
+            self.started = True
+
+    monkeypatch.setattr(yuanrong_reporter_module, "YuanRongResourceReporter", Reporter)
+    yuanrong_reporter_module._REPORTERS.clear()
+
+    assert start_yuanrong_resource_reporter({}) is None
+    assert (
+        start_yuanrong_resource_reporter(
+            {"yuanrong_resource_log_path": "/tmp/kv_resource.log", "device_id": 0}
+        )
+        is None
+    )
+
+    reporter = start_yuanrong_resource_reporter(
+        {
+            "yuanrong_resource_log_path": "/tmp/kv_resource.log",
+            "yuanrong_host": "127.0.0.1",
+            "yuanrong_port": 18483,
+        }
+    )
+
+    assert reporter is created[0]
+    assert reporter.started
+    assert reporter.kwargs == {
+        "log_path": "/tmp/kv_resource.log",
+        "endpoint": "127.0.0.1:18483",
+        "interval_sec": 15.0,
+    }
+    yuanrong_reporter_module._REPORTERS.clear()
+
+
 def test_default_metrics_config_matches_example_yaml():
     assert DEFAULT_METRICS_CONFIG == _load_example_metrics_config_without_yaml()
 
@@ -591,8 +779,8 @@ def test_posix_lookup_metrics_record_queries_and_returned_hits():
 
     assert 'NAME_TO_METRIC_ID("posix_lookup_query_blocks_total")' in source
     assert 'NAME_TO_METRIC_ID("posix_lookup_hit_blocks_total")' in source
-    assert source.count("RecordLookupQueries(") == 3
-    assert source.count("RecordLookupHits(") == 3
+    assert source.count("RecordLookupQueries(") == 4
+    assert source.count("RecordLookupHits(") == 4
 
 
 def test_launch_metrics_config_defaults_to_builtin_metrics_when_path_is_missing():
@@ -1215,12 +1403,16 @@ def test_direct_connector_get_finished_records_async_durations():
     _reset_fakes()
     import ucm.integration.vllm.ucm_connector as ucm_connector_module
 
-    class Store:
+    class RankConsistency:
         def __init__(self):
             self.waited = []
+            self.finished = []
 
-        def wait(self, task):
+        def wait_dump(self, task):
             self.waited.append(task)
+
+        def finish_dump(self, request_ids):
+            self.finished.append(request_ids)
 
     class Device:
         def __init__(self):
@@ -1230,7 +1422,7 @@ def test_direct_connector_get_finished_records_async_durations():
             self.destroyed.append(event_handle)
 
     connector = object.__new__(UCMDirectConnector)
-    connector.store = Store()
+    connector._rank_consistency = RankConsistency()
     connector.enable_event_sync = True
     connector.device = Device()
     task = object()
@@ -1255,7 +1447,8 @@ def test_direct_connector_get_finished_records_async_durations():
     assert skipped is None
     assert connector._pending_dump_tasks == []
     assert connector._async_dump_req_ids == set()
-    assert connector.store.waited == [task]
+    assert connector._rank_consistency.waited == [task]
+    assert connector._rank_consistency.finished == [{"req-1"}]
     assert connector.device.destroyed == [7]
     assert pending.event_handle == 0
     assert fake_ucmmetrics.updated == [
@@ -1273,17 +1466,21 @@ def test_direct_connector_poll_records_zero_completion_wait_duration():
     class Store:
         def __init__(self):
             self.checked = []
-            self.waited = []
 
         def check(self, task):
             self.checked.append(task)
             return True
 
-        def wait(self, task):
+    class RankConsistency:
+        def __init__(self):
+            self.waited = []
+
+        def wait_dump(self, task):
             self.waited.append(task)
 
     connector = object.__new__(UCMDirectConnector)
     connector.store = Store()
+    connector._rank_consistency = RankConsistency()
     connector.enable_event_sync = False
     connector.device = None
     task = object()
@@ -1305,7 +1502,7 @@ def test_direct_connector_poll_records_zero_completion_wait_duration():
 
     assert connector._pending_dump_tasks == []
     assert connector.store.checked == [task]
-    assert connector.store.waited == [task]
+    assert connector._rank_consistency.waited == [task]
     assert fake_ucmmetrics.updated == [
         {
             "save_duration": 100.0,
@@ -1432,8 +1629,16 @@ def test_connector_dashboard_direct_connector_layout_and_metrics():
         "FAWA Worker Wait Load Tasks Duration",
         "FAWA Worker Dump Duration",
     ]
+    expected_failure_titles = [
+        "Failures",
+        "Failure Counts by Type",
+        "Failure Ratio by Type",
+        "Failure Count Over Time",
+    ]
     direct_start = titles.index("Direct Connector")
-    assert titles[direct_start:] == expected_direct_titles + expected_fawa_titles
+    assert titles[direct_start:] == (
+        expected_direct_titles + expected_fawa_titles + expected_failure_titles
+    )
 
     by_title = {panel["title"]: panel for panel in panels}
     assert by_title["Direct Connector"]["type"] == "row"
@@ -1525,33 +1730,82 @@ def test_vllm_dashboard_uses_combined_prefix_cache_hit_rate_breakdown():
         "group": "A",
         "mode": "none",
     }
-    assert panel["gridPos"] == {"h": 8, "w": 24, "x": 0, "y": 36}
-    assert len(panel["targets"]) == 2
+    assert panel["gridPos"] == {"h": 8, "w": 12, "x": 12, "y": 4}
+    assert len(panel["targets"]) == 6
 
-    expected = [
-        (
-            "GPU Prefix Cache",
-            "ucm:gpu_hbm_hit_tokens_total",
-            "ucm:total_prefix_query_tokens_total",
-        ),
-        (
-            "Connector Prefix Cache",
-            "ucm:ucm_hit_tokens_total",
-            "ucm:total_prefix_query_tokens_total",
-        ),
-    ]
-    for target, (legend, hits, queries) in zip(panel["targets"], expected):
+    expected = {
+        "HBM": {
+            "vllm:prefix_cache_hits_total",
+            "vllm:prefix_cache_queries_total",
+        },
+        "YuanRong DRAM": {
+            "ucm:yuanrong_load_success_shards_total",
+            "ucm:yuanrong_local_dram_load_hits_total",
+            "ucm:yuanrong_remote_load_hits_total",
+        },
+        "YuanRong SSD": {
+            "ucm:yuanrong_load_success_shards_total",
+            "ucm:yuanrong_local_ssd_load_hits_total",
+        },
+        "Cache": {
+            "ucm:cache_load_success_shards_total",
+            "ucm:cache_posix_load_success_shards_total",
+        },
+        "Posix Store": {
+            "ucm:cache_posix_load_success_shards_total",
+            "ucm:yuanrong_lookup_miss_posix_load_success_shards_total",
+            "ucm:yuanrong_load_fallback_posix_load_success_shards_total",
+        },
+        "Total": {
+            "vllm:prefix_cache_hits_total",
+            "vllm:prefix_cache_queries_total",
+            "vllm:external_prefix_cache_hits_total",
+            "vllm:external_prefix_cache_queries_total",
+        },
+    }
+    for target in panel["targets"]:
+        legend = target["legendFormat"]
         assert target["legendFormat"] == legend
         expr = target["expr"]
-        assert hits in expr
-        assert queries in expr
-        assert "vllm:prefix_cache_queries_total" not in expr
-        assert "vllm:prefix_cache_hits_total" not in expr
-        assert "vllm:external_prefix_cache_hits_total" not in expr
+        for metric_name in expected[legend]:
+            assert metric_name in expr
         assert 'model_name="$model_name"' in expr
         assert 'job=~"$job"' in expr
         assert 'instance="$instance"' in expr
         assert "clamp_min" in expr
+
+    assert "ucm:yuanrong_l2_load_hits_total" not in " ".join(
+        target["expr"] for target in panel["targets"]
+    )
+    assert "ucm:yuanrong_l2_load_hits_total" not in json.dumps(dashboard)
+
+    targets = {target["legendFormat"]: target["expr"] for target in panel["targets"]}
+    for legend in ("YuanRong DRAM", "YuanRong SSD"):
+        assert "and on()" in targets[legend]
+        assert "ucm:yuanrong_load_success_shards_total" in targets[legend]
+        assert targets[legend].endswith(") > 0)")
+    assert "and on()" in targets["Cache"]
+    assert "ucm:cache_load_success_shards_total" in targets["Cache"]
+    assert targets["Cache"].endswith(") > 0)")
+    assert targets["Posix Store"].count("and on()") == 2
+    assert "\nor\n" in targets["Posix Store"]
+
+    capacity_panel = panels["Store Capacity Watermark"]
+    assert {target["legendFormat"] for target in capacity_panel["targets"]} == {
+        "YuanRong DRAM",
+        "YuanRong SSD",
+    }
+    assert capacity_panel["targets"][0]["expr"].startswith("max(")
+    assert capacity_panel["targets"][1]["expr"].startswith("max(")
+
+    used_panel = panels["Store Used and Capacity"]
+    assert {target["legendFormat"] for target in used_panel["targets"]} == {
+        "YuanRong DRAM used",
+        "YuanRong DRAM capacity",
+        "YuanRong SSD used",
+        "YuanRong SSD capacity",
+    }
+    assert "Tier Attribution Diagnostics" not in panels
 
 
 def test_vllm_dashboard_shows_time_range_token_and_prefix_totals():
@@ -1589,7 +1843,7 @@ def test_vllm_dashboard_shows_time_range_token_and_prefix_totals():
 
     pie = panels["Prefix Cache Query Breakdown"]
     assert pie["type"] == "piechart"
-    assert pie["gridPos"] == {"h": 8, "w": 24, "x": 0, "y": 4}
+    assert pie["gridPos"] == {"h": 8, "w": 12, "x": 0, "y": 4}
     assert pie["options"]["displayLabels"] == ["name", "value", "percent"]
     assert pie["options"]["legend"]["displayMode"] == "table"
     assert pie["options"]["legend"]["values"] == ["value", "percent"]
@@ -1719,7 +1973,7 @@ def test_grafana_dashboards_use_isolated_vllm_ucm_identity():
                 assert link["tags"] == [GRAFANA_VLLM_UCM_TAG]
 
 
-def test_ucm_overview_keeps_vllm_summary_and_adds_block_hit_and_health_views():
+def test_ucm_overview_keeps_vllm_summary_and_adds_health_views():
     metrics_dir = REPO_ROOT / "examples" / "metrics"
     source = json.loads((metrics_dir / "grafana_vllm.json").read_text(encoding="utf-8"))
     dashboard = json.loads(
@@ -1733,33 +1987,6 @@ def test_ucm_overview_keeps_vllm_summary_and_adds_block_hit_and_health_views():
     assert set(source_titles[summary_end:]).isdisjoint(panels)
     assert panels["Total Input Tokens"]["gridPos"]["y"] == 0
     assert panels["Total Output Tokens"]["gridPos"]["y"] == 0
-
-    hit_rate = panels["KV Cache Block Hit Rate by Store"]
-    assert hit_rate["type"] == "timeseries"
-    assert hit_rate["fieldConfig"]["defaults"]["unit"] == "percentunit"
-    assert hit_rate["fieldConfig"]["defaults"]["min"] == 0
-    assert hit_rate["fieldConfig"]["defaults"]["max"] == 1
-    assert hit_rate["fieldConfig"]["defaults"]["custom"]["drawStyle"] == "bars"
-    assert hit_rate["fieldConfig"]["defaults"]["custom"]["stacking"] == {
-        "group": "A",
-        "mode": "normal",
-    }
-    assert hit_rate["maxDataPoints"] == 60
-    assert hit_rate["options"]["tooltip"]["mode"] == "multi"
-    hit_targets = {
-        target["legendFormat"]: target["expr"] for target in hit_rate["targets"]
-    }
-    assert set(hit_targets) == {"HBM", "Cache", "Mooncake", "Posix"}
-    expected_hits = {
-        "HBM": "ucm:gpu_hbm_hit_blocks_total",
-        "Cache": "ucm:cache_lookup_hit_blocks_total",
-        "Mooncake": "ucm:mooncake_lookup_hit_blocks_total",
-        "Posix": "ucm:posix_lookup_hit_blocks_total",
-    }
-    for legend, metric in expected_hits.items():
-        assert metric in hit_targets[legend]
-        assert "ucm:total_prefix_query_blocks_total" in hit_targets[legend]
-        assert "or vector(0)" not in hit_targets[legend]
 
     pie = panels["Store Health"]
     assert pie["type"] == "piechart"
@@ -1864,6 +2091,11 @@ def test_ucm_dashboards_use_engine_and_worker_rank_filters():
         for legend in legends:
             if legend == "{{le}}":
                 continue
+            if filename == "grafana_connector.json" and legend in {
+                "{{failure_type}}",
+                "failures",
+            }:
+                continue
             assert "engine={{engine}}" not in legend
             assert "worker={{worker_rank}}" not in legend
             assert "Aggregated" not in legend
@@ -1876,7 +2108,11 @@ def test_ucm_dashboards_use_engine_and_worker_rank_filters():
                 continue
             assert 'engine=~"$engine"' in expr
             assert 'worker_rank=~"$worker_rank"' in expr
-            if "sum by (" in expr:
+            failure_aggregate = (
+                filename == "grafana_connector.json"
+                and "(errors|failure_events)_total" in expr
+            )
+            if "sum by (" in expr and not failure_aggregate:
                 assert (
                     "sum by (${perWorker:raw})" in expr
                     or "sum by (le, ${perWorker:raw})" in expr
@@ -1917,12 +2153,17 @@ def test_mooncake_dashboards_cover_configured_mooncake_metrics():
     metrics_text = (
         REPO_ROOT / "examples" / "metrics" / "metrics_configs.yaml"
     ).read_text(encoding="utf-8")
+    excluded_mooncake_metrics = {
+        "mooncake_h2d_bandwidth_gbps",
+        "mooncake_d2h_bandwidth_gbps",
+        "mooncake_lookup_hit_blocks_total",
+    }
     configured_mooncake = {
         name
         for name in re.findall(
             r'^\s*-\s+name:\s+"(mooncake_[^"]+)"', metrics_text, re.MULTILINE
         )
-        if name not in {"mooncake_h2d_bandwidth_gbps", "mooncake_d2h_bandwidth_gbps"}
+        if name not in excluded_mooncake_metrics
     }
     referenced = {
         re.sub(r"_(bucket|sum|count)$", "", metric)

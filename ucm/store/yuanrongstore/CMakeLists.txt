@@ -80,6 +80,7 @@ if(EXISTS "${YUANRONG_INCLUDE_DIR}/datasystem/hetero_client.h"
         storeintf
         infra_logger
         fmt
+        metrics
         trans
         ${YUANRONG_LIBRARY}
         ${YUANRONG_ASCEND_ACL_LIBRARY}

@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_YUANRONG_STORE_CC_LOAD_QUEUE_H
 
 #include <atomic>
+#include <cstdint>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -48,6 +49,15 @@ class LoadQueue {
     using WaiterPtr = std::shared_ptr<Latch>;
     using TaskPair = std::pair<TaskPtr, WaiterPtr>;
     using TaskIdSet = HashSet<Detail::TaskHandle>;
+    enum class RecoverySource : uint8_t { LOOKUP_MISS, LOAD_FALLBACK };
+    struct LoadStats {
+        size_t requested{0};
+        size_t yuanrongSuccess{0};
+        size_t lookupMissPosixSuccess{0};
+        size_t loadFallbackPosixSuccess{0};
+
+        void Record() const;
+    };
     struct HostBatch {
         std::vector<size_t> indexes;
         std::vector<std::string> keys;
@@ -84,14 +94,15 @@ private:
     void DispatchOneTask(TaskPair&& pair);
     void WorkerStage(size_t workerIndex, std::promise<Status> started);
     void RunOne(CopyStream& stream, TaskPair&& pair);
-    Status LoadOne(CopyStream& stream, TaskPtr task);
+    Status LoadOne(CopyStream& stream, TaskPtr task, LoadStats& stats);
     Status LoadThenRecover(CopyStream& stream, TaskPtr task, const std::vector<std::string>& keys,
                            const std::vector<datasystem::DeviceBlobList>& blobLists,
-                           double taskStart);
+                           double taskStart, LoadStats& stats);
     Status RecoverFromBackend(CopyStream& stream, TaskPtr task,
                               const std::vector<std::string>& keys,
                               const std::vector<datasystem::DeviceBlobList>& blobLists,
-                              const std::vector<size_t>& missIndexes);
+                              const std::vector<size_t>& missIndexes, RecoverySource source,
+                              LoadStats& stats);
     HostBatch PrepareHostBatch(TaskPtr task, const std::vector<std::string>& keys,
                                const std::vector<size_t>& missIndexes, size_t begin, size_t end);
     Status FinalizeHostBatch(CopyStream& stream,

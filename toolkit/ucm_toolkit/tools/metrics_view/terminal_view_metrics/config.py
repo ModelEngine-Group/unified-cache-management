@@ -154,8 +154,10 @@ def _normalize_metric(metric: dict, prefix: str, params: dict[str, str]) -> dict
     if "expr" in spec:
         spec["expr"] = _expand_params(str(spec["expr"]), params)
     aggregate = spec.get("aggregate")
-    if aggregate not in {"sum", "avg"}:
-        raise ValueError(f"Metric {name} requires aggregate to be 'sum' or 'avg'")
+    if aggregate not in {"sum", "avg", "max"}:
+        raise ValueError(
+            f"Metric {name} requires aggregate to be 'sum', 'avg', or 'max'"
+        )
     if spec.get("type") == "histogram":
         spec["avg"] = True
         spec["quantiles"] = list(DEFAULT_HISTOGRAM_QUANTILES)

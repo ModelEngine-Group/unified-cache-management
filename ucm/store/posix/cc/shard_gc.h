@@ -67,6 +67,7 @@ private:
     const SpaceLayout* layout_{nullptr};
     Config config_;
     size_t maxFileCount_{0};
+    size_t capacityBytes_{0};
     ThreadPool<ShardTaskContext> gcPool_;
     std::thread gcCheckWorker_;
     std::mutex gcCheckMtx_;

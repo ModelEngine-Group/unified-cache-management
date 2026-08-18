@@ -32,8 +32,8 @@ ShardGarbageCollector::~ShardGarbageCollector() { StopBackgroundCheck(); }
 
 Status ShardGarbageCollector::ValidateAndInitCapacity()
 {
-    size_t storageCapacityBytes = config_.posixCapacityGb * 1024ULL * 1024ULL * 1024ULL;
-    maxFileCount_ = storageCapacityBytes / config_.blockSize;
+    capacityBytes_ = config_.posixCapacityGb * 1024ULL * 1024ULL * 1024ULL;
+    maxFileCount_ = capacityBytes_ / config_.blockSize;
     size_t thresholdFilesPerShard = static_cast<size_t>(
         maxFileCount_ / layout_->SampleShards(1.0).size() * config_.posixGcTriggerThresholdRatio);
     size_t recycleNum = static_cast<size_t>(thresholdFilesPerShard * config_.posixGcRecyclePercent);
@@ -140,9 +140,20 @@ std::tuple<bool, size_t, size_t> ShardGarbageCollector::ShouldTrigger()
     }
     waiter->Wait();
     size_t avgFilesPerShard = sampledFiles.load() / sampleShards.size();
-    size_t thresholdFilesPerShard = maxFileCount_ / layout_->SampleShards(1.0).size();
+    const auto shardCount = layout_->SampleShards(1.0).size();
+    size_t thresholdFilesPerShard = maxFileCount_ / shardCount;
     size_t threshold =
         static_cast<size_t>(thresholdFilesPerShard * config_.posixGcTriggerThresholdRatio);
+    const auto estimatedFiles = static_cast<double>(sampledFiles.load()) *
+                                static_cast<double>(shardCount) /
+                                static_cast<double>(sampleShards.size());
+    const auto usedBytes = estimatedFiles * static_cast<double>(config_.blockSize);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_store_used_bytes"), usedBytes);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_store_capacity_bytes"),
+                             static_cast<double>(capacityBytes_));
+    UC::Metrics::UpdateStats(
+        NAME_TO_METRIC_ID("posix_store_usage_ratio"),
+        capacityBytes_ == 0 ? 0.0 : usedBytes / static_cast<double>(capacityBytes_));
     return {avgFilesPerShard >= threshold, avgFilesPerShard, threshold};
 }
 
