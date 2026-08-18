@@ -65,7 +65,7 @@ Status BufferManager::BufferRegion::Create(MemoryType type, std::size_t size, Bu
         }
         case MemoryType::HOST_PINNED: {
             void* deviceAddr = nullptr;
-            auto owner = ascendBuffer.MakeHostPinnedBuffer(size, &deviceAddr);
+            auto owner = ascendBuffer.MakeHostMappedDeviceBuffer(size, &deviceAddr);
             if (!owner) {
                 return Status::Error(StatusCode::INTERNAL_ERROR,
                                      "failed to allocate host-pinned memory");
