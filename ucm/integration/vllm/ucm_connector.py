@@ -1159,7 +1159,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
             )
             self._connector_worker_meta = UCMWorkerMetadata(is_mla=self.is_mla)
 
-        self.metrics_config = load_launch_metrics_config(self.launch_config)
         self._rank_consistency = RankConsistencyManager(
             is_scheduler=role == KVConnectorRole.SCHEDULER,
             use_consistency_manager=self._consistency_manager_enabled(
