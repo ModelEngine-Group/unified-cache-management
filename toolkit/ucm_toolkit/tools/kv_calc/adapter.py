@@ -17,9 +17,7 @@ class KvCalcTool(ToolAdapter):
 
     def add_run_args(self, parser: argparse.ArgumentParser) -> None:
         """Register kv-calc run arguments (documentation-only; run() parses)."""
-        parser.add_argument(
-            "args", nargs="*", help="Arguments forwarded to kv-calc"
-        )
+        parser.add_argument("args", nargs="*", help="Arguments forwarded to kv-calc")
 
     def run(self, tool_args: list[str]) -> int:
         """Run the kv-calc estimator with raw tool arguments."""

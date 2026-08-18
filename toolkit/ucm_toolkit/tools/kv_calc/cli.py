@@ -15,11 +15,14 @@ import json
 import sys
 
 from . import fmt, presets
-from .detect import classify, CLASS_LABELS
+from .detect import CLASS_LABELS, classify
 from .formulas import (
-    compute_seq_cache, default_precision, dtype_bytes, DTYPE_BYTES,
+    DTYPE_BYTES,
+    compute_seq_cache,
+    default_precision,
+    dtype_bytes,
 )
-from .loader import load_config, LoadError
+from .loader import LoadError, load_config
 
 
 def build_parser():
@@ -29,39 +32,72 @@ def build_parser():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("--list", action="store_true", help="list preset models and exit")
-    p.add_argument("--presets", metavar="FILE",
-                   help="merge extra preset models from a JSON file (list of entries "
-                        "in the same flat form as the built-ins; attention_class is "
-                        "auto-derived from architectures when omitted). Overrides "
-                        "built-ins with the same id.")
-    p.add_argument("--model", help="preset name/alias, local path, hf://ID, ms://ID, "
-                                   "or bare org/model id")
-    p.add_argument("--model-dir", dest="model_dir", metavar="DIR",
-                   help="local model directory containing config.json "
-                        "(alternative to --model)")
-    p.add_argument("--source", choices=["preset", "local", "hf", "ms"],
-                   help="force how --model is interpreted")
-    p.add_argument("--input-len", type=int, default=1024,
-                   help="tokens per request (default 1024)")
-    p.add_argument("--num-requests", type=int, default=1,
-                   help="concurrent request count (default 1)")
+    p.add_argument(
+        "--presets",
+        metavar="FILE",
+        help="merge extra preset models from a JSON file (list of entries "
+        "in the same flat form as the built-ins; attention_class is "
+        "auto-derived from architectures when omitted). Overrides "
+        "built-ins with the same id.",
+    )
+    p.add_argument(
+        "--model",
+        help="preset name/alias, local path, hf://ID, ms://ID, " "or bare org/model id",
+    )
+    p.add_argument(
+        "--model-dir",
+        dest="model_dir",
+        metavar="DIR",
+        help="local model directory containing config.json " "(alternative to --model)",
+    )
+    p.add_argument(
+        "--source",
+        choices=["preset", "local", "hf", "ms"],
+        help="force how --model is interpreted",
+    )
+    p.add_argument(
+        "--input-len", type=int, default=1024, help="tokens per request (default 1024)"
+    )
+    p.add_argument(
+        "--num-requests",
+        type=int,
+        default=1,
+        help="concurrent request count (default 1)",
+    )
     p.add_argument("--tp", type=int, default=1, help="tensor parallelism (default 1)")
     p.add_argument("--dp", type=int, default=1, help="data parallelism (default 1)")
-    p.add_argument("--gqa-copy", action="store_true",
-                   help="account for vLLM head-group replication when num_kv_heads "
-                        "is not divisible by TP (GQA/MHA only; MLA/DSA/V4 ignore)")
-    p.add_argument("--kv-dtype", choices=sorted(DTYPE_BYTES.keys()),
-                   help="KV precision (default: bf16, or fp8 for DeepSeek V4 nope)")
-    p.add_argument("--indexer-dtype", choices=sorted(DTYPE_BYTES.keys()),
-                   help="indexer precision for DSA/V4/MiniMax M3 (default fp4)")
-    p.add_argument("--deployment", choices=["vllm", "vllm-ascend"], default="vllm",
-                   help="which DeepSeek V4 measured deployment to highlight (default vllm)")
-    p.add_argument("--include-linear-state", action="store_true",
-                   help="include Qwen linear/Gated DeltaNet recurrent+conv state "
-                        "(off by default; conservative, matches kvcache.ai)")
+    p.add_argument(
+        "--gqa-copy",
+        action="store_true",
+        help="account for vLLM head-group replication when num_kv_heads "
+        "is not divisible by TP (GQA/MHA only; MLA/DSA/V4 ignore)",
+    )
+    p.add_argument(
+        "--kv-dtype",
+        choices=sorted(DTYPE_BYTES.keys()),
+        help="KV precision (default: bf16, or fp8 for DeepSeek V4 nope)",
+    )
+    p.add_argument(
+        "--indexer-dtype",
+        choices=sorted(DTYPE_BYTES.keys()),
+        help="indexer precision for DSA/V4/MiniMax M3 (default fp4)",
+    )
+    p.add_argument(
+        "--deployment",
+        choices=["vllm", "vllm-ascend"],
+        default="vllm",
+        help="which DeepSeek V4 measured deployment to highlight (default vllm)",
+    )
+    p.add_argument(
+        "--include-linear-state",
+        action="store_true",
+        help="include Qwen linear/Gated DeltaNet recurrent+conv state "
+        "(off by default; conservative, matches kvcache.ai)",
+    )
     p.add_argument("--json", action="store_true", help="emit JSON")
-    p.add_argument("--verbose", action="store_true",
-                   help="show config fields and extra detail")
+    p.add_argument(
+        "--verbose", action="store_true", help="show config fields and extra detail"
+    )
     return p
 
 
@@ -72,12 +108,16 @@ def main(argv=None):
         try:
             loaded = presets.load_user_presets(args.presets)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
-            print(f"error: failed to load --presets {args.presets!r}: {exc}",
-                  file=sys.stderr)
+            print(
+                f"error: failed to load --presets {args.presets!r}: {exc}",
+                file=sys.stderr,
+            )
             return 2
         if not loaded:
-            print(f"error: --presets {args.presets!r} contained no preset entries",
-                  file=sys.stderr)
+            print(
+                f"error: --presets {args.presets!r} contained no preset entries",
+                file=sys.stderr,
+            )
             return 2
 
     if args.list:
@@ -85,13 +125,18 @@ def main(argv=None):
         return 0
 
     if not args.model and not args.model_dir:
-        print("error: --model or --model-dir is required (or use --list)",
-              file=sys.stderr)
+        print(
+            "error: --model or --model-dir is required (or use --list)", file=sys.stderr
+        )
         return 2
 
     # Validate numeric params (RFC acceptance: clear errors for dp/tp=0 etc.).
-    for name, val in (("input-len", args.input_len), ("num-requests", args.num_requests),
-                      ("tp", args.tp), ("dp", args.dp)):
+    for name, val in (
+        ("input-len", args.input_len),
+        ("num-requests", args.num_requests),
+        ("tp", args.tp),
+        ("dp", args.dp),
+    ):
         if val < 1:
             print(f"error: --{name} must be >= 1 (got {val})", file=sys.stderr)
             return 2
@@ -115,7 +160,10 @@ def main(argv=None):
 
     try:
         seq = compute_seq_cache(
-            model.fields, attention_class, args.input_len, precision,
+            model.fields,
+            attention_class,
+            args.input_len,
+            precision,
             include_linear_state=args.include_linear_state,
         )
     except ValueError as exc:
@@ -146,8 +194,11 @@ def main(argv=None):
 
     # V4 measured side-by-side.
     v4_measured = []
-    if attention_class == "deepseek_v4" and model.preset_entry and \
-            model.preset_entry.get("deployment_measured"):
+    if (
+        attention_class == "deepseek_v4"
+        and model.preset_entry
+        and model.preset_entry.get("deployment_measured")
+    ):
         dm = model.preset_entry["deployment_measured"]
         for dep in ("vllm", "vllm-ascend"):
             if dep not in dm:
@@ -156,14 +207,16 @@ def main(argv=None):
             per_seq = bpt * args.input_len
             m_per_seq_pg = per_seq / args.tp
             m_total = args.num_requests * m_per_seq_pg * args.tp
-            v4_measured.append({
-                "deployment": dep,
-                "bytes_per_token": bpt,
-                "per_seq_bytes": per_seq,
-                "per_seq_per_gpu": m_per_seq_pg,
-                "total_bytes": m_total,
-                "selected": dep == args.deployment,
-            })
+            v4_measured.append(
+                {
+                    "deployment": dep,
+                    "bytes_per_token": bpt,
+                    "per_seq_bytes": per_seq,
+                    "per_seq_per_gpu": m_per_seq_pg,
+                    "total_bytes": m_total,
+                    "selected": dep == args.deployment,
+                }
+            )
 
     # Effective dtype strings/bytes for display.
     if attention_class == "deepseek_v4":
@@ -196,14 +249,30 @@ def main(argv=None):
     verbose_fields = None
     if args.verbose:
         # Compact subset of fields that drove the formula.
-        keys = ("num_hidden_layers", "num_attention_heads", "num_key_value_heads",
-                "head_dim", "hidden_size", "kv_lora_rank", "qk_rope_head_dim",
-                "index_head_dim", "sliding_window", "global_head_dim",
-                "num_global_key_value_heads", "swa_head_dim", "swa_v_head_dim",
-                "v_head_dim", "linear_num_key_heads", "linear_key_head_dim",
-                "linear_num_value_heads", "linear_value_head_dim",
-                "linear_conv_kernel_dim", "compress_ratios", "layer_types",
-                "hybrid_layer_pattern")
+        keys = (
+            "num_hidden_layers",
+            "num_attention_heads",
+            "num_key_value_heads",
+            "head_dim",
+            "hidden_size",
+            "kv_lora_rank",
+            "qk_rope_head_dim",
+            "index_head_dim",
+            "sliding_window",
+            "global_head_dim",
+            "num_global_key_value_heads",
+            "swa_head_dim",
+            "swa_v_head_dim",
+            "v_head_dim",
+            "linear_num_key_heads",
+            "linear_key_head_dim",
+            "linear_num_value_heads",
+            "linear_value_head_dim",
+            "linear_conv_kernel_dim",
+            "compress_ratios",
+            "layer_types",
+            "hybrid_layer_pattern",
+        )
         verbose_fields = {k: model.fields[k] for k in keys if k in model.fields}
 
     result = {

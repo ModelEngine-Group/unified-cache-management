@@ -26,8 +26,13 @@ QWEN_LINEAR_FULL = "qwen_linear_full"
 MINIMAX_MSA = "minimax_msa"
 
 ALL_CLASSES = (
-    STANDARD, MLA, DSA, DEEPSEEK_V4, MIXED_FULL_SLIDING,
-    QWEN_LINEAR_FULL, MINIMAX_MSA,
+    STANDARD,
+    MLA,
+    DSA,
+    DEEPSEEK_V4,
+    MIXED_FULL_SLIDING,
+    QWEN_LINEAR_FULL,
+    MINIMAX_MSA,
 )
 
 CLASS_LABELS = {
@@ -46,37 +51,37 @@ CLASS_LABELS = {
 # Llama is gated, Kimi-K2 base repo not separately published).
 ARCHITECTURE_REGISTRY = {
     # DeepSeek (verified)
-    "DeepseekV3ForCausalLM": MLA,       # V3, R1, V3.1-Terminus, Kimi K2.x
-    "DeepseekV32ForCausalLM": DSA,      # V3.2 (note "V32", no underscore)
+    "DeepseekV3ForCausalLM": MLA,  # V3, R1, V3.1-Terminus, Kimi K2.x
+    "DeepseekV32ForCausalLM": DSA,  # V3.2 (note "V32", no underscore)
     "DeepseekV4ForCausalLM": DEEPSEEK_V4,
     # Qwen (verified)
-    "Qwen3ForCausalLM": STANDARD,      # dense Qwen3 (32B)
-    "Qwen3MoeForCausalLM": STANDARD,    # MoE Qwen3 (235B-A22B, Coder-480B)
+    "Qwen3ForCausalLM": STANDARD,  # dense Qwen3 (32B)
+    "Qwen3MoeForCausalLM": STANDARD,  # MoE Qwen3 (235B-A22B, Coder-480B)
     "Qwen3_5ForConditionalGeneration": QWEN_LINEAR_FULL,  # Qwen3.5/3.6
     # GLM (verified, zai-org)
-    "Glm4MoeForCausalLM": STANDARD,     # GLM-4.5, 4.5-Air, 4.7 (GQA)
-    "Glm4MoeLiteForCausalLM": MLA,      # GLM-4.7-Flash (MLA latent)
-    "GlmMoeDsaForCausalLM": DSA,        # GLM-5, 5.1 (MLA + Lightning Indexer)
+    "Glm4MoeForCausalLM": STANDARD,  # GLM-4.5, 4.5-Air, 4.7 (GQA)
+    "Glm4MoeLiteForCausalLM": MLA,  # GLM-4.7-Flash (MLA latent)
+    "GlmMoeDsaForCausalLM": DSA,  # GLM-5, 5.1 (MLA + Lightning Indexer)
     # MiniMax (verified, MiniMaxAI)
-    "MiniMaxM2ForCausalLM": STANDARD,   # M2, M2.1, M2.5 (GQA)
+    "MiniMaxM2ForCausalLM": STANDARD,  # M2, M2.1, M2.5 (GQA)
     # Llama (canonical HF class; gated repo, not freshly re-fetched)
     "LlamaForCausalLM": STANDARD,
     # Mistral (verified; Ministral-8B, Mistral-Large-2411)
     "MistralForCausalLM": STANDARD,
     # Verified via the raw repo JSON files (cross-checked against HF)
     "Gemma4ForConditionalGeneration": MIXED_FULL_SLIDING,  # google/gemma-4-31b-it
-    "MiMoV2ForCausalLM": MIXED_FULL_SLIDING,              # XiaomiMiMo/MiMo-V2.5
+    "MiMoV2ForCausalLM": MIXED_FULL_SLIDING,  # XiaomiMiMo/MiMo-V2.5
     # --- newly verified 2026-08-18 (hf download) ---
-    "MuseGlimmerForConditionalGeneration": STANDARD,      # meta-models/Muse-Glimmer-30B
-    "KimiK3ForConditionalGeneration": MLA,                 # moonshotai/Kimi-K3 (config exposes MLA fields; KDA state not in config)
-    "KimiK25ForConditionalGeneration": MLA,                # moonshotai/Kimi-K2.7-Code
-    "Dots3NoteForCausalLM": DSA,                           # dots-studio/dots3-note-prev
-    "BailingMoeV3ForCausalLM": MLA,                        # inclusionAI/Ling-3.0-tiny/flash (config exposes MLA; "bailing_hybrid" KDA state not in config)
-    "OpenPanguV2ForCausalLM": DSA,                          # openpangu/openPangu-2.0-Pro/Flash
-    "LongcatCausalLM": DSA,                                # meituan-longcat/LongCat-2.0 (num_layers field)
-    "Step3p5ForCausalLM": MIXED_FULL_SLIDING,              # stepfun-ai/Step-3.5-Flash (grouped head-gated; approx)
-    "Step3p7ForConditionalGeneration": MIXED_FULL_SLIDING, # stepfun-ai/Step-3.7-Flash (grouped head-gated; approx)
-    "Qwen3_5MoeForCausalLM": QWEN_LINEAR_FULL,             # Qwen3.5/3.6/3.8 MoE (Gated DeltaNet)
+    "MuseGlimmerForConditionalGeneration": STANDARD,  # meta-models/Muse-Glimmer-30B
+    "KimiK3ForConditionalGeneration": MLA,  # moonshotai/Kimi-K3 (config exposes MLA fields; KDA state not in config)
+    "KimiK25ForConditionalGeneration": MLA,  # moonshotai/Kimi-K2.7-Code
+    "Dots3NoteForCausalLM": DSA,  # dots-studio/dots3-note-prev
+    "BailingMoeV3ForCausalLM": MLA,  # inclusionAI/Ling-3.0-tiny/flash (config exposes MLA; "bailing_hybrid" KDA state not in config)
+    "OpenPanguV2ForCausalLM": DSA,  # openpangu/openPangu-2.0-Pro/Flash
+    "LongcatCausalLM": DSA,  # meituan-longcat/LongCat-2.0 (num_layers field)
+    "Step3p5ForCausalLM": MIXED_FULL_SLIDING,  # stepfun-ai/Step-3.5-Flash (grouped head-gated; approx)
+    "Step3p7ForConditionalGeneration": MIXED_FULL_SLIDING,  # stepfun-ai/Step-3.7-Flash (grouped head-gated; approx)
+    "Qwen3_5MoeForCausalLM": QWEN_LINEAR_FULL,  # Qwen3.5/3.6/3.8 MoE (Gated DeltaNet)
     "Qwen3_5MoeForConditionalGeneration": QWEN_LINEAR_FULL,
     # MiniMax M3 — verified: real arch is MiniMaxM3SparseForConditionalGeneration
     # (model_type minimax_m3_vl). Config does NOT expose index_head_dim/sparse
@@ -181,7 +186,13 @@ def infer_attention_class(cfg):
     # 2. Full + sliding window mix (Gemma 4 / MiMo / Cohere R7B). Requires
     #    BOTH layer counts and a window so a bare sliding_window on a plain
     #    GQA model does not trip this.
-    if full_layers and sliding_layers and window and _num(cfg.get("num_key_value_heads")) and head_dim:
+    if (
+        full_layers
+        and sliding_layers
+        and window
+        and _num(cfg.get("num_key_value_heads"))
+        and head_dim
+    ):
         return MIXED_FULL_SLIDING, (
             f"full_attention={full_layers}, sliding_attention={sliding_layers}, "
             f"window={window}"
@@ -201,7 +212,11 @@ def infer_attention_class(cfg):
 
     # 6. Gemma4-flavor fallback: global head fields without explicit layer
     #    split (older multi-modal configs).
-    if cfg.get("global_head_dim") or cfg.get("num_global_key_value_heads") or cfg.get("num_kv_shared_layers"):
+    if (
+        cfg.get("global_head_dim")
+        or cfg.get("num_global_key_value_heads")
+        or cfg.get("num_kv_shared_layers")
+    ):
         return MIXED_FULL_SLIDING, "global_head_dim / num_kv_shared_layers present"
 
     # 7. Standard MHA/MQA/GQA (with explicit head_dim).

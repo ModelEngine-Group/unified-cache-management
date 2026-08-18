@@ -34,15 +34,11 @@ class KvCalcFormulaTest(unittest.TestCase):
 
     def test_standard_mha_and_mqa_variants(self):
         self.assertEqual(
-            standard_variant(
-                {"num_attention_heads": 32, "num_key_value_heads": 32}
-            ),
+            standard_variant({"num_attention_heads": 32, "num_key_value_heads": 32}),
             "MHA",
         )
         self.assertEqual(
-            standard_variant(
-                {"num_attention_heads": 32, "num_key_value_heads": 1}
-            ),
+            standard_variant({"num_attention_heads": 32, "num_key_value_heads": 1}),
             "MQA",
         )
 
@@ -68,9 +64,7 @@ class KvCalcFormulaTest(unittest.TestCase):
         entry = (512 - 64) * 1 + 64 * 2  # nope*FP8 + rope*BF16
         compressed = sum((4096 // r) * entry for r in ratios if r and r > 0)
         sliding = 43 * 128 * entry
-        indexer = (
-            sum(1 for r in ratios if r == 4) * (4096 // 4) * 128 * 0.5
-        )
+        indexer = sum(1 for r in ratios if r == 4) * (4096 // 4) * 128 * 0.5
         self.assertAlmostEqual(seq.bytes_per_seq, compressed + sliding + indexer)
 
     def test_v4_measured_constants_present(self):
@@ -117,9 +111,7 @@ class KvCalcFormulaTest(unittest.TestCase):
         self.assertEqual(
             classify(["DeepseekV32ForCausalLM"], {}).attention_class, "dsa"
         )
-        self.assertEqual(
-            classify(["GlmMoeDsaForCausalLM"], {}).attention_class, "dsa"
-        )
+        self.assertEqual(classify(["GlmMoeDsaForCausalLM"], {}).attention_class, "dsa")
         self.assertEqual(
             classify(["Qwen3_5ForConditionalGeneration"], {}).attention_class,
             "qwen_linear_full",

@@ -100,9 +100,7 @@ class KvCalcToolkitTest(unittest.TestCase):
     def test_kv_calc_readme_documents_flags(self):
         # Convention (matches develop's per-tool README pattern): each tool
         # ships a README.md documenting its flags, kept in sync with --help.
-        standalone_readme = (
-            ROOT / "ucm_toolkit" / "tools" / "kv_calc" / "README.md"
-        )
+        standalone_readme = ROOT / "ucm_toolkit" / "tools" / "kv_calc" / "README.md"
 
         self.assertTrue(standalone_readme.exists())
         text = standalone_readme.read_text(encoding="utf-8")

@@ -22,13 +22,17 @@ This lets one :func:`split_across_tp` implement every class's TP accounting.
 
 import math
 
-
 DTYPE_BYTES = {
-    "fp32": 4.0, "float32": 4.0,
-    "fp16": 2.0, "float16": 2.0,
-    "bf16": 2.0, "bfloat16": 2.0,
-    "int8": 1.0, "fp8": 1.0,
-    "int4": 0.5, "fp4": 0.5,
+    "fp32": 4.0,
+    "float32": 4.0,
+    "fp16": 2.0,
+    "float16": 2.0,
+    "bf16": 2.0,
+    "bfloat16": 2.0,
+    "int8": 1.0,
+    "fp8": 1.0,
+    "int4": 0.5,
+    "fp4": 0.5,
 }
 
 
@@ -37,7 +41,9 @@ def dtype_bytes(name):
         return None
     key = str(name).strip().lower()
     if key not in DTYPE_BYTES:
-        raise ValueError(f"unknown dtype '{name}'; expected one of {sorted(DTYPE_BYTES)}")
+        raise ValueError(
+            f"unknown dtype '{name}'; expected one of {sorted(DTYPE_BYTES)}"
+        )
     return DTYPE_BYTES[key]
 
 
@@ -125,7 +131,9 @@ class SeqCache:
         return sum(p.per_rank(tp, gqa_copy) for p in self.parts)
 
 
-def compute_seq_cache(cfg, attention_class, tokens, precision, include_linear_state=False):
+def compute_seq_cache(
+    cfg, attention_class, tokens, precision, include_linear_state=False
+):
     """Compute the whole-model per-sequence KV cache for one attention class.
 
     ``cfg`` is a dict of flattened config fields (see loader.py). Returns a
@@ -156,6 +164,7 @@ def compute_seq_cache(cfg, attention_class, tokens, precision, include_linear_st
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _num(v):
     if v is None:
         return None
@@ -181,7 +190,9 @@ def _resolve_head_dim(cfg):
     attn = _num(cfg.get("num_attention_heads"))
     if hidden and attn:
         return hidden / attn
-    raise ValueError("cannot resolve head_dim: provide head_dim or hidden_size/num_attention_heads")
+    raise ValueError(
+        "cannot resolve head_dim: provide head_dim or hidden_size/num_attention_heads"
+    )
 
 
 def _layers(cfg):
@@ -193,20 +204,28 @@ def _layers(cfg):
 
 def _has_layer_split(cfg):
     """True if the config distinguishes full/sliding/linear layer types."""
-    return any(cfg.get(k) for k in (
-        "full_attention_layers", "sliding_attention_layers",
-        "linear_attention_layers", "layer_types", "hybrid_layer_pattern",
-    ))
+    return any(
+        cfg.get(k)
+        for k in (
+            "full_attention_layers",
+            "sliding_attention_layers",
+            "linear_attention_layers",
+            "layer_types",
+            "hybrid_layer_pattern",
+        )
+    )
 
 
 def _layer_count(cfg, kind):
     from .detect import _layer_count as _lc
+
     return _lc(cfg, kind)
 
 
 # ---------------------------------------------------------------------------
 # Class formulas
 # ---------------------------------------------------------------------------
+
 
 def _standard(cfg, tokens, prec):
     layers = _layers(cfg)
@@ -231,10 +250,15 @@ def _standard(cfg, tokens, prec):
         )
     bytes_per_seq = layers * 2 * kv * head_dim * eff_tokens * prec.kv
     from .detect import standard_variant
+
     sub = standard_variant(cfg)
-    return SeqCache("standard", [
-        Part(f"KV ({sub})", bytes_per_seq, "heads", heads_total=kv),
-    ], note=note)
+    return SeqCache(
+        "standard",
+        [
+            Part(f"KV ({sub})", bytes_per_seq, "heads", heads_total=kv),
+        ],
+        note=note,
+    )
 
 
 def _mla(cfg, tokens, prec):
@@ -245,9 +269,14 @@ def _mla(cfg, tokens, prec):
         raise ValueError("MLA requires kv_lora_rank and qk_rope_head_dim")
     latent = kv_lora + qk_rope
     bytes_per_seq = layers * latent * tokens * prec.kv
-    return SeqCache("mla", [
-        Part("MLA latent KV (kv_lora_rank + qk_rope_head_dim)", bytes_per_seq, "tp"),
-    ])
+    return SeqCache(
+        "mla",
+        [
+            Part(
+                "MLA latent KV (kv_lora_rank + qk_rope_head_dim)", bytes_per_seq, "tp"
+            ),
+        ],
+    )
 
 
 def _dsa(cfg, tokens, prec):
@@ -264,10 +293,13 @@ def _dsa(cfg, tokens, prec):
     # reuse the previous full indexer's top-k selection (no independent cache).
     indexer_layers = _int(cfg.get("indexer_full_layers")) or layers
     indexer_bytes = indexer_layers * index_head_dim * tokens * prec.indexer
-    return SeqCache("dsa", [
-        Part("MLA latent KV (kv_lora_rank + qk_rope_head_dim)", ml_bytes, "tp"),
-        Part("Lightning Indexer", indexer_bytes, "tp"),
-    ])
+    return SeqCache(
+        "dsa",
+        [
+            Part("MLA latent KV (kv_lora_rank + qk_rope_head_dim)", ml_bytes, "tp"),
+            Part("Lightning Indexer", indexer_bytes, "tp"),
+        ],
+    )
 
 
 def _deepseek_v4(cfg, tokens, prec):
@@ -302,11 +334,15 @@ def _deepseek_v4(cfg, tokens, prec):
         "Differs from the measured vLLM/vLLM-Ascend bytes/token; the CLI prints "
         "both side by side."
     )
-    return SeqCache("deepseek_v4", [
-        Part("V4 sliding-window reserve", sliding, "tp"),
-        Part("V4 compressed KV (sum floor(T/ratio))", compressed, "tp"),
-        Part("V4 Lightning Indexer (ratio==4)", indexer, "tp"),
-    ], note=note)
+    return SeqCache(
+        "deepseek_v4",
+        [
+            Part("V4 sliding-window reserve", sliding, "tp"),
+            Part("V4 compressed KV (sum floor(T/ratio))", compressed, "tp"),
+            Part("V4 Lightning Indexer (ratio==4)", indexer, "tp"),
+        ],
+        note=note,
+    )
 
 
 def _mixed_full_sliding(cfg, tokens, prec):
@@ -320,17 +356,23 @@ def _mixed_full_sliding(cfg, tokens, prec):
         )
 
     # Full-attention layers may use separate "global" heads/dims (Gemma 4).
-    full_kv = _int(cfg.get("num_global_key_value_heads")) or _int(cfg.get("num_key_value_heads"))
+    full_kv = _int(cfg.get("num_global_key_value_heads")) or _int(
+        cfg.get("num_key_value_heads")
+    )
     full_hd = _num(cfg.get("global_head_dim")) or _num(cfg.get("head_dim"))
     full_vd = _num(cfg.get("v_head_dim")) or full_hd
     # Sliding-window layers use swa_* fields when present (MiMo), else the
     # standard kv/heads (Gemma 4 sliding layers reuse num_key_value_heads).
-    swa_kv = _int(cfg.get("swa_num_key_value_heads")) or _int(cfg.get("num_key_value_heads"))
+    swa_kv = _int(cfg.get("swa_num_key_value_heads")) or _int(
+        cfg.get("num_key_value_heads")
+    )
     swa_hd = _num(cfg.get("swa_head_dim")) or _num(cfg.get("head_dim"))
     swa_vd = _num(cfg.get("swa_v_head_dim")) or _num(cfg.get("v_head_dim")) or swa_hd
 
     if not (full_kv and full_hd and swa_kv and swa_hd):
-        raise ValueError("mixed_full_sliding: cannot resolve full/swa head counts and dims")
+        raise ValueError(
+            "mixed_full_sliding: cannot resolve full/swa head counts and dims"
+        )
 
     # Cross-layer KV sharing (Gemma 4 E2B/E4B num_kv_shared_layers): adjacent
     # layers reuse a neighbor's KV, so the allocated (stored) layer count is
@@ -349,7 +391,13 @@ def _mixed_full_sliding(cfg, tokens, prec):
     # K + V dims are *added* (not 2x head_dim) because head_dim and v_head_dim
     # may differ (MiMo: head 192 / v 128).
     full_bytes = full_layers_eff * full_kv * (full_hd + full_vd) * tokens * prec.kv
-    swa_bytes = min(tokens, int(window)) * sliding_layers_eff * swa_kv * (swa_hd + swa_vd) * prec.kv
+    swa_bytes = (
+        min(tokens, int(window))
+        * sliding_layers_eff
+        * swa_kv
+        * (swa_hd + swa_vd)
+        * prec.kv
+    )
 
     note = ""
     if shared > 0:
@@ -364,10 +412,19 @@ def _mixed_full_sliding(cfg, tokens, prec):
             "Cross-layer KV sharing (Gemma 4 E2B/E4B num_kv_shared_layers) modeled as "
             "shared layers contributing 0 additional KV; verify for your config."
         )
-    return SeqCache("mixed_full_sliding", [
-        Part("Full-attention KV", full_bytes, "heads", heads_total=full_kv),
-        Part("Sliding-window KV (capped at window)", swa_bytes, "heads", heads_total=swa_kv),
-    ], note=note)
+    return SeqCache(
+        "mixed_full_sliding",
+        [
+            Part("Full-attention KV", full_bytes, "heads", heads_total=full_kv),
+            Part(
+                "Sliding-window KV (capped at window)",
+                swa_bytes,
+                "heads",
+                heads_total=swa_kv,
+            ),
+        ],
+        note=note,
+    )
 
 
 def _qwen_linear_full(cfg, tokens, prec, include_linear_state):
@@ -386,7 +443,9 @@ def _qwen_linear_full(cfg, tokens, prec, include_linear_state):
     if include_linear_state:
         linear_layers = _layer_count(cfg, "linear")
         if not linear_layers:
-            raise ValueError("--include-linear-state set but no linear_attention layers found")
+            raise ValueError(
+                "--include-linear-state set but no linear_attention layers found"
+            )
         lkh = _int(cfg.get("linear_num_key_heads")) or 0
         lkhdim = _num(cfg.get("linear_key_head_dim")) or 0
         lvh = _int(cfg.get("linear_num_value_heads")) or 0
@@ -397,11 +456,14 @@ def _qwen_linear_full(cfg, tokens, prec, include_linear_state):
         # Conv state (BF16) + recurrent state (FP32), fixed per sequence.
         conv_state = linear_layers * conv_k * (2 * lkh * lkhdim + lvh * lvhdim) * 2.0
         recurrent_state = linear_layers * lvh * lkhdim * lvhdim * 4.0
-        parts.append(Part(
-            "Linear-attention state (conv+recurrent, fixed per seq)",
-            conv_state + recurrent_state, "fixed",
-            note="state is per-sequence; not sharded by TP in this model",
-        ))
+        parts.append(
+            Part(
+                "Linear-attention state (conv+recurrent, fixed per seq)",
+                conv_state + recurrent_state,
+                "fixed",
+                note="state is per-sequence; not sharded by TP in this model",
+            )
+        )
     return SeqCache("qwen_linear_full", parts)
 
 
