@@ -128,14 +128,14 @@ Status PosixQueue::H2S(Task::Shard& shard)
 {
     auto path = this->layout_->DataFilePath(shard.block, true);
     auto aligned = IsAligned(shard.offset) && IsAligned(shard.length) && IsAligned(shard.address);
-    return File::Write(path, shard.offset, shard.length, shard.address, aligned);
+    return File::Write(path, shard.offset, shard.length, shard.address, useDirect_ && aligned);
 }
 
 Status PosixQueue::S2H(Task::Shard& shard)
 {
     auto path = this->layout_->DataFilePath(shard.block, false);
     auto aligned = IsAligned(shard.offset) && IsAligned(shard.length) && IsAligned(shard.address);
-    return File::Read(path, shard.offset, shard.length, shard.address, aligned);
+    return File::Read(path, shard.offset, shard.length, shard.address, useDirect_ && aligned);
 }
 
 } // namespace UC
