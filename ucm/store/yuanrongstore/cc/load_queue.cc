@@ -373,7 +373,7 @@ Status LoadQueue::RecoverFromBackend(CopyStream& stream, TaskPtr task,
         auto status = FinalizeHostBatch(stream, blobLists, current);
         if (status.Success()) {
             auto& success = source == RecoverySource::LOOKUP_MISS ? stats.lookupMissPosixSuccess
-                                                                   : stats.loadFallbackPosixSuccess;
+                                                                  : stats.loadFallbackPosixSuccess;
             success += current.indexes.size();
         }
         if (firstFailure.Success() && status.Failure()) { firstFailure = std::move(status); }
