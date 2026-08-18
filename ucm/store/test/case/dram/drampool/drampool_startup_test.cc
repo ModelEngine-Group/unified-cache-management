@@ -37,6 +37,9 @@
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
+#include "channels/tcp/tcp_message_channel.h"
+#include "kv_protocol.h"
+#include "logger/logger.h"
 #endif
 #include "drampool_config.h"
 #include "drampool_daemon.h"
@@ -481,6 +484,87 @@ TEST(DramPoolServerTest, RejectsCallsOutsideValidState)
 
 #if defined(UCM_DRAMPOOL_RUNTIME_INTEGRATION_TESTS)
 #if !defined(_WIN32)
+TEST(DramPoolServerTest, RequestReceiverLogsReceivedRequestFields)
+{
+    constexpr std::uint64_t kRequestId = 42;
+    const auto logRoot = std::filesystem::temp_directory_path() /
+                         ("drampool_request_receiver_log_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(logRoot);
+    std::filesystem::create_directories(logRoot);
+
+    const auto child = ::fork();
+    ASSERT_GE(child, 0);
+    if (child == 0) {
+        (void)::setenv("UC_LOGGER_LEVEL", "debug", 1);
+        (void)::setenv("UCM_LOG_RATE_LIMIT_ENABLE", "false", 1);
+        UC::Logger::Setup(logRoot.string(), 1, 1);
+
+        auto config = MakeValidConfig();
+        config.poolBlockSizes = {4096};
+        config.poolBlockProportions = {1};
+        config.poolSlotCounts = {1};
+        config.gcEnabled = false;
+        const transport::Endpoint clientControl{"127.0.0.1", FindDistinctTcpPort(config.addr.port)};
+        const auto clientOneSidedPort = FindDistinctTcpPort(config.addr.port, clientControl.port);
+        config.twoSidedToOneSided.emplace(clientControl.ToString(),
+                                          "127.0.0.1:" + std::to_string(clientOneSidedPort));
+        ScopedDramPoolConfig configScope(std::move(config));
+
+        DramPoolServer server;
+        transport::TcpMessageChannel client;
+        ProtocolManager protocol;
+        if (server.Init().Failure()) { ::_exit(1); }
+        if (server.Start().Failure()) { ::_exit(2); }
+        if (client.Init(clientControl).Failure()) { ::_exit(3); }
+
+        KvLookupRequest request;
+        request.opcode = KvOpcode::Lookup;
+        request.request_id = kRequestId;
+        request.resp_addr = 0x1000;
+        request.batch_size = 1;
+        request.entries.emplace_back();
+        request.entries.back().key.back() = std::byte{1};
+        const auto packedSize = protocol.GetPackedRequestSize(request.opcode, request);
+        std::vector<std::uint8_t> packed(packedSize);
+        if (protocol.PackRequest(packed.data(), request.opcode, request).Failure()) { ::_exit(4); }
+        if (client.Send(g_config.addr, packed.data(), packed.size()).Failure()) { ::_exit(5); }
+
+        const auto expected =
+            "RequestReceiver received request, request_id=" + std::to_string(kRequestId) +
+            ", opcode=" + std::to_string(static_cast<int>(KvOpcode::Lookup));
+        const auto logPath = logRoot / std::to_string(::getpid()) / "ucm.log";
+        bool found = false;
+        for (int attempt = 0; attempt < 200 && !found; ++attempt) {
+            UC::Logger::Flush();
+            std::ifstream input(logPath);
+            const std::string content((std::istreambuf_iterator<char>(input)),
+                                      std::istreambuf_iterator<char>());
+            found = content.find(expected) != std::string::npos;
+            if (!found) { std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+        }
+
+        (void)client.Shutdown();
+        server.Stop();
+        UC::Logger::Flush();
+        ::_exit(found ? 0 : 6);
+    }
+
+    int childStatus = 0;
+    ASSERT_EQ(::waitpid(child, &childStatus, 0), child);
+    ASSERT_TRUE(WIFEXITED(childStatus));
+    ASSERT_EQ(WEXITSTATUS(childStatus), 0);
+
+    const auto logPath = logRoot / std::to_string(child) / "ucm.log";
+    std::ifstream input(logPath);
+    const std::string content((std::istreambuf_iterator<char>(input)),
+                              std::istreambuf_iterator<char>());
+    const auto messagePosition = content.find("RequestReceiver received request");
+    ASSERT_NE(messagePosition, std::string::npos);
+    const auto messageEnd = content.find('\n', messagePosition);
+    std::cout << content.substr(messagePosition, messageEnd - messagePosition) << std::endl;
+    std::filesystem::remove_all(logRoot);
+}
+
 TEST(DramPoolServerTest, StartsAndStopsService)
 {
     EXPECT_EQ(RunInIsolatedProcess([]() {

@@ -63,6 +63,8 @@ std::uint8_t LookupCode(LookupResult result) { return static_cast<std::uint8_t>(
 
 class TaskWorkerTest : public ::testing::Test {
 protected:
+    static constexpr std::uint64_t kRequestId = 42;
+
     static void SetUpTestSuite()
     {
         auto status = device_.Init();
@@ -182,9 +184,12 @@ TEST_F(TaskWorkerTest, ProcessesRequestWithoutInitiatingPeerConnection)
     task->peer_one_sided_id = kTargetManager;
     task->request = std::make_unique<KvLookupRequest>();
     task->request->opcode = KvOpcode::Lookup;
+    task->request->request_id = kRequestId;
 
     EXPECT_TRUE(worker.ProcessOneRequest(std::move(task)).Success());
-    EXPECT_EQ(PopCompletion().peer_one_sided_id, kTargetManager);
+    const auto record = PopCompletion();
+    EXPECT_EQ(record.peer_one_sided_id, kTargetManager);
+    EXPECT_EQ(record.request_id, kRequestId);
 }
 
 TEST_F(TaskWorkerTest, LookupReturnsHitAndMiss)
@@ -194,6 +199,7 @@ TEST_F(TaskWorkerTest, LookupReturnsHitAndMiss)
 
     KvLookupRequest request;
     request.opcode = KvOpcode::Lookup;
+    request.request_id = kRequestId;
     request.resp_addr = kResponseAddress;
     request.entries = {{hitKey}, {KeyFromHex("a2")}};
     request.batch_size = static_cast<std::uint16_t>(request.entries.size());
@@ -213,6 +219,7 @@ TEST_F(TaskWorkerTest, DuplicateDumpIsIdempotent)
 
     KvDumpRequest request;
     request.opcode = KvOpcode::Dump;
+    request.request_id = kRequestId;
     request.resp_addr = kResponseAddress;
     request.entries = {
         {key, 0x1000, kValueLength, 0}
@@ -235,6 +242,7 @@ TEST_F(TaskWorkerTest, DumpStopsAfterFirstStoreBeginFailure)
 
     KvDumpRequest request;
     request.opcode = KvOpcode::Dump;
+    request.request_id = kRequestId;
     request.resp_addr = kResponseAddress;
     request.entries = {
         {duplicateKey, 0x1000, kValueLength,     0},
@@ -260,6 +268,7 @@ TEST_F(TaskWorkerTest, DumpSubmitFailureDeletesReservedMetadata)
 
     KvDumpRequest request;
     request.opcode = KvOpcode::Dump;
+    request.request_id = kRequestId;
     request.resp_addr = kResponseAddress;
     request.entries = {
         {key, 0x1000, kValueLength, 0}
@@ -281,6 +290,7 @@ TEST_F(TaskWorkerTest, LoadReportsMissingAndOversizedItems)
 
     KvLoadRequest request;
     request.opcode = KvOpcode::Load;
+    request.request_id = kRequestId;
     request.resp_addr = kResponseAddress;
     request.entries = {
         {missingKey,   0x1000, kValueLength,     0},
@@ -305,6 +315,7 @@ TEST_F(TaskWorkerTest, LoadSubmitFailureEndsAllPinnedItems)
 
     KvLoadRequest request;
     request.opcode = KvOpcode::Load;
+    request.request_id = kRequestId;
     request.resp_addr = kResponseAddress;
     request.entries = {
         {firstKey,  0x1000, kValueLength, 0},
@@ -329,6 +340,7 @@ TEST_F(TaskWorkerTest, RejectsResponsesLargerThanFlagBufferSlot)
 
     KvDumpRequest dump;
     dump.opcode = KvOpcode::Dump;
+    dump.request_id = kRequestId;
     dump.batch_size = 1;
     dump.entries = {
         {KeyFromHex("a1"), 0x1000, kValueLength, 0}
@@ -337,6 +349,7 @@ TEST_F(TaskWorkerTest, RejectsResponsesLargerThanFlagBufferSlot)
 
     KvLoadRequest load;
     load.opcode = KvOpcode::Load;
+    load.request_id = kRequestId;
     load.batch_size = 1;
     load.entries = {
         {KeyFromHex("a2"), 0x2000, kValueLength, 0}
@@ -345,6 +358,7 @@ TEST_F(TaskWorkerTest, RejectsResponsesLargerThanFlagBufferSlot)
 
     KvLookupRequest lookup;
     lookup.opcode = KvOpcode::Lookup;
+    lookup.request_id = kRequestId;
     lookup.batch_size = 1;
     lookup.entries = {{KeyFromHex("a3")}};
     EXPECT_TRUE(ProcessLookup(lookup).Failure());

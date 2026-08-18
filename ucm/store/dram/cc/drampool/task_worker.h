@@ -47,7 +47,7 @@ private:
     void LoadEndItems(const std::vector<TransferItem>& items);
     Status QueueResponse(KvOpcode opcode, std::uint64_t responseAddr,
                          const transport::ManagerID& peerOneSidedId,
-                         std::vector<std::uint8_t>&& results);
+                         std::vector<std::uint8_t>&& results, std::uint64_t requestId);
     Status SubmitCompletion(CompletionRecord&& record);
 
     DramPoolRuntime& runtime_;

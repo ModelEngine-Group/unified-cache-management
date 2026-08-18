@@ -103,8 +103,8 @@ private:
 
     void TryFence(TimePoint now);
     void TryConnect(TimePoint now);
-    Status EncodeRequest(const ReplySlot& replySlot, OpType op, const std::vector<IoEntry>& entries,
-                         std::vector<std::uint8_t>& payload);
+    Status EncodeRequest(const ReplySlot& replySlot, RequestId requestId, OpType op,
+                         const std::vector<IoEntry>& entries, std::vector<std::uint8_t>& payload);
 
     Config config_;
     NodeDependencies dependencies_;

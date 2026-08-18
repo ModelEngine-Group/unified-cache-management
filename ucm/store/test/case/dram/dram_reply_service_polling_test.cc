@@ -37,11 +37,12 @@
 namespace UC::Dram {
 namespace {
 
-Status PackReply(const ReplySlot& slot, DramPool::KvOpcode opcode,
+Status PackReply(const ReplySlot& slot, DramPool::KvOpcode opcode, RequestId requestId,
                  std::vector<std::uint8_t> results)
 {
     DramPool::ProtocolManager protocol;
-    return protocol.PackResponse(slot.localAddr, opcode, DramPool::KvResponse{std::move(results)});
+    return protocol.PackResponse(slot.localAddr, opcode,
+                                 DramPool::KvResponse{requestId, std::move(results)});
 }
 
 class EventCollector final {
@@ -94,7 +95,7 @@ TEST(ReplyServicePollingTest, PublishesObservedReplyAndKeepsLeaseUntilActorRelea
     auto acquired = service->Acquire(token, OpType::LOOKUP, 2);
     ASSERT_TRUE(acquired);
     auto slot = acquired.Value();
-    ASSERT_TRUE(PackReply(slot, DramPool::KvOpcode::Lookup, {1, 0}).Success());
+    ASSERT_TRUE(PackReply(slot, DramPool::KvOpcode::Lookup, token.requestId, {1, 0}).Success());
 
     auto event = collector.Wait(std::chrono::milliseconds{500});
     ASSERT_TRUE(event.has_value());
@@ -148,7 +149,8 @@ TEST(ReplyServicePollingTest, ReusesSlotWhilePreviousReplyEventIsBeingPublished)
 
     auto first = service->Acquire(firstToken, OpType::LOOKUP, 1);
     ASSERT_TRUE(first);
-    ASSERT_TRUE(PackReply(first.Value(), DramPool::KvOpcode::Lookup, {1}).Success());
+    ASSERT_TRUE(
+        PackReply(first.Value(), DramPool::KvOpcode::Lookup, firstToken.requestId, {1}).Success());
     bool publishEntered = false;
     {
         std::unique_lock lock(mutex);
@@ -162,7 +164,10 @@ TEST(ReplyServicePollingTest, ReusesSlotWhilePreviousReplyEventIsBeingPublished)
     if (publishEntered) {
         firstRelease = service->Release(firstToken, first.Value());
         second = service->Acquire(secondToken, OpType::LOOKUP, 1);
-        if (second) { secondPack = PackReply(second.Value(), DramPool::KvOpcode::Lookup, {1}); }
+        if (second) {
+            secondPack =
+                PackReply(second.Value(), DramPool::KvOpcode::Lookup, secondToken.requestId, {1});
+        }
     }
 
     {
@@ -231,12 +236,13 @@ TEST(ReplyServicePollingTest, EventPublisherExceptionIsFatal)
             });
             if (created) {
                 auto service = std::move(created).Value();
-                auto acquired =
-                    service->Start().Success()
-                        ? service->Acquire(RequestToken{3, kDefaultLaneId, 1, 9}, OpType::LOOKUP, 1)
-                        : Expected<ReplySlot>{Status::Error()};
+                const RequestToken token = (RequestToken{3, kDefaultLaneId, 1, 9});
+                auto acquired = service->Start().Success()
+                                    ? service->Acquire(token, OpType::LOOKUP, 1)
+                                    : Expected<ReplySlot>{Status::Error()};
                 if (acquired &&
-                    PackReply(acquired.Value(), DramPool::KvOpcode::Lookup, {1}).Success()) {
+                    PackReply(acquired.Value(), DramPool::KvOpcode::Lookup, token.requestId, {1})
+                        .Success()) {
                     publishAttemptedFuture.wait();
                 }
                 service->Shutdown();

@@ -127,6 +127,7 @@ Status DramPoolServer::Start()
 void DramPoolServer::Stop()
 {
     if (state_ == ServerState::New || state_ == ServerState::Stopped) { return; }
+    UC_INFO("DramPool shutdown started, state={}", static_cast<int>(state_));
     // Close ingress, stop its receiver, then let TaskWorker drain accepted tasks.
     StopRequestReceiver();
     StopTaskWorker();
@@ -137,6 +138,7 @@ void DramPoolServer::Stop()
     // every active thread and transport service has stopped.
     ResetInitializedComponents();
     state_ = ServerState::Stopped;
+    UC_INFO("DramPool shutdown completed");
 }
 
 Status DramPoolServer::InitializeDeviceRuntime()
@@ -397,48 +399,66 @@ void DramPoolServer::StopTcpMessageChannel()
         tcpMessageChannelReady_ = false;
     }
     if (tcpMessageChannel_) {
+        UC_DEBUG("DramPool shutdown stopping TCP message channel");
         const auto status = tcpMessageChannel_->Shutdown();
         if (status.Failure()) {
-            UC_ERROR_UNLIMITED("DramPool TCP message channel shutdown failed");
+            UC_ERROR_UNLIMITED("DramPool TCP message channel shutdown failed, error={}", status);
         }
     }
 }
 
 void DramPoolServer::StopRequestReceiver()
 {
+    UC_DEBUG("DramPool shutdown stopping RequestReceiver and TCP ingress");
     {
         std::lock_guard<std::mutex> waitGuard(requestReceiverWaitMutex_);
         requestReceiverStop_.store(true, std::memory_order_release);
     }
     requestReceiverWaitCv_.notify_one();
     StopTcpMessageChannel();
-    if (requestReceiverThread_.joinable()) { requestReceiverThread_.join(); }
+    if (requestReceiverThread_.joinable()) {
+        UC_DEBUG("DramPool shutdown waiting for RequestReceiver thread");
+        requestReceiverThread_.join();
+    }
+    UC_DEBUG("DramPool shutdown RequestReceiver stopped");
 }
 
 void DramPoolServer::StopTaskWorker()
 {
     taskWorkerStop_.store(true, std::memory_order_release);
+    UC_DEBUG("DramPool shutdown waiting for TaskWorker to drain accepted requests");
     if (taskWorkerThread_.joinable()) { taskWorkerThread_.join(); }
+    UC_DEBUG("DramPool shutdown TaskWorker stopped");
 }
 
 void DramPoolServer::StopCompletionPoller()
 {
     completionPollerStop_.store(true, std::memory_order_release);
+    UC_DEBUG("DramPool shutdown waiting for CompletionPoller to drain pending completions");
     if (completionPollerThread_.joinable()) { completionPollerThread_.join(); }
+    UC_DEBUG("DramPool shutdown CompletionPoller stopped");
 }
 
 void DramPoolServer::StopGCThread()
 {
+    UC_DEBUG("DramPool shutdown stopping GCThread");
     gcThreadStop_.store(true, std::memory_order_release);
     stopWaitCv_.notify_one();
-    if (gcThread_.joinable()) { gcThread_.join(); }
+    if (gcThread_.joinable()) {
+        UC_DEBUG("DramPool shutdown waiting for GCThread");
+        gcThread_.join();
+    }
+    UC_DEBUG("DramPool shutdown GCThread stopped");
 }
 
 void DramPoolServer::StopTransportService()
 {
     if (transportManager_) {
+        UC_DEBUG("DramPool shutdown calling TransportManager::Shutdown");
         const auto status = transportManager_->Shutdown();
-        if (status.Failure()) { UC_ERROR_UNLIMITED("DramPool TransportManager shutdown failed"); }
+        if (status.Failure()) {
+            UC_ERROR_UNLIMITED("DramPool TransportManager shutdown failed, error={}", status);
+        }
     }
 }
 
@@ -480,20 +500,25 @@ void DramPoolServer::RequestReceiveLoop()
         const auto controlPeerId = controlPeer.ToString();
         const auto peerIt = g_config.twoSidedToOneSided.find(controlPeerId);
         if (peerIt == g_config.twoSidedToOneSided.end()) {
-            UC_WARN("RequestReceiver rejected unconfigured control peer {}", controlPeerId);
+            UC_WARN("RequestReceiver rejected unconfigured control peer, request_id={}, peer={}",
+                    request->request_id, controlPeerId);
             continue;
         }
 
         auto task = std::make_unique<RequestTask>();
         task->request = std::move(request);
         task->peer_one_sided_id = peerIt->second;
+        UC_DEBUG("RequestReceiver received request, request_id={}, opcode={}, control={}, peer={}",
+                 task->request->request_id, static_cast<int>(task->request->opcode), controlPeerId,
+                 peerIt->second);
         // This bounded handoff keeps transport I/O separate from potentially slow request handling.
         bool queueFullLogged = false;
         while (!requestReceiverStop_.load(std::memory_order_acquire)) {
             if (requestQueue_.TryPush(std::move(task))) { break; }
             if (!queueFullLogged) {
-                UC_WARN("RequestReceiver queue is full, depth={}, retry_wait_us={}",
-                        g_config.requestQueueDepth, g_config.requestReceiverIdleWaitUs);
+                UC_WARN("RequestReceiver queue is full, request_id={}, depth={}, retry_wait_us={}",
+                        task->request->request_id, g_config.requestQueueDepth,
+                        g_config.requestReceiverIdleWaitUs);
                 queueFullLogged = true;
             }
             std::this_thread::sleep_for(idleWait);
@@ -535,21 +560,27 @@ void DramPoolServer::ResetInitializedComponents()
 {
     // Dependents must be destroyed before the non-owning runtime context and
     // the components referenced by that context.
+    UC_DEBUG("DramPool cleanup releasing workers and runtime context");
     completionPoller_.reset();
     taskWorker_.reset();
     runtime_.reset();
+    UC_DEBUG("DramPool cleanup releasing protocol and metadata managers");
     protocolManager_.reset();
     metadataManager_.reset();
+    UC_DEBUG("DramPool cleanup releasing TCP channel and memory pools");
     tcpMessageChannel_.reset();
     flagBufferPool_.reset();
     bufferManager_.reset();
+    UC_DEBUG("DramPool cleanup releasing transport manager");
     transportManager_.reset();
     if (deviceRuntimeOwned_) {
+        UC_DEBUG("DramPool cleanup releasing device runtime");
         if (deviceId_) { (void)device_.Reset(*deviceId_); }
         (void)device_.Finalize();
         deviceRuntimeOwned_ = false;
     }
     deviceId_.reset();
+    UC_DEBUG("DramPool cleanup completed");
 }
 
 }  // namespace UC::DramPool

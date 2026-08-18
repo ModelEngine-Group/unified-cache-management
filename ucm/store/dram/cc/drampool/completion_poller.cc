@@ -38,8 +38,10 @@ void ReleaseResponseBuffer(BufferPool& flagBufferPool, CompletionRecord& record)
     const auto releaseStatus = flagBufferPool.Free(releasedSlot);
     record.local_resp_slot = {};
     if (releaseStatus.Failure()) {
-        UC_ERROR("CompletionPoller release response flag buffer failed, slot={}, error={}",
-                 releasedSlot, releaseStatus);
+        UC_ERROR(
+            "CompletionPoller release response flag buffer failed, request_id={}, slot={}, "
+            "error={}",
+            record.request_id, releasedSlot, releaseStatus);
     }
 }
 
@@ -107,8 +109,8 @@ void CompletionPoller::PollPendingCompletions()
                 }
                 break;
             default:
-                UC_ERROR("CompletionPoller got invalid completion stage={}",
-                         static_cast<int>(iter->stage));
+                UC_ERROR("CompletionPoller got invalid completion stage, request_id={}, stage={}",
+                         iter->request_id, static_cast<int>(iter->stage));
                 iter = pending_.erase(iter);
                 break;
         }
@@ -121,7 +123,9 @@ bool CompletionPoller::PollDataTransfer(CompletionRecord& record)
     const auto queryStatus = runtime_.transport.GetStatus(record.data_handle, transportStatus);
     if (queryStatus.Failure()) {
         // GetStatus removes failed handles, so an API failure is also terminal.
-        UC_ERROR("CompletionPoller data GetStatus failed, handle={}", record.data_handle);
+        UC_ERROR(
+            "CompletionPoller data transfer GetStatus failed, request_id={}, handle={}, error={}",
+            record.request_id, record.data_handle, queryStatus);
         SettleDataTransfer(record, transport::TransferStatus::Failed);
         record.data_handle = transport::kInvalidTransferHandle;
         record.stage = CompletionStage::SubmitResponse;
@@ -134,17 +138,22 @@ bool CompletionPoller::PollDataTransfer(CompletionRecord& record)
         if (!record.timeout_reported && OperationTimedOut(record, SteadyNowMs())) {
             record.timeout_reported = true;
             UC_ERROR(
-                "CompletionPoller data transfer timed out, peer={}, handle={}, timeout_ms={}; "
-                "waiting for Store-initiated disconnect or terminal transport status",
-                record.peer_one_sided_id, record.data_handle, g_config.opTimeoutMs);
+                "CompletionPoller data transfer timed out, request_id={}, peer={}, handle={}, "
+                "timeout_ms={}; waiting for Store-initiated disconnect or terminal transport "
+                "status",
+                record.request_id, record.peer_one_sided_id, record.data_handle,
+                g_config.opTimeoutMs);
         }
         return false;
     }
 
     // A terminal GetStatus releases the data handle before business state is settled.
+    UC_DEBUG("CompletionPoller data transfer finished, request_id={}, handle={}, status={}",
+             record.request_id, record.data_handle, static_cast<int>(transportStatus));
     SettleDataTransfer(record, transportStatus);
     record.data_handle = transport::kInvalidTransferHandle;
     record.stage = CompletionStage::SubmitResponse;
+    UC_DEBUG("CompletionPoller advances to SubmitResponse, request_id={}", record.request_id);
     return true;
 }
 
@@ -156,26 +165,33 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
     if (allocateStatus.Failure()) {
         if (allocateStatus.Underlying() == Status::NoSpace().Underlying()) {
             UC_WARN(
-                "CompletionPoller flag buffer pool full, opcode={}, error={}, retrying next round",
-                static_cast<int>(record.opcode), allocateStatus);
+                "CompletionPoller flag buffer pool full, request_id={}, opcode={}, error={}, "
+                "retrying next round",
+                record.request_id, static_cast<int>(record.opcode), allocateStatus);
             return false;
         }
 
-        UC_ERROR("CompletionPoller flag buffer allocation failed, opcode={}, error={}",
-                 static_cast<int>(record.opcode), allocateStatus);
+        UC_ERROR(
+            "CompletionPoller flag buffer allocation failed, request_id={}, opcode={}, error={}",
+            record.request_id, static_cast<int>(record.opcode), allocateStatus);
         return true;
     }
+    UC_DEBUG("CompletionPoller allocated response slot, request_id={}, slot={}", record.request_id,
+             record.local_resp_slot.slotIndex);
 
     const auto len = static_cast<std::uint32_t>(packedSize);
 
-    const auto protocolStatus = runtime_.protocol.PackResponse(
-        record.local_resp_slot.localAddr, record.opcode, KvResponse{record.results});
+    const auto protocolStatus =
+        runtime_.protocol.PackResponse(record.local_resp_slot.localAddr, record.opcode,
+                                       KvResponse{record.request_id, record.results});
     if (protocolStatus.Failure()) {
         ReleaseResponseBuffer(runtime_.flagBufferPool, record);
-        UC_ERROR("CompletionPoller SubmitResponse pack failed, opcode={}, error={}",
-                 static_cast<int>(record.opcode), protocolStatus);
+        UC_ERROR("CompletionPoller SubmitResponse pack failed, request_id={}, opcode={}, error={}",
+                 record.request_id, static_cast<int>(record.opcode), protocolStatus);
         return true;
     }
+    UC_DEBUG("CompletionPoller packed response, request_id={}, response_len={}", record.request_id,
+             len);
 
     transport::Operation operation;
     operation.opcode = transport::Opcode::Write;
@@ -188,8 +204,10 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
     const auto submitStatus = runtime_.transport.ExecuteAsync(operation, handle);
     if (submitStatus.Failure() || handle == transport::kInvalidTransferHandle) {
         ReleaseResponseBuffer(runtime_.flagBufferPool, record);
-        UC_ERROR("CompletionPoller SubmitResponse ExecuteAsync failed, opcode={}, error={}",
-                 static_cast<int>(record.opcode), submitStatus);
+        UC_ERROR(
+            "CompletionPoller SubmitResponse ExecuteAsync failed, request_id={}, opcode={}, "
+            "handle={}, error={}",
+            record.request_id, static_cast<int>(record.opcode), handle, submitStatus);
         return true;
     }
 
@@ -198,6 +216,8 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
     record.timeout_reported = false;
     record.results.clear();
     record.stage = CompletionStage::PollResponseTransfer;
+    UC_DEBUG("CompletionPoller submitted response transfer, request_id={}, handle={}, slot={}",
+             record.request_id, handle, record.local_resp_slot.slotIndex);
     return false;
 }
 
@@ -207,22 +227,35 @@ bool CompletionPoller::PollResponseTransfer(CompletionRecord& record)
     const auto queryStatus = runtime_.transport.GetStatus(record.response_handle, transportStatus);
     if (queryStatus.Failure()) {
         // GetStatus removes failed handles, so the response source buffer is no longer in use.
-        UC_ERROR("CompletionPoller response GetStatus failed, handle={}", record.response_handle);
-    } else if (transportStatus == transport::TransferStatus::Waiting) {
+        UC_ERROR("CompletionPoller response GetStatus failed, request_id={}, handle={}, error={}",
+                 record.request_id, record.response_handle, queryStatus);
+        ReleaseResponseBuffer(runtime_.flagBufferPool, record);
+        return true;
+    }
+    if (transportStatus == transport::TransferStatus::Waiting) {
         // Keep the response source buffer alive until transport reports a terminal state.
         if (!record.timeout_reported && OperationTimedOut(record, SteadyNowMs())) {
             record.timeout_reported = true;
             UC_ERROR(
-                "CompletionPoller response transfer timed out, peer={}, handle={}, timeout_ms={}; "
-                "waiting for Store-initiated disconnect or terminal transport status",
-                record.peer_one_sided_id, record.response_handle, g_config.opTimeoutMs);
+                "CompletionPoller response transfer timed out, request_id={}, peer={}, handle={}, "
+                "timeout_ms={}; waiting for Store-initiated disconnect or terminal transport "
+                "status",
+                record.request_id, record.peer_one_sided_id, record.response_handle,
+                g_config.opTimeoutMs);
         }
         return false;
-    } else if (transportStatus != transport::TransferStatus::Completed) {
-        UC_ERROR("CompletionPoller response transfer failed, handle={}", record.response_handle);
+    }
+    if (transportStatus != transport::TransferStatus::Completed) {
+        UC_ERROR("CompletionPoller response transfer failed, request_id={}, handle={}, status={}",
+                 record.request_id, record.response_handle, static_cast<int>(transportStatus));
+        ReleaseResponseBuffer(runtime_.flagBufferPool, record);
+        return true;
     }
 
     ReleaseResponseBuffer(runtime_.flagBufferPool, record);
+    UC_DEBUG("CompletionPoller response transfer finished, request_id={}, handle={}, status={}",
+             record.request_id, record.response_handle, static_cast<int>(transportStatus));
+
     return true;
 }
 
@@ -240,28 +273,30 @@ void CompletionPoller::SettleDataTransfer(CompletionRecord& record,
                 if (status.Success()) {
                     result = DumpLoadResult::Ok;
                 } else {
-                    UC_ERROR("CompletionPoller StoreEnd failed, handle={}, error={}",
-                             record.data_handle, status);
+                    UC_ERROR("CompletionPoller StoreEnd failed, request_id={}, handle={}, error={}",
+                             record.request_id, record.data_handle, status);
                     const auto abortStatus = runtime_.metadata.Delete(item.key);
                     if (abortStatus.Failure()) {
                         UC_ERROR(
-                            "CompletionPoller Delete failed after StoreEnd error, handle={}, "
-                            "error={}",
-                            record.data_handle, abortStatus);
+                            "CompletionPoller Delete failed after StoreEnd error, request_id={}, "
+                            "handle={}, error={}",
+                            record.request_id, record.data_handle, abortStatus);
                     }
                 }
             } else {
                 const auto abortStatus = runtime_.metadata.Delete(item.key);
                 if (abortStatus.Failure()) {
-                    UC_ERROR("CompletionPoller Delete reserved DUMP failed, handle={}, error={}",
-                             record.data_handle, abortStatus);
+                    UC_ERROR(
+                        "CompletionPoller Delete reserved DUMP failed, request_id={}, handle={}, "
+                        "error={}",
+                        record.request_id, record.data_handle, abortStatus);
                 }
             }
         } else if (record.opcode == KvOpcode::Load) {
             const auto releaseStatus = runtime_.metadata.LoadEnd(item.key);
             if (releaseStatus.Failure()) {
-                UC_ERROR("CompletionPoller LoadEnd failed, handle={}, error={}", record.data_handle,
-                         releaseStatus);
+                UC_ERROR("CompletionPoller LoadEnd failed, request_id={}, handle={}, error={}",
+                         record.request_id, record.data_handle, releaseStatus);
             } else if (terminalStatus == transport::TransferStatus::Completed) {
                 result = DumpLoadResult::Ok;
             }

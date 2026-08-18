@@ -88,7 +88,8 @@ bool ReplyService::CompletionReady(const Lease& lease) const noexcept
         return false;
     }
     bool ready = false;
-    const auto status = protocol_.IsResponseReady(lease.slot.localAddr, ready);
+    const auto status =
+        protocol_.IsResponseReady(lease.slot.localAddr, lease.token.requestId, ready);
     if (status.Failure() || !ready) { return false; }
     std::atomic_thread_fence(std::memory_order_acquire);
     return true;
@@ -100,8 +101,9 @@ Status ReplyService::DecodeReply(const Lease& lease, std::vector<EntryResult>* e
         return Status::InvalidParam("invalid DramPool reply metadata");
     }
     DramPool::KvResponse response;
-    auto status = protocol_.UnpackResponse(lease.slot.localAddr, ToOpcode(lease.op),
-                                           static_cast<std::uint16_t>(lease.entryCount), response);
+    auto status =
+        protocol_.UnpackResponse(lease.slot.localAddr, ToOpcode(lease.op), lease.token.requestId,
+                                 static_cast<std::uint16_t>(lease.entryCount), response);
     if (status.Failure()) { return status; }
     if (response.results.size() != lease.entryCount) { return Status::DeserializeFailed(); }
 
