@@ -119,23 +119,37 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_serve = sub.add_parser("serve", help="Serve the site locally.")
-    p_serve.add_argument("--dev-addr", default="127.0.0.1:8000", help="Dev server address.")
+    p_serve.add_argument(
+        "--dev-addr", default="127.0.0.1:8000", help="Dev server address."
+    )
     p_serve.set_defaults(func=serve)
 
     p_build = sub.add_parser("build", help="Build the site.")
-    p_build.add_argument("--lang", default="en", choices=LANGS, help="Language profile to record.")
-    p_build.add_argument("--strict", action="store_true", help="Treat warnings as errors.")
-    p_build.add_argument("--clean", action="store_true", help="Remove the site dir before building.")
+    p_build.add_argument(
+        "--lang", default="en", choices=LANGS, help="Language profile to record."
+    )
+    p_build.add_argument(
+        "--strict", action="store_true", help="Treat warnings as errors."
+    )
+    p_build.add_argument(
+        "--clean", action="store_true", help="Remove the site dir before building."
+    )
     p_build.set_defaults(func=build)
 
     p_validate = sub.add_parser("validate", help="Strict build across all languages.")
     p_validate.set_defaults(func=validate)
 
-    p_translate = sub.add_parser("translate", help="AI-generate Chinese for changed English pages (CI only).")
-    p_translate.add_argument("--changed", action="store_true", help="Only translate changed pages.")
+    p_translate = sub.add_parser(
+        "translate", help="AI-generate Chinese for changed English pages (CI only)."
+    )
+    p_translate.add_argument(
+        "--changed", action="store_true", help="Only translate changed pages."
+    )
     p_translate.set_defaults(func=translate)
 
-    p_generate = sub.add_parser("generate", help="Regenerate derived content from sources.")
+    p_generate = sub.add_parser(
+        "generate", help="Regenerate derived content from sources."
+    )
     p_generate.set_defaults(func=generate)
 
     args = parser.parse_args(argv)
