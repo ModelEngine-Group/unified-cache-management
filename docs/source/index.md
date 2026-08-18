@@ -63,6 +63,7 @@ user-guide/sparse-attention/index
 user-guide/pd-disaggregation/index
 user-guide/metrics/metrics
 user-guide/rerope/rerope
+user-guide/trace_mode
 :::
 
 :::{toctree}
