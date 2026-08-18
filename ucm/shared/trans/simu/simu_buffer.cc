@@ -51,6 +51,11 @@ static std::shared_ptr<void> GetBuffer(Buffers& buffers)
     return nullptr;
 }
 
+std::shared_ptr<void> SimuBuffer::MakeDeviceMappedHostBuffer(size_t size)
+{
+    return MakeHostBuffer(size);
+}
+
 std::shared_ptr<void> SimuBuffer::MakeDeviceBuffer(size_t size)
 {
     constexpr int8_t deviceInitVal = 0xd;

@@ -71,7 +71,7 @@ public:
                                size_t number) override;
 
     Status AppendCallback(std::function<void(bool)> cb) override;
-    Status WaitEvent(void* event) override;
+    Status WaitEvent(const Event& event) override;
     Status Synchronized() override;
 };
 

@@ -61,7 +61,7 @@ public:
 
     Status AppendCallback(std::function<void(bool)> cb) override;
     Status Synchronized() override;
-    Status WaitEvent(void* event) override;
+    Status WaitEvent(const Event& event) override;
 };
 
 }  // namespace UC::Trans

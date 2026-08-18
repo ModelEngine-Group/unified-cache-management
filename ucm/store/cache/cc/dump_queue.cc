@@ -98,7 +98,7 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
     DumpCtx dumpCtx;
     dumpCtx.taskHandle = task->id;
     if (task->desc.prerequisiteHandle != 0) {
-        auto s = stream.WaitEvent(reinterpret_cast<void*>(task->desc.prerequisiteHandle));
+        auto s = stream.WaitEvent(Trans::Event{task->desc.prerequisiteHandle});
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to wait prerequisite event for dump task({}).", s, task->id);
             return s;

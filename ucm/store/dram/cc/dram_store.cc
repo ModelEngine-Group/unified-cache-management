@@ -35,12 +35,10 @@
 #include "node_scheduler.h"
 #include "reply_service.h"
 #include "task_manager.h"
+#include "trans/device.h"
 #include "transport_executor.h"
 #include "transport_manager_backend.h"
 #include "ucmstore_v1.h"
-#ifdef UC_DRAM_ASCEND_BACKEND
-#include <acl/acl.h>
-#endif
 
 namespace UC::Dram {
 
@@ -51,14 +49,7 @@ namespace UC::Dram {
 // block on the prerequisite event here, before the control message is sent.
 static Status WaitPrerequisiteEvent(std::uintptr_t eventHandle)
 {
-    if (eventHandle == 0) { return Status::OK(); }
-#ifdef UC_DRAM_ASCEND_BACKEND
-    const auto ret = aclrtSynchronizeEvent(reinterpret_cast<aclrtEvent>(eventHandle));
-    if (ret == ACL_SUCCESS) { return Status::OK(); }
-    return Status::Error("aclrtSynchronizeEvent failed: " + std::to_string(ret));
-#else
-    return Status::OK();
-#endif
+    return Trans::Event{eventHandle}.Synchronize();
 }
 
 class DramStore final : public StoreV1 {
@@ -84,10 +75,11 @@ public:
 
 private:
     Expected<Detail::TaskHandle> SubmitTransfer(OpType op, Detail::TaskDesc task);
+    Status Start();
 
     Status SetupParsed(DramConfig parsed)
     {
-        config = std::make_unique<DramConfig>(std::move(parsed));
+        config_ = std::make_unique<DramConfig>(std::move(parsed));
         auto status = Compose();
 
         if (status.Failure()) {
@@ -99,82 +91,92 @@ private:
 
     Status Compose()
     {
+        UC::Trans::Device device;
+        const auto initStatus = device.Init();
+        if (initStatus.Failure() && initStatus != Status::DuplicateKey()) {
+            return Status::Error("aclInit failed: " + initStatus.ToString());
+        }
+        const auto setupStatus = device.Setup(config_->deviceId);
+        if (setupStatus.Failure()) {
+            return Status::Error("aclrtSetDevice failed: " + setupStatus.ToString());
+        }
 #ifdef UC_DRAM_ASCEND_BACKEND
-        const auto transferTimeout = std::max(config->taskTimeouts.load, config->taskTimeouts.dump);
-        auto createdBackend = CreateTransportManagerBackend(TransportManagerBackendOptions{
-            config->localControlHost, config->localControlPort, config->localTransportManagerId,
-            config->localHost, config->transportDeviceId, 1000,
+        // load and dump are timed separately per-task in TaskManager. The transport backend
+        // enforces a single deadline
+        const auto transferTimeout =
+            std::max(config_->taskTimeouts.load, config_->taskTimeouts.dump);
+        TransportManagerBackendOptions backendOpts{
+            config_->localControlHost,
+            config_->localControlPort,
+            config_->localTransportManagerId,
+            config_->localHost,
+            config_->deviceId,
+            1000,
             static_cast<std::int32_t>(std::min<std::int64_t>(
                 transferTimeout.count(), std::numeric_limits<std::int32_t>::max())),
-            config->nodeScheduler.nodes});
+            config_->nodeScheduler.nodes};
+        auto createdBackend = CreateTransportManagerBackend(std::move(backendOpts));
         if (!createdBackend) { return createdBackend.Error(); }
-        transportBackend = std::move(createdBackend).Value();
+        transportBackend_ = std::move(createdBackend).Value();
 
         auto createdReplies = ReplyService::Create(ReplyService::Options{
-            config->replySlotSize, config->replySlotCount, std::chrono::microseconds{50},
-            [this](NodeId nodeId, NodeEvent event) {
-                nodeScheduler->Publish(nodeId, std::move(event));
+            config_->deviceId, config_->replySlotSize, config_->replySlotCount,
+            std::chrono::microseconds{50}, [this](NodeId nodeId, NodeEvent event) {
+                nodeScheduler_->Publish(nodeId, std::move(event));
             }});
         if (!createdReplies) { return createdReplies.Error(); }
-        replyService = std::move(createdReplies).Value();
+        replyService_ = std::move(createdReplies).Value();
 
-        memoryHandles.reserve(1);
-        const auto replyMemory = replyService->MemoryRegion();
-        auto registeredReply = transportBackend->RegisterMemory(
-            replyMemory.address, replyMemory.length, MemoryRegionType::HOST);
+        memoryHandles_.reserve(1);
+        const auto replyMemory = replyService_->MemoryRegion();
+        auto registeredReply = transportBackend_->RegisterMemory(
+            replyMemory.address, replyMemory.length, MemoryRegionType::DEVICE);
         if (!registeredReply) { return registeredReply.Error(); }
-        memoryHandles.push_back(std::move(registeredReply).Value());
+        memoryHandles_.push_back(std::move(registeredReply).Value());
 
         std::vector<UC::KV::NodeId> nodeIds;
-        nodeIds.reserve(config->nodeScheduler.nodes.size());
-        for (const auto& node : config->nodeScheduler.nodes) { nodeIds.push_back(node.nodeId); }
+        nodeIds.reserve(config_->nodeScheduler.nodes.size());
+        for (const auto& node : config_->nodeScheduler.nodes) { nodeIds.push_back(node.nodeId); }
         UC::KV::RouterConfig routerConfig;
-        routerConfig.type = config->routerType;
-        router = UC::KV::CreateRouter(nodeIds, {}, routerConfig);
-        if (!router) { return Status::Error("failed to create DramStore router"); }
+        routerConfig.type = config_->routerType;
+        router_ = UC::KV::CreateRouter(nodeIds, {}, routerConfig);
+        if (!router_) { return Status::Error("failed to create DramStore router"); }
 
-        transport = std::make_unique<TransportExecutor>(TransportExecutor::Options{
-            config->transportRuntime.workerCount, config->nodeScheduler.nodes.size(),
-            config->nodeScheduler.limits.maxInflightRequests, transportBackend,
+        transport_ = std::make_unique<TransportExecutor>(TransportExecutor::Options{
+            config_->transportRuntime.workerCount, config_->nodeScheduler.nodes.size(),
+            config_->nodeScheduler.limits.maxInflightRequests, transportBackend_,
             [this](NodeId nodeId, NodeEvent event) {
-                nodeScheduler->Publish(nodeId, std::move(event));
+                nodeScheduler_->Publish(nodeId, std::move(event));
             }});
 
-        nodeScheduler = std::make_unique<NodeScheduler>(
-            config->nodeScheduler,
+        nodeScheduler_ = std::make_unique<NodeScheduler>(
+            config_->nodeScheduler,
             NodeDependencies{
-                [this](std::vector<RequestCompleted>& events) { taskManager->Publish(events); },
+                [this](std::vector<RequestCompleted>& events) { taskManager_->Publish(events); },
                 [this](TransportCommand& command) {
-                    return transport ? transport->TryPost(command)
-                                     : Status::Error("TransportExecutor is unavailable");
+                    return transport_ ? transport_->TryPost(command)
+                                      : Status::Error("TransportExecutor is unavailable");
                 },
                 [this](const RequestToken& token, OpType op,
                        std::size_t entryCount) -> Expected<ReplySlot> {
-                    return replyService
-                               ? replyService->Acquire(token, op, entryCount)
+                    return replyService_
+                               ? replyService_->Acquire(token, op, entryCount)
                                : Expected<ReplySlot>{Status::Error("ReplyService is unavailable")};
                 },
                 [this](const RequestToken& token, const ReplySlot& slot) {
-                    return replyService ? replyService->Release(token, slot)
-                                        : Status::Error("ReplyService is unavailable");
+                    return replyService_ ? replyService_->Release(token, slot)
+                                         : Status::Error("ReplyService is unavailable");
                 }});
 
-        taskManager = std::make_unique<TaskManager>(
-            TaskManagerConfig{config->tensorSizes, config->maxIoEntries,
-                              config->nodeScheduler.limits.maxBatchEntries, config->taskTimeouts},
-            TaskManagerDependencies{router, [this](Request& request) {
-                                        return nodeScheduler
-                                                   ? nodeScheduler->Post(request)
+        taskManager_ = std::make_unique<TaskManager>(
+            TaskManagerConfig{config_->tensorSizes, config_->maxIoEntries,
+                              config_->nodeScheduler.limits.maxBatchEntries, config_->taskTimeouts},
+            TaskManagerDependencies{router_, [this](Request& request) {
+                                        return nodeScheduler_
+                                                   ? nodeScheduler_->Post(request)
                                                    : Status::Error("NodeScheduler is unavailable");
                                     }});
-
-        auto status = transport->Start();
-        if (status.Failure()) { return status; }
-        status = taskManager->Start();
-        if (status.Failure()) { return status; }
-        status = replyService->Start();
-        if (status.Failure()) { return status; }
-        return nodeScheduler->Start();
+        return config_->role == Role::SCHEDULER ? Start() : Status::OK();
 #else
         return Status::Unsupported();
 #endif
@@ -182,41 +184,86 @@ private:
 
     void StopGraph()
     {
-        if (!config) { return; }
+        if (!config_) { return; }
+
+        UC_INFO("DramStore cleaning up");
 
         // Shutdown is terminal application teardown. TaskManager first stops all
         // admission and drops late completions while its callback target remains alive.
-        if (taskManager) { taskManager->Shutdown(); }
-        if (nodeScheduler) { nodeScheduler->Shutdown(); }
-        if (replyService) { replyService->Shutdown(); }
-        if (transport) { transport->Shutdown(); }
-        if (transportBackend) { transportBackend->Stop(); }
+        if (taskManager_) { taskManager_->Shutdown(); }
+        if (nodeScheduler_) { nodeScheduler_->Shutdown(); }
+        if (replyService_) { replyService_->Shutdown(); }
+        if (transport_) { transport_->Shutdown(); }
+        if (transportBackend_) { transportBackend_->Stop(); }
 
-        memoryHandles.clear();
-        transport.reset();
-        replyService.reset();
-        nodeScheduler.reset();
-        taskManager.reset();
-        transportBackend.reset();
-        router.reset();
-        config.reset();
+        memoryHandles_.clear();
+        transport_.reset();
+        replyService_.reset();
+        nodeScheduler_.reset();
+        taskManager_.reset();
+        transportBackend_.reset();
+        router_.reset();
+        config_.reset();
     }
 
-    std::unique_ptr<DramConfig> config;
-    std::shared_ptr<ITransportBackend> transportBackend;
-    std::vector<MemoryHandle> memoryHandles;
-    std::shared_ptr<UC::KV::Router> router;
-    std::unique_ptr<TransportExecutor> transport;
-    std::unique_ptr<ReplyService> replyService;
-    std::unique_ptr<NodeScheduler> nodeScheduler;
-    std::unique_ptr<TaskManager> taskManager;
+    std::unique_ptr<DramConfig> config_;
+    std::shared_ptr<ITransportBackend> transportBackend_;
+    std::vector<MemoryHandle> memoryHandles_;
+    std::shared_ptr<UC::KV::Router> router_;
+    std::unique_ptr<TransportExecutor> transport_;
+    std::unique_ptr<ReplyService> replyService_;
+    std::unique_ptr<NodeScheduler> nodeScheduler_;
+    std::unique_ptr<TaskManager> taskManager_;
 };
 
 Status DramStore::Setup(const Detail::Dictionary& config)
 {
     auto parsed = DramConfig::Parse(config);
-    if (!parsed) { return parsed.Error(); }
-    return SetupParsed(std::move(parsed).Value());
+    if (!parsed) {
+        UC_ERROR("DramStore setup failed while parsing configuration: {}", parsed.Error());
+        return parsed.Error();
+    }
+    auto status = SetupParsed(std::move(parsed).Value());
+    if (status.Failure()) {
+        UC_ERROR("DramStore setup failed: {}", status);
+        return status;
+    }
+    UC_INFO(
+        "DramStore setup succeeded, role={} device_id={} nodes={} max_io_entries={} "
+        "max_batch_entries={} max_inflight_per_node={} reply_slots={}",
+        config_->role == Role::SCHEDULER ? "scheduler" : "worker", config_->deviceId,
+        config_->nodeScheduler.nodes.size(), config_->maxIoEntries,
+        config_->nodeScheduler.limits.maxBatchEntries,
+        config_->nodeScheduler.limits.maxInflightRequests, config_->replySlotCount);
+    return Status::OK();
+}
+
+Status DramStore::Start()
+{
+    auto status = transport_->Start();
+    if (status.Failure()) {
+        UC_ERROR("DramStore start failed, stage=TransportExecutor status={}", status);
+        return status;
+    }
+    status = taskManager_->Start();
+    if (status.Failure()) {
+        UC_ERROR("DramStore start failed, stage=TaskManager status={}", status);
+        return status;
+    }
+    status = replyService_->Start();
+    if (status.Failure()) {
+        UC_ERROR("DramStore start failed, stage=ReplyService status={}", status);
+        return status;
+    }
+    status = nodeScheduler_->Start();
+    if (status.Failure()) {
+        UC_ERROR("DramStore start failed, stage=NodeScheduler status={}", status);
+        return status;
+    }
+    UC_INFO("DramStore started, role={} nodes={}",
+            config_->role == Role::SCHEDULER ? "scheduler" : "worker",
+            config_->nodeScheduler.nodes.size());
+    return Status::OK();
 }
 
 std::string DramStore::Readme() const
@@ -228,17 +275,23 @@ Expected<std::vector<std::uint8_t>> DramStore::Lookup(const Detail::BlockId* blo
                                                       std::size_t num)
 {
     if (num == 0) { return std::vector<std::uint8_t>{}; }
-    if (blocks == nullptr || num > config->maxIoEntries) {
+    if (blocks == nullptr || num > config_->maxIoEntries) {
         return Status::InvalidParam("invalid lookup input");
     }
-    auto submitted = taskManager->SubmitLookup(blocks, num);
+    auto submitted = taskManager_->SubmitLookup(blocks, num);
     if (!submitted) { return submitted.Error(); }
-    return taskManager->WaitLookup(std::move(submitted).Value());
+    return taskManager_->WaitLookup(std::move(submitted).Value());
 }
 
-Expected<ssize_t> DramStore::LookupOnPrefix(const Detail::BlockId*, std::size_t)
+Expected<ssize_t> DramStore::LookupOnPrefix(const Detail::BlockId* blocks, std::size_t num)
 {
-    return Status::Unsupported();
+    auto looked = Lookup(blocks, num);
+    if (!looked) { return looked.Error(); }
+    const auto& founds = looked.Value();
+    for (std::size_t i = 0; i < founds.size(); ++i) {
+        if (founds[i] == 0) { return static_cast<ssize_t>(i) - 1; }
+    }
+    return static_cast<ssize_t>(num) - 1;
 }
 
 void DramStore::Prefetch(const Detail::BlockId*, std::size_t) {}
@@ -252,7 +305,8 @@ Expected<Detail::TaskHandle> DramStore::Dump(Detail::TaskDesc task)
 {
     auto status = WaitPrerequisiteEvent(task.prerequisiteHandle);
     if (status.Failure()) {
-        UC_ERROR("Failed({}) to wait prerequisite event for dump.", status);
+        UC_ERROR("DramStore dump prerequisite wait failed, prerequisite_handle={} status={}",
+                 task.prerequisiteHandle, status);
         return status;
     }
     task.prerequisiteHandle = 0;
@@ -263,14 +317,17 @@ Expected<Detail::TaskHandle> DramStore::SubmitTransfer(OpType op, Detail::TaskDe
 {
     if (task.empty()) { return Status::InvalidParam("invalid transfer task"); }
 
-    return taskManager->SubmitTransfer(op, std::move(task));
+    return taskManager_->SubmitTransfer(op, std::move(task));
 }
 
-Expected<bool> DramStore::Check(Detail::TaskHandle taskId) { return taskManager->Check(taskId); }
+Expected<bool> DramStore::Check(Detail::TaskHandle taskId) { return taskManager_->Check(taskId); }
 
-Status DramStore::Wait(Detail::TaskHandle taskId) { return taskManager->WaitTransfer(taskId); }
+Status DramStore::Wait(Detail::TaskHandle taskId) { return taskManager_->WaitTransfer(taskId); }
 
-bool DramStore::NeedRegisterKVCaches() const { return true; }
+bool DramStore::NeedRegisterKVCaches() const
+{
+    return !config_ || config_->role != Role::SCHEDULER;
+}
 
 Status DramStore::RegisterKVCaches(const KVCacheRegistration* registrations, std::size_t count)
 {
@@ -283,37 +340,42 @@ Status DramStore::RegisterKVCaches(const KVCacheRegistration* registrations, std
         }
     }
 
-    const auto firstHandle = memoryHandles.size();
-    if (count > memoryHandles.max_size() - firstHandle) {
+    const auto firstHandle = memoryHandles_.size();
+    if (count > memoryHandles_.max_size() - firstHandle) {
         return Status::InvalidParam("too many KV cache registrations");
     }
     try {
-        memoryHandles.reserve(firstHandle + count);
+        memoryHandles_.reserve(firstHandle + count);
     } catch (...) {
         return Status::InvalidParam("too many KV cache registrations");
     }
 
     for (std::size_t index = 0; index < count; ++index) {
         auto registered =
-            transportBackend->RegisterMemory(reinterpret_cast<void*>(registrations[index].addr),
-                                             registrations[index].size, MemoryRegionType::DEVICE);
+            transportBackend_->RegisterMemory(reinterpret_cast<void*>(registrations[index].addr),
+                                              registrations[index].size, MemoryRegionType::DEVICE);
         if (registered) {
-            memoryHandles.push_back(std::move(registered).Value());
+            memoryHandles_.push_back(std::move(registered).Value());
             continue;
         }
 
         auto result = registered.Error();
-        while (memoryHandles.size() > firstHandle) {
-            const auto cleanup = transportBackend->UnregisterMemory(memoryHandles.back());
+        while (memoryHandles_.size() > firstHandle) {
+            const auto cleanup = transportBackend_->UnregisterMemory(memoryHandles_.back());
             if (cleanup.Failure()) {
                 result = cleanup;
                 break;
             }
-            memoryHandles.pop_back();
+            memoryHandles_.pop_back();
         }
+        UC_ERROR("DramStore KV cache registration failed, failed_index={} count={} status={}",
+                 index, count, result);
         return result;
     }
-    return Status::OK();
+
+    UC_INFO("DramStore KV caches registered, count={}", count);
+    // RegisterKVCaches is the final initialization hook for the worker role.
+    return Start();
 }
 
 }  // namespace UC::Dram

@@ -104,6 +104,8 @@ Expected<TaskId> TaskManager::EnqueueTask(OpType op, TaskInput input)
         }
     }
     if (enqueued.Failure()) {
+        UC_WARN("DramStore task rejected, task_id={} op={} status={}", taskId,
+                static_cast<unsigned>(op), enqueued);
         std::lock_guard lock(taskMutex_);
         taskResults_.erase(taskId);
         return enqueued;
@@ -210,6 +212,7 @@ std::vector<Request> TaskManager::BuildRequests(OpType op, std::vector<IoEntry> 
     std::vector<Request> requests;
     requests.reserve(routed.size());
     for (const auto& [node, indexes] : routed) {
+        UC_DEBUG("BuildRequests: route node={} entries={}", node, indexes.size());
         for (std::size_t begin = 0; begin < indexes.size(); begin += batchLimit) {
             const auto end = std::min(indexes.size(), begin + batchLimit);
             Request request;
@@ -229,6 +232,8 @@ std::vector<Request> TaskManager::BuildRequests(OpType op, std::vector<IoEntry> 
 void TaskManager::ProcessSubmission(Submission submission)
 {
     if (submission.deadline <= Clock::now()) {
+        UC_WARN("DramStore task expired before processing, task_id={} op={}", submission.taskId,
+                static_cast<unsigned>(submission.op));
         submission.promise.set_value(TaskResult{Status::Timeout(), {}});
         return;
     }
@@ -239,6 +244,11 @@ void TaskManager::ProcessSubmission(Submission submission)
             : NormalizeLookup(std::get<std::vector<Detail::BlockId>>(std::move(submission.input)));
     const auto entryCount = entries.size();
     if (entryCount > config_.maxIoEntries - usedIoEntries_) {
+        UC_WARN(
+            "DramStore task rejected by IO capacity, task_id={} op={} entries={} "
+            "used_entries={} capacity={}",
+            submission.taskId, static_cast<unsigned>(submission.op), entryCount, usedIoEntries_,
+            config_.maxIoEntries);
         submission.promise.set_value(TaskResult{Status::NoSpace(), {}});
         return;
     }
@@ -262,7 +272,14 @@ void TaskManager::ProcessSubmission(Submission submission)
 
     for (auto& request : requests) {
         const auto status = dependencies_.submitRequest(request);
-        if (status.Failure()) { CompleteRequest(taskId, status); }
+        if (status.Failure()) {
+            UC_WARN(
+                "DramStore request submission failed, task_id={} request_id={} op={} "
+                "node_id={} entries={} status={}",
+                taskId, request.requestId, static_cast<unsigned>(request.op), request.nodeId,
+                request.entries.size(), status);
+            CompleteRequest(taskId, status);
+        }
     }
 }
 
@@ -290,6 +307,10 @@ void TaskManager::CompleteRequest(TaskId taskId, Status status, std::vector<Entr
 
     auto promise = std::move(task.promise);
     auto taskStatus = task.failure.has_value() ? std::move(*task.failure) : Status::OK();
+    if (taskStatus.Failure()) {
+        UC_WARN("DramStore task failed, task_id={} op={} entries={} status={}", taskId,
+                static_cast<unsigned>(task.op), task.entryCount, taskStatus);
+    }
     auto lookupResults =
         taskStatus.Success() ? std::move(task.lookupResults) : std::vector<std::uint8_t>{};
     usedIoEntries_ -= task.entryCount;
@@ -331,7 +352,10 @@ void TaskManager::Run() noexcept
             }
         }
     } catch (...) {
-        UC_ERROR("TaskManager worker stopped unexpectedly");
+        UC_ERROR(
+            "DramStore TaskManager worker stopped unexpectedly, active_tasks={} "
+            "used_entries={}",
+            activeTasks_.size(), usedIoEntries_);
         {
             std::lock_guard lock(workMutex_);
             accepting_ = false;

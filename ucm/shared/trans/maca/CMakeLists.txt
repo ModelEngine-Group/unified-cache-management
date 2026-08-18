@@ -10,6 +10,7 @@ target_compile_options(kernel PRIVATE
 add_library(trans STATIC
     ${CMAKE_CURRENT_LIST_DIR}/../cuda/cuda_device.cc
     ${CMAKE_CURRENT_LIST_DIR}/../cuda/cuda_buffer.cc
+    ${CMAKE_CURRENT_LIST_DIR}/../cuda/cuda_event.cc
     ${CMAKE_CURRENT_LIST_DIR}/../cuda/cuda_stream.cc
     ${CMAKE_CURRENT_LIST_DIR}/../cuda/cuda_sm_stream.cc
 )

@@ -80,6 +80,7 @@ TEST(ReplyServicePollingTest, PublishesObservedReplyAndKeepsLeaseUntilActorRelea
 {
     EventCollector collector;
     auto created = ReplyService::Create(ReplyService::Options{
+        0,
         64,
         1,
         std::chrono::microseconds{50},
@@ -125,6 +126,7 @@ TEST(ReplyServicePollingTest, ReusesSlotWhilePreviousReplyEventIsBeingPublished)
     const RequestToken secondToken{7, kDefaultLaneId, 9, 43};
 
     auto created = ReplyService::Create(ReplyService::Options{
+        0,
         64,
         1,
         std::chrono::microseconds{50},
@@ -197,6 +199,7 @@ TEST(ReplyServicePollingTest, ReusesSlotWhilePreviousReplyEventIsBeingPublished)
 TEST(ReplyServicePollingTest, AllowsShutdownWithAbandonedLease)
 {
     auto created = ReplyService::Create(ReplyService::Options{
+        0,
         64,
         1,
         std::chrono::microseconds{50},
@@ -217,6 +220,7 @@ TEST(ReplyServicePollingTest, EventPublisherExceptionIsFatal)
             std::promise<void> publishAttempted;
             auto publishAttemptedFuture = publishAttempted.get_future();
             auto created = ReplyService::Create(ReplyService::Options{
+                0,
                 64,
                 1,
                 std::chrono::microseconds{50},

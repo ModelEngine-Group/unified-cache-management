@@ -52,6 +52,7 @@ struct ReplyMemoryRegion final {
 class ReplyService final {
 public:
     struct Options {
+        std::int32_t deviceId{0};
         std::uint32_t slotSize{0};
         std::size_t slotCount{0};
         std::chrono::microseconds pollInterval{0};

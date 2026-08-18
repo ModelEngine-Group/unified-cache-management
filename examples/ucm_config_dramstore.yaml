@@ -1,0 +1,53 @@
+# DramStore UCM configuration example.
+#
+# Pass this file through kv_connector_extra_config, for example:
+# kv_connector_extra_config={"UCM_CONFIG_FILE": "/workspace/unified-cache-management/examples/ucm_config_dramstore.yaml"}
+# The connector supplies role, device_id, and tensor_size_list at runtime.
+
+ucm_connectors:
+  - ucm_connector_name: "UcmPipelineStore"
+    ucm_connector_config:
+      store_pipeline: "Dram"
+
+      # This DramStore process must have a unique control endpoint and transport ID.
+      # Both values must also appear as one two_sided/one_sided pair in drampool.yaml.
+      local_control_endpoint: "127.0.0.1:9001"
+      local_host: "127.0.0.1"
+      local_transport_manager_id: "127.0.0.1:4502"
+
+      # DramPool control endpoints and their transport IDs. The two arrays must
+      # have the same length and matching indexes.
+      node_control_endpoints: ["127.0.0.1:9000"]
+      node_transport_manager_ids: ["127.0.0.1:4501"]
+
+      # Maximum number of active IO entries. A transfer shard expands to one
+      # entry per tensor in tensor_size_list, which the connector supplies.
+      max_io_entries: 10000
+
+      # Optional per-task timeouts and reconnect interval, in milliseconds.
+      # Omit to keep the defaults shown here.
+      lookup_timeout_ms: 1000
+      dump_timeout_ms: 3000
+      load_timeout_ms: 3000
+      reconnect_interval_ms: 3000
+
+      # Routing strategy for sharding keys across nodes.
+      # Options: ring_hash | maglev | contiguous_block_affinity | batch_topk_affinity
+      router_type: "ring_hash"
+
+      # Data-plane threads that execute dump/load transfers. Commands are
+      # dispatched by hash(nodeId), so a node's commands stay on one worker.
+      transport_worker_count: 1
+
+      # Control-plane threads driving the DramPool node actors (request/response
+      # scheduling, reconnection). Nodes are split round-robin across runners;
+      # effectively min(node_runner_count, node_count) runners. Both default to 1.
+      node_runner_count: 1
+
+
+# DramStore must wait for the compute-stream event before a dump exposes KV
+# cache memory to remote access.
+enable_event_sync: true
+
+# Whether to use layerwise loading/saving
+use_layerwise: true

@@ -202,7 +202,7 @@ Status SimuStream::AppendCallback(std::function<void(bool)> cb)
     return Status::OK();
 }
 
-Status SimuStream::WaitEvent(void* event)
+Status SimuStream::WaitEvent(const Event& event)
 {
     (void)event;
     return Status::OK();

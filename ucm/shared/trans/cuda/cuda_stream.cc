@@ -204,10 +204,10 @@ Status Trans::CudaStream::Synchronized()
     return Status::OK();
 }
 
-Status Trans::CudaStream::WaitEvent(void* event)
+Status Trans::CudaStream::WaitEvent(const Event& event)
 {
-    if (event == nullptr) { return Status::OK(); }
-    auto ret = cudaStreamWaitEvent(stream_, static_cast<cudaEvent_t>(event), 0);
+    if (!event.Valid()) { return Status::OK(); }
+    auto ret = cudaStreamWaitEvent(stream_, reinterpret_cast<cudaEvent_t>(event.NativeHandle()), 0);
     if (ret != cudaSuccess) [[unlikely]] { return Status{ret, cudaGetErrorString(ret)}; }
     return Status::OK();
 }
