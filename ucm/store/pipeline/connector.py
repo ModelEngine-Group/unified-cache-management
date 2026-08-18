@@ -316,9 +316,17 @@ def _yuanrong_pipeline_builder(
 def _stack_yuanrong_store(
     config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
 ) -> None:
-    from ucm.store.yuanrongstore import stack_yuanrong_store
+    from ucm.store.yuanrongstore.resource_reporter import (
+        start_yuanrong_resource_reporter,
+    )
 
-    stack_yuanrong_store(config, pipeline)
+    store_dir = Path(__file__).resolve().parent.parent
+    pipeline.Stack(
+        "YuanRong",
+        str(store_dir / "yuanrongstore/libyuanrongstore.so"),
+        config,
+    )
+    start_yuanrong_resource_reporter(config)
 
 
 def _yuanrong_posix_pipeline_builder(
