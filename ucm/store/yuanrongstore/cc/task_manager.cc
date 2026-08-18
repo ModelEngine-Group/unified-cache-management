@@ -1,7 +1,7 @@
 /**
  * MIT License
  *
- * Copyright (c) 2025 Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -21,38 +21,4 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TEST_DETAIL_PATH_BASE_H
-#define UNIFIEDCACHE_TEST_DETAIL_PATH_BASE_H
-
-#include <gtest/gtest.h>
-#include "random.h"
-
-namespace UC::Test::Detail {
-
-class PathBase : public ::testing::Test {
-public:
-    void SetUp() override
-    {
-        testing::Test::SetUp();
-        const auto info = testing::UnitTest::GetInstance()->current_test_info();
-        std::string testCaseName = info->test_case_name();
-        std::string testName = info->name();
-        this->path_ = "./" + testCaseName + "_" + testName + "_" + this->rd_.RandomString(20) + "/";
-        if (system((std::string("rm -rf ") + this->path_).c_str())) {}
-        if (system((std::string("mkdir -p ") + this->path_).c_str())) {}
-    }
-    void TearDown() override
-    {
-        if (system((std::string("rm -rf ") + this->path_).c_str())) {}
-        testing::Test::TearDown();
-    }
-    std::string Path() const { return this->path_; }
-
-private:
-    Random rd_;
-    std::string path_;
-};
-
-}  // namespace UC::Test::Detail
-
-#endif
+#include "task_manager.h"
