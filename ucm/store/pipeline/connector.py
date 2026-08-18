@@ -310,12 +310,15 @@ def _mooncake_posix_pipeline_builder(
 def _yuanrong_pipeline_builder(
     config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
 ):
-    store_dir = Path(__file__).resolve().parent.parent
-    pipeline.Stack(
-        "YuanRong",
-        str(store_dir / "yuanrongstore/libyuanrongstore.so"),
-        config,
-    )
+    _stack_yuanrong_store(config, pipeline)
+
+
+def _stack_yuanrong_store(
+    config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
+) -> None:
+    from ucm.store.yuanrongstore import stack_yuanrong_store
+
+    stack_yuanrong_store(config, pipeline)
 
 
 def _yuanrong_posix_pipeline_builder(
@@ -348,11 +351,7 @@ def _yuanrong_posix_pipeline_builder(
         posix_config["shard_size"] = object_size
         posix_config["block_size"] = object_size * shards_per_block
     pipeline.Stack("Posix", str(store_dir / "posix/libposixstore.so"), posix_config)
-    pipeline.Stack(
-        "YuanRong",
-        str(store_dir / "yuanrongstore/libyuanrongstore.so"),
-        config,
-    )
+    _stack_yuanrong_store(config, pipeline)
 
 
 UcmPipelineStoreBuilder.register("Cache|Ds3fs", _cache_ds3fs_pipeline_builder)

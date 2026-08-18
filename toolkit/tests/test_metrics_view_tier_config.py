@@ -109,7 +109,7 @@ ucm:yuanrong_local_ssd_load_hits_total 25
         self.assertAlmostEqual(values["yuanrong_ssd_hit_rate"], 0.064)
         self.assertAlmostEqual(values["posix_hit_rate"], 0.128)
 
-    def test_cache_posix_formula_does_not_require_yuanrong_series(self):
+    def test_cache_posix_formula_ignores_registered_zero_yuanrong_series(self):
         initial = """
 vllm:prefix_cache_hits_total 10
 vllm:prefix_cache_queries_total 20
@@ -117,6 +117,9 @@ vllm:external_prefix_cache_hits_total 5
 vllm:external_prefix_cache_queries_total 10
 ucm:cache_load_success_shards_total 10
 ucm:cache_posix_load_success_shards_total 5
+ucm:yuanrong_load_success_shards_total 0
+ucm:yuanrong_lookup_miss_posix_load_success_shards_total 0
+ucm:yuanrong_load_fallback_posix_load_success_shards_total 0
 """
         final = """
 vllm:prefix_cache_hits_total 30
@@ -125,6 +128,9 @@ vllm:external_prefix_cache_hits_total 45
 vllm:external_prefix_cache_queries_total 110
 ucm:cache_load_success_shards_total 85
 ucm:cache_posix_load_success_shards_total 30
+ucm:yuanrong_load_success_shards_total 0
+ucm:yuanrong_lookup_miss_posix_load_success_shards_total 0
+ucm:yuanrong_load_fallback_posix_load_success_shards_total 0
 """
 
         values = self._query_values(initial, final)

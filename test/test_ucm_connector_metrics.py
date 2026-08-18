@@ -366,11 +366,6 @@ from ucm.integration.vllm.ucm_connector import (
     UCMConnector,
     UCMDirectConnector,
 )
-from ucm.integration.vllm.yuanrong_resource_reporter import (
-    YuanRongResourceReporter,
-    counter_deltas,
-    parse_yuanrong_resource_snapshot,
-)
 from ucm.metrics_config import (
     consumer_enabled,
     get_metric_definitions,
@@ -382,6 +377,13 @@ from ucm.metrics_config import (
     vllm_connector_prefix,
 )
 from ucm.metrics_dispatcher import get_metrics_dispatcher
+from ucm.store.yuanrongstore import resource_reporter as yuanrong_reporter_module
+from ucm.store.yuanrongstore.resource_reporter import (
+    YuanRongResourceReporter,
+    counter_deltas,
+    parse_yuanrong_resource_snapshot,
+    start_yuanrong_resource_reporter,
+)
 
 
 def _metric_types():
@@ -723,6 +725,47 @@ def test_yuanrong_resource_reporter_baselines_then_emits_deltas(tmp_path):
     second = fake_ucmmetrics.updated[-1]
     assert second["yuanrong_local_dram_load_hits_total"] == 5
     assert second["yuanrong_local_ssd_load_hits_total"] == 2
+
+
+def test_yuanrong_store_starts_resource_reporter_only_for_host_store(monkeypatch):
+    created = []
+
+    class Reporter:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.started = False
+            created.append(self)
+
+        def start(self):
+            self.started = True
+
+    monkeypatch.setattr(yuanrong_reporter_module, "YuanRongResourceReporter", Reporter)
+    yuanrong_reporter_module._REPORTERS.clear()
+
+    assert start_yuanrong_resource_reporter({}) is None
+    assert (
+        start_yuanrong_resource_reporter(
+            {"yuanrong_resource_log_path": "/tmp/kv_resource.log", "device_id": 0}
+        )
+        is None
+    )
+
+    reporter = start_yuanrong_resource_reporter(
+        {
+            "yuanrong_resource_log_path": "/tmp/kv_resource.log",
+            "yuanrong_host": "127.0.0.1",
+            "yuanrong_port": 18483,
+        }
+    )
+
+    assert reporter is created[0]
+    assert reporter.started
+    assert reporter.kwargs == {
+        "log_path": "/tmp/kv_resource.log",
+        "endpoint": "127.0.0.1:18483",
+        "interval_sec": 15.0,
+    }
+    yuanrong_reporter_module._REPORTERS.clear()
 
 
 def test_default_metrics_config_matches_example_yaml():

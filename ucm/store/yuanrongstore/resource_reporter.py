@@ -21,6 +21,8 @@ from ucm.shared.metrics import ucmmetrics
 
 logger = init_logger(__name__)
 
+_REPORTERS: list["YuanRongResourceReporter"] = []
+
 _COUNTER_METRICS = {
     "mem_hit_num": "yuanrong_local_dram_load_hits_total",
     "remote_hit_num": "yuanrong_remote_load_hits_total",
@@ -255,3 +257,22 @@ class YuanRongResourceReporter:
         with open(temporary_path, "w", encoding="utf-8") as state_file:
             json.dump({"version": 1, "counters": counters}, state_file)
         os.replace(temporary_path, self.state_path)
+
+
+def start_yuanrong_resource_reporter(
+    config: dict[str, object],
+) -> YuanRongResourceReporter | None:
+    log_path = str(config.get("yuanrong_resource_log_path", ""))
+    enabled = bool(config.get("yuanrong_resource_metrics_enable", bool(log_path)))
+    if not enabled or not log_path or int(config.get("device_id", -1)) >= 0:
+        return None
+
+    endpoint = f"{config.get('yuanrong_host', '')}:{config.get('yuanrong_port', '')}"
+    reporter = YuanRongResourceReporter(
+        log_path=log_path,
+        endpoint=endpoint,
+        interval_sec=float(config.get("yuanrong_resource_metrics_interval_sec", 15)),
+    )
+    _REPORTERS.append(reporter)
+    reporter.start()
+    return reporter

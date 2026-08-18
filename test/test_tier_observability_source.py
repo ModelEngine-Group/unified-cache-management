@@ -44,20 +44,27 @@ class TierObservabilitySourceTest(unittest.TestCase):
         self.assertIn('"posix_store_usage_ratio"', source)
         self.assertIn("estimatedFiles", source)
 
-    def test_yuanrong_resource_reporter_runs_in_scheduler(self):
-        source = (REPO_ROOT / "ucm/integration/vllm/ucm_connector.py").read_text(
+    def test_yuanrong_resource_reporter_is_owned_by_yuanrong_store(self):
+        connector_source = (
+            REPO_ROOT / "ucm/integration/vllm/ucm_connector.py"
+        ).read_text(encoding="utf-8")
+        pipeline_source = (REPO_ROOT / "ucm/store/pipeline/connector.py").read_text(
+            encoding="utf-8"
+        )
+        reporter_source = (
+            REPO_ROOT / "ucm/store/yuanrongstore/resource_reporter.py"
+        ).read_text(encoding="utf-8")
+        store_source = (REPO_ROOT / "ucm/store/yuanrongstore/__init__.py").read_text(
             encoding="utf-8"
         )
 
-        self.assertIn("role == KVConnectorRole.SCHEDULER and consumer_enabled(", source)
-        self.assertIn("self._start_yuanrong_resource_reporter()", source)
-        self.assertNotIn(
-            "role == KVConnectorRole.WORKER and consumer_enabled(\n"
-            "            self.metrics_config, VLLM_CONNECTOR_CONSUMER\n"
-            "        ):\n"
-            "            self._start_yuanrong_resource_reporter()",
-            source,
+        self.assertNotIn("yuanrong_resource", connector_source)
+        self.assertNotIn("resource_reporter", pipeline_source)
+        self.assertEqual(
+            pipeline_source.count("_stack_yuanrong_store(config, pipeline)"), 2
         )
+        self.assertIn("start_yuanrong_resource_reporter(config)", store_source)
+        self.assertIn('config.get("device_id", -1)', reporter_source)
 
 
 if __name__ == "__main__":

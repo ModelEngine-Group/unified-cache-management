@@ -14,10 +14,7 @@ ucm_connectors:
       yuanrong_host: "127.0.0.1"
       yuanrong_port: 18483
       yuanrong_namespace: "ucm_model"
-      # Forward YuanRong node-level resource and hit metrics through UCM /metrics.
-      yuanrong_resource_metrics_enable: true
       yuanrong_resource_log_path: "/var/log/yuanrong/kv_resource.log"
-      yuanrong_resource_metrics_interval_sec: 15
       yuanrong_enable_remote_h2d: false
       yuanrong_timeout_ms: 20000
       yuanrong_waiting_queue_depth: 8192
