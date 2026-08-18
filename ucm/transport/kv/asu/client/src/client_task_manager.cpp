@@ -48,31 +48,6 @@ const char* AsuOpTypeName(AsuOpType opType)
     }
 }
 
-std::size_t TransportTaskItemCount(const TransportTask& transportTask)
-{
-    return transportTask.entries.empty() ? transportTask.keys.size() : transportTask.entries.size();
-}
-
-std::string FormatTransportTaskFailure(const ClientTask& task, const TransportTask& transportTask)
-{
-    return "client_task_id=" + std::to_string(task.taskId) + " op=" + AsuOpTypeName(task.opType) +
-           " asuId=" + std::to_string(transportTask.asuId) +
-           " trans_task_id=" + std::to_string(transportTask.taskId) +
-           " item_count=" + std::to_string(TransportTaskItemCount(transportTask));
-}
-
-std::string FirstFailedTransportTask(const ClientTask& task)
-{
-    for (const auto& transportTask : task.transportTasks) {
-        if (!transportTask || transportTask->finalStatus.ok()) { continue; }
-
-        return FormatTransportTaskFailure(task, *transportTask) +
-               " code=" + std::to_string(static_cast<int>(transportTask->finalStatus.code)) +
-               " message=" + transportTask->finalStatus.message;
-    }
-    return "client_task_id=" + std::to_string(task.taskId) + " op=" + AsuOpTypeName(task.opType);
-}
-
 std::vector<UC::KV::CacheKey> ToRouterKeys(const std::vector<CacheKey>& keys)
 {
     std::vector<UC::KV::CacheKey> routerKeys;
@@ -164,6 +139,8 @@ void ClientTaskManager::CompleteWithError(const ClientTaskPtr& task, const Statu
     std::lock_guard<std::mutex> lock{task->waitMu};
     std::fill(task->entryStatus.begin(), task->entryStatus.end(), status);
     task->finalStatus = status;
+    UC_ERROR("ASU client task failed: client_task_id={} op={} code={} message={}.", task->taskId,
+             AsuOpTypeName(task->opType), static_cast<int>(status.code), status.message);
     task->state.store(ClientTaskState::COMPLETED, std::memory_order_release);
     task->cv.notify_all();
 }
@@ -173,7 +150,7 @@ void ClientTaskManager::CompleteTransportTask(const ClientTaskPtr& task,
 {
     std::lock_guard<std::mutex> lock(task->waitMu);
     auto& transportTask = task->transportTasks[transportTaskIndex];
-    if (!transportTask || transportTask->clientCompleted) { return; }
+    if (transportTask->clientCompleted) { return; }
 
     auto completionStatus = result.status;
     bool invalidQueryResult = false;
@@ -215,7 +192,6 @@ void ClientTaskManager::CompleteUndispatchedTransportTasks(const ClientTaskPtr& 
     for (std::size_t index = firstTransportTaskIndex; index < task->transportTasks.size();
          ++index) {
         auto& failedTask = task->transportTasks[index];
-        if (!failedTask) { continue; }
         failedTask->clientCompleted = true;
         failedTask->finalStatus =
             index == firstTransportTaskIndex
@@ -241,22 +217,34 @@ void ClientTaskManager::Finalize(const ClientTaskPtr& task)
         }
     }
 
-    const bool anyFailed =
-        std::any_of(task->transportTasks.begin(), task->transportTasks.end(),
-                    [](const TransportTaskPtr& transportTask) {
-                        return transportTask != nullptr && !transportTask->finalStatus.ok();
-                    });
-    task->finalStatus =
-        anyFailed ? Status::Error(StatusCode::PARTIAL_FAILED, "client task partially failed: " +
-                                                                  FirstFailedTransportTask(*task))
-                  : Status::OK();
+    std::size_t failedTransportTasks = 0;
+    for (const auto& transportTask : task->transportTasks) {
+        if (transportTask->finalStatus.ok()) { continue; }
+
+        ++failedTransportTasks;
+        const auto itemCount = transportTask->entries.empty() ? transportTask->keys.size()
+                                                              : transportTask->entries.size();
+        UC_ERROR(
+            "ASU client transport task failed: client_task_id={} op={} asuId={} "
+            "transport_task_id={} item_count={} code={} message={}.",
+            task->taskId, AsuOpTypeName(task->opType), transportTask->asuId, transportTask->taskId,
+            itemCount, static_cast<int>(transportTask->finalStatus.code),
+            transportTask->finalStatus.message);
+    }
+    task->finalStatus = failedTransportTasks == 0 ? Status::OK()
+                                                  : Status::Error(StatusCode::PARTIAL_FAILED,
+                                                                  "client task partially failed");
+    if (task->finalStatus.ok()) {
+        UC_DEBUG("ASU client task completed: client_task_id={} op={} transport_tasks={}.",
+                 task->taskId, AsuOpTypeName(task->opType), task->transportTasks.size());
+    }
     task->state.store(ClientTaskState::COMPLETED, std::memory_order_release);
     task->cv.notify_all();
 }
 
 Status ClientTaskManager::BuildTransportTasks(const ClientTaskPtr& task)
 {
-    auto snapshot = task == nullptr ? nullptr : task->viewSnapshot;
+    auto snapshot = task->viewSnapshot;
     if (!snapshot || !snapshot->router || snapshot->transports.empty()) {
         return Status::Error(StatusCode::NOT_INITIALIZED, "client has no ASU transports");
     }
@@ -264,30 +252,30 @@ Status ClientTaskManager::BuildTransportTasks(const ClientTaskPtr& task)
     const auto routes = task->opType == AsuOpType::QUERY || task->opType == AsuOpType::DELETE
                             ? snapshot->router->RouteKeys(ToRouterKeys(task->keys))
                             : snapshot->router->RouteKeys(ExtractEntryKeys(task->entries));
-    for (const auto& route : routes) {
-        if (snapshot->transports.find(route.first) == snapshot->transports.end()) {
+    for (const auto& [asuId, indices] : routes) {
+        if (snapshot->transports.find(asuId) == snapshot->transports.end()) {
             return AddContext(
                 Status::Error(StatusCode::NOT_FOUND, "routed asu transport not found"),
-                "asuId=" + std::to_string(route.first));
+                "asuId=" + std::to_string(asuId));
         }
     }
 
     task->transportTasks.reserve(routes.size());
-    for (const auto& route : routes) {
+    for (const auto& [asuId, indices] : routes) {
         auto transportTask = std::make_shared<TransportTask>();
-        transportTask->asuId = route.first;
-        transportTask->transport = snapshot->transports.at(route.first);
+        transportTask->asuId = asuId;
+        transportTask->transport = snapshot->transports.at(asuId);
         transportTask->registeredMrKeys = task->registeredMrKeys;
-        transportTask->originalIndices.reserve(route.second.size());
+        transportTask->originalIndices.reserve(indices.size());
         if (task->opType == AsuOpType::QUERY || task->opType == AsuOpType::DELETE) {
-            transportTask->keys.reserve(route.second.size());
-            for (auto index : route.second) {
+            transportTask->keys.reserve(indices.size());
+            for (auto index : indices) {
                 transportTask->keys.push_back(std::move(task->keys[index]));
                 transportTask->originalIndices.push_back(index);
             }
         } else {
-            transportTask->entries.reserve(route.second.size());
-            for (auto index : route.second) {
+            transportTask->entries.reserve(indices.size());
+            for (auto index : indices) {
                 transportTask->entries.push_back(std::move(task->entries[index]));
                 transportTask->originalIndices.push_back(index);
             }
@@ -302,10 +290,6 @@ Status ClientTaskManager::BuildTransportTasks(const ClientTaskPtr& task)
 
 Status ClientTaskManager::DispatchTask(const ClientTaskPtr& task)
 {
-    auto snapshot = task == nullptr ? nullptr : task->viewSnapshot;
-    if (!snapshot) {
-        return Status::Error(StatusCode::NOT_INITIALIZED, "client view is not ready");
-    }
     if (task->transportTasks.empty()) {
         std::lock_guard<std::mutex> lock(task->waitMu);
         Finalize(task);
@@ -314,13 +298,7 @@ Status ClientTaskManager::DispatchTask(const ClientTaskPtr& task)
 
     for (std::size_t taskIndex = 0; taskIndex < task->transportTasks.size(); ++taskIndex) {
         auto& transportTask = task->transportTasks[taskIndex];
-        if (!transportTask) {
-            return Status::Error(StatusCode::NOT_FOUND, "routed ASU transport not found");
-        }
         auto transport = transportTask->transport.lock();
-        if (!transport) {
-            return Status::Error(StatusCode::NOT_FOUND, "routed ASU transport not found");
-        }
 
         std::weak_ptr<ClientTask> clientTask = task;
         transportTask->onComplete = [clientTask, taskIndex](TaskResult result) {
@@ -331,22 +309,6 @@ Status ClientTaskManager::DispatchTask(const ClientTaskPtr& task)
         transportTask->opType = task->opType;
         auto status = transport->Submit(transportTask);
         if (!status.ok()) {
-            for (std::size_t index = 0; index < taskIndex; ++index) {
-                auto& dispatchedTask = task->transportTasks[index];
-                if (!dispatchedTask || dispatchedTask->taskId == kInvalidTaskId) { continue; }
-                auto dispatchedTransport = dispatchedTask->transport.lock();
-                if (dispatchedTransport) {
-                    const auto cancelStatus = dispatchedTransport->Cancel(dispatchedTask->taskId);
-                    if (!cancelStatus.ok() && cancelStatus.code != StatusCode::TASK_NOT_FOUND) {
-                        UC_WARN(
-                            "Failed to cancel dispatched transport task: asuId={} taskId={} "
-                            "code={} message={}",
-                            dispatchedTask->asuId, dispatchedTask->taskId,
-                            static_cast<int>(cancelStatus.code), cancelStatus.message);
-                    }
-                }
-            }
-
             const auto dispatchStatus =
                 AddContext(status, "asuId=" + std::to_string(transportTask->asuId));
             CompleteUndispatchedTransportTasks(task, taskIndex, dispatchStatus);

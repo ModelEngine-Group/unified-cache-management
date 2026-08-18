@@ -101,13 +101,12 @@ void LogAsuStatus(const char* operation, const AsuStatus& status)
              status.message);
 }
 
-AsuStatus WaitPrerequisiteEvent(std::uintptr_t eventHandle)
+Status WaitPrerequisiteEvent(std::uintptr_t eventHandle)
 {
-    if (eventHandle == 0) { return AsuStatus::OK(); }
+    if (eventHandle == 0) { return Status::OK(); }
     auto ret = aclrtSynchronizeEvent(reinterpret_cast<aclrtEvent>(eventHandle));
-    if (ret == ACL_SUCCESS) { return AsuStatus::OK(); }
-    return AsuStatus::Error(AsuStatusCode::INTERNAL_ERROR,
-                            "aclrtSynchronizeEvent failed: " + std::to_string(ret));
+    if (ret == ACL_SUCCESS) { return Status::OK(); }
+    return Status::Error("aclrtSynchronizeEvent failed: " + std::to_string(ret));
 }
 
 const char* TransProviderBackendName(UC::ASU::TransProviderType providerType)
@@ -351,9 +350,9 @@ public:
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override
     {
         auto status = WaitPrerequisiteEvent(task.prerequisiteHandle);
-        if (!status.ok()) {
-            LogAsuStatus("wait prerequisite event", status);
-            return ConvertStatus(status);
+        if (status.Failure()) {
+            UC_ERROR("ASU wait prerequisite event failed: status={}.", status);
+            return status;
         }
         return Submit(std::move(task), &UC::ASU::AsuClient::BatchStoreAsync);
     }

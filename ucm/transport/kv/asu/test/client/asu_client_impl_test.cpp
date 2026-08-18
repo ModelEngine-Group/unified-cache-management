@@ -1712,10 +1712,11 @@ TEST(AsuClientImplTest, Task_CheckThenWaitHandlesRefreshableChildFailure)
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
 }
 
-TEST(AsuClientImplTest, Task_PartialDispatchFailureCancelsDispatchedSubtasks)
+TEST(AsuClientImplTest, Task_PartialDispatchFailureWaitsForDispatchedSubtasks)
 {
     auto state = std::make_shared<TestState>();
     state->failStoreAfterFirstDispatch = true;
+    state->deferCompletionCallbacks = true;
     auto client = CreateAsuClient(MakeFactory(state));
     const std::vector<AsuId> asuIds{10, 20, 30};
     ASSERT_TRUE(client->Init(MakeConfig(asuIds)).ok());
@@ -1727,13 +1728,27 @@ TEST(AsuClientImplTest, Task_PartialDispatchFailureCancelsDispatchedSubtasks)
 
     ASSERT_TRUE(status.ok()) << status.message;
     EXPECT_NE(taskId, kInvalidTaskId);
+    AsuId dispatchedAsuId = 0;
+    {
+        std::unique_lock<std::mutex> lock{state->completionMu};
+        ASSERT_TRUE(state->completionCv.wait_for(lock, std::chrono::milliseconds(100), [&] {
+            return !state->pendingCompletionCallbacks.empty();
+        }));
+        dispatchedAsuId = state->pendingCompletionCallbacks.begin()->first;
+    }
+    ASSERT_EQ(state->storeCalls.size(), std::size_t{1});
+    EXPECT_EQ(state->storeCalls[0], dispatchedAsuId);
+    EXPECT_FALSE(client->Check(taskId));
+    EXPECT_TRUE(state->cancelCalls.empty());
+
+    TaskResult completionResult;
+    completionResult.status = Status::OK();
+    completionResult.entryStatus = {Status::OK()};
+    ASSERT_TRUE(InvokePendingCompletion(state, dispatchedAsuId, std::move(completionResult)));
 
     TaskResult result;
     status = client->Wait(taskId, 100, result);
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
-    ASSERT_EQ(state->storeCalls.size(), std::size_t{1});
-    ASSERT_EQ(state->cancelCalls.size(), std::size_t{1});
-    EXPECT_EQ(state->cancelCalls[0], state->storeCalls[0]);
     EXPECT_EQ(state->completionCallbackCount, std::size_t{1});
     ASSERT_EQ(result.entryStatus.size(), std::size_t{3});
     EXPECT_EQ(std::count_if(result.entryStatus.begin(), result.entryStatus.end(),
