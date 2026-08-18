@@ -245,7 +245,13 @@ private:
         UC_INFO("Set {}::WaitingQueueDepth to {}.", ns, config.waitingQueueDepth);
         UC_INFO("Set {}::RunningQueueDepth to {}.", ns, config.runningQueueDepth);
         UC_INFO("Set {}::TimeoutMs to {}.", ns, config.timeoutMs);
-        UC_INFO("Set {}::StreamNumber to {}.", ns, config.streamNumber);
+        if (config.cacheSdmaDirect) {
+            UC_INFO(
+                "Set {}::StreamNumber to {} (configured={}, Cache SDMA Direct uses one stream).",
+                ns, config.EffectiveStreamNumber(), config.streamNumber);
+        } else {
+            UC_INFO("Set {}::StreamNumber to {}.", ns, config.EffectiveStreamNumber());
+        }
         UC_INFO("Set {}::CacheSdmaDirect to {}.", ns, config.cacheSdmaDirect);
         UC_INFO("Set {}::LoadExclusiveBufferNumber to {}.", ns, config.loadExclusiveBufferNumber);
         UC_INFO("Set {}::GpuKvBufferNumber to {}.", ns, config.gpuKvBufferAddrs.size());

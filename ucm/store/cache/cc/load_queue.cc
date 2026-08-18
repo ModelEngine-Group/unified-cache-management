@@ -42,7 +42,7 @@ Status LoadQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     backend_ = config.storeBackend;
     deviceId_ = config.deviceId;
     tensorSizes_ = config.tensorSizes;
-    streamNumber_ = config.streamNumber;
+    streamNumber_ = config.EffectiveStreamNumber();
     useGdr_ = config.useGdr;
     cacheSdmaDirect_ = config.cacheSdmaDirect;
     cpuAffinityCores_ = config.cpuAffinityCores;
@@ -156,7 +156,7 @@ void LoadQueue::TransferStage(std::promise<Status>& started)
     auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_load_xfer");
     if (nameStatus.Failure()) { UC_WARN("Failed({}) to set UCM load transfer name.", nameStatus); }
     CopyStream stream;
-    auto s = cacheSdmaDirect_ ? stream.SetupSdmaDirect(deviceId_, streamNumber_, useGdr_)
+    auto s = cacheSdmaDirect_ ? stream.SetupSdmaDirect(deviceId_, useGdr_)
                               : stream.Setup(deviceId_, streamNumber_, useGdr_);
     started.set_value(s);
     if (s.Failure()) [[unlikely]] { return; }

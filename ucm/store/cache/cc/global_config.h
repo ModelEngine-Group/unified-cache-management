@@ -59,6 +59,8 @@ struct Config {
     bool useGdr{false};
     bool cacheSdmaDirect{UCM_RUNTIME_ASCEND_SDMA_DIRECT};
     size_t localRankSize{8};
+
+    size_t EffectiveStreamNumber() const noexcept { return cacheSdmaDirect ? 1 : streamNumber; }
 };
 
 }  // namespace UC::CacheStore
