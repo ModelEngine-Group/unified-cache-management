@@ -59,9 +59,7 @@ private:
 std::string ValidRuntimeYaml()
 {
     return R"(transport:
-  device_ids:
-    - 0
-    - 2
+  device_ids: [0, 2]
   endpoints:
     - two_sided: "127.0.0.1:9000"
       one_sided: "127.0.0.1:4501"
@@ -89,7 +87,6 @@ metadata:
 operation:
   timeout_ms: 5000
 logger:
-  level: info
   dir: ./logs
   max_files: 10
   max_size_mb: 5
@@ -156,7 +153,6 @@ TEST(DramPoolRuntimeYamlTest, LoadsEveryRuntimeFieldAndPreservesLaunchFields)
     EXPECT_DOUBLE_EQ(config.metadataDefaultEvictRatio, 0.0);
     EXPECT_EQ(config.metadataEvictPeriodMs, 31'536'000'000ULL);
     EXPECT_EQ(config.opTimeoutMs, 5000U);
-    EXPECT_EQ(config.logLevel, "info");
     EXPECT_EQ(config.logDir, "./logs");
     EXPECT_EQ(config.logMaxFiles, 10U);
     EXPECT_EQ(config.logMaxSizeMb, 5U);
@@ -207,7 +203,9 @@ TEST(DramPoolRuntimeYamlTest, RejectsMissingUnknownAndDuplicateKeys)
     const std::vector<std::pair<std::string, std::string>> cases = {
         {ReplaceOnce(ValidRuntimeYaml(), "  max_size_mb: 5\n", ""), "missing required key"},
         {ValidRuntimeYaml() + "unknown: 1\n", "unknown DramPool runtime YAML key"},
-        {ValidRuntimeYaml() + "transport:\n  device_ids:\n    - 1\n", "duplicate YAML key"},
+        {ReplaceOnce(ValidRuntimeYaml(), "logger:\n", "logger:\n  level: info\n"),
+         "unknown DramPool runtime YAML key"},
+        {ValidRuntimeYaml() + "transport:\n  device_ids: [1]\n", "duplicate YAML key"},
     };
     for (const auto& item : cases) {
         auto config = LaunchConfig();
@@ -254,10 +252,16 @@ INSTANTIATE_TEST_SUITE_P(
                         "one_sided: \"127.0.0.1:4501\"", "duplicate transport one_sided"},
         InvalidYamlCase{"EndpointInBothRoles", "one_sided: \"127.0.0.1:4502\"",
                         "one_sided: \"127.0.0.1:9000\"", "both two_sided and one_sided"},
-        InvalidYamlCase{"EmptyDeviceIds", "  device_ids:\n    - 0\n    - 2\n", "  device_ids:\n",
+        InvalidYamlCase{"EmptyDeviceIds", "device_ids: [0, 2]", "device_ids: []",
                         "must not be empty"},
-        InvalidYamlCase{"NegativeDevice", "    - 0", "    - -1", "negative values"},
-        InvalidYamlCase{"DuplicateDevice", "    - 2", "    - 0", "duplicate device ID"},
+        InvalidYamlCase{"NegativeDevice", "device_ids: [0, 2]", "device_ids: [-1, 2]",
+                        "negative values"},
+        InvalidYamlCase{"DuplicateDevice", "device_ids: [0, 2]", "device_ids: [0, 0]",
+                        "duplicate device ID"},
+        InvalidYamlCase{"EmptyInlineDevice", "device_ids: [0, 2]", "device_ids: [0, ]",
+                        "empty entry"},
+        InvalidYamlCase{"BlockDeviceIds", "  device_ids: [0, 2]", "  device_ids:\n    - 0\n    - 2",
+                        "YAML sequence is unsupported"},
         InvalidYamlCase{"QueueTooShallow", "request_depth: 65536", "request_depth: 1",
                         "at least 2"},
         InvalidYamlCase{"ZeroPollerPendingDepth", "pending_depth: 64", "pending_depth: 0",
@@ -276,7 +280,6 @@ INSTANTIATE_TEST_SUITE_P(
                         "deep_eviction_policy: LFU", "unsupported eviction policy"},
         InvalidYamlCase{"EvictRatioAboveOne", "default_evict_ratio: 0.0",
                         "default_evict_ratio: 1.1", "must be in [0, 1]"},
-        InvalidYamlCase{"UnsupportedLogLevel", "level: info", "level: verbose", "unsupported"},
         InvalidYamlCase{"EmptyLogDirectory", "dir: ./logs", "dir: ''", "must not be empty"}),
     [](const testing::TestParamInfo<InvalidYamlCase>& info) { return info.param.name; });
 

@@ -24,7 +24,6 @@
 #include "drampool_daemon.h"
 #include <chrono>
 #include <csignal>
-#include <cstdlib>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -88,12 +87,6 @@ int DramPoolDaemon::Run(int argc, char** argv)
 
 Status DramPoolDaemon::SetupLogger()
 {
-    constexpr char kUcLoggerLevelEnv[] = "UC_LOGGER_LEVEL";
-
-    // UC::Logger reads its level once, when Setup creates the process logger.
-    if (::setenv(kUcLoggerLevelEnv, g_config.logLevel.c_str(), 1) != 0) {
-        return Status::OsApiError("failed to set UC_LOGGER_LEVEL");
-    }
     UC::Logger::Setup(g_config.logDir, static_cast<int>(g_config.logMaxFiles),
                       static_cast<int>(g_config.logMaxSizeMb));
     return Status::OK();

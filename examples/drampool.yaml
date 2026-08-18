@@ -5,8 +5,7 @@
 #   --kvcache-block-proportions, --ttl-minutes, and --config.
 
 transport:
-  device_ids:
-    - 0
+  device_ids: [0, 1, 2]
   # Cluster-wide request-channel to transport-endpoint routing.
   endpoints:
     - two_sided: "127.0.0.1:9000"
@@ -54,7 +53,7 @@ operation:
   timeout_ms: 5000
 
 logger:
-  level: info
+  # Consistent with UCM, the log level is read from the UC_LOGGER_LEVEL environment variable.
   dir: ./logs
   max_files: 10
   max_size_mb: 5

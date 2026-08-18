@@ -73,7 +73,6 @@ constexpr const char* kRequiredRuntimeConfigKeys[] = {
     "metadata.default_evict_ratio",
     "metadata.evict_period_ms",
     "operation.timeout_ms",
-    "logger.level",
     "logger.dir",
     "logger.max_files",
     "logger.max_size_mb",
@@ -118,6 +117,38 @@ Status ParseYamlScalar(const std::string& key, std::string value, std::string& o
         return Status::InvalidParam("unmatched quote in YAML key {}", key);
     }
     output = std::move(value);
+    return Status::OK();
+}
+
+Status ParseInlineDeviceIds(const std::string& value, std::vector<std::int32_t>& deviceIds)
+{
+    const auto list = Trim(value);
+    if (list.size() < 2 || list.front() != '[' || list.back() != ']') {
+        return Status::InvalidParam("transport.device_ids inline list must use [id, ...]");
+    }
+
+    const auto items = Trim(list.substr(1, list.size() - 2));
+    if (items.empty()) { return Status::OK(); }
+
+    std::size_t offset = 0;
+    while (offset <= items.size()) {
+        const auto separator = items.find(',', offset);
+        const auto itemToken = Trim(items.substr(offset, separator - offset));
+        if (itemToken.empty()) {
+            return Status::InvalidParam("transport.device_ids inline list contains an empty entry");
+        }
+
+        std::string itemValue;
+        auto status = ParseYamlScalar("transport.device_ids", itemToken, itemValue);
+        if (status.Failure()) { return status; }
+        std::int32_t deviceId = 0;
+        status = ParseInt32(itemValue, deviceId);
+        if (status.Failure()) { return status; }
+        deviceIds.push_back(deviceId);
+
+        if (separator == std::string::npos) { break; }
+        offset = separator + 1;
+    }
     return Status::OK();
 }
 
@@ -217,12 +248,6 @@ Status ParseStringValue(const std::string& value, std::string& output)
     return Status::OK();
 }
 
-Status ParseLowerStringValue(const std::string& value, std::string& output)
-{
-    output = ToLower(value);
-    return Status::OK();
-}
-
 const std::unordered_map<std::string_view, RuntimeConfigParser>& GetRuntimeConfigParsers()
 {
     static const std::unordered_map<std::string_view, RuntimeConfigParser> parsers = {
@@ -253,7 +278,6 @@ const std::unordered_map<std::string_view, RuntimeConfigParser>& GetRuntimeConfi
         {"metadata.evict_period_ms",
          BindConfigParser(ParseUint64, &DramPoolConfig::metadataEvictPeriodMs)},
         {"operation.timeout_ms", BindConfigParser(ParseUint32, &DramPoolConfig::opTimeoutMs)},
-        {"logger.level", BindConfigParser(ParseLowerStringValue, &DramPoolConfig::logLevel)},
         {"logger.dir", BindConfigParser(ParseStringValue, &DramPoolConfig::logDir)},
         {"logger.max_files", BindConfigParser(ParseUint32, &DramPoolConfig::logMaxFiles)},
         {"logger.max_size_mb", BindConfigParser(ParseUint32, &DramPoolConfig::logMaxSizeMb)}
@@ -359,10 +383,6 @@ Status ValidateRuntimeConfig(DramPoolConfig& config)
     if (config.opTimeoutMs == 0) {
         return Status::InvalidParam("operation.timeout_ms must be greater than zero");
     }
-    if (config.logLevel != "trace" && config.logLevel != "debug" && config.logLevel != "info" &&
-        config.logLevel != "warn" && config.logLevel != "error" && config.logLevel != "critical") {
-        return Status::InvalidParam("unsupported logger.level: {}", config.logLevel);
-    }
     if (Trim(config.logDir).empty()) {
         return Status::InvalidParam("logger.dir must not be empty");
     }
@@ -427,21 +447,6 @@ Status ParseYamlConfig(const std::string& path, DramPoolConfig& config)
         }
 
         if (content.rfind("- ", 0) == 0) {
-            if (sectionPath == "transport.device_ids") {
-                auto itemToken = Trim(content.substr(2));
-                if (itemToken.empty()) {
-                    return Status::InvalidParam("empty transport.device_ids entry at line {}",
-                                                lineNumber);
-                }
-                std::string itemValue;
-                auto status = ParseYamlScalar("transport.device_ids", itemToken, itemValue);
-                if (status.Failure()) { return status; }
-                std::int32_t deviceId = 0;
-                status = ParseInt32(itemValue, deviceId);
-                if (status.Failure()) { return status; }
-                loadedConfig.transportDeviceIds.push_back(deviceId);
-                continue;
-            }
             if (sectionPath != "transport.endpoints") {
                 return Status::InvalidParam("YAML sequence is unsupported at line {}", lineNumber);
             }
@@ -482,10 +487,6 @@ Status ParseYamlConfig(const std::string& path, DramPoolConfig& config)
         if (!hasScalar) {
             sections.push_back(YamlSection{indent, key});
             const auto newSectionPath = BuildSectionPath(sections);
-            if (newSectionPath == "transport.device_ids" &&
-                !configuredKeys.insert(newSectionPath).second) {
-                return Status::InvalidParam("duplicate YAML key: {}", newSectionPath);
-            }
             if (newSectionPath == "transport.endpoints") { endpointsSectionSeen = true; }
             continue;
         }
@@ -500,7 +501,11 @@ Status ParseYamlConfig(const std::string& path, DramPoolConfig& config)
         if (!configuredKeys.insert(fullKey).second) {
             return Status::InvalidParam("duplicate YAML key: {}", fullKey);
         }
-        status = ApplyRuntimeConfigValue(loadedConfig, fullKey, value);
+        if (fullKey == "transport.device_ids") {
+            status = ParseInlineDeviceIds(value, loadedConfig.transportDeviceIds);
+        } else {
+            status = ApplyRuntimeConfigValue(loadedConfig, fullKey, value);
+        }
         if (status.Failure()) { return status; }
     }
     if (endpointEntryActive) {
