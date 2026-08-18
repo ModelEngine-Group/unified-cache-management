@@ -366,6 +366,11 @@ from ucm.integration.vllm.ucm_connector import (
     UCMConnector,
     UCMDirectConnector,
 )
+from ucm.integration.vllm.yuanrong_resource_reporter import (
+    YuanRongResourceReporter,
+    counter_deltas,
+    parse_yuanrong_resource_snapshot,
+)
 from ucm.metrics_config import (
     consumer_enabled,
     get_metric_definitions,
@@ -578,6 +583,146 @@ def test_config_definitions_register_enable_list_and_metric_names():
         ("cache_load_duration_ms", "histogram", (1, 5)),
         ("interval_lookup_hit_rates", "histogram", (0.1, 0.5, 1.0)),
     ]
+
+
+def test_yuanrong_resource_snapshot_parse_and_counter_reset():
+    line = json.dumps(
+        {
+            "time": "2023-06-02T14:58:32+00:00",
+            "event": "resource_snapshot",
+            "version": "v0",
+            "metrics": {
+                "oc_hit_num": {
+                    "mem_hit_num": 13,
+                    "remote_hit_num": 5,
+                    "disk_hit_num": 7,
+                    "l2_hit_num": 0,
+                },
+                "shared_memory": {
+                    "physical_memory_usage": 25,
+                    "total_limit": 100,
+                },
+                "spill_hard_disk": {
+                    "physical_space_usage": 30,
+                    "total_limit": 200,
+                },
+            },
+        }
+    )
+
+    snapshot = parse_yuanrong_resource_snapshot(line)
+
+    assert snapshot.counters == {
+        "yuanrong_local_dram_load_hits_total": 13.0,
+        "yuanrong_remote_load_hits_total": 5.0,
+        "yuanrong_local_ssd_load_hits_total": 7.0,
+        "yuanrong_l2_load_hits_total": 0.0,
+    }
+    assert snapshot.gauges["yuanrong_dram_usage_ratio"] == 0.25
+    assert snapshot.gauges["yuanrong_ssd_usage_ratio"] == 0.15
+    assert snapshot.timestamp == 1685717912.0
+    assert counter_deltas(
+        snapshot.counters,
+        {
+            "yuanrong_local_dram_load_hits_total": 10,
+            "yuanrong_remote_load_hits_total": 8,
+            "yuanrong_local_ssd_load_hits_total": 1,
+            "yuanrong_l2_load_hits_total": 0,
+        },
+    ) == {
+        "yuanrong_local_dram_load_hits_total": 3.0,
+        "yuanrong_remote_load_hits_total": 5.0,
+        "yuanrong_local_ssd_load_hits_total": 6.0,
+        "yuanrong_l2_load_hits_total": 0.0,
+    }
+
+
+def test_yuanrong_resource_reporter_ignores_partial_tail(tmp_path):
+    complete = '{"event":"resource_snapshot","version":"v0"}'
+    log_path = tmp_path / "kv_resource.log"
+    log_path.write_bytes((complete + '\n{"event":').encode())
+    reporter = YuanRongResourceReporter(
+        str(log_path), "127.0.0.1:18481", shared_memory_dir=str(tmp_path)
+    )
+
+    assert reporter._read_latest_complete_line() == complete
+
+
+def test_yuanrong_resource_reporter_loser_exits_after_one_lock_attempt(
+    tmp_path, monkeypatch
+):
+    reporter = YuanRongResourceReporter(
+        str(tmp_path / "kv_resource.log"),
+        "127.0.0.1:18481",
+        interval_sec=60,
+        shared_memory_dir=str(tmp_path),
+    )
+    attempts = []
+    collections = []
+
+    def lose_election():
+        attempts.append(True)
+        return False
+
+    monkeypatch.setattr(reporter, "_try_become_leader", lose_election)
+    monkeypatch.setattr(reporter, "_collect_once", lambda: collections.append(True))
+
+    reporter.start()
+    reporter._thread.join(timeout=1)
+
+    assert not reporter._thread.is_alive()
+    assert attempts == [True]
+    assert collections == []
+
+
+def test_yuanrong_resource_reporter_baselines_then_emits_deltas(tmp_path):
+    _reset_fakes()
+    log_path = tmp_path / "kv_resource.log"
+
+    def write_snapshot(mem_hits, disk_hits):
+        log_path.write_text(
+            json.dumps(
+                {
+                    "time": "2023-06-02T14:58:32+00:00",
+                    "event": "resource_snapshot",
+                    "version": "v0",
+                    "metrics": {
+                        "oc_hit_num": {
+                            "mem_hit_num": mem_hits,
+                            "remote_hit_num": 3,
+                            "disk_hit_num": disk_hits,
+                            "l2_hit_num": 0,
+                        },
+                        "shared_memory": {
+                            "physical_memory_usage": 25,
+                            "total_limit": 100,
+                        },
+                        "spill_hard_disk": {
+                            "physical_space_usage": 30,
+                            "total_limit": 200,
+                        },
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    reporter = YuanRongResourceReporter(
+        str(log_path), "127.0.0.1:18481", shared_memory_dir=str(tmp_path)
+    )
+    write_snapshot(10, 4)
+    reporter._collect_once()
+    first = fake_ucmmetrics.updated[-1]
+    assert first["yuanrong_local_dram_load_hits_total"] == 0
+    assert first["yuanrong_local_ssd_load_hits_total"] == 0
+    assert first["yuanrong_dram_used_bytes"] == 25
+
+    write_snapshot(15, 6)
+    reporter._collect_once()
+    second = fake_ucmmetrics.updated[-1]
+    assert second["yuanrong_local_dram_load_hits_total"] == 5
+    assert second["yuanrong_local_ssd_load_hits_total"] == 2
 
 
 def test_default_metrics_config_matches_example_yaml():
@@ -1526,32 +1671,63 @@ def test_vllm_dashboard_uses_combined_prefix_cache_hit_rate_breakdown():
         "mode": "none",
     }
     assert panel["gridPos"] == {"h": 8, "w": 24, "x": 0, "y": 36}
-    assert len(panel["targets"]) == 2
+    assert len(panel["targets"]) == 6
 
-    expected = [
-        (
-            "GPU Prefix Cache",
-            "ucm:gpu_hbm_hit_tokens_total",
-            "ucm:total_prefix_query_tokens_total",
-        ),
-        (
-            "Connector Prefix Cache",
-            "ucm:ucm_hit_tokens_total",
-            "ucm:total_prefix_query_tokens_total",
-        ),
-    ]
-    for target, (legend, hits, queries) in zip(panel["targets"], expected):
+    expected = {
+        "HBM": {
+            "vllm:prefix_cache_hits_total",
+            "vllm:prefix_cache_queries_total",
+        },
+        "YuanRong DRAM": {
+            "ucm:yuanrong_load_success_shards_total",
+            "ucm:yuanrong_local_dram_load_hits_total",
+            "ucm:yuanrong_remote_load_hits_total",
+        },
+        "YuanRong SSD": {
+            "ucm:yuanrong_load_success_shards_total",
+            "ucm:yuanrong_local_ssd_load_hits_total",
+        },
+        "Cache": {
+            "ucm:cache_load_success_shards_total",
+            "ucm:cache_posix_load_success_shards_total",
+        },
+        "Posix Store": {
+            "ucm:cache_posix_load_success_shards_total",
+            "ucm:yuanrong_lookup_miss_posix_load_success_shards_total",
+            "ucm:yuanrong_load_fallback_posix_load_success_shards_total",
+        },
+        "Total": {
+            "vllm:prefix_cache_hits_total",
+            "vllm:prefix_cache_queries_total",
+            "vllm:external_prefix_cache_hits_total",
+            "vllm:external_prefix_cache_queries_total",
+        },
+    }
+    for target in panel["targets"]:
+        legend = target["legendFormat"]
         assert target["legendFormat"] == legend
         expr = target["expr"]
-        assert hits in expr
-        assert queries in expr
-        assert "vllm:prefix_cache_queries_total" not in expr
-        assert "vllm:prefix_cache_hits_total" not in expr
-        assert "vllm:external_prefix_cache_hits_total" not in expr
+        for metric_name in expected[legend]:
+            assert metric_name in expr
         assert 'model_name="$model_name"' in expr
         assert 'job=~"$job"' in expr
         assert 'instance="$instance"' in expr
         assert "clamp_min" in expr
+
+    assert "ucm:yuanrong_l2_load_hits_total" not in " ".join(
+        target["expr"] for target in panel["targets"]
+    )
+    assert "ucm:yuanrong_l2_load_hits_total" not in json.dumps(dashboard)
+
+    capacity_panel = panels["Store Capacity Watermark"]
+    assert {target["legendFormat"] for target in capacity_panel["targets"]} == {
+        "YuanRong DRAM",
+        "YuanRong SSD",
+        "Posix Store",
+    }
+    assert capacity_panel["targets"][0]["expr"].startswith("max(")
+    assert capacity_panel["targets"][1]["expr"].startswith("max(")
+    assert capacity_panel["targets"][2]["expr"].startswith("avg(")
 
 
 def test_vllm_dashboard_shows_time_range_token_and_prefix_totals():

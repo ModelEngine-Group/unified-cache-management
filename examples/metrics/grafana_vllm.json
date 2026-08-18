@@ -1317,7 +1317,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Prefix-cache token hit rates observed at the UCM connector boundary.",
+      "description": "Token hit-rate contribution by HBM and the final UCM load source. YuanRong DRAM includes successful remote hits.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1407,9 +1407,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(ucm:gpu_hbm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))\n/\nclamp_min(sum(rate(ucm:total_prefix_query_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1)",
+          "expr": "sum(rate(vllm:prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))\n/\nclamp_min(sum(rate(vllm:prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)",
           "instant": false,
-          "legendFormat": "GPU Prefix Cache",
+          "legendFormat": "HBM",
           "range": true,
           "refId": "A"
         },
@@ -1419,11 +1419,59 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(ucm:ucm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))\n/\nclamp_min(sum(rate(ucm:total_prefix_query_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1)",
+          "expr": "(sum(rate(vllm:external_prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:external_prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9))\n* clamp_min(1 - (sum(rate(vllm:prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)), 0)\n* (sum(rate(ucm:yuanrong_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(ucm:yuanrong_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_lookup_miss_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_load_fallback_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9))\n* ((sum(rate(ucm:yuanrong_local_dram_load_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_remote_load_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))) / clamp_min(sum(rate(ucm:yuanrong_local_dram_load_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_remote_load_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_local_ssd_load_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9))",
           "instant": false,
-          "legendFormat": "Connector Prefix Cache",
+          "legendFormat": "YuanRong DRAM",
           "range": true,
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "(sum(rate(vllm:external_prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:external_prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9))\n* clamp_min(1 - (sum(rate(vllm:prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)), 0)\n* (sum(rate(ucm:yuanrong_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(ucm:yuanrong_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_lookup_miss_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_load_fallback_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9))\n* (sum(rate(ucm:yuanrong_local_ssd_load_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(ucm:yuanrong_local_dram_load_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_remote_load_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_local_ssd_load_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9))",
+          "instant": false,
+          "legendFormat": "YuanRong SSD",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "(sum(rate(vllm:external_prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:external_prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9))\n* clamp_min(1 - (sum(rate(vllm:prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)), 0)\n* (sum(rate(ucm:cache_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(ucm:cache_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:cache_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9))",
+          "instant": false,
+          "legendFormat": "Cache",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "((sum(rate(vllm:external_prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:external_prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)) * clamp_min(1 - (sum(rate(vllm:prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)), 0) * ((sum(rate(ucm:yuanrong_lookup_miss_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_load_fallback_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))) / clamp_min(sum(rate(ucm:yuanrong_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_lookup_miss_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:yuanrong_load_fallback_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)))\nor\n((sum(rate(vllm:external_prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:external_prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)) * clamp_min(1 - (sum(rate(vllm:prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)), 0) * (sum(rate(ucm:cache_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(ucm:cache_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) + sum(rate(ucm:cache_posix_load_success_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)))",
+          "instant": false,
+          "legendFormat": "Posix Store",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "(sum(rate(vllm:prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)) + ((sum(rate(vllm:external_prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:external_prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)) * clamp_min(1 - (sum(rate(vllm:prefix_cache_hits_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])) / clamp_min(sum(rate(vllm:prefix_cache_queries_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval])), 1e-9)), 0))",
+          "instant": false,
+          "legendFormat": "Total",
+          "range": true,
+          "refId": "F"
         }
       ],
       "title": "KV Cache Hit Rate Breakdown",
@@ -2029,6 +2077,173 @@
         }
       ],
       "title": "Max Generation Token in Sequence Group",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Logical/physical usage ratios. Posix is averaged because multiple schedulers may report the same shared store.",
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "unit": "percentunit",
+          "color": {"mode": "palette-classic"}
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 68},
+      "id": 24,
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "none"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "editorMode": "code",
+          "expr": "max(ucm:yuanrong_dram_usage_ratio{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
+          "instant": false,
+          "legendFormat": "YuanRong DRAM",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "editorMode": "code",
+          "expr": "max(ucm:yuanrong_ssd_usage_ratio{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
+          "instant": false,
+          "legendFormat": "YuanRong SSD",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "editorMode": "code",
+          "expr": "avg(ucm:posix_store_usage_ratio{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
+          "instant": false,
+          "legendFormat": "Posix Store",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Store Capacity Watermark",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "YuanRong physical and Posix logical used/capacity bytes.",
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "unit": "bytes",
+          "color": {"mode": "palette-classic"}
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 68},
+      "id": 25,
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "none"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "editorMode": "code",
+          "expr": "max(ucm:yuanrong_dram_used_bytes{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
+          "legendFormat": "YuanRong DRAM used",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "editorMode": "code",
+          "expr": "max(ucm:yuanrong_dram_capacity_bytes{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
+          "legendFormat": "YuanRong DRAM capacity",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "editorMode": "code",
+          "expr": "max(ucm:yuanrong_ssd_used_bytes{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
+          "legendFormat": "YuanRong SSD used",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "editorMode": "code",
+          "expr": "max(ucm:yuanrong_ssd_capacity_bytes{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
+          "legendFormat": "YuanRong SSD capacity",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "editorMode": "code",
+          "expr": "avg(ucm:posix_store_used_bytes{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
+          "legendFormat": "Posix used",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "editorMode": "code",
+          "expr": "avg(ucm:posix_store_capacity_bytes{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
+          "legendFormat": "Posix capacity",
+          "range": true,
+          "refId": "F"
+        }
+      ],
+      "title": "Store Used and Capacity",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Load failures are diagnostic and excluded from tier attribution.",
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "unit": "ops",
+          "color": {"mode": "palette-classic"}
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 76},
+      "id": 26,
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "none"}
+      },
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "editorMode": "code",
+          "expr": "sum(rate(ucm:yuanrong_load_failed_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
+          "legendFormat": "YuanRong pipeline failed shards/s",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "editorMode": "code",
+          "expr": "sum(rate(ucm:cache_load_failed_shards_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__rate_interval]))",
+          "legendFormat": "Cache pipeline failed shards/s",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Tier Attribution Diagnostics",
       "type": "timeseries"
     }
   ],

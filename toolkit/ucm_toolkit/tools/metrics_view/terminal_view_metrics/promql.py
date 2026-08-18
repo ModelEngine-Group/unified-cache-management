@@ -49,6 +49,10 @@ class PromqlEvaluator:
         if _is_number(expr):
             return {_key({}): VectorPoint({}, float(expr))}
 
+        split = _split_set_operator(expr, "or")
+        if split is not None:
+            return _vector_or(self._eval(split[0]), self._eval(split[1]))
+
         call = _function_args(expr, "clamp_min")
         if call is not None:
             args = _split_top_level(call, ",")
@@ -259,6 +263,26 @@ def _split_binary(expr: str, operators: tuple[str, ...]) -> tuple[str, str, str]
     return None
 
 
+def _split_set_operator(expr: str, operator: str) -> tuple[str, str] | None:
+    token = f" {operator} "
+    depth = 0
+    in_quote = False
+    index = 0
+    while index <= len(expr) - len(token):
+        char = expr[index]
+        if char == '"' and (index == 0 or expr[index - 1] != "\\"):
+            in_quote = not in_quote
+        elif not in_quote:
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+            elif depth == 0 and expr.startswith(token, index):
+                return expr[:index], expr[index + len(token) :]
+        index += 1
+    return None
+
+
 def _split_top_level(text: str, separator: str) -> list[str]:
     if not text:
         return []
@@ -338,6 +362,12 @@ def _vector_binary(left: Vector, right: Vector, op: str) -> Vector:
         result[key] = VectorPoint(
             left[key].labels, _apply_binary(left[key].value, right[key].value, op)
         )
+    return result
+
+
+def _vector_or(left: Vector, right: Vector) -> Vector:
+    result = dict(right)
+    result.update(left)
     return result
 
 
