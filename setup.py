@@ -261,7 +261,10 @@ setup(
     package_data={
         "ucm": ["sparse/gsa_on_device/configs/**/*.json"],
         **({"ucm.integration.mindie": ["ucm_config.json"]} if ENABLE_MINDIE else {}),
-        "": ["ucm_patch.pth"],
+        "": [
+            "ucm_patch.pth",
+            "ucm/integration/vllm/patch/**/*.patch",
+        ],
     },
 )
 if any(arg in sys.argv for arg in ["-e", "develop", "editable_wheel"]):
