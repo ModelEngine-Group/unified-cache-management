@@ -111,36 +111,46 @@ extra:
 nav:
   - Home: index.md
   - User Guide:
+      - user-guide/index.md
       - Installation: user-guide/installation.md
       - Model Tour:
+          - user-guide/model-tour/index.md
           - GLM:
+              - user-guide/model-tour/glm/index.md
               - GLM-5.1: user-guide/model-tour/glm/glm-5-1.md
               - GLM-5.2: user-guide/model-tour/glm/glm-5-2.md
               - GLM-5: user-guide/model-tour/glm/glm-5.md
               - GLM-4.x: user-guide/model-tour/glm/glm-4x.md
           - Qwen3:
+              - user-guide/model-tour/qwen3/index.md
               - Qwen3-235B-A22B: user-guide/model-tour/qwen3/qwen3-235b-a22b.md
               - Qwen3-32B: user-guide/model-tour/qwen3/qwen3-32b.md
               - Qwen3-30B-A3B: user-guide/model-tour/qwen3/qwen3-moe.md
               - Qwen2.5: user-guide/model-tour/qwen3/qwen2-5.md
           - DeepSeek:
+              - user-guide/model-tour/deepseek/index.md
               - DeepSeek-V3: user-guide/model-tour/deepseek/deepseek-v3.md
               - DeepSeek-R1: user-guide/model-tour/deepseek/deepseek-r1.md
               - DeepSeek-V3.2: user-guide/model-tour/deepseek/deepseek-v3-2.md
           - MiniMax:
+              - user-guide/model-tour/minimax/index.md
               - MiniMax-M2.5: user-guide/model-tour/minimax/minimax-m2-5.md
               - MiniMax-M2.7: user-guide/model-tour/minimax/minimax-m2-7.md
           - Kimi:
+              - user-guide/model-tour/kimi/index.md
               - Kimi-K2: user-guide/model-tour/kimi/kimi-k2.md
       - Engines:
+          - user-guide/engines/index.md
           - vLLM: user-guide/engines/vllm.md
           - vLLM Ascend: user-guide/engines/vllm-ascend.md
           - SGLang: user-guide/engines/sglang.md
           - MindIE: user-guide/engines/mindie.md
       - Deploy:
+          - user-guide/deploy/index.md
           - Docker: user-guide/deploy/docker.md
           - Kubernetes (Helm + Kthena): user-guide/deploy/kubernetes.md
       - Core Capabilities & Troubleshooting:
+          - user-guide/capabilities/index.md
           - Prefix Cache:
               - Overview: user-guide/capabilities/prefix-cache/index.md
               - Pipeline Store: user-guide/capabilities/prefix-cache/pipeline-store.md
@@ -160,8 +170,10 @@ nav:
           - ReRoPE: user-guide/capabilities/rerope.md
           - Troubleshooting: user-guide/troubleshooting.md
   - Developer Guide:
+      - developer-guide/index.md
       - Architecture: developer-guide/architecture.md
       - Capability Principles:
+          - developer-guide/capability-principles.md
           - Prefix Cache Architecture: developer-guide/prefix-cache-architecture.md
           - Sparse Attention Principles: developer-guide/sparse-attention-principles.md
           - PD Disaggregation Design: developer-guide/pd-disaggregation-design.md
@@ -170,6 +182,7 @@ nav:
       - Extending Store: developer-guide/extending-store.md
       - Contribute: developer-guide/contribute.md
   - Reference:
+      - reference/index.md
       - Compatibility & Metrics:
           - Support Matrix: reference/compatibility.md
           - Metrics: reference/metrics.md
@@ -177,4 +190,5 @@ nav:
       - API & Parameters: reference/api-parameters.md
   - Benchmark: benchmark/index.md
   - Toolkit:
+      - toolkit/index.md
       - KV Cache Calculator: toolkit/kv-cache-calculator.md

@@ -1,0 +1,1 @@
+Placeholder: this page will hold the design principles behind Prefix Cache, Sparse Attention, PD Disaggregation, and ReRoPE.
