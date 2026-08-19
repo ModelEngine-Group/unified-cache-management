@@ -419,7 +419,6 @@ def create_cache_worker(
     config["cache_buffer_capacity_gb"] = 32
     config["cache_stream_number"] = 4
     config["cache_sdma_direct"] = cache_sdma_direct
-    config["cache_sdma_direct_launch_granularity"] = "shard"
     config["timeout_ms"] = 30000
     config["device_id"] = device_id
     if store_cpu_affinity_cores:
@@ -441,7 +440,6 @@ def create_cache_scheduler(
     config["io_direct"] = True
     config["cache_buffer_capacity_gb"] = 32
     config["cache_sdma_direct"] = cache_sdma_direct
-    config["cache_sdma_direct_launch_granularity"] = "shard"
     config["timeout_ms"] = 30000
     config["device_id"] = -1
     if store_cpu_affinity_cores:
