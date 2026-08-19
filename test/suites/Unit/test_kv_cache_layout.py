@@ -96,6 +96,7 @@ def _load_layout_symbols():
     source = CONNECTOR_PATH.read_text(encoding="utf-8-sig")
     tree = ast.parse(source)
     selected_names = {
+        "_get_store_gc_block_size",
         "_get_store_io_sizes",
         "_has_shared_indexer_layers",
         "KVCacheSegment",
@@ -127,6 +128,7 @@ def _load_layout_symbols():
 
 
 LAYOUT_SYMBOLS = _load_layout_symbols()
+get_store_gc_block_size = LAYOUT_SYMBOLS["_get_store_gc_block_size"]
 get_store_io_sizes = LAYOUT_SYMBOLS["_get_store_io_sizes"]
 KVCacheLayout = LAYOUT_SYMBOLS["KVCacheLayout"]
 SharedIndexerKVCacheLayout = LAYOUT_SYMBOLS["SharedIndexerKVCacheLayout"]
@@ -240,6 +242,26 @@ class KVCacheLayoutTest(unittest.TestCase):
         )
 
         self.assertEqual(shard_size, 118784)
+        self.assertEqual(block_size, 9383936)
+
+    def test_yuanrong_posix_gc_uses_compact_persisted_block_size(self):
+        block_size = get_store_gc_block_size(
+            "YuanRong|Posix",
+            [60000, 56992],
+            118784,
+            9383936,
+        )
+
+        self.assertEqual(block_size, 9242368)
+
+    def test_other_pipeline_gc_keeps_aligned_store_block_size(self):
+        block_size = get_store_gc_block_size(
+            "Cache|Posix",
+            [60000, 56992],
+            118784,
+            9383936,
+        )
+
         self.assertEqual(block_size, 9383936)
 
     def test_direct_layout_flattens_only_real_tensors(self):

@@ -34,7 +34,7 @@ TRACE_RE = re.compile(
 )
 SYSTEM_TIME_RE = re.compile(r"^\[(?P<system_time>\d{4}-\d{2}-\d{2} [^\]]+)\]")
 AVAILABLE_KV_RE = re.compile(
-    r"\bavailable[_\s-]*(?:kv[_\s-]*)?cache[_\s-]*memory\b"
+    r"\b(?:available|current)[_\s-]*(?:kv[_\s-]*)?cache[_\s-]*memory\b"
     r"[^0-9]*(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>[kmgt]?i?b|bytes?)?",
     re.IGNORECASE,
 )

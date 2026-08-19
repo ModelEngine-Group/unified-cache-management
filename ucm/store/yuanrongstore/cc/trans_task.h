@@ -1,7 +1,7 @@
 /**
  * MIT License
  *
- * Copyright (c) 2025 Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -21,38 +21,36 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TEST_DETAIL_PATH_BASE_H
-#define UNIFIEDCACHE_TEST_DETAIL_PATH_BASE_H
+#ifndef UNIFIEDCACHE_YUANRONG_STORE_CC_TRANS_TASK_H
+#define UNIFIEDCACHE_YUANRONG_STORE_CC_TRANS_TASK_H
 
-#include <gtest/gtest.h>
-#include "random.h"
+#include <atomic>
+#include <cstdint>
+#include "type/types.h"
 
-namespace UC::Test::Detail {
+namespace UC::YuanRongStore {
 
-class PathBase : public ::testing::Test {
+class TransTask {
 public:
-    void SetUp() override
+    enum class Type : uint8_t { LOAD, DUMP };
+
+    Detail::TaskHandle id{0};
+    Type type{Type::DUMP};
+    Detail::TaskDesc desc;
+
+    TransTask(Type taskType, Detail::TaskDesc taskDesc)
+        : id{NextId()}, type{taskType}, desc{std::move(taskDesc)}
     {
-        testing::Test::SetUp();
-        const auto info = testing::UnitTest::GetInstance()->current_test_info();
-        std::string testCaseName = info->test_case_name();
-        std::string testName = info->name();
-        this->path_ = "./" + testCaseName + "_" + testName + "_" + this->rd_.RandomString(20) + "/";
-        if (system((std::string("rm -rf ") + this->path_).c_str())) {}
-        if (system((std::string("mkdir -p ") + this->path_).c_str())) {}
     }
-    void TearDown() override
-    {
-        if (system((std::string("rm -rf ") + this->path_).c_str())) {}
-        testing::Test::TearDown();
-    }
-    std::string Path() const { return this->path_; }
 
 private:
-    Random rd_;
-    std::string path_;
+    static Detail::TaskHandle NextId() noexcept
+    {
+        static std::atomic<Detail::TaskHandle> id{1};
+        return id.fetch_add(1, std::memory_order_relaxed);
+    }
 };
 
-}  // namespace UC::Test::Detail
+}  // namespace UC::YuanRongStore
 
 #endif
