@@ -1,0 +1,382 @@
+diff --git a/vllm/vllm/v1/core/sched/scheduler.py b/vllm/vllm/v1/core/sched/scheduler.py
+index 90d93a11..1beb9951 100644
+--- a/vllm/vllm/v1/core/sched/scheduler.py
++++ b/vllm/vllm/v1/core/sched/scheduler.py
+@@ -2482,6 +2482,10 @@ class Scheduler(SchedulerInterface):
+         affected_req_ids: set[str] = set()
+         total_affected_tokens = 0
+         blocks_to_evict: set[int] = set()
++        # UCM: detect multi-group (HMA) models so we only iterate the
++        # full-attention group while still evicting invalid blocks from
++        # every group.
++        num_groups = getattr(self.kv_cache_manager, "num_kv_cache_groups", 1)
+         # If a block is invalid and shared by multiple requests in the batch,
+         # these requests must be rescheduled, but only the first will recompute
+         # it. This set tracks blocks already marked for recomputation.
+@@ -2491,7 +2495,14 @@ class Scheduler(SchedulerInterface):
+             marked_invalid_block = False
+             req_id = request.request_id
+             # TODO (davidb): add support for hybrid memory allocator
+-            (req_block_ids,) = self.kv_cache_manager.get_block_ids(req_id)
++            all_block_ids = self.kv_cache_manager.get_block_ids(req_id)
++            if num_groups > 1:
++                # UCM: for multi-group (HMA) models, only iterate the
++                # full-attention group; invalid blocks from other groups
++                # are merged into blocks_to_evict below.
++                req_block_ids = all_block_ids[0]
++            else:
++                (req_block_ids,) = all_block_ids
+             # We iterate only over blocks that may contain externally computed
+             # tokens
+             req_num_computed_tokens = (
+@@ -2549,6 +2560,11 @@ class Scheduler(SchedulerInterface):
+ 
+                 affected_req_ids.add(request.request_id)
+ 
++        # UCM: for multi-group models, evict invalid blocks from all groups,
++        # not just group 0.
++        if num_groups > 1:
++            blocks_to_evict.update(invalid_block_ids)
++
+         return affected_req_ids, total_affected_tokens, blocks_to_evict
+ 
+     def _handle_invalid_blocks(
+diff --git a/vllm-ascend/vllm_ascend/core/single_type_kv_cache_manager.py b/vllm-ascend/vllm_ascend/core/single_type_kv_cache_manager.py
+index f0f1daf..200e243 100644
+--- a/vllm-ascend/vllm_ascend/core/single_type_kv_cache_manager.py
++++ b/vllm-ascend/vllm_ascend/core/single_type_kv_cache_manager.py
+@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
+ 
+ from vllm.utils.math_utils import cdiv
+ from vllm.v1.core.block_pool import BlockPool
++from vllm.logger import logger
+ from vllm.v1.core.kv_cache_utils import (
+     BlockHashList,
+     BlockHashListWithBlockSize,
+@@ -122,10 +123,32 @@ class CompressAttentionManager(FullAttentionManager):
+         self.num_cached_block[request_id] = len(req_blocks)
+ 
+         if num_external_computed_tokens > 0:
+-            # Allocate new blocks for external computed tokens.
+-            allocated_blocks = self.block_pool.get_new_blocks(
+-                cdiv(num_total_computed_tokens, self.block_size) - len(req_blocks)
+-            )
++            # UCM: guard against negative allocation when compressed hits
++            # are inconsistent with the free-block queue state.
++            target_blocks = cdiv(num_total_computed_tokens, self.block_size)
++            num_new_blocks = target_blocks - len(req_blocks)
++            if num_new_blocks <= 0:
++                if num_new_blocks < 0:
++                    logger.warning(
++                        "Skip negative Ascend compressed-attention KV allocation: "
++                        "request_id=%s, num_new_blocks=%d, target_blocks=%d, "
++                        "req_blocks=%d, compress_ratio=%d, block_size=%d, "
++                        "compressed_total_tokens=%d, num_skipped_blocks=%d, "
++                        "kv_cache_group_id=%s, spec=%s",
++                        request_id,
++                        num_new_blocks,
++                        target_blocks,
++                        len(req_blocks),
++                        self.compress_ratio,
++                        self.block_size,
++                        num_total_computed_tokens,
++                        num_skipped_blocks,
++                        getattr(self, "kv_cache_group_id", None),
++                        type(self.kv_cache_spec).__name__,
++                    )
++                return
++
++            allocated_blocks = self.block_pool.get_new_blocks(num_new_blocks)
+             req_blocks.extend(allocated_blocks)
+             if type(self.kv_cache_spec) is FullAttentionSpec:
+                 self.new_block_ids.extend(b.block_id for b in allocated_blocks)
+diff --git a/vllm-ascend/vllm_ascend/cpu_binding.py b/vllm-ascend/vllm_ascend/cpu_binding.py
+index 0cbc0e2..b80af45 100644
+--- a/vllm-ascend/vllm_ascend/cpu_binding.py
++++ b/vllm-ascend/vllm_ascend/cpu_binding.py
+@@ -30,6 +30,81 @@ DEVICE_BINDING_MODE: dict["AscendDeviceType", str] = {
+ }
+ NO_IRQ_BINDING_DEVICE_TYPES = {AscendDeviceType.A5}
+ 
++# ---------------------------------------------------------------------------
++# UCM CPU affinity helpers
++# ---------------------------------------------------------------------------
++_UCM_THREAD_PREFIX = "ucm_"
++_UCM_HEALTH_THREAD_NAME = "ucm_health_mon"
++
++
++def _ucm_affinity_enabled() -> bool:
++    return os.getenv("VLLM_CPU_AFFINITY") == "1"
++
++
++def _split_contiguous_halves(cores: list[int]) -> tuple[list[int], list[int]]:
++    """Split *cores* into contiguous worker / UCM halves."""
++    ordered = sorted(set(cores))
++    if len(ordered) < 2:
++        return ordered, []
++
++    segments: list[list[int]] = []
++    segment = [ordered[0]]
++    for core in ordered[1:]:
++        if core == segment[-1] + 1:
++            segment.append(core)
++        else:
++            segments.append(segment)
++            segment = [core]
++    segments.append(segment)
++
++    worker_cores: list[int] = []
++    ucm_cores: list[int] = []
++    for seg in segments:
++        middle = max(1, len(seg) // 2)
++        worker_cores.extend(seg[:middle])
++        ucm_cores.extend(seg[middle:])
++
++    if not ucm_cores:
++        middle = max(1, len(ordered) // 2)
++        worker_cores = ordered[:middle]
++        ucm_cores = ordered[middle:]
++
++    return worker_cores, ucm_cores
++
++
++def _ucm_task_snapshot() -> list[tuple[int, str]]:
++    """Return ``(tid, name)`` for every thread of the current process."""
++    tasks: list[tuple[int, str]] = []
++    try:
++        entries = os.listdir("/proc/self/task")
++    except OSError:
++        return tasks
++    for entry in entries:
++        if not entry.isdigit():
++            continue
++        try:
++            with open(f"/proc/self/task/{entry}/comm") as f:
++                name = f.read().strip()
++        except (OSError, ProcessLookupError):
++            continue
++        tasks.append((int(entry), name))
++    return tasks
++
++
++def _split_health_cores(ucm_cores: list[int]) -> tuple[list[int], list[int]]:
++    """Reserve the last UCM core for the health-monitor thread."""
++    if len(ucm_cores) < 2:
++        return ucm_cores, ucm_cores
++    return ucm_cores[:-1], ucm_cores[-1:]
++
++
++def _ucm_thread_cores(
++    name: str, ucm_cores: list[int], health_cores: list[int]
++) -> list[int]:
++    if name == _UCM_HEALTH_THREAD_NAME and health_cores:
++        return health_cores
++    return ucm_cores
++
+ 
+ def is_arm_cpu() -> bool:
+     arch = platform.machine().lower()
+@@ -214,6 +289,8 @@ class CpuAlloc:
+         self.assign_main: dict[int, list[int]] = {}
+         self.assign_acl: dict[int, list[int]] = {}
+         self.assign_rel: dict[int, list[int]] = {}
++        self.assign_ucm: dict[int, list[int]] = {}
++        self.assign_ucm_health: dict[int, list[int]] = {}
+         self.uvb_cpu_pool: list[int] = []
+ 
+     @staticmethod
+@@ -592,11 +669,41 @@ class CpuAlloc:
+         # Keep only visible NPUs in the final binding pool. Non-visible NPUs are used only to avoid overlap.
+         self.npu_cpu_pool = {npu: final[npu] for npu in self.device_info.running_npu_list}
+ 
++    def _assign_ucm_cpu_roles(
++        self, npu: int, main: list[int], acl: list[int], rel: list[int]
++    ) -> None:
++        """Assign worker / UCM / health roles for *npu*."""
++        if _ucm_affinity_enabled():
++            worker_cores, ucm_cores = _split_contiguous_halves(main)
++            if ucm_cores:
++                main = worker_cores
++            ucm_cores, health_cores = _split_health_cores(ucm_cores)
++            self.assign_ucm[npu] = ucm_cores
++            self.assign_ucm_health[npu] = health_cores
++        else:
++            self.assign_ucm[npu] = []
++            self.assign_ucm_health[npu] = []
++        self.assign_main[npu] = main
++        self.assign_acl[npu] = acl
++        self.assign_rel[npu] = rel
++
+     def allocate(self) -> None:
++        self.assign_ucm = {}
++        self.assign_ucm_health = {}
+         if self._is_ascend_950():
+-            self._allocate_ascend_950_roles()
++            for npu, cpu_pool in self.npu_cpu_pool.items():
++                self._assign_ucm_cpu_roles(npu, cpu_pool, [], [])
+             return
+-        self._allocate_default_roles()
++        reserve_irq_cpus = self._reserve_irq_cpus()
++        min_cpus_per_npu = self._min_cpus_per_npu()
++        for npu, cpu_pool in self.npu_cpu_pool.items():
++            if len(cpu_pool) < min_cpus_per_npu:
++                raise RuntimeError(
++                    "The number of CPUs is insufficient. Each NPU requires at "
++                    f"least {min_cpus_per_npu} CPUs."
++                )
++            main = cpu_pool[2:-2] if reserve_irq_cpus else cpu_pool[:-2]
++            self._assign_ucm_cpu_roles(npu, main, [cpu_pool[-2]], [cpu_pool[-1]])
+ 
+     def _allocate_ascend_950_roles(self) -> None:
+         self.assign_main = {npu: cpu_pool for npu, cpu_pool in self.npu_cpu_pool.items()}
+@@ -625,10 +732,22 @@ class CpuAlloc:
+     def print_plan(self) -> None:
+         logger.info("The CPU allocation plan is as follows:")
+         current_npu = self.device_info.running_npu_list[self.rank_id]
+-        if self._is_ascend_950():
+-            self._print_ascend_950_plan(current_npu)
+-            return
+-        self._print_default_plan(current_npu)
++        main = " ".join(map(str, self.assign_main[current_npu]))
++        ucm = " ".join(map(str, self.assign_ucm.get(current_npu, [])))
++        ucm_health = " ".join(
++            map(str, self.assign_ucm_health.get(current_npu, []))
++        )
++        acl = " ".join(map(str, self.assign_acl[current_npu]))
++        rel = str(self.assign_rel[current_npu]) if self.assign_rel[current_npu] else ""
++        logger.info(
++            "NPU%s: main=[%s]  ucm=[%s]  ucm_health=[%s]  acl=[%s]  release=[%s]",
++            current_npu,
++            main,
++            ucm,
++            ucm_health,
++            acl,
++            rel,
++        )
+ 
+     def _print_ascend_950_plan(self, current_npu: int) -> None:
+         main = " ".join(map(str, self.assign_main[current_npu]))
+@@ -675,10 +794,50 @@ class CpuAlloc:
+         )
+ 
+     def bind_threads(self) -> None:
++        self._bind_ucm_threads()
+         if self._is_ascend_950():
+-            self.bind_ascend_950_threads()
+-            return
+-        self._bind_default_threads()
++            main_pid = str(psutil.Process().pid)
++            current_npu = self.device_info.running_npu_list[self.rank_id]
++            self.bind_memory(main_pid, current_npu)
++
++    def _bind_ucm_threads(self) -> None:
++        thread_message, _ = execute_command(["ps", "-Te"])
++        threads_map = self.get_threads_map(thread_message)
++        main_pid = str(psutil.Process().pid)
++        current_npu = self.device_info.running_npu_list[self.rank_id]
++        self.bind(main_pid, self.assign_main[current_npu], True)
++
++        ucm_cores = self.assign_ucm.get(current_npu, [])
++        health_cores = self.assign_ucm_health.get(current_npu, [])
++        if _ucm_affinity_enabled() and (ucm_cores or health_cores):
++            bound_ucm = 0
++            bound_health = 0
++            for tid, name in _ucm_task_snapshot():
++                if not name.startswith(_UCM_THREAD_PREFIX):
++                    continue
++                cores = _ucm_thread_cores(name, ucm_cores, health_cores)
++                if not cores:
++                    continue
++                self.bind(str(tid), cores, False)
++                if name == _UCM_HEALTH_THREAD_NAME:
++                    bound_health += 1
++                else:
++                    bound_ucm += 1
++            logger.info(
++                "[UCM CPU Affinity] vllm-ascend bound %s UCM tasks to cores %s",
++                bound_ucm,
++                ucm_cores,
++            )
++            logger.info(
++                "[UCM CPU Affinity] vllm-ascend bound %s health tasks to cores %s",
++                bound_health,
++                health_cores,
++            )
++
++        for acl_thread in threads_map.get(main_pid, {}).get("acl_thread", []):
++            self.bind(acl_thread, self.assign_acl[current_npu], False)
++        for release_thread in threads_map.get(main_pid, {}).get("release_thread", []):
++            self.bind(release_thread, self.assign_rel[current_npu], False)
+ 
+     def _bind_default_threads(self) -> None:
+         thread_message, _ = execute_command(["ps", "-Te"])
+diff --git a/vllm-ascend/vllm_ascend/distributed/kv_transfer/__init__.py b/vllm-ascend/vllm_ascend/distributed/kv_transfer/__init__.py
+index f75ebab..bd392e1 100644
+--- a/vllm-ascend/vllm_ascend/distributed/kv_transfer/__init__.py
++++ b/vllm-ascend/vllm_ascend/distributed/kv_transfer/__init__.py
+@@ -58,6 +58,13 @@ def register_connector():
+         "UCMConnector", "vllm_ascend.distributed.kv_transfer.kv_pool.ucm_connector", "UCMConnectorV1"
+     )
+ 
++    # UCM: MultiConnector serializes stats with the concrete class name
++    # UCMConnectorV1. Register it as an alias so the factory can resolve
++    # the class by either "UCMConnector" or "UCMConnectorV1".
++    KVConnectorFactory.register_connector(
++        "UCMConnectorV1", "vllm_ascend.distributed.kv_transfer.kv_pool.ucm_connector", "UCMConnectorV1"
++    )
++
+     KVConnectorFactory.register_connector(
+         "LMCacheAscendConnector",
+         "vllm_ascend.distributed.kv_transfer.kv_pool.lmcache_ascend_connector",
+diff --git a/vllm-ascend/vllm_ascend/patch/platform/patch_kv_cache_coordinator.py b/vllm-ascend/vllm_ascend/patch/platform/patch_kv_cache_coordinator.py
+index c66096f..4719a67 100644
+--- a/vllm-ascend/vllm_ascend/patch/platform/patch_kv_cache_coordinator.py
++++ b/vllm-ascend/vllm_ascend/patch/platform/patch_kv_cache_coordinator.py
+@@ -346,15 +346,14 @@ class AscendHybridKVCacheCoordinator(HybridKVCacheCoordinator):
+             if is_simple_hybrid:
+                 break
+ 
+-        # Truncate full attention blocks to final hit_length (if present)
+-        # NOTE(zxr): for deepseek-v4, there is two fullattn groups, but
+-        # in this function, only the first fullattn group is truncate by
+-        # the belowing codes(c4), c128 layer does not truncate, which may
+-        # have prefix cache block hit.
+-        # Due to slidingwindow attn, deepseek-v4 decode node can't have
+-        # any prefix cache hit, because `hit_length` of SWA is 0.
+-        spec, group_ids, _ = self.attention_groups[0]
+-        if isinstance(spec, FullAttentionSpec):
++        # UCM: truncate EVERY full-attention group, not just attention_groups[0].
++        # The original code only truncated the first group, leaving later
++        # compressed full-attention groups (e.g. C128) with stale blocks.
++        # This caused allocate_new_computed_blocks() to compute a negative
++        # number of blocks, corrupting the free-block queue.
++        for spec, group_ids, _ in self.attention_groups:
++            if not isinstance(spec, FullAttentionSpec):
++                continue
+             num_blocks = hit_length // self._get_effective_block_size(spec)
+             for group_id in group_ids:
+                 if (blks := hit_blocks_by_group[group_id]) is not None:
+@@ -448,15 +447,14 @@ class AscendHybridKVCacheCoordinator(HybridKVCacheCoordinator):
+             if is_simple_hybrid:
+                 break
+ 
+-        # Truncate full attention blocks to final hit_length (if present)
+-        # NOTE(zxr): for deepseek-v4, there is two fullattn groups, but
+-        # in this function, only the first fullattn group is truncate by
+-        # the belowing codes(c4), c128 layer does not truncate, which may
+-        # have prefix cache block hit.
+-        # Due to slidingwindow attn, deepseek-v4 decode node can't have
+-        # any prefix cache hit, because `hit_length` of SWA is 0.
+-        spec, group_ids, _ = self.attention_groups[0]
+-        if isinstance(spec, FullAttentionSpec):
++        # UCM: truncate EVERY full-attention group, not just attention_groups[0].
++        # The original code only truncated the first group, leaving later
++        # compressed full-attention groups (e.g. C128) with stale blocks.
++        # This caused allocate_new_computed_blocks() to compute a negative
++        # number of blocks, corrupting the free-block queue.
++        for spec, group_ids, _ in self.attention_groups:
++            if not isinstance(spec, FullAttentionSpec):
++                continue
+             num_blocks = hit_length // self._get_effective_block_size(spec)
+             for group_id in group_ids:
+                 if (blks := hit_blocks_by_group[group_id]) is not None:
