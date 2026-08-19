@@ -66,13 +66,25 @@ public:
 
     void register_at_exit()
     {
-        std::signal(SIGSEGV, &_signal_handler);
-        std::signal(SIGABRT, &_signal_handler);
-        std::signal(SIGFPE, &_signal_handler);
-        std::signal(SIGILL, &_signal_handler);
-        std::signal(SIGINT, &_signal_handler);
+        std::signal(SIGSEGV, &_fatal_signal_handler);
+        std::signal(SIGABRT, &_fatal_signal_handler);
+        std::signal(SIGFPE, &_fatal_signal_handler);
+        std::signal(SIGILL, &_fatal_signal_handler);
+        std::signal(SIGINT, &_interrupt_signal_handler);
     }
-    static void _signal_handler(int signum) { Logger::GetInstance().Flush(); }
+
+    static void _fatal_signal_handler(int signum)
+    {
+        Logger::GetInstance().Flush();
+        std::signal(signum, SIG_DFL);
+        std::raise(signum);
+    }
+
+    static void _interrupt_signal_handler(int signum)
+    {
+        Logger::GetInstance().Flush();
+        std::exit(128 + signum);
+    }
 
     void Log(Level&& lv, SourceLocation&& loc, std::string&& msg);
     void LogFileOnly(Level&& lv, SourceLocation&& loc, std::string&& msg);
