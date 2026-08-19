@@ -721,6 +721,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
         name, module_path, config = self._base_store_config(store_suffix)
         self._set_default_shm_buffer_capacity(config)
+        if label == "FA":
+            config.setdefault("cache_io_aggregation", True)
+        else:
+            config["cache_io_aggregation"] = False
         if self._role == KVConnectorRole.WORKER:
             if tensor_size_list is None:
                 raise RuntimeError(f"Worker FAWA {label} store needs tensor sizes.")
