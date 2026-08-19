@@ -40,6 +40,18 @@ _COUNTER_METRICS = [
         ),
     ),
     (
+        "cache_load_success_shards_total",
+        "Shards successfully loaded from an already-ready Cache buffer to device",
+    ),
+    (
+        "cache_posix_load_success_shards_total",
+        "Shards successfully loaded to device after waiting for Posix to fill Cache",
+    ),
+    (
+        "cache_load_failed_shards_total",
+        "Cache load shards that did not complete device delivery",
+    ),
+    (
         "cache_dump_shards_total",
         "Total shards dispatched by Cache dump (mirror of cache_load_shards_total)",
     ),
@@ -135,6 +147,42 @@ _COUNTER_METRICS = [
     (
         "posix_io_errors_total",
         "Number of Posix read, write, or AIO completion failures",
+    ),
+    (
+        "yuanrong_load_success_shards_total",
+        "Shards successfully loaded from YuanRong to device",
+    ),
+    (
+        "yuanrong_lookup_miss_posix_load_success_shards_total",
+        "Shards successfully loaded from Posix after YuanRong lookup miss",
+    ),
+    (
+        "yuanrong_load_fallback_posix_load_success_shards_total",
+        "Shards successfully loaded from Posix after YuanRong load failure",
+    ),
+    (
+        "yuanrong_load_failed_shards_total",
+        "YuanRong pipeline load shards that did not complete device delivery",
+    ),
+    (
+        "yuanrong_local_dram_load_hits_total",
+        "Estimated YuanRong local DRAM Get hits forwarded from kv_resource.log",
+    ),
+    (
+        "yuanrong_remote_load_hits_total",
+        "Estimated YuanRong remote worker Get hits forwarded from kv_resource.log",
+    ),
+    (
+        "yuanrong_local_ssd_load_hits_total",
+        "Estimated YuanRong local spill SSD Get hits forwarded from kv_resource.log",
+    ),
+    (
+        "yuanrong_l2_load_hits_total",
+        "YuanRong L2 persistence Get hits forwarded from kv_resource.log",
+    ),
+    (
+        "yuanrong_resource_log_read_errors_total",
+        "Number of failures opening, reading, or parsing YuanRong kv_resource.log",
     ),
     (
         "mooncake_load_blocks_total",
@@ -309,6 +357,61 @@ _GAUGE_METRICS = [
     (
         "cache_lookup_hit_rate",
         "Instantaneous Cache stage hit rate from the most recent lookup call",
+        {"multiprocess_mode": 'livemostrecent'},
+    ),
+    (
+        "yuanrong_dram_used_bytes",
+        "YuanRong physical shared-memory usage in bytes",
+        {"multiprocess_mode": 'livemostrecent'},
+    ),
+    (
+        "yuanrong_dram_capacity_bytes",
+        "YuanRong shared-memory capacity in bytes",
+        {"multiprocess_mode": 'livemostrecent'},
+    ),
+    (
+        "yuanrong_dram_usage_ratio",
+        "YuanRong physical shared-memory usage ratio",
+        {"multiprocess_mode": 'livemostrecent'},
+    ),
+    (
+        "yuanrong_ssd_used_bytes",
+        "YuanRong physical spill-disk usage in bytes",
+        {"multiprocess_mode": 'livemostrecent'},
+    ),
+    (
+        "yuanrong_ssd_capacity_bytes",
+        "YuanRong spill-disk capacity in bytes",
+        {"multiprocess_mode": 'livemostrecent'},
+    ),
+    (
+        "yuanrong_ssd_usage_ratio",
+        "YuanRong physical spill-disk usage ratio",
+        {"multiprocess_mode": 'livemostrecent'},
+    ),
+    (
+        "yuanrong_resource_log_last_update_timestamp_seconds",
+        "Unix timestamp of the latest YuanRong resource snapshot parsed by UCM",
+        {"multiprocess_mode": 'livemostrecent'},
+    ),
+    (
+        "yuanrong_resource_log_reporter_leader",
+        "Whether this UCM process is the host YuanRong resource reporter leader",
+        {"multiprocess_mode": 'livemostrecent'},
+    ),
+    (
+        "posix_store_used_bytes",
+        "Estimated logical Posix Store usage in bytes from GC sampling",
+        {"multiprocess_mode": 'livemostrecent'},
+    ),
+    (
+        "posix_store_capacity_bytes",
+        "Configured logical Posix Store capacity in bytes",
+        {"multiprocess_mode": 'livemostrecent'},
+    ),
+    (
+        "posix_store_usage_ratio",
+        "Estimated logical Posix Store usage ratio",
         {"multiprocess_mode": 'livemostrecent'},
     ),
     (

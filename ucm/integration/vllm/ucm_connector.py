@@ -117,6 +117,27 @@ def _get_store_io_sizes(
     return physical_shard_size, physical_shard_size * shard_count
 
 
+def _get_store_gc_block_size(
+    store_pipeline: str,
+    tensor_size_list: list[int],
+    store_shard_size: int,
+    store_block_size: int,
+) -> int:
+    """Return the persisted file size used by scheduler-side Posix GC."""
+    if store_pipeline != "YuanRong|Posix":
+        return store_block_size
+    shard_count, remainder = divmod(store_block_size, store_shard_size)
+    if remainder:
+        raise ValueError(
+            "Store block_size must be divisible by shard_size, "
+            f"got shard_size={store_shard_size}, block_size={store_block_size}."
+        )
+    object_size = sum(int(size) for size in tensor_size_list)
+    if object_size <= 0:
+        raise ValueError("tensor_size_list is required for YuanRong|Posix")
+    return object_size * shard_count
+
+
 def _drop_null_vllm_blocks(
     ucm_block_ids: list[bytes],
     vllm_block_ids: list[int],
@@ -1296,7 +1317,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["tensor_size_list"] = tensor_size_list
             config["shard_size"] = store_shard_size
             config["block_size"] = store_block_size
-            self._publish_block_size(store_block_size)
+            gc_block_size = _get_store_gc_block_size(
+                str(config.get("store_pipeline", "")),
+                tensor_size_list,
+                store_shard_size,
+                store_block_size,
+            )
+            self._publish_block_size(gc_block_size)
             if store_shard_size != logical_shard_size:
                 logger.info(
                     "Pad Store sizes for I/O alignment: "
@@ -2815,6 +2842,9 @@ class UCMLiteConnector(KVConnectorBase_V1):
         super().__init__(vllm_config, role, kv_cache_config)
 
         logger.info("Init UCMLiteConnector.")
+
+    def get_block_size(self) -> int:
+        return self.block_size
 
     def get_num_new_matched_tokens(self, request, num_computed_tokens):
         req_blocks_num = len(request.all_token_ids) // self.hash_block_size

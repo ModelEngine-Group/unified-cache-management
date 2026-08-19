@@ -53,6 +53,15 @@ For rapid prototyping and algorithm validation where development speed outweighs
         """Check presence of blocks in external storage."""
         pass
     @abstractmethod
+    def lookup_on_reverse(self, block_ids: List[bytes]) -> int:
+        """Check presence of blocks in external storage (reverse scan).
+
+        Scans from the last block down to the first, stopping at the first
+        block that exists. Returns the index of the rightmost present block,
+        or -1 if none are found.
+        """
+        pass
+    @abstractmethod
     def prefetch(self, block_ids: List[bytes]) -> None:
         """Asynchronously prefetch blocks into high-speed cache."""
         pass
@@ -133,6 +142,7 @@ Best for balancing productivity with performance—implement hot paths in C++, o
        // Core operations
        Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override;
        Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override;
+       Expected<ssize_t> LookupOnReverse(const Detail::BlockId* blocks, size_t num) override;
        void Prefetch(const Detail::BlockId* blocks, size_t num) override;
        Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override;
        Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override;
@@ -204,6 +214,7 @@ Production-ready implementation with maximum performance and resource control.
        // Required interfaces
        Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override;
        Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override;
+       Expected<ssize_t> LookupOnReverse(const Detail::BlockId* blocks, size_t num) override;
        void Prefetch(const Detail::BlockId* blocks, size_t num) override;
        Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override;
        Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override;

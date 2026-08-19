@@ -92,6 +92,28 @@ public:
     virtual Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) = 0;
 
     /**
+     * @brief Check whether the given blocks exist in storage (reverse scan).
+     *
+     * Scans blocks from the last index (num-1) down to 0 and stops at the
+     * first block that *exists* in storage (reverse semantics).  This is the
+     * dual of LookupOnPrefix: prefix scanning stops at the first *missing*
+     * block, whereas reverse scanning stops at the first *present* block.
+     *
+     * Typical use case: hybrid (full-attention + Mamba) models.  Full
+     * attention blocks are looked up with LookupOnPrefix (front-to-back,
+     * stop at first miss).  Mamba blocks are looked up with LookupOnReverse
+     * (back-to-front, stop at first hit) to maximise the reuse window.
+     *
+     * @param blocks Array of block identifiers to test.
+     * @param num Number of block identifiers to test.
+     * @return Expected<ssize_t>
+     *   - On success: the index of the rightmost block present in storage.
+     *     Returns -1 if none of the blocks are found.
+     *   - On failure: appropriate Status code.
+     * */
+    virtual Expected<ssize_t> LookupOnReverse(const Detail::BlockId* blocks, size_t num) = 0;
+
+    /**
      * @brief Hint the store to prefetch given blocks into high-speed cache.
      *
      * This call is **non-blocking** and **fire-and-forget**; it returns

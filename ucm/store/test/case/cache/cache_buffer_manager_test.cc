@@ -71,6 +71,11 @@ TEST_F(UCCacheBufferManagerTest, Lookup)
         ASSERT_EQ(founds.size(), blocks.size());
         std::for_each(founds.begin(), founds.end(), [](auto found) { ASSERT_FALSE(found); });
     }
+    EXPECT_CALL(backend, LookupOnReverse).WillOnce(testing::Return(-1));
+    {
+        auto ReverseIdx = bufferMgr.LookupOnReverse(blocks.data(), blocks.size()).Value();
+        ASSERT_EQ(ReverseIdx, -1);
+    }
     EXPECT_CALL(backend, LookupOnPrefix).WillOnce(testing::Invoke([](auto, size_t num) {
         return static_cast<ssize_t>(num) - 1;
     }));
@@ -81,6 +86,13 @@ TEST_F(UCCacheBufferManagerTest, Lookup)
         auto founds = bufferMgr.Lookup(blocks.data(), blocks.size()).Value();
         ASSERT_EQ(founds.size(), blocks.size());
         std::for_each(founds.begin(), founds.end(), [](auto found) { ASSERT_TRUE(found); });
+    }
+    EXPECT_CALL(backend, LookupOnReverse).WillOnce(testing::Invoke([](auto, size_t num) {
+        return static_cast<ssize_t>(num) - 1;
+    }));
+    {
+        auto ReverseIdx = bufferMgr.LookupOnReverse(blocks.data(), blocks.size()).Value();
+        ASSERT_EQ(ReverseIdx, 2);
     }
 }
 
@@ -116,4 +128,7 @@ TEST_F(UCCacheBufferManagerTest, BackendOnlyLookupBypassesCache)
 
     EXPECT_CALL(backend, LookupOnPrefix).WillOnce(testing::Return(-1));
     ASSERT_EQ(bufferMgr.LookupOnPrefix(&block, 1).Value(), -1);
+
+    EXPECT_CALL(backend, LookupOnReverse).WillOnce(testing::Return(-1));
+    ASSERT_EQ(bufferMgr.LookupOnReverse(&block, 1).Value(), -1);
 }

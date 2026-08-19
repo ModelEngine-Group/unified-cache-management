@@ -103,6 +103,18 @@ Expected<ssize_t> SpaceManager::LookupOnPrefix(const Detail::BlockId* blocks, si
     return firstFail->load() - 1;
 }
 
+Expected<ssize_t> SpaceManager::LookupOnReverse(const Detail::BlockId* blocks, size_t num)
+{
+    if (num == 0) { return static_cast<ssize_t>(-1); }
+    for (ssize_t i = static_cast<ssize_t>(num) - 1; i >= 0; --i) {
+        if (Lookup(blocks + i)) {
+            if (hotnessTrackerEnable_) { hotnessTracker_.Touch(*(blocks + i)); }
+            return i;
+        }
+    }
+    return static_cast<ssize_t>(-1);
+}
+
 uint8_t SpaceManager::Lookup(const Detail::BlockId* block)
 {
     const auto& path = layout_.DataFilePath(*block, false);
