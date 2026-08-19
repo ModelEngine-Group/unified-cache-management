@@ -141,10 +141,12 @@ def _is_hybrid(cfg: dict, text: dict, has) -> bool:
         return True
     if has("mixed_attention") or has("sparse_attention"):
         return True
-    if has("window_attention") or has("attention_window"):
-        return True
-    if has("sliding_window"):
-        return True
+    # A bare sliding_window / window_attention field marks a standard
+    # sliding-window attention model (e.g. Qwen2 / Mistral), whose KV cache is
+    # still computable with the GQA formula. calculator.js treats it as a hybrid
+    # indicator; we deliberately do not, so plain sliding-window GQA models are
+    # sized correctly. Genuine hybrids still trip on compress_ratios,
+    # linear_attention, layer_types, swa_*, or paired full/sliding layer lists.
     if has("swa_num_key_value_heads") or has("swa_num_attention_heads"):
         return True
     if has("swa_head_dim") or has("add_swa_attention_sink_bias"):
