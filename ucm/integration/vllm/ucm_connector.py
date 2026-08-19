@@ -2087,25 +2087,13 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self.dump_total_ptrs: np.ndarray | None = None
         self.request_data: list[tuple[str, list, list, np.ndarray]] = []
         self._failure_req_ids: set[str] = set()
+        # A layer can be visited more than once in one model-runner batch
+        # (for example by speculative decoding). Persist the first visit only.
+        # This state is reset at the start of every connector batch.
+        self._dumped_layer_ids: set[int] = set()
         self._layerwise_prev_wait_end: Optional[float] = None
         self._layerwise_batch_start: Optional[float] = None
         self._layerwise_batch_wait_blocking_total_ms = 0.0
-        # MTP layers can be revisited several times in one speculative decode
-        # batch. Keep only the last metadata snapshot for each MTP layer and
-        # submit its dump after the layerwise forward finishes.
-        self._deferred_mtp_dumps: dict[
-            int,
-            tuple[
-                list[bytes],
-                list[int],
-                set[str],
-            ],
-        ] = {}
-        self._is_mtp = False
-        self._num_mtp_layers = 0
-        self._mtp_layer_start: Optional[int] = None
-        self._mtp_layer_end: Optional[int] = None
-        self._init_mtp_layerwise_dump_state()
         logger.info("Init UCMLayerWiseConnector.")
 
     def _layerwise_batch_stats(
@@ -2134,73 +2122,16 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self._layerwise_batch_wait_blocking_total_ms = 0.0
         return stats
 
-    def _init_mtp_layerwise_dump_state(self) -> None:
-        """Cache whether MTP is enabled and how many MTP layers it has."""
-        speculative_config = getattr(self._vllm_config, "speculative_config", None)
-        if speculative_config is None:
-            return
-
-        mtp_method = getattr(speculative_config, "method", None)
-        self._is_mtp = mtp_method == "mtp" or (
-            isinstance(mtp_method, str) and mtp_method.endswith("_mtp")
-        )
-        if not self._is_mtp:
-            return
-
-        draft_model_config = getattr(speculative_config, "draft_model_config", None)
-        draft_hf_config = getattr(draft_model_config, "hf_config", None)
-        value = getattr(draft_hf_config, "n_predict", None)
-        if value is not None:
-            try:
-                self._num_mtp_layers = max(int(value), 0)
-            except (TypeError, ValueError) as e:
-                logger.warning(
-                    f"Failed to parse MTP n_predict from draft hf_config, "
-                    f"n_predict={value}. "
-                    f"{type(e).__name__}: {e}"
-                )
-
-    def _refresh_mtp_layer_range(self) -> None:
-        """Resolve MTP layer ids from the registered KV cache layout."""
-        self._mtp_layer_start = None
-        self._mtp_layer_end = None
-        if not self._is_mtp or self._num_mtp_layers <= 0:
-            return
-
-        num_hidden_layers = self.kv_cache_layout.num_hidden_layers
-        if num_hidden_layers <= 0:
-            logger.warning_once(
-                "Skip deferred MTP layerwise dump because num_hidden_layers is unknown."
-            )
-            return
-
-        # MTP layers are indexed after the base model layers, e.g. a 78-layer
-        # model uses layer_id 78 for its first MTP layer.
-        self._mtp_layer_start = num_hidden_layers
-        self._mtp_layer_end = num_hidden_layers + self._num_mtp_layers
-
-    def _is_mtp_layer(self, layer_id: int) -> bool:
-        """Check whether a global layer id belongs to the MTP layer range."""
-        return (
-            self._mtp_layer_start is not None
-            and self._mtp_layer_end is not None
-            and self._mtp_layer_start <= layer_id < self._mtp_layer_end
-        )
-
-    def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
-        super().register_kv_caches(kv_caches)
-        self._refresh_mtp_layer_range()
-
     def _submit_layerwise_dump_task(
         self,
         layer_id: int,
         total_ucm_block_ids: list[bytes],
         total_vllm_block_ids: list[int],
         dump_request_ids: set[str],
-    ) -> None:
+    ) -> bool:
         """Submit a layerwise dump and attach it to the existing async lifecycle."""
         if not dump_request_ids:
-            return
+            return False
 
         metadata = self._get_connector_metadata()
         block_ids_by_request = {
@@ -2233,6 +2164,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                     event_handle=event_handle,
                 )
             )
+            return True
         except Exception as e:
             logger.error(
                 f"submit dump task for layer {layer_id} failed. {type(e).__name__}: {e}"
@@ -2240,26 +2172,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             self._record_counter("connector_dump_submit_errors_total")
             if self.enable_event_sync and event_handle and self.device is not None:
                 self.device.destroy_event_handle(event_handle)
-
-    def _flush_deferred_mtp_dumps(self) -> None:
-        """Submit the last saved metadata snapshot for each deferred MTP layer."""
-        if not self._deferred_mtp_dumps:
-            return
-
-        deferred_mtp_dumps = self._deferred_mtp_dumps
-        self._deferred_mtp_dumps = {}
-        for layer_id in sorted(deferred_mtp_dumps):
-            (
-                total_ucm_block_ids,
-                total_vllm_block_ids,
-                dump_request_ids,
-            ) = deferred_mtp_dumps[layer_id]
-            self._submit_layerwise_dump_task(
-                layer_id,
-                total_ucm_block_ids,
-                total_vllm_block_ids,
-                dump_request_ids,
-            )
+            return False
 
     def _submit_request_load_tasks_for_layer(
         self,
@@ -2300,6 +2213,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 self._connector_worker_meta.mark_failed(request_id)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
+        self._dumped_layer_ids.clear()
         self._layerwise_batch_start = time.perf_counter()
         metadata = self._get_connector_metadata()
         self.load_tasks.clear()
@@ -2417,6 +2331,13 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         total_ucm_block_ids, total_vllm_block_ids = [], []
         dump_request_ids: set[str] = set()
         layer_id = self.layer_name_to_id[layer_name]
+        if layer_id in self._dumped_layer_ids:
+            logger.debug(
+                f"Skip duplicate layerwise dump in the same batch: "
+                f"layer_name={layer_name}, layer_id={layer_id}"
+            )
+            return
+
         for request_id, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
                 continue
@@ -2433,23 +2354,14 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             total_vllm_block_ids.extend(vllm_block_ids)
 
         if dump_request_ids:
-            if self._is_mtp_layer(layer_id):
-                self._deferred_mtp_dumps[layer_id] = (
-                    list(total_ucm_block_ids),
-                    list(total_vllm_block_ids),
-                    set(dump_request_ids),
-                )
-                logger.debug(
-                    f"Defer MTP layerwise dump: layer={layer_name}, "
-                    f"layer_id={layer_id}, blocks={len(total_ucm_block_ids)}"
-                )
-            else:
-                self._submit_layerwise_dump_task(
-                    layer_id,
-                    total_ucm_block_ids,
-                    total_vllm_block_ids,
-                    dump_request_ids,
-                )
+            submitted = self._submit_layerwise_dump_task(
+                layer_id,
+                total_ucm_block_ids,
+                total_vllm_block_ids,
+                dump_request_ids,
+            )
+            if submitted:
+                self._dumped_layer_ids.add(layer_id)
         if self.is_save:
             submit_end = time.perf_counter()
             ucmmetrics.update_stats(
@@ -2459,7 +2371,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
     def wait_for_save(self) -> None:
         save_tail_start = time.perf_counter()
         wait_for_save_start_ms = save_tail_start * 1000
-        self._flush_deferred_mtp_dumps()
         for pending_dump_task in self._pending_dump_tasks:
             if pending_dump_task.wait_for_save_start_ms <= 0:
                 pending_dump_task.wait_for_save_start_ms = wait_for_save_start_ms
