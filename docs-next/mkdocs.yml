@@ -1,0 +1,129 @@
+site_name: Unified Cache Manager
+site_url: https://ucm.readthedocs.io/
+site_description: >-
+  Unified Cache Manager (UCM) persists LLM KVCache and replaces redundant
+  computations through multiple retrieval mechanisms.
+
+repo_url: https://github.com/ModelEngine-Group/unified-cache-management
+repo_name: ModelEngine-Group/ucm
+edit_uri: edit/develop/docs-next/docs/en/
+
+docs_dir: docs
+
+theme:
+  name: material
+  custom_dir: overrides
+  language: en
+  logo: assets/images/UCM-light.png
+  favicon: assets/images/UCM-dark.png
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.indexes
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - content.action.edit
+    - content.action.view
+  font:
+    text: Inter
+    code: JetBrains Mono
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: cyan
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: cyan
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - i18n:
+      docs_structure: folder
+      fallback_to_default: true
+      reconfigure_material: true
+      reconfigure_search: true
+      languages:
+        - locale: en
+          name: English
+          default: true
+          build: true
+        - locale: zh
+          name: 简体中文
+          build: true
+          site_name: Unified Cache Manager 中文站点
+  - search:
+      separator: '[\s\u200b\-]'
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - def_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.mark
+  - pymdownx.caret
+  - pymdownx.tilde
+  - pymdownx.keys
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.snippets
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/ModelEngine-Group/unified-cache-management
+    - icon: fontawesome/brands/docker
+      link: https://github.com/ModelEngine-Group/unified-cache-management/pkgs/container/unified-cache-manager
+  version:
+    provider: mike
+
+nav:
+  - Home: index.md
+  - User Guide:
+      - Installation: user-guide/installation.md
+      - Model Tour: user-guide/model-tour/index.md
+      - Getting Started: user-guide/engines/index.md
+      - Deploy: user-guide/deploy/index.md
+      - Core Capabilities & Troubleshooting: user-guide/capabilities/index.md
+  - Developer Guide:
+      - Architecture: developer-guide/architecture.md
+      - Capability Principles: developer-guide/capability-principles.md
+      - Add Metrics: developer-guide/add-metrics.md
+      - Extending Store: developer-guide/extending-store.md
+      - Contribute: developer-guide/contribute.md
+  - Reference:
+      - API & Parameters: reference/api-parameters.md
+  - Benchmark: benchmark/index.md
+  - Toolkit:
+      - KV Cache Calculator: toolkit/kv-cache-calculator.md
