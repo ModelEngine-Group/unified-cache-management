@@ -13,18 +13,6 @@
 
 当前 UCM Python 包及其 native 扩展可用，`numpy` 可导入。模型驱动模式仅使用标准库（`json` / `math`），不依赖 `transformers` / `vllm`。
 
-## 导入来源
-
-`ucm-toolkit run posix-aio` 默认会优先使用当前 Python 环境中已经安装的 `ucm` 包；如果当前环境找不到安装版 `ucm`，才会把主仓源码根目录加入子进程 `PYTHONPATH`。当使用安装版 `ucm` 时，toolkit 会从子进程 `PYTHONPATH` 中移除主仓源码根目录，避免源码目录覆盖已安装包。如果需要显式切换导入来源，可以设置：
-
-```bash
-# 强制使用当前主仓源码中的 ucm 包
-UCM_TOOLKIT_POSIX_AIO_IMPORT=source ucm-toolkit run posix-aio
-
-# 强制使用当前 Python 环境中已安装的 ucm 包
-UCM_TOOLKIT_POSIX_AIO_IMPORT=installed ucm-toolkit run posix-aio
-```
-
 ## 示例
 
 ### 手动模式
