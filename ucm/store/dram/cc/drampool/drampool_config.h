@@ -90,7 +90,6 @@ struct DramPoolConfig {
 
     std::uint32_t opTimeoutMs{5000};
 
-    std::string logLevel{"info"};
     std::string logDir{"./logs"};
     std::uint32_t logMaxFiles{10};
     std::uint32_t logMaxSizeMb{5};

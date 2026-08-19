@@ -331,7 +331,6 @@ TEST(DramPoolRuntimeConfigTest, LoadsRepositoryExample)
     EXPECT_EQ(config.metadataLeaseTimeMs, 5000U);
     EXPECT_DOUBLE_EQ(config.metadataDefaultEvictRatio, 0.0);
     EXPECT_EQ(config.metadataEvictPeriodMs, 31'536'000'000ULL);
-    EXPECT_EQ(config.logLevel, "info");
 }
 
 TEST(DramPoolConfigTest, RejectsInvalidCommandLines)
