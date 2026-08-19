@@ -10,6 +10,7 @@
 | `posix-aio` | `posix_aio` | 可运行 | 运行 `ucm/store/test/e2e/posixstore_aio_test.py`，测试 POSIX AIO store 的 dump/load 性能。 |
 | `nic-monitor` | `nic_monitor` | 可运行 | 监控物理网卡实时流量、后台采样落盘，并生成阶段统计。 |
 | `metrics-view` | `metrics_view`, `terminal-metrics`, `terminal_metrics` | 可运行 | 采集 Prometheus/OpenMetrics 样本到 SQLite，并在终端查询聚合指标。 |
+| `ttft-analyze` | `ttft_analyze` | 可运行 | 估算 KV Cache 命中 UCM SSD/DRAM Prefix Cache 时的 TTFT，输出增益/损失与瓶颈拆分。 |
 
 ## 安装
 
@@ -519,6 +520,55 @@ ucm-toolkit run posix-aio \
 单 worker 数据量约为 shard-size * shard-number * block-number
 总数据量约为 worker-number * shard-size * shard-number * block-number
 ```
+
+## ttft-analyze
+
+`ttft-analyze` 估算 KV Cache 完全命中 UCM SSD/DRAM Prefix Cache 时的 TTFT。基于用户给定（或实测）的
+Full Prefill / Full HBM Prefix Cache TTFT，结合存储读带宽、H2D 带宽与输入长度，输出预估 TTFT、
+相对增益/损失与瓶颈拆分，用于部署前 TTFT 预判。纯计算，无外部依赖，不运行真实推理。
+
+核心模型（`posix_bw` 为存储总带宽、多卡均分；`h2d_bw` 为单卡带宽、独享）：
+
+```text
+每卡加载量：GQA/MHA = cache_total / tp；MLA/DSA = cache_total（latent 不切分）
+t_read = 每卡加载量 / (posix_bw / tp)
+t_h2d  = 每卡加载量 / h2d_bw
+t_cache_load = t_read + t_h2d
+
+模式 layered（边加载边计算，对应 use_layerwise=true）:
+    TTFT_ucm = max(TTFT_hbm, t_cache_load)
+
+模式 full（先整段加载再计算，对应 use_layerwise=false）:
+    TTFT_ucm = TTFT_hbm + t_cache_load
+```
+
+`cache_total` 由 `--model-dir/config.json` 的架构参数推导，口径与
+`docs/source/getting-started/kv_cache_calculator.md` 一致，自动识别 DSA / MLA / GQA。
+
+示例：
+
+```bash
+ucm-toolkit run ttft-analyze \
+  --model-dir /home/models/Qwen2.5-14B-Instruct \
+  --posix-bw 12 \
+  --h2d-bw 60 \
+  --input-len 2048 \
+  --ttft-prefill 260 \
+  --ttft-hbm 3.2 \
+  --tp 8
+```
+
+两种加载模式（layered / full）的结果会同时输出。
+
+| 参数 | 说明 |
+| --- | --- |
+| `--model-dir` | 模型目录，读取 `config.json` 推导 kvcache 大小。 |
+| `--posix-bw` | 存储总读带宽（GB/s，多卡均分）；SSD / DRAM 的实际读带宽分别代入即可得到对应介质结果。 |
+| `--h2d-bw` | 单卡 H2D 搬移带宽（GB/s），可由 `dev-sandbox copy` 或 `bandwidth` 工具测得。 |
+| `--input-len` | 输入序列长度（前缀命中长度假设）。 |
+| `--ttft-prefill` | 该输入长度下 Full Prefill TTFT（ms）。 |
+| `--ttft-hbm` | 该输入长度下 Full HBM Prefix Cache TTFT（ms）。 |
+| `--tp` | 张量并行卡数（默认 1）。 |
 
 ## nic-monitor
 
