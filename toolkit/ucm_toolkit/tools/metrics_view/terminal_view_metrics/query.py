@@ -342,6 +342,8 @@ def _aggregate(values: list[float], aggregate: str) -> float:
         return sum(values)
     if aggregate == "avg":
         return sum(values) / len(values)
+    if aggregate == "max":
+        return max(values)
     raise ValueError(f"Unsupported aggregate: {aggregate}")
 
 

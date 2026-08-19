@@ -48,6 +48,7 @@ class LoadQueue {
         TransBuffer::Handle bufferHandle;
         Detail::TaskHandle backendTaskHandle;
         WaiterPtr waiter;
+        bool fromPosix{false};
     };
 
 private:
@@ -80,6 +81,9 @@ private:
     void TransferOneTask(CopyStream& stream, ShardTask&& task);
     Status WaitBackendTaskReady(ShardTask& task);
     Status HostToDeviceAsync(CopyStream& stream, void* host, void** device);
+    void RecordShardResults(const std::vector<ShardTask>& tasks, const ShardTask* extra,
+                            bool success) const;
+    void RecordFailedShards(size_t count) const;
     void RecordH2dSyncMetrics(double h2dSyncMs) const;
 };
 

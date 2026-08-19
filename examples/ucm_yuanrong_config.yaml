@@ -14,6 +14,7 @@ ucm_connectors:
       yuanrong_host: "127.0.0.1"
       yuanrong_port: 18483
       yuanrong_namespace: "ucm_model"
+      yuanrong_resource_log_path: "/var/log/yuanrong/kv_resource.log"
       yuanrong_enable_remote_h2d: false
       yuanrong_timeout_ms: 20000
       yuanrong_waiting_queue_depth: 8192

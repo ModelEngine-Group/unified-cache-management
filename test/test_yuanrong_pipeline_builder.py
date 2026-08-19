@@ -20,6 +20,10 @@ class YuanRongPipelineBuilderTest(unittest.TestCase):
         ucm_module.__path__ = []
         store_module = types.ModuleType("ucm.store")
         store_module.__path__ = []
+        yuanrong_module = types.ModuleType("ucm.store.yuanrongstore")
+        yuanrong_module.__path__ = []
+        reporter_module = types.ModuleType("ucm.store.yuanrongstore.resource_reporter")
+        reporter_module.start_yuanrong_resource_reporter = lambda config: None
         pipeline_module = types.ModuleType("ucm.store.pipeline")
         pipeline_module.__path__ = []
         fake_native = types.ModuleType("ucm.store.pipeline.ucmpipelinestore")
@@ -60,6 +64,8 @@ class YuanRongPipelineBuilderTest(unittest.TestCase):
 
         sys.modules["ucm"] = ucm_module
         sys.modules["ucm.store"] = store_module
+        sys.modules["ucm.store.yuanrongstore"] = yuanrong_module
+        sys.modules["ucm.store.yuanrongstore.resource_reporter"] = reporter_module
         sys.modules["ucm.store.pipeline"] = pipeline_module
         sys.modules["ucm.store.pipeline.ucmpipelinestore"] = fake_native
         sys.modules["ucm.store.ucmstore_v1"] = store_v1
