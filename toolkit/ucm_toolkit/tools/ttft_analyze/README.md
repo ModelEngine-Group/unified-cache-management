@@ -1,5 +1,7 @@
 # ttft-analyze
 
+← 返回 [UCM Toolkit 主文档](../../../README.md)
+
 `ttft-analyze` 估算 KV Cache 完全命中 UCM SSD/DRAM Prefix Cache 时的 TTFT。
 它基于用户给定（或实测）的 Full Prefill / Full HBM Prefix Cache TTFT，结合存储读带宽、
 H2D 带宽与输入长度，输出预估 TTFT、相对增益/损失与瓶颈拆分，用于部署前 TTFT 预判。
