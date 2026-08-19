@@ -43,8 +43,8 @@ then back-validate task-page consistency.
 
 ## Reference
 
-- [Compatibility & Metrics](compatibility.md) — supported models and metrics.
-- [Prefix Cache stores](../user-guide/capabilities/prefix-cache/index.md) —
+- [Compatibility & Metrics](api-parameters.md) — supported models and metrics.
+- [Prefix Cache stores](../user-guide/capabilities/index.md) —
   backend config semantics.
-- [GLM-5.1 4-node PD](../user-guide/model-tour/glm/glm-5-1.md) — a worked
+- [GLM-5.1 4-node PD](../user-guide/model-tour/index.md) — a worked
   `ucm_config_example.yaml` + `vllm serve` example.

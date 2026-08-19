@@ -43,7 +43,7 @@ scenarios, including multi-turn dialogue and long-context reasoning tasks.
     multi-turn dialogue and shared prefixes. Choose from pipeline, NFS, DS3FS,
     Mooncake, and compress stores.
 
-    [:octicons-arrow-right-24: Learn more](user-guide/capabilities/prefix-cache/index.md)
+    [:octicons-arrow-right-24: Learn more](user-guide/capabilities/index.md)
 
 -   :material-radar: **Sparse Attention**
 
@@ -52,7 +52,7 @@ scenarios, including multi-turn dialogue and long-context reasoning tasks.
     Training-free sparse retrieval methods (GSA, CacheBlend) that select the most
     relevant KV slices, reducing attention overhead on extremely long sequences.
 
-    [:octicons-arrow-right-24: Learn more](user-guide/capabilities/sparse-attention/index.md)
+    [:octicons-arrow-right-24: Learn more](user-guide/capabilities/index.md)
 
 -   :material-split-horizontal: **PD Disaggregation**
 
@@ -62,7 +62,7 @@ scenarios, including multi-turn dialogue and long-context reasoning tasks.
     control over heterogeneous GPU/NPU clusters with centralized, distributed,
     and large-scale EP topologies.
 
-    [:octicons-arrow-right-24: Learn more](user-guide/capabilities/pd-disaggregation/index.md)
+    [:octicons-arrow-right-24: Learn more](user-guide/capabilities/index.md)
 
 -   :material-chart-bell-curve: **ReRoPE**
 
@@ -71,7 +71,7 @@ scenarios, including multi-turn dialogue and long-context reasoning tasks.
     Corrected rotary position embedding that extends context length without
     retraining, restoring position encoding quality for long-context inference.
 
-    [:octicons-arrow-right-24: Learn more](user-guide/capabilities/rerope.md)
+    [:octicons-arrow-right-24: Learn more](user-guide/capabilities/index.md)
 
 </div>
 
@@ -94,7 +94,7 @@ scenarios, including multi-turn dialogue and long-context reasoning tasks.
 
     Integrate UCM with vLLM, vLLM Ascend, SGLang, and MindIE.
 
-    [:octicons-arrow-right-24: Engines](user-guide/engines/vllm.md)
+    [:octicons-arrow-right-24: Engines](user-guide/engines/index.md)
 
 -   :material-view-grid-plus: **Compatibility Matrix**
 
@@ -102,7 +102,7 @@ scenarios, including multi-turn dialogue and long-context reasoning tasks.
 
     Supported models, platforms, and feature coverage at a glance.
 
-    [:octicons-arrow-right-24: Matrix](reference/compatibility.md)
+    [:octicons-arrow-right-24: Matrix](reference/api-parameters.md)
 
 -   :material-calculator: **KV Cache Calculator**
 

@@ -318,10 +318,10 @@ The installer gives you the bootstrap command. For engine integration patches,
 runtime configuration, and serving options, follow the engine guide that
 matches your selection:
 
-- [vLLM (CUDA)](engines/vllm.md)
-- [vLLM Ascend (NPU)](engines/vllm-ascend.md)
-- [SGLang](engines/sglang.md)
-- [MindIE](engines/mindie.md)
+- [vLLM (CUDA)](engines/index.md)
+- [vLLM Ascend (NPU)](engines/index.md)
+- [SGLang](engines/index.md)
+- [MindIE](engines/index.md)
 
 For Kubernetes deployment with Helm, see
-[GLM PD Best Practice](model-tour/glm/glm-5-1.md).
+[GLM PD Best Practice](model-tour/index.md).

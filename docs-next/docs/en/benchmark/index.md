@@ -12,7 +12,7 @@ myself?
 
 - **Method**: test scenario design (prefix cache hit rate, concurrency,
   input/output length), hardware, model, framework version. Reference the test
-  design already in [GLM-5.1 4-node PD](../user-guide/model-tour/glm/glm-5-1.md).
+  design already in [GLM-5.1 4-node PD](../user-guide/model-tour/index.md).
 - **Usage**: how to run — script/command, dataset, parameters, reproduction
   steps.
 - **Data**: standard result tables (throughput token/s, TTFT, TPOT, speedup),
@@ -36,7 +36,7 @@ myself?
 
 ## Reference
 
-- [GLM-5.1 4-node PD results](../user-guide/model-tour/glm/glm-5-1.md) — a
+- [GLM-5.1 4-node PD results](../user-guide/model-tour/index.md) — a
   worked benchmark table.
-- [Compatibility](../reference/compatibility.md) — supported models and
+- [Compatibility](../reference/api-parameters.md) — supported models and
   platforms.
