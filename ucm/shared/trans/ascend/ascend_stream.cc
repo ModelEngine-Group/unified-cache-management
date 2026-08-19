@@ -147,6 +147,58 @@ Status AscendStream::HostToDeviceAsync(void* host, void* device[], size_t size, 
     return Status::OK();
 }
 
+Status AscendStream::DeviceToDevice(void* source, void* destination, size_t size)
+{
+    auto ret = aclrtMemcpy(destination, size, source, size, ACL_MEMCPY_DEVICE_TO_DEVICE);
+    if (ret == ACL_SUCCESS) { return Status::OK(); }
+    return Status{ret, std::to_string(ret)};
+}
+
+Status AscendStream::DeviceToDevice(void* source[], void* destination[], size_t size,
+                                    size_t number)
+{
+    auto s = DeviceToDeviceAsync(source, destination, size, number);
+    if (s.Failure()) [[unlikely]] { return s; }
+    return Synchronized();
+}
+
+Status AscendStream::DeviceToDevice(void* source[], void* destination, size_t size,
+                                    size_t number)
+{
+    auto s = DeviceToDeviceAsync(source, destination, size, number);
+    if (s.Failure()) [[unlikely]] { return s; }
+    return Synchronized();
+}
+
+Status AscendStream::DeviceToDeviceAsync(void* source, void* destination, size_t size)
+{
+    auto ret = aclrtMemcpyAsync(destination, size, source, size, ACL_MEMCPY_DEVICE_TO_DEVICE,
+                                stream_);
+    if (ret == ACL_SUCCESS) { return Status::OK(); }
+    return Status{ret, std::to_string(ret)};
+}
+
+Status AscendStream::DeviceToDeviceAsync(void* source[], void* destination[], size_t size,
+                                         size_t number)
+{
+    for (size_t i = 0; i < number; i++) {
+        auto s = DeviceToDeviceAsync(source[i], destination[i], size);
+        if (s.Failure()) [[unlikely]] { return s; }
+    }
+    return Status::OK();
+}
+
+Status AscendStream::DeviceToDeviceAsync(void* source[], void* destination, size_t size,
+                                         size_t number)
+{
+    for (size_t i = 0; i < number; i++) {
+        auto pDestination = static_cast<void*>(static_cast<int8_t*>(destination) + size * i);
+        auto s = DeviceToDeviceAsync(source[i], pDestination, size);
+        if (s.Failure()) [[unlikely]] { return s; }
+    }
+    return Status::OK();
+}
+
 using Closure = std::function<void(bool)>;
 
 static void Trampoline(void* data)
@@ -175,10 +227,10 @@ Status AscendStream::Synchronized()
     return Status{ret, std::to_string(ret)};
 }
 
-Status AscendStream::WaitEvent(void* event)
+Status AscendStream::WaitEvent(const Event& event)
 {
-    if (event == nullptr) { return Status::OK(); }
-    auto ret = aclrtStreamWaitEvent(stream_, static_cast<aclrtEvent>(event));
+    if (!event.Valid()) { return Status::OK(); }
+    auto ret = aclrtStreamWaitEvent(stream_, reinterpret_cast<aclrtEvent>(event.NativeHandle()));
     if (ret != ACL_SUCCESS) [[unlikely]] { return Status{ret, std::to_string(ret)}; }
     return Status::OK();
 }

@@ -115,7 +115,7 @@ public:
         if (!stream) [[unlikely]] { return Status::Error("copy stream is not setup"); }
         return stream->DeviceToHostAsync(device, host, sizes);
     }
-    Status WaitEvent(void* event) noexcept
+    Status WaitEvent(const Trans::Event& event) noexcept
     {
         auto status = Status::OK();
         for (auto& stream : streams_) {

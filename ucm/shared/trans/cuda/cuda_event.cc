@@ -1,7 +1,7 @@
 /**
  * MIT License
  *
- * Copyright (c) 2025 Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -21,30 +21,16 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TRANS_DEVICE_H
-#define UNIFIEDCACHE_TRANS_DEVICE_H
-
-#include <cstddef>
-#include <cstdint>
-#include "buffer.h"
-#include "stream.h"
+#include <cuda_runtime.h>
+#include "trans/event.h"
 
 namespace UC::Trans {
 
-class Device {
-public:
-    Status Init();
-    Status Setup(int32_t deviceId);
-    Status Reset(int32_t deviceId);
-    Status Finalize();
-    std::unique_ptr<Stream> MakeStream();
-    std::shared_ptr<Stream> MakeSharedStream();
-    std::shared_ptr<Stream> MakeSdmaDirectStream();
-    std::unique_ptr<Stream> MakeGdrStream();
-    std::unique_ptr<Stream> MakeSMStream();
-    std::unique_ptr<Buffer> MakeBuffer();
-};
+Status Event::Synchronize() const
+{
+    if (!Valid()) { return Status::OK(); }
+    const auto ret = cudaEventSynchronize(reinterpret_cast<cudaEvent_t>(NativeHandle()));
+    return ret == cudaSuccess ? Status::OK() : Status{ret, cudaGetErrorString(ret)};
+}
 
 }  // namespace UC::Trans
-
-#endif

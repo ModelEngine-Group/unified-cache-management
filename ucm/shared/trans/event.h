@@ -1,7 +1,7 @@
 /**
  * MIT License
  *
- * Copyright (c) 2025 Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -21,28 +21,30 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_TRANS_DEVICE_H
-#define UNIFIEDCACHE_TRANS_DEVICE_H
+#ifndef UNIFIEDCACHE_TRANS_EVENT_H
+#define UNIFIEDCACHE_TRANS_EVENT_H
 
-#include <cstddef>
 #include <cstdint>
-#include "buffer.h"
-#include "stream.h"
+#include "status/status.h"
 
 namespace UC::Trans {
 
-class Device {
+/**
+ * A non-owning view of a platform-native device event.
+ *
+ * The producer of the native handle remains responsible for keeping the event
+ * alive and destroying it. A zero handle represents no event.
+ */
+class Event {
 public:
-    Status Init();
-    Status Setup(int32_t deviceId);
-    Status Reset(int32_t deviceId);
-    Status Finalize();
-    std::unique_ptr<Stream> MakeStream();
-    std::shared_ptr<Stream> MakeSharedStream();
-    std::shared_ptr<Stream> MakeSdmaDirectStream();
-    std::unique_ptr<Stream> MakeGdrStream();
-    std::unique_ptr<Stream> MakeSMStream();
-    std::unique_ptr<Buffer> MakeBuffer();
+    explicit Event(std::uintptr_t nativeHandle = 0) noexcept : nativeHandle_{nativeHandle} {}
+
+    Status Synchronize() const;
+    bool Valid() const noexcept { return nativeHandle_ != 0; }
+    std::uintptr_t NativeHandle() const noexcept { return nativeHandle_; }
+
+private:
+    std::uintptr_t nativeHandle_{0};
 };
 
 }  // namespace UC::Trans
