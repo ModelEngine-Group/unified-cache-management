@@ -6,7 +6,7 @@
 
 | 工具 | 别名 | 类型 | 功能 | 详细文档 |
 | --- | --- | --- | --- | --- |
-| `dev-sandbox` | `dev_sandbox` | 可构建、可运行 | 构建并运行 C++17 性能测试项目，包含 `copy`、`trans`、`aio` 三个子功能。 | [dev-sandbox README](ucm_toolkit/tools/dev_sandbox/README.md) |
+| `dev-sandbox` | `dev_sandbox` | 需构建、可运行 | 测量主机内存到设备显存的拷贝带宽及磁盘 AIO 吞吐（C++ 测试程序，使用前需先构建），包含 `copy`、`trans`、`aio` 三个子功能。 | [dev-sandbox README](ucm_toolkit/tools/dev_sandbox/README.md) |
 | `posix-aio` | `posix_aio` | 可运行 | 运行 `ucm/store/test/e2e/posixstore_aio_test.py`，测试 POSIX AIO store 的 dump/load 性能。 | [posix-aio README](ucm_toolkit/tools/posix_aio/README.md) |
 | `nic-monitor` | `nic_monitor` | 可运行 | 监控物理网卡实时流量、后台采样落盘，并生成阶段统计。 | [nic-monitor README](ucm_toolkit/tools/nic_monitor/README.md) |
 | `metrics-view` | `metrics_view`, `terminal-metrics`, `terminal_metrics` | 可运行 | 采集 Prometheus/OpenMetrics 样本到 SQLite，并在终端查询聚合指标。 | [metrics-view README](ucm_toolkit/tools/metrics_view/README.md) |

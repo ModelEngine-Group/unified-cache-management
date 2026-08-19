@@ -23,7 +23,9 @@
 ucm-toolkit run metrics-view list-configs
 ```
 
-## check：查看启动以来的统计
+查询 metrics 有两种方式：**方式一** `check` 即时拉取一次快照，适合快速看总量；**方式二** `start`/`query` 后台持续采集到 SQLite，适合查看时间窗口内的变化趋势。
+
+## 方式一：check —— 查看启动以来的统计
 
 `check` 会直接拉取一次当前 `/metrics` 快照并输出总聚合值，获取的是从服务启动到现在的总计值。
 
@@ -56,7 +58,7 @@ posix_store_dump_bandwidth_gbps  gbps=0.000                               GB/s
 
 使用 `check` 的话 gbps 不具备参考性，因为逻辑是总数据传输量/时间，不是瞬时值。需要看到合理的带宽需要使用如下 `start` 的方式来后台持续拉取 metrics。
 
-## 后台采集和查询
+## 方式二：后台采集和查询
 
 推荐使用 `start` / `stop` 方式后台采集 metrics。后台采集会把多次样本写入 SQLite，因此后续可以查询指定时间范围内的数据。
 
