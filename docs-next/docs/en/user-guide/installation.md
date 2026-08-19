@@ -4,13 +4,10 @@ UCM is delivered as Docker images, a Helm chart, Python wheels, and source
 builds. Use the installer below to get the exact command for your stack, then
 follow the engine-specific guide for the remaining steps.
 
-!!! tip "Single page, dynamic commands"
+!!! tip "How to use"
 
-    This page follows the PyTorch "local installer" pattern: one page holds a
-    static install matrix and a small front-end script renders the matching
-    command for the selected combination — there is **one page per task, not one
-    page per combination**. The same "static data + front-end script" approach
-    already drives the [KV Cache Calculator](../toolkit/kv-cache-calculator.md).
+    Select your UCM version, engine, device, OS, architecture, and install
+    method below — the matching install command appears automatically.
 
 ## Installer
 
