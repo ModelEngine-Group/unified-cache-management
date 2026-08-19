@@ -21,10 +21,6 @@ class AscendSdmaDirectCopier {
         std::vector<AscendFftsCopySpec> specs;
         FftsSdmaDispatcher dispatcher;
     };
-    struct Lane {
-        aclrtStream fftsStream{nullptr};
-        std::vector<std::unique_ptr<InFlightObject>> inFlight{};
-    };
 
 public:
     AscendSdmaDirectCopier() = default;
@@ -36,12 +32,7 @@ public:
     Status WaitEvent(void* event);
     Status SubmitLoadObject(const void* hostDevicePtr, void** devices,
                             const std::vector<size_t>& sizes);
-    Status SubmitLoadTask(const std::vector<void*>& hostDevicePtrs,
-                          const std::vector<void**>& devices, const std::vector<size_t>& sizes);
     Status SubmitDumpObject(void** devices, void* hostDevicePtr, const std::vector<size_t>& sizes);
-    Status SubmitDumpTask(const std::vector<void**>& devices,
-                          const std::vector<void*>& hostDevicePtrs,
-                          const std::vector<size_t>& sizes);
     Status Synchronize();
 
 private:
@@ -52,12 +43,11 @@ private:
     Status BuildDeviceToHostSpecs(void** devices, void* hostDevicePtr,
                                   const std::vector<size_t>& sizes,
                                   std::vector<AscendFftsCopySpec>& specs) const;
-    Status LaunchSpecs(std::vector<AscendFftsCopySpec>&& specs, Lane& lane);
-    Lane& NextLane();
+    Status LaunchSpecs(std::vector<AscendFftsCopySpec>&& specs);
     static Status AclStatus(aclError ret, const char* expr);
 
-    size_t nextLaneIndex_{0};
-    std::vector<Lane> lanes_{};
+    aclrtStream fftsStream_{nullptr};
+    std::vector<std::unique_ptr<InFlightObject>> inFlight_{};
     bool setup_{false};
 };
 
