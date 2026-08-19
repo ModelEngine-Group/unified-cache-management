@@ -32,6 +32,7 @@
 #include <thread>
 #include <tuple>
 #include <vector>
+#include "gc_lease.h"
 #include "global_config.h"
 #include "space_layout.h"
 #include "status/status.h"
@@ -61,7 +62,9 @@ private:
     Status ValidateAndInitCapacity();
     bool Execute();
     std::tuple<bool, size_t, size_t> ShouldTrigger();
+    void RunGcCycle();
     void ProcessTask(ShardTaskContext& ctx);
+    void OnTaskTimeout(const ShardTaskContext& ctx, ssize_t tid);
     void GCCheckLoop();
     void StopBackgroundCheck();
     const SpaceLayout* layout_{nullptr};
@@ -73,6 +76,8 @@ private:
     std::mutex gcCheckMtx_;
     std::condition_variable gcCheckCv_;
     std::atomic<bool> stop_{false};
+    GcLease lease_;
+    bool leaseEnable_{false};
 };
 
 }  // namespace UC::PosixStore
