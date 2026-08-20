@@ -13,12 +13,8 @@ hide:
 
 # Unified Cache Manager
 
-**Unified Cache Manager（UCM）** 的核心原理是持久化 LLM KVCache，并通过多种检索机制替换冗余计算。
-UCM 不仅支持前缀缓存（Prefix Cache），还提供多种免训练的稀疏注意力检索方法，在处理超长序列推理任务时
-带来更高的性能。
-
-此外，UCM 提供基于存算分离架构的 **PD 分离**方案，可以更直接、灵活地管理异构计算资源。与 vLLM 集成后，
-UCM 在多轮对话、长上下文推理等多种场景下可实现 **3-10 倍延迟降低**。
+**Unified Cache Manager（UCM）** 通过持久化 LLM KVCache 替换冗余计算，与 vLLM 集成后，在多轮对话、
+长上下文推理等多种场景下可实现 **3-10 倍延迟降低**。
 
 !!! note "中文站点说明"
 
@@ -39,34 +35,28 @@ UCM 在多轮对话、长上下文推理等多种场景下可实现 **3-10 倍�
 
     ---
 
-    跨请求持久化 KVCache 并复用，避免多轮对话与共享前缀的冗余预填充。可选 pipeline、NFS、DS3FS、
-    Mooncake、compress 等存储后端。
+    跨请求持久化 KVCache 并复用，避免多轮对话与共享前缀的冗余预填充。支持 DRAM、SSD、远程存储等
+    非 HBM 存储介质，可选 pipeline、NFS、DS3FS、Mooncake、compress 等存储后端。
 
     [:octicons-arrow-right-24: 了解更多](user-guide/capabilities/prefix-cache/index.md)
 
--   :material-radar: **Sparse Attention 稀疏注意力**
+-   :material-chart-line: **观测能力**
 
     ---
 
-    免训练稀疏检索方法（GSA、CacheBlend），选取最相关的 KV 切片，降低超长序列的注意力开销。
+    通过 vLLM connector 导出 Prometheus 指标，支持 Grafana 可视化，实时监控 KVCache 命中率、延迟、
+    吞吐量等关键性能指标。
 
-    [:octicons-arrow-right-24: 了解更多](user-guide/capabilities/sparse-attention/index.md)
+    [:octicons-arrow-right-24: 了解更多](user-guide/observability/metrics.md)
 
--   :material-split-horizontal: **PD Disaggregation PD 分离**
-
-    ---
-
-    预填充/解码分离的存算分离架构，灵活管控异构 GPU/NPU 集群，支持集中式、分布式与大规模 EP 拓扑。
-
-    [:octicons-arrow-right-24: 了解更多](user-guide/capabilities/pd-disaggregation/index.md)
-
--   :material-chart-bell-curve: **ReRoPE**
+-   :material-magnify: **Trace 模式**
 
     ---
 
-    修正旋转位置编码，无需重训练即可扩展上下文长度，恢复长上下文推理的位置编码质量。
+    轻量级诊断和评估模式，记录请求跟踪信息而不执行实际 KV cache 操作，用于模拟理论命中率和验证 UCM
+    部署效果。
 
-    [:octicons-arrow-right-24: 了解更多](user-guide/capabilities/rerope.md)
+    [:octicons-arrow-right-24: 了解更多](user-guide/diagnostics/trace-mode.md)
 
 </div>
 

@@ -66,6 +66,30 @@ plugins:
           name: 简体中文
           build: true
           site_name: Unified Cache Manager 中文站点
+          nav_translations:
+            Home: 首页
+            User Guide: 用户指南
+            Installation: 安装
+            Model Tour: 模型示例
+            Getting Started: 快速开始
+            Deploy: 部署
+            Capabilities: 核心能力
+            Prefix Cache: 前缀缓存
+            Observability: 观测能力
+            Metrics: 指标监控
+            Diagnostics: 诊断工具
+            Trace Mode: Trace 模式
+            Developer Guide: 开发者指南
+            Architecture: 架构
+            Capability Principles: 能力原理
+            Add Metrics: 添加指标
+            Extending Store: 扩展存储
+            Contribute: 贡献
+            Reference: 参考
+            API & Parameters: API 与参数
+            Benchmark: 性能测试
+            Toolkit: 工具集
+            KV Cache Calculator: KV Cache 计算器
   - search:
       separator: '[\s\u200b\-]'
 
@@ -115,7 +139,12 @@ nav:
       - Model Tour: user-guide/model-tour/index.md
       - Getting Started: user-guide/engines/index.md
       - Deploy: user-guide/deploy/index.md
-      - Core Capabilities & Troubleshooting: user-guide/capabilities/index.md
+      - Capabilities:
+          - Prefix Cache: user-guide/capabilities/prefix-cache/index.md
+      - Observability:
+          - Metrics: user-guide/observability/metrics.md
+      - Diagnostics:
+          - Trace Mode: user-guide/diagnostics/trace-mode.md
   - Developer Guide:
       - Architecture: developer-guide/architecture.md
       - Capability Principles: developer-guide/capability-principles.md
