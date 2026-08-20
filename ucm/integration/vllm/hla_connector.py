@@ -1414,6 +1414,10 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self.request_data: list[tuple[str, list[bytes], list[bytes], list[int]]] = []
         self._failure_req_ids: set[str] = set()
         self._submitted_load_rows: set[int] = set()
+        # A hybrid KV row can be visited more than once in one model-runner
+        # batch (for example by speculative decoding). Persist its first
+        # successful submission only and reset this state for every batch.
+        self._dumped_row_ids: set[int] = set()
         self._dump_transfer_data: (
             tuple[list[bytes], list[int], set[str], dict[str, set[bytes]]] | None
         ) = None
@@ -1432,31 +1436,10 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self.need_load = False
         self._layerwise_batch_start: Optional[float] = None
         self._layerwise_prev_wait_end: Optional[float] = None
-        # MTP save_kv_layer is called N times per decode step; defer & keep last.
-        self._deferred_mtp_row_dumps: dict[
-            int, tuple[list[bytes], list[int], set[str]]
-        ] = {}
-        self._is_mtp = False
-        self._init_mtp_layerwise_dump_state()
         logger.info(
             "Init UCMHybridLinearAttentionLayerWiseConnector "
             f"with prefetch_rows={self._load_prefetch_rows}."
         )
-
-    def _init_mtp_layerwise_dump_state(self) -> None:
-        """Detect whether MTP is enabled."""
-        speculative_config = getattr(self._vllm_config, "speculative_config", None)
-        if speculative_config is None:
-            return
-
-        mtp_method = getattr(speculative_config, "method", None)
-        self._is_mtp = mtp_method == "mtp" or (
-            isinstance(mtp_method, str) and mtp_method.endswith("_mtp")
-        )
-
-    def _is_mtp_layer(self, layer_name: str) -> bool:
-        """Check whether a layer belongs to the MTP draft model."""
-        return self._is_mtp and "mtp" in layer_name
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         if has_ucm_sparse() and os.getenv("VLLM_HASH_ATTENTION") == "1":
@@ -1617,8 +1600,8 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self.request_data.clear()
         self._failure_req_ids.clear()
         self._submitted_load_rows.clear()
+        self._dumped_row_ids.clear()
         self._dump_transfer_data = None
-        self._deferred_mtp_row_dumps.clear()
         self.need_load = False
 
         for request_id, request in metadata.request_meta.items():
@@ -1706,6 +1689,12 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             return
         if self.row_save_layer.get(row_id) != layer_name:
             return
+        if row_id in self._dumped_row_ids:
+            logger.debug(
+                "Skip duplicate hybrid layerwise dump in the same batch: "
+                f"layer_name={layer_name}, row_id={row_id}"
+            )
+            return
 
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
@@ -1722,15 +1711,6 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             return
 
         self.is_save = True
-
-        if self._is_mtp_layer(layer_name):
-            # Defer: last snapshot wins (MTP revisited N times per decode step).
-            self._deferred_mtp_row_dumps[row_id] = (
-                list(total_ucm_block_ids),
-                list(total_vllm_block_ids),
-                set(dump_request_ids),
-            )
-            return
 
         row_ptrs = self.kv_cache_layout.extract_block_addrs_for_row(
             total_vllm_block_ids, row_id
@@ -1754,6 +1734,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                     event_handle=event_handle,
                 )
             )
+            self._dumped_row_ids.add(row_id)
         except Exception as e:
             logger.error(
                 f"submit hybrid layerwise row {row_id} dump task failed. "
@@ -1794,45 +1775,6 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             block_ids_by_request,
         )
 
-    def _flush_deferred_mtp_dumps(self) -> None:
-        """Submit the last saved snapshot for each deferred MTP row."""
-        if not self._deferred_mtp_row_dumps:
-            return
-
-        deferred = self._deferred_mtp_row_dumps
-        self._deferred_mtp_row_dumps = {}
-        block_ids_by_request = (
-            self._dump_transfer_data[3] if self._dump_transfer_data is not None else {}
-        )
-        for row_id, (ucm_ids, vllm_ids, req_ids) in deferred.items():
-            try:
-                row_ptrs = self.kv_cache_layout.extract_block_addrs_for_row(
-                    vllm_ids, row_id
-                )
-                row_ptrs = np.ascontiguousarray(row_ptrs)
-                shard_indexs = [row_id] * len(ucm_ids)
-                event_handle = self._get_dump_event_handle()
-                task = self._rank_consistency.submit_dump(
-                    self.store,
-                    block_ids_by_request,
-                    ucm_ids,
-                    shard_indexs,
-                    row_ptrs,
-                    event_handle,
-                )
-                self.dump_tasks[row_id].append(
-                    PendingDumpTask(
-                        task=task,
-                        request_ids=set(req_ids),
-                        event_handle=event_handle,
-                    )
-                )
-            except Exception as e:
-                logger.error(
-                    f"submit deferred MTP row {row_id} dump task failed. "
-                    f"{type(e).__name__}: {e}"
-                )
-
     def wait_for_save(self) -> None:
         if not self.is_save:
             total_end = time.perf_counter()
@@ -1847,8 +1789,6 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             if self._dump_transfer_data is not None
             else set()
         )
-        self._flush_deferred_mtp_dumps()
-
         total_start = time.perf_counter()
         for row_id in self.row_ids:
             for pending_dump_task in self.dump_tasks.pop(row_id, []):
