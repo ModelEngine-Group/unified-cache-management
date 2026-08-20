@@ -93,7 +93,10 @@ Expected<TaskId> TaskManager::EnqueueTask(OpType op, TaskInput input)
         taskResults_.emplace(taskId, std::move(future));
     }
 
-    Submission submission{taskId, op, deadline, std::move(input), std::move(promise)};
+    TaskTiming timing;
+    timing.enqueuedUs = SteadyNowUs();
+    timing.enqueuedTsUs = UnixNowUs();
+    Submission submission{taskId, op, deadline, std::move(input), std::move(promise), timing};
     auto enqueued = Status::OK();
     {
         std::lock_guard lock(workMutex_);
@@ -231,10 +234,13 @@ std::vector<Request> TaskManager::BuildRequests(OpType op, std::vector<IoEntry> 
 
 void TaskManager::ProcessSubmission(Submission submission)
 {
+    submission.timing.processSubmissionStartedUs = SteadyNowUs();
     if (submission.deadline <= Clock::now()) {
         UC_WARN("DramStore task expired before processing, task_id={} op={}", submission.taskId,
                 static_cast<unsigned>(submission.op));
-        submission.promise.set_value(TaskResult{Status::Timeout(), {}});
+        const auto status = Status::Timeout();
+        LogTaskDone(submission.taskId, submission.op, 0, 0, status, submission.timing);
+        submission.promise.set_value(TaskResult{status, {}});
         return;
     }
 
@@ -249,7 +255,9 @@ void TaskManager::ProcessSubmission(Submission submission)
             "used_entries={} capacity={}",
             submission.taskId, static_cast<unsigned>(submission.op), entryCount, usedIoEntries_,
             config_.maxIoEntries);
-        submission.promise.set_value(TaskResult{Status::NoSpace(), {}});
+        const auto status = Status::NoSpace();
+        LogTaskDone(submission.taskId, submission.op, entryCount, 0, status, submission.timing);
+        submission.promise.set_value(TaskResult{status, {}});
         return;
     }
     auto requests = BuildRequests(submission.op, std::move(entries), submission.deadline);
@@ -258,8 +266,12 @@ void TaskManager::ProcessSubmission(Submission submission)
     ActiveTask task;
     task.op = submission.op;
     task.remainingRequests = requests.size();
+    task.requestCount = requests.size();
     task.entryCount = entryCount;
     task.promise = std::move(submission.promise);
+    task.timing = submission.timing;
+    task.timing.requestsStartedUs = SteadyNowUs();
+    task.timing.requestsStartedTsUs = UnixNowUs();
     if (task.op == OpType::LOOKUP) { task.lookupResults.resize(entryCount); }
 
     for (auto& request : requests) {
@@ -307,6 +319,7 @@ void TaskManager::CompleteRequest(TaskId taskId, Status status, std::vector<Entr
 
     auto promise = std::move(task.promise);
     auto taskStatus = task.failure.has_value() ? std::move(*task.failure) : Status::OK();
+    LogTaskDone(taskId, task.op, task.entryCount, task.requestCount, taskStatus, task.timing);
     if (taskStatus.Failure()) {
         UC_WARN("DramStore task failed, task_id={} op={} entries={} status={}", taskId,
                 static_cast<unsigned>(task.op), task.entryCount, taskStatus);
@@ -316,6 +329,27 @@ void TaskManager::CompleteRequest(TaskId taskId, Status status, std::vector<Entr
     usedIoEntries_ -= task.entryCount;
     activeTasks_.erase(found);
     promise.set_value(TaskResult{std::move(taskStatus), std::move(lookupResults)});
+}
+
+void TaskManager::LogTaskDone(TaskId taskId, OpType op, std::size_t entryCount,
+                              std::size_t requestCount, const Status& status, TaskTiming timing)
+{
+    timing.completedUs = SteadyNowUs();
+    timing.completedTsUs = UnixNowUs();
+    const auto elapsed = [](std::uint64_t begin, std::uint64_t end) {
+        return begin != 0 && end >= begin ? end - begin : 0;
+    };
+    UC_INFO(
+        "[PERF] component=dramstore event=task_done task_id={} opcode={} entries={} "
+        "request_count={} status={} status_code={} enqueued_ts_us={} requests_started_ts_us={} "
+        "completed_ts_us={} queue_us={} route_us={} requests_inflight_us={} total_us={}",
+        taskId, static_cast<unsigned>(op), entryCount, requestCount,
+        status.Success() ? "SUCCESS" : "FAILED", status.Underlying(), timing.enqueuedTsUs,
+        timing.requestsStartedTsUs, timing.completedTsUs,
+        elapsed(timing.enqueuedUs, timing.processSubmissionStartedUs),
+        elapsed(timing.processSubmissionStartedUs, timing.requestsStartedUs),
+        elapsed(timing.requestsStartedUs, timing.completedUs),
+        elapsed(timing.enqueuedUs, timing.completedUs));
 }
 
 void TaskManager::ProcessCompletion(RequestCompleted event)

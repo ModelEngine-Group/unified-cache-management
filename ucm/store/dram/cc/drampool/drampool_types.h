@@ -52,12 +52,50 @@ inline std::uint64_t SteadyNowMs()
         std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
 }
 
+inline std::uint64_t SteadyNowUs()
+{
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(now).count());
+}
+
+inline std::uint64_t UnixNowUs()
+{
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(now).count());
+}
+
+struct RequestTiming {
+    std::uint64_t received_us{0};
+    std::uint64_t worker_started_us{0};
+    std::uint64_t metadata_prepare_started_us{0};
+    std::uint64_t metadata_prepare_completed_us{0};
+    std::uint64_t completion_queued_us{0};
+    std::uint64_t poller_admitted_us{0};
+    std::uint64_t data_transfer_submitted_us{0};
+    std::uint64_t data_transfer_completed_us{0};
+    std::uint64_t metadata_settle_completed_us{0};
+    std::uint64_t response_ready_us{0};
+    std::uint64_t response_slot_acquired_us{0};
+    std::uint64_t response_submitted_us{0};
+    std::uint64_t response_completed_us{0};
+    std::uint64_t request_completed_us{0};
+    std::uint64_t received_ts_us{0};
+    std::uint64_t worker_started_ts_us{0};
+    std::uint64_t data_transfer_submitted_ts_us{0};
+    std::uint64_t data_transfer_completed_ts_us{0};
+    std::uint64_t response_submitted_ts_us{0};
+    std::uint64_t request_completed_ts_us{0};
+};
+
 using RequestPtr = std::unique_ptr<KvRequest>;
 
 // Receiver keeps transport identity beside the parsed KV request.
 struct RequestTask {
     RequestPtr request;
     transport::ManagerID peer_one_sided_id;
+    RequestTiming timing;
 };
 
 using RequestTaskPtr = std::unique_ptr<RequestTask>;
@@ -93,12 +131,19 @@ enum class CompletionStage : std::uint8_t {
 struct CompletionRecord {
     CompletionStage stage{CompletionStage::PollDataTransfer};
     std::uint64_t request_id{0};
+    std::uint16_t batch_size{0};
+    std::uint16_t failed_items{0};
+    std::uint64_t data_bytes{0};
+    RequestTiming timing;
 
     // State used while the request's data transfer is in flight.
     TransportHandle data_handle{transport::kInvalidTransferHandle};
     std::vector<TransferItem> transfer_items;
     std::uint64_t submit_ms{0};
     bool timeout_reported{false};
+    bool data_transfer_required{false};
+    bool data_transfer_submitted{false};
+    bool data_transfer_succeeded{false};
 
     // State needed to construct the request's sole response.
     OpType opcode{OpType::LOOKUP};

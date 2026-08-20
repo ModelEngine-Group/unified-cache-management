@@ -494,7 +494,7 @@ TEST(DramPoolServerTest, RequestReceiverLogsReceivedRequestFields)
     const auto child = ::fork();
     ASSERT_GE(child, 0);
     if (child == 0) {
-        (void)::setenv("UC_LOGGER_LEVEL", "debug", 1);
+        (void)::setenv("UC_LOGGER_LEVEL", "info", 1);
         (void)::setenv("UCM_LOG_RATE_LIMIT_ENABLE", "false", 1);
         UC::Logger::Setup(logRoot.string(), 1, 1);
 
@@ -532,20 +532,24 @@ TEST(DramPoolServerTest, RequestReceiverLogsReceivedRequestFields)
             "RequestReceiver received request, request_id=" + std::to_string(kRequestId) +
             ", opcode=" + std::to_string(static_cast<int>(OpType::LOOKUP));
         const auto logPath = logRoot / std::to_string(::getpid()) / "ucm.log";
-        bool found = false;
-        for (int attempt = 0; attempt < 200 && !found; ++attempt) {
+        bool stageFound = false;
+        bool completionFound = false;
+        for (int attempt = 0; attempt < 200 && (!stageFound || !completionFound); ++attempt) {
             UC::Logger::Flush();
             std::ifstream input(logPath);
             const std::string content((std::istreambuf_iterator<char>(input)),
                                       std::istreambuf_iterator<char>());
-            found = content.find(expected) != std::string::npos;
-            if (!found) { std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+            stageFound = content.find(expected) != std::string::npos;
+            completionFound = content.find(completed) != std::string::npos;
+            if (!stageFound || !completionFound) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
         }
 
         (void)client.Shutdown();
         server.Stop();
         UC::Logger::Flush();
-        ::_exit(found ? 0 : 6);
+        ::_exit(stageFound && completionFound ? 0 : 6);
     }
 
     int childStatus = 0;
@@ -557,10 +561,16 @@ TEST(DramPoolServerTest, RequestReceiverLogsReceivedRequestFields)
     std::ifstream input(logPath);
     const std::string content((std::istreambuf_iterator<char>(input)),
                               std::istreambuf_iterator<char>());
-    const auto messagePosition = content.find("RequestReceiver received request");
+    const auto messagePosition = content.find("[PERF] component=drampool event=stage request_id=");
     ASSERT_NE(messagePosition, std::string::npos);
     const auto messageEnd = content.find('\n', messagePosition);
     std::cout << content.substr(messagePosition, messageEnd - messagePosition) << std::endl;
+    const auto completionPosition =
+        content.find("[PERF] component=drampool event=request_done request_id=");
+    ASSERT_NE(completionPosition, std::string::npos);
+    const auto completionEnd = content.find('\n', completionPosition);
+    std::cout << content.substr(completionPosition, completionEnd - completionPosition)
+              << std::endl;
     std::filesystem::remove_all(logRoot);
 }
 

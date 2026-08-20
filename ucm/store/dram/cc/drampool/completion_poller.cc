@@ -22,6 +22,7 @@
  * SOFTWARE.
  * */
 #include "completion_poller.h"
+#include <algorithm>
 #include <thread>
 #include <utility>
 #include "core/transport_manager.h"
@@ -43,6 +44,39 @@ void ReleaseResponseBuffer(BufferPool& flagBufferPool, CompletionRecord& record)
             "error={}",
             record.request_id, releasedSlot, releaseStatus);
     }
+}
+
+void LogRequestDone(CompletionRecord& record, const char* status, const char* failedStage)
+{
+    record.timing.request_completed_us = SteadyNowUs();
+    record.timing.request_completed_ts_us = UnixNowUs();
+    const auto elapsed = [](std::uint64_t begin, std::uint64_t end) {
+        return begin != 0 && end >= begin ? end - begin : 0;
+    };
+    UC_INFO(
+        "[PERF] component=drampool event=request_done request_id={} opcode={} peer={} "
+        "batch_size={} data_bytes={} failed_items={} status={} failed_stage={} "
+        "received_ts_us={} worker_started_ts_us={} data_transfer_submitted_ts_us={} "
+        "data_transfer_completed_ts_us={} response_submitted_ts_us={} completed_ts_us={} "
+        "request_queue_us={} metadata_prepare_us={} taskworker_prepare_us={} poller_queue_us={} "
+        "data_transfer_us={} metadata_settle_us={} response_slot_wait_us={} "
+        "response_submit_us={} response_transfer_us={} total_us={}",
+        record.request_id, static_cast<int>(record.opcode), record.peer_one_sided_id,
+        record.batch_size, record.data_bytes, record.failed_items, status, failedStage,
+        record.timing.received_ts_us, record.timing.worker_started_ts_us,
+        record.timing.data_transfer_submitted_ts_us, record.timing.data_transfer_completed_ts_us,
+        record.timing.response_submitted_ts_us, record.timing.request_completed_ts_us,
+        elapsed(record.timing.received_us, record.timing.worker_started_us),  // request_queue_us
+        elapsed(record.timing.metadata_prepare_started_us,
+                record.timing.metadata_prepare_completed_us),
+        elapsed(record.timing.worker_started_us, record.timing.completion_queued_us),
+        elapsed(record.timing.completion_queued_us, record.timing.poller_admitted_us),
+        elapsed(record.timing.data_transfer_submitted_us, record.timing.data_transfer_completed_us),
+        elapsed(record.timing.data_transfer_completed_us, record.timing.metadata_settle_completed_us),
+        elapsed(record.timing.response_ready_us, record.timing.response_slot_acquired_us),
+        elapsed(record.timing.response_slot_acquired_us, record.timing.response_submitted_us),
+        elapsed(record.timing.response_submitted_us, record.timing.response_completed_us),
+        elapsed(record.timing.received_us, record.timing.request_completed_us));
 }
 
 }  // namespace
@@ -69,6 +103,11 @@ void CompletionPoller::FillPendingWindow()
     while (pending_.size() < g_config.pollerPendingDepth) {
         CompletionRecord record;
         if (!runtime_.completionQueue.TryPop(record)) { break; }
+        record.timing.poller_admitted_us = SteadyNowUs();
+        UC_INFO(
+            "[PERF] component=drampool event=stage request_id={} opcode={} "
+            "stage=POLLER_ADMITTED ts_us={}",
+            record.request_id, static_cast<int>(record.opcode), UnixNowUs());
         pending_.emplace_back(std::move(record));
     }
 }
@@ -111,6 +150,7 @@ void CompletionPoller::PollPendingCompletions()
             default:
                 UC_ERROR("CompletionPoller got invalid completion stage, request_id={}, stage={}",
                          iter->request_id, static_cast<int>(iter->stage));
+                LogRequestDone(*iter, "INVALID_STAGE", "COMPLETION_POLLER");
                 iter = pending_.erase(iter);
                 break;
         }
@@ -126,9 +166,18 @@ bool CompletionPoller::PollDataTransfer(CompletionRecord& record)
         UC_ERROR(
             "CompletionPoller data transfer GetStatus failed, request_id={}, handle={}, error={}",
             record.request_id, record.data_handle, queryStatus);
+        record.timing.data_transfer_completed_us = SteadyNowUs();
+        record.timing.data_transfer_completed_ts_us = UnixNowUs();
         SettleDataTransfer(record, transport::TransferStatus::Failed);
+        record.timing.metadata_settle_completed_us = SteadyNowUs();
+        record.timing.response_ready_us = record.timing.metadata_settle_completed_us;
         record.data_handle = transport::kInvalidTransferHandle;
         record.stage = CompletionStage::SubmitResponse;
+        UC_INFO(
+            "[PERF] component=drampool event=stage request_id={} opcode={} status={} "
+            "stage=DATA_TRANSFER_COMPLETED ts_us={}",
+            record.request_id, static_cast<int>(record.opcode), "GET_STATUS_FAILED",
+            record.timing.data_transfer_completed_ts_us);
         return true;
     }
 
@@ -150,15 +199,35 @@ bool CompletionPoller::PollDataTransfer(CompletionRecord& record)
     // A terminal GetStatus releases the data handle before business state is settled.
     UC_DEBUG("CompletionPoller data transfer finished, request_id={}, handle={}, status={}",
              record.request_id, record.data_handle, static_cast<int>(transportStatus));
+    record.timing.data_transfer_completed_us = SteadyNowUs();
+    record.timing.data_transfer_completed_ts_us = UnixNowUs();
+    record.data_transfer_succeeded = transportStatus == transport::TransferStatus::Completed;
+    UC_INFO(
+        "[PERF] component=drampool event=stage request_id={} opcode={} handle={} status={} "
+        "stage=DATA_TRANSFER_COMPLETED ts_us={}",
+        record.request_id, static_cast<int>(record.opcode), record.data_handle,
+        static_cast<int>(transportStatus), record.timing.data_transfer_completed_ts_us);
     SettleDataTransfer(record, transportStatus);
+    record.timing.metadata_settle_completed_us = SteadyNowUs();
+    record.timing.response_ready_us = record.timing.metadata_settle_completed_us;
     record.data_handle = transport::kInvalidTransferHandle;
     record.stage = CompletionStage::SubmitResponse;
     UC_DEBUG("CompletionPoller advances to SubmitResponse, request_id={}", record.request_id);
+    UC_INFO(
+        "[PERF] component=drampool event=stage request_id={} opcode={} "
+        "stage=SUBMIT_RESPONSE ts_us={}",
+        record.request_id, static_cast<int>(record.opcode), UnixNowUs());
     return true;
 }
 
 bool CompletionPoller::SubmitResponse(CompletionRecord& record)
 {
+    if (record.opcode == KvOpcode::Dump || record.opcode == KvOpcode::Load) {
+        record.failed_items = static_cast<std::uint16_t>(
+            std::count_if(record.results.begin(), record.results.end(), [](std::uint8_t result) {
+                return result != static_cast<std::uint8_t>(DumpLoadResult::Ok);
+            }));
+    }
     const auto packedSize =
         runtime_.protocol.GetPackedResponseSize(record.opcode, record.results.size());
     auto allocateStatus = runtime_.flagBufferPool.Allocate(record.local_resp_slot);
@@ -174,8 +243,10 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
         UC_ERROR(
             "CompletionPoller flag buffer allocation failed, request_id={}, opcode={}, error={}",
             record.request_id, static_cast<int>(record.opcode), allocateStatus);
+        LogRequestDone(record, "FLAG_BUFFER_ALLOCATION_FAILED", "SUBMIT_RESPONSE");
         return true;
     }
+    record.timing.response_slot_acquired_us = SteadyNowUs();
     UC_DEBUG("CompletionPoller allocated response slot, request_id={}, slot={}", record.request_id,
              record.local_resp_slot.slotIndex);
 
@@ -188,6 +259,7 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
         ReleaseResponseBuffer(runtime_.flagBufferPool, record);
         UC_ERROR("CompletionPoller SubmitResponse pack failed, request_id={}, opcode={}, error={}",
                  record.request_id, static_cast<int>(record.opcode), protocolStatus);
+        LogRequestDone(record, "RESPONSE_PACK_FAILED", "SUBMIT_RESPONSE");
         return true;
     }
     UC_DEBUG("CompletionPoller packed response, request_id={}, response_len={}", record.request_id,
@@ -208,16 +280,24 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
             "CompletionPoller SubmitResponse ExecuteAsync failed, request_id={}, opcode={}, "
             "handle={}, error={}",
             record.request_id, static_cast<int>(record.opcode), handle, submitStatus);
+        LogRequestDone(record, "RESPONSE_SUBMIT_FAILED", "SUBMIT_RESPONSE");
         return true;
     }
 
     record.response_handle = handle;
     record.submit_ms = SteadyNowMs();
+    record.timing.response_submitted_us = SteadyNowUs();
+    record.timing.response_submitted_ts_us = UnixNowUs();
     record.timeout_reported = false;
     record.results.clear();
     record.stage = CompletionStage::PollResponseTransfer;
     UC_DEBUG("CompletionPoller submitted response transfer, request_id={}, handle={}, slot={}",
              record.request_id, handle, record.local_resp_slot.slotIndex);
+    UC_INFO(
+        "[PERF] component=drampool event=stage request_id={} opcode={} handle={} slot={} "
+        "stage=RESPONSE_TRANSFER_SUBMITTED ts_us={}",
+        record.request_id, static_cast<int>(record.opcode), handle,
+        record.local_resp_slot.slotIndex, record.timing.response_submitted_ts_us);
     return false;
 }
 
@@ -229,7 +309,9 @@ bool CompletionPoller::PollResponseTransfer(CompletionRecord& record)
         // GetStatus removes failed handles, so the response source buffer is no longer in use.
         UC_ERROR("CompletionPoller response GetStatus failed, request_id={}, handle={}, error={}",
                  record.request_id, record.response_handle, queryStatus);
+        record.timing.response_completed_us = SteadyNowUs();
         ReleaseResponseBuffer(runtime_.flagBufferPool, record);
+        LogRequestDone(record, "RESPONSE_STATUS_FAILED", "POLL_RESPONSE_TRANSFER");
         return true;
     }
     if (transportStatus == transport::TransferStatus::Waiting) {
@@ -248,13 +330,30 @@ bool CompletionPoller::PollResponseTransfer(CompletionRecord& record)
     if (transportStatus != transport::TransferStatus::Completed) {
         UC_ERROR("CompletionPoller response transfer failed, request_id={}, handle={}, status={}",
                  record.request_id, record.response_handle, static_cast<int>(transportStatus));
+        record.timing.response_completed_us = SteadyNowUs();
         ReleaseResponseBuffer(runtime_.flagBufferPool, record);
+        LogRequestDone(record, "RESPONSE_TRANSFER_FAILED", "POLL_RESPONSE_TRANSFER");
         return true;
     }
 
+    record.timing.response_completed_us = SteadyNowUs();
     ReleaseResponseBuffer(runtime_.flagBufferPool, record);
     UC_DEBUG("CompletionPoller response transfer finished, request_id={}, handle={}, status={}",
              record.request_id, record.response_handle, static_cast<int>(transportStatus));
+    UC_INFO(
+        "[PERF] component=drampool event=stage request_id={} opcode={} handle={} status={} "
+        "stage=RESPONSE_TRANSFER_COMPLETED ts_us={}",
+        record.request_id, static_cast<int>(record.opcode), record.response_handle,
+        static_cast<int>(transportStatus), UnixNowUs());
+    if (record.data_transfer_required && !record.data_transfer_succeeded) {
+        LogRequestDone(
+            record, "DATA_TRANSFER_FAILED",
+            record.data_transfer_submitted ? "POLL_DATA_TRANSFER" : "SUBMIT_DATA_TRANSFER");
+    } else if (record.failed_items != 0) {
+        LogRequestDone(record, "ITEM_FAILURE", "METADATA_PROCESSING");
+    } else {
+        LogRequestDone(record, "SUCCESS", "NONE");
+    }
 
     return true;
 }

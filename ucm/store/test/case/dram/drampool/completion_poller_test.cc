@@ -149,10 +149,13 @@ protected:
         CompletionRecord record;
         record.stage = CompletionStage::SubmitResponse;
         record.request_id = kRequestId;
+        record.batch_size = 3;
         record.opcode = opcode;
         record.remote_resp_addr = 0x9000;
         record.peer_one_sided_id = kUnavailablePeer;
         record.results = {1, 0, 1};
+        record.timing.response_ready_us = SteadyNowUs();
+        record.timing.completion_queued_us = record.timing.response_ready_us;
         return record;
     }
 
@@ -180,6 +183,10 @@ TEST_F(CompletionPollerTest, FillPendingWindowHonorsConfiguredDepthAndQueueOrder
     ASSERT_EQ(poller_->pending_.size(), 2U);
     EXPECT_EQ(poller_->pending_[0].remote_resp_addr, 1U);
     EXPECT_EQ(poller_->pending_[1].remote_resp_addr, 2U);
+    EXPECT_GE(poller_->pending_[0].timing.poller_admitted_us,
+              poller_->pending_[0].timing.completion_queued_us);
+    EXPECT_GE(poller_->pending_[1].timing.poller_admitted_us,
+              poller_->pending_[1].timing.completion_queued_us);
 
     CompletionRecord remaining;
     ASSERT_TRUE(completionQueue_.TryPop(remaining));
@@ -253,6 +260,10 @@ TEST_F(CompletionPollerTest, DataStatusApiFailureAbortsDumpAndAdvancesToResponse
     record.stage = CompletionStage::PollDataTransfer;
     record.opcode = OpType::DUMP;
     record.data_handle = transport::kInvalidTransferHandle;
+    record.data_transfer_required = true;
+    record.data_transfer_submitted = true;
+    record.timing.data_transfer_submitted_us = SteadyNowUs();
+    record.timing.data_transfer_submitted_ts_us = UnixNowUs();
     record.results = {ResultCode(DumpLoadResult::Ok)};
     record.transfer_items = {
         TransferItem{0, key}
@@ -265,6 +276,11 @@ TEST_F(CompletionPollerTest, DataStatusApiFailureAbortsDumpAndAdvancesToResponse
     EXPECT_TRUE(record.transfer_items.empty());
     EXPECT_EQ(record.results, (std::vector<std::uint8_t>{ResultCode(DumpLoadResult::Failed)}));
     EXPECT_FALSE(metadata_->Query(key));
+    EXPECT_GE(record.timing.data_transfer_completed_us, record.timing.data_transfer_submitted_us);
+    EXPECT_GE(record.timing.data_transfer_completed_ts_us, record.timing.data_transfer_submitted_ts_us);
+    EXPECT_GE(record.timing.metadata_settle_completed_us, record.timing.data_transfer_completed_us);
+    EXPECT_EQ(record.timing.response_ready_us, record.timing.metadata_settle_completed_us);
+    EXPECT_FALSE(record.data_transfer_succeeded);
 }
 
 TEST_F(CompletionPollerTest, CompletedDumpPublishesReservedMetadata)

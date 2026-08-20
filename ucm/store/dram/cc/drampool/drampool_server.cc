@@ -511,6 +511,13 @@ void DramPoolServer::RequestReceiveLoop()
         UC_DEBUG("RequestReceiver received request, request_id={}, opcode={}, control={}, peer={}",
                  task->request->request_id, static_cast<int>(task->request->opcode), controlPeerId,
                  peerIt->second);
+        task->timing.received_us = SteadyNowUs();
+        task->timing.received_ts_us = UnixNowUs();
+        UC_INFO(
+            "[PERF] component=drampool event=stage request_id={} opcode={} control={} peer={} "
+            "stage=REQUEST_RECEIVED ts_us={}",
+            task->request->request_id, static_cast<int>(task->request->opcode), controlPeerId,
+            peerIt->second, task->timing.received_ts_us);
         // This bounded handoff keeps transport I/O separate from potentially slow request handling.
         bool queueFullLogged = false;
         while (!requestReceiverStop_.load(std::memory_order_acquire)) {
