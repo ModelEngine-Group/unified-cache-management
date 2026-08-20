@@ -301,11 +301,12 @@ void NodeActor::StartRequest(Request request)
     assert(inserted.second);
     auto& active = inserted.first->second;
     active.request.timing.nodeActorStartedUs = SteadyNowUs();
-    UC_INFO(
-        "[PERF] component=dramstore event=stage task_id={} request_id={} opcode={} node_id={} "
-        "stage=REQUEST_DISPATCHED ts_us={}",
-        active.request.taskId, requestId, static_cast<unsigned>(active.request.op),
-        config_.endpoint.nodeId, UnixNowUs());
+    // Stage PERF log disabled: request_done already contains the corresponding timing.
+    // UC_INFO(
+    //     "[PERF] component=dramstore event=stage task_id={} request_id={} opcode={} node_id={} "
+    //     "stage=REQUEST_DISPATCHED ts_us={}",
+    //     active.request.taskId, requestId, static_cast<unsigned>(active.request.op),
+    //     config_.endpoint.nodeId, UnixNowUs());
     UC_DEBUG(
         "DramStore request dispatch, task_id={} request_id={} op={} node_id={} epoch={} "
         "entries={}",
@@ -351,11 +352,12 @@ void NodeActor::StartRequest(Request request)
     active.request.timing.controlTransportSubmittedUs = SteadyNowUs();
     active.request.timing.controlTransportSubmittedTsUs = UnixNowUs();
     if (status.Success()) {
-        UC_INFO(
-            "[PERF] component=dramstore event=stage task_id={} request_id={} opcode={} "
-            "node_id={} stage=CONTROL_TRANSFER_SUBMITTED ts_us={}",
-            active.request.taskId, requestId, static_cast<unsigned>(active.request.op),
-            config_.endpoint.nodeId, active.request.timing.controlTransportSubmittedTsUs);
+        // Stage PERF log disabled: request_done already contains the corresponding timing.
+        // UC_INFO(
+        //     "[PERF] component=dramstore event=stage task_id={} request_id={} opcode={} "
+        //     "node_id={} stage=CONTROL_TRANSFER_SUBMITTED ts_us={}",
+        //     active.request.taskId, requestId, static_cast<unsigned>(active.request.op),
+        //     config_.endpoint.nodeId, active.request.timing.controlTransportSubmittedTsUs);
         UC_DEBUG(
             "DramStore request submitted, task_id={} request_id={} op={} node_id={} "
             "epoch={} entries={} payload_bytes={}",
@@ -380,11 +382,12 @@ void NodeActor::Handle(Request request, TimePoint now)
         request.timing.nodeQueuedUs = SteadyNowUs();
         request.timing.nodeQueuedTsUs = UnixNowUs();
     }
-    UC_INFO(
-        "[PERF] component=dramstore event=stage task_id={} request_id={} opcode={} node_id={} "
-        "stage=NODE_QUEUED ts_us={}",
-        request.taskId, request.requestId, static_cast<unsigned>(request.op), request.nodeId,
-        request.timing.nodeQueuedTsUs);
+    // Stage PERF log disabled: request_done already contains the corresponding timing.
+    // UC_INFO(
+    //     "[PERF] component=dramstore event=stage task_id={} request_id={} opcode={} node_id={} "
+    //     "stage=NODE_QUEUED ts_us={}",
+    //     request.taskId, request.requestId, static_cast<unsigned>(request.op), request.nodeId,
+    //     request.timing.nodeQueuedTsUs);
     if (request.deadline <= now) {
         UC_WARN(
             "DramStore request expired before node admission, task_id={} request_id={} op={} "
@@ -497,12 +500,13 @@ void NodeActor::Handle(ReplyObserved event, TimePoint now)
     }
     found->second.request.timing.replyObservedUs = SteadyNowUs();
     found->second.request.timing.replyObservedTsUs = UnixNowUs();
-    UC_INFO(
-        "[PERF] component=dramstore event=stage task_id={} request_id={} opcode={} node_id={} "
-        "stage=REPLY_OBSERVED ts_us={}",
-        found->second.request.taskId, found->second.request.requestId,
-        static_cast<unsigned>(found->second.request.op), config_.endpoint.nodeId,
-        found->second.request.timing.replyObservedTsUs);
+    // Stage PERF log disabled: request_done already contains the corresponding timing.
+    // UC_INFO(
+    //     "[PERF] component=dramstore event=stage task_id={} request_id={} opcode={} node_id={} "
+    //     "stage=REPLY_OBSERVED ts_us={}",
+    //     found->second.request.taskId, found->second.request.requestId,
+    //     static_cast<unsigned>(found->second.request.op), config_.endpoint.nodeId,
+    //     found->second.request.timing.replyObservedTsUs);
     auto status = event.status;
     std::vector<EntryResult> entryResults;
     if (status.Success() && found->second.request.op != OpType::LOOKUP) {
@@ -552,13 +556,14 @@ void NodeActor::Handle(TransmitCompleted event, TimePoint)
     }
     found->second.request.timing.controlTransportCompletedUs = SteadyNowUs();
     found->second.request.timing.controlTransportCompletedTsUs = UnixNowUs();
-    UC_INFO(
-        "[PERF] component=dramstore event=stage task_id={} request_id={} opcode={} node_id={} "
-        "status={} stage=CONTROL_TRANSFER_COMPLETED ts_us={}",
-        found->second.request.taskId, found->second.request.requestId,
-        static_cast<unsigned>(found->second.request.op), config_.endpoint.nodeId,
-        event.status.Success() ? "SUCCESS" : "FAILED",
-        found->second.request.timing.controlTransportCompletedTsUs);
+    // Stage PERF log disabled: request_done already contains the corresponding timing.
+    // UC_INFO(
+    //     "[PERF] component=dramstore event=stage task_id={} request_id={} opcode={} node_id={} "
+    //     "status={} stage=CONTROL_TRANSFER_COMPLETED ts_us={}",
+    //     found->second.request.taskId, found->second.request.requestId,
+    //     static_cast<unsigned>(found->second.request.op), config_.endpoint.nodeId,
+    //     event.status.Success() ? "SUCCESS" : "FAILED",
+    //     found->second.request.timing.controlTransportCompletedTsUs);
     if (event.status.Success()) {
         found->second.state = RequestState::INFLIGHT;
         return;

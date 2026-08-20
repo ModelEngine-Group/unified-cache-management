@@ -2,14 +2,14 @@
 
 ## 1. 总体架构
 
-性能日志覆盖 DramStore 和 DramPool 两个模块，采用"本地时间点 + 完成汇总 + 关键阶段切换"的记录策略。
+性能日志覆盖 DramStore 和 DramPool 两个模块，采用“本地时间点 + 完成汇总”的记录策略。
 
 ### 1.1 三类日志
 
 | 类型 | event | 用途 |
 |---|---|---|
 | **完成汇总日志** | `request_done` / `task_done` | 请求完成后打一条，包含全部阶段耗时，是性能分析的主要数据源 |
-| **阶段切换日志** | `stage` | 仅在异步状态变化时打，用于定位卡住的请求 |
+| **阶段切换日志（已禁用）** | `stage` | 代码保留为注释，避免阶段日志本身影响性能计时 |
 
 ### 1.2 计时方式
 
@@ -288,9 +288,10 @@ Unix epoch 微秒；时间差使用 steady clock 计算。
 | `status` | SUCCESS / DATA_TRANSFER_FAILED / ITEM_FAILURE / FLAG_BUFFER_ALLOCATION_FAILED 等 |
 | `failed_stage` | 发生失败的阶段，成功时为 NONE |
 
-### 2.4 阶段切换日志
+### 2.4 阶段切换日志（已禁用）
 
-仅在异步状态变化时打印，用于判断未完成请求卡在哪个阶段。
+这些日志的代码已注释，不再运行。对应时间点和耗时均由 `request_done` 汇总输出，避免额外的
+格式化、取时和日志 I/O 影响请求阶段计时。
 
 | stage | 代码位置 | 触发时机 |
 |---|---|---|
@@ -595,7 +596,9 @@ const auto remoteWaitStarted = request.timing.controlTransportCompletedUs != 0
 | `status` | SUCCESS / FAILED |
 | `status_code` | Status 底层错误码 |
 
-### 4.4 阶段切换日志
+### 4.4 阶段切换日志（已禁用）
+
+这些日志的代码已注释，不再运行；对应时间点和耗时由 `request_done` 汇总输出。
 
 | stage | 代码位置 | 触发时机 |
 |---|---|---|

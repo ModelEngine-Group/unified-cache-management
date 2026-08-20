@@ -467,19 +467,20 @@ Status TransportManager::ExecuteAsync(const Operation& batch, TransferHandle& ha
                                    request.opcode, request.direct, request.ops.size(), bytes,
                                    submittedUs, submittedTsUs, submittedUs - submitStartedUs});
     }
-    UC_INFO(
-        "[PERF] component=transport event=transfer_submitted manager={} target={} handle={} "
-        "transport_handle={} opcode={} direct={} segments={} bytes={} submitted_ts_us={} "
-        "manager_execute_async_ts_us={} backend_execute_async_ts_us={} "
-        "manager_to_backend_execute_async_us={} submit_us={}",
-        manager_id_, request.target_manager, handle, transport_handle,
-        static_cast<unsigned>(request.opcode), static_cast<unsigned>(request.direct),
-        request.ops.size(), bytes, submittedTsUs, callTiming.manager_entered_ts_us,
-        callTiming.backend_called_ts_us,
-        callTiming.backend_called_us >= callTiming.manager_entered_us
-            ? callTiming.backend_called_us - callTiming.manager_entered_us
-            : 0,
-        submittedUs - submitStartedUs);
+    // Transport PERF log disabled: request_done already contains the corresponding timing.
+    // UC_INFO(
+    //     "[PERF] component=transport event=transfer_submitted manager={} target={} handle={} "
+    //     "transport_handle={} opcode={} direct={} segments={} bytes={} submitted_ts_us={} "
+    //     "manager_execute_async_ts_us={} backend_execute_async_ts_us={} "
+    //     "manager_to_backend_execute_async_us={} submit_us={}",
+    //     manager_id_, request.target_manager, handle, transport_handle,
+    //     static_cast<unsigned>(request.opcode), static_cast<unsigned>(request.direct),
+    //     request.ops.size(), bytes, submittedTsUs, callTiming.manager_entered_ts_us,
+    //     callTiming.backend_called_ts_us,
+    //     callTiming.backend_called_us >= callTiming.manager_entered_us
+    //         ? callTiming.backend_called_us - callTiming.manager_entered_us
+    //         : 0,
+    //     submittedUs - submitStartedUs);
     return Status::OK();
 }
 
@@ -504,24 +505,25 @@ Status TransportManager::GetStatus(TransferHandle handle, TransferStatus& transf
     if (status != Status::OK() || transfer_status != TransferStatus::Waiting) {
         const auto completedUs = SteadyNowUs();
         const auto completedTsUs = UnixNowUs();
-        UC_INFO(
-            "[PERF] component=transport event=transfer_done manager={} target={} handle={} "
-            "transport_handle={} opcode={} direct={} segments={} bytes={} status={} "
-            "api_status={} submitted_ts_us={} completed_ts_us={} manager_get_status_ts_us={} "
-            "backend_query_ts_us={} submit_us={} transfer_us={} manager_to_backend_query_us={} "
-            "total_us={}",
-            manager_id_, record.target_manager, handle, record.transport_handle,
-            static_cast<unsigned>(record.opcode), static_cast<unsigned>(record.direct),
-            record.segment_count, record.bytes,
-            status == Status::OK() ? static_cast<int>(transfer_status) : -1, status.Underlying(),
-            record.submitted_ts_us, completedTsUs, callTiming.manager_entered_ts_us,
-            callTiming.backend_called_ts_us, record.submit_us,
-            completedUs >= record.submitted_us ? completedUs - record.submitted_us : 0,
-            callTiming.backend_called_us >= callTiming.manager_entered_us
-                ? callTiming.backend_called_us - callTiming.manager_entered_us
-                : 0,
-            record.submit_us +
-                (completedUs >= record.submitted_us ? completedUs - record.submitted_us : 0));
+        // Transport PERF log disabled: request_done already contains the corresponding timing.
+        // UC_INFO(
+        //     "[PERF] component=transport event=transfer_done manager={} target={} handle={} "
+        //     "transport_handle={} opcode={} direct={} segments={} bytes={} status={} "
+        //     "api_status={} submitted_ts_us={} completed_ts_us={} manager_get_status_ts_us={} "
+        //     "backend_query_ts_us={} submit_us={} transfer_us={} manager_to_backend_query_us={} "
+        //     "total_us={}",
+        //     manager_id_, record.target_manager, handle, record.transport_handle,
+        //     static_cast<unsigned>(record.opcode), static_cast<unsigned>(record.direct),
+        //     record.segment_count, record.bytes,
+        //     status == Status::OK() ? static_cast<int>(transfer_status) : -1, status.Underlying(),
+        //     record.submitted_ts_us, completedTsUs, callTiming.manager_entered_ts_us,
+        //     callTiming.backend_called_ts_us, record.submit_us,
+        //     completedUs >= record.submitted_us ? completedUs - record.submitted_us : 0,
+        //     callTiming.backend_called_us >= callTiming.manager_entered_us
+        //         ? callTiming.backend_called_us - callTiming.manager_entered_us
+        //         : 0,
+        //     record.submit_us +
+        //         (completedUs >= record.submitted_us ? completedUs - record.submitted_us : 0));
         std::lock_guard<std::mutex> lock(transfers_mutex_);
         transfers_.erase(handle);
     }

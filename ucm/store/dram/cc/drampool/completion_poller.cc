@@ -126,10 +126,11 @@ void CompletionPoller::FillPendingWindow()
         CompletionRecord record;
         if (!runtime_.completionQueue.TryPop(record)) { break; }
         record.timing.poller_admitted_us = SteadyNowUs();
-        UC_INFO(
-            "[PERF] component=drampool event=stage request_id={} opcode={} "
-            "stage=POLLER_ADMITTED ts_us={}",
-            record.request_id, static_cast<int>(record.opcode), UnixNowUs());
+        // Stage PERF log disabled: request_done already contains the corresponding timing.
+        // UC_INFO(
+        //     "[PERF] component=drampool event=stage request_id={} opcode={} "
+        //     "stage=POLLER_ADMITTED ts_us={}",
+        //     record.request_id, static_cast<int>(record.opcode), UnixNowUs());
         pending_.emplace_back(std::move(record));
     }
 }
@@ -196,11 +197,12 @@ bool CompletionPoller::PollDataTransfer(CompletionRecord& record)
         record.timing.response_ready_us = record.timing.metadata_settle_completed_us;
         record.data_handle = transport::kInvalidTransferHandle;
         record.stage = CompletionStage::SubmitResponse;
-        UC_INFO(
-            "[PERF] component=drampool event=stage request_id={} opcode={} status={} "
-            "stage=DATA_TRANSFER_COMPLETED ts_us={}",
-            record.request_id, static_cast<int>(record.opcode), "GET_STATUS_FAILED",
-            record.timing.data_transfer_completed_ts_us);
+        // Stage PERF log disabled: request_done already contains the corresponding timing.
+        // UC_INFO(
+        //     "[PERF] component=drampool event=stage request_id={} opcode={} status={} "
+        //     "stage=DATA_TRANSFER_COMPLETED ts_us={}",
+        //     record.request_id, static_cast<int>(record.opcode), "GET_STATUS_FAILED",
+        //     record.timing.data_transfer_completed_ts_us);
         return true;
     }
 
@@ -225,21 +227,23 @@ bool CompletionPoller::PollDataTransfer(CompletionRecord& record)
     record.timing.data_transfer_completed_us = SteadyNowUs();
     record.timing.data_transfer_completed_ts_us = UnixNowUs();
     record.data_transfer_succeeded = transportStatus == transport::TransferStatus::Completed;
-    UC_INFO(
-        "[PERF] component=drampool event=stage request_id={} opcode={} handle={} status={} "
-        "stage=DATA_TRANSFER_COMPLETED ts_us={}",
-        record.request_id, static_cast<int>(record.opcode), record.data_handle,
-        static_cast<int>(transportStatus), record.timing.data_transfer_completed_ts_us);
+    // Stage PERF log disabled: request_done already contains the corresponding timing.
+    // UC_INFO(
+    //     "[PERF] component=drampool event=stage request_id={} opcode={} handle={} status={} "
+    //     "stage=DATA_TRANSFER_COMPLETED ts_us={}",
+    //     record.request_id, static_cast<int>(record.opcode), record.data_handle,
+    //     static_cast<int>(transportStatus), record.timing.data_transfer_completed_ts_us);
     SettleDataTransfer(record, transportStatus);
     record.timing.metadata_settle_completed_us = SteadyNowUs();
     record.timing.response_ready_us = record.timing.metadata_settle_completed_us;
     record.data_handle = transport::kInvalidTransferHandle;
     record.stage = CompletionStage::SubmitResponse;
     UC_DEBUG("CompletionPoller advances to SubmitResponse, request_id={}", record.request_id);
-    UC_INFO(
-        "[PERF] component=drampool event=stage request_id={} opcode={} "
-        "stage=SUBMIT_RESPONSE ts_us={}",
-        record.request_id, static_cast<int>(record.opcode), UnixNowUs());
+    // Stage PERF log disabled: request_done already contains the corresponding timing.
+    // UC_INFO(
+    //     "[PERF] component=drampool event=stage request_id={} opcode={} "
+    //     "stage=SUBMIT_RESPONSE ts_us={}",
+    //     record.request_id, static_cast<int>(record.opcode), UnixNowUs());
     return true;
 }
 
@@ -317,11 +321,12 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
     record.stage = CompletionStage::PollResponseTransfer;
     UC_DEBUG("CompletionPoller submitted response transfer, request_id={}, handle={}, slot={}",
              record.request_id, handle, record.local_resp_slot.slotIndex);
-    UC_INFO(
-        "[PERF] component=drampool event=stage request_id={} opcode={} handle={} slot={} "
-        "stage=RESPONSE_TRANSFER_SUBMITTED ts_us={}",
-        record.request_id, static_cast<int>(record.opcode), handle,
-        record.local_resp_slot.slotIndex, record.timing.response_submitted_ts_us);
+    // Stage PERF log disabled: request_done already contains the corresponding timing.
+    // UC_INFO(
+    //     "[PERF] component=drampool event=stage request_id={} opcode={} handle={} slot={} "
+    //     "stage=RESPONSE_TRANSFER_SUBMITTED ts_us={}",
+    //     record.request_id, static_cast<int>(record.opcode), handle,
+    //     record.local_resp_slot.slotIndex, record.timing.response_submitted_ts_us);
     return false;
 }
 
@@ -365,11 +370,12 @@ bool CompletionPoller::PollResponseTransfer(CompletionRecord& record)
     ReleaseResponseBuffer(runtime_.flagBufferPool, record);
     UC_DEBUG("CompletionPoller response transfer finished, request_id={}, handle={}, status={}",
              record.request_id, record.response_handle, static_cast<int>(transportStatus));
-    UC_INFO(
-        "[PERF] component=drampool event=stage request_id={} opcode={} handle={} status={} "
-        "stage=RESPONSE_TRANSFER_COMPLETED ts_us={}",
-        record.request_id, static_cast<int>(record.opcode), record.response_handle,
-        static_cast<int>(transportStatus), UnixNowUs());
+    // Stage PERF log disabled: request_done already contains the corresponding timing.
+    // UC_INFO(
+    //     "[PERF] component=drampool event=stage request_id={} opcode={} handle={} status={} "
+    //     "stage=RESPONSE_TRANSFER_COMPLETED ts_us={}",
+    //     record.request_id, static_cast<int>(record.opcode), record.response_handle,
+    //     static_cast<int>(transportStatus), UnixNowUs());
     if (record.data_transfer_required && !record.data_transfer_succeeded) {
         LogRequestDone(
             record, "DATA_TRANSFER_FAILED",

@@ -73,11 +73,12 @@ Status TaskWorker::ProcessOneRequest(RequestTaskPtr task)
              request->request_id, static_cast<int>(request->opcode), peerOneSidedId);
     task->timing.worker_started_us = SteadyNowUs();
     task->timing.worker_started_ts_us = UnixNowUs();
-    UC_INFO(
-        "[PERF] component=drampool event=stage request_id={} opcode={} peer={} "
-        "stage=WORKER_STARTED ts_us={}",
-        request->request_id, static_cast<int>(request->opcode), peerOneSidedId,
-        task->timing.worker_started_ts_us);
+    // Stage PERF log disabled: request_done already contains the corresponding timing.
+    // UC_INFO(
+    //     "[PERF] component=drampool event=stage request_id={} opcode={} peer={} "
+    //     "stage=WORKER_STARTED ts_us={}",
+    //     request->request_id, static_cast<int>(request->opcode), peerOneSidedId,
+    //     task->timing.worker_started_ts_us);
     switch (request->opcode) {
         case OpType::DUMP: {
             const auto* dump = dynamic_cast<const KvDumpRequest*>(request.get());
@@ -195,11 +196,12 @@ Status TaskWorker::ProcessDump(const KvDumpRequest& request,
     record.timing.data_transfer_submitted_us = SteadyNowUs();
     record.timing.data_transfer_submitted_ts_us = UnixNowUs();
     UC_DEBUG("DUMP data transfer submitted, request_id={}, handle={}", request.request_id, handle);
-    UC_INFO(
-        "[PERF] component=drampool event=stage request_id={} opcode={} handle={} "
-        "stage=DATA_TRANSFER_SUBMITTED ts_us={}",
-        request.request_id, static_cast<int>(request.opcode), handle,
-        record.timing.data_transfer_submitted_ts_us);
+    // Stage PERF log disabled: request_done already contains the corresponding timing.
+    // UC_INFO(
+    //     "[PERF] component=drampool event=stage request_id={} opcode={} handle={} "
+    //     "stage=DATA_TRANSFER_SUBMITTED ts_us={}",
+    //     request.request_id, static_cast<int>(request.opcode), handle,
+    //     record.timing.data_transfer_submitted_ts_us);
     return SubmitCompletion(std::move(record));
 }
 
@@ -291,11 +293,12 @@ Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
     record.timing.data_transfer_submitted_us = SteadyNowUs();
     record.timing.data_transfer_submitted_ts_us = UnixNowUs();
     UC_DEBUG("LOAD data transfer submitted, request_id={}, handle={}", request.request_id, handle);
-    UC_INFO(
-        "[PERF] component=drampool event=stage request_id={} opcode={} handle={} "
-        "stage=DATA_TRANSFER_SUBMITTED ts_us={}",
-        request.request_id, static_cast<int>(request.opcode), handle,
-        record.timing.data_transfer_submitted_ts_us);
+    // Stage PERF log disabled: request_done already contains the corresponding timing.
+    // UC_INFO(
+    //     "[PERF] component=drampool event=stage request_id={} opcode={} handle={} "
+    //     "stage=DATA_TRANSFER_SUBMITTED ts_us={}",
+    //     request.request_id, static_cast<int>(request.opcode), handle,
+    //     record.timing.data_transfer_submitted_ts_us);
     return SubmitCompletion(std::move(record));
 }
 
@@ -369,10 +372,11 @@ Status TaskWorker::SubmitCompletion(CompletionRecord&& record)
              record.request_id, static_cast<int>(record.opcode), static_cast<int>(record.stage),
              record.data_handle);
     record.timing.completion_queued_us = SteadyNowUs();
-    UC_INFO(
-        "[PERF] component=drampool event=stage request_id={} opcode={} handle={} "
-        "stage=COMPLETION_QUEUED ts_us={}",
-        record.request_id, static_cast<int>(record.opcode), record.data_handle, UnixNowUs());
+    // Stage PERF log disabled: request_done already contains the corresponding timing.
+    // UC_INFO(
+    //     "[PERF] component=drampool event=stage request_id={} opcode={} handle={} "
+    //     "stage=COMPLETION_QUEUED ts_us={}",
+    //     record.request_id, static_cast<int>(record.opcode), record.data_handle, UnixNowUs());
     runtime_.completionQueue.Push(std::move(record));
     return Status::OK();
 }
