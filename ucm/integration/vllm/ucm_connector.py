@@ -1468,6 +1468,36 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if other_rank_block_ids:
             self.store.prefetch(other_rank_block_ids)
 
+    def _prefetch_direct_hit_key_hotness(
+        self,
+        hbm_hit_block_ids: list[bytes],
+        all_hit_block_ids: list[bytes],
+    ) -> None:
+        """Best-effort GC hotness update for keys skipped by scheduler lookup.
+
+        Rank 0 external keys are already touched by ``lookup_on_prefix``. The
+        local-HBM prefix is not part of that lookup, while other TP ranks do not
+        perform scheduler-side lookup at all, so update those two sets here.
+        """
+
+        if hbm_hit_block_ids:
+            try:
+                self.store.prefetch(hbm_hit_block_ids)
+            except Exception as e:
+                logger.warning(
+                    "UCM rank-0 HBM hotness update failed. " f"{type(e).__name__}: {e}"
+                )
+
+        if all_hit_block_ids:
+            try:
+                self._prefetch_other_rank_hashes(all_hit_block_ids)
+            except Exception as e:
+                # Prefetch is only a GC hotness hint. A failure must not turn a
+                # valid cache hit into a scheduler-side miss.
+                logger.warning(
+                    "UCM other-rank hotness update failed. " f"{type(e).__name__}: {e}"
+                )
+
     def get_num_new_matched_tokens(
         self,
         request: "Request",
@@ -1511,15 +1541,21 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     )
                     + 1
                 )
-                self._prefetch_other_rank_hashes(
-                    external_block_ids[:external_hit_hashes]
-                )
                 external_hit_blocks = external_hit_hashes // self.cp_world_size
             except Exception as e:
                 logger.error(
                     f"request {request.request_id} look up error. {type(e).__name__}: {e}"
                 )
                 self._record_counter("connector_lookup_errors_total")
+
+        hbm_hit_hashes = hbm_hit_block_num * self.cp_world_size
+        total_hit_hashes = (
+            hbm_hit_block_num + external_hit_blocks
+        ) * self.cp_world_size
+        self._prefetch_direct_hit_key_hotness(
+            ucm_block_ids[:hbm_hit_hashes],
+            ucm_block_ids[:total_hit_hashes],
+        )
 
         logger.info_once(
             f"request_id: {request.request_id}, "
