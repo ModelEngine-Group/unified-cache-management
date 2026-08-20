@@ -281,6 +281,9 @@ TEST_F(CompletionPollerTest, DataStatusApiFailureAbortsDumpAndAdvancesToResponse
     EXPECT_GE(record.timing.metadata_settle_completed_us, record.timing.data_transfer_completed_us);
     EXPECT_EQ(record.timing.response_ready_us, record.timing.metadata_settle_completed_us);
     EXPECT_FALSE(record.data_transfer_succeeded);
+    EXPECT_NE(record.timing.data_get_status.manager_entered_us, 0U);
+    EXPECT_NE(record.timing.data_get_status.manager_entered_ts_us, 0U);
+    EXPECT_EQ(record.timing.data_get_status.backend_called_us, 0U);
 }
 
 TEST_F(CompletionPollerTest, CompletedDumpPublishesReservedMetadata)
@@ -471,6 +474,9 @@ TEST_F(CompletionPollerTest, SubmitResponseReleasesBufferWhenRealTransportReject
 
     EXPECT_EQ(record.local_resp_slot.localAddr, nullptr);
     EXPECT_EQ(record.response_handle, transport::kInvalidTransferHandle);
+    EXPECT_NE(record.timing.response_execute_async.manager_entered_us, 0U);
+    EXPECT_NE(record.timing.response_execute_async.manager_entered_ts_us, 0U);
+    EXPECT_EQ(record.timing.response_execute_async.backend_called_us, 0U);
     BufferPool::Slot reused;
     ASSERT_TRUE(flagBufferPool_.Allocate(reused).Success());
     EXPECT_TRUE(flagBufferPool_.Free(reused.slotIndex).Success());

@@ -166,7 +166,9 @@ Status TaskWorker::ProcessDump(const KvDumpRequest& request,
     UC_DEBUG("DUMP submits data transfer, request_id={}, items={}, peer={}", request.request_id,
              transfer_items.size(), peerOneSidedId);
     TransportHandle handle = transport::kInvalidTransferHandle;
-    const auto submit_status = runtime_.transport.ExecuteAsync(operation, handle);
+    transport::TransportCallTiming submitTiming;
+    const auto submit_status = runtime_.transport.ExecuteAsync(operation, handle, &submitTiming);
+    timing.data_execute_async = submitTiming;
     if (submit_status.Failure() || handle == transport::kInvalidTransferHandle) {
         UC_ERROR("Dump SubmitAsync failed, request_id={}, items={}, error={}", request.request_id,
                  transfer_items.size(), submit_status);
@@ -260,7 +262,9 @@ Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
     UC_DEBUG("LOAD submits data transfer, request_id={}, items={}, peer={}", request.request_id,
              transfer_items.size(), peerOneSidedId);
     TransportHandle handle = transport::kInvalidTransferHandle;
-    const auto submit_status = runtime_.transport.ExecuteAsync(operation, handle);
+    transport::TransportCallTiming submitTiming;
+    const auto submit_status = runtime_.transport.ExecuteAsync(operation, handle, &submitTiming);
+    timing.data_execute_async = submitTiming;
     if (submit_status.Failure() || handle == transport::kInvalidTransferHandle) {
         UC_ERROR("Load SubmitAsync failed, request_id={}, items={}, error={}", request.request_id,
                  transfer_items.size(), submit_status);

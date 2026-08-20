@@ -300,6 +300,9 @@ TEST_F(TaskWorkerTest, DumpSubmitFailureDeletesReservedMetadata)
     EXPECT_EQ(record.data_bytes, kValueLength);
     EXPECT_EQ(record.results, (std::vector<std::uint8_t>{DumpLoadCode(DumpLoadResult::Failed)}));
     EXPECT_FALSE(metadata_->Query(key));
+    EXPECT_NE(record.timing.data_execute_async.manager_entered_us, 0U);
+    EXPECT_NE(record.timing.data_execute_async.manager_entered_ts_us, 0U);
+    EXPECT_EQ(record.timing.data_execute_async.backend_called_us, 0U);
 }
 
 TEST_F(TaskWorkerTest, LoadReportsMissingAndOversizedItems)
@@ -358,6 +361,9 @@ TEST_F(TaskWorkerTest, LoadSubmitFailureEndsAllPinnedItems)
     EXPECT_EQ(secondEntry->refCnt, 0U);
     EXPECT_TRUE(metadata_->Exist(firstKey));
     EXPECT_TRUE(metadata_->Exist(secondKey));
+    EXPECT_NE(record.timing.data_execute_async.manager_entered_us, 0U);
+    EXPECT_NE(record.timing.data_execute_async.manager_entered_ts_us, 0U);
+    EXPECT_EQ(record.timing.data_execute_async.backend_called_us, 0U);
 }
 
 TEST_F(TaskWorkerTest, RejectsResponsesLargerThanFlagBufferSlot)

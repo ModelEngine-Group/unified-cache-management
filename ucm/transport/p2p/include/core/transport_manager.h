@@ -34,8 +34,10 @@ public:
     Status Connect(TransportProtocol protocol, const ManagerID& manager_id);
     Status Disconnect(TransportProtocol protocol, const ManagerID& manager_id);
     Status ExecuteSync(const Operation& batch);
-    Status ExecuteAsync(const Operation& batch, TransferHandle& handle);
-    Status GetStatus(TransferHandle handle, TransferStatus& status);
+    Status ExecuteAsync(const Operation& batch, TransferHandle& handle,
+                        TransportCallTiming* timing = nullptr);
+    Status GetStatus(TransferHandle handle, TransferStatus& status,
+                     TransportCallTiming* timing = nullptr);
 
 private:
     struct InstalledTransport {

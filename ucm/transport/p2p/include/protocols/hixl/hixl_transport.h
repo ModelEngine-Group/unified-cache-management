@@ -40,8 +40,10 @@ public:
     Status Connect(const ManagerID& manager_id) override;
     Status Disconnect(const ManagerID& manager_id) override;
     Status ExecuteSync(const Operation& request) override;
-    Status ExecuteAsync(const Operation& request, TransferHandle& handle) override;
-    Status GetStatus(TransferHandle handle, TransferStatus& status) override;
+    Status ExecuteAsync(const Operation& request, TransferHandle& handle,
+                        TransportCallTiming* timing = nullptr) override;
+    Status GetStatus(TransferHandle handle, TransferStatus& status,
+                     TransportCallTiming* timing = nullptr) override;
 
 private:
     struct Peer {

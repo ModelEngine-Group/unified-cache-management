@@ -230,9 +230,15 @@ record.timing.request_completed_ts_us = UnixNowUs();
   batch_size=32 data_bytes=67108864 failed_items=0 status=SUCCESS failed_stage=NONE
   received_ts_us=... worker_started_ts_us=... data_transfer_submitted_ts_us=...
   data_transfer_completed_ts_us=... response_submitted_ts_us=... completed_ts_us=...
+  data_tm_execute_async_ts_us=... data_hixl_execute_async_ts_us=...
+  data_tm_get_status_ts_us=... data_hixl_query_handle_ts_us=...
+  response_tm_execute_async_ts_us=... response_hixl_execute_async_ts_us=...
+  response_tm_get_status_ts_us=... response_hixl_query_handle_ts_us=...
   request_queue_us=18 metadata_prepare_us=22 taskworker_prepare_us=45 poller_queue_us=7
   data_transfer_us=610 metadata_settle_us=15 response_slot_wait_us=0
-  response_submit_us=19 response_transfer_us=61 total_us=752
+  response_submit_us=19 response_transfer_us=61 data_tm_to_hixl_execute_async_us=...
+  data_tm_to_hixl_query_handle_us=... response_tm_to_hixl_execute_async_us=...
+  response_tm_to_hixl_query_handle_us=... total_us=752
 ```
 
 #### 耗时字段计算
@@ -249,6 +255,23 @@ record.timing.request_completed_ts_us = UnixNowUs();
 | `response_submit_us` | `response_slot_acquired_us → response_submitted_us` | PackResponse + ExecuteAsync 提交响应传输 |
 | `response_transfer_us` | `response_submitted_us → response_completed_us` | RDMA Write 响应实际传输时间 |
 | `total_us` | `received_us → request_completed_us` | 从 TCP 收到请求到响应传输完成的总耗时 |
+
+#### TransportManager → HIXL 调用字段
+
+下列字段分别为数据传输（`data_`）和响应传输（`response_`）记录。绝对时间使用
+Unix epoch 微秒；时间差使用 steady clock 计算。
+
+| 字段后缀 | 含义 |
+|---|---|
+| `tm_execute_async_ts_us` | 进入 `TransportManager::ExecuteAsync` 的绝对时间 |
+| `hixl_execute_async_ts_us` | HIXL worker 实际调用 `engine.TransferAsync` 的绝对时间 |
+| `tm_to_hixl_execute_async_us` | 从进入 TransportManager 到实际调用 HIXL ExecuteAsync 的耗时 |
+| `tm_get_status_ts_us` | 最终一次进入 `TransportManager::GetStatus` 的绝对时间 |
+| `hixl_query_handle_ts_us` | HIXL worker 最终一次实际调用 `engine.GetTransferStatus` 的绝对时间 |
+| `tm_to_hixl_query_handle_us` | 从进入 TransportManager 到实际调用 HIXL query handle 的耗时 |
+
+`GetStatus` 在轮询期间可能多次返回 `Waiting`；`request_done` 保存的是使传输进入终态的
+最后一次 query。LOOKUP 没有数据传输，因此对应的 `data_*` 字段为 `0`。
 
 > **注意**：`taskworker_prepare_us` 包含了 `metadata_prepare_us`，不是互斥的。`metadata_prepare_us` 是单独拎出来看的子阶段。
 

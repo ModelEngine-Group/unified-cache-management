@@ -58,14 +58,28 @@ void LogRequestDone(CompletionRecord& record, const char* status, const char* fa
         "batch_size={} data_bytes={} failed_items={} status={} failed_stage={} "
         "received_ts_us={} worker_started_ts_us={} data_transfer_submitted_ts_us={} "
         "data_transfer_completed_ts_us={} response_submitted_ts_us={} completed_ts_us={} "
+        "data_tm_execute_async_ts_us={} data_hixl_execute_async_ts_us={} "
+        "data_tm_get_status_ts_us={} data_hixl_query_handle_ts_us={} "
+        "response_tm_execute_async_ts_us={} response_hixl_execute_async_ts_us={} "
+        "response_tm_get_status_ts_us={} response_hixl_query_handle_ts_us={} "
         "request_queue_us={} metadata_prepare_us={} taskworker_prepare_us={} poller_queue_us={} "
         "data_transfer_us={} metadata_settle_us={} response_slot_wait_us={} "
-        "response_submit_us={} response_transfer_us={} total_us={}",
+        "response_submit_us={} response_transfer_us={} data_tm_to_hixl_execute_async_us={} "
+        "data_tm_to_hixl_query_handle_us={} response_tm_to_hixl_execute_async_us={} "
+        "response_tm_to_hixl_query_handle_us={} total_us={}",
         record.request_id, static_cast<int>(record.opcode), record.peer_one_sided_id,
         record.batch_size, record.data_bytes, record.failed_items, status, failedStage,
         record.timing.received_ts_us, record.timing.worker_started_ts_us,
         record.timing.data_transfer_submitted_ts_us, record.timing.data_transfer_completed_ts_us,
         record.timing.response_submitted_ts_us, record.timing.request_completed_ts_us,
+        record.timing.data_execute_async.manager_entered_ts_us,
+        record.timing.data_execute_async.backend_called_ts_us,
+        record.timing.data_get_status.manager_entered_ts_us,
+        record.timing.data_get_status.backend_called_ts_us,
+        record.timing.response_execute_async.manager_entered_ts_us,
+        record.timing.response_execute_async.backend_called_ts_us,
+        record.timing.response_get_status.manager_entered_ts_us,
+        record.timing.response_get_status.backend_called_ts_us,
         elapsed(record.timing.received_us, record.timing.worker_started_us),  // request_queue_us
         elapsed(record.timing.metadata_prepare_started_us,
                 record.timing.metadata_prepare_completed_us),
@@ -76,6 +90,14 @@ void LogRequestDone(CompletionRecord& record, const char* status, const char* fa
         elapsed(record.timing.response_ready_us, record.timing.response_slot_acquired_us),
         elapsed(record.timing.response_slot_acquired_us, record.timing.response_submitted_us),
         elapsed(record.timing.response_submitted_us, record.timing.response_completed_us),
+        elapsed(record.timing.data_execute_async.manager_entered_us,
+                record.timing.data_execute_async.backend_called_us),
+        elapsed(record.timing.data_get_status.manager_entered_us,
+                record.timing.data_get_status.backend_called_us),
+        elapsed(record.timing.response_execute_async.manager_entered_us,
+                record.timing.response_execute_async.backend_called_us),
+        elapsed(record.timing.response_get_status.manager_entered_us,
+                record.timing.response_get_status.backend_called_us),
         elapsed(record.timing.received_us, record.timing.request_completed_us));
 }
 
@@ -160,7 +182,8 @@ void CompletionPoller::PollPendingCompletions()
 bool CompletionPoller::PollDataTransfer(CompletionRecord& record)
 {
     transport::TransferStatus transportStatus = transport::TransferStatus::Failed;
-    const auto queryStatus = runtime_.transport.GetStatus(record.data_handle, transportStatus);
+    const auto queryStatus = runtime_.transport.GetStatus(
+        record.data_handle, transportStatus, &record.timing.data_get_status);
     if (queryStatus.Failure()) {
         // GetStatus removes failed handles, so an API failure is also terminal.
         UC_ERROR(
@@ -273,7 +296,8 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
         transport::Segment{record.local_resp_slot.localAddr, record.remote_resp_addr, len});
 
     TransportHandle handle = transport::kInvalidTransferHandle;
-    const auto submitStatus = runtime_.transport.ExecuteAsync(operation, handle);
+    const auto submitStatus = runtime_.transport.ExecuteAsync(
+        operation, handle, &record.timing.response_execute_async);
     if (submitStatus.Failure() || handle == transport::kInvalidTransferHandle) {
         ReleaseResponseBuffer(runtime_.flagBufferPool, record);
         UC_ERROR(
@@ -304,7 +328,8 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
 bool CompletionPoller::PollResponseTransfer(CompletionRecord& record)
 {
     transport::TransferStatus transportStatus = transport::TransferStatus::Failed;
-    const auto queryStatus = runtime_.transport.GetStatus(record.response_handle, transportStatus);
+    const auto queryStatus = runtime_.transport.GetStatus(
+        record.response_handle, transportStatus, &record.timing.response_get_status);
     if (queryStatus.Failure()) {
         // GetStatus removes failed handles, so the response source buffer is no longer in use.
         UC_ERROR("CompletionPoller response GetStatus failed, request_id={}, handle={}, error={}",

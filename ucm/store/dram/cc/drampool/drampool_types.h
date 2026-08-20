@@ -87,6 +87,10 @@ struct RequestTiming {
     std::uint64_t data_transfer_completed_ts_us{0};
     std::uint64_t response_submitted_ts_us{0};
     std::uint64_t request_completed_ts_us{0};
+    transport::TransportCallTiming data_execute_async;
+    transport::TransportCallTiming data_get_status;
+    transport::TransportCallTiming response_execute_async;
+    transport::TransportCallTiming response_get_status;
 };
 
 using RequestPtr = std::unique_ptr<KvRequest>;
