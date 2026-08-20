@@ -177,6 +177,19 @@ Expected<DramConfig> DramConfig::Parse(const Detail::Dictionary& dictionary)
             }
         }
 
+        std::size_t hixlListenPort = result.hixlListenPort;
+        status = OptionalSize(dictionary, "hixl_listen_port", &hixlListenPort);
+        const auto hixlPortOffset = result.role == Role::WORKER ? 1U : 0U;
+        if (status.Failure() || hixlListenPort == 0 ||
+            hixlListenPort > std::numeric_limits<std::uint16_t>::max() - hixlPortOffset) {
+            return status.Failure() ? status
+                                    : Status::InvalidParam("hixl_listen_port is out of range");
+        }
+        result.hixlListenPort = static_cast<std::uint16_t>(hixlListenPort + hixlPortOffset);
+        if (dictionary.Contains("enable_hixl_cs")) {
+            dictionary.Get("enable_hixl_cs", result.enableHixlCs);
+        }
+
         std::string managerHost;
         std::uint16_t managerPort = 0;
         status = ParseControlEndpoint(result.localTransportManagerId, "local_transport_manager_id",

@@ -174,10 +174,14 @@ TEST(DramConfigTest, UsesConfiguredPortsForScheduler)
     auto input = BaseConfig();
     input.Set("role", std::string{"scheduler"});
     input.SetNumber("device_id", 3);
+    input.SetNumber("hixl_listen_port", 36666);
+    input.Set("enable_hixl_cs", true);
     auto parsed = DramConfig::Parse(input);
     ASSERT_TRUE(parsed);
     EXPECT_EQ(parsed.Value().localControlPort, std::uint16_t{6000});
     EXPECT_EQ(parsed.Value().localTransportManagerId, "127.0.0.1:6100");
+    EXPECT_EQ(parsed.Value().hixlListenPort, std::uint16_t{36666});
+    EXPECT_TRUE(parsed.Value().enableHixlCs);
 }
 
 TEST(DramConfigTest, OffsetsWorkerPortsByDeviceId)
@@ -189,6 +193,7 @@ TEST(DramConfigTest, OffsetsWorkerPortsByDeviceId)
     ASSERT_TRUE(parsed);
     EXPECT_EQ(parsed.Value().localControlPort, std::uint16_t{6004});
     EXPECT_EQ(parsed.Value().localTransportManagerId, "127.0.0.1:6104");
+    EXPECT_EQ(parsed.Value().hixlListenPort, std::uint16_t{36667});
 }
 
 TEST(DramConfigTest, RejectsInvalidRoleAndWorkerPortOverflow)
@@ -201,6 +206,10 @@ TEST(DramConfigTest, RejectsInvalidRoleAndWorkerPortOverflow)
     overflow.Set("role", std::string{"worker"});
     overflow.Set("local_control_endpoint", std::string{"127.0.0.1:65535"});
     EXPECT_FALSE(DramConfig::Parse(overflow));
+
+    auto hixlOverflow = BaseConfig();
+    hixlOverflow.SetNumber("hixl_listen_port", 65535);
+    EXPECT_FALSE(DramConfig::Parse(hixlOverflow));
 }
 
 }  // namespace

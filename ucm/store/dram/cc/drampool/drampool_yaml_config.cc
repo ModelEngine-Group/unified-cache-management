@@ -59,6 +59,8 @@ struct EndpointEntry {
 
 constexpr const char* kRequiredRuntimeConfigKeys[] = {
     "transport.device_ids",
+    "transport.hixl.listen_port",
+    "transport.hixl.enable_cs",
     "queue.request_depth",
     "queue.completion_depth",
     "request_receiver.idle_wait_us",
@@ -252,6 +254,9 @@ const std::unordered_map<std::string_view, RuntimeConfigParser>& GetRuntimeConfi
 {
     static const std::unordered_map<std::string_view, RuntimeConfigParser> parsers = {
         {"health.port", BindConfigParser(ParseUint16, &DramPoolConfig::healthPort)},
+        {"transport.hixl.listen_port",
+         BindConfigParser(ParseUint16, &DramPoolConfig::hixlListenPort)},
+        {"transport.hixl.enable_cs", BindConfigParser(ParseBool, &DramPoolConfig::enableHixlCs)},
         {"queue.request_depth", BindConfigParser(ParseUint32, &DramPoolConfig::requestQueueDepth)},
         {"queue.completion_depth",
          BindConfigParser(ParseUint32, &DramPoolConfig::completionQueueDepth)},
@@ -315,6 +320,9 @@ Status ValidateRuntimeConfig(DramPoolConfig& config)
     }
     if (config.transportDeviceIds.empty()) {
         return Status::InvalidParam("transport.device_ids must not be empty");
+    }
+    if (config.hixlListenPort == 0) {
+        return Status::InvalidParam("transport.hixl.listen_port must be greater than zero");
     }
     std::unordered_set<std::int32_t> deviceIds;
     for (const auto deviceId : config.transportDeviceIds) {
