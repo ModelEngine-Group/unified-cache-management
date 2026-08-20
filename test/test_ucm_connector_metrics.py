@@ -1516,7 +1516,7 @@ def test_direct_connector_poll_records_zero_completion_wait_duration():
 
 def test_request_async_alloc_dispatches_load_without_scheduled_forward():
     connector = object.__new__(UCMDirectConnector)
-    connector.use_request_async = True
+    connector.use_request_async_load = True
     connector.block_size = 16
     connector.cp_world_size = 1
     connector.requests_meta = {

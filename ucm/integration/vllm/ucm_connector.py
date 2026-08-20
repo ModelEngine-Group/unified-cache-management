@@ -1183,15 +1183,15 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self._async_dump_req_ids: set[str] = set()
         self._pending_dump_tasks: list[PendingDumpTask] = []
         request_async_configured = bool(
-            self.launch_config.get("use_request_async", False)
+            self.launch_config.get("use_request_async_load", False)
         )
         # Keep the first implementation deliberately scoped to the direct
         # connector. Layerwise, CP and HMA connectors have different task and
         # block-layout semantics and must opt in separately.
-        self.use_request_async = (
+        self.use_request_async_load = (
             request_async_configured and type(self) is UCMDirectConnector
         )
-        if request_async_configured and not self.use_request_async:
+        if request_async_configured and not self.use_request_async_load:
             logger.warning(
                 "Request-async loading is currently supported only by "
                 "UCMDirectConnector; disabling it for %s.",
@@ -1562,13 +1562,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
             token_processed=hbm_hit_block_num * self.block_size + external_hit_tokens,
         )
 
-        load_async = self.use_request_async and external_hit_tokens > 0
+        load_async = self.use_request_async_load and external_hit_tokens > 0
         return external_hit_tokens, load_async
 
     def update_state_after_alloc(
         self, request: "Request", blocks: "KVCacheBlocks", num_external_tokens: int
     ):
-        if not self.use_request_async or num_external_tokens <= 0:
+        if not self.use_request_async_load or num_external_tokens <= 0:
             return
 
         request_id = request.request_id
