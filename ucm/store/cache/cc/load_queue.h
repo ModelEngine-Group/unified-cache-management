@@ -50,6 +50,7 @@ class LoadQueue {
         Detail::TaskHandle backendTaskHandle;
         WaiterPtr waiter;
         bool launchBoundary{false};
+        bool fromPosix{false};
     };
 
 private:
@@ -85,6 +86,9 @@ private:
     Status HostToDeviceAsync(CopyStream& stream, void* host, void** device);
     Status HostToDeviceTaskAsync(CopyStream& stream, std::vector<ShardTask>& tasks);
     Status FlushSdmaDirectTaskBatch(CopyStream& stream);
+    void RecordShardResults(const std::vector<ShardTask>& tasks, const ShardTask* extra,
+                            bool success) const;
+    void RecordFailedShards(size_t count) const;
     void RecordH2dSyncMetrics(double h2dSyncMs) const;
     void ClearSdmaDirectHolders() noexcept;
     bool UseSdmaDirectTaskLaunch() const noexcept;

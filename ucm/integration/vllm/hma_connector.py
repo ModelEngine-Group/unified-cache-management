@@ -849,13 +849,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         # WA rows represent window boundary state, so they are not required to
         # form a prefix. Search only inside the FA-contiguous hit range and use
         # the latest boundary that exists.
-        for hit_blocks in range(fa_hit_blocks, -1, -1):
-            # TODO: Add Posix SpaceManager::LookupOnSuffix() for sparse WA
-            # boundary lookups, where only the latest existing key is needed.
-            key = external_keys[hit_blocks - 1]
-            if self._rank_consistency.lookup_all(self.wa_store, [key])[0]:
-                return hit_blocks
-        return 0
+        wa_keys = external_keys[:fa_hit_blocks]
+        reverse_idx = self._rank_consistency.lookup_on_reverse(self.wa_store, wa_keys)
+        if reverse_idx < 0:
+            return 0
+        return reverse_idx + 1
 
     @fawa_latency_metric(
         "fawa_scheduler_get_num_new_matched_tokens_ms",

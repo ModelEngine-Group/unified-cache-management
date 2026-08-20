@@ -81,12 +81,40 @@ class UcmKVStoreBaseV1(ABC):
     def lookup_on_prefix(self, block_ids: List[bytes]) -> int:
         """Check presence of blocks in external storage.
 
+        Scans blocks from index 0 up to len-1 and stops at the first block
+        that is *absent* (prefix semantics).  Returns the index of the last
+        contiguous block present, or -1 if none are found.
+
         Args:
             block_ids: List of vLLM block hashes (raw bytes).
 
         Returns:
             An index representing the maximum index of blocks found in storage,
             returns -1 if none are found.
+        """
+        pass
+
+    @abstractmethod
+    def lookup_on_reverse(self, block_ids: List[bytes]) -> int:
+        """Check presence of blocks in external storage (reverse scan).
+
+        Scans blocks from the last index down to 0 and stops at the first
+        block that *exists* in storage (reverse semantics).  This is the dual
+        of ``lookup_on_prefix``: prefix scanning stops at the first *missing*
+        block, whereas reverse scanning stops at the first *present* block.
+
+        Typical use case: hybrid (full-attention + Mamba) models.  Full
+        attention blocks are looked up with ``lookup_on_prefix`` (front-to-
+        back, stop at first miss).  Mamba blocks are looked up with
+        ``lookup_on_reverse`` (back-to-front, stop at first hit) to maximise
+        the reuse window.
+
+        Args:
+            block_ids: List of vLLM block hashes (raw bytes).
+
+        Returns:
+            The index of the rightmost block present in storage.
+            Returns -1 if none of the blocks are found.
         """
         pass
 

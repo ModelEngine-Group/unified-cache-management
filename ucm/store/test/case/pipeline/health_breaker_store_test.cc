@@ -357,6 +357,10 @@ TEST(UCHealthBreakerStoreTest, UnhealthyOperationMatrix)
     ASSERT_TRUE(prefix);
     EXPECT_EQ(prefix.Value(), -1);
 
+    auto Reverse = breaker.LookupOnReverse(blocks.data(), blocks.size());
+    ASSERT_TRUE(Reverse);
+    EXPECT_EQ(Reverse.Value(), -1);
+
     breaker.Prefetch(blocks.data(), blocks.size());
 
     EXPECT_EQ(breaker.Load({}).Error(), Status::StoreUnhealthy());
@@ -380,6 +384,8 @@ TEST(UCHealthBreakerStoreTest, HealthyOperationsPassThroughWithoutChangingWindow
     EXPECT_EQ(breaker.Lookup(blocks.data(), blocks.size()).Value(), std::vector<uint8_t>{1});
     EXPECT_CALL(store, LookupOnPrefix(blocks.data(), blocks.size())).WillOnce(Return(0));
     EXPECT_EQ(breaker.LookupOnPrefix(blocks.data(), blocks.size()).Value(), 0);
+    EXPECT_CALL(store, LookupOnReverse(blocks.data(), blocks.size())).WillOnce(Return(0));
+    EXPECT_EQ(breaker.LookupOnReverse(blocks.data(), blocks.size()).Value(), 0);
     EXPECT_CALL(store, Prefetch(blocks.data(), blocks.size()));
     breaker.Prefetch(blocks.data(), blocks.size());
     EXPECT_CALL(store, Load(testing::_)).WillOnce(Return(21));

@@ -77,6 +77,13 @@ public:
         }
         return LookupOnPrefixFast(blocks, num);
     }
+    Expected<ssize_t> LookupOnReverse(const Detail::BlockId* blocks, size_t num)
+    {
+        if (!buffer_ || loadBackendOnly_) {
+            return LookupThrough<&StoreV1::LookupOnReverse>(blocks, num);
+        }
+        return LookupOnReverseFast(blocks, num);
+    }
     void Prefetch(const Detail::BlockId* blocks, size_t num)
     {
         if (backend_) { backend_->Prefetch(blocks, num); }
@@ -150,6 +157,46 @@ private:
             return static_cast<ssize_t>(num) - 1;
         }
         return static_cast<ssize_t>(missIdx[result + 1]) - 1;
+    }
+    Expected<ssize_t> LookupOnReverseFast(const Detail::BlockId* blocks, size_t num)
+    {
+        std::vector<uint8_t> results;
+        std::vector<Detail::BlockId> missBlk;
+        std::vector<size_t> missIdx;
+        Lookup(blocks, num, results, missBlk, missIdx);
+
+        ssize_t bufferHitIdx = -1;
+        for (ssize_t i = static_cast<ssize_t>(num) - 1; i >= 0; --i) {
+            if (results[i]) {
+                bufferHitIdx = i;
+                break;
+            }
+        }
+        // If the last block is a buffer hit, it's the maximum possible index.
+        if (bufferHitIdx == static_cast<ssize_t>(num) - 1) { return bufferHitIdx; }
+        // Only query backend for miss blocks after the buffer hit index.
+        std::vector<Detail::BlockId> backendMiss;
+        std::vector<size_t> backendMissIdx;
+        for (size_t i = 0; i < missIdx.size(); ++i) {
+            if (static_cast<ssize_t>(missIdx[i]) > bufferHitIdx) {
+                backendMiss.push_back(missBlk[i]);
+                backendMissIdx.push_back(missIdx[i]);
+            }
+        }
+        if (backendMiss.empty()) { return bufferHitIdx; }
+
+        StopWatch sw;
+        auto res = backend_->LookupOnReverse(backendMiss.data(), backendMiss.size());
+        if (!res) [[unlikely]] { return res.Error(); }
+        UC_DEBUG("Cache reverse lookup({}/{}) in backend costs {:.3f}ms.", backendMiss.size(), num,
+                 sw.Elapsed().count() * 1e3);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_lookup_backend_duration_ms"),
+                                 sw.Elapsed().count() * 1e3);
+        const auto backendResult = res.Value();
+        if (backendResult < 0) { return bufferHitIdx; }
+        ssize_t backendHitIdx = static_cast<ssize_t>(backendMissIdx[backendResult]);
+        ssize_t result = backendHitIdx > bufferHitIdx ? backendHitIdx : bufferHitIdx;
+        return result;
     }
 };
 

@@ -65,6 +65,7 @@ void LoadQueue::Submit(TaskPtr task, WaiterPtr waiter)
     if (success) { return; }
     UC_ERROR("Waiting queue full, submit load task({}) failed.", task->id);
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_queue_full_total"), 1.0);
+    RecordFailedShards(task->desc.size());
     failureSet_->Insert(task->id);
     waiter->Done();
 }
@@ -122,6 +123,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
         ShardTask shardTask;
         shardTask.bufferHandle = buffer_->Get(shard.owner, shard.index, true, true);
         shardTask.backendTaskHandle = 0;
+        shardTask.fromPosix = !shardTask.bufferHandle.Ready();
         if (shardTask.bufferHandle.Owner() && !shardTask.bufferHandle.Ready()) {
             Detail::TaskDesc backendTask{
                 Detail::Shard{shard.owner, shard.index, {shardTask.bufferHandle.Data()}}
@@ -132,6 +134,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
                 UC_ERROR("Failed({}) to submit load task({}) to backend.", res.Error(), task->id);
                 UC::Metrics::UpdateStats(
                     NAME_TO_METRIC_ID("cache_backend_load_submit_errors_total"), 1.0);
+                RecordFailedShards(taskLaunch ? nShard : nShard - i);
                 shardTask.bufferHandle.MarkFailed(res.Error());
                 task->Fail(res.Error());
                 failureSet_->Insert(task->id);
@@ -200,6 +203,7 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
     auto parentTask = task.task;
     const auto taskHandle = parentTask->id;
     if (failureSet_->Contains(taskHandle)) {
+        RecordFailedShards(1);
         if (task.waiter) {
             ClearSdmaDirectHolders();
             task.waiter->Done();
@@ -211,7 +215,10 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
     do {
         auto tpBackendWait = NowTime::Now();
         s = WaitBackendTaskReady(task);
-        if (s.Failure()) [[unlikely]] { break; }
+        if (s.Failure()) [[unlikely]] {
+            RecordShardResults(holder_, &task, false);
+            break;
+        }
         auto tpBackendReady = NowTime::Now();
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_shard_backend_wait_ms"),
                                  (tpBackendReady - tpBackendWait) * 1e3);
@@ -235,6 +242,7 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
             if (s.Failure()) [[unlikely]] {
                 UC_ERROR("Failed({}) to do H2D for task({}).", s, taskHandle);
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_errors_total"), 1.0);
+                RecordShardResults(holder_, &task, false);
                 break;
             }
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_submit_ms"),
@@ -247,6 +255,7 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
             s = stream.Synchronize();
             auto h2dSyncMs = (NowTime::Now() - tpH2dSyncStart) * 1e3;
             RecordH2dSyncMetrics(h2dSyncMs);
+            RecordShardResults(holder_, &task, s.Success());
             holder_.clear();
             if (s.Failure()) [[unlikely]] {
                 UC_ERROR("Failed({}) to sync on stream for task({}).", s, taskHandle);
@@ -261,6 +270,7 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to do H2D for task({}).", s, taskHandle);
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_errors_total"), 1.0);
+            RecordShardResults(holder_, &task, false);
             break;
         }
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2d_submit_ms"),
@@ -273,6 +283,7 @@ void LoadQueue::TransferOneTask(CopyStream& stream, ShardTask&& task)
         s = stream.Synchronize();
         auto h2dSyncMs = (NowTime::Now() - tpH2dSyncStart) * 1e3;
         RecordH2dSyncMetrics(h2dSyncMs);
+        RecordShardResults(holder_, &task, s.Success());
         holder_.clear();
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to sync on stream for task({}).", s, taskHandle);
@@ -338,6 +349,7 @@ Status LoadQueue::FlushSdmaDirectTaskBatch(CopyStream& stream)
     auto s = HostToDeviceTaskAsync(stream, holder_);
     auto tpH2dSubmitted = NowTime::Now();
     if (s.Failure()) [[unlikely]] {
+        RecordShardResults(holder_, nullptr, false);
         ClearSdmaDirectHolders();
         return s;
     }
@@ -347,8 +359,44 @@ Status LoadQueue::FlushSdmaDirectTaskBatch(CopyStream& stream)
     s = stream.Synchronize();
     auto h2dSyncMs = (NowTime::Now() - tpH2dSyncStart) * 1e3;
     RecordH2dSyncMetrics(h2dSyncMs);
+    RecordShardResults(holder_, nullptr, s.Success());
     ClearSdmaDirectHolders();
     return s;
+}
+
+void LoadQueue::RecordShardResults(const std::vector<ShardTask>& tasks, const ShardTask* extra,
+                                   bool success) const
+{
+    size_t cache = 0;
+    size_t posix = 0;
+    for (const auto& task : tasks) {
+        if (task.fromPosix) {
+            ++posix;
+        } else {
+            ++cache;
+        }
+    }
+    if (extra != nullptr) {
+        if (extra->fromPosix) {
+            ++posix;
+        } else {
+            ++cache;
+        }
+    }
+    if (!success) {
+        RecordFailedShards(cache + posix);
+        return;
+    }
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_success_shards_total"),
+                             static_cast<double>(cache));
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_posix_load_success_shards_total"),
+                             static_cast<double>(posix));
+}
+
+void LoadQueue::RecordFailedShards(size_t count) const
+{
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_failed_shards_total"),
+                             static_cast<double>(count));
 }
 
 void LoadQueue::RecordH2dSyncMetrics(double h2dSyncMs) const

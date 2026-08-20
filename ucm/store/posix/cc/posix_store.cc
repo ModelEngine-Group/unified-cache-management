@@ -110,6 +110,17 @@ public:
         RecordLookupHits(static_cast<size_t>(res.Value() + 1));
         return res;
     }
+    Expected<ssize_t> LookupOnReverse(const Detail::BlockId* blocks, size_t num) override
+    {
+        RecordLookupQueries(num);
+        auto res = spaceMgr_.LookupOnReverse(blocks, num);
+        if (!res) [[unlikely]] {
+            UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num);
+            return res;
+        }
+        RecordLookupHits(res.Value() >= 0 ? 1 : 0);
+        return res;
+    }
     void Prefetch(const Detail::BlockId* blocks, size_t num) override
     {
         spaceMgr_.Prefetch(blocks, num);

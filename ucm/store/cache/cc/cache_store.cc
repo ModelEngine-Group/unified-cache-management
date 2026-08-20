@@ -84,6 +84,12 @@ public:
         if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
         return res;
     }
+    Expected<ssize_t> LookupOnReverse(const Detail::BlockId* blocks, size_t num) override
+    {
+        auto res = bufferMgr_.LookupOnReverse(blocks, num);
+        if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
+        return res;
+    }
     void Prefetch(const Detail::BlockId* blocks, size_t num) override
     {
         bufferMgr_.Prefetch(blocks, num);
