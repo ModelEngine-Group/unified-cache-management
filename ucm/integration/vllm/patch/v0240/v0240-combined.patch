@@ -380,3 +380,18 @@ index c66096f..4719a67 100644
              num_blocks = hit_length // self._get_effective_block_size(spec)
              for group_id in group_ids:
                  if (blks := hit_blocks_by_group[group_id]) is not None:
+
+diff --git a/vllm-ascend/vllm_ascend/patch/worker/patch_mamba_utils.py b/vllm-ascend/vllm_ascend/patch/worker/patch_mamba_utils.py
+--- a/vllm-ascend/vllm_ascend/patch/worker/patch_mamba_utils.py
++++ b/vllm-ascend/vllm_ascend/patch/worker/patch_mamba_utils.py
+@@ -279,6 +279,8 @@
+             input_batch.num_accepted_tokens_cpu[i] = 1
+-    # do not copy here, since kv_transfer still not load
+-    # do_mamba_copy_block(copy_bufs)
++    # UCM: execute copy before start_load_kv and reset offset
++    # so the deferred call in model_runner becomes a no-op.
++    do_mamba_copy_block(copy_bufs)
++    copy_bufs.offset = 0
+ 
+ 
+ mamba_utils.preprocess_mamba = preprocess_mamba
