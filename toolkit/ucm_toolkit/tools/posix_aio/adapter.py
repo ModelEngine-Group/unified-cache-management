@@ -230,7 +230,7 @@ class PosixAioTool(ToolAdapter):
             return None
 
         arch = detect_architecture(cfg)
-        if arch not in ("gqa", "mla", "dsa"):
+        if arch not in ("GQA", "MLA", "DSA"):
             print(
                 f"warning: architecture '{arch}' not supported, only GQA and MLA "
                 f"family (MLA/DSA) are supported now",
@@ -306,7 +306,7 @@ class PosixAioTool(ToolAdapter):
                 f"  num_kv_heads/rank : {profile['num_kv_heads_per_rank']} "
                 f"(tp={profile['tensor_parallel']})\n"
             )
-        print("posix-aio model-driven profile:")
+        print("UCM Store IO Info:")
         print(f"  model             : {args.model}")
         print(f"  architecture      : {profile['architecture']}")
         print(f"  num_hidden_layers : {profile['num_hidden_layers']}")
@@ -320,12 +320,21 @@ class PosixAioTool(ToolAdapter):
         print(f"  block_size(tokens): {profile['block_size_tokens']}")
         print(f"  input_len         : {args.input_len}")
         print(f"  layerwise         : {profile['layerwise']}")
-        print(f"  per_layer/block   : {profile['per_layer_block_bytes']} bytes")
-        print(f"  shard_size        : {profile['shard_size']} bytes (posix ioSize)")
-        print(f"  shard_number      : {profile['shard_number']} (shards per block)")
+        plb = profile["per_layer_block_bytes"]
+        ss = profile["shard_size"]
         print(
-            f"  store_block_size  : {store_block} bytes "
-            f"(= shard_size * shard_number)"
+            f"  per_layer/block   : {plb} bytes ({plb / 1024:.2f} KB)"
+            f"  |  {profile['per_layer_formula']}"
+        )
+        print(
+            f"  shard size        : {ss} bytes ({ss / 1024:.2f} KB)"
+            f"  |  {profile['shard_size_formula']}"
+        )
+        print(f"  shards per file   : {profile['shard_number']}")
+        print(
+            f"  file size         : {store_block} bytes "
+            f"({store_block / 1024:.2f} KB / {store_block / 1024 / 1024:.2f} MB)"
+            f"  |  = shard size * shards per file"
         )
         print(
             f"  block_number      : {block_number} "

@@ -26,7 +26,7 @@ from typing import Any
 
 ALIGNMENT = 4096
 
-SUPPORTED_ARCHITECTURES = ("mla", "dsa", "gqa")
+SUPPORTED_ARCHITECTURES = ("MLA", "DSA", "GQA")
 
 _DTYPE_BYTES: dict[str, int] = {
     "bfloat16": 2,
@@ -90,24 +90,24 @@ def detect_architecture(cfg: dict[str, Any]) -> str:
         return False
 
     if _is_hybrid(cfg, text, has):
-        return "hybrid"
+        return "HYBRID"
 
     model_type = str(cfg.get("model_type") or text.get("model_type") or "").lower()
     if "mamba" in model_type or "jamba" in model_type:
-        return "mamba"
+        return "MAMBA"
 
     kv_lora_rank = cfg.get("kv_lora_rank")
     qk_rope_head_dim = cfg.get("qk_rope_head_dim")
     index_head_dim = cfg.get("index_head_dim")
     if kv_lora_rank and qk_rope_head_dim and index_head_dim:
-        return "dsa"
+        return "DSA"
     if kv_lora_rank and qk_rope_head_dim and not index_head_dim:
-        return "mla"
+        return "MLA"
 
     if has("num_key_value_heads") or has("num_kv_heads") or has("num_attention_heads"):
-        return "gqa"
+        return "GQA"
 
-    return "unknown"
+    return "UNKNOWN"
 
 
 def _is_hybrid(cfg: dict, text: dict, has) -> bool:
@@ -222,7 +222,7 @@ def compute_io_profile(
     )
     num_attention_heads = _resolve(cfg, "num_attention_heads")
 
-    if arch in ("mla", "dsa"):
+    if arch in ("MLA", "DSA"):
         kv_lora_rank = _resolve(cfg, "kv_lora_rank")
         qk_rope_head_dim = _resolve(cfg, "qk_rope_head_dim")
         if kv_lora_rank is None or qk_rope_head_dim is None:
@@ -230,15 +230,24 @@ def compute_io_profile(
                 "kv_lora_rank and qk_rope_head_dim are required for MLA/DSA"
             )
         latent = int(kv_lora_rank) + int(qk_rope_head_dim)
-        if arch == "dsa":
+        if arch == "DSA":
             index_head_dim = _resolve(cfg, "index_head_dim")
             if index_head_dim is None:
                 raise ModelProfileError("index_head_dim is required for DSA")
             latent += int(index_head_dim)
+            per_layer_formula = (
+                f"(kv_lora_rank({kv_lora_rank})+qk_rope_head_dim({qk_rope_head_dim})"
+                f"+index_head_dim({index_head_dim})) * block_size({tokens_per_block}) * dtype({elem_size})"
+            )
+        else:
+            per_layer_formula = (
+                f"(kv_lora_rank({kv_lora_rank})+qk_rope_head_dim({qk_rope_head_dim}))"
+                f" * block_size({tokens_per_block}) * dtype({elem_size})"
+            )
         head_dim = latent
         per_layer_block_bytes = latent * tokens_per_block * elem_size
         num_kv_heads_per_rank: int | None = None
-    else:  # gqa
+    else:  # GQA
         if not num_kv_heads_full:
             raise ModelProfileError("num_key_value_heads is required for GQA")
         heads_per_rank = (
@@ -253,14 +262,23 @@ def compute_io_profile(
             if hidden_size is None:
                 raise ModelProfileError("cannot derive head_dim (missing head_dim/hidden_size)")
             head_dim = int(hidden_size) // int(num_attention_heads)
-        per_layer_block_bytes = 2 * heads_per_rank * int(head_dim) * tokens_per_block * elem_size
+        head_dim = int(head_dim)
+        per_layer_block_bytes = 2 * heads_per_rank * head_dim * tokens_per_block * elem_size
+        per_layer_formula = (
+            f"2 * num_kv_heads({heads_per_rank}) * head_dim({head_dim})"
+            f" * block_size({tokens_per_block}) * dtype({elem_size})"
+        )
 
     if layerwise:
         shard_size = align_up(per_layer_block_bytes, ALIGNMENT)
         shard_number = int(num_layers)
+        shard_size_formula = f"align_up(per_layer/block, {ALIGNMENT})"
     else:
         shard_size = align_up(int(num_layers) * per_layer_block_bytes, ALIGNMENT)
         shard_number = 1
+        shard_size_formula = (
+            f"align_up(num_layers({int(num_layers)}) * per_layer/block, {ALIGNMENT})"
+        )
     store_block_size = shard_size * shard_number
 
     return {
@@ -271,7 +289,9 @@ def compute_io_profile(
         "elem_size": elem_size,
         "dtype": effective_dtype,
         "per_layer_block_bytes": per_layer_block_bytes,
+        "per_layer_formula": per_layer_formula,
         "shard_size": shard_size,
+        "shard_size_formula": shard_size_formula,
         "shard_number": shard_number,
         "store_block_size": store_block_size,
         "block_size_tokens": tokens_per_block,
