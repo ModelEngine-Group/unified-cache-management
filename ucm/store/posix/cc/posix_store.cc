@@ -21,6 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <fmt/ranges.h>
@@ -204,7 +205,23 @@ private:
         inConfig.GetNumber("posix_gc_max_recycle_count_per_shard",
                            config.posixGcMaxRecycleCountPerShard);
         inConfig.Get("posix_gc_shard_sample_ratio", config.posixGcShardSampleRatio);
+        inConfig.GetNumber("posix_gc_task_timeout_ms", config.posixGcTaskTimeoutMs);
+        inConfig.Get("posix_gc_cross_instance_lock", config.posixGcCrossInstanceLock);
+        inConfig.GetNumber("posix_gc_heartbeat_interval_sec", config.posixGcHeartbeatIntervalSec);
+        inConfig.GetNumber("posix_gc_stale_threshold_sec", config.posixGcStaleThresholdSec);
+        DeriveGcLeaseTimings(config);
         return config;
+    }
+    static void DeriveGcLeaseTimings(Config& config)
+    {
+        constexpr size_t kMinStaleSec = 60;
+        const auto interval = config.posixGcCheckIntervalSec;
+        if (config.posixGcHeartbeatIntervalSec == 0) {
+            config.posixGcHeartbeatIntervalSec = std::max<size_t>(1, interval / 4);
+        }
+        if (config.posixGcStaleThresholdSec == 0) {
+            config.posixGcStaleThresholdSec = std::max(interval * 2, kMinStaleSec);
+        }
     }
     Status CheckConfig(const Config& config)
     {
@@ -271,6 +288,20 @@ private:
                 return Status::InvalidParam("invalid gc shard sample ratio({})",
                                             config.posixGcShardSampleRatio);
             }
+            constexpr size_t kMinGcTaskTimeoutMs = 1000;
+            if (config.posixGcTaskTimeoutMs != 0 &&
+                config.posixGcTaskTimeoutMs < kMinGcTaskTimeoutMs) {
+                return Status::InvalidParam(
+                    "invalid gc task timeout({}ms), use 0 to disable or at least {}ms",
+                    config.posixGcTaskTimeoutMs, kMinGcTaskTimeoutMs);
+            }
+            if (config.posixGcCrossInstanceLock) {
+                if (config.posixGcStaleThresholdSec <= config.posixGcHeartbeatIntervalSec) {
+                    return Status::InvalidParam(
+                        "gc stale threshold({}s) must exceed heartbeat interval({}s)",
+                        config.posixGcStaleThresholdSec, config.posixGcHeartbeatIntervalSec);
+                }
+            }
         }
         return Status::OK();
     }
@@ -305,6 +336,14 @@ private:
             UC_INFO("Set {}::PosixGcMaxRecycleCountPerShard to {}.", ns,
                     config.posixGcMaxRecycleCountPerShard);
             UC_INFO("Set {}::PosixGcShardSampleRatio to {}.", ns, config.posixGcShardSampleRatio);
+            UC_INFO("Set {}::PosixGcTaskTimeoutMs to {}.", ns, config.posixGcTaskTimeoutMs);
+            UC_INFO("Set {}::PosixGcCrossInstanceLock to {}.", ns, config.posixGcCrossInstanceLock);
+            if (config.posixGcCrossInstanceLock) {
+                UC_INFO("Set {}::PosixGcHeartbeatIntervalSec to {}.", ns,
+                        config.posixGcHeartbeatIntervalSec);
+                UC_INFO("Set {}::PosixGcStaleThresholdSec to {}.", ns,
+                        config.posixGcStaleThresholdSec);
+            }
         }
     }
 };

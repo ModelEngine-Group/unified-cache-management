@@ -60,7 +60,12 @@ Status ShardGarbageCollector::Setup(const SpaceLayout* layout, const Config& con
     config_ = config;
     auto s = ValidateAndInitCapacity();
     if (s.Failure()) { return s; }
+    leaseEnable_ = config_.posixGcCrossInstanceLock;
+    if (leaseEnable_) { lease_.Setup(config_); }
     auto success = gcPool_.SetWorkerFn([this](ShardTaskContext& ctx, auto&) { ProcessTask(ctx); })
+                       .SetWorkerTimeoutFn(
+                           [this](ShardTaskContext& ctx, ssize_t tid) { OnTaskTimeout(ctx, tid); },
+                           config_.posixGcTaskTimeoutMs)
                        .SetNWorker(config_.posixGcConcurrency)
                        .Run();
     if (!success) { return Status::Error("failed to start gc thread pool"); }
@@ -81,6 +86,7 @@ void ShardGarbageCollector::StopBackgroundCheck()
     }
     gcCheckCv_.notify_all();
     if (gcCheckWorker_.joinable()) { gcCheckWorker_.join(); }
+    if (leaseEnable_) { lease_.RequestStop(); }
 }
 
 void ShardGarbageCollector::GCCheckLoop()
@@ -90,22 +96,23 @@ void ShardGarbageCollector::GCCheckLoop()
         UC_WARN("Failed({}) to set UCM posix GC check worker name.", nameStatus);
     }
     while (!stop_.load()) {
-        auto [trigger, avgFilesPerShard, threshold] = ShouldTrigger();
-        UC_INFO("GC sampling: avgFiles/shard={}, threshold={}, trigger={}", avgFilesPerShard,
-                threshold, trigger);
-        int rounds = 0;
-        const bool gcRunning = trigger;
-        if (gcRunning) { UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_gc_running"), 1.0); }
-        while (!stop_.load() && trigger) {
-            bool gcLimited = Execute();
-            rounds++;
-            if (gcLimited) { continue; }
-            std::tie(trigger, avgFilesPerShard, threshold) = ShouldTrigger();
-        }
-        if (gcRunning) { UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_gc_running"), 0.0); }
-        if (rounds > 0) {
-            UC_INFO("GC completed: rounds={}, avgFiles/shard={}, threshold={}", rounds,
-                    avgFilesPerShard, threshold);
+        if (!leaseEnable_) {
+            RunGcCycle();
+        } else {
+            switch (lease_.TryAcquire()) {
+                case GcLease::Acquisition::Acquired:
+                    RunGcCycle();
+                    lease_.Release();
+                    break;
+                case GcLease::Acquisition::HeldByPeer:
+                    UC_INFO("Another instance holds the GC lock; skipping this cycle.");
+                    break;
+                case GcLease::Acquisition::Unavailable:
+                    UC_ERROR(
+                        "GC lock is unusable; skipping this cycle. Capacity will not be "
+                        "reclaimed until this is resolved.");
+                    break;
+            }
         }
         {
             std::unique_lock<std::mutex> lock(gcCheckMtx_);
@@ -113,6 +120,34 @@ void ShardGarbageCollector::GCCheckLoop()
                                 [this] { return stop_.load(); });
         }
         if (stop_.load()) { break; }
+    }
+}
+
+void ShardGarbageCollector::RunGcCycle()
+{
+    auto [trigger, avgFilesPerShard, threshold] = ShouldTrigger();
+    UC_INFO("GC sampling: avgFiles/shard={}, threshold={}, trigger={}", avgFilesPerShard, threshold,
+            trigger);
+    int rounds = 0;
+    const bool gcRunning = trigger;
+    if (gcRunning) { UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_gc_running"), 1.0); }
+    while (!stop_.load() && trigger) {
+        if (leaseEnable_ && !lease_.HoldsLock()) {
+            UC_WARN(
+                "Lost the GC lock after {} round(s); a peer has taken over. Stopping this "
+                "drain to avoid concurrent reclamation.",
+                rounds);
+            break;
+        }
+        bool gcLimited = Execute();
+        rounds++;
+        if (gcLimited) { continue; }
+        std::tie(trigger, avgFilesPerShard, threshold) = ShouldTrigger();
+    }
+    if (gcRunning) { UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_gc_running"), 0.0); }
+    if (rounds > 0) {
+        UC_INFO("GC completed: rounds={}, avgFiles/shard={}, threshold={}", rounds,
+                avgFilesPerShard, threshold);
     }
 }
 
@@ -155,6 +190,15 @@ std::tuple<bool, size_t, size_t> ShardGarbageCollector::ShouldTrigger()
         NAME_TO_METRIC_ID("posix_store_usage_ratio"),
         capacityBytes_ == 0 ? 0.0 : usedBytes / static_cast<double>(capacityBytes_));
     return {avgFilesPerShard >= threshold, avgFilesPerShard, threshold};
+}
+
+void ShardGarbageCollector::OnTaskTimeout(const ShardTaskContext& ctx, ssize_t tid)
+{
+    UC_WARN(
+        "GC {} task on shard({}) exceeded {}ms (tid={}); storage may be unresponsive. "
+        "This round keeps waiting; a replacement worker is started.",
+        ctx.type == ShardTaskContext::Type::SAMPLE ? "sample" : "recycle", ctx.shard,
+        config_.posixGcTaskTimeoutMs, tid);
 }
 
 void ShardGarbageCollector::ProcessTask(ShardTaskContext& ctx)
