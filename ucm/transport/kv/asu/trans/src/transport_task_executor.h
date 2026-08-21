@@ -73,7 +73,6 @@ private:
                                  std::vector<TransportSubBatchContext>& subBatchContexts);
     Status BuildEntrySubBatchRequest(AsuOpType opType,
                                      const IoScheduler::ScheduledIoBatch& subBatch,
-                                     const RegisteredMrKeyMap& registeredMrKeys,
                                      TransportSubBatchContext& subBatchContext);
     Status SubmitKeySubBatchRequest(AsuOpType opType,
                                     const IoScheduler::ScheduledKeyBatch& subBatch,

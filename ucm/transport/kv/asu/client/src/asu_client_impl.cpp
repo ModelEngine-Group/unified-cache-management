@@ -350,17 +350,15 @@ Status AsuClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>&
     ctx->opType = opType;
     ctx->viewSnapshot = snapshot;
     ctx->entries = entries;
-    auto registeredMrKeys = std::make_shared<RegisteredMrKeyMap>();
     {
         std::lock_guard<std::mutex> memoryLock{memoryMu_};
-        for (const auto& entry : entries) {
+        for (auto& entry : ctx->entries) {
+            // mrKey is client-owned metadata. Ignore any value supplied by the caller.
+            entry.mrKey.reset();
             auto iter = registeredRegions_.find(entry.buffer.handle);
-            if (iter != registeredRegions_.end()) {
-                registeredMrKeys->emplace(iter->first, iter->second.tokenId);
-            }
+            if (iter != registeredRegions_.end()) { entry.mrKey = iter->second.tokenId; }
         }
     }
-    ctx->registeredMrKeys = std::move(registeredMrKeys);
     ctx->entryStatus.assign(entries.size(), Status::OK());
 
     auto status = taskManager_.Submit(std::move(ctx), taskId);

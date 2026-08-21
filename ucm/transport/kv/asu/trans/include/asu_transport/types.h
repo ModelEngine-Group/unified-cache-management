@@ -165,6 +165,8 @@ struct KVBuffer {
     CacheKey key;
     Buffer buffer;
     std::uint32_t offset{0};  // target buffer offset
+    // Resolved by AsuClient from buffer.handle before the entry reaches the transport.
+    std::optional<std::uint32_t> mrKey;
 };
 
 // Describes a registered memory region returned by registration or reused for binding.

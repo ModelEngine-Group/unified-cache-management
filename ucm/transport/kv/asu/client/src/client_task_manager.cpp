@@ -265,7 +265,6 @@ Status ClientTaskManager::BuildTransportTasks(const ClientTaskPtr& task)
         auto transportTask = std::make_shared<TransportTask>();
         transportTask->asuId = asuId;
         transportTask->transport = snapshot->transports.at(asuId);
-        transportTask->registeredMrKeys = task->registeredMrKeys;
         transportTask->originalIndices.reserve(indices.size());
         if (task->opType == AsuOpType::QUERY || task->opType == AsuOpType::DELETE) {
             transportTask->keys.reserve(indices.size());

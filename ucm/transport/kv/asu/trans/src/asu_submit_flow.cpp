@@ -60,15 +60,12 @@ Status TransportTaskExecutor::PrepareTaskSubBatches(
         }
         const auto entries = BatchView<KVBuffer>{ctx.entries.data(), ctx.entries.size()};
         const auto subBatches = ioScheduler_.SplitForAsu(entries, opType);
-        static const RegisteredMrKeyMap emptyRegisteredMrKeys;
-        const auto& registeredMrKeys =
-            ctx.registeredMrKeys == nullptr ? emptyRegisteredMrKeys : *ctx.registeredMrKeys;
         subBatchContexts.reserve(subBatches.size());
         for (std::size_t index = 0; index < subBatches.size(); ++index) {
             const auto& subBatch = subBatches[index];
             auto& subBatchContext = subBatchContexts.emplace_back();
             const auto subBatchStatus =
-                BuildEntrySubBatchRequest(opType, subBatch, registeredMrKeys, subBatchContext);
+                BuildEntrySubBatchRequest(opType, subBatch, subBatchContext);
             if (!subBatchStatus.ok()) {
                 UC_ERROR(
                     "Build entry sub-batch request failed index={} batch_size={} code={} "

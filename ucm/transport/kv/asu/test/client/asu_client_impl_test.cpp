@@ -69,7 +69,7 @@ struct TestState {
     std::unordered_map<AsuId, Status> checkResultStatus;
     std::vector<AsuId> registerCalls;
     std::vector<AsuId> providerBindCalls;
-    RegisteredMrKeyMap submittedMrKeys;
+    std::vector<KVBuffer> submittedEntries;
     std::vector<AsuId> unregisterCalls;
     bool failRegister{false};
     bool failProviderBind{false};
@@ -246,9 +246,7 @@ public:
         if (!task) {
             return Status::Error(StatusCode::INVALID_ARGUMENT, "fake transport task is null");
         }
-        if (task->registeredMrKeys != nullptr) {
-            state_->submittedMrKeys = *task->registeredMrKeys;
-        }
+        state_->submittedEntries = task->entries;
         state_->submittedOpTypes.emplace_back(task->opType);
         switch (task->opType) {
             case AsuOpType::QUERY: {
@@ -1359,6 +1357,7 @@ TEST(AsuClientImplTest, MemoryRegister_NewIndependentProviderBindsRememberedRegi
     EXPECT_EQ(QueryAndWait(*client, {MakeCacheKey("k05")}, queryResult).code,
               StatusCode::PARTIAL_FAILED);
     ASSERT_TRUE(WaitForFetchCount(viewServer, 2));
+    ASSERT_TRUE(client->Shutdown().ok());
 
     EXPECT_EQ(state->createdProviders, std::uint32_t{3});
     EXPECT_EQ(state->providerBindCalls, std::vector<AsuId>({10, 20}));
@@ -1929,7 +1928,7 @@ TEST(AsuClientImplTest, SnapshotRefresh_ReusesTransportAndBindsProviderForAddedA
     EXPECT_EQ(state->providerBindCalls, std::vector<AsuId>({10, 20}));
 }
 
-TEST(AsuClientImplTest, MemoryRegister_StoreTaskCarriesRegisteredTokenMetadata)
+TEST(AsuClientImplTest, MemoryRegister_StoreTaskCarriesMrKeyInEntry)
 {
     auto state = std::make_shared<TestState>();
     auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
@@ -1946,8 +1945,9 @@ TEST(AsuClientImplTest, MemoryRegister_StoreTaskCarriesRegisteredTokenMetadata)
     TaskResult result;
     ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
 
-    ASSERT_EQ(state->submittedMrKeys.size(), std::size_t{1});
-    EXPECT_EQ(state->submittedMrKeys.at(registeredRegions[0].handle), registeredRegions[0].tokenId);
+    ASSERT_EQ(state->submittedEntries.size(), std::size_t{1});
+    ASSERT_TRUE(state->submittedEntries[0].mrKey.has_value());
+    EXPECT_EQ(*state->submittedEntries[0].mrKey, registeredRegions[0].tokenId);
 }
 
 TEST(AsuClientImplTest,
