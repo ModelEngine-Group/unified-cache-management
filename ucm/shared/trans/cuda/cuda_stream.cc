@@ -133,16 +133,14 @@ Status CudaStream::DeviceToDevice(void* source, void* destination, size_t size)
     return Status::OK();
 }
 
-Status CudaStream::DeviceToDevice(void* source[], void* destination[], size_t size,
-                                  size_t number)
+Status CudaStream::DeviceToDevice(void* source[], void* destination[], size_t size, size_t number)
 {
     auto s = DeviceToDeviceAsync(source, destination, size, number);
     if (s.Failure()) [[unlikely]] { return s; }
     return Synchronized();
 }
 
-Status CudaStream::DeviceToDevice(void* source[], void* destination, size_t size,
-                                  size_t number)
+Status CudaStream::DeviceToDevice(void* source[], void* destination, size_t size, size_t number)
 {
     auto s = DeviceToDeviceAsync(source, destination, size, number);
     if (s.Failure()) [[unlikely]] { return s; }
@@ -209,8 +207,7 @@ Status Trans::CudaStream::Synchronized()
 Status Trans::CudaStream::WaitEvent(const Event& event)
 {
     if (!event.Valid()) { return Status::OK(); }
-    auto ret = cudaStreamWaitEvent(
-        stream_, reinterpret_cast<cudaEvent_t>(event.NativeHandle()), 0);
+    auto ret = cudaStreamWaitEvent(stream_, reinterpret_cast<cudaEvent_t>(event.NativeHandle()), 0);
     if (ret != cudaSuccess) [[unlikely]] { return Status{ret, cudaGetErrorString(ret)}; }
     return Status::OK();
 }

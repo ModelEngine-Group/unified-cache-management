@@ -225,10 +225,13 @@ Status GdrStream::WaitEvent(const Event& event)
     if (!event.Valid()) { return Status::OK(); }
 
     const auto operationId = nextOperationId_.load(std::memory_order_relaxed);
-    Operation op{
-        OperationType::Wait,  operationId,
-        reinterpret_cast<cudaEvent_t>(event.NativeHandle()), nullptr, nullptr, 0,
-        GdrMemcpyHostToDevice};
+    Operation op{OperationType::Wait,
+                 operationId,
+                 reinterpret_cast<cudaEvent_t>(event.NativeHandle()),
+                 nullptr,
+                 nullptr,
+                 0,
+                 GdrMemcpyHostToDevice};
     auto status = PushOperation(op);
     if (status.Failure()) { return status; }
     nextOperationId_.store(operationId + 1, std::memory_order_release);

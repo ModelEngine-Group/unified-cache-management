@@ -223,4 +223,4 @@ Status SimuStream::Synchronized()
     return Status::OK();
 }
 
-} // namespace UC::Trans
+}  // namespace UC::Trans

@@ -174,8 +174,8 @@ std::shared_ptr<void> Trans::AscendBuffer::MakeDeviceMappedHostBuffer(size_t siz
     prop.location.id = static_cast<uint32_t>(deviceId);
 
     size_t granularity = 0;
-    ret = aclrtMemGetAllocationGranularity(&prop, ACL_RT_MEM_ALLOC_GRANULARITY_MINIMUM,
-                                           &granularity);
+    ret =
+        aclrtMemGetAllocationGranularity(&prop, ACL_RT_MEM_ALLOC_GRANULARITY_MINIMUM, &granularity);
     constexpr auto maxSize = std::numeric_limits<size_t>::max();
     if (ret != ACL_SUCCESS || granularity == 0 || size > maxSize - (granularity - 1)) {
         UC_ERROR(
