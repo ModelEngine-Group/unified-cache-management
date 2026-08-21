@@ -30,7 +30,6 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
-#include <unordered_map>
 #include <vector>
 #include "asu_transport/types.h"
 
@@ -81,7 +80,6 @@ inline bool IsKeyBatchOp(AsuOpType opType)
 inline bool IsKeepAliveOp(AsuOpType opType) { return opType == AsuOpType::KEEP_ALIVE; }
 
 using TransportSubBatchList = std::vector<TransportSubBatchContext>;
-using RegisteredMrKeyMap = std::unordered_map<MRHandle, std::uint32_t>;
 
 struct TransportTask {
     TransportTask();
@@ -92,7 +90,6 @@ struct TransportTask {
     std::weak_ptr<AsuTransport> transport;
     std::vector<CacheKey> keys;
     std::vector<KVBuffer> entries;
-    std::shared_ptr<const RegisteredMrKeyMap> registeredMrKeys;
     std::vector<std::size_t> originalIndices;
     std::vector<Status> entryStatus;
     bool clientCompleted{false};
@@ -122,7 +119,6 @@ struct ClientTask {
     AsuOpType opType{AsuOpType::LOAD};
     std::shared_ptr<ViewSnapshot> viewSnapshot;
     std::vector<KVBuffer> entries;
-    std::shared_ptr<const RegisteredMrKeyMap> registeredMrKeys;
     std::vector<CacheKey> keys;
     std::vector<TransportTaskPtr> transportTasks;
     std::vector<Status> entryStatus;

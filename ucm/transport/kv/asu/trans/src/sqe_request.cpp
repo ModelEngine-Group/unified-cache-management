@@ -42,21 +42,14 @@ namespace {
 
 constexpr std::size_t kFlagBufferHeaderSize = 16;
 
-Status ResolveSqeMrKeys(const BatchView<KVBuffer>& entries,
-                        const RegisteredMrKeyMap& registeredMrKeys,
-                        std::vector<std::uint32_t>& mrKeys)
+Status ValidateSqeMrKeys(const BatchView<KVBuffer>& entries)
 {
-    mrKeys.clear();
-    mrKeys.reserve(entries.size);
     for (std::size_t index = 0; index < entries.size; ++index) {
-        const auto handle = entries[index].buffer.handle;
-        auto iter = registeredMrKeys.find(handle);
-        if (iter == registeredMrKeys.end()) {
+        if (!entries[index].mrKey.has_value()) {
             return Status::Error(
                 StatusCode::BUFFER_NOT_REGISTERED,
                 "entry buffer is not registered, entryIndex=" + std::to_string(index));
         }
-        mrKeys.emplace_back(iter->second);
     }
     return Status::OK();
 }
@@ -197,8 +190,7 @@ Status PackSubBatchRequest(ProtocolManager& protocolManager, BufferManager& send
 
 KvBatchStoreRequest BuildBatchStoreRequest(
     const BatchView<KVBuffer>& entries, const std::unordered_map<std::string, std::string>& attrs,
-    std::uint16_t cid, const ScatterGatherEntry& flagBuffer,
-    const std::vector<std::uint32_t>& mrKeys)
+    std::uint16_t cid, const ScatterGatherEntry& flagBuffer)
 {
     KvBatchStoreRequest request;
     request.cid = cid;
@@ -216,7 +208,7 @@ KvBatchStoreRequest BuildBatchStoreRequest(
         entry.key = entries[index].key;
         entry.offset = entries[index].offset;
         entry.buffer_addr = entries[index].buffer.region.addr;
-        entry.mr_key = mrKeys[index];
+        entry.mr_key = *entries[index].mrKey;
         entry.length = static_cast<std::uint32_t>(entries[index].buffer.region.size);
         request.entries.emplace_back(std::move(entry));
     }
@@ -225,7 +217,7 @@ KvBatchStoreRequest BuildBatchStoreRequest(
 
 KvStoreRequest BuildStoreRequest(const KVBuffer& entry,
                                  const std::unordered_map<std::string, std::string>& attrs,
-                                 std::uint16_t cid, std::uint32_t mrKey)
+                                 std::uint16_t cid)
 {
     KvStoreRequest request;
     request.cid = cid;
@@ -234,7 +226,7 @@ KvStoreRequest BuildStoreRequest(const KVBuffer& entry,
     request.dspec = GetTransportConfigAttr<std::uint8_t>(attrs, "dspec");
     request.buffer_addr = entry.buffer.region.addr;
     request.buffer_length = static_cast<std::uint32_t>(entry.buffer.region.size);
-    request.mr_key = mrKey;
+    request.mr_key = *entry.mrKey;
     request.offset = entry.offset;
     request.lr = GetTransportConfigAttr<bool>(attrs, "lr");
     request.length = request.buffer_length;
@@ -244,14 +236,14 @@ KvStoreRequest BuildStoreRequest(const KVBuffer& entry,
 
 KvRetrieveRequest BuildRetrieveRequest(const KVBuffer& entry,
                                        const std::unordered_map<std::string, std::string>& attrs,
-                                       std::uint16_t cid, std::uint32_t mrKey)
+                                       std::uint16_t cid)
 {
     KvRetrieveRequest request;
     request.cid = cid;
     request.kv_ns_id = GetTransportConfigAttr<std::uint32_t>(attrs, "kv_ns_id");
     request.buffer_addr = entry.buffer.region.addr;
     request.buffer_length = static_cast<std::uint32_t>(entry.buffer.region.size);
-    request.mr_key = mrKey;
+    request.mr_key = *entry.mrKey;
     request.offset = entry.offset;
     request.lr = GetTransportConfigAttr<bool>(attrs, "lr");
     request.length = request.buffer_length;
@@ -261,8 +253,7 @@ KvRetrieveRequest BuildRetrieveRequest(const KVBuffer& entry,
 
 KvBatchRetrieveRequest BuildBatchRetrieveRequest(
     const BatchView<KVBuffer>& entries, const std::unordered_map<std::string, std::string>& attrs,
-    std::uint16_t cid, const ScatterGatherEntry& flagBuffer,
-    const std::vector<std::uint32_t>& mrKeys)
+    std::uint16_t cid, const ScatterGatherEntry& flagBuffer)
 {
     KvBatchRetrieveRequest request;
     request.cid = cid;
@@ -278,7 +269,7 @@ KvBatchRetrieveRequest BuildBatchRetrieveRequest(
         entry.key = entries[index].key;
         entry.offset = entries[index].offset;
         entry.buffer_addr = entries[index].buffer.region.addr;
-        entry.mr_key = mrKeys[index];
+        entry.mr_key = *entries[index].mrKey;
         entry.length = static_cast<std::uint32_t>(entries[index].buffer.region.size);
         request.entries.emplace_back(std::move(entry));
     }
@@ -339,32 +330,25 @@ KvKeepAliveRequest BuildKeepAliveRequest(std::uint16_t cid, const ScatterGatherE
 std::unique_ptr<SqeRequest> BuildSqeRequest(
     KvOpcode opcode, const SubBatchRequestSource& source,
     const std::unordered_map<std::string, std::string>& attrs, std::uint16_t cid,
-    const ScatterGatherEntry& flagBuffer, const std::vector<std::uint32_t>* mrKeys,
-    TransportSubBatchContext& subBatchContext)
+    const ScatterGatherEntry& flagBuffer, TransportSubBatchContext& subBatchContext)
 {
     switch (opcode) {
         case KvOpcode::Store:
-            if (source.entries == nullptr || source.entries->size != 1 || mrKeys == nullptr ||
-                mrKeys->size() != 1) {
-                return nullptr;
-            }
+            if (source.entries == nullptr || source.entries->size != 1) { return nullptr; }
             return std::make_unique<KvStoreRequest>(
-                BuildStoreRequest(source.entries->data[0], attrs, cid, (*mrKeys)[0]));
+                BuildStoreRequest(source.entries->data[0], attrs, cid));
         case KvOpcode::Retrieve:
-            if (source.entries == nullptr || source.entries->size != 1 || mrKeys == nullptr ||
-                mrKeys->size() != 1) {
-                return nullptr;
-            }
+            if (source.entries == nullptr || source.entries->size != 1) { return nullptr; }
             return std::make_unique<KvRetrieveRequest>(
-                BuildRetrieveRequest(source.entries->data[0], attrs, cid, (*mrKeys)[0]));
+                BuildRetrieveRequest(source.entries->data[0], attrs, cid));
         case KvOpcode::BatchRetrieve:
-            if (source.entries == nullptr || mrKeys == nullptr) { return nullptr; }
+            if (source.entries == nullptr) { return nullptr; }
             return std::make_unique<KvBatchRetrieveRequest>(
-                BuildBatchRetrieveRequest(*source.entries, attrs, cid, flagBuffer, *mrKeys));
+                BuildBatchRetrieveRequest(*source.entries, attrs, cid, flagBuffer));
         case KvOpcode::BatchStore:
-            if (source.entries == nullptr || mrKeys == nullptr) { return nullptr; }
+            if (source.entries == nullptr) { return nullptr; }
             return std::make_unique<KvBatchStoreRequest>(
-                BuildBatchStoreRequest(*source.entries, attrs, cid, flagBuffer, *mrKeys));
+                BuildBatchStoreRequest(*source.entries, attrs, cid, flagBuffer));
         case KvOpcode::Delete:
             if (source.keys == nullptr) { return nullptr; }
             return std::make_unique<KvDeleteRequest>(
@@ -388,17 +372,16 @@ std::unique_ptr<SqeRequest> BuildSqeRequest(
 
 Status TransportTaskExecutor::BuildEntrySubBatchRequest(
     AsuOpType opType, const IoScheduler::ScheduledIoBatch& subBatch,
-    const RegisteredMrKeyMap& registeredMrKeys, TransportSubBatchContext& subBatchContext)
+    TransportSubBatchContext& subBatchContext)
 {
     const auto source = SubBatchRequestSource::FromEntries(subBatch.entries);
     subBatchContext.entryStatus.assign(subBatch.entries.size, Status::OK());
     const auto opcode = ToKvOpcode(opType);
 
-    std::vector<std::uint32_t> mrKeys;
-    auto resolveStatus = ResolveSqeMrKeys(subBatch.entries, registeredMrKeys, mrKeys);
-    if (!resolveStatus.ok()) {
-        SetSubBatchBuildFailed(subBatchContext, resolveStatus);
-        return resolveStatus;
+    auto validationStatus = ValidateSqeMrKeys(subBatch.entries);
+    if (!validationStatus.ok()) {
+        SetSubBatchBuildFailed(subBatchContext, validationStatus);
+        return validationStatus;
     }
 
     const auto cid = AllocateRequestCid();
@@ -407,7 +390,7 @@ Status TransportTaskExecutor::BuildEntrySubBatchRequest(
     if (!status.ok()) { return status; }
 
     auto request = BuildSqeRequest(opcode, source, config_.attrs, subBatchContext.cid,
-                                   subBatchContext.flagBuffer, &mrKeys, subBatchContext);
+                                   subBatchContext.flagBuffer, subBatchContext);
     return PackSubBatchRequest(*protocolManager_, sendBufferManager_, opcode, *request,
                                subBatchContext);
 }
@@ -425,7 +408,7 @@ Status TransportTaskExecutor::SubmitKeySubBatchRequest(
     if (!status.ok()) { return status; }
 
     auto request = BuildSqeRequest(opcode, source, config_.attrs, subBatchContext.cid,
-                                   subBatchContext.flagBuffer, nullptr, subBatchContext);
+                                   subBatchContext.flagBuffer, subBatchContext);
     return PackSubBatchRequest(*protocolManager_, sendBufferManager_, opcode, *request,
                                subBatchContext);
 }
@@ -442,7 +425,7 @@ Status TransportTaskExecutor::SubmitKeepAliveRequest(TransportSubBatchContext& s
     if (!status.ok()) { return status; }
 
     auto request = BuildSqeRequest(opcode, source, config_.attrs, subBatchContext.cid,
-                                   subBatchContext.flagBuffer, nullptr, subBatchContext);
+                                   subBatchContext.flagBuffer, subBatchContext);
     return PackSubBatchRequest(*protocolManager_, sendBufferManager_, opcode, *request,
                                subBatchContext);
 }
