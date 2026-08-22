@@ -138,7 +138,9 @@ def apply_all_patches() -> None:
         from ucm.integration.vllm.patch.logger_patch import patch_logger
 
         if not ENABLE_UCM_PATCH:
-            logger.warning("UCM patching is disabled. Set ENABLE_UCM_PATCH=1 to enable it.")
+            logger.warning(
+                "UCM patching is disabled. Set ENABLE_UCM_PATCH=1 to enable it."
+            )
             return
 
         version = get_vllm_version()
