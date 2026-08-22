@@ -335,7 +335,7 @@ class KVCacheLayout:
         self.buffer_sizes: np.ndarray
         self.tensor_size_lists: np.ndarray
         self.block_stride_lists: np.ndarray
-        self.use_layerwise = ucm_config.get("use_layerwise", False)
+        self.use_layerwise = ucm_config.get("use_layerwise", True)
         self.kv_cache_config = kv_cache_config
         self.vllm_config = vllm_config
         self.pp_size = self.vllm_config.parallel_config.pipeline_parallel_size
@@ -551,7 +551,7 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
     def supports(cls, vllm_config: "VllmConfig", ucm_config: dict) -> bool:
         device_type = getattr(current_platform, "device_type", None)
         return (
-            bool(ucm_config.get("use_layerwise", False))
+            bool(ucm_config.get("use_layerwise", True))
             and device_type in ("npu", "cuda")
             and _has_shared_indexer_layers(vllm_config)
         )
@@ -1562,6 +1562,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             f"total_blocks_num: {len(ucm_block_ids)}, "
             f"hit hbm: {hbm_hit_block_num * self.cp_world_size}, "
             f"hit external: {external_hit_blocks * self.cp_world_size}"
+            f"total tokens: {request.all_token_ids}"
         )
 
         if not external_block_ids:
@@ -2488,7 +2489,7 @@ class UCMCPConnector(UCMLayerWiseConnector):
         kv_cache_config: Optional["KVCacheConfig"] = None,
     ):
         super().__init__(vllm_config, role, kv_cache_config)
-        self.use_layerwise = self.launch_config.get("use_layerwise", False)
+        self.use_layerwise = self.launch_config.get("use_layerwise", True)
 
         try:
             from vllm.distributed import get_dcp_group, get_pcp_group
@@ -2815,11 +2816,13 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             if role == KVConnectorRole.WORKER
             else "scheduler" if role == KVConnectorRole.SCHEDULER else None
         )
+        if role == KVConnectorRole.WORKER and self._worker_rank == 0:
+            logger.info(f"UCM worker rank 0 KV cache config: {kv_cache_config!r}")
         self._setup_ucm_metrics(vllm_config, role)
         logger.info(f"self.launch_config: {self.launch_config}")
 
         use_layerwise = (
-            self.launch_config.get("use_layerwise", False)
+            self.launch_config.get("use_layerwise", True)
             if self.launch_config is not None
             else False
         )
