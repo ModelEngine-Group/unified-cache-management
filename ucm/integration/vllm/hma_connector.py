@@ -855,6 +855,42 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             return 0
         return reverse_idx + 1
 
+    def _prefetch_hit_key_hotness(
+        self,
+        fa_hbm_hit_keys: list[bytes],
+        all_hit_keys: list[bytes],
+    ) -> None:
+        """Best-effort GC hotness update for FAWA's two backing stores.
+
+        External FA keys are already touched by ``lookup_on_prefix``, so the
+        FA store only needs the local-HBM prefix that lookup did not inspect.
+        WA uses ``lookup_on_reverse``, which touches only the selected boundary;
+        update every reusable boundary key so sparse WA snapshots age together
+        with the corresponding FA prefix. Missing sparse WA files are harmless:
+        store ``prefetch`` is a hint and Posix simply ignores a failed ``utime``.
+        """
+
+        if self.fa_store is None:
+            raise RuntimeError("FA store is not initialized.")
+        if self.wa_store is None:
+            raise RuntimeError("WA store is not initialized.")
+
+        updates = (
+            ("FA", self.fa_store, fa_hbm_hit_keys),
+            ("WA", self.wa_store, all_hit_keys),
+        )
+        for label, store, keys in updates:
+            if not keys:
+                continue
+            try:
+                store.prefetch(keys)
+            except Exception as e:
+                # Prefetch is only a GC hotness hint. A failure must not turn a
+                # valid cache hit into a scheduler-side miss.
+                logger.warning(
+                    f"FAWA {label} hotness update failed. " f"{type(e).__name__}: {e}"
+                )
+
     @fawa_latency_metric(
         "fawa_scheduler_get_num_new_matched_tokens_ms",
     )
@@ -866,17 +902,28 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         wa_hbm_hit_block_num = num_computed_tokens // self.hash_block_size
         wa_computed_tokens = wa_hbm_hit_block_num * self.hash_block_size
 
-        if (
-            request.num_tokens <= self.persist_token_threshold
-            or request.num_tokens <= (wa_computed_tokens + self.load_tokens_threshold)
-        ):
+        if request.num_tokens <= self.persist_token_threshold:
             return 0, False
+        skip_external_load = request.num_tokens <= (
+            wa_computed_tokens + self.load_tokens_threshold
+        )
+        if skip_external_load and wa_hbm_hit_block_num <= 0:
+            return 0, False
+
         canonical_hashes = self.generate_hash(
             self.hash_block_size, request.all_token_ids, self._seed
         )
+        fa_hbm_hit_keys = canonical_hashes[:wa_hbm_hit_block_num]
+
+        # Even when no external load is worthwhile, the local-HBM prefix is a
+        # cache hit and should remain hot in both FAWA backing stores.
+        if skip_external_load:
+            self._prefetch_hit_key_hotness(fa_hbm_hit_keys, fa_hbm_hit_keys)
+            return 0, False
 
         external_keys = canonical_hashes[wa_hbm_hit_block_num:]
         if not external_keys:
+            self._prefetch_hit_key_hotness(fa_hbm_hit_keys, fa_hbm_hit_keys)
             return 0, False
 
         external_hit_blocks = 0
@@ -891,6 +938,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 self._record_counter("connector_lookup_errors_total")
 
         total_hit_block_num = wa_hbm_hit_block_num + external_hit_blocks
+        self._prefetch_hit_key_hotness(
+            fa_hbm_hit_keys,
+            canonical_hashes[:total_hit_block_num],
+        )
         num_total_hit_tokens = (
             external_hit_blocks * self.hash_block_size + wa_computed_tokens
         )
