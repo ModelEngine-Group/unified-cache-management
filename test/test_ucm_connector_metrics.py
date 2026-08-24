@@ -256,7 +256,6 @@ GRAFANA_VLLM_UCM_TAG = "ucm-vllm-connector-metrics"
 GRAFANA_UCM_DASHBOARDS = [
     "grafana_connector.json",
     "grafana_pipeline_store.json",
-    "grafana_mooncake.json",
 ]
 CONNECTOR_INTERFACE_METHODS = {
     "get_block_size",
@@ -2042,10 +2041,6 @@ def test_grafana_dashboards_use_isolated_vllm_ucm_identity():
             "vLLM - UCM Pipeline Store (vLLM Metrics)",
             "ucm-vllm-pipeline-store",
         ),
-        "grafana_mooncake.json": (
-            "vLLM - UCM Mooncake Store (vLLM Metrics)",
-            "ucm-vllm-mooncake-store",
-        ),
         "grafana_vllm.json": (
             "vLLM (UCM Metrics)",
             "ucm-vllm-overview",
@@ -2231,51 +2226,6 @@ def test_ucm_dashboards_use_engine_and_worker_rank_filters():
                     or "sum by (le, ${perWorker:raw})" in expr
                     or "sum by (le)" in expr
                 )
-
-
-def test_mooncake_dashboards_cover_configured_mooncake_metrics():
-    dashboard_path = REPO_ROOT / "examples" / "metrics" / "grafana_mooncake.json"
-    dashboard_text = dashboard_path.read_text(encoding="utf-8")
-    vllm_text = (REPO_ROOT / "examples" / "metrics" / "grafana_vllm.json").read_text(
-        encoding="utf-8"
-    )
-    dashboard = json.loads(dashboard_text)
-    panels = {panel["title"]: panel for panel in dashboard["panels"]}
-
-    assert dashboard["title"] == "vLLM - UCM Mooncake Store (vLLM Metrics)"
-    assert dashboard["uid"] == "ucm-vllm-mooncake-store"
-    assert "Mooncake Store" in panels
-    assert "Mooncake Load Hit / Miss Shards" in panels
-    assert "Mooncake Dump Existing / Missing Shards" in panels
-    assert "Mooncake Load Stage Avg Breakdown" in panels
-    assert "Mooncake Dump Stage Avg Breakdown" in panels
-    assert "Mooncake Error Rate" in panels
-    assert "mooncake_h2d_bandwidth_gbps" not in dashboard_text
-    assert "mooncake_d2h_bandwidth_gbps" not in dashboard_text
-
-    metrics_text = (
-        REPO_ROOT / "examples" / "metrics" / "metrics_configs.yaml"
-    ).read_text(encoding="utf-8")
-    excluded_mooncake_metrics = {
-        "mooncake_h2d_bandwidth_gbps",
-        "mooncake_d2h_bandwidth_gbps",
-        "mooncake_lookup_hit_blocks_total",
-    }
-    configured_mooncake = {
-        name
-        for name in re.findall(
-            r'^\s*-\s+name:\s+"(mooncake_[^"]+)"', metrics_text, re.MULTILINE
-        )
-        if name not in excluded_mooncake_metrics
-    }
-    referenced = {
-        re.sub(r"_(bucket|sum|count)$", "", metric)
-        for metric in re.findall(
-            r"ucm:(mooncake_[A-Za-z0-9_]+)", dashboard_text + vllm_text
-        )
-    }
-
-    assert configured_mooncake <= referenced
 
 
 def test_layerwise_wait_for_save_records_completion_start():
