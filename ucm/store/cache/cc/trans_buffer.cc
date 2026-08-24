@@ -53,18 +53,20 @@ struct BufferMetaNode {
     size_t hash;
     size_t prev;
     size_t next;
-    TransBuffer::State state;
-    int32_t errorCode;
+    alignas(64) std::atomic<TransBuffer::State> state;
+    std::atomic<int32_t> errorCode;
     void Init()
     {
         reference = 0;
         hash = invalidIndex;
         prev = invalidIndex;
         next = invalidIndex;
-        state = TransBuffer::State::LOADING;
-        errorCode = Status::OK().Underlying();
+        state.store(TransBuffer::State::LOADING, std::memory_order_relaxed);
+        errorCode.store(Status::OK().Underlying(), std::memory_order_relaxed);
     }
 };
+static_assert(std::atomic<TransBuffer::State>::is_always_lock_free, "state must be lock-free");
+static_assert(std::atomic<int32_t>::is_always_lock_free, "errorCode must be lock-free");
 
 class BufferStrategy {
 protected:
@@ -631,9 +633,9 @@ size_t TransBuffer::FindAt(size_t iBucket, const Detail::BlockId& blockId, size_
         strategy_->NodeLock(iNode);
         if (meta->block == blockId && meta->shard == shardIdx) {
             owner = meta->reference == 0;
-            if (owner && meta->state == State::FAILED) {
-                meta->state = State::LOADING;
-                meta->errorCode = Status::OK().Underlying();
+            if (owner && meta->state.load(std::memory_order_relaxed) == State::FAILED) {
+                meta->state.store(State::LOADING, std::memory_order_relaxed);
+                meta->errorCode.store(Status::OK().Underlying(), std::memory_order_relaxed);
             }
             ++meta->reference;
             strategy_->MarkAccessed(iNode);
@@ -674,8 +676,8 @@ size_t TransBuffer::Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_
         strategy_->MarkAccessed(iNode);
         meta->block = blockId;
         meta->shard = shardIdx;
-        meta->state = State::LOADING;
-        meta->errorCode = Status::OK().Underlying();
+        meta->state.store(State::LOADING, std::memory_order_relaxed);
+        meta->errorCode.store(Status::OK().Underlying(), std::memory_order_relaxed);
         strategy_->NodeUnlock(iNode);
         return iNode;
     }
@@ -741,17 +743,12 @@ bool TransBuffer::Ready(Index pos) { return GetState(pos) == State::READY; }
 
 TransBuffer::State TransBuffer::GetState(Index pos)
 {
-    strategy_->NodeLock(pos);
-    auto state = strategy_->MetaAt(pos)->state;
-    strategy_->NodeUnlock(pos);
-    return state;
+    return strategy_->MetaAt(pos)->state.load(std::memory_order_acquire);
 }
 
 Status TransBuffer::FailureStatus(Index pos)
 {
-    strategy_->NodeLock(pos);
-    auto errorCode = strategy_->MetaAt(pos)->errorCode;
-    strategy_->NodeUnlock(pos);
+    auto errorCode = strategy_->MetaAt(pos)->errorCode.load(std::memory_order_acquire);
     if (errorCode == Status::OK().Underlying()) {
         return Status::Error("shared buffer failed without an error status");
     }
@@ -760,33 +757,21 @@ Status TransBuffer::FailureStatus(Index pos)
 
 void TransBuffer::MarkReady(Index pos)
 {
-    strategy_->NodeLock(pos);
-    auto meta = strategy_->MetaAt(pos);
-    if (meta->state == State::LOADING) {
-        meta->state = State::READY;
-        meta->errorCode = Status::OK().Underlying();
-    }
-    strategy_->NodeUnlock(pos);
+    strategy_->MetaAt(pos)->state.store(State::READY, std::memory_order_release);
 }
 
 void TransBuffer::MarkFailed(Index pos, const Status& status)
 {
-    strategy_->NodeLock(pos);
     auto meta = strategy_->MetaAt(pos);
-    if (meta->state == State::LOADING) {
-        meta->state = State::FAILED;
-        meta->errorCode = status.Underlying();
-    }
-    strategy_->NodeUnlock(pos);
+    meta->errorCode.store(status.Underlying(), std::memory_order_release);
+    meta->state.store(State::FAILED, std::memory_order_release);
 }
 
 void TransBuffer::MarkNotReady(Index pos)
 {
-    strategy_->NodeLock(pos);
     auto meta = strategy_->MetaAt(pos);
-    meta->state = State::LOADING;
-    meta->errorCode = Status::OK().Underlying();
-    strategy_->NodeUnlock(pos);
+    meta->errorCode.store(Status::OK().Underlying(), std::memory_order_release);
+    meta->state.store(State::LOADING, std::memory_order_release);
 }
 
 }  // namespace UC::CacheStore
