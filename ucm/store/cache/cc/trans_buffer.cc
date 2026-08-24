@@ -93,12 +93,13 @@ public:
     virtual void* DataAt(size_t iNode) = 0;
     virtual void* DeviceDataAt(size_t iNode) = 0;
     virtual BufferMetaNode* MetaAt(size_t iNode) = 0;
+    virtual void MarkAccessed(size_t iNode) = 0;
 };
 
 class LocalBufferStrategy : public BufferStrategy {
     struct BufferHeader {
         size_t buckets[nHashTableBucket];
-        size_t freeHead;
+        size_t nodeCursor;
         size_t nodeSize;
         size_t nNode;
     };
@@ -134,6 +135,7 @@ class LocalBufferStrategy : public BufferStrategy {
     LocalMutex bucketLocks_[nHashTableBucket];
     std::unique_ptr<LocalLock[]> nodeLocks_;
     std::unique_ptr<BufferMetaNode[]> meta_;
+    std::unique_ptr<std::atomic<uint8_t>[]> accessed_;
     std::shared_ptr<void> data_;
     std::byte* dataOnDevice_{nullptr};
     bool registeredMappedHost_{false};
@@ -159,8 +161,12 @@ public:
         try {
             nodeLocks_ = std::make_unique<LocalLock[]>(nNode);
             meta_ = std::make_unique<BufferMetaNode[]>(nNode);
+            accessed_ = std::make_unique<std::atomic<uint8_t>[]>(nNode);
             for (size_t i = 0; i < nHashTableBucket; i++) { bucketLocks_[i].Init(); }
-            for (size_t i = 0; i < nNode; i++) { nodeLocks_[i].Init(); }
+            for (size_t i = 0; i < nNode; i++) {
+                nodeLocks_[i].Init();
+                accessed_[i].store(0, std::memory_order_relaxed);
+            }
         } catch (const std::exception& e) {
             UC_ERROR("Failed({}) to alloc buffer.", e.what());
             return Status::Error(e.what());
@@ -200,7 +206,7 @@ public:
         }
         for (size_t i = 0; i < nHashTableBucket; i++) { header_.buckets[i] = invalidIndex; }
         for (size_t i = 0; i < nNode; i++) { meta_[i].Init(); }
-        header_.freeHead = 0;
+        header_.nodeCursor = 0;
         header_.nodeSize = nodeSize;
         header_.nNode = nNode;
         return Status::OK();
@@ -213,9 +219,21 @@ public:
     size_t& FirstAt(size_t iBucket) override { return header_.buckets[iBucket]; }
     size_t FetchNode(bool allowReserved) override
     {
-        const auto limit = header_.nNode - (allowReserved ? 0 : base_.reservedNumber);
-        if (header_.freeHead >= limit) { header_.freeHead = 0; }
-        return header_.freeHead++;
+        const auto total = header_.nNode - (allowReserved ? 0 : base_.reservedNumber);
+        for (size_t i = 0; i < 2 * total; ++i) {
+            auto cur = header_.nodeCursor++ % total;
+            uint8_t expected = 1;
+            if (accessed_[cur].compare_exchange_strong(expected, 0, std::memory_order_relaxed,
+                                                       std::memory_order_relaxed)) {
+                continue;
+            }
+            return cur;
+        }
+        return header_.nodeCursor++ % total;
+    }
+    void MarkAccessed(size_t iNode) override
+    {
+        accessed_[iNode].store(1, std::memory_order_relaxed);
     }
     void* DataAt(size_t iNode) override
     {
@@ -260,16 +278,18 @@ protected:
     struct BufferHeader {
         std::atomic<size_t> magic;
         size_t nNode;
-        alignas(64) std::atomic<size_t> freeHead;
-        char freeHeadPad[64 - sizeof(std::atomic<size_t>)];
+        alignas(64) std::atomic<size_t> nodeCursor;
+        char nodeCursorPad[64 - sizeof(std::atomic<size_t>)];
         size_t buckets[nHashTableBucket];
         ShareMutex bucketLocks[nHashTableBucket];
         ShareLock nodeLocks[0];
     };
-    static_assert(std::atomic<size_t>::is_always_lock_free, "freeHead must be lock-free");
+    static_assert(std::atomic<size_t>::is_always_lock_free, "nodeCursor must be lock-free");
+    static_assert(std::atomic<uint8_t>::is_always_lock_free, "accessed must be lock-free");
 
     BufferHeader* header_{nullptr};
     BufferMetaNode* meta_{nullptr};
+    std::atomic<uint8_t>* accessed_{nullptr};
     std::byte* data_{nullptr};
     std::byte* dataOnDevice_{nullptr};
     const std::string& uuid_;
@@ -279,7 +299,19 @@ protected:
     void* addrress_{nullptr};
     size_t totalSize_{0};
 
-    size_t MetaOffset() const noexcept { return sizeof(BufferHeader) + sizeof(ShareLock) * nNode_; }
+    size_t AccessedOffset() const noexcept
+    {
+        constexpr auto align = 64;
+        auto off = sizeof(BufferHeader) + sizeof(ShareLock) * nNode_;
+        return (off + align - 1) & ~(align - 1);
+    }
+    size_t AccessedSize() const noexcept { return sizeof(std::atomic<uint8_t>) * nNode_; }
+    size_t MetaOffset() const noexcept
+    {
+        constexpr auto align = alignof(BufferMetaNode);
+        auto off = AccessedOffset() + AccessedSize();
+        return (off + align - 1) & ~(align - 1);
+    }
     size_t DataOffset() const noexcept
     {
         static const auto pageSize = sysconf(_SC_PAGESIZE);
@@ -352,8 +384,10 @@ protected:
         if (s.Failure()) [[unlikely]] { return s; }
         header_ = static_cast<BufferHeader*>(addrress_);
         meta_ = (BufferMetaNode*)(static_cast<std::byte*>(addrress_) + MetaOffset());
+        accessed_ = reinterpret_cast<std::atomic<uint8_t>*>(static_cast<std::byte*>(addrress_) +
+                                                            AccessedOffset());
         header_->nNode = nNode_;
-        header_->freeHead = 0;
+        header_->nodeCursor.store(0, std::memory_order_relaxed);
         for (size_t i = 0; i < nHashTableBucket; i++) {
             header_->buckets[i] = invalidIndex;
             header_->bucketLocks[i].Init();
@@ -361,6 +395,7 @@ protected:
         for (size_t i = 0; i < nNode_; i++) {
             header_->nodeLocks[i].Init();
             meta_[i].Init();
+            accessed_[i].store(0, std::memory_order_relaxed);
         }
         header_->magic = sharedBufferMagic;
         return Status::OK();
@@ -381,6 +416,8 @@ protected:
             return s;
         }
         meta_ = (BufferMetaNode*)(static_cast<std::byte*>(addrress_) + MetaOffset());
+        accessed_ = reinterpret_cast<std::atomic<uint8_t>*>(static_cast<std::byte*>(addrress_) +
+                                                            AccessedOffset());
         return Status::OK();
     }
     Status RegisterBuffer(int32_t deviceId)
@@ -447,16 +484,21 @@ public:
     size_t& FirstAt(size_t iBucket) override { return header_->buckets[iBucket]; }
     size_t FetchNode(bool allowReserved) override
     {
-        const auto limit = header_->nNode - (allowReserved ? 0 : base_.reservedNumber);
-        auto cur = header_->freeHead.load(std::memory_order_relaxed);
-        while (true) {
-            const auto iNode = (cur >= limit) ? 0 : cur;
-            const auto next = iNode + 1;
-            if (header_->freeHead.compare_exchange_weak(cur, next, std::memory_order_relaxed,
-                                                        std::memory_order_relaxed)) {
-                return iNode;
+        const auto total = header_->nNode - (allowReserved ? 0 : base_.reservedNumber);
+        for (size_t i = 0; i < 2 * total; ++i) {
+            auto cur = header_->nodeCursor.fetch_add(1, std::memory_order_relaxed) % total;
+            uint8_t expected = 1;
+            if (accessed_[cur].compare_exchange_strong(expected, 0, std::memory_order_relaxed,
+                                                       std::memory_order_relaxed)) {
+                continue;
             }
+            return cur;
         }
+        return header_->nodeCursor.fetch_add(1, std::memory_order_relaxed) % total;
+    }
+    void MarkAccessed(size_t iNode) override
+    {
+        accessed_[iNode].store(1, std::memory_order_relaxed);
     }
     void* DataAt(size_t iNode) override { return data_ + nodeSize_ * iNode; }
     void* DeviceDataAt(size_t iNode) override { return dataOnDevice_ + nodeSize_ * iNode; }
@@ -496,10 +538,13 @@ public:
         if (s.Failure()) [[unlikely]] { return s; }
         header_ = static_cast<BufferHeader*>(addrress_);
         meta_ = (BufferMetaNode*)(static_cast<std::byte*>(addrress_) + MetaOffset());
+        accessed_ = reinterpret_cast<std::atomic<uint8_t>*>(static_cast<std::byte*>(addrress_) +
+                                                            AccessedOffset());
         return Status::OK();
     }
     void* DataAt(size_t iNode) override { return nullptr; }
     void* DeviceDataAt(size_t iNode) override { return nullptr; }
+    void MarkAccessed(size_t /*iNode*/) override {}
 };
 
 Status TransBuffer::Setup(const Config& config)
@@ -591,6 +636,7 @@ size_t TransBuffer::FindAt(size_t iBucket, const Detail::BlockId& blockId, size_
                 meta->errorCode = Status::OK().Underlying();
             }
             ++meta->reference;
+            strategy_->MarkAccessed(iNode);
             strategy_->NodeUnlock(iNode);
             break;
         }
@@ -625,6 +671,7 @@ size_t TransBuffer::Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_
             MoveTo(iBucket, iNode);
         }
         ++meta->reference;
+        strategy_->MarkAccessed(iNode);
         meta->block = blockId;
         meta->shard = shardIdx;
         meta->state = State::LOADING;
