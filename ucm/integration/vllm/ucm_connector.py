@@ -1562,7 +1562,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             f"total_blocks_num: {len(ucm_block_ids)}, "
             f"hit hbm: {hbm_hit_block_num * self.cp_world_size}, "
             f"hit external: {external_hit_blocks * self.cp_world_size}"
-            f"total tokens: {request.all_token_ids}"
+            f"total tokens: {len(request.all_token_ids)}"
         )
 
         if not external_block_ids:
