@@ -48,7 +48,15 @@ Status TransportManagerBackend::Init()
     // TODO: make transport backend configurable
     transport::HixlInitAttrs attrs;
     attrs.ip = options_.localHost;
-    attrs.instances.push_back(transport::HixlInitAttrs::Instance{-1, options_.deviceId, {}});
+    transport::HixlInitAttrs::Instance instance{-1, options_.deviceId, {}};
+    if (options_.hixlDeviceListenPort > 0) {
+        instance.options["GlobalResourceConfig"] =
+            std::string{"{\"comm_resource_config.listen_port\":"} +
+            std::to_string(options_.hixlDeviceListenPort) + "}";
+    }
+    if (options_.enableHixlCs) { instance.options["LocalCommRes"] = R"({"version":"1.3"})"; }
+    UC_DEBUG("DramStore HIXL LocalCommRes 1.3 configured: enabled={}", options_.enableHixlCs);
+    attrs.instances.push_back(std::move(instance));
     attrs.connect_timeout_ms = options_.connectTimeoutMs;
     attrs.transfer_timeout_ms = options_.transferTimeoutMs;
     auto transportStatus = manager_.Init();

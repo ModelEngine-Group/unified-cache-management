@@ -12,6 +12,16 @@ enum class ControlOperation : uint32_t {
     Disconnect = 2,
 };
 
+inline const char* ControlOperationName(ControlOperation operation) noexcept
+{
+    switch (operation) {
+        case ControlOperation::ExchangeMetadata: return "exchange-metadata";
+        case ControlOperation::Connect: return "connect";
+        case ControlOperation::Disconnect: return "disconnect";
+    }
+    return "unknown";
+}
+
 struct ControlRequest {
     ControlOperation operation;
     std::optional<TransportProtocol> protocol;

@@ -1,6 +1,7 @@
 #include "control/control_channel.h"
 #include <algorithm>
 #include <arpa/inet.h>
+#include <cerrno>
 #include <cstring>
 #include <mutex>
 #include <netdb.h>
@@ -57,7 +58,11 @@ Status SendAll(Socket socket, const void* data, size_t length)
     while (length > 0) {
         const auto chunk = static_cast<int>(std::min<size_t>(length, 64 * 1024));
         const int sent = send(socket, cursor, chunk, 0);
-        if (sent <= 0) { return Status::Error(); }
+        if (sent <= 0) {
+            UC_ERROR("transport tcp send failed socket={} remaining={} errno={} error={}", socket,
+                     length, errno, std::strerror(errno));
+            return Status::Error();
+        }
         cursor += sent;
         length -= static_cast<size_t>(sent);
     }
@@ -70,7 +75,16 @@ Status RecvAll(Socket socket, void* data, size_t length)
     while (length > 0) {
         const auto chunk = static_cast<int>(std::min<size_t>(length, 64 * 1024));
         const int received = recv(socket, cursor, chunk, 0);
-        if (received <= 0) { return Status::Error(); }
+        if (received == 0) {
+            UC_ERROR("transport tcp peer closed connection socket={} remaining={}", socket, length);
+            return Status::Error();
+        }
+        if (received < 0) {
+            UC_ERROR(
+                "transport tcp receive failed socket={} remaining={} result={} errno={} error={}",
+                socket, length, received, errno, std::strerror(errno));
+            return Status::Error();
+        }
         cursor += received;
         length -= static_cast<size_t>(received);
     }
@@ -90,6 +104,8 @@ void CloseSocket(Socket socket)
 Status SendFrame(Socket socket, const void* data, size_t length)
 {
     if (socket == kInvalidSocket || (data == nullptr && length != 0) || length > UINT32_MAX) {
+        UC_ERROR("transport tcp send frame invalid socket={} data={} length={}", socket,
+                 static_cast<const void*>(data), length);
         return Status::InvalidParam();
     }
     const uint32_t network_length = htonl(static_cast<uint32_t>(length));
@@ -100,12 +116,19 @@ Status SendFrame(Socket socket, const void* data, size_t length)
 
 Status ReceiveFrame(Socket socket, Metadata& metadata, size_t max_length)
 {
-    if (socket == kInvalidSocket) { return Status::InvalidParam(); }
+    if (socket == kInvalidSocket) {
+        UC_ERROR("transport tcp receive frame invalid socket={}", socket);
+        return Status::InvalidParam();
+    }
     uint32_t network_length = 0;
     auto status = RecvAll(socket, &network_length, sizeof(network_length));
     if (status != Status::OK()) { return status; }
     const auto length = ntohl(network_length);
-    if (length > max_length) { return Status::InvalidParam(); }
+    if (length > max_length) {
+        UC_ERROR("transport tcp receive frame too large socket={} length={} limit={}", socket,
+                 length, max_length);
+        return Status::InvalidParam();
+    }
     metadata.assign(length, 0);
     return length == 0 ? Status::OK() : RecvAll(socket, metadata.data(), metadata.size());
 }
@@ -152,6 +175,7 @@ ControlChannel::~ControlChannel() { Close(); }
 
 Status ControlChannel::Init(const Endpoint& endpoint, RequestHandler handler)
 {
+    UC_DEBUG("transport control init begin endpoint={}:{}", endpoint.host, endpoint.port);
     Close();
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -159,17 +183,28 @@ Status ControlChannel::Init(const Endpoint& endpoint, RequestHandler handler)
     }
     auto status = Listen(endpoint);
     if (status != Status::OK()) {
+        UC_ERROR("transport control listen initialization failed endpoint={}:{} status={}",
+                 endpoint.host, endpoint.port, status.Underlying());
         Close();
         return status;
     }
     status = StartAccepting();
-    if (status != Status::OK()) { Close(); }
+    if (status != Status::OK()) {
+        UC_ERROR("transport control accept initialization failed endpoint={}:{} status={}",
+                 endpoint.host, endpoint.port, status.Underlying());
+        Close();
+    } else {
+        UC_DEBUG("transport control init completed endpoint={}:{}", endpoint.host, endpoint.port);
+    }
     return status;
 }
 
 Status ControlChannel::Listen(const Endpoint& endpoint)
 {
-    if (endpoint.port == 0) { return Status::InvalidParam(); }
+    if (endpoint.port == 0) {
+        UC_ERROR("transport tcp listen invalid endpoint={}:{}", endpoint.host, endpoint.port);
+        return Status::InvalidParam();
+    }
     UC_DEBUG("transport tcp listen begin endpoint={}:{} backlog={}", endpoint.host, endpoint.port,
              kListenBacklog);
     addrinfo hints{};
@@ -216,7 +251,10 @@ Status ControlChannel::Listen(const Endpoint& endpoint)
 
 Status ControlChannel::AcceptSocket(SocketHandle& socket)
 {
-    if (!listen_socket_.Valid()) { return Status::InvalidParam(); }
+    if (!listen_socket_.Valid()) {
+        UC_ERROR("transport tcp accept failed: listen socket is invalid");
+        return Status::InvalidParam();
+    }
 
     const auto accepted = ::accept(listen_socket_.Get(), nullptr, nullptr);
     if (accepted == kInvalidSocket) {
@@ -235,7 +273,10 @@ Status ControlChannel::AcceptSocket(SocketHandle& socket)
 
 Status ControlChannel::Connect(const Endpoint& endpoint)
 {
-    if (endpoint.host.empty() || endpoint.port == 0) { return Status::InvalidParam(); }
+    if (endpoint.host.empty() || endpoint.port == 0) {
+        UC_ERROR("transport tcp connect invalid endpoint={}:{}", endpoint.host, endpoint.port);
+        return Status::InvalidParam();
+    }
     UC_DEBUG("transport tcp connect begin endpoint={}:{}", endpoint.host, endpoint.port);
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
@@ -273,33 +314,69 @@ Status ControlChannel::Connect(const Endpoint& endpoint)
 Status ControlChannel::Request(const Endpoint& endpoint, const Metadata& request,
                                Metadata& response)
 {
+    UC_DEBUG("transport control request begin peer={}:{} bytes={}", endpoint.host, endpoint.port,
+             request.size());
     ControlChannel channel;
     auto status = channel.Connect(endpoint);
-    if (status != Status::OK()) { return status; }
+    if (status != Status::OK()) {
+        UC_ERROR("transport control request connect failed peer={}:{} status={}", endpoint.host,
+                 endpoint.port, status.Underlying());
+        return status;
+    }
 
     status = SendFrame(channel.socket_.Get(), request.data(), request.size());
-    if (status != Status::OK()) { return status; }
+    if (status != Status::OK()) {
+        UC_ERROR("transport control request send failed peer={}:{} socket={} status={}",
+                 endpoint.host, endpoint.port, channel.socket_.Get(), status.Underlying());
+        return status;
+    }
+    UC_DEBUG("transport control request sent peer={}:{} socket={} bytes={}", endpoint.host,
+             endpoint.port, channel.socket_.Get(), request.size());
 
     Metadata response_frame;
     status = ReceiveFrame(channel.socket_.Get(), response_frame, max_receive_frame_size_);
-    if (status != Status::OK()) { return status; }
+    if (status != Status::OK()) {
+        UC_ERROR("transport control response receive failed peer={}:{} socket={} status={}",
+                 endpoint.host, endpoint.port, channel.socket_.Get(), status.Underlying());
+        return status;
+    }
     ControlResponse decoded_response;
     status = DecodeControlResponse(response_frame, decoded_response);
-    if (status != Status::OK() || decoded_response.status != Status::OK()) {
-        return status == Status::OK() ? decoded_response.status : status;
+    if (status != Status::OK()) {
+        UC_ERROR("transport control response decode failed peer={}:{} socket={} bytes={} status={}",
+                 endpoint.host, endpoint.port, channel.socket_.Get(), response_frame.size(),
+                 status.Underlying());
+        return status;
+    }
+    if (decoded_response.status != Status::OK()) {
+        UC_ERROR("transport control peer rejected request peer={}:{} socket={} status={}",
+                 endpoint.host, endpoint.port, channel.socket_.Get(),
+                 decoded_response.status.Underlying());
+        return decoded_response.status;
     }
     response = std::move(decoded_response.payload);
+    UC_DEBUG("transport control request completed peer={}:{} socket={} response_bytes={}",
+             endpoint.host, endpoint.port, channel.socket_.Get(), response.size());
     return Status::OK();
 }
 
 Status ControlChannel::StartAccepting()
 {
-    if (!listen_socket_.Valid()) { return Status::InvalidParam(); }
+    if (!listen_socket_.Valid()) {
+        UC_ERROR("transport tcp start accepting failed: listen socket is invalid");
+        return Status::InvalidParam();
+    }
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!request_handler_) { return Status::InvalidParam(); }
-        if (accept_thread_.joinable()) { return Status::OK(); }
+        if (!request_handler_) {
+            UC_ERROR("transport tcp start accepting failed: request handler is empty");
+            return Status::InvalidParam();
+        }
+        if (accept_thread_.joinable()) {
+            UC_DEBUG("transport tcp accept thread already running socket={}", listen_socket_.Get());
+            return Status::OK();
+        }
         stop_accept_.store(false, std::memory_order_relaxed);
     }
 
@@ -312,7 +389,13 @@ Status ControlChannel::StartAccepting()
             Metadata request_frame;
             const auto receive_status =
                 ReceiveFrame(accepted_socket.Get(), request_frame, max_receive_frame_size_);
-            if (receive_status != Status::OK()) { continue; }
+            if (receive_status != Status::OK()) {
+                UC_ERROR("transport control request receive failed socket={} status={}",
+                         accepted_socket.Get(), receive_status.Underlying());
+                continue;
+            }
+            UC_DEBUG("transport control request received socket={} bytes={}", accepted_socket.Get(),
+                     request_frame.size());
 
             RequestHandler handler;
             {
@@ -322,13 +405,30 @@ Status ControlChannel::StartAccepting()
             Metadata response;
             const auto request_status =
                 handler ? handler(request_frame, response) : Status::InvalidParam();
+            if (request_status != Status::OK()) {
+                UC_ERROR("transport control request handler failed socket={} status={}",
+                         accepted_socket.Get(), request_status.Underlying());
+            } else {
+                UC_DEBUG("transport control request handled socket={} response_bytes={}",
+                         accepted_socket.Get(), response.size());
+            }
             ControlResponse control_response{request_status, std::move(response)};
             Metadata response_payload;
-            if (EncodeControlResponse(control_response, response_payload) == Status::OK()) {
-                const auto send_status = SendFrame(accepted_socket.Get(), response_payload.data(),
-                                                   response_payload.size());
-                if (send_status != Status::OK()) { continue; }
+            const auto encode_status = EncodeControlResponse(control_response, response_payload);
+            if (encode_status != Status::OK()) {
+                UC_ERROR("transport control response encode failed socket={} status={}",
+                         accepted_socket.Get(), encode_status.Underlying());
+                continue;
             }
+            const auto send_status =
+                SendFrame(accepted_socket.Get(), response_payload.data(), response_payload.size());
+            if (send_status != Status::OK()) {
+                UC_ERROR("transport control response send failed socket={} bytes={} status={}",
+                         accepted_socket.Get(), response_payload.size(), send_status.Underlying());
+                continue;
+            }
+            UC_DEBUG("transport control response sent socket={} bytes={} status={}",
+                     accepted_socket.Get(), response_payload.size(), request_status.Underlying());
         }
     });
     return Status::OK();

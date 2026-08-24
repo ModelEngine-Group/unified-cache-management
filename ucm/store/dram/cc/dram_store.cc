@@ -111,6 +111,8 @@ private:
             config_->localTransportManagerId,
             config_->localHost,
             config_->deviceId,
+            config_->hixlListenPort,
+            config_->enableHixlCs,
             1000,
             static_cast<std::int32_t>(std::min<std::int64_t>(
                 transferTimeout.count(), std::numeric_limits<std::int32_t>::max())),
