@@ -23,6 +23,7 @@
  * */
 #include "completion_poller.h"
 #include <algorithm>
+#include <cstdio>
 #include <thread>
 #include <utility>
 #include "core/transport_manager.h"
@@ -32,6 +33,16 @@
 
 namespace UC::DramPool {
 namespace {
+
+double ReadCpuLoadAvg1m()
+{
+    FILE* fp = std::fopen("/proc/loadavg", "r");
+    if (fp == nullptr) { return 0.0; }
+    double load = 0.0;
+    std::fscanf(fp, "%lf", &load);
+    std::fclose(fp);
+    return load;
+}
 
 void ReleaseResponseBuffer(BufferPool& flagBufferPool, CompletionRecord& record)
 {
@@ -66,7 +77,7 @@ void LogRequestDone(CompletionRecord& record, const char* status, const char* fa
         "data_transfer_us={} metadata_settle_us={} response_slot_wait_us={} "
         "response_submit_us={} response_transfer_us={} data_tm_to_hixl_execute_async_us={} "
         "data_tm_to_hixl_query_handle_us={} response_tm_to_hixl_execute_async_us={} "
-        "response_tm_to_hixl_query_handle_us={} total_us={}",
+        "response_tm_to_hixl_query_handle_us={} total_us={} cpu_loadavg_1m={:.2f}",
         record.request_id, static_cast<int>(record.opcode), record.peer_one_sided_id,
         record.batch_size, record.data_bytes, record.failed_items, status, failedStage,
         record.timing.received_ts_us, record.timing.worker_started_ts_us,
@@ -98,7 +109,7 @@ void LogRequestDone(CompletionRecord& record, const char* status, const char* fa
                 record.timing.response_execute_async.backend_called_us),
         elapsed(record.timing.response_get_status.manager_entered_us,
                 record.timing.response_get_status.backend_called_us),
-        elapsed(record.timing.received_us, record.timing.request_completed_us));
+        elapsed(record.timing.received_us, record.timing.request_completed_us), ReadCpuLoadAvg1m());
 }
 
 }  // namespace

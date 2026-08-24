@@ -23,6 +23,7 @@
  * */
 #include "task_manager.h"
 #include <algorithm>
+#include <cstdio>
 #include <fmt/format.h>
 #include <string>
 #include <system_error>
@@ -30,6 +31,19 @@
 #include "logger/logger.h"
 
 namespace UC::Dram {
+namespace {
+
+double ReadCpuLoadAvg1m()
+{
+    FILE* fp = std::fopen("/proc/loadavg", "r");
+    if (fp == nullptr) { return 0.0; }
+    double load = 0.0;
+    std::fscanf(fp, "%lf", &load);
+    std::fclose(fp);
+    return load;
+}
+
+}  // namespace
 
 TaskManager::TaskManager(TaskManagerConfig config, TaskManagerDependencies dependencies)
     : config_(std::move(config)),
@@ -342,14 +356,15 @@ void TaskManager::LogTaskDone(TaskId taskId, OpType op, std::size_t entryCount,
     UC_INFO(
         "[PERF] component=dramstore event=task_done task_id={} opcode={} entries={} "
         "request_count={} status={} status_code={} enqueued_ts_us={} requests_started_ts_us={} "
-        "completed_ts_us={} queue_us={} route_us={} requests_inflight_us={} total_us={}",
+        "completed_ts_us={} queue_us={} route_us={} requests_inflight_us={} total_us={} "
+        "cpu_loadavg_1m={:.2f}",
         taskId, static_cast<unsigned>(op), entryCount, requestCount,
         status.Success() ? "SUCCESS" : "FAILED", status.Underlying(), timing.enqueuedTsUs,
         timing.requestsStartedTsUs, timing.completedTsUs,
         elapsed(timing.enqueuedUs, timing.processSubmissionStartedUs),
         elapsed(timing.processSubmissionStartedUs, timing.requestsStartedUs),
         elapsed(timing.requestsStartedUs, timing.completedUs),
-        elapsed(timing.enqueuedUs, timing.completedUs));
+        elapsed(timing.enqueuedUs, timing.completedUs), ReadCpuLoadAvg1m());
 }
 
 void TaskManager::ProcessCompletion(RequestCompleted event)

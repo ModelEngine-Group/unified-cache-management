@@ -24,12 +24,23 @@
 #include "node_actor.h"
 #include <algorithm>
 #include <cassert>
+#include <cstdio>
 #include <cstring>
 #include <utility>
 #include "logger/logger.h"
 
 namespace UC::Dram {
 namespace {
+
+double ReadCpuLoadAvg1m()
+{
+    FILE* fp = std::fopen("/proc/loadavg", "r");
+    if (fp == nullptr) { return 0.0; }
+    double load = 0.0;
+    std::fscanf(fp, "%lf", &load);
+    std::fclose(fp);
+    return load;
+}
 
 // Fold shardId into the wire key for non-zero shards so multiple shards of one
 // block coexist on the same drampool node (which keys entries by BlockId alone).
@@ -142,7 +153,8 @@ void NodeActor::QueueCompletion(Request request, Status status,
         "transport_submitted_ts_us={} "
         "transmit_completed_ts_us={} reply_observed_ts_us={} completed_ts_us={} "
         "node_queue_us={} reply_slot_wait_us={} encode_us={} control_submit_us={} "
-        "control_transfer_us={} remote_wait_us={} reply_process_us={} total_us={}",
+        "control_transfer_us={} remote_wait_us={} reply_process_us={} total_us={} "
+        "cpu_loadavg_1m={:.2f}",
         request.taskId, request.requestId, static_cast<unsigned>(request.op), request.nodeId,
         request.entries.size(), status.Success() ? "SUCCESS" : "FAILED", status.Underlying(),
         request.timing.nodeQueuedTsUs, request.timing.controlTransportSubmittedTsUs,
@@ -155,7 +167,7 @@ void NodeActor::QueueCompletion(Request request, Status status,
         elapsed(request.timing.controlTransportSubmittedUs, request.timing.controlTransportCompletedUs),
         elapsed(remoteWaitStarted, request.timing.replyObservedUs),
         elapsed(request.timing.replyObservedUs, request.timing.replyProcessedUs),
-        elapsed(request.timing.nodeQueuedUs, request.timing.completedUs));
+        elapsed(request.timing.nodeQueuedUs, request.timing.completedUs), ReadCpuLoadAvg1m());
     for (std::size_t index = 0; index < entryResults.size(); ++index) {
         entryResults[index].originalIndex = request.entries[index].originalIndex;
     }
