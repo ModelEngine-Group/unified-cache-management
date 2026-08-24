@@ -1,12 +1,12 @@
 # UCM Metrics Reference
 
-## 3. Metrics Exported by Default
+## 1. Metrics Exported by Default
 
 The tables below use the default `ucm:` prefix. The default configuration contains 78 Counters, 14 Gauges, and 67 Histograms.
 
 See [UCM Health Metrics](health_metrics.md) for Store health metrics and recommended aggregation.
 
-### 3.1 Connector
+### 1.1 Connector
 
 #### Counters
 
@@ -56,7 +56,7 @@ No Connector-specific Gauges are exported by default.
 | `ucm:layerwise_batch_load_wait_total_load_only_ms`      | Sum of all`wait_for_layer_load` blocking time in a load-only batch       |
 | `ucm:layerwise_batch_load_wait_total_load_save_ms`      | Sum of all`wait_for_layer_load` blocking time in a load-and-save batch   |
 
-### 3.2 Cache Store
+### 1.2 Cache Store
 
 #### Counters
 
@@ -102,7 +102,7 @@ No Cache Store-specific Gauges are exported by default.
 | `ucm:cache_dump_backend_submit_duration_ms` | Time to synchronously submit the buffer to the lower Store                               |
 | `ucm:cache_dump_backend_wait_duration_ms`   | Time waiting for the lower Store to complete the write                                   |
 
-### 3.3 Posix Store
+### 1.3 Posix Store
 
 #### Counters
 
@@ -134,7 +134,7 @@ No Cache Store-specific Gauges are exported by default.
 | `ucm:posix_load_queue_wait_duration_ms` | Time a Posix Load task waits before the first worker picks it up                    |
 | `ucm:posix_dump_queue_wait_duration_ms` | Time a Posix Dump task waits before the first worker picks it up                    |
 
-### 3.4 YuanRong Store
+### 1.4 YuanRong Store
 
 #### Counters
 
@@ -165,7 +165,7 @@ No Cache Store-specific Gauges are exported by default.
 
 No YuanRong-specific Histograms are exported by default.
 
-### 3.5 Mooncake Store
+### 1.5 Mooncake Store
 
 #### Counters
 
@@ -212,9 +212,9 @@ No YuanRong-specific Histograms are exported by default.
 | `ucm:mooncake_dump_backend_submit_duration_ms` | Time to submit a backend Dump after the D2H archival copy             |
 | `ucm:mooncake_dump_backend_wait_duration_ms`   | Time waiting for backend archival to complete                         |
 
-## 4. Raw Metrics Usage
+## 2. Raw Metrics Usage
 
-### 4.1 Hit Rate
+### 2.1 Hit Rate
 
 Use a layered calculation instead of calculating each Store hit rate independently. First calculate the total hit rate at the boundary of two adjacent cache layers. Then split that total according to the actual load-source ratio reported by those layers. This keeps the numerator and denominator semantics consistent across the hierarchy and provides the most accurate tier-level estimate.
 
@@ -238,7 +238,7 @@ posix_hit_rate = external_cache_hit_rate * posix_share
 
 Apply the same approach to other layered Stores: calculate their combined hit rate first, then split it using Counters that represent the actual load source. Use `rate()` or `increase()` over the same time range for every Counter in a formula, and do not mix token, block, and shard counts within the same ratio.
 
-### 4.2 Bandwidth
+### 2.2 Bandwidth
 
 UCM exposes two useful bandwidth views with different meanings:
 
