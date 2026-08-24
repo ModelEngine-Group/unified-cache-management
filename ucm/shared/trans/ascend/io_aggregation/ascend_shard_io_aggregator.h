@@ -12,6 +12,7 @@
 #include <vector>
 #include "../ffts/ffts_sdma_dispatcher.h"
 #include "status/status.h"
+#include "trans/event.h"
 
 namespace UC::Trans {
 
@@ -45,7 +46,7 @@ public:
     AscendShardIOAggregator& operator=(const AscendShardIOAggregator&) = delete;
 
     Status Setup(const AscendShardIOAggregatorConfig& config);
-    Status WaitEvent(void* event);
+    Status WaitEvent(const Event& event);
     Status SubmitLoadObject(void* host, void** devices, const std::vector<size_t>& sizes);
     Status SubmitDumpObject(void** devices, void* host, const std::vector<size_t>& sizes);
     Status Synchronize();

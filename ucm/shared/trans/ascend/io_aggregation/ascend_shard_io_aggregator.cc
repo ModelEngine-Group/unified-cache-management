@@ -85,11 +85,11 @@ Status AscendShardIOAggregator::Setup(const AscendShardIOAggregatorConfig& confi
     return Status::OK();
 }
 
-Status AscendShardIOAggregator::WaitEvent(void* event)
+Status AscendShardIOAggregator::WaitEvent(const Event& event)
 {
     if (!setup_) { return Status::OK(); }
-    if (event == nullptr) { return Status::OK(); }
-    auto aclEvent = static_cast<aclrtEvent>(event);
+    if (!event.Valid()) { return Status::OK(); }
+    auto aclEvent = reinterpret_cast<aclrtEvent>(event.NativeHandle());
     for (auto& lane : lanes_) {
         auto s = AclStatus(aclrtStreamWaitEvent(lane.copyStream, aclEvent),
                            "aclrtStreamWaitEvent(copy prerequisite)");

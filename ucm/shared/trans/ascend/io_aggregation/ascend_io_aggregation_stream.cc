@@ -51,7 +51,7 @@ Status AscendIoAggregationStream::EnsureAggregator(const std::vector<size_t>& si
     auto s = aggregator->Setup(aggregatorConfig);
     if (s.Failure()) [[unlikely]] { return s; }
     aggregator_ = std::move(aggregator);
-    for (auto* event : pendingEvents_) {
+    for (const auto& event : pendingEvents_) {
         s = aggregator_->WaitEvent(event);
         if (s.Failure()) [[unlikely]] { return s; }
     }
@@ -119,6 +119,36 @@ Status AscendIoAggregationStream::HostToDeviceAsync(void*, void*[], size_t, size
     return Unsupported("HostToDeviceAsync");
 }
 
+Status AscendIoAggregationStream::DeviceToDevice(void*, void*, size_t)
+{
+    return Unsupported("DeviceToDevice");
+}
+
+Status AscendIoAggregationStream::DeviceToDevice(void*[], void*[], size_t, size_t)
+{
+    return Unsupported("DeviceToDevice");
+}
+
+Status AscendIoAggregationStream::DeviceToDevice(void*[], void*, size_t, size_t)
+{
+    return Unsupported("DeviceToDevice");
+}
+
+Status AscendIoAggregationStream::DeviceToDeviceAsync(void*, void*, size_t)
+{
+    return Unsupported("DeviceToDeviceAsync");
+}
+
+Status AscendIoAggregationStream::DeviceToDeviceAsync(void*[], void*[], size_t, size_t)
+{
+    return Unsupported("DeviceToDeviceAsync");
+}
+
+Status AscendIoAggregationStream::DeviceToDeviceAsync(void*[], void*, size_t, size_t)
+{
+    return Unsupported("DeviceToDeviceAsync");
+}
+
 Status AscendIoAggregationStream::HostToDeviceAsync(void* host, void* device[],
                                                     const std::vector<size_t>& sizes)
 {
@@ -150,9 +180,9 @@ Status AscendIoAggregationStream::Synchronized()
     return aggregator_->Synchronize();
 }
 
-Status AscendIoAggregationStream::WaitEvent(void* event)
+Status AscendIoAggregationStream::WaitEvent(const Event& event)
 {
-    if (event == nullptr) { return Status::OK(); }
+    if (!event.Valid()) { return Status::OK(); }
     if (!aggregator_) {
         pendingEvents_.push_back(event);
         return Status::OK();
