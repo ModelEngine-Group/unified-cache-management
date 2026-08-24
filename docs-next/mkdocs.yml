@@ -111,9 +111,21 @@ extra:
 nav:
   - Home: index.md
   - User Guide:
+      - user-guide/index.md
       - Installation: user-guide/installation.md
-      - Model Tour: user-guide/model-tour/index.md
       - Getting Started: user-guide/engines/index.md
+      - Model Tour:
+          - user-guide/model-tour/index.md
+          - GLM:
+              - user-guide/model-tour/glm/index.md
+          - Qwen:
+              - user-guide/model-tour/qwen3/index.md
+          - DeepSeek:
+              - user-guide/model-tour/deepseek/index.md
+          - MiniMax:
+              - user-guide/model-tour/minimax/index.md
+          - Kimi:
+              - user-guide/model-tour/kimi/index.md
       - Deploy: user-guide/deploy/index.md
       - Core Capabilities & Troubleshooting: user-guide/capabilities/index.md
   - Developer Guide:
