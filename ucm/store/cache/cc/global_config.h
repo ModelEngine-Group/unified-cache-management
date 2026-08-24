@@ -37,9 +37,6 @@
 
 namespace UC::CacheStore {
 
-inline constexpr const char* kSdmaDirectLaunchShard = "shard";
-inline constexpr const char* kSdmaDirectLaunchTask = "task";
-
 struct Config {
     StoreV1* storeBackend{};
     std::string uniqueId{};
@@ -61,8 +58,9 @@ struct Config {
     std::vector<size_t> gpuKvBufferSizes{};
     bool useGdr{false};
     bool cacheSdmaDirect{UCM_RUNTIME_ASCEND_SDMA_DIRECT};
-    std::string sdmaDirectLaunchGranularity{kSdmaDirectLaunchShard};
     size_t localRankSize{8};
+
+    size_t EffectiveStreamNumber() const noexcept { return cacheSdmaDirect ? 1 : streamNumber; }
 };
 
 }  // namespace UC::CacheStore

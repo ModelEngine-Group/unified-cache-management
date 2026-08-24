@@ -123,6 +123,11 @@ def get_supported_versions() -> list[str]:
         "0.21.0",
         "0.22.1",
         "0.23.0",
+        "0.24.0",
+        "0.25.1",
+        "0.26.0",
+        "0.27.0",
+        "0.28.0",
     ]
 
 
@@ -133,6 +138,9 @@ def apply_all_patches() -> None:
         from ucm.integration.vllm.patch.logger_patch import patch_logger
 
         if not ENABLE_UCM_PATCH:
+            logger.warning(
+                "UCM patching is disabled. Set ENABLE_UCM_PATCH=1 to enable it."
+            )
             return
 
         version = get_vllm_version()
@@ -155,6 +163,9 @@ def apply_all_patches() -> None:
             "0.20.2",
             "0.22.1",
             "0.23.0",
+            "0.24.0",
+            "0.25.1",
+            "0.26.0",
         }:
             logger.info("UCM patching vllm-ascend UCM connector metrics alias...")
             import ucm.integration.vllm.patch.ucm_connector_registration_patch
@@ -184,6 +195,11 @@ def apply_all_patches() -> None:
             import ucm.integration.vllm.patch.load_failure_patch
 
         # vllm_ascend patches
+        # Disable CpuAlloc.bind_memory BEFORE any cpu_binding_patch so that
+        # bind_memory is a no-op before bind_threads replacement is installed.
+        logger.info("UCM patching vllm-ascend bind_memory to no-op...")
+        import ucm.integration.vllm.patch.bind_memory_patch
+
         match ascend_version:
             case "0.11.0":
                 logger.info("UCM patching vllm-ascend for pc...")
@@ -229,8 +245,35 @@ def apply_all_patches() -> None:
                 import ucm.integration.vllm.patch.v0230.vllm_ascend.ascend_hybrid_cache_patch
                 import ucm.integration.vllm.patch.v0230.vllm_ascend.cpu_binding_patch
                 import ucm.integration.vllm.patch.v0230.vllm_ascend.sfa_kv_transfer_patch
+            case "0.24.0":
+                logger.info(
+                    "UCM patching vllm-ascend 0.24.0 for hybrid cache "
+                    "recovery and CPU affinity..."
+                )
+                import ucm.integration.vllm.patch.v0240.vllm_ascend.ascend_hybrid_cache_patch
+                import ucm.integration.vllm.patch.v0240.vllm_ascend.cpu_binding_patch
+            case "0.25.1":
+                logger.info(
+                    "UCM patching vllm-ascend 0.25.1 for hybrid cache "
+                    "recovery and CPU affinity..."
+                )
+                import ucm.integration.vllm.patch.v0251.vllm_ascend.ascend_hybrid_cache_patch
+                import ucm.integration.vllm.patch.v0251.vllm_ascend.cpu_binding_patch
+            case "0.26.0":
+                logger.info("UCM patching vllm-ascend 0.26.0 for CPU affinity...")
+                import ucm.integration.vllm.patch.v0260.vllm_ascend.cpu_binding_patch
             case _:
                 pass
+
+        # Fix: vllm-ascend >= 0.21.0 defers do_mamba_copy_block to after
+        # start_load_kv, overwriting UCM-loaded data. @when_imported is
+        # self-guarding (only fires when the module exists).
+        import ucm.integration.vllm.patch.v0210.vllm_ascend.mamba_copy_order_patch
+
+        # Fix: vLLM >= 0.27.0 Kimi-K3's MLA bypasses @maybe_transfer_kv_layer,
+        # so wait_for_layer_load/save_kv_layer are never called. @when_imported
+        # only fires when vllm.models.kimi_k3.nvidia.mla is imported.
+        import ucm.integration.vllm.patch.v0270.vllm.models.kimi_k3.nvidia.kimi_k3_mla_kv_hook_patch
 
         logger.info("UCM patch initialization completed!")
 

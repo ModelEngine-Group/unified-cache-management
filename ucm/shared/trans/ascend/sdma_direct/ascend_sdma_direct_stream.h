@@ -34,11 +34,7 @@ public:
     Status HostToDeviceAsync(void* host[], void* device[], size_t size, size_t number) override;
     Status HostToDeviceAsync(void* host, void* device[], size_t size, size_t number) override;
     Status HostToDeviceAsync(void* host, void* device[], const std::vector<size_t>& sizes) override;
-    Status HostToDeviceAsync(const std::vector<void*>& hosts, const std::vector<void**>& devices,
-                             const std::vector<size_t>& sizes) override;
     Status DeviceToHostAsync(void* device[], void* host, const std::vector<size_t>& sizes) override;
-    Status DeviceToHostAsync(const std::vector<void**>& devices, const std::vector<void*>& hosts,
-                             const std::vector<size_t>& sizes) override;
 
     Status AppendCallback(std::function<void(bool)> cb) override;
     Status Synchronized() override;
