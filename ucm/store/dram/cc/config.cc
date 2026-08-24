@@ -42,9 +42,9 @@ constexpr std::size_t kMaxInflightRequestsPerNode = 128;
 std::size_t MaxReplySize(std::size_t entryCount)
 {
     DramPool::ProtocolManager protocol;
-    return std::max({protocol.GetPackedResponseSize(DramPool::KvOpcode::Lookup, entryCount),
-                     protocol.GetPackedResponseSize(DramPool::KvOpcode::Dump, entryCount),
-                     protocol.GetPackedResponseSize(DramPool::KvOpcode::Load, entryCount)});
+    return std::max({protocol.GetPackedResponseSize(OpType::LOOKUP, entryCount),
+                     protocol.GetPackedResponseSize(OpType::DUMP, entryCount),
+                     protocol.GetPackedResponseSize(OpType::LOAD, entryCount)});
 }
 
 Status RequiredString(const Detail::Dictionary& input, const char* key, std::string* output)

@@ -101,7 +101,7 @@ struct CompletionRecord {
     bool timeout_reported{false};
 
     // State needed to construct the request's sole response.
-    KvOpcode opcode{KvOpcode::None};
+    OpType opcode{OpType::LOOKUP};
     std::uint64_t remote_resp_addr{0};
     transport::ManagerID peer_one_sided_id;
     std::vector<std::uint8_t> results;

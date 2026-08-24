@@ -63,22 +63,10 @@ Status ReplyService::Init()
     return Status::OK();
 }
 
-UC::DramPool::KvOpcode ReplyService::ToOpcode(OpType op) noexcept
-{
-    switch (op) {
-        case OpType::LOOKUP: return DramPool::KvOpcode::Lookup;
-        case OpType::DUMP: return DramPool::KvOpcode::Dump;
-        case OpType::LOAD: return DramPool::KvOpcode::Load;
-    }
-    return DramPool::KvOpcode::None;
-}
-
 std::size_t ReplyService::ReplyPayloadSize(OpType op, std::size_t entryCount) const noexcept
 {
     if (entryCount == 0 || entryCount > kMaxProtocolBatchEntries) { return 0; }
-    const auto opcode = ToOpcode(op);
-    return opcode == DramPool::KvOpcode::None ? 0
-                                              : protocol_.GetPackedResponseSize(opcode, entryCount);
+    return protocol_.GetPackedResponseSize(op, entryCount);
 }
 
 bool ReplyService::CompletionReady(const Lease& lease) const noexcept
@@ -101,9 +89,8 @@ Status ReplyService::DecodeReply(const Lease& lease, std::vector<EntryResult>* e
         return Status::InvalidParam("invalid DramPool reply metadata");
     }
     DramPool::KvResponse response;
-    auto status =
-        protocol_.UnpackResponse(lease.slot.localAddr, ToOpcode(lease.op), lease.token.requestId,
-                                 static_cast<std::uint16_t>(lease.entryCount), response);
+    auto status = protocol_.UnpackResponse(lease.slot.localAddr, lease.op, lease.token.requestId,
+                                           static_cast<std::uint16_t>(lease.entryCount), response);
     if (status.Failure()) { return status; }
     if (response.results.size() != lease.entryCount) { return Status::DeserializeFailed(); }
 

@@ -267,7 +267,7 @@ void CompletionPoller::SettleDataTransfer(CompletionRecord& record,
         DumpLoadResult result = DumpLoadResult::Failed;
 
         // Settle metadata and buffer ownership before completing the request item.
-        if (record.opcode == KvOpcode::Dump) {
+        if (record.opcode == OpType::DUMP) {
             if (terminalStatus == transport::TransferStatus::Completed) {
                 const auto status = runtime_.metadata.StoreEnd(item.key);
                 if (status.Success()) {
@@ -292,7 +292,7 @@ void CompletionPoller::SettleDataTransfer(CompletionRecord& record,
                         record.request_id, record.data_handle, abortStatus);
                 }
             }
-        } else if (record.opcode == KvOpcode::Load) {
+        } else if (record.opcode == OpType::LOAD) {
             const auto releaseStatus = runtime_.metadata.LoadEnd(item.key);
             if (releaseStatus.Failure()) {
                 UC_ERROR("CompletionPoller LoadEnd failed, request_id={}, handle={}, error={}",

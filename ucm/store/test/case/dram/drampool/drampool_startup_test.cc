@@ -517,7 +517,7 @@ TEST(DramPoolServerTest, RequestReceiverLogsReceivedRequestFields)
         if (client.Init(clientControl).Failure()) { ::_exit(3); }
 
         KvLookupRequest request;
-        request.opcode = KvOpcode::Lookup;
+        request.opcode = OpType::LOOKUP;
         request.request_id = kRequestId;
         request.resp_addr = 0x1000;
         request.batch_size = 1;
@@ -530,7 +530,7 @@ TEST(DramPoolServerTest, RequestReceiverLogsReceivedRequestFields)
 
         const auto expected =
             "RequestReceiver received request, request_id=" + std::to_string(kRequestId) +
-            ", opcode=" + std::to_string(static_cast<int>(KvOpcode::Lookup));
+            ", opcode=" + std::to_string(static_cast<int>(OpType::LOOKUP));
         const auto logPath = logRoot / std::to_string(::getpid()) / "ucm.log";
         bool found = false;
         for (int attempt = 0; attempt < 200 && !found; ++attempt) {

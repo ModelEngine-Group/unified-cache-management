@@ -64,6 +64,13 @@ protected:
     ProtocolManager mgr_;
 };
 
+TEST(KvProtocolOpcodeTest, UsesDramStoreOpType)
+{
+    EXPECT_EQ(static_cast<std::uint8_t>(OpType::LOOKUP), 0x0);
+    EXPECT_EQ(static_cast<std::uint8_t>(OpType::DUMP), 0x1);
+    EXPECT_EQ(static_cast<std::uint8_t>(OpType::LOAD), 0x2);
+}
+
 TEST_F(KvProtocolTest, PackDumpRequestMatchesLayout)
 {
     KvDumpEntry entry;
@@ -73,7 +80,7 @@ TEST_F(KvProtocolTest, PackDumpRequestMatchesLayout)
     entry.idx = 0x12345678;
 
     KvDumpRequest req;
-    req.opcode = KvOpcode::Dump;
+    req.opcode = OpType::DUMP;
     req.request_id = kRequestId;
     req.resp_addr = 0x0102030405060708ULL;
     req.batch_size = 1;
@@ -84,7 +91,7 @@ TEST_F(KvProtocolTest, PackDumpRequestMatchesLayout)
     auto status = mgr_.PackRequest(packed.data(), req.opcode, req);
     ASSERT_TRUE(status.Success()) << status.ToString();
 
-    EXPECT_EQ(packed[0], static_cast<std::uint8_t>(KvOpcode::Dump));
+    EXPECT_EQ(packed[0], static_cast<std::uint8_t>(OpType::DUMP));
     ExpectLe64(packed, kRequestIdOffset, req.request_id);
     ExpectLe64(packed, kRespAddrOffset, req.resp_addr);
     ExpectLe32(packed, kDumpTtlOffset, req.ttl);
@@ -106,7 +113,7 @@ TEST_F(KvProtocolTest, PackLoadRequestMatchesLayout)
     entry.idx = 7;
 
     KvLoadRequest req;
-    req.opcode = KvOpcode::Load;
+    req.opcode = OpType::LOAD;
     req.request_id = kRequestId;
     req.resp_addr = 0x1111222233334444ULL;
     req.batch_size = 1;
@@ -116,7 +123,7 @@ TEST_F(KvProtocolTest, PackLoadRequestMatchesLayout)
     auto status = mgr_.PackRequest(packed.data(), req.opcode, req);
     ASSERT_TRUE(status.Success()) << status.ToString();
 
-    EXPECT_EQ(packed[0], static_cast<std::uint8_t>(KvOpcode::Load));
+    EXPECT_EQ(packed[0], static_cast<std::uint8_t>(OpType::LOAD));
     ExpectLe64(packed, kRequestIdOffset, req.request_id);
     ExpectLe64(packed, kRespAddrOffset, req.resp_addr);
     ExpectLe16(packed, kLoadLookupBatchSizeOffset, req.batch_size);
@@ -132,7 +139,7 @@ TEST_F(KvProtocolTest, PackLookupRequestMatchesLayout)
     entry1.key = KeyFromHex("40");
 
     KvLookupRequest req;
-    req.opcode = KvOpcode::Lookup;
+    req.opcode = OpType::LOOKUP;
     req.request_id = kRequestId;
     req.resp_addr = 0x1234000056780000ULL;
     req.batch_size = 2;
@@ -142,7 +149,7 @@ TEST_F(KvProtocolTest, PackLookupRequestMatchesLayout)
     auto status = mgr_.PackRequest(packed.data(), req.opcode, req);
     ASSERT_TRUE(status.Success()) << status.ToString();
 
-    EXPECT_EQ(packed[0], static_cast<std::uint8_t>(KvOpcode::Lookup));
+    EXPECT_EQ(packed[0], static_cast<std::uint8_t>(OpType::LOOKUP));
     ExpectLe64(packed, kRequestIdOffset, req.request_id);
     ExpectLe64(packed, kRespAddrOffset, req.resp_addr);
     ExpectLe16(packed, kLoadLookupBatchSizeOffset, req.batch_size);
@@ -159,7 +166,7 @@ TEST_F(KvProtocolTest, RejectsBatchSizeMismatch)
     entry.key = KeyFromHex("50");
 
     KvLookupRequest req;
-    req.opcode = KvOpcode::Lookup;
+    req.opcode = OpType::LOOKUP;
     req.request_id = kRequestId;
     req.resp_addr = 0x1000;
     req.batch_size = 2;
@@ -176,7 +183,7 @@ TEST_F(KvProtocolTest, RejectsAllZeroKey)
     KvLookupEntry entry;
 
     KvLookupRequest req;
-    req.opcode = KvOpcode::Lookup;
+    req.opcode = OpType::LOOKUP;
     req.request_id = kRequestId;
     req.resp_addr = 0x1000;
     req.batch_size = 1;
@@ -196,7 +203,7 @@ TEST_F(KvProtocolTest, RejectsZeroDumpLoadAddrAndLen)
     entry.len = 1;
 
     KvDumpRequest req;
-    req.opcode = KvOpcode::Dump;
+    req.opcode = OpType::DUMP;
     req.request_id = kRequestId;
     req.resp_addr = 0x1000;
     req.batch_size = 1;
@@ -220,7 +227,7 @@ TEST_F(KvProtocolTest, UnpackRequestRejectsWrongSize)
     entry.key = KeyFromHex("70");
 
     KvLookupRequest req;
-    req.opcode = KvOpcode::Lookup;
+    req.opcode = OpType::LOOKUP;
     req.request_id = kRequestId;
     req.resp_addr = 0x1000;
     req.batch_size = 1;
@@ -243,7 +250,7 @@ TEST_F(KvProtocolTest, UnpackResponseReadsPackedResults)
                                  0x34, 0x12, static_cast<std::uint8_t>(ResponseStatus::Ready),
                                  0x8D, 0x01};
     KvResponse resp;
-    auto status = mgr_.UnpackResponse(lookupFlag, KvOpcode::Lookup, kRequestId, 9, resp);
+    auto status = mgr_.UnpackResponse(lookupFlag, OpType::LOOKUP, kRequestId, 9, resp);
     ASSERT_TRUE(status.Success()) << status.ToString();
     EXPECT_EQ(resp.results, (std::vector<std::uint8_t>{1, 0, 1, 1, 0, 0, 0, 1, 1}));
 
@@ -252,7 +259,7 @@ TEST_F(KvProtocolTest, UnpackResponseReadsPackedResults)
                                0x34, 0x12, static_cast<std::uint8_t>(ResponseStatus::Ready),
                                0x10, 0xF2, 0x03};
     resp.results.clear();
-    status = mgr_.UnpackResponse(dumpFlag, KvOpcode::Dump, kRequestId, 5, resp);
+    status = mgr_.UnpackResponse(dumpFlag, OpType::DUMP, kRequestId, 5, resp);
     ASSERT_TRUE(status.Success()) << status.ToString();
     EXPECT_EQ(resp.results, (std::vector<std::uint8_t>{0, 1, 2, 15, 3}));
 }
@@ -266,7 +273,7 @@ TEST_F(KvProtocolTest, ServerRoundTripDumpLoad)
     entry.idx = 0x55;
 
     KvLoadRequest req;
-    req.opcode = KvOpcode::Load;
+    req.opcode = OpType::LOAD;
     req.request_id = kRequestId;
     req.resp_addr = 0x9988776655443322ULL;
     req.batch_size = 1;
@@ -311,7 +318,7 @@ TEST_F(KvProtocolTest, ServerRoundTripLookup)
     KvLookupEntry e1;
     e1.key = KeyFromHex("a0");
     KvLookupRequest req;
-    req.opcode = KvOpcode::Lookup;
+    req.opcode = OpType::LOOKUP;
     req.request_id = kRequestId;
     req.resp_addr = 0x0E0E0E0E0E0E0E0EULL;
     req.batch_size = 2;
@@ -358,7 +365,7 @@ TEST_F(KvProtocolTest, DumpLoadMaxFieldValuesRoundTrip)
     entry.idx = 0xFFFFFFFFU;
 
     KvLoadRequest req;
-    req.opcode = KvOpcode::Load;
+    req.opcode = OpType::LOAD;
     req.request_id = std::numeric_limits<std::uint64_t>::max();
     req.resp_addr = 0xFFFFFFFFFFFFFFFFULL;
     req.batch_size = 1;
@@ -386,7 +393,7 @@ TEST_F(KvProtocolTest, DumpLoadMultiEntryRoundTrip)
 {
     constexpr std::uint16_t kBatch = 5;
     KvDumpRequest req;
-    req.opcode = KvOpcode::Dump;
+    req.opcode = OpType::DUMP;
     req.request_id = kRequestId;
     req.resp_addr = 0xA5A5A5A5A5A5A5A5ULL;
     req.batch_size = kBatch;
@@ -421,7 +428,7 @@ TEST_F(KvProtocolTest, LookupMultiEntryRoundTrip)
 {
     constexpr std::uint16_t kBatch = 4;
     KvLookupRequest req;
-    req.opcode = KvOpcode::Lookup;
+    req.opcode = OpType::LOOKUP;
     req.request_id = kRequestId;
     req.resp_addr = 0xB0B0B0B0B0B0B0B0ULL;
     req.batch_size = kBatch;
@@ -448,9 +455,11 @@ TEST_F(KvProtocolTest, LookupMultiEntryRoundTrip)
 // opcode validation
 // ---------------------------------------------------------------------------
 
-TEST_F(KvProtocolTest, RejectsNoneOpcodeOnDumpLoad)
+TEST_F(KvProtocolTest, RejectsUnknownOpcodeOnDumpLoad)
 {
-    KvDumpRequest req;  // opcode defaults to None
+    KvDumpRequest req;
+    const auto unknownOpcode = static_cast<OpType>(0xFF);
+    req.opcode = unknownOpcode;
     req.request_id = kRequestId;
     req.resp_addr = 0x1000;
     req.batch_size = 1;
@@ -458,8 +467,8 @@ TEST_F(KvProtocolTest, RejectsNoneOpcodeOnDumpLoad)
         KvDumpEntry{KeyFromHex("10"), 0x2000, 0x100, 0}
     };
 
-    std::vector<std::uint8_t> buf(mgr_.GetPackedRequestSize(KvOpcode::Dump, req), 0);
-    auto status = mgr_.PackRequest(buf.data(), KvOpcode::None, req);
+    std::vector<std::uint8_t> buf(mgr_.GetPackedRequestSize(OpType::DUMP, req), 0);
+    auto status = mgr_.PackRequest(buf.data(), unknownOpcode, req);
     EXPECT_FALSE(status.Success());
     EXPECT_NE(status.ToString().find("opcode"), std::string::npos);
 }
@@ -467,7 +476,7 @@ TEST_F(KvProtocolTest, RejectsNoneOpcodeOnDumpLoad)
 TEST_F(KvProtocolTest, RejectsOpcodeMismatch)
 {
     KvDumpRequest req;
-    req.opcode = KvOpcode::Lookup;  // wrong opcode for a Dump request
+    req.opcode = OpType::LOOKUP;  // wrong opcode for a Dump request
     req.request_id = kRequestId;
     req.resp_addr = 0x1000;
     req.batch_size = 1;
@@ -475,8 +484,8 @@ TEST_F(KvProtocolTest, RejectsOpcodeMismatch)
         KvDumpEntry{KeyFromHex("10"), 0x2000, 0x100, 0}
     };
 
-    std::vector<std::uint8_t> buf(mgr_.GetPackedRequestSize(KvOpcode::Dump, req), 0);
-    auto status = mgr_.PackRequest(buf.data(), KvOpcode::Dump, req);
+    std::vector<std::uint8_t> buf(mgr_.GetPackedRequestSize(OpType::DUMP, req), 0);
+    auto status = mgr_.PackRequest(buf.data(), OpType::DUMP, req);
     EXPECT_FALSE(status.Success());
     EXPECT_NE(status.ToString().find("opcode"), std::string::npos);
 }
@@ -498,7 +507,7 @@ TEST_F(KvProtocolTest, UnpackRequestRejectsUnknownOpcode)
 TEST_F(KvProtocolTest, UnpackRequestRejectsExtraBytes)
 {
     KvLookupRequest req;
-    req.opcode = KvOpcode::Lookup;
+    req.opcode = OpType::LOOKUP;
     req.request_id = kRequestId;
     req.resp_addr = 0x1000;
     req.batch_size = 1;
@@ -523,13 +532,13 @@ TEST_F(KvProtocolTest, UnpackRequestRejectsNull)
 TEST_F(KvProtocolTest, UnpackRequestRejectsTruncatedHeaderForEveryOpcode)
 {
     struct TestCase {
-        KvOpcode opcode;
+        OpType opcode;
         std::size_t header_size;
     };
     const std::array<TestCase, 3> test_cases = {
-        {{KvOpcode::Dump, kKvDumpRequestHeaderSize},
-         {KvOpcode::Load, kKvLoadRequestHeaderSize},
-         {KvOpcode::Lookup, kKvLookupRequestHeaderSize}}
+        {{OpType::DUMP, kKvDumpRequestHeaderSize},
+         {OpType::LOAD, kKvLoadRequestHeaderSize},
+         {OpType::LOOKUP, kKvLookupRequestHeaderSize}}
     };
 
     for (const auto& test_case : test_cases) {
@@ -546,7 +555,7 @@ TEST_F(KvProtocolTest, UnpackRequestRejectsTruncatedHeaderForEveryOpcode)
 TEST_F(KvProtocolTest, UnpackRequestRejectsSizeMismatch)
 {
     KvDumpRequest req;
-    req.opcode = KvOpcode::Dump;
+    req.opcode = OpType::DUMP;
     req.request_id = kRequestId;
     req.resp_addr = 0x1000;
     req.batch_size = 2;
@@ -573,7 +582,7 @@ TEST_F(KvProtocolTest, PackResponseRejectsNullData)
     KvResponse resp;
     resp.request_id = kRequestId;
     resp.results = {0x0};
-    auto status = mgr_.PackResponse(nullptr, KvOpcode::Dump, resp);
+    auto status = mgr_.PackResponse(nullptr, OpType::DUMP, resp);
     EXPECT_FALSE(status.Success());
 }
 
@@ -583,14 +592,14 @@ TEST_F(KvProtocolTest, PackResponseRejectsValuesThatDoNotFitWireWidth)
     KvResponse lookup;
     lookup.request_id = kRequestId;
     lookup.results = {2};
-    auto status = mgr_.PackResponse(flag, KvOpcode::Lookup, lookup);
+    auto status = mgr_.PackResponse(flag, OpType::LOOKUP, lookup);
     EXPECT_FALSE(status.Success()) << status.ToString();
     EXPECT_EQ(flag[kResponseStatusOffset], static_cast<std::uint8_t>(ResponseStatus::Pending));
 
     KvResponse dump;
     dump.request_id = kRequestId;
     dump.results = {16};
-    status = mgr_.PackResponse(flag, KvOpcode::Dump, dump);
+    status = mgr_.PackResponse(flag, OpType::DUMP, dump);
     EXPECT_FALSE(status.Success()) << status.ToString();
     EXPECT_EQ(flag[kResponseStatusOffset], static_cast<std::uint8_t>(ResponseStatus::Pending));
 }
@@ -600,7 +609,7 @@ TEST_F(KvProtocolTest, PackResponseLookupRejectsZeroCount)
     KvResponse resp;  // empty results
     resp.request_id = kRequestId;
     std::uint8_t flag[kResponseResultsOffset] = {0};
-    auto status = mgr_.PackResponse(flag, KvOpcode::Lookup, resp);
+    auto status = mgr_.PackResponse(flag, OpType::LOOKUP, resp);
     EXPECT_FALSE(status.Success());
 }
 
@@ -609,7 +618,7 @@ TEST_F(KvProtocolTest, PackResponseDumpLoadZeroErrcodes)
     KvResponse resp;  // empty, result_count=0
     resp.request_id = kRequestId;
     std::uint8_t flag[kResponseResultsOffset] = {0xFF};
-    auto status = mgr_.PackResponse(flag, KvOpcode::Dump, resp);
+    auto status = mgr_.PackResponse(flag, OpType::DUMP, resp);
     EXPECT_TRUE(status.Success());
     EXPECT_EQ(flag[kResponseStatusOffset], static_cast<std::uint8_t>(ResponseStatus::Ready));
 }
@@ -621,7 +630,7 @@ TEST_F(KvProtocolTest, PackResponseDumpLoadZeroErrcodes)
 TEST_F(KvProtocolTest, UnpackResponseRejectsNullData)
 {
     KvResponse resp;
-    auto status = mgr_.UnpackResponse(nullptr, KvOpcode::Dump, kRequestId, 1, resp);
+    auto status = mgr_.UnpackResponse(nullptr, OpType::DUMP, kRequestId, 1, resp);
     EXPECT_FALSE(status.Success());
 }
 
@@ -677,7 +686,7 @@ TEST_F(KvProtocolTest, UnpackResponseReturnsRetryWithoutChangingResultsWhilePend
     KvResponse response;
     response.results = {7, 8};
 
-    const auto status = mgr_.UnpackResponse(pending, KvOpcode::Dump, kRequestId, 2, response);
+    const auto status = mgr_.UnpackResponse(pending, OpType::DUMP, kRequestId, 2, response);
 
     EXPECT_EQ(status, Status::Retry());
     EXPECT_EQ(response.results, (std::vector<std::uint8_t>{7, 8}));
@@ -685,13 +694,13 @@ TEST_F(KvProtocolTest, UnpackResponseReturnsRetryWithoutChangingResultsWhilePend
 
 TEST_F(KvProtocolTest, PackedResponseSizesRoundUpAtBitBoundaries)
 {
-    EXPECT_EQ(mgr_.GetPackedResponseSize(KvOpcode::Lookup, 1), 10U);
-    EXPECT_EQ(mgr_.GetPackedResponseSize(KvOpcode::Lookup, 8), 10U);
-    EXPECT_EQ(mgr_.GetPackedResponseSize(KvOpcode::Lookup, 9), 11U);
-    EXPECT_EQ(mgr_.GetPackedResponseSize(KvOpcode::Dump, 1), 10U);
-    EXPECT_EQ(mgr_.GetPackedResponseSize(KvOpcode::Dump, 2), 10U);
-    EXPECT_EQ(mgr_.GetPackedResponseSize(KvOpcode::Load, 3), 11U);
-    EXPECT_EQ(mgr_.GetPackedResponseSize(KvOpcode::None, 3), 0U);
+    EXPECT_EQ(mgr_.GetPackedResponseSize(OpType::LOOKUP, 1), 10U);
+    EXPECT_EQ(mgr_.GetPackedResponseSize(OpType::LOOKUP, 8), 10U);
+    EXPECT_EQ(mgr_.GetPackedResponseSize(OpType::LOOKUP, 9), 11U);
+    EXPECT_EQ(mgr_.GetPackedResponseSize(OpType::DUMP, 1), 10U);
+    EXPECT_EQ(mgr_.GetPackedResponseSize(OpType::DUMP, 2), 10U);
+    EXPECT_EQ(mgr_.GetPackedResponseSize(OpType::LOAD, 3), 11U);
+    EXPECT_EQ(mgr_.GetPackedResponseSize(static_cast<OpType>(0xFF), 3), 0U);
 }
 
 // ---------------------------------------------------------------------------
@@ -704,15 +713,15 @@ TEST_F(KvProtocolTest, ResponseSymmetryMultipleErrcodes)
     resp.request_id = kRequestId;
     resp.results = {0x0, 0x1, 0x2, 0xE, 0xF};
     constexpr std::uint16_t kCount = 5;
-    std::vector<std::uint8_t> flag(mgr_.GetPackedResponseSize(KvOpcode::Dump, kCount), 0xFF);
+    std::vector<std::uint8_t> flag(mgr_.GetPackedResponseSize(OpType::DUMP, kCount), 0xFF);
 
-    ASSERT_TRUE(mgr_.PackResponse(flag.data(), KvOpcode::Dump, resp).Success());
+    ASSERT_TRUE(mgr_.PackResponse(flag.data(), OpType::DUMP, resp).Success());
     EXPECT_EQ(flag, (std::vector<std::uint8_t>{0xF0, 0xDE, 0xBC, 0x9A, 0x78, 0x56, 0x34, 0x12,
                                                static_cast<std::uint8_t>(ResponseStatus::Ready),
                                                0x10, 0xE2, 0x0F}));
     KvResponse resp2;
     ASSERT_TRUE(
-        mgr_.UnpackResponse(flag.data(), KvOpcode::Dump, kRequestId, kCount, resp2).Success());
+        mgr_.UnpackResponse(flag.data(), OpType::DUMP, kRequestId, kCount, resp2).Success());
     ASSERT_EQ(resp2.results.size(), kCount);
     for (std::uint16_t i = 0; i < kCount; ++i) {
         EXPECT_EQ(resp2.results[i], resp.results[i]) << "result " << i;
@@ -726,13 +735,13 @@ TEST_F(KvProtocolTest, ResponseSymmetryMultipleErrcodes)
 TEST_F(KvProtocolTest, MultiRoundSequentialPacks)
 {
     for (std::uint8_t round = 0; round < 10; ++round) {
-        const auto opcode = (round % 2 == 0) ? KvOpcode::Dump : KvOpcode::Load;
+        const auto opcode = (round % 2 == 0) ? OpType::DUMP : OpType::LOAD;
         const auto resp_addr = 0x1000ULL * (round + 1);
         const auto addr = 0x2000ULL * (round + 1);
         const auto len = 0x100U * (round + 1);
 
         std::vector<std::uint8_t> packed;
-        if (opcode == KvOpcode::Dump) {
+        if (opcode == OpType::DUMP) {
             KvDumpRequest req;
             req.opcode = opcode;
             req.request_id = static_cast<std::uint64_t>(round) + 1U;
@@ -762,7 +771,7 @@ TEST_F(KvProtocolTest, MultiRoundSequentialPacks)
         std::unique_ptr<KvRequest> parsed;
         ASSERT_TRUE(mgr_.UnpackRequest(packed.data(), packed.size(), parsed).Success())
             << "round " << round;
-        if (opcode == KvOpcode::Dump) {
+        if (opcode == OpType::DUMP) {
             auto& dl = static_cast<KvDumpRequest&>(*parsed);
             EXPECT_EQ(dl.opcode, opcode) << "round " << round;
             EXPECT_EQ(dl.resp_addr, resp_addr) << "round " << round;
@@ -797,16 +806,16 @@ TEST_F(KvProtocolTest, LookupPackedResponseOverwritesNonZeroBufferAndRoundTrips)
     KvResponse resp;
     resp.request_id = kRequestId;
     resp.results = {1, 0, 1, 1, 0, 0, 0, 1, 1};
-    std::vector<std::uint8_t> flag(
-        mgr_.GetPackedResponseSize(KvOpcode::Lookup, resp.results.size()), 0xFF);
+    std::vector<std::uint8_t> flag(mgr_.GetPackedResponseSize(OpType::LOOKUP, resp.results.size()),
+                                   0xFF);
 
-    ASSERT_TRUE(mgr_.PackResponse(flag.data(), KvOpcode::Lookup, resp).Success());
+    ASSERT_TRUE(mgr_.PackResponse(flag.data(), OpType::LOOKUP, resp).Success());
     EXPECT_EQ(flag, (std::vector<std::uint8_t>{0xF0, 0xDE, 0xBC, 0x9A, 0x78, 0x56, 0x34, 0x12,
                                                static_cast<std::uint8_t>(ResponseStatus::Ready),
                                                0x8D, 0x01}));
 
     KvResponse unpacked;
-    ASSERT_TRUE(mgr_.UnpackResponse(flag.data(), KvOpcode::Lookup, kRequestId,
+    ASSERT_TRUE(mgr_.UnpackResponse(flag.data(), OpType::LOOKUP, kRequestId,
                                     static_cast<std::uint16_t>(resp.results.size()), unpacked)
                     .Success());
     EXPECT_EQ(unpacked.results, resp.results);
@@ -820,15 +829,15 @@ TEST_F(KvProtocolTest, FourBitResponseCoversEveryPackedByteValue)
             response.request_id = kRequestId;
             response.results = {static_cast<std::uint8_t>(low), static_cast<std::uint8_t>(high)};
             std::vector<std::uint8_t> flag(
-                mgr_.GetPackedResponseSize(KvOpcode::Dump, response.results.size()), 0xFFU);
+                mgr_.GetPackedResponseSize(OpType::DUMP, response.results.size()), 0xFFU);
 
-            ASSERT_TRUE(mgr_.PackResponse(flag.data(), KvOpcode::Dump, response).Success());
+            ASSERT_TRUE(mgr_.PackResponse(flag.data(), OpType::DUMP, response).Success());
             ASSERT_EQ(flag.size(), kResponseResultsOffset + 1U);
             EXPECT_EQ(flag[kResponseResultsOffset], static_cast<std::uint8_t>(low | (high << 4U)));
 
             KvResponse unpacked;
-            ASSERT_TRUE(mgr_.UnpackResponse(flag.data(), KvOpcode::Dump, kRequestId, 2U, unpacked)
-                            .Success());
+            ASSERT_TRUE(
+                mgr_.UnpackResponse(flag.data(), OpType::DUMP, kRequestId, 2U, unpacked).Success());
             EXPECT_EQ(unpacked.results, response.results);
         }
     }
@@ -843,15 +852,15 @@ TEST_F(KvProtocolTest, OneBitResponseCoversEveryPackedByteValue)
             response.results.push_back(static_cast<std::uint8_t>((byteValue >> bit) & 0x01U));
         }
         std::vector<std::uint8_t> flag(
-            mgr_.GetPackedResponseSize(KvOpcode::Lookup, response.results.size()), 0xFFU);
+            mgr_.GetPackedResponseSize(OpType::LOOKUP, response.results.size()), 0xFFU);
 
-        ASSERT_TRUE(mgr_.PackResponse(flag.data(), KvOpcode::Lookup, response).Success());
+        ASSERT_TRUE(mgr_.PackResponse(flag.data(), OpType::LOOKUP, response).Success());
         ASSERT_EQ(flag.size(), kResponseResultsOffset + 1U);
         EXPECT_EQ(flag[kResponseResultsOffset], static_cast<std::uint8_t>(byteValue));
 
         KvResponse unpacked;
         ASSERT_TRUE(
-            mgr_.UnpackResponse(flag.data(), KvOpcode::Lookup, kRequestId, 8U, unpacked).Success());
+            mgr_.UnpackResponse(flag.data(), OpType::LOOKUP, kRequestId, 8U, unpacked).Success());
         EXPECT_EQ(unpacked.results, response.results);
     }
 }
@@ -861,14 +870,14 @@ TEST_F(KvProtocolTest, ResponsePackingClearsUnusedBitsAndPreservesCanary)
     constexpr std::array<std::size_t, 12> kBoundaryCounts = {1,  2,  3,  7,   8,   9,
                                                              15, 16, 17, 255, 256, 257};
     for (const std::size_t count : kBoundaryCounts) {
-        for (const KvOpcode opcode : {KvOpcode::Dump, KvOpcode::Load, KvOpcode::Lookup}) {
+        for (const OpType opcode : {OpType::DUMP, OpType::LOAD, OpType::LOOKUP}) {
             KvResponse response;
             response.request_id = kRequestId;
             response.results.resize(count);
             for (std::size_t index = 0; index < count; ++index) {
                 response.results[index] = static_cast<std::uint8_t>(
-                    opcode == KvOpcode::Lookup ? (index + count) & 0x01U
-                                               : (index * 7U + count) & 0x0FU);
+                    opcode == OpType::LOOKUP ? (index + count) & 0x01U
+                                             : (index * 7U + count) & 0x0FU);
             }
 
             const std::size_t packedSize = mgr_.GetPackedResponseSize(opcode, count);
@@ -878,9 +887,9 @@ TEST_F(KvProtocolTest, ResponsePackingClearsUnusedBitsAndPreservesCanary)
                 EXPECT_EQ(flag[index], 0xA5U) << "count=" << count << ", index=" << index;
             }
 
-            if (opcode == KvOpcode::Lookup && count % 8U != 0U) {
+            if (opcode == OpType::LOOKUP && count % 8U != 0U) {
                 EXPECT_EQ(static_cast<unsigned>(flag[packedSize - 1U]) >> (count % 8U), 0U);
-            } else if (opcode != KvOpcode::Lookup && count % 2U != 0U) {
+            } else if (opcode != OpType::LOOKUP && count % 2U != 0U) {
                 EXPECT_EQ(flag[packedSize - 1U] & 0xF0U, 0U);
             }
 
@@ -896,7 +905,7 @@ TEST_F(KvProtocolTest, ResponsePackingClearsUnusedBitsAndPreservesCanary)
 TEST_F(KvProtocolTest, PackRequestRejectsNullTarget)
 {
     KvLookupRequest request;
-    request.opcode = KvOpcode::Lookup;
+    request.opcode = OpType::LOOKUP;
     request.request_id = kRequestId;
     request.resp_addr = 0x1000;
     request.batch_size = 1;
@@ -911,7 +920,7 @@ TEST_F(KvProtocolTest, PackRequestRejectsNullTarget)
 TEST_F(KvProtocolTest, RejectsRequestConcreteTypeMismatch)
 {
     KvLoadRequest request;
-    request.opcode = KvOpcode::Dump;
+    request.opcode = OpType::DUMP;
     request.request_id = kRequestId;
     request.resp_addr = 0x1000;
     request.batch_size = 1;
@@ -920,8 +929,8 @@ TEST_F(KvProtocolTest, RejectsRequestConcreteTypeMismatch)
     };
     std::array<std::uint8_t, kKvDumpRequestHeaderSize + kKvDumpEntrySize> packed{};
 
-    EXPECT_EQ(mgr_.GetPackedRequestSize(KvOpcode::Dump, request), 0U);
-    const auto status = mgr_.PackRequest(packed.data(), KvOpcode::Dump, request);
+    EXPECT_EQ(mgr_.GetPackedRequestSize(OpType::DUMP, request), 0U);
+    const auto status = mgr_.PackRequest(packed.data(), OpType::DUMP, request);
     EXPECT_TRUE(status.Failure());
     EXPECT_NE(status.ToString().find("type mismatch"), std::string::npos);
 }
@@ -931,7 +940,7 @@ TEST_F(KvProtocolTest, UnpackRequestRejectsZeroHeaderFieldsForEveryOpcode)
     std::vector<std::pair<std::vector<std::uint8_t>, std::size_t>> packedRequests;
     {
         KvDumpRequest request;
-        request.opcode = KvOpcode::Dump;
+        request.opcode = OpType::DUMP;
         request.request_id = kRequestId;
         request.resp_addr = 0x1000;
         request.ttl = 10;
@@ -945,7 +954,7 @@ TEST_F(KvProtocolTest, UnpackRequestRejectsZeroHeaderFieldsForEveryOpcode)
     }
     {
         KvLoadRequest request;
-        request.opcode = KvOpcode::Load;
+        request.opcode = OpType::LOAD;
         request.request_id = kRequestId;
         request.resp_addr = 0x1000;
         request.batch_size = 1;
@@ -958,7 +967,7 @@ TEST_F(KvProtocolTest, UnpackRequestRejectsZeroHeaderFieldsForEveryOpcode)
     }
     {
         KvLookupRequest request;
-        request.opcode = KvOpcode::Lookup;
+        request.opcode = OpType::LOOKUP;
         request.request_id = kRequestId;
         request.resp_addr = 0x1000;
         request.batch_size = 1;
@@ -969,7 +978,7 @@ TEST_F(KvProtocolTest, UnpackRequestRejectsZeroHeaderFieldsForEveryOpcode)
     }
 
     for (const auto& [packed, batchSizeOffset] : packedRequests) {
-        const auto opcode = static_cast<KvOpcode>(packed[kOpcodeOffset]);
+        const auto opcode = static_cast<OpType>(packed[kOpcodeOffset]);
         SCOPED_TRACE(static_cast<std::uint8_t>(opcode));
         auto malformed = packed;
         std::fill_n(malformed.begin() + kRequestIdOffset, sizeof(std::uint64_t), std::uint8_t{0});
@@ -1006,7 +1015,7 @@ TEST_F(KvProtocolTest, UnpackRequestRejectsInvalidDumpLoadEntryFields)
     };
 
     KvDumpRequest dump;
-    dump.opcode = KvOpcode::Dump;
+    dump.opcode = OpType::DUMP;
     dump.request_id = kRequestId;
     dump.resp_addr = 0x1000;
     dump.ttl = 10;
@@ -1018,7 +1027,7 @@ TEST_F(KvProtocolTest, UnpackRequestRejectsInvalidDumpLoadEntryFields)
     ASSERT_TRUE(mgr_.PackRequest(packedDump.data(), dump.opcode, dump).Success());
 
     KvLoadRequest load;
-    load.opcode = KvOpcode::Load;
+    load.opcode = OpType::LOAD;
     load.request_id = kRequestId;
     load.resp_addr = 0x1000;
     load.batch_size = 1;
@@ -1043,7 +1052,7 @@ TEST_F(KvProtocolTest, UnpackRequestRejectsInvalidDumpLoadEntryFields)
 TEST_F(KvProtocolTest, UnpackRequestFailurePreservesOutput)
 {
     std::vector<std::uint8_t> malformed(kKvLookupRequestHeaderSize + kKvLookupEntrySize, 0);
-    malformed[kOpcodeOffset] = static_cast<std::uint8_t>(KvOpcode::Lookup);
+    malformed[kOpcodeOffset] = static_cast<std::uint8_t>(OpType::LOOKUP);
     auto original = std::make_unique<KvLookupRequest>();
     auto* originalAddress = original.get();
     std::unique_ptr<KvRequest> output = std::move(original);
