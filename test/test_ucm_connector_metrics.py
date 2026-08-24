@@ -1663,7 +1663,7 @@ def test_example_metrics_config_defaults_to_vllm_connector_metrics():
     assert not re.search(r"^\s+multiproc:\s+true$", text, re.MULTILINE)
 
 
-def test_connector_dashboard_direct_connector_layout_and_metrics():
+def test_connector_dashboard_layout_and_metrics():
     dashboard_path = REPO_ROOT / "examples" / "metrics" / "grafana_connector.json"
     text = dashboard_path.read_text(encoding="utf-8")
     dashboard = json.loads(text)
@@ -1673,59 +1673,93 @@ def test_connector_dashboard_direct_connector_layout_and_metrics():
     assert "_seconds" not in text
     assert "1000 *" not in text
     assert "save_speed" not in text
-    assert panels[0]["title"] == "vLLM Connector Interface Duration (P99)"
-    assert panels[0]["gridPos"] == {"h": 10, "w": 24, "x": 0, "y": 0}
-    assert panels[0]["fieldConfig"]["defaults"]["unit"] == "ms"
-    assert len(panels[0]["targets"]) == len(CONNECTOR_INTERFACE_METHODS)
-    assert {
-        re.search(r"ucm:(connector_[a-z0-9_]+_duration_ms)_bucket", target["expr"])[1]
-        for target in panels[0]["targets"]
-    } == {
-        f"connector_{method_name}_duration_ms"
-        for method_name in CONNECTOR_INTERFACE_METHODS
-    }
-    assert all(
-        target["expr"].startswith("histogram_quantile(0.99,")
-        for target in panels[0]["targets"]
-    )
-    assert "Direct Connector" in titles
-    assert "Layerwise Connector" in titles
+    critical_methods = [
+        "get_num_new_matched_tokens",
+        "start_load_kv",
+        "wait_for_layer_load",
+        "save_kv_layer",
+        "wait_for_save",
+    ]
+    critical_grids = [
+        {"h": 8, "w": 12, "x": 12, "y": 0},
+        {"h": 8, "w": 12, "x": 0, "y": 8},
+        {"h": 8, "w": 12, "x": 12, "y": 8},
+        {"h": 8, "w": 12, "x": 0, "y": 16},
+        {"h": 8, "w": 12, "x": 12, "y": 16},
+    ]
+    assert panels[0]["title"] == "Connector Aggregate Bandwidth"
+    assert panels[0]["gridPos"] == {"h": 8, "w": 12, "x": 0, "y": 0}
+    assert panels[0]["fieldConfig"]["defaults"]["unit"] == "gbytes"
+    assert len(panels[0]["targets"]) == 2
+    assert "rate(ucm:load_bytes_total" in panels[0]["targets"][0]["expr"]
+    assert "rate(ucm:save_bytes_total" in panels[0]["targets"][1]["expr"]
+    assert all("/ 1e9" in target["expr"] for target in panels[0]["targets"])
+
+    for panel, method, grid in zip(
+        panels[1:6], critical_methods, critical_grids, strict=True
+    ):
+        assert panel["title"] == f"Connector Interface: {method}"
+        assert panel["gridPos"] == grid
+        assert panel["fieldConfig"]["defaults"]["unit"] == "ms"
+        assert len(panel["targets"]) == 3
+        assert [
+            target["expr"].split(",", maxsplit=1)[0] for target in panel["targets"]
+        ] == [
+            "histogram_quantile(0.5",
+            "histogram_quantile(0.9",
+            "histogram_quantile(0.99",
+        ]
+        assert all(
+            f"ucm:connector_{method}_duration_ms_bucket" in target["expr"]
+            for target in panel["targets"]
+        )
+
+    other_methods = CONNECTOR_INTERFACE_METHODS - set(critical_methods)
+    other_panels = panels[6:8]
+    assert [panel["title"] for panel in other_panels] == [
+        "Other Connector Interfaces (P50)",
+        "Other Connector Interfaces (P99)",
+    ]
+    assert [panel["gridPos"] for panel in other_panels] == [
+        {"h": 8, "w": 12, "x": 0, "y": 24},
+        {"h": 8, "w": 12, "x": 12, "y": 24},
+    ]
+    for panel, quantile in zip(other_panels, ("0.5", "0.99"), strict=True):
+        assert len(panel["targets"]) == len(other_methods)
+        assert {
+            re.search(r"ucm:connector_([a-z0-9_]+)_duration_ms_bucket", target["expr"])[
+                1
+            ]
+            for target in panel["targets"]
+        } == other_methods
+        assert all(
+            target["expr"].startswith(f"histogram_quantile({quantile},")
+            for target in panel["targets"]
+        )
+    assert "Direct Connector" not in titles
+    assert "Layerwise Connector" not in titles
+    assert not any(title.startswith("Layerwise /") for title in titles)
+    assert "Connector Dump Duration" not in titles
+    assert "Connector Dump Completion Wait Duration" not in titles
     assert not any(title.startswith("FAWA") for title in titles)
     assert not any("Requests Rate" in title for title in titles)
     assert not any("Size Distribution" in title for title in titles)
 
-    expected_direct_titles = [
-        "Direct Connector",
-        "Connector Load Bandwidth (aggregated)",
-        "Connector Dump Bandwidth (aggregated)",
-        "Connector Dump Duration",
-        "Connector Dump Completion Wait Duration",
-    ]
     expected_failure_titles = [
         "Failures",
         "Failure Counts by Type",
         "Failure Ratio by Type",
         "Failure Count Over Time",
     ]
-    direct_start = titles.index("Direct Connector")
-    layerwise_start = titles.index("Layerwise Connector")
-    assert titles[direct_start:layerwise_start] == expected_direct_titles
     assert titles[-len(expected_failure_titles) :] == expected_failure_titles
 
     by_title = {panel["title"]: panel for panel in panels}
-    assert by_title["Direct Connector"]["type"] == "row"
-    assert by_title["Direct Connector"]["gridPos"] == {
+    assert by_title["Failures"]["type"] == "row"
+    assert by_title["Failures"]["gridPos"] == {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 10,
-    }
-    assert by_title["Layerwise Connector"]["type"] == "row"
-    assert by_title["Layerwise Connector"]["gridPos"] == {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 27,
+        "y": 32,
     }
 
     occupied = set()
@@ -2216,71 +2250,6 @@ def test_mooncake_dashboards_cover_configured_mooncake_metrics():
     }
 
     assert configured_mooncake <= referenced
-
-
-def test_layerwise_dashboard_hides_no_transfer_and_uses_rate_interval_for_breakdown():
-    dashboard = json.loads(
-        (REPO_ROOT / "examples" / "metrics" / "grafana_connector.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    panels = {panel["title"]: panel for panel in dashboard["panels"]}
-    all_panels = []
-    for panel in dashboard["panels"]:
-        all_panels.append(panel)
-        all_panels.extend(panel.get("panels", []))
-
-    assert "Layerwise / Batch Total - No Transfer" not in panels
-    assert all("No Transfer" not in panel["title"] for panel in all_panels)
-
-    batch_mix = panels["Layerwise / Batch Mix Rate"]
-    assert all(
-        "layerwise_batch_total_no_transfer_ms" not in target["expr"]
-        for target in batch_mix["targets"]
-    )
-    assert all(
-        "no transfer" not in target.get("legendFormat", "")
-        for target in batch_mix["targets"]
-    )
-
-    load_only = panels["Layerwise / Load Only Batch Avg Breakdown"]
-    load_save = panels["Layerwise / Load + Save Batch Avg Breakdown"]
-    for panel in (load_only, load_save):
-        for target in panel["targets"]:
-            assert "[40s]" not in target["expr"]
-            assert "[$__rate_interval]" in target["expr"]
-
-
-def test_layerwise_dashboard_uses_batch_duration_and_dump_completion_wait():
-    dashboard = json.loads(
-        (REPO_ROOT / "examples" / "metrics" / "grafana_connector.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    all_panels = []
-    for panel in dashboard["panels"]:
-        all_panels.append(panel)
-        all_panels.extend(panel.get("panels", []))
-    panels = {panel["title"]: panel for panel in all_panels}
-
-    assert "Layerwise / Batch Total Duration (all batches)" not in panels
-    assert "Layerwise / wait_for_save Total (save batches only)" not in panels
-    assert all("Batch Total" not in panel["title"] for panel in all_panels)
-
-    assert "Layerwise / Batch Duration - Load Only" in panels
-    assert "Layerwise / Batch Duration - Save Only" in panels
-    assert "Layerwise / Batch Duration - Load + Save" in panels
-
-    panel = panels["Layerwise / Dump Completion Wait Duration"]
-    assert panel["gridPos"] == {"h": 8, "w": 24, "x": 0, "y": 60}
-    assert all(
-        "ucm:save_completion_wait_duration" in target["expr"]
-        for target in panel["targets"]
-    )
-    assert all(
-        "ucm:layerwise_save_tail_total_ms" not in target["expr"]
-        for target in panel["targets"]
-    )
 
 
 def test_layerwise_wait_for_save_records_completion_start():
