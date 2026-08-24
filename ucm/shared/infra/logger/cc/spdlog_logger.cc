@@ -32,6 +32,12 @@
 #include <spdlog/spdlog.h>
 #include "compress_rotate_file_sink.h"
 #include "logger.h"
+#ifdef _WIN32
+#include <process.h>
+#define getpid _getpid
+#else
+#include <unistd.h>
+#endif
 namespace UC::Logger {
 constexpr uint32_t kRateLimitCountBits = 2;
 constexpr uint64_t kRateLimitCountMask = (1u << kRateLimitCountBits) - 1u;

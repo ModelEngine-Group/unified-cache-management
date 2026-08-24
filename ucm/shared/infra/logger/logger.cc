@@ -24,7 +24,9 @@
 
 #include "logger.h"
 #include <iostream>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 namespace UC::Logger {
 
 void Log(Level lv, std::string file, std::string func, int line, std::string msg)

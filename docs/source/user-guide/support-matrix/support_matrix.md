@@ -65,6 +65,7 @@ This section presents the currently supported compute platforms and devices.
 |:----------------:|:------:|:------:|
 | CANN | Ascend | 910C, 910B |
 | CUDA | NVIDIA | H100, H20, L40, L20 |
+| ROCm | AMD | MI250X (gfx90a), Radeon Pro W7800 (gfx1100), Radeon PRO V710 (gfx1101), Radeon RX 9070 XT (gfx1201), Radeon 8060S (gfx1151) |
 | MUSA | Mthreads | S5000 |
 | MACA | MetaX | C500 |
 
