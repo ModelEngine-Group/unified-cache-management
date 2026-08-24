@@ -259,13 +259,14 @@ protected:
     static constexpr size_t sharedBufferMagic = (('S' << 16) | ('b' << 8) | 2);
     struct BufferHeader {
         std::atomic<size_t> magic;
-        ShareLock lock;
         size_t nNode;
-        size_t freeHead;
+        alignas(64) std::atomic<size_t> freeHead;
+        char freeHeadPad[64 - sizeof(std::atomic<size_t>)];
         size_t buckets[nHashTableBucket];
         ShareMutex bucketLocks[nHashTableBucket];
         ShareLock nodeLocks[0];
     };
+    static_assert(std::atomic<size_t>::is_always_lock_free, "freeHead must be lock-free");
 
     BufferHeader* header_{nullptr};
     BufferMetaNode* meta_{nullptr};
@@ -351,7 +352,6 @@ protected:
         if (s.Failure()) [[unlikely]] { return s; }
         header_ = static_cast<BufferHeader*>(addrress_);
         meta_ = (BufferMetaNode*)(static_cast<std::byte*>(addrress_) + MetaOffset());
-        header_->lock.Init();
         header_->nNode = nNode_;
         header_->freeHead = 0;
         for (size_t i = 0; i < nHashTableBucket; i++) {
@@ -448,11 +448,15 @@ public:
     size_t FetchNode(bool allowReserved) override
     {
         const auto limit = header_->nNode - (allowReserved ? 0 : base_.reservedNumber);
-        header_->lock.Lock();
-        if (header_->freeHead >= limit) { header_->freeHead = 0; }
-        const auto iNode = header_->freeHead++;
-        header_->lock.Unlock();
-        return iNode;
+        auto cur = header_->freeHead.load(std::memory_order_relaxed);
+        while (true) {
+            const auto iNode = (cur >= limit) ? 0 : cur;
+            const auto next = iNode + 1;
+            if (header_->freeHead.compare_exchange_weak(cur, next, std::memory_order_relaxed,
+                                                        std::memory_order_relaxed)) {
+                return iNode;
+            }
+        }
     }
     void* DataAt(size_t iNode) override { return data_ + nodeSize_ * iNode; }
     void* DeviceDataAt(size_t iNode) override { return dataOnDevice_ + nodeSize_ * iNode; }
