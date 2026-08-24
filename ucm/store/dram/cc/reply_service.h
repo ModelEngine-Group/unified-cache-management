@@ -93,7 +93,6 @@ private:
 
     explicit ReplyService(Options options);
     Status Init();
-    static DramPool::KvOpcode ToOpcode(OpType op) noexcept;
     std::size_t ReplyPayloadSize(OpType op, std::size_t entryCount) const noexcept;
     bool CompletionReady(const Lease& lease) const noexcept;
     Status DecodeReply(const Lease& lease, std::vector<EntryResult>* entryResults);

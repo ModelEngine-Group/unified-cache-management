@@ -37,7 +37,7 @@
 namespace UC::Dram {
 namespace {
 
-Status PackReply(const ReplySlot& slot, DramPool::KvOpcode opcode, RequestId requestId,
+Status PackReply(const ReplySlot& slot, OpType opcode, RequestId requestId,
                  std::vector<std::uint8_t> results)
 {
     DramPool::ProtocolManager protocol;
@@ -95,7 +95,7 @@ TEST(ReplyServicePollingTest, PublishesObservedReplyAndKeepsLeaseUntilActorRelea
     auto acquired = service->Acquire(token, OpType::LOOKUP, 2);
     ASSERT_TRUE(acquired);
     auto slot = acquired.Value();
-    ASSERT_TRUE(PackReply(slot, DramPool::KvOpcode::Lookup, token.requestId, {1, 0}).Success());
+    ASSERT_TRUE(PackReply(slot, OpType::LOOKUP, token.requestId, {1, 0}).Success());
 
     auto event = collector.Wait(std::chrono::milliseconds{500});
     ASSERT_TRUE(event.has_value());
@@ -149,8 +149,7 @@ TEST(ReplyServicePollingTest, ReusesSlotWhilePreviousReplyEventIsBeingPublished)
 
     auto first = service->Acquire(firstToken, OpType::LOOKUP, 1);
     ASSERT_TRUE(first);
-    ASSERT_TRUE(
-        PackReply(first.Value(), DramPool::KvOpcode::Lookup, firstToken.requestId, {1}).Success());
+    ASSERT_TRUE(PackReply(first.Value(), OpType::LOOKUP, firstToken.requestId, {1}).Success());
     bool publishEntered = false;
     {
         std::unique_lock lock(mutex);
@@ -165,8 +164,7 @@ TEST(ReplyServicePollingTest, ReusesSlotWhilePreviousReplyEventIsBeingPublished)
         firstRelease = service->Release(firstToken, first.Value());
         second = service->Acquire(secondToken, OpType::LOOKUP, 1);
         if (second) {
-            secondPack =
-                PackReply(second.Value(), DramPool::KvOpcode::Lookup, secondToken.requestId, {1});
+            secondPack = PackReply(second.Value(), OpType::LOOKUP, secondToken.requestId, {1});
         }
     }
 
@@ -241,8 +239,7 @@ TEST(ReplyServicePollingTest, EventPublisherExceptionIsFatal)
                                     ? service->Acquire(token, OpType::LOOKUP, 1)
                                     : Expected<ReplySlot>{Status::Error()};
                 if (acquired &&
-                    PackReply(acquired.Value(), DramPool::KvOpcode::Lookup, token.requestId, {1})
-                        .Success()) {
+                    PackReply(acquired.Value(), OpType::LOOKUP, token.requestId, {1}).Success()) {
                     publishAttemptedFuture.wait();
                 }
                 service->Shutdown();

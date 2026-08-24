@@ -22,7 +22,10 @@ Status PickAvailablePort(const std::string& host, uint16_t& port)
     hints.ai_socktype = SOCK_STREAM;
 
     addrinfo* results = nullptr;
-    if (getaddrinfo(host.c_str(), "0", &hints, &results) != 0) { return Status::Error(); }
+    if (getaddrinfo(host.c_str(), "0", &hints, &results) != 0) {
+        UC_ERROR("[Transport][HIXL] resolve host for available port failed: host={}", host);
+        return Status::Error();
+    }
 
     Status status = Status::Error();
     for (auto* item = results; item != nullptr; item = item->ai_next) {
@@ -49,24 +52,32 @@ Status PickAvailablePort(const std::string& host, uint16_t& port)
     }
 
     freeaddrinfo(results);
+    if (status != Status::OK()) {
+        UC_ERROR("[Transport][HIXL] no available port found: host={}", host);
+    }
     return status;
 }
 
 Status EncodeMetadata(HixlRole role, const std::vector<HixlInstanceInfo>& instances, Metadata& out)
 {
     if (instances.empty() || instances.size() > std::numeric_limits<uint32_t>::max()) {
+        UC_ERROR("[Transport][HIXL] encode metadata failed: instances={}", instances.size());
         return Status::InvalidParam();
     }
 
     out.clear();
     if (!detail::AppendU8(out, static_cast<uint8_t>(role)) ||
         !detail::AppendU32(out, static_cast<uint32_t>(instances.size()))) {
+        UC_ERROR("[Transport][HIXL] encode metadata header failed: role={} instances={}",
+                 static_cast<uint32_t>(role), instances.size());
         return Status::InvalidParam();
     }
     for (const auto& instance : instances) {
         if (instance.device_id < 0 || !detail::AppendString(out, instance.endpoint.host) ||
             !detail::AppendU16(out, instance.endpoint.port) ||
             !detail::AppendU32(out, static_cast<uint32_t>(instance.device_id))) {
+            UC_ERROR("[Transport][HIXL] encode instance metadata failed: engine={} device={}",
+                     instance.endpoint.ToString(), instance.device_id);
             return Status::InvalidParam();
         }
     }
@@ -81,6 +92,7 @@ Status DecodeMetadata(const Metadata& in, HixlRole& role, std::vector<HixlInstan
     if (!detail::ReadU8(in, offset, raw_role) ||
         raw_role > static_cast<uint8_t>(HixlRole::Bidirectional) ||
         !detail::ReadU32(in, offset, count) || count == 0) {
+        UC_ERROR("[Transport][HIXL] decode metadata header failed: bytes={}", in.size());
         return Status::InvalidParam();
     }
     role = static_cast<HixlRole>(raw_role);
@@ -94,12 +106,19 @@ Status DecodeMetadata(const Metadata& in, HixlRole& role, std::vector<HixlInstan
             !detail::ReadU16(in, offset, instance.endpoint.port) ||
             !detail::ReadU32(in, offset, device_id) ||
             device_id > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
+            UC_ERROR("[Transport][HIXL] decode instance metadata failed: index={} bytes={}", i,
+                     in.size());
             return Status::InvalidParam();
         }
         instance.device_id = static_cast<int32_t>(device_id);
         instances.push_back(std::move(instance));
     }
-    return offset == in.size() ? Status::OK() : Status::InvalidParam();
+    if (offset != in.size()) {
+        UC_ERROR("[Transport][HIXL] decode metadata has trailing bytes: consumed={} total={}",
+                 offset, in.size());
+        return Status::InvalidParam();
+    }
+    return Status::OK();
 }
 
 }  // namespace
@@ -116,13 +135,31 @@ TransportProtocol HixlTransport::Protocol() const { return TransportProtocol::Hi
 Status HixlTransport::Init(const InitAttrs& attrs)
 {
     const auto* hixl_attrs = dynamic_cast<const HixlInitAttrs*>(&attrs);
-    return hixl_attrs == nullptr ? Status::InvalidParam() : Init(*hixl_attrs);
+    if (hixl_attrs == nullptr) {
+        UC_ERROR("[Transport][HIXL] init failed: invalid attribute type");
+        return Status::InvalidParam();
+    }
+    return Init(*hixl_attrs);
 }
 
 Status HixlTransport::Init(const HixlInitAttrs& attrs)
 {
-    if (!instances_.empty()) { return Status::OK(); }
-    if (attrs.instances.empty()) { return Status::InvalidParam(); }
+    if (!instances_.empty()) {
+        UC_DEBUG("[Transport][HIXL] transport already initialized: instances={}",
+                 instances_.size());
+        return Status::OK();
+    }
+    if (attrs.instances.empty()) {
+        UC_ERROR("[Transport][HIXL] init failed: no instances configured");
+        return Status::InvalidParam();
+    }
+    if (attrs.role != HixlRole::Client && attrs.instances.size() > 1) {
+        UC_ERROR(
+            "[Transport][HIXL] only Client role supports multiple instances: role={} "
+            "instances={}",
+            static_cast<uint32_t>(attrs.role), attrs.instances.size());
+        return Status::InvalidParam();
+    }
 
     for (size_t i = 0; i < attrs.instances.size(); ++i) {
         const auto& instance_attrs = attrs.instances[i];
@@ -160,13 +197,15 @@ Status HixlTransport::Init(const HixlInitAttrs& attrs)
     for (size_t i = 0; i < instances_.size(); ++i) {
         const auto status = instances_[i]->Initialize(attrs.instances[i].options);
         if (status != Status::OK()) {
+            UC_ERROR("[Transport][HIXL] instance init failed: instance={} device={} status={}", i,
+                     attrs.instances[i].device_id, status);
             for (auto& instance : instances_) { instance->Finalize(); }
             instances_.clear();
             return status;
         }
     }
-    UC_INFO("[Transport][HIXL] init success role={} instances={}", static_cast<uint32_t>(role_),
-            instances_.size());
+    UC_DEBUG("[Transport][HIXL] init success role={} instances={}", static_cast<uint32_t>(role_),
+             instances_.size());
     return Status::OK();
 }
 
@@ -203,7 +242,10 @@ Status HixlTransport::RegisterMemory(const MemoryRegion& memory, MemoryHandle& h
 {
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
     handle = kInvalidMemoryHandle;
-    if (instances_.empty()) { return Status::Error(); }
+    if (instances_.empty()) {
+        UC_ERROR("[Transport][HIXL] register memory failed: transport is not initialized");
+        return Status::Error();
+    }
 
     std::unique_lock<std::shared_mutex> memory_lock(memories_mutex_);
 
@@ -231,29 +273,47 @@ Status HixlTransport::RegisterMemory(const MemoryRegion& memory, MemoryHandle& h
         record->native_handles.emplace(i, native_handle);
     }
 
-    if (record->native_handles.empty()) { return Status::InvalidParam(); }
+    if (record->native_handles.empty()) {
+        UC_ERROR(
+            "[Transport][HIXL] register memory failed: no matching instance, type={} device={}",
+            static_cast<int>(memory.type), memory.device_id);
+        return Status::InvalidParam();
+    }
     handle = reinterpret_cast<MemoryHandle>(record.get());
     memories_.emplace(handle, std::move(record));
+    UC_DEBUG("[Transport][HIXL] memory registration completed: handle={} addr={} length={}", handle,
+             memory.addr, memory.length);
     return Status::OK();
 }
 
 Status HixlTransport::UnregisterMemory(MemoryHandle handle)
 {
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
-    if (handle == kInvalidMemoryHandle) { return Status::InvalidParam(); }
+    if (handle == kInvalidMemoryHandle) {
+        UC_ERROR("[Transport][HIXL] unregister memory failed: invalid handle");
+        return Status::InvalidParam();
+    }
 
     std::unique_lock<std::shared_mutex> memory_lock(memories_mutex_);
     const auto record_it = memories_.find(handle);
-    if (record_it == memories_.end()) { return Status::Error(); }
+    if (record_it == memories_.end()) {
+        UC_ERROR("[Transport][HIXL] unregister memory failed: unknown handle={}", handle);
+        return Status::Error();
+    }
     auto& record = *record_it->second;
     while (!record.native_handles.empty()) {
         const auto item = *record.native_handles.begin();
-        if (item.first >= instances_.size() || item.second == nullptr) { return Status::Error(); }
+        if (item.first >= instances_.size() || item.second == nullptr) {
+            UC_ERROR("[Transport][HIXL] unregister memory failed: handle={} instance={} native={}",
+                     handle, item.first, item.second);
+            return Status::Error();
+        }
         const auto status = instances_[item.first]->UnregisterMemory(item.second);
         if (status != Status::OK()) { return status; }
         record.native_handles.erase(item.first);
     }
     memories_.erase(record_it);
+    UC_DEBUG("[Transport][HIXL] memory unregistration completed: handle={}", handle);
     return Status::OK();
 }
 
@@ -274,7 +334,10 @@ Status HixlTransport::ImportMetadata(const ManagerID& manager_id, const Metadata
     std::vector<HixlInstanceInfo> remote_instances;
     HixlRole remote_role = HixlRole::Bidirectional;
     const auto status = DecodeMetadata(metadata, remote_role, remote_instances);
-    if (status != Status::OK()) { return status; }
+    if (status != Status::OK()) {
+        UC_ERROR("[Transport][HIXL] import metadata failed: peer={} status={}", manager_id, status);
+        return status;
+    }
 
     {
         std::unique_lock<std::shared_mutex> peer_lock(peers_mutex_);
@@ -316,18 +379,39 @@ Status HixlTransport::BuildRouteLocked(const ManagerID& manager_id, Peer& peer)
         return Status::InvalidParam();
     }
 
+    const auto& remote = peer.instances.front();
+    const bool initiates_connection = role_ != HixlRole::Server && peer.role != HixlRole::Client;
     const auto local_count = instances_.size();
+    if (local_count == 1) {
+        if (initiates_connection && peer.instances.size() == 1 &&
+            instances_.front()->LocalEndpoint().host == remote.endpoint.host &&
+            instances_.front()->DeviceId() == remote.device_id) {
+            UC_ERROR(
+                "[Transport][HIXL] build route failed: local and remote single instances use "
+                "the same device, endpoint={} device={}",
+                remote.endpoint.ToString(), remote.device_id);
+            return Status::Error();
+        }
+        peer.local_index = 0;
+        UC_DEBUG(
+            "[Transport][HIXL] build route peer={} local_instance=0 local_engine={} "
+            "local_device={} remote_engine={} remote_device={}",
+            manager_id, instances_.front()->LocalEndpoint().ToString(),
+            instances_.front()->DeviceId(), remote.endpoint.ToString(), remote.device_id);
+        return Status::OK();
+    }
+
     std::vector<size_t> load(local_count, 0);
     for (const auto& item : peers_) {
         if (item.first == manager_id) { continue; }
         if (item.second.local_index < load.size()) { ++load[item.second.local_index]; }
     }
 
-    const auto& remote = peer.instances.front();
     std::vector<size_t> candidates;
     size_t min_load = std::numeric_limits<size_t>::max();
     for (size_t local_index = 0; local_index < local_count; ++local_index) {
-        if (instances_[local_index]->LocalEndpoint().host == remote.endpoint.host &&
+        if (initiates_connection &&
+            instances_[local_index]->LocalEndpoint().host == remote.endpoint.host &&
             instances_[local_index]->DeviceId() == remote.device_id) {
             continue;
         }
@@ -357,7 +441,13 @@ Status HixlTransport::BuildRouteLocked(const ManagerID& manager_id, Peer& peer)
 
 Status HixlTransport::DisconnectRoute(const Peer& peer, bool ignore_failure)
 {
-    if (peer.local_index >= instances_.size() || peer.instances.empty()) { return Status::Error(); }
+    if (peer.local_index >= instances_.size() || peer.instances.empty()) {
+        UC_ERROR(
+            "[Transport][HIXL] disconnect route failed: local_instance={} local_count={} "
+            "remote_count={}",
+            peer.local_index, instances_.size(), peer.instances.size());
+        return Status::Error();
+    }
     if (role_ == HixlRole::Server || peer.role == HixlRole::Client) { return Status::OK(); }
 
     const auto remote_engine = peer.instances.front().endpoint.ToString();
@@ -371,11 +461,24 @@ Status HixlTransport::Connect(const ManagerID& manager_id)
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
     std::unique_lock<std::shared_mutex> peer_lock(peers_mutex_);
     const auto peer_it = peers_.find(manager_id);
-    if (peer_it == peers_.end()) { return Status::Error(); }
+    if (peer_it == peers_.end()) {
+        UC_ERROR("[Transport][HIXL] connect failed: unknown peer={}", manager_id);
+        return Status::Error();
+    }
     auto& peer = peer_it->second;
-    if (peer.local_index == SIZE_MAX || peer.instances.empty()) { return Status::Error(); }
-    if (peer.connected) { return Status::OK(); }
-    if (peer.local_index >= instances_.size()) { return Status::Error(); }
+    if (peer.local_index == SIZE_MAX || peer.instances.empty()) {
+        UC_ERROR("[Transport][HIXL] connect failed: peer={} has no route", manager_id);
+        return Status::Error();
+    }
+    if (peer.connected) {
+        UC_DEBUG("[Transport][HIXL] connect skipped: peer={} already connected", manager_id);
+        return Status::OK();
+    }
+    if (peer.local_index >= instances_.size()) {
+        UC_ERROR("[Transport][HIXL] connect failed: peer={} local_instance={} local_count={}",
+                 manager_id, peer.local_index, instances_.size());
+        return Status::Error();
+    }
 
     if (role_ == peer.role && role_ != HixlRole::Bidirectional) {
         UC_ERROR("[Transport][HIXL] incompatible roles: local={} remote={} peer={}",
@@ -391,6 +494,8 @@ Status HixlTransport::Connect(const ManagerID& manager_id)
     }
 
     peer.connected = true;
+    UC_DEBUG("[Transport][HIXL] connect completed: peer={} local_instance={} remote_engine={}",
+             manager_id, peer.local_index, remote_engine);
     return Status::OK();
 }
 
@@ -399,23 +504,41 @@ Status HixlTransport::Disconnect(const ManagerID& manager_id)
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
     std::unique_lock<std::shared_mutex> peer_lock(peers_mutex_);
     const auto peer_it = peers_.find(manager_id);
-    if (peer_it == peers_.end()) { return Status::Error(); }
+    if (peer_it == peers_.end()) {
+        UC_ERROR("[Transport][HIXL] disconnect failed: unknown peer={}", manager_id);
+        return Status::Error();
+    }
     auto& peer = peer_it->second;
-    if (!peer.connected) { return Status::OK(); }
-    if (peer.local_index >= instances_.size() || peer.instances.empty()) { return Status::Error(); }
+    if (!peer.connected) {
+        UC_DEBUG("[Transport][HIXL] disconnect skipped: peer={} is not connected", manager_id);
+        return Status::OK();
+    }
+    if (peer.local_index >= instances_.size() || peer.instances.empty()) {
+        UC_ERROR("[Transport][HIXL] disconnect failed: peer={} has invalid route", manager_id);
+        return Status::Error();
+    }
 
     const auto status = DisconnectRoute(peer, false);
     peer.connected = false;
+    if (status == Status::OK()) {
+        UC_DEBUG("[Transport][HIXL] disconnect completed: peer={}", manager_id);
+    }
     return status;
 }
 
 Status HixlTransport::ValidateTransferLocked(const Operation& batch, size_t instance_index) const
 {
     if (batch.target_manager.empty() || batch.ops.empty() || instance_index >= instances_.size()) {
+        UC_ERROR("[Transport][HIXL] invalid transfer: peer={} segments={} instance={} instances={}",
+                 batch.target_manager, batch.ops.size(), instance_index, instances_.size());
         return Status::InvalidParam();
     }
     for (const auto& item : batch.ops) {
         if (item.local_addr == nullptr || item.length == 0 || item.remote_addr == 0) {
+            UC_ERROR(
+                "[Transport][HIXL] invalid transfer segment: local_addr={} remote_addr={} "
+                "length={}",
+                item.local_addr, item.remote_addr, item.length);
             return Status::InvalidParam();
         }
 
@@ -434,7 +557,13 @@ Status HixlTransport::ValidateTransferLocked(const Operation& batch, size_t inst
                 break;
             }
         }
-        if (!registered) { return Status::InvalidParam(); }
+        if (!registered) {
+            UC_ERROR(
+                "[Transport][HIXL] transfer memory is not registered: local_addr={} length={} "
+                "instance={}",
+                item.local_addr, item.length, instance_index);
+            return Status::InvalidParam();
+        }
     }
     return Status::OK();
 }
@@ -451,10 +580,19 @@ Status HixlTransport::ExecuteSync(const Operation& batch)
     {
         std::shared_lock<std::shared_mutex> peer_lock(peers_mutex_);
         const auto peer_it = peers_.find(batch.target_manager);
-        if (peer_it == peers_.end()) { return Status::Error(); }
+        if (peer_it == peers_.end()) {
+            UC_ERROR("[Transport][HIXL] synchronous transfer failed: unknown peer={}",
+                     batch.target_manager);
+            return Status::Error();
+        }
         const auto& peer_state = peer_it->second;
         if (peer_state.local_index >= instances_.size() || peer_state.instances.empty() ||
             !peer_state.connected) {
+            UC_ERROR(
+                "[Transport][HIXL] synchronous transfer failed: peer={} connected={} "
+                "local_instance={} local_count={} remote_count={}",
+                batch.target_manager, peer_state.connected, peer_state.local_index,
+                instances_.size(), peer_state.instances.size());
             return Status::Error();
         }
         local_index = peer_state.local_index;
@@ -464,9 +602,15 @@ Status HixlTransport::ExecuteSync(const Operation& batch)
     {
         std::shared_lock<std::shared_mutex> memory_lock(memories_mutex_);
         const auto transfer_status = ValidateTransferLocked(batch, local_index);
-        if (transfer_status != Status::OK()) { return transfer_status; }
+        if (transfer_status != Status::OK()) {
+            UC_ERROR("[Transport][HIXL] synchronous transfer validation failed: peer={} status={}",
+                     batch.target_manager, transfer_status);
+            return transfer_status;
+        }
     }
 
+    UC_DEBUG("[Transport][HIXL] synchronous transfer started: peer={} opcode={} segments={}",
+             batch.target_manager, static_cast<int>(batch.opcode), batch.ops.size());
     return instances_[local_index]->TransferSync(remote_engine, batch.opcode, batch.ops,
                                                  transfer_timeout_ms_);
 }
@@ -484,10 +628,19 @@ Status HixlTransport::ExecuteAsync(const Operation& batch, TransferHandle& handl
     {
         std::shared_lock<std::shared_mutex> peer_lock(peers_mutex_);
         const auto peer_it = peers_.find(batch.target_manager);
-        if (peer_it == peers_.end()) { return Status::Error(); }
+        if (peer_it == peers_.end()) {
+            UC_ERROR("[Transport][HIXL] asynchronous transfer failed: unknown peer={}",
+                     batch.target_manager);
+            return Status::Error();
+        }
         const auto& peer_state = peer_it->second;
         if (peer_state.local_index >= instances_.size() || peer_state.instances.empty() ||
             !peer_state.connected) {
+            UC_ERROR(
+                "[Transport][HIXL] asynchronous transfer failed: peer={} connected={} "
+                "local_instance={} local_count={} remote_count={}",
+                batch.target_manager, peer_state.connected, peer_state.local_index,
+                instances_.size(), peer_state.instances.size());
             return Status::Error();
         }
         local_index = peer_state.local_index;
@@ -497,13 +650,21 @@ Status HixlTransport::ExecuteAsync(const Operation& batch, TransferHandle& handl
     {
         std::shared_lock<std::shared_mutex> memory_lock(memories_mutex_);
         const auto transfer_status = ValidateTransferLocked(batch, local_index);
-        if (transfer_status != Status::OK()) { return transfer_status; }
+        if (transfer_status != Status::OK()) {
+            UC_ERROR("[Transport][HIXL] asynchronous transfer validation failed: peer={} status={}",
+                     batch.target_manager, transfer_status);
+            return transfer_status;
+        }
     }
 
     hixl::TransferReq request = nullptr;
     const auto status =
         instances_[local_index]->TransferAsync(remote_engine, batch.opcode, batch.ops, request);
-    if (status != Status::OK()) { return status; }
+    if (status != Status::OK()) {
+        UC_ERROR("[Transport][HIXL] asynchronous transfer submission failed: peer={} status={}",
+                 batch.target_manager, status);
+        return status;
+    }
 
     {
         std::lock_guard<std::mutex> pending_lock(pending_mutex_);
@@ -511,19 +672,29 @@ Status HixlTransport::ExecuteAsync(const Operation& batch, TransferHandle& handl
         if (handle == kInvalidTransferHandle) { handle = next_transfer_handle_++; }
         pending_transfers_.emplace(handle, PendingTransfer{local_index, request});
     }
+    UC_DEBUG(
+        "[Transport][HIXL] asynchronous transfer tracked: peer={} opcode={} segments={} "
+        "instance={} handle={} request={}",
+        batch.target_manager, static_cast<int>(batch.opcode), batch.ops.size(), local_index, handle,
+        request);
     return Status::OK();
 }
 
 Status HixlTransport::GetStatus(TransferHandle handle, TransferStatus& status)
 {
     status = TransferStatus::Failed;
-    if (handle == kInvalidTransferHandle) { return Status::InvalidParam(); }
+    if (handle == kInvalidTransferHandle) {
+        UC_ERROR("[Transport][HIXL] get status failed: invalid handle");
+        return Status::InvalidParam();
+    }
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
     PendingTransfer pending;
     {
         std::lock_guard<std::mutex> pending_lock(pending_mutex_);
         const auto it = pending_transfers_.find(handle);
         if (it == pending_transfers_.end() || it->second.instance_index >= instances_.size()) {
+            UC_ERROR("[Transport][HIXL] get status failed: unknown handle={} instances={}", handle,
+                     instances_.size());
             return Status::Error();
         }
         pending = it->second;
@@ -535,12 +706,16 @@ Status HixlTransport::GetStatus(TransferHandle handle, TransferStatus& status)
     if (query_status != Status::OK()) {
         std::lock_guard<std::mutex> pending_lock(pending_mutex_);
         pending_transfers_.erase(handle);
+        UC_ERROR("[Transport][HIXL] get status query failed: handle={} request={} status={}",
+                 handle, pending.request, query_status);
         return query_status;
     }
     status = transfer_status;
     if (status != TransferStatus::Waiting) {
         std::lock_guard<std::mutex> pending_lock(pending_mutex_);
         pending_transfers_.erase(handle);
+        UC_DEBUG("[Transport][HIXL] asynchronous transfer completed: handle={} status={}", handle,
+                 static_cast<int>(status));
     }
     return Status::OK();
 }

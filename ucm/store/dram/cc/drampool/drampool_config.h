@@ -58,6 +58,8 @@ struct DramPoolConfig {
 
     // Transport internals are loaded from the runtime YAML file.
     std::vector<std::int32_t> transportDeviceIds{0};
+    std::uint16_t hixlListenPort{26666};
+    bool enableHixlCs{false};
     // Cluster-wide routing from the request channel address to the transport identity.
     std::unordered_map<std::string, transport::ManagerID> twoSidedToOneSided{};
 

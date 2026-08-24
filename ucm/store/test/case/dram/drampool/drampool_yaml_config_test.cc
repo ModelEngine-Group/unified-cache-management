@@ -60,6 +60,9 @@ std::string ValidRuntimeYaml()
 {
     return R"(transport:
   device_ids: [0, 2]
+  hixl:
+    listen_port: 26666
+    enable_cs: true
   endpoints:
     - two_sided: "127.0.0.1:9000"
       one_sided: "127.0.0.1:4501"
@@ -137,6 +140,8 @@ TEST(DramPoolRuntimeYamlTest, LoadsEveryRuntimeFieldAndPreservesLaunchFields)
     EXPECT_EQ(config.twoSidedToOneSided.at("127.0.0.1:9000"), "127.0.0.1:4501");
     EXPECT_EQ(config.twoSidedToOneSided.at("127.0.0.1:9001"), "127.0.0.1:4502");
     EXPECT_EQ(config.transportDeviceIds, (std::vector<std::int32_t>{0, 2}));
+    EXPECT_EQ(config.hixlListenPort, 26666U);
+    EXPECT_TRUE(config.enableHixlCs);
     EXPECT_EQ(config.healthPort, 0U);
     EXPECT_EQ(config.requestQueueDepth, 65536U);
     EXPECT_EQ(config.completionQueueDepth, 65536U);

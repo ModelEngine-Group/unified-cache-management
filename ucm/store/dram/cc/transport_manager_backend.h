@@ -43,6 +43,8 @@ struct TransportManagerBackendOptions {
     std::string localTransportManagerId;
     std::string localHost;
     std::int32_t deviceId{0};
+    std::int32_t hixlDeviceListenPort{-1};
+    bool enableHixlCs{false};
     std::int32_t connectTimeoutMs{1000};
     std::int32_t transferTimeoutMs{5000};
     std::vector<NodeEndpoint> nodes;

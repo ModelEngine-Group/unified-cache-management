@@ -17,7 +17,7 @@ add_library(dramstore SHARED ${UCM_DRAM_STORE_CC_SOURCE_FILES})
 
 set_target_properties(dramstore PROPERTIES
     BUILD_WITH_INSTALL_RPATH ON
-    INSTALL_RPATH "$ORIGIN"
+    INSTALL_RPATH "$ORIGIN;$ORIGIN/../../transport/p2p"
 )
 if(RUNTIME_ENVIRONMENT STREQUAL "ascend")
     target_compile_definitions(dramstore PRIVATE UC_DRAM_ASCEND_BACKEND)

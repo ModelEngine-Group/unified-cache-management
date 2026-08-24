@@ -257,11 +257,17 @@ Status DramPoolServer::StartTransportService()
     }
     attrs.ip = managerEndpoint.host;
     attrs.role = transport::HixlRole::Client;
+    UC_DEBUG("DramPool HIXL configured: listen_port={} enable_cs={}", g_config.hixlListenPort,
+             g_config.enableHixlCs);
     attrs.instances.reserve(g_config.transportDeviceIds.size());
     for (const auto deviceId : g_config.transportDeviceIds) {
         transport::HixlInitAttrs::Instance instance;
         instance.port = -1;
         instance.device_id = deviceId;
+        instance.options["GlobalResourceConfig"] =
+            std::string{"{\"comm_resource_config.listen_port\":"} +
+            std::to_string(g_config.hixlListenPort) + "}";
+        if (g_config.enableHixlCs) { instance.options["LocalCommRes"] = R"({"version":"1.3"})"; }
         attrs.instances.push_back(std::move(instance));
     }
     attrs.connect_timeout_ms = static_cast<std::int32_t>(g_config.opTimeoutMs);
@@ -510,7 +516,7 @@ void DramPoolServer::RequestReceiveLoop()
         task->peer_one_sided_id = peerIt->second;
         UC_DEBUG("RequestReceiver received request, request_id={}, opcode={}, control={}, peer={}",
                  task->request->request_id, static_cast<int>(task->request->opcode), controlPeerId,
-                 peerIt->second);
+                 task->peer_one_sided_id);
         // This bounded handoff keeps transport I/O separate from potentially slow request handling.
         bool queueFullLogged = false;
         while (!requestReceiverStop_.load(std::memory_order_acquire)) {

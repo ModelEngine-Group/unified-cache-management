@@ -116,9 +116,9 @@ void UnpackResults(const void* data, std::size_t resultCount, std::size_t result
     }
 }
 
-KvOpcode PeekOpcode(const void* data)
+OpType PeekOpcode(const void* data)
 {
-    return static_cast<KvOpcode>(static_cast<const std::uint8_t*>(data)[kOpcodeOffset]);
+    return static_cast<OpType>(static_cast<const std::uint8_t*>(data)[kOpcodeOffset]);
 }
 
 bool IsAllZeroKey(const BlockId& key)
@@ -127,13 +127,12 @@ bool IsAllZeroKey(const BlockId& key)
                        [](std::byte value) { return value == std::byte{}; });
 }
 
-const char* ProtocolName(KvOpcode opcode)
+const char* ProtocolName(OpType opcode)
 {
     switch (opcode) {
-        case KvOpcode::None: return "Unknown";
-        case KvOpcode::Dump: return "Dump";
-        case KvOpcode::Load: return "Load";
-        case KvOpcode::Lookup: return "Lookup";
+        case OpType::DUMP: return "Dump";
+        case OpType::LOAD: return "Load";
+        case OpType::LOOKUP: return "Lookup";
     }
     return "Unknown";
 }
@@ -153,8 +152,8 @@ Status ValidateRequestHeader(const Request& request)
     return Status::OK();
 }
 
-void PackHeader(std::uint8_t* out, KvOpcode opcode, std::uint64_t request_id,
-                std::uint64_t resp_addr, std::uint16_t batch_size)
+void PackHeader(std::uint8_t* out, OpType opcode, std::uint64_t request_id, std::uint64_t resp_addr,
+                std::uint16_t batch_size)
 {
     out[kOpcodeOffset] = static_cast<std::uint8_t>(opcode);
     std::memcpy(out + kRequestIdOffset, &request_id, sizeof(request_id));
@@ -162,7 +161,7 @@ void PackHeader(std::uint8_t* out, KvOpcode opcode, std::uint64_t request_id,
     std::memcpy(out + kLoadLookupBatchSizeOffset, &batch_size, sizeof(batch_size));
 }
 
-void PackDumpHeader(std::uint8_t* out, KvOpcode opcode, std::uint64_t request_id,
+void PackDumpHeader(std::uint8_t* out, OpType opcode, std::uint64_t request_id,
                     std::uint64_t resp_addr, std::uint32_t ttl, std::uint16_t batch_size)
 {
     out[kOpcodeOffset] = static_cast<std::uint8_t>(opcode);
@@ -175,7 +174,7 @@ void PackDumpHeader(std::uint8_t* out, KvOpcode opcode, std::uint64_t request_id
 template <typename RequestT>
 Status UnpackCommonRequestHeader(const void* data, std::size_t size, std::size_t headerSize,
                                  std::size_t batchSizeOffset, std::size_t entrySize,
-                                 KvOpcode expectedOpcode, RequestT& request)
+                                 OpType expectedOpcode, RequestT& request)
 {
     const std::string protocol = ProtocolName(expectedOpcode);
     if (!data || size < headerSize) {
@@ -254,7 +253,7 @@ Status KvDumpProtocol::UnpackResponse(const void* data, std::uint16_t result_cou
 
 Status KvDumpProtocol::ValidateRequest(const KvDumpRequest& req) const
 {
-    if (req.opcode != KvOpcode::Dump) { return Status::InvalidParam("Dump: opcode must be Dump"); }
+    if (req.opcode != OpType::DUMP) { return Status::InvalidParam("Dump: opcode must be Dump"); }
     auto header_status = ValidateRequestHeader(req);
     if (!header_status.Success()) { return header_status; }
 
@@ -274,7 +273,7 @@ Status KvDumpProtocol::UnpackRequest(const void* data, std::size_t size,
     auto req = std::make_unique<KvDumpRequest>();
     if (auto status =
             UnpackCommonRequestHeader(data, size, kKvDumpRequestHeaderSize, kDumpBatchSizeOffset,
-                                      kKvDumpEntrySize, KvOpcode::Dump, *req);
+                                      kKvDumpEntrySize, OpType::DUMP, *req);
         status.Failure()) {
         return status;
     }
@@ -357,7 +356,7 @@ Status KvLoadProtocol::UnpackResponse(const void* data, std::uint16_t result_cou
 
 Status KvLoadProtocol::ValidateRequest(const KvLoadRequest& req) const
 {
-    if (req.opcode != KvOpcode::Load) { return Status::InvalidParam("Load: opcode must be Load"); }
+    if (req.opcode != OpType::LOAD) { return Status::InvalidParam("Load: opcode must be Load"); }
     auto header_status = ValidateRequestHeader(req);
     if (!header_status.Success()) { return header_status; }
 
@@ -377,7 +376,7 @@ Status KvLoadProtocol::UnpackRequest(const void* data, std::size_t size,
     auto req = std::make_unique<KvLoadRequest>();
     if (auto status = UnpackCommonRequestHeader(data, size, kKvLoadRequestHeaderSize,
                                                 kLoadLookupBatchSizeOffset, kKvLoadEntrySize,
-                                                KvOpcode::Load, *req);
+                                                OpType::LOAD, *req);
         status.Failure()) {
         return status;
     }
@@ -457,7 +456,7 @@ Status KvLookupProtocol::UnpackResponse(const void* data, std::uint16_t result_c
 
 Status KvLookupProtocol::ValidateRequest(const KvLookupRequest& req) const
 {
-    if (req.opcode != KvOpcode::Lookup) {
+    if (req.opcode != OpType::LOOKUP) {
         return Status::InvalidParam("Lookup: opcode must be Lookup");
     }
     auto header_status = ValidateRequestHeader(req);
@@ -479,7 +478,7 @@ Status KvLookupProtocol::UnpackRequest(const void* data, std::size_t size,
     auto req = std::make_unique<KvLookupRequest>();
     if (auto status = UnpackCommonRequestHeader(data, size, kKvLookupRequestHeaderSize,
                                                 kLoadLookupBatchSizeOffset, kKvLookupEntrySize,
-                                                KvOpcode::Lookup, *req);
+                                                OpType::LOOKUP, *req);
         status.Failure()) {
         return status;
     }
@@ -517,12 +516,12 @@ Status KvLookupProtocol::PackResponse(void* data, const KvResponse& resp) const
 
 ProtocolManager::ProtocolManager()
 {
-    protocols_[KvOpcode::Dump] = std::make_unique<KvDumpProtocol>();
-    protocols_[KvOpcode::Load] = std::make_unique<KvLoadProtocol>();
-    protocols_[KvOpcode::Lookup] = std::make_unique<KvLookupProtocol>();
+    protocols_[OpType::DUMP] = std::make_unique<KvDumpProtocol>();
+    protocols_[OpType::LOAD] = std::make_unique<KvLoadProtocol>();
+    protocols_[OpType::LOOKUP] = std::make_unique<KvLookupProtocol>();
 }
 
-KvProtocol* ProtocolManager::GetProtocol(KvOpcode opcode) const
+KvProtocol* ProtocolManager::GetProtocol(OpType opcode) const
 {
     auto it = protocols_.find(opcode);
     return it != protocols_.end() ? it->second.get() : nullptr;
@@ -530,20 +529,20 @@ KvProtocol* ProtocolManager::GetProtocol(KvOpcode opcode) const
 
 // ---- Client side ----
 
-std::size_t ProtocolManager::GetPackedRequestSize(KvOpcode opcode, const KvRequest& req) const
+std::size_t ProtocolManager::GetPackedRequestSize(OpType opcode, const KvRequest& req) const
 {
     KvProtocol* proto = GetProtocol(opcode);
     if (!proto) { return 0; }
     return proto->GetPackedRequestSize(req);
 }
 
-std::size_t ProtocolManager::GetPackedResponseSize(KvOpcode opcode, std::size_t result_count) const
+std::size_t ProtocolManager::GetPackedResponseSize(OpType opcode, std::size_t result_count) const
 {
     auto* proto = GetProtocol(opcode);
     return proto ? proto->GetPackedResponseSize(result_count) : 0;
 }
 
-Status ProtocolManager::PackRequest(void* data, KvOpcode opcode, const KvRequest& req)
+Status ProtocolManager::PackRequest(void* data, OpType opcode, const KvRequest& req)
 {
     KvProtocol* proto = GetProtocol(opcode);
     if (!proto) { return Status::InvalidParam("unknown opcode in PackRequest"); }
@@ -582,7 +581,7 @@ Status ProtocolManager::IsResponseReady(const void* data, std::uint64_t expected
     }
 }
 
-Status ProtocolManager::UnpackResponse(const void* data, KvOpcode opcode,
+Status ProtocolManager::UnpackResponse(const void* data, OpType opcode,
                                        std::uint64_t expected_request_id,
                                        std::uint16_t result_count, KvResponse& out)
 {
@@ -603,7 +602,7 @@ Status ProtocolManager::UnpackRequest(const void* data, std::size_t size,
     if (!data || size < sizeof(std::uint8_t)) {
         return Status::InvalidParam("UnpackRequest: invalid data or missing opcode");
     }
-    KvOpcode opcode = PeekOpcode(data);
+    OpType opcode = PeekOpcode(data);
     KvProtocol* proto = GetProtocol(opcode);
     if (!proto) {
         return Status::InvalidParam("UnpackRequest: unknown opcode " +
@@ -612,7 +611,7 @@ Status ProtocolManager::UnpackRequest(const void* data, std::size_t size,
     return proto->UnpackRequest(data, size, out);
 }
 
-Status ProtocolManager::PackResponse(void* data, KvOpcode opcode, const KvResponse& resp)
+Status ProtocolManager::PackResponse(void* data, OpType opcode, const KvResponse& resp)
 {
     KvProtocol* proto = GetProtocol(opcode);
     if (!proto) { return Status::InvalidParam("unknown opcode in PackResponse"); }
