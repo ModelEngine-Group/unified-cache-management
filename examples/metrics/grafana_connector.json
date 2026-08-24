@@ -203,7 +203,7 @@
     "ucm-vllm-connector-metrics",
     "connector"
   ],
-  "description": "Unified UCM Connector dashboard: common vLLM interface duration at the top, followed by connector-specific Direct and Layerwise diagnostics.",
+  "description": "UCM Connector 性能指标，包括 Connector 接口耗时、聚合带宽和 Layerwise 加载耗时。",
   "links": [
     {
       "type": "dashboards",
@@ -224,7 +224,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Aggregate Load and Save throughput in GB/s, calculated from cumulative Connector byte counters.",
+      "description": "- `Load`：`rate(ucm:load_bytes_total) / 1e9`；Connector 聚合加载带宽，包含任务间的空闲时间。代码位置：`ucm/integration/vllm/ucm_connector.py` / `UCMDirectConnector.start_load_kv` / Load 完成后。\n- `Save`：`rate(ucm:save_bytes_total) / 1e9`；Connector 聚合保存带宽，包含任务间的空闲时间。代码位置：`ucm/integration/vllm/ucm_connector.py` / `UCMDirectConnector.wait_for_save` / Dump 提交后。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -337,7 +337,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "P50, P90, and P99 wall-clock duration of Connector interface `wait_for_save`.",
+      "description": "指标：`ucm:connector_wait_for_save_duration_ms`；Connector 接口 `wait_for_save` 的墙钟耗时，本面板展示 p50、p90 和 p99。代码位置：`ucm/integration/vllm/ucm_connector.py` / `_record_connector_interface_duration` / 接口返回时。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -464,7 +464,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "P50, P90, and P99 wall-clock duration of Connector interface `get_num_new_matched_tokens`.",
+      "description": "指标：`ucm:connector_get_num_new_matched_tokens_duration_ms`；Connector 接口 `get_num_new_matched_tokens` 的墙钟耗时，本面板展示 p50、p90 和 p99。代码位置：`ucm/integration/vllm/ucm_connector.py` / `_record_connector_interface_duration` / 接口返回时。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -591,7 +591,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "P50, P90, and P99 wall-clock duration of Connector interface `start_load_kv`.",
+      "description": "指标：`ucm:connector_start_load_kv_duration_ms`；Connector 接口 `start_load_kv` 的墙钟耗时，本面板展示 p50、p90 和 p99。代码位置：`ucm/integration/vllm/ucm_connector.py` / `_record_connector_interface_duration` / 接口返回时。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -718,7 +718,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "P50, P90, and P99 wall-clock duration of Connector interface `wait_for_layer_load`.",
+      "description": "指标：`ucm:connector_wait_for_layer_load_duration_ms`；Connector 接口 `wait_for_layer_load` 的墙钟耗时，本面板展示 p50、p90 和 p99。代码位置：`ucm/integration/vllm/ucm_connector.py` / `_record_connector_interface_duration` / 接口返回时。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -845,7 +845,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "P50, P90, and P99 wall-clock duration of Connector interface `save_kv_layer`.",
+      "description": "指标：`ucm:connector_save_kv_layer_duration_ms`；Connector 接口 `save_kv_layer` 的墙钟耗时，本面板展示 p50、p90 和 p99。代码位置：`ucm/integration/vllm/ucm_connector.py` / `_record_connector_interface_duration` / 接口返回时。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -972,7 +972,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "P50 wall-clock duration of all non-highlighted Connector interfaces.",
+      "description": "各曲线：`ucm:connector_<method>_duration_ms`；除单独展示接口外，其他 Connector 接口墙钟耗时的 p50，曲线名对应接口名。代码位置：`ucm/integration/vllm/ucm_connector.py` / `_record_connector_interface_duration` / 接口返回时。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1231,7 +1231,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "P99 wall-clock duration of all non-highlighted Connector interfaces.",
+      "description": "各曲线：`ucm:connector_<method>_duration_ms`；除单独展示接口外，其他 Connector 接口墙钟耗时的 p99，曲线名对应接口名。代码位置：`ucm/integration/vllm/ucm_connector.py` / `_record_connector_interface_duration` / 接口返回时。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1490,7 +1490,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "P50, P90, and P99 wall-clock time from a layer load start to its wait_for_layer_load return.",
+      "description": "指标：`ucm:layerwise_layer_load_duration_ms`；单层从开始加载到该层 `wait_for_layer_load` 返回的墙钟耗时，本面板展示 p50、p90 和 p99。代码位置：`ucm/integration/vllm/ucm_connector.py` / `UCMLayerWiseConnector._record_layerwise_load_duration` / 单层加载完成后。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1617,7 +1617,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "P50, P90, and P99 sum of per-layer load durations within one Layerwise batch.",
+      "description": "指标：`ucm:layerwise_batch_load_duration_sum_ms`；一个 Layerwise batch 内各层加载耗时之和，本面板展示 p50、p90 和 p99。代码位置：`ucm/integration/vllm/ucm_connector.py` / `UCMLayerWiseConnector.wait_for_layer_load` / 最后一层加载完成后。",
       "fieldConfig": {
         "defaults": {
           "color": {

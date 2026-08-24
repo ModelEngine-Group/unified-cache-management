@@ -1671,6 +1671,14 @@ def test_connector_dashboard_layout_and_metrics():
     panels = dashboard["panels"]
     titles = [panel.get("title", "") for panel in panels]
 
+    assert "UCM Connector 性能指标" in dashboard["description"]
+    described_panels = [panel for panel in panels if panel.get("description")]
+    assert len(described_panels) == 10
+    assert all(
+        any("\u4e00" <= char <= "\u9fff" for char in panel["description"])
+        for panel in described_panels
+    )
+
     assert "_seconds" not in text
     assert "1000 *" not in text
     assert "save_speed" not in text
@@ -2548,6 +2556,48 @@ def test_pipeline_dashboard_orders_cache_bandwidth_rows():
     assert panels["Cache Load H2D Duration"]["gridPos"]["y"] == 57
     assert "Cache Dump D2H Duration (include wait compute)" in panels
     assert "Cache Dump D2H Duration" not in panels
+
+
+def test_pipeline_dashboard_cache_load_breakdown_uses_backend_submit():
+    dashboard = json.loads(
+        (REPO_ROOT / "examples" / "metrics" / "grafana_pipeline_store.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    panel = next(
+        panel
+        for panel in dashboard["panels"]
+        if panel["title"] == "Cache Load Avg Breakdown"
+    )
+    targets = {
+        target["legendFormat"].split(" {{", 1)[0]: target for target in panel["targets"]
+    }
+
+    assert set(targets) == {
+        "queue wait",
+        "backend submit",
+        "H2D sync",
+        "h2d submit & other",
+    }
+    assert "cache_load_backend_submit_duration_ms" in targets["backend submit"]["expr"]
+    residual = targets["h2d submit & other"]["expr"]
+    for metric in (
+        "cache_load_duration_ms",
+        "cache_load_queue_wait_duration_ms",
+        "cache_load_backend_submit_duration_ms",
+        "cache_h2d_sync_ms",
+    ):
+        assert metric in residual
+    description = panel["description"]
+    assert "`queue wait`：`ucm:cache_load_queue_wait_duration_ms`；" in description
+    assert (
+        "`backend submit`：`ucm:cache_load_backend_submit_duration_ms`；" in description
+    )
+    assert "`H2D sync`：`ucm:cache_h2d_sync_ms`；" in description
+    assert (
+        "`h2d submit & other`：`ucm:cache_load_duration_ms - queue wait - "
+        "backend submit - H2D sync`；" in description
+    )
 
 
 def test_pipeline_dashboard_groups_performance_stores_in_order():
