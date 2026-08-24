@@ -1,9 +1,7 @@
 import copy
 import math
 import os
-import time
 from dataclasses import dataclass, field
-from functools import wraps
 from typing import TYPE_CHECKING, Optional, Sequence, Tuple
 
 import numpy as np
@@ -35,29 +33,6 @@ if TYPE_CHECKING:
     from vllm.v1.request import Request
 
 logger = init_logger(__name__)
-
-
-def fawa_latency_metric(metric_name: str, *, ms_threshold: int = 1):
-    def decorator(func):
-        @wraps(func)
-        def wrapper(self, *args, **kwargs):
-            if not getattr(self, "_fawa_stats_enabled", True):
-                return func(self, *args, **kwargs)
-            start = time.perf_counter()
-            try:
-                return func(self, *args, **kwargs)
-            finally:
-                duration_ms = (time.perf_counter() - start) * 1e3
-                if duration_ms >= ms_threshold:
-                    ucmmetrics.update_stats(
-                        {
-                            metric_name: duration_ms,
-                        }
-                    )
-
-        return wrapper
-
-    return decorator
 
 
 @dataclass(frozen=True)
@@ -830,9 +805,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             raise RuntimeError(f"Worker FAWA {group_label} layout is empty.")
         return tensor_size_list
 
-    @fawa_latency_metric(
-        "fawa_scheduler_lookup_external_hit_blocks_ms",
-    )
     def _lookup_external_hit_blocks(self, external_keys: list[bytes]) -> int:
         """Find the longest reusable prefix present in both FA and WA stores."""
 
@@ -855,9 +827,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             return 0
         return reverse_idx + 1
 
-    @fawa_latency_metric(
-        "fawa_scheduler_get_num_new_matched_tokens_ms",
-    )
     def get_num_new_matched_tokens(
         self,
         request: "Request",
@@ -1264,9 +1233,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         }
         return all_group_vllm_block_ids
 
-    @fawa_latency_metric(
-        "fawa_worker_start_load_kv_ms",
-    )
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         metadata = self._get_connector_metadata()
         if not isinstance(metadata, UCMFAWAConnectorMetadata):
@@ -1322,16 +1288,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
         self._wait_all_load_task(tasks)
 
-    @fawa_latency_metric(
-        "fawa_worker_wait_wait_all_load_task_ms",
-    )
     def _wait_all_load_task(self, tasks: list[FAWALoadTask]):
         for load_task in tasks:
             self._wait_load_task(load_task)
 
-    @fawa_latency_metric(
-        "fawa_worker_wait_for_save_ms",
-    )
     def wait_for_save(self) -> None:
         metadata = self._get_connector_metadata()
         if not isinstance(metadata, UCMFAWAConnectorMetadata):

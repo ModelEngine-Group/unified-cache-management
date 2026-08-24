@@ -26,12 +26,10 @@ counter:
     documentation: "Number of lookup hits served by the Cache stage (no descent to backend)"
   - name: "cache_lookup_miss_blocks_total"
     documentation: "Number of lookup misses at the Cache stage (had to query the backend)"
-  - name: "cache_load_blocks_total"
-    documentation: "Total blocks loaded by the Cache stage"
-  - name: "cache_dump_blocks_total"
-    documentation: "Total blocks dumped by the Cache stage"
   - name: "cache_load_shards_total"
-    documentation: "Total shards dispatched by Cache load (num blocks * shards_per_block)"
+    documentation: "Total shards whose Cache buffer state was inspected during load"
+  - name: "cache_load_wait_shards_total"
+    documentation: "Shards whose Cache buffer was not ready when acquired and required waiting"
   - name: "cache_load_backend_shards_total"
     documentation: "Shards that descended to the backend on load (true cache miss at the buffer-allocation stage; aka backend-load count)"
   - name: "cache_load_success_shards_total"
@@ -41,7 +39,7 @@ counter:
   - name: "cache_load_failed_shards_total"
     documentation: "Cache load shards that did not complete device delivery"
   - name: "cache_dump_shards_total"
-    documentation: "Total shards dispatched by Cache dump (mirror of cache_load_shards_total)"
+    documentation: "Total shard descriptors processed by Cache dump, including failed tasks"
   - name: "cache_dump_backend_shards_total"
     documentation: "Shards actually pushed to backend on dump (excludes !handle.Owner() skips in shared-buffer scenario)"
   - name: "cache_load_queue_full_total"
@@ -170,10 +168,6 @@ counter:
     documentation: "Total Mooncake bytes copied from device to host"
 
   # -- Connector layer: per-worker real throughput counters ----------------
-  # The connector load_speed histogram samples per-call speed
-  # (a statistical distribution), so an aggregated quantile across workers
-  # is still ~per-call speed, not a sum. Use rate(*_bytes_total) / 1e9 to
-  # get the actual GB/s the whole vLLM service is moving through UCM.
   - name: "load_bytes_total"
     documentation: "Total bytes loaded through the UCM connector (summed across all start_load_kv calls)"
   - name: "save_bytes_total"
@@ -205,9 +199,6 @@ counter:
 
 # Gauge metrics configuration
 gauge:
-  - name: "cache_lookup_hit_rate"
-    documentation: "Instantaneous Cache stage hit rate from the most recent lookup call"
-    multiprocess_mode: "livemostrecent"
   - name: "yuanrong_dram_used_bytes"
     documentation: "YuanRong physical shared-memory usage in bytes"
     multiprocess_mode: "livemostrecent"
@@ -253,25 +244,7 @@ gauge:
 
 # Histogram metrics configuration
 histogram:
-  # -- Legacy end-to-end connector metrics ----------------------------------
-  - name: "load_requests_num"
-    documentation: "Number of requests loaded from ucm"
-    buckets: [1, 5, 10, 20, 50, 100, 200, 500, 1000]
-  - name: "load_blocks_num"
-    documentation: "Number of blocks loaded from ucm"
-    buckets: [0, 50, 100, 150, 200, 250, 300, 350, 400, 550, 600, 750, 800, 850, 900, 950, 1000]
-  - name: "load_duration"
-    documentation: "Time to load from ucm (ms)"
-    buckets: [0, 50, 100, 150, 200, 250, 300, 350, 400, 550, 600, 750, 800, 850, 900, 950, 1000]
-  - name: "load_speed"
-    documentation: "Speed of loading from ucm (GB/s)"
-    buckets: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 50, 60, 70, 80, 90, 100]
-  - name: "save_requests_num"
-    documentation: "Number of requests saved to ucm"
-    buckets: [1, 5, 10, 20, 50, 100, 200, 500, 1000]
-  - name: "save_blocks_num"
-    documentation: "Number of blocks saved to ucm"
-    buckets: [0, 50, 100, 150, 200, 250, 300, 350, 400, 550, 600, 750, 800, 850, 900, 950, 1000]
+  # -- End-to-end connector metrics -----------------------------------------
   - name: "save_duration"
     documentation: "Time from UCM connector wait_for_save entry to async dump task completion (ms)"
     buckets: [0, 50, 100, 150, 200, 250, 300, 350, 400, 550, 600, 750, 800, 850, 900, 950, 1000]
@@ -420,15 +393,71 @@ histogram:
     documentation: "Mooncake dump time waiting for backend archive completion (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000]
 
+  # vLLM Connector public interfaces
+  - name: "connector_get_block_size_duration_ms"
+    documentation: "Wall-clock duration of UCMConnector.get_block_size invoked by vLLM (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "connector_get_kv_connector_stats_duration_ms"
+    documentation: "Wall-clock duration of UCMConnector.get_kv_connector_stats invoked by vLLM (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "connector_get_num_new_matched_tokens_duration_ms"
+    documentation: "Wall-clock duration of UCMConnector.get_num_new_matched_tokens invoked by vLLM (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "connector_update_state_after_alloc_duration_ms"
+    documentation: "Wall-clock duration of UCMConnector.update_state_after_alloc invoked by vLLM (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "connector_register_kv_caches_duration_ms"
+    documentation: "Wall-clock duration of UCMConnector.register_kv_caches invoked by vLLM (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "connector_build_connector_meta_duration_ms"
+    documentation: "Wall-clock duration of UCMConnector.build_connector_meta invoked by vLLM (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "connector_bind_connector_metadata_duration_ms"
+    documentation: "Wall-clock duration of UCMConnector.bind_connector_metadata invoked by vLLM (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "connector_handle_preemptions_duration_ms"
+    documentation: "Wall-clock duration of UCMConnector.handle_preemptions invoked by vLLM (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "connector_has_connector_metadata_duration_ms"
+    documentation: "Wall-clock duration of UCMConnector.has_connector_metadata invoked by vLLM (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "connector_start_load_kv_duration_ms"
+    documentation: "Wall-clock duration of UCMConnector.start_load_kv invoked by vLLM (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "connector_wait_for_layer_load_duration_ms"
+    documentation: "Wall-clock duration of UCMConnector.wait_for_layer_load invoked by vLLM (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "connector_save_kv_layer_duration_ms"
+    documentation: "Wall-clock duration of UCMConnector.save_kv_layer invoked by vLLM (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "connector_wait_for_save_duration_ms"
+    documentation: "Wall-clock duration of UCMConnector.wait_for_save invoked by vLLM (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "connector_request_finished_all_groups_duration_ms"
+    documentation: "Wall-clock duration of UCMConnector.request_finished_all_groups invoked by vLLM (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "connector_request_finished_duration_ms"
+    documentation: "Wall-clock duration of UCMConnector.request_finished invoked by vLLM (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "connector_get_finished_duration_ms"
+    documentation: "Wall-clock duration of UCMConnector.get_finished invoked by vLLM (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "connector_build_connector_worker_meta_duration_ms"
+    documentation: "Wall-clock duration of UCMConnector.build_connector_worker_meta invoked by vLLM (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "connector_update_connector_output_duration_ms"
+    documentation: "Wall-clock duration of UCMConnector.update_connector_output invoked by vLLM (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "connector_clear_connector_metadata_duration_ms"
+    documentation: "Wall-clock duration of UCMConnector.clear_connector_metadata invoked by vLLM (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "connector_get_block_ids_with_load_errors_duration_ms"
+    documentation: "Wall-clock duration of UCMConnector.get_block_ids_with_load_errors invoked by vLLM (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+
   # =========================================================================
   # Layerwise Connector — overlap / pipelining health
   # =========================================================================
-  # Primary signal: layerwise_wait_blocking_ms. If p99 is near 0, overlap is
-  # perfect; if it tracks load_duration closely, loading is the bottleneck
-  # and the layerwise design is degenerating into serial execution.
-  - name: "layerwise_batch_total_ms"
-    documentation: "Layerwise batch wall-clock time from start_load_kv entry to wait_for_save return (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
   - name: "layerwise_batch_total_load_only_ms"
     documentation: "Layerwise load-only batch wall-clock time from start_load_kv entry to wait_for_save return (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
@@ -438,67 +467,9 @@ histogram:
   - name: "layerwise_batch_total_load_save_ms"
     documentation: "Layerwise load-and-save batch wall-clock time from start_load_kv entry to wait_for_save return (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
-  - name: "layerwise_batch_total_no_transfer_ms"
-    documentation: "Layerwise batch wall-clock time with neither load nor save work (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
   - name: "layerwise_batch_load_wait_total_load_only_ms"
     documentation: "Total wait_for_layer_load blocking time accumulated within one load-only layerwise batch (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
   - name: "layerwise_batch_load_wait_total_load_save_ms"
     documentation: "Total wait_for_layer_load blocking time accumulated within one load-and-save layerwise batch (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
-  - name: "layerwise_batch_save_tail_save_only_ms"
-    documentation: "wait_for_save tail duration within one save-only layerwise batch (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000]
-  - name: "layerwise_batch_save_tail_load_save_ms"
-    documentation: "wait_for_save tail duration within one load-and-save layerwise batch (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000]
-  - name: "layerwise_wait_blocking_ms"
-    documentation: "Time wait_for_layer_load blocked before returning (ms). Near 0 = good overlap."
-    buckets: [0, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
-  - name: "layerwise_wait_tasks_count"
-    documentation: "Number of per-request load tasks awaited in a single layer wait"
-    buckets: [0, 1, 2, 4, 8, 16, 32, 64]
-  - name: "layerwise_inter_wait_interval_ms"
-    documentation: "Interval between consecutive wait_for_layer_load calls (~forward time) (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
-  - name: "layerwise_next_layer_submit_ms"
-    documentation: "Time to submit next layer's load tasks inside wait_for_layer_load (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50]
-  - name: "layerwise_first_layer_submit_ms"
-    documentation: "Time to submit first layer load tasks during start_load_kv - TTFT critical (ms)"
-    buckets: [0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100]
-  - name: "layerwise_first_layer_requests"
-    documentation: "Number of requests whose first-layer load was submitted in start_load_kv"
-    buckets: [0, 1, 2, 4, 8, 16, 32, 64, 128]
-  - name: "layerwise_save_submit_ms"
-    documentation: "Time to submit one layer's dump task in save_kv_layer (ms)"
-    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50]
-  - name: "layerwise_save_tail_total_ms"
-    documentation: "Legacy metric; LayerWise no longer waits for dump completion in wait_for_save"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000]
-
-  # =========================================================================
-  # FAWA Connector
-  # =========================================================================
-  # visualize major time span for TTFT
-
-  - name: "fawa_scheduler_lookup_external_hit_blocks_ms"
-    documentation: "store lookup latency"
-    buckets: [1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 30, 40, 50]
-
-  - name: "fawa_scheduler_get_num_new_matched_tokens_ms"
-    documentation: "store lookup latency + generate block hash latency"
-    buckets: [1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 30, 40, 50]
-
-  - name: "fawa_worker_wait_wait_all_load_task_ms"
-    documentation: "store load latency"
-    buckets: [1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 850, 900, 950, 1000, 1250, 1500, 1750, 2000]
-
-  - name: "fawa_worker_start_load_kv_ms"
-    documentation: "store load task latency + generate task latency"
-    buckets: [1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 850, 900, 950, 1000, 1250, 1500, 1750, 2000]
-
-  - name: "fawa_worker_wait_for_save_ms"
-    documentation: "store dump task latency"
-    buckets: [1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 100, 150, 200, 250, 300, 350, 400, 450, 500]

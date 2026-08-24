@@ -255,10 +255,31 @@ fake_ucmmetrics = FakeUcmMetrics()
 GRAFANA_VLLM_UCM_TAG = "ucm-vllm-connector-metrics"
 GRAFANA_UCM_DASHBOARDS = [
     "grafana_connector.json",
-    "grafana_layerwise.json",
     "grafana_pipeline_store.json",
     "grafana_mooncake.json",
 ]
+CONNECTOR_INTERFACE_METHODS = {
+    "get_block_size",
+    "get_kv_connector_stats",
+    "get_num_new_matched_tokens",
+    "update_state_after_alloc",
+    "register_kv_caches",
+    "build_connector_meta",
+    "bind_connector_metadata",
+    "handle_preemptions",
+    "has_connector_metadata",
+    "start_load_kv",
+    "wait_for_layer_load",
+    "save_kv_layer",
+    "wait_for_save",
+    "request_finished_all_groups",
+    "request_finished",
+    "get_finished",
+    "build_connector_worker_meta",
+    "update_connector_output",
+    "clear_connector_metadata",
+    "get_block_ids_with_load_errors",
+}
 
 
 def _install_stubs():
@@ -491,7 +512,7 @@ def _metrics_config(consumers=None):
         ],
         "gauge": [
             {
-                "name": "cache_lookup_hit_rate",
+                "name": "test_health",
                 "documentation": "Latest cache lookup hit rate.",
             }
         ],
@@ -564,7 +585,7 @@ def test_config_definitions_register_enable_list_and_metric_names():
     assert vllm_connector_prefix({}) == "ucm:"
     assert list(by_name) == [
         "load_bytes_total",
-        "cache_lookup_hit_rate",
+        "test_health",
         "load_duration",
         "cache_load_duration_ms",
         "interval_lookup_hit_rates",
@@ -577,10 +598,10 @@ def test_config_definitions_register_enable_list_and_metric_names():
         == "ucm:cache_load_duration_ms"
     )
     assert by_name["interval_lookup_hit_rates"].vllm_connector_enabled is False
-    assert by_name["cache_lookup_hit_rate"].multiprocess_mode == ""
+    assert by_name["test_health"].multiprocess_mode == ""
     assert fake_ucmmetrics.created == [
         ("load_bytes_total", "counter", ()),
-        ("cache_lookup_hit_rate", "gauge", ()),
+        ("test_health", "gauge", ()),
         ("load_duration", "histogram", (50, 100)),
         ("cache_load_duration_ms", "histogram", (1, 5)),
         ("interval_lookup_hit_rates", "histogram", (0.1, 0.5, 1.0)),
@@ -863,8 +884,7 @@ def test_scheduler_side_metrics_are_configured_for_vllm_connector():
         "total_prefix_query_blocks_total",
         "gpu_hbm_hit_blocks_total",
         "connector_lookup_errors_total",
-        "fawa_scheduler_lookup_external_hit_blocks_ms",
-        "fawa_scheduler_get_num_new_matched_tokens_ms",
+        "connector_get_num_new_matched_tokens_duration_ms",
     } <= definitions
 
 
@@ -890,7 +910,7 @@ def test_dispatcher_fans_out_single_core_drain_to_independent_consumers():
     config = _metrics_config()
     fake_ucmmetrics.snapshot = (
         {"load_bytes_total": 4096.0, "not_configured": 99.0},
-        {"cache_lookup_hit_rate": 0.5},
+        {"test_health": 0.5},
         {
             "load_duration": ([0, 1, 0], 75.0),
             "interval_lookup_hit_rates": ([1, 0, 0, 0], 0.1),
@@ -904,11 +924,11 @@ def test_dispatcher_fans_out_single_core_drain_to_independent_consumers():
 
     assert fake_ucmmetrics.drained == ["all"]
     assert multiproc_stats[0] == {"load_bytes_total": 4096.0}
-    assert multiproc_stats[1] == {"cache_lookup_hit_rate": 0.5}
+    assert multiproc_stats[1] == {"test_health": 0.5}
     assert multiproc_stats[2]["load_duration"] == ([0, 1, 0], 75.0)
     assert multiproc_stats[2]["interval_lookup_hit_rates"] == ([1, 0, 0, 0], 0.1)
     assert vllm_stats[0] == {"load_bytes_total": 4096.0}
-    assert vllm_stats[1] == {"cache_lookup_hit_rate": 0.5}
+    assert vllm_stats[1] == {"test_health": 0.5}
     assert vllm_stats[2] == {"load_duration": ([0, 1, 0], 75.0)}
     assert dispatcher.get_stats_and_clear("multiproc") == ({}, {}, {})
 
@@ -919,13 +939,13 @@ def test_dispatcher_accumulates_deltas_and_keeps_gauge_latest():
 
     fake_ucmmetrics.snapshot = (
         {"load_bytes_total": 100.0},
-        {"cache_lookup_hit_rate": 0.25},
+        {"test_health": 0.25},
         {"load_duration": ([1, 0, 0], 50.0)},
     )
     dispatcher.drain_to_consumers()
     fake_ucmmetrics.snapshot = (
         {"load_bytes_total": 50.0},
-        {"cache_lookup_hit_rate": 0.75},
+        {"test_health": 0.75},
         {"load_duration": ([0, 2, 0], 125.0)},
     )
     dispatcher.drain_to_consumers()
@@ -933,7 +953,7 @@ def test_dispatcher_accumulates_deltas_and_keeps_gauge_latest():
     counters, gauges, histograms = dispatcher.get_stats_and_clear("vllm_connector")
 
     assert counters == {"load_bytes_total": 150.0}
-    assert gauges == {"cache_lookup_hit_rate": 0.75}
+    assert gauges == {"test_health": 0.75}
     assert histograms == {"load_duration": ([1, 2, 0], 175.0)}
 
 
@@ -1003,7 +1023,7 @@ def test_stats_from_ucm_snapshot_preserves_metric_types_and_worker_rank():
     definitions = get_vllm_connector_metric_definitions(_metrics_config())
     stats = UCMConnectorStats.from_ucm_snapshot(
         counter_stats={"load_bytes_total": 2048.0, "not_configured": 99.0},
-        gauge_stats={"cache_lookup_hit_rate": 0.75},
+        gauge_stats={"test_health": 0.75},
         histogram_stats={
             "load_duration": ([1, 2, 0], 150.0),
             "interval_lookup_hit_rates": ([1, 0, 0, 0], 0.1),
@@ -1014,7 +1034,7 @@ def test_stats_from_ucm_snapshot_preserves_metric_types_and_worker_rank():
 
     assert stats.worker_rank == "7"
     assert stats.data["counters_by_rank"]["7"]["load_bytes_total"] == 2048.0
-    assert stats.data["gauges_by_rank"]["7"]["cache_lookup_hit_rate"] == 0.75
+    assert stats.data["gauges_by_rank"]["7"]["test_health"] == 0.75
     assert stats.data["histograms_by_rank"]["7"]["load_duration"] == {
         "bucket_counts": [1, 2, 0],
         "sum": 150.0,
@@ -1032,7 +1052,7 @@ def test_stats_record_aggregate_clone_and_reset_preserve_worker_rank():
         UCMConnectorStats(
             data={
                 "counters_by_rank": {"1": {"load_bytes_total": 10.0}},
-                "gauges_by_rank": {"1": {"cache_lookup_hit_rate": 0.5}},
+                "gauges_by_rank": {"1": {"test_health": 0.5}},
                 "histograms_by_rank": {
                     "1": {"load_duration": {"bucket_counts": [0, 1], "sum": 75.0}}
                 },
@@ -1046,7 +1066,7 @@ def test_stats_record_aggregate_clone_and_reset_preserve_worker_rank():
     assert rank0.is_empty()
     assert snapshot.data["histograms_by_rank"]["0"]["load_duration"] == [50.0]
     assert snapshot.data["counters_by_rank"]["1"]["load_bytes_total"] == 10.0
-    assert snapshot.data["gauges_by_rank"]["1"]["cache_lookup_hit_rate"] == 0.5
+    assert snapshot.data["gauges_by_rank"]["1"]["test_health"] == 0.5
     assert snapshot.data["histograms_by_rank"]["1"]["load_duration"] == {
         "bucket_counts": [0, 1],
         "sum": 75.0,
@@ -1058,7 +1078,7 @@ def test_stats_reduce_skips_ucm_cli_summary():
     stats = UCMConnectorStats(
         data={
             "counters_by_rank": {"0": {"load_bytes_total": 10.0}},
-            "gauges_by_rank": {"0": {"cache_lookup_hit_rate": 0.5}},
+            "gauges_by_rank": {"0": {"test_health": 0.5}},
             "histograms_by_rank": {
                 "0": {
                     "load_duration": {"bucket_counts": [1, 0], "sum": 50.0},
@@ -1090,7 +1110,7 @@ def test_prom_metrics_register_vllm_connector_prefixed_metrics():
     prom.observe(
         {
             "counters_by_rank": {"7": {"load_bytes_total": 2048.0}},
-            "gauges_by_rank": {"7": {"cache_lookup_hit_rate": 0.75}},
+            "gauges_by_rank": {"7": {"test_health": 0.75}},
             "histograms_by_rank": {
                 "7": {"load_duration": {"bucket_counts": [1, 2, 0], "sum": 150.0}}
             },
@@ -1108,7 +1128,7 @@ def test_prom_metrics_register_vllm_connector_prefixed_metrics():
     ]
 
     counter = FakeCounter.created["ucm:load_bytes_total"]
-    gauge = FakeGauge.created["ucm:cache_lookup_hit_rate"]
+    gauge = FakeGauge.created["ucm:test_health"]
     histogram = FakeHistogram.created["ucm:load_duration"]
 
     assert counter.labelnames == ["model_name", "engine", "worker_rank"]
@@ -1246,7 +1266,7 @@ def test_ucm_connector_drains_dispatcher_vllm_connector_snapshot():
     dispatcher = get_metrics_dispatcher(config)
     fake_ucmmetrics.snapshot = (
         {"load_bytes_total": 4096.0},
-        {"cache_lookup_hit_rate": 0.5},
+        {"test_health": 0.5},
         {"load_duration": ([0, 1, 0], 75.0)},
     )
     connector = object.__new__(UCMConnector)
@@ -1264,7 +1284,7 @@ def test_ucm_connector_drains_dispatcher_vllm_connector_snapshot():
 
     assert fake_ucmmetrics.drained == ["all"]
     assert stats.data["counters_by_rank"]["5"]["load_bytes_total"] == 4096.0
-    assert stats.data["gauges_by_rank"]["5"]["cache_lookup_hit_rate"] == 0.5
+    assert stats.data["gauges_by_rank"]["5"]["test_health"] == 0.5
     assert stats.data["histograms_by_rank"]["5"]["load_duration"] == {
         "bucket_counts": [0, 1, 0],
         "sum": 75.0,
@@ -1287,7 +1307,7 @@ def test_ucm_connector_drains_scheduler_vllm_connector_snapshot():
             "ucm_hit_tokens_total": 384,
         },
         {},
-        {"fawa_scheduler_get_num_new_matched_tokens_ms": ([0, 1], 12.0)},
+        {"connector_get_num_new_matched_tokens_duration_ms": ([0, 1], 12.0)},
     )
 
     stats = connector.get_kv_connector_stats()
@@ -1298,7 +1318,7 @@ def test_ucm_connector_drains_scheduler_vllm_connector_snapshot():
         "ucm_hit_tokens_total": 384.0,
     }
     assert stats.data["histograms_by_rank"]["scheduler"][
-        "fawa_scheduler_get_num_new_matched_tokens_ms"
+        "connector_get_num_new_matched_tokens_duration_ms"
     ] == {
         "bucket_counts": [0, 1],
         "sum": 12.0,
@@ -1316,14 +1336,61 @@ def test_ucm_connector_records_prefix_cache_token_counters():
 
     assert connector.get_num_new_matched_tokens(request, 512) == (384, False)
 
+    assert {
+        "total_prefix_query_tokens_total": 2048,
+        "gpu_hbm_hit_tokens_total": 512,
+        "ucm_hit_tokens_total": 384,
+        "total_prefix_query_blocks_total": 16,
+        "gpu_hbm_hit_blocks_total": 4,
+    } in fake_ucmmetrics.updated
+    assert {
+        next(iter(update)) for update in fake_ucmmetrics.updated if len(update) == 1
+    } >= {
+        "connector_get_block_size_duration_ms",
+        "connector_get_num_new_matched_tokens_duration_ms",
+    }
+
+
+def test_ucm_connector_public_interfaces_record_durations_on_failure():
+    _reset_fakes()
+    configured_histograms = {
+        metric["name"] for metric in DEFAULT_METRICS_CONFIG["histogram"]
+    }
+    duration_metrics = {
+        f"connector_{method_name}_duration_ms"
+        for method_name in CONNECTOR_INTERFACE_METHODS
+    }
+    assert duration_metrics <= configured_histograms
+    metrics_list = (
+        REPO_ROOT / "docs" / "source" / "user-guide" / "metrics" / "metrics_list.md"
+    ).read_text(encoding="utf-8")
+    error_duration_metric = "connector_get_block_ids_with_load_errors_duration_ms"
+    assert all(
+        f"ucm:{metric_name}" in metrics_list
+        for metric_name in duration_metrics - {error_duration_metric}
+    )
+    assert f"ucm:{error_duration_metric}" not in metrics_list
+    for method_name in CONNECTOR_INTERFACE_METHODS:
+        method = UCMConnector.__dict__[method_name]
+        assert method.__wrapped__.__name__ == method_name
+
+    connector = object.__new__(UCMConnector)
+
+    def raise_error():
+        raise RuntimeError("boom")
+
+    connector.connector = SimpleNamespace(has_connector_metadata=raise_error)
+    times = iter([1.0, 1.025])
+    original_perf_counter = ucm_connector_module.time.perf_counter
+    ucm_connector_module.time.perf_counter = lambda: next(times)
+    try:
+        with pytest.raises(RuntimeError, match="boom"):
+            connector.has_connector_metadata()
+    finally:
+        ucm_connector_module.time.perf_counter = original_perf_counter
+
     assert fake_ucmmetrics.updated == [
-        {
-            "total_prefix_query_tokens_total": 2048,
-            "gpu_hbm_hit_tokens_total": 512,
-            "ucm_hit_tokens_total": 384,
-            "total_prefix_query_blocks_total": 16,
-            "gpu_hbm_hit_blocks_total": 4,
-        }
+        {"connector_has_connector_metadata_duration_ms": pytest.approx(25.0)}
     ]
 
 
@@ -1526,7 +1593,7 @@ def test_multiproc_logger_uses_prefix_and_dispatcher_snapshot(tmp_path):
     logger = observability.PrometheusStatsLogger("model-a", "worker-0", "unused.yaml")
     fake_ucmmetrics.snapshot = (
         {"load_bytes_total": 1024.0},
-        {"cache_lookup_hit_rate": 0.25},
+        {"test_health": 0.25},
         {"load_duration": ([1, 0, 0], 50.0)},
     )
 
@@ -1537,7 +1604,7 @@ def test_multiproc_logger_uses_prefix_and_dispatcher_snapshot(tmp_path):
         observability.time.sleep = original_sleep
 
     counter = FakeCounter.created["ucm_multiproc:load_bytes_total"]
-    gauge = FakeGauge.created["ucm_multiproc:cache_lookup_hit_rate"]
+    gauge = FakeGauge.created["ucm_multiproc:test_health"]
     histogram = FakeHistogram.created["ucm_multiproc:load_duration"]
 
     assert logger.thread.started
@@ -1606,9 +1673,24 @@ def test_connector_dashboard_direct_connector_layout_and_metrics():
     assert "_seconds" not in text
     assert "1000 *" not in text
     assert "save_speed" not in text
-    assert panels[0]["title"] == "Connector Prefix Cache Hit Rate"
-    assert panels[0]["gridPos"] == {"h": 8, "w": 24, "x": 0, "y": 0}
+    assert panels[0]["title"] == "vLLM Connector Interface Duration (P99)"
+    assert panels[0]["gridPos"] == {"h": 10, "w": 24, "x": 0, "y": 0}
+    assert panels[0]["fieldConfig"]["defaults"]["unit"] == "ms"
+    assert len(panels[0]["targets"]) == len(CONNECTOR_INTERFACE_METHODS)
+    assert {
+        re.search(r"ucm:(connector_[a-z0-9_]+_duration_ms)_bucket", target["expr"])[1]
+        for target in panels[0]["targets"]
+    } == {
+        f"connector_{method_name}_duration_ms"
+        for method_name in CONNECTOR_INTERFACE_METHODS
+    }
+    assert all(
+        target["expr"].startswith("histogram_quantile(0.99,")
+        for target in panels[0]["targets"]
+    )
     assert "Direct Connector" in titles
+    assert "Layerwise Connector" in titles
+    assert not any(title.startswith("FAWA") for title in titles)
     assert not any("Requests Rate" in title for title in titles)
     assert not any("Size Distribution" in title for title in titles)
 
@@ -1616,18 +1698,8 @@ def test_connector_dashboard_direct_connector_layout_and_metrics():
         "Direct Connector",
         "Connector Load Bandwidth (aggregated)",
         "Connector Dump Bandwidth (aggregated)",
-        "Connector Load Duration",
         "Connector Dump Duration",
-        "Connector Load Speed (per task)",
         "Connector Dump Completion Wait Duration",
-    ]
-    expected_fawa_titles = [
-        "FAWA Connector",
-        "FAWA Scheduler Lookup Duration",
-        "FAWA Scheduler Match Duration",
-        "FAWA Worker Load Duration",
-        "FAWA Worker Wait Load Tasks Duration",
-        "FAWA Worker Dump Duration",
     ]
     expected_failure_titles = [
         "Failures",
@@ -1636,9 +1708,9 @@ def test_connector_dashboard_direct_connector_layout_and_metrics():
         "Failure Count Over Time",
     ]
     direct_start = titles.index("Direct Connector")
-    assert titles[direct_start:] == (
-        expected_direct_titles + expected_fawa_titles + expected_failure_titles
-    )
+    layerwise_start = titles.index("Layerwise Connector")
+    assert titles[direct_start:layerwise_start] == expected_direct_titles
+    assert titles[-len(expected_failure_titles) :] == expected_failure_titles
 
     by_title = {panel["title"]: panel for panel in panels}
     assert by_title["Direct Connector"]["type"] == "row"
@@ -1646,31 +1718,15 @@ def test_connector_dashboard_direct_connector_layout_and_metrics():
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 8,
+        "y": 10,
     }
-    assert by_title["FAWA Connector"]["type"] == "row"
-    assert by_title["FAWA Connector"]["gridPos"] == {
+    assert by_title["Layerwise Connector"]["type"] == "row"
+    assert by_title["Layerwise Connector"]["gridPos"] == {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 33,
+        "y": 27,
     }
-
-    expected_fawa_metrics = {
-        "FAWA Scheduler Lookup Duration": "fawa_scheduler_lookup_external_hit_blocks_ms",
-        "FAWA Scheduler Match Duration": "fawa_scheduler_get_num_new_matched_tokens_ms",
-        "FAWA Worker Load Duration": "fawa_worker_start_load_kv_ms",
-        "FAWA Worker Wait Load Tasks Duration": "fawa_worker_wait_wait_all_load_task_ms",
-        "FAWA Worker Dump Duration": "fawa_worker_wait_for_save_ms",
-    }
-    for title, metric in expected_fawa_metrics.items():
-        panel = by_title[title]
-        assert panel["fieldConfig"]["defaults"]["unit"] == "ms"
-        assert panel["type"] == "timeseries"
-        exprs = [target["expr"] for target in panel["targets"]]
-        assert all(f"ucm:{metric}" in expr for expr in exprs)
-        assert any("_bucket" in expr for expr in exprs)
-        assert any("_sum" in expr and "_count" in expr for expr in exprs)
 
     occupied = set()
     for panel in panels:
@@ -1748,11 +1804,12 @@ def test_vllm_dashboard_uses_combined_prefix_cache_hit_rate_breakdown():
             "ucm:yuanrong_local_ssd_load_hits_total",
         },
         "Cache": {
-            "ucm:cache_load_success_shards_total",
-            "ucm:cache_posix_load_success_shards_total",
+            "ucm:cache_load_shards_total",
+            "ucm:cache_load_wait_shards_total",
         },
         "Posix Store": {
-            "ucm:cache_posix_load_success_shards_total",
+            "ucm:cache_load_shards_total",
+            "ucm:cache_load_wait_shards_total",
             "ucm:yuanrong_lookup_miss_posix_load_success_shards_total",
             "ucm:yuanrong_load_fallback_posix_load_success_shards_total",
         },
@@ -1785,7 +1842,7 @@ def test_vllm_dashboard_uses_combined_prefix_cache_hit_rate_breakdown():
         assert "ucm:yuanrong_load_success_shards_total" in targets[legend]
         assert targets[legend].endswith(") > 0)")
     assert "and on()" in targets["Cache"]
-    assert "ucm:cache_load_success_shards_total" in targets["Cache"]
+    assert "ucm:cache_load_wait_shards_total" in targets["Cache"]
     assert targets["Cache"].endswith(") > 0)")
     assert targets["Posix Store"].count("and on()") == 2
     assert "\nor\n" in targets["Posix Store"]
@@ -1924,10 +1981,6 @@ def test_grafana_dashboards_use_isolated_vllm_ucm_identity():
         "grafana_connector.json": (
             "vLLM - UCM Connector (vLLM Metrics)",
             "ucm-vllm-connector-overview",
-        ),
-        "grafana_layerwise.json": (
-            "vLLM - UCM Layerwise (vLLM Metrics)",
-            "ucm-vllm-layerwise",
         ),
         "grafana_pipeline_store.json": (
             "vLLM - UCM Cache / Posix Store (vLLM Metrics)",
@@ -2119,16 +2172,6 @@ def test_ucm_dashboards_use_engine_and_worker_rank_filters():
                     or "sum by (le)" in expr
                 )
 
-        if filename == "grafana_connector.json":
-            external_prefix_exprs = [
-                expr for expr in exprs if "vllm:external_prefix_cache_" in expr
-            ]
-            assert external_prefix_exprs
-            for expr in external_prefix_exprs:
-                assert 'engine=~"$engine"' in expr
-                assert 'worker_rank=~"$worker_rank"' not in expr
-                assert "sum by (model_name)" in expr
-
 
 def test_mooncake_dashboards_cover_configured_mooncake_metrics():
     dashboard_path = REPO_ROOT / "examples" / "metrics" / "grafana_mooncake.json"
@@ -2177,7 +2220,7 @@ def test_mooncake_dashboards_cover_configured_mooncake_metrics():
 
 def test_layerwise_dashboard_hides_no_transfer_and_uses_rate_interval_for_breakdown():
     dashboard = json.loads(
-        (REPO_ROOT / "examples" / "metrics" / "grafana_layerwise.json").read_text(
+        (REPO_ROOT / "examples" / "metrics" / "grafana_connector.json").read_text(
             encoding="utf-8"
         )
     )
@@ -2201,9 +2244,8 @@ def test_layerwise_dashboard_hides_no_transfer_and_uses_rate_interval_for_breakd
     )
 
     load_only = panels["Layerwise / Load Only Batch Avg Breakdown"]
-    save_only = panels["Layerwise / Save Only Batch Avg Breakdown"]
     load_save = panels["Layerwise / Load + Save Batch Avg Breakdown"]
-    for panel in (load_only, save_only, load_save):
+    for panel in (load_only, load_save):
         for target in panel["targets"]:
             assert "[40s]" not in target["expr"]
             assert "[$__rate_interval]" in target["expr"]
@@ -2211,7 +2253,7 @@ def test_layerwise_dashboard_hides_no_transfer_and_uses_rate_interval_for_breakd
 
 def test_layerwise_dashboard_uses_batch_duration_and_dump_completion_wait():
     dashboard = json.loads(
-        (REPO_ROOT / "examples" / "metrics" / "grafana_layerwise.json").read_text(
+        (REPO_ROOT / "examples" / "metrics" / "grafana_connector.json").read_text(
             encoding="utf-8"
         )
     )
@@ -2230,7 +2272,7 @@ def test_layerwise_dashboard_uses_batch_duration_and_dump_completion_wait():
     assert "Layerwise / Batch Duration - Load + Save" in panels
 
     panel = panels["Layerwise / Dump Completion Wait Duration"]
-    assert panel["gridPos"] == {"h": 8, "w": 12, "x": 0, "y": 64}
+    assert panel["gridPos"] == {"h": 8, "w": 24, "x": 0, "y": 60}
     assert all(
         "ucm:save_completion_wait_duration" in target["expr"]
         for target in panel["targets"]
@@ -2241,17 +2283,14 @@ def test_layerwise_dashboard_uses_batch_duration_and_dump_completion_wait():
     )
 
 
-def test_layerwise_wait_for_save_records_save_tail_and_completion_start():
+def test_layerwise_wait_for_save_records_completion_start():
     source = (
         REPO_ROOT / "ucm" / "integration" / "vllm" / "ucm_connector.py"
     ).read_text(encoding="utf-8")
 
-    assert "save_tail_start = time.perf_counter()" in source
-    assert "wait_for_save_start_ms = save_tail_start * 1000" in source
+    assert "wait_for_save_start_ms = time.perf_counter() * 1000" in source
     assert "pending_dump_task.wait_for_save_start_ms = wait_for_save_start_ms" in source
-    assert "save_tail_ms = (total_end - save_tail_start) * 1000" in source
-    assert "self._layerwise_batch_stats(total_end, save_tail_ms)" in source
-    assert 'stats["layerwise_save_tail_total_ms"] = save_tail_ms' in source
+    assert "self._layerwise_batch_stats(total_end)" in source
 
 
 def test_cache_load_h2d_duration_records_stream_synchronize_only():
@@ -2273,6 +2312,23 @@ def test_cache_load_h2d_duration_records_stream_synchronize_only():
     assert "auto h2dSyncMs = (NowTime::Now() - tpH2dSyncStart) * 1e3;" in source
     assert "cache_h2d_bandwidth_gbps" not in source
     assert "auto h2dSyncMs = (NowTime::Now() - tpH2dSubmitted) * 1e3;" not in source
+
+
+def test_cache_store_uses_single_shard_counter_per_operation():
+    cache_dir = REPO_ROOT / "ucm" / "store" / "cache" / "cc"
+    trans_manager = (cache_dir / "trans_manager.h").read_text(encoding="utf-8")
+    load_queue = (cache_dir / "load_queue.cc").read_text(encoding="utf-8")
+    dump_queue = (cache_dir / "dump_queue.cc").read_text(encoding="utf-8")
+    buffer_manager = (cache_dir / "buffer_manager.h").read_text(encoding="utf-8")
+    source = trans_manager + load_queue + dump_queue + buffer_manager
+
+    assert "cache_load_blocks_total" not in source
+    assert "cache_dump_blocks_total" not in source
+    assert source.count('NAME_TO_METRIC_ID("cache_load_shards_total")') == 1
+    assert source.count('NAME_TO_METRIC_ID("cache_load_wait_shards_total")') == 1
+    assert source.count('NAME_TO_METRIC_ID("cache_dump_shards_total")') == 1
+    assert 'NAME_TO_METRIC_ID("cache_lookup_hit_blocks_total")' in buffer_manager
+    assert 'NAME_TO_METRIC_ID("cache_lookup_miss_blocks_total")' in buffer_manager
 
 
 def test_cache_dump_d2h_metrics_require_event_ready_timestamp():
@@ -2467,7 +2523,7 @@ def test_pipeline_dashboard_orders_cache_bandwidth_rows():
     assert "Cache Dump D2H Duration" not in panels
 
 
-def test_pipeline_dashboard_cache_backend_load_ratio_uses_hit_source_share():
+def test_pipeline_dashboard_cache_posix_load_ratio_uses_waiting_share():
     dashboard = json.loads(
         (REPO_ROOT / "examples" / "metrics" / "grafana_pipeline_store.json").read_text(
             encoding="utf-8"
@@ -2476,12 +2532,16 @@ def test_pipeline_dashboard_cache_backend_load_ratio_uses_hit_source_share():
     panel = next(
         panel
         for panel in dashboard["panels"]
-        if panel["title"] == "Cache Backend Load Ratio"
+        if panel["title"] == "Cache / Posix Load Ratio"
     )
-    expression = panel["targets"][0]["expr"]
+    targets = {
+        target["legendFormat"].split()[0]: target["expr"] for target in panel["targets"]
+    }
 
-    assert expression.count("ucm:posix_lookup_hit_blocks_total") == 2
-    assert expression.count("ucm:cache_lookup_hit_blocks_total") == 1
-    assert "cache_load_backend_shards_total" not in expression
-    assert "cache_load_shards_total" not in expression
-    assert "returned hit blocks" in panel["description"]
+    assert set(targets) == {"Cache", "Posix"}
+    assert "cache_load_shards_total" in targets["Cache"]
+    assert "cache_load_wait_shards_total" in targets["Cache"]
+    assert "cache_load_shards_total" in targets["Posix"]
+    assert "cache_load_wait_shards_total" in targets["Posix"]
+    assert "cache_lookup_hit_blocks_total" not in " ".join(targets.values())
+    assert "wait for Posix" in panel["description"]

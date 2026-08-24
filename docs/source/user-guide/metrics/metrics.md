@@ -204,9 +204,8 @@ UCM provides these dashboards:
 | --- | --- |
 | `examples/metrics/grafana_vllm.json` | vLLM request latency, token throughput, scheduler state, and cache state |
 | `examples/metrics/grafana_ucm_overview.json` | vLLM/UCM overview, input and output token counts, Store health, and probe trends |
-| `examples/metrics/grafana_connector.json` | Connector Lookup/Load/Save request counts, block counts, durations, throughput, and errors |
+| `examples/metrics/grafana_connector.json` | Common vLLM Connector interface duration plus Direct and Layerwise diagnostics |
 | `examples/metrics/grafana_pipeline_store.json` | Cache, Posix, and Mooncake queueing, transfers, backend submission, bandwidth, and bottleneck analysis |
-| `examples/metrics/grafana_layerwise.json` | Per-layer load waits, submissions, and asynchronous save diagnostics when `use_layerwise=true` |
 
 The `job` selector defaults to **All**. UCM dashboards also provide Aggregated/Per Worker views and a `worker_rank` filter.
 

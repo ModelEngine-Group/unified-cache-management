@@ -43,7 +43,7 @@ class TerminalViewMetricsTest(unittest.TestCase):
 ucm:load_duration_bucket{worker_id="0",model_name="qwen",le="0.5"} 3
 ucm:load_duration_bucket{worker_id="0",model_name="qwen",le="+Inf"} 5
 ucm:load_duration_sum{worker_id="0",model_name="qwen"} 2.5 1700000000000
-ucm:cache_lookup_hit_rate{worker_id="0",note="escaped\\\"quote"} NaN
+ucm:test_health{worker_id="0",note="escaped\\\"quote"} NaN
 """
         samples = parse_prometheus_text(text)
 
@@ -228,7 +228,7 @@ ucm:load_duration_bucket{worker_id="0",le="+Inf"} 100
                         "title": "Smoke",
                         "metrics": [
                             {
-                                "name": "ucm:cache_lookup_hit_rate",
+                                "name": "ucm:test_health",
                                 "type": "gauge",
                                 "op": "last",
                                 "aggregate": "avg",
@@ -244,7 +244,7 @@ ucm:load_duration_bucket{worker_id="0",le="+Inf"} 100
             table = render_table(
                 [
                     QueryEngine.Row(
-                        metric="ucm:cache_lookup_hit_rate",
+                        metric="ucm:test_health",
                         group={"worker_id": "0"},
                         values={"last": 0.75},
                         unit="",
@@ -252,7 +252,7 @@ ucm:load_duration_bucket{worker_id="0",le="+Inf"} 100
                 ]
             )
 
-            self.assertIn("ucm:cache_lookup_hit_rate", table)
+            self.assertIn("ucm:test_health", table)
             self.assertNotIn("group", table.splitlines()[0])
             self.assertNotIn("worker_id=0", table)
             self.assertIn("0.750", table)
@@ -920,7 +920,7 @@ vllm:num_requests_running{worker_id="1"} 5
                 "e2e_request_latency_s",
                 "ttft_s",
                 "tpot_s",
-                "layerwise_wait_blocking_ms",
+                "layerwise_batch_total_load_save_ms",
                 "cache_store_load_bandwidth_gbps",
                 "cache_store_dump_bandwidth_gbps",
                 "posix_store_load_bandwidth_gbps",
@@ -950,7 +950,7 @@ vllm:num_requests_running{worker_id="1"} 5
                 "e2e_request_latency_s": "vllm:e2e_request_latency_seconds",
                 "ttft_s": "vllm:time_to_first_token_seconds",
                 "tpot_s": "vllm:request_time_per_output_token_seconds",
-                "layerwise_wait_blocking_ms": "ucm:layerwise_wait_blocking_ms",
+                "layerwise_batch_total_load_save_ms": "ucm:layerwise_batch_total_load_save_ms",
             },
         )
         for metric in histograms.values():
@@ -967,9 +967,9 @@ vllm:num_requests_running{worker_id="1"} 5
                 "vllm:request_time_per_output_token_seconds_bucket",
                 "vllm:request_time_per_output_token_seconds_sum",
                 "vllm:request_time_per_output_token_seconds_count",
-                "ucm:layerwise_wait_blocking_ms_bucket",
-                "ucm:layerwise_wait_blocking_ms_sum",
-                "ucm:layerwise_wait_blocking_ms_count",
+                "ucm:layerwise_batch_total_load_save_ms_bucket",
+                "ucm:layerwise_batch_total_load_save_ms_sum",
+                "ucm:layerwise_batch_total_load_save_ms_count",
                 "ucm:cache_load_bytes_total",
                 "ucm:cache_dump_bytes_total",
                 "ucm:posix_s2h_bytes_total",
@@ -978,8 +978,8 @@ vllm:num_requests_running{worker_id="1"} 5
                 "vllm:external_prefix_cache_queries_total",
                 "ucm:total_prefix_query_tokens_total",
                 "ucm:gpu_hbm_hit_tokens_total",
-                "ucm:cache_load_success_shards_total",
-                "ucm:cache_posix_load_success_shards_total",
+                "ucm:cache_load_shards_total",
+                "ucm:cache_load_wait_shards_total",
             }.issubset(metric_names_for_scrape(config))
         )
         self.assertFalse(
@@ -1048,12 +1048,12 @@ vllm:prefix_cache_hits_total 40
 vllm:prefix_cache_queries_total 50
 vllm:external_prefix_cache_hits_total 10
 vllm:external_prefix_cache_queries_total 25
-ucm:layerwise_wait_blocking_ms_bucket{le="1"} 1
-ucm:layerwise_wait_blocking_ms_bucket{le="5"} 3
-ucm:layerwise_wait_blocking_ms_bucket{le="10"} 5
-ucm:layerwise_wait_blocking_ms_bucket{le="+Inf"} 5
-ucm:layerwise_wait_blocking_ms_sum 20
-ucm:layerwise_wait_blocking_ms_count 5
+ucm:layerwise_batch_total_load_save_ms_bucket{le="1"} 1
+ucm:layerwise_batch_total_load_save_ms_bucket{le="5"} 3
+ucm:layerwise_batch_total_load_save_ms_bucket{le="10"} 5
+ucm:layerwise_batch_total_load_save_ms_bucket{le="+Inf"} 5
+ucm:layerwise_batch_total_load_save_ms_sum 20
+ucm:layerwise_batch_total_load_save_ms_count 5
 ucm:cache_load_bytes_total 1000000000
 ucm:cache_dump_bytes_total 2000000000
 ucm:posix_s2h_bytes_total 3000000000
@@ -1072,8 +1072,8 @@ ucm:total_prefix_query_tokens_total 100
 ucm:gpu_hbm_hit_tokens_total 25
 ucm:posix_lookup_query_blocks_total 20
 ucm:posix_lookup_hit_blocks_total 5
-ucm:cache_load_success_shards_total 10
-ucm:cache_posix_load_success_shards_total 2
+ucm:cache_load_shards_total 12
+ucm:cache_load_wait_shards_total 2
 """
                     ),
                     t0,
@@ -1095,12 +1095,12 @@ vllm:prefix_cache_hits_total 70
 vllm:prefix_cache_queries_total 100
 vllm:external_prefix_cache_hits_total 20
 vllm:external_prefix_cache_queries_total 50
-ucm:layerwise_wait_blocking_ms_bucket{le="1"} 2
-ucm:layerwise_wait_blocking_ms_bucket{le="5"} 6
-ucm:layerwise_wait_blocking_ms_bucket{le="10"} 9
-ucm:layerwise_wait_blocking_ms_bucket{le="+Inf"} 9
-ucm:layerwise_wait_blocking_ms_sum 40
-ucm:layerwise_wait_blocking_ms_count 9
+ucm:layerwise_batch_total_load_save_ms_bucket{le="1"} 2
+ucm:layerwise_batch_total_load_save_ms_bucket{le="5"} 6
+ucm:layerwise_batch_total_load_save_ms_bucket{le="10"} 9
+ucm:layerwise_batch_total_load_save_ms_bucket{le="+Inf"} 9
+ucm:layerwise_batch_total_load_save_ms_sum 40
+ucm:layerwise_batch_total_load_save_ms_count 9
 ucm:cache_load_bytes_total 6000000000
 ucm:cache_dump_bytes_total 10000000000
 ucm:posix_s2h_bytes_total 15000000000
@@ -1119,8 +1119,8 @@ ucm:total_prefix_query_tokens_total 300
 ucm:gpu_hbm_hit_tokens_total 85
 ucm:posix_lookup_query_blocks_total 120
 ucm:posix_lookup_hit_blocks_total 15
-ucm:cache_load_success_shards_total 50
-ucm:cache_posix_load_success_shards_total 12
+ucm:cache_load_shards_total 62
+ucm:cache_load_wait_shards_total 12
 """
                     ),
                     t1,
@@ -1142,12 +1142,13 @@ ucm:cache_posix_load_success_shards_total 12
         self.assertAlmostEqual(values["e2e_request_latency_s"]["p99"], 0.4946666667)
         self.assertAlmostEqual(values["e2e_request_latency_s"]["avg"], 0.5)
         self.assertEqual(
-            list(values["layerwise_wait_blocking_ms"]), ["p50", "p90", "p99", "avg"]
+            list(values["layerwise_batch_total_load_save_ms"]),
+            ["p50", "p90", "p99", "avg"],
         )
-        self.assertAlmostEqual(values["layerwise_wait_blocking_ms"]["p50"], 3.0)
-        self.assertAlmostEqual(values["layerwise_wait_blocking_ms"]["p90"], 8.0)
-        self.assertAlmostEqual(values["layerwise_wait_blocking_ms"]["p99"], 9.8)
-        self.assertAlmostEqual(values["layerwise_wait_blocking_ms"]["avg"], 5.0)
+        self.assertAlmostEqual(values["layerwise_batch_total_load_save_ms"]["p50"], 3.0)
+        self.assertAlmostEqual(values["layerwise_batch_total_load_save_ms"]["p90"], 8.0)
+        self.assertAlmostEqual(values["layerwise_batch_total_load_save_ms"]["p99"], 9.8)
+        self.assertAlmostEqual(values["layerwise_batch_total_load_save_ms"]["avg"], 5.0)
         self.assertAlmostEqual(values["cache_store_load_bandwidth_gbps"]["gbps"], 0.5)
         self.assertAlmostEqual(values["cache_store_dump_bandwidth_gbps"]["gbps"], 0.8)
         self.assertAlmostEqual(values["posix_store_load_bandwidth_gbps"]["gbps"], 1.2)
@@ -1190,8 +1191,8 @@ vllm:external_prefix_cache_hits_total 10
 vllm:external_prefix_cache_queries_total 25
 ucm:total_prefix_query_tokens_total 100
 ucm:gpu_hbm_hit_tokens_total 25
-ucm:cache_load_success_shards_total 10
-ucm:cache_posix_load_success_shards_total 10
+ucm:cache_load_shards_total 20
+ucm:cache_load_wait_shards_total 10
 """
                     ),
                     t0,
@@ -1206,8 +1207,8 @@ vllm:external_prefix_cache_hits_total 20
 vllm:external_prefix_cache_queries_total 50
 ucm:total_prefix_query_tokens_total 300
 ucm:gpu_hbm_hit_tokens_total 85
-ucm:cache_load_success_shards_total 70
-ucm:cache_posix_load_success_shards_total 50
+ucm:cache_load_shards_total 120
+ucm:cache_load_wait_shards_total 50
 """
                     ),
                     t1,
@@ -1239,8 +1240,8 @@ vllm:external_prefix_cache_hits_total 10
 vllm:external_prefix_cache_queries_total 25
 ucm:total_prefix_query_tokens_total 100
 ucm:gpu_hbm_hit_tokens_total 25
-ucm:cache_load_success_shards_total 0
-ucm:cache_posix_load_success_shards_total 0
+ucm:cache_load_shards_total 0
+ucm:cache_load_wait_shards_total 0
 """
                     ),
                     t0,
@@ -1253,8 +1254,8 @@ vllm:external_prefix_cache_hits_total 20
 vllm:external_prefix_cache_queries_total 50
 ucm:total_prefix_query_tokens_total 300
 ucm:gpu_hbm_hit_tokens_total 85
-ucm:cache_load_success_shards_total 0
-ucm:cache_posix_load_success_shards_total 0
+ucm:cache_load_shards_total 0
+ucm:cache_load_wait_shards_total 0
 """
                     ),
                     t1,
@@ -1284,8 +1285,8 @@ vllm:external_prefix_cache_hits_total 80
 vllm:external_prefix_cache_queries_total 100
 ucm:total_prefix_query_tokens_total 100
 ucm:gpu_hbm_hit_tokens_total 25
-ucm:cache_load_success_shards_total 0
-ucm:cache_posix_load_success_shards_total 0
+ucm:cache_load_shards_total 0
+ucm:cache_load_wait_shards_total 0
 """
                     ),
                     t0,
@@ -1298,8 +1299,8 @@ vllm:external_prefix_cache_hits_total 160
 vllm:external_prefix_cache_queries_total 200
 ucm:total_prefix_query_tokens_total 200
 ucm:gpu_hbm_hit_tokens_total 50
-ucm:cache_load_success_shards_total 6
-ucm:cache_posix_load_success_shards_total 4
+ucm:cache_load_shards_total 10
+ucm:cache_load_wait_shards_total 4
 """
                     ),
                     t1,
@@ -1332,8 +1333,8 @@ vllm:external_prefix_cache_hits_total 10
 vllm:external_prefix_cache_queries_total 25
 ucm:total_prefix_query_tokens_total 100
 ucm:gpu_hbm_hit_tokens_total 25
-ucm:cache_load_success_shards_total 0
-ucm:cache_posix_load_success_shards_total 0
+ucm:cache_load_shards_total 0
+ucm:cache_load_wait_shards_total 0
 """
                     ),
                     t0,
@@ -1348,8 +1349,8 @@ vllm:external_prefix_cache_hits_total 20
 vllm:external_prefix_cache_queries_total 50
 ucm:total_prefix_query_tokens_total 300
 ucm:gpu_hbm_hit_tokens_total 85
-ucm:cache_load_success_shards_total 0
-ucm:cache_posix_load_success_shards_total 35
+ucm:cache_load_shards_total 35
+ucm:cache_load_wait_shards_total 35
 """
                     ),
                     t1,

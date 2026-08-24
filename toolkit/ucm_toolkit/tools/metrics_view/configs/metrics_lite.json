@@ -62,7 +62,7 @@
     {
       "name": "cache_hit_rate",
       "type": "promql",
-      "expr": "((sum by () (rate(vllm:external_prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:external_prefix_cache_queries_total[$__rate_interval])), 1e-9)) * clamp_min(1 - ((sum by () (rate(vllm:prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:prefix_cache_queries_total[$__rate_interval])), 1e-9)) or (sum by () (rate(ucm:gpu_hbm_hit_tokens_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:total_prefix_query_tokens_total[$__rate_interval])), 1e-9))), 0)) * (sum by () (rate(ucm:cache_load_success_shards_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:cache_load_success_shards_total[$__rate_interval])) + sum by () (rate(ucm:cache_posix_load_success_shards_total[$__rate_interval])), 1e-9))",
+      "expr": "((sum by () (rate(vllm:external_prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:external_prefix_cache_queries_total[$__rate_interval])), 1e-9)) * clamp_min(1 - ((sum by () (rate(vllm:prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:prefix_cache_queries_total[$__rate_interval])), 1e-9)) or (sum by () (rate(ucm:gpu_hbm_hit_tokens_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:total_prefix_query_tokens_total[$__rate_interval])), 1e-9))), 0)) * (clamp_min(sum by () (rate(ucm:cache_load_shards_total[$__rate_interval])) - sum by () (rate(ucm:cache_load_wait_shards_total[$__rate_interval])), 0) / clamp_min(sum by () (rate(ucm:cache_load_shards_total[$__rate_interval])), 1e-9))",
       "value": "hit_rate",
       "unit": "ratio",
       "aggregate": "avg"
@@ -70,7 +70,7 @@
     {
       "name": "posix_hit_rate",
       "type": "promql",
-      "expr": "((((sum by () (rate(vllm:external_prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:external_prefix_cache_queries_total[$__rate_interval])), 1e-9)) * clamp_min(1 - ((sum by () (rate(vllm:prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:prefix_cache_queries_total[$__rate_interval])), 1e-9)) or (sum by () (rate(ucm:gpu_hbm_hit_tokens_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:total_prefix_query_tokens_total[$__rate_interval])), 1e-9))), 0)) * ((sum by () (rate(ucm:yuanrong_lookup_miss_posix_load_success_shards_total[$__rate_interval])) + sum by () (rate(ucm:yuanrong_load_fallback_posix_load_success_shards_total[$__rate_interval]))) / clamp_min(sum by () (rate(ucm:yuanrong_load_success_shards_total[$__rate_interval])) + sum by () (rate(ucm:yuanrong_lookup_miss_posix_load_success_shards_total[$__rate_interval])) + sum by () (rate(ucm:yuanrong_load_fallback_posix_load_success_shards_total[$__rate_interval])), 1e-9))) or 0) + ((((sum by () (rate(vllm:external_prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:external_prefix_cache_queries_total[$__rate_interval])), 1e-9)) * clamp_min(1 - ((sum by () (rate(vllm:prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:prefix_cache_queries_total[$__rate_interval])), 1e-9)) or (sum by () (rate(ucm:gpu_hbm_hit_tokens_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:total_prefix_query_tokens_total[$__rate_interval])), 1e-9))), 0)) * (sum by () (rate(ucm:cache_posix_load_success_shards_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:cache_load_success_shards_total[$__rate_interval])) + sum by () (rate(ucm:cache_posix_load_success_shards_total[$__rate_interval])), 1e-9))) or 0)",
+      "expr": "((((sum by () (rate(vllm:external_prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:external_prefix_cache_queries_total[$__rate_interval])), 1e-9)) * clamp_min(1 - ((sum by () (rate(vllm:prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:prefix_cache_queries_total[$__rate_interval])), 1e-9)) or (sum by () (rate(ucm:gpu_hbm_hit_tokens_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:total_prefix_query_tokens_total[$__rate_interval])), 1e-9))), 0)) * ((sum by () (rate(ucm:yuanrong_lookup_miss_posix_load_success_shards_total[$__rate_interval])) + sum by () (rate(ucm:yuanrong_load_fallback_posix_load_success_shards_total[$__rate_interval]))) / clamp_min(sum by () (rate(ucm:yuanrong_load_success_shards_total[$__rate_interval])) + sum by () (rate(ucm:yuanrong_lookup_miss_posix_load_success_shards_total[$__rate_interval])) + sum by () (rate(ucm:yuanrong_load_fallback_posix_load_success_shards_total[$__rate_interval])), 1e-9))) or 0) + ((((sum by () (rate(vllm:external_prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:external_prefix_cache_queries_total[$__rate_interval])), 1e-9)) * clamp_min(1 - ((sum by () (rate(vllm:prefix_cache_hits_total[$__rate_interval])) / clamp_min(sum by () (rate(vllm:prefix_cache_queries_total[$__rate_interval])), 1e-9)) or (sum by () (rate(ucm:gpu_hbm_hit_tokens_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:total_prefix_query_tokens_total[$__rate_interval])), 1e-9))), 0)) * (sum by () (rate(ucm:cache_load_wait_shards_total[$__rate_interval])) / clamp_min(sum by () (rate(ucm:cache_load_shards_total[$__rate_interval])), 1e-9))) or 0)",
       "value": "hit_rate",
       "unit": "ratio",
       "aggregate": "avg"
@@ -139,8 +139,8 @@
       "aggregate": "avg"
     },
     {
-      "name": "layerwise_wait_blocking_ms",
-      "source": "ucm:layerwise_wait_blocking_ms",
+      "name": "layerwise_batch_total_load_save_ms",
+      "source": "ucm:layerwise_batch_total_load_save_ms",
       "type": "histogram",
       "avg": true,
       "quantiles": [0.5, 0.9, 0.99],

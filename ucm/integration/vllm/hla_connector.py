@@ -1311,7 +1311,6 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         total_vllm_block_ids: list[int] = []
         block_ids_by_request: dict[str, set[bytes]] = {}
         num_saved_block = 0
-        num_saved_request = 0
         for request_id, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
                 continue
@@ -1327,7 +1326,6 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     continue
             block_ids_by_request[request_id] = set(ucm_block_ids)
             num_saved_block += len(ucm_block_ids)
-            num_saved_request += 1
             ucm_block_ids = self._rank_scoped_ucm_block_ids(ucm_block_ids)
             total_ucm_block_ids.extend(ucm_block_ids)
             total_vllm_block_ids.extend(vllm_block_ids)
@@ -1372,13 +1370,9 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
         self._rank_consistency.finish_dump(set(block_ids_by_request))
         save_bytes = num_saved_block * self.block_data_size
-        save_speed = save_bytes / max(save_end_time - save_start_time, 1) / 1024 / 1024
         ucmmetrics.update_stats(
             {
-                "save_requests_num": num_saved_request,
-                "save_blocks_num": num_saved_block,
                 "save_duration": save_end_time - save_start_time,
-                "save_speed": save_speed,
                 "save_bytes_total": save_bytes,
             }
         )
@@ -1434,8 +1428,6 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             self._load_prefetch_rows = 2
         self.is_save = False
         self.need_load = False
-        self._layerwise_batch_start: Optional[float] = None
-        self._layerwise_prev_wait_end: Optional[float] = None
         logger.info(
             "Init UCMHybridLinearAttentionLayerWiseConnector "
             f"with prefetch_rows={self._load_prefetch_rows}."
@@ -1592,8 +1584,6 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         return len(row_tasks)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
-        self._layerwise_batch_start = time.perf_counter()
-        self._layerwise_prev_wait_end = None
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
         self.load_tasks.clear()
@@ -1647,30 +1637,13 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
 
         self._submit_request_load_tasks_for_row_once(next_row_id, metadata)
 
-        wait_start = time.perf_counter()
-        n_tasks = self._wait_row_load(next_row_id, metadata)
-        wait_end = time.perf_counter()
+        self._wait_row_load(next_row_id, metadata)
 
         # Prefetch rows ahead.
         prefetch_start = next_row_id + 1
         prefetch_end = min(prefetch_start + self._load_prefetch_rows, len(self.row_ids))
         for idx in range(prefetch_start, prefetch_end):
             self._submit_request_load_tasks_for_row_once(idx, metadata)
-
-        blocking_ms = (wait_end - wait_start) * 1000
-        stats: dict[str, float] = {
-            "layerwise_wait_blocking_ms": blocking_ms,
-            "layerwise_wait_tasks_count": float(n_tasks),
-        }
-        if self._layerwise_prev_wait_end is not None:
-            stats["layerwise_inter_wait_interval_ms"] = (
-                wait_start - self._layerwise_prev_wait_end
-            ) * 1000
-        if prefetch_start < prefetch_end:
-            submit_end = time.perf_counter()
-            stats["layerwise_next_layer_submit_ms"] = (submit_end - wait_end) * 1000
-        ucmmetrics.update_stats(stats)
-        self._layerwise_prev_wait_end = wait_end
 
     def save_kv_layer(
         self,
@@ -1777,11 +1750,6 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
 
     def wait_for_save(self) -> None:
         if not self.is_save:
-            total_end = time.perf_counter()
-            if self._layerwise_batch_start is not None:
-                batch_total_ms = (total_end - self._layerwise_batch_start) * 1000
-                ucmmetrics.update_stats({"layerwise_batch_total_ms": batch_total_ms})
-                self._layerwise_batch_start = None
             return
 
         dump_request_ids = (
@@ -1789,7 +1757,6 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             if self._dump_transfer_data is not None
             else set()
         )
-        total_start = time.perf_counter()
         for row_id in self.row_ids:
             for pending_dump_task in self.dump_tasks.pop(row_id, []):
                 try:
@@ -1799,17 +1766,6 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
                         f"wait for dump kv cache failed. " f"{type(e).__name__}: {e}"
                     )
         self._rank_consistency.finish_dump(dump_request_ids)
-        total_end = time.perf_counter()
-        stats: dict[str, float] = {
-            "layerwise_save_tail_total_ms": (total_end - total_start) * 1000,
-        }
-        if self._layerwise_batch_start is not None:
-            stats["layerwise_batch_total_ms"] = (
-                total_end - self._layerwise_batch_start
-            ) * 1000
-            self._layerwise_batch_start = None
-        ucmmetrics.update_stats(stats)
-
         self.dump_tasks.clear()
         self._dump_transfer_data = None
         self.is_save = False

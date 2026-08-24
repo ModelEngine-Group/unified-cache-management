@@ -237,7 +237,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Fraction of returned hit blocks served by the Posix backend. Equals Posix hits divided by Cache-buffer hits plus Posix hits; the Cache-buffer hit share is the complement.",
+      "description": "Share of Cache Load shards served by an already-ready Cache buffer versus shards that had to wait for Posix data.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -325,15 +325,28 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (${perWorker:raw}) (rate(ucm:posix_lookup_hit_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/ clamp_min(\n  sum by (${perWorker:raw}) (rate(ucm:cache_lookup_hit_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n  +\n  sum by (${perWorker:raw}) (rate(ucm:posix_lookup_hit_blocks_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])),\n  1e-9\n)",
+          "expr": "clamp_min(sum by (${perWorker:raw}) (rate(ucm:cache_load_shards_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) - sum by (${perWorker:raw}) (rate(ucm:cache_load_wait_shards_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])), 0)\n/ clamp_min(sum by (${perWorker:raw}) (rate(ucm:cache_load_shards_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])), 1e-9)",
           "hide": false,
           "instant": false,
-          "legendFormat": "{{engine}} {{worker_rank}}",
+          "legendFormat": "Cache {{engine}} {{worker_rank}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (${perWorker:raw}) (rate(ucm:cache_load_wait_shards_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/ clamp_min(sum by (${perWorker:raw}) (rate(ucm:cache_load_shards_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])), 1e-9)",
+          "hide": false,
+          "instant": false,
+          "legendFormat": "Posix {{engine}} {{worker_rank}}",
+          "range": true,
+          "refId": "B"
         }
       ],
-      "title": "Cache Backend Load Ratio",
+      "title": "Cache / Posix Load Ratio",
       "type": "timeseries"
     },
     {

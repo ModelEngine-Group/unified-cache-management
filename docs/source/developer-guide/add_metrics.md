@@ -98,9 +98,8 @@ its layer:
 
 | Dashboard | Metric scope |
 |-----------|--------------|
-| `examples/metrics/grafana_connector.json` | Connector-level metrics. |
+| `examples/metrics/grafana_connector.json` | Common and connector-specific metrics, including Layerwise. |
 | `examples/metrics/grafana_pipeline_store.json` | Cache Store and Posix Store metrics. |
-| `examples/metrics/grafana_layerwise.json` | Layerwise connector metrics. |
 | `examples/metrics/grafana_vllm.json` | vLLM service-side metrics. |
 
 The dashboards use a `job` selector with regex matching, so the default **All**

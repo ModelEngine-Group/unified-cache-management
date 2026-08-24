@@ -146,8 +146,6 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
         dumpCtx.bufferHandles.push_back(std::move(handle));
     }
     auto tpMakeBuffer = NowTime::Now();
-    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_shards_total"),
-                             static_cast<double>(nShard));
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_backend_shards_total"),
                              static_cast<double>(backendTaskDesc.size()));
     if (backendTaskDesc.empty()) { return Status::OK(); }
