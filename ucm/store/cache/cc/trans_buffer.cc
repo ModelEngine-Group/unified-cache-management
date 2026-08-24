@@ -536,6 +536,17 @@ TransBuffer::Handle TransBuffer::Get(const Detail::BlockId& blockId, size_t shar
     return Handle(this, iNode, true);
 }
 
+void TransBuffer::Prealloc(const Detail::BlockId& blockId, size_t shardIdx, bool allowReserved)
+{
+    auto iBucket = Hash(blockId, shardIdx);
+    strategy_->BucketLock(iBucket);
+    if (!ExistAt(iBucket, blockId, shardIdx)) {
+        size_t pos = Alloc(blockId, shardIdx, iBucket, allowReserved);
+        Release(pos);
+    }
+    strategy_->BucketUnlock(iBucket);
+}
+
 bool TransBuffer::Exist(const Detail::BlockId& blockId, size_t shardIdx)
 {
     auto iBucket = Hash(blockId, shardIdx);

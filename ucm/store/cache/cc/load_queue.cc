@@ -42,6 +42,7 @@ Status LoadQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     backend_ = config.storeBackend;
     deviceId_ = config.deviceId;
     tensorSizes_ = config.tensorSizes;
+    nShardPerBlock_ = config.blockSize / config.shardSize;
     streamNumber_ = config.EffectiveStreamNumber();
     useGdr_ = config.useGdr;
     cacheSdmaDirect_ = config.cacheSdmaDirect;
@@ -142,6 +143,12 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
         running_.Push(std::move(shardTask));
     }
     auto tpDispatch = NowTime::Now();
+    for (size_t i = 0; i < nShard; i++) {
+        auto& shard = task->desc[indexes[i]];
+        if (shard.index + 1 != nShardPerBlock_) {
+            buffer_->Prealloc(shard.owner, shard.index + 1, true);
+        }
+    }
     UC_DEBUG("Cache task({}) dispatch shards({}), wait={:.3f}ms, cost={:.3f}ms.", task->id, nShard,
              (tpWait - tp) * 1e3, (tpDispatch - tpWait) * 1e3);
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_queue_wait_duration_ms"),
