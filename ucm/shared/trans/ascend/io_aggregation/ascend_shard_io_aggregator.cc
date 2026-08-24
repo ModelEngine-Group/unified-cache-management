@@ -118,13 +118,12 @@ Status AscendShardIOAggregator::BuildScatterSpecs(InFlightObject& object, void* 
     size_t offset = 0;
     for (size_t i = 0; i < sizes.size(); ++i) {
         const auto size = sizes[i];
-        if (size == 0 || devices[i] == nullptr) {
-            return Status::InvalidParam("invalid shard IO aggregation tensor({})", i);
-        }
         if (offset > objectBytes_ || size > objectBytes_ - offset) {
             return Status::InvalidParam("shard IO aggregation object bytes overflow");
         }
-        object.specs.push_back({devices[i], stagingBase + offset, size});
+        if (size != 0 && devices[i] != nullptr) {
+            object.specs.push_back({devices[i], stagingBase + offset, size});
+        }
         offset += size;
     }
     if (offset == 0 || offset > objectBytes_) {
@@ -150,13 +149,12 @@ Status AscendShardIOAggregator::BuildGatherSpecs(InFlightObject& object, void* s
     size_t offset = 0;
     for (size_t i = 0; i < sizes.size(); ++i) {
         const auto size = sizes[i];
-        if (size == 0 || devices[i] == nullptr) {
-            return Status::InvalidParam("invalid shard IO aggregation tensor({})", i);
-        }
         if (offset > objectBytes_ || size > objectBytes_ - offset) {
             return Status::InvalidParam("shard IO aggregation object bytes overflow");
         }
-        object.specs.push_back({stagingBase + offset, devices[i], size});
+        if (size != 0 && devices[i] != nullptr) {
+            object.specs.push_back({stagingBase + offset, devices[i], size});
+        }
         offset += size;
     }
     if (offset == 0 || offset > objectBytes_) {
