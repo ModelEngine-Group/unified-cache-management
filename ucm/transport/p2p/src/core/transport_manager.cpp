@@ -1,4 +1,5 @@
 #include "core/transport_manager.h"
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -71,6 +72,20 @@ bool TransportForDirect(OperationDirect direct, TransportProtocol& protocol)
     if (direct != OperationDirect::RemoteDeviceHost) { return false; }
     protocol = TransportProtocol::Hixl;
     return true;
+}
+
+std::uint64_t SteadyNowUs()
+{
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(now).count());
+}
+
+std::uint64_t UnixNowUs()
+{
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(now).count());
 }
 
 }  // namespace
@@ -418,31 +433,65 @@ Status TransportManager::ExecuteSync(const Operation& batch)
     return transport->ExecuteSync(request);
 }
 
-Status TransportManager::ExecuteAsync(const Operation& batch, TransferHandle& handle)
+Status TransportManager::ExecuteAsync(const Operation& batch, TransferHandle& handle,
+                                      TransportCallTiming* timing)
 {
+    TransportCallTiming localTiming;
+    auto& callTiming = timing != nullptr ? *timing : localTiming;
+    callTiming = {};
+    callTiming.manager_entered_us = SteadyNowUs();
+    callTiming.manager_entered_ts_us = UnixNowUs();
     handle = kInvalidTransferHandle;
     Transport* transport = nullptr;
     auto request = batch;
     auto status = FindTransport(request, transport);
     if (status != Status::OK()) { return status; }
 
+    std::uint64_t bytes = 0;
+    for (const auto& segment : request.ops) { bytes += segment.length; }
+    const auto submitStartedUs = SteadyNowUs();
     TransferHandle transport_handle = kInvalidTransferHandle;
-    status = transport->ExecuteAsync(request, transport_handle);
+    status = transport->ExecuteAsync(request, transport_handle, &callTiming);
     if (status != Status::OK() || transport_handle == kInvalidTransferHandle) {
         return status == Status::OK() ? Status::Error() : status;
     }
 
+    const auto submittedUs = SteadyNowUs();
+    const auto submittedTsUs = UnixNowUs();
     {
         std::lock_guard<std::mutex> lock(transfers_mutex_);
         handle = next_transfer_handle_++;
         if (handle == kInvalidTransferHandle) { handle = next_transfer_handle_++; }
-        transfers_.emplace(handle, TransferRecord{transport, transport_handle});
+        transfers_.emplace(
+            handle, TransferRecord{transport, transport_handle, request.target_manager,
+                                   request.opcode, request.direct, request.ops.size(), bytes,
+                                   submittedUs, submittedTsUs, submittedUs - submitStartedUs});
     }
+    // Transport PERF log disabled: request_done already contains the corresponding timing.
+    // UC_INFO(
+    //     "[PERF] component=transport event=transfer_submitted manager={} target={} handle={} "
+    //     "transport_handle={} opcode={} direct={} segments={} bytes={} submitted_ts_us={} "
+    //     "manager_execute_async_ts_us={} backend_execute_async_ts_us={} "
+    //     "manager_to_backend_execute_async_us={} submit_us={}",
+    //     manager_id_, request.target_manager, handle, transport_handle,
+    //     static_cast<unsigned>(request.opcode), static_cast<unsigned>(request.direct),
+    //     request.ops.size(), bytes, submittedTsUs, callTiming.manager_entered_ts_us,
+    //     callTiming.backend_called_ts_us,
+    //     callTiming.backend_called_us >= callTiming.manager_entered_us
+    //         ? callTiming.backend_called_us - callTiming.manager_entered_us
+    //         : 0,
+    //     submittedUs - submitStartedUs);
     return Status::OK();
 }
 
-Status TransportManager::GetStatus(TransferHandle handle, TransferStatus& transfer_status)
+Status TransportManager::GetStatus(TransferHandle handle, TransferStatus& transfer_status,
+                                   TransportCallTiming* timing)
 {
+    TransportCallTiming localTiming;
+    auto& callTiming = timing != nullptr ? *timing : localTiming;
+    callTiming = {};
+    callTiming.manager_entered_us = SteadyNowUs();
+    callTiming.manager_entered_ts_us = UnixNowUs();
     if (handle == kInvalidTransferHandle) { return Status::InvalidParam(); }
     TransferRecord record;
     {
@@ -451,8 +500,30 @@ Status TransportManager::GetStatus(TransferHandle handle, TransferStatus& transf
         if (it == transfers_.end() || it->second.transport == nullptr) { return Status::Error(); }
         record = it->second;
     }
-    const auto status = record.transport->GetStatus(record.transport_handle, transfer_status);
+    const auto status =
+        record.transport->GetStatus(record.transport_handle, transfer_status, &callTiming);
     if (status != Status::OK() || transfer_status != TransferStatus::Waiting) {
+        const auto completedUs = SteadyNowUs();
+        const auto completedTsUs = UnixNowUs();
+        // Transport PERF log disabled: request_done already contains the corresponding timing.
+        // UC_INFO(
+        //     "[PERF] component=transport event=transfer_done manager={} target={} handle={} "
+        //     "transport_handle={} opcode={} direct={} segments={} bytes={} status={} "
+        //     "api_status={} submitted_ts_us={} completed_ts_us={} manager_get_status_ts_us={} "
+        //     "backend_query_ts_us={} submit_us={} transfer_us={} manager_to_backend_query_us={} "
+        //     "total_us={}",
+        //     manager_id_, record.target_manager, handle, record.transport_handle,
+        //     static_cast<unsigned>(record.opcode), static_cast<unsigned>(record.direct),
+        //     record.segment_count, record.bytes,
+        //     status == Status::OK() ? static_cast<int>(transfer_status) : -1, status.Underlying(),
+        //     record.submitted_ts_us, completedTsUs, callTiming.manager_entered_ts_us,
+        //     callTiming.backend_called_ts_us, record.submit_us,
+        //     completedUs >= record.submitted_us ? completedUs - record.submitted_us : 0,
+        //     callTiming.backend_called_us >= callTiming.manager_entered_us
+        //         ? callTiming.backend_called_us - callTiming.manager_entered_us
+        //         : 0,
+        //     record.submit_us +
+        //         (completedUs >= record.submitted_us ? completedUs - record.submitted_us : 0));
         std::lock_guard<std::mutex> lock(transfers_mutex_);
         transfers_.erase(handle);
     }

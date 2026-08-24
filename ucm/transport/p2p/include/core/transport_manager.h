@@ -34,8 +34,10 @@ public:
     Status Connect(TransportProtocol protocol, const ManagerID& manager_id);
     Status Disconnect(TransportProtocol protocol, const ManagerID& manager_id);
     Status ExecuteSync(const Operation& batch);
-    Status ExecuteAsync(const Operation& batch, TransferHandle& handle);
-    Status GetStatus(TransferHandle handle, TransferStatus& status);
+    Status ExecuteAsync(const Operation& batch, TransferHandle& handle,
+                        TransportCallTiming* timing = nullptr);
+    Status GetStatus(TransferHandle handle, TransferStatus& status,
+                     TransportCallTiming* timing = nullptr);
 
 private:
     struct InstalledTransport {
@@ -51,6 +53,14 @@ private:
     struct TransferRecord {
         Transport* transport = nullptr;
         TransferHandle transport_handle = kInvalidTransferHandle;
+        ManagerID target_manager;
+        Opcode opcode{Opcode::Read};
+        OperationDirect direct{OperationDirect::RemoteDeviceHost};
+        std::size_t segment_count{0};
+        std::uint64_t bytes{0};
+        std::uint64_t submitted_us{0};
+        std::uint64_t submitted_ts_us{0};
+        std::uint64_t submit_us{0};
     };
 
     TransportPtr CreateTransport(TransportProtocol protocol) const;

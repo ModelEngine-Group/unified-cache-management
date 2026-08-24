@@ -471,7 +471,8 @@ Status HixlTransport::ExecuteSync(const Operation& batch)
                                                  transfer_timeout_ms_);
 }
 
-Status HixlTransport::ExecuteAsync(const Operation& batch, TransferHandle& handle)
+Status HixlTransport::ExecuteAsync(const Operation& batch, TransferHandle& handle,
+                                   TransportCallTiming* timing)
 {
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
     handle = kInvalidTransferHandle;
@@ -501,8 +502,8 @@ Status HixlTransport::ExecuteAsync(const Operation& batch, TransferHandle& handl
     }
 
     hixl::TransferReq request = nullptr;
-    const auto status =
-        instances_[local_index]->TransferAsync(remote_engine, batch.opcode, batch.ops, request);
+    const auto status = instances_[local_index]->TransferAsync(remote_engine, batch.opcode,
+                                                               batch.ops, request, timing);
     if (status != Status::OK()) { return status; }
 
     {
@@ -514,7 +515,8 @@ Status HixlTransport::ExecuteAsync(const Operation& batch, TransferHandle& handl
     return Status::OK();
 }
 
-Status HixlTransport::GetStatus(TransferHandle handle, TransferStatus& status)
+Status HixlTransport::GetStatus(TransferHandle handle, TransferStatus& status,
+                                TransportCallTiming* timing)
 {
     status = TransferStatus::Failed;
     if (handle == kInvalidTransferHandle) { return Status::InvalidParam(); }
@@ -530,8 +532,8 @@ Status HixlTransport::GetStatus(TransferHandle handle, TransferStatus& status)
     }
 
     TransferStatus transfer_status = TransferStatus::Waiting;
-    const auto query_status =
-        instances_[pending.instance_index]->GetTransferStatus(pending.request, transfer_status);
+    const auto query_status = instances_[pending.instance_index]->GetTransferStatus(
+        pending.request, transfer_status, timing);
     if (query_status != Status::OK()) {
         std::lock_guard<std::mutex> pending_lock(pending_mutex_);
         pending_transfers_.erase(handle);

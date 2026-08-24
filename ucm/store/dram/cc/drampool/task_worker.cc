@@ -71,29 +71,37 @@ Status TaskWorker::ProcessOneRequest(RequestTaskPtr task)
     const auto& request = task->request;
     UC_DEBUG("TaskWorker processing request, request_id={}, opcode={}, peer={}",
              request->request_id, static_cast<int>(request->opcode), peerOneSidedId);
+    task->timing.worker_started_us = SteadyNowUs();
+    task->timing.worker_started_ts_us = UnixNowUs();
+    // Stage PERF log disabled: request_done already contains the corresponding timing.
+    // UC_INFO(
+    //     "[PERF] component=drampool event=stage request_id={} opcode={} peer={} "
+    //     "stage=WORKER_STARTED ts_us={}",
+    //     request->request_id, static_cast<int>(request->opcode), peerOneSidedId,
+    //     task->timing.worker_started_ts_us);
     switch (request->opcode) {
         case OpType::DUMP: {
             const auto* dump = dynamic_cast<const KvDumpRequest*>(request.get());
             return dump == nullptr ? Status::InvalidParam("DUMP request type does not match opcode")
-                                   : ProcessDump(*dump, peerOneSidedId);
+                                   : ProcessDump(*dump, peerOneSidedId, std::move(task->timing));
         }
         case OpType::LOAD: {
             const auto* load = dynamic_cast<const KvLoadRequest*>(request.get());
             return load == nullptr ? Status::InvalidParam("LOAD request type does not match opcode")
-                                   : ProcessLoad(*load, peerOneSidedId);
+                                   : ProcessLoad(*load, peerOneSidedId, std::move(task->timing));
         }
         case OpType::LOOKUP: {
             const auto* lookup = dynamic_cast<const KvLookupRequest*>(request.get());
             return lookup == nullptr
                        ? Status::InvalidParam("LOOKUP request type does not match opcode")
-                       : ProcessLookup(*lookup, peerOneSidedId);
+                       : ProcessLookup(*lookup, peerOneSidedId, std::move(task->timing));
         }
     }
     return Status::InvalidParam("TaskWorker got invalid opcode");
 }
 
 Status TaskWorker::ProcessDump(const KvDumpRequest& request,
-                               const transport::ManagerID& peerOneSidedId)
+                               const transport::ManagerID& peerOneSidedId, RequestTiming timing)
 {
     if (runtime_.protocol.GetPackedResponseSize(OpType::DUMP, request.batch_size) >
         g_config.flagBufferSlotSizeBytes) {
@@ -110,12 +118,14 @@ Status TaskWorker::ProcessDump(const KvDumpRequest& request,
     };
     std::vector<TransferItem> transfer_items;
     transfer_items.reserve(request.entries.size());
+    std::uint64_t dataBytes = 0;
     transport::Operation operation;
     operation.opcode = transport::Opcode::Read;
     operation.direct = transport::OperationDirect::RemoteDeviceHost;
     operation.target_manager = peerOneSidedId;
     operation.ops.reserve(request.entries.size());
 
+    timing.metadata_prepare_started_us = SteadyNowUs();
     for (std::uint16_t index = 0; index < request.batch_size; ++index) {
         const auto& entry = request.entries[index];
 
@@ -141,9 +151,11 @@ Status TaskWorker::ProcessDump(const KvDumpRequest& request,
 
         // INITIALIZED entries are not eviction candidates while the DUMP is in flight.
         transfer_items.emplace_back(TransferItem{index, entry.key});
+        dataBytes += entry.len;
         operation.ops.emplace_back(
             transport::Segment{metadataEntry->buffer.addr, entry.addr, entry.len});
     }
+    timing.metadata_prepare_completed_us = SteadyNowUs();
 
     if (transfer_items.empty()) {
         UC_DEBUG("DUMP skips data transfer, request_id={}, batch_size={}", request.request_id,
@@ -155,7 +167,9 @@ Status TaskWorker::ProcessDump(const KvDumpRequest& request,
     UC_DEBUG("DUMP submits data transfer, request_id={}, items={}, peer={}", request.request_id,
              transfer_items.size(), peerOneSidedId);
     TransportHandle handle = transport::kInvalidTransferHandle;
-    const auto submit_status = runtime_.transport.ExecuteAsync(operation, handle);
+    transport::TransportCallTiming submitTiming;
+    const auto submit_status = runtime_.transport.ExecuteAsync(operation, handle, &submitTiming);
+    timing.data_execute_async = submitTiming;
     if (submit_status.Failure() || handle == transport::kInvalidTransferHandle) {
         UC_ERROR("Dump SubmitAsync failed, request_id={}, items={}, error={}", request.request_id,
                  transfer_items.size(), submit_status);
@@ -177,12 +191,22 @@ Status TaskWorker::ProcessDump(const KvDumpRequest& request,
     record.results = std::move(results);
     record.transfer_items = std::move(transfer_items);
     record.submit_ms = SteadyNowMs();
+    record.data_transfer_required = true;
+    record.data_transfer_submitted = true;
+    record.timing.data_transfer_submitted_us = SteadyNowUs();
+    record.timing.data_transfer_submitted_ts_us = UnixNowUs();
     UC_DEBUG("DUMP data transfer submitted, request_id={}, handle={}", request.request_id, handle);
+    // Stage PERF log disabled: request_done already contains the corresponding timing.
+    // UC_INFO(
+    //     "[PERF] component=drampool event=stage request_id={} opcode={} handle={} "
+    //     "stage=DATA_TRANSFER_SUBMITTED ts_us={}",
+    //     request.request_id, static_cast<int>(request.opcode), handle,
+    //     record.timing.data_transfer_submitted_ts_us);
     return SubmitCompletion(std::move(record));
 }
 
 Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
-                               const transport::ManagerID& peerOneSidedId)
+                               const transport::ManagerID& peerOneSidedId, RequestTiming timing)
 {
     if (runtime_.protocol.GetPackedResponseSize(OpType::LOAD, request.batch_size) >
         g_config.flagBufferSlotSizeBytes) {
@@ -192,12 +216,14 @@ Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
                                       static_cast<std::uint8_t>(DumpLoadResult::Ok));
     std::vector<TransferItem> transfer_items;
     transfer_items.reserve(request.entries.size());
+    std::uint64_t dataBytes = 0;
     transport::Operation operation;
     operation.opcode = transport::Opcode::Write;
     operation.direct = transport::OperationDirect::RemoteDeviceHost;
     operation.target_manager = peerOneSidedId;
     operation.ops.reserve(request.entries.size());
 
+    timing.metadata_prepare_started_us = SteadyNowUs();
     for (std::uint16_t index = 0; index < request.batch_size; ++index) {
         const auto& entry = request.entries[index];
         UC::DramPool::EntryPtr metadataEntry;
@@ -222,9 +248,11 @@ Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
 
         // The LOAD pin keeps metadata and buffer alive through async transport.
         transfer_items.emplace_back(TransferItem{index, entry.key});
+        dataBytes += entry.len;
         operation.ops.emplace_back(
             transport::Segment{metadataEntry->buffer.addr, entry.addr, entry.len});
     }
+    timing.metadata_prepare_completed_us = SteadyNowUs();
 
     if (transfer_items.empty()) {
         UC_DEBUG("LOAD skips data transfer, request_id={}, batch_size={}", request.request_id,
@@ -236,7 +264,9 @@ Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
     UC_DEBUG("LOAD submits data transfer, request_id={}, items={}, peer={}", request.request_id,
              transfer_items.size(), peerOneSidedId);
     TransportHandle handle = transport::kInvalidTransferHandle;
-    const auto submit_status = runtime_.transport.ExecuteAsync(operation, handle);
+    transport::TransportCallTiming submitTiming;
+    const auto submit_status = runtime_.transport.ExecuteAsync(operation, handle, &submitTiming);
+    timing.data_execute_async = submitTiming;
     if (submit_status.Failure() || handle == transport::kInvalidTransferHandle) {
         UC_ERROR("Load SubmitAsync failed, request_id={}, items={}, error={}", request.request_id,
                  transfer_items.size(), submit_status);
@@ -258,12 +288,22 @@ Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
     record.results = std::move(results);
     record.transfer_items = std::move(transfer_items);
     record.submit_ms = SteadyNowMs();
+    record.data_transfer_required = true;
+    record.data_transfer_submitted = true;
+    record.timing.data_transfer_submitted_us = SteadyNowUs();
+    record.timing.data_transfer_submitted_ts_us = UnixNowUs();
     UC_DEBUG("LOAD data transfer submitted, request_id={}, handle={}", request.request_id, handle);
+    // Stage PERF log disabled: request_done already contains the corresponding timing.
+    // UC_INFO(
+    //     "[PERF] component=drampool event=stage request_id={} opcode={} handle={} "
+    //     "stage=DATA_TRANSFER_SUBMITTED ts_us={}",
+    //     request.request_id, static_cast<int>(request.opcode), handle,
+    //     record.timing.data_transfer_submitted_ts_us);
     return SubmitCompletion(std::move(record));
 }
 
 Status TaskWorker::ProcessLookup(const KvLookupRequest& request,
-                                 const transport::ManagerID& peerOneSidedId)
+                                 const transport::ManagerID& peerOneSidedId, RequestTiming timing)
 {
     if (runtime_.protocol.GetPackedResponseSize(OpType::LOOKUP, request.batch_size) >
         g_config.flagBufferSlotSizeBytes) {
@@ -271,11 +311,13 @@ Status TaskWorker::ProcessLookup(const KvLookupRequest& request,
     }
     std::vector<std::uint8_t> results(request.batch_size,
                                       static_cast<std::uint8_t>(LookupResult::NotFound));
+    timing.metadata_prepare_started_us = SteadyNowUs();
     for (std::uint16_t index = 0; index < request.batch_size; ++index) {
         if (runtime_.metadata.Exist(request.entries[index].key)) {
             results[index] = static_cast<std::uint8_t>(LookupResult::Exists);
         }
     }
+    timing.metadata_prepare_completed_us = SteadyNowUs();
 
     UC_DEBUG("LOOKUP metadata scan completed, request_id={}, batch_size={}", request.request_id,
              request.batch_size);
@@ -304,11 +346,18 @@ void TaskWorker::LoadEndItems(const std::vector<TransferItem>& items)
 
 Status TaskWorker::QueueResponse(OpType opcode, std::uint64_t responseAddr,
                                  const transport::ManagerID& peerOneSidedId,
-                                 std::vector<std::uint8_t>&& results, std::uint64_t requestId)
+                                 std::vector<std::uint8_t>&& results, std::uint64_t requestId,
+                                 RequestTiming timing, bool dataTransferRequired,
+                                 std::uint64_t dataBytes)
 {
     CompletionRecord record;
     record.stage = CompletionStage::SubmitResponse;
     record.request_id = requestId;
+    record.batch_size = static_cast<std::uint16_t>(results.size());
+    record.data_transfer_required = dataTransferRequired;
+    record.data_bytes = dataBytes;
+    timing.response_ready_us = SteadyNowUs();
+    record.timing = std::move(timing);
     record.opcode = opcode;
     record.remote_resp_addr = responseAddr;
     record.peer_one_sided_id = peerOneSidedId;
@@ -322,6 +371,12 @@ Status TaskWorker::SubmitCompletion(CompletionRecord&& record)
     UC_DEBUG("TaskWorker queues completion, request_id={}, opcode={}, stage={}, handle={}",
              record.request_id, static_cast<int>(record.opcode), static_cast<int>(record.stage),
              record.data_handle);
+    record.timing.completion_queued_us = SteadyNowUs();
+    // Stage PERF log disabled: request_done already contains the corresponding timing.
+    // UC_INFO(
+    //     "[PERF] component=drampool event=stage request_id={} opcode={} handle={} "
+    //     "stage=COMPLETION_QUEUED ts_us={}",
+    //     record.request_id, static_cast<int>(record.opcode), record.data_handle, UnixNowUs());
     runtime_.completionQueue.Push(std::move(record));
     return Status::OK();
 }

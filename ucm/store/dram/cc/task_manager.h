@@ -88,21 +88,34 @@ private:
         std::vector<std::uint8_t> lookupResults;
     };
 
+    struct TaskTiming {
+        std::uint64_t enqueuedUs{0};
+        std::uint64_t processSubmissionStartedUs{0};
+        std::uint64_t requestsStartedUs{0};
+        std::uint64_t completedUs{0};
+        std::uint64_t enqueuedTsUs{0};
+        std::uint64_t requestsStartedTsUs{0};
+        std::uint64_t completedTsUs{0};
+    };
+
     struct Submission {
         TaskId taskId{0};
         OpType op{OpType::LOOKUP};
         TimePoint deadline;
         TaskInput input;
         std::promise<TaskResult> promise;
+        TaskTiming timing;
     };
 
     struct ActiveTask {
         OpType op{OpType::LOOKUP};
         std::size_t remainingRequests{0};
+        std::size_t requestCount{0};
         std::size_t entryCount{0};
         std::optional<Status> failure;
         std::vector<std::uint8_t> lookupResults;
         std::promise<TaskResult> promise;
+        TaskTiming timing;
     };
 
     TaskId AllocateTaskIdLocked() noexcept;
@@ -119,6 +132,8 @@ private:
     void ProcessCompletion(RequestCompleted event);
     void CompleteRequest(TaskId taskId, Status status, std::vector<EntryResult> results = {});
     void ApplyLookupResults(ActiveTask& task, const std::vector<EntryResult>& results) const;
+    static void LogTaskDone(TaskId taskId, OpType op, std::size_t entryCount,
+                            std::size_t requestCount, const Status& status, TaskTiming timing);
 
     TaskManagerConfig config_;
     TaskManagerDependencies dependencies_;

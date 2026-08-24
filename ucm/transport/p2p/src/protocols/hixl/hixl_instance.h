@@ -38,8 +38,10 @@ public:
     Status TransferSync(const std::string& remote_engine, Opcode opcode,
                         const std::vector<Segment>& segments, int32_t timeout_ms);
     Status TransferAsync(const std::string& remote_engine, Opcode opcode,
-                         const std::vector<Segment>& segments, hixl::TransferReq& request);
-    Status GetTransferStatus(hixl::TransferReq request, TransferStatus& status);
+                         const std::vector<Segment>& segments, hixl::TransferReq& request,
+                         TransportCallTiming* timing = nullptr);
+    Status GetTransferStatus(hixl::TransferReq request, TransferStatus& status,
+                             TransportCallTiming* timing = nullptr);
 
     const Endpoint& LocalEndpoint() const;
     int32_t DeviceId() const;

@@ -42,6 +42,20 @@ using LaneId = std::uint32_t;
 using ConnectionEpoch = std::uint64_t;
 using ReplySlot = BufferPool::Slot;
 
+inline std::uint64_t SteadyNowUs()
+{
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(now).count());
+}
+
+inline std::uint64_t UnixNowUs()
+{
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(now).count());
+}
+
 inline constexpr LaneId kDefaultLaneId = 0;
 inline constexpr RequestId kInvalidRequestId = 0;
 inline constexpr ConnectionEpoch kInvalidConnectionEpoch = 0;
@@ -84,6 +98,24 @@ struct EntryResult {
     std::int32_t code{0};
 };
 
+struct RequestTiming {
+    std::uint64_t nodeQueuedUs{0};
+    std::uint64_t nodeActorStartedUs{0};
+    std::uint64_t replySlotAcquiredUs{0};
+    std::uint64_t requestEncodedUs{0};
+    std::uint64_t controlTransportSubmitStartedUs{0};
+    std::uint64_t controlTransportSubmittedUs{0};
+    std::uint64_t controlTransportCompletedUs{0};
+    std::uint64_t replyObservedUs{0};
+    std::uint64_t replyProcessedUs{0};
+    std::uint64_t completedUs{0};
+    std::uint64_t nodeQueuedTsUs{0};
+    std::uint64_t controlTransportSubmittedTsUs{0};
+    std::uint64_t controlTransportCompletedTsUs{0};
+    std::uint64_t replyObservedTsUs{0};
+    std::uint64_t completedTsUs{0};
+};
+
 struct Request {
     TaskId taskId{};
     RequestId requestId{0};
@@ -91,6 +123,7 @@ struct Request {
     OpType op{OpType::LOOKUP};
     std::vector<IoEntry> entries;
     std::chrono::steady_clock::time_point deadline;
+    RequestTiming timing;
 };
 
 struct RequestToken {

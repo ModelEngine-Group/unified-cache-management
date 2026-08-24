@@ -1,5 +1,6 @@
 #include "protocols/hixl/hixl_instance.h"
 #include <acl/acl.h>
+#include <chrono>
 #include <exception>
 #include <utility>
 #include "hixl/hixl.h"
@@ -7,6 +8,20 @@
 
 namespace transport {
 namespace {
+
+std::uint64_t SteadyNowUs()
+{
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(now).count());
+}
+
+std::uint64_t UnixNowUs()
+{
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(now).count());
+}
 
 std::vector<hixl::TransferOpDesc> BuildTransferOpDesc(const std::vector<Segment>& segments)
 {
@@ -228,13 +243,18 @@ Status HixlInstance::TransferSync(const std::string& remote_engine, Opcode opcod
 }
 
 Status HixlInstance::TransferAsync(const std::string& remote_engine, Opcode opcode,
-                                   const std::vector<Segment>& segments, hixl::TransferReq& request)
+                                   const std::vector<Segment>& segments, hixl::TransferReq& request,
+                                   TransportCallTiming* timing)
 {
     hixl::TransferReq native_request = nullptr;
     const auto status = Run([&](hixl::Hixl& engine) {
         const auto descs = BuildTransferOpDesc(segments);
         hixl::TransferArgs args;
         const auto operation = opcode == Opcode::Read ? hixl::READ : hixl::WRITE;
+        if (timing != nullptr) {
+            timing->backend_called_us = SteadyNowUs();
+            timing->backend_called_ts_us = UnixNowUs();
+        }
         const auto native_status =
             engine.TransferAsync(remote_engine.c_str(), operation, descs, args, native_request);
         if (native_status != hixl::SUCCESS || native_request == nullptr) {
@@ -250,11 +270,16 @@ Status HixlInstance::TransferAsync(const std::string& remote_engine, Opcode opco
     return status;
 }
 
-Status HixlInstance::GetTransferStatus(hixl::TransferReq request, TransferStatus& status)
+Status HixlInstance::GetTransferStatus(hixl::TransferReq request, TransferStatus& status,
+                                       TransportCallTiming* timing)
 {
     status = TransferStatus::Failed;
     return Run([&](hixl::Hixl& engine) {
         hixl::TransferStatus native_transfer_status = hixl::TransferStatus::WAITING;
+        if (timing != nullptr) {
+            timing->backend_called_us = SteadyNowUs();
+            timing->backend_called_ts_us = UnixNowUs();
+        }
         const auto native_status = engine.GetTransferStatus(request, native_transfer_status);
         if (native_status != hixl::SUCCESS) {
             UC_ERROR("[Transport][HIXL] get transfer status failed: req={} returned {}", request,

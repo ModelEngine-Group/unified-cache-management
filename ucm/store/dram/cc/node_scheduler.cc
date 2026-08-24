@@ -116,6 +116,8 @@ Status NodeScheduler::Post(Request& request)
     if (!acceptingMessages_.load(std::memory_order_acquire)) {
         return Status::Error("NodeScheduler is not accepting commands");
     }
+    request.timing.nodeQueuedUs = SteadyNowUs();
+    request.timing.nodeQueuedTsUs = UnixNowUs();
     auto& runner = GetRunner(request.nodeId);
     {
         std::lock_guard lock(runner.mutex);

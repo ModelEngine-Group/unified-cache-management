@@ -77,6 +77,15 @@ struct Operation {
     std::vector<Segment> ops;
 };
 
+// Timing for one TransportManager-to-backend API call. Steady-clock values are used for
+// elapsed time, while Unix timestamps allow correlation with request logs across processes.
+struct TransportCallTiming {
+    std::uint64_t manager_entered_us = 0;
+    std::uint64_t manager_entered_ts_us = 0;
+    std::uint64_t backend_called_us = 0;
+    std::uint64_t backend_called_ts_us = 0;
+};
+
 class Transport {
 public:
     virtual ~Transport() = default;
@@ -92,8 +101,10 @@ public:
     virtual Status Connect(const ManagerID& manager_id) = 0;
     virtual Status Disconnect(const ManagerID& manager_id) = 0;
     virtual Status ExecuteSync(const Operation& request) = 0;
-    virtual Status ExecuteAsync(const Operation& request, TransferHandle& handle) = 0;
-    virtual Status GetStatus(TransferHandle handle, TransferStatus& status) = 0;
+    virtual Status ExecuteAsync(const Operation& request, TransferHandle& handle,
+                                TransportCallTiming* timing = nullptr) = 0;
+    virtual Status GetStatus(TransferHandle handle, TransferStatus& status,
+                             TransportCallTiming* timing = nullptr) = 0;
 };
 
 using TransportPtr = std::shared_ptr<Transport>;
