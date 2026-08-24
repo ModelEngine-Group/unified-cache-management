@@ -72,23 +72,22 @@ Status TaskWorker::ProcessOneRequest(RequestTaskPtr task)
     UC_DEBUG("TaskWorker processing request, request_id={}, opcode={}, peer={}",
              request->request_id, static_cast<int>(request->opcode), peerOneSidedId);
     switch (request->opcode) {
-        case KvOpcode::Dump: {
+        case OpType::DUMP: {
             const auto* dump = dynamic_cast<const KvDumpRequest*>(request.get());
             return dump == nullptr ? Status::InvalidParam("DUMP request type does not match opcode")
                                    : ProcessDump(*dump, peerOneSidedId);
         }
-        case KvOpcode::Load: {
+        case OpType::LOAD: {
             const auto* load = dynamic_cast<const KvLoadRequest*>(request.get());
             return load == nullptr ? Status::InvalidParam("LOAD request type does not match opcode")
                                    : ProcessLoad(*load, peerOneSidedId);
         }
-        case KvOpcode::Lookup: {
+        case OpType::LOOKUP: {
             const auto* lookup = dynamic_cast<const KvLookupRequest*>(request.get());
             return lookup == nullptr
                        ? Status::InvalidParam("LOOKUP request type does not match opcode")
                        : ProcessLookup(*lookup, peerOneSidedId);
         }
-        case KvOpcode::None: break;
     }
     return Status::InvalidParam("TaskWorker got invalid opcode");
 }
@@ -96,7 +95,7 @@ Status TaskWorker::ProcessOneRequest(RequestTaskPtr task)
 Status TaskWorker::ProcessDump(const KvDumpRequest& request,
                                const transport::ManagerID& peerOneSidedId)
 {
-    if (runtime_.protocol.GetPackedResponseSize(KvOpcode::Dump, request.batch_size) >
+    if (runtime_.protocol.GetPackedResponseSize(OpType::DUMP, request.batch_size) >
         g_config.flagBufferSlotSizeBytes) {
         return Status::InvalidParam("DUMP response exceeds configured flag buffer slot size");
     }
@@ -149,7 +148,7 @@ Status TaskWorker::ProcessDump(const KvDumpRequest& request,
     if (transfer_items.empty()) {
         UC_DEBUG("DUMP skips data transfer, request_id={}, batch_size={}", request.request_id,
                  request.batch_size);
-        return QueueResponse(KvOpcode::Dump, request.resp_addr, peerOneSidedId, std::move(results),
+        return QueueResponse(OpType::DUMP, request.resp_addr, peerOneSidedId, std::move(results),
                              request.request_id);
     }
 
@@ -164,14 +163,14 @@ Status TaskWorker::ProcessDump(const KvDumpRequest& request,
         for (const auto& item : transfer_items) {
             results[item.index_in_request] = static_cast<std::uint8_t>(DumpLoadResult::Failed);
         }
-        return QueueResponse(KvOpcode::Dump, request.resp_addr, peerOneSidedId, std::move(results),
+        return QueueResponse(OpType::DUMP, request.resp_addr, peerOneSidedId, std::move(results),
                              request.request_id);
     }
 
     CompletionRecord record;
     record.stage = CompletionStage::PollDataTransfer;
     record.request_id = request.request_id;
-    record.opcode = KvOpcode::Dump;
+    record.opcode = OpType::DUMP;
     record.data_handle = handle;
     record.remote_resp_addr = request.resp_addr;
     record.peer_one_sided_id = peerOneSidedId;
@@ -185,7 +184,7 @@ Status TaskWorker::ProcessDump(const KvDumpRequest& request,
 Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
                                const transport::ManagerID& peerOneSidedId)
 {
-    if (runtime_.protocol.GetPackedResponseSize(KvOpcode::Load, request.batch_size) >
+    if (runtime_.protocol.GetPackedResponseSize(OpType::LOAD, request.batch_size) >
         g_config.flagBufferSlotSizeBytes) {
         return Status::InvalidParam("LOAD response exceeds configured flag buffer slot size");
     }
@@ -230,7 +229,7 @@ Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
     if (transfer_items.empty()) {
         UC_DEBUG("LOAD skips data transfer, request_id={}, batch_size={}", request.request_id,
                  request.batch_size);
-        return QueueResponse(KvOpcode::Load, request.resp_addr, peerOneSidedId, std::move(results),
+        return QueueResponse(OpType::LOAD, request.resp_addr, peerOneSidedId, std::move(results),
                              request.request_id);
     }
 
@@ -245,14 +244,14 @@ Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
         for (const auto& item : transfer_items) {
             results[item.index_in_request] = static_cast<std::uint8_t>(DumpLoadResult::Failed);
         }
-        return QueueResponse(KvOpcode::Load, request.resp_addr, peerOneSidedId, std::move(results),
+        return QueueResponse(OpType::LOAD, request.resp_addr, peerOneSidedId, std::move(results),
                              request.request_id);
     }
 
     CompletionRecord record;
     record.stage = CompletionStage::PollDataTransfer;
     record.request_id = request.request_id;
-    record.opcode = KvOpcode::Load;
+    record.opcode = OpType::LOAD;
     record.data_handle = handle;
     record.remote_resp_addr = request.resp_addr;
     record.peer_one_sided_id = peerOneSidedId;
@@ -266,7 +265,7 @@ Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
 Status TaskWorker::ProcessLookup(const KvLookupRequest& request,
                                  const transport::ManagerID& peerOneSidedId)
 {
-    if (runtime_.protocol.GetPackedResponseSize(KvOpcode::Lookup, request.batch_size) >
+    if (runtime_.protocol.GetPackedResponseSize(OpType::LOOKUP, request.batch_size) >
         g_config.flagBufferSlotSizeBytes) {
         return Status::InvalidParam("LOOKUP response exceeds configured flag buffer slot size");
     }
@@ -280,7 +279,7 @@ Status TaskWorker::ProcessLookup(const KvLookupRequest& request,
 
     UC_DEBUG("LOOKUP metadata scan completed, request_id={}, batch_size={}", request.request_id,
              request.batch_size);
-    return QueueResponse(KvOpcode::Lookup, request.resp_addr, peerOneSidedId, std::move(results),
+    return QueueResponse(OpType::LOOKUP, request.resp_addr, peerOneSidedId, std::move(results),
                          request.request_id);
 }
 
@@ -303,7 +302,7 @@ void TaskWorker::LoadEndItems(const std::vector<TransferItem>& items)
     }
 }
 
-Status TaskWorker::QueueResponse(KvOpcode opcode, std::uint64_t responseAddr,
+Status TaskWorker::QueueResponse(OpType opcode, std::uint64_t responseAddr,
                                  const transport::ManagerID& peerOneSidedId,
                                  std::vector<std::uint8_t>&& results, std::uint64_t requestId)
 {

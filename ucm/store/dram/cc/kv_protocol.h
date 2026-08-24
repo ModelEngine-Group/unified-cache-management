@@ -30,18 +30,12 @@
 #include <unordered_map>
 #include <vector>
 #include "status/status.h"
-#include "type/types.h"
+#include "types.h"
 
 namespace UC::DramPool {
 
 using BlockId = UC::Detail::BlockId;
-
-enum class KvOpcode : std::uint8_t {
-    None = 0x0,
-    Dump = 0x1,
-    Load = 0x2,
-    Lookup = 0x3,
-};
+using OpType = UC::Dram::OpType;
 
 enum class ResponseStatus : std::uint8_t {
     Pending = 0,
@@ -105,7 +99,7 @@ public:
 class KvRequest {
 public:
     virtual ~KvRequest() = default;
-    KvOpcode opcode{KvOpcode::None};
+    OpType opcode{OpType::LOOKUP};
     std::uint64_t request_id{0};
 };
 
@@ -218,20 +212,20 @@ public:
     ProtocolManager& operator=(const ProtocolManager&) = delete;
 
     // Client side
-    std::size_t GetPackedRequestSize(KvOpcode opcode, const KvRequest& req) const;
-    std::size_t GetPackedResponseSize(KvOpcode opcode, std::size_t result_count) const;
-    Status PackRequest(void* data, KvOpcode opcode, const KvRequest& req);
+    std::size_t GetPackedRequestSize(OpType opcode, const KvRequest& req) const;
+    std::size_t GetPackedResponseSize(OpType opcode, std::size_t result_count) const;
+    Status PackRequest(void* data, OpType opcode, const KvRequest& req);
     Status IsResponseReady(const void* data, std::uint64_t expected_request_id, bool& ready) const;
-    Status UnpackResponse(const void* data, KvOpcode opcode, std::uint64_t expected_request_id,
+    Status UnpackResponse(const void* data, OpType opcode, std::uint64_t expected_request_id,
                           std::uint16_t result_count, KvResponse& out);
     // Server side
     Status UnpackRequest(const void* data, std::size_t size, std::unique_ptr<KvRequest>& out);
-    Status PackResponse(void* data, KvOpcode opcode, const KvResponse& resp);
+    Status PackResponse(void* data, OpType opcode, const KvResponse& resp);
 
 private:
-    std::unordered_map<KvOpcode, std::unique_ptr<KvProtocol>> protocols_;
+    std::unordered_map<OpType, std::unique_ptr<KvProtocol>> protocols_;
 
-    KvProtocol* GetProtocol(KvOpcode opcode) const;
+    KvProtocol* GetProtocol(OpType opcode) const;
 };
 
 }  // namespace UC::DramPool

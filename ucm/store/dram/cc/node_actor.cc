@@ -91,7 +91,7 @@ Status NodeActor::EncodeRequest(const ReplySlot& replySlot, RequestId requestId,
     switch (op) {
         case OpType::LOOKUP: {
             DramPool::KvLookupRequest request;
-            request.opcode = DramPool::KvOpcode::Lookup;
+            request.opcode = OpType::LOOKUP;
             request.request_id = requestId;
             request.resp_addr = responseAddress;
             request.batch_size = batchSize;
@@ -104,7 +104,7 @@ Status NodeActor::EncodeRequest(const ReplySlot& replySlot, RequestId requestId,
         }
         case OpType::DUMP: {
             DramPool::KvDumpRequest request;
-            request.opcode = DramPool::KvOpcode::Dump;
+            request.opcode = OpType::DUMP;
             request.request_id = requestId;
             request.resp_addr = responseAddress;
             request.ttl = 0;
@@ -114,7 +114,7 @@ Status NodeActor::EncodeRequest(const ReplySlot& replySlot, RequestId requestId,
         }
         case OpType::LOAD: {
             DramPool::KvLoadRequest request;
-            request.opcode = DramPool::KvOpcode::Load;
+            request.opcode = OpType::LOAD;
             request.request_id = requestId;
             request.resp_addr = responseAddress;
             request.batch_size = batchSize;
