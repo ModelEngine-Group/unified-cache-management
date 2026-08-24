@@ -1,0 +1,52 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
+#ifndef UNIFIEDCACHE_TRANS_EVENT_H
+#define UNIFIEDCACHE_TRANS_EVENT_H
+
+#include <cstdint>
+#include "status/status.h"
+
+namespace UC::Trans {
+
+/**
+ * A non-owning view of a platform-native device event.
+ *
+ * The producer of the native handle remains responsible for keeping the event
+ * alive and destroying it. A zero handle represents no event.
+ */
+class Event {
+public:
+    explicit Event(std::uintptr_t nativeHandle = 0) noexcept : nativeHandle_{nativeHandle} {}
+
+    Status Synchronize() const;
+    bool Valid() const noexcept { return nativeHandle_ != 0; }
+    std::uintptr_t NativeHandle() const noexcept { return nativeHandle_; }
+
+private:
+    std::uintptr_t nativeHandle_{0};
+};
+
+}  // namespace UC::Trans
+
+#endif

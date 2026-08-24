@@ -7,6 +7,7 @@ set_target_properties(Ascend::ascendcl PROPERTIES
 add_library(trans STATIC
     ascend_device.cc
     ascend_buffer.cc
+    ascend_event.cc
     ascend_stream.cc
 )
 if(ASCEND_SUPPORTS_REGISTER_PIN)

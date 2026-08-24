@@ -36,6 +36,6 @@ public:
     Status HostToDeviceAsync(void* host, void* device[], size_t size, size_t number) override;
 };
 
-} // namespace UC::Trans
+}  // namespace UC::Trans
 
 #endif

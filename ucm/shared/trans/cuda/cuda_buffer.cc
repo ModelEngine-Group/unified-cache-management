@@ -94,4 +94,14 @@ void Buffer::UnregisterHostBuffer(void* host)
     (void)cudaHostUnregister(host);
 }
 
+Status Memset(void* ptr, std::size_t size, std::int32_t value)
+{
+    auto ret = cudaMemset(ptr, value, size);
+    if (ret != cudaSuccess) [[unlikely]] { return Status{ret, cudaGetErrorString(ret)}; }
+
+    ret = cudaStreamSynchronize(nullptr);
+    if (ret != cudaSuccess) [[unlikely]] { return Status{ret, cudaGetErrorString(ret)}; }
+    return Status::OK();
+}
+
 }  // namespace UC::Trans
