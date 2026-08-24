@@ -50,11 +50,8 @@ No Connector-specific Gauges are exported by default.
 | `ucm:connector_build_connector_worker_meta_duration_ms` | Duration of Connector interface`build_connector_worker_meta`             |
 | `ucm:connector_update_connector_output_duration_ms`     | Duration of Connector interface`update_connector_output`                 |
 | `ucm:connector_clear_connector_metadata_duration_ms`    | Duration of Connector interface`clear_connector_metadata`                |
-| `ucm:layerwise_batch_total_load_only_ms`                | Total wall-clock time of a load-only Layerwise batch                       |
-| `ucm:layerwise_batch_total_save_only_ms`                | Total wall-clock time of a save-only Layerwise batch                       |
-| `ucm:layerwise_batch_total_load_save_ms`                | Total wall-clock time of a Layerwise batch containing Load and Save        |
-| `ucm:layerwise_batch_load_wait_total_load_only_ms`      | Sum of all`wait_for_layer_load` blocking time in a load-only batch       |
-| `ucm:layerwise_batch_load_wait_total_load_save_ms`      | Sum of all`wait_for_layer_load` blocking time in a load-and-save batch   |
+| `ucm:layerwise_layer_load_duration_ms`                  | Per-layer wall-clock time from layer load start to `wait_for_layer_load` return |
+| `ucm:layerwise_batch_load_duration_sum_ms`              | Sum of per-layer load durations within one Layerwise batch               |
 
 ### 1.2 Cache Store
 

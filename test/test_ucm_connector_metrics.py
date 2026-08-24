@@ -386,6 +386,7 @@ from ucm.integration.vllm.ucm_connector import (
     PendingDumpTask,
     UCMConnector,
     UCMDirectConnector,
+    UCMLayerWiseConnector,
 )
 from ucm.metrics_config import (
     consumer_enabled,
@@ -1674,11 +1675,11 @@ def test_connector_dashboard_layout_and_metrics():
     assert "1000 *" not in text
     assert "save_speed" not in text
     critical_methods = [
+        "wait_for_save",
         "get_num_new_matched_tokens",
         "start_load_kv",
         "wait_for_layer_load",
         "save_kv_layer",
-        "wait_for_save",
     ]
     critical_grids = [
         {"h": 8, "w": 12, "x": 12, "y": 0},
@@ -1698,7 +1699,7 @@ def test_connector_dashboard_layout_and_metrics():
     for panel, method, grid in zip(
         panels[1:6], critical_methods, critical_grids, strict=True
     ):
-        assert panel["title"] == f"Connector Interface: {method}"
+        assert panel["title"] == f"Connector method duration: {method}"
         assert panel["gridPos"] == grid
         assert panel["fieldConfig"]["defaults"]["unit"] == "ms"
         assert len(panel["targets"]) == 3
@@ -1736,6 +1737,36 @@ def test_connector_dashboard_layout_and_metrics():
             target["expr"].startswith(f"histogram_quantile({quantile},")
             for target in panel["targets"]
         )
+
+    layerwise_panels = panels[8:10]
+    assert [panel["title"] for panel in layerwise_panels] == [
+        "Layerwise Per-Layer Load Duration",
+        "Layerwise All-Layer Load Duration Sum",
+    ]
+    assert [panel["gridPos"] for panel in layerwise_panels] == [
+        {"h": 8, "w": 12, "x": 0, "y": 32},
+        {"h": 8, "w": 12, "x": 12, "y": 32},
+    ]
+    for panel, metric in zip(
+        layerwise_panels,
+        (
+            "layerwise_layer_load_duration_ms",
+            "layerwise_batch_load_duration_sum_ms",
+        ),
+        strict=True,
+    ):
+        assert len(panel["targets"]) == 3
+        assert all(
+            f"ucm:{metric}_bucket" in target["expr"] for target in panel["targets"]
+        )
+        assert [
+            target["expr"].split(",", maxsplit=1)[0] for target in panel["targets"]
+        ] == [
+            "histogram_quantile(0.5",
+            "histogram_quantile(0.9",
+            "histogram_quantile(0.99",
+        ]
+
     assert "Direct Connector" not in titles
     assert "Layerwise Connector" not in titles
     assert not any(title.startswith("Layerwise /") for title in titles)
@@ -1759,7 +1790,7 @@ def test_connector_dashboard_layout_and_metrics():
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 32,
+        "y": 40,
     }
 
     occupied = set()
@@ -2017,7 +2048,7 @@ def test_grafana_dashboards_use_isolated_vllm_ucm_identity():
             "ucm-vllm-connector-overview",
         ),
         "grafana_pipeline_store.json": (
-            "vLLM - UCM Cache / Posix Store (vLLM Metrics)",
+            "vLLM - UCM Pipeline Store (vLLM Metrics)",
             "ucm-vllm-pipeline-store",
         ),
         "grafana_mooncake.json": (
@@ -2259,7 +2290,34 @@ def test_layerwise_wait_for_save_records_completion_start():
 
     assert "wait_for_save_start_ms = time.perf_counter() * 1000" in source
     assert "pending_dump_task.wait_for_save_start_ms = wait_for_save_start_ms" in source
-    assert "self._layerwise_batch_stats(total_end)" in source
+
+
+def test_layerwise_records_per_layer_load_duration_and_batch_sum():
+    _reset_fakes()
+    connector = object.__new__(UCMLayerWiseConnector)
+    connector._connector_metadata = object()
+    connector.need_load = True
+    connector._get_connector_metadata = lambda: SimpleNamespace(request_meta={})
+    connector.layer_name_to_id = {"layer.0": 0}
+    connector.layer_ids = {0}
+    connector.load_tasks = {0: {}}
+    connector._layerwise_load_start_by_layer = {0: 1.0}
+    connector._layerwise_layer_load_duration_sum_ms = 0.0
+
+    times = iter([1.03])
+    original_perf_counter = ucm_connector_module.time.perf_counter
+    ucm_connector_module.time.perf_counter = lambda: next(times)
+    try:
+        connector.wait_for_layer_load("layer.0")
+    finally:
+        ucm_connector_module.time.perf_counter = original_perf_counter
+
+    assert fake_ucmmetrics.updated == [
+        {"layerwise_layer_load_duration_ms": pytest.approx(30.0)},
+        {"layerwise_batch_load_duration_sum_ms": pytest.approx(30.0)},
+    ]
+    assert connector._layerwise_load_start_by_layer == {}
+    assert connector._layerwise_layer_load_duration_sum_ms == 0.0
 
 
 def test_cache_load_h2d_duration_records_stream_synchronize_only():
@@ -2469,48 +2527,93 @@ def test_pipeline_dashboard_orders_cache_bandwidth_rows():
     )
     panels = {panel["title"]: panel for panel in dashboard["panels"]}
 
-    assert panels["Cache Load Bandwidth (aggregated)"]["gridPos"]["y"] == 33
-    assert panels["Cache Dump Bandwidth (aggregated)"]["gridPos"]["y"] == 33
-    assert panels["Cache Load Bandwidth (per task)"]["gridPos"]["y"] == 41
-    assert panels["Cache Dump Bandwidth (per task)"]["gridPos"]["y"] == 41
+    assert panels["Cache Load Bandwidth (aggregated)"]["gridPos"]["y"] == 25
+    assert panels["Cache Dump Bandwidth (aggregated)"]["gridPos"]["y"] == 25
+    assert panels["Cache Load Bandwidth (per task)"]["gridPos"]["y"] == 33
+    assert panels["Cache Dump Bandwidth (per task)"]["gridPos"]["y"] == 33
     assert "Cache Load H2D Bandwidth (per task)" not in panels
     assert "Cache Dump D2H Bandwidth (per task)" not in panels
     assert panels["Cache Load Backend Wait Duration"]["gridPos"] == {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 65,
+        "y": 49,
     }
     assert panels["Cache Dump Wait Compute Duration"]["gridPos"] == {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 65,
+        "y": 49,
     }
-    assert panels["Cache Load H2D Duration"]["gridPos"]["y"] == 73
+    assert panels["Cache Load H2D Duration"]["gridPos"]["y"] == 57
     assert "Cache Dump D2H Duration (include wait compute)" in panels
     assert "Cache Dump D2H Duration" not in panels
 
 
-def test_pipeline_dashboard_cache_posix_load_ratio_uses_waiting_share():
+def test_pipeline_dashboard_groups_performance_stores_in_order():
     dashboard = json.loads(
         (REPO_ROOT / "examples" / "metrics" / "grafana_pipeline_store.json").read_text(
             encoding="utf-8"
         )
     )
-    panel = next(
-        panel
-        for panel in dashboard["panels"]
-        if panel["title"] == "Cache / Posix Load Ratio"
-    )
-    targets = {
-        target["legendFormat"].split()[0]: target["expr"] for target in panel["targets"]
+    panels = dashboard["panels"]
+    rows = {panel["title"]: panel for panel in panels if panel["type"] == "row"}
+    store_titles = [
+        panel["title"]
+        for panel in panels
+        if panel["title"]
+        in {"Cache Store", "YuanRong Store", "Mooncake Store", "Posix Store"}
+    ]
+
+    assert dashboard["title"] == "vLLM - UCM Pipeline Store (vLLM Metrics)"
+    assert store_titles == [
+        "Cache Store",
+        "Mooncake Store",
+        "Posix Store",
+    ]
+    assert rows["Cache Store"]["collapsed"] is False
+    assert rows["Posix Store"]["collapsed"] is False
+    assert rows["Mooncake Store"]["collapsed"] is True
+    assert rows["Cache Store"]["panels"] == []
+    assert rows["Posix Store"]["panels"] == []
+
+    mooncake_children = rows["Mooncake Store"]["panels"]
+    assert {panel["title"] for panel in mooncake_children} == {
+        "Mooncake Block Rate",
+        "Mooncake Byte Rate",
+        "Mooncake Load Hit / Miss Shards",
+        "Mooncake Dump Existing / Missing Shards",
+        "Mooncake Load / Dump Duration",
+        "Mooncake Load / Dump Bandwidth",
+        "Mooncake Load Stage Avg Breakdown",
+        "Mooncake Dump Stage Avg Breakdown",
     }
 
-    assert set(targets) == {"Cache", "Posix"}
-    assert "cache_load_shards_total" in targets["Cache"]
-    assert "cache_load_wait_shards_total" in targets["Cache"]
-    assert "cache_load_shards_total" in targets["Posix"]
-    assert "cache_load_wait_shards_total" in targets["Posix"]
-    assert "cache_lookup_hit_blocks_total" not in " ".join(targets.values())
-    assert "wait for Posix" in panel["description"]
+    dashboard_text = json.dumps(dashboard)
+    assert "yuanrong_" not in dashboard_text
+    assert "Mooncake Error Rate" not in dashboard_text
+
+    all_panels = list(panels)
+    for row in rows.values():
+        all_panels.extend(row.get("panels", []))
+    ids = [panel["id"] for panel in all_panels]
+    assert len(ids) == len(set(ids))
+
+
+def test_pipeline_dashboard_contains_only_performance_panels_with_chinese_hints():
+    dashboard = json.loads(
+        (REPO_ROOT / "examples" / "metrics" / "grafana_pipeline_store.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    all_panels = list(dashboard["panels"])
+    for row in dashboard["panels"]:
+        all_panels.extend(row.get("panels", []))
+
+    assert "Cache / Posix Load Ratio" not in {panel["title"] for panel in all_panels}
+    metric_panels = [panel for panel in all_panels if panel["type"] != "row"]
+    assert all("代码位置" in panel["description"] for panel in metric_panels)
+    assert all(
+        any("\u4e00" <= char <= "\u9fff" for char in panel["description"])
+        for panel in all_panels
+    )

@@ -706,43 +706,13 @@ _HISTOGRAM_METRICS = [
         for method in _CONNECTOR_INTERFACE_METHODS
     ],
     (
-        "layerwise_batch_total_load_only_ms",
-        (
-            "Layerwise load-only batch wall-clock time from start_load_kv entry to "
-            "wait_for_save return (ms)"
-        ),
+        "layerwise_layer_load_duration_ms",
+        "Layerwise per-layer wall-clock time from layer load start to wait_for_layer_load return (ms)",
         [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
     ),
     (
-        "layerwise_batch_total_save_only_ms",
-        (
-            "Layerwise save-only batch wall-clock time from start_load_kv entry to "
-            "wait_for_save return (ms)"
-        ),
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
-    ),
-    (
-        "layerwise_batch_total_load_save_ms",
-        (
-            "Layerwise load-and-save batch wall-clock time from start_load_kv entry to "
-            "wait_for_save return (ms)"
-        ),
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
-    ),
-    (
-        "layerwise_batch_load_wait_total_load_only_ms",
-        (
-            "Total wait_for_layer_load blocking time accumulated within one load-only "
-            "layerwise batch (ms)"
-        ),
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
-    ),
-    (
-        "layerwise_batch_load_wait_total_load_save_ms",
-        (
-            "Total wait_for_layer_load blocking time accumulated within one "
-            "load-and-save layerwise batch (ms)"
-        ),
+        "layerwise_batch_load_duration_sum_ms",
+        "Sum of per-layer load durations within one Layerwise batch (ms)",
         [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
     ),
 ]

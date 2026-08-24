@@ -139,8 +139,8 @@
       "aggregate": "avg"
     },
     {
-      "name": "layerwise_batch_total_load_save_ms",
-      "source": "ucm:layerwise_batch_total_load_save_ms",
+      "name": "layerwise_batch_load_duration_sum_ms",
+      "source": "ucm:layerwise_batch_load_duration_sum_ms",
       "type": "histogram",
       "avg": true,
       "quantiles": [0.5, 0.9, 0.99],

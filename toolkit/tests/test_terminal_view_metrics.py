@@ -920,7 +920,7 @@ vllm:num_requests_running{worker_id="1"} 5
                 "e2e_request_latency_s",
                 "ttft_s",
                 "tpot_s",
-                "layerwise_batch_total_load_save_ms",
+                "layerwise_batch_load_duration_sum_ms",
                 "cache_store_load_bandwidth_gbps",
                 "cache_store_dump_bandwidth_gbps",
                 "posix_store_load_bandwidth_gbps",
@@ -950,7 +950,7 @@ vllm:num_requests_running{worker_id="1"} 5
                 "e2e_request_latency_s": "vllm:e2e_request_latency_seconds",
                 "ttft_s": "vllm:time_to_first_token_seconds",
                 "tpot_s": "vllm:request_time_per_output_token_seconds",
-                "layerwise_batch_total_load_save_ms": "ucm:layerwise_batch_total_load_save_ms",
+                "layerwise_batch_load_duration_sum_ms": "ucm:layerwise_batch_load_duration_sum_ms",
             },
         )
         for metric in histograms.values():
@@ -967,9 +967,9 @@ vllm:num_requests_running{worker_id="1"} 5
                 "vllm:request_time_per_output_token_seconds_bucket",
                 "vllm:request_time_per_output_token_seconds_sum",
                 "vllm:request_time_per_output_token_seconds_count",
-                "ucm:layerwise_batch_total_load_save_ms_bucket",
-                "ucm:layerwise_batch_total_load_save_ms_sum",
-                "ucm:layerwise_batch_total_load_save_ms_count",
+                "ucm:layerwise_batch_load_duration_sum_ms_bucket",
+                "ucm:layerwise_batch_load_duration_sum_ms_sum",
+                "ucm:layerwise_batch_load_duration_sum_ms_count",
                 "ucm:cache_load_bytes_total",
                 "ucm:cache_dump_bytes_total",
                 "ucm:posix_s2h_bytes_total",
@@ -1048,12 +1048,12 @@ vllm:prefix_cache_hits_total 40
 vllm:prefix_cache_queries_total 50
 vllm:external_prefix_cache_hits_total 10
 vllm:external_prefix_cache_queries_total 25
-ucm:layerwise_batch_total_load_save_ms_bucket{le="1"} 1
-ucm:layerwise_batch_total_load_save_ms_bucket{le="5"} 3
-ucm:layerwise_batch_total_load_save_ms_bucket{le="10"} 5
-ucm:layerwise_batch_total_load_save_ms_bucket{le="+Inf"} 5
-ucm:layerwise_batch_total_load_save_ms_sum 20
-ucm:layerwise_batch_total_load_save_ms_count 5
+ucm:layerwise_batch_load_duration_sum_ms_bucket{le="1"} 1
+ucm:layerwise_batch_load_duration_sum_ms_bucket{le="5"} 3
+ucm:layerwise_batch_load_duration_sum_ms_bucket{le="10"} 5
+ucm:layerwise_batch_load_duration_sum_ms_bucket{le="+Inf"} 5
+ucm:layerwise_batch_load_duration_sum_ms_sum 20
+ucm:layerwise_batch_load_duration_sum_ms_count 5
 ucm:cache_load_bytes_total 1000000000
 ucm:cache_dump_bytes_total 2000000000
 ucm:posix_s2h_bytes_total 3000000000
@@ -1095,12 +1095,12 @@ vllm:prefix_cache_hits_total 70
 vllm:prefix_cache_queries_total 100
 vllm:external_prefix_cache_hits_total 20
 vllm:external_prefix_cache_queries_total 50
-ucm:layerwise_batch_total_load_save_ms_bucket{le="1"} 2
-ucm:layerwise_batch_total_load_save_ms_bucket{le="5"} 6
-ucm:layerwise_batch_total_load_save_ms_bucket{le="10"} 9
-ucm:layerwise_batch_total_load_save_ms_bucket{le="+Inf"} 9
-ucm:layerwise_batch_total_load_save_ms_sum 40
-ucm:layerwise_batch_total_load_save_ms_count 9
+ucm:layerwise_batch_load_duration_sum_ms_bucket{le="1"} 2
+ucm:layerwise_batch_load_duration_sum_ms_bucket{le="5"} 6
+ucm:layerwise_batch_load_duration_sum_ms_bucket{le="10"} 9
+ucm:layerwise_batch_load_duration_sum_ms_bucket{le="+Inf"} 9
+ucm:layerwise_batch_load_duration_sum_ms_sum 40
+ucm:layerwise_batch_load_duration_sum_ms_count 9
 ucm:cache_load_bytes_total 6000000000
 ucm:cache_dump_bytes_total 10000000000
 ucm:posix_s2h_bytes_total 15000000000
@@ -1142,13 +1142,21 @@ ucm:cache_load_wait_shards_total 12
         self.assertAlmostEqual(values["e2e_request_latency_s"]["p99"], 0.4946666667)
         self.assertAlmostEqual(values["e2e_request_latency_s"]["avg"], 0.5)
         self.assertEqual(
-            list(values["layerwise_batch_total_load_save_ms"]),
+            list(values["layerwise_batch_load_duration_sum_ms"]),
             ["p50", "p90", "p99", "avg"],
         )
-        self.assertAlmostEqual(values["layerwise_batch_total_load_save_ms"]["p50"], 3.0)
-        self.assertAlmostEqual(values["layerwise_batch_total_load_save_ms"]["p90"], 8.0)
-        self.assertAlmostEqual(values["layerwise_batch_total_load_save_ms"]["p99"], 9.8)
-        self.assertAlmostEqual(values["layerwise_batch_total_load_save_ms"]["avg"], 5.0)
+        self.assertAlmostEqual(
+            values["layerwise_batch_load_duration_sum_ms"]["p50"], 3.0
+        )
+        self.assertAlmostEqual(
+            values["layerwise_batch_load_duration_sum_ms"]["p90"], 8.0
+        )
+        self.assertAlmostEqual(
+            values["layerwise_batch_load_duration_sum_ms"]["p99"], 9.8
+        )
+        self.assertAlmostEqual(
+            values["layerwise_batch_load_duration_sum_ms"]["avg"], 5.0
+        )
         self.assertAlmostEqual(values["cache_store_load_bandwidth_gbps"]["gbps"], 0.5)
         self.assertAlmostEqual(values["cache_store_dump_bandwidth_gbps"]["gbps"], 0.8)
         self.assertAlmostEqual(values["posix_store_load_bandwidth_gbps"]["gbps"], 1.2)

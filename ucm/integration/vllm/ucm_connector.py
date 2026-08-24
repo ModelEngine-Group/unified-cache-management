@@ -2052,16 +2052,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                              load l2    -> forward l2 -> save l2
     """
 
-    _BATCH_TOTAL_METRICS = {
-        (True, False): "layerwise_batch_total_load_only_ms",
-        (False, True): "layerwise_batch_total_save_only_ms",
-        (True, True): "layerwise_batch_total_load_save_ms",
-    }
-    _BATCH_LOAD_WAIT_METRICS = {
-        (True, False): "layerwise_batch_load_wait_total_load_only_ms",
-        (True, True): "layerwise_batch_load_wait_total_load_save_ms",
-    }
-
     def __init__(
         self,
         vllm_config: "VllmConfig",
@@ -2072,7 +2062,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         # {layer_id: {request_id: Task}}
         self.load_tasks: dict[int, dict[str, Task]] = defaultdict(dict)
         self.use_layerwise = True
-        self.is_save = False
         self.need_load = False
         self.dump_total_ptrs: np.ndarray | None = None
         self.request_data: list[tuple[str, list, list, np.ndarray]] = []
@@ -2081,28 +2070,18 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         # (for example by speculative decoding). Persist the first visit only.
         # This state is reset at the start of every connector batch.
         self._dumped_layer_ids: set[int] = set()
-        self._layerwise_batch_start: Optional[float] = None
-        self._layerwise_batch_wait_blocking_total_ms = 0.0
+        self._layerwise_load_start_by_layer: dict[int, float] = {}
+        self._layerwise_layer_load_duration_sum_ms = 0.0
         logger.info("Init UCMLayerWiseConnector.")
 
-    def _layerwise_batch_stats(self, total_end: float) -> dict[str, float]:
-        if self._layerwise_batch_start is None:
-            return {}
-
-        batch_type = (self.need_load, self.is_save)
-        batch_total_ms = (total_end - self._layerwise_batch_start) * 1000
-        stats = {}
-        total_metric = self._BATCH_TOTAL_METRICS.get(batch_type)
-        if total_metric:
-            stats[total_metric] = batch_total_ms
-
-        load_wait_metric = self._BATCH_LOAD_WAIT_METRICS.get(batch_type)
-        if load_wait_metric:
-            stats[load_wait_metric] = self._layerwise_batch_wait_blocking_total_ms
-
-        self._layerwise_batch_start = None
-        self._layerwise_batch_wait_blocking_total_ms = 0.0
-        return stats
+    def _record_layerwise_load_duration(self, layer_id: int, load_end: float) -> bool:
+        if layer_id not in self._layerwise_load_start_by_layer:
+            return False
+        load_start = self._layerwise_load_start_by_layer.pop(layer_id)
+        duration_ms = self._non_negative_ms((load_end - load_start) * 1000)
+        self._layerwise_layer_load_duration_sum_ms += duration_ms
+        ucmmetrics.update_stats({"layerwise_layer_load_duration_ms": duration_ms})
+        return True
 
     def _submit_layerwise_dump_task(
         self,
@@ -2161,7 +2140,11 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         layer_id: int,
         local_row: int,
         metadata: "UCMConnectorMetadata",
+        load_start: Optional[float] = None,
     ) -> None:
+        if load_start is None:
+            load_start = time.perf_counter()
+        submitted = False
         for (
             request_id,
             ucm_block_ids,
@@ -2181,6 +2164,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                     layer_ptrs,
                 )
                 self.load_tasks[layer_id][request_id] = task
+                submitted = True
             except Exception as e:
                 logger.error(
                     f"request {request_id} submit load task for layer {layer_id} "
@@ -2193,16 +2177,19 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 )
                 self._failure_req_ids.add(request_id)
                 self._connector_worker_meta.mark_failed(request_id)
+        if submitted:
+            self._layerwise_load_start_by_layer[layer_id] = load_start
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         self._dumped_layer_ids.clear()
-        self._layerwise_batch_start = time.perf_counter()
+        first_layer_load_start = time.perf_counter()
         metadata = self._get_connector_metadata()
         self.load_tasks.clear()
         self.request_data.clear()
         self._failure_req_ids.clear()
         self.need_load = False
-        self._layerwise_batch_wait_blocking_total_ms = 0.0
+        self._layerwise_load_start_by_layer.clear()
+        self._layerwise_layer_load_duration_sum_ms = 0.0
 
         for request_id, request in metadata.request_meta.items():
             if len(request.load_block_ids[0]) == 0:
@@ -2224,7 +2211,12 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             )
 
         if self.need_load:
-            self._submit_request_load_tasks_for_layer(self.first_layer_id, 0, metadata)
+            self._submit_request_load_tasks_for_layer(
+                self.first_layer_id,
+                0,
+                metadata,
+                first_layer_load_start,
+            )
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         if not self._connector_metadata:
@@ -2233,8 +2225,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             return
         metadata = self._get_connector_metadata()
         current_layer_id = self.layer_name_to_id[layer_name]
-
-        wait_start = time.perf_counter()
 
         # Pop before wait so MTP / rollback paths that revisit the same layer_name
         # do not call store.wait() again on already-completed handles.
@@ -2256,6 +2246,9 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 self._failure_req_ids.add(request_id)
 
         wait_end = time.perf_counter()
+        load_duration_recorded = self._record_layerwise_load_duration(
+            current_layer_id, wait_end
+        )
 
         next_layer_id = current_layer_id + 1
         has_next = next_layer_id in self.layer_ids
@@ -2264,9 +2257,12 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             self._submit_request_load_tasks_for_layer(
                 next_layer_id, next_local_row, metadata
             )
-
-        blocking_ms = (wait_end - wait_start) * 1000
-        self._layerwise_batch_wait_blocking_total_ms += blocking_ms
+        elif load_duration_recorded:
+            duration_sum_ms = self._layerwise_layer_load_duration_sum_ms
+            ucmmetrics.update_stats(
+                {"layerwise_batch_load_duration_sum_ms": duration_sum_ms}
+            )
+            self._layerwise_layer_load_duration_sum_ms = 0.0
 
     def save_kv_layer(
         self,
@@ -2296,7 +2292,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             if len(request.dump_block_ids[0]) == 0:
                 continue
 
-            self.is_save = True
             dump_request_ids.add(request_id)
             ucm_block_ids, vllm_block_ids = request.dump_block_ids
             store_block_ids = ucm_block_ids
@@ -2331,11 +2326,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 if len(request.dump_block_ids[0]) > 0
             )
 
-        total_end = time.perf_counter()
-        stats = self._layerwise_batch_stats(total_end)
-        if stats:
-            ucmmetrics.update_stats(stats)
-        self.is_save = False
         self.dump_total_ptrs = None
 
 
