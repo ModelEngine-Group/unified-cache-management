@@ -214,4 +214,4 @@ When a Gauge is 0 or a failure Counter increases:
 5. Confirm that requests are triggering connector metric synchronization and that the Prometheus target is UP.
 6. After the backend recovers, verify consecutive successful probes and confirm that the Gauge returns to 1.
 
-Import `examples/metrics/grafana_ucm_overview.json` in Grafana to view healthy/fused Store counts and Posix/Mooncake probe trends.
+Import `examples/metrics/grafana_vllm.json` in Grafana to view healthy/fused Store counts and Posix/Mooncake probe trends in the bottom **Store Health Metrics** group.

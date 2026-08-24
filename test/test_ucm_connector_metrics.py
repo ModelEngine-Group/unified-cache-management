@@ -1859,7 +1859,7 @@ def test_vllm_dashboard_uses_combined_prefix_cache_hit_rate_breakdown():
         "group": "A",
         "mode": "none",
     }
-    assert panel["gridPos"] == {"h": 8, "w": 12, "x": 12, "y": 4}
+    assert panel["gridPos"] == {"h": 8, "w": 12, "x": 12, "y": 0}
     assert len(panel["targets"]) == 6
 
     expected = {
@@ -1938,7 +1938,7 @@ def test_vllm_dashboard_uses_combined_prefix_cache_hit_rate_breakdown():
     assert "Tier Attribution Diagnostics" not in panels
 
 
-def test_vllm_dashboard_shows_time_range_token_and_prefix_totals():
+def test_vllm_dashboard_shows_prefix_breakdown_without_summary_stats():
     dashboard = json.loads(
         (REPO_ROOT / "examples" / "metrics" / "grafana_vllm.json").read_text(
             encoding="utf-8"
@@ -1946,34 +1946,17 @@ def test_vllm_dashboard_shows_time_range_token_and_prefix_totals():
     )
     panels = {panel["title"]: panel for panel in dashboard["panels"]}
 
-    expected = [
-        ("Total Input Tokens", "vllm:prompt_tokens_total", 0, 5),
-        ("Total Output Tokens", "vllm:generation_tokens_total", 5, 5),
-        ("Prefix Cache Query Tokens", "ucm:total_prefix_query_tokens_total", 10, 5),
-        ("GPU/HBM Prefix Hit Tokens", "ucm:gpu_hbm_hit_tokens_total", 15, 5),
-        ("UCM Prefix Hit Tokens", "ucm:ucm_hit_tokens_total", 20, 4),
-    ]
-
-    for title, metric, x, w in expected:
-        panel = panels[title]
-        assert panel["type"] == "stat"
-        assert panel["gridPos"] == {"h": 4, "w": w, "x": x, "y": 0}
-        assert panel["fieldConfig"]["defaults"]["unit"] == "short"
-        assert panel["fieldConfig"]["defaults"]["decimals"] == 2
-        assert len(panel["targets"]) == 1
-        target = panel["targets"][0]
-        assert target["instant"] is True
-        assert target["range"] is False
-        expr = target["expr"]
-        assert expr == (
-            f'sum(increase({metric}{{model_name="$model_name", '
-            'job=~"$job", instance="$instance", engine=~"$engine"}[$__range]))'
-        )
-        assert "$__rate_interval" not in expr
+    assert {
+        "Total Input Tokens",
+        "Total Output Tokens",
+        "Prefix Cache Query Tokens",
+        "GPU/HBM Prefix Hit Tokens",
+        "UCM Prefix Hit Tokens",
+    }.isdisjoint(panels)
 
     pie = panels["Prefix Cache Query Breakdown"]
     assert pie["type"] == "piechart"
-    assert pie["gridPos"] == {"h": 8, "w": 12, "x": 0, "y": 4}
+    assert pie["gridPos"] == {"h": 8, "w": 12, "x": 0, "y": 0}
     assert pie["options"]["displayLabels"] == ["name", "value", "percent"]
     assert pie["options"]["legend"]["displayMode"] == "table"
     assert pie["options"]["legend"]["values"] == ["value", "percent"]
@@ -1999,7 +1982,7 @@ def test_vllm_dashboard_shows_time_range_token_and_prefix_totals():
     assert pie_targets["Misses"].startswith("clamp_min(")
     assert "$__rate_interval" not in pie_targets["Misses"]
 
-    assert panels["E2E Request Latency"]["gridPos"]["y"] == 12
+    assert panels["E2E Request Latency"]["gridPos"]["y"] == 8
 
 
 def test_vllm_dashboard_uses_engine_filter_and_aggregates_engine_series():
@@ -2067,10 +2050,6 @@ def test_grafana_dashboards_use_isolated_vllm_ucm_identity():
             "vLLM (UCM Metrics)",
             "ucm-vllm-overview",
         ),
-        "grafana_ucm_overview.json": (
-            "UCM-Overview",
-            "ucm-vllm-ucm-overview",
-        ),
     }
     old_uids = {
         "ucm-connector-overview",
@@ -2099,20 +2078,27 @@ def test_grafana_dashboards_use_isolated_vllm_ucm_identity():
                 assert link["tags"] == [GRAFANA_VLLM_UCM_TAG]
 
 
-def test_ucm_overview_keeps_vllm_summary_and_adds_health_views():
+def test_vllm_dashboard_removes_summary_stats_and_adds_health_group():
     metrics_dir = REPO_ROOT / "examples" / "metrics"
-    source = json.loads((metrics_dir / "grafana_vllm.json").read_text(encoding="utf-8"))
     dashboard = json.loads(
-        (metrics_dir / "grafana_ucm_overview.json").read_text(encoding="utf-8")
+        (metrics_dir / "grafana_vllm.json").read_text(encoding="utf-8")
     )
-    source_titles = [panel["title"] for panel in source["panels"]]
+    panel_list = dashboard["panels"]
+    titles = [panel["title"] for panel in panel_list]
     panels = {panel["title"]: panel for panel in dashboard["panels"]}
 
-    summary_end = source_titles.index("Prefix Cache Query Breakdown") + 1
-    assert set(source_titles[:summary_end]) <= set(panels)
-    assert set(source_titles[summary_end:]).isdisjoint(panels)
-    assert panels["Total Input Tokens"]["gridPos"]["y"] == 0
-    assert panels["Total Output Tokens"]["gridPos"]["y"] == 0
+    assert {
+        "Total Input Tokens",
+        "Total Output Tokens",
+        "Prefix Cache Query Tokens",
+        "GPU/HBM Prefix Hit Tokens",
+        "UCM Prefix Hit Tokens",
+    }.isdisjoint(titles)
+    assert panels["Prefix Cache Query Breakdown"]["gridPos"]["y"] == 0
+    health_row = panels["Store Health Metrics"]
+    assert health_row["type"] == "row"
+    assert health_row["collapsed"] is False
+    assert panel_list[-5] is health_row
 
     pie = panels["Store Health"]
     assert pie["type"] == "piechart"
@@ -2152,20 +2138,21 @@ def test_ucm_overview_keeps_vllm_summary_and_adds_health_views():
         assert "up{" not in target["expr"]
         assert "or vector(0)" not in target["expr"]
     assert trend["fieldConfig"]["defaults"]["custom"]["spanNulls"] is True
-    details_row = panels["Store Probe Details"]
-    assert details_row["type"] == "row"
-    assert details_row["collapsed"] is True
-    nested = {panel["title"]: panel for panel in details_row["panels"]}
-    assert set(nested) == {"Posix Health Probes", "Mooncake Health Probes"}
-    assert all(len(panel["targets"]) == 2 for panel in nested.values())
-    for panel in nested.values():
-        defaults = panel["fieldConfig"]["defaults"]
-        assert defaults["custom"]["spanNulls"] is True
-        assert defaults["unit"] == "short"
-        for target in panel["targets"]:
-            assert "sum(increase(" in target["expr"]
-            assert "[$__rate_interval]" in target["expr"]
-            assert "sum(rate(" not in target["expr"]
+    probes = panels["Store Health Probes"]
+    assert probes["gridPos"] == {"h": 8, "w": 24, "x": 0, "y": 81}
+    assert {target["legendFormat"] for target in probes["targets"]} == {
+        "Posix Healthy",
+        "Posix Unhealthy",
+        "Mooncake Healthy",
+        "Mooncake Unhealthy",
+    }
+    defaults = probes["fieldConfig"]["defaults"]
+    assert defaults["custom"]["spanNulls"] is True
+    assert defaults["unit"] == "short"
+    for target in probes["targets"]:
+        assert "sum(increase(" in target["expr"]
+        assert "[$__rate_interval]" in target["expr"]
+        assert "sum(rate(" not in target["expr"]
 
 
 def test_ucm_dashboards_use_engine_and_worker_rank_filters():
@@ -2249,9 +2236,9 @@ def test_ucm_dashboards_use_engine_and_worker_rank_filters():
 def test_mooncake_dashboards_cover_configured_mooncake_metrics():
     dashboard_path = REPO_ROOT / "examples" / "metrics" / "grafana_mooncake.json"
     dashboard_text = dashboard_path.read_text(encoding="utf-8")
-    overview_text = (
-        REPO_ROOT / "examples" / "metrics" / "grafana_ucm_overview.json"
-    ).read_text(encoding="utf-8")
+    vllm_text = (REPO_ROOT / "examples" / "metrics" / "grafana_vllm.json").read_text(
+        encoding="utf-8"
+    )
     dashboard = json.loads(dashboard_text)
     panels = {panel["title"]: panel for panel in dashboard["panels"]}
 
@@ -2284,7 +2271,7 @@ def test_mooncake_dashboards_cover_configured_mooncake_metrics():
     referenced = {
         re.sub(r"_(bucket|sum|count)$", "", metric)
         for metric in re.findall(
-            r"ucm:(mooncake_[A-Za-z0-9_]+)", dashboard_text + overview_text
+            r"ucm:(mooncake_[A-Za-z0-9_]+)", dashboard_text + vllm_text
         )
     }
 
@@ -2576,27 +2563,32 @@ def test_pipeline_dashboard_cache_load_breakdown_uses_backend_submit():
     assert set(targets) == {
         "queue wait",
         "backend submit",
+        "backend wait",
         "H2D sync",
         "h2d submit & other",
     }
     assert "cache_load_backend_submit_duration_ms" in targets["backend submit"]["expr"]
+    assert "cache_shard_backend_wait_ms" in targets["backend wait"]["expr"]
     residual = targets["h2d submit & other"]["expr"]
     for metric in (
         "cache_load_duration_ms",
         "cache_load_queue_wait_duration_ms",
         "cache_load_backend_submit_duration_ms",
+        "cache_shard_backend_wait_ms",
         "cache_h2d_sync_ms",
     ):
         assert metric in residual
     description = panel["description"]
-    assert "`queue wait`：`ucm:cache_load_queue_wait_duration_ms`；" in description
+    assert "`queue wait`：指标 `ucm:cache_load_queue_wait_duration_ms`；" in description
     assert (
-        "`backend submit`：`ucm:cache_load_backend_submit_duration_ms`；" in description
+        "`backend submit`：指标 `ucm:cache_load_backend_submit_duration_ms`；"
+        in description
     )
-    assert "`H2D sync`：`ucm:cache_h2d_sync_ms`；" in description
+    assert "`backend wait`：指标 `ucm:cache_shard_backend_wait_ms`；" in description
+    assert "`H2D sync`：指标 `ucm:cache_h2d_sync_ms`；" in description
     assert (
-        "`h2d submit & other`：`ucm:cache_load_duration_ms - queue wait - "
-        "backend submit - H2D sync`；" in description
+        "`h2d submit & other`：计算方法 `Load 总耗时 - queue wait - "
+        "backend submit - backend wait - H2D sync`；" in description
     )
 
 

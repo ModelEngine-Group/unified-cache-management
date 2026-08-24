@@ -21,7 +21,7 @@
       }
     ]
   },
-  "description": "vLLM service-side observability: request latency, token throughput, scheduler state, and cache state.",
+  "description": "vLLM service-side observability: request latency, token throughput, scheduler state, cache state, and UCM Store health.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -42,336 +42,6 @@
   ],
   "liveNow": false,
   "panels": [
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "description": "Total over the selected dashboard time range.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 2,
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 5,
-        "x": 0,
-        "y": 0
-      },
-      "id": 18,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum(increase(vllm:prompt_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))",
-          "instant": true,
-          "legendFormat": "Total Input Tokens",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Total Input Tokens",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "description": "Total over the selected dashboard time range.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 2,
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 5,
-        "x": 5,
-        "y": 0
-      },
-      "id": 19,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum(increase(vllm:generation_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))",
-          "instant": true,
-          "legendFormat": "Total Output Tokens",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Total Output Tokens",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "description": "Total over the selected dashboard time range.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 2,
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 5,
-        "x": 10,
-        "y": 0
-      },
-      "id": 20,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum(increase(ucm:total_prefix_query_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))",
-          "instant": true,
-          "legendFormat": "Prefix Cache Query Tokens",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Prefix Cache Query Tokens",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "description": "Total over the selected dashboard time range.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 2,
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 5,
-        "x": 15,
-        "y": 0
-      },
-      "id": 21,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum(increase(ucm:gpu_hbm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))",
-          "instant": true,
-          "legendFormat": "GPU/HBM Prefix Hit Tokens",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "GPU/HBM Prefix Hit Tokens",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "description": "Total over the selected dashboard time range.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 2,
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 20,
-        "y": 0
-      },
-      "id": 22,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum(increase(ucm:ucm_hit_tokens_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"}[$__range]))",
-          "instant": true,
-          "legendFormat": "UCM Prefix Hit Tokens",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "UCM Prefix Hit Tokens",
-      "type": "stat"
-    },
     {
       "datasource": {
         "type": "prometheus",
@@ -401,7 +71,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 4
+        "y": 0
       },
       "id": 23,
       "options": {
@@ -539,7 +209,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 12
+        "y": 8
       },
       "id": 9,
       "options": {
@@ -705,7 +375,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 12
+        "y": 8
       },
       "id": 8,
       "options": {
@@ -825,7 +495,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 20
+        "y": 16
       },
       "id": 10,
       "options": {
@@ -992,7 +662,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 20
+        "y": 16
       },
       "id": 3,
       "options": {
@@ -1112,7 +782,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 28
+        "y": 24
       },
       "id": 5,
       "options": {
@@ -1279,7 +949,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 28
+        "y": 24
       },
       "id": 4,
       "options": {
@@ -1384,7 +1054,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 4
+        "y": 0
       },
       "id": 17,
       "options": {
@@ -1502,7 +1172,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 36
+        "y": 32
       },
       "id": 12,
       "options": {
@@ -1594,7 +1264,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 36
+        "y": 32
       },
       "id": 13,
       "options": {
@@ -1725,7 +1395,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 44
+        "y": 40
       },
       "id": 11,
       "options": {
@@ -1827,7 +1497,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 44
+        "y": 40
       },
       "id": 14,
       "options": {
@@ -1928,7 +1598,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 52
+        "y": 48
       },
       "id": 15,
       "options": {
@@ -2042,7 +1712,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 52
+        "y": 48
       },
       "id": 16,
       "options": {
@@ -2090,19 +1760,36 @@
           "min": 0,
           "max": 1,
           "unit": "percentunit",
-          "color": {"mode": "palette-classic"}
+          "color": {
+            "mode": "palette-classic"
+          }
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 60},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 56
+      },
       "id": 24,
       "options": {
-        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
-        "tooltip": {"mode": "multi", "sort": "none"}
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
       },
       "targets": [
         {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "max(ucm:yuanrong_dram_usage_ratio{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
           "instant": false,
@@ -2111,7 +1798,10 @@
           "refId": "A"
         },
         {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "max(ucm:yuanrong_ssd_usage_ratio{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
           "instant": false,
@@ -2133,19 +1823,36 @@
         "defaults": {
           "min": 0,
           "unit": "bytes",
-          "color": {"mode": "palette-classic"}
+          "color": {
+            "mode": "palette-classic"
+          }
         },
         "overrides": []
       },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 60},
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 56
+      },
       "id": 25,
       "options": {
-        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
-        "tooltip": {"mode": "multi", "sort": "none"}
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
       },
       "targets": [
         {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "max(ucm:yuanrong_dram_used_bytes{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
           "legendFormat": "YuanRong DRAM used",
@@ -2153,7 +1860,10 @@
           "refId": "A"
         },
         {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "max(ucm:yuanrong_dram_capacity_bytes{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
           "legendFormat": "YuanRong DRAM capacity",
@@ -2161,7 +1871,10 @@
           "refId": "B"
         },
         {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "max(ucm:yuanrong_ssd_used_bytes{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
           "legendFormat": "YuanRong SSD used",
@@ -2169,7 +1882,10 @@
           "refId": "C"
         },
         {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "editorMode": "code",
           "expr": "max(ucm:yuanrong_ssd_capacity_bytes{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\"})",
           "legendFormat": "YuanRong SSD capacity",
@@ -2178,6 +1894,545 @@
         }
       ],
       "title": "Store Used and Capacity",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "description": "Store 健康状态、健康/熔断数量和探测趋势，默认展开。",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 64
+      },
+      "id": 26,
+      "panels": [],
+      "title": "Store Health Metrics",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "\u5c55\u793a\u5f53\u524d Posix \u548c Mooncake Store \u5b9e\u4f8b\u7684 HealthBreaker \u751f\u6548\u72b6\u6001\u3002\u6bcf\u79cd Store \u7684\u5b9e\u4f8b\u603b\u6570\u4e3a (1\uff08Scheduler \u4e2a\u6570\uff09+ tp_size\uff08Worker \u4e2a\u6570\uff09) \u00d7 dp_size\u3002",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Healthy"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Unhealthy"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 65
+      },
+      "id": 27,
+      "options": {
+        "displayLabels": [
+          "name",
+          "percent"
+        ],
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": false,
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "pieType": "pie",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "(sum(ucm:posix_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0)) + (sum(ucm:mooncake_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0))",
+          "legendFormat": "Healthy",
+          "range": false,
+          "refId": "A",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "clamp_min((count(ucm:posix_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0)) - (sum(ucm:posix_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0)), 0) + clamp_min((count(ucm:mooncake_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0)) - (sum(ucm:mooncake_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) or vector(0)), 0)",
+          "legendFormat": "Unhealthy",
+          "range": false,
+          "refId": "B",
+          "instant": true
+        }
+      ],
+      "title": "Store Health",
+      "type": "piechart"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "\u6309 Store \u7c7b\u578b\u5c55\u793a\u5065\u5eb7\u548c\u5df2\u7194\u65ad\u7684\u5b9e\u4f8b\u6570\u91cf\u3002\u6bcf\u79cd Store \u7684\u5b9e\u4f8b\u603b\u6570\u4e3a (1\uff08Scheduler \u4e2a\u6570\uff09+ tp_size\uff08Worker \u4e2a\u6570\uff09) \u00d7 dp_size\u3002",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 8,
+        "y": 65
+      },
+      "id": 28,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "enablePagination": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "label_replace(label_replace(sum(ucm:posix_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}), \"store\", \"Posix\", \"__name__\", \".*\"), \"state\", \"Healthy\", \"__name__\", \".*\") or\nlabel_replace(label_replace(clamp_min(count(ucm:posix_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) - sum(ucm:posix_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}), 0), \"store\", \"Posix\", \"__name__\", \".*\"), \"state\", \"Unhealthy\", \"__name__\", \".*\") or\nlabel_replace(label_replace(sum(ucm:mooncake_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}), \"store\", \"Mooncake\", \"__name__\", \".*\"), \"state\", \"Healthy\", \"__name__\", \".*\") or\nlabel_replace(label_replace(clamp_min(count(ucm:mooncake_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) - sum(ucm:mooncake_store_health{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}), 0), \"store\", \"Mooncake\", \"__name__\", \".*\"), \"state\", \"Unhealthy\", \"__name__\", \".*\")",
+          "legendFormat": "{{store}} {{state}}",
+          "range": false,
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "title": "Store Health Details",
+      "transformations": [
+        {
+          "id": "groupingToMatrix",
+          "options": {
+            "columnField": "state",
+            "emptyValue": "null",
+            "rowField": "store",
+            "valueField": "Value"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "store": 0,
+              "Healthy": 1,
+              "Unhealthy": 2
+            },
+            "renameByName": {
+              "store": "Store"
+            }
+          }
+        }
+      ],
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "展示健康和已熔断的 Store 实例数量随时间的变化。",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.5
+              },
+              {
+                "color": "green",
+                "value": 0.8
+              }
+            ]
+          },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Healthy"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Unhealthy"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 73
+      },
+      "id": 29,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum({__name__=~\"ucm:(posix|mooncake)_store_health\", model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"})",
+          "legendFormat": "Healthy",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "clamp_min(count({__name__=~\"ucm:(posix|mooncake)_store_health\", model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}) - sum({__name__=~\"ucm:(posix|mooncake)_store_health\", model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}), 0)",
+          "legendFormat": "Unhealthy",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Healthy and Unhealthy Store Count",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "- `Posix Healthy`：指标 `ucm:posix_healthy_count_total`；每个时间区间内 Posix 健康探测成功的次数。\n- `Posix Unhealthy`：指标 `ucm:posix_unhealthy_count_total`；每个时间区间内 Posix 健康探测失败的次数。\n- `Mooncake Healthy`：指标 `ucm:mooncake_healthy_count_total`；每个时间区间内 Mooncake 健康探测成功的次数。\n- `Mooncake Unhealthy`：指标 `ucm:mooncake_unhealthy_count_total`；每个时间区间内 Mooncake 健康探测失败的次数。",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.5
+              },
+              {
+                "color": "green",
+                "value": 0.8
+              }
+            ]
+          },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* Healthy$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* Unhealthy$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 81
+      },
+      "id": 30,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "maxHeight": "50%",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(ucm:posix_healthy_count_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "Posix Healthy",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(ucm:posix_unhealthy_count_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "Posix Unhealthy",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(ucm:mooncake_healthy_count_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "Mooncake Healthy",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(ucm:mooncake_unhealthy_count_total{model_name=\"$model_name\", job=~\"$job\", instance=\"$instance\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+          "legendFormat": "Mooncake Unhealthy",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "Store Health Probes",
       "type": "timeseries"
     }
   ],
