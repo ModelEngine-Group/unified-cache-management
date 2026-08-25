@@ -1,0 +1,23 @@
+{
+  "mount_path": null,
+  "kernel_min": "5.10",
+  "cuda_min_compute_cap": 8.0,
+  "ascend_min_hdk": "25.2.0",
+  "shm_min_gib": 512.0,
+  "bandwidth": {
+    "shard_sizes": ["180k", "8m"],
+    "worker_counts": [1, 8, 16],
+    "engines": ["psync", "aio"],
+    "modes": ["dump", "read", "mix"],
+    "block_number": 32,
+    "shard_number": 1,
+    "dump_epochs": 8,
+    "load_epochs": 8,
+    "mixed_epochs": 8,
+    "rw_ratio": 4,
+    "barrier_timeout": 60,
+    "combo_timeout": 120,
+    "aio_queue_depth": 4096,
+    "threshold_gb": 8.0
+  }
+}
