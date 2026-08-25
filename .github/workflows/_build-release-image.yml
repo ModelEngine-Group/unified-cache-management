@@ -150,10 +150,29 @@ jobs:
           IMAGE_ID: ${{ inputs.image_id }}
         run: |
           set -euo pipefail
-          printf '%s' "${{ github.token }}" | docker login ghcr.io \
-            --username "${GITHUB_ACTOR}" --password-stdin
-          skopeo copy "oci-archive:out/image.oci.tar" "docker://${TARGET_REF}"
-          digest="$(skopeo inspect --format '{{.Digest}}' "docker://${TARGET_REF}")"
+          digest_file="${RUNNER_TEMP}/ucm-image-digest"
+          publish_member() {
+            printf '%s' "${{ github.token }}" | docker login ghcr.io \
+              --username "${GITHUB_ACTOR}" --password-stdin || return 1
+            skopeo copy "oci-archive:out/image.oci.tar" \
+              "docker://${TARGET_REF}" || return 1
+            skopeo inspect --format '{{.Digest}}' "docker://${TARGET_REF}" \
+              >"${digest_file}" || return 1
+          }
+          for attempt in 1 2 3; do
+            if publish_member; then
+              break
+            fi
+            if [ "${attempt}" -eq 3 ]; then
+              echo "GHCR member publication failed after ${attempt} attempts" >&2
+              exit 1
+            fi
+            sleep_seconds=$((attempt * 10))
+            echo "GHCR member publication attempt ${attempt} failed; retrying in ${sleep_seconds}s" >&2
+            sleep "${sleep_seconds}"
+          done
+          digest="$(<"${digest_file}")"
+          test -n "${digest}"
           jq -n --arg id "${IMAGE_ID}" --arg reference "${TARGET_REF}" \
             --arg digest "${digest}" \
             '{kind:"ucm-image-member-receipt",schema_version:1,id:$id,

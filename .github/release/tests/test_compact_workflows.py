@@ -489,6 +489,38 @@ def test_reusable_builds_keep_functional_inputs() -> None:
         assert set(workflow["on"]["workflow_call"]["inputs"]) == inputs
 
 
+def test_release_image_retries_only_the_verified_member_publication() -> None:
+    steps = _load("_build-release-image.yml")["jobs"]["publish"]["steps"]
+    step_names = [step.get("name") for step in steps]
+    build = next(
+        step for step in steps if step.get("name") == "Build install-only Runtime image"
+    )
+    verify = next(
+        step
+        for step in steps
+        if step.get("name") == "Verify Runtime glibc, Python, OS, and UCM import"
+    )
+    publish = next(
+        step
+        for step in steps
+        if step.get("name") == "Publish verified GHCR member and record digest"
+    )
+
+    assert (
+        step_names.index(build["name"])
+        < step_names.index(verify["name"])
+        < step_names.index(publish["name"])
+    )
+    assert "publish_member()" in publish["run"]
+    assert "for attempt in 1 2 3" in publish["run"]
+    assert "if publish_member; then" in publish["run"]
+    assert "docker login ghcr.io" in publish["run"]
+    assert 'skopeo copy "oci-archive:out/image.oci.tar"' in publish["run"]
+    assert "retrying in ${sleep_seconds}s" in publish["run"]
+    assert "for attempt in 1 2 3" not in build["run"]
+    assert "for attempt in 1 2 3" not in verify["run"]
+
+
 def test_compact_wheel_passes_dynamic_python_and_platform_to_build() -> None:
     workflow = (WORKFLOWS / "_build-wheel.yml").read_text(encoding="utf-8")
     dockerfile = (
