@@ -47,6 +47,7 @@ Status DumpQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     tensorSizes_ = config.tensorSizes;
     streamNumber_ = config.EffectiveStreamNumber();
     useGdr_ = config.useGdr;
+    cacheIOAggregation_ = config.cacheIOAggregation;
     cacheSdmaDirect_ = config.cacheSdmaDirect;
     cpuAffinityCores_ = config.cpuAffinityCores;
     waiting_.Setup(config.waitingQueueDepth);
@@ -76,8 +77,14 @@ void DumpQueue::DispatchStage(std::promise<Status>& started)
         UC_WARN("Failed({}) to set UCM dump dispatcher name.", nameStatus);
     }
     CopyStream stream;
-    auto s = cacheSdmaDirect_ ? stream.SetupSdmaDirect(deviceId_, useGdr_)
-                              : stream.Setup(deviceId_, streamNumber_, useGdr_);
+    auto s = Status::OK();
+    if (cacheIOAggregation_) {
+        s = stream.SetupIoAggregation(deviceId_, useGdr_);
+    } else if (cacheSdmaDirect_) {
+        s = stream.SetupSdmaDirect(deviceId_, useGdr_);
+    } else {
+        s = stream.Setup(deviceId_, streamNumber_, useGdr_);
+    }
     started.set_value(s);
     if (s.Failure()) [[unlikely]] { return; }
     if (!cpuAffinityCores_.empty()) {

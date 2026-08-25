@@ -360,7 +360,7 @@ protected:
                 return s;
             }
         }
-        s = shmFile.MMap(addr, size, true, true, true);
+        s = shmFile.MMap(addr, size, true, true, true, true);
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to mmap file({}) with size({}).", s, shmFile.ShmName(), size);
             return s;
