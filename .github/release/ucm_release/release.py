@@ -233,6 +233,7 @@ def build_artifacts_manifest(
             ],
             f"Image {item.get('id')!r} family member",
         )
+        expected_targets = _expected_targets(plan, member["reference"])
         images.append(
             {
                 "id": item["id"],
@@ -241,12 +242,29 @@ def build_artifacts_manifest(
                 "cpu_arch": item["cpu_arch"],
                 "runtime": copy.deepcopy(item["runtime"]),
                 "planned_reference": member["reference"],
-                "expected_targets": _expected_targets(plan, member["reference"]),
-                "status": "building",
+                "expected_targets": expected_targets,
+                "status": "building" if expected_targets else "not-requested",
                 "targets": [],
             }
         )
 
+    family_records = []
+    for family in sorted(families.values(), key=lambda item: str(item["id"])):
+        expected_targets = _expected_targets(plan, family["published_reference"])
+        family_records.append(
+            {
+                "id": family["id"],
+                "runtime": copy.deepcopy(family["runtime"]),
+                "planned_reference": family["published_reference"],
+                "expected_targets": expected_targets,
+                "create_index": family["create_index"],
+                "status": "building" if expected_targets else "not-requested",
+                "targets": [],
+            }
+        )
+    publication_requested = any(
+        item["expected_targets"] for item in [*images, *family_records]
+    )
     manifest = {
         "kind": "ucm-release-manifest",
         "schema_version": 1,
@@ -255,7 +273,7 @@ def build_artifacts_manifest(
             "release_kind": plan.get("release_kind", "publish"),
             "is_prerelease": plan.get("is_prerelease", True),
             "version": plan["version"],
-            "status": "artifacts-ready",
+            "status": "artifacts-ready" if publication_requested else "complete",
         },
         "chart": {
             "name": plan["chart"]["name"],
@@ -266,20 +284,7 @@ def build_artifacts_manifest(
         },
         "wheels": wheels,
         "images": sorted(images, key=lambda item: str(item["id"])),
-        "families": [
-            {
-                "id": family["id"],
-                "runtime": copy.deepcopy(family["runtime"]),
-                "planned_reference": family["published_reference"],
-                "expected_targets": _expected_targets(
-                    plan, family["published_reference"]
-                ),
-                "create_index": family["create_index"],
-                "status": "building",
-                "targets": [],
-            }
-            for family in sorted(families.values(), key=lambda item: str(item["id"]))
-        ],
+        "families": family_records,
     }
     return manifest, sorted(checksums, key=lambda item: item[1])
 
@@ -362,6 +367,30 @@ def finalize_manifest(
         raise ValueError("member receipts contain unknown Image IDs")
     if set(indexes) - expected_index_ids:
         raise ValueError("index receipts contain unknown family IDs")
+
+    publication_items = [*result["images"], *result["families"]]
+    publication_not_requested = all(
+        "expected_targets" in item
+        and not _mapping(
+            item["expected_targets"],
+            f"publication target contract {item.get('id')!r}",
+        )
+        for item in publication_items
+    )
+    if publication_not_requested:
+        if (build_outcome, member_outcome, index_outcome) != (
+            "skipped",
+            "skipped",
+            "skipped",
+        ):
+            raise ValueError("disabled image publication jobs must all be skipped")
+        if members or indexes:
+            raise ValueError("disabled image publication must not produce receipts")
+        for item in publication_items:
+            item["status"] = "not-requested"
+            item["targets"] = []
+        result["release"]["status"] = "complete"
+        return result
 
     failed = build_outcome != "success" or member_outcome != "success"
     for image in result["images"]:
@@ -654,7 +683,7 @@ def render_notes(
         "",
     ]
     if release["status"] == "release-open":
-        lines.append("Wheels, Chart, and images are building.")
+        lines.append("Release artifacts are building.")
         return "\n".join(lines) + "\n"
 
     chart = _mapping(manifest.get("chart"), "release manifest Chart")

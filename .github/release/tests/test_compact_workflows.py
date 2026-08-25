@@ -88,11 +88,19 @@ def test_release_workflow_has_staged_publication_jobs() -> None:
         "build-images",
         "publish-release-artifacts",
     }
+    assert (
+        "needs.plan.outputs.publish_images == 'true'"
+        in jobs["publish-image-members"]["if"]
+    )
     assert set(jobs["build-images"]["needs"]) == {
         "plan",
         "build-wheels",
         "publish-release-artifacts",
     }
+    assert jobs["plan"]["outputs"]["publish_images"] == (
+        "${{ steps.plan.outputs.publish_images }}"
+    )
+    assert "needs.plan.outputs.publish_images == 'true'" in jobs["build-images"]["if"]
     assert "publish-release-artifacts.result == 'success'" in jobs["build-images"]["if"]
     assert set(jobs["publish-image-indexes"]["needs"]) == {
         "plan",
@@ -125,6 +133,9 @@ def test_release_workflow_has_staged_publication_jobs() -> None:
 def test_artifact_stage_keeps_release_state_internal() -> None:
     jobs = _load("release-ucm.yml")["jobs"]
     text = yaml.safe_dump(jobs["publish-release-artifacts"])
+    assert jobs["publish-release-artifacts"]["name"] == (
+        "Release · Publish Wheels, Chart, and Config"
+    )
     assert "release.py artifacts" in text
     assert "release.py notes" in text
     assert "release-state.json" in text
@@ -134,14 +145,16 @@ def test_artifact_stage_keeps_release_state_internal() -> None:
     upload = next(
         step
         for step in jobs["publish-release-artifacts"]["steps"]
-        if step.get("name") == "Upload Wheels and Chart"
+        if step.get("name") == "Upload Wheels, Chart, and Config"
     )
     upload_lines = upload["run"].splitlines()
     upload_index = upload_lines.index('gh release upload "${tag}" --clobber \\')
-    assert upload_lines[upload_index : upload_index + 2] == [
+    assert upload_lines[upload_index : upload_index + 3] == [
         'gh release upload "${tag}" --clobber \\',
-        "  input/wheels/*/*.whl input/chart/*.tgz",
+        "  input/wheels/*/*.whl input/chart/*.tgz \\",
+        "  examples/ucm_config_example.yaml",
     ]
+    assert 'index("ucm_config_example.yaml") != null' in upload["run"]
     assert "SHA256SUMS" not in upload["run"]
     assert "release-manifest.json" not in upload["run"]
     assert 'gh api "/repos/${GH_REPO}/releases/${release_id}"' in upload["run"]
@@ -149,6 +162,41 @@ def test_artifact_stage_keeps_release_state_internal() -> None:
     failure_step = jobs["publish-release-artifacts"]["steps"][-1]
     assert failure_step["if"] == "${{ failure() }}"
     assert "artifacts-failed" in failure_step["run"]
+
+
+def test_runtime_images_include_the_config_example_at_the_workspace_root() -> None:
+    image_path = "/workspace/ucm_config_example.yaml"
+    dockerfile = (
+        ROOT / ".github" / "release" / "docker" / "Dockerfile.runtime"
+    ).read_text(encoding="utf-8")
+
+    assert f"COPY --chmod=0644 ucm_config_example.yaml {image_path}" in dockerfile
+    assert "ENV UCM_CONFIG_FILE" not in dockerfile
+    for workflow_name, build_name, verify_name in (
+        (
+            "_build-release-image.yml",
+            "Build install-only Runtime image",
+            "Verify Runtime glibc, Python, OS, and UCM import",
+        ),
+        (
+            "_build-image.yml",
+            "Build install-only runtime image",
+            "Verify runtime glibc, Python, OS, and UCM import",
+        ),
+    ):
+        steps = _load(workflow_name)["jobs"][
+            "publish" if workflow_name == "_build-release-image.yml" else "build"
+        ]["steps"]
+        build = next(step for step in steps if step.get("name") == build_name)
+        verify = next(step for step in steps if step.get("name") == verify_name)
+        assert (
+            "cp examples/ucm_config_example.yaml context/ucm_config_example.yaml"
+            in build["run"]
+        )
+        assert "sha256sum examples/ucm_config_example.yaml" in verify["run"]
+        assert "EXPECTED_UCM_CONFIG_SHA256" in verify["run"]
+        assert "hashlib.sha256(path.read_bytes())" in verify["run"]
+        assert image_path in verify["run"]
 
 
 def test_public_release_updates_do_not_upload_internal_state() -> None:
@@ -248,7 +296,9 @@ def test_direct_member_receipt_barrier_and_index_matrix_are_unbounded() -> None:
         indexes["strategy"]["matrix"]
         == "${{ fromJSON(needs.plan.outputs.image_index_matrix) }}"
     )
-    assert indexes["if"] == "${{ needs.plan.outputs.has_image_indexes == 'true' }}"
+    assert "needs.plan.outputs.publish_images == 'true'" in indexes["if"]
+    assert "needs.publish-image-members.result == 'success'" in indexes["if"]
+    assert "needs.plan.outputs.has_image_indexes == 'true'" in indexes["if"]
     text = (WORKFLOWS / "release-ucm.yml").read_text(encoding="utf-8")
     assert "while IFS=$'\\t' read -r image_id" not in text
 
@@ -327,8 +377,11 @@ def test_release_index_matrix_generation_fails_closed() -> None:
     )
 
     assert 'index_matrix="$(jq -ce' in plan_script
+    assert "publish_images=\"$(jq -r '.publish.ghcr.enabled == true'" in plan_script
+    assert 'echo "publish_images=${publish_images}"' in plan_script
+    assert 'if [ "${publish_images}" = true ]; then' in plan_script
     assert 'echo "image_index_matrix=${index_matrix}"' in plan_script
-    assert 'echo "has_image_indexes=$(jq -r' in plan_script
+    assert 'echo "has_image_indexes=${has_image_indexes}"' in plan_script
     assert "image_index_matrix=$(jq" not in plan_script
 
 

@@ -1,8 +1,9 @@
 # UCM Registry-driven release automation
 
-The active pipeline builds UCM Wheels, runtime images, and the Helm Chart from
-actual published runtime images. It never reads vLLM or vLLM-Ascend source
-branches to decide versions or Builder capabilities.
+The active pipeline builds UCM Wheels and the Helm Chart from actual published
+runtime images. When `publish.ghcr.enabled` is true, it also publishes
+install-only Runtime images. It never reads vLLM or vLLM-Ascend source branches
+to decide versions or Builder capabilities.
 
 ## Maintained policy
 
@@ -31,7 +32,7 @@ Runtime Registry Tags
   -> compatible raw Builder Registry match
   -> digest-pinned label-only Builder mirror
   -> Wheel union
-  -> runtime images and Chart
+  -> optional runtime images and Chart
 ```
 
 Crane reads each immutable member manifest/config to obtain CUDA/CANN,
@@ -78,18 +79,25 @@ duplicate Release records fail closed.
 Publication then updates the same Release in stages:
 
 1. `release-open`: no artifacts are required yet;
-2. `artifacts-ready`: all Wheels and the Chart are uploaded;
-3. `complete` or `images-failed`: Registry member/index receipts add the final
-   image references and digests.
+2. all Wheels, the example config, and the Chart are uploaded; the state is
+   `artifacts-ready` when images are requested and `complete` otherwise;
+3. when images are requested, `complete` or `images-failed` records the final
+   Registry member/index references and digests.
 
 `release-state.json` is an internal staging file retained in the
 `ucm-release-stage-run-<run>` Actions artifact. It is not uploaded as a public
 GitHub Release asset.
 
-If image publication fails, already published Wheels and Chart remain usable
-and the public Release is marked `images-failed`. OCI archives are not uploaded
-to GitHub Release. Draft builds use `.devN` GHCR and Chart coordinates and never
-publish to PyPI or Docker Hub.
+If image publication is disabled, Tag Releases stop after Wheels, the example
+config, and Chart publication. If requested image publication fails, those
+artifacts remain usable and the public Release is marked `images-failed`. OCI
+archives are not uploaded to GitHub Release. Draft builds use `.devN` GHCR
+coordinates only when image publication is enabled; they never publish to PyPI
+or Docker Hub.
+
+Every published Runtime image also contains the same Tag's example config at
+`/workspace/ucm_config_example.yaml`. It is not selected automatically; callers
+must explicitly point `UCM_CONFIG_FILE` at it when they want to use the example.
 
 ## Wheel contract
 
@@ -137,10 +145,11 @@ Artifacts are scoped by run and overwritten by failed-job reruns:
 - image member/index receipt artifacts;
 - `ucm-release-stage-run-<run>` containing internal `release-state.json`.
 
-Trusted Tag builds keep the verified OCI archive on the native build runner,
-copy it directly to GHCR, and upload only the small member receipt. They do not
-retain multi-gigabyte OCI archives as Actions artifacts. PR Robot builds keep
-the separate read-only build to trusted publisher artifact boundary.
+When image publication is enabled, trusted Tag builds keep the verified OCI
+archive on the native build runner, copy it directly to GHCR, and upload only
+the small member receipt. They do not retain multi-gigabyte OCI archives as
+Actions artifacts. PR Robot builds keep the separate read-only build to trusted
+publisher artifact boundary.
 
 ## Verification
 

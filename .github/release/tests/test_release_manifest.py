@@ -219,6 +219,54 @@ def test_artifacts_and_image_receipts_form_one_mapping(tmp_path: Path) -> None:
     assert "sha256:" not in final_notes
 
 
+def test_disabled_image_publication_completes_with_wheels_and_chart(
+    tmp_path: Path,
+) -> None:
+    wheels, chart, _, filename = _write_artifact_inputs(tmp_path)
+    plan = _plan()
+    publish = plan["publish"]
+    assert isinstance(publish, dict)
+    ghcr = publish["ghcr"]
+    assert isinstance(ghcr, dict)
+    ghcr["enabled"] = False
+
+    manifest, _ = release.build_artifacts_manifest(plan, wheels, chart)
+
+    assert manifest["release"]["status"] == "complete"
+    assert manifest["images"][0]["expected_targets"] == {}
+    assert manifest["images"][0]["status"] == "not-requested"
+    assert manifest["families"][0]["expected_targets"] == {}
+    assert manifest["families"][0]["status"] == "not-requested"
+
+    with pytest.raises(ValueError, match="must all be skipped"):
+        release.finalize_manifest(
+            manifest,
+            tmp_path / "missing-receipts",
+            build_outcome="success",
+            member_outcome="skipped",
+            index_outcome="skipped",
+        )
+
+    final = release.finalize_manifest(
+        manifest,
+        tmp_path / "missing-receipts",
+        build_outcome="skipped",
+        member_outcome="skipped",
+        index_outcome="skipped",
+    )
+
+    assert final["release"]["status"] == "complete"
+    assert all(item["status"] == "not-requested" for item in final["images"])
+    assert all(item["status"] == "not-requested" for item in final["families"])
+    assert all(item["targets"] == [] for item in [*final["images"], *final["families"]])
+    asset_urls = _asset_urls(final)
+    notes = release.render_notes(final, repository="example/ucm", asset_urls=asset_urls)
+    assert f"[{filename}]({asset_urls[filename]})" in notes
+    assert "Images are still building" not in notes
+    assert "Images:" not in notes
+    assert "pkgs/container" not in notes
+
+
 def test_release_commands_write_internal_state_without_public_metadata_assets(
     tmp_path: Path,
 ) -> None:

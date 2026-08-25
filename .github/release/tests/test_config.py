@@ -169,7 +169,7 @@ def test_release_policy_matches_the_schema_v5_registry_surface() -> None:
                 "enabled": False,
                 "index": "https://upload.pypi.org/legacy/",
             },
-            "ghcr": {"enabled": True},
+            "ghcr": {"enabled": False},
             "dockerhub": {
                 "enabled": False,
                 "namespace": "docker.io/{owner}",
@@ -330,7 +330,7 @@ def test_release_yaml_is_the_exact_publication_authority() -> None:
             "enabled": False,
             "index": "https://upload.pypi.org/legacy/",
         },
-        "ghcr": {"enabled": True},
+        "ghcr": {"enabled": False},
         "dockerhub": {"enabled": False, "namespace": "docker.io/{owner}"},
         "chart_oci": {
             "enabled": True,
@@ -359,7 +359,7 @@ def test_publish_plan_is_the_normalized_config_without_runtime_layers() -> None:
             "enabled": False,
             "index": "https://upload.pypi.org/legacy/",
         },
-        "ghcr": {"enabled": True, "namespace": "ghcr.io/release-org"},
+        "ghcr": {"enabled": False, "namespace": "ghcr.io/release-org"},
         "dockerhub": {
             "enabled": False,
             "namespace": "docker.io/release-org",

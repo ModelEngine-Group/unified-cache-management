@@ -81,7 +81,7 @@ jobs:
           printf '%s\n' \
             "Status: \`release-open\`" \
             "" \
-            "Wheels, Chart, and images are building." \
+            "Release artifacts are building." \
             >"${notes}"
 
           lookup_release() {
@@ -371,6 +371,7 @@ jobs:
     outputs:
       route: ${{ steps.plan.outputs.route }}
       release_kind: ${{ steps.plan.outputs.release_kind }}
+      publish_images: ${{ steps.plan.outputs.publish_images }}
       plan_artifact: ${{ steps.plan.outputs.plan_artifact }}
       wheel_matrix: ${{ steps.plan.outputs.wheel_matrix }}
       image_matrix: ${{ steps.plan.outputs.image_matrix }}
@@ -448,14 +449,23 @@ jobs:
             '{include:[.families[]|select(.create_index)|
               {id,label,target_repository,target_tag,members:[.members[].reference]}]}' \
             out/plan/release-plan.json)"
+          publish_images="$(jq -r '.publish.ghcr.enabled == true' \
+            out/plan/release-plan.json)"
+          if [ "${publish_images}" = true ]; then
+            has_image_indexes="$(jq -r '.include | length > 0' \
+              <<<"${index_matrix}")"
+          else
+            has_image_indexes=false
+          fi
           {
             echo "route=${route}"
             echo "release_kind=${release_kind}"
+            echo "publish_images=${publish_images}"
             echo "plan_artifact=${artifact}"
             echo "wheel_matrix=$(jq -c '.wheel_matrix' out/plan/release-plan.json)"
             echo "image_matrix=$(jq -c '.image_matrix' out/plan/release-plan.json)"
             echo "image_index_matrix=${index_matrix}"
-            echo "has_image_indexes=$(jq -r '.include | length > 0' <<<"${index_matrix}")"
+            echo "has_image_indexes=${has_image_indexes}"
           } >>"${GITHUB_OUTPUT}"
       - uses: actions/upload-artifact@v4.6.2
         with:
@@ -548,6 +558,7 @@ jobs:
     if: >-
       ${{
         github.event_name == 'push' && github.ref_type == 'tag' &&
+        needs.plan.outputs.publish_images == 'true' &&
         needs.plan.result == 'success' && needs.build-wheels.result == 'success' &&
         needs.publish-release-artifacts.result == 'success'
       }}
@@ -584,7 +595,7 @@ jobs:
       upload_oci: ${{ inputs.deliver_full_oci == true }}
 
   publish-release-artifacts:
-    name: Release · Publish Wheels and Chart
+    name: Release · Publish Wheels, Chart, and Config
     needs: [plan, open-release, build-wheels, package-chart]
     if: >-
       ${{
@@ -661,7 +672,7 @@ jobs:
           if-no-files-found: error
           overwrite: true
           retention-days: 90
-      - name: Upload Wheels and Chart
+      - name: Upload Wheels, Chart, and Config
         run: |
           set -euo pipefail
           plan=input/plan/release-plan.json
@@ -681,9 +692,12 @@ jobs:
           fi
           release_id="$(jq -er '.[0].id' <<<"${releases}")"
           gh release upload "${tag}" --clobber \
-            input/wheels/*/*.whl input/chart/*.tgz
+            input/wheels/*/*.whl input/chart/*.tgz \
+            examples/ucm_config_example.yaml
           release_json="${RUNNER_TEMP}/github-release-${release_id}.json"
           gh api "/repos/${GH_REPO}/releases/${release_id}" >"${release_json}"
+          jq -e '[.assets[].name] | index("ucm_config_example.yaml") != null' \
+            "${release_json}" >/dev/null
           python .github/release/ucm_release/release.py notes \
             --manifest out/release/release-state.json \
             --release "${release_json}" --repository "${GH_REPO}" \
@@ -705,7 +719,7 @@ jobs:
           printf '%s\n' \
             "Status: \`artifacts-failed\`" \
             "" \
-            "Wheel or Chart validation/upload failed. Retry the failed job to " \
+            "Wheel, Chart, or config validation/upload failed. Retry the failed job to " \
             "complete the staged assets." >"${notes}"
           gh api --method PATCH "/repos/${GH_REPO}/releases/${release_id}" \
             -f "tag_name=${tag}" \
@@ -717,6 +731,7 @@ jobs:
     if: >-
       ${{
         always() && needs.plan.result == 'success' &&
+        needs.plan.outputs.publish_images == 'true' &&
         needs.build-images.result == 'success' &&
         needs.publish-release-artifacts.result == 'success'
       }}
@@ -765,7 +780,12 @@ jobs:
   publish-image-indexes:
     name: Publish index · ${{ matrix.label }}
     needs: [plan, publish-image-members]
-    if: ${{ needs.plan.outputs.has_image_indexes == 'true' }}
+    if: >-
+      ${{
+        needs.plan.outputs.publish_images == 'true' &&
+        needs.publish-image-members.result == 'success' &&
+        needs.plan.outputs.has_image_indexes == 'true'
+      }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.image_index_matrix) }}
