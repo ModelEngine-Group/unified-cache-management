@@ -21,6 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <algorithm>
 #include <memory>
 #include <numeric>
 #include "buffer_manager.h"
@@ -208,9 +209,13 @@ private:
         }
 #endif
         auto bufferNumber = config.bufferCapacity / config.shardSize;
-        if (bufferNumber < 1024 || bufferNumber < config.loadExclusiveBufferNumber * 2) {
-            return Status::InvalidParam("too small buffer({}) on shard({})", config.bufferCapacity,
-                                        config.shardSize);
+        const size_t minBufferNumber = std::max(size_t(1024), config.loadExclusiveBufferNumber * 2);
+        if (bufferNumber < minBufferNumber) {
+            const size_t minBufferCapacityGb =
+                (minBufferNumber * config.shardSize + (size_t(1) << 30) - 1) >> 30;
+            return Status::InvalidParam(
+                "too small buffer({}) on shard({}), please set cache_buffer_capacity_gb >= {}GB",
+                config.bufferCapacity, config.shardSize, minBufferCapacityGb);
         }
         if (config.waitingQueueDepth <= 1 || config.runningQueueDepth <= 1) {
             return Status::InvalidParam("invalid queue depth({},{})", config.waitingQueueDepth,
