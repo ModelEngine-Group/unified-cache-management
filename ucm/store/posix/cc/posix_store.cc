@@ -198,6 +198,8 @@ private:
         inConfig.GetNumber("data_dir_shard_bytes", config.dataDirShardBytes);
         inConfig.Get("posix_gc_enable", config.posixGcEnable);
         inConfig.Get("posix_gc_recycle_percent", config.posixGcRecyclePercent);
+        inConfig.Get("posix_gc_precise_mode", config.posixGcPreciseMode);
+        inConfig.Get("posix_gc_candidate_extra_percent", config.posixGcCandidateExtraPercent);
         inConfig.GetNumber("posix_gc_concurrency", config.posixGcConcurrency);
         inConfig.GetNumber("posix_gc_check_interval_sec", config.posixGcCheckIntervalSec);
         inConfig.GetNumber("posix_capacity_gb", config.posixCapacityGb);
@@ -242,30 +244,23 @@ private:
                 return Status::InvalidParam("invalid cpu core({})", core);
             }
         }
-        if (config.deviceId == -1) { return Status::OK(); }
-        if (config.tensorSize == 0 || config.shardSize < config.tensorSize ||
-            config.blockSize < config.shardSize || config.shardSize % config.tensorSize != 0 ||
-            config.blockSize % config.shardSize != 0) {
-            return Status::InvalidParam("invalid size({},{},{})", config.tensorSize,
-                                        config.shardSize, config.blockSize);
-        }
-        if (config.ioEngine == "aio") {
-            if (config.openConcurrency == 0 || config.commitConcurrency == 0) {
-                return Status::InvalidParam("invalid aio concurrency({},{})",
-                                            config.openConcurrency, config.commitConcurrency);
-            }
-        } else if (config.ioEngine == "psync") {
-            if (config.dataTransConcurrency == 0) {
-                return Status::InvalidParam("invalid psync concurrency({})",
-                                            config.dataTransConcurrency);
-            }
-        } else {
-            return Status::InvalidParam("invalid io engine({})", config.ioEngine);
-        }
         if (config.posixGcEnable && config.posixCapacityGb > 0) {
             if (config.posixGcRecyclePercent <= 0 || config.posixGcRecyclePercent > 1.0) {
                 return Status::InvalidParam("invalid gc recycle percent({})",
                                             config.posixGcRecyclePercent);
+            }
+            if (config.posixGcPreciseMode) {
+                if (config.posixGcCandidateExtraPercent <= 0 ||
+                    config.posixGcCandidateExtraPercent >= 1.0) {
+                    return Status::InvalidParam("invalid gc candidate extra percent({})",
+                                                config.posixGcCandidateExtraPercent);
+                }
+                if (config.posixGcRecyclePercent + config.posixGcCandidateExtraPercent > 1.0) {
+                    return Status::InvalidParam(
+                        "gc recycle percent({}) plus candidate extra percent({}) must not exceed "
+                        "1.0",
+                        config.posixGcRecyclePercent, config.posixGcCandidateExtraPercent);
+                }
             }
             if (config.posixGcConcurrency == 0) {
                 return Status::InvalidParam("invalid gc concurrency({})",
@@ -303,6 +298,26 @@ private:
                 }
             }
         }
+        if (config.deviceId == -1) { return Status::OK(); }
+        if (config.tensorSize == 0 || config.shardSize < config.tensorSize ||
+            config.blockSize < config.shardSize || config.shardSize % config.tensorSize != 0 ||
+            config.blockSize % config.shardSize != 0) {
+            return Status::InvalidParam("invalid size({},{},{})", config.tensorSize,
+                                        config.shardSize, config.blockSize);
+        }
+        if (config.ioEngine == "aio") {
+            if (config.openConcurrency == 0 || config.commitConcurrency == 0) {
+                return Status::InvalidParam("invalid aio concurrency({},{})",
+                                            config.openConcurrency, config.commitConcurrency);
+            }
+        } else if (config.ioEngine == "psync") {
+            if (config.dataTransConcurrency == 0) {
+                return Status::InvalidParam("invalid psync concurrency({})",
+                                            config.dataTransConcurrency);
+            }
+        } else {
+            return Status::InvalidParam("invalid io engine({})", config.ioEngine);
+        }
         return Status::OK();
     }
     void ShowConfig(const Config& config)
@@ -329,6 +344,11 @@ private:
             UC_INFO("Set {}::PosixGcEnable to {}.", ns, config.posixGcEnable);
             UC_INFO("Set {}::PosixCapacityGb to {}.", ns, config.posixCapacityGb);
             UC_INFO("Set {}::PosixGcRecyclePercent to {}.", ns, config.posixGcRecyclePercent);
+            UC_INFO("Set {}::PosixGcPreciseMode to {}.", ns, config.posixGcPreciseMode);
+            if (config.posixGcPreciseMode) {
+                UC_INFO("Set {}::PosixGcCandidateExtraPercent to {}.", ns,
+                        config.posixGcCandidateExtraPercent);
+            }
             UC_INFO("Set {}::PosixGcConcurrency to {}.", ns, config.posixGcConcurrency);
             UC_INFO("Set {}::PosixGcCheckIntervalSec to {}.", ns, config.posixGcCheckIntervalSec);
             UC_INFO("Set {}::PosixGcTriggerThresholdRatio to {}.", ns,
