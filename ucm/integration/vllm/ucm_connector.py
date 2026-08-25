@@ -351,19 +351,18 @@ class KVCacheLayout:
         self.num_blocks = self.kv_cache_config.num_blocks
         self._build_layout(kvcaches)
 
-    @staticmethod
     def _tensor_infos(
+        self,
         layer_name: str,
         kv_layer,
-        _role: str | None = None,
     ) -> tuple[KVCacheTensorInfo, ...]:
         """Describe tensor components in one vLLM KV-cache entry."""
         tensor_infos = []
 
-        def handle_tensor(tensor: torch.Tensor, size_dims) -> None:
-            bytes_per_block = math.prod(
-                int(tensor.shape[dim]) for dim in size_dims
-            ) * int(tensor.element_size())
+        def handle_tensor(tensor: torch.Tensor) -> None:
+            bytes_per_block = math.prod(int(dim) for dim in tensor.shape[1:]) * int(
+                tensor.element_size()
+            )
             tensor_infos.append(
                 KVCacheTensorInfo(
                     ptr=int(tensor[0].data_ptr()),
@@ -373,29 +372,30 @@ class KVCacheLayout:
             )
 
         if isinstance(kv_layer, torch.Tensor):
-            if kv_layer.dim() == 5:
-                num_blocks_first = kv_layer.shape[0] != 2 and kv_layer.shape[1] == 2
-                if num_blocks_first:
-                    handle_tensor(kv_layer, (-4, -3, -2, -1))
-                elif kv_layer.shape[0] == 2:
-                    handle_tensor(kv_layer[0], (-3, -2, -1))
-                    handle_tensor(kv_layer[1], (-3, -2, -1))
-                else:
-                    raise ValueError(
-                        "Unsupported 5D KV cache layout: expected "
-                        "[num_blocks, 2, ...] or [2, num_blocks, ...], "
-                        f"layer={layer_name}, shape={tuple(kv_layer.shape)}."
+            if kv_layer.dim() == 5 and kv_layer.shape[0] == 2:
+                if kv_layer.shape[1] == 2 and kv_layer.shape[1] >= self.num_blocks:
+                    logger.warning(
+                        "Ambiguous KV cache layout with two leading dimensions "
+                        "of size 2; treating it as K/V-first: layer=%s, "
+                        "shape=%s, num_blocks=%s.",
+                        layer_name,
+                        tuple(kv_layer.shape),
+                        self.num_blocks,
                     )
-            elif kv_layer.dim() == 3:
-                handle_tensor(kv_layer, (-2, -1))
+                # Legacy K/V-first layout: [2, physical_blocks, ...].
+                handle_tensor(kv_layer[0])
+                handle_tensor(kv_layer[1])
             else:
-                raise ValueError(
-                    "Unsupported KV cache tensor shape: "
-                    f"layer={layer_name}, shape={tuple(kv_layer.shape)}."
-                )
-        elif isinstance(kv_layer, Tuple):
+                # A block-first tensor stores one complete page per row.
+                handle_tensor(kv_layer)
+        elif isinstance(kv_layer, (tuple, list)):
             for tensor in kv_layer:
-                handle_tensor(tensor, (-3, -2, -1))
+                if not isinstance(tensor, torch.Tensor):
+                    raise TypeError(
+                        "KV cache component must be a tensor: "
+                        f"layer={layer_name}, type={type(tensor)}."
+                    )
+                handle_tensor(tensor)
         else:
             raise TypeError(
                 f"Unsupported KV cache type: layer={layer_name}, "
@@ -640,48 +640,8 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
                     f"Duplicate Shared Indexer {slot} cache for "
                     f"layer {layer_id}: {layer_name}."
                 )
-            layer[slot] = tensor_infos(layer_name, kv_layer, slot)
+            layer[slot] = tensor_infos(layer_name, kv_layer)
         return layer_tensors
-
-    @staticmethod
-    def _cuda_tensor_infos(
-        layer_name: str,
-        tensor: torch.Tensor,
-        role: str,
-    ) -> tuple[KVCacheTensorInfo, ...]:
-        """Describe block-first CUDA tensors, splitting combined K/V caches."""
-        if tensor.dim() == 5:
-            if role != "attention" or tensor.shape[0] != 2:
-                raise ValueError(
-                    "CUDA 5D combined KV cache must be an Attention tensor "
-                    "with shape [2, num_blocks, ...]: "
-                    f"layer={layer_name}, role={role}, shape={tuple(tensor.shape)}."
-                )
-            component_tensors = (tensor[0], tensor[1])
-        else:
-            component_tensors = (tensor,)
-
-        tensor_infos = []
-        for component in component_tensors:
-            bytes_per_block = int(component.stride(0)) * int(component.element_size())
-            payload_size = math.prod(int(size) for size in component.shape[1:]) * int(
-                component.element_size()
-            )
-            if bytes_per_block != payload_size:
-                raise ValueError(
-                    "CUDA Shared Indexer KV cache requires contiguous blocks: "
-                    f"layer={layer_name}, block_stride={bytes_per_block}, "
-                    f"payload_size={payload_size}."
-                )
-
-            tensor_infos.append(
-                KVCacheTensorInfo(
-                    ptr=int(component.data_ptr()),
-                    bytes_per_block=bytes_per_block,
-                    buffer_size=int(component.shape[0]) * bytes_per_block,
-                )
-            )
-        return tuple(tensor_infos)
 
     def _build_segment_rows(
         self,
@@ -807,7 +767,7 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
         Layers without an independent Indexer keep the same copy schema by
         receiving a metadata-only ghost segment in the Indexer slot.
         """
-        layer_tensors = self._collect_role_tensors(kvcaches, self._cuda_tensor_infos)
+        layer_tensors = self._collect_role_tensors(kvcaches, self._tensor_infos)
 
         row_layer_ids = sorted(layer_tensors)
         self.first_layer_id = row_layer_ids[0]
