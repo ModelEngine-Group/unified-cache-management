@@ -1,0 +1,15 @@
+# VCS / editor / OS
+.git/
+/.idea/
+.gitignore
+.DS_Store
+__pycache__/
+*.pyc
+
+# build artifacts
+*.tgz
+
+# internal-only material (not part of the published chart)
+deploy.sh
+plan/
+docs/

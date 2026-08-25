@@ -1,0 +1,15 @@
+{{- if .Values.servingEngineSpec.enableEngine -}}
+{{- $modelSpec := .Values.servingEngineSpec.modelSpec -}}
+{{- $ucmConfigEnabled := eq (include "chart.ucmConfigEnabled" (list $modelSpec)) "true" -}}
+{{- $kvcsStoreIdAutoDetectEnabled := eq (include "chart.kvcsStoreIdAutoDetectEnabled" (list $modelSpec)) "true" -}}
+{{- if and $ucmConfigEnabled $kvcsStoreIdAutoDetectEnabled -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: "{{ include "chart.enginePvReaderClusterRoleName" . }}"
+rules:
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get"]
+{{- end -}}
+{{- end -}}

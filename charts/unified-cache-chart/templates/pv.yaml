@@ -1,0 +1,43 @@
+{{- if .Values.servingEngineSpec.enableEngine -}}
+{{- $modelSpec := .Values.servingEngineSpec.modelSpec -}}
+{{- $storage := default (dict) $modelSpec.storage -}}
+{{- $unifiedStorage := default (list) $storage.unifiedcacheStorage -}}
+{{- include "chart.validateStorageConfig" (list $modelSpec $) -}}
+{{- $extraStorage := include "chart.combinedExtraStorage" (list $modelSpec $) | fromYamlArray -}}
+{{- with $ -}}
+{{- $allStorage := concat $unifiedStorage $extraStorage -}}
+{{- $first := true -}}
+{{- range $storage := $allStorage -}}
+{{- if hasKey $storage "staticPVC" -}}
+{{- if not $first }}
+---
+{{- end }}
+{{- $first = false }}
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ include "chart.storageStaticPvName" (list $ $modelSpec $storage) | quote }}
+spec:
+  capacity:
+    storage: {{ $storage.staticPVC.pvcStorage | default "20Gi" }}
+  accessModes:
+    {{- if $storage.staticPVC.pvcAccessMode }}
+    {{- toYaml $storage.staticPVC.pvcAccessMode | nindent 4 }}
+    {{- else }}
+    - ReadWriteOnce
+    {{- end }}
+  persistentVolumeReclaimPolicy: {{ $storage.staticPVC.reclaimPolicy | default "Retain" }}
+  storageClassName: "{{ $storage.staticPVC.storageClass | default "" }}"
+  claimRef:
+    namespace: {{ $.Release.Namespace }}
+    name: {{ include "chart.storageStaticPvcClaimName" (list $ $modelSpec $storage) | quote }}
+  {{- if not (empty $storage.staticPVC.mountOptions) }}
+  mountOptions:
+    {{- toYaml $storage.staticPVC.mountOptions | nindent 4 }}
+  {{- end }}
+  csi:
+    {{- toYaml $storage.staticPVC.csi | nindent 4 }}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

@@ -1,0 +1,10 @@
+# syntax=docker/dockerfile:1.12.1
+ARG BASE_IMAGE
+
+FROM ${BASE_IMAGE} AS runtime
+
+ARG UCM_WHEEL
+COPY ${UCM_WHEEL} /tmp/${UCM_WHEEL}
+RUN python3 -m pip install --disable-pip-version-check --no-cache-dir \
+      /tmp/${UCM_WHEEL} && \
+    python3 -c 'import ucm'

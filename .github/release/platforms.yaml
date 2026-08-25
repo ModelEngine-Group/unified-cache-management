@@ -1,0 +1,46 @@
+kind: ucm-platform-policy
+schema_version: 1
+
+excluded_upstream_variants:
+  vllm-ascend: [310p]
+
+builder_families:
+  cuda:
+    target_repository: ghcr.io/{owner}/ucm-builder-vllm
+    source_repositories:
+      amd64: docker.io/pytorch/manylinux2_28-builder
+      arm64: docker.io/pytorch/manylinuxaarch64-builder
+    manylinux: manylinux_2_28
+    required_commands: [gcc, g++, make, git, nvcc]
+
+  ascend:
+    target_repository: ghcr.io/{owner}/ucm-builder-vllm-ascend
+    source_repositories:
+      amd64: quay.io/ascend/manylinux
+      arm64: quay.io/ascend/manylinux
+    required_commands: [gcc, g++, make, git, cmake]
+    required_files: [acl.h]
+    variant_required_files:
+      a3: [libruntime.so]
+
+backends:
+  cuda:
+    status: supported
+    platform: cuda
+    distribution_template: uc-manager-cuda-{runtime_variant}
+
+  cann-a2:
+    status: supported
+    platform: ascend
+    distribution_template: uc-manager-{runtime_variant}
+
+  cann-a3:
+    status: supported
+    platform: ascend-a3
+    distribution_template: uc-manager-{runtime_variant}
+
+  cann-a5:
+    status: blocked
+    platform: ascend-a5
+    distribution_template: uc-manager-{runtime_variant}
+    reason: A5 requires a dedicated UCM native implementation

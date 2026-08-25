@@ -1,0 +1,153 @@
+# ============================================================
+# Qwen3-0.6B PD 分离 1P1D（CUDA / Mooncake + UCM MultiConnector）
+# helm install qwen3-0p6b-1p1-1d1 -n yulei-test --create-namespace . -f values.yaml -f models/cuda/values-qwen3-0p6b-1p1-1d1.yaml
+# 渲染：Mooncake master(Service+Deployment) + ModelServing 2 role(prefill/decode) + ModelServer + ModelRoute
+# KV：运行时按 role identity 生成 —— P0=engine 0/port 20001，D0=engine 1/port 20101；producer 自动叠加 UCM。
+# Mooncake KV 走唯一 kv_port 基址（GPU 也一样），需 hostNetwork；反亲和进一步降低同机端口冲突风险。
+# ============================================================
+mooncakeMaster:
+  enabled: true
+  create: true
+  client:
+    config: |
+      {
+        "metadata_server": "P2PHANDSHAKE",
+        "global_segment_size": "80GB",
+        "local_buffer_size": "4GB",
+        "protocol": "rdma",
+        "device_name": ""
+      }
+  # master 不占 GPU 卡（纯 CPU 控制面）；nodeSelector 钉 GPU 节点（标签按集群实际，此处用 GFD 的 gpu.present）。
+  resources:
+    limits:   { rdma/rdma_shared: "1", cpu: "2", memory: 4Gi }
+    requests: { rdma/rdma_shared: "1", cpu: "1", memory: 2Gi }
+  nodeSelector:
+    "nvidia.com/gpu.present": "true"
+
+servingEngineSpec:
+  enableEngine: true
+  containerPort: 8000
+  modelSpec:
+    name: "qwen3-0p6b-1p1-1d1"                  # K8s 资源名片段：小写字母/数字/-，起止字母或数字；<release>-<name> <= 63
+    modelPath: "/mnt/model/Qwen3-0.6B"
+    modelName: "Qwen3-0.6B"
+    shmSize: "128Gi"
+    recoveryPolicy: ServingGroupRecreate          # 可选：ServingGroupRecreate（整组）| RoleRecreate（单 Role，默认）| None（Pod/Deployment 默认行为）
+    restartGracePeriodSeconds: 60
+    gangPolicy:
+      minRoleReplicas:
+        prefill: 1
+        decode: 1
+    # 无 runtime sidecar：router 直连引擎 8000、KV 走引擎自带连接器；如 kthena webhook 自动注入则由其托管。
+    pd:
+      kvTransfer:
+        connector: MooncakeConnectorV1            # 可选（区分大小写）：MooncakeConnectorV1 | MooncakeHybridConnector | NixlConnector
+        routerType: mooncake                       # Mooncake 两种 connector 对应 mooncake；NixlConnector 对应 nixl
+        identity:
+          engineIdBase: 0
+          kvPortBase: 20001
+          instanceStride: 100
+      mooncake:
+        master:
+          enabled: true
+      antiAffinity: true
+      prefill: prefill
+      decode: decode
+    router:
+      enabled: true
+      inferenceEngine: vLLM
+      trafficPolicy:
+        timeout: 60s
+    hooks:
+      preStart: |
+        echo "[hook] preStart: pod=${POD_NAME} kind=${UC_POD_KIND:-entry} master=${MASTER_IP} rank=${NODE_RANK}"
+        export UC_PRESTART_MARK="${POD_NAME}"
+      postReady: |
+        echo "[hook] postReady: ${POD_IP}:${POD_PORT} is serving"
+      preStop: |
+        echo "[hook] preStop: pod=${POD_NAME} is stopping"
+    roles:
+      - name: prefill                         # role 名：小写字母/数字/-，起止字母或数字，最长 12
+        replicas: 1                               # xPyD 的 x
+        workerReplicas: 0
+        resources:
+          limits:   { nvidia.com/gpu: "1", rdma/rdma_shared: "1", cpu: "64", memory: 256Gi }
+          requests: { nvidia.com/gpu: "1", rdma/rdma_shared: "1", cpu: "64", memory: 256Gi }
+        vllmArgs: |
+          --tensor-parallel-size 1
+          --max-model-len 20000
+          --block-size 128
+          --gpu-memory-utilization 0.85
+          --trust-remote-code
+      - name: decode                         # role 名：小写字母/数字/-，起止字母或数字，最长 12
+        replicas: 1                               # xPyD 的 y
+        workerReplicas: 0
+        resources:
+          limits:   { nvidia.com/gpu: "1", rdma/rdma_shared: "1", cpu: "64", memory: 256Gi }
+          requests: { nvidia.com/gpu: "1", rdma/rdma_shared: "1", cpu: "64", memory: 256Gi }
+        vllmArgs: |
+          --tensor-parallel-size 1
+          --max-model-len 20000
+          --block-size 128
+          --gpu-memory-utilization 0.85
+          --trust-remote-code
+          --no-enable-prefix-caching
+    env:
+      - { name: VLLM_SERVER_DEV_MODE, value: "1" }
+      # Mooncake on GPU 的 RDMA NIC 配置是「集群相关」的，勿硬编码网卡名；GPU 无 HCCL_*（那是 Ascend 专用）。
+      # 若 GPU 集群需显式 RDMA/控制面网卡，按节点实测取消注释填写：
+      #   - { name: NCCL_IB_HCA, value: "<mlx5_x>" }        # RDMA HCA，集群相关
+      #   - { name: GLOO_SOCKET_IFNAME, value: "<ethN>" }   # 控制面网卡，集群相关
+      # Mooncake/UCM 传输参数来自 kvTransfer 模板、运行时 identity resolver 与 unifiedcacheConfig，不走 env。
+    # UCM（prefill 侧 MultiConnector 引用；chart 渲染 configmap-ucm，挂在 prefill）
+    unifiedcacheConfig:
+      enabled: true                         # false = 不使用 UCM（不注 UCMConnector、不渲染 ucm ConfigMap、不挂缓存盘）
+      kvcsStoreIdAutoDetect: false
+      config:
+        ucm_connectors:
+          - ucm_connector_name: "UcmPipelineStore"
+            ucm_connector_config:
+              io_direct: false
+              store_pipeline: "Cache|Posix"
+              cache_buffer_capacity_gb: 64
+              use_gdr: false
+    storage:
+      unifiedcacheStorage:
+        - name: model-data                    # Volume/PVC 名片段：小写字母/数字/-，起止字母或数字
+          mountPath: /mnt/data
+          dynamicPVC:
+            pvcStorage: "1Ti"
+            storageClass: a800-192-168-4-106      # 按你 GPU 集群的 RWX storageClass 调整
+            pvcAccessMode: [ "ReadWriteMany" ]
+
+        # ===== 双挂载（多缓存后端）示例 =====
+        # 取消注释即再挂一块静态盘：storage_backends 按 mountPath 顺序拼成 "/mnt/data:/data-0"。
+        # kvcsStoreIdAutoDetect=true 时，每块 PV 都需在 csi.volumeAttributes.kvcacheStoreId 标注 store id，
+        # 运行时按同序拼成 kvcs_store_id（如 "0:1"）。
+#        - name: static-data-0               # Volume/PVC 名片段：小写字母/数字/-，起止字母或数字
+#          mountPath: /data-0
+#          staticPVC:
+#            pvcStorage: "1Ti"
+#            storageClass: manual-nfs
+#            pvcAccessMode: [ "ReadWriteMany" ]
+#            reclaimPolicy: Retain
+#            mountOptions:
+#              - nfsvers=3
+#              - nolock
+#              - nocto
+#              - proto=rdma
+#              - port=20049
+#              - rsize=1048576
+#              - wsize=1048576
+#              - hard
+#              - timeo=600
+#              - retrans=2
+#              - nconnect=8
+#            csi:
+#              driver: nfs.csi.k8s.io
+#              fsType: nfs
+#              volumeHandle: 192.168.3.106#/datasets/team-a
+#              volumeAttributes:
+#                server: 192.168.3.106
+#                share: /datasets/team-a
+#                kvcacheStoreId: "1"   # 第二块盘 store id（auto-detect 必填）

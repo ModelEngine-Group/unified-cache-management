@@ -1,0 +1,55 @@
+name: UCM PR Artifact Cleanup
+
+on:
+  pull_request:
+    types: [closed]
+  schedule:
+    - cron: "0 3 * * *"  # Daily at 03:00 UTC — sweep expired PR tags
+
+permissions:
+  packages: write
+  contents: read
+
+jobs:
+  cleanup-pr-artifacts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Delete PR-tagged GHCR images
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          owner="${{ github.repository_owner }}"
+          repo="${{ github.event.repository.name }}"
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            pr_number="${{ github.event.pull_request.number }}"
+            regex="(^|-)pr-${pr_number}-"
+          else
+            regex="(^|-)pr-[0-9]+-"
+          fi
+          echo "Cleaning up GHCR tags matching /${regex}/ for ${owner}/${repo}"
+          # PR image tags are v<upstream-ver>-pr-<n>-<author>-<sha8>[-<variant>][-<arch>]
+          # (the vllm version leads, so pr-<n>- is not at the start — match anywhere).
+          # GITHUB_TOKEN cannot list user/packages (needs a user PAT with
+          # read:packages), but it CAN read+delete versions of packages it owns —
+          # so enumerate the known family package names the bot pushes to (plus
+          # historical ones) and sweep each. Release tags (v...-ucm-...) never
+          # match because they contain no -pr-<n>-. Capture each API response raw
+          # and jq-filter separately — gh api --jq leaks 404 error bodies to
+          # stdout, which would otherwise be parsed as garbage tags.
+          # If a new image family is added to the catalog, add its package here.
+          packages="vllm vllm-ascend vllm-openai ucm-pr"
+          for pkg in ${packages}; do
+            raw="$(gh api "user/packages/container/${pkg}/versions?per_page=100" 2>/dev/null || true)"
+            printf '%s' "${raw}" | jq -e 'type=="array"' >/dev/null 2>&1 || continue
+            printf '%s' "${raw}" | jq -r --arg re "${regex}" '.[] | select(.metadata.container.tags[0] // "" | test($re)) | "\(.id) \(.metadata.container.tags[0])"' 2>/dev/null | while IFS= read -r line; do
+              [ -n "${line}" ] || continue
+              version_id="${line%% *}"
+              tag="${line#* }"
+              [[ "${version_id}" =~ ^[0-9]+$ ]] || continue
+              echo "Deleting ${pkg}:${tag} (version ${version_id})"
+              gh api --method DELETE "user/packages/container/${pkg}/versions/${version_id}" 2>/dev/null || true
+            done
+          done
+          echo "PR artifact cleanup complete"

@@ -1,0 +1,125 @@
+# ============================================================
+# Qwen3-235B 双机部署（Ascend，kthena）
+# helm install qwen3-235b -n yulei-test --create-namespace . -f values.yaml -f models/ascend/values-qwen3-235b-multi.yaml
+# kthena：1 role engine，workerReplicas 1（DP2×TP8）；UCM 缓存。
+# ============================================================
+servingEngineSpec:
+  enableEngine: true
+  containerPort: 8000
+  modelSpec:
+    name: "qwen3-235b"                  # K8s 资源名片段：小写字母/数字/-，起止字母或数字；<release>-<name> <= 63
+    modelPath: "/mnt/model/Qwen3-235B-A22B-W8A8"
+    modelName: "Qwen3-235B"
+    shmSize: "256Gi"
+    recoveryPolicy: ServingGroupRecreate          # 可选：ServingGroupRecreate（整组）| RoleRecreate（单 Role，默认）| None（Pod/Deployment 默认行为）
+    restartGracePeriodSeconds: 60
+    gangPolicy:
+      minRoleReplicas:
+        engine: 1
+    hooks:
+      preStart: |
+        echo "[hook] preStart: pod=${POD_NAME} kind=${UC_POD_KIND:-entry} master=${MASTER_IP} rank=${NODE_RANK}"
+        export UC_PRESTART_MARK="${POD_NAME}"
+      postReady: |
+        echo "[hook] postReady: ${POD_IP}:${POD_PORT} is serving"
+      preStop: |
+        echo "[hook] preStop: pod=${POD_NAME} is stopping"
+    roles:
+      - name: engine                         # role 名：小写字母/数字/-，起止字母或数字，最长 12
+        replicas: 1
+        workerReplicas: 1
+        resources:
+          limits:   { huawei.com/Ascend910: "8", rdma/rdma_shared: "1", cpu: "96", memory: 600Gi }
+          requests: { huawei.com/Ascend910: "8", rdma/rdma_shared: "1", cpu: "96", memory: 600Gi }
+        vllmArgs: |
+          --tensor-parallel-size 8
+          --data-parallel-size 2
+          --data-parallel-size-local 1
+          --pipeline-parallel-size 1
+          --enable-expert-parallel
+          --max-model-len 13000
+          --max-num-batched-tokens 4096
+          --max-num-seqs 16
+          --seed 1024
+          --block-size 128
+          --gpu-memory-utilization 0.94
+          --quantization ascend
+          --distributed-executor-backend mp
+          --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'
+          --no-enable-prefix-caching
+          --trust-remote-code
+    env:
+      - name: VLLM_SERVER_DEV_MODE
+        value: "1"
+
+    # ===== Unified Cache（本模型）=====
+    # config 原样渲染为 ucm_config；其中 storage_backends / kvcs_instance_name / kvcs_store_id /
+    # kvcs_tls_enable 由 chart 自动接管，无需手填。完整字段说明见根 values.yaml。
+    # kthena 下：运行时 KV resolver 据此生成 UCMConnector(kv_both)，UCM_CONFIG_FILE 指向
+    # chart 渲染的 /vllm-workspace/UnifiedCache/config/ucm_config.runtime.yaml。
+    unifiedcacheConfig:
+      enabled: true                         # false = 不使用 UCM（不注 UCMConnector、不渲染 ucm ConfigMap、不挂缓存盘）
+      kvcsStoreIdAutoDetect: false
+      config:
+        ucm_connectors:
+          - ucm_connector_name: "UcmPipelineStore"
+            ucm_connector_config:
+              io_direct: false
+              store_pipeline: "Cache|Posix"
+              cache_buffer_capacity_gb: 128
+              use_gdr: false
+    #          - ucm_connector_config:
+    #              io_direct: true
+    #              kvcs_store_id: 0
+    #              kvcs_ucm_over_tcp_ip_list: "192.168.3.252"
+    #              cache_buffer_capacity_gb: 16
+    #              posix_io_engine: aio
+    #              kvcs_block_size: 128
+    #              kvcs_tls_enable: false
+    #              kvcs_sliding_window_size: 100
+    #              kvcs_failure_rate_threshold: 10
+    #              kvcs_consecutive_fail_limit: 5
+
+    # ===== 存储：本模型 UCM 缓存盘 =====
+    # unifiedcacheStorage 各项 mountPath 即上面的 storage_backends（按序拼接）。
+    # extraStorage 由根 values.yaml 注入；其它挂载写法（staticPVC/csi/nfs…）见根 values.yaml。
+    storage:
+      unifiedcacheStorage:
+        - name: model-data                    # Volume/PVC 名片段：小写字母/数字/-，起止字母或数字
+          mountPath: /mnt/data
+          dynamicPVC:
+            pvcStorage: "1Ti"
+            storageClass: a800-192-168-4-106
+            pvcAccessMode: [ "ReadWriteMany" ]
+
+        # ===== 双挂载（多缓存后端）示例 =====
+        # 取消注释即再挂一块静态盘：storage_backends 按 mountPath 顺序拼成 "/mnt/data:/data-0"。
+        # kvcsStoreIdAutoDetect=true 时，每块 PV 都需在 csi.volumeAttributes.kvcacheStoreId 标注 store id，
+        # 运行时按同序拼成 kvcs_store_id（如 "0:1"）。
+#        - name: static-data-0               # Volume/PVC 名片段：小写字母/数字/-，起止字母或数字
+#          mountPath: /data-0
+#          staticPVC:
+#            pvcStorage: "1Ti"
+#            storageClass: manual-nfs
+#            pvcAccessMode: [ "ReadWriteMany" ]
+#            reclaimPolicy: Retain
+#            mountOptions:
+#              - nfsvers=3
+#              - nolock
+#              - nocto
+#              - proto=rdma
+#              - port=20049
+#              - rsize=1048576
+#              - wsize=1048576
+#              - hard
+#              - timeo=600
+#              - retrans=2
+#              - nconnect=8
+#            csi:
+#              driver: nfs.csi.k8s.io
+#              fsType: nfs
+#              volumeHandle: 192.168.3.106#/datasets/team-a
+#              volumeAttributes:
+#                server: 192.168.3.106
+#                share: /datasets/team-a
+#                kvcacheStoreId: "1"   # 第二块盘 store id（auto-detect 必填）

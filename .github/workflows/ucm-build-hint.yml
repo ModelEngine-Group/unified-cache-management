@@ -1,0 +1,44 @@
+name: UCM Build Bot Hint
+
+on:
+  pull_request:
+    types: [opened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  hint:
+    # same-repo PRs only — external-fork PRs get a read-only GITHUB_TOKEN on
+    # pull_request events, so they can't post. (head.repo.fork is true for ANY
+    # PR in a fork-of-a-fork repo, so compare head vs base repo full_name instead.)
+    # Fork contributors can run /ucm-build help.
+    if: github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Post /ucm-build command list
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          cat >hint.md <<'EOF'
+          ## 🤖 `/ucm-build` 命令 / Commands
+
+          仓库成员(write+)可用。每次构建固定当前 PR head SHA;推送的镜像在 PR 关闭时自动删除。
+          Available to repo members (write+). Each run fixes the current PR head SHA; pushed images auto-delete when the PR closes.
+
+          | 命令 / Command | 构建 / Builds | 推 GHCR? / Push? |
+          | --- | --- | --- |
+          | `/ucm-build wheel [profile=<generated-group>]` | UCM Wheel；省略 profile 构建当前正式矩阵 / omit profile for the current formal matrix | 否 / no(仅 artifact / artifact only) |
+          | `/ucm-build image <repo:tag>` | 探测一个已发布且能力可解析的 runtime tag，再构建 Wheel + 镜像 / inspect one published capability-resolvable runtime tag, then build Wheel + image | 是 / yes |
+          | `/ucm-build chart` | chart(lint + template + package)/ chart (lint + template + package) | 否 / no(仅 artifact / artifact only) |
+          | `/ucm-build all` | 全部正式矩阵(wheel + image + chart)/ complete formal matrices | 否 / no(仅 artifact / artifact only) |
+
+          - 镜像 tag / Image tag: `ghcr.io/<owner>/<family>:pr-<n>-<author>-run-<run-id>-<runtime-tag>`；member 追加 `-amd64`/`-arm64`，双架构才创建 index / members add the architecture suffix; only multi-arch inputs get an index。
+          - 允许的上游仓库 / Allowed repos: `docker.io/vllm/vllm-openai` / `quay.io/ascend/vllm-ascend`。Tag 按 opaque string 处理；优先从 OCI config 读取 Python、CUDA/CANN、SOC，字段缺失时才拉取对应 member 探测；最终镜像校验 GLIBC、Wheel 安装和 `import ucm` / tags are opaque; OCI config is primary for Python, CUDA/CANN, and SOC, missing fields trigger a member pull, and the final image validates GLIBC, Wheel installation, and `import ucm`。
+          - `/ucm-build help`(或光敲 `/ucm-build`)重显本消息 / re-shows this message.
+          EOF
+          gh pr comment "${PR_NUMBER}" --repo "${{ github.repository }}" --body-file hint.md

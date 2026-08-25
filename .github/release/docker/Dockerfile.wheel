@@ -1,0 +1,43 @@
+# syntax=docker/dockerfile:1.12.1
+ARG UCM_BUILDER_IMAGE
+
+FROM ${UCM_BUILDER_IMAGE} AS build
+
+ARG UCM_CPU_ARCH
+ARG UCM_PLATFORM
+ARG UCM_PYTHON_VERSION
+ARG UCM_PYTHON_ABI
+
+SHELL ["/bin/bash", "-euxo", "pipefail", "-c"]
+ENV PLATFORM="${UCM_PLATFORM}" \
+    UCM_BUILD_CPU_ARCH="${UCM_CPU_ARCH}" \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+COPY . /workspace/ucm
+WORKDIR /workspace/ucm
+
+RUN python_candidate="/opt/python/${UCM_PYTHON_ABI}-${UCM_PYTHON_ABI}/bin/python"; \
+    if [[ -x "${python_candidate}" ]]; then \
+      selected_python="${python_candidate}"; \
+    elif command -v "python${UCM_PYTHON_VERSION}" >/dev/null; then \
+      selected_python="$(command -v "python${UCM_PYTHON_VERSION}")"; \
+    elif command -v python3 >/dev/null; then \
+      selected_python="$(command -v python3)"; \
+    else \
+      echo "Builder has no usable Python" >&2; exit 1; \
+    fi; \
+    ln -sf "${selected_python}" /usr/local/bin/ucm-python; \
+    test "$(ucm-python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" \
+      = "${UCM_PYTHON_VERSION}"
+
+RUN ucm-python -m pip install --no-cache-dir --only-binary=:all: \
+      -r .ucm-compact/build-requirements.txt
+RUN python_scripts="$(ucm-python -c \
+      'import sysconfig; print(sysconfig.get_path("scripts"))')" && \
+    PATH="${python_scripts}:${PATH}" \
+      ucm-python -m build --no-isolation --wheel --outdir /out
+
+FROM scratch AS wheel
+COPY --from=build /out/ /

@@ -1,0 +1,142 @@
+name: Build one UCM wheel
+
+on:
+  workflow_call:
+    inputs:
+      wheel_id:
+        type: string
+        required: true
+      runner:
+        type: string
+        required: true
+      plan_artifact:
+        type: string
+        required: true
+      source_ref:
+        type: string
+        required: false
+        default: ""
+    outputs:
+      wheel_artifact:
+        description: Wheel artifact produced by this task
+        value: ${{ jobs.build.outputs.wheel_artifact }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 180
+    outputs:
+      wheel_artifact: ${{ steps.task.outputs.wheel_artifact }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - run: >-
+          python -m pip install --disable-pip-version-check --no-cache-dir
+          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+      - uses: ./.github/actions/download-artifact-retry
+        with:
+          name: ${{ inputs.plan_artifact }}
+          path: input/plan
+      - id: task
+        name: Select wheel task
+        env:
+          WHEEL_ID: ${{ inputs.wheel_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p out .ucm-compact
+          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            python scripts/materialize_version.py --tag "${GITHUB_REF_NAME}" >/dev/null
+          fi
+          PYTHONPATH=.github/release python -m ucm_release compact select \
+            --plan input/plan/release-plan.json --kind wheel --id "${WHEEL_ID}" \
+            --output out/wheel-task.json >/dev/null
+          source_version="$(PYTHONPATH=.github/release python -c \
+            'from ucm_release.core import read_version; print(read_version())')"
+          test "$(jq -r '.wheel_version' out/wheel-task.json)" = "${source_version}"
+          PYTHONPATH=.github/release python -m ucm_release compact prepare-wheel-source \
+            --source-root . \
+            --distribution "$(jq -r '.dist_name' out/wheel-task.json)" >/dev/null
+          jq -r '.build_requirements[]' out/wheel-task.json \
+            >.ucm-compact/build-requirements.txt
+          artifact="ucm-wheel-${WHEEL_ID}-run-${GITHUB_RUN_ID}"
+          echo "wheel_artifact=${artifact}" >>"${GITHUB_OUTPUT}"
+      - uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+      - uses: docker/setup-buildx-action@v3.11.1
+      - name: Build native wheel
+        run: |
+          set -euo pipefail
+          builder="$(jq -r '.builder.repository + "@" + .builder.digest' out/wheel-task.json)"
+          docker buildx build \
+            --platform "$(jq -r '.platform' out/wheel-task.json)" \
+            --file .github/release/docker/Dockerfile.wheel \
+            --target wheel \
+            --build-arg "UCM_BUILDER_IMAGE=${builder}" \
+            --build-arg "UCM_CPU_ARCH=$(jq -r '.cpu_arch' out/wheel-task.json)" \
+            --build-arg "UCM_PLATFORM=$(jq -r '.build.platform_arg' out/wheel-task.json)" \
+            --build-arg "UCM_PYTHON_VERSION=$(jq -r '.python_version' out/wheel-task.json)" \
+            --build-arg "UCM_PYTHON_ABI=$(jq -r '.python_abi' out/wheel-task.json)" \
+            --output type=local,dest=out/wheel \
+            --progress plain .
+          test "$(find out/wheel -maxdepth 1 -type f -name '*.whl' | wc -l | tr -d ' ')" = 1
+      - name: Inspect Wheel platform and record result
+        run: |
+          set -euo pipefail
+          wheel="$(find out/wheel -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "${wheel}"
+          python -m pip install --disable-pip-version-check --no-cache-dir \
+            auditwheel==6.4.2
+          python -m auditwheel -v show "${wheel}" 2>&1 \
+            | tee out/wheel/auditwheel-show.txt
+          PYTHONPATH=.github/release python -m ucm_release compact record-wheel-result \
+            --task out/wheel-task.json --wheel "${wheel}" \
+            --output out/wheel/wheel-result.json >/dev/null
+          external_libraries="$(jq -r '
+            if .external_libraries == null then "not reported"
+            elif (.external_libraries | length) == 0 then "none"
+            else (.external_libraries | join(", "))
+            end
+          ' out/wheel/wheel-result.json)"
+          wheel_platform="$(jq -r '.platform_tags | join(", ")' \
+            out/wheel/wheel-result.json)"
+          auditwheel_platform="$(jq -r '.auditwheel_platform_tag' \
+            out/wheel/wheel-result.json)"
+          glibc_floor="$(jq -r '.glibc_floor // "not reported"' \
+            out/wheel/wheel-result.json)"
+          # Backticks in these format strings are literal Markdown.
+          # shellcheck disable=SC2016
+          {
+            printf '### Wheel audit: `%s`\n\n' "$(basename "${wheel}")"
+            printf -- '- Wheel platform: `%s`\n' "${wheel_platform}"
+            printf -- '- auditwheel compatible platform: `%s`\n' \
+              "${auditwheel_platform}"
+            printf -- '- GLIBC floor: `%s`\n' "${glibc_floor}"
+            printf '%s\n\n' "- External libraries: ${external_libraries}"
+            printf '<details><summary>auditwheel show</summary>\n\n```text\n'
+            cat out/wheel/auditwheel-show.txt
+            printf '```\n</details>\n'
+          } >>"${GITHUB_STEP_SUMMARY}"
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ${{ steps.task.outputs.wheel_artifact }}
+          path: out/wheel/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: ${{ github.event_name == 'push' && github.ref_type == 'tag' && 90 || 7 }}

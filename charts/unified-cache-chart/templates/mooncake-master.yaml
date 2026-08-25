@@ -1,0 +1,161 @@
+{{- $mm := default (dict) .Values.mooncakeMaster -}}
+{{- $service := default (dict) $mm.service -}}
+{{- $images := default (dict) .Values.images -}}
+{{- $mooncakeMasterImage := include "chart.releaseMooncakeMasterImage" . -}}
+{{- $mooncakeMasterImagePullPolicy := $images.pullPolicy | default "IfNotPresent" -}}
+{{- $hostNetwork := true -}}
+{{- if hasKey $mm "hostNetwork" -}}{{- $hostNetwork = $mm.hostNetwork -}}{{- end -}}
+{{- $hostIPC := true -}}
+{{- if hasKey $mm "hostIPC" -}}{{- $hostIPC = $mm.hostIPC -}}{{- end -}}
+{{- /* 昇腾（client.config.protocol=ascend）时内置宿主机挂载：昇腾构建的 mooncake_master
+       动态链接 CANN/驱动用户态库，仅要求库文件可加载——不占 NPU 卡、无需 privileged；
+       driver 目录已含 tools/hccn_tool。这两个 hostPath 仅存在于 NPU 节点，
+       需配 mooncakeMaster.nodeSelector/affinity 将 master 钉到 NPU 节点。 */ -}}
+{{- $moonCfg := include "chart.mooncakeClientConfigResolved" . | fromYaml -}}
+{{- $isAscend := eq (default "" (get $moonCfg "protocol")) "ascend" -}}
+{{- if and (default false $mm.enabled) (default false $mm.create) -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "chart.mooncakeMasterName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: mooncake-master
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  {{- with $service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ default "ClusterIP" $service.type }}
+  selector:
+    app.kubernetes.io/name: mooncake-master
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: rpc
+      port: {{ default 50088 $service.rpcPort }}
+      targetPort: rpc
+    - name: metrics
+      port: {{ default 9003 $service.metricsPort }}
+      targetPort: metrics
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "chart.mooncakeMasterName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: mooncake-master
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mooncake-master
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mooncake-master
+        app.kubernetes.io/instance: {{ .Release.Name }}
+      {{- with $mm.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      hostNetwork: {{ $hostNetwork }}
+      {{- if $hostNetwork }}
+      dnsPolicy: {{ default "ClusterFirstWithHostNet" $mm.dnsPolicy | quote }}
+      {{- else if hasKey $mm "dnsPolicy" }}
+      dnsPolicy: {{ $mm.dnsPolicy | quote }}
+      {{- end }}
+      {{- if $hostIPC }}
+      hostIPC: true
+      {{- end }}
+      {{- with $mm.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $mm.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $mm.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: mooncake-master
+          image: {{ $mooncakeMasterImage }}
+          imagePullPolicy: {{ $mooncakeMasterImagePullPolicy }}
+          {{- with $mm.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command: [ "/bin/sh", "-ec" ]
+          args:
+            - |
+              export LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH:-}"
+              exec mooncake_master "$@"
+            - mooncake_master
+            {{- range $line := splitList "\n" (default "" $mm.args) }}
+            {{- $trimmed := trim $line }}
+            {{- if and $trimmed (not (hasPrefix "#" $trimmed)) }}
+            {{- range $arg := splitList " " (regexReplaceAll "[ \t]+" $trimmed " ") }}
+            - {{ $arg | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+          env:
+            - name: HOST_IP
+              valueFrom: { fieldRef: { fieldPath: status.hostIP } }
+            - name: POD_IP
+              valueFrom: { fieldRef: { fieldPath: status.podIP } }
+            - name: NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+            {{- with $mm.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: rpc
+              containerPort: {{ default 50088 $service.rpcPort }}
+              {{- if $hostNetwork }}
+              hostPort: {{ default 50088 $service.rpcPort }}
+              {{- end }}
+            - name: metrics
+              containerPort: {{ default 9003 $service.metricsPort }}
+              {{- if $hostNetwork }}
+              hostPort: {{ default 9003 $service.metricsPort }}
+              {{- end }}
+          {{- with $mm.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if $isAscend }}
+          volumeMounts:
+            - name: ascend-driver
+              mountPath: /usr/local/Ascend/driver
+              readOnly: true
+            - name: ascend-dcmi
+              mountPath: /usr/local/dcmi
+              readOnly: true
+            - name: hccn-conf
+              mountPath: /etc/hccn.conf
+              readOnly: true
+          {{- end }}
+      {{- if $isAscend }}
+      volumes:
+        - name: ascend-driver
+          hostPath:
+            path: /usr/local/Ascend/driver
+            type: Directory
+        - name: ascend-dcmi
+          hostPath:
+            path: /usr/local/dcmi
+            type: Directory
+        - name: hccn-conf
+          hostPath:
+            path: /etc/hccn.conf
+            type: File
+      {{- end }}
+{{- end -}}

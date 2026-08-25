@@ -1,0 +1,20 @@
+apiVersion: v2
+name: unified-cache-chart
+description: Unified Cache Kubernetes 一键部署包（kthena-only）；基于 kthena CRD（ModelServing/ModelServer/ModelRoute）支持单机/双机/PD 分离的 vLLM 推理部署
+version: 0.5.0-rc.1
+appVersion: "0.5.0rc1"
+type: application
+
+maintainers:
+  - name: yulei136
+
+keywords:
+  - unified-cache
+  - vllm
+  - llm
+  - inference
+  - ai
+  - gpu
+
+# Kubernetes 版本要求
+kubeVersion: ">=1.19.0"

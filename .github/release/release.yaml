@@ -1,0 +1,40 @@
+kind: ucm-release-policy
+schema_version: 5
+
+runners:
+  amd64: ubuntu-24.04
+  arm64: ubuntu-24.04-arm
+
+products:
+  - id: vllm
+    runtime_repository: docker.io/vllm/vllm-openai
+    target_repository: ghcr.io/{owner}/vllm-openai
+    minimum_version: "0.23.0"
+    channel_policy: latest-stable-or-rc-or-nightly-per-minor
+
+  - id: vllm-ascend
+    runtime_repository: quay.io/ascend/vllm-ascend
+    target_repository: ghcr.io/{owner}/vllm-ascend
+    minimum_version: "0.23.0"
+    channel_policy: latest-stable-or-rc-or-nightly-per-minor
+
+publish:
+  pypi:
+    enabled: false
+    index: https://upload.pypi.org/legacy/
+  ghcr:
+    enabled: true
+  dockerhub:
+    enabled: false
+    namespace: docker.io/{owner}
+  chart_oci:
+    enabled: true
+    namespace: ghcr.io/{owner}/charts
+  github_release:
+    enabled: true
+
+chart:
+  source: charts/unified-cache-chart
+  smoke_values:
+    vllm: charts/unified-cache-chart/models/cuda/values-qwen3-0p6b-1e1.yaml
+    vllm-ascend: charts/unified-cache-chart/models/ascend/values-qwen3-0p6b-1e1.yaml
