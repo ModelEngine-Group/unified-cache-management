@@ -803,10 +803,10 @@ jobs:
           set -euo pipefail
           printf '%s' "${{ github.token }}" | docker login ghcr.io \
             --username "${GITHUB_ACTOR}" --password-stdin
-          mapfile -t members < <(jq -er '.[]' <<<"${MEMBERS}")
-          test "${#members[@]}" -gt 1
+          mapfile -t member_refs < <(jq -er '.[]' <<<"${MEMBERS}")
+          test "${#member_refs[@]}" -gt 1
           docker buildx imagetools create \
-            --tag "${TARGET_REPOSITORY}:${TARGET_TAG}" "${members[@]}"
+            --tag "${TARGET_REPOSITORY}:${TARGET_TAG}" "${member_refs[@]}"
           docker buildx imagetools inspect "${TARGET_REPOSITORY}:${TARGET_TAG}" >/dev/null
 
   post-build-receipt:

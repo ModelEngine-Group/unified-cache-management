@@ -613,7 +613,7 @@ def test_pr_member_and_index_publication_are_separate_dynamic_matrices() -> None
     index_step = indexes["steps"][-1]["run"]
     assert "matrix.members" not in index_step
     assert "jq -er '.[]'" in index_step
-    assert '"${members[@]}"' in index_step
+    assert '"${member_refs[@]}"' in index_step
     assert "-amd64" not in index_step
     assert "-arm64" not in index_step
 
