@@ -74,6 +74,7 @@ plugins:
             Getting Started: 快速开始
             Deploy: 部署
             Capabilities: 核心能力
+            Overview: 概览
             Prefix Cache: 前缀缓存
             Observability: 观测能力
             Metrics: 指标监控
@@ -140,10 +141,13 @@ nav:
       - Getting Started: user-guide/engines/index.md
       - Deploy: user-guide/deploy/index.md
       - Capabilities:
+          - Overview: user-guide/capabilities/index.md
           - Prefix Cache: user-guide/capabilities/prefix-cache/index.md
       - Observability:
+          - Overview: user-guide/observability/index.md
           - Metrics: user-guide/observability/metrics.md
       - Diagnostics:
+          - Overview: user-guide/diagnostics/index.md
           - Trace Mode: user-guide/diagnostics/trace-mode.md
   - Developer Guide:
       - Architecture: developer-guide/architecture.md
