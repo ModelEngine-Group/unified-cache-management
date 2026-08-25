@@ -378,7 +378,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         # If the number of external hit blocks is small, it's possible that the load overhead is larger than the compute of a few blocks.
         # In that case, we can skip loading and directly compute the missed blocks, which can be faster.
         # This threshold can be tuned based on the performance characteristics of the system.
-        self.load_tokens_threshold = self.launch_config.get("load_tokens_threshold", 2048)
+        self.load_tokens_threshold = self.launch_config.get(
+            "load_tokens_threshold", 2048
+        )
 
         if role == KVConnectorRole.SCHEDULER:
             self.fa_store = self._create_fa_store(None)

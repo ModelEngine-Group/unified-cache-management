@@ -1282,7 +1282,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
             return
         if config.get("cache_buffer_capacity_gb") is None:
             config["cache_buffer_capacity_gb"] = 128
-            logger.info("Set cache_buffer_capacity_gb to 128GB for shared-buffer store.")
+            logger.info(
+                "Set cache_buffer_capacity_gb to 128GB for shared-buffer store."
+            )
         # The shared buffer is allocated via shm_open in /dev/shm; fail early
         # (before store creation) if the tmpfs cannot hold it.
         _check_shm_capacity(int(config["cache_buffer_capacity_gb"]))
