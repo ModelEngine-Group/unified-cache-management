@@ -3,7 +3,6 @@ import os
 import re
 import sys
 
-
 TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 UNIFIEDCACHE_VOLUME_NAMES = []
@@ -56,7 +55,7 @@ def choose_volumes(volumes):
 
 def patch_kvcs_store_ids(content, kvcache_store_id):
     updated, count = re.subn(
-        r'(?m)^(\s*kvcs_store_id:\s*).*$',
+        r"(?m)^(\s*kvcs_store_id:\s*).*$",
         lambda match: f'{match.group(1)}"{kvcache_store_id}"',
         content,
     )
@@ -68,7 +67,9 @@ def patch_kvcs_store_ids(content, kvcache_store_id):
 def main():
     import requests
 
-    api_base = f"https://{env('KUBERNETES_SERVICE_HOST')}:{env('KUBERNETES_SERVICE_PORT')}"
+    api_base = (
+        f"https://{env('KUBERNETES_SERVICE_HOST')}:{env('KUBERNETES_SERVICE_PORT')}"
+    )
     pod_name = env("POD_NAME")
     pod_namespace = env("POD_NAMESPACE")
     runtime_ucm_config_path = os.environ.get("UCM_CONFIG_FILE", "").strip()
@@ -104,9 +105,13 @@ def main():
             raise RuntimeError(f"PVC {pvc_name!r} is not yet bound to a PV")
 
         pv = get(session, f"{api_base}/api/v1/persistentvolumes/{pv_name}", headers)
-        kvcache_store_id = (((pv.get("spec") or {}).get("csi") or {}).get("volumeAttributes") or {}).get("kvcacheStoreId")
+        kvcache_store_id = (
+            ((pv.get("spec") or {}).get("csi") or {}).get("volumeAttributes") or {}
+        ).get("kvcacheStoreId")
         if not kvcache_store_id:
-            raise RuntimeError(f"PV {pv_name!r} missing csi.volumeAttributes.kvcacheStoreId")
+            raise RuntimeError(
+                f"PV {pv_name!r} missing csi.volumeAttributes.kvcacheStoreId"
+            )
         kvcache_store_ids.append(kvcache_store_id)
         selected_volume_names.append(selected_volume["name"])
 

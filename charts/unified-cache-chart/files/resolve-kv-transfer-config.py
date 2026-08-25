@@ -52,7 +52,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterable, Mapping, Sequence
 
-
 SCHEMA_VERSION = 1
 ENGINE_ID_SENTINEL = "__UC_ENGINE_ID__"
 KV_PORT_SENTINEL = "__UC_KV_PORT__"
@@ -153,7 +152,9 @@ def _find_key_paths(value: Any, wanted: str, path: str = "$") -> list[str]:
     return paths
 
 
-def _connector_children(config: Mapping[str, Any], path: str) -> list[Mapping[str, Any]]:
+def _connector_children(
+    config: Mapping[str, Any], path: str
+) -> list[Mapping[str, Any]]:
     extra = config.get("kv_connector_extra_config")
     if extra is None:
         return []
@@ -543,9 +544,7 @@ def resolve_kv_transfer_config(
         role_ordinal = _parse_ordinal(
             role_id, f"{role_name}-", "modelserving.volcano.sh/role-id"
         )
-        role_replicas = (
-            prefill_replicas if role_kind == "producer" else decode_replicas
-        )
+        role_replicas = prefill_replicas if role_kind == "producer" else decode_replicas
         if role_ordinal >= role_replicas:
             raise ResolutionError(
                 f"role ordinal {role_ordinal} is outside {role_kind} replica "
@@ -554,9 +553,7 @@ def resolve_kv_transfer_config(
 
         per_group = prefill_replicas + decode_replicas
         role_offset = (
-            role_ordinal
-            if role_kind == "producer"
-            else prefill_replicas + role_ordinal
+            role_ordinal if role_kind == "producer" else prefill_replicas + role_ordinal
         )
         instance_index = group_ordinal * per_group + role_offset
         engine_id = str(engine_id_base + instance_index)

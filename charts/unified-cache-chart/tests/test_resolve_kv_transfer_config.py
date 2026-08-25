@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
-import importlib.util
 import ctypes
+import importlib.util
 import io
 import json
 import os
@@ -16,7 +16,6 @@ from contextlib import redirect_stderr, redirect_stdout
 from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
-
 
 ROOT = Path(__file__).resolve().parents[1]
 RESOLVER_PATH = ROOT / "files" / "resolve-kv-transfer-config.py"
@@ -55,9 +54,7 @@ def nixl_template(*, role: str = "producer") -> dict:
     }
 
 
-def multi_template(
-    *, connector: str = "MooncakeConnectorV1"
-) -> dict:
+def multi_template(*, connector: str = "MooncakeConnectorV1") -> dict:
     mooncake = {
         "kv_connector": connector,
         "kv_role": "kv_producer",
@@ -79,9 +76,7 @@ def multi_template(
                 {
                     "kv_connector": "UCMConnector",
                     "kv_role": "kv_both",
-                    "kv_connector_module_path": (
-                        "ucm.integration.vllm.ucm_connector"
-                    ),
+                    "kv_connector_module_path": ("ucm.integration.vllm.ucm_connector"),
                     "kv_connector_extra_config": {
                         "UCM_CONFIG_FILE": (
                             "/vllm-workspace/UnifiedCache/config/"
@@ -116,8 +111,7 @@ def pd_meta(
         "dynamicIdentity": True,
         "connector": connector,
         "roleKind": role_kind,
-        "roleName": role_name
-        or ("prefill" if role_kind == "producer" else "decode"),
+        "roleName": role_name or ("prefill" if role_kind == "producer" else "decode"),
         "groupNamePrefix": "demo-",
         "prefillReplicas": prefill_replicas,
         "decodeReplicas": decode_replicas,
@@ -183,17 +177,13 @@ class IdentityFormulaTests(unittest.TestCase):
     def test_second_serving_group_uses_next_identity_block(self) -> None:
         producer = resolve(
             mooncake_template(role="producer"),
-            pd_meta(
-                role_kind="producer", prefill_replicas=2, decode_replicas=2
-            ),
+            pd_meta(role_kind="producer", prefill_replicas=2, decode_replicas=2),
             "demo-1",
             "prefill-0",
         )
         consumer = resolve(
             mooncake_template(role="consumer"),
-            pd_meta(
-                role_kind="consumer", prefill_replicas=2, decode_replicas=2
-            ),
+            pd_meta(role_kind="consumer", prefill_replicas=2, decode_replicas=2),
             "demo-1",
             "decode-1",
         )
@@ -274,7 +264,9 @@ class ValidationTests(unittest.TestCase):
                 self.assert_resolution_error(pattern, group=group, role_id=role_id)
 
     def test_role_ordinal_must_be_in_replica_range(self) -> None:
-        self.assert_resolution_error("outside producer replica range", role_id="prefill-2")
+        self.assert_resolution_error(
+            "outside producer replica range", role_id="prefill-2"
+        )
 
     def test_stride_has_absolute_and_parallel_span_minimum(self) -> None:
         meta = pd_meta(instance_stride=99)
@@ -317,11 +309,15 @@ class ValidationTests(unittest.TestCase):
     def test_embedded_and_unknown_sentinels_are_rejected(self) -> None:
         embedded = deepcopy(self.template)
         embedded["note"] = f"prefix-{resolver.ENGINE_ID_SENTINEL}"
-        self.assert_resolution_error("unresolved KV-transfer sentinel", template=embedded)
+        self.assert_resolution_error(
+            "unresolved KV-transfer sentinel", template=embedded
+        )
 
         unknown = deepcopy(self.template)
         unknown["note"] = "__UC_UNKNOWN_FIELD__"
-        self.assert_resolution_error("unresolved KV-transfer sentinel", template=unknown)
+        self.assert_resolution_error(
+            "unresolved KV-transfer sentinel", template=unknown
+        )
 
     def test_nixl_rejects_port_identity(self) -> None:
         meta = pd_meta(connector="NixlConnector", role_kind="producer")
@@ -520,7 +516,11 @@ class RegistryProbeTests(unittest.TestCase):
         modules, observed = self.fake_vllm_modules()
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with patch.dict(sys.modules, modules), redirect_stdout(stdout), redirect_stderr(stderr):
+        with (
+            patch.dict(sys.modules, modules),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
             resolver._probe_connector_registry(multi_template())
         self.assertEqual(
             observed, ["MultiConnector", "MooncakeConnectorV1", "UCMConnector"]
@@ -546,9 +546,10 @@ class RegistryProbeTests(unittest.TestCase):
         saved_stdout = os.dup(1)
         saved_stderr = os.dup(2)
         try:
-            with tempfile.TemporaryFile(mode="w+b") as stdout_file, tempfile.TemporaryFile(
-                mode="w+b"
-            ) as stderr_file:
+            with (
+                tempfile.TemporaryFile(mode="w+b") as stdout_file,
+                tempfile.TemporaryFile(mode="w+b") as stderr_file,
+            ):
                 sys.stdout.flush()
                 sys.stderr.flush()
                 os.dup2(stdout_file.fileno(), 1)
@@ -623,10 +624,13 @@ class CliTests(unittest.TestCase):
                 encoding="utf-8",
             )
             stdout = io.StringIO()
-            with patch.dict(
-                os.environ,
-                {"UC_PD_GROUP_NAME": "demo-0", "UC_PD_ROLE_ID": "prefill-0"},
-            ), redirect_stdout(stdout):
+            with (
+                patch.dict(
+                    os.environ,
+                    {"UC_PD_GROUP_NAME": "demo-0", "UC_PD_ROLE_ID": "prefill-0"},
+                ),
+                redirect_stdout(stdout),
+            ):
                 result = resolver.main(
                     [
                         "--template",
@@ -649,8 +653,10 @@ class CliTests(unittest.TestCase):
             meta_path.write_text(json.dumps(pd_meta()), encoding="utf-8")
             stdout = io.StringIO()
             stderr = io.StringIO()
-            with patch.dict(sys.modules, modules), redirect_stdout(stdout), redirect_stderr(
-                stderr
+            with (
+                patch.dict(sys.modules, modules),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
             ):
                 result = resolver.main(
                     [
