@@ -99,8 +99,15 @@ its layer:
 | Dashboard | Metric scope |
 |-----------|--------------|
 | `examples/metrics/grafana_connector.json` | Common and connector-specific metrics, including Layerwise. |
-| `examples/metrics/grafana_pipeline_store.json` | Cache, Mooncake, and Posix Store performance metrics. |
+| `examples/metrics/grafana_store.json` | Cache, Mooncake, and Posix Store performance metrics. |
 | `examples/metrics/grafana_vllm.json` | vLLM service-side metrics. |
+
+After changing one of these dashboards, regenerate the matching Metrics View
+configurations:
+
+```bash
+python examples/metrics/generate_metrics_view_configs.py
+```
 
 The dashboards use a `job` selector with regex matching, so the default **All**
 selection also works for metrics without a `job` label.

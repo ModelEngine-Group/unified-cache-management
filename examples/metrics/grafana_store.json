@@ -195,7 +195,7 @@
   "timezone": "",
   "weekStart": "",
   "refresh": "",
-  "title": "vLLM - UCM Pipeline Store (vLLM Metrics)",
+  "title": "vLLM - UCM Store (vLLM Metrics)",
   "uid": "ucm-vllm-pipeline-store",
   "version": 3,
   "id": null,
@@ -203,7 +203,7 @@
     "ucm-vllm-connector-metrics",
     "pipeline-store"
   ],
-  "description": "UCM Pipeline Store 性能指标，按 Cache、Mooncake 和 Posix Store 分组。同组其他 UCM dashboard 可通过页头链接访问。",
+  "description": "UCM Store 性能指标，按 Cache、Mooncake 和 Posix Store 分组。同组其他 UCM dashboard 可通过页头链接访问。",
   "links": [
     {
       "type": "dashboards",

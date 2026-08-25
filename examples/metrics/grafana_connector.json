@@ -224,7 +224,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "- `Load`：`rate(ucm:load_bytes_total) / 1e9`；Connector 聚合加载带宽，包含任务间的空闲时间。代码位置：`ucm/integration/vllm/ucm_connector.py` / `UCMDirectConnector.start_load_kv` / Load 完成后。\n- `Save`：`rate(ucm:save_bytes_total) / 1e9`；Connector 聚合保存带宽，包含任务间的空闲时间。代码位置：`ucm/integration/vllm/ucm_connector.py` / `UCMDirectConnector.wait_for_save` / Dump 提交后。",
+      "description": "- `Load`：`rate(ucm:load_bytes_total) / 1e9`；Connector 聚合加载带宽，包含任务间的空闲时间。代码位置：`ucm/integration/vllm/ucm_connector.py` / `UCMDirectConnector.start_load_kv`、`UCMLayerWiseConnector.wait_for_layer_load`，`ucm/integration/vllm/hla_connector.py` / `UCMHybridLinearAttentionLayerWiseConnector._record_layerwise_load_bytes`，`ucm/integration/vllm/hma_connector.py` / `UCMFAWAConnector._wait_all_load_task` / Load 完成后。\n- `Save`：`rate(ucm:save_bytes_total) / 1e9`；Connector 聚合保存带宽，包含任务间的空闲时间。代码位置：`ucm/integration/vllm/ucm_connector.py`、`ucm/integration/vllm/hla_connector.py`、`ucm/integration/vllm/hma_connector.py` / 各 Connector 的 `wait_for_save` / Dump 成功提交后。",
       "fieldConfig": {
         "defaults": {
           "color": {

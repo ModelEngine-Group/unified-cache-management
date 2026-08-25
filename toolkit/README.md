@@ -113,6 +113,17 @@ ucm-toolkit clean TOOL --dry-run
 ucm-toolkit run metrics-view list-configs
 ```
 
+内置配置与 Grafana dashboard 的对应关系如下：
+
+| Metrics View 配置 | Grafana dashboard |
+| `metrics_lite` | 常用指标的精简集合 |
+| --- | --- |
+| `vllm` | `examples/metrics/grafana_vllm.json` |
+| `connector` | `examples/metrics/grafana_connector.json` |
+| `store` | `examples/metrics/grafana_store.json` |
+
+`vllm`、`connector` 和 `store` 会展示对应 Grafana dashboard 的全部数据。单曲线数据使用面板名，多曲线数据使用 `<面板名>: <曲线名>`。
+
 
 ### 使用check查看启动以来的统计：
 

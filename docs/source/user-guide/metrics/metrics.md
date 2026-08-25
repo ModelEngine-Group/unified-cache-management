@@ -203,11 +203,11 @@ UCM provides these dashboards:
 | File | Purpose |
 | --- | --- |
 | `examples/metrics/grafana_vllm.json` | vLLM request latency, token throughput, scheduler state, cache state, Store health, and probe trends |
-| `examples/metrics/grafana_connector.json` | Common vLLM Connector interface duration and Layerwise load duration |
-| `examples/metrics/grafana_pipeline_store.json` | Cache, Mooncake, and Posix Store performance metrics grouped by Store |
+| `examples/metrics/grafana_connector.json` | Connector aggregate bandwidth, common interface duration, and Layerwise load duration |
+| `examples/metrics/grafana_store.json` | Cache, Mooncake, and Posix Store performance metrics grouped by Store |
 
 The `job` selector defaults to **All**. UCM dashboards also provide Aggregated/Per Worker views and a `worker_rank` filter.
-In the Pipeline Store dashboard, Cache and Posix are expanded by default, while Mooncake is collapsed.
+In the Store dashboard, Cache and Posix are expanded by default, while Mooncake is collapsed.
 
 Use these aggregation rules:
 
@@ -235,6 +235,20 @@ List built-in configurations:
 ucm-toolkit run metrics-view list-configs
 ```
 
+The built-in configurations correspond to the Grafana dashboards:
+
+| Metrics View configuration | Grafana dashboard |
+| --- | --- |
+| `vllm` | `examples/metrics/grafana_vllm.json` |
+| `connector` | `examples/metrics/grafana_connector.json` |
+| `store` | `examples/metrics/grafana_store.json` |
+| `metrics_lite` | A compact selection of commonly used metrics |
+
+The `vllm`, `connector`, and `store` configurations expose every query shown by
+the corresponding dashboard. A panel with one data series uses the panel title
+as its name. For a panel with multiple series, the name is
+`<panel title>: <series name>`.
+
 ### 4.1 Inspect the Current Snapshot
 
 `check` fetches the current `/metrics` snapshot and displays cumulative results since service startup:
@@ -242,7 +256,7 @@ ucm-toolkit run metrics-view list-configs
 ```bash
 ucm-toolkit run metrics-view check \
   --url http://127.0.0.1:8000/metrics \
-  --config metrics_lite
+  --config vllm
 ```
 
 GQA/MHA models use the default parameters. For MLA models, pass the actual service TP size. For example, for TP=8:
@@ -315,7 +329,7 @@ Check the following:
 ## Related Documentation
 
 - [UCM Health Metrics](health_metrics.md): health probes, circuit-breaker state, and aggregation.
-- [UCM Metrics Reference](metrics_list.md): complete metric list.
+- [UCM Metrics Reference](metrics_list.md): metric names, types, semantics, and raw usage.
 
 ```{toctree}
 :maxdepth: 1

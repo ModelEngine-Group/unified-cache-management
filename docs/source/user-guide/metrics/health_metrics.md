@@ -89,7 +89,7 @@ clamp_min(
 )
 ```
 
-This is also the basic aggregation used by the health-state count panels in the UCM Overview dashboard. Calculate Posix and Mooncake counts separately so their states are not mixed.
+This is also the basic aggregation used by the health-state count panels in the bottom **Store Health Metrics** group of the vLLM dashboard. Calculate Posix and Mooncake counts separately so their states are not mixed.
 
 #### Understanding the Store Count
 

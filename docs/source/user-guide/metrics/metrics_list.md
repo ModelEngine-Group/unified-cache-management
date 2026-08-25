@@ -2,7 +2,7 @@
 
 ## 1. Metrics Exported by Default
 
-The tables below use the default `ucm:` prefix. The default configuration contains 78 Counters, 14 Gauges, and 67 Histograms.
+The tables below use the default `ucm:` prefix. The default configuration contains 78 Counters, 14 Gauges, and 64 Histograms.
 
 See [UCM Health Metrics](health_metrics.md) for Store health metrics and recommended aggregation.
 
@@ -12,8 +12,8 @@ See [UCM Health Metrics](health_metrics.md) for Store health metrics and recomme
 
 | Metric                                  | Description                                                       |
 | --------------------------------------- | ----------------------------------------------------------------- |
-| `ucm:load_bytes_total`                | Cumulative bytes loaded by all`start_load_kv` calls             |
-| `ucm:save_bytes_total`                | Cumulative bytes saved by all`wait_for_save` calls              |
+| `ucm:load_bytes_total`                | Cumulative bytes successfully loaded through Connector transfer paths |
+| `ucm:save_bytes_total`                | Cumulative bytes successfully submitted through Connector save paths  |
 | `ucm:total_prefix_query_tokens_total` | Total prefix-cache query tokens observed by the UCM Connector     |
 | `ucm:gpu_hbm_hit_tokens_total`        | Prefix tokens already found in GPU/HBM before UCM Lookup          |
 | `ucm:ucm_hit_tokens_total`            | Prefix tokens hit by the UCM Connector                            |
@@ -28,28 +28,28 @@ No Connector-specific Gauges are exported by default.
 
 | Metric                                                    | Description                                                                |
 | --------------------------------------------------------- | -------------------------------------------------------------------------- |
-| `ucm:save_duration`                                     | Duration from entering`wait_for_save` until asynchronous Dump completion |
+| `ucm:save_duration`                                     | Duration from entering `wait_for_save` until asynchronous Dump completion |
 | `ucm:save_completion_wait_duration`                     | Time actually blocked while confirming asynchronous Dump completion        |
 | `ucm:interval_lookup_hit_rates`                         | Per-request UCM Lookup hit-rate distribution                               |
-| `ucm:connector_get_block_size_duration_ms`              | Duration of Connector interface`get_block_size`                          |
-| `ucm:connector_get_kv_connector_stats_duration_ms`      | Duration of Connector interface`get_kv_connector_stats`                  |
-| `ucm:connector_get_num_new_matched_tokens_duration_ms`  | Duration of Connector interface`get_num_new_matched_tokens`              |
-| `ucm:connector_update_state_after_alloc_duration_ms`    | Duration of Connector interface`update_state_after_alloc`                |
-| `ucm:connector_register_kv_caches_duration_ms`          | Duration of Connector interface`register_kv_caches`                      |
-| `ucm:connector_build_connector_meta_duration_ms`        | Duration of Connector interface`build_connector_meta`                    |
-| `ucm:connector_bind_connector_metadata_duration_ms`     | Duration of Connector interface`bind_connector_metadata`                 |
-| `ucm:connector_handle_preemptions_duration_ms`          | Duration of Connector interface`handle_preemptions`                      |
-| `ucm:connector_has_connector_metadata_duration_ms`      | Duration of Connector interface`has_connector_metadata`                  |
-| `ucm:connector_start_load_kv_duration_ms`               | Duration of Connector interface`start_load_kv`                           |
-| `ucm:connector_wait_for_layer_load_duration_ms`         | Duration of Connector interface`wait_for_layer_load`                     |
-| `ucm:connector_save_kv_layer_duration_ms`               | Duration of Connector interface`save_kv_layer`                           |
-| `ucm:connector_wait_for_save_duration_ms`               | Duration of Connector interface`wait_for_save`                           |
-| `ucm:connector_request_finished_all_groups_duration_ms` | Duration of Connector interface`request_finished_all_groups`             |
-| `ucm:connector_request_finished_duration_ms`            | Duration of Connector interface`request_finished`                        |
-| `ucm:connector_get_finished_duration_ms`                | Duration of Connector interface`get_finished`                            |
-| `ucm:connector_build_connector_worker_meta_duration_ms` | Duration of Connector interface`build_connector_worker_meta`             |
-| `ucm:connector_update_connector_output_duration_ms`     | Duration of Connector interface`update_connector_output`                 |
-| `ucm:connector_clear_connector_metadata_duration_ms`    | Duration of Connector interface`clear_connector_metadata`                |
+| `ucm:connector_get_block_size_duration_ms`              | Duration of Connector interface `get_block_size`                          |
+| `ucm:connector_get_kv_connector_stats_duration_ms`      | Duration of Connector interface `get_kv_connector_stats`                  |
+| `ucm:connector_get_num_new_matched_tokens_duration_ms`  | Duration of Connector interface `get_num_new_matched_tokens`              |
+| `ucm:connector_update_state_after_alloc_duration_ms`    | Duration of Connector interface `update_state_after_alloc`                |
+| `ucm:connector_register_kv_caches_duration_ms`          | Duration of Connector interface `register_kv_caches`                      |
+| `ucm:connector_build_connector_meta_duration_ms`        | Duration of Connector interface `build_connector_meta`                    |
+| `ucm:connector_bind_connector_metadata_duration_ms`     | Duration of Connector interface `bind_connector_metadata`                 |
+| `ucm:connector_handle_preemptions_duration_ms`          | Duration of Connector interface `handle_preemptions`                      |
+| `ucm:connector_has_connector_metadata_duration_ms`      | Duration of Connector interface `has_connector_metadata`                  |
+| `ucm:connector_start_load_kv_duration_ms`               | Duration of Connector interface `start_load_kv`                           |
+| `ucm:connector_wait_for_layer_load_duration_ms`         | Duration of Connector interface `wait_for_layer_load`                     |
+| `ucm:connector_save_kv_layer_duration_ms`               | Duration of Connector interface `save_kv_layer`                           |
+| `ucm:connector_wait_for_save_duration_ms`               | Duration of Connector interface `wait_for_save`                           |
+| `ucm:connector_request_finished_all_groups_duration_ms` | Duration of Connector interface `request_finished_all_groups`             |
+| `ucm:connector_request_finished_duration_ms`            | Duration of Connector interface `request_finished`                        |
+| `ucm:connector_get_finished_duration_ms`                | Duration of Connector interface `get_finished`                            |
+| `ucm:connector_build_connector_worker_meta_duration_ms` | Duration of Connector interface `build_connector_worker_meta`             |
+| `ucm:connector_update_connector_output_duration_ms`     | Duration of Connector interface `update_connector_output`                 |
+| `ucm:connector_clear_connector_metadata_duration_ms`    | Duration of Connector interface `clear_connector_metadata`                |
 | `ucm:layerwise_layer_load_duration_ms`                  | Per-layer wall-clock time from layer load start to `wait_for_layer_load` return |
 | `ucm:layerwise_batch_load_duration_sum_ms`              | Sum of per-layer load durations within one Layerwise batch               |
 
@@ -81,7 +81,7 @@ No Cache Store-specific Gauges are exported by default.
 
 | Metric                                        | Description                                                                              |
 | --------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `ucm:cache_lookup_duration_ms`              | Wall-clock time of one Cache buffer`Lookup`/`LookupOnPrefix` call                    |
+| `ucm:cache_lookup_duration_ms`              | Cache buffer scan time for `Lookup`, `LookupOnPrefix`, or `LookupOnReverse`; no samples are produced when shared memory is disabled because Lookup goes directly to the lower Store |
 | `ucm:cache_lookup_backend_duration_ms`      | Backend Lookup wall-clock time when there is no buffer or the buffer misses              |
 | `ucm:cache_load_duration_ms`                | End-to-end Cache-stage Load task duration                                                |
 | `ucm:cache_dump_duration_ms`                | End-to-end Cache-stage Dump task duration                                                |

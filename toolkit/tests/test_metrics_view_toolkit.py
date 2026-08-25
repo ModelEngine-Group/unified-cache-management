@@ -34,7 +34,11 @@ class MetricsViewToolkitTest(unittest.TestCase):
             result = main(["run", "metrics-view", "list-configs"])
 
         self.assertEqual(result, 0)
-        self.assertIn("metrics_lite", output.getvalue())
+        configs = output.getvalue()
+        self.assertIn("metrics_lite", configs)
+        self.assertIn("vllm", configs)
+        self.assertIn("connector", configs)
+        self.assertIn("store", configs)
 
     def test_doctor_does_not_report_metrics_view_environment_checks(self):
         output = io.StringIO()

@@ -255,7 +255,7 @@ fake_ucmmetrics = FakeUcmMetrics()
 GRAFANA_VLLM_UCM_TAG = "ucm-vllm-connector-metrics"
 GRAFANA_UCM_DASHBOARDS = [
     "grafana_connector.json",
-    "grafana_pipeline_store.json",
+    "grafana_store.json",
 ]
 CONNECTOR_INTERFACE_METHODS = {
     "get_block_size",
@@ -2071,8 +2071,8 @@ def test_grafana_dashboards_use_isolated_vllm_ucm_identity():
             "vLLM - UCM Connector (vLLM Metrics)",
             "ucm-vllm-connector-overview",
         ),
-        "grafana_pipeline_store.json": (
-            "vLLM - UCM Pipeline Store (vLLM Metrics)",
+        "grafana_store.json": (
+            "vLLM - UCM Store (vLLM Metrics)",
             "ucm-vllm-pipeline-store",
         ),
         "grafana_vllm.json": (
@@ -2641,7 +2641,7 @@ def test_health_breaker_store_links_metrics_target_for_metrics_api_includes():
 
 def test_pipeline_dashboard_orders_cache_bandwidth_rows():
     dashboard = json.loads(
-        (REPO_ROOT / "examples" / "metrics" / "grafana_pipeline_store.json").read_text(
+        (REPO_ROOT / "examples" / "metrics" / "grafana_store.json").read_text(
             encoding="utf-8"
         )
     )
@@ -2690,7 +2690,7 @@ def test_pipeline_dashboard_orders_cache_bandwidth_rows():
 
 def test_pipeline_dashboard_cache_load_breakdown_uses_backend_submit():
     dashboard = json.loads(
-        (REPO_ROOT / "examples" / "metrics" / "grafana_pipeline_store.json").read_text(
+        (REPO_ROOT / "examples" / "metrics" / "grafana_store.json").read_text(
             encoding="utf-8"
         )
     )
@@ -2737,7 +2737,7 @@ def test_pipeline_dashboard_cache_load_breakdown_uses_backend_submit():
 
 def test_pipeline_dashboard_groups_performance_stores_in_order():
     dashboard = json.loads(
-        (REPO_ROOT / "examples" / "metrics" / "grafana_pipeline_store.json").read_text(
+        (REPO_ROOT / "examples" / "metrics" / "grafana_store.json").read_text(
             encoding="utf-8"
         )
     )
@@ -2750,7 +2750,7 @@ def test_pipeline_dashboard_groups_performance_stores_in_order():
         in {"Cache Store", "YuanRong Store", "Mooncake Store", "Posix Store"}
     ]
 
-    assert dashboard["title"] == "vLLM - UCM Pipeline Store (vLLM Metrics)"
+    assert dashboard["title"] == "vLLM - UCM Store (vLLM Metrics)"
     assert store_titles == [
         "Cache Store",
         "Mooncake Store",
@@ -2787,7 +2787,7 @@ def test_pipeline_dashboard_groups_performance_stores_in_order():
 
 def test_pipeline_dashboard_contains_only_performance_panels_with_chinese_hints():
     dashboard = json.loads(
-        (REPO_ROOT / "examples" / "metrics" / "grafana_pipeline_store.json").read_text(
+        (REPO_ROOT / "examples" / "metrics" / "grafana_store.json").read_text(
             encoding="utf-8"
         )
     )

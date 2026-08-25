@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import io
 import json
 import math
@@ -29,6 +30,7 @@ from terminal_view_metrics.config import (
 from terminal_view_metrics.parser import parse_prometheus_text
 from terminal_view_metrics.query import QueryEngine
 from terminal_view_metrics.render import render_json, render_table
+from terminal_view_metrics.snapshot import SnapshotQueryEngine
 from terminal_view_metrics.storage import MetricsStore
 
 
@@ -1006,11 +1008,14 @@ vllm:num_requests_running{worker_id="1"} 5
             & metric_names_for_scrape(config)
         )
 
-    def test_preset_configs_use_explicit_aggregate_without_group_by(self):
+    def test_preset_configs_use_explicit_aggregate(self):
         self.assertEqual(
             [path.name for path in list_preset_configs()],
             [
+                "connector.json",
                 "metrics_lite.json",
+                "store.json",
+                "vllm.json",
             ],
         )
         for path in list_preset_configs():
@@ -1018,10 +1023,55 @@ vllm:num_requests_running{worker_id="1"} 5
             for metric in config.get("metrics", []):
                 self.assertIn("aggregate", metric, path.name)
                 self.assertIn(metric["aggregate"], {"sum", "avg", "max"}, path.name)
-                self.assertNotIn("group_by", metric, path.name)
+                if "group_by" in metric:
+                    self.assertIsInstance(metric["group_by"], list, path.name)
                 if metric.get("type") == "histogram":
                     self.assertTrue(metric.get("avg"), path.name)
                     self.assertEqual(metric.get("quantiles"), [0.5, 0.9, 0.99])
+
+        for metric in load_config("metrics_lite").get("metrics", []):
+            self.assertNotIn("group_by", metric)
+
+    def test_dashboard_presets_parse_every_expression(self):
+        engine = SnapshotQueryEngine([])
+
+        for name in ("vllm", "connector", "store"):
+            config = load_config(name)
+            for metric in config["metrics"]:
+                engine.query_config({"metrics": [metric]})
+
+    def test_dashboard_presets_match_grafana_dashboards(self):
+        script = TOOLKIT_ROOT.parent / "examples" / "metrics"
+        script = script / "generate_metrics_view_configs.py"
+        module_spec = importlib.util.spec_from_file_location(
+            "generate_metrics_view_configs", script
+        )
+        self.assertIsNotNone(module_spec)
+        self.assertIsNotNone(module_spec.loader)
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+
+        for name, dashboard in module.DASHBOARDS.items():
+            self.assertEqual(load_config(name), module.build_config(name, dashboard))
+
+    def test_dashboard_presets_render_dynamic_grafana_line_names(self):
+        samples = parse_prometheus_text(
+            """
+ucm:cache_load_errors_total{model_name="qwen"} 2
+vllm:request_prompt_tokens_bucket{model_name="qwen",le="16"} 3
+vllm:request_prompt_tokens_bucket{model_name="qwen",le="+Inf"} 3
+"""
+        )
+        engine = SnapshotQueryEngine(samples)
+
+        connector_rows = engine.query_config(load_config("connector"))
+        vllm_rows = engine.query_config(load_config("vllm"))
+
+        self.assertIn(
+            "Failure Counts by Type: cache_load_errors_total",
+            {row.metric for row in connector_rows},
+        )
+        self.assertIn("Request Prompt Length: 16", {row.metric for row in vllm_rows})
 
     def test_metrics_lite_preset_does_not_require_tp_size(self):
         self.assertNotIn("params", load_config("metrics_lite"))
