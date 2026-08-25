@@ -100,6 +100,7 @@ class UnifiedCacheStoreConfig:
         tensor_size = page_bytes if storage_config.is_mla_model else page_bytes // 2
         block_size = tensor_size * (1 if storage_config.is_mla_model else 2)
         is_kv_split = mem_pool_host.layout == "page_first_kv_split"
+        use_cache_pipeline = storage_config.is_mla_model
 
         ucm_cfg = kvc.get("ucm_connector_config")
         name = kvc.get("ucm_connector_name")
@@ -114,8 +115,12 @@ class UnifiedCacheStoreConfig:
             )
 
         cfg = dict(ucm_cfg)
-        if is_kv_split:
-            tensor_sizes = _page_first_kv_split_tensor_sizes(mem_pool_host)
+        if use_cache_pipeline:
+            tensor_sizes = (
+                _page_first_kv_split_tensor_sizes(mem_pool_host)
+                if is_kv_split
+                else [page_bytes]
+            )
             payload_size = sum(tensor_sizes)
             io_direct = bool(cfg.get("io_direct", False))
             block_size = (
@@ -127,7 +132,7 @@ class UnifiedCacheStoreConfig:
             cfg.pop("tensor_size", None)
             cfg["tensor_size_list"] = tensor_sizes
             cfg["cache_use_host_buffer"] = True
-            # Host pointers must never enter the Ascend SDMA or GDR paths.
+            # Host pointers must never enter device SDMA or GDR paths.
             cfg["cache_sdma_direct"] = False
             cfg["use_gdr"] = False
             cfg.pop("gpu_kv_buffer_addrs", None)
@@ -140,7 +145,7 @@ class UnifiedCacheStoreConfig:
             if not cfg.get("unique_id"):
                 tensor_fingerprint = "-".join(str(size) for size in tensor_sizes)
                 cfg["unique_id"] = (
-                    f"sglang-{safe_model_name}-page-first-kv-split-"
+                    f"sglang-{safe_model_name}-{mem_pool_host.layout}-"
                     f"tp{storage_config.tp_size}-{tensor_fingerprint}"
                 )
         else:
@@ -192,6 +197,15 @@ class SglangUcmConnector:
             if self.is_kv_split
             else []
         )
+        self.cache_tensor_sizes = (
+            self.split_tensor_sizes
+            if self.is_kv_split
+            else (
+                [self.page_size * mem_pool_host.get_size_per_token()]
+                if self.is_mla
+                else []
+            )
+        )
 
         self.config_suffix = self._build_config_suffix()
 
@@ -224,16 +238,14 @@ class SglangUcmConnector:
 
     def _build_config_suffix(self) -> str:
         model_name = "-".join(self.model.split("/")) if self.model else ""
-        if self.is_kv_split:
+        if self.is_mla:
             tensor_fingerprint = "-".join(
-                str(size) for size in self.split_tensor_sizes
+                str(size) for size in self.cache_tensor_sizes
             )
             return (
-                f"_{model_name}_page_first_kv_split_p{self.page_size}_"
+                f"_{model_name}_{self.mem_pool_host.layout}_p{self.page_size}_"
                 f"tp{self.tp_size}_{tensor_fingerprint}"
             )
-        if self.is_mla:
-            return f"_{model_name}"
         return f"_{model_name}_{self.tp_rank}_{self.tp_size}"
 
     def _get_physical_key(self, logical_key: str) -> str:
