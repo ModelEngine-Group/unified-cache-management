@@ -46,6 +46,8 @@ struct Config {
     size_t dataDirShardBytes{3};
     bool posixGcEnable{true};
     double posixGcRecyclePercent{0.1};
+    bool posixGcPreciseMode{true};
+    double posixGcCandidateExtraPercent{0.1};
     size_t posixGcConcurrency{16};
     size_t posixGcCheckIntervalSec{30};
     size_t posixCapacityGb{0};
