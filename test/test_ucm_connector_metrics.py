@@ -1672,7 +1672,7 @@ def test_connector_dashboard_layout_and_metrics():
 
     assert "UCM Connector 性能指标" in dashboard["description"]
     described_panels = [panel for panel in panels if panel.get("description")]
-    assert len(described_panels) == 10
+    assert len(described_panels) == 12
     assert all(
         any("\u4e00" <= char <= "\u9fff" for char in panel["description"])
         for panel in described_panels
@@ -1709,9 +1709,16 @@ def test_connector_dashboard_layout_and_metrics():
         assert panel["title"] == f"Connector method duration: {method}"
         assert panel["gridPos"] == grid
         assert panel["fieldConfig"]["defaults"]["unit"] == "ms"
-        assert len(panel["targets"]) == 3
+        assert len(panel["targets"]) == 4
         assert [
-            target["expr"].split(",", maxsplit=1)[0] for target in panel["targets"]
+            target["legendFormat"].split(" ", maxsplit=1)[0]
+            for target in panel["targets"]
+        ] == ["avg", "p50", "p90", "p99"]
+        average_expr = panel["targets"][0]["expr"]
+        assert f"ucm:connector_{method}_duration_ms_sum" in average_expr
+        assert f"ucm:connector_{method}_duration_ms_count" in average_expr
+        assert [
+            target["expr"].split(",", maxsplit=1)[0] for target in panel["targets"][1:]
         ] == [
             "histogram_quantile(0.5",
             "histogram_quantile(0.9",
@@ -1719,40 +1726,51 @@ def test_connector_dashboard_layout_and_metrics():
         ]
         assert all(
             f"ucm:connector_{method}_duration_ms_bucket" in target["expr"]
-            for target in panel["targets"]
+            for target in panel["targets"][1:]
         )
 
     other_methods = CONNECTOR_INTERFACE_METHODS - set(critical_methods)
-    other_panels = panels[6:8]
+    other_panels = panels[6:10]
     assert [panel["title"] for panel in other_panels] == [
+        "Other Connector Interfaces (Avg)",
         "Other Connector Interfaces (P50)",
+        "Other Connector Interfaces (P90)",
         "Other Connector Interfaces (P99)",
     ]
     assert [panel["gridPos"] for panel in other_panels] == [
         {"h": 8, "w": 12, "x": 0, "y": 24},
         {"h": 8, "w": 12, "x": 12, "y": 24},
+        {"h": 8, "w": 12, "x": 0, "y": 32},
+        {"h": 8, "w": 12, "x": 12, "y": 32},
     ]
-    for panel, quantile in zip(other_panels, ("0.5", "0.99"), strict=True):
+    for panel, quantile in zip(other_panels, (None, "0.5", "0.9", "0.99"), strict=True):
         assert len(panel["targets"]) == len(other_methods)
         assert {
-            re.search(r"ucm:connector_([a-z0-9_]+)_duration_ms_bucket", target["expr"])[
-                1
-            ]
+            re.search(
+                r"ucm:connector_([a-z0-9_]+)_duration_ms_(?:bucket|sum)",
+                target["expr"],
+            )[1]
             for target in panel["targets"]
         } == other_methods
-        assert all(
-            target["expr"].startswith(f"histogram_quantile({quantile},")
-            for target in panel["targets"]
-        )
+        if quantile is None:
+            assert all(
+                "_sum" in target["expr"] and "_count" in target["expr"]
+                for target in panel["targets"]
+            )
+        else:
+            assert all(
+                target["expr"].startswith(f"histogram_quantile({quantile},")
+                for target in panel["targets"]
+            )
 
-    layerwise_panels = panels[8:10]
+    layerwise_panels = panels[10:12]
     assert [panel["title"] for panel in layerwise_panels] == [
         "Layerwise Per-Layer Load Duration",
         "Layerwise All-Layer Load Duration Sum",
     ]
     assert [panel["gridPos"] for panel in layerwise_panels] == [
-        {"h": 8, "w": 12, "x": 0, "y": 32},
-        {"h": 8, "w": 12, "x": 12, "y": 32},
+        {"h": 8, "w": 12, "x": 0, "y": 40},
+        {"h": 8, "w": 12, "x": 12, "y": 40},
     ]
     for panel, metric in zip(
         layerwise_panels,
@@ -1797,7 +1815,7 @@ def test_connector_dashboard_layout_and_metrics():
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 40,
+        "y": 48,
     }
 
     occupied = set()
@@ -1827,8 +1845,24 @@ def test_ucm_dashboards_reference_configured_vllm_connector_metrics():
         dashboard_text = (REPO_ROOT / "examples" / "metrics" / filename).read_text(
             encoding="utf-8"
         )
+        dashboard = json.loads(dashboard_text)
+
+        def target_expressions(panels):
+            for panel in panels:
+                yield from (
+                    target["expr"]
+                    for target in panel.get("targets", [])
+                    if "expr" in target
+                )
+                yield from target_expressions(panel.get("panels", []))
+
         assert "vllm:ucm_" not in dashboard_text
-        referenced = set(re.findall(r"ucm:[A-Za-z0-9_]+", dashboard_text))
+        referenced = set(
+            re.findall(
+                r"ucm:[A-Za-z0-9_]+",
+                "\n".join(target_expressions(dashboard["panels"])),
+            )
+        )
         referenced = {
             re.sub(r"_(bucket|sum|count)$", "", metric) for metric in referenced
         }
@@ -2242,12 +2276,24 @@ def test_layerwise_records_per_layer_load_duration_and_batch_sum():
     connector = object.__new__(UCMLayerWiseConnector)
     connector._connector_metadata = object()
     connector.need_load = True
-    connector._get_connector_metadata = lambda: SimpleNamespace(request_meta={})
+    metadata = SimpleNamespace(
+        request_meta={
+            "req-1": SimpleNamespace(
+                load_block_ids=([b"a", b"b"], [1, 2]),
+                dump_block_ids=([], []),
+            )
+        }
+    )
+    connector._get_connector_metadata = lambda: metadata
     connector.layer_name_to_id = {"layer.0": 0}
     connector.layer_ids = {0}
-    connector.load_tasks = {0: {}}
+    connector.load_tasks = {0: {"req-1": object()}}
+    connector._rank_consistency = SimpleNamespace(wait_load=lambda task: None)
+    connector.kv_cache_layout = SimpleNamespace(shard_size=64)
+    connector._failure_req_ids = set()
     connector._layerwise_load_start_by_layer = {0: 1.0}
     connector._layerwise_layer_load_duration_sum_ms = 0.0
+    connector._layerwise_load_bytes = 0
 
     times = iter([1.03])
     original_perf_counter = ucm_connector_module.time.perf_counter
@@ -2259,10 +2305,139 @@ def test_layerwise_records_per_layer_load_duration_and_batch_sum():
 
     assert fake_ucmmetrics.updated == [
         {"layerwise_layer_load_duration_ms": pytest.approx(30.0)},
-        {"layerwise_batch_load_duration_sum_ms": pytest.approx(30.0)},
+        {
+            "layerwise_batch_load_duration_sum_ms": pytest.approx(30.0),
+            "load_bytes_total": 128,
+        },
     ]
     assert connector._layerwise_load_start_by_layer == {}
     assert connector._layerwise_layer_load_duration_sum_ms == 0.0
+    assert connector._layerwise_load_bytes == 0
+
+
+def test_layerwise_records_save_bytes_once():
+    _reset_fakes()
+    connector = object.__new__(UCMLayerWiseConnector)
+    connector._pending_dump_tasks = []
+    connector._poll_pending_dump_tasks = lambda: None
+    connector._layerwise_save_bytes = 512
+    connector._connector_metadata = None
+    connector.dump_total_ptrs = object()
+
+    connector.wait_for_save()
+    connector.wait_for_save()
+
+    assert fake_ucmmetrics.updated == [{"save_bytes_total": 512}]
+    assert connector._layerwise_save_bytes == 0
+    assert connector.dump_total_ptrs is None
+
+
+def test_hybrid_layerwise_records_load_bytes_once():
+    _reset_fakes()
+    from ucm.integration.vllm.hla_connector import (
+        UCMHybridLinearAttentionLayerWiseConnector,
+    )
+
+    connector = object.__new__(UCMHybridLinearAttentionLayerWiseConnector)
+    connector._layerwise_load_bytes = 768
+    connector._layerwise_load_bytes_recorded = False
+
+    connector._record_layerwise_load_bytes()
+    connector._record_layerwise_load_bytes()
+
+    assert fake_ucmmetrics.updated == [{"load_bytes_total": 768}]
+
+
+def test_hybrid_layerwise_records_save_bytes_once():
+    _reset_fakes()
+    from ucm.integration.vllm.hla_connector import (
+        UCMHybridLinearAttentionLayerWiseConnector,
+    )
+
+    connector = object.__new__(UCMHybridLinearAttentionLayerWiseConnector)
+    connector.is_save = True
+    connector._dump_transfer_data = ([], [], {"req-1"}, {})
+    connector.row_ids = []
+    connector.dump_tasks = {}
+    connector._layerwise_save_bytes = 896
+    connector._rank_consistency = SimpleNamespace(finish_dump=lambda request_ids: None)
+    connector.enable_event_sync = False
+
+    connector.wait_for_save()
+
+    assert fake_ucmmetrics.updated == [{"save_bytes_total": 896}]
+    assert connector._layerwise_save_bytes == 0
+    assert connector.is_save is False
+
+
+def test_fawa_records_only_successful_load_task_bytes():
+    _reset_fakes()
+    from ucm.integration.vllm.hma_connector import FAWALoadTask, UCMFAWAConnector
+
+    class RankConsistency:
+        @staticmethod
+        def wait_load(task):
+            if task == "failed":
+                raise RuntimeError("load failed")
+
+    connector = object.__new__(UCMFAWAConnector)
+    connector._rank_consistency = RankConsistency()
+    connector.file_size = {"FA": 100, "WA": 40}
+    failed_requests = []
+    connector._handle_load_err = failed_requests.append
+    tasks = [
+        FAWALoadTask("req-1", "FA", None, "fa", 2),
+        FAWALoadTask("req-1", "WA", None, "wa", 1),
+        FAWALoadTask("req-2", "WA", None, "failed", 1),
+    ]
+
+    connector._wait_all_load_task(tasks)
+
+    assert fake_ucmmetrics.updated == [{"load_bytes_total": 240}]
+    assert failed_requests == ["req-2"]
+
+
+def test_fawa_records_submitted_save_bytes():
+    _reset_fakes()
+    import numpy as np
+
+    from ucm.integration.vllm.hma_connector import (
+        FAWADumpTask,
+        UCMFAWAConnector,
+        UCMFAWAConnectorMetadata,
+    )
+
+    connector = object.__new__(UCMFAWAConnector)
+    request = SimpleNamespace(
+        dump_keys=[b"key"],
+        dump_hash_start=0,
+        dump_hash_end=1,
+        dump_vllm_block_ids=([1],),
+    )
+    metadata = UCMFAWAConnectorMetadata(request_meta={"req-1": request})
+    connector._get_connector_metadata = lambda: metadata
+    connector.fa_store = object()
+    connector.wa_store = object()
+    connector._poll_completed_dump_tasks = lambda: None
+    connector.tp_size = 1
+    connector.tp_rank = 0
+    connector.wa_dump_block_wise = False
+    connector.tp_dump_tasks = {}
+    connector.file_size = {"FA": 100, "WA": 40}
+    connector._extract_fa_ptr = lambda *args: np.zeros((1, 1), dtype=np.uint64)
+    connector._extract_wa_ptr = lambda *args: np.zeros((1, 1), dtype=np.uint64)
+    connector._get_dump_event_handle = lambda: 7
+    connector._submit_dump_task = (
+        lambda label, store, keys, ptrs, event_handle, block_ids_by_request: (
+            FAWADumpTask(label, store, object(), len(keys), event_handle)
+        )
+    )
+    connector._rank_consistency = SimpleNamespace(wait_dump=lambda task: None)
+    connector.device = SimpleNamespace(destroy_event_handle=lambda event_handle: None)
+
+    connector.wait_for_save()
+
+    assert fake_ucmmetrics.updated == [{"save_bytes_total": 140}]
 
 
 def test_cache_load_h2d_duration_records_stream_synchronize_only():

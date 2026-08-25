@@ -1112,7 +1112,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     def _wait_load_task(
         self,
         load_task: FAWALoadTask,
-    ) -> None:
+    ) -> bool:
         """Wait a load task and mark its anchor blocks invalid on failure."""
 
         try:
@@ -1123,6 +1123,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 f"task label={load_task.label} error. {type(e).__name__}: {e}"
             )
             self._handle_load_err(load_task.request_id)
+            return False
+        return True
 
     def get_block_ids_with_load_errors(self) -> set[int]:
         res = self._invalid_block_ids
@@ -1289,8 +1291,12 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         self._wait_all_load_task(tasks)
 
     def _wait_all_load_task(self, tasks: list[FAWALoadTask]):
+        load_bytes = 0
         for load_task in tasks:
-            self._wait_load_task(load_task)
+            if self._wait_load_task(load_task):
+                load_bytes += load_task.key_count * self.file_size[load_task.label]
+        if tasks:
+            ucmmetrics.update_stats({"load_bytes_total": load_bytes})
 
     def wait_for_save(self) -> None:
         metadata = self._get_connector_metadata()
@@ -1311,6 +1317,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         dump_request_ids: tuple[str] = ()
         fa_dump_blocks_by_request: dict[str, set[bytes]] = {}
         wa_dump_blocks_by_request: dict[str, set[bytes]] = {}
+        save_bytes = 0
         if self.tp_size > 1:
             # Split FA rows by canonical block index. Block-wise WA follows the same
             # TP key slice; chunk-wise WA assigns one final boundary per request.
@@ -1432,6 +1439,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     fa_dump_blocks_by_request,
                 )
                 self.tp_dump_tasks[dump_request_ids].append(fa_dump_task)
+                save_bytes += fa_dump_task.key_count * self.file_size["FA"]
             except Exception as e:
                 self.device.destroy_event_handle(event_handle)
                 logger.error(f"dump FAWA kv cache failed. {type(e).__name__}: {e}")
@@ -1452,6 +1460,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     event_handle,
                     wa_dump_blocks_by_request,
                 )
+                save_bytes += wa_dump_task.key_count * self.file_size["WA"]
                 try:
                     self._rank_consistency.wait_dump(wa_dump_task.task)
                 except Exception as e:
@@ -1467,6 +1476,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 self.device.destroy_event_handle(event_handle)
                 logger.error(f"dump FAWA WA kv cache failed. {type(e).__name__}: {e}")
                 self._record_counter("connector_dump_submit_errors_total")
+        if fa_dump_keys or wa_dump_keys:
+            ucmmetrics.update_stats({"save_bytes_total": save_bytes})
 
     def _poll_completed_dump_tasks(self) -> None:
         """Reap completed FAWA dump tasks without waiting for in-flight tasks."""

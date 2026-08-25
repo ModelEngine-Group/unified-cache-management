@@ -2072,6 +2072,8 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self._dumped_layer_ids: set[int] = set()
         self._layerwise_load_start_by_layer: dict[int, float] = {}
         self._layerwise_layer_load_duration_sum_ms = 0.0
+        self._layerwise_load_bytes = 0
+        self._layerwise_save_bytes = 0
         logger.info("Init UCMLayerWiseConnector.")
 
     def _record_layerwise_load_duration(self, layer_id: int, load_end: float) -> bool:
@@ -2124,6 +2126,9 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                     request_ids=set(dump_request_ids),
                     event_handle=event_handle,
                 )
+            )
+            self._layerwise_save_bytes += (
+                len(total_ucm_block_ids) * self.kv_cache_layout.shard_size
             )
             return True
         except Exception as e:
@@ -2190,6 +2195,8 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         self.need_load = False
         self._layerwise_load_start_by_layer.clear()
         self._layerwise_layer_load_duration_sum_ms = 0.0
+        self._layerwise_load_bytes = 0
+        self._layerwise_save_bytes = 0
 
         for request_id, request in metadata.request_meta.items():
             if len(request.load_block_ids[0]) == 0:
@@ -2244,6 +2251,11 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 )
                 self._connector_worker_meta.mark_failed(request_id)
                 self._failure_req_ids.add(request_id)
+            else:
+                self._layerwise_load_bytes += (
+                    len(metadata.request_meta[request_id].load_block_ids[0])
+                    * self.kv_cache_layout.shard_size
+                )
 
         wait_end = time.perf_counter()
         load_duration_recorded = self._record_layerwise_load_duration(
@@ -2260,9 +2272,13 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         elif load_duration_recorded:
             duration_sum_ms = self._layerwise_layer_load_duration_sum_ms
             ucmmetrics.update_stats(
-                {"layerwise_batch_load_duration_sum_ms": duration_sum_ms}
+                {
+                    "layerwise_batch_load_duration_sum_ms": duration_sum_ms,
+                    "load_bytes_total": self._layerwise_load_bytes,
+                }
             )
             self._layerwise_layer_load_duration_sum_ms = 0.0
+            self._layerwise_load_bytes = 0
 
     def save_kv_layer(
         self,
@@ -2318,6 +2334,9 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             if pending_dump_task.wait_for_save_start_ms <= 0:
                 pending_dump_task.wait_for_save_start_ms = wait_for_save_start_ms
         self._poll_pending_dump_tasks()
+        if self._layerwise_save_bytes > 0:
+            ucmmetrics.update_stats({"save_bytes_total": self._layerwise_save_bytes})
+            self._layerwise_save_bytes = 0
         if self._connector_metadata:
             metadata = self._get_connector_metadata()
             self._async_dump_req_ids.update(
