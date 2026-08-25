@@ -23,6 +23,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
   build:
@@ -80,6 +81,13 @@ jobs:
           docker-images: true
           swap-storage: false
       - uses: docker/setup-buildx-action@v3.11.1
+      - name: Authenticate to GHCR
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${GITHUB_TOKEN}" | docker login ghcr.io \
+            --username "${GITHUB_ACTOR}" --password-stdin
       - name: Build native wheel
         run: |
           set -euo pipefail

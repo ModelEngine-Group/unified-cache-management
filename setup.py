@@ -195,7 +195,7 @@ class CMakeBuild(build_ext):
             cmake_args += [f"-DASCEND_ROOT={ASCEND_ROOT}"]
 
         build_cpu_arch = os.getenv("UCM_BUILD_CPU_ARCH")
-        if PLATFORM == "ascend-a3" and build_cpu_arch:
+        if is_ascend() and build_cpu_arch:
             ascend_subdirectory = {
                 "amd64": "x86_64-linux",
                 "arm64": "aarch64-linux",

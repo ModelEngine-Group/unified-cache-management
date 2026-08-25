@@ -448,6 +448,29 @@ def test_wheel_build_records_auditwheel_result_manifest() -> None:
     assert "out/wheel/wheel-result.json" in text
 
 
+def test_wheel_build_authenticates_to_ghcr_with_read_only_package_access() -> None:
+    workflow = _load("_build-wheel.yml")
+    assert workflow["permissions"] == {"contents": "read", "packages": "read"}
+
+    steps = workflow["jobs"]["build"]["steps"]
+    auth_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Authenticate to GHCR"
+    )
+    build_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Build native wheel"
+    )
+    auth = steps[auth_index]
+
+    assert auth_index < build_index
+    assert auth["env"]["GITHUB_TOKEN"] == "${{ github.token }}"
+    assert "docker login ghcr.io" in auth["run"]
+    assert '"${GITHUB_ACTOR}" --password-stdin' in auth["run"]
+
+
 def test_reusable_builds_keep_functional_inputs() -> None:
     expected = {
         "_build-wheel.yml": {"wheel_id", "runner", "plan_artifact", "source_ref"},
@@ -481,7 +504,7 @@ def test_compact_wheel_passes_dynamic_python_and_platform_to_build() -> None:
     assert 'PATH="${python_scripts}:${PATH}"' in dockerfile
 
 
-def test_compact_wheel_uses_source_metadata_and_active_a3_arch_handoff() -> None:
+def test_compact_wheel_uses_source_metadata_and_active_ascend_arch_handoff() -> None:
     workflow = (WORKFLOWS / "_build-wheel.yml").read_text(encoding="utf-8")
     dockerfile = (
         ROOT / ".github" / "release" / "docker" / "Dockerfile.wheel"
@@ -502,6 +525,9 @@ def test_compact_wheel_uses_source_metadata_and_active_a3_arch_handoff() -> None
     assert "ARG UCM_CPU_ARCH" in dockerfile
     assert 'UCM_BUILD_CPU_ARCH="${UCM_CPU_ARCH}"' in dockerfile
     assert 'os.getenv("UCM_BUILD_CPU_ARCH")' in setup_py
+    assert "if is_ascend() and build_cpu_arch:" in setup_py
+    assert '"amd64": "x86_64-linux"' in setup_py
+    assert '"arm64": "aarch64-linux"' in setup_py
     assert "-DASCEND_ARCH_DIR=" in setup_py
 
 
