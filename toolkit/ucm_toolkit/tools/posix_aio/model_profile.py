@@ -68,9 +68,7 @@ def dtype_to_elem_size(dtype: str | None) -> int:
     if key in _DTYPE_BYTES:
         return _DTYPE_BYTES[key]
     supported = ", ".join(sorted(set(_DTYPE_BYTES)))
-    raise ModelProfileError(
-        f"unsupported dtype '{dtype}'; supported: {supported}"
-    )
+    raise ModelProfileError(f"unsupported dtype '{dtype}'; supported: {supported}")
 
 
 def detect_architecture(cfg: dict[str, Any]) -> str:
@@ -85,7 +83,13 @@ def detect_architecture(cfg: dict[str, Any]) -> str:
     def has(key: str, *, sources: tuple[dict, ...] = (cfg, text)) -> bool:
         for src in sources:
             value = src.get(key)
-            if value is not None and value is not False and value != "" and value != 0 and value != []:
+            if (
+                value is not None
+                and value is not False
+                and value != ""
+                and value != 0
+                and value != []
+            ):
                 return True
         return False
 
@@ -113,7 +117,9 @@ def detect_architecture(cfg: dict[str, Any]) -> str:
 def _is_hybrid(cfg: dict, text: dict, has) -> bool:
     """Return True if config exhibits hybrid / non-standard attention signals."""
     layer_types = text.get("layer_types") or cfg.get("layer_types")
-    if isinstance(layer_types, list) and any(t != "full_attention" for t in layer_types):
+    if isinstance(layer_types, list) and any(
+        t != "full_attention" for t in layer_types
+    ):
         return True
 
     attention_layers = cfg.get("attention_layers") or text.get("attention_layers")
@@ -211,7 +217,9 @@ def compute_io_profile(
     if not num_layers:
         raise ModelProfileError("num_hidden_layers is missing or zero")
 
-    effective_dtype = kv_dtype or _resolve(cfg, "torch_dtype") or _resolve(cfg, "dtype") or "bfloat16"
+    effective_dtype = (
+        kv_dtype or _resolve(cfg, "torch_dtype") or _resolve(cfg, "dtype") or "bfloat16"
+    )
     elem_size = dtype_to_elem_size(effective_dtype)
     tokens_per_block = block_size
 
@@ -251,19 +259,27 @@ def compute_io_profile(
         if not num_kv_heads_full:
             raise ModelProfileError("num_key_value_heads is required for GQA")
         heads_per_rank = (
-            max(1, int(num_kv_heads_full) // tp) if tp and tp > 0 else int(num_kv_heads_full)
+            max(1, int(num_kv_heads_full) // tp)
+            if tp and tp > 0
+            else int(num_kv_heads_full)
         )
         num_kv_heads_per_rank = heads_per_rank
         head_dim = _resolve(cfg, "head_dim")
         if head_dim is None:
             if not num_attention_heads:
-                raise ModelProfileError("cannot derive head_dim (missing head_dim/num_attention_heads)")
+                raise ModelProfileError(
+                    "cannot derive head_dim (missing head_dim/num_attention_heads)"
+                )
             hidden_size = _resolve(cfg, "hidden_size")
             if hidden_size is None:
-                raise ModelProfileError("cannot derive head_dim (missing head_dim/hidden_size)")
+                raise ModelProfileError(
+                    "cannot derive head_dim (missing head_dim/hidden_size)"
+                )
             head_dim = int(hidden_size) // int(num_attention_heads)
         head_dim = int(head_dim)
-        per_layer_block_bytes = 2 * heads_per_rank * head_dim * tokens_per_block * elem_size
+        per_layer_block_bytes = (
+            2 * heads_per_rank * head_dim * tokens_per_block * elem_size
+        )
         per_layer_formula = (
             f"2 * num_kv_heads({heads_per_rank}) * head_dim({head_dim})"
             f" * block_size({tokens_per_block}) * dtype({elem_size})"
