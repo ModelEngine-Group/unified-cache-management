@@ -24,6 +24,8 @@
 #include "dump_queue.h"
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
+#include <cstring>
 #include <memory>
 #include "logger/logger.h"
 #include "metrics_api.h"
@@ -48,6 +50,7 @@ Status DumpQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     streamNumber_ = config.EffectiveStreamNumber();
     useGdr_ = config.useGdr;
     cacheSdmaDirect_ = config.cacheSdmaDirect;
+    useHostBuffer_ = config.cacheUseHostBuffer;
     cpuAffinityCores_ = config.cpuAffinityCores;
     waiting_.Setup(config.waitingQueueDepth);
     dumping_.Setup(config.runningQueueDepth);
@@ -76,8 +79,9 @@ void DumpQueue::DispatchStage(std::promise<Status>& started)
         UC_WARN("Failed({}) to set UCM dump dispatcher name.", nameStatus);
     }
     CopyStream stream;
-    auto s = cacheSdmaDirect_ ? stream.SetupSdmaDirect(deviceId_, useGdr_)
-                              : stream.Setup(deviceId_, streamNumber_, useGdr_);
+    auto s = useHostBuffer_ ? Status::OK()
+                            : (cacheSdmaDirect_ ? stream.SetupSdmaDirect(deviceId_, useGdr_)
+                                                : stream.Setup(deviceId_, streamNumber_, useGdr_));
     started.set_value(s);
     if (s.Failure()) [[unlikely]] { return; }
     if (!cpuAffinityCores_.empty()) {
@@ -115,6 +119,10 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
     dumpCtx.taskHandle = task->id;
     std::shared_ptr<std::atomic<double>> eventReadyTp;
     if (task->desc.prerequisiteHandle != 0) {
+        if (useHostBuffer_) {
+            return Status::InvalidParam(
+                "host-to-host dump does not accept a device prerequisite event");
+        }
         auto s = stream.WaitEvent(reinterpret_cast<void*>(task->desc.prerequisiteHandle));
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed({}) to wait prerequisite event for dump task({}).", s, task->id);
@@ -134,9 +142,11 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
         if (!handle.Owner()) { continue; }
         if (!handle.Ready()) {
             auto* host = cacheSdmaDirect_ ? handle.DeviceData() : handle.Data();
-            auto s = DeviceToHostAsync(stream, shard.addrs.data(), host);
+            auto s = useHostBuffer_ ? HostToHostGather(shard, host)
+                                    : DeviceToHostAsync(stream, shard.addrs.data(), host);
             if (s.Failure()) [[unlikely]] {
-                UC_ERROR("Failed({}) to do D2H for task({}).", s, task->id);
+                UC_ERROR("Failed({}) to do {} gather for task({}).", s,
+                         useHostBuffer_ ? "H2H" : "D2H", task->id);
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_errors_total"), 1.0);
                 return s;
             }
@@ -152,7 +162,7 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
                              static_cast<double>(backendTaskDesc.size()));
     if (backendTaskDesc.empty()) { return Status::OK(); }
     auto tpSyncStart = NowTime::Now();
-    auto s = stream.Synchronize();
+    auto s = useHostBuffer_ ? Status::OK() : stream.Synchronize();
     if (s.Failure()) [[unlikely]] {
         UC_ERROR("Failed({}) to sync on stream for task({}).", s, task->id);
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_d2h_errors_total"), 1.0);
@@ -199,6 +209,25 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
 Status DumpQueue::DeviceToHostAsync(CopyStream& stream, void** device, void* host)
 {
     return stream.DeviceToHostAsync(device, host, tensorSizes_);
+}
+
+Status DumpQueue::HostToHostGather(const Detail::Shard& shard, void* destination)
+{
+    if (shard.addrs.size() != tensorSizes_.size()) {
+        return Status::InvalidParam("invalid host addr number({}, expect {})", shard.addrs.size(),
+                                    tensorSizes_.size());
+    }
+    if (destination == nullptr) { return Status::InvalidParam("invalid null host destination"); }
+    auto* dst = static_cast<std::byte*>(destination);
+    size_t offset = 0;
+    for (size_t i = 0; i < tensorSizes_.size(); ++i) {
+        if (shard.addrs[i] == nullptr) {
+            return Status::InvalidParam("invalid null host source({})", i);
+        }
+        std::memcpy(dst + offset, shard.addrs[i], tensorSizes_[i]);
+        offset += tensorSizes_[i];
+    }
+    return Status::OK();
 }
 
 void DumpQueue::BackendDumpStage()

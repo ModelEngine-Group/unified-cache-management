@@ -49,7 +49,8 @@ public:
             UC_ERROR("Failed to check config params: {}.", s);
             return s;
         }
-        if (config.deviceId >= 0 && !config.gpuKvBufferAddrs.empty()) {
+        if (!config.cacheUseHostBuffer && config.deviceId >= 0 &&
+            !config.gpuKvBufferAddrs.empty()) {
             gpuKvBufferRegistrations_ = std::make_unique<Trans::GdrKVBufferConfig>();
             s = gpuKvBufferRegistrations_->Register(config.gpuKvBufferAddrs,
                                                     config.gpuKvBufferSizes);
@@ -161,6 +162,7 @@ private:
         config.GetNumbers("gpu_kv_buffer_sizes", param.gpuKvBufferSizes);
         config.Get("use_gdr", param.useGdr);
         config.Get("cache_sdma_direct", param.cacheSdmaDirect);
+        config.Get("cache_use_host_buffer", param.cacheUseHostBuffer);
         config.GetNumber("local_rank_size", param.localRankSize);
         return param;
     }
@@ -184,6 +186,10 @@ private:
         if (config.deviceId < -1) {
             return Status::InvalidParam("invalid device({})", config.deviceId);
         }
+        if (config.cacheUseHostBuffer && config.deviceId < 0) {
+            return Status::InvalidParam(
+                "cache_use_host_buffer requires a non-negative device_id as cache owner id");
+        }
         if (config.uniqueId.empty()) { return Status::InvalidParam("invalid unique id"); }
         auto s =
             Trans::GdrKVBufferConfig::Validate(config.gpuKvBufferAddrs, config.gpuKvBufferSizes);
@@ -196,6 +202,12 @@ private:
         if (config.deviceId == -1) { return Status::OK(); }
         s = CheckSizeConfig(config);
         if (s.Failure()) { return s; }
+        if (config.cacheUseHostBuffer &&
+            (config.cacheSdmaDirect || config.useGdr || !config.gpuKvBufferAddrs.empty())) {
+            return Status::InvalidParam(
+                "cache_use_host_buffer is incompatible with cache_sdma_direct, use_gdr, "
+                "and gpu_kv_buffer_addrs");
+        }
 #if !UCM_RUNTIME_ASCEND_SDMA_DIRECT
         if (config.cacheSdmaDirect) {
             return Status::InvalidParam("Cache SDMA Direct requires RUNTIME_ENVIRONMENT=ascend-a3");
@@ -253,6 +265,7 @@ private:
             UC_INFO("Set {}::StreamNumber to {}.", ns, config.EffectiveStreamNumber());
         }
         UC_INFO("Set {}::CacheSdmaDirect to {}.", ns, config.cacheSdmaDirect);
+        UC_INFO("Set {}::CacheUseHostBuffer to {}.", ns, config.cacheUseHostBuffer);
         UC_INFO("Set {}::LoadExclusiveBufferNumber to {}.", ns, config.loadExclusiveBufferNumber);
         UC_INFO("Set {}::GpuKvBufferNumber to {}.", ns, config.gpuKvBufferAddrs.size());
         UC_INFO("Set {}::UseGdr to {}.", ns, config.useGdr);

@@ -22,6 +22,8 @@
  * SOFTWARE.
  * */
 #include <gtest/gtest.h>
+#include <array>
+#include <cstring>
 #include "cache/cc/load_queue.h"
 #include "detail/data_generator.h"
 #include "detail/mock_store.h"
@@ -225,4 +227,56 @@ TEST_F(UCCacheLoadQueueTest, LoadWhileBackendWaitFailed)
     ASSERT_EQ(observer.GetState(), TransBuffer::State::FAILED);
     ASSERT_EQ(observer.FailureStatus(), UC::Status::NotFound());
     ASSERT_EQ(task->FailureStatus(), UC::Status::NotFound());
+}
+
+TEST_F(UCCacheLoadQueueTest, HostToHostScatterSupportsVariableTensorSizes)
+{
+    using namespace UC::CacheStore;
+    using namespace testing;
+    constexpr size_t kSize = 16;
+    constexpr size_t vSize = 8;
+    std::array<uint8_t, kSize + vSize> expected{};
+    for (size_t i = 0; i < expected.size(); ++i) {
+        expected[i] = static_cast<uint8_t>(i + 1);
+    }
+
+    UC::Test::Detail::MockStore backend;
+    EXPECT_CALL(backend, Load).WillOnce(Invoke([&](UC::Detail::TaskDesc desc) {
+        EXPECT_EQ(desc.size(), 1);
+        std::memcpy(desc[0].addrs[0], expected.data(), expected.size());
+        return NextId();
+    }));
+    EXPECT_CALL(backend, Wait).WillOnce(Return(UC::Status::OK()));
+
+    UC::HashSet<UC::Detail::TaskHandle> failureSet;
+    Config config;
+    config.storeBackend = &backend;
+    config.tensorSizes = {kSize, vSize};
+    config.shardSize = expected.size();
+    config.blockSize = config.shardSize;
+    config.deviceId = 0;
+    config.bufferCapacity = config.shardSize * 1024;
+    config.uniqueId = rd.RandomString(10);
+    config.shareBufferEnable = true;
+    config.cacheUseHostBuffer = true;
+    config.cacheSdmaDirect = false;
+
+    TransBuffer buffer;
+    LoadQueue loadQ;
+    ASSERT_EQ(buffer.Setup(config), UC::Status::OK());
+    ASSERT_EQ(loadQ.Setup(config, &failureSet, &buffer), UC::Status::OK());
+    std::array<uint8_t, kSize> k{};
+    std::array<uint8_t, vSize> v{};
+    auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId(
+        "a1b2c3d4e5f6789012345678901234ab");
+    UC::Detail::TaskDesc desc{
+        {blockId, 0, {k.data(), v.data()}}
+    };
+    auto task = std::make_shared<TransTask>(TransTask::Type::LOAD, desc);
+    auto waiter = std::make_shared<UC::Latch>();
+    loadQ.Submit(task, waiter);
+    waiter->Wait();
+    ASSERT_FALSE(failureSet.Contains(task->id));
+    EXPECT_EQ(std::memcmp(k.data(), expected.data(), k.size()), 0);
+    EXPECT_EQ(std::memcmp(v.data(), expected.data() + k.size(), v.size()), 0);
 }
