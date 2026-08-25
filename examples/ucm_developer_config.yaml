@@ -1,0 +1,70 @@
+# UCM Configuration File Example
+# 
+# This file demonstrates how to configure UCM using YAML.
+# You can use this config file by setting the path to this file in kv_connector_extra_config in launch script or command line like this:
+# kv_connector_extra_config={"UCM_CONFIG_FILE": "/workspace/unified-cache-management/examples/ucm_developer_config.yaml"}
+#
+# Alternatively, you can still use kv_connector_extra_config in KVTransferConfig
+# for backward compatibility.
+
+# Connector name (e.g., "UcmNfsStore", "UcmPipelineStore")
+# One important detail is that when multiple DP instances run on the same node, each of them creates its own CacheStore.
+ucm_connectors:
+  - ucm_connector_name: "UcmPipelineStore"
+    ucm_connector_config:
+      store_pipeline: "Cache|Posix"
+      storage_backends: "/mnt/test"
+      io_direct: true
+      # posix_capacity_gb: 1024
+
+      # Enable GPUDirect RDMA transfers for CacheStore/PcStore H2D and D2H copies.
+      # This requires an RDMA-capable NIC, a working GPUDirect RDMA environment,
+      # and building UCM with ENABLE_GDR=1.
+      use_gdr: false
+      store_health:
+        enabled: true
+
+# When you use UcmNfsStore, you should set enable_event_sync to false.
+enable_event_sync: true
+# Enable UCM metrics so they can be monitored online via Grafana and Prometheus.
+# If metrics_config_path is omitted, UCM uses the built-in default config.
+enable_metrics: true
+# metrics_config_path: "/workspace/unified-cache-management/examples/metrics/metrics_configs.yaml"
+
+# Sparse attention configuration
+# ucm_sparse_config:
+  # GSAOnDevice: {}
+
+# The frequency level to dump KV cache to the storage backend. Default/not set is true, which means each block's WA cache will be dumped.
+# Set this to false, to dump the last block's WA cache of each chunk prefill only
+wa_dump_block_wise: true
+
+# Whether to use layerwise loading/saving (optional, default: True for UCMConnector)
+use_layerwise: true
+
+# Enable the no-I/O inference-duration monitor. When true, UCM always selects
+# the monitoring connector and reports the wall-clock interval from
+# start_load_kv to wait_for_save plus device-event time for every attention
+# layer. All cache lookup, load, and dump work is skipped.
+use_inference_duration_monitor: false
+inference_duration_monitor_fake_hit_ratio: 0.0  # 可选, 0.0~1.0, 默认 0.0 (不 fake)
+
+# hit_ratio: 0.9
+
+# Whether to record requests' traces (optional, default: False)
+# When enable_record_traces set to true, logs per-request traces (timestamp, input_length, output_length, hash_ids)
+# Each hash_id takes 32 bytes. Enable only when needed with proper UCM_LOG_MAX_FILES and UCM_LOG_MAX_SIZE.
+enable_record_traces: false
+
+# Whether to use UCM Lite Connector (optional, default: False)
+# UCM Lite Connector is used with Fake Store to skip actual KV dump and load operations, only for request hit ratio statistics. 
+# It is suggested to collect hit ratio statistics and confirm with relevant project members whether to adopt UCM.
+use_lite: false
+
+# Minimum token threshold for KV persistence.
+# Requests with fewer tokens skip KV load and dump operations.
+persist_token_threshold: 0
+
+# Minimum token threshold for loading KV cache.
+# Only when external hit tokens num > load_tokens_threshold, kv cache loading behavior can be triggered
+load_tokens_threshold: 2048
