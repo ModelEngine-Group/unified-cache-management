@@ -48,7 +48,7 @@ struct Config {
     std::vector<size_t> tensorSizes{};
     size_t shardSize{0};
     size_t blockSize{0};
-    bool ioDirect{false};
+    bool ioDirect{true};
     std::vector<ssize_t> cpuAffinityCores{};
     size_t bufferCapacity{256ULL << 30};
     size_t loadExclusiveBufferNumber{1024};
