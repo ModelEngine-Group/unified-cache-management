@@ -3804,7 +3804,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "指标：`ucm:cache_lookup_duration_ms` 表示 Cache 内存 buffer 扫描的耗时，本面板展示每次 Lookup 调用的 p50、p90、p99 和平均值。代码位置：`ucm/store/cache/cc/buffer_manager.h` / `BufferManager::Lookup`（私有快速扫描函数）/ 扫描完成后。",
+      "description": "指标：`ucm:cache_lookup_duration_ms` 表示 Cache 内存 buffer 扫描的耗时，本面板展示每次 Lookup 调用的 p50、p90、p99 和平均值。未开启共享内存时不会查询 Cache buffer，请求会直接查询下层 Store，因此该指标不会产生数据。代码位置：`ucm/store/cache/cc/buffer_manager.h` / `BufferManager::Lookup`（私有快速扫描函数）/ 扫描完成后。",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -4144,8 +4144,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 81
+        "x": 0,
+        "y": 89
       },
       "id": 30,
       "options": {
@@ -4352,7 +4352,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 89
+        "y": 81
       },
       "id": 56,
       "options": {

@@ -2668,6 +2668,24 @@ def test_pipeline_dashboard_orders_cache_bandwidth_rows():
     assert panels["Cache Load H2D Duration"]["gridPos"]["y"] == 57
     assert "Cache Dump D2H Duration (include wait compute)" in panels
     assert "Cache Dump D2H Duration" not in panels
+    assert panels["Cache Lookup Duration"]["gridPos"] == {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 81,
+    }
+    assert panels["Cache Dump Backend Wait Duration"]["gridPos"] == {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 81,
+    }
+    assert panels["Cache Lookup Backend Duration"]["gridPos"] == {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 89,
+    }
 
 
 def test_pipeline_dashboard_cache_load_breakdown_uses_backend_submit():
