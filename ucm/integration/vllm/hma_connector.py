@@ -698,8 +698,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             f"{capacity}GB shared-buffer capacity across FA/WA stores."
         )
         # The shared buffer is allocated via shm_open in /dev/shm; fail early
-        # (before store creation) if the tmpfs cannot hold it.
-        _check_shm_capacity(int(config["cache_buffer_capacity_gb"]))
+        # (before store creation) if the tmpfs cannot hold the FA+WA total.
+        _check_shm_capacity(capacity)
 
     @staticmethod
     def _namespace_storage_backends(
