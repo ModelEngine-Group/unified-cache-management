@@ -4,7 +4,6 @@ import json
 import re
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_DIR = ROOT / "toolkit/ucm_toolkit/tools/metrics_view/configs"
 DASHBOARDS = {

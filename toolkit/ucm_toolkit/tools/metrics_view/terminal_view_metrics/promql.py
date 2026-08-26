@@ -221,9 +221,7 @@ def _clean_expr(expr: str) -> str:
 
 def _parse_selector(expr: str) -> tuple[str | None, list[tuple[str, str, str]]]:
     selector = re.sub(r"\[[^\]]+\]\s*$", "", expr.strip())
-    match = re.fullmatch(
-        r"(?:([A-Za-z_:][A-Za-z0-9_:]*))?(?:\{(.*)\})?", selector
-    )
+    match = re.fullmatch(r"(?:([A-Za-z_:][A-Za-z0-9_:]*))?(?:\{(.*)\})?", selector)
     if not match:
         raise ValueError(f"Unsupported PromQL selector: {expr}")
     if not match.group(1) and match.group(2) is None:
@@ -280,9 +278,7 @@ def _parse_aggregate(expr: str) -> tuple[str, list[str] | None, str] | None:
         return None
     labels = None
     if match.group(2) is not None:
-        labels = [
-            item.strip() for item in match.group(2).split(",") if item.strip()
-        ]
+        labels = [item.strip() for item in match.group(2).split(",") if item.strip()]
     rest = expr[match.end() :].strip()
     if not rest.startswith("(") or not rest.endswith(")"):
         return None
