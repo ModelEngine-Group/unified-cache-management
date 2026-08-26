@@ -1,6 +1,6 @@
 # posix-aio
 
-调用仓库中的 `ucm/store/test/e2e/posixstore_aio_test.py`，通过 `UcmPipelineStore` 和 `posix_io_engine=aio` 做 dump/load 性能测试，用于评估 UCM POSIX AIO store 的磁盘读写带宽。
+调用仓库中的 `ucm/store/test/e2e/posixstore_aio_test.py`，通过 `UcmPipelineStore` 做 dump/load 性能测试，用于评估 UCM POSIX store 的磁盘读写带宽。IO 引擎（`posix_io_engine`，psync/aio）、传输并发（`posix_data_trans_concurrency`）、是否走 O_DIRECT（`io_direct`）均可通过 CLI 配置。
 
 支持两种用法：
 
@@ -69,10 +69,13 @@ ucm-toolkit run posix-aio --model /models/DeepSeek-V4-Pro --tp 8 --input-len 409
 | `-d`, `--dump-epoch-number` | `32` | dump epoch number: number of dump epochs. |
 | `-l`, `--load-epoch-number` | `32` | load epoch number: number of load epochs. |
 | `-o`, `--storage-backend` | `./build/data` | storage backend: storage backend path; may be repeated. Passing this option replaces the default backend list with the provided values. |
+| `--posix-data-trans-concurrency` | `32` | posix 数据传输并发（psync worker 数）。 |
+| `--posix-io-engine` | `aio` | posix io 引擎：`psync` 或 `aio`。 |
+| `--io-direct` | `True` | 是否走 O_DIRECT 做对齐文件 I/O；用 `--no-io-direct` 关闭。 |
 
 ### 模型驱动模式参数
 
-传入 `--model` 即进入模型驱动模式。此时 `--shard-size` / `--shard-number` / `--block-number` 由模型 config 计算得出，会覆盖任何手动设置（并打印 warning）。`--storage-backend` / `--dump-epoch-number` / `--load-epoch-number` / `--worker-number` 仍透传给脚本。
+传入 `--model` 即进入模型驱动模式。此时 `--shard-size` / `--shard-number` / `--block-number` 由模型 config 计算得出，会覆盖任何手动设置（并打印 warning）。`--storage-backend` / `--dump-epoch-number` / `--load-epoch-number` / `--worker-number` / `--posix-io-engine` / `--posix-data-trans-concurrency` / `--io-direct` 仍透传给脚本。
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |

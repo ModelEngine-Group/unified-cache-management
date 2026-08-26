@@ -163,6 +163,24 @@ class PosixAioTool(ToolAdapter):
             ),
         )
         parser.add_argument(
+            "--posix-data-trans-concurrency",
+            type=int,
+            default=32,
+            help="posix data transfer concurrency (psync worker count). Default 32.",
+        )
+        parser.add_argument(
+            "--posix-io-engine",
+            choices=["psync", "aio"],
+            default="aio",
+            help="posix io engine: psync or aio. Default aio.",
+        )
+        parser.add_argument(
+            "--io-direct",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="use O_DIRECT for aligned file I/O (default true; --no-io-direct to disable).",
+        )
+        parser.add_argument(
             "--dry-run",
             action="store_true",
             help="print the computed profile and the forwarded command without launching the script.",
@@ -186,11 +204,14 @@ class PosixAioTool(ToolAdapter):
             "block_number",
             "dump_epoch_number",
             "load_epoch_number",
+            "posix_data_trans_concurrency",
+            "posix_io_engine",
         )
         for option_name in option_names:
             value = getattr(args, option_name)
             if value is not None:
                 forwarded.extend([f"--{option_name.replace('_', '-')}", str(value)])
+        forwarded.append("--io-direct" if args.io_direct else "--no-io-direct")
         if args.storage_backend is not None:
             for path in args.storage_backend:
                 forwarded.extend(["--storage-backend", path])
@@ -289,6 +310,11 @@ class PosixAioTool(ToolAdapter):
             forwarded.extend(["--dump-epoch-number", str(args.dump_epoch_number)])
         if args.load_epoch_number is not None:
             forwarded.extend(["--load-epoch-number", str(args.load_epoch_number)])
+        forwarded.extend(["--posix-io-engine", str(args.posix_io_engine)])
+        forwarded.extend(
+            ["--posix-data-trans-concurrency", str(args.posix_data_trans_concurrency)]
+        )
+        forwarded.append("--io-direct" if args.io_direct else "--no-io-direct")
         if args.storage_backend is not None:
             for path in args.storage_backend:
                 forwarded.extend(["--storage-backend", path])
