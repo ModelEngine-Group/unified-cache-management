@@ -18,14 +18,21 @@ SPEC.loader.exec_module(release)
 def _plan() -> dict[str, object]:
     return {
         "git_tag": "v0.7.62rc1",
+        "release_type": "prerelease",
         "release_kind": "publish",
         "version": "0.7.62rc1",
         "publish": {
-            "ghcr": {"enabled": True},
+            "pypi": {"enabled": False, "index": "https://upload.pypi.org/legacy/"},
+            "ghcr": {"enabled": True, "namespace": "ghcr.io/example"},
             "dockerhub": {
                 "enabled": False,
                 "namespace": "docker.io/example",
             },
+            "chart_oci": {
+                "enabled": True,
+                "namespace": "ghcr.io/example/charts",
+            },
+            "github_release": {"enabled": True},
         },
         "chart": {
             "name": "unified-cache-chart",
@@ -157,7 +164,16 @@ def _asset_urls(manifest: dict[str, object]) -> dict[str, str]:
 def test_artifacts_and_image_receipts_form_one_mapping(tmp_path: Path) -> None:
     wheels, chart, _, filename = _write_artifact_inputs(tmp_path)
 
-    manifest, checksums = release.build_artifacts_manifest(_plan(), wheels, chart)
+    manifest, checksums = release.build_artifacts_manifest(
+        _plan(), wheels, chart, actions_run_id=123
+    )
+    assert manifest["kind"] == "ucm-release-state"
+    assert manifest["schema_version"] == 2
+    assert manifest["release"]["release_type"] == "prerelease"
+    assert manifest["release"]["actions_run_id"] == 123
+    assert manifest["chart"]["oci_reference"] == (
+        "ghcr.io/example/charts/unified-cache-chart:0.7.62-rc.1"
+    )
     assert manifest["release"]["status"] == "artifacts-ready"
     assert manifest["wheels"][0]["platform_tags"] == ["linux_x86_64"]
     assert manifest["wheels"][0]["auditwheel_platform_tag"] == "linux_x86_64"
@@ -168,9 +184,10 @@ def test_artifacts_and_image_receipts_form_one_mapping(tmp_path: Path) -> None:
     notes = release.render_notes(
         manifest, repository="example/ucm", asset_urls=asset_urls
     )
-    assert "Runtime: `docker.io/vllm/vllm-openai`" in notes
+    assert "Upstream Runtime tags<br>docker.io/vllm/vllm-openai：" in notes
+    assert "Runtime tags<br>ghcr.io/example/vllm：" in notes
     assert "`v0.23.0`" in notes
-    assert f"[{filename}]({asset_urls[filename]})" in notes
+    assert f"[x86_64]({asset_urls[filename]})" in notes
     assert "amd64=" not in notes
     assert notes.startswith("Status: `artifacts-ready`")
     assert "# UCM" not in notes
@@ -218,6 +235,41 @@ def test_artifacts_and_image_receipts_form_one_mapping(tmp_path: Path) -> None:
     assert "https://github.com/example/ucm/pkgs/container/vllm" in final_notes
     assert "sha256:" not in final_notes
 
+    state_path = tmp_path / "release-state.json"
+    release_path = tmp_path / "github-release.json"
+    notes_output = tmp_path / "notes-output"
+    notes_output.mkdir()
+    state_path.write_text(json.dumps(final), encoding="utf-8")
+    release_path.write_text(
+        json.dumps(
+            {
+                "tag_name": "v0.7.62rc1",
+                "assets": [
+                    {"name": name, "browser_download_url": url}
+                    for name, url in asset_urls.items()
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    command = release.build_parser().parse_args(
+        [
+            "notes",
+            "--manifest",
+            str(state_path),
+            "--release",
+            str(release_path),
+            "--repository",
+            "example/ucm",
+            "--output",
+            str(notes_output),
+        ]
+    )
+    command.func(command)
+    assert (notes_output / "release-notes.md").read_text(encoding="utf-8") == (
+        final_notes
+    )
+
 
 def test_disabled_image_publication_completes_with_wheels_and_chart(
     tmp_path: Path,
@@ -230,9 +282,11 @@ def test_disabled_image_publication_completes_with_wheels_and_chart(
     assert isinstance(ghcr, dict)
     ghcr["enabled"] = False
 
-    manifest, _ = release.build_artifacts_manifest(plan, wheels, chart)
+    manifest, _ = release.build_artifacts_manifest(
+        plan, wheels, chart, actions_run_id=123
+    )
 
-    assert manifest["release"]["status"] == "complete"
+    assert manifest["release"]["status"] == "artifacts-ready"
     assert manifest["images"][0]["expected_targets"] == {}
     assert manifest["images"][0]["status"] == "not-requested"
     assert manifest["families"][0]["expected_targets"] == {}
@@ -261,10 +315,146 @@ def test_disabled_image_publication_completes_with_wheels_and_chart(
     assert all(item["targets"] == [] for item in [*final["images"], *final["families"]])
     asset_urls = _asset_urls(final)
     notes = release.render_notes(final, repository="example/ucm", asset_urls=asset_urls)
-    assert f"[{filename}]({asset_urls[filename]})" in notes
+    assert f"[x86_64]({asset_urls[filename]})" in notes
+    assert "| — |" in notes
     assert "Images are still building" not in notes
     assert "Images:" not in notes
     assert "pkgs/container" not in notes
+
+
+def test_public_manifest_is_exact_schema_v6_and_uses_published_targets(
+    tmp_path: Path,
+) -> None:
+    wheels, chart, _, _ = _write_artifact_inputs(tmp_path)
+    state, _ = release.build_artifacts_manifest(
+        _plan(), wheels, chart, actions_run_id=987654
+    )
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    (receipts / "member.json").write_text(
+        json.dumps(
+            {
+                "kind": "ucm-image-member-receipt",
+                "schema_version": 1,
+                "id": "vllm-v023-amd64",
+                "status": "published",
+                "targets": [
+                    {
+                        "channel": "ghcr",
+                        "reference": "ghcr.io/example/vllm:v0.23.0-ucm-amd64",
+                        "digest": "sha256:" + "d" * 64,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    state = release.finalize_manifest(
+        state,
+        receipts,
+        build_outcome="success",
+        member_outcome="success",
+        index_outcome="skipped",
+    )
+    document = {
+        "tag_name": "v0.7.62rc1",
+        "assets": [
+            {"name": "ucm.whl"},
+            {"name": "unified-cache-chart-0.7.62-rc.1.tgz"},
+            {"name": "ucm_config_example.yaml"},
+        ],
+    }
+
+    manifest = release.build_public_manifest(state, document)
+
+    assert manifest == {
+        "kind": "ucm-release-manifest",
+        "schema_version": 6,
+        "tag": "v0.7.62rc1",
+        "release_type": "prerelease",
+        "actions_run_id": 987654,
+        "chart_oci": ("ghcr.io/example/charts/unified-cache-chart:0.7.62-rc.1"),
+        "runtime_images": {
+            "ghcr": {
+                "members": ["ghcr.io/example/vllm:v0.23.0-ucm-amd64"],
+                "indexes": [],
+            },
+            "dockerhub": {"members": [], "indexes": []},
+        },
+        "github_release_assets": [
+            "release-manifest.json",
+            "ucm.whl",
+            "ucm_config_example.yaml",
+            "unified-cache-chart-0.7.62-rc.1.tgz",
+        ],
+    }
+
+    state_path = tmp_path / "public-state.json"
+    release_path = tmp_path / "public-release.json"
+    output = tmp_path / "public-output"
+    output.mkdir()
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    release_path.write_text(json.dumps(document), encoding="utf-8")
+    command = release.build_parser().parse_args(
+        [
+            "manifest",
+            "--state",
+            str(state_path),
+            "--release",
+            str(release_path),
+            "--output",
+            str(output),
+        ]
+    )
+    command.func(command)
+    assert json.loads((output / "release-manifest.json").read_text()) == manifest
+
+
+def test_public_manifest_rejects_incomplete_release() -> None:
+    with pytest.raises(ValueError, match="complete publication"):
+        release.build_public_manifest(
+            {
+                "release": {
+                    "git_tag": "nightly/v0.8.1-20260826-1",
+                    "status": "images-failed",
+                }
+            },
+            {"tag_name": "nightly/v0.8.1-20260826-1"},
+        )
+
+
+def test_member_barrier_accepts_all_profile_enabled_targets(tmp_path: Path) -> None:
+    plan = _plan()
+    plan["publish"]["dockerhub"]["enabled"] = True
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir()
+    (receipt_dir / "member.json").write_text(
+        json.dumps(
+            {
+                "kind": "ucm-image-member-receipt",
+                "schema_version": 1,
+                "id": "vllm-v023-amd64",
+                "status": "published",
+                "targets": [
+                    {
+                        "channel": "ghcr",
+                        "reference": "ghcr.io/example/vllm:v0.23.0-ucm-amd64",
+                        "digest": "sha256:" + "1" * 64,
+                    },
+                    {
+                        "channel": "dockerhub",
+                        "reference": "docker.io/example/vllm:v0.23.0-ucm-amd64",
+                        "digest": "sha256:" + "2" * 64,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    receipts = release.validate_member_receipts(plan, receipt_dir)
+
+    assert set(receipts) == {"vllm-v023-amd64"}
 
 
 def test_release_commands_write_internal_state_without_public_metadata_assets(
@@ -284,6 +474,8 @@ def test_release_commands_write_internal_state_without_public_metadata_assets(
             str(wheels),
             "--chart",
             str(chart),
+            "--run-id",
+            "123",
             "--output",
             str(artifacts_output),
         ]
@@ -313,6 +505,10 @@ def test_release_commands_write_internal_state_without_public_metadata_assets(
             "skipped",
             "--index-outcome",
             "skipped",
+            "--pypi-outcome",
+            "success",
+            "--chart-oci-outcome",
+            "success",
             "--output",
             str(final_output),
         ]
@@ -454,7 +650,20 @@ def test_release_notes_split_products_and_aggregate_wheel_capabilities() -> None
     assert notes.count("## vLLM OpenAI") == 1
     assert notes.count("## vLLM-Ascend") == 1
     assert notes.count("| Runtime capability |") == 2
-    assert notes.count("uc_manager_cuda-amd64.whl") == 2
+    assert notes.count("| Wheel |") == 2
+    assert "Wheel 内容" not in notes
+    assert "Wheel downloads" not in notes
+    assert notes.count("uc_manager_cuda-amd64.whl") == 1
+    assert notes.count("[aarch64](") == 2
+    assert notes.count("[x86_64](") == 2
+    assert "Upstream Runtime tags<br>docker.io/vllm/vllm-openai：" in notes
+    assert "Runtime tags<br>ghcr.io/example/vllm-openai：" in notes
+    assert "Upstream Runtime tags<br>quay.io/ascend/vllm-ascend：" in notes
+    assert "Runtime tags<br>ghcr.io/example/vllm-ascend：" in notes
+    assert "`v1.0.0`<br>`v1.1.0`" in notes
+    assert "`v1.0.0-ucm`<br>`v1.1.0-ucm`" in notes
+    cuda_row = next(line for line in notes.splitlines() if line.startswith("| CUDA"))
+    assert cuda_row.index("[aarch64](") < cuda_row.index("[x86_64](")
     assert "CANN 9.1.0 / A2" in notes
     assert "`v1.0.0` (aarch64 only)" in notes
     assert "pkgs/container/vllm-openai" in notes
@@ -502,7 +711,7 @@ def test_artifact_manifest_rejects_wrong_wheel_result_contract(
     result_path.write_text(json.dumps(result), encoding="utf-8")
 
     with pytest.raises(ValueError, match="ucm-wheel-result schema 2"):
-        release.build_artifacts_manifest(_plan(), wheels, chart)
+        release.build_artifacts_manifest(_plan(), wheels, chart, actions_run_id=123)
 
 
 @pytest.mark.parametrize(
@@ -525,7 +734,7 @@ def test_artifact_manifest_requires_wheel_audit_fields(
     result_path.write_text(json.dumps(result), encoding="utf-8")
 
     with pytest.raises(ValueError, match="missing audit fields"):
-        release.build_artifacts_manifest(_plan(), wheels, chart)
+        release.build_artifacts_manifest(_plan(), wheels, chart, actions_run_id=123)
 
 
 def test_artifact_manifest_rejects_changed_auditwheel_report(tmp_path: Path) -> None:
@@ -537,7 +746,7 @@ def test_artifact_manifest_rejects_changed_auditwheel_report(tmp_path: Path) -> 
     )
 
     with pytest.raises(ValueError, match="report digest does not match"):
-        release.build_artifacts_manifest(_plan(), wheels, chart)
+        release.build_artifacts_manifest(_plan(), wheels, chart, actions_run_id=123)
 
 
 def test_artifact_manifest_requires_immutable_builder_digest(tmp_path: Path) -> None:
@@ -546,7 +755,7 @@ def test_artifact_manifest_requires_immutable_builder_digest(tmp_path: Path) -> 
     del plan["wheels"][0]["builder"]["digest"]
 
     with pytest.raises(ValueError, match="immutable Builder digest"):
-        release.build_artifacts_manifest(plan, wheels, chart)
+        release.build_artifacts_manifest(plan, wheels, chart, actions_run_id=123)
 
 
 def test_missing_receipt_keeps_artifacts_available_and_marks_images_failed() -> None:
@@ -592,7 +801,9 @@ def test_published_receipt_must_match_its_schema_and_planned_target(
     tmp_path: Path, field: str, value: object, message: str
 ) -> None:
     wheels, chart, _, _ = _write_artifact_inputs(tmp_path)
-    manifest, _ = release.build_artifacts_manifest(_plan(), wheels, chart)
+    manifest, _ = release.build_artifacts_manifest(
+        _plan(), wheels, chart, actions_run_id=123
+    )
     receipt = {
         "kind": "ucm-image-member-receipt",
         "schema_version": 1,

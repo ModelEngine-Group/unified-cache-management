@@ -306,27 +306,81 @@
         "channel_policy": {"const": "latest-stable-or-rc-or-nightly-per-minor"}
       }
     },
+    "releasePolicyPypi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index"],
+      "properties": {
+        "index": {"type": "string", "minLength": 1}
+      }
+    },
+    "releasePolicyOci": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespace"],
+      "properties": {
+        "namespace": {"type": "string", "minLength": 1}
+      }
+    },
+    "releasePolicyGithubRelease": {
+      "type": "object",
+      "additionalProperties": false
+    },
     "releasePolicyPublish": {
       "type": "object",
       "additionalProperties": false,
       "required": ["pypi", "ghcr", "dockerhub", "chart_oci", "github_release"],
       "properties": {
-        "pypi": {"$ref": "#/$defs/publishPypi"},
-        "ghcr": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["enabled"],
-          "properties": {"enabled": {"type": "boolean"}}
-        },
-        "dockerhub": {"$ref": "#/$defs/publishOci"},
-        "chart_oci": {"$ref": "#/$defs/publishOci"},
-        "github_release": {"$ref": "#/$defs/publishGithubRelease"}
+        "pypi": {"$ref": "#/$defs/releasePolicyPypi"},
+        "ghcr": {"$ref": "#/$defs/releasePolicyOci"},
+        "dockerhub": {"$ref": "#/$defs/releasePolicyOci"},
+        "chart_oci": {"$ref": "#/$defs/releasePolicyOci"},
+        "github_release": {"$ref": "#/$defs/releasePolicyGithubRelease"}
+      }
+    },
+    "releaseProfileLimit": {
+      "oneOf": [
+        {"type": "integer", "const": -1},
+        {"type": "integer", "minimum": 1}
+      ]
+    },
+    "releaseProfilePublish": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pypi", "ghcr", "dockerhub", "chart_oci", "github_release"],
+      "properties": {
+        "pypi": {"type": "boolean"},
+        "ghcr": {"type": "boolean"},
+        "dockerhub": {"type": "boolean"},
+        "chart_oci": {"type": "boolean"},
+        "github_release": {"type": "boolean"}
+      }
+    },
+    "releaseProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_count", "max_minor_versions", "publish"],
+      "properties": {
+        "max_count": {"$ref": "#/$defs/releaseProfileLimit"},
+        "max_minor_versions": {"$ref": "#/$defs/releaseProfileLimit"},
+        "publish": {"$ref": "#/$defs/releaseProfilePublish"}
+      }
+    },
+    "releaseProfiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stable", "prerelease", "draft", "nightly"],
+      "properties": {
+        "stable": {"$ref": "#/$defs/releaseProfile"},
+        "prerelease": {"$ref": "#/$defs/releaseProfile"},
+        "draft": {"$ref": "#/$defs/releaseProfile"},
+        "nightly": {"$ref": "#/$defs/releaseProfile"}
       }
     },
     "releasePolicy": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "schema_version", "runners", "products", "publish", "chart"],
+      "required": ["kind", "schema_version", "runners", "products", "publish", "release_profiles", "chart"],
       "properties": {
         "kind": {"const": "ucm-release-policy"},
         "schema_version": {"const": 5},
@@ -346,6 +400,7 @@
           "items": {"$ref": "#/$defs/releasePolicyProduct"}
         },
         "publish": {"$ref": "#/$defs/releasePolicyPublish"},
+        "release_profiles": {"$ref": "#/$defs/releaseProfiles"},
         "chart": {
           "type": "object",
           "additionalProperties": false,

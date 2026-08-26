@@ -12,7 +12,7 @@ images:
   # engine：发布自动化使用的结构化不可变镜像引用。设置时优先于 image；digest 同时存在时优先于 tag。
   # engine:
   #   repository: "ghcr.io/modelengine-group/vllm-openai"
-  #   tag: "v0.21.0-ucm-0.5.0rc1-r1"
+  #   tag: "v0.21.0-ucm-0.5.0rc1"
   #   digest: "sha256:<64 lowercase hex>"
   # mooncakeMasterImage：自创建 Mooncake master 镜像；留空复用 images.image
   mooncakeMasterImage: ""

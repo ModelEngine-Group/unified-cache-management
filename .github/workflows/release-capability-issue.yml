@@ -42,7 +42,7 @@ jobs:
           found=false
           for _ in $(seq 1 120); do
             runs="$(gh api \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/release-ucm.yml/runs?event=push&per_page=50")"
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/release-tag.yml/runs?event=push&per_page=50")"
             run_id="$(jq -r --arg sha "${GITHUB_SHA}" --arg ref "${GITHUB_REF_NAME}" \
               '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == $ref)] |
                sort_by(.created_at) | last | .id // empty' <<<"${runs}")"

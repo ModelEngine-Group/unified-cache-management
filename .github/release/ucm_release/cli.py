@@ -166,13 +166,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     upstreams_candidates = upstreams_actions.add_parser("candidates")
     upstreams_candidates.add_argument("--release", type=Path, default=core.DEFAULT_RELEASE)
+    upstreams_candidates.add_argument(
+        "--release-type", choices=policy.RELEASE_TYPES, default="stable"
+    )
     upstreams_candidates.add_argument("--tag-fixture", type=Path)
     upstreams_candidates.add_argument("--pr-default", action="store_true")
     upstreams_candidates.add_argument("--output", type=Path, required=True)
 
     def _cmd_upstreams_candidates(a):
         result = upstream.resolve_runtime_candidates(
-            policy.resolve(a.release),
+            policy.resolve(a.release, release_type=a.release_type),
             tag_fixture=core.load_json(a.tag_fixture) if a.tag_fixture else None,
             pr_default=a.pr_default,
         )
@@ -184,6 +187,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     upstreams_resolve = upstreams_actions.add_parser("resolve")
     upstreams_resolve.add_argument("--release", type=Path, default=core.DEFAULT_RELEASE)
+    upstreams_resolve.add_argument(
+        "--release-type", choices=policy.RELEASE_TYPES, default="stable"
+    )
     upstreams_resolve.add_argument("--candidates", type=Path, required=True)
     upstreams_resolve.add_argument("--runtime-probe", type=Path, required=True)
     upstreams_resolve.add_argument("--tag-fixture", type=Path)
@@ -191,7 +197,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     def _cmd_upstreams_resolve(a):
         result = upstream.resolve_upstreams(
-            policy.resolve(a.release),
+            policy.resolve(a.release, release_type=a.release_type),
             candidates=core.load_json(a.candidates),
             runtime_probe=core.load_json(a.runtime_probe),
             tag_fixture=core.load_json(a.tag_fixture) if a.tag_fixture else None,
@@ -208,6 +214,9 @@ def build_parser() -> argparse.ArgumentParser:
     compact_plan = compact_actions.add_parser("plan")
     compact_plan.add_argument("--catalog", type=Path, default=core.DEFAULT_RELEASE)
     compact_plan.add_argument("--schema-dir", type=Path, default=core.DEFAULT_SCHEMA_DIR)
+    compact_plan.add_argument(
+        "--release-type", choices=policy.RELEASE_TYPES, default="stable"
+    )
     compact_plan.add_argument("--builder-catalog", type=Path, required=True)
     compact_plan.add_argument("--runtime-selection", type=Path, required=True)
     compact_plan.add_argument("--route", choices=tuple(sorted(compact.ROUTES)), required=True)
@@ -222,7 +231,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     def _cmd_compact_plan(a):
         result = compact.resolve_plan(
-            policy.resolve(a.catalog),
+            policy.resolve(a.catalog, release_type=a.release_type),
             builder_catalog=core.load_json(a.builder_catalog),
             runtime_selection=core.load_json(a.runtime_selection),
             route=a.route,

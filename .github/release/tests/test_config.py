@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from yaml.tokens import AliasToken, AnchorToken
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / ".github" / "release"))
@@ -141,10 +142,6 @@ def _platform_policy() -> dict[str, object]:
 
 def test_release_policy_matches_the_schema_v5_registry_surface() -> None:
     release = _release_policy()
-    release["products"] = [
-        {key: value for key, value in product.items() if key != "minimum_version"}
-        for product in release["products"]
-    ]
 
     assert release == {
         "kind": "ucm-release-policy",
@@ -155,30 +152,69 @@ def test_release_policy_matches_the_schema_v5_registry_surface() -> None:
                 "id": "vllm",
                 "runtime_repository": "docker.io/vllm/vllm-openai",
                 "target_repository": "ghcr.io/{owner}/vllm-openai",
+                "minimum_version": "0.23.0",
                 "channel_policy": "latest-stable-or-rc-or-nightly-per-minor",
             },
             {
                 "id": "vllm-ascend",
                 "runtime_repository": "quay.io/ascend/vllm-ascend",
                 "target_repository": "ghcr.io/{owner}/vllm-ascend",
+                "minimum_version": "0.23.0",
                 "channel_policy": "latest-stable-or-rc-or-nightly-per-minor",
             },
         ],
         "publish": {
-            "pypi": {
-                "enabled": False,
-                "index": "https://upload.pypi.org/legacy/",
+            "pypi": {"index": "https://upload.pypi.org/legacy/"},
+            "ghcr": {"namespace": "ghcr.io/{owner}"},
+            "dockerhub": {"namespace": "docker.io/{owner}"},
+            "chart_oci": {"namespace": "ghcr.io/{owner}/charts"},
+            "github_release": {},
+        },
+        "release_profiles": {
+            "stable": {
+                "max_count": -1,
+                "max_minor_versions": -1,
+                "publish": {
+                    "pypi": False,
+                    "ghcr": True,
+                    "dockerhub": False,
+                    "chart_oci": True,
+                    "github_release": True,
+                },
             },
-            "ghcr": {"enabled": False},
-            "dockerhub": {
-                "enabled": False,
-                "namespace": "docker.io/{owner}",
+            "prerelease": {
+                "max_count": -1,
+                "max_minor_versions": -1,
+                "publish": {
+                    "pypi": False,
+                    "ghcr": True,
+                    "dockerhub": False,
+                    "chart_oci": True,
+                    "github_release": True,
+                },
             },
-            "chart_oci": {
-                "enabled": True,
-                "namespace": "ghcr.io/{owner}/charts",
+            "draft": {
+                "max_count": 7,
+                "max_minor_versions": -1,
+                "publish": {
+                    "pypi": False,
+                    "ghcr": True,
+                    "dockerhub": False,
+                    "chart_oci": True,
+                    "github_release": True,
+                },
             },
-            "github_release": {"enabled": True},
+            "nightly": {
+                "max_count": 7,
+                "max_minor_versions": 1,
+                "publish": {
+                    "pypi": False,
+                    "ghcr": True,
+                    "dockerhub": False,
+                    "chart_oci": True,
+                    "github_release": True,
+                },
+            },
         },
         "chart": {
             "source": "charts/unified-cache-chart",
@@ -188,6 +224,64 @@ def test_release_policy_matches_the_schema_v5_registry_surface() -> None:
             },
         },
     }
+
+
+def test_release_yaml_has_expanded_commented_profiles_without_aliases() -> None:
+    text = (RELEASE_ROOT / "release.yaml").read_text(encoding="utf-8")
+
+    assert "# 四类发布配置全部展开" in text
+    assert "# -1 表示无限保留 Stable 发布。" in text
+    assert "# 最多保留 7 个新版 Draft。" in text
+    assert "# 最多保留 7 个 Nightly。" in text
+    assert "# 只构建 minimum_version 起第一个实际存在的 minor。" in text
+    assert not any(
+        isinstance(token, (AnchorToken, AliasToken)) for token in yaml.scan(text)
+    )
+
+
+@pytest.mark.parametrize("field", ["max_count", "max_minor_versions"])
+@pytest.mark.parametrize("value", [-2, -1.0, 0, True, 1.5, "-1", "1", None])
+def test_release_profile_limits_reject_values_other_than_minus_one_or_positive_int(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    policy = importlib.import_module("ucm_release.policy")
+    release = _release_policy()
+    release["release_profiles"]["nightly"][field] = value
+    path = tmp_path / "release.yaml"
+    path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        policy.load(path)
+
+
+@pytest.mark.parametrize("value", [-1, 1, 7])
+def test_release_profile_limits_accept_minus_one_and_positive_int(
+    tmp_path: Path, value: int
+) -> None:
+    policy = importlib.import_module("ucm_release.policy")
+    release = _release_policy()
+    release["release_profiles"]["nightly"]["max_minor_versions"] = value
+    path = tmp_path / "release.yaml"
+    path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
+
+    loaded = policy.load(path)
+
+    assert (
+        loaded["release"]["release_profiles"]["nightly"]["max_minor_versions"] == value
+    )
+
+
+def test_finite_profile_with_pypi_enabled_is_valid(tmp_path: Path) -> None:
+    policy = importlib.import_module("ucm_release.policy")
+    release = _release_policy()
+    release["release_profiles"]["draft"]["publish"]["pypi"] = True
+    path = tmp_path / "release.yaml"
+    path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
+
+    loaded = policy.load(path)
+
+    assert loaded["release"]["release_profiles"]["draft"]["max_count"] == 7
+    assert loaded["release"]["release_profiles"]["draft"]["publish"]["pypi"]
 
 
 def test_platform_policy_matches_supported_and_blocked_backends() -> None:
@@ -271,6 +365,71 @@ def test_formal_policy_loads_exact_requirements_without_legacy_authorities() -> 
         assert legacy_key not in serialized
 
 
+@pytest.mark.parametrize(
+    ("release_type", "max_count", "max_minor_versions"),
+    [
+        ("stable", -1, -1),
+        ("prerelease", -1, -1),
+        ("draft", 7, -1),
+        ("nightly", 7, 1),
+    ],
+)
+def test_policy_resolve_selects_one_profile_and_normalizes_publication(
+    release_type: str, max_count: int, max_minor_versions: int
+) -> None:
+    policy = importlib.import_module("ucm_release.policy")
+
+    resolved = policy.resolve(repository="release-org/ucm", release_type=release_type)
+
+    assert resolved["release_type"] == release_type
+    assert resolved["release_profile"] == {
+        "max_count": max_count,
+        "max_minor_versions": max_minor_versions,
+        "publish": {
+            "pypi": False,
+            "ghcr": True,
+            "dockerhub": False,
+            "chart_oci": True,
+            "github_release": True,
+        },
+    }
+    assert resolved["publish"] == {
+        "pypi": {
+            "index": "https://upload.pypi.org/legacy/",
+            "enabled": False,
+        },
+        "ghcr": {"namespace": "ghcr.io/release-org", "enabled": True},
+        "dockerhub": {
+            "namespace": "docker.io/release-org",
+            "enabled": False,
+        },
+        "chart_oci": {
+            "namespace": "ghcr.io/release-org/charts",
+            "enabled": True,
+        },
+        "github_release": {"enabled": True},
+    }
+
+
+def test_policy_resolve_uses_only_the_selected_profile_switches(
+    tmp_path: Path,
+) -> None:
+    policy = importlib.import_module("ucm_release.policy")
+    release = _release_policy()
+    release["release_profiles"]["stable"]["publish"]["ghcr"] = False
+    release["release_profiles"]["draft"]["publish"]["pypi"] = True
+    path = tmp_path / "release.yaml"
+    path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
+
+    stable = policy.resolve(path, repository="release-org/ucm", release_type="stable")
+    draft = policy.resolve(path, repository="release-org/ucm", release_type="draft")
+
+    assert stable["publish"]["ghcr"]["enabled"] is False
+    assert stable["publish"]["pypi"]["enabled"] is False
+    assert draft["publish"]["ghcr"]["enabled"] is True
+    assert draft["publish"]["pypi"]["enabled"] is True
+
+
 def test_builder_discovery_defaults_to_the_platform_policy() -> None:
     cli = importlib.import_module("ucm_release.cli")
     policy = importlib.import_module("ucm_release.policy")
@@ -289,6 +448,64 @@ def test_builder_discovery_defaults_to_the_platform_policy() -> None:
     assert args.config == policy.DEFAULT_PLATFORMS
 
 
+@pytest.mark.parametrize(
+    ("arguments", "release_type"),
+    [
+        (
+            [
+                "upstreams",
+                "candidates",
+                "--release-type",
+                "nightly",
+                "--output",
+                "candidates.json",
+            ],
+            "nightly",
+        ),
+        (
+            [
+                "upstreams",
+                "resolve",
+                "--release-type",
+                "draft",
+                "--candidates",
+                "candidates.json",
+                "--runtime-probe",
+                "probe.json",
+                "--output",
+                "selection.json",
+            ],
+            "draft",
+        ),
+        (
+            [
+                "compact",
+                "plan",
+                "--release-type",
+                "prerelease",
+                "--builder-catalog",
+                "builders.json",
+                "--runtime-selection",
+                "selection.json",
+                "--route",
+                "release",
+                "--output",
+                "plan.json",
+            ],
+            "prerelease",
+        ),
+    ],
+)
+def test_release_commands_accept_explicit_release_type(
+    arguments: list[str], release_type: str
+) -> None:
+    cli = importlib.import_module("ucm_release.cli")
+
+    args = cli.build_parser().parse_args(arguments)
+
+    assert args.release_type == release_type
+
+
 def test_core_projects_v5_for_release_consumers() -> None:
     core = importlib.import_module("ucm_release.core")
 
@@ -297,6 +514,9 @@ def test_core_projects_v5_for_release_consumers() -> None:
     assert catalog["kind"] == "release-config"
     assert catalog["schema_version"] == 3
     assert catalog["runner_map"] == _release_policy()["runners"]
+    assert {
+        product["target_tag_suffix"] for product in catalog["upstream_products"]
+    } == {"-ucm-0.7.59rc7"}
     assert catalog["wheel_build_requirements"] == [
         "build==1.3.0",
         "cmake==3.31.6",
@@ -326,17 +546,57 @@ def test_release_yaml_is_the_exact_publication_authority() -> None:
     release = _release_policy()
 
     assert release["publish"] == {
-        "pypi": {
-            "enabled": False,
-            "index": "https://upload.pypi.org/legacy/",
+        "pypi": {"index": "https://upload.pypi.org/legacy/"},
+        "ghcr": {"namespace": "ghcr.io/{owner}"},
+        "dockerhub": {"namespace": "docker.io/{owner}"},
+        "chart_oci": {"namespace": "ghcr.io/{owner}/charts"},
+        "github_release": {},
+    }
+    assert release["release_profiles"] == {
+        "stable": {
+            "max_count": -1,
+            "max_minor_versions": -1,
+            "publish": {
+                "pypi": False,
+                "ghcr": True,
+                "dockerhub": False,
+                "chart_oci": True,
+                "github_release": True,
+            },
         },
-        "ghcr": {"enabled": False},
-        "dockerhub": {"enabled": False, "namespace": "docker.io/{owner}"},
-        "chart_oci": {
-            "enabled": True,
-            "namespace": "ghcr.io/{owner}/charts",
+        "prerelease": {
+            "max_count": -1,
+            "max_minor_versions": -1,
+            "publish": {
+                "pypi": False,
+                "ghcr": True,
+                "dockerhub": False,
+                "chart_oci": True,
+                "github_release": True,
+            },
         },
-        "github_release": {"enabled": True},
+        "draft": {
+            "max_count": 7,
+            "max_minor_versions": -1,
+            "publish": {
+                "pypi": False,
+                "ghcr": True,
+                "dockerhub": False,
+                "chart_oci": True,
+                "github_release": True,
+            },
+        },
+        "nightly": {
+            "max_count": 7,
+            "max_minor_versions": 1,
+            "publish": {
+                "pypi": False,
+                "ghcr": True,
+                "dockerhub": False,
+                "chart_oci": True,
+                "github_release": True,
+            },
+        },
     }
     assert set(release) == {
         "kind",
@@ -344,6 +604,7 @@ def test_release_yaml_is_the_exact_publication_authority() -> None:
         "runners",
         "products",
         "publish",
+        "release_profiles",
         "chart",
     }
     assert set(release["chart"]) == {"source", "smoke_values"}
@@ -359,7 +620,10 @@ def test_publish_plan_is_the_normalized_config_without_runtime_layers() -> None:
             "enabled": False,
             "index": "https://upload.pypi.org/legacy/",
         },
-        "ghcr": {"enabled": False, "namespace": "ghcr.io/release-org"},
+        "ghcr": {
+            "enabled": True,
+            "namespace": "ghcr.io/release-org",
+        },
         "dockerhub": {
             "enabled": False,
             "namespace": "docker.io/release-org",
@@ -372,14 +636,31 @@ def test_publish_plan_is_the_normalized_config_without_runtime_layers() -> None:
     }
 
 
-def test_enabled_public_channel_requires_github_release_draft_barrier(
-    tmp_path: Path,
+@pytest.mark.parametrize("enabled", [False, True])
+def test_ghcr_publication_accepts_both_boolean_modes(
+    tmp_path: Path, enabled: bool
+) -> None:
+    core = importlib.import_module("ucm_release.core")
+    release = _release_policy()
+    release["release_profiles"]["stable"]["publish"]["ghcr"] = enabled
+    path = tmp_path / "release.yaml"
+    path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
+
+    catalog = core.load_catalog(path, repository="release-org/ucm")
+    plan = core.compute_publish_plan(catalog)
+
+    assert plan["ghcr"]["enabled"] is enabled
+
+
+@pytest.mark.parametrize("release_type", ["stable", "prerelease", "draft", "nightly"])
+def test_each_profile_requires_github_release_draft_barrier(
+    tmp_path: Path, release_type: str
 ) -> None:
     core = importlib.import_module("ucm_release.core")
     release = yaml.safe_load(
         (REPO_ROOT / ".github" / "release" / "release.yaml").read_text(encoding="utf-8")
     )
-    release["publish"]["github_release"]["enabled"] = False
+    release["release_profiles"][release_type]["publish"]["github_release"] = False
     path = tmp_path / "release.yaml"
     path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
 
@@ -387,13 +668,16 @@ def test_enabled_public_channel_requires_github_release_draft_barrier(
         core.load_catalog(path)
 
 
-def test_dockerhub_publication_requires_ghcr_source_channel(tmp_path: Path) -> None:
+@pytest.mark.parametrize("release_type", ["stable", "prerelease", "draft", "nightly"])
+def test_each_profile_dockerhub_requires_ghcr_source_channel(
+    tmp_path: Path, release_type: str
+) -> None:
     core = importlib.import_module("ucm_release.core")
     release = yaml.safe_load(
         (REPO_ROOT / ".github" / "release" / "release.yaml").read_text(encoding="utf-8")
     )
-    release["publish"]["dockerhub"]["enabled"] = True
-    release["publish"]["ghcr"]["enabled"] = False
+    release["release_profiles"][release_type]["publish"]["dockerhub"] = True
+    release["release_profiles"][release_type]["publish"]["ghcr"] = False
     path = tmp_path / "release.yaml"
     path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
 

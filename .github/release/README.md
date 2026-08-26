@@ -1,16 +1,18 @@
 # UCM Registry-driven release automation
 
 The active pipeline builds UCM Wheels and the Helm Chart from actual published
-runtime images. When `publish.ghcr.enabled` is true, it also publishes
-install-only Runtime images. It never reads vLLM or vLLM-Ascend source branches
-to decide versions or Builder capabilities.
+runtime images. Stable, Prerelease, Draft, and Nightly Profiles independently
+select the five publication channels and retention limits. The pipeline never
+reads vLLM or vLLM-Ascend source branches to decide versions or Builder
+capabilities.
 
 ## Maintained policy
 
 The human-maintained release authorities are:
 
 - `release.yaml`: runtime repositories, inclusive version windows, runners,
-  publication channels, and Chart smoke inputs;
+  fixed publication addresses, four fully expanded Release Profiles, and Chart
+  smoke inputs;
 - `platforms.yaml`: raw Builder registries, excluded variants, Builder checks,
   and supported or blocked UCM backends;
 - `requirements/wheel-build.txt` and `requirements/wheel-runtime.txt`: exact
@@ -20,7 +22,9 @@ The human-maintained release authorities are:
 when present, inclusive. Registry Tags are grouped by major/minor. Each line
 selects its highest Stable version, otherwise its highest formal RC, otherwise
 its release-nightly version. All real variants of that selected version remain
-eligible; 310P is filtered and A5 is reported as blocked.
+eligible; 310P is filtered and A5 is reported as blocked. A Profile
+`max_minor_versions` of `-1` keeps all actual minor groups; a positive value
+keeps the first N existing minor groups in ascending order without filling gaps.
 
 ## Registry-only flow
 
@@ -70,30 +74,58 @@ The workflow accepts:
 | `vX.Y.ZrcN` | `X.Y.ZrcN` | `X.Y.Z-rc.N` | public prerelease |
 | `draft/vX.Y.Z` | `X.Y.Z.dev0` | `X.Y.Z-draft.0` | Draft |
 | `draft/vX.Y.Z-N` | `X.Y.Z.devN` | `X.Y.Z-draft.N` | Draft |
+| `nightly/vX.Y.Z-YYYYMMDD-N` | `X.Y.Z.devYYYYMMDDNNN` | `X.Y.Z-nightly.YYYYMMDD.N` | public prerelease after success |
 
 For a formal `v*` Tag, the Release is created or reused and made public
 immediately. A manually pre-opened public Release is valid. A Draft Tag always
 remains Draft. Exact Releases API lookup requires one Release for the Tag;
 duplicate Release records fail closed.
 
+At 02:00 Asia/Shanghai (`18:00` UTC), `release-nightly.yml` reads the highest
+strict `vX.Y.Z` Stable Tag, advances its patch, and creates the next dated
+Nightly Tag from `develop`. An incomplete same-SHA Nightly Tag is reused; an
+existing Tag is never moved. Because a `GITHUB_TOKEN` Tag creation does not
+recursively trigger another workflow, the same scheduled Run calls the common
+`release-ucm.yml` reusable core directly. Manual `nightly/*` Tag pushes use the
+same core through `release-tag.yml`.
+
 Publication then updates the same Release in stages:
 
 1. `release-open`: no artifacts are required yet;
-2. all Wheels, the example config, and the Chart are uploaded; the state is
-   `artifacts-ready` when images are requested and `complete` otherwise;
-3. when images are requested, `complete` or `images-failed` records the final
-   Registry member/index references and digests.
+2. all Wheels, the example config, and the Chart are uploaded and the state is
+   `artifacts-ready` while any enabled channel remains;
+3. image members/indexes, PyPI, and Chart OCI complete and are read back;
+4. the final state becomes `complete`, `images-failed`, or
+   `publication-failed`.
 
-`release-state.json` is an internal staging file retained in the
-`ucm-release-stage-run-<run>` Actions artifact. It is not uploaded as a public
-GitHub Release asset.
+`release-state.json` remains the rich internal staging file in the
+`ucm-release-stage-run-<run>` Actions artifact. Only after all enabled channels
+succeed, a compact public `release-manifest.json` schema 6 is uploaded and read
+back. It records only the Tag/type/Actions Run, Chart OCI reference, Runtime
+member/index references, and GitHub Release asset names needed for cleanup.
 
 If image publication is disabled, Tag Releases stop after Wheels, the example
 config, and Chart publication. If requested image publication fails, those
 artifacts remain usable and the public Release is marked `images-failed`. OCI
-archives are not uploaded to GitHub Release. Draft builds use `.devN` GHCR
-coordinates only when image publication is enabled; they never publish to PyPI
-or Docker Hub.
+archives are not uploaded to GitHub Release. Draft and Nightly channel behavior
+comes only from their Profiles; there are no type-specific PyPI or DockerHub
+prohibitions in publication code.
+
+## Retention and cleanup
+
+`max_count: -1` disables retention. Finite retention considers only successful
+same-type Releases carrying an exact schema-v6 manifest, never the current Tag;
+old Releases without that manifest are skipped rather than guessed. When PyPI
+is enabled for a finite Profile, retention is skipped with an explicit reason.
+
+Cleanup is manifest-driven and retryable through
+`cleanup-ucm-release.yml(tag=...)`. Each resource is probed before up to three
+attempts with waits of 0, 5, and 15 seconds. Registry resources are removed
+first, followed by the associated Actions Run, Git Tag, and all exact-tag
+GitHub Releases. A failed phase blocks later phases while other resources in
+that phase are still attempted. GHCR package versions carrying any non-target
+Tag are refused. Re-running cleanup is idempotent because missing resources are
+treated as already removed.
 
 Every published Runtime image also contains the same Tag's example config at
 `/workspace/ucm_config_example.yaml`. It is not selected automatically; callers
@@ -162,5 +194,5 @@ git diff --check
 ```
 
 Local checks are preflight only. Forward-compatible matrix and staged Release
-acceptance must be demonstrated by GitHub Actions on `feature/cicd_v4`, with
+acceptance must be demonstrated by GitHub Actions on `feature/cicd_v5`, with
 run URL/SHA/job/artifact evidence and Registry/Release readback.

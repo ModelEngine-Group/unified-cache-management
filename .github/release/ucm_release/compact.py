@@ -336,6 +336,9 @@ def resolve_plan(
     distributions = sorted({str(item["dist_name"]) for item in wheels})
     publish = copy.deepcopy(catalog["publish"])
     publish["pypi"]["distributions"] = distributions
+    resolved_release_type = catalog.get("release_type")
+    if resolved_release_type not in {"stable", "prerelease", "draft", "nightly"}:
+        raise ValueError(f"unsupported release type: {resolved_release_type!r}")
     resolved_version = str(catalog["ucm_version"])
     resolved_git_tag = git_tag or str(catalog["release_tag"])
     resolved_release_kind = release_kind or (
@@ -356,6 +359,7 @@ def resolve_plan(
     return {
         "kind": "ucm-release-plan",
         "route": route,
+        "release_type": resolved_release_type,
         "version": resolved_version,
         "image_version": resolved_version,
         "git_tag": resolved_git_tag,

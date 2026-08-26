@@ -204,6 +204,16 @@ def _version_window(
     return minimum, maximum
 
 
+def _minor_limit(value: object, context: str) -> int:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or (value != -1 and value < 1)
+    ):
+        raise ValueError(f"{context}: must be -1 or an integer >= 1")
+    return value
+
+
 def _parsed_runtime_tag(product_id: str, tag: str) -> dict[str, object] | None:
     nightly = _NIGHTLY_TAG.fullmatch(tag) if product_id == "vllm-ascend" else None
     formal = _FORMAL_TAG.fullmatch(tag)
@@ -251,13 +261,17 @@ def _parsed_runtime_tag(product_id: str, tag: str) -> dict[str, object] | None:
 
 
 def _select_runtime_tags(
-    product: Mapping[str, object], tags: Sequence[str]
+    product: Mapping[str, object],
+    tags: Sequence[str],
+    *,
+    max_minor_versions: int = -1,
 ) -> list[dict[str, str]]:
     """Select one published version per major/minor and keep its real variants."""
 
     product_id = _string(product, "id", "release product")
     if product.get("channel_policy") != "latest-stable-or-rc-or-nightly-per-minor":
         raise ValueError(f"{product_id}: unsupported channel policy")
+    minor_limit = _minor_limit(max_minor_versions, f"{product_id} max_minor_versions")
     minimum, maximum = _version_window(product)
     parsed = [
         item
@@ -273,7 +287,10 @@ def _select_runtime_tags(
         by_minor.setdefault((version.major, version.minor), []).append(item)
 
     selected: list[dict[str, str]] = []
-    for minor in sorted(by_minor):
+    selected_minors = sorted(by_minor)
+    if minor_limit != -1:
+        selected_minors = selected_minors[:minor_limit]
+    for minor in selected_minors:
         values = by_minor[minor]
         chosen_channel = next(
             (
@@ -324,6 +341,13 @@ def resolve_runtime_candidates(
     if not isinstance(products, list) or not products:
         raise ValueError("formal runtime selection requires release products")
     backends = _mapping(release.get("backends"), "platform backends")
+    release_profile = _mapping(
+        release.get("release_profile"), "selected release profile"
+    )
+    max_minor_versions = _minor_limit(
+        release_profile.get("max_minor_versions"),
+        "selected release profile max_minor_versions",
+    )
     excluded_by_product = _mapping(
         release.get("excluded_upstream_variants"), "excluded upstream variants"
     )
@@ -338,6 +362,7 @@ def resolve_runtime_candidates(
             _repository_tags(
                 repository, tag_fixture=tag_fixture, tag_loader=tag_loader
             ),
+            max_minor_versions=max_minor_versions,
         )
         if not selected:
             raise ValueError(
@@ -972,7 +997,7 @@ def resolve_upstreams(
         str(item["id"]): _mapping(item, "release product")
         for item in release["products"]  # type: ignore[index]
     }
-    image_suffix = f"-ucm-{core._oci_tag_version(str(release['ucm_version']))}-r1"
+    image_suffix = f"-ucm-{core._oci_tag_version(str(release['ucm_version']))}"
     runtimes: list[dict[str, object]] = []
     for reference, group in sorted(grouped.items()):
         candidate = candidate_by_ref[reference]

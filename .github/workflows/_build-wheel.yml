@@ -16,6 +16,10 @@ on:
         type: string
         required: false
         default: ""
+      retention_days:
+        type: number
+        required: false
+        default: 7
     outputs:
       wheel_artifact:
         description: Wheel artifact produced by this task
@@ -55,9 +59,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out .ucm-compact
-          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            python scripts/materialize_version.py --tag "${GITHUB_REF_NAME}" >/dev/null
-          fi
+          python scripts/materialize_version.py \
+            --version "$(jq -er '.version' input/plan/release-plan.json)" >/dev/null
           PYTHONPATH=.github/release python -m ucm_release compact select \
             --plan input/plan/release-plan.json --kind wheel --id "${WHEEL_ID}" \
             --output out/wheel-task.json >/dev/null
@@ -147,4 +150,4 @@ jobs:
           path: out/wheel/
           if-no-files-found: error
           overwrite: true
-          retention-days: ${{ github.event_name == 'push' && github.ref_type == 'tag' && 90 || 7 }}
+          retention-days: ${{ inputs.retention_days }}

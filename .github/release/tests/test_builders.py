@@ -20,11 +20,12 @@ policy = importlib.import_module("ucm_release.policy")
 upstream = importlib.import_module("ucm_release.upstream")
 
 
-def _policy() -> dict[str, object]:
+def _policy(release_type: str = "stable") -> dict[str, object]:
     release = copy.deepcopy(
         policy.resolve(
             repository="release-org/unified-cache-management",
             version_override="0.7.60rc1",
+            release_type=release_type,
         )
     )
     for product in release["products"]:
@@ -94,6 +95,102 @@ def test_registry_tag_selection_is_per_minor_and_uses_inclusive_window() -> None
         ("0.26.0rc0", "nightly"),
     }
     assert all(not item["runtime_tag"].startswith("releases/") for item in selected)
+
+
+def test_registry_tag_selection_limits_first_actual_minors_and_keeps_variants() -> None:
+    product = {
+        "id": "vllm-ascend",
+        "minimum_version": "0.23.0",
+        "maximum_version": "0.27.0",
+        "channel_policy": "latest-stable-or-rc-or-nightly-per-minor",
+    }
+    tags = [
+        "v0.22.9",
+        "v0.23.1",
+        "v0.23.1-a3",
+        "v0.23.2rc1",
+        "v0.25.2rc1",
+        "v0.25.2rc1-a3",
+        "nightly-releases-v0.26.0rc",
+        "nightly-releases-v0.26.0rc-a3",
+    ]
+
+    limited = upstream._select_runtime_tags(  # noqa: SLF001
+        product, tags, max_minor_versions=2
+    )
+    unlimited = upstream._select_runtime_tags(  # noqa: SLF001
+        product, tags, max_minor_versions=-1
+    )
+
+    assert limited == [
+        {"runtime_tag": "v0.23.1", "version": "0.23.1", "channel": "stable"},
+        {
+            "runtime_tag": "v0.23.1-a3",
+            "version": "0.23.1",
+            "channel": "stable",
+        },
+        {
+            "runtime_tag": "v0.25.2rc1",
+            "version": "0.25.2rc1",
+            "channel": "rc",
+        },
+        {
+            "runtime_tag": "v0.25.2rc1-a3",
+            "version": "0.25.2rc1",
+            "channel": "rc",
+        },
+    ]
+    assert {(item["version"], item["channel"]) for item in unlimited} == {
+        ("0.23.1", "stable"),
+        ("0.25.2rc1", "rc"),
+        ("0.26.0rc0", "nightly"),
+    }
+
+
+@pytest.mark.parametrize("value", [-2, 0, True])
+def test_registry_tag_selection_rejects_invalid_minor_limit(value: object) -> None:
+    product = {
+        "id": "vllm",
+        "minimum_version": "0.23.0",
+        "channel_policy": "latest-stable-or-rc-or-nightly-per-minor",
+    }
+
+    with pytest.raises(ValueError, match="must be -1 or an integer >= 1"):
+        upstream._select_runtime_tags(  # noqa: SLF001
+            product, ["v0.23.0"], max_minor_versions=value
+        )
+
+
+def test_candidate_selection_uses_selected_profile_minor_limit_per_product() -> None:
+    release = _policy("nightly")
+    tags = {
+        "docker.io/vllm/vllm-openai": ["v0.22.1", "v0.24.0"],
+        "quay.io/ascend/vllm-ascend": [
+            "v0.21.0",
+            "v0.21.0-a3",
+            "v0.23.0",
+        ],
+    }
+
+    candidates = upstream.resolve_runtime_candidates(
+        release, tag_loader=lambda repository: tags[repository]
+    )
+
+    by_product = {
+        product_id: {
+            (item["version"], item["runtime_tag"])
+            for item in candidates["runtimes"]
+            if item["product_id"] == product_id
+        }
+        for product_id in ("vllm", "vllm-ascend")
+    }
+    assert by_product == {
+        "vllm": {("0.22.1", "v0.22.1")},
+        "vllm-ascend": {
+            ("0.21.0", "v0.21.0"),
+            ("0.21.0", "v0.21.0-a3"),
+        },
+    }
 
 
 def test_candidates_are_real_registry_tags_and_filter_arch_310p_and_a5() -> None:

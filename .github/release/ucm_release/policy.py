@@ -36,6 +36,8 @@ _MATRIX_LIMITS = {
     "max_family_tasks": 128,
 }
 _SCAN_LIMITS = {"max_tags_per_repository": 1024, "max_selected_upstreams": 64}
+RELEASE_TYPES = ("stable", "prerelease", "draft", "nightly")
+PUBLISH_CHANNELS = core.PUBLISH_CHANNELS
 
 
 def _companion_path(release_path: Path, explicit: Path | None, default: Path) -> Path:
@@ -87,6 +89,23 @@ def _exact_requirements(path: Path) -> list[str]:
     return [requirements[name] for name in sorted(requirements)]
 
 
+def _select_release_profile(
+    release: dict[str, Any], release_type: str
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    if release_type not in RELEASE_TYPES:
+        raise ValueError(f"unsupported release type: {release_type!r}")
+    profiles = release["release_profiles"]
+    profile = copy.deepcopy(profiles[release_type])
+    addresses = release["publish"]
+    switches = profile["publish"]
+    publish: dict[str, dict[str, Any]] = {}
+    for channel in PUBLISH_CHANNELS:
+        config = copy.deepcopy(addresses[channel])
+        config["enabled"] = switches[channel]
+        publish[channel] = config
+    return profile, publish
+
+
 def _validate_release_semantics(release: dict[str, Any]) -> None:
     products = release["products"]
     product_ids = [product["id"] for product in products]
@@ -113,19 +132,24 @@ def _validate_release_semantics(release: dict[str, Any]) -> None:
             raise ValueError(
                 f"release product {product['id']}: maximum_version must be >= minimum_version"
             )
-    publish = release["publish"]
-    if (
-        any(
-            publish[channel]["enabled"]
-            for channel in ("pypi", "ghcr", "dockerhub", "chart_oci")
-        )
-        and not publish["github_release"]["enabled"]
-    ):
-        raise ValueError(
-            "enabled public channels require the GitHub Release Draft barrier"
-        )
-    if publish["dockerhub"]["enabled"] and not publish["ghcr"]["enabled"]:
-        raise ValueError("Docker Hub publication requires GHCR source publication")
+    for release_type in RELEASE_TYPES:
+        profile_publish = release["release_profiles"][release_type]["publish"]
+        if (
+            any(
+                profile_publish[channel]
+                for channel in ("pypi", "ghcr", "dockerhub", "chart_oci")
+            )
+            and not profile_publish["github_release"]
+        ):
+            raise ValueError(
+                f"{release_type}: enabled public channels require the GitHub Release "
+                "Draft barrier"
+            )
+        if profile_publish["dockerhub"] and not profile_publish["ghcr"]:
+            raise ValueError(
+                f"{release_type}: Docker Hub publication requires GHCR source "
+                "publication"
+            )
 
 
 def _validate_platform_semantics(platforms: dict[str, Any]) -> None:
@@ -190,6 +214,7 @@ def resolve(
     repository_root: Path = core.REPO_ROOT,
     repository: str | None = None,
     version_override: str | None = None,
+    release_type: str = "stable",
 ) -> dict[str, Any]:
     """Resolve the two human policies into the formal runtime authority."""
     bundle = load(release_path, platforms_path=platforms_path)
@@ -221,6 +246,10 @@ def resolve(
             "backends": platforms["backends"],
         }
     )
+    selected_profile, normalized_publish = _select_release_profile(merged, release_type)
+    merged["publish"] = normalized_publish
+    merged["release_type"] = release_type
+    merged["release_profile"] = selected_profile
     version = version_override or core.read_version(repository_root / "version.ini")
     chart_document = core.load_yaml(
         repository_root / release["chart"]["source"] / "Chart.yaml"
@@ -275,7 +304,7 @@ def _backend_contracts(platforms: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def compatibility_projection(
-    policy: dict[str, Any], *, chart_name: str
+    policy: dict[str, Any], *, chart_name: str, release_type: str = "stable"
 ) -> dict[str, Any]:
     """Project v5 policy into the transitional schema-v3 catalog interface."""
     release = policy["release"]
@@ -301,8 +330,7 @@ def compatibility_projection(
         if "maximum_version" in product:
             projected["maximum_version"] = product["maximum_version"]
         upstream_products.append(projected)
-    publish = copy.deepcopy(release["publish"])
-    publish["ghcr"]["namespace"] = "ghcr.io/{owner}"
+    _, publish = _select_release_profile(release, release_type)
     builder_families = platforms["builder_families"]
     return {
         "kind": "release-config",

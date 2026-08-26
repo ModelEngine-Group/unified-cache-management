@@ -1203,11 +1203,11 @@ def load_catalog(
 ) -> dict[str, Any]:
     config_schema = load_json(schema_dir / "config.schema.json")
     release = load_yaml(release_path)
-    is_v4_policy = (
+    is_formal_policy = (
         release.get("kind") == "ucm-release-policy"
         and release.get("schema_version") == 5
     )
-    if is_v4_policy:
+    if is_formal_policy:
         from . import policy as release_policy
 
         formal_policy = release_policy.load(
@@ -1233,7 +1233,9 @@ def load_catalog(
     release["source"]["release_tag"] = f"v{version}"
     release["chart"]["version"] = derive_chart_version(version)
     release["chart"]["app_version"] = version
-    image_suffix = f"-ucm-{_oci_tag_version(version)}-r{release.get('image_revision', 1)}"  # fmt: skip  # noqa: E501
+    image_suffix = f"-ucm-{_oci_tag_version(version)}"
+    if not is_formal_policy:
+        image_suffix += f"-r{release.get('image_revision', 1)}"
     for product in release.get("upstream_products", []):
         product["target_tag_suffix"] = image_suffix
     for profile in release.get("wheel_profiles", []):

@@ -1,4 +1,4 @@
-"""Build staged GitHub Release manifests from validated build receipts."""
+"""Build staged Release state and the compact public cleanup manifest."""
 
 from __future__ import annotations
 
@@ -12,6 +12,11 @@ from typing import Any
 from urllib.parse import quote, urlparse
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+STATE_KIND = "ucm-release-state"
+STATE_SCHEMA_VERSION = 2
+PUBLIC_MANIFEST_KIND = "ucm-release-manifest"
+PUBLIC_MANIFEST_SCHEMA_VERSION = 6
+PUBLIC_MANIFEST_FILENAME = "release-manifest.json"
 
 
 def _load_json(path: Path) -> Any:
@@ -134,10 +139,7 @@ def _expected_targets(plan: dict[str, Any], reference: str) -> dict[str, str]:
     if _mapping(publish.get("ghcr"), "release plan GHCR").get("enabled") is True:
         expected["ghcr"] = reference
     dockerhub = _mapping(publish.get("dockerhub"), "release plan Docker Hub")
-    if (
-        dockerhub.get("enabled") is True
-        and plan.get("release_kind", "publish") != "draft"
-    ):
+    if dockerhub.get("enabled") is True:
         repository, separator, tag = reference.rpartition(":")
         if not separator or not repository or not tag:
             raise ValueError(f"planned image reference is invalid: {reference!r}")
@@ -149,7 +151,11 @@ def _expected_targets(plan: dict[str, Any], reference: str) -> dict[str, str]:
 
 
 def build_artifacts_manifest(
-    plan: dict[str, Any], wheels_root: Path, chart_root: Path
+    plan: dict[str, Any],
+    wheels_root: Path,
+    chart_root: Path,
+    *,
+    actions_run_id: int,
 ) -> tuple[dict[str, Any], list[tuple[str, str]]]:
     """Validate Wheel/Chart outputs and return the artifacts-ready manifest."""
     tasks = {
@@ -262,17 +268,32 @@ def build_artifacts_manifest(
                 "targets": [],
             }
         )
+    publish = copy.deepcopy(_mapping(plan.get("publish"), "release plan publish"))
     publication_requested = any(
         item["expected_targets"] for item in [*images, *family_records]
+    ) or any(
+        _mapping(publish.get(channel), f"release plan {channel}").get("enabled") is True
+        for channel in ("pypi", "chart_oci")
+    )
+    if isinstance(actions_run_id, bool) or actions_run_id < 1:
+        raise ValueError("Actions run ID must be a positive integer")
+    chart_oci = _mapping(publish.get("chart_oci"), "release plan Chart OCI")
+    chart_oci_reference = (
+        f"{chart_oci['namespace']}/{plan['chart']['name']}:{plan['chart']['version']}"
+        if chart_oci.get("enabled") is True
+        else None
     )
     manifest = {
-        "kind": "ucm-release-manifest",
-        "schema_version": 1,
+        "kind": STATE_KIND,
+        "schema_version": STATE_SCHEMA_VERSION,
+        "publish": publish,
         "release": {
             "git_tag": plan["git_tag"],
+            "release_type": plan["release_type"],
             "release_kind": plan.get("release_kind", "publish"),
             "is_prerelease": plan.get("is_prerelease", True),
             "version": plan["version"],
+            "actions_run_id": actions_run_id,
             "status": "artifacts-ready" if publication_requested else "complete",
         },
         "chart": {
@@ -281,6 +302,7 @@ def build_artifacts_manifest(
             "app_version": plan["chart"]["app_version"],
             "filename": chart_path.name,
             "sha256": chart_digest,
+            "oci_reference": chart_oci_reference,
         },
         "wheels": wheels,
         "images": sorted(images, key=lambda item: str(item["id"])),
@@ -347,6 +369,39 @@ def _validated_receipt_targets(
     return targets
 
 
+def validate_member_receipts(
+    plan: dict[str, Any], receipts_root: Path
+) -> dict[str, dict[str, Any]]:
+    """Require one complete member receipt for every planned image."""
+    families = _family_map(plan)
+    expected: dict[str, dict[str, str]] = {}
+    for raw_image in _list(plan.get("images"), "release plan Images"):
+        image = _mapping(raw_image, "release plan Image")
+        image_id = str(image.get("id", ""))
+        family = families.get(str(image.get("family_id", "")))
+        if not image_id or family is None:
+            raise ValueError("release plan Image has no family")
+        member = _one(
+            [
+                item
+                for item in _list(family.get("members"), "release family members")
+                if _mapping(item, "release family member").get("image_id") == image_id
+            ],
+            f"Image {image_id!r} family member",
+        )
+        expected[image_id] = _expected_targets(plan, str(member["reference"]))
+    receipts = _receipt_map(receipts_root, "ucm-image-member-receipt")
+    if set(receipts) != set(expected):
+        raise ValueError("member receipts do not exactly cover planned Images")
+    for image_id, receipt in receipts.items():
+        _validated_receipt_targets(
+            receipt, expected[image_id], f"Image {image_id} receipt"
+        )
+        if receipt.get("status") != "published":
+            raise ValueError(f"Image {image_id} receipt is not published")
+    return receipts
+
+
 def finalize_manifest(
     manifest: dict[str, Any],
     receipts_root: Path,
@@ -354,6 +409,8 @@ def finalize_manifest(
     build_outcome: str,
     member_outcome: str,
     index_outcome: str,
+    pypi_outcome: str = "success",
+    chart_oci_outcome: str = "success",
 ) -> dict[str, Any]:
     """Merge immutable publication receipts and close the image stage."""
     result = copy.deepcopy(manifest)
@@ -389,7 +446,11 @@ def finalize_manifest(
         for item in publication_items:
             item["status"] = "not-requested"
             item["targets"] = []
-        result["release"]["status"] = "complete"
+        result["release"]["status"] = (
+            "complete"
+            if pypi_outcome == "success" and chart_oci_outcome == "success"
+            else "publication-failed"
+        )
         return result
 
     failed = build_outcome != "success" or member_outcome != "success"
@@ -445,8 +506,84 @@ def finalize_manifest(
             family["targets"] = copy.deepcopy(member["targets"])
             failed = failed or member["status"] != "published"
 
-    result["release"]["status"] = "images-failed" if failed else "complete"
+    if failed:
+        result["release"]["status"] = "images-failed"
+    elif pypi_outcome != "success" or chart_oci_outcome != "success":
+        result["release"]["status"] = "publication-failed"
+    else:
+        result["release"]["status"] = "complete"
     return result
+
+
+def _published_references(records: list[dict[str, Any]], *, channel: str) -> list[str]:
+    references = {
+        str(target["reference"])
+        for record in records
+        if record.get("status") == "published"
+        for target in _list(record.get("targets"), "publication targets")
+        if _mapping(target, "publication target").get("channel") == channel
+    }
+    return sorted(references)
+
+
+def build_public_manifest(
+    state: dict[str, Any], release_document: dict[str, Any]
+) -> dict[str, Any]:
+    """Project completed internal state into the exact public schema-v6 surface."""
+    release = _mapping(state.get("release"), "release state release")
+    tag = release.get("git_tag")
+    if release.get("status") != "complete":
+        raise ValueError("public release manifest requires complete publication")
+    if release_document.get("tag_name") != tag:
+        raise ValueError("GitHub Release does not match the release state tag")
+    release_type = release.get("release_type")
+    if release_type not in {"stable", "prerelease", "draft", "nightly"}:
+        raise ValueError("release state has an invalid release type")
+    actions_run_id = release.get("actions_run_id")
+    if (
+        not isinstance(actions_run_id, int)
+        or isinstance(actions_run_id, bool)
+        or actions_run_id < 1
+    ):
+        raise ValueError("release state has an invalid Actions run ID")
+
+    asset_names = {
+        str(_mapping(asset, "GitHub Release asset").get("name", ""))
+        for asset in _list(release_document.get("assets"), "GitHub Release assets")
+    }
+    if "" in asset_names:
+        raise ValueError("GitHub Release contains an unnamed asset")
+    asset_names.add(PUBLIC_MANIFEST_FILENAME)
+
+    images = [
+        _mapping(item, "release state image")
+        for item in _list(state.get("images"), "release state images")
+    ]
+    families = [
+        _mapping(item, "release state family")
+        for item in _list(state.get("families"), "release state families")
+    ]
+    indexes = [item for item in families if item.get("create_index") is True]
+    chart = _mapping(state.get("chart"), "release state Chart")
+    chart_oci = chart.get("oci_reference")
+    if chart_oci is not None and (not isinstance(chart_oci, str) or not chart_oci):
+        raise ValueError("release state Chart OCI reference is invalid")
+    return {
+        "kind": PUBLIC_MANIFEST_KIND,
+        "schema_version": PUBLIC_MANIFEST_SCHEMA_VERSION,
+        "tag": tag,
+        "release_type": release_type,
+        "actions_run_id": actions_run_id,
+        "chart_oci": chart_oci,
+        "runtime_images": {
+            channel: {
+                "members": _published_references(images, channel=channel),
+                "indexes": _published_references(indexes, channel=channel),
+            }
+            for channel in ("ghcr", "dockerhub")
+        },
+        "github_release_assets": sorted(asset_names),
+    }
 
 
 def _github_asset_urls(
@@ -593,16 +730,33 @@ def _render_product_tables(
                 {
                     "tag": str(runtime["tag"]),
                     "architectures": {str(member["cpu_arch"]) for member in members},
+                    "target_tag": None,
                 }
             )
             for wheel in family_wheels:
                 row["wheels"][str(wheel["cpu_arch"])] = wheel
 
-            ghcr_reference = family["expected_targets"].get("ghcr")
-            if isinstance(ghcr_reference, str):
-                ghcr_repositories.add(
-                    _target_repository(ghcr_reference, "release family GHCR target")
+            actual_ghcr_references = [
+                str(target["reference"])
+                for target in family.get("targets", [])
+                if target.get("channel") == "ghcr"
+                and isinstance(target.get("reference"), str)
+            ]
+            if len(actual_ghcr_references) > 1:
+                raise ValueError(
+                    f"release family {family_id!r} has multiple GHCR targets"
                 )
+            ghcr_reference = (
+                actual_ghcr_references[0]
+                if actual_ghcr_references
+                else family["expected_targets"].get("ghcr")
+            )
+            if isinstance(ghcr_reference, str):
+                target_repository = _target_repository(
+                    ghcr_reference, "release family GHCR target"
+                )
+                ghcr_repositories.add(target_repository)
+                row["families"][-1]["target_tag"] = ghcr_reference.rpartition(":")[2]
             if family.get("status") == "published" and any(
                 target.get("channel") == "ghcr" for target in family["targets"]
             ):
@@ -635,14 +789,19 @@ def _render_product_tables(
 
         rendered.extend(
             [
-                "| Runtime capability | Upstream Runtime tags | Python ABI | Wheel downloads |",
-                "| --- | --- | --- | --- |",
+                "| Runtime capability | "
+                f"Upstream Runtime tags<br>{runtime_repository}： | "
+                "Runtime tags"
+                + (f"<br>{ghcr_repository}：" if ghcr_repositories else "")
+                + " | Python ABI | Wheel |",
+                "| --- | --- | --- | --- | --- |",
             ]
         )
         for key in sorted(rows, key=lambda item: (item[1], item[2], item[0])):
             row = rows[key]
             available_arches = set(row["wheels"])
-            runtime_tags = []
+            upstream_runtime_tags = []
+            packaged_runtime_tags = []
             for family in sorted(row["families"], key=lambda item: item["tag"]):
                 tag = family["tag"]
                 arch_suffix = ""
@@ -652,17 +811,35 @@ def _render_product_tables(
                         for item in sorted(family["architectures"])
                     )
                     arch_suffix = f" ({architectures} only)"
-                runtime_tags.append(f"`{tag}`{arch_suffix}")
+                upstream_runtime_tags.append(f"`{tag}`{arch_suffix}")
+                if family["target_tag"] is not None:
+                    packaged_runtime_tags.append(
+                        f"`{family['target_tag']}`{arch_suffix}"
+                    )
+            if not packaged_runtime_tags:
+                packaged_runtime_tags.append("—")
             wheel_links = []
-            for _, wheel in sorted(row["wheels"].items()):
+            wheel_architectures = [
+                architecture
+                for architecture in ("arm64", "amd64")
+                if architecture in row["wheels"]
+            ]
+            wheel_architectures.extend(
+                sorted(set(row["wheels"]) - set(wheel_architectures))
+            )
+            for architecture in wheel_architectures:
+                wheel = row["wheels"][architecture]
                 filename = str(wheel["filename"])
-                wheel_links.append(f"[{filename}]({asset_urls[filename]})")
+                wheel_links.append(
+                    f"[{_architecture_label(architecture)}]({asset_urls[filename]})"
+                )
             rendered.append(
                 "| "
                 + " | ".join(
                     (
                         _capability_label(row),
-                        "<br>".join(runtime_tags),
+                        "<br>".join(upstream_runtime_tags),
+                        "<br>".join(packaged_runtime_tags),
                         f"`{row['python_abi']}`",
                         "<br>".join(wheel_links),
                     )
@@ -709,6 +886,13 @@ def render_notes(
                 "",
             ]
         )
+    elif release["status"] == "publication-failed":
+        lines.extend(
+            [
+                "> Wheels and Chart remain available, but one or more publication channels failed.",
+                "",
+            ]
+        )
     lines.extend(
         _render_product_tables(manifest, repository=repository, asset_urls=asset_urls)
     )
@@ -717,7 +901,12 @@ def render_notes(
 
 def _artifacts(arguments: argparse.Namespace) -> None:
     plan = _mapping(_load_json(arguments.plan), "release plan")
-    manifest, _ = build_artifacts_manifest(plan, arguments.wheels, arguments.chart)
+    manifest, _ = build_artifacts_manifest(
+        plan,
+        arguments.wheels,
+        arguments.chart,
+        actions_run_id=arguments.run_id,
+    )
     _write_json(arguments.output / "release-state.json", manifest)
 
 
@@ -729,6 +918,8 @@ def _finalize(arguments: argparse.Namespace) -> None:
         build_outcome=arguments.build_outcome,
         member_outcome=arguments.member_outcome,
         index_outcome=arguments.index_outcome,
+        pypi_outcome=arguments.pypi_outcome,
+        chart_oci_outcome=arguments.chart_oci_outcome,
     )
     _write_json(arguments.output / "release-state.json", result)
 
@@ -749,6 +940,22 @@ def _notes(arguments: argparse.Namespace) -> None:
     )
 
 
+def _manifest(arguments: argparse.Namespace) -> None:
+    state = _mapping(_load_json(arguments.state), "release state")
+    release_document = _mapping(
+        _load_json(arguments.release), "GitHub Release document"
+    )
+    _write_json(
+        arguments.output / PUBLIC_MANIFEST_FILENAME,
+        build_public_manifest(state, release_document),
+    )
+
+
+def _members(arguments: argparse.Namespace) -> None:
+    plan = _mapping(_load_json(arguments.plan), "release plan")
+    validate_member_receipts(plan, arguments.receipts)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -756,6 +963,7 @@ def build_parser() -> argparse.ArgumentParser:
     artifacts.add_argument("--plan", type=Path, required=True)
     artifacts.add_argument("--wheels", type=Path, required=True)
     artifacts.add_argument("--chart", type=Path, required=True)
+    artifacts.add_argument("--run-id", type=int, required=True)
     artifacts.add_argument("--output", type=Path, required=True)
     artifacts.set_defaults(func=_artifacts)
     finalize = commands.add_parser("finalize")
@@ -764,6 +972,8 @@ def build_parser() -> argparse.ArgumentParser:
     finalize.add_argument("--build-outcome", required=True)
     finalize.add_argument("--member-outcome", required=True)
     finalize.add_argument("--index-outcome", required=True)
+    finalize.add_argument("--pypi-outcome", required=True)
+    finalize.add_argument("--chart-oci-outcome", required=True)
     finalize.add_argument("--output", type=Path, required=True)
     finalize.set_defaults(func=_finalize)
     notes = commands.add_parser("notes")
@@ -772,6 +982,16 @@ def build_parser() -> argparse.ArgumentParser:
     notes.add_argument("--repository", required=True)
     notes.add_argument("--output", type=Path, required=True)
     notes.set_defaults(func=_notes)
+    manifest = commands.add_parser("manifest")
+    manifest.add_argument("--state", type=Path, required=True)
+    manifest.add_argument("--release", type=Path, required=True)
+    manifest.add_argument("--output", type=Path, required=True)
+    manifest.set_defaults(func=_manifest)
+    members = commands.add_parser("members")
+    members.add_argument("--plan", type=Path, required=True)
+    members.add_argument("--receipts", type=Path, required=True)
+    members.add_argument("--output", type=Path, required=True)
+    members.set_defaults(func=_members)
     return parser
 
 

@@ -23,10 +23,11 @@ policy = importlib.import_module("ucm_release.policy")
 upstream = importlib.import_module("ucm_release.upstream")
 
 
-def _fixture_policy():
+def _fixture_policy(release_type: str = "stable"):
     formal = policy.resolve(
         repository="release-org/unified-cache-management",
         version_override="0.7.60rc1",
+        release_type=release_type,
     )
     for product in formal["products"]:
         product["minimum_version"] = "0"
@@ -34,8 +35,8 @@ def _fixture_policy():
     return formal
 
 
-def _inputs():
-    formal = _fixture_policy()
+def _inputs(release_type: str = "stable"):
+    formal = _fixture_policy(release_type)
     selection = upstream.resolve_upstreams(
         formal,
         tag_fixture=core.load_json(TAG_FIXTURE),
@@ -57,8 +58,8 @@ def _inputs():
     return formal, selection, catalog
 
 
-def _plan():
-    formal, selection, catalog = _inputs()
+def _plan(release_type: str = "stable"):
+    formal, selection, catalog = _inputs(release_type)
     return compact.resolve_plan(
         formal,
         runtime_selection=selection,
@@ -242,6 +243,7 @@ def test_plan_keeps_top_level_contract_without_problem_or_index_matrix() -> None
     assert set(plan) == {
         "kind",
         "route",
+        "release_type",
         "version",
         "image_version",
         "git_tag",
@@ -257,13 +259,14 @@ def test_plan_keeps_top_level_contract_without_problem_or_index_matrix() -> None
     }
     assert "image_index_matrix" not in plan
     assert "problems" not in plan
+    assert plan["release_type"] == "stable"
     keys = _all_keys(plan)
     assert not {key for key in keys if "authority" in key or "mooncake" in key}
     assert "@sha256:" in json.dumps(plan)
 
 
 def test_draft_coordinates_are_owned_by_the_plan_contract() -> None:
-    formal, selection, catalog = _inputs()
+    formal, selection, catalog = _inputs("draft")
 
     plan = compact.resolve_plan(
         formal,
@@ -277,9 +280,38 @@ def test_draft_coordinates_are_owned_by_the_plan_contract() -> None:
     )
 
     assert plan["git_tag"] == "draft/v0.7.62-4"
+    assert plan["release_type"] == "draft"
     assert plan["release_kind"] == "draft"
     assert plan["is_prerelease"] is True
     assert plan["chart"]["version"] == "0.7.62-draft.4"
+
+
+@pytest.mark.parametrize("release_type", policy.RELEASE_TYPES)
+def test_plan_records_selected_release_profile(release_type: str) -> None:
+    plan = _plan(release_type)
+
+    assert plan["release_type"] == release_type
+    assert plan["publish"] == {
+        "pypi": {
+            "index": "https://upload.pypi.org/legacy/",
+            "enabled": False,
+            "distributions": [
+                "uc-manager-cann900-a2",
+                "uc-manager-cann900-a3",
+                "uc-manager-cuda-cu129",
+            ],
+        },
+        "ghcr": {"namespace": "ghcr.io/release-org", "enabled": True},
+        "dockerhub": {
+            "namespace": "docker.io/release-org",
+            "enabled": False,
+        },
+        "chart_oci": {
+            "namespace": "ghcr.io/release-org/charts",
+            "enabled": True,
+        },
+        "github_release": {"enabled": True},
+    }
 
 
 def test_family_members_are_the_authority_for_index_inputs() -> None:
@@ -293,16 +325,14 @@ def test_family_members_are_the_authority_for_index_inputs() -> None:
             "image_id": "vllm-v0.22.1-cu129-amd64",
             "cpu_arch": "amd64",
             "reference": (
-                "ghcr.io/release-org/vllm-openai:"
-                "v0.22.1-cu129-ucm-0.7.60rc1-r1-amd64"
+                "ghcr.io/release-org/vllm-openai:" "v0.22.1-cu129-ucm-0.7.60rc1-amd64"
             ),
         },
         {
             "image_id": "vllm-v0.22.1-cu129-arm64",
             "cpu_arch": "arm64",
             "reference": (
-                "ghcr.io/release-org/vllm-openai:"
-                "v0.22.1-cu129-ucm-0.7.60rc1-r1-arm64"
+                "ghcr.io/release-org/vllm-openai:" "v0.22.1-cu129-ucm-0.7.60rc1-arm64"
             ),
         },
     ]
@@ -382,7 +412,7 @@ def test_multiple_pr_runtime_tags_with_same_capability_reuse_wheels() -> None:
     second["runtime_tag"] = "v0.22.1-cu129-ubuntu2404"
     second["runtime_digest"] = "sha256:" + "d" * 64
     second["os_version"] = "24.04"
-    second["target_tag"] = "v0.22.1-cu129-ubuntu2404-ucm-0.7.60rc1-r1"
+    second["target_tag"] = "v0.22.1-cu129-ubuntu2404-ucm-0.7.60rc1"
     selected = [first, second]
     for runtime in selected:
         runtime["channel"] = "pinned"

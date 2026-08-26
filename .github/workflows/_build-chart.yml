@@ -10,6 +10,10 @@ on:
         type: string
         required: false
         default: ""
+      retention_days:
+        type: number
+        required: false
+        default: 7
     outputs:
       chart_artifact:
         description: Chart artifact produced by this run
@@ -49,13 +53,11 @@ jobs:
         run: |
           set -euo pipefail
           plan=input/plan/release-plan.json
-          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            python scripts/materialize_version.py --tag "${GITHUB_REF_NAME}" >/dev/null
-          fi
+          python scripts/materialize_version.py \
+            --version "$(jq -er '.version' "${plan}")" >/dev/null
           app_version="$(PYTHONPATH=.github/release python -c \
             'from ucm_release.core import read_version; print(read_version())')"
-          chart_version="$(PYTHONPATH=.github/release python -c \
-            'from ucm_release.core import derive_chart_version, read_version; print(derive_chart_version(read_version()))')"
+          chart_version="$(jq -er '.chart.version' "${plan}")"
           test "$(jq -r '.chart.app_version' "${plan}")" = "${app_version}"
           test "$(jq -r '.chart.version' "${plan}")" = "${chart_version}"
           source="$(jq -r '.chart.source' "${plan}")"
@@ -87,4 +89,4 @@ jobs:
           path: out/chart/*.tgz
           if-no-files-found: error
           overwrite: true
-          retention-days: ${{ github.event_name == 'push' && github.ref_type == 'tag' && 90 || 7 }}
+          retention-days: ${{ inputs.retention_days }}

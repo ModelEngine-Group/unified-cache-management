@@ -12,6 +12,14 @@ on:
       plan_artifact:
         type: string
         required: true
+      source_ref:
+        type: string
+        required: true
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: false
+      DOCKERHUB_TOKEN:
+        required: false
 
 permissions:
   contents: read
@@ -26,6 +34,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
         with:
+          ref: ${{ inputs.source_ref }}
           fetch-depth: 1
           persist-credentials: false
       - uses: actions/setup-python@v5.6.0
@@ -44,13 +53,10 @@ jobs:
           IMAGE_ID: ${{ inputs.image_id }}
         run: |
           set -euo pipefail
-          test "${GITHUB_EVENT_NAME}" = push
-          test "${GITHUB_REF_TYPE}" = tag
           plan=input/plan/release-plan.json
           test "$(jq -r '.route' "${plan}")" = release
-          test "$(jq -r '.git_tag' "${plan}")" = "${GITHUB_REF_NAME}"
-          test "$(jq -r '.publish.ghcr.enabled' "${plan}")" = true
-          test "$(jq -r '.publish.dockerhub.enabled' "${plan}")" = false
+          jq -e '(.publish.ghcr.enabled == true) or
+                 (.publish.dockerhub.enabled == true)' "${plan}" >/dev/null
           mkdir -p out/receipts context
           PYTHONPATH=.github/release python -m ucm_release compact select \
             --plan "${plan}" --kind image --id "${IMAGE_ID}" \
@@ -60,6 +66,13 @@ jobs:
             '.families[].members[] | select(.image_id == $image) | .reference' \
             "${plan}")"
           case "${target_ref}" in ghcr.io/*:*) ;; *) exit 2 ;; esac
+          dockerhub_ref=""
+          if [ "$(jq -r '.publish.dockerhub.enabled' "${plan}")" = true ]; then
+            namespace="$(jq -er '.publish.dockerhub.namespace' "${plan}")"
+            repository="${target_ref%:*}"
+            tag="${target_ref##*:}"
+            dockerhub_ref="${namespace}/${repository##*/}:${tag}"
+          fi
           receipt="out/receipts/member-${IMAGE_ID}.json"
           jq -n --arg id "${IMAGE_ID}" \
             '{kind:"ucm-image-member-receipt",schema_version:1,id:$id,
@@ -67,6 +80,7 @@ jobs:
           {
             echo "wheel_artifact=ucm-wheel-${wheel_id}-run-${GITHUB_RUN_ID}"
             echo "target_ref=${target_ref}"
+            echo "dockerhub_ref=${dockerhub_ref}"
             echo "receipt=${receipt}"
           } >>"${GITHUB_OUTPUT}"
       - uses: ./.github/actions/download-artifact-retry
@@ -105,8 +119,18 @@ jobs:
           IMAGE_ID: ${{ inputs.image_id }}
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes skopeo
+          for setup_attempt in 1 2 3; do
+            if sudo apt-get update && sudo apt-get install --yes skopeo; then
+              break
+            fi
+            if [ "${setup_attempt}" -eq 3 ]; then
+              echo "skopeo setup failed after ${setup_attempt} attempts" >&2
+              exit 1
+            fi
+            setup_wait=$((setup_attempt * 5))
+            echo "skopeo setup failed; retrying in ${setup_wait}s" >&2
+            sleep "${setup_wait}"
+          done
           local_tag="ucm-runtime-check:${IMAGE_ID}"
           wheel_glibc_floor="$(jq -er '.glibc_floor | select(type == "string")' \
             input/wheel/wheel-result.json)"
@@ -147,41 +171,70 @@ jobs:
               python3 -c "import hashlib, os, pathlib; path=pathlib.Path(\"/workspace/ucm_config_example.yaml\"); actual=hashlib.sha256(path.read_bytes()).hexdigest(); assert actual == os.environ[\"EXPECTED_UCM_CONFIG_SHA256\"], actual"
               python3 -c "import ucm"
             '
-      - name: Publish verified GHCR member and record digest
+      - name: Publish verified Profile members and record digests
         env:
           TARGET_REF: ${{ steps.task.outputs.target_ref }}
+          DOCKERHUB_REF: ${{ steps.task.outputs.dockerhub_ref }}
           RECEIPT: ${{ steps.task.outputs.receipt }}
           IMAGE_ID: ${{ inputs.image_id }}
+          GITHUB_TOKEN: ${{ github.token }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
-          digest_file="${RUNNER_TEMP}/ucm-image-digest"
+          plan=input/plan/release-plan.json
+          targets='[]'
           publish_member() {
-            printf '%s' "${{ github.token }}" | docker login ghcr.io \
-              --username "${GITHUB_ACTOR}" --password-stdin || return 1
+            local channel="$1" reference="$2" digest_file="$3"
+            if [ "${channel}" = ghcr ]; then
+              printf '%s' "${GITHUB_TOKEN}" | docker login ghcr.io \
+                --username "${GITHUB_ACTOR}" --password-stdin || return 1
+            else
+              test -n "${DOCKERHUB_USERNAME}" && test -n "${DOCKERHUB_TOKEN}"
+              printf '%s' "${DOCKERHUB_TOKEN}" | docker login docker.io \
+                --username "${DOCKERHUB_USERNAME}" --password-stdin || return 1
+            fi
             skopeo copy "oci-archive:out/image.oci.tar" \
-              "docker://${TARGET_REF}" || return 1
-            skopeo inspect --format '{{.Digest}}' "docker://${TARGET_REF}" \
+              "docker://${reference}" || return 1
+            skopeo inspect --format '{{.Digest}}' "docker://${reference}" \
               >"${digest_file}" || return 1
           }
-          for attempt in 1 2 3; do
-            if publish_member; then
-              break
-            fi
-            if [ "${attempt}" -eq 3 ]; then
-              echo "GHCR member publication failed after ${attempt} attempts" >&2
-              exit 1
-            fi
-            sleep_seconds=$((attempt * 10))
-            echo "GHCR member publication attempt ${attempt} failed; retrying in ${sleep_seconds}s" >&2
-            sleep "${sleep_seconds}"
-          done
-          digest="$(<"${digest_file}")"
-          test -n "${digest}"
-          jq -n --arg id "${IMAGE_ID}" --arg reference "${TARGET_REF}" \
-            --arg digest "${digest}" \
+          publish_channel() {
+            local channel="$1" reference="$2"
+            local digest_file="${RUNNER_TEMP}/ucm-image-${channel}-digest"
+            local attempt sleep_seconds digest
+            for attempt in 1 2 3; do
+              if publish_member "${channel}" "${reference}" "${digest_file}"; then
+                break
+              fi
+              if [ "${attempt}" -eq 3 ]; then
+                echo "${channel} member publication failed after ${attempt} attempts" >&2
+                return 1
+              fi
+              sleep_seconds=$((attempt * 10))
+              echo "${channel} member publication attempt ${attempt} failed; retrying in ${sleep_seconds}s" >&2
+              sleep "${sleep_seconds}"
+            done
+            digest="$(<"${digest_file}")"
+            test -n "${digest}"
+            targets="$(jq -c --arg channel "${channel}" \
+              --arg reference "${reference}" --arg digest "${digest}" \
+              '. + [{channel:$channel,reference:$reference,digest:$digest}]' \
+              <<<"${targets}")"
+            jq -n --arg id "${IMAGE_ID}" --argjson targets "${targets}" \
+              '{kind:"ucm-image-member-receipt",schema_version:1,id:$id,
+                status:"failed",targets:$targets}' >"${RECEIPT}"
+          }
+          if [ "$(jq -r '.publish.ghcr.enabled' "${plan}")" = true ]; then
+            publish_channel ghcr "${TARGET_REF}"
+          fi
+          if [ "$(jq -r '.publish.dockerhub.enabled' "${plan}")" = true ]; then
+            test -n "${DOCKERHUB_REF}"
+            publish_channel dockerhub "${DOCKERHUB_REF}"
+          fi
+          jq -n --arg id "${IMAGE_ID}" --argjson targets "${targets}" \
             '{kind:"ucm-image-member-receipt",schema_version:1,id:$id,
-              status:"published",
-              targets:[{channel:"ghcr",reference:$reference,digest:$digest}]}' \
+              status:"published",targets:$targets}' \
             >"${RECEIPT}"
       - uses: actions/upload-artifact@v4.6.2
         if: ${{ always() }}
