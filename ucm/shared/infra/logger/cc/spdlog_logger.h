@@ -74,14 +74,16 @@ public:
 
     static void _signal_handler(int signum)
     {
-        // 只允许第一次进入时刷日志，防止 Flush 期间又来一个不同的致命信号导致重入
+        // Only flush logs on first entry, to prevent reentrancy from a different
+        // fatal signal arriving during Flush
         static std::atomic_flag flushed = ATOMIC_FLAG_INIT;
         if (!flushed.test_and_set()) { Logger::GetInstance().Flush(); }
 
-        // 恢复默认动作后重新发给自己：
-        // SIGSEGV/SIGABRT/SIGFPE/SIGILL 的默认动作是 Term+Core，会生成 core dump；
-        // SIGINT 的默认动作是 Term，不产生 core dump。
-        // 是否 dump 由内核按信号种类决定，不需要代码区分。
+        // Restore the default action and re-raise to ourselves:
+        // SIGSEGV/SIGABRT/SIGFPE/SIGILL default to Term+Core, generating a core dump;
+        // SIGINT defaults to Term, no core dump.
+        // Whether to dump is decided by the kernel based on signal type, no need to
+        // handle it in code.
         std::signal(signum, SIG_DFL);
         std::raise(signum);
     }
