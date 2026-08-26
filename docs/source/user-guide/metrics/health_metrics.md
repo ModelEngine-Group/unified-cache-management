@@ -1,6 +1,6 @@
 # UCM Health Metrics
 
-UCM Pipeline Store can enable health probes and circuit breaking for individual Store stages. Health metrics answer two different questions:
+UCM Pipeline Store enables health probes and circuit breaking for individual Store stages by default. Set `store_health.enabled` to `false` to disable them. Health metrics answer two different questions:
 
 - How many health probes succeeded or failed during a time window?
 - Is a Store currently blocked from accepting new requests by its circuit breaker?

@@ -5,6 +5,7 @@ import math
 import os
 import pickle
 import re
+import shutil
 import time
 import uuid
 from collections import defaultdict
@@ -78,14 +79,19 @@ logger = init_logger(__name__)
 
 def _has_shared_indexer_layers(vllm_config: "VllmConfig") -> bool:
     model_config = getattr(vllm_config, "model_config", None)
-    hf_text_config = getattr(model_config, "hf_text_config", None)
-    indexer_types = getattr(hf_text_config, "indexer_types", None)
-    if not isinstance(indexer_types, (list, tuple)):
-        return False
-    return any(
-        isinstance(indexer_type, str) and indexer_type.lower() == "shared"
-        for indexer_type in indexer_types
+    configs = (
+        getattr(model_config, "hf_text_config", None),
+        getattr(model_config, "hf_config", None),
+        getattr(getattr(model_config, "hf_config", None), "text_config", None),
     )
+    for config in configs:
+        indexer_types = getattr(config, "indexer_types", None)
+        if isinstance(indexer_types, (list, tuple)) and any(
+            isinstance(indexer_type, str) and indexer_type.lower() == "shared"
+            for indexer_type in indexer_types
+        ):
+            return True
+    return False
 
 
 def _short_list(values: list[int], limit: int = 12) -> list[int]:
@@ -137,6 +143,35 @@ def _get_store_gc_block_size(
     if object_size <= 0:
         raise ValueError("tensor_size_list is required for YuanRong|Posix")
     return object_size * shard_count
+
+
+_SHM_DIR = "/dev/shm"
+
+
+def _check_shm_capacity(cache_buffer_capacity_gb: int) -> None:
+    """Early-validate that /dev/shm can hold the shared-buffer store.
+
+    With ``share_buffer_enable=True`` the cache buffer is backed by ``shm_open``
+    in ``/dev/shm`` (a tmpfs with a fixed size limit). If the configured buffer
+    capacity exceeds what ``/dev/shm`` can hold, allocation fails deep inside
+    the C++ store; raise here instead with an actionable message.
+    """
+    if cache_buffer_capacity_gb <= 0:
+        return
+    try:
+        shm_total = shutil.disk_usage(_SHM_DIR).total
+    except OSError:
+        # /dev/shm unavailable (e.g. non-Linux dev host); defer to the store.
+        logger.debug("Skip /dev/shm capacity check: %s unavailable.", _SHM_DIR)
+        return
+    needed_bytes = cache_buffer_capacity_gb * (1 << 30)
+    if shm_total < needed_bytes:
+        raise RuntimeError(
+            f"Shared-buffer cache requires {cache_buffer_capacity_gb}GB in {_SHM_DIR}, "
+            f"but {_SHM_DIR} has only {shm_total >> 30}GB. "
+            f"Either increase the size of {_SHM_DIR} (e.g. remount tmpfs with a "
+            f"larger size= option) or decrease cache_buffer_capacity_gb."
+        )
 
 
 def _drop_null_vllm_blocks(
@@ -346,7 +381,7 @@ class KVCacheLayout:
         self.buffer_sizes: np.ndarray
         self.tensor_size_lists: np.ndarray
         self.block_stride_lists: np.ndarray
-        self.use_layerwise = ucm_config.get("use_layerwise", False)
+        self.use_layerwise = ucm_config.get("use_layerwise", True)
         self.kv_cache_config = kv_cache_config
         self.vllm_config = vllm_config
         self.pp_size = self.vllm_config.parallel_config.pipeline_parallel_size
@@ -362,57 +397,67 @@ class KVCacheLayout:
         self.num_blocks = self.kv_cache_config.num_blocks
         self._build_layout(kvcaches)
 
+    def _tensor_infos(
+        self,
+        layer_name: str,
+        kv_layer,
+    ) -> tuple[KVCacheTensorInfo, ...]:
+        """Describe tensor components in one vLLM KV-cache entry."""
+        tensor_infos = []
+
+        def handle_tensor(tensor: torch.Tensor) -> None:
+            bytes_per_block = math.prod(int(dim) for dim in tensor.shape[1:]) * int(
+                tensor.element_size()
+            )
+            tensor_infos.append(
+                KVCacheTensorInfo(
+                    ptr=int(tensor[0].data_ptr()),
+                    bytes_per_block=bytes_per_block,
+                    buffer_size=int(tensor.shape[0]) * bytes_per_block,
+                )
+            )
+
+        if isinstance(kv_layer, torch.Tensor):
+            if kv_layer.dim() == 5 and kv_layer.shape[0] == 2:
+                if kv_layer.shape[1] == 2 and kv_layer.shape[1] >= self.num_blocks:
+                    logger.warning(
+                        "Ambiguous KV cache layout with two leading dimensions "
+                        "of size 2; treating it as K/V-first: layer=%s, "
+                        "shape=%s, num_blocks=%s.",
+                        layer_name,
+                        tuple(kv_layer.shape),
+                        self.num_blocks,
+                    )
+                # Legacy K/V-first layout: [2, physical_blocks, ...].
+                handle_tensor(kv_layer[0])
+                handle_tensor(kv_layer[1])
+            else:
+                # A block-first tensor stores one complete page per row.
+                handle_tensor(kv_layer)
+        elif isinstance(kv_layer, (tuple, list)):
+            for tensor in kv_layer:
+                if not isinstance(tensor, torch.Tensor):
+                    raise TypeError(
+                        "KV cache component must be a tensor: "
+                        f"layer={layer_name}, type={type(tensor)}."
+                    )
+                handle_tensor(tensor)
+        else:
+            raise TypeError(
+                f"Unsupported KV cache type: layer={layer_name}, "
+                f"type={type(kv_layer)}."
+            )
+        return tuple(tensor_infos)
+
     def _collect_tensor_rows(self, kvcaches):
         num_rows = len(set(self.layer_name_to_id.values()))
         tensor_rows = [[] for _ in range(num_rows)]
         row_layer_ids = [None for _ in range(num_rows)]
 
         for layer_name, kv_layer in kvcaches.items():
-
-            def handle_tensor(t: torch.Tensor, size_dims):
-                stride = math.prod([t.shape[i] for i in size_dims]) * t.element_size()
-                tensor_rows[local_layer_id].append(
-                    KVCacheTensorInfo(
-                        ptr=int(t[0].data_ptr()),
-                        bytes_per_block=int(stride),
-                        buffer_size=int(t.shape[0]) * int(stride),
-                    )
-                )
-
             local_layer_id = self.layer_name_to_id[layer_name] - self.first_layer_id
             row_layer_ids[local_layer_id] = self.layer_name_to_id[layer_name]
-            if isinstance(kv_layer, torch.Tensor):
-                if kv_layer.dim() == 5:
-                    num_blocks_first = kv_layer.shape[0] != 2 and kv_layer.shape[1] == 2
-                    if num_blocks_first:
-                        # CUDA: [num_blocks, 2, block_size, num_head, head_dim].
-                        # K and V are contiguous within each block, so expose
-                        # the complete block as one store segment.
-                        handle_tensor(kv_layer, (-4, -3, -2, -1))
-                    elif kv_layer.shape[0] == 2:
-                        # [2, num_blocks, block_size, num_head, head_dim].
-                        # K and V are stored in separate contiguous buffers.
-                        handle_tensor(kv_layer[0], (-3, -2, -1))
-                        handle_tensor(kv_layer[1], (-3, -2, -1))
-                    else:
-                        raise ValueError(
-                            "Unsupported 5D KV cache layout: expected "
-                            "[num_blocks, 2, ...] or [2, num_blocks, ...] "
-                            f"but got {tuple(kv_layer.shape)}"
-                        )
-                elif kv_layer.dim() == 3:
-                    # [num_blocks, block_size, head_dim]
-                    handle_tensor(kv_layer, (-2, -1))
-                else:
-                    raise ValueError(
-                        f"Unsupported kv cache tensor shape: {kv_layer.shape}"
-                    )
-            elif isinstance(kv_layer, Tuple):
-                # vllm_ascend >= 0.10.0, ([num_blocks, block_size, num_head, head_dim], ...)
-                for tensor in kv_layer:
-                    handle_tensor(tensor, (-3, -2, -1))
-            else:
-                raise TypeError(f"Unsupported kv cache type: {type(kv_layer)}")
+            tensor_rows[local_layer_id].extend(self._tensor_infos(layer_name, kv_layer))
 
         return tensor_rows, row_layer_ids
 
@@ -538,7 +583,7 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
     mask behavior to the generic KV cache layout.
     """
 
-    CUDA_TENSOR_ROLE_PATTERNS = {
+    TENSOR_ROLE_PATTERNS = {
         "indexer": (
             re.compile(
                 r"(?:^|\.)indexer(?:\.|$)",
@@ -546,13 +591,13 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
             ),
         ),
     }
-    CUDA_DEFAULT_TENSOR_ROLE = "attention"
+    DEFAULT_TENSOR_ROLE = "attention"
 
     @classmethod
     def supports(cls, vllm_config: "VllmConfig", ucm_config: dict) -> bool:
         device_type = getattr(current_platform, "device_type", None)
         return (
-            bool(ucm_config.get("use_layerwise", False))
+            bool(ucm_config.get("use_layerwise", True))
             and device_type in ("npu", "cuda")
             and _has_shared_indexer_layers(vllm_config)
         )
@@ -610,8 +655,8 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
         return "shared"
 
     @classmethod
-    def _cuda_cache_role(cls, layer_name: str) -> str:
-        """Classify a CUDA cache using the extensible role-pattern mapping."""
+    def _cache_role(cls, layer_name: str) -> str:
+        """Classify an attention or Indexer cache independently of platform."""
         path_components = [
             component for component in layer_name.lower().split(".") if component
         ]
@@ -620,50 +665,29 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
                 path_components = path_components[index + 2 :]
                 break
         semantic_name = ".".join(path_components)
-        for role, patterns in cls.CUDA_TENSOR_ROLE_PATTERNS.items():
+        for role, patterns in cls.TENSOR_ROLE_PATTERNS.items():
             if any(pattern.search(semantic_name) for pattern in patterns):
                 return role
-        return cls.CUDA_DEFAULT_TENSOR_ROLE
+        return cls.DEFAULT_TENSOR_ROLE
 
-    @staticmethod
-    def _cuda_tensor_infos(
-        layer_name: str,
-        tensor: torch.Tensor,
-        role: str,
-    ) -> tuple[KVCacheTensorInfo, ...]:
-        """Describe block-first CUDA tensors, splitting combined K/V caches."""
-        if tensor.dim() == 5:
-            if role != "attention" or tensor.shape[0] != 2:
-                raise ValueError(
-                    "CUDA 5D combined KV cache must be an Attention tensor "
-                    "with shape [2, num_blocks, ...]: "
-                    f"layer={layer_name}, role={role}, shape={tuple(tensor.shape)}."
-                )
-            component_tensors = (tensor[0], tensor[1])
-        else:
-            component_tensors = (tensor,)
-
-        tensor_infos = []
-        for component in component_tensors:
-            bytes_per_block = int(component.stride(0)) * int(component.element_size())
-            payload_size = math.prod(int(size) for size in component.shape[1:]) * int(
-                component.element_size()
+    def _collect_role_tensors(self, kvcaches, tensor_infos):
+        """Group cache entries by layer and semantic role."""
+        layer_tensors: dict[int, dict[str, Optional[tuple[KVCacheTensorInfo, ...]]]] = (
+            {}
+        )
+        for layer_name, kv_layer in kvcaches.items():
+            layer_id = self.layer_name_to_id[layer_name]
+            layer = layer_tensors.setdefault(
+                layer_id, {"attention": None, "indexer": None}
             )
-            if bytes_per_block != payload_size:
+            slot = self._cache_role(layer_name)
+            if layer[slot] is not None:
                 raise ValueError(
-                    "CUDA Shared Indexer KV cache requires contiguous blocks: "
-                    f"layer={layer_name}, block_stride={bytes_per_block}, "
-                    f"payload_size={payload_size}."
+                    f"Duplicate Shared Indexer {slot} cache for "
+                    f"layer {layer_id}: {layer_name}."
                 )
-
-            tensor_infos.append(
-                KVCacheTensorInfo(
-                    ptr=int(component.data_ptr()),
-                    bytes_per_block=bytes_per_block,
-                    buffer_size=int(component.shape[0]) * bytes_per_block,
-                )
-            )
-        return tuple(tensor_infos)
+            layer[slot] = tensor_infos(layer_name, kv_layer)
+        return layer_tensors
 
     def _build_segment_rows(
         self,
@@ -789,23 +813,7 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
         Layers without an independent Indexer keep the same copy schema by
         receiving a metadata-only ghost segment in the Indexer slot.
         """
-        layer_tensors: dict[int, dict[str, Optional[tuple[KVCacheTensorInfo, ...]]]] = (
-            {}
-        )
-        for layer_name, tensor in kvcaches.items():
-            layer_id = self.layer_name_to_id[layer_name]
-            layer = layer_tensors.setdefault(
-                layer_id, {"attention": None, "indexer": None}
-            )
-
-            # Classification is independent of dict order and exact suffixes.
-            slot = self._cuda_cache_role(layer_name)
-            if layer[slot] is not None:
-                raise ValueError(
-                    f"Duplicate CUDA Shared Indexer {slot} cache for "
-                    f"layer {layer_id}: {layer_name}."
-                )
-            layer[slot] = self._cuda_tensor_infos(layer_name, tensor, slot)
+        layer_tensors = self._collect_role_tensors(kvcaches, self._tensor_infos)
 
         row_layer_ids = sorted(layer_tensors)
         self.first_layer_id = row_layer_ids[0]
@@ -872,50 +880,74 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
         )
 
     def _build_ascend_layout(self, kvcaches) -> None:
-        """Build the existing Ascend SFA C8/BF16/mixed layerwise layout."""
-        tensor_rows, row_layer_ids = self._collect_tensor_rows(kvcaches)
-        if not tensor_rows or not tensor_rows[0]:
-            raise ValueError("KV cache layout must contain at least one tensor")
+        """Build Ascend SFA C8/BF16/mixed layerwise layout by cache role.
+
+        vLLM-Ascend used to append an optional Indexer cache after the MLA
+        cache in one tuple. Newer versions register it under an independent
+        ``*.indexer.*`` cache entry. Grouping only by numeric layer id makes
+        the latter dependent on dictionary insertion order, so classify the
+        entries before assembling the fixed UCM slot order.
+        """
 
         additional_config = getattr(self.vllm_config, "additional_config", None) or {}
         sfa_c8 = bool(additional_config.get("enable_sparse_sfa_c8", False))
         li_c8 = bool(additional_config.get("enable_sparse_li_c8", False))
         base_tensor_count = 1 if sfa_c8 else 2
+        max_extra_count = 2 if li_c8 else 1
 
-        base_sizes = [
-            tensor.bytes_per_block for tensor in tensor_rows[0][:base_tensor_count]
-        ]
-        if len(base_sizes) != base_tensor_count:
-            raise ValueError("The first Shared Indexer layer has no SFA base tensor.")
+        layer_tensors = self._collect_role_tensors(kvcaches, self._tensor_infos)
 
-        for layer_id, row in zip(row_layer_ids, tensor_rows):
-            current_sizes = [
-                tensor.bytes_per_block for tensor in row[:base_tensor_count]
-            ]
-            if current_sizes != base_sizes:
+        if not layer_tensors:
+            raise ValueError("KV cache layout must contain at least one tensor")
+
+        row_layer_ids = sorted(layer_tensors)
+        self.first_layer_id = row_layer_ids[0]
+        layers = []
+        for layer_id in row_layer_ids:
+            attention = layer_tensors[layer_id]["attention"]
+            if attention is None or len(attention) < base_tensor_count:
+                count = 0 if attention is None else len(attention)
                 raise ValueError(
-                    "Shared Indexer layers must have identical SFA base tensors: "
-                    f"expected={base_sizes}, layer={layer_id}, "
-                    f"actual={current_sizes}."
+                    "Ascend Shared Indexer layer has insufficient SFA base "
+                    f"tensors: layer={layer_id}, expected={base_tensor_count}, "
+                    f"actual={count}."
                 )
 
-        max_extra_count = 2 if li_c8 else 1
-        layers = []
-        for layer_id, row in zip(row_layer_ids, tensor_rows):
-            extras = row[base_tensor_count:]
+            # Legacy versions keep Indexer/scale after the base SFA tensors in
+            # the attention tuple. Newer versions expose them in an independent
+            # Indexer entry. Seeing both would be ambiguous and must not result
+            # in a silent duplicate store segment.
+            legacy_extras = attention[base_tensor_count:]
+            separate_indexer = layer_tensors[layer_id]["indexer"]
+            if legacy_extras and separate_indexer is not None:
+                raise ValueError(
+                    "Ascend Shared Indexer layer exposes both legacy and "
+                    f"separate Indexer caches: layer={layer_id}."
+                )
+            extras = separate_indexer if separate_indexer is not None else legacy_extras
             if len(extras) > max_extra_count:
                 raise ValueError(
-                    "Unsupported Shared Indexer tensors after the SFA cache: "
+                    "Unsupported Ascend Shared Indexer cache components: "
                     f"layer={layer_id}, count={len(extras)}."
                 )
             layers.append(
                 SharedIndexerLayerInfo(
                     layer_id=layer_id,
-                    sfa_tensors=tuple(row[:base_tensor_count]),
+                    sfa_tensors=tuple(attention[:base_tensor_count]),
                     indexer=extras[0] if extras else None,
                     scale=extras[1] if len(extras) == 2 else None,
                 )
             )
+
+        base_sizes = [tensor.bytes_per_block for tensor in layers[0].sfa_tensors]
+        for layer in layers:
+            current_sizes = [tensor.bytes_per_block for tensor in layer.sfa_tensors]
+            if current_sizes != base_sizes:
+                raise ValueError(
+                    "Shared Indexer layers must have identical SFA base tensors: "
+                    f"expected={base_sizes}, layer={layer.layer_id}, "
+                    f"actual={current_sizes}."
+                )
 
         c8_layers = [layer for layer in layers if layer.scale is not None]
         bf16_layers = [
@@ -1264,11 +1296,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def _set_default_shm_buffer_capacity(self, config: dict[str, Any]) -> None:
         if not bool(config.get("share_buffer_enable", False)):
             return
-        if config.get("cache_buffer_capacity_gb") is not None:
-            return
-
-        config["cache_buffer_capacity_gb"] = 128
-        logger.info("Set cache_buffer_capacity_gb to 128GB for shared-buffer store.")
+        if config.get("cache_buffer_capacity_gb") is None:
+            config["cache_buffer_capacity_gb"] = 128
+            logger.info(
+                "Set cache_buffer_capacity_gb to 128GB for shared-buffer store."
+            )
+        # The shared buffer is allocated via shm_open in /dev/shm; fail early
+        # (before store creation) if the tmpfs cannot hold it.
+        _check_shm_capacity(int(config["cache_buffer_capacity_gb"]))
 
     def _create_store(
         self,
@@ -1442,6 +1477,36 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if other_rank_block_ids:
             self.store.prefetch(other_rank_block_ids)
 
+    def _prefetch_direct_hit_key_hotness(
+        self,
+        hbm_hit_block_ids: list[bytes],
+        all_hit_block_ids: list[bytes],
+    ) -> None:
+        """Best-effort GC hotness update for keys skipped by scheduler lookup.
+
+        Rank 0 external keys are already touched by ``lookup_on_prefix``. The
+        local-HBM prefix is not part of that lookup, while other TP ranks do not
+        perform scheduler-side lookup at all, so update those two sets here.
+        """
+
+        if hbm_hit_block_ids:
+            try:
+                self.store.prefetch(hbm_hit_block_ids)
+            except Exception as e:
+                logger.warning(
+                    "UCM rank-0 HBM hotness update failed. " f"{type(e).__name__}: {e}"
+                )
+
+        if all_hit_block_ids:
+            try:
+                self._prefetch_other_rank_hashes(all_hit_block_ids)
+            except Exception as e:
+                # Prefetch is only a GC hotness hint. A failure must not turn a
+                # valid cache hit into a scheduler-side miss.
+                logger.warning(
+                    "UCM other-rank hotness update failed. " f"{type(e).__name__}: {e}"
+                )
+
     def get_num_new_matched_tokens(
         self,
         request: "Request",
@@ -1485,9 +1550,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     )
                     + 1
                 )
-                self._prefetch_other_rank_hashes(
-                    external_block_ids[:external_hit_hashes]
-                )
                 external_hit_blocks = external_hit_hashes // self.cp_world_size
             except Exception as e:
                 logger.error(
@@ -1495,11 +1557,21 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 )
                 self._record_counter("connector_lookup_errors_total")
 
+        hbm_hit_hashes = hbm_hit_block_num * self.cp_world_size
+        total_hit_hashes = (
+            hbm_hit_block_num + external_hit_blocks
+        ) * self.cp_world_size
+        self._prefetch_direct_hit_key_hotness(
+            ucm_block_ids[:hbm_hit_hashes],
+            ucm_block_ids[:total_hit_hashes],
+        )
+
         logger.info_once(
             f"request_id: {request.request_id}, "
             f"total_blocks_num: {len(ucm_block_ids)}, "
             f"hit hbm: {hbm_hit_block_num * self.cp_world_size}, "
             f"hit external: {external_hit_blocks * self.cp_world_size}"
+            f"total tokens: {len(request.all_token_ids)}"
         )
 
         if not external_block_ids:
@@ -2366,7 +2438,7 @@ class UCMCPConnector(UCMLayerWiseConnector):
         kv_cache_config: Optional["KVCacheConfig"] = None,
     ):
         super().__init__(vllm_config, role, kv_cache_config)
-        self.use_layerwise = self.launch_config.get("use_layerwise", False)
+        self.use_layerwise = self.launch_config.get("use_layerwise", True)
 
         try:
             from vllm.distributed import get_dcp_group, get_pcp_group
@@ -2693,11 +2765,13 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             if role == KVConnectorRole.WORKER
             else "scheduler" if role == KVConnectorRole.SCHEDULER else None
         )
+        if role == KVConnectorRole.WORKER and self._worker_rank == 0:
+            logger.info(f"UCM worker rank 0 KV cache config: {kv_cache_config!r}")
         self._setup_ucm_metrics(vllm_config, role)
         logger.info(f"self.launch_config: {self.launch_config}")
 
         use_layerwise = (
-            self.launch_config.get("use_layerwise", False)
+            self.launch_config.get("use_layerwise", True)
             if self.launch_config is not None
             else False
         )

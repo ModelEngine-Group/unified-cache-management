@@ -7,12 +7,13 @@ set_target_properties(Ascend::ascendcl PROPERTIES
 add_library(trans STATIC
     ascend_device.cc
     ascend_buffer.cc
+    ascend_event.cc
     ascend_stream.cc
 )
 if(ASCEND_SUPPORTS_REGISTER_PIN)
     target_compile_definitions(trans PRIVATE ASCEND_SUPPORTS_REGISTER_PIN=1)
 endif()
-if(UCM_RUNTIME_ASCEND_SDMA_DIRECT)
+if(UCM_RUNTIME_ASCEND_IO_AGGREGATION OR UCM_RUNTIME_ASCEND_SDMA_DIRECT)
     set(ASCEND_ARCH_DIR "${ASCEND_ROOT}/aarch64-linux" CACHE PATH
         "Path to Ascend architecture-specific directory")
     set(ASCEND_PKG_INCLUDE_DIR "${ASCEND_ARCH_DIR}/pkg_inc" CACHE PATH
@@ -27,26 +28,36 @@ if(UCM_RUNTIME_ASCEND_SDMA_DIRECT)
         "Path to Ascend runtime library")
     if(NOT EXISTS "${ASCEND_RUNTIME_LIBRARY}")
         message(FATAL_ERROR
-            "RUNTIME_ENVIRONMENT=ascend-a3 requires libruntime: ${ASCEND_RUNTIME_LIBRARY}")
+            "RUNTIME_ENVIRONMENT=${RUNTIME_ENVIRONMENT} requires libruntime: ${ASCEND_RUNTIME_LIBRARY}")
     endif()
     if(NOT EXISTS "${ASCEND_FFTS_INCLUDE_DIR}/runtime/rt_ffts_plus.h"
         AND NOT EXISTS "${ASCEND_FFTS_INCLUDE_DIR}/rt_external_ffts.h")
         message(FATAL_ERROR
-            "RUNTIME_ENVIRONMENT=ascend-a3 requires FFTS headers in: ${ASCEND_FFTS_INCLUDE_DIR}")
+            "RUNTIME_ENVIRONMENT=${RUNTIME_ENVIRONMENT} requires FFTS headers in: ${ASCEND_FFTS_INCLUDE_DIR}")
     endif()
     if(NOT EXISTS "${ASCEND_TOOLCHAIN_INCLUDE_DIR}/prof_api.h")
         message(FATAL_ERROR
-            "RUNTIME_ENVIRONMENT=ascend-a3 requires Ascend toolchain headers in: ${ASCEND_TOOLCHAIN_INCLUDE_DIR}")
+            "RUNTIME_ENVIRONMENT=${RUNTIME_ENVIRONMENT} requires Ascend toolchain headers in: ${ASCEND_TOOLCHAIN_INCLUDE_DIR}")
     endif()
     if(NOT EXISTS "${ASCEND_PROFILING_INCLUDE_DIR}/prof_common.h")
         message(FATAL_ERROR
-            "RUNTIME_ENVIRONMENT=ascend-a3 requires Ascend profiling headers in: ${ASCEND_PROFILING_INCLUDE_DIR}")
+            "RUNTIME_ENVIRONMENT=${RUNTIME_ENVIRONMENT} requires Ascend profiling headers in: ${ASCEND_PROFILING_INCLUDE_DIR}")
     endif()
     target_sources(trans PRIVATE
-        sdma_direct/ascend_sdma_direct_stream.cc
-        sdma_direct/ascend_sdma_direct_copier.cc
         ffts/ffts_sdma_dispatcher.cc
     )
+    if(UCM_RUNTIME_ASCEND_IO_AGGREGATION)
+        target_sources(trans PRIVATE
+            io_aggregation/ascend_io_aggregation_stream.cc
+            io_aggregation/ascend_shard_io_aggregator.cc
+        )
+    endif()
+    if(UCM_RUNTIME_ASCEND_SDMA_DIRECT)
+        target_sources(trans PRIVATE
+            sdma_direct/ascend_sdma_direct_stream.cc
+            sdma_direct/ascend_sdma_direct_copier.cc
+        )
+    endif()
     target_include_directories(trans PUBLIC
         "${ASCEND_FFTS_INCLUDE_DIR}"
         "${ASCEND_PKG_INCLUDE_DIR}"

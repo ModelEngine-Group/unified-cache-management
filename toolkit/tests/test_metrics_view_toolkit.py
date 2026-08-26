@@ -52,12 +52,15 @@ class MetricsViewToolkitTest(unittest.TestCase):
         self.assertNotIn("sqlite3", text)
         self.assertNotIn("PyYAML", text)
 
-    def test_metrics_view_uses_toolkit_readme_only(self):
+    def test_metrics_view_readme_documents_dashboard_configs(self):
         standalone_readme = (
             ROOT / "ucm_toolkit" / "tools" / "metrics_view" / "README.md"
         )
 
-        self.assertFalse(standalone_readme.exists())
+        readme = standalone_readme.read_text(encoding="utf-8")
+        self.assertIn("grafana_vllm.json", readme)
+        self.assertIn("grafana_connector.json", readme)
+        self.assertIn("grafana_store.json", readme)
 
 
 if __name__ == "__main__":

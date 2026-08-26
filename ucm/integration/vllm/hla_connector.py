@@ -20,6 +20,7 @@ from vllm.v1.kv_cache_interface import (
     FullAttentionSpec,
     KVCacheSpec,
     MambaSpec,
+    MLAAttentionSpec,
     UniformTypeKVCacheSpecs,
 )
 
@@ -32,7 +33,6 @@ from ucm.integration.vllm.ucm_connector import (
     RequestMeta,
     UCMConnectorMetadata,
     UCMDirectConnector,
-    _drop_null_vllm_blocks,
     _record_counter,
     _scheduler_read_block_size,
     _short_list,
@@ -60,6 +60,14 @@ class HLARequestMeta(RequestMeta):
 
     group_ucm_block_ids: list[list[bytes]] = field(default_factory=list)
     group_vllm_block_ids: list[list[int]] = field(default_factory=list)
+
+
+@dataclass
+class HLARequestDispatchMeta(RequestDispatchMeta):
+    """Extends RequestDispatchMeta with full-attn block count for MLA rank scoping."""
+
+    load_full_attn_count: int = 0
+    dump_full_attn_count: int = 0
 
 
 def layer_name_to_kv_cache_spec(
@@ -447,21 +455,21 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             for shape, dtype in zip(spec.shapes, spec.dtypes)
         ]
 
-    @staticmethod
-    def _attention_component_sizes(spec: KVCacheSpec) -> tuple[int, int]:
+    def _attention_component_sizes(self, spec: KVCacheSpec) -> tuple[int, int]:
         assert isinstance(spec, FullAttentionSpec)
+        if isinstance(spec, MLAAttentionSpec):
+            # MLA: head_size = kv_lora_rank + qk_rope_head_dim
+            hf = self.vllm_config.model_config.hf_text_config
+            k_dim = getattr(hf, "kv_lora_rank", spec.head_size)
+            v_dim = getattr(hf, "qk_rope_head_dim", spec.head_size)
+        else:
+            k_dim = spec.head_size
+            v_dim = getattr(spec, "head_size_v", spec.head_size)
         k_size = (
-            spec.block_size
-            * spec.num_kv_heads
-            * spec.head_size
-            * HybridLinearAttentionLayout._dtype_size(spec.dtype)
+            spec.block_size * spec.num_kv_heads * k_dim * self._dtype_size(spec.dtype)
         )
-        head_size_v = getattr(spec, "head_size_v", spec.head_size)
         v_size = (
-            spec.block_size
-            * spec.num_kv_heads
-            * head_size_v
-            * HybridLinearAttentionLayout._dtype_size(spec.dtype)
+            spec.block_size * spec.num_kv_heads * v_dim * self._dtype_size(spec.dtype)
         )
         return k_size, v_size
 
@@ -804,9 +812,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             self.block_size = lcm_block_size
             self.hash_block_size = lcm_block_size
 
-        logger.info(
-            f"UCMHybridLinearAttentionConnector initialized with use_layerwise={self.use_layerwise}"
-        )
+        logger.info(f"{type(self).__name__} initialized")
 
     def get_block_size(self) -> int:
         if self.group_manager is not None:
@@ -1012,13 +1018,17 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         hbm_hit_full_attn = num_computed_tokens // primary_full_attn.block_size
         total_hit_full_attn = total_hit_tokens // primary_full_attn.block_size
         all_hit_full_attn = primary_block_ids[0:total_hit_full_attn]
-        # Rank 0: prefetch updates heat for HBM-attn and mamba blocks not checked by lookup.
         hbm_full_attn = primary_block_ids[0:hbm_hit_full_attn]
         if hbm_full_attn:
             self.store.prefetch(hbm_full_attn)
         if mamba_prefetch_hashes:
             self.store.prefetch(mamba_prefetch_hashes)
-        self._prefetch_other_rank_hashes(all_hit_full_attn + mamba_prefetch_hashes)
+        # MLA full-attn is TP-replicated (shared hash), no per-rank entries to prefetch.
+        # Only mamba blocks have per-rank entries needing heat update.
+        per_rank_hashes = mamba_prefetch_hashes
+        if not self.is_mla:
+            per_rank_hashes = all_hit_full_attn + mamba_prefetch_hashes
+        self._prefetch_other_rank_hashes(per_rank_hashes)
 
         if len(primary_block_ids) > 0:
             ucmmetrics.update_stats(
@@ -1069,6 +1079,51 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             )
         req_meta.group_vllm_block_ids = [list(group) for group in block_ids]
 
+    def _append_mamba_align_state_block(
+        self,
+        dst_ucm_block_ids: list[bytes],
+        dst_vllm_block_ids: list[int],
+        req_meta: "HLARequestMeta",
+        request_id: str,
+        gid: int,
+        seq_len: int,
+        reason: str,
+    ) -> None:
+        group = self.group_manager.groups_by_id[gid]
+        state_idx = max((seq_len - 1) // group.block_size, 0)
+        vllm_state_idx = state_idx
+        if reason == "load":
+            block_ids = req_meta.group_vllm_block_ids[gid]
+            for i in range(len(block_ids) - 1, -1, -1):
+                if block_ids[i] != 0:
+                    vllm_state_idx = i
+                    break
+        try:
+            vllm_block_id = req_meta.group_vllm_block_ids[gid][vllm_state_idx]
+        except IndexError:
+            logger.error(
+                "HLA mamba-align state vLLM block missing: "
+                f"request_id={request_id}, group_id={gid}, reason={reason}, "
+                f"seq_len={seq_len}, state_idx={state_idx}, "
+                f"vllm_state_idx={vllm_state_idx}, "
+                f"num_vllm_blocks={len(req_meta.group_vllm_block_ids[gid])}"
+            )
+            return
+        if vllm_block_id == 0:
+            return
+        ucm_block_id = self.group_manager.compute_mamba_align_state_hash(
+            group, seq_len, req_meta.group_ucm_block_ids
+        )
+        if ucm_block_id is None:
+            logger.error(
+                "HLA mamba-align state hash missing: "
+                f"request_id={request_id}, group_id={gid}, reason={reason}, "
+                f"seq_len={seq_len}, state_idx={state_idx}"
+            )
+            return
+        dst_ucm_block_ids.append(ucm_block_id)
+        dst_vllm_block_ids.append(vllm_block_id)
+
     def _generate_hla_dispatch_meta(
         self,
         req_meta: "HLARequestMeta",
@@ -1077,7 +1132,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         need_load: bool = True,
         request_id: str = "",
         incoming_block_ids_are_full: bool = False,
-    ) -> RequestDispatchMeta:
+    ) -> HLARequestDispatchMeta:
         """Build a flat (ucm, vllm) block id pair list across all groups."""
         assert self.group_manager is not None
         groups_by_id = self.group_manager.groups_by_id
@@ -1097,7 +1152,6 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             elif not existing_vllm_block_ids:
                 req_meta.group_vllm_block_ids[gid] = incoming_vllm_block_ids
             elif incoming_vllm_block_ids:
-                # Avoid double-append when update_state_after_alloc already set full table.
                 suffix_len = len(incoming_vllm_block_ids)
                 if existing_vllm_block_ids[-suffix_len:] != incoming_vllm_block_ids:
                     existing_vllm_block_ids.extend(incoming_vllm_block_ids)
@@ -1107,50 +1161,6 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         dump_ucm_block_ids: list[bytes] = []
         dump_vllm_block_ids: list[int] = []
 
-        def append_mamba_align_state_block(
-            dst_ucm_block_ids: list[bytes],
-            dst_vllm_block_ids: list[int],
-            gid: int,
-            seq_len: int,
-            reason: str,
-        ) -> None:
-            group = groups_by_id[gid]
-            state_idx = max((seq_len - 1) // group.block_size, 0)
-            vllm_state_idx = state_idx
-            if reason == "load":
-                # Write into the running state block, not the cached prefix block.
-                block_ids = req_meta.group_vllm_block_ids[gid]
-                for i in range(len(block_ids) - 1, -1, -1):
-                    if block_ids[i] != 0:
-                        vllm_state_idx = i
-                        break
-
-            try:
-                vllm_block_id = req_meta.group_vllm_block_ids[gid][vllm_state_idx]
-            except IndexError:
-                logger.error(
-                    "HLA mamba-align state vLLM block missing: "
-                    f"request_id={request_id}, group_id={gid}, reason={reason}, "
-                    f"seq_len={seq_len}, state_idx={state_idx}, "
-                    f"vllm_state_idx={vllm_state_idx}, "
-                    f"num_vllm_blocks={len(req_meta.group_vllm_block_ids[gid])}"
-                )
-                return
-            if vllm_block_id == 0:
-                return
-            ucm_block_id = self.group_manager.compute_mamba_align_state_hash(
-                group, seq_len, req_meta.group_ucm_block_ids
-            )
-            if ucm_block_id is None:
-                logger.error(
-                    "HLA mamba-align state hash missing: "
-                    f"request_id={request_id}, group_id={gid}, reason={reason}, "
-                    f"seq_len={seq_len}, state_idx={state_idx}"
-                )
-                return
-            dst_ucm_block_ids.append(ucm_block_id)
-            dst_vllm_block_ids.append(vllm_block_id)
-
         external_hit_lcm_blocks = (
             req_meta.total_hit_block_num - req_meta.hbm_hit_block_num
         )
@@ -1158,17 +1168,10 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         total_hit_tokens = req_meta.total_hit_block_num * lcm_block_size
 
         if need_load and external_hit_lcm_blocks > 0:
+            # Pass 1: full-attention blocks first (for MLA rank-0-only dump)
             for gid, group in enumerate(groups_by_id):
                 if group.is_mamba_align:
-                    append_mamba_align_state_block(
-                        load_ucm_block_ids,
-                        load_vllm_block_ids,
-                        gid,
-                        total_hit_tokens,
-                        "load",
-                    )
                     continue
-                # Full-attention group: load the external hit prefix.
                 load_tok_start = hbm_hit_tokens
                 load_tok_end = total_hit_tokens
                 start_blk = load_tok_start // group.block_size
@@ -1181,6 +1184,22 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     req_meta.group_ucm_block_ids[gid][start_blk:end_blk],
                     req_meta.group_vllm_block_ids[gid][start_blk:end_blk],
                 )
+            load_full_attn_count = len(load_ucm_block_ids) if self.is_mla else 0
+            # Pass 2: mamba state blocks
+            for gid, group in enumerate(groups_by_id):
+                if not group.is_mamba_align:
+                    continue
+                self._append_mamba_align_state_block(
+                    load_ucm_block_ids,
+                    load_vllm_block_ids,
+                    req_meta,
+                    request_id,
+                    gid,
+                    total_hit_tokens,
+                    "load",
+                )
+        else:
+            load_full_attn_count = 0
 
         if req_meta.token_processed < req_meta.num_token_ids:
             dump_tok_start = req_meta.token_processed
@@ -1190,38 +1209,46 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             first_lcm_b = (dump_tok_start // lcm_block_size + 1) * lcm_block_size
             last_lcm_b = (dump_tok_end // lcm_block_size) * lcm_block_size
 
+            # Pass 1: full-attention blocks first
             for gid, group in enumerate(groups_by_id):
-                if group.is_full_attention:
-                    start_blk = dump_tok_start // group.block_size
-                    end_blk = dump_tok_end // group.block_size
-                    if start_blk >= end_blk:
-                        continue
-                    extend_non_null(
-                        dump_ucm_block_ids,
-                        dump_vllm_block_ids,
-                        req_meta.group_ucm_block_ids[gid][start_blk:end_blk],
-                        req_meta.group_vllm_block_ids[gid][start_blk:end_blk],
-                    )
-                else:
-                    # Only dump when the chunk ends exactly at an LCM
-                    # boundary, so the state at last_lcm_b is the running
-                    # state. If dump_tok_end is not aligned, the HBM slot
-                    # at last_lcm_b may have been overwritten by the mamba
-                    # kernel's running state update for the partial block.
-                    if dump_tok_end != last_lcm_b or last_lcm_b < first_lcm_b:
-                        continue
-                    append_mamba_align_state_block(
-                        dump_ucm_block_ids,
-                        dump_vllm_block_ids,
-                        gid,
-                        last_lcm_b,
-                        "dump",
-                    )
-            req_meta.token_processed += new_tokens
+                if group.is_mamba_align:
+                    continue
+                start_blk = dump_tok_start // group.block_size
+                end_blk = dump_tok_end // group.block_size
+                if start_blk >= end_blk:
+                    continue
+                extend_non_null(
+                    dump_ucm_block_ids,
+                    dump_vllm_block_ids,
+                    req_meta.group_ucm_block_ids[gid][start_blk:end_blk],
+                    req_meta.group_vllm_block_ids[gid][start_blk:end_blk],
+                )
+            dump_full_attn_count = len(dump_ucm_block_ids) if self.is_mla else 0
+            # Pass 2: mamba state blocks
+            for gid, group in enumerate(groups_by_id):
+                if not group.is_mamba_align:
+                    continue
+                if dump_tok_end != last_lcm_b or last_lcm_b < first_lcm_b:
+                    continue
+                self._append_mamba_align_state_block(
+                    dump_ucm_block_ids,
+                    dump_vllm_block_ids,
+                    req_meta,
+                    request_id,
+                    gid,
+                    last_lcm_b,
+                    "dump",
+                )
+        else:
+            dump_full_attn_count = 0
 
-        return RequestDispatchMeta(
+        req_meta.token_processed += new_tokens
+
+        return HLARequestDispatchMeta(
             (load_ucm_block_ids, load_vllm_block_ids),
             (dump_ucm_block_ids, dump_vllm_block_ids),
+            load_full_attn_count,
+            dump_full_attn_count,
         )
 
     def build_connector_meta(
@@ -1231,7 +1258,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         num_groups = self.group_manager.num_groups
         empty_per_group: tuple[list[int], ...] = tuple([] for _ in range(num_groups))
 
-        requests_dispatch_meta: dict[str, RequestDispatchMeta] = {}
+        requests_dispatch_meta: dict[str, HLARequestDispatchMeta] = {}
 
         for request in scheduler_output.scheduled_new_reqs:
             request_id = request.req_id
@@ -1300,10 +1327,134 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             scheduler_output.preempted_req_ids or set(),
         )
 
-    def wait_for_save(self) -> None:
-        if self.is_mla and self.tp_rank % self.tp_size != 0:
-            return
+    def _mla_split_scope(self, ucm_ids, vllm_ids, full_attn_count, is_dump):
+        """Split into MLA/KDA and apply rank scoping for MLA hybrid.
 
+        Returns ``(rank0_ucm, scoped_ucm, scoped_vllm)`` where *rank0_ucm*
+        holds the rank-0 hashes of the blocks that will actually be stored
+        (for the rank-consistency tracker), *scoped_ucm* holds the per-rank
+        store keys, and *scoped_vllm* holds the matching vLLM block IDs.
+        """
+        n = full_attn_count
+        mla_ucm, kda_ucm = ucm_ids[:n], ucm_ids[n:]
+        mla_vllm, kda_vllm = vllm_ids[:n], vllm_ids[n:]
+        is_rank0 = self.tp_rank % self.tp_size == 0
+        # MLA: shared hash for all ranks; KDA: rank0 shared, non-rank0 per-rank hash
+        if is_rank0:
+            kda_scoped = kda_ucm
+        else:
+            kda_scoped = [self.request_hasher(b) for b in kda_ucm]
+        if is_dump and not is_rank0:
+            return kda_ucm, kda_scoped, kda_vllm
+        return mla_ucm + kda_ucm, mla_ucm + kda_scoped, mla_vllm + kda_vllm
+
+    def _scope_blocks(self, ucm_ids, vllm_ids, full_attn_count, is_dump):
+        """Rank-scope block IDs for dump or load.
+
+        Returns ``(rank0_ucm, scoped_ucm, scoped_vllm)`` where *rank0_ucm*
+        is the rank-0 hash (for tracker clear/mark), *scoped_ucm* is the
+        per-rank store key, and *scoped_vllm* is the matching vLLM block IDs.
+        """
+        n = int(full_attn_count) if full_attn_count else 0
+        if self.is_mla:
+            return self._mla_split_scope(ucm_ids, vllm_ids, n, is_dump)
+        if self.tp_rank % self.tp_size == 0:
+            return ucm_ids, ucm_ids, vllm_ids
+        scoped = [self.request_hasher(b) for b in ucm_ids]
+        return ucm_ids, scoped, vllm_ids
+
+    def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
+        """Bulk load override: MLA blocks shared hash, KDA blocks per-rank hash."""
+        metadata = self._get_connector_metadata()
+        assert isinstance(metadata, UCMConnectorMetadata)
+        request_to_task: dict[str, Task] = {}
+        is_load = False
+        num_loaded_block = 0
+        num_loaded_request = 0
+        load_start_time = time.perf_counter() * 1000
+        request_to_load_blocks: dict[str, int] = {}
+        all_load_ucm_ids: list[bytes] = []
+        all_load_vllm_ids: list[int] = []
+        # Ensure do_mamba_copy_block (from preprocess_mamba, compute stream)
+        # has completed before submitting load DMA (store stream).  Without
+        # this, the copy may land after the load and clobber loaded data.
+        # At this point the previous step's forward is done, so the only
+        # pending compute op is the mamba state copy — sync overhead is
+        # negligible.
+        self.device.synchronize()
+        for request_id, request in metadata.request_meta.items():
+            if len(request.load_block_ids[0]) == 0:
+                continue
+            is_load = True
+            num_loaded_block += len(request.load_block_ids[0])
+            num_loaded_request += 1
+            n = getattr(request, "load_full_attn_count", 0)
+            _, scoped_ucm, scoped_vllm = self._scope_blocks(
+                request.load_block_ids[0], request.load_block_ids[1], n, is_dump=False
+            )
+            if not scoped_ucm:
+                num_loaded_block -= len(request.load_block_ids[0])
+                num_loaded_request -= 1
+                continue
+            num_loaded_block -= len(request.load_block_ids[0]) - len(scoped_ucm)
+            try:
+                ptrs = self.kv_cache_layout.extract_block_addrs(scoped_vllm)
+                ptrs = ptrs.reshape(ptrs.shape[0], -1)
+                shard_indexs = [0] * len(scoped_ucm)
+                task = self._rank_consistency.submit_load(
+                    self.store,
+                    {request_id: request.load_block_ids[0]},
+                    scoped_ucm,
+                    shard_indexs,
+                    ptrs,
+                )
+                request_to_task[request_id] = task
+                request_to_load_blocks[request_id] = len(scoped_ucm)
+            except Exception as e:
+                logger.error(
+                    f"request {request_id} submit load task error. "
+                    f"{type(e).__name__}: {e}"
+                )
+                self._record_load_error(
+                    "connector_load_submit_errors_total",
+                    metadata.request_meta[request_id].load_block_ids[1]
+                    + metadata.request_meta[request_id].dump_block_ids[1],
+                )
+                self._connector_worker_meta.mark_failed(request_id)
+                num_loaded_block -= len(scoped_ucm)
+
+        for request_id, task in request_to_task.items():
+            try:
+                self._rank_consistency.wait_load(task)
+            except Exception as e:
+                logger.error(
+                    f"request {request_id} wait load task error. "
+                    f"{type(e).__name__}: {e}"
+                )
+                self._record_load_error(
+                    "connector_load_wait_errors_total",
+                    metadata.request_meta[request_id].load_block_ids[1]
+                    + metadata.request_meta[request_id].dump_block_ids[1],
+                )
+                self._connector_worker_meta.mark_failed(request_id)
+                num_loaded_block -= request_to_load_blocks.get(request_id, 0)
+
+        if is_load:
+            load_end_time = time.perf_counter() * 1000
+            load_duration_ms = load_end_time - load_start_time
+            load_bytes = num_loaded_block * self.block_data_size
+            load_speed = load_bytes / max(load_duration_ms, 1) / 1024 / 1024
+            ucmmetrics.update_stats(
+                {
+                    "load_requests_num": num_loaded_request,
+                    "load_blocks_num": num_loaded_block,
+                    "load_duration": load_duration_ms,
+                    "load_speed": load_speed,
+                    "load_bytes_total": load_bytes,
+                }
+            )
+
+    def wait_for_save(self) -> None:
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
 
@@ -1314,21 +1465,16 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         for request_id, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
                 continue
-
-            ucm_block_ids, vllm_block_ids = request.dump_block_ids
-            if self._skip_null_vllm_blocks:
-                ucm_block_ids, vllm_block_ids = _drop_null_vllm_blocks(
-                    ucm_block_ids,
-                    vllm_block_ids,
-                    f"UCM dump request {request_id}",
-                )
-                if len(ucm_block_ids) == 0:
-                    continue
-            block_ids_by_request[request_id] = set(ucm_block_ids)
-            num_saved_block += len(ucm_block_ids)
-            ucm_block_ids = self._rank_scoped_ucm_block_ids(ucm_block_ids)
-            total_ucm_block_ids.extend(ucm_block_ids)
-            total_vllm_block_ids.extend(vllm_block_ids)
+            n = getattr(request, "dump_full_attn_count", 0)
+            rank0_ucm, scoped_ucm, scoped_vllm = self._scope_blocks(
+                request.dump_block_ids[0], request.dump_block_ids[1], n, is_dump=True
+            )
+            if not scoped_ucm:
+                continue
+            block_ids_by_request[request_id] = set(rank0_ucm)
+            num_saved_block += len(scoped_ucm)
+            total_ucm_block_ids.extend(scoped_ucm)
+            total_vllm_block_ids.extend(scoped_vllm)
 
         if not total_ucm_block_ids:
             return
@@ -1383,11 +1529,6 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         block_ids: tuple[list[int], ...],
     ) -> tuple[bool, dict[str, object] | None]:
         return False, None
-
-    def _rank_scoped_ucm_block_ids(self, ucm_block_ids: list[bytes]) -> list[bytes]:
-        if self.tp_rank % self.tp_size == 0 or self.is_mla:
-            return ucm_block_ids
-        return [self.request_hasher(b) for b in ucm_block_ids]
 
 
 class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnector):
@@ -1617,24 +1758,26 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         for request_id, request in metadata.request_meta.items():
             if len(request.load_block_ids[0]) == 0:
                 continue
-
-            ucm_block_ids, vllm_block_ids = request.load_block_ids
-            if self._skip_null_vllm_blocks:
-                ucm_block_ids, vllm_block_ids = _drop_null_vllm_blocks(
-                    ucm_block_ids,
-                    vllm_block_ids,
-                    f"UCM hybrid layerwise load request {request_id}",
-                )
-                if len(ucm_block_ids) == 0:
-                    continue
+            n = getattr(request, "load_full_attn_count", 0)
+            _, scoped_ucm, scoped_vllm = self._scope_blocks(
+                request.load_block_ids[0], request.load_block_ids[1], n, is_dump=False
+            )
+            if not scoped_ucm:
+                continue
             self.need_load = True
-            self._load_block_counts[request_id] = len(ucm_block_ids)
-            store_block_ids = self._rank_scoped_ucm_block_ids(ucm_block_ids)
+            self._load_block_counts[request_id] = len(scoped_ucm)
             self.request_data.append(
-                (request_id, ucm_block_ids, store_block_ids, vllm_block_ids)
+                (request_id, request.load_block_ids[0], scoped_ucm, scoped_vllm)
             )
 
         if self.need_load and self.row_ids:
+            # Ensure do_mamba_copy_block (from preprocess_mamba, compute stream)
+            # has completed before submitting load DMA (store stream).  Without
+            # this, the copy may land after the load and clobber loaded data.
+            # At this point the previous step's forward is done, so the only
+            # pending compute op is the mamba state copy — sync overhead is
+            # negligible.
+            self.device.synchronize()
             # vLLM only calls wait_for_layer_load at full_attn (last layer of
             # each row), so row 0 must be loaded here before linear_attn begins.
             num_submit = min(self._load_prefetch_rows + 1, len(self.row_ids))
@@ -1678,8 +1821,6 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         **kwargs,
     ) -> None:
         if not self._connector_metadata:
-            return
-        if self.is_mla and self.tp_rank % self.tp_size != 0:
             return
 
         row_id = self.layer_name_to_row.get(layer_name)
@@ -1754,21 +1895,16 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         for request_id, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
                 continue
-
             dump_request_ids.add(request_id)
-            ucm_block_ids, vllm_block_ids = request.dump_block_ids
-            if self._skip_null_vllm_blocks:
-                ucm_block_ids, vllm_block_ids = _drop_null_vllm_blocks(
-                    ucm_block_ids,
-                    vllm_block_ids,
-                    f"UCM hybrid layerwise dump row {row_id}",
-                )
-                if len(ucm_block_ids) == 0:
-                    continue
-            block_ids_by_request[request_id] = set(ucm_block_ids)
-            ucm_block_ids = self._rank_scoped_ucm_block_ids(ucm_block_ids)
-            total_ucm_block_ids.extend(ucm_block_ids)
-            total_vllm_block_ids.extend(vllm_block_ids)
+            n = getattr(request, "dump_full_attn_count", 0)
+            rank0_ucm, scoped_ucm, scoped_vllm = self._scope_blocks(
+                request.dump_block_ids[0], request.dump_block_ids[1], n, is_dump=True
+            )
+            if not scoped_ucm:
+                continue
+            block_ids_by_request[request_id] = set(rank0_ucm)
+            total_ucm_block_ids.extend(scoped_ucm)
+            total_vllm_block_ids.extend(scoped_vllm)
         return (
             total_ucm_block_ids,
             total_vllm_block_ids,

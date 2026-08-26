@@ -17,3 +17,4 @@ include = ["ucm_toolkit*"]
 
 [tool.setuptools.package-data]
 "ucm_toolkit.tools.metrics_view" = ["configs/*.json"]
+"ucm_toolkit.tools.precheck" = ["*.json"]

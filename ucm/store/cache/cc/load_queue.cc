@@ -42,8 +42,10 @@ Status LoadQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     backend_ = config.storeBackend;
     deviceId_ = config.deviceId;
     tensorSizes_ = config.tensorSizes;
+    nShardPerBlock_ = config.blockSize / config.shardSize;
     streamNumber_ = config.EffectiveStreamNumber();
     useGdr_ = config.useGdr;
+    cacheIOAggregation_ = config.cacheIOAggregation;
     cacheSdmaDirect_ = config.cacheSdmaDirect;
     cpuAffinityCores_ = config.cpuAffinityCores;
     localRankSize_ = config.localRankSize;
@@ -145,6 +147,12 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
         running_.Push(std::move(shardTask));
     }
     auto tpDispatch = NowTime::Now();
+    for (size_t i = 0; i < nShard; i++) {
+        auto& shard = task->desc[indexes[i]];
+        if (shard.index + 1 != nShardPerBlock_) {
+            buffer_->Prealloc(shard.owner, shard.index + 1, true);
+        }
+    }
     UC_DEBUG("Cache task({}) dispatch shards({}), wait={:.3f}ms, cost={:.3f}ms.", task->id, nShard,
              (tpWait - tp) * 1e3, (tpDispatch - tpWait) * 1e3);
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_queue_wait_duration_ms"),
@@ -161,8 +169,14 @@ void LoadQueue::TransferStage(std::promise<Status>& started)
     auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_load_xfer");
     if (nameStatus.Failure()) { UC_WARN("Failed({}) to set UCM load transfer name.", nameStatus); }
     CopyStream stream;
-    auto s = cacheSdmaDirect_ ? stream.SetupSdmaDirect(deviceId_, useGdr_)
-                              : stream.Setup(deviceId_, streamNumber_, useGdr_);
+    auto s = Status::OK();
+    if (cacheIOAggregation_) {
+        s = stream.SetupIoAggregation(deviceId_, useGdr_);
+    } else if (cacheSdmaDirect_) {
+        s = stream.SetupSdmaDirect(deviceId_, useGdr_);
+    } else {
+        s = stream.Setup(deviceId_, streamNumber_, useGdr_);
+    }
     started.set_value(s);
     if (s.Failure()) [[unlikely]] { return; }
     if (!cpuAffinityCores_.empty()) {
