@@ -390,103 +390,36 @@ TEST_F(BufferManagerTest, AllocateReturnsBusyWhenFull)
     mgr.Free(sge2.slot_index);
 }
 
-class StubTransProvider : public TransProvider {
-public:
-    uint32_t registerCount = 0;
-    uint32_t unregisterCount = 0;
-    uint32_t fakeTokenId = 42;
-    bool failRegister = false;
-    bool failGetToken = false;
-    MemType lastMemType = MemType::MEM_HOST;
-    uintptr_t lastAddr = 0;
-    uintptr_t lastLocalAddr = 0;
-    size_t lastSize = 0;
-
-    Status CreateConnection(const std::string&, const std::string&, uint32_t, uint32_t, uint32_t,
-                            std::vector<ConnectionHandle>&) override
-    {
-        return Status::OK();
-    }
-    std::vector<Status> DeleteConnections(const std::vector<ConnectionHandle>&) override
-    {
-        return {};
-    }
-    std::vector<Status> Send(const std::vector<SendIoBatch>&, uint32_t, uint32_t) override
-    {
-        return {};
-    }
-    Status RegisterMemory(const std::vector<RegisterMemoryDesc>& descs,
-                          std::vector<MRHandle>& handles) override
-    {
-        registerCount++;
-        if (!descs.empty()) {
-            lastMemType = descs[0].memoryType;
-            lastAddr = descs[0].addr;
-            lastLocalAddr = descs[0].localAddr;
-            lastSize = descs[0].size;
-        }
-        if (failRegister) {
-            return Status::Error(StatusCode::INTERNAL_ERROR, "stub register failed");
-        }
-        handles.push_back(reinterpret_cast<MRHandle>(static_cast<uintptr_t>(registerCount)));
-        return Status::OK();
-    }
-    std::vector<Status> UnregisterMemory(const std::vector<UnregisterMemoryDesc>& descs) override
-    {
-        unregisterCount += static_cast<uint32_t>(descs.size());
-        return std::vector<Status>(descs.size(), Status::OK());
-    }
-    Status AllocThread(uint32_t, const std::vector<uint32_t>&, std::vector<ThreadHandle>&) override
-    {
-        return Status::OK();
-    }
-    std::vector<Status> FreeThread(const std::vector<ThreadHandle>&) override { return {}; }
-    Status GetMemTokenId(MRHandle, uint32_t& tokenId) override
-    {
-        if (failGetToken) {
-            return Status::Error(StatusCode::INTERNAL_ERROR, "stub get token failed");
-        }
-        tokenId = fakeTokenId;
-        return Status::OK();
-    }
-};
-
-TEST_F(BufferManagerTest, InitWithProviderRegistersMemory)
+TEST_F(BufferManagerTest, HostMemoryExposesRegistrationDescription)
 {
-    StubTransProvider provider;
-
     BufferManager mgr;
-    auto status = mgr.Init("test_rdma", MemoryType::HOST, 1024, 10, &provider);
+    auto status = mgr.Init("test_host", MemoryType::HOST, 1024, 10);
     ASSERT_TRUE(status.ok()) << status.message;
-    ASSERT_EQ(provider.registerCount, 1);
-    ASSERT_EQ(provider.lastMemType, TransProvider::MemType::MEM_HOST);
-    ASSERT_NE(provider.lastAddr, 0);
-    ASSERT_EQ(provider.lastLocalAddr, provider.lastAddr);
-    ASSERT_EQ(provider.lastSize, 1024 * 10);
-    ASSERT_EQ(mgr.GetTokenId(), 42);
 
-    ScatterGatherEntry sge;
-    ASSERT_TRUE(mgr.Allocate(64, sge).ok());
-    ASSERT_EQ(sge.local_addr, sge.device_addr);
+    TransProvider::RegisterMemoryDesc desc;
+    status = mgr.GetRegisterMemoryDesc(desc);
+    ASSERT_TRUE(status.ok()) << status.message;
+    ASSERT_EQ(desc.memoryType, TransProvider::MemType::MEM_HOST);
+    ASSERT_NE(desc.addr, 0);
+    ASSERT_EQ(desc.localAddr, desc.addr);
+    ASSERT_EQ(desc.size, 1024 * 10);
 }
 
-TEST_F(BufferManagerTest, HostPinnedRegistersDeviceAddress)
+TEST_F(BufferManagerTest, HostPinnedMemoryExposesDeviceRegistrationDescription)
 {
-    StubTransProvider provider;
-
     BufferManager mgr;
-    auto status = mgr.Init("test_rdma_pinned", MemoryType::HOST_PINNED, 4096, 1, &provider);
+    auto status = mgr.Init("test_pinned", MemoryType::HOST_PINNED, 4096, 1);
     ASSERT_TRUE(status.ok()) << status.message;
-    ASSERT_EQ(provider.registerCount, 1);
-    ASSERT_EQ(provider.lastMemType, TransProvider::MemType::MEM_DEVICE);
 
     ScatterGatherEntry sge;
     ASSERT_TRUE(mgr.Allocate(64, sge).ok());
-    ASSERT_NE(sge.local_addr, 0);
-    ASSERT_NE(sge.device_addr, 0);
-    ASSERT_EQ(sge.local_addr % 4096, 0);
-    ASSERT_EQ(provider.lastAddr, sge.device_addr);
-    ASSERT_EQ(provider.lastLocalAddr, sge.local_addr);
+    TransProvider::RegisterMemoryDesc desc;
+    status = mgr.GetRegisterMemoryDesc(desc);
+    ASSERT_TRUE(status.ok()) << status.message;
+    ASSERT_EQ(desc.memoryType, TransProvider::MemType::MEM_DEVICE);
+    ASSERT_EQ(desc.addr, sge.device_addr);
+    ASSERT_EQ(desc.localAddr, sge.local_addr);
+    ASSERT_EQ(desc.size, 4096);
 
     // The CPU writes through local_addr while HCOMM and remote RDMA use device_addr.
     // ACL simulators may map both roles to the same numeric address.
@@ -494,14 +427,13 @@ TEST_F(BufferManagerTest, HostPinnedRegistersDeviceAddress)
     ASSERT_EQ(*reinterpret_cast<unsigned char*>(sge.local_addr), 0x5A);
 }
 
-TEST_F(BufferManagerTest, InitWithProviderAllocateReturnsTokenId)
+TEST_F(BufferManagerTest, SetTokenIdIsReflectedInAllocatedSge)
 {
-    StubTransProvider provider;
-    provider.fakeTokenId = 99;
-
     BufferManager mgr;
-    auto status = mgr.Init("test_rdma", MemoryType::HOST, 1024, 10, &provider);
+    auto status = mgr.Init("test_token", MemoryType::HOST, 1024, 10);
     ASSERT_TRUE(status.ok()) << status.message;
+    mgr.SetTokenId(99);
+    ASSERT_EQ(mgr.GetTokenId(), 99);
 
     ScatterGatherEntry sge;
     status = mgr.Allocate(64, sge);
@@ -511,40 +443,13 @@ TEST_F(BufferManagerTest, InitWithProviderAllocateReturnsTokenId)
     mgr.Free(sge.slot_index);
 }
 
-TEST_F(BufferManagerTest, DestroyWithProviderUnregistersMemory)
+TEST_F(BufferManagerTest, RegistrationDescriptionRequiresInitialization)
 {
-    StubTransProvider provider;
-    {
-        BufferManager mgr;
-        auto status = mgr.Init("test_rdma", MemoryType::HOST, 1024, 10, &provider);
-        ASSERT_TRUE(status.ok()) << status.message;
-        ASSERT_EQ(provider.unregisterCount, 0);
-    }
-    ASSERT_EQ(provider.unregisterCount, 1);
-}
-
-TEST_F(BufferManagerTest, InitWithProviderRegisterFails)
-{
-    StubTransProvider provider;
-    provider.failRegister = true;
-
     BufferManager mgr;
-    auto status = mgr.Init("test_rdma", MemoryType::HOST, 1024, 10, &provider);
+    TransProvider::RegisterMemoryDesc desc;
+    const auto status = mgr.GetRegisterMemoryDesc(desc);
     ASSERT_FALSE(status.ok());
-    ASSERT_EQ(status.code, StatusCode::INTERNAL_ERROR);
-    ASSERT_EQ(provider.unregisterCount, 0);
-}
-
-TEST_F(BufferManagerTest, InitWithProviderGetTokenFailsCleansUp)
-{
-    StubTransProvider provider;
-    provider.failGetToken = true;
-
-    BufferManager mgr;
-    auto status = mgr.Init("test_rdma", MemoryType::HOST, 1024, 10, &provider);
-    ASSERT_FALSE(status.ok());
-    ASSERT_EQ(status.code, StatusCode::INTERNAL_ERROR);
-    ASSERT_EQ(provider.unregisterCount, 1);
+    ASSERT_EQ(status.code, StatusCode::NOT_INITIALIZED);
 }
 
 }  // namespace

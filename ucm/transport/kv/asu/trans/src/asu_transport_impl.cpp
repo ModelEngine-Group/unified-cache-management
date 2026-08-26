@@ -93,7 +93,7 @@ Status AsuTransportImpl::Init(const TransportConfig& config,
     connManager_ = std::make_unique<ConnectionManager>(*transProvider_, localIp, timeout,
                                                        config_.maxErrorCount);
 
-    std::uint32_t qp_num = config_.queryQpNum + config_.loadQpNum + config_.storeQpNum;
+    const std::uint32_t qp_num = config_.qpNum;
     UC_DEBUG("AsuTransportImpl::Init endpoints={} qp_num={}", config_.endpoints.size(), qp_num);
     for (const auto& ep : config_.endpoints) {
         auto s = connManager_->AddGroup(ep, qp_num);
@@ -137,40 +137,20 @@ Status AsuTransportImpl::Init(const TransportConfig& config,
             config_.asuBatchStoreIoNum, config_.asuBatchLoadIoNum, config_.asuDeleteIoNum,
             config_.asuQueryIoNum);
 
-    ioScheduler_ = IoScheduler(config_);
     connManager_->StartRecoverLoop();
 
-    auto status = sendBufferManager_.Init("asu send buffer", MemoryType::HOST_PINNED,
-                                          config_.sendBufferSlotSize, config_.sendBufferSlotNum,
-                                          transProvider_.get());
+    taskExecutor_ = std::make_unique<TransportTaskExecutor>(config_, transProvider_, connManager_);
+    auto status = taskExecutor_->Init();
     if (!status.ok()) {
         const auto shutdownStatus = Shutdown();
         if (!shutdownStatus.ok()) {
             UC_WARN(
-                "AsuTransportImpl::Init cleanup failed after send buffer initialization "
+                "AsuTransportImpl::Init cleanup failed after task executor initialization "
                 "failure: code={} message={}",
                 static_cast<int>(shutdownStatus.code), shutdownStatus.message);
         }
         return status;
     }
-
-    status = flagBufferManager_.Init("asu flag buffer", MemoryType::HOST_PINNED,
-                                     config_.flagBufferSlotSize, config_.flagBufferSlotNum,
-                                     transProvider_.get());
-    if (!status.ok()) {
-        const auto shutdownStatus = Shutdown();
-        if (!shutdownStatus.ok()) {
-            UC_WARN(
-                "AsuTransportImpl::Init cleanup failed after flag buffer initialization "
-                "failure: code={} message={}",
-                static_cast<int>(shutdownStatus.code), shutdownStatus.message);
-        }
-        return status;
-    }
-    protocolManager_ = std::make_unique<ProtocolManager>();
-    taskExecutor_ = std::make_unique<TransportTaskExecutor>(
-        config_, ioScheduler_, transProvider_, sendBufferManager_, flagBufferManager_,
-        protocolManager_, connManager_, nextRequestCid_);
     auto queueDepth = std::max<std::size_t>(2, static_cast<std::size_t>(config_.maxInflightTasks));
     executeQueue_.Setup(queueDepth + 1);
     stopWorker_.store(false, std::memory_order_release);
@@ -216,9 +196,14 @@ Status AsuTransportImpl::Shutdown()
     for (const auto& ctx : taskManager_.GetAll()) {
         if (ctx != nullptr) { (void)taskManager_.Remove(ctx->taskId); }
     }
-    taskExecutor_.reset();
-    flagBufferManager_.Shutdown();
-    sendBufferManager_.Shutdown();
+    if (taskExecutor_) {
+        const auto status = taskExecutor_->Shutdown();
+        if (!status.ok()) {
+            if (finalStatus.ok()) { finalStatus = status; }
+        } else {
+            taskExecutor_.reset();
+        }
+    }
 
     if (connManager_) {
         auto status = connManager_->Shutdown();

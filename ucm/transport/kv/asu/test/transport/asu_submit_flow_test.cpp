@@ -127,9 +127,7 @@ public:
 void CreateTaskExecutor(AsuTransportImpl& transport)
 {
     transport.taskExecutor_ = std::make_unique<TransportTaskExecutor>(
-        transport.config_, transport.ioScheduler_, transport.transProvider_,
-        transport.sendBufferManager_, transport.flagBufferManager_, transport.protocolManager_,
-        transport.connManager_, transport.nextRequestCid_);
+        transport.config_, transport.transProvider_, transport.connManager_);
 }
 
 class AsuSubmitFlowBufferTest : public ::testing::Test {
@@ -158,6 +156,185 @@ protected:
 }  // namespace
 
 namespace {
+
+class AsuTransportBufferRegistrationTest : public ::testing::Test {
+protected:
+    static void SetUpTestSuite()
+    {
+        const auto ret = aclInit(nullptr);
+        if (ret != ACL_SUCCESS && ret != ACL_ERROR_REPEAT_INITIALIZE) {
+            FAIL() << "aclInit failed: " << ret;
+        }
+        ASSERT_EQ(aclrtSetDevice(0), ACL_SUCCESS);
+    }
+
+    static void TearDownTestSuite()
+    {
+        EXPECT_EQ(aclrtResetDevice(0), ACL_SUCCESS);
+        EXPECT_EQ(aclFinalize(), ACL_SUCCESS);
+    }
+};
+
+TEST_F(AsuTransportBufferRegistrationTest, InitRegistersAndShutdownUnregistersBothBuffers)
+{
+    auto provider = std::make_shared<StubTransProvider>();
+    AsuTransportImpl transport;
+
+    auto status = transport.Init(TransportConfig{}, provider);
+    ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(provider->registerCount, 2);
+    EXPECT_EQ(provider->registerCallCount, 2);
+    EXPECT_EQ(provider->tokenLookupCount, 2);
+    ASSERT_NE(transport.taskExecutor_, nullptr);
+    EXPECT_NE(transport.taskExecutor_->sendBufferMrHandle_, kInvalidMRHandle);
+    EXPECT_NE(transport.taskExecutor_->flagBufferMrHandle_, kInvalidMRHandle);
+    EXPECT_EQ(transport.taskExecutor_->sendBufferManager_.GetTokenId(), 1);
+    EXPECT_EQ(transport.taskExecutor_->flagBufferManager_.GetTokenId(), 1);
+
+    status = transport.Shutdown();
+    EXPECT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(provider->unregisterCount, 2);
+    EXPECT_EQ(transport.taskExecutor_, nullptr);
+}
+
+TEST_F(AsuTransportBufferRegistrationTest, DestructorUnregistersBothBuffers)
+{
+    auto provider = std::make_shared<StubTransProvider>();
+
+    {
+        AsuTransportImpl transport;
+        const auto status = transport.Init(TransportConfig{}, provider);
+        ASSERT_TRUE(status.ok()) << status.message;
+        EXPECT_EQ(provider->registerCount, 2);
+        EXPECT_EQ(provider->unregisterCount, 0);
+    }
+
+    EXPECT_EQ(provider->unregisterCount, 2);
+}
+
+TEST_F(AsuTransportBufferRegistrationTest, FirstRegistrationFailureDoesNotUnregister)
+{
+    auto provider = std::make_shared<StubTransProvider>();
+    provider->failRegisterAt = 1;
+    AsuTransportImpl transport;
+
+    const auto status = transport.Init(TransportConfig{}, provider);
+    EXPECT_FALSE(status.ok());
+    EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
+    EXPECT_NE(status.message.find("send buffer"), std::string::npos);
+    EXPECT_EQ(provider->registerCount, 1);
+    EXPECT_EQ(provider->registerCallCount, 1);
+    EXPECT_EQ(provider->tokenLookupCount, 0);
+    EXPECT_EQ(provider->unregisterCount, 0);
+    EXPECT_EQ(transport.taskExecutor_, nullptr);
+}
+
+TEST_F(AsuTransportBufferRegistrationTest, FirstTokenLookupFailureCleansUpRegisteredBuffer)
+{
+    auto provider = std::make_shared<StubTransProvider>();
+    provider->failTokenLookupAt = 1;
+    AsuTransportImpl transport;
+
+    const auto status = transport.Init(TransportConfig{}, provider);
+    EXPECT_FALSE(status.ok());
+    EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
+    EXPECT_NE(status.message.find("send buffer"), std::string::npos);
+    EXPECT_EQ(provider->registerCount, 1);
+    EXPECT_EQ(provider->registerCallCount, 1);
+    EXPECT_EQ(provider->tokenLookupCount, 1);
+    EXPECT_EQ(provider->unregisterCount, 1);
+    EXPECT_EQ(transport.taskExecutor_, nullptr);
+}
+
+TEST_F(AsuTransportBufferRegistrationTest, TokenLookupRollbackFailureIsRetriedDuringShutdown)
+{
+    auto provider = std::make_shared<StubTransProvider>();
+    provider->failTokenLookupAt = 1;
+    provider->failUnregisterAt = 1;
+    AsuTransportImpl transport;
+
+    const auto status = transport.Init(TransportConfig{}, provider);
+    EXPECT_FALSE(status.ok());
+    EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
+    EXPECT_NE(status.message.find("send buffer"), std::string::npos);
+    EXPECT_EQ(provider->registerCount, 1);
+    EXPECT_EQ(provider->tokenLookupCount, 1);
+    EXPECT_EQ(provider->unregisterCount, 2);
+    EXPECT_EQ(transport.taskExecutor_, nullptr);
+}
+
+TEST_F(AsuTransportBufferRegistrationTest, SecondRegistrationFailureCleansUpFirstBuffer)
+{
+    auto provider = std::make_shared<StubTransProvider>();
+    provider->failRegisterAt = 2;
+    AsuTransportImpl transport;
+
+    const auto status = transport.Init(TransportConfig{}, provider);
+    EXPECT_FALSE(status.ok());
+    EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
+    EXPECT_NE(status.message.find("flag buffer"), std::string::npos);
+    EXPECT_EQ(provider->registerCount, 2);
+    EXPECT_EQ(provider->unregisterCount, 1);
+    EXPECT_EQ(transport.taskExecutor_, nullptr);
+}
+
+TEST_F(AsuTransportBufferRegistrationTest, SecondTokenLookupFailureCleansUpBothBuffers)
+{
+    auto provider = std::make_shared<StubTransProvider>();
+    provider->failTokenLookupAt = 2;
+    AsuTransportImpl transport;
+
+    const auto status = transport.Init(TransportConfig{}, provider);
+    EXPECT_FALSE(status.ok());
+    EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
+    EXPECT_NE(status.message.find("flag buffer"), std::string::npos);
+    EXPECT_EQ(provider->registerCount, 2);
+    EXPECT_EQ(provider->tokenLookupCount, 2);
+    EXPECT_EQ(provider->unregisterCount, 2);
+    EXPECT_EQ(transport.taskExecutor_, nullptr);
+}
+
+TEST_F(AsuTransportBufferRegistrationTest, FlagUnregistrationFailureIncludesCallerContext)
+{
+    auto provider = std::make_shared<StubTransProvider>();
+    AsuTransportImpl transport;
+
+    ASSERT_TRUE(transport.Init(TransportConfig{}, provider).ok());
+    provider->failUnregisterAt = 1;
+
+    const auto status = transport.Shutdown();
+    EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
+    EXPECT_NE(status.message.find("flag buffer"), std::string::npos);
+    EXPECT_EQ(provider->unregisterCount, 2);
+    ASSERT_NE(transport.taskExecutor_, nullptr);
+    EXPECT_NE(transport.taskExecutor_->flagBufferMrHandle_, kInvalidMRHandle);
+    EXPECT_EQ(transport.taskExecutor_->sendBufferMrHandle_, kInvalidMRHandle);
+
+    EXPECT_TRUE(transport.Shutdown().ok());
+    EXPECT_EQ(provider->unregisterCount, 3);
+    EXPECT_EQ(transport.taskExecutor_, nullptr);
+}
+
+TEST_F(AsuTransportBufferRegistrationTest, SendUnregistrationFailureIncludesCallerContext)
+{
+    auto provider = std::make_shared<StubTransProvider>();
+    AsuTransportImpl transport;
+
+    ASSERT_TRUE(transport.Init(TransportConfig{}, provider).ok());
+    provider->failUnregisterAt = 2;
+
+    const auto status = transport.Shutdown();
+    EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
+    EXPECT_NE(status.message.find("send buffer"), std::string::npos);
+    EXPECT_EQ(provider->unregisterCount, 2);
+    ASSERT_NE(transport.taskExecutor_, nullptr);
+    EXPECT_EQ(transport.taskExecutor_->flagBufferMrHandle_, kInvalidMRHandle);
+    EXPECT_NE(transport.taskExecutor_->sendBufferMrHandle_, kInvalidMRHandle);
+
+    EXPECT_TRUE(transport.Shutdown().ok());
+    EXPECT_EQ(provider->unregisterCount, 3);
+    EXPECT_EQ(transport.taskExecutor_, nullptr);
+}
 
 TEST(AsuSubmitFlowTest, SendSubBatchBuffersReadsSendCountsFromAttrs)
 {
@@ -265,12 +442,12 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersReportsSendFailures)
 
 TEST_F(AsuSubmitFlowBufferTest, BuildSubBatchSendBuffersUsesHostPinnedDeviceAddresses)
 {
-    ASSERT_TRUE(
-        transport_->sendBufferManager_.Init("test send buffer", MemoryType::HOST_PINNED, 4096, 1)
-            .ok());
-    ASSERT_TRUE(
-        transport_->flagBufferManager_.Init("test flag buffer", MemoryType::HOST_PINNED, 128, 1)
-            .ok());
+    ASSERT_TRUE(transport_->taskExecutor_->sendBufferManager_
+                    .Init("test send buffer", MemoryType::HOST_PINNED, 4096, 1)
+                    .ok());
+    ASSERT_TRUE(transport_->taskExecutor_->flagBufferManager_
+                    .Init("test flag buffer", MemoryType::HOST_PINNED, 128, 1)
+                    .ok());
 
     transport_->connManager_ =
         std::make_unique<ConnectionManager>(*transport_->transProvider_, "", 5000);
@@ -282,8 +459,11 @@ TEST_F(AsuSubmitFlowBufferTest, BuildSubBatchSendBuffersUsesHostPinnedDeviceAddr
     subBatchContext.channel = transport_->connManager_->SelectConnection();
     subBatchContext.entryStatus.assign(1, Status::OK());
     ASSERT_NE(subBatchContext.channel, nullptr);
-    ASSERT_TRUE(transport_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
-    ASSERT_TRUE(transport_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
+    ASSERT_TRUE(
+        transport_->taskExecutor_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
+    ASSERT_TRUE(
+        transport_->taskExecutor_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer)
+            .ok());
     ASSERT_NE(subBatchContext.sendSge.local_addr, std::uint64_t{0});
     ASSERT_NE(subBatchContext.sendSge.device_addr, std::uint64_t{0});
     ASSERT_NE(subBatchContext.flagBuffer.local_addr, std::uint64_t{0});
