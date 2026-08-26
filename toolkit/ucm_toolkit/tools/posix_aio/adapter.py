@@ -145,8 +145,9 @@ class PosixAioTool(ToolAdapter):
         )
         parser.add_argument(
             "--layerwise",
-            action="store_true",
-            help="layerwise mode: one shard = one layer. Default is non-layerwise (one shard = all layers).",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="layerwise mode: one shard = one layer (default true; --no-layerwise for non-layerwise, one shard = all layers).",
         )
         parser.add_argument(
             "--block-size",

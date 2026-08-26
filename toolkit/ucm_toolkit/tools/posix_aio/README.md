@@ -37,9 +37,9 @@ ucm-toolkit run posix-aio \
 ucm-toolkit run posix-aio --model /models/DeepSeek-V3 --tp 8 --input-len 4096 \
   --worker-number 8 --layerwise --storage-backend /mnt/ssd/ucm
 
-# DSA (GLM-5.1 / DeepSeek-V3.2), 非 layerwise
+# DSA (GLM-5.1 / DeepSeek-V3.2), 非 layerwise (--no-layerwise)
 ucm-toolkit run posix-aio --model /models/GLM-5.1 --tp 8 --input-len 4096 \
-  --worker-number 8 --storage-backend /mnt/ssd/ucm
+  --worker-number 8 --no-layerwise --storage-backend /mnt/ssd/ucm
 
 # GQA, layerwise
 ucm-toolkit run posix-aio --model /models/Qwen3-32B --tp 8 --input-len 4096 \
@@ -82,7 +82,7 @@ ucm-toolkit run posix-aio --model /models/DeepSeek-V4-Pro --tp 8 --input-len 409
 | `--model` | — | 模型目录（含 `config.json`）或 `config.json` 文件路径；传入即进入模型驱动模式。 |
 | `--tp` | `1` | tensor parallel size；GQA 下用于按 rank 切分 `num_kv_heads`。 |
 | `--input-len` | `4096` | 请求输入长度；`block_number = ceil(input_len / block_size)`。 |
-| `--layerwise` | `False` | layerwise 模式：一个 shard = 一层；默认非 layerwise（一个 shard = 全部层）。 |
+| `--layerwise` | `True` | layerwise 模式：一个 shard = 一层（默认 true）；用 `--no-layerwise` 切到非 layerwise（一个 shard = 全部层）。 |
 | `--block-size` | `128` | vLLM paged block 的 token 数，用于 `input_len → block_number` 换算。 |
 | `--kv-dtype` | config 的 `torch_dtype`，无则 `bfloat16` | 覆盖 KV dtype：`bfloat16`/`bf16`、`float16`/`fp16`、`float32`/`fp32`、`float8_e4m3fn`/`fp8`、`float8_e5m2`、`int8`。 |
 | `--dry-run` | `False` | 只打印 `UCM Store IO Info` 摘要与转发命令，不启动脚本（用于核对 io size / io number）。 |
