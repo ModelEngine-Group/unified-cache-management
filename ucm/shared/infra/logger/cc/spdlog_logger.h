@@ -27,7 +27,6 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
-#include <cstdlib>
 #include <mutex>
 #include <spdlog/spdlog.h>
 #include <string>
@@ -72,7 +71,20 @@ public:
         std::signal(SIGILL, &_signal_handler);
         std::signal(SIGINT, &_signal_handler);
     }
-    static void _signal_handler(int signum) { Logger::GetInstance().Flush(); }
+
+    static void _signal_handler(int signum)
+    {
+        // 只允许第一次进入时刷日志，防止 Flush 期间又来一个不同的致命信号导致重入
+        static std::atomic_flag flushed = ATOMIC_FLAG_INIT;
+        if (!flushed.test_and_set()) { Logger::GetInstance().Flush(); }
+
+        // 恢复默认动作后重新发给自己：
+        // SIGSEGV/SIGABRT/SIGFPE/SIGILL 的默认动作是 Term+Core，会生成 core dump；
+        // SIGINT 的默认动作是 Term，不产生 core dump。
+        // 是否 dump 由内核按信号种类决定，不需要代码区分。
+        std::signal(signum, SIG_DFL);
+        std::raise(signum);
+    }
 
     void Log(Level&& lv, SourceLocation&& loc, std::string&& msg);
     void LogFileOnly(Level&& lv, SourceLocation&& loc, std::string&& msg);
