@@ -6,7 +6,7 @@
 #include <numeric>
 #include <string>
 #include <vector>
-#include "kv_common/router.h"
+#include "router/router.h"
 
 namespace {
 
@@ -20,19 +20,19 @@ struct PerfResult {
     std::size_t routeBucketCount{0};
 };
 
-std::vector<UC::KV::NodeId> MakeNodeIds(std::size_t count)
+std::vector<UC::Router::NodeId> MakeNodeIds(std::size_t count)
 {
-    std::vector<UC::KV::NodeId> nodeIds;
+    std::vector<UC::Router::NodeId> nodeIds;
     nodeIds.reserve(count);
     for (std::size_t index = 0; index < count; ++index) {
-        nodeIds.emplace_back(static_cast<UC::KV::NodeId>(index + 1));
+        nodeIds.emplace_back(static_cast<UC::Router::NodeId>(index + 1));
     }
     return nodeIds;
 }
 
-std::vector<UC::KV::CacheKey> MakeKeys(std::size_t count)
+std::vector<UC::Router::CacheKey> MakeKeys(std::size_t count)
 {
-    std::vector<UC::KV::CacheKey> keys;
+    std::vector<UC::Router::CacheKey> keys;
     keys.reserve(count);
     for (std::size_t index = 0; index < count; ++index) {
         keys.emplace_back("router-perf-key-" + std::to_string(index));
@@ -46,11 +46,11 @@ std::uint64_t ElapsedNs(Clock::time_point start)
         std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count());
 }
 
-PerfResult RunPerf(const std::string& name, const std::vector<UC::KV::NodeId>& nodeIds,
-                   const std::vector<UC::KV::CacheKey>& keys, UC::KV::RouterConfig config)
+PerfResult RunPerf(const std::string& name, const std::vector<UC::Router::NodeId>& nodeIds,
+                   const std::vector<UC::Router::CacheKey>& keys, UC::Router::RouterConfig config)
 {
     auto buildStart = Clock::now();
-    auto router = UC::KV::CreateRouter(nodeIds, nullptr, config);
+    auto router = UC::Router::CreateRouter(nodeIds, nullptr, config);
     auto buildNs = ElapsedNs(buildStart);
     if (router == nullptr) { return PerfResult{name, buildNs, 0, 0, 0}; }
 
@@ -89,12 +89,12 @@ int main(int argc, char** argv)
     auto nodeIds = MakeNodeIds(nodeCount);
     auto keys = MakeKeys(keyCount);
 
-    UC::KV::RouterConfig ringConfig;
-    ringConfig.type = UC::KV::RouterType::RING_HASH_FULL_SPREAD;
+    UC::Router::RouterConfig ringConfig;
+    ringConfig.type = UC::Router::RouterType::RING_HASH_FULL_SPREAD;
     ringConfig.ringHash.virtualNodeCount = 256;
 
-    UC::KV::RouterConfig maglevConfig;
-    maglevConfig.type = UC::KV::RouterType::MAGLEV_FULL_SPREAD;
+    UC::Router::RouterConfig maglevConfig;
+    maglevConfig.type = UC::Router::RouterType::MAGLEV_FULL_SPREAD;
     maglevConfig.maglev.tableSize = 65537;
 
     std::cout << "router perf: nodes=" << nodeCount << " keys=" << keyCount << '\n';

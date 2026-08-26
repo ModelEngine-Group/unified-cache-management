@@ -32,7 +32,7 @@ if(BUILD_UNIT_TESTS)
         target_link_libraries(ucmstore.test PRIVATE
             dramstore
             storeintf
-            kv_common)
+            router)
         if(RUNTIME_ENVIRONMENT STREQUAL "ascend")
             target_sources(ucmstore.test PRIVATE
                 ${CMAKE_SOURCE_DIR}/ucm/store/dram/cc/drampool/metadata.cc)

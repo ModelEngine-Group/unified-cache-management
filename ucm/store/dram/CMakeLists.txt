@@ -28,7 +28,7 @@ target_include_directories(dramstore PUBLIC
     ${CMAKE_SOURCE_DIR}/ucm/transport/p2p/include)
 target_include_directories(dramstore PUBLIC ${CMAKE_SOURCE_DIR}/ucm/shared)
 
-target_link_libraries(dramstore PUBLIC storeintf infra_logger infra_thread kv_common buffer_pool)
+target_link_libraries(dramstore PUBLIC storeintf infra_logger infra_thread router buffer_pool)
 if(RUNTIME_ENVIRONMENT STREQUAL "ascend")
     target_link_libraries(dramstore PUBLIC ucm_p2p_transport)
 endif()

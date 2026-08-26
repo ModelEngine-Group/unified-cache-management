@@ -31,7 +31,7 @@
 #include <stdexcept>
 #include <thread>
 #include <vector>
-#include "kv_common/router.h"
+#include "router/router.h"
 #include "task_manager.h"
 
 namespace UC::Dram {
@@ -44,12 +44,12 @@ void PublishCompletion(TaskManager& manager, RequestCompleted event)
     manager.Publish(events);
 }
 
-class CountingRouter final : public UC::KV::Router {
+class CountingRouter final : public UC::Router::Router {
 public:
     CountingRouter() : Router([](const std::string&) { return std::uint64_t{0}; }) {}
 
-    std::unordered_map<UC::KV::NodeId, std::vector<EntryIndex>> RouteKeys(
-        const std::vector<UC::KV::CacheKey>& keys) const override
+    std::unordered_map<UC::Router::NodeId, std::vector<EntryIndex>> RouteKeys(
+        const std::vector<UC::Router::CacheKey>& keys) const override
     {
         calls_.fetch_add(1, std::memory_order_relaxed);
         std::vector<EntryIndex> indexes(keys.size());
@@ -62,7 +62,7 @@ public:
     std::size_t calls() const noexcept { return calls_.load(std::memory_order_relaxed); }
 
 private:
-    UC::KV::NodeId RouteKey(const UC::KV::CacheKey&) const override { return NodeId{7}; }
+    UC::Router::NodeId RouteKey(const UC::Router::CacheKey&) const override { return NodeId{7}; }
 
     mutable std::atomic<std::size_t> calls_{0};
 };
@@ -193,8 +193,8 @@ protected:
 
     static constexpr std::uintptr_t kLayerBase = 0x10000;
     static constexpr std::uintptr_t kSecondLayerBase = 0x12000;
-    std::shared_ptr<UC::KV::Router> router_{
-        UC::KV::CreateRouter({NodeId{7}}, {}, UC::KV::RouterConfig{})};
+    std::shared_ptr<UC::Router::Router> router_{
+        UC::Router::CreateRouter({NodeId{7}}, {}, UC::Router::RouterConfig{})};
 };
 
 TEST_F(TaskManagerAsyncTest, CheckDoesNotWaitForTaskWorker)

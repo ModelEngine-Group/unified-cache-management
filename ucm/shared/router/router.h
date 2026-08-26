@@ -31,7 +31,7 @@
 #include <utility>
 #include <vector>
 
-namespace UC::KV {
+namespace UC::Router {
 
 using CacheKey = std::string;
 using NodeId = std::uint64_t;
@@ -181,4 +181,4 @@ private:
 std::shared_ptr<Router> CreateRouter(const std::vector<NodeId>& nodeIds, HashFunction hash,
                                      RouterConfig config);
 
-}  // namespace UC::KV
+}  // namespace UC::Router

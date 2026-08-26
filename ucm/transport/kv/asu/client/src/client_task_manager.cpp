@@ -27,8 +27,8 @@
 #include <string>
 #include <utility>
 #include "asu_client_impl.h"
-#include "kv_common/router.h"
 #include "logger/logger.h"
+#include "router/router.h"
 
 namespace UC::ASU {
 
@@ -48,17 +48,17 @@ const char* AsuOpTypeName(AsuOpType opType)
     }
 }
 
-std::vector<UC::KV::CacheKey> ToRouterKeys(const std::vector<CacheKey>& keys)
+std::vector<UC::Router::CacheKey> ToRouterKeys(const std::vector<CacheKey>& keys)
 {
-    std::vector<UC::KV::CacheKey> routerKeys;
+    std::vector<UC::Router::CacheKey> routerKeys;
     routerKeys.reserve(keys.size());
     for (const auto& key : keys) { routerKeys.emplace_back(std::string(CacheKeyView(key))); }
     return routerKeys;
 }
 
-std::vector<UC::KV::CacheKey> ExtractEntryKeys(const std::vector<KVBuffer>& entries)
+std::vector<UC::Router::CacheKey> ExtractEntryKeys(const std::vector<KVBuffer>& entries)
 {
-    std::vector<UC::KV::CacheKey> keys;
+    std::vector<UC::Router::CacheKey> keys;
     keys.reserve(entries.size());
     for (const auto& entry : entries) { keys.emplace_back(std::string(CacheKeyView(entry.key))); }
     return keys;

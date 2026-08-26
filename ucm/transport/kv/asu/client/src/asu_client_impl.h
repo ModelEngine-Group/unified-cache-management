@@ -36,15 +36,15 @@
 #include "client_task_manager.h"
 #include "view_server.h"
 
-namespace UC::KV {
+namespace UC::Router {
 class Router;
-}  // namespace UC::KV
+}  // namespace UC::Router
 
 namespace UC::ASU {
 
 // ViewSnapshot is the immutable routing state used by foreground IO and submitted tasks.
 struct ViewSnapshot {
-    std::shared_ptr<UC::KV::Router> router;
+    std::shared_ptr<UC::Router::Router> router;
     std::vector<AsuId> asuIds;
     GlobalView view;
     std::unordered_map<AsuId, std::shared_ptr<AsuTransport>> transports;

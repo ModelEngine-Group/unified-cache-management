@@ -21,14 +21,14 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "kv_common/router.h"
+#include "router/router.h"
 #include <algorithm>
 #include <array>
 #include <string>
 #include <unordered_set>
 #include <utility>
 
-namespace UC::KV {
+namespace UC::Router {
 
 using RingNode = std::pair<std::uint64_t, NodeId>;
 using RingData = std::vector<RingNode>;
@@ -338,4 +338,4 @@ std::shared_ptr<Router> CreateRouter(const std::vector<NodeId>& nodeIds, HashFun
     }
 }
 
-}  // namespace UC::KV
+}  // namespace UC::Router

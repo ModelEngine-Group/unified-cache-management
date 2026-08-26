@@ -1,4 +1,4 @@
-#include "kv_common/router.h"
+#include "router/router.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -8,7 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace UC::KV {
+namespace UC::Router {
 namespace {
 
 std::uint64_t Fnv1a64(const std::string& value)
@@ -253,4 +253,4 @@ TEST(RouterTest, MaglevMigrationRatioIsBoundedWhenNodeIsAdded)
 }
 
 }  // namespace
-}  // namespace UC::KV
+}  // namespace UC::Router
