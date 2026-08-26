@@ -2572,6 +2572,34 @@
         "skipUrlSync": false,
         "sort": 2,
         "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values({__name__=~\"ucm:.*\", job=~\"$job\", model_name=\"$model_name\", instance=\"$instance\", engine=~\"$engine\"}, worker_rank)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "worker_rank",
+        "multi": false,
+        "name": "worker_rank",
+        "options": [],
+        "query": {
+          "query": "label_values({__name__=~\"ucm:.*\", job=~\"$job\", model_name=\"$model_name\", instance=\"$instance\", engine=~\"$engine\"}, worker_rank)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 2,
+        "type": "query"
       }
     ]
   },

@@ -2112,6 +2112,12 @@ def test_vllm_dashboard_removes_summary_stats_and_adds_health_group():
     dashboard = json.loads(
         (metrics_dir / "grafana_vllm.json").read_text(encoding="utf-8")
     )
+    variables = {item["name"]: item for item in dashboard["templating"]["list"]}
+    worker_rank = variables["worker_rank"]
+    assert worker_rank["includeAll"] is True
+    assert worker_rank["allValue"] == ".*"
+    assert 'instance="$instance"' in worker_rank["definition"]
+    assert 'engine=~"$engine"' in worker_rank["definition"]
     panel_list = dashboard["panels"]
     titles = [panel["title"] for panel in panel_list]
     panels = {panel["title"]: panel for panel in dashboard["panels"]}
