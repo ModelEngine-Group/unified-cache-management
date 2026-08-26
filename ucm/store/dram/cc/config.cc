@@ -148,13 +148,13 @@ Expected<DramConfig> DramConfig::Parse(const Detail::Dictionary& dictionary)
         std::string routerType{"ring_hash"};
         if (dictionary.Contains("router_type")) { dictionary.Get("router_type", routerType); }
         if (routerType == "ring_hash") {
-            result.routerType = UC::KV::RouterType::RING_HASH_FULL_SPREAD;
+            result.routerType = UC::Router::RouterType::RING_HASH_FULL_SPREAD;
         } else if (routerType == "maglev") {
-            result.routerType = UC::KV::RouterType::MAGLEV_FULL_SPREAD;
+            result.routerType = UC::Router::RouterType::MAGLEV_FULL_SPREAD;
         } else if (routerType == "contiguous_block_affinity") {
-            result.routerType = UC::KV::RouterType::CONTIGUOUS_BLOCK_AFFINITY;
+            result.routerType = UC::Router::RouterType::CONTIGUOUS_BLOCK_AFFINITY;
         } else if (routerType == "batch_topk_affinity") {
-            result.routerType = UC::KV::RouterType::BATCH_TOPK_AFFINITY;
+            result.routerType = UC::Router::RouterType::BATCH_TOPK_AFFINITY;
         } else {
             return Status::InvalidParam("unsupported router_type({})", routerType);
         }

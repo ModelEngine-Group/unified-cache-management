@@ -18,7 +18,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#include "kv_common/router.h"
+#include "router/router.h"
 
 namespace UC::ASU {
 
@@ -529,8 +529,9 @@ Status QueryAndWait(AsuClient& client, const std::vector<CacheKey>& keys, QueryR
 
 CacheKey FindKeyForAsu(const std::vector<AsuId>& asuIds, AsuId targetAsuId)
 {
-    std::vector<UC::KV::NodeId> nodeIds(asuIds.begin(), asuIds.end());
-    auto router = UC::KV::CreateRouter(nodeIds, UC::KV::HashFunction{}, UC::KV::RouterConfig{});
+    std::vector<UC::Router::NodeId> nodeIds(asuIds.begin(), asuIds.end());
+    auto router =
+        UC::Router::CreateRouter(nodeIds, UC::Router::HashFunction{}, UC::Router::RouterConfig{});
     for (std::uint32_t index = 1; index < 1000000; ++index) {
         std::uint64_t combined = (static_cast<std::uint64_t>(targetAsuId) << 32) | index;
         CacheKey cacheKey{};

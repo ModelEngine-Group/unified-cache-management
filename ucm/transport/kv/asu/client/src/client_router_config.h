@@ -26,11 +26,11 @@
 #include <string>
 #include <unordered_map>
 #include "asu_transport/types.h"
-#include "kv_common/router.h"
+#include "router/router.h"
 
 namespace UC::ASU {
 
 Status BuildRouterConfigFromAttrs(const std::unordered_map<std::string, std::string>& attrs,
-                                  UC::KV::RouterConfig& config);
+                                  UC::Router::RouterConfig& config);
 
 }  // namespace UC::ASU

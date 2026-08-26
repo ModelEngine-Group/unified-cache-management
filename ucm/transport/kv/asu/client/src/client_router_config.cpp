@@ -87,28 +87,28 @@ Status GetBoolAttr(const std::unordered_map<std::string, std::string>& attrs,
                                 "invalid router config " + key + "=" + text);
 }
 
-UC::KV::RouterType ParseRouterType(const std::string& value, UC::KV::RouterType fallback)
+UC::Router::RouterType ParseRouterType(const std::string& value, UC::Router::RouterType fallback)
 {
     const auto type = NormalizeAttrValue(value);
     if (type == "RING_HASH" || type == "RING_HASH_FULL_SPREAD") {
-        return UC::KV::RouterType::RING_HASH_FULL_SPREAD;
+        return UC::Router::RouterType::RING_HASH_FULL_SPREAD;
     }
     if (type == "MAGLEV" || type == "MAGLEV_FULL_SPREAD") {
-        return UC::KV::RouterType::MAGLEV_FULL_SPREAD;
+        return UC::Router::RouterType::MAGLEV_FULL_SPREAD;
     }
     if (type == "CONTIGUOUS_BLOCK_AFFINITY") {
-        return UC::KV::RouterType::CONTIGUOUS_BLOCK_AFFINITY;
+        return UC::Router::RouterType::CONTIGUOUS_BLOCK_AFFINITY;
     }
-    if (type == "BATCH_TOPK_AFFINITY") { return UC::KV::RouterType::BATCH_TOPK_AFFINITY; }
+    if (type == "BATCH_TOPK_AFFINITY") { return UC::Router::RouterType::BATCH_TOPK_AFFINITY; }
     return fallback;
 }
 
 }  // namespace
 
 Status BuildRouterConfigFromAttrs(const std::unordered_map<std::string, std::string>& attrs,
-                                  UC::KV::RouterConfig& config)
+                                  UC::Router::RouterConfig& config)
 {
-    config = UC::KV::RouterConfig{};
+    config = UC::Router::RouterConfig{};
 
     std::string type;
     if (GetAttr(attrs, "hash_table.type", type)) {

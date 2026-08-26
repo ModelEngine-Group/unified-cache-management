@@ -30,10 +30,10 @@
 #include <utility>
 #include <vector>
 #include "config.h"
-#include "kv_common/router.h"
 #include "logger/logger.h"
 #include "node_scheduler.h"
 #include "reply_service.h"
+#include "router/router.h"
 #include "task_manager.h"
 #include "trans/device.h"
 #include "transport_executor.h"
@@ -136,12 +136,12 @@ private:
         if (!registeredReply) { return registeredReply.Error(); }
         memoryHandles_.push_back(std::move(registeredReply).Value());
 
-        std::vector<UC::KV::NodeId> nodeIds;
+        std::vector<UC::Router::NodeId> nodeIds;
         nodeIds.reserve(config_->nodeScheduler.nodes.size());
         for (const auto& node : config_->nodeScheduler.nodes) { nodeIds.push_back(node.nodeId); }
-        UC::KV::RouterConfig routerConfig;
+        UC::Router::RouterConfig routerConfig;
         routerConfig.type = config_->routerType;
-        router_ = UC::KV::CreateRouter(nodeIds, {}, routerConfig);
+        router_ = UC::Router::CreateRouter(nodeIds, {}, routerConfig);
         if (!router_) { return Status::Error("failed to create DramStore router"); }
 
         transport_ = std::make_unique<TransportExecutor>(TransportExecutor::Options{
@@ -211,7 +211,7 @@ private:
     std::unique_ptr<DramConfig> config_;
     std::shared_ptr<ITransportBackend> transportBackend_;
     std::vector<MemoryHandle> memoryHandles_;
-    std::shared_ptr<UC::KV::Router> router_;
+    std::shared_ptr<UC::Router::Router> router_;
     std::unique_ptr<TransportExecutor> transport_;
     std::unique_ptr<ReplyService> replyService_;
     std::unique_ptr<NodeScheduler> nodeScheduler_;

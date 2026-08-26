@@ -28,7 +28,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
-#include "kv_common/router.h"
+#include "router/router.h"
 #include "status/status.h"
 #include "type/dictionary.h"
 #include "types.h"
@@ -49,7 +49,7 @@ struct DramConfig {
     Role role{Role::WORKER};
     std::uint16_t hixlListenPort{36666};
     bool enableHixlCs{false};
-    UC::KV::RouterType routerType{UC::KV::RouterType::RING_HASH_FULL_SPREAD};
+    UC::Router::RouterType routerType{UC::Router::RouterType::RING_HASH_FULL_SPREAD};
     std::size_t maxIoEntries{65536};
     NodeSchedulerConfig nodeScheduler;
     TransportRuntimeConfig transportRuntime;

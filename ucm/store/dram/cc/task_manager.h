@@ -38,7 +38,7 @@
 #include "messages.h"
 #include "status/status.h"
 
-namespace UC::KV {
+namespace UC::Router {
 class Router;
 }
 
@@ -52,7 +52,7 @@ struct TaskManagerConfig {
 };
 
 struct TaskManagerDependencies {
-    std::shared_ptr<const UC::KV::Router> router;
+    std::shared_ptr<const UC::Router::Router> router;
     RequestSubmitter submitRequest;
 };
 

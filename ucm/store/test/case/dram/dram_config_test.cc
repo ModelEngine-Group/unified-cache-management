@@ -113,7 +113,7 @@ TEST(DramConfigTest, ParsesRouterTypeIntoStrongConfiguration)
     input.Set("router_type", std::string{"maglev"});
     auto parsed = DramConfig::Parse(input);
     ASSERT_TRUE(parsed);
-    EXPECT_EQ(parsed.Value().routerType, UC::KV::RouterType::MAGLEV_FULL_SPREAD);
+    EXPECT_EQ(parsed.Value().routerType, UC::Router::RouterType::MAGLEV_FULL_SPREAD);
 
     input.Set("router_type", std::string{"unsupported"});
     EXPECT_FALSE(DramConfig::Parse(input));
