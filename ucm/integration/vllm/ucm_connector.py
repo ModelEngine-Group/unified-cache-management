@@ -5,6 +5,7 @@ import math
 import os
 import pickle
 import re
+import shutil
 import time
 import uuid
 from collections import defaultdict
@@ -141,6 +142,35 @@ def _get_store_gc_block_size(
     if object_size <= 0:
         raise ValueError("tensor_size_list is required for YuanRong|Posix")
     return object_size * shard_count
+
+
+_SHM_DIR = "/dev/shm"
+
+
+def _check_shm_capacity(cache_buffer_capacity_gb: int) -> None:
+    """Early-validate that /dev/shm can hold the shared-buffer store.
+
+    With ``share_buffer_enable=True`` the cache buffer is backed by ``shm_open``
+    in ``/dev/shm`` (a tmpfs with a fixed size limit). If the configured buffer
+    capacity exceeds what ``/dev/shm`` can hold, allocation fails deep inside
+    the C++ store; raise here instead with an actionable message.
+    """
+    if cache_buffer_capacity_gb <= 0:
+        return
+    try:
+        shm_total = shutil.disk_usage(_SHM_DIR).total
+    except OSError:
+        # /dev/shm unavailable (e.g. non-Linux dev host); defer to the store.
+        logger.debug("Skip /dev/shm capacity check: %s unavailable.", _SHM_DIR)
+        return
+    needed_bytes = cache_buffer_capacity_gb * (1 << 30)
+    if shm_total < needed_bytes:
+        raise RuntimeError(
+            f"Shared-buffer cache requires {cache_buffer_capacity_gb}GB in {_SHM_DIR}, "
+            f"but {_SHM_DIR} has only {shm_total >> 30}GB. "
+            f"Either increase the size of {_SHM_DIR} (e.g. remount tmpfs with a "
+            f"larger size= option) or decrease cache_buffer_capacity_gb."
+        )
 
 
 def _drop_null_vllm_blocks(
@@ -1250,11 +1280,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def _set_default_shm_buffer_capacity(self, config: dict[str, Any]) -> None:
         if not bool(config.get("share_buffer_enable", False)):
             return
-        if config.get("cache_buffer_capacity_gb") is not None:
-            return
-
-        config["cache_buffer_capacity_gb"] = 128
-        logger.info("Set cache_buffer_capacity_gb to 128GB for shared-buffer store.")
+        if config.get("cache_buffer_capacity_gb") is None:
+            config["cache_buffer_capacity_gb"] = 128
+            logger.info(
+                "Set cache_buffer_capacity_gb to 128GB for shared-buffer store."
+            )
+        # The shared buffer is allocated via shm_open in /dev/shm; fail early
+        # (before store creation) if the tmpfs cannot hold it.
+        _check_shm_capacity(int(config["cache_buffer_capacity_gb"]))
 
     def _create_store(
         self,

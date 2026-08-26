@@ -19,6 +19,7 @@ from vllm.v1.core.sched.output import SchedulerOutput
 from ucm.integration.vllm.device import create_device
 from ucm.integration.vllm.ucm_connector import (
     UCMDirectConnector,
+    _check_shm_capacity,
     _use_ucm_connector_cpu_affinity,
 )
 from ucm.logger import init_logger
@@ -377,7 +378,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         # If the number of external hit blocks is small, it's possible that the load overhead is larger than the compute of a few blocks.
         # In that case, we can skip loading and directly compute the missed blocks, which can be faster.
         # This threshold can be tuned based on the performance characteristics of the system.
-        self.load_tokens_threshold = self.launch_config.get("load_tokens_threshold", 0)
+        self.load_tokens_threshold = self.launch_config.get(
+            "load_tokens_threshold", 2048
+        )
 
         if role == KVConnectorRole.SCHEDULER:
             self.fa_store = self._create_fa_store(None)
@@ -681,17 +684,22 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     def _set_default_shm_buffer_capacity(self, config: dict[str, object]) -> None:
         if not bool(config.get("share_buffer_enable", False)):
             return
-        if config.get("cache_buffer_capacity_gb") is not None:
-            return
 
-        # HMA creates two shared-buffer stores, FA and WA, so split the direct
-        # connector's 128GB shared-buffer default evenly between them.
-        config["cache_buffer_capacity_gb"] = 128 // 2
+        # HMA creates two shared-buffer stores, FA and WA, so split the
+        # shared-buffer capacity evenly between them, whether user-set or the
+        # 128GB direct-connector default.
+        if config.get("cache_buffer_capacity_gb") is None:
+            config["cache_buffer_capacity_gb"] = 128
+        capacity = int(config["cache_buffer_capacity_gb"])
+        config["cache_buffer_capacity_gb"] = max(capacity // 2, 1)
         logger.info(
             f"Set FAWA cache_buffer_capacity_gb to "
-            f"{config['cache_buffer_capacity_gb']}GB by splitting the direct "
-            "shared-buffer default 128GB across FA/WA stores."
+            f"{config['cache_buffer_capacity_gb']}GB by splitting the "
+            f"{capacity}GB shared-buffer capacity across FA/WA stores."
         )
+        # The shared buffer is allocated via shm_open in /dev/shm; fail early
+        # (before store creation) if the tmpfs cannot hold it.
+        _check_shm_capacity(int(config["cache_buffer_capacity_gb"]))
 
     @staticmethod
     def _namespace_storage_backends(
