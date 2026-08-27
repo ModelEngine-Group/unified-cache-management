@@ -24,13 +24,16 @@
 #ifndef UNIFIEDCACHE_CACHE_STORE_CC_DUMP_QUEUE_H
 #define UNIFIEDCACHE_CACHE_STORE_CC_DUMP_QUEUE_H
 
+#include <atomic>
 #include <future>
+#include <list>
 #include <string>
 #include <thread>
 #include "copy_stream.h"
 #include "template/hashset.h"
 #include "template/spsc_ring_queue.h"
 #include "thread/latch.h"
+#include "thread/thread_pool.h"
 #include "trans_buffer.h"
 #include "trans_task.h"
 #include "ucmstore_v1.h"
@@ -47,6 +50,20 @@ class DumpQueue {
         Detail::TaskHandle backendTaskHandle;
         std::vector<TransBuffer::Handle> bufferHandles;
     };
+    struct H2HDumpContext {
+        TaskPtr task;
+        WaiterPtr waiter;
+        std::atomic<size_t> pending{0};
+        std::atomic<bool> failed{false};
+        Detail::TaskDesc backendTaskDesc;
+        std::vector<TransBuffer::Handle> bufferHandles;
+    };
+    using H2HDumpContextPtr = std::shared_ptr<H2HDumpContext>;
+    struct H2HDumpJob {
+        H2HDumpContextPtr context;
+        size_t shardIndex{0};
+        size_t handleIndex{0};
+    };
 
 private:
     alignas(64) std::atomic_bool stop_{false};
@@ -60,11 +77,16 @@ private:
     bool useGdr_{false};
     bool cacheIOAggregation_{false};
     bool cacheSdmaDirect_{false};
+    bool useHostBuffer_{false};
+    size_t h2hQueueDepth_{0};
+    std::atomic<size_t> h2hOutstanding_{0};
     std::vector<ssize_t> cpuAffinityCores_{};
     SpscRingQueue<TaskPair> waiting_;
     SpscRingQueue<DumpCtx> dumping_;
     std::thread dispatcher_;
     std::thread dumper_;
+    ThreadPool<H2HDumpContextPtr> h2hCompletionPool_;
+    ThreadPool<H2HDumpJob> h2hCopyPool_;
 
 public:
     ~DumpQueue();
@@ -76,6 +98,11 @@ private:
     void DispatchOneTask(CopyStream& stream, TaskPair&& pair);
     Status DumpOneTask(CopyStream& stream, TaskPtr task);
     Status DeviceToHostAsync(CopyStream& stream, void** device, void* host);
+    Status DispatchH2HDump(TaskPtr task, WaiterPtr waiter);
+    void H2HDumpWorker(H2HDumpJob& job);
+    void CompleteH2HDump(H2HDumpContextPtr context);
+    Status HostToHostGather(const Detail::Shard& shard, void* destination) const;
+    bool TryReserveH2HJobs(size_t number);
     void BackendDumpStage();
 };
 

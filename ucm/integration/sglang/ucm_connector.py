@@ -21,6 +21,34 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _page_first_kv_split_buffers(mem_pool_host: "HostKVCache") -> List[torch.Tensor]:
+    """Return the K/V Host buffers for a regular MLA split layout."""
+    buffers = [mem_pool_host.k_buffer, mem_pool_host.v_buffer]
+    for name, buffer in zip(("k", "v"), buffers):
+        if not buffer.is_contiguous():
+            raise ValueError(
+                f"page_first_kv_split {name}_buffer must be contiguous"
+            )
+    return buffers
+
+
+def _page_first_kv_split_tensor_sizes(
+    mem_pool_host: "HostKVCache",
+) -> List[int]:
+    page_num = int(mem_pool_host.page_num)
+    if page_num <= 0:
+        raise ValueError(f"invalid page_num for page_first_kv_split: {page_num}")
+    sizes = []
+    for buffer in _page_first_kv_split_buffers(mem_pool_host):
+        nbytes = int(buffer.numel()) * int(buffer.element_size())
+        if nbytes % page_num != 0:
+            raise ValueError(
+                f"buffer bytes {nbytes} are not divisible by page_num {page_num}"
+            )
+        sizes.append(nbytes // page_num)
+    return sizes
+
+
 def _load_extra_config_from_yaml_env() -> Optional[Dict[str, Any]]:
     cfg_path = os.environ.get("UNIFIEDCACHE_CONFIG_FILE")
     if not cfg_path:
@@ -71,6 +99,8 @@ class UnifiedCacheStoreConfig:
         page_bytes = page_size * mem_pool_host.get_size_per_token()
         tensor_size = page_bytes if storage_config.is_mla_model else page_bytes // 2
         block_size = tensor_size * (1 if storage_config.is_mla_model else 2)
+        is_kv_split = mem_pool_host.layout == "page_first_kv_split"
+        use_cache_pipeline = storage_config.is_mla_model
 
         ucm_cfg = kvc.get("ucm_connector_config")
         name = kvc.get("ucm_connector_name")
@@ -85,12 +115,53 @@ class UnifiedCacheStoreConfig:
             )
 
         cfg = dict(ucm_cfg)
-        cfg["store_pipeline"] = "Posix"
-        cfg["storage_backends"] = [
-            path for path in cfg["storage_backends"].split(":") if path
-        ]
+        if use_cache_pipeline:
+            tensor_sizes = (
+                _page_first_kv_split_tensor_sizes(mem_pool_host)
+                if is_kv_split
+                else [page_bytes]
+            )
+            payload_size = sum(tensor_sizes)
+            io_direct = bool(cfg.get("io_direct", True))
+            block_size = (
+                (payload_size + 4095) // 4096 * 4096
+                if io_direct
+                else payload_size
+            )
+            cfg["store_pipeline"] = "Cache|Posix"
+            cfg.pop("tensor_size", None)
+            cfg["tensor_size_list"] = tensor_sizes
+            cfg["cache_use_host_buffer"] = True
+            cfg.setdefault("cache_h2h_worker_number", 4)
+            cfg.setdefault("cache_h2h_queue_depth", 1024)
+            cfg["cache_io_aggregation"] = False
+            cfg["cache_sdma_direct"] = False
+            cfg["use_gdr"] = False
+            cfg.pop("gpu_kv_buffer_addrs", None)
+            cfg.pop("gpu_kv_buffer_sizes", None)
+            safe_model_name = (
+                "-".join(storage_config.model_name.split("/"))
+                if storage_config.model_name
+                else "unknown-model"
+            )
+            if not cfg.get("unique_id"):
+                tensor_fingerprint = "-".join(str(size) for size in tensor_sizes)
+                cfg["unique_id"] = (
+                    f"sglang-{safe_model_name}-{mem_pool_host.layout}-"
+                    f"tp{storage_config.tp_size}-{tensor_fingerprint}"
+                )
+        else:
+            cfg["store_pipeline"] = "Posix"
+            cfg["tensor_size"] = tensor_size
+
+        storage_backends = cfg["storage_backends"]
+        if isinstance(storage_backends, str):
+            cfg["storage_backends"] = [
+                path for path in storage_backends.split(":") if path
+            ]
+        else:
+            cfg["storage_backends"] = list(storage_backends)
         cfg["device_id"] = get_world_group().local_rank
-        cfg["tensor_size"] = tensor_size
         cfg["shard_size"] = block_size
         cfg["block_size"] = block_size
         cfg["stream_number"] = 8
@@ -117,6 +188,26 @@ class SglangUcmConnector:
         self.cache_nums = 1 if self.is_mla else 2
         self.tp_rank = storage_config.tp_rank
         self.tp_size = storage_config.tp_size
+        self.is_kv_split = mem_pool_host.layout == "page_first_kv_split"
+        self.split_buffers = (
+            _page_first_kv_split_buffers(mem_pool_host)
+            if self.is_kv_split
+            else []
+        )
+        self.split_tensor_sizes = (
+            _page_first_kv_split_tensor_sizes(mem_pool_host)
+            if self.is_kv_split
+            else []
+        )
+        self.cache_tensor_sizes = (
+            self.split_tensor_sizes
+            if self.is_kv_split
+            else (
+                [self.page_size * mem_pool_host.get_size_per_token()]
+                if self.is_mla
+                else []
+            )
+        )
 
         self.config_suffix = self._build_config_suffix()
 
@@ -150,7 +241,13 @@ class SglangUcmConnector:
     def _build_config_suffix(self) -> str:
         model_name = "-".join(self.model.split("/")) if self.model else ""
         if self.is_mla:
-            return f"_{model_name}"
+            tensor_fingerprint = "-".join(
+                str(size) for size in self.cache_tensor_sizes
+            )
+            return (
+                f"_{model_name}_{self.mem_pool_host.layout}_p{self.page_size}_"
+                f"tp{self.tp_size}_{tensor_fingerprint}"
+            )
         return f"_{model_name}_{self.tp_rank}_{self.tp_size}"
 
     def _get_physical_key(self, logical_key: str) -> str:
@@ -168,6 +265,35 @@ class SglangUcmConnector:
             return [], [], []
 
         shard_index_list = [0] * len(encoded_keys)
+        if self.is_kv_split:
+            indices = host_indices.tolist()
+            if len(indices) % self.page_size != 0:
+                raise ValueError(
+                    "host_indices length must be a multiple of page_size"
+                )
+            if len(indices) // self.page_size != len(encoded_keys):
+                raise ValueError(
+                    "page count mismatch between keys and host_indices: "
+                    f"{len(encoded_keys)} != {len(indices) // self.page_size}"
+                )
+            ptr_list = []
+            for offset in range(0, len(indices), self.page_size):
+                first_token_index = int(indices[offset])
+                if first_token_index % self.page_size != 0:
+                    raise ValueError(
+                        "page_first_kv_split host index must start at a page boundary"
+                    )
+                page_index = first_token_index // self.page_size
+                ptr_list.append(
+                    [
+                        buffer.data_ptr() + page_index * tensor_size
+                        for buffer, tensor_size in zip(
+                            self.split_buffers, self.split_tensor_sizes
+                        )
+                    ]
+                )
+            return encoded_keys, shard_index_list, ptr_list
+
         ptr_list, _ = self.mem_pool_host.get_page_buffer_meta(host_indices)
 
         if not self.is_mla:

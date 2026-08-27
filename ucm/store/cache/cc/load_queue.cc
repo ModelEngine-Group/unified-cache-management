@@ -22,6 +22,10 @@
  * SOFTWARE.
  * */
 #include "load_queue.h"
+#include <cstddef>
+#include <cstring>
+#include <list>
+#include <numeric>
 #include "logger/logger.h"
 #include "metrics_api.h"
 #include "thread/cpu_affinity.h"
@@ -47,12 +51,24 @@ Status LoadQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     useGdr_ = config.useGdr;
     cacheIOAggregation_ = config.cacheIOAggregation;
     cacheSdmaDirect_ = config.cacheSdmaDirect;
+    useHostBuffer_ = config.cacheUseHostBuffer;
+    h2hQueueDepth_ = config.h2hQueueDepth;
     cpuAffinityCores_ = config.cpuAffinityCores;
     localRankSize_ = config.localRankSize;
     waiting_.Setup(config.waitingQueueDepth);
     running_.Setup(config.runningQueueDepth);
     holder_.reserve(1024);
+    if (useHostBuffer_) {
+        auto started =
+            h2hCopyPool_
+                .SetNWorker(config.h2hWorkerNumber)
+                .SetWorkerFn([this](ShardTask& task, void* const&) { H2HLoadWorker(task); })
+                .SetCpuAffinity(cpuAffinityCores_)
+                .Run();
+        if (!started) { return Status::Error("failed to start CacheStore H2H load workers"); }
+    }
     dispatcher_ = std::thread{&LoadQueue::DispatchStage, this};
+    if (useHostBuffer_) { return Status::OK(); }
     std::promise<Status> started;
     auto fut = started.get_future();
     transfer_ = std::thread{&LoadQueue::TransferStage, this, std::ref(started)};
@@ -101,6 +117,10 @@ static std::vector<size_t> RearrangeIndex(size_t n, size_t iProc, size_t nProc)
 
 void LoadQueue::DispatchOneTask(TaskPair&& pair)
 {
+    if (useHostBuffer_) {
+        DispatchOneH2HTask(std::move(pair));
+        return;
+    }
     auto& task = pair.first;
     auto& waiter = pair.second;
     if (failureSet_->Contains(task->id)) {
@@ -162,13 +182,178 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
                              static_cast<double>(nShard));
 }
 
+bool LoadQueue::TryReserveH2HJobs(size_t number)
+{
+    auto outstanding = h2hOutstanding_.load(std::memory_order_relaxed);
+    for (;;) {
+        if (number > h2hQueueDepth_ || outstanding > h2hQueueDepth_ - number) { return false; }
+        if (h2hOutstanding_.compare_exchange_weak(outstanding, outstanding + number,
+                                                  std::memory_order_acq_rel,
+                                                  std::memory_order_relaxed)) {
+            return true;
+        }
+    }
+}
+
+void LoadQueue::DispatchOneH2HTask(TaskPair&& pair)
+{
+    auto task = std::move(pair.first);
+    auto waiter = std::move(pair.second);
+    if (failureSet_->Contains(task->id)) {
+        waiter->Done();
+        return;
+    }
+    const auto nShard = task->desc.size();
+    if (nShard == 0) {
+        waiter->Done();
+        return;
+    }
+    if (!TryReserveH2HJobs(nShard)) {
+        auto s = Status::Error("CacheStore H2H load queue full");
+        task->Fail(s);
+        failureSet_->Insert(task->id);
+        RecordFailedShards(nShard);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2h_load_queue_full_total"), 1.0);
+        waiter->Done();
+        return;
+    }
+
+    auto context = std::make_shared<H2HLoadContext>();
+    context->task = task;
+    context->waiter = waiter;
+    context->pending.store(nShard, std::memory_order_release);
+    std::list<ShardTask> jobs;
+    size_t backendSubmitCount = 0;
+    const auto indexes = RearrangeIndex(nShard, deviceId_, localRankSize_);
+    for (size_t i = 0; i < nShard; ++i) {
+        auto& shard = task->desc[indexes[i]];
+        ShardTask shardTask;
+        shardTask.task = task;
+        shardTask.shard = shard;
+        shardTask.h2hContext = context;
+        shardTask.bufferHandle = buffer_->Get(shard.owner, shard.index, true, true);
+        shardTask.fromPosix = !shardTask.bufferHandle.Ready();
+        if (shardTask.bufferHandle.Owner() && !shardTask.bufferHandle.Ready()) {
+            if (context->failed.load(std::memory_order_acquire)) {
+                shardTask.bufferHandle.MarkFailed(task->FailureStatus());
+            } else {
+                Detail::TaskDesc backendTask{
+                    Detail::Shard{shard.owner, shard.index, {shardTask.bufferHandle.Data()}}
+                };
+                backendTask.brief = "Backend2Cache";
+                auto res = backend_->Load(std::move(backendTask));
+                if (!res) [[unlikely]] {
+                    auto error = res.Error();
+                    UC_ERROR("Failed({}) to submit H2H load task({}) to backend.", error,
+                             task->id);
+                    shardTask.bufferHandle.MarkFailed(error);
+                    task->Fail(error);
+                    context->failed.store(true, std::memory_order_release);
+                    failureSet_->Insert(task->id);
+                    UC::Metrics::UpdateStats(
+                        NAME_TO_METRIC_ID("cache_backend_load_submit_errors_total"), 1.0);
+                } else {
+                    shardTask.backendTaskHandle = res.Value();
+                    ++backendSubmitCount;
+                }
+            }
+        }
+        jobs.push_back(std::move(shardTask));
+    }
+    h2hCopyPool_.Push(jobs);
+
+    if (!context->failed.load(std::memory_order_acquire)) {
+        for (size_t i = 0; i < nShard; ++i) {
+            auto& shard = task->desc[indexes[i]];
+            if (shard.index + 1 != nShardPerBlock_) {
+                buffer_->Prealloc(shard.owner, shard.index + 1, true);
+            }
+        }
+    }
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_backend_shards_total"),
+                             static_cast<double>(backendSubmitCount));
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_shards_total"),
+                             static_cast<double>(nShard));
+}
+
+void LoadQueue::H2HLoadWorker(ShardTask& task)
+{
+    auto& context = task.h2hContext;
+    auto success = false;
+    auto s = Status::OK();
+    const auto start = NowTime::Now();
+
+    if (task.backendTaskHandle != 0 || !context->failed.load(std::memory_order_acquire)) {
+        auto tpBackendWait = NowTime::Now();
+        s = WaitBackendTaskReady(task);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_shard_backend_wait_ms"),
+                                 (NowTime::Now() - tpBackendWait) * 1e3);
+        if (s.Success() && !context->failed.load(std::memory_order_acquire)) {
+            s = HostToHostScatter(task.bufferHandle.Data(), task.shard);
+        }
+        success = s.Success() && !context->failed.load(std::memory_order_acquire);
+    }
+
+    if (!success) {
+        if (s.Success()) { s = context->task->FailureStatus(); }
+        context->task->Fail(s);
+        context->failed.store(true, std::memory_order_release);
+        failureSet_->Insert(context->task->id);
+        RecordFailedShards(1);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2h_load_errors_total"), 1.0);
+    } else {
+        const auto bytes = std::accumulate(tensorSizes_.begin(), tensorSizes_.end(), size_t(0));
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2h_load_bytes_total"),
+                                 static_cast<double>(bytes));
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2h_load_duration_ms"),
+                                 (NowTime::Now() - start) * 1e3);
+        if (task.fromPosix) {
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_posix_load_success_shards_total"),
+                                     1.0);
+        } else {
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_success_shards_total"), 1.0);
+        }
+    }
+    FinishH2HLoadShard(context, success);
+    h2hOutstanding_.fetch_sub(1, std::memory_order_acq_rel);
+}
+
+void LoadQueue::FinishH2HLoadShard(const H2HLoadContextPtr& context, bool success)
+{
+    if (!success) { context->failed.store(true, std::memory_order_release); }
+    if (context->pending.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        context->waiter->Done();
+    }
+}
+
+Status LoadQueue::HostToHostScatter(void* source, const Detail::Shard& shard) const
+{
+    if (shard.addrs.size() != tensorSizes_.size()) {
+        return Status::InvalidParam("invalid host addr number({}, expect {})", shard.addrs.size(),
+                                    tensorSizes_.size());
+    }
+    if (source == nullptr) { return Status::InvalidParam("invalid null host source"); }
+    auto* src = static_cast<std::byte*>(source);
+    size_t offset = 0;
+    for (size_t i = 0; i < tensorSizes_.size(); ++i) {
+        if (shard.addrs[i] == nullptr) {
+            return Status::InvalidParam("invalid null host destination({})", i);
+        }
+        std::memcpy(shard.addrs[i], src + offset, tensorSizes_[i]);
+        offset += tensorSizes_[i];
+    }
+    return Status::OK();
+}
+
 void LoadQueue::TransferStage(std::promise<Status>& started)
 {
     auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_load_xfer");
     if (nameStatus.Failure()) { UC_WARN("Failed({}) to set UCM load transfer name.", nameStatus); }
     CopyStream stream;
     auto s = Status::OK();
-    if (cacheIOAggregation_) {
+    if (useHostBuffer_) {
+        s = Status::OK();
+    } else if (cacheIOAggregation_) {
         s = stream.SetupIoAggregation(deviceId_, useGdr_);
     } else if (cacheSdmaDirect_) {
         s = stream.SetupSdmaDirect(deviceId_, useGdr_);

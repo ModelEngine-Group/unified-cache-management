@@ -24,7 +24,11 @@
 #include "dump_queue.h"
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
+#include <cstring>
+#include <list>
 #include <memory>
+#include <numeric>
 #include "logger/logger.h"
 #include "metrics_api.h"
 #include "thread/cpu_affinity.h"
@@ -49,9 +53,31 @@ Status DumpQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     useGdr_ = config.useGdr;
     cacheIOAggregation_ = config.cacheIOAggregation;
     cacheSdmaDirect_ = config.cacheSdmaDirect;
+    useHostBuffer_ = config.cacheUseHostBuffer;
+    h2hQueueDepth_ = config.h2hQueueDepth;
     cpuAffinityCores_ = config.cpuAffinityCores;
     waiting_.Setup(config.waitingQueueDepth);
     dumping_.Setup(config.runningQueueDepth);
+    if (useHostBuffer_) {
+        auto completionStarted =
+            h2hCompletionPool_
+                .SetNWorker(1)
+                .SetWorkerFn([this](H2HDumpContextPtr& context, void* const&) {
+                    CompleteH2HDump(std::move(context));
+                })
+                .SetCpuAffinity(cpuAffinityCores_)
+                .Run();
+        auto copyStarted =
+            h2hCopyPool_
+                .SetNWorker(config.h2hWorkerNumber)
+                .SetWorkerFn(
+                    [this](H2HDumpJob& job, void* const&) { H2HDumpWorker(job); })
+                .SetCpuAffinity(cpuAffinityCores_)
+                .Run();
+        if (!completionStarted || !copyStarted) {
+            return Status::Error("failed to start CacheStore H2H dump workers");
+        }
+    }
     dumper_ = std::thread{&DumpQueue::BackendDumpStage, this};
     std::promise<Status> started;
     auto fut = started.get_future();
@@ -78,7 +104,9 @@ void DumpQueue::DispatchStage(std::promise<Status>& started)
     }
     CopyStream stream;
     auto s = Status::OK();
-    if (cacheIOAggregation_) {
+    if (useHostBuffer_) {
+        s = Status::OK();
+    } else if (cacheIOAggregation_) {
         s = stream.SetupIoAggregation(deviceId_, useGdr_);
     } else if (cacheSdmaDirect_) {
         s = stream.SetupSdmaDirect(deviceId_, useGdr_);
@@ -101,6 +129,16 @@ void DumpQueue::DispatchOneTask(CopyStream& stream, TaskPair&& pair)
     auto wait = NowTime::Now() - waiter->startTp;
     UC_DEBUG("Cache task({}) start running, wait {:.3f}ms.", task->id, wait * 1e3);
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_queue_wait_duration_ms"), wait * 1e3);
+    if (useHostBuffer_) {
+        if (!failureSet_->Contains(task->id)) {
+            auto s = DispatchH2HDump(task, waiter);
+            if (s.Success()) { return; }
+            task->Fail(s);
+            failureSet_->Insert(task->id);
+        }
+        waiter->Done();
+        return;
+    }
     if (!failureSet_->Contains(task->id)) {
         auto s = DumpOneTask(stream, task);
         if (s.Failure()) [[unlikely]] {
@@ -206,6 +244,145 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
 Status DumpQueue::DeviceToHostAsync(CopyStream& stream, void** device, void* host)
 {
     return stream.DeviceToHostAsync(device, host, tensorSizes_);
+}
+
+bool DumpQueue::TryReserveH2HJobs(size_t number)
+{
+    auto outstanding = h2hOutstanding_.load(std::memory_order_relaxed);
+    for (;;) {
+        if (number > h2hQueueDepth_ || outstanding > h2hQueueDepth_ - number) { return false; }
+        if (h2hOutstanding_.compare_exchange_weak(outstanding, outstanding + number,
+                                                  std::memory_order_acq_rel,
+                                                  std::memory_order_relaxed)) {
+            return true;
+        }
+    }
+}
+
+Status DumpQueue::DispatchH2HDump(TaskPtr task, WaiterPtr waiter)
+{
+    if (task->desc.prerequisiteHandle != 0) {
+        return Status::InvalidParam(
+            "host-to-host dump does not accept a device prerequisite event");
+    }
+
+    auto context = std::make_shared<H2HDumpContext>();
+    context->task = task;
+    context->waiter = waiter;
+    context->backendTaskDesc.brief = "Cache2Backend";
+    context->bufferHandles.reserve(task->desc.size());
+    std::list<H2HDumpJob> jobs;
+
+    for (size_t shardIndex = 0; shardIndex < task->desc.size(); ++shardIndex) {
+        const auto& shard = task->desc[shardIndex];
+        auto handle = buffer_->Get(shard.owner, shard.index);
+        if (!handle.Owner()) { continue; }
+        const auto handleIndex = context->bufferHandles.size();
+        const auto ready = handle.Ready();
+        context->backendTaskDesc.push_back(
+            Detail::Shard{shard.owner, shard.index, {handle.Data()}});
+        context->bufferHandles.push_back(std::move(handle));
+        if (!ready) { jobs.push_back(H2HDumpJob{context, shardIndex, handleIndex}); }
+    }
+
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_shards_total"),
+                             static_cast<double>(task->desc.size()));
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_backend_shards_total"),
+                             static_cast<double>(context->backendTaskDesc.size()));
+    if (context->backendTaskDesc.empty()) {
+        waiter->Done();
+        return Status::OK();
+    }
+    if (jobs.empty()) {
+        h2hCompletionPool_.Push(std::move(context));
+        return Status::OK();
+    }
+    if (!TryReserveH2HJobs(jobs.size())) {
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2h_dump_queue_full_total"), 1.0);
+        auto s = Status::Error("CacheStore H2H dump queue full");
+        for (const auto& job : jobs) {
+            context->bufferHandles[job.handleIndex].MarkFailed(s);
+        }
+        return s;
+    }
+    context->pending.store(jobs.size(), std::memory_order_release);
+    h2hCopyPool_.Push(jobs);
+    return Status::OK();
+}
+
+void DumpQueue::H2HDumpWorker(H2HDumpJob& job)
+{
+    const auto start = NowTime::Now();
+    auto& context = job.context;
+    auto& shard = context->task->desc[job.shardIndex];
+    auto& handle = context->bufferHandles[job.handleIndex];
+    auto s = HostToHostGather(shard, handle.Data());
+    if (s.Failure()) [[unlikely]] {
+        UC_ERROR("Failed({}) to do H2H gather for task({}).", s, context->task->id);
+        handle.MarkFailed(s);
+        context->task->Fail(s);
+        context->failed.store(true, std::memory_order_release);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2h_dump_errors_total"), 1.0);
+    } else {
+        const auto bytes = std::accumulate(tensorSizes_.begin(), tensorSizes_.end(), size_t(0));
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2h_dump_bytes_total"),
+                                 static_cast<double>(bytes));
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2h_dump_duration_ms"),
+                                 (NowTime::Now() - start) * 1e3);
+    }
+    if (context->pending.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        h2hCompletionPool_.Push(std::move(context));
+    }
+    h2hOutstanding_.fetch_sub(1, std::memory_order_acq_rel);
+}
+
+void DumpQueue::CompleteH2HDump(H2HDumpContextPtr context)
+{
+    if (context->failed.load(std::memory_order_acquire)) {
+        auto error = context->task->FailureStatus();
+        for (auto& handle : context->bufferHandles) { handle.MarkFailed(error); }
+        failureSet_->Insert(context->task->id);
+        context->waiter->Done();
+        return;
+    }
+    for (auto& handle : context->bufferHandles) { handle.MarkReady(); }
+    auto res = backend_->Dump(std::move(context->backendTaskDesc));
+    if (!res) [[unlikely]] {
+        auto error = res.Error();
+        context->task->Fail(error);
+        failureSet_->Insert(context->task->id);
+        UC_ERROR("Failed({}) to submit H2H dump task({}) to backend.", error,
+                 context->task->id);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_backend_dump_submit_errors_total"),
+                                 1.0);
+        context->waiter->Done();
+        return;
+    }
+    DumpCtx dumpCtx;
+    dumpCtx.taskHandle = context->task->id;
+    dumpCtx.backendTaskHandle = res.Value();
+    dumpCtx.bufferHandles = std::move(context->bufferHandles);
+    dumping_.Push(std::move(dumpCtx));
+    context->waiter->Done();
+}
+
+Status DumpQueue::HostToHostGather(const Detail::Shard& shard, void* destination) const
+{
+    if (shard.addrs.size() != tensorSizes_.size()) {
+        return Status::InvalidParam("invalid host addr number({}, expect {})", shard.addrs.size(),
+                                    tensorSizes_.size());
+    }
+    if (destination == nullptr) { return Status::InvalidParam("invalid null host destination"); }
+    auto* dst = static_cast<std::byte*>(destination);
+    size_t offset = 0;
+    for (size_t i = 0; i < tensorSizes_.size(); ++i) {
+        if (shard.addrs[i] == nullptr) {
+            return Status::InvalidParam("invalid null host source({})", i);
+        }
+        std::memcpy(dst + offset, shard.addrs[i], tensorSizes_[i]);
+        offset += tensorSizes_[i];
+    }
+    return Status::OK();
 }
 
 void DumpQueue::BackendDumpStage()
