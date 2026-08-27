@@ -51,6 +51,11 @@ static std::shared_ptr<void> GetBuffer(Buffers& buffers)
     return nullptr;
 }
 
+std::shared_ptr<void> SimuBuffer::MakeDeviceMappedHostBuffer(size_t size)
+{
+    return MakeHostBuffer(size);
+}
+
 std::shared_ptr<void> SimuBuffer::MakeDeviceBuffer(size_t size)
 {
     constexpr int8_t deviceInitVal = 0xd;
@@ -80,5 +85,11 @@ Status Buffer::GetHostDevicePointer(void* host, void** pDevice)
 }
 
 void Buffer::UnregisterHostBuffer(void* host) {}
+
+Status Memset(void* ptr, std::size_t size, std::int32_t value)
+{
+    std::memset(ptr, value, size);
+    return Status::OK();
+}
 
 }  // namespace UC::Trans

@@ -12,6 +12,7 @@ from .query import (
     _aggregate,
     _group_key,
     _matches_tag_filters,
+    _metric_name,
     _parse_le,
     _quantile_name,
     _source_name,
@@ -63,7 +64,7 @@ class SnapshotQueryEngine:
                 )
         return [
             QueryRow(
-                spec["name"],
+                _metric_name(spec, dict(group)),
                 dict(group),
                 {value_name: _aggregate(values, aggregate)},
                 spec.get("unit", ""),
@@ -91,7 +92,7 @@ class SnapshotQueryEngine:
         value_name = spec.get("op", "value")
         return [
             QueryRow(
-                spec["name"],
+                _metric_name(spec, dict(group)),
                 dict(group),
                 {value_name: _aggregate(values, aggregate)},
                 spec.get("unit", ""),
@@ -144,7 +145,14 @@ class SnapshotQueryEngine:
             if spec.get("avg", False) and count > 0:
                 values["avg"] = (sum_values.get(group, 0.0) / count) * scale
             if values:
-                rows.append(QueryRow(name, dict(group), values, spec.get("unit", "")))
+                rows.append(
+                    QueryRow(
+                        _metric_name(spec, dict(group)),
+                        dict(group),
+                        values,
+                        spec.get("unit", ""),
+                    )
+                )
         return rows
 
 
@@ -170,6 +178,9 @@ class SnapshotStore:
 
     def list_series(self, name: str) -> list[dict[str, object]]:
         return [series for series in self.series if series["name"] == name]
+
+    def list_metric_names(self) -> list[str]:
+        return sorted({str(series["name"]) for series in self.series})
 
     def samples_for_series(
         self,

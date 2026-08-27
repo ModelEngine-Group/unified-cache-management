@@ -75,7 +75,7 @@ class FakeCombinedTensor:
 
 
 class FakeTorch:
-    Tensor = FakeTensor
+    Tensor = (FakeTensor, FakeCombinedTensor)
 
 
 class FakeLogger:
@@ -175,6 +175,7 @@ def _build_layout(
 def _build_cuda_shared_layout(
     entries: list[tuple[str, int, int] | tuple[str, int, int, int]],
 ):
+    num_blocks = 3
     next_ptr = 0x100000
     kvcaches = {}
     tensor_ptrs = {}
@@ -186,12 +187,14 @@ def _build_cuda_shared_layout(
             kvcaches[layer_name] = FakeCombinedTensor(
                 next_ptr,
                 block_stride,
+                num_blocks=num_blocks,
                 element_size=element_size,
             )
         else:
             kvcaches[layer_name] = FakeTensor(
                 next_ptr,
                 block_stride,
+                num_blocks=num_blocks,
                 element_size=element_size,
                 dimensions=dimensions,
             )
@@ -207,7 +210,7 @@ def _build_cuda_shared_layout(
         parallel_config=SimpleNamespace(pipeline_parallel_size=1),
         model_config=SimpleNamespace(hf_text_config=hf_text_config),
     )
-    kv_cache_config = SimpleNamespace(num_blocks=2)
+    kv_cache_config = SimpleNamespace(num_blocks=num_blocks)
     ucm_config = {"use_layerwise": True}
 
     layout_globals = SharedIndexerKVCacheLayout.supports.__func__.__globals__
@@ -436,7 +439,7 @@ class KVCacheLayoutTest(unittest.TestCase):
 
         self.assertEqual(layout.base_ptrs[1, 1], 0)
         self.assertEqual(layout.block_stride_lists[1].tolist(), [73728, 0])
-        self.assertEqual(layout.buffer_sizes[1].tolist(), [147456, 0])
+        self.assertEqual(layout.buffer_sizes[1].tolist(), [221184, 0])
 
         block_one_addrs = layout.extract_block_addrs([1], layer_first=True)
         self.assertEqual(
@@ -470,7 +473,7 @@ class KVCacheLayoutTest(unittest.TestCase):
         )
 
         layer_0_attention_ptr = tensor_ptrs[layer_0_attention]
-        layer_0_value_ptr = layer_0_attention_ptr + 2 * 4096
+        layer_0_value_ptr = layer_0_attention_ptr + 3 * 4096
         self.assertEqual(
             layout.base_ptrs[0].tolist(),
             [

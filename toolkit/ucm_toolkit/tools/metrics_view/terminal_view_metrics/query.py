@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -130,7 +131,7 @@ class QueryEngine:
             grouped[_group_key(point.labels, spec.get("group_by", []))].append(value)
         return [
             QueryRow(
-                spec["name"],
+                _metric_name(spec, dict(group)),
                 dict(group),
                 {value_name: _aggregate(values, aggregate)},
                 spec.get("unit", ""),
@@ -164,7 +165,7 @@ class QueryEngine:
         key_name = "rate" if op == "rate" else "increase"
         return [
             QueryRow(
-                spec["name"],
+                _metric_name(spec, dict(group)),
                 dict(group),
                 {key_name: _aggregate(values, aggregate)},
                 spec.get("unit", ""),
@@ -193,7 +194,7 @@ class QueryEngine:
             )
         return [
             QueryRow(
-                spec["name"],
+                _metric_name(spec, dict(group)),
                 dict(group),
                 {spec.get("op", "last"): _aggregate(values, aggregate)},
                 spec.get("unit", ""),
@@ -255,7 +256,14 @@ class QueryEngine:
             if spec.get("avg", False) and count > 0:
                 values["avg"] = (sum_values.get(group, 0.0) / count) * scale
             if values:
-                rows.append(QueryRow(name, dict(group), values, spec.get("unit", "")))
+                rows.append(
+                    QueryRow(
+                        _metric_name(spec, dict(group)),
+                        dict(group),
+                        values,
+                        spec.get("unit", ""),
+                    )
+                )
         return rows
 
 
@@ -322,6 +330,15 @@ def _matches_tag_filters(labels: object, tag_filters: Mapping[str, str] | None) 
 
 def _source_name(spec: dict) -> str:
     return str(spec.get("source", spec["name"]))
+
+
+def _metric_name(spec: dict, group: Mapping[str, str]) -> str:
+    name = str(spec["name"])
+    return re.sub(
+        r"\{([A-Za-z_][A-Za-z0-9_]*)\}",
+        lambda match: group.get(match.group(1), ""),
+        name,
+    ).strip()
 
 
 def _parse_le(value: str) -> float:
