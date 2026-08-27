@@ -71,14 +71,13 @@ various scenarios, including multi-turn dialogue and long-context reasoning task
 
     [:octicons-arrow-right-24: Installation](user-guide/installation.md)
 
--   :material-rocket-launch: **Quick Start**
+-   :material-engine: **Getting Started**
 
     ---
 
-    Get started with UCM in your inference engine quickly. Choose your engine
-    (vLLM, vLLM-Ascend, SGLang, MindIE) and follow the integration guide.
+    Integrate UCM with vLLM, vLLM Ascend, SGLang, and MindIE.
 
-    [:octicons-arrow-right-24: Quick Start](user-guide/quick-start/index.md)
+    [:octicons-arrow-right-24: Getting Started](user-guide/engines/index.md)
 
 -   :material-view-grid-plus: **Compatibility Matrix**
 
