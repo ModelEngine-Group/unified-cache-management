@@ -125,21 +125,3 @@
 | `interval_minutes` | Optional | int | `400` | Disk persistence interval (minutes). |
 | `memSoftLimitInGB` | Optional | int | `30` | Eviction trigger threshold (GB). |
 | `memHardLimitInGB` | Optional | int | `40` | PMR-tree stop writing threshold (GB). |
-
----
-
-## KVCS Configuration
-
-!!! note
-    KVCS parameters are not configured by default. Only fill when using KV Cache Service.
-
-| Parameter | Required | Type | Value Range | Description |
-|---|---|---|---|---|
-| `kvcs_store_id` | Not configured by default | int | — | KV Cache store ID. Fill with the store ID created on storage per "Create Repository" chapter. See [Create KV Cache Store](https://support.huawei.com/enterprise/zh/doc/EDOC1100582752/47f029f5#ZH-CN_TOPIC_0000002501883936). |
-| `kvcs_instance_name` | Not configured by default | string | Default: `default_instance` | Inference instance name for Unified Cache alarm reporting. User-defined. |
-| `kvcs_ucm_over_tcp_ip_list` | Not configured by default | string | — | UCM Over TCP logical port IP list created per "Create UCM over TCP" chapter. Multiple IPs separated by `:`. Example: `192.168.0.1:192.168.0.2`. See [Create UCM over TCP](https://support.huawei.com/enterprise/zh/doc/EDOC1100582752/30f71963#ZH-CN_TOPIC_0000002533643827). |
-| `kvcs_block_size` | Not configured by default | int | Default: `128` | Must match `block_size` in serve config. DeepSeek V4 series: `4 * block_size`. |
-| `kvcs_tls_enable` | Not configured by default | bool | Default: `false` (TLS disabled) | Enable TLS authentication for GRPC communication between inference engine and storage. |
-| `kvcs_sliding_window_size` | Not configured by default | int | Default: `100`, range 10-1000 | Unified Cache alarm config: sliding window size — total inference request count for failure rate statistics (last N requests). |
-| `kvcs_failure_rate_threshold` | Not configured by default | int | Default: `10`, range 0-100 | Unified Cache alarm config: failure rate threshold. When exceeded, isolates KV Cache store. All requests fully recompute. Critical alarm reported. |
-| `kvcs_consecutive_fail_limit` | Not configured by default | int | Default: `5`, range 1-100 | Unified Cache alarm config: consecutive failure limit. When exceeded, isolates KV Cache store. All requests fully recompute. Critical alarm reported. |

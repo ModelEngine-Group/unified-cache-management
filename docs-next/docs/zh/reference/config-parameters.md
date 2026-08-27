@@ -125,21 +125,3 @@
 | `interval_minutes` | 选填 | int | `400` | 落盘时间，单位分钟。 |
 | `memSoftLimitInGB` | 选填 | int | `30` | 开始触发淘汰的阈值，单位 GB。 |
 | `memHardLimitInGB` | 选填 | int | `40` | pmr-tree 停止写入的阈值，单位 GB。 |
-
----
-
-## KVCS 相关配置
-
-!!! note
-    KVCS 参数默认不配置。仅在使用 KV Cache Service 时填写。
-
-| 配置项 | 是否必填 | 取值类型 | 取值范围 | 配置说明 |
-|---|---|---|---|---|
-| `kvcs_store_id` | 默认不配置 | int | — | 获取已创建的 KV Cache 库 ID。填写创库使用章节中存储上已创建的 KV Cache 库 ID。详见 [创建 KV Cache 库](https://support.huawei.com/enterprise/zh/doc/EDOC1100582752/47f029f5#ZH-CN_TOPIC_0000002501883936)。 |
-| `kvcs_instance_name` | 默认不配置 | string | 默认 `default_instance` | 推理实例名称，Unified Cache 推理加速服务异常告警上报使用，用于区分推理实例，由用户自定义。 |
-| `kvcs_ucm_over_tcp_ip_list` | 默认不配置 | string | — | 创建 UCM over TCP 逻辑端口章节创建的 UCM Over TCP 逻辑端口 IP 列表，支持多 IP 以冒号 ":" 分割，如 `192.168.0.1:192.168.0.2`。详见 [创建 UCM over TCP 逻辑端口](https://support.huawei.com/enterprise/zh/doc/EDOC1100582752/30f71963#ZH-CN_TOPIC_0000002533643827)。 |
-| `kvcs_block_size` | 默认不配置 | int | 默认 `128` | 与推理引擎拉起配置参数中的 `block_size` 保持一致，拉起 DeepSeek V4 系列模型时填 `4 * block_size`。 |
-| `kvcs_tls_enable` | 默认不配置 | bool | 默认 `false`（关闭 TLS 身份验证） | 推理引擎和存储 GRPC 通信时是否开启 TLS 身份验证。 |
-| `kvcs_sliding_window_size` | 默认不配置 | int | 默认 `100`，参数范围 10-1000 | Unified Cache 推理加速服务告警配置：滑动窗口大小，指代统计失败率时的推理请求总数（最近 N 次）。 |
-| `kvcs_failure_rate_threshold` | 默认不配置 | int | 默认 `10`，参数范围 0-100 | Unified Cache 推理加速服务告警配置：推理请求失败率阈值，最近 N 次请求中请求失败率大于该阈值时，会隔离该 KV Cache 库，所有推理请求均会完全重算，同时会上报重要级别告警。 |
-| `kvcs_consecutive_fail_limit` | 默认不配置 | int | 默认 `5`，参数范围 1-100 | Unified Cache 推理加速服务告警配置：推理请求连续失败次数超过该阈值，此时会隔离该 KV Cache 库，所有推理请求均会完全重算，同时会上报重要级别告警。 |
