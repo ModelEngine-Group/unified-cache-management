@@ -13,7 +13,13 @@ from vllm.engine.arg_utils import EngineArgs
 from ucm.logger import init_logger
 
 logger = init_logger(__name__)
+os.environ["VLLM_WORKER_SHUTDOWN_TIMEOUT_SECONDS"] = "100"
 
+
+def remove_none(d):
+    if isinstance(d, dict):
+        return {k: remove_none(v) for k, v in d.items() if v is not None}
+    return d
 
 @contextlib.contextmanager
 def build_llm_with_uc(module_path: str, name: str, model: str):
@@ -21,7 +27,7 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
         kv_connector=name,
         kv_connector_module_path=module_path,
         kv_role="kv_both",
-        kv_connector_extra_config={"UCM_CONFIG_FILE": "./ucm_config_example.yaml"},
+        kv_connector_extra_config={"UCM_CONFIG_FILE": "/home/drampool/nt/unified-cache-management/examples/ucm_config_example.yaml"},
     )
 
     llm_args = EngineArgs(
@@ -34,9 +40,11 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
         enforce_eager=True,
         trust_remote_code=True,
         enable_prefix_caching=False,
+        tensor_parallel_size=int(os.getenv("UCM_QUERY_STRESS_TP", "2")),
     )
 
-    llm = LLM(**asdict(llm_args))
+    llm_kwargs = remove_none(asdict(llm_args))
+    llm = LLM(**llm_kwargs)
     try:
         yield llm
     finally:
@@ -45,24 +53,29 @@ def build_llm_with_uc(module_path: str, name: str, model: str):
 
 def print_output(
     llm: LLM,
-    prompt: list[str],
+    prompt: str | list[str],
     sampling_params: SamplingParams,
     req_str: str,
 ):
+    stress_batch = int(os.getenv("UCM_QUERY_STRESS_BATCH", "1"))
+    generation_input = [prompt] * stress_batch if stress_batch > 1 else prompt
     start = time.time()
-    outputs = llm.generate(prompt, sampling_params)
+    outputs = llm.generate(generation_input, sampling_params)
     print("-" * 50)
     for output in outputs:
         generated_text = output.outputs[0].text
         print(f"Generated text: {generated_text!r}")
-    print(f"Generation took {time.time() - start:.2f} seconds, {req_str} request done.")
+    print(
+        f"Generation took {time.time() - start:.2f} seconds, {req_str} request done, "
+        f"stress_batch={stress_batch}."
+    )
     print("-" * 50)
 
 
 def main():
     module_path = "ucm.integration.vllm.ucm_connector"
     name = "UCMConnector"
-    model = os.getenv("MODEL_PATH", "/home/models/DeepSeek-V2-Lite")
+    model = os.getenv("MODEL_PATH", "/home/drampool/models/DeepSeek-V2-Lite-Chat")
 
     tokenizer = AutoTokenizer.from_pretrained(model, use_chat_template=True)
 
@@ -106,6 +119,45 @@ def main():
         print_output(llm, prompts, sampling_params, "first")
         print_output(llm, prompts, sampling_params, "second")
 
+
+        messages = [
+            {
+                "role": "system",
+                "content": "111You are a highly specialized assistant whose mission is to faithfully reproduce English "
+                "literary texts verbatim, without any deviation, paraphrasing, or omission. Your primary "
+                "responsibility is accuracy: every word, every punctuation mark, and every line must "
+                "appear exactly as in the original source. Core Principles: Verbatim Reproduction: If the "
+                "user asks for a passage, you must output the text word-for-word. Do not alter spelling, "
+                "punctuation, capitalization, or line breaks. Do not paraphrase, summarize, modernize, "
+                "or “improve” the language. Consistency: The same input must always yield the same output. "
+                "Do not generate alternative versions or interpretations. Clarity of Scope: Your role is "
+                "not to explain, interpret, or critique. You are not a storyteller or commentator, "
+                "but a faithful copyist of English literary and cultural texts. Recognizability: Because "
+                "texts must be reproduced exactly, they will carry their own cultural recognition. You "
+                "should not add labels, introductions, or explanations before or after the text. Coverage: "
+                "You must handle passages from classic literature, poetry, speeches, or cultural texts. "
+                "Regardless of tone—solemn, visionary, poetic, persuasive—you must preserve the original "
+                "form, structure, and rhythm by reproducing it precisely. Success Criteria: A human reader "
+                "should be able to compare your output directly with the original and find zero "
+                "differences. The measure of success is absolute textual fidelity. Your function can be "
+                "summarized as follows: verbatim reproduction only, no paraphrase, no commentary, "
+                "no embellishment, no omission.",
+            },
+            {
+                "role": "user",
+                "content": "Please reproduce verbatim the opening sentence of the United States Declaration of "
+                "Independence (1776), starting with 'When in the Course of human events' and continuing "
+                "word-for-word without paraphrasing.",
+            },
+        ]
+
+        prompts = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        sampling_params = SamplingParams(temperature=0, top_p=0.95, max_tokens=100)
+
+        print_output(llm, prompts, sampling_params, "first")
+        print_output(llm, prompts, sampling_params, "second")
 
 if __name__ == "__main__":
     main()
