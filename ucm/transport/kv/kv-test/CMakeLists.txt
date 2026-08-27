@@ -36,7 +36,7 @@ target_include_directories(kv-test
 target_link_libraries(kv-test
     PRIVATE
         ${CMAKE_DL_LIBS}
-        asu_ascend_deps
+        trans
 )
 
 if(BUILD_UNIT_TESTS)

@@ -142,7 +142,7 @@ void FillStoreValue(std::vector<std::uint8_t>& value, std::uint64_t valueIndex, 
 Status SyncBenchDeviceBuffers(const KvTestConfig& config, BenchBufferSlot& slot,
                               std::size_t entryCount)
 {
-    auto status = MaybeSetUpPayloadAclThread(config);
+    auto status = MaybeSetUpPayloadThread(config);
     if (!status.Ok()) { return status; }
 
     auto& buffers = slot.buffers;
@@ -166,7 +166,7 @@ Status BuildBenchBufferPool(const KvTestConfig& config, bool useDeviceBuffers,
     const auto& bench = config.bench;
     const auto allocationPolicy = AllocationPolicyForConfig(config);
     if (useDeviceBuffers) {
-        auto status = MaybeSetUpPayloadAclThread(config);
+        auto status = MaybeSetUpPayloadThread(config);
         if (!status.Ok()) { return status; }
     }
 

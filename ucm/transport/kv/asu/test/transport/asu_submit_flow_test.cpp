@@ -21,7 +21,6 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include <acl/acl.h>
 #include <cstdint>
 #include <functional>
 #include <gtest/gtest.h>
@@ -33,6 +32,7 @@
 #include "asu_transport/trans_provider.h"
 #include "buffer_manager.h"
 #include "connection_internal.h"
+#include "trans/device.h"
 
 namespace UC::ASU {
 namespace {
@@ -134,14 +134,18 @@ class AsuSubmitFlowBufferTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite()
     {
-        auto ret = aclInit(nullptr);
-        if (ret != ACL_SUCCESS && ret != ACL_ERROR_REPEAT_INITIALIZE) {
-            FAIL() << "aclInit failed: " << ret;
+        const auto initStatus = device_.Init();
+        if (initStatus.Failure() && initStatus != UC::Status::DuplicateKey()) {
+            FAIL() << "Device::Init failed: " << initStatus.ToString();
         }
-        ASSERT_EQ(aclrtSetDevice(0), ACL_SUCCESS);
+        ASSERT_TRUE(device_.Setup(0).Success());
     }
 
-    static void TearDownTestSuite() { aclrtResetDevice(0); }
+    static void TearDownTestSuite()
+    {
+        (void)device_.Reset(0);
+        (void)device_.Finalize();
+    }
 
     void SetUp() override
     {
@@ -151,6 +155,7 @@ protected:
     }
 
     std::unique_ptr<AsuTransportImpl> transport_;
+    static inline Trans::Device device_;
 };
 
 }  // namespace
@@ -161,18 +166,20 @@ class AsuTransportBufferRegistrationTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite()
     {
-        const auto ret = aclInit(nullptr);
-        if (ret != ACL_SUCCESS && ret != ACL_ERROR_REPEAT_INITIALIZE) {
-            FAIL() << "aclInit failed: " << ret;
+        const auto initStatus = device_.Init();
+        if (initStatus.Failure() && initStatus != UC::Status::DuplicateKey()) {
+            FAIL() << "Device::Init failed: " << initStatus.ToString();
         }
-        ASSERT_EQ(aclrtSetDevice(0), ACL_SUCCESS);
+        ASSERT_TRUE(device_.Setup(0).Success());
     }
 
     static void TearDownTestSuite()
     {
-        EXPECT_EQ(aclrtResetDevice(0), ACL_SUCCESS);
-        EXPECT_EQ(aclFinalize(), ACL_SUCCESS);
+        (void)device_.Reset(0);
+        (void)device_.Finalize();
     }
+
+    static inline Trans::Device device_;
 };
 
 TEST_F(AsuTransportBufferRegistrationTest, InitRegistersAndShutdownUnregistersBothBuffers)

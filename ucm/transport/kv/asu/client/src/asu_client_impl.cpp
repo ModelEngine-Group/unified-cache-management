@@ -250,7 +250,7 @@ Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regio
     std::vector<TransProvider::RegisterMemoryDesc> registerDescs;
     registerDescs.reserve(regions.size());
     for (const auto& region : regions) {
-        const auto memType = region.memoryType == MemoryType::ASCEND_DEVICE
+        const auto memType = region.memoryType == MemoryType::DEVICE
                                  ? TransProvider::MemType::MEM_DEVICE
                                  : TransProvider::MemType::MEM_HOST;
         registerDescs.push_back({memType, static_cast<std::uintptr_t>(region.addr),
@@ -624,7 +624,7 @@ Status AsuClientImpl::BindProviderRegions(const std::shared_ptr<TransProvider>& 
     std::vector<TransProvider::BindMemoryDesc> bindDescs;
     bindDescs.reserve(registeredRegions.size());
     for (const auto& registeredRegion : registeredRegions) {
-        const auto memType = registeredRegion.region.memoryType == MemoryType::ASCEND_DEVICE
+        const auto memType = registeredRegion.region.memoryType == MemoryType::DEVICE
                                  ? TransProvider::MemType::MEM_DEVICE
                                  : TransProvider::MemType::MEM_HOST;
         bindDescs.push_back({memType, static_cast<std::uintptr_t>(registeredRegion.region.addr),

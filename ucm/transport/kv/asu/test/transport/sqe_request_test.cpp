@@ -21,7 +21,6 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include <acl/acl.h>
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -39,6 +38,7 @@
 #include "asu_transport/trans_provider.h"
 #include "buffer_manager.h"
 #include "kv_protocol.h"
+#include "trans/device.h"
 #include "transport_config_parser.h"
 
 namespace UC::ASU {
@@ -185,14 +185,17 @@ class SqeRequestTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite()
     {
-        aclInit(nullptr);
-        aclrtSetDevice(0);
+        const auto initStatus = device_.Init();
+        if (initStatus.Failure() && initStatus != UC::Status::DuplicateKey()) {
+            FAIL() << "Device::Init failed: " << initStatus.ToString();
+        }
+        ASSERT_TRUE(device_.Setup(0).Success());
     }
 
     static void TearDownTestSuite()
     {
-        aclrtResetDevice(0);
-        aclFinalize();
+        (void)device_.Reset(0);
+        (void)device_.Finalize();
     }
 
     void SetUp() override
@@ -219,6 +222,7 @@ protected:
     }
 
     std::unique_ptr<AsuTransportImpl> transport_;
+    static inline Trans::Device device_;
 };
 
 TEST_F(SqeRequestTest, ValidateSqeRequestAttrsRejectsMalformedValues)
@@ -305,53 +309,6 @@ TEST_F(SqeRequestTest, SubmitStoreUsesStoreOpcodeAndRequest)
     EXPECT_EQ(sqe[8] & 0xFFFFFF, entries[0].buffer.region.size);
     EXPECT_EQ(sqe[10], entries[0].offset);
     EXPECT_EQ(sqe[11] & 0xFFFFFF, entries[0].buffer.region.size);
-}
-
-TEST_F(SqeRequestTest, SubmitBatchStorePacksSqeIntoDeviceSendBuffer)
-{
-    AsuTransportImpl deviceTransport;
-    deviceTransport.SetTransProvider(std::make_unique<StubTransProvider>());
-    deviceTransport.config_.attrs = DefaultAttrs();
-    CreateTaskExecutor(deviceTransport);
-    ASSERT_TRUE(deviceTransport.taskExecutor_->flagBufferManager_
-                    .Init("test flag buffer", MemoryType::HOST_PINNED, kFlagBufferSlotSize,
-                          kFlagBufferSlotNum)
-                    .ok());
-    ASSERT_TRUE(deviceTransport.taskExecutor_->sendBufferManager_
-                    .Init("test send buffer", MemoryType::ASCEND_DEVICE, kTestSendBufferSlotSize,
-                          kTestSendBufferSlotNum)
-                    .ok());
-    ASSERT_TRUE(deviceTransport.taskExecutor_
-                    ->RegisterBufferMemory(deviceTransport.taskExecutor_->sendBufferManager_,
-                                           deviceTransport.taskExecutor_->sendBufferMrHandle_)
-                    .ok());
-    ASSERT_TRUE(deviceTransport.taskExecutor_
-                    ->RegisterBufferMemory(deviceTransport.taskExecutor_->flagBufferManager_,
-                                           deviceTransport.taskExecutor_->flagBufferMrHandle_)
-                    .ok());
-    deviceTransport.taskExecutor_->nextRequestCid_.store(41, std::memory_order_relaxed);
-
-    auto entries = MakeEntries(3);
-    SetMrKeys(entries, 0x12340000);
-    IoScheduler::ScheduledIoBatch subBatch{
-        BatchView<KVBuffer>{entries.data(), entries.size()}
-    };
-    TransportSubBatchContext subBatchContext;
-
-    const auto status = deviceTransport.taskExecutor_->BuildEntrySubBatchRequest(
-        AsuOpType::BATCH_STORE, subBatch, subBatchContext);
-
-    ASSERT_TRUE(status.ok()) << status.message;
-    EXPECT_EQ(subBatchContext.sendSge.memory_type, MemoryType::ASCEND_DEVICE);
-    EXPECT_NE(subBatchContext.sendSge.device_addr, std::uint64_t{0});
-    std::vector<std::uint8_t> packed(subBatchContext.sendSge.length);
-    ASSERT_EQ(aclrtMemcpy(packed.data(), packed.size(),
-                          reinterpret_cast<void*>(subBatchContext.sendSge.device_addr),
-                          packed.size(), ACL_MEMCPY_DEVICE_TO_HOST),
-              ACL_SUCCESS);
-    EXPECT_TRUE(deviceTransport.taskExecutor_->protocolManager_
-                    .VerifyPackedBuffer(packed.data(), packed.size())
-                    .ok());
 }
 
 TEST_F(SqeRequestTest, SubmitBatchRetrieveUsesRetrieveOpcodeAndRequest)

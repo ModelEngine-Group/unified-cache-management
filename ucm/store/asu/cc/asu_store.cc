@@ -313,7 +313,7 @@ public:
         for (std::size_t index = 0; index < count; ++index) {
             if (registrations[index].addr == 0 || registrations[index].size == 0) { continue; }
             UC::ASU::MemoryRegion region;
-            region.memoryType = UC::ASU::MemoryType::ASCEND_DEVICE;
+            region.memoryType = UC::ASU::MemoryType::DEVICE;
             region.addr = static_cast<std::uint64_t>(registrations[index].addr);
             region.size = static_cast<std::uint64_t>(registrations[index].size);
             region.deviceId = config_.deviceId;
@@ -727,7 +727,7 @@ private:
             for (std::size_t tensorIndex = 0; tensorIndex < shard.addrs.size(); ++tensorIndex) {
                 UC::ASU::KVBuffer entry;
                 entry.key = MakeAsuKey(shard.owner);
-                entry.buffer.region.memoryType = UC::ASU::MemoryType::ASCEND_DEVICE;
+                entry.buffer.region.memoryType = UC::ASU::MemoryType::DEVICE;
                 entry.buffer.region.addr =
                     reinterpret_cast<std::uint64_t>(shard.addrs[tensorIndex]);
                 entry.buffer.region.size = config_.tensorSizes[tensorIndex];

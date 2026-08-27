@@ -3,6 +3,8 @@ if(BUILD_UNIT_TESTS)
     file(GLOB_RECURSE UCMSTORE_TEST_SOURCE_FILES "./case/*.cc")
     if(NOT BUILD_UCM_ASU)
         list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX ".*[/\\\\]asu[/\\\\].*")
+    endif()
+    if(NOT BUILD_UCM_DELEGATOR)
         list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX ".*[/\\\\]delegator[/\\\\].*")
     endif()
     if(RUNTIME_ENVIRONMENT STREQUAL "ascend" OR RUNTIME_ENVIRONMENT STREQUAL "simu")
@@ -48,12 +50,16 @@ if(BUILD_UNIT_TESTS)
     if(BUILD_UCM_ASU)
         target_link_libraries(ucmstore.test PRIVATE
             asu_client
-            delegator
-            delegator_store
             buffer_pool
-            asu_ascend_deps
+            trans
         )
         target_compile_definitions(ucmstore.test PRIVATE ASU_BUILD_TESTS)
+    endif()
+    if(BUILD_UCM_DELEGATOR)
+        target_link_libraries(ucmstore.test PRIVATE
+            delegator
+            delegator_store
+        )
     endif()
     gtest_discover_tests(ucmstore.test)
 endif()

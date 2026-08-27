@@ -21,7 +21,6 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include <acl/acl.h>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -35,6 +34,7 @@
 #include "asu_transport/trans_provider.h"
 #include "buffer_manager.h"
 #include "connection_internal.h"
+#include "trans/device.h"
 
 namespace UC::ASU {
 namespace {
@@ -92,14 +92,17 @@ class TransportTaskCompletionTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite()
     {
-        aclInit(nullptr);
-        aclrtSetDevice(0);
+        const auto initStatus = device_.Init();
+        if (initStatus.Failure() && initStatus != UC::Status::DuplicateKey()) {
+            FAIL() << "Device::Init failed: " << initStatus.ToString();
+        }
+        ASSERT_TRUE(device_.Setup(0).Success());
     }
 
     static void TearDownTestSuite()
     {
-        aclrtResetDevice(0);
-        aclFinalize();
+        (void)device_.Reset(0);
+        (void)device_.Finalize();
     }
 
     void SetUp() override
@@ -124,6 +127,7 @@ protected:
     }
 
     std::unique_ptr<AsuTransportImpl> transport_;
+    static inline Trans::Device device_;
 };
 
 TEST_F(TransportTaskCompletionTest, InitRejectsZeroMaxErrorCount)
@@ -192,72 +196,6 @@ TEST_F(TransportTaskCompletionTest, ReleaseSubBatchResourcesClearsAllocatedSlots
     EXPECT_EQ(subBatchContext.flagBuffer.slot_index, UINT32_MAX);
     EXPECT_EQ(subBatchContext.sendSge.local_addr, std::uint64_t{0});
     EXPECT_EQ(subBatchContext.flagBuffer.local_addr, std::uint64_t{0});
-}
-
-TEST_F(TransportTaskCompletionTest, PollTaskCompletionsReadsDeviceFlagBuffer)
-{
-    AsuTransportImpl deviceTransport;
-    deviceTransport.SetTransProvider(std::make_unique<StubTransProvider>());
-    CreateTaskExecutor(deviceTransport);
-    ASSERT_TRUE(
-        deviceTransport.taskExecutor_->sendBufferManager_
-            .Init("test send buffer", MemoryType::HOST, kTestBufferSlotSize, kTestBufferSlotNum)
-            .ok());
-    ASSERT_TRUE(deviceTransport.taskExecutor_->flagBufferManager_
-                    .Init("test flag buffer", MemoryType::ASCEND_DEVICE, kTestBufferSlotSize,
-                          kTestBufferSlotNum)
-                    .ok());
-    ASSERT_TRUE(deviceTransport.taskExecutor_
-                    ->RegisterBufferMemory(deviceTransport.taskExecutor_->sendBufferManager_,
-                                           deviceTransport.taskExecutor_->sendBufferMrHandle_)
-                    .ok());
-    ASSERT_TRUE(deviceTransport.taskExecutor_
-                    ->RegisterBufferMemory(deviceTransport.taskExecutor_->flagBufferManager_,
-                                           deviceTransport.taskExecutor_->flagBufferMrHandle_)
-                    .ok());
-    auto* provider = deviceTransport.transProvider_.get();
-    deviceTransport.connManager_ = std::make_unique<ConnectionManager>(*provider, "", 5000, 2);
-    ASSERT_TRUE(deviceTransport.connManager_->AddGroup(AsuEndpoint{}, 1).ok());
-    auto channel = deviceTransport.connManager_->SelectConnection();
-    ASSERT_NE(channel, nullptr);
-    deviceTransport.connManager_->ReportFailure(channel);
-    ASSERT_EQ(channel->GetErrorCount(), std::uint32_t{1});
-
-    auto ctx = std::make_shared<TransportTask>();
-    ctx->state.store(TransportTaskState::INFLIGHT, std::memory_order_release);
-    ctx->subBatchContexts->resize(1);
-    ctx->remainingSubBatchCount = 1;
-
-    auto& subBatchContext = (*ctx->subBatchContexts)[0];
-    subBatchContext.cid = 123;
-    subBatchContext.opType = AsuOpType::BATCH_STORE;
-    subBatchContext.entryStatus.assign(2, Status::OK());
-    subBatchContext.channel = channel;
-    ASSERT_TRUE(
-        deviceTransport.taskExecutor_->flagBufferManager_
-            .Allocate((kCqeDwordCount + 1) * sizeof(std::uint32_t), subBatchContext.flagBuffer)
-            .ok());
-    ASSERT_EQ(subBatchContext.flagBuffer.memory_type, MemoryType::ASCEND_DEVICE);
-
-    std::array<std::uint32_t, kCqeDwordCount + 1> cqe{};
-    cqe[3] = subBatchContext.cid;
-    ASSERT_EQ(aclrtMemcpy(reinterpret_cast<void*>(subBatchContext.flagBuffer.device_addr),
-                          cqe.size() * sizeof(std::uint32_t), cqe.data(),
-                          cqe.size() * sizeof(std::uint32_t), ACL_MEMCPY_HOST_TO_DEVICE),
-              ACL_SUCCESS);
-
-    deviceTransport.taskExecutor_->Poll(ctx);
-
-    EXPECT_EQ(ctx->remainingSubBatchCount, std::uint32_t{0});
-    EXPECT_EQ(ctx->state.load(std::memory_order_acquire), TransportTaskState::COMPLETED);
-    EXPECT_TRUE(ctx->finalStatus.ok()) << ctx->finalStatus.message;
-    EXPECT_EQ(subBatchContext.state, TransportSubBatchState::COMPLETED);
-    EXPECT_TRUE(subBatchContext.status.ok()) << subBatchContext.status.message;
-    ASSERT_EQ(subBatchContext.entryStatus.size(), std::size_t{2});
-    EXPECT_TRUE(subBatchContext.entryStatus[0].ok());
-    EXPECT_TRUE(subBatchContext.entryStatus[1].ok());
-    EXPECT_EQ(subBatchContext.flagBuffer.slot_index, UINT32_MAX);
-    EXPECT_EQ(channel->GetErrorCount(), std::uint32_t{0});
 }
 
 TEST_F(TransportTaskCompletionTest, FailureCqeAccumulatesWithoutSuccessReset)

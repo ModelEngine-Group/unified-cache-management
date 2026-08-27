@@ -1,4 +1,6 @@
+#define private public
 #include "fake_trans_provider.h"
+#undef private
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -98,18 +100,19 @@ TEST(FakeTransProviderTest, ExistHonorsSeekControl)
     config.storePath = storePath.string();
     config.latencyMs = 0;
     const std::vector<CacheKey> keys{first, missing, third};
+    FakeTransProvider provider{config};
 
     auto request = BuildExistRequest(keys, false);
     std::vector<std::uint32_t> completion;
-    auto status = CompleteFakeBackendRequestForTest(
-        config, request.data(), request.size() * sizeof(std::uint32_t), completion);
+    auto status = provider.CompleteFakeBackendRequest(
+        request.data(), request.size() * sizeof(std::uint32_t), completion);
     EXPECT_TRUE(status.ok()) << status.message;
     ASSERT_GT(completion.size(), kCqeDwordCount);
     EXPECT_EQ(completion[0] & 0xFFFF, 1U);
 
     request = BuildExistRequest(keys, true);
-    status = CompleteFakeBackendRequestForTest(config, request.data(),
-                                               request.size() * sizeof(std::uint32_t), completion);
+    status = provider.CompleteFakeBackendRequest(
+        request.data(), request.size() * sizeof(std::uint32_t), completion);
     EXPECT_TRUE(status.ok()) << status.message;
     ASSERT_GT(completion.size(), kCqeDwordCount);
     EXPECT_EQ(completion[0] & 0xFFFF, 2U);

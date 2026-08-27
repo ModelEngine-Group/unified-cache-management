@@ -1,7 +1,7 @@
 #include "kv_test/buffer_allocator.h"
-#include <acl/acl.h>
 #include <limits>
 #include "kv_test/key_value_generator.h"
+#include "trans/device.h"
 
 namespace UC::KVTest {
 
@@ -12,6 +12,13 @@ constexpr int kExitInvalidArgument = 1;
 constexpr std::uint8_t kRetrieveBufferInitialValue = 0xA5;
 constexpr std::size_t kDeviceBufferAlignment = UC::ASU::kAsuAlignmentBytes;
 constexpr std::size_t kDeviceMrRegisterAlignment = 2ULL * 1024ULL * 1024ULL;
+
+Trans::Stream* GetThreadStream()
+{
+    thread_local std::unique_ptr<Trans::Stream> stream;
+    if (!stream) { stream = Trans::Device{}.MakeStream(); }
+    return stream.get();
+}
 
 Status BuildDeviceBuffers(BufferSet& buffers, DeviceAllocationPolicy allocationPolicy,
                           std::int32_t logicalDeviceId)
@@ -102,18 +109,17 @@ Status AllocateDeviceBuffer(std::size_t size, DeviceAllocationPolicy allocationP
     }
     const auto allocationSize = size + alignment - 1;
 
-    void* ptr = nullptr;
-    const auto ret = allocationPolicy == DeviceAllocationPolicy::AIV_REGISTERABLE
-                         ? aclrtMalloc(&ptr, allocationSize, ACL_MEM_MALLOC_HUGE_ONLY)
-                         : aclrtMalloc(&ptr, allocationSize, ACL_MEM_TYPE_HIGH_BAND_WIDTH);
-    if (ret != ACL_SUCCESS) {
-        return Status::Error(kExitInvalidArgument, "device payload aclrtMalloc failed: size=" +
-                                                       std::to_string(allocationSize) +
-                                                       " ret=" + std::to_string(ret));
+    auto buffer = Trans::Device{}.MakeBuffer();
+    if (!buffer) {
+        return Status::Error(kExitInvalidArgument, "device payload buffer creation failed");
     }
-    const auto baseAddr = AlignUp(reinterpret_cast<std::uintptr_t>(ptr), alignment);
-    deviceBuffer = std::shared_ptr<void>(reinterpret_cast<void*>(baseAddr),
-                                         [ptr](void*) { (void)aclrtFree(ptr); });
+    auto owner = buffer->MakeDeviceBuffer(allocationSize);
+    if (!owner) {
+        return Status::Error(kExitInvalidArgument, "device payload MakeDeviceBuffer failed: size=" +
+                                                       std::to_string(allocationSize));
+    }
+    const auto baseAddr = AlignUp(reinterpret_cast<std::uintptr_t>(owner.get()), alignment);
+    deviceBuffer = std::shared_ptr<void>(std::move(owner), reinterpret_cast<void*>(baseAddr));
     return Status::Success();
 }
 
@@ -121,13 +127,18 @@ Status CopyHostToDevice(const std::vector<std::uint8_t>& hostBuffer, std::uintpt
                         const std::string& context)
 {
     if (hostBuffer.empty()) { return Status::Success(); }
-    const auto ret = aclrtMemcpy(reinterpret_cast<void*>(deviceAddr), hostBuffer.size(),
-                                 hostBuffer.data(), hostBuffer.size(), ACL_MEMCPY_HOST_TO_DEVICE);
-    if (ret != ACL_SUCCESS) {
+    auto* stream = GetThreadStream();
+    if (stream == nullptr) {
+        return Status::Error(kExitInvalidArgument, "device payload stream creation failed");
+    }
+    const auto status =
+        stream->HostToDevice(const_cast<void*>(static_cast<const void*>(hostBuffer.data())),
+                             reinterpret_cast<void*>(deviceAddr), hostBuffer.size());
+    if (!status.Success()) {
         const auto contextText = context.empty() ? "" : " " + context;
         return Status::Error(kExitInvalidArgument,
                              "device payload" + contextText + " host-to-device copy failed: size=" +
-                                 std::to_string(hostBuffer.size()) + " ret=" + std::to_string(ret));
+                                 std::to_string(hostBuffer.size()) + " " + status.ToString());
     }
     return Status::Success();
 }
@@ -147,7 +158,7 @@ UC::ASU::MemoryRegion MakeDeviceRegion(std::uint64_t addr, std::size_t size,
                                        std::int32_t logicalDeviceId)
 {
     UC::ASU::MemoryRegion region;
-    region.memoryType = UC::ASU::MemoryType::ASCEND_DEVICE;
+    region.memoryType = UC::ASU::MemoryType::DEVICE;
     region.addr = addr;
     region.size = size;
     region.deviceId = logicalDeviceId;
@@ -229,17 +240,22 @@ Status BufferAllocator::CopyDeviceBuffersToHost(BufferSet& buffers) const
                              "device payload entry/host buffer count mismatch");
     }
 
+    auto* stream = GetThreadStream();
+    if (stream == nullptr) {
+        return Status::Error(kExitInvalidArgument, "device payload stream creation failed");
+    }
+
     for (std::size_t index = 0; index < buffers.ownedBuffers.size(); ++index) {
         auto& hostBuffer = buffers.ownedBuffers[index];
         if (hostBuffer.empty()) { continue; }
-        auto ret = aclrtMemcpy(hostBuffer.data(), hostBuffer.size(),
-                               reinterpret_cast<void*>(buffers.entries[index].buffer.region.addr),
-                               hostBuffer.size(), ACL_MEMCPY_DEVICE_TO_HOST);
-        if (ret != ACL_SUCCESS) {
+        const auto status =
+            stream->DeviceToHost(reinterpret_cast<void*>(buffers.entries[index].buffer.region.addr),
+                                 hostBuffer.data(), hostBuffer.size());
+        if (!status.Success()) {
             return Status::Error(
                 kExitInvalidArgument,
                 "device payload device-to-host copy failed: index=" + std::to_string(index) +
-                    " size=" + std::to_string(hostBuffer.size()) + " ret=" + std::to_string(ret));
+                    " size=" + std::to_string(hostBuffer.size()) + " " + status.ToString());
         }
     }
     return Status::Success();

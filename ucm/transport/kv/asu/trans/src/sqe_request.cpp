@@ -21,7 +21,6 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include <acl/acl.h>
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -159,23 +158,8 @@ Status PackSubBatchRequest(ProtocolManager& protocolManager, BufferManager& send
         return status;
     }
 
-    if (subBatchContext.sendSge.memory_type == MemoryType::ASCEND_DEVICE) {
-        std::vector<std::uint8_t> staging(packedSize, 0);
-        status = protocolManager.PackRequest(staging.data(), opcode, request);
-        if (status.ok()) {
-            const auto ret =
-                aclrtMemcpy(reinterpret_cast<void*>(subBatchContext.sendSge.device_addr),
-                            packedSize, staging.data(), packedSize, ACL_MEMCPY_HOST_TO_DEVICE);
-            if (ret != ACL_SUCCESS) {
-                status = Status::Error(
-                    StatusCode::INTERNAL_ERROR,
-                    "copy packed SQE to device memory failed ret=" + std::to_string(ret));
-            }
-        }
-    } else {
-        status = protocolManager.PackRequest(
-            reinterpret_cast<void*>(subBatchContext.sendSge.local_addr), opcode, request);
-    }
+    status = protocolManager.PackRequest(
+        reinterpret_cast<void*>(subBatchContext.sendSge.local_addr), opcode, request);
     if (!status.ok()) {
         UC_ERROR("Pack sub-batch request failed opcode={} cid={} code={} message={}",
                  static_cast<int>(opcode), subBatchContext.cid, static_cast<int>(status.code),

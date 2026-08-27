@@ -22,12 +22,12 @@
  * SOFTWARE.
  * */
 #include "buffer_manager.h"
-#include <acl/acl.h>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
 #include "logger.h"
-#include "trans/ascend/ascend_buffer.h"
+#include "trans/detail/reserved_buffer.h"
+#include "trans/device.h"
 
 namespace UC::ASU {
 
@@ -51,10 +51,14 @@ bool GetSlotStride(std::size_t capacity, std::size_t& stride)
 
 Status BufferManager::BufferRegion::Create(MemoryType type, std::size_t size, BufferRegion& region)
 {
-    Trans::AscendBuffer ascendBuffer;
+    auto buffer = Trans::Device{}.MakeBuffer();
+    if (!buffer) {
+        return Status::Error(StatusCode::INTERNAL_ERROR, "failed to create runtime buffer");
+    }
+
     switch (type) {
         case MemoryType::HOST: {
-            auto owner = ascendBuffer.MakeHostBuffer(size);
+            auto owner = buffer->MakeHostBuffer(size);
             if (!owner) {
                 return Status::Error(StatusCode::INTERNAL_ERROR, "failed to allocate host memory");
             }
@@ -64,8 +68,12 @@ Status BufferManager::BufferRegion::Create(MemoryType type, std::size_t size, Bu
             return Status::OK();
         }
         case MemoryType::HOST_PINNED: {
+            if (!buffer->SupportsHostMappedDeviceBuffer()) {
+                return Status::Error(StatusCode::UNSUPPORTED,
+                                     "host-mapped device buffer not supported by runtime");
+            }
             void* deviceAddr = nullptr;
-            auto owner = ascendBuffer.MakeHostMappedDeviceBuffer(size, &deviceAddr);
+            auto owner = buffer->MakeHostMappedDeviceBuffer(size, &deviceAddr);
             if (!owner) {
                 return Status::Error(StatusCode::INTERNAL_ERROR,
                                      "failed to allocate host-pinned memory");
@@ -73,8 +81,8 @@ Status BufferManager::BufferRegion::Create(MemoryType type, std::size_t size, Bu
             region = {owner, owner.get(), deviceAddr, TransProvider::MemType::MEM_DEVICE};
             return Status::OK();
         }
-        case MemoryType::ASCEND_DEVICE: {
-            auto owner = ascendBuffer.MakeDeviceBuffer(size);
+        case MemoryType::DEVICE: {
+            auto owner = buffer->MakeDeviceBuffer(size);
             if (!owner) {
                 return Status::Error(StatusCode::INTERNAL_ERROR,
                                      "failed to allocate device memory");
@@ -132,11 +140,11 @@ Status BufferManager::Init(std::string name, MemoryType type, std::size_t slot_c
     auto allocStatus = BufferRegion::Create(memory_type_, total, region_);
     if (!allocStatus.ok()) { return allocStatus; }
 
-    if (memory_type_ == MemoryType::ASCEND_DEVICE) {
-        if (aclrtMemset(region_.localAddr, total, 0, total) != ACL_SUCCESS) {
+    if (memory_type_ == MemoryType::DEVICE) {
+        if (const auto memStatus = UC::Trans::Memset(region_.localAddr, total, 0);
+            memStatus.Failure()) {
             region_.Reset();
-            return Status::Error(StatusCode::INTERNAL_ERROR,
-                                 name_ + ": failed to zero device memory");
+            return Status::Error(StatusCode::INTERNAL_ERROR, name_ + ": failed to zero memory");
         }
     } else {
         std::memset(region_.localAddr, 0, total);
@@ -189,10 +197,9 @@ Status BufferManager::Free(std::uint32_t slot_index)
         return Status::Error(StatusCode::INVALID_ARGUMENT, name_ + ": slot_index out of range");
     }
     auto* p = static_cast<char*>(region_.localAddr) + slot_index * slot_stride_;
-    if (memory_type_ == MemoryType::ASCEND_DEVICE) {
-        if (aclrtMemset(p, slot_stride_, 0, slot_stride_) != ACL_SUCCESS) {
-            return Status::Error(StatusCode::INTERNAL_ERROR,
-                                 name_ + ": failed to zero device memory");
+    if (memory_type_ == MemoryType::DEVICE) {
+        if (const auto memStatus = UC::Trans::Memset(p, slot_stride_, 0); memStatus.Failure()) {
+            return Status::Error(StatusCode::INTERNAL_ERROR, name_ + ": failed to zero memory");
         }
     } else {
         std::memset(p, 0, slot_stride_);

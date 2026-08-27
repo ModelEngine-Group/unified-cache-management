@@ -1,5 +1,4 @@
 #include "kv_test/payload_buffer_runtime.h"
-#include <acl/acl.h>
 #include <algorithm>
 #include <cstdlib>
 #include "kv_test/kv_test_config_helpers.h"
@@ -53,23 +52,23 @@ std::int32_t ResolvePayloadDeviceId(const KvTestConfig& config)
 
 namespace {
 
-Status SetUpAclThreadDevice(std::int32_t deviceId, bool* initialized)
+Status SetUpThreadDevice(Trans::Device& device, std::int32_t deviceId, bool* initialized)
 {
     thread_local std::int32_t readyDeviceId = -1;
     if (readyDeviceId == deviceId) { return Status::Success(); }
 
-    auto ret = aclInit(nullptr);
-    if (ret != ACL_SUCCESS && ret != ACL_ERROR_REPEAT_INITIALIZE) {
+    const auto initStatus = device.Init();
+    if (initStatus.Failure() && initStatus != UC::Status::DuplicateKey()) {
         return Status::Error(kExitInvalidArgument,
-                             "payload buffer aclInit failed: ret=" + std::to_string(ret));
+                             "payload buffer Device::Init failed: " + initStatus.ToString());
     }
-    if (initialized != nullptr) { *initialized = ret == ACL_SUCCESS; }
+    if (initialized != nullptr) { *initialized = initStatus.Success(); }
 
-    ret = aclrtSetDevice(deviceId);
-    if (ret != ACL_SUCCESS) {
+    const auto setupStatus = device.Setup(deviceId);
+    if (!setupStatus.Success()) {
         return Status::Error(kExitInvalidArgument,
-                             "payload buffer aclrtSetDevice failed: device_id=" +
-                                 std::to_string(deviceId) + " ret=" + std::to_string(ret));
+                             "payload buffer Device::Setup failed: device_id=" +
+                                 std::to_string(deviceId) + " " + setupStatus.ToString());
     }
     readyDeviceId = deviceId;
     return Status::Success();
@@ -77,14 +76,14 @@ Status SetUpAclThreadDevice(std::int32_t deviceId, bool* initialized)
 
 }  // namespace
 
-PayloadBufferAclRuntime::~PayloadBufferAclRuntime() { TearDown(); }
+PayloadBufferRuntime::~PayloadBufferRuntime() { TearDown(); }
 
-Status PayloadBufferAclRuntime::MaybeSetUp(const KvTestConfig& config)
+Status PayloadBufferRuntime::MaybeSetUp(const KvTestConfig& config)
 {
     if (!UsesDevicePayloadBuffers(config)) { return Status::Success(); }
 
     deviceId_ = ResolvePayloadDeviceId(config);
-    auto status = SetUpAclThreadDevice(deviceId_, &initialized_);
+    auto status = SetUpThreadDevice(device_, deviceId_, &initialized_);
     if (!status.Ok()) {
         TearDown();
         return status;
@@ -93,14 +92,14 @@ Status PayloadBufferAclRuntime::MaybeSetUp(const KvTestConfig& config)
     return Status::Success();
 }
 
-void PayloadBufferAclRuntime::TearDown()
+void PayloadBufferRuntime::TearDown()
 {
     if (deviceSet_) {
-        (void)aclrtResetDevice(deviceId_);
+        (void)device_.Reset(deviceId_);
         deviceSet_ = false;
     }
     if (initialized_) {
-        (void)aclFinalize();
+        (void)device_.Finalize();
         initialized_ = false;
     }
 }
@@ -110,10 +109,11 @@ bool UsesDevicePayloadBuffers(const KvTestConfig& config)
     return HasFakeProvider(config) || IsAivProviderMode(config);
 }
 
-Status MaybeSetUpPayloadAclThread(const KvTestConfig& config)
+Status MaybeSetUpPayloadThread(const KvTestConfig& config)
 {
     if (!UsesDevicePayloadBuffers(config)) { return Status::Success(); }
-    return SetUpAclThreadDevice(ResolvePayloadDeviceId(config), nullptr);
+    Trans::Device device;
+    return SetUpThreadDevice(device, ResolvePayloadDeviceId(config), nullptr);
 }
 
 }  // namespace UC::KVTest
