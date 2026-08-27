@@ -69,6 +69,7 @@ user-guide/trace_mode
 :::{toctree}
 :caption: Developer Guide
 :maxdepth: 1
+developer-guide/build_from_source
 developer-guide/contribute
 developer-guide/deepdive_ucm
 developer-guide/add_metrics

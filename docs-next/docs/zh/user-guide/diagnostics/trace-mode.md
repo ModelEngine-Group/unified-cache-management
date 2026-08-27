@@ -75,6 +75,7 @@ Trace 模式作为 OpenAI 兼容的 vLLM 服务器部署。以与正常 UCM 部�
 以 Qwen/Qwen2.5-14B-Instruct 模型为例：
 
 ```bash
+export ENABLE_UCM_PATCH=1
 vllm serve Qwen/Qwen2.5-14B-Instruct \
   --max-model-len 32000 \
   --tensor-parallel-size 2 \
