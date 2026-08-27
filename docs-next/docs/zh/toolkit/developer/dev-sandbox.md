@@ -1,10 +1,10 @@
 # dev-sandbox 开发者文档
 
-> 面向开发者的参考文档：构建、原生子命令（`copy`/`trans`/`aio`）、完整 case 表与底层参数。日常使用见 [README.md](./README.md)。
+> 面向开发者的参考文档：构建、原生子命令（`copy`/`trans`/`aio`）、完整 case 表与底层参数。日常使用见 [README.md](../user/dev-sandbox.md)。
 
 CMake C++17 性能测试项目。toolkit 负责构建项目、定位二进制并转发子命令参数；`copy`、`trans`、`aio` 的业务参数由底层二进制解析。
 
-← 返回 [UCM Toolkit 顶层文档](../../../README.md)
+← 返回 [UCM Toolkit 文档](../index.md)
 
 ## 依赖
 

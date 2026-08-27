@@ -7,7 +7,7 @@
 - **手动模式**（默认）：直接指定 `--shard-size` / `--shard-number` / `--block-number` 等。
 - **模型驱动模式**：传 `--model` 指向模型目录，自动读取 `config.json` 判定架构（GQA / MLA / DSA）并计算 `shard-size` / `shard-number` / `block-number`，再转发给同一脚本，实现自动化带宽测试。
 
-← 返回 [UCM Toolkit 顶层文档](../../../README.md)
+← 返回 [UCM Toolkit 文档](../index.md)
 
 ## 依赖
 
