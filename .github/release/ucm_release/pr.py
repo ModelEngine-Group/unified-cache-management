@@ -208,6 +208,7 @@ def resolve_pr_request(
         pr_number=pr_number,
         author=author,
         run_id=run_id,
+        tag_prefix=str(formal_policy.get("runtime_image_tag_prefix", "")),
     )
     existing_builds = {
         str(match["wheel_id"]): _build_from_registry_record(match["builder_record"])

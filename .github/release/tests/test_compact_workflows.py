@@ -43,6 +43,7 @@ def test_release_core_is_input_driven_and_uses_crane_before_plan() -> None:
         "release_kind",
         "is_prerelease",
         "source_sha",
+        "publication_scope",
     }
     assert all(value["required"] is True for value in inputs.values())
     assert inputs["is_prerelease"]["type"] == "boolean"
@@ -90,6 +91,9 @@ def test_release_core_is_input_driven_and_uses_crane_before_plan() -> None:
     candidate_text = yaml.safe_dump(jobs["select-runtime-candidates"])
     resolve_text = yaml.safe_dump(jobs["resolve-upstreams"])
     plan_text = yaml.safe_dump(jobs["plan"])
+    plan_run = next(
+        step["run"] for step in jobs["plan"]["steps"] if step.get("id") == "plan"
+    )
     assert "--release-type" in candidate_text
     assert "inputs.release_type" in candidate_text
     assert "--release-type" in resolve_text
@@ -97,7 +101,7 @@ def test_release_core_is_input_driven_and_uses_crane_before_plan() -> None:
     assert "--runtime-selection" in plan_text
     assert "--release-type" in plan_text
     assert "inputs.release_type" in plan_text
-    assert ".release_type == $type" in plan_text
+    assert ".release_type == $type" in plan_run
     assert "image_index_matrix" in plan_text
     assert "'{include:[.families[]" in plan_text
 
@@ -187,7 +191,11 @@ def test_nightly_schedule_creates_or_reuses_a_tag_then_calls_core_in_same_run() 
     }
     jobs = workflow["jobs"]
     prepare = jobs["prepare-nightly"]
-    assert prepare["if"] == "${{ github.ref == 'refs/heads/develop' }}"
+    assert "github.ref == 'refs/heads/develop'" in prepare["if"]
+    assert (
+        "github.repository == 'ModelEngine-Group/unified-cache-management'"
+        in prepare["if"]
+    )
     assert prepare["permissions"] == {"contents": "write"}
     checkout = next(
         step
@@ -216,10 +224,12 @@ def test_nightly_schedule_creates_or_reuses_a_tag_then_calls_core_in_same_run() 
         "release_kind",
         "is_prerelease",
         "source_sha",
+        "publication_scope",
     }
     assert release["with"]["source_sha"] == (
         "${{ needs.prepare-nightly.outputs.source_sha }}"
     )
+    assert release["with"]["publication_scope"] == "official"
     assert release["secrets"] == "inherit"
 
 
@@ -397,7 +407,11 @@ def test_image_failure_notes_are_not_overwritten_by_the_fallback() -> None:
 def test_tag_entry_only_classifies_four_release_types_and_calls_core() -> None:
     workflow = _load("release-tag.yml")
     assert workflow["on"] == {"push": {"tags": ["v*", "draft/v*", "nightly/v*"]}}
-    assert set(workflow["jobs"]) == {"classify-tag", "release"}
+    assert set(workflow["jobs"]) == {
+        "classify-tag",
+        "release-official",
+        "release-fork",
+    }
     classify = workflow["jobs"]["classify-tag"]
     assert set(classify["outputs"]) == {
         "git_tag",
@@ -407,6 +421,7 @@ def test_tag_entry_only_classifies_four_release_types_and_calls_core() -> None:
         "chart_version",
         "image_version",
         "is_prerelease",
+        "publication_scope",
     }
     classify_run = next(
         step["run"] for step in classify["steps"] if step.get("id") == "classify"
@@ -414,21 +429,32 @@ def test_tag_entry_only_classifies_four_release_types_and_calls_core() -> None:
     assert '--tag "${RELEASE_TAG}" --classify' in classify_run
     assert "release_type=$(jq -r '.release_type'" in classify_run
 
-    release = workflow["jobs"]["release"]
-    assert release["needs"] == "classify-tag"
-    assert release["uses"] == "./.github/workflows/release-ucm.yml"
-    assert set(release["with"]) == {
-        "git_tag",
-        "release_type",
-        "version",
-        "chart_version",
-        "image_version",
-        "release_kind",
-        "is_prerelease",
-        "source_sha",
-    }
-    assert release["with"]["source_sha"] == "${{ github.sha }}"
-    assert release["secrets"] == "inherit"
+    assert "${GITHUB_REPOSITORY,,}" in classify_run
+    assert "modelengine-group/unified-cache-management" in classify_run
+
+    for job_name, scope in (
+        ("release-official", "official"),
+        ("release-fork", "fork"),
+    ):
+        release = workflow["jobs"][job_name]
+        assert release["needs"] == "classify-tag"
+        assert release["uses"] == "./.github/workflows/release-ucm.yml"
+        assert set(release["with"]) == {
+            "git_tag",
+            "release_type",
+            "version",
+            "chart_version",
+            "image_version",
+            "release_kind",
+            "is_prerelease",
+            "source_sha",
+            "publication_scope",
+        }
+        assert release["with"]["source_sha"] == "${{ github.sha }}"
+        assert release["with"]["publication_scope"] == scope
+        assert scope in release["if"]
+    assert workflow["jobs"]["release-official"]["secrets"] == "inherit"
+    assert "secrets" not in workflow["jobs"]["release-fork"]
 
 
 def test_common_core_opens_the_exact_tag_before_builds() -> None:
@@ -538,6 +564,10 @@ def test_only_open_and_successful_nightly_finalize_can_publicize_release() -> No
 
 def test_remote_writers_use_environment_and_minimum_permissions() -> None:
     jobs = _load("release-ucm.yml")["jobs"]
+    scoped_environment = (
+        "${{ inputs.publication_scope == 'official' && "
+        "'release-production' || 'fork-preview' }}"
+    )
     for name in (
         "open-release",
         "publish-release-artifacts",
@@ -547,7 +577,7 @@ def test_remote_writers_use_environment_and_minimum_permissions() -> None:
         "publish-chart-oci",
         "update-release-images",
     ):
-        assert jobs[name]["environment"] == "release-production"
+        assert jobs[name]["environment"] == scoped_environment
         assert jobs[name]["permissions"]["contents"] in {"read", "write"}
     assert "packages" not in jobs["publish-pypi"]["permissions"]
     assert jobs["publish-chart-oci"]["permissions"]["packages"] == "write"
@@ -570,6 +600,36 @@ def test_remote_writers_use_environment_and_minimum_permissions() -> None:
         assert "release_type" not in channel_job
         assert "!= draft" not in channel_job
         assert "!= nightly" not in channel_job
+
+
+def test_publication_scope_and_repository_ownership_fail_closed_at_writers() -> None:
+    core = (WORKFLOWS / "release-ucm.yml").read_text(encoding="utf-8")
+    child = (WORKFLOWS / "_build-release-image.yml").read_text(encoding="utf-8")
+    builders = (WORKFLOWS / "sync-builders.yml").read_text(encoding="utf-8")
+    cleanup = (WORKFLOWS / "cleanup-ucm-release.yml").read_text(encoding="utf-8")
+
+    assert ".publication_scope == $scope" in core
+    assert ".repository | ascii_downcase" in core
+    assert 'test "${GH_REPO}" = "${GITHUB_REPOSITORY}"' in core
+    assert "Chart OCI target is outside current owner namespace" in core
+    assert "GHCR index target is outside current owner namespace" in core
+    assert core.count('publication_scope == "official"') >= 2
+    assert core.count("modelengine-group/unified-cache-management") >= 2
+
+    assert ".publication_scope == $scope" in child
+    assert "GHCR member target is outside current owner namespace" in child
+    assert 'publication_scope == "official"' in child
+    assert "modelengine-group/unified-cache-management" in child
+
+    assert "[.builders[].target_repository] | all(startswith($prefix))" in builders
+    assert "Builder target is outside current owner namespace" in builders
+    assert "Builder candidate is outside current owner namespace" in builders
+
+    cleanup_job = _load("cleanup-ucm-release.yml")["jobs"]["cleanup"]
+    assert "release-production" in cleanup_job["environment"]
+    assert "fork-preview" in cleanup_job["environment"]
+    assert "Authenticate to DockerHub when configured" in cleanup
+    assert "modelengine-group/unified-cache-management" in cleanup.lower()
 
 
 def test_builder_sync_consumes_selection_and_uses_digest_pinned_mirror_only() -> None:
@@ -701,6 +761,7 @@ def test_reusable_builds_keep_functional_inputs() -> None:
             "runner",
             "plan_artifact",
             "source_ref",
+            "publication_scope",
         },
         "_build-chart.yml": {"plan_artifact", "source_ref", "retention_days"},
     }
@@ -874,16 +935,18 @@ def test_ucm_build_bot_uses_probe_pipeline_without_hardcoded_capabilities() -> N
     assert "select-plan.result == 'success'" in jobs["build-wheels"]["if"]
     assert "build-wheels.result == 'success'" in jobs["build-images"]["if"]
     text = (WORKFLOWS / "ucm-build-bot.yml").read_text(encoding="utf-8")
-    hint = (WORKFLOWS / "ucm-build-hint.yml").read_text(encoding="utf-8")
+    assert not (WORKFLOWS / "ucm-build-hint.yml").exists()
     assert "runtime inspect" in text
     assert "runtime aggregate" in text
     assert "builders scan-registry" in text
     assert "runtime resolve" in text
     assert "upstreams candidates" in text
     assert text.count("./.github/workflows/_probe-runtime.yml") == 2
-    assert "opaque" in hint
-    assert "pep440" not in hint.lower()
-    assert "cann900" not in text + hint
+    assert "opaque" in text
+    assert "pep440" not in text.lower()
+    assert "cann900" not in text
+    assert "## `/ucm-build`" in text
+    assert "build receipt" in text
     assert "--runtime-selection" in text
     assert "profile_id==$profile" in text
 
@@ -909,11 +972,15 @@ def test_pr_member_and_index_publication_are_separate_dynamic_matrices() -> None
     assert ".families[]" in member_step
     assert ".members[]" in member_step
     assert '"docker://${target_ref}"' in member_step
+    assert "GITHUB_REPOSITORY_OWNER" in member_step
+    assert "outside current owner namespace" in member_step
     assert "${tag}-${arch}" not in member_step
     index_step = indexes["steps"][-1]["run"]
     assert "matrix.members" not in index_step
     assert "jq -er '.[]'" in index_step
     assert '"${member_refs[@]}"' in index_step
+    assert "GITHUB_REPOSITORY_OWNER" in index_step
+    assert "outside current owner namespace" in index_step
     assert "-amd64" not in index_step
     assert "-arm64" not in index_step
 
@@ -933,6 +1000,13 @@ def test_pr_receipt_is_always_posted_and_has_no_package_write_permission() -> No
     assert "ucm-builder-finalize-failure-run-${{ github.run_id }}" in text
     workflow_text = (WORKFLOWS / "ucm-build-bot.yml").read_text(encoding="utf-8")
     assert "builder=${{ needs.sync-pr-builders.result }}" in workflow_text
+
+
+def test_pr_cleanup_matches_owner_prefixed_runtime_tags() -> None:
+    cleanup = (WORKFLOWS / "ucm-pr-cleanup.yml").read_text(encoding="utf-8")
+
+    assert 'regex="(^|-)pr-${pr_number}-"' in cleanup
+    assert 'regex="(^|-)pr-[0-9]+-"' in cleanup
 
 
 def test_bot_control_plane_is_trusted_while_builds_use_pr_source() -> None:
@@ -1056,9 +1130,13 @@ def test_trusted_tag_image_publishes_directly_without_oci_artifact() -> None:
         "runner",
         "plan_artifact",
         "source_ref",
+        "publication_scope",
     }
     job = workflow["jobs"]["publish"]
-    assert job["environment"] == "release-production"
+    assert job["environment"] == (
+        "${{ inputs.publication_scope == 'official' && "
+        "'release-production' || 'fork-preview' }}"
+    )
     assert workflow["permissions"] == {"contents": "read", "packages": "write"}
     text = (WORKFLOWS / "_build-release-image.yml").read_text(encoding="utf-8")
     assert "ref: ${{ inputs.source_ref }}" in text
@@ -1076,6 +1154,9 @@ def test_trusted_tag_image_publishes_directly_without_oci_artifact() -> None:
         "./.github/workflows/_build-release-image.yml"
     )
     assert release["build-images"]["with"]["source_ref"] == "${{ inputs.source_sha }}"
+    assert release["build-images"]["with"]["publication_scope"] == (
+        "${{ inputs.publication_scope }}"
+    )
     assert "build-validation-images" not in release
 
 

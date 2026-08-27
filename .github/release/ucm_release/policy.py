@@ -16,6 +16,7 @@ from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
 from . import core
+from . import runtime as runtime_ops
 
 RELEASE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RELEASE = RELEASE_ROOT / "release.yaml"
@@ -23,6 +24,7 @@ DEFAULT_PLATFORMS = RELEASE_ROOT / "platforms.yaml"
 DEFAULT_SCHEMA = RELEASE_ROOT / "schemas" / "config.schema.json"
 DEFAULT_BUILD_REQUIREMENTS = RELEASE_ROOT / "requirements" / "wheel-build.txt"
 DEFAULT_RUNTIME_REQUIREMENTS = RELEASE_ROOT / "requirements" / "wheel-runtime.txt"
+OFFICIAL_REPOSITORY = "ModelEngine-Group/unified-cache-management"
 
 _COMPATIBILITY_SOURCE = {
     "staging_repository": "ghcr.io/{owner}/ucm-release-staging",
@@ -38,6 +40,21 @@ _MATRIX_LIMITS = {
 _SCAN_LIMITS = {"max_tags_per_repository": 1024, "max_selected_upstreams": 64}
 RELEASE_TYPES = ("stable", "prerelease", "draft", "nightly")
 PUBLISH_CHANNELS = core.PUBLISH_CHANNELS
+
+
+def publication_identity(repository: str) -> tuple[str, str]:
+    """Derive immutable publication scope and Runtime tag prefix."""
+
+    parts = repository.split("/", 1)
+    if len(parts) != 2 or not all(parts):
+        raise ValueError("repository identity must be owner/name")
+    if repository.casefold() == OFFICIAL_REPOSITORY.casefold():
+        return "official", ""
+    owner = parts[0]
+    owner_component = runtime_ops.sanitize_oci_tag_component(
+        owner.lower(), max_length=len(owner)
+    )
+    return "fork", f"{owner_component}-"
 
 
 def _companion_path(release_path: Path, explicit: Path | None, default: Path) -> Path:
@@ -224,6 +241,9 @@ def resolve(
         repository, repository_root=repository_root
     )
     owner, repo = resolved_repository.split("/", 1)
+    publication_scope, runtime_image_tag_prefix = publication_identity(
+        resolved_repository
+    )
 
     def resolve_repository_templates(value: Any) -> Any:
         if isinstance(value, str):
@@ -247,6 +267,10 @@ def resolve(
         }
     )
     selected_profile, normalized_publish = _select_release_profile(merged, release_type)
+    if publication_scope == "fork":
+        for channel in ("pypi", "dockerhub"):
+            selected_profile["publish"][channel] = False
+            normalized_publish[channel]["enabled"] = False
     merged["publish"] = normalized_publish
     merged["release_type"] = release_type
     merged["release_profile"] = selected_profile
@@ -260,6 +284,8 @@ def resolve(
     merged.update(
         {
             "repository": resolved_repository,
+            "publication_scope": publication_scope,
+            "runtime_image_tag_prefix": runtime_image_tag_prefix,
             "ucm_version": version,
             "release_tag": f"v{version}",
             "matrix_limits": copy.deepcopy(_MATRIX_LIMITS),

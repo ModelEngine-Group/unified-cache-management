@@ -23,9 +23,12 @@ policy = importlib.import_module("ucm_release.policy")
 upstream = importlib.import_module("ucm_release.upstream")
 
 
-def _fixture_policy(release_type: str = "stable"):
+def _fixture_policy(
+    release_type: str = "stable",
+    repository: str = "release-org/unified-cache-management",
+):
     formal = policy.resolve(
-        repository="release-org/unified-cache-management",
+        repository=repository,
         version_override="0.7.60rc1",
         release_type=release_type,
     )
@@ -35,14 +38,17 @@ def _fixture_policy(release_type: str = "stable"):
     return formal
 
 
-def _inputs(release_type: str = "stable"):
-    formal = _fixture_policy(release_type)
+def _inputs(
+    release_type: str = "stable",
+    repository: str = "release-org/unified-cache-management",
+):
+    formal = _fixture_policy(release_type, repository)
     selection = upstream.resolve_upstreams(
         formal,
         tag_fixture=core.load_json(TAG_FIXTURE),
     )
     catalog = builders.catalog_from_selection(
-        selection, owner="release-org", formal_policy=formal
+        selection, owner=repository.split("/", 1)[0], formal_policy=formal
     )
     observations = {
         item["id"]: {
@@ -58,8 +64,11 @@ def _inputs(release_type: str = "stable"):
     return formal, selection, catalog
 
 
-def _plan(release_type: str = "stable"):
-    formal, selection, catalog = _inputs(release_type)
+def _plan(
+    release_type: str = "stable",
+    repository: str = "release-org/unified-cache-management",
+):
+    formal, selection, catalog = _inputs(release_type, repository)
     return compact.resolve_plan(
         formal,
         runtime_selection=selection,
@@ -242,6 +251,9 @@ def test_plan_keeps_top_level_contract_without_problem_or_index_matrix() -> None
     plan = _plan()
     assert set(plan) == {
         "kind",
+        "repository",
+        "publication_scope",
+        "runtime_image_tag_prefix",
         "route",
         "release_type",
         "version",
@@ -260,9 +272,45 @@ def test_plan_keeps_top_level_contract_without_problem_or_index_matrix() -> None
     assert "image_index_matrix" not in plan
     assert "problems" not in plan
     assert plan["release_type"] == "stable"
+    assert plan["repository"] == "release-org/unified-cache-management"
+    assert plan["publication_scope"] == "fork"
+    assert plan["runtime_image_tag_prefix"] == "release-org-"
     keys = _all_keys(plan)
     assert not {key for key in keys if "authority" in key or "mooncake" in key}
     assert "@sha256:" in json.dumps(plan)
+
+
+def test_plan_rejects_repository_scope_or_runtime_prefix_drift() -> None:
+    formal, selection, catalog = _inputs()
+    wrong_scope = copy.deepcopy(formal)
+    wrong_scope["publication_scope"] = "official"
+    with pytest.raises(ValueError, match="scope does not match"):
+        compact.resolve_plan(
+            wrong_scope,
+            runtime_selection=selection,
+            builder_catalog=catalog,
+            route="release",
+        )
+
+    missing_prefix = copy.deepcopy(formal)
+    missing_prefix["runtime_image_tag_prefix"] = ""
+    with pytest.raises(ValueError, match="prefix does not match"):
+        compact.resolve_plan(
+            missing_prefix,
+            runtime_selection=selection,
+            builder_catalog=catalog,
+            route="release",
+        )
+
+    shared_channel = copy.deepcopy(formal)
+    shared_channel["publish"]["pypi"]["enabled"] = True
+    with pytest.raises(ValueError, match="fork publication cannot enable pypi"):
+        compact.resolve_plan(
+            shared_channel,
+            runtime_selection=selection,
+            builder_catalog=catalog,
+            route="release",
+        )
 
 
 def test_draft_coordinates_are_owned_by_the_plan_contract() -> None:
@@ -284,6 +332,38 @@ def test_draft_coordinates_are_owned_by_the_plan_contract() -> None:
     assert plan["release_kind"] == "draft"
     assert plan["is_prerelease"] is True
     assert plan["chart"]["version"] == "0.7.62-draft.4"
+
+
+def test_official_plan_keeps_runtime_and_wheel_coordinates_unchanged() -> None:
+    plan = _plan(repository=policy.OFFICIAL_REPOSITORY)
+    family = next(
+        item for item in plan["families"] if item["id"] == "vllm-v0.22.1-cu129"
+    )
+
+    assert plan["publication_scope"] == "official"
+    assert plan["runtime_image_tag_prefix"] == ""
+    assert family["target_tag"] == "v0.22.1-cu129-ucm-0.7.60rc1"
+    assert {wheel["wheel_version"] for wheel in plan["wheels"]} == {"0.7.60rc1"}
+
+
+def test_fork_owner_prefix_changes_runtime_tags_only() -> None:
+    formal, selection, builder_catalog = _inputs()
+    plan = compact.resolve_plan(
+        formal,
+        runtime_selection=selection,
+        builder_catalog=builder_catalog,
+        route="release",
+    )
+
+    assert all(
+        family["target_tag"].startswith("release-org-") for family in plan["families"]
+    )
+    assert all("release-org" not in wheel["dist_name"] for wheel in plan["wheels"])
+    assert all(
+        not builder["target_tag"].startswith("release-org-")
+        for builder in builder_catalog["builders"]
+    )
+    assert plan["chart"]["version"] == "0.7.60-rc.1"
 
 
 @pytest.mark.parametrize("release_type", policy.RELEASE_TYPES)
@@ -325,14 +405,16 @@ def test_family_members_are_the_authority_for_index_inputs() -> None:
             "image_id": "vllm-v0.22.1-cu129-amd64",
             "cpu_arch": "amd64",
             "reference": (
-                "ghcr.io/release-org/vllm-openai:" "v0.22.1-cu129-ucm-0.7.60rc1-amd64"
+                "ghcr.io/release-org/vllm-openai:"
+                "release-org-v0.22.1-cu129-ucm-0.7.60rc1-amd64"
             ),
         },
         {
             "image_id": "vllm-v0.22.1-cu129-arm64",
             "cpu_arch": "arm64",
             "reference": (
-                "ghcr.io/release-org/vllm-openai:" "v0.22.1-cu129-ucm-0.7.60rc1-arm64"
+                "ghcr.io/release-org/vllm-openai:"
+                "release-org-v0.22.1-cu129-ucm-0.7.60rc1-arm64"
             ),
         },
     ]
@@ -351,7 +433,7 @@ def test_formal_all_plan_can_be_retagged_for_pr_publication() -> None:
     )
 
     assert all(
-        family["target_tag"].startswith("pr-12-release-author-run-345-")
+        family["target_tag"].startswith("release-org-pr-12-release-author-run-345-")
         for family in retagged["families"]
     )
     assert all(
@@ -412,7 +494,7 @@ def test_multiple_pr_runtime_tags_with_same_capability_reuse_wheels() -> None:
     second["runtime_tag"] = "v0.22.1-cu129-ubuntu2404"
     second["runtime_digest"] = "sha256:" + "d" * 64
     second["os_version"] = "24.04"
-    second["target_tag"] = "v0.22.1-cu129-ubuntu2404-ucm-0.7.60rc1"
+    second["target_tag"] = "release-org-v0.22.1-cu129-ubuntu2404-ucm-0.7.60rc1"
     selected = [first, second]
     for runtime in selected:
         runtime["channel"] = "pinned"

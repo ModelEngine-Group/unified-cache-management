@@ -25,7 +25,7 @@ jobs:
     name: Cleanup · ${{ inputs.tag }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    environment: release-production
+    environment: ${{ github.repository == 'ModelEngine-Group/unified-cache-management' && 'release-production' || 'fork-preview' }}
     permissions:
       actions: write
       contents: write
@@ -51,7 +51,11 @@ jobs:
             | tar -xz -C "${RUNNER_TEMP}/crane" crane
           echo "${RUNNER_TEMP}/crane" >>"${GITHUB_PATH}"
       - name: Authenticate to DockerHub when configured
-        if: ${{ env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
+        if: >-
+          ${{
+            github.repository == 'ModelEngine-Group/unified-cache-management' &&
+            env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
+          }}
         run: |
           set -euo pipefail
           printf '%s' "${DOCKERHUB_TOKEN}" | docker login docker.io \
@@ -59,6 +63,7 @@ jobs:
       - name: Delete manifest resources in recovery-preserving phases
         run: |
           set -euo pipefail
+          test "${GH_REPO}" = "${GITHUB_REPOSITORY}"
           args=(tag --repository "${GH_REPO}" --tag "${CLEANUP_TAG}")
           if [ -n "${FAIL_RESOURCE}" ]; then
             args+=(--fail-resource "${FAIL_RESOURCE}")

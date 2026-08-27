@@ -22,6 +22,7 @@ jobs:
       chart_version: ${{ steps.classify.outputs.chart_version }}
       image_version: ${{ steps.classify.outputs.image_version }}
       is_prerelease: ${{ steps.classify.outputs.is_prerelease }}
+      publication_scope: ${{ steps.classify.outputs.publication_scope }}
     steps:
       - uses: actions/checkout@v4.2.2
         with:
@@ -40,6 +41,12 @@ jobs:
           set -euo pipefail
           classification="$(python scripts/materialize_version.py \
             --tag "${RELEASE_TAG}" --classify)"
+          repository="${GITHUB_REPOSITORY,,}"
+          if [ "${repository}" = modelengine-group/unified-cache-management ]; then
+            publication_scope=official
+          else
+            publication_scope=fork
+          fi
           {
             echo "git_tag=$(jq -r '.git_tag' <<<"${classification}")"
             echo "release_type=$(jq -r '.release_type' <<<"${classification}")"
@@ -48,11 +55,13 @@ jobs:
             echo "chart_version=$(jq -r '.chart_version' <<<"${classification}")"
             echo "image_version=$(jq -r '.image_version' <<<"${classification}")"
             echo "is_prerelease=$(jq -r '.is_prerelease' <<<"${classification}")"
+            echo "publication_scope=${publication_scope}"
           } >>"${GITHUB_OUTPUT}"
 
-  release:
-    name: Run common Release core
+  release-official:
+    name: Run official Release core
     needs: classify-tag
+    if: ${{ needs.classify-tag.outputs.publication_scope == 'official' }}
     permissions:
       actions: write
       contents: write
@@ -67,4 +76,25 @@ jobs:
       release_kind: ${{ needs.classify-tag.outputs.release_kind }}
       is_prerelease: ${{ needs.classify-tag.outputs.is_prerelease == 'true' }}
       source_sha: ${{ github.sha }}
+      publication_scope: official
     secrets: inherit
+
+  release-fork:
+    name: Run fork Release core
+    needs: classify-tag
+    if: ${{ needs.classify-tag.outputs.publication_scope == 'fork' }}
+    permissions:
+      actions: write
+      contents: write
+      packages: write
+    uses: ./.github/workflows/release-ucm.yml
+    with:
+      git_tag: ${{ needs.classify-tag.outputs.git_tag }}
+      release_type: ${{ needs.classify-tag.outputs.release_type }}
+      version: ${{ needs.classify-tag.outputs.version }}
+      chart_version: ${{ needs.classify-tag.outputs.chart_version }}
+      image_version: ${{ needs.classify-tag.outputs.image_version }}
+      release_kind: ${{ needs.classify-tag.outputs.release_kind }}
+      is_prerelease: ${{ needs.classify-tag.outputs.is_prerelease == 'true' }}
+      source_sha: ${{ github.sha }}
+      publication_scope: fork

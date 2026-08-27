@@ -15,6 +15,9 @@ on:
       source_ref:
         type: string
         required: true
+      publication_scope:
+        type: string
+        required: true
     secrets:
       DOCKERHUB_USERNAME:
         required: false
@@ -30,7 +33,7 @@ jobs:
     name: Build, verify, and publish
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 180
-    environment: release-production
+    environment: ${{ inputs.publication_scope == 'official' && 'release-production' || 'fork-preview' }}
     steps:
       - uses: actions/checkout@v4.2.2
         with:
@@ -51,10 +54,16 @@ jobs:
         name: Select trusted Tag image task
         env:
           IMAGE_ID: ${{ inputs.image_id }}
+          PUBLICATION_SCOPE: ${{ inputs.publication_scope }}
         run: |
           set -euo pipefail
           plan=input/plan/release-plan.json
           test "$(jq -r '.route' "${plan}")" = release
+          jq -e --arg scope "${PUBLICATION_SCOPE}" \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            '.publication_scope == $scope and
+             (.repository | ascii_downcase) == ($repository | ascii_downcase)' \
+            "${plan}" >/dev/null
           jq -e '(.publish.ghcr.enabled == true) or
                  (.publish.dockerhub.enabled == true)' "${plan}" >/dev/null
           mkdir -p out/receipts context
@@ -65,9 +74,18 @@ jobs:
           target_ref="$(jq -er --arg image "${IMAGE_ID}" \
             '.families[].members[] | select(.image_id == $image) | .reference' \
             "${plan}")"
-          case "${target_ref}" in ghcr.io/*:*) ;; *) exit 2 ;; esac
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          case "${target_ref}" in
+            "ghcr.io/${owner}/"*:*) ;;
+            *) echo "GHCR member target is outside current owner namespace" >&2; exit 2 ;;
+          esac
           dockerhub_ref=""
           if [ "$(jq -r '.publish.dockerhub.enabled' "${plan}")" = true ]; then
+            jq -e \
+              '.publication_scope == "official" and
+               (.repository | ascii_downcase) ==
+                 "modelengine-group/unified-cache-management"' \
+              "${plan}" >/dev/null
             namespace="$(jq -er '.publish.dockerhub.namespace' "${plan}")"
             repository="${target_ref%:*}"
             tag="${target_ref##*:}"
@@ -187,9 +205,19 @@ jobs:
           publish_member() {
             local channel="$1" reference="$2" digest_file="$3"
             if [ "${channel}" = ghcr ]; then
+              owner="${GITHUB_REPOSITORY_OWNER,,}"
+              case "${reference}" in
+                "ghcr.io/${owner}/"*:*) ;;
+                *) echo "GHCR member target is outside current owner namespace" >&2; return 2 ;;
+              esac
               printf '%s' "${GITHUB_TOKEN}" | docker login ghcr.io \
                 --username "${GITHUB_ACTOR}" --password-stdin || return 1
             else
+              jq -e \
+                '.publication_scope == "official" and
+                 (.repository | ascii_downcase) ==
+                   "modelengine-group/unified-cache-management"' \
+                "${plan}" >/dev/null || return 2
               test -n "${DOCKERHUB_USERNAME}" && test -n "${DOCKERHUB_TOKEN}"
               printf '%s' "${DOCKERHUB_TOKEN}" | docker login docker.io \
                 --username "${DOCKERHUB_USERNAME}" --password-stdin || return 1

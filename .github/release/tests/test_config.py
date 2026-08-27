@@ -382,6 +382,8 @@ def test_policy_resolve_selects_one_profile_and_normalizes_publication(
     resolved = policy.resolve(repository="release-org/ucm", release_type=release_type)
 
     assert resolved["release_type"] == release_type
+    assert resolved["publication_scope"] == "fork"
+    assert resolved["runtime_image_tag_prefix"] == "release-org-"
     assert resolved["release_profile"] == {
         "max_count": max_count,
         "max_minor_versions": max_minor_versions,
@@ -421,13 +423,58 @@ def test_policy_resolve_uses_only_the_selected_profile_switches(
     path = tmp_path / "release.yaml"
     path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
 
-    stable = policy.resolve(path, repository="release-org/ucm", release_type="stable")
-    draft = policy.resolve(path, repository="release-org/ucm", release_type="draft")
+    stable = policy.resolve(
+        path, repository=policy.OFFICIAL_REPOSITORY, release_type="stable"
+    )
+    draft = policy.resolve(
+        path, repository=policy.OFFICIAL_REPOSITORY, release_type="draft"
+    )
 
     assert stable["publish"]["ghcr"]["enabled"] is False
     assert stable["publish"]["pypi"]["enabled"] is False
     assert draft["publish"]["ghcr"]["enabled"] is True
     assert draft["publish"]["pypi"]["enabled"] is True
+    assert draft["publication_scope"] == "official"
+    assert draft["runtime_image_tag_prefix"] == ""
+
+
+def test_fork_scope_disables_shared_external_channels_only(tmp_path: Path) -> None:
+    policy = importlib.import_module("ucm_release.policy")
+    release = _release_policy()
+    release["release_profiles"]["stable"]["publish"].update(
+        {"pypi": True, "dockerhub": True}
+    )
+    path = tmp_path / "release.yaml"
+    path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
+
+    official = policy.resolve(
+        path, repository=policy.OFFICIAL_REPOSITORY, release_type="stable"
+    )
+    fork = policy.resolve(
+        path,
+        repository="SuperMarioYL/unified-cache-management",
+        release_type="stable",
+    )
+
+    assert official["publish"]["pypi"]["enabled"] is True
+    assert official["publish"]["dockerhub"]["enabled"] is True
+    assert fork["publication_scope"] == "fork"
+    assert fork["runtime_image_tag_prefix"] == "supermarioyl-"
+    assert fork["release_profile"]["publish"]["pypi"] is False
+    assert fork["release_profile"]["publish"]["dockerhub"] is False
+    assert fork["publish"]["pypi"]["enabled"] is False
+    assert fork["publish"]["dockerhub"]["enabled"] is False
+    assert fork["publish"]["ghcr"]["enabled"] is True
+    assert fork["publish"]["chart_oci"]["enabled"] is True
+    assert fork["publish"]["github_release"]["enabled"] is True
+
+
+def test_official_repository_identity_is_case_insensitive() -> None:
+    policy = importlib.import_module("ucm_release.policy")
+
+    assert policy.publication_identity(
+        "modelengine-group/UNIFIED-CACHE-MANAGEMENT"
+    ) == ("official", "")
 
 
 def test_builder_discovery_defaults_to_the_platform_policy() -> None:

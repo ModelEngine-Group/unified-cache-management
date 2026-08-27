@@ -1048,6 +1048,11 @@ def resolve_upstreams(
         runtime_id = re.sub(r"[^a-z0-9._-]+", "-", f"{product_id}-{tag}".lower()).strip(
             ".-"
         )
+        target_tag = runtime_contract.project_runtime_image_tag(
+            tag + image_suffix,
+            tag_prefix=str(release.get("runtime_image_tag_prefix", "")),
+            architectures=architectures,
+        )
         runtimes.append(
             {
                 "id": runtime_id,
@@ -1071,7 +1076,7 @@ def resolve_upstreams(
                 "version": candidate["version"],
                 "channel": candidate["channel"],
                 "target_repository": product["target_repository"],
-                "target_tag": tag + image_suffix,
+                "target_tag": target_tag,
             }
         )
     return validate_selection(

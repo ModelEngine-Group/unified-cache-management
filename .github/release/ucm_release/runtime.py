@@ -25,6 +25,7 @@ __all__ = [
     "parse_runtime_reference",
     "project_pr_publication",
     "project_pr_tag",
+    "project_runtime_image_tag",
     "render_receipt_markdown",
     "sanitize_oci_tag_component",
 ]
@@ -949,27 +950,75 @@ def _positive_integer_text(value: object, context: str) -> str:
     return text
 
 
+def _runtime_image_tag_prefix(value: object) -> str:
+    prefix = str(value)
+    if not prefix:
+        return ""
+    component = prefix.removesuffix("-")
+    if (
+        not prefix.endswith("-")
+        or component != component.lower()
+        or core.OCI_TAG_PATTERN.fullmatch(component) is None
+    ):
+        raise ValueError(
+            "runtime image tag prefix must be a lowercase OCI component ending in '-'"
+        )
+    return prefix
+
+
+def project_runtime_image_tag(
+    runtime_tag: str,
+    *,
+    tag_prefix: str = "",
+    architectures: Sequence[str] = (),
+) -> str:
+    """Prefix one Runtime tag while reserving room for member suffixes."""
+
+    prefix = _runtime_image_tag_prefix(tag_prefix)
+    if not isinstance(runtime_tag, str) or not runtime_tag:
+        raise ValueError("runtime image tag must be a non-empty string")
+    architecture_values = tuple(str(item) for item in architectures)
+    if not set(architecture_values) <= set(SUPPORTED_ARCHITECTURES):
+        raise ValueError("runtime image tag has unsupported architectures")
+    member_suffix_room = (
+        max(len(f"-{architecture}") for architecture in architecture_values)
+        if len(architecture_values) > 1
+        else 0
+    )
+    result = prefix + runtime_tag
+    if len(result) + member_suffix_room > 128:
+        raise ValueError(
+            "runtime image tag exceeds the OCI 128-character limit "
+            "after repository-owner prefix and member suffix"
+        )
+    if core.OCI_TAG_PATTERN.fullmatch(result) is None:
+        raise ValueError("runtime image tag is invalid")
+    return result
+
+
 def project_pr_tag(
     runtime_tag: str,
     *,
     pr_number: int | str,
     author: str,
     run_id: int | str,
+    tag_prefix: str = "",
 ) -> str:
     """Build the collision-resistant PR base tag, reserving member suffix room."""
 
     pr = _positive_integer_text(pr_number, "PR number")
     run = _positive_integer_text(run_id, "run id")
     author_component = sanitize_oci_tag_component(author.lower(), max_length=39)
-    prefix = f"pr-{pr}-{author_component}-run-{run}-"
+    prefix = _runtime_image_tag_prefix(tag_prefix)
+    pr_prefix = f"pr-{pr}-{author_component}-run-{run}-"
     member_suffix_room = max(len(f"-{arch}") for arch in SUPPORTED_ARCHITECTURES)
-    maximum_runtime_length = 128 - len(prefix) - member_suffix_room
+    maximum_runtime_length = 128 - len(prefix) - len(pr_prefix) - member_suffix_room
     if maximum_runtime_length < 1:
         raise ValueError("PR tag prefix leaves no room for the runtime tag")
     runtime_component = sanitize_oci_tag_component(
         runtime_tag, max_length=maximum_runtime_length
     )
-    result = prefix + runtime_component
+    result = prefix + pr_prefix + runtime_component
     if core.OCI_TAG_PATTERN.fullmatch(result) is None:
         raise ValueError("projected PR tag is invalid")
     return result
@@ -982,6 +1031,7 @@ def project_pr_publication(
     pr_number: int | str,
     author: str,
     run_id: int | str,
+    tag_prefix: str = "",
 ) -> dict[str, Any]:
     """Project per-member tags and indexes from actual probed architectures."""
 
@@ -1041,7 +1091,11 @@ def project_pr_publication(
         runtime_ref = next(iter(runtime_refs))
         target_repository = next(iter(repositories))
         base_tag = project_pr_tag(
-            next(iter(tags)), pr_number=pr_number, author=author, run_id=run_id
+            next(iter(tags)),
+            pr_number=pr_number,
+            author=author,
+            run_id=run_id,
+            tag_prefix=tag_prefix,
         )
         if (target_repository, base_tag) in coordinates:
             raise ValueError(

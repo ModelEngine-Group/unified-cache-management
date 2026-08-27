@@ -113,6 +113,9 @@ def test_checked_registry_builder_reuse_preserves_immutable_identity() -> None:
     build = result["selection"]["wheel_builds"][0]
     assert build["sync_mode"] == "mirror"
     assert result["selection"]["runtimes"][0]["channel"] == "pinned"
+    assert result["selection"]["runtimes"][0]["target_tag"].startswith(
+        "release-org-pr-30-supermarioyl-run-100-"
+    )
     assert not {
         "source_repository",
         "source_ref",

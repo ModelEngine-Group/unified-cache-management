@@ -773,6 +773,11 @@ jobs:
             '.families[] | select(.id == $family) | .members[] |
              select(.image_id == $image) | .reference' \
             input/plan/release-plan.json)"
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          case "${target_ref}" in
+            "ghcr.io/${owner}/"*:*) ;;
+            *) echo "PR image target is outside current owner namespace" >&2; exit 2 ;;
+          esac
           skopeo copy "oci-archive:input/image/image.oci.tar" \
             "docker://${target_ref}"
 
@@ -801,10 +806,21 @@ jobs:
           MEMBERS: ${{ toJSON(matrix.members) }}
         run: |
           set -euo pipefail
-          printf '%s' "${{ github.token }}" | docker login ghcr.io \
-            --username "${GITHUB_ACTOR}" --password-stdin
           mapfile -t member_refs < <(jq -er '.[]' <<<"${MEMBERS}")
           test "${#member_refs[@]}" -gt 1
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          case "${TARGET_REPOSITORY}" in
+            "ghcr.io/${owner}/"*) ;;
+            *) echo "PR image index is outside current owner namespace" >&2; exit 2 ;;
+          esac
+          for member in "${member_refs[@]}"; do
+            case "${member}" in
+              "ghcr.io/${owner}/"*:*) ;;
+              *) echo "PR image member is outside current owner namespace" >&2; exit 2 ;;
+            esac
+          done
+          printf '%s' "${{ github.token }}" | docker login ghcr.io \
+            --username "${GITHUB_ACTOR}" --password-stdin
           docker buildx imagetools create \
             --tag "${TARGET_REPOSITORY}:${TARGET_TAG}" "${member_refs[@]}"
           docker buildx imagetools inspect "${TARGET_REPOSITORY}:${TARGET_TAG}" >/dev/null

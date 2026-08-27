@@ -16,7 +16,11 @@ permissions:
 jobs:
   prepare-nightly:
     name: Select or create immutable Nightly Tag
-    if: ${{ github.ref == 'refs/heads/develop' }}
+    if: >-
+      ${{
+        github.ref == 'refs/heads/develop' &&
+        github.repository == 'ModelEngine-Group/unified-cache-management'
+      }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -115,4 +119,5 @@ jobs:
       release_kind: ${{ needs.prepare-nightly.outputs.release_kind }}
       is_prerelease: ${{ needs.prepare-nightly.outputs.is_prerelease == 'true' }}
       source_sha: ${{ needs.prepare-nightly.outputs.source_sha }}
+      publication_scope: official
     secrets: inherit

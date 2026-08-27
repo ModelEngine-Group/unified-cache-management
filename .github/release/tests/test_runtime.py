@@ -615,6 +615,42 @@ def test_pr_tag_sanitizes_and_truncates_with_run_identity() -> None:
     assert first != second
 
 
+def test_fork_pr_publication_prefixes_owner_and_reserves_member_suffix() -> None:
+    _, probe = _aggregate_cuda()
+    publication = runtime.project_pr_publication(
+        probe,
+        _matches(probe),
+        pr_number=42,
+        author="Release-Author",
+        run_id=998877,
+        tag_prefix="supermarioyl-",
+    )
+
+    tags = [item["target_tag"] for item in publication["member_matrix"]["include"]]
+    assert all(tag.startswith("supermarioyl-pr-42-") for tag in tags)
+    assert all(len(tag) <= 128 for tag in tags)
+
+
+def test_formal_runtime_tag_prefix_enforces_exact_oci_length_boundary() -> None:
+    prefix = "supermarioyl-"
+    member_suffix = "-amd64"
+    runtime_tag = "v" + "x" * (128 - len(prefix) - len(member_suffix) - 1)
+
+    projected = runtime.project_runtime_image_tag(
+        runtime_tag,
+        tag_prefix=prefix,
+        architectures=("amd64", "arm64"),
+    )
+
+    assert len(projected + member_suffix) == 128
+    with pytest.raises(ValueError, match="128-character limit"):
+        runtime.project_runtime_image_tag(
+            runtime_tag + "x",
+            tag_prefix=prefix,
+            architectures=("amd64", "arm64"),
+        )
+
+
 def test_receipt_carries_capability_wheel_and_final_tag_mapping() -> None:
     inspection, probe = _aggregate_cuda(("amd64",), tag="nightly")
     matches = _matches(probe)

@@ -35,6 +35,10 @@ on:
         description: Frozen source commit referenced by the Tag
         type: string
         required: true
+      publication_scope:
+        description: Expected repository-derived publication scope
+        type: string
+        required: true
 
 concurrency:
   group: ucm-release-${{ github.repository_id }}-${{ inputs.git_tag }}
@@ -48,7 +52,7 @@ jobs:
     name: Release · Open immediately
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    environment: release-production
+    environment: ${{ inputs.publication_scope == 'official' && 'release-production' || 'fork-preview' }}
     outputs:
       enabled: ${{ steps.profile.outputs.enabled }}
     permissions:
@@ -60,6 +64,7 @@ jobs:
       RELEASE_TYPE: ${{ inputs.release_type }}
       IS_PRERELEASE: ${{ inputs.is_prerelease }}
       RELEASE_TAG: ${{ inputs.git_tag }}
+      PUBLICATION_SCOPE: ${{ inputs.publication_scope }}
     steps:
       - uses: actions/checkout@v4.2.2
         with:
@@ -75,14 +80,22 @@ jobs:
         name: Resolve GitHub Release Profile switch
         run: |
           set -euo pipefail
-          enabled="$(PYTHONPATH=.github/release python -c \
-            'import sys; from ucm_release import policy; print(str(policy.resolve(release_type=sys.argv[1])["publish"]["github_release"]["enabled"]).lower())' \
+          test "${GH_REPO}" = "${GITHUB_REPOSITORY}"
+          resolved="$(PYTHONPATH=.github/release python -c \
+            'import json, sys; from ucm_release import policy; print(json.dumps(policy.resolve(release_type=sys.argv[1])))' \
             "${RELEASE_TYPE}")"
+          jq -e --arg scope "${PUBLICATION_SCOPE}" \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            '.publication_scope == $scope and
+             (.repository | ascii_downcase) == ($repository | ascii_downcase)' \
+            <<<"${resolved}" >/dev/null
+          enabled="$(jq -r '.publish.github_release.enabled' <<<"${resolved}")"
           echo "enabled=${enabled}" >>"${GITHUB_OUTPUT}"
       - name: Create or reuse exact Tag Release
         if: ${{ steps.profile.outputs.enabled == 'true' }}
         run: |
           set -euo pipefail
+          test "${GH_REPO}" = "${GITHUB_REPOSITORY}"
           tag="${RELEASE_TAG}"
           notes="${RUNNER_TEMP}/release-open.md"
           printf '%s\n' \
@@ -411,6 +424,8 @@ jobs:
           IS_PRERELEASE: ${{ inputs.is_prerelease }}
           CHART_VERSION: ${{ inputs.chart_version }}
           IMAGE_VERSION: ${{ inputs.image_version }}
+          PUBLICATION_SCOPE: ${{ inputs.publication_scope }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           test "${IMAGE_VERSION}" = "${RELEASE_VERSION}"
@@ -431,7 +446,11 @@ jobs:
             --arg kind "${RELEASE_KIND}" \
             --arg version "${RELEASE_VERSION}" \
             --arg chart_version "${CHART_VERSION}" \
-            '.git_tag == $tag and .release_type == $type and
+            --arg scope "${PUBLICATION_SCOPE}" \
+            --arg repository "${REPOSITORY}" \
+            '.publication_scope == $scope and
+             (.repository | ascii_downcase) == ($repository | ascii_downcase) and
+             .git_tag == $tag and .release_type == $type and
              .release_kind == $kind and .version == $version and
              .image_version == $version and .chart.app_version == $version and
              .chart.version == $chart_version and
@@ -487,7 +506,7 @@ jobs:
       }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    environment: release-production
+    environment: ${{ inputs.publication_scope == 'official' && 'release-production' || 'fork-preview' }}
     permissions:
       contents: write
     env:
@@ -504,6 +523,7 @@ jobs:
       - name: Mark the opened Release as failed
         run: |
           set -euo pipefail
+          test "${GH_REPO}" = "${GITHUB_REPOSITORY}"
           tag="${RELEASE_TAG}"
           releases="$(gh api --paginate --slurp \
             "/repos/${GH_REPO}/releases?per_page=100" \
@@ -573,6 +593,7 @@ jobs:
       runner: ${{ matrix.runner }}
       plan_artifact: ${{ needs.plan.outputs.plan_artifact }}
       source_ref: ${{ inputs.source_sha }}
+      publication_scope: ${{ inputs.publication_scope }}
     secrets: inherit
 
   publish-release-artifacts:
@@ -585,7 +606,7 @@ jobs:
       }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    environment: release-production
+    environment: ${{ inputs.publication_scope == 'official' && 'release-production' || 'fork-preview' }}
     permissions:
       actions: read
       contents: write
@@ -607,6 +628,7 @@ jobs:
           CHART_OUTCOME: ${{ needs.package-chart.result }}
         run: |
           set -euo pipefail
+          test "${GH_REPO}" = "${GITHUB_REPOSITORY}"
           tag="${RELEASE_TAG}"
           releases="$(gh api --paginate --slurp \
             "/repos/${GH_REPO}/releases?per_page=100" \
@@ -660,7 +682,13 @@ jobs:
       - name: Upload Wheels, Chart, and Config
         run: |
           set -euo pipefail
+          test "${GH_REPO}" = "${GITHUB_REPOSITORY}"
           plan=input/plan/release-plan.json
+          jq -e --arg scope "${{ inputs.publication_scope }}" \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            '.publication_scope == $scope and
+             (.repository | ascii_downcase) == ($repository | ascii_downcase)' \
+            "${plan}" >/dev/null
           if [ "$(jq -r '.publish.github_release.enabled' "${plan}")" != true ]; then
             exit 0
           fi
@@ -694,6 +722,7 @@ jobs:
         if: ${{ failure() && needs.open-release.outputs.enabled == 'true' }}
         run: |
           set -euo pipefail
+          test "${GH_REPO}" = "${GITHUB_REPOSITORY}"
           tag="${RELEASE_TAG}"
           releases="$(gh api --paginate --slurp \
             "/repos/${GH_REPO}/releases?per_page=100" \
@@ -722,7 +751,7 @@ jobs:
       }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    environment: release-production
+    environment: ${{ inputs.publication_scope == 'official' && 'release-production' || 'fork-preview' }}
     permissions:
       actions: read
       contents: read
@@ -761,7 +790,7 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.image_index_matrix) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    environment: release-production
+    environment: ${{ inputs.publication_scope == 'official' && 'release-production' || 'fork-preview' }}
     permissions:
       actions: read
       contents: read
@@ -784,6 +813,11 @@ jobs:
         run: |
           set -euo pipefail
           plan=input/plan/release-plan.json
+          jq -e --arg scope "${{ inputs.publication_scope }}" \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            '.publication_scope == $scope and
+             (.repository | ascii_downcase) == ($repository | ascii_downcase)' \
+            "${plan}" >/dev/null
           mkdir -p out/receipts
           receipt="out/receipts/index-${{ matrix.id }}.json"
           targets='[]'
@@ -793,6 +827,17 @@ jobs:
           mapfile -t ghcr_members < <(jq -er '.[]' <<<"${MEMBERS}")
           test "${#ghcr_members[@]}" -gt 1
           if [ "$(jq -r '.publish.ghcr.enabled' "${plan}")" = true ]; then
+            owner="${GITHUB_REPOSITORY_OWNER,,}"
+            case "${TARGET_REPOSITORY}" in
+              "ghcr.io/${owner}/"*) ;;
+              *) echo "GHCR index target is outside current owner namespace" >&2; exit 2 ;;
+            esac
+            for member in "${ghcr_members[@]}"; do
+              case "${member}" in
+                "ghcr.io/${owner}/"*:*) ;;
+                *) echo "GHCR member is outside current owner namespace" >&2; exit 2 ;;
+              esac
+            done
             printf '%s' "${GH_TOKEN}" | docker login ghcr.io \
               --username "${GITHUB_ACTOR}" --password-stdin
             docker buildx imagetools create \
@@ -810,6 +855,11 @@ jobs:
                 status:"failed",targets:$targets}' >"${receipt}"
           fi
           if [ "$(jq -r '.publish.dockerhub.enabled' "${plan}")" = true ]; then
+            jq -e \
+              '.publication_scope == "official" and
+               (.repository | ascii_downcase) ==
+                 "modelengine-group/unified-cache-management"' \
+              "${plan}" >/dev/null
             test -n "${DOCKERHUB_USERNAME}" && test -n "${DOCKERHUB_TOKEN}"
             printf '%s' "${DOCKERHUB_TOKEN}" | docker login docker.io \
               --username "${DOCKERHUB_USERNAME}" --password-stdin
@@ -848,7 +898,7 @@ jobs:
     needs: [plan, publish-release-artifacts]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    environment: release-production
+    environment: ${{ inputs.publication_scope == 'official' && 'release-production' || 'fork-preview' }}
     permissions:
       actions: read
       contents: read
@@ -873,6 +923,11 @@ jobs:
           if [ "$(jq -r '.publish.pypi.enabled' "${plan}")" != true ]; then
             exit 0
           fi
+          jq -e \
+            '.publication_scope == "official" and
+             (.repository | ascii_downcase) ==
+               "modelengine-group/unified-cache-management"' \
+            "${plan}" >/dev/null
           test -n "${PYPI_API_TOKEN}"
           python -m pip install --disable-pip-version-check --no-cache-dir twine
           TWINE_USERNAME=__token__ TWINE_PASSWORD="${PYPI_API_TOKEN}" \
@@ -885,7 +940,7 @@ jobs:
     needs: [plan, publish-release-artifacts]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    environment: release-production
+    environment: ${{ inputs.publication_scope == 'official' && 'release-production' || 'fork-preview' }}
     permissions:
       actions: read
       contents: read
@@ -908,12 +963,22 @@ jobs:
         run: |
           set -euo pipefail
           plan=input/plan/release-plan.json
+          jq -e --arg scope "${{ inputs.publication_scope }}" \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            '.publication_scope == $scope and
+             (.repository | ascii_downcase) == ($repository | ascii_downcase)' \
+            "${plan}" >/dev/null
           if [ "$(jq -r '.publish.chart_oci.enabled' "${plan}")" != true ]; then
             exit 0
           fi
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          namespace="$(jq -r '.publish.chart_oci.namespace' "${plan}")"
+          case "${namespace}" in
+            "ghcr.io/${owner}/"*) ;;
+            *) echo "Chart OCI target is outside current owner namespace" >&2; exit 2 ;;
+          esac
           printf '%s' "${GH_TOKEN}" | helm registry login ghcr.io \
             --username "${GITHUB_ACTOR}" --password-stdin
-          namespace="$(jq -r '.publish.chart_oci.namespace' "${plan}")"
           chart_name="$(jq -r '.chart.name' "${plan}")"
           chart_version="$(jq -r '.chart.version' "${plan}")"
           helm push input/chart/*.tgz "oci://${namespace}"
@@ -943,7 +1008,7 @@ jobs:
       }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    environment: release-production
+    environment: ${{ inputs.publication_scope == 'official' && 'release-production' || 'fork-preview' }}
     permissions:
       actions: write
       contents: write
@@ -1007,6 +1072,12 @@ jobs:
         name: Update image list and final status
         run: |
           set -euo pipefail
+          test "${GH_REPO}" = "${GITHUB_REPOSITORY}"
+          jq -e --arg scope "${{ inputs.publication_scope }}" \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            '.publication_scope == $scope and
+             (.repository | ascii_downcase) == ($repository | ascii_downcase)' \
+            input/plan/release-plan.json >/dev/null
           state=out/release/release-state.json
           tag="$(jq -er '.release.git_tag' "${state}")"
           releases="$(gh api --paginate --slurp \
@@ -1036,6 +1107,7 @@ jobs:
         name: Publish and read back cleanup manifest
         run: |
           set -euo pipefail
+          test "${GH_REPO}" = "${GITHUB_REPOSITORY}"
           state=out/release/release-state.json
           release_json=out/release/github-release.json
           tag="$(jq -er '.release.git_tag' "${state}")"
@@ -1068,18 +1140,27 @@ jobs:
         name: Retain only the configured same-type Releases
         run: |
           set -euo pipefail
-          profile="$(PYTHONPATH=.github/release python -c \
-            'import json, sys; from ucm_release import policy; print(json.dumps(policy.resolve(release_type=sys.argv[1])["release_profile"]))' \
+          resolved="$(PYTHONPATH=.github/release python -c \
+            'import json, sys; from ucm_release import policy; print(json.dumps(policy.resolve(release_type=sys.argv[1])))' \
             "${RELEASE_TYPE}")"
+          jq -e --arg scope "${{ inputs.publication_scope }}" \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            '.publication_scope == $scope and
+             (.repository | ascii_downcase) == ($repository | ascii_downcase)' \
+            <<<"${resolved}" >/dev/null
+          profile="$(jq -c '.release_profile' <<<"${resolved}")"
           max_count="$(jq -er '.max_count' <<<"${profile}")"
-          pypi_enabled="$(jq -r '.publish.pypi' <<<"${profile}")"
+          pypi_enabled="$(jq -r '.publish.pypi.enabled' <<<"${resolved}")"
           if [ "${max_count}" != -1 ] && [ "${pypi_enabled}" = false ]; then
             mkdir -p "${RUNNER_TEMP}/crane"
             curl -fsSL --retry 3 \
               https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz \
               | tar -xz -C "${RUNNER_TEMP}/crane" crane
             export PATH="${RUNNER_TEMP}/crane:${PATH}"
-            if [ -n "${DOCKERHUB_USERNAME}" ] && [ -n "${DOCKERHUB_TOKEN}" ]; then
+            if [ "${{ inputs.publication_scope }}" = official ] && \
+               [ "${GITHUB_REPOSITORY,,}" = \
+                 modelengine-group/unified-cache-management ] && \
+               [ -n "${DOCKERHUB_USERNAME}" ] && [ -n "${DOCKERHUB_TOKEN}" ]; then
               printf '%s' "${DOCKERHUB_TOKEN}" | docker login docker.io \
                 --username "${DOCKERHUB_USERNAME}" --password-stdin
             fi
@@ -1092,6 +1173,7 @@ jobs:
         if: ${{ failure() && steps.publish-manifest.outcome != 'success' }}
         run: |
           set -euo pipefail
+          test "${GH_REPO}" = "${GITHUB_REPOSITORY}"
           tag="${RELEASE_TAG}"
           releases="$(gh api --paginate --slurp \
             "/repos/${GH_REPO}/releases?per_page=100" \

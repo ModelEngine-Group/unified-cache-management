@@ -29,8 +29,8 @@ jobs:
             regex="(^|-)pr-[0-9]+-"
           fi
           echo "Cleaning up GHCR tags matching /${regex}/ for ${owner}/${repo}"
-          # PR image tags are v<upstream-ver>-pr-<n>-<author>-<sha8>[-<variant>][-<arch>]
-          # (the vllm version leads, so pr-<n>- is not at the start — match anywhere).
+          # PR image tags may start with the fork owner prefix before
+          # pr-<n>-<author>-run-<id>-..., so match pr-<n>- at any component boundary.
           # GITHUB_TOKEN cannot list user/packages (needs a user PAT with
           # read:packages), but it CAN read+delete versions of packages it owns —
           # so enumerate the known family package names the bot pushes to (plus

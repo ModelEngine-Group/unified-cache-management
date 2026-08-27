@@ -17,6 +17,7 @@ from packaging.utils import canonicalize_name, parse_wheel_filename
 from packaging.version import Version
 
 from . import builders
+from . import policy as release_policy
 from . import runtime as runtime_ops
 from . import upstream
 
@@ -212,6 +213,29 @@ def resolve_plan(
     """Generate Wheel/Image tasks from one normalized Runtime selection."""
     if route not in ROUTES:
         raise ValueError(f"unsupported release route: {route}")
+    repository = str(catalog.get("repository", ""))
+    publication_scope = catalog.get("publication_scope")
+    runtime_image_tag_prefix = catalog.get("runtime_image_tag_prefix")
+    expected_scope, expected_prefix = release_policy.publication_identity(repository)
+    if publication_scope != expected_scope:
+        raise ValueError("formal publication scope does not match repository identity")
+    if not isinstance(runtime_image_tag_prefix, str):
+        raise ValueError("formal runtime image tag prefix must be a string")
+    if runtime_image_tag_prefix != expected_prefix:
+        raise ValueError(
+            "formal runtime image tag prefix does not match repository owner"
+        )
+    if expected_scope == "fork":
+        publication_policy = _mapping(
+            catalog.get("publish"), "formal publication policy"
+        )
+        for channel in ("pypi", "dockerhub"):
+            channel_policy = _mapping(
+                publication_policy.get(channel),
+                f"formal {channel} publication policy",
+            )
+            if channel_policy.get("enabled") is not False:
+                raise ValueError(f"fork publication cannot enable {channel}")
     selection = upstream.validate_selection(runtime_selection)
     builds = _build_map(selection)
     builder_by_id = _builder_map(builder_catalog)
@@ -220,6 +244,12 @@ def resolve_plan(
     families: list[dict[str, Any]] = []
 
     for runtime in _selected_runtimes(selection, pinned_upstreams):
+        if runtime_image_tag_prefix and not str(runtime["target_tag"]).startswith(
+            runtime_image_tag_prefix
+        ):
+            raise ValueError(
+                f"{runtime['id']}: Runtime target tag is missing repository-owner prefix"
+            )
         backend = _backend(catalog, str(runtime["backend"]))
         if backend.get("status") == "blocked":
             continue
@@ -358,6 +388,9 @@ def resolve_plan(
         chart["version"] = chart_version
     return {
         "kind": "ucm-release-plan",
+        "repository": repository,
+        "publication_scope": publication_scope,
+        "runtime_image_tag_prefix": runtime_image_tag_prefix,
         "route": route,
         "release_type": resolved_release_type,
         "version": resolved_version,
@@ -406,6 +439,7 @@ def retag_pr_plan(
             pr_number=pr_number,
             author=author,
             run_id=run_id,
+            tag_prefix=str(result.get("runtime_image_tag_prefix", "")),
         )
         family["target_tag"] = base_tag
         for member in family["members"]:

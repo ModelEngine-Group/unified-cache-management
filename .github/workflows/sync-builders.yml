@@ -59,6 +59,10 @@ jobs:
           PYTHONPATH=.github/release python -m ucm_release builders discover \
             --selection input/upstreams/runtime-selection.json \
             --output out/builder-catalog.json >/dev/null
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          jq -e --arg prefix "ghcr.io/${owner}/" \
+            '[.builders[].target_repository] | all(startswith($prefix))' \
+            out/builder-catalog.json >/dev/null
           printf '{}\n' >out/existing-tags.json
           while IFS=$'\t' read -r repository tag; do
             tags='[]'
@@ -109,6 +113,16 @@ jobs:
         with:
           persist-credentials: false
       - uses: docker/setup-buildx-action@v3.11.1
+      - name: Validate current-owner Builder target
+        env:
+          TARGET_REPOSITORY: ${{ matrix.target_repository }}
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          case "${TARGET_REPOSITORY}" in
+            "ghcr.io/${owner}/"*) ;;
+            *) echo "Builder target is outside current owner namespace" >&2; exit 2 ;;
+          esac
       - name: Authenticate to GHCR
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -128,6 +142,11 @@ jobs:
         run: |
           set -euo pipefail
           target="${TARGET_REPOSITORY}:${TARGET_TAG}"
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          case "${target}" in
+            "ghcr.io/${owner}/"*:*) ;;
+            *) echo "Builder target is outside current owner namespace" >&2; exit 2 ;;
+          esac
           source_repository="${SOURCE_IMAGE%:*}"
           pinned_source="${source_repository}@${SOURCE_IMAGE_DIGEST}"
           docker buildx imagetools inspect "${pinned_source}" >/dev/null
@@ -147,6 +166,10 @@ jobs:
               'to_entries[] | "--label", "\(.key)=\(.value)"' \
               out/builder-labels.json)
             candidate="${target}-candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            case "${candidate}" in
+              "ghcr.io/${owner}/"*:*) ;;
+              *) echo "Builder candidate is outside current owner namespace" >&2; exit 2 ;;
+            esac
             docker buildx build --push \
               --platform "linux/${CPU_ARCH}" \
               --file .github/release/docker/Dockerfile.builder-mirror \
