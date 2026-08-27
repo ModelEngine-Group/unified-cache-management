@@ -55,7 +55,7 @@ This section presents support information for inference enhancement features, in
 | Qwen3 | ✅ | ✅ | ✅ |
 | Qwen2.5 | ✅ | ✅ | ✅ |
 
-> **Note**: See [**Sparse Attention**](../sparse-attention/index.md) and [**ReRoPE**](../rerope/rerope.md) for more details.
+> **Note**: Inference enhancement features (Sparse Attention, ReRoPE, CacheBlend) are not covered in this documentation.
 
 ## Supported Compute Platforms and Devices
 

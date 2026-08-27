@@ -312,9 +312,9 @@ UCM 以 Docker 镜像、Helm Chart、Python wheel 包和源码构建的形式交
 
 安装器提供启动命令。关于引擎集成补丁、运行时配置和服务选项，请按照您选择的引擎指南操作：
 
-- [vLLM (CUDA)](../engines/index.md)
-- [vLLM Ascend (NPU)](../engines/index.md)
-- [SGLang](../engines/index.md)
-- [MindIE](../engines/index.md)
+- [vLLM (CUDA)](engines/index.md)
+- [vLLM Ascend (NPU)](engines/index.md)
+- [SGLang](engines/index.md)
+- [MindIE](engines/index.md)
 
-关于使用 Helm 的 Kubernetes 部署，请参见 [GLM PD 最佳实践](../model-tour/index.md)。
+关于使用 Helm 的 Kubernetes 部署，请参见 [GLM PD 最佳实践](model-tour/index.md)。

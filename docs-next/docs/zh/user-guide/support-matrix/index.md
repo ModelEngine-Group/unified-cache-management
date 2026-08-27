@@ -55,7 +55,7 @@
 | Qwen3 | ✅ | ✅ | ✅ |
 | Qwen2.5 | ✅ | ✅ | ✅ |
 
-> **注意**：详见 [**稀疏注意力**](../sparse-attention/index.md) 和 [**ReRoPE**](../rerope/rerope.md)。
+> **注意**：推理增强特性（稀疏注意力、ReRoPE、CacheBlend）不在本文档范围内。
 
 ## 支持的计算平台与设备
 
