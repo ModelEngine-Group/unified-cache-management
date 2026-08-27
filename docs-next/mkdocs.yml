@@ -70,8 +70,8 @@ plugins:
             Home: 首页
             User Guide: 用户指南
             Installation: 安装
+            Quick Start: 快速开始
             Model Tour: 模型示例
-            Getting Started: 快速开始
             Deploy: 部署
             Capabilities: 核心能力
             Overview: 概览
@@ -137,8 +137,8 @@ nav:
   - Home: index.md
   - User Guide:
       - Installation: user-guide/installation.md
+      - Quick Start: user-guide/quick-start/index.md
       - Model Tour: user-guide/model-tour/index.md
-      - Getting Started: user-guide/engines/index.md
       - Deploy: user-guide/deploy/index.md
       - Capabilities:
           - Overview: user-guide/capabilities/index.md

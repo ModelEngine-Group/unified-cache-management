@@ -72,13 +72,14 @@ hide:
 
     [:octicons-arrow-right-24: 安装](user-guide/installation.md)
 
--   :material-engine: **引擎**
+-   :material-rocket-launch: **快速开始**
 
     ---
 
-    将 UCM 与 vLLM、vLLM Ascend、SGLang、MindIE 集成。
+    在推理引擎中快速启用 UCM。选择您的引擎（vLLM、vLLM-Ascend、SGLang、MindIE）
+    并按照集成指南操作。
 
-    [:octicons-arrow-right-24: 引擎](user-guide/engines/vllm.md)
+    [:octicons-arrow-right-24: 快速开始](user-guide/quick-start/index.md)
 
 -   :material-view-grid-plus: **兼容性矩阵**
 
