@@ -1,6 +1,8 @@
 if(BUILD_UNIT_TESTS)
     include(GoogleTest)
     file(GLOB_RECURSE UCMSTORE_TEST_SOURCE_FILES "./case/*.cc")
+    # DramPool sources currently depend on shared DramStore types that are not part of this PR.
+    list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX ".*[/\\\\]dram[/\\\\].*")
     if(NOT TARGET yuanrongstore)
         list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX ".*/yuanrong/.*\\.cc$")
     endif()
