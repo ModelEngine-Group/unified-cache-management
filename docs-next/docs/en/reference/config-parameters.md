@@ -11,11 +11,13 @@
 | `use_layerwise` | Optional | bool | Default: `false` | Enable layer-wise (per-layer) load/save mode. Recommended `true`; DeepSeek V4 series recommends `false`. |
 | `enable_event_sync` | Optional | bool | Default: `true` | Performance optimization switch. Recommended to enable. |
 | `persist_token_threshold` | Optional | int | `0` | When request length < `persist_token_threshold`, UCM does not process the request. |
+| `timeout_ms` | Optional | int | >0, default `30000` | Timeout for memory/DRAM/SHM copies and disk read/write (ms). |
 | `wa_dump_block_wise` | Optional | bool | `true` | Only used in FAWA connector. `true`: every block's WA cache is dumped (high frequency); `false`: only dump last block's WA cache of each chunk prefill (low frequency). |
 | `load_tokens_threshold` | Optional | int | `0` | Minimum token threshold for triggering KV cache loading. Only effective for DeepSeek V4 series. When external hit tokens > `load_tokens_threshold`, triggers KV Cache loading. |
 | `enable_record_traces` | Optional | bool | `false` | Record request information (timestamps, input length, output length, etc.). |
+| `enable_metrics` | Optional | bool | Default: `true` | Whether to enable metrics collection. |
 | `use_lite` | Optional | bool | `false` | Enable UCM Lite. Does not save/load KV Cache data, only saves and queries metadata. Used to evaluate KV Cache hit rate — no acceleration effect. |
-| `metrics_config_path` | Optional | string | User-configured | Custom metrics config file path. Enables UCM online monitoring via toolkit. Refer to Unified Cache Performance Tuning Toolkit Guide. |
+| `metrics_config_path` | Optional | string | User-configured | Custom metrics config file path. Enables UCM online monitoring via toolkit. See [Toolkit Guide](https://support.huawei.com/enterprise/zh/doc/EDOC1100582752/e66a9eed#ZH-CN_TOPIC_0000002657360684). |
 
 ---
 
@@ -26,11 +28,18 @@
 | Parameter | Required | Type | Value Range | Description |
 |---|---|---|---|---|
 | `store_pipeline` | Optional | string | See valid values below | Pipeline name. Default: `Cache\|Posix`. |
-| `storage_backends` | **Required** | string | User-configured | Storage mount path. For manual NFS over RDMA, separate multiple mount points with `:`. |
+| `storage_backends` | **Required** | string | User-configured, multiple mount points separated by `:` | Storage mount path. See [Create Filesystem Mount](https://support.huawei.com/enterprise/zh/doc/EDOC1100582752/47f029f5#ZH-CN_TOPIC_0000002501883936). |
 | `io_direct` | Optional | bool | Default: `true` | Enable Direct I/O (bypass OS page cache). `false`: uses PageCache; `true`: skips PageCache. |
 | `posix_io_engine` | Optional | string | Default: `psync` | File I/O mode. `psync`: synchronous; `aio`: asynchronous, requires `io_direct=true`. |
+| `posix_data_trans_concurrency` | Optional | int | Default: `128` | Read/write threads per card in `psync` mode. NFS over RDMA: 128/card; DPC: max 256/node. Not used in `aio` mode. |
+| `posix_open_concurrency` | Optional | int | Default: `32` | File open threads in `aio` mode. Not applicable in `psync`. |
+| `posix_commit_concurrency` | Optional | int | Default: `4` | File rename threads in `aio` mode. Not applicable in `psync`. |
+| `posix_lookup_concurrency` | Optional | int | Default: `16` | Threads for checking file existence at mount point. |
 | `cache_buffer_capacity_gb` | Optional | int | See recommendation table | GQA: default 32GB/card; MLA: `/dev/shm` space per DP group. Ascend: max 200GB per node. |
 | `cache_sdma_direct` | Optional | bool | Default: `true` | Enable SDMA H2D/D2H transfer. Only effective on A3 devices. Recommended to disable. |
+| `cache_load_backend_only` | Optional | bool | Default: `false` | Force load from SSD even on cache hit. Test only. |
+| `cache_io_aggregation` | Optional | bool | Default: `false`, auto-enabled when `PLATFORM=ascend` and model is V4 | Enable IO aggregation H2D transfer. Only effective on A2 devices. |
+| `share_buffer_enable` | Optional | bool | MLA: default enabled; GQA: default disabled | Enable shared memory. MLA without shm or GQA with shm causes performance degradation. |
 | `posix_capacity_gb` | Optional | int | Default: `0` (no GC) | Max disk storage capacity (GB). Triggers GC when used >= `posix_capacity_gb * posix_gc_trigger_threshold_ratio`. |
 | `posix_gc_trigger_threshold_ratio` | Conditional | float | Default: `0.7`, 0~1 | GC trigger threshold ratio. Used with `posix_capacity_gb`. |
 | `posix_gc_recycle_percent` | Optional | float | Default: `0.1`, 0~1 | Ratio of current capacity deleted per GC round. |
@@ -126,9 +135,9 @@
 
 | Parameter | Required | Type | Value Range | Description |
 |---|---|---|---|---|
-| `kvcs_store_id` | Not configured by default | int | — | KV Cache store ID. Fill with the store ID created on storage per "Create Repository" chapter. |
+| `kvcs_store_id` | Not configured by default | int | — | KV Cache store ID. Fill with the store ID created on storage per "Create Repository" chapter. See [Create KV Cache Store](https://support.huawei.com/enterprise/zh/doc/EDOC1100582752/47f029f5#ZH-CN_TOPIC_0000002501883936). |
 | `kvcs_instance_name` | Not configured by default | string | Default: `default_instance` | Inference instance name for Unified Cache alarm reporting. User-defined. |
-| `kvcs_ucm_over_tcp_ip_list` | Not configured by default | string | — | UCM Over TCP logical port IP list created per "Create UCM over TCP" chapter. Multiple IPs separated by `:`. Example: `192.168.0.1:192.168.0.2`. |
+| `kvcs_ucm_over_tcp_ip_list` | Not configured by default | string | — | UCM Over TCP logical port IP list created per "Create UCM over TCP" chapter. Multiple IPs separated by `:`. Example: `192.168.0.1:192.168.0.2`. See [Create UCM over TCP](https://support.huawei.com/enterprise/zh/doc/EDOC1100582752/30f71963#ZH-CN_TOPIC_0000002533643827). |
 | `kvcs_block_size` | Not configured by default | int | Default: `128` | Must match `block_size` in serve config. DeepSeek V4 series: `4 * block_size`. |
 | `kvcs_tls_enable` | Not configured by default | bool | Default: `false` (TLS disabled) | Enable TLS authentication for GRPC communication between inference engine and storage. |
 | `kvcs_sliding_window_size` | Not configured by default | int | Default: `100`, range 10-1000 | Unified Cache alarm config: sliding window size — total inference request count for failure rate statistics (last N requests). |
