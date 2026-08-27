@@ -10,6 +10,7 @@ import time
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
+from functools import wraps
 from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 import numpy as np
@@ -201,6 +202,21 @@ def _drop_null_vllm_blocks(
 
 def _record_counter(name: str, value: float = 1.0) -> None:
     ucmmetrics.update_stats({name: value})
+
+
+def _record_connector_interface_duration(func):
+    metric_name = f"connector_{func.__name__}_duration_ms"
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        start = time.perf_counter()
+        try:
+            return func(*args, **kwargs)
+        finally:
+            duration_ms = (time.perf_counter() - start) * 1e3
+            ucmmetrics.update_stats({metric_name: duration_ms})
+
+    return wrapper
 
 
 def _use_ucm_connector_cpu_affinity() -> bool:
@@ -1745,15 +1761,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
         request_to_task: dict[str, Task] = {}
         is_load = False
         num_loaded_block = 0
-        num_loaded_request = 0
-        load_start_time = time.perf_counter() * 1000
         request_to_load_blocks: dict[str, int] = {}
         for request_id, request in metadata.request_meta.items():
             if len(request.load_block_ids[0]) == 0:
                 continue
             is_load = True
             num_loaded_block += len(request.load_block_ids[0])
-            num_loaded_request += 1
 
             ucm_block_ids, vllm_block_ids = request.load_block_ids
             if self._skip_null_vllm_blocks:
@@ -1764,7 +1777,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 )
                 if len(ucm_block_ids) == 0:
                     num_loaded_block -= len(request.load_block_ids[0])
-                    num_loaded_request -= 1
                     continue
                 num_loaded_block -= len(request.load_block_ids[0]) - len(ucm_block_ids)
             store_block_ids = ucm_block_ids
@@ -1814,19 +1826,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self._connector_worker_meta.mark_failed(request_id)
                 num_loaded_block -= request_to_load_blocks.get(request_id, 0)
 
-        load_end_time = time.perf_counter() * 1000
-        load_duration_ms = load_end_time - load_start_time
         load_bytes = num_loaded_block * self.block_data_size
-        load_speed = load_bytes / load_duration_ms / 1024 / 1024  # GB/s
         if is_load:
-            load_stats = {
-                "load_requests_num": num_loaded_request,
-                "load_blocks_num": num_loaded_block,
-                "load_duration": load_duration_ms,
-                "load_speed": load_speed,
-                "load_bytes_total": load_bytes,
-            }
-            ucmmetrics.update_stats(load_stats)
+            ucmmetrics.update_stats({"load_bytes_total": load_bytes})
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         pass
@@ -1949,7 +1951,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         is_save = False
         num_saved_block = 0
-        num_saved_request = 0
         total_ucm_block_ids, total_vllm_block_ids = [], []
         dump_request_ids: set[str] = set()
         block_ids_by_request: dict[str, set[bytes]] = {}
@@ -1970,7 +1971,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
             dump_request_ids.add(request_id)
             block_ids_by_request[request_id] = set(ucm_block_ids)
             num_saved_block += len(ucm_block_ids)
-            num_saved_request += 1
             store_block_ids = ucm_block_ids
             if self.tp_rank != 0:
                 store_block_ids = [
@@ -2003,12 +2003,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 return
 
             save_bytes = num_saved_block * self.block_data_size
-            save_stats = {
-                "save_requests_num": num_saved_request,
-                "save_blocks_num": num_saved_block,
-                "save_bytes_total": save_bytes,
-            }
-            ucmmetrics.update_stats(save_stats)
+            ucmmetrics.update_stats({"save_bytes_total": save_bytes})
             self._pending_dump_tasks.append(
                 PendingDumpTask(
                     task=task,
@@ -2129,21 +2124,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                              load l2    -> forward l2 -> save l2
     """
 
-    _BATCH_TOTAL_METRICS = {
-        (False, False): "layerwise_batch_total_no_transfer_ms",
-        (True, False): "layerwise_batch_total_load_only_ms",
-        (False, True): "layerwise_batch_total_save_only_ms",
-        (True, True): "layerwise_batch_total_load_save_ms",
-    }
-    _BATCH_LOAD_WAIT_METRICS = {
-        (True, False): "layerwise_batch_load_wait_total_load_only_ms",
-        (True, True): "layerwise_batch_load_wait_total_load_save_ms",
-    }
-    _BATCH_SAVE_TAIL_METRICS = {
-        (False, True): "layerwise_batch_save_tail_save_only_ms",
-        (True, True): "layerwise_batch_save_tail_load_save_ms",
-    }
-
     def __init__(
         self,
         vllm_config: "VllmConfig",
@@ -2154,7 +2134,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         # {layer_id: {request_id: Task}}
         self.load_tasks: dict[int, dict[str, Task]] = defaultdict(dict)
         self.use_layerwise = True
-        self.is_save = False
         self.need_load = False
         self.dump_total_ptrs: np.ndarray | None = None
         self.request_data: list[tuple[str, list, list, np.ndarray]] = []
@@ -2163,36 +2142,20 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         # (for example by speculative decoding). Persist the first visit only.
         # This state is reset at the start of every connector batch.
         self._dumped_layer_ids: set[int] = set()
-        self._layerwise_prev_wait_end: Optional[float] = None
-        self._layerwise_batch_start: Optional[float] = None
-        self._layerwise_batch_wait_blocking_total_ms = 0.0
+        self._layerwise_load_start_by_layer: dict[int, float] = {}
+        self._layerwise_layer_load_duration_sum_ms = 0.0
+        self._layerwise_load_bytes = 0
+        self._layerwise_save_bytes = 0
         logger.info("Init UCMLayerWiseConnector.")
 
-    def _layerwise_batch_stats(
-        self, total_end: float, save_tail_ms: Optional[float] = None
-    ) -> dict[str, float]:
-        if self._layerwise_batch_start is None:
-            return {}
-
-        batch_type = (self.need_load, self.is_save)
-        batch_total_ms = (total_end - self._layerwise_batch_start) * 1000
-        stats = {
-            "layerwise_batch_total_ms": batch_total_ms,
-            self._BATCH_TOTAL_METRICS[batch_type]: batch_total_ms,
-        }
-
-        load_wait_metric = self._BATCH_LOAD_WAIT_METRICS.get(batch_type)
-        if load_wait_metric:
-            stats[load_wait_metric] = self._layerwise_batch_wait_blocking_total_ms
-
-        save_tail_metric = self._BATCH_SAVE_TAIL_METRICS.get(batch_type)
-        if save_tail_metric and save_tail_ms is not None:
-            stats["layerwise_save_tail_total_ms"] = save_tail_ms
-            stats[save_tail_metric] = save_tail_ms
-
-        self._layerwise_batch_start = None
-        self._layerwise_batch_wait_blocking_total_ms = 0.0
-        return stats
+    def _record_layerwise_load_duration(self, layer_id: int, load_end: float) -> bool:
+        if layer_id not in self._layerwise_load_start_by_layer:
+            return False
+        load_start = self._layerwise_load_start_by_layer.pop(layer_id)
+        duration_ms = self._non_negative_ms((load_end - load_start) * 1000)
+        self._layerwise_layer_load_duration_sum_ms += duration_ms
+        ucmmetrics.update_stats({"layerwise_layer_load_duration_ms": duration_ms})
+        return True
 
     def _submit_layerwise_dump_task(
         self,
@@ -2236,6 +2199,9 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                     event_handle=event_handle,
                 )
             )
+            self._layerwise_save_bytes += (
+                len(total_ucm_block_ids) * self.kv_cache_layout.shard_size
+            )
             return True
         except Exception as e:
             logger.error(
@@ -2251,7 +2217,11 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         layer_id: int,
         local_row: int,
         metadata: "UCMConnectorMetadata",
+        load_start: Optional[float] = None,
     ) -> None:
+        if load_start is None:
+            load_start = time.perf_counter()
+        submitted = False
         for (
             request_id,
             ucm_block_ids,
@@ -2271,6 +2241,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                     layer_ptrs,
                 )
                 self.load_tasks[layer_id][request_id] = task
+                submitted = True
             except Exception as e:
                 logger.error(
                     f"request {request_id} submit load task for layer {layer_id} "
@@ -2283,17 +2254,21 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 )
                 self._failure_req_ids.add(request_id)
                 self._connector_worker_meta.mark_failed(request_id)
+        if submitted:
+            self._layerwise_load_start_by_layer[layer_id] = load_start
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         self._dumped_layer_ids.clear()
-        self._layerwise_batch_start = time.perf_counter()
+        first_layer_load_start = time.perf_counter()
         metadata = self._get_connector_metadata()
         self.load_tasks.clear()
         self.request_data.clear()
         self._failure_req_ids.clear()
         self.need_load = False
-        self._layerwise_prev_wait_end = None
-        self._layerwise_batch_wait_blocking_total_ms = 0.0
+        self._layerwise_load_start_by_layer.clear()
+        self._layerwise_layer_load_duration_sum_ms = 0.0
+        self._layerwise_load_bytes = 0
+        self._layerwise_save_bytes = 0
 
         for request_id, request in metadata.request_meta.items():
             if len(request.load_block_ids[0]) == 0:
@@ -2315,18 +2290,11 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             )
 
         if self.need_load:
-            first_submit_start = time.perf_counter()
-            self._submit_request_load_tasks_for_layer(self.first_layer_id, 0, metadata)
-            first_submit_end = time.perf_counter()
-            n_reqs = len(self.request_data) - len(self._failure_req_ids)
-            ucmmetrics.update_stats(
-                {
-                    "layerwise_first_layer_submit_ms": (
-                        first_submit_end - first_submit_start
-                    )
-                    * 1000,
-                    "layerwise_first_layer_requests": float(n_reqs),
-                }
+            self._submit_request_load_tasks_for_layer(
+                self.first_layer_id,
+                0,
+                metadata,
+                first_layer_load_start,
             )
 
     def wait_for_layer_load(self, layer_name: str) -> None:
@@ -2337,12 +2305,9 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         metadata = self._get_connector_metadata()
         current_layer_id = self.layer_name_to_id[layer_name]
 
-        wait_start = time.perf_counter()
-
         # Pop before wait so MTP / rollback paths that revisit the same layer_name
         # do not call store.wait() again on already-completed handles.
         layer_tasks = self.load_tasks.pop(current_layer_id, {})
-        n_tasks = len(layer_tasks)
         for request_id, task in layer_tasks.items():
             try:
                 self._rank_consistency.wait_load(task)
@@ -2358,8 +2323,16 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 )
                 self._connector_worker_meta.mark_failed(request_id)
                 self._failure_req_ids.add(request_id)
+            else:
+                self._layerwise_load_bytes += (
+                    len(metadata.request_meta[request_id].load_block_ids[0])
+                    * self.kv_cache_layout.shard_size
+                )
 
         wait_end = time.perf_counter()
+        load_duration_recorded = self._record_layerwise_load_duration(
+            current_layer_id, wait_end
+        )
 
         next_layer_id = current_layer_id + 1
         has_next = next_layer_id in self.layer_ids
@@ -2368,22 +2341,16 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             self._submit_request_load_tasks_for_layer(
                 next_layer_id, next_local_row, metadata
             )
-
-        blocking_ms = (wait_end - wait_start) * 1000
-        self._layerwise_batch_wait_blocking_total_ms += blocking_ms
-        stats = {
-            "layerwise_wait_blocking_ms": blocking_ms,
-            "layerwise_wait_tasks_count": float(n_tasks),
-        }
-        if self._layerwise_prev_wait_end is not None:
-            stats["layerwise_inter_wait_interval_ms"] = (
-                wait_start - self._layerwise_prev_wait_end
-            ) * 1000
-        if has_next:
-            submit_end = time.perf_counter()
-            stats["layerwise_next_layer_submit_ms"] = (submit_end - wait_end) * 1000
-        ucmmetrics.update_stats(stats)
-        self._layerwise_prev_wait_end = wait_end
+        elif load_duration_recorded:
+            duration_sum_ms = self._layerwise_layer_load_duration_sum_ms
+            ucmmetrics.update_stats(
+                {
+                    "layerwise_batch_load_duration_sum_ms": duration_sum_ms,
+                    "load_bytes_total": self._layerwise_load_bytes,
+                }
+            )
+            self._layerwise_layer_load_duration_sum_ms = 0.0
+            self._layerwise_load_bytes = 0
 
     def save_kv_layer(
         self,
@@ -2399,7 +2366,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
         metadata = self._get_connector_metadata()
 
-        submit_start = time.perf_counter()
         total_ucm_block_ids, total_vllm_block_ids = [], []
         dump_request_ids: set[str] = set()
         layer_id = self.layer_name_to_id[layer_name]
@@ -2414,7 +2380,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             if len(request.dump_block_ids[0]) == 0:
                 continue
 
-            self.is_save = True
             dump_request_ids.add(request_id)
             ucm_block_ids, vllm_block_ids = request.dump_block_ids
             store_block_ids = ucm_block_ids
@@ -2434,19 +2399,16 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             )
             if submitted:
                 self._dumped_layer_ids.add(layer_id)
-        if self.is_save:
-            submit_end = time.perf_counter()
-            ucmmetrics.update_stats(
-                {"layerwise_save_submit_ms": (submit_end - submit_start) * 1000}
-            )
 
     def wait_for_save(self) -> None:
-        save_tail_start = time.perf_counter()
-        wait_for_save_start_ms = save_tail_start * 1000
+        wait_for_save_start_ms = time.perf_counter() * 1000
         for pending_dump_task in self._pending_dump_tasks:
             if pending_dump_task.wait_for_save_start_ms <= 0:
                 pending_dump_task.wait_for_save_start_ms = wait_for_save_start_ms
         self._poll_pending_dump_tasks()
+        if self._layerwise_save_bytes > 0:
+            ucmmetrics.update_stats({"save_bytes_total": self._layerwise_save_bytes})
+            self._layerwise_save_bytes = 0
         if self._connector_metadata:
             metadata = self._get_connector_metadata()
             self._async_dump_req_ids.update(
@@ -2455,12 +2417,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 if len(request.dump_block_ids[0]) > 0
             )
 
-        total_end = time.perf_counter()
-        save_tail_ms = (total_end - save_tail_start) * 1000
-        stats = self._layerwise_batch_stats(total_end, save_tail_ms)
-        if stats:
-            ucmmetrics.update_stats(stats)
-        self.is_save = False
         self.dump_total_ptrs = None
 
 
@@ -2899,6 +2855,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         else:
             self.connector = UCMDirectConnector(vllm_config, role, kv_cache_config)
 
+    @_record_connector_interface_duration
     def get_block_size(self) -> int:
         return self.connector.get_block_size()
 
@@ -2941,6 +2898,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             )
             self._vllm_metrics_enabled = bool(self._vllm_metric_definitions)
 
+    @_record_connector_interface_duration
     def get_kv_connector_stats(self) -> Optional["KVConnectorStats"]:
         if not self._vllm_metrics_enabled:
             return None
@@ -2989,6 +2947,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             per_engine_labelvalues,
         )
 
+    @_record_connector_interface_duration
     def get_num_new_matched_tokens(
         self,
         request: "Request",
@@ -3044,6 +3003,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             }
         )
 
+    @_record_connector_interface_duration
     def update_state_after_alloc(
         self, request: "Request", blocks: "KVCacheBlocks", num_external_tokens: int
     ):
@@ -3052,6 +3012,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         """
         self.connector.update_state_after_alloc(request, blocks, num_external_tokens)
 
+    @_record_connector_interface_duration
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         """
         Initialize with the KV caches. Useful for pre-registering the
@@ -3062,6 +3023,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         """
         self.connector.register_kv_caches(kv_caches)
 
+    @_record_connector_interface_duration
     def build_connector_meta(
         self, scheduler_output: SchedulerOutput
     ) -> KVConnectorMetadata:
@@ -3076,6 +3038,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         """
         return self.connector.build_connector_meta(scheduler_output)
 
+    @_record_connector_interface_duration
     def bind_connector_metadata(self, connector_metadata: KVConnectorMetadata) -> None:
         """Set the connector metadata from the scheduler.
 
@@ -3088,9 +3051,11 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         """
         self.connector.bind_connector_metadata(connector_metadata)
 
+    @_record_connector_interface_duration
     def handle_preemptions(self, kv_connector_metadata: KVConnectorMetadata):
         self.connector.handle_preemptions(kv_connector_metadata)
 
+    @_record_connector_interface_duration
     def has_connector_metadata(self) -> bool:
         """Check whether the connector metadata is currently set.
 
@@ -3099,6 +3064,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         """
         return self.connector.has_connector_metadata()
 
+    @_record_connector_interface_duration
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         """
         Start loading the KV cache from the connector to vLLM's paged
@@ -3116,6 +3082,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         """
         self.connector.start_load_kv(forward_context, **kwargs)
 
+    @_record_connector_interface_duration
     def wait_for_layer_load(self, layer_name: str) -> None:
         """
         Block until the KV for a specific layer is loaded into vLLM's
@@ -3129,6 +3096,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         """
         self.connector.wait_for_layer_load(layer_name)
 
+    @_record_connector_interface_duration
     def save_kv_layer(
         self,
         layer_name: str,
@@ -3150,6 +3118,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         """
         self.connector.save_kv_layer(layer_name, kv_layer, attn_metadata, **kwargs)
 
+    @_record_connector_interface_duration
     def wait_for_save(self) -> None:
         """
         Block until all the save operations is done. This is called
@@ -3160,6 +3129,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         """
         self.connector.wait_for_save()
 
+    @_record_connector_interface_duration
     def request_finished_all_groups(
         self,
         request: "Request",
@@ -3171,6 +3141,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             return self.connector.request_finished(request, block_ids[0])
         return self.connector.request_finished(request, [])
 
+    @_record_connector_interface_duration
     def request_finished(
         self,
         request: "Request",
@@ -3178,18 +3149,22 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
     ) -> tuple[bool, dict[str, object] | None]:
         return self.connector.request_finished(request, block_ids)
 
+    @_record_connector_interface_duration
     def get_finished(
         self,
         finished_req_ids: set[str],
     ) -> tuple[Optional[set[str]], Optional[set[str]]]:
         return self.connector.get_finished(finished_req_ids)
 
+    @_record_connector_interface_duration
     def build_connector_worker_meta(self):
         return self.connector.build_connector_worker_meta()
 
+    @_record_connector_interface_duration
     def update_connector_output(self, connector_output: KVConnectorOutput):
         return self.connector.update_connector_output(connector_output)
 
+    @_record_connector_interface_duration
     def clear_connector_metadata(self) -> None:
         """Clear the connector metadata.
 
@@ -3198,6 +3173,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         """
         self.connector.clear_connector_metadata()
 
+    @_record_connector_interface_duration
     def get_block_ids_with_load_errors(self) -> set[int]:
         """
         Get the set of block IDs that failed to load.

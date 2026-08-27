@@ -111,6 +111,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
     auto tpWait = NowTime::Now();
     const auto nShard = task->desc.size();
     size_t backendSubmitCount = 0;
+    size_t waitShardCount = 0;
     const auto indexes = RearrangeIndex(nShard, deviceId_, localRankSize_);
     for (size_t i = 0; i < nShard; i++) {
         auto& shard = task->desc[indexes[i]];
@@ -118,6 +119,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
         shardTask.bufferHandle = buffer_->Get(shard.owner, shard.index, true, true);
         shardTask.backendTaskHandle = 0;
         shardTask.fromPosix = !shardTask.bufferHandle.Ready();
+        if (shardTask.fromPosix) { waitShardCount++; }
         if (shardTask.bufferHandle.Owner() && !shardTask.bufferHandle.Ready()) {
             Detail::TaskDesc backendTask{
                 Detail::Shard{shard.owner, shard.index, {shardTask.bufferHandle.Data()}}
@@ -128,6 +130,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
                 UC_ERROR("Failed({}) to submit load task({}) to backend.", res.Error(), task->id);
                 UC::Metrics::UpdateStats(
                     NAME_TO_METRIC_ID("cache_backend_load_submit_errors_total"), 1.0);
+                RecordLoadSourceShards(i + 1, waitShardCount);
                 RecordFailedShards(nShard - i);
                 shardTask.bufferHandle.MarkFailed(res.Error());
                 task->Fail(res.Error());
@@ -158,8 +161,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
                              (tpDispatch - tpWait) * 1e3);
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_backend_shards_total"),
                              static_cast<double>(backendSubmitCount));
-    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_shards_total"),
-                             static_cast<double>(nShard));
+    RecordLoadSourceShards(nShard, waitShardCount);
 }
 
 void LoadQueue::TransferStage(std::promise<Status>& started)
@@ -306,6 +308,14 @@ void LoadQueue::RecordFailedShards(size_t count) const
 {
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_failed_shards_total"),
                              static_cast<double>(count));
+}
+
+void LoadQueue::RecordLoadSourceShards(size_t total, size_t wait) const
+{
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_shards_total"),
+                             static_cast<double>(total));
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_wait_shards_total"),
+                             static_cast<double>(wait));
 }
 
 void LoadQueue::RecordH2dSyncMetrics(double h2dSyncMs) const
