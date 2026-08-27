@@ -5,10 +5,12 @@ import math
 import os
 import pickle
 import re
+import shutil
 import time
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
+from functools import wraps
 from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 import numpy as np
@@ -77,14 +79,19 @@ logger = init_logger(__name__)
 
 def _has_shared_indexer_layers(vllm_config: "VllmConfig") -> bool:
     model_config = getattr(vllm_config, "model_config", None)
-    hf_text_config = getattr(model_config, "hf_text_config", None)
-    indexer_types = getattr(hf_text_config, "indexer_types", None)
-    if not isinstance(indexer_types, (list, tuple)):
-        return False
-    return any(
-        isinstance(indexer_type, str) and indexer_type.lower() == "shared"
-        for indexer_type in indexer_types
+    configs = (
+        getattr(model_config, "hf_text_config", None),
+        getattr(model_config, "hf_config", None),
+        getattr(getattr(model_config, "hf_config", None), "text_config", None),
     )
+    for config in configs:
+        indexer_types = getattr(config, "indexer_types", None)
+        if isinstance(indexer_types, (list, tuple)) and any(
+            isinstance(indexer_type, str) and indexer_type.lower() == "shared"
+            for indexer_type in indexer_types
+        ):
+            return True
+    return False
 
 
 def _short_list(values: list[int], limit: int = 12) -> list[int]:
@@ -117,6 +124,56 @@ def _get_store_io_sizes(
     return physical_shard_size, physical_shard_size * shard_count
 
 
+def _get_store_gc_block_size(
+    store_pipeline: str,
+    tensor_size_list: list[int],
+    store_shard_size: int,
+    store_block_size: int,
+) -> int:
+    """Return the persisted file size used by scheduler-side Posix GC."""
+    if store_pipeline != "YuanRong|Posix":
+        return store_block_size
+    shard_count, remainder = divmod(store_block_size, store_shard_size)
+    if remainder:
+        raise ValueError(
+            "Store block_size must be divisible by shard_size, "
+            f"got shard_size={store_shard_size}, block_size={store_block_size}."
+        )
+    object_size = sum(int(size) for size in tensor_size_list)
+    if object_size <= 0:
+        raise ValueError("tensor_size_list is required for YuanRong|Posix")
+    return object_size * shard_count
+
+
+_SHM_DIR = "/dev/shm"
+
+
+def _check_shm_capacity(cache_buffer_capacity_gb: int) -> None:
+    """Early-validate that /dev/shm can hold the shared-buffer store.
+
+    With ``share_buffer_enable=True`` the cache buffer is backed by ``shm_open``
+    in ``/dev/shm`` (a tmpfs with a fixed size limit). If the configured buffer
+    capacity exceeds what ``/dev/shm`` can hold, allocation fails deep inside
+    the C++ store; raise here instead with an actionable message.
+    """
+    if cache_buffer_capacity_gb <= 0:
+        return
+    try:
+        shm_total = shutil.disk_usage(_SHM_DIR).total
+    except OSError:
+        # /dev/shm unavailable (e.g. non-Linux dev host); defer to the store.
+        logger.debug("Skip /dev/shm capacity check: %s unavailable.", _SHM_DIR)
+        return
+    needed_bytes = cache_buffer_capacity_gb * (1 << 30)
+    if shm_total < needed_bytes:
+        raise RuntimeError(
+            f"Shared-buffer cache requires {cache_buffer_capacity_gb}GB in {_SHM_DIR}, "
+            f"but {_SHM_DIR} has only {shm_total >> 30}GB. "
+            f"Either increase the size of {_SHM_DIR} (e.g. remount tmpfs with a "
+            f"larger size= option) or decrease cache_buffer_capacity_gb."
+        )
+
+
 def _drop_null_vllm_blocks(
     ucm_block_ids: list[bytes],
     vllm_block_ids: list[int],
@@ -145,6 +202,21 @@ def _drop_null_vllm_blocks(
 
 def _record_counter(name: str, value: float = 1.0) -> None:
     ucmmetrics.update_stats({name: value})
+
+
+def _record_connector_interface_duration(func):
+    metric_name = f"connector_{func.__name__}_duration_ms"
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        start = time.perf_counter()
+        try:
+            return func(*args, **kwargs)
+        finally:
+            duration_ms = (time.perf_counter() - start) * 1e3
+            ucmmetrics.update_stats({metric_name: duration_ms})
+
+    return wrapper
 
 
 def _use_ucm_connector_cpu_affinity() -> bool:
@@ -309,7 +381,7 @@ class KVCacheLayout:
         self.buffer_sizes: np.ndarray
         self.tensor_size_lists: np.ndarray
         self.block_stride_lists: np.ndarray
-        self.use_layerwise = ucm_config.get("use_layerwise", False)
+        self.use_layerwise = ucm_config.get("use_layerwise", True)
         self.kv_cache_config = kv_cache_config
         self.vllm_config = vllm_config
         self.pp_size = self.vllm_config.parallel_config.pipeline_parallel_size
@@ -325,57 +397,67 @@ class KVCacheLayout:
         self.num_blocks = self.kv_cache_config.num_blocks
         self._build_layout(kvcaches)
 
+    def _tensor_infos(
+        self,
+        layer_name: str,
+        kv_layer,
+    ) -> tuple[KVCacheTensorInfo, ...]:
+        """Describe tensor components in one vLLM KV-cache entry."""
+        tensor_infos = []
+
+        def handle_tensor(tensor: torch.Tensor) -> None:
+            bytes_per_block = math.prod(int(dim) for dim in tensor.shape[1:]) * int(
+                tensor.element_size()
+            )
+            tensor_infos.append(
+                KVCacheTensorInfo(
+                    ptr=int(tensor[0].data_ptr()),
+                    bytes_per_block=bytes_per_block,
+                    buffer_size=int(tensor.shape[0]) * bytes_per_block,
+                )
+            )
+
+        if isinstance(kv_layer, torch.Tensor):
+            if kv_layer.dim() == 5 and kv_layer.shape[0] == 2:
+                if kv_layer.shape[1] == 2 and kv_layer.shape[1] >= self.num_blocks:
+                    logger.warning(
+                        "Ambiguous KV cache layout with two leading dimensions "
+                        "of size 2; treating it as K/V-first: layer=%s, "
+                        "shape=%s, num_blocks=%s.",
+                        layer_name,
+                        tuple(kv_layer.shape),
+                        self.num_blocks,
+                    )
+                # Legacy K/V-first layout: [2, physical_blocks, ...].
+                handle_tensor(kv_layer[0])
+                handle_tensor(kv_layer[1])
+            else:
+                # A block-first tensor stores one complete page per row.
+                handle_tensor(kv_layer)
+        elif isinstance(kv_layer, (tuple, list)):
+            for tensor in kv_layer:
+                if not isinstance(tensor, torch.Tensor):
+                    raise TypeError(
+                        "KV cache component must be a tensor: "
+                        f"layer={layer_name}, type={type(tensor)}."
+                    )
+                handle_tensor(tensor)
+        else:
+            raise TypeError(
+                f"Unsupported KV cache type: layer={layer_name}, "
+                f"type={type(kv_layer)}."
+            )
+        return tuple(tensor_infos)
+
     def _collect_tensor_rows(self, kvcaches):
         num_rows = len(set(self.layer_name_to_id.values()))
         tensor_rows = [[] for _ in range(num_rows)]
         row_layer_ids = [None for _ in range(num_rows)]
 
         for layer_name, kv_layer in kvcaches.items():
-
-            def handle_tensor(t: torch.Tensor, size_dims):
-                stride = math.prod([t.shape[i] for i in size_dims]) * t.element_size()
-                tensor_rows[local_layer_id].append(
-                    KVCacheTensorInfo(
-                        ptr=int(t[0].data_ptr()),
-                        bytes_per_block=int(stride),
-                        buffer_size=int(t.shape[0]) * int(stride),
-                    )
-                )
-
             local_layer_id = self.layer_name_to_id[layer_name] - self.first_layer_id
             row_layer_ids[local_layer_id] = self.layer_name_to_id[layer_name]
-            if isinstance(kv_layer, torch.Tensor):
-                if kv_layer.dim() == 5:
-                    num_blocks_first = kv_layer.shape[0] != 2 and kv_layer.shape[1] == 2
-                    if num_blocks_first:
-                        # CUDA: [num_blocks, 2, block_size, num_head, head_dim].
-                        # K and V are contiguous within each block, so expose
-                        # the complete block as one store segment.
-                        handle_tensor(kv_layer, (-4, -3, -2, -1))
-                    elif kv_layer.shape[0] == 2:
-                        # [2, num_blocks, block_size, num_head, head_dim].
-                        # K and V are stored in separate contiguous buffers.
-                        handle_tensor(kv_layer[0], (-3, -2, -1))
-                        handle_tensor(kv_layer[1], (-3, -2, -1))
-                    else:
-                        raise ValueError(
-                            "Unsupported 5D KV cache layout: expected "
-                            "[num_blocks, 2, ...] or [2, num_blocks, ...] "
-                            f"but got {tuple(kv_layer.shape)}"
-                        )
-                elif kv_layer.dim() == 3:
-                    # [num_blocks, block_size, head_dim]
-                    handle_tensor(kv_layer, (-2, -1))
-                else:
-                    raise ValueError(
-                        f"Unsupported kv cache tensor shape: {kv_layer.shape}"
-                    )
-            elif isinstance(kv_layer, Tuple):
-                # vllm_ascend >= 0.10.0, ([num_blocks, block_size, num_head, head_dim], ...)
-                for tensor in kv_layer:
-                    handle_tensor(tensor, (-3, -2, -1))
-            else:
-                raise TypeError(f"Unsupported kv cache type: {type(kv_layer)}")
+            tensor_rows[local_layer_id].extend(self._tensor_infos(layer_name, kv_layer))
 
         return tensor_rows, row_layer_ids
 
@@ -501,7 +583,7 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
     mask behavior to the generic KV cache layout.
     """
 
-    CUDA_TENSOR_ROLE_PATTERNS = {
+    TENSOR_ROLE_PATTERNS = {
         "indexer": (
             re.compile(
                 r"(?:^|\.)indexer(?:\.|$)",
@@ -509,13 +591,13 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
             ),
         ),
     }
-    CUDA_DEFAULT_TENSOR_ROLE = "attention"
+    DEFAULT_TENSOR_ROLE = "attention"
 
     @classmethod
     def supports(cls, vllm_config: "VllmConfig", ucm_config: dict) -> bool:
         device_type = getattr(current_platform, "device_type", None)
         return (
-            bool(ucm_config.get("use_layerwise", False))
+            bool(ucm_config.get("use_layerwise", True))
             and device_type in ("npu", "cuda")
             and _has_shared_indexer_layers(vllm_config)
         )
@@ -573,8 +655,8 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
         return "shared"
 
     @classmethod
-    def _cuda_cache_role(cls, layer_name: str) -> str:
-        """Classify a CUDA cache using the extensible role-pattern mapping."""
+    def _cache_role(cls, layer_name: str) -> str:
+        """Classify an attention or Indexer cache independently of platform."""
         path_components = [
             component for component in layer_name.lower().split(".") if component
         ]
@@ -583,50 +665,29 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
                 path_components = path_components[index + 2 :]
                 break
         semantic_name = ".".join(path_components)
-        for role, patterns in cls.CUDA_TENSOR_ROLE_PATTERNS.items():
+        for role, patterns in cls.TENSOR_ROLE_PATTERNS.items():
             if any(pattern.search(semantic_name) for pattern in patterns):
                 return role
-        return cls.CUDA_DEFAULT_TENSOR_ROLE
+        return cls.DEFAULT_TENSOR_ROLE
 
-    @staticmethod
-    def _cuda_tensor_infos(
-        layer_name: str,
-        tensor: torch.Tensor,
-        role: str,
-    ) -> tuple[KVCacheTensorInfo, ...]:
-        """Describe block-first CUDA tensors, splitting combined K/V caches."""
-        if tensor.dim() == 5:
-            if role != "attention" or tensor.shape[0] != 2:
-                raise ValueError(
-                    "CUDA 5D combined KV cache must be an Attention tensor "
-                    "with shape [2, num_blocks, ...]: "
-                    f"layer={layer_name}, role={role}, shape={tuple(tensor.shape)}."
-                )
-            component_tensors = (tensor[0], tensor[1])
-        else:
-            component_tensors = (tensor,)
-
-        tensor_infos = []
-        for component in component_tensors:
-            bytes_per_block = int(component.stride(0)) * int(component.element_size())
-            payload_size = math.prod(int(size) for size in component.shape[1:]) * int(
-                component.element_size()
+    def _collect_role_tensors(self, kvcaches, tensor_infos):
+        """Group cache entries by layer and semantic role."""
+        layer_tensors: dict[int, dict[str, Optional[tuple[KVCacheTensorInfo, ...]]]] = (
+            {}
+        )
+        for layer_name, kv_layer in kvcaches.items():
+            layer_id = self.layer_name_to_id[layer_name]
+            layer = layer_tensors.setdefault(
+                layer_id, {"attention": None, "indexer": None}
             )
-            if bytes_per_block != payload_size:
+            slot = self._cache_role(layer_name)
+            if layer[slot] is not None:
                 raise ValueError(
-                    "CUDA Shared Indexer KV cache requires contiguous blocks: "
-                    f"layer={layer_name}, block_stride={bytes_per_block}, "
-                    f"payload_size={payload_size}."
+                    f"Duplicate Shared Indexer {slot} cache for "
+                    f"layer {layer_id}: {layer_name}."
                 )
-
-            tensor_infos.append(
-                KVCacheTensorInfo(
-                    ptr=int(component.data_ptr()),
-                    bytes_per_block=bytes_per_block,
-                    buffer_size=int(component.shape[0]) * bytes_per_block,
-                )
-            )
-        return tuple(tensor_infos)
+            layer[slot] = tensor_infos(layer_name, kv_layer)
+        return layer_tensors
 
     def _build_segment_rows(
         self,
@@ -752,23 +813,7 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
         Layers without an independent Indexer keep the same copy schema by
         receiving a metadata-only ghost segment in the Indexer slot.
         """
-        layer_tensors: dict[int, dict[str, Optional[tuple[KVCacheTensorInfo, ...]]]] = (
-            {}
-        )
-        for layer_name, tensor in kvcaches.items():
-            layer_id = self.layer_name_to_id[layer_name]
-            layer = layer_tensors.setdefault(
-                layer_id, {"attention": None, "indexer": None}
-            )
-
-            # Classification is independent of dict order and exact suffixes.
-            slot = self._cuda_cache_role(layer_name)
-            if layer[slot] is not None:
-                raise ValueError(
-                    f"Duplicate CUDA Shared Indexer {slot} cache for "
-                    f"layer {layer_id}: {layer_name}."
-                )
-            layer[slot] = self._cuda_tensor_infos(layer_name, tensor, slot)
+        layer_tensors = self._collect_role_tensors(kvcaches, self._tensor_infos)
 
         row_layer_ids = sorted(layer_tensors)
         self.first_layer_id = row_layer_ids[0]
@@ -835,50 +880,74 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
         )
 
     def _build_ascend_layout(self, kvcaches) -> None:
-        """Build the existing Ascend SFA C8/BF16/mixed layerwise layout."""
-        tensor_rows, row_layer_ids = self._collect_tensor_rows(kvcaches)
-        if not tensor_rows or not tensor_rows[0]:
-            raise ValueError("KV cache layout must contain at least one tensor")
+        """Build Ascend SFA C8/BF16/mixed layerwise layout by cache role.
+
+        vLLM-Ascend used to append an optional Indexer cache after the MLA
+        cache in one tuple. Newer versions register it under an independent
+        ``*.indexer.*`` cache entry. Grouping only by numeric layer id makes
+        the latter dependent on dictionary insertion order, so classify the
+        entries before assembling the fixed UCM slot order.
+        """
 
         additional_config = getattr(self.vllm_config, "additional_config", None) or {}
         sfa_c8 = bool(additional_config.get("enable_sparse_sfa_c8", False))
         li_c8 = bool(additional_config.get("enable_sparse_li_c8", False))
         base_tensor_count = 1 if sfa_c8 else 2
+        max_extra_count = 2 if li_c8 else 1
 
-        base_sizes = [
-            tensor.bytes_per_block for tensor in tensor_rows[0][:base_tensor_count]
-        ]
-        if len(base_sizes) != base_tensor_count:
-            raise ValueError("The first Shared Indexer layer has no SFA base tensor.")
+        layer_tensors = self._collect_role_tensors(kvcaches, self._tensor_infos)
 
-        for layer_id, row in zip(row_layer_ids, tensor_rows):
-            current_sizes = [
-                tensor.bytes_per_block for tensor in row[:base_tensor_count]
-            ]
-            if current_sizes != base_sizes:
+        if not layer_tensors:
+            raise ValueError("KV cache layout must contain at least one tensor")
+
+        row_layer_ids = sorted(layer_tensors)
+        self.first_layer_id = row_layer_ids[0]
+        layers = []
+        for layer_id in row_layer_ids:
+            attention = layer_tensors[layer_id]["attention"]
+            if attention is None or len(attention) < base_tensor_count:
+                count = 0 if attention is None else len(attention)
                 raise ValueError(
-                    "Shared Indexer layers must have identical SFA base tensors: "
-                    f"expected={base_sizes}, layer={layer_id}, "
-                    f"actual={current_sizes}."
+                    "Ascend Shared Indexer layer has insufficient SFA base "
+                    f"tensors: layer={layer_id}, expected={base_tensor_count}, "
+                    f"actual={count}."
                 )
 
-        max_extra_count = 2 if li_c8 else 1
-        layers = []
-        for layer_id, row in zip(row_layer_ids, tensor_rows):
-            extras = row[base_tensor_count:]
+            # Legacy versions keep Indexer/scale after the base SFA tensors in
+            # the attention tuple. Newer versions expose them in an independent
+            # Indexer entry. Seeing both would be ambiguous and must not result
+            # in a silent duplicate store segment.
+            legacy_extras = attention[base_tensor_count:]
+            separate_indexer = layer_tensors[layer_id]["indexer"]
+            if legacy_extras and separate_indexer is not None:
+                raise ValueError(
+                    "Ascend Shared Indexer layer exposes both legacy and "
+                    f"separate Indexer caches: layer={layer_id}."
+                )
+            extras = separate_indexer if separate_indexer is not None else legacy_extras
             if len(extras) > max_extra_count:
                 raise ValueError(
-                    "Unsupported Shared Indexer tensors after the SFA cache: "
+                    "Unsupported Ascend Shared Indexer cache components: "
                     f"layer={layer_id}, count={len(extras)}."
                 )
             layers.append(
                 SharedIndexerLayerInfo(
                     layer_id=layer_id,
-                    sfa_tensors=tuple(row[:base_tensor_count]),
+                    sfa_tensors=tuple(attention[:base_tensor_count]),
                     indexer=extras[0] if extras else None,
                     scale=extras[1] if len(extras) == 2 else None,
                 )
             )
+
+        base_sizes = [tensor.bytes_per_block for tensor in layers[0].sfa_tensors]
+        for layer in layers:
+            current_sizes = [tensor.bytes_per_block for tensor in layer.sfa_tensors]
+            if current_sizes != base_sizes:
+                raise ValueError(
+                    "Shared Indexer layers must have identical SFA base tensors: "
+                    f"expected={base_sizes}, layer={layer.layer_id}, "
+                    f"actual={current_sizes}."
+                )
 
         c8_layers = [layer for layer in layers if layer.scale is not None]
         bf16_layers = [
@@ -1227,11 +1296,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def _set_default_shm_buffer_capacity(self, config: dict[str, Any]) -> None:
         if not bool(config.get("share_buffer_enable", False)):
             return
-        if config.get("cache_buffer_capacity_gb") is not None:
-            return
-
-        config["cache_buffer_capacity_gb"] = 128
-        logger.info("Set cache_buffer_capacity_gb to 128GB for shared-buffer store.")
+        if config.get("cache_buffer_capacity_gb") is None:
+            config["cache_buffer_capacity_gb"] = 128
+            logger.info(
+                "Set cache_buffer_capacity_gb to 128GB for shared-buffer store."
+            )
+        # The shared buffer is allocated via shm_open in /dev/shm; fail early
+        # (before store creation) if the tmpfs cannot hold it.
+        _check_shm_capacity(int(config["cache_buffer_capacity_gb"]))
 
     def _create_store(
         self,
@@ -1266,7 +1338,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["tensor_size_list"] = tensor_size_list
             config["shard_size"] = store_shard_size
             config["block_size"] = store_block_size
-            self._publish_block_size(store_block_size)
+            gc_block_size = _get_store_gc_block_size(
+                str(config.get("store_pipeline", "")),
+                tensor_size_list,
+                store_shard_size,
+                store_block_size,
+            )
+            self._publish_block_size(gc_block_size)
             if store_shard_size != logical_shard_size:
                 logger.info(
                     "Pad Store sizes for I/O alignment: "
@@ -1399,6 +1477,36 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if other_rank_block_ids:
             self.store.prefetch(other_rank_block_ids)
 
+    def _prefetch_direct_hit_key_hotness(
+        self,
+        hbm_hit_block_ids: list[bytes],
+        all_hit_block_ids: list[bytes],
+    ) -> None:
+        """Best-effort GC hotness update for keys skipped by scheduler lookup.
+
+        Rank 0 external keys are already touched by ``lookup_on_prefix``. The
+        local-HBM prefix is not part of that lookup, while other TP ranks do not
+        perform scheduler-side lookup at all, so update those two sets here.
+        """
+
+        if hbm_hit_block_ids:
+            try:
+                self.store.prefetch(hbm_hit_block_ids)
+            except Exception as e:
+                logger.warning(
+                    "UCM rank-0 HBM hotness update failed. " f"{type(e).__name__}: {e}"
+                )
+
+        if all_hit_block_ids:
+            try:
+                self._prefetch_other_rank_hashes(all_hit_block_ids)
+            except Exception as e:
+                # Prefetch is only a GC hotness hint. A failure must not turn a
+                # valid cache hit into a scheduler-side miss.
+                logger.warning(
+                    "UCM other-rank hotness update failed. " f"{type(e).__name__}: {e}"
+                )
+
     def get_num_new_matched_tokens(
         self,
         request: "Request",
@@ -1442,9 +1550,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     )
                     + 1
                 )
-                self._prefetch_other_rank_hashes(
-                    external_block_ids[:external_hit_hashes]
-                )
                 external_hit_blocks = external_hit_hashes // self.cp_world_size
             except Exception as e:
                 logger.error(
@@ -1452,11 +1557,21 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 )
                 self._record_counter("connector_lookup_errors_total")
 
+        hbm_hit_hashes = hbm_hit_block_num * self.cp_world_size
+        total_hit_hashes = (
+            hbm_hit_block_num + external_hit_blocks
+        ) * self.cp_world_size
+        self._prefetch_direct_hit_key_hotness(
+            ucm_block_ids[:hbm_hit_hashes],
+            ucm_block_ids[:total_hit_hashes],
+        )
+
         logger.info_once(
             f"request_id: {request.request_id}, "
             f"total_blocks_num: {len(ucm_block_ids)}, "
             f"hit hbm: {hbm_hit_block_num * self.cp_world_size}, "
             f"hit external: {external_hit_blocks * self.cp_world_size}"
+            f"total tokens: {len(request.all_token_ids)}"
         )
 
         if not external_block_ids:
@@ -1646,15 +1761,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
         request_to_task: dict[str, Task] = {}
         is_load = False
         num_loaded_block = 0
-        num_loaded_request = 0
-        load_start_time = time.perf_counter() * 1000
         request_to_load_blocks: dict[str, int] = {}
         for request_id, request in metadata.request_meta.items():
             if len(request.load_block_ids[0]) == 0:
                 continue
             is_load = True
             num_loaded_block += len(request.load_block_ids[0])
-            num_loaded_request += 1
 
             ucm_block_ids, vllm_block_ids = request.load_block_ids
             if self._skip_null_vllm_blocks:
@@ -1665,7 +1777,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 )
                 if len(ucm_block_ids) == 0:
                     num_loaded_block -= len(request.load_block_ids[0])
-                    num_loaded_request -= 1
                     continue
                 num_loaded_block -= len(request.load_block_ids[0]) - len(ucm_block_ids)
             store_block_ids = ucm_block_ids
@@ -1715,19 +1826,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 self._connector_worker_meta.mark_failed(request_id)
                 num_loaded_block -= request_to_load_blocks.get(request_id, 0)
 
-        load_end_time = time.perf_counter() * 1000
-        load_duration_ms = load_end_time - load_start_time
         load_bytes = num_loaded_block * self.block_data_size
-        load_speed = load_bytes / load_duration_ms / 1024 / 1024  # GB/s
         if is_load:
-            load_stats = {
-                "load_requests_num": num_loaded_request,
-                "load_blocks_num": num_loaded_block,
-                "load_duration": load_duration_ms,
-                "load_speed": load_speed,
-                "load_bytes_total": load_bytes,
-            }
-            ucmmetrics.update_stats(load_stats)
+            ucmmetrics.update_stats({"load_bytes_total": load_bytes})
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         pass
@@ -1850,7 +1951,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         is_save = False
         num_saved_block = 0
-        num_saved_request = 0
         total_ucm_block_ids, total_vllm_block_ids = [], []
         dump_request_ids: set[str] = set()
         block_ids_by_request: dict[str, set[bytes]] = {}
@@ -1871,7 +1971,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
             dump_request_ids.add(request_id)
             block_ids_by_request[request_id] = set(ucm_block_ids)
             num_saved_block += len(ucm_block_ids)
-            num_saved_request += 1
             store_block_ids = ucm_block_ids
             if self.tp_rank != 0:
                 store_block_ids = [
@@ -1904,12 +2003,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 return
 
             save_bytes = num_saved_block * self.block_data_size
-            save_stats = {
-                "save_requests_num": num_saved_request,
-                "save_blocks_num": num_saved_block,
-                "save_bytes_total": save_bytes,
-            }
-            ucmmetrics.update_stats(save_stats)
+            ucmmetrics.update_stats({"save_bytes_total": save_bytes})
             self._pending_dump_tasks.append(
                 PendingDumpTask(
                     task=task,
@@ -2030,21 +2124,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                              load l2    -> forward l2 -> save l2
     """
 
-    _BATCH_TOTAL_METRICS = {
-        (False, False): "layerwise_batch_total_no_transfer_ms",
-        (True, False): "layerwise_batch_total_load_only_ms",
-        (False, True): "layerwise_batch_total_save_only_ms",
-        (True, True): "layerwise_batch_total_load_save_ms",
-    }
-    _BATCH_LOAD_WAIT_METRICS = {
-        (True, False): "layerwise_batch_load_wait_total_load_only_ms",
-        (True, True): "layerwise_batch_load_wait_total_load_save_ms",
-    }
-    _BATCH_SAVE_TAIL_METRICS = {
-        (False, True): "layerwise_batch_save_tail_save_only_ms",
-        (True, True): "layerwise_batch_save_tail_load_save_ms",
-    }
-
     def __init__(
         self,
         vllm_config: "VllmConfig",
@@ -2055,114 +2134,28 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         # {layer_id: {request_id: Task}}
         self.load_tasks: dict[int, dict[str, Task]] = defaultdict(dict)
         self.use_layerwise = True
-        self.is_save = False
         self.need_load = False
         self.dump_total_ptrs: np.ndarray | None = None
         self.request_data: list[tuple[str, list, list, np.ndarray]] = []
         self._failure_req_ids: set[str] = set()
-        self._layerwise_prev_wait_end: Optional[float] = None
-        self._layerwise_batch_start: Optional[float] = None
-        self._layerwise_batch_wait_blocking_total_ms = 0.0
-        # MTP layers can be revisited several times in one speculative decode
-        # batch. Keep only the last metadata snapshot for each MTP layer and
-        # submit its dump after the layerwise forward finishes.
-        self._deferred_mtp_dumps: dict[
-            int,
-            tuple[
-                list[bytes],
-                list[int],
-                set[str],
-            ],
-        ] = {}
-        self._is_mtp = False
-        self._num_mtp_layers = 0
-        self._mtp_layer_start: Optional[int] = None
-        self._mtp_layer_end: Optional[int] = None
-        self._init_mtp_layerwise_dump_state()
+        # A layer can be visited more than once in one model-runner batch
+        # (for example by speculative decoding). Persist the first visit only.
+        # This state is reset at the start of every connector batch.
+        self._dumped_layer_ids: set[int] = set()
+        self._layerwise_load_start_by_layer: dict[int, float] = {}
+        self._layerwise_layer_load_duration_sum_ms = 0.0
+        self._layerwise_load_bytes = 0
+        self._layerwise_save_bytes = 0
         logger.info("Init UCMLayerWiseConnector.")
 
-    def _layerwise_batch_stats(
-        self, total_end: float, save_tail_ms: Optional[float] = None
-    ) -> dict[str, float]:
-        if self._layerwise_batch_start is None:
-            return {}
-
-        batch_type = (self.need_load, self.is_save)
-        batch_total_ms = (total_end - self._layerwise_batch_start) * 1000
-        stats = {
-            "layerwise_batch_total_ms": batch_total_ms,
-            self._BATCH_TOTAL_METRICS[batch_type]: batch_total_ms,
-        }
-
-        load_wait_metric = self._BATCH_LOAD_WAIT_METRICS.get(batch_type)
-        if load_wait_metric:
-            stats[load_wait_metric] = self._layerwise_batch_wait_blocking_total_ms
-
-        save_tail_metric = self._BATCH_SAVE_TAIL_METRICS.get(batch_type)
-        if save_tail_metric and save_tail_ms is not None:
-            stats["layerwise_save_tail_total_ms"] = save_tail_ms
-            stats[save_tail_metric] = save_tail_ms
-
-        self._layerwise_batch_start = None
-        self._layerwise_batch_wait_blocking_total_ms = 0.0
-        return stats
-
-    def _init_mtp_layerwise_dump_state(self) -> None:
-        """Cache whether MTP is enabled and how many MTP layers it has."""
-        speculative_config = getattr(self._vllm_config, "speculative_config", None)
-        if speculative_config is None:
-            return
-
-        mtp_method = getattr(speculative_config, "method", None)
-        self._is_mtp = mtp_method == "mtp" or (
-            isinstance(mtp_method, str) and mtp_method.endswith("_mtp")
-        )
-        if not self._is_mtp:
-            return
-
-        draft_model_config = getattr(speculative_config, "draft_model_config", None)
-        draft_hf_config = getattr(draft_model_config, "hf_config", None)
-        value = getattr(draft_hf_config, "n_predict", None)
-        if value is not None:
-            try:
-                self._num_mtp_layers = max(int(value), 0)
-            except (TypeError, ValueError) as e:
-                logger.warning(
-                    f"Failed to parse MTP n_predict from draft hf_config, "
-                    f"n_predict={value}. "
-                    f"{type(e).__name__}: {e}"
-                )
-
-    def _refresh_mtp_layer_range(self) -> None:
-        """Resolve MTP layer ids from the registered KV cache layout."""
-        self._mtp_layer_start = None
-        self._mtp_layer_end = None
-        if not self._is_mtp or self._num_mtp_layers <= 0:
-            return
-
-        num_hidden_layers = self.kv_cache_layout.num_hidden_layers
-        if num_hidden_layers <= 0:
-            logger.warning_once(
-                "Skip deferred MTP layerwise dump because num_hidden_layers is unknown."
-            )
-            return
-
-        # MTP layers are indexed after the base model layers, e.g. a 78-layer
-        # model uses layer_id 78 for its first MTP layer.
-        self._mtp_layer_start = num_hidden_layers
-        self._mtp_layer_end = num_hidden_layers + self._num_mtp_layers
-
-    def _is_mtp_layer(self, layer_id: int) -> bool:
-        """Check whether a global layer id belongs to the MTP layer range."""
-        return (
-            self._mtp_layer_start is not None
-            and self._mtp_layer_end is not None
-            and self._mtp_layer_start <= layer_id < self._mtp_layer_end
-        )
-
-    def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
-        super().register_kv_caches(kv_caches)
-        self._refresh_mtp_layer_range()
+    def _record_layerwise_load_duration(self, layer_id: int, load_end: float) -> bool:
+        if layer_id not in self._layerwise_load_start_by_layer:
+            return False
+        load_start = self._layerwise_load_start_by_layer.pop(layer_id)
+        duration_ms = self._non_negative_ms((load_end - load_start) * 1000)
+        self._layerwise_layer_load_duration_sum_ms += duration_ms
+        ucmmetrics.update_stats({"layerwise_layer_load_duration_ms": duration_ms})
+        return True
 
     def _submit_layerwise_dump_task(
         self,
@@ -2170,10 +2163,10 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         total_ucm_block_ids: list[bytes],
         total_vllm_block_ids: list[int],
         dump_request_ids: set[str],
-    ) -> None:
+    ) -> bool:
         """Submit a layerwise dump and attach it to the existing async lifecycle."""
         if not dump_request_ids:
-            return
+            return False
 
         metadata = self._get_connector_metadata()
         block_ids_by_request = {
@@ -2206,6 +2199,10 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                     event_handle=event_handle,
                 )
             )
+            self._layerwise_save_bytes += (
+                len(total_ucm_block_ids) * self.kv_cache_layout.shard_size
+            )
+            return True
         except Exception as e:
             logger.error(
                 f"submit dump task for layer {layer_id} failed. {type(e).__name__}: {e}"
@@ -2213,33 +2210,18 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             self._record_counter("connector_dump_submit_errors_total")
             if self.enable_event_sync and event_handle and self.device is not None:
                 self.device.destroy_event_handle(event_handle)
-
-    def _flush_deferred_mtp_dumps(self) -> None:
-        """Submit the last saved metadata snapshot for each deferred MTP layer."""
-        if not self._deferred_mtp_dumps:
-            return
-
-        deferred_mtp_dumps = self._deferred_mtp_dumps
-        self._deferred_mtp_dumps = {}
-        for layer_id in sorted(deferred_mtp_dumps):
-            (
-                total_ucm_block_ids,
-                total_vllm_block_ids,
-                dump_request_ids,
-            ) = deferred_mtp_dumps[layer_id]
-            self._submit_layerwise_dump_task(
-                layer_id,
-                total_ucm_block_ids,
-                total_vllm_block_ids,
-                dump_request_ids,
-            )
+            return False
 
     def _submit_request_load_tasks_for_layer(
         self,
         layer_id: int,
         local_row: int,
         metadata: "UCMConnectorMetadata",
+        load_start: Optional[float] = None,
     ) -> None:
+        if load_start is None:
+            load_start = time.perf_counter()
+        submitted = False
         for (
             request_id,
             ucm_block_ids,
@@ -2259,6 +2241,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                     layer_ptrs,
                 )
                 self.load_tasks[layer_id][request_id] = task
+                submitted = True
             except Exception as e:
                 logger.error(
                     f"request {request_id} submit load task for layer {layer_id} "
@@ -2271,16 +2254,21 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 )
                 self._failure_req_ids.add(request_id)
                 self._connector_worker_meta.mark_failed(request_id)
+        if submitted:
+            self._layerwise_load_start_by_layer[layer_id] = load_start
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
-        self._layerwise_batch_start = time.perf_counter()
+        self._dumped_layer_ids.clear()
+        first_layer_load_start = time.perf_counter()
         metadata = self._get_connector_metadata()
         self.load_tasks.clear()
         self.request_data.clear()
         self._failure_req_ids.clear()
         self.need_load = False
-        self._layerwise_prev_wait_end = None
-        self._layerwise_batch_wait_blocking_total_ms = 0.0
+        self._layerwise_load_start_by_layer.clear()
+        self._layerwise_layer_load_duration_sum_ms = 0.0
+        self._layerwise_load_bytes = 0
+        self._layerwise_save_bytes = 0
 
         for request_id, request in metadata.request_meta.items():
             if len(request.load_block_ids[0]) == 0:
@@ -2302,18 +2290,11 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             )
 
         if self.need_load:
-            first_submit_start = time.perf_counter()
-            self._submit_request_load_tasks_for_layer(self.first_layer_id, 0, metadata)
-            first_submit_end = time.perf_counter()
-            n_reqs = len(self.request_data) - len(self._failure_req_ids)
-            ucmmetrics.update_stats(
-                {
-                    "layerwise_first_layer_submit_ms": (
-                        first_submit_end - first_submit_start
-                    )
-                    * 1000,
-                    "layerwise_first_layer_requests": float(n_reqs),
-                }
+            self._submit_request_load_tasks_for_layer(
+                self.first_layer_id,
+                0,
+                metadata,
+                first_layer_load_start,
             )
 
     def wait_for_layer_load(self, layer_name: str) -> None:
@@ -2324,12 +2305,9 @@ class UCMLayerWiseConnector(UCMDirectConnector):
         metadata = self._get_connector_metadata()
         current_layer_id = self.layer_name_to_id[layer_name]
 
-        wait_start = time.perf_counter()
-
         # Pop before wait so MTP / rollback paths that revisit the same layer_name
         # do not call store.wait() again on already-completed handles.
         layer_tasks = self.load_tasks.pop(current_layer_id, {})
-        n_tasks = len(layer_tasks)
         for request_id, task in layer_tasks.items():
             try:
                 self._rank_consistency.wait_load(task)
@@ -2345,8 +2323,16 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 )
                 self._connector_worker_meta.mark_failed(request_id)
                 self._failure_req_ids.add(request_id)
+            else:
+                self._layerwise_load_bytes += (
+                    len(metadata.request_meta[request_id].load_block_ids[0])
+                    * self.kv_cache_layout.shard_size
+                )
 
         wait_end = time.perf_counter()
+        load_duration_recorded = self._record_layerwise_load_duration(
+            current_layer_id, wait_end
+        )
 
         next_layer_id = current_layer_id + 1
         has_next = next_layer_id in self.layer_ids
@@ -2355,22 +2341,16 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             self._submit_request_load_tasks_for_layer(
                 next_layer_id, next_local_row, metadata
             )
-
-        blocking_ms = (wait_end - wait_start) * 1000
-        self._layerwise_batch_wait_blocking_total_ms += blocking_ms
-        stats = {
-            "layerwise_wait_blocking_ms": blocking_ms,
-            "layerwise_wait_tasks_count": float(n_tasks),
-        }
-        if self._layerwise_prev_wait_end is not None:
-            stats["layerwise_inter_wait_interval_ms"] = (
-                wait_start - self._layerwise_prev_wait_end
-            ) * 1000
-        if has_next:
-            submit_end = time.perf_counter()
-            stats["layerwise_next_layer_submit_ms"] = (submit_end - wait_end) * 1000
-        ucmmetrics.update_stats(stats)
-        self._layerwise_prev_wait_end = wait_end
+        elif load_duration_recorded:
+            duration_sum_ms = self._layerwise_layer_load_duration_sum_ms
+            ucmmetrics.update_stats(
+                {
+                    "layerwise_batch_load_duration_sum_ms": duration_sum_ms,
+                    "load_bytes_total": self._layerwise_load_bytes,
+                }
+            )
+            self._layerwise_layer_load_duration_sum_ms = 0.0
+            self._layerwise_load_bytes = 0
 
     def save_kv_layer(
         self,
@@ -2386,15 +2366,20 @@ class UCMLayerWiseConnector(UCMDirectConnector):
 
         metadata = self._get_connector_metadata()
 
-        submit_start = time.perf_counter()
         total_ucm_block_ids, total_vllm_block_ids = [], []
         dump_request_ids: set[str] = set()
         layer_id = self.layer_name_to_id[layer_name]
+        if layer_id in self._dumped_layer_ids:
+            logger.debug(
+                f"Skip duplicate layerwise dump in the same batch: "
+                f"layer_name={layer_name}, layer_id={layer_id}"
+            )
+            return
+
         for request_id, request in metadata.request_meta.items():
             if len(request.dump_block_ids[0]) == 0:
                 continue
 
-            self.is_save = True
             dump_request_ids.add(request_id)
             ucm_block_ids, vllm_block_ids = request.dump_block_ids
             store_block_ids = ucm_block_ids
@@ -2406,37 +2391,24 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             total_vllm_block_ids.extend(vllm_block_ids)
 
         if dump_request_ids:
-            if self._is_mtp_layer(layer_id):
-                self._deferred_mtp_dumps[layer_id] = (
-                    list(total_ucm_block_ids),
-                    list(total_vllm_block_ids),
-                    set(dump_request_ids),
-                )
-                logger.debug(
-                    f"Defer MTP layerwise dump: layer={layer_name}, "
-                    f"layer_id={layer_id}, blocks={len(total_ucm_block_ids)}"
-                )
-            else:
-                self._submit_layerwise_dump_task(
-                    layer_id,
-                    total_ucm_block_ids,
-                    total_vllm_block_ids,
-                    dump_request_ids,
-                )
-        if self.is_save:
-            submit_end = time.perf_counter()
-            ucmmetrics.update_stats(
-                {"layerwise_save_submit_ms": (submit_end - submit_start) * 1000}
+            submitted = self._submit_layerwise_dump_task(
+                layer_id,
+                total_ucm_block_ids,
+                total_vllm_block_ids,
+                dump_request_ids,
             )
+            if submitted:
+                self._dumped_layer_ids.add(layer_id)
 
     def wait_for_save(self) -> None:
-        save_tail_start = time.perf_counter()
-        wait_for_save_start_ms = save_tail_start * 1000
-        self._flush_deferred_mtp_dumps()
+        wait_for_save_start_ms = time.perf_counter() * 1000
         for pending_dump_task in self._pending_dump_tasks:
             if pending_dump_task.wait_for_save_start_ms <= 0:
                 pending_dump_task.wait_for_save_start_ms = wait_for_save_start_ms
         self._poll_pending_dump_tasks()
+        if self._layerwise_save_bytes > 0:
+            ucmmetrics.update_stats({"save_bytes_total": self._layerwise_save_bytes})
+            self._layerwise_save_bytes = 0
         if self._connector_metadata:
             metadata = self._get_connector_metadata()
             self._async_dump_req_ids.update(
@@ -2445,12 +2417,6 @@ class UCMLayerWiseConnector(UCMDirectConnector):
                 if len(request.dump_block_ids[0]) > 0
             )
 
-        total_end = time.perf_counter()
-        save_tail_ms = (total_end - save_tail_start) * 1000
-        stats = self._layerwise_batch_stats(total_end, save_tail_ms)
-        if stats:
-            ucmmetrics.update_stats(stats)
-        self.is_save = False
         self.dump_total_ptrs = None
 
 
@@ -2472,7 +2438,7 @@ class UCMCPConnector(UCMLayerWiseConnector):
         kv_cache_config: Optional["KVCacheConfig"] = None,
     ):
         super().__init__(vllm_config, role, kv_cache_config)
-        self.use_layerwise = self.launch_config.get("use_layerwise", False)
+        self.use_layerwise = self.launch_config.get("use_layerwise", True)
 
         try:
             from vllm.distributed import get_dcp_group, get_pcp_group
@@ -2799,11 +2765,13 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             if role == KVConnectorRole.WORKER
             else "scheduler" if role == KVConnectorRole.SCHEDULER else None
         )
+        if role == KVConnectorRole.WORKER and self._worker_rank == 0:
+            logger.info(f"UCM worker rank 0 KV cache config: {kv_cache_config!r}")
         self._setup_ucm_metrics(vllm_config, role)
         logger.info(f"self.launch_config: {self.launch_config}")
 
         use_layerwise = (
-            self.launch_config.get("use_layerwise", False)
+            self.launch_config.get("use_layerwise", True)
             if self.launch_config is not None
             else False
         )
@@ -2887,6 +2855,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         else:
             self.connector = UCMDirectConnector(vllm_config, role, kv_cache_config)
 
+    @_record_connector_interface_duration
     def get_block_size(self) -> int:
         return self.connector.get_block_size()
 
@@ -2929,6 +2898,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             )
             self._vllm_metrics_enabled = bool(self._vllm_metric_definitions)
 
+    @_record_connector_interface_duration
     def get_kv_connector_stats(self) -> Optional["KVConnectorStats"]:
         if not self._vllm_metrics_enabled:
             return None
@@ -2977,6 +2947,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             per_engine_labelvalues,
         )
 
+    @_record_connector_interface_duration
     def get_num_new_matched_tokens(
         self,
         request: "Request",
@@ -3032,6 +3003,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             }
         )
 
+    @_record_connector_interface_duration
     def update_state_after_alloc(
         self, request: "Request", blocks: "KVCacheBlocks", num_external_tokens: int
     ):
@@ -3040,6 +3012,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         """
         self.connector.update_state_after_alloc(request, blocks, num_external_tokens)
 
+    @_record_connector_interface_duration
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         """
         Initialize with the KV caches. Useful for pre-registering the
@@ -3050,6 +3023,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         """
         self.connector.register_kv_caches(kv_caches)
 
+    @_record_connector_interface_duration
     def build_connector_meta(
         self, scheduler_output: SchedulerOutput
     ) -> KVConnectorMetadata:
@@ -3064,6 +3038,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         """
         return self.connector.build_connector_meta(scheduler_output)
 
+    @_record_connector_interface_duration
     def bind_connector_metadata(self, connector_metadata: KVConnectorMetadata) -> None:
         """Set the connector metadata from the scheduler.
 
@@ -3076,9 +3051,11 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         """
         self.connector.bind_connector_metadata(connector_metadata)
 
+    @_record_connector_interface_duration
     def handle_preemptions(self, kv_connector_metadata: KVConnectorMetadata):
         self.connector.handle_preemptions(kv_connector_metadata)
 
+    @_record_connector_interface_duration
     def has_connector_metadata(self) -> bool:
         """Check whether the connector metadata is currently set.
 
@@ -3087,6 +3064,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         """
         return self.connector.has_connector_metadata()
 
+    @_record_connector_interface_duration
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         """
         Start loading the KV cache from the connector to vLLM's paged
@@ -3104,6 +3082,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         """
         self.connector.start_load_kv(forward_context, **kwargs)
 
+    @_record_connector_interface_duration
     def wait_for_layer_load(self, layer_name: str) -> None:
         """
         Block until the KV for a specific layer is loaded into vLLM's
@@ -3117,6 +3096,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         """
         self.connector.wait_for_layer_load(layer_name)
 
+    @_record_connector_interface_duration
     def save_kv_layer(
         self,
         layer_name: str,
@@ -3138,6 +3118,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         """
         self.connector.save_kv_layer(layer_name, kv_layer, attn_metadata, **kwargs)
 
+    @_record_connector_interface_duration
     def wait_for_save(self) -> None:
         """
         Block until all the save operations is done. This is called
@@ -3148,6 +3129,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         """
         self.connector.wait_for_save()
 
+    @_record_connector_interface_duration
     def request_finished_all_groups(
         self,
         request: "Request",
@@ -3159,6 +3141,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             return self.connector.request_finished(request, block_ids[0])
         return self.connector.request_finished(request, [])
 
+    @_record_connector_interface_duration
     def request_finished(
         self,
         request: "Request",
@@ -3166,18 +3149,22 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
     ) -> tuple[bool, dict[str, object] | None]:
         return self.connector.request_finished(request, block_ids)
 
+    @_record_connector_interface_duration
     def get_finished(
         self,
         finished_req_ids: set[str],
     ) -> tuple[Optional[set[str]], Optional[set[str]]]:
         return self.connector.get_finished(finished_req_ids)
 
+    @_record_connector_interface_duration
     def build_connector_worker_meta(self):
         return self.connector.build_connector_worker_meta()
 
+    @_record_connector_interface_duration
     def update_connector_output(self, connector_output: KVConnectorOutput):
         return self.connector.update_connector_output(connector_output)
 
+    @_record_connector_interface_duration
     def clear_connector_metadata(self) -> None:
         """Clear the connector metadata.
 
@@ -3186,6 +3173,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         """
         self.connector.clear_connector_metadata()
 
+    @_record_connector_interface_duration
     def get_block_ids_with_load_errors(self) -> set[int]:
         """
         Get the set of block IDs that failed to load.

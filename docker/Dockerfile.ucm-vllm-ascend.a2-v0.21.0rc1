@@ -30,7 +30,7 @@ RUN pip install /workspace/package/uc_manager-*.whl
 
 # Run optional post-install hook
 RUN if [ -f /workspace/package/install.sh ]; then \
-        bash /workspace/package/install.sh; \
+        bash /workspace/package/install. || true; \
     fi
 
 CMD ["/bin/bash"]

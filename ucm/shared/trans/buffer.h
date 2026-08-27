@@ -42,6 +42,14 @@ public:
     virtual Status MakeHostBuffers(size_t size, size_t number) = 0;
     virtual std::shared_ptr<void> GetHostBuffer(size_t size) = 0;
 
+    // Whether mapped host/device memory is implemented by the active runtime.
+    virtual bool SupportsHostMappedDeviceBuffer() const { return false; }
+    virtual std::shared_ptr<void> MakeHostMappedDeviceBuffer(size_t size,
+                                                             void** pDevice = nullptr) = 0;
+
+    virtual bool SupportsDeviceMappedHostBuffer() const { return false; }
+    virtual std::shared_ptr<void> MakeDeviceMappedHostBuffer(size_t size) = 0;
+
     static Status RegisterHostBuffer(void* host, size_t size, void** pDevice = nullptr);
     static Status GetHostDevicePointer(void* host, void** pDevice);
     static void UnregisterHostBuffer(void* host);

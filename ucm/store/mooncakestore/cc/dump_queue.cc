@@ -249,7 +249,7 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
     DumpCtx dumpCtx;
     if (backend_) {
         if (task->prerequisiteHandle != 0) {
-            auto s = stream.WaitEvent(reinterpret_cast<void*>(task->prerequisiteHandle));
+            auto s = stream.WaitEvent(Trans::Event{task->prerequisiteHandle});
             if (s.Failure()) [[unlikely]] {
                 UC_ERROR("Failed({}) to set stream wait event for task({}).", s, task->id);
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_d2h_errors_total"), 1.0);

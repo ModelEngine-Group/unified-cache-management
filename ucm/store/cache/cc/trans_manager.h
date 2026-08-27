@@ -68,14 +68,12 @@ protected:
             if (isLoad) {
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_duration_ms"), costMs);
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_bandwidth_gbps"), bwGbps);
-                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_blocks_total"),
-                                         static_cast<double>(num));
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_bytes_total"),
                                          static_cast<double>(size));
             } else {
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_duration_ms"), costMs);
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_bandwidth_gbps"), bwGbps);
-                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_blocks_total"),
+                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_shards_total"),
                                          static_cast<double>(num));
                 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_bytes_total"),
                                          static_cast<double>(size));

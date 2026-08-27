@@ -285,3 +285,62 @@ TEST_P(UCCacheTransBufferTest, InsertDifferentDataRepeatedly)
         }
     }
 }
+
+TEST_P(UCCacheTransBufferTest, ClockSparesRecentlyTouchedBlock)
+{
+    constexpr size_t nNode = 4;
+    UC::CacheStore::TransBuffer transBuffer;
+    UC::CacheStore::Config config;
+    config.uniqueId = rd.RandomString(10);
+    config.shardSize = 32768;
+    config.bufferCapacity = config.shardSize * nNode;
+    config.shareBufferEnable = GetParam();
+    config.deviceId = 0;
+    config.loadExclusiveBufferNumber = 0;
+    auto s = transBuffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    auto b1 = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto b2 = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto b3 = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto b4 = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto b5 = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto b6 = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    constexpr size_t shardIdx = 0;
+
+    {
+        auto h = transBuffer.Get(b1, shardIdx);
+        h.MarkReady();
+    }
+    {
+        auto h = transBuffer.Get(b2, shardIdx);
+        h.MarkReady();
+    }
+    {
+        auto h = transBuffer.Get(b3, shardIdx);
+        h.MarkReady();
+    }
+    {
+        auto h = transBuffer.Get(b4, shardIdx);
+        h.MarkReady();
+    }
+
+    {
+        auto h = transBuffer.Get(b5, shardIdx);
+        h.MarkReady();
+    }
+    ASSERT_FALSE(transBuffer.Exist(b1, shardIdx));
+    ASSERT_TRUE(transBuffer.Exist(b5, shardIdx));
+
+    {
+        auto h = transBuffer.Get(b2, shardIdx);
+        ASSERT_TRUE(h.Ready());
+    }
+
+    {
+        auto h = transBuffer.Get(b6, shardIdx);
+        h.MarkReady();
+    }
+    ASSERT_TRUE(transBuffer.Exist(b2, shardIdx));
+    ASSERT_TRUE(transBuffer.Exist(b5, shardIdx));
+    ASSERT_FALSE(transBuffer.Exist(b3, shardIdx));
+}
