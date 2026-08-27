@@ -143,6 +143,12 @@ nav:
       - user-guide/index.md
       - Installation: user-guide/installation.md
       - Getting Started: user-guide/engines/index.md
+      - Support Matrix: user-guide/support-matrix/index.md
+      - Deploy: user-guide/deploy/index.md
+      - Deployment Frameworks:
+          - user-guide/frameworks/index.md
+          - Kubernetes: user-guide/frameworks/kubernetes.md
+          - pyMotor: user-guide/frameworks/pyMotor.md
       - Model Tour:
           - user-guide/model-tour/index.md
           - GLM:
@@ -155,12 +161,6 @@ nav:
               - user-guide/model-tour/minimax/index.md
           - Kimi:
               - user-guide/model-tour/kimi/index.md
-      - Support Matrix: user-guide/support-matrix/index.md
-      - Deploy: user-guide/deploy/index.md
-      - Deployment Frameworks:
-          - user-guide/frameworks/index.md
-          - Kubernetes: user-guide/frameworks/kubernetes.md
-          - pyMotor: user-guide/frameworks/pyMotor.md
       - Capabilities:
           - Overview: user-guide/capabilities/index.md
           - Prefix Cache: user-guide/capabilities/prefix-cache/index.md
