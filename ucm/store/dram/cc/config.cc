@@ -36,7 +36,7 @@
 namespace UC::Dram {
 namespace {
 
-constexpr std::size_t kTargetBatchEntries = 128;
+constexpr std::size_t kTargetBatchEntries = 512;
 constexpr std::size_t kMaxInflightRequestsPerNode = 128;
 
 std::size_t MaxReplySize(std::size_t entryCount)
