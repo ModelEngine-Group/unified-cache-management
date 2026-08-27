@@ -15,7 +15,7 @@ theme:
   custom_dir: overrides
   language: en
   logo: assets/images/UCM-light.png
-  favicon: assets/images/UCM-dark.png
+  favicon: assets/images/UCM.png
   features:
     - navigation.tabs
     - navigation.tabs.sticky
@@ -127,6 +127,10 @@ nav:
           - Kimi:
               - user-guide/model-tour/kimi/index.md
       - Deploy: user-guide/deploy/index.md
+      - Deployment Frameworks:
+          - user-guide/frameworks/index.md
+          - Kubernetes: user-guide/frameworks/kubernetes.md
+          - pyMotor: user-guide/frameworks/pyMotor.md
       - Core Capabilities & Troubleshooting: user-guide/capabilities/index.md
   - Developer Guide:
       - Architecture: developer-guide/architecture.md
