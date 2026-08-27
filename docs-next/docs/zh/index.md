@@ -97,8 +97,3 @@ hide:
     [:octicons-arrow-right-24: 计算器](toolkit/kv-cache-calculator.md)
 
 </div>
-
-## 社区
-
-- [ModelEngine 社区 UCM](https://modelengine-ai.net/#/ucm)
-- [GitHub Discussions](https://github.com/ModelEngine-Group/unified-cache-management/discussions)

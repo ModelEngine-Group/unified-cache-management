@@ -96,16 +96,3 @@ various scenarios, including multi-turn dialogue and long-context reasoning task
     [:octicons-arrow-right-24: Calculator](toolkit/kv-cache-calculator.md)
 
 </div>
-
-## Publications
-
-- [HATA: Trainable and Hardware-Efficient Hash-Aware Top-k Attention for Scalable Large Model Inference](https://arxiv.org/abs/2506.02572)
-- [ReTaKe: Reducing Temporal and Knowledge Redundancy for Long Video Understanding](https://arxiv.org/abs/2412.20504)
-- [AdaReTaKe: Adaptive Redundancy Reduction to Perceive Longer for Video-language Understanding](https://arxiv.org/abs/2503.12559)
-- [Dynamic Early Exit in Reasoning Models](https://arxiv.org/abs/2504.15895)
-- [Sparse Attention across Multiple-context KV Cache](https://arxiv.org/abs/2508.11661)
-
-## Community
-
-- [UCM on the ModelEngine Community](https://modelengine-ai.net/#/ucm)
-- [GitHub Discussions](https://github.com/ModelEngine-Group/unified-cache-management/discussions)
