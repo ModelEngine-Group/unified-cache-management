@@ -36,7 +36,7 @@ as structured data):
 - No conflicts with task pages.
 
 **First-draft approach**: extract parameters already in use from
-`model-tour/*`, `capabilities/prefix-cache/*`, and `engines/*` into a table,
+`model-tour/*`, `capabilities/prefix-cache/*`, and `quick_start/*` into a table,
 then back-validate task-page consistency.
 
 **Owner**: _(to be assigned)_
