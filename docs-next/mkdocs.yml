@@ -140,6 +140,7 @@ nav:
       - Installation: user-guide/installation.md
       - Model Tour: user-guide/model-tour/index.md
       - Getting Started: user-guide/engines/index.md
+      - Support Matrix: user-guide/support-matrix/index.md
       - Deploy: user-guide/deploy/index.md
       - Capabilities:
           - Overview: user-guide/capabilities/index.md
