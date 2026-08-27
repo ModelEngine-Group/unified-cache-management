@@ -388,21 +388,45 @@ def plan_blocks(
     if not hasattr(kv_utils, "get_kv_cache_configs"):
         return 3 * max(4, (tokens + block_size - 1) // block_size + 1)
 
+    last_capacity_error: ValueError | None = None
+
     def fits(num_blocks: int) -> bool:
         """Return whether vLLM accepts this candidate KV pool size."""
 
+        nonlocal last_capacity_error
         try:
             make_layout(vllm_config, kv_cache_specs, num_blocks)
         except ValueError as exc:
-            if "kv cache" not in str(exc).lower():
-                raise
+            message = str(exc).lower()
+            capacity_error = "no available memory for the cache blocks" in message or (
+                "kv cache is needed" in message
+                and "available kv cache memory" in message
+            )
+            if not capacity_error:
+                raise UnsupportedEnvironment(
+                    "vLLM rejected the KV-cache layout for a reason unrelated "
+                    f"to pool capacity at num_blocks={num_blocks}. Increasing "
+                    "num_blocks cannot resolve this error. "
+                    f"Original error: {type(exc).__name__}: {exc}"
+                ) from exc
+            last_capacity_error = exc
             return False
         return True
 
     low = 0
     high = max(1, (tokens + block_size - 1) // block_size + 1)
+    max_blocks = high * 4096
     while not fits(high):
-        low, high = high, high * 2
+        if high >= max_blocks:
+            raise UnsupportedEnvironment(
+                "KV block planning could not satisfy vLLM's capacity check: "
+                f"tokens={tokens}, block_size={block_size}, "
+                f"tried_up_to={max_blocks} blocks. Continuing to double the "
+                "pool was stopped to avoid numeric overflow. "
+                f"Last vLLM error: {type(last_capacity_error).__name__}: "
+                f"{last_capacity_error}"
+            ) from last_capacity_error
+        low, high = high, min(high * 2, max_blocks)
     while high - low > 1:
         middle = (low + high) // 2
         if fits(middle):
