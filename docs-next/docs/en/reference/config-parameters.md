@@ -126,11 +126,11 @@
 
 | Parameter | Required | Type | Value Range | Description |
 |---|---|---|---|---|
-| `kvcs_store_id` | **Required** | int | — | KV Cache store ID created on storage per "Create Repository" chapter. |
-| `kvcs_instance_name` | **Required** | string | Default: `default_instance` | Inference instance name for alarm reporting. User-defined. |
-| `kvcs_ucm_over_tcp_ip_list` | **Required** | string | — | UCM Over TCP logical port IP list. Multiple IPs separated by `:`. Example: `192.168.0.1:192.168.0.2`. |
-| `kvcs_block_size` | **Required** | int | Default: `128` | Must match `block_size` in serve config. DeepSeek V4 series: `4 * block_size`. |
-| `kvcs_tls_enable` | Optional | bool | Default: `false` | Enable TLS authentication for GRPC communication. |
-| `kvcs_sliding_window_size` | Optional | int | Default: `100`, 10-1000 | Sliding window size for failure rate statistics (last N requests). |
-| `kvcs_failure_rate_threshold` | Optional | int | Default: `10`, 0-100 | Failure rate threshold. When exceeded, isolates KV Cache store. All requests fully recompute. Critical alarm. |
-| `kvcs_consecutive_fail_limit` | Optional | int | Default: `5`, 1-100 | Consecutive failure limit. When exceeded, isolates KV Cache store. All requests fully recompute. Critical alarm. |
+| `kvcs_store_id` | Not configured by default | int | — | KV Cache store ID. Fill with the store ID created on storage per "Create Repository" chapter. |
+| `kvcs_instance_name` | Not configured by default | string | Default: `default_instance` | Inference instance name for Unified Cache alarm reporting. User-defined. |
+| `kvcs_ucm_over_tcp_ip_list` | Not configured by default | string | — | UCM Over TCP logical port IP list created per "Create UCM over TCP" chapter. Multiple IPs separated by `:`. Example: `192.168.0.1:192.168.0.2`. |
+| `kvcs_block_size` | Not configured by default | int | Default: `128` | Must match `block_size` in serve config. DeepSeek V4 series: `4 * block_size`. |
+| `kvcs_tls_enable` | Not configured by default | bool | Default: `false` (TLS disabled) | Enable TLS authentication for GRPC communication between inference engine and storage. |
+| `kvcs_sliding_window_size` | Not configured by default | int | Default: `100`, range 10-1000 | Unified Cache alarm config: sliding window size — total inference request count for failure rate statistics (last N requests). |
+| `kvcs_failure_rate_threshold` | Not configured by default | int | Default: `10`, range 0-100 | Unified Cache alarm config: failure rate threshold. When exceeded, isolates KV Cache store. All requests fully recompute. Critical alarm reported. |
+| `kvcs_consecutive_fail_limit` | Not configured by default | int | Default: `5`, range 1-100 | Unified Cache alarm config: consecutive failure limit. When exceeded, isolates KV Cache store. All requests fully recompute. Critical alarm reported. |
