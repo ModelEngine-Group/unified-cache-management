@@ -13,17 +13,9 @@ hide:
 
 # Unified Cache Manager
 
-The core principle of **Unified Cache Manager (UCM)** is to persist the LLM KVCache
-and replace redundant computations through multiple retrieval mechanisms. UCM not
-only supports prefix caching but also offers a variety of training-free sparse
-attention retrieval methods, delivering higher performance when handling extremely
-long sequence inference tasks.
-
-Additionally, UCM provides a **PD disaggregation** solution based on a
-storage-compute separation architecture, which enables more straightforward and
-flexible management of heterogeneous computing resources. When integrated with
-vLLM, UCM achieves a **3-10x reduction** in inference latency across various
-scenarios, including multi-turn dialogue and long-context reasoning tasks.
+**Unified Cache Manager (UCM)** persists LLM KVCache to replace redundant computations.
+When integrated with vLLM, UCM achieves a **3-10x reduction** in inference latency across
+various scenarios, including multi-turn dialogue and long-context reasoning tasks.
 
 <div align="center" markdown>
 
@@ -40,38 +32,29 @@ scenarios, including multi-turn dialogue and long-context reasoning tasks.
     ---
 
     Persist KVCache across requests and reuse it to avoid redundant prefill for
-    multi-turn dialogue and shared prefixes. Choose from pipeline, NFS, DS3FS,
-    Mooncake, and compress stores.
+    multi-turn dialogue and shared prefixes. Supports non-HBM storage media including
+    DRAM, SSD, and remote storage with pipeline, NFS, DS3FS, Mooncake, and compress backends.
 
-    [:octicons-arrow-right-24: Learn more](user-guide/capabilities/index.md)
+    [:octicons-arrow-right-24: Learn more](user-guide/capabilities/prefix-cache/index.md)
 
--   :material-radar: **Sparse Attention**
-
-    ---
-
-    Training-free sparse retrieval methods (GSA, CacheBlend) that select the most
-    relevant KV slices, reducing attention overhead on extremely long sequences.
-
-    [:octicons-arrow-right-24: Learn more](user-guide/capabilities/index.md)
-
--   :material-split-horizontal: **PD Disaggregation**
+-   :material-chart-line: **Observability**
 
     ---
 
-    Storage-compute separation for prefill/decode disaggregation, giving flexible
-    control over heterogeneous GPU/NPU clusters with centralized, distributed,
-    and large-scale EP topologies.
+    Export Prometheus metrics through the vLLM connector and visualize with Grafana
+    to monitor key performance metrics like KVCache hit rate, latency, and throughput in real-time.
 
-    [:octicons-arrow-right-24: Learn more](user-guide/capabilities/index.md)
+    [:octicons-arrow-right-24: Learn more](user-guide/observability/metrics.md)
 
--   :material-chart-bell-curve: **ReRoPE**
+-   :material-magnify: **Trace Mode**
 
     ---
 
-    Corrected rotary position embedding that extends context length without
-    retraining, restoring position encoding quality for long-context inference.
+    Lightweight diagnostic and evaluation mode that records request traces without
+    performing actual KV cache operations, used to simulate theoretical hit rates
+    and validate UCM deployment effectiveness.
 
-    [:octicons-arrow-right-24: Learn more](user-guide/capabilities/index.md)
+    [:octicons-arrow-right-24: Learn more](user-guide/diagnostics/trace-mode.md)
 
 </div>
 
@@ -88,13 +71,13 @@ scenarios, including multi-turn dialogue and long-context reasoning tasks.
 
     [:octicons-arrow-right-24: Installation](user-guide/installation.md)
 
--   :material-engine: **Engines**
+-   :material-engine: **Getting Started**
 
     ---
 
     Integrate UCM with vLLM, vLLM Ascend, SGLang, and MindIE.
 
-    [:octicons-arrow-right-24: Engines](user-guide/engines/index.md)
+    [:octicons-arrow-right-24: Getting Started](user-guide/engines/index.md)
 
 -   :material-view-grid-plus: **Compatibility Matrix**
 
@@ -102,7 +85,7 @@ scenarios, including multi-turn dialogue and long-context reasoning tasks.
 
     Supported models, platforms, and feature coverage at a glance.
 
-    [:octicons-arrow-right-24: Matrix](reference/api-parameters.md)
+    [:octicons-arrow-right-24: Matrix](user-guide/support-matrix/index.md)
 
 -   :material-calculator: **KV Cache Calculator**
 
@@ -113,16 +96,3 @@ scenarios, including multi-turn dialogue and long-context reasoning tasks.
     [:octicons-arrow-right-24: Calculator](toolkit/kv-cache-calculator.md)
 
 </div>
-
-## Publications
-
-- [HATA: Trainable and Hardware-Efficient Hash-Aware Top-k Attention for Scalable Large Model Inference](https://arxiv.org/abs/2506.02572)
-- [ReTaKe: Reducing Temporal and Knowledge Redundancy for Long Video Understanding](https://arxiv.org/abs/2412.20504)
-- [AdaReTaKe: Adaptive Redundancy Reduction to Perceive Longer for Video-language Understanding](https://arxiv.org/abs/2503.12559)
-- [Dynamic Early Exit in Reasoning Models](https://arxiv.org/abs/2504.15895)
-- [Sparse Attention across Multiple-context KV Cache](https://arxiv.org/abs/2508.11661)
-
-## Community
-
-- [UCM on the ModelEngine Community](https://modelengine-ai.net/#/ucm)
-- [GitHub Discussions](https://github.com/ModelEngine-Group/unified-cache-management/discussions)
