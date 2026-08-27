@@ -555,6 +555,16 @@ def make_cache(
     init_dist(vllm_config, backend)
     model, kv_vllm_config = make_model(vllm_config)
     runner = make_runner(kv_vllm_config, model, active_device)
+
+    # The production executor resolves the backend-dependent block size after
+    # model construction and before asking the runner for its KV-cache specs.
+    # Keep the call optional for older vLLM versions that predate this hook.
+    from vllm.platforms import current_platform
+
+    update_block_size = getattr(current_platform, "update_block_size_for_backend", None)
+    if callable(update_block_size):
+        update_block_size(kv_vllm_config)
+
     kv_cache_specs = get_kv_specs(runner, kv_vllm_config)
     if not kv_cache_specs:
         raise UnsupportedEnvironment("The real model returned an empty KVCacheSpec")
