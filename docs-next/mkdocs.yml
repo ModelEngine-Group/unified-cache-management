@@ -144,7 +144,12 @@ nav:
   - User Guide:
       - user-guide/index.md
       - Installation: user-guide/installation.md
-      - Getting Started: user-guide/engines/index.md
+      - Getting Started:
+          - Getting Started: user-guide/quick_start/index.md
+          - vLLM (CUDA): user-guide/quick_start/quickstart_vllm.md
+          - vLLM Ascend (NPU): user-guide/quick_start/quickstart_vllm_ascend.md
+          - SGLang (CUDA): user-guide/quick_start/quickstart_sglang.md
+          - MindIE (NPU Ascend): user-guide/quick_start/quickstart_mindie_llm.md
       - Support Matrix: user-guide/support-matrix/index.md
       - Deploy: user-guide/deploy/index.md
       - Deployment Frameworks:
@@ -172,8 +177,11 @@ nav:
       - Diagnostics:
           - Overview: user-guide/diagnostics/index.md
           - Trace Mode: user-guide/diagnostics/trace-mode.md
+      - Support Matrix: user-guide/support-matrix/support_matrix.md
+      
   - Developer Guide:
       - Architecture: developer-guide/architecture.md
+      - Build from Source: developer-guide/build_from_source.md
       - Capability Principles: developer-guide/capability-principles.md
       - Add Metrics: developer-guide/add-metrics.md
       - Extending Store: developer-guide/extending-store.md

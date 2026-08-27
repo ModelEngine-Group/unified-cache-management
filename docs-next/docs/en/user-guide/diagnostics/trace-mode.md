@@ -82,6 +82,7 @@ difference is the UCM config file contents.
 Take the Qwen/Qwen2.5-14B-Instruct model as an example:
 
 ```bash
+export ENABLE_UCM_PATCH=1
 vllm serve Qwen/Qwen2.5-14B-Instruct \
   --max-model-len 32000 \
   --tensor-parallel-size 2 \
