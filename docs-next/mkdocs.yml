@@ -95,6 +95,8 @@ plugins:
             Benchmark: 性能测试
             Toolkit: 工具集
             KV Cache Calculator: KV Cache 计算器
+            Developer: 开发者
+            Design: 设计文档
   - search:
       separator: '[\s\u200b\-]'
 
@@ -180,4 +182,14 @@ nav:
       - API & Parameters: reference/api-parameters.md
   - Benchmark: benchmark/index.md
   - Toolkit:
+      - toolkit/index.md
       - KV Cache Calculator: toolkit/kv-cache-calculator.md
+      - User Guide:
+          - dev-sandbox: toolkit/user/dev-sandbox.md
+          - metrics-view: toolkit/user/metrics-view.md
+          - nic-monitor: toolkit/user/nic-monitor.md
+          - posix-aio: toolkit/user/posix-aio.md
+          - precheck: toolkit/user/precheck.md
+      - Developer:
+          - Design: toolkit/developer/design.md
+          - dev-sandbox: toolkit/developer/dev-sandbox.md

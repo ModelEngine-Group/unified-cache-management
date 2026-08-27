@@ -10,6 +10,8 @@ It is the first item of the toolkit RFC (#1208): *UCM 部署前预检工具 — 
 storage bandwidth, kernel version, driver version, shm-size, and other key
 configuration before running UCM*.
 
+← Back to [UCM Toolkit](../index.md)
+
 ```bash
 ucm-toolkit run precheck                           # all checks (bandwidth skipped w/o a mount path)
 ucm-toolkit run precheck --mount-path /mnt/ucm_cache

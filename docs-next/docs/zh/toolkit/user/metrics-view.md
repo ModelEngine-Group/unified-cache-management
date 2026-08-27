@@ -2,7 +2,7 @@
 
 采集 Prometheus/OpenMetrics `/metrics` 样本到 SQLite，并在终端查询聚合后的 UCM/vLLM 指标。适合在没有 Prometheus/Grafana 的环境中观察分层 KV cache 命中率、带宽等指标。
 
-← 返回 [UCM Toolkit 顶层文档](../../../README.md)
+← 返回 [UCM Toolkit 文档](../index.md)
 
 ## 依赖
 

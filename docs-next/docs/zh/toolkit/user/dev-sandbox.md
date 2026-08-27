@@ -2,7 +2,7 @@
 
 dev-sandbox 测量 Ascend 主机内存到设备显存的拷贝带宽，覆盖普通内存、O_DIRECT、共享内存等分配方式与多流 CE、FFTS direct H2D SDMA 等传输引擎，并支持 GQA（每卡各自本地内存）和 MLA（单块共享内存分发到所有卡）两种拓扑。
 
-← 返回 [UCM Toolkit 顶层文档](../../../README.md)
+← 返回 [UCM Toolkit 文档](../index.md)
 
 ## IO 流与 UCM KV cache 的关系
 
@@ -12,7 +12,7 @@ UCM 采用分层 KV cache：设备显存（HBM，最快）→ 主机内存（lay
 ┌──────────────────── UCM 分层 KV cache ────────────────────┐
 │                                                           │
 │  ┌──────────────┐     H2D 拷贝       ┌────────────────┐  │
-│  │  主机内存     │ ════════════════▶ │ 设备显存 (HBM)  │  │
+│  │  主机内存     │ ══════════════════▶ │ 设备显存 (HBM)  │  │
 │  │ (layer cache)│   CE 多流 / SDMA   │  (KV cache)    │  │
 │  └──────┬───────┘                    └────────────────┘  │
 │         │ dump/load                                       │
@@ -125,7 +125,7 @@ MLA + 多流 CE（一块共享 host buffer fan-out 到所有卡）：
   acl::shm::0       acl::device::all  CE-MS-FORK16        4096    1056 / 1270 / 1162 / 1161 / 1209        3914 / 5024 / 4471 / 4424 / 4852            13.979
 ```
 
-MLA 用 `acl::shm::0` 作为数据源（共享内存），GQA 用 `acl::host::all`（多卡各自主机内存）；两者 `Count` 均为“卡数 × `-n`”（8 × 512 = 4096）。`--sdma true` 对应的 FFTS direct H2D SDMA 路径需要机器支持 FFTS 特性，输出格式与上表一致，仅 `Method`/`Copy` 数值不同。
+MLA 用 `acl::shm::0` 作为数据源（共享内存），GQA 用 `acl::host::all`（多卡各自主机内存）；两者 `Count` 均为"卡数 × `-n`"（8 × 512 = 4096）。`--sdma true` 对应的 FFTS direct H2D SDMA 路径需要机器支持 FFTS 特性，输出格式与上表一致，仅 `Method`/`Copy` 数值不同。
 
 输出字段释义：
 
@@ -135,7 +135,7 @@ MLA 用 `acl::shm::0` 作为数据源（共享内存），GQA 用 `acl::host::al
 | `From` / `To` | 数据源 / 目的地内存类型。`acl::host::all` = 多卡各自主机内存，`acl::shm::0` = 共享内存，`acl::device::all` = 所有卡显存。 |
 | `Method` | 传输引擎，如 `CE-MS-FORK` = 多流 CE + fork fan-out（列宽恰好被方法名填满，故输出中 `CE-MS-FORK` 与紧随其后的 `Size(KB)` 数值连写为 `CE-MS-FORK16`）。 |
 | `Size(KB)` | 单个数据块大小，对应 `-s`（如 `-s 16K` → `16`）。 |
-| `Count` | 实际拷贝的数据块总数。多卡 fork 场景下为“卡数 × `-n`”（如 8 卡 × 512 = 4096）。 |
+| `Count` | 实际拷贝的数据块总数。多卡 fork 场景下为"卡数 × `-n`"（如 8 卡 × 512 = 4096）。 |
 | `Submit(us)` | 提交阶段耗时统计（微秒），按 Min/Max/Avg/P50/P90 给出。 |
 | `Copy(us)` | 实际拷贝耗时统计（微秒），按 Min/Max/Avg/P50/P90 给出，是计算带宽的基准。 |
 | `BW(GB/s)` | 聚合带宽 = `Size × Count × 1e6 / Copy.avg`，单位 GB/s，越大越好。 |
@@ -148,4 +148,4 @@ MLA 用 `acl::shm::0` 作为数据源（共享内存），GQA 用 `acl::host::al
 ucm-toolkit build dev-sandbox
 ```
 
-构建细节（后端选择、自定义路径等）、底层原生子命令（`copy`/`trans`/`aio`）与完整 case 表见 [开发者文档](./developer.md)。
+构建细节（后端选择、自定义路径等）、底层原生子命令（`copy`/`trans`/`aio`）与完整 case 表见 [开发者文档](../developer/dev-sandbox.md)。

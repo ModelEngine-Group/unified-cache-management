@@ -2,7 +2,7 @@
 
 监控 Linux 物理网卡。脚本通过 `/sys/class/net` 找物理网卡，通过 `ethtool` 优先读取厂商统计计数器，失败时回退到 `/proc/net/dev`，可前台实时刷新或后台采样落盘并生成阶段统计。
 
-← 返回 [UCM Toolkit 顶层文档](../../../README.md)
+← 返回 [UCM Toolkit 文档](../index.md)
 
 ## 依赖
 
