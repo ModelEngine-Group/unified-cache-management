@@ -86,7 +86,7 @@ hide:
 
     一览支持的模型、平台与特性覆盖。
 
-    [:octicons-arrow-right-24: 矩阵](reference/compatibility.md)
+    [:octicons-arrow-right-24: 矩阵](user-guide/support-matrix/index.md)
 
 -   :material-calculator: **KV Cache 计算器**
 

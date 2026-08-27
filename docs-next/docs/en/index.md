@@ -85,7 +85,7 @@ various scenarios, including multi-turn dialogue and long-context reasoning task
 
     Supported models, platforms, and feature coverage at a glance.
 
-    [:octicons-arrow-right-24: Matrix](reference/api-parameters.md)
+    [:octicons-arrow-right-24: Matrix](user-guide/support-matrix/index.md)
 
 -   :material-calculator: **KV Cache Calculator**
 

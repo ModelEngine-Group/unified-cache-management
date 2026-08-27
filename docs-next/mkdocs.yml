@@ -80,6 +80,7 @@ plugins:
             Metrics: 指标监控
             Diagnostics: 诊断工具
             Trace Mode: Trace 模式
+            Support Matrix: 支持矩阵
             Developer Guide: 开发者指南
             Architecture: 架构
             Capability Principles: 能力原理
