@@ -314,9 +314,7 @@ def _delegator_pipeline_builder(
     delegator_config = copy.deepcopy(config)
     if "role" not in delegator_config:
         delegator_config["role"] = (
-            "worker"
-            if int(delegator_config.get("device_id", -1)) >= 0
-            else "scheduler"
+            "worker" if int(delegator_config.get("device_id", -1)) >= 0 else "scheduler"
         )
     pipeline.Stack(
         "Delegator",
