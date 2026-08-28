@@ -31,6 +31,9 @@
 #include <string_view>
 #include <unordered_set>
 #include <utility>
+#ifdef UC_DRAM_ASCEND_BACKEND
+#include <acl/acl.h>
+#endif
 #include "kv_protocol.h"
 
 namespace UC::Dram {
@@ -38,6 +41,17 @@ namespace {
 
 constexpr std::size_t kTargetBatchEntries = 128;
 constexpr std::size_t kMaxInflightRequestsPerNode = 128;
+
+#ifdef UC_DRAM_ASCEND_BACKEND
+Status ResolvePhysicalDeviceId(int32_t logicalDeviceId, int32_t& physicalDeviceId)
+{
+    const auto ret = aclrtGetPhyDevIdByLogicDevId(logicalDeviceId, &physicalDeviceId);
+    return ret == ACL_SUCCESS
+               ? Status::OK()
+               : Status::Error(fmt::format("aclrtGetPhyDevIdByLogicDevId({}) returned {}",
+                                           logicalDeviceId, static_cast<int>(ret)));
+}
+#endif
 
 std::size_t MaxReplySize(std::size_t entryCount)
 {
@@ -167,15 +181,22 @@ Expected<DramConfig> DramConfig::Parse(const Detail::Dictionary& dictionary)
         result.deviceId = static_cast<std::int32_t>(deviceId);
         result.nodeScheduler.deviceId = result.RuntimeDeviceId();
 
+        std::int32_t physicalDeviceId = result.RuntimeDeviceId();
+#ifdef UC_DRAM_ASCEND_BACKEND
+        status = ResolvePhysicalDeviceId(result.RuntimeDeviceId(), physicalDeviceId);
+        if (status.Failure()) { return status; }
+#endif
+        const auto portOffset = static_cast<std::uint32_t>(physicalDeviceId) * 2U +
+                                (result.GetRole() == Role::WORKER ? 1U : 0U);
+
         std::size_t hixlListenPort = result.hixlListenPort;
         status = OptionalSize(dictionary, "hixl_listen_port", &hixlListenPort);
-        const auto hixlPortOffset = result.GetRole() == Role::SCHEDULER ? 0U : 1U;
         if (status.Failure() || hixlListenPort == 0 ||
-            hixlListenPort > std::numeric_limits<std::uint16_t>::max() - hixlPortOffset) {
+            hixlListenPort > std::numeric_limits<std::uint16_t>::max() - portOffset) {
             return status.Failure() ? status
                                     : Status::InvalidParam("hixl_listen_port is out of range");
         }
-        result.hixlListenPort = static_cast<std::uint16_t>(hixlListenPort + hixlPortOffset);
+        result.hixlListenPort = static_cast<std::uint16_t>(hixlListenPort + portOffset);
         if (dictionary.Contains("enable_hixl_cs")) {
             dictionary.Get("enable_hixl_cs", result.enableHixlCs);
         }
@@ -185,15 +206,12 @@ Expected<DramConfig> DramConfig::Parse(const Detail::Dictionary& dictionary)
         status = ParseControlEndpoint(result.localTransportManagerId, "local_transport_manager_id",
                                       &managerHost, &managerPort);
         if (status.Failure()) { return status; }
-        if (result.GetRole() == Role::WORKER) {
-            const auto offset = static_cast<std::uint32_t>(result.deviceId) + 1;
-            if (result.localControlPort > std::numeric_limits<std::uint16_t>::max() - offset ||
-                managerPort > std::numeric_limits<std::uint16_t>::max() - offset) {
-                return Status::InvalidParam("worker transport port is out of range");
-            }
-            result.localControlPort += static_cast<std::uint16_t>(offset);
-            managerPort += static_cast<std::uint16_t>(offset);
+        if (result.localControlPort > std::numeric_limits<std::uint16_t>::max() - portOffset ||
+            managerPort > std::numeric_limits<std::uint16_t>::max() - portOffset) {
+            return Status::InvalidParam("local transport port is out of range");
         }
+        result.localControlPort += static_cast<std::uint16_t>(portOffset);
+        managerPort += static_cast<std::uint16_t>(portOffset);
         result.localTransportManagerId = fmt::format("{}:{}", managerHost, managerPort);
 
         std::vector<std::string> controlEndpoints;

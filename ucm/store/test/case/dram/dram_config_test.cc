@@ -215,16 +215,16 @@ TEST(UCDramConfigTest, UsesConfiguredPortsForScheduler)
     EXPECT_TRUE(parsed.Value().enableHixlCs);
 }
 
-TEST(UCDramConfigTest, OffsetsWorkerPortsByDeviceId)
+TEST(UCDramConfigTest, OffsetsWorkerPortsByPhysicalDeviceId)
 {
     auto input = BaseConfig();
     input.SetNumber("device_id", 3);
     auto parsed = DramConfig::Parse(input);
     ASSERT_TRUE(parsed);
     EXPECT_EQ(parsed.Value().GetRole(), Role::WORKER);
-    EXPECT_EQ(parsed.Value().localControlPort, std::uint16_t{6004});
-    EXPECT_EQ(parsed.Value().localTransportManagerId, "127.0.0.1:6104");
-    EXPECT_EQ(parsed.Value().hixlListenPort, std::uint16_t{36667});
+    EXPECT_EQ(parsed.Value().localControlPort, std::uint16_t{6007});
+    EXPECT_EQ(parsed.Value().localTransportManagerId, "127.0.0.1:6107");
+    EXPECT_EQ(parsed.Value().hixlListenPort, std::uint16_t{36673});
 }
 
 TEST(UCDramConfigTest, RejectsInvalidDeviceIdAndWorkerPortOverflow)
