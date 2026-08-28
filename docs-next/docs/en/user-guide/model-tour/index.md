@@ -1,8 +1,9 @@
 # Model Tour
 
-Explore UCM deployment recipes by model family. Each family keeps its model
-catalog in one place and presents engine-specific guidance as tabs on the same
-page.
+Use these recipes to start representative GLM, Qwen, DeepSeek, and Kimi models
+with UCM-backed prefix caching. Each family page separates model-specific flags
+from the common UCM configuration and provides commands for the engines that
+the repository currently integrates.
 
 The family tables mirror the current
 [vLLM Ascend Model Tutorials](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/).
@@ -23,11 +24,17 @@ official guide for model weights, environment variables, and launch arguments.
 
 ## Model families
 
-- [GLM](glm/index.md)
-- [Qwen](qwen3/index.md)
-- [DeepSeek](deepseek/index.md)
-- [MiniMax](minimax/index.md)
-- [Kimi](kimi/index.md)
+| Family | First recipe | UCM validation status |
+| --- | --- | --- |
+| [GLM](glm/index.md) | GLM-4.5-Air / GLM-4.7-W8A8 | GLM-4.x validated on vLLM, vLLM Ascend, and SGLang |
+| [Qwen](qwen3/index.md) | Qwen3-8B | Qwen3 validated on vLLM, vLLM Ascend, and SGLang |
+| [DeepSeek](deepseek/index.md) | DeepSeek-R1 | DeepSeek-R1 validated on vLLM, vLLM Ascend, and SGLang |
+| [Kimi](kimi/index.md) | Kimi-K2-Thinking | Preview recipe; Kimi-K2 is not yet release-matrix validated |
+
+The validation status describes UCM prefix-cache coverage in this repository,
+not only whether the upstream engine can load the model. Model variants with a
+different attention architecture, quantization, or modality require separate
+validation even when they belong to the same family.
 
 For openEuler images, append `-openeuler` to the A2 tag or use
 `v0.23.0-a3-openeuler` for A3. A5 is not included in the runtime-image table

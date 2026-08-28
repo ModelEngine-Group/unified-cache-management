@@ -1,6 +1,12 @@
 # Qwen
 
-Alibaba Qwen model tutorials currently published by vLLM Ascend.
+This tour uses `Qwen/Qwen3-8B`, a dense text model that is small enough for a
+single modern accelerator while retaining Qwen3 reasoning behavior. Increase
+tensor parallelism for larger Qwen3 variants.
+
+**UCM status:** Qwen3 dense and MoE prefix caching is validated on vLLM, vLLM
+Ascend, and SGLang. Multimodal, embedding, reranker, and hybrid-attention
+variants must be checked separately.
 
 ## Models
 
@@ -28,6 +34,10 @@ Alibaba Qwen model tutorials currently published by vLLM Ascend.
 | Qwen3-ASR-1.7B | [Official guide](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/Qwen3-ASR-1.7B.html) |
 | Qwen2.5-Math-RM-72B | [Official guide](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/Qwen2.5-Math-RM-72B.html) |
 
+## Before you start
+
+--8<-- "docs/en/user-guide/model-tour/_shared/setup.md"
+
 ## Serving engine
 
 === "vLLM"
@@ -41,3 +51,11 @@ Alibaba Qwen model tutorials currently published by vLLM Ascend.
 === "SGLang"
 
     --8<-- "docs/en/user-guide/model-tour/qwen3/sglang.md"
+
+## Verify UCM reuse
+
+```bash
+export MODEL_ALIAS=qwen3
+```
+
+--8<-- "docs/en/user-guide/model-tour/_shared/verify.md"
