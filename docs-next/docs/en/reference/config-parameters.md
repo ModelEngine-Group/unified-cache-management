@@ -17,7 +17,7 @@
 | `enable_record_traces` | Optional | bool | `false` | Record request information (timestamps, input length, output length, etc.). |
 | `enable_metrics` | Optional | bool | Default: `true` | Whether to enable metrics collection. |
 | `use_lite` | Optional | bool | `false` | Enable UCM Lite. Does not save/load KV Cache data, only saves and queries metadata. Used to evaluate KV Cache hit rate — no acceleration effect. |
-| `metrics_config_path` | Optional | string | User-configured | Custom metrics config file path. Enables UCM online monitoring via toolkit. See [Toolkit Guide](https://support.huawei.com/enterprise/zh/doc/EDOC1100582752/e66a9eed#ZH-CN_TOPIC_0000002657360684). |
+| `metrics_config_path` | Optional | string | User-configured | Custom metrics config file path. Enables UCM online monitoring via toolkit. |
 
 ---
 
@@ -28,39 +28,27 @@
 | Parameter | Required | Type | Value Range | Description |
 |---|---|---|---|---|
 | `store_pipeline` | Optional | string | See valid values below | Pipeline name. Default: `Cache\|Posix`. |
-| `storage_backends` | **Required** | string | User-configured, multiple mount points separated by `:` | Storage mount path. See [Create Filesystem Mount](https://support.huawei.com/enterprise/zh/doc/EDOC1100582752/47f029f5#ZH-CN_TOPIC_0000002501883936). |
+| `storage_backends` | **Required** | string | User-configured, multiple mount points separated by `:` | Local directory or mount point. Multiple mount points are separated by colons. |
 | `io_direct` | Optional | bool | Default: `true` | Enable Direct I/O (bypass OS page cache). `false`: uses PageCache; `true`: skips PageCache. |
 | `posix_io_engine` | Optional | string | Default: `psync` | File I/O mode. `psync`: synchronous; `aio`: asynchronous, requires `io_direct=true`. |
 | `posix_data_trans_concurrency` | Optional | int | Default: `128` | Read/write threads per card in `psync` mode. NFS over RDMA: 128/card. Not used in `aio` mode. |
 | `posix_open_concurrency` | Optional | int | Default: `32` | File open threads in `aio` mode. Not applicable in `psync`. |
 | `posix_commit_concurrency` | Optional | int | Default: `4` | File rename threads in `aio` mode. Not applicable in `psync`. |
 | `posix_lookup_concurrency` | Optional | int | Default: `16` | Threads for checking file existence at mount point. |
-| `cache_buffer_capacity_gb` | Optional | int | See recommendation table | GQA: default 32GB/card; MLA: `/dev/shm` space per DP group. Ascend: max 200GB per node. |
-| `cache_sdma_direct` | Optional | bool | Default: `true` | Enable SDMA H2D/D2H transfer. Only effective on A3 devices. Recommended to disable. |
+| `cache_buffer_capacity_gb` | Optional | int | See description | For GQA, default is 32GB DRAM per card. For MLA, default is 128GB shm space per node. Recommended to use defaults. |
+| `cache_sdma_direct` | Optional | bool | Depends on build env: `true` when `PLATFORM=ascend-a3`, `false` otherwise | Enable SDMA H2D/D2H transfer. Only effective on A3 devices. Recommended to disable. |
 | `cache_load_backend_only` | Optional | bool | Default: `false` | Force load from SSD even on cache hit. Test only. |
 | `cache_io_aggregation` | Optional | bool | Default: `false`, auto-enabled when `PLATFORM=ascend` and model is V4 | Enable IO aggregation H2D transfer. Only effective on A2 devices. |
 | `share_buffer_enable` | Optional | bool | MLA: default enabled; GQA: default disabled | Enable shared memory. MLA without shm or GQA with shm causes performance degradation. |
-| `posix_capacity_gb` | Optional | int | Default: `0` (no GC) | Max disk storage capacity (GB). Triggers GC when used >= `posix_capacity_gb * posix_gc_trigger_threshold_ratio`. |
-| `posix_gc_trigger_threshold_ratio` | Conditional | float | Default: `0.7`, 0~1 | GC trigger threshold ratio. Used with `posix_capacity_gb`. |
-| `posix_gc_recycle_percent` | Optional | float | Default: `0.1`, 0~1 | Ratio of current capacity deleted per GC round. |
-| `posix_gc_max_recycle_count_per_shard` | Optional | int | Default: `50000`, >0 | Max file deletion count per directory per GC round. |
-| `posix_gc_shard_sample_ratio` | Optional | float | Default: `0.1`, 0~1 | Sample 10% directories to estimate total capacity. |
-| `posix_gc_check_interval_sec` | Optional | int | Default: `30`, >0 | GC sampling and trigger interval. |
-| `posix_gc_concurrency` | Optional | int | Default: `16`, >0 | GC thread pool worker count. |
-| `posix_gc_task_timeout_ms` | Optional | int | Default: `300000`, >0 | Single directory task timeout watchdog. `0` = disabled. |
-| `posix_gc_precise_mode` | Optional | bool | Default: `true` | `true`: precise mode (global coldest); `false`: performance mode (per-directory coldest). |
-
-???+ tip "cache_buffer_capacity_gb Recommendations"
-    | Model | Deployment | Recommended |
-    |---|---|---|
-    | GQA (Qwen3/GLM-4.7/MiniMax M2) | — | Default 32GB/card (not configured) |
-    | MLA (DS V3/R1, Kimi K2, GLM-5) | Single A3, TP8DP2 | `96` |
-    | MLA (DS V3/R1, Kimi K2, GLM-5) | Two A2, TP8DP2 | `192` |
-    | DeepSeek V4 series | Single A3, TP8DP2 | `48` |
-    | DeepSeek V4 series | Two A2, TP8DP2 | `96` |
-
-    !!! warning "Limit"
-        Ascend: max 200GB per node.
+| `posix_capacity_gb` | Optional | int | Default: `0` (no GC); must not exceed mounted filesystem available capacity | Max disk storage capacity (GB). Triggers GC when used >= `posix_capacity_gb * posix_gc_trigger_threshold_ratio`. |
+| `posix_gc_trigger_threshold_ratio` | Conditional | float | Default: `0.7`, 0~1. Not set when `posix_capacity_gb` is not configured | GC trigger threshold ratio. Used with `posix_capacity_gb`. |
+| `posix_gc_recycle_percent` | Optional | float | Default: `0.1`, 0~1. Not set when `posix_capacity_gb` is not configured | Ratio of current capacity deleted per GC round. |
+| `posix_gc_max_recycle_count_per_shard` | Optional | int | Default: `50000`, >0. Not recommended to modify. Not set when `posix_capacity_gb` is not configured | Max file deletion count per directory per GC round. |
+| `posix_gc_shard_sample_ratio` | Optional | float | Default: `0.1`, 0~1. Not set when `posix_capacity_gb` is not configured | Sample 10% directories to estimate total capacity. |
+| `posix_gc_check_interval_sec` | Optional | int | Default: `30`, >0. Not set when `posix_capacity_gb` is not configured | GC sampling and trigger interval. |
+| `posix_gc_concurrency` | Optional | int | Default: `16`, >0. Not set when `posix_capacity_gb` is not configured | GC thread pool worker count. |
+| `posix_gc_task_timeout_ms` | Optional | int | Default: `300000`, >0. Not set when `posix_capacity_gb` is not configured | Single directory task timeout watchdog. `0` = disabled. |
+| `posix_gc_precise_mode` | Optional | bool | Default: `true`. Not set when `posix_capacity_gb` is not configured | `true`: precise mode (global coldest); `false`: performance mode (per-directory coldest). |
 
 ### store_pipeline Valid Values
 
@@ -77,7 +65,7 @@
 | `YuanRong\|Posix` | YuanRong memory pool with disk persistence |
 
 !!! note "storage_backends Note"
-    If `storage_backends` uses the filesystem mounted per "Create Repository" chapter, do not set `posix_capacity_gb`.
+    If `storage_backends` uses a mounted filesystem, do not set `posix_capacity_gb`.
 
 ---
 
@@ -92,9 +80,5 @@
 | `health_check_timeout_s` | Optional | int | Default: `3` | Single probe timeout (sec). Must be >0 and < `health_check_interval_s`. |
 | `health_window_size` | Optional | int | Default: `8` | Fault statistics window. Must be positive and >= `failure_threshold`. |
 | `failure_threshold` | Optional | int | Default: `2` | Fault trigger threshold. Must be positive and <= `health_window_size`. |
-
-???+ info "Parameter Constraints"
-    - `health_check_interval_s` > `health_check_timeout_s` > 0
-    - `health_window_size` >= `failure_threshold` > 0
 
 
