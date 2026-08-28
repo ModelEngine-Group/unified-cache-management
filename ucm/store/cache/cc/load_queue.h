@@ -56,7 +56,7 @@ class LoadQueue {
         TaskPtr task;
         Detail::Shard shard;
         TransBuffer::Handle bufferHandle;
-        Detail::TaskHandle backendTaskHandle;
+        Detail::TaskHandle backendTaskHandle{0};
         WaiterPtr waiter;
         H2HLoadContextPtr h2hContext;
         bool fromPosix{false};

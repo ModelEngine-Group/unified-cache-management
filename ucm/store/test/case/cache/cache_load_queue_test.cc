@@ -295,3 +295,79 @@ TEST_F(UCCacheLoadQueueTest, HostToHostScatterRunsShardsInParallel)
     for (auto byte : v0) { EXPECT_EQ(byte, value); }
     for (auto byte : v1) { EXPECT_EQ(byte, value); }
 }
+
+TEST_F(UCCacheLoadQueueTest, HostToHostConcurrentLoadWaitsBackendOnlyOnce)
+{
+    using namespace UC::CacheStore;
+    using namespace testing;
+    constexpr size_t tensorSize = 32;
+    constexpr uint8_t value = 0x6b;
+    std::promise<void> waitEntered;
+    std::promise<void> allowBackendReady;
+    auto allowBackendReadyFuture = allowBackendReady.get_future().share();
+
+    UC::Test::Detail::MockStore backend;
+    EXPECT_CALL(backend, Load)
+        .Times(1)
+        .WillOnce(Invoke([&](UC::Detail::TaskDesc desc) {
+            std::memset(desc[0].addrs[0], value, tensorSize);
+            return NextId();
+        }));
+    EXPECT_CALL(backend, Wait)
+        .Times(1)
+        .WillOnce(Invoke([&](UC::Detail::TaskHandle) {
+            waitEntered.set_value();
+            allowBackendReadyFuture.wait();
+            return UC::Status::OK();
+        }));
+
+    UC::HashSet<UC::Detail::TaskHandle> failureSet;
+    Config config;
+    config.storeBackend = &backend;
+    config.tensorSizes = {tensorSize};
+    config.shardSize = tensorSize;
+    config.blockSize = config.shardSize;
+    config.deviceId = 0;
+    config.bufferCapacity = config.shardSize * 1024;
+    config.uniqueId = rd.RandomString(10);
+    config.shareBufferEnable = true;
+    config.cacheUseHostBuffer = true;
+    config.cacheSdmaDirect = false;
+    config.h2hWorkerNumber = 2;
+    config.h2hQueueDepth = 8;
+
+    TransBuffer buffer;
+    LoadQueue loadQ;
+    ASSERT_EQ(buffer.Setup(config), UC::Status::OK());
+    ASSERT_EQ(loadQ.Setup(config, &failureSet, &buffer), UC::Status::OK());
+
+    std::array<uint8_t, tensorSize> dst0{}, dst1{};
+    auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId(
+        "c1b2c3d4e5f6789012345678901234ab");
+    UC::Detail::TaskDesc desc0{
+        {blockId, 0, {dst0.data()}}
+    };
+    UC::Detail::TaskDesc desc1{
+        {blockId, 0, {dst1.data()}}
+    };
+    auto task0 = std::make_shared<TransTask>(TransTask::Type::LOAD, desc0);
+    auto task1 = std::make_shared<TransTask>(TransTask::Type::LOAD, desc1);
+    auto waiter0 = std::make_shared<UC::Latch>();
+    auto waiter1 = std::make_shared<UC::Latch>();
+
+    loadQ.Submit(task0, waiter0);
+    waitEntered.get_future().wait();
+    // Keep a non-owner reference alive so the second request must share the
+    // in-flight buffer instead of becoming a new backend-load owner.
+    auto observer = buffer.Get(blockId, 0, true, true);
+    ASSERT_FALSE(observer.Owner());
+    loadQ.Submit(task1, waiter1);
+    allowBackendReady.set_value();
+
+    ASSERT_TRUE(waiter0->WaitForDuration(2000));
+    ASSERT_TRUE(waiter1->WaitForDuration(2000));
+    ASSERT_FALSE(failureSet.Contains(task0->id));
+    ASSERT_FALSE(failureSet.Contains(task1->id));
+    for (auto byte : dst0) { EXPECT_EQ(byte, value); }
+    for (auto byte : dst1) { EXPECT_EQ(byte, value); }
+}
