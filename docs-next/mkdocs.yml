@@ -15,7 +15,7 @@ theme:
   custom_dir: overrides
   language: en
   logo: assets/images/UCM-light.png
-  favicon: assets/images/UCM-dark.png
+  favicon: assets/images/UCM.png
   features:
     - navigation.tabs
     - navigation.tabs.sticky
@@ -151,7 +151,6 @@ nav:
           - SGLang (CUDA): user-guide/quick_start/quickstart_sglang.md
           - MindIE (NPU Ascend): user-guide/quick_start/quickstart_mindie_llm.md
       - Support Matrix: user-guide/support-matrix/index.md
-      - Deploy: user-guide/deploy/index.md
       - Deployment Frameworks:
           - user-guide/frameworks/index.md
           - Kubernetes: user-guide/frameworks/kubernetes.md
@@ -177,8 +176,7 @@ nav:
       - Diagnostics:
           - Overview: user-guide/diagnostics/index.md
           - Trace Mode: user-guide/diagnostics/trace-mode.md
-      - Support Matrix: user-guide/support-matrix/support_matrix.md
-      
+
   - Developer Guide:
       - Architecture: developer-guide/architecture.md
       - Build from Source: developer-guide/build_from_source.md
@@ -188,6 +186,7 @@ nav:
       - Contribute: developer-guide/contribute.md
   - Reference:
       - API & Parameters: reference/api-parameters.md
+      - Troubleshooting: reference/troubleshooting.md
   - Benchmark: benchmark/index.md
   - Toolkit:
       - toolkit/index.md
