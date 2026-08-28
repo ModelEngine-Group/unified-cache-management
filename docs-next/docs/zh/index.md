@@ -29,6 +29,8 @@ hide:
 
 </div>
 
+## 功能特性
+
 <div class="grid cards" markdown>
 
 -   :material-database-clock-outline: **Prefix Cache 前缀缓存**
@@ -72,13 +74,13 @@ hide:
 
     [:octicons-arrow-right-24: 安装](user-guide/installation.md)
 
--   :material-engine: **快速开始**
+-   :material-engine: **部署**
 
     ---
 
     将 UCM 与 vLLM、vLLM Ascend、SGLang、MindIE 集成。
 
-    [:octicons-arrow-right-24: 引擎](user-guide/quick_start/quickstart_vllm.md)
+    [:octicons-arrow-right-24: 部署](user-guide/quick_start/quickstart_vllm.md)
 
 -   :material-view-grid-plus: **兼容性矩阵**
 
@@ -87,6 +89,52 @@ hide:
     一览支持的模型、平台与特性覆盖。
 
     [:octicons-arrow-right-24: 矩阵](user-guide/support-matrix/index.md)
+
+</div>
+
+## 工具
+
+<div class="grid cards" markdown>
+
+-   :material-check-circle: **环境预检**
+
+    ---
+
+    在 UCM 部署前运行环境预检，验证版本、驱动、内核和带宽。
+
+    [:octicons-arrow-right-24: 预检](toolkit/user/precheck.md)
+
+-   :material-harddisk: **带宽模拟**
+
+    ---
+
+    测试 POSIX AIO 存储 dump/load 性能，用于存储基准测试。
+
+    [:octicons-arrow-right-24: 带宽模拟](toolkit/user/posix-aio.md)
+
+-   :material-chart-box: **指标监控**
+
+    ---
+
+    收集 Prometheus/OpenMetrics 样本到 SQLite 并在终端查询聚合指标。
+
+    [:octicons-arrow-right-24: 指标监控](toolkit/user/metrics-view.md)
+
+-   :material-network: **网卡监控**
+
+    ---
+
+    监控物理网卡实时流量，支持后台采样和阶段统计。
+
+    [:octicons-arrow-right-24: 网卡监控](toolkit/user/nic-monitor.md)
+
+-   :material-test-tube: **开发沙箱**
+
+    ---
+
+    测量主机到设备内存复制带宽和磁盘 AIO 吞吐量，用于性能测试。
+
+    [:octicons-arrow-right-24: 开发沙箱](toolkit/user/dev-sandbox.md)
 
 -   :material-calculator: **KV Cache 计算器**
 
@@ -97,3 +145,5 @@ hide:
     [:octicons-arrow-right-24: 计算器](toolkit/kv-cache-calculator.md)
 
 </div>
+
+**[关于我们](about.md)** — 了解 UCM 团队与我们的使命。
