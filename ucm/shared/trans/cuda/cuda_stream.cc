@@ -25,6 +25,11 @@
 
 namespace UC::Trans {
 
+CudaStream::~CudaStream()
+{
+    if (stream_ != nullptr) { (void)cudaStreamDestroy(stream_); }
+}
+
 Status CudaStream::Setup()
 {
     auto ret = cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking);
