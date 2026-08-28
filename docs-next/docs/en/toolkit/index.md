@@ -6,11 +6,12 @@
 
 | Tool | Alias | Type | Description | Documentation |
 | --- | --- | --- | --- | --- |
-| `dev-sandbox` | `dev_sandbox` | Buildable, runnable | Measures host-to-device memory copy bandwidth and disk AIO throughput (C++ test program, requires building before use), includes `copy`, `trans`, and `aio` sub-features. | [dev-sandbox](user/dev-sandbox.md) |
-| `posix-aio` | `posix_aio` | Runnable | Runs `ucm/store/test/e2e/posixstore_aio_test.py` to test POSIX AIO store dump/load performance. | [posix-aio](user/posix-aio.md) |
-| `nic-monitor` | `nic_monitor` | Runnable | Monitors physical NIC real-time traffic, background sampling to disk, and generates phase statistics. | [nic-monitor](user/nic-monitor.md) |
-| `metrics-view` | `metrics_view`, `terminal-metrics`, `terminal_metrics` | Runnable | Collects Prometheus/OpenMetrics samples to SQLite and queries aggregated metrics in the terminal. | [metrics-view](user/metrics-view.md) |
-| `precheck` | `pre_check` | Runnable | Runs environment pre-checks locally on the UCM deployment host before UCM starts, verifying serving-stack/uc-manager versions, accelerator drivers (CUDA compute capability or Ascend HDK), kernel version, `/dev/shm` and posix store bandwidth, outputting `PASS`/`WARN`/`FAIL` with remediation advice for failures (RFC #1208). | [precheck](user/precheck.md) |
+| `precheck` | `pre_check` | Runnable | Runs environment pre-checks locally on the UCM deployment host before UCM starts, verifying serving-stack/uc-manager versions, accelerator drivers (CUDA compute capability or Ascend HDK), kernel version, `/dev/shm` and posix store bandwidth, outputting `PASS`/`WARN`/`FAIL` with remediation advice for failures (RFC #1208). | [Precheck](user/precheck.md) |
+| `posix-aio` | `posix_aio` | Runnable | Runs `ucm/store/test/e2e/posixstore_aio_test.py` to test POSIX AIO store dump/load performance. | [POSIX AIO](user/posix-aio.md) |
+| `metrics-view` | `metrics_view`, `terminal-metrics`, `terminal_metrics` | Runnable | Collects Prometheus/OpenMetrics samples to SQLite and queries aggregated metrics in the terminal. | [Metrics View](user/metrics-view.md) |
+| `nic-monitor` | `nic_monitor` | Runnable | Monitors physical NIC real-time traffic, background sampling to disk, and generates phase statistics. | [NIC Monitor](user/nic-monitor.md) |
+| `dev-sandbox` | `dev_sandbox` | Buildable, runnable | Measures host-to-device memory copy bandwidth and disk AIO throughput (C++ test program, requires building before use), includes `copy`, `trans`, and `aio` sub-features. | [Dev Sandbox](user/dev-sandbox.md) |
+| KV Cache Calculator | - | - | Estimate KV cache memory usage for your model configuration. | [KV Cache Calculator](kv-cache-calculator.md) |
 
 Dependencies, parameters, examples, and FAQs for each tool are documented in their respective pages.
 
