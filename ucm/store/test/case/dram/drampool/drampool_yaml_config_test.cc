@@ -64,7 +64,7 @@ std::string ValidRuntimeYaml()
   device_ids: [0, 2]
   hixl:
     listen_port: 26666
-    enable_cs: true
+    enable_hixl_cs: true
   endpoints:
     - two_sided: "127.0.0.1:9000"
       one_sided: "127.0.0.1:4501"
@@ -113,7 +113,6 @@ DramPoolConfig LaunchConfig()
     config.addr.host = "127.0.0.1";
     config.addr.port = 9000;
     config.poolSizeGb = 7;
-    config.nics = {"mlx5_0"};
     return config;
 }
 
@@ -137,7 +136,6 @@ TEST(DramPoolRuntimeYamlTest, LoadsEveryRuntimeFieldAndPreservesLaunchFields)
     EXPECT_EQ(config.runtimeConfigPath, "launch-selected.yaml");
     EXPECT_EQ(config.addr.port, 9000U);
     EXPECT_EQ(config.poolSizeGb, 7U);
-    EXPECT_EQ(config.nics, (std::vector<std::string>{"mlx5_0"}));
     ASSERT_EQ(config.twoSidedToOneSided.size(), 2U);
     EXPECT_EQ(config.twoSidedToOneSided.at("127.0.0.1:9000"), "127.0.0.1:4501");
     EXPECT_EQ(config.twoSidedToOneSided.at("127.0.0.1:9001"), "127.0.0.1:4502");
