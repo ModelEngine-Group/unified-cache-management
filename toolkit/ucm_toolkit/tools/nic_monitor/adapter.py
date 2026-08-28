@@ -21,9 +21,10 @@ class NicMonitorTool(ToolAdapter):
 
     def _script(self) -> Path:
         """Installed location of nic_monitor_pro.sh (package data)."""
-        return Path(
-            importlib.resources.files("ucm_toolkit._native.nic_monitor")
-        ) / "nic_monitor_pro.sh"
+        return (
+            Path(importlib.resources.files("ucm_toolkit._native.nic_monitor"))
+            / "nic_monitor_pro.sh"
+        )
 
     def add_run_args(self, parser: argparse.ArgumentParser) -> None:
         """Register NIC load run arguments."""
