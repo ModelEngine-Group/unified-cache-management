@@ -125,6 +125,19 @@ void HixlInstance::WorkerMain(std::map<std::string, std::string> options,
         return;
     }
 
+    const auto get_physical_device_status =
+        aclrtGetPhyDevIdByLogicDevId(device_id_, &physical_device_id_);
+    if (get_physical_device_status != ACL_ERROR_NONE) {
+        UC_ERROR(
+            "[Transport][HIXL] resolve physical device failed: "
+            "aclrtGetPhyDevIdByLogicDevId({}) returned {}",
+            device_id_, static_cast<int>(get_physical_device_status));
+        initialize_result.set_value(Status::Error());
+        return;
+    }
+    UC_DEBUG("[Transport][HIXL] device resolved: logical_device={} physical_device={}", device_id_,
+             physical_device_id_);
+
     {
         hixl::Hixl engine;
         std::map<hixl::AscendString, hixl::AscendString> hixl_options;
@@ -144,8 +157,10 @@ void HixlInstance::WorkerMain(std::map<std::string, std::string> options,
                 initialized_ = true;
             }
             initialize_result.set_value(Status::OK());
-            UC_DEBUG("[Transport][HIXL] instance initialized: engine={} device={}", local_engine,
-                     device_id_);
+            UC_DEBUG(
+                "[Transport][HIXL] instance initialized: engine={} logical_device={} "
+                "physical_device={}",
+                local_engine, device_id_, physical_device_id_);
             ProcessTasks(engine);
             engine.Finalize();
         }
@@ -335,6 +350,8 @@ Status HixlInstance::GetTransferStatus(hixl::TransferReq request, TransferStatus
 
 const Endpoint& HixlInstance::LocalEndpoint() const { return local_endpoint_; }
 
-int32_t HixlInstance::DeviceId() const { return device_id_; }
+int32_t HixlInstance::LogicalDeviceId() const { return device_id_; }
+
+int32_t HixlInstance::PhysicalDeviceId() const { return physical_device_id_; }
 
 }  // namespace transport

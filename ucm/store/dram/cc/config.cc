@@ -32,6 +32,7 @@
 #include <unordered_set>
 #include <utility>
 #include "kv_protocol.h"
+#include "trans/device.h"
 
 namespace UC::Dram {
 namespace {
@@ -167,15 +168,21 @@ Expected<DramConfig> DramConfig::Parse(const Detail::Dictionary& dictionary)
         result.deviceId = static_cast<std::int32_t>(deviceId);
         result.nodeScheduler.deviceId = result.RuntimeDeviceId();
 
+        std::int32_t physicalDeviceId = -1;
+        status =
+            UC::Trans::Device::ResolvePhysicalDeviceId(result.RuntimeDeviceId(), physicalDeviceId);
+        if (status.Failure()) { return status; }
+        const auto portOffset = static_cast<std::uint32_t>(physicalDeviceId) * 2U +
+                                (result.GetRole() == Role::WORKER ? 1U : 0U);
+
         std::size_t hixlListenPort = result.hixlListenPort;
         status = OptionalSize(dictionary, "hixl_listen_port", &hixlListenPort);
-        const auto hixlPortOffset = result.GetRole() == Role::SCHEDULER ? 0U : 1U;
         if (status.Failure() || hixlListenPort == 0 ||
-            hixlListenPort > std::numeric_limits<std::uint16_t>::max() - hixlPortOffset) {
+            hixlListenPort > std::numeric_limits<std::uint16_t>::max() - portOffset) {
             return status.Failure() ? status
                                     : Status::InvalidParam("hixl_listen_port is out of range");
         }
-        result.hixlListenPort = static_cast<std::uint16_t>(hixlListenPort + hixlPortOffset);
+        result.hixlListenPort = static_cast<std::uint16_t>(hixlListenPort + portOffset);
         if (dictionary.Contains("enable_hixl_cs")) {
             dictionary.Get("enable_hixl_cs", result.enableHixlCs);
         }
@@ -185,15 +192,12 @@ Expected<DramConfig> DramConfig::Parse(const Detail::Dictionary& dictionary)
         status = ParseControlEndpoint(result.localTransportManagerId, "local_transport_manager_id",
                                       &managerHost, &managerPort);
         if (status.Failure()) { return status; }
-        if (result.GetRole() == Role::WORKER) {
-            const auto offset = static_cast<std::uint32_t>(result.deviceId) + 1;
-            if (result.localControlPort > std::numeric_limits<std::uint16_t>::max() - offset ||
-                managerPort > std::numeric_limits<std::uint16_t>::max() - offset) {
-                return Status::InvalidParam("worker transport port is out of range");
-            }
-            result.localControlPort += static_cast<std::uint16_t>(offset);
-            managerPort += static_cast<std::uint16_t>(offset);
+        if (result.localControlPort > std::numeric_limits<std::uint16_t>::max() - portOffset ||
+            managerPort > std::numeric_limits<std::uint16_t>::max() - portOffset) {
+            return Status::InvalidParam("local transport port is out of range");
         }
+        result.localControlPort += static_cast<std::uint16_t>(portOffset);
+        managerPort += static_cast<std::uint16_t>(portOffset);
         result.localTransportManagerId = fmt::format("{}:{}", managerHost, managerPort);
 
         std::vector<std::string> controlEndpoints;

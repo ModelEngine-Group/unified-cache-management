@@ -47,7 +47,6 @@ struct DramPoolConfig {
     std::string runtimeConfigPath{kDefaultDramPoolRuntimeConfigPath};
     // Northbound KV control endpoint supplied by --addr.
     transport::Endpoint addr{};
-    std::vector<std::string> nics{};
     // --pool-size-gb follows the project convention: the unit is GiB.
     std::uint64_t poolSizeGb{0};
     std::vector<std::uint64_t> poolBlockSizes{};

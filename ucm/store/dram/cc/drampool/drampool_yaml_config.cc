@@ -60,7 +60,7 @@ struct EndpointEntry {
 constexpr const char* kRequiredRuntimeConfigKeys[] = {
     "transport.device_ids",
     "transport.hixl.listen_port",
-    "transport.hixl.enable_cs",
+    "transport.hixl.enable_hixl_cs",
     "queue.request_depth",
     "queue.completion_depth",
     "request_receiver.idle_wait_us",
@@ -256,7 +256,8 @@ const std::unordered_map<std::string_view, RuntimeConfigParser>& GetRuntimeConfi
         {"health.port", BindConfigParser(ParseUint16, &DramPoolConfig::healthPort)},
         {"transport.hixl.listen_port",
          BindConfigParser(ParseUint16, &DramPoolConfig::hixlListenPort)},
-        {"transport.hixl.enable_cs", BindConfigParser(ParseBool, &DramPoolConfig::enableHixlCs)},
+        {"transport.hixl.enable_hixl_cs",
+         BindConfigParser(ParseBool, &DramPoolConfig::enableHixlCs)},
         {"queue.request_depth", BindConfigParser(ParseUint32, &DramPoolConfig::requestQueueDepth)},
         {"queue.completion_depth",
          BindConfigParser(ParseUint32, &DramPoolConfig::completionQueueDepth)},
