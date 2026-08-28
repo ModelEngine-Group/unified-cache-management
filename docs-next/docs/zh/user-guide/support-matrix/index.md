@@ -37,8 +37,9 @@
 | GLM-4.x | ✅ | ✅ | ✅ |
 | MiniMax-M2.5 | ✅ | ✅ | ✅ |
 | MiniMax-M2.7 | ✅ | ✅ | ✅ |
-| MiniMax-M3 | ❌ | ❌ | ❌ |
-| Kimi-K2.5 | ❌ | ❌ | ❌ |
+| MiniMax-M3 | 🟡 | 🟡 | ❌ |
+| Kimi-K2.5 | ✅ | ✅ | ❌ |
+| Kimi-K3 | 🟡 | 🟡 | ❌ |
 
 > **注意**：表格列出了部分代表性模型。
 > 详见 [**前缀缓存**](../capabilities/prefix-cache/index.md)。

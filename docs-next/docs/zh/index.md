@@ -97,3 +97,10 @@ hide:
     [:octicons-arrow-right-24: 计算器](toolkit/kv-cache-calculator.md)
 
 </div>
+
+## 版本兼容性
+
+| 分支 | 状态 | vLLM 版本 | vLLM-Ascend 版本 |
+| --- | --- | --- | --- |
+| `main` | 维护中 | v0.27.1 | nightly-0.26.0 |
+| `develop` | 维护中 | v0.27.1 | nightly-0.26.0 |

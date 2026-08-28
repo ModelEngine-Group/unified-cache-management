@@ -101,3 +101,10 @@ various scenarios, including multi-turn dialogue and long-context reasoning task
     [:octicons-arrow-right-24: Calculator](toolkit/kv-cache-calculator.md)
 
 </div>
+
+## Version Compatibility
+
+| Branch | Status | vLLM version | vLLM-Ascend version |
+| --- | --- | --- | --- |
+| `main` | Maintained | v0.27.1 | nightly-0.26.0 |
+| `develop` | Maintained | v0.27.1 | nightly-0.26.0 |
