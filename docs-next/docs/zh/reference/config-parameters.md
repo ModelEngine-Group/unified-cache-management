@@ -8,7 +8,7 @@
 
 | 配置项 | 是否必填 | 取值类型 | 取值范围 | 配置说明 |
 |---|---|---|---|---|
-| `use_layerwise` | 选填 | bool | 默认 `false` | 是否启用分层（逐层）加载和保存模式。推荐设置为 `true`，DeepSeek v4 系列模型推荐设置为 `false`。 |
+| `use_layerwise` | 选填 | bool | 默认 `true` | 是否启用分层（逐层）加载和保存模式。推荐设置为 `true`，DeepSeek v4 系列模型推荐设置为 `false`。 |
 | `enable_event_sync` | 选填 | bool | 默认 `true` | 性能优化开关，推荐开启。 |
 | `persist_token_threshold` | 选填 | int | `0` | 当请求长度小于 `persist_token_threshold` 时，UCM 软件不对该请求进行处理。 |
 | `timeout_ms` | 选填 | int | >0，默认 `30000` | 显存和 DRAM/SHM 之间的拷贝以及读写盘的超时时间（单位：ms）。 |
@@ -17,7 +17,7 @@
 | `enable_record_traces` | 选填 | bool | `false` | 用来记录请求信息（时间戳，输入长度，输出长度等信息）。 |
 | `enable_metrics` | 选填 | bool | 默认 `true` | 是否开启 metrics 收集。 |
 | `use_lite` | 选填 | bool | `false` | 是否启用 UCM Lite 功能。不对 KV Cache 数据进行保存和加载，仅对元数据进行保存和查询。仅可用于评估 KV Cache 命中率情况，无加速效果。 |
-| `metrics_config_path` | 选填 | string | 自行配置 | 指定监控指标配置文件路径，启用后可通过 toolkit 进行 UCM 在线监控。详见 [Toolkit 使用指南](https://support.huawei.com/enterprise/zh/doc/EDOC1100582752/e66a9eed#ZH-CN_TOPIC_0000002657360684)。 |
+| `metrics_config_path` | 选填 | string | 自行配置 | 指定监控指标配置文件路径，启用后可通过 toolkit 进行 UCM 在线监控。 |
 
 ---
 
@@ -28,10 +28,10 @@
 | 配置项 | 是否必填 | 取值类型 | 取值范围 | 配置说明 |
 |---|---|---|---|---|
 | `store_pipeline` | 选填 | string | 见下方可选值 | 管线名称，决定 Cache 与 Store 的组合方式。默认使用 `Cache\|Posix`。 |
-| `storage_backends` | **必填** | string | 自行配置，多个挂载点用冒号隔开 | 填写创库使用章节中在计算主机的挂载目录。详见 [创建文件系统挂载](https://support.huawei.com/enterprise/zh/doc/EDOC1100582752/47f029f5#ZH-CN_TOPIC_0000002501883936)。 |
+| `storage_backends` | **必填** | string | 自行配置，多个挂载点用冒号隔开 | 填写本地目录或者挂载点，如果有多个挂载点需要用冒号隔开。 |
 | `io_direct` | 选填 | bool | 默认 `true` | 是否启用直接 IO 模式（绕过操作系统页缓存）。`false`: 使用 PageCache；`true`: 跳过 PageCache，直接 IO。 |
 | `posix_io_engine` | 选填 | string | 默认 `psync` | 文件 IO 模式。`psync`：同步 io；`aio`：异步 io，要求 `io_direct` 配置为 `true`。 |
-| `posix_data_trans_concurrency` | 选填 | int | 默认 `128` | `psync` 模式下单卡对存储的读写线程数。nfs over rdma 下推荐单卡 128 线程，dpc 下单机不超过 256 线程。`aio` 下不读取该值。 |
+| `posix_data_trans_concurrency` | 选填 | int | 默认 `128` | `psync` 模式下单卡对存储的读写线程数。NFS over RDMA 下推荐单卡 128 线程。`aio` 下不读取该值。 |
 | `posix_open_concurrency` | 选填 | int | 默认 `32` | `aio` 下对文件进行 open 操作的线程数。`psync` 下不感知。 |
 | `posix_commit_concurrency` | 选填 | int | 默认 `4` | `aio` 下对文件进行 rename 操作的线程数。`psync` 下不感知。 |
 | `posix_lookup_concurrency` | 选填 | int | 默认 `16` | 在挂载点中查找文件是否存在的线程数。 |
@@ -97,31 +97,4 @@
     - `health_check_interval_s` > `health_check_timeout_s` > 0
     - `health_window_size` >= `failure_threshold` > 0
 
----
 
-## pmr_config（PMR 配置）
-
-!!! warning
-    PMR 默认不开启，`use_pmr=false`。PMR 仅在部分模型、框架版本支持。
-
-???+ abstract "适合开启 PMR 的典型任务场景"
-    1. 面向长文本的总结摘要生成，能够显著加速对重复或相似信息片段的提炼过程。
-    2. 在检索增强生成（RAG）中，可对检索返回的相关文档片段进行快速前缀匹配与候选路径预判。
-
-| 配置项 | 是否必填 | 取值类型 | 取值范围 | 配置说明 |
-|---|---|---|---|---|
-| `use_pmr` | **必填** | bool | `false` | PMR 算法的开关。为 `true` 时需填写 `pmr_config` 下方参数，否则不填写。 |
-| `searchN` | 选填 | int | `5` | 查询时最大前缀匹配长度。 |
-| `speculator_length` | 选填 | int | `12` | 单请求最长投机长度。 |
-| `num_speculative_tokens` | 选填 | int | `3` | pmr 投机个数。开启 FLASHCOMM1 后需满足 `max(tp, 1+mtp+pmr)` 整除 `min(tp, 1+mtp+pmr)`。 |
-| `maxSeqLen` | 选填 | int | `16` | pmr 树的最大深度。 |
-| `use_history` | 选填 | bool | `true` | 是否从历史请求中查询。 |
-| `token_len_list` | 选填 | list | `[5, 5, 5]` | 单并发时不同 prefix 的序列投机长度：prefix > searchN/2, 1 < prefix < searchN/2, prefix = 1。 |
-| `large_bs_token_len_list` | 选填 | list | `[3, 2, 1]` | 大并发时不同 prefix 的序列投机长度：prefix > searchN/2, 1 < prefix < searchN/2, prefix = 1。 |
-| `storage_path` | **必填** | string | `/mnt/storages/pmr` | pmr 树的落盘路径。 |
-| `model_path` | **必填** | string | `/home/models/Qwen3-32B/` | 模型权重存放目录，同 `vllm serve` 的模型路径保持一致。 |
-| `base_core_id` | 选填 | int | `0` | 算法调用的 core ids 的起始 core id。 |
-| `thread_num` | 选填 | int | `16` | 算法调用的 core ids 个数，每个 core 上开启一个 thread。 |
-| `interval_minutes` | 选填 | int | `400` | 落盘时间，单位分钟。 |
-| `memSoftLimitInGB` | 选填 | int | `30` | 开始触发淘汰的阈值，单位 GB。 |
-| `memHardLimitInGB` | 选填 | int | `40` | pmr-tree 停止写入的阈值，单位 GB。 |

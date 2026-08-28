@@ -8,7 +8,7 @@
 
 | Parameter | Required | Type | Value Range | Description |
 |---|---|---|---|---|
-| `use_layerwise` | Optional | bool | Default: `false` | Enable layer-wise (per-layer) load/save mode. Recommended `true`; DeepSeek V4 series recommends `false`. |
+| `use_layerwise` | Optional | bool | Default: `true` | Enable layer-wise (per-layer) load/save mode. Recommended `true`; DeepSeek V4 series recommends `false`. |
 | `enable_event_sync` | Optional | bool | Default: `true` | Performance optimization switch. Recommended to enable. |
 | `persist_token_threshold` | Optional | int | `0` | When request length < `persist_token_threshold`, UCM does not process the request. |
 | `timeout_ms` | Optional | int | >0, default `30000` | Timeout for memory/DRAM/SHM copies and disk read/write (ms). |
@@ -31,7 +31,7 @@
 | `storage_backends` | **Required** | string | User-configured, multiple mount points separated by `:` | Storage mount path. See [Create Filesystem Mount](https://support.huawei.com/enterprise/zh/doc/EDOC1100582752/47f029f5#ZH-CN_TOPIC_0000002501883936). |
 | `io_direct` | Optional | bool | Default: `true` | Enable Direct I/O (bypass OS page cache). `false`: uses PageCache; `true`: skips PageCache. |
 | `posix_io_engine` | Optional | string | Default: `psync` | File I/O mode. `psync`: synchronous; `aio`: asynchronous, requires `io_direct=true`. |
-| `posix_data_trans_concurrency` | Optional | int | Default: `128` | Read/write threads per card in `psync` mode. NFS over RDMA: 128/card; DPC: max 256/node. Not used in `aio` mode. |
+| `posix_data_trans_concurrency` | Optional | int | Default: `128` | Read/write threads per card in `psync` mode. NFS over RDMA: 128/card. Not used in `aio` mode. |
 | `posix_open_concurrency` | Optional | int | Default: `32` | File open threads in `aio` mode. Not applicable in `psync`. |
 | `posix_commit_concurrency` | Optional | int | Default: `4` | File rename threads in `aio` mode. Not applicable in `psync`. |
 | `posix_lookup_concurrency` | Optional | int | Default: `16` | Threads for checking file existence at mount point. |
@@ -97,31 +97,4 @@
     - `health_check_interval_s` > `health_check_timeout_s` > 0
     - `health_window_size` >= `failure_threshold` > 0
 
----
 
-## pmr_config (PMR Configuration)
-
-!!! warning
-    PMR is disabled by default (`use_pmr=false`). PMR is only supported on certain models and framework versions.
-
-???+ abstract "Typical Scenarios for Enabling PMR"
-    1. Long-text summarization — significantly accelerates extraction of repeated or similar information fragments.
-    2. Retrieval-Augmented Generation (RAG) — fast prefix matching and candidate path prediction.
-
-| Parameter | Required | Type | Value Range | Description |
-|---|---|---|---|---|
-| `use_pmr` | **Required** | bool | `false` | PMR algorithm switch. When `true`, must fill params below. |
-| `searchN` | Optional | int | `5` | Maximum prefix match length during query. |
-| `speculator_length` | Optional | int | `12` | Maximum speculation length per request. |
-| `num_speculative_tokens` | Optional | int | `3` | PMR speculation count. With FLASHCOMM1: `max(tp, 1+mtp+pmr)` divisible by `min(tp, 1+mtp+pmr)`. |
-| `maxSeqLen` | Optional | int | `16` | Maximum depth of PMR tree. |
-| `use_history` | Optional | bool | `true` | Whether to query from historical requests. |
-| `token_len_list` | Optional | list | `[5, 5, 5]` | Speculation lengths at single concurrency: prefix > searchN/2, 1 < prefix < searchN/2, prefix = 1. |
-| `large_bs_token_len_list` | Optional | list | `[3, 2, 1]` | Speculation lengths at high concurrency: prefix > searchN/2, 1 < prefix < searchN/2, prefix = 1. |
-| `storage_path` | **Required** | string | `/mnt/storages/pmr` | PMR tree disk persistence path. |
-| `model_path` | **Required** | string | `/home/models/Qwen3-32B/` | Model weight directory. Must match `vllm serve` model path. |
-| `base_core_id` | Optional | int | `0` | Starting core ID for algorithm. |
-| `thread_num` | Optional | int | `16` | Number of cores, one thread per core. |
-| `interval_minutes` | Optional | int | `400` | Disk persistence interval (minutes). |
-| `memSoftLimitInGB` | Optional | int | `30` | Eviction trigger threshold (GB). |
-| `memHardLimitInGB` | Optional | int | `40` | PMR-tree stop writing threshold (GB). |
