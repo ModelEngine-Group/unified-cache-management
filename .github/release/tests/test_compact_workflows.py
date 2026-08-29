@@ -820,13 +820,8 @@ def test_builder_sync_consumes_selection_and_uses_digest_pinned_mirror_only() ->
     assert "matrix.source_image" in text
     assert "matrix.source_image_digest" in text
     assert 'pinned_source="${source_repository}@${SOURCE_IMAGE_DIGEST}"' in text
-    assert "for pull_attempt in 1 2 3 4 5" in build
+    assert "retry-registry-command.sh" in build
     assert 'docker pull --platform "linux/${CPU_ARCH}" "${verified_target}"' in build
-    assert "TOOMANYREQUESTS|too many requests|retry-after|HTTP 429" in build
-    assert "Builder image pull failed with a non-retryable error" in build
-    assert "Builder image pull failed after ${pull_attempt} attempts" in build
-    assert "Builder image pull failed; retrying in ${sleep_seconds}s" in build
-    assert "4) sleep_seconds=60" in build
     assert 'docker run --pull=never --platform "linux/${CPU_ARCH}" --rm' in build
     assert build.count("docker run --pull=never") == 1
     assert build.index(
@@ -1110,6 +1105,8 @@ def test_compact_wheel_passes_dynamic_python_and_platform_to_build() -> None:
     dockerfile = (
         ROOT / ".github" / "release" / "docker" / "Dockerfile.wheel"
     ).read_text(encoding="utf-8")
+    assert "retry-registry-command.sh" in workflow
+    assert "${RUNNER_TEMP}/ucm-wheel-build.log" in workflow
     assert "UCM_PYTHON_VERSION" in workflow
     assert "UCM_PYTHON_ABI" in workflow
     assert "UCM_PLATFORM" in workflow

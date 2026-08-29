@@ -107,7 +107,9 @@ jobs:
         run: |
           set -euo pipefail
           builder="$(jq -r '.builder.repository + "@" + .builder.digest' out/wheel-task.json)"
-          docker buildx build \
+          bash .github/release/retry-registry-command.sh \
+            "${RUNNER_TEMP}/ucm-wheel-build.log" \
+            docker buildx build \
             --platform "$(jq -r '.platform' out/wheel-task.json)" \
             --file .github/release/docker/Dockerfile.wheel \
             --target wheel \
