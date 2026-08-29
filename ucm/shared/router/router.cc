@@ -136,6 +136,7 @@ std::unordered_map<NodeId, std::vector<Router::EntryIndex>> Router::RouteKeys(
     const std::vector<CacheKey>& keys) const
 {
     std::unordered_map<NodeId, std::vector<EntryIndex>> routes;
+    routes.reserve(keys.size());
     for (EntryIndex index = 0; index < keys.size(); ++index) {
         auto nodeId = RouteKey(keys[index]);
         if (nodeId != kInvalidNodeId) { routes[nodeId].emplace_back(index); }
