@@ -21,6 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <fmt/ranges.h>
@@ -197,6 +198,8 @@ private:
         inConfig.GetNumber("data_dir_shard_bytes", config.dataDirShardBytes);
         inConfig.Get("posix_gc_enable", config.posixGcEnable);
         inConfig.Get("posix_gc_recycle_percent", config.posixGcRecyclePercent);
+        inConfig.Get("posix_gc_precise_mode", config.posixGcPreciseMode);
+        inConfig.Get("posix_gc_candidate_extra_percent", config.posixGcCandidateExtraPercent);
         inConfig.GetNumber("posix_gc_concurrency", config.posixGcConcurrency);
         inConfig.GetNumber("posix_gc_check_interval_sec", config.posixGcCheckIntervalSec);
         inConfig.GetNumber("posix_capacity_gb", config.posixCapacityGb);
@@ -204,7 +207,23 @@ private:
         inConfig.GetNumber("posix_gc_max_recycle_count_per_shard",
                            config.posixGcMaxRecycleCountPerShard);
         inConfig.Get("posix_gc_shard_sample_ratio", config.posixGcShardSampleRatio);
+        inConfig.GetNumber("posix_gc_task_timeout_ms", config.posixGcTaskTimeoutMs);
+        inConfig.Get("posix_gc_cross_instance_lock", config.posixGcCrossInstanceLock);
+        inConfig.GetNumber("posix_gc_heartbeat_interval_sec", config.posixGcHeartbeatIntervalSec);
+        inConfig.GetNumber("posix_gc_stale_threshold_sec", config.posixGcStaleThresholdSec);
+        DeriveGcLeaseTimings(config);
         return config;
+    }
+    static void DeriveGcLeaseTimings(Config& config)
+    {
+        constexpr size_t kMinStaleSec = 60;
+        const auto interval = config.posixGcCheckIntervalSec;
+        if (config.posixGcHeartbeatIntervalSec == 0) {
+            config.posixGcHeartbeatIntervalSec = std::max<size_t>(1, interval / 4);
+        }
+        if (config.posixGcStaleThresholdSec == 0) {
+            config.posixGcStaleThresholdSec = std::max(interval * 2, kMinStaleSec);
+        }
     }
     Status CheckConfig(const Config& config)
     {
@@ -225,30 +244,23 @@ private:
                 return Status::InvalidParam("invalid cpu core({})", core);
             }
         }
-        if (config.deviceId == -1) { return Status::OK(); }
-        if (config.tensorSize == 0 || config.shardSize < config.tensorSize ||
-            config.blockSize < config.shardSize || config.shardSize % config.tensorSize != 0 ||
-            config.blockSize % config.shardSize != 0) {
-            return Status::InvalidParam("invalid size({},{},{})", config.tensorSize,
-                                        config.shardSize, config.blockSize);
-        }
-        if (config.ioEngine == "aio") {
-            if (config.openConcurrency == 0 || config.commitConcurrency == 0) {
-                return Status::InvalidParam("invalid aio concurrency({},{})",
-                                            config.openConcurrency, config.commitConcurrency);
-            }
-        } else if (config.ioEngine == "psync") {
-            if (config.dataTransConcurrency == 0) {
-                return Status::InvalidParam("invalid psync concurrency({})",
-                                            config.dataTransConcurrency);
-            }
-        } else {
-            return Status::InvalidParam("invalid io engine({})", config.ioEngine);
-        }
         if (config.posixGcEnable && config.posixCapacityGb > 0) {
             if (config.posixGcRecyclePercent <= 0 || config.posixGcRecyclePercent > 1.0) {
                 return Status::InvalidParam("invalid gc recycle percent({})",
                                             config.posixGcRecyclePercent);
+            }
+            if (config.posixGcPreciseMode) {
+                if (config.posixGcCandidateExtraPercent <= 0 ||
+                    config.posixGcCandidateExtraPercent >= 1.0) {
+                    return Status::InvalidParam("invalid gc candidate extra percent({})",
+                                                config.posixGcCandidateExtraPercent);
+                }
+                if (config.posixGcRecyclePercent + config.posixGcCandidateExtraPercent > 1.0) {
+                    return Status::InvalidParam(
+                        "gc recycle percent({}) plus candidate extra percent({}) must not exceed "
+                        "1.0",
+                        config.posixGcRecyclePercent, config.posixGcCandidateExtraPercent);
+                }
             }
             if (config.posixGcConcurrency == 0) {
                 return Status::InvalidParam("invalid gc concurrency({})",
@@ -271,6 +283,40 @@ private:
                 return Status::InvalidParam("invalid gc shard sample ratio({})",
                                             config.posixGcShardSampleRatio);
             }
+            constexpr size_t kMinGcTaskTimeoutMs = 1000;
+            if (config.posixGcTaskTimeoutMs != 0 &&
+                config.posixGcTaskTimeoutMs < kMinGcTaskTimeoutMs) {
+                return Status::InvalidParam(
+                    "invalid gc task timeout({}ms), use 0 to disable or at least {}ms",
+                    config.posixGcTaskTimeoutMs, kMinGcTaskTimeoutMs);
+            }
+            if (config.posixGcCrossInstanceLock) {
+                if (config.posixGcStaleThresholdSec <= config.posixGcHeartbeatIntervalSec) {
+                    return Status::InvalidParam(
+                        "gc stale threshold({}s) must exceed heartbeat interval({}s)",
+                        config.posixGcStaleThresholdSec, config.posixGcHeartbeatIntervalSec);
+                }
+            }
+        }
+        if (config.deviceId == -1) { return Status::OK(); }
+        if (config.tensorSize == 0 || config.shardSize < config.tensorSize ||
+            config.blockSize < config.shardSize || config.shardSize % config.tensorSize != 0 ||
+            config.blockSize % config.shardSize != 0) {
+            return Status::InvalidParam("invalid size({},{},{})", config.tensorSize,
+                                        config.shardSize, config.blockSize);
+        }
+        if (config.ioEngine == "aio") {
+            if (config.openConcurrency == 0 || config.commitConcurrency == 0) {
+                return Status::InvalidParam("invalid aio concurrency({},{})",
+                                            config.openConcurrency, config.commitConcurrency);
+            }
+        } else if (config.ioEngine == "psync") {
+            if (config.dataTransConcurrency == 0) {
+                return Status::InvalidParam("invalid psync concurrency({})",
+                                            config.dataTransConcurrency);
+            }
+        } else {
+            return Status::InvalidParam("invalid io engine({})", config.ioEngine);
         }
         return Status::OK();
     }
@@ -298,6 +344,11 @@ private:
             UC_INFO("Set {}::PosixGcEnable to {}.", ns, config.posixGcEnable);
             UC_INFO("Set {}::PosixCapacityGb to {}.", ns, config.posixCapacityGb);
             UC_INFO("Set {}::PosixGcRecyclePercent to {}.", ns, config.posixGcRecyclePercent);
+            UC_INFO("Set {}::PosixGcPreciseMode to {}.", ns, config.posixGcPreciseMode);
+            if (config.posixGcPreciseMode) {
+                UC_INFO("Set {}::PosixGcCandidateExtraPercent to {}.", ns,
+                        config.posixGcCandidateExtraPercent);
+            }
             UC_INFO("Set {}::PosixGcConcurrency to {}.", ns, config.posixGcConcurrency);
             UC_INFO("Set {}::PosixGcCheckIntervalSec to {}.", ns, config.posixGcCheckIntervalSec);
             UC_INFO("Set {}::PosixGcTriggerThresholdRatio to {}.", ns,
@@ -305,6 +356,14 @@ private:
             UC_INFO("Set {}::PosixGcMaxRecycleCountPerShard to {}.", ns,
                     config.posixGcMaxRecycleCountPerShard);
             UC_INFO("Set {}::PosixGcShardSampleRatio to {}.", ns, config.posixGcShardSampleRatio);
+            UC_INFO("Set {}::PosixGcTaskTimeoutMs to {}.", ns, config.posixGcTaskTimeoutMs);
+            UC_INFO("Set {}::PosixGcCrossInstanceLock to {}.", ns, config.posixGcCrossInstanceLock);
+            if (config.posixGcCrossInstanceLock) {
+                UC_INFO("Set {}::PosixGcHeartbeatIntervalSec to {}.", ns,
+                        config.posixGcHeartbeatIntervalSec);
+                UC_INFO("Set {}::PosixGcStaleThresholdSec to {}.", ns,
+                        config.posixGcStaleThresholdSec);
+            }
         }
     }
 };

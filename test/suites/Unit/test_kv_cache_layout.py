@@ -75,7 +75,7 @@ class FakeCombinedTensor:
 
 
 class FakeTorch:
-    Tensor = FakeTensor
+    Tensor = (FakeTensor, FakeCombinedTensor)
 
 
 class FakeLogger:
@@ -175,6 +175,7 @@ def _build_layout(
 def _build_cuda_shared_layout(
     entries: list[tuple[str, int, int] | tuple[str, int, int, int]],
 ):
+    num_blocks = 3
     next_ptr = 0x100000
     kvcaches = {}
     tensor_ptrs = {}
@@ -186,12 +187,14 @@ def _build_cuda_shared_layout(
             kvcaches[layer_name] = FakeCombinedTensor(
                 next_ptr,
                 block_stride,
+                num_blocks=num_blocks,
                 element_size=element_size,
             )
         else:
             kvcaches[layer_name] = FakeTensor(
                 next_ptr,
                 block_stride,
+                num_blocks=num_blocks,
                 element_size=element_size,
                 dimensions=dimensions,
             )
@@ -207,7 +210,7 @@ def _build_cuda_shared_layout(
         parallel_config=SimpleNamespace(pipeline_parallel_size=1),
         model_config=SimpleNamespace(hf_text_config=hf_text_config),
     )
-    kv_cache_config = SimpleNamespace(num_blocks=2)
+    kv_cache_config = SimpleNamespace(num_blocks=num_blocks)
     ucm_config = {"use_layerwise": True}
 
     layout_globals = SharedIndexerKVCacheLayout.supports.__func__.__globals__
@@ -338,30 +341,60 @@ class KVCacheLayoutTest(unittest.TestCase):
 
         self.assertTrue(supported)
 
-    def test_cuda_tensor_role_pattern_mapping_is_extensible(self):
-        class ExtendedCUDAKVCacheLayout(SharedIndexerKVCacheLayout):
-            CUDA_TENSOR_ROLE_PATTERNS = {
-                "indexer": (
-                    *SharedIndexerKVCacheLayout.CUDA_TENSOR_ROLE_PATTERNS["indexer"],
-                    re.compile(
-                        r"(?:^|\.)selector\.cache(?:\.|$)",
-                        re.IGNORECASE,
-                    ),
-                ),
-            }
-
+    def test_tensor_role_mapping(self):
         self.assertEqual(
-            SharedIndexerKVCacheLayout._cuda_cache_role(
+            SharedIndexerKVCacheLayout._cache_role(
                 "model.layers.0.self_attn.indexer.k_cache"
             ),
             "indexer",
         )
         self.assertEqual(
-            SharedIndexerKVCacheLayout._cuda_cache_role(
-                "model.layers.0.self_attn.attn"
-            ),
+            SharedIndexerKVCacheLayout._cache_role("model.layers.0.self_attn.attn"),
             "attention",
         )
+
+    def test_ascend_separate_indexer_uses_semantic_order(self):
+        indexer = FakeTensor(0x100000, 32768)
+        attention_0 = (
+            FakeTensor(0x200000, 131072),
+            FakeTensor(0x300000, 16384),
+        )
+        attention_1 = (
+            FakeTensor(0x400000, 131072),
+            FakeTensor(0x500000, 16384),
+        )
+        kvcaches = {
+            "model.layers.0.self_attn.indexer.k_cache": (indexer,),
+            "model.layers.0.self_attn": attention_0,
+            "model.layers.1.self_attn": attention_1,
+        }
+        vllm_config = SimpleNamespace(
+            additional_config={},
+            parallel_config=SimpleNamespace(pipeline_parallel_size=1),
+            model_config=SimpleNamespace(
+                hf_text_config=SimpleNamespace(num_hidden_layers=2),
+                hf_config=SimpleNamespace(
+                    text_config=SimpleNamespace(indexer_types=["full", "shared"])
+                ),
+            ),
+        )
+
+        self.assertTrue(
+            SharedIndexerKVCacheLayout.supports(vllm_config, {"use_layerwise": True})
+        )
+        layout = SharedIndexerKVCacheLayout(
+            kvcaches,
+            {"use_layerwise": True},
+            vllm_config,
+            SimpleNamespace(num_blocks=2),
+        )
+
+        self.assertEqual(layout.tensor_size_list, [131072, 16384, 32768])
+        self.assertEqual(
+            layout.base_ptrs[0].tolist(),
+            [0x200000, 0x300000, 0x100000],
+        )
+        self.assertEqual(layout.base_ptrs[1, 2], 0)
 
     def test_cuda_shared_indexer_uses_semantic_order_and_padding(self):
         layer_2_indexer = "model.layers.2.router.indexer.cache_storage"
@@ -406,7 +439,7 @@ class KVCacheLayoutTest(unittest.TestCase):
 
         self.assertEqual(layout.base_ptrs[1, 1], 0)
         self.assertEqual(layout.block_stride_lists[1].tolist(), [73728, 0])
-        self.assertEqual(layout.buffer_sizes[1].tolist(), [147456, 0])
+        self.assertEqual(layout.buffer_sizes[1].tolist(), [221184, 0])
 
         block_one_addrs = layout.extract_block_addrs([1], layer_first=True)
         self.assertEqual(
@@ -440,7 +473,7 @@ class KVCacheLayoutTest(unittest.TestCase):
         )
 
         layer_0_attention_ptr = tensor_ptrs[layer_0_attention]
-        layer_0_value_ptr = layer_0_attention_ptr + 2 * 4096
+        layer_0_value_ptr = layer_0_attention_ptr + 3 * 4096
         self.assertEqual(
             layout.base_ptrs[0].tolist(),
             [

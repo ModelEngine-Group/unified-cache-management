@@ -21,10 +21,53 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <array>
+#include <cstdint>
+#include <cstring>
 #include <gtest/gtest.h>
+#include "trans/detail/reserved_buffer.h"
 #include "trans/device.h"
 
 class UCTransUnitTest : public ::testing::Test {};
+
+TEST_F(UCTransUnitTest, EmptyEventIsSafe)
+{
+    UC::Trans::Event event;
+    EXPECT_FALSE(event.Valid());
+    EXPECT_TRUE(event.Synchronize().Success());
+
+    UC::Trans::Device device;
+    ASSERT_TRUE(device.Setup(0).Success());
+    auto stream = device.MakeStream();
+    ASSERT_NE(stream, nullptr);
+    EXPECT_TRUE(stream->WaitEvent(event).Success());
+}
+
+TEST_F(UCTransUnitTest, MemsetAndDeviceToDevice)
+{
+    constexpr std::size_t size = 128;
+    constexpr std::int32_t value = 0xAB;
+    UC::Trans::Device device;
+    ASSERT_TRUE(device.Setup(0).Success());
+    auto buffer = device.MakeBuffer();
+    auto stream = device.MakeStream();
+    ASSERT_NE(buffer, nullptr);
+    ASSERT_NE(stream, nullptr);
+
+    auto source = buffer->MakeDeviceBuffer(size);
+    auto destination = buffer->MakeDeviceBuffer(size);
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(destination, nullptr);
+    ASSERT_TRUE(UC::Trans::Memset(source.get(), size, value).Success());
+    ASSERT_TRUE(stream->DeviceToDevice(source.get(), destination.get(), size).Success());
+
+    std::array<std::uint8_t, size> copied{};
+    auto host = buffer->MakeHostBuffer(size);
+    ASSERT_NE(host, nullptr);
+    ASSERT_TRUE(stream->DeviceToHost(destination.get(), host.get(), size).Success());
+    std::memcpy(copied.data(), host.get(), size);
+    for (const auto byte : copied) { EXPECT_EQ(byte, static_cast<std::uint8_t>(value)); }
+}
 
 TEST_F(UCTransUnitTest, CopyDataWithCE)
 {

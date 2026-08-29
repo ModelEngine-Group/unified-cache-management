@@ -21,16 +21,12 @@ _COUNTER_METRICS = [
         "Number of lookup misses at the Cache stage (had to query the backend)",
     ),
     (
-        "cache_load_blocks_total",
-        "Total blocks loaded by the Cache stage",
-    ),
-    (
-        "cache_dump_blocks_total",
-        "Total blocks dumped by the Cache stage",
-    ),
-    (
         "cache_load_shards_total",
-        "Total shards dispatched by Cache load (num blocks * shards_per_block)",
+        "Total shards whose Cache buffer state was inspected during load",
+    ),
+    (
+        "cache_load_wait_shards_total",
+        "Shards whose Cache buffer was not ready when acquired and required waiting",
     ),
     (
         "cache_load_backend_shards_total",
@@ -53,7 +49,7 @@ _COUNTER_METRICS = [
     ),
     (
         "cache_dump_shards_total",
-        "Total shards dispatched by Cache dump (mirror of cache_load_shards_total)",
+        "Total shard descriptors processed by Cache dump, including failed tasks",
     ),
     (
         "cache_dump_backend_shards_total",
@@ -355,11 +351,6 @@ _COUNTER_METRICS = [
 ]
 _GAUGE_METRICS = [
     (
-        "cache_lookup_hit_rate",
-        "Instantaneous Cache stage hit rate from the most recent lookup call",
-        {"multiprocess_mode": 'livemostrecent'},
-    ),
-    (
         "yuanrong_dram_used_bytes",
         "YuanRong physical shared-memory usage in bytes",
         {"multiprocess_mode": 'livemostrecent'},
@@ -430,37 +421,33 @@ _GAUGE_METRICS = [
         {"multiprocess_mode": 'livemostrecent'},
     ),
 ]
+_CONNECTOR_INTERFACE_METHODS = [
+    "get_block_size",
+    "get_kv_connector_stats",
+    "get_num_new_matched_tokens",
+    "update_state_after_alloc",
+    "register_kv_caches",
+    "build_connector_meta",
+    "bind_connector_metadata",
+    "handle_preemptions",
+    "has_connector_metadata",
+    "start_load_kv",
+    "wait_for_layer_load",
+    "save_kv_layer",
+    "wait_for_save",
+    "request_finished_all_groups",
+    "request_finished",
+    "get_finished",
+    "build_connector_worker_meta",
+    "update_connector_output",
+    "clear_connector_metadata",
+    "get_block_ids_with_load_errors",
+]
+_CONNECTOR_INTERFACE_DURATION_BUCKETS = [
+    0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000,
+    2000, 5000, 10000,
+]
 _HISTOGRAM_METRICS = [
-    (
-        "load_requests_num",
-        "Number of requests loaded from ucm",
-        [1, 5, 10, 20, 50, 100, 200, 500, 1000],
-    ),
-    (
-        "load_blocks_num",
-        "Number of blocks loaded from ucm",
-        [0, 50, 100, 150, 200, 250, 300, 350, 400, 550, 600, 750, 800, 850, 900, 950, 1000],
-    ),
-    (
-        "load_duration",
-        "Time to load from ucm (ms)",
-        [0, 50, 100, 150, 200, 250, 300, 350, 400, 550, 600, 750, 800, 850, 900, 950, 1000],
-    ),
-    (
-        "load_speed",
-        "Speed of loading from ucm (GB/s)",
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 50, 60, 70, 80, 90, 100],
-    ),
-    (
-        "save_requests_num",
-        "Number of requests saved to ucm",
-        [1, 5, 10, 20, 50, 100, 200, 500, 1000],
-    ),
-    (
-        "save_blocks_num",
-        "Number of blocks saved to ucm",
-        [0, 50, 100, 150, 200, 250, 300, 350, 400, 550, 600, 750, 800, 850, 900, 950, 1000],
-    ),
     (
         "save_duration",
         "Time from UCM connector wait_for_save entry to async dump task completion (ms)",
@@ -710,136 +697,23 @@ _HISTOGRAM_METRICS = [
         "Mooncake dump time waiting for backend archive completion (ms)",
         [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000],
     ),
-    (
-        "layerwise_batch_total_ms",
+    *[
         (
-            "Layerwise batch wall-clock time from start_load_kv entry to wait_for_save "
-            "return (ms)"
-        ),
+            f"connector_{method}_duration_ms",
+            f"Wall-clock duration of UCMConnector.{method} invoked by vLLM (ms)",
+            _CONNECTOR_INTERFACE_DURATION_BUCKETS,
+        )
+        for method in _CONNECTOR_INTERFACE_METHODS
+    ],
+    (
+        "layerwise_layer_load_duration_ms",
+        "Layerwise per-layer wall-clock time from layer load start to wait_for_layer_load return (ms)",
         [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
     ),
     (
-        "layerwise_batch_total_load_only_ms",
-        (
-            "Layerwise load-only batch wall-clock time from start_load_kv entry to "
-            "wait_for_save return (ms)"
-        ),
+        "layerwise_batch_load_duration_sum_ms",
+        "Sum of per-layer load durations within one Layerwise batch (ms)",
         [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
-    ),
-    (
-        "layerwise_batch_total_save_only_ms",
-        (
-            "Layerwise save-only batch wall-clock time from start_load_kv entry to "
-            "wait_for_save return (ms)"
-        ),
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
-    ),
-    (
-        "layerwise_batch_total_load_save_ms",
-        (
-            "Layerwise load-and-save batch wall-clock time from start_load_kv entry to "
-            "wait_for_save return (ms)"
-        ),
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
-    ),
-    (
-        "layerwise_batch_total_no_transfer_ms",
-        "Layerwise batch wall-clock time with neither load nor save work (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
-    ),
-    (
-        "layerwise_batch_load_wait_total_load_only_ms",
-        (
-            "Total wait_for_layer_load blocking time accumulated within one load-only "
-            "layerwise batch (ms)"
-        ),
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
-    ),
-    (
-        "layerwise_batch_load_wait_total_load_save_ms",
-        (
-            "Total wait_for_layer_load blocking time accumulated within one "
-            "load-and-save layerwise batch (ms)"
-        ),
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
-    ),
-    (
-        "layerwise_batch_save_tail_save_only_ms",
-        "wait_for_save tail duration within one save-only layerwise batch (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000],
-    ),
-    (
-        "layerwise_batch_save_tail_load_save_ms",
-        "wait_for_save tail duration within one load-and-save layerwise batch (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000],
-    ),
-    (
-        "layerwise_wait_blocking_ms",
-        "Time wait_for_layer_load blocked before returning (ms). Near 0 = good overlap.",
-        [0, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500],
-    ),
-    (
-        "layerwise_wait_tasks_count",
-        "Number of per-request load tasks awaited in a single layer wait",
-        [0, 1, 2, 4, 8, 16, 32, 64],
-    ),
-    (
-        "layerwise_inter_wait_interval_ms",
-        "Interval between consecutive wait_for_layer_load calls (~forward time) (ms)",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500],
-    ),
-    (
-        "layerwise_next_layer_submit_ms",
-        "Time to submit next layer's load tasks inside wait_for_layer_load (ms)",
-        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50],
-    ),
-    (
-        "layerwise_first_layer_submit_ms",
-        (
-            "Time to submit first layer load tasks during start_load_kv - TTFT critical "
-            "(ms)"
-        ),
-        [0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100],
-    ),
-    (
-        "layerwise_first_layer_requests",
-        "Number of requests whose first-layer load was submitted in start_load_kv",
-        [0, 1, 2, 4, 8, 16, 32, 64, 128],
-    ),
-    (
-        "layerwise_save_submit_ms",
-        "Time to submit one layer's dump task in save_kv_layer (ms)",
-        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50],
-    ),
-    (
-        "layerwise_save_tail_total_ms",
-        "Legacy metric; LayerWise no longer waits for dump completion in wait_for_save",
-        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000],
-    ),
-    (
-        "fawa_scheduler_lookup_external_hit_blocks_ms",
-        "store lookup latency",
-        [1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 30, 40, 50],
-    ),
-    (
-        "fawa_scheduler_get_num_new_matched_tokens_ms",
-        "store lookup latency + generate block hash latency",
-        [1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 30, 40, 50],
-    ),
-    (
-        "fawa_worker_wait_wait_all_load_task_ms",
-        "store load latency",
-        [1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 850, 900, 950, 1000, 1250, 1500, 1750, 2000],
-    ),
-    (
-        "fawa_worker_start_load_kv_ms",
-        "store load task latency + generate task latency",
-        [1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 850, 900, 950, 1000, 1250, 1500, 1750, 2000],
-    ),
-    (
-        "fawa_worker_wait_for_save_ms",
-        "store dump task latency",
-        [1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 100, 150, 200, 250, 300, 350, 400, 450, 500],
     ),
 ]
 

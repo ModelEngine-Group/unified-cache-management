@@ -142,10 +142,12 @@ def init_builtin_tools() -> None:
     from .tools.metrics_view import MetricsViewTool
     from .tools.nic_monitor import NicMonitorTool
     from .tools.posix_aio import PosixAioTool
+    from .tools.precheck import PrecheckTool
     from .tools.ttft_analyze import TtftAnalyzeTool
 
     register(DevSandboxTool())
     register(MetricsViewTool())
     register(PosixAioTool())
     register(NicMonitorTool())
+    register(PrecheckTool())
     register(TtftAnalyzeTool())
