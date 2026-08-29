@@ -15,6 +15,7 @@
 #include <acl/acl.h>
 #include <arpa/inet.h>
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cctype>
 #include <cstddef>
@@ -23,6 +24,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unistd.h>
@@ -611,19 +613,6 @@ std::uint32_t MakeKernelTimeoutSeconds(std::uint32_t hcommTimeoutMs)
     return static_cast<std::uint32_t>(MakeAclSyncTimeoutMs(hcommTimeoutMs) / 1000) + 1U;
 }
 
-struct DeviceAllocation {
-    void* ptr{nullptr};
-
-    DeviceAllocation() = default;
-    explicit DeviceAllocation(void* value) : ptr(value) {}
-    DeviceAllocation(const DeviceAllocation&) = delete;
-    DeviceAllocation& operator=(const DeviceAllocation&) = delete;
-    ~DeviceAllocation()
-    {
-        if (ptr != nullptr) { (void)aclrtFree(ptr); }
-    }
-};
-
 ConnectionRecord* ToConnectionRecord(TransProvider::ConnectionHandle handle)
 {
     return static_cast<ConnectionRecord*>(handle);
@@ -636,6 +625,43 @@ struct AICPUProvider::Impl {
         std::size_t size{0};
         std::uintptr_t deviceAddr{0};
         std::size_t refCount{0};
+    };
+
+    struct MappedBatchWorkspace {
+        std::shared_ptr<void> owner;
+        void* deviceBase{nullptr};
+        std::size_t capacity{0};
+
+        UcmHixlSendIoBatch* HostBatches() const
+        {
+            return static_cast<UcmHixlSendIoBatch*>(owner.get());
+        }
+
+        UcmHixlSendIoBatch* DeviceBatches() const
+        {
+            return static_cast<UcmHixlSendIoBatch*>(deviceBase);
+        }
+
+        std::uint32_t* HostStatuses() const
+        {
+            auto* base = static_cast<std::uint8_t*>(owner.get());
+            return reinterpret_cast<std::uint32_t*>(
+                base + capacity * sizeof(UcmHixlSendIoBatch));
+        }
+
+        std::uint32_t* DeviceStatuses() const
+        {
+            auto* base = static_cast<std::uint8_t*>(deviceBase);
+            return reinterpret_cast<std::uint32_t*>(
+                base + capacity * sizeof(UcmHixlSendIoBatch));
+        }
+
+        void Reset()
+        {
+            owner.reset();
+            deviceBase = nullptr;
+            capacity = 0;
+        }
     };
 
     explicit Impl(const TransportConfig& configIn)
@@ -668,13 +694,15 @@ struct AICPUProvider::Impl {
     ~Impl()
     {
         AclContextScope contextScope("AICPUProvider cleanup");
-        if (hixlBin != nullptr || stream != nullptr || endpoint != nullptr) {
+        if (mappedBatchWorkspace.owner || hixlBin != nullptr || stream != nullptr ||
+            endpoint != nullptr) {
             const auto deviceStatus = EnsureAclDeviceBound("AICPUProvider cleanup");
             if (!deviceStatus.ok()) {
                 KV_WARN("AICPUProvider: cleanup continuing after device bind failure: {}",
                         deviceStatus.message);
             }
         }
+        mappedBatchWorkspace.Reset();
         if (hixlBin != nullptr) {
             (void)aclrtBinaryUnLoad(hixlBin);
             hixlBin = nullptr;
@@ -1114,6 +1142,54 @@ struct AICPUProvider::Impl {
         return Status::OK();
     }
 
+    Status EnsureMappedBatchWorkspaceLocked(std::size_t requiredCapacity)
+    {
+        if (mappedBatchWorkspace.owner && mappedBatchWorkspace.capacity >= requiredCapacity) {
+            return Status::OK();
+        }
+
+        constexpr auto kEntryBytes = sizeof(UcmHixlSendIoBatch) + sizeof(std::uint32_t);
+        constexpr auto kMaxSize = std::numeric_limits<std::size_t>::max();
+        if (requiredCapacity == 0 || requiredCapacity > kMaxSize / kEntryBytes) {
+            return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                 "AICPUProvider: invalid mapped batch workspace capacity");
+        }
+
+        std::size_t capacity = mappedBatchWorkspace.capacity == 0
+                                   ? requiredCapacity
+                                   : mappedBatchWorkspace.capacity;
+        while (capacity < requiredCapacity) {
+            if (capacity > kMaxSize / 2) {
+                capacity = requiredCapacity;
+                break;
+            }
+            capacity *= 2;
+        }
+        if (capacity > kMaxSize / kEntryBytes) {
+            return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                 "AICPUProvider: mapped batch workspace size overflows");
+        }
+
+        void* deviceBase = nullptr;
+        runtime::AscendBuffer buffer;
+        auto owner = buffer.MakeHostMappedDeviceBuffer(capacity * kEntryBytes, &deviceBase);
+        if (!owner || deviceBase == nullptr) {
+            return Status::Error(StatusCode::INTERNAL_ERROR,
+                                 "AICPUProvider: failed to allocate mapped batch workspace");
+        }
+
+        std::memset(owner.get(), 0, capacity * kEntryBytes);
+        mappedBatchWorkspace.Reset();
+        mappedBatchWorkspace.owner = std::move(owner);
+        mappedBatchWorkspace.deviceBase = deviceBase;
+        mappedBatchWorkspace.capacity = capacity;
+        KV_INFO("AICPUProvider: allocated mapped batch workspace host_addr={} device_addr={} "
+                "capacity={} bytes={}",
+                mappedBatchWorkspace.owner.get(), mappedBatchWorkspace.deviceBase, capacity,
+                capacity * kEntryBytes);
+        return Status::OK();
+    }
+
     Status LoadHixlBatchSendLocked(aclrtFuncHandle& func)
     {
         if (hixlBin == nullptr) {
@@ -1173,22 +1249,15 @@ struct AICPUProvider::Impl {
                                  "AICPUProvider::Send: no AICPU thread available");
         }
 
-        void* deviceBatchesRaw = nullptr;
-        auto ret = aclrtMalloc(&deviceBatchesRaw, batches.size() * sizeof(UcmHixlSendIoBatch),
-                               ACL_MEM_MALLOC_NORMAL_ONLY);
-        if (ret != ACL_SUCCESS) { return AclError("aclrtMalloc HIXL batch entries", ret); }
-        DeviceAllocation deviceBatches(deviceBatchesRaw);
+        status = EnsureMappedBatchWorkspaceLocked(batches.size());
+        if (!status.ok()) { return status; }
 
-        void* deviceStatusRaw = nullptr;
-        ret = aclrtMalloc(&deviceStatusRaw, hixlStatuses.size() * sizeof(std::uint32_t),
-                          ACL_MEM_MALLOC_NORMAL_ONLY);
-        if (ret != ACL_SUCCESS) { return AclError("aclrtMalloc HIXL status array", ret); }
-        DeviceAllocation deviceStatus(deviceStatusRaw);
-
-        ret = aclrtMemcpy(deviceBatches.ptr, batches.size() * sizeof(UcmHixlSendIoBatch),
-                          batches.data(), batches.size() * sizeof(UcmHixlSendIoBatch),
-                          ACL_MEMCPY_HOST_TO_DEVICE);
-        if (ret != ACL_SUCCESS) { return AclError("aclrtMemcpy HIXL batch entries", ret); }
+        std::memcpy(mappedBatchWorkspace.HostBatches(), batches.data(),
+                    batches.size() * sizeof(UcmHixlSendIoBatch));
+        std::fill_n(mappedBatchWorkspace.HostStatuses(), hixlStatuses.size(), 1U);
+        // Host and AICPU use paired virtual addresses for one mapped allocation. Stream
+        // synchronization below completes device writes before Host reads the statuses.
+        std::atomic_thread_fence(std::memory_order_release);
 
         aclrtFuncHandle func = nullptr;
         status = LoadHixlBatchSendLocked(func);
@@ -1196,9 +1265,9 @@ struct AICPUProvider::Impl {
 
         UcmHixlBatchSendParam param{};
         param.thread = thread;
-        param.io_batches = static_cast<UcmHixlSendIoBatch*>(deviceBatches.ptr);
+        param.io_batches = mappedBatchWorkspace.DeviceBatches();
         param.batch_size = static_cast<std::uint64_t>(batches.size());
-        param.status_array = static_cast<std::uint32_t*>(deviceStatus.ptr);
+        param.status_array = mappedBatchWorkspace.DeviceStatuses();
         param.timeout_ms = sendTimeoutMs;
         param.stats = nullptr;
         // Staged Hcomm channels use USER_CTL sender CQs. The paired HixlBatchSend
@@ -1207,7 +1276,7 @@ struct AICPUProvider::Impl {
 
         aclrtArgsHandle args = nullptr;
         aclrtParamHandle paramHandle = nullptr;
-        ret = aclrtKernelArgsInit(func, &args);
+        auto ret = aclrtKernelArgsInit(func, &args);
         if (ret != ACL_SUCCESS) { return AclError("aclrtKernelArgsInit HixlBatchSend", ret); }
         ret = aclrtKernelArgsAppend(args, &param, sizeof(param), &paramHandle);
         if (ret != ACL_SUCCESS) { return AclError("aclrtKernelArgsAppend HixlBatchSend", ret); }
@@ -1227,10 +1296,12 @@ struct AICPUProvider::Impl {
             return AclError("aclrtSynchronizeStreamWithTimeout HixlBatchSend", ret);
         }
 
-        ret = aclrtMemcpy(hixlStatuses.data(), hixlStatuses.size() * sizeof(std::uint32_t),
-                          deviceStatus.ptr, hixlStatuses.size() * sizeof(std::uint32_t),
-                          ACL_MEMCPY_DEVICE_TO_HOST);
-        if (ret != ACL_SUCCESS) { return AclError("aclrtMemcpy HIXL status array", ret); }
+        std::atomic_thread_fence(std::memory_order_acquire);
+        auto* statuses = static_cast<volatile std::uint32_t*>(
+            mappedBatchWorkspace.HostStatuses());
+        for (std::size_t i = 0; i < hixlStatuses.size(); ++i) {
+            hixlStatuses[i] = statuses[i];
+        }
         return Status::OK();
     }
 
@@ -1264,6 +1335,7 @@ struct AICPUProvider::Impl {
     std::mutex hostMappingMu;
     std::unordered_map<std::uintptr_t, HostMapping> hostMappings;
 
+    MappedBatchWorkspace mappedBatchWorkspace;
     aclrtStream stream{nullptr};
     aclrtBinHandle hixlBin{nullptr};
 };
@@ -1273,7 +1345,8 @@ AICPUProvider::AICPUProvider(const TransportConfig& config)
 {
     KV_INFO("AICPU_TRANSPORT_PROVIDER_SIGNATURE={} pid={} asu_id={} logical_device_id={} "
             "device_source={} provider_context={} protocol=ubg channel_api={} "
-            "send_with_imm=1 complete_sender_cqe=1 publish_mrs=1 channel_name={}",
+            "send_with_imm=1 complete_sender_cqe=1 publish_mrs=1 mapped_batch_io=1 "
+            "channel_name={}",
             kProviderSignature, static_cast<long>(::getpid()), impl_->config.nodeId,
             impl_->localDeviceId, impl_->deviceSelectionSource,
             static_cast<const void*>(impl_->providerContext), kChannelApiMode, impl_->channelName);
