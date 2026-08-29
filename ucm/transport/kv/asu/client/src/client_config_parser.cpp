@@ -153,6 +153,11 @@ Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& confi
                     static_cast<std::uint32_t>(ParseConfigUint64(field.second));
                 continue;
             }
+            if (field.first == "maxInflightTasks" || field.first == "max_inflight_tasks") {
+                transportConfig.maxInflightTasks =
+                    static_cast<std::uint32_t>(ParseConfigUint64(field.second));
+                continue;
+            }
             transportConfig.attrs.emplace(field);
         }
 

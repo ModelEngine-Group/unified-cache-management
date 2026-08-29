@@ -15,6 +15,16 @@ add_executable(kv-test
     src/result_writer.cpp
 )
 
+target_compile_options(kv-test
+    PRIVATE
+        $<$<CONFIG:Release>:-O3>
+)
+
+target_link_options(kv-test
+    PRIVATE
+        $<$<CONFIG:Release>:-s>
+)
+
 target_include_directories(kv-test
     PRIVATE
         include

@@ -23,8 +23,7 @@
  * */
 #pragma once
 
-#include <condition_variable>
-#include <deque>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -34,6 +33,7 @@
 #include "asu_client/asu_client.h"
 #include "asu_transport/types.h"
 #include "client_task_manager.h"
+#include "template/spsc_ring_queue.h"
 #include "view_server.h"
 
 namespace UC::Router {
@@ -147,11 +147,10 @@ private:
 
     // Tracks aggregate client tasks returned through public TaskId values.
     ClientTaskManager taskManager_;
-    // Protects the client worker queue and shutdown acceptance boundary.
-    std::mutex taskQueueMu_;
-    std::condition_variable taskQueueCv_;
-    std::deque<ClientTaskPtr> taskQueue_;
-    bool stopWorker_{true};
+    // Serializes producers and protects the shutdown acceptance boundary.
+    std::mutex producerMu_;
+    UC::SpscRingQueue<ClientTaskPtr> taskQueue_;
+    std::atomic_bool stopWorker_{true};
     std::thread worker_;
     // Creates ASU transports; tests inject fake transports through this hook.
     TransportFactory transportFactory_;

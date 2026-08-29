@@ -1644,6 +1644,69 @@ TEST(AsuClientImplTest, Task_SubmitReturnsWhileWorkerDispatchIsBlocked)
     EXPECT_TRUE(client->Wait(taskId, 100, result).ok());
 }
 
+TEST(AsuClientImplTest, Task_SubmitReturnsResourceBusyWhenQueueIsFull)
+{
+    auto state = std::make_shared<TestState>();
+    state->blockStoreDispatch = true;
+    auto client = CreateAsuClient(MakeFactory(state));
+    auto config = MakeConfig({10});
+    config.transportConfigs.front().maxInflightTasks = 2;
+    ASSERT_TRUE(client->Init(config).ok());
+
+    std::vector<TaskId> taskIds;
+    TaskId taskId = kInvalidTaskId;
+    ASSERT_TRUE(client
+                    ->StoreAsync(
+                        {
+                            KVBuffer{MakeCacheKey("k05"), {}}
+    },
+                        taskId)
+                    .ok());
+    taskIds.emplace_back(taskId);
+
+    bool dispatchStarted = false;
+    {
+        std::unique_lock<std::mutex> lock{state->storeDispatchMu};
+        dispatchStarted = state->storeDispatchCv.wait_for(
+            lock, std::chrono::milliseconds(100), [&] { return state->storeDispatchStarted; });
+    }
+
+    std::vector<Status> queuedStatuses;
+    for (std::size_t index = 0; index < 2; ++index) {
+        taskId = kInvalidTaskId;
+        queuedStatuses.emplace_back(client->StoreAsync(
+            {
+                KVBuffer{MakeCacheKey("queued-" + std::to_string(index)), {}}
+        },
+            taskId));
+        if (queuedStatuses.back().ok()) { taskIds.emplace_back(taskId); }
+    }
+
+    taskId = 0;
+    const auto status = client->StoreAsync(
+        {
+            KVBuffer{MakeCacheKey("queue-full"), {}}
+    },
+        taskId);
+    EXPECT_EQ(status.code, StatusCode::RESOURCE_BUSY);
+    EXPECT_EQ(taskId, kInvalidTaskId);
+
+    {
+        std::lock_guard<std::mutex> lock{state->storeDispatchMu};
+        state->releaseStoreDispatch = true;
+    }
+    state->storeDispatchCv.notify_all();
+
+    ASSERT_TRUE(dispatchStarted);
+    ASSERT_EQ(queuedStatuses.size(), std::size_t{2});
+    EXPECT_TRUE(queuedStatuses[0].ok()) << queuedStatuses[0].message;
+    EXPECT_TRUE(queuedStatuses[1].ok()) << queuedStatuses[1].message;
+    for (const auto submittedTaskId : taskIds) {
+        TaskResult result;
+        EXPECT_TRUE(client->Wait(submittedTaskId, 100, result).ok());
+    }
+}
+
 TEST(AsuClientImplTest, Task_CheckUsesClientStateUntilCompletionCallback)
 {
     auto state = std::make_shared<TestState>();
