@@ -36,7 +36,7 @@ from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.outputs import KVConnectorOutput
 
-from ucm.integration.vllm.device import create_device
+from ucm.integration.vllm.device import create_device, get_current_device_id
 from ucm.integration.vllm.metrics import (
     UCM_HAS_PROM_METRICS,
     UCMConnectorStats,
@@ -1127,6 +1127,15 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.local_rank = (
             -1 if role == KVConnectorRole.SCHEDULER else get_world_group().local_rank
         )
+        self.device_id = (
+            -1 if role == KVConnectorRole.SCHEDULER else get_current_device_id()
+        )
+        if role != KVConnectorRole.SCHEDULER:
+            logger.info(
+                "UCM worker device mapping: local_rank=%s, device_id=%s",
+                self.local_rank,
+                self.device_id,
+            )
         self.tp_rank = self._vllm_config.parallel_config.rank
         self.block_size = self._vllm_config.cache_config.block_size
         self.is_mla = self._vllm_config.model_config.is_deepseek_mla
@@ -1156,8 +1165,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
         else:
             raise RuntimeError("Unsupported device platform for UCMDirectConnector.")
 
-        if self.local_rank >= 0:
-            self.device = torch_dev.device(f"{dev_name}:{self.local_rank}")
+        if self.device_id >= 0:
+            self.device = torch_dev.device(f"{dev_name}:{self.device_id}")
 
         self.store: UcmKVStoreBaseV1
         self.rope_store: Optional[UcmKVStoreBaseV1] = None
@@ -1327,7 +1336,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["storage_backends"] = backends
         config["unique_id"] = f"{self.unique_id}"
         if self._role == KVConnectorRole.WORKER:
-            config["device_id"] = self.local_rank
+            config["device_id"] = self.device_id
             tensor_size_list = kv_cache_layout.tensor_size_list * self.blocks_per_chunk
             logical_shard_size = kv_cache_layout.shard_size * self.blocks_per_chunk
             logical_block_size = kv_cache_layout.block_size * self.blocks_per_chunk
@@ -1444,7 +1453,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         enable_affinity = _use_ucm_connector_cpu_affinity()
         worker_cores, store_cores = (
-            self.device.split_cores(self.local_rank)
+            self.device.split_cores(self.device_id)
             if enable_affinity
             else (None, None)
         )
@@ -1570,7 +1579,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             f"request_id: {request.request_id}, "
             f"total_blocks_num: {len(ucm_block_ids)}, "
             f"hit hbm: {hbm_hit_block_num * self.cp_world_size}, "
-            f"hit external: {external_hit_blocks * self.cp_world_size}"
+            f"hit external: {external_hit_blocks * self.cp_world_size}, "
             f"total tokens: {len(request.all_token_ids)}"
         )
 
