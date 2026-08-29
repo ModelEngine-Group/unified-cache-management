@@ -130,17 +130,12 @@ Status AsuClientImpl::Shutdown()
         initialized_ = false;
         waitTimeoutMs = config_.defaultWaitTimeoutMs;
     }
-    JoinBackgroundRefresh();
-
     {
         std::lock_guard<std::mutex> lock{producerMu_};
-        if (worker_.joinable()) {
-            taskQueue_.Push(ClientTaskPtr{});
-            worker_.join();
-        } else {
-            stopWorker_.store(true, std::memory_order_release);
-        }
+        stopWorker_.store(true, std::memory_order_release);
     }
+    JoinBackgroundRefresh();
+    if (worker_.joinable()) { worker_.join(); }
 
     std::shared_ptr<ViewSnapshot> snapshot;
     std::vector<std::shared_ptr<AsuTransport>> retiredTransports;
@@ -443,14 +438,14 @@ Status AsuClientImpl::SubmitAsync(AsuOpType opType, const std::vector<CacheKey>&
 
 void AsuClientImpl::WorkerLoop()
 {
-    taskQueue_.ConsumerLoop(stopWorker_, [this](ClientTaskPtr ctx) {
-        if (!ctx) {
-            stopWorker_.store(true, std::memory_order_release);
-            return;
-        }
+    auto processTask = [this](ClientTaskPtr ctx) {
         auto status = taskManager_.Process(ctx);
         if (IsRefreshNeeded(status)) { RequestBackgroundRefresh(); }
-    });
+    };
+    taskQueue_.ConsumerLoop(stopWorker_, processTask);
+
+    ClientTaskPtr ctx;
+    while (taskQueue_.TryPop(ctx)) { processTask(std::move(ctx)); }
 }
 
 Status AsuClientImpl::UnregisterRegions(const std::vector<MRHandle>& handles)

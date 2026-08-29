@@ -673,6 +673,54 @@ TEST(AsuClientImplTest, Lifecycle_ShutdownClearsTasksAndRejectsFutureOperations)
     EXPECT_TRUE(client->Check(taskId));
 }
 
+TEST(AsuClientImplTest, Lifecycle_ShutdownDrainsFullTaskQueue)
+{
+    auto state = std::make_shared<TestState>();
+    state->blockStoreDispatch = true;
+    auto client = CreateAsuClient(MakeFactory(state));
+    auto config = MakeConfig({10});
+    config.transportConfigs.front().maxInflightTasks = 2;
+    ASSERT_TRUE(client->Init(config).ok());
+
+    TaskId taskId = kInvalidTaskId;
+    ASSERT_TRUE(client
+                    ->StoreAsync(
+                        {
+                            KVBuffer{MakeCacheKey("active"), {}}
+    },
+                        taskId)
+                    .ok());
+
+    {
+        std::unique_lock<std::mutex> lock{state->storeDispatchMu};
+        EXPECT_TRUE(state->storeDispatchCv.wait_for(lock, std::chrono::milliseconds(100),
+                                                    [&] { return state->storeDispatchStarted; }));
+    }
+
+    for (std::size_t index = 0; index < 2; ++index) {
+        EXPECT_TRUE(client
+                        ->StoreAsync(
+                            {
+                                KVBuffer{MakeCacheKey("queued-" + std::to_string(index)), {}}
+        },
+                            taskId)
+                        .ok());
+    }
+
+    auto shutdown = std::async(std::launch::async, [&] { return client->Shutdown(); });
+    EXPECT_EQ(shutdown.wait_for(std::chrono::milliseconds(20)), std::future_status::timeout);
+
+    {
+        std::lock_guard<std::mutex> lock{state->storeDispatchMu};
+        state->releaseStoreDispatch = true;
+    }
+    state->storeDispatchCv.notify_all();
+
+    ASSERT_EQ(shutdown.wait_for(std::chrono::milliseconds(200)), std::future_status::ready);
+    EXPECT_TRUE(shutdown.get().ok());
+    EXPECT_EQ(state->storeCalls.size(), std::size_t{3});
+}
+
 TEST(AsuClientImplTest, Input_EmptyQueryReturnsEmptyResult)
 {
     auto state = std::make_shared<TestState>();
