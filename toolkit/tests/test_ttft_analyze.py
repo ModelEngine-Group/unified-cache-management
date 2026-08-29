@@ -43,9 +43,7 @@ class KvSizeTest(unittest.TestCase):
         self.assertEqual(kv_size.kv_cache_bytes(arch, 2048), expected)
 
     def test_dsa_cache_bytes(self):
-        arch = make_arch(
-            kv_lora_rank=512, qk_rope_head_dim=64, index_head_dim=128
-        )
+        arch = make_arch(kv_lora_rank=512, qk_rope_head_dim=64, index_head_dim=128)
         expected = 48 * 2048 * (512 + 64 + 128) * 2
         self.assertEqual(kv_size.kv_cache_bytes(arch, 2048), expected)
 
@@ -59,9 +57,7 @@ class KvSizeTest(unittest.TestCase):
         )
         self.assertEqual(
             kv_size.detect_architecture(
-                make_arch(
-                    kv_lora_rank=512, qk_rope_head_dim=64, index_head_dim=128
-                )
+                make_arch(kv_lora_rank=512, qk_rope_head_dim=64, index_head_dim=128)
             ),
             "dsa",
         )
@@ -69,9 +65,7 @@ class KvSizeTest(unittest.TestCase):
     def test_per_card_gqa_shards_by_tp(self):
         arch = make_arch()
         total = kv_size.kv_cache_bytes(arch, 2048)
-        self.assertAlmostEqual(
-            kv_size.per_card_cache_bytes(arch, 2048, 8), total / 8
-        )
+        self.assertAlmostEqual(kv_size.per_card_cache_bytes(arch, 2048, 8), total / 8)
 
     def test_per_card_mla_not_sharded(self):
         arch = make_arch(kv_lora_rank=512, qk_rope_head_dim=64)

@@ -143,7 +143,14 @@ def _render(
     print(f"h2d-bw      {args.h2d_bw:.3f} GB/s (per-card)")
     print()
 
-    headers = ["mode", "TTFT(ms)", "storage-read(ms)", "H2D(ms)", "compute(ms)", "bottleneck"]
+    headers = [
+        "mode",
+        "TTFT(ms)",
+        "storage-read(ms)",
+        "H2D(ms)",
+        "compute(ms)",
+        "bottleneck",
+    ]
     aligns = ["<", ">", ">", ">", ">", "<"]
     rows = [
         [
@@ -161,9 +168,7 @@ def _render(
 
     print(f"vs Full Prefill ({args.ttft_prefill:.1f} ms):")
     for mode, result in (("layered", layered), ("full", full)):
-        print(
-            f"  {mode:<9} {_vs_prefill_text(result.ttft_ucm_ms, args.ttft_prefill)}"
-        )
+        print(f"  {mode:<9} {_vs_prefill_text(result.ttft_ucm_ms, args.ttft_prefill)}")
     print(f"vs Full HBM ({args.ttft_hbm:.1f} ms):")
     for mode, result in (("layered", layered), ("full", full)):
         print(f"  {mode:<9} {_vs_hbm_text(result.ttft_ucm_ms, args.ttft_hbm)}")

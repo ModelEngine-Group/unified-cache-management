@@ -116,8 +116,10 @@ def kv_cache_bytes(arch: ModelArchitecture, input_len: int) -> int:
     arch_type = detect_architecture(arch)
 
     if arch_type == "dsa":
-        elements = layers * tokens * (
-            arch.kv_lora_rank + arch.qk_rope_head_dim + arch.index_head_dim
+        elements = (
+            layers
+            * tokens
+            * (arch.kv_lora_rank + arch.qk_rope_head_dim + arch.index_head_dim)
         )
     elif arch_type == "mla":
         elements = layers * tokens * (arch.kv_lora_rank + arch.qk_rope_head_dim)
@@ -137,4 +139,3 @@ def per_card_cache_bytes(arch: ModelArchitecture, input_len: int, tp: int) -> fl
     if detect_architecture(arch) == "gqa":
         return total / tp
     return float(total)
-
