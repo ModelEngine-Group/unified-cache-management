@@ -104,6 +104,7 @@ write_fake_backend_config() {
         echo "bench.io_size=4096"
         echo "bench.concurrency=1"
         echo "bench.duration_sec=1"
+        echo "bench.io_count=0"
         echo "bench.warmup_sec=0"
         echo "bench.read_ratio=50"
         echo "bench.write_ratio=50"

@@ -363,6 +363,17 @@ Status ArgParser::Parse(int argc, char** argv, CommandOptions& options) const
     }
     if (options.helpRequested && positionals.empty()) { return Status::Success(); }
 
+    auto status = SetCommand(positionals, options);
+    if (!status.Ok()) { return status; }
+
+    if (options.command == CommandType::BENCH && hasCount) {
+        if (options.count == 0) {
+            return Status::Error(kExitInvalidArgument, "bench --count must be greater than zero");
+        }
+        options.ioCount = options.count;
+        options.count = 0;
+    }
+
     const bool hasRangePart =
         !options.keyPrefix.empty() || options.keyStartSet || options.keyEndSet;
     if (hasRangePart && (options.keyPrefix.empty() || !options.keyStartSet || !options.keyEndSet)) {
@@ -382,9 +393,6 @@ Status ArgParser::Parse(int argc, char** argv, CommandOptions& options) const
                              "--key, --keys, --keys-file, --count, and prefix range are mutually "
                              "exclusive");
     }
-
-    auto status = SetCommand(positionals, options);
-    if (!status.Ok()) { return status; }
 
     if (options.helpRequested) { return Status::Success(); }
 

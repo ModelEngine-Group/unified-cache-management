@@ -53,4 +53,17 @@ if(BUILD_UNIT_TESTS)
     )
     target_link_libraries(kv-test-config.test PRIVATE gtest_main gtest)
     gtest_discover_tests(kv-test-config.test)
+
+    add_executable(kv-test-arg-parser.test
+        src/arg_parser.cpp
+        test/arg_parser_test.cpp
+    )
+    target_include_directories(kv-test-arg-parser.test
+        PRIVATE
+            include
+            ../asu/client/include
+            ../asu/trans/include
+    )
+    target_link_libraries(kv-test-arg-parser.test PRIVATE gtest_main gtest)
+    gtest_discover_tests(kv-test-arg-parser.test)
 endif()

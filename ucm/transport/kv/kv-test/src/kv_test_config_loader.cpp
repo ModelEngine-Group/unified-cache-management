@@ -211,6 +211,7 @@ Status KvTestConfigLoader::Load(const std::string& configPath, KvTestConfig& con
         GetUint64Any(values, {"bench.io_size"}, config.bench.ioSize);
         GetUint32Any(values, {"bench.concurrency"}, config.bench.concurrency);
         GetUint64Any(values, {"bench.duration_sec"}, config.bench.durationSec);
+        GetUint64Any(values, {"bench.io_count"}, config.bench.ioCount);
         GetUint64Any(values, {"bench.warmup_sec"}, config.bench.warmupSec);
         GetUint32Any(values, {"bench.read_ratio"}, config.bench.readRatio);
         GetUint32Any(values, {"bench.write_ratio"}, config.bench.writeRatio);
@@ -247,7 +248,11 @@ Status KvTestConfigLoader::MergeCommandOptions(const CommandOptions& options,
 
     if (options.benchOp != BenchOpType::UNKNOWN) { config.bench.op = options.benchOp; }
     if (options.concurrency != 0) { config.bench.concurrency = options.concurrency; }
-    if (options.durationSec != 0) { config.bench.durationSec = options.durationSec; }
+    if (options.durationSec != 0) {
+        config.bench.durationSec = options.durationSec;
+        config.bench.ioCount = 0;
+    }
+    if (options.ioCount != 0) { config.bench.ioCount = options.ioCount; }
     if (options.warmupSec != 0) { config.bench.warmupSec = options.warmupSec; }
     if (options.readRatio != 0) { config.bench.readRatio = options.readRatio; }
     if (options.writeRatio != 0) { config.bench.writeRatio = options.writeRatio; }
