@@ -753,9 +753,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
         enable_affinity = _use_ucm_connector_cpu_affinity()
         worker_cores, store_cores = (
-            self.device.split_cores(self.device_id)
-            if enable_affinity
-            else (None, None)
+            self.device.split_cores(self.device_id) if enable_affinity else (None, None)
         )
 
         for group_id, group_spec in enumerate(self._kv_cache_config.kv_cache_groups):
