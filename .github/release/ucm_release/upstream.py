@@ -188,20 +188,35 @@ def _repository_tags(
 
 def _version_window(
     product: Mapping[str, object],
-) -> tuple[Version, Version | None]:
+) -> tuple[Version | None, Version | None]:
     context = f"release product {_string(product, 'id', 'release product')}"
     try:
-        minimum = Version(_string(product, "minimum_version", context))
+        raw_minimum = product.get("minimum_version")
+        minimum = (
+            Version(_string(product, "minimum_version", context))
+            if raw_minimum is not None
+            else None
+        )
         raw_maximum = product.get("maximum_version")
-        maximum = Version(str(raw_maximum)) if raw_maximum is not None else None
+        maximum = (
+            Version(_string(product, "maximum_version", context))
+            if raw_maximum is not None
+            else None
+        )
     except InvalidVersion as error:
         raise ValueError(f"{context}: version window is invalid") from error
     for name, value in (("minimum_version", minimum), ("maximum_version", maximum)):
         if value is not None and (value.local is not None or value.dev is not None):
             raise ValueError(f"{context}: {name} must be a formal version")
-    if maximum is not None and maximum < minimum:
+    if minimum is not None and maximum is not None and maximum < minimum:
         raise ValueError(f"{context}: maximum_version must be >= minimum_version")
     return minimum, maximum
+
+
+def _minor_window_size(value: object, context: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError(f"{context}: must be an integer >= 1")
+    return value
 
 
 def _minor_limit(value: object, context: str) -> int:
@@ -260,30 +275,75 @@ def _parsed_runtime_tag(product_id: str, tag: str) -> dict[str, object] | None:
     }
 
 
+def _runtime_variant(product_id: str, parsed: Mapping[str, object]) -> str:
+    tokens = set(parsed["tokens"])
+    if product_id == "vllm":
+        return "default"
+    if product_id == "vllm-ascend":
+        return next(
+            (token for token in ("310p", "a3", "a5") if token in tokens),
+            "a2",
+        )
+    raise ValueError(f"unsupported runtime product {product_id!r}")
+
+
 def _select_runtime_tags(
     product: Mapping[str, object],
     tags: Sequence[str],
     *,
+    excluded_variants: Sequence[str] = (),
     max_minor_versions: int = -1,
 ) -> list[dict[str, str]]:
-    """Select one published version per major/minor and keep its real variants."""
+    """Select recent minor lines, then one published version and its variants."""
 
     product_id = _string(product, "id", "release product")
     if product.get("channel_policy") != "latest-stable-or-rc-or-nightly-per-minor":
         raise ValueError(f"{product_id}: unsupported channel policy")
-    minor_limit = _minor_limit(max_minor_versions, f"{product_id} max_minor_versions")
+    window_size = _minor_window_size(
+        product.get("recent_minor_versions"),
+        f"{product_id} recent_minor_versions",
+    )
+    minor_limit = _minor_limit(
+        max_minor_versions,
+        f"{product_id} max_minor_versions",
+    )
     minimum, maximum = _version_window(product)
     parsed = [
         item
         for tag in sorted(set(tags))
         if (item := _parsed_runtime_tag(product_id, str(tag))) is not None
-        and item["version"] >= minimum
-        and (maximum is None or item["version"] <= maximum)
     ]
+    selectable = [
+        item
+        for item in parsed
+        if _runtime_variant(product_id, item) not in excluded_variants
+    ]
+    latest_minor_window: tuple[int, int, int] | None = None
+    if selectable:
+        latest_version = max(item["version"] for item in selectable)
+        assert isinstance(latest_version, Version)
+        latest_major, latest_minor = latest_version.major, latest_version.minor
+        latest_minor_window = (
+            latest_major,
+            max(0, latest_minor - window_size + 1),
+            latest_minor,
+        )
+
     by_minor: dict[tuple[int, int], list[dict[str, object]]] = {}
-    for item in parsed:
+    for item in selectable:
         version = item["version"]
         assert isinstance(version, Version)
+        if minimum is not None and version < minimum:
+            continue
+        if maximum is not None and version > maximum:
+            continue
+        if latest_minor_window is not None:
+            latest_major, earliest_minor, latest_minor = latest_minor_window
+            if not (
+                version.major == latest_major
+                and earliest_minor <= version.minor <= latest_minor
+            ):
+                continue
         by_minor.setdefault((version.major, version.minor), []).append(item)
 
     selected: list[dict[str, str]] = []
@@ -356,35 +416,32 @@ def resolve_runtime_candidates(
     for index, raw_product in enumerate(products):
         product = _mapping(raw_product, f"release products[{index}]")
         product_id = _string(product, "id", f"release products[{index}]")
+        if pr_default and product_id != "vllm-ascend":
+            continue
         repository = _string(product, "runtime_repository", product_id)
+        excluded = excluded_by_product.get(product_id, [])
+        if not isinstance(excluded, list) or not all(
+            isinstance(item, str) for item in excluded
+        ):
+            raise ValueError(f"{product_id}: excluded variants must be a list")
         selected = _select_runtime_tags(
             product,
             _repository_tags(
                 repository, tag_fixture=tag_fixture, tag_loader=tag_loader
             ),
+            excluded_variants=excluded,
             max_minor_versions=max_minor_versions,
         )
         if not selected:
             raise ValueError(
-                f"{product_id}: no Runtime Registry tags satisfy the version window"
+                f"{product_id}: no Runtime Registry tags satisfy the selection windows"
             )
+        product_runtime_count = len(runtimes)
         for item in selected:
             tag = item["runtime_tag"]
             parsed = _parsed_runtime_tag(product_id, tag)
             assert parsed is not None
             tokens = set(parsed["tokens"])
-            variant = (
-                next(token for token in ("310p", "a3", "a5") if token in tokens)
-                if tokens & {"310p", "a3", "a5"}
-                else "a2" if product_id == "vllm-ascend" else "default"
-            )
-            excluded = excluded_by_product.get(product_id, [])
-            if not isinstance(excluded, list) or not all(
-                isinstance(item, str) for item in excluded
-            ):
-                raise ValueError(f"{product_id}: excluded variants must be a list")
-            if variant in excluded:
-                continue
             if product_id == "vllm-ascend" and "a5" in tokens:
                 backend = "cann-a5"
                 backend_policy = _mapping(backends.get(backend), f"backend {backend}")
@@ -407,6 +464,10 @@ def resolve_runtime_candidates(
                     "version": item["version"],
                     "channel": item["channel"],
                 }
+            )
+        if len(runtimes) == product_runtime_count:
+            raise ValueError(
+                f"{product_id}: no publishable Runtime Registry tags satisfy policy"
             )
     if pr_default:
         eligible = []
@@ -701,12 +762,16 @@ def _raw_builder_candidates(
 
     ascend = _mapping(families.get("ascend"), "Ascend Builder family")
     ascend_repositories = _source_repositories(ascend, "Ascend Builder family")
+    ascend_manylinux = _string(ascend, "manylinux", "Ascend Builder family")
+    _manylinux_floor(ascend_manylinux)
     seen_ascend: set[tuple[str, str]] = set()
     variant_by_token = {"910b": "a2", "a3": "a3", "950": "a5"}
     for architecture, repository in ascend_repositories.items():
         for tag in tags(repository):
             match = _ASCEND_BUILDER_TAG.fullmatch(tag)
             if match is None or match.group("variant") == "310p":
+                continue
+            if match.group("manylinux") != ascend_manylinux:
                 continue
             runtime = f"cann-{match.group('runtime')}"
             variant = variant_by_token[match.group("variant")]

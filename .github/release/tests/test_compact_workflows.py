@@ -94,6 +94,11 @@ def test_release_core_is_input_driven_and_uses_crane_before_plan() -> None:
     plan_run = next(
         step["run"] for step in jobs["plan"]["steps"] if step.get("id") == "plan"
     )
+    profile_run = next(
+        step["run"]
+        for step in jobs["open-release"]["steps"]
+        if step.get("id") == "profile"
+    )
     assert "--release-type" in candidate_text
     assert "inputs.release_type" in candidate_text
     assert "--release-type" in resolve_text
@@ -102,6 +107,23 @@ def test_release_core_is_input_driven_and_uses_crane_before_plan() -> None:
     assert "--release-type" in plan_text
     assert "inputs.release_type" in plan_text
     assert ".release_type == $type" in plan_run
+    assert "canonical non-local version" in profile_run
+    assert "if version <" not in profile_run
+    assert "if version >" not in profile_run
+    assert '--tag "${RELEASE_TAG}" --classify' in profile_run
+    assert "refs/tags/${RELEASE_TAG}^{commit}" in profile_run
+    assert 'test "${head_sha}" = "${SOURCE_SHA}"' in profile_run
+    assert 'test "${tag_sha}" = "${SOURCE_SHA}"' in profile_run
+    for field in (
+        "git_tag",
+        "release_type",
+        "release_kind",
+        "version",
+        "chart_version",
+        "image_version",
+        "is_prerelease",
+    ):
+        assert f".{field}" in profile_run
     assert "image_index_matrix" in plan_text
     assert "'{include:[.families[]" in plan_text
 
@@ -116,10 +138,13 @@ def test_release_workflow_has_staged_publication_jobs() -> None:
     jobs = _load("release-ucm.yml")["jobs"]
     publish_jobs = [
         "open-release",
+        "build-meta",
+        "validate-wheel-runtimes",
         "publish-release-artifacts",
         "publish-image-members",
         "publish-image-indexes",
         "publish-pypi",
+        "verify-pypi-installs",
         "publish-chart-oci",
         "update-release-images",
     ]
@@ -128,6 +153,8 @@ def test_release_workflow_has_staged_publication_jobs() -> None:
         "plan",
         "open-release",
         "build-wheels",
+        "build-meta",
+        "validate-wheel-runtimes",
         "package-chart",
     }
     assert set(jobs["publish-image-members"]["needs"]) == {
@@ -141,12 +168,36 @@ def test_release_workflow_has_staged_publication_jobs() -> None:
     )
     assert set(jobs["build-images"]["needs"]) == {
         "plan",
-        "build-wheels",
         "publish-release-artifacts",
     }
     assert jobs["plan"]["outputs"]["publish_images"] == (
         "${{ steps.plan.outputs.publish_images }}"
     )
+    assert jobs["plan"]["outputs"]["publish_pypi"] == (
+        "${{ steps.plan.outputs.publish_pypi }}"
+    )
+    assert jobs["plan"]["outputs"]["pypi_disposition"] == (
+        "${{ steps.plan.outputs.pypi_disposition }}"
+    )
+    assert jobs["plan"]["outputs"]["dockerhub_disposition"] == (
+        "${{ steps.plan.outputs.dockerhub_disposition }}"
+    )
+    report_decisions = next(
+        step
+        for step in jobs["plan"]["steps"]
+        if step.get("name") == "Report shared publication decisions"
+    )["run"]
+    assert ".publish.pypi.requested" in report_decisions
+    assert ".publish.pypi.disposition" in report_decisions
+    assert ".publish.dockerhub.requested" in report_decisions
+    assert ".publish.dockerhub.disposition" in report_decisions
+    assert "jq -r '.publish.pypi.requested'" in report_decisions
+    assert "jq -r '.publish.pypi.enabled'" in report_decisions
+    assert "jq -r '.publish.dockerhub.requested'" in report_decisions
+    assert "jq -r '.publish.dockerhub.enabled'" in report_decisions
+    assert "jq -er '.publish.pypi.requested'" not in report_decisions
+    assert "jq -er '.publish.dockerhub.requested'" not in report_decisions
+    assert "GITHUB_STEP_SUMMARY" in report_decisions
     assert "needs.plan.outputs.publish_images == 'true'" in jobs["build-images"]["if"]
     assert "publish-release-artifacts.result == 'success'" in jobs["build-images"]["if"]
     assert set(jobs["publish-image-indexes"]["needs"]) == {
@@ -156,6 +207,16 @@ def test_release_workflow_has_staged_publication_jobs() -> None:
     assert set(jobs["publish-pypi"]["needs"]) == {
         "plan",
         "publish-release-artifacts",
+    }
+    assert jobs["publish-pypi"]["if"] == (
+        "${{ needs.plan.outputs.publish_pypi == 'true' }}"
+    )
+    assert jobs["publish-pypi"]["name"] == (
+        "PyPI · ${{ needs.plan.outputs.pypi_disposition }}"
+    )
+    assert set(jobs["verify-pypi-installs"]["needs"]) == {
+        "plan",
+        "publish-pypi",
     }
     assert set(jobs["publish-chart-oci"]["needs"]) == {
         "plan",
@@ -169,6 +230,7 @@ def test_release_workflow_has_staged_publication_jobs() -> None:
         "publish-image-members",
         "publish-image-indexes",
         "publish-pypi",
+        "verify-pypi-installs",
         "publish-chart-oci",
     }
     for name in (
@@ -207,6 +269,8 @@ def test_nightly_schedule_creates_or_reuses_a_tag_then_calls_core_in_same_run() 
     assert "TZ=Asia/Shanghai date +%Y%m%d" in run
     assert "--next-nightly" in run
     assert 'git rev-list -n 1 "${candidate}"' in run
+    assert ".name == $tag and .draft == true" in run
+    assert 'startswith("untagged-")' in run
     assert 'any(.name == "release-manifest.json")' in run
     assert 'gh api --method POST "/repos/${GH_REPO}/git/refs"' in run
     assert '-f "ref=refs/tags/${selected_tag}"' in run
@@ -237,7 +301,7 @@ def test_artifact_stage_keeps_release_state_internal() -> None:
     jobs = _load("release-ucm.yml")["jobs"]
     text = yaml.safe_dump(jobs["publish-release-artifacts"])
     assert jobs["publish-release-artifacts"]["name"] == (
-        "Release · Publish Wheels, Chart, and Config"
+        "Release · Publish backend/meta Wheels, Chart, and Config"
     )
     assert "release.py artifacts" in text
     assert "release-state.json" in text
@@ -253,21 +317,24 @@ def test_artifact_stage_keeps_release_state_internal() -> None:
     upload = next(
         step
         for step in jobs["publish-release-artifacts"]["steps"]
-        if step.get("name") == "Upload Wheels, Chart, and Config"
+        if step.get("name") == "Upload backend/meta Wheels, Chart, and Config"
     )
-    upload_lines = upload["run"].splitlines()
-    upload_index = upload_lines.index('gh release upload "${tag}" --clobber \\')
-    assert upload_lines[upload_index : upload_index + 3] == [
-        'gh release upload "${tag}" --clobber \\',
-        "  input/wheels/*/*.whl input/chart/*.tgz \\",
-        "  examples/ucm_config_example.yaml",
-    ]
+    assert 'gh release upload "${tag}" --clobber "${artifacts[@]}"' in upload["run"]
+    assert ".publish.pypi.enabled" not in upload["run"]
+    assert "meta_artifacts=(input/meta/*.whl)" in upload["run"]
     assert 'index("ucm_config_example.yaml") != null' in upload["run"]
     assert "SHA256SUMS" not in upload["run"]
     assert "release-manifest.json" not in upload["run"]
     assert "release.py notes" in upload["run"]
     assert 'gh api "/repos/${GH_REPO}/releases/${release_id}"' in upload["run"]
     assert '--repository "${GH_REPO}"' in upload["run"]
+    metadata_check = next(
+        step
+        for step in jobs["publish-release-artifacts"]["steps"]
+        if step.get("name") == "Validate all PyPI package metadata without publishing"
+    )
+    assert "python -m twine check" in metadata_check["run"]
+    assert "twine==6.1.0" in text
     failure_step = jobs["publish-release-artifacts"]["steps"][-1]
     assert failure_step["if"] == (
         "${{ failure() && needs.open-release.outputs.enabled == 'true' }}"
@@ -306,6 +373,10 @@ def test_runtime_images_include_the_config_example_at_the_workspace_root() -> No
         )
         assert "sha256sum examples/ucm_config_example.yaml" in verify["run"]
         assert "EXPECTED_UCM_CONFIG_SHA256" in verify["run"]
+        assert "DEFERRED_EXTERNAL_LIBRARIES" in verify["run"]
+        assert "EXPECTED_RUNTIME_REQUIREMENTS" in verify["run"]
+        assert '.dependencies | select(type == "array")' in verify["run"]
+        assert ".deferred_external_libraries" in verify["run"]
         assert "hashlib.sha256(path.read_bytes())" in verify["run"]
         assert image_path in verify["run"]
 
@@ -333,6 +404,14 @@ def test_schema_v6_manifest_is_uploaded_only_after_complete_and_read_back() -> N
     assert "release-state.json" in update["run"]
     assert "release-manifest.json" not in update["run"]
     assert "gh release upload" not in update["run"]
+    receipt_index, receipt = next(
+        (index, step)
+        for index, step in enumerate(steps)
+        if step.get("id") == "publish-pypi-receipt"
+    )
+    assert receipt_index < update_index < complete_index
+    assert "pypi-receipt.json" in receipt["run"]
+    assert "cmp input/receipts/pypi-receipt.json" in receipt["run"]
     assert "release.status" in complete["run"]
     assert "release.py manifest" in manifest["run"]
     assert 'gh release upload "${tag}" --clobber out/release/release-manifest.json' in (
@@ -342,6 +421,15 @@ def test_schema_v6_manifest_is_uploaded_only_after_complete_and_read_back() -> N
     assert "Accept: application/octet-stream" in manifest["run"]
     assert "cmp out/release/release-manifest.json" in manifest["run"]
     assert "github_release_assets" in manifest["run"]
+    assert "--rawfile notes out/release/release-notes.md" in manifest["run"]
+    assert "out/release/readback/release-notes.md" in manifest["run"]
+    assert "cmp out/release/release-notes.md" in manifest["run"]
+    manifest_upload = manifest["run"].index("gh release upload")
+    assert (
+        manifest_upload
+        < manifest["run"].index('-f "tag_name=${tag}"', manifest_upload)
+        < manifest["run"].index("release.py notes")
+    )
     release_module = (
         ROOT / ".github" / "release" / "ucm_release" / "release.py"
     ).read_text(encoding="utf-8")
@@ -366,13 +454,16 @@ def test_handwritten_release_notes_start_with_status() -> None:
         jobs["report-planning-failure"]["steps"][0]["run"],
         jobs["publish-release-artifacts"]["steps"][0]["run"],
         jobs["publish-release-artifacts"]["steps"][-1]["run"],
-        jobs["update-release-images"]["steps"][-1]["run"],
     ]
 
     for run in runs:
         assert "printf '%s\\n' \\\n  \"Status:" in run
         assert '"# UCM ${tag}"' not in run
         assert "Checksums:" not in run
+
+    fallback = jobs["update-release-images"]["steps"][-1]["run"]
+    assert "release.py notes" in fallback
+    assert "Status: \\`publication-failed\\`" in fallback
 
 
 def test_opened_release_reports_pre_plan_failures() -> None:
@@ -387,6 +478,7 @@ def test_opened_release_reports_pre_plan_failures() -> None:
 def test_image_failure_notes_are_not_overwritten_by_the_fallback() -> None:
     steps = _load("release-ucm.yml")["jobs"]["update-release-images"]["steps"]
     update = next(step for step in steps if step.get("id") == "update-release")
+    manifest = next(step for step in steps if step.get("id") == "publish-manifest")
     require = next(
         step
         for step in steps
@@ -395,8 +487,9 @@ def test_image_failure_notes_are_not_overwritten_by_the_fallback() -> None:
     fallback = steps[-1]
 
     assert "release.status" not in update["run"]
-    assert "release.py notes" in update["run"]
-    assert 'gh api "/repos/${GH_REPO}/releases/${release_id}"' in update["run"]
+    assert "release.py notes" not in update["run"]
+    assert 'gh api "/repos/${GH_REPO}/releases/${release_id}"' in manifest["run"]
+    assert "release.py notes" in manifest["run"]
     assert "release.status" in require["run"]
     assert "steps.publish-manifest.outcome != 'success'" in fallback["if"]
     assert "publication-failed" in fallback["run"]
@@ -459,6 +552,11 @@ def test_tag_entry_only_classifies_four_release_types_and_calls_core() -> None:
 
 def test_common_core_opens_the_exact_tag_before_builds() -> None:
     jobs = _load("release-ucm.yml")["jobs"]
+    checkout = next(
+        step
+        for step in jobs["open-release"]["steps"]
+        if step.get("uses") == "actions/checkout@v4.2.2"
+    )
     open_text = yaml.safe_dump(jobs["open-release"])
     open_run = next(
         step["run"]
@@ -466,9 +564,24 @@ def test_common_core_opens_the_exact_tag_before_builds() -> None:
         if step.get("name") == "Create or reuse exact Tag Release"
     )
     assert "needs" not in jobs["open-release"]
+    assert checkout["with"] == {
+        "ref": "${{ inputs.source_sha }}",
+        "fetch-depth": 0,
+        "fetch-tags": True,
+        "persist-credentials": False,
+    }
     assert "--verify-tag" in open_text
     assert "--paginate --slurp" in open_text
-    assert "select(.tag_name == $tag)" in open_run
+    assert "(.tag_name == $tag) or" in open_run
+    assert ".name == $tag and .draft == true" in open_run
+    assert 'startswith("untagged-")' in open_run
+    assert 'index("release-manifest.json")' in open_run
+    assert "(.assets | length) == 0" in open_run
+    assert (
+        "artifacts-ready|artifacts-failed|images-failed|publication-failed" in open_run
+    )
+    assert "complete or is not owned by this pipeline" in open_run
+    assert open_run.count(".name == $tag") == 1
     assert "wait_for_release" in open_run
     assert "for attempt in $(seq 1 15)" in open_run
     assert "sleep 2" in open_run
@@ -485,9 +598,41 @@ def test_common_core_opens_the_exact_tag_before_builds() -> None:
     assert ".release_tag = $tag" not in plan_run
 
 
-def test_every_release_patch_preserves_the_exact_tag_name() -> None:
-    text = (WORKFLOWS / "release-ucm.yml").read_text(encoding="utf-8")
-    assert text.count("gh api --method PATCH") == text.count('-f "tag_name=${tag}"')
+def test_draft_body_patches_preserve_tag_after_asset_uploads() -> None:
+    jobs = _load("release-ucm.yml")["jobs"]
+    artifact_run = next(
+        step["run"]
+        for step in jobs["publish-release-artifacts"]["steps"]
+        if step.get("name") == "Upload backend/meta Wheels, Chart, and Config"
+    )
+    manifest_run = next(
+        step["run"]
+        for step in jobs["update-release-images"]["steps"]
+        if step.get("id") == "publish-manifest"
+    )
+
+    for run in (artifact_run, manifest_run):
+        assert "if jq -e '.draft == true'" in run
+        assert '-f "tag_name=${tag}"' in run
+        assert '-f "body=$(<out/release/release-notes.md)"' in run
+
+
+def test_artifact_upload_restores_tag_before_generating_asset_links() -> None:
+    steps = _load("release-ucm.yml")["jobs"]["publish-release-artifacts"]["steps"]
+    run = next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Upload backend/meta Wheels, Chart, and Config"
+    )
+
+    upload = run.index("gh release upload")
+    assert (
+        upload
+        < run.index('-f "tag_name=${tag}"', upload)
+        < run.index("release.py notes")
+    )
+    assert "out/release/artifact-readback/release-notes.md" in run
+    assert 'sub("\\\\n+$"; "")' in run
 
 
 def test_direct_member_receipt_barrier_and_index_matrix_are_unbounded() -> None:
@@ -592,7 +737,6 @@ def test_remote_writers_use_environment_and_minimum_permissions() -> None:
     for name in (
         "publish-image-members",
         "publish-image-indexes",
-        "publish-pypi",
         "publish-chart-oci",
     ):
         channel_job = yaml.safe_dump(jobs[name])
@@ -630,6 +774,34 @@ def test_publication_scope_and_repository_ownership_fail_closed_at_writers() -> 
     assert "fork-preview" in cleanup_job["environment"]
     assert "Authenticate to DockerHub when configured" in cleanup
     assert "modelengine-group/unified-cache-management" in cleanup.lower()
+
+
+def test_shared_channel_writers_use_only_effective_enabled_decisions() -> None:
+    jobs = _load("release-ucm.yml")["jobs"]
+    pypi = next(
+        step["run"]
+        for step in jobs["publish-pypi"]["steps"]
+        if step.get("name") == "Publish backend Wheels, then the meta Wheel"
+    )
+    dockerhub_index = next(
+        step["run"]
+        for step in jobs["publish-image-indexes"]["steps"]
+        if step.get("name") == "Publish multi-architecture index"
+    )
+    member = next(
+        step["run"]
+        for step in _load("_build-release-image.yml")["jobs"]["publish"]["steps"]
+        if step.get("name") == "Publish verified Profile members and record digests"
+    )
+
+    for script, channel in (
+        (pypi, "pypi"),
+        (dockerhub_index, "dockerhub"),
+        (member, "dockerhub"),
+    ):
+        assert f".publish.{channel}.enabled" in script
+        assert f".publish.{channel}.requested" not in script
+        assert f".publish.{channel}.disposition" not in script
 
 
 def test_builder_sync_consumes_selection_and_uses_digest_pinned_mirror_only() -> None:
@@ -709,12 +881,103 @@ def test_runtime_probe_is_one_shared_reusable_workflow() -> None:
 
 def test_wheel_build_records_auditwheel_result_manifest() -> None:
     text = (WORKFLOWS / "_build-wheel.yml").read_text(encoding="utf-8")
+    dockerfile = (
+        ROOT / ".github" / "release" / "docker" / "Dockerfile.wheel"
+    ).read_text(encoding="utf-8")
     assert '.builder.repository + "@" + .builder.digest' in text
-    assert "auditwheel==" in text
-    assert "python -m auditwheel -v show" in text
-    assert 'show "${wheel}" 2>&1' in text
+    requirements = (
+        ROOT / ".github" / "release" / "requirements" / "wheel-build.txt"
+    ).read_text(encoding="utf-8")
+    assert "auditwheel==6.7.0" in requirements
+    assert "ucm-python -m auditwheel -v repair" in dockerfile
+    assert "--only-plat" in dockerfile
+    assert "ucm-python -m auditwheel -v show" in dockerfile
+    assert "--strip" not in dockerfile
     assert "compact record-wheel-result" in text
     assert "out/wheel/wheel-result.json" in text
+
+
+def test_release_builds_reproducible_empty_meta_wheel_from_the_plan() -> None:
+    jobs = _load("release-ucm.yml")["jobs"]
+    job = jobs["build-meta"]
+    assert job["needs"] == "plan"
+    build = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Build and validate empty meta Wheel"
+    )
+    assert build["env"]["SOURCE_DATE_EPOCH"] == "315532800"
+    assert "compact \\\n  materialize-meta-source" in build["run"]
+    assert "record-meta-result" in build["run"]
+    assert "ucm-meta-run-${{ github.run_id }}" in yaml.safe_dump(job)
+
+
+def test_pypi_publication_is_backend_first_meta_last_and_read_back() -> None:
+    job = _load("release-ucm.yml")["jobs"]["publish-pypi"]
+    publish = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Publish backend Wheels, then the meta Wheel"
+    )["run"]
+    assert "pypi publish" in publish
+    assert '.release_type == "stable" or .release_type == "prerelease"' not in publish
+    assert "--wheel-root input/wheels --meta-root input/meta" in publish
+    assert "--output out/pypi/pypi-receipt.json" in publish
+    assert "--skip-existing" not in publish
+    adapter = (ROOT / ".github" / "release" / "ucm_release" / "pypi.py").read_text(
+        encoding="utf-8"
+    )
+    assert '"Cache-Control": "no-cache"' in adapter
+    assert adapter.index("for filename in missing_backends") < adapter.index(
+        "for filename in missing_meta"
+    )
+
+    job = _load("release-ucm.yml")["jobs"]["verify-pypi-installs"]
+    verify = job
+    assert "pypi_test_matrix" in str(verify["strategy"]["matrix"])
+    install = next(
+        step
+        for step in job["steps"]
+        if step.get("name")
+        == "Install one extra from public PyPI in a fresh environment"
+    )["run"]
+    assert "python3 -m venv" in install
+    assert '"uc-manager[${UCM_EXTRA}]==${UCM_VERSION}"' in install
+    assert "validate_wheel_runtime.py" in install
+    assert "DEFERRED_EXTERNAL_LIBRARIES" in install
+
+
+def test_exact_wheels_pass_runtime_validation_before_publication() -> None:
+    jobs = _load("release-ucm.yml")["jobs"]
+    validation = jobs["validate-wheel-runtimes"]
+    assert set(validation["needs"]) == {"plan", "build-wheels"}
+    assert validation["strategy"]["matrix"] == (
+        "${{ fromJSON(needs.plan.outputs.pypi_test_matrix) }}"
+    )
+    run = next(
+        step["run"]
+        for step in validation["steps"]
+        if step.get("name")
+        == "Install and validate the local Wheel in its matching Runtime"
+    )
+    assert "docker run --rm" in run
+    assert '-e UCM_WHEEL="/tmp/${wheel_name}"' in run
+    assert '"${UCM_WHEEL}"' in run
+    assert "validate_wheel_runtime.py" in run
+    assert "python3 -m venv" in run
+    assert "DEFERRED_EXTERNAL_LIBRARIES" in run
+    assert "EXPECTED_RUNTIME_REQUIREMENTS" in run
+    assert '.dependencies | select(type == "array")' in run
+    assert ".deferred_external_libraries" in run
+    assert 'if [[ "${PLATFORM_ARG}" == ascend* ]]' not in run
+    assert "python -m pip check" not in run
+    assert 're.search(r\\"[0-9]+' in run
+    assert "re.search(r'[0-9]+" not in run
+    assert "validate-wheel-runtimes" in jobs["publish-release-artifacts"]["needs"]
+    assert set(jobs["publish-pypi"]["needs"]) == {
+        "plan",
+        "publish-release-artifacts",
+    }
 
 
 def test_wheel_build_authenticates_to_ghcr_with_read_only_package_access() -> None:
@@ -1111,7 +1374,8 @@ def test_runtime_image_checks_wheel_glibc_floor_and_import() -> None:
     assert "EXPECTED_WHEEL_GLIBC_FLOOR" in run
     assert "ldd --version" in run
     assert "parse(sys.argv[1]) >= parse(sys.argv[2])" in run
-    assert 'python3 -c "import ucm"' in run
+    assert "python3 /tmp/validate_wheel_runtime.py" in run
+    assert ":/tmp/validate_wheel_runtime.py:ro" in run
     assert 'EXPECTED_OS_ID}" != linux' in run
     assert 'EXPECTED_OS_VERSION}" != unreported' in run
 
@@ -1120,7 +1384,8 @@ def test_runtime_image_checks_wheel_glibc_floor_and_import() -> None:
     ).read_text(encoding="utf-8")
     assert "python3 -m pip install" in dockerfile
     assert "--index-url https://pypi.org/simple" in dockerfile
-    assert "python3 -c 'import ucm'" in dockerfile
+    assert "validate_wheel_runtime.py" not in dockerfile
+    assert "python3 -c 'import ucm'" not in dockerfile
 
 
 def test_trusted_tag_image_publishes_directly_without_oci_artifact() -> None:

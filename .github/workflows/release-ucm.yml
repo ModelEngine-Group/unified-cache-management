@@ -62,13 +62,19 @@ jobs:
       GH_REPO: ${{ github.repository }}
       RELEASE_KIND: ${{ inputs.release_kind }}
       RELEASE_TYPE: ${{ inputs.release_type }}
+      RELEASE_VERSION: ${{ inputs.version }}
+      CHART_VERSION: ${{ inputs.chart_version }}
+      IMAGE_VERSION: ${{ inputs.image_version }}
       IS_PRERELEASE: ${{ inputs.is_prerelease }}
       RELEASE_TAG: ${{ inputs.git_tag }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
       PUBLICATION_SCOPE: ${{ inputs.publication_scope }}
     steps:
       - uses: actions/checkout@v4.2.2
         with:
           ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          fetch-tags: true
           persist-credentials: false
       - uses: actions/setup-python@v5.6.0
         with:
@@ -77,10 +83,39 @@ jobs:
           python -m pip install --disable-pip-version-check --no-cache-dir
           --only-binary=:all: PyYAML==6.0.2 packaging==24.2
       - id: profile
-        name: Resolve GitHub Release Profile switch
+        name: Bind exact Tag inputs and resolve Release Profile
         run: |
           set -euo pipefail
           test "${GH_REPO}" = "${GITHUB_REPOSITORY}"
+          [[ "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          head_sha="$(git rev-parse --verify 'HEAD^{commit}')"
+          tag_sha="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"
+          test "${head_sha}" = "${SOURCE_SHA}"
+          test "${tag_sha}" = "${SOURCE_SHA}"
+          classification="$(python scripts/materialize_version.py \
+            --tag "${RELEASE_TAG}" --classify)"
+          jq -e --arg tag "${RELEASE_TAG}" \
+            --arg type "${RELEASE_TYPE}" \
+            --arg kind "${RELEASE_KIND}" \
+            --arg version "${RELEASE_VERSION}" \
+            --arg chart_version "${CHART_VERSION}" \
+            --arg image_version "${IMAGE_VERSION}" \
+            --argjson prerelease "${IS_PRERELEASE}" \
+            '.git_tag == $tag and .release_type == $type and
+             .release_kind == $kind and .version == $version and
+             .chart_version == $chart_version and
+             .image_version == $image_version and
+             .is_prerelease == $prerelease' \
+            <<<"${classification}" >/dev/null
+          python - "${RELEASE_VERSION}" <<'PY'
+          import sys
+          from packaging.version import Version
+
+          raw_version = sys.argv[1]
+          version = Version(raw_version)
+          if str(version) != raw_version or version.local is not None:
+              raise SystemExit("the public package model requires a canonical non-local version")
+          PY
           resolved="$(PYTHONPATH=.github/release python -c \
             'import json, sys; from ucm_release import policy; print(json.dumps(policy.resolve(release_type=sys.argv[1])))' \
             "${RELEASE_TYPE}")"
@@ -108,7 +143,10 @@ jobs:
             gh api --paginate --slurp \
               "/repos/${GH_REPO}/releases?per_page=100" \
               | jq -ce --arg tag "${tag}" \
-                '[.[][] | select(.tag_name == $tag)]'
+                '[.[][] | select(
+                  (.tag_name == $tag) or
+                  (.name == $tag and .draft == true and
+                   ((.tag_name // "") | startswith("untagged-"))))]'
           }
           wait_for_release() {
             local releases count attempt
@@ -134,6 +172,19 @@ jobs:
           if [ "${count}" -gt 1 ]; then
             echo "Tag ${tag} resolves to ${count} Releases; refusing ambiguity" >&2
             exit 2
+          fi
+          if [ "${count}" -eq 1 ]; then
+            jq -e '
+              .[0] |
+              ([.assets[].name] | index("release-manifest.json")) == null and
+              ((.assets | length) == 0 or
+               ((.body // "") | test(
+                 "^Status: `(release-open|artifacts-ready|artifacts-failed|images-failed|publication-failed)`"
+               )))
+            ' <<<"${releases}" >/dev/null || {
+              echo "Existing Release is complete or is not owned by this pipeline" >&2
+              exit 2
+            }
           fi
           if [ "${count}" -eq 0 ]; then
             args=("${tag}" --verify-tag --title "${tag}" --notes-file "${notes}")
@@ -389,9 +440,13 @@ jobs:
       route: ${{ steps.plan.outputs.route }}
       release_kind: ${{ steps.plan.outputs.release_kind }}
       publish_images: ${{ steps.plan.outputs.publish_images }}
+      publish_pypi: ${{ steps.plan.outputs.publish_pypi }}
+      pypi_disposition: ${{ steps.plan.outputs.pypi_disposition }}
+      dockerhub_disposition: ${{ steps.plan.outputs.dockerhub_disposition }}
       plan_artifact: ${{ steps.plan.outputs.plan_artifact }}
       wheel_matrix: ${{ steps.plan.outputs.wheel_matrix }}
       image_matrix: ${{ steps.plan.outputs.image_matrix }}
+      pypi_test_matrix: ${{ steps.plan.outputs.pypi_test_matrix }}
       image_index_matrix: ${{ steps.plan.outputs.image_index_matrix }}
       has_image_indexes: ${{ steps.plan.outputs.has_image_indexes }}
     steps:
@@ -464,6 +519,11 @@ jobs:
           publish_images="$(jq -r \
             '(.publish.ghcr.enabled == true) or (.publish.dockerhub.enabled == true)' \
             out/plan/release-plan.json)"
+          publish_pypi="$(jq -r '.publish.pypi.enabled' out/plan/release-plan.json)"
+          pypi_disposition="$(jq -er '.publish.pypi.disposition' \
+            out/plan/release-plan.json)"
+          dockerhub_disposition="$(jq -er '.publish.dockerhub.disposition' \
+            out/plan/release-plan.json)"
           if [ "${publish_images}" = true ]; then
             has_image_indexes="$(jq -r '.include | length > 0' \
               <<<"${index_matrix}")"
@@ -474,12 +534,43 @@ jobs:
             echo "route=release"
             echo "release_kind=${RELEASE_KIND}"
             echo "publish_images=${publish_images}"
+            echo "publish_pypi=${publish_pypi}"
+            echo "pypi_disposition=${pypi_disposition}"
+            echo "dockerhub_disposition=${dockerhub_disposition}"
             echo "plan_artifact=${artifact}"
             echo "wheel_matrix=$(jq -c '.wheel_matrix' out/plan/release-plan.json)"
             echo "image_matrix=$(jq -c '.image_matrix' out/plan/release-plan.json)"
+            echo "pypi_test_matrix=$(jq -c '.pypi_test_matrix' out/plan/release-plan.json)"
             echo "image_index_matrix=${index_matrix}"
             echo "has_image_indexes=${has_image_indexes}"
           } >>"${GITHUB_OUTPUT}"
+      - name: Report shared publication decisions
+        run: |
+          set -euo pipefail
+          plan=out/plan/release-plan.json
+          scope="$(jq -er '.publication_scope' "${plan}")"
+          pypi_requested="$(jq -r '.publish.pypi.requested' "${plan}")"
+          pypi_enabled="$(jq -r '.publish.pypi.enabled' "${plan}")"
+          pypi_disposition="$(jq -er '.publish.pypi.disposition' "${plan}")"
+          dockerhub_requested="$(jq -r '.publish.dockerhub.requested' "${plan}")"
+          dockerhub_enabled="$(jq -r '.publish.dockerhub.enabled' "${plan}")"
+          dockerhub_disposition="$(jq -er '.publish.dockerhub.disposition' "${plan}")"
+          printf 'PyPI: requested=%s enabled=%s disposition=%s scope=%s\n' \
+            "${pypi_requested}" "${pypi_enabled}" "${pypi_disposition}" "${scope}"
+          printf 'Docker Hub: requested=%s enabled=%s disposition=%s scope=%s\n' \
+            "${dockerhub_requested}" "${dockerhub_enabled}" \
+            "${dockerhub_disposition}" "${scope}"
+          {
+            echo '### Shared publication decisions'
+            echo
+            echo '| Channel | Requested by Profile | Effective write | Decision |'
+            echo '| --- | --- | --- | --- |'
+            printf '| PyPI | %s | %s | %s |\n' \
+              "${pypi_requested}" "${pypi_enabled}" "${pypi_disposition}"
+            printf '| Docker Hub | %s | %s | %s |\n' \
+              "${dockerhub_requested}" "${dockerhub_enabled}" \
+              "${dockerhub_disposition}"
+          } >>"${GITHUB_STEP_SUMMARY}"
       - uses: actions/upload-artifact@v4.6.2
         with:
           name: ${{ steps.plan.outputs.plan_artifact }}
@@ -561,6 +652,124 @@ jobs:
       source_ref: ${{ inputs.source_sha }}
       retention_days: 90
 
+  build-meta:
+    name: Wheel · uc-manager meta package
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - run: >-
+          python -m pip install --disable-pip-version-check --no-cache-dir
+          --only-binary=:all: build==1.3.0 packaging==24.2 PyYAML==6.0.2
+          setuptools==75.8.2 wheel==0.45.1
+      - uses: ./.github/actions/download-artifact-retry
+        with:
+          name: ${{ needs.plan.outputs.plan_artifact }}
+          path: input/plan
+      - name: Build and validate empty meta Wheel
+        env:
+          SOURCE_DATE_EPOCH: "315532800"
+        run: |
+          set -euo pipefail
+          mkdir -p out/meta source/meta
+          PYTHONPATH=.github/release python -m ucm_release compact \
+            materialize-meta-source --plan input/plan/release-plan.json \
+            --output-dir source/meta >/dev/null
+          python -m build --no-isolation --wheel --outdir out/meta source/meta
+          test "$(find out/meta -maxdepth 1 -type f -name '*.whl' \
+            | wc -l | tr -d ' ')" = 1
+          wheel="$(find out/meta -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          PYTHONPATH=.github/release python -m ucm_release compact \
+            record-meta-result --plan input/plan/release-plan.json \
+            --wheel "${wheel}" --output out/meta/meta-result.json >/dev/null
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ucm-meta-run-${{ github.run_id }}
+          path: out/meta/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 90
+
+  validate-wheel-runtimes:
+    name: Validate Wheel Runtime · ${{ matrix.label }}
+    needs: [plan, build-wheels]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.pypi_test_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./.github/actions/download-artifact-retry
+        with:
+          name: ucm-wheel-${{ matrix.id }}-run-${{ github.run_id }}
+          path: input/wheel
+      - name: Install and validate the local Wheel in its matching Runtime
+        env:
+          RUNTIME_IMAGE: ${{ matrix.runtime_image }}
+          BACKEND_DISTRIBUTION: ${{ matrix.distribution }}
+          PLATFORM_ARG: ${{ matrix.platform_arg }}
+        run: |
+          set -euo pipefail
+          result=input/wheel/wheel-result.json
+          wheel="$(find input/wheel -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "${wheel}"
+          test "$(jq -r '.distribution' "${result}")" = "${BACKEND_DISTRIBUTION}"
+          wheel="$(realpath "${wheel}")"
+          wheel_name="$(basename "${wheel}")"
+          external_libraries="$(jq -c '.external_libraries' "${result}")"
+          deferred_external_libraries="$(jq -c \
+            '.deferred_external_libraries' "${result}")"
+          runtime_requirements="$(jq -ce '.dependencies | select(type == "array")' \
+            "${result}")"
+          wheel_glibc_floor="$(jq -er '.glibc_floor | select(type == "string")' \
+            "${result}")"
+          ucm_version="$(jq -er '.version' "${result}")"
+          docker pull "${RUNTIME_IMAGE}"
+          docker run --rm --entrypoint bash \
+            -e DEFERRED_EXTERNAL_LIBRARIES="${deferred_external_libraries}" \
+            -e PLATFORM="${PLATFORM_ARG}" \
+            -e EXPECTED_UCM_VERSION="${ucm_version}" \
+            -e EXPECTED_BACKEND_DISTRIBUTION="${BACKEND_DISTRIBUTION}" \
+            -e EXPECTED_EXTERNAL_LIBRARIES="${external_libraries}" \
+            -e EXPECTED_RUNTIME_REQUIREMENTS="${runtime_requirements}" \
+            -e EXPECTED_WHEEL_GLIBC_FLOOR="${wheel_glibc_floor}" \
+            -e UCM_WHEEL="/tmp/${wheel_name}" \
+            -v "${wheel}:/tmp/${wheel_name}:ro" \
+            -v "${PWD}/.github/release/validate_wheel_runtime.py:/tmp/validate_wheel_runtime.py:ro" \
+            "${RUNTIME_IMAGE}" -c '
+              set -euo pipefail
+              ldd_output="$(ldd --version 2>&1)"
+              actual_glibc="$(python3 -c "import re, sys; match = re.search(r\"[0-9]+(?:\\.[0-9]+)+\", sys.stdin.read()); print(match.group(0) if match else \"\")" \
+                <<<"${ldd_output}")"
+              test -n "${actual_glibc}"
+              required_glibc="${EXPECTED_WHEEL_GLIBC_FLOOR#GLIBC_}"
+              python3 -c "import sys; parse=lambda value: tuple(map(int, value.split(\".\"))); sys.exit(0 if parse(sys.argv[1]) >= parse(sys.argv[2]) else 1)" \
+                "${actual_glibc}" "${required_glibc}"
+              python3 -m venv /tmp/ucm-wheel-venv
+              . /tmp/ucm-wheel-venv/bin/activate
+              python -m pip install --disable-pip-version-check --no-cache-dir \
+                --index-url https://pypi.org/simple "${UCM_WHEEL}"
+              python /tmp/validate_wheel_runtime.py
+            '
+
   package-chart:
     name: Chart · Helm package
     needs: plan
@@ -574,11 +783,11 @@ jobs:
 
   build-images:
     name: Tag Image · ${{ matrix.label }}
-    needs: [plan, build-wheels, publish-release-artifacts]
+    needs: [plan, publish-release-artifacts]
     if: >-
       ${{
         needs.plan.outputs.publish_images == 'true' &&
-        needs.plan.result == 'success' && needs.build-wheels.result == 'success' &&
+        needs.plan.result == 'success' &&
         needs.publish-release-artifacts.result == 'success'
       }}
     strategy:
@@ -597,8 +806,9 @@ jobs:
     secrets: inherit
 
   publish-release-artifacts:
-    name: Release · Publish Wheels, Chart, and Config
-    needs: [plan, open-release, build-wheels, package-chart]
+    name: Release · Publish backend/meta Wheels, Chart, and Config
+    needs:
+      [plan, open-release, build-wheels, build-meta, validate-wheel-runtimes, package-chart]
     if: >-
       ${{
         always() && needs.plan.result == 'success' &&
@@ -616,15 +826,19 @@ jobs:
       RELEASE_TAG: ${{ inputs.git_tag }}
       RELEASE_TYPE: ${{ inputs.release_type }}
     steps:
-      - name: Report failed Wheel or Chart build
+      - name: Report failed Wheel, Runtime validation, or Chart build
         if: >-
           ${{
             needs.open-release.outputs.enabled == 'true' &&
             (needs.build-wheels.result != 'success' ||
+             needs.build-meta.result != 'success' ||
+             needs.validate-wheel-runtimes.result != 'success' ||
              needs.package-chart.result != 'success')
           }}
         env:
           WHEEL_OUTCOME: ${{ needs.build-wheels.result }}
+          META_OUTCOME: ${{ needs.build-meta.result }}
+          RUNTIME_VALIDATION_OUTCOME: ${{ needs.validate-wheel-runtimes.result }}
           CHART_OUTCOME: ${{ needs.package-chart.result }}
         run: |
           set -euo pipefail
@@ -645,6 +859,8 @@ jobs:
             "Status: \`artifacts-failed\`" \
             "" \
             "Wheel outcome: ${WHEEL_OUTCOME}" \
+            "Meta outcome: ${META_OUTCOME}" \
+            "Runtime validation outcome: ${RUNTIME_VALIDATION_OUTCOME}" \
             "Chart outcome: ${CHART_OUTCOME}" >"${notes}"
           gh api --method PATCH "/repos/${GH_REPO}/releases/${release_id}" \
             -f "tag_name=${tag}" \
@@ -653,6 +869,12 @@ jobs:
       - uses: actions/checkout@v4.2.2
         with:
           persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - run: >-
+          python -m pip install --disable-pip-version-check --no-cache-dir
+          --only-binary=:all: twine==6.1.0
       - uses: actions/download-artifact@v4.3.0
         with:
           name: ${{ needs.plan.outputs.plan_artifact }}
@@ -663,14 +885,25 @@ jobs:
           path: input/wheels
       - uses: actions/download-artifact@v4.3.0
         with:
+          name: ucm-meta-run-${{ github.run_id }}
+          path: input/meta
+      - uses: actions/download-artifact@v4.3.0
+        with:
           name: ucm-chart-run-${{ github.run_id }}
           path: input/chart
+      - name: Validate all PyPI package metadata without publishing
+        run: |
+          set -euo pipefail
+          mapfile -t wheels < <(find input/wheels input/meta -type f \
+            -name '*.whl' -print | sort)
+          test "${#wheels[@]}" -gt 1
+          python -m twine check "${wheels[@]}"
       - name: Build internal artifacts-ready release state
         run: |
           set -euo pipefail
           python .github/release/ucm_release/release.py artifacts \
             --plan input/plan/release-plan.json \
-            --wheels input/wheels --chart input/chart \
+            --wheels input/wheels --meta input/meta --chart input/chart \
             --run-id "${GITHUB_RUN_ID}" --output out/release
       - uses: actions/upload-artifact@v4.6.2
         with:
@@ -679,7 +912,7 @@ jobs:
           if-no-files-found: error
           overwrite: true
           retention-days: 90
-      - name: Upload Wheels, Chart, and Config
+      - name: Upload backend/meta Wheels, Chart, and Config
         run: |
           set -euo pipefail
           test "${GH_REPO}" = "${GITHUB_REPOSITORY}"
@@ -704,20 +937,51 @@ jobs:
             jq -e '.[0].draft == false' <<<"${releases}" >/dev/null
           fi
           release_id="$(jq -er '.[0].id' <<<"${releases}")"
-          gh release upload "${tag}" --clobber \
-            input/wheels/*/*.whl input/chart/*.tgz \
-            examples/ucm_config_example.yaml
           release_json="${RUNNER_TEMP}/github-release-${release_id}.json"
+          shopt -s nullglob
+          artifacts=(
+            input/wheels/*/*.whl
+            input/chart/*.tgz
+            examples/ucm_config_example.yaml
+          )
+          meta_artifacts=(input/meta/*.whl)
+          test "${#meta_artifacts[@]}" = 1
+          artifacts+=("${meta_artifacts[@]}")
+          test "${#artifacts[@]}" -gt 2
+          gh api --method PATCH "/repos/${GH_REPO}/releases/${release_id}" \
+            -f "tag_name=${tag}" >/dev/null
+          gh release upload "${tag}" --clobber "${artifacts[@]}"
+          gh api --method PATCH "/repos/${GH_REPO}/releases/${release_id}" \
+            -f "tag_name=${tag}" >/dev/null
           gh api "/repos/${GH_REPO}/releases/${release_id}" >"${release_json}"
+          jq -e --arg tag "${tag}" '.tag_name == $tag' \
+            "${release_json}" >/dev/null
           jq -e '[.assets[].name] | index("ucm_config_example.yaml") != null' \
             "${release_json}" >/dev/null
           python .github/release/ucm_release/release.py notes \
             --manifest out/release/release-state.json \
             --release "${release_json}" --repository "${GH_REPO}" \
             --output out/release
-          gh api --method PATCH "/repos/${GH_REPO}/releases/${release_id}" \
-            -f "tag_name=${tag}" \
-            -f "body=$(<out/release/release-notes.md)" >/dev/null
+          if jq -e '.draft == true' "${release_json}" >/dev/null; then
+            gh api --method PATCH "/repos/${GH_REPO}/releases/${release_id}" \
+              -f "tag_name=${tag}" \
+              -f "body=$(<out/release/release-notes.md)" >/dev/null
+          else
+            gh api --method PATCH "/repos/${GH_REPO}/releases/${release_id}" \
+              -f "body=$(<out/release/release-notes.md)" >/dev/null
+          fi
+          gh api "/repos/${GH_REPO}/releases/${release_id}" >"${release_json}"
+          jq -e --arg tag "${tag}" --rawfile notes out/release/release-notes.md \
+            '.tag_name == $tag and
+             (.body | sub("\\n+$"; "")) == ($notes | sub("\\n+$"; ""))' \
+            "${release_json}" >/dev/null
+          mkdir -p out/release/artifact-readback
+          python .github/release/ucm_release/release.py notes \
+            --manifest out/release/release-state.json \
+            --release "${release_json}" --repository "${GH_REPO}" \
+            --output out/release/artifact-readback
+          cmp out/release/release-notes.md \
+            out/release/artifact-readback/release-notes.md
       - name: Mark artifact publication failure
         if: ${{ failure() && needs.open-release.outputs.enabled == 'true' }}
         run: |
@@ -894,8 +1158,9 @@ jobs:
           retention-days: 90
 
   publish-pypi:
-    name: Publish · PyPI
+    name: PyPI · ${{ needs.plan.outputs.pypi_disposition }}
     needs: [plan, publish-release-artifacts]
+    if: ${{ needs.plan.outputs.publish_pypi == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: ${{ inputs.publication_scope == 'official' && 'release-production' || 'fork-preview' }}
@@ -905,9 +1170,17 @@ jobs:
     env:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
     steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 1
+          persist-credentials: false
       - uses: actions/setup-python@v5.6.0
         with:
           python-version: "3.12"
+      - run: >-
+          python -m pip install --disable-pip-version-check --no-cache-dir
+          --only-binary=:all: packaging==24.2 PyYAML==6.0.2 twine==6.1.0
       - uses: actions/download-artifact@v4.3.0
         with:
           name: ${{ needs.plan.outputs.plan_artifact }}
@@ -916,24 +1189,102 @@ jobs:
         with:
           pattern: ucm-wheel-*-run-${{ github.run_id }}
           path: input/wheels
-      - name: Publish Wheels
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          name: ucm-meta-run-${{ github.run_id }}
+          path: input/meta
+      - name: Publish backend Wheels, then the meta Wheel
         run: |
           set -euo pipefail
           plan=input/plan/release-plan.json
-          if [ "$(jq -r '.publish.pypi.enabled' "${plan}")" != true ]; then
-            exit 0
-          fi
+          test "$(jq -r '.publish.pypi.enabled' "${plan}")" = true
           jq -e \
             '.publication_scope == "official" and
              (.repository | ascii_downcase) ==
                "modelengine-group/unified-cache-management"' \
             "${plan}" >/dev/null
           test -n "${PYPI_API_TOKEN}"
-          python -m pip install --disable-pip-version-check --no-cache-dir twine
-          TWINE_USERNAME=__token__ TWINE_PASSWORD="${PYPI_API_TOKEN}" \
-            python -m twine upload \
-              --repository-url "$(jq -r '.publish.pypi.index' "${plan}")" \
-              input/wheels/*/*.whl
+          mkdir -p out/pypi
+          PYTHONPATH=.github/release python -m ucm_release pypi publish \
+            --release-plan "${plan}" --wheel-results-dir input/wheels \
+            --meta-result input/meta/meta-result.json \
+            --wheel-root input/wheels --meta-root input/meta \
+            --repository-url "$(jq -r '.publish.pypi.index' "${plan}")" \
+            --attempts 12 --interval 5 \
+            --output out/pypi/pypi-receipt.json >/dev/null
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ucm-pypi-receipt-run-${{ github.run_id }}
+          path: out/pypi/pypi-receipt.json
+          if-no-files-found: ignore
+          overwrite: true
+          retention-days: 90
+
+  verify-pypi-installs:
+    name: Verify PyPI · ${{ matrix.label }}
+    needs: [plan, publish-pypi]
+    if: >-
+      ${{
+        needs.plan.outputs.publish_pypi == 'true' &&
+        needs.publish-pypi.result == 'success'
+      }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.pypi_test_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./.github/actions/download-artifact-retry
+        with:
+          name: ucm-wheel-${{ matrix.id }}-run-${{ github.run_id }}
+          path: input/wheel
+      - name: Install one extra from public PyPI in a fresh environment
+        env:
+          RUNTIME_IMAGE: ${{ matrix.runtime_image }}
+          UCM_EXTRA: ${{ matrix.extra }}
+          UCM_VERSION: ${{ inputs.version }}
+          BACKEND_DISTRIBUTION: ${{ matrix.distribution }}
+          PLATFORM_ARG: ${{ matrix.platform_arg }}
+        run: |
+          set -euo pipefail
+          external_libraries="$(jq -c '.external_libraries' \
+            input/wheel/wheel-result.json)"
+          deferred_external_libraries="$(jq -c '.deferred_external_libraries' \
+            input/wheel/wheel-result.json)"
+          docker pull "${RUNTIME_IMAGE}"
+          docker run --rm \
+            --entrypoint bash \
+            -e PLATFORM="${PLATFORM_ARG}" \
+            -e UCM_EXTRA="${UCM_EXTRA}" \
+            -e UCM_VERSION="${UCM_VERSION}" \
+            -e EXPECTED_UCM_VERSION="${UCM_VERSION}" \
+            -e EXPECTED_META_VERSION="${UCM_VERSION}" \
+            -e EXPECTED_BACKEND_DISTRIBUTION="${BACKEND_DISTRIBUTION}" \
+            -e EXPECTED_EXTERNAL_LIBRARIES="${external_libraries}" \
+            -e DEFERRED_EXTERNAL_LIBRARIES="${deferred_external_libraries}" \
+            -v "${PWD}/.github/release/validate_wheel_runtime.py:/tmp/validate_wheel_runtime.py:ro" \
+            "${RUNTIME_IMAGE}" -c '
+              set -euo pipefail
+              python3 -m venv /tmp/ucm-pypi-venv
+              . /tmp/ucm-pypi-venv/bin/activate
+              for install_attempt in {1..30}; do
+                if python -m pip install --disable-pip-version-check --no-cache-dir \
+                  --index-url https://pypi.org/simple \
+                  "uc-manager[${UCM_EXTRA}]==${UCM_VERSION}"; then
+                  break
+                fi
+                test "${install_attempt}" -lt 30
+                sleep 10
+              done
+              python /tmp/validate_wheel_runtime.py
+            '
 
   publish-chart-oci:
     name: Publish · Chart OCI
@@ -998,6 +1349,7 @@ jobs:
       - publish-image-members
       - publish-image-indexes
       - publish-pypi
+      - verify-pypi-installs
       - publish-chart-oci
     if: >-
       ${{
@@ -1050,12 +1402,18 @@ jobs:
           pattern: ucm-image-index-receipt-*-run-${{ github.run_id }}
           path: input/receipts
           merge-multiple: true
+      - uses: actions/download-artifact@v4.3.0
+        continue-on-error: true
+        with:
+          name: ucm-pypi-receipt-run-${{ github.run_id }}
+          path: input/receipts
       - name: Merge publication receipts into internal release state
         env:
           BUILD_OUTCOME: ${{ needs.build-images.result }}
           MEMBER_OUTCOME: ${{ needs.publish-image-members.result }}
           INDEX_OUTCOME: ${{ needs.publish-image-indexes.result }}
           PYPI_OUTCOME: ${{ needs.publish-pypi.result }}
+          PYPI_INSTALL_OUTCOME: ${{ needs.verify-pypi-installs.result }}
           CHART_OCI_OUTCOME: ${{ needs.publish-chart-oci.result }}
         run: |
           set -euo pipefail
@@ -1066,8 +1424,36 @@ jobs:
             --member-outcome "${MEMBER_OUTCOME}" \
             --index-outcome "${INDEX_OUTCOME}" \
             --pypi-outcome "${PYPI_OUTCOME}" \
+            --pypi-install-outcome "${PYPI_INSTALL_OUTCOME}" \
             --chart-oci-outcome "${CHART_OCI_OUTCOME}" \
             --output out/release
+      - id: publish-pypi-receipt
+        name: Publish and read back PyPI receipt
+        run: |
+          set -euo pipefail
+          state=out/release/release-state.json
+          tag="$(jq -er '.release.git_tag' "${state}")"
+          if [ "$(jq -r '.publish.pypi.enabled' "${state}")" = true ]; then
+            test "$(find input/receipts -maxdepth 1 -type f \
+              -name 'pypi-receipt.json' | wc -l | tr -d ' ')" = 1
+            releases="$(gh api --paginate --slurp \
+              "/repos/${GH_REPO}/releases?per_page=100" \
+              | jq -ce --arg tag "${tag}" '[.[][] | select(.tag_name == $tag)]')"
+            test "$(jq 'length' <<<"${releases}")" = 1
+            release_id="$(jq -er '.[0].id' <<<"${releases}")"
+            gh release upload "${tag}" --clobber input/receipts/pypi-receipt.json
+            release_json="out/release/github-release-pypi.json"
+            gh api "/repos/${GH_REPO}/releases/${release_id}" >"${release_json}"
+            asset_id="$(jq -er \
+              '[.assets[] | select(.name == "pypi-receipt.json")] |
+               if length == 1 then .[0].id else error("PyPI receipt asset is ambiguous") end' \
+              "${release_json}")"
+            gh api -H 'Accept: application/octet-stream' \
+              "/repos/${GH_REPO}/releases/assets/${asset_id}" \
+              >out/release/pypi-receipt-readback.json
+            cmp input/receipts/pypi-receipt.json \
+              out/release/pypi-receipt-readback.json
+          fi
       - id: update-release
         name: Update image list and final status
         run: |
@@ -1090,15 +1476,6 @@ jobs:
           else
             jq -e '.[0].draft == false' <<<"${releases}" >/dev/null
           fi
-          release_id="$(jq -er '.[0].id' <<<"${releases}")"
-          release_json="out/release/github-release.json"
-          gh api "/repos/${GH_REPO}/releases/${release_id}" >"${release_json}"
-          python .github/release/ucm_release/release.py notes \
-            --manifest "${state}" --release "${release_json}" \
-            --repository "${GH_REPO}" --output out/release
-          gh api --method PATCH "/repos/${GH_REPO}/releases/${release_id}" \
-            -f "tag_name=${tag}" \
-            -f "body=$(<out/release/release-notes.md)" >/dev/null
       - name: Require complete image publication
         run: >-
           test "$(jq -r '.release.status'
@@ -1111,12 +1488,29 @@ jobs:
           state=out/release/release-state.json
           release_json=out/release/github-release.json
           tag="$(jq -er '.release.git_tag' "${state}")"
-          release_id="$(jq -er '.id' "${release_json}")"
+          releases="$(gh api --paginate --slurp \
+            "/repos/${GH_REPO}/releases?per_page=100" \
+            | jq -ce --arg tag "${tag}" '[.[][] | select(.tag_name == $tag)]')"
+          test "$(jq 'length' <<<"${releases}")" = 1
+          release_id="$(jq -er '.[0].id' <<<"${releases}")"
+          gh api "/repos/${GH_REPO}/releases/${release_id}" >"${release_json}"
           python .github/release/ucm_release/release.py manifest \
             --state "${state}" --release "${release_json}" \
             --output out/release
+          gh api --method PATCH "/repos/${GH_REPO}/releases/${release_id}" \
+            -f "tag_name=${tag}" >/dev/null
           gh release upload "${tag}" --clobber out/release/release-manifest.json
+          if [ "${RELEASE_TYPE}" = nightly ]; then
+            gh api --method PATCH "/repos/${GH_REPO}/releases/${release_id}" \
+              -F draft=false -F prerelease=true \
+              -f "tag_name=${tag}" -f "name=${tag}" >/dev/null
+          else
+            gh api --method PATCH "/repos/${GH_REPO}/releases/${release_id}" \
+              -f "tag_name=${tag}" >/dev/null
+          fi
           gh api "/repos/${GH_REPO}/releases/${release_id}" >"${release_json}"
+          jq -e --arg tag "${tag}" '.tag_name == $tag' \
+            "${release_json}" >/dev/null
           asset_id="$(jq -er \
             '[.assets[] | select(.name == "release-manifest.json")] |
              if length == 1 then .[0].id else error("manifest asset is ambiguous") end' \
@@ -1130,12 +1524,31 @@ jobs:
             '([.assets[].name] | sort) == $manifest[0].github_release_assets' \
             "${release_json}" >/dev/null
           if [ "${RELEASE_TYPE}" = nightly ]; then
-            gh api --method PATCH "/repos/${GH_REPO}/releases/${release_id}" \
-              -F draft=false -F prerelease=true \
-              -f "tag_name=${tag}" -f "name=${tag}" >/dev/null
-            gh api "/repos/${GH_REPO}/releases/${release_id}" \
-              | jq -e '.draft == false and .prerelease == true' >/dev/null
+            jq -e '.draft == false and .prerelease == true' \
+              "${release_json}" >/dev/null
           fi
+          python .github/release/ucm_release/release.py notes \
+            --manifest "${state}" --release "${release_json}" \
+            --repository "${GH_REPO}" --output out/release
+          if jq -e '.draft == true' "${release_json}" >/dev/null; then
+            gh api --method PATCH "/repos/${GH_REPO}/releases/${release_id}" \
+              -f "tag_name=${tag}" \
+              -f "body=$(<out/release/release-notes.md)" >/dev/null
+          else
+            gh api --method PATCH "/repos/${GH_REPO}/releases/${release_id}" \
+              -f "body=$(<out/release/release-notes.md)" >/dev/null
+          fi
+          gh api "/repos/${GH_REPO}/releases/${release_id}" >"${release_json}"
+          jq -e --arg tag "${tag}" --rawfile notes out/release/release-notes.md \
+            '.tag_name == $tag and
+             (.body | sub("\\n+$"; "")) == ($notes | sub("\\n+$"; ""))' \
+            "${release_json}" >/dev/null
+          mkdir -p out/release/readback
+          python .github/release/ucm_release/release.py notes \
+            --manifest "${state}" --release "${release_json}" \
+            --repository "${GH_REPO}" --output out/release/readback
+          cmp out/release/release-notes.md \
+            out/release/readback/release-notes.md
       - id: retention
         name: Retain only the configured same-type Releases
         run: |
@@ -1185,12 +1598,23 @@ jobs:
               -F draft=true -F prerelease=true \
               -f "tag_name=${tag}" -f "name=${tag}" >/dev/null
           fi
-          notes="${RUNNER_TEMP}/image-stage-failed.md"
-          printf '%s\n' \
-            "Status: \`publication-failed\`" \
-            "" \
-            "Wheels and Chart remain available, but final publication or manifest " \
-            "readback failed." >"${notes}"
+          release_json="${RUNNER_TEMP}/finalization-failed-release.json"
+          gh api "/repos/${GH_REPO}/releases/${release_id}" >"${release_json}"
+          state=out/release/release-state.json
+          if [ -f "${state}" ] && \
+             [ "$(jq -r '.release.status' "${state}")" != complete ]; then
+            python .github/release/ucm_release/release.py notes \
+              --manifest "${state}" --release "${release_json}" \
+              --repository "${GH_REPO}" --output out/release
+            notes=out/release/release-notes.md
+          else
+            notes="${RUNNER_TEMP}/image-stage-failed.md"
+            printf '%s\n' \
+              "Status: \`publication-failed\`" \
+              "" \
+              "Backend and Chart artifacts remain available, but final publication " \
+              "or manifest readback failed." >"${notes}"
+          fi
           gh api --method PATCH "/repos/${GH_REPO}/releases/${release_id}" \
             -f "tag_name=${tag}" \
             -f "body=$(<"${notes}")" >/dev/null

@@ -1,4 +1,5 @@
 # Exact Python tools installed by the compact Wheel Builder Docker stage.
+auditwheel==6.7.0
 build==1.3.0
 cmake==3.31.6
 packaging==24.2

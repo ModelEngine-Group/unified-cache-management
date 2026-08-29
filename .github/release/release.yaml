@@ -9,13 +9,15 @@ products:
   - id: vllm
     runtime_repository: docker.io/vllm/vllm-openai
     target_repository: ghcr.io/{owner}/vllm-openai
-    minimum_version: "0.23.0"
+    # 默认检查 Registry 最新版所在的最近 3 个连续 minor。
+    recent_minor_versions: 3
     channel_policy: latest-stable-or-rc-or-nightly-per-minor
 
   - id: vllm-ascend
     runtime_repository: quay.io/ascend/vllm-ascend
     target_repository: ghcr.io/{owner}/vllm-ascend
-    minimum_version: "0.23.0"
+    # 默认检查 Registry 最新版所在的最近 3 个连续 minor。
+    recent_minor_versions: 3
     channel_policy: latest-stable-or-rc-or-nightly-per-minor
 
 publish:
@@ -39,43 +41,43 @@ release_profiles:
   stable:
     # -1 表示无限保留 Stable 发布。
     max_count: -1
-    # -1 表示构建版本窗口内的全部实际 minor。
+    # -1 表示构建产品版本交集内的全部实际 minor。
     max_minor_versions: -1
     publish:
-      pypi: false
+      pypi: true
       ghcr: true
-      dockerhub: false
+      dockerhub: true
       chart_oci: true
       github_release: true
 
   prerelease:
     # -1 表示无限保留 Prerelease 发布。
     max_count: -1
-    # -1 表示构建版本窗口内的全部实际 minor。
+    # -1 表示构建产品版本交集内的全部实际 minor。
     max_minor_versions: -1
     publish:
-      pypi: false
+      pypi: true
       ghcr: true
-      dockerhub: false
+      dockerhub: true
       chart_oci: true
       github_release: true
 
   draft:
     # 最多保留 7 个新版 Draft。
     max_count: 7
-    # -1 表示构建版本窗口内的全部实际 minor。
+    # -1 表示构建产品版本交集内的全部实际 minor。
     max_minor_versions: -1
     publish:
-      pypi: false
+      pypi: true
       ghcr: true
-      dockerhub: false
+      dockerhub: true
       chart_oci: true
       github_release: true
 
   nightly:
     # 最多保留 7 个 Nightly。
     max_count: 7
-    # 只构建 minimum_version 起第一个实际存在的 minor。
+    # 只构建产品版本交集内第一个实际存在的 minor。
     max_minor_versions: 1
     publish:
       pypi: false

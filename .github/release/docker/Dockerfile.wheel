@@ -7,13 +7,16 @@ ARG UCM_CPU_ARCH
 ARG UCM_PLATFORM
 ARG UCM_PYTHON_VERSION
 ARG UCM_PYTHON_ABI
+ARG UCM_TARGET_PLATFORM_TAG
+ARG SOURCE_DATE_EPOCH
 
 SHELL ["/bin/bash", "-euxo", "pipefail", "-c"]
 ENV PLATFORM="${UCM_PLATFORM}" \
     UCM_BUILD_CPU_ARCH="${UCM_CPU_ARCH}" \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}"
 
 COPY . /workspace/ucm
 WORKDIR /workspace/ucm
@@ -36,8 +39,41 @@ RUN ucm-python -m pip install --no-cache-dir --only-binary=:all: \
       -r .ucm-compact/build-requirements.txt
 RUN python_scripts="$(ucm-python -c \
       'import sysconfig; print(sysconfig.get_path("scripts"))')" && \
-    PATH="${python_scripts}:${PATH}" \
-      ucm-python -m build --no-isolation --wheel --outdir /out
+    PATH="${python_scripts}:${PATH}" && \
+    command -v patchelf >/dev/null && \
+    test -n "${UCM_TARGET_PLATFORM_TAG}" && \
+    test "${SOURCE_DATE_EPOCH}" -ge 315532800 && \
+    mkdir -p /tmp/ucm-raw-wheel /out && \
+    ucm-python -m build --no-isolation --wheel \
+      --outdir /tmp/ucm-raw-wheel && \
+    mapfile -t auditwheel_excludes \
+      <.ucm-compact/auditwheel-exclude-patterns.txt && \
+    repair_args=() && \
+    for library in "${auditwheel_excludes[@]}"; do \
+      repair_args+=(--exclude "${library}"); \
+    done && \
+    raw_wheel="$(find /tmp/ucm-raw-wheel -maxdepth 1 -type f \
+      -name '*.whl' -print -quit)" && \
+    test -n "${raw_wheel}" && \
+    test "$(find /tmp/ucm-raw-wheel -maxdepth 1 -type f \
+      -name '*.whl' | wc -l | tr -d ' ')" = 1 && \
+    ucm-python -m auditwheel -v repair \
+      --only-plat \
+      --plat "${UCM_TARGET_PLATFORM_TAG}" \
+      "${repair_args[@]}" \
+      --wheel-dir /out "${raw_wheel}" 2>&1 \
+      | tee /out/auditwheel-repair.txt && \
+    if grep -Fq 'Grafting:' /out/auditwheel-repair.txt; then \
+      echo "auditwheel grafted an unplanned external library" >&2; \
+      exit 1; \
+    fi && \
+    repaired_wheel="$(find /out -maxdepth 1 -type f \
+      -name '*.whl' -print -quit)" && \
+    test -n "${repaired_wheel}" && \
+    test "$(find /out -maxdepth 1 -type f \
+      -name '*.whl' | wc -l | tr -d ' ')" = 1 && \
+    ucm-python -m auditwheel -v show "${repaired_wheel}" 2>&1 \
+      | tee /out/auditwheel-show.txt
 
 FROM scratch AS wheel
 COPY --from=build /out/ /

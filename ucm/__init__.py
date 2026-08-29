@@ -52,8 +52,8 @@ def _guard_single_backend() -> None:
         raise ImportError(
             f"Multiple UCM backend distributions are installed: {', '.join(found)}.\n"
             f"They provide the same top-level 'ucm' package and will overwrite each "
-            f"other's files. Keep only one:\n"
-            f"  pip uninstall -y {' '.join(found[1:])}"
+            f"other's files. Create a new virtual environment and install exactly "
+            f"one uc-manager extra."
         )
 
 

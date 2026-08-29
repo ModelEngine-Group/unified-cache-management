@@ -8,5 +8,4 @@ COPY ${UCM_WHEEL} /tmp/${UCM_WHEEL}
 COPY --chmod=0644 ucm_config_example.yaml /workspace/ucm_config_example.yaml
 RUN python3 -m pip install --disable-pip-version-check --no-cache-dir \
       --index-url https://pypi.org/simple \
-      /tmp/${UCM_WHEEL} && \
-    python3 -c 'import ucm'
+      /tmp/${UCM_WHEEL}

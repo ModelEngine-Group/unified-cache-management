@@ -35,8 +35,8 @@
         {
           "tags": [
             "9.0.0-310p-manylinux_2_28-py3.12",
-            "9.0.0-910b-manylinux_2_28-py3.12",
-            "9.0.0-a3-manylinux_2_28-py3.12"
+            "9.0.1-910b-manylinux_2_34-py3.12",
+            "9.0.1-a3-manylinux_2_34-py3.12"
           ]
         }
       ]
@@ -49,10 +49,10 @@
     "docker.io/pytorch/manylinuxaarch64-builder:cuda12.9": {
       "arm64": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
     },
-    "quay.io/ascend/manylinux:9.0.0-910b-manylinux_2_28-py3.12": {
+    "quay.io/ascend/manylinux:9.0.1-910b-manylinux_2_34-py3.12": {
       "amd64": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
     },
-    "quay.io/ascend/manylinux:9.0.0-a3-manylinux_2_28-py3.12": {
+    "quay.io/ascend/manylinux:9.0.1-a3-manylinux_2_34-py3.12": {
       "arm64": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
     }
   },
@@ -118,7 +118,7 @@
         "runner": "ubuntu-24.04",
         "image_reference": "quay.io/ascend/vllm-ascend@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb1",
         "backend": "cann-a2",
-        "accelerator_runtime": "cann-9.0.0",
+        "accelerator_runtime": "cann-9.0.1",
         "soc_version": "ascend910b1",
         "python_version": "3.12",
         "python_abi": "cp312",
@@ -140,7 +140,7 @@
         "runner": "ubuntu-24.04-arm",
         "image_reference": "quay.io/ascend/vllm-ascend@sha256:ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc1",
         "backend": "cann-a3",
-        "accelerator_runtime": "cann-9.0.0",
+        "accelerator_runtime": "cann-9.0.1",
         "soc_version": "ascend910_9391",
         "python_version": "3.12",
         "python_abi": "cp312",

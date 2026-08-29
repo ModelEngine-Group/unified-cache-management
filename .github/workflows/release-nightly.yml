@@ -69,7 +69,10 @@ jobs:
             releases="$(gh api --paginate --slurp \
               "/repos/${GH_REPO}/releases?per_page=100" \
               | jq -ce --arg tag "${candidate}" \
-                '[.[][] | select(.tag_name == $tag)]')"
+                '[.[][] | select(
+                  (.tag_name == $tag) or
+                  (.name == $tag and .draft == true and
+                   ((.tag_name // "") | startswith("untagged-"))))]')"
             test "$(jq 'length' <<<"${releases}")" -le 1
             if [ "$(jq 'length' <<<"${releases}")" -eq 0 ] || \
                ! jq -e '.[0] | .draft == false and .prerelease == true and

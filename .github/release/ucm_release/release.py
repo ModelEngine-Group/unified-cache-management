@@ -11,9 +11,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
 
+if __package__:
+    from . import wheel_audit
+else:
+    import wheel_audit
+
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 STATE_KIND = "ucm-release-state"
-STATE_SCHEMA_VERSION = 2
+STATE_SCHEMA_VERSION = 3
 PUBLIC_MANIFEST_KIND = "ucm-release-manifest"
 PUBLIC_MANIFEST_SCHEMA_VERSION = 6
 PUBLIC_MANIFEST_FILENAME = "release-manifest.json"
@@ -58,20 +63,28 @@ def _one(paths: list[Path], context: str) -> Path:
 
 def _validate_wheel_result_contract(result: dict[str, Any], result_path: Path) -> None:
     context = f"Wheel result {result_path}"
-    if result.get("kind") != "ucm-wheel-result" or result.get("schema_version") != 2:
-        raise ValueError(f"{context} must use ucm-wheel-result schema 2")
+    if result.get("kind") != "ucm-wheel-result" or result.get("schema_version") != 5:
+        raise ValueError(f"{context} must use ucm-wheel-result schema 5")
 
     audit_fields = {
         "platform_tags",
         "auditwheel_platform_tag",
+        "abi_compatible_platform_tag",
         "glibc_versions",
         "glibc_floor",
+        "external_library_roots",
         "external_libraries",
+        "deferred_external_libraries",
         "auditwheel_report",
+        "repair",
+        "sha256",
+        "dependencies",
     }
     missing_fields = sorted(audit_fields - result.keys())
     if missing_fields:
         raise ValueError(f"{context} is missing audit fields: {missing_fields}")
+    if "runtime_deferred_libraries" in result:
+        raise ValueError(f"{context} contains removed field runtime_deferred_libraries")
 
     platform_tags = result.get("platform_tags")
     if (
@@ -83,6 +96,17 @@ def _validate_wheel_result_contract(result: dict[str, Any], result_path: Path) -
     auditwheel_platform = result.get("auditwheel_platform_tag")
     if not isinstance(auditwheel_platform, str) or not auditwheel_platform:
         raise ValueError(f"{context} has no auditwheel_platform_tag")
+    abi_platform = result.get("abi_compatible_platform_tag")
+    if not isinstance(abi_platform, str) or not abi_platform.startswith("manylinux_"):
+        raise ValueError(f"{context} has no manylinux ABI compatibility tag")
+    digest = result.get("sha256")
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise ValueError(f"{context} has an invalid Wheel digest")
+    dependencies = result.get("dependencies")
+    if not isinstance(dependencies, list) or any(
+        not isinstance(value, str) or not value for value in dependencies
+    ):
+        raise ValueError(f"{context} has invalid dependencies")
 
     glibc_versions = result.get("glibc_versions")
     if not isinstance(glibc_versions, list) or any(
@@ -94,11 +118,54 @@ def _validate_wheel_result_contract(result: dict[str, Any], result_path: Path) -
         not isinstance(glibc_floor, str) or glibc_floor not in glibc_versions
     ):
         raise ValueError(f"{context} has an invalid glibc_floor")
+    external_roots = result.get("external_library_roots")
     external_libraries = result.get("external_libraries")
     if not isinstance(external_libraries, list) or any(
         not isinstance(value, str) or not value for value in external_libraries
     ):
         raise ValueError(f"{context} has invalid external_libraries")
+    if external_libraries != sorted(set(external_libraries)):
+        raise ValueError(f"{context} has non-canonical external_libraries")
+    if (
+        not isinstance(external_roots, list)
+        or external_roots != sorted(set(external_roots))
+        or any(not isinstance(value, str) or not value for value in external_roots)
+        or not set(external_roots).issubset(external_libraries)
+    ):
+        raise ValueError(f"{context} has invalid external_library_roots")
+    deferred_external = result.get("deferred_external_libraries")
+    if (
+        not isinstance(deferred_external, list)
+        or deferred_external != sorted(set(deferred_external))
+        or any(not isinstance(value, str) or not value for value in deferred_external)
+        or not set(deferred_external).issubset(external_libraries)
+        or set(deferred_external).intersection(external_roots)
+    ):
+        raise ValueError(f"{context} has invalid deferred_external_libraries")
+    for soname in deferred_external:
+        wheel_audit.validate_external_soname(soname)
+
+    repair = _mapping(result.get("repair"), f"{context} repair")
+    if set(repair) != {
+        "tool",
+        "version",
+        "target_platform",
+        "excluded_patterns",
+    }:
+        raise ValueError(f"{context} has an invalid repair contract")
+    if repair.get("tool") != "auditwheel" or not isinstance(repair.get("version"), str):
+        raise ValueError(f"{context} has an invalid repair tool")
+    target_platform = repair.get("target_platform")
+    if not isinstance(target_platform, str) or target_platform not in platform_tags:
+        raise ValueError(f"{context} repair target is not a Wheel platform tag")
+    excluded = repair.get("excluded_patterns")
+    if (
+        not isinstance(excluded, list)
+        or excluded != sorted(excluded)
+        or len(excluded) != len(set(excluded))
+        or any(not isinstance(value, str) or not value for value in excluded)
+    ):
+        raise ValueError(f"{context} has invalid external exclude patterns")
 
     report = _mapping(result.get("auditwheel_report"), f"{context} auditwheel report")
     report_name = report.get("filename")
@@ -121,6 +188,16 @@ def _validate_wheel_result_contract(result: dict[str, Any], result_path: Path) -
         or report_path.read_text(encoding="utf-8") != report_text
     ):
         raise ValueError(f"{context} auditwheel report text does not match")
+    closure = wheel_audit.validate_external_library_closure(
+        report_text,
+        expected_patterns=excluded,
+    )
+    if external_roots != closure["external_library_roots"]:
+        raise ValueError(f"{context} external roots do not match auditwheel")
+    if external_libraries != closure["external_libraries"]:
+        raise ValueError(f"{context} external libraries do not match auditwheel")
+    if deferred_external != closure["deferred_external_libraries"]:
+        raise ValueError(f"{context} deferred libraries do not match auditwheel")
 
 
 def _family_map(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -150,10 +227,51 @@ def _expected_targets(plan: dict[str, Any], reference: str) -> dict[str, str]:
     return expected
 
 
+def _meta_artifact(
+    plan: dict[str, Any], meta_root: Path | None
+) -> tuple[dict[str, Any] | None, Path | None]:
+    planned = plan.get("meta_package")
+    if planned is None:
+        if meta_root is not None and any(meta_root.rglob("*")):
+            raise ValueError(
+                "meta artifacts were provided without a planned meta package"
+            )
+        return None, None
+    if meta_root is None:
+        raise ValueError("planned meta package has no artifact directory")
+    planned_meta = _mapping(planned, "release plan meta package")
+    result_path = _one(sorted(meta_root.rglob("meta-result.json")), "meta result")
+    result = _mapping(_load_json(result_path), f"meta result {result_path}")
+    if result.get("kind") != "ucm-meta-result" or result.get("schema_version") != 1:
+        raise ValueError("meta result must use ucm-meta-result schema 1")
+    expected = {
+        "distribution": planned_meta.get("distribution"),
+        "version": planned_meta.get("version"),
+        "extras": planned_meta.get("extras"),
+        "tags": ["py3-none-any"],
+    }
+    if any(result.get(key) != value for key, value in expected.items()):
+        raise ValueError("meta result does not match the release plan")
+    filename = result.get("filename")
+    if not isinstance(filename, str) or not filename:
+        raise ValueError("meta result has no filename")
+    wheel_path = result_path.parent / filename
+    if not wheel_path.is_file():
+        raise ValueError("meta result has no matching Wheel")
+    digest = result.get("sha256")
+    if digest != f"sha256:{_sha256(wheel_path)}":
+        raise ValueError("meta result digest does not match its Wheel")
+    discovered = {path.resolve() for path in meta_root.rglob("*.whl")}
+    if discovered != {wheel_path.resolve()}:
+        raise ValueError("meta Wheel files and result must match exactly")
+    return copy.deepcopy(result), wheel_path
+
+
 def build_artifacts_manifest(
     plan: dict[str, Any],
     wheels_root: Path,
     chart_root: Path,
+    meta_root: Path | None = None,
     *,
     actions_run_id: int,
 ) -> tuple[dict[str, Any], list[tuple[str, str]]]:
@@ -177,15 +295,26 @@ def build_artifacts_manifest(
         wheel_path = result_path.parent / filename
         if not filename or not wheel_path.is_file():
             raise ValueError(f"Wheel result {task_id!r} has no matching file")
+        if _sha256(wheel_path) != result["sha256"]:
+            raise ValueError(f"Wheel result {task_id!r} digest does not match its file")
         task = tasks[task_id]
         expected = {
             "distribution": task["dist_name"],
             "version": task["wheel_version"],
             "python_abi": task["python_abi"],
             "cpu_arch": task["cpu_arch"],
+            "dependencies": task["runtime_requirements"],
         }
         if any(result.get(key) != value for key, value in expected.items()):
             raise ValueError(f"Wheel result {task_id!r} does not match its plan")
+        expected_repair = {
+            "tool": task["repair"]["tool"],
+            "version": task["repair"]["version"],
+            "target_platform": task["target_platform_tag"],
+            "excluded_patterns": task["external_runtime_exclude_patterns"],
+        }
+        if result.get("repair") != expected_repair:
+            raise ValueError(f"Wheel result {task_id!r} repair does not match its plan")
         results[task_id] = result
         wheel_files[task_id] = wheel_path
 
@@ -200,6 +329,7 @@ def build_artifacts_manifest(
     if len(filenames) != len(set(filenames)):
         raise ValueError("Wheel result filenames must be unique")
 
+    meta_result, meta_wheel_path = _meta_artifact(plan, meta_root)
     chart_path = _one(sorted(chart_root.rglob("*.tgz")), "Chart package")
     checksums: list[tuple[str, str]] = []
     wheels: list[dict[str, Any]] = []
@@ -224,6 +354,8 @@ def build_artifacts_manifest(
 
     chart_digest = _sha256(chart_path)
     checksums.append((chart_digest, chart_path.name))
+    if meta_result is not None and meta_wheel_path is not None:
+        checksums.append((_sha256(meta_wheel_path), str(meta_result["filename"])))
     families = _family_map(plan)
     images = []
     for raw in _list(plan.get("images"), "release plan Images"):
@@ -308,6 +440,8 @@ def build_artifacts_manifest(
         "images": sorted(images, key=lambda item: str(item["id"])),
         "families": family_records,
     }
+    if meta_result is not None:
+        manifest["meta_package"] = meta_result
     return manifest, sorted(checksums, key=lambda item: item[1])
 
 
@@ -402,6 +536,94 @@ def validate_member_receipts(
     return receipts
 
 
+def validate_pypi_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
+    """Validate the receipt envelope before exact state comparison."""
+    if (
+        set(receipt)
+        != {
+            "kind",
+            "schema_version",
+            "status",
+            "version",
+            "projects",
+            "extras",
+        }
+        or receipt.get("schema_version") != 1
+    ):
+        raise ValueError("PyPI publication receipt has an invalid contract")
+    if receipt.get("status") != "complete":
+        raise ValueError("PyPI publication receipt is not complete")
+    return copy.deepcopy(receipt)
+
+
+def _pypi_receipt(receipts_root: Path) -> dict[str, Any] | None:
+    matches: list[dict[str, Any]] = []
+    if receipts_root.exists():
+        for path in sorted(receipts_root.rglob("*.json")):
+            value = _mapping(_load_json(path), f"publication receipt {path}")
+            if value.get("kind") == "ucm-pypi-receipt":
+                matches.append(value)
+    if len(matches) > 1:
+        raise ValueError("PyPI publication receipt is duplicated")
+    if not matches:
+        return None
+    return validate_pypi_receipt(matches[0])
+
+
+def _expected_pypi_projects(state: dict[str, Any]) -> list[dict[str, Any]]:
+    version = state["release"]["version"]
+    grouped: dict[str, dict[str, Any]] = {}
+    for raw_wheel in _list(state.get("wheels"), "release state Wheels"):
+        wheel = _mapping(raw_wheel, "release state Wheel")
+        project = wheel.get("distribution")
+        filename = wheel.get("filename")
+        digest = wheel.get("sha256")
+        if (
+            not isinstance(project, str)
+            or not project
+            or not isinstance(filename, str)
+            or not filename
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            raise ValueError("release state Wheel has invalid PyPI coordinates")
+        record = grouped.setdefault(
+            project,
+            {
+                "project": project,
+                "version": version,
+                "role": "backend",
+                "files": [],
+            },
+        )
+        record["files"].append({"filename": filename, "sha256": f"sha256:{digest}"})
+    if not grouped:
+        raise ValueError("release state has no backend Wheels for PyPI")
+    backends = sorted(grouped.values(), key=lambda item: item["project"])
+    for backend in backends:
+        backend["files"].sort(key=lambda item: item["filename"])
+
+    meta = _mapping(state.get("meta_package"), "release state meta package")
+    meta_digest = meta.get("sha256")
+    if (
+        meta.get("distribution") != "uc-manager"
+        or meta.get("version") != version
+        or not isinstance(meta.get("filename"), str)
+        or not isinstance(meta_digest, str)
+        or _DIGEST.fullmatch(meta_digest) is None
+    ):
+        raise ValueError("release state meta package has invalid PyPI coordinates")
+    return [
+        *backends,
+        {
+            "project": "uc-manager",
+            "version": version,
+            "role": "meta",
+            "files": [{"filename": meta["filename"], "sha256": meta_digest}],
+        },
+    ]
+
+
 def finalize_manifest(
     manifest: dict[str, Any],
     receipts_root: Path,
@@ -409,7 +631,8 @@ def finalize_manifest(
     build_outcome: str,
     member_outcome: str,
     index_outcome: str,
-    pypi_outcome: str = "success",
+    pypi_outcome: str = "skipped",
+    pypi_install_outcome: str = "skipped",
     chart_oci_outcome: str = "success",
 ) -> dict[str, Any]:
     """Merge immutable publication receipts and close the image stage."""
@@ -424,6 +647,39 @@ def finalize_manifest(
         raise ValueError("member receipts contain unknown Image IDs")
     if set(indexes) - expected_index_ids:
         raise ValueError("index receipts contain unknown family IDs")
+    publish_contract = result.get("publish")
+    planned_pypi = (
+        _mapping(publish_contract.get("pypi"), "release state PyPI")
+        if isinstance(publish_contract, dict)
+        else {"enabled": False}
+    )
+    pypi_receipt = _pypi_receipt(receipts_root)
+    if planned_pypi.get("enabled") is True:
+        if pypi_outcome == "success":
+            if pypi_receipt is None:
+                raise ValueError("enabled PyPI publication has no complete receipt")
+            if pypi_receipt.get("version") != result["release"]["version"]:
+                raise ValueError(
+                    "PyPI publication receipt version does not match release"
+                )
+            meta_package = _mapping(
+                result.get("meta_package"), "release state meta package"
+            )
+            if pypi_receipt.get("extras") != meta_package.get("extras"):
+                raise ValueError("PyPI receipt extras do not match the meta package")
+            if pypi_receipt.get("projects") != _expected_pypi_projects(result):
+                raise ValueError("PyPI receipt files do not match release artifacts")
+            result["pypi"] = pypi_receipt
+        elif pypi_receipt is not None:
+            raise ValueError("failed PyPI publication cannot have a complete receipt")
+    else:
+        if pypi_receipt is not None:
+            raise ValueError("disabled PyPI publication produced a receipt")
+        if pypi_outcome != "skipped" or pypi_install_outcome != "skipped":
+            raise ValueError("disabled PyPI publication jobs must be skipped")
+    pypi_failed = planned_pypi.get("enabled") is True and (
+        pypi_outcome != "success" or pypi_install_outcome != "success"
+    )
 
     publication_items = [*result["images"], *result["families"]]
     publication_not_requested = all(
@@ -448,7 +704,7 @@ def finalize_manifest(
             item["targets"] = []
         result["release"]["status"] = (
             "complete"
-            if pypi_outcome == "success" and chart_oci_outcome == "success"
+            if not pypi_failed and chart_oci_outcome == "success"
             else "publication-failed"
         )
         return result
@@ -508,7 +764,7 @@ def finalize_manifest(
 
     if failed:
         result["release"]["status"] = "images-failed"
-    elif pypi_outcome != "success" or chart_oci_outcome != "success":
+    elif pypi_failed or chart_oci_outcome != "success":
         result["release"]["status"] = "publication-failed"
     else:
         result["release"]["status"] = "complete"
@@ -616,6 +872,11 @@ def _github_asset_urls(
         str(item["filename"])
         for item in _list(manifest.get("wheels"), "release manifest Wheels")
     }
+    if "meta_package" in manifest:
+        meta_package = _mapping(
+            manifest.get("meta_package"), "release manifest meta package"
+        )
+        required.add(str(meta_package.get("filename", "")))
     chart = _mapping(manifest.get("chart"), "release manifest Chart")
     required.add(str(chart.get("filename", "")))
     missing = sorted(required - urls.keys())
@@ -674,7 +935,11 @@ def _capability_label(row: dict[str, Any]) -> str:
 
 
 def _render_product_tables(
-    manifest: dict[str, Any], *, repository: str, asset_urls: dict[str, str]
+    manifest: dict[str, Any],
+    *,
+    repository: str,
+    asset_urls: dict[str, str],
+    link_assets: bool,
 ) -> list[str]:
     wheels = {str(item["id"]): item for item in manifest["wheels"]}
     images_by_family: dict[str, list[dict[str, Any]]] = {}
@@ -830,8 +1095,11 @@ def _render_product_tables(
             for architecture in wheel_architectures:
                 wheel = row["wheels"][architecture]
                 filename = str(wheel["filename"])
+                label = _architecture_label(architecture)
                 wheel_links.append(
-                    f"[{_architecture_label(architecture)}]({asset_urls[filename]})"
+                    f"[{label}]({asset_urls[filename]})"
+                    if link_assets
+                    else f"`{label}`"
                 )
             rendered.append(
                 "| "
@@ -851,7 +1119,11 @@ def _render_product_tables(
 
 
 def render_notes(
-    manifest: dict[str, Any], *, repository: str, asset_urls: dict[str, str]
+    manifest: dict[str, Any],
+    *,
+    repository: str,
+    asset_urls: dict[str, str],
+    link_assets: bool = True,
 ) -> str:
     """Render compact, linked Release notes from the current manifest stage."""
     release = _mapping(manifest.get("release"), "release manifest release")
@@ -868,33 +1140,78 @@ def render_notes(
     chart_url = asset_urls.get(chart_filename)
     if not chart_filename or not chart_url:
         raise ValueError("Release notes require a Chart URL")
-    lines.extend(
-        [
-            f"Wheels: {len(manifest.get('wheels', []))}",
-            f"Chart: [{chart_filename}]({chart_url})",
-            "",
-        ]
+    has_meta_package = "meta_package" in manifest
+    artifact_lines = [f"Backend Wheels: {len(manifest.get('wheels', []))}"]
+    if has_meta_package:
+        meta_package = _mapping(
+            manifest.get("meta_package"), "release manifest meta package"
+        )
+        meta_filename = str(meta_package.get("filename", ""))
+        meta_url = asset_urls.get(meta_filename)
+        if not meta_filename or not meta_url:
+            raise ValueError("Release notes require a meta Wheel URL")
+        artifact_lines.append(
+            f"Meta Wheel: [{meta_filename}]({meta_url})"
+            if link_assets
+            else f"Meta Wheel: `{meta_filename}`"
+        )
+    chart_line = (
+        f"Chart: [{chart_filename}]({chart_url})"
+        if link_assets
+        else f"Chart: `{chart_filename}`"
+    )
+    artifact_lines.extend([chart_line, ""])
+    lines.extend(artifact_lines)
+    available_artifacts = (
+        "Backend, meta, and Chart" if has_meta_package else "Backend and Chart"
     )
     if release["status"] == "artifacts-ready":
         lines.extend(
-            ["> Wheels and Chart are available. Images are still building.", ""]
+            [
+                f"> {available_artifacts} artifacts are available. Images are still building.",
+                "",
+            ]
         )
     elif release["status"] == "images-failed":
         lines.extend(
             [
-                "> Wheels and Chart remain available, but one or more images failed to publish.",
+                f"> {available_artifacts} artifacts remain available, but one or more images failed to publish.",
                 "",
             ]
         )
     elif release["status"] == "publication-failed":
         lines.extend(
             [
-                "> Wheels and Chart remain available, but one or more publication channels failed.",
+                f"> {available_artifacts} artifacts remain available, but one or more publication channels failed.",
                 "",
             ]
         )
+    pypi_receipt = manifest.get("pypi")
+    if pypi_receipt is not None and release["status"] == "complete":
+        receipt = _mapping(pypi_receipt, "release manifest PyPI receipt")
+        extras = _mapping(receipt.get("extras"), "release manifest PyPI extras")
+        version = str(receipt.get("version", ""))
+        if not version or not extras:
+            raise ValueError("Release notes require complete PyPI coordinates")
+        lines.extend(
+            [
+                "## PyPI",
+                "",
+                "> Install one backend extra in a new virtual environment; do not upgrade "
+                "an older monolithic uc-manager environment or switch backends in place.",
+                "",
+            ]
+        )
+        for extra in sorted(extras):
+            lines.append(f"- `pip install 'uc-manager[{extra}]=={version}'`")
+        lines.append("")
     lines.extend(
-        _render_product_tables(manifest, repository=repository, asset_urls=asset_urls)
+        _render_product_tables(
+            manifest,
+            repository=repository,
+            asset_urls=asset_urls,
+            link_assets=link_assets,
+        )
     )
     return "\n".join(lines) + "\n"
 
@@ -905,6 +1222,7 @@ def _artifacts(arguments: argparse.Namespace) -> None:
         plan,
         arguments.wheels,
         arguments.chart,
+        arguments.meta,
         actions_run_id=arguments.run_id,
     )
     _write_json(arguments.output / "release-state.json", manifest)
@@ -919,6 +1237,7 @@ def _finalize(arguments: argparse.Namespace) -> None:
         member_outcome=arguments.member_outcome,
         index_outcome=arguments.index_outcome,
         pypi_outcome=arguments.pypi_outcome,
+        pypi_install_outcome=arguments.pypi_install_outcome,
         chart_oci_outcome=arguments.chart_oci_outcome,
     )
     _write_json(arguments.output / "release-state.json", result)
@@ -935,6 +1254,7 @@ def _notes(arguments: argparse.Namespace) -> None:
             manifest,
             repository=arguments.repository,
             asset_urls=asset_urls,
+            link_assets=release_document.get("draft") is not True,
         ),
         encoding="utf-8",
     )
@@ -963,6 +1283,7 @@ def build_parser() -> argparse.ArgumentParser:
     artifacts.add_argument("--plan", type=Path, required=True)
     artifacts.add_argument("--wheels", type=Path, required=True)
     artifacts.add_argument("--chart", type=Path, required=True)
+    artifacts.add_argument("--meta", type=Path)
     artifacts.add_argument("--run-id", type=int, required=True)
     artifacts.add_argument("--output", type=Path, required=True)
     artifacts.set_defaults(func=_artifacts)
@@ -973,6 +1294,7 @@ def build_parser() -> argparse.ArgumentParser:
     finalize.add_argument("--member-outcome", required=True)
     finalize.add_argument("--index-outcome", required=True)
     finalize.add_argument("--pypi-outcome", required=True)
+    finalize.add_argument("--pypi-install-outcome", required=True)
     finalize.add_argument("--chart-oci-outcome", required=True)
     finalize.add_argument("--output", type=Path, required=True)
     finalize.set_defaults(func=_finalize)

@@ -55,8 +55,14 @@ def test_versioned_backend_distribution_names_are_recognized(monkeypatch, name) 
 
 
 def test_multiple_versioned_backend_distributions_are_rejected(monkeypatch) -> None:
-    with pytest.raises(ImportError, match="Multiple UCM backend distributions"):
+    with pytest.raises(ImportError, match="new virtual environment"):
         _load_guard(
             monkeypatch,
             ["uc-manager-cann851-a2", "uc-manager-cuda-cu129"],
         )
+
+
+def test_empty_meta_distribution_is_not_counted_as_a_backend(monkeypatch) -> None:
+    module = _load_guard(monkeypatch, ["uc-manager", "uc-manager-cuda-cu130"])
+
+    assert not module._is_backend_distribution("uc-manager")

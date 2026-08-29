@@ -1,5 +1,5 @@
 kind: ucm-platform-policy
-schema_version: 1
+schema_version: 3
 
 excluded_upstream_variants:
   vllm-ascend: [310p]
@@ -11,14 +11,15 @@ builder_families:
       amd64: docker.io/pytorch/manylinux2_28-builder
       arm64: docker.io/pytorch/manylinuxaarch64-builder
     manylinux: manylinux_2_28
-    required_commands: [gcc, g++, make, git, nvcc]
+    required_commands: [gcc, g++, make, git, nvcc, patchelf]
 
   ascend:
     target_repository: ghcr.io/{owner}/ucm-builder-vllm-ascend
     source_repositories:
       amd64: quay.io/ascend/manylinux
       arm64: quay.io/ascend/manylinux
-    required_commands: [gcc, g++, make, git, cmake]
+    manylinux: manylinux_2_34
+    required_commands: [gcc, g++, make, git, cmake, patchelf]
     required_files: [acl.h]
     variant_required_files:
       a3: [libruntime.so]
@@ -28,16 +29,21 @@ backends:
     status: supported
     platform: cuda
     distribution_template: uc-manager-cuda-{runtime_variant}
+    external_runtime_exclude_patterns: ["libcudart.so.{accelerator_major}"]
 
   cann-a2:
     status: supported
     platform: ascend
     distribution_template: uc-manager-{runtime_variant}
+    # CANN libraries are supplied by the target Runtime. auditwheel discovers
+    # the concrete direct roots and their version-specific transitive closure.
+    external_runtime_exclude_patterns: ["/usr/local/Ascend/*"]
 
   cann-a3:
     status: supported
     platform: ascend-a3
     distribution_template: uc-manager-{runtime_variant}
+    external_runtime_exclude_patterns: ["/usr/local/Ascend/*"]
 
   cann-a5:
     status: blocked

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -14,9 +15,11 @@ from . import (
     builders,
     compact,
     core,
+    meta,
     policy,
     pr,
     problems,
+    pypi,
     registry,
     runtime,
     upstream,
@@ -302,6 +305,80 @@ def build_parser() -> argparse.ArgumentParser:
         return result
 
     compact_record.set_defaults(func=_cmd_compact_record)
+
+    compact_meta_source = compact_actions.add_parser("materialize-meta-source")
+    compact_meta_source.add_argument("--plan", type=Path, required=True)
+    compact_meta_source.add_argument("--output-dir", type=Path, required=True)
+
+    def _cmd_compact_meta_source(a):
+        path = meta.materialize_meta_source(core.load_json(a.plan), a.output_dir)
+        return {"source": str(path)}
+
+    compact_meta_source.set_defaults(func=_cmd_compact_meta_source)
+
+    compact_meta_result = compact_actions.add_parser("record-meta-result")
+    compact_meta_result.add_argument("--plan", type=Path, required=True)
+    compact_meta_result.add_argument("--wheel", type=Path, required=True)
+    compact_meta_result.add_argument("--output", type=Path, required=True)
+
+    def _cmd_compact_meta_result(a):
+        result = meta.record_meta_wheel(core.load_json(a.plan), a.wheel)
+        a.output.parent.mkdir(parents=True, exist_ok=True)
+        _write(a.output, result)
+        return result
+
+    compact_meta_result.set_defaults(func=_cmd_compact_meta_result)
+
+    pypi_parser = groups.add_parser("pypi")
+    pypi_actions = pypi_parser.add_subparsers(dest="action", required=True)
+
+    pypi_publish = pypi_actions.add_parser("publish")
+    pypi_publish.add_argument("--release-plan", type=Path, required=True)
+    pypi_publish.add_argument("--wheel-results-dir", type=Path, required=True)
+    pypi_publish.add_argument("--meta-result", type=Path, required=True)
+    pypi_publish.add_argument("--wheel-root", type=Path, required=True)
+    pypi_publish.add_argument("--meta-root", type=Path, required=True)
+    pypi_publish.add_argument("--repository-url", required=True)
+    pypi_publish.add_argument("--attempts", type=int, default=12)
+    pypi_publish.add_argument("--interval", type=float, default=5.0)
+    pypi_publish.add_argument("--output", type=Path, required=True)
+
+    def _cmd_pypi_publish(a):
+        backend_results = [
+            core.load_json(path)
+            for path in sorted(a.wheel_results_dir.rglob("wheel-result.json"))
+        ]
+        publication = pypi.build_publication(
+            core.load_json(a.release_plan),
+            backend_results,
+            core.load_json(a.meta_result),
+        )
+        if a.repository_url != publication["repository_url"]:
+            raise ValueError("PyPI repository URL differs from the authorized plan")
+        token = os.environ.get("PYPI_API_TOKEN", "")
+        projects = [*publication["backends"], publication["meta"]]
+        expected_sha256 = {
+            file["filename"]: file["sha256"]
+            for project in projects
+            for file in project["files"]
+        }
+        uploader = pypi.make_twine_uploader(
+            roots=[a.wheel_root, a.meta_root],
+            expected_sha256=expected_sha256,
+            repository_url=a.repository_url,
+            token=token,
+        )
+        result = pypi.publish(
+            publication,
+            uploader=uploader,
+            attempts=a.attempts,
+            interval=a.interval,
+        )
+        a.output.parent.mkdir(parents=True, exist_ok=True)
+        _write(a.output, result)
+        return result
+
+    pypi_publish.set_defaults(func=_cmd_pypi_publish)
 
     runtime_parser = groups.add_parser("runtime")
     runtime_actions = runtime_parser.add_subparsers(dest="action", required=True)
@@ -716,7 +793,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         result = args.func(args)
-    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError, yaml.YAMLError) as error:
+    except (
+        OSError,
+        RuntimeError,
+        ValueError,
+        KeyError,
+        TypeError,
+        json.JSONDecodeError,
+        yaml.YAMLError,
+    ) as error:
         parser.exit(2, f"error: {error}\n")
     print(_json(result))
     return 0

@@ -72,8 +72,20 @@ jobs:
             --distribution "$(jq -r '.dist_name' out/wheel-task.json)" >/dev/null
           jq -r '.build_requirements[]' out/wheel-task.json \
             >.ucm-compact/build-requirements.txt
+          jq -e '
+            (.target_platform_tag | type == "string" and length > 0) and
+            (.external_runtime_exclude_patterns | type == "array") and
+            all(.external_runtime_exclude_patterns[];
+              type == "string" and length > 0 and
+              index("\n") == null and index("\r") == null)
+          ' out/wheel-task.json >/dev/null
+          jq -r '.external_runtime_exclude_patterns[]' out/wheel-task.json \
+            >.ucm-compact/auditwheel-exclude-patterns.txt
           artifact="ucm-wheel-${WHEEL_ID}-run-${GITHUB_RUN_ID}"
+          source_date_epoch="$(git show -s --format=%ct HEAD)"
+          test "${source_date_epoch}" -ge 315532800
           echo "wheel_artifact=${artifact}" >>"${GITHUB_OUTPUT}"
+          echo "source_date_epoch=${source_date_epoch}" >>"${GITHUB_OUTPUT}"
       - uses: jlumbroso/free-disk-space@v1.3.1
         with:
           tool-cache: true
@@ -104,18 +116,18 @@ jobs:
             --build-arg "UCM_PLATFORM=$(jq -r '.build.platform_arg' out/wheel-task.json)" \
             --build-arg "UCM_PYTHON_VERSION=$(jq -r '.python_version' out/wheel-task.json)" \
             --build-arg "UCM_PYTHON_ABI=$(jq -r '.python_abi' out/wheel-task.json)" \
+            --build-arg "UCM_TARGET_PLATFORM_TAG=$(jq -r '.target_platform_tag' out/wheel-task.json)" \
+            --build-arg "SOURCE_DATE_EPOCH=${{ steps.task.outputs.source_date_epoch }}" \
             --output type=local,dest=out/wheel \
             --progress plain .
           test "$(find out/wheel -maxdepth 1 -type f -name '*.whl' | wc -l | tr -d ' ')" = 1
-      - name: Inspect Wheel platform and record result
+          test -s out/wheel/auditwheel-repair.txt
+          test -s out/wheel/auditwheel-show.txt
+      - name: Record repaired Wheel result
         run: |
           set -euo pipefail
           wheel="$(find out/wheel -maxdepth 1 -type f -name '*.whl' -print -quit)"
           test -n "${wheel}"
-          python -m pip install --disable-pip-version-check --no-cache-dir \
-            auditwheel==6.4.2
-          python -m auditwheel -v show "${wheel}" 2>&1 \
-            | tee out/wheel/auditwheel-show.txt
           PYTHONPATH=.github/release python -m ucm_release compact record-wheel-result \
             --task out/wheel-task.json --wheel "${wheel}" \
             --output out/wheel/wheel-result.json >/dev/null

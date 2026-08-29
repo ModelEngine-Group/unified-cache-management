@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import copy
+import email.parser
 import hashlib
-import json
 import re
 import tomllib
 import zipfile
@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from packaging.requirements import InvalidRequirement, Requirement
 from packaging.tags import parse_tag
 from packaging.utils import canonicalize_name, parse_wheel_filename
 from packaging.version import Version
@@ -19,7 +20,7 @@ from packaging.version import Version
 from . import builders
 from . import policy as release_policy
 from . import runtime as runtime_ops
-from . import upstream
+from . import upstream, wheel_audit
 
 ROUTES = frozenset({"pr", "daily", "release"})
 WHEEL_ARCHITECTURES = {"amd64": "x86_64", "arm64": "aarch64"}
@@ -76,6 +77,91 @@ def _distribution(backend: Mapping[str, Any], runtime_variant: str) -> str:
     if re.fullmatch(r"uc-manager(?:-[a-z0-9]+)*", value) is None:
         raise ValueError("backend policy generated an invalid distribution")
     return value
+
+
+def _target_platform_tag(manylinux: str, architecture: str) -> str:
+    try:
+        wheel_architecture = WHEEL_ARCHITECTURES[architecture]
+    except KeyError as error:
+        raise ValueError(
+            f"unsupported Wheel CPU architecture: {architecture}"
+        ) from error
+    if re.fullmatch(r"manylinux_[0-9]+_[0-9]+", manylinux) is None:
+        raise ValueError(f"invalid manylinux policy: {manylinux!r}")
+    return f"{manylinux}_{wheel_architecture}"
+
+
+def _manylinux_parts(platform: str) -> tuple[int, int, str]:
+    match = re.fullmatch(
+        r"manylinux_(?P<major>[0-9]+)_(?P<minor>[0-9]+)_(?P<arch>x86_64|aarch64)",
+        platform,
+    )
+    if match is None:
+        raise ValueError(f"invalid manylinux platform tag: {platform!r}")
+    return int(match.group("major")), int(match.group("minor")), match.group("arch")
+
+
+def _auditwheel_version(requirements: list[str]) -> str:
+    matches = [
+        requirement
+        for raw in requirements
+        if (requirement := Requirement(raw)).name.lower() == "auditwheel"
+    ]
+    if len(matches) != 1:
+        raise ValueError("Wheel build requirements must pin auditwheel exactly once")
+    specifiers = list(matches[0].specifier)
+    if len(specifiers) != 1 or specifiers[0].operator != "==":
+        raise ValueError("Wheel build auditwheel requirement must be an exact pin")
+    return specifiers[0].version
+
+
+def _external_runtime_exclude_patterns(
+    backend: Mapping[str, Any], build: Mapping[str, Any]
+) -> list[str]:
+    templates = backend.get("external_runtime_exclude_patterns")
+    if (
+        not isinstance(templates, list)
+        or not templates
+        or any(not isinstance(item, str) or not item for item in templates)
+    ):
+        raise ValueError("supported backend has no external runtime exclude patterns")
+    accelerator_runtime = str(build["accelerator_runtime"])
+    match = re.fullmatch(r"cuda-(?P<major>[0-9]+)(?:\.[0-9]+)*", accelerator_runtime)
+    major = match.group("major") if match is not None else None
+    patterns: list[str] = []
+    for template in templates:
+        if "{accelerator_major}" in template:
+            if major is None:
+                raise ValueError(
+                    "external runtime exclude pattern requires a CUDA accelerator major"
+                )
+            pattern = template.replace("{accelerator_major}", major)
+        else:
+            pattern = template
+        wheel_audit.validate_exclude_pattern(pattern)
+        patterns.append(pattern)
+    if len(patterns) != len(set(patterns)):
+        raise ValueError("external runtime exclude patterns contain duplicates")
+    return sorted(patterns)
+
+
+def _meta_package(wheels: list[Mapping[str, Any]], version: str) -> dict[str, Any]:
+    extras: dict[str, str] = {}
+    for wheel in wheels:
+        extra = str(wheel["runtime_variant"])
+        if re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", extra) is None:
+            raise ValueError(f"Wheel channel cannot be used as an extra: {extra!r}")
+        requirement = f"{wheel['dist_name']}=={version}"
+        existing = extras.setdefault(extra, requirement)
+        if existing != requirement:
+            raise ValueError(f"Wheel channel {extra!r} maps to multiple distributions")
+    if not extras:
+        raise ValueError("meta package requires at least one backend extra")
+    return {
+        "distribution": "uc-manager",
+        "version": version,
+        "extras": {key: extras[key] for key in sorted(extras)},
+    }
 
 
 def _runtime_label(runtime: Mapping[str, Any]) -> str:
@@ -145,7 +231,13 @@ def _wheel_task(
     backend: Mapping[str, Any],
 ) -> dict[str, Any]:
     architecture = str(build["cpu_arch"])
+    manylinux = str(build["manylinux"])
     requirements = _mapping(catalog.get("requirements"), "formal requirements")
+    build_requirements = copy.deepcopy(requirements["wheel_build"])
+    target_platform_tag = _target_platform_tag(manylinux, architecture)
+    external_runtime_exclude_patterns = _external_runtime_exclude_patterns(
+        backend, build
+    )
     return {
         "id": str(build["id"]),
         "label": (f"{build['build_group']} · {build['python_abi']} · {architecture}"),
@@ -158,7 +250,9 @@ def _wheel_task(
         "platform": f"linux/{architecture}",
         "python_version": str(build["python_version"]),
         "python_abi": str(build["python_abi"]),
-        "manylinux": str(build["manylinux"]),
+        "manylinux": manylinux,
+        "target_platform_tag": target_platform_tag,
+        "external_runtime_exclude_patterns": external_runtime_exclude_patterns,
         "wheel_version": catalog["ucm_version"],
         "dist_name": _distribution(backend, str(build["runtime_variant"])),
         "build": {"docker_target": "wheel", "platform_arg": backend["platform"]},
@@ -171,7 +265,13 @@ def _wheel_task(
             "manylinux": str(builder["manylinux"]),
             "recipe_revision": str(builder["recipe_revision"]),
         },
-        "build_requirements": copy.deepcopy(requirements["wheel_build"]),
+        "build_requirements": build_requirements,
+        "repair": {
+            "tool": "auditwheel",
+            "version": _auditwheel_version(build_requirements),
+            "target_platform": target_platform_tag,
+            "excluded_patterns": external_runtime_exclude_patterns,
+        },
         "runtime_requirements": copy.deepcopy(requirements["wheel_runtime"]),
     }
 
@@ -225,17 +325,37 @@ def resolve_plan(
         raise ValueError(
             "formal runtime image tag prefix does not match repository owner"
         )
-    if expected_scope == "fork":
-        publication_policy = _mapping(
-            catalog.get("publish"), "formal publication policy"
+    publication_policy = _mapping(catalog.get("publish"), "formal publication policy")
+    release_profile = _mapping(catalog.get("release_profile"), "release profile")
+    profile_requests = _mapping(
+        release_profile.get("publish"), "release profile publication requests"
+    )
+    for channel in release_policy.PUBLISH_CHANNELS:
+        requested = profile_requests.get(channel)
+        channel_policy = _mapping(
+            publication_policy.get(channel), f"formal {channel} publication policy"
         )
-        for channel in ("pypi", "dockerhub"):
-            channel_policy = _mapping(
-                publication_policy.get(channel),
-                f"formal {channel} publication policy",
+        if (
+            not isinstance(requested, bool)
+            or channel_policy.get("requested") is not requested
+        ):
+            raise ValueError(
+                f"formal {channel} publication request does not match its Profile"
             )
-            if channel_policy.get("enabled") is not False:
-                raise ValueError(f"fork publication cannot enable {channel}")
+        scope_skipped = (
+            expected_scope == "fork" and channel in {"pypi", "dockerhub"} and requested
+        )
+        expected_enabled = requested and not scope_skipped
+        expected_disposition = (
+            "scope-skipped" if scope_skipped else "publish" if requested else "disabled"
+        )
+        if (
+            channel_policy.get("enabled") is not expected_enabled
+            or channel_policy.get("disposition") != expected_disposition
+        ):
+            raise ValueError(
+                f"formal {channel} publication decision does not match repository scope"
+            )
     selection = upstream.validate_selection(runtime_selection)
     builds = _build_map(selection)
     builder_by_id = _builder_map(builder_catalog)
@@ -370,6 +490,27 @@ def resolve_plan(
     if resolved_release_type not in {"stable", "prerelease", "draft", "nightly"}:
         raise ValueError(f"unsupported release type: {resolved_release_type!r}")
     resolved_version = str(catalog["ucm_version"])
+    meta_package = _meta_package(wheels, resolved_version)
+    image_by_wheel: dict[str, dict[str, Any]] = {}
+    for image in images:
+        image_by_wheel.setdefault(str(image["wheel_id"]), image)
+    pypi_test_matrix = {
+        "include": [
+            {
+                "id": wheel["id"],
+                "label": f"{wheel['runtime_variant']} · {wheel['cpu_arch']}",
+                "runner": wheel["runner"],
+                "cpu_arch": wheel["cpu_arch"],
+                "extra": wheel["runtime_variant"],
+                "distribution": wheel["dist_name"],
+                "platform_arg": wheel["build"]["platform_arg"],
+                "runtime_image": image_by_wheel[str(wheel["id"])]["runtime"][
+                    "image_reference"
+                ],
+            }
+            for wheel in wheels
+        ]
+    }
     resolved_git_tag = git_tag or str(catalog["release_tag"])
     resolved_release_kind = release_kind or (
         "publish" if route == "release" else "none"
@@ -399,6 +540,7 @@ def resolve_plan(
         "release_kind": resolved_release_kind,
         "is_prerelease": resolved_prerelease,
         "publish": publish,
+        "meta_package": meta_package,
         "chart": chart,
         "wheels": wheels,
         "images": images,
@@ -414,6 +556,7 @@ def resolve_plan(
                 for task in images
             ]
         },
+        "pypi_test_matrix": pypi_test_matrix,
     }
 
 
@@ -501,7 +644,57 @@ def _wheel_metadata_tags(wheel_path: Path) -> set[str]:
     return tags
 
 
-def _validate_wheel_platforms(platforms: set[str], architecture: str) -> str:
+def _normalized_requirements(values: object, context: str) -> list[str]:
+    if not isinstance(values, list) or any(
+        not isinstance(item, str) for item in values
+    ):
+        raise ValueError(f"{context} must be a string list")
+    normalized: list[str] = []
+    for raw in values:
+        try:
+            requirement = Requirement(raw)
+        except InvalidRequirement as error:
+            raise ValueError(f"{context} contains an invalid requirement") from error
+        rendered = str(requirement)
+        normalized.append(
+            canonicalize_name(requirement.name) + rendered[len(requirement.name) :]
+        )
+    if len(normalized) != len(set(normalized)):
+        raise ValueError(f"{context} contains duplicate requirements")
+    return sorted(normalized)
+
+
+def _wheel_dependencies(
+    wheel_path: Path, *, distribution: str, version: str
+) -> list[str]:
+    try:
+        with zipfile.ZipFile(wheel_path) as wheel:
+            metadata_files = [
+                name
+                for name in wheel.namelist()
+                if name.count("/") == 1 and name.endswith(".dist-info/METADATA")
+            ]
+            if len(metadata_files) != 1:
+                raise ValueError("built Wheel must contain exactly one METADATA file")
+            metadata = email.parser.Parser().parsestr(
+                wheel.read(metadata_files[0]).decode("utf-8")
+            )
+    except (OSError, UnicodeDecodeError, zipfile.BadZipFile) as error:
+        raise ValueError("built Wheel METADATA cannot be read") from error
+
+    metadata_distribution = metadata.get("Name", "")
+    if canonicalize_name(metadata_distribution) != canonicalize_name(distribution):
+        raise ValueError("built Wheel METADATA distribution does not match its task")
+    if metadata.get("Version", "") != version:
+        raise ValueError("built Wheel METADATA version does not match its task")
+    return _normalized_requirements(
+        metadata.get_all("Requires-Dist", []), "built Wheel METADATA dependencies"
+    )
+
+
+def _validate_wheel_platforms(
+    platforms: set[str], architecture: str, target_platform: str
+) -> str:
     try:
         wheel_architecture = WHEEL_ARCHITECTURES[architecture]
     except KeyError as error:
@@ -512,14 +705,26 @@ def _validate_wheel_platforms(platforms: set[str], architecture: str) -> str:
         re.search(r"(?:^|_)(?:amd64|arm64)(?:_|$)", platform) for platform in platforms
     ):
         raise ValueError("built Wheel platform must use x86_64/aarch64, not OCI names")
-    expected = f"linux_{wheel_architecture}"
-    if platforms != {expected}:
-        raise ValueError(f"built Wheel platform must be exactly {expected}")
+    target_parts = _manylinux_parts(target_platform)
+    if target_parts[2] != wheel_architecture:
+        raise ValueError("Wheel target platform architecture does not match its task")
+    if target_platform not in platforms:
+        raise ValueError(f"built Wheel platform must include {target_platform}")
+    for platform in platforms:
+        major, minor, platform_architecture = _manylinux_parts(platform)
+        if platform_architecture != wheel_architecture:
+            raise ValueError("built Wheel contains a mismatched manylinux architecture")
+        if (major, minor) > target_parts[:2]:
+            raise ValueError("built Wheel contains a platform newer than its target")
     return wheel_architecture
 
 
 def _auditwheel_result(
-    wheel_path: Path, architecture: str, report_path: Path | None
+    wheel_path: Path,
+    architecture: str,
+    target_platform: str,
+    expected_external_patterns: list[str],
+    report_path: Path | None,
 ) -> dict[str, Any]:
     report = report_path or wheel_path.with_name(AUDITWHEEL_REPORT)
     if not report.is_file():
@@ -548,6 +753,22 @@ def _auditwheel_result(
     if not compatible_platform.endswith(f"_{wheel_architecture}"):
         raise ValueError("auditwheel platform architecture does not match its task")
 
+    constrained_matches = re.findall(
+        r'This constrains the platform tag to "([^"]+)"', text
+    )
+    if len(constrained_matches) > 1:
+        raise ValueError("auditwheel report has ambiguous ABI platform constraints")
+    if constrained_matches:
+        abi_compatible_platform = constrained_matches[0]
+    elif compatible_platform.startswith("manylinux_"):
+        abi_compatible_platform = compatible_platform
+    else:
+        raise ValueError("auditwheel report has no manylinux ABI compatibility tag")
+    abi_parts = _manylinux_parts(abi_compatible_platform)
+    target_parts = _manylinux_parts(target_platform)
+    if abi_parts[2] != wheel_architecture or abi_parts[:2] > target_parts[:2]:
+        raise ValueError("auditwheel ABI platform exceeds the Wheel target")
+
     glibc_versions = sorted(
         {
             f"GLIBC_{version}"
@@ -557,19 +778,10 @@ def _auditwheel_result(
             int(part) for part in value.removeprefix("GLIBC_").split(".")
         ),
     )
-    external_libraries: list[str] | None = None
-    marker = "The following external shared libraries are required by the wheel:"
-    if marker in text:
-        payload = text.split(marker, 1)[1].lstrip()
-        try:
-            libraries, _ = json.JSONDecoder().raw_decode(payload)
-        except json.JSONDecodeError as error:
-            raise ValueError("auditwheel external-library report is invalid") from error
-        if not isinstance(libraries, dict):
-            raise ValueError("auditwheel external-library report must be a mapping")
-        external_libraries = sorted(str(name) for name in libraries)
-    elif "The wheel requires no external shared libraries" in text:
-        external_libraries = []
+    external_closure = wheel_audit.validate_external_library_closure(
+        text,
+        expected_patterns=expected_external_patterns,
+    )
 
     return {
         "auditwheel_report": {
@@ -578,9 +790,10 @@ def _auditwheel_result(
             "text": text,
         },
         "auditwheel_platform_tag": compatible_platform,
+        "abi_compatible_platform_tag": abi_compatible_platform,
         "glibc_versions": glibc_versions,
         "glibc_floor": glibc_versions[-1] if glibc_versions else None,
-        "external_libraries": external_libraries,
+        **external_closure,
     }
 
 
@@ -608,20 +821,42 @@ def record_wheel_result(
         raise ValueError("built Wheel ABI does not match its task")
     architecture = str(task["cpu_arch"])
     platform_tags = {tag.platform for tag in tags}
-    _validate_wheel_platforms(platform_tags, architecture)
+    target_platform = str(task["target_platform_tag"])
+    _validate_wheel_platforms(platform_tags, architecture, target_platform)
     filename_tags = {str(tag) for tag in tags}
     if _wheel_metadata_tags(wheel_path) != filename_tags:
         raise ValueError("built Wheel filename and WHEEL metadata Tags do not match")
+    dependencies = _wheel_dependencies(
+        wheel_path,
+        distribution=str(task["dist_name"]),
+        version=str(task["wheel_version"]),
+    )
+    expected_dependencies = _normalized_requirements(
+        task.get("runtime_requirements"), "Wheel task runtime requirements"
+    )
+    if dependencies != expected_dependencies:
+        raise ValueError("built Wheel dependencies do not match its task")
     result = {
         "kind": "ucm-wheel-result",
-        "schema_version": 2,
+        "schema_version": 5,
         "task_id": task["id"],
         "distribution": task["dist_name"],
         "version": task["wheel_version"],
         "python_abi": python_abi,
         "cpu_arch": architecture,
         "filename": wheel_path.name,
+        "sha256": hashlib.sha256(wheel_path.read_bytes()).hexdigest(),
         "platform_tags": sorted(platform_tags),
+        "repair": copy.deepcopy(task["repair"]),
+        "dependencies": dependencies,
     }
-    result.update(_auditwheel_result(wheel_path, architecture, auditwheel_report_path))
+    result.update(
+        _auditwheel_result(
+            wheel_path,
+            architecture,
+            target_platform,
+            sorted(str(item) for item in task["external_runtime_exclude_patterns"]),
+            auditwheel_report_path,
+        )
+    )
     return result

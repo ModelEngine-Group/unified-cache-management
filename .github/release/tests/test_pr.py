@@ -22,14 +22,10 @@ upstream = importlib.import_module("ucm_release.upstream")
 
 
 def _fixture_policy():
-    formal = policy.resolve(
+    return policy.resolve(
         repository="release-org/unified-cache-management",
         version_override="0.7.60rc1",
     )
-    for product in formal["products"]:
-        product["minimum_version"] = "0"
-        product.pop("maximum_version", None)
-    return formal
 
 
 def _inputs():
