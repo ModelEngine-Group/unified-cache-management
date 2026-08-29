@@ -2,7 +2,7 @@
 #include <exception>
 #include <memory>
 #ifdef UCM_ASU_ENABLE_AICPU_PROVIDER
-#include "aicpu/aicpu_trans_provider.h"
+#include "aicpu/aicpu_provider.h"
 #endif
 #ifdef UCM_ASU_ENABLE_AIV_PROVIDER
 #include "aiv/aiv_trans_provider.h"
@@ -21,12 +21,12 @@ Status CreateTransProvider(const TransportConfig& config,
     switch (config.providerType) {
         case TransProviderType::AICPU:
 #ifdef UCM_ASU_ENABLE_AICPU_PROVIDER
-            transProvider = std::make_shared<AICPUTransProvider>();
+            transProvider = std::make_shared<AICPUProvider>(config);
             return Status::OK();
 #else
             return Status::Error(
                 StatusCode::UNSUPPORTED,
-                "AICPU trans provider is not built; enable BUILD_KV_CLIENT_PROVIDER_AICPU");
+                "AICPUProvider is not built; enable BUILD_KV_CLIENT_PROVIDER_AICPU");
 #endif
         case TransProviderType::FAKE:
 #ifdef UCM_ASU_ENABLE_FAKE_PROVIDER
