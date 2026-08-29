@@ -811,10 +811,27 @@ def test_builder_sync_consumes_selection_and_uses_digest_pinned_mirror_only() ->
         "runtime_selection_artifact",
     }
     text = (WORKFLOWS / "sync-builders.yml").read_text(encoding="utf-8")
+    build = next(
+        step["run"]
+        for step in workflow["jobs"]["build-missing"]["steps"]
+        if step.get("name") == "Build missing Builder"
+    )
     assert "--selection input/upstreams/runtime-selection.json" in text
     assert "matrix.source_image" in text
     assert "matrix.source_image_digest" in text
     assert 'pinned_source="${source_repository}@${SOURCE_IMAGE_DIGEST}"' in text
+    assert "for pull_attempt in 1 2 3 4 5" in build
+    assert 'docker pull --platform "linux/${CPU_ARCH}" "${verified_target}"' in build
+    assert "TOOMANYREQUESTS|too many requests|retry-after|HTTP 429" in build
+    assert "Builder image pull failed with a non-retryable error" in build
+    assert "Builder image pull failed after ${pull_attempt} attempts" in build
+    assert "Builder image pull failed; retrying in ${sleep_seconds}s" in build
+    assert "4) sleep_seconds=60" in build
+    assert 'docker run --pull=never --platform "linux/${CPU_ARCH}" --rm' in build
+    assert build.count("docker run --pull=never") == 1
+    assert build.index(
+        'docker pull --platform "linux/${CPU_ARCH}" "${verified_target}"'
+    ) < build.index('docker run --pull=never --platform "linux/${CPU_ARCH}" --rm')
     assert 'test "cann-${actual_cann}" = "${EXPECTED_RUNTIME}"' in text
     assert 'test "${SOC_VERSION}" = "${EXPECTED_SOC}"' in text
     assert "Dockerfile.builder-mirror" in text

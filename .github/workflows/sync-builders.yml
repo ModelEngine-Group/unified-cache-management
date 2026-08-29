@@ -184,9 +184,34 @@ jobs:
             --format '{{json .Manifest}}' | jq -er '.digest // .Digest')"
           verified_target="${TARGET_REPOSITORY}@${target_digest}"
           docker buildx imagetools inspect "${verified_target}" >/dev/null
+          pull_log="${RUNNER_TEMP}/ucm-builder-pull.log"
+          for pull_attempt in 1 2 3 4 5; do
+            if docker pull --platform "linux/${CPU_ARCH}" "${verified_target}" \
+              2>&1 | tee "${pull_log}"; then
+              break
+            fi
+            if ! grep -Eiq \
+              'TOOMANYREQUESTS|too many requests|retry-after|HTTP 429' \
+              "${pull_log}"; then
+              echo "Builder image pull failed with a non-retryable error" >&2
+              exit 1
+            fi
+            if [ "${pull_attempt}" -eq 5 ]; then
+              echo "Builder image pull failed after ${pull_attempt} attempts" >&2
+              exit 1
+            fi
+            case "${pull_attempt}" in
+              1) sleep_seconds=5 ;;
+              2) sleep_seconds=15 ;;
+              3) sleep_seconds=30 ;;
+              4) sleep_seconds=60 ;;
+            esac
+            echo "Builder image pull failed; retrying in ${sleep_seconds}s" >&2
+            sleep "${sleep_seconds}"
+          done
           commands="$(jq -r '.commands | join(" ")' <<<"${CHECKS}")"
           required_files="$(jq -r '.required_files | join(" ")' <<<"${CHECKS}")"
-          docker run --rm \
+          docker run --pull=never --platform "linux/${CPU_ARCH}" --rm \
             -e EXPECTED_PYTHON="$(jq -r '.python_version' <<<"${CHECKS}")" \
             -e EXPECTED_ABI="$(jq -r '.python_abi' <<<"${CHECKS}")" \
             -e EXPECTED_RUNTIME="$(jq -r '.accelerator_runtime' <<<"${CHECKS}")" \
