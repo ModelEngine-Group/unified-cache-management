@@ -71,7 +71,7 @@ plugins:
             User Guide: 用户指南
             Installation: 安装
             Model Tour: 模型示例
-            Getting Started: 快速开始
+            Deployment: 部署
             Deploy: 部署
             Deployment Frameworks: 部署框架
             Kubernetes: Kubernetes
@@ -95,6 +95,12 @@ plugins:
             Benchmark: 性能测试
             Toolkit: 工具集
             KV Cache Calculator: KV Cache 计算器
+            User Guide: 用户指南
+            Precheck: 环境预检
+            POSIX AIO: 带宽模拟
+            Metrics View: 指标监控
+            NIC Monitor: 网卡监控
+            Dev Sandbox: 开发沙箱
             Developer: 开发者
             Design: 设计文档
   - search:
@@ -144,8 +150,8 @@ nav:
   - User Guide:
       - user-guide/index.md
       - Installation: user-guide/installation.md
-      - Getting Started:
-          - Getting Started: user-guide/quick_start/index.md
+      - Deployment:
+          - Deployment: user-guide/quick_start/index.md
           - vLLM (CUDA): user-guide/quick_start/quickstart_vllm.md
           - vLLM Ascend (NPU): user-guide/quick_start/quickstart_vllm_ascend.md
           - SGLang (CUDA): user-guide/quick_start/quickstart_sglang.md
@@ -192,11 +198,11 @@ nav:
       - toolkit/index.md
       - KV Cache Calculator: toolkit/kv-cache-calculator.md
       - User Guide:
-          - dev-sandbox: toolkit/user/dev-sandbox.md
-          - metrics-view: toolkit/user/metrics-view.md
-          - nic-monitor: toolkit/user/nic-monitor.md
-          - posix-aio: toolkit/user/posix-aio.md
-          - precheck: toolkit/user/precheck.md
+          - Precheck: toolkit/user/precheck.md
+          - POSIX AIO: toolkit/user/posix-aio.md
+          - Metrics View: toolkit/user/metrics-view.md
+          - NIC Monitor: toolkit/user/nic-monitor.md
+          - Dev Sandbox: toolkit/user/dev-sandbox.md
       - Developer:
           - Design: toolkit/developer/design.md
-          - dev-sandbox: toolkit/developer/dev-sandbox.md
+          - Dev Sandbox: toolkit/developer/dev-sandbox.md

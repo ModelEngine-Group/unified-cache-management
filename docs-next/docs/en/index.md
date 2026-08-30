@@ -25,6 +25,8 @@ various scenarios, including multi-turn dialogue and long-context reasoning task
 
 </div>
 
+## Capabilities
+
 <div class="grid cards" markdown>
 
 -   :material-database-clock-outline: **Prefix Cache**
@@ -71,13 +73,13 @@ various scenarios, including multi-turn dialogue and long-context reasoning task
 
     [:octicons-arrow-right-24: Installation](user-guide/installation.md)
 
--   :material-engine: **Getting Started**
+-   :material-engine: **Deployment**
 
     ---
 
     Integrate UCM with vLLM, vLLM Ascend, SGLang, and MindIE.
 
-    [:octicons-arrow-right-24: Getting Started](user-guide/quick_start/index.md)
+    [:octicons-arrow-right-24: Deployment](user-guide/quick_start/index.md)
 
     - [vLLM](user-guide/quick_start/quickstart_vllm.md)
     - [vLLM Ascend](user-guide/quick_start/quickstart_vllm_ascend.md)
@@ -92,6 +94,56 @@ various scenarios, including multi-turn dialogue and long-context reasoning task
 
     [:octicons-arrow-right-24: Matrix](user-guide/support-matrix/index.md)
 
+</div>
+
+## Tools
+
+<div class="grid cards" markdown>
+
+-   :material-check-circle: **Precheck**
+
+    ---
+
+    Run environment pre-checks before UCM deployment to verify versions, drivers, 
+    kernel, and bandwidth.
+
+    [:octicons-arrow-right-24: Precheck](toolkit/user/precheck.md)
+
+-   :material-harddisk: **POSIX AIO**
+
+    ---
+
+    Test POSIX AIO store dump/load performance for storage benchmarking.
+
+    [:octicons-arrow-right-24: POSIX AIO](toolkit/user/posix-aio.md)
+
+-   :material-chart-box: **Metrics View**
+
+    ---
+
+    Collect Prometheus/OpenMetrics samples to SQLite and query aggregated metrics 
+    in the terminal.
+
+    [:octicons-arrow-right-24: Metrics View](toolkit/user/metrics-view.md)
+
+-   :material-network: **NIC Monitor**
+
+    ---
+
+    Monitor physical NIC real-time traffic with background sampling and phase 
+    statistics.
+
+    [:octicons-arrow-right-24: NIC Monitor](toolkit/user/nic-monitor.md)
+
+-   :material-test-tube: **Dev Sandbox**
+
+    ---
+
+    Measure host-to-device memory copy bandwidth and disk AIO throughput for 
+    performance testing.
+
+    [:octicons-arrow-right-24: Dev Sandbox](toolkit/user/dev-sandbox.md)
+
 -   :material-calculator: **KV Cache Calculator**
 
     ---
@@ -101,6 +153,8 @@ various scenarios, including multi-turn dialogue and long-context reasoning task
     [:octicons-arrow-right-24: Calculator](toolkit/kv-cache-calculator.md)
 
 </div>
+
+**[About Us](about.md)** — Learn about the UCM team and our mission.
 
 ## Version Compatibility
 
