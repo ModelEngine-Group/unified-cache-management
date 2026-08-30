@@ -67,6 +67,12 @@ user-guide/trace_mode
 :::
 
 :::{toctree}
+:caption: Design Documents
+:maxdepth: 1
+design-doc/store_architecture
+:::
+
+:::{toctree}
 :caption: Developer Guide
 :maxdepth: 1
 developer-guide/contribute
