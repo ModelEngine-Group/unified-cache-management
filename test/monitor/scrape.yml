@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 2s
+  scrape_timeout: 5s
+  external_labels:
+    monitor: 'vllm-ucm'
+
+scrape_configs:
+  - job_name: 'vllm-0'
+    static_configs:
+      - targets:
+          - '192.168.1.100:8000'
+        labels:
+          env: 'production'
+          model: 'glm-5'
+    metrics_path: /metrics

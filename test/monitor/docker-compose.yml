@@ -1,0 +1,30 @@
+version: '3.2'
+
+services:
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.99.0
+    container_name: vm-vllm
+    hostname: vm-vllm
+    ports:
+      - "8428:8428"
+    volumes:
+      - ./data:/storage
+      - ./scrape.yml:/etc/vm/scrape.yml:ro
+    command:
+      - "--storageDataPath=/storage"
+      - "--retentionPeriod=7d"
+      - "--promscrape.config=/etc/vm/scrape.yml"
+      - "--promscrape.config.strictParse=false"
+      - "--httpListenAddr=:8428"
+      - "--search.latencyOffset=500ms"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8428/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
