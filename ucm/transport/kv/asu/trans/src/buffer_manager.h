@@ -53,8 +53,7 @@ public:
     BufferManager(const BufferManager&) = delete;
     BufferManager& operator=(const BufferManager&) = delete;
 
-    Status Init(std::string name, MemoryType type, std::size_t slot_capacity, std::size_t slot_num,
-                TransProvider* provider = nullptr);
+    Status Init(std::string name, MemoryType type, std::size_t slot_capacity, std::size_t slot_num);
     void Shutdown();
 
     Status Allocate(std::size_t size, ScatterGatherEntry& sge);
@@ -63,6 +62,8 @@ public:
     bool IsValidPointer(const void* ptr) const;
 
     std::uint32_t GetTokenId() const { return tokenId_; }
+    void SetTokenId(std::uint32_t tokenId) { tokenId_ = tokenId; }
+    Status GetRegisterMemoryDesc(TransProvider::RegisterMemoryDesc& desc) const;
 
 private:
     struct BufferRegion {
@@ -77,7 +78,6 @@ private:
         TransProvider::MemType providerMemType{TransProvider::MemType::MEM_HOST};
     };
 
-    Status RegisterMemory();
     std::string name_;
     std::size_t slot_capacity_{0};
     std::size_t slot_stride_{0};
@@ -87,8 +87,6 @@ private:
     BufferRegion region_;
     IndexPool index_pool_;
 
-    TransProvider* provider_{nullptr};
-    MRHandle mrHandle_{kInvalidMRHandle};
     std::uint32_t tokenId_{0};
 };
 

@@ -858,8 +858,13 @@ TEST(AsuClientE2EMetricsTest, DiskMembershipChangesRefreshAndContinueWorkload)
     QueryResult ignoredResult;
     auto status = QueryAndWait(*client, {MakeCacheKey("membership-refresh-add")}, ignoredResult);
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
-    ASSERT_TRUE(WaitUntil(
-        [&] { return viewServer->FetchCount() >= 2 && state->Snapshot().createdTransports >= 3; }));
+    const auto addProbeKeys = MakeProbeKeys(512);
+    ASSERT_TRUE(WaitUntil([&] {
+        state->ClearOperationCalls();
+        QueryResult result;
+        const auto retryStatus = QueryAndWait(*client, addProbeKeys, result);
+        return retryStatus.ok() && state->OperationCalls(3) > 0;
+    }));
 
     std::vector<std::vector<std::uint8_t>> addedPayloads;
     auto addedEntries = MakeStoreEntries("membership-added-key-", 96, 96, addedPayloads);
@@ -875,9 +880,10 @@ TEST(AsuClientE2EMetricsTest, DiskMembershipChangesRefreshAndContinueWorkload)
     status = QueryAndWait(*client, probeKeys, ignoredResult);
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_TRUE(WaitUntil([&] {
+        state->ClearOperationCalls();
         QueryResult result;
-        auto retryStatus = QueryAndWait(*client, probeKeys, result);
-        return retryStatus.ok();
+        const auto retryStatus = QueryAndWait(*client, probeKeys, result);
+        return retryStatus.ok() && state->OperationCalls(2) == 0 && state->OperationCalls(3) > 0;
     }));
 
     state->ClearOperationCalls();

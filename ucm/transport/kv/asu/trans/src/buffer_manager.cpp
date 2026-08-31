@@ -98,17 +98,6 @@ BufferManager::~BufferManager() { Shutdown(); }
 
 void BufferManager::Shutdown()
 {
-    if (provider_ && mrHandle_) {
-        std::vector<TransProvider::UnregisterMemoryDesc> descs{{mrHandle_}};
-        const auto statuses = provider_->UnregisterMemory(descs);
-        for (const auto& status : statuses) {
-            if (!status.ok()) {
-                UC_WARN("Failed to unregister {} buffer memory: {}.", name_, status.message);
-            }
-        }
-    }
-    provider_ = nullptr;
-    mrHandle_ = kInvalidMRHandle;
     tokenId_ = 0;
     region_.Reset();
     slot_capacity_ = 0;
@@ -117,7 +106,7 @@ void BufferManager::Shutdown()
 }
 
 Status BufferManager::Init(std::string name, MemoryType type, std::size_t slot_capacity,
-                           std::size_t slot_num, TransProvider* provider)
+                           std::size_t slot_num)
 {
     if (region_) {
         return Status::Error(StatusCode::INVALID_ARGUMENT, name + " already initialized");
@@ -154,43 +143,16 @@ Status BufferManager::Init(std::string name, MemoryType type, std::size_t slot_c
     }
 
     index_pool_.Setup(static_cast<IndexPool::Index>(slot_num));
-
-    if (provider) {
-        provider_ = provider;
-        auto regStatus = RegisterMemory();
-        if (!regStatus.ok()) {
-            provider_ = nullptr;
-            region_.Reset();
-            return regStatus;
-        }
-    }
+    tokenId_ = 0;
 
     return Status::OK();
 }
 
-Status BufferManager::RegisterMemory()
+Status BufferManager::GetRegisterMemoryDesc(TransProvider::RegisterMemoryDesc& desc) const
 {
-    std::size_t total = slot_stride_ * slot_num_;
-    std::vector<TransProvider::RegisterMemoryDesc> descs{
-        {region_.providerMemType, reinterpret_cast<uintptr_t>(region_.deviceAddr), total,
-         reinterpret_cast<uintptr_t>(region_.localAddr)}
-    };
-    std::vector<MRHandle> mrHandles;
-    auto regStatus = provider_->RegisterMemory(descs, mrHandles);
-    if (!regStatus.ok() || mrHandles.empty()) {
-        return Status::Error(StatusCode::INTERNAL_ERROR,
-                             name_ + ": failed to register memory: " + regStatus.message);
-    }
-
-    auto tokenStatus = provider_->GetMemTokenId(mrHandles[0], tokenId_);
-    if (!tokenStatus.ok()) {
-        std::vector<TransProvider::UnregisterMemoryDesc> unregDescs{{mrHandles[0]}};
-        provider_->UnregisterMemory(unregDescs);
-        return Status::Error(StatusCode::INTERNAL_ERROR,
-                             name_ + ": failed to get token id: " + tokenStatus.message);
-    }
-
-    mrHandle_ = mrHandles[0];
+    if (!region_) { return Status::Error(StatusCode::NOT_INITIALIZED, name_ + " not initialized"); }
+    desc = {region_.providerMemType, reinterpret_cast<uintptr_t>(region_.deviceAddr),
+            slot_stride_ * slot_num_, reinterpret_cast<uintptr_t>(region_.localAddr)};
     return Status::OK();
 }
 

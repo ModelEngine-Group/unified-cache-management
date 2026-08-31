@@ -391,7 +391,7 @@ Status TransportTaskExecutor::BuildEntrySubBatchRequest(
 
     auto request = BuildSqeRequest(opcode, source, config_.attrs, subBatchContext.cid,
                                    subBatchContext.flagBuffer, subBatchContext);
-    return PackSubBatchRequest(*protocolManager_, sendBufferManager_, opcode, *request,
+    return PackSubBatchRequest(protocolManager_, sendBufferManager_, opcode, *request,
                                subBatchContext);
 }
 
@@ -409,7 +409,7 @@ Status TransportTaskExecutor::SubmitKeySubBatchRequest(
 
     auto request = BuildSqeRequest(opcode, source, config_.attrs, subBatchContext.cid,
                                    subBatchContext.flagBuffer, subBatchContext);
-    return PackSubBatchRequest(*protocolManager_, sendBufferManager_, opcode, *request,
+    return PackSubBatchRequest(protocolManager_, sendBufferManager_, opcode, *request,
                                subBatchContext);
 }
 
@@ -426,7 +426,7 @@ Status TransportTaskExecutor::SubmitKeepAliveRequest(TransportSubBatchContext& s
 
     auto request = BuildSqeRequest(opcode, source, config_.attrs, subBatchContext.cid,
                                    subBatchContext.flagBuffer, subBatchContext);
-    return PackSubBatchRequest(*protocolManager_, sendBufferManager_, opcode, *request,
+    return PackSubBatchRequest(protocolManager_, sendBufferManager_, opcode, *request,
                                subBatchContext);
 }
 

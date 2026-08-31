@@ -55,18 +55,21 @@ inline KvOpcode ToKvOpcode(AsuOpType opType)
 // Task lookup, waiting, and callback delivery remain TransportTaskManager concerns.
 class TransportTaskExecutor {
 public:
-    TransportTaskExecutor(const TransportConfig& config, IoScheduler& ioScheduler,
+    TransportTaskExecutor(const TransportConfig& config,
                           const std::shared_ptr<TransProvider>& transProvider,
-                          BufferManager& sendBufferManager, BufferManager& flagBufferManager,
-                          const std::unique_ptr<ProtocolManager>& protocolManager,
-                          const std::unique_ptr<ConnectionManager>& connectionManager,
-                          std::atomic<std::uint16_t>& nextRequestCid);
+                          const std::unique_ptr<ConnectionManager>& connectionManager);
+    ~TransportTaskExecutor();
+
+    Status Init();
+    Status Shutdown();
 
     bool Execute(const TransportTaskPtr& task);
     bool Poll(const TransportTaskPtr& task);
     bool Cancel(const TransportTaskPtr& task);
 
 private:
+    Status RegisterBufferMemory(BufferManager& bufferManager, MRHandle& mrHandle);
+    Status UnregisterBufferMemory(MRHandle& mrHandle);
     std::uint16_t AllocateRequestCid();
 
     Status PrepareTaskSubBatches(const TransportTask& task,
@@ -93,13 +96,15 @@ private:
     void ReleaseAllSubBatchResources(std::vector<TransportSubBatchContext>& subBatchContexts);
 
     const TransportConfig& config_;
-    IoScheduler& ioScheduler_;
+    IoScheduler ioScheduler_;
     const std::shared_ptr<TransProvider>& transProvider_;
-    BufferManager& sendBufferManager_;
-    BufferManager& flagBufferManager_;
-    const std::unique_ptr<ProtocolManager>& protocolManager_;
+    BufferManager sendBufferManager_;
+    BufferManager flagBufferManager_;
+    MRHandle sendBufferMrHandle_{kInvalidMRHandle};
+    MRHandle flagBufferMrHandle_{kInvalidMRHandle};
+    ProtocolManager protocolManager_;
     const std::unique_ptr<ConnectionManager>& connManager_;
-    std::atomic<std::uint16_t>& nextRequestCid_;
+    std::atomic<std::uint16_t> nextRequestCid_{1};
 };
 
 }  // namespace UC::ASU

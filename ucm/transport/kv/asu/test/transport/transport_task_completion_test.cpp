@@ -85,9 +85,7 @@ public:
 void CreateTaskExecutor(AsuTransportImpl& transport)
 {
     transport.taskExecutor_ = std::make_unique<TransportTaskExecutor>(
-        transport.config_, transport.ioScheduler_, transport.transProvider_,
-        transport.sendBufferManager_, transport.flagBufferManager_, transport.protocolManager_,
-        transport.connManager_, transport.nextRequestCid_);
+        transport.config_, transport.transProvider_, transport.connManager_);
 }
 
 class TransportTaskCompletionTest : public ::testing::Test {
@@ -108,16 +106,21 @@ protected:
     {
         transport_ = std::make_unique<AsuTransportImpl>();
         transport_->SetTransProvider(std::make_unique<StubTransProvider>());
-        auto* provider = transport_->transProvider_.get();
-        auto status =
-            transport_->sendBufferManager_.Init("test send buffer", MemoryType::HOST,
-                                                kTestBufferSlotSize, kTestBufferSlotNum, provider);
-        ASSERT_TRUE(status.ok()) << status.message;
-        status =
-            transport_->flagBufferManager_.Init("test flag buffer", MemoryType::HOST,
-                                                kTestBufferSlotSize, kTestBufferSlotNum, provider);
-        ASSERT_TRUE(status.ok()) << status.message;
         CreateTaskExecutor(*transport_);
+        auto status = transport_->taskExecutor_->sendBufferManager_.Init(
+            "test send buffer", MemoryType::HOST, kTestBufferSlotSize, kTestBufferSlotNum);
+        ASSERT_TRUE(status.ok()) << status.message;
+        status = transport_->taskExecutor_->flagBufferManager_.Init(
+            "test flag buffer", MemoryType::HOST, kTestBufferSlotSize, kTestBufferSlotNum);
+        ASSERT_TRUE(status.ok()) << status.message;
+        status = transport_->taskExecutor_->RegisterBufferMemory(
+            transport_->taskExecutor_->sendBufferManager_,
+            transport_->taskExecutor_->sendBufferMrHandle_);
+        ASSERT_TRUE(status.ok()) << status.message;
+        status = transport_->taskExecutor_->RegisterBufferMemory(
+            transport_->taskExecutor_->flagBufferManager_,
+            transport_->taskExecutor_->flagBufferMrHandle_);
+        ASSERT_TRUE(status.ok()) << status.message;
     }
 
     std::unique_ptr<AsuTransportImpl> transport_;
@@ -177,8 +180,11 @@ TEST_F(TransportTaskCompletionTest, CompleteSubBatchCompletesPendingSubBatch)
 TEST_F(TransportTaskCompletionTest, ReleaseSubBatchResourcesClearsAllocatedSlots)
 {
     TransportSubBatchContext subBatchContext;
-    ASSERT_TRUE(transport_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
-    ASSERT_TRUE(transport_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
+    ASSERT_TRUE(
+        transport_->taskExecutor_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
+    ASSERT_TRUE(
+        transport_->taskExecutor_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer)
+            .ok());
 
     transport_->taskExecutor_->ReleaseSubBatchResources(subBatchContext);
 
@@ -192,18 +198,25 @@ TEST_F(TransportTaskCompletionTest, PollTaskCompletionsReadsDeviceFlagBuffer)
 {
     AsuTransportImpl deviceTransport;
     deviceTransport.SetTransProvider(std::make_unique<StubTransProvider>());
-    auto* provider = deviceTransport.transProvider_.get();
-    ASSERT_TRUE(deviceTransport.sendBufferManager_
-                    .Init("test send buffer", MemoryType::HOST, kTestBufferSlotSize,
-                          kTestBufferSlotNum, provider)
-                    .ok());
-    ASSERT_TRUE(deviceTransport.flagBufferManager_
-                    .Init("test flag buffer", MemoryType::ASCEND_DEVICE, kTestBufferSlotSize,
-                          kTestBufferSlotNum, provider)
-                    .ok());
-    deviceTransport.protocolManager_ = std::make_unique<ProtocolManager>();
-    deviceTransport.connManager_ = std::make_unique<ConnectionManager>(*provider, "", 5000, 2);
     CreateTaskExecutor(deviceTransport);
+    ASSERT_TRUE(
+        deviceTransport.taskExecutor_->sendBufferManager_
+            .Init("test send buffer", MemoryType::HOST, kTestBufferSlotSize, kTestBufferSlotNum)
+            .ok());
+    ASSERT_TRUE(deviceTransport.taskExecutor_->flagBufferManager_
+                    .Init("test flag buffer", MemoryType::ASCEND_DEVICE, kTestBufferSlotSize,
+                          kTestBufferSlotNum)
+                    .ok());
+    ASSERT_TRUE(deviceTransport.taskExecutor_
+                    ->RegisterBufferMemory(deviceTransport.taskExecutor_->sendBufferManager_,
+                                           deviceTransport.taskExecutor_->sendBufferMrHandle_)
+                    .ok());
+    ASSERT_TRUE(deviceTransport.taskExecutor_
+                    ->RegisterBufferMemory(deviceTransport.taskExecutor_->flagBufferManager_,
+                                           deviceTransport.taskExecutor_->flagBufferMrHandle_)
+                    .ok());
+    auto* provider = deviceTransport.transProvider_.get();
+    deviceTransport.connManager_ = std::make_unique<ConnectionManager>(*provider, "", 5000, 2);
     ASSERT_TRUE(deviceTransport.connManager_->AddGroup(AsuEndpoint{}, 1).ok());
     auto channel = deviceTransport.connManager_->SelectConnection();
     ASSERT_NE(channel, nullptr);
@@ -221,7 +234,7 @@ TEST_F(TransportTaskCompletionTest, PollTaskCompletionsReadsDeviceFlagBuffer)
     subBatchContext.entryStatus.assign(2, Status::OK());
     subBatchContext.channel = channel;
     ASSERT_TRUE(
-        deviceTransport.flagBufferManager_
+        deviceTransport.taskExecutor_->flagBufferManager_
             .Allocate((kCqeDwordCount + 1) * sizeof(std::uint32_t), subBatchContext.flagBuffer)
             .ok());
     ASSERT_EQ(subBatchContext.flagBuffer.memory_type, MemoryType::ASCEND_DEVICE);
@@ -250,7 +263,6 @@ TEST_F(TransportTaskCompletionTest, PollTaskCompletionsReadsDeviceFlagBuffer)
 TEST_F(TransportTaskCompletionTest, FailureCqeAccumulatesWithoutSuccessReset)
 {
     auto* provider = transport_->transProvider_.get();
-    transport_->protocolManager_ = std::make_unique<ProtocolManager>();
     transport_->connManager_ = std::make_unique<ConnectionManager>(*provider, "", 5000, 3);
     ASSERT_TRUE(transport_->connManager_->AddGroup(AsuEndpoint{}, 1).ok());
     auto channel = transport_->connManager_->SelectConnection();
@@ -268,7 +280,7 @@ TEST_F(TransportTaskCompletionTest, FailureCqeAccumulatesWithoutSuccessReset)
     subBatchContext.entryStatus.assign(1, Status::OK());
     subBatchContext.channel = channel;
     ASSERT_TRUE(
-        transport_->flagBufferManager_
+        transport_->taskExecutor_->flagBufferManager_
             .Allocate((kCqeDwordCount + 1) * sizeof(std::uint32_t), subBatchContext.flagBuffer)
             .ok());
 
@@ -301,8 +313,11 @@ TEST_F(TransportTaskCompletionTest, PollTaskCompletionsTimesOutAndReleasesResour
     subBatchContext.opType = AsuOpType::BATCH_STORE;
     subBatchContext.entryStatus.assign(2, Status::OK());
     subBatchContext.channel = channel;
-    ASSERT_TRUE(transport_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
-    ASSERT_TRUE(transport_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
+    ASSERT_TRUE(
+        transport_->taskExecutor_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
+    ASSERT_TRUE(
+        transport_->taskExecutor_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer)
+            .ok());
 
     std::size_t callbackCount = 0;
     TaskResult callbackResult;
@@ -357,8 +372,11 @@ TEST_F(TransportTaskCompletionTest, ReleaseSubBatchResourcesPreservesSubBatchSta
     TransportSubBatchContext subBatchContext;
     subBatchContext.state = TransportSubBatchState::COMPLETED;
     subBatchContext.status = Status::Error(StatusCode::IO_ERROR, "send failed");
-    ASSERT_TRUE(transport_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
-    ASSERT_TRUE(transport_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
+    ASSERT_TRUE(
+        transport_->taskExecutor_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
+    ASSERT_TRUE(
+        transport_->taskExecutor_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer)
+            .ok());
 
     transport_->taskExecutor_->ReleaseSubBatchResources(subBatchContext);
 
@@ -370,7 +388,9 @@ TEST_F(TransportTaskCompletionTest, ReleaseSubBatchResourcesClearsSlotsAfterFree
 {
     TransportSubBatchContext subBatchContext;
     subBatchContext.sendSge.slot_index = kTestBufferSlotNum;
-    ASSERT_TRUE(transport_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
+    ASSERT_TRUE(
+        transport_->taskExecutor_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer)
+            .ok());
 
     transport_->taskExecutor_->ReleaseSubBatchResources(subBatchContext);
 
@@ -625,7 +645,6 @@ TEST_F(TransportTaskCompletionTest, ShutdownCallbackCannotSubmitNewTask)
 
 TEST_F(TransportTaskCompletionTest, ShutdownDrainsInflightTaskBeforeCanceling)
 {
-    transport_->protocolManager_ = std::make_unique<ProtocolManager>();
     auto ctx = std::make_unique<TransportTask>();
     ctx->entryStatus.assign(1, Status::OK());
     ctx->subBatchContexts->resize(1);
@@ -634,7 +653,9 @@ TEST_F(TransportTaskCompletionTest, ShutdownDrainsInflightTaskBeforeCanceling)
     subBatchContext.cid = 123;
     subBatchContext.opType = AsuOpType::BATCH_STORE;
     subBatchContext.entryStatus.assign(1, Status::OK());
-    ASSERT_TRUE(transport_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
+    ASSERT_TRUE(
+        transport_->taskExecutor_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer)
+            .ok());
     auto* cqe = reinterpret_cast<std::uint32_t*>(subBatchContext.flagBuffer.local_addr);
     cqe[3] = subBatchContext.cid;
 
@@ -667,8 +688,11 @@ TEST_F(TransportTaskCompletionTest, CancelReleasesResourcesBeforeInvokingCallbac
     auto ctx = std::make_unique<TransportTask>();
     ctx->subBatchContexts->resize(1);
     auto& subBatchContext = (*ctx->subBatchContexts)[0];
-    ASSERT_TRUE(transport_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
-    ASSERT_TRUE(transport_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
+    ASSERT_TRUE(
+        transport_->taskExecutor_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
+    ASSERT_TRUE(
+        transport_->taskExecutor_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer)
+            .ok());
     auto* rawCtx = ctx.get();
     ctx->onComplete = [&](TaskResult result) {
         ++callbackCount;
@@ -697,8 +721,11 @@ TEST_F(TransportTaskCompletionTest, ShutdownReleasesResourcesBeforeInvokingCallb
     ctx->subBatchContexts->resize(1);
     auto& subBatchContext = (*ctx->subBatchContexts)[0];
     subBatchContext.entryStatus = {Status::OK()};
-    ASSERT_TRUE(transport_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
-    ASSERT_TRUE(transport_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer).ok());
+    ASSERT_TRUE(
+        transport_->taskExecutor_->sendBufferManager_.Allocate(64, subBatchContext.sendSge).ok());
+    ASSERT_TRUE(
+        transport_->taskExecutor_->flagBufferManager_.Allocate(64, subBatchContext.flagBuffer)
+            .ok());
     auto* rawCtx = ctx.get();
     ctx->onComplete = [&](TaskResult result) {
         ++callbackCount;

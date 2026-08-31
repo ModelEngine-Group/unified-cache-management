@@ -56,20 +56,150 @@ Status CopyDeviceToHost(const ScatterGatherEntry& sge, void* host, std::size_t s
 }  // namespace
 
 TransportTaskExecutor::TransportTaskExecutor(
-    const TransportConfig& config, IoScheduler& ioScheduler,
-    const std::shared_ptr<TransProvider>& transProvider, BufferManager& sendBufferManager,
-    BufferManager& flagBufferManager, const std::unique_ptr<ProtocolManager>& protocolManager,
-    const std::unique_ptr<ConnectionManager>& connectionManager,
-    std::atomic<std::uint16_t>& nextRequestCid)
+    const TransportConfig& config, const std::shared_ptr<TransProvider>& transProvider,
+    const std::unique_ptr<ConnectionManager>& connectionManager)
     : config_(config),
-      ioScheduler_(ioScheduler),
+      ioScheduler_(config),
       transProvider_(transProvider),
-      sendBufferManager_(sendBufferManager),
-      flagBufferManager_(flagBufferManager),
-      protocolManager_(protocolManager),
-      connManager_(connectionManager),
-      nextRequestCid_(nextRequestCid)
+      connManager_(connectionManager)
 {
+}
+
+TransportTaskExecutor::~TransportTaskExecutor()
+{
+    const auto status = Shutdown();
+    if (!status.ok()) {
+        UC_WARN("TransportTaskExecutor destructor cleanup failed: code={} message={}",
+                static_cast<int>(status.code), status.message);
+    }
+}
+
+Status TransportTaskExecutor::Init()
+{
+    auto status = sendBufferManager_.Init("asu send buffer", MemoryType::HOST_PINNED,
+                                          config_.sendBufferSlotSize, config_.sendBufferSlotNum);
+    if (!status.ok()) {
+        (void)Shutdown();
+        return status;
+    }
+
+    status = flagBufferManager_.Init("asu flag buffer", MemoryType::HOST_PINNED,
+                                     config_.flagBufferSlotSize, config_.flagBufferSlotNum);
+    if (!status.ok()) {
+        (void)Shutdown();
+        return status;
+    }
+
+    status = RegisterBufferMemory(sendBufferManager_, sendBufferMrHandle_);
+    if (!status.ok()) {
+        const auto registerStatus =
+            Status::Error(status.code, "failed to register send buffer: " + status.message);
+        const auto shutdownStatus = Shutdown();
+        if (!shutdownStatus.ok()) {
+            UC_WARN(
+                "TransportTaskExecutor::Init cleanup failed after send buffer registration "
+                "failure: code={} message={}",
+                static_cast<int>(shutdownStatus.code), shutdownStatus.message);
+        }
+        return registerStatus;
+    }
+
+    status = RegisterBufferMemory(flagBufferManager_, flagBufferMrHandle_);
+    if (!status.ok()) {
+        const auto registerStatus =
+            Status::Error(status.code, "failed to register flag buffer: " + status.message);
+        const auto shutdownStatus = Shutdown();
+        if (!shutdownStatus.ok()) {
+            UC_WARN(
+                "TransportTaskExecutor::Init cleanup failed after flag buffer registration "
+                "failure: code={} message={}",
+                static_cast<int>(shutdownStatus.code), shutdownStatus.message);
+        }
+        return registerStatus;
+    }
+    return Status::OK();
+}
+
+Status TransportTaskExecutor::Shutdown()
+{
+    Status finalStatus = Status::OK();
+    auto status = UnregisterBufferMemory(flagBufferMrHandle_);
+    if (!status.ok()) {
+        UC_WARN("Failed to unregister flag buffer: code={} message={}",
+                static_cast<int>(status.code), status.message);
+        finalStatus =
+            Status::Error(status.code, "failed to unregister flag buffer: " + status.message);
+    }
+
+    status = UnregisterBufferMemory(sendBufferMrHandle_);
+    if (!status.ok()) {
+        UC_WARN("Failed to unregister send buffer: code={} message={}",
+                static_cast<int>(status.code), status.message);
+        if (finalStatus.ok()) {
+            finalStatus =
+                Status::Error(status.code, "failed to unregister send buffer: " + status.message);
+        }
+    }
+
+    if (flagBufferMrHandle_ == kInvalidMRHandle) { flagBufferManager_.Shutdown(); }
+    if (sendBufferMrHandle_ == kInvalidMRHandle) { sendBufferManager_.Shutdown(); }
+    return finalStatus;
+}
+
+Status TransportTaskExecutor::RegisterBufferMemory(BufferManager& bufferManager, MRHandle& mrHandle)
+{
+    if (!transProvider_) {
+        return Status::Error(StatusCode::NOT_INITIALIZED, "TransProvider is null");
+    }
+
+    TransProvider::RegisterMemoryDesc desc;
+    auto status = bufferManager.GetRegisterMemoryDesc(desc);
+    if (!status.ok()) { return status; }
+
+    std::vector<MRHandle> mrHandles;
+    status = transProvider_->RegisterMemory({desc}, mrHandles);
+    if (!status.ok()) {
+        return Status::Error(StatusCode::INTERNAL_ERROR,
+                             "provider memory registration failed: " + status.message);
+    }
+    if (mrHandles.empty() || mrHandles[0] == kInvalidMRHandle) {
+        return Status::Error(StatusCode::INTERNAL_ERROR, "provider returned no valid MR handle");
+    }
+
+    mrHandle = mrHandles[0];
+    std::uint32_t tokenId = 0;
+    status = transProvider_->GetMemTokenId(mrHandle, tokenId);
+    if (!status.ok()) {
+        const auto unregisterStatus = UnregisterBufferMemory(mrHandle);
+        if (!unregisterStatus.ok()) {
+            UC_WARN("Failed to unregister memory after token lookup failure: {}",
+                    unregisterStatus.message);
+        }
+        return Status::Error(StatusCode::INTERNAL_ERROR,
+                             "memory token lookup failed: " + status.message);
+    }
+
+    bufferManager.SetTokenId(tokenId);
+    return Status::OK();
+}
+
+Status TransportTaskExecutor::UnregisterBufferMemory(MRHandle& mrHandle)
+{
+    if (mrHandle == kInvalidMRHandle) { return Status::OK(); }
+    if (!transProvider_) {
+        return Status::Error(StatusCode::NOT_INITIALIZED, "TransProvider is null");
+    }
+
+    const auto statuses =
+        transProvider_->UnregisterMemory({TransProvider::UnregisterMemoryDesc{mrHandle}});
+    for (const auto& status : statuses) {
+        if (!status.ok()) {
+            return Status::Error(status.code,
+                                 "provider memory unregistration failed: " + status.message);
+        }
+    }
+    mrHandle = kInvalidMRHandle;
+    return Status::OK();
 }
 
 void TransportTaskExecutor::ReleaseSubBatchResources(TransportSubBatchContext& subBatchContext)
@@ -292,7 +422,7 @@ bool TransportTaskExecutor::Poll(const TransportTaskPtr& task)
                 }
 
                 if (const auto status =
-                        protocolManager_->PollResponseCid(responseData, completedCid);
+                        protocolManager_.PollResponseCid(responseData, completedCid);
                     !status.ok()) {
                     continue;
                 }
@@ -317,7 +447,7 @@ bool TransportTaskExecutor::Poll(const TransportTaskPtr& task)
                 KvResponse response;
                 const auto batchNumber =
                     static_cast<std::uint16_t>(subBatchContext.entryStatus.size());
-                if (const auto status = protocolManager_->UnpackResponse(
+                if (const auto status = protocolManager_.UnpackResponse(
                         responseData, ToKvOpcode(subBatchContext.opType), batchNumber, response);
                     !status.ok()) {
                     completeWithError(status);
