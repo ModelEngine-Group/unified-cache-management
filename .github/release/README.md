@@ -74,10 +74,14 @@ software. Builder identity is based on the raw platform member digest and
 checked capability, not a vLLM version or Git ref. The official pipeline does
 not download, build, or identify Mooncake.
 
-Every existing or newly built mirror is re-probed on its native architecture,
-its OCI labels are compared with the desired catalog, and its final manifest
-digest is recorded. Wheel builds consume `repository@digest`, never a mutable
-Builder Tag.
+Every mirror's remote OCI config and labels are compared with the desired
+catalog, and its final manifest digest is recorded. The mirror is normally
+pulled and re-probed on its native architecture. If bounded retries prove that
+the mirror pull is still rate-limited, the capability probe uses the exact raw
+platform member recorded by `source_image@source_image_digest`; other failures
+remain terminal. Wheel builds follow the same rule: prefer the mirror digest,
+fall back only when the Builder repository itself remains rate-limited, and
+never consume a mutable Builder Tag.
 
 ## Tag and Release modes
 

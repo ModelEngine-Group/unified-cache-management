@@ -107,21 +107,63 @@ jobs:
         run: |
           set -euo pipefail
           builder="$(jq -r '.builder.repository + "@" + .builder.digest' out/wheel-task.json)"
-          bash .github/release/retry-registry-command.sh \
-            "${RUNNER_TEMP}/ucm-wheel-build.log" \
-            docker buildx build \
-            --platform "$(jq -r '.platform' out/wheel-task.json)" \
-            --file .github/release/docker/Dockerfile.wheel \
-            --target wheel \
-            --build-arg "UCM_BUILDER_IMAGE=${builder}" \
-            --build-arg "UCM_CPU_ARCH=$(jq -r '.cpu_arch' out/wheel-task.json)" \
-            --build-arg "UCM_PLATFORM=$(jq -r '.build.platform_arg' out/wheel-task.json)" \
-            --build-arg "UCM_PYTHON_VERSION=$(jq -r '.python_version' out/wheel-task.json)" \
-            --build-arg "UCM_PYTHON_ABI=$(jq -r '.python_abi' out/wheel-task.json)" \
-            --build-arg "UCM_TARGET_PLATFORM_TAG=$(jq -r '.target_platform_tag' out/wheel-task.json)" \
-            --build-arg "SOURCE_DATE_EPOCH=${{ steps.task.outputs.source_date_epoch }}" \
-            --output type=local,dest=out/wheel \
-            --progress plain .
+          source_image="$(jq -er '.builder.source_image' out/wheel-task.json)"
+          source_repository="${source_image%:*}"
+          builder_repository="$(jq -er '.builder.repository' out/wheel-task.json)"
+          builder_rate_limit_scope="${builder_repository#ghcr.io/}"
+          source_builder="${source_repository}@$(jq -er \
+            '.builder.source_image_digest' out/wheel-task.json)"
+          build_wheel() {
+            local builder_image="$1"
+            local log_path="$2"
+            local rate_limit_marker="${3:-}"
+            local rate_limit_scope="${4:-}"
+            local retry_args=()
+            if [ -n "${rate_limit_marker}" ]; then
+              retry_args=(--rate-limit-marker "${rate_limit_marker}")
+              if [ -n "${rate_limit_scope}" ]; then
+                retry_args+=(--rate-limit-scope "${rate_limit_scope}")
+              fi
+            fi
+            bash .github/release/retry-registry-command.sh \
+              "${log_path}" "${retry_args[@]}" \
+              docker buildx build \
+              --platform "$(jq -r '.platform' out/wheel-task.json)" \
+              --file .github/release/docker/Dockerfile.wheel \
+              --target wheel \
+              --build-arg "UCM_BUILDER_IMAGE=${builder_image}" \
+              --build-arg "UCM_CPU_ARCH=$(jq -r '.cpu_arch' out/wheel-task.json)" \
+              --build-arg "UCM_PLATFORM=$(jq -r '.build.platform_arg' out/wheel-task.json)" \
+              --build-arg "UCM_PYTHON_VERSION=$(jq -r '.python_version' out/wheel-task.json)" \
+              --build-arg "UCM_PYTHON_ABI=$(jq -r '.python_abi' out/wheel-task.json)" \
+              --build-arg "UCM_TARGET_PLATFORM_TAG=$(jq -r '.target_platform_tag' out/wheel-task.json)" \
+              --build-arg "SOURCE_DATE_EPOCH=${{ steps.task.outputs.source_date_epoch }}" \
+              --output type=local,dest=out/wheel \
+              --progress plain .
+          }
+          target_rate_limit_marker="${RUNNER_TEMP}/ucm-wheel-target-rate-limited"
+          selected_builder="${builder}"
+          if build_wheel "${builder}" "${RUNNER_TEMP}/ucm-wheel-target-build.log" \
+            "${target_rate_limit_marker}" "${builder_rate_limit_scope}"; then
+            :
+          else
+            target_build_status="$?"
+            if [ ! -f "${target_rate_limit_marker}" ] || \
+               [ "$(<"${target_rate_limit_marker}")" != "rate-limit-exhausted" ]; then
+              exit "${target_build_status}"
+            fi
+            echo "Builder target remained rate-limited; rebuilding from pinned source ${source_builder}"
+            build_wheel "${source_builder}" "${RUNNER_TEMP}/ucm-wheel-source-build.log"
+            selected_builder="${source_builder}"
+          fi
+          # Backticks in these format strings are literal Markdown.
+          # shellcheck disable=SC2016
+          {
+            echo '### Builder registry source'
+            echo
+            printf -- '- Requested: `%s`\n' "${builder}"
+            printf -- '- Used: `%s`\n' "${selected_builder}"
+          } >>"${GITHUB_STEP_SUMMARY}"
           test "$(find out/wheel -maxdepth 1 -type f -name '*.whl' | wc -l | tr -d ' ')" = 1
           test -s out/wheel/auditwheel-repair.txt
           test -s out/wheel/auditwheel-show.txt

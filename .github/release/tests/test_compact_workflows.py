@@ -858,11 +858,19 @@ def test_builder_sync_consumes_selection_and_uses_digest_pinned_mirror_only() ->
     assert "matrix.source_image_digest" in text
     assert 'pinned_source="${source_repository}@${SOURCE_IMAGE_DIGEST}"' in text
     assert "retry-registry-command.sh" in build
+    assert '--rate-limit-marker "${target_rate_limit_marker}"' in build
     assert 'docker pull --platform "linux/${CPU_ARCH}" "${verified_target}"' in build
+    assert 'docker pull --platform "linux/${CPU_ARCH}" "${pinned_source}"' in build
+    assert '[ ! -f "${target_rate_limit_marker}" ] ||' in build
+    assert '!= "rate-limit-exhausted"' in build
+    assert 'validation_image="${pinned_source}"' in build
     assert 'docker run --pull=never --platform "linux/${CPU_ARCH}" --rm' in build
     assert build.count("docker run --pull=never") == 1
     assert build.index(
         'docker pull --platform "linux/${CPU_ARCH}" "${verified_target}"'
+    ) < build.index('docker pull --platform "linux/${CPU_ARCH}" "${pinned_source}"')
+    assert build.index(
+        'docker pull --platform "linux/${CPU_ARCH}" "${pinned_source}"'
     ) < build.index('docker run --pull=never --platform "linux/${CPU_ARCH}" --rm')
     assert 'test "cann-${actual_cann}" = "${EXPECTED_RUNTIME}"' in text
     assert 'test "${SOC_VERSION}" = "${EXPECTED_SOC}"' in text
@@ -889,8 +897,12 @@ def test_builder_sync_consumes_selection_and_uses_digest_pinned_mirror_only() ->
     assert "builders finalize" in text
     assert 'target_digest="$(docker buildx imagetools inspect "${target}"' in text
     assert 'verified_target="${TARGET_REPOSITORY}@${target_digest}"' in text
-    assert '"${verified_target}" bash -c' in text
-    assert "docker image inspect" in text
+    assert '"${validation_image}" bash -c' in text
+    assert "--format '{{json .Image}}' >out/verified-target-config-raw.json" in text
+    assert "if has($platform) then .[$platform] else . end" in text
+    assert "--slurpfile image out/verified-target-config.json" in text
+    assert "config:$image[0]" in text
+    assert "docker image inspect" not in text
     assert "ucm-builder-verification-${{ matrix.id }}" in text
     assert "candidate-${GITHUB_RUN_ID}" in text
     assert 'imagetools create --tag "${target}" "${candidate}"' in text
@@ -901,6 +913,14 @@ def test_builder_sync_consumes_selection_and_uses_digest_pinned_mirror_only() ->
     }
 
     release_docker = ROOT / ".github" / "release" / "docker"
+    mirror_lines = [
+        line
+        for line in (release_docker / "Dockerfile.builder-mirror")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line and not line.startswith("#")
+    ]
+    assert mirror_lines == ["ARG BASE_IMAGE", "FROM ${BASE_IMAGE}"]
     for retired in (
         "Dockerfile.builder",
         "gflags-config.cmake",
@@ -1143,7 +1163,19 @@ def test_compact_wheel_passes_dynamic_python_and_platform_to_build() -> None:
         ROOT / ".github" / "release" / "docker" / "Dockerfile.wheel"
     ).read_text(encoding="utf-8")
     assert "retry-registry-command.sh" in workflow
-    assert "${RUNNER_TEMP}/ucm-wheel-build.log" in workflow
+    assert "${RUNNER_TEMP}/ucm-wheel-target-build.log" in workflow
+    assert "${RUNNER_TEMP}/ucm-wheel-source-build.log" in workflow
+    assert ".builder.source_image" in workflow
+    assert ".builder.source_image_digest" in workflow
+    assert 'source_builder="${source_repository}@$(jq -er' in workflow
+    assert 'build_wheel "${builder}"' in workflow
+    assert 'build_wheel "${source_builder}"' in workflow
+    assert '--rate-limit-marker "${rate_limit_marker}"' in workflow
+    assert '--rate-limit-scope "${rate_limit_scope}"' in workflow
+    assert 'builder_rate_limit_scope="${builder_repository#ghcr.io/}"' in workflow
+    assert '"${target_rate_limit_marker}" "${builder_rate_limit_scope}"' in workflow
+    assert '[ ! -f "${target_rate_limit_marker}" ] ||' in workflow
+    assert '!= "rate-limit-exhausted"' in workflow
     assert "UCM_PYTHON_VERSION" in workflow
     assert "UCM_PYTHON_ABI" in workflow
     assert "UCM_PLATFORM" in workflow

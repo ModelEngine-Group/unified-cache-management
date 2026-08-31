@@ -183,10 +183,38 @@ jobs:
           target_digest="$(docker buildx imagetools inspect "${target}" \
             --format '{{json .Manifest}}' | jq -er '.digest // .Digest')"
           verified_target="${TARGET_REPOSITORY}@${target_digest}"
-          docker buildx imagetools inspect "${verified_target}" >/dev/null
-          bash .github/release/retry-registry-command.sh \
-            "${RUNNER_TEMP}/ucm-builder-pull.log" \
-            docker pull --platform "linux/${CPU_ARCH}" "${verified_target}"
+          mkdir -p out/verification
+          docker buildx imagetools inspect "${verified_target}" \
+            --format '{{json .Image}}' >out/verified-target-config-raw.json
+          # jq variables in this single-quoted program are intentional.
+          # shellcheck disable=SC2016
+          jq -e --arg platform "linux/${CPU_ARCH}" --arg arch "${CPU_ARCH}" '
+            (if has($platform) then .[$platform] else . end) |
+            select(.os == "linux" and .architecture == $arch and
+                   (.created | type == "string") and
+                   (.config.Labels | type == "object"))
+          ' out/verified-target-config-raw.json >out/verified-target-config.json
+          target_rate_limit_marker="${RUNNER_TEMP}/ucm-builder-target-rate-limited"
+          validation_image="${verified_target}"
+          validation_origin="target"
+          if bash .github/release/retry-registry-command.sh \
+            "${RUNNER_TEMP}/ucm-builder-target-pull.log" \
+            --rate-limit-marker "${target_rate_limit_marker}" \
+            docker pull --platform "linux/${CPU_ARCH}" "${verified_target}"; then
+            :
+          else
+            target_pull_status="$?"
+            if [ ! -f "${target_rate_limit_marker}" ] || \
+               [ "$(<"${target_rate_limit_marker}")" != "rate-limit-exhausted" ]; then
+              exit "${target_pull_status}"
+            fi
+            echo "Builder target remained rate-limited; validating pinned source ${pinned_source}"
+            bash .github/release/retry-registry-command.sh \
+              "${RUNNER_TEMP}/ucm-builder-source-pull.log" \
+              docker pull --platform "linux/${CPU_ARCH}" "${pinned_source}"
+            validation_image="${pinned_source}"
+            validation_origin="source-fallback"
+          fi
           commands="$(jq -r '.commands | join(" ")' <<<"${CHECKS}")"
           required_files="$(jq -r '.required_files | join(" ")' <<<"${CHECKS}")"
           docker run --pull=never --platform "linux/${CPU_ARCH}" --rm \
@@ -197,7 +225,7 @@ jobs:
             -e EXPECTED_VARIANT="$(jq -r '.variant' <<<"${CHECKS}")" \
             -e REQUIRED_COMMANDS="${commands}" \
             -e REQUIRED_FILES="${required_files}" \
-            "${verified_target}" bash -c '
+            "${validation_image}" bash -c '
               set -euo pipefail
               candidate="/opt/python/${EXPECTED_ABI}-${EXPECTED_ABI}/bin/python"
               if [ ! -x "${candidate}" ]; then candidate="$(command -v python3)"; fi
@@ -227,14 +255,18 @@ jobs:
                 done
               fi
             '
-          mkdir -p out/verification
-          docker image inspect --format '{{json .}}' "${verified_target}" \
-            >out/verified-config.json
+          # Backticks in these format strings are literal Markdown.
+          # shellcheck disable=SC2016
+          {
+            echo '### Builder validation source'
+            echo
+            printf -- '- Target: `%s`\n' "${verified_target}"
+            printf -- '- Runtime check: `%s` (%s)\n' \
+              "${validation_image}" "${validation_origin}"
+          } >>"${GITHUB_STEP_SUMMARY}"
           jq -n --arg id "${{ matrix.id }}" --arg digest "${target_digest}" \
-            --slurpfile image out/verified-config.json \
-            '{id:$id,target_digest:$digest,
-              config:{created:$image[0].Created,
-                      config:{Labels:($image[0].Config.Labels // {})}}}' \
+            --slurpfile image out/verified-target-config.json \
+            '{id:$id,target_digest:$digest,config:$image[0]}' \
             >"out/verification/${{ matrix.id }}.json"
       - uses: actions/upload-artifact@v4.6.2
         with:
