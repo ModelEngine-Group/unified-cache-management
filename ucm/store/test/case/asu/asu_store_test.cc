@@ -237,9 +237,8 @@ UC::Detail::Dictionary MakeBaseConfig()
     config.SetNumber("tensor_size", std::size_t{64});
     config.SetNumber("shard_size", std::size_t{64});
     config.SetNumber("block_size", std::size_t{64});
-    config.SetNumber("asu_default_wait_timeout_ms", std::uint64_t{1000});
+    config.SetNumber("asu_wait_timeout_ms", std::uint64_t{1000});
     config.SetNumber("asu_query_timeout_ms", std::uint64_t{500});
-    config.SetNumber("asu_timeout_ms", std::uint64_t{1000});
     config.SetNumber("asu_client_max_inflight_tasks", std::uint64_t{16});
     config.SetNumber("asu_transport_max_inflight_tasks", std::uint64_t{16});
     config.Set("kv_ns_ids", std::vector<ssize_t>{100});
@@ -342,28 +341,32 @@ TEST(UCAsuStoreTest, ParsesKvNamespaces)
     }
 }
 
-TEST(UCAsuStoreTest, ParsesOperationTimeout)
+TEST(UCAsuStoreTest, PropagatesWaitTimeout)
 {
     UC::AsuStore::AsuStore store;
     auto state = UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("asu_ids", std::vector<ssize_t>{1001});
-    config.SetNumber("asu_timeout_ms", std::uint64_t{321});
+    config.SetNumber("asu_wait_timeout_ms", std::uint64_t{321});
 
     ASSERT_TRUE(store.Setup(config).Success());
     ASSERT_FALSE(state->initConfigs.empty());
-    EXPECT_EQ(state->initConfigs.back().timeoutMs, 321);
+    EXPECT_EQ(state->initConfigs.back().waitTimeoutMs, 321);
+
+    auto asuClientConfig = UC::AsuStore::BuildAsuClientConfig(state->initConfigs.back());
+    EXPECT_EQ(asuClientConfig.defaultWaitTimeoutMs, 321);
+    EXPECT_EQ(asuClientConfig.timeoutMs, 321);
 
     auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
     EXPECT_EQ(transportConfig.timeoutMs, 321);
 }
 
-TEST(UCAsuStoreTest, RejectsZeroOperationTimeout)
+TEST(UCAsuStoreTest, RejectsZeroWaitTimeout)
 {
     UC::AsuStore::AsuStore store;
     auto config = MakeBaseConfig();
     config.Set("asu_ids", std::vector<ssize_t>{1001});
-    config.SetNumber("asu_timeout_ms", std::uint64_t{0});
+    config.SetNumber("asu_wait_timeout_ms", std::uint64_t{0});
 
     EXPECT_TRUE(store.Setup(config).Failure());
 }
@@ -423,6 +426,22 @@ TEST(UCAsuStoreTest, PropagatesSeparateMaxInflightTasks)
     EXPECT_EQ(asuConfig.maxInflightTasks, std::uint32_t{17});
     ASSERT_EQ(asuConfig.transportConfigs.size(), std::size_t{1});
     EXPECT_EQ(asuConfig.transportConfigs.front().maxInflightTasks, std::uint32_t{23});
+}
+
+TEST(UCAsuStoreTest, FakeProviderPreservesConfiguredSc)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_trans_provider_backend", std::string{"fake"});
+    config.Set("asu_sc", false);
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+
+    const auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+    EXPECT_EQ(transportConfig.attrs.at("sc"), "false");
 }
 
 TEST(UCAsuStoreTest, RejectsMissingKvNamespaces)
@@ -839,7 +858,7 @@ TEST(UCAsuStoreTest, ClientModeConfigPathSmoke)
         ASSERT_TRUE(configFile.is_open());
         configFile << "clientId=asu-store-test\n";
         configFile << "transport.asuIds=1001,1002\n";
-        configFile << "defaultWaitTimeoutMs=1000\n";
+        configFile << "wait_timeout_ms=1000\n";
     }
 
     UC::AsuStore::AsuStore store;

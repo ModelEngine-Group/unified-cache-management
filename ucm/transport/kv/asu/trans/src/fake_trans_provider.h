@@ -82,4 +82,10 @@ private:
 
 FakeTransProviderConfig MakeFakeTransProviderConfig(const TransportConfig& config);
 
+#ifdef ASU_BUILD_TESTS
+Status CompleteFakeBackendRequestForTest(const FakeTransProviderConfig& config,
+                                         const void* sendBuffer, std::uint64_t len,
+                                         std::vector<std::uint32_t>& completion);
+#endif
+
 }  // namespace UC::ASU

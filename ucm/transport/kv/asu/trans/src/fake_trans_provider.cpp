@@ -50,6 +50,7 @@ constexpr std::uint8_t kDeleteEntryOk = 0x0;
 constexpr std::uint8_t kDeleteEntryFailed = 0x1;
 constexpr std::uint8_t kExistEntryNotExist = 0x0;
 constexpr std::uint8_t kExistEntryExist = 0x1;
+constexpr std::uint32_t kExistSeekControlMask = 1U << 16;
 
 std::uint64_t ReadU64(std::uint32_t low, std::uint32_t high)
 {
@@ -342,12 +343,15 @@ Status CompleteExist(const FakeTransProviderConfig& config, AsuId asuId,
     const auto batchNumber = static_cast<std::uint16_t>(request[10] & 0xFFFF);
     std::vector<std::uint8_t> results(batchNumber, kExistEntryNotExist);
     std::uint16_t existingKeyNumber = 0;
+    const bool useSeekControl = (request[10] & kExistSeekControlMask) != 0;
 
     const auto keys = ReadKeyEntries(request, batchNumber);
     for (std::size_t index = 0; index < keys.size(); ++index) {
         if (ExistsKey(config, asuId, keys[index])) {
             results[index] = kExistEntryExist;
             ++existingKeyNumber;
+        } else if (!useSeekControl) {
+            break;
         }
     }
 
@@ -407,6 +411,15 @@ Status CompleteFakeBackendRequest(const FakeTransProviderConfig& config, const v
 }
 
 }  // namespace
+
+#ifdef ASU_BUILD_TESTS
+Status CompleteFakeBackendRequestForTest(const FakeTransProviderConfig& config,
+                                         const void* sendBuffer, std::uint64_t len,
+                                         std::vector<std::uint32_t>& completion)
+{
+    return CompleteFakeBackendRequest(config, sendBuffer, len, completion);
+}
+#endif
 
 FakeTransProviderConfig MakeFakeTransProviderConfig(const TransportConfig& config)
 {

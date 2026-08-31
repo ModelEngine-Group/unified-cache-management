@@ -77,10 +77,10 @@ Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& confi
         } else if (key == "view.config_path" || key == "viewConfigPath" ||
                    key == "view_config_path") {
             config.attrs["view.config_path"] = value;
-        } else if (key == "defaultWaitTimeoutMs" || key == "default_wait_timeout_ms") {
-            config.defaultWaitTimeoutMs = ParseConfigUint64(value);
-        } else if (key == "timeoutMs" || key == "timeout_ms") {
-            config.timeoutMs = ParseConfigUint64(value);
+        } else if (key == "waitTimeoutMs" || key == "wait_timeout_ms") {
+            const auto waitTimeoutMs = ParseConfigUint64(value);
+            config.defaultWaitTimeoutMs = waitTimeoutMs;
+            config.timeoutMs = waitTimeoutMs;
         } else if (key == "asuSharedProvider" || key == "asu_shared_provider") {
             config.sharedProviderMode = static_cast<SharedProviderMode>(ParseConfigUint64(value));
         } else if (key == "router.type" || key == "routerType" || key == "hashTable.type" ||

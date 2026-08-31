@@ -152,7 +152,7 @@ public:
     std::uint64_t response_buffer_addr{0};
     std::uint32_t response_mr_key{0};
     bool rflag{false};
-    bool sc{false};
+    bool sc{true};
     std::uint16_t batch_number{0};
     std::vector<CacheKey> keys;
 };

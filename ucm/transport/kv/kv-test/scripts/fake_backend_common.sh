@@ -79,7 +79,7 @@ write_fake_backend_config() {
 
     {
         echo "client_id=kv-test-fake-backend-script"
-        echo "default_wait_timeout_ms=5000"
+        echo "wait_timeout_ms=5000"
         echo
         echo "fake_backend.path=${store_path}"
         echo "fake_backend.latency_ms=1"

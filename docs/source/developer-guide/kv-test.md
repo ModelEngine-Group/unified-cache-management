@@ -125,7 +125,7 @@ Options can use either `--option value` or `--option=value`.
 | `--help`, `-h` | Prints general or command-specific help. |
 | `--version` | Prints tool version. Does not accept positional arguments. |
 | `--check` | Enables consistency checking where supported. |
-| `--timeout <ms>` | Overrides `default_wait_timeout_ms` for this run. |
+| `--timeout <ms>` | Overrides `wait_timeout_ms` for this run. |
 | `--output <path>` | Overrides `output.path`. |
 | `--progress` | For `bench`, prints one progress line per measured second. |
 
@@ -175,7 +175,7 @@ Example:
 
 ```ini
 client_id=kv-test-client-0
-default_wait_timeout_ms=5000
+wait_timeout_ms=5000
 # Optional when libasu_client.so/libasu_transport.so are not discoverable.
 # asu.client_library_path=/path/to/libasu_client.so
 # asu.transport_library_path=/path/to/libasu_transport.so
@@ -222,7 +222,7 @@ These fields are parsed by the ASU client config parser:
 | `client_id` | Client identifier. |
 | `view_service_addrs` | View service addresses. |
 | `view.config_path` | File used by the default `ConfigFileViewServer`. |
-| `default_wait_timeout_ms` | Default wait timeout in milliseconds. |
+| `wait_timeout_ms` | Client wait and transport task timeout in milliseconds. |
 | `transport.asu_ids` | ASU ids. |
 | `transport.provider_type` | Transport provider used by `AsuTransportImpl`. Supported values are `AICPU`, `FAKE`, and `AIV`. The selected provider must also be enabled in CMake. The aliases `transport.provider_backend`, `transport.trans_provider_type`, and `transport.trans_provider_backend` are also accepted. |
 | `transport.device_id` | Local logical device id used to initialize the transport provider. |
@@ -264,7 +264,6 @@ These fields are parsed by `kv-test` itself:
 | `bench.batch_size` | Entries per batch operation. |
 | `output.path` | Base output directory. Empty value uses `.`. |
 | `output.realtime_file_max_bytes` | Maximum realtime CSV size before rolling. Default is 100 MiB. |
-| `connection.timeout_ms` | Also overrides ASU client default wait timeout. |
 
 Batch and sub-batch limits are left to Client and Transport. New kv-test configs
 should not include older `limits.batch_store_max`, `limits.batch_retrieve_max`,
