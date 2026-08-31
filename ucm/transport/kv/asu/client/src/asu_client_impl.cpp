@@ -80,13 +80,8 @@ Status AsuClientImpl::Init(const AsuClientConfig& config)
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "at least one transport config is required");
     }
-    const auto maxInflightTasks =
-        std::max_element(config.transportConfigs.begin(), config.transportConfigs.end(),
-                         [](const TransportConfig& lhs, const TransportConfig& rhs) {
-                             return lhs.maxInflightTasks < rhs.maxInflightTasks;
-                         });
     const auto queueDepth =
-        std::max<std::size_t>(2, static_cast<std::size_t>(maxInflightTasks->maxInflightTasks));
+        std::max<std::size_t>(2, static_cast<std::size_t>(config.maxInflightTasks));
 
     GlobalView view;
     auto status = viewServer_->GetGlobalView(view);

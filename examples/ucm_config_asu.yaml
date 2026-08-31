@@ -42,7 +42,8 @@ ucm_connectors:
       asu_query_timeout_ms: 500
       asu_timeout_ms: 5000
       asu_max_error_count: 2
-      asu_max_inflight_tasks: 1024
+      asu_client_max_inflight_tasks: 1024
+      asu_transport_max_inflight_tasks: 1024
 
 enable_event_sync: true
 use_layerwise: false

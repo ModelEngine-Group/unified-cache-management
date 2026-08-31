@@ -70,6 +70,8 @@ Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& confi
         const auto value = TrimConfigValue(line.substr(pos + 1));
         if (key == "clientId" || key == "client_id") {
             config.clientId = value;
+        } else if (key == "client.maxInflightTasks" || key == "client.max_inflight_tasks") {
+            config.maxInflightTasks = static_cast<std::uint32_t>(ParseConfigUint64(value));
         } else if (key == "viewServiceAddrs" || key == "view_service_addrs") {
             config.viewServiceAddrs = SplitConfigValue(value, ',');
         } else if (key == "view.config_path" || key == "viewConfigPath" ||

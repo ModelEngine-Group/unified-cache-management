@@ -18,6 +18,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include "client_config_parser.h"
 #include "router/router.h"
 
 namespace UC::ASU {
@@ -679,7 +680,7 @@ TEST(AsuClientImplTest, Lifecycle_ShutdownDrainsFullTaskQueue)
     state->blockStoreDispatch = true;
     auto client = CreateAsuClient(MakeFactory(state));
     auto config = MakeConfig({10});
-    config.transportConfigs.front().maxInflightTasks = 2;
+    config.maxInflightTasks = 2;
     ASSERT_TRUE(client->Init(config).ok());
 
     TaskId taskId = kInvalidTaskId;
@@ -886,6 +887,27 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
         EXPECT_EQ(state->initConfigs[asuId].asuQueryIoNum, std::size_t{14});
         EXPECT_EQ(state->initConfigs[asuId].maxErrorCount, std::uint32_t{5});
     }
+}
+
+TEST(AsuClientImplTest, Config_SeparatesClientAndTransportMaxInflightTasks)
+{
+    constexpr const char* kConfigPath = "asu_client_impl_max_inflight_tasks_test.conf";
+    {
+        std::ofstream configFile{kConfigPath};
+        ASSERT_TRUE(configFile.is_open());
+        configFile << "client.maxInflightTasks=3\n";
+        configFile << "transport.asuIds=10\n";
+        configFile << "transport.maxInflightTasks=7\n";
+    }
+
+    AsuClientConfig config;
+    const auto status = LoadAsuClientConfig(kConfigPath, config);
+    std::remove(kConfigPath);
+
+    ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(config.maxInflightTasks, std::uint32_t{3});
+    ASSERT_EQ(config.transportConfigs.size(), std::size_t{1});
+    EXPECT_EQ(config.transportConfigs.front().maxInflightTasks, std::uint32_t{7});
 }
 
 TEST(AsuClientImplTest, Lifecycle_PublicInitRejectsInvalidSharedProviderMode)
@@ -1698,7 +1720,7 @@ TEST(AsuClientImplTest, Task_SubmitReturnsResourceBusyWhenQueueIsFull)
     state->blockStoreDispatch = true;
     auto client = CreateAsuClient(MakeFactory(state));
     auto config = MakeConfig({10});
-    config.transportConfigs.front().maxInflightTasks = 2;
+    config.maxInflightTasks = 2;
     ASSERT_TRUE(client->Init(config).ok());
 
     std::vector<TaskId> taskIds;
