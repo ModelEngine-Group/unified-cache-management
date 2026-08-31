@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import importlib
 import sys
 from pathlib import Path
@@ -22,10 +23,18 @@ upstream = importlib.import_module("ucm_release.upstream")
 
 
 def _fixture_policy():
-    return policy.resolve(
+    resolved = policy.resolve(
         repository="release-org/unified-cache-management",
         version_override="0.7.60rc1",
     )
+    selectors = {
+        "vllm": [{"raw": "0.22.1", "keyword": "0.22.1", "tag": None}],
+        "vllm-ascend": [{"raw": "0.22.1rc1", "keyword": "0.22.1rc1", "tag": None}],
+    }
+    resolved["runtime_selectors"] = copy.deepcopy(selectors)
+    for product in resolved["products"]:
+        product["runtime_selectors"] = copy.deepcopy(selectors[product["id"]])
+    return resolved
 
 
 def _inputs():

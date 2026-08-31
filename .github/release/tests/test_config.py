@@ -140,27 +140,23 @@ def _platform_policy() -> dict[str, object]:
     return yaml.safe_load((RELEASE_ROOT / "platforms.yaml").read_text(encoding="utf-8"))
 
 
-def test_release_policy_matches_the_schema_v5_registry_surface() -> None:
+def test_release_policy_matches_the_schema_v6_registry_surface() -> None:
     release = _release_policy()
 
     assert release == {
         "kind": "ucm-release-policy",
-        "schema_version": 5,
+        "schema_version": 6,
         "runners": {"amd64": "ubuntu-24.04", "arm64": "ubuntu-24.04-arm"},
         "products": [
             {
                 "id": "vllm",
                 "runtime_repository": "docker.io/vllm/vllm-openai",
                 "target_repository": "ghcr.io/{owner}/vllm-openai",
-                "recent_minor_versions": 3,
-                "channel_policy": "latest-stable-or-rc-or-nightly-per-minor",
             },
             {
                 "id": "vllm-ascend",
                 "runtime_repository": "quay.io/ascend/vllm-ascend",
                 "target_repository": "ghcr.io/{owner}/vllm-ascend",
-                "recent_minor_versions": 3,
-                "channel_policy": "latest-stable-or-rc-or-nightly-per-minor",
             },
         ],
         "publish": {
@@ -173,7 +169,6 @@ def test_release_policy_matches_the_schema_v5_registry_surface() -> None:
         "release_profiles": {
             "stable": {
                 "max_count": -1,
-                "max_minor_versions": -1,
                 "publish": {
                     "pypi": True,
                     "ghcr": True,
@@ -184,7 +179,6 @@ def test_release_policy_matches_the_schema_v5_registry_surface() -> None:
             },
             "prerelease": {
                 "max_count": -1,
-                "max_minor_versions": -1,
                 "publish": {
                     "pypi": True,
                     "ghcr": True,
@@ -195,7 +189,6 @@ def test_release_policy_matches_the_schema_v5_registry_surface() -> None:
             },
             "draft": {
                 "max_count": 7,
-                "max_minor_versions": -1,
                 "publish": {
                     "pypi": True,
                     "ghcr": True,
@@ -206,7 +199,6 @@ def test_release_policy_matches_the_schema_v5_registry_surface() -> None:
             },
             "nightly": {
                 "max_count": 7,
-                "max_minor_versions": 1,
                 "publish": {
                     "pypi": False,
                     "ghcr": True,
@@ -233,78 +225,71 @@ def test_release_yaml_has_expanded_commented_profiles_without_aliases() -> None:
     assert "# -1 表示无限保留 Stable 发布。" in text
     assert "# 最多保留 7 个新版 Draft。" in text
     assert "# 最多保留 7 个 Nightly。" in text
-    assert "# 默认检查 Registry 最新版所在的最近 3 个连续 minor。" in text
-    assert "# -1 表示构建产品版本交集内的全部实际 minor。" in text
-    assert "# 只构建产品版本交集内第一个实际存在的 minor。" in text
+    assert "recent_minor_versions" not in text
+    assert "max_minor_versions" not in text
     assert not any(
         isinstance(token, (AnchorToken, AliasToken)) for token in yaml.scan(text)
     )
 
 
-def test_optional_product_version_bounds_remain_supported(tmp_path: Path) -> None:
+def test_readme_documents_fork_preview_publication_setup() -> None:
+    text = (RELEASE_ROOT / "README.md").read_text(encoding="utf-8")
+
+    for value in (
+        "## Fork preview setup",
+        "fork-preview",
+        "TEST_PYPI_API_TOKEN",
+        "DOCKERHUB_USERNAME",
+        "DOCKERHUB_TOKEN",
+        "FORK_DOCKERHUB_NAMESPACE",
+        "gh secret set TEST_PYPI_API_TOKEN --env fork-preview",
+        "Read and write permissions",
+        "https://test.pypi.org/simple/",
+        'publish.pypi.target == "testpypi"',
+        "scope-skipped",
+        "Disabled by Profile",
+        "git push origin",
+    ):
+        assert value in text
+    assert "Do not copy it into `fork-preview`" in text
+    assert "not the empty meta Wheel" in text
+
+
+@pytest.mark.parametrize(
+    ("location", "field", "value"),
+    [
+        ("product", "minimum_version", "0.24.0"),
+        ("product", "maximum_version", "0.27.0"),
+        ("product", "recent_minor_versions", 3),
+        ("product", "channel_policy", "latest-stable-or-rc-or-nightly-per-minor"),
+        ("profile", "max_minor_versions", 1),
+    ],
+)
+def test_release_yaml_rejects_runtime_version_selection_fields(
+    tmp_path: Path, location: str, field: str, value: object
+) -> None:
     policy = importlib.import_module("ucm_release.policy")
     release = _release_policy()
-    release["products"][0]["minimum_version"] = "0.24.0"
-    release["products"][0]["maximum_version"] = "0.27.0"
+    target = (
+        release["products"][0]
+        if location == "product"
+        else release["release_profiles"]["nightly"]
+    )
+    target[field] = value
     path = tmp_path / "release.yaml"
     path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
 
-    loaded = policy.load(path)
-
-    assert loaded["release"]["products"][0]["minimum_version"] == "0.24.0"
-    assert loaded["release"]["products"][0]["maximum_version"] == "0.27.0"
-
-
-def test_optional_product_version_bounds_reject_an_empty_range(tmp_path: Path) -> None:
-    policy = importlib.import_module("ucm_release.policy")
-    release = _release_policy()
-    release["products"][0]["minimum_version"] = "0.27.0"
-    release["products"][0]["maximum_version"] = "0.26.0"
-    path = tmp_path / "release.yaml"
-    path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
-
-    with pytest.raises(ValueError, match="maximum_version must be >= minimum_version"):
+    with pytest.raises(ValueError, match="Additional properties"):
         policy.load(path)
 
 
-@pytest.mark.parametrize("field", ["max_count", "max_minor_versions"])
 @pytest.mark.parametrize("value", [-2, -1.0, 0, True, 1.5, "-1", "1", None])
 def test_release_profile_limits_reject_invalid_values(
-    tmp_path: Path, field: str, value: object
-) -> None:
-    policy = importlib.import_module("ucm_release.policy")
-    release = _release_policy()
-    release["release_profiles"]["nightly"][field] = value
-    path = tmp_path / "release.yaml"
-    path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
-
-    with pytest.raises(ValueError):
-        policy.load(path)
-
-
-@pytest.mark.parametrize("field", ["max_count", "max_minor_versions"])
-@pytest.mark.parametrize("value", [-1, 1, 7])
-def test_release_profile_limits_accept_minus_one_and_positive_int(
-    tmp_path: Path, field: str, value: int
-) -> None:
-    policy = importlib.import_module("ucm_release.policy")
-    release = _release_policy()
-    release["release_profiles"]["nightly"][field] = value
-    path = tmp_path / "release.yaml"
-    path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
-
-    loaded = policy.load(path)
-
-    assert loaded["release"]["release_profiles"]["nightly"][field] == value
-
-
-@pytest.mark.parametrize("value", [-2, -1, -1.0, 0, True, 1.5, "-1", "1", None])
-def test_recent_minor_versions_rejects_non_positive_integers(
     tmp_path: Path, value: object
 ) -> None:
     policy = importlib.import_module("ucm_release.policy")
     release = _release_policy()
-    release["products"][0]["recent_minor_versions"] = value
+    release["release_profiles"]["nightly"]["max_count"] = value
     path = tmp_path / "release.yaml"
     path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
 
@@ -312,34 +297,19 @@ def test_recent_minor_versions_rejects_non_positive_integers(
         policy.load(path)
 
 
-@pytest.mark.parametrize("value", [1, 3, 7])
-def test_recent_minor_versions_accepts_positive_integers(
+@pytest.mark.parametrize("value", [-1, 1, 7])
+def test_release_profile_limits_accept_minus_one_and_positive_int(
     tmp_path: Path, value: int
 ) -> None:
     policy = importlib.import_module("ucm_release.policy")
     release = _release_policy()
-    release["products"][0]["recent_minor_versions"] = value
+    release["release_profiles"]["nightly"]["max_count"] = value
     path = tmp_path / "release.yaml"
     path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
 
     loaded = policy.load(path)
 
-    assert loaded["release"]["products"][0]["recent_minor_versions"] == value
-
-
-def test_missing_recent_minor_versions_defaults_to_three(tmp_path: Path) -> None:
-    policy = importlib.import_module("ucm_release.policy")
-    release = _release_policy()
-    for product in release["products"]:
-        product.pop("recent_minor_versions")
-    path = tmp_path / "release.yaml"
-    path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
-
-    loaded = policy.load(path)
-
-    assert [
-        product["recent_minor_versions"] for product in loaded["release"]["products"]
-    ] == [3, 3]
+    assert loaded["release"]["release_profiles"]["nightly"]["max_count"] == value
 
 
 def test_draft_profile_publication_is_policy_driven(tmp_path: Path) -> None:
@@ -357,6 +327,25 @@ def test_draft_profile_publication_is_policy_driven(tmp_path: Path) -> None:
         "chart_oci": True,
         "github_release": True,
     }
+
+
+def test_version_ini_is_the_runtime_selector_authority() -> None:
+    policy = importlib.import_module("ucm_release.policy")
+
+    resolved = policy.resolve(repository=policy.OFFICIAL_REPOSITORY)
+
+    assert {
+        product_id: [selector["raw"] for selector in selectors]
+        for product_id, selectors in resolved["runtime_selectors"].items()
+    } == {
+        "vllm": ["0.26.0", "0.27.1", "0.28.0"],
+        "vllm-ascend": ["0.24.0rc", "0.25.1rc", "0.26.0rc"],
+    }
+    assert {
+        product["id"]: product["runtime_selectors"] for product in resolved["products"]
+    } == resolved["runtime_selectors"]
+    assert resolved["ucm_base_version"] == "0.9.4"
+    assert resolved["version_authority_sha256"].startswith("sha256:")
 
 
 def test_platform_policy_matches_supported_and_blocked_backends() -> None:
@@ -462,16 +451,16 @@ def test_formal_policy_loads_exact_requirements_without_legacy_authorities() -> 
 
 
 @pytest.mark.parametrize(
-    ("release_type", "max_count", "max_minor_versions"),
+    ("release_type", "max_count"),
     [
-        ("stable", -1, -1),
-        ("prerelease", -1, -1),
-        ("draft", 7, -1),
-        ("nightly", 7, 1),
+        ("stable", -1),
+        ("prerelease", -1),
+        ("draft", 7),
+        ("nightly", 7),
     ],
 )
 def test_policy_resolve_selects_one_profile_and_normalizes_publication(
-    release_type: str, max_count: int, max_minor_versions: int
+    release_type: str, max_count: int
 ) -> None:
     policy = importlib.import_module("ucm_release.policy")
 
@@ -483,7 +472,6 @@ def test_policy_resolve_selects_one_profile_and_normalizes_publication(
     shared_requested = release_type != "nightly"
     assert resolved["release_profile"] == {
         "max_count": max_count,
-        "max_minor_versions": max_minor_versions,
         "publish": {
             "pypi": shared_requested,
             "ghcr": True,
@@ -494,7 +482,8 @@ def test_policy_resolve_selects_one_profile_and_normalizes_publication(
     }
     assert resolved["publish"] == {
         "pypi": {
-            "index": "https://upload.pypi.org/legacy/",
+            "target": "testpypi",
+            **policy.PYPI_TARGETS["testpypi"],
             "requested": shared_requested,
             "enabled": False,
             "disposition": "scope-skipped" if shared_requested else "disabled",
@@ -568,7 +557,8 @@ def test_fork_scope_disables_shared_external_channels_only(tmp_path: Path) -> No
     )
 
     assert official["publish"]["pypi"] == {
-        "index": "https://upload.pypi.org/legacy/",
+        "target": "pypi",
+        **policy.PYPI_TARGETS["pypi"],
         "requested": True,
         "enabled": True,
         "disposition": "publish",
@@ -590,6 +580,42 @@ def test_fork_scope_disables_shared_external_channels_only(tmp_path: Path) -> No
     assert fork["publish"]["ghcr"]["disposition"] == "publish"
     assert fork["publish"]["chart_oci"]["enabled"] is True
     assert fork["publish"]["github_release"]["enabled"] is True
+
+
+def test_fork_credentials_enable_only_requested_test_targets() -> None:
+    policy = importlib.import_module("ucm_release.policy")
+
+    draft = policy.resolve(
+        repository="SuperMarioYL/unified-cache-management",
+        release_type="draft",
+        fork_test_pypi=True,
+        fork_dockerhub_namespace="docker.io/ucm-debug",
+    )
+    nightly = policy.resolve(
+        repository="SuperMarioYL/unified-cache-management",
+        release_type="nightly",
+        fork_test_pypi=True,
+        fork_dockerhub_namespace="docker.io/ucm-debug",
+    )
+
+    assert draft["publish"]["pypi"]["target"] == "testpypi"
+    assert draft["publish"]["pypi"]["enabled"] is True
+    assert draft["publish"]["dockerhub"] == {
+        "namespace": "docker.io/ucm-debug",
+        "requested": True,
+        "enabled": True,
+        "disposition": "publish",
+    }
+    assert nightly["publish"]["pypi"]["enabled"] is False
+    assert nightly["publish"]["pypi"]["disposition"] == "disabled"
+    assert nightly["publish"]["dockerhub"]["enabled"] is False
+
+    with pytest.raises(ValueError, match="Docker Hub namespace"):
+        policy.resolve(
+            repository="SuperMarioYL/unified-cache-management",
+            release_type="draft",
+            fork_dockerhub_namespace="ghcr.io/not-dockerhub",
+        )
 
 
 def test_official_repository_identity_is_case_insensitive() -> None:
@@ -676,7 +702,7 @@ def test_release_commands_accept_explicit_release_type(
     assert args.release_type == release_type
 
 
-def test_core_projects_v5_for_release_consumers() -> None:
+def test_core_projects_v6_for_release_consumers() -> None:
     core = importlib.import_module("ucm_release.core")
 
     catalog = core.load_catalog(version_override="0.7.59rc7")
@@ -732,7 +758,6 @@ def test_release_yaml_is_the_exact_publication_authority() -> None:
     assert release["release_profiles"] == {
         "stable": {
             "max_count": -1,
-            "max_minor_versions": -1,
             "publish": {
                 "pypi": True,
                 "ghcr": True,
@@ -743,7 +768,6 @@ def test_release_yaml_is_the_exact_publication_authority() -> None:
         },
         "prerelease": {
             "max_count": -1,
-            "max_minor_versions": -1,
             "publish": {
                 "pypi": True,
                 "ghcr": True,
@@ -754,7 +778,6 @@ def test_release_yaml_is_the_exact_publication_authority() -> None:
         },
         "draft": {
             "max_count": 7,
-            "max_minor_versions": -1,
             "publish": {
                 "pypi": True,
                 "ghcr": True,
@@ -765,7 +788,6 @@ def test_release_yaml_is_the_exact_publication_authority() -> None:
         },
         "nightly": {
             "max_count": 7,
-            "max_minor_versions": 1,
             "publish": {
                 "pypi": False,
                 "ghcr": True,
@@ -789,6 +811,7 @@ def test_release_yaml_is_the_exact_publication_authority() -> None:
 
 def test_publish_plan_is_the_normalized_config_without_runtime_layers() -> None:
     core = importlib.import_module("ucm_release.core")
+    policy = importlib.import_module("ucm_release.policy")
 
     plan = core.compute_publish_plan(core.load_catalog())
 
@@ -797,7 +820,8 @@ def test_publish_plan_is_the_normalized_config_without_runtime_layers() -> None:
             "requested": True,
             "enabled": False,
             "disposition": "scope-skipped",
-            "index": "https://upload.pypi.org/legacy/",
+            "target": "testpypi",
+            **policy.PYPI_TARGETS["testpypi"],
         },
         "ghcr": {
             "requested": True,

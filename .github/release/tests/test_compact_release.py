@@ -27,11 +27,19 @@ def _fixture_policy(
     release_type: str = "stable",
     repository: str = "release-org/unified-cache-management",
 ):
-    return policy.resolve(
+    resolved = policy.resolve(
         repository=repository,
         version_override="0.7.60rc1",
         release_type=release_type,
     )
+    selectors = {
+        "vllm": [{"raw": "0.22.1", "keyword": "0.22.1", "tag": None}],
+        "vllm-ascend": [{"raw": "0.22.1rc1", "keyword": "0.22.1rc1", "tag": None}],
+    }
+    resolved["runtime_selectors"] = copy.deepcopy(selectors)
+    for product in resolved["products"]:
+        product["runtime_selectors"] = copy.deepcopy(selectors[product["id"]])
+    return resolved
 
 
 def _inputs(
@@ -339,6 +347,7 @@ def test_plan_keeps_top_level_contract_without_problem_or_index_matrix() -> None
         "git_tag",
         "release_kind",
         "is_prerelease",
+        "version_authority",
         "publish",
         "meta_package",
         "chart",
@@ -356,7 +365,8 @@ def test_plan_keeps_top_level_contract_without_problem_or_index_matrix() -> None
     assert plan["publication_scope"] == "fork"
     assert plan["runtime_image_tag_prefix"] == "release-org-"
     keys = _all_keys(plan)
-    assert not {key for key in keys if "authority" in key or "mooncake" in key}
+    assert {key for key in keys if "authority" in key} == {"version_authority"}
+    assert not {key for key in keys if "mooncake" in key}
     assert "@sha256:" in json.dumps(plan)
     assert {
         (item["extra"], item["cpu_arch"])
@@ -468,7 +478,8 @@ def test_plan_records_selected_release_profile(release_type: str) -> None:
     assert plan["release_type"] == release_type
     assert plan["publish"] == {
         "pypi": {
-            "index": "https://upload.pypi.org/legacy/",
+            "target": "testpypi",
+            **policy.PYPI_TARGETS["testpypi"],
             "requested": shared_requested,
             "enabled": False,
             "disposition": "scope-skipped" if shared_requested else "disabled",

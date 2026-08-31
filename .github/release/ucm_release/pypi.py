@@ -25,7 +25,7 @@ from . import policy as release_policy
 
 PUBLICATION_KIND = "ucm-pypi-publication"
 RECEIPT_KIND = "ucm-pypi-receipt"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 FetchRelease = Callable[[str, str], Mapping[str, Any] | None]
 UploadFile = Callable[[str], object]
@@ -128,21 +128,30 @@ def _validate_extras(
     return normalized
 
 
-def _authorized_repository_url(plan: Mapping[str, Any]) -> str:
+def _authorized_target(plan: Mapping[str, Any]) -> dict[str, str]:
     publish = _mapping(plan.get("publish"), "release plan publish policy")
     pypi_policy = _mapping(publish.get("pypi"), "release plan PyPI policy")
     repository = plan.get("repository")
-    if (
-        plan.get("publication_scope") != "official"
-        or not isinstance(repository, str)
-        or repository.casefold() != release_policy.OFFICIAL_REPOSITORY.casefold()
-        or pypi_policy.get("enabled") is not True
-    ):
-        raise ValueError("PyPI publication requires an official enabled PyPI plan")
-    repository_url = pypi_policy.get("index")
-    if not isinstance(repository_url, str) or not repository_url.startswith("https://"):
-        raise ValueError("PyPI publication requires an HTTPS repository URL")
-    return repository_url
+    scope = plan.get("publication_scope")
+    target = pypi_policy.get("target")
+    if not isinstance(repository, str) or pypi_policy.get("enabled") is not True:
+        raise ValueError("Python index publication requires an enabled release plan")
+    authorized = (
+        scope == "official"
+        and repository.casefold() == release_policy.OFFICIAL_REPOSITORY.casefold()
+        and target == "pypi"
+    ) or (
+        scope == "fork"
+        and repository.casefold() != release_policy.OFFICIAL_REPOSITORY.casefold()
+        and target == "testpypi"
+    )
+    if not authorized:
+        raise ValueError("Python index target does not match publication scope")
+    expected = release_policy.PYPI_TARGETS[str(target)]
+    observed = {field: pypi_policy.get(field) for field in expected}
+    if observed != expected:
+        raise ValueError("Python index endpoints differ from the authorized target")
+    return {"target": str(target), **expected}
 
 
 def build_publication(
@@ -154,7 +163,7 @@ def build_publication(
     plan = _mapping(release_plan, "release plan")
     if plan.get("kind") != "ucm-release-plan":
         raise ValueError("PyPI publication requires a release plan")
-    repository_url = _authorized_repository_url(plan)
+    target = _authorized_target(plan)
     version = _version(plan.get("version"), "release version")
     raw_tasks = plan.get("wheels")
     if not isinstance(raw_tasks, list) or not raw_tasks:
@@ -263,7 +272,11 @@ def build_publication(
         "kind": PUBLICATION_KIND,
         "schema_version": SCHEMA_VERSION,
         "version": version,
-        "repository_url": repository_url,
+        "target": target["target"],
+        "repository_url": target["index"],
+        "simple_index": target["simple_index"],
+        "json_api": target["json_api"],
+        "dependency_index": target["dependency_index"],
         "backends": backends,
         "meta": meta_project_record,
         "extras": extras,
@@ -277,14 +290,17 @@ def fetch_version_json(
     attempts: int = 4,
     retry_interval: float = 1.0,
     timeout: float = 30.0,
+    json_api_url: str = "https://pypi.org/pypi/",
     open_url: Callable[..., Any] = urlopen,
     sleep: Sleep = time.sleep,
 ) -> dict[str, Any] | None:
     """Fetch one version document with cache busting and bounded retry."""
+    if not json_api_url.startswith("https://") or not json_api_url.endswith("/"):
+        raise ValueError("Python index JSON API must be an HTTPS base URL")
     for attempt in range(1, attempts + 1):
         query = urlencode({"ucm_readback": uuid.uuid4().hex})
         url = (
-            f"https://pypi.org/pypi/{quote(project, safe='')}/"
+            f"{json_api_url}{quote(project, safe='')}/"
             f"{quote(version, safe='')}/json?{query}"
         )
         request = Request(
@@ -461,7 +477,7 @@ def publish(
     """Upload missing backends, read them back, then upload and verify meta."""
     if (
         publication.get("kind") != PUBLICATION_KIND
-        or publication.get("schema_version") != 1
+        or publication.get("schema_version") != SCHEMA_VERSION
         or not isinstance(publication.get("repository_url"), str)
     ):
         raise ValueError("invalid PyPI publication contract")
@@ -510,6 +526,8 @@ def publish(
         "schema_version": SCHEMA_VERSION,
         "status": "complete",
         "version": publication["version"],
+        "target": publication["target"],
+        "repository_url": publication["repository_url"],
         "projects": copy.deepcopy([*backends, meta]),
         "extras": copy.deepcopy(publication["extras"]),
     }

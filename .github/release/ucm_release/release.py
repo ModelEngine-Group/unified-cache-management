@@ -545,10 +545,12 @@ def validate_pypi_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
             "schema_version",
             "status",
             "version",
+            "target",
+            "repository_url",
             "projects",
             "extras",
         }
-        or receipt.get("schema_version") != 1
+        or receipt.get("schema_version") != 2
     ):
         raise ValueError("PyPI publication receipt has an invalid contract")
     if receipt.get("status") != "complete":
@@ -662,6 +664,10 @@ def finalize_manifest(
                 raise ValueError(
                     "PyPI publication receipt version does not match release"
                 )
+            if pypi_receipt.get("target") != planned_pypi.get(
+                "target"
+            ) or pypi_receipt.get("repository_url") != planned_pypi.get("index"):
+                raise ValueError("PyPI receipt target does not match the release plan")
             meta_package = _mapping(
                 result.get("meta_package"), "release state meta package"
             )
@@ -872,11 +878,6 @@ def _github_asset_urls(
         str(item["filename"])
         for item in _list(manifest.get("wheels"), "release manifest Wheels")
     }
-    if "meta_package" in manifest:
-        meta_package = _mapping(
-            manifest.get("meta_package"), "release manifest meta package"
-        )
-        required.add(str(meta_package.get("filename", "")))
     chart = _mapping(manifest.get("chart"), "release manifest Chart")
     required.add(str(chart.get("filename", "")))
     missing = sorted(required - urls.keys())
@@ -1140,21 +1141,7 @@ def render_notes(
     chart_url = asset_urls.get(chart_filename)
     if not chart_filename or not chart_url:
         raise ValueError("Release notes require a Chart URL")
-    has_meta_package = "meta_package" in manifest
     artifact_lines = [f"Backend Wheels: {len(manifest.get('wheels', []))}"]
-    if has_meta_package:
-        meta_package = _mapping(
-            manifest.get("meta_package"), "release manifest meta package"
-        )
-        meta_filename = str(meta_package.get("filename", ""))
-        meta_url = asset_urls.get(meta_filename)
-        if not meta_filename or not meta_url:
-            raise ValueError("Release notes require a meta Wheel URL")
-        artifact_lines.append(
-            f"Meta Wheel: [{meta_filename}]({meta_url})"
-            if link_assets
-            else f"Meta Wheel: `{meta_filename}`"
-        )
     chart_line = (
         f"Chart: [{chart_filename}]({chart_url})"
         if link_assets
@@ -1162,9 +1149,7 @@ def render_notes(
     )
     artifact_lines.extend([chart_line, ""])
     lines.extend(artifact_lines)
-    available_artifacts = (
-        "Backend, meta, and Chart" if has_meta_package else "Backend and Chart"
-    )
+    available_artifacts = "Backend and Chart"
     if release["status"] == "artifacts-ready":
         lines.extend(
             [
@@ -1191,11 +1176,13 @@ def render_notes(
         receipt = _mapping(pypi_receipt, "release manifest PyPI receipt")
         extras = _mapping(receipt.get("extras"), "release manifest PyPI extras")
         version = str(receipt.get("version", ""))
-        if not version or not extras:
+        target = receipt.get("target")
+        if not version or not extras or target not in {"pypi", "testpypi"}:
             raise ValueError("Release notes require complete PyPI coordinates")
+        heading = "PyPI" if target == "pypi" else "TestPyPI"
         lines.extend(
             [
-                "## PyPI",
+                f"## {heading}",
                 "",
                 "> Install one backend extra in a new virtual environment; do not upgrade "
                 "an older monolithic uc-manager environment or switch backends in place.",
@@ -1203,7 +1190,14 @@ def render_notes(
             ]
         )
         for extra in sorted(extras):
-            lines.append(f"- `pip install 'uc-manager[{extra}]=={version}'`")
+            command = f"pip install 'uc-manager[{extra}]=={version}'"
+            if target == "testpypi":
+                command = (
+                    "pip install --index-url https://test.pypi.org/simple/ "
+                    "--extra-index-url https://pypi.org/simple/ "
+                    f"'uc-manager[{extra}]=={version}'"
+                )
+            lines.append(f"- `{command}`")
         lines.append("")
     lines.extend(
         _render_product_tables(

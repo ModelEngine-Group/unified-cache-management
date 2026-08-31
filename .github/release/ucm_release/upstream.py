@@ -22,6 +22,7 @@ from packaging.version import InvalidVersion, Version
 
 from . import core
 from . import runtime as runtime_contract
+from . import version_config
 
 SELECTION_KIND = "ucm-runtime-selection"
 SELECTION_SCHEMA_VERSION = 3
@@ -186,49 +187,6 @@ def _repository_tags(
     return sorted(set(str(tag) for tag in values if str(tag)))
 
 
-def _version_window(
-    product: Mapping[str, object],
-) -> tuple[Version | None, Version | None]:
-    context = f"release product {_string(product, 'id', 'release product')}"
-    try:
-        raw_minimum = product.get("minimum_version")
-        minimum = (
-            Version(_string(product, "minimum_version", context))
-            if raw_minimum is not None
-            else None
-        )
-        raw_maximum = product.get("maximum_version")
-        maximum = (
-            Version(_string(product, "maximum_version", context))
-            if raw_maximum is not None
-            else None
-        )
-    except InvalidVersion as error:
-        raise ValueError(f"{context}: version window is invalid") from error
-    for name, value in (("minimum_version", minimum), ("maximum_version", maximum)):
-        if value is not None and (value.local is not None or value.dev is not None):
-            raise ValueError(f"{context}: {name} must be a formal version")
-    if minimum is not None and maximum is not None and maximum < minimum:
-        raise ValueError(f"{context}: maximum_version must be >= minimum_version")
-    return minimum, maximum
-
-
-def _minor_window_size(value: object, context: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-        raise ValueError(f"{context}: must be an integer >= 1")
-    return value
-
-
-def _minor_limit(value: object, context: str) -> int:
-    if (
-        not isinstance(value, int)
-        or isinstance(value, bool)
-        or (value != -1 and value < 1)
-    ):
-        raise ValueError(f"{context}: must be -1 or an integer >= 1")
-    return value
-
-
 def _parsed_runtime_tag(product_id: str, tag: str) -> dict[str, object] | None:
     nightly = _NIGHTLY_TAG.fullmatch(tag) if product_id == "vllm-ascend" else None
     formal = _FORMAL_TAG.fullmatch(tag)
@@ -287,93 +245,107 @@ def _runtime_variant(product_id: str, parsed: Mapping[str, object]) -> str:
     raise ValueError(f"unsupported runtime product {product_id!r}")
 
 
+def _tag_matches_keyword(tag: str, keyword: str) -> bool:
+    """Match one literal keyword as a delimited OCI tag component."""
+
+    offset = 0
+    while (index := tag.find(keyword, offset)) != -1:
+        end = index + len(keyword)
+        left_boundary = (
+            index == 0
+            or tag[index - 1] in "-_"
+            or (tag[index - 1] == "v" and (index == 1 or tag[index - 2] in "-_"))
+        )
+        right_boundary = end == len(tag) or tag[end] in "-_"
+        if left_boundary and right_boundary:
+            return True
+        offset = index + 1
+    return False
+
+
 def _select_runtime_tags(
     product: Mapping[str, object],
     tags: Sequence[str],
     *,
     excluded_variants: Sequence[str] = (),
-    max_minor_versions: int = -1,
 ) -> list[dict[str, str]]:
-    """Select recent minor lines, then one published version and its variants."""
+    """Resolve literal version.ini keywords to published Runtime tags."""
 
     product_id = _string(product, "id", "release product")
-    if product.get("channel_policy") != "latest-stable-or-rc-or-nightly-per-minor":
-        raise ValueError(f"{product_id}: unsupported channel policy")
-    window_size = _minor_window_size(
-        product.get("recent_minor_versions"),
-        f"{product_id} recent_minor_versions",
-    )
-    minor_limit = _minor_limit(
-        max_minor_versions,
-        f"{product_id} max_minor_versions",
-    )
-    minimum, maximum = _version_window(product)
-    parsed = [
-        item
-        for tag in sorted(set(tags))
-        if (item := _parsed_runtime_tag(product_id, str(tag))) is not None
-    ]
-    selectable = [
-        item
-        for item in parsed
-        if _runtime_variant(product_id, item) not in excluded_variants
-    ]
-    latest_minor_window: tuple[int, int, int] | None = None
-    if selectable:
-        latest_version = max(item["version"] for item in selectable)
-        assert isinstance(latest_version, Version)
-        latest_major, latest_minor = latest_version.major, latest_version.minor
-        latest_minor_window = (
-            latest_major,
-            max(0, latest_minor - window_size + 1),
-            latest_minor,
-        )
-
-    by_minor: dict[tuple[int, int], list[dict[str, object]]] = {}
-    for item in selectable:
-        version = item["version"]
-        assert isinstance(version, Version)
-        if minimum is not None and version < minimum:
-            continue
-        if maximum is not None and version > maximum:
-            continue
-        if latest_minor_window is not None:
-            latest_major, earliest_minor, latest_minor = latest_minor_window
-            if not (
-                version.major == latest_major
-                and earliest_minor <= version.minor <= latest_minor
-            ):
-                continue
-        by_minor.setdefault((version.major, version.minor), []).append(item)
-
+    raw_selectors = product.get("runtime_selectors")
+    if not isinstance(raw_selectors, list) or not raw_selectors:
+        raise ValueError(f"{product_id}: version.ini has no Runtime selectors")
+    available_tags = sorted(set(str(tag) for tag in tags))
+    parsed_by_tag = {
+        tag: parsed
+        for tag in available_tags
+        if (parsed := _parsed_runtime_tag(product_id, tag)) is not None
+    }
     selected: list[dict[str, str]] = []
-    selected_minors = sorted(by_minor)
-    if minor_limit != -1:
-        selected_minors = selected_minors[:minor_limit]
-    for minor in selected_minors:
-        values = by_minor[minor]
-        chosen_channel = next(
-            (
-                channel
-                for channel in ("stable", "rc", "nightly")
-                if any(item["channel"] == channel for item in values)
-            ),
-            None,
+    selected_tags: set[str] = set()
+    for index, raw_selector in enumerate(raw_selectors):
+        context = f"{product_id} runtime selector[{index}]"
+        if not isinstance(raw_selector, Mapping) or set(raw_selector) != {
+            "raw",
+            "keyword",
+            "tag",
+        }:
+            raise ValueError(f"{context}: malformed selector")
+        keyword = version_config.runtime_keyword(
+            raw_selector.get("keyword"), f"{context} keyword"
         )
-        if chosen_channel is None:
-            continue
-        chosen_version = max(
-            item["version"] for item in values if item["channel"] == chosen_channel
-        )
-        for item in sorted(values, key=lambda value: str(value["tag"])):
-            if item["channel"] == chosen_channel and item["version"] == chosen_version:
-                selected.append(
-                    {
-                        "runtime_tag": str(item["tag"]),
-                        "version": str(chosen_version),
-                        "channel": chosen_channel,
-                    }
+        explicit_tag = raw_selector.get("tag")
+        if explicit_tag is not None:
+            if not isinstance(explicit_tag, str) or explicit_tag not in available_tags:
+                raise ValueError(f"{context}: explicit Runtime tag is not published")
+            if not _tag_matches_keyword(explicit_tag, keyword):
+                raise ValueError(f"{context}: explicit Runtime tag lacks its keyword")
+            parsed = parsed_by_tag.get(explicit_tag)
+            if (
+                parsed is not None
+                and _runtime_variant(product_id, parsed) in excluded_variants
+            ):
+                raise ValueError(f"{context}: explicit Runtime tag is excluded")
+            values = [
+                {
+                    "runtime_tag": explicit_tag,
+                    "version": keyword,
+                    "channel": "pinned",
+                }
+            ]
+        else:
+            matching = [
+                item
+                for item in parsed_by_tag.values()
+                if _tag_matches_keyword(str(item["tag"]), keyword)
+            ]
+            values = [
+                item
+                for item in matching
+                if _runtime_variant(product_id, item) not in excluded_variants
+            ]
+            if not values:
+                reason = (
+                    "only excluded variants are published"
+                    if matching
+                    else "no supported Runtime tag contains the keyword"
                 )
+                raise ValueError(f"{context}: {reason}")
+
+        resolved_values = []
+        for item in values:
+            runtime_tag = str(item.get("runtime_tag", item.get("tag", "")))
+            if not runtime_tag or runtime_tag in selected_tags:
+                raise ValueError(f"{context}: Runtime tag is duplicated")
+            selected_tags.add(runtime_tag)
+            resolved_values.append(
+                {
+                    "runtime_tag": runtime_tag,
+                    "version": keyword,
+                    "channel": str(item["channel"]),
+                }
+            )
+        selected.extend(sorted(resolved_values, key=lambda item: item["runtime_tag"]))
     return selected
 
 
@@ -401,13 +373,6 @@ def resolve_runtime_candidates(
     if not isinstance(products, list) or not products:
         raise ValueError("formal runtime selection requires release products")
     backends = _mapping(release.get("backends"), "platform backends")
-    release_profile = _mapping(
-        release.get("release_profile"), "selected release profile"
-    )
-    max_minor_versions = _minor_limit(
-        release_profile.get("max_minor_versions"),
-        "selected release profile max_minor_versions",
-    )
     excluded_by_product = _mapping(
         release.get("excluded_upstream_variants"), "excluded upstream variants"
     )
@@ -424,14 +389,26 @@ def resolve_runtime_candidates(
             isinstance(item, str) for item in excluded
         ):
             raise ValueError(f"{product_id}: excluded variants must be a list")
-        selected = _select_runtime_tags(
-            product,
-            _repository_tags(
-                repository, tag_fixture=tag_fixture, tag_loader=tag_loader
-            ),
-            excluded_variants=excluded,
-            max_minor_versions=max_minor_versions,
+        repository_tags = _repository_tags(
+            repository, tag_fixture=tag_fixture, tag_loader=tag_loader
         )
+        if pr_default:
+            selected = [
+                {
+                    "runtime_tag": str(item["tag"]),
+                    "version": str(item["version"]),
+                    "channel": str(item["channel"]),
+                }
+                for tag in repository_tags
+                if (item := _parsed_runtime_tag(product_id, tag)) is not None
+                and _runtime_variant(product_id, item) not in excluded
+            ]
+        else:
+            selected = _select_runtime_tags(
+                product,
+                repository_tags,
+                excluded_variants=excluded,
+            )
         if not selected:
             raise ValueError(
                 f"{product_id}: no Runtime Registry tags satisfy the selection windows"
@@ -440,8 +417,7 @@ def resolve_runtime_candidates(
         for item in selected:
             tag = item["runtime_tag"]
             parsed = _parsed_runtime_tag(product_id, tag)
-            assert parsed is not None
-            tokens = set(parsed["tokens"])
+            tokens = set(parsed["tokens"]) if parsed is not None else set()
             if product_id == "vllm-ascend" and "a5" in tokens:
                 backend = "cann-a5"
                 backend_policy = _mapping(backends.get(backend), f"backend {backend}")
@@ -562,9 +538,9 @@ def validate_runtime_candidates(value: object) -> dict[str, object]:
         if reference in seen:
             raise ValueError(f"duplicate runtime candidate {reference}")
         seen.add(reference)
-        if item.get("channel") not in {"stable", "rc", "nightly"}:
+        if item.get("channel") not in {"stable", "rc", "nightly", "pinned"}:
             raise ValueError(f"{reference}: invalid channel")
-        Version(_string(item, "version", reference))
+        version_config.runtime_keyword(item.get("version"), f"{reference} keyword")
         expected_refs.append(reference)
     if sorted(references) != sorted(expected_refs):
         raise ValueError("runtime candidate references do not match runtimes")

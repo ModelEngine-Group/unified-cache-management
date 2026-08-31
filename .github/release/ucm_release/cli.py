@@ -44,6 +44,23 @@ def _write(path: Path, value: object) -> None:
     path.write_bytes(core.canonical_bytes(value) + b"\n")
 
 
+def _publication_context(path: Path | None) -> dict[str, object]:
+    if path is None:
+        return {}
+    value = core.load_json(path)
+    if not isinstance(value, dict) or set(value) != {
+        "fork_test_pypi",
+        "fork_dockerhub_namespace",
+    }:
+        raise ValueError("publication context fields must be exact")
+    if not isinstance(value["fork_test_pypi"], bool):
+        raise ValueError("publication context TestPyPI flag must be boolean")
+    namespace = value["fork_dockerhub_namespace"]
+    if namespace is not None and (not isinstance(namespace, str) or not namespace):
+        raise ValueError("publication context Docker Hub namespace is invalid")
+    return value
+
+
 def _crane_output(operation: str, reference: str) -> str:
     completed = None
     last_error = ""
@@ -230,11 +247,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     compact_plan.add_argument("--is-prerelease", choices=("true", "false"))
     compact_plan.add_argument("--chart-version")
+    compact_plan.add_argument("--publication-context", type=Path)
     compact_plan.add_argument("--output", type=Path, required=True)
 
     def _cmd_compact_plan(a):
+        publication = _publication_context(a.publication_context)
         result = compact.resolve_plan(
-            policy.resolve(a.catalog, release_type=a.release_type),
+            policy.resolve(
+                a.catalog,
+                release_type=a.release_type,
+                **publication,
+            ),
             builder_catalog=core.load_json(a.builder_catalog),
             runtime_selection=core.load_json(a.runtime_selection),
             route=a.route,
@@ -371,6 +394,11 @@ def build_parser() -> argparse.ArgumentParser:
         result = pypi.publish(
             publication,
             uploader=uploader,
+            fetch=lambda project, version: pypi.fetch_version_json(
+                project,
+                version,
+                json_api_url=publication["json_api"],
+            ),
             attempts=a.attempts,
             interval=a.interval,
         )

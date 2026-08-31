@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +17,11 @@ from packaging.version import InvalidVersion, Version
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = REPOSITORY_ROOT / "version.ini"
+RELEASE_ROOT = REPOSITORY_ROOT / ".github" / "release"
+sys.path.insert(0, str(RELEASE_ROOT))
+
+from ucm_release import version_config  # noqa: E402
+
 VERSION_TRIPLE_PATTERN = (
     r"(?:0|[1-9][0-9]*)\." r"(?:0|[1-9][0-9]*)\." r"(?:0|[1-9][0-9]*)"
 )
@@ -163,23 +169,36 @@ def next_nightly_sequence(
 
 
 def next_nightly_classification(
-    tags: Iterable[str], *, release_date: str
+    tags: Iterable[str], *, base_version: str, release_date: str
 ) -> dict[str, object]:
-    """Classify the next Nightly derived only from existing Tag names."""
+    """Classify the next Nightly for the repository-owned base version."""
     known_tags = tuple(tags)
-    base_version = next_patch_version(known_tags)
     sequence = next_nightly_sequence(
         known_tags, base_version=base_version, release_date=release_date
     )
     return classify_tag(f"nightly/v{base_version}-{release_date}-{sequence}")
 
 
+def validate_tag_against_config(tag: str, config_path: Path) -> dict[str, object]:
+    classification = classify_tag(tag)
+    config = version_config.load(config_path)
+    tag_base = Version(str(classification["version"])).base_version
+    if tag_base != config["ucm_base_version"]:
+        raise ValueError(
+            "release Tag base version differs from version.ini: "
+            f"{tag_base} != {config['ucm_base_version']}"
+        )
+    return classification
+
+
 def materialize_version(version: str, output: Path = DEFAULT_OUTPUT) -> str:
-    """Atomically write one canonical VLLM_UC_VERSION assignment."""
+    """Atomically replace only VLLM_UC_VERSION in the version authority."""
     canonical = canonical_version(version)
     target = Path(output)
     target.parent.mkdir(parents=True, exist_ok=True)
     mode = target.stat().st_mode & 0o777 if target.exists() else 0o644
+    source = target if target.exists() else DEFAULT_OUTPUT
+    rendered = version_config.render(version_config.load(source), ucm_version=canonical)
     temporary_name: str | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -189,7 +208,7 @@ def materialize_version(version: str, output: Path = DEFAULT_OUTPUT) -> str:
             prefix=f".{target.name}.",
             delete=False,
         ) as temporary:
-            temporary.write(f"VLLM_UC_VERSION={canonical}\n")
+            temporary.write(rendered)
             temporary.flush()
             os.fsync(temporary.fileno())
             temporary_name = temporary.name
@@ -214,6 +233,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tags-file", type=Path)
     parser.add_argument("--date", help="Nightly date in YYYYMMDD form")
     parser.add_argument(
+        "--version-config",
+        type=Path,
+        help="validate or derive the Tag from this version.ini authority",
+    )
+    parser.add_argument(
         "--classify",
         action="store_true",
         help="print Tag classification as JSON without writing version.ini",
@@ -235,9 +259,16 @@ def main() -> int:
                 for line in arguments.tags_file.read_text(encoding="utf-8").splitlines()
                 if line.strip()
             ]
+            if arguments.version_config is None:
+                raise ValueError("--next-nightly requires --version-config")
+            config = version_config.load(arguments.version_config)
             print(
                 json.dumps(
-                    next_nightly_classification(tags, release_date=arguments.date),
+                    next_nightly_classification(
+                        tags,
+                        base_version=config["ucm_base_version"],
+                        release_date=arguments.date,
+                    ),
                     sort_keys=True,
                 )
             )
@@ -247,7 +278,12 @@ def main() -> int:
         if arguments.classify:
             if arguments.tag is None:
                 raise ValueError("--classify requires --tag")
-            print(json.dumps(classify_tag(arguments.tag), sort_keys=True))
+            classification = (
+                validate_tag_against_config(arguments.tag, arguments.version_config)
+                if arguments.version_config is not None
+                else classify_tag(arguments.tag)
+            )
+            print(json.dumps(classification, sort_keys=True))
             return 0
         version = (
             version_from_tag(arguments.tag)

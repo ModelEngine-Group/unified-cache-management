@@ -50,10 +50,14 @@ jobs:
             https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz \
             | tar -xz -C "${RUNNER_TEMP}/crane" crane
           echo "${RUNNER_TEMP}/crane" >>"${GITHUB_PATH}"
+      - name: Validate Docker Hub credentials when configured
+        if: ${{ env.DOCKERHUB_USERNAME != '' || env.DOCKERHUB_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          test -n "${DOCKERHUB_USERNAME}" && test -n "${DOCKERHUB_TOKEN}"
       - name: Authenticate to DockerHub when configured
         if: >-
           ${{
-            github.repository == 'ModelEngine-Group/unified-cache-management' &&
             env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
           }}
         run: |

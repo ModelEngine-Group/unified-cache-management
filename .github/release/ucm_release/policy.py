@@ -1,4 +1,4 @@
-"""Human-maintained schema-v5 Release and platform policy.
+"""Human-maintained schema-v6 Release and platform policy.
 
 The two policy files and their exact requirement lists are the formal build
 authorities. ``compatibility_projection`` keeps transitional schema-v3
@@ -8,6 +8,7 @@ consumers on the same policy without duplicating Release configuration.
 from __future__ import annotations
 
 import copy
+import re
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,7 @@ from packaging.version import InvalidVersion, Version
 
 from . import core
 from . import runtime as runtime_ops
-from . import wheel_audit
+from . import version_config, wheel_audit
 
 RELEASE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RELEASE = RELEASE_ROOT / "release.yaml"
@@ -41,7 +42,20 @@ _MATRIX_LIMITS = {
 _SCAN_LIMITS = {"max_tags_per_repository": 1024, "max_selected_upstreams": 64}
 RELEASE_TYPES = ("stable", "prerelease", "draft", "nightly")
 PUBLISH_CHANNELS = core.PUBLISH_CHANNELS
-DEFAULT_RECENT_MINOR_VERSIONS = 3
+PYPI_TARGETS = {
+    "pypi": {
+        "index": "https://upload.pypi.org/legacy/",
+        "simple_index": "https://pypi.org/simple/",
+        "json_api": "https://pypi.org/pypi/",
+        "dependency_index": "https://pypi.org/simple/",
+    },
+    "testpypi": {
+        "index": "https://test.pypi.org/legacy/",
+        "simple_index": "https://test.pypi.org/simple/",
+        "json_api": "https://test.pypi.org/pypi/",
+        "dependency_index": "https://pypi.org/simple/",
+    },
+}
 
 
 def publication_identity(repository: str) -> tuple[str, str]:
@@ -128,15 +142,53 @@ def _select_release_profile(
     return profile, publish
 
 
+def _pypi_target(config: dict[str, Any], target: str) -> dict[str, Any]:
+    endpoints = PYPI_TARGETS[target]
+    if target == "pypi" and config.get("index") != endpoints["index"]:
+        raise ValueError("official PyPI upload endpoint differs from policy")
+    return {**copy.deepcopy(config), "target": target, **endpoints}
+
+
+def _dockerhub_namespace(value: str) -> str:
+    if (
+        not isinstance(value, str)
+        or re.fullmatch(r"docker\.io/[a-z0-9][a-z0-9._-]{0,127}", value) is None
+    ):
+        raise ValueError("Fork Docker Hub namespace must be docker.io/<account-or-org>")
+    return value
+
+
 def _resolve_release_profile(
-    release: dict[str, Any], release_type: str, publication_scope: str
+    release: dict[str, Any],
+    release_type: str,
+    publication_scope: str,
+    *,
+    fork_test_pypi: bool = False,
+    fork_dockerhub_namespace: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     profile, publish = _select_release_profile(release, release_type)
+    publish["pypi"] = _pypi_target(
+        publish["pypi"], "testpypi" if publication_scope == "fork" else "pypi"
+    )
     if publication_scope == "fork":
-        for channel in ("pypi", "dockerhub"):
-            if publish[channel]["requested"]:
-                publish[channel]["enabled"] = False
-                publish[channel]["disposition"] = "scope-skipped"
+        if not isinstance(fork_test_pypi, bool):
+            raise ValueError("Fork TestPyPI availability must be boolean")
+        if fork_dockerhub_namespace is not None:
+            publish["dockerhub"]["namespace"] = _dockerhub_namespace(
+                fork_dockerhub_namespace
+            )
+        availability = {
+            "pypi": fork_test_pypi,
+            "dockerhub": fork_dockerhub_namespace is not None,
+        }
+        for channel, available in availability.items():
+            requested = publish[channel]["requested"]
+            publish[channel]["enabled"] = requested and available
+            publish[channel]["disposition"] = (
+                "publish"
+                if requested and available
+                else "scope-skipped" if requested else "disabled"
+            )
     return profile, publish
 
 
@@ -145,31 +197,6 @@ def _validate_release_semantics(release: dict[str, Any]) -> None:
     product_ids = [product["id"] for product in products]
     if set(product_ids) != {"vllm", "vllm-ascend"} or len(product_ids) != 2:
         raise ValueError("release policy requires exactly vllm and vllm-ascend")
-    for product in products:
-        try:
-            minimum = (
-                Version(product["minimum_version"])
-                if "minimum_version" in product
-                else None
-            )
-            maximum = (
-                Version(product["maximum_version"])
-                if "maximum_version" in product
-                else None
-            )
-        except InvalidVersion as error:
-            raise ValueError(
-                f"release product {product['id']}: version window is invalid"
-            ) from error
-        for name, value in (("minimum_version", minimum), ("maximum_version", maximum)):
-            if value is not None and (value.local is not None or value.dev is not None):
-                raise ValueError(
-                    f"release product {product['id']}: {name} must be a formal version"
-                )
-        if minimum is not None and maximum is not None and maximum < minimum:
-            raise ValueError(
-                f"release product {product['id']}: maximum_version must be >= minimum_version"
-            )
     for release_type in RELEASE_TYPES:
         profile_publish = release["release_profiles"][release_type]["publish"]
         if (
@@ -188,11 +215,6 @@ def _validate_release_semantics(release: dict[str, Any]) -> None:
                 f"{release_type}: Docker Hub publication requires GHCR source "
                 "publication"
             )
-
-
-def _apply_release_defaults(release: dict[str, Any]) -> None:
-    for product in release["products"]:
-        product.setdefault("recent_minor_versions", DEFAULT_RECENT_MINOR_VERSIONS)
 
 
 def _validate_platform_semantics(platforms: dict[str, Any]) -> None:
@@ -255,7 +277,7 @@ def load(
     build_requirements_path: Path | None = None,
     runtime_requirements_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Load only the schema-v5 formal policy and its direct authorities."""
+    """Load only the schema-v6 formal policy and its direct authorities."""
     resolved_platforms = _companion_path(
         release_path, platforms_path, DEFAULT_PLATFORMS
     )
@@ -274,7 +296,6 @@ def load(
     core.validate_schema(
         platforms, schema["$defs"]["platformPolicy"], root=schema, path="$.platforms"
     )
-    _apply_release_defaults(release)
     _validate_release_semantics(release)
     _validate_platform_semantics(platforms)
     return {
@@ -295,6 +316,8 @@ def resolve(
     repository: str | None = None,
     version_override: str | None = None,
     release_type: str = "stable",
+    fork_test_pypi: bool = False,
+    fork_dockerhub_namespace: str | None = None,
 ) -> dict[str, Any]:
     """Resolve the two human policies into the formal runtime authority."""
     bundle = load(release_path, platforms_path=platforms_path)
@@ -330,12 +353,20 @@ def resolve(
         }
     )
     selected_profile, normalized_publish = _resolve_release_profile(
-        merged, release_type, publication_scope
+        merged,
+        release_type,
+        publication_scope,
+        fork_test_pypi=fork_test_pypi,
+        fork_dockerhub_namespace=fork_dockerhub_namespace,
     )
     merged["publish"] = normalized_publish
     merged["release_type"] = release_type
     merged["release_profile"] = selected_profile
-    version = version_override or core.read_version(repository_root / "version.ini")
+    version_authority = version_config.load(repository_root / "version.ini")
+    version = version_override or str(version_authority["ucm_version"])
+    selectors = version_authority["supported_runtimes"]
+    for product in merged["products"]:
+        product["runtime_selectors"] = copy.deepcopy(selectors[product["id"]])
     chart_document = core.load_yaml(
         repository_root / release["chart"]["source"] / "Chart.yaml"
     )
@@ -348,6 +379,9 @@ def resolve(
             "publication_scope": publication_scope,
             "runtime_image_tag_prefix": runtime_image_tag_prefix,
             "ucm_version": version,
+            "ucm_base_version": version_authority["ucm_base_version"],
+            "version_authority_sha256": version_authority["authority_sha256"],
+            "runtime_selectors": copy.deepcopy(selectors),
             "release_tag": f"v{version}",
             "matrix_limits": copy.deepcopy(_MATRIX_LIMITS),
             "requirements": copy.deepcopy(bundle["requirements"]),
@@ -403,27 +437,16 @@ def compatibility_projection(
     smoke_values = release["chart"]["smoke_values"]
     upstream_products = []
     for product in release["products"]:
-        version_constraints = []
-        if "minimum_version" in product:
-            version_constraints.append(f">={product['minimum_version']}")
-        if "maximum_version" in product:
-            version_constraints.append(f"<={product['maximum_version']}")
         projected = {
             "id": product["id"],
             "runtime_product": product["id"],
             "runtime_repository": product["runtime_repository"],
             "target_repository": product["target_repository"],
-            "recent_minor_versions": product["recent_minor_versions"],
-            "channel_policy": product["channel_policy"],
-            "version_specifier": ",".join(version_constraints) or ">=0",
+            "version_specifier": ">=0",
             "channels": ["stable", "rc", "nightly"],
             # Transitional only. Formal runtime Python comes from OCI probing.
             "integration_python_abi": "cp312",
         }
-        if "minimum_version" in product:
-            projected["minimum_version"] = product["minimum_version"]
-        if "maximum_version" in product:
-            projected["maximum_version"] = product["maximum_version"]
         upstream_products.append(projected)
     publication_scope, _ = publication_identity(repository)
     _, publish = _resolve_release_profile(release, release_type, publication_scope)

@@ -59,7 +59,8 @@ jobs:
           tags_file="${RUNNER_TEMP}/ucm-tags.txt"
           git tag --list >"${tags_file}"
           next="$(python scripts/materialize_version.py --next-nightly \
-            --tags-file "${tags_file}" --date "${shanghai_date}")"
+            --tags-file "${tags_file}" --date "${shanghai_date}" \
+            --version-config version.ini)"
           next_tag="$(jq -r '.git_tag' <<<"${next}")"
           prefix="${next_tag%-*}-"
           selected_tag=""
@@ -93,7 +94,7 @@ jobs:
           fi
 
           classification="$(python scripts/materialize_version.py \
-            --tag "${selected_tag}" --classify)"
+            --tag "${selected_tag}" --classify --version-config version.ini)"
           {
             echo "source_sha=${source_sha}"
             echo "git_tag=$(jq -r '.git_tag' <<<"${classification}")"

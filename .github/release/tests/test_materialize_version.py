@@ -15,6 +15,12 @@ assert SPEC is not None and SPEC.loader is not None
 materialize = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(materialize)
 
+VERSION_CONFIG = (
+    "VLLM_UC_VERSION=0.7.62\n"
+    "UCM_SUPPORTED_VLLM_VERSIONS=0.27.1\n"
+    "UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26.0rc\n"
+)
+
 
 @pytest.mark.parametrize(
     ("tag", "expected"),
@@ -54,8 +60,9 @@ def test_invalid_or_noncanonical_tags_are_rejected(value: str) -> None:
         materialize.version_from_tag(value)
 
 
-def test_cli_writes_one_line_and_prints_the_version(tmp_path: Path) -> None:
+def test_cli_replaces_only_ucm_version_and_prints_it(tmp_path: Path) -> None:
     output = tmp_path / "version.ini"
+    output.write_text(VERSION_CONFIG, encoding="utf-8")
     completed = subprocess.run(
         [
             sys.executable,
@@ -71,7 +78,9 @@ def test_cli_writes_one_line_and_prints_the_version(tmp_path: Path) -> None:
     )
 
     assert completed.stdout == "0.6.0.dev13\n"
-    assert output.read_text(encoding="utf-8") == "VLLM_UC_VERSION=0.6.0.dev13\n"
+    assert output.read_text(encoding="utf-8") == VERSION_CONFIG.replace(
+        "VLLM_UC_VERSION=0.7.62", "VLLM_UC_VERSION=0.6.0.dev13"
+    )
 
 
 @pytest.mark.parametrize(
@@ -226,6 +235,8 @@ def test_next_nightly_cli_outputs_classification_without_materializing(
         encoding="utf-8",
     )
     output = tmp_path / "version.ini"
+    config = tmp_path / "source-version.ini"
+    config.write_text(VERSION_CONFIG, encoding="utf-8")
 
     completed = subprocess.run(
         [
@@ -236,6 +247,8 @@ def test_next_nightly_cli_outputs_classification_without_materializing(
             str(tags_file),
             "--date",
             "20260826",
+            "--version-config",
+            str(config),
             "--output",
             str(output),
         ],
@@ -291,3 +304,57 @@ def test_version_option_requires_canonical_pep440(tmp_path: Path) -> None:
     assert completed.returncode != 0
     assert "canonical PEP 440" in completed.stderr
     assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        "v0.7.62",
+        "v0.7.62rc3",
+        "draft/v0.7.62-4",
+        "nightly/v0.7.62-20260826-1",
+    ],
+)
+def test_tag_base_must_match_version_config(tmp_path: Path, tag: str) -> None:
+    config = tmp_path / "version.ini"
+    config.write_text(VERSION_CONFIG, encoding="utf-8")
+
+    assert materialize.validate_tag_against_config(tag, config)["git_tag"] == tag
+    with pytest.raises(ValueError, match="base version differs"):
+        materialize.validate_tag_against_config(tag.replace("0.7.62", "0.7.63"), config)
+
+
+def test_version_config_supports_keywords_and_explicit_tags() -> None:
+    parsed = materialize.version_config.parse(
+        "VLLM_UC_VERSION=0.9.3\n"
+        "UCM_SUPPORTED_VLLM_VERSIONS=0.27.1,latest\n"
+        "UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.25.1rc@nightly-releases-v0.25.1rc\n"
+    )
+
+    assert parsed["supported_runtimes"]["vllm"] == [
+        {"raw": "0.27.1", "keyword": "0.27.1", "tag": None},
+        {"raw": "latest", "keyword": "latest", "tag": None},
+    ]
+    assert parsed["supported_runtimes"]["vllm-ascend"] == [
+        {
+            "raw": "0.25.1rc@nightly-releases-v0.25.1rc",
+            "keyword": "0.25.1rc",
+            "tag": "nightly-releases-v0.25.1rc",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "VLLM_UC_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27.1\n",
+        "VLLM_UC_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27.1,0.27.1\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26.0rc\n",
+        "VLLM_UC_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=bad keyword\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26.0rc\n",
+        "VLLM_UC_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27.1@bad/tag\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26.0rc\n",
+    ],
+)
+def test_version_config_rejects_missing_duplicate_or_invalid_selectors(
+    text: str,
+) -> None:
+    with pytest.raises(ValueError):
+        materialize.version_config.parse(text)

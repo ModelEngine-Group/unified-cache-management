@@ -30,6 +30,7 @@ from typing import Any
 from packaging.utils import canonicalize_name, parse_wheel_filename
 from packaging.version import InvalidVersion, Version
 
+from . import version_config
 from .core import (
     DEFAULT_RELEASE,
     DEFAULT_SCHEMA_DIR,
@@ -1341,6 +1342,24 @@ def _verify_source_root(archive: tarfile.TarFile, source_root: Path) -> None:
                 raise ValueError(f"extracted source executable mode differs: {name}")
 
 
+def _materialized_source_version_bytes(
+    text: str, source_version: str, *, source: str
+) -> bytes:
+    try:
+        return version_config.materialize_bytes(text, source_version, source=source)
+    except ValueError as error:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if len(lines) != 1 or not lines[0].startswith("VLLM_UC_VERSION="):
+            raise
+        # Historical commits predate Runtime selectors. Their exact one-line
+        # source shape remains verifiable, while new release preflight is strict.
+        try:
+            Version(lines[0].split("=", 1)[1])
+        except InvalidVersion:
+            raise error
+        return f"VLLM_UC_VERSION={source_version}\n".encode()
+
+
 def verify_source_context(
     archive_path: Path,
     manifest_path: Path,
@@ -1348,6 +1367,7 @@ def verify_source_context(
     commit_payload_path: Path | None = None,
     expected_source_sha: str | None = None,
     expected_source_version: str | None = None,
+    repository_root: Path = REPO_ROOT,
 ) -> dict[str, Any]:
     """Verify original Git identity and its version-materialized source archive."""
     if commit_payload_path is None or expected_source_sha is None:
@@ -1404,6 +1424,24 @@ def verify_source_context(
     commit_tree = _commit_tree(commit_payload)
     if manifest["source_tree"] != commit_tree:
         raise ValueError("source context tree does not match source commit")
+    source_version_config = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(Path(repository_root).resolve()),
+            "show",
+            f"{expected_source_sha}:version.ini",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if source_version_config.returncode != 0:
+        raise ValueError("source commit version.ini cannot be read")
+    expected_version_bytes = _materialized_source_version_bytes(
+        source_version_config.stdout.decode("utf-8"),
+        source_version,
+        source=f"{expected_source_sha}:version.ini",
+    )
     with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
         if archive.pax_headers:
             raise ValueError(
@@ -1416,9 +1454,7 @@ def verify_source_context(
             version_stream = archive.extractfile(version_member)
         except KeyError:
             version_stream = None
-        if version_stream is None or version_stream.read() != (
-            f"VLLM_UC_VERSION={source_version}\n".encode()
-        ):
+        if version_stream is None or version_stream.read() != expected_version_bytes:
             raise ValueError("materialized source version.ini differs")
         _verify_source_root(archive, Path(source_root))
     return manifest
@@ -1472,7 +1508,12 @@ def prepare_source_context(
     repository_objects_path = Path(repository_objects)
     if not repository_objects_path.is_absolute():
         repository_objects_path = (repository_root / repository_objects_path).resolve()
-    version_bytes = f"VLLM_UC_VERSION={source_version}\n".encode()
+    source_version_bytes = git("show", f"{source_sha}:version.ini")
+    version_bytes = _materialized_source_version_bytes(
+        source_version_bytes.decode("utf-8"),
+        source_version,
+        source=f"{source_sha}:version.ini",
+    )
     with tempfile.TemporaryDirectory(prefix="ucm-materialized-source-") as temporary:
         temporary_root = Path(temporary)
         object_directory = temporary_root / "objects"

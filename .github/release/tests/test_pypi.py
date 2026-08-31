@@ -38,7 +38,8 @@ def _release_plan() -> dict[str, object]:
         "publish": {
             "pypi": {
                 "enabled": True,
-                "index": "https://upload.pypi.org/legacy/",
+                "target": "pypi",
+                **pypi.release_policy.PYPI_TARGETS["pypi"],
             }
         },
         "meta_package": {
@@ -178,7 +179,7 @@ def test_publication_rejects_incomplete_results_and_extra_drift() -> None:
         ("pypi_enabled", False),
     ],
 )
-def test_publication_rejects_non_official_or_disabled_plan(
+def test_publication_rejects_wrong_scope_or_disabled_plan(
     field: str, value: object
 ) -> None:
     plan = _release_plan()
@@ -187,7 +188,32 @@ def test_publication_rejects_non_official_or_disabled_plan(
     else:
         plan[field] = value
 
-    with pytest.raises(ValueError, match="official enabled PyPI"):
+    with pytest.raises(ValueError, match="publication|target|enabled"):
+        pypi.build_publication(plan, _backend_results(), _meta_result())
+
+
+def test_fork_publication_authorizes_only_testpypi() -> None:
+    plan = _release_plan()
+    plan["publication_scope"] = "fork"
+    plan["repository"] = "SuperMarioYL/unified-cache-management"
+    plan["publish"]["pypi"] = {  # type: ignore[index]
+        "enabled": True,
+        "target": "testpypi",
+        **pypi.release_policy.PYPI_TARGETS["testpypi"],
+    }
+
+    publication = pypi.build_publication(plan, _backend_results(), _meta_result())
+
+    assert publication["target"] == "testpypi"
+    assert publication["repository_url"] == "https://test.pypi.org/legacy/"
+    assert publication["simple_index"] == "https://test.pypi.org/simple/"
+
+    plan["publish"]["pypi"] = {  # type: ignore[index]
+        "enabled": True,
+        "target": "pypi",
+        **pypi.release_policy.PYPI_TARGETS["pypi"],
+    }
+    with pytest.raises(ValueError, match="target"):
         pypi.build_publication(plan, _backend_results(), _meta_result())
 
 
@@ -214,7 +240,10 @@ def test_publish_uploads_backends_then_meta_and_returns_receipt() -> None:
 
     assert uploads == [CANN_AMD64, CUDA_ARM64, CUDA_AMD64, META_WHEEL]
     assert receipt["kind"] == "ucm-pypi-receipt"
+    assert receipt["schema_version"] == 2
     assert receipt["status"] == "complete"
+    assert receipt["target"] == "pypi"
+    assert receipt["repository_url"] == "https://upload.pypi.org/legacy/"
     assert receipt["projects"] == [cann, cuda, meta]
 
 
@@ -324,6 +353,23 @@ def test_fetch_retries_transient_http_with_fresh_cache_nonce() -> None:
     assert result == {"info": {}, "urls": []}
     nonces = [parse_qs(urlparse(url).query)["ucm_readback"][0] for url in urls]
     assert len(set(nonces)) == 2
+
+
+def test_fetch_uses_the_authorized_target_json_api() -> None:
+    urls: list[str] = []
+
+    def open_url(request, *, timeout):
+        urls.append(request.full_url)
+        return _Response({"info": {}, "urls": []})
+
+    pypi.fetch_version_json(
+        CUDA,
+        VERSION,
+        json_api_url="https://test.pypi.org/pypi/",
+        open_url=open_url,
+    )
+
+    assert urls[0].startswith(f"https://test.pypi.org/pypi/{CUDA}/{VERSION}/json?")
 
 
 def test_twine_uploader_resolves_one_file_and_keeps_token_out_of_args(

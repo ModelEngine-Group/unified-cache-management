@@ -40,7 +40,7 @@ jobs:
         run: |
           set -euo pipefail
           classification="$(python scripts/materialize_version.py \
-            --tag "${RELEASE_TAG}" --classify)"
+            --tag "${RELEASE_TAG}" --classify --version-config version.ini)"
           repository="${GITHUB_REPOSITORY,,}"
           if [ "${repository}" = modelengine-group/unified-cache-management ]; then
             publication_scope=official
@@ -98,3 +98,5 @@ jobs:
       is_prerelease: ${{ needs.classify-tag.outputs.is_prerelease == 'true' }}
       source_sha: ${{ github.sha }}
       publication_scope: fork
+    secrets:
+      TEST_PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}

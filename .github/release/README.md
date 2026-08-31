@@ -10,26 +10,36 @@ capabilities.
 
 The human-maintained release authorities are:
 
-- `release.yaml`: runtime repositories, inclusive version windows, runners,
-  fixed publication addresses, four fully expanded Release Profiles, and Chart
-  smoke inputs;
+- `version.ini`: the UCM base version plus the exact supported vLLM and
+  vLLM-Ascend Runtime selectors for this source version;
+- `release.yaml`: runtime repositories, runners, fixed publication addresses,
+  four fully expanded Release Profiles, retention, and Chart smoke inputs;
 - `platforms.yaml`: raw Builder registries, excluded variants, Builder checks,
   and supported or blocked UCM backends;
 - `requirements/wheel-build.txt` and `requirements/wheel-runtime.txt`: exact
   Python dependencies.
 
-`minimum_version` and `maximum_version` are optional inclusive product bounds.
-The shipped policy leaves both unset. Each product uses
-`recent_minor_versions: 3`: the latest valid Registry minor anchors the three
-most recent continuous minor ranges, and missing minors are not backfilled with
-older ones. For example, latest `0.27` selects the `0.25` through `0.27` range.
-Optional product bounds and this latest-relative window are independent filters;
-when combined, selection uses their intersection. Within each eligible
-major/minor line, selection keeps its highest Stable version, otherwise its
-highest formal RC, otherwise its release-nightly version. All real variants of
-that version remain eligible. A Profile `max_minor_versions` of `-1` keeps all
-actual minor groups in this intersection; a positive value keeps the first N in
-ascending order. 310P is filtered and A5 is reported as blocked.
+Each product selector is a literal Registry-tag keyword such as `0.27.1` or
+`0.25.1rc`. A bare keyword expands every legal tag variant containing that
+delimited keyword. It does not use PEP 440 normalization, so `0.25.1` does not
+match `0.25.1rc` or `0.25.10`. An explicit `keyword@tag` binding such as
+`0.25.1rc@nightly-releases-v0.25.1rc-a3` selects only that exact published Tag;
+the Tag must contain the keyword. Exact bindings are reported as pinned and are
+not expanded. Missing keywords, missing explicit Tags, and selector sets that
+produce no publishable Runtime fail the release. All four Release Profiles
+consume the same selectors; Profiles no longer trim the Runtime matrix. 310P is
+filtered and A5 is reported as blocked.
+
+This keyword rule applies only to `UCM_SUPPORTED_VLLM_VERSIONS` and
+`UCM_SUPPORTED_VLLM_ASCEND_VERSIONS`. `VLLM_UC_VERSION` remains a canonical PEP
+440 package version because it drives Wheel, Chart, and Release coordinates.
+
+For example:
+
+```ini
+UCM_SUPPORTED_VLLM_VERSIONS=0.26.0,0.27.1,0.28.0
+UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.24.0rc,0.25.1rc,0.26.0rc
+```
 
 ## Registry-only flow
 
@@ -82,36 +92,39 @@ The workflow accepts:
 | `nightly/vX.Y.Z-YYYYMMDD-N` | `X.Y.Z.devYYYYMMDDNNN` | `X.Y.Z-nightly.YYYYMMDD.N` | public prerelease after success |
 
 The tagged source owns the package model, and public versions must be canonical
-and non-local. Before opening or reusing a Release, the reusable core
-reclassifies the Tag and requires its version, release type, visibility,
-prerelease flag, Chart/image versions, target commit, requested source SHA, and
-checked-out commit to agree. A manually pre-opened public Release is valid. A
-Draft Tag always remains Draft. Exact Releases API lookup requires one Release
-for the Tag; duplicate Release records fail closed.
+and non-local. Before opening or reusing a Release, the reusable core requires
+the Tag's complete `X.Y.Z` base to match `VLLM_UC_VERSION`, then reclassifies the
+Tag and checks its release type, visibility, prerelease flag, Chart/image
+versions, target commit, requested source SHA, and checked-out commit. A Draft
+Tag always remains Draft. Exact Releases API lookup requires one Release for the
+Tag; duplicate Release records fail closed.
 
-At 02:00 Asia/Shanghai (`18:00` UTC), `release-nightly.yml` reads the highest
-strict `vX.Y.Z` Stable Tag, advances its patch, and creates the next dated
-Nightly Tag from `develop`. An incomplete same-SHA Nightly Tag is reused; an
-existing Tag is never moved. Because a `GITHUB_TOKEN` Tag creation does not
+At 02:00 Asia/Shanghai (`18:00` UTC), `release-nightly.yml` reads the `X.Y.Z`
+base from `version.ini` and creates the next dated Nightly Tag from `develop`.
+An incomplete same-SHA Nightly Tag is reused; an existing Tag is never moved.
+Because a `GITHUB_TOKEN` Tag creation does not
 recursively trigger another workflow, the same scheduled Run calls the common
 `release-ucm.yml` reusable core directly. Manual `nightly/*` Tag pushes use the
 same core through `release-tag.yml`.
 
 Official and fork `v*` Tags invoke that same Release Core. The two mutually
-exclusive callers only isolate shared secrets: the official caller inherits
-publication credentials, while the fork caller does not. A fork still publishes
-its own GitHub Release, GHCR images, and Chart OCI artifacts.
+exclusive callers isolate production secrets: the official caller inherits
+production credentials, while the fork uses only its `fork-preview` environment.
+A fork still publishes its own GitHub Release, GHCR images, and Chart OCI
+artifacts.
 
 Publication then updates the same Release in stages:
 
-1. the package-model prerequisite passes, then `release-open` records the
-   in-progress Release;
-2. every repaired Wheel passes one matching native-architecture Runtime before
+1. version, Tag, Profile, and Fork target preflight passes, then every configured
+   Runtime selector resolves to published Registry Tags;
+2. `release-open` records the in-progress Release;
+3. every repaired Wheel passes one matching native-architecture Runtime before
    any Release asset or PyPI upload;
-3. all Wheels, the example config, and the Chart are uploaded and the state is
-   `artifacts-ready` while any enabled channel remains;
-4. image members/indexes, PyPI, and Chart OCI complete and are read back;
-5. the final state becomes `complete`, `images-failed`, or
+4. backend Wheels, the example config, and the Chart are uploaded and the state
+   is `artifacts-ready` while any enabled channel remains; the empty meta Wheel
+   remains an internal Actions artifact;
+5. image members/indexes, PyPI, and Chart OCI complete and are read back;
+6. the final state becomes `complete`, `images-failed`, or
    `publication-failed`.
 
 `release-state.json` remains the rich internal staging file in the
@@ -124,13 +137,139 @@ If image publication is disabled, Tag Releases stop after Wheels, the example
 config, and Chart publication. If requested image publication fails, those
 artifacts remain usable and the public Release is marked `images-failed`. OCI
 archives are not uploaded to GitHub Release. PyPI and Docker Hub follow the
-selected Release Profile for the official repository. Fork plans retain the
-Profile request as `requested: true`, set effective `enabled: false`, and report
-`disposition: scope-skipped` in the Plan job without reading shared-channel
-credentials or pushing either channel.
+selected Release Profile. Official releases use only production targets. Forks
+use TestPyPI when `TEST_PYPI_API_TOKEN` exists, and a custom Docker Hub namespace
+when both Docker Hub credentials exist; absent Fork credentials remain
+`scope-skipped`, while a Profile-disabled channel stays disabled.
 Missing backend Wheels are uploaded and read back first, the meta Wheel is
 uploaded last, and exact extras metadata plus all filenames, versions, and
 SHA256 digests are persisted in `pypi-receipt.json`.
+
+## Fork preview setup
+
+Fork publication is opt-in by credential presence. It never reads the official
+PyPI credential and it does not change the publication targets of the canonical
+`ModelEngine-Group/unified-cache-management` repository.
+
+### 1. Create the GitHub Environment
+
+In the fork repository, open **Settings -> Environments** and create an
+environment named exactly `fork-preview`. Store the Fork channel Secrets in
+that environment when possible. A repository-level Actions Secret is also
+supported for `TEST_PYPI_API_TOKEN`: the Tag caller forwards only that named
+credential and never forwards `PYPI_API_TOKEN` to the Fork Release call. Keep
+the Docker Hub credential pair in `fork-preview`.
+
+Also open **Settings -> Actions -> General** and make sure Actions is enabled. If
+repository or organization policy restricts `GITHUB_TOKEN` writes, allow
+**Read and write permissions**. The workflow itself requests scoped `contents`
+and `packages` writes for the Fork's Release, GHCR, and Chart OCI.
+See [GitHub's Actions settings guide](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository).
+
+| Name | GitHub kind | Required | Value |
+| --- | --- | --- | --- |
+| `TEST_PYPI_API_TOKEN` | Secret (environment recommended; repository supported) | TestPyPI only | A TestPyPI API token with permission to publish the planned `uc-manager*` projects. TestPyPI accounts and tokens are separate from production PyPI; follow the [TestPyPI guide](https://packaging.python.org/en/latest/guides/using-testpypi/). |
+| `DOCKERHUB_USERNAME` | Environment Secret | Docker Hub only | The Docker ID whose token can write to the selected personal or organization namespace. |
+| `DOCKERHUB_TOKEN` | Environment Secret | Docker Hub only | A Docker Hub personal access token with Read & Write permission; also grant Delete when retention or `cleanup-ucm-release.yml` must remove Docker Hub tags. Do not use the account password; follow the [Docker access-token guide](https://docs.docker.com/security/access-tokens/). |
+| `FORK_DOCKERHUB_NAMESPACE` | Variable | Optional | Full namespace such as `docker.io/my-org`, without a trailing slash. If omitted, the pipeline uses `docker.io/<DOCKERHUB_USERNAME>`. |
+
+The equivalent GitHub CLI commands are below. Each `gh secret set` command
+prompts for the value without writing it to the repository; omit the channels
+you do not want to enable:
+
+```bash
+fork=OWNER/unified-cache-management
+gh secret set TEST_PYPI_API_TOKEN --env fork-preview --repo "${fork}"
+gh secret set DOCKERHUB_USERNAME --env fork-preview --repo "${fork}"
+gh secret set DOCKERHUB_TOKEN --env fork-preview --repo "${fork}"
+gh variable set FORK_DOCKERHUB_NAMESPACE --env fork-preview \
+  --repo "${fork}" --body docker.io/my-org
+```
+
+The TestPyPI endpoints are fixed by policy: upload uses
+`https://test.pypi.org/legacy/`, package installation uses
+`https://test.pypi.org/simple/`, and normal Python dependencies still come from
+`https://pypi.org/simple/`. No endpoint Variable is required.
+
+Keep the production `PYPI_API_TOKEN` only in the official
+`release-production` environment. Do not copy it into `fork-preview`.
+
+Docker Hub credentials are a pair. Configuring only the username or only the
+token, or setting `FORK_DOCKERHUB_NAMESPACE` without both credentials, fails the
+Release preflight before Registry discovery or GitHub Release creation. The
+configured user or token must have write access when the namespace names an
+organization.
+
+### 2. Understand what becomes enabled
+
+Credentials only make a Fork target available; the selected Release Profile
+must also request that channel:
+
+| `fork-preview` configuration | Stable / Prerelease / Draft | Nightly |
+| --- | --- | --- |
+| No external credentials | TestPyPI and Docker Hub are `scope-skipped` | Both remain disabled |
+| `TEST_PYPI_API_TOKEN` only | Publish and read back TestPyPI | Disabled by Profile |
+| Docker Hub username + token | Publish and read back Docker Hub | Disabled by Profile |
+| All three Secrets | Publish and read back both targets | Both remain disabled |
+
+GHCR, Chart OCI, and the Fork's own GitHub Release continue to use the Fork's
+GitHub identity in every combination. `FORK_DOCKERHUB_NAMESPACE` changes only
+the Docker Hub destination; image repository basenames and tags still come from
+the frozen Release Plan.
+
+### 3. Run one Fork Draft validation
+
+First update and commit `version.ini`, including `VLLM_UC_VERSION` and both
+supported Runtime selector lists. Use a fresh Draft sequence because Python
+index filenames are immutable and the cleanup workflow does not delete
+TestPyPI releases:
+
+```bash
+base="$(PYTHONPATH=.github/release python -c \
+  'from pathlib import Path; from ucm_release.version_config import load; print(load(Path("version.ini"))["ucm_base_version"])')"
+tag="draft/v${base}-1"  # replace 1 with an unused sequence for this base
+git tag -a "${tag}" -m "Fork publication validation ${tag}"
+git push origin "${tag}"
+```
+
+In the `Plan Wheels, Images, and Chart` summary, confirm the requested channels
+show the expected effective decisions:
+
+```text
+PyPI: requested=true enabled=true disposition=publish scope=fork
+Docker Hub: requested=true enabled=true disposition=publish scope=fork
+```
+
+If only one credential set was configured, the other channel should remain
+`scope-skipped`. The frozen `release-plan.json` must also record
+`.publish.pypi.target == "testpypi"` and the configured Docker Hub namespace.
+After completion, verify all of the following:
+
+- each backend project and the final empty `uc-manager` meta package are visible
+  on TestPyPI, and the fresh-environment extra installation job passed;
+- Docker Hub member tags and multi-architecture indexes exist under the planned
+  namespace and match the digests recorded in `release-manifest.json`;
+- the Fork GitHub Release still contains backend Wheels, the Chart, config,
+  receipts, and manifest, but not the empty meta Wheel;
+- no project or image was written to production PyPI or the official Docker Hub
+  namespace.
+
+### Common setup failures
+
+- Preflight reports an incomplete Docker Hub credential pair: add or remove both
+  `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` together.
+- Preflight rejects the Docker Hub namespace: use exactly
+  `docker.io/<account-or-org>` with no repository name or trailing slash.
+- TestPyPI returns an authorization error: use the complete TestPyPI token,
+  including its prefix, and verify that it can publish every planned
+  `uc-manager*` project. Production PyPI ownership does not grant TestPyPI
+  ownership.
+- TestPyPI reports an existing filename with different bytes: do not reuse or
+  move the Tag; create a new Draft sequence so the derived `.devN` version is
+  new.
+- GitHub Release, GHCR, or Chart writes return `403`: recheck the Fork's Actions
+  policy and `GITHUB_TOKEN` Read and write setting before changing external
+  credentials.
 
 ## Retention and cleanup
 
@@ -188,7 +327,8 @@ provider closure; they are not maintained as a SONAME list. A direct external
 outside the provider boundary, a UCM-owned external, or an external unreachable
 from the discovered roots still fails. A separate `py3-none-any` `uc-manager`
 meta Wheel maps the release's dynamic extras to exact backend distribution
-versions.
+versions. It is published only through PyPI or TestPyPI and is never a GitHub
+Release asset.
 The staged Release validates the standalone report again before uploading the
 Wheel. Draft notes show filenames and architecture labels without embedding
 GitHub's rotating `untagged-*` asset URLs; downloads remain in the Release

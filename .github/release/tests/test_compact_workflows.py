@@ -63,9 +63,20 @@ def test_release_core_is_input_driven_and_uses_crane_before_plan() -> None:
         assert event_value not in text
 
     jobs = workflow["jobs"]
-    assert "needs" not in jobs["open-release"]
-    assert "needs" not in jobs["select-runtime-candidates"]
-    assert jobs["inspect-runtimes"]["needs"] == "select-runtime-candidates"
+    assert "needs" not in jobs["release-preflight"]
+    assert jobs["select-runtime-candidates"]["needs"] == "release-preflight"
+    assert (
+        "needs.release-preflight.outputs.enabled"
+        in jobs["select-runtime-candidates"]["if"]
+    )
+    assert set(jobs["open-release"]["needs"]) == {
+        "release-preflight",
+        "select-runtime-candidates",
+    }
+    assert set(jobs["inspect-runtimes"]["needs"]) == {
+        "select-runtime-candidates",
+        "open-release",
+    }
     assert jobs["probe-runtimes"]["needs"] == "inspect-runtimes"
     assert jobs["probe-runtimes"]["uses"] == "./.github/workflows/_probe-runtime.yml"
     assert "if" not in jobs["probe-runtimes"]
@@ -83,7 +94,12 @@ def test_release_core_is_input_driven_and_uses_crane_before_plan() -> None:
         "probe-runtimes",
     }
     assert jobs["sync-builders"]["needs"] == "resolve-upstreams"
-    assert set(jobs["plan"]["needs"]) == {"resolve-upstreams", "sync-builders"}
+    assert set(jobs["plan"]["needs"]) == {
+        "release-preflight",
+        "open-release",
+        "resolve-upstreams",
+        "sync-builders",
+    }
     assert (
         jobs["sync-builders"]["with"]["runtime_selection_artifact"]
         == "${{ needs.resolve-upstreams.outputs.runtime_selection_artifact }}"
@@ -96,7 +112,7 @@ def test_release_core_is_input_driven_and_uses_crane_before_plan() -> None:
     )
     profile_run = next(
         step["run"]
-        for step in jobs["open-release"]["steps"]
+        for step in jobs["release-preflight"]["steps"]
         if step.get("id") == "profile"
     )
     assert "--release-type" in candidate_text
@@ -111,6 +127,11 @@ def test_release_core_is_input_driven_and_uses_crane_before_plan() -> None:
     assert "if version <" not in profile_run
     assert "if version >" not in profile_run
     assert '--tag "${RELEASE_TAG}" --classify' in profile_run
+    assert "--version-config version.ini" in profile_run
+    assert (
+        "Fork Docker Hub username and token must be configured together" in profile_run
+    )
+    assert "fork_test_pypi" in profile_run
     assert "refs/tags/${RELEASE_TAG}^{commit}" in profile_run
     assert 'test "${head_sha}" = "${SOURCE_SHA}"' in profile_run
     assert 'test "${tag_sha}" = "${SOURCE_SHA}"' in profile_run
@@ -126,6 +147,8 @@ def test_release_core_is_input_driven_and_uses_crane_before_plan() -> None:
         assert f".{field}" in profile_run
     assert "image_index_matrix" in plan_text
     assert "'{include:[.families[]" in plan_text
+    assert "--publication-context" in plan_run
+    assert "needs.release-preflight.outputs.fork_test_pypi" in plan_text
 
 
 def test_pr_gate_keeps_ucm_artifact_builds_in_the_robot_lane() -> None:
@@ -268,6 +291,8 @@ def test_nightly_schedule_creates_or_reuses_a_tag_then_calls_core_in_same_run() 
     run = next(step["run"] for step in prepare["steps"] if step.get("id") == "prepare")
     assert "TZ=Asia/Shanghai date +%Y%m%d" in run
     assert "--next-nightly" in run
+    assert "--version-config version.ini" in run
+    assert "next_patch_version" not in run
     assert 'git rev-list -n 1 "${candidate}"' in run
     assert ".name == $tag and .draft == true" in run
     assert 'startswith("untagged-")' in run
@@ -301,7 +326,7 @@ def test_artifact_stage_keeps_release_state_internal() -> None:
     jobs = _load("release-ucm.yml")["jobs"]
     text = yaml.safe_dump(jobs["publish-release-artifacts"])
     assert jobs["publish-release-artifacts"]["name"] == (
-        "Release · Publish backend/meta Wheels, Chart, and Config"
+        "Release · Publish backend Wheels, Chart, and Config"
     )
     assert "release.py artifacts" in text
     assert "release-state.json" in text
@@ -317,11 +342,12 @@ def test_artifact_stage_keeps_release_state_internal() -> None:
     upload = next(
         step
         for step in jobs["publish-release-artifacts"]["steps"]
-        if step.get("name") == "Upload backend/meta Wheels, Chart, and Config"
+        if step.get("name") == "Upload backend Wheels, Chart, and Config"
     )
     assert 'gh release upload "${tag}" --clobber "${artifacts[@]}"' in upload["run"]
     assert ".publish.pypi.enabled" not in upload["run"]
     assert "meta_artifacts=(input/meta/*.whl)" in upload["run"]
+    assert 'artifacts+=("${meta_artifacts[@]}")' not in upload["run"]
     assert 'index("ucm_config_example.yaml") != null' in upload["run"]
     assert "SHA256SUMS" not in upload["run"]
     assert "release-manifest.json" not in upload["run"]
@@ -520,6 +546,7 @@ def test_tag_entry_only_classifies_four_release_types_and_calls_core() -> None:
         step["run"] for step in classify["steps"] if step.get("id") == "classify"
     )
     assert '--tag "${RELEASE_TAG}" --classify' in classify_run
+    assert "--version-config version.ini" in classify_run
     assert "release_type=$(jq -r '.release_type'" in classify_run
 
     assert "${GITHUB_REPOSITORY,,}" in classify_run
@@ -547,14 +574,16 @@ def test_tag_entry_only_classifies_four_release_types_and_calls_core() -> None:
         assert release["with"]["publication_scope"] == scope
         assert scope in release["if"]
     assert workflow["jobs"]["release-official"]["secrets"] == "inherit"
-    assert "secrets" not in workflow["jobs"]["release-fork"]
+    assert workflow["jobs"]["release-fork"]["secrets"] == {
+        "TEST_PYPI_API_TOKEN": "${{ secrets.TEST_PYPI_API_TOKEN }}",
+    }
 
 
-def test_common_core_opens_the_exact_tag_before_builds() -> None:
+def test_common_core_validates_and_selects_runtimes_before_opening_release() -> None:
     jobs = _load("release-ucm.yml")["jobs"]
     checkout = next(
         step
-        for step in jobs["open-release"]["steps"]
+        for step in jobs["release-preflight"]["steps"]
         if step.get("uses") == "actions/checkout@v4.2.2"
     )
     open_text = yaml.safe_dump(jobs["open-release"])
@@ -563,7 +592,11 @@ def test_common_core_opens_the_exact_tag_before_builds() -> None:
         for step in jobs["open-release"]["steps"]
         if step.get("name") == "Create or reuse exact Tag Release"
     )
-    assert "needs" not in jobs["open-release"]
+    assert "needs" not in jobs["release-preflight"]
+    assert set(jobs["open-release"]["needs"]) == {
+        "release-preflight",
+        "select-runtime-candidates",
+    }
     assert checkout["with"] == {
         "ref": "${{ inputs.source_sha }}",
         "fetch-depth": 0,
@@ -603,7 +636,7 @@ def test_draft_body_patches_preserve_tag_after_asset_uploads() -> None:
     artifact_run = next(
         step["run"]
         for step in jobs["publish-release-artifacts"]["steps"]
-        if step.get("name") == "Upload backend/meta Wheels, Chart, and Config"
+        if step.get("name") == "Upload backend Wheels, Chart, and Config"
     )
     manifest_run = next(
         step["run"]
@@ -622,7 +655,7 @@ def test_artifact_upload_restores_tag_before_generating_asset_links() -> None:
     run = next(
         step["run"]
         for step in steps
-        if step.get("name") == "Upload backend/meta Wheels, Chart, and Config"
+        if step.get("name") == "Upload backend Wheels, Chart, and Config"
     )
 
     upload = run.index("gh release upload")
@@ -724,6 +757,8 @@ def test_remote_writers_use_environment_and_minimum_permissions() -> None:
     ):
         assert jobs[name]["environment"] == scoped_environment
         assert jobs[name]["permissions"]["contents"] in {"read", "write"}
+    assert jobs["release-preflight"]["environment"] == scoped_environment
+    assert jobs["release-preflight"]["permissions"] == {"contents": "read"}
     assert "packages" not in jobs["publish-pypi"]["permissions"]
     assert jobs["publish-chart-oci"]["permissions"]["packages"] == "write"
     assert "packages" not in jobs["publish-image-members"]["permissions"]
@@ -757,13 +792,15 @@ def test_publication_scope_and_repository_ownership_fail_closed_at_writers() -> 
     assert 'test "${GH_REPO}" = "${GITHUB_REPOSITORY}"' in core
     assert "Chart OCI target is outside current owner namespace" in core
     assert "GHCR index target is outside current owner namespace" in core
-    assert core.count('publication_scope == "official"') >= 2
+    assert '.publish.pypi.target == "pypi"' in core
+    assert '.publish.pypi.target == "testpypi"' in core
+    assert "Docker Hub namespace is outside docker.io" in core
     assert core.count("modelengine-group/unified-cache-management") >= 2
 
     assert ".publication_scope == $scope" in child
     assert "GHCR member target is outside current owner namespace" in child
-    assert 'publication_scope == "official"' in child
-    assert "modelengine-group/unified-cache-management" in child
+    assert "Docker Hub member is outside the planned namespace" in child
+    assert '"${namespace}/"*:*)' in child
 
     assert "[.builders[].target_repository] | all(startswith($prefix))" in builders
     assert "Builder target is outside current owner namespace" in builders
@@ -950,11 +987,11 @@ def test_pypi_publication_is_backend_first_meta_last_and_read_back() -> None:
     install = next(
         step
         for step in job["steps"]
-        if step.get("name")
-        == "Install one extra from public PyPI in a fresh environment"
+        if step.get("name") == "Install one extra from the planned Python index"
     )["run"]
     assert "python3 -m venv" in install
     assert '"uc-manager[${UCM_EXTRA}]==${UCM_VERSION}"' in install
+    assert '"${index_args[@]}"' in install
     assert "validate_wheel_runtime.py" in install
     assert "DEFERRED_EXTERNAL_LIBRARIES" in install
 

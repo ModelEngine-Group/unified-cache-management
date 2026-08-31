@@ -21,13 +21,21 @@ upstream = importlib.import_module("ucm_release.upstream")
 
 
 def _policy(release_type: str = "stable") -> dict[str, object]:
-    return copy.deepcopy(
+    resolved = copy.deepcopy(
         policy.resolve(
             repository="release-org/unified-cache-management",
             version_override="0.7.60rc1",
             release_type=release_type,
         )
     )
+    selectors = {
+        "vllm": [{"raw": "0.22.1", "keyword": "0.22.1", "tag": None}],
+        "vllm-ascend": [{"raw": "0.22.1rc1", "keyword": "0.22.1rc1", "tag": None}],
+    }
+    resolved["runtime_selectors"] = copy.deepcopy(selectors)
+    for product in resolved["products"]:
+        product["runtime_selectors"] = copy.deepcopy(selectors[product["id"]])
+    return resolved
 
 
 def _fixture() -> dict[str, object]:
@@ -58,177 +66,146 @@ def _all_keys(value: object) -> set[str]:
     return set()
 
 
-def test_registry_tag_selection_is_per_minor_and_uses_inclusive_window() -> None:
+def test_registry_tag_selection_uses_literal_keywords_and_all_variants() -> None:
     product = {
         "id": "vllm-ascend",
-        "minimum_version": "0.22.0",
-        "maximum_version": "0.26.0",
-        "recent_minor_versions": 10,
-        "channel_policy": "latest-stable-or-rc-or-nightly-per-minor",
+        "runtime_selectors": [
+            {"raw": "0.23.0", "keyword": "0.23.0", "tag": None},
+            {"raw": "0.24.0rc", "keyword": "0.24.0rc", "tag": None},
+        ],
     }
+
     selected = upstream._select_runtime_tags(  # noqa: SLF001
         product,
         [
-            "v0.21.0",
-            "v0.22.1rc1",
-            "v0.22.1rc1-a3",
             "v0.23.0rc1",
             "v0.23.0",
             "v0.23.0-a3",
             "nightly-releases-v0.24.0rc",
             "nightly-releases-v0.24.0rc-a3",
-            "v0.25.0rc1",
-            "nightly-releases-v0.25.1rc",
-            "nightly-releases-v0.26.0rc",
-            "v0.26.1rc1",
         ],
-    )
-
-    assert {(item["version"], item["channel"]) for item in selected} == {
-        ("0.22.1rc1", "rc"),
-        ("0.23.0", "stable"),
-        ("0.24.0rc0", "nightly"),
-        ("0.25.0rc1", "rc"),
-        ("0.26.0rc0", "nightly"),
-    }
-    assert all(not item["runtime_tag"].startswith("releases/") for item in selected)
-
-
-def test_registry_tag_selection_intersects_latest_minor_window_with_bounds() -> None:
-    product = {
-        "id": "vllm-ascend",
-        "minimum_version": "0.23.0",
-        "maximum_version": "0.27.0",
-        "recent_minor_versions": 2,
-        "channel_policy": "latest-stable-or-rc-or-nightly-per-minor",
-    }
-    tags = [
-        "v0.22.9",
-        "v0.23.1",
-        "v0.23.1-a3",
-        "v0.23.2rc1",
-        "v0.25.2rc1",
-        "v0.25.2rc1-a3",
-        "nightly-releases-v0.26.0rc",
-        "nightly-releases-v0.26.0rc-a3",
-        "v0.27.0",
-        "v0.27.0-a3",
-    ]
-
-    limited = upstream._select_runtime_tags(product, tags)  # noqa: SLF001
-    capped = upstream._select_runtime_tags(  # noqa: SLF001
-        {**product, "maximum_version": "0.26.0"},
-        tags,
-    )
-    profile_limited = upstream._select_runtime_tags(  # noqa: SLF001
-        product,
-        tags,
-        max_minor_versions=1,
-    )
-    wide = upstream._select_runtime_tags(  # noqa: SLF001
-        {**product, "recent_minor_versions": 10}, tags
-    )
-
-    assert limited == [
-        {
-            "runtime_tag": "nightly-releases-v0.26.0rc",
-            "version": "0.26.0rc0",
-            "channel": "nightly",
-        },
-        {
-            "runtime_tag": "nightly-releases-v0.26.0rc-a3",
-            "version": "0.26.0rc0",
-            "channel": "nightly",
-        },
-        {"runtime_tag": "v0.27.0", "version": "0.27.0", "channel": "stable"},
-        {
-            "runtime_tag": "v0.27.0-a3",
-            "version": "0.27.0",
-            "channel": "stable",
-        },
-    ]
-    assert capped == [
-        {
-            "runtime_tag": "nightly-releases-v0.26.0rc",
-            "version": "0.26.0rc0",
-            "channel": "nightly",
-        },
-        {
-            "runtime_tag": "nightly-releases-v0.26.0rc-a3",
-            "version": "0.26.0rc0",
-            "channel": "nightly",
-        },
-    ]
-    assert profile_limited == capped
-    assert {(item["version"], item["channel"]) for item in wide} == {
-        ("0.23.1", "stable"),
-        ("0.25.2rc1", "rc"),
-        ("0.26.0rc0", "nightly"),
-        ("0.27.0", "stable"),
-    }
-
-
-def test_registry_tag_selection_does_not_backfill_missing_latest_minor() -> None:
-    product = {
-        "id": "vllm",
-        "minimum_version": "0.23.0",
-        "recent_minor_versions": 2,
-        "channel_policy": "latest-stable-or-rc-or-nightly-per-minor",
-    }
-
-    selected = upstream._select_runtime_tags(  # noqa: SLF001
-        product,
-        ["v0.23.0", "v0.25.0", "v0.27.0"],
     )
 
     assert selected == [
-        {"runtime_tag": "v0.27.0", "version": "0.27.0", "channel": "stable"}
+        {"runtime_tag": "v0.23.0", "version": "0.23.0", "channel": "stable"},
+        {"runtime_tag": "v0.23.0-a3", "version": "0.23.0", "channel": "stable"},
+        {
+            "runtime_tag": "nightly-releases-v0.24.0rc",
+            "version": "0.24.0rc",
+            "channel": "nightly",
+        },
+        {
+            "runtime_tag": "nightly-releases-v0.24.0rc-a3",
+            "version": "0.24.0rc",
+            "channel": "nightly",
+        },
     ]
 
 
-@pytest.mark.parametrize("value", [-2, 0, True])
-def test_registry_tag_selection_rejects_invalid_window_size(value: object) -> None:
+def test_explicit_runtime_tag_is_pinned_without_grammar_or_expansion() -> None:
     product = {
         "id": "vllm",
-        "minimum_version": "0.23.0",
-        "recent_minor_versions": value,
-        "channel_policy": "latest-stable-or-rc-or-nightly-per-minor",
+        "runtime_selectors": [
+            {
+                "raw": "0.29.0rc@nightly-custom-v0.29.0rc-a3",
+                "keyword": "0.29.0rc",
+                "tag": "nightly-custom-v0.29.0rc-a3",
+            }
+        ],
     }
 
-    with pytest.raises(ValueError, match="must be an integer >= 1"):
-        upstream._select_runtime_tags(product, ["v0.23.0"])  # noqa: SLF001
+    assert upstream._select_runtime_tags(  # noqa: SLF001
+        product, ["nightly-custom-v0.29.0rc-a3", "v0.29.0rc0"]
+    ) == [
+        {
+            "runtime_tag": "nightly-custom-v0.29.0rc-a3",
+            "version": "0.29.0rc",
+            "channel": "pinned",
+        }
+    ]
 
 
-def test_candidate_selection_uses_latest_window_per_product() -> None:
-    release = _policy("nightly")
-    for product in release["products"]:
-        product["recent_minor_versions"] = 1
+def test_explicit_runtime_tag_flows_through_candidate_contract() -> None:
+    release = _policy()
+    vllm = next(product for product in release["products"] if product["id"] == "vllm")
+    vllm["runtime_selectors"] = [
+        {
+            "raw": "0.29.0rc@nightly-custom-v0.29.0rc-a3",
+            "keyword": "0.29.0rc",
+            "tag": "nightly-custom-v0.29.0rc-a3",
+        }
+    ]
     tags = {
-        "docker.io/vllm/vllm-openai": ["v0.22.1", "v0.24.0"],
-        "quay.io/ascend/vllm-ascend": [
-            "v0.21.0",
-            "v0.21.0-a3",
-            "v0.23.0",
+        "docker.io/vllm/vllm-openai": [
+            "nightly-custom-v0.29.0rc-a3",
+            "v0.29.0rc0",
         ],
+        "quay.io/ascend/vllm-ascend": ["v0.22.1rc1"],
     }
 
     candidates = upstream.resolve_runtime_candidates(
         release, tag_loader=lambda repository: tags[repository]
     )
 
-    by_product = {
-        product_id: {
-            (item["version"], item["runtime_tag"])
-            for item in candidates["runtimes"]
-            if item["product_id"] == product_id
-        }
-        for product_id in ("vllm", "vllm-ascend")
+    pinned = next(
+        item for item in candidates["runtimes"] if item["product_id"] == "vllm"
+    )
+    assert pinned["runtime_tag"] == "nightly-custom-v0.29.0rc-a3"
+    assert pinned["version"] == "0.29.0rc"
+    assert pinned["channel"] == "pinned"
+
+
+def test_keyword_boundaries_do_not_merge_stable_rc_or_patch_versions() -> None:
+    product = {
+        "id": "vllm-ascend",
+        "runtime_selectors": [{"raw": "0.25.1", "keyword": "0.25.1", "tag": None}],
     }
-    assert by_product == {
-        "vllm": {("0.24.0", "v0.24.0")},
-        "vllm-ascend": {
-            ("0.23.0", "v0.23.0"),
-        },
+
+    assert upstream._select_runtime_tags(  # noqa: SLF001
+        product,
+        ["v0.25.1", "v0.25.1-a3", "v0.25.1rc1", "v0.25.10"],
+    ) == [
+        {"runtime_tag": "v0.25.1", "version": "0.25.1", "channel": "stable"},
+        {"runtime_tag": "v0.25.1-a3", "version": "0.25.1", "channel": "stable"},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("selector", "tags", "message"),
+    [
+        (
+            {"raw": "0.27.1", "keyword": "0.27.1", "tag": None},
+            [],
+            "contains the keyword",
+        ),
+        (
+            {"raw": "0.27.1@custom", "keyword": "0.27.1", "tag": "custom"},
+            [],
+            "not published",
+        ),
+        (
+            {"raw": "0.27.1@custom", "keyword": "0.27.1", "tag": "custom"},
+            ["custom"],
+            "lacks its keyword",
+        ),
+    ],
+)
+def test_runtime_selector_fails_closed(
+    selector: dict[str, object], tags: list[str], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        upstream._select_runtime_tags(  # noqa: SLF001
+            {"id": "vllm", "runtime_selectors": [selector]}, tags
+        )
+
+
+def test_all_release_profiles_use_the_same_runtime_selectors() -> None:
+    assert {
+        release_type: _policy(release_type)["runtime_selectors"]
+        for release_type in policy.RELEASE_TYPES
+    } == {
+        release_type: _policy()["runtime_selectors"]
+        for release_type in policy.RELEASE_TYPES
     }
 
 
@@ -268,7 +245,9 @@ def test_excluded_variant_policy_is_the_runtime_filter_authority() -> None:
 def test_newer_excluded_variant_does_not_shadow_supported_runtime() -> None:
     release = _policy()
     for product in release["products"]:
-        product["recent_minor_versions"] = 1
+        product["runtime_selectors"] = [
+            {"raw": "0.27.0", "keyword": "0.27.0", "tag": None}
+        ]
     tags = {
         "docker.io/vllm/vllm-openai": ["v0.27.0"],
         "quay.io/ascend/vllm-ascend": ["v0.27.0", "v0.28.0-310p"],
@@ -286,6 +265,10 @@ def test_newer_excluded_variant_does_not_shadow_supported_runtime() -> None:
 
 def test_product_with_only_blocked_variants_fails_selection() -> None:
     release = _policy()
+    for product in release["products"]:
+        product["runtime_selectors"] = [
+            {"raw": "0.27.0", "keyword": "0.27.0", "tag": None}
+        ]
     tags = {
         "docker.io/vllm/vllm-openai": ["v0.27.0"],
         "quay.io/ascend/vllm-ascend": ["v0.27.0-a5"],

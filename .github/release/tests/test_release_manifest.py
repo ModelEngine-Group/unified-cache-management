@@ -278,7 +278,13 @@ def test_artifact_state_includes_exact_meta_wheel(tmp_path: Path) -> None:
 
 def test_enabled_pypi_requires_and_records_complete_receipt(tmp_path: Path) -> None:
     manifest = {
-        "publish": {"pypi": {"enabled": True}},
+        "publish": {
+            "pypi": {
+                "enabled": True,
+                "target": "pypi",
+                "index": "https://upload.pypi.org/legacy/",
+            }
+        },
         "release": {
             "git_tag": "v0.7.62rc1",
             "version": "0.7.62rc1",
@@ -331,9 +337,11 @@ def test_enabled_pypi_requires_and_records_complete_receipt(tmp_path: Path) -> N
 
     receipt = {
         "kind": "ucm-pypi-receipt",
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "complete",
         "version": "0.7.62rc1",
+        "target": "pypi",
+        "repository_url": "https://upload.pypi.org/legacy/",
         "projects": [
             {
                 "project": "uc-manager-cuda-cu129",
@@ -936,7 +944,7 @@ def test_release_notes_split_products_and_aggregate_wheel_capabilities() -> None
     assert draft_notes.count("`x86_64`") == 2
 
 
-def test_github_asset_urls_require_backend_meta_and_chart() -> None:
+def test_github_asset_urls_require_backend_and_chart_but_not_meta() -> None:
     manifest = {
         "release": {"git_tag": "draft/v1.0.0-1"},
         "chart": {"filename": "unified-cache-chart.tgz"},
@@ -959,9 +967,6 @@ def test_github_asset_urls_require_backend_meta_and_chart() -> None:
     urls = release._github_asset_urls(manifest, release_document)
 
     assert urls["ucm.whl"] == f"{base}/ucm.whl"
-    assert urls["uc_manager-1.0.0-py3-none-any.whl"] == (
-        f"{base}/uc_manager-1.0.0-py3-none-any.whl"
-    )
     assert urls["unified-cache-chart.tgz"] == (f"{base}/unified-cache-chart.tgz")
     assert "draft%2F" not in urls["ucm.whl"]
 
@@ -969,6 +974,13 @@ def test_github_asset_urls_require_backend_meta_and_chart() -> None:
         asset
         for asset in release_document["assets"]
         if asset["name"] != "uc_manager-1.0.0-py3-none-any.whl"
+    ]
+    assert "uc_manager-1.0.0-py3-none-any.whl" not in release._github_asset_urls(
+        manifest, release_document
+    )
+
+    release_document["assets"] = [
+        asset for asset in release_document["assets"] if asset["name"] != "ucm.whl"
     ]
     with pytest.raises(ValueError, match="missing required assets"):
         release._github_asset_urls(manifest, release_document)

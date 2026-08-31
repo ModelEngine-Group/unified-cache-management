@@ -255,12 +255,16 @@
     "publishPypi": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["requested", "enabled", "disposition", "index"],
+      "required": ["requested", "enabled", "disposition", "target", "index", "simple_index", "json_api", "dependency_index"],
       "properties": {
         "requested": {"type": "boolean"},
         "enabled": {"type": "boolean"},
         "disposition": {"enum": ["publish", "scope-skipped", "disabled"]},
-        "index": {"type": "string", "minLength": 1}
+        "target": {"enum": ["pypi", "testpypi"]},
+        "index": {"type": "string", "pattern": "^https://[^ ]+/$"},
+        "simple_index": {"type": "string", "pattern": "^https://[^ ]+/$"},
+        "json_api": {"type": "string", "pattern": "^https://[^ ]+/$"},
+        "dependency_index": {"type": "string", "pattern": "^https://[^ ]+/$"}
       }
     },
     "publishOci": {
@@ -300,17 +304,12 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "id", "runtime_repository", "target_repository",
-        "channel_policy"
+        "id", "runtime_repository", "target_repository"
       ],
       "properties": {
         "id": {"enum": ["vllm", "vllm-ascend"]},
         "runtime_repository": {"type": "string", "pattern": "^[a-z0-9.-]+/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$"},
-        "target_repository": {"type": "string", "pattern": "^ghcr\\.io/(\\{owner\\}|[a-z0-9][a-z0-9-]{0,38})/[a-zA-Z0-9_.-]+$"},
-        "minimum_version": {"type": "string", "minLength": 1},
-        "maximum_version": {"type": "string", "minLength": 1},
-        "recent_minor_versions": {"type": "integer", "minimum": 1},
-        "channel_policy": {"const": "latest-stable-or-rc-or-nightly-per-minor"}
+        "target_repository": {"type": "string", "pattern": "^ghcr\\.io/(\\{owner\\}|[a-z0-9][a-z0-9-]{0,38})/[a-zA-Z0-9_.-]+$"}
       }
     },
     "releasePolicyPypi": {
@@ -366,10 +365,9 @@
     "releaseProfile": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["max_count", "max_minor_versions", "publish"],
+      "required": ["max_count", "publish"],
       "properties": {
         "max_count": {"$ref": "#/$defs/releaseProfileLimit"},
-        "max_minor_versions": {"$ref": "#/$defs/releaseProfileLimit"},
         "publish": {"$ref": "#/$defs/releaseProfilePublish"}
       }
     },
@@ -390,7 +388,7 @@
       "required": ["kind", "schema_version", "runners", "products", "publish", "release_profiles", "chart"],
       "properties": {
         "kind": {"const": "ucm-release-policy"},
-        "schema_version": {"const": 5},
+        "schema_version": {"const": 6},
         "runners": {
           "type": "object",
           "additionalProperties": false,

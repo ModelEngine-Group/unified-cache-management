@@ -39,6 +39,15 @@ on:
         description: Expected repository-derived publication scope
         type: string
         required: true
+    secrets:
+      PYPI_API_TOKEN:
+        required: false
+      TEST_PYPI_API_TOKEN:
+        required: false
+      DOCKERHUB_USERNAME:
+        required: false
+      DOCKERHUB_TOKEN:
+        required: false
 
 concurrency:
   group: ucm-release-${{ github.repository_id }}-${{ inputs.git_tag }}
@@ -48,15 +57,17 @@ permissions:
   contents: read
 
 jobs:
-  open-release:
-    name: Release · Open immediately
+  release-preflight:
+    name: Release · Validate version, Tag, and publication targets
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: ${{ inputs.publication_scope == 'official' && 'release-production' || 'fork-preview' }}
     outputs:
       enabled: ${{ steps.profile.outputs.enabled }}
+      fork_test_pypi: ${{ steps.profile.outputs.fork_test_pypi }}
+      fork_dockerhub_namespace: ${{ steps.profile.outputs.fork_dockerhub_namespace }}
     permissions:
-      contents: write
+      contents: read
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -69,6 +80,10 @@ jobs:
       RELEASE_TAG: ${{ inputs.git_tag }}
       SOURCE_SHA: ${{ inputs.source_sha }}
       PUBLICATION_SCOPE: ${{ inputs.publication_scope }}
+      TEST_PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      FORK_DOCKERHUB_NAMESPACE: ${{ vars.FORK_DOCKERHUB_NAMESPACE }}
     steps:
       - uses: actions/checkout@v4.2.2
         with:
@@ -93,7 +108,7 @@ jobs:
           test "${head_sha}" = "${SOURCE_SHA}"
           test "${tag_sha}" = "${SOURCE_SHA}"
           classification="$(python scripts/materialize_version.py \
-            --tag "${RELEASE_TAG}" --classify)"
+            --tag "${RELEASE_TAG}" --classify --version-config version.ini)"
           jq -e --arg tag "${RELEASE_TAG}" \
             --arg type "${RELEASE_TYPE}" \
             --arg kind "${RELEASE_KIND}" \
@@ -116,18 +131,109 @@ jobs:
           if str(version) != raw_version or version.local is not None:
               raise SystemExit("the public package model requires a canonical non-local version")
           PY
+          fork_test_pypi=false
+          fork_dockerhub_namespace=""
+          if [ "${PUBLICATION_SCOPE}" = fork ]; then
+            if [ -n "${TEST_PYPI_API_TOKEN}" ]; then
+              fork_test_pypi=true
+            fi
+            if { [ -n "${DOCKERHUB_USERNAME}" ] && [ -z "${DOCKERHUB_TOKEN}" ]; } || \
+               { [ -z "${DOCKERHUB_USERNAME}" ] && [ -n "${DOCKERHUB_TOKEN}" ]; }; then
+              echo "Fork Docker Hub username and token must be configured together" >&2
+              exit 2
+            fi
+            if [ -n "${DOCKERHUB_USERNAME}" ]; then
+              fork_dockerhub_namespace="${FORK_DOCKERHUB_NAMESPACE:-docker.io/${DOCKERHUB_USERNAME,,}}"
+            elif [ -n "${FORK_DOCKERHUB_NAMESPACE}" ]; then
+              echo "Fork Docker Hub namespace requires credentials" >&2
+              exit 2
+            fi
+          fi
           resolved="$(PYTHONPATH=.github/release python -c \
-            'import json, sys; from ucm_release import policy; print(json.dumps(policy.resolve(release_type=sys.argv[1])))' \
-            "${RELEASE_TYPE}")"
+            'import json, sys; from ucm_release import policy; print(json.dumps(policy.resolve(release_type=sys.argv[1], fork_test_pypi=sys.argv[2] == "true", fork_dockerhub_namespace=sys.argv[3] or None)))' \
+            "${RELEASE_TYPE}" "${fork_test_pypi}" "${fork_dockerhub_namespace}")"
           jq -e --arg scope "${PUBLICATION_SCOPE}" \
             --arg repository "${GITHUB_REPOSITORY}" \
             '.publication_scope == $scope and
              (.repository | ascii_downcase) == ($repository | ascii_downcase)' \
             <<<"${resolved}" >/dev/null
           enabled="$(jq -r '.publish.github_release.enabled' <<<"${resolved}")"
-          echo "enabled=${enabled}" >>"${GITHUB_OUTPUT}"
-      - name: Create or reuse exact Tag Release
-        if: ${{ steps.profile.outputs.enabled == 'true' }}
+          {
+            echo "enabled=${enabled}"
+            echo "fork_test_pypi=${fork_test_pypi}"
+            echo "fork_dockerhub_namespace=${fork_dockerhub_namespace}"
+          } >>"${GITHUB_OUTPUT}"
+  select-runtime-candidates:
+    name: Select Runtime Registry Tags
+    needs: release-preflight
+    if: ${{ needs.release-preflight.outputs.enabled == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      candidates_artifact: ${{ steps.select.outputs.candidates_artifact }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - run: >-
+          python -m pip install --disable-pip-version-check --no-cache-dir
+          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+      - name: Install crane for runtime discovery
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/crane"
+          curl -fsSL --retry 3 \
+            https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz \
+            | tar -xz -C "${RUNNER_TEMP}/crane" crane
+          echo "${RUNNER_TEMP}/crane" >>"${GITHUB_PATH}"
+      - id: select
+        name: Select runtime versions from Registry Tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TYPE: ${{ inputs.release_type }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python scripts/materialize_version.py --version "${RELEASE_VERSION}" >/dev/null
+          mkdir -p out/candidates
+          PYTHONPATH=.github/release python -m ucm_release upstreams candidates \
+            --release-type "${RELEASE_TYPE}" \
+            --output out/candidates/runtime-candidates.json >/dev/null
+          artifact="ucm-runtime-candidates-run-${GITHUB_RUN_ID}"
+          echo "candidates_artifact=${artifact}" >>"${GITHUB_OUTPUT}"
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ${{ steps.select.outputs.candidates_artifact }}
+          path: out/candidates/runtime-candidates.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 90
+
+  open-release:
+    name: Release · Open after Runtime selection
+    needs: [release-preflight, select-runtime-candidates]
+    if: ${{ needs.release-preflight.outputs.enabled == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: ${{ inputs.publication_scope == 'official' && 'release-production' || 'fork-preview' }}
+    outputs:
+      enabled: ${{ steps.opened.outputs.enabled }}
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TYPE: ${{ inputs.release_type }}
+      RELEASE_TAG: ${{ inputs.git_tag }}
+      IS_PRERELEASE: ${{ inputs.is_prerelease }}
+    steps:
+      - id: opened
+        name: Create or reuse exact Tag Release
         run: |
           set -euo pipefail
           test "${GH_REPO}" = "${GITHUB_REPOSITORY}"
@@ -220,59 +326,11 @@ jobs:
               '.[0].draft == false and .[0].prerelease == $prerelease' \
               <<<"${releases}" >/dev/null
           fi
-
-  select-runtime-candidates:
-    name: Select Runtime Registry Tags
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    outputs:
-      candidates_artifact: ${{ steps.select.outputs.candidates_artifact }}
-    steps:
-      - uses: actions/checkout@v4.2.2
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-          persist-credentials: false
-      - uses: actions/setup-python@v5.6.0
-        with:
-          python-version: "3.12"
-      - run: >-
-          python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
-      - name: Install crane for runtime discovery
-        run: |
-          set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/crane"
-          curl -fsSL --retry 3 \
-            https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz \
-            | tar -xz -C "${RUNNER_TEMP}/crane" crane
-          echo "${RUNNER_TEMP}/crane" >>"${GITHUB_PATH}"
-      - id: select
-        name: Select runtime versions from Registry Tags
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TYPE: ${{ inputs.release_type }}
-          RELEASE_VERSION: ${{ inputs.version }}
-        run: |
-          set -euo pipefail
-          python scripts/materialize_version.py --version "${RELEASE_VERSION}" >/dev/null
-          mkdir -p out/candidates
-          PYTHONPATH=.github/release python -m ucm_release upstreams candidates \
-            --release-type "${RELEASE_TYPE}" \
-            --output out/candidates/runtime-candidates.json >/dev/null
-          artifact="ucm-runtime-candidates-run-${GITHUB_RUN_ID}"
-          echo "candidates_artifact=${artifact}" >>"${GITHUB_OUTPUT}"
-      - uses: actions/upload-artifact@v4.6.2
-        with:
-          name: ${{ steps.select.outputs.candidates_artifact }}
-          path: out/candidates/runtime-candidates.json
-          if-no-files-found: error
-          overwrite: true
-          retention-days: 90
+          echo "enabled=true" >>"${GITHUB_OUTPUT}"
 
   inspect-runtimes:
     name: Inspect selected Runtime manifests
-    needs: select-runtime-candidates
+    needs: [select-runtime-candidates, open-release]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     outputs:
@@ -433,7 +491,7 @@ jobs:
 
   plan:
     name: Plan Wheels, Images, and Chart
-    needs: [resolve-upstreams, sync-builders]
+    needs: [release-preflight, open-release, resolve-upstreams, sync-builders]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
@@ -481,12 +539,19 @@ jobs:
           IMAGE_VERSION: ${{ inputs.image_version }}
           PUBLICATION_SCOPE: ${{ inputs.publication_scope }}
           REPOSITORY: ${{ github.repository }}
+          FORK_TEST_PYPI: ${{ needs.release-preflight.outputs.fork_test_pypi }}
+          FORK_DOCKERHUB_NAMESPACE: ${{ needs.release-preflight.outputs.fork_dockerhub_namespace }}
         run: |
           set -euo pipefail
           test "${IMAGE_VERSION}" = "${RELEASE_VERSION}"
           python scripts/materialize_version.py \
             --version "${RELEASE_VERSION}" >/dev/null
           mkdir -p out/plan
+          jq -n --argjson fork_test_pypi "${FORK_TEST_PYPI}" \
+            --arg namespace "${FORK_DOCKERHUB_NAMESPACE}" \
+            '{fork_test_pypi:$fork_test_pypi,
+              fork_dockerhub_namespace:(if $namespace == "" then null else $namespace end)}' \
+            >out/plan/publication-context.json
           PYTHONPATH=.github/release python -m ucm_release compact plan \
             --runtime-selection input/upstreams/runtime-selection.json \
             --builder-catalog input/builders/builder-catalog.json \
@@ -495,6 +560,7 @@ jobs:
             --release-kind "${RELEASE_KIND}" \
             --is-prerelease "${IS_PRERELEASE}" \
             --chart-version "${CHART_VERSION}" \
+            --publication-context out/plan/publication-context.json \
             --output out/plan/release-plan.json >/dev/null
           jq -e --arg tag "${RELEASE_TAG}" \
             --arg type "${RELEASE_TYPE}" \
@@ -806,7 +872,7 @@ jobs:
     secrets: inherit
 
   publish-release-artifacts:
-    name: Release · Publish backend/meta Wheels, Chart, and Config
+    name: Release · Publish backend Wheels, Chart, and Config
     needs:
       [plan, open-release, build-wheels, build-meta, validate-wheel-runtimes, package-chart]
     if: >-
@@ -912,7 +978,7 @@ jobs:
           if-no-files-found: error
           overwrite: true
           retention-days: 90
-      - name: Upload backend/meta Wheels, Chart, and Config
+      - name: Upload backend Wheels, Chart, and Config
         run: |
           set -euo pipefail
           test "${GH_REPO}" = "${GITHUB_REPOSITORY}"
@@ -946,7 +1012,6 @@ jobs:
           )
           meta_artifacts=(input/meta/*.whl)
           test "${#meta_artifacts[@]}" = 1
-          artifacts+=("${meta_artifacts[@]}")
           test "${#artifacts[@]}" -gt 2
           gh api --method PATCH "/repos/${GH_REPO}/releases/${release_id}" \
             -f "tag_name=${tag}" >/dev/null
@@ -1119,15 +1184,14 @@ jobs:
                 status:"failed",targets:$targets}' >"${receipt}"
           fi
           if [ "$(jq -r '.publish.dockerhub.enabled' "${plan}")" = true ]; then
-            jq -e \
-              '.publication_scope == "official" and
-               (.repository | ascii_downcase) ==
-                 "modelengine-group/unified-cache-management"' \
-              "${plan}" >/dev/null
             test -n "${DOCKERHUB_USERNAME}" && test -n "${DOCKERHUB_TOKEN}"
             printf '%s' "${DOCKERHUB_TOKEN}" | docker login docker.io \
               --username "${DOCKERHUB_USERNAME}" --password-stdin
             namespace="$(jq -r '.publish.dockerhub.namespace' "${plan}")"
+            case "${namespace}" in
+              docker.io/*) ;;
+              *) echo "Docker Hub namespace is outside docker.io" >&2; exit 2 ;;
+            esac
             repository="${namespace}/$(basename "${TARGET_REPOSITORY}")"
             mapfile -t dockerhub_members < <(jq -er --arg repository "${repository}" \
               '.[] | ($repository + ":" + (split(":")[-1]))' <<<"${MEMBERS}")
@@ -1169,6 +1233,8 @@ jobs:
       contents: read
     env:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+      TEST_PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
+      PUBLICATION_SCOPE: ${{ inputs.publication_scope }}
     steps:
       - uses: actions/checkout@v4.2.2
         with:
@@ -1198,11 +1264,21 @@ jobs:
           set -euo pipefail
           plan=input/plan/release-plan.json
           test "$(jq -r '.publish.pypi.enabled' "${plan}")" = true
-          jq -e \
-            '.publication_scope == "official" and
-             (.repository | ascii_downcase) ==
-               "modelengine-group/unified-cache-management"' \
-            "${plan}" >/dev/null
+          if [ "${PUBLICATION_SCOPE}" = official ]; then
+            jq -e \
+              '.publication_scope == "official" and
+               (.repository | ascii_downcase) ==
+                 "modelengine-group/unified-cache-management" and
+               .publish.pypi.target == "pypi"' "${plan}" >/dev/null
+          else
+            jq -e \
+              '.publication_scope == "fork" and
+               (.repository | ascii_downcase) !=
+                 "modelengine-group/unified-cache-management" and
+               .publish.pypi.target == "testpypi"' "${plan}" >/dev/null
+            PYPI_API_TOKEN="${TEST_PYPI_API_TOKEN}"
+            export PYPI_API_TOKEN
+          fi
           test -n "${PYPI_API_TOKEN}"
           mkdir -p out/pypi
           PYTHONPATH=.github/release python -m ucm_release pypi publish \
@@ -1243,9 +1319,13 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/download-artifact-retry
         with:
+          name: ${{ needs.plan.outputs.plan_artifact }}
+          path: input/plan
+      - uses: ./.github/actions/download-artifact-retry
+        with:
           name: ucm-wheel-${{ matrix.id }}-run-${{ github.run_id }}
           path: input/wheel
-      - name: Install one extra from public PyPI in a fresh environment
+      - name: Install one extra from the planned Python index
         env:
           RUNTIME_IMAGE: ${{ matrix.runtime_image }}
           UCM_EXTRA: ${{ matrix.extra }}
@@ -1258,12 +1338,18 @@ jobs:
             input/wheel/wheel-result.json)"
           deferred_external_libraries="$(jq -c '.deferred_external_libraries' \
             input/wheel/wheel-result.json)"
+          index_url="$(jq -er '.publish.pypi.simple_index' \
+            input/plan/release-plan.json)"
+          dependency_index="$(jq -er '.publish.pypi.dependency_index' \
+            input/plan/release-plan.json)"
           docker pull "${RUNTIME_IMAGE}"
           docker run --rm \
             --entrypoint bash \
             -e PLATFORM="${PLATFORM_ARG}" \
             -e UCM_EXTRA="${UCM_EXTRA}" \
             -e UCM_VERSION="${UCM_VERSION}" \
+            -e UCM_INDEX_URL="${index_url}" \
+            -e UCM_DEPENDENCY_INDEX="${dependency_index}" \
             -e EXPECTED_UCM_VERSION="${UCM_VERSION}" \
             -e EXPECTED_META_VERSION="${UCM_VERSION}" \
             -e EXPECTED_BACKEND_DISTRIBUTION="${BACKEND_DISTRIBUTION}" \
@@ -1274,9 +1360,13 @@ jobs:
               set -euo pipefail
               python3 -m venv /tmp/ucm-pypi-venv
               . /tmp/ucm-pypi-venv/bin/activate
+              index_args=(--index-url "${UCM_INDEX_URL}")
+              if [ "${UCM_DEPENDENCY_INDEX}" != "${UCM_INDEX_URL}" ]; then
+                index_args+=(--extra-index-url "${UCM_DEPENDENCY_INDEX}")
+              fi
               for install_attempt in {1..30}; do
                 if python -m pip install --disable-pip-version-check --no-cache-dir \
-                  --index-url https://pypi.org/simple \
+                  "${index_args[@]}" \
                   "uc-manager[${UCM_EXTRA}]==${UCM_VERSION}"; then
                   break
                 fi
@@ -1563,17 +1653,17 @@ jobs:
             <<<"${resolved}" >/dev/null
           profile="$(jq -c '.release_profile' <<<"${resolved}")"
           max_count="$(jq -er '.max_count' <<<"${profile}")"
-          pypi_enabled="$(jq -r '.publish.pypi.enabled' <<<"${resolved}")"
+          pypi_enabled="$(jq -r '.publish.pypi.enabled' \
+            input/plan/release-plan.json)"
           if [ "${max_count}" != -1 ] && [ "${pypi_enabled}" = false ]; then
             mkdir -p "${RUNNER_TEMP}/crane"
             curl -fsSL --retry 3 \
               https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz \
               | tar -xz -C "${RUNNER_TEMP}/crane" crane
             export PATH="${RUNNER_TEMP}/crane:${PATH}"
-            if [ "${{ inputs.publication_scope }}" = official ] && \
-               [ "${GITHUB_REPOSITORY,,}" = \
-                 modelengine-group/unified-cache-management ] && \
-               [ -n "${DOCKERHUB_USERNAME}" ] && [ -n "${DOCKERHUB_TOKEN}" ]; then
+            if [ "$(jq -r '.publish.dockerhub.enabled' \
+                 input/plan/release-plan.json)" = true ]; then
+              test -n "${DOCKERHUB_USERNAME}" && test -n "${DOCKERHUB_TOKEN}"
               printf '%s' "${DOCKERHUB_TOKEN}" | docker login docker.io \
                 --username "${DOCKERHUB_USERNAME}" --password-stdin
             fi

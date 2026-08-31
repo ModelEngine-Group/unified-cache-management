@@ -19,6 +19,8 @@ from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
+from . import version_config
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 RELEASE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RELEASE = RELEASE_ROOT / "release.yaml"
@@ -206,11 +208,7 @@ def sha256_value(value: Any) -> str:
 
 def read_version(path: Path | None = None) -> str:
     version_path = path or (REPO_ROOT / "version.ini")
-    for line in version_path.read_text(encoding="utf-8").splitlines():
-        key, separator, value = line.strip().partition("=")
-        if separator and key == "VLLM_UC_VERSION" and value:
-            return value
-    raise ValueError(f"VLLM_UC_VERSION is missing from {version_path}")
+    return str(version_config.load(version_path)["ucm_version"])
 
 
 def _pep440_public(version: str) -> str:
@@ -1206,7 +1204,7 @@ def load_catalog(
     resolved_repository = resolve_repository(repository, repository_root=repository_root)  # fmt: skip  # noqa: E501
     is_formal_policy = (
         release.get("kind") == "ucm-release-policy"
-        and release.get("schema_version") == 5
+        and release.get("schema_version") == 6
     )
     if is_formal_policy:
         from . import policy as release_policy
@@ -1253,7 +1251,8 @@ def load_catalog(
 PUBLISH_CHANNELS = ("pypi", "ghcr", "dockerhub", "chart_oci", "github_release")
 _PUBLISH_DECISION_KEYS = frozenset({"requested", "enabled", "disposition"})
 PUBLISH_CHANNEL_KEYS = {
-    "pypi": _PUBLISH_DECISION_KEYS | {"index"},
+    "pypi": _PUBLISH_DECISION_KEYS
+    | {"target", "index", "simple_index", "json_api", "dependency_index"},
     "ghcr": _PUBLISH_DECISION_KEYS | {"namespace"},
     "dockerhub": _PUBLISH_DECISION_KEYS | {"namespace"},
     "chart_oci": _PUBLISH_DECISION_KEYS | {"namespace"},

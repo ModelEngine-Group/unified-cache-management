@@ -1,5 +1,5 @@
 kind: ucm-release-policy
-schema_version: 5
+schema_version: 6
 
 runners:
   amd64: ubuntu-24.04
@@ -9,16 +9,10 @@ products:
   - id: vllm
     runtime_repository: docker.io/vllm/vllm-openai
     target_repository: ghcr.io/{owner}/vllm-openai
-    # 默认检查 Registry 最新版所在的最近 3 个连续 minor。
-    recent_minor_versions: 3
-    channel_policy: latest-stable-or-rc-or-nightly-per-minor
 
   - id: vllm-ascend
     runtime_repository: quay.io/ascend/vllm-ascend
     target_repository: ghcr.io/{owner}/vllm-ascend
-    # 默认检查 Registry 最新版所在的最近 3 个连续 minor。
-    recent_minor_versions: 3
-    channel_policy: latest-stable-or-rc-or-nightly-per-minor
 
 publish:
   # PyPI 固定上传地址，是否发布由 Release Profile 决定。
@@ -41,8 +35,6 @@ release_profiles:
   stable:
     # -1 表示无限保留 Stable 发布。
     max_count: -1
-    # -1 表示构建产品版本交集内的全部实际 minor。
-    max_minor_versions: -1
     publish:
       pypi: true
       ghcr: true
@@ -53,8 +45,6 @@ release_profiles:
   prerelease:
     # -1 表示无限保留 Prerelease 发布。
     max_count: -1
-    # -1 表示构建产品版本交集内的全部实际 minor。
-    max_minor_versions: -1
     publish:
       pypi: true
       ghcr: true
@@ -65,8 +55,6 @@ release_profiles:
   draft:
     # 最多保留 7 个新版 Draft。
     max_count: 7
-    # -1 表示构建产品版本交集内的全部实际 minor。
-    max_minor_versions: -1
     publish:
       pypi: true
       ghcr: true
@@ -77,8 +65,6 @@ release_profiles:
   nightly:
     # 最多保留 7 个 Nightly。
     max_count: 7
-    # 只构建产品版本交集内第一个实际存在的 minor。
-    max_minor_versions: 1
     publish:
       pypi: false
       ghcr: true

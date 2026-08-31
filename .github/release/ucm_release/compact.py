@@ -342,20 +342,27 @@ def resolve_plan(
             raise ValueError(
                 f"formal {channel} publication request does not match its Profile"
             )
-        scope_skipped = (
-            expected_scope == "fork" and channel in {"pypi", "dockerhub"} and requested
+        decision = (
+            channel_policy.get("enabled"),
+            channel_policy.get("disposition"),
         )
-        expected_enabled = requested and not scope_skipped
-        expected_disposition = (
-            "scope-skipped" if scope_skipped else "publish" if requested else "disabled"
+        allowed = (
+            {(False, "disabled")}
+            if not requested
+            else (
+                {(True, "publish"), (False, "scope-skipped")}
+                if expected_scope == "fork" and channel in {"pypi", "dockerhub"}
+                else {(True, "publish")}
+            )
         )
-        if (
-            channel_policy.get("enabled") is not expected_enabled
-            or channel_policy.get("disposition") != expected_disposition
-        ):
+        if decision not in allowed:
             raise ValueError(
                 f"formal {channel} publication decision does not match repository scope"
             )
+    pypi_policy = _mapping(publication_policy["pypi"], "formal PyPI policy")
+    expected_pypi_target = "pypi" if expected_scope == "official" else "testpypi"
+    if pypi_policy.get("target") != expected_pypi_target:
+        raise ValueError("formal PyPI target does not match repository scope")
     selection = upstream.validate_selection(runtime_selection)
     builds = _build_map(selection)
     builder_by_id = _builder_map(builder_catalog)
@@ -539,6 +546,11 @@ def resolve_plan(
         "git_tag": resolved_git_tag,
         "release_kind": resolved_release_kind,
         "is_prerelease": resolved_prerelease,
+        "version_authority": {
+            "ucm_base_version": catalog["ucm_base_version"],
+            "sha256": catalog["version_authority_sha256"],
+            "runtime_selectors": copy.deepcopy(catalog["runtime_selectors"]),
+        },
         "publish": publish,
         "meta_package": meta_package,
         "chart": chart,

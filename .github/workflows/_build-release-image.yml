@@ -81,12 +81,11 @@ jobs:
           esac
           dockerhub_ref=""
           if [ "$(jq -r '.publish.dockerhub.enabled' "${plan}")" = true ]; then
-            jq -e \
-              '.publication_scope == "official" and
-               (.repository | ascii_downcase) ==
-                 "modelengine-group/unified-cache-management"' \
-              "${plan}" >/dev/null
             namespace="$(jq -er '.publish.dockerhub.namespace' "${plan}")"
+            case "${namespace}" in
+              docker.io/*) ;;
+              *) echo "Docker Hub namespace is outside docker.io" >&2; exit 2 ;;
+            esac
             repository="${target_ref%:*}"
             tag="${target_ref##*:}"
             dockerhub_ref="${namespace}/${repository##*/}:${tag}"
@@ -223,11 +222,11 @@ jobs:
               printf '%s' "${GITHUB_TOKEN}" | docker login ghcr.io \
                 --username "${GITHUB_ACTOR}" --password-stdin || return 1
             else
-              jq -e \
-                '.publication_scope == "official" and
-                 (.repository | ascii_downcase) ==
-                   "modelengine-group/unified-cache-management"' \
-                "${plan}" >/dev/null || return 2
+              namespace="$(jq -er '.publish.dockerhub.namespace' "${plan}")"
+              case "${reference}" in
+                "${namespace}/"*:*) ;;
+                *) echo "Docker Hub member is outside the planned namespace" >&2; return 2 ;;
+              esac
               test -n "${DOCKERHUB_USERNAME}" && test -n "${DOCKERHUB_TOKEN}"
               printf '%s' "${DOCKERHUB_TOKEN}" | docker login docker.io \
                 --username "${DOCKERHUB_USERNAME}" --password-stdin || return 1

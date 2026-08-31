@@ -36,6 +36,23 @@ def _extract(archive_path: Path, destination: Path) -> None:
         archive.extractall(destination, filter="data")
 
 
+def _expected_materialized_version() -> str:
+    source = _git("show", "HEAD:version.ini")
+    if "UCM_SUPPORTED_VLLM_VERSIONS=" not in source:
+        return f"VLLM_UC_VERSION={SOURCE_VERSION}\n"
+    return (
+        "\n".join(
+            (
+                f"VLLM_UC_VERSION={SOURCE_VERSION}"
+                if line.startswith("VLLM_UC_VERSION=")
+                else line
+            )
+            for line in source.splitlines()
+        )
+        + "\n"
+    )
+
+
 def _production_task(source_sha: str) -> dict[str, object]:
     task: dict[str, object] = {
         "kind": "ucm-production-wheel-build-task",
@@ -98,7 +115,7 @@ def test_materialized_source_context_is_deterministic_and_keeps_original_identit
         tmp_path / "second/source-context.json"
     ).read_bytes()
     assert (ROOT / "version.ini").read_text(encoding="utf-8") != (
-        f"VLLM_UC_VERSION={SOURCE_VERSION}\n"
+        _expected_materialized_version()
     )
 
     extracted = tmp_path / "extracted"
@@ -112,9 +129,9 @@ def test_materialized_source_context_is_deterministic_and_keeps_original_identit
         SOURCE_VERSION,
     )
     assert verified["source_version"] == SOURCE_VERSION
-    assert (extracted / "version.ini").read_text(encoding="utf-8") == (
-        f"VLLM_UC_VERSION={SOURCE_VERSION}\n"
-    )
+    assert (extracted / "version.ini").read_text(
+        encoding="utf-8"
+    ) == _expected_materialized_version()
 
 
 def test_production_authority_binds_materialized_tree_and_rejects_tampering(
