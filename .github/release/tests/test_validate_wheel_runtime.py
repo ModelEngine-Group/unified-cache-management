@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from importlib import metadata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -66,6 +67,42 @@ def test_distribution_validation_requires_the_expected_backend() -> None:
         assert "not installed" in str(error)
     else:
         raise AssertionError("missing expected backend distribution was accepted")
+
+
+def test_distribution_validation_uses_the_planned_meta_name(monkeypatch) -> None:
+    backend = type("Backend", (), {"version": "1.0.0"})()
+    requested: list[str] = []
+
+    def distribution(name: str):
+        requested.append(name)
+        if name == "supermarioyl-uc-manager-cuda-cu130":
+            return backend
+        raise metadata.PackageNotFoundError(name)
+
+    def version(name: str) -> str:
+        requested.append(name)
+        if name == "supermarioyl-uc-manager":
+            return "1.0.0"
+        raise metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(
+        runtime_validation.importlib.metadata, "distribution", distribution
+    )
+    monkeypatch.setattr(runtime_validation.importlib.metadata, "version", version)
+
+    assert (
+        runtime_validation.validate_installed_distributions(
+            "supermarioyl-uc-manager-cuda-cu130",
+            "1.0.0",
+            "1.0.0",
+            "supermarioyl-uc-manager",
+        )
+        is backend
+    )
+    assert requested == [
+        "supermarioyl-uc-manager-cuda-cu130",
+        "supermarioyl-uc-manager",
+    ]
 
 
 def test_external_runtime_library_cannot_resolve_to_sibling_wheel_libs(

@@ -27,7 +27,8 @@ import re
 from ucm.integration.vllm.patch.logger_patch import patch_logger as patch_logger
 
 _UCM_BACKEND_DIST = re.compile(
-    r"uc-manager-(?:cuda(?:-[a-z0-9]+)*|cann(?:[0-9]+)?-a[0-9]+(?:-[a-z0-9]+)*)"
+    r"(?:[a-z0-9]+-)*uc-manager-"
+    r"(?:cuda(?:-[a-z0-9]+)*|cann(?:[0-9]+)?-a[0-9]+(?:-[a-z0-9]+)*)"
 )
 
 

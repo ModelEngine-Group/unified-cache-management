@@ -286,20 +286,20 @@ def test_plan_projects_runtime_referenced_distributions_from_platform_policy() -
     plan = _plan()
 
     assert plan["publish"]["pypi"]["distributions"] == [
-        "uc-manager-cann901-a2",
-        "uc-manager-cann901-a3",
-        "uc-manager-cuda-cu129",
+        "release-org-uc-manager-cann901-a2",
+        "release-org-uc-manager-cann901-a3",
+        "release-org-uc-manager-cuda-cu129",
     ]
     assert {item["dist_name"] for item in plan["wheels"]} == set(
         plan["publish"]["pypi"]["distributions"]
     )
     assert plan["meta_package"] == {
-        "distribution": "uc-manager",
+        "distribution": "release-org-uc-manager",
         "version": "0.7.60rc1",
         "extras": {
-            "cann901-a2": "uc-manager-cann901-a2==0.7.60rc1",
-            "cann901-a3": "uc-manager-cann901-a3==0.7.60rc1",
-            "cu129": "uc-manager-cuda-cu129==0.7.60rc1",
+            "cann901-a2": "release-org-uc-manager-cann901-a2==0.7.60rc1",
+            "cann901-a3": "release-org-uc-manager-cann901-a3==0.7.60rc1",
+            "cu129": "release-org-uc-manager-cuda-cu129==0.7.60rc1",
         },
     }
     assert all(
@@ -331,6 +331,27 @@ def test_cann_distribution_identity_keeps_runtime_versions_distinct() -> None:
 
     assert compact._distribution(backend, "cann901-a2") == "uc-manager-cann901-a2"
     assert compact._distribution(backend, "cann910-a2") == "uc-manager-cann910-a2"
+
+
+def test_compact_source_accepts_exact_prefixed_distribution(tmp_path: Path) -> None:
+    project = tmp_path / "pyproject.toml"
+    project.write_text('[project]\nname = "uc-manager"\n', encoding="utf-8")
+
+    result = compact.prepare_wheel_source(
+        tmp_path, "supermarioyl-uc-manager-cuda-cu130"
+    )
+
+    assert result["distribution"] == "supermarioyl-uc-manager-cuda-cu130"
+    assert 'name = "supermarioyl-uc-manager-cuda-cu130"' in project.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_python_distribution_internal_length_limit_fails_without_truncation() -> None:
+    prefix = f"{'a' * 117}-"
+
+    with pytest.raises(ValueError, match="namespaced Python distribution"):
+        compact._namespaced_distribution(prefix, "uc-manager-cuda-cu130")
 
 
 def test_plan_keeps_top_level_contract_without_problem_or_index_matrix() -> None:
@@ -396,6 +417,16 @@ def test_plan_rejects_repository_scope_or_runtime_prefix_drift() -> None:
             route="release",
         )
 
+    wrong_python_prefix = copy.deepcopy(formal)
+    wrong_python_prefix["publish"]["pypi"]["distribution_prefix"] = "other-owner-"
+    with pytest.raises(ValueError, match="distribution prefix"):
+        compact.resolve_plan(
+            wrong_python_prefix,
+            runtime_selection=selection,
+            builder_catalog=catalog,
+            route="release",
+        )
+
     shared_channel = copy.deepcopy(formal)
     shared_channel["publish"]["pypi"]["enabled"] = True
     with pytest.raises(ValueError, match="publication decision does not match"):
@@ -448,9 +479,12 @@ def test_official_plan_keeps_runtime_and_wheel_coordinates_unchanged() -> None:
     assert plan["runtime_image_tag_prefix"] == ""
     assert family["target_tag"] == "v0.22.1-cu129-ucm-0.7.60rc1"
     assert {wheel["wheel_version"] for wheel in plan["wheels"]} == {"0.7.60rc1"}
+    assert all(wheel["dist_name"].startswith("uc-manager-") for wheel in plan["wheels"])
+    assert plan["meta_package"]["distribution"] == "uc-manager"
+    assert plan["publish"]["pypi"]["distribution_prefix"] == ""
 
 
-def test_fork_owner_prefix_changes_runtime_tags_only() -> None:
+def test_fork_owner_prefix_changes_runtime_and_python_coordinates() -> None:
     formal, selection, builder_catalog = _inputs()
     plan = compact.resolve_plan(
         formal,
@@ -462,12 +496,45 @@ def test_fork_owner_prefix_changes_runtime_tags_only() -> None:
     assert all(
         family["target_tag"].startswith("release-org-") for family in plan["families"]
     )
-    assert all("release-org" not in wheel["dist_name"] for wheel in plan["wheels"])
+    assert all(
+        wheel["dist_name"].startswith("release-org-uc-manager-")
+        for wheel in plan["wheels"]
+    )
     assert all(
         not builder["target_tag"].startswith("release-org-")
         for builder in builder_catalog["builders"]
     )
     assert plan["chart"]["version"] == "0.7.60-rc.1"
+
+
+def test_fork_python_coordinates_do_not_depend_on_secret_availability() -> None:
+    disabled = _plan()
+    formal, selection, builder_catalog = _inputs()
+    formal = policy.resolve(
+        repository="release-org/unified-cache-management",
+        version_override="0.7.60rc1",
+        release_type="stable",
+        fork_test_pypi=True,
+    )
+    selectors = _fixture_policy()["runtime_selectors"]
+    formal["runtime_selectors"] = copy.deepcopy(selectors)
+    for product in formal["products"]:
+        product["runtime_selectors"] = copy.deepcopy(selectors[product["id"]])
+    enabled = compact.resolve_plan(
+        formal,
+        runtime_selection=selection,
+        builder_catalog=builder_catalog,
+        route="release",
+    )
+
+    assert disabled["publish"]["pypi"]["enabled"] is False
+    assert enabled["publish"]["pypi"]["enabled"] is True
+    assert disabled["publish"]["pypi"]["distribution_prefix"] == "release-org-"
+    assert enabled["publish"]["pypi"]["distribution_prefix"] == "release-org-"
+    assert [wheel["dist_name"] for wheel in disabled["wheels"]] == [
+        wheel["dist_name"] for wheel in enabled["wheels"]
+    ]
+    assert disabled["meta_package"] == enabled["meta_package"]
 
 
 @pytest.mark.parametrize("release_type", policy.RELEASE_TYPES)
@@ -480,13 +547,14 @@ def test_plan_records_selected_release_profile(release_type: str) -> None:
         "pypi": {
             "target": "testpypi",
             **policy.PYPI_TARGETS["testpypi"],
+            "distribution_prefix": "release-org-",
             "requested": shared_requested,
             "enabled": False,
             "disposition": "scope-skipped" if shared_requested else "disabled",
             "distributions": [
-                "uc-manager-cann901-a2",
-                "uc-manager-cann901-a3",
-                "uc-manager-cuda-cu129",
+                "release-org-uc-manager-cann901-a2",
+                "release-org-uc-manager-cann901-a3",
+                "release-org-uc-manager-cuda-cu129",
             ],
         },
         "ghcr": {

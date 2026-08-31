@@ -1010,8 +1010,17 @@ def test_pypi_publication_is_backend_first_meta_last_and_read_back() -> None:
         if step.get("name") == "Install one extra from the planned Python index"
     )["run"]
     assert "python3 -m venv" in install
-    assert '"uc-manager[${UCM_EXTRA}]==${UCM_VERSION}"' in install
-    assert '"${index_args[@]}"' in install
+    assert ".meta_package.distribution" in install
+    assert "ucm-pypi-receipt-run-${{ github.run_id }}" in yaml.safe_dump(job)
+    assert ".publish.pypi.json_api" in install
+    assert "https://test-files.pythonhosted.org/" in install
+    assert "https://files.pythonhosted.org/" in install
+    assert ".digests.sha256 == $sha256" in install
+    assert 'actual_sha256="$(sha256sum' in install
+    assert 'UCM_META_DISTRIBUTION="${meta_distribution}"' in install
+    assert 'EXPECTED_META_DISTRIBUTION="${meta_distribution}"' in install
+    assert '"${UCM_META_WHEEL}[${UCM_EXTRA}]" "${UCM_BACKEND_WHEEL}"' in install
+    assert "--extra-index-url" not in install
     assert "validate_wheel_runtime.py" in install
     assert "DEFERRED_EXTERNAL_LIBRARIES" in install
 

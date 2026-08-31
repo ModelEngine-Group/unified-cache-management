@@ -25,11 +25,16 @@ from . import upstream, wheel_audit
 ROUTES = frozenset({"pr", "daily", "release"})
 WHEEL_ARCHITECTURES = {"amd64": "x86_64", "arm64": "aarch64"}
 AUDITWHEEL_REPORT = "auditwheel-show.txt"
+_UCM_DISTRIBUTION = re.compile(r"(?:[a-z0-9]+-)*uc-manager(?:-[a-z0-9]+)*")
 
 
 def prepare_wheel_source(source_root: Path, distribution: str) -> dict[str, str]:
     """Set the PEP 621 distribution name for one compact Wheel build."""
-    if re.fullmatch(r"uc-manager(?:-[a-z0-9]+)*", distribution) is None:
+    if (
+        len(distribution) > release_policy.MAX_PYPI_DISTRIBUTION_LENGTH
+        or canonicalize_name(distribution, validate=True) != distribution
+        or _UCM_DISTRIBUTION.fullmatch(distribution) is None
+    ):
         raise ValueError("compact Wheel distribution name is invalid")
     path = source_root / "pyproject.toml"
     raw = path.read_text(encoding="utf-8")
@@ -76,6 +81,17 @@ def _distribution(backend: Mapping[str, Any], runtime_variant: str) -> str:
         raise ValueError("backend policy has no valid distribution rule")
     if re.fullmatch(r"uc-manager(?:-[a-z0-9]+)*", value) is None:
         raise ValueError("backend policy generated an invalid distribution")
+    return value
+
+
+def _namespaced_distribution(prefix: str, distribution: str) -> str:
+    value = f"{prefix}{distribution}"
+    if (
+        len(value) > release_policy.MAX_PYPI_DISTRIBUTION_LENGTH
+        or canonicalize_name(value, validate=True) != value
+        or _UCM_DISTRIBUTION.fullmatch(value) is None
+    ):
+        raise ValueError("namespaced Python distribution is invalid")
     return value
 
 
@@ -145,7 +161,9 @@ def _external_runtime_exclude_patterns(
     return sorted(patterns)
 
 
-def _meta_package(wheels: list[Mapping[str, Any]], version: str) -> dict[str, Any]:
+def _meta_package(
+    wheels: list[Mapping[str, Any]], version: str, distribution: str
+) -> dict[str, Any]:
     extras: dict[str, str] = {}
     for wheel in wheels:
         extra = str(wheel["runtime_variant"])
@@ -158,7 +176,7 @@ def _meta_package(wheels: list[Mapping[str, Any]], version: str) -> dict[str, An
     if not extras:
         raise ValueError("meta package requires at least one backend extra")
     return {
-        "distribution": "uc-manager",
+        "distribution": distribution,
         "version": version,
         "extras": {key: extras[key] for key in sorted(extras)},
     }
@@ -229,6 +247,7 @@ def _wheel_task(
     build: Mapping[str, Any],
     builder: Mapping[str, Any],
     backend: Mapping[str, Any],
+    distribution_prefix: str,
 ) -> dict[str, Any]:
     architecture = str(build["cpu_arch"])
     manylinux = str(build["manylinux"])
@@ -254,7 +273,10 @@ def _wheel_task(
         "target_platform_tag": target_platform_tag,
         "external_runtime_exclude_patterns": external_runtime_exclude_patterns,
         "wheel_version": catalog["ucm_version"],
-        "dist_name": _distribution(backend, str(build["runtime_variant"])),
+        "dist_name": _namespaced_distribution(
+            distribution_prefix,
+            _distribution(backend, str(build["runtime_variant"])),
+        ),
         "build": {"docker_target": "wheel", "platform_arg": backend["platform"]},
         "builder": {
             "repository": str(builder["target_repository"]),
@@ -363,6 +385,12 @@ def resolve_plan(
     expected_pypi_target = "pypi" if expected_scope == "official" else "testpypi"
     if pypi_policy.get("target") != expected_pypi_target:
         raise ValueError("formal PyPI target does not match repository scope")
+    distribution_prefix = pypi_policy.get("distribution_prefix")
+    expected_distribution_prefix = release_policy.pypi_distribution_prefix(repository)
+    if distribution_prefix != expected_distribution_prefix:
+        raise ValueError(
+            "formal PyPI distribution prefix does not match repository owner"
+        )
     selection = upstream.validate_selection(runtime_selection)
     builds = _build_map(selection)
     builder_by_id = _builder_map(builder_catalog)
@@ -396,7 +424,13 @@ def resolve_plan(
                 )
             _validate_builder_matches_build(build, builder)
             if build_id not in wheels_by_id:
-                wheels_by_id[build_id] = _wheel_task(catalog, build, builder, backend)
+                wheels_by_id[build_id] = _wheel_task(
+                    catalog,
+                    build,
+                    builder,
+                    backend,
+                    expected_distribution_prefix,
+                )
             image_id = f"{runtime['id']}-{architecture}"
             image_ids.append(image_id)
             member_reference = (
@@ -497,7 +531,11 @@ def resolve_plan(
     if resolved_release_type not in {"stable", "prerelease", "draft", "nightly"}:
         raise ValueError(f"unsupported release type: {resolved_release_type!r}")
     resolved_version = str(catalog["ucm_version"])
-    meta_package = _meta_package(wheels, resolved_version)
+    meta_package = _meta_package(
+        wheels,
+        resolved_version,
+        _namespaced_distribution(expected_distribution_prefix, "uc-manager"),
+    )
     image_by_wheel: dict[str, dict[str, Any]] = {}
     for image in images:
         image_by_wheel.setdefault(str(image["wheel_id"]), image)

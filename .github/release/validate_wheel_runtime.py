@@ -144,7 +144,10 @@ def validate_runtime(
 
 
 def validate_installed_distributions(
-    expected_backend: str, expected_version: str, expected_meta_version: str | None
+    expected_backend: str,
+    expected_version: str,
+    expected_meta_version: str | None,
+    expected_meta_distribution: str = "uc-manager",
 ) -> importlib.metadata.Distribution:
     try:
         backend = importlib.metadata.distribution(expected_backend)
@@ -156,14 +159,14 @@ def validate_installed_distributions(
         raise RuntimeError("installed UCM backend version does not match")
     if expected_meta_version is None:
         try:
-            importlib.metadata.version("uc-manager")
+            importlib.metadata.version(expected_meta_distribution)
         except importlib.metadata.PackageNotFoundError:
             return backend
         raise RuntimeError(
-            "local backend validation found an existing uc-manager distribution"
+            "local backend validation found an existing UCM meta distribution"
         )
-    if importlib.metadata.version("uc-manager") != expected_meta_version:
-        raise RuntimeError("installed uc-manager meta version does not match")
+    if importlib.metadata.version(expected_meta_distribution) != expected_meta_version:
+        raise RuntimeError("installed UCM meta version does not match")
     return backend
 
 
@@ -197,6 +200,9 @@ def main() -> int:
     expected_backend = required_environment("EXPECTED_BACKEND_DISTRIBUTION")
     expected_version = required_environment("EXPECTED_UCM_VERSION")
     expected_meta_version = os.environ.get("EXPECTED_META_VERSION")
+    expected_meta_distribution = os.environ.get(
+        "EXPECTED_META_DISTRIBUTION", "uc-manager"
+    )
     expected = json.loads(os.environ.get("EXPECTED_EXTERNAL_LIBRARIES", "[]"))
     if not isinstance(expected, list) or any(
         not isinstance(value, str) or not value for value in expected
@@ -217,7 +223,10 @@ def main() -> int:
     ):
         raise RuntimeError("EXPECTED_RUNTIME_REQUIREMENTS must be a JSON string list")
     backend = validate_installed_distributions(
-        expected_backend, expected_version, expected_meta_version
+        expected_backend,
+        expected_version,
+        expected_meta_version,
+        expected_meta_distribution,
     )
     package = importlib.import_module("ucm")
     package_paths = getattr(package, "__path__", None)

@@ -607,8 +607,10 @@ def _expected_pypi_projects(state: dict[str, Any]) -> list[dict[str, Any]]:
 
     meta = _mapping(state.get("meta_package"), "release state meta package")
     meta_digest = meta.get("sha256")
+    meta_distribution = meta.get("distribution")
     if (
-        meta.get("distribution") != "uc-manager"
+        not isinstance(meta_distribution, str)
+        or not meta_distribution
         or meta.get("version") != version
         or not isinstance(meta.get("filename"), str)
         or not isinstance(meta_digest, str)
@@ -618,7 +620,7 @@ def _expected_pypi_projects(state: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         *backends,
         {
-            "project": "uc-manager",
+            "project": meta_distribution,
             "version": version,
             "role": "meta",
             "files": [{"filename": meta["filename"], "sha256": meta_digest}],
@@ -1175,10 +1177,23 @@ def render_notes(
     if pypi_receipt is not None and release["status"] == "complete":
         receipt = _mapping(pypi_receipt, "release manifest PyPI receipt")
         extras = _mapping(receipt.get("extras"), "release manifest PyPI extras")
+        projects = _list(receipt.get("projects"), "release manifest PyPI projects")
+        meta_projects = [
+            _mapping(project, "release manifest PyPI project")
+            for project in projects
+            if isinstance(project, dict) and project.get("role") == "meta"
+        ]
         version = str(receipt.get("version", ""))
         target = receipt.get("target")
-        if not version or not extras or target not in {"pypi", "testpypi"}:
+        if (
+            not version
+            or not extras
+            or target not in {"pypi", "testpypi"}
+            or len(meta_projects) != 1
+            or not isinstance(meta_projects[0].get("project"), str)
+        ):
             raise ValueError("Release notes require complete PyPI coordinates")
+        meta_project = str(meta_projects[0]["project"])
         heading = "PyPI" if target == "pypi" else "TestPyPI"
         lines.extend(
             [
@@ -1190,12 +1205,12 @@ def render_notes(
             ]
         )
         for extra in sorted(extras):
-            command = f"pip install 'uc-manager[{extra}]=={version}'"
+            command = f"pip install '{meta_project}[{extra}]=={version}'"
             if target == "testpypi":
                 command = (
                     "pip install --index-url https://test.pypi.org/simple/ "
                     "--extra-index-url https://pypi.org/simple/ "
-                    f"'uc-manager[{extra}]=={version}'"
+                    f"'{meta_project}[{extra}]=={version}'"
                 )
             lines.append(f"- `{command}`")
         lines.append("")

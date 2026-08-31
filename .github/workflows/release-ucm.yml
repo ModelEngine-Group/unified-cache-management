@@ -1325,6 +1325,10 @@ jobs:
         with:
           name: ucm-wheel-${{ matrix.id }}-run-${{ github.run_id }}
           path: input/wheel
+      - uses: ./.github/actions/download-artifact-retry
+        with:
+          name: ucm-pypi-receipt-run-${{ github.run_id }}
+          path: input/pypi
       - name: Install one extra from the planned Python index
         env:
           RUNTIME_IMAGE: ${{ matrix.runtime_image }}
@@ -1338,41 +1342,98 @@ jobs:
             input/wheel/wheel-result.json)"
           deferred_external_libraries="$(jq -c '.deferred_external_libraries' \
             input/wheel/wheel-result.json)"
-          index_url="$(jq -er '.publish.pypi.simple_index' \
-            input/plan/release-plan.json)"
           dependency_index="$(jq -er '.publish.pypi.dependency_index' \
             input/plan/release-plan.json)"
+          json_api="$(jq -er '.publish.pypi.json_api' \
+            input/plan/release-plan.json)"
+          pypi_target="$(jq -er '.publish.pypi.target' \
+            input/plan/release-plan.json)"
+          meta_distribution="$(jq -er '.meta_package.distribution' \
+            input/plan/release-plan.json)"
+          receipt=input/pypi/pypi-receipt.json
+          test "$(jq -r '.status' "${receipt}")" = complete
+          test "$(jq -r '.target' "${receipt}")" = "${pypi_target}"
+          test "$(jq -r '.version' "${receipt}")" = "${UCM_VERSION}"
+          backend_filename="$(jq -er '.filename' input/wheel/wheel-result.json)"
+          read -r meta_filename meta_sha256 < <(jq -er \
+            --arg project "${meta_distribution}" '
+              [.projects[] | select(.project == $project and .role == "meta") |
+               .files[]] | if length == 1 then
+               [.[0].filename, (.[0].sha256 | sub("^sha256:"; ""))] | @tsv
+               else error("meta receipt file is ambiguous") end
+            ' "${receipt}")
+          read -r receipt_backend_filename backend_sha256 < <(jq -er \
+            --arg project "${BACKEND_DISTRIBUTION}" \
+            --arg filename "${backend_filename}" '
+              [.projects[] | select(.project == $project and .role == "backend") |
+               .files[] | select(.filename == $filename)] |
+               if length == 1 then
+               [.[0].filename, (.[0].sha256 | sub("^sha256:"; ""))] | @tsv
+               else error("backend receipt file is ambiguous") end
+            ' "${receipt}")
+          test "${receipt_backend_filename}" = "${backend_filename}"
+          resolve_index_file() {
+            local project="$1"
+            local filename="$2"
+            local expected_sha256="$3"
+            local output="$4"
+            local document url actual_sha256 expected_host
+            document="$(curl -fsSL --retry 3 \
+              "${json_api}${project}/${UCM_VERSION}/json?ucm_install=${GITHUB_RUN_ATTEMPT}")"
+            url="$(jq -er --arg filename "${filename}" \
+              --arg sha256 "${expected_sha256}" '
+                [.urls[] | select(
+                  .filename == $filename and .packagetype == "bdist_wheel" and
+                  .yanked == false and .digests.sha256 == $sha256)] |
+                if length == 1 then .[0].url
+                else error("index file is missing or ambiguous") end
+              ' <<<"${document}")"
+            case "${pypi_target}" in
+              pypi) expected_host="https://files.pythonhosted.org/" ;;
+              testpypi) expected_host="https://test-files.pythonhosted.org/" ;;
+              *) echo "Unsupported Python index target" >&2; return 2 ;;
+            esac
+            case "${url}" in
+              "${expected_host}"*) ;;
+              *) echo "Python index returned an unexpected file host" >&2; return 2 ;;
+            esac
+            test "${filename}" = "$(basename "${filename}")"
+            curl -fsSL --retry 3 --output "${output}" "${url}"
+            actual_sha256="$(sha256sum "${output}" | cut -d' ' -f1)"
+            test "${actual_sha256}" = "${expected_sha256}"
+          }
+          meta_wheel="/tmp/${meta_filename}"
+          backend_wheel="/tmp/${backend_filename}"
+          resolve_index_file "${meta_distribution}" "${meta_filename}" \
+            "${meta_sha256}" "${meta_wheel}"
+          resolve_index_file "${BACKEND_DISTRIBUTION}" "${backend_filename}" \
+            "${backend_sha256}" "${backend_wheel}"
           docker pull "${RUNTIME_IMAGE}"
           docker run --rm \
             --entrypoint bash \
             -e PLATFORM="${PLATFORM_ARG}" \
             -e UCM_EXTRA="${UCM_EXTRA}" \
             -e UCM_VERSION="${UCM_VERSION}" \
-            -e UCM_INDEX_URL="${index_url}" \
             -e UCM_DEPENDENCY_INDEX="${dependency_index}" \
+            -e UCM_META_DISTRIBUTION="${meta_distribution}" \
+            -e UCM_META_WHEEL="${meta_wheel}" \
+            -e UCM_BACKEND_WHEEL="${backend_wheel}" \
             -e EXPECTED_UCM_VERSION="${UCM_VERSION}" \
             -e EXPECTED_META_VERSION="${UCM_VERSION}" \
+            -e EXPECTED_META_DISTRIBUTION="${meta_distribution}" \
             -e EXPECTED_BACKEND_DISTRIBUTION="${BACKEND_DISTRIBUTION}" \
             -e EXPECTED_EXTERNAL_LIBRARIES="${external_libraries}" \
             -e DEFERRED_EXTERNAL_LIBRARIES="${deferred_external_libraries}" \
+            -v "${meta_wheel}:${meta_wheel}:ro" \
+            -v "${backend_wheel}:${backend_wheel}:ro" \
             -v "${PWD}/.github/release/validate_wheel_runtime.py:/tmp/validate_wheel_runtime.py:ro" \
             "${RUNTIME_IMAGE}" -c '
               set -euo pipefail
               python3 -m venv /tmp/ucm-pypi-venv
               . /tmp/ucm-pypi-venv/bin/activate
-              index_args=(--index-url "${UCM_INDEX_URL}")
-              if [ "${UCM_DEPENDENCY_INDEX}" != "${UCM_INDEX_URL}" ]; then
-                index_args+=(--extra-index-url "${UCM_DEPENDENCY_INDEX}")
-              fi
-              for install_attempt in {1..30}; do
-                if python -m pip install --disable-pip-version-check --no-cache-dir \
-                  "${index_args[@]}" \
-                  "uc-manager[${UCM_EXTRA}]==${UCM_VERSION}"; then
-                  break
-                fi
-                test "${install_attempt}" -lt 30
-                sleep 10
-              done
+              python -m pip install --disable-pip-version-check --no-cache-dir \
+                --index-url "${UCM_DEPENDENCY_INDEX}" \
+                "${UCM_META_WHEEL}[${UCM_EXTRA}]" "${UCM_BACKEND_WHEEL}"
               python /tmp/validate_wheel_runtime.py
             '
 

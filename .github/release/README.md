@@ -147,7 +147,17 @@ when both Docker Hub credentials exist; absent Fork credentials remain
 `scope-skipped`, while a Profile-disabled channel stays disabled.
 Missing backend Wheels are uploaded and read back first, the meta Wheel is
 uploaded last, and exact extras metadata plus all filenames, versions, and
-SHA256 digests are persisted in `pypi-receipt.json`.
+SHA256 digests are persisted in `pypi-receipt.json`. Fresh-environment install
+validation downloads the exact receipt-bound meta/backend URLs, verifies their
+SHA256 digests, and uses production PyPI only for ordinary dependencies; index
+ordering never chooses the UCM distributions.
+
+Python distribution names are repository-owned and deterministic. The official
+repository publishes canonical `uc-manager*` names. A Fork always prefixes the
+same family with its losslessly normalized GitHub owner, independent of whether
+credentials are present. For example, `SuperMarioYL` builds
+`supermarioyl-uc-manager` and `supermarioyl-uc-manager-cuda-cu130`. The Python
+import remains `ucm`.
 
 ## Fork preview setup
 
@@ -172,7 +182,7 @@ See [GitHub's Actions settings guide](https://docs.github.com/en/repositories/ma
 
 | Name | GitHub kind | Required | Value |
 | --- | --- | --- | --- |
-| `TEST_PYPI_API_TOKEN` | Secret (environment recommended; repository supported) | TestPyPI only | A TestPyPI API token with permission to publish the planned `uc-manager*` projects. TestPyPI accounts and tokens are separate from production PyPI; follow the [TestPyPI guide](https://packaging.python.org/en/latest/guides/using-testpypi/). |
+| `TEST_PYPI_API_TOKEN` | Secret (environment recommended; repository supported) | TestPyPI only | An account-scoped TestPyPI API token that can create or update the Fork-owned `<owner>-uc-manager*` projects. TestPyPI accounts and tokens are separate from production PyPI; follow the [TestPyPI guide](https://packaging.python.org/en/latest/guides/using-testpypi/). |
 | `DOCKERHUB_USERNAME` | Environment Secret | Docker Hub only | The Docker ID whose token can write to the selected personal or organization namespace. |
 | `DOCKERHUB_TOKEN` | Environment Secret | Docker Hub only | A Docker Hub personal access token with Read & Write permission; also grant Delete when retention or `cleanup-ucm-release.yml` must remove Docker Hub tags. Do not use the account password; follow the [Docker access-token guide](https://docs.docker.com/security/access-tokens/). |
 | `FORK_DOCKERHUB_NAMESPACE` | Variable | Optional | Full namespace such as `docker.io/my-org`, without a trailing slash. If omitted, the pipeline uses `docker.io/<DOCKERHUB_USERNAME>`. |
@@ -193,7 +203,9 @@ gh variable set FORK_DOCKERHUB_NAMESPACE --env fork-preview \
 The TestPyPI endpoints are fixed by policy: upload uses
 `https://test.pypi.org/legacy/`, package installation uses
 `https://test.pypi.org/simple/`, and normal Python dependencies still come from
-`https://pypi.org/simple/`. No endpoint Variable is required.
+`https://pypi.org/simple/`. No endpoint or distribution-prefix Variable is
+required; the prefix is derived from `github.repository_owner` through the
+frozen repository identity.
 
 Keep the production `PYPI_API_TOKEN` only in the official
 `release-production` environment. Do not copy it into `fork-preview`.
@@ -249,8 +261,9 @@ If only one credential set was configured, the other channel should remain
 `.publish.pypi.target == "testpypi"` and the configured Docker Hub namespace.
 After completion, verify all of the following:
 
-- each backend project and the final empty `uc-manager` meta package are visible
-  on TestPyPI, and the fresh-environment extra installation job passed;
+- each owner-prefixed backend project and the final empty owner-prefixed meta
+  package are visible on TestPyPI, and the fresh-environment extra installation
+  job passed;
 - Docker Hub member tags and multi-architecture indexes exist under the planned
   namespace and match the digests recorded in `release-manifest.json`;
 - the Fork GitHub Release still contains backend Wheels, the Chart, config,
@@ -264,10 +277,10 @@ After completion, verify all of the following:
   `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` together.
 - Preflight rejects the Docker Hub namespace: use exactly
   `docker.io/<account-or-org>` with no repository name or trailing slash.
-- TestPyPI returns an authorization error: use the complete TestPyPI token,
-  including its prefix, and verify that it can publish every planned
-  `uc-manager*` project. Production PyPI ownership does not grant TestPyPI
-  ownership.
+- TestPyPI returns an authorization error: use the complete account-scoped
+  TestPyPI token, including its prefix, and verify that it can publish every
+  planned `<owner>-uc-manager*` project. Production PyPI ownership does not
+  grant TestPyPI ownership.
 - TestPyPI reports an existing filename with different bytes: do not reuse or
   move the Tag; create a new Draft sequence so the derived `.devN` version is
   new.

@@ -46,6 +46,8 @@ def _load_guard(monkeypatch, names: list[str]):
         "uc-manager-cann851-a2",
         "uc_manager_cann910_a3",
         "uc-manager-cann910-a3-mc0311post1",
+        "supermarioyl-uc-manager-cuda-cu130",
+        "supermarioyl_uc_manager_cann901_a2",
     ],
 )
 def test_versioned_backend_distribution_names_are_recognized(monkeypatch, name) -> None:
@@ -63,6 +65,22 @@ def test_multiple_versioned_backend_distributions_are_rejected(monkeypatch) -> N
 
 
 def test_empty_meta_distribution_is_not_counted_as_a_backend(monkeypatch) -> None:
-    module = _load_guard(monkeypatch, ["uc-manager", "uc-manager-cuda-cu130"])
+    module = _load_guard(
+        monkeypatch,
+        [
+            "uc-manager",
+            "uc-manager-cuda-cu130",
+            "supermarioyl-uc-manager",
+        ],
+    )
 
     assert not module._is_backend_distribution("uc-manager")
+    assert not module._is_backend_distribution("supermarioyl-uc-manager")
+
+
+def test_prefixed_and_canonical_backends_cannot_coexist(monkeypatch) -> None:
+    with pytest.raises(ImportError, match="Multiple UCM backend distributions"):
+        _load_guard(
+            monkeypatch,
+            ["uc-manager-cuda-cu129", "supermarioyl-uc-manager-cuda-cu129"],
+        )

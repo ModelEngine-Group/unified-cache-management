@@ -276,13 +276,31 @@ def test_artifact_state_includes_exact_meta_wheel(tmp_path: Path) -> None:
     assert any(filename.endswith("py3-none-any.whl") for _, filename in checksums)
 
 
-def test_enabled_pypi_requires_and_records_complete_receipt(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("prefix", "target", "repository_url"),
+    [
+        ("", "pypi", "https://upload.pypi.org/legacy/"),
+        ("supermarioyl-", "testpypi", "https://test.pypi.org/legacy/"),
+    ],
+)
+def test_enabled_pypi_requires_and_records_complete_receipt(
+    tmp_path: Path, prefix: str, target: str, repository_url: str
+) -> None:
+    filename_prefix = prefix.replace("-", "_")
+    meta_distribution = f"{prefix}uc-manager"
+    backend_distribution = f"{prefix}uc-manager-cuda-cu129"
+    meta_filename = f"{filename_prefix}uc_manager-0.7.62rc1-py3-none-any.whl"
+    backend_filename = (
+        f"{filename_prefix}uc_manager_cuda_cu129-0.7.62rc1-"
+        "cp312-cp312-manylinux_2_28_x86_64.whl"
+    )
+    extra_requirement = f"{backend_distribution}==0.7.62rc1"
     manifest = {
         "publish": {
             "pypi": {
                 "enabled": True,
-                "target": "pypi",
-                "index": "https://upload.pypi.org/legacy/",
+                "target": target,
+                "index": repository_url,
             }
         },
         "release": {
@@ -291,17 +309,17 @@ def test_enabled_pypi_requires_and_records_complete_receipt(tmp_path: Path) -> N
             "status": "artifacts-ready",
         },
         "meta_package": {
-            "distribution": "uc-manager",
+            "distribution": meta_distribution,
             "version": "0.7.62rc1",
-            "filename": "uc_manager-0.7.62rc1-py3-none-any.whl",
+            "filename": meta_filename,
             "sha256": "sha256:" + "b" * 64,
-            "extras": {"cu129": "uc-manager-cuda-cu129==0.7.62rc1"},
+            "extras": {"cu129": extra_requirement},
         },
         "wheels": [
             {
-                "distribution": "uc-manager-cuda-cu129",
+                "distribution": backend_distribution,
                 "version": "0.7.62rc1",
-                "filename": "uc_manager_cuda_cu129-0.7.62rc1-cp312-cp312-manylinux_2_28_x86_64.whl",
+                "filename": backend_filename,
                 "sha256": "a" * 64,
             }
         ],
@@ -340,33 +358,33 @@ def test_enabled_pypi_requires_and_records_complete_receipt(tmp_path: Path) -> N
         "schema_version": 2,
         "status": "complete",
         "version": "0.7.62rc1",
-        "target": "pypi",
-        "repository_url": "https://upload.pypi.org/legacy/",
+        "target": target,
+        "repository_url": repository_url,
         "projects": [
             {
-                "project": "uc-manager-cuda-cu129",
+                "project": backend_distribution,
                 "version": "0.7.62rc1",
                 "role": "backend",
                 "files": [
                     {
-                        "filename": "uc_manager_cuda_cu129-0.7.62rc1-cp312-cp312-manylinux_2_28_x86_64.whl",
+                        "filename": backend_filename,
                         "sha256": "sha256:" + "a" * 64,
                     }
                 ],
             },
             {
-                "project": "uc-manager",
+                "project": meta_distribution,
                 "version": "0.7.62rc1",
                 "role": "meta",
                 "files": [
                     {
-                        "filename": "uc_manager-0.7.62rc1-py3-none-any.whl",
+                        "filename": meta_filename,
                         "sha256": "sha256:" + "b" * 64,
                     }
                 ],
             },
         ],
-        "extras": {"cu129": "uc-manager-cuda-cu129==0.7.62rc1"},
+        "extras": {"cu129": extra_requirement},
     }
     (tmp_path / "pypi-receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
 
@@ -899,6 +917,17 @@ def test_release_notes_split_products_and_aggregate_wheel_capabilities() -> None
                 "targets": [{"channel": "ghcr"}],
             },
         ],
+        "pypi": {
+            "target": "testpypi",
+            "version": "1.0.0",
+            "extras": {"cu130": "supermarioyl-uc-manager-cuda-cu130==1.0.0"},
+            "projects": [
+                {
+                    "project": "supermarioyl-uc-manager",
+                    "role": "meta",
+                }
+            ],
+        },
     }
     asset_urls = _asset_urls(manifest)
 
@@ -930,6 +959,11 @@ def test_release_notes_split_products_and_aggregate_wheel_capabilities() -> None
     assert "2 image families / 4 architecture members" in notes
     assert "2 image families / 3 architecture members" in notes
     assert " tags / " not in notes
+    assert (
+        "pip install --index-url https://test.pypi.org/simple/ "
+        "--extra-index-url https://pypi.org/simple/ "
+        "'supermarioyl-uc-manager[cu130]==1.0.0'"
+    ) in notes
 
     draft_notes = release.render_notes(
         manifest,

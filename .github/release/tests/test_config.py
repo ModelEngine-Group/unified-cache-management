@@ -344,7 +344,7 @@ def test_version_ini_is_the_runtime_selector_authority() -> None:
     assert {
         product["id"]: product["runtime_selectors"] for product in resolved["products"]
     } == resolved["runtime_selectors"]
-    assert resolved["ucm_base_version"] == "0.9.5"
+    assert resolved["ucm_base_version"] == "0.9.6"
     assert resolved["version_authority_sha256"].startswith("sha256:")
 
 
@@ -484,6 +484,7 @@ def test_policy_resolve_selects_one_profile_and_normalizes_publication(
         "pypi": {
             "target": "testpypi",
             **policy.PYPI_TARGETS["testpypi"],
+            "distribution_prefix": "release-org-",
             "requested": shared_requested,
             "enabled": False,
             "disposition": "scope-skipped" if shared_requested else "disabled",
@@ -559,6 +560,7 @@ def test_fork_scope_disables_shared_external_channels_only(tmp_path: Path) -> No
     assert official["publish"]["pypi"] == {
         "target": "pypi",
         **policy.PYPI_TARGETS["pypi"],
+        "distribution_prefix": "",
         "requested": True,
         "enabled": True,
         "disposition": "publish",
@@ -571,6 +573,7 @@ def test_fork_scope_disables_shared_external_channels_only(tmp_path: Path) -> No
     assert fork["release_profile"]["publish"]["pypi"] is True
     assert fork["release_profile"]["publish"]["dockerhub"] is True
     assert fork["publish"]["pypi"]["requested"] is True
+    assert fork["publish"]["pypi"]["distribution_prefix"] == "supermarioyl-"
     assert fork["publish"]["pypi"]["enabled"] is False
     assert fork["publish"]["pypi"]["disposition"] == "scope-skipped"
     assert fork["publish"]["dockerhub"]["requested"] is True
@@ -599,6 +602,7 @@ def test_fork_credentials_enable_only_requested_test_targets() -> None:
     )
 
     assert draft["publish"]["pypi"]["target"] == "testpypi"
+    assert draft["publish"]["pypi"]["distribution_prefix"] == "supermarioyl-"
     assert draft["publish"]["pypi"]["enabled"] is True
     assert draft["publish"]["dockerhub"] == {
         "namespace": "docker.io/ucm-debug",
@@ -624,6 +628,34 @@ def test_official_repository_identity_is_case_insensitive() -> None:
     assert policy.publication_identity(
         "modelengine-group/UNIFIED-CACHE-MANAGEMENT"
     ) == ("official", "")
+    assert (
+        policy.pypi_distribution_prefix("modelengine-group/UNIFIED-CACHE-MANAGEMENT")
+        == ""
+    )
+
+
+@pytest.mark.parametrize(
+    "repository",
+    [
+        "owner/repo/extra",
+        "foo_bar/repo",
+        "foo.bar/repo",
+        "foo--bar/repo",
+        "foo-uc-manager-cuda/repo",
+        "foo-uc-manager-cann901-a2/repo",
+        "é/repo",
+        "owner\nname/repo",
+        "owner/repo\nname",
+        f"{'a' * 40}/repo",
+    ],
+)
+def test_python_distribution_prefix_rejects_lossy_or_invalid_owners(
+    repository: str,
+) -> None:
+    policy = importlib.import_module("ucm_release.policy")
+
+    with pytest.raises(ValueError):
+        policy.pypi_distribution_prefix(repository)
 
 
 def test_builder_discovery_defaults_to_the_platform_policy() -> None:

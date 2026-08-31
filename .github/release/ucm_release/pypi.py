@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -136,22 +137,23 @@ def _authorized_target(plan: Mapping[str, Any]) -> dict[str, str]:
     target = pypi_policy.get("target")
     if not isinstance(repository, str) or pypi_policy.get("enabled") is not True:
         raise ValueError("Python index publication requires an enabled release plan")
-    authorized = (
-        scope == "official"
-        and repository.casefold() == release_policy.OFFICIAL_REPOSITORY.casefold()
-        and target == "pypi"
-    ) or (
-        scope == "fork"
-        and repository.casefold() != release_policy.OFFICIAL_REPOSITORY.casefold()
-        and target == "testpypi"
-    )
-    if not authorized:
+    expected_scope, _ = release_policy.publication_identity(repository)
+    expected_target = "pypi" if expected_scope == "official" else "testpypi"
+    if scope != expected_scope or target != expected_target:
         raise ValueError("Python index target does not match publication scope")
+    distribution_prefix = pypi_policy.get("distribution_prefix")
+    expected_prefix = release_policy.pypi_distribution_prefix(repository)
+    if distribution_prefix != expected_prefix:
+        raise ValueError("Python distribution prefix does not match repository owner")
     expected = release_policy.PYPI_TARGETS[str(target)]
     observed = {field: pypi_policy.get(field) for field in expected}
     if observed != expected:
         raise ValueError("Python index endpoints differ from the authorized target")
-    return {"target": str(target), **expected}
+    return {
+        "target": str(target),
+        "distribution_prefix": expected_prefix,
+        **expected,
+    }
 
 
 def build_publication(
@@ -164,6 +166,10 @@ def build_publication(
     if plan.get("kind") != "ucm-release-plan":
         raise ValueError("PyPI publication requires a release plan")
     target = _authorized_target(plan)
+    meta_project_name = f"{target['distribution_prefix']}uc-manager"
+    if len(meta_project_name) > release_policy.MAX_PYPI_DISTRIBUTION_LENGTH:
+        raise ValueError("meta Python distribution exceeds the UCM length limit")
+    backend_project_prefix = f"{meta_project_name}-"
     version = _version(plan.get("version"), "release version")
     raw_tasks = plan.get("wheels")
     if not isinstance(raw_tasks, list) or not raw_tasks:
@@ -202,13 +208,25 @@ def build_publication(
     for task_id in sorted(tasks):
         task = tasks[task_id]
         result = results[task_id]
-        project = canonicalize_name(str(task.get("dist_name", "")))
+        raw_project = task.get("dist_name")
+        if not isinstance(raw_project, str):
+            raise ValueError(f"Wheel task {task_id!r} has invalid coordinates")
+        project = str(canonicalize_name(raw_project, validate=True))
         filename = result.get("filename")
-        if not project.startswith("uc-manager-") or not isinstance(filename, str):
+        suffix = project.removeprefix(backend_project_prefix)
+        if (
+            raw_project != project
+            or len(project) > release_policy.MAX_PYPI_DISTRIBUTION_LENGTH
+            or not project.startswith(backend_project_prefix)
+            or re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", suffix) is None
+            or not isinstance(filename, str)
+        ):
             raise ValueError(f"Wheel task {task_id!r} has invalid coordinates")
         file_project, file_version = _wheel_coordinates(filename, f"Wheel {task_id}")
+        result_distribution = result.get("distribution")
         if (
-            canonicalize_name(str(result.get("distribution", ""))) != project
+            not isinstance(result_distribution, str)
+            or result_distribution != project
             or _version(result.get("version"), f"Wheel {task_id} version") != version
             or file_project != project
             or file_version != version
@@ -244,11 +262,11 @@ def build_publication(
     if (
         meta.get("kind") != "ucm-meta-result"
         or meta.get("schema_version") != 1
-        or planned_meta.get("distribution") != "uc-manager"
+        or planned_meta.get("distribution") != meta_project_name
         or planned_meta.get("version") != version
-        or meta.get("distribution") != "uc-manager"
+        or meta.get("distribution") != meta_project_name
         or meta.get("version") != version
-        or meta_project != "uc-manager"
+        or meta_project != meta_project_name
         or meta_version != version
     ):
         raise ValueError("meta Wheel result has unexpected coordinates")
@@ -258,7 +276,7 @@ def build_publication(
     if meta.get("extras") != extras:
         raise ValueError("meta Wheel extras differ from the release plan")
     meta_project_record = {
-        "project": "uc-manager",
+        "project": meta_project_name,
         "version": version,
         "role": "meta",
         "files": [

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from packaging.requirements import InvalidRequirement, Requirement
-from packaging.utils import canonicalize_name
+from packaging.utils import InvalidName, canonicalize_name
 from packaging.version import InvalidVersion, Version
 
 from . import core
@@ -42,6 +42,7 @@ _MATRIX_LIMITS = {
 _SCAN_LIMITS = {"max_tags_per_repository": 1024, "max_selected_upstreams": 64}
 RELEASE_TYPES = ("stable", "prerelease", "draft", "nightly")
 PUBLISH_CHANNELS = core.PUBLISH_CHANNELS
+MAX_PYPI_DISTRIBUTION_LENGTH = 128
 PYPI_TARGETS = {
     "pypi": {
         "index": "https://upload.pypi.org/legacy/",
@@ -56,11 +57,20 @@ PYPI_TARGETS = {
         "dependency_index": "https://pypi.org/simple/",
     },
 }
+_PYPI_BACKEND_DISTRIBUTION = re.compile(
+    r"(?:[a-z0-9]+-)*uc-manager-"
+    r"(?:cuda(?:-[a-z0-9]+)*|cann(?:[0-9]+)?-a[0-9]+(?:-[a-z0-9]+)*)"
+)
 
 
 def publication_identity(repository: str) -> tuple[str, str]:
     """Derive immutable publication scope and Runtime tag prefix."""
 
+    if (
+        repository.count("/") != 1
+        or re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None
+    ):
+        raise ValueError("repository identity must be owner/name")
     parts = repository.split("/", 1)
     if len(parts) != 2 or not all(parts):
         raise ValueError("repository identity must be owner/name")
@@ -71,6 +81,28 @@ def publication_identity(repository: str) -> tuple[str, str]:
         owner.lower(), max_length=len(owner)
     )
     return "fork", f"{owner_component}-"
+
+
+def pypi_distribution_prefix(repository: str) -> str:
+    """Derive the lossless PEP 503 namespace for Fork Python distributions."""
+
+    publication_scope, _ = publication_identity(repository)
+    if publication_scope == "official":
+        return ""
+    owner = repository.split("/", 1)[0]
+    if len(owner) > 39:
+        raise ValueError("repository owner exceeds the GitHub username limit")
+    try:
+        normalized = str(canonicalize_name(owner, validate=True))
+    except InvalidName as error:
+        raise ValueError(
+            "repository owner is not a valid Python project prefix"
+        ) from error
+    if normalized != owner.casefold():
+        raise ValueError("repository owner requires lossy Python name normalization")
+    if _PYPI_BACKEND_DISTRIBUTION.fullmatch(f"{normalized}-uc-manager"):
+        raise ValueError("repository owner makes the UCM meta name ambiguous")
+    return f"{normalized}-"
 
 
 def _companion_path(release_path: Path, explicit: Path | None, default: Path) -> Path:
@@ -358,6 +390,9 @@ def resolve(
         publication_scope,
         fork_test_pypi=fork_test_pypi,
         fork_dockerhub_namespace=fork_dockerhub_namespace,
+    )
+    normalized_publish["pypi"]["distribution_prefix"] = pypi_distribution_prefix(
+        resolved_repository
     )
     merged["publish"] = normalized_publish
     merged["release_type"] = release_type

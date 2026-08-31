@@ -7,6 +7,7 @@ import copy
 import csv
 import hashlib
 import importlib
+import importlib.metadata
 import io
 import os
 import subprocess
@@ -29,7 +30,10 @@ VERSION = "0.9.1"
 def _plan() -> dict[str, object]:
     return {
         "kind": "ucm-release-plan",
+        "repository": "ModelEngine-Group/unified-cache-management",
+        "publication_scope": "official",
         "version": VERSION,
+        "publish": {"pypi": {"distribution_prefix": ""}},
         "meta_package": {
             "distribution": "uc-manager",
             "version": VERSION,
@@ -61,6 +65,22 @@ def _plan() -> dict[str, object]:
     }
 
 
+def _fork_plan() -> dict[str, object]:
+    plan = copy.deepcopy(_plan())
+    plan["repository"] = "SuperMarioYL/unified-cache-management"
+    plan["publication_scope"] = "fork"
+    plan["publish"]["pypi"]["distribution_prefix"] = "supermarioyl-"
+    for wheel in plan["wheels"]:
+        wheel["dist_name"] = f"supermarioyl-{wheel['dist_name']}"
+    meta_package = plan["meta_package"]
+    meta_package["distribution"] = "supermarioyl-uc-manager"
+    meta_package["extras"] = {
+        extra: f"supermarioyl-{requirement}"
+        for extra, requirement in meta_package["extras"].items()
+    }
+    return plan
+
+
 def _record(members: dict[str, bytes], record_name: str) -> bytes:
     rows: list[list[str]] = []
     for name in sorted(members):
@@ -83,16 +103,18 @@ def _write_wheel(
     version: str = VERSION,
     extras: dict[str, str] | None = None,
     payload: dict[str, bytes] | None = None,
+    distribution: str = "uc-manager",
 ) -> None:
     extras = extras or {
         "cann901-a2": f"uc-manager-cann901-a2=={version}",
         "cu130": f"uc-manager-cuda-cu130=={version}",
     }
-    dist_info = f"uc_manager-{version}.dist-info"
+    filename_distribution = distribution.replace("-", "_")
+    dist_info = f"{filename_distribution}-{version}.dist-info"
     metadata = "\n".join(
         (
             "Metadata-Version: 2.4",
-            "Name: uc-manager",
+            f"Name: {distribution}",
             f"Version: {version}",
             "Requires-Python: >=3.10",
             *(f"Provides-Extra: {extra}" for extra in sorted(extras)),
@@ -207,6 +229,99 @@ def test_materialized_source_build_is_reproducible(tmp_path: Path) -> None:
     assert wheels[0].read_bytes() == wheels[1].read_bytes()
 
 
+def test_fork_meta_source_and_wheel_use_the_owner_namespace(tmp_path: Path) -> None:
+    plan = _fork_plan()
+    source = tmp_path / "source"
+    project_path = meta.materialize_meta_source(plan, source)
+    document = tomllib.loads(project_path.read_text(encoding="utf-8"))
+
+    assert document["project"]["name"] == "supermarioyl-uc-manager"
+    assert document["project"]["optional-dependencies"] == {
+        "cann901-a2": [f"supermarioyl-uc-manager-cann901-a2=={VERSION}"],
+        "cu130": [f"supermarioyl-uc-manager-cuda-cu130=={VERSION}"],
+    }
+
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir()
+    wheel_path = _build_wheel(source, wheelhouse)
+    result = meta.record_meta_wheel(plan, wheel_path)
+
+    assert wheel_path.name == (f"supermarioyl_uc_manager-{VERSION}-py3-none-any.whl")
+    assert result["distribution"] == "supermarioyl-uc-manager"
+    assert all(
+        requirement.startswith("supermarioyl-uc-manager-")
+        for requirement in result["requires_dist"]
+    )
+
+
+def test_fork_meta_extra_is_satisfied_by_exact_local_wheels(tmp_path: Path) -> None:
+    plan = _fork_plan()
+    meta_source = tmp_path / "meta-source"
+    meta_wheelhouse = tmp_path / "meta-wheelhouse"
+    meta_wheelhouse.mkdir()
+    meta.materialize_meta_source(plan, meta_source)
+    meta_wheel = _build_wheel(meta_source, meta_wheelhouse)
+
+    backend_source = tmp_path / "backend-source"
+    backend_source.mkdir()
+    (backend_source / "pyproject.toml").write_text(
+        "\n".join(
+            (
+                "[build-system]",
+                'requires = ["setuptools==75.8.2", "wheel==0.45.1"]',
+                'build-backend = "setuptools.build_meta"',
+                "",
+                "[project]",
+                'name = "supermarioyl-uc-manager-cuda-cu130"',
+                f'version = "{VERSION}"',
+                "",
+                "[tool.setuptools]",
+                "packages = []",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    backend_wheelhouse = tmp_path / "backend-wheelhouse"
+    backend_wheelhouse.mkdir()
+    backend_wheel = _build_wheel(backend_source, backend_wheelhouse)
+    target = tmp_path / "installed"
+    installer_venv = tmp_path / "installer-venv"
+    subprocess.run(
+        [sys.executable, "-m", "venv", str(installer_venv)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    subprocess.run(
+        [
+            str(installer_venv / "bin" / "python"),
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--no-index",
+            "--target",
+            str(target),
+            f"{meta_wheel}[cu130]",
+            str(backend_wheel),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    installed = {
+        distribution.metadata["Name"]: distribution.version
+        for distribution in importlib.metadata.distributions(path=[str(target)])
+    }
+    assert installed == {
+        "supermarioyl-uc-manager": VERSION,
+        "supermarioyl-uc-manager-cuda-cu130": VERSION,
+    }
+
+
 def test_release_workflow_uses_canonical_meta_source_date_epoch() -> None:
     workflow = (ROOT / ".github" / "workflows" / "release-ucm.yml").read_text(
         encoding="utf-8"
@@ -263,6 +378,14 @@ def test_meta_plan_rejects_swapped_extra_backends() -> None:
     )
 
     with pytest.raises(ValueError, match="must exactly match planned runtime variants"):
+        meta.validate_meta_package(plan)
+
+
+def test_meta_plan_rejects_repository_prefix_drift() -> None:
+    plan = _fork_plan()
+    plan["publish"]["pypi"]["distribution_prefix"] = "other-owner-"
+
+    with pytest.raises(ValueError, match="prefix differs"):
         meta.validate_meta_package(plan)
 
 

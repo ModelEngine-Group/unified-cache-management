@@ -19,13 +19,14 @@ from packaging.utils import (
 )
 from packaging.version import InvalidVersion, Version
 
-META_DISTRIBUTION = "uc-manager"
+from . import policy as release_policy
+
+META_BASE_DISTRIBUTION = "uc-manager"
 META_TAG = "py3-none-any"
 META_RESULT_KIND = "ucm-meta-result"
 META_RESULT_SCHEMA_VERSION = 1
 META_SOURCE_DATE_EPOCH = 315532800
 _EXTRA = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
-_BACKEND_DISTRIBUTION = re.compile(r"uc-manager-[a-z0-9]+(?:-[a-z0-9]+)*")
 
 
 def _mapping(value: object, context: str) -> Mapping[str, Any]:
@@ -51,7 +52,33 @@ def _canonical_version(value: object, context: str) -> str:
     return normalized
 
 
-def _canonical_exact_requirement(value: object, context: str) -> tuple[str, str]:
+def _distribution_family(plan: Mapping[str, Any]) -> tuple[str, str]:
+    repository = plan.get("repository")
+    if not isinstance(repository, str):
+        raise ValueError("release plan repository must be owner/name")
+    expected_scope, _ = release_policy.publication_identity(repository)
+    if plan.get("publication_scope") != expected_scope:
+        raise ValueError("release plan publication scope differs from repository")
+    publish = _mapping(plan.get("publish"), "release plan publish")
+    pypi = _mapping(publish.get("pypi"), "release plan publish.pypi")
+    prefix = pypi.get("distribution_prefix")
+    expected_prefix = release_policy.pypi_distribution_prefix(repository)
+    if prefix != expected_prefix:
+        raise ValueError(
+            "release plan Python distribution prefix differs from repository"
+        )
+    meta_distribution = f"{expected_prefix}{META_BASE_DISTRIBUTION}"
+    if (
+        len(meta_distribution) > release_policy.MAX_PYPI_DISTRIBUTION_LENGTH
+        or canonicalize_name(meta_distribution, validate=True) != meta_distribution
+    ):
+        raise ValueError("release plan meta distribution is not canonical")
+    return meta_distribution, f"{meta_distribution}-"
+
+
+def _canonical_exact_requirement(
+    value: object, context: str, backend_prefix: str
+) -> tuple[str, str]:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{context} must be one exact requirement")
     try:
@@ -69,8 +96,13 @@ def _canonical_exact_requirement(value: object, context: str) -> tuple[str, str]
     ):
         raise ValueError(f"{context} must pin one distribution with ==")
     name = canonicalize_name(requirement.name)
-    if _BACKEND_DISTRIBUTION.fullmatch(name) is None:
-        raise ValueError(f"{context} must reference a uc-manager backend distribution")
+    suffix = name.removeprefix(backend_prefix)
+    if (
+        len(name) > release_policy.MAX_PYPI_DISTRIBUTION_LENGTH
+        or not name.startswith(backend_prefix)
+        or re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", suffix) is None
+    ):
+        raise ValueError(f"{context} must reference a planned UCM backend family")
     version = _canonical_version(specifiers[0].version, f"{context} version")
     canonical = f"{name}=={version}"
     if value != canonical:
@@ -83,13 +115,14 @@ def validate_meta_package(plan: Mapping[str, Any]) -> dict[str, Any]:
     plan = _mapping(plan, "release plan")
     if plan.get("kind") != "ucm-release-plan":
         raise ValueError("meta package requires a ucm-release-plan")
+    expected_distribution, backend_prefix = _distribution_family(plan)
     plan_version = _canonical_version(plan.get("version"), "release plan version")
     meta = _mapping(plan.get("meta_package"), "release plan meta_package")
     expected_fields = {"distribution", "version", "extras"}
     if set(meta) != expected_fields:
         raise ValueError("release plan meta_package fields must be exact")
-    if meta.get("distribution") != META_DISTRIBUTION:
-        raise ValueError(f"meta package distribution must be {META_DISTRIBUTION!r}")
+    if meta.get("distribution") != expected_distribution:
+        raise ValueError(f"meta package distribution must be {expected_distribution!r}")
     version = _canonical_version(meta.get("version"), "meta package version")
     if version != plan_version:
         raise ValueError("meta package version must match release plan version")
@@ -107,7 +140,7 @@ def validate_meta_package(plan: Mapping[str, Any]) -> dict[str, Any]:
         ):
             raise ValueError(f"invalid canonical meta package extra: {raw_extra!r}")
         backend_name, requirement = _canonical_exact_requirement(
-            raw_requirement, f"meta package extra {raw_extra!r}"
+            raw_requirement, f"meta package extra {raw_extra!r}", backend_prefix
         )
         if requirement.removeprefix(f"{backend_name}==") != version:
             raise ValueError(f"meta package extra {raw_extra!r} must pin {version}")
@@ -129,7 +162,13 @@ def validate_meta_package(plan: Mapping[str, Any]) -> dict[str, Any]:
         canonical_distribution = canonicalize_name(distribution)
         if (
             distribution != canonical_distribution
-            or _BACKEND_DISTRIBUTION.fullmatch(distribution) is None
+            or len(distribution) > release_policy.MAX_PYPI_DISTRIBUTION_LENGTH
+            or not distribution.startswith(backend_prefix)
+            or re.fullmatch(
+                r"[a-z0-9]+(?:-[a-z0-9]+)*",
+                distribution.removeprefix(backend_prefix),
+            )
+            is None
         ):
             raise ValueError(f"release plan wheels[{index}].dist_name is invalid")
         wheel_version = _canonical_version(
@@ -167,7 +206,7 @@ def validate_meta_package(plan: Mapping[str, Any]) -> dict[str, Any]:
             f"missing={missing}, unexpected={unexpected}"
         )
     return {
-        "distribution": META_DISTRIBUTION,
+        "distribution": expected_distribution,
         "version": version,
         "extras": {key: normalized_extras[key] for key in sorted(normalized_extras)},
     }
@@ -198,7 +237,7 @@ def materialize_meta_source(plan: Mapping[str, Any], output_dir: Path) -> Path:
             'build-backend = "setuptools.build_meta"',
             "",
             "[project]",
-            f'name = "{META_DISTRIBUTION}"',
+            f'name = "{meta["distribution"]}"',
             f'version = "{meta["version"]}"',
             'description = "Unified Cache Management backend selector"',
             'requires-python = ">=3.10"',
@@ -224,7 +263,7 @@ def _single_header(message: Any, name: str, context: str) -> str:
     return values[0]
 
 
-def _canonical_metadata_requirement(value: str) -> str:
+def _canonical_metadata_requirement(value: str, backend_prefix: str) -> str:
     try:
         requirement = Requirement(value)
     except InvalidRequirement as error:
@@ -234,7 +273,7 @@ def _canonical_metadata_requirement(value: str) -> str:
     marker = requirement.marker
     requirement.marker = None
     _, canonical = _canonical_exact_requirement(
-        str(requirement), "meta Wheel METADATA Requires-Dist"
+        str(requirement), "meta Wheel METADATA Requires-Dist", backend_prefix
     )
     if marker is None:
         raise ValueError("meta Wheel dependencies must be guarded by one extra")
@@ -259,15 +298,16 @@ def record_meta_wheel(plan: Mapping[str, Any], wheel_path: Path) -> dict[str, An
         distribution, version, build, tags = parse_wheel_filename(wheel_path.name)
     except InvalidWheelFilename as error:
         raise ValueError(f"invalid meta Wheel filename: {wheel_path.name}") from error
-    if canonicalize_name(str(distribution)) != META_DISTRIBUTION:
-        raise ValueError("meta Wheel filename distribution must be uc-manager")
+    if canonicalize_name(str(distribution)) != meta["distribution"]:
+        raise ValueError("meta Wheel filename distribution does not match the plan")
     if str(version) != meta["version"]:
         raise ValueError("meta Wheel filename version does not match the plan")
     if build:
         raise ValueError("meta Wheel filename must not contain a build tag")
     if tags != frozenset({Tag("py3", "none", "any")}):
         raise ValueError(f"meta Wheel filename tag must be {META_TAG}")
-    expected_filename = f"uc_manager-{meta['version']}-{META_TAG}.whl"
+    filename_distribution = meta["distribution"].replace("-", "_")
+    expected_filename = f"{filename_distribution}-{meta['version']}-{META_TAG}.whl"
     if wheel_path.name != expected_filename:
         raise ValueError(f"meta Wheel filename must be exactly {expected_filename}")
 
@@ -279,7 +319,7 @@ def record_meta_wheel(plan: Mapping[str, Any], wheel_path: Path) -> dict[str, An
     if bad_member is not None:
         raise ValueError(f"meta Wheel CRC is corrupt: {bad_member}")
 
-    expected_dist_info = f"uc_manager-{meta['version']}.dist-info/"
+    expected_dist_info = f"{filename_distribution}-{meta['version']}.dist-info/"
     with zipfile.ZipFile(wheel_path) as archive:
         names = archive.namelist()
         if len(names) != len(set(names)):
@@ -307,7 +347,7 @@ def record_meta_wheel(plan: Mapping[str, Any], wheel_path: Path) -> dict[str, An
         metadata_distribution = _single_header(metadata, "Name", "METADATA")
         metadata_version = _single_header(metadata, "Version", "METADATA")
         requires_python = _single_header(metadata, "Requires-Python", "METADATA")
-        if metadata_distribution != META_DISTRIBUTION:
+        if metadata_distribution != meta["distribution"]:
             raise ValueError("meta Wheel METADATA distribution does not match the plan")
         if metadata_version != meta["version"]:
             raise ValueError("meta Wheel METADATA version does not match the plan")
@@ -325,7 +365,7 @@ def record_meta_wheel(plan: Mapping[str, Any], wheel_path: Path) -> dict[str, An
             raise ValueError("meta Wheel Provides-Extra does not match the plan")
         raw_requirements = metadata.get_all("Requires-Dist", [])
         actual_requirements = sorted(
-            _canonical_metadata_requirement(requirement)
+            _canonical_metadata_requirement(requirement, f"{meta['distribution']}-")
             for requirement in raw_requirements
         )
         expected_requirements = _metadata_requirements(meta)
@@ -345,7 +385,7 @@ def record_meta_wheel(plan: Mapping[str, Any], wheel_path: Path) -> dict[str, An
     return {
         "kind": META_RESULT_KIND,
         "schema_version": META_RESULT_SCHEMA_VERSION,
-        "distribution": META_DISTRIBUTION,
+        "distribution": meta["distribution"],
         "version": meta["version"],
         "filename": wheel_path.name,
         "sha256": _sha256(wheel_path),

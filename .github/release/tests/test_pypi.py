@@ -39,6 +39,7 @@ def _release_plan() -> dict[str, object]:
             "pypi": {
                 "enabled": True,
                 "target": "pypi",
+                "distribution_prefix": "",
                 **pypi.release_policy.PYPI_TARGETS["pypi"],
             }
         },
@@ -104,6 +105,40 @@ def _meta_result() -> dict[str, object]:
 
 def _publication() -> dict[str, object]:
     return pypi.build_publication(_release_plan(), _backend_results(), _meta_result())
+
+
+def _fork_inputs() -> (
+    tuple[dict[str, object], list[dict[str, object]], dict[str, object]]
+):
+    prefix = "supermarioyl-"
+    filename_prefix = "supermarioyl_"
+    plan = _release_plan()
+    plan["publication_scope"] = "fork"
+    plan["repository"] = "SuperMarioYL/unified-cache-management"
+    plan["publish"]["pypi"] = {  # type: ignore[index]
+        "enabled": True,
+        "target": "testpypi",
+        "distribution_prefix": prefix,
+        **pypi.release_policy.PYPI_TARGETS["testpypi"],
+    }
+    for wheel in plan["wheels"]:  # type: ignore[union-attr]
+        wheel["dist_name"] = f"{prefix}{wheel['dist_name']}"
+    meta_package = plan["meta_package"]  # type: ignore[assignment]
+    meta_package["distribution"] = f"{prefix}{META}"
+    meta_package["extras"] = {  # type: ignore[index]
+        extra: f"{prefix}{requirement}"
+        for extra, requirement in meta_package["extras"].items()  # type: ignore[union-attr]
+    }
+
+    backend_results = _backend_results()
+    for result in backend_results:
+        result["distribution"] = f"{prefix}{result['distribution']}"
+        result["filename"] = f"{filename_prefix}{result['filename']}"
+    meta_result = _meta_result()
+    meta_result["distribution"] = f"{prefix}{META}"
+    meta_result["filename"] = f"{filename_prefix}{META_WHEEL}"
+    meta_result["extras"] = meta_package["extras"]  # type: ignore[index]
+    return plan, backend_results, meta_result
 
 
 def _document(project: dict[str, object]) -> dict[str, object]:
@@ -193,28 +228,71 @@ def test_publication_rejects_wrong_scope_or_disabled_plan(
 
 
 def test_fork_publication_authorizes_only_testpypi() -> None:
-    plan = _release_plan()
-    plan["publication_scope"] = "fork"
-    plan["repository"] = "SuperMarioYL/unified-cache-management"
-    plan["publish"]["pypi"] = {  # type: ignore[index]
-        "enabled": True,
-        "target": "testpypi",
-        **pypi.release_policy.PYPI_TARGETS["testpypi"],
-    }
+    plan, backend_results, meta_result = _fork_inputs()
 
-    publication = pypi.build_publication(plan, _backend_results(), _meta_result())
+    publication = pypi.build_publication(plan, backend_results, meta_result)
 
     assert publication["target"] == "testpypi"
     assert publication["repository_url"] == "https://test.pypi.org/legacy/"
     assert publication["simple_index"] == "https://test.pypi.org/simple/"
+    assert publication["meta"]["project"] == "supermarioyl-uc-manager"
+    assert all(
+        backend["project"].startswith("supermarioyl-uc-manager-")
+        for backend in publication["backends"]
+    )
 
     plan["publish"]["pypi"] = {  # type: ignore[index]
         "enabled": True,
         "target": "pypi",
+        "distribution_prefix": "supermarioyl-",
         **pypi.release_policy.PYPI_TARGETS["pypi"],
     }
     with pytest.raises(ValueError, match="target"):
+        pypi.build_publication(plan, backend_results, meta_result)
+
+
+def test_fork_publication_rejects_wrong_or_missing_owner_prefix() -> None:
+    plan, backend_results, meta_result = _fork_inputs()
+    plan["publish"]["pypi"]["distribution_prefix"] = "other-owner-"  # type: ignore[index]
+    with pytest.raises(ValueError, match="prefix"):
+        pypi.build_publication(plan, backend_results, meta_result)
+
+    plan, backend_results, meta_result = _fork_inputs()
+    plan["wheels"][0]["dist_name"] = CUDA  # type: ignore[index]
+    with pytest.raises(ValueError, match="coordinates"):
+        pypi.build_publication(plan, backend_results, meta_result)
+
+
+def test_publication_rejects_noncanonical_distribution_alias() -> None:
+    plan = _release_plan()
+    plan["wheels"][0]["dist_name"] = "UC_Manager_Cuda_Cu130"  # type: ignore[index]
+
+    with pytest.raises(ValueError, match="coordinates"):
         pypi.build_publication(plan, _backend_results(), _meta_result())
+
+
+def test_fork_publication_readback_is_idempotent() -> None:
+    plan, backend_results, meta_result = _fork_inputs()
+    publication = pypi.build_publication(plan, backend_results, meta_result)
+    projects = [*publication["backends"], publication["meta"]]
+    documents = {project["project"]: _document(project) for project in projects}
+    meta_document = documents[publication["meta"]["project"]]
+    meta_document["info"]["requires_dist"] = [  # type: ignore[index]
+        f'{requirement}; extra == "{extra}"'
+        for extra, requirement in sorted(publication["extras"].items())
+    ]
+    uploads: list[str] = []
+
+    receipt = pypi.publish(
+        publication,
+        fetch=lambda project, version: documents[project],
+        uploader=uploads.append,
+        sleep=lambda _seconds: None,
+    )
+
+    assert uploads == []
+    assert receipt["status"] == "complete"
+    assert receipt["projects"][-1]["project"] == "supermarioyl-uc-manager"
 
 
 def test_publish_uploads_backends_then_meta_and_returns_receipt() -> None:
