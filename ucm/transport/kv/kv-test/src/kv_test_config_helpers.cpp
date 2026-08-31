@@ -30,7 +30,6 @@ void PatchFakeBackendTransportConfig(UC::ASU::TransportConfig& config,
     config.attrs.try_emplace("dtype", "0");
     config.attrs.try_emplace("dspec", "0");
     config.attrs.try_emplace("lr", "false");
-    config.attrs["sc"] = "true";
     config.attrs["fake_backend.path"] = fakeConfig.storePath;
     config.attrs["fake_backend.latency_ms"] = std::to_string(fakeConfig.latencyMs);
     config.attrs["fake_backend.device_id"] = std::to_string(fakeBackendDeviceId);

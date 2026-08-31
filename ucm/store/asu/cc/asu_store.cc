@@ -178,6 +178,7 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
     const auto kvNsIndex = config.uniqueId.find("_fawa_wa") == std::string::npos ? 0 : 1;
     transportConfig.attrs["kv_ns_id"] = std::to_string(config.kvNsIds[kvNsIndex]);
     if (!config.localIp.empty()) { transportConfig.attrs["localIp"] = config.localIp; }
+    transportConfig.attrs["sc"] = config.sc ? "true" : "false";
 
     if (!config.asuIps.empty()) {
         UC::ASU::AsuEndpoint endpoint;
@@ -193,7 +194,6 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
         transportConfig.attrs.try_emplace("dtype", "0");
         transportConfig.attrs.try_emplace("dspec", "0");
         transportConfig.attrs.try_emplace("lr", "false");
-        transportConfig.attrs["sc"] = "true";
         transportConfig.attrs["fake_backend.path"] = config.fakeBackendPath;
         transportConfig.attrs["fake_backend.latency_ms"] =
             std::to_string(config.fakeBackendLatencyMs);
@@ -410,6 +410,7 @@ private:
         inConfig.Get("asu_fake_backend_path", config.fakeBackendPath);
         inConfig.GetNumber("asu_fake_backend_latency_ms", config.fakeBackendLatencyMs);
         inConfig.GetNumber("asu_shared_provider", config.sharedProviderMode);
+        inConfig.Get("asu_sc", config.sc);
         ReadClientAttr(inConfig, "asu_router_type", "hash_table.type", config);
         ReadClientAttr(inConfig, "asu_ring_hash_virtual_node_count", "ring_hash.virtual_node_count",
                        config);

@@ -425,6 +425,22 @@ TEST(UCAsuStoreTest, PropagatesSeparateMaxInflightTasks)
     EXPECT_EQ(asuConfig.transportConfigs.front().maxInflightTasks, std::uint32_t{23});
 }
 
+TEST(UCAsuStoreTest, FakeProviderPreservesConfiguredSc)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_trans_provider_backend", std::string{"fake"});
+    config.Set("asu_sc", false);
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+
+    const auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+    EXPECT_EQ(transportConfig.attrs.at("sc"), "false");
+}
+
 TEST(UCAsuStoreTest, RejectsMissingKvNamespaces)
 {
     UC::AsuStore::AsuStore store;

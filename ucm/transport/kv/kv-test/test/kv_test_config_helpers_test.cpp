@@ -26,6 +26,7 @@ TEST(KvTestConfigHelpersTest, FakeDefaultsDoNotModifyAivTransport)
     UC::ASU::TransportConfig fakeConfig;
     fakeConfig.asuId = 1;
     fakeConfig.providerType = UC::ASU::TransProviderType::FAKE;
+    fakeConfig.attrs["sc"] = "false";
     config.asuClientConfig.transportConfigs.emplace_back(std::move(fakeConfig));
 
     UC::ASU::TransportConfig aivConfig;
@@ -39,6 +40,7 @@ TEST(KvTestConfigHelpersTest, FakeDefaultsDoNotModifyAivTransport)
 
     const auto& patchedFake = config.asuClientConfig.transportConfigs[0];
     EXPECT_EQ(patchedFake.providerType, UC::ASU::TransProviderType::FAKE);
+    EXPECT_EQ(patchedFake.attrs.at("sc"), "false");
     EXPECT_EQ(patchedFake.attrs.at("fake_backend.path"), "./kv-test-fake-backend-store");
 
     const auto& unchangedAiv = config.asuClientConfig.transportConfigs[1];
