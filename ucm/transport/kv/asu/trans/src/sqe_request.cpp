@@ -311,7 +311,7 @@ KvExistRequest BuildExistRequest(const BatchView<CacheKey>& keys,
     request.response_buffer_addr = flagBuffer.device_addr;
     request.response_mr_key = flagBuffer.tokenId;
     request.rflag = true;
-    request.sc = GetTransportConfigAttr<bool>(attrs, "sc");
+    request.sc = GetTransportConfigAttr<bool>(attrs, "sc", true);
     request.keys = CopyKeys(keys);
     request.batch_number = static_cast<std::uint16_t>(request.keys.size());
     return request;
