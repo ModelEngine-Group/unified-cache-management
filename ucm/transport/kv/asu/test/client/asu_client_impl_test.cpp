@@ -18,6 +18,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include "client_config_parser.h"
 #include "router/router.h"
 
 namespace UC::ASU {
@@ -416,7 +417,7 @@ public:
     Status GetGlobalView(GlobalView& view) override
     {
         std::lock_guard<std::mutex> lock{mutex_};
-        if (failFetchAt_ != 0 && fetchCount_ + 1 == failFetchAt_) {
+        if (failFetchFrom_ != 0 && fetchCount_ + 1 >= failFetchFrom_) {
             ++fetchCount_;
             return Status::Error(StatusCode::IO_ERROR, "fake view fetch failed");
         }
@@ -431,10 +432,10 @@ public:
         return Status::OK();
     }
 
-    void FailFetchAt(std::size_t fetchCount)
+    void FailFetchFrom(std::size_t fetchCount)
     {
         std::lock_guard<std::mutex> lock{mutex_};
-        failFetchAt_ = fetchCount;
+        failFetchFrom_ = fetchCount;
     }
     std::size_t FetchCount() const
     {
@@ -445,7 +446,7 @@ public:
 private:
     mutable std::mutex mutex_;
     std::size_t fetchCount_{0};
-    std::size_t failFetchAt_{0};
+    std::size_t failFetchFrom_{0};
     std::vector<std::vector<AsuId>> views_;
     std::vector<std::uint64_t> epochs_;
 };
@@ -673,6 +674,54 @@ TEST(AsuClientImplTest, Lifecycle_ShutdownClearsTasksAndRejectsFutureOperations)
     EXPECT_TRUE(client->Check(taskId));
 }
 
+TEST(AsuClientImplTest, Lifecycle_ShutdownDrainsFullTaskQueue)
+{
+    auto state = std::make_shared<TestState>();
+    state->blockStoreDispatch = true;
+    auto client = CreateAsuClient(MakeFactory(state));
+    auto config = MakeConfig({10});
+    config.maxInflightTasks = 2;
+    ASSERT_TRUE(client->Init(config).ok());
+
+    TaskId taskId = kInvalidTaskId;
+    ASSERT_TRUE(client
+                    ->StoreAsync(
+                        {
+                            KVBuffer{MakeCacheKey("active"), {}}
+    },
+                        taskId)
+                    .ok());
+
+    {
+        std::unique_lock<std::mutex> lock{state->storeDispatchMu};
+        EXPECT_TRUE(state->storeDispatchCv.wait_for(lock, std::chrono::milliseconds(100),
+                                                    [&] { return state->storeDispatchStarted; }));
+    }
+
+    for (std::size_t index = 0; index < 2; ++index) {
+        EXPECT_TRUE(client
+                        ->StoreAsync(
+                            {
+                                KVBuffer{MakeCacheKey("queued-" + std::to_string(index)), {}}
+        },
+                            taskId)
+                        .ok());
+    }
+
+    auto shutdown = std::async(std::launch::async, [&] { return client->Shutdown(); });
+    EXPECT_EQ(shutdown.wait_for(std::chrono::milliseconds(20)), std::future_status::timeout);
+
+    {
+        std::lock_guard<std::mutex> lock{state->storeDispatchMu};
+        state->releaseStoreDispatch = true;
+    }
+    state->storeDispatchCv.notify_all();
+
+    ASSERT_EQ(shutdown.wait_for(std::chrono::milliseconds(200)), std::future_status::ready);
+    EXPECT_TRUE(shutdown.get().ok());
+    EXPECT_EQ(state->storeCalls.size(), std::size_t{3});
+}
+
 TEST(AsuClientImplTest, Input_EmptyQueryReturnsEmptyResult)
 {
     auto state = std::make_shared<TestState>();
@@ -838,6 +887,27 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
         EXPECT_EQ(state->initConfigs[asuId].asuQueryIoNum, std::size_t{14});
         EXPECT_EQ(state->initConfigs[asuId].maxErrorCount, std::uint32_t{5});
     }
+}
+
+TEST(AsuClientImplTest, Config_SeparatesClientAndTransportMaxInflightTasks)
+{
+    constexpr const char* kConfigPath = "asu_client_impl_max_inflight_tasks_test.conf";
+    {
+        std::ofstream configFile{kConfigPath};
+        ASSERT_TRUE(configFile.is_open());
+        configFile << "client.maxInflightTasks=3\n";
+        configFile << "transport.asuIds=10\n";
+        configFile << "transport.maxInflightTasks=7\n";
+    }
+
+    AsuClientConfig config;
+    const auto status = LoadAsuClientConfig(kConfigPath, config);
+    std::remove(kConfigPath);
+
+    ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(config.maxInflightTasks, std::uint32_t{3});
+    ASSERT_EQ(config.transportConfigs.size(), std::size_t{1});
+    EXPECT_EQ(config.transportConfigs.front().maxInflightTasks, std::uint32_t{7});
 }
 
 TEST(AsuClientImplTest, Lifecycle_PublicInitRejectsInvalidSharedProviderMode)
@@ -1158,7 +1228,7 @@ TEST(AsuClientImplTest, BackgroundRefresh_QueryReturnsPartialFailedWhenViewFetch
             {10, 20}
     },
         std::vector<std::uint64_t>{1, 2});
-    viewServer->FailFetchAt(2);
+    viewServer->FailFetchFrom(2);
     auto config = MakeConfig({10, 20});
     auto client =
         std::make_unique<AsuClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
@@ -1642,6 +1712,69 @@ TEST(AsuClientImplTest, Task_SubmitReturnsWhileWorkerDispatchIsBlocked)
 
     TaskResult result;
     EXPECT_TRUE(client->Wait(taskId, 100, result).ok());
+}
+
+TEST(AsuClientImplTest, Task_SubmitReturnsResourceBusyWhenQueueIsFull)
+{
+    auto state = std::make_shared<TestState>();
+    state->blockStoreDispatch = true;
+    auto client = CreateAsuClient(MakeFactory(state));
+    auto config = MakeConfig({10});
+    config.maxInflightTasks = 2;
+    ASSERT_TRUE(client->Init(config).ok());
+
+    std::vector<TaskId> taskIds;
+    TaskId taskId = kInvalidTaskId;
+    ASSERT_TRUE(client
+                    ->StoreAsync(
+                        {
+                            KVBuffer{MakeCacheKey("k05"), {}}
+    },
+                        taskId)
+                    .ok());
+    taskIds.emplace_back(taskId);
+
+    bool dispatchStarted = false;
+    {
+        std::unique_lock<std::mutex> lock{state->storeDispatchMu};
+        dispatchStarted = state->storeDispatchCv.wait_for(
+            lock, std::chrono::milliseconds(100), [&] { return state->storeDispatchStarted; });
+    }
+
+    std::vector<Status> queuedStatuses;
+    for (std::size_t index = 0; index < 2; ++index) {
+        taskId = kInvalidTaskId;
+        queuedStatuses.emplace_back(client->StoreAsync(
+            {
+                KVBuffer{MakeCacheKey("queued-" + std::to_string(index)), {}}
+        },
+            taskId));
+        if (queuedStatuses.back().ok()) { taskIds.emplace_back(taskId); }
+    }
+
+    taskId = 0;
+    const auto status = client->StoreAsync(
+        {
+            KVBuffer{MakeCacheKey("queue-full"), {}}
+    },
+        taskId);
+    EXPECT_EQ(status.code, StatusCode::RESOURCE_BUSY);
+    EXPECT_EQ(taskId, kInvalidTaskId);
+
+    {
+        std::lock_guard<std::mutex> lock{state->storeDispatchMu};
+        state->releaseStoreDispatch = true;
+    }
+    state->storeDispatchCv.notify_all();
+
+    ASSERT_TRUE(dispatchStarted);
+    ASSERT_EQ(queuedStatuses.size(), std::size_t{2});
+    EXPECT_TRUE(queuedStatuses[0].ok()) << queuedStatuses[0].message;
+    EXPECT_TRUE(queuedStatuses[1].ok()) << queuedStatuses[1].message;
+    for (const auto submittedTaskId : taskIds) {
+        TaskResult result;
+        EXPECT_TRUE(client->Wait(submittedTaskId, 100, result).ok());
+    }
 }
 
 TEST(AsuClientImplTest, Task_CheckUsesClientStateUntilCompletionCallback)

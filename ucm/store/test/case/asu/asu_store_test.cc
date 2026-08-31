@@ -240,7 +240,8 @@ UC::Detail::Dictionary MakeBaseConfig()
     config.SetNumber("asu_default_wait_timeout_ms", std::uint64_t{1000});
     config.SetNumber("asu_query_timeout_ms", std::uint64_t{500});
     config.SetNumber("asu_timeout_ms", std::uint64_t{1000});
-    config.SetNumber("asu_max_inflight_tasks", std::uint64_t{16});
+    config.SetNumber("asu_client_max_inflight_tasks", std::uint64_t{16});
+    config.SetNumber("asu_transport_max_inflight_tasks", std::uint64_t{16});
     config.Set("kv_ns_ids", std::vector<ssize_t>{100});
     return config;
 }
@@ -406,6 +407,24 @@ TEST(UCAsuStoreTest, PropagatesMaxErrorCountToTransport)
     EXPECT_EQ(transportConfig.maxErrorCount, std::uint32_t{7});
 }
 
+TEST(UCAsuStoreTest, PropagatesSeparateMaxInflightTasks)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.SetNumber("asu_client_max_inflight_tasks", std::uint64_t{17});
+    config.SetNumber("asu_transport_max_inflight_tasks", std::uint64_t{23});
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+
+    const auto asuConfig = UC::AsuStore::BuildAsuClientConfig(state->initConfigs.back());
+    EXPECT_EQ(asuConfig.maxInflightTasks, std::uint32_t{17});
+    ASSERT_EQ(asuConfig.transportConfigs.size(), std::size_t{1});
+    EXPECT_EQ(asuConfig.transportConfigs.front().maxInflightTasks, std::uint32_t{23});
+}
+
 TEST(UCAsuStoreTest, RejectsMissingKvNamespaces)
 {
     UC::AsuStore::AsuStore store;
@@ -498,7 +517,7 @@ TEST(UCAsuStoreTest, RejectsInvalidSharedProviderMode)
     EXPECT_TRUE(store.Setup(config).Failure());
 }
 
-TEST(UCAsuStoreTest, RejectsTransportIntegerOverflow)
+TEST(UCAsuStoreTest, RejectsAsuIntegerOverflow)
 {
     {
         UC::AsuStore::AsuStore store;
@@ -521,7 +540,16 @@ TEST(UCAsuStoreTest, RejectsTransportIntegerOverflow)
         UC::AsuStore::AsuStore store;
         auto config = MakeBaseConfig();
         config.Set("asu_ids", std::vector<ssize_t>{1001});
-        config.SetNumber("asu_max_inflight_tasks",
+        config.SetNumber("asu_client_max_inflight_tasks",
+                         std::uint64_t{std::numeric_limits<std::uint32_t>::max()} + 1);
+
+        EXPECT_TRUE(store.Setup(config).Failure());
+    }
+    {
+        UC::AsuStore::AsuStore store;
+        auto config = MakeBaseConfig();
+        config.Set("asu_ids", std::vector<ssize_t>{1001});
+        config.SetNumber("asu_transport_max_inflight_tasks",
                          std::uint64_t{std::numeric_limits<std::uint32_t>::max()} + 1);
 
         EXPECT_TRUE(store.Setup(config).Failure());

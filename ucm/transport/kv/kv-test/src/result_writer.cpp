@@ -216,6 +216,7 @@ Status ResultWriter::WriteSummary(const CommandOptions& options, const CommandRe
              << "batch_size: " << options.batchSize << '\n'
              << "concurrency: " << options.concurrency << '\n'
              << "duration_sec: " << options.durationSec << '\n'
+             << "io_count: " << options.ioCount << '\n'
              << "asu_status_code: " << asuStatusCode << '\n';
     if (!result.status.Ok()) { textFile << "error: " << result.status.message << '\n'; }
     if (!result.taskResult.status.message.empty()) {
@@ -248,7 +249,8 @@ Status ResultWriter::WriteSummary(const CommandOptions& options, const CommandRe
              << "    \"value_size\": " << options.valueSize << ",\n"
              << "    \"batch_size\": " << options.batchSize << ",\n"
              << "    \"concurrency\": " << options.concurrency << ",\n"
-             << "    \"duration_sec\": " << options.durationSec << "\n"
+             << "    \"duration_sec\": " << options.durationSec << ",\n"
+             << "    \"io_count\": " << options.ioCount << "\n"
              << "  },\n";
     if (options.command == CommandType::BENCH) {
         jsonFile << "  \"metrics\": {\n"
@@ -399,6 +401,7 @@ Status ResultWriter::WriteHtmlReport(const CommandOptions& options, const Comman
              << "<tr><th>Batch size</th><td>" << options.batchSize << "</td></tr>"
              << "<tr><th>Concurrency</th><td>" << options.concurrency << "</td></tr>"
              << "<tr><th>Duration sec</th><td>" << options.durationSec << "</td></tr>"
+             << "<tr><th>IO count</th><td>" << options.ioCount << "</td></tr>"
              << "</tbody></table></section>";
 
     if (options.command == CommandType::BENCH) {

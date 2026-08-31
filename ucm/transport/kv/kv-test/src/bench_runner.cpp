@@ -383,8 +383,9 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
     if (bench.concurrency == 0) {
         return Status::Error(kExitInvalidArgument, "bench concurrency must be greater than zero");
     }
-    if (bench.durationSec == 0) {
-        return Status::Error(kExitInvalidArgument, "bench duration must be greater than zero");
+    if (bench.durationSec == 0 && bench.ioCount == 0) {
+        return Status::Error(kExitInvalidArgument,
+                             "bench duration or IO count must be greater than zero");
     }
     if (bench.op == BenchOpType::MIX && bench.readRatio + bench.writeRatio == 0) {
         return Status::Error(kExitInvalidArgument,
@@ -407,6 +408,10 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
 
     auto status = ValidateBenchBufferConfig(bench, poolEntryCount, config.memoryMaxBytes);
     if (!status.Ok()) { return status; }
+    if (bench.ioCount != 0 &&
+        bench.ioCount > std::numeric_limits<std::uint64_t>::max() / bench.ioSize) {
+        return Status::Error(kExitInvalidArgument, "bench total IO bytes overflow uint64");
+    }
 
     const std::string keyPrefix = config.keyPrefix.empty() ? "b" : config.keyPrefix;
     const bool useDeviceBuffers = UsesDevicePayloadBuffers(config);
@@ -435,9 +440,11 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
     result.benchMetrics.warmupSec = bench.warmupSec;
     result.benchMetrics.durationSec = bench.durationSec;
 
-    auto runPhase = [&](std::uint64_t durationSec, bool collectStats) -> Status {
+    auto runPhase = [&](std::uint64_t durationSec, std::uint64_t ioCount,
+                        bool collectStats) -> Status {
         const auto phaseStart = Clock::now();
         const auto phaseEnd = phaseStart + std::chrono::seconds(durationSec);
+        std::uint64_t scheduledEntryCount = 0;
         std::uint64_t windowOperationCount = 0;
         std::uint64_t windowEntryCount = 0;
         std::uint64_t windowBytes = 0;
@@ -459,18 +466,26 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
             if (options.progress) { PrintProgressSample(sample, operationsPerSec); }
         };
 
-        while (Clock::now() < phaseEnd) {
+        auto shouldContinue = [&]() {
+            return ioCount == 0 ? Clock::now() < phaseEnd : scheduledEntryCount < ioCount;
+        };
+
+        while (shouldContinue()) {
             std::vector<std::future<OperationOutcome>> futures;
             std::vector<OperationOutcome> inlineOutcomes;
             futures.reserve(bench.concurrency);
             inlineOutcomes.reserve(bench.concurrency);
-            for (std::uint32_t inFlight = 0;
-                 inFlight < bench.concurrency && Clock::now() < phaseEnd; ++inFlight) {
+            for (std::uint32_t inFlight = 0; inFlight < bench.concurrency && shouldContinue();
+                 ++inFlight) {
                 const auto begin =
                     static_cast<std::size_t>((operationIndex * entryCountPerOperation) % keyCount);
                 const auto available = keyCount - begin;
+                const auto remainingEntryCount =
+                    ioCount == 0 ? entryCountPerOperation : ioCount - scheduledEntryCount;
                 const auto currentEntryCount = static_cast<std::size_t>(
-                    std::min<std::uint64_t>(entryCountPerOperation, available));
+                    std::min({entryCountPerOperation, static_cast<std::uint64_t>(available),
+                              remainingEntryCount}));
+                scheduledEntryCount += currentEntryCount;
                 const auto currentOperationIndex = operationIndex++;
                 auto* bufferSlot = &bufferPool[inFlight];
 
@@ -580,7 +595,7 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
     };
 
     if (bench.warmupSec != 0) {
-        status = runPhase(bench.warmupSec, false);
+        status = runPhase(bench.warmupSec, 0, false);
         if (!status.Ok()) {
             if (useDeviceBuffers) { (void)UnregisterBenchDeviceBuffers(clientRunner, bufferPool); }
             return status;
@@ -588,7 +603,7 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
     }
 
     const auto measureStart = Clock::now();
-    status = runPhase(bench.durationSec, true);
+    status = runPhase(bench.durationSec, bench.ioCount, true);
     const auto measureEnd = Clock::now();
     auto cleanupStatus = useDeviceBuffers ? UnregisterBenchDeviceBuffers(clientRunner, bufferPool)
                                           : Status::Success();

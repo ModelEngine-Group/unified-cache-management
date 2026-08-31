@@ -63,6 +63,7 @@ CommandOptions BuildEffectiveOptions(const CommandOptions& options, const KvTest
     if (effective.benchOp == BenchOpType::UNKNOWN) { effective.benchOp = config.bench.op; }
     effective.concurrency = config.bench.concurrency;
     effective.durationSec = config.bench.durationSec;
+    effective.ioCount = config.bench.ioCount;
     effective.warmupSec = config.bench.warmupSec;
     effective.readRatio = config.bench.readRatio;
     effective.writeRatio = config.bench.writeRatio;
@@ -161,7 +162,7 @@ void PrintGeneralHelp()
         << "  --key <key>              Use one key.\n"
         << "  --keys <k1,k2,...>       Use a comma-separated key list.\n"
         << "  --keys-file <path>       Read comma-separated keys from a file.\n"
-        << "  --count <n>              Generate n keys from kv.key_prefix.\n"
+        << "  --count <n>              Generate n keys; for bench, run exactly n logical IOs.\n"
         << "  --prefix <p> --key-start <n> --key-end <n>\n"
         << "                           Generate keys in the closed interval [start, end].\n"
         << "  --seed <n>               Override kv.seed.\n"
@@ -173,7 +174,8 @@ void PrintGeneralHelp()
         << "\n"
         << "Bench options:\n"
         << "  --op <op>, --bench-op <op>, --io-size <bytes>, --concurrency <n>,\n"
-        << "  --duration <sec>, --warmup <sec>, --read-ratio <n>, --write-ratio <n>,\n"
+        << "  --duration <sec>, --count <n>, --warmup <sec>, --read-ratio <n>,\n"
+        << "  --write-ratio <n>,\n"
         << "  --progress               Print one benchmark progress line per second.\n\n"
         << "Examples:\n"
         << "  export KV_TEST_CONFIG=/abs/path/to/asu_kv_test.conf\n"
@@ -239,9 +241,12 @@ void PrintCommandHelp(CommandType command)
             break;
         case CommandType::BENCH:
             std::cout << "Usage: kv-test bench [store|retrieve|batch-store|batch-retrieve|mix] "
-                         "[--io-size <bytes>] [--concurrency <n>] [--duration <sec>]\n"
+                         "[--io-size <bytes>] [--concurrency <n>] "
+                         "[--duration <sec>] [--count <n>]\n"
                       << "       kv-test bench --op <op> [--batch-size <n>] [--warmup <sec>] "
-                         "[--read-ratio <n>] [--write-ratio <n>] [--progress]\n";
+                         "[--read-ratio <n>] [--write-ratio <n>] [--progress]\n"
+                      << "       A positive --count runs exactly that many io-size logical IOs "
+                         "and overrides duration.\n";
             break;
         case CommandType::UNKNOWN:
         default: PrintGeneralHelp(); break;
@@ -311,6 +316,7 @@ void PrintBenchSummary(const CommandOptions& options, const CommandResult& resul
               << std::setprecision(3) << metrics.elapsedSec
               << "\noperations=" << metrics.completedOperations
               << "\nentries=" << metrics.completedEntries << "\nbytes=" << metrics.completedBytes
+              << "\nio_count=" << options.ioCount
               << "\nbandwidth_mib_s=" << FormatMiBPerSec(metrics.avgBandwidthBytesPerSec)
               << "\niops=" << std::fixed << std::setprecision(2) << metrics.avgIops
               << "\nbatch_iops=" << metrics.avgBatchIops

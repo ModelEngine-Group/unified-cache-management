@@ -114,6 +114,7 @@ struct CommandOptions {
     std::string keysFile;
     std::string keyPrefix;
     std::uint64_t count{0};
+    std::uint64_t ioCount{0};
     std::uint64_t keyStart{0};
     std::uint64_t keyEnd{0};
     std::uint64_t seed{0};
@@ -140,6 +141,7 @@ struct BenchConfig {
     std::uint64_t ioSize{0};
     std::uint32_t concurrency{0};
     std::uint64_t durationSec{0};
+    std::uint64_t ioCount{0};
     std::uint64_t warmupSec{0};
     std::uint32_t readRatio{0};
     std::uint32_t writeRatio{0};

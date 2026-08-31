@@ -170,7 +170,7 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
     transportConfig.deviceId = config.deviceId;
     transportConfig.timeoutMs = config.timeoutMs;
     transportConfig.maxErrorCount = static_cast<std::uint32_t>(config.maxErrorCount);
-    transportConfig.maxInflightTasks = static_cast<std::uint32_t>(config.maxInflightTasks);
+    transportConfig.maxInflightTasks = static_cast<std::uint32_t>(config.transportMaxInflightTasks);
     transportConfig.maxInflightBytes = config.maxInflightBytes;
     transportConfig.providerType = config.transProviderType;
 
@@ -214,6 +214,7 @@ UC::ASU::AsuClientConfig BuildAsuClientConfig(const Config& config)
     UC::ASU::AsuClientConfig asuConfig;
     asuConfig.clientId = config.clientId;
     asuConfig.viewServiceAddrs = config.viewServiceAddrs;
+    asuConfig.maxInflightTasks = static_cast<std::uint32_t>(config.clientMaxInflightTasks);
     asuConfig.defaultWaitTimeoutMs = config.defaultWaitTimeoutMs;
     asuConfig.timeoutMs = config.timeoutMs;
     asuConfig.sharedProviderMode =
@@ -395,7 +396,8 @@ private:
         inConfig.GetNumber("asu_timeout_ms", config.timeoutMs);
         inConfig.GetNumber("asu_query_timeout_ms", config.queryTimeoutMs);
         inConfig.GetNumber("asu_max_error_count", config.maxErrorCount);
-        inConfig.GetNumber("asu_max_inflight_tasks", config.maxInflightTasks);
+        inConfig.GetNumber("asu_client_max_inflight_tasks", config.clientMaxInflightTasks);
+        inConfig.GetNumber("asu_transport_max_inflight_tasks", config.transportMaxInflightTasks);
         inConfig.GetNumber("asu_max_inflight_bytes", config.maxInflightBytes);
         inConfig.GetNumber("shard_size", config.shardSize);
         inConfig.GetNumber("block_size", config.blockSize);
@@ -532,8 +534,11 @@ private:
         if (config.queryTimeoutMs == 0) {
             return Status::InvalidParam("asu_query_timeout_ms must be greater than zero");
         }
-        if (config.maxInflightTasks > std::numeric_limits<std::uint32_t>::max()) {
-            return Status::InvalidParam("asu_max_inflight_tasks exceeds uint32 range");
+        if (config.clientMaxInflightTasks > std::numeric_limits<std::uint32_t>::max()) {
+            return Status::InvalidParam("asu_client_max_inflight_tasks exceeds uint32 range");
+        }
+        if (config.transportMaxInflightTasks > std::numeric_limits<std::uint32_t>::max()) {
+            return Status::InvalidParam("asu_transport_max_inflight_tasks exceeds uint32 range");
         }
         // Scheduler config check done
         if (config.role == "scheduler") { return Status::OK(); }

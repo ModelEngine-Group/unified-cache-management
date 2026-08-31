@@ -26,7 +26,8 @@ struct Config {
     std::uint64_t timeoutMs{100};
     std::uint64_t queryTimeoutMs{500};
     std::uint64_t maxErrorCount{2};
-    std::uint64_t maxInflightTasks{1024};
+    std::uint64_t clientMaxInflightTasks{1024};
+    std::uint64_t transportMaxInflightTasks{1024};
     std::uint64_t maxInflightBytes{1ULL << 30};
     std::vector<std::size_t> tensorSizes;
     std::size_t shardSize{0};

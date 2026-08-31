@@ -61,10 +61,6 @@ struct TransportConfig {
     std::uint32_t maxInflightTasks{1024};
     std::uint64_t maxInflightBytes{1ULL << 30};
 
-    std::uint32_t maxQueryInflight{256};
-    std::uint32_t maxLoadInflight{512};
-    std::uint32_t maxStoreInflight{256};
-
     std::uint64_t timeoutMs{100};
     std::uint32_t maxErrorCount{2};
 

@@ -40,6 +40,7 @@ struct AsuClientConfig {
 
     std::vector<TransportConfig> transportConfigs;
 
+    std::uint32_t maxInflightTasks{1024};
     std::uint64_t defaultWaitTimeoutMs{100};
     std::uint64_t timeoutMs{100};
     SharedProviderMode sharedProviderMode{SharedProviderMode::INDEPENDENT};

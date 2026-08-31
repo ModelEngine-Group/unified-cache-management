@@ -80,6 +80,8 @@ Status AsuClientImpl::Init(const AsuClientConfig& config)
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "at least one transport config is required");
     }
+    const auto queueDepth =
+        std::max<std::size_t>(2, static_cast<std::size_t>(config.maxInflightTasks));
 
     GlobalView view;
     auto status = viewServer_->GetGlobalView(view);
@@ -107,10 +109,8 @@ Status AsuClientImpl::Init(const AsuClientConfig& config)
         return status;
     }
 
-    {
-        std::lock_guard<std::mutex> lock{taskQueueMu_};
-        stopWorker_ = false;
-    }
+    taskQueue_.Setup(queueDepth + 1);
+    stopWorker_.store(false, std::memory_order_release);
     worker_ = std::thread(&AsuClientImpl::WorkerLoop, this);
     snapshot_ = std::move(nextSnapshot);
     initialized_ = true;
@@ -125,13 +125,11 @@ Status AsuClientImpl::Shutdown()
         initialized_ = false;
         waitTimeoutMs = config_.defaultWaitTimeoutMs;
     }
-    JoinBackgroundRefresh();
-
     {
-        std::lock_guard<std::mutex> lock{taskQueueMu_};
-        stopWorker_ = true;
+        std::lock_guard<std::mutex> lock{producerMu_};
+        stopWorker_.store(true, std::memory_order_release);
     }
-    taskQueueCv_.notify_all();
+    JoinBackgroundRefresh();
     if (worker_.joinable()) { worker_.join(); }
 
     std::shared_ptr<ViewSnapshot> snapshot;
@@ -371,15 +369,18 @@ Status AsuClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>&
     }
 
     {
-        std::lock_guard<std::mutex> lock{taskQueueMu_};
-        if (stopWorker_) {
+        std::lock_guard<std::mutex> lock{producerMu_};
+        if (stopWorker_.load(std::memory_order_acquire)) {
             (void)taskManager_.Remove(taskId);
             taskId = kInvalidTaskId;
             return NotInitialized();
         }
-        taskQueue_.emplace_back(std::move(rawCtx));
+        if (!taskQueue_.TryPush(std::move(rawCtx))) {
+            (void)taskManager_.Remove(taskId);
+            taskId = kInvalidTaskId;
+            return Status::Error(StatusCode::RESOURCE_BUSY, "client task queue is full");
+        }
     }
-    taskQueueCv_.notify_one();
     return Status::OK();
 }
 
@@ -415,35 +416,31 @@ Status AsuClientImpl::SubmitAsync(AsuOpType opType, const std::vector<CacheKey>&
     }
 
     {
-        std::lock_guard<std::mutex> lock{taskQueueMu_};
-        if (stopWorker_) {
+        std::lock_guard<std::mutex> lock{producerMu_};
+        if (stopWorker_.load(std::memory_order_acquire)) {
             (void)taskManager_.Remove(taskId);
             taskId = kInvalidTaskId;
             return NotInitialized();
         }
-        taskQueue_.emplace_back(std::move(rawCtx));
+        if (!taskQueue_.TryPush(std::move(rawCtx))) {
+            (void)taskManager_.Remove(taskId);
+            taskId = kInvalidTaskId;
+            return Status::Error(StatusCode::RESOURCE_BUSY, "client task queue is full");
+        }
     }
-    taskQueueCv_.notify_one();
     return Status::OK();
 }
 
 void AsuClientImpl::WorkerLoop()
 {
-    while (true) {
-        ClientTaskPtr ctx;
-        {
-            std::unique_lock<std::mutex> lock{taskQueueMu_};
-            taskQueueCv_.wait(lock, [this] { return stopWorker_ || !taskQueue_.empty(); });
-            if (taskQueue_.empty()) {
-                if (stopWorker_) { return; }
-                continue;
-            }
-            ctx = std::move(taskQueue_.front());
-            taskQueue_.pop_front();
-        }
+    auto processTask = [this](ClientTaskPtr ctx) {
         auto status = taskManager_.Process(ctx);
         if (IsRefreshNeeded(status)) { RequestBackgroundRefresh(); }
-    }
+    };
+    taskQueue_.ConsumerLoop(stopWorker_, processTask);
+
+    ClientTaskPtr ctx;
+    while (taskQueue_.TryPop(ctx)) { processTask(std::move(ctx)); }
 }
 
 Status AsuClientImpl::UnregisterRegions(const std::vector<MRHandle>& handles)
