@@ -333,6 +333,56 @@ def get_kv_specs(runner: Any, vllm_config: Any) -> dict[str, Any]:
         ) from exc
 
 
+def resolve_layout(vllm_config: Any, kv_cache_specs: dict[str, Any]) -> None:
+    """Resolve the model-wide KV layout when required by this vLLM version."""
+
+    cache_config = vllm_config.cache_config
+    if not callable(getattr(cache_config, "get_resolved_kv_cache_layout", None)):
+        # Older vLLM versions resolve tensor shapes inside their worker path and
+        # have no model-wide layout-resolution phase.
+        return
+    if getattr(cache_config, "kv_cache_layout", None) is not None:
+        return
+
+    try:
+        from vllm.distributed.kv_transfer.kv_connector.utils import (
+            get_current_attn_backends,
+        )
+        from vllm.v1.attention.backends.utils import (
+            get_supported_kv_cache_layouts,
+            resolve_kv_cache_layout,
+        )
+    except (ImportError, AttributeError) as exc:
+        raise UnsupportedEnvironment(
+            "This vLLM requires a resolved KV-cache layout, but does not expose "
+            "the EngineCore layout-resolution helpers needed by the standalone "
+            "checker."
+        ) from exc
+
+    with current_vllm_config_context(vllm_config):
+        backends = call_with_supported_kwargs(
+            get_current_attn_backends,
+            {"vllm_config": vllm_config, "layer_names": None},
+        )
+        layouts = get_supported_kv_cache_layouts(backends)
+        supported_layouts = [
+            [getattr(layout, "name", str(layout)) for layout in layouts]
+        ]
+        call_with_supported_kwargs(
+            resolve_kv_cache_layout,
+            {
+                "vllm_config": vllm_config,
+                "supported_layouts": supported_layouts,
+                "kv_cache_specs": list(kv_cache_specs.values()),
+            },
+        )
+
+    if getattr(cache_config, "kv_cache_layout", None) is None:
+        raise UnsupportedEnvironment(
+            "vLLM's KV-cache layout resolver returned without recording a layout."
+        )
+
+
 def make_layout(
     vllm_config: Any,
     kv_cache_specs: dict[str, Any],
@@ -568,6 +618,8 @@ def make_cache(
     kv_cache_specs = get_kv_specs(runner, kv_vllm_config)
     if not kv_cache_specs:
         raise UnsupportedEnvironment("The real model returned an empty KVCacheSpec")
+
+    resolve_layout(kv_vllm_config, kv_cache_specs)
 
     kv_num_blocks = plan_blocks(
         kv_vllm_config,
