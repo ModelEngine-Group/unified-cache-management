@@ -73,6 +73,10 @@ Status AsuTransportImpl::Init(const TransportConfig& config,
     if (config_.maxErrorCount == 0) {
         return Status::Error(StatusCode::INVALID_ARGUMENT, "maxErrorCount must be greater than 0");
     }
+    if (config_.completionPollSpinLimit == 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "completionPollSpinLimit must be greater than 0");
+    }
 
     if (!transProvider_) {
         UC_ERROR("AsuTransportImpl::Init: TransProvider is null");
@@ -278,7 +282,6 @@ void AsuTransportImpl::WorkerLoop()
 
 void AsuTransportImpl::CompletionLoop()
 {
-    constexpr std::size_t kPollSpinLimit = 16;
     std::size_t noCompletionRounds = 0;
 
     while (!stopCompletionWorker_.load(std::memory_order_acquire)) {
@@ -299,7 +302,7 @@ void AsuTransportImpl::CompletionLoop()
 
         if (completedTask) {
             noCompletionRounds = 0;
-        } else if (++noCompletionRounds >= kPollSpinLimit) {
+        } else if (++noCompletionRounds >= config_.completionPollSpinLimit) {
             noCompletionRounds = 0;
             std::this_thread::yield();
         }

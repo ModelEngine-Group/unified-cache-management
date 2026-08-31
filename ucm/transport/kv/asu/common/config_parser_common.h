@@ -40,6 +40,8 @@ bool ApplyTransportBufferConfigField(TransportConfig& config, const std::string&
                                      const std::string& value);
 bool ApplyTransportIoNumConfigField(TransportConfig& config, const std::string& key,
                                     const std::string& value);
+bool ApplyTransportCompletionConfigField(TransportConfig& config, const std::string& key,
+                                         const std::string& value);
 bool ApplyTransportProviderConfigField(TransportConfig& config, const std::string& key,
                                        const std::string& value);
 bool ApplyTransportDeviceConfigField(TransportConfig& config, const std::string& key,

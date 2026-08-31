@@ -164,6 +164,14 @@ bool ApplyTransportIoNumConfigField(TransportConfig& config, const std::string& 
     return true;
 }
 
+bool ApplyTransportCompletionConfigField(TransportConfig& config, const std::string& key,
+                                         const std::string& value)
+{
+    if (key != "completionPollSpinLimit" && key != "completion_poll_spin_limit") { return false; }
+    config.completionPollSpinLimit = static_cast<std::size_t>(ParseConfigUint64(value));
+    return true;
+}
+
 bool ApplyTransportProviderConfigField(TransportConfig& config, const std::string& key,
                                        const std::string& value)
 {
