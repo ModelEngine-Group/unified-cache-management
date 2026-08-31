@@ -41,7 +41,6 @@ namespace {
 std::atomic<BackendFactory> backendFactory{nullptr};
 
 struct Config {
-    std::string role;
     std::vector<std::size_t> tensorSizes;
     std::int32_t deviceId{-1};
     std::size_t bufferNumber{0};
@@ -51,7 +50,6 @@ struct Config {
 Expected<Config> ParseConfig(const Detail::Dictionary& input)
 {
     Config config;
-    input.Get("role", config.role);
     ssize_t deviceId = -1;
     ssize_t bufferNumber = 0;
     ssize_t streamNumber = static_cast<ssize_t>(Executor::kDefaultStreamNumber);
@@ -66,10 +64,7 @@ Expected<Config> ParseConfig(const Detail::Dictionary& input)
     if (bufferNumber > 0) { config.bufferNumber = static_cast<std::size_t>(bufferNumber); }
     if (streamNumber > 0) { config.streamNumber = static_cast<std::size_t>(streamNumber); }
 
-    if (config.role != "scheduler" && config.role != "worker") {
-        return Status::InvalidParam("invalid delegator role({})", config.role);
-    }
-    if (config.role == "scheduler") { return config; }
+    if (config.deviceId < 0) { return config; }
 
     std::size_t tensorSize = 0;
     input.GetNumber("tensor_size", tensorSize);
@@ -154,7 +149,7 @@ Status DelegatorStore::Setup(const Detail::Dictionary& input)
         return status;
     }
 
-    if (config.role == "scheduler") {
+    if (config.deviceId < 0) {
         setup_ = true;
         return Status::OK();
     }

@@ -97,7 +97,7 @@ TEST(UCDelegatorStoreTest, ReportsMissingBackend)
 {
     auto store = CreateStore();
     Detail::Dictionary config;
-    config.Set("role", std::string{"scheduler"});
+    config.SetNumber("device_id", -1);
     EXPECT_EQ(store->Setup(config), Status::Unsupported());
 }
 
@@ -108,7 +108,7 @@ TEST(UCDelegatorStoreTest, InjectsGenericBackendForScheduler)
 
     auto store = CreateStore();
     Detail::Dictionary config;
-    config.Set("role", std::string{"scheduler"});
+    config.SetNumber("device_id", -1);
     ASSERT_TRUE(store->Setup(config).Success());
     EXPECT_EQ(store->Readme(), "DelegatorStore(FakeBackend)");
 
