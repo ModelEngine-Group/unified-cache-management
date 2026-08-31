@@ -27,30 +27,14 @@
 #include <thread>
 #include <vector>
 #include "asu_transport/trans_provider.h"
-#include "trans/device.h"
 
 namespace UC::ASU {
 namespace {
 
 class BufferManagerTest : public ::testing::Test {
 protected:
-    static void SetUpTestSuite()
-    {
-        const auto initStatus = device_.Init();
-        if (initStatus.Failure() && initStatus != UC::Status::DuplicateKey()) {
-            FAIL() << "Device::Init failed: " << initStatus.ToString();
-        }
-        ASSERT_TRUE(device_.Setup(0).Success());
-    }
-    static void TearDownTestSuite()
-    {
-        (void)device_.Reset(0);
-        (void)device_.Finalize();
-    }
     void SetUp() override {}
     void TearDown() override {}
-
-    static inline Trans::Device device_;
 };
 
 TEST_F(BufferManagerTest, InitAndDestroy)

@@ -105,7 +105,7 @@ if(BUILD_UNIT_TESTS)
     )
     target_link_libraries(asu.test PRIVATE
         asu_client
-        gtest_main gtest
+        gtest
     )
     gtest_discover_tests(asu.test)
 endif()

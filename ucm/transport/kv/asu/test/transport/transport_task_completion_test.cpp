@@ -34,7 +34,6 @@
 #include "asu_transport/trans_provider.h"
 #include "buffer_manager.h"
 #include "connection_internal.h"
-#include "trans/device.h"
 
 namespace UC::ASU {
 namespace {
@@ -90,21 +89,6 @@ void CreateTaskExecutor(AsuTransportImpl& transport)
 
 class TransportTaskCompletionTest : public ::testing::Test {
 protected:
-    static void SetUpTestSuite()
-    {
-        const auto initStatus = device_.Init();
-        if (initStatus.Failure() && initStatus != UC::Status::DuplicateKey()) {
-            FAIL() << "Device::Init failed: " << initStatus.ToString();
-        }
-        ASSERT_TRUE(device_.Setup(0).Success());
-    }
-
-    static void TearDownTestSuite()
-    {
-        (void)device_.Reset(0);
-        (void)device_.Finalize();
-    }
-
     void SetUp() override
     {
         transport_ = std::make_unique<AsuTransportImpl>();
@@ -127,7 +111,6 @@ protected:
     }
 
     std::unique_ptr<AsuTransportImpl> transport_;
-    static inline Trans::Device device_;
 };
 
 TEST_F(TransportTaskCompletionTest, InitRejectsZeroMaxErrorCount)
