@@ -199,6 +199,8 @@ Status KvTestConfigLoader::Load(const std::string& configPath, KvTestConfig& con
                      {"fake_backend.latency_ms", "fakebackend.latency_ms", "fake_backend.latencyms",
                       "fakebackend.latencyms"},
                      config.fakeBackend.latencyMs);
+        GetUint64Any(values, {"fake_backend.worker_threads", "fakebackend.worker_threads"},
+                     config.fakeBackend.workerThreads);
 
         GetStringAny(values, {"kv.key_prefix"}, config.keyPrefix);
 

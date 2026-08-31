@@ -23,15 +23,20 @@
  * */
 #include "fake_trans_provider.h"
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <shared_mutex>
 #include <sstream>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -42,6 +47,7 @@ namespace UC::ASU {
 namespace {
 
 constexpr std::uint16_t kCqeSuccess = 0x000;
+constexpr std::uint16_t kCqeInternalError = 0x006;
 constexpr std::uint16_t kCqeCheckResultBuffer = 0x732;
 constexpr std::uint8_t kBatchEntryOk = 0x0;
 constexpr std::uint8_t kBatchEntryKeyNotFound = 0x3;
@@ -50,6 +56,9 @@ constexpr std::uint8_t kDeleteEntryFailed = 0x1;
 constexpr std::uint8_t kExistEntryNotExist = 0x0;
 constexpr std::uint8_t kExistEntryExist = 0x1;
 constexpr std::uint32_t kExistSeekControlMask = 1U << 16;
+constexpr std::size_t kKeyLockCount = 256;
+
+std::array<std::shared_mutex, kKeyLockCount> g_keyMutexes;
 
 std::uint64_t ReadU64(std::uint32_t low, std::uint32_t high)
 {
@@ -72,7 +81,7 @@ CacheKey ReadKey(const std::uint32_t* data)
     return key;
 }
 
-std::string KeyFileName(const CacheKey& key)
+std::uint64_t KeyHash(const CacheKey& key)
 {
     std::uint64_t hash = 1469598103934665603ULL;
     for (auto byte : key) {
@@ -80,10 +89,19 @@ std::string KeyFileName(const CacheKey& key)
         hash ^= ch;
         hash *= 1099511628211ULL;
     }
+    return hash;
+}
 
+std::string KeyFileName(const CacheKey& key)
+{
     std::ostringstream stream;
-    stream << std::hex << std::setw(16) << std::setfill('0') << hash << ".bin";
+    stream << std::hex << std::setw(16) << std::setfill('0') << KeyHash(key) << ".bin";
     return stream.str();
+}
+
+std::shared_mutex& KeyMutex(const CacheKey& key)
+{
+    return g_keyMutexes[KeyHash(key) % kKeyLockCount];
 }
 
 std::filesystem::path AsuRoot(const std::string& storePath, AsuId asuId)
@@ -171,7 +189,117 @@ std::size_t CompletionDwordCount(const std::uint32_t* request)
     return kCqeDwordCount + resultDwordCount;
 }
 
+std::size_t RequestDwordCount(const std::uint32_t* request)
+{
+    const auto opcode = RequestOpcode(request);
+    if (opcode == KvOpcode::Store || opcode == KvOpcode::Retrieve ||
+        opcode == KvOpcode::KeepAlive) {
+        return kSqeDwordCount;
+    }
+
+    const auto batchNumber = static_cast<std::uint16_t>(request[10] & 0xFFFF);
+    const auto entryDwordCount = opcode == KvOpcode::BatchStore || opcode == KvOpcode::BatchRetrieve
+                                     ? kBatchEntryDwordCount
+                                     : kKeyEntryDwordCount;
+    return kSqeDwordCount + static_cast<std::size_t>(batchNumber) * entryDwordCount;
+}
+
+void PublishCompletion(std::uint32_t* flagBuffer, const std::vector<std::uint32_t>& completion)
+{
+    std::memcpy(flagBuffer, completion.data(), 3 * sizeof(std::uint32_t));
+    if (completion.size() > kCqeDwordCount) {
+        std::memcpy(flagBuffer + kCqeDwordCount, completion.data() + kCqeDwordCount,
+                    (completion.size() - kCqeDwordCount) * sizeof(std::uint32_t));
+    }
+    __atomic_store_n(flagBuffer + 3, completion[3], __ATOMIC_RELEASE);
+}
+
 }  // namespace
+
+class FakeTransProvider::WorkerPool {
+public:
+    WorkerPool(FakeTransProvider& provider, std::size_t workerCount) : provider_(provider)
+    {
+        if (workerCount == 0) { throw std::invalid_argument("fake backend worker count is zero"); }
+        workers_.reserve(workerCount);
+        try {
+            for (std::size_t index = 0; index < workerCount; ++index) {
+                workers_.emplace_back(&WorkerPool::WorkerLoop, this);
+            }
+        } catch (...) {
+            StopAndJoin();
+            throw;
+        }
+    }
+
+    ~WorkerPool() { StopAndJoin(); }
+
+    WorkerPool(const WorkerPool&) = delete;
+    WorkerPool& operator=(const WorkerPool&) = delete;
+
+    bool Push(IoTask task)
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stopping_) { return false; }
+            tasks_.emplace_back(std::move(task));
+            ++pendingTaskCount_;
+        }
+        workReady_.notify_one();
+        return true;
+    }
+
+    void WaitUntilIdle()
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        idle_.wait(lock, [this] { return pendingTaskCount_ == 0; });
+    }
+
+private:
+    void WorkerLoop()
+    {
+        while (true) {
+            IoTask task;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                workReady_.wait(lock, [this] { return stopping_ || !tasks_.empty(); });
+                if (stopping_ && tasks_.empty()) { return; }
+                task = std::move(tasks_.front());
+                tasks_.pop_front();
+            }
+
+            provider_.ProcessIoTask(task);
+
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                --pendingTaskCount_;
+                if (pendingTaskCount_ == 0) { idle_.notify_all(); }
+            }
+        }
+    }
+
+    void StopAndJoin()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+        }
+        workReady_.notify_all();
+        for (auto& worker : workers_) {
+            if (worker.joinable()) { worker.join(); }
+        }
+        workers_.clear();
+    }
+
+    FakeTransProvider& provider_;
+    std::mutex mutex_;
+    std::condition_variable workReady_;
+    std::condition_variable idle_;
+    std::deque<IoTask> tasks_;
+    std::vector<std::thread> workers_;
+    std::size_t pendingTaskCount_{0};
+    bool stopping_{false};
+};
 
 FakeTransProviderConfig MakeFakeTransProviderConfig(const TransportConfig& config)
 {
@@ -189,13 +317,21 @@ FakeTransProviderConfig MakeFakeTransProviderConfig(const TransportConfig& confi
     if (deviceIter != config.attrs.end()) {
         fakeConfig.deviceId = static_cast<std::int32_t>(std::stol(deviceIter->second));
     }
+    auto workerIter = config.attrs.find("fake_backend.worker_threads");
+    if (workerIter != config.attrs.end()) {
+        fakeConfig.workerThreads = static_cast<std::size_t>(std::stoull(workerIter->second));
+    }
     return fakeConfig;
 }
 
-FakeTransProvider::FakeTransProvider(FakeTransProviderConfig config) : config_(std::move(config))
+FakeTransProvider::FakeTransProvider(FakeTransProviderConfig config)
+    : config_(std::move(config)),
+      workerPool_(std::make_unique<WorkerPool>(*this, config_.workerThreads))
 {
     if (SetupDeviceRuntime().ok()) { stream_ = device_.MakeStream(); }
 }
+
+FakeTransProvider::~FakeTransProvider() = default;
 
 Status FakeTransProvider::SetupDeviceRuntime()
 {
@@ -240,6 +376,7 @@ Status FakeTransProvider::ResolveLocalAddress(const void* providerAddr, std::siz
 bool FakeTransProvider::StoreBytes(AsuId asuId, const CacheKey& key, std::uint32_t offset,
                                    std::uint64_t addr, std::uint32_t length)
 {
+    std::unique_lock<std::shared_mutex> keyLock(KeyMutex(key));
     if (stream_ == nullptr) {
         UC_ERROR("ASU fake backend stream not initialized asuId={} key={} addr={} length={}.",
                  asuId, CacheKeyToHex(key), addr, length);
@@ -282,6 +419,7 @@ bool FakeTransProvider::StoreBytes(AsuId asuId, const CacheKey& key, std::uint32
 bool FakeTransProvider::LoadBytes(AsuId asuId, const CacheKey& key, std::uint32_t offset,
                                   std::uint64_t addr, std::uint32_t length)
 {
+    std::shared_lock<std::shared_mutex> keyLock(KeyMutex(key));
     if (stream_ == nullptr) {
         UC_ERROR("ASU fake backend stream not initialized asuId={} key={} addr={} length={}.",
                  asuId, CacheKeyToHex(key), addr, length);
@@ -317,6 +455,7 @@ bool FakeTransProvider::LoadBytes(AsuId asuId, const CacheKey& key, std::uint32_
 
 bool FakeTransProvider::DeleteKey(AsuId asuId, const CacheKey& key)
 {
+    std::unique_lock<std::shared_mutex> keyLock(KeyMutex(key));
     std::error_code errorCode;
     std::filesystem::remove(KeyPath(config_.storePath, asuId, key), errorCode);
     return !errorCode;
@@ -324,6 +463,7 @@ bool FakeTransProvider::DeleteKey(AsuId asuId, const CacheKey& key)
 
 bool FakeTransProvider::ExistsKey(AsuId asuId, const CacheKey& key)
 {
+    std::shared_lock<std::shared_mutex> keyLock(KeyMutex(key));
     std::error_code errorCode;
     return std::filesystem::exists(KeyPath(config_.storePath, asuId, key), errorCode);
 }
@@ -509,13 +649,11 @@ std::vector<Status> FakeTransProvider::Send(const std::vector<SendIoBatch>& ioBa
 {
     (void)kernelCount;
     (void)quietCount;
-    auto runtimeStatus = SetupDeviceRuntime();
-    if (!runtimeStatus.ok()) { return std::vector<Status>(ioBatches.size(), runtimeStatus); }
-
     std::vector<Status> statuses;
     statuses.reserve(ioBatches.size());
     for (const auto& ioBatch : ioBatches) {
         if (ioBatch.sendBuffer == nullptr || ioBatch.flagBuffer == nullptr ||
+            ioBatch.len < kSqeDwordCount * sizeof(std::uint32_t) ||
             ioBatch.len > std::numeric_limits<std::size_t>::max()) {
             statuses.emplace_back(
                 Status::Error(StatusCode::INVALID_ARGUMENT, "fake backend IO buffer is invalid"));
@@ -530,24 +668,64 @@ std::vector<Status> FakeTransProvider::Send(const std::vector<SendIoBatch>& ioBa
             continue;
         }
 
-        std::vector<std::uint32_t> completion;
-        status = CompleteFakeBackendRequest(localSendBuffer, ioBatch.len, completion);
-        if (!status.ok()) {
-            statuses.emplace_back(std::move(status));
+        const auto* request = static_cast<const std::uint32_t*>(localSendBuffer);
+        const auto requestSize = RequestDwordCount(request) * sizeof(std::uint32_t);
+        if (requestSize > ioBatch.len) {
+            statuses.emplace_back(Status::Error(StatusCode::INVALID_ARGUMENT,
+                                                "fake backend send buffer is truncated"));
             continue;
         }
 
-        const auto completionSize = completion.size() * sizeof(std::uint32_t);
+        const auto completionSize = CompletionDwordCount(request) * sizeof(std::uint32_t);
         void* localFlagBuffer = nullptr;
         status = ResolveLocalAddress(ioBatch.flagBuffer, completionSize, localFlagBuffer);
         if (!status.ok()) {
             statuses.emplace_back(std::move(status));
             continue;
         }
-        std::memcpy(localFlagBuffer, completion.data(), completionSize);
+
+        IoTask task;
+        task.request.resize(ioBatch.len / sizeof(std::uint32_t) +
+                            (ioBatch.len % sizeof(std::uint32_t) != 0));
+        std::memcpy(task.request.data(), localSendBuffer, static_cast<std::size_t>(ioBatch.len));
+        task.requestLength = ioBatch.len;
+        task.flagBuffer = static_cast<std::uint32_t*>(localFlagBuffer);
+        if (!workerPool_->Push(std::move(task))) {
+            statuses.emplace_back(
+                Status::Error(StatusCode::NOT_INITIALIZED, "fake backend worker pool is stopping"));
+            continue;
+        }
         statuses.emplace_back(Status::OK());
     }
     return statuses;
+}
+
+void FakeTransProvider::ProcessIoTask(IoTask& task)
+{
+    std::vector<std::uint32_t> completion;
+    Status status;
+    try {
+        status = SetupDeviceRuntime();
+        if (status.ok()) {
+            status =
+                CompleteFakeBackendRequest(task.request.data(), task.requestLength, completion);
+        }
+    } catch (const std::exception& error) {
+        status = Status::Error(StatusCode::INTERNAL_ERROR,
+                               "fake backend worker exception: " + std::string(error.what()));
+    } catch (...) {
+        status = Status::Error(StatusCode::INTERNAL_ERROR,
+                               "fake backend worker raised an unknown exception");
+    }
+    if (!status.ok()) {
+        completion.assign(kCqeDwordCount, 0);
+        PackCqeHeader(completion.data(),
+                      static_cast<std::uint16_t>(RequestCid(task.request.data())),
+                      kCqeInternalError);
+        UC_ERROR("ASU fake backend worker failed code={} message={}", static_cast<int>(status.code),
+                 status.message);
+    }
+    PublishCompletion(task.flagBuffer, completion);
 }
 
 Status FakeTransProvider::RegisterMemory(const std::vector<RegisterMemoryDesc>& memoryDescs,
@@ -587,10 +765,18 @@ Status FakeTransProvider::BindMemory(const std::vector<BindMemoryDesc>& memoryDe
 std::vector<Status> FakeTransProvider::UnregisterMemory(
     const std::vector<UnregisterMemoryDesc>& handles)
 {
+    workerPool_->WaitUntilIdle();
     std::lock_guard<std::mutex> lock(registeredMemoryMu_);
     for (const auto& desc : handles) { registeredMemories_.erase(desc.mrHandle); }
     return std::vector<Status>(handles.size(), Status::OK());
 }
+
+#ifdef ASU_BUILD_TESTS
+void WaitForFakeBackendIdleForTest(FakeTransProvider& provider)
+{
+    provider.workerPool_->WaitUntilIdle();
+}
+#endif
 
 Status FakeTransProvider::AllocThread(uint32_t, const std::vector<uint32_t>&,
                                       std::vector<ThreadHandle>&)

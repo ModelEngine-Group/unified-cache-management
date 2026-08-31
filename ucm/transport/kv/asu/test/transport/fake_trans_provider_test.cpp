@@ -1,6 +1,7 @@
 #define private public
 #include "fake_trans_provider.h"
 #undef private
+#include <array>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -41,6 +42,14 @@ std::vector<std::uint32_t> BuildExistRequest(const std::vector<CacheKey>& keys, 
     return request;
 }
 
+std::array<std::uint32_t, kSqeDwordCount> BuildKeepAliveRequest(std::uint16_t cid)
+{
+    std::array<std::uint32_t, kSqeDwordCount> request{};
+    request[0] =
+        static_cast<std::uint32_t>(KvOpcode::KeepAlive) | (static_cast<std::uint32_t>(cid) << 16);
+    return request;
+}
+
 TEST(FakeTransProviderTest, RegisterMemoryReturnsUniqueHandlesAcrossCalls)
 {
     FakeTransProvider provider(FakeTransProviderConfig{});
@@ -76,6 +85,51 @@ TEST(FakeTransProviderTest, BindMemoryCreatesProviderLocalHandles)
     EXPECT_NE(handles[0], kInvalidMRHandle);
     EXPECT_NE(handles[1], kInvalidMRHandle);
     EXPECT_NE(handles[0], handles[1]);
+}
+
+TEST(FakeTransProviderTest, SendQueuesCompletionForWorker)
+{
+    FakeTransProviderConfig config;
+    config.latencyMs = 20;
+    config.workerThreads = 2;
+    FakeTransProvider provider(config);
+
+    constexpr std::uint16_t cid = 7;
+    auto request = BuildKeepAliveRequest(cid);
+    std::array<std::uint32_t, kCqeDwordCount> completion{};
+    std::vector<MRHandle> handles;
+    ASSERT_TRUE(
+        provider
+            .RegisterMemory(
+                {
+                    {TransProvider::MemType::MEM_HOST,
+                     reinterpret_cast<std::uintptr_t>(request.data()),    sizeof(request),
+                     reinterpret_cast<std::uintptr_t>(request.data())   },
+                    {TransProvider::MemType::MEM_HOST,
+                     reinterpret_cast<std::uintptr_t>(completion.data()), sizeof(completion),
+                     reinterpret_cast<std::uintptr_t>(completion.data())}
+    },
+                handles)
+            .ok());
+
+    const auto statuses = provider.Send(
+        {
+            {nullptr, request.data(), completion.data(), sizeof(request)}
+    },
+        0, 0);
+    ASSERT_EQ(statuses.size(), 1U);
+    ASSERT_TRUE(statuses[0].ok()) << statuses[0].message;
+    EXPECT_EQ(__atomic_load_n(completion.data() + 3, __ATOMIC_ACQUIRE), 0U);
+
+    WaitForFakeBackendIdleForTest(provider);
+    EXPECT_EQ(__atomic_load_n(completion.data() + 3, __ATOMIC_ACQUIRE) & 0xFFFF, cid);
+}
+
+TEST(FakeTransProviderTest, ParsesWorkerThreadCount)
+{
+    TransportConfig config;
+    config.attrs["fake_backend.worker_threads"] = "6";
+    EXPECT_EQ(MakeFakeTransProviderConfig(config).workerThreads, 6U);
 }
 
 TEST(FakeTransProviderTest, ExistHonorsSeekControl)

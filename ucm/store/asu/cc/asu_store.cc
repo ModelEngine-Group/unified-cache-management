@@ -199,6 +199,8 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
         transportConfig.attrs["fake_backend.path"] = config.fakeBackendPath;
         transportConfig.attrs["fake_backend.latency_ms"] =
             std::to_string(config.fakeBackendLatencyMs);
+        transportConfig.attrs["fake_backend.worker_threads"] =
+            std::to_string(config.fakeBackendWorkerThreads);
         transportConfig.attrs["fake_backend.device_id"] = std::to_string(fakeDeviceId);
         if (transportConfig.endpoints.empty()) {
             UC::ASU::AsuEndpoint endpoint;
@@ -411,6 +413,7 @@ private:
         }
         inConfig.Get("asu_fake_backend_path", config.fakeBackendPath);
         inConfig.GetNumber("asu_fake_backend_latency_ms", config.fakeBackendLatencyMs);
+        inConfig.GetNumber("asu_fake_backend_worker_threads", config.fakeBackendWorkerThreads);
         inConfig.GetNumber("asu_shared_provider", config.sharedProviderMode);
         inConfig.Get("asu_sc", config.sc);
         ReadClientAttr(inConfig, "asu_router_type", "hash_table.type", config);
@@ -536,6 +539,11 @@ private:
         }
         if (config.queryTimeoutMs == 0) {
             return Status::InvalidParam("asu_query_timeout_ms must be greater than zero");
+        }
+        if (config.transProviderType == UC::ASU::TransProviderType::FAKE &&
+            config.fakeBackendWorkerThreads == 0) {
+            return Status::InvalidParam(
+                "asu_fake_backend_worker_threads must be greater than zero");
         }
         if (config.clientMaxInflightTasks > std::numeric_limits<std::uint32_t>::max()) {
             return Status::InvalidParam("asu_client_max_inflight_tasks exceeds uint32 range");
@@ -761,6 +769,7 @@ private:
         UC_INFO("Set AsuStore::TransProviderBackend to {}.",
                 TransProviderBackendName(config.transProviderType));
         UC_INFO("Set AsuStore::FakeBackendPath to {}.", config.fakeBackendPath);
+        UC_INFO("Set AsuStore::FakeBackendWorkerThreads to {}.", config.fakeBackendWorkerThreads);
     }
 
     UC::ASU::MRHandle FindPersistentHandle(const UC::ASU::MemoryRegion& region) const
