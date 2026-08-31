@@ -220,11 +220,6 @@ Status KvTestConfigLoader::Load(const std::string& configPath, KvTestConfig& con
         GetStringAny(values, {"output.path"}, config.output.path);
         GetUint64Any(values, {"output.realtime_file_max_bytes"},
                      config.output.realtimeFileMaxBytes);
-
-        std::uint64_t timeoutMs{0};
-        if (GetUint64Any(values, {"connection.timeout_ms"}, timeoutMs)) {
-            config.asuClientConfig.defaultWaitTimeoutMs = timeoutMs;
-        }
     } catch (const std::exception& e) {
         return Status::Error(kExitInvalidArgument,
                              "invalid kv-test config value in " + configPath + ": " + e.what());
@@ -243,7 +238,13 @@ Status KvTestConfigLoader::MergeCommandOptions(const CommandOptions& options,
         if (options.command == CommandType::BENCH) { config.bench.ioSize = options.valueSize; }
     }
     if (options.batchSize != 0) { config.bench.batchSize = options.batchSize; }
-    if (options.timeoutMs != 0) { config.asuClientConfig.defaultWaitTimeoutMs = options.timeoutMs; }
+    if (options.timeoutMs != 0) {
+        config.asuClientConfig.defaultWaitTimeoutMs = options.timeoutMs;
+        config.asuClientConfig.timeoutMs = options.timeoutMs;
+        for (auto& transportConfig : config.asuClientConfig.transportConfigs) {
+            transportConfig.timeoutMs = options.timeoutMs;
+        }
+    }
     if (!options.outputPath.empty()) { config.output.path = options.outputPath; }
 
     if (options.benchOp != BenchOpType::UNKNOWN) { config.bench.op = options.benchOp; }

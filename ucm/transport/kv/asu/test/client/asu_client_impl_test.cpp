@@ -896,6 +896,7 @@ TEST(AsuClientImplTest, Config_SeparatesClientAndTransportMaxInflightTasks)
         std::ofstream configFile{kConfigPath};
         ASSERT_TRUE(configFile.is_open());
         configFile << "client.maxInflightTasks=3\n";
+        configFile << "wait_timeout_ms=321\n";
         configFile << "transport.asuIds=10\n";
         configFile << "transport.maxInflightTasks=7\n";
     }
@@ -906,7 +907,10 @@ TEST(AsuClientImplTest, Config_SeparatesClientAndTransportMaxInflightTasks)
 
     ASSERT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(config.maxInflightTasks, std::uint32_t{3});
+    EXPECT_EQ(config.defaultWaitTimeoutMs, std::uint64_t{321});
+    EXPECT_EQ(config.timeoutMs, std::uint64_t{321});
     ASSERT_EQ(config.transportConfigs.size(), std::size_t{1});
+    EXPECT_EQ(config.transportConfigs.front().timeoutMs, std::uint64_t{321});
     EXPECT_EQ(config.transportConfigs.front().maxInflightTasks, std::uint32_t{7});
 }
 

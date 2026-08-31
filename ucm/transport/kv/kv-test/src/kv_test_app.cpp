@@ -406,7 +406,7 @@ int KvTestApp::Run(int argc, char** argv)
                   << " command=config check config=" << options.configPath << '\n';
         std::cout << "config: key_prefix=" << config.keyPrefix << " count=" << config.count
                   << " value_size=" << config.valueSize
-                  << " timeout_ms=" << config.asuClientConfig.defaultWaitTimeoutMs
+                  << " wait_timeout_ms=" << config.asuClientConfig.defaultWaitTimeoutMs
                   << " output=" << config.output.path << '\n';
         return kExitSuccess;
     }

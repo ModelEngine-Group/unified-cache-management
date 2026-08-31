@@ -22,8 +22,7 @@ struct Config {
     std::string localIp;
     std::string asuNamePrefix{"asu"};
     std::vector<std::uint32_t> kvNsIds;
-    std::uint64_t defaultWaitTimeoutMs{100};
-    std::uint64_t timeoutMs{100};
+    std::uint64_t waitTimeoutMs{100};
     std::uint64_t queryTimeoutMs{500};
     std::uint64_t maxErrorCount{2};
     std::uint64_t clientMaxInflightTasks{1024};

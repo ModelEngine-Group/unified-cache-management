@@ -168,7 +168,7 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
     transportConfig.asuId = static_cast<UC::ASU::AsuId>(config.asuIds[index]);
     transportConfig.asuName = config.asuNamePrefix + "-" + std::to_string(config.asuIds[index]);
     transportConfig.deviceId = config.deviceId;
-    transportConfig.timeoutMs = config.timeoutMs;
+    transportConfig.timeoutMs = config.waitTimeoutMs;
     transportConfig.maxErrorCount = static_cast<std::uint32_t>(config.maxErrorCount);
     transportConfig.maxInflightTasks = static_cast<std::uint32_t>(config.transportMaxInflightTasks);
     transportConfig.maxInflightBytes = config.maxInflightBytes;
@@ -215,8 +215,8 @@ UC::ASU::AsuClientConfig BuildAsuClientConfig(const Config& config)
     asuConfig.clientId = config.clientId;
     asuConfig.viewServiceAddrs = config.viewServiceAddrs;
     asuConfig.maxInflightTasks = static_cast<std::uint32_t>(config.clientMaxInflightTasks);
-    asuConfig.defaultWaitTimeoutMs = config.defaultWaitTimeoutMs;
-    asuConfig.timeoutMs = config.timeoutMs;
+    asuConfig.defaultWaitTimeoutMs = config.waitTimeoutMs;
+    asuConfig.timeoutMs = config.waitTimeoutMs;
     asuConfig.sharedProviderMode =
         static_cast<UC::ASU::SharedProviderMode>(config.sharedProviderMode);
     asuConfig.attrs = config.clientAttrs;
@@ -363,8 +363,8 @@ public:
     Status Wait(Detail::TaskHandle taskId) override
     {
         UC::ASU::TaskResult result;
-        auto status = client_->Wait(static_cast<UC::ASU::TaskId>(taskId),
-                                    config_.defaultWaitTimeoutMs, result);
+        auto status =
+            client_->Wait(static_cast<UC::ASU::TaskId>(taskId), config_.waitTimeoutMs, result);
         if (!status.ok()) {
             LogAsuStatus("wait task", status);
             return ConvertStatus(status);
@@ -392,8 +392,7 @@ private:
         inConfig.Get("asu_local_ip", config.localIp);
         inConfig.Get("asu_name_prefix", config.asuNamePrefix);
         inConfig.GetNumbers("kv_ns_ids", config.kvNsIds);
-        inConfig.GetNumber("asu_default_wait_timeout_ms", config.defaultWaitTimeoutMs);
-        inConfig.GetNumber("asu_timeout_ms", config.timeoutMs);
+        inConfig.GetNumber("asu_wait_timeout_ms", config.waitTimeoutMs);
         inConfig.GetNumber("asu_query_timeout_ms", config.queryTimeoutMs);
         inConfig.GetNumber("asu_max_error_count", config.maxErrorCount);
         inConfig.GetNumber("asu_client_max_inflight_tasks", config.clientMaxInflightTasks);
@@ -529,8 +528,8 @@ private:
             config.maxErrorCount > std::numeric_limits<std::uint32_t>::max()) {
             return Status::InvalidParam("asu_max_error_count must be in uint32 range and nonzero");
         }
-        if (config.timeoutMs == 0) {
-            return Status::InvalidParam("asu_timeout_ms must be greater than zero");
+        if (config.waitTimeoutMs == 0) {
+            return Status::InvalidParam("asu_wait_timeout_ms must be greater than zero");
         }
         if (config.queryTimeoutMs == 0) {
             return Status::InvalidParam("asu_query_timeout_ms must be greater than zero");
