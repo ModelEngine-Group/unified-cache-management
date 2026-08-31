@@ -140,16 +140,18 @@ TEST_F(TransportTaskCompletionTest, InitRejectsZeroMaxErrorCount)
     EXPECT_EQ(status.code, StatusCode::INVALID_ARGUMENT);
 }
 
-TEST_F(TransportTaskCompletionTest, TaskExecutorFollowsInitializedTransportLifetime)
+TEST_F(TransportTaskCompletionTest, TaskExecutorSupportsExplicitLifecycle)
 {
     AsuTransportImpl transport;
     EXPECT_EQ(transport.taskExecutor_, nullptr);
     transport.SetTransProvider(std::make_unique<StubTransProvider>());
 
-    ASSERT_TRUE(transport.Init(TransportConfig{}, transport.transProvider_).ok());
+    CreateTaskExecutor(transport);
+    ASSERT_TRUE(transport.taskExecutor_->Init().ok());
     EXPECT_NE(transport.taskExecutor_, nullptr);
 
-    EXPECT_TRUE(transport.Shutdown().ok());
+    EXPECT_TRUE(transport.taskExecutor_->Shutdown().ok());
+    transport.taskExecutor_.reset();
     EXPECT_EQ(transport.taskExecutor_, nullptr);
 }
 
