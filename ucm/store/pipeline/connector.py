@@ -307,6 +307,17 @@ def _mooncake_posix_pipeline_builder(
     )
 
 
+def _delegator_pipeline_builder(
+    config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
+):
+    store_dir = Path(__file__).resolve().parent.parent
+    pipeline.Stack(
+        "Delegator",
+        str(store_dir / "delegator/libdelegator_store.so"),
+        config,
+    )
+
+
 def _yuanrong_pipeline_builder(
     config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
 ):
@@ -374,5 +385,6 @@ UcmPipelineStoreBuilder.register(
 UcmPipelineStoreBuilder.register("Cache|Fake", _cache_fake_pipeline_builder)
 UcmPipelineStoreBuilder.register("Mooncake", _mooncake_pipeline_builder)
 UcmPipelineStoreBuilder.register("Mooncake|Posix", _mooncake_posix_pipeline_builder)
+UcmPipelineStoreBuilder.register("Delegator", _delegator_pipeline_builder)
 UcmPipelineStoreBuilder.register("YuanRong", _yuanrong_pipeline_builder)
 UcmPipelineStoreBuilder.register("YuanRong|Posix", _yuanrong_posix_pipeline_builder)
