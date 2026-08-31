@@ -64,6 +64,25 @@ TEST(TransportConfigParserTest, LoadsMaxErrorCount)
     EXPECT_EQ(config.maxErrorCount, std::uint32_t{7});
 }
 
+TEST(TransportConfigParserTest, LoadsCompletionPollSpinLimit)
+{
+    constexpr const char* kConfigPath = "asu_transport_completion_poll_spin_limit_test.conf";
+    {
+        std::ofstream configFile{kConfigPath};
+        ASSERT_TRUE(configFile.is_open());
+        configFile << "completion_poll_spin_limit=23\n"
+                   << "kernel_count=1\n"
+                   << "quiet_count=1\n";
+    }
+
+    TransportConfig config;
+    const auto status = LoadTransportConfig(kConfigPath, config);
+    std::remove(kConfigPath);
+
+    ASSERT_TRUE(status.ok()) << status.message;
+    EXPECT_EQ(config.completionPollSpinLimit, std::size_t{23});
+}
+
 CacheKey MakeCacheKey(std::string_view text)
 {
     CacheKey key{};

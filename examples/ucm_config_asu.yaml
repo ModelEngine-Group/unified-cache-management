@@ -44,6 +44,7 @@ ucm_connectors:
       asu_client_max_inflight_tasks: 1024
       asu_transport_max_inflight_tasks: 1024
       asu_sc: true
+      asu_completion_poll_spin_limit: 16
 
 enable_event_sync: true
 use_layerwise: false

@@ -63,6 +63,7 @@ struct TransportConfig {
 
     std::uint64_t timeoutMs{100};
     std::uint32_t maxErrorCount{2};
+    std::size_t completionPollSpinLimit{16};
 
     bool enableDeviceDirect{true};
     bool enableHostFallback{false};

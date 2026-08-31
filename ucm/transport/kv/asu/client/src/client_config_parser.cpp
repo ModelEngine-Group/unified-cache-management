@@ -138,6 +138,9 @@ Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& confi
     for (auto& transportConfig : config.transportConfigs) {
         transportConfig.timeoutMs = config.timeoutMs;
         for (const auto& field : transportFields) {
+            if (ApplyTransportCompletionConfigField(transportConfig, field.first, field.second)) {
+                continue;
+            }
             if (ApplyTransportBufferConfigField(transportConfig, field.first, field.second)) {
                 continue;
             }

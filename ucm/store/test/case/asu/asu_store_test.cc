@@ -418,6 +418,7 @@ TEST(UCAsuStoreTest, PropagatesSeparateMaxInflightTasks)
     config.Set("asu_ids", std::vector<ssize_t>{1001});
     config.SetNumber("asu_client_max_inflight_tasks", std::uint64_t{17});
     config.SetNumber("asu_transport_max_inflight_tasks", std::uint64_t{23});
+    config.SetNumber("asu_completion_poll_spin_limit", std::uint64_t{19});
 
     ASSERT_TRUE(store.Setup(config).Success());
     ASSERT_FALSE(state->initConfigs.empty());
@@ -426,6 +427,7 @@ TEST(UCAsuStoreTest, PropagatesSeparateMaxInflightTasks)
     EXPECT_EQ(asuConfig.maxInflightTasks, std::uint32_t{17});
     ASSERT_EQ(asuConfig.transportConfigs.size(), std::size_t{1});
     EXPECT_EQ(asuConfig.transportConfigs.front().maxInflightTasks, std::uint32_t{23});
+    EXPECT_EQ(asuConfig.transportConfigs.front().completionPollSpinLimit, std::size_t{19});
 }
 
 TEST(UCAsuStoreTest, FakeProviderPreservesConfiguredSc)

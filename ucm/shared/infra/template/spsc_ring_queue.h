@@ -109,7 +109,7 @@ public:
                 std::this_thread::yield();
             } else {
                 if (stop.load(std::memory_order_acquire)) { break; }
-                std::this_thread::sleep_for(std::chrono::microseconds(100));
+                std::this_thread::sleep_for(std::chrono::microseconds(50));
                 spinCount = 0;
             }
         }

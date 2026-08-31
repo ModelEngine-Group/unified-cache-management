@@ -858,6 +858,7 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
         configFile << "transport.device_id=6\n";
         configFile << "transport.provider_type=fake\n";
         configFile << "transport.max_error_count=5\n";
+        configFile << "transport.completion_poll_spin_limit=23\n";
         configFile << "asuInfo.20=protocol=roce,placement=device,port=6000,"
                    << "local.comm_id=192.168.1.20\n";
     }
@@ -886,6 +887,7 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
         EXPECT_EQ(state->initConfigs[asuId].asuDeleteIoNum, std::size_t{13});
         EXPECT_EQ(state->initConfigs[asuId].asuQueryIoNum, std::size_t{14});
         EXPECT_EQ(state->initConfigs[asuId].maxErrorCount, std::uint32_t{5});
+        EXPECT_EQ(state->initConfigs[asuId].completionPollSpinLimit, std::size_t{23});
     }
 }
 

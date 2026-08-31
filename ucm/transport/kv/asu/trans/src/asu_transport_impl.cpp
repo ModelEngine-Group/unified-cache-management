@@ -73,6 +73,10 @@ Status AsuTransportImpl::Init(const TransportConfig& config,
     if (config_.maxErrorCount == 0) {
         return Status::Error(StatusCode::INVALID_ARGUMENT, "maxErrorCount must be greater than 0");
     }
+    if (config_.completionPollSpinLimit == 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             "completionPollSpinLimit must be greater than 0");
+    }
 
     if (!transProvider_) {
         UC_ERROR("AsuTransportImpl::Init: TransProvider is null");
@@ -278,11 +282,30 @@ void AsuTransportImpl::WorkerLoop()
 
 void AsuTransportImpl::CompletionLoop()
 {
+    std::size_t noCompletionRounds = 0;
+
     while (!stopCompletionWorker_.load(std::memory_order_acquire)) {
-        for (const auto& ctx : taskManager_.GetAll()) {
-            if (taskExecutor_->Poll(ctx)) { taskManager_.NotifyCompletion(ctx); }
+        const auto tasks = taskManager_.GetAll();
+        if (tasks.empty()) {
+            noCompletionRounds = 0;
+            std::this_thread::sleep_for(std::chrono::microseconds(50));
+            continue;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+        bool completedTask = false;
+        for (const auto& ctx : tasks) {
+            if (taskExecutor_->Poll(ctx)) {
+                taskManager_.NotifyCompletion(ctx);
+                completedTask = true;
+            }
+        }
+
+        if (completedTask) {
+            noCompletionRounds = 0;
+        } else if (++noCompletionRounds >= config_.completionPollSpinLimit) {
+            noCompletionRounds = 0;
+            std::this_thread::yield();
+        }
     }
 }
 
