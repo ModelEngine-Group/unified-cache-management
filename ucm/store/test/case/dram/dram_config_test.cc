@@ -30,7 +30,7 @@
 namespace UC::Dram {
 namespace {
 
-Detail::Dictionary BaseConfig(bool includeTensorSizes = true)
+Detail::Dictionary BaseConfig(bool includeTensorSizes = true, bool includeDeviceId = true)
 {
     Detail::Dictionary config;
     config.Set("local_control_endpoint", std::string{"127.0.0.1:6000"});
@@ -40,6 +40,7 @@ Detail::Dictionary BaseConfig(bool includeTensorSizes = true)
                std::vector<std::string>{"127.0.0.1:7000", "127.0.0.1:9000"});
     config.Set("node_transport_manager_ids",
                std::vector<std::string>{"127.0.0.1:7100", "127.0.0.1:9100"});
+    if (includeDeviceId) { config.SetNumber("device_id", 0); }
     if (includeTensorSizes) { config.Set("tensor_size_list", std::vector<ssize_t>{4096}); }
     return config;
 }
@@ -107,6 +108,34 @@ TEST(UCDramConfigTest, ParsesFixedReconnectInterval)
 
 TEST(UCDramConfigTest, RequiresTensorSizes) { EXPECT_FALSE(DramConfig::Parse(BaseConfig(false))); }
 
+TEST(UCDramConfigTest, ParsesGpuKvBuffers)
+{
+    auto input = BaseConfig();
+    input.Set("gpu_kv_buffer_addrs", std::vector<ssize_t>{4096, 8192});
+    input.Set("gpu_kv_buffer_sizes", std::vector<ssize_t>{1024, 2048});
+    auto parsed = DramConfig::Parse(input);
+    ASSERT_TRUE(parsed);
+    EXPECT_EQ(parsed.Value().gpuKvBufferAddrs, (std::vector<std::uintptr_t>{4096, 8192}));
+    EXPECT_EQ(parsed.Value().gpuKvBufferSizes, (std::vector<std::size_t>{1024, 2048}));
+}
+
+TEST(UCDramConfigTest, RejectsInvalidGpuKvBuffers)
+{
+    auto mismatched = BaseConfig();
+    mismatched.Set("gpu_kv_buffer_addrs", std::vector<ssize_t>{4096});
+    EXPECT_FALSE(DramConfig::Parse(mismatched));
+
+    auto zeroAddress = BaseConfig();
+    zeroAddress.Set("gpu_kv_buffer_addrs", std::vector<ssize_t>{0});
+    zeroAddress.Set("gpu_kv_buffer_sizes", std::vector<ssize_t>{1024});
+    EXPECT_FALSE(DramConfig::Parse(zeroAddress));
+
+    auto zeroSize = BaseConfig();
+    zeroSize.Set("gpu_kv_buffer_addrs", std::vector<ssize_t>{4096});
+    zeroSize.Set("gpu_kv_buffer_sizes", std::vector<ssize_t>{0});
+    EXPECT_FALSE(DramConfig::Parse(zeroSize));
+}
+
 TEST(UCDramConfigTest, ParsesRouterTypeIntoStrongConfiguration)
 {
     auto input = BaseConfig();
@@ -153,7 +182,7 @@ TEST(UCDramConfigTest, RejectsInvalidSchedulerBoundaries)
 TEST(UCDramConfigTest, ParsesControlEndpointsAndStoresManagerIds)
 {
     auto input = BaseConfig();
-    input.Set("role", std::string{"scheduler"});
+    input.SetNumber("device_id", -1);
     input.Set("local_control_endpoint", std::string{"127.0.0.1:06000"});
     auto parsed = DramConfig::Parse(input);
     ASSERT_TRUE(parsed);
@@ -172,12 +201,14 @@ TEST(UCDramConfigTest, ParsesControlEndpointsAndStoresManagerIds)
 TEST(UCDramConfigTest, UsesConfiguredPortsForScheduler)
 {
     auto input = BaseConfig();
-    input.Set("role", std::string{"scheduler"});
-    input.SetNumber("device_id", 3);
+    input.SetNumber("device_id", -1);
     input.SetNumber("hixl_listen_port", 36666);
     input.Set("enable_hixl_cs", true);
     auto parsed = DramConfig::Parse(input);
     ASSERT_TRUE(parsed);
+    EXPECT_EQ(parsed.Value().GetRole(), Role::SCHEDULER);
+    EXPECT_EQ(parsed.Value().deviceId, -1);
+    EXPECT_EQ(parsed.Value().nodeScheduler.deviceId, 0);
     EXPECT_EQ(parsed.Value().localControlPort, std::uint16_t{6000});
     EXPECT_EQ(parsed.Value().localTransportManagerId, "127.0.0.1:6100");
     EXPECT_EQ(parsed.Value().hixlListenPort, std::uint16_t{36666});
@@ -187,29 +218,46 @@ TEST(UCDramConfigTest, UsesConfiguredPortsForScheduler)
 TEST(UCDramConfigTest, OffsetsWorkerPortsByDeviceId)
 {
     auto input = BaseConfig();
-    input.Set("role", std::string{"worker"});
     input.SetNumber("device_id", 3);
     auto parsed = DramConfig::Parse(input);
     ASSERT_TRUE(parsed);
+    EXPECT_EQ(parsed.Value().GetRole(), Role::WORKER);
     EXPECT_EQ(parsed.Value().localControlPort, std::uint16_t{6004});
     EXPECT_EQ(parsed.Value().localTransportManagerId, "127.0.0.1:6104");
     EXPECT_EQ(parsed.Value().hixlListenPort, std::uint16_t{36667});
 }
 
-TEST(UCDramConfigTest, RejectsInvalidRoleAndWorkerPortOverflow)
+TEST(UCDramConfigTest, RejectsInvalidDeviceIdAndWorkerPortOverflow)
 {
-    auto invalidRole = BaseConfig();
-    invalidRole.Set("role", std::string{"server"});
-    EXPECT_FALSE(DramConfig::Parse(invalidRole));
+    auto invalidDeviceId = BaseConfig();
+    invalidDeviceId.SetNumber("device_id", 66);
+    EXPECT_FALSE(DramConfig::Parse(invalidDeviceId));
 
     auto overflow = BaseConfig();
-    overflow.Set("role", std::string{"worker"});
+    overflow.SetNumber("device_id", 0);
     overflow.Set("local_control_endpoint", std::string{"127.0.0.1:65535"});
     EXPECT_FALSE(DramConfig::Parse(overflow));
 
     auto hixlOverflow = BaseConfig();
     hixlOverflow.SetNumber("hixl_listen_port", 65535);
     EXPECT_FALSE(DramConfig::Parse(hixlOverflow));
+}
+
+TEST(UCDramConfigTest, SchedulerDoesNotRequireWorkerTensorSizes)
+{
+    auto input = BaseConfig(false);
+    input.SetNumber("device_id", -2);
+    auto parsed = DramConfig::Parse(input);
+    ASSERT_TRUE(parsed);
+    EXPECT_EQ(parsed.Value().GetRole(), Role::SCHEDULER);
+}
+
+TEST(UCDramConfigTest, DefaultsToSchedulerWhenDeviceIdIsOmitted)
+{
+    auto parsed = DramConfig::Parse(BaseConfig(false, false));
+    ASSERT_TRUE(parsed);
+    EXPECT_EQ(parsed.Value().deviceId, -1);
+    EXPECT_EQ(parsed.Value().GetRole(), Role::SCHEDULER);
 }
 
 }  // namespace

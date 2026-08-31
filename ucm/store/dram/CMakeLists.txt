@@ -1,5 +1,4 @@
-if(NOT (RUNTIME_ENVIRONMENT STREQUAL "ascend"
-        OR RUNTIME_ENVIRONMENT STREQUAL "simu"))
+if(NOT (UCM_RUNTIME_ASCEND_FAMILY OR RUNTIME_ENVIRONMENT STREQUAL "simu"))
     return()
 endif()
 
@@ -16,7 +15,7 @@ set(UCM_DRAM_STORE_CC_SOURCE_FILES
     ${DRAM_SOURCE_DIR}/node_scheduler.cc
     ${DRAM_SOURCE_DIR}/task_manager.cc
 )
-if(RUNTIME_ENVIRONMENT STREQUAL "ascend")
+if(UCM_RUNTIME_ASCEND_FAMILY)
     list(APPEND UCM_DRAM_STORE_CC_SOURCE_FILES
         ${DRAM_SOURCE_DIR}/transport_manager_backend.cc)
 endif()
@@ -26,7 +25,7 @@ set_target_properties(dramstore PROPERTIES
     BUILD_WITH_INSTALL_RPATH ON
     INSTALL_RPATH "$ORIGIN;$ORIGIN/../../transport/p2p"
 )
-if(RUNTIME_ENVIRONMENT STREQUAL "ascend")
+if(UCM_RUNTIME_ASCEND_FAMILY)
     target_compile_definitions(dramstore PRIVATE UC_DRAM_ASCEND_BACKEND)
 endif()
 target_include_directories(dramstore PUBLIC
@@ -45,7 +44,7 @@ target_link_libraries(dramstore
         router
         buffer_pool
 )
-if(RUNTIME_ENVIRONMENT STREQUAL "ascend")
+if(UCM_RUNTIME_ASCEND_FAMILY)
     target_link_libraries(dramstore PUBLIC ucm_p2p_transport)
 endif()
 file(RELATIVE_PATH DRAM_INSTALL_REL_PATH ${UCM_ROOT_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
@@ -56,6 +55,7 @@ install(TARGETS dramstore
 
 set(DRAMPOOL_SOURCE_DIR ${DRAM_SOURCE_DIR}/drampool)
 set(DRAMPOOL_SOURCE_FILES
+    ${DRAM_SOURCE_DIR}/kv_protocol.cc
     ${DRAMPOOL_SOURCE_DIR}/completion_poller.cc
     ${DRAMPOOL_SOURCE_DIR}/drampool_daemon.cc
     ${DRAMPOOL_SOURCE_DIR}/drampool_launch_config.cc
@@ -70,6 +70,8 @@ target_include_directories(drampool_core
     PUBLIC
         ${DRAMPOOL_SOURCE_DIR}
         ${DRAM_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/ucm/shared
+        ${CMAKE_SOURCE_DIR}/ucm/store/detail
 )
 target_link_libraries(drampool_core
     PUBLIC
@@ -80,8 +82,10 @@ target_link_libraries(drampool_core
         buffer_pool
         ucm_p2p_transport
         trans
-        dramstore
 )
 add_executable(drampool ${DRAMPOOL_SOURCE_DIR}/main.cc)
 target_link_libraries(drampool PRIVATE drampool_core)
+set_target_properties(drampool PROPERTIES
+    INSTALL_RPATH "$ORIGIN/../ucm/transport/p2p"
+)
 install(TARGETS drampool RUNTIME DESTINATION bin COMPONENT ucm)
