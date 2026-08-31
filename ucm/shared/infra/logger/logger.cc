@@ -29,24 +29,24 @@ namespace UC::Logger {
 
 void Log(Level lv, std::string file, std::string func, int line, std::string msg)
 {
-    SourceLocation loc{InternSourceString(std::move(file)), InternSourceString(std::move(func)),
-                       line};
-    Logger::GetInstance().Log(std::move(lv), std::move(loc), std::move(msg));
+    auto& logger = Logger::GetInstance();
+    SourceLocation loc = logger.InternSourceLocation(std::move(file), std::move(func), line);
+    logger.Log(std::move(lv), std::move(loc), std::move(msg));
 }
 
 void LogFileOnly(Level lv, std::string file, std::string func, int line, std::string msg)
 {
-    SourceLocation loc{InternSourceString(std::move(file)), InternSourceString(std::move(func)),
-                       line};
-    Logger::GetInstance().LogFileOnly(std::move(lv), std::move(loc), std::move(msg));
+    auto& logger = Logger::GetInstance();
+    SourceLocation loc = logger.InternSourceLocation(std::move(file), std::move(func), line);
+    logger.LogFileOnly(std::move(lv), std::move(loc), std::move(msg));
 }
 
 void LogRateLimit(Level lv, std::string file, std::string func, int line, std::string msg)
 {
-    SourceLocation loc{InternSourceString(std::move(file)), InternSourceString(std::move(func)),
-                       line};
-    if (Logger::GetInstance().FilterCallSite(loc.file, line)) {
-        Logger::GetInstance().Log(std::move(lv), std::move(loc), std::move(msg));
+    auto& logger = Logger::GetInstance();
+    SourceLocation loc = logger.InternSourceLocation(std::move(file), std::move(func), line);
+    if (logger.FilterCallSite(loc.file, line)) {
+        logger.Log(std::move(lv), std::move(loc), std::move(msg));
     }
 }
 

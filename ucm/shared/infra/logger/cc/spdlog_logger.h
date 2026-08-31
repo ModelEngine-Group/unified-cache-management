@@ -28,10 +28,8 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
-#include <mutex>
 #include <spdlog/spdlog.h>
 #include <string>
-#include <unordered_set>
 namespace UC::Logger {
 
 constexpr size_t HASH_SLOT_NUM = 512;
@@ -43,24 +41,19 @@ struct SourceLocation {
     const int32_t line = 0;
 };
 
-const char* InternSourceString(std::string&& s);
-
 class Logger {
     static constexpr uint64_t kDefaultRateLimitWindowMs = 10000;
-    std::shared_ptr<spdlog::logger> logger_;
-    std::shared_ptr<spdlog::logger> file_logger_;
-    std::mutex mutex_;
+    struct Backend;
+
+    std::atomic<Backend*> backend_{nullptr};
+    const int32_t creation_pid_;
     bool rate_limit_enabled_{true};
     uint64_t rate_limit_window_ms_{kDefaultRateLimitWindowMs};
     uint32_t rate_limit_max_logs_{3};
 
 public:
-    Logger()
-    {
-        logger_ = nullptr;
-        register_at_exit();
-        LoadRateLimitConfig();
-    }
+    Logger();
+    ~Logger();
 
     void LoadRateLimitConfig();
 
@@ -78,6 +71,7 @@ public:
     void LogFileOnly(Level&& lv, SourceLocation&& loc, std::string&& msg);
     void Setup(const std::string& path, int max_files, int max_size);
     void Flush();
+    SourceLocation InternSourceLocation(std::string&& file, std::string&& func, int line);
 
     static Logger& GetInstance()
     {
@@ -99,11 +93,7 @@ private:
         std::array<ChainEntryData, HASH_CHAIN_LEN> chain_entries;
     };
 
-    std::array<SlotData, HASH_SLOT_NUM> hash_slots_;
-
-    std::shared_ptr<spdlog::logger> Make();
-    std::shared_ptr<spdlog::logger> MakeCapture();
-    bool file_enabled_{true};
+    Backend* GetBackend();
     std::string path_{"log"};
     int max_files_{3};
     int max_size_{5 * 1048576};  // 5MB
