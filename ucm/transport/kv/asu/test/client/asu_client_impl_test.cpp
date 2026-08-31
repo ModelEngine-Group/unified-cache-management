@@ -417,7 +417,7 @@ public:
     Status GetGlobalView(GlobalView& view) override
     {
         std::lock_guard<std::mutex> lock{mutex_};
-        if (failFetchAt_ != 0 && fetchCount_ + 1 == failFetchAt_) {
+        if (failFetchFrom_ != 0 && fetchCount_ + 1 >= failFetchFrom_) {
             ++fetchCount_;
             return Status::Error(StatusCode::IO_ERROR, "fake view fetch failed");
         }
@@ -432,10 +432,10 @@ public:
         return Status::OK();
     }
 
-    void FailFetchAt(std::size_t fetchCount)
+    void FailFetchFrom(std::size_t fetchCount)
     {
         std::lock_guard<std::mutex> lock{mutex_};
-        failFetchAt_ = fetchCount;
+        failFetchFrom_ = fetchCount;
     }
     std::size_t FetchCount() const
     {
@@ -446,7 +446,7 @@ public:
 private:
     mutable std::mutex mutex_;
     std::size_t fetchCount_{0};
-    std::size_t failFetchAt_{0};
+    std::size_t failFetchFrom_{0};
     std::vector<std::vector<AsuId>> views_;
     std::vector<std::uint64_t> epochs_;
 };
@@ -1228,7 +1228,7 @@ TEST(AsuClientImplTest, BackgroundRefresh_QueryReturnsPartialFailedWhenViewFetch
             {10, 20}
     },
         std::vector<std::uint64_t>{1, 2});
-    viewServer->FailFetchAt(2);
+    viewServer->FailFetchFrom(2);
     auto config = MakeConfig({10, 20});
     auto client =
         std::make_unique<AsuClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
