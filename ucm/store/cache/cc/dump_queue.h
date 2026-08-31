@@ -33,7 +33,7 @@
 #include "template/hashset.h"
 #include "template/spsc_ring_queue.h"
 #include "thread/latch.h"
-#include "thread/thread_pool.h"
+#include "trans/host/host_copy_executor.h"
 #include "trans_buffer.h"
 #include "trans_task.h"
 #include "ucmstore_v1.h"
@@ -59,14 +59,10 @@ class DumpQueue {
         std::vector<TransBuffer::Handle> bufferHandles;
     };
     using H2HDumpContextPtr = std::shared_ptr<H2HDumpContext>;
-    struct H2HDumpJob {
-        H2HDumpContextPtr context;
-        size_t shardIndex{0};
-        size_t handleIndex{0};
-    };
 
 private:
     alignas(64) std::atomic_bool stop_{false};
+    alignas(64) std::atomic_bool backendStop_{false};
     Detail::TaskHandle finishedBackendTaskHandle_{0};
     TaskIdSet* failureSet_{nullptr};
     TransBuffer* buffer_{nullptr};
@@ -78,15 +74,12 @@ private:
     bool cacheIOAggregation_{false};
     bool cacheSdmaDirect_{false};
     bool useHostBuffer_{false};
-    size_t h2hQueueDepth_{0};
-    std::atomic<size_t> h2hOutstanding_{0};
     std::vector<ssize_t> cpuAffinityCores_{};
     SpscRingQueue<TaskPair> waiting_;
     SpscRingQueue<DumpCtx> dumping_;
     std::thread dispatcher_;
     std::thread dumper_;
-    ThreadPool<H2HDumpContextPtr> h2hCompletionPool_;
-    ThreadPool<H2HDumpJob> h2hCopyPool_;
+    Trans::HostCopyExecutor hostCopyExecutor_;
 
 public:
     ~DumpQueue();
@@ -99,10 +92,11 @@ private:
     Status DumpOneTask(CopyStream& stream, TaskPtr task);
     Status DeviceToHostAsync(CopyStream& stream, void** device, void* host);
     Status DispatchH2HDump(TaskPtr task, WaiterPtr waiter);
-    void H2HDumpWorker(H2HDumpJob& job);
+    void CompleteH2HCopy(const H2HDumpContextPtr& context, size_t handleIndex,
+                         const Trans::HostCopyExecutor::Result& result);
     void CompleteH2HDump(H2HDumpContextPtr context);
-    Status HostToHostGather(const Detail::Shard& shard, void* destination) const;
-    bool TryReserveH2HJobs(size_t number);
+    std::vector<Trans::HostCopyExecutor::Segment> MakeH2HSegments(
+        const Detail::Shard& shard) const;
     void BackendDumpStage();
 };
 

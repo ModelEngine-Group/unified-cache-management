@@ -33,7 +33,7 @@
 #include "template/hashset.h"
 #include "template/spsc_ring_queue.h"
 #include "thread/latch.h"
-#include "thread/thread_pool.h"
+#include "trans/host/host_copy_executor.h"
 #include "trans_buffer.h"
 #include "trans_task.h"
 #include "ucmstore_v1.h"
@@ -75,8 +75,6 @@ private:
     bool cacheIOAggregation_{false};
     bool cacheSdmaDirect_{false};
     bool useHostBuffer_{false};
-    size_t h2hQueueDepth_{0};
-    std::atomic<size_t> h2hOutstanding_{0};
     std::vector<ssize_t> cpuAffinityCores_{};
     size_t localRankSize_{};
     SpscRingQueue<TaskPair> waiting_;
@@ -84,7 +82,7 @@ private:
     std::thread dispatcher_;
     std::thread transfer_;
     std::vector<ShardTask> holder_;
-    ThreadPool<ShardTask> h2hCopyPool_;
+    Trans::HostCopyExecutor hostCopyExecutor_;
 
 public:
     ~LoadQueue();
@@ -99,10 +97,11 @@ private:
     void TransferOneTask(CopyStream& stream, ShardTask&& task);
     Status WaitBackendTaskReady(ShardTask& task);
     Status HostToDeviceAsync(CopyStream& stream, void* host, void** device);
-    Status HostToHostScatter(void* source, const Detail::Shard& shard) const;
-    void H2HLoadWorker(ShardTask& task);
+    std::vector<Trans::HostCopyExecutor::Segment> MakeH2HSegments(
+        const Detail::Shard& shard) const;
+    void CompleteH2HLoad(const std::shared_ptr<ShardTask>& task,
+                         const Trans::HostCopyExecutor::Result& result);
     void FinishH2HLoadShard(const H2HLoadContextPtr& context, bool success);
-    bool TryReserveH2HJobs(size_t number);
     void RecordShardResults(const std::vector<ShardTask>& tasks, const ShardTask* extra,
                             bool success) const;
     void RecordFailedShards(size_t count) const;

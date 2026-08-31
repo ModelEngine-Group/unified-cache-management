@@ -24,11 +24,8 @@
 #include "dump_queue.h"
 #include <algorithm>
 #include <atomic>
-#include <cstddef>
-#include <cstring>
 #include <list>
 #include <memory>
-#include <numeric>
 #include "logger/logger.h"
 #include "metrics_api.h"
 #include "thread/cpu_affinity.h"
@@ -39,6 +36,8 @@ DumpQueue::~DumpQueue()
 {
     stop_.store(true);
     if (dispatcher_.joinable()) { dispatcher_.join(); }
+    if (useHostBuffer_) { hostCopyExecutor_.Synchronize(); }
+    backendStop_.store(true);
     if (dumper_.joinable()) { dumper_.join(); }
 }
 
@@ -54,29 +53,13 @@ Status DumpQueue::Setup(const Config& config, TaskIdSet* failureSet, TransBuffer
     cacheIOAggregation_ = config.cacheIOAggregation;
     cacheSdmaDirect_ = config.cacheSdmaDirect;
     useHostBuffer_ = config.cacheUseHostBuffer;
-    h2hQueueDepth_ = config.h2hQueueDepth;
     cpuAffinityCores_ = config.cpuAffinityCores;
     waiting_.Setup(config.waitingQueueDepth);
     dumping_.Setup(config.runningQueueDepth);
     if (useHostBuffer_) {
-        auto completionStarted =
-            h2hCompletionPool_
-                .SetNWorker(1)
-                .SetWorkerFn([this](H2HDumpContextPtr& context, void* const&) {
-                    CompleteH2HDump(std::move(context));
-                })
-                .SetCpuAffinity(cpuAffinityCores_)
-                .Run();
-        auto copyStarted =
-            h2hCopyPool_
-                .SetNWorker(config.h2hWorkerNumber)
-                .SetWorkerFn(
-                    [this](H2HDumpJob& job, void* const&) { H2HDumpWorker(job); })
-                .SetCpuAffinity(cpuAffinityCores_)
-                .Run();
-        if (!completionStarted || !copyStarted) {
-            return Status::Error("failed to start CacheStore H2H dump workers");
-        }
+        auto s = hostCopyExecutor_.Setup(config.h2hWorkerNumber, config.h2hQueueDepth,
+                                         cpuAffinityCores_);
+        if (s.Failure()) { return s; }
     }
     dumper_ = std::thread{&DumpQueue::BackendDumpStage, this};
     std::promise<Status> started;
@@ -246,19 +229,6 @@ Status DumpQueue::DeviceToHostAsync(CopyStream& stream, void** device, void* hos
     return stream.DeviceToHostAsync(device, host, tensorSizes_);
 }
 
-bool DumpQueue::TryReserveH2HJobs(size_t number)
-{
-    auto outstanding = h2hOutstanding_.load(std::memory_order_relaxed);
-    for (;;) {
-        if (number > h2hQueueDepth_ || outstanding > h2hQueueDepth_ - number) { return false; }
-        if (h2hOutstanding_.compare_exchange_weak(outstanding, outstanding + number,
-                                                  std::memory_order_acq_rel,
-                                                  std::memory_order_relaxed)) {
-            return true;
-        }
-    }
-}
-
 Status DumpQueue::DispatchH2HDump(TaskPtr task, WaiterPtr waiter)
 {
     if (task->desc.prerequisiteHandle != 0) {
@@ -271,7 +241,11 @@ Status DumpQueue::DispatchH2HDump(TaskPtr task, WaiterPtr waiter)
     context->waiter = waiter;
     context->backendTaskDesc.brief = "Cache2Backend";
     context->bufferHandles.reserve(task->desc.size());
-    std::list<H2HDumpJob> jobs;
+    struct PendingCopy {
+        size_t shardIndex;
+        size_t handleIndex;
+    };
+    std::vector<PendingCopy> pendingCopies;
 
     for (size_t shardIndex = 0; shardIndex < task->desc.size(); ++shardIndex) {
         const auto& shard = task->desc[shardIndex];
@@ -282,7 +256,7 @@ Status DumpQueue::DispatchH2HDump(TaskPtr task, WaiterPtr waiter)
         context->backendTaskDesc.push_back(
             Detail::Shard{shard.owner, shard.index, {handle.Data()}});
         context->bufferHandles.push_back(std::move(handle));
-        if (!ready) { jobs.push_back(H2HDumpJob{context, shardIndex, handleIndex}); }
+        if (!ready) { pendingCopies.push_back({shardIndex, handleIndex}); }
     }
 
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_shards_total"),
@@ -293,30 +267,59 @@ Status DumpQueue::DispatchH2HDump(TaskPtr task, WaiterPtr waiter)
         waiter->Done();
         return Status::OK();
     }
-    if (jobs.empty()) {
-        h2hCompletionPool_.Push(std::move(context));
-        return Status::OK();
+    if (pendingCopies.empty()) {
+        return hostCopyExecutor_.PostCompletion(
+            [this, context](const Trans::HostCopyExecutor::Result&) {
+                CompleteH2HDump(context);
+            });
     }
-    if (!TryReserveH2HJobs(jobs.size())) {
+    auto reservationResult = hostCopyExecutor_.Reserve(pendingCopies.size());
+    if (!reservationResult) {
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2h_dump_queue_full_total"), 1.0);
         auto s = Status::Error("CacheStore H2H dump queue full");
-        for (const auto& job : jobs) {
-            context->bufferHandles[job.handleIndex].MarkFailed(s);
+        for (const auto& copy : pendingCopies) {
+            context->bufferHandles[copy.handleIndex].MarkFailed(s);
         }
         return s;
     }
-    context->pending.store(jobs.size(), std::memory_order_release);
-    h2hCopyPool_.Push(jobs);
+    auto reservation = std::move(reservationResult).Value();
+    context->pending.store(pendingCopies.size(), std::memory_order_release);
+    std::list<Trans::HostCopyExecutor::Job> jobs;
+    for (const auto& copy : pendingCopies) {
+        auto& shard = context->task->desc[copy.shardIndex];
+        Trans::HostCopyExecutor::Job job;
+        job.direction = Trans::HostCopyExecutor::Direction::GATHER;
+        job.contiguous = context->bufferHandles[copy.handleIndex].Data();
+        job.segments = MakeH2HSegments(shard);
+        job.prerequisite = [this, context, shardIndex = copy.shardIndex] {
+            const auto& currentShard = context->task->desc[shardIndex];
+            if (currentShard.addrs.size() != tensorSizes_.size()) {
+                return Status::InvalidParam("invalid host addr number({}, expect {})",
+                                            currentShard.addrs.size(), tensorSizes_.size());
+            }
+            return Status::OK();
+        };
+        job.completion = [this, context, handleIndex = copy.handleIndex](
+                             const Trans::HostCopyExecutor::Result& result) {
+            CompleteH2HCopy(context, handleIndex, result);
+        };
+        jobs.push_back(std::move(job));
+    }
+    auto submitStatus = reservation.Submit(jobs);
+    if (submitStatus.Failure()) {
+        for (const auto& copy : pendingCopies) {
+            context->bufferHandles[copy.handleIndex].MarkFailed(submitStatus);
+        }
+        return submitStatus;
+    }
     return Status::OK();
 }
 
-void DumpQueue::H2HDumpWorker(H2HDumpJob& job)
+void DumpQueue::CompleteH2HCopy(const H2HDumpContextPtr& context, size_t handleIndex,
+                                const Trans::HostCopyExecutor::Result& result)
 {
-    const auto start = NowTime::Now();
-    auto& context = job.context;
-    auto& shard = context->task->desc[job.shardIndex];
-    auto& handle = context->bufferHandles[job.handleIndex];
-    auto s = HostToHostGather(shard, handle.Data());
+    auto& handle = context->bufferHandles[handleIndex];
+    auto s = result.status;
     if (s.Failure()) [[unlikely]] {
         UC_ERROR("Failed({}) to do H2H gather for task({}).", s, context->task->id);
         handle.MarkFailed(s);
@@ -324,16 +327,14 @@ void DumpQueue::H2HDumpWorker(H2HDumpJob& job)
         context->failed.store(true, std::memory_order_release);
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2h_dump_errors_total"), 1.0);
     } else {
-        const auto bytes = std::accumulate(tensorSizes_.begin(), tensorSizes_.end(), size_t(0));
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2h_dump_bytes_total"),
-                                 static_cast<double>(bytes));
+                                 static_cast<double>(result.bytes));
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_h2h_dump_duration_ms"),
-                                 (NowTime::Now() - start) * 1e3);
+                                 result.durationMs);
     }
     if (context->pending.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-        h2hCompletionPool_.Push(std::move(context));
+        CompleteH2HDump(context);
     }
-    h2hOutstanding_.fetch_sub(1, std::memory_order_acq_rel);
 }
 
 void DumpQueue::CompleteH2HDump(H2HDumpContextPtr context)
@@ -366,23 +367,16 @@ void DumpQueue::CompleteH2HDump(H2HDumpContextPtr context)
     context->waiter->Done();
 }
 
-Status DumpQueue::HostToHostGather(const Detail::Shard& shard, void* destination) const
+std::vector<Trans::HostCopyExecutor::Segment> DumpQueue::MakeH2HSegments(
+    const Detail::Shard& shard) const
 {
-    if (shard.addrs.size() != tensorSizes_.size()) {
-        return Status::InvalidParam("invalid host addr number({}, expect {})", shard.addrs.size(),
-                                    tensorSizes_.size());
-    }
-    if (destination == nullptr) { return Status::InvalidParam("invalid null host destination"); }
-    auto* dst = static_cast<std::byte*>(destination);
-    size_t offset = 0;
+    std::vector<Trans::HostCopyExecutor::Segment> segments;
+    if (shard.addrs.size() != tensorSizes_.size()) { return segments; }
+    segments.reserve(tensorSizes_.size());
     for (size_t i = 0; i < tensorSizes_.size(); ++i) {
-        if (shard.addrs[i] == nullptr) {
-            return Status::InvalidParam("invalid null host source({})", i);
-        }
-        std::memcpy(dst + offset, shard.addrs[i], tensorSizes_[i]);
-        offset += tensorSizes_[i];
+        segments.push_back({shard.addrs[i], tensorSizes_[i]});
     }
-    return Status::OK();
+    return segments;
 }
 
 void DumpQueue::BackendDumpStage()
@@ -393,7 +387,7 @@ void DumpQueue::BackendDumpStage()
         auto s = CpuAffinity::SetCpuAffinity4CurrentThread(cpuAffinityCores_);
         if (s.Failure()) { UC_WARN("Failed({}) to set affinity.", s); }
     }
-    dumping_.ConsumerLoop(stop_, [this](auto&& task) {
+    dumping_.ConsumerLoop(backendStop_, [this](auto&& task) {
         if (task.backendTaskHandle > finishedBackendTaskHandle_) {
             auto tpWait = NowTime::Now();
             auto s = backend_->Wait(task.backendTaskHandle);
