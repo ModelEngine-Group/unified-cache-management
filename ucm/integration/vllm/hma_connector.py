@@ -711,7 +711,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if self._role == KVConnectorRole.WORKER:
             if tensor_size_list is None:
                 raise RuntimeError(f"Worker FAWA {label} store needs tensor sizes.")
-            config["device_id"] = self.local_rank
+            config["device_id"] = self.device_id
             config["tensor_size_list"] = tensor_size_list
             # io_direct requires shard and block sizes to be 4KB aligned.
             aligned_size = 4096
@@ -753,9 +753,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
         enable_affinity = _use_ucm_connector_cpu_affinity()
         worker_cores, store_cores = (
-            self.device.split_cores(self.local_rank)
-            if enable_affinity
-            else (None, None)
+            self.device.split_cores(self.device_id) if enable_affinity else (None, None)
         )
 
         for group_id, group_spec in enumerate(self._kv_cache_config.kv_cache_groups):

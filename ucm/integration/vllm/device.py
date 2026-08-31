@@ -704,3 +704,14 @@ def create_device() -> Optional[Device]:
         return NpuDevice()
 
     return None
+
+
+def get_current_device_id() -> int:
+    """Return the current process-visible accelerator device ordinal."""
+    if current_platform.is_cuda_alike():
+        return int(torch.cuda.current_device())
+
+    if current_platform.device_type == "npu":
+        return int(torch.npu.current_device())
+
+    raise RuntimeError("Unsupported device platform for UCM connector.")
