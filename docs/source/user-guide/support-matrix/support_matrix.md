@@ -1,4 +1,4 @@
-﻿# Feature and Model Support Matrix
+# Feature and Model Support Matrix
 
 This page provides an overview of UCM (Unified Cache Manager) compatibility across different models and inference frameworks.
 Use this matrix as a compatibility reference for model selection, deployment, and feature validation.
@@ -37,7 +37,7 @@ This information serves as a reference for evaluating framework compatibility in
 | GLM-5 | ✅ | ✅ | ❌ |
 | GLM-5.1 | ✅ | ✅ | ❌ |
 | GLM-5.2 | ✅ | ✅ | ❌ |
-| GLM-5.3 | 🟡 | 🟡 | ❌ |
+| GLM-5.3-Flash | 🟡 | 🟡 | ❌ |
 | MiniMax-M2.5 | ✅ | ✅ | ✅ |
 | MiniMax-M2.7 | ✅ | ✅ | ✅ |
 | MiniMax-M3 | 🟡 | 🟡 | ❌ |
