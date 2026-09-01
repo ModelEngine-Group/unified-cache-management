@@ -67,11 +67,15 @@ public:
     }
     static void _signal_handler(int signum) { Logger::GetInstance().Flush(); }
 
-    void Log(Level&& lv, SourceLocation&& loc, std::string&& msg);
-    void LogFileOnly(Level&& lv, SourceLocation&& loc, std::string&& msg);
+    void Log(Level lv, const SourceLocation& loc, std::string&& msg);
+    void LogDynamic(Level lv, std::string&& file, std::string&& func, int line, std::string&& msg);
+    void LogRateLimit(Level lv, const SourceLocation& loc, std::string&& msg);
+    void LogRateLimitDynamic(Level lv, std::string&& file, std::string&& func, int line,
+                             std::string&& msg);
+    void LogFileOnlyDynamic(Level lv, std::string&& file, std::string&& func, int line,
+                            std::string&& msg);
     void Setup(const std::string& path, int max_files, int max_size);
     void Flush();
-    SourceLocation InternSourceLocation(std::string&& file, std::string&& func, int line);
 
     static Logger& GetInstance()
     {
@@ -80,8 +84,6 @@ public:
     }
 
     bool IsEnabledFor(Level lv);
-
-    bool FilterCallSite(const char* file, int line);
 
 private:
     struct ChainEntryData {

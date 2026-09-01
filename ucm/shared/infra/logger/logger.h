@@ -39,7 +39,7 @@ template <typename... Args>
 void Log(Level lv, const SourceLocation& loc, fmt::format_string<Args...> fmt, Args&&... args)
 {
     std::string msg = fmt::format(fmt, std::forward<Args>(args)...);
-    Log(lv, std::string(loc.file), std::string(loc.func), loc.line, std::move(msg));
+    Logger::GetInstance().Log(lv, loc, std::move(msg));
 }
 
 template <typename... Args>
@@ -47,7 +47,7 @@ void LogRateLimit(Level lv, const SourceLocation& loc, fmt::format_string<Args..
                   Args&&... args)
 {
     std::string msg = fmt::format(fmt, std::forward<Args>(args)...);
-    LogRateLimit(lv, std::string(loc.file), std::string(loc.func), loc.line, std::move(msg));
+    Logger::GetInstance().LogRateLimit(lv, loc, std::move(msg));
 }
 
 void Setup(const std::string& path, int max_files, int max_size);

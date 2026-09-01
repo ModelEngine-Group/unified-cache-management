@@ -24,7 +24,6 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <charconv>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -38,7 +37,6 @@
 #include <spdlog/spdlog.h>
 #include <string>
 #include <string_view>
-#include <sys/syscall.h>
 #include <unistd.h>
 #include <unordered_set>
 #include <vector>
@@ -119,23 +117,6 @@ private:
     bool color_enabled_;
 };
 
-class ForkSafeThreadIdFlag final : public spdlog::custom_flag_formatter {
-public:
-    void format(const spdlog::details::log_msg&, const std::tm&,
-                spdlog::memory_buf_t& dest) override
-    {
-        char buffer[32];
-        const auto [end, error] =
-            std::to_chars(buffer, buffer + sizeof(buffer), syscall(SYS_gettid));
-        if (error == std::errc{}) { dest.append(buffer, end); }
-    }
-
-    std::unique_ptr<spdlog::custom_flag_formatter> clone() const override
-    {
-        return std::make_unique<ForkSafeThreadIdFlag>();
-    }
-};
-
 bool EnvFlag(const char* name, bool default_value)
 {
     auto value = spdlog::details::os::getenv(name);
@@ -144,14 +125,9 @@ bool EnvFlag(const char* name, bool default_value)
     return value != "false" && value != "0" && value != "off";
 }
 
-void ConfigureLogger(const std::shared_ptr<spdlog::logger>& logger, bool forked_child)
+void ConfigureLogger(const std::shared_ptr<spdlog::logger>& logger)
 {
-    auto formatter = std::make_unique<spdlog::pattern_formatter>();
-    // Calendar conversion may retain a libc lock held by a vanished parent thread.
-    formatter->add_flag<ForkSafeThreadIdFlag>('t').set_pattern(
-        forked_child ? "[%E.%f][%n][%^%L%$] %v [%P,%t][%s:%#,%!]"
-                     : "[%Y-%m-%d %H:%M:%S.%f][%n][%^%L%$] %v [%P,%t][%s:%#,%!]");
-    logger->set_formatter(std::move(formatter));
+    logger->set_pattern("[%Y-%m-%d %H:%M:%S.%f][%n][%^%L%$] %v [%P,%t][%s:%#,%!]");
     auto level_str = spdlog::details::os::getenv("UCM_LOG_LEVEL");
     if (level_str.empty()) { level_str = spdlog::details::os::getenv("UC_LOGGER_LEVEL"); }
     if (!level_str.empty()) {
@@ -205,6 +181,21 @@ struct Logger::Backend {
         return SourceLocation{file_ptr, func_ptr, line};
     }
 
+    void Log(Level lv, const SourceLocation& loc, std::string&& msg)
+    {
+        auto level = SpdLevels[fmt::underlying(lv)];
+        logger_->log(spdlog::source_loc{loc.file, loc.line, loc.func}, level, std::move(msg));
+    }
+
+    void LogFileOnly(Level lv, const SourceLocation& loc, std::string&& msg)
+    {
+        auto capture_logger = MakeCaptureLogger();
+        if (!capture_logger) { return; }
+        auto level = SpdLevels[fmt::underlying(lv)];
+        capture_logger->log(spdlog::source_loc{loc.file, loc.line, loc.func}, level,
+                            std::move(msg));
+    }
+
     std::shared_ptr<spdlog::logger> MakeCaptureLogger()
     {
         if (!file_enabled_) { return nullptr; }
@@ -221,7 +212,7 @@ struct Logger::Backend {
             } else {
                 file_logger_ = std::make_shared<spdlog::logger>("VLLM", file_sink);
             }
-            ConfigureLogger(file_logger_, forked_child_);
+            ConfigureLogger(file_logger_);
             file_logger_->set_level(logger_->level());
             if (!thread_pool_) { file_logger_->flush_on(spdlog::level::trace); }
             if (!forked_child_) {
@@ -337,7 +328,7 @@ private:
             logger_ =
                 std::make_shared<spdlog::logger>("UC", std::make_shared<ForkSafeStdoutSink>());
         }
-        ConfigureLogger(logger_, forked_child_);
+        ConfigureLogger(logger_);
         if (!thread_pool_) { logger_->flush_on(spdlog::level::trace); }
     }
 
@@ -388,25 +379,40 @@ Logger::Backend* Logger::GetBackend()
     }
 }
 
-SourceLocation Logger::InternSourceLocation(std::string&& file, std::string&& func, int line)
+void Logger::Log(Level lv, const SourceLocation& loc, std::string&& msg)
 {
-    return GetBackend()->InternSourceLocation(std::move(file), std::move(func), line);
+    GetBackend()->Log(lv, loc, std::move(msg));
 }
 
-void Logger::Log(Level&& lv, SourceLocation&& loc, std::string&& msg)
+void Logger::LogDynamic(Level lv, std::string&& file, std::string&& func, int line,
+                        std::string&& msg)
 {
     Backend* backend = GetBackend();
-    auto level = SpdLevels[fmt::underlying(lv)];
-    backend->logger_->log(spdlog::source_loc{loc.file, loc.line, loc.func}, level, std::move(msg));
+    SourceLocation loc = backend->InternSourceLocation(std::move(file), std::move(func), line);
+    backend->Log(lv, loc, std::move(msg));
 }
 
-void Logger::LogFileOnly(Level&& lv, SourceLocation&& loc, std::string&& msg)
+void Logger::LogRateLimit(Level lv, const SourceLocation& loc, std::string&& msg)
 {
     Backend* backend = GetBackend();
-    auto logger = backend->MakeCaptureLogger();
-    if (!logger) { return; }
-    auto level = SpdLevels[fmt::underlying(lv)];
-    logger->log(spdlog::source_loc{loc.file, loc.line, loc.func}, level, std::move(msg));
+    if (backend->FilterCallSite(loc.file, loc.line)) { backend->Log(lv, loc, std::move(msg)); }
+}
+
+void Logger::LogRateLimitDynamic(Level lv, std::string&& file, std::string&& func, int line,
+                                 std::string&& msg)
+{
+    Backend* backend = GetBackend();
+    if (!backend->FilterCallSite(file.c_str(), line)) { return; }
+    SourceLocation loc = backend->InternSourceLocation(std::move(file), std::move(func), line);
+    backend->Log(lv, loc, std::move(msg));
+}
+
+void Logger::LogFileOnlyDynamic(Level lv, std::string&& file, std::string&& func, int line,
+                                std::string&& msg)
+{
+    Backend* backend = GetBackend();
+    SourceLocation loc = backend->InternSourceLocation(std::move(file), std::move(func), line);
+    backend->LogFileOnly(lv, loc, std::move(msg));
 }
 
 void Logger::Setup(const std::string& path, int max_files, int max_size)
@@ -427,11 +433,6 @@ bool Logger::IsEnabledFor(Level lv)
 {
     auto level = SpdLevels[fmt::underlying(lv)];
     return GetBackend()->logger_->should_log(level);
-}
-
-bool Logger::FilterCallSite(const char* file, int line)
-{
-    return GetBackend()->FilterCallSite(file, line);
 }
 
 void Logger::LoadRateLimitConfig()
