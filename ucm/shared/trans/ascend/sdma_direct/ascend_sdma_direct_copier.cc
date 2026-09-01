@@ -30,12 +30,13 @@ Status AscendSdmaDirectCopier::Setup()
     return Status::OK();
 }
 
-Status AscendSdmaDirectCopier::WaitEvent(void* event)
+Status AscendSdmaDirectCopier::WaitEvent(const Event& event)
 {
-    if (event == nullptr) { return Status::OK(); }
+    if (!event.Valid()) { return Status::OK(); }
     if (!setup_) { return Status::OK(); }
-    return AclStatus(aclrtStreamWaitEvent(fftsStream_, static_cast<aclrtEvent>(event)),
-                     "aclrtStreamWaitEvent(sdma-direct)");
+    return AclStatus(
+        aclrtStreamWaitEvent(fftsStream_, reinterpret_cast<aclrtEvent>(event.NativeHandle())),
+        "aclrtStreamWaitEvent(sdma-direct)");
 }
 
 Status AscendSdmaDirectCopier::SubmitLoadObject(const void* hostDevicePtr, void** devices,

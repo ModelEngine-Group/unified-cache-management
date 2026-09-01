@@ -173,6 +173,24 @@ Status GdrStream::HostToDeviceAsync(void* host, void* device[], size_t size, siz
     return Status::OK();
 }
 
+Status GdrStream::DeviceToDevice(void*, void*, size_t) { return Status::Unsupported(); }
+
+Status GdrStream::DeviceToDevice(void*[], void*[], size_t, size_t) { return Status::Unsupported(); }
+
+Status GdrStream::DeviceToDevice(void*[], void*, size_t, size_t) { return Status::Unsupported(); }
+
+Status GdrStream::DeviceToDeviceAsync(void*, void*, size_t) { return Status::Unsupported(); }
+
+Status GdrStream::DeviceToDeviceAsync(void*[], void*[], size_t, size_t)
+{
+    return Status::Unsupported();
+}
+
+Status GdrStream::DeviceToDeviceAsync(void*[], void*, size_t, size_t)
+{
+    return Status::Unsupported();
+}
+
 Status GdrStream::AppendCallback(std::function<void(bool)> cb)
 {
     (void)cb;
@@ -197,19 +215,23 @@ Status GdrStream::Synchronized()
     return Status::OK();
 }
 
-Status GdrStream::WaitEvent(void* event)
+Status GdrStream::WaitEvent(const Event& event)
 {
     if (!channel_) { return Status::Error("GDR channel is not ready"); }
     if (HasAsyncError()) {
         std::lock_guard<std::mutex> lock{mutex_};
         return AsyncErrorLocked();
     }
-    if (!event) { return Status::OK(); }
+    if (!event.Valid()) { return Status::OK(); }
 
     const auto operationId = nextOperationId_.load(std::memory_order_relaxed);
-    Operation op{
-        OperationType::Wait,  operationId, static_cast<cudaEvent_t>(event), nullptr, nullptr, 0,
-        GdrMemcpyHostToDevice};
+    Operation op{OperationType::Wait,
+                 operationId,
+                 reinterpret_cast<cudaEvent_t>(event.NativeHandle()),
+                 nullptr,
+                 nullptr,
+                 0,
+                 GdrMemcpyHostToDevice};
     auto status = PushOperation(op);
     if (status.Failure()) { return status; }
     nextOperationId_.store(operationId + 1, std::memory_order_release);

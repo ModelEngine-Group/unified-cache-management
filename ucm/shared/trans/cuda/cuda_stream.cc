@@ -25,6 +25,11 @@
 
 namespace UC::Trans {
 
+CudaStream::~CudaStream()
+{
+    if (stream_ != nullptr) { (void)cudaStreamDestroy(stream_); }
+}
+
 Status CudaStream::Setup()
 {
     auto ret = cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking);
@@ -126,6 +131,55 @@ Status Trans::CudaStream::HostToDeviceAsync(void* host, void* device[], size_t s
     return Status::OK();
 }
 
+Status CudaStream::DeviceToDevice(void* source, void* destination, size_t size)
+{
+    auto ret = cudaMemcpy(destination, source, size, cudaMemcpyDeviceToDevice);
+    if (ret != cudaSuccess) [[unlikely]] { return Status{ret, cudaGetErrorString(ret)}; }
+    return Status::OK();
+}
+
+Status CudaStream::DeviceToDevice(void* source[], void* destination[], size_t size, size_t number)
+{
+    auto s = DeviceToDeviceAsync(source, destination, size, number);
+    if (s.Failure()) [[unlikely]] { return s; }
+    return Synchronized();
+}
+
+Status CudaStream::DeviceToDevice(void* source[], void* destination, size_t size, size_t number)
+{
+    auto s = DeviceToDeviceAsync(source, destination, size, number);
+    if (s.Failure()) [[unlikely]] { return s; }
+    return Synchronized();
+}
+
+Status CudaStream::DeviceToDeviceAsync(void* source, void* destination, size_t size)
+{
+    auto ret = cudaMemcpyAsync(destination, source, size, cudaMemcpyDeviceToDevice, stream_);
+    if (ret != cudaSuccess) [[unlikely]] { return Status{ret, cudaGetErrorString(ret)}; }
+    return Status::OK();
+}
+
+Status CudaStream::DeviceToDeviceAsync(void* source[], void* destination[], size_t size,
+                                       size_t number)
+{
+    for (size_t i = 0; i < number; i++) {
+        auto s = DeviceToDeviceAsync(source[i], destination[i], size);
+        if (s.Failure()) [[unlikely]] { return s; }
+    }
+    return Status::OK();
+}
+
+Status CudaStream::DeviceToDeviceAsync(void* source[], void* destination, size_t size,
+                                       size_t number)
+{
+    for (size_t i = 0; i < number; i++) {
+        auto pDestination = static_cast<void*>(static_cast<int8_t*>(destination) + size * i);
+        auto s = DeviceToDeviceAsync(source[i], pDestination, size);
+        if (s.Failure()) [[unlikely]] { return s; }
+    }
+    return Status::OK();
+}
+
 using Closure = std::function<void(bool)>;
 
 static void Trampoline(cudaStream_t stream, cudaError_t err, void* data)
@@ -155,10 +209,10 @@ Status Trans::CudaStream::Synchronized()
     return Status::OK();
 }
 
-Status Trans::CudaStream::WaitEvent(void* event)
+Status Trans::CudaStream::WaitEvent(const Event& event)
 {
-    if (event == nullptr) { return Status::OK(); }
-    auto ret = cudaStreamWaitEvent(stream_, static_cast<cudaEvent_t>(event), 0);
+    if (!event.Valid()) { return Status::OK(); }
+    auto ret = cudaStreamWaitEvent(stream_, reinterpret_cast<cudaEvent_t>(event.NativeHandle()), 0);
     if (ret != cudaSuccess) [[unlikely]] { return Status{ret, cudaGetErrorString(ret)}; }
     return Status::OK();
 }

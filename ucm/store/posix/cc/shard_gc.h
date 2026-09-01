@@ -42,12 +42,14 @@
 namespace UC::PosixStore {
 
 struct ShardTaskContext {
-    enum class Type { GC, SAMPLE };
+    enum class Type { GC, SAMPLE, COLLECT, DELETE };
     Type type;
     std::string shard;
     std::shared_ptr<Latch> waiter;
     std::atomic<size_t>* sampledFiles{nullptr};
     std::atomic<bool>* gcLimited{nullptr};
+    std::vector<FileInfo>* candidates{nullptr};
+    const std::vector<Detail::BlockId>* victims{nullptr};
 };
 
 class ShardGarbageCollector {
@@ -61,6 +63,7 @@ public:
 private:
     Status ValidateAndInitCapacity();
     bool Execute();
+    bool ExecutePrecise();
     std::tuple<bool, size_t, size_t> ShouldTrigger();
     void RunGcCycle();
     void ProcessTask(ShardTaskContext& ctx);

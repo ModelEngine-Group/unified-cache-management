@@ -58,8 +58,10 @@ private:
     StoreV1* backend_{nullptr};
     int32_t deviceId_{-1};
     std::vector<size_t> tensorSizes_{};
+    size_t nShardPerBlock_{0};
     size_t streamNumber_{1};
     bool useGdr_{false};
+    bool cacheIOAggregation_{false};
     bool cacheSdmaDirect_{false};
     std::vector<ssize_t> cpuAffinityCores_{};
     size_t localRankSize_{};
@@ -83,6 +85,7 @@ private:
     Status HostToDeviceAsync(CopyStream& stream, void* host, void** device);
     void RecordShardResults(const std::vector<ShardTask>& tasks, const ShardTask* extra,
                             bool success) const;
+    void RecordLoadSourceShards(size_t total, size_t wait) const;
     void RecordFailedShards(size_t count) const;
     void RecordH2dSyncMetrics(double h2dSyncMs) const;
 };
