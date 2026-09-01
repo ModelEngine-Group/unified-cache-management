@@ -32,7 +32,10 @@ class SimuBuffer : public ReservedBuffer {
 public:
     // Simu has no real device, so device-mapped-host memory is plain host memory.
     bool SupportsDeviceMappedHostBuffer() const override { return true; }
+    bool SupportsHostMappedDeviceBuffer() const override { return true; }
     std::shared_ptr<void> MakeDeviceMappedHostBuffer(size_t size) override;
+    std::shared_ptr<void> MakeHostMappedDeviceBuffer(size_t size,
+                                                     void** pDevice = nullptr) override;
     std::shared_ptr<void> MakeDeviceBuffer(size_t size) override;
     std::shared_ptr<void> MakeHostBuffer(size_t size) override;
 };

@@ -411,8 +411,8 @@ int KvTestApp::Run(int argc, char** argv)
         return kExitSuccess;
     }
 
-    PayloadBufferAclRuntime payloadBufferAclRuntime;
-    status = payloadBufferAclRuntime.MaybeSetUp(config);
+    PayloadBufferRuntime payloadBufferRuntime;
+    status = payloadBufferRuntime.MaybeSetUp(config);
     if (!status.Ok()) {
         PrintFailure(status);
         return ToExitCode(status);

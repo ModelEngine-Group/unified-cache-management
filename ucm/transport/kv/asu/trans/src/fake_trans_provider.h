@@ -29,6 +29,8 @@
 #include <unordered_map>
 #include "asu_transport/asu_transport.h"
 #include "asu_transport/trans_provider.h"
+#include "trans/device.h"
+#include "trans/stream.h"
 
 namespace UC::ASU {
 
@@ -71,21 +73,33 @@ private:
         std::size_t size{0};
     };
 
-    Status SetUpAclRuntime();
+    Status SetupDeviceRuntime();
     Status ResolveLocalAddress(const void* providerAddr, std::size_t size, void*& localAddr);
 
+    bool StoreBytes(AsuId asuId, const CacheKey& key, std::uint32_t offset, std::uint64_t addr,
+                    std::uint32_t length);
+    bool LoadBytes(AsuId asuId, const CacheKey& key, std::uint32_t offset, std::uint64_t addr,
+                   std::uint32_t length);
+    bool DeleteKey(AsuId asuId, const CacheKey& key);
+    bool ExistsKey(AsuId asuId, const CacheKey& key);
+    Status CompleteStore(AsuId asuId, const std::uint32_t* request, std::uint32_t* flagBuffer);
+    Status CompleteRetrieve(AsuId asuId, const std::uint32_t* request, std::uint32_t* flagBuffer);
+    Status CompleteBatchStore(AsuId asuId, const std::uint32_t* request, std::uint32_t* flagBuffer);
+    Status CompleteBatchRetrieve(AsuId asuId, const std::uint32_t* request,
+                                 std::uint32_t* flagBuffer);
+    Status CompleteDelete(AsuId asuId, const std::uint32_t* request, std::uint32_t* flagBuffer);
+    Status CompleteExist(AsuId asuId, const std::uint32_t* request, std::uint32_t* flagBuffer);
+    Status CompleteFakeBackendRequest(const void* sendBuffer, std::uint64_t len,
+                                      std::vector<std::uint32_t>& completion);
+
     FakeTransProviderConfig config_;
+    Trans::Device device_;
+    std::unique_ptr<Trans::Stream> stream_;
     std::atomic<std::uintptr_t> nextMrHandle_{1};
     std::mutex registeredMemoryMu_;
     std::unordered_map<MRHandle, RegisteredMemory> registeredMemories_;
 };
 
 FakeTransProviderConfig MakeFakeTransProviderConfig(const TransportConfig& config);
-
-#ifdef ASU_BUILD_TESTS
-Status CompleteFakeBackendRequestForTest(const FakeTransProviderConfig& config,
-                                         const void* sendBuffer, std::uint64_t len,
-                                         std::vector<std::uint32_t>& completion);
-#endif
 
 }  // namespace UC::ASU

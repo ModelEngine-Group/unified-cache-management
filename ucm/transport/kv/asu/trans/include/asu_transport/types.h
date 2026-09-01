@@ -145,7 +145,7 @@ struct QueryResult {
 enum class MemoryType {
     HOST = 0,
     HOST_PINNED = 1,
-    ASCEND_DEVICE = 2,
+    DEVICE = 2,
 };
 
 struct MemoryRegion {  // 地址范围抽象

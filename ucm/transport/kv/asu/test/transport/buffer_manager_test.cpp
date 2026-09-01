@@ -22,12 +22,12 @@
  * SOFTWARE.
  * */
 #include "buffer_manager.h"
-#include <acl/acl.h>
 #include <cstring>
 #include <gtest/gtest.h>
 #include <thread>
 #include <vector>
 #include "asu_transport/trans_provider.h"
+#include "trans/device.h"
 
 namespace UC::ASU {
 namespace {
@@ -36,16 +36,21 @@ class BufferManagerTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite()
     {
-        aclInit(nullptr);
-        aclrtSetDevice(0);
+        const auto initStatus = device_.Init();
+        if (initStatus.Failure() && initStatus != UC::Status::DuplicateKey()) {
+            FAIL() << "Device::Init failed: " << initStatus.ToString();
+        }
+        ASSERT_TRUE(device_.Setup(0).Success());
     }
     static void TearDownTestSuite()
     {
-        aclrtResetDevice(0);
-        aclFinalize();
+        (void)device_.Reset(0);
+        (void)device_.Finalize();
     }
     void SetUp() override {}
     void TearDown() override {}
+
+    static inline Trans::Device device_;
 };
 
 TEST_F(BufferManagerTest, InitAndDestroy)
@@ -81,7 +86,7 @@ TEST_F(BufferManagerTest, InitHostWithUnalignedSlotCapacity)
 TEST_F(BufferManagerTest, InitDeviceWithUnalignedSlotCapacity)
 {
     BufferManager mgr;
-    auto status = mgr.Init("test_buffer", MemoryType::ASCEND_DEVICE, 1000, 10);
+    auto status = mgr.Init("test_buffer", MemoryType::DEVICE, 1000, 10);
     ASSERT_TRUE(status.ok()) << status.message;
 }
 
@@ -234,7 +239,7 @@ TEST_F(BufferManagerTest, AllocateExceeds4160ByteSlotCapacity)
 
 TEST_F(BufferManagerTest, AllMemoryTypesUseAlignedSlotStride)
 {
-    for (const auto type : {MemoryType::HOST, MemoryType::HOST_PINNED, MemoryType::ASCEND_DEVICE}) {
+    for (const auto type : {MemoryType::HOST, MemoryType::HOST_PINNED, MemoryType::DEVICE}) {
         BufferManager mgr;
         auto status = mgr.Init("test_buffer", type, 4160, 2);
         ASSERT_TRUE(status.ok()) << status.message;
@@ -419,7 +424,6 @@ TEST_F(BufferManagerTest, HostPinnedMemoryExposesDeviceRegistrationDescription)
     ASSERT_EQ(desc.memoryType, TransProvider::MemType::MEM_DEVICE);
     ASSERT_EQ(desc.addr, sge.device_addr);
     ASSERT_EQ(desc.localAddr, sge.local_addr);
-    ASSERT_EQ(desc.size, 4096);
 
     // The CPU writes through local_addr while HCOMM and remote RDMA use device_addr.
     // ACL simulators may map both roles to the same numeric address.

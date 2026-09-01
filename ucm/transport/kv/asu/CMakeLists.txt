@@ -1,53 +1,11 @@
-if(NOT RUNTIME_ENVIRONMENT STREQUAL "ascend")
-    message(FATAL_ERROR "BUILD_UCM_ASU requires RUNTIME_ENVIRONMENT=ascend. Current value: ${RUNTIME_ENVIRONMENT}")
+if(NOT (RUNTIME_ENVIRONMENT STREQUAL "ascend" OR RUNTIME_ENVIRONMENT STREQUAL "simu"))
+    message(FATAL_ERROR
+        "BUILD_UCM_ASU requires RUNTIME_ENVIRONMENT=ascend or simu. Current value: ${RUNTIME_ENVIRONMENT}")
 endif()
-
-if(NOT DEFINED ASCEND_ROOT)
-    if(DEFINED ENV{ASCEND_HOME_PATH})
-        set(ASCEND_ROOT "$ENV{ASCEND_HOME_PATH}" CACHE PATH "Path to Ascend root directory")
-    elseif(DEFINED ENV{ASCEND_TOOLKIT_HOME})
-        set(ASCEND_ROOT "$ENV{ASCEND_TOOLKIT_HOME}" CACHE PATH "Path to Ascend root directory")
-    else()
-        set(ASCEND_ROOT "/usr/local/Ascend/ascend-toolkit/latest" CACHE PATH "Path to Ascend root directory")
-    endif()
-endif()
-
-find_path(ASU_ASCEND_INCLUDE_DIR
-    NAMES acl/acl.h
-    HINTS
-        ${ASCEND_ROOT}/include
-        ${ASCEND_ROOT}/aarch64-linux/include
-        ${ASCEND_ROOT}/arm64-linux/include
-    NO_DEFAULT_PATH
-)
-if(NOT ASU_ASCEND_INCLUDE_DIR)
-    message(FATAL_ERROR "Cannot find acl/acl.h under ASCEND_ROOT=${ASCEND_ROOT}")
-endif()
-
-find_library(ASU_ASCENDCL_LIB
-    NAMES ascendcl
-    HINTS
-        ${ASCEND_ROOT}/lib64
-        ${ASCEND_ROOT}/aarch64-linux/lib64
-        ${ASCEND_ROOT}/aarch64-linux/devlib
-        ${ASCEND_ROOT}/arm64-linux/lib64
-        ${ASCEND_ROOT}/arm64-linux/devlib
-    NO_DEFAULT_PATH
-)
-if(NOT ASU_ASCENDCL_LIB)
-    message(FATAL_ERROR "Cannot find libascendcl under ASCEND_ROOT=${ASCEND_ROOT}")
-endif()
-
-message(STATUS "ASU ASCEND include: ${ASU_ASCEND_INCLUDE_DIR}")
-message(STATUS "ASU ASCENDCL lib: ${ASU_ASCENDCL_LIB}")
 
 option(BUILD_UCM_ASU_PROVIDER_AICPU "Build ASU AICPU trans provider" OFF)
 option(BUILD_UCM_ASU_PROVIDER_FAKE "Build ASU fake trans provider" ON)
 option(BUILD_UCM_ASU_PROVIDER_AIV "Build ASU AIV trans provider (requires external libumc.a)" OFF)
-
-add_library(asu_ascend_deps INTERFACE)
-target_include_directories(asu_ascend_deps INTERFACE ${ASU_ASCEND_INCLUDE_DIR})
-target_link_libraries(asu_ascend_deps INTERFACE ${ASU_ASCENDCL_LIB})
 
 file(GLOB ASU_COMMON_SOURCES CONFIGURE_DEPENDS common/*.cpp)
 file(GLOB ASU_TRANSPORT_SOURCES CONFIGURE_DEPENDS trans/src/*.cpp)
@@ -57,7 +15,6 @@ file(GLOB LOGGER_SOURCES CONFIGURE_DEPENDS
 )
 list(APPEND ASU_TRANSPORT_SOURCES ${ASU_COMMON_SOURCES})
 list(APPEND ASU_TRANSPORT_SOURCES ${LOGGER_SOURCES})
-list(APPEND ASU_TRANSPORT_SOURCES ${UCM_ROOT_DIR}/ucm/shared/trans/ascend/ascend_buffer.cc)
 add_library(asu_transport SHARED ${ASU_TRANSPORT_SOURCES})
 target_include_directories(asu_transport
     PUBLIC
@@ -74,9 +31,7 @@ target_include_directories(asu_transport
 target_compile_definitions(asu_transport PRIVATE SPDLOG_FMT_EXTERNAL)
 target_link_libraries(asu_transport
     PUBLIC
-        pthread fmt spdlog zlibstatic
-    PRIVATE
-        asu_ascend_deps
+        pthread fmt spdlog zlibstatic trans
 )
 
 if(BUILD_UCM_ASU_PROVIDER_AICPU)
@@ -150,7 +105,6 @@ if(BUILD_UNIT_TESTS)
     )
     target_link_libraries(asu.test PRIVATE
         asu_client
-        asu_ascend_deps
         gtest_main gtest
     )
     gtest_discover_tests(asu.test)

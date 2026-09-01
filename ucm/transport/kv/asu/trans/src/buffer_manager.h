@@ -35,7 +35,7 @@ namespace UC::ASU {
 
 struct ScatterGatherEntry {
     // Local-side address. CPU-accessible for HOST/HOST_PINNED and a local
-    // device address for ASCEND_DEVICE.
+    // device address for DEVICE.
     std::uint64_t local_addr{0};
     // Device-visible address used by HCOMM/HIXL and remote RDMA operations.
     std::uint64_t device_addr{0};
