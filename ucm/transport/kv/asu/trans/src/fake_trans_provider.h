@@ -72,10 +72,6 @@ public:
     Status GetMemTokenId(MRHandle, uint32_t& tokenId) override;
 
 private:
-#ifdef ASU_BUILD_TESTS
-    friend void WaitForFakeBackendIdleForTest(FakeTransProvider& provider);
-#endif
-
     struct IoTask {
         std::vector<std::uint32_t> request;
         std::uint64_t requestLength{0};
@@ -120,9 +116,5 @@ private:
 };
 
 FakeTransProviderConfig MakeFakeTransProviderConfig(const TransportConfig& config);
-
-#ifdef ASU_BUILD_TESTS
-void WaitForFakeBackendIdleForTest(FakeTransProvider& provider);
-#endif
 
 }  // namespace UC::ASU

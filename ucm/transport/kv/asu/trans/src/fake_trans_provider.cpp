@@ -771,13 +771,6 @@ std::vector<Status> FakeTransProvider::UnregisterMemory(
     return std::vector<Status>(handles.size(), Status::OK());
 }
 
-#ifdef ASU_BUILD_TESTS
-void WaitForFakeBackendIdleForTest(FakeTransProvider& provider)
-{
-    provider.workerPool_->WaitUntilIdle();
-}
-#endif
-
 Status FakeTransProvider::AllocThread(uint32_t, const std::vector<uint32_t>&,
                                       std::vector<ThreadHandle>&)
 {

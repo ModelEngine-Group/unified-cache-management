@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 #include <iomanip>
 #include <sstream>
+#include <thread>
 #include <unordered_set>
 #include "kv_protocol.h"
 
@@ -121,7 +122,11 @@ TEST(FakeTransProviderTest, SendQueuesCompletionForWorker)
     ASSERT_TRUE(statuses[0].ok()) << statuses[0].message;
     EXPECT_EQ(__atomic_load_n(completion.data() + 3, __ATOMIC_ACQUIRE), 0U);
 
-    WaitForFakeBackendIdleForTest(provider);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while ((__atomic_load_n(completion.data() + 3, __ATOMIC_ACQUIRE) & 0xFFFF) == 0 &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
     EXPECT_EQ(__atomic_load_n(completion.data() + 3, __ATOMIC_ACQUIRE) & 0xFFFF, cid);
 }
 
