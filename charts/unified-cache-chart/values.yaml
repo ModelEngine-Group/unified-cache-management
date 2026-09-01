@@ -1,26 +1,15 @@
 # ===== 镜像配置 =====
-# 镜像集中在此，切换环境只改这里。
+# 镜像集中在此。本开源 Chart 不默认绑定任何私有镜像仓库。
 # kthena-only：本 chart 只渲染 vLLM 引擎镜像。
-# 旧 router / sidecar / initContainer / runtimeSidecar 镜像随 native + ucm-router 一并移除（chart 不再渲染）。
 images:
   # registry：全局仓库前缀（如 harbor.xxx.com/project）；留空不加前缀，已含 registry 的镜像不重复添加
   registry: ""
   # pullPolicy：镜像拉取策略
   pullPolicy: ""
-  # image：vLLM 推理引擎镜像（后端由镜像本身决定 CUDA/Ascend，vLLM 自动探测）；可被 modelSpec.image 按模型覆盖
-  image: "registry.dev.huawei.com/flash_stor/ucm-vllm-cuda:v25.5.0"
-  # engine：发布自动化使用的结构化不可变镜像引用。设置时优先于 image；digest 同时存在时优先于 tag。
-  # engine:
-  #   repository: "ghcr.io/modelengine-group/vllm-openai"
-  #   tag: "v0.21.0-ucm-0.5.0rc1"
-  #   digest: "sha256:<64 lowercase hex>"
+  # image：vLLM/UCM 推理引擎镜像；安装时必须显式设置，也可被 modelSpec.image 按模型覆盖
+  image: ""
   # mooncakeMasterImage：自创建 Mooncake master 镜像；留空复用 images.image
   mooncakeMasterImage: ""
-  # mooncakeMaster：Mooncake master 的结构化引用；优先于 mooncakeMasterImage，digest 优先于 tag。
-  # mooncakeMaster:
-  #   repository: "ghcr.io/modelengine-group/ucm-mooncake-master"
-  #   tag: "0.5.0rc1-candidate-r1"
-  #   digest: "sha256:<64 lowercase hex>"
 
 # ===== Mooncake master（可选，共享基础服务）=====
 # Mooncake master 不属于 kthena ModelServing role。需要 Mooncake master 的 PD release：
@@ -52,7 +41,7 @@ mooncakeMaster:
   client:
     # Helm 固定生成 /vllm-workspace/UnifiedCache/mooncake/mooncake.json，
     # 并注入 MOONCAKE_CONFIG_PATH；master_server_address 由 chart 自动补，用户不要手写。
-    # protocol 跟平台相关，必须放到具体模型模板里：CUDA/GPU 通常用 rdma，Ascend/NPU 用 ascend。
+    # protocol 由具体运行时决定，必须放到模型 profile 中：CUDA/GPU 通常用 rdma，Ascend/NPU 用 ascend。
     config: ""
     # 追加到使用 master 的 prefill/decode Pod；MOONCAKE_* 托管变量禁止在这里覆盖。
     env: []
@@ -62,10 +51,9 @@ mooncakeMaster:
       add:
         - IPC_LOCK
   podAnnotations: {}
-  # master 是纯 CPU 控制面，resources 不要写加速卡键（不占 NPU/GPU 配额）。
-  # Ascend（client.config.protocol=ascend）时模板自动内置宿主机挂载
-  # /usr/local/Ascend/driver 与 /etc/hccn.conf（仅 NPU 节点存在），
-  # 请用 nodeSelector/affinity 把 master 钉到 NPU 节点，避免调度到无驱动节点 FailedMount。
+  # master 是纯 CPU 控制面，不默认请求加速卡资源。
+  # protocol=ascend 时，模板会只读挂载节点上的标准 Ascend driver、DCMI 和 hccn.conf；
+  # 请通过 nodeSelector/affinity 将 master 调度到已安装 Ascend 驱动的节点。
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -73,91 +61,32 @@ mooncakeMaster:
 
 # ===== 互联网卡（跨节点通信网卡）自动探测（与 nodeTopologyConfig 同级）=====
 # autoDetectInterface：默认 true。启动脚本按“K8s 节点 IP(HOST_IP) → 归属网卡”自动探测，
-#   扇出到 GLOO/HCCL/NCCL/TP_SOCKET_IFNAME 及 VLLM_NETWORK_INTERFACE/VLLM_USE_NETIF，
-#   并派生 HCCL_IF_IP，且置 VLLM_DETECT_MULTI_IP=0（已固定网卡，无需多 IP 探测）。
+#   固定扇出到 GLOO_SOCKET_IFNAME、TP_SOCKET_IFNAME、NCCL_SOCKET_IFNAME、
+#   HCCL_SOCKET_IFNAME、HCCL_IF_NAME、VLLM_NETWORK_INTERFACE、VLLM_USE_NETIF，
+#   从网卡 IPv4 派生 HCCL_IF_IP，并置 VLLM_DETECT_MULTI_IP=0。
 #   VLLM_HOST_IP 不自动派生；需要固定 Mooncake/vLLM 注册地址时在 nodeTopologyConfig 中按节点显式设置。
 #   需 hostNetwork=true 才能看到宿主机网卡；非 hostNetwork 时跳过探测并告警。
-#   显式 nodeTopologyConfig 值优先，探测不覆盖。Ray worker（KubeRay）暂不在自动探测范围内。
+#   显式 nodeTopologyConfig 值优先，探测不覆盖。
 autoDetectInterface: true
 # forceInterface：硬覆盖网卡名（独立 fabric 等探测会选错的场景）；留空=不强制
 forceInterface: ""
-# interfaceEnvVars：自定义扇出的变量名集合；留空用内置超集（GPU/Ascend 通用，多余变量被忽略）
-interfaceEnvVars: []
 # ===== Node Topology（与 servingEngineSpec 同级）=====
 # 按节点名注入“节点级环境变量”并联动调度：
 # - key=K8s 节点名（须与 `kubectl get nodes` 一致），value=ENV map
 # - 非空：引擎 Pod 自动加 nodeAffinity（仅调度到这些节点）；多副本再加 podAntiAffinity 分散节点
 # - 为空（{}）：不加调度约束，也不注入节点级变量；网卡改由 autoDetectInterface 自动探测（默认开）
 # - 不得覆盖 UC_PD_GROUP_NAME / UC_PD_ROLE_ID / UC_USES_UCM 等 Chart 托管的 KV 运行时变量
-# 示例（GPU 用 NCCL_*，Ascend 用 HCCL_*，InfiniBand 另加 NCCL_IB_*）：
+# 示例：
 # nodeTopologyConfig:
-#   gpu-1:
-#     NCCL_SOCKET_IFNAME: "ens10f0"
-#     NCCL_IB_DISABLE: "1"
-#     VLLM_NETWORK_INTERFACE: "ens10f0"
-#     VLLM_HOST_IP: "10.10.10.11"
+#   worker-a:
+#     GLOO_SOCKET_IFNAME: "eth1"
+#     VLLM_NETWORK_INTERFACE: "eth1"
 nodeTopologyConfig:
-#    gpu-1:
-#      GLOO_SOCKET_IFNAME: "ens10f0"
-#      NCCL_SOCKET_IFNAME: "ens10f0"
-#      VLLM_NETWORK_INTERFACE: "ens10f0"
-#      VLLM_USE_NETIF: "ens10f0"
-#      VLLM_HOST_IP: "10.10.10.11"
-#      VLLM_DETECT_MULTI_IP: "0"
-#      VLLM_USE_HOSTNAME: "0"
-#    gpu-3:
-#      GLOO_SOCKET_IFNAME: "ens10f0"
-#      NCCL_SOCKET_IFNAME: "ens10f0"
-#      VLLM_NETWORK_INTERFACE: "ens10f0"
-#      VLLM_USE_NETIF: "ens10f0"
-#      VLLM_HOST_IP: "10.10.10.13"
-#      VLLM_DETECT_MULTI_IP: "0"
-#      VLLM_USE_HOSTNAME: "0"
-#    gpu-4:
-#      GLOO_SOCKET_IFNAME: "ens10f0"
-#      NCCL_SOCKET_IFNAME: "ens10f0"
-#      VLLM_NETWORK_INTERFACE: "ens10f0"
-#      VLLM_USE_NETIF: "ens10f0"
-#      VLLM_HOST_IP: "10.10.10.14"
-#      VLLM_DETECT_MULTI_IP: "0"
-#      VLLM_USE_HOSTNAME: "0"
-#    npu-1:
-#      GLOO_SOCKET_IFNAME: "enp189s0f0"
-#      HCCL_IF_NAME: "enp189s0f0"
-#      HCCL_SOCKET_IFNAME: "enp189s0f0"
-#      VLLM_NETWORK_INTERFACE: "enp189s0f0"
-#      VLLM_USE_NETIF: "enp189s0f0"
-#      VLLM_HOST_IP: "10.10.20.11"
-#      VLLM_DETECT_MULTI_IP: "0"
-#    npu-3:
-#      GLOO_SOCKET_IFNAME: "enp189s0f0"
-#      HCCL_IF_NAME: "enp189s0f0"
-#      HCCL_SOCKET_IFNAME: "enp189s0f0"
-#      VLLM_NETWORK_INTERFACE: "enp189s0f0"
-#      VLLM_USE_NETIF: "enp189s0f0"
-#      VLLM_HOST_IP: "10.10.20.13"
-#      VLLM_DETECT_MULTI_IP: "0"
-#    npu-5:
-#      GLOO_SOCKET_IFNAME: "enp189s0f0"
-#      HCCL_IF_NAME: "enp189s0f0"
-#      HCCL_SOCKET_IFNAME: "enp189s0f0"
-#      VLLM_NETWORK_INTERFACE: "enp189s0f0"
-#      VLLM_USE_NETIF: "enp189s0f0"
-#      VLLM_HOST_IP: "10.10.20.15"
-#      VLLM_DETECT_MULTI_IP: "0"
-#    npu-6:
-#      GLOO_SOCKET_IFNAME: "enp189s0f0"
-#      HCCL_IF_NAME: "enp189s0f0"
-#      HCCL_SOCKET_IFNAME: "enp189s0f0"
-#      VLLM_NETWORK_INTERFACE: "enp189s0f0"
-#      VLLM_USE_NETIF: "enp189s0f0"
-#      VLLM_HOST_IP: "10.10.20.16"
-#      VLLM_DETECT_MULTI_IP: "0"
 
 # -- 推理引擎配置
 # 本 chart 为 kthena-only：只渲染 ModelServing[/ModelServer/ModelRoute]，无 native(Deployment/StatefulSet/Ray)。
 # 形态由 servingEngineSpec.modelSpec.roles[] 形状决定（单/双机=1 role；PD=多 role + modelSpec.pd 配对）。
-# 资源/KV 显式写、chip-agnostic（chipType / storage.chipExtraStorage 已删除）。详见 plan/uc-stack-kthena-only-2026-06-22.md。
+# 资源和 KV 配置均显式声明，不再通过芯片类型推断。
 servingEngineSpec:
   enableEngine: true
 
@@ -176,7 +105,7 @@ servingEngineSpec:
   # dnsPolicy：hostNetwork=true 时用 ClusterFirstWithHostNet 以保留集群 DNS（默认 ClusterFirst）
   dnsPolicy: "ClusterFirstWithHostNet"
 
-  # -- 探针配置（仅 entry/leader 容器；worker 是 --headless 无本地 HTTP，故不配探针）。
+  # -- 探针配置：standard 仅 entry/leader；hybrid 的多机 role 中 entry/worker 都提供 HTTP，均渲染探针。
   # exec 探 http://127.0.0.1:<containerPort><healthPath>。每个探针可单独 enabled:false 关闭。
   # 可在 modelSpec.probes 下按模型覆盖（如大模型调大 startup.failureThreshold）。
   probes:
@@ -201,23 +130,8 @@ servingEngineSpec:
   #  labels:
   #    environment: "test"
   #    release: "test"
-  # -- 模型的额外 Service 端口
-  extraPorts: [ ]
-
   # -- 从 ConfigMap 设置其他环境变量
   configs:
-    RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES: "1"
-    VLLM_ALLREDUCE_USE_SYMM_MEM: "0"
-    RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES: "1"
-    VLLM_USE_DEEP_GEMM: "0"
-    HCCL_OP_EXPANSION_MODE: "AIV"
-    OMP_PROC_BIND: "false"
-    OMP_NUM_THREADS: "100"
-    HCCL_BUFFSIZE: "200"
-    PYTORCH_NPU_ALLOC_CONF: "expandable_segments:True"
-    VLLM_ASCEND_ENABLE_MLAPO: "1"
-    HCCL_INTRA_PCIE_ENABLE: "1"
-    HCCL_INTRA_ROCE_ENABLE: "0"
     ENABLE_UCM_PATCH: "1"
 
 
@@ -233,8 +147,11 @@ servingEngineSpec:
   #   modelName   对外 API model 名；留空回退 modelPath
   #   roles[]     部署形态来源：单机/双机=1 role，PD=多 role + modelSpec.pd
   #   resources   原生 K8s ResourceRequirements，直接写设备资源键
+  #   serviceAccountName 可选，仅引用用户预先创建的 ServiceAccount；Chart 不创建或绑定权限
   modelSpec:
-    # 调度相关（affinity / podAnnotations 等）应通过部署专用 values 叠加；base 不绑定专用节点池。
+    # 数据并行服务模式：standard（默认，entry HTTP + headless worker）| hybrid（PD+Router，每节点 HTTP）。
+    # hybrid 仅用于含 workerReplicas>0 的 PD 部署，并要求 router.enabled=true；Chart 自动注入 vLLM Hybrid LB 参数。
+    dataParallelMode: standard
 
 
     # ===== 部署形态（kthena-only）=====
@@ -256,52 +173,41 @@ servingEngineSpec:
 
     # ===== vLLM 启动方式与参数 =====
     # 原生 vLLM CLI flag 写在 roles[].vllmArgs（每行一个）。
-    # 不要写入：modelPath、--served-model-name、6 个网络参数（--host/--port/...）；这些由 chart/entrypoint 注入。
+    # 不要写入：modelPath、--served-model-name、网络/DP LB 参数（--host/--port/--headless/--data-parallel-...）；这些由 chart/entrypoint 注入。
     # 环境变量放 servingEngineSpec.configs 或 modelSpec.env；真实写法见 models/ 下各模型 values 文件。
 
     # ===== Unified Cache（模型覆盖项）=====
     # 模型侧按需填写 unifiedcacheConfig.config；base 不启用 UCM。
     # unifiedcacheConfig.enabled（默认 true，别名 enable；两者同时出现且值冲突会渲染失败）：显式开关。
-    #   false = 不使用 UCM，即使 config 非空也不渲染 ucm ConfigMap、不注 UCMConnector(--kv-transfer-config)、
-    #   不挂 UCM 卷/缓存盘、不建 SA/RBAC，等价于未填 config（unifiedcacheStorage 的 PVC/PV 仍按 storage 配置创建，
-    #   只是不挂载进引擎 Pod；HF_HOME 仍指向 unifiedcacheStorage[0].mountPath，靠 HF 在线下载模型的部署需自行留意）。
+    #   false = 不使用 UCM，即使 config 非空也不渲染 UCM ConfigMap、不注入 UCMConnector、
+    #   不挂载 UCM 卷，也不为 unifiedcacheStorage 创建 PV/PVC。extraStorage 不受影响。
     #   PD 下它是唯一 UCM 开关：生效时 Mooncake producer 自动叠加 UCM，decode 保持纯传输 connector。
     #   unifiedcacheConfig.enable 仅作为旧别名兼容，新配置统一写 enabled。
     #   enabled: true 但 config 为空会直接渲染失败，防止静默不生效。
     #   注意：servingEngineSpec.configs.ENABLE_UCM_PATCH 是镜像内 vLLM patch 的独立 env，chart 不随本开关托管，
     #   需要彻底关闭镜像内 UCM patch 时在 overlay 里自行置 "0"。
-    # chart 自动托管 storage_backends、kvcs_instance_name、kvcs_store_id、kvcs_tls_enable，其它 UCM 字段原样透传。
+    # unifiedcacheConfig.config 按 UCM 原生结构透传；Chart 仅按 unifiedcacheStorage 挂载路径填充 storage_backends。
 
     # ===== 资源（kthena-only：raw resources，chip-agnostic）=====
-    # roles[].resources 原样透传为 K8s ResourceRequirements；直接写 nvidia.com/gpu、huawei.com/Ascend910、rdma/...、hugepages-2Mi 等资源键。
+    # roles[].resources 原样透传为 K8s ResourceRequirements；直接写集群设备插件暴露的资源键。
 
     # ===== 存储与挂载 =====
     # unifiedcacheStorage：UCM 高性能缓存盘（在各模型 values 文件配置；UCM 可选，与 kthena 拉起正交）
-    # extraStorage：公共额外挂载（此处统一维护，所有模型共享；昇腾驱动挂载若运行时不自动注入也写这里）
+    # extraStorage：公共额外挂载，由用户按集群环境显式配置。
     # 列表项必须含 name、mountPath，且 source 六选一：
     #   dynamicPVC 动态 PVC | staticPVC 静态 PV+PVC | persistentVolumeClaim 复用 PVC
     #   hostPath 宿主机路径 | csi 直连 CSI 卷 | nfs 原生 NFS 卷
     storage:
-      # unifiedcacheStorage（高性能缓存盘）已下沉到各模型 values 文件
-      # （models/cuda|ascend/values-*.yaml）；base 不再激活，下方仅留写法参考。
+      # unifiedcacheStorage（高性能缓存盘）在各模型 profile 中按需配置；base 不激活。
       # unifiedcacheStorage:
       #   - name: model-data     # Volume/PVC 名片段：小写字母/数字/-，起止字母或数字
       #     mountPath: /mnt/data
       #     dynamicPVC:
       #       pvcStorage: "1Ti"
-      #       storageClass: a800-192-168-4-106
+      #       storageClass: replace-with-your-rwx-storage-class  # 部署前替换为目标集群实际名称
       #       pvcAccessMode: [ "ReadWriteMany" ]
-      extraStorage:
-        - name: timezone-volume  # Volume 名片段：小写字母/数字/-，起止字母或数字
-          mountPath: /etc/localtime
-          hostPath:
-            path: /usr/share/zoneinfo/Asia/Shanghai
-            type: File
-        - name: models           # Volume 名片段：小写字母/数字/-，起止字母或数字
-          mountPath: /mnt/model
-          nfs:
-            server: 192.168.3.6
-            path: /public_model
+      # 模型目录需要本地挂载时，请通过 PVC、NFS 或 CSI overlay 配置 extraStorage。
+      extraStorage: []
 
 
     # ===== 环境变量 =====
@@ -310,13 +216,13 @@ servingEngineSpec:
     # 系统自动注入 NODE_IP / POD_NAME / CPU_REQUEST 等 Downward API 变量
     env: [ ]
 
-    # ===== 生命周期钩子（可选；详见 plan/vllm-lifecycle-hooks-2026-07-10.md 与 doc）=====
+    # ===== 生命周期钩子（可选；详见 doc/DEVELOPER_GUIDE.md）=====
     # hooks：键 preStart/postReady/preStop，值为 shell 脚本块字符串（同 vllmArgs 风格）；
     #   roles[].hooks 按键整体覆盖 modelSpec.hooks，键值写显式 null 可禁用该 role 的对应钩子。
     #   preStart  entrypoint 内 source 执行（prepare_common_runtime 之后、exec vllm 之前，非 K8s 原生钩子）：
     #             可读全部运行时变量（MASTER_IP/NODE_RANK/UCM_CONFIG_FILE/...），export 的变量直达 vllm 进程；
     #             任一命令失败=启动失败（set -e）；提前结束用 return 0（禁止 exit）；顶层禁用 local。
-    #   postReady entry 的后台 watcher 轮询 /health，就绪后执行一次（worker 无本地 HTTP 不触发）；失败仅告警。
+    #   postReady 后台 watcher 轮询本 Pod /health，就绪后执行一次；standard 仅 entry，hybrid 多机 role 包含 worker；失败仅告警。
     #   preStop   渲染为 K8s containers[].lifecycle.preStop.exec（SIGTERM 之前）；容器 crash 不触发——
     #             注册/摘流类用例须以外部 TTL/健康检查为主通道；网络调用务必 curl -m 限时。
     #   entry/worker 分流：脚本内判 ${UC_POD_KIND}（entry|worker，配置了钩子才注入）。
@@ -335,11 +241,7 @@ servingEngineSpec:
     # terminationGracePeriodSeconds: 120
 
 
-    # ===== InitContainer / Sidecar / Ray 与鉴权（均可选）=====
-    # initContainer：主容器启动前准备数据/权限；字段 enabled/name/image/command/args/env/resources，
-    #   mountPvcStorage=true 自动挂载 unifiedcacheStorage 各项，extraVolumeMounts 可追加临时挂载
-    # sidecar：与主容器并行（日志/监控/代理）；字段 enabled/name/image/command/args/env/resources/volumeMounts
-    # raySpec.enabled=true：用 RayCluster 形态，headNode 可单独设资源
+    # ===== 鉴权（可选）=====
     # hf_token：字符串，或现有 Secret 引用 {secretName, secretKey}
 
   # ================= ServiceMonitor（Prometheus Operator）=================
@@ -390,7 +292,7 @@ servingEngineSpec:
     #     action: drop
     metricRelabelings: [ ]
 
-  # 探针：kthena 形态由 chart.kthenaProbe 注入（entry 探 127.0.0.1，worker 探 $ENTRY_ADDRESS，见 plan §3.6）。
+  # 探针：kthena 形态由 chart.kthenaProbe 注入，所有提供 HTTP 的 Pod 均自探 127.0.0.1:$POD_PORT。
   # 部署策略/可用性由 ModelServing.spec.rolloutStrategy / recoveryPolicy 接管；base 不再配 strategy/probe/PDB。
 
   # -- 容忍度配置（当节点有污点时）
@@ -399,13 +301,10 @@ servingEngineSpec:
   #   - key: "node-role.kubernetes.io/control-plane"
   #     operator: "Exists"
   #     effect: "NoSchedule"
-  # 专用节点池的污点容忍应通过部署专用 values 叠加；base 默认不注入额外 tolerations。
-
   # -- runtimeClassName（可选）：在 roles[].runtimeClassName 显式写；留空则不设（无 chipType 自动推断）
   # runtimeClassName: "custom-runtime"
   # -- SchedulerName 配置
   # kthena 多机 / PD 示例默认走 Volcano；如需回落 default-scheduler，可在 overlay 中设为 ""。
-  # 专用队列的 queue/affinity/toleration 应通过部署专用 values 叠加。
   schedulerName: "volcano"
 
   # -- Pod 级别安全上下文配置。https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.32/#podsecuritycontext-v1-core

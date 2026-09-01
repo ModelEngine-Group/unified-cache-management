@@ -2,10 +2,14 @@
 {{- $modelSpec := .Values.servingEngineSpec.modelSpec -}}
 {{- $storage := default (dict) $modelSpec.storage -}}
 {{- $unifiedStorage := default (list) $storage.unifiedcacheStorage -}}
+{{- $extraStorage := default (list) $storage.extraStorage -}}
+{{- $ucmConfigEnabled := eq (include "chart.ucmConfigEnabled" (list $modelSpec)) "true" -}}
 {{- include "chart.validateStorageConfig" (list $modelSpec $) -}}
-{{- $extraStorage := include "chart.combinedExtraStorage" (list $modelSpec $) | fromYamlArray -}}
 {{- with $ -}}
-{{- $allStorage := concat $unifiedStorage $extraStorage -}}
+{{- $allStorage := $extraStorage -}}
+{{- if $ucmConfigEnabled -}}
+{{- $allStorage = concat $unifiedStorage $extraStorage -}}
+{{- end -}}
 {{- $first := true -}}
 {{- range $storage := $allStorage -}}
 {{- if hasKey $storage "staticPVC" -}}

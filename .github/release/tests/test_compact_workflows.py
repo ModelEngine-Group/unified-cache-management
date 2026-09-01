@@ -1232,6 +1232,8 @@ def test_release_build_keeps_gcc_fmt_false_positive_non_fatal() -> None:
 def test_chart_consumes_product_smoke_values_from_v4_policy() -> None:
     text = (WORKFLOWS / "_build-chart.yml").read_text(encoding="utf-8")
     assert ".chart.smoke_values[$product]" in text
+    assert '--set-string "images.image=${repository}:${tag}"' in text
+    assert "images.engine." not in text
     assert "huawei.com/Ascend910" in text
     assert "nvidia.com/gpu" in text
     assert "validation_cases" not in text

@@ -109,6 +109,7 @@ as exact sentinels and is resolved inside the Pod immediately before vLLM starts
 {{- $modelSpec := .Values.servingEngineSpec.modelSpec }}
 {{- $ucmConfigEnabled := eq (include "chart.ucmConfigEnabled" (list $modelSpec)) "true" }}
 {{- $anyHooks := eq (include "chart.anyRoleHasHooks" (list $modelSpec)) "true" }}
+{{- $hybridDataParallel := eq (include "chart.hybridDataParallelEnabled" (list $modelSpec)) "true" }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -140,6 +141,9 @@ data:
         -dpp
         --data-parallel-start-rank
         -dpr
+        --data-parallel-hybrid-lb
+        --data-parallel-external-lb
+        --data-parallel-rank
         --kv-transfer-config
         --served-model-name
         --config
@@ -239,7 +243,7 @@ data:
     # Downward API identity and the role-level UCM decision are immutable inputs.
     # Lock them before sourcing topology/profile/hooks so one logical role replica
     # cannot be made to collide with another at runtime.
-    readonly UC_PD_GROUP_NAME UC_PD_ROLE_ID UC_USES_UCM UC_SKIP_KV_CONNECTOR_REGISTRY_PROBE
+    readonly UC_PD_GROUP_NAME UC_PD_ROLE_ID UC_USES_UCM
     prepare_common_runtime
     readonly VLLM_ARGS_FILE
 {{- if $anyHooks }}
@@ -276,10 +280,17 @@ data:
       --served-model-name {{ include "chart.servedModelName" $modelSpec | quote }}
     )
 
-    if [[ "${REPLICA_COUNT}" == "1" ]] || [[ "${NODE_RANK:-0}" == "0" ]]; then
+    if [[ "${REPLICA_COUNT}" == "1" ]]; then
+      cmd+=( --host 0.0.0.0 --port "{{ include "chart.container-port" $ }}" )
+{{- if $hybridDataParallel }}
+    else
+      cmd+=( --host 0.0.0.0 --port "{{ include "chart.container-port" $ }}" --data-parallel-hybrid-lb )
+{{- else }}
+    elif [[ "${NODE_RANK:-0}" == "0" ]]; then
       cmd+=( --host 0.0.0.0 --port "{{ include "chart.container-port" $ }}" )
     else
       cmd+=( --headless )
+{{- end }}
     fi
 
     if [[ "${REPLICA_COUNT}" != "1" ]]; then
@@ -310,10 +321,10 @@ data:
     print_server_args
 {{- if $anyHooks }}
 
-    # postReady 钩子：后台 watcher 轮询 /health，就绪后执行一次（仅 entry，worker --headless 无本地 HTTP）；失败仅告警。
+    # postReady 钩子：后台 watcher 轮询 /health，就绪后执行一次；standard 仅 entry，hybrid 的多机 role 包含 worker。
     # exec 原地换映像不换 PID，watcher 父进程恒为 PID 1（届时已是 vllm），stdout 继承容器日志 FD 继续可见；
     # watcher 结束后留一个 defunct 条目直到 Pod 终止，属预期（PID 1 不 wait 未知子进程）。
-    if [[ -f "${ENTRYPOINT_DIR}/hook-post-ready.sh" && "${UC_POD_KIND:-entry}" == "entry" ]]; then
+    if [[ -f "${ENTRYPOINT_DIR}/hook-post-ready.sh" && ( "${UC_POD_KIND:-entry}" == "entry"{{- if $hybridDataParallel }} || "${REPLICA_COUNT}" != "1"{{- end }} ) ]]; then
       (
         set +e   # 子 shell 继承父 errexit，未就绪期 curl 必失败，先关掉
         until curl -sf -m 2 "http://127.0.0.1:${POD_PORT}/health" >/dev/null; do

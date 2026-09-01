@@ -1,6 +1,6 @@
 # ============================================================
 # Qwen3-0.6B PD 分离 2P2D 双机实例（Ascend / Mooncake + UCM）
-# helm install qwen3-0p6b-2p2-2d2 -n yulei-test --create-namespace . -f values.yaml -f models/ascend/values-qwen3-0p6b-2p2-2d2.yaml
+# helm install qwen3-0p6b-2p2-2d2 -n inference --create-namespace . -f values.yaml -f models/ascend/values-qwen3-0p6b-2p2-2d2.yaml
 # 2P2D + 每个 P/D 实例跨两机：prefill/decode 各 2 个实例，每个实例 entry+worker（workerReplicas=1，DP2×TP1）。
 # ============================================================
 mooncakeMaster:
@@ -15,13 +15,11 @@ mooncakeMaster:
         "protocol": "ascend",
         "device_name": ""
       }
-  # master 不占 NPU 卡（纯 CPU 控制面）；昇腾 driver/dcmi/hccn.conf 挂载由 chart 模板按 protocol=ascend 内置。
-  # nodeSelector 钉 NPU 节点（标签按集群实际）；保留 rdma/rdma_shared 作调度双保险。
+  # master 是纯 CPU 控制面；protocol=ascend 时 Chart 挂载标准 Ascend driver/DCMI/HCCN 运行时文件。
+  # 请通过 nodeSelector/affinity 将 master 调度到提供这些标准宿主机路径的 Ascend 节点。
   resources:
     limits:   { rdma/rdma_shared: "1", cpu: "2", memory: 4Gi }
     requests: { rdma/rdma_shared: "1", cpu: "1", memory: 2Gi }
-  nodeSelector:
-    "accelerator": "huawei-Ascend910"
 
 servingEngineSpec:
   enableEngine: true
@@ -30,6 +28,7 @@ servingEngineSpec:
     name: "qwen3-0p6b-2p2-2d2"                  # K8s 资源名片段：小写字母/数字/-，起止字母或数字；<release>-<name> <= 63
     modelPath: "/mnt/model/Qwen3-0.6B"
     modelName: "Qwen3-0.6B"
+    dataParallelMode: hybrid                    # P/D 的 entry+worker 均提供 HTTP，由 kthena-router 负载均衡
     shmSize: "128Gi"
     recoveryPolicy: ServingGroupRecreate          # 可选：ServingGroupRecreate（整组）| RoleRecreate（单 Role，默认）| None（Pod/Deployment 默认行为）
     restartGracePeriodSeconds: 60
@@ -42,10 +41,14 @@ servingEngineSpec:
       kvTransfer:
         connector: MooncakeConnectorV1            # 可选（区分大小写）：MooncakeConnectorV1 | MooncakeHybridConnector | NixlConnector
         routerType: mooncake                       # Mooncake 两种 connector 对应 mooncake；NixlConnector 对应 nixl
+        # ===== Chart 托管的 KV identity 输出 =====
+        # - engine_id：从 engineIdBase 起，按 serving group、P/D role 与副本序号生成。
+        # - kv_port：从 kvPortBase 起按 instanceStride 分配，与 containerPort/HTTP --port 无关。
+        # 最终值由 Chart 写入运行时 KV 配置，不要手工覆盖。
         identity:
-          engineIdBase: 0
-          kvPortBase: 36000
-          instanceStride: 100
+          engineIdBase: 0                         # 首个逻辑 P/D 实例的 engine_id
+          kvPortBase: 36000                       # 首个逻辑 P/D 实例的 Mooncake kv_port
+          instanceStride: 100                     # 相邻实例的端口基址间隔，须覆盖单实例并行端口跨度
       mooncake:
         master:
           enabled: true
@@ -65,6 +68,24 @@ servingEngineSpec:
         echo "[hook] postReady: ${POD_IP}:${POD_PORT} is serving"
       preStop: |
         echo "[hook] preStop: pod=${POD_NAME} is stopping"
+    # ===== Chart 托管的 vLLM 启动参数（下方所有 role 共用）=====
+    # vllmArgs 仅填写模型、并行与性能参数；下列参数由 Chart 拼接或保留，重复填写会渲染失败：
+    # - modelPath：vllm serve 的模型路径位置参数，来自 modelSpec.modelPath。
+    # - --served-model-name：对外模型名，来自 modelSpec.modelName（为空时回退 modelPath）。
+    # - --host：entry 监听地址，固定为 0.0.0.0。
+    # - --port：entry HTTP 服务端口，来自 containerPort。
+    # - --headless / --data-parallel-hybrid-lb：由 dataParallelMode 派生；本模板为 hybrid，worker 也启动 HTTP。
+    # - --data-parallel-address (-dpa)：多机时使用 MASTER_IP。
+    # - --data-parallel-rpc-port (-dpp)：多机时使用 Chart 计算的 DP RPC 端口。
+    # - --data-parallel-start-rank (-dpr)：多机时按 NODE_RANK 与本地 DP size 计算。
+    # - --kv-transfer-config：启用 UCM/PD 时由 Chart 生成并在 Pod 启动期解析。
+    # - --config：始终禁止，避免外部配置绕过托管参数校验。
+    # - --kv-offloading-size：存在 Chart KV 配置时禁止。
+    # - --kv-offloading-backend：存在 Chart KV 配置时禁止。
+    # Connector 结果：
+    # - UCMConnector(kv_both)：UCM-only role 使用。
+    # - MultiConnector：PD+UCM 的 prefill 使用，内部组合传输 connector 与 UCMConnector。
+    # - 传输 connector：PD 的 decode 单独使用。
     roles:
       - name: prefill                         # role 名：小写字母/数字/-，起止字母或数字，最长 12
         replicas: 2                               # xPyD 的 x=2
@@ -100,11 +121,45 @@ servingEngineSpec:
           --distributed-executor-backend mp
           --trust-remote-code
           --max-num-batched-tokens 16384
+    # ===== Chart 托管的运行时环境变量（勿在 env 中设置）=====
+    # - UC_PD_GROUP_NAME：当前逻辑 serving group 名称。
+    # - UC_PD_ROLE_ID：当前 role 副本序号。
+    # - UC_USES_UCM：当前 role 是否挂载并使用 UCM。
+    # - VLLM_ARGS_FILE：当前 role 投影的 vllm.args 文件路径。
+    # - MOONCAKE_MASTER：启用 Mooncake master 时注入其 RPC 地址。
+    # - MOONCAKE_CONFIG_PATH：启用 Mooncake master 时固定为客户端配置文件路径。
+    # - MOONCAKE_GLOBAL_SEGMENT_SIZE：启用 Mooncake master 时来自 client.config.global_segment_size。
+    # ===== Ascend 运行时环境（公开默认值）=====
+    # CANN 运行库由镜像提供；以下参数保留原有 HCCL / vLLM Ascend 行为。
     env:
-      - { name: VLLM_SERVER_DEV_MODE, value: "1" }
+      - name: VLLM_SERVER_DEV_MODE
+        value: "1"
+      - name: RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES
+        value: "1"
+      - name: VLLM_ALLREDUCE_USE_SYMM_MEM
+        value: "0"
+      - name: HCCL_OP_EXPANSION_MODE
+        value: "AIV"
+      - name: OMP_PROC_BIND
+        value: "false"
+      - name: OMP_NUM_THREADS
+        value: "100"
+      - name: HCCL_BUFFSIZE
+        value: "200"
+      - name: PYTORCH_NPU_ALLOC_CONF
+        value: "expandable_segments:True"
+      - name: VLLM_ASCEND_ENABLE_MLAPO
+        value: "1"
+      - name: HCCL_INTRA_PCIE_ENABLE
+        value: "1"
+      - name: HCCL_INTRA_ROCE_ENABLE
+        value: "0"
+    # ===== Unified Cache 托管参数（本模型）=====
+    # 未列为托管的 config 字段原样渲染；完整字段说明见根 values.yaml。
+    # - storage_backends：Chart 按 unifiedcacheStorage 的 mountPath 顺序生成。
+    # - UCM_CONFIG_FILE：固定指向 /vllm-workspace/UnifiedCache/config/ucm_config.runtime.yaml。
     unifiedcacheConfig:
       enabled: true                         # false = 不使用 UCM（不注 UCMConnector、不渲染 ucm ConfigMap、不挂缓存盘）
-      kvcsStoreIdAutoDetect: false
       config:
         enable_event_sync: true
         use_layerwise: true
@@ -116,24 +171,9 @@ servingEngineSpec:
               cache_buffer_capacity_gb: 64
               use_gdr: false
     storage:
-      unifiedcacheStorage:
-        - name: model-data                    # Volume/PVC 名片段：小写字母/数字/-，起止字母或数字
-          mountPath: /mnt/data
-          dynamicPVC:
-            pvcStorage: "1Ti"
-            storageClass: a800-192-168-4-106
-            pvcAccessMode: [ "ReadWriteMany" ]
+      # 请用额外 values 将模型盘挂载到 /mnt/model；可选择 PVC、CSI 或 NFS。
+      # Ascend Mooncake 引擎启动时会校验这两个标准宿主机文件。
       extraStorage:
-        - name: timezone-volume
-          mountPath: /etc/localtime
-          hostPath:
-            path: /usr/share/zoneinfo/Asia/Shanghai
-            type: File
-        - name: models
-          mountPath: /mnt/model
-          nfs:
-            server: 192.168.3.6
-            path: /public_model
         - name: hccn-conf
           mountPath: /etc/hccn.conf
           readOnly: true
@@ -146,35 +186,11 @@ servingEngineSpec:
           hostPath:
             path: /usr/local/Ascend/driver/tools/hccn_tool
             type: File
-
-        # ===== 双挂载（多缓存后端）示例 =====
-        # 取消注释即再挂一块静态盘：storage_backends 按 mountPath 顺序拼成 "/mnt/data:/data-0"。
-        # kvcsStoreIdAutoDetect=true 时，每块 PV 都需在 csi.volumeAttributes.kvcacheStoreId 标注 store id，
-        # 运行时按同序拼成 kvcs_store_id（如 "0:1"）。
-#        - name: static-data-0               # Volume/PVC 名片段：小写字母/数字/-，起止字母或数字
-#          mountPath: /data-0
-#          staticPVC:
-#            pvcStorage: "1Ti"
-#            storageClass: manual-nfs
-#            pvcAccessMode: [ "ReadWriteMany" ]
-#            reclaimPolicy: Retain
-#            mountOptions:
-#              - nfsvers=3
-#              - nolock
-#              - nocto
-#              - proto=rdma
-#              - port=20049
-#              - rsize=1048576
-#              - wsize=1048576
-#              - hard
-#              - timeo=600
-#              - retrans=2
-#              - nconnect=8
-#            csi:
-#              driver: nfs.csi.k8s.io
-#              fsType: nfs
-#              volumeHandle: 192.168.3.106#/datasets/team-a
-#              volumeAttributes:
-#                server: 192.168.3.106
-#                share: /datasets/team-a
-#                kvcacheStoreId: "1"   # 第二块盘 store id（auto-detect 必填）
+      unifiedcacheStorage:
+        - name: model-data                    # Volume/PVC 名片段：小写字母/数字/-，起止字母或数字
+          mountPath: /mnt/data
+          dynamicPVC:
+            pvcStorage: "1Ti"
+            # 必填：替换为集群中支持 ReadWriteMany 的 StorageClass 名称。
+            storageClass: replace-with-your-rwx-storage-class
+            pvcAccessMode: [ "ReadWriteMany" ]

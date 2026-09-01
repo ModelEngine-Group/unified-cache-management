@@ -70,8 +70,7 @@ jobs:
             [ "${product}" = vllm ] && expected=nvidia.com/gpu
             test -n "${values}"
             helm template "ucm-${variant}" "${source}" --values "${values}" \
-              --set-string "images.engine.repository=${repository}" \
-              --set-string "images.engine.tag=${tag}" \
+              --set-string "images.image=${repository}:${tag}" \
               >"out/rendered/${product}-${variant}.yaml"
             grep -Fq "${repository}:${tag}" "out/rendered/${product}-${variant}.yaml"
             grep -Fq "${expected}" "out/rendered/${product}-${variant}.yaml"

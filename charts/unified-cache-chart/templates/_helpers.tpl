@@ -6,18 +6,6 @@ Define ports for the pods
 {{- end }}
 
 {{/*
-Define service account name for engine pods.
-*/}}
-{{- define "chart.engineServiceAccountName" -}}
-{{- $modelSpec := .Values.servingEngineSpec.modelSpec -}}
-{{- if and $modelSpec (hasKey $modelSpec "serviceAccountName") $modelSpec.serviceAccountName -}}
-{{- $modelSpec.serviceAccountName -}}
-{{- else -}}
-{{- printf "%s-engine-service-account" .Release.Name -}}
-{{- end -}}
-{{- end }}
-
-{{/*
 Normalize a value so it can be used as part of a Kubernetes DNS label.
 */}}
 {{- define "chart.k8sNamePart" -}}
@@ -41,21 +29,6 @@ x
 {{- $prefixLen := sub 62 (len $hash) | int -}}
 {{- printf "%s-%s" ($clean | trunc $prefixLen | trimSuffix "-") $hash -}}
 {{- end -}}
-{{- end -}}
-
-{{/*
-Build a per-release cluster-scoped resource name. Cluster-scoped resources
-cannot have metadata.namespace, so namespace is encoded in the object name.
-*/}}
-{{- define "chart.clusterScopedInstanceName" -}}
-{{- $root := index . 0 -}}
-{{- $purpose := index . 1 -}}
-{{- $base := printf "%s-%s-%s" (include "chart.k8sNamePart" $root.Release.Namespace) (include "chart.k8sNamePart" $root.Release.Name) (include "chart.k8sNamePart" $purpose) -}}
-{{- include "chart.truncatedK8sName" $base -}}
-{{- end -}}
-
-{{- define "chart.enginePvReaderClusterRoleName" -}}
-{{- include "chart.clusterScopedInstanceName" (list . "engine-pv-reader") -}}
 {{- end -}}
 
 {{/*
@@ -95,16 +68,6 @@ whitespace-normalised and scanned token-by-token. Returns "" when unset
 
 
 {{/*
-Return modelSpec.storage.extraStorage. (chipType / chipExtraStorage 已删除)
-Usage: include "chart.combinedExtraStorage" (list $modelSpec $)
-*/}}
-{{- define "chart.combinedExtraStorage" -}}
-{{- $modelSpec := index . 0 -}}
-{{- $storage := default (dict) $modelSpec.storage -}}
-{{- toYaml (default (list) $storage.extraStorage) -}}
-{{- end -}}
-
-{{/*
 为镜像应用全局 registry（若已包含 registry 则不重复添加）
 Usage: include "chart.resolveImageWithRegistry" (list $image $)
 */}}
@@ -125,59 +88,6 @@ Usage: include "chart.resolveImageWithRegistry" (list $image $)
   {{- end -}}
 {{- else -}}
 {{- $image -}}
-{{- end -}}
-{{- end -}}
-
-{{/*
-Resolve a release image reference. A structured repository/tag/digest object
-takes precedence over the legacy string. When both digest and tag are set,
-the immutable digest is rendered. values.schema.json rejects orphan fields;
-the template repeats those guards so rendering is safe without schema support.
-Usage: include "chart.resolveReleaseImage" (list $structured $legacy $root)
-*/}}
-{{- define "chart.resolveReleaseImage" -}}
-{{- $structured := default (dict) (index . 0) -}}
-{{- $legacy := default "" (index . 1) -}}
-{{- $root := index . 2 -}}
-{{- $repository := default "" $structured.repository -}}
-{{- $tag := default "" $structured.tag -}}
-{{- $digest := default "" $structured.digest -}}
-{{- $image := "" -}}
-{{- if $repository -}}
-  {{- if $digest -}}
-    {{- $image = printf "%s@%s" $repository $digest -}}
-  {{- else if $tag -}}
-    {{- $image = printf "%s:%s" $repository $tag -}}
-  {{- else -}}
-    {{- fail "structured image repository requires tag or digest" -}}
-  {{- end -}}
-{{- else -}}
-  {{- if or $tag $digest -}}
-    {{- fail "structured image tag/digest requires repository" -}}
-  {{- end -}}
-  {{- $image = $legacy -}}
-{{- end -}}
-{{- if empty $image -}}
-  {{- fail "image reference is empty" -}}
-{{- end -}}
-{{- include "chart.resolveImageWithRegistry" (list $image $root) -}}
-{{- end -}}
-
-{{- define "chart.releaseEngineImage" -}}
-{{- $root := . -}}
-{{- $images := default (dict) $root.Values.images -}}
-{{- include "chart.resolveReleaseImage" (list (default (dict) $images.engine) $images.image $root) -}}
-{{- end -}}
-
-{{- define "chart.releaseMooncakeMasterImage" -}}
-{{- $root := . -}}
-{{- $images := default (dict) $root.Values.images -}}
-{{- $structured := default (dict) $images.mooncakeMaster -}}
-{{- $legacy := default "" $images.mooncakeMasterImage -}}
-{{- if and (empty $structured) (empty $legacy) -}}
-{{- include "chart.releaseEngineImage" $root -}}
-{{- else -}}
-{{- include "chart.resolveReleaseImage" (list $structured $legacy $root) -}}
 {{- end -}}
 {{- end -}}
 
@@ -298,7 +208,7 @@ Usage: include "chart.resolveReleaseImage" (list $structured $legacy $root)
 {{- end -}}
 {{- $resolvedCfg := include "chart.mooncakeClientConfigResolved" $root | fromYaml -}}
 {{- if not (get $resolvedCfg "protocol") -}}
-{{- fail "mooncakeMaster.client.config.protocol is required when Mooncake master is enabled; set it in the model values, e.g. rdma for CUDA/GPU or ascend for Ascend/NPU" -}}
+{{- fail "mooncakeMaster.client.config.protocol is required when Mooncake master is enabled; set it in the model profile, for example rdma for CUDA/GPU or ascend for Ascend/NPU" -}}
 {{- end -}}
 {{- include "chart.validateNoManagedMooncakeEnv" (list $client.env "mooncakeMaster.client.env") -}}
 {{- include "chart.validateNoManagedMooncakeEnv" (list $modelSpec.env "servingEngineSpec.modelSpec.env") -}}
@@ -412,6 +322,9 @@ Usage: include "chart.validateStorageItem" (list $item $idx $path)
 {{- if or (not (hasKey $item.staticPVC.csi "driver")) (empty $item.staticPVC.csi.driver) -}}
 {{- fail (printf "%s[%d].staticPVC.csi.driver is required" $path $idx) -}}
 {{- end -}}
+{{- if or (not (hasKey $item.staticPVC.csi "volumeHandle")) (empty $item.staticPVC.csi.volumeHandle) -}}
+{{- fail (printf "%s[%d].staticPVC.csi.volumeHandle is required" $path $idx) -}}
+{{- end -}}
 {{- end -}}
 {{- if hasKey $item "persistentVolumeClaim" -}}
 {{- if not (kindIs "map" $item.persistentVolumeClaim) -}}
@@ -419,6 +332,14 @@ Usage: include "chart.validateStorageItem" (list $item $idx $path)
 {{- end -}}
 {{- if or (not (hasKey $item.persistentVolumeClaim "claimName")) (empty $item.persistentVolumeClaim.claimName) -}}
 {{- fail (printf "%s[%d].persistentVolumeClaim.claimName is required" $path $idx) -}}
+{{- end -}}
+{{- end -}}
+{{- if hasKey $item "csi" -}}
+{{- if not (kindIs "map" $item.csi) -}}
+{{- fail (printf "%s[%d].csi must be an object" $path $idx) -}}
+{{- end -}}
+{{- if or (not (hasKey $item.csi "driver")) (empty $item.csi.driver) -}}
+{{- fail (printf "%s[%d].csi.driver is required" $path $idx) -}}
 {{- end -}}
 {{- end -}}
 {{- if hasKey $item "nfs" -}}
@@ -600,6 +521,57 @@ Usage: include "chart.vllmArgInt" (list $args (list "--long-name" "-x") 1)
 {{- end -}}
 
 {{/*
+Resolve the model-wide data-parallel serving mode. The default preserves the
+existing single HTTP entry + headless worker topology.
+*/}}
+{{- define "chart.dataParallelMode" -}}
+{{- $modelSpec := index . 0 -}}
+{{- $mode := "standard" -}}
+{{- if hasKey $modelSpec "dataParallelMode" -}}
+{{- if not (kindIs "string" $modelSpec.dataParallelMode) -}}
+{{- fail "servingEngineSpec.modelSpec.dataParallelMode must be a string: standard or hybrid" -}}
+{{- end -}}
+{{- $mode = trim $modelSpec.dataParallelMode -}}
+{{- end -}}
+{{- if not (has $mode (list "standard" "hybrid")) -}}
+{{- fail (printf "servingEngineSpec.modelSpec.dataParallelMode=%q is invalid; supported values are standard and hybrid" $mode) -}}
+{{- end -}}
+{{- $mode -}}
+{{- end -}}
+
+{{- define "chart.hybridDataParallelEnabled" -}}
+{{- $modelSpec := index . 0 -}}
+{{- if eq (include "chart.dataParallelMode" (list $modelSpec)) "hybrid" -}}true{{- else -}}false{{- end -}}
+{{- end -}}
+
+{{/* Validate the cross-resource contract derived from dataParallelMode. */}}
+{{- define "chart.validateDataParallelMode" -}}
+{{- $modelSpec := index . 0 -}}
+{{- $mode := include "chart.dataParallelMode" (list $modelSpec) -}}
+{{- if eq $mode "hybrid" -}}
+{{- if ne (include "chart.pdEnabled" (list $modelSpec)) "true" -}}
+{{- fail "servingEngineSpec.modelSpec.dataParallelMode=hybrid requires a PD deployment" -}}
+{{- end -}}
+{{- $router := default (dict) $modelSpec.router -}}
+{{- if not (and (kindIs "map" $router) (eq (default false $router.enabled) true)) -}}
+{{- fail "servingEngineSpec.modelSpec.dataParallelMode=hybrid requires modelSpec.router.enabled=true" -}}
+{{- end -}}
+{{- $hasWorker := false -}}
+{{- range $role := default (list) $modelSpec.roles -}}
+{{- $workers := 0 -}}
+{{- if hasKey $role "workerReplicas" -}}
+{{- $rawWorkers := toString $role.workerReplicas -}}
+{{- if regexMatch "^[1-9][0-9]*$" $rawWorkers -}}{{- $workers = int $rawWorkers -}}{{- end -}}
+{{- end -}}
+{{- if gt $workers 0 -}}{{- $hasWorker = true -}}{{- end -}}
+{{- end -}}
+{{- if not $hasWorker -}}
+{{- fail "servingEngineSpec.modelSpec.dataParallelMode=hybrid requires at least one role with workerReplicas > 0" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Single role-level UCM decision used by both KV JSON and Pod env/volumes.
 NIXL + effective UCM is rejected by chart.validateKvTransfer before this helper is consumed.
 */}}
@@ -619,7 +591,7 @@ true
 {{- define "chart.validateNoManagedKvTransferEnv" -}}
 {{- $envs := default (list) (index . 0) -}}
 {{- $where := index . 1 -}}
-{{- $managed := list "UC_PD_GROUP_NAME" "UC_PD_ROLE_ID" "UC_USES_UCM" "UC_SKIP_KV_CONNECTOR_REGISTRY_PROBE" "VLLM_ARGS_FILE" -}}
+{{- $managed := list "UC_PD_GROUP_NAME" "UC_PD_ROLE_ID" "UC_USES_UCM" "VLLM_ARGS_FILE" -}}
 {{- range $idx, $env := $envs -}}
 {{- if and (kindIs "map" $env) (has (default "" $env.name) $managed) -}}
 {{- fail (printf "%s[%d].name=%s is chart-managed by the KV-transfer runtime" $where $idx $env.name) -}}
@@ -634,7 +606,7 @@ true
 {{- if not (kindIs "map" $envs) -}}
 {{- fail (printf "%s must be an environment-variable map" $where) -}}
 {{- end -}}
-{{- $managed := list "UC_PD_GROUP_NAME" "UC_PD_ROLE_ID" "UC_USES_UCM" "UC_SKIP_KV_CONNECTOR_REGISTRY_PROBE" "VLLM_ARGS_FILE" -}}
+{{- $managed := list "UC_PD_GROUP_NAME" "UC_PD_ROLE_ID" "UC_USES_UCM" "VLLM_ARGS_FILE" -}}
 {{- range $name, $_ := $envs -}}
 {{- if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $name) -}}
 {{- fail (printf "%s contains invalid environment-variable name %q" $where $name) -}}
@@ -786,23 +758,6 @@ true
 {{- end -}}
 
 {{/*
-Returns "true" when automatic kvcs_store_id detection and runtime patching are enabled.
-Defaults to true for backward compatibility.
-*/}}
-{{- define "chart.kvcsStoreIdAutoDetectEnabled" -}}
-{{- $modelSpec := index . 0 -}}
-{{- if and (hasKey $modelSpec "unifiedcacheConfig") (kindIs "map" $modelSpec.unifiedcacheConfig) (hasKey $modelSpec.unifiedcacheConfig "kvcsStoreIdAutoDetect") -}}
-{{- ternary "true" "false" $modelSpec.unifiedcacheConfig.kvcsStoreIdAutoDetect -}}
-{{- else if and (hasKey $modelSpec "unifiedcacheConfig") (kindIs "map" $modelSpec.unifiedcacheConfig) (hasKey $modelSpec.unifiedcacheConfig "autoDetectKvcsStoreId") -}}
-{{- ternary "true" "false" $modelSpec.unifiedcacheConfig.autoDetectKvcsStoreId -}}
-{{- else if and (hasKey $modelSpec "unifiedcacheConfig") (kindIs "map" $modelSpec.unifiedcacheConfig) (hasKey $modelSpec.unifiedcacheConfig "kvcsEnable") -}}
-{{- ternary "true" "false" $modelSpec.unifiedcacheConfig.kvcsEnable -}}
-{{- else -}}
-true
-{{- end -}}
-{{- end -}}
-
-{{/*
 Join unified storage mount paths with ":".
 */}}
 {{- define "chart.ucmStorageBackends" -}}
@@ -850,7 +805,7 @@ Usage: include "chart.kvRoleOf" (list $role $modelSpec) */}}
 {{- end -}}
 {{- end -}}
 
-{{/* ===================== 生命周期钩子（plan/vllm-lifecycle-hooks-2026-07-10.md） ===================== */}}
+{{/* ===================== 生命周期钩子 ===================== */}}
 
 {{/* chart.validateHooksMap: 校验一个 hooks map（modelSpec.hooks 或 roles[].hooks）。
 键仅允许 preStart/postReady/preStop（onExit 为 P2 预留，单独报「暂未支持」）；
@@ -865,7 +820,7 @@ Usage: include "chart.validateHooksMap" (list $hooks $where) */}}
 {{- end -}}
 {{- range $k, $v := $hooks -}}
 {{- if eq $k "onExit" -}}
-{{- fail (printf "%s.hooks.onExit 暂未支持（P2 预留，见 plan/vllm-lifecycle-hooks-2026-07-10.md §2.2）" $where) -}}
+{{- fail (printf "%s.hooks.onExit 暂未支持" $where) -}}
 {{- end -}}
 {{- if not (has $k (list "preStart" "postReady" "preStop")) -}}
 {{- fail (printf "%s.hooks 含未知钩子键 %q（仅支持 preStart/postReady/preStop）" $where $k) -}}

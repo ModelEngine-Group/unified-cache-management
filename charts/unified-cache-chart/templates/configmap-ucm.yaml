@@ -44,30 +44,11 @@
 {{- $rawConfig := $modelSpec.unifiedcacheConfig.config -}}
 {{- $ucmConfig := fromYaml (toYaml $rawConfig) -}}
 {{- $storageBackends := include "chart.ucmStorageBackends" (list $modelSpec) -}}
-{{- range $key, $_ := $ucmConfig -}}
-{{- if hasPrefix "kvcs_" $key -}}
-{{- $_ := unset $ucmConfig $key -}}
-{{- end -}}
-{{- end -}}
 {{- range $connector := $ucmConfig.ucm_connectors -}}
 {{- $connectorConfig := default (dict) $connector.ucm_connector_config -}}
-{{- $connectorState := dict "hasKvcs" false -}}
-{{- range $key, $_ := $connectorConfig -}}
-{{- if hasPrefix "kvcs_" $key -}}
-{{- $_ := set $connectorState "hasKvcs" true -}}
-{{- end -}}
-{{- end -}}
-{{- if $connectorState.hasKvcs -}}
-{{- $instanceName := default (printf "%s-%s" $.Release.Name $modelSpec.name) (default "" $connectorConfig.kvcs_instance_name) -}}
-{{- $_ := set $connectorConfig "kvcs_instance_name" $instanceName -}}
-{{- $_ := set $connectorConfig "kvcs_tls_enable" (default false $modelSpec.unifiedcacheConfig.kvcsTlsEnable) -}}
-{{- end -}}
 {{- $_ := set $connectorConfig "storage_backends" $storageBackends -}}
 {{- $_ := set $connector "ucm_connector_config" $connectorConfig -}}
 {{- end -}}
-{{- $renderedUcmConfig := toYaml $ucmConfig -}}
-{{- $quotedScalarPattern := "(?m)^(\\s*(?:ucm_connector_name|ucm_connector_module_path|store_pipeline|storage_backends|kvcs_instance_name|kvcs_ucm_over_tcp_ip_list):\\s*)([^\"\\n].*)$" -}}
-{{- $renderedUcmConfig = regexReplaceAll $quotedScalarPattern $renderedUcmConfig "${1}\"${2}\"" -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -75,6 +56,6 @@ metadata:
   namespace: {{ $.Release.Namespace }}
 data:
   ucm_config.yaml: |
-{{ $renderedUcmConfig | nindent 4 }}
+{{ toYaml $ucmConfig | nindent 4 }}
 {{- end -}}
 {{- end -}}

@@ -1,16 +1,15 @@
 {{- $mm := default (dict) .Values.mooncakeMaster -}}
 {{- $service := default (dict) $mm.service -}}
 {{- $images := default (dict) .Values.images -}}
-{{- $mooncakeMasterImage := include "chart.releaseMooncakeMasterImage" . -}}
+{{- $mooncakeMasterImage := default $images.image $images.mooncakeMasterImage -}}
 {{- $mooncakeMasterImagePullPolicy := $images.pullPolicy | default "IfNotPresent" -}}
 {{- $hostNetwork := true -}}
 {{- if hasKey $mm "hostNetwork" -}}{{- $hostNetwork = $mm.hostNetwork -}}{{- end -}}
 {{- $hostIPC := true -}}
 {{- if hasKey $mm "hostIPC" -}}{{- $hostIPC = $mm.hostIPC -}}{{- end -}}
-{{- /* 昇腾（client.config.protocol=ascend）时内置宿主机挂载：昇腾构建的 mooncake_master
-       动态链接 CANN/驱动用户态库，仅要求库文件可加载——不占 NPU 卡、无需 privileged；
-       driver 目录已含 tools/hccn_tool。这两个 hostPath 仅存在于 NPU 节点，
-       需配 mooncakeMaster.nodeSelector/affinity 将 master 钉到 NPU 节点。 */ -}}
+{{- /* Ascend Mooncake master dynamically links the standard CANN/driver
+       userspace libraries. These read-only host mounts are enabled only for
+       client.config.protocol=ascend; schedule the master onto an Ascend node. */ -}}
 {{- $moonCfg := include "chart.mooncakeClientConfigResolved" . | fromYaml -}}
 {{- $isAscend := eq (default "" (get $moonCfg "protocol")) "ascend" -}}
 {{- if and (default false $mm.enabled) (default false $mm.create) -}}
@@ -86,7 +85,7 @@ spec:
       {{- end }}
       containers:
         - name: mooncake-master
-          image: {{ $mooncakeMasterImage }}
+          image: {{ include "chart.resolveImageWithRegistry" (list (required "set images.mooncakeMasterImage or images.image when mooncakeMaster.create=true" $mooncakeMasterImage) .) }}
           imagePullPolicy: {{ $mooncakeMasterImagePullPolicy }}
           {{- with $mm.containerSecurityContext }}
           securityContext:

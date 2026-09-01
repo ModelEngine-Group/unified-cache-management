@@ -38,10 +38,10 @@ print_topology_summary() {
     echo "========================================"
 }
 
-# ===== 互联网卡探测与扇出（详见 plan/iface-auto-detect-2026-06-03.md） =====
+# ===== 跨节点通信网卡探测与环境变量扇出 =====
 
 # 探测“互联网卡”，回显 "<iface> <iface_ip>"；逐级降级，绝不阻断启动。
-# 依赖镜像内完整 iproute2（vLLM/CANN 镜像通常具备）。
+# 依赖镜像内完整 iproute2（vLLM/CANN 运行时镜像通常具备）。
 detect_interconnect_iface() {
     local iface="" ipaddr=""
     # 信号①：到 master 的出口网卡（多机最准，精确回答“走哪块网卡到达对端”）
@@ -72,11 +72,17 @@ detect_interconnect_iface() {
     echo "$iface $ipaddr"
 }
 
-# 校验显式配置的网卡确实存在且有 IPv4。高速/NPU 网卡不一定承载 K8s HOST_IP，
+# 校验显式配置的网卡确实存在且有 IPv4。高速/GPU/NPU 网卡不一定承载 K8s HOST_IP，
 # 因此默认不把 HOST_IP 不匹配当成告警；需要严格校验时设置 UC_VERIFY_IFACE_HOST_IP=true。
 verify_explicit_iface() {
-    local name="${VLLM_NETWORK_INTERFACE:-${VLLM_USE_NETIF:-${HCCL_SOCKET_IFNAME:-${HCCL_IF_NAME:-${GLOO_SOCKET_IFNAME:-${TP_SOCKET_IFNAME:-${NCCL_SOCKET_IFNAME:-}}}}}}}"
-    local ips=""
+    local vars="GLOO_SOCKET_IFNAME TP_SOCKET_IFNAME NCCL_SOCKET_IFNAME HCCL_SOCKET_IFNAME HCCL_IF_NAME VLLM_NETWORK_INTERFACE VLLM_USE_NETIF"
+    local name="" ips="" v
+    for v in $vars; do
+        if [[ -n "${!v:-}" ]]; then
+            name="${!v}"
+            break
+        fi
+    done
     [[ -z "$name" ]] && return 0
     name="${name%%,*}"
     name="${name#^}"
@@ -117,7 +123,7 @@ apply_iface_env() {
     case $- in *e*) _restore_e=1; set +e ;; esac
 
     local IFACE="" IFACE_IP="" iface_source="" v can_detect=1
-    local vars="${UC_IFACE_ENV_VARS:-GLOO_SOCKET_IFNAME TP_SOCKET_IFNAME NCCL_SOCKET_IFNAME HCCL_SOCKET_IFNAME HCCL_IF_NAME VLLM_NETWORK_INTERFACE VLLM_USE_NETIF}"
+    local vars="GLOO_SOCKET_IFNAME TP_SOCKET_IFNAME NCCL_SOCKET_IFNAME HCCL_SOCKET_IFNAME HCCL_IF_NAME VLLM_NETWORK_INTERFACE VLLM_USE_NETIF"
 
     # hostNetwork 守卫：非 hostNetwork 下 Pod 内看不到宿主机网卡，跳过探测以免选错
     if [[ -n "${POD_IP:-}" && -n "${HOST_IP:-}" && "${POD_IP}" != "${HOST_IP}" ]]; then
@@ -125,7 +131,13 @@ apply_iface_env() {
         echo "[WARN][iface] 疑似非 hostNetwork（POD_IP=$POD_IP ≠ HOST_IP=$HOST_IP），跳过自动探测；如需请开启 hostNetwork 或显式 nodeTopologyConfig" >&2
     fi
 
-    local explicit_iface="${VLLM_NETWORK_INTERFACE:-${VLLM_USE_NETIF:-${HCCL_SOCKET_IFNAME:-${HCCL_IF_NAME:-${GLOO_SOCKET_IFNAME:-${TP_SOCKET_IFNAME:-${NCCL_SOCKET_IFNAME:-}}}}}}}"
+    local explicit_iface=""
+    for v in $vars; do
+        if [[ -n "${!v:-}" ]]; then
+            explicit_iface="${!v}"
+            break
+        fi
+    done
     if [[ -n "$explicit_iface" ]]; then
         IFACE="${explicit_iface%%,*}"
         IFACE="${IFACE#^}"
@@ -153,7 +165,7 @@ apply_iface_env() {
                 echo "[INFO][iface] 保留显式 $v=${!v}（未用探测值 $IFACE 覆盖）"
             fi
         done
-        [[ -n "$IFACE_IP" && -z "${HCCL_IF_IP:-}"   ]] && export HCCL_IF_IP="$IFACE_IP"
+        [[ -n "$IFACE_IP" && -z "${HCCL_IF_IP:-}" ]] && export HCCL_IF_IP="$IFACE_IP"
         # 已固定网卡/IP，关闭 vLLM 多 IP 探测（仅未显式设置时）
         [[ -z "${VLLM_DETECT_MULTI_IP:-}" ]] && export VLLM_DETECT_MULTI_IP="0"
         # 打印最终注入的网卡相关环境变量

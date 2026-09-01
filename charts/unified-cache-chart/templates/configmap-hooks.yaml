@@ -1,5 +1,5 @@
 {{/*
-生命周期钩子 per-role ConfigMap（plan/vllm-lifecycle-hooks-2026-07-10.md §4.2）。
+生命周期钩子 per-role ConfigMap。
 仅当该 role 解析后有任一钩子才渲染；判空必须与 modelserving.yaml 的 projected source 追加条件
 共用 chart.resolveHooks（两处漂移 = Pod 引用不存在的 CM → 永久 ContainerCreating + FailedMount）。
 包壳按执行方式分两种：
@@ -12,7 +12,7 @@
 {{- $modelSpec := .Values.servingEngineSpec.modelSpec -}}
 {{/* projected 卷键冲突是静默后者覆盖：hook 文件名不得与 entrypoint 卷其他 source 的键重名。
      改任一侧键名时同步维护 $reservedKeys（模板期断言挡住）。 */}}
-{{- $reservedKeys := list "args-entrypoint.sh" "parse-vllm-args.py" "vllm.args" "common-entrypoint.sh" "node-topology-setup.sh" "patch_ucm_kvcs_store.py" -}}
+{{- $reservedKeys := list "args-entrypoint.sh" "parse-vllm-args.py" "vllm.args" "common-entrypoint.sh" "node-topology-setup.sh" -}}
 {{- range $f := list "hook-pre-start.sh" "hook-post-ready.sh" "hook-pre-stop.sh" -}}
 {{- if has $f $reservedKeys -}}
 {{- fail (printf "hooks 文件名 %s 与 entrypoint projected 卷既有键冲突（会被静默覆盖），需改名" $f) -}}

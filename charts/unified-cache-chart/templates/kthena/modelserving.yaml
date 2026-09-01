@@ -1,10 +1,10 @@
 {{/*
 True when the chart itself owns interface env: autoDetectInterface on,
 forceInterface set, or nodeTopologyConfig non-empty.
-Usage: include "chart.skipImageIfaceDetect" (list $ $modelSpec)
+Usage: include "chart.skipImageIfaceDetect" $
 */}}
 {{- define "chart.skipImageIfaceDetect" -}}
-{{- $root := index . 0 -}}
+{{- $root := . -}}
 {{- $auto := true -}}
 {{- if hasKey $root.Values "autoDetectInterface" -}}{{- $auto = $root.Values.autoDetectInterface -}}{{- end -}}
 {{- $force := not (empty (default "" $root.Values.forceInterface)) -}}
@@ -13,25 +13,19 @@ Usage: include "chart.skipImageIfaceDetect" (list $ $modelSpec)
 {{- end -}}
 
 {{/*
-Emit the interface auto-detection env trio (+ optional var list) shared by
-deployment / statefulset / ray-head. Ray worker is intentionally not covered.
-Usage: {{- include "chart.ifaceEnv" (list $ $modelSpec) | nindent <N> }}
+Emit the interface auto-detection env trio shared by the engine pod.
+Usage: {{- include "chart.ifaceEnv" $ | nindent <N> }}
 */}}
 {{- define "chart.ifaceEnv" -}}
-{{- $root := index . 0 -}}
-{{- $modelSpec := index . 1 -}}
+{{- $root := . -}}
 {{- $auto := true -}}
 {{- if hasKey $root.Values "autoDetectInterface" -}}{{- $auto = $root.Values.autoDetectInterface -}}{{- end -}}
 - name: UC_SKIP_IFACE_AUTO_DETECT
-  value: {{ include "chart.skipImageIfaceDetect" (list $root $modelSpec) | quote }}
+  value: {{ include "chart.skipImageIfaceDetect" $root | quote }}
 - name: UC_AUTO_DETECT_IFACE
   value: {{ ternary "true" "false" $auto | quote }}
 - name: UC_FORCE_IFACE
   value: {{ default "" $root.Values.forceInterface | quote }}
-{{- with $root.Values.interfaceEnvVars }}
-- name: UC_IFACE_ENV_VARS
-  value: {{ join " " . | quote }}
-{{- end }}
 {{- end -}}
 
 {{/*
@@ -45,8 +39,8 @@ Validate modelSpec.vllmArgs schema for the native vllm serve path.
 {{- if not (kindIs "string" $args) -}}
 {{- fail "vllmArgs must be a block string of native vLLM CLI arguments" -}}
 {{- end -}}
-{{/* kthena-only：6 个网络参数 + --kv-transfer-config 均由 chart 接管（后者由 runtime resolver 生成），禁止用户写。 */}}
-{{- $managedArgs := list "--host" "--port" "--headless" "--data-parallel-address" "-dpa" "--data-parallel-rpc-port" "-dpp" "--data-parallel-start-rank" "-dpr" "--kv-transfer-config" "--served-model-name" "--config" -}}
+{{/* kthena-only：网络/DP LB 参数 + --kv-transfer-config 均由 chart 接管（后者由 runtime resolver 生成），禁止用户写。 */}}
+{{- $managedArgs := list "--host" "--port" "--headless" "--data-parallel-address" "-dpa" "--data-parallel-rpc-port" "-dpp" "--data-parallel-start-rank" "-dpr" "--data-parallel-hybrid-lb" "--data-parallel-external-lb" "--data-parallel-rank" "--kv-transfer-config" "--served-model-name" "--config" -}}
 {{- if gt (len .) 3 -}}
 {{- $role := index . 3 -}}
 {{- if include "chart.kvTransferTemplate" (list $role $modelSpec $root) -}}
@@ -111,14 +105,8 @@ Usage: include "chart.getVllmImage" (list $modelSpec $)
 {{- define "chart.getVllmImage" -}}
 {{- $modelSpec := index . 0 -}}
 {{- $global := index . 1 -}}
-{{- $image := "" -}}
-{{- if $modelSpec.image -}}
-{{- $image = $modelSpec.image -}}
-{{- $image = include "chart.resolveImageWithRegistry" (list $image $global) -}}
-{{- else -}}
-{{- $image = include "chart.releaseEngineImage" $global -}}
-{{- end -}}
-{{- $image -}}
+{{- $image := required "images.image or servingEngineSpec.modelSpec.image is required; set it to a public vLLM/UCM runtime image" (default $global.Values.images.image $modelSpec.image) -}}
+{{- include "chart.resolveImageWithRegistry" (list $image $global) -}}
 {{- end -}}
 
 {{/*
@@ -143,7 +131,7 @@ Usage: include "chart.primaryStorageMountPath" (list $modelSpec)
 {{- $modelSpec := index . 0 -}}
 {{- $storage := default (dict) $modelSpec.storage -}}
 {{- $unifiedStorage := default (list) $storage.unifiedcacheStorage -}}
-{{- if gt (len $unifiedStorage) 0 -}}
+{{- if and (eq (include "chart.ucmConfigEnabled" (list $modelSpec)) "true") (gt (len $unifiedStorage) 0) -}}
 {{- (index $unifiedStorage 0).mountPath -}}
 {{- else -}}
 {{- "/tmp" -}}
@@ -263,21 +251,20 @@ Usage: include "chart.kthenaPodSpec" (list $role $modelSpec $)
 {{- $roleArgs := default (default "" $modelSpec.vllmArgs) $role.vllmArgs -}}
 {{- include "chart.validateVllmArgs" (list $modelSpec $ $roleArgs $role) -}}
 {{- $tpSize := include "chart.vllmTpSize" (list $roleArgs) -}}
-{{- $extraStorage := include "chart.combinedExtraStorage" (list $modelSpec $) | fromYamlArray -}}
 {{- $storage := default (dict) $modelSpec.storage -}}
+{{- $extraStorage := default (list) $storage.extraStorage -}}
 {{- $unifiedStorage := default (list) $storage.unifiedcacheStorage -}}
 {{- $vllmArgsCM := printf "%s-%s-vllm-args" $.Release.Name $role.name -}}
 {{- $roleHooks := include "chart.resolveHooks" (list $role $modelSpec) | fromYaml -}}
 {{- $hostIPC := ternary $modelSpec.hostIPC (default false $.Values.servingEngineSpec.hostIPC) (hasKey $modelSpec "hostIPC") -}}
 {{- $hostNetwork := ternary (default false $modelSpec.hostNetwork) (default false $.Values.servingEngineSpec.hostNetwork) (hasKey $modelSpec "hostNetwork") -}}
 {{- $replicaCount := add 1 (int (default 0 $role.workerReplicas)) -}}
+{{- $hybridRole := and (eq (include "chart.hybridDataParallelEnabled" (list $modelSpec)) "true") (gt (int (default 0 $role.workerReplicas)) 0) -}}
 {{- $pd := default (dict) $modelSpec.pd -}}
 {{- $kvRole := include "chart.kvRoleOf" (list $role $modelSpec) -}}
 {{- $moonMasterOnRole := and (eq (include "chart.pdMooncakeMasterEnabled" (list $modelSpec $)) "true") $kvRole -}}
 {{- if $moonMasterOnRole -}}{{- include "chart.validateMooncakeMaster" (list $modelSpec $) -}}{{- end -}}
 {{- $topo := default (dict) $.Values.nodeTopologyConfig -}}
-{{- $ucmConfigEnabled := eq (include "chart.ucmConfigEnabled" (list $modelSpec)) "true" -}}
-{{- $kvcsAutoDetect := eq (include "chart.kvcsStoreIdAutoDetectEnabled" (list $modelSpec)) "true" -}}
 {{/* KV JSON、UCM runtime env 与卷共用同一 role-level capability 判定。 */}}
 {{- $ucmOnRole := eq (include "chart.usesUcmForRole" (list $role $modelSpec)) "true" -}}
 {{- if or (hasKey $modelSpec "hostNetwork") $.Values.servingEngineSpec.hostNetwork }}
@@ -311,14 +298,14 @@ runtimeClassName: {{ $role.runtimeClassName }}
 nodeSelector:
   {{- toYaml . | nindent 2 }}
 {{- end }}
-{{/* tolerations：合并 servingEngineSpec（如 genet overlay 的独占池污点容忍）+ modelSpec + role 三级 */}}
+{{/* tolerations：合并 servingEngineSpec + modelSpec + role 三级 */}}
 {{- $tolerations := concat (default (list) $.Values.servingEngineSpec.tolerations) (default (list) $modelSpec.tolerations) (default (list) $role.tolerations) -}}
 {{- with $tolerations }}
 tolerations:
   {{- toYaml . | nindent 2 }}
 {{- end }}
 {{/* affinity 合并策略（三者并存而非互斥）：
-     1) 显式 affinity（role > modelSpec（如 genet 独占池）> servingEngineSpec）整体保留为基底；
+     1) 显式 affinity（role > modelSpec > servingEngineSpec）整体保留为基底；
      2) nodeTopologyConfig 非空 → 把 hostname In[节点] 作为硬约束 AND 进 nodeAffinity 的每个 nodeSelectorTerm
         （nodeSelectorTerms 之间是 OR，同一 term 内 matchExpressions 是 AND，故按 term 分发即得「用户约束 AND 拓扑节点」）。
         必须始终生效：node-topology ConfigMap/挂载仅按 topo 非空注入，若调度不限制到这些节点，pod 可能落到无拓扑 ENV 的节点而静默丢网卡配置。
@@ -358,9 +345,9 @@ affinity:
 imagePullSecrets:
   - name: {{ $modelSpec.imagePullSecret }}
 {{- end }}
-{{/* 绑定 SA：UCM kvcs_store_id 自动探测需读 pod/PVC/PV（RBAC 绑在此 SA 上）；或用户显式指定时也下发。否则用默认 SA。 */}}
-{{- if or $modelSpec.serviceAccountName (and $ucmConfigEnabled $kvcsAutoDetect) }}
-serviceAccountName: {{ include "chart.engineServiceAccountName" $ }}
+{{/* Chart 不创建或绑定 RBAC；仅透传用户预先创建的 ServiceAccount。 */}}
+{{- if $modelSpec.serviceAccountName }}
+serviceAccountName: {{ $modelSpec.serviceAccountName }}
 {{- end }}
 containers:
   - name: vllm
@@ -418,7 +405,7 @@ containers:
       - name: DATA_DIRS
         value: {{ include "chart.ucmStorageBackends" (list $modelSpec) | quote }}
     {{- end }}
-    {{- include "chart.ifaceEnv" (list $ $modelSpec) | nindent 6 }}
+    {{- include "chart.ifaceEnv" $ | nindent 6 }}
     {{- if $tpSize }}
       - name: TENSOR_PARALLEL_SIZE
         value: {{ $tpSize | quote }}
@@ -486,7 +473,7 @@ containers:
         {{- if $hostNetwork }}
         hostPort: {{ include "chart.container-port" $ }}   {{/* hostNetwork 下声明 hostPort：调度器据此把每个 vLLM 排到不同节点，避免同机 8000 冲突 */}}
         {{- end }}
-    {{- if ne $kind "worker" }}
+    {{- if or (ne $kind "worker") $hybridRole }}
     {{- include "chart.kthenaProbe" $ | nindent 4 }}
     {{- end }}
     {{- if hasKey $roleHooks "preStop" }}
@@ -581,6 +568,7 @@ volumes:
 
 {{- if .Values.servingEngineSpec.enableEngine -}}
 {{- $modelSpec := .Values.servingEngineSpec.modelSpec -}}
+{{- $_ := include "chart.getVllmImage" (list $modelSpec $) -}}
 {{- $name := include "chart.kthenaName" (list $modelSpec $) -}}
 {{- if not $modelSpec.roles -}}
 {{- fail "需要 servingEngineSpec.modelSpec.roles[]（单/双机=1 role name engine；PD=多 role + modelSpec.pd 配对）" -}}

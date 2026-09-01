@@ -12,4 +12,5 @@ __pycache__/
 # internal-only material (not part of the published chart)
 deploy.sh
 plan/
-docs/
+doc/
+tests/

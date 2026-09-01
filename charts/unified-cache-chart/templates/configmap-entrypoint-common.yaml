@@ -1,9 +1,6 @@
 {{- if .Values.servingEngineSpec.enableEngine -}}
 {{- $modelSpec := .Values.servingEngineSpec.modelSpec }}
 {{- $ucmConfigEnabled := eq (include "chart.ucmConfigEnabled" (list $modelSpec)) "true" }}
-{{- $kvcsStoreIdAutoDetectEnabled := eq (include "chart.kvcsStoreIdAutoDetectEnabled" (list $modelSpec)) "true" }}
-{{- $storage := default (dict) $modelSpec.storage }}
-{{- $unifiedStorage := default (list) $storage.unifiedcacheStorage }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -37,24 +34,15 @@ data:
         echo "[WARN] UCM template file not found: ${UCM_CONFIG_TEMPLATE_FILE}"
       fi
     {{- end }}
-    {{- if and $ucmConfigEnabled $kvcsStoreIdAutoDetectEnabled }}
-      if python3 "${ENTRYPOINT_DIR}/patch_ucm_kvcs_store.py"; then
-        echo "[INFO] success patch kvcs_store_id into ${UCM_CONFIG_FILE}"
-      else
-        echo "[ERROR] failed to patch kvcs_store_id, aborting startup"
-        exit 1
-      fi
-    {{- end }}
     }
 
     prepare_runtime_env() {
       source /etc/profile || true
       source ~/.bashrc || true
 
-      # Ascend CANN runtime env：非登录/非交互容器 shell 不会自动加载 set_env.sh，
-      # 而 torch_npu / libascendcl 等 .so 依赖它设置的 LD_LIBRARY_PATH/PYTHONPATH/ASCEND_*；
-      # 缺它会在 vllm serve 启动时报 .so 加载失败。文件存在才 source（昇腾镜像有、CUDA 镜像无），保持 chip-agnostic。
-      # driver/lib64 是 NPU 驱动运行时（set_env.sh 一般不含），需在 source 前显式前置。
+      # Ascend CANN runtime env: non-login/non-interactive shells do not load
+      # set_env.sh automatically. Source it when present so the same entrypoint
+      # remains usable by both CUDA and Ascend runtime images.
       if [[ -f /usr/local/Ascend/ascend-toolkit/set_env.sh ]]; then
         export LD_LIBRARY_PATH="/usr/local/lib:/usr/local/Ascend/driver/lib64:/usr/local/Ascend/ascend-toolkit/latest/lib64:${LD_LIBRARY_PATH:-}"
         source /usr/local/Ascend/ascend-toolkit/set_env.sh || true
@@ -105,14 +93,4 @@ data:
   node-topology-setup.sh: |
 {{ (.Files.Get "files/node-topology-setup.sh") | nindent 4 }}
 
-{{- if and $ucmConfigEnabled $kvcsStoreIdAutoDetectEnabled }}
-  patch_ucm_kvcs_store.py: |
-{{- $patchScript := .Files.Get "files/patch_ucm_kvcs_store.py" -}}
-{{- $volumeNames := list -}}
-{{- range $item := $unifiedStorage -}}
-{{- $volumeNames = append $volumeNames (include "chart.storageVolumeName" (list $ $item)) -}}
-{{- end -}}
-{{- $patchScript = replace "UNIFIEDCACHE_VOLUME_NAMES = []" (printf "UNIFIEDCACHE_VOLUME_NAMES = %s" (toJson $volumeNames)) $patchScript -}}
-{{ $patchScript | nindent 4 }}
-{{- end }}
 {{- end }}

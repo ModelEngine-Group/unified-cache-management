@@ -46,11 +46,10 @@ import json
 import os
 import re
 import sys
-from contextlib import contextmanager, redirect_stdout
 from copy import deepcopy
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Iterable, Mapping, Sequence
+
 
 SCHEMA_VERSION = 1
 ENGINE_ID_SENTINEL = "__UC_ENGINE_ID__"
@@ -152,9 +151,7 @@ def _find_key_paths(value: Any, wanted: str, path: str = "$") -> list[str]:
     return paths
 
 
-def _connector_children(
-    config: Mapping[str, Any], path: str
-) -> list[Mapping[str, Any]]:
+def _connector_children(config: Mapping[str, Any], path: str) -> list[Mapping[str, Any]]:
     extra = config.get("kv_connector_extra_config")
     if extra is None:
         return []
@@ -388,94 +385,12 @@ def _ensure_no_residual_sentinels(config: Mapping[str, Any]) -> None:
         )
 
 
-@contextmanager
-def _redirect_process_stdout_to_stderr() -> Iterable[None]:
-    """Keep both Python and native plugin diagnostics off stdout.
-
-    ``redirect_stdout`` alone cannot catch C extensions or libraries writing
-    directly to file descriptor 1. Temporarily mapping fd 1 to fd 2 preserves
-    stdout as the resolver's single-JSON-line API.
-    """
-
-    try:
-        sys.stdout.flush()
-    except (AttributeError, OSError):
-        pass
-    saved_stdout_fd = os.dup(1)
-    try:
-        os.dup2(2, 1)
-        with redirect_stdout(sys.stderr):
-            yield
-    finally:
-        # Flush libc stdio while fd 1 still targets stderr. Without this, a
-        # plugin's buffered printf() can be emitted only after fd 1 is restored.
-        try:
-            import ctypes
-
-            libc = ctypes.CDLL(None)
-            libc.fflush.argtypes = [ctypes.c_void_p]
-            libc.fflush.restype = ctypes.c_int
-            libc.fflush(None)
-        except Exception:
-            # The chart runtime uses --output, so even an exotic C runtime with
-            # an inaccessible flush API cannot corrupt the resolved JSON file.
-            pass
-        try:
-            sys.stdout.flush()
-        except (AttributeError, OSError):
-            pass
-        os.dup2(saved_stdout_fd, 1)
-        os.close(saved_stdout_fd)
-
-
-def _probe_connector_registry(config: Mapping[str, Any]) -> None:
-    """Load vLLM plugins, then resolve every connector through its factory.
-
-    We deliberately do not translate or fall back between connector names. In
-    particular, a missing ``MooncakeHybridConnector`` remains a startup error.
-    Python- and fd-level stdout redirection preserves the resolver's stdout as
-    a JSON-only API even if a third-party native plugin prints while imported.
-    """
-
-    try:
-        with _redirect_process_stdout_to_stderr():
-            from vllm.plugins import load_general_plugins
-
-            load_general_plugins()
-            from vllm.distributed.kv_transfer.kv_connector.factory import (
-                KVConnectorFactory,
-            )
-
-            for path, connector_config in _iter_connector_configs(config):
-                name = connector_config["kv_connector"]
-                module_path = connector_config.get("kv_connector_module_path")
-                probe_config = SimpleNamespace(
-                    kv_connector=name,
-                    kv_connector_module_path=module_path,
-                )
-                try:
-                    KVConnectorFactory.get_connector_class(probe_config)
-                except Exception as exc:
-                    raise ResolutionError(
-                        f"connector registry validation failed at {path} for "
-                        f"{name!r}: {type(exc).__name__}: {exc}"
-                    ) from exc
-    except ResolutionError:
-        raise
-    except Exception as exc:
-        raise ResolutionError(
-            "unable to load vLLM plugins/KVConnectorFactory: "
-            f"{type(exc).__name__}: {exc}"
-        ) from exc
-
-
 def resolve_kv_transfer_config(
     template: Mapping[str, Any],
     meta: Mapping[str, Any],
     *,
     group_name: str | None,
     role_id: str | None,
-    probe_registry: bool = True,
 ) -> dict[str, Any]:
     """Resolve and validate one vLLM KV transfer configuration."""
 
@@ -490,8 +405,9 @@ def resolve_kv_transfer_config(
             f"expected {SCHEMA_VERSION}"
         )
 
-    # Validate connector tree even when the registry probe is disabled. This
-    # keeps malformed generated JSON from reaching vLLM in unit/offline tests.
+    # Validate the connector tree structurally so malformed generated JSON
+    # is rejected before reaching vLLM. This is a pure-data check and runs
+    # in unit/offline tests without a live vLLM install.
     list(_iter_connector_configs(template))
 
     dynamic_identity = meta.get("dynamicIdentity")
@@ -544,7 +460,9 @@ def resolve_kv_transfer_config(
         role_ordinal = _parse_ordinal(
             role_id, f"{role_name}-", "modelserving.volcano.sh/role-id"
         )
-        role_replicas = prefill_replicas if role_kind == "producer" else decode_replicas
+        role_replicas = (
+            prefill_replicas if role_kind == "producer" else decode_replicas
+        )
         if role_ordinal >= role_replicas:
             raise ResolutionError(
                 f"role ordinal {role_ordinal} is outside {role_kind} replica "
@@ -553,7 +471,9 @@ def resolve_kv_transfer_config(
 
         per_group = prefill_replicas + decode_replicas
         role_offset = (
-            role_ordinal if role_kind == "producer" else prefill_replicas + role_ordinal
+            role_ordinal
+            if role_kind == "producer"
+            else prefill_replicas + role_ordinal
         )
         instance_index = group_ordinal * per_group + role_offset
         engine_id = str(engine_id_base + instance_index)
@@ -600,8 +520,6 @@ def resolve_kv_transfer_config(
         resolved = _replace_exact_values(template, replacements)
 
     _ensure_no_residual_sentinels(resolved)
-    if probe_registry:
-        _probe_connector_registry(resolved)
     return resolved
 
 
@@ -655,19 +573,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output",
-        help=(
-            "write the compact JSON result to this file instead of stdout; "
-            "the chart runtime always uses this channel so plugin diagnostics "
-            "cannot corrupt command data"
-        ),
-    )
-    parser.add_argument(
-        "--skip-registry-probe",
-        action="store_true",
-        help=(
-            "skip vLLM plugin/factory validation; intended only for offline "
-            "resolver tests and never set by the chart runtime"
-        ),
+        help="write the compact JSON result to this file instead of stdout",
     )
     return parser
 
@@ -682,7 +588,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             meta,
             group_name=args.group_name,
             role_id=args.role_id,
-            probe_registry=not args.skip_registry_probe,
         )
     except ResolutionError as exc:
         print(f"kv-transfer resolver: {exc}", file=sys.stderr)
