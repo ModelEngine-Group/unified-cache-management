@@ -2,14 +2,20 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <deque>
+#include <functional>
 #include <future>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <sstream>
+#include <stdexcept>
 #include <system_error>
+#include <thread>
 #include "kv_test/buffer_allocator.h"
 #include "kv_test/key_value_generator.h"
 #include "kv_test/kv_test_config_helpers.h"
@@ -40,6 +46,75 @@ struct OperationOutcome {
 };
 
 using BenchBufferPool = std::vector<BenchBufferSlot>;
+
+class BenchExecutor {
+public:
+    explicit BenchExecutor(std::size_t workerCount)
+    {
+        workers_.reserve(workerCount);
+        try {
+            for (std::size_t index = 0; index < workerCount; ++index) {
+                workers_.emplace_back(&BenchExecutor::WorkerLoop, this);
+            }
+        } catch (...) {
+            Shutdown();
+            throw;
+        }
+    }
+
+    ~BenchExecutor() { Shutdown(); }
+
+    BenchExecutor(const BenchExecutor&) = delete;
+    BenchExecutor& operator=(const BenchExecutor&) = delete;
+
+    std::future<OperationOutcome> Submit(std::function<OperationOutcome()> handler)
+    {
+        std::packaged_task<OperationOutcome()> task(std::move(handler));
+        auto future = task.get_future();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stopping_) { throw std::runtime_error("bench executor is stopping"); }
+            tasks_.emplace_back(std::move(task));
+        }
+        workReady_.notify_one();
+        return future;
+    }
+
+private:
+    void Shutdown()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+        }
+        workReady_.notify_all();
+        for (auto& worker : workers_) {
+            if (worker.joinable()) { worker.join(); }
+        }
+        workers_.clear();
+    }
+
+    void WorkerLoop()
+    {
+        while (true) {
+            std::packaged_task<OperationOutcome()> task;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                workReady_.wait(lock, [this] { return stopping_ || !tasks_.empty(); });
+                if (stopping_ && tasks_.empty()) { return; }
+                task = std::move(tasks_.front());
+                tasks_.pop_front();
+            }
+            task();
+        }
+    }
+
+    std::mutex mutex_;
+    std::condition_variable workReady_;
+    std::deque<std::packaged_task<OperationOutcome()>> tasks_;
+    std::vector<std::thread> workers_;
+    bool stopping_{false};
+};
 
 std::uint64_t BenchEntryCount(const BenchConfig& bench, BenchOpType op)
 {
@@ -206,6 +281,16 @@ Status BuildBenchBufferPool(const KvTestConfig& config, bool useDeviceBuffers,
     return Status::Success();
 }
 
+Status SyncStoreBenchDeviceBuffers(const KvTestConfig& config, BenchBufferPool& pool,
+                                   std::size_t entryCount)
+{
+    for (auto& slot : pool) {
+        auto status = SyncBenchDeviceBuffers(config, slot, entryCount);
+        if (!status.Ok()) { return status; }
+    }
+    return Status::Success();
+}
+
 bool IsBenchReadOperation(BenchOpType op, std::uint64_t operationIndex, const BenchConfig& bench)
 {
     if (op == BenchOpType::RETRIEVE || op == BenchOpType::BATCH_RETRIEVE) { return true; }
@@ -328,7 +413,7 @@ Status ExecuteBenchOperation(BenchOpType requestedOp, const KvTestConfig& config
     if (!status.Ok()) { return status; }
     auto& buffers = slot.buffers;
 
-    if (useDeviceBuffers && !isRead) {
+    if (useDeviceBuffers && !isRead && requestedOp == BenchOpType::MIX) {
         auto status = SyncBenchDeviceBuffers(config, slot, entryCount);
         if (!status.Ok()) { return status; }
     }
@@ -420,12 +505,29 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
     BenchBufferPool bufferPool;
     status = BuildBenchBufferPool(config, useDeviceBuffers, entryCountPerOperation, bufferPool);
     if (!status.Ok()) { return status; }
+    if (useDeviceBuffers &&
+        (bench.op == BenchOpType::STORE || bench.op == BenchOpType::BATCH_STORE)) {
+        status = SyncStoreBenchDeviceBuffers(config, bufferPool,
+                                             static_cast<std::size_t>(entryCountPerOperation));
+        if (!status.Ok()) { return status; }
+    }
     if (useDeviceBuffers) {
         status = RegisterBenchDeviceBuffers(clientRunner, bufferPool, entryCountPerOperation,
                                             keyPrefix, allocationPolicy, logicalDeviceId);
         if (!status.Ok()) {
             (void)UnregisterBenchDeviceBuffers(clientRunner, bufferPool);
             return status;
+        }
+    }
+
+    std::unique_ptr<BenchExecutor> executor;
+    if (bench.concurrency > 1) {
+        try {
+            executor = std::make_unique<BenchExecutor>(bench.concurrency);
+        } catch (const std::system_error& error) {
+            if (useDeviceBuffers) { (void)UnregisterBenchDeviceBuffers(clientRunner, bufferPool); }
+            return Status::Error(kExitInvalidArgument,
+                                 "bench worker creation failed: " + std::string(error.what()));
         }
     }
 
@@ -497,19 +599,17 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
                 }
 
                 try {
-                    futures.emplace_back(std::async(
-                        std::launch::async,
-                        [&, begin, currentEntryCount, currentOperationIndex,
-                         bufferSlot]() -> OperationOutcome {
-                            return RunBenchOperation(bench.op, config, clientRunner, *bufferSlot,
-                                                     begin, currentEntryCount,
-                                                     currentOperationIndex, keyPrefix,
-                                                     useDeviceBuffers);
-                        }));
-                } catch (const std::system_error& e) {
+                    futures.emplace_back(executor->Submit([&, begin, currentEntryCount,
+                                                           currentOperationIndex,
+                                                           bufferSlot]() -> OperationOutcome {
+                        return RunBenchOperation(bench.op, config, clientRunner, *bufferSlot, begin,
+                                                 currentEntryCount, currentOperationIndex,
+                                                 keyPrefix, useDeviceBuffers);
+                    }));
+                } catch (const std::exception& error) {
                     return Status::Error(
                         kExitInvalidArgument,
-                        "bench async worker creation failed: " + std::string(e.what()));
+                        "bench operation submission failed: " + std::string(error.what()));
                 }
             }
 
@@ -597,6 +697,7 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
     if (bench.warmupSec != 0) {
         status = runPhase(bench.warmupSec, 0, false);
         if (!status.Ok()) {
+            executor.reset();
             if (useDeviceBuffers) { (void)UnregisterBenchDeviceBuffers(clientRunner, bufferPool); }
             return status;
         }
@@ -605,6 +706,7 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
     const auto measureStart = Clock::now();
     status = runPhase(bench.durationSec, bench.ioCount, true);
     const auto measureEnd = Clock::now();
+    executor.reset();
     auto cleanupStatus = useDeviceBuffers ? UnregisterBenchDeviceBuffers(clientRunner, bufferPool)
                                           : Status::Success();
     if (status.Ok() && !cleanupStatus.Ok()) { status = cleanupStatus; }
