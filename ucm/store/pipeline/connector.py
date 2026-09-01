@@ -380,6 +380,18 @@ def _dram_pipeline_builder(
     pipeline.Stack("Dram", str(store_dir / "dram/libdramstore.so"), config)
 
 
+def _delegator_dram_pipeline_builder(
+    config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
+):
+    store_dir = Path(__file__).resolve().parent.parent
+    pipeline.Stack("Dram", str(store_dir / "dram/libdramstore.so"), config)
+    pipeline.Stack(
+        "Delegator",
+        str(store_dir / "delegator/libdelegator_store.so"),
+        config,
+    )
+
+
 UcmPipelineStoreBuilder.register("Cache|Ds3fs", _cache_ds3fs_pipeline_builder)
 UcmPipelineStoreBuilder.register("Cache|Empty", _cache_empty_pipeline_builder)
 UcmPipelineStoreBuilder.register("Cache|Posix", _cache_posix_pipeline_builder)
@@ -396,3 +408,4 @@ UcmPipelineStoreBuilder.register("Delegator", _delegator_pipeline_builder)
 UcmPipelineStoreBuilder.register("YuanRong", _yuanrong_pipeline_builder)
 UcmPipelineStoreBuilder.register("YuanRong|Posix", _yuanrong_posix_pipeline_builder)
 UcmPipelineStoreBuilder.register("Dram", _dram_pipeline_builder)
+UcmPipelineStoreBuilder.register("Delegator|Dram", _delegator_dram_pipeline_builder)
