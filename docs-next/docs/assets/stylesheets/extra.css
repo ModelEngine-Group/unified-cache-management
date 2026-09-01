@@ -1,0 +1,24 @@
+/* Wider content area for tables */
+.md-grid {
+  max-width: 1600px;
+}
+
+/* Table styling - prevent horizontal scroll */
+.md-typeset table:not([class]) {
+  display: table;
+  width: 100%;
+  table-layout: auto;
+  overflow-x: hidden;
+}
+
+.md-typeset table:not([class]) th,
+.md-typeset table:not([class]) td {
+  word-wrap: break-word;
+  word-break: break-word;
+  white-space: normal;
+}
+
+/* Make code cells in tables not overflow */
+.md-typeset table:not([class]) code {
+  white-space: nowrap;
+}
