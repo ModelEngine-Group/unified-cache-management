@@ -38,7 +38,6 @@
 #include "asu_transport/trans_provider.h"
 #include "buffer_manager.h"
 #include "kv_protocol.h"
-#include "trans/device.h"
 #include "transport_config_parser.h"
 
 namespace UC::ASU {
@@ -183,21 +182,6 @@ std::uint32_t PackedBatchEntryMrKey(const std::uint32_t* sqe, std::size_t entryI
 
 class SqeRequestTest : public ::testing::Test {
 protected:
-    static void SetUpTestSuite()
-    {
-        const auto initStatus = device_.Init();
-        if (initStatus.Failure() && initStatus != UC::Status::DuplicateKey()) {
-            FAIL() << "Device::Init failed: " << initStatus.ToString();
-        }
-        ASSERT_TRUE(device_.Setup(0).Success());
-    }
-
-    static void TearDownTestSuite()
-    {
-        (void)device_.Reset(0);
-        (void)device_.Finalize();
-    }
-
     void SetUp() override
     {
         transport_ = std::make_unique<AsuTransportImpl>();
@@ -222,7 +206,6 @@ protected:
     }
 
     std::unique_ptr<AsuTransportImpl> transport_;
-    static inline Trans::Device device_;
 };
 
 TEST_F(SqeRequestTest, ValidateSqeRequestAttrsRejectsMalformedValues)

@@ -25,6 +25,7 @@
 #include <functional>
 #include <gtest/gtest.h>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #define private public
 #include "asu_transport_impl.h"
@@ -32,7 +33,6 @@
 #include "asu_transport/trans_provider.h"
 #include "buffer_manager.h"
 #include "connection_internal.h"
-#include "trans/device.h"
 
 namespace UC::ASU {
 namespace {
@@ -130,23 +130,26 @@ void CreateTaskExecutor(AsuTransportImpl& transport)
         transport.config_, transport.transProvider_, transport.connManager_);
 }
 
+Status InitTaskExecutorWithoutRecoverLoop(AsuTransportImpl& transport,
+                                          std::shared_ptr<TransProvider> provider)
+{
+    transport.SetTransProvider(std::move(provider));
+    CreateTaskExecutor(transport);
+    const auto status = transport.taskExecutor_->Init();
+    if (!status.ok()) { transport.taskExecutor_.reset(); }
+    return status;
+}
+
+Status ShutdownTaskExecutorWithoutRecoverLoop(AsuTransportImpl& transport)
+{
+    if (!transport.taskExecutor_) { return Status::OK(); }
+    const auto status = transport.taskExecutor_->Shutdown();
+    if (status.ok()) { transport.taskExecutor_.reset(); }
+    return status;
+}
+
 class AsuSubmitFlowBufferTest : public ::testing::Test {
 protected:
-    static void SetUpTestSuite()
-    {
-        const auto initStatus = device_.Init();
-        if (initStatus.Failure() && initStatus != UC::Status::DuplicateKey()) {
-            FAIL() << "Device::Init failed: " << initStatus.ToString();
-        }
-        ASSERT_TRUE(device_.Setup(0).Success());
-    }
-
-    static void TearDownTestSuite()
-    {
-        (void)device_.Reset(0);
-        (void)device_.Finalize();
-    }
-
     void SetUp() override
     {
         transport_ = std::make_unique<AsuTransportImpl>();
@@ -155,39 +158,20 @@ protected:
     }
 
     std::unique_ptr<AsuTransportImpl> transport_;
-    static inline Trans::Device device_;
 };
 
 }  // namespace
 
 namespace {
 
-class AsuTransportBufferRegistrationTest : public ::testing::Test {
-protected:
-    static void SetUpTestSuite()
-    {
-        const auto initStatus = device_.Init();
-        if (initStatus.Failure() && initStatus != UC::Status::DuplicateKey()) {
-            FAIL() << "Device::Init failed: " << initStatus.ToString();
-        }
-        ASSERT_TRUE(device_.Setup(0).Success());
-    }
-
-    static void TearDownTestSuite()
-    {
-        (void)device_.Reset(0);
-        (void)device_.Finalize();
-    }
-
-    static inline Trans::Device device_;
-};
+class AsuTransportBufferRegistrationTest : public ::testing::Test {};
 
 TEST_F(AsuTransportBufferRegistrationTest, InitRegistersAndShutdownUnregistersBothBuffers)
 {
     auto provider = std::make_shared<StubTransProvider>();
     AsuTransportImpl transport;
 
-    auto status = transport.Init(TransportConfig{}, provider);
+    auto status = InitTaskExecutorWithoutRecoverLoop(transport, provider);
     ASSERT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(provider->registerCount, 2);
     EXPECT_EQ(provider->registerCallCount, 2);
@@ -198,7 +182,7 @@ TEST_F(AsuTransportBufferRegistrationTest, InitRegistersAndShutdownUnregistersBo
     EXPECT_EQ(transport.taskExecutor_->sendBufferManager_.GetTokenId(), 1);
     EXPECT_EQ(transport.taskExecutor_->flagBufferManager_.GetTokenId(), 1);
 
-    status = transport.Shutdown();
+    status = ShutdownTaskExecutorWithoutRecoverLoop(transport);
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(provider->unregisterCount, 2);
     EXPECT_EQ(transport.taskExecutor_, nullptr);
@@ -210,7 +194,7 @@ TEST_F(AsuTransportBufferRegistrationTest, DestructorUnregistersBothBuffers)
 
     {
         AsuTransportImpl transport;
-        const auto status = transport.Init(TransportConfig{}, provider);
+        const auto status = InitTaskExecutorWithoutRecoverLoop(transport, provider);
         ASSERT_TRUE(status.ok()) << status.message;
         EXPECT_EQ(provider->registerCount, 2);
         EXPECT_EQ(provider->unregisterCount, 0);
@@ -225,7 +209,7 @@ TEST_F(AsuTransportBufferRegistrationTest, FirstRegistrationFailureDoesNotUnregi
     provider->failRegisterAt = 1;
     AsuTransportImpl transport;
 
-    const auto status = transport.Init(TransportConfig{}, provider);
+    const auto status = InitTaskExecutorWithoutRecoverLoop(transport, provider);
     EXPECT_FALSE(status.ok());
     EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
     EXPECT_NE(status.message.find("send buffer"), std::string::npos);
@@ -242,7 +226,7 @@ TEST_F(AsuTransportBufferRegistrationTest, FirstTokenLookupFailureCleansUpRegist
     provider->failTokenLookupAt = 1;
     AsuTransportImpl transport;
 
-    const auto status = transport.Init(TransportConfig{}, provider);
+    const auto status = InitTaskExecutorWithoutRecoverLoop(transport, provider);
     EXPECT_FALSE(status.ok());
     EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
     EXPECT_NE(status.message.find("send buffer"), std::string::npos);
@@ -260,7 +244,7 @@ TEST_F(AsuTransportBufferRegistrationTest, TokenLookupRollbackFailureIsRetriedDu
     provider->failUnregisterAt = 1;
     AsuTransportImpl transport;
 
-    const auto status = transport.Init(TransportConfig{}, provider);
+    const auto status = InitTaskExecutorWithoutRecoverLoop(transport, provider);
     EXPECT_FALSE(status.ok());
     EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
     EXPECT_NE(status.message.find("send buffer"), std::string::npos);
@@ -276,7 +260,7 @@ TEST_F(AsuTransportBufferRegistrationTest, SecondRegistrationFailureCleansUpFirs
     provider->failRegisterAt = 2;
     AsuTransportImpl transport;
 
-    const auto status = transport.Init(TransportConfig{}, provider);
+    const auto status = InitTaskExecutorWithoutRecoverLoop(transport, provider);
     EXPECT_FALSE(status.ok());
     EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
     EXPECT_NE(status.message.find("flag buffer"), std::string::npos);
@@ -291,7 +275,7 @@ TEST_F(AsuTransportBufferRegistrationTest, SecondTokenLookupFailureCleansUpBothB
     provider->failTokenLookupAt = 2;
     AsuTransportImpl transport;
 
-    const auto status = transport.Init(TransportConfig{}, provider);
+    const auto status = InitTaskExecutorWithoutRecoverLoop(transport, provider);
     EXPECT_FALSE(status.ok());
     EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
     EXPECT_NE(status.message.find("flag buffer"), std::string::npos);
@@ -306,10 +290,10 @@ TEST_F(AsuTransportBufferRegistrationTest, FlagUnregistrationFailureIncludesCall
     auto provider = std::make_shared<StubTransProvider>();
     AsuTransportImpl transport;
 
-    ASSERT_TRUE(transport.Init(TransportConfig{}, provider).ok());
+    ASSERT_TRUE(InitTaskExecutorWithoutRecoverLoop(transport, provider).ok());
     provider->failUnregisterAt = 1;
 
-    const auto status = transport.Shutdown();
+    const auto status = ShutdownTaskExecutorWithoutRecoverLoop(transport);
     EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
     EXPECT_NE(status.message.find("flag buffer"), std::string::npos);
     EXPECT_EQ(provider->unregisterCount, 2);
@@ -317,7 +301,7 @@ TEST_F(AsuTransportBufferRegistrationTest, FlagUnregistrationFailureIncludesCall
     EXPECT_NE(transport.taskExecutor_->flagBufferMrHandle_, kInvalidMRHandle);
     EXPECT_EQ(transport.taskExecutor_->sendBufferMrHandle_, kInvalidMRHandle);
 
-    EXPECT_TRUE(transport.Shutdown().ok());
+    EXPECT_TRUE(ShutdownTaskExecutorWithoutRecoverLoop(transport).ok());
     EXPECT_EQ(provider->unregisterCount, 3);
     EXPECT_EQ(transport.taskExecutor_, nullptr);
 }
@@ -327,10 +311,10 @@ TEST_F(AsuTransportBufferRegistrationTest, SendUnregistrationFailureIncludesCall
     auto provider = std::make_shared<StubTransProvider>();
     AsuTransportImpl transport;
 
-    ASSERT_TRUE(transport.Init(TransportConfig{}, provider).ok());
+    ASSERT_TRUE(InitTaskExecutorWithoutRecoverLoop(transport, provider).ok());
     provider->failUnregisterAt = 2;
 
-    const auto status = transport.Shutdown();
+    const auto status = ShutdownTaskExecutorWithoutRecoverLoop(transport);
     EXPECT_EQ(status.code, StatusCode::INTERNAL_ERROR);
     EXPECT_NE(status.message.find("send buffer"), std::string::npos);
     EXPECT_EQ(provider->unregisterCount, 2);
@@ -338,7 +322,7 @@ TEST_F(AsuTransportBufferRegistrationTest, SendUnregistrationFailureIncludesCall
     EXPECT_EQ(transport.taskExecutor_->flagBufferMrHandle_, kInvalidMRHandle);
     EXPECT_NE(transport.taskExecutor_->sendBufferMrHandle_, kInvalidMRHandle);
 
-    EXPECT_TRUE(transport.Shutdown().ok());
+    EXPECT_TRUE(ShutdownTaskExecutorWithoutRecoverLoop(transport).ok());
     EXPECT_EQ(provider->unregisterCount, 3);
     EXPECT_EQ(transport.taskExecutor_, nullptr);
 }

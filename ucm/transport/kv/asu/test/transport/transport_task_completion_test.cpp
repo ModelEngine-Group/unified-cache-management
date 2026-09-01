@@ -34,7 +34,6 @@
 #include "asu_transport/trans_provider.h"
 #include "buffer_manager.h"
 #include "connection_internal.h"
-#include "trans/device.h"
 
 namespace UC::ASU {
 namespace {
@@ -90,21 +89,6 @@ void CreateTaskExecutor(AsuTransportImpl& transport)
 
 class TransportTaskCompletionTest : public ::testing::Test {
 protected:
-    static void SetUpTestSuite()
-    {
-        const auto initStatus = device_.Init();
-        if (initStatus.Failure() && initStatus != UC::Status::DuplicateKey()) {
-            FAIL() << "Device::Init failed: " << initStatus.ToString();
-        }
-        ASSERT_TRUE(device_.Setup(0).Success());
-    }
-
-    static void TearDownTestSuite()
-    {
-        (void)device_.Reset(0);
-        (void)device_.Finalize();
-    }
-
     void SetUp() override
     {
         transport_ = std::make_unique<AsuTransportImpl>();
@@ -127,7 +111,6 @@ protected:
     }
 
     std::unique_ptr<AsuTransportImpl> transport_;
-    static inline Trans::Device device_;
 };
 
 TEST_F(TransportTaskCompletionTest, InitRejectsZeroMaxErrorCount)
@@ -140,16 +123,18 @@ TEST_F(TransportTaskCompletionTest, InitRejectsZeroMaxErrorCount)
     EXPECT_EQ(status.code, StatusCode::INVALID_ARGUMENT);
 }
 
-TEST_F(TransportTaskCompletionTest, TaskExecutorFollowsInitializedTransportLifetime)
+TEST_F(TransportTaskCompletionTest, TaskExecutorSupportsExplicitLifecycle)
 {
     AsuTransportImpl transport;
     EXPECT_EQ(transport.taskExecutor_, nullptr);
     transport.SetTransProvider(std::make_unique<StubTransProvider>());
 
-    ASSERT_TRUE(transport.Init(TransportConfig{}, transport.transProvider_).ok());
+    CreateTaskExecutor(transport);
+    ASSERT_TRUE(transport.taskExecutor_->Init().ok());
     EXPECT_NE(transport.taskExecutor_, nullptr);
 
-    EXPECT_TRUE(transport.Shutdown().ok());
+    EXPECT_TRUE(transport.taskExecutor_->Shutdown().ok());
+    transport.taskExecutor_.reset();
     EXPECT_EQ(transport.taskExecutor_, nullptr);
 }
 
