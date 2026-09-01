@@ -1,0 +1,39 @@
+# UCM + YuanRong + Posix configuration example.
+#
+# The YuanRong SDK and worker must be available before starting vLLM.
+# For YuanRong|Posix with io_direct enabled, start every YuanRong worker with
+# memory_alignment=4096. Keep oc_metadata_header enabled so the asynchronous
+# Posix dump can hold a read latch. The SDK obtains memory_alignment from the
+# worker during registration; UCM derives it from io_direct (4096 when enabled,
+# otherwise 64).
+
+ucm_connectors:
+  - ucm_connector_name: "UcmPipelineStore"
+    ucm_connector_config:
+      store_pipeline: "YuanRong|Posix"
+      yuanrong_host: "127.0.0.1"
+      yuanrong_port: 18483
+      yuanrong_namespace: "ucm_model"
+      yuanrong_resource_log_path: "/var/log/yuanrong/kv_resource.log"
+      yuanrong_enable_remote_h2d: false
+      yuanrong_timeout_ms: 20000
+      yuanrong_waiting_queue_depth: 8192
+      yuanrong_load_worker_count: 4
+      # Workers blocked waiting for vLLM prerequisite events.
+      yuanrong_dump_prerequisite_worker_count: 2
+      # Posix cold recovery pipeline batch size.
+      yuanrong_recovery_batch_size: 32
+      yuanrong_h2d_stream_count: 4
+      yuanrong_backfill_worker_count: 1
+      yuanrong_backfill_queue_depth: 128
+      # Maximum YuanRong buffers held by Posix per UCM process.
+      yuanrong_posix_max_inflight_gb: 1
+
+      share_buffer_enable: true
+      storage_backends: "/mnt/ucm"
+      # "aio" is supported when io_direct is true; "psync" supports either mode.
+      posix_io_engine: "psync"
+      io_direct: false
+
+enable_event_sync: true
+use_layerwise: false

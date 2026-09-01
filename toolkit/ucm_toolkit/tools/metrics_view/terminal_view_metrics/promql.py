@@ -49,6 +49,37 @@ class PromqlEvaluator:
         if _is_number(expr):
             return {_key({}): VectorPoint({}, float(expr))}
 
+        split = _split_set_operator(expr, "or")
+        if split is not None:
+            return _vector_or(self._eval(split[0]), self._eval(split[1]))
+
+        split = _split_set_operator(expr, "and on()")
+        if split is not None:
+            left = self._eval(split[0])
+            return left if self._eval(split[1]) else {}
+
+        for name in ("sort_desc", "sort"):
+            call = _function_args(expr, name)
+            if call is not None:
+                return self._eval(call)
+
+        call = _function_args(expr, "vector")
+        if call is not None:
+            return {_key({}): VectorPoint({}, float(call))}
+
+        call = _function_args(expr, "label_replace")
+        if call is not None:
+            args = _split_top_level(call, ",")
+            if len(args) != 5:
+                raise ValueError(f"label_replace expects 5 args: {expr}")
+            return _vector_label_replace(
+                self._eval(args[0]),
+                _unquote(args[1]),
+                _unquote(args[2]),
+                _unquote(args[3]),
+                _unquote(args[4]),
+            )
+
         call = _function_args(expr, "clamp_min")
         if call is not None:
             args = _split_top_level(call, ",")
@@ -74,6 +105,11 @@ class PromqlEvaluator:
                 raise ValueError(f"histogram_quantile expects 2 args: {expr}")
             return self._histogram_quantile(float(args[0]), self._eval(args[1]))
 
+        split = _split_comparison(expr)
+        if split is not None:
+            left, op, right = split
+            return _vector_compare(self._eval(left), self._eval(right), op)
+
         split = _split_binary(expr, ("+", "-"))
         if split is None:
             split = _split_binary(expr, ("*", "/"))
@@ -81,10 +117,10 @@ class PromqlEvaluator:
             left, op, right = split
             return _vector_binary(self._eval(left), self._eval(right), op)
 
-        aggregate = _parse_sum_by(expr)
+        aggregate = _parse_aggregate(expr)
         if aggregate is not None:
-            labels, inner = aggregate
-            return _vector_sum_by(self._eval(inner), labels)
+            operation, labels, inner = aggregate
+            return _vector_aggregate(self._eval(inner), operation, labels)
 
         for name in ("rate", "increase"):
             call = _function_args(expr, name)
@@ -96,10 +132,13 @@ class PromqlEvaluator:
         return self._gauge_vector(metric_name, matchers)
 
     def _counter_vector(
-        self, metric_name: str, matchers: list[tuple[str, str, str]], rate: bool
+        self,
+        metric_name: str | None,
+        matchers: list[tuple[str, str, str]],
+        rate: bool,
     ) -> Vector:
         vector: Vector = {}
-        for series in self.store.list_series(metric_name):
+        for series in self._matching_series(metric_name, matchers):
             labels = dict(series["labels"])
             if not _labels_match(labels, matchers) or not _tag_filters_match(
                 labels, self.tag_filters
@@ -122,10 +161,10 @@ class PromqlEvaluator:
         return vector
 
     def _gauge_vector(
-        self, metric_name: str, matchers: list[tuple[str, str, str]]
+        self, metric_name: str | None, matchers: list[tuple[str, str, str]]
     ) -> Vector:
         vector: Vector = {}
-        for series in self.store.list_series(metric_name):
+        for series in self._matching_series(metric_name, matchers):
             labels = dict(series["labels"])
             if not _labels_match(labels, matchers) or not _tag_filters_match(
                 labels, self.tag_filters
@@ -138,6 +177,21 @@ class PromqlEvaluator:
                 continue
             vector[_key(labels)] = VectorPoint(labels, samples[-1][1])
         return vector
+
+    def _matching_series(
+        self, metric_name: str | None, matchers: list[tuple[str, str, str]]
+    ) -> Iterable[dict[str, object]]:
+        names = [metric_name] if metric_name else self.store.list_metric_names()
+        for name in names:
+            if name is None or not _name_matches(name, matchers):
+                continue
+            for series in self.store.list_series(name):
+                item = dict(series)
+                labels = dict(item["labels"])
+                if metric_name is None:
+                    labels["__name__"] = name
+                item["labels"] = labels
+                yield item
 
     def _histogram_quantile(self, quantile: float, vector: Vector) -> Vector:
         buckets_by_group: dict[tuple[tuple[str, str], ...], dict[float, float]] = {}
@@ -165,10 +219,12 @@ def _clean_expr(expr: str) -> str:
     return re.sub(r"\s+", " ", expr).strip()
 
 
-def _parse_selector(expr: str) -> tuple[str, list[tuple[str, str, str]]]:
+def _parse_selector(expr: str) -> tuple[str | None, list[tuple[str, str, str]]]:
     selector = re.sub(r"\[[^\]]+\]\s*$", "", expr.strip())
-    match = re.fullmatch(r"([A-Za-z_:][A-Za-z0-9_:]*)(?:\{(.*)\})?", selector)
+    match = re.fullmatch(r"(?:([A-Za-z_:][A-Za-z0-9_:]*))?(?:\{(.*)\})?", selector)
     if not match:
+        raise ValueError(f"Unsupported PromQL selector: {expr}")
+    if not match.group(1) and match.group(2) is None:
         raise ValueError(f"Unsupported PromQL selector: {expr}")
     return match.group(1), _parse_matchers(match.group(2) or "")
 
@@ -206,19 +262,27 @@ def _labels_match(
     return True
 
 
+def _name_matches(name: str, matchers: Iterable[tuple[str, str, str]]) -> bool:
+    return _labels_match(
+        {"__name__": name}, [item for item in matchers if item[0] == "__name__"]
+    )
+
+
 def _tag_filters_match(labels: dict[str, str], filters: Mapping[str, str]) -> bool:
     return all(labels.get(name, "") == value for name, value in filters.items())
 
 
-def _parse_sum_by(expr: str) -> tuple[list[str], str] | None:
-    match = re.match(r"sum\s+by\s*\(([^)]*)\)\s*", expr)
+def _parse_aggregate(expr: str) -> tuple[str, list[str] | None, str] | None:
+    match = re.match(r"(sum|avg|max|count)(?:\s+by\s*\(([^)]*)\))?\s*", expr)
     if not match:
         return None
-    labels = [item.strip() for item in match.group(1).split(",") if item.strip()]
+    labels = None
+    if match.group(2) is not None:
+        labels = [item.strip() for item in match.group(2).split(",") if item.strip()]
     rest = expr[match.end() :].strip()
     if not rest.startswith("(") or not rest.endswith(")"):
         return None
-    return labels, rest[1:-1]
+    return match.group(1), labels, rest[1:-1]
 
 
 def _function_args(expr: str, name: str) -> str | None:
@@ -256,6 +320,53 @@ def _split_binary(expr: str, operators: tuple[str, ...]) -> tuple[str, str, str]
             if char == "-" and (index == 0 or expr[index - 1] in "+-*/("):
                 continue
             return expr[:index].strip(), char, expr[index + 1 :].strip()
+    return None
+
+
+def _split_comparison(expr: str) -> tuple[str, str, str] | None:
+    depth = 0
+    in_quote = False
+    for index, char in enumerate(expr):
+        if char == '"' and (index == 0 or expr[index - 1] != "\\"):
+            in_quote = not in_quote
+            continue
+        if in_quote:
+            continue
+        if char in "({[":
+            depth += 1
+            continue
+        if char in ")}]":
+            depth -= 1
+            continue
+        if depth != 0:
+            continue
+        for operator in (">=", "<=", "==", "!=", ">", "<"):
+            if expr.startswith(operator, index):
+                return (
+                    expr[:index].strip(),
+                    operator,
+                    expr[index + len(operator) :].strip(),
+                )
+    return None
+
+
+def _split_set_operator(expr: str, operator: str) -> tuple[str, str] | None:
+    token = f" {operator} "
+    depth = 0
+    in_quote = False
+    index = 0
+    while index <= len(expr) - len(token):
+        char = expr[index]
+        if char == '"' and (index == 0 or expr[index - 1] != "\\"):
+            in_quote = not in_quote
+        elif not in_quote:
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+            elif depth == 0 and expr.startswith(token, index):
+                return expr[:index], expr[index + len(token) :]
+        index += 1
     return None
 
 
@@ -307,15 +418,34 @@ def _balanced(expr: str) -> bool:
     return depth == 0 and not in_quote
 
 
-def _vector_sum_by(vector: Vector, labels: list[str]) -> Vector:
-    sums: dict[tuple[tuple[str, str], ...], float] = {}
+def _vector_aggregate(
+    vector: Vector, operation: str, labels: list[str] | None
+) -> Vector:
+    values: dict[tuple[tuple[str, str], ...], list[float]] = {}
     group_labels: dict[tuple[tuple[str, str], ...], dict[str, str]] = {}
     for point in vector.values():
-        selected = {name: point.labels.get(name, "") for name in labels}
+        selected = (
+            {name: point.labels.get(name, "") for name in labels}
+            if labels is not None
+            else {}
+        )
         key = _key(selected)
-        sums[key] = sums.get(key, 0.0) + point.value
+        values.setdefault(key, []).append(point.value)
         group_labels[key] = selected
-    return {key: VectorPoint(group_labels[key], value) for key, value in sums.items()}
+    result: Vector = {}
+    for key, items in values.items():
+        if operation == "sum":
+            value = sum(items)
+        elif operation == "avg":
+            value = sum(items) / len(items)
+        elif operation == "max":
+            value = max(items)
+        elif operation == "count":
+            value = float(len(items))
+        else:
+            raise ValueError(f"Unsupported aggregation: {operation}")
+        result[key] = VectorPoint(group_labels[key], value)
+    return result
 
 
 def _vector_binary(left: Vector, right: Vector, op: str) -> Vector:
@@ -341,6 +471,12 @@ def _vector_binary(left: Vector, right: Vector, op: str) -> Vector:
     return result
 
 
+def _vector_or(left: Vector, right: Vector) -> Vector:
+    result = dict(right)
+    result.update(left)
+    return result
+
+
 def _vector_clamp_min(vector: Vector, minimum: float) -> Vector:
     return {
         key: VectorPoint(point.labels, max(point.value, minimum))
@@ -360,6 +496,65 @@ def _vector_positive_or_nan(vector: Vector) -> Vector:
         key: VectorPoint(point.labels, point.value if point.value > 0 else math.nan)
         for key, point in vector.items()
     }
+
+
+def _vector_label_replace(
+    vector: Vector,
+    destination: str,
+    replacement: str,
+    source: str,
+    pattern: str,
+) -> Vector:
+    regex = re.compile(pattern)
+    python_replacement = re.sub(r"\$(\d+)", r"\\g<\1>", replacement)
+    result: Vector = {}
+    for point in vector.values():
+        match = regex.fullmatch(point.labels.get(source, ""))
+        labels = dict(point.labels)
+        if match:
+            labels[destination] = match.expand(python_replacement)
+        result[_key(labels)] = VectorPoint(labels, point.value)
+    return result
+
+
+def _vector_compare(left: Vector, right: Vector, operator: str) -> Vector:
+    left_scalar = _scalar_value(left)
+    right_scalar = _scalar_value(right)
+    if right_scalar is not None:
+        return {
+            key: point
+            for key, point in left.items()
+            if _compare(point.value, right_scalar, operator)
+        }
+    if left_scalar is not None:
+        return {
+            key: point
+            for key, point in right.items()
+            if _compare(left_scalar, point.value, operator)
+        }
+    return {
+        key: left[key]
+        for key in left.keys() & right.keys()
+        if _compare(left[key].value, right[key].value, operator)
+    }
+
+
+def _compare(left: float, right: float, operator: str) -> bool:
+    return {
+        ">": left > right,
+        "<": left < right,
+        ">=": left >= right,
+        "<=": left <= right,
+        "==": left == right,
+        "!=": left != right,
+    }[operator]
+
+
+def _unquote(value: str) -> str:
+    text = value.strip()
+    if len(text) < 2 or text[0] != '"' or text[-1] != '"':
+        raise ValueError(f"Expected quoted string: {value}")
+    return bytes(text[1:-1], "utf-8").decode("unicode_escape")
 
 
 def _scalar_value(vector: Vector) -> float | None:

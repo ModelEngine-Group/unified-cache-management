@@ -307,6 +307,61 @@ def _mooncake_posix_pipeline_builder(
     )
 
 
+def _yuanrong_pipeline_builder(
+    config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
+):
+    _stack_yuanrong_store(config, pipeline)
+
+
+def _stack_yuanrong_store(
+    config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
+) -> None:
+    from ucm.store.yuanrongstore.resource_reporter import (
+        start_yuanrong_resource_reporter,
+    )
+
+    store_dir = Path(__file__).resolve().parent.parent
+    pipeline.Stack(
+        "YuanRong",
+        str(store_dir / "yuanrongstore/libyuanrongstore.so"),
+        config,
+    )
+    start_yuanrong_resource_reporter(config)
+
+
+def _yuanrong_posix_pipeline_builder(
+    config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
+):
+    io_engine = config.get("posix_io_engine", "psync")
+    if io_engine not in ("psync", "aio"):
+        raise ValueError(f"invalid posix_io_engine={io_engine} for YuanRong|Posix")
+    if io_engine == "aio" and not config.get("io_direct", False):
+        raise ValueError("YuanRong|Posix posix_io_engine=aio requires io_direct=true")
+    store_dir = Path(__file__).resolve().parent.parent
+    posix_config = copy.deepcopy(config)
+    tensor_sizes = config.get("tensor_size_list")
+    if config.get("device_id", -1) >= 0:
+        if not tensor_sizes:
+            raise ValueError("tensor_size_list is required for YuanRong|Posix")
+        shard_size = int(config["shard_size"])
+        block_size = int(config["block_size"])
+        if shard_size <= 0 or block_size % shard_size != 0:
+            raise ValueError("invalid shard_size/block_size for YuanRong|Posix")
+        object_size = sum(int(size) for size in tensor_sizes)
+        if config.get("io_direct", False):
+            if object_size % 4096:
+                raise ValueError(
+                    "YuanRong object size must be aligned to 4096 bytes for "
+                    "io_direct"
+                )
+        shards_per_block = block_size // shard_size
+        posix_config["tensor_size"] = object_size
+        posix_config["shard_size"] = object_size
+        posix_config["block_size"] = object_size * shards_per_block
+    pipeline.Stack("Posix", str(store_dir / "posix/libposixstore.so"), posix_config)
+    _stack_yuanrong_store(config, pipeline)
+
+
 UcmPipelineStoreBuilder.register("Cache|Ds3fs", _cache_ds3fs_pipeline_builder)
 UcmPipelineStoreBuilder.register("Cache|Empty", _cache_empty_pipeline_builder)
 UcmPipelineStoreBuilder.register("Cache|Posix", _cache_posix_pipeline_builder)
@@ -319,3 +374,5 @@ UcmPipelineStoreBuilder.register(
 UcmPipelineStoreBuilder.register("Cache|Fake", _cache_fake_pipeline_builder)
 UcmPipelineStoreBuilder.register("Mooncake", _mooncake_pipeline_builder)
 UcmPipelineStoreBuilder.register("Mooncake|Posix", _mooncake_posix_pipeline_builder)
+UcmPipelineStoreBuilder.register("YuanRong", _yuanrong_pipeline_builder)
+UcmPipelineStoreBuilder.register("YuanRong|Posix", _yuanrong_posix_pipeline_builder)

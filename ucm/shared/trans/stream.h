@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <functional>
 #include <vector>
+#include "event.h"
 #include "status/status.h"
 
 namespace UC::Trans {
@@ -49,6 +50,17 @@ public:
     virtual Status HostToDeviceAsync(void* host, void* device, size_t size) = 0;
     virtual Status HostToDeviceAsync(void* host[], void* device[], size_t size, size_t number) = 0;
     virtual Status HostToDeviceAsync(void* host, void* device[], size_t size, size_t number) = 0;
+
+    virtual Status DeviceToDevice(void* source, void* destination, size_t size) = 0;
+    virtual Status DeviceToDevice(void* source[], void* destination[], size_t size,
+                                  size_t number) = 0;
+    virtual Status DeviceToDevice(void* source[], void* destination, size_t size,
+                                  size_t number) = 0;
+    virtual Status DeviceToDeviceAsync(void* source, void* destination, size_t size) = 0;
+    virtual Status DeviceToDeviceAsync(void* source[], void* destination[], size_t size,
+                                       size_t number) = 0;
+    virtual Status DeviceToDeviceAsync(void* source[], void* destination, size_t size,
+                                       size_t number) = 0;
     virtual Status HostToDeviceAsync(void* host, void* device[], const std::vector<size_t>& sizes)
     {
         size_t offset = 0;
@@ -61,19 +73,6 @@ public:
                 if (s.Failure()) [[unlikely]] { return s; }
             }
             offset += sizes[i];
-        }
-        return Status::OK();
-    }
-    virtual Status HostToDeviceAsync(const std::vector<void*>& hosts,
-                                     const std::vector<void**>& devices,
-                                     const std::vector<size_t>& sizes)
-    {
-        if (hosts.size() != devices.size()) {
-            return Status::InvalidParam("invalid H2D task copy inputs");
-        }
-        for (size_t i = 0; i < hosts.size(); ++i) {
-            auto s = HostToDeviceAsync(hosts[i], devices[i], sizes);
-            if (s.Failure()) [[unlikely]] { return s; }
         }
         return Status::OK();
     }
@@ -92,23 +91,9 @@ public:
         }
         return Status::OK();
     }
-    virtual Status DeviceToHostAsync(const std::vector<void**>& devices,
-                                     const std::vector<void*>& hosts,
-                                     const std::vector<size_t>& sizes)
-    {
-        if (hosts.size() != devices.size()) {
-            return Status::InvalidParam("invalid D2H task copy inputs");
-        }
-        for (size_t i = 0; i < hosts.size(); ++i) {
-            auto s = DeviceToHostAsync(devices[i], hosts[i], sizes);
-            if (s.Failure()) [[unlikely]] { return s; }
-        }
-        return Status::OK();
-    }
-
     virtual Status AppendCallback(std::function<void(bool)> cb) = 0;
     virtual Status Synchronized() = 0;
-    virtual Status WaitEvent(void* event) = 0;
+    virtual Status WaitEvent(const Event& event) = 0;
 };
 
 }  // namespace UC::Trans

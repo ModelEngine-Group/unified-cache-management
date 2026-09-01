@@ -16,6 +16,32 @@ from ...errors import (
 from ...registry import ToolAdapter
 from ...runner import check_command, command_exists, run_command
 
+# Friendly-mode copy-case matrix: (model_type, iodirect, sdma) -> Ascend case
+# name. Sourced from toolkit/src/dev-sandbox/module/copy/ascend/*.cc. MLA does
+# not distinguish iodirect: the shared-memory path is the same whether or not
+# O_DIRECT is requested, so the iodirect=true cells reuse the iodirect=false
+# case for each sdma value.
+COPY_CASE_MATRIX: dict[tuple[str, bool, bool], str] = {
+    ("gqa", False, False): "all_host_to_all_device_ce_multi_stream",
+    ("gqa", True, False): "all_odirect_host_to_all_device_ce_multi_stream",
+    ("gqa", False, True): "all_host_to_all_device_ffts_direct_h2d",
+    ("gqa", True, True): "all_odirect_host_to_all_device_ffts_direct_h2d",
+    ("mla", False, False): "one_share_host_to_all_device_ce_multi_stream",
+    ("mla", True, False): "one_share_host_to_all_device_ce_multi_stream",
+    ("mla", False, True): "one_share_host_to_all_device_ffts_direct_h2d",
+    ("mla", True, True): "one_share_host_to_all_device_ffts_direct_h2d",
+}
+
+
+def _parse_bool(value: str) -> bool:
+    """Parse a true/false CLI value (case-insensitive)."""
+    text = value.strip().lower()
+    if text in ("true", "1", "yes", "on"):
+        return True
+    if text in ("false", "0", "no", "off"):
+        return False
+    raise argparse.ArgumentTypeError(f"expected true/false, got {value!r}")
+
 
 class DevSandboxTool(ToolAdapter):
     """Build adapter for toolkit/src/dev-sandbox."""
@@ -77,15 +103,54 @@ class DevSandboxTool(ToolAdapter):
         return 0
 
     def run(self, tool_args: list[str]) -> int:
-        """Run a dev-sandbox subcommand with raw native arguments."""
+        """Run a native subcommand (copy/trans/aio) or the friendly selector."""
         if not tool_args or tool_args[0] in ("-h", "--help"):
             self._print_run_help()
             return 0
 
-        subcommand = tool_args[0]
-        native_args = tool_args[1:]
+        first = tool_args[0]
+        if first in self.subcommands:
+            # Native passthrough: copy/trans/aio + raw native args.
+            return self._run_native(first, tool_args[1:])
+        if first.startswith("-"):
+            # Friendly mode: map model-type/iodirect/sdma to a copy case,
+            # then forward the remaining args verbatim to the copy binary.
+            return self._run_friendly(tool_args)
+        # Unknown bare token: let _binary_path raise the "unknown subcommand" error.
+        return self._run_native(first, tool_args[1:])
+
+    def _run_native(self, subcommand: str, native_args: list[str]) -> int:
+        """Locate the subcommand binary and forward native args verbatim."""
         binary = self._binary_path(subcommand)
         return run_command([str(binary), *native_args])
+
+    def _run_friendly(self, tool_args: list[str]) -> int:
+        """Map --model-type/--iodirect/--sdma to a copy case and forward the
+        remaining args verbatim to the copy binary."""
+        parser = argparse.ArgumentParser(
+            prog="ucm-toolkit run dev-sandbox",
+            description=(
+                "Friendly mode: map model-type/iodirect/sdma to an Ascend "
+                "copy case via a lookup table, then forward the rest of the "
+                "args verbatim to the copy binary."
+            ),
+        )
+        parser.add_argument("--model-type", choices=["gqa", "mla"], required=True)
+        parser.add_argument(
+            "--iodirect", type=_parse_bool, required=True, help="true/false"
+        )
+        parser.add_argument(
+            "--sdma", type=_parse_bool, required=True, help="true/false"
+        )
+        args, passthrough = parser.parse_known_args(tool_args)
+
+        case = COPY_CASE_MATRIX.get((args.model_type, args.iodirect, args.sdma))
+        if case is None:
+            raise ToolkitError(
+                f"no Ascend copy case for model-type={args.model_type} "
+                f"iodirect={args.iodirect} sdma={args.sdma}"
+            )
+        return self._run_native("copy", ["-t", case, *passthrough])
 
     def doctor(self, args: argparse.Namespace | None = None) -> int:
         """Inspect dev-sandbox source/build availability."""
@@ -147,7 +212,27 @@ class DevSandboxTool(ToolAdapter):
 
     def _print_run_help(self) -> None:
         print("usage: ucm-toolkit run dev-sandbox SUBCOMMAND [native args...]")
+        print("       ucm-toolkit run dev-sandbox --model-type {gqa|mla} \\")
+        print(
+            "              --iodirect {true|false} --sdma {true|false} "
+            "[copy native args...]"
+        )
         print()
-        print("Available subcommands:")
+        print("Native subcommands (detailed control over copy/trans/aio):")
         for name in sorted(self.subcommands):
             print(f"  {name}")
+        print()
+        print("Friendly mode (map model-type/iodirect/sdma to a copy case,")
+        print("remaining args are forwarded verbatim to the copy binary):")
+        print("  --model-type {gqa|mla}     required selector")
+        print("  --iodirect   {true|false}  required selector")
+        print("  --sdma       {true|false}  required selector")
+        print(
+            "  e.g. --model-type gqa --iodirect false --sdma false "
+            "-s 16K -n 512 -i 128 -d 8"
+        )
+        print()
+        print("model-type/iodirect/sdma -> Ascend copy case:")
+        for (mt, iod, sdma), case in COPY_CASE_MATRIX.items():
+            label = case if case else "(none)"
+            print(f"  {mt:<3} iodirect={str(iod):<5} sdma={str(sdma):<5} -> {label}")

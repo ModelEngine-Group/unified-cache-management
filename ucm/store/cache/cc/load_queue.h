@@ -25,7 +25,6 @@
 #define UNIFIEDCACHE_CACHE_STORE_CC_LOAD_QUEUE_H
 
 #include <future>
-#include <string>
 #include <thread>
 #include <vector>
 #include "copy_stream.h"
@@ -49,7 +48,7 @@ class LoadQueue {
         TransBuffer::Handle bufferHandle;
         Detail::TaskHandle backendTaskHandle;
         WaiterPtr waiter;
-        bool launchBoundary{false};
+        bool fromPosix{false};
     };
 
 private:
@@ -59,10 +58,11 @@ private:
     StoreV1* backend_{nullptr};
     int32_t deviceId_{-1};
     std::vector<size_t> tensorSizes_{};
+    size_t nShardPerBlock_{0};
     size_t streamNumber_{1};
     bool useGdr_{false};
+    bool cacheIOAggregation_{false};
     bool cacheSdmaDirect_{false};
-    std::string sdmaDirectLaunchGranularity_{kSdmaDirectLaunchShard};
     std::vector<ssize_t> cpuAffinityCores_{};
     size_t localRankSize_{};
     SpscRingQueue<TaskPair> waiting_;
@@ -83,11 +83,11 @@ private:
     void TransferOneTask(CopyStream& stream, ShardTask&& task);
     Status WaitBackendTaskReady(ShardTask& task);
     Status HostToDeviceAsync(CopyStream& stream, void* host, void** device);
-    Status HostToDeviceTaskAsync(CopyStream& stream, std::vector<ShardTask>& tasks);
-    Status FlushSdmaDirectTaskBatch(CopyStream& stream);
+    void RecordShardResults(const std::vector<ShardTask>& tasks, const ShardTask* extra,
+                            bool success) const;
+    void RecordLoadSourceShards(size_t total, size_t wait) const;
+    void RecordFailedShards(size_t count) const;
     void RecordH2dSyncMetrics(double h2dSyncMs) const;
-    void ClearSdmaDirectHolders() noexcept;
-    bool UseSdmaDirectTaskLaunch() const noexcept;
 };
 
 }  // namespace UC::CacheStore

@@ -81,10 +81,12 @@ def metric_specs(config: dict) -> list[dict]:
     return specs
 
 
-def metric_names_for_scrape(config: dict) -> set[str]:
+def metric_names_for_scrape(config: dict) -> set[str] | None:
     names: set[str] = set()
     for spec in metric_specs(config):
         if "expr" in spec:
+            if re.search(r"\{[^}]*__name__\s*(?:=~|!~)", spec["expr"]):
+                return None
             names.update(metric_names_in_expr(spec["expr"]))
             continue
         name = spec.get("source", spec["name"])
@@ -154,8 +156,10 @@ def _normalize_metric(metric: dict, prefix: str, params: dict[str, str]) -> dict
     if "expr" in spec:
         spec["expr"] = _expand_params(str(spec["expr"]), params)
     aggregate = spec.get("aggregate")
-    if aggregate not in {"sum", "avg"}:
-        raise ValueError(f"Metric {name} requires aggregate to be 'sum' or 'avg'")
+    if aggregate not in {"sum", "avg", "max"}:
+        raise ValueError(
+            f"Metric {name} requires aggregate to be 'sum', 'avg', or 'max'"
+        )
     if spec.get("type") == "histogram":
         spec["avg"] = True
         spec["quantiles"] = list(DEFAULT_HISTOGRAM_QUANTILES)

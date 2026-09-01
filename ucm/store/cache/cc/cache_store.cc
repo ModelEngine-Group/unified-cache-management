@@ -21,12 +21,17 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <algorithm>
 #include <memory>
 #include <numeric>
 #include "buffer_manager.h"
 #include "logger/logger.h"
 #include "trans/cuda/gdr/gdr_config.h"
 #include "trans_manager.h"
+
+#ifndef UCM_RUNTIME_ASCEND_IO_AGGREGATION
+#define UCM_RUNTIME_ASCEND_IO_AGGREGATION 0
+#endif
 
 #ifndef UCM_RUNTIME_ASCEND_SDMA_DIRECT
 #define UCM_RUNTIME_ASCEND_SDMA_DIRECT 0
@@ -160,8 +165,9 @@ private:
         config.GetNumbers("gpu_kv_buffer_addrs", param.gpuKvBufferAddrs);
         config.GetNumbers("gpu_kv_buffer_sizes", param.gpuKvBufferSizes);
         config.Get("use_gdr", param.useGdr);
+        config.Get("cache_io_aggregation", param.cacheIOAggregation);
+        param.cacheIOAggregation = param.cacheIOAggregation && UCM_RUNTIME_ASCEND_IO_AGGREGATION;
         config.Get("cache_sdma_direct", param.cacheSdmaDirect);
-        config.Get("cache_sdma_direct_launch_granularity", param.sdmaDirectLaunchGranularity);
         config.GetNumber("local_rank_size", param.localRankSize);
         return param;
     }
@@ -202,19 +208,22 @@ private:
             return Status::InvalidParam("Cache SDMA Direct requires RUNTIME_ENVIRONMENT=ascend-a3");
         }
 #endif
-        if (config.sdmaDirectLaunchGranularity != kSdmaDirectLaunchShard &&
-            config.sdmaDirectLaunchGranularity != kSdmaDirectLaunchTask) {
-            return Status::InvalidParam("invalid Cache SDMA Direct launch granularity({})",
-                                        config.sdmaDirectLaunchGranularity);
-        }
         auto bufferNumber = config.bufferCapacity / config.shardSize;
-        if (bufferNumber < 1024 || bufferNumber < config.loadExclusiveBufferNumber * 2) {
-            return Status::InvalidParam("too small buffer({}) on shard({})", config.bufferCapacity,
-                                        config.shardSize);
+        const size_t minBufferNumber = std::max(size_t(1024), config.loadExclusiveBufferNumber * 2);
+        if (bufferNumber < minBufferNumber) {
+            const size_t minBufferCapacityGb =
+                (minBufferNumber * config.shardSize + (size_t(1) << 30) - 1) >> 30;
+            return Status::InvalidParam(
+                "too small buffer({}) on shard({}), please set cache_buffer_capacity_gb >= {}GB",
+                config.bufferCapacity, config.shardSize, minBufferCapacityGb);
         }
         if (config.waitingQueueDepth <= 1 || config.runningQueueDepth <= 1) {
             return Status::InvalidParam("invalid queue depth({},{})", config.waitingQueueDepth,
                                         config.runningQueueDepth);
+        }
+        if (config.cacheIOAggregation && config.cacheSdmaDirect) {
+            return Status::InvalidParam(
+                "Cache IO aggregation is incompatible with Cache SDMA Direct");
         }
         if (config.streamNumber < 1 || config.streamNumber > 32) {
             return Status::InvalidParam("invalid stream number({})", config.streamNumber);
@@ -248,13 +257,21 @@ private:
         UC_INFO("Set {}::CpuAffinityCores to {}.", ns, config.cpuAffinityCores);
         UC_INFO("Set {}::BufferCapacity to {}GB.", ns, config.bufferCapacity >> 30);
         UC_INFO("Set {}::ShareBufferEnable to {}.", ns, config.shareBufferEnable);
+        UC_INFO("Set {}::CacheIOAggregation to {}.", ns, config.cacheIOAggregation);
+        if (config.cacheIOAggregation) {
+            UC_INFO("Set {}::AggregationObject to CacheStoreShard.", ns);
+        }
         UC_INFO("Set {}::WaitingQueueDepth to {}.", ns, config.waitingQueueDepth);
         UC_INFO("Set {}::RunningQueueDepth to {}.", ns, config.runningQueueDepth);
         UC_INFO("Set {}::TimeoutMs to {}.", ns, config.timeoutMs);
-        UC_INFO("Set {}::StreamNumber to {}.", ns, config.streamNumber);
+        if (config.cacheSdmaDirect) {
+            UC_INFO(
+                "Set {}::StreamNumber to {} (configured={}, Cache SDMA Direct uses one stream).",
+                ns, config.EffectiveStreamNumber(), config.streamNumber);
+        } else {
+            UC_INFO("Set {}::StreamNumber to {}.", ns, config.EffectiveStreamNumber());
+        }
         UC_INFO("Set {}::CacheSdmaDirect to {}.", ns, config.cacheSdmaDirect);
-        UC_INFO("Set {}::SdmaDirectLaunchGranularity to {}.", ns,
-                config.sdmaDirectLaunchGranularity);
         UC_INFO("Set {}::LoadExclusiveBufferNumber to {}.", ns, config.loadExclusiveBufferNumber);
         UC_INFO("Set {}::GpuKvBufferNumber to {}.", ns, config.gpuKvBufferAddrs.size());
         UC_INFO("Set {}::UseGdr to {}.", ns, config.useGdr);

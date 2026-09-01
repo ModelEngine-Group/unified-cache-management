@@ -432,12 +432,18 @@ integrated artifacts are the `0.7.58 Preview/Fork` release.
 ## Next steps
 
 The installer gives you the bootstrap command. For engine integration patches,
-runtime configuration, and serving options, follow the engine guide that
+runtime configuration, and serving options, follow the quick start guide that
 matches your selection:
 
-- [vLLM (CUDA)](engines/index.md)
-- [vLLM Ascend (NPU)](engines/index.md)
-- [SGLang](engines/index.md)
+- [vLLM (CUDA)](quick_start/quickstart_vllm.md)
+- [vLLM Ascend (NPU)](quick_start/quickstart_vllm_ascend.md)
+- [SGLang](quick_start/quickstart_sglang.md)
+- [MindIE](quick_start/quickstart_mindie_llm.md)
+
+For capacity planning, see the
+[KV Cache Calculator](../toolkit/kv-cache-calculator.md).
+For common problems, see
+[Troubleshooting](../reference/troubleshooting.md).
 
 For Kubernetes deployment with Helm, see
 [GLM PD Best Practice](model-tour/index.md).

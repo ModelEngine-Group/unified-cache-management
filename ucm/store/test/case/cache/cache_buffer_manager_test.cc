@@ -57,6 +57,7 @@ TEST_F(UCCacheBufferManagerTest, Lookup)
     config.bufferCapacity = config.shardSize * 1024;
     config.uniqueId = rd.RandomString(10);
     config.shareBufferEnable = true;
+    config.loadExclusiveBufferNumber = 0;
     ASSERT_TRUE(bufferMgr.Setup(config).Success());
     std::vector<UC::Detail::BlockId> blocks(3);
     std::for_each(blocks.begin(), blocks.end(), [](auto& block) {
@@ -110,6 +111,7 @@ TEST_F(UCCacheBufferManagerTest, BackendOnlyLookupBypassesCache)
     config.bufferCapacity = config.shardSize * 1024;
     config.uniqueId = rd.RandomString(10);
     config.shareBufferEnable = false;
+    config.loadExclusiveBufferNumber = 0;
     config.cacheLoadBackendOnly = true;
     ASSERT_TRUE(bufferMgr.Setup(config).Success());
 

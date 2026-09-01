@@ -31,14 +31,15 @@
 #include <vector>
 #include "ucmstore_v1.h"
 
+#ifndef UCM_RUNTIME_ASCEND_IO_AGGREGATION
+#define UCM_RUNTIME_ASCEND_IO_AGGREGATION 0
+#endif
+
 #ifndef UCM_RUNTIME_ASCEND_SDMA_DIRECT
 #define UCM_RUNTIME_ASCEND_SDMA_DIRECT 0
 #endif
 
 namespace UC::CacheStore {
-
-inline constexpr const char* kSdmaDirectLaunchShard = "shard";
-inline constexpr const char* kSdmaDirectLaunchTask = "task";
 
 struct Config {
     StoreV1* storeBackend{};
@@ -47,7 +48,7 @@ struct Config {
     std::vector<size_t> tensorSizes{};
     size_t shardSize{0};
     size_t blockSize{0};
-    bool ioDirect{false};
+    bool ioDirect{true};
     std::vector<ssize_t> cpuAffinityCores{};
     size_t bufferCapacity{256ULL << 30};
     size_t loadExclusiveBufferNumber{1024};
@@ -60,9 +61,11 @@ struct Config {
     std::vector<uintptr_t> gpuKvBufferAddrs{};
     std::vector<size_t> gpuKvBufferSizes{};
     bool useGdr{false};
+    bool cacheIOAggregation{false};
     bool cacheSdmaDirect{UCM_RUNTIME_ASCEND_SDMA_DIRECT};
-    std::string sdmaDirectLaunchGranularity{kSdmaDirectLaunchShard};
     size_t localRankSize{8};
+
+    size_t EffectiveStreamNumber() const noexcept { return cacheSdmaDirect ? 1 : streamNumber; }
 };
 
 }  // namespace UC::CacheStore

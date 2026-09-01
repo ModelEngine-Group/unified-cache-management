@@ -15,7 +15,7 @@ theme:
   custom_dir: overrides
   language: en
   logo: assets/images/UCM-light.png
-  favicon: assets/images/UCM-dark.png
+  favicon: assets/images/UCM.png
   features:
     - navigation.tabs
     - navigation.tabs.sticky
@@ -66,6 +66,43 @@ plugins:
           name: 简体中文
           build: true
           site_name: Unified Cache Manager 中文站点
+          nav_translations:
+            Home: 首页
+            User Guide: 用户指南
+            Installation: 安装
+            Model Tour: 模型示例
+            Deployment: 部署
+            Deploy: 部署
+            Deployment Frameworks: 部署框架
+            Kubernetes: Kubernetes
+            pyMotor: pyMotor
+            Support Matrix: 支持矩阵
+            Capabilities: 核心能力
+            Overview: 概览
+            Prefix Cache: 前缀缓存
+            Observability: 观测能力
+            Metrics: 指标监控
+            Diagnostics: 诊断工具
+            Trace Mode: Trace 模式
+            Developer Guide: 开发者指南
+            Architecture: 架构
+            Capability Principles: 能力原理
+            Add Metrics: 添加指标
+            Extending Store: 扩展存储
+            Contribute: 贡献
+            Reference: 参考
+            API & Parameters: API 与参数
+            Benchmark: 性能测试
+            Toolkit: 工具集
+            KV Cache Calculator: KV Cache 计算器
+            User Guide: 用户指南
+            Precheck: 环境预检
+            POSIX AIO: 带宽模拟
+            Metrics View: 指标监控
+            NIC Monitor: 网卡监控
+            Dev Sandbox: 开发沙箱
+            Developer: 开发者
+            Design: 设计文档
   - search:
       separator: '[\s\u200b\-]'
 
@@ -116,7 +153,17 @@ nav:
   - User Guide:
       - user-guide/index.md
       - Installation: user-guide/installation.md
-      - Getting Started: user-guide/engines/index.md
+      - Deployment:
+          - Deployment: user-guide/quick_start/index.md
+          - vLLM (CUDA): user-guide/quick_start/quickstart_vllm.md
+          - vLLM Ascend (NPU): user-guide/quick_start/quickstart_vllm_ascend.md
+          - SGLang (CUDA): user-guide/quick_start/quickstart_sglang.md
+          - MindIE (NPU Ascend): user-guide/quick_start/quickstart_mindie_llm.md
+      - Support Matrix: user-guide/support-matrix/index.md
+      - Deployment Frameworks:
+          - user-guide/frameworks/index.md
+          - Kubernetes: user-guide/frameworks/kubernetes.md
+          - pyMotor: user-guide/frameworks/pyMotor.md
       - Model Tour:
           - user-guide/model-tour/index.md
           - GLM:
@@ -129,10 +176,19 @@ nav:
               - user-guide/model-tour/minimax/index.md
           - Kimi:
               - user-guide/model-tour/kimi/index.md
-      - Deploy: user-guide/deploy/index.md
-      - Core Capabilities & Troubleshooting: user-guide/capabilities/index.md
+      - Capabilities:
+          - Overview: user-guide/capabilities/index.md
+          - Prefix Cache: user-guide/capabilities/prefix-cache/index.md
+      - Observability:
+          - Overview: user-guide/observability/index.md
+          - Metrics: user-guide/observability/metrics.md
+      - Diagnostics:
+          - Overview: user-guide/diagnostics/index.md
+          - Trace Mode: user-guide/diagnostics/trace-mode.md
+
   - Developer Guide:
       - Architecture: developer-guide/architecture.md
+      - Build from Source: developer-guide/build_from_source.md
       - Capability Principles: developer-guide/capability-principles.md
       - Add Metrics: developer-guide/add-metrics.md
       - Extending Store: developer-guide/extending-store.md
@@ -140,6 +196,17 @@ nav:
   - Reference:
       - API & Parameters: reference/api-parameters.md
       - Configuration Parameters: reference/config-parameters.md
+      - Troubleshooting: reference/troubleshooting.md
   - Benchmark: benchmark/index.md
   - Toolkit:
+      - toolkit/index.md
       - KV Cache Calculator: toolkit/kv-cache-calculator.md
+      - User Guide:
+          - Precheck: toolkit/user/precheck.md
+          - POSIX AIO: toolkit/user/posix-aio.md
+          - Metrics View: toolkit/user/metrics-view.md
+          - NIC Monitor: toolkit/user/nic-monitor.md
+          - Dev Sandbox: toolkit/user/dev-sandbox.md
+      - Developer:
+          - Design: toolkit/developer/design.md
+          - Dev Sandbox: toolkit/developer/dev-sandbox.md
