@@ -1,4 +1,5 @@
 #include "asu_transport/trans_provider.h"
+#include <exception>
 #include <memory>
 #ifdef UCM_ASU_ENABLE_AICPU_PROVIDER
 #include "aicpu_trans_provider.h"
@@ -29,9 +30,15 @@ Status CreateTransProvider(const TransportConfig& config,
 #endif
         case TransProviderType::FAKE:
 #ifdef UCM_ASU_ENABLE_FAKE_PROVIDER
-            transProvider =
-                std::make_shared<FakeTransProvider>(MakeFakeTransProviderConfig(config));
-            return Status::OK();
+            try {
+                transProvider =
+                    std::make_shared<FakeTransProvider>(MakeFakeTransProviderConfig(config));
+                return Status::OK();
+            } catch (const std::exception& error) {
+                return Status::Error(
+                    StatusCode::INTERNAL_ERROR,
+                    "failed to create fake provider: " + std::string(error.what()));
+            }
 #else
             return Status::Error(
                 StatusCode::UNSUPPORTED,

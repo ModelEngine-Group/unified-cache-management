@@ -24,9 +24,12 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 #include "asu_transport/asu_transport.h"
 #include "asu_transport/trans_provider.h"
 #include "trans/device.h"
@@ -38,11 +41,13 @@ struct FakeTransProviderConfig {
     std::string storePath{"./asu-fake-backend-store"};
     std::uint64_t latencyMs{1};
     std::int32_t deviceId{0};
+    std::size_t workerThreads{4};
 };
 
 class FakeTransProvider : public TransProvider {
 public:
     explicit FakeTransProvider(FakeTransProviderConfig config);
+    ~FakeTransProvider() override;
 
     Status CreateConnection(const std::string&, const std::string&, uint32_t, uint32_t qpNum,
                             uint32_t, std::vector<ConnectionHandle>& handles) override;
@@ -67,6 +72,14 @@ public:
     Status GetMemTokenId(MRHandle, uint32_t& tokenId) override;
 
 private:
+    struct IoTask {
+        std::vector<std::uint32_t> request;
+        std::uint64_t requestLength{0};
+        std::uint32_t* flagBuffer{nullptr};
+    };
+
+    class WorkerPool;
+
     struct RegisteredMemory {
         std::uintptr_t providerAddr{0};
         std::uintptr_t localAddr{0};
@@ -75,6 +88,7 @@ private:
 
     Status SetupDeviceRuntime();
     Status ResolveLocalAddress(const void* providerAddr, std::size_t size, void*& localAddr);
+    void ProcessIoTask(IoTask& task);
 
     bool StoreBytes(AsuId asuId, const CacheKey& key, std::uint32_t offset, std::uint64_t addr,
                     std::uint32_t length);
@@ -98,6 +112,7 @@ private:
     std::atomic<std::uintptr_t> nextMrHandle_{1};
     std::mutex registeredMemoryMu_;
     std::unordered_map<MRHandle, RegisteredMemory> registeredMemories_;
+    std::unique_ptr<WorkerPool> workerPool_;
 };
 
 FakeTransProviderConfig MakeFakeTransProviderConfig(const TransportConfig& config);

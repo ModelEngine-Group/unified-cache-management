@@ -42,6 +42,7 @@ TEST(KvTestConfigHelpersTest, FakeDefaultsDoNotModifyAivTransport)
     EXPECT_EQ(patchedFake.providerType, UC::ASU::TransProviderType::FAKE);
     EXPECT_EQ(patchedFake.attrs.at("sc"), "false");
     EXPECT_EQ(patchedFake.attrs.at("fake_backend.path"), "./kv-test-fake-backend-store");
+    EXPECT_EQ(patchedFake.attrs.at("fake_backend.worker_threads"), "4");
 
     const auto& unchangedAiv = config.asuClientConfig.transportConfigs[1];
     EXPECT_EQ(unchangedAiv.providerType, UC::ASU::TransProviderType::AIV);

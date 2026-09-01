@@ -182,6 +182,7 @@ wait_timeout_ms=5000
 
 fake_backend.path=./kv-test-fake-backend-store
 fake_backend.latency_ms=1
+fake_backend.worker_threads=4
 
 view.config_path=./ucm/transport/kv/kv-test/asu_view.conf
 hash_table.type=RING_HASH
@@ -250,6 +251,7 @@ These fields are parsed by `kv-test` itself:
 | `asu.transport_library_path` | Optional `libasu_transport.so` path used by kv-test's runtime proxy. The environment variable `KV_TEST_ASU_TRANSPORT_LIB` is also accepted. |
 | `fake_backend.path` | FAKE provider storage root. Defaults to `./kv-test-fake-backend-store`. |
 | `fake_backend.latency_ms` | Mock backend completion delay in milliseconds. Default is `1`. |
+| `fake_backend.worker_threads` | Number of FAKE provider IO workers. Default is `4`. |
 | `kv.key_prefix` | Prefix for count-based key generation. |
 | `kv.seed` | Seed for deterministic value generation. |
 | `kv.value_size` | Value size for normal commands. |
@@ -295,9 +297,9 @@ Mocked or not covered in this mode:
 - real connection failure, drain, and recovery behavior
 
 For every transport configured with the FAKE provider, kv-test fills required
-SQE/send attrs and passes `fake_backend.path`, `fake_backend.latency_ms`, and
-`fake_backend.device_id` through `TransportConfig.attrs`. Other provider entries
-are left unchanged.
+SQE/send attrs and passes `fake_backend.path`, `fake_backend.latency_ms`,
+`fake_backend.worker_threads`, and `fake_backend.device_id` through
+`TransportConfig.attrs`. Other provider entries are left unchanged.
 `FakeTransProvider::CreateConnection` returns placeholder connection handles so
 `ConnectionManager` can create channels during this software-only integration
 phase.
@@ -321,7 +323,9 @@ recover a per-ASU namespace from the send buffer without changing the Transport
 `Send` interface. This is a kv-test-only temporary semantic mapping, not a
 long-term protocol statement that KVNS_ID is ASU ID.
 
-The fake backend writes the CQE/flag buffer synchronously before `Send` returns.
+The fake backend copies and queues each SQE before `Send` returns. Dedicated IO
+workers process queued requests in parallel and publish the CQE/flag buffer when
+the mock file operation completes.
 Query returns CQE status `0` when every key exists and `0x732` with a
 result-buffer payload when only some keys exist. Delete treats missing keys as
 successful entries; a result-buffer byte value of `0` means success and `1`

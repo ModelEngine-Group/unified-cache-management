@@ -39,6 +39,7 @@ ucm_connectors:
       # and replaces the missing device Send/backend execution with local files.
       asu_fake_backend_path: "/mnt/test"
       asu_fake_backend_latency_ms: 1
+      asu_fake_backend_worker_threads: 4
 
       # ASU wait/task timeout and connection recovery.
       asu_wait_timeout_ms: 5000

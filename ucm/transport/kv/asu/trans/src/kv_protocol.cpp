@@ -1239,7 +1239,7 @@ Status ProtocolManager::UnpackResponse(const void* data_ptr, KvOpcode opcode,
 Status ProtocolManager::PollResponseCid(const void* data_ptr, std::uint16_t& cid) const
 {
     auto* data = static_cast<const std::uint32_t*>(data_ptr);
-    cid = data[3] & 0xFFFF;
+    cid = __atomic_load_n(data + 3, __ATOMIC_ACQUIRE) & 0xFFFF;
     return Status::OK();
 }
 
