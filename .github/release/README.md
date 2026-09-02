@@ -323,7 +323,7 @@ The TestPyPI endpoints are fixed by policy: upload uses
 required; the prefix is derived from `github.repository_owner` through the
 frozen repository identity. TestPyPI file readback waits for up to approximately
 three minutes because upload acceptance can precede JSON/Simple Index visibility;
-production PyPI keeps the shorter one-minute window.
+production PyPI uses the same bounded readback window.
 
 Keep the production `PYPI_API_TOKEN` only in the official repository. Do not
 copy it into the Fork or `fork-preview`.

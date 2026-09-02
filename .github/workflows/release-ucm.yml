@@ -1283,16 +1283,13 @@ jobs:
             export PYPI_API_TOKEN
           fi
           test -n "${PYPI_API_TOKEN}"
-          readback_attempts="$(jq -r \
-            'if .publish.pypi.target == "testpypi" then 36 else 12 end' \
-            "${plan}")"
           mkdir -p out/pypi
           PYTHONPATH=.github/release python -m ucm_release pypi publish \
             --release-plan "${plan}" --wheel-results-dir input/wheels \
             --meta-result input/meta/meta-result.json \
             --wheel-root input/wheels --meta-root input/meta \
             --repository-url "$(jq -r '.publish.pypi.index' "${plan}")" \
-            --attempts "${readback_attempts}" --interval 5 \
+            --attempts 36 --interval 5 \
             --output out/pypi/pypi-receipt.json >/dev/null
       - uses: actions/upload-artifact@v4.6.2
         with:
