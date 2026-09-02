@@ -340,7 +340,9 @@ class RequestDispatchMeta:
         list[bytes], list[int]
     ]  # [0] mean ucm_block_ids, [1] means vllm_block_ids
     dump_block_ids: tuple[list[bytes], list[int]]
-    load_async: bool = False
+    # Keep this keyword-only so adding the optional async flag does not change
+    # positional constructor semantics for connector-specific subclasses.
+    load_async: bool = field(default=False, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -1686,9 +1688,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         load_vllm_block_ids = list(vllm_block_ids[external_start:external_end])
         load_ucm_block_ids = list(
             req_meta.ucm_block_ids[
-                external_start
-                * self.cp_world_size : external_end
-                * self.cp_world_size
+                external_start * self.cp_world_size : external_end * self.cp_world_size
             ]
         )
 
@@ -2212,9 +2212,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         return self.request_finished(request, [])
 
     def _poll_pending_load_tasks(self) -> set[str]:
-        finished_recving = set(
-            getattr(self, "_finished_async_load_req_ids", set())
-        )
+        finished_recving = set(getattr(self, "_finished_async_load_req_ids", set()))
         if hasattr(self, "_finished_async_load_req_ids"):
             self._finished_async_load_req_ids.clear()
 

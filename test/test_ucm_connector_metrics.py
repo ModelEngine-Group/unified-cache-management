@@ -1624,6 +1624,22 @@ def test_request_async_alloc_dispatches_load_without_scheduled_forward():
     assert connector._async_load_req_ids == {"req-async"}
 
 
+def test_request_dispatch_async_flag_preserves_subclass_positional_fields():
+    @dataclass
+    class SpecializedRequestDispatchMeta(RequestDispatchMeta):
+        required_value: int
+
+    dispatch = SpecializedRequestDispatchMeta(
+        ([b"u0"], [10]),
+        ([], []),
+        7,
+        load_async=True,
+    )
+
+    assert dispatch.required_value == 7
+    assert dispatch.load_async is True
+
+
 def test_request_async_reschedule_does_not_dispatch_duplicate_load():
     connector = object.__new__(UCMDirectConnector)
     connector.block_size = 16
