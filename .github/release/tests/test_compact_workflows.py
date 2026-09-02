@@ -833,6 +833,8 @@ def test_shared_channel_writers_use_only_effective_enabled_decisions() -> None:
         for step in jobs["publish-pypi"]["steps"]
         if step.get("name") == "Publish backend Wheels, then the meta Wheel"
     )
+    assert 'if .publish.pypi.target == "testpypi" then 36 else 12 end' in pypi
+    assert '--attempts "${readback_attempts}" --interval 5' in pypi
     dockerhub_index = next(
         step["run"]
         for step in jobs["publish-image-indexes"]["steps"]
