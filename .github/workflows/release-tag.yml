@@ -1,0 +1,102 @@
+name: UCM Tag Release · Stable, Prerelease, Draft, and Nightly
+
+on:
+  push:
+    tags: ["v*", "draft/v*", "nightly/v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  classify-tag:
+    name: Classify immutable Release Tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      git_tag: ${{ steps.classify.outputs.git_tag }}
+      release_type: ${{ steps.classify.outputs.release_type }}
+      release_kind: ${{ steps.classify.outputs.release_kind }}
+      version: ${{ steps.classify.outputs.version }}
+      chart_version: ${{ steps.classify.outputs.chart_version }}
+      image_version: ${{ steps.classify.outputs.image_version }}
+      is_prerelease: ${{ steps.classify.outputs.is_prerelease }}
+      publication_scope: ${{ steps.classify.outputs.publication_scope }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - run: >-
+          python -m pip install --disable-pip-version-check --no-cache-dir
+          --only-binary=:all: packaging==24.2
+      - id: classify
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          classification="$(python scripts/materialize_version.py \
+            --tag "${RELEASE_TAG}" --classify --version-config version.ini)"
+          repository="${GITHUB_REPOSITORY,,}"
+          if [ "${repository}" = modelengine-group/unified-cache-management ]; then
+            publication_scope=official
+          else
+            publication_scope=fork
+          fi
+          {
+            echo "git_tag=$(jq -r '.git_tag' <<<"${classification}")"
+            echo "release_type=$(jq -r '.release_type' <<<"${classification}")"
+            echo "release_kind=$(jq -r '.release_kind' <<<"${classification}")"
+            echo "version=$(jq -r '.version' <<<"${classification}")"
+            echo "chart_version=$(jq -r '.chart_version' <<<"${classification}")"
+            echo "image_version=$(jq -r '.image_version' <<<"${classification}")"
+            echo "is_prerelease=$(jq -r '.is_prerelease' <<<"${classification}")"
+            echo "publication_scope=${publication_scope}"
+          } >>"${GITHUB_OUTPUT}"
+
+  release-official:
+    name: Run official Release core
+    needs: classify-tag
+    if: ${{ needs.classify-tag.outputs.publication_scope == 'official' }}
+    permissions:
+      actions: write
+      contents: write
+      packages: write
+    uses: ./.github/workflows/release-ucm.yml
+    with:
+      git_tag: ${{ needs.classify-tag.outputs.git_tag }}
+      release_type: ${{ needs.classify-tag.outputs.release_type }}
+      version: ${{ needs.classify-tag.outputs.version }}
+      chart_version: ${{ needs.classify-tag.outputs.chart_version }}
+      image_version: ${{ needs.classify-tag.outputs.image_version }}
+      release_kind: ${{ needs.classify-tag.outputs.release_kind }}
+      is_prerelease: ${{ needs.classify-tag.outputs.is_prerelease == 'true' }}
+      source_sha: ${{ github.sha }}
+      publication_scope: official
+    secrets: inherit
+
+  release-fork:
+    name: Run fork Release core
+    needs: classify-tag
+    if: ${{ needs.classify-tag.outputs.publication_scope == 'fork' }}
+    permissions:
+      actions: write
+      contents: write
+      packages: write
+    uses: ./.github/workflows/release-ucm.yml
+    with:
+      git_tag: ${{ needs.classify-tag.outputs.git_tag }}
+      release_type: ${{ needs.classify-tag.outputs.release_type }}
+      version: ${{ needs.classify-tag.outputs.version }}
+      chart_version: ${{ needs.classify-tag.outputs.chart_version }}
+      image_version: ${{ needs.classify-tag.outputs.image_version }}
+      release_kind: ${{ needs.classify-tag.outputs.release_kind }}
+      is_prerelease: ${{ needs.classify-tag.outputs.is_prerelease == 'true' }}
+      source_sha: ${{ github.sha }}
+      publication_scope: fork
+    secrets:
+      TEST_PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}

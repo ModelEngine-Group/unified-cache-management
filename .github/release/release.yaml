@@ -1,0 +1,79 @@
+kind: ucm-release-policy
+schema_version: 6
+
+runners:
+  amd64: ubuntu-24.04
+  arm64: ubuntu-24.04-arm
+
+products:
+  - id: vllm
+    runtime_repository: docker.io/vllm/vllm-openai
+    target_repository: ghcr.io/{owner}/vllm-openai
+
+  - id: vllm-ascend
+    runtime_repository: quay.io/ascend/vllm-ascend
+    target_repository: ghcr.io/{owner}/vllm-ascend
+
+publish:
+  # PyPI 固定上传地址，是否发布由 Release Profile 决定。
+  pypi:
+    index: https://upload.pypi.org/legacy/
+  # GHCR 固定命名空间，是否发布由 Release Profile 决定。
+  ghcr:
+    namespace: ghcr.io/{owner}
+  # DockerHub 固定命名空间，是否发布由 Release Profile 决定。
+  dockerhub:
+    namespace: docker.io/{owner}
+  # Chart OCI 固定命名空间，是否发布由 Release Profile 决定。
+  chart_oci:
+    namespace: ghcr.io/{owner}/charts
+  # GitHub Release 使用当前仓库，没有额外地址配置。
+  github_release: {}
+
+# 四类发布配置全部展开，避免 YAML anchor 隐藏实际发布行为。
+release_profiles:
+  stable:
+    # -1 表示无限保留 Stable 发布。
+    max_count: -1
+    publish:
+      pypi: true
+      ghcr: true
+      dockerhub: true
+      chart_oci: true
+      github_release: true
+
+  prerelease:
+    # -1 表示无限保留 Prerelease 发布。
+    max_count: -1
+    publish:
+      pypi: true
+      ghcr: true
+      dockerhub: true
+      chart_oci: true
+      github_release: true
+
+  draft:
+    # 最多保留 7 个新版 Draft。
+    max_count: 7
+    publish:
+      pypi: true
+      ghcr: true
+      dockerhub: true
+      chart_oci: true
+      github_release: true
+
+  nightly:
+    # 最多保留 7 个 Nightly。
+    max_count: 7
+    publish:
+      pypi: false
+      ghcr: true
+      dockerhub: false
+      chart_oci: true
+      github_release: true
+
+chart:
+  source: charts/unified-cache-chart
+  smoke_values:
+    vllm: charts/unified-cache-chart/models/cuda/values-qwen3-0p6b-1e1.yaml
+    vllm-ascend: charts/unified-cache-chart/models/ascend/values-qwen3-0p6b-1e1.yaml

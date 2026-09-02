@@ -34,7 +34,7 @@ if [ ! -f "${VERSION_FILE}" ]; then
     exit 1
 fi
 . ${VERSION_FILE}
-VERSION=$VLLM_UC_VERSION
+VERSION=$UCM_VERSION
 echo "Build version=$VERSION"
 
 function check_build_install()

@@ -1,0 +1,353 @@
+name: Synchronize project builder pool
+
+on:
+  workflow_call:
+    inputs:
+      runtime_selection_artifact:
+        description: Exact Runtime selection for this release run
+        type: string
+        required: true
+    outputs:
+      builder_catalog_artifact:
+        description: Discovered Builder catalog for this run
+        value: ${{ jobs.finalize.outputs.builder_catalog_artifact }}
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ucm-builder-sync-${{ github.repository_id }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare builders
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      prepared_catalog_artifact: ${{ steps.plan.outputs.prepared_catalog_artifact }}
+      has_builders: ${{ steps.plan.outputs.has_builders }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - run: >-
+          python -m pip install --disable-pip-version-check --no-cache-dir
+          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+      - uses: docker/setup-buildx-action@v3.11.1
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          name: ${{ inputs.runtime_selection_artifact }}
+          path: input/upstreams
+      - name: Authenticate to GHCR
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${GITHUB_TOKEN}" | docker login ghcr.io \
+            --username "${GITHUB_ACTOR}" --password-stdin
+      - id: plan
+        name: Discover builders and compute missing targets
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          PYTHONPATH=.github/release python -m ucm_release builders discover \
+            --selection input/upstreams/runtime-selection.json \
+            --output out/builder-catalog.json >/dev/null
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          jq -e --arg prefix "ghcr.io/${owner}/" \
+            '[.builders[].target_repository] | all(startswith($prefix))' \
+            out/builder-catalog.json >/dev/null
+          printf '{}\n' >out/existing-tags.json
+          while IFS=$'\t' read -r repository tag; do
+            tags='[]'
+            if docker buildx imagetools inspect "${repository}:${tag}" >/dev/null 2>&1; then
+              tags="$(jq -cn --arg tag "${tag}" '[$tag]')"
+            fi
+            jq --arg repository "${repository}" --argjson tags "${tags}" \
+              '.[$repository] = ((.[$repository] // []) + $tags | unique | sort)' \
+              out/existing-tags.json >out/existing-tags.next.json
+            mv out/existing-tags.next.json out/existing-tags.json
+          done < <(jq -r '.builders[] | [.target_repository,.target_tag] | @tsv' \
+            out/builder-catalog.json)
+          PYTHONPATH=.github/release python -m ucm_release builders sync-plan \
+            --catalog out/builder-catalog.json \
+            --existing out/existing-tags.json \
+            --output out/builder-sync-plan.json >/dev/null
+          count="$(jq '.matrix.include | length' out/builder-sync-plan.json)"
+          artifact="ucm-builder-catalog-prepared-run-${GITHUB_RUN_ID}"
+          {
+            echo "prepared_catalog_artifact=${artifact}"
+            echo "matrix=$(jq -c '.matrix' out/builder-sync-plan.json)"
+            if [ "${count}" -gt 0 ]; then
+              echo "has_builders=true"
+            else
+              echo "has_builders=false"
+            fi
+          } >>"${GITHUB_OUTPUT}"
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ${{ steps.plan.outputs.prepared_catalog_artifact }}
+          path: out/builder-catalog.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  build-missing:
+    name: Build/verify Builder · ${{ matrix.label }}
+    needs: prepare
+    if: ${{ needs.prepare.outputs.has_builders == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    continue-on-error: ${{ matrix.checks.blocking != true }}
+    runs-on: ${{ matrix.cpu_arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3.11.1
+      - name: Validate current-owner Builder target
+        env:
+          TARGET_REPOSITORY: ${{ matrix.target_repository }}
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          case "${TARGET_REPOSITORY}" in
+            "ghcr.io/${owner}/"*) ;;
+            *) echo "Builder target is outside current owner namespace" >&2; exit 2 ;;
+          esac
+      - name: Authenticate to GHCR
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${GITHUB_TOKEN}" | docker login ghcr.io \
+            --username "${GITHUB_ACTOR}" --password-stdin
+      - name: Build missing Builder
+        env:
+          SOURCE_IMAGE: ${{ matrix.source_image }}
+          SOURCE_IMAGE_DIGEST: ${{ matrix.source_image_digest }}
+          TARGET_REPOSITORY: ${{ matrix.target_repository }}
+          TARGET_TAG: ${{ matrix.target_tag }}
+          CPU_ARCH: ${{ matrix.cpu_arch }}
+          CHECKS: ${{ toJSON(matrix.checks) }}
+          BUILDER_JSON: ${{ toJSON(matrix) }}
+        run: |
+          set -euo pipefail
+          target="${TARGET_REPOSITORY}:${TARGET_TAG}"
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          case "${target}" in
+            "ghcr.io/${owner}/"*:*) ;;
+            *) echo "Builder target is outside current owner namespace" >&2; exit 2 ;;
+          esac
+          source_repository="${SOURCE_IMAGE%:*}"
+          pinned_source="${source_repository}@${SOURCE_IMAGE_DIGEST}"
+          docker buildx imagetools inspect "${pinned_source}" >/dev/null
+          if docker buildx imagetools inspect "${target}" >/dev/null 2>&1; then
+            echo "Builder already exists: ${target}"
+            candidate="${target}"
+          else
+            mkdir -p out
+            jq -c 'del(.label)' <<<"${BUILDER_JSON}" >out/builder.json
+            PYTHONPATH=.github/release python -m ucm_release builders labels \
+              --builder out/builder.json --output out/builder-labels.json >/dev/null
+            jq --arg created "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              '. + {"io.ucm.builder.created": $created}' \
+              out/builder-labels.json >out/builder-labels.next.json
+            mv out/builder-labels.next.json out/builder-labels.json
+            mapfile -t label_args < <(jq -r \
+              'to_entries[] | "--label", "\(.key)=\(.value)"' \
+              out/builder-labels.json)
+            candidate="${target}-candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            case "${candidate}" in
+              "ghcr.io/${owner}/"*:*) ;;
+              *) echo "Builder candidate is outside current owner namespace" >&2; exit 2 ;;
+            esac
+            docker buildx build --push \
+              --platform "linux/${CPU_ARCH}" \
+              --file .github/release/docker/Dockerfile.builder-mirror \
+              --build-arg "BASE_IMAGE=${pinned_source}" \
+              "${label_args[@]}" --tag "${candidate}" .
+          fi
+          docker buildx imagetools inspect "${candidate}" >/dev/null
+          if [ "${candidate}" != "${target}" ]; then
+            docker buildx imagetools create --tag "${target}" "${candidate}"
+          fi
+          target_digest="$(docker buildx imagetools inspect "${target}" \
+            --format '{{json .Manifest}}' | jq -er '.digest // .Digest')"
+          verified_target="${TARGET_REPOSITORY}@${target_digest}"
+          mkdir -p out/verification
+          docker buildx imagetools inspect "${verified_target}" \
+            --format '{{json .Image}}' >out/verified-target-config-raw.json
+          # jq variables in this single-quoted program are intentional.
+          # shellcheck disable=SC2016
+          jq -e --arg platform "linux/${CPU_ARCH}" --arg arch "${CPU_ARCH}" '
+            (if has($platform) then .[$platform] else . end) |
+            select(.os == "linux" and .architecture == $arch and
+                   (.created | type == "string") and
+                   (.config.Labels | type == "object"))
+          ' out/verified-target-config-raw.json >out/verified-target-config.json
+          target_rate_limit_marker="${RUNNER_TEMP}/ucm-builder-target-rate-limited"
+          validation_image="${verified_target}"
+          validation_origin="target"
+          if bash .github/release/retry-registry-command.sh \
+            "${RUNNER_TEMP}/ucm-builder-target-pull.log" \
+            --rate-limit-marker "${target_rate_limit_marker}" \
+            docker pull --platform "linux/${CPU_ARCH}" "${verified_target}"; then
+            :
+          else
+            target_pull_status="$?"
+            if [ ! -f "${target_rate_limit_marker}" ] || \
+               [ "$(<"${target_rate_limit_marker}")" != "rate-limit-exhausted" ]; then
+              exit "${target_pull_status}"
+            fi
+            echo "Builder target remained rate-limited; validating pinned source ${pinned_source}"
+            bash .github/release/retry-registry-command.sh \
+              "${RUNNER_TEMP}/ucm-builder-source-pull.log" \
+              docker pull --platform "linux/${CPU_ARCH}" "${pinned_source}"
+            validation_image="${pinned_source}"
+            validation_origin="source-fallback"
+          fi
+          commands="$(jq -r '.commands | join(" ")' <<<"${CHECKS}")"
+          required_files="$(jq -r '.required_files | join(" ")' <<<"${CHECKS}")"
+          docker run --pull=never --platform "linux/${CPU_ARCH}" --rm \
+            -e EXPECTED_PYTHON="$(jq -r '.python_version' <<<"${CHECKS}")" \
+            -e EXPECTED_ABI="$(jq -r '.python_abi' <<<"${CHECKS}")" \
+            -e EXPECTED_RUNTIME="$(jq -r '.accelerator_runtime' <<<"${CHECKS}")" \
+            -e EXPECTED_SOC="$(jq -r '.soc_version' <<<"${CHECKS}")" \
+            -e EXPECTED_VARIANT="$(jq -r '.variant' <<<"${CHECKS}")" \
+            -e REQUIRED_COMMANDS="${commands}" \
+            -e REQUIRED_FILES="${required_files}" \
+            "${validation_image}" bash -c '
+              set -euo pipefail
+              candidate="/opt/python/${EXPECTED_ABI}-${EXPECTED_ABI}/bin/python"
+              if [ ! -x "${candidate}" ]; then candidate="$(command -v python3)"; fi
+              test "$("${candidate}" -c "import sys; print(f\"{sys.version_info.major}.{sys.version_info.minor}\")")" = "${EXPECTED_PYTHON}"
+              for command_name in ${REQUIRED_COMMANDS}; do command -v "${command_name}" >/dev/null; done
+              if [[ "${EXPECTED_RUNTIME}" == cuda-* ]]; then
+                nvcc --version | grep -F "release ${EXPECTED_RUNTIME#cuda-}"
+              fi
+              if [[ "${EXPECTED_RUNTIME}" == cann-* ]]; then
+                actual_cann="${CANN_VERSION:-${ASCEND_TOOLKIT_HOME:-${ASCEND_HOME_PATH:-}}}"
+                if [ -z "${actual_cann}" ]; then
+                  version_file="$(find /usr/local/Ascend -type f \
+                    \( -name version.info -o -name version.cfg \) \
+                    -print -quit 2>/dev/null || true)"
+                  [ -z "${version_file}" ] || actual_cann="$(head -n 1 "${version_file}")"
+                fi
+                actual_cann="$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+' \
+                  <<<"${actual_cann}" | head -n 1)"
+                test "cann-${actual_cann}" = "${EXPECTED_RUNTIME}"
+                if [ -n "${SOC_VERSION:-}" ]; then
+                  test "${SOC_VERSION}" = "${EXPECTED_SOC}"
+                fi
+                test -n "${EXPECTED_VARIANT}"
+                for file_name in ${REQUIRED_FILES}; do
+                  find /usr/local/Ascend -name "${file_name}" -print -quit \
+                    | grep -q .
+                done
+              fi
+            '
+          # Backticks in these format strings are literal Markdown.
+          # shellcheck disable=SC2016
+          {
+            echo '### Builder validation source'
+            echo
+            printf -- '- Target: `%s`\n' "${verified_target}"
+            printf -- '- Runtime check: `%s` (%s)\n' \
+              "${validation_image}" "${validation_origin}"
+          } >>"${GITHUB_STEP_SUMMARY}"
+          jq -n --arg id "${{ matrix.id }}" --arg digest "${target_digest}" \
+            --slurpfile image out/verified-target-config.json \
+            '{id:$id,target_digest:$digest,config:$image[0]}' \
+            >"out/verification/${{ matrix.id }}.json"
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ucm-builder-verification-${{ matrix.id }}-run-${{ github.run_id }}
+          path: out/verification/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  finalize:
+    name: Finalize immutable Builder catalog
+    needs: [prepare, build-missing]
+    if: >-
+      ${{
+        always() && needs.prepare.result == 'success' &&
+        (needs.build-missing.result == 'success' ||
+         needs.build-missing.result == 'skipped')
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      builder_catalog_artifact: ${{ steps.finalize.outputs.builder_catalog_artifact }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - run: >-
+          python -m pip install --disable-pip-version-check --no-cache-dir
+          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          name: ${{ needs.prepare.outputs.prepared_catalog_artifact }}
+          path: input/builders
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          pattern: ucm-builder-verification-*-run-${{ github.run_id }}
+          path: input/observations
+          merge-multiple: true
+      - id: finalize
+        name: Verify labels and pin target digests
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          jq -s 'map({key:.id,
+            value:{target_digest:.target_digest,config:.config}}) | from_entries' \
+            input/observations/*.json >out/observations.json
+          PYTHONPATH=.github/release python -m ucm_release builders finalize \
+            --catalog input/builders/builder-catalog.json \
+            --observations out/observations.json \
+            --output out/builder-catalog.json >/dev/null \
+            2> >(tee out/builder-finalize-error.log >&2)
+          artifact="ucm-builder-catalog-run-${GITHUB_RUN_ID}"
+          echo "builder_catalog_artifact=${artifact}" >>"${GITHUB_OUTPUT}"
+      - name: Record Builder finalization failure
+        if: ${{ failure() && steps.finalize.outcome == 'failure' }}
+        run: |
+          set -euo pipefail
+          test -s out/builder-finalize-error.log || \
+            printf '%s\n' "Builder catalog finalization failed" \
+              >out/builder-finalize-error.log
+          jq -n --rawfile detail out/builder-finalize-error.log \
+            '{stage:"builder-finalize",
+              reason:"builder-catalog-finalization-failed",detail:$detail}' \
+            >out/builder-finalize-failure.json
+      - uses: actions/upload-artifact@v4.6.2
+        if: ${{ failure() && steps.finalize.outcome == 'failure' }}
+        with:
+          name: ucm-builder-finalize-failure-run-${{ github.run_id }}
+          path: |
+            out/builder-finalize-error.log
+            out/builder-finalize-failure.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ${{ steps.finalize.outputs.builder_catalog_artifact }}
+          path: out/builder-catalog.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7

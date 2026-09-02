@@ -1,0 +1,54 @@
+name: download-artifact-retry
+description: >-
+  actions/download-artifact@v4 的重试包装；吸收签名 URL 下载时的 GitHub 429 / ECONNRESET。
+  输入与 download-artifact@v4 一致；name 与 pattern 二选一，失败重试时清空目标目录避免半成品合并。
+inputs:
+  name:
+    description: 单个制品名（与 pattern 二选一）。
+    required: false
+    default: ''
+  pattern:
+    description: 匹配多个制品名的 glob。
+    required: false
+    default: ''
+  path:
+    description: 目标路径。
+    required: false
+    default: 'artifacts'
+runs:
+  using: composite
+  steps:
+    - id: dl-1
+      uses: actions/download-artifact@v4.3.0
+      continue-on-error: true
+      with:
+        name: ${{ inputs.name }}
+        pattern: ${{ inputs.pattern }}
+        path: ${{ inputs.path }}
+    - name: Clear partial download before retry (1 → 2)
+      if: ${{ steps.dl-1.outcome == 'failure' || steps.dl-1.outcome == 'cancelled' }}
+      shell: bash
+      run: |
+        rm -rf "${{ inputs.path }}"
+        sleep 10
+    - id: dl-2
+      if: ${{ steps.dl-1.outcome == 'failure' || steps.dl-1.outcome == 'cancelled' }}
+      uses: actions/download-artifact@v4.3.0
+      continue-on-error: true
+      with:
+        name: ${{ inputs.name }}
+        pattern: ${{ inputs.pattern }}
+        path: ${{ inputs.path }}
+    - name: Clear partial download before retry (2 → 3)
+      if: ${{ steps.dl-2.outcome == 'failure' || steps.dl-2.outcome == 'cancelled' }}
+      shell: bash
+      run: |
+        rm -rf "${{ inputs.path }}"
+        sleep 30
+    - id: dl-3
+      if: ${{ steps.dl-2.outcome == 'failure' || steps.dl-2.outcome == 'cancelled' }}
+      uses: actions/download-artifact@v4.3.0
+      with:
+        name: ${{ inputs.name }}
+        pattern: ${{ inputs.pattern }}
+        path: ${{ inputs.path }}

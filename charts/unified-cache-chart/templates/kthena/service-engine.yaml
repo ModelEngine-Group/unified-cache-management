@@ -1,0 +1,28 @@
+{{- if .Values.servingEngineSpec.enableEngine -}}
+{{- $modelSpec := .Values.servingEngineSpec.modelSpec -}}
+{{- $name := include "chart.kthenaName" (list $modelSpec $) -}}
+{{/*
+引擎 Service：
+  - 非 router 模式（无 pd.kvTransfer / 无 router.enabled）下作为直连 entry pod 的入口；
+  - 同时作为 Prometheus 抓取目标（ServiceMonitor 按 uc-stack.io/service-role 选择，端口名须与此处一致）。
+始终渲染，使监控在单机/双机/PD 全形态都有目标（依赖 kthena 给 entry pod 注入
+modelserving.volcano.sh/{name,entry} label —— 见 plan 中 kthena selector 约定）。
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    uc-stack.io/service-role: "engine-service"
+    model: {{ $modelSpec.name }}
+    helm-release-name: {{ .Release.Name }}
+spec:
+  selector:
+    modelserving.volcano.sh/name: {{ $name }}
+    modelserving.volcano.sh/entry: "true"
+  ports:
+    - name: {{ include "chart.container-port-name" . }}
+      port: {{ default 80 .Values.servingEngineSpec.servicePort }}
+      targetPort: {{ include "chart.container-port" . }}
+{{- end }}
