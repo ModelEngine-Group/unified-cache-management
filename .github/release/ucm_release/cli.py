@@ -50,12 +50,12 @@ def _publication_context(path: Path | None) -> dict[str, object]:
     value = core.load_json(path)
     if not isinstance(value, dict) or set(value) != {
         "fork_test_pypi",
-        "fork_dockerhub_namespace",
+        "dockerhub_namespace",
     }:
         raise ValueError("publication context fields must be exact")
     if not isinstance(value["fork_test_pypi"], bool):
         raise ValueError("publication context TestPyPI flag must be boolean")
-    namespace = value["fork_dockerhub_namespace"]
+    namespace = value["dockerhub_namespace"]
     if namespace is not None and (not isinstance(namespace, str) or not namespace):
         raise ValueError("publication context Docker Hub namespace is invalid")
     return value

@@ -278,6 +278,17 @@
         "namespace": {"type": "string", "minLength": 1}
       }
     },
+    "publishDockerhub": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested", "enabled", "disposition"],
+      "properties": {
+        "requested": {"type": "boolean"},
+        "enabled": {"type": "boolean"},
+        "disposition": {"enum": ["publish", "scope-skipped", "disabled"]},
+        "namespace": {"type": "string", "minLength": 1}
+      }
+    },
     "publishGithubRelease": {
       "type": "object",
       "additionalProperties": false,
@@ -295,7 +306,7 @@
       "properties": {
         "pypi": {"$ref": "#/$defs/publishPypi"},
         "ghcr": {"$ref": "#/$defs/publishOci"},
-        "dockerhub": {"$ref": "#/$defs/publishOci"},
+        "dockerhub": {"$ref": "#/$defs/publishDockerhub"},
         "chart_oci": {"$ref": "#/$defs/publishOci"},
         "github_release": {"$ref": "#/$defs/publishGithubRelease"}
       }
@@ -328,6 +339,10 @@
         "namespace": {"type": "string", "minLength": 1}
       }
     },
+    "releasePolicyDockerhub": {
+      "type": "object",
+      "additionalProperties": false
+    },
     "releasePolicyGithubRelease": {
       "type": "object",
       "additionalProperties": false
@@ -339,7 +354,7 @@
       "properties": {
         "pypi": {"$ref": "#/$defs/releasePolicyPypi"},
         "ghcr": {"$ref": "#/$defs/releasePolicyOci"},
-        "dockerhub": {"$ref": "#/$defs/releasePolicyOci"},
+        "dockerhub": {"$ref": "#/$defs/releasePolicyDockerhub"},
         "chart_oci": {"$ref": "#/$defs/releasePolicyOci"},
         "github_release": {"$ref": "#/$defs/releasePolicyGithubRelease"}
       }

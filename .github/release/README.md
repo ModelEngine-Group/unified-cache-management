@@ -87,13 +87,13 @@ never consume a mutable Builder Tag.
 
 The workflow accepts:
 
-| Git Tag | Wheel version | Chart version | GitHub Release |
-| --- | --- | --- | --- |
-| `vX.Y.Z` | `X.Y.Z` | `X.Y.Z` | public Release |
-| `vX.Y.ZrcN` | `X.Y.ZrcN` | `X.Y.Z-rc.N` | public prerelease |
-| `draft/vX.Y.Z` | `X.Y.Z.dev0` | `X.Y.Z-draft.0` | Draft |
-| `draft/vX.Y.Z-N` | `X.Y.Z.devN` | `X.Y.Z-draft.N` | Draft |
-| `nightly/vX.Y.Z-YYYYMMDD-N` | `X.Y.Z.devYYYYMMDDNNN` | `X.Y.Z-nightly.YYYYMMDD.N` | public prerelease after success |
+| Git Tag | Selected Profile | Wheel version | Chart version | GitHub Release mode when enabled |
+| --- | --- | --- | --- | --- |
+| `vX.Y.Z` | Stable | `X.Y.Z` | `X.Y.Z` | public Release |
+| `vX.Y.ZrcN` | Prerelease | `X.Y.ZrcN` | `X.Y.Z-rc.N` | public prerelease |
+| `draft/vX.Y.Z` | Draft | `X.Y.Z.dev0` | `X.Y.Z-draft.0` | Draft |
+| `draft/vX.Y.Z-N` | Draft | `X.Y.Z.devN` | `X.Y.Z-draft.N` | Draft |
+| `nightly/vX.Y.Z-YYYYMMDD-N` | Nightly | `X.Y.Z.devYYYYMMDDNNN` | `X.Y.Z-nightly.YYYYMMDD.N` | public prerelease after success |
 
 The tagged source owns the package model, and public versions must be canonical
 and non-local. Before opening or reusing a Release, the reusable core requires
@@ -111,13 +111,18 @@ recursively trigger another workflow, the same scheduled Run calls the common
 `release-ucm.yml` reusable core directly. Manual `nightly/*` Tag pushes use the
 same core through `release-tag.yml`.
 
-Official and fork `v*` Tags invoke that same Release Core. The two mutually
-exclusive callers isolate production secrets: the official caller inherits
-production credentials, while the fork uses only its `fork-preview` environment.
-A fork still publishes its own GitHub Release, GHCR images, and Chart OCI
-artifacts.
+Supported Release Tags in both the official repository and Forks invoke that
+same Release Core. The two mutually exclusive callers isolate production
+secrets: the official caller inherits production credentials, while Fork
+publication jobs bind to the `fork-preview` Environment. The Fork Tag caller
+explicitly forwards its TestPyPI and Docker Hub Secrets; it never forwards
+`PYPI_API_TOKEN`.
 
-Publication then updates the same Release in stages:
+A fork publishes any Profile-enabled GitHub Release, GHCR, and Chart OCI outputs
+under its own identity.
+
+When `github_release` is enabled, publication updates the same Release in
+stages:
 
 1. version, Tag, Profile, and Fork target preflight passes, then every configured
    Runtime selector resolves to published Registry Tags;
@@ -137,14 +142,18 @@ succeed, a compact public `release-manifest.json` schema 6 is uploaded and read
 back. It records only the Tag/type/Actions Run, Chart OCI reference, Runtime
 member/index references, and GitHub Release asset names needed for cleanup.
 
-If image publication is disabled, Tag Releases stop after Wheels, the example
-config, and Chart publication. If requested image publication fails, those
+If image publication is disabled while other channels remain enabled, the image
+stages are skipped and publication continues only through those enabled
+channels. If every channel is disabled, validation completes without an
+external write. If requested image publication fails, already published
 artifacts remain usable and the public Release is marked `images-failed`. OCI
 archives are not uploaded to GitHub Release. PyPI and Docker Hub follow the
-selected Release Profile. Official releases use only production targets. Forks
-use TestPyPI when `TEST_PYPI_API_TOKEN` exists, and a custom Docker Hub namespace
-when both Docker Hub credentials exist; absent Fork credentials remain
-`scope-skipped`, while a Profile-disabled channel stays disabled.
+selected Release Profile in `release.yaml`, which is the sole authority for
+channel switches. Official releases use production targets. Forks use TestPyPI
+when `TEST_PYPI_API_TOKEN` exists. Docker Hub publication in either scope
+requires `DOCKERHUB_NAMESPACE` plus both Docker Hub credentials. Missing
+requested Docker Hub configuration fails preflight, while a Profile-disabled
+channel stays disabled.
 Missing backend Wheels are uploaded and read back first, the meta Wheel is
 uploaded last, and exact extras metadata plus all filenames, versions, and
 SHA256 digests are persisted in the internal `pypi-receipt.json` Actions
@@ -162,46 +171,149 @@ credentials are present. For example, `SuperMarioYL` builds
 `supermarioyl-uc-manager` and `supermarioyl-uc-manager-cuda-cu130`. The Python
 import remains `ucm`.
 
+## Official release setup
+
+This section applies only to
+`ModelEngine-Group/unified-cache-management`. The Tag workflow identifies that
+repository as `publication_scope=official`.
+
+Publication has two separate inputs:
+
+1. the selected Profile in `release.yaml` requests the channel with
+   `publish.<channel>: true`;
+2. the repository contains the Secret or Variable required by that channel.
+
+A Secret never turns on a Profile-disabled channel. Conversely, an enabled
+official channel does not silently fall back to another target when its
+configuration is missing.
+
+### 1. Configure the official repository
+
+Open **Settings -> Secrets and variables -> Actions** in the official repository.
+Add tokens and credentials under **Repository secrets**, and add the Docker Hub
+target under **Repository variables**:
+
+| Name | GitHub kind | Required when | Value |
+| --- | --- | --- | --- |
+| `PYPI_API_TOKEN` | Repository Secret | Profile has `pypi: true` | Complete production PyPI API token authorized for every planned `uc-manager*` project. |
+| `DOCKERHUB_USERNAME` | Repository Secret | Profile has `dockerhub: true` | Docker ID authorized for the configured namespace. |
+| `DOCKERHUB_TOKEN` | Repository Secret | Profile has `dockerhub: true` | Docker Hub access token with Read & Write permission; add Delete permission when cleanup must remove tags. |
+| `DOCKERHUB_NAMESPACE` | Repository Variable | Profile has `dockerhub: true` | Full namespace such as `docker.io/official-org`, without a repository name or trailing slash. |
+
+The workflow reads the three credentials through `secrets.*` and reads only
+`DOCKERHUB_NAMESPACE` through `vars.*`. Do not store tokens in Variables. Even
+though the Docker Hub username is not sensitive, it must remain a Secret because
+the workflow does not read `vars.DOCKERHUB_USERNAME`.
+
+Under **Settings -> Actions -> General**, allow **Read and write permissions**
+when repository or organization policy otherwise restricts `GITHUB_TOKEN`.
+
+The equivalent GitHub CLI commands are:
+
+```bash
+repo=ModelEngine-Group/unified-cache-management
+gh secret set PYPI_API_TOKEN --repo "${repo}"
+gh secret set DOCKERHUB_USERNAME --repo "${repo}"
+gh secret set DOCKERHUB_TOKEN --repo "${repo}"
+gh variable set DOCKERHUB_NAMESPACE --repo "${repo}" \
+  --body docker.io/official-org
+```
+
+Each command prompts for the value without writing it to the repository. Omit
+the PyPI command while `pypi` is disabled, and omit both Docker Hub commands
+plus the namespace command while `dockerhub` is disabled.
+
+Release jobs still reference the Environment name `release-production`. You do
+not need to create or populate it for repository-level configuration: GitHub
+[creates an unconfigured referenced Environment automatically](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments).
+Create it manually only when deployment reviewers, wait timers, or
+Environment-level isolation are required; do not duplicate the same credential
+at both repository and Environment levels.
+
+### 2. Confirm the official targets
+
+Official PyPI always uses `https://upload.pypi.org/legacy/` and publishes the
+canonical `uc-manager*` distribution names. Never put a TestPyPI token in
+`PYPI_API_TOKEN`.
+
+Docker Hub always uses the exact `DOCKERHUB_NAMESPACE` value. It is not derived
+from the GitHub owner or `DOCKERHUB_USERNAME`, and `release.yaml` contains no
+fallback namespace. Image repository basenames and tags still come from the
+frozen Release Plan.
+
+### 3. Check the effective decision
+
+Before pushing a formal Tag, inspect the selected Profile in `release.yaml`.
+The Plan summary and frozen `release-plan.json` must show the same `requested`
+value.
+
+Official PyPI resolves as follows:
+
+| Profile `pypi` | `PYPI_API_TOKEN` | Result |
+| --- | --- | --- |
+| `false` | absent or present | channel is disabled and the Secret is unused |
+| `true` | present and authorized | publication and public readback run |
+| `true` | absent | the enabled publication job fails |
+
+Official Docker Hub resolves as follows:
+
+| Profile `dockerhub` | Namespace + Secret pair | Result |
+| --- | --- | --- |
+| `false` | absent, partial, or complete | channel is disabled and the values are unused |
+| `true` | all three configured and authorized | preflight passes; member and index publication run |
+| `true` | namespace, username, or token missing | preflight fails before Registry discovery |
+
+An invalid or unauthorized supplied credential can still fail authentication or
+readback; `present` does not mean it has been accepted by the external service.
+
 ## Fork preview setup
 
-Fork publication is opt-in by credential presence. It never reads the official
-PyPI credential and it does not change the publication targets of the canonical
-`ModelEngine-Group/unified-cache-management` repository.
+This section applies to every repository other than the canonical official
+repository. Fork PyPI and Docker Hub publication requires both a request from
+the selected Release Profile and the corresponding Fork credential. It never
+reads the official PyPI credential and it does not change the publication
+targets of `ModelEngine-Group/unified-cache-management`.
 
-### 1. Create the GitHub Environment
+### 1. Configure the Fork repository
 
-In the fork repository, open **Settings -> Environments** and create an
-environment named exactly `fork-preview`. Store the Fork channel Secrets in
-that environment when possible. A repository-level Actions Secret is also
-supported for `TEST_PYPI_API_TOKEN`: the Tag caller forwards only that named
-credential and never forwards `PYPI_API_TOKEN` to the Fork Release call. Keep
-the Docker Hub credential pair in `fork-preview`.
+Open **Settings -> Secrets and variables -> Actions** in the Fork. Add the
+credentials as **Repository secrets** and the Docker Hub target as a
+**Repository variable**:
+
+| Name | GitHub kind | Required when | Value |
+| --- | --- | --- | --- |
+| `TEST_PYPI_API_TOKEN` | Repository Secret | Profile has `pypi: true` and TestPyPI publication is wanted | Account-scoped TestPyPI API token authorized for every Fork-owned `<owner>-uc-manager*` project. |
+| `DOCKERHUB_USERNAME` | Repository Secret | Profile has `dockerhub: true` | Docker ID authorized for the configured namespace. |
+| `DOCKERHUB_TOKEN` | Repository Secret | Profile has `dockerhub: true` | Docker Hub access token with Read & Write permission; add Delete permission when cleanup must remove tags. |
+| `DOCKERHUB_NAMESPACE` | Repository Variable | Profile has `dockerhub: true` | Full namespace such as `docker.io/my-org`, without a repository name or trailing slash. |
+
+The Fork caller explicitly forwards all three Secrets to the reusable Release
+Core. The equivalent GitHub CLI commands are:
+
+```bash
+fork=OWNER/unified-cache-management
+gh secret set TEST_PYPI_API_TOKEN --repo "${fork}"
+gh secret set DOCKERHUB_USERNAME --repo "${fork}"
+gh secret set DOCKERHUB_TOKEN --repo "${fork}"
+gh variable set DOCKERHUB_NAMESPACE --repo "${fork}" \
+  --body docker.io/my-org
+```
+
+Each `gh secret set` command prompts for its value. Omit the TestPyPI command
+when that publication is not wanted, and omit all three Docker Hub settings
+while `dockerhub` is disabled.
+
+Fork jobs still reference the Environment name `fork-preview`, but
+repository-level configuration does not require you to create or populate it.
+GitHub creates an unconfigured referenced Environment automatically. Create it
+manually only when approval or Environment-level isolation is required, and do
+not duplicate the same credential at both levels.
 
 Also open **Settings -> Actions -> General** and make sure Actions is enabled. If
 repository or organization policy restricts `GITHUB_TOKEN` writes, allow
 **Read and write permissions**. The workflow itself requests scoped `contents`
 and `packages` writes for the Fork's Release, GHCR, and Chart OCI.
 See [GitHub's Actions settings guide](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository).
-
-| Name | GitHub kind | Required | Value |
-| --- | --- | --- | --- |
-| `TEST_PYPI_API_TOKEN` | Secret (environment recommended; repository supported) | TestPyPI only | An account-scoped TestPyPI API token that can create or update the Fork-owned `<owner>-uc-manager*` projects. TestPyPI accounts and tokens are separate from production PyPI; follow the [TestPyPI guide](https://packaging.python.org/en/latest/guides/using-testpypi/). |
-| `DOCKERHUB_USERNAME` | Environment Secret | Docker Hub only | The Docker ID whose token can write to the selected personal or organization namespace. |
-| `DOCKERHUB_TOKEN` | Environment Secret | Docker Hub only | A Docker Hub personal access token with Read & Write permission; also grant Delete when retention or `cleanup-ucm-release.yml` must remove Docker Hub tags. Do not use the account password; follow the [Docker access-token guide](https://docs.docker.com/security/access-tokens/). |
-| `FORK_DOCKERHUB_NAMESPACE` | Variable | Optional | Full namespace such as `docker.io/my-org`, without a trailing slash. If omitted, the pipeline uses `docker.io/<DOCKERHUB_USERNAME>`. |
-
-The equivalent GitHub CLI commands are below. Each `gh secret set` command
-prompts for the value without writing it to the repository; omit the channels
-you do not want to enable:
-
-```bash
-fork=OWNER/unified-cache-management
-gh secret set TEST_PYPI_API_TOKEN --env fork-preview --repo "${fork}"
-gh secret set DOCKERHUB_USERNAME --env fork-preview --repo "${fork}"
-gh secret set DOCKERHUB_TOKEN --env fork-preview --repo "${fork}"
-gh variable set FORK_DOCKERHUB_NAMESPACE --env fork-preview \
-  --repo "${fork}" --body docker.io/my-org
-```
 
 The TestPyPI endpoints are fixed by policy: upload uses
 `https://test.pypi.org/legacy/`, package installation uses
@@ -210,38 +322,41 @@ The TestPyPI endpoints are fixed by policy: upload uses
 required; the prefix is derived from `github.repository_owner` through the
 frozen repository identity.
 
-Keep the production `PYPI_API_TOKEN` only in the official
-`release-production` environment. Do not copy it into `fork-preview`.
-
-Docker Hub credentials are a pair. Configuring only the username or only the
-token, or setting `FORK_DOCKERHUB_NAMESPACE` without both credentials, fails the
-Release preflight before Registry discovery or GitHub Release creation. The
-configured user or token must have write access when the namespace names an
-organization.
+Keep the production `PYPI_API_TOKEN` only in the official repository. Do not
+copy it into the Fork or `fork-preview`.
 
 ### 2. Understand what becomes enabled
 
-Credentials only make a Fork target available; the selected Release Profile
-must also request that channel:
+Credentials only make a Fork target available; they do not override the
+selected Release Profile. PyPI resolves as follows:
 
-| `fork-preview` configuration | Stable / Prerelease / Draft | Nightly |
+| Profile `pypi` | `TEST_PYPI_API_TOKEN` | Effective decision |
 | --- | --- | --- |
-| No external credentials | TestPyPI and Docker Hub are `scope-skipped` | Both remain disabled |
-| `TEST_PYPI_API_TOKEN` only | Publish and read back TestPyPI | Disabled by Profile |
-| Docker Hub username + token | Publish and read back Docker Hub | Disabled by Profile |
-| All three Secrets | Publish and read back both targets | Both remain disabled |
+| `false` | absent or present | `requested=false`, `enabled=false`, `disabled` |
+| `true` | absent | `requested=true`, `enabled=false`, `scope-skipped` |
+| `true` | present | `requested=true`, `enabled=true`, `publish` |
 
-GHCR, Chart OCI, and the Fork's own GitHub Release continue to use the Fork's
-GitHub identity in every combination. `FORK_DOCKERHUB_NAMESPACE` changes only
-the Docker Hub destination; image repository basenames and tags still come from
-the frozen Release Plan.
+Docker Hub uses the same explicit three-value contract as official publication:
 
-### 3. Run one Fork Draft validation
+| Profile `dockerhub` | Fork Docker Hub configuration | Result |
+| --- | --- | --- |
+| `false` | absent, partial, or complete | `requested=false`, `enabled=false`, `disabled`; values are unused |
+| `true` | namespace, username, and token all configured | preflight passes and Docker Hub publication runs |
+| `true` | any of the three values missing | preflight fails before Registry discovery |
+
+`DOCKERHUB_NAMESPACE` must match `docker.io/<account-or-org>`. It has no
+`{owner}` or username-derived fallback. Credentials by themselves never change
+a `false` Profile switch to `true`; read the current switch values from
+`release.yaml` rather than inferring them from this setup section.
+
+When requested, GHCR, Chart OCI, and the Fork's own GitHub Release use the
+Fork's GitHub identity and do not depend on the external credentials above.
+
+### 3. Validate Profile decisions with a Fork Draft
 
 First update and commit `version.ini`, including `UCM_VERSION` and both
-supported Runtime selector lists. Use a fresh Draft sequence because Python
-index filenames are immutable and the cleanup workflow does not delete
-TestPyPI releases:
+supported Runtime selector lists. Use a fresh Draft sequence because published
+Tag, Release, and OCI coordinates are immutable:
 
 ```bash
 base="$(PYTHONPATH=.github/release python -c \
@@ -251,33 +366,36 @@ git tag -a "${tag}" -m "Fork publication validation ${tag}"
 git push origin "${tag}"
 ```
 
-In the `Plan Wheels, Images, and Chart` summary, confirm the requested channels
-show the expected effective decisions:
+This run validates only the channels requested by the selected Draft Profile.
+In the currently committed `release.yaml`, Draft disables both PyPI and Docker
+Hub, so this example proves that neither channel writes externally; it does not
+prove that TestPyPI or Docker Hub credentials are valid. Credential validation
+requires a fresh Fork Tag whose selected Profile explicitly requests the target
+channel.
 
-```text
-PyPI: requested=true enabled=true disposition=publish scope=fork
-Docker Hub: requested=true enabled=true disposition=publish scope=fork
-```
+In the `Plan Wheels, Images, and Chart` summary, compare each channel with the
+selected Release Profile in `release.yaml`. Every `requested` value must match
+that Profile exactly. For PyPI and Docker Hub, `enabled` and `disposition` then
+follow the credential table above; the frozen `release-plan.json` records the
+same decisions, the TestPyPI target, and any configured Docker Hub namespace.
 
-If only one credential set was configured, the other channel should remain
-`scope-skipped`. The frozen `release-plan.json` must also record
-`.publish.pypi.target == "testpypi"` and the configured Docker Hub namespace.
 After completion, verify all of the following:
 
-- each owner-prefixed backend project and the final empty owner-prefixed meta
-  package are visible on TestPyPI, and the fresh-environment extra installation
-  job passed;
-- Docker Hub member tags and multi-architecture indexes exist under the planned
-  namespace and match the digests recorded in `release-manifest.json`;
-- the Fork GitHub Release still contains backend Wheels, the Chart, config,
-  and manifest, but not the empty meta Wheel or internal receipt;
+- every channel with `enabled=true` was published and read back at its planned
+  target;
+- every channel with `enabled=false` performed no external write;
+- GHCR member tags and multi-architecture indexes, when enabled, match the
+  references recorded in `release-manifest.json`;
+- the Fork GitHub Release, when enabled, contains backend Wheels, the Chart,
+  config, and manifest, but not the empty meta Wheel or internal receipt;
 - no project or image was written to production PyPI or the official Docker Hub
   namespace.
 
 ### Common setup failures
 
-- Preflight reports an incomplete Docker Hub credential pair: add or remove both
-  `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` together.
+- Preflight reports incomplete Docker Hub configuration while the channel is
+  requested: configure `DOCKERHUB_NAMESPACE`, `DOCKERHUB_USERNAME`, and
+  `DOCKERHUB_TOKEN` together.
 - Preflight rejects the Docker Hub namespace: use exactly
   `docker.io/<account-or-org>` with no repository name or trailing slash.
 - TestPyPI returns an authorization error: use the complete account-scoped
@@ -285,8 +403,7 @@ After completion, verify all of the following:
   planned `<owner>-uc-manager*` project. Production PyPI ownership does not
   grant TestPyPI ownership.
 - TestPyPI reports an existing filename with different bytes: do not reuse or
-  move the Tag; create a new Draft sequence so the derived `.devN` version is
-  new.
+  move the Tag; publish a new version.
 - GitHub Release, GHCR, or Chart writes return `403`: recheck the Fork's Actions
   policy and `GITHUB_TOKEN` Read and write setting before changing external
   credentials.

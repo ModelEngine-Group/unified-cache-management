@@ -128,10 +128,20 @@ def test_release_core_is_input_driven_and_uses_crane_before_plan() -> None:
     assert "if version >" not in profile_run
     assert '--tag "${RELEASE_TAG}" --classify' in profile_run
     assert "--version-config version.ini" in profile_run
-    assert (
-        "Fork Docker Hub username and token must be configured together" in profile_run
-    )
+    assert "Docker Hub namespace must be configured" in profile_run
+    assert "Docker Hub username and token must be configured together" in profile_run
+    assert 'if [ "${dockerhub_requested}" = true ]; then' in profile_run
+    assert '[ -z "${DOCKERHUB_NAMESPACE}" ]' in profile_run
+    assert '[ -z "${DOCKERHUB_USERNAME}" ]' in profile_run
+    assert '[ -z "${DOCKERHUB_TOKEN}" ]' in profile_run
+    assert "dockerhub_namespace=sys.argv[3] or None" in profile_run
     assert "fork_test_pypi" in profile_run
+    assert jobs["release-preflight"]["env"]["DOCKERHUB_NAMESPACE"] == (
+        "${{ vars.DOCKERHUB_NAMESPACE }}"
+    )
+    assert jobs["release-preflight"]["outputs"]["dockerhub_namespace"] == (
+        "${{ steps.profile.outputs.dockerhub_namespace }}"
+    )
     assert "refs/tags/${RELEASE_TAG}^{commit}" in profile_run
     assert 'test "${head_sha}" = "${SOURCE_SHA}"' in profile_run
     assert 'test "${tag_sha}" = "${SOURCE_SHA}"' in profile_run
@@ -149,6 +159,10 @@ def test_release_core_is_input_driven_and_uses_crane_before_plan() -> None:
     assert "'{include:[.families[]" in plan_text
     assert "--publication-context" in plan_run
     assert "needs.release-preflight.outputs.fork_test_pypi" in plan_text
+    assert "needs.release-preflight.outputs.dockerhub_namespace" in plan_text
+    assert "dockerhub_namespace" in plan_run
+    assert "FORK_DOCKERHUB_NAMESPACE" not in text
+    assert "docker.io/${DOCKERHUB_USERNAME,,}" not in text
 
 
 def test_pr_gate_keeps_ucm_artifact_builds_in_the_robot_lane() -> None:
@@ -569,6 +583,8 @@ def test_tag_entry_only_classifies_four_release_types_and_calls_core() -> None:
     assert workflow["jobs"]["release-official"]["secrets"] == "inherit"
     assert workflow["jobs"]["release-fork"]["secrets"] == {
         "TEST_PYPI_API_TOKEN": "${{ secrets.TEST_PYPI_API_TOKEN }}",
+        "DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}",
+        "DOCKERHUB_TOKEN": "${{ secrets.DOCKERHUB_TOKEN }}",
     }
 
 
@@ -898,7 +914,13 @@ def test_builder_sync_consumes_selection_and_uses_digest_pinned_mirror_only() ->
     assert "docker image inspect" not in text
     assert "ucm-builder-verification-${{ matrix.id }}" in text
     assert "candidate-${GITHUB_RUN_ID}" in text
-    assert 'imagetools create --tag "${target}" "${candidate}"' in text
+    promotion = 'docker buildx imagetools create --tag "${target}" "${candidate}"'
+    promotion_index = build.index(promotion)
+    retry_index = build.rfind("retry-registry-command.sh", 0, promotion_index)
+    assert 0 < promotion_index - retry_index < 240
+    retry_prefix = build[retry_index:promotion_index]
+    assert "${RUNNER_TEMP}/ucm-builder-promotion.log" in retry_prefix
+    assert "--retry-transport" in retry_prefix
     assert workflow["jobs"]["build-missing"]["timeout-minutes"] == 180
     assert set(workflow["jobs"]["finalize"]["needs"]) == {
         "prepare",

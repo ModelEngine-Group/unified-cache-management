@@ -15,15 +15,16 @@ products:
     target_repository: ghcr.io/{owner}/vllm-ascend
 
 publish:
-  # PyPI 固定上传地址，是否发布由 Release Profile 决定。
+  # 正式仓库的 PyPI 上传地址；Fork 会固定改用 TestPyPI。
+  # 是否发布仍由 Release Profile 决定。
   pypi:
     index: https://upload.pypi.org/legacy/
   # GHCR 固定命名空间，是否发布由 Release Profile 决定。
   ghcr:
     namespace: ghcr.io/{owner}
-  # DockerHub 固定命名空间，是否发布由 Release Profile 决定。
-  dockerhub:
-    namespace: docker.io/{owner}
+  # 正式仓库和 Fork 都通过 DOCKERHUB_NAMESPACE 配置发布命名空间。
+  # 此处只声明渠道；是否发布仍由 Release Profile 决定。
+  dockerhub: {}
   # Chart OCI 固定命名空间，是否发布由 Release Profile 决定。
   chart_oci:
     namespace: ghcr.io/{owner}/charts
@@ -56,9 +57,9 @@ release_profiles:
     # 最多保留 7 个新版 Draft。
     max_count: 7
     publish:
-      pypi: true
+      pypi: false
       ghcr: true
-      dockerhub: true
+      dockerhub: false
       chart_oci: true
       github_release: true
 

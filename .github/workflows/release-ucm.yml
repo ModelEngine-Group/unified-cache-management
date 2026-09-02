@@ -65,7 +65,7 @@ jobs:
     outputs:
       enabled: ${{ steps.profile.outputs.enabled }}
       fork_test_pypi: ${{ steps.profile.outputs.fork_test_pypi }}
-      fork_dockerhub_namespace: ${{ steps.profile.outputs.fork_dockerhub_namespace }}
+      dockerhub_namespace: ${{ steps.profile.outputs.dockerhub_namespace }}
     permissions:
       contents: read
     env:
@@ -83,7 +83,7 @@ jobs:
       TEST_PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-      FORK_DOCKERHUB_NAMESPACE: ${{ vars.FORK_DOCKERHUB_NAMESPACE }}
+      DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
     steps:
       - uses: actions/checkout@v4.2.2
         with:
@@ -132,36 +132,39 @@ jobs:
               raise SystemExit("the public package model requires a canonical non-local version")
           PY
           fork_test_pypi=false
-          fork_dockerhub_namespace=""
           if [ "${PUBLICATION_SCOPE}" = fork ]; then
             if [ -n "${TEST_PYPI_API_TOKEN}" ]; then
               fork_test_pypi=true
             fi
-            if { [ -n "${DOCKERHUB_USERNAME}" ] && [ -z "${DOCKERHUB_TOKEN}" ]; } || \
-               { [ -z "${DOCKERHUB_USERNAME}" ] && [ -n "${DOCKERHUB_TOKEN}" ]; }; then
-              echo "Fork Docker Hub username and token must be configured together" >&2
-              exit 2
-            fi
-            if [ -n "${DOCKERHUB_USERNAME}" ]; then
-              fork_dockerhub_namespace="${FORK_DOCKERHUB_NAMESPACE:-docker.io/${DOCKERHUB_USERNAME,,}}"
-            elif [ -n "${FORK_DOCKERHUB_NAMESPACE}" ]; then
-              echo "Fork Docker Hub namespace requires credentials" >&2
-              exit 2
-            fi
           fi
           resolved="$(PYTHONPATH=.github/release python -c \
-            'import json, sys; from ucm_release import policy; print(json.dumps(policy.resolve(release_type=sys.argv[1], fork_test_pypi=sys.argv[2] == "true", fork_dockerhub_namespace=sys.argv[3] or None)))' \
-            "${RELEASE_TYPE}" "${fork_test_pypi}" "${fork_dockerhub_namespace}")"
+            'import json, sys; from ucm_release import policy; print(json.dumps(policy.resolve(release_type=sys.argv[1], fork_test_pypi=sys.argv[2] == "true", dockerhub_namespace=sys.argv[3] or None)))' \
+            "${RELEASE_TYPE}" "${fork_test_pypi}" "${DOCKERHUB_NAMESPACE}")"
           jq -e --arg scope "${PUBLICATION_SCOPE}" \
             --arg repository "${GITHUB_REPOSITORY}" \
             '.publication_scope == $scope and
              (.repository | ascii_downcase) == ($repository | ascii_downcase)' \
             <<<"${resolved}" >/dev/null
+          dockerhub_requested="$(jq -r '.publish.dockerhub.requested' \
+            <<<"${resolved}")"
+          dockerhub_namespace="$(jq -r '.publish.dockerhub.namespace // empty' \
+            <<<"${resolved}")"
+          if [ "${dockerhub_requested}" = true ]; then
+            if [ -z "${DOCKERHUB_NAMESPACE}" ]; then
+              echo "Docker Hub namespace must be configured through DOCKERHUB_NAMESPACE" >&2
+              exit 2
+            fi
+            if [ -z "${DOCKERHUB_USERNAME}" ] || [ -z "${DOCKERHUB_TOKEN}" ]; then
+              echo "Docker Hub username and token must be configured together" >&2
+              exit 2
+            fi
+            test "${dockerhub_namespace}" = "${DOCKERHUB_NAMESPACE}"
+          fi
           enabled="$(jq -r '.publish.github_release.enabled' <<<"${resolved}")"
           {
             echo "enabled=${enabled}"
             echo "fork_test_pypi=${fork_test_pypi}"
-            echo "fork_dockerhub_namespace=${fork_dockerhub_namespace}"
+            echo "dockerhub_namespace=${dockerhub_namespace}"
           } >>"${GITHUB_OUTPUT}"
   select-runtime-candidates:
     name: Select Runtime Registry Tags
@@ -540,7 +543,7 @@ jobs:
           PUBLICATION_SCOPE: ${{ inputs.publication_scope }}
           REPOSITORY: ${{ github.repository }}
           FORK_TEST_PYPI: ${{ needs.release-preflight.outputs.fork_test_pypi }}
-          FORK_DOCKERHUB_NAMESPACE: ${{ needs.release-preflight.outputs.fork_dockerhub_namespace }}
+          DOCKERHUB_NAMESPACE: ${{ needs.release-preflight.outputs.dockerhub_namespace }}
         run: |
           set -euo pipefail
           test "${IMAGE_VERSION}" = "${RELEASE_VERSION}"
@@ -548,9 +551,9 @@ jobs:
             --version "${RELEASE_VERSION}" >/dev/null
           mkdir -p out/plan
           jq -n --argjson fork_test_pypi "${FORK_TEST_PYPI}" \
-            --arg namespace "${FORK_DOCKERHUB_NAMESPACE}" \
+            --arg namespace "${DOCKERHUB_NAMESPACE}" \
             '{fork_test_pypi:$fork_test_pypi,
-              fork_dockerhub_namespace:(if $namespace == "" then null else $namespace end)}' \
+              dockerhub_namespace:(if $namespace == "" then null else $namespace end)}' \
             >out/plan/publication-context.json
           PYTHONPATH=.github/release python -m ucm_release compact plan \
             --runtime-selection input/upstreams/runtime-selection.json \

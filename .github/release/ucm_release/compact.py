@@ -373,7 +373,8 @@ def resolve_plan(
             if not requested
             else (
                 {(True, "publish"), (False, "scope-skipped")}
-                if expected_scope == "fork" and channel in {"pypi", "dockerhub"}
+                if (expected_scope == "fork" and channel == "pypi")
+                or (channel == "dockerhub" and route != "release")
                 else {(True, "publish")}
             )
         )
@@ -381,6 +382,14 @@ def resolve_plan(
             raise ValueError(
                 f"formal {channel} publication decision does not match repository scope"
             )
+        if channel == "dockerhub":
+            namespace = channel_policy.get("namespace")
+            if channel_policy.get("enabled") != (
+                isinstance(namespace, str) and bool(namespace)
+            ):
+                raise ValueError(
+                    "formal Docker Hub namespace does not match publication decision"
+                )
     pypi_policy = _mapping(publication_policy["pypi"], "formal PyPI policy")
     expected_pypi_target = "pypi" if expected_scope == "official" else "testpypi"
     if pypi_policy.get("target") != expected_pypi_target:

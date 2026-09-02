@@ -1254,10 +1254,11 @@ PUBLISH_CHANNEL_KEYS = {
     "pypi": _PUBLISH_DECISION_KEYS
     | {"target", "index", "simple_index", "json_api", "dependency_index"},
     "ghcr": _PUBLISH_DECISION_KEYS | {"namespace"},
-    "dockerhub": _PUBLISH_DECISION_KEYS | {"namespace"},
+    "dockerhub": _PUBLISH_DECISION_KEYS,
     "chart_oci": _PUBLISH_DECISION_KEYS | {"namespace"},
     "github_release": _PUBLISH_DECISION_KEYS,
 }
+PUBLISH_CHANNEL_OPTIONAL_KEYS = {"dockerhub": {"namespace"}}
 
 
 def compute_publish_plan(catalog: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -1266,7 +1267,13 @@ def compute_publish_plan(catalog: dict[str, Any]) -> dict[str, dict[str, Any]]:
         raise ValueError("publish configuration requires the exact five channels")
     for channel in PUBLISH_CHANNELS:
         config = publish[channel]
-        if not isinstance(config, dict) or set(config) != PUBLISH_CHANNEL_KEYS[channel]:
+        required = PUBLISH_CHANNEL_KEYS[channel]
+        allowed = required | PUBLISH_CHANNEL_OPTIONAL_KEYS.get(channel, set())
+        if (
+            not isinstance(config, dict)
+            or not required.issubset(config)
+            or not set(config).issubset(allowed)
+        ):
             raise ValueError(f"publish channel {channel} configuration is malformed")
         if not isinstance(config["requested"], bool) or not isinstance(
             config["enabled"], bool
@@ -1284,7 +1291,11 @@ def compute_publish_plan(catalog: dict[str, Any]) -> dict[str, dict[str, Any]]:
             raise ValueError(
                 f"publish channel {channel} has an invalid publication decision"
             )
-        for field in PUBLISH_CHANNEL_KEYS[channel] - _PUBLISH_DECISION_KEYS:
+        if channel == "dockerhub" and config["enabled"] != ("namespace" in config):
+            raise ValueError(
+                "Docker Hub namespace is required exactly when publication is enabled"
+            )
+        for field in set(config) - _PUBLISH_DECISION_KEYS:
             if not isinstance(config[field], str) or not config[field]:
                 raise ValueError(f"publish channel {channel} {field} must be non-empty")
     return {channel: copy.deepcopy(publish[channel]) for channel in PUBLISH_CHANNELS}

@@ -186,7 +186,7 @@ def _dockerhub_namespace(value: str) -> str:
         not isinstance(value, str)
         or re.fullmatch(r"docker\.io/[a-z0-9][a-z0-9._-]{0,127}", value) is None
     ):
-        raise ValueError("Fork Docker Hub namespace must be docker.io/<account-or-org>")
+        raise ValueError("Docker Hub namespace must be docker.io/<account-or-org>")
     return value
 
 
@@ -196,31 +196,34 @@ def _resolve_release_profile(
     publication_scope: str,
     *,
     fork_test_pypi: bool = False,
-    fork_dockerhub_namespace: str | None = None,
+    dockerhub_namespace: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     profile, publish = _select_release_profile(release, release_type)
     publish["pypi"] = _pypi_target(
         publish["pypi"], "testpypi" if publication_scope == "fork" else "pypi"
     )
+    dockerhub = publish["dockerhub"]
+    dockerhub_requested = dockerhub["requested"]
+    if dockerhub_requested and dockerhub_namespace is not None:
+        dockerhub["namespace"] = _dockerhub_namespace(dockerhub_namespace)
+        dockerhub["enabled"] = True
+        dockerhub["disposition"] = "publish"
+    elif dockerhub_requested:
+        dockerhub["enabled"] = False
+        dockerhub["disposition"] = "scope-skipped"
+    else:
+        dockerhub["enabled"] = False
+        dockerhub["disposition"] = "disabled"
     if publication_scope == "fork":
         if not isinstance(fork_test_pypi, bool):
             raise ValueError("Fork TestPyPI availability must be boolean")
-        if fork_dockerhub_namespace is not None:
-            publish["dockerhub"]["namespace"] = _dockerhub_namespace(
-                fork_dockerhub_namespace
-            )
-        availability = {
-            "pypi": fork_test_pypi,
-            "dockerhub": fork_dockerhub_namespace is not None,
-        }
-        for channel, available in availability.items():
-            requested = publish[channel]["requested"]
-            publish[channel]["enabled"] = requested and available
-            publish[channel]["disposition"] = (
-                "publish"
-                if requested and available
-                else "scope-skipped" if requested else "disabled"
-            )
+        requested = publish["pypi"]["requested"]
+        publish["pypi"]["enabled"] = requested and fork_test_pypi
+        publish["pypi"]["disposition"] = (
+            "publish"
+            if requested and fork_test_pypi
+            else "scope-skipped" if requested else "disabled"
+        )
     return profile, publish
 
 
@@ -349,7 +352,7 @@ def resolve(
     version_override: str | None = None,
     release_type: str = "stable",
     fork_test_pypi: bool = False,
-    fork_dockerhub_namespace: str | None = None,
+    dockerhub_namespace: str | None = None,
 ) -> dict[str, Any]:
     """Resolve the two human policies into the formal runtime authority."""
     bundle = load(release_path, platforms_path=platforms_path)
@@ -389,7 +392,7 @@ def resolve(
         release_type,
         publication_scope,
         fork_test_pypi=fork_test_pypi,
-        fork_dockerhub_namespace=fork_dockerhub_namespace,
+        dockerhub_namespace=dockerhub_namespace,
     )
     normalized_publish["pypi"]["distribution_prefix"] = pypi_distribution_prefix(
         resolved_repository
@@ -465,6 +468,7 @@ def compatibility_projection(
     chart_name: str,
     release_type: str = "stable",
     repository: str = OFFICIAL_REPOSITORY,
+    dockerhub_namespace: str | None = None,
 ) -> dict[str, Any]:
     """Project v5 policy into the transitional schema-v3 catalog interface."""
     release = policy["release"]
@@ -484,7 +488,12 @@ def compatibility_projection(
         }
         upstream_products.append(projected)
     publication_scope, _ = publication_identity(repository)
-    _, publish = _resolve_release_profile(release, release_type, publication_scope)
+    _, publish = _resolve_release_profile(
+        release,
+        release_type,
+        publication_scope,
+        dockerhub_namespace=dockerhub_namespace,
+    )
     builder_families = platforms["builder_families"]
     return {
         "kind": "release-config",

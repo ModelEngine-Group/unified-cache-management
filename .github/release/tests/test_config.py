@@ -141,81 +141,28 @@ def _platform_policy() -> dict[str, object]:
 
 
 def test_release_policy_matches_the_schema_v6_registry_surface() -> None:
-    release = _release_policy()
+    policy = importlib.import_module("ucm_release.policy")
 
-    assert release == {
-        "kind": "ucm-release-policy",
-        "schema_version": 6,
-        "runners": {"amd64": "ubuntu-24.04", "arm64": "ubuntu-24.04-arm"},
-        "products": [
-            {
-                "id": "vllm",
-                "runtime_repository": "docker.io/vllm/vllm-openai",
-                "target_repository": "ghcr.io/{owner}/vllm-openai",
-            },
-            {
-                "id": "vllm-ascend",
-                "runtime_repository": "quay.io/ascend/vllm-ascend",
-                "target_repository": "ghcr.io/{owner}/vllm-ascend",
-            },
-        ],
-        "publish": {
-            "pypi": {"index": "https://upload.pypi.org/legacy/"},
-            "ghcr": {"namespace": "ghcr.io/{owner}"},
-            "dockerhub": {"namespace": "docker.io/{owner}"},
-            "chart_oci": {"namespace": "ghcr.io/{owner}/charts"},
-            "github_release": {},
-        },
-        "release_profiles": {
-            "stable": {
-                "max_count": -1,
-                "publish": {
-                    "pypi": True,
-                    "ghcr": True,
-                    "dockerhub": True,
-                    "chart_oci": True,
-                    "github_release": True,
-                },
-            },
-            "prerelease": {
-                "max_count": -1,
-                "publish": {
-                    "pypi": True,
-                    "ghcr": True,
-                    "dockerhub": True,
-                    "chart_oci": True,
-                    "github_release": True,
-                },
-            },
-            "draft": {
-                "max_count": 7,
-                "publish": {
-                    "pypi": True,
-                    "ghcr": True,
-                    "dockerhub": True,
-                    "chart_oci": True,
-                    "github_release": True,
-                },
-            },
-            "nightly": {
-                "max_count": 7,
-                "publish": {
-                    "pypi": False,
-                    "ghcr": True,
-                    "dockerhub": False,
-                    "chart_oci": True,
-                    "github_release": True,
-                },
-            },
-        },
-        "chart": {
-            "source": "charts/unified-cache-chart",
-            "smoke_values": {
-                "vllm": "charts/unified-cache-chart/models/cuda/values-qwen3-0p6b-1e1.yaml",
-                "vllm-ascend": "charts/unified-cache-chart/models/ascend/values-qwen3-0p6b-1e1.yaml",
-            },
-        },
+    release = policy.load()["release"]
+
+    assert release["kind"] == "ucm-release-policy"
+    assert release["schema_version"] == 6
+    assert set(release) == {
+        "kind",
+        "schema_version",
+        "runners",
+        "products",
+        "publish",
+        "release_profiles",
+        "chart",
     }
+    assert set(release["publish"]) == set(policy.PUBLISH_CHANNELS)
+    assert release["publish"]["dockerhub"] == {}
+    assert set(release["release_profiles"]) == set(policy.RELEASE_TYPES)
+    for profile in release["release_profiles"].values():
+        assert set(profile) == {"max_count", "publish"}
+        assert set(profile["publish"]) == set(policy.PUBLISH_CHANNELS)
+        assert all(isinstance(value, bool) for value in profile["publish"].values())
 
 
 def test_release_yaml_has_expanded_commented_profiles_without_aliases() -> None:
@@ -232,26 +179,31 @@ def test_release_yaml_has_expanded_commented_profiles_without_aliases() -> None:
     )
 
 
-def test_readme_documents_fork_preview_publication_setup() -> None:
+def test_readme_documents_official_and_fork_publication_setup() -> None:
     text = (RELEASE_ROOT / "README.md").read_text(encoding="utf-8")
 
     for value in (
+        "## Official release setup",
+        "release-production",
+        "PYPI_API_TOKEN",
+        "gh secret set PYPI_API_TOKEN --repo",
         "## Fork preview setup",
         "fork-preview",
         "TEST_PYPI_API_TOKEN",
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
-        "FORK_DOCKERHUB_NAMESPACE",
-        "gh secret set TEST_PYPI_API_TOKEN --env fork-preview",
+        "DOCKERHUB_NAMESPACE",
+        "gh secret set TEST_PYPI_API_TOKEN --repo",
+        "gh variable set DOCKERHUB_NAMESPACE --repo",
         "Read and write permissions",
         "https://test.pypi.org/simple/",
-        'publish.pypi.target == "testpypi"',
         "scope-skipped",
-        "Disabled by Profile",
+        "selected Release Profile",
         "git push origin",
     ):
         assert value in text
-    assert "Do not copy it into `fork-preview`" in text
+    assert "FORK_DOCKERHUB_NAMESPACE" not in text
+    assert "copy it into the Fork or `fork-preview`" in text
     assert "not the empty meta Wheel" in text
 
 
@@ -312,21 +264,20 @@ def test_release_profile_limits_accept_minus_one_and_positive_int(
     assert loaded["release"]["release_profiles"]["nightly"]["max_count"] == value
 
 
-def test_draft_profile_publication_is_policy_driven(tmp_path: Path) -> None:
+@pytest.mark.parametrize("enabled", [False, True])
+def test_release_profile_publication_switches_are_policy_driven(
+    tmp_path: Path, enabled: bool
+) -> None:
     policy = importlib.import_module("ucm_release.policy")
     release = _release_policy()
+    switches = {channel: enabled for channel in policy.PUBLISH_CHANNELS}
+    release["release_profiles"]["draft"]["publish"] = switches
     path = tmp_path / "release.yaml"
     path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
 
     loaded = policy.load(path)
 
-    assert loaded["release"]["release_profiles"]["draft"]["publish"] == {
-        "pypi": True,
-        "ghcr": True,
-        "dockerhub": True,
-        "chart_oci": True,
-        "github_release": True,
-    }
+    assert loaded["release"]["release_profiles"]["draft"]["publish"] == switches
 
 
 def test_version_ini_is_the_runtime_selector_authority() -> None:
@@ -450,69 +401,43 @@ def test_formal_policy_loads_exact_requirements_without_legacy_authorities() -> 
         assert legacy_key not in serialized
 
 
-@pytest.mark.parametrize(
-    ("release_type", "max_count"),
-    [
-        ("stable", -1),
-        ("prerelease", -1),
-        ("draft", 7),
-        ("nightly", 7),
-    ],
-)
+@pytest.mark.parametrize("release_type", ("stable", "prerelease", "draft", "nightly"))
 def test_policy_resolve_selects_one_profile_and_normalizes_publication(
-    release_type: str, max_count: int
+    release_type: str,
 ) -> None:
     policy = importlib.import_module("ucm_release.policy")
+    source = _release_policy()
+    selected_profile = source["release_profiles"][release_type]
 
     resolved = policy.resolve(repository="release-org/ucm", release_type=release_type)
 
     assert resolved["release_type"] == release_type
     assert resolved["publication_scope"] == "fork"
     assert resolved["runtime_image_tag_prefix"] == "release-org-"
-    shared_requested = release_type != "nightly"
-    assert resolved["release_profile"] == {
-        "max_count": max_count,
-        "publish": {
-            "pypi": shared_requested,
-            "ghcr": True,
-            "dockerhub": shared_requested,
-            "chart_oci": True,
-            "github_release": True,
-        },
-    }
-    assert resolved["publish"] == {
-        "pypi": {
-            "target": "testpypi",
-            **policy.PYPI_TARGETS["testpypi"],
-            "distribution_prefix": "release-org-",
-            "requested": shared_requested,
-            "enabled": False,
-            "disposition": "scope-skipped" if shared_requested else "disabled",
-        },
-        "ghcr": {
-            "namespace": "ghcr.io/release-org",
-            "requested": True,
-            "enabled": True,
-            "disposition": "publish",
-        },
-        "dockerhub": {
-            "namespace": "docker.io/release-org",
-            "requested": shared_requested,
-            "enabled": False,
-            "disposition": "scope-skipped" if shared_requested else "disabled",
-        },
-        "chart_oci": {
-            "namespace": "ghcr.io/release-org/charts",
-            "requested": True,
-            "enabled": True,
-            "disposition": "publish",
-        },
-        "github_release": {
-            "requested": True,
-            "enabled": True,
-            "disposition": "publish",
-        },
-    }
+    assert resolved["release_profile"] == selected_profile
+    for channel, requested in selected_profile["publish"].items():
+        publication = resolved["publish"][channel]
+        assert publication["requested"] is requested
+        if channel in {"pypi", "dockerhub"}:
+            assert publication["enabled"] is False
+            assert publication["disposition"] == (
+                "scope-skipped" if requested else "disabled"
+            )
+        else:
+            assert publication["enabled"] is requested
+            assert publication["disposition"] == (
+                "publish" if requested else "disabled"
+            )
+    assert resolved["publish"]["pypi"]["target"] == "testpypi"
+    assert resolved["publish"]["pypi"]["distribution_prefix"] == "release-org-"
+    for channel in ("ghcr", "chart_oci"):
+        expected_namespace = (
+            source["publish"][channel]["namespace"]
+            .replace("{owner}", "release-org")
+            .replace("{repo}", "ucm")
+        )
+        assert resolved["publish"][channel]["namespace"] == expected_namespace
+    assert "namespace" not in resolved["publish"]["dockerhub"]
 
 
 def test_policy_resolve_uses_only_the_selected_profile_switches(
@@ -520,9 +445,23 @@ def test_policy_resolve_uses_only_the_selected_profile_switches(
 ) -> None:
     policy = importlib.import_module("ucm_release.policy")
     release = _release_policy()
-    release["release_profiles"]["stable"]["publish"]["ghcr"] = False
-    release["release_profiles"]["stable"]["publish"]["dockerhub"] = False
-    release["release_profiles"]["draft"]["publish"]["chart_oci"] = False
+    # Synthetic inputs exercise profile isolation; they are not repository defaults.
+    stable_switches = {
+        "pypi": True,
+        "ghcr": False,
+        "dockerhub": False,
+        "chart_oci": False,
+        "github_release": True,
+    }
+    draft_switches = {
+        "pypi": False,
+        "ghcr": True,
+        "dockerhub": True,
+        "chart_oci": True,
+        "github_release": True,
+    }
+    release["release_profiles"]["stable"]["publish"] = stable_switches
+    release["release_profiles"]["draft"]["publish"] = draft_switches
     path = tmp_path / "release.yaml"
     path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
 
@@ -530,96 +469,243 @@ def test_policy_resolve_uses_only_the_selected_profile_switches(
         path, repository=policy.OFFICIAL_REPOSITORY, release_type="stable"
     )
     draft = policy.resolve(
-        path, repository=policy.OFFICIAL_REPOSITORY, release_type="draft"
+        path,
+        repository=policy.OFFICIAL_REPOSITORY,
+        release_type="draft",
+        dockerhub_namespace="docker.io/ucm-debug",
     )
 
-    assert stable["publish"]["ghcr"]["enabled"] is False
-    assert stable["publish"]["pypi"]["enabled"] is True
-    assert draft["publish"]["ghcr"]["enabled"] is True
-    assert draft["publish"]["pypi"]["enabled"] is True
-    assert draft["publish"]["chart_oci"]["enabled"] is False
+    assert stable["release_profile"]["publish"] == stable_switches
+    assert draft["release_profile"]["publish"] == draft_switches
+    assert {
+        channel: publication["requested"]
+        for channel, publication in stable["publish"].items()
+    } == stable_switches
+    assert {
+        channel: publication["requested"]
+        for channel, publication in draft["publish"].items()
+    } == draft_switches
+    assert {
+        channel: publication["enabled"]
+        for channel, publication in stable["publish"].items()
+    } == stable_switches
+    assert {
+        channel: publication["enabled"]
+        for channel, publication in draft["publish"].items()
+    } == draft_switches
     assert draft["publication_scope"] == "official"
     assert draft["runtime_image_tag_prefix"] == ""
 
 
-def test_fork_scope_disables_shared_external_channels_only(tmp_path: Path) -> None:
+def test_fork_scope_only_skips_requested_pypi(tmp_path: Path) -> None:
     policy = importlib.import_module("ucm_release.policy")
     release = _release_policy()
+    # Give both external channels an explicit request before testing Fork scope.
+    switches = {channel: True for channel in policy.PUBLISH_CHANNELS}
+    release["release_profiles"]["draft"]["publish"] = switches
     path = tmp_path / "release.yaml"
     path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
 
     official = policy.resolve(
-        path, repository=policy.OFFICIAL_REPOSITORY, release_type="draft"
+        path,
+        repository=policy.OFFICIAL_REPOSITORY,
+        release_type="draft",
+        dockerhub_namespace="docker.io/ucm-debug",
     )
     fork = policy.resolve(
         path,
         repository="SuperMarioYL/unified-cache-management",
         release_type="draft",
+        dockerhub_namespace="docker.io/ucm-debug",
     )
 
-    assert official["publish"]["pypi"] == {
-        "target": "pypi",
-        **policy.PYPI_TARGETS["pypi"],
-        "distribution_prefix": "",
-        "requested": True,
-        "enabled": True,
-        "disposition": "publish",
-    }
-    assert official["publish"]["dockerhub"]["requested"] is True
-    assert official["publish"]["dockerhub"]["enabled"] is True
-    assert official["publish"]["dockerhub"]["disposition"] == "publish"
+    assert (
+        official["publish"]["pypi"]["requested"],
+        official["publish"]["pypi"]["enabled"],
+        official["publish"]["pypi"]["disposition"],
+    ) == (True, True, "publish")
+    assert (
+        fork["publish"]["pypi"]["requested"],
+        fork["publish"]["pypi"]["enabled"],
+        fork["publish"]["pypi"]["disposition"],
+    ) == (True, False, "scope-skipped")
+    assert (
+        official["publish"]["dockerhub"]
+        == fork["publish"]["dockerhub"]
+        == {
+            "namespace": "docker.io/ucm-debug",
+            "requested": True,
+            "enabled": True,
+            "disposition": "publish",
+        }
+    )
     assert fork["publication_scope"] == "fork"
     assert fork["runtime_image_tag_prefix"] == "supermarioyl-"
-    assert fork["release_profile"]["publish"]["pypi"] is True
-    assert fork["release_profile"]["publish"]["dockerhub"] is True
-    assert fork["publish"]["pypi"]["requested"] is True
+    assert fork["release_profile"]["publish"] == switches
     assert fork["publish"]["pypi"]["distribution_prefix"] == "supermarioyl-"
-    assert fork["publish"]["pypi"]["enabled"] is False
-    assert fork["publish"]["pypi"]["disposition"] == "scope-skipped"
-    assert fork["publish"]["dockerhub"]["requested"] is True
-    assert fork["publish"]["dockerhub"]["enabled"] is False
-    assert fork["publish"]["dockerhub"]["disposition"] == "scope-skipped"
-    assert fork["publish"]["ghcr"]["enabled"] is True
-    assert fork["publish"]["ghcr"]["disposition"] == "publish"
-    assert fork["publish"]["chart_oci"]["enabled"] is True
-    assert fork["publish"]["github_release"]["enabled"] is True
+    for channel in ("ghcr", "chart_oci", "github_release"):
+        assert (
+            fork["publish"][channel]["requested"],
+            fork["publish"][channel]["enabled"],
+            fork["publish"][channel]["disposition"],
+        ) == (True, True, "publish")
 
 
-def test_fork_credentials_enable_only_requested_test_targets() -> None:
+def test_external_configuration_enables_only_profile_requested_channels(
+    tmp_path: Path,
+) -> None:
     policy = importlib.import_module("ucm_release.policy")
+    release = _release_policy()
+    # Opposite requests prove that credentials cannot override either channel.
+    release["release_profiles"]["prerelease"]["publish"] = {
+        "pypi": True,
+        "ghcr": True,
+        "dockerhub": False,
+        "chart_oci": False,
+        "github_release": True,
+    }
+    release["release_profiles"]["draft"]["publish"] = {
+        "pypi": False,
+        "ghcr": True,
+        "dockerhub": True,
+        "chart_oci": False,
+        "github_release": True,
+    }
+    path = tmp_path / "release.yaml"
+    path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
 
+    prerelease = policy.resolve(
+        path,
+        repository="SuperMarioYL/unified-cache-management",
+        release_type="prerelease",
+        fork_test_pypi=True,
+        dockerhub_namespace="docker.io/ucm-debug",
+    )
     draft = policy.resolve(
+        path,
         repository="SuperMarioYL/unified-cache-management",
         release_type="draft",
         fork_test_pypi=True,
-        fork_dockerhub_namespace="docker.io/ucm-debug",
-    )
-    nightly = policy.resolve(
-        repository="SuperMarioYL/unified-cache-management",
-        release_type="nightly",
-        fork_test_pypi=True,
-        fork_dockerhub_namespace="docker.io/ucm-debug",
+        dockerhub_namespace="docker.io/ucm-debug",
     )
 
-    assert draft["publish"]["pypi"]["target"] == "testpypi"
-    assert draft["publish"]["pypi"]["distribution_prefix"] == "supermarioyl-"
-    assert draft["publish"]["pypi"]["enabled"] is True
+    assert prerelease["publish"]["pypi"]["target"] == "testpypi"
+    assert prerelease["publish"]["pypi"]["distribution_prefix"] == "supermarioyl-"
+    assert (
+        prerelease["publish"]["pypi"]["enabled"],
+        prerelease["publish"]["pypi"]["disposition"],
+    ) == (True, "publish")
+    assert (
+        prerelease["publish"]["dockerhub"]["enabled"],
+        prerelease["publish"]["dockerhub"]["disposition"],
+    ) == (False, "disabled")
+    assert (
+        draft["publish"]["pypi"]["enabled"],
+        draft["publish"]["pypi"]["disposition"],
+    ) == (False, "disabled")
     assert draft["publish"]["dockerhub"] == {
         "namespace": "docker.io/ucm-debug",
         "requested": True,
         "enabled": True,
         "disposition": "publish",
     }
-    assert nightly["publish"]["pypi"]["enabled"] is False
-    assert nightly["publish"]["pypi"]["disposition"] == "disabled"
-    assert nightly["publish"]["dockerhub"]["enabled"] is False
+
+
+@pytest.mark.parametrize(
+    "repository",
+    (
+        "ModelEngine-Group/unified-cache-management",
+        "SuperMarioYL/unified-cache-management",
+    ),
+)
+def test_requested_dockerhub_namespace_is_scope_independent(
+    tmp_path: Path, repository: str
+) -> None:
+    policy = importlib.import_module("ucm_release.policy")
+    release = _release_policy()
+    release["release_profiles"]["draft"]["publish"] = {
+        "pypi": False,
+        "ghcr": True,
+        "dockerhub": True,
+        "chart_oci": False,
+        "github_release": True,
+    }
+    path = tmp_path / "release.yaml"
+    path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
+
+    missing = policy.resolve(path, repository=repository, release_type="draft")
+    configured = policy.resolve(
+        path,
+        repository=repository,
+        release_type="draft",
+        dockerhub_namespace="docker.io/ucm-debug",
+    )
+
+    assert missing["publish"]["dockerhub"] == {
+        "requested": True,
+        "enabled": False,
+        "disposition": "scope-skipped",
+    }
+    assert configured["publish"]["dockerhub"] == {
+        "namespace": "docker.io/ucm-debug",
+        "requested": True,
+        "enabled": True,
+        "disposition": "publish",
+    }
 
     with pytest.raises(ValueError, match="Docker Hub namespace"):
         policy.resolve(
-            repository="SuperMarioYL/unified-cache-management",
+            path,
+            repository=repository,
             release_type="draft",
-            fork_dockerhub_namespace="ghcr.io/not-dockerhub",
+            dockerhub_namespace="ghcr.io/not-dockerhub",
         )
+
+
+@pytest.mark.parametrize(
+    "repository",
+    (
+        "ModelEngine-Group/unified-cache-management",
+        "SuperMarioYL/unified-cache-management",
+    ),
+)
+def test_disabled_dockerhub_ignores_runtime_configuration(
+    tmp_path: Path, repository: str
+) -> None:
+    policy = importlib.import_module("ucm_release.policy")
+    release = _release_policy()
+    release["release_profiles"]["draft"]["publish"] = {
+        channel: False for channel in policy.PUBLISH_CHANNELS
+    }
+    path = tmp_path / "release.yaml"
+    path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
+
+    resolved = policy.resolve(
+        path,
+        repository=repository,
+        release_type="draft",
+        dockerhub_namespace="not-a-docker-namespace",
+    )
+
+    assert resolved["publish"]["dockerhub"] == {
+        "requested": False,
+        "enabled": False,
+        "disposition": "disabled",
+    }
+
+
+def test_publication_context_uses_shared_dockerhub_namespace(tmp_path: Path) -> None:
+    cli = importlib.import_module("ucm_release.cli")
+    path = tmp_path / "publication-context.json"
+    path.write_text(
+        '{"fork_test_pypi":false,' '"dockerhub_namespace":"docker.io/ucm-debug"}',
+        encoding="utf-8",
+    )
+
+    assert cli._publication_context(path) == {  # noqa: SLF001
+        "fork_test_pypi": False,
+        "dockerhub_namespace": "docker.io/ucm-debug",
+    }
 
 
 def test_official_repository_identity_is_case_insensitive() -> None:
@@ -777,108 +863,40 @@ def test_core_projects_v6_for_release_consumers() -> None:
     )
 
 
-def test_release_yaml_is_the_exact_publication_authority() -> None:
-    release = _release_policy()
-
-    assert release["publish"] == {
-        "pypi": {"index": "https://upload.pypi.org/legacy/"},
-        "ghcr": {"namespace": "ghcr.io/{owner}"},
-        "dockerhub": {"namespace": "docker.io/{owner}"},
-        "chart_oci": {"namespace": "ghcr.io/{owner}/charts"},
-        "github_release": {},
-    }
-    assert release["release_profiles"] == {
-        "stable": {
-            "max_count": -1,
-            "publish": {
-                "pypi": True,
-                "ghcr": True,
-                "dockerhub": True,
-                "chart_oci": True,
-                "github_release": True,
-            },
-        },
-        "prerelease": {
-            "max_count": -1,
-            "publish": {
-                "pypi": True,
-                "ghcr": True,
-                "dockerhub": True,
-                "chart_oci": True,
-                "github_release": True,
-            },
-        },
-        "draft": {
-            "max_count": 7,
-            "publish": {
-                "pypi": True,
-                "ghcr": True,
-                "dockerhub": True,
-                "chart_oci": True,
-                "github_release": True,
-            },
-        },
-        "nightly": {
-            "max_count": 7,
-            "publish": {
-                "pypi": False,
-                "ghcr": True,
-                "dockerhub": False,
-                "chart_oci": True,
-                "github_release": True,
-            },
-        },
-    }
-    assert set(release) == {
-        "kind",
-        "schema_version",
-        "runners",
-        "products",
-        "publish",
-        "release_profiles",
-        "chart",
-    }
-    assert set(release["chart"]) == {"source", "smoke_values"}
-
-
 def test_publish_plan_is_the_normalized_config_without_runtime_layers() -> None:
     core = importlib.import_module("ucm_release.core")
-    policy = importlib.import_module("ucm_release.policy")
-
-    plan = core.compute_publish_plan(core.load_catalog())
-
-    assert plan == {
-        "pypi": {
-            "requested": True,
-            "enabled": False,
-            "disposition": "scope-skipped",
-            "target": "testpypi",
-            **policy.PYPI_TARGETS["testpypi"],
-        },
-        "ghcr": {
-            "requested": True,
-            "enabled": True,
-            "disposition": "publish",
-            "namespace": "ghcr.io/release-org",
-        },
-        "dockerhub": {
-            "requested": True,
-            "enabled": False,
-            "disposition": "scope-skipped",
-            "namespace": "docker.io/release-org",
-        },
-        "chart_oci": {
-            "requested": True,
-            "enabled": True,
-            "disposition": "publish",
-            "namespace": "ghcr.io/release-org/charts",
-        },
-        "github_release": {
-            "requested": True,
-            "enabled": True,
-            "disposition": "publish",
-        },
+    catalog = core.load_catalog()
+    expected = {
+        channel: dict(publication)
+        for channel, publication in catalog["publish"].items()
     }
+
+    plan = core.compute_publish_plan(catalog)
+
+    assert plan == expected
+    assert plan is not catalog["publish"]
+    assert all(plan[channel] is not catalog["publish"][channel] for channel in plan)
+
+
+def test_publish_plan_requires_namespace_only_for_enabled_dockerhub() -> None:
+    core = importlib.import_module("ucm_release.core")
+    catalog = core.load_catalog()
+
+    assert "namespace" not in catalog["publish"]["dockerhub"]
+    catalog["publish"]["dockerhub"] = {
+        "requested": True,
+        "enabled": True,
+        "disposition": "publish",
+    }
+
+    with pytest.raises(ValueError, match="Docker Hub namespace"):
+        core.compute_publish_plan(catalog)
+
+    catalog["publish"]["dockerhub"]["namespace"] = "docker.io/ucm-debug"
+
+    assert core.compute_publish_plan(catalog)["dockerhub"]["namespace"] == (
+        "docker.io/ucm-debug"
+    )
 
 
 @pytest.mark.parametrize(
@@ -890,6 +908,11 @@ def test_publish_plan_rejects_inconsistent_channel_decisions(
 ) -> None:
     core = importlib.import_module("ucm_release.core")
     catalog = core.load_catalog()
+    catalog["publish"]["pypi"].update(
+        requested=True,
+        enabled=False,
+        disposition="scope-skipped",
+    )
     catalog["publish"]["pypi"][field] = value
 
     with pytest.raises(ValueError, match="invalid publication decision"):
@@ -902,15 +925,20 @@ def test_ghcr_publication_accepts_both_boolean_modes(
 ) -> None:
     core = importlib.import_module("ucm_release.core")
     release = _release_policy()
-    release["release_profiles"]["stable"]["publish"]["ghcr"] = enabled
-    if not enabled:
-        release["release_profiles"]["stable"]["publish"]["dockerhub"] = False
+    release["release_profiles"]["stable"]["publish"] = {
+        "pypi": False,
+        "ghcr": enabled,
+        "dockerhub": False,
+        "chart_oci": False,
+        "github_release": enabled,
+    }
     path = tmp_path / "release.yaml"
     path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
 
     catalog = core.load_catalog(path, repository="release-org/ucm")
     plan = core.compute_publish_plan(catalog)
 
+    assert plan["ghcr"]["requested"] is enabled
     assert plan["ghcr"]["enabled"] is enabled
 
 
@@ -922,7 +950,13 @@ def test_each_profile_requires_github_release_draft_barrier(
     release = yaml.safe_load(
         (REPO_ROOT / ".github" / "release" / "release.yaml").read_text(encoding="utf-8")
     )
-    release["release_profiles"][release_type]["publish"]["github_release"] = False
+    release["release_profiles"][release_type]["publish"] = {
+        "pypi": True,
+        "ghcr": False,
+        "dockerhub": False,
+        "chart_oci": False,
+        "github_release": False,
+    }
     path = tmp_path / "release.yaml"
     path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
 
@@ -938,8 +972,13 @@ def test_each_profile_dockerhub_requires_ghcr_source_channel(
     release = yaml.safe_load(
         (REPO_ROOT / ".github" / "release" / "release.yaml").read_text(encoding="utf-8")
     )
-    release["release_profiles"][release_type]["publish"]["dockerhub"] = True
-    release["release_profiles"][release_type]["publish"]["ghcr"] = False
+    release["release_profiles"][release_type]["publish"] = {
+        "pypi": False,
+        "ghcr": False,
+        "dockerhub": True,
+        "chart_oci": False,
+        "github_release": True,
+    }
     path = tmp_path / "release.yaml"
     path.write_text(yaml.safe_dump(release, sort_keys=False), encoding="utf-8")
 

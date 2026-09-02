@@ -3,12 +3,17 @@
 set -euo pipefail
 
 if [ "$#" -lt 2 ]; then
-  echo "usage: retry-registry-command.sh LOG_PATH [--rate-limit-marker PATH [--rate-limit-scope TEXT]] COMMAND [ARG ...]" >&2
+  echo "usage: retry-registry-command.sh LOG_PATH [--retry-transport] [--rate-limit-marker PATH [--rate-limit-scope TEXT]] COMMAND [ARG ...]" >&2
   exit 2
 fi
 
 log_path="$1"
 shift
+retry_transport=false
+if [ "${1:-}" = "--retry-transport" ]; then
+  retry_transport=true
+  shift
+fi
 rate_limit_marker=""
 rate_limit_scope=""
 if [ "${1:-}" = "--rate-limit-marker" ]; then
@@ -46,6 +51,7 @@ max_attempts=$(( ${#retry_delays[@]} + 1 ))
 mkdir -p "$(dirname "${log_path}")"
 rate_limit_pattern='TOOMANYREQUESTS|too many requests|retry-after|HTTP 429|(^|[^[:alnum:]])429([^[:alnum:]]|$)'
 scoped_rate_limit_pattern='TOOMANYREQUESTS|too many requests|retry-after|HTTP 429|status[^0-9]*429|429 Too Many Requests'
+transport_pattern='connection reset( by peer)?|(^|[^[:alnum:]_])EOF([^[:alnum:]_]|$)'
 
 for ((attempt = 1; attempt <= max_attempts; attempt++)); do
   if "$@" 2>&1 | tee "${log_path}"; then
@@ -61,12 +67,19 @@ for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     exit "${tee_status}"
   fi
 
-  if ! grep -Eiq "${rate_limit_pattern}" "${log_path}"; then
+  retry_reason=""
+  if grep -Eiq "${rate_limit_pattern}" "${log_path}"; then
+    retry_reason="rate-limit"
+  elif [ "${retry_transport}" = true ] && \
+       grep -Eiq "${transport_pattern}" "${log_path}"; then
+    retry_reason="transport"
+  else
     echo "Registry command failed with a non-retryable error" >&2
     exit "${command_status}"
   fi
   if [ "${attempt}" -eq "${max_attempts}" ]; then
-    if [ -n "${rate_limit_marker}" ]; then
+    if [ "${retry_reason}" = "rate-limit" ] && \
+       [ -n "${rate_limit_marker}" ]; then
       marker_allowed=true
       if [ -n "${rate_limit_scope}" ] && \
          ! grep -Fi -- "${rate_limit_scope}" "${log_path}" \
@@ -85,6 +98,10 @@ for ((attempt = 1; attempt <= max_attempts; attempt++)); do
   fi
 
   sleep_seconds="${retry_delays[$((attempt - 1))]}"
-  echo "Registry command was rate-limited; retrying in ${sleep_seconds}s" >&2
+  if [ "${retry_reason}" = "rate-limit" ]; then
+    echo "Registry command was rate-limited; retrying in ${sleep_seconds}s" >&2
+  else
+    echo "Registry command hit a transient transport error; retrying in ${sleep_seconds}s" >&2
+  fi
   sleep "${sleep_seconds}"
 done
