@@ -4,6 +4,10 @@ set(AIV_PROVIDER_FOUNDATION_SOURCES
     src/runtime/acl_rt_loader.cpp
     src/runtime/ascendcl_loader.cpp
     src/runtime/hccp_v2_loader.cpp
+    src/ub/oob/rasocket.cpp
+    src/ub/oob/tcp_client.cpp
+    src/ub/raii.cpp
+    src/ub/resource.cpp
     src/ub/status.cpp)
 
 add_library(aiv_provider_foundation OBJECT ${AIV_PROVIDER_FOUNDATION_SOURCES})
