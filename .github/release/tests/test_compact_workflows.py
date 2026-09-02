@@ -430,14 +430,7 @@ def test_schema_v6_manifest_is_uploaded_only_after_complete_and_read_back() -> N
     assert "release-state.json" in update["run"]
     assert "release-manifest.json" not in update["run"]
     assert "gh release upload" not in update["run"]
-    receipt_index, receipt = next(
-        (index, step)
-        for index, step in enumerate(steps)
-        if step.get("id") == "publish-pypi-receipt"
-    )
-    assert receipt_index < update_index < complete_index
-    assert "pypi-receipt.json" in receipt["run"]
-    assert "cmp input/receipts/pypi-receipt.json" in receipt["run"]
+    assert not any(step.get("id") == "publish-pypi-receipt" for step in steps)
     assert "release.status" in complete["run"]
     assert "release.py manifest" in manifest["run"]
     assert 'gh release upload "${tag}" --clobber out/release/release-manifest.json' in (
@@ -1205,7 +1198,7 @@ def test_compact_wheel_uses_source_metadata_and_active_ascend_arch_handoff() -> 
     assert "compact prepare-wheel-source" in workflow
     assert "--distribution \"$(jq -r '.dist_name'" in workflow
     assert 'version_path = os.path.join(ROOT_DIR, "version.ini")' in setup_py
-    assert 'key == "VLLM_UC_VERSION"' in setup_py
+    assert 'key == "UCM_VERSION"' in setup_py
     assert "version=get_package_version()" in setup_py
 
     combined = workflow + dockerfile + setup_py
@@ -1222,11 +1215,33 @@ def test_compact_wheel_uses_source_metadata_and_active_ascend_arch_handoff() -> 
     assert "-DASCEND_ARCH_DIR=" in setup_py
 
 
-def test_release_build_keeps_gcc_fmt_false_positive_non_fatal() -> None:
+def test_ucm_build_does_not_enable_strict_compilation() -> None:
     cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
-    assert 'CMAKE_BUILD_TYPE_LOWER STREQUAL "release"' in cmake
-    assert 'CMAKE_CXX_COMPILER_ID STREQUAL "GNU"' in cmake
-    assert "-Wno-error=stringop-overflow" in cmake
+    shared_cmake = (ROOT / "ucm" / "shared" / "CMakeLists.txt").read_text(
+        encoding="utf-8"
+    )
+
+    vendor_index = cmake.index("add_subdirectory(ucm/shared/vendor)")
+    ucm_index = cmake.index("add_subdirectory(ucm)")
+
+    assert vendor_index < ucm_index
+    assert "-Wall" not in cmake
+    assert "-Werror" not in cmake
+    assert "-Wno-error=stringop-overflow" not in cmake
+    assert "add_subdirectory(vendor)" not in shared_cmake
+
+
+def test_ascend_drampool_defers_only_shared_library_driver_symbols() -> None:
+    cmake = (ROOT / "ucm" / "store" / "dram" / "CMakeLists.txt").read_text(
+        encoding="utf-8"
+    )
+
+    option = 'target_link_options(drampool PRIVATE "LINKER:--allow-shlib-undefined")'
+    assert cmake.count(option) == 1
+    option_index = cmake.index(option)
+    guard_index = cmake.rfind("if(UCM_RUNTIME_ASCEND_FAMILY)", 0, option_index)
+    endif_index = cmake.index("endif()", option_index)
+    assert guard_index < option_index < endif_index
 
 
 def test_chart_consumes_product_smoke_values_from_v4_policy() -> None:

@@ -126,7 +126,13 @@ def validate_external_library_closure(
         raise ValueError("UCM-owned libmetrics.so remains external after repair")
 
     direct, dependencies = _elf_dependency_graph(report_text)
-    direct_external = set(external) & direct
+    boundary_external = (set(external) & direct) | {
+        dependency
+        for library, required in dependencies.items()
+        if library not in external
+        for dependency in required
+        if dependency in external
+    }
 
     def matches_boundary(soname: str) -> bool:
         path = external[soname]
@@ -136,12 +142,12 @@ def validate_external_library_closure(
             for pattern in patterns
         )
 
-    roots = sorted(soname for soname in direct_external if matches_boundary(soname))
+    roots = sorted(soname for soname in boundary_external if matches_boundary(soname))
     if not roots:
         raise ValueError(
             "auditwheel exclude patterns matched no direct external libraries"
         )
-    unmatched_direct = sorted(direct_external - set(roots))
+    unmatched_direct = sorted(boundary_external - set(roots))
     if unmatched_direct:
         raise ValueError(
             "auditwheel found direct external libraries outside the provider boundary: "

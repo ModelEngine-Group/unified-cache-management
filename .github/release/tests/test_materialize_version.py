@@ -16,7 +16,7 @@ materialize = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(materialize)
 
 VERSION_CONFIG = (
-    "VLLM_UC_VERSION=0.7.62\n"
+    "UCM_VERSION=0.7.62\n"
     "UCM_SUPPORTED_VLLM_VERSIONS=0.27.1\n"
     "UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26.0rc\n"
 )
@@ -79,7 +79,7 @@ def test_cli_replaces_only_ucm_version_and_prints_it(tmp_path: Path) -> None:
 
     assert completed.stdout == "0.6.0.dev13\n"
     assert output.read_text(encoding="utf-8") == VERSION_CONFIG.replace(
-        "VLLM_UC_VERSION=0.7.62", "VLLM_UC_VERSION=0.6.0.dev13"
+        "UCM_VERSION=0.7.62", "UCM_VERSION=0.6.0.dev13"
     )
 
 
@@ -326,7 +326,7 @@ def test_tag_base_must_match_version_config(tmp_path: Path, tag: str) -> None:
 
 def test_version_config_supports_keywords_and_explicit_tags() -> None:
     parsed = materialize.version_config.parse(
-        "VLLM_UC_VERSION=0.9.3\n"
+        "UCM_VERSION=0.9.3\n"
         "UCM_SUPPORTED_VLLM_VERSIONS=0.27.1,latest\n"
         "UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.25.1rc@nightly-releases-v0.25.1rc\n"
     )
@@ -347,10 +347,10 @@ def test_version_config_supports_keywords_and_explicit_tags() -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        "VLLM_UC_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27.1\n",
-        "VLLM_UC_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27.1,0.27.1\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26.0rc\n",
-        "VLLM_UC_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=bad keyword\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26.0rc\n",
-        "VLLM_UC_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27.1@bad/tag\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26.0rc\n",
+        "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27.1\n",
+        "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27.1,0.27.1\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26.0rc\n",
+        "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=bad keyword\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26.0rc\n",
+        "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27.1@bad/tag\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26.0rc\n",
     ],
 )
 def test_version_config_rejects_missing_duplicate_or_invalid_selectors(
@@ -358,3 +358,10 @@ def test_version_config_rejects_missing_duplicate_or_invalid_selectors(
 ) -> None:
     with pytest.raises(ValueError):
         materialize.version_config.parse(text)
+
+
+def test_version_config_rejects_legacy_version_key() -> None:
+    with pytest.raises(ValueError, match="unsupported version key"):
+        materialize.version_config.parse(
+            VERSION_CONFIG.replace("UCM_VERSION=", "VLLM_UC_VERSION=", 1)
+        )

@@ -959,11 +959,21 @@ def test_release_notes_split_products_and_aggregate_wheel_capabilities() -> None
     assert "2 image families / 4 architecture members" in notes
     assert "2 image families / 3 architecture members" in notes
     assert " tags / " not in notes
-    assert (
-        "pip install --index-url https://test.pypi.org/simple/ "
-        "--extra-index-url https://pypi.org/simple/ "
-        "'supermarioyl-uc-manager[cu130]==1.0.0'"
-    ) in notes
+    assert "## TestPyPI" not in notes
+    assert "pip install" not in notes
+
+    official_manifest = json.loads(json.dumps(manifest))
+    official_manifest["pypi"] = {
+        "target": "pypi",
+        "version": "1.0.0",
+        "extras": {"cu130": "uc-manager-cuda-cu130==1.0.0"},
+        "projects": [{"project": "uc-manager", "role": "meta"}],
+    }
+    official_notes = release.render_notes(
+        official_manifest, repository="example/ucm", asset_urls=asset_urls
+    )
+    assert "## PyPI" not in official_notes
+    assert "pip install" not in official_notes
 
     draft_notes = release.render_notes(
         manifest,

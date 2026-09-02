@@ -192,7 +192,7 @@ def validate_tag_against_config(tag: str, config_path: Path) -> dict[str, object
 
 
 def materialize_version(version: str, output: Path = DEFAULT_OUTPUT) -> str:
-    """Atomically replace only VLLM_UC_VERSION in the version authority."""
+    """Atomically replace only UCM_VERSION in the version authority."""
     canonical = canonical_version(version)
     target = Path(output)
     target.parent.mkdir(parents=True, exist_ok=True)

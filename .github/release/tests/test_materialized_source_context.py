@@ -38,13 +38,18 @@ def _extract(archive_path: Path, destination: Path) -> None:
 
 def _expected_materialized_version() -> str:
     source = _git("show", "HEAD:version.ini")
+    version_key = (
+        "UCM_VERSION"
+        if any(line.startswith("UCM_VERSION=") for line in source.splitlines())
+        else "VLLM_UC_VERSION"
+    )
     if "UCM_SUPPORTED_VLLM_VERSIONS=" not in source:
-        return f"VLLM_UC_VERSION={SOURCE_VERSION}\n"
+        return f"{version_key}={SOURCE_VERSION}\n"
     return (
         "\n".join(
             (
-                f"VLLM_UC_VERSION={SOURCE_VERSION}"
-                if line.startswith("VLLM_UC_VERSION=")
+                f"{version_key}={SOURCE_VERSION}"
+                if line.startswith(f"{version_key}=")
                 else line
             )
             for line in source.splitlines()
@@ -166,7 +171,8 @@ def test_production_authority_binds_materialized_tree_and_rejects_tampering(
     extracted = tmp_path / "tampered-source"
     _extract(tmp_path / "context/ucm-source.tar", extracted)
     (extracted / "version.ini").write_text(
-        "VLLM_UC_VERSION=0.6.0.dev14\n", encoding="utf-8"
+        _expected_materialized_version().replace(SOURCE_VERSION, "0.6.0.dev14"),
+        encoding="utf-8",
     )
     with pytest.raises(ValueError):
         wheel.verify_source_context(
@@ -177,3 +183,26 @@ def test_production_authority_binds_materialized_tree_and_rejects_tampering(
             source_sha,
             SOURCE_VERSION,
         )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "VLLM_UC_VERSION=0.5.0rc1\n",
+        (
+            "VLLM_UC_VERSION=0.7.0\n"
+            "UCM_SUPPORTED_VLLM_VERSIONS=0.27.1\n"
+            "UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26.0rc\n"
+        ),
+    ],
+)
+def test_historical_version_key_remains_materializable(source: str) -> None:
+    legacy_version = source.split("=", 1)[1].splitlines()[0]
+    expected = source.replace(legacy_version, SOURCE_VERSION, 1).encode()
+
+    assert (
+        wheel._materialized_source_version_bytes(
+            source, SOURCE_VERSION, source="historical/version.ini"
+        )
+        == expected
+    )

@@ -28,6 +28,24 @@ def test_wheel_builder_repairs_to_the_planned_manylinux_tag() -> None:
     assert "tee /out/auditwheel-show.txt" in dockerfile
 
 
+def test_ascend_manylinux_builder_corrects_the_false_x86_64_crt_property() -> None:
+    dockerfile = (
+        ROOT / ".github" / "release" / "docker" / "Dockerfile.wheel"
+    ).read_text(encoding="utf-8")
+
+    assert '"${PLATFORM}" == ascend*' in dockerfile
+    assert '"${UCM_CPU_ARCH}" == "amd64"' in dockerfile
+    assert '"${UCM_TARGET_PLATFORM_TAG}" == "manylinux_2_34_x86_64"' in dockerfile
+    assert "for crt_name in crt1.o Scrt1.o; do" in dockerfile
+    assert 'c++ -print-file-name="${crt_name}"' in dockerfile
+    assert "ucm-python .github/release/ucm_release/crt.py" in dockerfile
+    assert 'c++ "-B${baseline_crt_dir}/" -print-file-name="${crt_name}"' in dockerfile
+    assert 'CXXFLAGS="${CXXFLAGS:-} -march=x86-64 -mtune=generic"' in dockerfile
+    assert 'LDFLAGS="-B${baseline_crt_dir}/ ${LDFLAGS:-}"' in dockerfile
+    assert "x86-64-baseline" not in dockerfile
+    assert "--disable-isa-ext-check" not in dockerfile
+
+
 def test_wheel_workflow_materializes_external_roots_for_the_builder() -> None:
     workflow = (ROOT / ".github" / "workflows" / "_build-wheel.yml").read_text(
         encoding="utf-8"

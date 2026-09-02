@@ -39,7 +39,7 @@ def _source_tree(tmp_path: Path, script_name: str) -> tuple[Path, Path, Path]:
     script_dir.mkdir()
     shutil.copy2(REPOSITORY_ROOT / "scripts" / script_name, script_dir / script_name)
     (source / "version.ini").write_text(
-        f"VLLM_UC_VERSION={SOURCE_VERSION}\n", encoding="utf-8"
+        f"UCM_VERSION={SOURCE_VERSION}\n", encoding="utf-8"
     )
 
     (source / "install.sh").write_text("#!/bin/sh\n", encoding="utf-8")
@@ -143,7 +143,7 @@ def test_docker_source_build_keeps_checked_in_version_ini(
     package, tar_record = _run_script(tmp_path, script_name, skip_tar=True)
 
     assert (package / "version.ini").read_text(encoding="utf-8") == (
-        f"VLLM_UC_VERSION={SOURCE_VERSION}\n"
+        f"UCM_VERSION={SOURCE_VERSION}\n"
     )
     assert not tar_record.exists()
 
@@ -159,7 +159,7 @@ def test_tar_package_keeps_checked_in_version_file(
     _, tar_record = _run_script(tmp_path, script_name, skip_tar=False)
 
     assert (tmp_path / "packaged-version.ini").read_text(encoding="utf-8") == (
-        f"VLLM_UC_VERSION={SOURCE_VERSION}\n"
+        f"UCM_VERSION={SOURCE_VERSION}\n"
     )
     arguments = tar_record.read_text(encoding="utf-8").splitlines()
     assert arguments[:2] == [

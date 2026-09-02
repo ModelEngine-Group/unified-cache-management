@@ -10,7 +10,7 @@ from typing import Any
 
 from packaging.version import InvalidVersion, Version
 
-UCM_VERSION_KEY = "VLLM_UC_VERSION"
+UCM_VERSION_KEY = "UCM_VERSION"
 SUPPORTED_VERSION_KEYS = {
     "vllm": "UCM_SUPPORTED_VLLM_VERSIONS",
     "vllm-ascend": "UCM_SUPPORTED_VLLM_ASCEND_VERSIONS",

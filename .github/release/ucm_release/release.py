@@ -1173,47 +1173,6 @@ def render_notes(
                 "",
             ]
         )
-    pypi_receipt = manifest.get("pypi")
-    if pypi_receipt is not None and release["status"] == "complete":
-        receipt = _mapping(pypi_receipt, "release manifest PyPI receipt")
-        extras = _mapping(receipt.get("extras"), "release manifest PyPI extras")
-        projects = _list(receipt.get("projects"), "release manifest PyPI projects")
-        meta_projects = [
-            _mapping(project, "release manifest PyPI project")
-            for project in projects
-            if isinstance(project, dict) and project.get("role") == "meta"
-        ]
-        version = str(receipt.get("version", ""))
-        target = receipt.get("target")
-        if (
-            not version
-            or not extras
-            or target not in {"pypi", "testpypi"}
-            or len(meta_projects) != 1
-            or not isinstance(meta_projects[0].get("project"), str)
-        ):
-            raise ValueError("Release notes require complete PyPI coordinates")
-        meta_project = str(meta_projects[0]["project"])
-        heading = "PyPI" if target == "pypi" else "TestPyPI"
-        lines.extend(
-            [
-                f"## {heading}",
-                "",
-                "> Install one backend extra in a new virtual environment; do not upgrade "
-                "an older monolithic uc-manager environment or switch backends in place.",
-                "",
-            ]
-        )
-        for extra in sorted(extras):
-            command = f"pip install '{meta_project}[{extra}]=={version}'"
-            if target == "testpypi":
-                command = (
-                    "pip install --index-url https://test.pypi.org/simple/ "
-                    "--extra-index-url https://pypi.org/simple/ "
-                    f"'{meta_project}[{extra}]=={version}'"
-                )
-            lines.append(f"- `{command}`")
-        lines.append("")
     lines.extend(
         _render_product_tables(
             manifest,

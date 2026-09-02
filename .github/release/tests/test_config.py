@@ -344,7 +344,7 @@ def test_version_ini_is_the_runtime_selector_authority() -> None:
     assert {
         product["id"]: product["runtime_selectors"] for product in resolved["products"]
     } == resolved["runtime_selectors"]
-    assert resolved["ucm_base_version"] == "0.9.6"
+    assert resolved["ucm_base_version"] == "0.7.0"
     assert resolved["version_authority_sha256"].startswith("sha256:")
 
 

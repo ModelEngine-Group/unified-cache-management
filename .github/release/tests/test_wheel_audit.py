@@ -86,6 +86,36 @@ def test_cann_boundary_derives_four_roots_and_unresolved_transitives() -> None:
     ]
 
 
+def test_cann_boundary_includes_provider_roots_used_by_bundled_ucm_libraries() -> None:
+    external = {
+        "libcann_hixl.so": "/usr/local/Ascend/cann/lib64/libcann_hixl.so",
+        "libhcomm.so": "/usr/local/Ascend/cann/lib64/libhcomm.so",
+        "libmetadef.so": "/usr/local/Ascend/cann/lib64/libmetadef.so",
+    }
+    report = _report(
+        external,
+        direct=["libucm_p2p_transport.so"],
+        dependencies={
+            "libucm_p2p_transport.so": ["libcann_hixl.so", "libmetadef.so"],
+            "libcann_hixl.so": ["libhcomm.so"],
+            "libhcomm.so": [],
+            "libmetadef.so": [],
+        },
+    )
+
+    closure = wheel_audit.validate_external_library_closure(
+        report,
+        expected_patterns=["/usr/local/Ascend/*"],
+    )
+
+    assert closure["external_library_roots"] == [
+        "libcann_hixl.so",
+        "libmetadef.so",
+    ]
+    assert closure["external_libraries"] == sorted(external)
+    assert closure["deferred_external_libraries"] == []
+
+
 def test_closure_does_not_defer_an_unresolved_direct_root() -> None:
     report = _report(
         {"libcudart.so.13": None},

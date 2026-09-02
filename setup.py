@@ -45,13 +45,13 @@ def get_package_version() -> str:
         with open(version_path, encoding="utf-8") as version_file:
             for line in version_file:
                 key, separator, value = line.strip().partition("=")
-                if separator and key == "VLLM_UC_VERSION" and value:
+                if separator and key == "UCM_VERSION" and value:
                     return value
     except OSError as error:
         raise RuntimeError(
             f"cannot read package version from {version_path}"
         ) from error
-    raise RuntimeError(f"VLLM_UC_VERSION is missing from {version_path}")
+    raise RuntimeError(f"UCM_VERSION is missing from {version_path}")
 
 
 def get_abi_flag_from_env() -> str:

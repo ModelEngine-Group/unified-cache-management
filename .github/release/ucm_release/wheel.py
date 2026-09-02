@@ -50,6 +50,7 @@ AUTHORITY_KIND = "ucm-native-build-authority"
 CLOSURE_KIND = "ucm-linux-dependency-closure"
 SOURCE_CONTEXT_KIND = "ucm-canonical-source-context"
 SOURCE_CONTEXT_PREFIX = b"ucm-build-context-v3\0"
+LEGACY_UCM_VERSION_KEY = "VLLM_UC_VERSION"
 HOST_PATH_MARKERS = (
     b"/Users/",
     b"/home/runner/",
@@ -1349,15 +1350,38 @@ def _materialized_source_version_bytes(
         return version_config.materialize_bytes(text, source_version, source=source)
     except ValueError as error:
         lines = [line.strip() for line in text.splitlines() if line.strip()]
-        if len(lines) != 1 or not lines[0].startswith("VLLM_UC_VERSION="):
+        legacy_prefix = f"{LEGACY_UCM_VERSION_KEY}="
+        current_prefix = f"{version_config.UCM_VERSION_KEY}="
+        legacy_indexes = [
+            index for index, line in enumerate(lines) if line.startswith(legacy_prefix)
+        ]
+        if len(legacy_indexes) != 1:
             raise
-        # Historical commits predate Runtime selectors. Their exact one-line
-        # source shape remains verifiable, while new release preflight is strict.
+        # Preserve the old key when rebuilding historical source archives while
+        # keeping the current version.ini parser strict about UCM_VERSION.
+        if len(lines) == 1:
+            try:
+                Version(lines[0].split("=", 1)[1])
+            except InvalidVersion:
+                raise error
+            return f"{legacy_prefix}{source_version}\n".encode()
+        migrated_lines = [
+            (
+                f"{current_prefix}{line.removeprefix(legacy_prefix)}"
+                if index == legacy_indexes[0]
+                else line
+            )
+            for index, line in enumerate(lines)
+        ]
         try:
-            Version(lines[0].split("=", 1)[1])
-        except InvalidVersion:
+            materialized = version_config.materialize_bytes(
+                "\n".join(migrated_lines) + "\n", source_version, source=source
+            )
+        except ValueError:
             raise error
-        return f"VLLM_UC_VERSION={source_version}\n".encode()
+        if not materialized.startswith(current_prefix.encode()):
+            raise error
+        return legacy_prefix.encode() + materialized[len(current_prefix) :]
 
 
 def verify_source_context(

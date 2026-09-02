@@ -85,6 +85,10 @@ target_link_libraries(drampool_core
 )
 add_executable(drampool ${DRAMPOOL_SOURCE_DIR}/main.cc)
 target_link_libraries(drampool PRIVATE drampool_core)
+if(UCM_RUNTIME_ASCEND_FAMILY)
+    # CANN DSOs depend on driver libraries supplied by the runtime host, not the build image.
+    target_link_options(drampool PRIVATE "LINKER:--allow-shlib-undefined")
+endif()
 set_target_properties(drampool PROPERTIES
     INSTALL_RPATH "$ORIGIN/../ucm/transport/p2p"
 )
