@@ -178,7 +178,10 @@ jobs:
           fi
           docker buildx imagetools inspect "${candidate}" >/dev/null
           if [ "${candidate}" != "${target}" ]; then
-            docker buildx imagetools create --tag "${target}" "${candidate}"
+            bash .github/release/retry-registry-command.sh \
+              "${RUNNER_TEMP}/ucm-builder-promotion.log" \
+              --retry-transport \
+              docker buildx imagetools create --tag "${target}" "${candidate}"
           fi
           target_digest="$(docker buildx imagetools inspect "${target}" \
             --format '{{json .Manifest}}' | jq -er '.digest // .Digest')"

@@ -31,6 +31,7 @@ def _fixture_policy(
         repository=repository,
         version_override="0.7.60rc1",
         release_type=release_type,
+        dockerhub_namespace="docker.io/release-test",
     )
     selectors = {
         "vllm": [{"raw": "0.22.1", "keyword": "0.22.1", "tag": None}],
@@ -438,7 +439,10 @@ def test_plan_rejects_repository_scope_or_runtime_prefix_drift() -> None:
         )
 
     wrong_disposition = copy.deepcopy(formal)
-    wrong_disposition["publish"]["dockerhub"]["disposition"] = "publish"
+    wrong_disposition["publish"]["dockerhub"].update(
+        enabled=False,
+        disposition="publish",
+    )
     with pytest.raises(ValueError, match="publication decision does not match"):
         compact.resolve_plan(
             wrong_disposition,
@@ -446,6 +450,49 @@ def test_plan_rejects_repository_scope_or_runtime_prefix_drift() -> None:
             builder_catalog=catalog,
             route="release",
         )
+
+
+@pytest.mark.parametrize(
+    "repository",
+    (policy.OFFICIAL_REPOSITORY, "release-org/unified-cache-management"),
+)
+def test_release_plan_requires_requested_dockerhub_namespace(
+    repository: str,
+) -> None:
+    formal, selection, catalog = _inputs(repository=repository)
+    formal["release_profile"]["publish"]["dockerhub"] = True
+    formal["publish"]["dockerhub"] = {
+        "requested": True,
+        "enabled": False,
+        "disposition": "scope-skipped",
+    }
+
+    with pytest.raises(ValueError, match="publication decision does not match"):
+        compact.resolve_plan(
+            formal,
+            runtime_selection=selection,
+            builder_catalog=catalog,
+            route="release",
+        )
+
+
+def test_pr_plan_does_not_require_release_dockerhub_configuration() -> None:
+    formal, selection, catalog = _inputs()
+    formal["release_profile"]["publish"]["dockerhub"] = True
+    formal["publish"]["dockerhub"] = {
+        "requested": True,
+        "enabled": False,
+        "disposition": "scope-skipped",
+    }
+
+    plan = compact.resolve_plan(
+        formal,
+        runtime_selection=selection,
+        builder_catalog=catalog,
+        route="pr",
+    )
+
+    assert plan["publish"]["dockerhub"] == formal["publish"]["dockerhub"]
 
 
 def test_draft_coordinates_are_owned_by_the_plan_contract() -> None:
@@ -508,20 +555,28 @@ def test_fork_owner_prefix_changes_runtime_and_python_coordinates() -> None:
 
 
 def test_fork_python_coordinates_do_not_depend_on_secret_availability() -> None:
-    disabled = _plan()
     formal, selection, builder_catalog = _inputs()
-    formal = policy.resolve(
-        repository="release-org/unified-cache-management",
-        version_override="0.7.60rc1",
-        release_type="stable",
-        fork_test_pypi=True,
+    formal = copy.deepcopy(formal)
+    # This compact-plan test supplies its own request instead of inheriting defaults.
+    formal["release_profile"]["publish"]["pypi"] = True
+    formal["publish"]["pypi"].update(
+        requested=True,
+        enabled=False,
+        disposition="scope-skipped",
     )
-    selectors = _fixture_policy()["runtime_selectors"]
-    formal["runtime_selectors"] = copy.deepcopy(selectors)
-    for product in formal["products"]:
-        product["runtime_selectors"] = copy.deepcopy(selectors[product["id"]])
-    enabled = compact.resolve_plan(
+    disabled = compact.resolve_plan(
         formal,
+        runtime_selection=selection,
+        builder_catalog=builder_catalog,
+        route="release",
+    )
+    enabled_formal = copy.deepcopy(formal)
+    enabled_formal["publish"]["pypi"].update(
+        enabled=True,
+        disposition="publish",
+    )
+    enabled = compact.resolve_plan(
+        enabled_formal,
         runtime_selection=selection,
         builder_catalog=builder_catalog,
         route="release",
@@ -539,48 +594,20 @@ def test_fork_python_coordinates_do_not_depend_on_secret_availability() -> None:
 
 @pytest.mark.parametrize("release_type", policy.RELEASE_TYPES)
 def test_plan_records_selected_release_profile(release_type: str) -> None:
-    plan = _plan(release_type)
-    shared_requested = release_type != "nightly"
+    formal, selection, builder_catalog = _inputs(release_type)
+    plan = compact.resolve_plan(
+        formal,
+        runtime_selection=selection,
+        builder_catalog=builder_catalog,
+        route="release",
+    )
+    expected_publish = copy.deepcopy(formal["publish"])
+    expected_publish["pypi"]["distributions"] = sorted(
+        {wheel["dist_name"] for wheel in plan["wheels"]}
+    )
 
     assert plan["release_type"] == release_type
-    assert plan["publish"] == {
-        "pypi": {
-            "target": "testpypi",
-            **policy.PYPI_TARGETS["testpypi"],
-            "distribution_prefix": "release-org-",
-            "requested": shared_requested,
-            "enabled": False,
-            "disposition": "scope-skipped" if shared_requested else "disabled",
-            "distributions": [
-                "release-org-uc-manager-cann901-a2",
-                "release-org-uc-manager-cann901-a3",
-                "release-org-uc-manager-cuda-cu129",
-            ],
-        },
-        "ghcr": {
-            "namespace": "ghcr.io/release-org",
-            "requested": True,
-            "enabled": True,
-            "disposition": "publish",
-        },
-        "dockerhub": {
-            "namespace": "docker.io/release-org",
-            "requested": shared_requested,
-            "enabled": False,
-            "disposition": "scope-skipped" if shared_requested else "disabled",
-        },
-        "chart_oci": {
-            "namespace": "ghcr.io/release-org/charts",
-            "requested": True,
-            "enabled": True,
-            "disposition": "publish",
-        },
-        "github_release": {
-            "requested": True,
-            "enabled": True,
-            "disposition": "publish",
-        },
-    }
+    assert plan["publish"] == expected_publish
 
 
 def test_family_members_are_the_authority_for_index_inputs() -> None:
