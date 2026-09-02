@@ -139,9 +139,7 @@ def test_release_core_is_input_driven_and_uses_crane_before_plan() -> None:
     assert jobs["release-preflight"]["env"]["DOCKERHUB_NAMESPACE"] == (
         "${{ vars.DOCKERHUB_NAMESPACE }}"
     )
-    assert jobs["release-preflight"]["outputs"]["dockerhub_namespace"] == (
-        "${{ steps.profile.outputs.dockerhub_namespace }}"
-    )
+    assert "dockerhub_namespace" not in jobs["release-preflight"]["outputs"]
     assert "refs/tags/${RELEASE_TAG}^{commit}" in profile_run
     assert 'test "${head_sha}" = "${SOURCE_SHA}"' in profile_run
     assert 'test "${tag_sha}" = "${SOURCE_SHA}"' in profile_run
@@ -159,7 +157,9 @@ def test_release_core_is_input_driven_and_uses_crane_before_plan() -> None:
     assert "'{include:[.families[]" in plan_text
     assert "--publication-context" in plan_run
     assert "needs.release-preflight.outputs.fork_test_pypi" in plan_text
-    assert "needs.release-preflight.outputs.dockerhub_namespace" in plan_text
+    assert "needs.release-preflight.outputs.dockerhub_namespace" not in plan_text
+    plan_step = next(step for step in jobs["plan"]["steps"] if step.get("id") == "plan")
+    assert plan_step["env"]["DOCKERHUB_NAMESPACE"] == "${{ vars.DOCKERHUB_NAMESPACE }}"
     assert "dockerhub_namespace" in plan_run
     assert "FORK_DOCKERHUB_NAMESPACE" not in text
     assert "docker.io/${DOCKERHUB_USERNAME,,}" not in text

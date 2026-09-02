@@ -65,7 +65,6 @@ jobs:
     outputs:
       enabled: ${{ steps.profile.outputs.enabled }}
       fork_test_pypi: ${{ steps.profile.outputs.fork_test_pypi }}
-      dockerhub_namespace: ${{ steps.profile.outputs.dockerhub_namespace }}
     permissions:
       contents: read
     env:
@@ -164,7 +163,6 @@ jobs:
           {
             echo "enabled=${enabled}"
             echo "fork_test_pypi=${fork_test_pypi}"
-            echo "dockerhub_namespace=${dockerhub_namespace}"
           } >>"${GITHUB_OUTPUT}"
   select-runtime-candidates:
     name: Select Runtime Registry Tags
@@ -543,7 +541,9 @@ jobs:
           PUBLICATION_SCOPE: ${{ inputs.publication_scope }}
           REPOSITORY: ${{ github.repository }}
           FORK_TEST_PYPI: ${{ needs.release-preflight.outputs.fork_test_pypi }}
-          DOCKERHUB_NAMESPACE: ${{ needs.release-preflight.outputs.dockerhub_namespace }}
+          # Do not relay this through a job output: GitHub suppresses outputs
+          # containing the Docker Hub username when it matches a Secret.
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
         run: |
           set -euo pipefail
           test "${IMAGE_VERSION}" = "${RELEASE_VERSION}"
