@@ -530,13 +530,12 @@ def test_image_failure_notes_are_not_overwritten_by_the_fallback() -> None:
     assert "-F draft=true -F prerelease=true" in fallback["run"]
 
 
-def test_tag_entry_only_classifies_four_release_types_and_calls_core() -> None:
+def test_tag_entry_only_classifies_four_release_types_and_calls_one_core() -> None:
     workflow = _load("release-tag.yml")
     assert workflow["on"] == {"push": {"tags": ["v*", "draft/v*", "nightly/v*"]}}
     assert set(workflow["jobs"]) == {
         "classify-tag",
-        "release-official",
-        "release-fork",
+        "release",
     }
     classify = workflow["jobs"]["classify-tag"]
     assert set(classify["outputs"]) == {
@@ -559,30 +558,35 @@ def test_tag_entry_only_classifies_four_release_types_and_calls_core() -> None:
     assert "${GITHUB_REPOSITORY,,}" in classify_run
     assert "modelengine-group/unified-cache-management" in classify_run
 
-    for job_name, scope in (
-        ("release-official", "official"),
-        ("release-fork", "fork"),
-    ):
-        release = workflow["jobs"][job_name]
-        assert release["needs"] == "classify-tag"
-        assert release["uses"] == "./.github/workflows/release-ucm.yml"
-        assert set(release["with"]) == {
-            "git_tag",
-            "release_type",
-            "version",
-            "chart_version",
-            "image_version",
-            "release_kind",
-            "is_prerelease",
-            "source_sha",
-            "publication_scope",
-        }
-        assert release["with"]["source_sha"] == "${{ github.sha }}"
-        assert release["with"]["publication_scope"] == scope
-        assert scope in release["if"]
-    assert workflow["jobs"]["release-official"]["secrets"] == "inherit"
-    assert workflow["jobs"]["release-fork"]["secrets"] == {
-        "TEST_PYPI_API_TOKEN": "${{ secrets.TEST_PYPI_API_TOKEN }}",
+    release = workflow["jobs"]["release"]
+    assert release["name"] == "Run Release core"
+    assert release["needs"] == "classify-tag"
+    assert "if" not in release
+    assert release["uses"] == "./.github/workflows/release-ucm.yml"
+    assert set(release["with"]) == {
+        "git_tag",
+        "release_type",
+        "version",
+        "chart_version",
+        "image_version",
+        "release_kind",
+        "is_prerelease",
+        "source_sha",
+        "publication_scope",
+    }
+    assert release["with"]["source_sha"] == "${{ github.sha }}"
+    assert release["with"]["publication_scope"] == (
+        "${{ needs.classify-tag.outputs.publication_scope }}"
+    )
+    assert release["secrets"] == {
+        "PYPI_API_TOKEN": (
+            "${{ needs.classify-tag.outputs.publication_scope == 'official' "
+            "&& secrets.PYPI_API_TOKEN || '' }}"
+        ),
+        "TEST_PYPI_API_TOKEN": (
+            "${{ needs.classify-tag.outputs.publication_scope == 'fork' "
+            "&& secrets.TEST_PYPI_API_TOKEN || '' }}"
+        ),
         "DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}",
         "DOCKERHUB_TOKEN": "${{ secrets.DOCKERHUB_TOKEN }}",
     }

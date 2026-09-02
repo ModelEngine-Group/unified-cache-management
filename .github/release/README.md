@@ -112,11 +112,11 @@ recursively trigger another workflow, the same scheduled Run calls the common
 same core through `release-tag.yml`.
 
 Supported Release Tags in both the official repository and Forks invoke that
-same Release Core. The two mutually exclusive callers isolate production
-secrets: the official caller inherits production credentials, while Fork
-publication jobs bind to the `fork-preview` Environment. The Fork Tag caller
-explicitly forwards its TestPyPI and Docker Hub Secrets; it never forwards
-`PYPI_API_TOKEN`.
+same Release Core through one caller. The caller passes the repository-derived
+publication scope and conditionally forwards the matching Python index Secret:
+`PYPI_API_TOKEN` only for the official repository and `TEST_PYPI_API_TOKEN`
+only for Forks. Docker Hub credentials remain explicit for either scope, while
+publication jobs bind to the corresponding Environment.
 
 A fork publishes any Profile-enabled GitHub Release, GHCR, and Chart OCI outputs
 under its own identity.
@@ -287,8 +287,9 @@ credentials as **Repository secrets** and the Docker Hub target as a
 | `DOCKERHUB_TOKEN` | Repository Secret | Profile has `dockerhub: true` | Docker Hub access token with Read & Write permission; add Delete permission when cleanup must remove tags. |
 | `DOCKERHUB_NAMESPACE` | Repository Variable | Profile has `dockerhub: true` | Full namespace such as `docker.io/my-org`, without a repository name or trailing slash. |
 
-The Fork caller explicitly forwards all three Secrets to the reusable Release
-Core. The equivalent GitHub CLI commands are:
+For Fork scope, the shared Tag caller forwards the TestPyPI Secret and both
+Docker Hub Secrets to the reusable Release Core. It does not forward
+`PYPI_API_TOKEN`. The equivalent GitHub CLI commands are:
 
 ```bash
 fork=OWNER/unified-cache-management
