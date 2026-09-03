@@ -1,7 +1,7 @@
 name: download-artifact-retry
 description: >-
-  actions/download-artifact@v4 的重试包装；吸收签名 URL 下载时的 GitHub 429 / ECONNRESET。
-  输入与 download-artifact@v4 一致；name 与 pattern 二选一，失败重试时清空目标目录避免半成品合并。
+  actions/download-artifact@v4 的重试包装;吸收签名 URL 下载时的 GitHub 429 / ECONNRESET。
+  输入与 download-artifact@v4 一致;name 与 pattern 二选一，失败重试时清空目标目录避免半成品合并。
 inputs:
   name:
     description: 单个制品名（与 pattern 二选一）。
