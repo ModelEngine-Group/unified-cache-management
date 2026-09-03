@@ -1,4 +1,4 @@
-"""Device-independent UCM metadata helpers for compatibility checks."""
+"""Device-independent UCM model compatibility-check helpers."""
 
 from __future__ import annotations
 
@@ -75,6 +75,7 @@ class CacheFixture:
     kv_cache_config: Any
     kv_caches: dict[str, Any]
     layer_to_group: dict[str, int]
+    transfer_layers: tuple[str, ...]
 
 
 # Engine and UCM configuration.
@@ -159,6 +160,9 @@ def make_config(
             "max_model_len": max_model_len,
             "max_num_batched_tokens": max_model_len,
             "max_num_seqs": 2,
+            # The checker must exercise the external UCM lookup. Keeping local
+            # prefix caching enabled lets the target request reuse source blocks
+            # from the same Scheduler and bypass UCM with an HBM hit.
             "enable_prefix_caching": True,
             "enforce_eager": True,
             "disable_hybrid_kv_cache_manager": False,
@@ -661,11 +665,22 @@ def make_cache(
         raise AssertionError(
             f"KV tensors are missing native group assignments: {sorted(missing)}"
         )
+    from vllm.v1.kv_cache_interface import AttentionSpec
+
+    # vLLM wraps only Attention/MLA execution with maybe_transfer_kv_layer.
+    # Mamba and linear-attention layers contribute KV tensors and groups, but
+    # do not invoke the connector's per-layer hooks during a real forward pass.
+    transfer_layers = tuple(
+        layer_name
+        for layer_name in kv_caches
+        if isinstance(kv_cache_specs.get(layer_name), AttentionSpec)
+    )
     return CacheFixture(
         vllm_config=kv_vllm_config,
         kv_cache_config=kv_cache_config,
         kv_caches=kv_caches,
         layer_to_group=layer_to_group,
+        transfer_layers=transfer_layers,
     )
 
 
@@ -910,9 +925,10 @@ def build_forward_context(kv_caches: dict[str, Any]) -> Any:
 
 
 def call_worker_layer_hooks(worker: Any, fixture: Any, save: bool) -> None:
-    """Run UCM's per-layer load wait and optional save hook for every KV cache."""
+    """Reproduce the hooks called by vLLM Attention/MLA execution."""
 
-    for layer_name, kv_cache in fixture.kv_caches.items():
+    for layer_name in fixture.transfer_layers:
+        kv_cache = fixture.kv_caches[layer_name]
         worker.wait_for_layer_load(layer_name)
         if save:
             worker.save_kv_layer(layer_name, kv_cache, None)
