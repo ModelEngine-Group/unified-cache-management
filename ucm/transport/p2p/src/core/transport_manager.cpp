@@ -99,7 +99,11 @@ bool TransportForDirect(OperationDirect direct, TransportProtocol& protocol)
 
 }  // namespace
 
-TransportManager::TransportManager(ManagerID manager_id) : manager_id_(std::move(manager_id)) {}
+TransportManager::TransportManager(ManagerID manager_id)
+    : manager_id_(std::move(manager_id)),
+      memory_region_manager_(std::make_shared<MemoryRegionManager>())
+{
+}
 
 TransportManager::~TransportManager() { (void)Shutdown(); }
 
@@ -128,6 +132,7 @@ Status TransportManager::Init()
 
 Status TransportManager::InstallTransport(TransportProtocol protocol, const InitAttrs& options)
 {
+    std::lock_guard<std::mutex> memory_lock(memory_mutex_);
     if (protocol_map_.find(protocol) != protocol_map_.end()) {
         UC_DEBUG("transport manager install skipped protocol={}: already installed",
                  static_cast<uint32_t>(protocol));
@@ -138,7 +143,9 @@ Status TransportManager::InstallTransport(TransportProtocol protocol, const Init
     P2P_RETURN_IF_TRUE(!transport, Status::Unsupported(),
                        "transport manager install failed: unsupported protocol={}",
                        static_cast<uint32_t>(protocol));
-    P2P_RETURN_IF_ERROR(transport->Init(options), "transport manager install failed protocol={}",
+    const TransportContext context{memory_region_manager_};
+    P2P_RETURN_IF_ERROR(transport->Init(context, options),
+                        "transport manager install failed protocol={}",
                         static_cast<uint32_t>(protocol));
 
     protocol_map_[protocol] = transport.get();
@@ -161,6 +168,7 @@ Status TransportManager::Shutdown()
 {
     UC_DEBUG("transport manager shutdown begin manager={}", manager_id_);
     Status result = Status::OK();
+    std::lock_guard<std::mutex> memory_lock(memory_mutex_);
     std::vector<std::pair<TransportProtocol, ManagerID>> connections;
     {
         std::lock_guard<std::recursive_mutex> lock(peer_mutex_);
@@ -187,7 +195,6 @@ Status TransportManager::Shutdown()
             if (result == Status::OK()) { result = status; }
         }
     }
-    memories_.clear();
     {
         std::lock_guard<std::mutex> lock(transfers_mutex_);
         transfers_.clear();
@@ -343,71 +350,52 @@ Status TransportManager::HandleControlRequest(const Metadata& request, Metadata&
 Status TransportManager::RegisterMemory(const MemoryRegion& memory, MemoryHandle& handle)
 {
     handle = kInvalidMemoryHandle;
-    P2P_RETURN_IF_TRUE(memory.addr == nullptr || memory.length == 0, Status::InvalidParam(),
-                       "transport manager register memory invalid addr={} length={}", memory.addr,
-                       memory.length);
-    const auto address = detail::PtrToU64(memory.addr);
-    P2P_RETURN_IF_TRUE(memory.length > std::numeric_limits<uint64_t>::max() - address,
-                       Status::InvalidParam(),
-                       "transport manager register memory address overflow addr=0x{:x} length={}",
-                       address, memory.length);
-    P2P_RETURN_IF_TRUE(transports_.empty(), Status::Error(),
-                       "transport manager register memory failed: no installed transports");
+    std::lock_guard<std::mutex> memory_lock(memory_mutex_);
+    P2P_RETURN_IF_ERROR(memory_region_manager_->ValidateMemoryRegion(memory),
+                        "transport manager register memory validation failed addr={} length={}",
+                        memory.addr, memory.length);
+    handle = MemoryRegionManager::HashMemoryRegion(memory);
+    P2P_RETURN_IF_ERROR(RegisterMemoryWithTransports(memory, handle),
+                        "transport manager register memory failed addr={} length={}", memory.addr,
+                        memory.length);
+    return Status::OK();
+}
 
-    auto record = std::make_unique<MemoryRecord>();
-    record->region = memory;
-    std::vector<std::pair<Transport*, MemoryHandle>> registered;
-    auto rollback = MakeScopeGuard([&registered] {
+Status TransportManager::RegisterMemoryWithTransports(const MemoryRegion& memory,
+                                                      MemoryHandle handle)
+{
+    std::vector<Transport*> registered;
+    auto rollback = MakeScopeGuard([&registered, handle]() {
         for (auto it = registered.rbegin(); it != registered.rend(); ++it) {
-            P2P_LOG_IF_ERROR(it->first->UnregisterMemory(it->second),
-                             "transport manager register memory rollback failed handle={}",
-                             it->second);
+            P2P_LOG_IF_ERROR((*it)->UnregisterMemory(handle),
+                             "transport manager memory registration rollback failed handle={}",
+                             handle);
         }
     });
     for (const auto& item : transports_) {
-        MemoryHandle transport_handle = kInvalidMemoryHandle;
-        P2P_RETURN_IF_ERROR(item.transport->RegisterMemory(memory, transport_handle),
-                            "transport manager register memory failed protocol={}",
-                            static_cast<int>(item.protocol));
-        P2P_RETURN_IF_TRUE(transport_handle == kInvalidMemoryHandle, Status::Error(),
-                           "transport manager register memory returned an invalid handle "
-                           "protocol={}",
-                           static_cast<int>(item.protocol));
-        record->transport_handles.emplace(item.protocol, transport_handle);
-        registered.emplace_back(item.transport.get(), transport_handle);
+        P2P_RETURN_IF_ERROR(item.transport->RegisterMemory(memory, handle),
+                            "transport manager register memory failed protocol={} handle={}",
+                            static_cast<uint32_t>(item.protocol), handle);
+        registered.push_back(item.transport.get());
     }
-
-    handle = reinterpret_cast<MemoryHandle>(record.get());
-    memories_.emplace(handle, std::move(record));
     rollback.Dismiss();
-    UC_DEBUG("transport manager registered memory handle={} addr=0x{:x} length={}", handle, address,
+    UC_DEBUG("transport manager registered memory handle={} addr={} length={}", handle, memory.addr,
              memory.length);
     return Status::OK();
 }
-
 Status TransportManager::UnregisterMemory(MemoryHandle handle)
 {
+    std::lock_guard<std::mutex> memory_lock(memory_mutex_);
     P2P_RETURN_IF_TRUE(handle == kInvalidMemoryHandle, Status::InvalidParam(),
                        "transport manager unregister memory invalid handle={}", handle);
-
-    const auto it = memories_.find(handle);
-    P2P_RETURN_IF_TRUE(it == memories_.end(), Status::Error(),
-                       "transport manager unregister memory unknown handle={}", handle);
-
-    for (const auto& item : it->second->transport_handles) {
-        const auto transport_it = protocol_map_.find(item.first);
-        P2P_RETURN_IF_TRUE(transport_it == protocol_map_.end(), Status::Error(),
-                           "transport manager unregister memory failed protocol={} handle={}",
-                           static_cast<int>(item.first), item.second);
-        P2P_RETURN_IF_ERROR(transport_it->second->UnregisterMemory(item.second),
+    for (const auto& item : transports_) {
+        P2P_RETURN_IF_ERROR(item.transport->UnregisterMemory(handle),
                             "transport manager unregister memory failed protocol={} handle={}",
-                            static_cast<int>(item.first), item.second);
+                            static_cast<int>(item.protocol), handle);
     }
-    memories_.erase(it);
     UC_DEBUG("transport manager unregistered memory handle={}", handle);
     return Status::OK();
 }
-
 Status TransportManager::FindTransport(Operation& batch, Transport*& transport)
 {
     Endpoint endpoint;

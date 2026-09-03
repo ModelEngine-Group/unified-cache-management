@@ -31,6 +31,8 @@
 
 namespace transport {
 
+class MemoryRegionManager;
+
 using Status = UC::Status;
 using ManagerID = std::string;
 using MemoryHandle = uint64_t;
@@ -57,6 +59,7 @@ enum class Opcode {
 
 enum class TransportProtocol : uint32_t {
     Hixl = 0,
+    Count,
 };
 
 enum class TransferStatus {
@@ -68,6 +71,7 @@ enum class TransferStatus {
 enum class MemoryType {
     Host,
     Device,
+    Count,
 };
 
 enum class OperationDirect {
@@ -85,6 +89,10 @@ struct MemoryRegion {
 
 struct InitAttrs {
     virtual ~InitAttrs() = default;
+};
+
+struct TransportContext {
+    std::shared_ptr<MemoryRegionManager> memory_region_manager;
 };
 
 struct Segment {
@@ -105,10 +113,10 @@ public:
     virtual ~Transport() = default;
 
     virtual TransportProtocol Protocol() const = 0;
-    virtual Status Init(const InitAttrs& options) = 0;
+    virtual Status Init(const TransportContext& context, const InitAttrs& options) = 0;
     virtual Status Shutdown() = 0;
 
-    virtual Status RegisterMemory(const MemoryRegion& memory, MemoryHandle& handle) = 0;
+    virtual Status RegisterMemory(const MemoryRegion& memory, MemoryHandle handle) = 0;
     virtual Status UnregisterMemory(MemoryHandle handle) = 0;
     virtual Status ExportMetadata(const ManagerID& manager_id, Metadata& out) = 0;
     virtual Status ImportMetadata(const ManagerID& manager_id, const Metadata& metadata) = 0;

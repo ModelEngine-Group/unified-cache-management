@@ -147,16 +147,16 @@ HixlTransport::~HixlTransport() { (void)Shutdown(); }
 
 TransportProtocol HixlTransport::Protocol() const { return TransportProtocol::Hixl; }
 
-Status HixlTransport::Init(const InitAttrs& attrs)
+Status HixlTransport::Init(const TransportContext& context, const InitAttrs& attrs)
 {
     const auto* hixl_attrs = dynamic_cast<const HixlInitAttrs*>(&attrs);
     if (hixl_attrs == nullptr) {
         return Status::InvalidParam("invalid HIXL initialization attribute type");
     }
-    return Init(*hixl_attrs);
+    return Init(context, *hixl_attrs);
 }
 
-Status HixlTransport::Init(const HixlInitAttrs& attrs)
+Status HixlTransport::Init(const TransportContext& context, const HixlInitAttrs& attrs)
 {
     if (!instances_.empty()) {
         UC_DEBUG("[Transport][HIXL] transport already initialized: instances={}",
@@ -164,6 +164,9 @@ Status HixlTransport::Init(const HixlInitAttrs& attrs)
         return Status::OK();
     }
     if (attrs.instances.empty()) { return Status::InvalidParam("no HIXL instances configured"); }
+    if (!context.memory_region_manager) {
+        return Status::InvalidParam("memory region manager is not configured");
+    }
     if (attrs.role != HixlRole::Client && attrs.instances.size() > 1) {
         return Status::InvalidParam(
             fmt::format("only Client role supports multiple HIXL instances: role={} instances={}",
@@ -201,6 +204,7 @@ Status HixlTransport::Init(const HixlInitAttrs& attrs)
     connect_timeout_ms_ = attrs.connect_timeout_ms;
     transfer_timeout_ms_ = attrs.transfer_timeout_ms;
     role_ = attrs.role;
+    memory_region_manager_ = context.memory_region_manager;
 
     for (size_t i = 0; i < instances_.size(); ++i) {
         const auto status = instances_[i]->Initialize(attrs.instances[i].options);
@@ -219,7 +223,6 @@ Status HixlTransport::Init(const HixlInitAttrs& attrs)
 
 Status HixlTransport::Shutdown()
 {
-    std::unique_lock<std::shared_mutex> lock(lifecycle_mutex_);
     Status result = Status::OK();
     for (auto& item : peers_) {
         auto& peer = item.second;
@@ -229,68 +232,65 @@ Status HixlTransport::Shutdown()
         peer.connected = false;
     }
 
-    for (const auto& memory : memories_) {
-        for (const auto& handle : memory.second->native_handles) {
-            if (handle.first >= instances_.size() || handle.second == nullptr) { continue; }
-            const auto status = instances_[handle.first]->UnregisterMemory(handle.second);
-            if (status != Status::OK() && result == Status::OK()) { result = status; }
+    if (memory_region_manager_) {
+        std::vector<MemoryRegionManager::Region> memories;
+        const auto query_status = memory_region_manager_->GetMemoryRegions(Protocol(), memories);
+        if (query_status.Failure()) {
+            result = query_status;
+        } else {
+            for (const auto& memory : memories) {
+                const auto& native_handles =
+                    memory.registrations[static_cast<size_t>(Protocol())]->native_handles;
+                for (size_t i = 0; i < native_handles.size(); ++i) {
+                    const auto native_handle = reinterpret_cast<hixl::MemHandle>(native_handles[i]);
+                    const auto status = instances_[i]->UnregisterMemory(native_handle);
+                    if (status != Status::OK() && result == Status::OK()) { result = status; }
+                }
+                (void)memory_region_manager_->RemoveMemoryRegion(Protocol(), memory.handle);
+            }
         }
     }
 
     for (auto& instance : instances_) { instance->Finalize(); }
     instances_.clear();
     peers_.clear();
-    memories_.clear();
     pending_transfers_.clear();
     next_transfer_handle_ = 1;
     return result;
 }
 
-Status HixlTransport::RegisterMemory(const MemoryRegion& memory, MemoryHandle& handle)
+Status HixlTransport::RegisterMemory(const MemoryRegion& memory, MemoryHandle handle)
 {
-    std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
-    handle = kInvalidMemoryHandle;
-    if (instances_.empty()) { return Status::Error("HIXL transport is not initialized"); }
+    MemoryRegionManager::Region existing;
+    const auto query_status = memory_region_manager_->FindMemoryRegion(Protocol(), memory.device_id,
+                                                                       memory.addr, existing);
+    if (query_status.Success()) { return Status::DuplicateKey(); }
 
-    std::unique_lock<std::shared_mutex> memory_lock(memories_mutex_);
-
-    auto record = std::make_unique<LocalMemoryRecord>();
-    record->region = memory;
+    MemoryRegionManager::NativeHandles native_handles;
+    native_handles.reserve(instances_.size());
+    auto rollback = MakeScopeGuard([this, &native_handles]() {
+        for (size_t i = 0; i < native_handles.size(); ++i) {
+            const auto registered = reinterpret_cast<hixl::MemHandle>(native_handles[i]);
+            P2P_LOG_IF_ERROR(instances_[i]->UnregisterMemory(registered),
+                             "HIXL rollback memory registration failed instance={} handle={}", i,
+                             native_handles[i]);
+        }
+    });
 
     for (size_t i = 0; i < instances_.size(); ++i) {
-        if (memory.type == MemoryType::Device &&
-            instances_[i]->LogicalDeviceId() != memory.device_id) {
-            continue;
-        }
-
         hixl::MemHandle native_handle = nullptr;
-        const auto status = instances_[i]->RegisterMemory(memory, native_handle);
-        if (status != Status::OK() || native_handle == nullptr) {
-            for (const auto& item : record->native_handles) {
-                if (instances_[item.first]->UnregisterMemory(item.second) != Status::OK()) {
-                    UC_ERROR(
-                        "[Transport][HIXL] rollback memory registration failed: instance={} "
-                        "handle={}",
-                        item.first, item.second);
-                }
-            }
-            return status.Success()
-                       ? Status::Error(
-                             fmt::format("HIXL instance={} returned an invalid memory handle", i))
-                       : Status(status.Underlying(),
-                                fmt::format("HIXL memory registration failed instance={}: {}", i,
-                                            status.ToString()));
-        }
-        record->native_handles.emplace(i, native_handle);
+        P2P_RETURN_IF_ERROR(instances_[i]->RegisterMemory(memory, native_handle),
+                            "HIXL register memory failed instance={}", i);
+        P2P_RETURN_IF_TRUE(native_handle == nullptr, Status::Error(),
+                           "HIXL register memory returned invalid handle instance={}", i);
+        native_handles.push_back(
+            static_cast<MemoryHandle>(reinterpret_cast<std::uintptr_t>(native_handle)));
     }
 
-    if (record->native_handles.empty()) {
-        return Status::InvalidParam(
-            fmt::format("no matching HIXL instance for memory type={} device={}",
-                        static_cast<int>(memory.type), memory.device_id));
-    }
-    handle = reinterpret_cast<MemoryHandle>(record.get());
-    memories_.emplace(handle, std::move(record));
+    rollback.Dismiss();
+    P2P_RETURN_IF_ERROR(memory_region_manager_->AddMemoryRegion(Protocol(), memory,
+                                                                std::move(native_handles), handle),
+                        "HIXL memory region registration failed handle={}", handle);
     UC_DEBUG("[Transport][HIXL] memory registration completed: handle={} addr={} length={}", handle,
              memory.addr, memory.length);
     return Status::OK();
@@ -299,32 +299,25 @@ Status HixlTransport::RegisterMemory(const MemoryRegion& memory, MemoryHandle& h
 Status HixlTransport::UnregisterMemory(MemoryHandle handle)
 {
     std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
-    if (handle == kInvalidMemoryHandle) {
-        return Status::InvalidParam("invalid HIXL memory handle");
-    }
+    P2P_RETURN_IF_TRUE(handle == kInvalidMemoryHandle, Status::InvalidParam(),
+                       "HIXL unregister memory received invalid handle");
 
-    std::unique_lock<std::shared_mutex> memory_lock(memories_mutex_);
-    const auto record_it = memories_.find(handle);
-    if (record_it == memories_.end()) {
-        return Status::Error(fmt::format("unknown HIXL memory handle={}", handle));
+    if (!memory_region_manager_) {
+        return Status::Error("memory region manager is not configured");
     }
-    auto& record = *record_it->second;
-    while (!record.native_handles.empty()) {
-        const auto item = *record.native_handles.begin();
-        if (item.first >= instances_.size() || item.second == nullptr) {
-            return Status::Error(
-                fmt::format("invalid HIXL native memory handle: handle={} instance={} native={}",
-                            handle, item.first, item.second));
-        }
-        const auto status = instances_[item.first]->UnregisterMemory(item.second);
-        if (status.Failure()) {
-            return {status.Underlying(),
-                    fmt::format("HIXL memory unregistration failed instance={} handle={}: {}",
-                                item.first, item.second, status.ToString())};
-        }
-        record.native_handles.erase(item.first);
+    MemoryRegionManager::Region record;
+    P2P_RETURN_IF_ERROR(memory_region_manager_->FindMemoryRegion(Protocol(), handle, record),
+                        "HIXL unregister memory received unknown handle={}", handle);
+    const auto& native_handles =
+        record.registrations[static_cast<size_t>(Protocol())]->native_handles;
+    for (size_t i = 0; i < native_handles.size(); ++i) {
+        const auto native_handle = reinterpret_cast<hixl::MemHandle>(native_handles[i]);
+        P2P_RETURN_IF_ERROR(instances_[i]->UnregisterMemory(native_handle),
+                            "HIXL unregister memory failed instance={} handle={}", i,
+                            native_handle);
     }
-    memories_.erase(record_it);
+    P2P_RETURN_IF_ERROR(memory_region_manager_->RemoveMemoryRegion(Protocol(), handle),
+                        "HIXL remove memory region failed handle={}", handle);
     UC_DEBUG("[Transport][HIXL] memory unregistration completed: handle={}", handle);
     return Status::OK();
 }
@@ -343,7 +336,6 @@ Status HixlTransport::ExportMetadata(const ManagerID&, Metadata& out)
 
 Status HixlTransport::ImportMetadata(const ManagerID& manager_id, const Metadata& metadata)
 {
-    std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
     std::vector<HixlInstanceInfo> remote_instances;
     HixlRole remote_role = HixlRole::Bidirectional;
     const auto status = DecodeMetadata(metadata, remote_role, remote_instances);
@@ -515,7 +507,6 @@ Status HixlTransport::Connect(const ManagerID& manager_id)
 
 Status HixlTransport::Disconnect(const ManagerID& manager_id)
 {
-    std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
     std::unique_lock<std::shared_mutex> peer_lock(peers_mutex_);
     const auto peer_it = peers_.find(manager_id);
     if (peer_it == peers_.end()) {
@@ -554,21 +545,16 @@ Status HixlTransport::ValidateTransferLocked(const Operation& batch, size_t inst
                             item.local_addr, item.remote_addr, item.length));
         }
 
-        const auto local_address = detail::PtrToU64(item.local_addr);
-        bool registered = false;
-        for (const auto& memory : memories_) {
-            const auto begin = detail::PtrToU64(memory.second->region.addr);
-            if (local_address < begin) { continue; }
-
-            const auto offset = local_address - begin;
-            if (offset <= memory.second->region.length &&
-                item.length <= memory.second->region.length - offset &&
-                memory.second->native_handles.find(instance_index) !=
-                    memory.second->native_handles.end()) {
-                registered = true;
-                break;
-            }
+        if (!memory_region_manager_) {
+            return Status::Error("memory region manager is not configured");
         }
+        MemoryRegionManager::Region memory;
+        const auto query_status = memory_region_manager_->FindContainingMemoryRegion(
+            Protocol(), -1, item.local_addr, item.length, memory);
+        const bool registered =
+            query_status.Success() &&
+            instance_index <
+                memory.registrations[static_cast<size_t>(Protocol())]->native_handles.size();
         if (!registered) {
             return Status::InvalidParam(fmt::format(
                 "HIXL transfer memory is not registered local_addr={} length={} instance={}",
@@ -607,14 +593,11 @@ Status HixlTransport::ExecuteSync(const Operation& batch)
         remote_engine = peer_state.instances.front().endpoint.ToString();
     }
 
-    {
-        std::shared_lock<std::shared_mutex> memory_lock(memories_mutex_);
-        const auto transfer_status = ValidateTransferLocked(batch, local_index);
-        if (transfer_status != Status::OK()) {
-            return {transfer_status.Underlying(),
-                    fmt::format("synchronous HIXL transfer validation failed peer={}: {}",
-                                batch.target_manager, transfer_status.ToString())};
-        }
+    const auto transfer_status = ValidateTransferLocked(batch, local_index);
+    if (transfer_status != Status::OK()) {
+        return {transfer_status.Underlying(),
+                fmt::format("synchronous HIXL transfer validation failed peer={}: {}",
+                            batch.target_manager, transfer_status.ToString())};
     }
 
     UC_DEBUG("[Transport][HIXL] synchronous transfer started: peer={} opcode={} segments={}",
@@ -657,14 +640,11 @@ Status HixlTransport::ExecuteAsync(const Operation& batch, TransferHandle& handl
         remote_engine = peer_state.instances.front().endpoint.ToString();
     }
 
-    {
-        std::shared_lock<std::shared_mutex> memory_lock(memories_mutex_);
-        const auto transfer_status = ValidateTransferLocked(batch, local_index);
-        if (transfer_status != Status::OK()) {
-            return {transfer_status.Underlying(),
-                    fmt::format("asynchronous HIXL transfer validation failed peer={}: {}",
-                                batch.target_manager, transfer_status.ToString())};
-        }
+    const auto transfer_status = ValidateTransferLocked(batch, local_index);
+    if (transfer_status != Status::OK()) {
+        return {transfer_status.Underlying(),
+                fmt::format("asynchronous HIXL transfer validation failed peer={}: {}",
+                            batch.target_manager, transfer_status.ToString())};
     }
 
     hixl::TransferReq request = nullptr;
