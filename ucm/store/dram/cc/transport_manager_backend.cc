@@ -82,7 +82,7 @@ Expected<MemoryHandle> TransportManagerBackend::RegisterMemory(void* address, st
     region.type = type == MemoryRegionType::DEVICE ? transport::MemoryType::Device
                                                    : transport::MemoryType::Host;
     region.device_id = type == MemoryRegionType::DEVICE ? options_.deviceId : -1;
-    transport::MemoryHandle handle = transport::kInvalidMemoryHandle;
+    transport::MemoryHandle handle{};
     const auto status = manager_.RegisterMemory(region, handle);
     if (status.Failure()) { return status; }
     return static_cast<MemoryHandle>(handle);
