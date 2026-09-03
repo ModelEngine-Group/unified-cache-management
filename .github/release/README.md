@@ -161,8 +161,13 @@ artifact. It is not attached to the public GitHub Release. Fresh-environment
 install validation downloads the exact receipt-bound meta/backend URLs,
 verifies their SHA256 digests, and uses production PyPI only for ordinary
 dependencies; index ordering never chooses the UCM distributions. GitHub
-Release notes omit Python-index installation commands for both official and
-Fork releases.
+Release notes show version-pinned installation commands only after a complete
+Python-index publication receipt is available. Official PyPI commands install
+one meta-package extra. TestPyPI examples download the meta Wheel and one
+backend Wheel, then install those local files with dependencies from PyPI.
+Package names, versions, and extras come from the receipt; index URLs come from
+the frozen publication configuration. Unpublished channels have no installation
+section.
 
 Python distribution names are repository-owned and deterministic. The official
 repository publishes canonical `uc-manager*` names. A Fork always prefixes the
