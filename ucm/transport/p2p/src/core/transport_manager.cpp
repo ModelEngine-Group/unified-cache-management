@@ -30,6 +30,7 @@
 #include <utility>
 #include <vector>
 #include "common/binary_codec.h"
+#include "common/status_utils.h"
 #include "control/control_channel.h"
 #include "control/control_protocol.h"
 #ifdef UCM_P2P_HAS_HIXL
@@ -100,18 +101,13 @@ bool TransportForDirect(OperationDirect direct, TransportProtocol& protocol)
 
 TransportManager::TransportManager(ManagerID manager_id) : manager_id_(std::move(manager_id)) {}
 
-TransportManager::~TransportManager()
-{
-    if (Shutdown() != Status::OK()) {}
-}
+TransportManager::~TransportManager() { (void)Shutdown(); }
 
 Status TransportManager::Init()
 {
     UC_DEBUG("transport manager init begin manager={}", manager_id_);
-    if (ParseManagerID(manager_id_, local_endpoint_) != Status::OK()) {
-        UC_ERROR("transport manager init failed: invalid manager id={}", manager_id_);
-        return Status::InvalidParam();
-    }
+    P2P_RETURN_IF_ERROR(ParseManagerID(manager_id_, local_endpoint_),
+                        "transport manager init failed manager={}", manager_id_);
     if (control_) {
         UC_DEBUG("transport manager init skipped: already initialized manager={}", manager_id_);
         return Status::OK();
@@ -122,10 +118,9 @@ Status TransportManager::Init()
             return HandleControlRequest(request, response);
         });
     if (status != Status::OK()) {
-        UC_ERROR("transport manager control init failed manager={} status={}", manager_id_,
-                 status.Underlying());
         control_.reset();
-        return status;
+        P2P_RETURN_IF_ERROR(status, "transport manager control init failed manager={}",
+                            manager_id_);
     }
     UC_DEBUG("transport manager init completed manager={}", manager_id_);
     return Status::OK();
@@ -140,17 +135,11 @@ Status TransportManager::InstallTransport(TransportProtocol protocol, const Init
     }
 
     auto transport = CreateTransport(protocol);
-    if (!transport) {
-        UC_ERROR("transport manager install failed: unsupported protocol={}",
-                 static_cast<uint32_t>(protocol));
-        return Status::Unsupported();
-    }
-    const auto status = transport->Init(options);
-    if (status != Status::OK()) {
-        UC_ERROR("transport manager install failed protocol={} status={}",
-                 static_cast<uint32_t>(protocol), status.Underlying());
-        return status;
-    }
+    P2P_RETURN_IF_TRUE(!transport, Status::Unsupported(),
+                       "transport manager install failed: unsupported protocol={}",
+                       static_cast<uint32_t>(protocol));
+    P2P_RETURN_IF_ERROR(transport->Init(options), "transport manager install failed protocol={}",
+                        static_cast<uint32_t>(protocol));
 
     protocol_map_[protocol] = transport.get();
     transports_.push_back(InstalledTransport{protocol, std::move(transport)});
@@ -181,7 +170,11 @@ Status TransportManager::Shutdown()
     for (const auto& connection : connections) {
         const auto status = CoordinateConnectionWithPeer(ControlOperation::Disconnect,
                                                          connection.first, connection.second);
-        if (status != Status::OK() && result == Status::OK()) { result = status; }
+        if (status != Status::OK()) {
+            P2P_LOG_IF_ERROR(status, "transport manager disconnect failed protocol={} peer={}",
+                             static_cast<uint32_t>(connection.first), connection.second);
+            if (result == Status::OK()) { result = status; }
+        }
     }
 
     if (control_) { control_->Close(); }
@@ -189,8 +182,8 @@ Status TransportManager::Shutdown()
     for (auto& item : transports_) {
         const auto status = item.transport->Shutdown();
         if (status != Status::OK()) {
-            UC_ERROR("transport manager transport shutdown failed protocol={} status={}",
-                     static_cast<uint32_t>(item.protocol), status.Underlying());
+            P2P_LOG_IF_ERROR(status, "transport manager transport shutdown failed protocol={}",
+                             static_cast<uint32_t>(item.protocol));
             if (result == Status::OK()) { result = status; }
         }
     }
@@ -215,12 +208,8 @@ Status TransportManager::ExchangeMetadata(const ManagerID& manager_id)
 {
     UC_DEBUG("transport manager metadata exchange begin local={} peer={}", manager_id_, manager_id);
     Endpoint endpoint;
-    auto status = ParseManagerID(manager_id, endpoint);
-    if (status != Status::OK()) {
-        UC_ERROR("transport manager metadata exchange invalid peer={} status={}", manager_id,
-                 status.Underlying());
-        return status;
-    }
+    P2P_RETURN_IF_ERROR(ParseManagerID(manager_id, endpoint),
+                        "transport manager metadata exchange invalid peer={}", manager_id);
 
     if (manager_id == LocalEndpoint().ToString()) {
         UC_DEBUG("transport manager metadata exchange skipped local peer={}", manager_id);
@@ -228,85 +217,59 @@ Status TransportManager::ExchangeMetadata(const ManagerID& manager_id)
     }
 
     Metadata local;
-    status = ExportLocalMetadata(manager_id, local);
-    if (status != Status::OK()) {
-        UC_ERROR("transport manager metadata export failed peer={} status={}", manager_id,
-                 status.Underlying());
-        return status;
-    }
+    P2P_RETURN_IF_ERROR(ExportLocalMetadata(manager_id, local),
+                        "transport manager metadata export failed peer={}", manager_id);
     Metadata remote;
     Metadata request;
-    status = EncodeControlRequest(ControlRequest{ControlOperation::ExchangeMetadata, std::nullopt,
-                                                 manager_id_, std::move(local)},
-                                  request);
-    if (status != Status::OK()) {
-        UC_ERROR("transport manager metadata request encode failed peer={} status={}", manager_id,
-                 status.Underlying());
-        return status;
-    }
-    status = control_->Request(endpoint, request, remote);
-    if (status != Status::OK()) {
-        UC_ERROR("transport manager metadata request failed peer={} status={}", manager_id,
-                 status.Underlying());
-        return status;
-    }
-    status = ImportMetadata(remote, manager_id);
-    if (status != Status::OK()) {
-        UC_ERROR("transport manager metadata import failed peer={} status={}", manager_id,
-                 status.Underlying());
-        return status;
-    }
+    P2P_RETURN_IF_ERROR(
+        EncodeControlRequest(ControlRequest{ControlOperation::ExchangeMetadata, std::nullopt,
+                                            manager_id_, std::move(local)},
+                             request),
+        "transport manager metadata request encode failed peer={}", manager_id);
+    P2P_RETURN_IF_ERROR(control_->Request(endpoint, request, remote),
+                        "transport manager metadata request failed peer={}", manager_id);
+    P2P_RETURN_IF_ERROR(ImportMetadata(remote, manager_id),
+                        "transport manager metadata import failed peer={}", manager_id);
     UC_DEBUG("transport manager metadata exchange completed local={} peer={}", manager_id_,
              manager_id);
-    return status;
+    return Status::OK();
 }
 
 Status TransportManager::ExportLocalMetadata(const ManagerID& manager_id, Metadata& out)
 {
-    if (transports_.size() > UINT32_MAX) {
-        UC_ERROR("transport manager metadata export failed peer={}: transport count={}", manager_id,
-                 transports_.size());
-        return Status::InvalidParam();
-    }
+    P2P_RETURN_IF_TRUE(
+        transports_.size() > UINT32_MAX, Status::InvalidParam(),
+        "transport manager metadata export transport count exceeds limit count={} peer={}",
+        transports_.size(), manager_id);
 
     PeerAdvertisement advertisement;
     advertisement.records.reserve(transports_.size());
     for (const auto& item : transports_) {
         Metadata metadata;
-        const auto status = item.transport->ExportMetadata(manager_id, metadata);
-        if (status != Status::OK()) {
-            UC_ERROR("transport manager metadata export failed protocol={} peer={} status={}",
-                     static_cast<uint32_t>(item.protocol), manager_id, status.Underlying());
-            return status;
-        }
+        P2P_RETURN_IF_ERROR(item.transport->ExportMetadata(manager_id, metadata),
+                            "protocol={} failed to export metadata for peer={}",
+                            static_cast<uint32_t>(item.protocol), manager_id);
         advertisement.records.push_back(
             TransportMetadataRecord{item.protocol, std::move(metadata)});
     }
-    const auto status = EncodePeerAdvertisement(advertisement, out);
-    if (status != Status::OK()) {
-        UC_ERROR("transport manager advertisement encode failed peer={} status={}", manager_id,
-                 status.Underlying());
-    }
-    return status;
+    P2P_RETURN_IF_ERROR(EncodePeerAdvertisement(advertisement, out),
+                        "failed to encode advertisement for peer={}", manager_id);
+    return Status::OK();
 }
 
 Status TransportManager::ImportMetadata(const Metadata& metadata, const ManagerID& manager_id)
 {
     Endpoint endpoint;
-    if (ParseManagerID(manager_id, endpoint) != Status::OK() ||
-        metadata.size() < sizeof(uint32_t)) {
-        UC_ERROR("transport manager metadata import invalid peer={} bytes={}", manager_id,
-                 metadata.size());
-        return Status::InvalidParam();
-    }
+    P2P_RETURN_IF_ERROR(ParseManagerID(manager_id, endpoint), "invalid metadata peer={}",
+                        manager_id);
+    P2P_RETURN_IF_TRUE(metadata.size() < sizeof(uint32_t), Status::InvalidParam(),
+                       "transport manager metadata import payload is too short peer={} bytes={}",
+                       manager_id, metadata.size());
 
     PeerAdvertisement advertisement;
-    const auto decode_status = DecodePeerAdvertisement(metadata, advertisement);
-    if (decode_status != Status::OK()) {
-        UC_ERROR("transport manager advertisement decode failed peer={} bytes={} status={}",
-                 manager_id, metadata.size(), decode_status.Underlying());
-        return decode_status;
-    }
+    P2P_RETURN_IF_ERROR(DecodePeerAdvertisement(metadata, advertisement),
+                        "failed to decode advertisement peer={} bytes={}", manager_id,
+                        metadata.size());
 
     std::lock_guard<std::recursive_mutex> lock(peer_mutex_);
     for (const auto& record : advertisement.records) {
@@ -317,12 +280,9 @@ Status TransportManager::ImportMetadata(const Metadata& metadata, const ManagerI
             continue;
         }
 
-        const auto status = it->second->ImportMetadata(manager_id, record.metadata);
-        if (status != Status::OK()) {
-            UC_ERROR("transport manager metadata import failed protocol={} peer={} status={}",
-                     static_cast<uint32_t>(record.protocol), manager_id, status.Underlying());
-            return status;
-        }
+        P2P_RETURN_IF_ERROR(it->second->ImportMetadata(manager_id, record.metadata),
+                            "protocol={} failed to import metadata from peer={}",
+                            static_cast<uint32_t>(record.protocol), manager_id);
     }
 
     return Status::OK();
@@ -334,18 +294,10 @@ Status TransportManager::HandleMetadataExchange(const ManagerID& manager_id,
 {
     UC_DEBUG("transport manager handling metadata exchange local={} peer={} request_bytes={}",
              manager_id_, manager_id, remote_metadata.size());
-    const auto status = ImportMetadata(remote_metadata, manager_id);
-    if (status != Status::OK()) {
-        UC_ERROR("transport manager handling metadata import failed peer={} status={}", manager_id,
-                 status.Underlying());
-        return status;
-    }
-    const auto export_status = ExportLocalMetadata(manager_id, local_metadata);
-    if (export_status != Status::OK()) {
-        UC_ERROR("transport manager handling metadata export failed peer={} status={}", manager_id,
-                 export_status.Underlying());
-        return export_status;
-    }
+    P2P_RETURN_IF_ERROR(ImportMetadata(remote_metadata, manager_id),
+                        "failed to import metadata from peer={}", manager_id);
+    P2P_RETURN_IF_ERROR(ExportLocalMetadata(manager_id, local_metadata),
+                        "failed to export metadata to peer={}", manager_id);
     UC_DEBUG("transport manager handled metadata exchange local={} peer={} response_bytes={}",
              manager_id_, manager_id, local_metadata.size());
     return Status::OK();
@@ -354,12 +306,9 @@ Status TransportManager::HandleMetadataExchange(const ManagerID& manager_id,
 Status TransportManager::HandleControlRequest(const Metadata& request, Metadata& response)
 {
     ControlRequest control_request{};
-    auto status = DecodeControlRequest(request, control_request);
-    if (status != Status::OK()) {
-        UC_ERROR("transport manager control request decode failed local={} bytes={} status={}",
-                 manager_id_, request.size(), status.Underlying());
-        return status;
-    }
+    P2P_RETURN_IF_ERROR(DecodeControlRequest(request, control_request),
+                        "transport manager control request decode failed local={} bytes={}",
+                        manager_id_, request.size());
 
     UC_DEBUG(
         "transport manager control request decoded local={} operation={} protocol={} peer={}",
@@ -368,27 +317,23 @@ Status TransportManager::HandleControlRequest(const Metadata& request, Metadata&
         control_request.manager_id);
 
     if (control_request.operation == ControlOperation::ExchangeMetadata) {
-        return HandleMetadataExchange(control_request.manager_id, control_request.payload,
-                                      response);
+        P2P_RETURN_IF_ERROR(
+            HandleMetadataExchange(control_request.manager_id, control_request.payload, response),
+            "transport manager metadata control request failed local={} peer={}", manager_id_,
+            control_request.manager_id);
+        return Status::OK();
     }
-    if (!control_request.protocol.has_value()) {
-        UC_ERROR("transport manager control request missing protocol local={} operation={} peer={}",
-                 manager_id_, ControlOperationName(control_request.operation),
-                 control_request.manager_id);
-        return Status::InvalidParam();
-    }
+    P2P_RETURN_IF_TRUE(
+        !control_request.protocol.has_value(), Status::InvalidParam(),
+        "transport manager control request missing protocol local={} operation={} peer={}",
+        manager_id_, ControlOperationName(control_request.operation), control_request.manager_id);
 
-    const auto apply_status = ApplyConnectionLocally(
-        control_request.operation, *control_request.protocol, control_request.manager_id);
-    if (apply_status != Status::OK()) {
-        UC_ERROR(
-            "transport manager control request apply failed operation={} protocol={} peer={} "
-            "status={}",
-            ControlOperationName(control_request.operation),
-            static_cast<uint32_t>(*control_request.protocol), control_request.manager_id,
-            apply_status.Underlying());
-        return apply_status;
-    }
+    P2P_RETURN_IF_ERROR(
+        ApplyConnectionLocally(control_request.operation, *control_request.protocol,
+                               control_request.manager_id),
+        "transport manager control request apply failed operation={} protocol={} peer={}",
+        ControlOperationName(control_request.operation),
+        static_cast<uint32_t>(*control_request.protocol), control_request.manager_id);
     UC_DEBUG("transport manager control request applied operation={} protocol={} peer={}",
              ControlOperationName(control_request.operation),
              static_cast<uint32_t>(*control_request.protocol), control_request.manager_id);
@@ -398,50 +343,43 @@ Status TransportManager::HandleControlRequest(const Metadata& request, Metadata&
 Status TransportManager::RegisterMemory(const MemoryRegion& memory, MemoryHandle& handle)
 {
     handle = kInvalidMemoryHandle;
-    if (memory.addr == nullptr || memory.length == 0) {
-        UC_ERROR("transport manager register memory invalid addr={} length={}", memory.addr,
-                 memory.length);
-        return Status::InvalidParam();
-    }
+    P2P_RETURN_IF_TRUE(memory.addr == nullptr || memory.length == 0, Status::InvalidParam(),
+                       "transport manager register memory invalid addr={} length={}", memory.addr,
+                       memory.length);
     const auto address = detail::PtrToU64(memory.addr);
-    if (memory.length > std::numeric_limits<uint64_t>::max() - address) {
-        UC_ERROR("transport manager register memory address overflow addr=0x{:x} length={}",
-                 address, memory.length);
-        return Status::InvalidParam();
-    }
-    if (transports_.empty()) {
-        UC_ERROR("transport manager register memory failed: no installed transports");
-        return Status::Error();
-    }
+    P2P_RETURN_IF_TRUE(memory.length > std::numeric_limits<uint64_t>::max() - address,
+                       Status::InvalidParam(),
+                       "transport manager register memory address overflow addr=0x{:x} length={}",
+                       address, memory.length);
+    P2P_RETURN_IF_TRUE(transports_.empty(), Status::Error(),
+                       "transport manager register memory failed: no installed transports");
 
     auto record = std::make_unique<MemoryRecord>();
     record->region = memory;
+    std::vector<std::pair<Transport*, MemoryHandle>> registered;
+    auto rollback = MakeScopeGuard([&registered] {
+        for (auto it = registered.rbegin(); it != registered.rend(); ++it) {
+            P2P_LOG_IF_ERROR(it->first->UnregisterMemory(it->second),
+                             "transport manager register memory rollback failed handle={}",
+                             it->second);
+        }
+    });
     for (const auto& item : transports_) {
         MemoryHandle transport_handle = kInvalidMemoryHandle;
-        auto status = item.transport->RegisterMemory(memory, transport_handle);
-        if (status == Status::OK() && transport_handle == kInvalidMemoryHandle) {
-            status = Status::Error();
-        }
-        if (status != Status::OK()) {
-            UC_ERROR(
-                "transport manager register memory failed protocol={} status={} handle={} "
-                "addr=0x{:x} length={}",
-                static_cast<int>(item.protocol), status.Underlying(), transport_handle,
-                detail::PtrToU64(memory.addr), memory.length);
-            continue;
-        }
+        P2P_RETURN_IF_ERROR(item.transport->RegisterMemory(memory, transport_handle),
+                            "transport manager register memory failed protocol={}",
+                            static_cast<int>(item.protocol));
+        P2P_RETURN_IF_TRUE(transport_handle == kInvalidMemoryHandle, Status::Error(),
+                           "transport manager register memory returned an invalid handle "
+                           "protocol={}",
+                           static_cast<int>(item.protocol));
         record->transport_handles.emplace(item.protocol, transport_handle);
-    }
-    if (record->transport_handles.empty()) {
-        UC_ERROR(
-            "transport manager register memory failed: no transport accepted addr=0x{:x} "
-            "length={}",
-            detail::PtrToU64(memory.addr), memory.length);
-        return Status::Error();
+        registered.emplace_back(item.transport.get(), transport_handle);
     }
 
     handle = reinterpret_cast<MemoryHandle>(record.get());
     memories_.emplace(handle, std::move(record));
+    rollback.Dismiss();
     UC_DEBUG("transport manager registered memory handle={} addr=0x{:x} length={}", handle, address,
              memory.length);
     return Status::OK();
@@ -449,30 +387,21 @@ Status TransportManager::RegisterMemory(const MemoryRegion& memory, MemoryHandle
 
 Status TransportManager::UnregisterMemory(MemoryHandle handle)
 {
-    if (handle == kInvalidMemoryHandle) {
-        UC_ERROR("transport manager unregister memory invalid handle={}", handle);
-        return Status::InvalidParam();
-    }
+    P2P_RETURN_IF_TRUE(handle == kInvalidMemoryHandle, Status::InvalidParam(),
+                       "transport manager unregister memory invalid handle={}", handle);
 
     const auto it = memories_.find(handle);
-    if (it == memories_.end()) {
-        UC_ERROR("transport manager unregister memory unknown handle={}", handle);
-        return Status::Error();
-    }
+    P2P_RETURN_IF_TRUE(it == memories_.end(), Status::Error(),
+                       "transport manager unregister memory unknown handle={}", handle);
 
     for (const auto& item : it->second->transport_handles) {
         const auto transport_it = protocol_map_.find(item.first);
-        if (transport_it == protocol_map_.end()) {
-            UC_ERROR("transport manager unregister memory failed protocol={} handle={}",
-                     static_cast<int>(item.first), item.second);
-            return Status::Error();
-        }
-        const auto status = transport_it->second->UnregisterMemory(item.second);
-        if (status != Status::OK()) {
-            UC_ERROR("transport manager unregister memory failed protocol={} status={} handle={}",
-                     static_cast<int>(item.first), status.Underlying(), item.second);
-            return Status::Error();
-        }
+        P2P_RETURN_IF_TRUE(transport_it == protocol_map_.end(), Status::Error(),
+                           "transport manager unregister memory failed protocol={} handle={}",
+                           static_cast<int>(item.first), item.second);
+        P2P_RETURN_IF_ERROR(transport_it->second->UnregisterMemory(item.second),
+                            "transport manager unregister memory failed protocol={} handle={}",
+                            static_cast<int>(item.first), item.second);
     }
     memories_.erase(it);
     UC_DEBUG("transport manager unregistered memory handle={}", handle);
@@ -481,41 +410,39 @@ Status TransportManager::UnregisterMemory(MemoryHandle handle)
 
 Status TransportManager::FindTransport(Operation& batch, Transport*& transport)
 {
-    if (batch.target_manager.empty()) {
-        UC_ERROR("transport manager select transport failed: target manager is empty");
-        return Status::InvalidParam();
-    }
     Endpoint endpoint;
-    if (ParseManagerID(batch.target_manager, endpoint) != Status::OK()) {
-        UC_ERROR("transport manager select transport failed: invalid peer={}",
-                 batch.target_manager);
-        return Status::InvalidParam();
-    }
+    P2P_RETURN_IF_ERROR(ParseManagerID(batch.target_manager, endpoint),
+                        "transport manager transfer selection invalid peer={}",
+                        batch.target_manager);
 
     TransportProtocol protocol = TransportProtocol::Hixl;
-    if (!TransportForDirect(batch.direct, protocol)) {
-        UC_ERROR("transport manager select transport failed: unsupported direction={} peer={}",
-                 static_cast<uint32_t>(batch.direct), batch.target_manager);
-        return Status::Error();
-    }
+    P2P_RETURN_IF_TRUE(!TransportForDirect(batch.direct, protocol), Status::Unsupported(),
+                       "transport manager transfer selection unsupported direction={} peer={}",
+                       static_cast<uint32_t>(batch.direct), batch.target_manager);
     const auto transport_it = protocol_map_.find(protocol);
-    if (transport_it == protocol_map_.end()) {
-        UC_ERROR("transport manager select transport failed: protocol={} not installed peer={}",
-                 static_cast<uint32_t>(protocol), batch.target_manager);
-        return Status::Error();
-    }
+    P2P_RETURN_IF_TRUE(transport_it == protocol_map_.end(), Status::Unsupported(),
+                       "transport manager transfer selection protocol={} is not installed peer={}",
+                       static_cast<uint32_t>(protocol), batch.target_manager);
     transport = transport_it->second;
     return Status::OK();
 }
 
 Status TransportManager::Connect(TransportProtocol protocol, const ManagerID& manager_id)
 {
-    return CoordinateConnectionWithPeer(ControlOperation::Connect, protocol, manager_id);
+    P2P_RETURN_IF_ERROR(
+        CoordinateConnectionWithPeer(ControlOperation::Connect, protocol, manager_id),
+        "transport manager connect failed protocol={} peer={}", static_cast<uint32_t>(protocol),
+        manager_id);
+    return Status::OK();
 }
 
 Status TransportManager::Disconnect(TransportProtocol protocol, const ManagerID& manager_id)
 {
-    return CoordinateConnectionWithPeer(ControlOperation::Disconnect, protocol, manager_id);
+    P2P_RETURN_IF_ERROR(
+        CoordinateConnectionWithPeer(ControlOperation::Disconnect, protocol, manager_id),
+        "transport manager disconnect failed protocol={} peer={}", static_cast<uint32_t>(protocol),
+        manager_id);
+    return Status::OK();
 }
 
 Status TransportManager::ApplyConnectionLocally(ControlOperation operation,
@@ -525,27 +452,24 @@ Status TransportManager::ApplyConnectionLocally(ControlOperation operation,
     UC_DEBUG("transport manager local {} begin protocol={} peer={}",
              ControlOperationName(operation), static_cast<uint32_t>(protocol), manager_id);
     std::lock_guard<std::recursive_mutex> lock(peer_mutex_);
-    if (shutting_down_ && operation == ControlOperation::Connect) { return Status::Error(); }
+    P2P_RETURN_IF_TRUE(
+        shutting_down_ && operation == ControlOperation::Connect, Status::Error(),
+        "transport manager local connect rejected during shutdown protocol={} peer={}",
+        static_cast<uint32_t>(protocol), manager_id);
     Endpoint endpoint;
-    if (ParseManagerID(manager_id, endpoint) != Status::OK()) {
-        UC_ERROR("transport manager local {} invalid peer={} protocol={}",
-                 ControlOperationName(operation), manager_id, static_cast<uint32_t>(protocol));
-        return Status::InvalidParam();
-    }
+    P2P_RETURN_IF_ERROR(ParseManagerID(manager_id, endpoint),
+                        "local {} has invalid peer={} protocol={}", ControlOperationName(operation),
+                        manager_id, static_cast<uint32_t>(protocol));
     const auto it = protocol_map_.find(protocol);
-    if (it == protocol_map_.end()) {
-        UC_ERROR("transport manager local {} unavailable protocol={} peer={}",
-                 ControlOperationName(operation), static_cast<uint32_t>(protocol), manager_id);
-        return Status::InvalidParam();
-    }
+    P2P_RETURN_IF_TRUE(it == protocol_map_.end(), Status::Unsupported(),
+                       "transport manager local {} has unavailable protocol={} peer={}",
+                       ControlOperationName(operation), static_cast<uint32_t>(protocol),
+                       manager_id);
     const auto status = operation == ControlOperation::Connect ? it->second->Connect(manager_id)
                                                                : it->second->Disconnect(manager_id);
-    if (status != Status::OK()) {
-        UC_ERROR("transport manager local {} failed protocol={} peer={} status={}",
-                 ControlOperationName(operation), static_cast<uint32_t>(protocol), manager_id,
-                 status.Underlying());
-        return status;
-    }
+    P2P_RETURN_IF_ERROR(status, "local {} failed protocol={} peer={}",
+                        ControlOperationName(operation), static_cast<uint32_t>(protocol),
+                        manager_id);
 
     const auto connection = std::make_pair(protocol, manager_id);
     if (operation == ControlOperation::Connect) {
@@ -565,40 +489,29 @@ Status TransportManager::CoordinateConnectionWithPeer(ControlOperation operation
     UC_DEBUG("transport manager coordinate {} begin protocol={} peer={}",
              ControlOperationName(operation), static_cast<uint32_t>(protocol), manager_id);
     Endpoint endpoint;
-    if (ParseManagerID(manager_id, endpoint) != Status::OK()) {
-        UC_ERROR("transport manager coordinate {} invalid peer={} protocol={}",
-                 ControlOperationName(operation), manager_id, static_cast<uint32_t>(protocol));
-        return Status::InvalidParam();
-    }
-    if (!control_) {
-        UC_ERROR(
-            "transport manager coordinate {} failed: control channel is unavailable peer={} "
-            "protocol={}",
-            ControlOperationName(operation), manager_id, static_cast<uint32_t>(protocol));
-        return Status::InvalidParam();
-    }
-    if (protocol_map_.find(protocol) == protocol_map_.end()) {
-        UC_ERROR("transport manager coordinate {} unavailable protocol={} peer={}",
-                 ControlOperationName(operation), static_cast<uint32_t>(protocol), manager_id);
-        return Status::InvalidParam();
-    }
+    P2P_RETURN_IF_ERROR(
+        ParseManagerID(manager_id, endpoint), "coordinate {} has invalid peer={} protocol={}",
+        ControlOperationName(operation), manager_id, static_cast<uint32_t>(protocol));
+    P2P_RETURN_IF_TRUE(
+        !control_, Status::Error(),
+        "transport manager coordinate {} failed: control channel is unavailable peer={} "
+        "protocol={}",
+        ControlOperationName(operation), manager_id, static_cast<uint32_t>(protocol));
+    P2P_RETURN_IF_TRUE(protocol_map_.find(protocol) == protocol_map_.end(), Status::Unsupported(),
+                       "transport manager coordinate {} has unavailable protocol={} peer={}",
+                       ControlOperationName(operation), static_cast<uint32_t>(protocol),
+                       manager_id);
 
     Metadata request;
-    auto status =
-        EncodeControlRequest(ControlRequest{operation, protocol, manager_id_, {}}, request);
-    if (status != Status::OK()) {
-        UC_ERROR(
-            "transport manager coordinate {} request encode failed protocol={} peer={} status={}",
-            ControlOperationName(operation), static_cast<uint32_t>(protocol), manager_id,
-            status.Underlying());
-        return status;
-    }
+    P2P_RETURN_IF_ERROR(
+        EncodeControlRequest(ControlRequest{operation, protocol, manager_id_, {}}, request),
+        "coordinate {} request encode failed protocol={} peer={}", ControlOperationName(operation),
+        static_cast<uint32_t>(protocol), manager_id);
 
     const auto local_status = ApplyConnectionLocally(operation, protocol, manager_id);
     if (operation == ControlOperation::Connect && local_status != Status::OK()) {
-        UC_ERROR("transport manager local connect failed protocol={} peer={} status={}",
-                 static_cast<uint32_t>(protocol), manager_id, local_status.Underlying());
-        return local_status;
+        P2P_RETURN_IF_ERROR(local_status, "local connect failed protocol={} peer={}",
+                            static_cast<uint32_t>(protocol), manager_id);
     }
 
     Metadata ack;
@@ -608,17 +521,17 @@ Status TransportManager::CoordinateConnectionWithPeer(ControlOperation operation
         local_status.Underlying());
     const auto remote_status = control_->Request(endpoint, request, ack);
     if (local_status != Status::OK() || remote_status != Status::OK()) {
-        UC_ERROR("transport manager coordinated {} failed protocol={} peer={} local={} remote={}",
-                 operation == ControlOperation::Connect ? "connect" : "disconnect",
-                 static_cast<uint32_t>(protocol), manager_id, local_status.Underlying(),
-                 remote_status.Underlying());
         if (operation == ControlOperation::Connect && remote_status != Status::OK()) {
             const auto rollback_status =
                 ApplyConnectionLocally(ControlOperation::Disconnect, protocol, manager_id);
             UC_WARN("transport manager rolled back local connect protocol={} peer={} status={}",
                     static_cast<uint32_t>(protocol), manager_id, rollback_status.Underlying());
         }
-        return local_status != Status::OK() ? local_status : remote_status;
+        const auto status = local_status != Status::OK() ? local_status : remote_status;
+        P2P_RETURN_IF_ERROR(status, "coordinated {} failed protocol={} peer={} local={} remote={}",
+                            operation == ControlOperation::Connect ? "connect" : "disconnect",
+                            static_cast<uint32_t>(protocol), manager_id, local_status.Underlying(),
+                            remote_status.Underlying());
     }
     UC_DEBUG("transport manager coordinated {} success protocol={} peer={} ack_bytes={}",
              ControlOperationName(operation), static_cast<uint32_t>(protocol), manager_id,
@@ -632,18 +545,12 @@ Status TransportManager::ExecuteSync(const Operation& batch)
              batch.ops.size());
     Transport* transport = nullptr;
     auto request = batch;
-    auto status = FindTransport(request, transport);
-    if (status != Status::OK()) {
-        UC_ERROR("transport manager sync transfer selection failed peer={} status={}",
-                 batch.target_manager, status.Underlying());
-        return status;
-    }
-    status = transport->ExecuteSync(request);
-    if (status != Status::OK()) {
-        UC_ERROR("transport manager sync transfer failed peer={} segments={} status={}",
-                 batch.target_manager, batch.ops.size(), status.Underlying());
-        return status;
-    }
+    P2P_RETURN_IF_ERROR(FindTransport(request, transport),
+                        "transport manager sync transfer selection failed peer={}",
+                        batch.target_manager);
+    P2P_RETURN_IF_ERROR(transport->ExecuteSync(request),
+                        "transport manager sync transfer failed peer={} segments={}",
+                        batch.target_manager, batch.ops.size());
     UC_DEBUG("transport manager sync transfer completed peer={} segments={}", batch.target_manager,
              batch.ops.size());
     return Status::OK();
@@ -654,22 +561,18 @@ Status TransportManager::ExecuteAsync(const Operation& batch, TransferHandle& ha
     handle = kInvalidTransferHandle;
     Transport* transport = nullptr;
     auto request = batch;
-    auto status = FindTransport(request, transport);
-    if (status != Status::OK()) {
-        UC_ERROR("transport manager async transfer selection failed peer={} status={}",
-                 batch.target_manager, status.Underlying());
-        return status;
-    }
+    P2P_RETURN_IF_ERROR(FindTransport(request, transport),
+                        "transport manager async transfer selection failed peer={}",
+                        batch.target_manager);
 
     TransferHandle transport_handle = kInvalidTransferHandle;
-    status = transport->ExecuteAsync(request, transport_handle);
-    if (status != Status::OK() || transport_handle == kInvalidTransferHandle) {
-        UC_ERROR(
-            "transport manager async transfer submit failed peer={} segments={} status={} "
-            "transport_handle={}",
-            batch.target_manager, batch.ops.size(), status.Underlying(), transport_handle);
-        return status == Status::OK() ? Status::Error() : status;
-    }
+    P2P_RETURN_IF_ERROR(transport->ExecuteAsync(request, transport_handle),
+                        "transport manager async transfer submit failed peer={} segments={}",
+                        batch.target_manager, batch.ops.size());
+    P2P_RETURN_IF_TRUE(
+        transport_handle == kInvalidTransferHandle, Status::Error(),
+        "transport manager async transfer returned an invalid handle peer={} segments={}",
+        batch.target_manager, batch.ops.size());
 
     {
         std::lock_guard<std::mutex> lock(transfers_mutex_);
@@ -686,26 +589,23 @@ Status TransportManager::ExecuteAsync(const Operation& batch, TransferHandle& ha
 
 Status TransportManager::GetStatus(TransferHandle handle, TransferStatus& transfer_status)
 {
-    if (handle == kInvalidTransferHandle) {
-        UC_ERROR("transport manager transfer status invalid handle={}", handle);
-        return Status::InvalidParam();
-    }
+    P2P_RETURN_IF_TRUE(handle == kInvalidTransferHandle, Status::InvalidParam(),
+                       "transport manager transfer status invalid handle={}", handle);
     TransferRecord record;
     {
         std::lock_guard<std::mutex> lock(transfers_mutex_);
         const auto it = transfers_.find(handle);
-        if (it == transfers_.end() || it->second.transport == nullptr) {
-            UC_ERROR("transport manager transfer status unknown handle={}", handle);
-            return Status::Error();
-        }
+        P2P_RETURN_IF_TRUE(it == transfers_.end() || it->second.transport == nullptr,
+                           Status::Error(), "transport manager transfer status unknown handle={}",
+                           handle);
         record = it->second;
     }
     const auto status = record.transport->GetStatus(record.transport_handle, transfer_status);
     if (status != Status::OK()) {
-        UC_ERROR(
-            "transport manager transfer status query failed handle={} transport_handle={} "
-            "status={}",
-            handle, record.transport_handle, status.Underlying());
+        P2P_LOG_IF_ERROR(status,
+                         "transport manager transfer status query failed handle={} "
+                         "transport_handle={}",
+                         handle, record.transport_handle);
     } else if (transfer_status != TransferStatus::Waiting) {
         UC_DEBUG("transport manager transfer completed handle={} transport_handle={} status={}",
                  handle, record.transport_handle, static_cast<uint32_t>(transfer_status));
@@ -723,8 +623,7 @@ Status TransportManager::ParseManagerID(const ManagerID& manager_id, Endpoint& e
 {
     const auto separator = manager_id.rfind(':');
     if (separator == std::string::npos || separator == 0 || separator + 1 >= manager_id.size()) {
-        UC_ERROR("transport manager invalid manager id={}", manager_id);
-        return Status::InvalidParam();
+        return Status::InvalidParam(fmt::format("invalid manager id={}", manager_id));
     }
 
     const auto host = manager_id.substr(0, separator);
@@ -734,16 +633,14 @@ Status TransportManager::ParseManagerID(const ManagerID& manager_id, Endpoint& e
         const auto port = std::stoul(port_text, &parsed, 10);
         if (parsed != port_text.size() || port == 0 ||
             port > std::numeric_limits<uint16_t>::max()) {
-            UC_ERROR("transport manager invalid manager port manager={} port={}", manager_id,
-                     port_text);
-            return Status::InvalidParam();
+            return Status::InvalidParam(
+                fmt::format("invalid manager port manager={} port={}", manager_id, port_text));
         }
         endpoint = Endpoint{host, static_cast<uint16_t>(port)};
         return Status::OK();
     } catch (const std::exception& error) {
-        UC_ERROR("transport manager failed to parse manager id={} error={}", manager_id,
-                 error.what());
-        return Status::InvalidParam();
+        return Status::InvalidParam(
+            fmt::format("failed to parse manager id={} error={}", manager_id, error.what()));
     }
 }
 
