@@ -6,61 +6,73 @@ It is recommended to first collect hit ratio statistics with Trace Mode and conf
 
 ## 1. Overview
 
-Trace Mode is enabled by setting two options to `true` in the UCM configuration file:
+Trace Mode supports three model categories, each with a dedicated Lite connector variant:
 
-| Option | Default | Description |
-| :----- | :------ | :---------- |
-| `enable_record_traces` | `false` | Logs per-request traces (timestamp, input_length, output_length, hash_ids). Each hash_id takes 32 bytes. |
-| `use_lite` | `false` | Switches to the **UCM Lite Connector**, which works with a Fake Store that skips all actual KV dump/load operations. |
+| Model type   | Connector                | Examples                                      |
+| :----------- | :----------------------- | :-------------------------------------------- |
+| `standard` | `UCMLiteConnector`     | GQA / MLA models (e.g. Qwen2.5)               |
+| `mamba`    | `UCMHLALiteConnector`  | Hybrid linear-attention (Qwen3-Next, Kimi-K3) |
+| `fawa`     | `UCMFAWALiteConnector` | DeepSeek-V4 (FA + WA mixed attention)         |
 
-When both are enabled, `UCMConnector` internally instantiates a `UCMLiteConnector` instead of the regular storage-backed connectors. The Lite connector:
+Trace Mode is enabled by setting `use_lite: true` in the UCM configuration file:
+
+| Option       | Default | Description                                                                                                                       |
+| :----------- | :------ | :-------------------------------------------------------------------------------------------------------------------------------- |
+| `use_lite` | `false` | Switches to the **UCM Lite Connector**, which works with a Fake Store that skips all actual KV dump/load operations.          |
+
+When enabled, `UCMConnector` internally instantiates the appropriate Lite connector variant based on the model's KV cache layout. The Lite connector:
 
 - Computes the same block hash IDs that a real UCM deployment would use.
-- Logs a trace record for every request on its first lookup.
+- Logs a topology line at startup and a trace record for every request on its first lookup.
 - Returns `0` external hit tokens (there is no real store to look up), so inference correctness is unaffected and no KV data is persisted.
 - Implements all KV transfer hooks (`start_load_kv`, `save_kv_layer`, `wait_for_save`, etc.) as no-ops.
 
+### Topology Line (startup, one per process)
 
-### Logged Trace Format
-
-Each request produces two log lines on first lookup:
+At startup the Lite connector emits a single `UCMTraceMeta:` line that encodes the model's KV cache topology. The simulator parses this line automatically to determine model type, block sizes, and per-group configuration — **you don't need to specify any of these on the CLI**.
 
 ```text
-[UC][I] timestamp: 1234567.890123, request_id: req-42, input_length: 8192, output_length: 128, ucm_block_ids: ['a1b2...', 'c3d4...', ...]
-[UC][I] request_id: req-42, hash_time_ms: 0.512, print_time_ms: 0.034
+UCMTraceMeta: type=<standard|mamba|fawa>, is_mla=<bool>, vllm_hash_block_size=<T>, trace_hash_block_size=<S>, hbm_block_data_size=<B>, ...
 ```
 
-| Field | Description |
-| :---- | :---------- |
-| `timestamp` | `time.perf_counter()` value at lookup time, used to preserve request ordering during analysis. |
-| `request_id` | vLLM request identifier (present in Lite connector traces). |
-| `input_length` | Number of input tokens in the request (`request.num_tokens`). |
-| `output_length` | Maximum output tokens for the request (`request.max_tokens`). |
-| `ucm_block_ids` | List of hex-encoded block hash IDs. Each block corresponds to `block_size` tokens; each hash is 32 bytes. |
-| `hash_time_ms` | Time spent computing the block hash IDs (Lite connector only). |
-| `print_time_ms` | Time spent formatting/logging the trace line (Lite connector only). |
+All model types emit `trace_hash_block_size` (the granularity at which per-request block hashes are generated, typically 512). The exact fields vary by model type (mamba adds `lcm_block_size`/`mamba_groups`; fawa adds `ucm_hash_block_size`/`fa_file_size`/`wa_file_size`/`alignment_tokens`/`groups`). This line is for the simulator's internal use only.
+
+### Trace Line (per request)
+
+Each request produces one log line on first lookup:
+
+```text
+UCMTrace: timestamp: 1234567.890123, request_id: req-42, input_length: 8192, output_length: 128, block_hashes: ['a1b2...', 'c3d4...', ...]
+```
+
+| Field             | Description                                                                                                                                                                      |
+| :---------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `timestamp`     | `time.perf_counter()` value at lookup time, used to preserve request ordering during analysis.                                                                                 |
+| `request_id`    | vLLM request identifier (present in Lite connector traces).                                                                                                                      |
+| `input_length`  | Number of input tokens in the request (`request.num_tokens`).                                                                                                                  |
+| `output_length` | Maximum output tokens for the request (`request.max_tokens`).                                                                                                                  |
+| `block_hashes`  | List of hex-encoded block hash IDs generated by the Lite connector at `trace_hash_block_size` granularity (typically 512 tokens per hash; see the `trace_hash_block_size` field in the topology line). Each hash is a 16-byte hex string (32 characters). During simulation, the analyzer synthesizes finer-grained hashes from these coarse hashes to match `vllm_hash_block_size`. |
 
 ## 2. Configuration
 
 You can start from the sample file at `unified-cache-management/examples/ucm_config_example.yaml`
 
-Trace Mode is enabled by setting two options to `true`: 
+Trace Mode is enabled by setting `use_lite: true`:
+
 ```yaml
-enable_record_traces: true
 use_lite: true
 ```
 
-
 ### Log Configuration(Optional)
 
-Trace line can be large because each hash_id is 32 bytes and a long request can contain many block IDs. Tune the following environment variables before launching the service:
+Trace line can be large because each hash is a 32-character hex string and a long request can contain many block hashes. Tune the following environment variables before launching the service:
 
-| Environment Variable | Default | Description |
-| :------------------- | :------ | :---------- |
-| `UCM_LOG_PATH` | `log` | Directory for per-process log files (e.g. `ucm-<pid>.log`). |
-| `UCM_LOG_MAX_FILES` | `10` | Maximum number of rotated log files kept per process. |
-| `UCM_LOG_MAX_SIZE` | `5` | Maximum size in **MiB** per log file before rotation. Increase this significantly when recording traces for long requests. |
-| `UCM_LOG_LEVEL` | `info` | Log level. Traces are emitted at `INFO` level, so keep this at `info` (or lower for extra debug output). |
+| Environment Variable  | Default  | Description                                                                                                                     |
+| :-------------------- | :------- | :------------------------------------------------------------------------------------------------------------------------------ |
+| `UCM_LOG_PATH`      | `log`  | Directory for per-process log files (e.g.`ucm-<pid>.log`).                                                                    |
+| `UCM_LOG_MAX_FILES` | `10`   | Maximum number of rotated log files kept per process.                                                                           |
+| `UCM_LOG_MAX_SIZE`  | `5`    | Maximum size in**MiB** per log file before rotation. Increase this significantly when recording traces for long requests. |
+| `UCM_LOG_LEVEL`     | `info` | Log level. Traces are emitted at`INFO` level, so keep this at `info` (or lower for extra debug output).                     |
 
 Example for a trace-collection run:
 
@@ -98,138 +110,156 @@ vllm serve Qwen/Qwen2.5-14B-Instruct \
 
 **⚠️ Replace the `UCM_CONFIG_FILE` path with the actual path to your trace-mode config file on your machine.**
 
-When the service starts, the following log confirms that the Lite connector is active:
-
-```text
-[UC][I] Init UCMLiteConnector.
-```
-
 You can now send production-equivalent traffic to the server. Every request will produce a trace record in the UCM log directory. No KV cache is dumped or loaded.
 
 ## 4. Trace Analysis
 
-After collecting traces, run `benchmarks/auto_trace_analysis.py` to simulate the theoretical KV cache hit rate. The script parses trace lines **plus** the `available kv cache memory` (or `current kv cache memory`) and `tensor_parallel_size` values that vLLM/UCM emit at startup, then simulates an LRU multi-tier cache (HBM → DRAM → FS) to estimate the hit rate UCM would achieve.
+After collecting traces, run `benchmarks/auto_trace_analysis.py` to simulate the theoretical KV cache hit rate. The script parses the `UCMTraceMeta:` topology line **plus** the `available kv cache memory` (or `current kv cache memory`), `tensor_parallel_size`, `data_parallel_size`, `max_num_batched_tokens`, and `async_scheduling` values that vLLM/UCM emit at startup, then simulates a multi-tier cache (HBM → DRAM → FS) to estimate the hit rate UCM would achieve. The simulation engine (standard / mamba / fawa) is selected automatically based on the `type` field in the topology line — no manual model specification needed.
+
+When `async_scheduling` is detected in the logs, the simulator delays WA (window-attention) block frees by two chunks — matching vLLM's `remove_skipped_blocks` behavior where step N-1's tokens are still in-flight when step N's allocation begins. This doubles the peak HBM block occupancy during chunk prefill (two chunks' worth of temporary blocks instead of one), causing earlier eviction of cached prefix blocks.
 
 ```bash
 python benchmarks/auto_trace_analysis.py \
-  --service-url <ip:port of vllm service> \
   --log-dir <path to log folder> \
-  --block-kv-cache-size <bytes_per_block> \
-  --is-mla <true|false> \
   --dram-pool-size-gb <dram_gb> \
-  --fs-pool-size-gb <fs_gb> 
+  --fs-pool-size-gb <fs_gb> \
+  [--num-nodes <physical nodes>] \
+  [--unified-memory-pool] \
+  [--service-url <ip:port>] \
+  [--output <path>] \
+  [--trace-output <path>]
 ```
 
 Required arguments:
 
-| Argument | Description |
-| :------- | :---------- |
-| `--service-url`  | vLLM `/metrics` endpoint (Prometheus). When set, the tool fetches the service's actual prefix-cache hit rate for comparison. |
-| `--log-dir` | Directory containing the UCM log files (scanned recursively for `*.log`, `*.log.*`, `*.log.gz`). It must include vLLM's startup logs (captured to `<UCM_LOG_PATH>/vllm-<pid>.log` by default) so the available KV cache memory and tensor-parallel size can be parsed. |
-| `--block-kv-cache-size`  | Size in bytes of a single KV cache block. Use the [KV Cache Size Calculator](../getting-started/kv_cache_calculator.md) to determine this value for your model. |
-| `--is-mla` | Whether the model uses Multi-Latent Attention (`true`/`false`). When `true`, the HBM capacity is taken per-rank; otherwise it is multiplied by the tensor-parallel size. |
-| `--dram-pool-size-gb` | Simulated DRAM (host memory) pool size in GiB. |
-| `--fs-pool-size-gb` | Simulated filesystem (SSD/NFS) pool size in GiB. |
+| Argument                | Description                                                                                                                                                                                                                                                                                                                                                                           |
+| :---------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--log-dir`           | Directory containing the UCM log files (scanned recursively for`*.log`, `*.log.*`, `*.log.gz`). It must include vLLM's startup logs (captured to `<UCM_LOG_PATH>/vllm-<pid>.log` by default) so the available KV cache memory, tensor-parallel size, data-parallel size, `max_num_batched_tokens`, `async_scheduling`, and `UCMTraceMeta:` topology line can be parsed. |
+| `--dram-pool-size-gb` | Simulated DRAM (host memory) pool size in GiB (total cluster budget).                                                                                                                                                                                                                                                                                                                 |
+| `--fs-pool-size-gb`   | Simulated filesystem (SSD/NFS) pool size in GiB (total cluster budget).                                                                                                                                                                                                                                                                                                               |
 
-### Configuration Reference for Common Models
+Optional arguments:
 
-`--block-kv-cache-size` is computed from the model architecture. Formulas (per block, **not** divided by tensor-parallel — it is the full block size across all layers/heads):
-
-```text
-GQA:          2 × num_hidden_layers × block_size × num_kv_heads × head_dim × dtype_bytes
-MLA:          num_hidden_layers × block_size × (kv_lora_rank + qk_rope_head_dim) × dtype_bytes
-DSA:          num_hidden_layers × block_size × (kv_lora_rank + qk_rope_head_dim + index_head_dim) × dtype_bytes
-Hybrid (V4):  bytesPerToken × block_size
-```
-
-`--is-mla` reflects whether the KV is **shared across ranks** (compressed MLA/DSA/V4 KV is rank-shared → `true`; GQA shards KV by head → `false`). It corresponds to UCM's `is_deepseek_mla` / `share_buffer_enable` (`ucm_connector.py:1063`, `ucm_connector.py:1251`): when `true`, the single-rank available KV memory parsed from logs already represents the full cluster budget; otherwise it is multiplied by the tensor-parallel size.
-
-Values below assume **bfloat16** (`dtype_bytes=2`) and **`block_size=128`** (UCM default):
-
-| Model | Attention | `--is-mla` | `--block-kv-cache-size` |
-| :--- | :--- | :--- | :--- |
-| GLM-4.7 | GQA | `false` | `48234496` |
-| GLM-4.7-Flash | MLA | `true` | `6930432` |
-| GLM-5 / GLM-5.1 / GLM-5.2 | DSA | `true` | `14057472` |
-| MiniMax-M2.7 | GQA | `false` | `32505856` |
-| MiniMax-M3 | GQA | `false` | `15728640` |
-
-**DeepSeek V4 (hybrid)** uses `bytesPerToken × block_size`:
-
-| Model | Deployment | `block_size` | bytesPerToken | `--is-mla` | `--block-kv-cache-size` |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| DeepSeek-V4-Pro | vllm-ascend | 32 | 27175 | `true` | `869600` |
-| DeepSeek-V4-Pro | vllm-ascend | 128 | 27175 | `true` | `3478400` |
-| DeepSeek-V4-Pro | vllm | 256 | 28415.4375 | `true` | `7274352` |
-| DeepSeek-V4-Flash | vllm-ascend | 32 | 19162.5 | `true` | `613200` |
-| DeepSeek-V4-Flash | vllm-ascend | 128 | 19162.5 | `true` | `2452800` |
-| DeepSeek-V4-Flash | vllm | 256 | 20058.25 | `true` | `5134912` |
-
-Notes:
-
-- For fp16 keep the same value; for fp8 halve it; for fp32 double it.
-- `block_size` must equal the vLLM `--block_size` used when collecting traces, otherwise the capacity derived here will not line up with the recorded hashes.
-- Architecture params are sourced from `docs/source/_static/model-configs.js`; DeepSeek V4 `bytesPerToken` from `calculator.js` (`DEEPSEEK_V4_CONFIGS`). Always cross-check with the [KV Cache Size Calculator](../getting-started/kv_cache_calculator.md) for your exact model config.
+| Argument                  | Description                                                                                                                                                                                          |
+| :------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--num-nodes`           | Number of physical nodes (default 1; not logged by vLLM).                                                                                                                                          |
+| `--unified-memory-pool` | If set, DRAM is a single global pool (FA+WA share one`ByteLRUPool` for FAWA). If unset, DRAM is partitioned per-node (MLA) or per-DP-rank (GQA); FAWA splits DRAM evenly between FA and WA stores. |
+| `--service-url`         | vLLM`/metrics` endpoint (Prometheus). When set, the tool fetches the service's actual prefix-cache hit rate for comparison.                                                                        |
+| `--metrics-timeout`     | Timeout for fetching Prometheus metrics (default 5.0 seconds).                                                                                                                                       |
+| `--random-seed`         | Random seed for DP-rank routing (default 0).                                                                                                                                                         |
+| `--trace-output`        | If set, exports parsed trace records as JSON Lines to the given path.                                                                                                                                |
+| `--output`              | If set, writes the full analysis result as JSON to the given path.                                                                                                                                   |
 
 ## 5. Report
 
-`print_summary` prints the following to stdout (the same values are written to the `analysis` section of the `--output` JSON). Example:
+`AnalysisRunner.print_summary` prints the following to stdout (the same values are written to the `analysis` section of the `--output` JSON).
+
+### Standard / Mamba models
 
 ```text
 Trace cache hit rate analysis
+  Model type: standard
   Total request count: 1200
   Total request token count: 19660800
-  Average tokens per request: 16384.00
-  Total HBM available KV cache size: 12.50 GiB
-  TP size: 2
-  DRAM pool size: 64.00 GiB
-  FS pool size: 1024.00 GiB
-  Theoretical max KV cache hit rate: 78.340000%
-  HBM theoretical hit rate: 21.560000%
-  HBM + DRAM pool theoretical hit rate: 45.210000%
-  HBM + DRAM pool + FS pool theoretical hit rate: 72.890000%
+  HBM available: 12.50 GiB
+  TP=2  DP=2  Nodes=1
+  DRAM pool: 64.00 GiB  FS pool: 1024.00 GiB
+  Theoretical max: 78.34%
+  Service actual:  18.34%
+  HBM:              21.56%
+  HBM+DRAM:         45.21%
+  HBM+DRAM+FS:      72.89%
   Request lifetime sample count: 980
   Average request lifetime: 142.350000 s
   P90 request lifetime: 318.700000 s
   P95 request lifetime: 405.120000 s
 ```
 
+> `Service actual` is only shown when `--service-url` is configured.
+
+### FAWA (DeepSeek-V4) models
+
+FAWA models run each scenario twice — once with **block-wise** WA dump (every hash-block boundary) and once with **chunk-wise** WA dump (only chunk-end boundaries):
+
+```text
+Trace cache hit rate analysis
+  Model type: fawa
+  Total request count: 1200
+  Total request token count: 19660800
+  HBM available: 12.50 GiB
+  TP=2  DP=2  Nodes=1
+  DRAM pool: 64.00 GiB  FS pool: 1024.00 GiB
+  [block_wise]
+    Theoretical max: 80.12%
+    Service actual:  18.34%
+    HBM:              23.45%
+    HBM+DRAM:         48.67%
+    HBM+DRAM+FS:      75.34%
+  [chunk_wise]
+    Theoretical max: 75.89%
+    Service actual:  18.34%
+    HBM:              20.12%
+    HBM+DRAM:         43.56%
+    HBM+DRAM+FS:      70.23%
+  Request lifetime sample count: 980
+  Average request lifetime: 142.350000 s
+  P90 request lifetime: 318.700000 s
+  P95 request lifetime: 405.120000 s
+```
+
+> Block-wise typically yields higher hit rates (any boundary can be matched) at the cost of more dump I/O. Chunk-wise has lower I/O but can only match at chunk boundaries. Choose the mode that best reflects your deployment's dump strategy.
+
 **Workload & capacity echo** — confirms what was parsed from the logs and derived from your arguments:
 
-| Metric | Meaning |
-| :--- | :--- |
-| `Total request count` | Number of trace records parsed (= request count). |
-| `Total request token count` | Sum of `input_length` across all requests. |
-| `Average tokens per request` | Mean input tokens per request. |
-| `Total HBM available KV cache size` | HBM KV budget in GiB. Parsed from vLLM's `Current/Available KV cache memory`; for non-MLA it is already multiplied by `TP size`, for MLA it is the shared per-rank value. |
-| `TP size` | Tensor-parallel size resolved from the logs. |
-| `DRAM pool size` / `FS pool size` | The `--dram-pool-size-gb` / `--fs-pool-size-gb` you passed in. |
+| Metric                        | Meaning                                                                                                                                         |
+| :---------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Model type`                | Model category (`standard` / `mamba` / `fawa`) parsed from the `UCMTraceMeta` topology line.                                            |
+| `Total request count`       | Number of trace records parsed (= request count).                                                                                               |
+| `Total request token count` | Sum of`input_length` across all requests.                                                                                                     |
+| `HBM available`             | Single-card HBM KV budget in GiB. Parsed from vLLM's`Current/Available KV cache memory`; this is the per-DP-rank HBM, never multiplied by TP. |
+| `TP`                        | Tensor-parallel size resolved from the logs.                                                                                                    |
+| `DP`                        | Data-parallel size resolved from the logs.                                                                                                      |
+| `DRAM pool` / `FS pool`   | The`--dram-pool-size-gb` / `--fs-pool-size-gb` you passed in.                                                                               |
 
-**Hit-rate scenarios** — four LRU simulations with different tier capacities; each rate is `hit_tokens / total_tokens`:
+**Hit-rate scenarios** — four independent simulation runs per mode, each with different tier capacities; each rate is `hit_tokens / total_tokens`. For FAWA models, each run is executed twice (block-wise and chunk-wise WA dump):
 
-| Metric | Tier capacity used | What it tells you |
-| :--- | :--- | :--- |
-| `Theoretical max KV cache hit rate` | every tier = `unique_block_count` (effectively unlimited) | Upper bound — the most UCM could ever reach for this traffic. |
-| `HBM theoretical hit rate` | HBM only (DRAM=FS=0) | What you get with no external pool — pure on-device KV. |
-| `HBM + DRAM pool theoretical hit rate` | HBM + DRAM (FS=0) | Marginal gain from adding a host-memory pool. |
-| `HBM + DRAM pool + FS pool theoretical hit rate` | all three tiers | Closest to a real UCM deployment's expected hit rate. |
+| Metric (stdout label) | JSON key suffix             | Tier capacity used                                         | What it tells you                                              |
+| :-------------------- | :-------------------------- | :--------------------------------------------------------- | :------------------------------------------------------------- |
+| `Theoretical max`   | `theoretical_max_percent` | every tier =`unique_block_count` (effectively unlimited) | Upper bound — the most UCM could ever reach for this traffic. |
+| `HBM`               | `hbm_percent`             | HBM only (DRAM=FS=0)                                       | What you get with no external pool — pure on-device KV.       |
+| `HBM+DRAM`          | `hbm_dram_percent`        | HBM + DRAM (FS=0)                                          | Marginal gain from adding a host-memory pool.                  |
+| `HBM+DRAM+FS`       | `hbm_dram_fs_percent`     | all three tiers                                            | Closest to a real UCM deployment's expected hit rate.          |
+
+> For FAWA, JSON keys are prefixed with `block_wise_` or `chunk_wise_` (e.g. `block_wise_hbm_percent`). The stdout output uses `[block_wise]` / `[chunk_wise]` section headers.
+
+A progress bar is printed to stderr during simulation. All scenarios run in parallel via multiprocessing, with each scenario's progress shown on a separate line that updates in place using ANSI escape codes:
+
+```text
+  [block_wise] theoretical_max              100.0% |██████████████████████████████| 1200/1200
+  [block_wise] hbm                           45.0% |████████████████░░░░░░░░░░░░░░| 540/1200
+  [block_wise] hbm_dram                     60.0% |██████████████████████░░░░░░░░| 720/1200
+  [block_wise] hbm_dram_fs                  75.0% |████████████████████████████░░| 900/1200
+  [chunk_wise] theoretical_max              30.0% |█████████░░░░░░░░░░░░░░░░░░░░░| 360/1200
+  [chunk_wise] hbm                          10.0% |███░░░░░░░░░░░░░░░░░░░░░░░░░░░| 120/1200
+  [chunk_wise] hbm_dram                      5.0% |█░░░░░░░░░░░░░░░░░░░░░░░░░░░░░| 60/1200
+  [chunk_wise] hbm_dram_fs                   0.0% |░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░| 0/1200
+```
 
 Read them as a monotonic ladder: `HBM` ≤ `HBM+DRAM` ≤ `HBM+DRAM+FS` ≤ `Theoretical max`. Key points:
 
 - **`Theoretical max`** is the ceiling for this traffic. If it is already low, the workload has little prefix reuse and UCM will not deliver much uplift regardless of pool size — in that case adopting UCM may not be worthwhile.
-- **`HBM`** is the no-external-pool baseline. Note the simulated value assumes a single in-flight request; under real **concurrency** multiple requests compete for the HBM KV budget and evict each other, so the actual on-device hit rate will be **lower** than this value.
-- **`HBM + DRAM pool`** is what a DRAM pool of the specified size can reach. Compared against the live `Service actual KV cache hit rate` (only shown when `--service-url` is configured, fetched from vLLM's `/metrics`), the difference is the uplift the DRAM pool brings.
-- **`HBM + DRAM pool + FS pool`** vs **`HBM + DRAM pool`**: the delta is the additional hit rate contributed by the filesystem (SSD/NFS) tier.
+- **`HBM`** is the on-device KV cache contribution. Note the simulated value assumes a single in-flight request; under real **concurrency** multiple requests compete for the HBM KV budget and evict each other, so the actual on-device hit rate will be **lower** than this value.
+- **`HBM+DRAM`** is what a DRAM pool of the specified size can reach. Compared against the live `Service actual` (only shown when `--service-url` is configured, fetched from vLLM's `/metrics`), the difference is the uplift the DRAM pool brings.
+- **`HBM+DRAM+FS`** vs **`HBM+DRAM`**: the delta is the additional hit rate contributed by the filesystem (SSD/NFS) tier.
 - If the three-tier value is already near the theoretical max, enlarging DRAM/FS yields little; if there is a big gap, bigger pools still help.
 
 **Request lifetime** — how long a request's blocks stay reusable (time from first appearance to the last hit on any of its blocks):
 
-| Metric | Meaning |
-| :--- | :--- |
+| Metric                            | Meaning                                                      |
+| :-------------------------------- | :----------------------------------------------------------- |
 | `Request lifetime sample count` | Number of request groups that had at least one block reused. |
-| `Average request lifetime` | Mean reuse lifetime. |
-| `P90 request lifetime` | 90% of reused blocks are hit again within this window. |
-| `P95 request lifetime` | 95% of reused blocks are hit again within this window. |
+| `Average request lifetime`      | Mean reuse lifetime.                                         |
+| `P90 request lifetime`          | 90% of reused blocks are hit again within this window.       |
+| `P95 request lifetime`          | 95% of reused blocks are hit again within this window.       |
 
 **`Average` / `P90` / `P95 request lifetime`** is the request's actual alive time — the span from when the request first appears (chat start) to the last time any of its blocks was reused. It measures how long a conversation's KV stays useful. Use it to size retention: if `P95 = 405 s`, blocks must stay in cache ~7 min to capture 95% of reuse — compare against your DRAM/FS capacity and eviction to judge whether the pool is large enough and retention is long enough.
-
