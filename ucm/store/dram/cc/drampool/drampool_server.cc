@@ -291,7 +291,7 @@ Status DramPoolServer::RegisterBufferPools()
     }
     const auto& regions = bufferManager_->MemoryRegions();
     for (const auto& memory : regions) {
-        transport::MemoryHandle handle = transport::kInvalidMemoryHandle;
+        transport::MemoryHandle handle{};
         const auto status = transportManager_->RegisterMemory(memory, handle);
         if (status.Failure()) { return status; }
     }
@@ -300,7 +300,7 @@ Status DramPoolServer::RegisterBufferPools()
     flagBufferRegion.addr = flagBufferPool_->GetLocalAddr();
     flagBufferRegion.length = flagBufferPool_->GetTotalSize();
     flagBufferRegion.type = transport::MemoryType::Host;
-    transport::MemoryHandle handle = transport::kInvalidMemoryHandle;
+    transport::MemoryHandle handle{};
     const auto flagStatus = transportManager_->RegisterMemory(flagBufferRegion, handle);
     if (flagStatus.Failure()) { return flagStatus; }
     return Status::OK();

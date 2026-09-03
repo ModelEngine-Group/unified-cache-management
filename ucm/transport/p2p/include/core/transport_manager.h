@@ -32,6 +32,7 @@
 #include <vector>
 #include "control/control_channel.h"
 #include "control/control_protocol.h"
+#include "core/memory_region_manager.h"
 #include "core/transport.h"
 #include "core/transport_init_attrs.h"
 
@@ -66,17 +67,13 @@ private:
         TransportPtr transport;
     };
 
-    struct MemoryRecord {
-        MemoryRegion region;
-        std::unordered_map<TransportProtocol, MemoryHandle> transport_handles;
-    };
-
     struct TransferRecord {
         Transport* transport = nullptr;
         TransferHandle transport_handle = kInvalidTransferHandle;
     };
 
     TransportPtr CreateTransport(TransportProtocol protocol) const;
+    Status RegisterMemoryWithTransports(const MemoryRegion& memory, MemoryHandle handle);
     Status FindTransport(Operation& batch, Transport*& transport);
     Status ExportLocalMetadata(const ManagerID& manager_id, Metadata& out);
     Status ImportMetadata(const Metadata& metadata, const ManagerID& manager_id);
@@ -98,7 +95,8 @@ private:
     bool shutting_down_ = false;
     std::unordered_map<TransportProtocol, Transport*> protocol_map_;
     std::vector<InstalledTransport> transports_;
-    std::unordered_map<MemoryHandle, std::unique_ptr<MemoryRecord>> memories_;
+    std::mutex memory_mutex_;
+    std::shared_ptr<MemoryRegionManager> memory_region_manager_;
     std::mutex transfers_mutex_;
     std::unordered_map<TransferHandle, TransferRecord> transfers_;
     TransferHandle next_transfer_handle_ = 1;

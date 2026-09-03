@@ -88,6 +88,7 @@ set(P2P_TRANSPORT_SOURCES
     src/common/binary_codec.cpp
     src/control/control_channel.cpp
     src/control/control_protocol.cpp
+    src/core/memory_region_manager.cpp
     src/core/transport_manager.cpp
     src/channels/tcp/tcp_message_channel.cpp
 )
