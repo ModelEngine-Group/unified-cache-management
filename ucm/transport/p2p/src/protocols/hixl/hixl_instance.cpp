@@ -83,11 +83,9 @@ Status HixlInstance::Run(Task task)
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!initialized_ || stopping_) {
-            UC_ERROR(
-                "[Transport][HIXL] reject worker task: engine={} device={} initialized={} "
-                "stopping={}",
-                local_endpoint_.ToString(), device_id_, initialized_, stopping_);
-            return Status::Error();
+            return Status::Error(
+                fmt::format("reject worker task: engine={} device={} initialized={} stopping={}",
+                            local_endpoint_.ToString(), device_id_, initialized_, stopping_));
         }
         tasks_.push_back(std::move(queued));
     }
@@ -95,11 +93,10 @@ Status HixlInstance::Run(Task task)
     try {
         return result.get();
     } catch (const std::exception& e) {
-        UC_ERROR("[Transport][HIXL] worker task failed: {}", e.what());
+        return Status::Error(fmt::format("worker task failed: {}", e.what()));
     } catch (...) {
-        UC_ERROR("[Transport][HIXL] worker task failed with unknown exception");
+        return Status::Error("worker task failed with unknown exception");
     }
-    return Status::Error();
 }
 
 void HixlInstance::Finalize()
@@ -119,20 +116,17 @@ void HixlInstance::WorkerMain(std::map<std::string, std::string> options,
 {
     const auto set_device_status = aclrtSetDevice(device_id_);
     if (set_device_status != ACL_ERROR_NONE) {
-        UC_ERROR("[Transport][HIXL] set device failed: aclrtSetDevice({}) returned {}", device_id_,
-                 static_cast<int>(set_device_status));
-        initialize_result.set_value(Status::Error());
+        initialize_result.set_value(Status::Error(fmt::format(
+            "aclrtSetDevice({}) returned {}", device_id_, static_cast<int>(set_device_status))));
         return;
     }
 
     const auto get_physical_device_status =
         aclrtGetPhyDevIdByLogicDevId(device_id_, &physical_device_id_);
     if (get_physical_device_status != ACL_ERROR_NONE) {
-        UC_ERROR(
-            "[Transport][HIXL] resolve physical device failed: "
-            "aclrtGetPhyDevIdByLogicDevId({}) returned {}",
-            device_id_, static_cast<int>(get_physical_device_status));
-        initialize_result.set_value(Status::Error());
+        initialize_result.set_value(
+            Status::Error(fmt::format("aclrtGetPhyDevIdByLogicDevId({}) returned {}", device_id_,
+                                      static_cast<int>(get_physical_device_status))));
         return;
     }
     UC_DEBUG("[Transport][HIXL] device resolved: logical_device={} physical_device={}", device_id_,
@@ -148,9 +142,8 @@ void HixlInstance::WorkerMain(std::map<std::string, std::string> options,
         const auto local_engine = local_endpoint_.ToString();
         const auto init_status = engine.Initialize(local_engine.c_str(), hixl_options);
         if (init_status != hixl::SUCCESS) {
-            UC_ERROR("[Transport][HIXL] init failed: Initialize(\"{}\") returned {}", local_engine,
-                     static_cast<int>(init_status));
-            initialize_result.set_value(Status::Error());
+            initialize_result.set_value(Status::Error(fmt::format(
+                "Initialize(\"{}\") returned {}", local_engine, static_cast<int>(init_status))));
         } else {
             {
                 std::lock_guard<std::mutex> lock(mutex_);
@@ -202,12 +195,10 @@ Status HixlInstance::RegisterMemory(const MemoryRegion& memory, hixl::MemHandle&
         const auto type = memory.type == MemoryType::Device ? hixl::MEM_DEVICE : hixl::MEM_HOST;
         const auto native_status = engine.RegisterMem(desc, type, native_handle);
         if (native_status != hixl::SUCCESS) {
-            UC_ERROR(
-                "[Transport][HIXL] register memory failed: engine={} device={} "
-                "RegisterMem(addr=0x{:x}, length={}) returned {}",
+            return Status::Error(fmt::format(
+                "engine={} device={} RegisterMem(addr=0x{:x}, length={}) returned {}",
                 local_endpoint_.ToString(), device_id_, reinterpret_cast<uintptr_t>(memory.addr),
-                memory.length, static_cast<int>(native_status));
-            return Status::Error();
+                memory.length, static_cast<int>(native_status)));
         }
         UC_DEBUG(
             "[Transport][HIXL] memory registered: engine={} device={} addr=0x{:x} length={} "
@@ -225,11 +216,9 @@ Status HixlInstance::UnregisterMemory(hixl::MemHandle handle)
     return Run([&](hixl::Hixl& engine) {
         const auto native_status = engine.DeregisterMem(handle);
         if (native_status != hixl::SUCCESS) {
-            UC_ERROR(
-                "[Transport][HIXL] unregister memory failed: engine={} DeregisterMem(handle={}) "
-                "returned {}",
-                local_endpoint_.ToString(), handle, static_cast<int>(native_status));
-            return Status::Error();
+            return Status::Error(fmt::format("engine={} DeregisterMem(handle={}) returned {}",
+                                             local_endpoint_.ToString(), handle,
+                                             static_cast<int>(native_status)));
         }
         UC_DEBUG("[Transport][HIXL] memory unregistered: engine={} device={} handle={}",
                  local_endpoint_.ToString(), device_id_, handle);
@@ -242,11 +231,9 @@ Status HixlInstance::Connect(const std::string& remote_engine, int32_t timeout_m
     return Run([&](hixl::Hixl& engine) {
         const auto native_status = engine.Connect(remote_engine.c_str(), timeout_ms);
         if (native_status != hixl::SUCCESS) {
-            UC_ERROR(
-                "[Transport][HIXL] connect failed: local_engine=\"{}\" remote_engine=\"{}\" "
-                "returned {}",
-                local_endpoint_.ToString(), remote_engine, static_cast<int>(native_status));
-            return Status::Error();
+            return Status::Error(fmt::format("Connect local_engine={} remote_engine={} returned {}",
+                                             local_endpoint_.ToString(), remote_engine,
+                                             static_cast<int>(native_status)));
         }
         UC_DEBUG(
             "[Transport][HIXL] connection established: local_engine={} device={} "
@@ -261,12 +248,10 @@ Status HixlInstance::Disconnect(const std::string& remote_engine, int32_t timeou
     return Run([&](hixl::Hixl& engine) {
         const auto native_status = engine.Disconnect(remote_engine.c_str(), timeout_ms);
         if (native_status != hixl::SUCCESS) {
-            UC_ERROR(
-                "[Transport][HIXL] disconnect failed: local_engine={} device={} "
-                "remote_engine={} returned {}",
-                local_endpoint_.ToString(), device_id_, remote_engine,
-                static_cast<int>(native_status));
-            return Status::Error();
+            return Status::Error(
+                fmt::format("Disconnect local_engine={} device={} remote_engine={} returned {}",
+                            local_endpoint_.ToString(), device_id_, remote_engine,
+                            static_cast<int>(native_status)));
         }
         UC_DEBUG(
             "[Transport][HIXL] connection disconnected: local_engine={} device={} "
@@ -285,11 +270,9 @@ Status HixlInstance::TransferSync(const std::string& remote_engine, Opcode opcod
         const auto native_status =
             engine.TransferSync(remote_engine.c_str(), operation, descs, timeout_ms);
         if (native_status != hixl::SUCCESS) {
-            UC_ERROR(
-                "[Transport][HIXL] operation failed: TransferSync(\"{}\", ops={}, timeout_ms={}) "
-                "returned {}",
-                remote_engine, descs.size(), timeout_ms, static_cast<int>(native_status));
-            return Status::Error();
+            return Status::Error(fmt::format("TransferSync({}, ops={}, timeout_ms={}) returned {}",
+                                             remote_engine, descs.size(), timeout_ms,
+                                             static_cast<int>(native_status)));
         }
         UC_DEBUG(
             "[Transport][HIXL] synchronous transfer completed: engine={} remote_engine={} "
@@ -310,11 +293,9 @@ Status HixlInstance::TransferAsync(const std::string& remote_engine, Opcode opco
         const auto native_status =
             engine.TransferAsync(remote_engine.c_str(), operation, descs, args, native_request);
         if (native_status != hixl::SUCCESS || native_request == nullptr) {
-            UC_ERROR(
-                "[Transport][HIXL] async operation failed: TransferAsync(\"{}\", ops={}) returned "
-                "{} request={}",
-                remote_engine, descs.size(), static_cast<int>(native_status), native_request);
-            return Status::Error();
+            return Status::Error(fmt::format("TransferAsync({}, ops={}) returned {} request={}",
+                                             remote_engine, descs.size(),
+                                             static_cast<int>(native_status), native_request));
         }
         UC_DEBUG(
             "[Transport][HIXL] asynchronous transfer submitted: engine={} remote_engine={} "
@@ -334,9 +315,8 @@ Status HixlInstance::GetTransferStatus(hixl::TransferReq request, TransferStatus
         hixl::TransferStatus native_transfer_status = hixl::TransferStatus::WAITING;
         const auto native_status = engine.GetTransferStatus(request, native_transfer_status);
         if (native_status != hixl::SUCCESS) {
-            UC_ERROR("[Transport][HIXL] get transfer status failed: req={} returned {}", request,
-                     static_cast<int>(native_status));
-            return Status::Error();
+            return Status::Error(fmt::format("GetTransferStatus(req={}) returned {}", request,
+                                             static_cast<int>(native_status)));
         }
         switch (native_transfer_status) {
             case hixl::TransferStatus::WAITING: status = TransferStatus::Waiting; break;
