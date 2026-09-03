@@ -228,6 +228,49 @@ def _asset_urls(manifest: dict[str, object]) -> dict[str, str]:
     }
 
 
+def _single_family_release_notes_manifest(
+    *,
+    expected_targets: dict[str, str],
+    targets: list[dict[str, str]],
+    release_status: str = "complete",
+    family_status: str = "published",
+) -> dict[str, object]:
+    return {
+        "release": {"git_tag": "v1.0.0rc1", "status": release_status},
+        "chart": {"filename": "unified-cache-chart-1.0.0-rc.1.tgz"},
+        "wheels": [
+            {
+                "id": "cuda-amd64",
+                "filename": "uc_manager_cuda-amd64.whl",
+                "backend": "cuda",
+                "runtime_variant": "cu130",
+                "python_abi": "cp312",
+                "cpu_arch": "amd64",
+            }
+        ],
+        "images": [
+            {
+                "family_id": "openai-v1",
+                "wheel_id": "cuda-amd64",
+                "cpu_arch": "amd64",
+            }
+        ],
+        "families": [
+            {
+                "id": "openai-v1",
+                "runtime": {
+                    "repository": "docker.io/vllm/vllm-openai",
+                    "tag": "v1.0.0",
+                    "accelerator_runtime": "cuda-13.0",
+                },
+                "expected_targets": expected_targets,
+                "status": family_status,
+                "targets": targets,
+            }
+        ],
+    }
+
+
 def _write_meta_artifact(tmp_path: Path, plan: dict[str, object]) -> Path:
     meta_root = tmp_path / "meta"
     meta_root.mkdir()
@@ -460,7 +503,7 @@ def test_artifacts_and_image_receipts_form_one_mapping(tmp_path: Path) -> None:
         manifest, repository="example/ucm", asset_urls=asset_urls
     )
     assert "Upstream Runtime tags<br>docker.io/vllm/vllm-openai：" in notes
-    assert "Runtime tags<br>ghcr.io/example/vllm：" in notes
+    assert "Runtime tags<br>GHCR: ghcr.io/example/vllm" in notes
     assert "`v0.23.0`" in notes
     assert f"[x86_64]({asset_urls[filename]})" in notes
     assert "amd64=" not in notes
@@ -917,17 +960,6 @@ def test_release_notes_split_products_and_aggregate_wheel_capabilities() -> None
                 "targets": [{"channel": "ghcr"}],
             },
         ],
-        "pypi": {
-            "target": "testpypi",
-            "version": "1.0.0",
-            "extras": {"cu130": "supermarioyl-uc-manager-cuda-cu130==1.0.0"},
-            "projects": [
-                {
-                    "project": "supermarioyl-uc-manager",
-                    "role": "meta",
-                }
-            ],
-        },
     }
     asset_urls = _asset_urls(manifest)
 
@@ -945,9 +977,9 @@ def test_release_notes_split_products_and_aggregate_wheel_capabilities() -> None
     assert notes.count("[aarch64](") == 2
     assert notes.count("[x86_64](") == 2
     assert "Upstream Runtime tags<br>docker.io/vllm/vllm-openai：" in notes
-    assert "Runtime tags<br>ghcr.io/example/vllm-openai：" in notes
+    assert "Runtime tags<br>GHCR: ghcr.io/example/vllm-openai" in notes
     assert "Upstream Runtime tags<br>quay.io/ascend/vllm-ascend：" in notes
-    assert "Runtime tags<br>ghcr.io/example/vllm-ascend：" in notes
+    assert "Runtime tags<br>GHCR: ghcr.io/example/vllm-ascend" in notes
     assert "`v1.0.0`<br>`v1.1.0`" in notes
     assert "`v1.0.0-ucm`<br>`v1.1.0-ucm`" in notes
     cuda_row = next(line for line in notes.splitlines() if line.startswith("| CUDA"))
@@ -959,22 +991,6 @@ def test_release_notes_split_products_and_aggregate_wheel_capabilities() -> None
     assert "2 image families / 4 architecture members" in notes
     assert "2 image families / 3 architecture members" in notes
     assert " tags / " not in notes
-    assert "## TestPyPI" not in notes
-    assert "pip install" not in notes
-
-    official_manifest = json.loads(json.dumps(manifest))
-    official_manifest["pypi"] = {
-        "target": "pypi",
-        "version": "1.0.0",
-        "extras": {"cu130": "uc-manager-cuda-cu130==1.0.0"},
-        "projects": [{"project": "uc-manager", "role": "meta"}],
-    }
-    official_notes = release.render_notes(
-        official_manifest, repository="example/ucm", asset_urls=asset_urls
-    )
-    assert "## PyPI" not in official_notes
-    assert "pip install" not in official_notes
-
     draft_notes = release.render_notes(
         manifest,
         repository="example/ucm",
@@ -986,6 +1002,212 @@ def test_release_notes_split_products_and_aggregate_wheel_capabilities() -> None
     assert "[x86_64](" not in draft_notes
     assert draft_notes.count("`aarch64`") == 2
     assert draft_notes.count("`x86_64`") == 2
+
+
+@pytest.mark.parametrize("receipt_status", [None, "uploading"])
+def test_release_notes_hide_pypi_until_a_complete_receipt(
+    receipt_status: str | None,
+) -> None:
+    manifest = _single_family_release_notes_manifest(
+        expected_targets={}, targets=[], release_status="artifacts-ready"
+    )
+    manifest["publish"] = {
+        "pypi": {
+            "enabled": True,
+            "target": "testpypi",
+            "simple_index": "https://test.pypi.org/simple/",
+            "dependency_index": "https://pypi.org/simple/",
+        }
+    }
+    if receipt_status is not None:
+        manifest["pypi"] = {"status": receipt_status}
+
+    notes = release.render_notes(
+        manifest, repository="example/ucm", asset_urls=_asset_urls(manifest)
+    )
+
+    assert "## PyPI" not in notes
+    assert "## TestPyPI" not in notes
+    assert "pip install" not in notes
+    assert "pip download" not in notes
+
+
+@pytest.mark.parametrize(
+    ("version", "extra"),
+    [("1.0.0", "cu130"), ("2.4.0rc3", "cann920-a3")],
+)
+def test_release_notes_show_pypi_installation_from_published_receipt(
+    version: str, extra: str
+) -> None:
+    manifest = _single_family_release_notes_manifest(
+        expected_targets={},
+        targets=[],
+        release_status="images-failed",
+        family_status="failed",
+    )
+    simple_index = "https://pypi.org/simple/"
+    manifest["publish"] = {
+        "pypi": {
+            "enabled": True,
+            "simple_index": simple_index,
+            "dependency_index": simple_index,
+        }
+    }
+    meta_project = "uc-manager"
+    backend_project = f"uc-manager-{extra}"
+    manifest["pypi"] = {
+        "status": "complete",
+        "target": "pypi",
+        "version": version,
+        "extras": {extra: f"{backend_project}=={version}"},
+        "projects": [
+            {"project": backend_project, "role": "backend"},
+            {"project": meta_project, "role": "meta"},
+        ],
+    }
+
+    notes = release.render_notes(
+        manifest, repository="example/ucm", asset_urls=_asset_urls(manifest)
+    )
+
+    assert "Status: `images-failed`" in notes
+    assert "## PyPI" in notes
+    assert f"https://pypi.org/project/{meta_project}/{version}/" in notes
+    assert (
+        f"python -m pip install --index-url {simple_index} "
+        f'"{meta_project}[{extra}]=={version}"'
+    ) in notes
+    assert "## TestPyPI" not in notes
+    assert "pip download" not in notes
+
+
+def test_release_notes_testpypi_installs_one_published_backend_at_a_time() -> None:
+    manifest = _single_family_release_notes_manifest(expected_targets={}, targets=[])
+    simple_index = "https://test.pypi.org/simple/"
+    dependency_index = "https://pypi.org/simple/"
+    manifest["publish"] = {
+        "pypi": {
+            "enabled": True,
+            "simple_index": simple_index,
+            "dependency_index": dependency_index,
+        }
+    }
+    meta_project = "another-fork-uc-manager"
+    version = "2.4.0rc3"
+    extras = {
+        "cu140": f"{meta_project}-cuda-cu140=={version}",
+        "cann920-a3": f"{meta_project}-cann920-a3=={version}",
+    }
+    manifest["pypi"] = {
+        "status": "complete",
+        "target": "testpypi",
+        "version": version,
+        "extras": extras,
+        "projects": [{"project": meta_project, "role": "meta"}],
+    }
+
+    notes = release.render_notes(
+        manifest, repository="example/ucm", asset_urls=_asset_urls(manifest)
+    )
+
+    assert "## TestPyPI" in notes
+    assert f"https://test.pypi.org/project/{meta_project}/{version}/" in notes
+    commands = [part.split("```", 1)[0] for part in notes.split("```bash\n")[1:]]
+    assert len(commands) == len(extras)
+    for requirement in extras.values():
+        command = next(block for block in commands if f'"{requirement}"' in block)
+        assert 'ucm_wheel_dir="$(mktemp -d)"' in command
+        assert "python -m pip download --no-deps" in command
+        assert f"--index-url {simple_index}" in command
+        assert '--dest "$ucm_wheel_dir"' in command
+        assert f'"{meta_project}=={version}"' in command
+        assert f"python -m pip install --index-url {dependency_index}" in command
+        assert '"$ucm_wheel_dir"/*.whl' in command
+        assert sum(f'"{item}"' in command for item in extras.values()) == 1
+    assert "--extra-index-url" not in notes
+    assert "wrapt" not in notes
+    assert "supermarioyl" not in notes
+
+
+def test_release_notes_show_dockerhub_only_after_a_published_target() -> None:
+    ghcr_reference = "ghcr.io/example/vllm-openai:release-tag"
+    dockerhub_reference = "docker.io/example/vllm-openai:release-tag"
+    configured_manifest = _single_family_release_notes_manifest(
+        expected_targets={
+            "ghcr": ghcr_reference,
+            "dockerhub": dockerhub_reference,
+        },
+        targets=[],
+        release_status="artifacts-ready",
+        family_status="building",
+    )
+
+    before_dockerhub_push = release.render_notes(
+        configured_manifest,
+        repository="example/ucm",
+        asset_urls=_asset_urls(configured_manifest),
+    )
+
+    assert "ghcr.io/example/vllm-openai" in before_dockerhub_push
+    assert "https://github.com/example/ucm/pkgs/container/vllm-openai" in (
+        before_dockerhub_push
+    )
+    assert "docker.io/example/vllm-openai" not in before_dockerhub_push
+    assert "https://hub.docker.com/r/example/vllm-openai" not in before_dockerhub_push
+
+    published_manifest = _single_family_release_notes_manifest(
+        expected_targets={
+            "ghcr": ghcr_reference,
+            "dockerhub": dockerhub_reference,
+        },
+        targets=[
+            {"channel": "ghcr", "reference": ghcr_reference},
+            {"channel": "dockerhub", "reference": dockerhub_reference},
+        ],
+    )
+    after_dockerhub_push = release.render_notes(
+        published_manifest,
+        repository="example/ucm",
+        asset_urls=_asset_urls(published_manifest),
+    )
+    header = next(
+        line
+        for line in after_dockerhub_push.splitlines()
+        if line.startswith("| Runtime capability |")
+    )
+
+    assert (
+        "[`ghcr.io/example/vllm-openai`]"
+        "(https://github.com/example/ucm/pkgs/container/vllm-openai)"
+    ) in after_dockerhub_push
+    assert (
+        "[`docker.io/example/vllm-openai`]"
+        "(https://hub.docker.com/r/example/vllm-openai)"
+    ) in after_dockerhub_push
+    assert "ghcr.io/example/vllm-openai" in header
+    assert "docker.io/example/vllm-openai" in header
+
+
+def test_release_notes_use_dockerhub_target_tag_without_a_ghcr_target() -> None:
+    dockerhub_reference = "docker.io/example/vllm-openai:dockerhub-only-tag"
+    manifest = _single_family_release_notes_manifest(
+        expected_targets={"dockerhub": dockerhub_reference},
+        targets=[{"channel": "dockerhub", "reference": dockerhub_reference}],
+    )
+
+    notes = release.render_notes(
+        manifest,
+        repository="example/ucm",
+        asset_urls=_asset_urls(manifest),
+    )
+    header = next(
+        line for line in notes.splitlines() if line.startswith("| Runtime capability |")
+    )
+
+    assert "docker.io/example/vllm-openai" in header
+    assert "ghcr.io/example/vllm-openai" not in notes
+    assert "`dockerhub-only-tag`" in notes
+    assert "https://hub.docker.com/r/example/vllm-openai" in notes
 
 
 def test_github_asset_urls_require_backend_and_chart_but_not_meta() -> None:

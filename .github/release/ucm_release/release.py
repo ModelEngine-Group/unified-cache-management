@@ -911,6 +911,20 @@ def _ghcr_package_link(repository: str, target_repository: str) -> str:
     return f"[`{target_repository}`]({url})"
 
 
+def _dockerhub_repository_link(target_repository: str) -> str:
+    prefix = "docker.io/"
+    target_parts = target_repository.removeprefix(prefix).split("/")
+    if (
+        not target_repository.startswith(prefix)
+        or len(target_parts) != 2
+        or any(re.fullmatch(r"[A-Za-z0-9_.-]+", part) is None for part in target_parts)
+    ):
+        raise ValueError("Docker Hub target is not a namespaced repository")
+    path = "/".join(target_parts)
+    url = f"https://hub.docker.com/r/{quote(path, safe='/')}"
+    return f"[`{target_repository}`]({url})"
+
+
 def _architecture_label(cpu_arch: str) -> str:
     return {"amd64": "x86_64", "arm64": "aarch64"}.get(cpu_arch, cpu_arch)
 
@@ -961,7 +975,10 @@ def _render_product_tables(
     for runtime_repository in product_order:
         product_families = families_by_product[runtime_repository]
         rows: dict[tuple[str, str, str], dict[str, Any]] = {}
-        ghcr_repositories: set[str] = set()
+        target_repositories: dict[str, set[str]] = {
+            "ghcr": set(),
+            "dockerhub": set(),
+        }
         member_count = 0
         published_count = 0
         for family in product_families:
@@ -1004,39 +1021,57 @@ def _render_product_tables(
             for wheel in family_wheels:
                 row["wheels"][str(wheel["cpu_arch"])] = wheel
 
-            actual_ghcr_references = [
-                str(target["reference"])
-                for target in family.get("targets", [])
-                if target.get("channel") == "ghcr"
-                and isinstance(target.get("reference"), str)
-            ]
-            if len(actual_ghcr_references) > 1:
-                raise ValueError(
-                    f"release family {family_id!r} has multiple GHCR targets"
-                )
-            ghcr_reference = (
-                actual_ghcr_references[0]
-                if actual_ghcr_references
-                else family["expected_targets"].get("ghcr")
-            )
-            if isinstance(ghcr_reference, str):
+            target_tag = None
+            for channel, label in (("ghcr", "GHCR"), ("dockerhub", "Docker Hub")):
+                actual_references = [
+                    str(target["reference"])
+                    for target in family.get("targets", [])
+                    if target.get("channel") == channel
+                    and isinstance(target.get("reference"), str)
+                ]
+                if len(actual_references) > 1:
+                    raise ValueError(
+                        f"release family {family_id!r} has multiple {label} targets"
+                    )
+                reference = actual_references[0] if actual_references else None
+                if reference is None and channel == "ghcr":
+                    reference = family["expected_targets"].get("ghcr")
+                if not isinstance(reference, str):
+                    continue
                 target_repository = _target_repository(
-                    ghcr_reference, "release family GHCR target"
+                    reference, f"release family {label} target"
                 )
-                ghcr_repositories.add(target_repository)
-                row["families"][-1]["target_tag"] = ghcr_reference.rpartition(":")[2]
-            if family.get("status") == "published" and any(
-                target.get("channel") == "ghcr" for target in family["targets"]
-            ):
+                target_repositories[channel].add(target_repository)
+                reference_tag = reference.rpartition(":")[2]
+                if target_tag is not None and reference_tag != target_tag:
+                    raise ValueError(
+                        f"release family {family_id!r} target tags do not match"
+                    )
+                target_tag = reference_tag
+            row["families"][-1]["target_tag"] = target_tag
+            if family.get("status") == "published" and family.get("targets"):
                 published_count += 1
 
         _, title = _product_title(runtime_repository)
         rendered.extend([f"## {title}", "", f"Runtime: `{runtime_repository}`", ""])
-        if len(ghcr_repositories) > 1:
-            raise ValueError(f"{title} maps to multiple GHCR packages")
-        if ghcr_repositories:
-            ghcr_repository = next(iter(ghcr_repositories))
-            package = _ghcr_package_link(repository, ghcr_repository)
+        repositories: dict[str, str] = {}
+        for channel, label in (("ghcr", "GHCR"), ("dockerhub", "Docker Hub")):
+            channel_repositories = target_repositories[channel]
+            if len(channel_repositories) > 1:
+                raise ValueError(f"{title} maps to multiple {label} repositories")
+            if channel_repositories:
+                repositories[channel] = next(iter(channel_repositories))
+        if repositories:
+            packages = []
+            if "ghcr" in repositories:
+                packages.append(
+                    f"GHCR {_ghcr_package_link(repository, repositories['ghcr'])}"
+                )
+            if "dockerhub" in repositories:
+                packages.append(
+                    "Docker Hub "
+                    + _dockerhub_repository_link(repositories["dockerhub"])
+                )
             family_count = len(product_families)
             release_status = manifest["release"]["status"]
             if release_status == "complete":
@@ -1053,14 +1088,24 @@ def _render_product_tables(
                     f"building {family_count} image families / "
                     f"{member_count} architecture members"
                 )
-            rendered.extend([f"Images: {package} — {image_status}", ""])
+            rendered.extend([f"Images: {' · '.join(packages)} — {image_status}", ""])
+
+        repository_headers = []
+        if "ghcr" in repositories:
+            repository_headers.append(f"GHCR: {repositories['ghcr']}")
+        if "dockerhub" in repositories:
+            repository_headers.append(f"Docker Hub: {repositories['dockerhub']}")
 
         rendered.extend(
             [
                 "| Runtime capability | "
                 f"Upstream Runtime tags<br>{runtime_repository}： | "
                 "Runtime tags"
-                + (f"<br>{ghcr_repository}：" if ghcr_repositories else "")
+                + (
+                    "<br>" + "<br>".join(repository_headers)
+                    if repository_headers
+                    else ""
+                )
                 + " | Python ABI | Wheel |",
                 "| --- | --- | --- | --- | --- |",
             ]
@@ -1119,6 +1164,79 @@ def _render_product_tables(
             )
         rendered.append("")
     return rendered
+
+
+def _render_pypi_installation(manifest: dict[str, Any]) -> list[str]:
+    receipt = manifest.get("pypi")
+    if not receipt or receipt.get("status") != "complete":
+        return []
+
+    target = receipt["target"]
+    title = {"pypi": "PyPI", "testpypi": "TestPyPI"}[target]
+    meta_projects = [
+        project["project"]
+        for project in receipt["projects"]
+        if project["role"] == "meta"
+    ]
+    if len(meta_projects) != 1:
+        raise ValueError(
+            "PyPI installation requires exactly one published meta project"
+        )
+    meta_project = meta_projects[0]
+    version = receipt["version"]
+    publication = manifest["publish"]["pypi"]
+    simple_index = publication["simple_index"]
+    index_url = urlparse(simple_index)
+    project_url = (
+        f"{index_url.scheme}://{index_url.netloc}/project/"
+        f"{quote(meta_project, safe='')}/{quote(version, safe='')}/"
+    )
+    lines = [
+        f"## {title}",
+        "",
+        f"Package: [`{meta_project}=={version}`]({project_url})",
+        "",
+        "Choose **one** extra matching the Runtime, Python ABI, and architecture "
+        "in the tables above. The meta package alone does not install a UCM backend.",
+        "",
+    ]
+    if target == "pypi":
+        lines.extend(["| Extra | Install |", "| --- | --- |"])
+        for extra in sorted(receipt["extras"]):
+            lines.append(
+                f"| `{extra}` | `python -m pip install --index-url {simple_index} "
+                f'"{meta_project}[{extra}]=={version}"` |'
+            )
+        return [*lines, ""]
+
+    lines.extend(
+        [
+            "Download the selected packages from TestPyPI, then install the local "
+            "Wheels with dependencies from PyPI. Run only one of the examples below.",
+            "",
+        ]
+    )
+    for extra, backend_requirement in sorted(receipt["extras"].items()):
+        lines.extend(
+            [
+                "<details>",
+                f"<summary>{extra}</summary>",
+                "",
+                "```bash",
+                'ucm_wheel_dir="$(mktemp -d)"',
+                f"python -m pip download --no-deps --index-url {simple_index} \\",
+                '  --dest "$ucm_wheel_dir" \\',
+                f'  "{meta_project}=={version}" "{backend_requirement}"',
+                "python -m pip install --index-url "
+                f'{publication["dependency_index"]} \\',
+                '  "$ucm_wheel_dir"/*.whl',
+                "```",
+                "",
+                "</details>",
+                "",
+            ]
+        )
+    return lines
 
 
 def render_notes(
@@ -1181,6 +1299,7 @@ def render_notes(
             link_assets=link_assets,
         )
     )
+    lines.extend(_render_pypi_installation(manifest))
     return "\n".join(lines) + "\n"
 
 
