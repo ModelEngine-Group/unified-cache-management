@@ -17,6 +17,7 @@ from vllm.v1.core.sched.output import SchedulerOutput
 from ucm.integration.vllm.device import create_device
 from ucm.integration.vllm.ucm_connector import (
     UCMDirectConnector,
+    UCMLiteConnector,
     _check_shm_capacity,
     _use_ucm_connector_cpu_affinity,
 )
@@ -1630,3 +1631,157 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     ) -> tuple[bool, dict[str, object] | None]:
         # Scheduler side method
         return True, None
+
+
+class UCMFAWALiteConnector(UCMLiteConnector):
+    """UCM Lite connector for DS V4 (FAWA) models.
+
+    Logs the FAWA topology (UCMTraceMeta) and per-request block_hashes
+    (UCMTrace) for offline hit-rate simulation. No actual I/O.
+    """
+
+    @staticmethod
+    def _approximate_gcd(sizes: list[int], lb: int) -> int:
+        best_d, best_pad = lb, float("inf")
+        hi = max(sizes) if sizes else lb
+        for d in range(lb, hi + 1):
+            pad = sum(-(-s // d) * d - s for s in sizes)
+            if pad < best_pad:
+                best_pad, best_d = pad, d
+        return best_d
+
+    @classmethod
+    def _compute_fawa_sizes(
+        cls,
+        vllm_config: "VllmConfig",
+        kv_cache_config: "KVCacheConfig",
+        is_ascend: bool,
+        bs: int,
+    ) -> tuple[int, int, int]:
+        """Compute (hbm_block_data_size, fa_file_size, wa_file_size).
+
+        Mirrors UCMFAWAConnector._init_group_metas file_size logic and
+        the calculator's deriveDSv4Params hbm formula.
+        """
+        hf = vllm_config.model_config.hf_text_config
+        ratios = getattr(hf, "compress_ratios", None)
+        if ratios is None:
+            return 0, 0, 0
+        decoder = ratios[:-1] if ratios and ratios[-1] == 0 else ratios
+        num_c4a = sum(1 for r in decoder if r == 4)
+        num_c128a = sum(1 for r in decoder if r == 128)
+        num_total = len(decoder)
+        has_mtp = (
+            vllm_config.speculative_config is not None
+            and vllm_config.speculative_config.num_speculative_tokens > 0
+        )
+        num_total_layers = num_total + (1 if has_mtp else 0)
+
+        # num_layer_tuples (for both Ascend hbm and CUDA swa sub-group split)
+        buckets = [num_c4a, num_c128a, num_total, num_c4a, num_c128a]
+        lb = min(num_c4a, num_c128a) or 1
+        num_tuples = cls._approximate_gcd(buckets, lb)
+
+        # file_size (same as _init_group_metas)
+        c4a_per_blk_tok = 1024 + 128 + 2  # mla + indexer + scale
+        c128a_per_blk_tok = 32
+        if is_ascend:
+            fa_raw = bs * (c4a_per_blk_tok * num_c4a + c128a_per_blk_tok * num_c128a)
+            wa_raw = 131072 * num_total_layers + (32768 + 8192) * num_c4a
+        else:
+            fa_raw = (37376 + 8448) * num_c4a + 1168 * num_c128a
+            wa_raw = (37376 * 2) * num_total_layers + (8192 + 32768) * num_c4a
+        fa_size = -(-fa_raw // 4096) * 4096  # round_up
+        wa_size = -(-wa_raw // 4096) * 4096
+
+        # hbm_block_data_size
+        if is_ascend:
+            tuple_bytes = bs * c4a_per_blk_tok  # bs × 1154
+            hbm = num_tuples * tuple_bytes + (bs * 1024 if has_mtp else 0)
+        else:
+            # fp8_ds_mla layout (default): 584B/token MLA/SWA, 132B/token indexer, align=576
+            mla_per_tok = 584
+            idx_per_tok = 132
+            align = 576
+            g0 = (
+                num_c4a * round_up(bs // 4 * mla_per_tok, align)
+                + num_c128a * round_up(bs // 128 * mla_per_tok, align)
+                + num_c4a * round_up(bs // 4 * idx_per_tok, align)
+            )
+            swa_subgroups = -(-num_total // num_tuples) if num_tuples else 1
+            swa_sub1 = -(-num_total // swa_subgroups) if swa_subgroups else num_total
+            g1 = swa_sub1 * round_up(64 * mla_per_tok, align)
+            g3 = num_c4a * round_up(32768, align) + num_c4a * round_up(8192, align)
+            g4 = num_c128a * round_up(32768, align)
+            hbm = max(g0, g1, g3, g4)
+
+        return hbm, fa_size, wa_size
+
+    def __init__(
+        self,
+        vllm_config: "VllmConfig",
+        role: KVConnectorRole,
+        kv_cache_config: Optional["KVCacheConfig"] = None,
+    ) -> None:
+        if kv_cache_config is None:
+            raise RuntimeError("UCMFAWALiteConnector requires kv_cache_config.")
+        super().__init__(vllm_config, role, kv_cache_config)
+
+        groups = kv_cache_config.kv_cache_groups
+        is_ascend = UCMFAWAConnector.can_handle_ascend_kv_cache_config(kv_cache_config)
+
+        if is_ascend:
+            bs = UCMFAWAConnector._get_ascend_base_block_size(kv_cache_config)
+            ucm_hash_bs = bs * UCMFAWAConnector.ASCEND_C4_COMPRESS_RATIO
+        else:
+            bs = vllm_config.cache_config.block_size
+            ucm_hash_bs = UCMFAWAConnector.DEFAULT_HASH_BLOCK_SIZE
+
+        group_specs = []
+        block_sizes_for_gcd = []
+        effective_block_sizes = []
+        for gid, group in enumerate(groups):
+            spec = group.kv_cache_spec
+            nested = getattr(spec, "kv_cache_specs", None)
+            inner = next(iter(nested.values())) if nested else spec
+            window = getattr(inner, "sliding_window", None)
+            cr = getattr(inner, "compress_ratio", 1) or 1
+            cr = max(cr, 1)
+            bs_g = spec.block_size
+            block_sizes_for_gcd.append(bs_g)
+            lbs = bs_g * cr if (is_ascend and window is None) else bs_g
+            effective_block_sizes.append(lbs)
+            mtype = (
+                "compress"
+                if (is_ascend and window is None)
+                else ("full_attention" if window is None else "sliding_window")
+            )
+            group_specs.append((f"G{gid}", lbs, mtype, window, cr))
+
+        from functools import reduce
+        from math import gcd, lcm
+
+        vllm_hash_bs = reduce(gcd, block_sizes_for_gcd) if block_sizes_for_gcd else 1
+        alignment = reduce(lcm, effective_block_sizes) if effective_block_sizes else 1
+
+        hbm_data_size, fa_file, wa_file = self._compute_fawa_sizes(
+            vllm_config, kv_cache_config, is_ascend, bs
+        )
+
+        self.hash_block_size = vllm_hash_bs
+        self.ucm_hash_block_size = ucm_hash_bs
+        self.trace_hash_block_size = max(512, vllm_hash_bs)
+
+        logger.info(
+            f"UCMTraceMeta: type=fawa, "
+            f"is_mla=true, "
+            f"vllm_hash_block_size={vllm_hash_bs}, "
+            f"trace_hash_block_size={self.trace_hash_block_size}, "
+            f"ucm_hash_block_size={ucm_hash_bs}, "
+            f"hbm_block_data_size={hbm_data_size}, "
+            f"fa_file_size={fa_file}, "
+            f"wa_file_size={wa_file}, "
+            f"alignment_tokens={alignment}, "
+            f"groups={group_specs}"
+        )
+        logger.info("Init UCMFAWALiteConnector.")

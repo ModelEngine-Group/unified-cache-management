@@ -2627,6 +2627,7 @@ class UCMLiteConnector(KVConnectorBase_V1):
     ):
         self.block_size = vllm_config.cache_config.block_size
         self.hash_block_size = self.block_size
+        self.trace_hash_block_size = max(512, self.hash_block_size)
         self.requests_meta: dict[str, RequestMeta] = {}
         self.total_block_nums = 0
 
@@ -2635,19 +2636,62 @@ class UCMLiteConnector(KVConnectorBase_V1):
 
         super().__init__(vllm_config, role, kv_cache_config)
 
+        if type(self) is not UCMLiteConnector:
+            return
+
+        is_mla = getattr(vllm_config.model_config, "is_deepseek_mla", False)
+        hbm_data_size = self._compute_block_data_size(vllm_config)
+        logger.info(
+            f"UCMTraceMeta: type=standard, "
+            f"is_mla={is_mla}, "
+            f"vllm_hash_block_size={self.hash_block_size}, "
+            f"trace_hash_block_size={self.trace_hash_block_size}, "
+            f"hbm_block_data_size={hbm_data_size}"
+        )
         logger.info("Init UCMLiteConnector.")
+
+    @staticmethod
+    def _compute_block_data_size(vllm_config) -> int:
+        """Compute hbm_block_data_size from model config (standard models)."""
+        mc = vllm_config.model_config
+        hf = mc.hf_text_config
+        bs = vllm_config.cache_config.block_size
+        num_layers = getattr(hf, "num_hidden_layers", 0)
+        dtype_map = {"bfloat16": 2, "float16": 2, "float32": 4, "int8": 1}
+        dt = dtype_map.get(getattr(mc, "dtype", "bfloat16"), 2)
+
+        kv_lora = getattr(hf, "kv_lora_rank", None)
+        qk_rope = getattr(hf, "qk_rope_head_dim", None)
+        index_hd = getattr(hf, "index_head_dim", None)
+
+        if kv_lora and qk_rope and index_hd:
+            per_tok = (kv_lora + qk_rope + index_hd) * dt
+        elif kv_lora and qk_rope:
+            per_tok = (kv_lora + qk_rope) * dt
+        else:
+            kv_heads = getattr(
+                hf, "num_key_value_heads", getattr(hf, "num_attention_heads", 0)
+            )
+            tp = vllm_config.parallel_config.tensor_parallel_size
+            head_dim = getattr(hf, "head_dim", 0) or (
+                getattr(hf, "hidden_size", 0)
+                // max(getattr(hf, "num_attention_heads", 1), 1)
+            )
+            per_tok = 2 * head_dim * (kv_heads // tp) * dt
+
+        return num_layers * bs * per_tok
 
     def get_block_size(self) -> int:
         return self.block_size
 
     def get_num_new_matched_tokens(self, request, num_computed_tokens):
-        req_blocks_num = len(request.all_token_ids) // self.hash_block_size
+        req_blocks_num = len(request.all_token_ids) // self.trace_hash_block_size
         if req_blocks_num < 1:
             return 0, False
         if request.request_id not in self.requests_meta:
             hash_start = time.perf_counter()
             ucm_block_ids = self.generate_hash(
-                self.hash_block_size, request.all_token_ids, self._seed
+                self.trace_hash_block_size, request.all_token_ids, self._seed
             )
             hash_end = time.perf_counter()
             hash_time_ms = (hash_end - hash_start) * 1000.0
@@ -2655,11 +2699,11 @@ class UCMLiteConnector(KVConnectorBase_V1):
             print_start = time.perf_counter()
             hex_ucm_block_ids = [b.hex() for b in ucm_block_ids]
             logger.info(
-                f"timestamp: {time.perf_counter()}, "
+                f"UCMTrace: timestamp: {time.perf_counter()}, "
                 f"request_id: {request.request_id}, "
                 f"input_length: {request.num_tokens}, "
                 f"output_length: {request.max_tokens}, "
-                f"ucm_block_ids: {hex_ucm_block_ids}"
+                f"block_hashes: {hex_ucm_block_ids}"
             )
             print_time_ms = (time.perf_counter() - print_start) * 1000.0
             logger.info(
@@ -2790,7 +2834,25 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         )
 
         if use_lite:
-            self.connector = UCMLiteConnector(vllm_config, role, kv_cache_config)
+            from ucm.integration.vllm.hla_connector import (
+                UCMHLALiteConnector,
+                UCMHybridLinearAttentionConnector,
+            )
+            from ucm.integration.vllm.hma_connector import (
+                UCMFAWAConnector,
+                UCMFAWALiteConnector,
+            )
+
+            if UCMFAWAConnector.can_handle_kv_cache_config(kv_cache_config):
+                self.connector = UCMFAWALiteConnector(
+                    vllm_config, role, kv_cache_config
+                )
+            elif UCMHybridLinearAttentionConnector.supports_kv_cache_layout(
+                kv_cache_config
+            ):
+                self.connector = UCMHLALiteConnector(vllm_config, role, kv_cache_config)
+            else:
+                self.connector = UCMLiteConnector(vllm_config, role, kv_cache_config)
             return
 
         use_inference_duration_monitor = (
