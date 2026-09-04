@@ -30,6 +30,7 @@ CANDIDATES_KIND = "ucm-runtime-candidates"
 CANDIDATES_SCHEMA_VERSION = 1
 RELEASE_ROOT = Path(__file__).resolve().parents[1]
 SUPPORTED_ARCHITECTURES = ("amd64", "arm64")
+RUNTIME_CHANNEL_PRIORITY = ("stable", "rc", "nightly")
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _MANYLINUX = re.compile(r"manylinux_(\d+)_(\d+)")
@@ -227,6 +228,7 @@ def _parsed_runtime_tag(product_id: str, tag: str) -> dict[str, object] | None:
     return {
         "tag": tag,
         "version": version,
+        "version_text": match.group("version"),
         "channel": channel,
         "suffix": suffix,
         "tokens": tokens,
@@ -245,22 +247,32 @@ def _runtime_variant(product_id: str, parsed: Mapping[str, object]) -> str:
     raise ValueError(f"unsupported runtime product {product_id!r}")
 
 
-def _tag_matches_keyword(tag: str, keyword: str) -> bool:
-    """Match one literal keyword as a delimited OCI tag component."""
+def _version_is_in_selector(version: Version, selector: Version) -> bool:
+    return version.release[: len(selector.release)] == selector.release
 
-    offset = 0
-    while (index := tag.find(keyword, offset)) != -1:
-        end = index + len(keyword)
-        left_boundary = (
-            index == 0
-            or tag[index - 1] in "-_"
-            or (tag[index - 1] == "v" and (index == 1 or tag[index - 2] in "-_"))
-        )
-        right_boundary = end == len(tag) or tag[end] in "-_"
-        if left_boundary and right_boundary:
-            return True
-        offset = index + 1
-    return False
+
+def _preferred_runtime_tags(
+    candidates: Sequence[Mapping[str, object]],
+) -> list[Mapping[str, object]]:
+    """Choose one channel and complete version from a candidate cohort."""
+
+    channel = next(
+        (
+            value
+            for value in RUNTIME_CHANNEL_PRIORITY
+            if any(item.get("channel") == value for item in candidates)
+        ),
+        None,
+    )
+    if channel is None:
+        return []
+    channel_candidates = [item for item in candidates if item.get("channel") == channel]
+    winning_version = max(Version(str(item["version"])) for item in channel_candidates)
+    return [
+        item
+        for item in channel_candidates
+        if Version(str(item["version"])) == winning_version
+    ]
 
 
 def _select_runtime_tags(
@@ -269,7 +281,7 @@ def _select_runtime_tags(
     *,
     excluded_variants: Sequence[str] = (),
 ) -> list[dict[str, str]]:
-    """Resolve literal version.ini keywords to published Runtime tags."""
+    """Resolve version.ini ranges to one published Runtime version per selector."""
 
     product_id = _string(product, "id", "release product")
     raw_selectors = product.get("runtime_selectors")
@@ -287,48 +299,52 @@ def _select_runtime_tags(
         context = f"{product_id} runtime selector[{index}]"
         if not isinstance(raw_selector, Mapping) or set(raw_selector) != {
             "raw",
-            "keyword",
+            "version",
             "tag",
         }:
             raise ValueError(f"{context}: malformed selector")
-        keyword = version_config.runtime_keyword(
-            raw_selector.get("keyword"), f"{context} keyword"
+        selector_text = version_config.runtime_selector_version(
+            raw_selector.get("version"), f"{context} version"
         )
+        selector_version = Version(selector_text)
         explicit_tag = raw_selector.get("tag")
+        expected_raw = (
+            selector_text if explicit_tag is None else f"{selector_text}@{explicit_tag}"
+        )
+        if raw_selector.get("raw") != expected_raw:
+            raise ValueError(f"{context}: raw selector is inconsistent")
         if explicit_tag is not None:
             if not isinstance(explicit_tag, str) or explicit_tag not in available_tags:
                 raise ValueError(f"{context}: explicit Runtime tag is not published")
-            if not _tag_matches_keyword(explicit_tag, keyword):
-                raise ValueError(f"{context}: explicit Runtime tag lacks its keyword")
             parsed = parsed_by_tag.get(explicit_tag)
-            if (
-                parsed is not None
-                and _runtime_variant(product_id, parsed) in excluded_variants
-            ):
+            if parsed is None:
+                raise ValueError(
+                    f"{context}: explicit Runtime tag does not match product grammar"
+                )
+            if not _version_is_in_selector(parsed["version"], selector_version):
+                raise ValueError(
+                    f"{context}: explicit Runtime tag is outside its version range"
+                )
+            if _runtime_variant(product_id, parsed) in excluded_variants:
                 raise ValueError(f"{context}: explicit Runtime tag is excluded")
-            values = [
-                {
-                    "runtime_tag": explicit_tag,
-                    "version": keyword,
-                    "channel": "pinned",
-                }
-            ]
+            values = [parsed]
         else:
             matching = [
                 item
                 for item in parsed_by_tag.values()
-                if _tag_matches_keyword(str(item["tag"]), keyword)
+                if _version_is_in_selector(item["version"], selector_version)
             ]
+            winners = _preferred_runtime_tags(matching)
             values = [
                 item
-                for item in matching
+                for item in winners
                 if _runtime_variant(product_id, item) not in excluded_variants
             ]
             if not values:
                 reason = (
-                    "only excluded variants are published"
-                    if matching
-                    else "no supported Runtime tag contains the keyword"
+                    "winning Runtime version contains only excluded variants"
+                    if winners
+                    else "no published Runtime tag matches the version range"
                 )
                 raise ValueError(f"{context}: {reason}")
 
@@ -341,7 +357,7 @@ def _select_runtime_tags(
             resolved_values.append(
                 {
                     "runtime_tag": runtime_tag,
-                    "version": keyword,
+                    "version": str(item["version_text"]),
                     "channel": str(item["channel"]),
                 }
             )
@@ -396,7 +412,7 @@ def resolve_runtime_candidates(
             selected = [
                 {
                     "runtime_tag": str(item["tag"]),
-                    "version": str(item["version"]),
+                    "version": str(item["version_text"]),
                     "channel": str(item["channel"]),
                 }
                 for tag in repository_tags
@@ -453,23 +469,12 @@ def resolve_runtime_candidates(
             parsed = _parsed_runtime_tag("vllm-ascend", item["runtime_tag"])
             if parsed is not None and not parsed["tokens"]:
                 eligible.append(item)
-        channel = next(
-            (
-                value
-                for value in ("stable", "rc", "nightly")
-                if any(item["channel"] == value for item in eligible)
-            ),
-            None,
-        )
-        if channel is None:
+        preferred = _preferred_runtime_tags(eligible)
+        if not preferred:
             raise ValueError("PR default selector found no Ascend A2 Ubuntu Runtime")
-        pool = [item for item in eligible if item["channel"] == channel]
         selected_default = max(
-            pool,
-            key=lambda item: (
-                Version(str(item["version"])),
-                str(item["runtime_tag"]),
-            ),
+            preferred,
+            key=lambda item: str(item["runtime_tag"]),
         )
         runtimes = [selected_default]
         problems = []
@@ -538,9 +543,15 @@ def validate_runtime_candidates(value: object) -> dict[str, object]:
         if reference in seen:
             raise ValueError(f"duplicate runtime candidate {reference}")
         seen.add(reference)
-        if item.get("channel") not in {"stable", "rc", "nightly", "pinned"}:
-            raise ValueError(f"{reference}: invalid channel")
-        version_config.runtime_keyword(item.get("version"), f"{reference} keyword")
+        product_id = _string(item, "product_id", reference)
+        runtime_tag = _string(item, "runtime_tag", reference)
+        parsed = _parsed_runtime_tag(product_id, runtime_tag)
+        if parsed is None:
+            raise ValueError(f"{reference}: Runtime tag does not match product grammar")
+        if item.get("version") != parsed["version_text"]:
+            raise ValueError(f"{reference}: Runtime version differs from its tag")
+        if item.get("channel") != parsed["channel"]:
+            raise ValueError(f"{reference}: Runtime channel differs from its tag")
         expected_refs.append(reference)
     if sorted(references) != sorted(expected_refs):
         raise ValueError("runtime candidate references do not match runtimes")

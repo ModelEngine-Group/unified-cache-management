@@ -20,6 +20,14 @@ policy = importlib.import_module("ucm_release.policy")
 upstream = importlib.import_module("ucm_release.upstream")
 
 
+def _selector(version: str, tag: str | None = None) -> dict[str, str | None]:
+    return {
+        "raw": version if tag is None else f"{version}@{tag}",
+        "version": version,
+        "tag": tag,
+    }
+
+
 def _policy(release_type: str = "stable") -> dict[str, object]:
     resolved = copy.deepcopy(
         policy.resolve(
@@ -29,8 +37,8 @@ def _policy(release_type: str = "stable") -> dict[str, object]:
         )
     )
     selectors = {
-        "vllm": [{"raw": "0.22.1", "keyword": "0.22.1", "tag": None}],
-        "vllm-ascend": [{"raw": "0.22.1rc1", "keyword": "0.22.1rc1", "tag": None}],
+        "vllm": [_selector("0.22.1")],
+        "vllm-ascend": [_selector("0.22.1")],
     }
     resolved["runtime_selectors"] = copy.deepcopy(selectors)
     for product in resolved["products"]:
@@ -66,12 +74,12 @@ def _all_keys(value: object) -> set[str]:
     return set()
 
 
-def test_registry_tag_selection_uses_literal_keywords_and_all_variants() -> None:
+def test_registry_tag_selection_uses_version_ranges_and_all_winner_variants() -> None:
     product = {
         "id": "vllm-ascend",
         "runtime_selectors": [
-            {"raw": "0.23.0", "keyword": "0.23.0", "tag": None},
-            {"raw": "0.24.0rc", "keyword": "0.24.0rc", "tag": None},
+            _selector("0.23"),
+            _selector("0.24"),
         ],
     }
 
@@ -102,25 +110,19 @@ def test_registry_tag_selection_uses_literal_keywords_and_all_variants() -> None
     ]
 
 
-def test_explicit_runtime_tag_is_pinned_without_grammar_or_expansion() -> None:
+def test_explicit_runtime_tag_is_range_checked_without_expansion() -> None:
     product = {
         "id": "vllm",
-        "runtime_selectors": [
-            {
-                "raw": "0.29.0rc@nightly-custom-v0.29.0rc-a3",
-                "keyword": "0.29.0rc",
-                "tag": "nightly-custom-v0.29.0rc-a3",
-            }
-        ],
+        "runtime_selectors": [_selector("0.29", "v0.29.0rc1-cu129")],
     }
 
     assert upstream._select_runtime_tags(  # noqa: SLF001
-        product, ["nightly-custom-v0.29.0rc-a3", "v0.29.0rc0"]
+        product, ["v0.29.0rc1-cu129", "v0.29.0rc2"]
     ) == [
         {
-            "runtime_tag": "nightly-custom-v0.29.0rc-a3",
-            "version": "0.29.0rc",
-            "channel": "pinned",
+            "runtime_tag": "v0.29.0rc1-cu129",
+            "version": "0.29.0rc1",
+            "channel": "rc",
         }
     ]
 
@@ -128,17 +130,11 @@ def test_explicit_runtime_tag_is_pinned_without_grammar_or_expansion() -> None:
 def test_explicit_runtime_tag_flows_through_candidate_contract() -> None:
     release = _policy()
     vllm = next(product for product in release["products"] if product["id"] == "vllm")
-    vllm["runtime_selectors"] = [
-        {
-            "raw": "0.29.0rc@nightly-custom-v0.29.0rc-a3",
-            "keyword": "0.29.0rc",
-            "tag": "nightly-custom-v0.29.0rc-a3",
-        }
-    ]
+    vllm["runtime_selectors"] = [_selector("0.29", "v0.29.0rc1-cu129")]
     tags = {
         "docker.io/vllm/vllm-openai": [
-            "nightly-custom-v0.29.0rc-a3",
-            "v0.29.0rc0",
+            "v0.29.0rc1-cu129",
+            "v0.29.0rc2",
         ],
         "quay.io/ascend/vllm-ascend": ["v0.22.1rc1"],
     }
@@ -150,15 +146,15 @@ def test_explicit_runtime_tag_flows_through_candidate_contract() -> None:
     pinned = next(
         item for item in candidates["runtimes"] if item["product_id"] == "vllm"
     )
-    assert pinned["runtime_tag"] == "nightly-custom-v0.29.0rc-a3"
-    assert pinned["version"] == "0.29.0rc"
-    assert pinned["channel"] == "pinned"
+    assert pinned["runtime_tag"] == "v0.29.0rc1-cu129"
+    assert pinned["version"] == "0.29.0rc1"
+    assert pinned["channel"] == "rc"
 
 
-def test_keyword_boundaries_do_not_merge_stable_rc_or_patch_versions() -> None:
+def test_patch_selector_does_not_merge_rc_or_other_patch_versions() -> None:
     product = {
         "id": "vllm-ascend",
-        "runtime_selectors": [{"raw": "0.25.1", "keyword": "0.25.1", "tag": None}],
+        "runtime_selectors": [_selector("0.25.1")],
     }
 
     assert upstream._select_runtime_tags(  # noqa: SLF001
@@ -170,23 +166,111 @@ def test_keyword_boundaries_do_not_merge_stable_rc_or_patch_versions() -> None:
     ]
 
 
+def test_minor_selector_prefers_channel_before_newer_version() -> None:
+    product = {
+        "id": "vllm-ascend",
+        "runtime_selectors": [_selector("0.27")],
+    }
+
+    assert upstream._select_runtime_tags(  # noqa: SLF001
+        product,
+        [
+            "v0.27.0",
+            "v0.27.0-a3",
+            "v0.27.1rc2",
+            "nightly-releases-v0.27.2rc-a3",
+        ],
+    ) == [
+        {"runtime_tag": "v0.27.0", "version": "0.27.0", "channel": "stable"},
+        {
+            "runtime_tag": "v0.27.0-a3",
+            "version": "0.27.0",
+            "channel": "stable",
+        },
+    ]
+
+
+def test_minor_selector_uses_highest_rc_and_only_its_variants() -> None:
+    product = {
+        "id": "vllm-ascend",
+        "runtime_selectors": [_selector("0.26")],
+    }
+
+    assert upstream._select_runtime_tags(  # noqa: SLF001
+        product,
+        [
+            "v0.26.0rc1",
+            "v0.26.0rc1-openeuler",
+            "v0.26.0rc2",
+            "v0.26.0rc2-a3",
+            "nightly-releases-v0.26.1rc-a3",
+        ],
+    ) == [
+        {"runtime_tag": "v0.26.0rc2", "version": "0.26.0rc2", "channel": "rc"},
+        {
+            "runtime_tag": "v0.26.0rc2-a3",
+            "version": "0.26.0rc2",
+            "channel": "rc",
+        },
+    ]
+
+
+def test_minor_selector_uses_highest_nightly_and_only_its_variants() -> None:
+    product = {
+        "id": "vllm-ascend",
+        "runtime_selectors": [_selector("0.25")],
+    }
+
+    assert upstream._select_runtime_tags(  # noqa: SLF001
+        product,
+        [
+            "nightly-releases-v0.25.0rc",
+            "nightly-releases-v0.25.0rc-a3",
+            "nightly-releases-v0.25.1rc",
+            "nightly-releases-v0.25.1rc-a3",
+            "nightly-releases-v0.25.1rc-openeuler",
+        ],
+    ) == [
+        {
+            "runtime_tag": "nightly-releases-v0.25.1rc",
+            "version": "0.25.1rc",
+            "channel": "nightly",
+        },
+        {
+            "runtime_tag": "nightly-releases-v0.25.1rc-a3",
+            "version": "0.25.1rc",
+            "channel": "nightly",
+        },
+        {
+            "runtime_tag": "nightly-releases-v0.25.1rc-openeuler",
+            "version": "0.25.1rc",
+            "channel": "nightly",
+        },
+    ]
+
+
 @pytest.mark.parametrize(
     ("selector", "tags", "message"),
     [
         (
-            {"raw": "0.27.1", "keyword": "0.27.1", "tag": None},
+            _selector("0.27.1"),
             [],
-            "contains the keyword",
+            "matches the version range",
         ),
         (
-            {"raw": "0.27.1@custom", "keyword": "0.27.1", "tag": "custom"},
+            _selector("0.27.1", "v0.27.1"),
             [],
             "not published",
         ),
         (
-            {"raw": "0.27.1@custom", "keyword": "0.27.1", "tag": "custom"},
+            _selector("0.27.1", "custom"),
             ["custom"],
-            "lacks its keyword",
+            "does not match product grammar",
+        ),
+        (
+            _selector("0.27.1", "v0.28.0"),
+            ["v0.28.0"],
+            "outside its version range",
         ),
     ],
 )
@@ -206,6 +290,65 @@ def test_all_release_profiles_use_the_same_runtime_selectors() -> None:
     } == {
         release_type: _policy()["runtime_selectors"]
         for release_type in policy.RELEASE_TYPES
+    }
+
+
+def test_candidate_resolution_selects_each_minor_independently() -> None:
+    release = _policy()
+    selectors = {
+        "vllm": [_selector("0.26"), _selector("0.27")],
+        "vllm-ascend": [
+            _selector("0.24"),
+            _selector("0.25"),
+            _selector("0.26"),
+        ],
+    }
+    for product in release["products"]:
+        product["runtime_selectors"] = selectors[product["id"]]
+    tags = {
+        "docker.io/vllm/vllm-openai": [
+            "v0.26.0",
+            "v0.26.1",
+            "v0.26.1-cu129",
+            "v0.27.0rc2",
+            "v0.27.1rc1",
+        ],
+        "quay.io/ascend/vllm-ascend": [
+            "nightly-releases-v0.24.0rc",
+            "nightly-releases-v0.24.0rc-a3",
+            "nightly-releases-v0.25.0rc",
+            "nightly-releases-v0.25.1rc",
+            "nightly-releases-v0.25.1rc-a3",
+            "v0.26.0rc1",
+            "v0.26.0rc1-a3",
+            "nightly-releases-v0.26.1rc-a3",
+        ],
+    }
+
+    candidates = upstream.resolve_runtime_candidates(
+        release, tag_loader=lambda repository: tags[repository]
+    )
+
+    assert candidates["references"] == [
+        "docker.io/vllm/vllm-openai:v0.26.1",
+        "docker.io/vllm/vllm-openai:v0.26.1-cu129",
+        "docker.io/vllm/vllm-openai:v0.27.1rc1",
+        "quay.io/ascend/vllm-ascend:nightly-releases-v0.24.0rc",
+        "quay.io/ascend/vllm-ascend:nightly-releases-v0.24.0rc-a3",
+        "quay.io/ascend/vllm-ascend:nightly-releases-v0.25.1rc",
+        "quay.io/ascend/vllm-ascend:nightly-releases-v0.25.1rc-a3",
+        "quay.io/ascend/vllm-ascend:v0.26.0rc1",
+        "quay.io/ascend/vllm-ascend:v0.26.0rc1-a3",
+    ]
+    assert {
+        (item["product_id"], item["version"], item["channel"])
+        for item in candidates["runtimes"]
+    } == {
+        ("vllm", "0.26.1", "stable"),
+        ("vllm", "0.27.1rc1", "rc"),
+        ("vllm-ascend", "0.24.0rc", "nightly"),
+        ("vllm-ascend", "0.25.1rc", "nightly"),
+        ("vllm-ascend", "0.26.0rc1", "rc"),
     }
 
 
@@ -242,36 +385,28 @@ def test_excluded_variant_policy_is_the_runtime_filter_authority() -> None:
     assert all("-310p" not in reference for reference in candidates["references"])
 
 
-def test_newer_excluded_variant_does_not_shadow_supported_runtime() -> None:
+def test_excluded_winner_does_not_fall_back_to_an_older_runtime() -> None:
     release = _policy()
     for product in release["products"]:
-        product["runtime_selectors"] = [
-            {"raw": "0.27.0", "keyword": "0.27.0", "tag": None}
-        ]
+        product["runtime_selectors"] = [_selector("0.27")]
     tags = {
         "docker.io/vllm/vllm-openai": ["v0.27.0"],
-        "quay.io/ascend/vllm-ascend": ["v0.27.0", "v0.28.0-310p"],
+        "quay.io/ascend/vllm-ascend": ["v0.27.0", "v0.27.1-310p"],
     }
 
-    candidates = upstream.resolve_runtime_candidates(
-        release, tag_loader=lambda repository: tags[repository]
-    )
-
-    assert candidates["references"] == [
-        "docker.io/vllm/vllm-openai:v0.27.0",
-        "quay.io/ascend/vllm-ascend:v0.27.0",
-    ]
+    with pytest.raises(ValueError, match="winning Runtime version"):
+        upstream.resolve_runtime_candidates(
+            release, tag_loader=lambda repository: tags[repository]
+        )
 
 
 def test_product_with_only_blocked_variants_fails_selection() -> None:
     release = _policy()
     for product in release["products"]:
-        product["runtime_selectors"] = [
-            {"raw": "0.27.0", "keyword": "0.27.0", "tag": None}
-        ]
+        product["runtime_selectors"] = [_selector("0.27")]
     tags = {
         "docker.io/vllm/vllm-openai": ["v0.27.0"],
-        "quay.io/ascend/vllm-ascend": ["v0.27.0-a5"],
+        "quay.io/ascend/vllm-ascend": ["v0.27.0", "v0.27.1-a5"],
     }
 
     with pytest.raises(ValueError, match="vllm-ascend: no publishable Runtime"):

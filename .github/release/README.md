@@ -19,26 +19,33 @@ The human-maintained release authorities are:
 - `requirements/wheel-build.txt` and `requirements/wheel-runtime.txt`: exact
   Python dependencies.
 
-Each product selector is a literal Registry-tag keyword such as `0.27.1` or
-`0.25.1rc`. A bare keyword expands every legal tag variant containing that
-delimited keyword. It does not use PEP 440 normalization, so `0.25.1` does not
-match `0.25.1rc` or `0.25.10`. An explicit `keyword@tag` binding such as
-`0.25.1rc@nightly-releases-v0.25.1rc-a3` selects only that exact published Tag;
-the Tag must contain the keyword. Exact bindings are reported as pinned and are
-not expanded. Missing keywords, missing explicit Tags, and selector sets that
-produce no publishable Runtime fail the release. All four Release Profiles
-consume the same selectors; Profiles no longer trim the Runtime matrix. 310P is
-filtered and A5 is reported as blocked.
+Each product selector is a canonical `X.Y` Minor range or an exact `X.Y.Z`
+Patch range. Every range is resolved independently from parsed Registry tags:
+the selector first chooses the highest available channel in `stable`, `rc`,
+`nightly` order, then the highest complete version in that channel, and finally
+expands every legal variant of only that version and channel. A newer RC never
+displaces a stable version in the same range, and missing variants are never
+backfilled from another version or channel.
 
-This keyword rule applies only to `UCM_SUPPORTED_VLLM_VERSIONS` and
-`UCM_SUPPORTED_VLLM_ASCEND_VERSIONS`. `UCM_VERSION` remains a canonical PEP
-440 package version because it drives Wheel, Chart, and Release coordinates.
+An explicit `version@tag` binding such as
+`0.25@nightly-releases-v0.25.1rc-a3` selects only that exact published Tag. The
+Tag must satisfy the product grammar and its parsed version must be inside the
+declared Minor or Patch range. The candidate records the Tag's complete version
+and actual channel; the pin is not expanded. Overlapping selectors such as
+`0.26,0.26.0`, missing ranges, missing explicit Tags, and selector sets that
+produce no publishable Runtime fail the release. All four Release Profiles
+consume the same selectors. After a winning version is chosen, 310P is filtered
+and A5 is reported as blocked; neither condition causes fallback.
+
+These range rules apply only to `UCM_SUPPORTED_VLLM_VERSIONS` and
+`UCM_SUPPORTED_VLLM_ASCEND_VERSIONS`. `UCM_VERSION` remains a canonical PEP 440
+`X.Y.Z` package version because it drives Wheel, Chart, and Release coordinates.
 
 For example:
 
 ```ini
-UCM_SUPPORTED_VLLM_VERSIONS=0.26.0,0.27.1,0.28.0
-UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.24.0rc,0.25.1rc,0.26.0rc
+UCM_SUPPORTED_VLLM_VERSIONS=0.26,0.27,0.28
+UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.23,0.24,0.25,0.26
 ```
 
 ## Registry-only flow
