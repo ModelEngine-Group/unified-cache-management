@@ -1037,6 +1037,11 @@ class PendingLoadTask:
     task: Task
     request_id: str
     vllm_block_ids: list[int]
+    load_start_ns: int = field(default_factory=time.perf_counter_ns)
+    submit_end_ns: int = field(default_factory=time.perf_counter_ns)
+    block_count: int = 0
+    byte_count: int = 0
+    poll_count: int = 0
 
 
 class RequestHasher:
@@ -1896,6 +1901,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 )
                 continue
             try:
+                load_start_ns = time.perf_counter_ns()
                 total_ptrs = self.kv_cache_layout.extract_block_addrs(vllm_block_ids)
                 total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
                 shard_indexs = [0] * len(ucm_block_ids)
@@ -1906,11 +1912,27 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     shard_indexs,
                     total_ptrs,
                 )
+                submit_end_ns = time.perf_counter_ns()
                 if request.load_async:
                     self._pending_load_tasks[request_id] = PendingLoadTask(
                         task=task,
                         request_id=request_id,
                         vllm_block_ids=list(vllm_block_ids),
+                        load_start_ns=load_start_ns,
+                        submit_end_ns=submit_end_ns,
+                        block_count=len(ucm_block_ids),
+                        byte_count=len(ucm_block_ids) * self.block_data_size,
+                    )
+                    logger.info(
+                        "[UCM_REQUEST_ASYNC] event=load_submitted "
+                        "request_id=%s tp_rank=%d blocks=%d bytes=%d "
+                        "submit_ms=%.3f native_task_id=%s",
+                        request_id,
+                        self.tp_rank,
+                        len(ucm_block_ids),
+                        len(ucm_block_ids) * self.block_data_size,
+                        (submit_end_ns - load_start_ns) / 1e6,
+                        getattr(task, "task_id", id(task)),
                     )
                 else:
                     request_to_task[request_id] = task
@@ -2219,18 +2241,47 @@ class UCMDirectConnector(KVConnectorBase_V1):
         pending_load_tasks = getattr(self, "_pending_load_tasks", {})
         for request_id, pending in list(pending_load_tasks.items()):
             completed = False
+            pending.poll_count += 1
             try:
                 if not self._rank_consistency.check_load(pending.task):
                     continue
                 completed = True
+                detected_ns = time.perf_counter_ns()
                 # A completed poll is followed by wait_load() to surface any
                 # deferred Store error and release the task context.
                 self._rank_consistency.wait_load(pending.task)
+                finalized_ns = time.perf_counter_ns()
+                logger.info(
+                    "[UCM_REQUEST_ASYNC] event=load_completed "
+                    "request_id=%s tp_rank=%d blocks=%d bytes=%d "
+                    "observed_total_ms=%.3f observed_after_submit_ms=%.3f "
+                    "finalize_ms=%.3f polls=%d native_task_id=%s",
+                    request_id,
+                    getattr(self, "tp_rank", -1),
+                    pending.block_count,
+                    pending.byte_count,
+                    (detected_ns - pending.load_start_ns) / 1e6,
+                    (detected_ns - pending.submit_end_ns) / 1e6,
+                    (finalized_ns - detected_ns) / 1e6,
+                    pending.poll_count,
+                    getattr(pending.task, "task_id", id(pending.task)),
+                )
             except Exception as e:
                 completed = True
+                failed_ns = time.perf_counter_ns()
                 logger.error(
-                    f"request {request_id} async load task failed. "
-                    f"{type(e).__name__}: {e}"
+                    "[UCM_REQUEST_ASYNC] event=load_failed "
+                    "request_id=%s tp_rank=%d blocks=%d "
+                    "observed_total_ms=%.3f polls=%d native_task_id=%s "
+                    "error=%s: %s",
+                    request_id,
+                    getattr(self, "tp_rank", -1),
+                    pending.block_count,
+                    (failed_ns - pending.load_start_ns) / 1e6,
+                    pending.poll_count,
+                    getattr(pending.task, "task_id", id(pending.task)),
+                    type(e).__name__,
+                    e,
                 )
                 self._record_load_error(
                     "connector_load_wait_errors_total",
