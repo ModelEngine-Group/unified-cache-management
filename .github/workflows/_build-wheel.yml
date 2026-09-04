@@ -1,0 +1,209 @@
+name: Build one UCM wheel
+
+on:
+  workflow_call:
+    inputs:
+      wheel_id:
+        type: string
+        required: true
+      runner:
+        type: string
+        required: true
+      plan_artifact:
+        type: string
+        required: true
+      source_ref:
+        type: string
+        required: false
+        default: ""
+      retention_days:
+        type: number
+        required: false
+        default: 7
+    outputs:
+      wheel_artifact:
+        description: Wheel artifact produced by this task
+        value: ${{ jobs.build.outputs.wheel_artifact }}
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  build:
+    name: Build
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 180
+    outputs:
+      wheel_artifact: ${{ steps.task.outputs.wheel_artifact }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - run: >-
+          python -m pip install --disable-pip-version-check --no-cache-dir
+          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+      - uses: ./.github/actions/download-artifact-retry
+        with:
+          name: ${{ inputs.plan_artifact }}
+          path: input/plan
+      - id: task
+        name: Select wheel task
+        env:
+          WHEEL_ID: ${{ inputs.wheel_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p out .ucm-compact
+          python scripts/materialize_version.py \
+            --version "$(jq -er '.version' input/plan/release-plan.json)" >/dev/null
+          PYTHONPATH=.github/release python -m ucm_release compact select \
+            --plan input/plan/release-plan.json --kind wheel --id "${WHEEL_ID}" \
+            --output out/wheel-task.json >/dev/null
+          source_version="$(PYTHONPATH=.github/release python -c \
+            'from ucm_release.core import read_version; print(read_version())')"
+          test "$(jq -r '.wheel_version' out/wheel-task.json)" = "${source_version}"
+          PYTHONPATH=.github/release python -m ucm_release compact prepare-wheel-source \
+            --source-root . \
+            --distribution "$(jq -r '.dist_name' out/wheel-task.json)" >/dev/null
+          jq -r '.build_requirements[]' out/wheel-task.json \
+            >.ucm-compact/build-requirements.txt
+          jq -e '
+            (.target_platform_tag | type == "string" and length > 0) and
+            (.external_runtime_exclude_patterns | type == "array") and
+            all(.external_runtime_exclude_patterns[];
+              type == "string" and length > 0 and
+              index("\n") == null and index("\r") == null)
+          ' out/wheel-task.json >/dev/null
+          jq -r '.external_runtime_exclude_patterns[]' out/wheel-task.json \
+            >.ucm-compact/auditwheel-exclude-patterns.txt
+          artifact="ucm-wheel-${WHEEL_ID}-run-${GITHUB_RUN_ID}"
+          source_date_epoch="$(git show -s --format=%ct HEAD)"
+          test "${source_date_epoch}" -ge 315532800
+          echo "wheel_artifact=${artifact}" >>"${GITHUB_OUTPUT}"
+          echo "source_date_epoch=${source_date_epoch}" >>"${GITHUB_OUTPUT}"
+      - uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+      - uses: docker/setup-buildx-action@v3.11.1
+      - name: Authenticate to GHCR
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${GITHUB_TOKEN}" | docker login ghcr.io \
+            --username "${GITHUB_ACTOR}" --password-stdin
+      - name: Build native wheel
+        run: |
+          set -euo pipefail
+          builder="$(jq -r '.builder.repository + "@" + .builder.digest' out/wheel-task.json)"
+          source_image="$(jq -er '.builder.source_image' out/wheel-task.json)"
+          source_repository="${source_image%:*}"
+          builder_repository="$(jq -er '.builder.repository' out/wheel-task.json)"
+          builder_rate_limit_scope="${builder_repository#ghcr.io/}"
+          source_builder="${source_repository}@$(jq -er \
+            '.builder.source_image_digest' out/wheel-task.json)"
+          build_wheel() {
+            local builder_image="$1"
+            local log_path="$2"
+            local rate_limit_marker="${3:-}"
+            local rate_limit_scope="${4:-}"
+            local retry_args=()
+            if [ -n "${rate_limit_marker}" ]; then
+              retry_args=(--rate-limit-marker "${rate_limit_marker}")
+              if [ -n "${rate_limit_scope}" ]; then
+                retry_args+=(--rate-limit-scope "${rate_limit_scope}")
+              fi
+            fi
+            bash .github/release/retry-registry-command.sh \
+              "${log_path}" "${retry_args[@]}" \
+              docker buildx build \
+              --platform "$(jq -r '.platform' out/wheel-task.json)" \
+              --file .github/release/docker/Dockerfile.wheel \
+              --target wheel \
+              --build-arg "UCM_BUILDER_IMAGE=${builder_image}" \
+              --build-arg "UCM_CPU_ARCH=$(jq -r '.cpu_arch' out/wheel-task.json)" \
+              --build-arg "UCM_PLATFORM=$(jq -r '.build.platform_arg' out/wheel-task.json)" \
+              --build-arg "UCM_PYTHON_VERSION=$(jq -r '.python_version' out/wheel-task.json)" \
+              --build-arg "UCM_PYTHON_ABI=$(jq -r '.python_abi' out/wheel-task.json)" \
+              --build-arg "UCM_TARGET_PLATFORM_TAG=$(jq -r '.target_platform_tag' out/wheel-task.json)" \
+              --build-arg "SOURCE_DATE_EPOCH=${{ steps.task.outputs.source_date_epoch }}" \
+              --output type=local,dest=out/wheel \
+              --progress plain .
+          }
+          target_rate_limit_marker="${RUNNER_TEMP}/ucm-wheel-target-rate-limited"
+          selected_builder="${builder}"
+          if build_wheel "${builder}" "${RUNNER_TEMP}/ucm-wheel-target-build.log" \
+            "${target_rate_limit_marker}" "${builder_rate_limit_scope}"; then
+            :
+          else
+            target_build_status="$?"
+            if [ ! -f "${target_rate_limit_marker}" ] || \
+               [ "$(<"${target_rate_limit_marker}")" != "rate-limit-exhausted" ]; then
+              exit "${target_build_status}"
+            fi
+            echo "Builder target remained rate-limited; rebuilding from pinned source ${source_builder}"
+            build_wheel "${source_builder}" "${RUNNER_TEMP}/ucm-wheel-source-build.log"
+            selected_builder="${source_builder}"
+          fi
+          # Backticks in these format strings are literal Markdown.
+          # shellcheck disable=SC2016
+          {
+            echo '### Builder registry source'
+            echo
+            printf -- '- Requested: `%s`\n' "${builder}"
+            printf -- '- Used: `%s`\n' "${selected_builder}"
+          } >>"${GITHUB_STEP_SUMMARY}"
+          test "$(find out/wheel -maxdepth 1 -type f -name '*.whl' | wc -l | tr -d ' ')" = 1
+          test -s out/wheel/auditwheel-repair.txt
+          test -s out/wheel/auditwheel-show.txt
+      - name: Record repaired Wheel result
+        run: |
+          set -euo pipefail
+          wheel="$(find out/wheel -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "${wheel}"
+          PYTHONPATH=.github/release python -m ucm_release compact record-wheel-result \
+            --task out/wheel-task.json --wheel "${wheel}" \
+            --output out/wheel/wheel-result.json >/dev/null
+          external_libraries="$(jq -r '
+            if .external_libraries == null then "not reported"
+            elif (.external_libraries | length) == 0 then "none"
+            else (.external_libraries | join(", "))
+            end
+          ' out/wheel/wheel-result.json)"
+          wheel_platform="$(jq -r '.platform_tags | join(", ")' \
+            out/wheel/wheel-result.json)"
+          auditwheel_platform="$(jq -r '.auditwheel_platform_tag' \
+            out/wheel/wheel-result.json)"
+          glibc_floor="$(jq -r '.glibc_floor // "not reported"' \
+            out/wheel/wheel-result.json)"
+          # Backticks in these format strings are literal Markdown.
+          # shellcheck disable=SC2016
+          {
+            printf '### Wheel audit: `%s`\n\n' "$(basename "${wheel}")"
+            printf -- '- Wheel platform: `%s`\n' "${wheel_platform}"
+            printf -- '- auditwheel compatible platform: `%s`\n' \
+              "${auditwheel_platform}"
+            printf -- '- GLIBC floor: `%s`\n' "${glibc_floor}"
+            printf '%s\n\n' "- External libraries: ${external_libraries}"
+            printf '<details><summary>auditwheel show</summary>\n\n```text\n'
+            cat out/wheel/auditwheel-show.txt
+            printf '```\n</details>\n'
+          } >>"${GITHUB_STEP_SUMMARY}"
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ${{ steps.task.outputs.wheel_artifact }}
+          path: out/wheel/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: ${{ inputs.retention_days }}
