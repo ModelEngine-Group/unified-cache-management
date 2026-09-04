@@ -155,3 +155,10 @@ various scenarios, including multi-turn dialogue and long-context reasoning task
 </div>
 
 **[About Us](about.md)** — Learn about the UCM team and our mission.
+
+## Version Compatibility
+
+| Branch | Status | vLLM version | vLLM-Ascend version |
+| --- | --- | --- | --- |
+| `main` | Maintained | v0.27.1 | nightly-0.26.0 |
+| `develop` | Maintained | v0.27.1 | nightly-0.26.0 |

@@ -20,25 +20,29 @@
 
 | Model | vLLM<br>(main) | vLLM-Ascend<br>(main) | SGLang<br>(main) |
 |-------|:-----------:|:------------------:|:------:|
-| DeepSeek V3.2 | ✅ | ✅ | ✅ |
-| DeepSeek R1 | ✅ | ✅ | ✅ |
 | DeepSeek V3/3.1 | ✅ | ✅ | ✅ |
+| DeepSeek R1 | ✅ | ✅ | ✅ |
+| DeepSeek V3.2 | ✅ | ✅ | ✅ |
 | DeepSeek V4 Pro | ✅ | ✅ | ❌ |
 | DeepSeek V4 Flash | ✅ | ✅ | ❌ |
-| Qwen3.6 | ✅ | ✅ | ❌ |
-| Qwen3.5 | ✅ | ✅ | ❌ |
+| Qwen2.5 | ✅ | ✅ | ✅ |
 | Qwen3 | ✅ | ✅ | ✅ |
 | Qwen3-MoE | ✅ | ✅ | ✅ |
 | Qwen3-Next | ✅ | ✅ | ❌ |
-| Qwen2.5 | ✅ | ✅ | ✅ |
-| GLM-5.2 | ✅ | ✅ | ❌ |
-| GLM-5.1 | ✅ | ✅ | ❌ |
-| GLM-5 | ✅ | ✅ | ❌ |
+| Qwen3.5 | ✅ | ✅ | ❌ |
+| Qwen3.6 | ✅ | ✅ | ❌ |
+| Qwen3.8 | ✅ | ✅ | ❌ |
+| Qwen3.8-Flash-Next | 🟡 | 🟡 | ❌ |
 | GLM-4.x | ✅ | ✅ | ✅ |
+| GLM-5 | ✅ | ✅ | ❌ |
+| GLM-5.1 | ✅ | ✅ | ❌ |
+| GLM-5.2 | ✅ | ✅ | ❌ |
+| GLM-5.3-Flash | 🟡 | 🟡 | ❌ |
 | MiniMax-M2.5 | ✅ | ✅ | ✅ |
 | MiniMax-M2.7 | ✅ | ✅ | ✅ |
-| MiniMax-M3 | ❌ | ❌ | ❌ |
-| Kimi-K2.5 | ❌ | ❌ | ❌ |
+| MiniMax-M3 | 🟡 | 🟡 | ❌ |
+| Kimi-K2.5 | ✅ | ✅ | ❌ |
+| Kimi-K3 | 🟡 | 🟡 | ❌ |
 
 > **注意**：表格列出了部分代表性模型。
 > 详见 [**前缀缓存**](../capabilities/prefix-cache/index.md)。
@@ -49,11 +53,11 @@
 
 | Model | GsaOnDevice<br>vLLM / vLLM-Ascend 0.11.0 | ReRoPE<br>vLLM 0.11.0 | CacheBlend<br>vLLM 0.9.2 |
 |-------|:-------------------------:|:------------------------:|:---------------------:|
-| DeepSeek V3.2 | ✅ | ✅ | ✅ |
-| DeepSeek R1 | ✅ | ✅ | ✅ |
 | DeepSeek V3/3.1 | ✅ | ✅ | ✅ |
-| Qwen3 | ✅ | ✅ | ✅ |
+| DeepSeek R1 | ✅ | ✅ | ✅ |
+| DeepSeek V3.2 | ✅ | ✅ | ✅ |
 | Qwen2.5 | ✅ | ✅ | ✅ |
+| Qwen3 | ✅ | ✅ | ✅ |
 
 > **注意**：推理增强特性（稀疏注意力、ReRoPE、CacheBlend）不在本文档范围内。
 
