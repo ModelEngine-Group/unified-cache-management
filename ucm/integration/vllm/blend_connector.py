@@ -12,6 +12,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.request import Request
 
+from ucm.integration.vllm.request_hasher import RequestHashError
 from ucm.integration.vllm.ucm_connector import (
     RequestDispatchMeta,
     UCMConnectorMetadata,
@@ -120,10 +121,22 @@ class UCMBlendConnectorMetadata(UCMConnectorMetadata):
 
 class UCMBlendConnector(UCMDirectConnector):
     """
-    This Connector process chunk hash and prefix cache
+    This Connector processes chunk hashes and prefix cache for text-only models.
     """
 
     def __init__(self, vllm_config: "VllmConfig", role: KVConnectorRole):
+        is_multimodal_model = getattr(
+            vllm_config.model_config, "is_multimodal_model", False
+        )
+        if callable(is_multimodal_model):
+            is_multimodal_model = is_multimodal_model()
+        if is_multimodal_model:
+            logger.warning_once(
+                "CacheBlend detected a multimodal-capable model, but currently "
+                "supports only its plain-text request path. Multimodal requests "
+                "will bypass CacheBlend external caching."
+            )
+
         super().__init__(vllm_config, role)
         ucm_sparse_config = self.launch_config.get("ucm_sparse_config", [])
         self.blend_stage = BlendStage.BUILD_PREFIX_CACHE
@@ -145,7 +158,33 @@ class UCMBlendConnector(UCMDirectConnector):
         self.delta_rope_vllm_ids: torch.Tensor = None
         self.delta_rope_positions: torch.Tensor = None
 
-    def _process_req(self, all_token_ids: List[int]):
+    def _generate_chunk_hashes(self, token_ids: List[int]) -> list[bytes]:
+        """Hash a plain-text chunk with the common three-field schema."""
+        parent = self._seed
+        hashes = []
+        for start in range(0, len(token_ids), self.block_size):
+            end = start + self.block_size
+            if end > len(token_ids):
+                break
+            parent = self.request_hasher((parent, tuple(token_ids[start:end]), None))
+            hashes.append(parent)
+        return hashes
+
+    @staticmethod
+    def _validate_supported_request(request: "Request") -> None:
+        if (
+            getattr(request, "mm_features", None)
+            or getattr(request, "lora_request", None) is not None
+            or getattr(request, "cache_salt", None)
+            or getattr(request, "prompt_embeds", None) is not None
+        ):
+            raise RequestHashError(
+                "CacheBlend currently supports only plain-text requests "
+                "without multimodal features, LoRA, cache salt, or prompt "
+                "embeddings."
+            )
+
+    def _process_req(self, request: "Request"):
         """
         pre-assumption, we explicitly construct block-padded chunk req to make it cached all tokens
         beside chunk-build req, we try to split chunk from req, if no chunk exist, it just builds naive prefix cache
@@ -153,10 +192,11 @@ class UCMBlendConnector(UCMDirectConnector):
         then for other chunk blocks, if store hit num of block hash is less than threshold, we do not conduct cache blend
         finally, if there are quite many chunk block-hits, we do cache blend to get TTFT-promot
         """
+        self._validate_supported_request(request)
         chunks_meta = []
-        prefix_block_hashes = self.generate_hash(
-            self.block_size, all_token_ids, self._seed
-        )
+        all_token_ids = request.all_token_ids
+        assert self.request_block_hasher is not None
+        prefix_block_hashes = self.request_block_hasher(request)
         if (
             all_token_ids[-1] == self.chunk_end_token_id
             and len(all_token_ids) % self.block_size == 0
@@ -180,9 +220,7 @@ class UCMBlendConnector(UCMDirectConnector):
             # but this will bring lots of modification to engine.
             if all_token_ids[end_token_idx] == self.chunk_end_token_id:
                 chunk_token_ids = all_token_ids[start_token_dix : end_token_idx + 1]
-                chunk_blks_hash = self.generate_hash(
-                    self.block_size, chunk_token_ids, self._seed
-                )
+                chunk_blks_hash = self._generate_chunk_hashes(chunk_token_ids)
 
                 chunk_blks_len = end_blk_idx - start_blk_idx + 1
                 chunk_tokens_len = chunk_blks_len * self.block_size
@@ -361,9 +399,15 @@ class UCMBlendConnector(UCMDirectConnector):
         if max_blk_num == 0:
             return 0, False
 
-        req_stage, prefix_block_hashes, req_chunks_meta, req_chunks_hashes = (
-            self._process_req(all_token_ids)
-        )
+        try:
+            req_stage, prefix_block_hashes, req_chunks_meta, req_chunks_hashes = (
+                self._process_req(request)
+            )
+        except RequestHashError as e:
+            logger.error(
+                f"request {request.request_id} hash error. " f"{type(e).__name__}: {e}"
+            )
+            return 0, False
 
         pc_hit_blocks, chunk_hit_blocks = self._get_req_chunk_hit(
             req_stage, prefix_block_hashes, req_chunks_meta, req_chunks_hashes

@@ -73,6 +73,8 @@ developer-guide/contribute
 developer-guide/deepdive_ucm
 developer-guide/add_metrics
 developer-guide/extending_store
+developer-guide/vllm_request_aware_prefix_hashing_design
+developer-guide/vllm_request_aware_prefix_hashing_design_zh
 :::
 
 :::{toctree}

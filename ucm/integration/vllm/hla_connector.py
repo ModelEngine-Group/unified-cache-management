@@ -25,11 +25,11 @@ from vllm.v1.kv_cache_interface import (
 )
 
 from ucm.integration.vllm.device import create_device
+from ucm.integration.vllm.request_hasher import RequestHasher, RequestHashError
 from ucm.integration.vllm.ucm_connector import (
     KVCacheLayout,
     PendingDumpTask,
     RequestDispatchMeta,
-    RequestHasher,
     RequestMeta,
     UCMConnectorMetadata,
     UCMDirectConnector,
@@ -141,6 +141,7 @@ class GroupInfo:
     # Independent hash chain seed per group (see ``KVCacheGroupManager``).
     seed: bytes
     is_mamba_align: bool = False
+    block_hasher: Optional[Callable[["Request"], list[bytes]]] = None
 
     @property
     def is_full_attention(self) -> bool:
@@ -173,6 +174,10 @@ class KVCacheGroupManager:
                 seed=seed,
                 is_mamba_align=is_mamba_align,
             )
+            if not is_mamba_align:
+                info.block_hasher = request_hasher.make_request_block_hasher(
+                    block_size, seed
+                )
             self.groups_by_id.append(info)
             if info.is_full_attention:
                 self.full_attn_groups.append(info)
@@ -213,30 +218,18 @@ class KVCacheGroupManager:
     def num_groups(self) -> int:
         return len(self.groups_by_id)
 
-    def compute_block_hashes(
-        self, group: GroupInfo, token_ids: list[int]
-    ) -> list[bytes]:
-        """Hash ``token_ids`` into per-block ids using ``group``'s chain seed."""
+    def compute_block_hashes(self, group: GroupInfo, request: "Request") -> list[bytes]:
+        """Hash a request at one group's block boundaries and chain seed."""
         if group.is_mamba_align:
             # mamba-align pads block table with null blocks; no per-block hash.
-            return [b""] * (len(token_ids) // group.block_size)
+            return [b""] * (len(request.all_token_ids) // group.block_size)
 
-        ret: list[bytes] = []
-        parent = group.seed
-        block_size = group.block_size
-        for start in range(0, len(token_ids), block_size):
-            end = start + block_size
-            block_token_ids = token_ids[start:end]
-            if len(block_token_ids) < block_size:
-                break
-            hash_value = self.request_hasher((parent, tuple(block_token_ids)))
-            parent = hash_value
-            ret.append(hash_value)
-        return ret
+        assert group.block_hasher is not None
+        return group.block_hasher(request)
 
-    def compute_all_group_block_ids(self, token_ids: list[int]) -> list[list[bytes]]:
+    def compute_all_group_block_ids(self, request: "Request") -> list[list[bytes]]:
         """Compute full block hashes for every group, indexed by group_id."""
-        return [self.compute_block_hashes(g, token_ids) for g in self.groups_by_id]
+        return [self.compute_block_hashes(g, request) for g in self.groups_by_id]
 
     def compute_mamba_align_state_hash(
         self,
@@ -811,6 +804,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             lcm_block_size = self.group_manager.lcm_block_size
             self.block_size = lcm_block_size
             self.hash_block_size = lcm_block_size
+            self._bind_request_block_hasher()
 
         logger.info(f"{type(self).__name__} initialized")
 
@@ -958,9 +952,15 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             )
             return 0, False
 
-        group_ucm_block_ids = self.group_manager.compute_all_group_block_ids(
-            request.all_token_ids
-        )
+        try:
+            group_ucm_block_ids = self.group_manager.compute_all_group_block_ids(
+                request
+            )
+        except RequestHashError as e:
+            logger.error(
+                f"request {request.request_id} hash error. " f"{type(e).__name__}: {e}"
+            )
+            return 0, False
         primary_full_attn = self.group_manager.full_attn_groups[0]
         primary_block_ids = group_ucm_block_ids[primary_full_attn.group_id]
 
