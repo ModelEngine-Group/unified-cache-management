@@ -222,6 +222,19 @@ def apply_all_patches() -> None:
         logger.info("UCM patching vllm-ascend bind_memory to no-op...")
         import ucm.integration.vllm.patch.bind_memory_patch
 
+        # The CPU binding patch is version-independent since 0.26.0: the fixed
+        # implementation wraps the upstream CpuAlloc methods (see
+        # cpu_binding_affinity_patch.*_fixed), so every release >= 0.26.0 is
+        # patched here; older versions keep their per-version cpu_binding
+        # patches inside the match below. @when_imported is self-guarding
+        # (only fires when vllm_ascend.cpu_binding exists).
+        if (
+            ascend_version is not None
+            and tuple(int(part) for part in ascend_version.split("."))[:2] >= (0, 26)
+        ):
+            logger.info("UCM patching vllm-ascend CPU binding (fixed impl)...")
+            import ucm.integration.vllm.patch.v0260.vllm_ascend.cpu_binding_patch
+
         match ascend_version:
             case "0.11.0":
                 logger.info("UCM patching vllm-ascend for pc...")
@@ -281,9 +294,6 @@ def apply_all_patches() -> None:
                 )
                 import ucm.integration.vllm.patch.v0251.vllm_ascend.ascend_hybrid_cache_patch
                 import ucm.integration.vllm.patch.v0251.vllm_ascend.cpu_binding_patch
-            case "0.26.0":
-                logger.info("UCM patching vllm-ascend 0.26.0 for CPU affinity...")
-                import ucm.integration.vllm.patch.v0260.vllm_ascend.cpu_binding_patch
             case _:
                 pass
 
