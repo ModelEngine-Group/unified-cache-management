@@ -78,8 +78,10 @@ private:
     TransportPtr CreateTransport(TransportProtocol protocol) const;
     Status RegisterMemoryWithTransports(const MemoryRegion& memory, MemoryHandle handle);
     Status FindTransport(Operation& batch, Transport*& transport);
-    Status ExportLocalMetadata(const ManagerID& manager_id, Metadata& out);
-    Status ImportMetadata(const Metadata& metadata, const ManagerID& manager_id);
+    Status ExportLocalMetadata(TransportProtocol protocol, const ManagerID& manager_id,
+                               Metadata& out);
+    Status ImportMetadata(TransportProtocol protocol, const Metadata& metadata,
+                          const ManagerID& manager_id);
     Status HandleControlRequest(ManagerMessageType type, TransportProtocol protocol,
                                 const ManagerID& manager_id, const Metadata& request,
                                 Metadata& response);

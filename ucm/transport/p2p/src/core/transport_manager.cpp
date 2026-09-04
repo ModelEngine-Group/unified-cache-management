@@ -29,7 +29,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include "common/binary_codec.h"
 #include "common/status_utils.h"
 #include "control/control_protocol.h"
 #ifdef UCM_P2P_HAS_HIXL
@@ -39,53 +38,6 @@
 
 namespace transport {
 namespace {
-
-struct TransportMetadataRecord {
-    TransportProtocol protocol;
-    Metadata metadata;
-};
-
-struct PeerAdvertisement {
-    std::vector<TransportMetadataRecord> records;
-};
-
-Status EncodePeerAdvertisement(const PeerAdvertisement& advertisement, Metadata& out)
-{
-    out.clear();
-    if (!detail::AppendU32(out, static_cast<uint32_t>(advertisement.records.size()))) {
-        return Status::InvalidParam();
-    }
-
-    for (const auto& record : advertisement.records) {
-        if (!detail::AppendU32(out, static_cast<uint32_t>(record.protocol)) ||
-            !detail::AppendBytes(out, record.metadata)) {
-            return Status::InvalidParam();
-        }
-    }
-    return Status::OK();
-}
-
-Status DecodePeerAdvertisement(const Metadata& in, PeerAdvertisement& advertisement)
-{
-    size_t offset = 0;
-    uint32_t count = 0;
-    if (!detail::ReadU32(in, offset, count)) { return Status::InvalidParam(); }
-
-    advertisement.records.clear();
-    advertisement.records.reserve(count);
-    for (uint32_t i = 0; i < count; ++i) {
-        TransportMetadataRecord record;
-        uint32_t protocol = 0;
-        if (!detail::ReadU32(in, offset, protocol) ||
-            !detail::ReadBytes(in, offset, record.metadata)) {
-            return Status::InvalidParam();
-        }
-        record.protocol = static_cast<TransportProtocol>(protocol);
-        advertisement.records.push_back(std::move(record));
-    }
-
-    return offset == in.size() ? Status::OK() : Status::InvalidParam();
-}
 
 const char* ConnectionRequestName(ManagerMessageType type)
 {
@@ -213,46 +165,23 @@ Status TransportManager::Shutdown()
     return result;
 }
 
-Status TransportManager::ExportLocalMetadata(const ManagerID& manager_id, Metadata& out)
+Status TransportManager::ExportLocalMetadata(TransportProtocol protocol,
+                                             const ManagerID& manager_id, Metadata& out)
 {
-    PeerAdvertisement advertisement;
-    advertisement.records.reserve(transports_.size());
-    for (const auto& item : transports_) {
-        Metadata metadata;
-        P2P_RETURN_IF_ERROR(item.transport->ExportMetadata(manager_id, metadata),
-                            "transport manager metadata export failed protocol={} peer={}",
-                            static_cast<uint32_t>(item.protocol), manager_id);
-        advertisement.records.push_back(
-            TransportMetadataRecord{item.protocol, std::move(metadata)});
-    }
-    return EncodePeerAdvertisement(advertisement, out);
+    const auto transport = protocol_map_.find(protocol);
+    if (transport == protocol_map_.end()) { return Status::Unsupported(); }
+    return transport->second->ExportMetadata(manager_id, out);
 }
 
-Status TransportManager::ImportMetadata(const Metadata& metadata, const ManagerID& manager_id)
+Status TransportManager::ImportMetadata(TransportProtocol protocol, const Metadata& metadata,
+                                        const ManagerID& manager_id)
 {
     Endpoint endpoint;
     P2P_RETURN_IF_ERROR(ParseManagerID(manager_id, endpoint),
                         "transport manager metadata import invalid peer={}", manager_id);
-    if (metadata.size() < sizeof(uint32_t)) { return Status::InvalidParam(); }
-
-    PeerAdvertisement advertisement;
-    P2P_RETURN_IF_ERROR(DecodePeerAdvertisement(metadata, advertisement),
-                        "transport manager metadata decode failed peer={}", manager_id);
-
-    for (const auto& record : advertisement.records) {
-        const auto it = protocol_map_.find(record.protocol);
-        if (it == protocol_map_.end()) {
-            UC_DEBUG("transport manager metadata ignored unsupported protocol={} peer={}",
-                     static_cast<uint32_t>(record.protocol), manager_id);
-            continue;
-        }
-
-        P2P_RETURN_IF_ERROR(it->second->ImportMetadata(manager_id, record.metadata),
-                            "transport manager metadata import failed protocol={} peer={}",
-                            static_cast<uint32_t>(record.protocol), manager_id);
-    }
-
-    return Status::OK();
+    const auto transport = protocol_map_.find(protocol);
+    if (transport == protocol_map_.end()) { return Status::Unsupported(); }
+    return transport->second->ImportMetadata(manager_id, metadata);
 }
 
 Status TransportManager::HandleControlRequest(ManagerMessageType type, TransportProtocol protocol,
@@ -263,11 +192,11 @@ Status TransportManager::HandleControlRequest(ManagerMessageType type, Transport
     P2P_RETURN_IF_ERROR(ParseManagerID(manager_id, endpoint),
                         "transport manager control request invalid peer={}", manager_id);
     if (type == ManagerMessageType::ConnectRequest) {
-        P2P_RETURN_IF_ERROR(ExportLocalMetadata(manager_id, response),
+        P2P_RETURN_IF_ERROR(ExportLocalMetadata(protocol, manager_id, response),
                             "transport manager local metadata export failed peer={}", manager_id);
     }
-    P2P_RETURN_IF_ERROR(ApplyConnectionLocally(type, protocol, manager_id, endpoint, request),
-                        "transport manager local {} failed protocol={} peer={}",
+    const auto status = ApplyConnectionLocally(type, protocol, manager_id, endpoint, request);
+    P2P_RETURN_IF_ERROR(status, "transport manager local {} failed protocol={} peer={}",
                         ConnectionRequestName(type), static_cast<uint32_t>(protocol), manager_id);
     UC_DEBUG("transport manager control request applied operation={} protocol={} peer={}",
              ConnectionRequestName(type), static_cast<uint32_t>(protocol), manager_id);
@@ -357,7 +286,7 @@ Status TransportManager::Connect(TransportProtocol protocol, const ManagerID& ma
     if (channel_manager_->IsConnected(endpoint, protocol)) { return Status::OK(); }
 
     Metadata request;
-    P2P_RETURN_IF_ERROR(ExportLocalMetadata(manager_id, request),
+    P2P_RETURN_IF_ERROR(ExportLocalMetadata(protocol, manager_id, request),
                         "transport manager connect metadata export failed protocol={} peer={}",
                         static_cast<uint32_t>(protocol), manager_id);
     Metadata response;
@@ -388,6 +317,11 @@ Status TransportManager::Disconnect(TransportProtocol protocol, const ManagerID&
     P2P_RETURN_IF_ERROR(ValidateConnection(protocol, manager_id, endpoint),
                         "transport manager disconnect validation failed protocol={} peer={}",
                         static_cast<uint32_t>(protocol), manager_id);
+    auto close_unused_channel = MakeScopeGuard([this, &endpoint, &manager_id]() {
+        if (!channel_manager_->ConnectedProtocols(endpoint).empty()) { return; }
+        P2P_LOG_IF_ERROR(channel_manager_->Close(endpoint),
+                         "transport manager unused channel close failed peer={}", manager_id);
+    });
     Metadata response;
     const auto request_status = channel_manager_->Request(
         endpoint, ManagerMessageType::DisconnectRequest, protocol, {}, response);
@@ -409,7 +343,7 @@ Status TransportManager::ApplyConnectionLocally(ManagerMessageType type, Transpo
     const auto it = protocol_map_.find(protocol);
     if (it == protocol_map_.end()) { return Status::Unsupported(); }
     if (type == ManagerMessageType::ConnectRequest) {
-        P2P_RETURN_IF_ERROR(ImportMetadata(metadata, manager_id),
+        P2P_RETURN_IF_ERROR(ImportMetadata(protocol, metadata, manager_id),
                             "transport manager peer metadata import failed peer={}", manager_id);
         const auto status = it->second->Connect(manager_id);
         if (status.Failure()) {
