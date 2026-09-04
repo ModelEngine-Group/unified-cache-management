@@ -28,7 +28,7 @@
 
 | Parameter | Required | Type | Value Range | Description |
 |---|---|---|---|---|
-| `store_pipeline` | Optional | string | See [store_pipeline Valid Values](#store_pipeline-valid-values) | Pipeline name. Default: `Cache\|Posix`. |
+| `store_pipeline` | **Required** | string | See [store_pipeline Valid Values](#store_pipeline-valid-values) | Pipeline name. Recommended: `Cache\|Posix`. |
 | `storage_backends` | **Required** | string | User-configured, multiple mount points separated by `:` | Local directory or mount point. Multiple mount points are separated by colons. |
 | `timeout_ms` | Optional | int | Default: `30000`, >0 | Timeout for memory/DRAM/SHM copies and disk read/write (ms). |
 
