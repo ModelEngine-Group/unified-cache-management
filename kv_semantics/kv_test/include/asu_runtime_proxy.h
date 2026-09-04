@@ -13,8 +13,7 @@ public:
     Status Load(const AsuRuntimeLibraryConfig& config);
     UC::ASU::Status LoadAsuClientConfig(const std::string& configPath,
                                         UC::ASU::AsuClientConfig& config);
-    std::unique_ptr<UC::ASU::AsuClient> CreateAsuClient(
-        const UC::ASU::TransportFactory* transportFactory, Status& status);
+    std::unique_ptr<UC::ASU::AsuClient> CreateAsuClient(Status& status);
     std::unique_ptr<UC::ASU::AsuTransport> CreateAsuTransport(Status& status);
 
 private:
@@ -22,8 +21,7 @@ private:
 
     Status EnsureLoaded();
 
-    using CreateClientFn =
-        std::unique_ptr<UC::ASU::AsuClient> (*)(const UC::ASU::TransportFactory*);
+    using CreateClientFn = std::unique_ptr<UC::ASU::AsuClient> (*)();
     using CreateTransportFn = std::unique_ptr<UC::ASU::AsuTransport> (*)();
     using LoadClientConfigFn = UC::ASU::Status (*)(const char*, UC::ASU::AsuClientConfig*);
 

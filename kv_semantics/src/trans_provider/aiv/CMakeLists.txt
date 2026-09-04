@@ -1,10 +1,10 @@
 find_package(Threads REQUIRED)
 
 set(AIV_PROVIDER_FOUNDATION_SOURCES
-    src/runtime/acl_rt_loader.cpp
-    src/runtime/ascendcl_loader.cpp
-    src/runtime/hccp_v2_loader.cpp
-    src/ub/status.cpp)
+    src/runtime/acl_rt_loader.cc
+    src/runtime/ascendcl_loader.cc
+    src/runtime/hccp_v2_loader.cc
+    src/ub/status.cc)
 
 add_library(aiv_provider_foundation OBJECT ${AIV_PROVIDER_FOUNDATION_SOURCES})
 target_include_directories(aiv_provider_foundation

@@ -32,15 +32,19 @@
 #include <vector>
 #include "kv_client.h"
 #include "types.h"
-#include "client_task_manager.h"
-#include "template/spsc_ring_queue.h"
-#include "view_server.h"
+#include "task/task_manager.h"
+#include "spsc_ring_queue.h"
+#include "view/view_server.h"
 
 namespace UC::Router {
 class Router;
 }  // namespace UC::Router
 
 namespace UC::ASU {
+
+using TransportFactory = std::function<std::unique_ptr<AsuTransport>()>;
+using TransProviderFactory =
+    std::function<Status(const TransportConfig&, std::shared_ptr<TransProvider>&)>;
 
 // ViewSnapshot is the immutable routing state used by foreground IO and submitted tasks.
 struct ViewSnapshot {

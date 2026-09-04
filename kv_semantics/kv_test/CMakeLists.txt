@@ -1,18 +1,18 @@
 add_executable(kv-test
-    src/arg_parser.cpp
-    src/asu_client_runner.cpp
-    src/asu_runtime_proxy.cpp
-    src/bench_runner.cpp
-    src/buffer_allocator.cpp
-    src/consistency_checker.cpp
-    src/hcomm_config_adapter.cpp
-    src/key_value_generator.cpp
-    src/kv_test_app.cpp
-    src/kv_test_config_loader.cpp
-    src/kv_test_config_helpers.cpp
-    src/payload_buffer_runtime.cpp
-    src/kv_test_main.cpp
-    src/result_writer.cpp
+    src/arg_parser.cc
+    src/asu_client_runner.cc
+    src/asu_runtime_proxy.cc
+    src/bench_runner.cc
+    src/buffer_allocator.cc
+    src/consistency_checker.cc
+    src/hcomm_config_adapter.cc
+    src/key_value_generator.cc
+    src/kv_test_app.cc
+    src/kv_test_config_loader.cc
+    src/kv_test_config_helpers.cc
+    src/payload_buffer_runtime.cc
+    src/kv_test_main.cc
+    src/result_writer.cc
 )
 
 target_compile_options(kv-test
@@ -42,8 +42,8 @@ target_link_libraries(kv-test
 if(BUILD_UNIT_TESTS)
     include(GoogleTest)
     add_executable(kv-test-config.test
-        src/kv_test_config_helpers.cpp
-        test/kv_test_config_helpers_test.cpp
+        src/kv_test_config_helpers.cc
+        test/kv_test_config_helpers_test.cc
     )
     target_include_directories(kv-test-config.test
         PRIVATE
@@ -55,8 +55,8 @@ if(BUILD_UNIT_TESTS)
     gtest_discover_tests(kv-test-config.test)
 
     add_executable(kv-test-arg-parser.test
-        src/arg_parser.cpp
-        test/arg_parser_test.cpp
+        src/arg_parser.cc
+        test/arg_parser_test.cc
     )
     target_include_directories(kv-test-arg-parser.test
         PRIVATE

@@ -23,23 +23,15 @@
  * */
 #pragma once
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <optional>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
+#include "../../include/types.h"
 
 namespace UC::ASU {
-
-using TaskId = std::uint64_t;
-using MRHandle = std::uint64_t;
-constexpr std::size_t kCacheKeySizeBytes = 8;
-using CacheKey = std::array<std::byte, kCacheKeySizeBytes>;
-using AsuId = std::uint64_t;
 
 inline std::string_view CacheKeyView(const CacheKey& key)
 {
@@ -59,67 +51,7 @@ inline std::string CacheKeyToHex(const CacheKey& key)
     return text;
 }
 
-enum class TransProviderType { AICPU, FAKE, AIV, UNSUPPORTED };
-
-constexpr TaskId kInvalidTaskId = 0;
-constexpr MRHandle kInvalidMRHandle = 0;
 constexpr std::uint32_t kAsuAlignmentBytes = 512;  // KV protocol requires 512B alignment
-
-enum class StatusCode {
-    OK = 0,
-    INVALID_ARGUMENT,
-    NOT_INITIALIZED,
-    TIMEOUT,
-    NOT_FOUND,
-    PARTIAL_FAILED,
-    CONNECTION_ERROR,
-    IO_ERROR,
-    BUFFER_NOT_REGISTERED,
-    BUFFER_NOT_SUPPORTED,
-    TASK_NOT_FOUND,
-    RESOURCE_BUSY,
-    UNSUPPORTED,
-    IN_PROGRESS,
-    INTERNAL_ERROR,
-    CANCELED,
-
-    // ASU entry status codes keep raw entry result values in the low byte.
-    ASU_ENTRY_RETRY_ADVISED = 0x0100 | 0x01,
-    ASU_ENTRY_NO_RETRY_ADVISED = 0x0100 | 0x02,
-    ASU_ENTRY_KEY_NOT_FOUND = 0x0100 | 0x03,
-    ASU_ENTRY_DATA_NOT_EXIST = 0x0100 | 0x04,
-    ASU_ENTRY_DELETE_FAILED = 0x0200 | 0x01,
-    ASU_ENTRY_KEY_NOT_EXIST = 0x0300 | 0x00,
-    ASU_ENTRY_KEY_EXIST = 0x0300 | 0x01,
-
-    ASU_CQE_INVALID_COMMAND_OPCODE = 0x10000 | 0x001,
-    ASU_CQE_INVALID_FIELD_IN_COMMAND = 0x10000 | 0x002,
-    ASU_CQE_INTERNAL_ERROR = 0x10000 | 0x006,
-    ASU_CQE_WRITE_FAULT = 0x10000 | 0x280,
-    ASU_CQE_UNRECOVERED_READ_ERROR = 0x10000 | 0x281,
-    ASU_CQE_KEY_NOT_EXIST = 0x10000 | 0x701,
-    ASU_CQE_OUT_OF_CREATE_SIZE = 0x10000 | 0x712,
-    ASU_CQE_IO_TIMEOUT = 0x10000 | 0x716,
-    ASU_CQE_KEY_ALREADY_EXISTED = 0x10000 | 0x723,
-    ASU_CQE_RESOURCE_BUSY = 0x10000 | 0x731,
-    ASU_CQE_CHECK_RESULT_BUFFER = 0x10000 | 0x732,
-};
-
-struct Status {
-    StatusCode code{StatusCode::OK};
-    std::string message;
-
-    bool ok() const noexcept { return code == StatusCode::OK; }
-
-    static Status OK() { return {}; }
-    static Status Error(StatusCode c, std::string msg) { return Status{c, std::move(msg)}; }
-};
-
-enum class Protocol {
-    UB = 0,
-    ROCE = 1,
-    TCP = 2,
-};
 
 struct ServerKvCapabilities {
     // A zero limit means that the provider did not advertise that capability.
@@ -135,51 +67,6 @@ struct ServerKvCapabilities {
     std::uint32_t queryKeys{0};
     std::uint32_t keyLength{0};
     std::uint32_t kvCapabilities{0};  // Placeholder
-};
-
-struct QueryResult {
-    std::vector<std::uint8_t> exists;
-    std::uint32_t prefixHitKeys{0};
-};
-
-enum class MemoryType {
-    HOST = 0,
-    HOST_PINNED = 1,
-    DEVICE = 2,
-};
-
-struct MemoryRegion {  // 地址范围抽象
-    MemoryType memoryType{MemoryType::HOST};
-    std::uint64_t addr{0};
-    std::uint64_t size{0};
-    std::int32_t deviceId{-1};
-    std::int32_t numaNode{-1};
-};
-
-struct Buffer {  // 单个IO
-    MemoryRegion region;
-    MRHandle handle{kInvalidMRHandle};
-};
-
-struct KVBuffer {
-    CacheKey key;
-    Buffer buffer;
-    std::uint32_t offset{0};  // target buffer offset
-    // Resolved by AsuClient from buffer.handle before the entry reaches the transport.
-    std::optional<std::uint32_t> mrKey;
-};
-
-// Describes a registered memory region returned by registration or reused for binding.
-struct RegisteredMemory {
-    MemoryRegion region;
-    MRHandle handle{kInvalidMRHandle};
-    std::uint32_t tokenId{0};
-};
-
-struct TaskResult {
-    Status status;
-    std::vector<Status> entryStatus;
-    std::optional<QueryResult> queryResult;
 };
 
 using TaskCompletionCallback = std::function<void(TaskResult)>;

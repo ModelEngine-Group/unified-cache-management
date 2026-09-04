@@ -20,32 +20,15 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * */
+ */
 #pragma once
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
-#include "asu_transport.h"
+#include "types.h"
 
 namespace UC::ASU {
-
-enum class SharedProviderMode : std::uint8_t { INDEPENDENT = 0, SHARED = 1 };
-
-struct AsuClientConfig {
-    std::string clientId;
-    std::vector<std::string> viewServiceAddrs;
-
-    std::vector<TransportConfig> transportConfigs;
-
-    std::uint32_t maxInflightTasks{1024};
-    std::uint64_t defaultWaitTimeoutMs{100};
-    std::uint64_t timeoutMs{100};
-    SharedProviderMode sharedProviderMode{SharedProviderMode::INDEPENDENT};
-    std::unordered_map<std::string, std::string> attrs;
-};
 
 class AsuClient {
 public:
@@ -73,12 +56,7 @@ public:
     virtual Status UnregisterRegions(const std::vector<MRHandle>& handles) = 0;
 };
 
-using TransportFactory = std::function<std::unique_ptr<AsuTransport>()>;
-using TransProviderFactory =
-    std::function<Status(const TransportConfig&, std::shared_ptr<TransProvider>&)>;
-
-std::unique_ptr<AsuClient> CreateAsuClient(
-    TransportFactory transportFactory = CreateAsuTransport,
-    TransProviderFactory transProviderFactory = CreateTransProvider);
+// Creates a client wired to the default transport and provider factories.
+std::unique_ptr<AsuClient> CreateAsuClient();
 
 }  // namespace UC::ASU
