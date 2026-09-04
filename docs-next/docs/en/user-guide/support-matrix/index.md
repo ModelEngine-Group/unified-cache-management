@@ -20,25 +20,29 @@ This information serves as a reference for evaluating framework compatibility in
 
 | Model | vLLM<br>(main) | vLLM-Ascend<br>(main) | SGLang<br>(main) |
 |-------|:-----------:|:------------------:|:------:|
-| DeepSeek V3.2 | ✅ | ✅ | ✅ |
-| DeepSeek R1 | ✅ | ✅ | ✅ |
 | DeepSeek V3/3.1 | ✅ | ✅ | ✅ |
+| DeepSeek R1 | ✅ | ✅ | ✅ |
+| DeepSeek V3.2 | ✅ | ✅ | ✅ |
 | DeepSeek V4 Pro | ✅ | ✅ | ❌ |
 | DeepSeek V4 Flash | ✅ | ✅ | ❌ |
-| Qwen3.6 | ✅ | ✅ | ❌ |
-| Qwen3.5 | ✅ | ✅ | ❌ |
+| Qwen2.5 | ✅ | ✅ | ✅ |
 | Qwen3 | ✅ | ✅ | ✅ |
 | Qwen3-MoE | ✅ | ✅ | ✅ |
 | Qwen3-Next | ✅ | ✅ | ❌ |
-| Qwen2.5 | ✅ | ✅ | ✅ |
-| GLM-5.2 | ✅ | ✅ | ❌ |
-| GLM-5.1 | ✅ | ✅ | ❌ |
-| GLM-5 | ✅ | ✅ | ❌ |
+| Qwen3.5 | ✅ | ✅ | ❌ |
+| Qwen3.6 | ✅ | ✅ | ❌ |
+| Qwen3.8 | ✅ | ✅ | ❌ |
+| Qwen3.8-Flash-Next | 🟡 | 🟡 | ❌ |
 | GLM-4.x | ✅ | ✅ | ✅ |
+| GLM-5 | ✅ | ✅ | ❌ |
+| GLM-5.1 | ✅ | ✅ | ❌ |
+| GLM-5.2 | ✅ | ✅ | ❌ |
+| GLM-5.3-Flash | 🟡 | 🟡 | ❌ |
 | MiniMax-M2.5 | ✅ | ✅ | ✅ |
 | MiniMax-M2.7 | ✅ | ✅ | ✅ |
-| MiniMax-M3 | ❌ | ❌ | ❌ |
-| Kimi-K2.5 | ❌ | ❌ | ❌ |
+| MiniMax-M3 | 🟡 | 🟡 | ❌ |
+| Kimi-K2.5 | ✅ | ✅ | ❌ |
+| Kimi-K3 | 🟡 | 🟡 | ❌ |
 
 > **Note**: The table lists a selected set of representative models.
 > See [**Prefix Cache**](../capabilities/prefix-cache/index.md) for more details.
@@ -49,11 +53,11 @@ This section presents support information for inference enhancement features, in
 
 | Model | GsaOnDevice<br>vLLM / vLLM-Ascend 0.11.0 | ReRoPE<br>vLLM 0.11.0 | CacheBlend<br>vLLM 0.9.2 |
 |-------|:-------------------------:|:------------------------:|:---------------------:|
-| DeepSeek V3.2 | ✅ | ✅ | ✅ |
-| DeepSeek R1 | ✅ | ✅ | ✅ |
 | DeepSeek V3/3.1 | ✅ | ✅ | ✅ |
-| Qwen3 | ✅ | ✅ | ✅ |
+| DeepSeek R1 | ✅ | ✅ | ✅ |
+| DeepSeek V3.2 | ✅ | ✅ | ✅ |
 | Qwen2.5 | ✅ | ✅ | ✅ |
+| Qwen3 | ✅ | ✅ | ✅ |
 
 > **Note**: Inference enhancement features (Sparse Attention, ReRoPE, CacheBlend) are not covered in this documentation.
 
