@@ -137,6 +137,34 @@ TEST(FakeTransProviderTest, ParsesWorkerThreadCount)
     EXPECT_EQ(MakeFakeTransProviderConfig(config).workerThreads, 6U);
 }
 
+TEST(FakeTransProviderTest, ParsesImmediateCompletionMode)
+{
+    TransportConfig config;
+    config.attrs["fake_backend.complete_immediately"] = "true";
+    EXPECT_TRUE(MakeFakeTransProviderConfig(config).completeImmediately);
+}
+
+TEST(FakeTransProviderTest, ImmediateCompletionBypassesBackendExecution)
+{
+    FakeTransProviderConfig config;
+    config.completeImmediately = true;
+    config.latencyMs = 1000;
+    FakeTransProvider provider(config);
+
+    constexpr std::uint16_t cid = 11;
+    std::array<std::uint32_t, kSqeDwordCount> request{};
+    request[0] = 0xFFU | (static_cast<std::uint32_t>(cid) << 16);
+    std::vector<std::uint32_t> completion;
+
+    const auto status = provider.CompleteFakeBackendRequest(
+        request.data(), request.size() * sizeof(std::uint32_t), completion);
+
+    EXPECT_TRUE(status.ok()) << status.message;
+    ASSERT_EQ(completion.size(), kCqeDwordCount);
+    EXPECT_EQ(completion[3] & 0xFFFF, cid);
+    EXPECT_EQ(completion[3] >> 17, kCqeSuccess);
+}
+
 TEST(FakeTransProviderTest, ExistHonorsSeekControl)
 {
     const auto storePath =

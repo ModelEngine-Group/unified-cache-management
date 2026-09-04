@@ -313,6 +313,11 @@ FakeTransProviderConfig MakeFakeTransProviderConfig(const TransportConfig& confi
     if (latencyIter != config.attrs.end()) {
         fakeConfig.latencyMs = static_cast<std::uint64_t>(std::stoull(latencyIter->second));
     }
+    auto immediateIter = config.attrs.find("fake_backend.complete_immediately");
+    if (immediateIter != config.attrs.end()) {
+        fakeConfig.completeImmediately =
+            immediateIter->second == "1" || immediateIter->second == "true";
+    }
     auto deviceIter = config.attrs.find("fake_backend.device_id");
     if (deviceIter != config.attrs.end()) {
         fakeConfig.deviceId = static_cast<std::int32_t>(std::stol(deviceIter->second));
@@ -328,7 +333,12 @@ FakeTransProvider::FakeTransProvider(FakeTransProviderConfig config)
     : config_(std::move(config)),
       workerPool_(std::make_unique<WorkerPool>(*this, config_.workerThreads))
 {
-    if (SetupDeviceRuntime().ok()) { trans_ = device_.MakeTrans(); }
+    if (config_.completeImmediately) {
+        UC_INFO(
+            "Fake provider immediate completion is enabled; requests bypass fake-backend "
+            "execution");
+    }
+    if (SetupDeviceRuntime().ok()) { stream_ = device_.MakeStream(); }
 }
 
 FakeTransProvider::~FakeTransProvider() = default;
@@ -594,7 +604,7 @@ Status FakeTransProvider::CompleteExist(NodeId nodeId, const std::uint32_t* requ
 Status FakeTransProvider::CompleteFakeBackendRequest(const void* sendBuffer, std::uint64_t len,
                                                      std::vector<std::uint32_t>& completion)
 {
-    if (config_.latencyMs > 0) {
+    if (!config_.completeImmediately && config_.latencyMs > 0) {
         std::this_thread::sleep_for(std::chrono::milliseconds(config_.latencyMs));
     }
 
@@ -603,6 +613,12 @@ Status FakeTransProvider::CompleteFakeBackendRequest(const void* sendBuffer, std
     }
 
     const auto* request = reinterpret_cast<const std::uint32_t*>(sendBuffer);
+    if (config_.completeImmediately) {
+        completion.assign(kCqeDwordCount, 0);
+        PackCqeHeader(completion.data(), static_cast<std::uint16_t>(RequestCid(request)),
+                      kCqeSuccess);
+        return Status::OK();
+    }
     completion.assign(CompletionDwordCount(request), 0);
     auto* flagBuffer = completion.data();
     const auto nodeId = RequestAsuId(request);

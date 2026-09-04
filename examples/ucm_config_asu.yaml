@@ -37,6 +37,8 @@ ucm_connectors:
       # asu_fake_backend_path: "./asu-fake-backend-store"
       # asu_fake_backend_latency_ms: 1
       # asu_fake_backend_worker_threads: 4
+      # Set true to bypass fake-backend request execution and complete every request successfully.
+      asu_fake_backend_complete_immediately: false
 
       # ASU wait/task timeout and connection recovery.
       asu_wait_timeout_ms: 5000

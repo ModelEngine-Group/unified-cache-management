@@ -463,6 +463,23 @@ TEST(UCAsuStoreTest, PropagatesFakeBackendWorkerThreads)
 
     const auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
     EXPECT_EQ(transportConfig.attrs.at("fake_backend.worker_threads"), "8");
+    EXPECT_EQ(transportConfig.attrs.at("fake_backend.complete_immediately"), "false");
+}
+
+TEST(UCAsuStoreTest, PropagatesFakeBackendCompleteImmediately)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_trans_provider_backend", std::string{"fake"});
+    config.Set("asu_fake_backend_complete_immediately", true);
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+
+    const auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+    EXPECT_EQ(transportConfig.attrs.at("fake_backend.complete_immediately"), "true");
 }
 
 TEST(UCAsuStoreTest, RejectsMissingKvNamespaces)
