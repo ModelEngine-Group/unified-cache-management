@@ -34,8 +34,8 @@ def _fixture_policy(
         dockerhub_namespace="docker.io/release-test",
     )
     selectors = {
-        "vllm": [{"raw": "0.22.1", "keyword": "0.22.1", "tag": None}],
-        "vllm-ascend": [{"raw": "0.22.1rc1", "keyword": "0.22.1rc1", "tag": None}],
+        "vllm": [{"raw": "0.22.1", "version": "0.22.1", "tag": None}],
+        "vllm-ascend": [{"raw": "0.22.1", "version": "0.22.1", "tag": None}],
     }
     resolved["runtime_selectors"] = copy.deepcopy(selectors)
     for product in resolved["products"]:

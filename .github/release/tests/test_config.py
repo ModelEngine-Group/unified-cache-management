@@ -289,8 +289,8 @@ def test_version_ini_is_the_runtime_selector_authority() -> None:
         product_id: [selector["raw"] for selector in selectors]
         for product_id, selectors in resolved["runtime_selectors"].items()
     } == {
-        "vllm": ["0.26.0", "0.27.1", "0.28.0"],
-        "vllm-ascend": ["0.24.0rc", "0.25.1rc", "0.26.0rc"],
+        "vllm": ["0.26", "0.27", "0.28"],
+        "vllm-ascend": ["0.23", "0.24", "0.25", "0.26"],
     }
     assert {
         product["id"]: product["runtime_selectors"] for product in resolved["products"]
