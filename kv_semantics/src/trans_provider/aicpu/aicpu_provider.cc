@@ -16,6 +16,7 @@
 #include <arpa/inet.h>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cerrno>
 #include <cctype>
 #include <cstddef>
@@ -27,6 +28,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
@@ -52,6 +54,7 @@ constexpr std::uint32_t kDefaultSendTimeoutMs = 1836U * 1000U;
 constexpr std::uint32_t kAclSyncGraceMs = 5000U;
 constexpr std::uint32_t kCpuKernelMode = 0U;
 constexpr std::uint32_t kKernelBlockDim = 1U;
+constexpr std::uint32_t kChannelStatusPollIntervalMs = 2U;
 constexpr std::uintptr_t kHostRegisterAlignment = 4096U;
 constexpr const char* kDefaultChannelName = "ucm_asu_aicpu";
 constexpr const char* kProviderSignature =
@@ -65,6 +68,16 @@ constexpr const char* kChannelApiMode = "HcommChannelCreateStaged";
 #else
 constexpr const char* kChannelApiMode = "HcommChannelCreate";
 #endif
+
+// HcommChannelGetStatus exposes int32_t status values but does not publish the
+// corresponding enum in hcomm_channel.h. Keep these values aligned with
+// hcomm::HcommChannelLinkStatus.
+constexpr std::int32_t kHcommChannelReady = 0;
+constexpr std::int32_t kHcommChannelConnecting = 1;
+constexpr std::int32_t kHcommChannelFailed = 2;
+constexpr std::int32_t kHcommChannelTimeout = 3;
+constexpr std::int32_t kHcommChannelLocalResourceUnavailable = 4;
+constexpr std::int32_t kHcommChannelRemoteResourceUnavailable = 5;
 
 // Local mirror of the HixlBatchSend AICPU launch ABI. It assumes 64-bit handles and pointers:
 // UcmHixlSendIoBatch is 32 bytes with imm_data at offset 24, and UcmHixlBatchSendParam is 56 bytes.
@@ -178,6 +191,53 @@ Status HcommError(const std::string& op, HcommResult ret, StatusCode code = Stat
     auto message = op + " failed ret=" + std::to_string(ret);
     KV_ERROR("AICPUProvider: {}", message);
     return Status::Error(code, std::move(message));
+}
+
+Status WaitForHcommChannelReady(::ChannelHandle channel, std::uint32_t timeoutMs,
+                                std::uint32_t qpIndex)
+{
+    const auto start = std::chrono::steady_clock::now();
+    while (true) {
+        std::int32_t channelStatus = kHcommChannelConnecting;
+        const auto ret = HcommChannelGetStatus(&channel, 1U, &channelStatus);
+        if (ret != 0) {
+            return HcommError("HcommChannelGetStatus", ret, StatusCode::CONNECTION_ERROR);
+        }
+
+        if (channelStatus == kHcommChannelReady) {
+            const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                                       std::chrono::steady_clock::now() - start)
+                                       .count();
+            KV_INFO("AICPUProvider: HCOMM device channel ready qp_index={} channel={} "
+                    "elapsed_us={}",
+                    qpIndex, channel, elapsedUs);
+            return Status::OK();
+        }
+        if (channelStatus == kHcommChannelFailed) {
+            return Status::Error(StatusCode::CONNECTION_ERROR,
+                                 "HCOMM channel entered failed state");
+        }
+        if (channelStatus == kHcommChannelTimeout) {
+            return Status::Error(StatusCode::TIMEOUT, "HCOMM channel reported timeout");
+        }
+        if (channelStatus == kHcommChannelLocalResourceUnavailable ||
+            channelStatus == kHcommChannelRemoteResourceUnavailable) {
+            return Status::Error(StatusCode::RESOURCE_BUSY,
+                                 "HCOMM channel resource is unavailable");
+        }
+        if (channelStatus != kHcommChannelConnecting) {
+            return Status::Error(StatusCode::INTERNAL_ERROR,
+                                 "HCOMM channel returned unknown status " +
+                                     std::to_string(channelStatus));
+        }
+
+        if (timeoutMs != 0U &&
+            std::chrono::steady_clock::now() - start >= std::chrono::milliseconds(timeoutMs)) {
+            return Status::Error(StatusCode::TIMEOUT,
+                                 "waiting for HCOMM device channel initialization timed out");
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(kChannelStatusPollIntervalMs));
+    }
 }
 
 Status HcommConnectionError(const std::string& op, HcommResult ret)
@@ -1610,6 +1670,19 @@ Status AICPUProvider::CreateConnection(const std::string& localIp, const std::st
         KV_INFO("AICPUProvider: standard channel created qp_index={} channel={} thread={}",
                 qpIndex, record->channel, record->thread);
 #endif
+
+        // Channel creation preallocates an AICPU device context. HcommChannelGetStatus
+        // completes device-side construction and stores the real transport handle in it.
+        // Memory updates must not run against the context before that initialization.
+        status = WaitForHcommChannelReady(record->channel, timeout, qpIndex);
+        if (!status.ok()) {
+            KV_ERROR("AICPUProvider: HCOMM device channel initialization failed "
+                     "qp_index={} channel={} code={} message={}",
+                     qpIndex, record->channel, static_cast<int>(status.code), status.message);
+            cleanupRecord();
+            if (!createdHandles.empty()) { (void)DeleteConnections(createdHandles); }
+            return status;
+        }
 
         status = impl_->AttachExistingMemoriesToConnection(*record);
         if (!status.ok()) {
