@@ -336,7 +336,7 @@ FakeTransProvider::FakeTransProvider(FakeTransProviderConfig config)
     if (config_.completeImmediately) {
         UC_INFO(
             "Fake provider immediate completion is enabled; requests bypass fake-backend "
-            "execution");
+            "execution and Exist requests report all keys as missing");
     }
     if (SetupDeviceRuntime().ok()) { stream_ = device_.MakeStream(); }
 }
@@ -614,9 +614,13 @@ Status FakeTransProvider::CompleteFakeBackendRequest(const void* sendBuffer, std
 
     const auto* request = reinterpret_cast<const std::uint32_t*>(sendBuffer);
     if (config_.completeImmediately) {
-        completion.assign(kCqeDwordCount, 0);
+        const auto opcode = RequestOpcode(request);
+        const auto cqeStatus = opcode == KvOpcode::Exist ? kCqeCheckResultBuffer : kCqeSuccess;
+        const auto completionDwordCount =
+            opcode == KvOpcode::Exist ? CompletionDwordCount(request) : kCqeDwordCount;
+        completion.assign(completionDwordCount, 0);
         PackCqeHeader(completion.data(), static_cast<std::uint16_t>(RequestCid(request)),
-                      kCqeSuccess);
+                      cqeStatus);
         return Status::OK();
     }
     completion.assign(CompletionDwordCount(request), 0);

@@ -165,6 +165,31 @@ TEST(FakeTransProviderTest, ImmediateCompletionBypassesBackendExecution)
     EXPECT_EQ(completion[3] >> 17, kCqeSuccess);
 }
 
+TEST(FakeTransProviderTest, ImmediateCompletionReportsAllQueriedKeysMissing)
+{
+    FakeTransProviderConfig config;
+    config.completeImmediately = true;
+    FakeTransProvider provider(config);
+
+    CacheKey first{};
+    first[0] = std::byte{1};
+    CacheKey second{};
+    second[0] = std::byte{2};
+    for (const bool useSeekControl : {false, true}) {
+        const auto request = BuildExistRequest({first, second}, useSeekControl);
+        std::vector<std::uint32_t> completion;
+
+        const auto status = provider.CompleteFakeBackendRequest(
+            request.data(), request.size() * sizeof(std::uint32_t), completion);
+
+        EXPECT_TRUE(status.ok()) << status.message;
+        ASSERT_EQ(completion.size(), kCqeDwordCount + 1);
+        EXPECT_EQ(completion[0] & 0xFFFF, 0U);
+        EXPECT_EQ(completion[3] >> 17, kCqeCheckResultBuffer);
+        EXPECT_EQ(completion[kCqeDwordCount], 0U);
+    }
+}
+
 TEST(FakeTransProviderTest, ExistHonorsSeekControl)
 {
     const auto storePath =
