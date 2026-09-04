@@ -100,7 +100,6 @@ if(UCM_RUNTIME_ASCEND_FAMILY
    AND P2P_METADEF_LIBRARY)
     set(P2P_HIXL_AVAILABLE ON)
     list(APPEND P2P_TRANSPORT_SOURCES
-        src/common/acl_runtime_context.cpp
         src/protocols/hixl/hixl_instance.cpp
         src/protocols/hixl/hixl_transport.cpp
     )

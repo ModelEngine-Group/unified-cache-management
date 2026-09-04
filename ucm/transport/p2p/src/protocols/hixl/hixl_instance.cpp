@@ -56,18 +56,6 @@ HixlInstance::~HixlInstance() { Finalize(); }
 
 Status HixlInstance::Initialize(const std::map<std::string, std::string>& options)
 {
-    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (initialized_) {
-            UC_DEBUG("[Transport][HIXL] instance already initialized: engine={} device={}",
-                     local_endpoint_.ToString(), device_id_);
-            return Status::OK();
-        }
-        stopping_ = false;
-    }
-    if (worker_.joinable()) { worker_.join(); }
-
     std::promise<Status> initialize_result;
     auto initialize_future = initialize_result.get_future();
     worker_ = std::thread(&HixlInstance::WorkerMain, this, options, std::move(initialize_result));
@@ -101,7 +89,6 @@ Status HixlInstance::Run(Task task)
 
 void HixlInstance::Finalize()
 {
-    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!worker_.joinable()) { return; }
@@ -329,8 +316,6 @@ Status HixlInstance::GetTransferStatus(hixl::TransferReq request, TransferStatus
 }
 
 const Endpoint& HixlInstance::LocalEndpoint() const { return local_endpoint_; }
-
-int32_t HixlInstance::LogicalDeviceId() const { return device_id_; }
 
 int32_t HixlInstance::PhysicalDeviceId() const { return physical_device_id_; }
 

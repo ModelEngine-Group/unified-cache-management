@@ -65,10 +65,6 @@ public:
     Status GetTransferStatus(hixl::TransferReq request, TransferStatus& status);
 
     const Endpoint& LocalEndpoint() const;
-    // ACL APIs use the process-visible logical ID. Routing metadata uses the
-    // machine-wide physical ID so separately remapped processes can detect
-    // that they refer to the same device.
-    int32_t LogicalDeviceId() const;
     int32_t PhysicalDeviceId() const;
 
 private:
@@ -84,9 +80,6 @@ private:
     int32_t device_id_ = -1;
     int32_t physical_device_id_ = -1;
     std::thread worker_;
-
-    // Serializes Initialize and Finalize, including worker creation and join.
-    std::mutex lifecycle_mutex_;
 
     // Protects tasks_, stopping_, and initialized_; cv_ coordinates state changes.
     std::mutex mutex_;
