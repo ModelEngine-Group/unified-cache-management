@@ -228,10 +228,9 @@ def apply_all_patches() -> None:
         # patched here; older versions keep their per-version cpu_binding
         # patches inside the match below. @when_imported is self-guarding
         # (only fires when vllm_ascend.cpu_binding exists).
-        if (
-            ascend_version is not None
-            and tuple(int(part) for part in ascend_version.split("."))[:2] >= (0, 26)
-        ):
+        if ascend_version is not None and tuple(
+            int(part) for part in ascend_version.split(".")
+        )[:2] >= (0, 26):
             logger.info("UCM patching vllm-ascend CPU binding (fixed impl)...")
             import ucm.integration.vllm.patch.v0260.vllm_ascend.cpu_binding_patch
 
