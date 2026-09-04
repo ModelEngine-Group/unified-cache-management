@@ -29,26 +29,9 @@
 |---|---|---|---|---|
 | `store_pipeline` | 选填 | string | 见下方可选值 | 管线名称，决定 Cache 与 Store 的组合方式。默认使用 `Cache\|Posix`。 |
 | `storage_backends` | **必填** | string | 自行配置，多个挂载点用冒号隔开 | 填写本地目录或者挂载点，如果有多个挂载点需要用冒号隔开。 |
-| `io_direct` | 选填 | bool | 默认 `true` | 是否启用直接 IO 模式（绕过操作系统页缓存）。`false`: 使用 PageCache；`true`: 跳过 PageCache，直接 IO。 |
-| `posix_io_engine` | 选填 | string | 默认 `psync` | 文件 IO 模式。`psync`：同步 io；`aio`：异步 io，要求 `io_direct` 配置为 `true`。 |
-| `posix_data_trans_concurrency` | 选填 | int | 默认 `128` | `psync` 模式下单卡对存储的读写线程数。NFS over RDMA 下推荐单卡 128 线程。`aio` 下不读取该值。 |
-| `posix_open_concurrency` | 选填 | int | 默认 `32` | `aio` 下对文件进行 open 操作的线程数。`psync` 下不感知。 |
-| `posix_commit_concurrency` | 选填 | int | 默认 `4` | `aio` 下对文件进行 rename 操作的线程数。`psync` 下不感知。 |
-| `posix_lookup_concurrency` | 选填 | int | 默认 `16` | 在挂载点中查找文件是否存在的线程数。 |
 | `cache_buffer_capacity_gb` | 选填 | int | 见配置说明 | 对于 GQA，默认值是每张卡会占 32GB DRAM 内存。对于 MLA，默认值是单机会占 128GB 的 shm 空间。目前建议全部使用默认值。 |
-| `cache_sdma_direct` | 选填 | bool | 依据编译环境变量决定，`PLATFORM=ascend-a3` 时默认 `true`，其他默认 `false` | 启用 SDMA H2D/D2H 传输路径，仅在 A3 设备生效，推荐关闭。 |
-| `cache_load_backend_only` | 选填 | bool | 默认 `false` | 即使在 cache 层命中还是会强制从 SSD 上加载，仅供测试使用。 |
 | `cache_io_aggregation` | 选填 | bool | 默认 `false`，仅在 `PLATFORM=ascend` 且模型为 V4 时自动开启 | 启用 IO 聚合 h2d 传输，仅在 A2 设备生效。 |
 | `share_buffer_enable` | 选填 | bool | MLA 默认启用，GQA 默认不启用 | 是否启用共享内存。MLA 如果不用 shm 或 GQA 用 shm 都会导致性能下降。 |
-| `posix_capacity_gb` | 选填 | int | 默认 `0`，表示不启用 GC；不可超过挂载文件系统可用容量 | 设置磁盘存储的最大容量（GB），当已用容量 >= `posix_capacity_gb * posix_gc_trigger_threshold_ratio` 时触发 GC。多实例部署共享同一文件系统时，只能有一个实例开启 GC，其他实例不要开启。 |
-| `posix_gc_trigger_threshold_ratio` | 条件选填 | float | 默认 `0.7`，范围：0~1。`posix_capacity_gb` 未配置时不填写 | GC 阈值比例，配合 `posix_capacity_gb` 使用。 |
-| `posix_gc_recycle_percent` | 选填 | float | 默认 `0.1`，范围：0~1。`posix_capacity_gb` 未配置时不填写 | 每轮 GC 删除当前容量的比值。 |
-| `posix_gc_max_recycle_count_per_shard` | 选填 | int | 默认 `50000`，>0。不建议修改。`posix_capacity_gb` 未配置时不填写 | 每轮 GC 单目录允许删除的文件数上限。 |
-| `posix_gc_shard_sample_ratio` | 选填 | float | 默认 `0.1`，范围：0~1。`posix_capacity_gb` 未配置时不填写 | 采样 10% 目录估算总容量。 |
-| `posix_gc_check_interval_sec` | 选填 | int | 默认 `30`，>0。`posix_capacity_gb` 未配置时不填写 | GC 采样及触发间隔。 |
-| `posix_gc_concurrency` | 选填 | int | 默认 `16`，>0。`posix_capacity_gb` 未配置时不填写 | GC 线程池 worker 数。 |
-| `posix_gc_task_timeout_ms` | 选填 | int | 默认 `300000`，>0。`posix_capacity_gb` 未配置时不填写 | 单目录任务超时 watchdog。`0`=禁用。 |
-| `posix_gc_precise_mode` | 选填 | bool | 默认 `true`。`posix_capacity_gb` 未配置时不填写 | `true`: 精准模式（全局最冷）；`false`: 性能模式（每目录最冷）。 |
 
 ### store_pipeline 可选值
 
@@ -63,22 +46,3 @@
 | `Mooncake\|Posix` | 对接 Mooncake 内存池并支持落盘 |
 | `YuanRong` | 对接 YuanRong 内存池 |
 | `YuanRong\|Posix` | 对接 YuanRong 内存池并支持落盘 |
-
-!!! note "storage_backends 须知"
-    若 `storage_backends` 参数填写挂载的文件系统，则不可设置 `posix_capacity_gb`。
-
----
-
-## store_health（ucm_connector_config.store_health）
-
-> 写在 `ucm_connector_config.store_health` 下的参数。
-
-| 配置项 | 是否必填 | 取值类型 | 取值范围 | 配置说明 |
-|---|---|---|---|---|
-| `enabled` | 选填 | bool | 默认 `false` | 存储隔离机制总开关。开启后给磁盘 KV 缓存增加故障熔断器，磁盘读写频繁超时/报错时自动切断存储。 |
-| `health_check_interval_s` | 选填 | int | 默认 `5` | 缓存磁盘健康巡检周期（秒）。必须 >0 且 > `health_check_timeout_s`。 |
-| `health_check_timeout_s` | 选填 | int | 默认 `3` | 单次探测超时时间（秒）。必须 >0 且 < `health_check_interval_s`。 |
-| `health_window_size` | 选填 | int | 默认 `8` | 故障统计窗口长度。必须为正整数且 >= `failure_threshold`。 |
-| `failure_threshold` | 选填 | int | 默认 `2` | 故障触发阈值。必须为正整数且 <= `health_window_size`。 |
-
-
