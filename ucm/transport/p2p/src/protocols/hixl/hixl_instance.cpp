@@ -22,30 +22,12 @@
  * SOFTWARE.
  * */
 #include "protocols/hixl/hixl_instance.h"
-#include <acl/acl.h>
-#include <exception>
 #include <utility>
+#include "common/acl_runtime_context.h"
 #include "hixl/hixl.h"
 #include "logger/logger.h"
 
 namespace transport {
-namespace {
-
-std::vector<hixl::TransferOpDesc> BuildTransferOpDesc(const std::vector<Segment>& segments)
-{
-    std::vector<hixl::TransferOpDesc> descs;
-    descs.reserve(segments.size());
-    for (const auto& segment : segments) {
-        descs.push_back(hixl::TransferOpDesc{
-            reinterpret_cast<uintptr_t>(segment.local_addr),
-            static_cast<uintptr_t>(segment.remote_addr),
-            static_cast<size_t>(segment.length),
-        });
-    }
-    return descs;
-}
-
-}  // namespace
 
 HixlInstance::HixlInstance(Endpoint local_endpoint, int32_t device_id)
     : local_endpoint_(std::move(local_endpoint)), device_id_(device_id)
@@ -56,277 +38,53 @@ HixlInstance::~HixlInstance() { Finalize(); }
 
 Status HixlInstance::Initialize(const std::map<std::string, std::string>& options)
 {
-    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (initialized_) {
-            UC_DEBUG("[Transport][HIXL] instance already initialized: engine={} device={}",
-                     local_endpoint_.ToString(), device_id_);
-            return Status::OK();
-        }
-        stopping_ = false;
+    if (engine_) { return Status::OK(); }
+    const auto set_device_status = aclrtSetDevice(device_id_);
+    if (set_device_status != ACL_ERROR_NONE) {
+        return Status::Error(fmt::format("aclrtSetDevice({}) returned {}", device_id_,
+                                         static_cast<int>(set_device_status)));
     }
-    if (worker_.joinable()) { worker_.join(); }
+    const auto context_status = aclrtGetCurrentContext(&context_);
+    if (context_status != ACL_ERROR_NONE || context_ == nullptr) {
+        return Status::Error(fmt::format("aclrtGetCurrentContext(device={}) returned {}",
+                                         device_id_, static_cast<int>(context_status)));
+    }
+    const auto physical_status = aclrtGetPhyDevIdByLogicDevId(device_id_, &physical_device_id_);
+    if (physical_status != ACL_ERROR_NONE) {
+        return Status::Error(fmt::format("aclrtGetPhyDevIdByLogicDevId({}) returned {}", device_id_,
+                                         static_cast<int>(physical_status)));
+    }
 
-    std::promise<Status> initialize_result;
-    auto initialize_future = initialize_result.get_future();
-    worker_ = std::thread(&HixlInstance::WorkerMain, this, options, std::move(initialize_result));
-    const auto status = initialize_future.get();
-    if (status != Status::OK() && worker_.joinable()) { worker_.join(); }
-    return status;
-}
-
-Status HixlInstance::Run(Task task)
-{
-    QueuedTask queued(std::move(task));
-    auto result = queued.get_future();
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (!initialized_ || stopping_) {
-            return Status::Error(
-                fmt::format("reject worker task: engine={} device={} initialized={} stopping={}",
-                            local_endpoint_.ToString(), device_id_, initialized_, stopping_));
-        }
-        tasks_.push_back(std::move(queued));
+    std::map<hixl::AscendString, hixl::AscendString> hixl_options;
+    for (const auto& item : options) {
+        hixl_options.emplace(item.first.c_str(), item.second.c_str());
     }
-    cv_.notify_one();
-    try {
-        return result.get();
-    } catch (const std::exception& e) {
-        return Status::Error(fmt::format("worker task failed: {}", e.what()));
-    } catch (...) {
-        return Status::Error("worker task failed with unknown exception");
+    auto engine = std::make_unique<hixl::Hixl>();
+    const auto local_engine = local_endpoint_.ToString();
+    const auto status = engine->Initialize(local_engine.c_str(), hixl_options);
+    if (status != hixl::SUCCESS) {
+        return Status::Error(
+            fmt::format("Initialize(\"{}\") returned {}", local_engine, static_cast<int>(status)));
     }
+    engine_ = std::move(engine);
+    UC_DEBUG(
+        "[Transport][HIXL] instance initialized: engine={} logical_device={} physical_device={}",
+        local_engine, device_id_, physical_device_id_);
+    return Status::OK();
 }
 
 void HixlInstance::Finalize()
 {
-    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (!worker_.joinable()) { return; }
-        stopping_ = true;
-    }
-    cv_.notify_one();
-    worker_.join();
+    if (!engine_) { return; }
+    WithAclRuntimeContext context(context_);
+    (void)engine_->Finalize();
+    engine_.reset();
+    context_ = nullptr;
 }
 
-void HixlInstance::WorkerMain(std::map<std::string, std::string> options,
-                              std::promise<Status> initialize_result)
-{
-    const auto set_device_status = aclrtSetDevice(device_id_);
-    if (set_device_status != ACL_ERROR_NONE) {
-        initialize_result.set_value(Status::Error(fmt::format(
-            "aclrtSetDevice({}) returned {}", device_id_, static_cast<int>(set_device_status))));
-        return;
-    }
+hixl::Hixl& HixlInstance::Engine() { return *engine_; }
 
-    const auto get_physical_device_status =
-        aclrtGetPhyDevIdByLogicDevId(device_id_, &physical_device_id_);
-    if (get_physical_device_status != ACL_ERROR_NONE) {
-        initialize_result.set_value(
-            Status::Error(fmt::format("aclrtGetPhyDevIdByLogicDevId({}) returned {}", device_id_,
-                                      static_cast<int>(get_physical_device_status))));
-        return;
-    }
-    UC_DEBUG("[Transport][HIXL] device resolved: logical_device={} physical_device={}", device_id_,
-             physical_device_id_);
-
-    {
-        hixl::Hixl engine;
-        std::map<hixl::AscendString, hixl::AscendString> hixl_options;
-        for (const auto& item : options) {
-            hixl_options.emplace(item.first.c_str(), item.second.c_str());
-        }
-
-        const auto local_engine = local_endpoint_.ToString();
-        const auto init_status = engine.Initialize(local_engine.c_str(), hixl_options);
-        if (init_status != hixl::SUCCESS) {
-            initialize_result.set_value(Status::Error(fmt::format(
-                "Initialize(\"{}\") returned {}", local_engine, static_cast<int>(init_status))));
-        } else {
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                initialized_ = true;
-            }
-            initialize_result.set_value(Status::OK());
-            UC_DEBUG(
-                "[Transport][HIXL] instance initialized: engine={} logical_device={} "
-                "physical_device={}",
-                local_engine, device_id_, physical_device_id_);
-            ProcessTasks(engine);
-            engine.Finalize();
-        }
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        initialized_ = false;
-    }
-    const auto reset_device_status = aclrtResetDevice(device_id_);
-    if (reset_device_status != ACL_ERROR_NONE) {
-        UC_WARN("[Transport][HIXL] reset device failed: aclrtResetDevice({}) returned {}",
-                device_id_, static_cast<int>(reset_device_status));
-    }
-}
-
-void HixlInstance::ProcessTasks(hixl::Hixl& engine)
-{
-    for (;;) {
-        QueuedTask queued;
-        {
-            std::unique_lock<std::mutex> lock(mutex_);
-            cv_.wait(lock, [this] { return stopping_ || !tasks_.empty(); });
-            if (stopping_ && tasks_.empty()) { break; }
-            queued = std::move(tasks_.front());
-            tasks_.pop_front();
-        }
-        queued(engine);
-    }
-}
-
-Status HixlInstance::RegisterMemory(const MemoryRegion& memory, hixl::MemHandle& handle)
-{
-    hixl::MemHandle native_handle = nullptr;
-    const auto status = Run([&](hixl::Hixl& engine) {
-        hixl::MemDesc desc{};
-        desc.addr = reinterpret_cast<uintptr_t>(memory.addr);
-        desc.len = static_cast<size_t>(memory.length);
-        const auto type = memory.type == MemoryType::Device ? hixl::MEM_DEVICE : hixl::MEM_HOST;
-        const auto native_status = engine.RegisterMem(desc, type, native_handle);
-        if (native_status != hixl::SUCCESS) {
-            return Status::Error(fmt::format(
-                "engine={} device={} RegisterMem(addr=0x{:x}, length={}) returned {}",
-                local_endpoint_.ToString(), device_id_, reinterpret_cast<uintptr_t>(memory.addr),
-                memory.length, static_cast<int>(native_status)));
-        }
-        UC_DEBUG(
-            "[Transport][HIXL] memory registered: engine={} device={} addr=0x{:x} length={} "
-            "handle={}",
-            local_endpoint_.ToString(), device_id_, reinterpret_cast<uintptr_t>(memory.addr),
-            memory.length, native_handle);
-        return Status::OK();
-    });
-    if (status == Status::OK()) { handle = native_handle; }
-    return status;
-}
-
-Status HixlInstance::UnregisterMemory(hixl::MemHandle handle)
-{
-    return Run([&](hixl::Hixl& engine) {
-        const auto native_status = engine.DeregisterMem(handle);
-        if (native_status != hixl::SUCCESS) {
-            return Status::Error(fmt::format("engine={} DeregisterMem(handle={}) returned {}",
-                                             local_endpoint_.ToString(), handle,
-                                             static_cast<int>(native_status)));
-        }
-        UC_DEBUG("[Transport][HIXL] memory unregistered: engine={} device={} handle={}",
-                 local_endpoint_.ToString(), device_id_, handle);
-        return Status::OK();
-    });
-}
-
-Status HixlInstance::Connect(const std::string& remote_engine, int32_t timeout_ms)
-{
-    return Run([&](hixl::Hixl& engine) {
-        const auto native_status = engine.Connect(remote_engine.c_str(), timeout_ms);
-        if (native_status != hixl::SUCCESS) {
-            return Status::Error(fmt::format("Connect local_engine={} remote_engine={} returned {}",
-                                             local_endpoint_.ToString(), remote_engine,
-                                             static_cast<int>(native_status)));
-        }
-        UC_DEBUG(
-            "[Transport][HIXL] connection established: local_engine={} device={} "
-            "remote_engine={}",
-            local_endpoint_.ToString(), device_id_, remote_engine);
-        return Status::OK();
-    });
-}
-
-Status HixlInstance::Disconnect(const std::string& remote_engine, int32_t timeout_ms)
-{
-    return Run([&](hixl::Hixl& engine) {
-        const auto native_status = engine.Disconnect(remote_engine.c_str(), timeout_ms);
-        if (native_status != hixl::SUCCESS) {
-            return Status::Error(
-                fmt::format("Disconnect local_engine={} device={} remote_engine={} returned {}",
-                            local_endpoint_.ToString(), device_id_, remote_engine,
-                            static_cast<int>(native_status)));
-        }
-        UC_DEBUG(
-            "[Transport][HIXL] connection disconnected: local_engine={} device={} "
-            "remote_engine={}",
-            local_endpoint_.ToString(), device_id_, remote_engine);
-        return Status::OK();
-    });
-}
-
-Status HixlInstance::TransferSync(const std::string& remote_engine, Opcode opcode,
-                                  const std::vector<Segment>& segments, int32_t timeout_ms)
-{
-    return Run([&](hixl::Hixl& engine) {
-        const auto descs = BuildTransferOpDesc(segments);
-        const auto operation = opcode == Opcode::Read ? hixl::READ : hixl::WRITE;
-        const auto native_status =
-            engine.TransferSync(remote_engine.c_str(), operation, descs, timeout_ms);
-        if (native_status != hixl::SUCCESS) {
-            return Status::Error(fmt::format("TransferSync({}, ops={}, timeout_ms={}) returned {}",
-                                             remote_engine, descs.size(), timeout_ms,
-                                             static_cast<int>(native_status)));
-        }
-        UC_DEBUG(
-            "[Transport][HIXL] synchronous transfer completed: engine={} remote_engine={} "
-            "opcode={} segments={}",
-            local_endpoint_.ToString(), remote_engine, static_cast<int>(opcode), descs.size());
-        return Status::OK();
-    });
-}
-
-Status HixlInstance::TransferAsync(const std::string& remote_engine, Opcode opcode,
-                                   const std::vector<Segment>& segments, hixl::TransferReq& request)
-{
-    hixl::TransferReq native_request = nullptr;
-    const auto status = Run([&](hixl::Hixl& engine) {
-        const auto descs = BuildTransferOpDesc(segments);
-        hixl::TransferArgs args;
-        const auto operation = opcode == Opcode::Read ? hixl::READ : hixl::WRITE;
-        const auto native_status =
-            engine.TransferAsync(remote_engine.c_str(), operation, descs, args, native_request);
-        if (native_status != hixl::SUCCESS || native_request == nullptr) {
-            return Status::Error(fmt::format("TransferAsync({}, ops={}) returned {} request={}",
-                                             remote_engine, descs.size(),
-                                             static_cast<int>(native_status), native_request));
-        }
-        UC_DEBUG(
-            "[Transport][HIXL] asynchronous transfer submitted: engine={} remote_engine={} "
-            "opcode={} segments={} request={}",
-            local_endpoint_.ToString(), remote_engine, static_cast<int>(opcode), descs.size(),
-            native_request);
-        return Status::OK();
-    });
-    if (status == Status::OK()) { request = native_request; }
-    return status;
-}
-
-Status HixlInstance::GetTransferStatus(hixl::TransferReq request, TransferStatus& status)
-{
-    status = TransferStatus::Failed;
-    return Run([&](hixl::Hixl& engine) {
-        hixl::TransferStatus native_transfer_status = hixl::TransferStatus::WAITING;
-        const auto native_status = engine.GetTransferStatus(request, native_transfer_status);
-        if (native_status != hixl::SUCCESS) {
-            return Status::Error(fmt::format("GetTransferStatus(req={}) returned {}", request,
-                                             static_cast<int>(native_status)));
-        }
-        switch (native_transfer_status) {
-            case hixl::TransferStatus::WAITING: status = TransferStatus::Waiting; break;
-            case hixl::TransferStatus::COMPLETED: status = TransferStatus::Completed; break;
-            case hixl::TransferStatus::FAILED:
-            case hixl::TransferStatus::TIMEOUT: status = TransferStatus::Failed; break;
-        }
-        return Status::OK();
-    });
-}
+aclrtContext HixlInstance::Context() const { return context_; }
 
 const Endpoint& HixlInstance::LocalEndpoint() const { return local_endpoint_; }
 

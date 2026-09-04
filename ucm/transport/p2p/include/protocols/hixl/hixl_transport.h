@@ -72,7 +72,6 @@ private:
         std::vector<HixlInstanceInfo> instances;
         HixlRole role = HixlRole::Bidirectional;
         size_t local_index = SIZE_MAX;
-        bool connected = false;
     };
 
     struct PendingTransfer {
@@ -82,7 +81,7 @@ private:
 
     Status ValidateTransferLocked(const Operation& batch, size_t instance_index) const;
     Status BuildRouteLocked(const ManagerID& manager_id, Peer& peer);
-    Status DisconnectRoute(const Peer& peer, bool ignore_failure);
+    Status DisconnectRoute(const Peer& peer);
 
     int32_t connect_timeout_ms_ = 1000;
     int32_t transfer_timeout_ms_ = 1000;
@@ -92,7 +91,6 @@ private:
     std::shared_ptr<MemoryRegionManager> memory_region_manager_;
     std::unordered_map<TransferHandle, PendingTransfer> pending_transfers_;
     TransferHandle next_transfer_handle_ = 1;
-    mutable std::shared_mutex lifecycle_mutex_;
     mutable std::shared_mutex peers_mutex_;
     mutable std::mutex pending_mutex_;
 };
