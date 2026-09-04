@@ -1242,20 +1242,11 @@ def test_compact_wheel_uses_source_metadata_and_active_ascend_arch_handoff() -> 
     assert "-DASCEND_ARCH_DIR=" in setup_py
 
 
-def test_ucm_build_does_not_enable_strict_compilation() -> None:
+def test_ucm_build_enables_strict_compilation() -> None:
     cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
-    shared_cmake = (ROOT / "ucm" / "shared" / "CMakeLists.txt").read_text(
-        encoding="utf-8"
-    )
 
-    vendor_index = cmake.index("add_subdirectory(ucm/shared/vendor)")
-    ucm_index = cmake.index("add_subdirectory(ucm)")
-
-    assert vendor_index < ucm_index
-    assert "-Wall" not in cmake
-    assert "-Werror" not in cmake
+    assert 'set(FLAGS_PUBLIC "-Wall -Werror ' in cmake
     assert "-Wno-error=stringop-overflow" not in cmake
-    assert "add_subdirectory(vendor)" not in shared_cmake
 
 
 def test_ascend_drampool_defers_only_shared_library_driver_symbols() -> None:

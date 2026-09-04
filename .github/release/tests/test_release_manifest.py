@@ -1030,14 +1030,12 @@ def test_release_notes_hide_pypi_until_a_complete_receipt(
     assert "## TestPyPI" not in notes
     assert "pip install" not in notes
     assert "pip download" not in notes
+    assert "[x86_64](" in notes
 
 
-@pytest.mark.parametrize(
-    ("version", "extra"),
-    [("1.0.0", "cu130"), ("2.4.0rc3", "cann920-a3")],
-)
+@pytest.mark.parametrize("version", ["1.0.0", "2.4.0rc3"])
 def test_release_notes_show_pypi_installation_from_published_receipt(
-    version: str, extra: str
+    version: str,
 ) -> None:
     manifest = _single_family_release_notes_manifest(
         expected_targets={},
@@ -1054,6 +1052,7 @@ def test_release_notes_show_pypi_installation_from_published_receipt(
         }
     }
     meta_project = "uc-manager"
+    extra = "cu130"
     backend_project = f"uc-manager-{extra}"
     manifest["pypi"] = {
         "status": "complete",
@@ -1071,62 +1070,80 @@ def test_release_notes_show_pypi_installation_from_published_receipt(
     )
 
     assert "Status: `images-failed`" in notes
-    assert "## PyPI" in notes
-    assert f"https://pypi.org/project/{meta_project}/{version}/" in notes
-    assert (
-        f"python -m pip install --index-url {simple_index} "
-        f'"{meta_project}[{extra}]=={version}"'
-    ) in notes
+    assert "## PyPI" not in notes
     assert "## TestPyPI" not in notes
+    assert f"https://pypi.org/project/{meta_project}/{version}/" in notes
+    assert f'pip install "{meta_project}[{extra}]=={version}"' in notes
+    assert "python -m" not in notes
+    assert "--index-url" not in notes
+    assert "uc_manager_cuda-amd64.whl" not in notes
     assert "pip download" not in notes
 
 
-def test_release_notes_testpypi_installs_one_published_backend_at_a_time() -> None:
+def test_release_notes_show_testpypi_installation_in_the_wheel_column() -> None:
     manifest = _single_family_release_notes_manifest(expected_targets={}, targets=[])
     simple_index = "https://test.pypi.org/simple/"
-    dependency_index = "https://pypi.org/simple/"
     manifest["publish"] = {
         "pypi": {
             "enabled": True,
             "simple_index": simple_index,
-            "dependency_index": dependency_index,
         }
     }
     meta_project = "another-fork-uc-manager"
     version = "2.4.0rc3"
-    extras = {
-        "cu140": f"{meta_project}-cuda-cu140=={version}",
-        "cann920-a3": f"{meta_project}-cann920-a3=={version}",
-    }
+    extra = "cu130"
+    backend_project = f"{meta_project}-cuda-{extra}"
     manifest["pypi"] = {
         "status": "complete",
         "target": "testpypi",
         "version": version,
-        "extras": extras,
-        "projects": [{"project": meta_project, "role": "meta"}],
+        "extras": {extra: f"{backend_project}=={version}"},
+        "projects": [
+            {"project": backend_project, "role": "backend"},
+            {"project": meta_project, "role": "meta"},
+        ],
     }
 
     notes = release.render_notes(
         manifest, repository="example/ucm", asset_urls=_asset_urls(manifest)
     )
 
-    assert "## TestPyPI" in notes
+    assert "## PyPI" not in notes
+    assert "## TestPyPI" not in notes
     assert f"https://test.pypi.org/project/{meta_project}/{version}/" in notes
-    commands = [part.split("```", 1)[0] for part in notes.split("```bash\n")[1:]]
-    assert len(commands) == len(extras)
-    for requirement in extras.values():
-        command = next(block for block in commands if f'"{requirement}"' in block)
-        assert 'ucm_wheel_dir="$(mktemp -d)"' in command
-        assert "python -m pip download --no-deps" in command
-        assert f"--index-url {simple_index}" in command
-        assert '--dest "$ucm_wheel_dir"' in command
-        assert f'"{meta_project}=={version}"' in command
-        assert f"python -m pip install --index-url {dependency_index}" in command
-        assert '"$ucm_wheel_dir"/*.whl' in command
-        assert sum(f'"{item}"' in command for item in extras.values()) == 1
+    assert (
+        f"pip install --index-url {simple_index} "
+        f'"{meta_project}[{extra}]=={version}"'
+    ) in notes
+    assert "python -m" not in notes
     assert "--extra-index-url" not in notes
-    assert "wrapt" not in notes
-    assert "supermarioyl" not in notes
+    assert "https://pypi.org/simple/" not in notes
+    assert "uc_manager_cuda-amd64.whl" not in notes
+    assert "<details>" not in notes
+    assert "mktemp" not in notes
+    assert "pip download" not in notes
+
+
+def test_release_notes_reject_published_packages_without_the_runtime_extra() -> None:
+    manifest = _single_family_release_notes_manifest(expected_targets={}, targets=[])
+    manifest["publish"] = {
+        "pypi": {
+            "enabled": True,
+            "simple_index": "https://pypi.org/simple/",
+        }
+    }
+    manifest["pypi"] = {
+        "status": "complete",
+        "target": "pypi",
+        "version": "1.0.0",
+        "extras": {"cu129": "uc-manager-cuda-cu129==1.0.0"},
+        "projects": [{"project": "uc-manager", "role": "meta"}],
+    }
+
+    with pytest.raises(ValueError, match="no extra for 'cu130'"):
+        release.render_notes(
+            manifest, repository="example/ucm", asset_urls=_asset_urls(manifest)
+        )
 
 
 def test_release_notes_show_dockerhub_only_after_a_published_target() -> None:
