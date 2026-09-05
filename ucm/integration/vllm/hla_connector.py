@@ -1243,10 +1243,10 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         req_meta.token_processed += new_tokens
 
         return HLARequestDispatchMeta(
-            (load_ucm_block_ids, load_vllm_block_ids),
-            (dump_ucm_block_ids, dump_vllm_block_ids),
-            load_full_attn_count,
-            dump_full_attn_count,
+            load_block_ids=(load_ucm_block_ids, load_vllm_block_ids),
+            dump_block_ids=(dump_ucm_block_ids, dump_vllm_block_ids),
+            load_full_attn_count=load_full_attn_count,
+            dump_full_attn_count=dump_full_attn_count,
         )
 
     def build_connector_meta(
