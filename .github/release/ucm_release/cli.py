@@ -170,6 +170,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     builders_finalize.set_defaults(func=_cmd_builders_finalize)
 
+    builders_bind_source = builders_actions.add_parser("bind-source")
+    builders_bind_source.add_argument("--catalog", type=Path, required=True)
+    builders_bind_source.add_argument("--output", type=Path, required=True)
+
+    def _cmd_builders_bind_source(a):
+        result = builders.bind_source_catalog(core.load_json(a.catalog))
+        a.output.parent.mkdir(parents=True, exist_ok=True)
+        _write(a.output, result)
+        return result
+
+    builders_bind_source.set_defaults(func=_cmd_builders_bind_source)
+
     builders_scan = builders_actions.add_parser("scan-registry")
     builders_scan.add_argument("--output", type=Path, required=True)
 
