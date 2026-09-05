@@ -9,6 +9,7 @@ set(UCM_ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
 option(BUILD_UCM_STORE "build ucm store module." ON)
 option(BUILD_UCM_SPARSE "build ucm sparse module." OFF)
+option(BUILD_UCM_DPOOL "build ucm dram pool module." OFF)
 option(BUILD_UCM_MINDIE "build ucm MindIE integration module." OFF)
 option(BUILD_UNIT_TESTS "build all unit test suits." OFF)
 option(BUILD_NUMA "build numactl library." OFF)
