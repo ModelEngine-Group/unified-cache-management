@@ -823,6 +823,16 @@ Status AsuClientImpl::NotInitialized()
     return Status::Error(StatusCode::NOT_INITIALIZED, "asu client is not initialized");
 }
 
+std::unique_ptr<AsuClient> CreateAsuClient()
+{
+    return std::make_unique<AsuClientImpl>(nullptr, nullptr, nullptr);
+}
+
+std::unique_ptr<AsuClient> CreateAsuClient(TransportFactory transportFactory)
+{
+    return std::make_unique<AsuClientImpl>(std::move(transportFactory), nullptr, nullptr);
+}
+
 std::unique_ptr<AsuClient> CreateAsuClient(TransportFactory transportFactory,
                                            TransProviderFactory transProviderFactory)
 {

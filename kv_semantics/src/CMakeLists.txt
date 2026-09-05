@@ -20,6 +20,7 @@ list(APPEND KV_TRANSPORT_SOURCES ${KV_COMMON_SOURCES})
 add_library(kv_transport SHARED ${KV_TRANSPORT_SOURCES})
 target_include_directories(kv_transport
     PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/../include
         ${CMAKE_CURRENT_SOURCE_DIR}/trans
         ${CMAKE_CURRENT_SOURCE_DIR}/trans_provider
     PRIVATE

@@ -32,6 +32,7 @@
 #include <mutex>
 #include <vector>
 #include "types.h"
+#include "trans_types.h"
 
 namespace kv {
 

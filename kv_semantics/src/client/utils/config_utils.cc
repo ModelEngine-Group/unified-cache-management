@@ -28,8 +28,8 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#include "common/utils/parser_common.h"
-#include "common/utils/status_utils.h"
+#include "parser_common.h"
+#include "status_utils.h"
 
 namespace kv {
 namespace {
@@ -61,6 +61,8 @@ void ApplyClientViewEndpointField(AsuEndpoint& endpoint, const std::string& key,
     }
 }
 
+}  // namespace
+
 AsuInfo ParseAsuInfo(const std::string& value)
 {
     AsuInfo info;
@@ -69,8 +71,6 @@ AsuInfo ParseAsuInfo(const std::string& value)
     }
     return info;
 }
-
-}  // namespace
 
 bool TryParseAsuInfoKey(const std::string& key, AsuId& asuId)
 {

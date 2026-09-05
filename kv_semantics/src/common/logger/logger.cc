@@ -21,41 +21,32 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#pragma once
 
-#include <cstddef>
-#include <cstdint>
-#include <memory>
-#include <vector>
-#include "kv_transport.h"
-#include "buffer/buffer_manager.h"
-#include "conn/connection_manager.h"
-#include "task_context.h"
-#include "task_manager_base.h"
+#include "logger.h"
 
-namespace kv {
+namespace kv::logger {
 
-struct TransportSubBatchContext {
-    std::uint16_t cid{0};
-    AsuOpType opType{AsuOpType::QUERY};
-    TransportSubBatchState state{TransportSubBatchState::PENDING};
-    Status status{Status::OK()};
-    std::shared_ptr<ConnectionChannel> channel;
-    bool useSeekControl{false};
-    ScatterGatherEntry sendSge;
-    ScatterGatherEntry flagBuffer;
-    std::vector<Status> entryStatus;
-};
+void Log(Level lv, std::string file, std::string func, int line, std::string msg)
+{
+    Logger::GetInstance().Log(std::move(lv), SourceLocation{file.c_str(), func.c_str(), line},
+                              std::move(msg));
+}
 
-void FillEntryStatusFromCqeResult(const KvResponse& response,
-                                  TransportSubBatchContext& subBatchContext);
+void LogRateLimit(Level lv, std::string file, std::string func, int line, std::string msg)
+{
+    if (Logger::GetInstance().FilterCallSite(file.c_str(), line)) {
+        Logger::GetInstance().Log(std::move(lv), SourceLocation{file.c_str(), func.c_str(), line},
+                                  std::move(msg));
+    }
+}
 
-class TransportTaskManager : public TaskManagerBase<TransportTask, TransportTaskState> {
-public:
-    TransportTaskManager() : TaskManagerBase(TransportTaskState::PENDING, "transport") {}
+void Setup(const std::string& path, int max_files, int max_size)
+{
+    Logger::GetInstance().Setup(path, max_files, max_size);
+}
 
-    void NotifyCompletion(const TransportTaskPtr& task);
-    static void BuildResult(const TransportTask& task, TaskResult& result);
-};
+void Flush() { Logger::GetInstance().Flush(); }
 
-}  // namespace kv
+bool isEnabledFor(Level lv) { return Logger::GetInstance().IsEnabledFor(lv); }
+
+}  // namespace kv::logger

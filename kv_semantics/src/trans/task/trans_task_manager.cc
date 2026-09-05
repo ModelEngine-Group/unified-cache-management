@@ -4,6 +4,13 @@
 
 namespace kv {
 
+void FillEntryStatusFromCqeResult(const KvResponse& response,
+                                 TransportSubBatchContext& subBatchContext)
+{
+    FillEntryStatusFromCqeResult(response, subBatchContext.opType, subBatchContext.useSeekControl,
+                                 subBatchContext.status, subBatchContext.entryStatus);
+}
+
 TransportTask::TransportTask() : subBatchContexts(std::make_shared<TransportSubBatchList>()) {}
 
 bool TransportTask::Done() const

@@ -103,7 +103,7 @@ std::vector<NodeId> NormalizeNodeIds(const std::vector<NodeId>& nodeIds)
     return activeNodeIds;
 }
 
-std::string BuildBatchKey(const std::vector<CacheKey>& keys)
+std::string BuildBatchKey(const std::vector<Key>& keys)
 {
     std::string batchKey = "batch-size#" + std::to_string(keys.size());
     for (std::size_t index = 0; index < keys.size(); ++index) {
@@ -133,7 +133,7 @@ Router::Router(HashFunction hash) : hash_(std::move(hash))
 }
 
 std::unordered_map<NodeId, std::vector<Router::EntryIndex>> Router::RouteKeys(
-    const std::vector<CacheKey>& keys) const
+    const std::vector<Key>& keys) const
 {
     std::unordered_map<NodeId, std::vector<EntryIndex>> routes;
     routes.reserve(keys.size());
@@ -168,7 +168,7 @@ void RingHashRouter::Build(const std::vector<NodeId>& nodeIds)
     ring_ = std::move(ringData);
 }
 
-NodeId RingHashRouter::RouteKey(const CacheKey& key) const
+NodeId RingHashRouter::RouteKey(const Key& key) const
 {
     if (ring_.empty()) { return kInvalidNodeId; }
 
@@ -226,7 +226,7 @@ void MaglevRouter::Build(const std::vector<NodeId>& nodeIds)
     }
 }
 
-NodeId MaglevRouter::RouteKey(const CacheKey& key) const
+NodeId MaglevRouter::RouteKey(const Key& key) const
 {
     if (lookupTable_.empty()) { return kInvalidNodeId; }
     return lookupTable_[hash_(key) % lookupTable_.size()];
@@ -246,7 +246,7 @@ ContiguousBlockAffinityRouter::ContiguousBlockAffinityRouter(const std::vector<N
 }
 
 std::unordered_map<NodeId, std::vector<Router::EntryIndex>>
-ContiguousBlockAffinityRouter::RouteKeys(const std::vector<CacheKey>& keys) const
+ContiguousBlockAffinityRouter::RouteKeys(const std::vector<Key>& keys) const
 {
     std::unordered_map<NodeId, std::vector<EntryIndex>> routes;
     if (!fullSpreadRouter_) { return routes; }
@@ -263,7 +263,7 @@ ContiguousBlockAffinityRouter::RouteKeys(const std::vector<CacheKey>& keys) cons
     return routes;
 }
 
-NodeId ContiguousBlockAffinityRouter::RouteKey(const CacheKey& key) const
+NodeId ContiguousBlockAffinityRouter::RouteKey(const Key& key) const
 {
     if (!fullSpreadRouter_) { return kInvalidNodeId; }
     auto routes = fullSpreadRouter_->RouteKeys({key});
@@ -279,7 +279,7 @@ BatchTopKAffinityRouter::BatchTopKAffinityRouter(const std::vector<NodeId>& node
 }
 
 std::unordered_map<NodeId, std::vector<Router::EntryIndex>> BatchTopKAffinityRouter::RouteKeys(
-    const std::vector<CacheKey>& keys) const
+    const std::vector<Key>& keys) const
 {
     std::unordered_map<NodeId, std::vector<EntryIndex>> routes;
     auto candidates = SelectCandidates(BuildBatchKey(keys));
@@ -292,7 +292,7 @@ std::unordered_map<NodeId, std::vector<Router::EntryIndex>> BatchTopKAffinityRou
     return routes;
 }
 
-NodeId BatchTopKAffinityRouter::RouteKey(const CacheKey& key) const
+NodeId BatchTopKAffinityRouter::RouteKey(const Key& key) const
 {
     if (nodeIds_.empty()) { return kInvalidNodeId; }
     return nodeIds_[hash_(key) % nodeIds_.size()];

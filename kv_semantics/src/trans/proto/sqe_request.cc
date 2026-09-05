@@ -33,6 +33,7 @@
 #include "conn/connection_manager.h"
 #include "kv_protocol.h"
 #include "logger.h"
+#include "parser_common.h"
 #include "task/trans_task_executor.h"
 
 namespace kv {
@@ -51,13 +52,6 @@ Status ValidateSqeMrKeys(const BatchView<KVBuffer>& entries)
         }
     }
     return Status::OK();
-}
-
-std::string ToLower(std::string value)
-{
-    std::transform(value.begin(), value.end(), value.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-    return value;
 }
 
 template <typename T>

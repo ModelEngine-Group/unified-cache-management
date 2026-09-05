@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 KV_TEST_DIR=$(cd "${SCRIPT_DIR}/.." && pwd)
-PROJECT_ROOT=$(cd "${KV_TEST_DIR}/../../../.." && pwd)
+PROJECT_ROOT=$(cd "${KV_TEST_DIR}/../.." && pwd)
 ANSI_GREEN=$'\033[32m'
 ANSI_RED=$'\033[31m'
 ANSI_RESET=$'\033[0m'
@@ -36,10 +36,10 @@ find_kv_test_bin() {
     for candidate in \
         "${PROJECT_ROOT}/kv-test" \
         "${PROJECT_ROOT}/kv-test.exe" \
-        "${PROJECT_ROOT}/build-kv-test/ucm/transport/kv/kv-test/kv-test" \
-        "${PROJECT_ROOT}/build-kv-test/ucm/transport/kv/kv-test/kv-test.exe" \
-        "${PROJECT_ROOT}/build/ucm/transport/kv/kv-test/kv-test" \
-        "${PROJECT_ROOT}/build/ucm/transport/kv/kv-test/kv-test.exe"; do
+        "${PROJECT_ROOT}/build-kv-test/kv_semantics/kv_test/kv-test" \
+        "${PROJECT_ROOT}/build-kv-test/kv_semantics/kv_test/kv-test.exe" \
+        "${PROJECT_ROOT}/build/kv_semantics/kv_test/kv-test" \
+        "${PROJECT_ROOT}/build/kv_semantics/kv_test/kv-test.exe"; do
         if [[ -x "${candidate}" ]]; then
             printf '%s\n' "${candidate}"
             return

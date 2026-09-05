@@ -16,6 +16,7 @@ endif()
 target_link_libraries(kv_buffer_runtime
     PUBLIC
         fmt
+        spdlog
         Ascend::ascendcl
 )
 target_include_directories(kv_buffer_runtime

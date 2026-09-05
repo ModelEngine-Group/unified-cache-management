@@ -178,7 +178,7 @@ void PrintGeneralHelp()
         << "  --write-ratio <n>,\n"
         << "  --progress               Print one benchmark progress line per second.\n\n"
         << "Examples:\n"
-        << "  export KV_TEST_CONFIG=/abs/path/to/asu_kv_test.conf\n"
+        << "  export KV_TEST_CONFIG=/abs/path/to/kv_test.conf\n"
         << "  kv-test connect\n"
         << "  kv-test store --key hello --check\n"
         << "  kv-test retrieve --keys hello,world --check\n"

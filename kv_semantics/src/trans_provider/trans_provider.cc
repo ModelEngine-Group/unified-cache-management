@@ -2,14 +2,14 @@
 #include <exception>
 #include <memory>
 #ifdef UCM_ASU_ENABLE_AICPU_PROVIDER
-#include "trans_provider/aicpu/aicpu_trans_provider.h"
+#include "aicpu/aicpu_trans_provider.h"
 #endif
 #ifdef UCM_ASU_ENABLE_AIV_PROVIDER
-#include "trans_provider/aiv/aiv_trans_provider.h"
+#include "aiv/aiv_trans_provider.h"
 #endif
 #include "kv_transport.h"
 #ifdef UCM_ASU_ENABLE_FAKE_PROVIDER
-#include "trans_provider/fake/fake_trans_provider.h"
+#include "fake/fake_trans_provider.h"
 #endif
 
 namespace kv {

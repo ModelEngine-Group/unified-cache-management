@@ -28,6 +28,7 @@
 #include "kv_client.h"
 #include "parser_common.h"
 #include "status_utils.h"
+#include "utils/config_utils.h"
 
 namespace kv {
 namespace {
@@ -36,15 +37,6 @@ AsuInfo ExtractAsuInfo(const TransportConfig& config)
 {
     AsuInfo info;
     info.endpoints = config.endpoints;
-    return info;
-}
-
-AsuInfo ParseAsuInfo(const std::string& value)
-{
-    AsuInfo info;
-    for (const auto& endpointValue : SplitConfigValue(value, ';')) {
-        info.endpoints.emplace_back(ParseClientViewEndpoint(endpointValue));
-    }
     return info;
 }
 
@@ -117,13 +109,6 @@ private:
 };
 
 }  // namespace
-
-void ApplyAsuInfoToTransportConfig(const AsuInfo& info, TransportConfig& config)
-{
-    if (info.endpoints.empty()) { return; }
-
-    config.endpoints = info.endpoints;
-}
 
 GlobalView BuildConfigGlobalView(const AsuClientConfig& config)
 {

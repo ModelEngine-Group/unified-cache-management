@@ -31,6 +31,9 @@ target_include_directories(kv-test
         ../include
         ../src/trans
         ../src/common
+        ../src/common/utils
+        ../src/common/ds
+        ../src/client
 )
 
 target_link_libraries(kv-test

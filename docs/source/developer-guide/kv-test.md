@@ -61,13 +61,13 @@ script process and does not update the caller's shell.
 The bundled example config is:
 
 ```text
-ucm/transport/kv/kv-test/asu_kv_test.conf
+ucm/transport/kv/kv-test/kv_test.conf
 ```
 
 The bundled example view file is:
 
 ```text
-ucm/transport/kv/kv-test/asu_view.conf
+ucm/transport/kv/kv-test/kv_client_view.conf
 ```
 
 The sample config uses relative paths such as `view.config_path`,
@@ -184,7 +184,7 @@ fake_backend.path=./kv-test-fake-backend-store
 fake_backend.latency_ms=1
 fake_backend.worker_threads=4
 
-view.config_path=./ucm/transport/kv/kv-test/asu_view.conf
+view.config_path=./ucm/transport/kv/kv-test/kv_client_view.conf
 hash_table.type=RING_HASH
 ring_hash.virtual_node_count=128
 
@@ -361,7 +361,7 @@ Set `KV_TEST_SCRIPT_LOG_DIR` to place these artifacts elsewhere.
 ### connect
 
 ```bash
-kv-test connect --configpath ./ucm/transport/kv/kv-test/asu_kv_test.conf
+kv-test connect --configpath ./ucm/transport/kv/kv-test/kv_test.conf
 ```
 
 The tool loads config, creates the ASU client, initializes it, opens the output
@@ -370,7 +370,7 @@ directory, writes a summary, shuts the client down, and exits.
 ### config check
 
 ```bash
-kv-test config check --configpath ./ucm/transport/kv/kv-test/asu_kv_test.conf
+kv-test config check --configpath ./ucm/transport/kv/kv-test/kv_test.conf
 ```
 
 The command validates config loading and fixed kv-test behavior constraints. It
@@ -564,7 +564,7 @@ so they do not overlap the kv-test layer's exit codes.
 ## Examples
 
 ```bash
-export KV_TEST_CONFIG=./ucm/transport/kv/kv-test/asu_kv_test.conf
+export KV_TEST_CONFIG=./ucm/transport/kv/kv-test/kv_test.conf
 
 kv-test config check
 kv-test connect

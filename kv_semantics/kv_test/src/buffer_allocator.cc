@@ -2,6 +2,7 @@
 #include <limits>
 #include "key_value_generator.h"
 #include "runtime/device.h"
+#include "trans_types.h"
 
 namespace kv::bench {
 

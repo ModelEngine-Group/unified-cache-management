@@ -34,9 +34,9 @@
 
 namespace kv {
 
-using CacheKey = std::string;
+using Key = std::string;
 using NodeId = std::uint64_t;
-using HashFunction = std::function<std::uint64_t(const CacheKey&)>;
+using HashFunction = std::function<std::uint64_t(const Key&)>;
 
 constexpr NodeId kInvalidNodeId = UINT64_MAX;
 
@@ -49,13 +49,13 @@ public:
     virtual ~Router() = default;
     // Routes cache keys to node identifiers.
     virtual std::unordered_map<NodeId, std::vector<EntryIndex>> RouteKeys(
-        const std::vector<CacheKey>& keys) const;
+        const std::vector<Key>& keys) const;
 
 protected:
     // Builds a router with the supplied hash function.
     explicit Router(HashFunction hash);
     // Returns the node that owns a cache key.
-    virtual NodeId RouteKey(const CacheKey& key) const = 0;
+    virtual NodeId RouteKey(const Key& key) const = 0;
 
     HashFunction hash_;
 };
@@ -70,7 +70,7 @@ private:
     using RingNode = std::pair<std::uint64_t, NodeId>;
 
     // Returns the ring owner for a cache key.
-    NodeId RouteKey(const CacheKey& key) const override;
+    NodeId RouteKey(const Key& key) const override;
     // Constructs the consistent-hash ring.
     void Build(const std::vector<NodeId>& nodeIds);
 
@@ -86,7 +86,7 @@ public:
 
 private:
     // Returns the lookup-table owner for a cache key.
-    NodeId RouteKey(const CacheKey& key) const override;
+    NodeId RouteKey(const Key& key) const override;
     // Constructs the Maglev lookup table.
     void Build(const std::vector<NodeId>& nodeIds);
 
@@ -103,11 +103,11 @@ public:
 
     // Routes keys by anchoring each K-sized range to its first key.
     std::unordered_map<NodeId, std::vector<EntryIndex>> RouteKeys(
-        const std::vector<CacheKey>& keys) const override;
+        const std::vector<Key>& keys) const override;
 
 private:
     // Returns the owner selected by the underlying full-spread router.
-    NodeId RouteKey(const CacheKey& key) const override;
+    NodeId RouteKey(const Key& key) const override;
 
     RouterConfig config_;
     std::shared_ptr<Router> fullSpreadRouter_;
@@ -122,11 +122,11 @@ public:
 
     // Routes one RouteKeys call through a batch-specific TopK node candidate set.
     std::unordered_map<NodeId, std::vector<EntryIndex>> RouteKeys(
-        const std::vector<CacheKey>& keys) const override;
+        const std::vector<Key>& keys) const override;
 
 private:
     // Returns the owner selected from all active nodes.
-    NodeId RouteKey(const CacheKey& key) const override;
+    NodeId RouteKey(const Key& key) const override;
     // Selects the TopK candidates for one batch fingerprint.
     std::vector<NodeId> SelectCandidates(const std::string& batchKey) const;
 

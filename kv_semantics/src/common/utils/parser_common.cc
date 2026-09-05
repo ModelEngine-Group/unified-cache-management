@@ -30,11 +30,6 @@
 namespace kv {
 namespace {
 
-void SetEndpointAttr(AsuEndpoint& endpoint, const std::string& key, const std::string& value)
-{
-    endpoint.attrs[key] = value;
-}
-
 void ApplyTransportEndpointField(AsuEndpoint& endpoint, const std::string& key,
                                  const std::string& value)
 {
@@ -52,33 +47,6 @@ void ApplyTransportEndpointField(AsuEndpoint& endpoint, const std::string& key,
         endpoint.hcaPort = static_cast<std::uint8_t>(ParseConfigUint64(value));
     } else {
         endpoint.attrs[key] = value;
-    }
-}
-
-void ApplyClientViewEndpointField(AsuEndpoint& endpoint, const std::string& key,
-                                  const std::string& value)
-{
-    if (key == "protocol") {
-        endpoint.protocol = ParseConfigProtocol(value);
-        SetEndpointAttr(endpoint, "protocol", value);
-    } else if (key == "placement") {
-        SetEndpointAttr(endpoint, "placement", value);
-    } else if (key == "port") {
-        endpoint.port = static_cast<std::uint16_t>(ParseConfigUint64(value));
-    } else if (key == "local.comm_id" || key == "localCommId") {
-        endpoint.ip = value;
-    } else if (key == "tc") {
-        SetEndpointAttr(endpoint, "tc", value);
-    } else if (key == "sl") {
-        SetEndpointAttr(endpoint, "sl", value);
-    } else if (key == "send_size" || key == "sendSize") {
-        SetEndpointAttr(endpoint, "send_size", value);
-    } else if (key == "flag_size" || key == "flagSize") {
-        SetEndpointAttr(endpoint, "flag_size", value);
-    } else if (key == "remote_send_addr" || key == "remoteSendAddr") {
-        SetEndpointAttr(endpoint, "remote_send_addr", value);
-    } else if (key == "remote_flag_addr" || key == "remoteFlagAddr") {
-        SetEndpointAttr(endpoint, "remote_flag_addr", value);
     }
 }
 
@@ -114,6 +82,13 @@ Protocol ParseConfigProtocol(std::string value)
     if (value == "ROCE") { return Protocol::ROCE; }
     if (value == "TCP") { return Protocol::TCP; }
     return Protocol::TCP;
+}
+
+std::string ToLower(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return value;
 }
 
 TransProviderType ParseConfigTransProviderType(std::string value)
@@ -195,31 +170,6 @@ bool ApplyTransportDeviceConfigField(TransportConfig& config, const std::string&
     return false;
 }
 
-bool TryParseAsuInfoKey(const std::string& key, AsuId& asuId)
-{
-    constexpr const char* kCamelPrefix = "asuInfo.";
-    constexpr const char* kSnakePrefix = "asu_info.";
-    if (key.rfind(kCamelPrefix, 0) == 0) {
-        asuId = std::stoull(key.substr(std::string{kCamelPrefix}.size()));
-        return true;
-    }
-    if (key.rfind(kSnakePrefix, 0) == 0) {
-        asuId = std::stoull(key.substr(std::string{kSnakePrefix}.size()));
-        return true;
-    }
-    return false;
-}
-
-bool TryGetTransportAttrKey(const std::string& key, std::string& attrKey)
-{
-    constexpr const char* kCamelPrefix = "transport.";
-    if (key.rfind(kCamelPrefix, 0) == 0) {
-        attrKey = key.substr(std::string{kCamelPrefix}.size());
-        return !attrKey.empty();
-    }
-    return false;
-}
-
 AsuEndpoint ParseTransportEndpoint(const std::string& value)
 {
     AsuEndpoint endpoint;
@@ -238,31 +188,6 @@ AsuEndpoint ParseTransportEndpoint(const std::string& value)
         if (pos == std::string::npos) { continue; }
         ApplyTransportEndpointField(endpoint, TrimConfigValue(item.substr(0, pos)),
                                     TrimConfigValue(item.substr(pos + 1)));
-    }
-    return endpoint;
-}
-
-AsuEndpoint ParseClientViewEndpoint(const std::string& value)
-{
-    AsuEndpoint endpoint;
-    if (value.find('=') == std::string::npos) {
-        auto parts = SplitConfigValue(value, ':');
-        if (!parts.empty()) { endpoint.ip = parts[0]; }
-        if (parts.size() > 1) {
-            endpoint.port = static_cast<std::uint16_t>(ParseConfigUint64(parts[1]));
-        }
-        if (parts.size() > 2) {
-            endpoint.protocol = ParseConfigProtocol(parts[2]);
-            SetEndpointAttr(endpoint, "protocol", parts[2]);
-        }
-        return endpoint;
-    }
-
-    for (const auto& item : SplitConfigValue(value, ',')) {
-        const auto pos = item.find('=');
-        if (pos == std::string::npos) { continue; }
-        ApplyClientViewEndpointField(endpoint, TrimConfigValue(item.substr(0, pos)),
-                                     TrimConfigValue(item.substr(pos + 1)));
     }
     return endpoint;
 }

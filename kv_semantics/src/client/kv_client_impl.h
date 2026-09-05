@@ -46,6 +46,10 @@ using TransportFactory = std::function<std::unique_ptr<AsuTransport>()>;
 using TransProviderFactory =
     std::function<Status(const TransportConfig&, std::shared_ptr<TransProvider>&)>;
 
+std::unique_ptr<AsuClient> CreateAsuClient(TransportFactory transportFactory);
+std::unique_ptr<AsuClient> CreateAsuClient(TransportFactory transportFactory,
+                                           TransProviderFactory transProviderFactory);
+
 // ViewSnapshot is the immutable routing state used by foreground IO and submitted tasks.
 struct ViewSnapshot {
     std::shared_ptr<kv::Router> router;

@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include "trans_types.h"
 
 namespace kv::bench {
 

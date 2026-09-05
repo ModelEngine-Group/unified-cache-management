@@ -48,17 +48,17 @@ const char* AsuOpTypeName(AsuOpType opType)
     }
 }
 
-std::vector<kv::CacheKey> ToRouterKeys(const std::vector<CacheKey>& keys)
+std::vector<kv::Key> ToRouterKeys(const std::vector<CacheKey>& keys)
 {
-    std::vector<kv::CacheKey> routerKeys;
+    std::vector<kv::Key> routerKeys;
     routerKeys.reserve(keys.size());
     for (const auto& key : keys) { routerKeys.emplace_back(std::string(CacheKeyView(key))); }
     return routerKeys;
 }
 
-std::vector<kv::CacheKey> ExtractEntryKeys(const std::vector<KVBuffer>& entries)
+std::vector<kv::Key> ExtractEntryKeys(const std::vector<KVBuffer>& entries)
 {
-    std::vector<kv::CacheKey> keys;
+    std::vector<kv::Key> keys;
     keys.reserve(entries.size());
     for (const auto& entry : entries) { keys.emplace_back(std::string(CacheKeyView(entry.key))); }
     return keys;
