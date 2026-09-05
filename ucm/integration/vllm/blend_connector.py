@@ -133,7 +133,7 @@ class UCMBlendConnector(UCMDirectConnector):
             self.enable_blend = True
             self.chunk_end_token_id = blend_config["chunk_end_token_id"]
         else:
-            raise "UCMBlendConnector init failed, please check your config"
+            raise ValueError("UCMBlendConnector init failed, please check your config")
 
         self.requests_blend_meta: dict[str, BlendRequestMeta] = {}
         self.cos_sin_cache: torch.Tensor = None
@@ -331,7 +331,7 @@ class UCMBlendConnector(UCMDirectConnector):
         post process loaded chunk kcache
         """
         if self.cos_sin_cache is None:
-            raise "Please call setup model first."
+            raise RuntimeError("Please call setup model first.")
         # triton kernl for block-wise delta rope
         block_wise_rope_forward(k_cache, vllm_ids, positions, self.cos_sin_cache)
 
@@ -340,7 +340,9 @@ class UCMBlendConnector(UCMDirectConnector):
             rotary_emb = model.model.layers[0].self_attn.rotary_emb
             self.cos_sin_cache = rotary_emb.cos_sin_cache
         except Exception:
-            raise "get cos_sin_cache from model failed!  current not implemented for this model"
+            raise RuntimeError(
+                "get cos_sin_cache from model failed! current not implemented for this model"
+            )
 
     def setup_model(self, model: "Model") -> None:
         self._register_cos_sin_cache(model)
