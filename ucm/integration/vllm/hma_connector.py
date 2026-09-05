@@ -15,6 +15,7 @@ from vllm.model_executor.models.utils import extract_layer_index
 from vllm.v1.core.sched.output import SchedulerOutput
 
 from ucm.integration.vllm.device import create_device
+from ucm.integration.vllm.request_hasher import RequestHashError
 from ucm.integration.vllm.ucm_connector import (
     UCMDirectConnector,
     _check_shm_capacity,
@@ -344,6 +345,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         # The maximum token block size across all groups, used for aligning the number of computed tokens in the scheduler.
         self.max_token_block_size = 0
         self._init_group_metas()
+        self._bind_request_block_hasher()
         self.fa_store: Optional[UcmKVStoreBaseV1] = None
         self.wa_store: Optional[UcmKVStoreBaseV1] = None
         self.requests_meta: dict[str, FAWARequestMeta] = {}
@@ -891,9 +893,14 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if skip_external_load and wa_hbm_hit_block_num <= 0:
             return 0, False
 
-        canonical_hashes = self.generate_hash(
-            self.hash_block_size, request.all_token_ids, self._seed
-        )
+        assert self.request_block_hasher is not None
+        try:
+            canonical_hashes = self.request_block_hasher(request)
+        except RequestHashError as e:
+            logger.error(
+                f"request {request.request_id} hash error. " f"{type(e).__name__}: {e}"
+            )
+            return 0, False
         fa_hbm_hit_keys = canonical_hashes[:wa_hbm_hit_block_num]
 
         # Even when no external load is worthwhile, the local-HBM prefix is a

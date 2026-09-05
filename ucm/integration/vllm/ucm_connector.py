@@ -1,9 +1,7 @@
 ﻿import copy
 import glob
-import hashlib
 import math
 import os
-import pickle
 import re
 import shutil
 import time
@@ -43,6 +41,7 @@ from ucm.integration.vllm.metrics import (
     UCMPromMetrics,
 )
 from ucm.integration.vllm.rank_consistency import RankConsistencyManager
+from ucm.integration.vllm.request_hasher import RequestHasher, RequestHashError
 from ucm.logger import init_logger
 from ucm.metrics_config import (
     MULTIPROC_CONSUMER,
@@ -1029,38 +1028,6 @@ class PendingDumpTask:
     wait_for_save_start_ms: float = 0.0
 
 
-class RequestHasher:
-    """hash(md5) request to generate ucm block id"""
-
-    def __init__(self, vllm_config, rank_id):
-        speculative_config = getattr(vllm_config, "speculative_config", None)
-        spec_info = ""
-        if speculative_config is not None:
-            spec_method = getattr(speculative_config, "method", "") or ""
-            spec_tokens = getattr(speculative_config, "num_speculative_tokens", 0)
-            spec_info = f":{spec_method}:{spec_tokens}"
-        additional_config = getattr(vllm_config, "additional_config", None) or {}
-        sparse_sfa_c8 = bool(additional_config.get("enable_sparse_sfa_c8", False))
-        sparse_li_c8 = bool(additional_config.get("enable_sparse_li_c8", False))
-        sparse_c8_info = f":sfa_c8={int(sparse_sfa_c8)}:li_c8={int(sparse_li_c8)}"
-        model_name = vllm_config.model_config.model.rstrip("/").split("/")[-1]
-        meta = (
-            f"{model_name}:"
-            f"{vllm_config.parallel_config.tensor_parallel_size}:"
-            f"{vllm_config.model_config.dtype}:{rank_id}{spec_info}{sparse_c8_info}"
-        )
-        self.meta_bytes = meta.encode("utf-8")
-
-    def __call__(self, input_data) -> bytes:
-        if isinstance(input_data, bytes):
-            input_bytes = input_data
-        else:
-            input_bytes = pickle.dumps(input_data, protocol=pickle.HIGHEST_PROTOCOL)
-
-        h = hashlib.md5(self.meta_bytes + input_bytes)
-        return h.digest()
-
-
 @dataclass
 class UCMWorkerMetadata(KVConnectorWorkerMetadata):
     """Worker-to-scheduler metadata for load failures and Dump success."""
@@ -1205,7 +1172,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if role == KVConnectorRole.SCHEDULER:
             self.request_hasher = RequestHasher(vllm_config, 0)
             self._other_rank_hashers = self._make_other_rank_hashers(vllm_config)
-            self._seed = self.request_hasher("UCM_HASH_SEED")
+            self._seed = self.request_hasher.seed
             # init scheduler-side connector
             if not defer_scheduler_store:
                 self.store = self._create_store(None)
@@ -1234,6 +1201,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.cp_world_size = 1
         self.hash_block_size = self.block_size
         self.block_size *= self.cp_world_size
+        self.request_block_hasher = None
+        self._bind_request_block_hasher()
 
     def get_block_size(self) -> int:
         return self.block_size
@@ -1282,25 +1251,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
             }
         )
 
-    def generate_hash(
-        self, block_size: int, token_ids: List[int], parent_block_hash_value: bytes
-    ) -> list[bytes]:
-        ret = []
-        for start in range(0, len(token_ids), block_size):
-            end = start + block_size
-            block_token_ids = token_ids[start:end]
-            # Do not hash the block if it is not full.
-            if len(block_token_ids) < block_size:
-                break
-
-            block_token_ids_tuple = tuple(block_token_ids)
-            hash_value = self.request_hasher(
-                (parent_block_hash_value, block_token_ids_tuple)
+    def _bind_request_block_hasher(self) -> None:
+        if self._role == KVConnectorRole.SCHEDULER:
+            self.request_block_hasher = self.request_hasher.make_request_block_hasher(
+                self.hash_block_size, self._seed
             )
-            parent_block_hash_value = hash_value
-            ret.append(hash_value)
-
-        return ret
 
     def _set_default_shm_buffer_capacity(self, config: dict[str, Any]) -> None:
         if not bool(config.get("share_buffer_enable", False)):
@@ -1522,9 +1477,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
         assert num_computed_tokens % self.block_size == 0
         hbm_hit_block_num = num_computed_tokens // self.block_size
 
-        ucm_block_ids = self.generate_hash(
-            self.hash_block_size, request.all_token_ids, self._seed
-        )
+        assert self.request_block_hasher is not None
+        try:
+            ucm_block_ids = self.request_block_hasher(request)
+        except RequestHashError as e:
+            logger.error(
+                f"request {request.request_id} hash error. {type(e).__name__}: {e}"
+            )
+            return 0, False
 
         if (
             self.enable_record_traces
@@ -2485,13 +2445,14 @@ class UCMCPConnector(UCMLayerWiseConnector):
         if role == KVConnectorRole.SCHEDULER:
             self.request_hasher = RequestHasher(vllm_config, 0)
             self._other_rank_hashers = self._make_other_rank_hashers(vllm_config)
-            self._seed = self.request_hasher("UCM_HASH_SEED")
+            self._seed = self.request_hasher.seed
             # init scheduler-side connector
             self.store = self._create_store(None)
         else:
             self.request_hasher = RequestHasher(vllm_config, self.tp_rank)
         vllm_config.parallel_config.tensor_parallel_size = old_tp_size
         self.block_size *= self.cp_world_size
+        self._bind_request_block_hasher()
         logger.info("Init UCMCPConnector.")
 
     def bind_connector_metadata(self, connector_metadata: KVConnectorMetadata) -> None:
@@ -2631,7 +2592,10 @@ class UCMLiteConnector(KVConnectorBase_V1):
         self.total_block_nums = 0
 
         self.request_hasher = RequestHasher(vllm_config, 0)
-        self._seed = self.request_hasher("UCM_HASH_SEED")
+        self._seed = self.request_hasher.seed
+        self.request_block_hasher = self.request_hasher.make_request_block_hasher(
+            self.hash_block_size, self._seed
+        )
 
         super().__init__(vllm_config, role, kv_cache_config)
 
@@ -2646,9 +2610,14 @@ class UCMLiteConnector(KVConnectorBase_V1):
             return 0, False
         if request.request_id not in self.requests_meta:
             hash_start = time.perf_counter()
-            ucm_block_ids = self.generate_hash(
-                self.hash_block_size, request.all_token_ids, self._seed
-            )
+            try:
+                ucm_block_ids = self.request_block_hasher(request)
+            except RequestHashError as e:
+                logger.error(
+                    f"request {request.request_id} hash error. "
+                    f"{type(e).__name__}: {e}"
+                )
+                return 0, False
             hash_end = time.perf_counter()
             hash_time_ms = (hash_end - hash_start) * 1000.0
 
@@ -2718,29 +2687,6 @@ class UCMLiteConnector(KVConnectorBase_V1):
 
     def wait_for_save(self):
         pass
-
-    def generate_hash(
-        self,
-        block_size: int,
-        token_ids: List[int],
-        parent_block_hash_value: bytes,
-    ) -> list[bytes]:
-        ret = []
-        for start in range(0, len(token_ids), block_size):
-            end = start + block_size
-            block_token_ids = token_ids[start:end]
-            # Do not hash the block if it is not full.
-            if len(block_token_ids) < block_size:
-                break
-
-            block_token_ids_tuple = tuple(block_token_ids)
-            hash_value = self.request_hasher(
-                (parent_block_hash_value, block_token_ids_tuple)
-            )
-            parent_block_hash_value = hash_value
-            ret.append(hash_value)
-
-        return ret
 
 
 class UCMConnector(KVConnectorBase_V1, SupportsHMA):
