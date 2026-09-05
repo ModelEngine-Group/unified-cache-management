@@ -22,6 +22,7 @@
  * SOFTWARE.
  * */
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
@@ -37,7 +38,8 @@ class RuntimeYamlFile {
 public:
     explicit RuntimeYamlFile(const std::string& contents)
         : path_(std::filesystem::temp_directory_path() /
-                ("drampool_runtime_" + std::to_string(sequence_++) + ".yaml"))
+                ("drampool_runtime_" + std::to_string(getpid()) + "_" +
+                 std::to_string(sequence_++) + ".yaml"))
     {
         std::ofstream output(path_);
         output << contents;

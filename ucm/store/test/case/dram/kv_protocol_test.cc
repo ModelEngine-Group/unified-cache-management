@@ -59,19 +59,19 @@ void ExpectLe64(const std::vector<std::uint8_t>& buf, std::size_t offset, std::u
     }
 }
 
-class KvProtocolTest : public ::testing::Test {
+class UCDramKvProtocolTest : public ::testing::Test {
 protected:
     ProtocolManager mgr_;
 };
 
-TEST(KvProtocolOpcodeTest, UsesDramStoreOpType)
+TEST(UCDramKvProtocolOpcodeTest, UsesDramStoreOpType)
 {
     EXPECT_EQ(static_cast<std::uint8_t>(OpType::LOOKUP), 0x0);
     EXPECT_EQ(static_cast<std::uint8_t>(OpType::DUMP), 0x1);
     EXPECT_EQ(static_cast<std::uint8_t>(OpType::LOAD), 0x2);
 }
 
-TEST_F(KvProtocolTest, PackDumpRequestMatchesLayout)
+TEST_F(UCDramKvProtocolTest, PackDumpRequestMatchesLayout)
 {
     KvDumpEntry entry;
     entry.key = KeyFromHex("10");
@@ -104,7 +104,7 @@ TEST_F(KvProtocolTest, PackDumpRequestMatchesLayout)
     ExpectLe32(packed, kKvDumpRequestHeaderSize + 28, entry.idx);
 }
 
-TEST_F(KvProtocolTest, PackLoadRequestMatchesLayout)
+TEST_F(UCDramKvProtocolTest, PackLoadRequestMatchesLayout)
 {
     KvLoadEntry entry;
     entry.key = KeyFromHex("20");
@@ -131,7 +131,7 @@ TEST_F(KvProtocolTest, PackLoadRequestMatchesLayout)
               0);
 }
 
-TEST_F(KvProtocolTest, PackLookupRequestMatchesLayout)
+TEST_F(UCDramKvProtocolTest, PackLookupRequestMatchesLayout)
 {
     KvLookupEntry entry0;
     entry0.key = KeyFromHex("30");
@@ -160,7 +160,7 @@ TEST_F(KvProtocolTest, PackLookupRequestMatchesLayout)
               0);
 }
 
-TEST_F(KvProtocolTest, RejectsBatchSizeMismatch)
+TEST_F(UCDramKvProtocolTest, RejectsBatchSizeMismatch)
 {
     KvLookupEntry entry;
     entry.key = KeyFromHex("50");
@@ -178,7 +178,7 @@ TEST_F(KvProtocolTest, RejectsBatchSizeMismatch)
     EXPECT_NE(status.ToString().find("batch_size"), std::string::npos);
 }
 
-TEST_F(KvProtocolTest, RejectsAllZeroKey)
+TEST_F(UCDramKvProtocolTest, RejectsAllZeroKey)
 {
     KvLookupEntry entry;
 
@@ -195,7 +195,7 @@ TEST_F(KvProtocolTest, RejectsAllZeroKey)
     EXPECT_NE(status.ToString().find("key"), std::string::npos);
 }
 
-TEST_F(KvProtocolTest, RejectsZeroDumpLoadAddrAndLen)
+TEST_F(UCDramKvProtocolTest, RejectsZeroDumpLoadAddrAndLen)
 {
     KvDumpEntry entry;
     entry.key = KeyFromHex("60");
@@ -221,7 +221,7 @@ TEST_F(KvProtocolTest, RejectsZeroDumpLoadAddrAndLen)
     EXPECT_NE(status.ToString().find("len"), std::string::npos);
 }
 
-TEST_F(KvProtocolTest, UnpackRequestRejectsWrongSize)
+TEST_F(UCDramKvProtocolTest, UnpackRequestRejectsWrongSize)
 {
     KvLookupEntry entry;
     entry.key = KeyFromHex("70");
@@ -243,7 +243,7 @@ TEST_F(KvProtocolTest, UnpackRequestRejectsWrongSize)
     EXPECT_NE(status.ToString().find("size"), std::string::npos);
 }
 
-TEST_F(KvProtocolTest, UnpackResponseReadsPackedResults)
+TEST_F(UCDramKvProtocolTest, UnpackResponseReadsPackedResults)
 {
     std::uint8_t lookupFlag[] = {0xF0, 0xDE, 0xBC,
                                  0x9A, 0x78, 0x56,
@@ -264,7 +264,7 @@ TEST_F(KvProtocolTest, UnpackResponseReadsPackedResults)
     EXPECT_EQ(resp.results, (std::vector<std::uint8_t>{0, 1, 2, 15, 3}));
 }
 
-TEST_F(KvProtocolTest, ServerRoundTripDumpLoad)
+TEST_F(UCDramKvProtocolTest, ServerRoundTripDumpLoad)
 {
     KvLoadEntry entry;
     entry.key = KeyFromHex("80");
@@ -311,7 +311,7 @@ TEST_F(KvProtocolTest, ServerRoundTripDumpLoad)
     EXPECT_EQ(resp2.results[0], 0x0U);
 }
 
-TEST_F(KvProtocolTest, ServerRoundTripLookup)
+TEST_F(UCDramKvProtocolTest, ServerRoundTripLookup)
 {
     KvLookupEntry e0;
     e0.key = KeyFromHex("90");
@@ -356,7 +356,7 @@ TEST_F(KvProtocolTest, ServerRoundTripLookup)
 // Boundary values: every field set to max
 // ---------------------------------------------------------------------------
 
-TEST_F(KvProtocolTest, DumpLoadMaxFieldValuesRoundTrip)
+TEST_F(UCDramKvProtocolTest, DumpLoadMaxFieldValuesRoundTrip)
 {
     KvLoadEntry entry;
     entry.key.fill(std::byte{0xFF});
@@ -389,7 +389,7 @@ TEST_F(KvProtocolTest, DumpLoadMaxFieldValuesRoundTrip)
 // Multi-entry: batch_size > 1, verify every entry survives the round-trip
 // ---------------------------------------------------------------------------
 
-TEST_F(KvProtocolTest, DumpLoadMultiEntryRoundTrip)
+TEST_F(UCDramKvProtocolTest, DumpLoadMultiEntryRoundTrip)
 {
     constexpr std::uint16_t kBatch = 5;
     KvDumpRequest req;
@@ -424,7 +424,7 @@ TEST_F(KvProtocolTest, DumpLoadMultiEntryRoundTrip)
     }
 }
 
-TEST_F(KvProtocolTest, LookupMultiEntryRoundTrip)
+TEST_F(UCDramKvProtocolTest, LookupMultiEntryRoundTrip)
 {
     constexpr std::uint16_t kBatch = 4;
     KvLookupRequest req;
@@ -455,7 +455,7 @@ TEST_F(KvProtocolTest, LookupMultiEntryRoundTrip)
 // opcode validation
 // ---------------------------------------------------------------------------
 
-TEST_F(KvProtocolTest, RejectsUnknownOpcodeOnDumpLoad)
+TEST_F(UCDramKvProtocolTest, RejectsUnknownOpcodeOnDumpLoad)
 {
     KvDumpRequest req;
     const auto unknownOpcode = static_cast<OpType>(0xFF);
@@ -473,7 +473,7 @@ TEST_F(KvProtocolTest, RejectsUnknownOpcodeOnDumpLoad)
     EXPECT_NE(status.ToString().find("opcode"), std::string::npos);
 }
 
-TEST_F(KvProtocolTest, RejectsOpcodeMismatch)
+TEST_F(UCDramKvProtocolTest, RejectsOpcodeMismatch)
 {
     KvDumpRequest req;
     req.opcode = OpType::LOOKUP;  // wrong opcode for a Dump request
@@ -494,7 +494,7 @@ TEST_F(KvProtocolTest, RejectsOpcodeMismatch)
 // Server UnpackRequest edge cases (validation is now merged into UnpackRequest)
 // ---------------------------------------------------------------------------
 
-TEST_F(KvProtocolTest, UnpackRequestRejectsUnknownOpcode)
+TEST_F(UCDramKvProtocolTest, UnpackRequestRejectsUnknownOpcode)
 {
     std::vector<std::uint8_t> buf(kKvLookupRequestHeaderSize + kKvLookupEntrySize, 0);
     buf[0] = 0xEE;  // unknown opcode
@@ -504,7 +504,7 @@ TEST_F(KvProtocolTest, UnpackRequestRejectsUnknownOpcode)
     EXPECT_NE(status.ToString().find("unknown opcode"), std::string::npos);
 }
 
-TEST_F(KvProtocolTest, UnpackRequestRejectsExtraBytes)
+TEST_F(UCDramKvProtocolTest, UnpackRequestRejectsExtraBytes)
 {
     KvLookupRequest req;
     req.opcode = OpType::LOOKUP;
@@ -522,14 +522,14 @@ TEST_F(KvProtocolTest, UnpackRequestRejectsExtraBytes)
     EXPECT_NE(status.ToString().find("size"), std::string::npos);
 }
 
-TEST_F(KvProtocolTest, UnpackRequestRejectsNull)
+TEST_F(UCDramKvProtocolTest, UnpackRequestRejectsNull)
 {
     std::unique_ptr<KvRequest> out;
     auto status = mgr_.UnpackRequest(nullptr, kKvLoadRequestHeaderSize, out);
     EXPECT_FALSE(status.Success());
 }
 
-TEST_F(KvProtocolTest, UnpackRequestRejectsTruncatedHeaderForEveryOpcode)
+TEST_F(UCDramKvProtocolTest, UnpackRequestRejectsTruncatedHeaderForEveryOpcode)
 {
     struct TestCase {
         OpType opcode;
@@ -552,7 +552,7 @@ TEST_F(KvProtocolTest, UnpackRequestRejectsTruncatedHeaderForEveryOpcode)
     }
 }
 
-TEST_F(KvProtocolTest, UnpackRequestRejectsSizeMismatch)
+TEST_F(UCDramKvProtocolTest, UnpackRequestRejectsSizeMismatch)
 {
     KvDumpRequest req;
     req.opcode = OpType::DUMP;
@@ -577,7 +577,7 @@ TEST_F(KvProtocolTest, UnpackRequestRejectsSizeMismatch)
 // PackResponse edge cases
 // ---------------------------------------------------------------------------
 
-TEST_F(KvProtocolTest, PackResponseRejectsNullData)
+TEST_F(UCDramKvProtocolTest, PackResponseRejectsNullData)
 {
     KvResponse resp;
     resp.request_id = kRequestId;
@@ -586,7 +586,7 @@ TEST_F(KvProtocolTest, PackResponseRejectsNullData)
     EXPECT_FALSE(status.Success());
 }
 
-TEST_F(KvProtocolTest, PackResponseRejectsValuesThatDoNotFitWireWidth)
+TEST_F(UCDramKvProtocolTest, PackResponseRejectsValuesThatDoNotFitWireWidth)
 {
     std::uint8_t flag[kResponseResultsOffset + 1] = {0};
     KvResponse lookup;
@@ -604,7 +604,7 @@ TEST_F(KvProtocolTest, PackResponseRejectsValuesThatDoNotFitWireWidth)
     EXPECT_EQ(flag[kResponseStatusOffset], static_cast<std::uint8_t>(ResponseStatus::Pending));
 }
 
-TEST_F(KvProtocolTest, PackResponseLookupRejectsZeroCount)
+TEST_F(UCDramKvProtocolTest, PackResponseLookupRejectsZeroCount)
 {
     KvResponse resp;  // empty results
     resp.request_id = kRequestId;
@@ -613,7 +613,7 @@ TEST_F(KvProtocolTest, PackResponseLookupRejectsZeroCount)
     EXPECT_FALSE(status.Success());
 }
 
-TEST_F(KvProtocolTest, PackResponseDumpLoadZeroErrcodes)
+TEST_F(UCDramKvProtocolTest, PackResponseDumpLoadZeroErrcodes)
 {
     KvResponse resp;  // empty, result_count=0
     resp.request_id = kRequestId;
@@ -627,14 +627,14 @@ TEST_F(KvProtocolTest, PackResponseDumpLoadZeroErrcodes)
 // UnpackResponse edge cases
 // ---------------------------------------------------------------------------
 
-TEST_F(KvProtocolTest, UnpackResponseRejectsNullData)
+TEST_F(UCDramKvProtocolTest, UnpackResponseRejectsNullData)
 {
     KvResponse resp;
     auto status = mgr_.UnpackResponse(nullptr, OpType::DUMP, kRequestId, 1, resp);
     EXPECT_FALSE(status.Success());
 }
 
-TEST_F(KvProtocolTest, ReportsPendingAndReadyResponseStatus)
+TEST_F(UCDramKvProtocolTest, ReportsPendingAndReadyResponseStatus)
 {
     bool ready = true;
     const std::uint8_t pending[kResponseResultsOffset] = {};
@@ -650,7 +650,7 @@ TEST_F(KvProtocolTest, ReportsPendingAndReadyResponseStatus)
     EXPECT_TRUE(ready);
 }
 
-TEST_F(KvProtocolTest, ReadyResponseWithDifferentRequestIdReturnsError)
+TEST_F(UCDramKvProtocolTest, ReadyResponseWithDifferentRequestIdReturnsError)
 {
     std::uint8_t response[kResponseResultsOffset] = {};
     const std::uint64_t staleRequestId = kRequestId - 1U;
@@ -664,7 +664,7 @@ TEST_F(KvProtocolTest, ReadyResponseWithDifferentRequestIdReturnsError)
     EXPECT_FALSE(ready);
 }
 
-TEST_F(KvProtocolTest, ResponseStatusRejectsNullAndUnknownValues)
+TEST_F(UCDramKvProtocolTest, ResponseStatusRejectsNullAndUnknownValues)
 {
     bool ready = true;
     auto status = mgr_.IsResponseReady(nullptr, kRequestId, ready);
@@ -679,7 +679,7 @@ TEST_F(KvProtocolTest, ResponseStatusRejectsNullAndUnknownValues)
     EXPECT_FALSE(ready);
 }
 
-TEST_F(KvProtocolTest, UnpackResponseReturnsRetryWithoutChangingResultsWhilePending)
+TEST_F(UCDramKvProtocolTest, UnpackResponseReturnsRetryWithoutChangingResultsWhilePending)
 {
     std::uint8_t pending[kResponseResultsOffset + 1] = {};
     pending[kResponseResultsOffset] = 0xFF;
@@ -692,7 +692,7 @@ TEST_F(KvProtocolTest, UnpackResponseReturnsRetryWithoutChangingResultsWhilePend
     EXPECT_EQ(response.results, (std::vector<std::uint8_t>{7, 8}));
 }
 
-TEST_F(KvProtocolTest, PackedResponseSizesRoundUpAtBitBoundaries)
+TEST_F(UCDramKvProtocolTest, PackedResponseSizesRoundUpAtBitBoundaries)
 {
     EXPECT_EQ(mgr_.GetPackedResponseSize(OpType::LOOKUP, 1), 10U);
     EXPECT_EQ(mgr_.GetPackedResponseSize(OpType::LOOKUP, 8), 10U);
@@ -707,7 +707,7 @@ TEST_F(KvProtocolTest, PackedResponseSizesRoundUpAtBitBoundaries)
 // Full response symmetry: PackResponse -> UnpackResponse exact match
 // ---------------------------------------------------------------------------
 
-TEST_F(KvProtocolTest, ResponseSymmetryMultipleErrcodes)
+TEST_F(UCDramKvProtocolTest, ResponseSymmetryMultipleErrcodes)
 {
     KvResponse resp;
     resp.request_id = kRequestId;
@@ -732,7 +732,7 @@ TEST_F(KvProtocolTest, ResponseSymmetryMultipleErrcodes)
 // Multi-round: same manager handles many sequential operations
 // ---------------------------------------------------------------------------
 
-TEST_F(KvProtocolTest, MultiRoundSequentialPacks)
+TEST_F(UCDramKvProtocolTest, MultiRoundSequentialPacks)
 {
     for (std::uint8_t round = 0; round < 10; ++round) {
         const auto opcode = (round % 2 == 0) ? OpType::DUMP : OpType::LOAD;
@@ -801,7 +801,7 @@ TEST_F(KvProtocolTest, MultiRoundSequentialPacks)
 // Full client-server round-trip with response values spanning the range
 // ---------------------------------------------------------------------------
 
-TEST_F(KvProtocolTest, LookupPackedResponseOverwritesNonZeroBufferAndRoundTrips)
+TEST_F(UCDramKvProtocolTest, LookupPackedResponseOverwritesNonZeroBufferAndRoundTrips)
 {
     KvResponse resp;
     resp.request_id = kRequestId;
@@ -821,7 +821,7 @@ TEST_F(KvProtocolTest, LookupPackedResponseOverwritesNonZeroBufferAndRoundTrips)
     EXPECT_EQ(unpacked.results, resp.results);
 }
 
-TEST_F(KvProtocolTest, FourBitResponseCoversEveryPackedByteValue)
+TEST_F(UCDramKvProtocolTest, FourBitResponseCoversEveryPackedByteValue)
 {
     for (std::uint16_t low = 0; low <= 0x0FU; ++low) {
         for (std::uint16_t high = 0; high <= 0x0FU; ++high) {
@@ -843,7 +843,7 @@ TEST_F(KvProtocolTest, FourBitResponseCoversEveryPackedByteValue)
     }
 }
 
-TEST_F(KvProtocolTest, OneBitResponseCoversEveryPackedByteValue)
+TEST_F(UCDramKvProtocolTest, OneBitResponseCoversEveryPackedByteValue)
 {
     for (std::uint16_t byteValue = 0; byteValue <= 0xFFU; ++byteValue) {
         KvResponse response;
@@ -865,7 +865,7 @@ TEST_F(KvProtocolTest, OneBitResponseCoversEveryPackedByteValue)
     }
 }
 
-TEST_F(KvProtocolTest, ResponsePackingClearsUnusedBitsAndPreservesCanary)
+TEST_F(UCDramKvProtocolTest, ResponsePackingClearsUnusedBitsAndPreservesCanary)
 {
     constexpr std::array<std::size_t, 12> kBoundaryCounts = {1,  2,  3,  7,   8,   9,
                                                              15, 16, 17, 255, 256, 257};
@@ -902,7 +902,7 @@ TEST_F(KvProtocolTest, ResponsePackingClearsUnusedBitsAndPreservesCanary)
     }
 }
 
-TEST_F(KvProtocolTest, PackRequestRejectsNullTarget)
+TEST_F(UCDramKvProtocolTest, PackRequestRejectsNullTarget)
 {
     KvLookupRequest request;
     request.opcode = OpType::LOOKUP;
@@ -917,7 +917,7 @@ TEST_F(KvProtocolTest, PackRequestRejectsNullTarget)
     EXPECT_NE(status.ToString().find("null"), std::string::npos);
 }
 
-TEST_F(KvProtocolTest, RejectsRequestConcreteTypeMismatch)
+TEST_F(UCDramKvProtocolTest, RejectsRequestConcreteTypeMismatch)
 {
     KvLoadRequest request;
     request.opcode = OpType::DUMP;
@@ -935,7 +935,7 @@ TEST_F(KvProtocolTest, RejectsRequestConcreteTypeMismatch)
     EXPECT_NE(status.ToString().find("type mismatch"), std::string::npos);
 }
 
-TEST_F(KvProtocolTest, UnpackRequestRejectsZeroHeaderFieldsForEveryOpcode)
+TEST_F(UCDramKvProtocolTest, UnpackRequestRejectsZeroHeaderFieldsForEveryOpcode)
 {
     std::vector<std::pair<std::vector<std::uint8_t>, std::size_t>> packedRequests;
     {
@@ -1001,7 +1001,7 @@ TEST_F(KvProtocolTest, UnpackRequestRejectsZeroHeaderFieldsForEveryOpcode)
     }
 }
 
-TEST_F(KvProtocolTest, UnpackRequestRejectsInvalidDumpLoadEntryFields)
+TEST_F(UCDramKvProtocolTest, UnpackRequestRejectsInvalidDumpLoadEntryFields)
 {
     auto expectInvalidEntry = [this](const std::vector<std::uint8_t>& packed,
                                      std::size_t headerSize, std::size_t fieldOffset,
@@ -1049,7 +1049,7 @@ TEST_F(KvProtocolTest, UnpackRequestRejectsInvalidDumpLoadEntryFields)
     }
 }
 
-TEST_F(KvProtocolTest, UnpackRequestFailurePreservesOutput)
+TEST_F(UCDramKvProtocolTest, UnpackRequestFailurePreservesOutput)
 {
     std::vector<std::uint8_t> malformed(kKvLookupRequestHeaderSize + kKvLookupEntrySize, 0);
     malformed[kOpcodeOffset] = static_cast<std::uint8_t>(OpType::LOOKUP);
