@@ -1,7 +1,7 @@
 #include "buffer_allocator.h"
 #include <limits>
 #include "key_value_generator.h"
-#include "trans/device.h"
+#include "runtime/device.h"
 
 namespace UC::KVTest {
 
@@ -13,10 +13,10 @@ constexpr std::uint8_t kRetrieveBufferInitialValue = 0xA5;
 constexpr std::size_t kDeviceBufferAlignment = UC::ASU::kAsuAlignmentBytes;
 constexpr std::size_t kDeviceMrRegisterAlignment = 2ULL * 1024ULL * 1024ULL;
 
-Trans::Stream* GetThreadStream()
+Trans::Trans* GetThreadStream()
 {
-    thread_local std::unique_ptr<Trans::Stream> stream;
-    if (!stream) { stream = Trans::Device{}.MakeStream(); }
+    thread_local std::unique_ptr<Trans::Trans> stream;
+    if (!stream) { stream = Trans::Device{}.MakeTrans(); }
     return stream.get();
 }
 
@@ -134,11 +134,11 @@ Status CopyHostToDevice(const std::vector<std::uint8_t>& hostBuffer, std::uintpt
     const auto status =
         stream->HostToDevice(const_cast<void*>(static_cast<const void*>(hostBuffer.data())),
                              reinterpret_cast<void*>(deviceAddr), hostBuffer.size());
-    if (!status.Success()) {
+    if (!status.ok()) {
         const auto contextText = context.empty() ? "" : " " + context;
         return Status::Error(kExitInvalidArgument,
                              "device payload" + contextText + " host-to-device copy failed: size=" +
-                                 std::to_string(hostBuffer.size()) + " " + status.ToString());
+                                 std::to_string(hostBuffer.size()) + " " + status.message);
     }
     return Status::Success();
 }
@@ -251,11 +251,11 @@ Status BufferAllocator::CopyDeviceBuffersToHost(BufferSet& buffers) const
         const auto status =
             stream->DeviceToHost(reinterpret_cast<void*>(buffers.entries[index].buffer.region.addr),
                                  hostBuffer.data(), hostBuffer.size());
-        if (!status.Success()) {
+        if (!status.ok()) {
             return Status::Error(
                 kExitInvalidArgument,
                 "device payload device-to-host copy failed: index=" + std::to_string(index) +
-                    " size=" + std::to_string(hostBuffer.size()) + " " + status.ToString());
+                    " size=" + std::to_string(hostBuffer.size()) + " " + status.message);
         }
     }
     return Status::Success();

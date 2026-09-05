@@ -1,5 +1,7 @@
 find_package(Threads REQUIRED)
 
+add_subdirectory(common/runtime)
+
 file(GLOB KV_COMMON_SOURCES CONFIGURE_DEPENDS common/utils/*.cc)
 file(GLOB KV_TRANSPORT_SOURCES CONFIGURE_DEPENDS
     trans/*.cc
@@ -27,6 +29,7 @@ target_include_directories(kv_transport
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/common/utils
         ${CMAKE_CURRENT_SOURCE_DIR}/common/ds
+        ${CMAKE_CURRENT_SOURCE_DIR}/common/runtime
         ${CMAKE_CURRENT_SOURCE_DIR}/trans
         ${CMAKE_CURRENT_SOURCE_DIR}/trans_provider
         ${UCM_ROOT_DIR}/ucm/shared/infra
@@ -39,6 +42,8 @@ target_compile_definitions(kv_transport PRIVATE SPDLOG_FMT_EXTERNAL)
 target_link_libraries(kv_transport
     PUBLIC
         pthread fmt spdlog zlibstatic trans
+    PRIVATE
+        kv_buffer_runtime
 )
 
 if(BUILD_KV_CLIENT_PROVIDER_AICPU)

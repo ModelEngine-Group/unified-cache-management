@@ -23,11 +23,10 @@
  * */
 #include "buffer_manager.h"
 #include <cstdlib>
-#include <cstring>
 #include <limits>
 #include "logger.h"
-#include "trans/detail/reserved_buffer.h"
-#include "trans/device.h"
+#include "runtime/buffer.h"
+#include "runtime/device.h"
 
 namespace UC::ASU {
 
@@ -140,14 +139,10 @@ Status BufferManager::Init(std::string name, MemoryType type, std::size_t slot_c
     auto allocStatus = BufferRegion::Create(memory_type_, total, region_);
     if (!allocStatus.ok()) { return allocStatus; }
 
-    if (memory_type_ == MemoryType::DEVICE) {
-        if (const auto memStatus = UC::Trans::Memset(region_.localAddr, total, 0);
-            memStatus.Failure()) {
-            region_.Reset();
-            return Status::Error(StatusCode::INTERNAL_ERROR, name_ + ": failed to zero memory");
-        }
-    } else {
-        std::memset(region_.localAddr, 0, total);
+    if (const auto memStatus = UC::Trans::Memset(region_.localAddr, total, 0);
+        !memStatus.ok()) {
+        region_.Reset();
+        return Status::Error(StatusCode::INTERNAL_ERROR, name_ + ": failed to zero memory");
     }
 
     index_pool_.Setup(static_cast<IndexPool::Index>(slot_num));
@@ -197,12 +192,8 @@ Status BufferManager::Free(std::uint32_t slot_index)
         return Status::Error(StatusCode::INVALID_ARGUMENT, name_ + ": slot_index out of range");
     }
     auto* p = static_cast<char*>(region_.localAddr) + slot_index * slot_stride_;
-    if (memory_type_ == MemoryType::DEVICE) {
-        if (const auto memStatus = UC::Trans::Memset(p, slot_stride_, 0); memStatus.Failure()) {
-            return Status::Error(StatusCode::INTERNAL_ERROR, name_ + ": failed to zero memory");
-        }
-    } else {
-        std::memset(p, 0, slot_stride_);
+    if (const auto memStatus = UC::Trans::Memset(p, slot_stride_, 0); !memStatus.ok()) {
+        return Status::Error(StatusCode::INTERNAL_ERROR, name_ + ": failed to zero memory");
     }
     index_pool_.Release(static_cast<IndexPool::Index>(slot_index));
     return Status::OK();

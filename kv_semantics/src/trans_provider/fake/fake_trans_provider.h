@@ -32,8 +32,8 @@
 #include <vector>
 #include "kv_transport.h"
 #include "trans_provider.h"
-#include "trans/device.h"
-#include "trans/stream.h"
+#include "runtime/device.h"
+#include "runtime/trans.h"
 
 namespace UC::ASU {
 
@@ -108,7 +108,7 @@ private:
 
     FakeTransProviderConfig config_;
     Trans::Device device_;
-    std::unique_ptr<Trans::Stream> stream_;
+    std::unique_ptr<Trans::Trans> stream_;
     std::atomic<std::uintptr_t> nextMrHandle_{1};
     std::mutex registeredMemoryMu_;
     std::unordered_map<MRHandle, RegisteredMemory> registeredMemories_;

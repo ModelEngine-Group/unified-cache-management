@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "trans/device.h"
+#include "runtime/device.h"
 
 namespace UC::ASU {
 namespace {
@@ -9,15 +9,14 @@ public:
     void SetUp() override
     {
         const auto initStatus = device_.Init();
-        ASSERT_TRUE(initStatus.Success() || initStatus == UC::Status::DuplicateKey())
-            << "Device::Init failed: " << initStatus.ToString();
-        ASSERT_TRUE(device_.Setup(0).Success());
+        ASSERT_TRUE(initStatus.ok()) << "Device::Init failed: " << initStatus.message;
+        ASSERT_TRUE(device_.Setup(0).ok());
     }
 
     void TearDown() override
     {
-        EXPECT_TRUE(device_.Reset(0).Success());
-        EXPECT_TRUE(device_.Finalize().Success());
+        EXPECT_TRUE(device_.Reset(0).ok());
+        EXPECT_TRUE(device_.Finalize().ok());
     }
 
 private:

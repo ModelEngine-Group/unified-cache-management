@@ -16,6 +16,7 @@ target_include_directories(kv.test PRIVATE
 )
 target_link_libraries(kv.test PRIVATE
     kv_client
+    kv_buffer_runtime
     gtest
 )
 gtest_discover_tests(kv.test)

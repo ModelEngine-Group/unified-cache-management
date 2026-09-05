@@ -2,7 +2,7 @@
 
 #include <cstdint>
 #include "kv_test_types.h"
-#include "trans/device.h"
+#include "runtime/device.h"
 
 namespace UC::KVTest {
 

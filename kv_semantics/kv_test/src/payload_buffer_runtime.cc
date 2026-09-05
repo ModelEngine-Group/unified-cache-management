@@ -58,17 +58,17 @@ Status SetUpThreadDevice(Trans::Device& device, std::int32_t deviceId, bool* ini
     if (readyDeviceId == deviceId) { return Status::Success(); }
 
     const auto initStatus = device.Init();
-    if (initStatus.Failure() && initStatus != UC::Status::DuplicateKey()) {
+    if (!initStatus.ok()) {
         return Status::Error(kExitInvalidArgument,
-                             "payload buffer Device::Init failed: " + initStatus.ToString());
+                             "payload buffer Device::Init failed: " + initStatus.message);
     }
-    if (initialized != nullptr) { *initialized = initStatus.Success(); }
+    if (initialized != nullptr) { *initialized = initStatus.ok(); }
 
     const auto setupStatus = device.Setup(deviceId);
-    if (!setupStatus.Success()) {
+    if (!setupStatus.ok()) {
         return Status::Error(kExitInvalidArgument,
                              "payload buffer Device::Setup failed: device_id=" +
-                                 std::to_string(deviceId) + " " + setupStatus.ToString());
+                                 std::to_string(deviceId) + " " + setupStatus.message);
     }
     readyDeviceId = deviceId;
     return Status::Success();

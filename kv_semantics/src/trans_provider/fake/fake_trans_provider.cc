@@ -328,7 +328,7 @@ FakeTransProvider::FakeTransProvider(FakeTransProviderConfig config)
     : config_(std::move(config)),
       workerPool_(std::make_unique<WorkerPool>(*this, config_.workerThreads))
 {
-    if (SetupDeviceRuntime().ok()) { stream_ = device_.MakeStream(); }
+    if (SetupDeviceRuntime().ok()) { stream_ = device_.MakeTrans(); }
 }
 
 FakeTransProvider::~FakeTransProvider() = default;
@@ -340,16 +340,16 @@ Status FakeTransProvider::SetupDeviceRuntime()
     if (readyDeviceId == deviceId) { return Status::OK(); }
 
     const auto initStatus = device_.Init();
-    if (initStatus.Failure() && initStatus != UC::Status::DuplicateKey()) {
+    if (!initStatus.ok()) {
         return Status::Error(StatusCode::INTERNAL_ERROR,
-                             "ASU fake backend Device::Init failed: " + initStatus.ToString());
+                             "ASU fake backend Device::Init failed: " + initStatus.message);
     }
 
     const auto setupStatus = device_.Setup(deviceId);
-    if (setupStatus.Failure()) {
+    if (!setupStatus.ok()) {
         return Status::Error(StatusCode::INTERNAL_ERROR,
                              "ASU fake backend Device::Setup failed: device_id=" +
-                                 std::to_string(deviceId) + " message=" + setupStatus.ToString());
+                                 std::to_string(deviceId) + " message=" + setupStatus.message);
     }
     readyDeviceId = deviceId;
     return Status::OK();
@@ -385,11 +385,11 @@ bool FakeTransProvider::StoreBytes(AsuId asuId, const CacheKey& key, std::uint32
     std::vector<char> buffer(length);
     const auto copyStatus =
         stream_->DeviceToHost(reinterpret_cast<void*>(addr), buffer.data(), length);
-    if (copyStatus.Failure()) {
+    if (!copyStatus.ok()) {
         UC_ERROR(
             "ASU fake backend device-to-host copy failed asuId={} key={} addr={} length={} "
             "message={}.",
-            asuId, CacheKeyToHex(key), addr, length, copyStatus.ToString());
+            asuId, CacheKeyToHex(key), addr, length, copyStatus.message);
         return false;
     }
 
@@ -443,11 +443,11 @@ bool FakeTransProvider::LoadBytes(AsuId asuId, const CacheKey& key, std::uint32_
     }
     const auto copyStatus =
         stream_->HostToDevice(buffer.data(), reinterpret_cast<void*>(addr), length);
-    if (copyStatus.Failure()) {
+    if (!copyStatus.ok()) {
         UC_ERROR(
             "ASU fake backend host-to-device copy failed asuId={} key={} addr={} length={} "
             "message={}.",
-            asuId, CacheKeyToHex(key), addr, length, copyStatus.ToString());
+            asuId, CacheKeyToHex(key), addr, length, copyStatus.message);
         return false;
     }
     return true;
