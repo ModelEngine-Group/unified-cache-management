@@ -4,7 +4,7 @@
 #include <gtest/gtest.h>
 #include "kv_client.h"
 
-namespace UC::ASU {
+namespace kv::test {
 namespace {
 
 TEST(ViewServerTest, ConfigFileViewServerLoadsView)
@@ -95,4 +95,4 @@ TEST(ViewServerTest, PublishAndRefreshPolicies)
 }
 
 }  // namespace
-}  // namespace UC::ASU
+}  // namespace kv::test

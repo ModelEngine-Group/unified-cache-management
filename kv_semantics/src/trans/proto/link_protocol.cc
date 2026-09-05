@@ -24,7 +24,7 @@
 #include "link_protocol.h"
 #include <cstring>
 
-namespace UC::ASU {
+namespace kv {
 
 Status NegotiateSqe::Pack(const NegotiateRequest& req)
 {
@@ -153,4 +153,4 @@ Status DisconnectSqe::Pack(const DisconnectRequest& req)
     return Status::OK();
 }
 
-}  // namespace UC::ASU
+}  // namespace kv

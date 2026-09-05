@@ -30,7 +30,7 @@
 #include <vector>
 #include "types.h"
 
-namespace UC::ASU {
+namespace kv {
 
 class AIVTransport {
 public:
@@ -92,4 +92,4 @@ public:
 std::unique_ptr<AIVTransport> CreateAIVTransProvider();
 std::unique_ptr<AIVTransport> CreateAIVTransProvider(uint32_t deviceId);
 
-}  // namespace UC::ASU
+}  // namespace kv

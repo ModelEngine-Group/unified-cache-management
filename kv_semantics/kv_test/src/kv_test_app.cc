@@ -10,7 +10,7 @@
 #include "kv_test_config_helpers.h"
 #include "payload_buffer_runtime.h"
 
-namespace UC::KVTest {
+namespace kv::bench {
 
 namespace {
 
@@ -335,7 +335,7 @@ void PrintSuccess(const CommandOptions& options, const CommandResult& result)
     PrintBenchSummary(options, result);
 }
 
-Status CreateClient(std::unique_ptr<UC::ASU::AsuClient>& client)
+Status CreateClient(std::unique_ptr<kv::AsuClient>& client)
 {
     Status status;
     client = AsuRuntimeProxy::Instance().CreateAsuClient(nullptr, status);
@@ -425,7 +425,7 @@ int KvTestApp::Run(int argc, char** argv)
     }
 
     CommandResult result;
-    std::unique_ptr<UC::ASU::AsuClient> client;
+    std::unique_ptr<kv::AsuClient> client;
     status = CreateClient(client);
     if (!status.Ok()) {
         PrintFailure(status);
@@ -604,4 +604,4 @@ Status KvTestApp::RunExistCommand(const CommandOptions& options, const KvTestCon
     return clientRunner.Exist(data.keys, options.timeoutMs, result);
 }
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

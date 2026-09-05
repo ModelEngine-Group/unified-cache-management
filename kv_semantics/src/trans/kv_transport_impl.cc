@@ -35,7 +35,7 @@
 #include "logger.h"
 #include "utils/trans_config_utils.h"
 
-namespace UC::ASU {
+namespace kv {
 
 namespace {
 
@@ -318,4 +318,4 @@ std::unique_ptr<AsuTransport> CreateAsuTransport() { return std::make_unique<Asu
 
 extern "C" std::unique_ptr<AsuTransport> UcmAsuCreateAsuTransport() { return CreateAsuTransport(); }
 
-}  // namespace UC::ASU
+}  // namespace kv

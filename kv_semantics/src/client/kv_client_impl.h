@@ -36,11 +36,11 @@
 #include "spsc_ring_queue.h"
 #include "view/view_server.h"
 
-namespace UC::Router {
+namespace kv {
 class Router;
-}  // namespace UC::Router
+}  // namespace kv
 
-namespace UC::ASU {
+namespace kv {
 
 using TransportFactory = std::function<std::unique_ptr<AsuTransport>()>;
 using TransProviderFactory =
@@ -48,7 +48,7 @@ using TransProviderFactory =
 
 // ViewSnapshot is the immutable routing state used by foreground IO and submitted tasks.
 struct ViewSnapshot {
-    std::shared_ptr<UC::Router::Router> router;
+    std::shared_ptr<kv::Router> router;
     std::vector<AsuId> asuIds;
     GlobalView view;
     std::unordered_map<AsuId, std::shared_ptr<AsuTransport>> transports;
@@ -153,7 +153,7 @@ private:
     ClientTaskManager taskManager_;
     // Serializes producers and protects the shutdown acceptance boundary.
     std::mutex producerMu_;
-    UC::SpscRingQueue<ClientTaskPtr> taskQueue_;
+    kv::SpscRingQueue<ClientTaskPtr> taskQueue_;
     std::atomic_bool stopWorker_{true};
     std::thread worker_;
     // Creates ASU transports; tests inject fake transports through this hook.
@@ -190,4 +190,4 @@ private:
     std::thread refreshThread_;
 };
 
-}  // namespace UC::ASU
+}  // namespace kv

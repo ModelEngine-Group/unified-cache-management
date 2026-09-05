@@ -2,7 +2,7 @@
 
 #include "kv_test_types.h"
 
-namespace UC::KVTest {
+namespace kv::bench {
 
 class KvTestConfigLoader {
 public:
@@ -13,4 +13,4 @@ public:
     Status MergeCommandOptions(const CommandOptions& options, KvTestConfig& config) const;
 };
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

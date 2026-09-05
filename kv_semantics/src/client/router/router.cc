@@ -28,7 +28,7 @@
 #include <unordered_set>
 #include <utility>
 
-namespace UC::Router {
+namespace kv {
 
 using RingNode = std::pair<std::uint64_t, NodeId>;
 using RingData = std::vector<RingNode>;
@@ -339,4 +339,4 @@ std::shared_ptr<Router> CreateRouter(const std::vector<NodeId>& nodeIds, HashFun
     }
 }
 
-}  // namespace UC::Router
+}  // namespace kv

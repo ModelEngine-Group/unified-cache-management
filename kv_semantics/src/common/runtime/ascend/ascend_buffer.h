@@ -26,7 +26,7 @@
 
 #include "buffer.h"
 
-namespace UC::Trans {
+namespace kv::runtime {
 
 class AscendBuffer : public Buffer {
 public:
@@ -41,6 +41,6 @@ public:
                                                      void** pDevice = nullptr) override;
 };
 
-}  // namespace UC::Trans
+}  // namespace kv::runtime
 
 #endif  // KV_SEMANTICS_RUNTIME_ASCEND_BUFFER_H

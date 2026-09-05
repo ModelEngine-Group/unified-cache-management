@@ -3,7 +3,7 @@
 #include "asu_client_runner.h"
 #include "kv_test_types.h"
 
-namespace UC::KVTest {
+namespace kv::bench {
 
 std::string FormatMiBPerSec(double bytesPerSec);
 
@@ -13,4 +13,4 @@ public:
                AsuClientRunner& clientRunner, CommandResult& result) const;
 };
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

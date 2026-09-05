@@ -29,7 +29,7 @@
 #include <vector>
 #include "kv_transport.h"
 
-namespace UC::ASU {
+namespace kv {
 
 std::string TrimConfigValue(const std::string& value);
 std::vector<std::string> SplitConfigValue(const std::string& value, char delimiter);
@@ -59,4 +59,4 @@ bool ApplyTransportDeviceConfigField(TransportConfig& config, const std::string&
 
 AsuEndpoint ParseTransportEndpoint(const std::string& value);
 
-}  // namespace UC::ASU
+}  // namespace kv

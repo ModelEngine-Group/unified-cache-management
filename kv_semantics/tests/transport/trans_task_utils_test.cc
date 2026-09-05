@@ -27,7 +27,7 @@
 #include <cstdint>
 #include <gtest/gtest.h>
 
-namespace UC::ASU {
+namespace kv::test {
 namespace {
 
 TEST(TransTaskUtilsTest, MapsCqeRawStatusToSubBatchStatus)
@@ -170,4 +170,4 @@ TEST(TransTaskUtilsTest, MissingResultBufferPropagatesSubBatchError)
 }
 
 }  // namespace
-}  // namespace UC::ASU
+}  // namespace kv::test

@@ -26,7 +26,7 @@
 #include <cstdlib>
 #include <cstring>
 
-namespace UC::Trans {
+namespace kv::runtime {
 
 static void* AllocMemory(size_t size, int8_t initVal)
 {
@@ -66,10 +66,10 @@ std::shared_ptr<void> SimuBuffer::MakeHostBuffer(size_t size)
     return std::shared_ptr<void>(device, FreeMemory);
 }
 
-UC::ASU::Status Memset(void* ptr, std::size_t size, std::int32_t value)
+Status Memset(void* ptr, std::size_t size, std::int32_t value)
 {
     std::memset(ptr, static_cast<int>(value), size);
-    return UC::ASU::Status::OK();
+    return Status::OK();
 }
 
-}  // namespace UC::Trans
+}  // namespace kv::runtime

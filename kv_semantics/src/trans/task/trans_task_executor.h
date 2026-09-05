@@ -35,7 +35,7 @@
 #include "proto/kv_protocol.h"
 #include "task/trans_task_manager.h"
 
-namespace UC::ASU {
+namespace kv {
 
 inline KvOpcode ToKvOpcode(AsuOpType opType)
 {
@@ -107,4 +107,4 @@ private:
     std::atomic<std::uint16_t> nextRequestCid_{1};
 };
 
-}  // namespace UC::ASU
+}  // namespace kv

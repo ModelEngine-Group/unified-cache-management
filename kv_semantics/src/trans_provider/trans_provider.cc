@@ -12,7 +12,7 @@
 #include "trans_provider/fake/fake_trans_provider.h"
 #endif
 
-namespace UC::ASU {
+namespace kv {
 
 Status CreateTransProvider(const TransportConfig& config,
                            std::shared_ptr<TransProvider>& transProvider)
@@ -61,4 +61,4 @@ Status CreateTransProvider(const TransportConfig& config,
     return Status::Error(StatusCode::UNSUPPORTED, "ASU trans provider backend is not supported");
 }
 
-}  // namespace UC::ASU
+}  // namespace kv

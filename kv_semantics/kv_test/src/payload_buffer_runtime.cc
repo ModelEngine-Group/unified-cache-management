@@ -3,7 +3,7 @@
 #include <cstdlib>
 #include "kv_test_config_helpers.h"
 
-namespace UC::KVTest {
+namespace kv::bench {
 namespace {
 
 constexpr int kExitInvalidArgument = 1;
@@ -16,8 +16,8 @@ std::int32_t ResolveFakeBackendPayloadDeviceId(const KvTestConfig& config)
     auto transportIter =
         std::find_if(config.asuClientConfig.transportConfigs.begin(),
                      config.asuClientConfig.transportConfigs.end(),
-                     [](const UC::ASU::TransportConfig& transportConfig) {
-                         return transportConfig.providerType == UC::ASU::TransProviderType::FAKE;
+                     [](const kv::TransportConfig& transportConfig) {
+                         return transportConfig.providerType == kv::TransProviderType::FAKE;
                      });
     if (transportIter == config.asuClientConfig.transportConfigs.end()) {
         transportIter = config.asuClientConfig.transportConfigs.begin();
@@ -52,7 +52,7 @@ std::int32_t ResolvePayloadDeviceId(const KvTestConfig& config)
 
 namespace {
 
-Status SetUpThreadDevice(Trans::Device& device, std::int32_t deviceId, bool* initialized)
+Status SetUpThreadDevice(runtime::Device& device, std::int32_t deviceId, bool* initialized)
 {
     thread_local std::int32_t readyDeviceId = -1;
     if (readyDeviceId == deviceId) { return Status::Success(); }
@@ -112,8 +112,8 @@ bool UsesDevicePayloadBuffers(const KvTestConfig& config)
 Status MaybeSetUpPayloadThread(const KvTestConfig& config)
 {
     if (!UsesDevicePayloadBuffers(config)) { return Status::Success(); }
-    Trans::Device device;
+    runtime::Device device;
     return SetUpThreadDevice(device, ResolvePayloadDeviceId(config), nullptr);
 }
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

@@ -29,7 +29,7 @@
 #include "task_context.h"
 #include "task_manager_base.h"
 
-namespace UC::ASU {
+namespace kv {
 
 class ClientTaskManager : public TaskManagerBase<ClientTask, ClientTaskState> {
 public:
@@ -56,4 +56,4 @@ private:
                               TaskResult& result);
 };
 
-}  // namespace UC::ASU
+}  // namespace kv

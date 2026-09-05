@@ -30,13 +30,13 @@ target_include_directories(kv-test
         include
         ../include
         ../src/trans
-        ${UCM_ROOT_DIR}/ucm/shared/infra
+        ../src/common
 )
 
 target_link_libraries(kv-test
     PRIVATE
         ${CMAKE_DL_LIBS}
-        trans
+        kv_client
         kv_buffer_runtime
 )
 

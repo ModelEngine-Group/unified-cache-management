@@ -7,7 +7,7 @@
 #include <vector>
 #include "kv_client.h"
 
-namespace UC::KVTest {
+namespace kv::bench {
 
 constexpr std::uint64_t kDefaultMemoryMaxBytes = 4ULL * 1024ULL * 1024ULL * 1024ULL;
 
@@ -184,7 +184,7 @@ struct HcommProtocolMapping {
 };
 
 struct KvTestConfig {
-    UC::ASU::AsuClientConfig asuClientConfig;
+    kv::AsuClientConfig asuClientConfig;
     ToolBehaviorConfig behavior;
     HcommProtocolMapping hcommProtocolMapping;
     BenchConfig bench;
@@ -199,7 +199,7 @@ struct KvTestConfig {
 };
 
 struct GeneratedData {
-    std::vector<UC::ASU::CacheKey> keys;
+    std::vector<kv::CacheKey> keys;
     std::vector<std::vector<std::uint8_t>> values;
 };
 
@@ -207,10 +207,10 @@ struct BufferSet {
     std::vector<std::vector<std::uint8_t>> ownedBuffers;
     std::vector<std::shared_ptr<void>> deviceBuffers;
     std::vector<std::size_t> deviceBufferOffsets;
-    std::vector<UC::ASU::MemoryRegion> regions;
-    std::vector<UC::ASU::KVBuffer> entries;
+    std::vector<kv::MemoryRegion> regions;
+    std::vector<kv::KVBuffer> entries;
     std::vector<std::size_t> entryRegionIndexes;
-    std::vector<UC::ASU::RegisteredMemory> registeredRegions;
+    std::vector<kv::RegisteredMemory> registeredRegions;
 };
 
 struct BenchLatencyStats {
@@ -262,10 +262,10 @@ struct ConsistencySummary {
 
 struct CommandResult {
     Status status;
-    UC::ASU::TaskResult taskResult;
-    UC::ASU::QueryResult queryResult;
+    kv::TaskResult taskResult;
+    kv::QueryResult queryResult;
     BenchMetrics benchMetrics;
     ConsistencySummary consistency;
 };
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

@@ -2,29 +2,29 @@
 #include <string>
 #include "key_value_generator.h"
 
-namespace UC::KVTest {
+namespace kv::bench {
 
-using UC::ASU::CacheKeyToHex;
+using kv::CacheKeyToHex;
 
-std::string AsuStatusCodeName(UC::ASU::StatusCode code)
+std::string AsuStatusCodeName(kv::StatusCode code)
 {
     switch (code) {
-        case UC::ASU::StatusCode::OK: return "OK";
-        case UC::ASU::StatusCode::INVALID_ARGUMENT: return "INVALID_ARGUMENT";
-        case UC::ASU::StatusCode::NOT_INITIALIZED: return "NOT_INITIALIZED";
-        case UC::ASU::StatusCode::TIMEOUT: return "TIMEOUT";
-        case UC::ASU::StatusCode::NOT_FOUND: return "NOT_FOUND";
-        case UC::ASU::StatusCode::PARTIAL_FAILED: return "PARTIAL_FAILED";
-        case UC::ASU::StatusCode::CONNECTION_ERROR: return "CONNECTION_ERROR";
-        case UC::ASU::StatusCode::IO_ERROR: return "IO_ERROR";
-        case UC::ASU::StatusCode::BUFFER_NOT_REGISTERED: return "BUFFER_NOT_REGISTERED";
-        case UC::ASU::StatusCode::BUFFER_NOT_SUPPORTED: return "BUFFER_NOT_SUPPORTED";
-        case UC::ASU::StatusCode::TASK_NOT_FOUND: return "TASK_NOT_FOUND";
-        case UC::ASU::StatusCode::RESOURCE_BUSY: return "RESOURCE_BUSY";
-        case UC::ASU::StatusCode::UNSUPPORTED: return "UNSUPPORTED";
-        case UC::ASU::StatusCode::IN_PROGRESS: return "IN_PROGRESS";
-        case UC::ASU::StatusCode::INTERNAL_ERROR: return "INTERNAL_ERROR";
-        case UC::ASU::StatusCode::CANCELED: return "CANCELED";
+        case kv::StatusCode::OK: return "OK";
+        case kv::StatusCode::INVALID_ARGUMENT: return "INVALID_ARGUMENT";
+        case kv::StatusCode::NOT_INITIALIZED: return "NOT_INITIALIZED";
+        case kv::StatusCode::TIMEOUT: return "TIMEOUT";
+        case kv::StatusCode::NOT_FOUND: return "NOT_FOUND";
+        case kv::StatusCode::PARTIAL_FAILED: return "PARTIAL_FAILED";
+        case kv::StatusCode::CONNECTION_ERROR: return "CONNECTION_ERROR";
+        case kv::StatusCode::IO_ERROR: return "IO_ERROR";
+        case kv::StatusCode::BUFFER_NOT_REGISTERED: return "BUFFER_NOT_REGISTERED";
+        case kv::StatusCode::BUFFER_NOT_SUPPORTED: return "BUFFER_NOT_SUPPORTED";
+        case kv::StatusCode::TASK_NOT_FOUND: return "TASK_NOT_FOUND";
+        case kv::StatusCode::RESOURCE_BUSY: return "RESOURCE_BUSY";
+        case kv::StatusCode::UNSUPPORTED: return "UNSUPPORTED";
+        case kv::StatusCode::IN_PROGRESS: return "IN_PROGRESS";
+        case kv::StatusCode::INTERNAL_ERROR: return "INTERNAL_ERROR";
+        case kv::StatusCode::CANCELED: return "CANCELED";
         default: return "UNKNOWN";
     }
 }
@@ -34,7 +34,7 @@ namespace {
 constexpr int kExitInvalidArgument = 1;
 constexpr int kExitConsistencyFailed = 4;
 
-Status ConsistencyError(const std::string& operation, const UC::ASU::CacheKey& key,
+Status ConsistencyError(const std::string& operation, const kv::CacheKey& key,
                         const std::string& reason)
 {
     return Status::Error(kExitConsistencyFailed,
@@ -90,7 +90,7 @@ Status DigestValue(const std::vector<std::uint8_t>& value, std::string& digest)
     return generator.Digest(value, digest);
 }
 
-void SetValueComparison(ConsistencySummary& summary, const UC::ASU::CacheKey& key,
+void SetValueComparison(ConsistencySummary& summary, const kv::CacheKey& key,
                         const std::string& expectedDigest, const std::string& actualDigest)
 {
     summary.key = CacheKeyToHex(key);
@@ -98,7 +98,7 @@ void SetValueComparison(ConsistencySummary& summary, const UC::ASU::CacheKey& ke
     summary.actual = "digest=" + actualDigest;
 }
 
-void SetExistComparison(ConsistencySummary& summary, const UC::ASU::CacheKey& key,
+void SetExistComparison(ConsistencySummary& summary, const kv::CacheKey& key,
                         bool expectedExists, bool actualExists)
 {
     summary.key = CacheKeyToHex(key);
@@ -143,7 +143,7 @@ Status CheckRetrievedValues(const GeneratedData& expected, const BufferSet& retr
     return Status::Success();
 }
 
-Status ValidateQueryResultForConsistency(const std::vector<UC::ASU::CacheKey>& keys,
+Status ValidateQueryResultForConsistency(const std::vector<kv::CacheKey>& keys,
                                          const CommandResult& result, const std::string& operation)
 {
     if (!result.status.Ok()) { return result.status; }
@@ -177,7 +177,7 @@ Status ConsistencyChecker::CheckRetrieveResult(const GeneratedData& expected,
     return CheckRetrievedValues(expected, retrieved, "retrieve", summary);
 }
 
-Status ConsistencyChecker::CheckDeleteResult(const std::vector<UC::ASU::CacheKey>& keys,
+Status ConsistencyChecker::CheckDeleteResult(const std::vector<kv::CacheKey>& keys,
                                              const CommandResult& deleteResult,
                                              const CommandResult& existResult,
                                              ConsistencySummary& summary) const
@@ -204,7 +204,7 @@ Status ConsistencyChecker::CheckDeleteResult(const std::vector<UC::ASU::CacheKey
     return Status::Success();
 }
 
-Status ConsistencyChecker::CheckExistResult(const std::vector<UC::ASU::CacheKey>& keys,
+Status ConsistencyChecker::CheckExistResult(const std::vector<kv::CacheKey>& keys,
                                             const CommandResult& result, bool expectedExists,
                                             ConsistencySummary& summary) const
 {
@@ -230,4 +230,4 @@ Status ConsistencyChecker::CheckExistResult(const std::vector<UC::ASU::CacheKey>
     return Status::Success();
 }
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

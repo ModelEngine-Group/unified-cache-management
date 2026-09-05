@@ -21,7 +21,7 @@
 #include "utils/config_utils.h"
 #include "router/router.h"
 
-namespace UC::ASU {
+namespace kv::test {
 
 static CacheKey MakeCacheKey(std::string_view text)
 {
@@ -530,9 +530,9 @@ Status QueryAndWait(AsuClient& client, const std::vector<CacheKey>& keys, QueryR
 
 CacheKey FindKeyForAsu(const std::vector<AsuId>& asuIds, AsuId targetAsuId)
 {
-    std::vector<UC::Router::NodeId> nodeIds(asuIds.begin(), asuIds.end());
+    std::vector<kv::NodeId> nodeIds(asuIds.begin(), asuIds.end());
     auto router =
-        UC::Router::CreateRouter(nodeIds, UC::Router::HashFunction{}, UC::Router::RouterConfig{});
+        kv::CreateRouter(nodeIds, kv::HashFunction{}, kv::RouterConfig{});
     for (std::uint32_t index = 1; index < 1000000; ++index) {
         std::uint64_t combined = (static_cast<std::uint64_t>(targetAsuId) << 32) | index;
         CacheKey cacheKey{};
@@ -2137,4 +2137,4 @@ TEST(AsuClientImplTest,
     EXPECT_EQ(state->storeCalls, std::vector<AsuId>({20, 10}));
 }
 
-}  // namespace UC::ASU
+}  // namespace kv::test

@@ -28,7 +28,7 @@
 #include <vector>
 #include "types.h"
 
-namespace UC::ASU {
+namespace kv {
 
 class AsuClient {
 public:
@@ -59,4 +59,4 @@ public:
 // Creates a client wired to the default transport and provider factories.
 std::unique_ptr<AsuClient> CreateAsuClient();
 
-}  // namespace UC::ASU
+}  // namespace kv

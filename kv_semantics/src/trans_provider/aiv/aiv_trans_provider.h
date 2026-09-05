@@ -27,7 +27,7 @@
 #include "aiv_transport.h"
 #include "trans_provider.h"
 
-namespace UC::ASU {
+namespace kv {
 
 class AIVTransProviderAdapter : public TransProvider {
 public:
@@ -130,4 +130,4 @@ private:
     std::unique_ptr<AIVTransport> impl_;
 };
 
-}  // namespace UC::ASU
+}  // namespace kv

@@ -27,29 +27,29 @@
 #include "simu_trans.h"
 #include "types.h"
 
-namespace UC::Trans {
+namespace kv::runtime {
 
-UC::ASU::Status Device::Init() { return UC::ASU::Status::OK(); }
+Status Device::Init() { return Status::OK(); }
 
-UC::ASU::Status Device::Setup(int32_t deviceId)
+Status Device::Setup(int32_t deviceId)
 {
     if (deviceId < 0) {
-        return UC::ASU::Status::Error(UC::ASU::StatusCode::INVALID_ARGUMENT,
-                                      fmt::format("invalid device id({})", deviceId));
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                  fmt::format("invalid device id({})", deviceId));
     }
-    return UC::ASU::Status::OK();
+    return Status::OK();
 }
 
-UC::ASU::Status Device::Reset(int32_t deviceId)
+Status Device::Reset(int32_t deviceId)
 {
     if (deviceId < 0) {
-        return UC::ASU::Status::Error(UC::ASU::StatusCode::INVALID_ARGUMENT,
-                                      fmt::format("invalid device id({})", deviceId));
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                  fmt::format("invalid device id({})", deviceId));
     }
-    return UC::ASU::Status::OK();
+    return Status::OK();
 }
 
-UC::ASU::Status Device::Finalize() { return UC::ASU::Status::OK(); }
+Status Device::Finalize() { return Status::OK(); }
 
 std::unique_ptr<Buffer> Device::MakeBuffer()
 {
@@ -69,4 +69,4 @@ std::unique_ptr<Trans> Device::MakeTrans()
     }
 }
 
-}  // namespace UC::Trans
+}  // namespace kv::runtime

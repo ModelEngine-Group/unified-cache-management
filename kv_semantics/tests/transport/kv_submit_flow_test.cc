@@ -34,7 +34,7 @@
 #include "buffer/buffer_manager.h"
 #include "conn/connection_internal.h"
 
-namespace UC::ASU {
+namespace kv::test {
 namespace {
 
 std::uint32_t g_kernelCount = 0;
@@ -506,4 +506,4 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersFailsAllSentSubBatchesWhenStatusCount
 }
 
 }  // namespace
-}  // namespace UC::ASU
+}  // namespace kv::test

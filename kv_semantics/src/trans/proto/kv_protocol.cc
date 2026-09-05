@@ -25,7 +25,7 @@
 #include <algorithm>
 #include <cstring>
 
-namespace UC::ASU {
+namespace kv {
 
 static void UnpackCqeBase(const std::uint32_t* data, KvResponse& out)
 {
@@ -1268,4 +1268,4 @@ KvProtocol* ProtocolManager::GetProtocol(KvOpcode opcode) const
     return it != protocols_.end() ? it->second.get() : nullptr;
 }
 
-}  // namespace UC::ASU
+}  // namespace kv

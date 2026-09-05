@@ -29,7 +29,7 @@
 #include "parser_common.h"
 #include "logger.h"
 
-namespace UC::ASU {
+namespace kv {
 
 Status ValidateSqeRequestAttrs(const std::unordered_map<std::string, std::string>& attrs)
 {
@@ -161,4 +161,4 @@ Status LoadTransportConfig(const std::string& configPath, TransportConfig& confi
     return ValidateSqeRequestAttrs(config.attrs);
 }
 
-}  // namespace UC::ASU
+}  // namespace kv

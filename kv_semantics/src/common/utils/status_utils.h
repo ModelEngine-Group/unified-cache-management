@@ -32,5 +32,5 @@
     ([&]() {                                                                  \
         std::string asuStatusMessage = (message);                             \
         UC_ERROR("{}", asuStatusMessage);                                     \
-        return ::UC::ASU::Status::Error((code), std::move(asuStatusMessage)); \
+        return Status::Error((code), std::move(asuStatusMessage)); \
     }())

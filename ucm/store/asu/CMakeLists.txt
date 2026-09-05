@@ -4,7 +4,7 @@ target_include_directories(asustore
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/cc
 )
-target_link_libraries(asustore PUBLIC storeintf asu_client infra_logger PRIVATE trans)
+target_link_libraries(asustore PUBLIC storeintf kv_client infra_logger PRIVATE trans)
 set_target_properties(asustore PROPERTIES
     BUILD_WITH_INSTALL_RPATH TRUE
     BUILD_RPATH "$ORIGIN;$ORIGIN/../../transport/kv/asu"

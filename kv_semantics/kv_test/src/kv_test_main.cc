@@ -2,6 +2,6 @@
 
 int main(int argc, char** argv)
 {
-    UC::KVTest::KvTestApp app;
+    kv::bench::KvTestApp app;
     return app.Run(argc, argv);
 }

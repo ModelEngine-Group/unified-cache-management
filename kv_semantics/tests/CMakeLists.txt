@@ -10,9 +10,9 @@ target_compile_definitions(kv.test PRIVATE ASU_BUILD_TESTS)
 target_include_directories(kv.test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/common/utils
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/common/ds
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/common
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/client
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/trans
-    ${UCM_ROOT_DIR}/ucm/shared/infra
 )
 target_link_libraries(kv.test PRIVATE
     kv_client

@@ -33,7 +33,7 @@
 #include "task_context.h"
 #include "task_manager_base.h"
 
-namespace UC::ASU {
+namespace kv {
 
 struct TransportSubBatchContext {
     std::uint16_t cid{0};
@@ -55,4 +55,4 @@ public:
     static void BuildResult(const TransportTask& task, TaskResult& result);
 };
 
-}  // namespace UC::ASU
+}  // namespace kv

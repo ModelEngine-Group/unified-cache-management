@@ -3,13 +3,13 @@
 #include <memory>
 #include "kv_test_types.h"
 
-namespace UC::KVTest {
+namespace kv::bench {
 
-UC::ASU::TaskResult BuildEmptyTaskResult();
+kv::TaskResult BuildEmptyTaskResult();
 
 class AsuClientRunner {
 public:
-    explicit AsuClientRunner(std::unique_ptr<UC::ASU::AsuClient> client);
+    explicit AsuClientRunner(std::unique_ptr<kv::AsuClient> client);
     ~AsuClientRunner();
 
     Status Init(const KvTestConfig& config);
@@ -24,13 +24,13 @@ public:
                  CommandResult& result);
     Status Retrieve(const BufferSet& buffers, SubmitMode submitMode, std::uint64_t timeoutMs,
                     CommandResult& result);
-    Status Delete(const std::vector<UC::ASU::CacheKey>& keys, std::uint64_t timeoutMs,
+    Status Delete(const std::vector<kv::CacheKey>& keys, std::uint64_t timeoutMs,
                   CommandResult& result);
-    Status Exist(const std::vector<UC::ASU::CacheKey>& keys, std::uint64_t timeoutMs,
+    Status Exist(const std::vector<kv::CacheKey>& keys, std::uint64_t timeoutMs,
                  CommandResult& result);
 
 private:
-    std::unique_ptr<UC::ASU::AsuClient> client_;
+    std::unique_ptr<kv::AsuClient> client_;
 };
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

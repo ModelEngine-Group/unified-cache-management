@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-namespace UC::KVTest {
+namespace kv::bench {
 namespace {
 
 Status ParseArguments(std::vector<std::string> arguments, CommandOptions& options)
@@ -46,4 +46,4 @@ TEST(ArgParserTest, BenchCountMustBePositive)
 }
 
 }  // namespace
-}  // namespace UC::KVTest
+}  // namespace kv::bench

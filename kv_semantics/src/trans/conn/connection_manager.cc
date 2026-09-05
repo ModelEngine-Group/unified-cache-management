@@ -27,7 +27,7 @@
 #include "connection_internal.h"
 #include "logger.h"
 
-namespace UC::ASU {
+namespace kv {
 
 ConnectionManager::ConnectionManager(TransProvider& provider, const std::string& localIp,
                                      std::uint32_t timeout, std::uint32_t maxErrorCount)
@@ -342,4 +342,4 @@ std::vector<ServerKvCapabilities> ConnectionManager::GetServerCapabilities()
     return capabilities;
 }
 
-}  // namespace UC::ASU
+}  // namespace kv

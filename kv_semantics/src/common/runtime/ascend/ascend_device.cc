@@ -30,44 +30,44 @@
 #include "ascend_trans.h"
 #include "types.h"
 
-namespace UC::Trans {
+namespace kv::runtime {
 
-UC::ASU::Status Device::Init()
+Status Device::Init()
 {
     const auto ret = aclInit(nullptr);
-    if (ret == ACL_SUCCESS) { return UC::ASU::Status::OK(); }
-    if (ret == ACL_ERROR_REPEAT_INITIALIZE) { return UC::ASU::Status::OK(); }
-    return UC::ASU::Status::Error(UC::ASU::StatusCode::INTERNAL_ERROR, std::to_string(ret));
+    if (ret == ACL_SUCCESS) { return Status::OK(); }
+    if (ret == ACL_ERROR_REPEAT_INITIALIZE) { return Status::OK(); }
+    return Status::Error(StatusCode::INTERNAL_ERROR, std::to_string(ret));
 }
 
-UC::ASU::Status Device::Setup(int32_t deviceId)
+Status Device::Setup(int32_t deviceId)
 {
     if (deviceId < 0) {
-        return UC::ASU::Status::Error(UC::ASU::StatusCode::INVALID_ARGUMENT,
-                                      fmt::format("invalid device id({})", deviceId));
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                  fmt::format("invalid device id({})", deviceId));
     }
     auto ret = aclrtSetDevice(deviceId);
-    if (ret == ACL_SUCCESS) { return UC::ASU::Status::OK(); }
-    return UC::ASU::Status::Error(UC::ASU::StatusCode::INTERNAL_ERROR, std::to_string(ret));
+    if (ret == ACL_SUCCESS) { return Status::OK(); }
+    return Status::Error(StatusCode::INTERNAL_ERROR, std::to_string(ret));
 }
 
-UC::ASU::Status Device::Reset(int32_t deviceId)
+Status Device::Reset(int32_t deviceId)
 {
     if (deviceId < 0) {
-        return UC::ASU::Status::Error(UC::ASU::StatusCode::INVALID_ARGUMENT,
-                                      fmt::format("invalid device id({})", deviceId));
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                  fmt::format("invalid device id({})", deviceId));
     }
     const auto ret = aclrtResetDevice(deviceId);
-    return ret == ACL_SUCCESS ? UC::ASU::Status::OK()
-                              : UC::ASU::Status::Error(UC::ASU::StatusCode::INTERNAL_ERROR,
+    return ret == ACL_SUCCESS ? Status::OK()
+                              : Status::Error(StatusCode::INTERNAL_ERROR,
                                                        std::to_string(ret));
 }
 
-UC::ASU::Status Device::Finalize()
+Status Device::Finalize()
 {
     const auto ret = aclFinalize();
-    return ret == ACL_SUCCESS ? UC::ASU::Status::OK()
-                              : UC::ASU::Status::Error(UC::ASU::StatusCode::INTERNAL_ERROR,
+    return ret == ACL_SUCCESS ? Status::OK()
+                              : Status::Error(StatusCode::INTERNAL_ERROR,
                                                        std::to_string(ret));
 }
 
@@ -89,4 +89,4 @@ std::unique_ptr<Trans> Device::MakeTrans()
     }
 }
 
-}  // namespace UC::Trans
+}  // namespace kv::runtime

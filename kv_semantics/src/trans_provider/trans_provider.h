@@ -6,7 +6,7 @@
 #include <vector>
 #include "types.h"
 
-namespace UC::ASU {
+namespace kv {
 
 struct TransportConfig;
 
@@ -91,4 +91,4 @@ public:
 Status CreateTransProvider(const TransportConfig& config,
                            std::shared_ptr<TransProvider>& transProvider);
 
-}  // namespace UC::ASU
+}  // namespace kv

@@ -27,7 +27,7 @@
 #include <string>
 #include "types.h"
 
-namespace UC::ASU {
+namespace kv {
 
 bool TryParseAsuInfoKey(const std::string& key, AsuId& asuId);
 bool TryGetTransportAttrKey(const std::string& key, std::string& attrKey);
@@ -35,4 +35,4 @@ AsuEndpoint ParseClientViewEndpoint(const std::string& value);
 Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& config);
 void ApplyAsuInfoToTransportConfig(const AsuInfo& info, TransportConfig& config);
 
-}  // namespace UC::ASU
+}  // namespace kv

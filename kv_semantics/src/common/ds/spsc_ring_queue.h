@@ -31,7 +31,7 @@
 #include <memory>
 #include <thread>
 
-namespace UC {
+namespace kv {
 
 template <typename T>
 class SpscRingQueue {
@@ -116,6 +116,6 @@ public:
     }
 };
 
-}  // namespace UC
+}  // namespace kv
 
 #endif

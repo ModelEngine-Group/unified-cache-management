@@ -30,18 +30,18 @@
 #include "trans.h"
 #include "types.h"
 
-namespace UC::Trans {
+namespace kv::runtime {
 
 class Device {
 public:
-    UC::ASU::Status Init();
-    UC::ASU::Status Setup(int32_t deviceId);
-    UC::ASU::Status Reset(int32_t deviceId);
-    UC::ASU::Status Finalize();
+    Status Init();
+    Status Setup(int32_t deviceId);
+    Status Reset(int32_t deviceId);
+    Status Finalize();
     std::unique_ptr<Buffer> MakeBuffer();
     std::unique_ptr<Trans> MakeTrans();
 };
 
-}  // namespace UC::Trans
+}  // namespace kv::runtime
 
 #endif  // KV_SEMANTICS_RUNTIME_DEVICE_H

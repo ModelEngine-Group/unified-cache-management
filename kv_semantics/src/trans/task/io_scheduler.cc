@@ -24,7 +24,7 @@
 #include "io_scheduler.h"
 #include <algorithm>
 
-namespace UC::ASU {
+namespace kv {
 
 namespace {
 
@@ -89,4 +89,4 @@ std::size_t IoScheduler::GetSqeIoNum(AsuOpType opType) const
     }
 }
 
-}  // namespace UC::ASU
+}  // namespace kv

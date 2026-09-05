@@ -32,7 +32,7 @@
 #include "trans_provider.h"
 #include "types.h"
 
-namespace UC::ASU {
+namespace kv {
 
 struct TransportTask;
 
@@ -64,4 +64,4 @@ public:
 
 std::unique_ptr<AsuTransport> CreateAsuTransport();
 
-}  // namespace UC::ASU
+}  // namespace kv

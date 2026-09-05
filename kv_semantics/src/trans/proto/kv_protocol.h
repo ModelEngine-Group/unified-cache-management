@@ -31,7 +31,7 @@
 #include <vector>
 #include "types.h"
 
-namespace UC::ASU {
+namespace kv {
 
 enum class KvOpcode : std::uint8_t {
     Store = 0x1,
@@ -306,4 +306,4 @@ private:
     KvProtocol* GetProtocol(KvOpcode opcode) const;
 };
 
-}  // namespace UC::ASU
+}  // namespace kv

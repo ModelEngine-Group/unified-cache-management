@@ -28,7 +28,7 @@
 #include <string>
 #include <vector>
 
-namespace UC::ASU {
+namespace kv::test {
 namespace {
 
 CacheKey MakeCacheKey(const std::string& text)
@@ -96,4 +96,4 @@ TEST(IoSchedulerTest, SplitByOperationUsesHeldConfig)
 }
 
 }  // namespace
-}  // namespace UC::ASU
+}  // namespace kv::test

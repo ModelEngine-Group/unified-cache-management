@@ -33,7 +33,7 @@
 #include <vector>
 #include "types.h"
 
-namespace UC::ASU {
+namespace kv {
 
 class AsuTransport;
 struct TransportSubBatchContext;
@@ -137,4 +137,4 @@ struct ClientTask {
 
 using ClientTaskPtr = std::shared_ptr<ClientTask>;
 
-}  // namespace UC::ASU
+}  // namespace kv

@@ -7,15 +7,15 @@
 #include <utility>
 #include <vector>
 
-namespace UC::KVTest {
+namespace kv::bench {
 
 namespace {
 
 constexpr int kExitInvalidArgument = 1;
 constexpr const char* kClientLibraryEnv = "KV_TEST_ASU_CLIENT_LIB";
 constexpr const char* kTransportLibraryEnv = "KV_TEST_ASU_TRANSPORT_LIB";
-constexpr const char* kDefaultClientLibrary = "libasu_client.so";
-constexpr const char* kDefaultTransportLibrary = "libasu_transport.so";
+constexpr const char* kDefaultClientLibrary = "libkv_client.so";
+constexpr const char* kDefaultTransportLibrary = "libkv_transport.so";
 
 std::string GetEnvValue(const char* name)
 {
@@ -126,18 +126,18 @@ Status AsuRuntimeProxy::EnsureLoaded()
     return Load(AsuRuntimeLibraryConfig{});
 }
 
-UC::ASU::Status AsuRuntimeProxy::LoadAsuClientConfig(const std::string& configPath,
-                                                     UC::ASU::AsuClientConfig& config)
+kv::Status AsuRuntimeProxy::LoadAsuClientConfig(const std::string& configPath,
+                                                     kv::AsuClientConfig& config)
 {
     auto status = EnsureLoaded();
     if (!status.Ok()) {
-        return UC::ASU::Status::Error(UC::ASU::StatusCode::INVALID_ARGUMENT, status.message);
+        return kv::Status::Error(kv::StatusCode::INVALID_ARGUMENT, status.message);
     }
     return loadClientConfig_(configPath.c_str(), &config);
 }
 
-std::unique_ptr<UC::ASU::AsuClient> AsuRuntimeProxy::CreateAsuClient(
-    const UC::ASU::TransportFactory* transportFactory, Status& status)
+std::unique_ptr<kv::AsuClient> AsuRuntimeProxy::CreateAsuClient(
+    const kv::TransportFactory* transportFactory, Status& status)
 {
     status = EnsureLoaded();
     if (!status.Ok()) { return nullptr; }
@@ -148,7 +148,7 @@ std::unique_ptr<UC::ASU::AsuClient> AsuRuntimeProxy::CreateAsuClient(
     return client;
 }
 
-std::unique_ptr<UC::ASU::AsuTransport> AsuRuntimeProxy::CreateAsuTransport(Status& status)
+std::unique_ptr<kv::AsuTransport> AsuRuntimeProxy::CreateAsuTransport(Status& status)
 {
     status = EnsureLoaded();
     if (!status.Ok()) { return nullptr; }
@@ -159,4 +159,4 @@ std::unique_ptr<UC::ASU::AsuTransport> AsuRuntimeProxy::CreateAsuTransport(Statu
     return transport;
 }
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

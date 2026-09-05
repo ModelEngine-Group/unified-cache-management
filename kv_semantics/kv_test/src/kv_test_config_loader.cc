@@ -8,7 +8,7 @@
 #include <unordered_map>
 #include "asu_runtime_proxy.h"
 
-namespace UC::KVTest {
+namespace kv::bench {
 
 namespace {
 
@@ -130,7 +130,7 @@ bool GetUint32Any(const std::unordered_map<std::string, std::string>& values,
     return false;
 }
 
-Status ToKvTestConfigStatus(const UC::ASU::Status& status)
+Status ToKvTestConfigStatus(const kv::Status& status)
 {
     if (status.ok()) { return Status::Success(); }
     return Status::Error(kExitInvalidArgument,
@@ -282,4 +282,4 @@ Status KvTestConfigLoader::MergeCommandOptions(const CommandOptions& options,
     return Status::Success();
 }
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

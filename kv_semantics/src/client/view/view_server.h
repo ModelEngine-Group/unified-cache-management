@@ -30,7 +30,7 @@
 #include <vector>
 #include "kv_transport.h"
 
-namespace UC::ASU {
+namespace kv {
 
 struct AsuClientConfig;
 
@@ -64,4 +64,4 @@ using ViewServerFactory = std::function<std::shared_ptr<ViewServer>(const AsuCli
 std::shared_ptr<ViewServer> CreateDefaultViewServer(const AsuClientConfig& config);
 GlobalView BuildConfigGlobalView(const AsuClientConfig& config);
 
-}  // namespace UC::ASU
+}  // namespace kv

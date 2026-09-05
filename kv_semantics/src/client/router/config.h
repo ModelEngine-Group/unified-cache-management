@@ -28,7 +28,7 @@
 #include <unordered_map>
 #include "types.h"
 
-namespace UC::Router {
+namespace kv {
 
 constexpr std::uint64_t kDefaultVirtualNodeCount = 128;
 constexpr std::uint64_t kDefaultMaglevTableSize = 65537;
@@ -76,9 +76,9 @@ struct RouterConfig {
 };
 
 // Builds a RouterConfig from a string-keyed attribute map.
-// Returns ::UC::ASU::Status to report invalid attribute values; this cross-module
+// Returns Status to report invalid attribute values; this cross-module
 // dependency on ASU's Status type is a transitional layering wrinkle.
-::UC::ASU::Status BuildRouterConfigFromAttrs(const std::unordered_map<std::string, std::string>& attrs,
+Status BuildRouterConfigFromAttrs(const std::unordered_map<std::string, std::string>& attrs,
                                              RouterConfig& config);
 
-}  // namespace UC::Router
+}  // namespace kv

@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include "runtime/device.h"
 
-namespace UC::ASU {
+namespace kv::test {
 namespace {
 
 class AsuDeviceTestEnvironment final : public ::testing::Environment {
@@ -20,15 +20,15 @@ public:
     }
 
 private:
-    Trans::Device device_;
+    runtime::Device device_;
 };
 
 }  // namespace
-}  // namespace UC::ASU
+}  // namespace kv::test
 
 int main(int argc, char** argv)
 {
     ::testing::InitGoogleTest(&argc, argv);
-    ::testing::AddGlobalTestEnvironment(new UC::ASU::AsuDeviceTestEnvironment);
+    ::testing::AddGlobalTestEnvironment(new kv::test::AsuDeviceTestEnvironment);
     return RUN_ALL_TESTS();
 }

@@ -29,7 +29,7 @@
 #include <unordered_map>
 #include "kv_client_impl.h"
 
-namespace UC::ASU {
+namespace kv::test {
 namespace {
 
 CacheKey MakeCacheKey(std::string_view text)
@@ -239,4 +239,4 @@ TEST(KvClientSmokeTest, ClientAsyncTasksCompleteEndToEnd)
     ASSERT_TRUE(status.ok()) << status.message;
 }
 
-}  // namespace UC::ASU
+}  // namespace kv::test

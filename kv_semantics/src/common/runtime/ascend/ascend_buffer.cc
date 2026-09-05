@@ -29,13 +29,13 @@
 #include "logger.h"
 #include "types.h"
 
-namespace UC::Trans {
+namespace kv::runtime {
 
 namespace {
 
 constexpr std::uintptr_t HOST_REGISTER_PAGE_SIZE = 4096;
 
-UC::ASU::Status RegisterHostBuffer(void* host, size_t size, void** pDevice);
+Status RegisterHostBuffer(void* host, size_t size, void** pDevice);
 void UnregisterHostBuffer(void* host);
 
 void FreeHostMemory(void* host)
@@ -72,23 +72,23 @@ void ReleaseDeviceMappedHostMemory(void* mappedAddress, aclrtDrvMemHandle handle
     }
 }
 
-UC::ASU::Status RegisterHostBuffer(void* host, size_t size, void** pDevice)
+Status RegisterHostBuffer(void* host, size_t size, void** pDevice)
 {
     void* device = nullptr;
 #if ASCEND_SUPPORTS_REGISTER_PIN
     auto ret = aclrtHostRegisterV2(host, size, ACL_HOST_REG_MAPPED | ACL_HOST_REG_PINNED);
     if (ret != ACL_SUCCESS) [[unlikely]] {
-        return UC::ASU::Status::Error(UC::ASU::StatusCode::INTERNAL_ERROR, std::to_string(ret));
+        return Status::Error(StatusCode::INTERNAL_ERROR, std::to_string(ret));
     }
     if (pDevice) { ret = aclrtHostGetDevicePointer(host, &device, 0); }
 #else
     auto ret = aclrtHostRegister(host, size, ACL_HOST_REGISTER_MAPPED, &device);
 #endif
     if (ret != ACL_SUCCESS) [[unlikely]] {
-        return UC::ASU::Status::Error(UC::ASU::StatusCode::INTERNAL_ERROR, std::to_string(ret));
+        return Status::Error(StatusCode::INTERNAL_ERROR, std::to_string(ret));
     }
     if (pDevice) { *pDevice = device; }
-    return UC::ASU::Status::OK();
+    return Status::OK();
 }
 
 void UnregisterHostBuffer(void* host) { aclrtHostUnregister(host); }
@@ -217,12 +217,12 @@ std::shared_ptr<void> AscendBuffer::MakeHostMappedDeviceBuffer(size_t size, void
     });
 }
 
-UC::ASU::Status Memset(void* ptr, std::size_t size, std::int32_t value)
+Status Memset(void* ptr, std::size_t size, std::int32_t value)
 {
     if (aclrtMemset(ptr, size, value, size) != ACL_SUCCESS) {
-        return UC::ASU::Status::Error(UC::ASU::StatusCode::INTERNAL_ERROR, "aclrtMemset failed");
+        return Status::Error(StatusCode::INTERNAL_ERROR, "aclrtMemset failed");
     }
-    return UC::ASU::Status::OK();
+    return Status::OK();
 }
 
-}  // namespace UC::Trans
+}  // namespace kv::runtime

@@ -27,7 +27,7 @@
 #include <string>
 #include "status_utils.h"
 
-namespace UC::ASU {
+namespace kv {
 namespace {
 
 std::string NormalizeAttrValue(std::string value)
@@ -87,28 +87,28 @@ Status GetBoolAttr(const std::unordered_map<std::string, std::string>& attrs,
                                 "invalid router config " + key + "=" + text);
 }
 
-UC::Router::RouterType ParseRouterType(const std::string& value, UC::Router::RouterType fallback)
+kv::RouterType ParseRouterType(const std::string& value, kv::RouterType fallback)
 {
     const auto type = NormalizeAttrValue(value);
     if (type == "RING_HASH" || type == "RING_HASH_FULL_SPREAD") {
-        return UC::Router::RouterType::RING_HASH_FULL_SPREAD;
+        return kv::RouterType::RING_HASH_FULL_SPREAD;
     }
     if (type == "MAGLEV" || type == "MAGLEV_FULL_SPREAD") {
-        return UC::Router::RouterType::MAGLEV_FULL_SPREAD;
+        return kv::RouterType::MAGLEV_FULL_SPREAD;
     }
     if (type == "CONTIGUOUS_BLOCK_AFFINITY") {
-        return UC::Router::RouterType::CONTIGUOUS_BLOCK_AFFINITY;
+        return kv::RouterType::CONTIGUOUS_BLOCK_AFFINITY;
     }
-    if (type == "BATCH_TOPK_AFFINITY") { return UC::Router::RouterType::BATCH_TOPK_AFFINITY; }
+    if (type == "BATCH_TOPK_AFFINITY") { return kv::RouterType::BATCH_TOPK_AFFINITY; }
     return fallback;
 }
 
 }  // namespace
 
 Status BuildRouterConfigFromAttrs(const std::unordered_map<std::string, std::string>& attrs,
-                                  UC::Router::RouterConfig& config)
+                                  kv::RouterConfig& config)
 {
-    config = UC::Router::RouterConfig{};
+    config = kv::RouterConfig{};
 
     std::string type;
     if (GetAttr(attrs, "hash_table.type", type)) {
@@ -141,4 +141,4 @@ Status BuildRouterConfigFromAttrs(const std::unordered_map<std::string, std::str
     return Status::OK();
 }
 
-}  // namespace UC::ASU
+}  // namespace kv

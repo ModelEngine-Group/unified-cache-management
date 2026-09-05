@@ -1,6 +1,6 @@
 ﻿#include "hcomm_config_adapter.h"
 
-namespace UC::KVTest {
+namespace kv::bench {
 
 namespace {
 
@@ -8,17 +8,17 @@ constexpr int kExitInvalidArgument = 1;
 
 }  // namespace
 
-Status HcommConfigAdapter::ResolveProtocol(UC::ASU::Protocol protocol, const KvTestConfig& config,
+Status HcommConfigAdapter::ResolveProtocol(kv::Protocol protocol, const KvTestConfig& config,
                                            HcommProtocol& hcommProtocol) const
 {
     switch (protocol) {
-        case UC::ASU::Protocol::UB:
+        case kv::Protocol::UB:
             hcommProtocol = config.hcommProtocolMapping.ub;
             return Status::Success();
-        case UC::ASU::Protocol::ROCE:
+        case kv::Protocol::ROCE:
             hcommProtocol = config.hcommProtocolMapping.roce;
             return Status::Success();
-        case UC::ASU::Protocol::TCP:
+        case kv::Protocol::TCP:
             // TODO(#6): Confirm whether ASU TCP should map to Hcomm COMM_PROTOCOL_PCIE.
             hcommProtocol = config.hcommProtocolMapping.tcp;
             return Status::Success();
@@ -79,4 +79,4 @@ Status HcommConfigAdapter::ValidateChannelSource(const KvTestConfig& config) con
     return Status::Success();
 }
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

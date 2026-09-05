@@ -28,7 +28,7 @@
 #include <gtest/gtest.h>
 #include <string_view>
 
-namespace UC::ASU {
+namespace kv::test {
 namespace {
 
 CacheKey MakeCacheKey(std::string_view text)
@@ -2561,4 +2561,4 @@ TEST_F(KvProtocolVerifyTest, KeepAliveRejectsRflagFalseWithResponseMrKey)
 }
 
 }  // namespace
-}  // namespace UC::ASU
+}  // namespace kv::test

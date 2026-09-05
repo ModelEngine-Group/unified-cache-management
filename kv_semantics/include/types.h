@@ -31,7 +31,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace UC::ASU {
+namespace kv {
 
 using TaskId = std::uint64_t;
 using MRHandle = std::uint64_t;
@@ -215,4 +215,4 @@ struct AsuClientConfig {
     std::unordered_map<std::string, std::string> attrs;
 };
 
-}  // namespace UC::ASU
+}  // namespace kv

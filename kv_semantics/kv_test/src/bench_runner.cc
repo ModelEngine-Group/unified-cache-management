@@ -21,7 +21,7 @@
 #include "kv_test_config_helpers.h"
 #include "payload_buffer_runtime.h"
 
-namespace UC::KVTest {
+namespace kv::bench {
 
 std::string FormatMiBPerSec(double bytesPerSec)
 {
@@ -336,7 +336,7 @@ Status PrepareBenchBuffers(BenchBufferSlot& slot, std::uint64_t begin, std::size
                       buffers.ownedBuffers[index].size(), logicalDeviceId)
                 : MakeHostRegion(buffers.ownedBuffers[index]);
         if (!useDeviceBuffers) { buffers.regions.emplace_back(region); }
-        UC::ASU::CacheKey key{};
+        kv::CacheKey key{};
         auto status =
             StringToCacheKey(keyPrefix + std::to_string(keyIndex), "bench generated", key);
         if (!status.Ok()) { return status; }
@@ -730,4 +730,4 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
     return result.status;
 }
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

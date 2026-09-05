@@ -13,7 +13,7 @@
 #include <unordered_set>
 #include "proto/kv_protocol.h"
 
-namespace UC::ASU {
+namespace kv::test {
 namespace {
 
 std::string FakeBackendKeyFileName(const CacheKey& key)
@@ -182,4 +182,4 @@ TEST(FakeTransProviderTest, ExistHonorsSeekControl)
 }
 
 }  // namespace
-}  // namespace UC::ASU
+}  // namespace kv::test

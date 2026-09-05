@@ -3,12 +3,12 @@
 #include <unordered_set>
 #include "kv_client.h"
 
-namespace UC::KVTest {
+namespace kv::bench {
 
-UC::ASU::TaskResult BuildEmptyTaskResult()
+kv::TaskResult BuildEmptyTaskResult()
 {
-    UC::ASU::TaskResult result;
-    result.status = UC::ASU::Status::OK();
+    kv::TaskResult result;
+    result.status = kv::Status::OK();
     return result;
 }
 
@@ -17,16 +17,16 @@ namespace {
 constexpr int kExitInvalidArgument = 1;
 constexpr int kExitAsuStatusBase = 100;
 
-Status ToKvTestStatus(const UC::ASU::Status& status, const std::string& operation)
+Status ToKvTestStatus(const kv::Status& status, const std::string& operation)
 {
     if (status.ok()) { return Status::Success(); }
     return Status::Error(kExitAsuStatusBase + static_cast<int>(status.code),
                          operation + " failed: " + status.message);
 }
 
-UC::ASU::TaskResult BuildFailedTaskResult(const UC::ASU::Status& status, std::size_t entryCount)
+kv::TaskResult BuildFailedTaskResult(const kv::Status& status, std::size_t entryCount)
 {
-    UC::ASU::TaskResult result;
+    kv::TaskResult result;
     result.status = status;
     result.entryStatus.assign(entryCount, status);
     return result;
@@ -44,15 +44,15 @@ Status FinalizeQueryResult(CommandResult& result)
     return result.status;
 }
 
-using EntrySubmitMethod = UC::ASU::Status (UC::ASU::AsuClient::*)(
-    const std::vector<UC::ASU::KVBuffer>&, UC::ASU::TaskId&);
+using EntrySubmitMethod = kv::Status (kv::AsuClient::*)(
+    const std::vector<kv::KVBuffer>&, kv::TaskId&);
 
-Status SubmitAndWaitEntries(UC::ASU::AsuClient& client,
-                            const std::vector<UC::ASU::KVBuffer>& entries,
+Status SubmitAndWaitEntries(kv::AsuClient& client,
+                            const std::vector<kv::KVBuffer>& entries,
                             EntrySubmitMethod submitMethod, std::uint64_t timeoutMs,
                             const std::string& operation, CommandResult& result)
 {
-    UC::ASU::TaskId taskId{UC::ASU::kInvalidTaskId};
+    kv::TaskId taskId{kv::kInvalidTaskId};
     auto status = (client.*submitMethod)(entries, taskId);
     if (!status.ok()) {
         result.taskResult = BuildFailedTaskResult(status, entries.size());
@@ -69,10 +69,10 @@ Status SubmitAndWaitEntries(UC::ASU::AsuClient& client,
     return FinalizeTaskResult(result);
 }
 
-Status SubmitAndWaitKeys(UC::ASU::AsuClient& client, const std::vector<UC::ASU::CacheKey>& keys,
+Status SubmitAndWaitKeys(kv::AsuClient& client, const std::vector<kv::CacheKey>& keys,
                          std::uint64_t timeoutMs, CommandResult& result)
 {
-    UC::ASU::TaskId taskId{UC::ASU::kInvalidTaskId};
+    kv::TaskId taskId{kv::kInvalidTaskId};
     auto status = client.DeleteAsync(keys, taskId);
     if (!status.ok()) {
         result.taskResult = BuildFailedTaskResult(status, keys.size());
@@ -89,17 +89,17 @@ Status SubmitAndWaitKeys(UC::ASU::AsuClient& client, const std::vector<UC::ASU::
     return FinalizeTaskResult(result);
 }
 
-Status SubmitEntriesOneByOne(UC::ASU::AsuClient& client,
-                             const std::vector<UC::ASU::KVBuffer>& entries,
+Status SubmitEntriesOneByOne(kv::AsuClient& client,
+                             const std::vector<kv::KVBuffer>& entries,
                              EntrySubmitMethod submitMethod, std::uint64_t timeoutMs,
                              const std::string& operation, CommandResult& result)
 {
     result.taskResult = BuildEmptyTaskResult();
     result.taskResult.entryStatus.reserve(entries.size());
 
-    UC::ASU::Status firstFailure = UC::ASU::Status::OK();
+    kv::Status firstFailure = kv::Status::OK();
     for (const auto& entry : entries) {
-        std::vector<UC::ASU::KVBuffer> singleEntry{entry};
+        std::vector<kv::KVBuffer> singleEntry{entry};
         CommandResult singleResult;
         auto status = SubmitAndWaitEntries(client, singleEntry, submitMethod, timeoutMs, operation,
                                            singleResult);
@@ -112,14 +112,14 @@ Status SubmitEntriesOneByOne(UC::ASU::AsuClient& client,
         if (!status.Ok() && firstFailure.ok()) {
             firstFailure =
                 singleResult.taskResult.status.ok()
-                    ? UC::ASU::Status::Error(UC::ASU::StatusCode::INTERNAL_ERROR, status.message)
+                    ? kv::Status::Error(kv::StatusCode::INTERNAL_ERROR, status.message)
                     : singleResult.taskResult.status;
         }
     }
 
     if (!firstFailure.ok()) {
-        result.taskResult.status = UC::ASU::Status::Error(
-            UC::ASU::StatusCode::PARTIAL_FAILED, operation + " failed for one or more entries");
+        result.taskResult.status = kv::Status::Error(
+            kv::StatusCode::PARTIAL_FAILED, operation + " failed for one or more entries");
         return FinalizeTaskResult(result);
     }
 
@@ -128,7 +128,7 @@ Status SubmitEntriesOneByOne(UC::ASU::AsuClient& client,
 
 }  // namespace
 
-AsuClientRunner::AsuClientRunner(std::unique_ptr<UC::ASU::AsuClient> client)
+AsuClientRunner::AsuClientRunner(std::unique_ptr<kv::AsuClient> client)
     : client_(std::move(client))
 {
 }
@@ -191,11 +191,11 @@ Status AsuClientRunner::UnregisterBuffers(const BufferSet& buffers)
 {
     if (client_ == nullptr) { return Status::Success(); }
 
-    std::vector<UC::ASU::MRHandle> handles;
+    std::vector<kv::MRHandle> handles;
     handles.reserve(buffers.registeredRegions.size());
-    std::unordered_set<UC::ASU::MRHandle> seen;
+    std::unordered_set<kv::MRHandle> seen;
     for (const auto& registeredRegion : buffers.registeredRegions) {
-        if (registeredRegion.handle != UC::ASU::kInvalidMRHandle &&
+        if (registeredRegion.handle != kv::kInvalidMRHandle &&
             seen.insert(registeredRegion.handle).second) {
             handles.push_back(registeredRegion.handle);
         }
@@ -216,11 +216,11 @@ Status AsuClientRunner::Store(const BufferSet& buffers, SubmitMode submitMode,
     }
 
     if (submitMode == SubmitMode::SINGLE_ENTRY_PER_CALL) {
-        return SubmitEntriesOneByOne(*client_, buffers.entries, &UC::ASU::AsuClient::StoreAsync,
+        return SubmitEntriesOneByOne(*client_, buffers.entries, &kv::AsuClient::StoreAsync,
                                      timeoutMs, "store", result);
     }
 
-    return SubmitAndWaitEntries(*client_, buffers.entries, &UC::ASU::AsuClient::BatchStoreAsync,
+    return SubmitAndWaitEntries(*client_, buffers.entries, &kv::AsuClient::BatchStoreAsync,
                                 timeoutMs, "store", result);
 }
 
@@ -234,15 +234,15 @@ Status AsuClientRunner::Retrieve(const BufferSet& buffers, SubmitMode submitMode
     }
 
     if (submitMode == SubmitMode::SINGLE_ENTRY_PER_CALL) {
-        return SubmitEntriesOneByOne(*client_, buffers.entries, &UC::ASU::AsuClient::LoadAsync,
+        return SubmitEntriesOneByOne(*client_, buffers.entries, &kv::AsuClient::LoadAsync,
                                      timeoutMs, "retrieve", result);
     }
 
-    return SubmitAndWaitEntries(*client_, buffers.entries, &UC::ASU::AsuClient::BatchLoadAsync,
+    return SubmitAndWaitEntries(*client_, buffers.entries, &kv::AsuClient::BatchLoadAsync,
                                 timeoutMs, "retrieve", result);
 }
 
-Status AsuClientRunner::Delete(const std::vector<UC::ASU::CacheKey>& keys, std::uint64_t timeoutMs,
+Status AsuClientRunner::Delete(const std::vector<kv::CacheKey>& keys, std::uint64_t timeoutMs,
                                CommandResult& result)
 {
     if (client_ == nullptr) { return Status::Error(kExitInvalidArgument, "asu client is null"); }
@@ -254,20 +254,20 @@ Status AsuClientRunner::Delete(const std::vector<UC::ASU::CacheKey>& keys, std::
     return SubmitAndWaitKeys(*client_, keys, timeoutMs, result);
 }
 
-Status AsuClientRunner::Exist(const std::vector<UC::ASU::CacheKey>& keys, std::uint64_t timeoutMs,
+Status AsuClientRunner::Exist(const std::vector<kv::CacheKey>& keys, std::uint64_t timeoutMs,
                               CommandResult& result)
 {
     if (client_ == nullptr) { return Status::Error(kExitInvalidArgument, "asu client is null"); }
 
-    UC::ASU::TaskId taskId = UC::ASU::kInvalidTaskId;
+    kv::TaskId taskId = kv::kInvalidTaskId;
     auto status = client_->QueryAsync(keys, taskId);
     if (status.ok()) {
-        UC::ASU::TaskResult taskResult;
+        kv::TaskResult taskResult;
         status = client_->Wait(taskId, timeoutMs, taskResult);
         if (taskResult.queryResult.has_value()) {
             result.queryResult = std::move(*taskResult.queryResult);
         } else if (status.ok()) {
-            status = UC::ASU::Status::Error(UC::ASU::StatusCode::INTERNAL_ERROR,
+            status = kv::Status::Error(kv::StatusCode::INTERNAL_ERROR,
                                             "client query result is missing");
         }
     }
@@ -279,4 +279,4 @@ Status AsuClientRunner::Exist(const std::vector<UC::ASU::CacheKey>& keys, std::u
     return FinalizeQueryResult(result);
 }
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

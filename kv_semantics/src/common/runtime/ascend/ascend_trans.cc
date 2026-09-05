@@ -27,58 +27,58 @@
 #include <string>
 #include "types.h"
 
-namespace UC::Trans {
+namespace kv::runtime {
 
-UC::ASU::Status AscendTrans::DeviceToHost(void* device, void* host, size_t size)
+Status AscendTrans::DeviceToHost(void* device, void* host, size_t size)
 {
     auto ret = aclrtMemcpy(host, size, device, size, ACL_MEMCPY_DEVICE_TO_HOST);
-    if (ret == ACL_SUCCESS) { return UC::ASU::Status::OK(); }
-    return UC::ASU::Status::Error(UC::ASU::StatusCode::INTERNAL_ERROR, std::to_string(ret));
+    if (ret == ACL_SUCCESS) { return Status::OK(); }
+    return Status::Error(StatusCode::INTERNAL_ERROR, std::to_string(ret));
 }
 
-UC::ASU::Status AscendTrans::DeviceToHost(void* device[], void* host[], size_t size, size_t number)
+Status AscendTrans::DeviceToHost(void* device[], void* host[], size_t size, size_t number)
 {
     for (size_t i = 0; i < number; i++) {
         auto s = DeviceToHost(device[i], host[i], size);
         if (!s.ok()) { return s; }
     }
-    return UC::ASU::Status::OK();
+    return Status::OK();
 }
 
-UC::ASU::Status AscendTrans::DeviceToHost(void* device[], void* host, size_t size, size_t number)
+Status AscendTrans::DeviceToHost(void* device[], void* host, size_t size, size_t number)
 {
     for (size_t i = 0; i < number; i++) {
         auto pHost = static_cast<void*>(static_cast<int8_t*>(host) + size * i);
         auto s = DeviceToHost(device[i], pHost, size);
         if (!s.ok()) { return s; }
     }
-    return UC::ASU::Status::OK();
+    return Status::OK();
 }
 
-UC::ASU::Status AscendTrans::HostToDevice(void* host, void* device, size_t size)
+Status AscendTrans::HostToDevice(void* host, void* device, size_t size)
 {
     auto ret = aclrtMemcpy(device, size, host, size, ACL_MEMCPY_HOST_TO_DEVICE);
-    if (ret == ACL_SUCCESS) { return UC::ASU::Status::OK(); }
-    return UC::ASU::Status::Error(UC::ASU::StatusCode::INTERNAL_ERROR, std::to_string(ret));
+    if (ret == ACL_SUCCESS) { return Status::OK(); }
+    return Status::Error(StatusCode::INTERNAL_ERROR, std::to_string(ret));
 }
 
-UC::ASU::Status AscendTrans::HostToDevice(void* host[], void* device[], size_t size, size_t number)
+Status AscendTrans::HostToDevice(void* host[], void* device[], size_t size, size_t number)
 {
     for (size_t i = 0; i < number; i++) {
         auto s = HostToDevice(host[i], device[i], size);
         if (!s.ok()) { return s; }
     }
-    return UC::ASU::Status::OK();
+    return Status::OK();
 }
 
-UC::ASU::Status AscendTrans::HostToDevice(void* host, void* device[], size_t size, size_t number)
+Status AscendTrans::HostToDevice(void* host, void* device[], size_t size, size_t number)
 {
     for (size_t i = 0; i < number; i++) {
         auto pHost = static_cast<void*>(static_cast<int8_t*>(host) + size * i);
         auto s = HostToDevice(pHost, device[i], size);
         if (!s.ok()) { return s; }
     }
-    return UC::ASU::Status::OK();
+    return Status::OK();
 }
 
-}  // namespace UC::Trans
+}  // namespace kv::runtime

@@ -27,7 +27,7 @@
 #include <sstream>
 #include <utility>
 
-namespace UC::ASU {
+namespace kv {
 namespace {
 
 void SetEndpointAttr(AsuEndpoint& endpoint, const std::string& key, const std::string& value)
@@ -267,4 +267,4 @@ AsuEndpoint ParseClientViewEndpoint(const std::string& value)
     return endpoint;
 }
 
-}  // namespace UC::ASU
+}  // namespace kv

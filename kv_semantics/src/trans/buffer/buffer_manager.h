@@ -31,7 +31,7 @@
 #include "types.h"
 #include "index_pool.h"
 
-namespace UC::ASU {
+namespace kv {
 
 struct ScatterGatherEntry {
     // Local-side address. CPU-accessible for HOST/HOST_PINNED and a local
@@ -90,4 +90,4 @@ private:
     std::uint32_t tokenId_{0};
 };
 
-}  // namespace UC::ASU
+}  // namespace kv

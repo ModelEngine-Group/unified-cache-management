@@ -31,7 +31,7 @@
 #include <vector>
 #include "../../include/types.h"
 
-namespace UC::ASU {
+namespace kv {
 
 inline std::string_view CacheKeyView(const CacheKey& key)
 {
@@ -71,4 +71,4 @@ struct ServerKvCapabilities {
 
 using TaskCompletionCallback = std::function<void(TaskResult)>;
 
-}  // namespace UC::ASU
+}  // namespace kv

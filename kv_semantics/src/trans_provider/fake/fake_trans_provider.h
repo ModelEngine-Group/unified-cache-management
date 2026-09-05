@@ -35,7 +35,7 @@
 #include "runtime/device.h"
 #include "runtime/trans.h"
 
-namespace UC::ASU {
+namespace kv {
 
 struct FakeTransProviderConfig {
     std::string storePath{"./asu-fake-backend-store"};
@@ -107,8 +107,8 @@ private:
                                       std::vector<std::uint32_t>& completion);
 
     FakeTransProviderConfig config_;
-    Trans::Device device_;
-    std::unique_ptr<Trans::Trans> stream_;
+    runtime::Device device_;
+    std::unique_ptr<runtime::Trans> trans_;
     std::atomic<std::uintptr_t> nextMrHandle_{1};
     std::mutex registeredMemoryMu_;
     std::unordered_map<MRHandle, RegisteredMemory> registeredMemories_;
@@ -117,4 +117,4 @@ private:
 
 FakeTransProviderConfig MakeFakeTransProviderConfig(const TransportConfig& config);
 
-}  // namespace UC::ASU
+}  // namespace kv

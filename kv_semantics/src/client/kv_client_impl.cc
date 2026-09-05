@@ -32,7 +32,7 @@
 #include "logger/logger.h"
 #include "router/router.h"
 
-namespace UC::ASU {
+namespace kv {
 
 constexpr std::uint32_t kMaxShutdownDrainAttempts = 64;
 
@@ -524,16 +524,16 @@ Status AsuClientImpl::BuildSnapshot(const GlobalView& view,
         nextSnapshot->transports.emplace(asuId, std::move(transport));
     }
 
-    UC::Router::RouterConfig routerConfig;
+    kv::RouterConfig routerConfig;
     auto status = BuildRouterConfigFromAttrs(config_.attrs, routerConfig);
     if (!status.ok()) {
         UC_ERROR("BuildSnapshot build router config failed: {}", status.message);
         return status;
     }
 
-    std::vector<UC::Router::NodeId> nodeIds(asuIds.begin(), asuIds.end());
+    std::vector<kv::NodeId> nodeIds(asuIds.begin(), asuIds.end());
     nextSnapshot->router =
-        UC::Router::CreateRouter(nodeIds, UC::Router::HashFunction{}, routerConfig);
+        kv::CreateRouter(nodeIds, kv::HashFunction{}, routerConfig);
     nextSnapshot->asuIds = std::move(asuIds);
     snapshot = std::move(nextSnapshot);
     return Status::OK();
@@ -794,7 +794,7 @@ std::vector<AsuId> AsuClientImpl::GetSortedAsuIds(const GlobalView& view)
     std::vector<AsuId> asuIds;
     asuIds.reserve(view.asuMap.size());
     for (const auto& item : view.asuMap) {
-        if (item.first != static_cast<AsuId>(UC::Router::kInvalidNodeId)) {
+        if (item.first != static_cast<AsuId>(kv::kInvalidNodeId)) {
             asuIds.emplace_back(item.first);
         }
     }
@@ -846,4 +846,4 @@ extern "C" Status UcmAsuLoadAsuClientConfig(const char* configPath, AsuClientCon
     return LoadAsuClientConfig(configPath, *config);
 }
 
-}  // namespace UC::ASU
+}  // namespace kv

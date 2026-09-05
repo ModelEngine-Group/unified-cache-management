@@ -40,7 +40,7 @@
 #include <vector>
 #include "kv_client_impl.h"
 
-namespace UC::ASU {
+namespace kv::test {
 namespace {
 
 CacheKey MakeCacheKey(std::string_view text)
@@ -906,4 +906,4 @@ TEST(KvClientE2EMetricsTest, DiskMembershipChangesRefreshAndContinueWorkload)
     EXPECT_TRUE(status.ok()) << status.message;
 }
 
-}  // namespace UC::ASU
+}  // namespace kv::test

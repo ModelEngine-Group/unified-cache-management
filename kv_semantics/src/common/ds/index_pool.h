@@ -29,7 +29,7 @@
 #include <limits>
 #include <vector>
 
-namespace UC {
+namespace kv {
 
 class IndexPool {
 public:
@@ -89,6 +89,6 @@ private:
     alignas(64) std::atomic<Pointer> pointer_;
 };
 
-}  // namespace UC
+}  // namespace kv
 
 #endif

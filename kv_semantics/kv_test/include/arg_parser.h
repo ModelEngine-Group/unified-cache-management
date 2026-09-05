@@ -2,7 +2,7 @@
 
 #include "kv_test_types.h"
 
-namespace UC::KVTest {
+namespace kv::bench {
 
 std::string CommandTypeName(CommandType command);
 std::string BenchOpTypeName(BenchOpType op);
@@ -12,4 +12,4 @@ public:
     Status Parse(int argc, char** argv, CommandOptions& options) const;
 };
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

@@ -30,7 +30,7 @@
 #include "logger/logger.h"
 #include "router/router.h"
 
-namespace UC::ASU {
+namespace kv {
 
 namespace {
 
@@ -48,17 +48,17 @@ const char* AsuOpTypeName(AsuOpType opType)
     }
 }
 
-std::vector<UC::Router::CacheKey> ToRouterKeys(const std::vector<CacheKey>& keys)
+std::vector<kv::CacheKey> ToRouterKeys(const std::vector<CacheKey>& keys)
 {
-    std::vector<UC::Router::CacheKey> routerKeys;
+    std::vector<kv::CacheKey> routerKeys;
     routerKeys.reserve(keys.size());
     for (const auto& key : keys) { routerKeys.emplace_back(std::string(CacheKeyView(key))); }
     return routerKeys;
 }
 
-std::vector<UC::Router::CacheKey> ExtractEntryKeys(const std::vector<KVBuffer>& entries)
+std::vector<kv::CacheKey> ExtractEntryKeys(const std::vector<KVBuffer>& entries)
 {
-    std::vector<UC::Router::CacheKey> keys;
+    std::vector<kv::CacheKey> keys;
     keys.reserve(entries.size());
     for (const auto& entry : entries) { keys.emplace_back(std::string(CacheKeyView(entry.key))); }
     return keys;
@@ -351,4 +351,4 @@ Status ClientTaskManager::WaitContext(const ClientTaskPtr& task, std::uint64_t w
     return result.status;
 }
 
-}  // namespace UC::ASU
+}  // namespace kv

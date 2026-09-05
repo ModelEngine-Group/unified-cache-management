@@ -29,7 +29,7 @@
 #include "kv_transport.h"
 #include "trans_task_manager.h"
 
-namespace UC::ASU {
+namespace kv {
 
 class IoScheduler {
 public:
@@ -57,4 +57,4 @@ private:
     std::size_t queryIoNum_{256};
 };
 
-}  // namespace UC::ASU
+}  // namespace kv

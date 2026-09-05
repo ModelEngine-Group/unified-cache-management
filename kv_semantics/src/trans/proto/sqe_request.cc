@@ -35,7 +35,7 @@
 #include "logger.h"
 #include "task/trans_task_executor.h"
 
-namespace UC::ASU {
+namespace kv {
 
 namespace {
 
@@ -414,4 +414,4 @@ Status TransportTaskExecutor::SubmitKeepAliveRequest(TransportSubBatchContext& s
                                subBatchContext);
 }
 
-}  // namespace UC::ASU
+}  // namespace kv

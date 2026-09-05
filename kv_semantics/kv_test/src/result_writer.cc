@@ -8,7 +8,7 @@
 #include "arg_parser.h"
 #include "consistency_checker.h"
 
-namespace UC::KVTest {
+namespace kv::bench {
 
 namespace {
 
@@ -93,14 +93,14 @@ std::string FormatLocalTimestamp(const char* format)
 std::string ResultStatusName(const CommandResult& result)
 {
     if (!result.status.Ok()) { return "failed"; }
-    if (result.taskResult.status.code == UC::ASU::StatusCode::PARTIAL_FAILED) {
+    if (result.taskResult.status.code == kv::StatusCode::PARTIAL_FAILED) {
         return "partial_failed";
     }
     if (!result.taskResult.status.ok()) { return "failed"; }
 
     const auto failedEntry =
         std::find_if(result.taskResult.entryStatus.begin(), result.taskResult.entryStatus.end(),
-                     [](const UC::ASU::Status& status) { return !status.ok(); });
+                     [](const kv::Status& status) { return !status.ok(); });
     return failedEntry == result.taskResult.entryStatus.end() ? "success" : "partial_failed";
 }
 
@@ -619,4 +619,4 @@ Status ResultWriter::RollRealtimeFileIfNeeded(std::uint64_t incomingBytes)
     return OpenRealtimeFile();
 }
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

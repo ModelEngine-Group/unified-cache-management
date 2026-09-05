@@ -29,7 +29,7 @@
 #include "parser_common.h"
 #include "status_utils.h"
 
-namespace UC::ASU {
+namespace kv {
 namespace {
 
 AsuInfo ExtractAsuInfo(const TransportConfig& config)
@@ -172,4 +172,4 @@ std::shared_ptr<ViewServer> CreateDefaultViewServer(const AsuClientConfig& confi
     return std::make_shared<ConfigFileViewServer>(config.viewServiceAddrs.front());
 }
 
-}  // namespace UC::ASU
+}  // namespace kv

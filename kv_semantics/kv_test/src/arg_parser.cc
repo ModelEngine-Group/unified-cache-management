@@ -5,7 +5,7 @@
 #include <sstream>
 #include <unordered_map>
 
-namespace UC::KVTest {
+namespace kv::bench {
 
 std::string CommandTypeName(CommandType command)
 {
@@ -399,4 +399,4 @@ Status ArgParser::Parse(int argc, char** argv, CommandOptions& options) const
     return Status::Success();
 }
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

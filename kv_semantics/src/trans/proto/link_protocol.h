@@ -29,7 +29,7 @@
 #include <vector>
 #include "types.h"
 
-namespace UC::ASU {
+namespace kv {
 
 constexpr std::uint32_t kMsgHeaderSize = 16;
 constexpr std::uint32_t kMsgVersion = 1;
@@ -160,4 +160,4 @@ private:
     std::vector<std::uint8_t> buffer;
 };
 
-}  // namespace UC::ASU
+}  // namespace kv

@@ -10,7 +10,7 @@
 #include "kv_test_config_loader.h"
 #include "result_writer.h"
 
-namespace UC::KVTest {
+namespace kv::bench {
 
 class KvTestApp {
 public:
@@ -40,4 +40,4 @@ private:
     ResultWriter resultWriter_;
 };
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

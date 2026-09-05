@@ -33,7 +33,7 @@
 #include "types.h"
 #include "connection_manager.h"
 
-namespace UC::ASU {
+namespace kv {
 
 enum class ChannelState : std::uint8_t {
     ACTIVE,
@@ -102,4 +102,4 @@ private:
     std::atomic<std::uint32_t> nextChannelId_{0};
 };
 
-}  // namespace UC::ASU
+}  // namespace kv

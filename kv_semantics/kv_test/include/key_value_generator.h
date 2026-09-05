@@ -2,10 +2,10 @@
 
 #include "kv_test_types.h"
 
-namespace UC::KVTest {
+namespace kv::bench {
 
 Status StringToCacheKey(const std::string& value, const std::string& source,
-                        UC::ASU::CacheKey& key);
+                        kv::CacheKey& key);
 Status ValidateGeneratedData(const GeneratedData& data, const std::string& operation);
 
 class KeyValueGenerator {
@@ -17,4 +17,4 @@ public:
     Status Digest(const std::vector<std::uint8_t>& value, std::string& digest) const;
 };
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

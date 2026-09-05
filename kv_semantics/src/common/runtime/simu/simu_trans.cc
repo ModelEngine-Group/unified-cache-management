@@ -26,24 +26,24 @@
 #include <cstring>
 #include "types.h"
 
-namespace UC::Trans {
+namespace kv::runtime {
 
-UC::ASU::Status SimuTrans::DeviceToHost(void* device, void* host, size_t size)
+Status SimuTrans::DeviceToHost(void* device, void* host, size_t size)
 {
     std::memcpy(host, device, size);
-    return UC::ASU::Status::OK();
+    return Status::OK();
 }
 
-UC::ASU::Status SimuTrans::DeviceToHost(void* device[], void* host[], size_t size, size_t number)
+Status SimuTrans::DeviceToHost(void* device[], void* host[], size_t size, size_t number)
 {
     for (size_t i = 0; i < number; i++) {
         auto s = this->DeviceToHost(device[i], host[i], size);
         if (!s.ok()) { return s; }
     }
-    return UC::ASU::Status::OK();
+    return Status::OK();
 }
 
-UC::ASU::Status SimuTrans::DeviceToHost(void* device[], void* host, size_t size, size_t number)
+Status SimuTrans::DeviceToHost(void* device[], void* host, size_t size, size_t number)
 {
     for (size_t i = 0; i < number; i++) {
         auto pDevice = device[i];
@@ -51,32 +51,32 @@ UC::ASU::Status SimuTrans::DeviceToHost(void* device[], void* host, size_t size,
         auto s = this->DeviceToHost(pDevice, pHost, size);
         if (!s.ok()) { return s; }
     }
-    return UC::ASU::Status::OK();
+    return Status::OK();
 }
 
-UC::ASU::Status SimuTrans::HostToDevice(void* host, void* device, size_t size)
+Status SimuTrans::HostToDevice(void* host, void* device, size_t size)
 {
     std::memcpy(device, host, size);
-    return UC::ASU::Status::OK();
+    return Status::OK();
 }
 
-UC::ASU::Status SimuTrans::HostToDevice(void* host[], void* device[], size_t size, size_t number)
+Status SimuTrans::HostToDevice(void* host[], void* device[], size_t size, size_t number)
 {
     for (size_t i = 0; i < number; i++) {
         auto s = this->HostToDevice(host[i], device[i], size);
         if (!s.ok()) { return s; }
     }
-    return UC::ASU::Status::OK();
+    return Status::OK();
 }
 
-UC::ASU::Status SimuTrans::HostToDevice(void* host, void* device[], size_t size, size_t number)
+Status SimuTrans::HostToDevice(void* host, void* device[], size_t size, size_t number)
 {
     for (size_t i = 0; i < number; i++) {
         auto pHost = static_cast<void*>(static_cast<int8_t*>(host) + size * i);
         auto s = this->HostToDevice(pHost, device[i], size);
         if (!s.ok()) { return s; }
     }
-    return UC::ASU::Status::OK();
+    return Status::OK();
 }
 
-}  // namespace UC::Trans
+}  // namespace kv::runtime

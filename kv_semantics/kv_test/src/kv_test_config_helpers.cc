@@ -3,27 +3,27 @@
 #include <string>
 #include <utility>
 
-namespace UC::KVTest {
+namespace kv::bench {
 namespace {
 
 constexpr int kFakeBackendAclDeviceId = 0;
 
-bool HasProvider(const KvTestConfig& config, UC::ASU::TransProviderType providerType)
+bool HasProvider(const KvTestConfig& config, kv::TransProviderType providerType)
 {
     return std::any_of(config.asuClientConfig.transportConfigs.begin(),
                        config.asuClientConfig.transportConfigs.end(),
-                       [providerType](const UC::ASU::TransportConfig& transportConfig) {
+                       [providerType](const kv::TransportConfig& transportConfig) {
                            return transportConfig.providerType == providerType;
                        });
 }
 
-void PatchFakeBackendTransportConfig(UC::ASU::TransportConfig& config,
+void PatchFakeBackendTransportConfig(kv::TransportConfig& config,
                                      const KvTestFakeBackendConfig& fakeConfig)
 {
     const auto fakeBackendDeviceId =
         config.deviceId < 0 ? kFakeBackendAclDeviceId : config.deviceId;
     config.deviceId = fakeBackendDeviceId;
-    config.providerType = UC::ASU::TransProviderType::FAKE;
+    config.providerType = kv::TransProviderType::FAKE;
     config.attrs.try_emplace("kernel_count", "1");
     config.attrs.try_emplace("quiet_count", "1");
     config.attrs["kv_ns_id"] = std::to_string(config.asuId);
@@ -35,10 +35,10 @@ void PatchFakeBackendTransportConfig(UC::ASU::TransportConfig& config,
     config.attrs["fake_backend.worker_threads"] = std::to_string(fakeConfig.workerThreads);
     config.attrs["fake_backend.device_id"] = std::to_string(fakeBackendDeviceId);
     if (config.endpoints.empty()) {
-        UC::ASU::AsuEndpoint endpoint;
+        kv::AsuEndpoint endpoint;
         endpoint.ip = "fake_backend";
         endpoint.port = 19001;
-        endpoint.protocol = UC::ASU::Protocol::TCP;
+        endpoint.protocol = kv::Protocol::TCP;
         config.endpoints.emplace_back(std::move(endpoint));
     }
 }
@@ -47,12 +47,12 @@ void PatchFakeBackendTransportConfig(UC::ASU::TransportConfig& config,
 
 bool HasFakeProvider(const KvTestConfig& config)
 {
-    return HasProvider(config, UC::ASU::TransProviderType::FAKE);
+    return HasProvider(config, kv::TransProviderType::FAKE);
 }
 
 bool IsAivProviderMode(const KvTestConfig& config)
 {
-    return HasProvider(config, UC::ASU::TransProviderType::AIV);
+    return HasProvider(config, kv::TransProviderType::AIV);
 }
 
 DeviceAllocationPolicy AllocationPolicyForConfig(const KvTestConfig& config)
@@ -72,10 +72,10 @@ void MaybePrepareFakeBackend(KvTestConfig& config)
     config.asuClientConfig.attrs.try_emplace("hash_table.type", "RING_HASH");
     config.asuClientConfig.attrs.try_emplace("ring_hash.virtual_node_count", "128");
     for (auto& transportConfig : config.asuClientConfig.transportConfigs) {
-        if (transportConfig.providerType == UC::ASU::TransProviderType::FAKE) {
+        if (transportConfig.providerType == kv::TransProviderType::FAKE) {
             PatchFakeBackendTransportConfig(transportConfig, config.fakeBackend);
         }
     }
 }
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

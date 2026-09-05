@@ -37,7 +37,7 @@
 #include "types.h"
 #include "proto/kv_protocol.h"
 
-namespace UC::ASU {
+namespace kv {
 
 using ConnectionHandle = void*;
 
@@ -103,4 +103,4 @@ private:
     std::shared_ptr<ConnectionChannel> SelectByLeastLoaded();
 };
 
-}  // namespace UC::ASU
+}  // namespace kv

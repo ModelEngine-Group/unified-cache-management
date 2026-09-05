@@ -28,7 +28,7 @@
 #include "runtime/buffer.h"
 #include "runtime/device.h"
 
-namespace UC::ASU {
+namespace kv {
 
 constexpr std::size_t kSlotAddressAlignment = 64;
 
@@ -50,7 +50,7 @@ bool GetSlotStride(std::size_t capacity, std::size_t& stride)
 
 Status BufferManager::BufferRegion::Create(MemoryType type, std::size_t size, BufferRegion& region)
 {
-    auto buffer = Trans::Device{}.MakeBuffer();
+    auto buffer = runtime::Device{}.MakeBuffer();
     if (!buffer) {
         return Status::Error(StatusCode::INTERNAL_ERROR, "failed to create runtime buffer");
     }
@@ -139,7 +139,7 @@ Status BufferManager::Init(std::string name, MemoryType type, std::size_t slot_c
     auto allocStatus = BufferRegion::Create(memory_type_, total, region_);
     if (!allocStatus.ok()) { return allocStatus; }
 
-    if (const auto memStatus = UC::Trans::Memset(region_.localAddr, total, 0);
+    if (const auto memStatus = runtime::Memset(region_.localAddr, total, 0);
         !memStatus.ok()) {
         region_.Reset();
         return Status::Error(StatusCode::INTERNAL_ERROR, name_ + ": failed to zero memory");
@@ -192,7 +192,7 @@ Status BufferManager::Free(std::uint32_t slot_index)
         return Status::Error(StatusCode::INVALID_ARGUMENT, name_ + ": slot_index out of range");
     }
     auto* p = static_cast<char*>(region_.localAddr) + slot_index * slot_stride_;
-    if (const auto memStatus = UC::Trans::Memset(p, slot_stride_, 0); !memStatus.ok()) {
+    if (const auto memStatus = runtime::Memset(p, slot_stride_, 0); !memStatus.ok()) {
         return Status::Error(StatusCode::INTERNAL_ERROR, name_ + ": failed to zero memory");
     }
     index_pool_.Release(static_cast<IndexPool::Index>(slot_index));
@@ -209,4 +209,4 @@ bool BufferManager::IsValidPointer(const void* ptr) const
     return (offset % slot_stride_) == 0;
 }
 
-}  // namespace UC::ASU
+}  // namespace kv

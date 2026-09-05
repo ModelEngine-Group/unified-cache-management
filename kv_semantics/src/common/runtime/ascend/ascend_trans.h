@@ -26,19 +26,19 @@
 
 #include "trans.h"
 
-namespace UC::Trans {
+namespace kv::runtime {
 
 class AscendTrans : public Trans {
 public:
-    UC::ASU::Status DeviceToHost(void* device, void* host, size_t size) override;
-    UC::ASU::Status DeviceToHost(void* device[], void* host[], size_t size, size_t number) override;
-    UC::ASU::Status DeviceToHost(void* device[], void* host, size_t size, size_t number) override;
+    Status DeviceToHost(void* device, void* host, size_t size) override;
+    Status DeviceToHost(void* device[], void* host[], size_t size, size_t number) override;
+    Status DeviceToHost(void* device[], void* host, size_t size, size_t number) override;
 
-    UC::ASU::Status HostToDevice(void* host, void* device, size_t size) override;
-    UC::ASU::Status HostToDevice(void* host[], void* device[], size_t size, size_t number) override;
-    UC::ASU::Status HostToDevice(void* host, void* device[], size_t size, size_t number) override;
+    Status HostToDevice(void* host, void* device, size_t size) override;
+    Status HostToDevice(void* host[], void* device[], size_t size, size_t number) override;
+    Status HostToDevice(void* host, void* device[], size_t size, size_t number) override;
 };
 
-}  // namespace UC::Trans
+}  // namespace kv::runtime
 
 #endif  // KV_SEMANTICS_RUNTIME_ASCEND_TRANS_H

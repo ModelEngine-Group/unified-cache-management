@@ -25,7 +25,7 @@
 #include <algorithm>
 #include <string>
 
-namespace UC::ASU {
+namespace kv {
 namespace {
 
 constexpr int kAsuBatchEntryStatusBase = 0x0100;
@@ -183,4 +183,4 @@ QueryResult BuildQueryResultFromEntryStatus(const std::vector<Status>& entryStat
     return queryResult;
 }
 
-}  // namespace UC::ASU
+}  // namespace kv

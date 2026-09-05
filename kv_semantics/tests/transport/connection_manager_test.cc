@@ -32,7 +32,7 @@
 #include "trans_provider.h"
 #include "conn/connection_internal.h"
 
-namespace UC::ASU {
+namespace kv::test {
 namespace {
 
 static std::atomic<int> g_deleteCount{0};
@@ -649,4 +649,4 @@ TEST(ConnectionManagerTest, ReportFailureMultipleTimesDoesNotDuplicateInDrainLis
     EXPECT_EQ(g_deleteCount.load(), 1);
 }
 
-}  // namespace UC::ASU
+}  // namespace kv::test

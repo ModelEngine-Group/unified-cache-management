@@ -26,7 +26,7 @@
 #include <cstring>
 #include <gtest/gtest.h>
 
-namespace UC::ASU {
+namespace kv::test {
 namespace {
 
 class LinkProtoPackTest : public ::testing::Test {
@@ -200,4 +200,4 @@ TEST_F(LinkProtoPackTest, DisconnectSqePackMatchesProtocol)
 }
 
 }  // namespace
-}  // namespace UC::ASU
+}  // namespace kv::test

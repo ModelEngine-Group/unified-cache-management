@@ -6,7 +6,7 @@
 #include <string>
 #include "kv_test_types.h"
 
-namespace UC::KVTest {
+namespace kv::bench {
 
 std::size_t DeviceBufferAlignment();
 std::size_t DeviceMrRegisterAlignment();
@@ -16,10 +16,10 @@ Status AllocateDeviceBuffer(std::size_t size, DeviceAllocationPolicy allocationP
                             std::shared_ptr<void>& deviceBuffer);
 Status CopyHostToDevice(const std::vector<std::uint8_t>& hostBuffer, std::uintptr_t deviceAddr,
                         const std::string& context);
-UC::ASU::MemoryRegion MakeHostRegion(std::vector<std::uint8_t>& buffer);
-UC::ASU::MemoryRegion MakeDeviceRegion(std::uint64_t addr, std::size_t size,
+kv::MemoryRegion MakeHostRegion(std::vector<std::uint8_t>& buffer);
+kv::MemoryRegion MakeDeviceRegion(std::uint64_t addr, std::size_t size,
                                        std::int32_t logicalDeviceId);
-UC::ASU::KVBuffer MakeKvBuffer(const UC::ASU::CacheKey& key, const UC::ASU::MemoryRegion& region);
+kv::KVBuffer MakeKvBuffer(const kv::CacheKey& key, const kv::MemoryRegion& region);
 
 class BufferAllocator {
 public:
@@ -32,4 +32,4 @@ public:
     Status CopyDeviceBuffersToHost(BufferSet& buffers) const;
 };
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

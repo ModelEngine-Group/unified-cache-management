@@ -28,7 +28,7 @@
 #include <vector>
 #include "trans_provider.h"
 
-namespace UC::ASU {
+namespace kv::test {
 namespace {
 
 class BufferManagerTest : public ::testing::Test {
@@ -441,4 +441,4 @@ TEST_F(BufferManagerTest, RegistrationDescriptionRequiresInitialization)
 }
 
 }  // namespace
-}  // namespace UC::ASU
+}  // namespace kv::test

@@ -43,7 +43,7 @@
 #include "proto/kv_protocol.h"
 #include "logger.h"
 
-namespace UC::ASU {
+namespace kv {
 namespace {
 
 constexpr std::uint16_t kCqeSuccess = 0x000;
@@ -328,7 +328,7 @@ FakeTransProvider::FakeTransProvider(FakeTransProviderConfig config)
     : config_(std::move(config)),
       workerPool_(std::make_unique<WorkerPool>(*this, config_.workerThreads))
 {
-    if (SetupDeviceRuntime().ok()) { stream_ = device_.MakeTrans(); }
+    if (SetupDeviceRuntime().ok()) { trans_ = device_.MakeTrans(); }
 }
 
 FakeTransProvider::~FakeTransProvider() = default;
@@ -377,14 +377,14 @@ bool FakeTransProvider::StoreBytes(AsuId asuId, const CacheKey& key, std::uint32
                                    std::uint64_t addr, std::uint32_t length)
 {
     std::unique_lock<std::shared_mutex> keyLock(KeyMutex(key));
-    if (stream_ == nullptr) {
-        UC_ERROR("ASU fake backend stream not initialized asuId={} key={} addr={} length={}.",
+    if (trans_ == nullptr) {
+        UC_ERROR("ASU fake backend trans not initialized asuId={} key={} addr={} length={}.",
                  asuId, CacheKeyToHex(key), addr, length);
         return false;
     }
     std::vector<char> buffer(length);
     const auto copyStatus =
-        stream_->DeviceToHost(reinterpret_cast<void*>(addr), buffer.data(), length);
+        trans_->DeviceToHost(reinterpret_cast<void*>(addr), buffer.data(), length);
     if (!copyStatus.ok()) {
         UC_ERROR(
             "ASU fake backend device-to-host copy failed asuId={} key={} addr={} length={} "
@@ -420,8 +420,8 @@ bool FakeTransProvider::LoadBytes(AsuId asuId, const CacheKey& key, std::uint32_
                                   std::uint64_t addr, std::uint32_t length)
 {
     std::shared_lock<std::shared_mutex> keyLock(KeyMutex(key));
-    if (stream_ == nullptr) {
-        UC_ERROR("ASU fake backend stream not initialized asuId={} key={} addr={} length={}.",
+    if (trans_ == nullptr) {
+        UC_ERROR("ASU fake backend trans not initialized asuId={} key={} addr={} length={}.",
                  asuId, CacheKeyToHex(key), addr, length);
         return false;
     }
@@ -442,7 +442,7 @@ bool FakeTransProvider::LoadBytes(AsuId asuId, const CacheKey& key, std::uint32_
         }
     }
     const auto copyStatus =
-        stream_->HostToDevice(buffer.data(), reinterpret_cast<void*>(addr), length);
+        trans_->HostToDevice(buffer.data(), reinterpret_cast<void*>(addr), length);
     if (!copyStatus.ok()) {
         UC_ERROR(
             "ASU fake backend host-to-device copy failed asuId={} key={} addr={} length={} "
@@ -788,4 +788,4 @@ Status FakeTransProvider::GetMemTokenId(MRHandle, uint32_t& tokenId)
     return Status::OK();
 }
 
-}  // namespace UC::ASU
+}  // namespace kv

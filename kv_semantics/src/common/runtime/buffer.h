@@ -29,7 +29,7 @@
 #include <memory>
 #include "types.h"
 
-namespace UC::Trans {
+namespace kv::runtime {
 
 class Buffer {
 public:
@@ -46,8 +46,8 @@ public:
     virtual std::shared_ptr<void> MakeDeviceMappedHostBuffer(size_t size) = 0;
 };
 
-UC::ASU::Status Memset(void* ptr, std::size_t size, std::int32_t value);
+Status Memset(void* ptr, std::size_t size, std::int32_t value);
 
-}  // namespace UC::Trans
+}  // namespace kv::runtime
 
 #endif  // KV_SEMANTICS_RUNTIME_BUFFER_H

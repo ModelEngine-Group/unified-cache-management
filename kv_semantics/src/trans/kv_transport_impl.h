@@ -37,7 +37,7 @@
 #include "task/trans_task_executor.h"
 #include "task/trans_task_manager.h"
 
-namespace UC::ASU {
+namespace kv {
 
 class AsuTransportImpl final : public AsuTransport {
 public:
@@ -69,7 +69,7 @@ private:
 
     std::unique_ptr<TransportTaskExecutor> taskExecutor_;
     TransportTaskManager taskManager_;
-    UC::SpscRingQueue<TransportTaskPtr> executeQueue_;
+    kv::SpscRingQueue<TransportTaskPtr> executeQueue_;
     std::mutex producerMu_;
 
     std::thread worker_;
@@ -78,4 +78,4 @@ private:
     std::atomic_bool stopCompletionWorker_{false};
 };
 
-}  // namespace UC::ASU
+}  // namespace kv

@@ -3,21 +3,21 @@
 #include "key_value_generator.h"
 #include "runtime/device.h"
 
-namespace UC::KVTest {
+namespace kv::bench {
 
 namespace {
 
 constexpr int kExitInvalidArgument = 1;
 
 constexpr std::uint8_t kRetrieveBufferInitialValue = 0xA5;
-constexpr std::size_t kDeviceBufferAlignment = UC::ASU::kAsuAlignmentBytes;
+constexpr std::size_t kDeviceBufferAlignment = kv::kAsuAlignmentBytes;
 constexpr std::size_t kDeviceMrRegisterAlignment = 2ULL * 1024ULL * 1024ULL;
 
-Trans::Trans* GetThreadStream()
+runtime::Trans* GetThreadTrans()
 {
-    thread_local std::unique_ptr<Trans::Trans> stream;
-    if (!stream) { stream = Trans::Device{}.MakeTrans(); }
-    return stream.get();
+    thread_local std::unique_ptr<runtime::Trans> trans;
+    if (!trans) { trans = runtime::Device{}.MakeTrans(); }
+    return trans.get();
 }
 
 Status BuildDeviceBuffers(BufferSet& buffers, DeviceAllocationPolicy allocationPolicy,
@@ -60,7 +60,7 @@ Status BuildDeviceBuffers(BufferSet& buffers, DeviceAllocationPolicy allocationP
     return Status::Success();
 }
 
-UC::ASU::MemoryRegion MakeRegion(BufferSet& buffers, std::size_t index,
+kv::MemoryRegion MakeRegion(BufferSet& buffers, std::size_t index,
                                  PayloadBufferPlacement placement, std::int32_t logicalDeviceId)
 {
     if (placement != PayloadBufferPlacement::HOST) {
@@ -109,7 +109,7 @@ Status AllocateDeviceBuffer(std::size_t size, DeviceAllocationPolicy allocationP
     }
     const auto allocationSize = size + alignment - 1;
 
-    auto buffer = Trans::Device{}.MakeBuffer();
+    auto buffer = runtime::Device{}.MakeBuffer();
     if (!buffer) {
         return Status::Error(kExitInvalidArgument, "device payload buffer creation failed");
     }
@@ -127,12 +127,12 @@ Status CopyHostToDevice(const std::vector<std::uint8_t>& hostBuffer, std::uintpt
                         const std::string& context)
 {
     if (hostBuffer.empty()) { return Status::Success(); }
-    auto* stream = GetThreadStream();
-    if (stream == nullptr) {
-        return Status::Error(kExitInvalidArgument, "device payload stream creation failed");
+    auto* trans = GetThreadTrans();
+    if (trans == nullptr) {
+        return Status::Error(kExitInvalidArgument, "device payload trans creation failed");
     }
     const auto status =
-        stream->HostToDevice(const_cast<void*>(static_cast<const void*>(hostBuffer.data())),
+        trans->HostToDevice(const_cast<void*>(static_cast<const void*>(hostBuffer.data())),
                              reinterpret_cast<void*>(deviceAddr), hostBuffer.size());
     if (!status.ok()) {
         const auto contextText = context.empty() ? "" : " " + context;
@@ -143,10 +143,10 @@ Status CopyHostToDevice(const std::vector<std::uint8_t>& hostBuffer, std::uintpt
     return Status::Success();
 }
 
-UC::ASU::MemoryRegion MakeHostRegion(std::vector<std::uint8_t>& buffer)
+kv::MemoryRegion MakeHostRegion(std::vector<std::uint8_t>& buffer)
 {
-    UC::ASU::MemoryRegion region;
-    region.memoryType = UC::ASU::MemoryType::HOST;
+    kv::MemoryRegion region;
+    region.memoryType = kv::MemoryType::HOST;
     region.addr = buffer.empty() ? 0 : reinterpret_cast<std::uint64_t>(buffer.data());
     region.size = buffer.size();
     region.deviceId = -1;
@@ -154,11 +154,11 @@ UC::ASU::MemoryRegion MakeHostRegion(std::vector<std::uint8_t>& buffer)
     return region;
 }
 
-UC::ASU::MemoryRegion MakeDeviceRegion(std::uint64_t addr, std::size_t size,
+kv::MemoryRegion MakeDeviceRegion(std::uint64_t addr, std::size_t size,
                                        std::int32_t logicalDeviceId)
 {
-    UC::ASU::MemoryRegion region;
-    region.memoryType = UC::ASU::MemoryType::DEVICE;
+    kv::MemoryRegion region;
+    region.memoryType = kv::MemoryType::DEVICE;
     region.addr = addr;
     region.size = size;
     region.deviceId = logicalDeviceId;
@@ -166,12 +166,12 @@ UC::ASU::MemoryRegion MakeDeviceRegion(std::uint64_t addr, std::size_t size,
     return region;
 }
 
-UC::ASU::KVBuffer MakeKvBuffer(const UC::ASU::CacheKey& key, const UC::ASU::MemoryRegion& region)
+kv::KVBuffer MakeKvBuffer(const kv::CacheKey& key, const kv::MemoryRegion& region)
 {
-    UC::ASU::Buffer buffer;
+    kv::Buffer buffer;
     buffer.region = region;
-    buffer.handle = UC::ASU::kInvalidMRHandle;
-    return UC::ASU::KVBuffer{key, buffer};
+    buffer.handle = kv::kInvalidMRHandle;
+    return kv::KVBuffer{key, buffer};
 }
 
 Status BufferAllocator::BuildStoreBuffers(const GeneratedData& data,
@@ -240,16 +240,16 @@ Status BufferAllocator::CopyDeviceBuffersToHost(BufferSet& buffers) const
                              "device payload entry/host buffer count mismatch");
     }
 
-    auto* stream = GetThreadStream();
-    if (stream == nullptr) {
-        return Status::Error(kExitInvalidArgument, "device payload stream creation failed");
+    auto* trans = GetThreadTrans();
+    if (trans == nullptr) {
+        return Status::Error(kExitInvalidArgument, "device payload trans creation failed");
     }
 
     for (std::size_t index = 0; index < buffers.ownedBuffers.size(); ++index) {
         auto& hostBuffer = buffers.ownedBuffers[index];
         if (hostBuffer.empty()) { continue; }
         const auto status =
-            stream->DeviceToHost(reinterpret_cast<void*>(buffers.entries[index].buffer.region.addr),
+            trans->DeviceToHost(reinterpret_cast<void*>(buffers.entries[index].buffer.region.addr),
                                  hostBuffer.data(), hostBuffer.size());
         if (!status.ok()) {
             return Status::Error(
@@ -261,4 +261,4 @@ Status BufferAllocator::CopyDeviceBuffersToHost(BufferSet& buffers) const
     return Status::Success();
 }
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

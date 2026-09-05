@@ -40,7 +40,7 @@
 #include "proto/kv_protocol.h"
 #include "utils/trans_config_utils.h"
 
-namespace UC::ASU {
+namespace kv::test {
 
 namespace {
 
@@ -477,4 +477,4 @@ TEST_F(SqeRequestTest, SubmitKeepAliveBuildsFlagBackedRequest)
     EXPECT_TRUE(subBatchContext.entryStatus[0].ok());
 }
 
-}  // namespace UC::ASU
+}  // namespace kv::test

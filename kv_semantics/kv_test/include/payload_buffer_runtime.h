@@ -4,7 +4,7 @@
 #include "kv_test_types.h"
 #include "runtime/device.h"
 
-namespace UC::KVTest {
+namespace kv::bench {
 
 class PayloadBufferRuntime {
 public:
@@ -18,11 +18,11 @@ private:
     bool initialized_{false};
     bool deviceSet_{false};
     std::int32_t deviceId_{0};
-    Trans::Device device_;
+    runtime::Device device_;
 };
 
 std::int32_t ResolvePayloadDeviceId(const KvTestConfig& config);
 bool UsesDevicePayloadBuffers(const KvTestConfig& config);
 Status MaybeSetUpPayloadThread(const KvTestConfig& config);
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

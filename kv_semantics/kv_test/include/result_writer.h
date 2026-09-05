@@ -5,7 +5,7 @@
 #include <string>
 #include "kv_test_types.h"
 
-namespace UC::KVTest {
+namespace kv::bench {
 
 class ResultWriter {
 public:
@@ -34,4 +34,4 @@ private:
     std::ofstream consistencyErrorFile_;
 };
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

@@ -27,25 +27,25 @@
 #include <cstddef>
 #include "types.h"
 
-namespace UC::Trans {
+namespace kv::runtime {
 
 class Trans {
 public:
     virtual ~Trans() = default;
 
-    virtual UC::ASU::Status DeviceToHost(void* device, void* host, size_t size) = 0;
-    virtual UC::ASU::Status DeviceToHost(void* device[], void* host[], size_t size,
-                                         size_t number) = 0;
-    virtual UC::ASU::Status DeviceToHost(void* device[], void* host, size_t size,
-                                         size_t number) = 0;
+    virtual Status DeviceToHost(void* device, void* host, size_t size) = 0;
+    virtual Status DeviceToHost(void* device[], void* host[], size_t size,
+                                     size_t number) = 0;
+    virtual Status DeviceToHost(void* device[], void* host, size_t size,
+                                     size_t number) = 0;
 
-    virtual UC::ASU::Status HostToDevice(void* host, void* device, size_t size) = 0;
-    virtual UC::ASU::Status HostToDevice(void* host[], void* device[], size_t size,
-                                          size_t number) = 0;
-    virtual UC::ASU::Status HostToDevice(void* host, void* device[], size_t size,
-                                          size_t number) = 0;
+    virtual Status HostToDevice(void* host, void* device, size_t size) = 0;
+    virtual Status HostToDevice(void* host[], void* device[], size_t size,
+                                      size_t number) = 0;
+    virtual Status HostToDevice(void* host, void* device[], size_t size,
+                                      size_t number) = 0;
 };
 
-}  // namespace UC::Trans
+}  // namespace kv::runtime
 
 #endif  // KV_SEMANTICS_RUNTIME_TRANS_H

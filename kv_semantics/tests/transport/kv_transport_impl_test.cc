@@ -35,7 +35,7 @@
 #include "buffer/buffer_manager.h"
 #include "conn/connection_internal.h"
 
-namespace UC::ASU {
+namespace kv::test {
 namespace {
 
 constexpr std::size_t kTestBufferSlotSize = 512;
@@ -670,4 +670,4 @@ TEST_F(TransportTaskCompletionTest, ShutdownReleasesResourcesBeforeInvokingCallb
 }
 
 }  // namespace
-}  // namespace UC::ASU
+}  // namespace kv::test

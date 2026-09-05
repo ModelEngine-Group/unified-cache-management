@@ -28,7 +28,7 @@
 #include "logger.h"
 #include "trans_task_executor.h"
 
-namespace UC::ASU {
+namespace kv {
 
 namespace {
 
@@ -160,4 +160,4 @@ void TransportTaskExecutor::SendSubBatchBuffers(
     }
 }
 
-}  // namespace UC::ASU
+}  // namespace kv

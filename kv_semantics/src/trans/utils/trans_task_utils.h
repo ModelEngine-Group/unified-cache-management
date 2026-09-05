@@ -29,7 +29,7 @@
 #include "task_context.h"
 #include "proto/kv_protocol.h"
 
-namespace UC::ASU {
+namespace kv {
 
 Status KvResponseStatusToSubBatchStatus(std::uint16_t rawStatus);
 
@@ -39,4 +39,4 @@ void FillEntryStatusFromCqeResult(const KvResponse& response, AsuOpType opType,
 
 QueryResult BuildQueryResultFromEntryStatus(const std::vector<Status>& entryStatus);
 
-}  // namespace UC::ASU
+}  // namespace kv

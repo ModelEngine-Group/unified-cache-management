@@ -31,7 +31,7 @@
 #include "conn/connection_internal.h"
 #include "logger.h"
 
-namespace UC::ASU {
+namespace kv {
 
 TransportTaskExecutor::TransportTaskExecutor(
     const TransportConfig& config, const std::shared_ptr<TransProvider>& transProvider,
@@ -424,4 +424,4 @@ bool TransportTaskExecutor::Poll(const TransportTaskPtr& task)
     return done;
 }
 
-}  // namespace UC::ASU
+}  // namespace kv

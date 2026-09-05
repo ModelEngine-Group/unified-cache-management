@@ -32,7 +32,7 @@
 #include <utility>
 #include "types.h"
 
-namespace UC::ASU {
+namespace kv {
 
 template <typename Context, typename State>
 class TaskManagerBase {
@@ -108,4 +108,4 @@ private:
     std::unordered_map<TaskId, std::shared_ptr<Context>> tasks_;
 };
 
-}  // namespace UC::ASU
+}  // namespace kv

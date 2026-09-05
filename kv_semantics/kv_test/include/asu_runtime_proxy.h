@@ -4,26 +4,26 @@
 #include <string>
 #include "kv_test_types.h"
 
-namespace UC::KVTest {
+namespace kv::bench {
 
 class AsuRuntimeProxy {
 public:
     static AsuRuntimeProxy& Instance();
 
     Status Load(const AsuRuntimeLibraryConfig& config);
-    UC::ASU::Status LoadAsuClientConfig(const std::string& configPath,
-                                        UC::ASU::AsuClientConfig& config);
-    std::unique_ptr<UC::ASU::AsuClient> CreateAsuClient(Status& status);
-    std::unique_ptr<UC::ASU::AsuTransport> CreateAsuTransport(Status& status);
+    kv::Status LoadAsuClientConfig(const std::string& configPath,
+                                        kv::AsuClientConfig& config);
+    std::unique_ptr<kv::AsuClient> CreateAsuClient(Status& status);
+    std::unique_ptr<kv::AsuTransport> CreateAsuTransport(Status& status);
 
 private:
     AsuRuntimeProxy() = default;
 
     Status EnsureLoaded();
 
-    using CreateClientFn = std::unique_ptr<UC::ASU::AsuClient> (*)();
-    using CreateTransportFn = std::unique_ptr<UC::ASU::AsuTransport> (*)();
-    using LoadClientConfigFn = UC::ASU::Status (*)(const char*, UC::ASU::AsuClientConfig*);
+    using CreateClientFn = std::unique_ptr<kv::AsuClient> (*)();
+    using CreateTransportFn = std::unique_ptr<kv::AsuTransport> (*)();
+    using LoadClientConfigFn = kv::Status (*)(const char*, kv::AsuClientConfig*);
 
     void* clientHandle_{nullptr};
     void* transportHandle_{nullptr};
@@ -33,4 +33,4 @@ private:
     AsuRuntimeLibraryConfig config_;
 };
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

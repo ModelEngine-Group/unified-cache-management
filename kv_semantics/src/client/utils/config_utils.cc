@@ -31,7 +31,7 @@
 #include "common/utils/parser_common.h"
 #include "common/utils/status_utils.h"
 
-namespace UC::ASU {
+namespace kv {
 namespace {
 
 void ApplyClientViewEndpointField(AsuEndpoint& endpoint, const std::string& key,
@@ -255,4 +255,4 @@ void ApplyAsuInfoToTransportConfig(const AsuInfo& info, TransportConfig& config)
     config.endpoints = info.endpoints;
 }
 
-}  // namespace UC::ASU
+}  // namespace kv

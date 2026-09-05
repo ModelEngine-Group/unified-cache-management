@@ -6,7 +6,7 @@
 #include <limits>
 #include <sstream>
 
-namespace UC::KVTest {
+namespace kv::bench {
 
 namespace {
 
@@ -14,7 +14,7 @@ constexpr int kExitInvalidArgument = 1;
 
 }  // namespace
 
-Status StringToCacheKey(const std::string& value, const std::string& source, UC::ASU::CacheKey& key)
+Status StringToCacheKey(const std::string& value, const std::string& source, kv::CacheKey& key)
 {
     if (value.size() > key.size()) {
         return Status::Error(kExitInvalidArgument,
@@ -22,7 +22,7 @@ Status StringToCacheKey(const std::string& value, const std::string& source, UC:
                                  " bytes: length=" + std::to_string(value.size()) +
                                  ", key=" + value);
     }
-    key = UC::ASU::CacheKey{};
+    key = kv::CacheKey{};
     if (!value.empty()) { std::memcpy(key.data(), value.data(), value.size()); }
     return Status::Success();
 }
@@ -73,12 +73,12 @@ std::uint64_t SplitMix64Next(std::uint64_t& state)
     return value ^ (value >> 31);
 }
 
-std::vector<std::uint8_t> GenerateValueBytes(const UC::ASU::CacheKey& key, std::uint64_t seed,
+std::vector<std::uint8_t> GenerateValueBytes(const kv::CacheKey& key, std::uint64_t seed,
                                              std::uint64_t valueSize)
 {
     std::vector<std::uint8_t> value(static_cast<std::size_t>(valueSize));
     std::uint64_t state =
-        HashString(HashUint64(kFnvOffsetBasis64, seed), UC::ASU::CacheKeyView(key));
+        HashString(HashUint64(kFnvOffsetBasis64, seed), kv::CacheKeyView(key));
     for (std::size_t offset = 0; offset < value.size();) {
         const std::uint64_t random = SplitMix64Next(state);
         for (std::uint32_t byteIndex = 0; byteIndex < 8 && offset < value.size();
@@ -98,7 +98,7 @@ std::string Trim(const std::string& value)
 }
 
 Status AddCommaSeparatedKeys(const std::string& value, const std::string& source,
-                             std::vector<UC::ASU::CacheKey>& keys)
+                             std::vector<kv::CacheKey>& keys)
 {
     std::string normalized = value;
     std::replace(normalized.begin(), normalized.end(), '\n', ',');
@@ -111,7 +111,7 @@ Status AddCommaSeparatedKeys(const std::string& value, const std::string& source
         if (item.empty()) {
             return Status::Error(kExitInvalidArgument, source + " contains an empty key");
         }
-        UC::ASU::CacheKey key{};
+        kv::CacheKey key{};
         auto status = StringToCacheKey(item, source, key);
         if (!status.Ok()) { return status; }
         keys.push_back(key);
@@ -120,7 +120,7 @@ Status AddCommaSeparatedKeys(const std::string& value, const std::string& source
     return Status::Success();
 }
 
-Status LoadKeysFile(const std::string& keysFile, std::vector<UC::ASU::CacheKey>& keys)
+Status LoadKeysFile(const std::string& keysFile, std::vector<kv::CacheKey>& keys)
 {
     std::ifstream input{keysFile};
     if (!input.is_open()) {
@@ -137,7 +137,7 @@ Status LoadKeysFile(const std::string& keysFile, std::vector<UC::ASU::CacheKey>&
     return Status::Success();
 }
 
-Status GenerateRangeKeys(const CommandOptions& options, std::vector<UC::ASU::CacheKey>& keys)
+Status GenerateRangeKeys(const CommandOptions& options, std::vector<kv::CacheKey>& keys)
 {
     if (!options.keyStartSet && !options.keyEndSet) { return Status::Success(); }
 
@@ -150,7 +150,7 @@ Status GenerateRangeKeys(const CommandOptions& options, std::vector<UC::ASU::Cac
 
     keys.reserve(static_cast<std::size_t>(rangeCount));
     for (std::uint64_t index = options.keyStart; index <= options.keyEnd; ++index) {
-        UC::ASU::CacheKey key{};
+        kv::CacheKey key{};
         auto status =
             StringToCacheKey(options.keyPrefix + std::to_string(index), "generated range", key);
         if (!status.Ok()) { return status; }
@@ -202,7 +202,7 @@ Status KeyValueGenerator::Generate(const CommandOptions& options, const KvTestCo
         data.keys.reserve(options.keys.size());
         for (const auto& key : options.keys) {
             if (key.empty()) { return Status::Error(kExitInvalidArgument, "key cannot be empty"); }
-            UC::ASU::CacheKey cacheKey{};
+            kv::CacheKey cacheKey{};
             auto status = StringToCacheKey(key, "--key/--keys", cacheKey);
             if (!status.Ok()) { return status; }
             data.keys.push_back(cacheKey);
@@ -219,7 +219,7 @@ Status KeyValueGenerator::Generate(const CommandOptions& options, const KvTestCo
         }
         data.keys.reserve(static_cast<std::size_t>(count));
         for (std::uint64_t index = 0; index < count; ++index) {
-            UC::ASU::CacheKey key{};
+            kv::CacheKey key{};
             auto status =
                 StringToCacheKey(config.keyPrefix + std::to_string(index), "generated config", key);
             if (!status.Ok()) { return status; }
@@ -258,4 +258,4 @@ Status KeyValueGenerator::Digest(const std::vector<std::uint8_t>& value, std::st
     return Status::Success();
 }
 
-}  // namespace UC::KVTest
+}  // namespace kv::bench

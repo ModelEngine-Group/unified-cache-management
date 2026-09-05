@@ -25,7 +25,7 @@
 #include <algorithm>
 #include "logger.h"
 
-namespace UC::ASU {
+namespace kv {
 
 // ─── ConnectionChannel ───
 
@@ -126,4 +126,4 @@ bool ConnectionGroup::HasActiveChannel() const
     return false;
 }
 
-}  // namespace UC::ASU
+}  // namespace kv
