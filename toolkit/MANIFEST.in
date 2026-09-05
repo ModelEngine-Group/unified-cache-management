@@ -1,0 +1,18 @@
+graft ucm_toolkit
+graft src/dev-sandbox
+graft src/nic_monitor
+graft tests
+
+# dev-sandbox CMake project ships only what the build needs; drop fmt's
+# doc/test/.github (always disabled via FMT_DOC/FMT_TEST/FMT_INSTALL=OFF) and
+# the subproject's own .github CI.
+prune src/dev-sandbox/.github
+prune src/dev-sandbox/build
+prune src/dev-sandbox/vendor/fmt/.github
+prune src/dev-sandbox/vendor/fmt/doc
+prune src/dev-sandbox/vendor/fmt/test
+prune src/nic_monitor/__pycache__
+
+global-exclude *.pyc *.pyo *.so *.dll *.dylib *.a *.o *.obj *.exe *.out *.app
+global-exclude .gitignore .DS_Store
+include README.md DESIGN.md
