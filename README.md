@@ -80,10 +80,10 @@ please refer to [Quick Start for vLLM](https://ucm.readthedocs.io/en/latest/gett
 
 ## Branch
 
-| **Branch** |     Status | vLLM version |
-|-----------:|-----------:|-------------:|
-|       main | Maintained |       v0.17.0 |
-|    develop | Maintained |       v0.17.0 |
+| **Branch**   |     Status   | vLLM version | vLLM-Ascend version |
+|-----------:|-----------:|----------:|-----------------:|
+|       main | Maintained     |   v0.27.1 | nightly-0.26.0   |
+|    develop | Maintained     |   v0.27.1 | nightly-0.26.0   |
 
 ---
 

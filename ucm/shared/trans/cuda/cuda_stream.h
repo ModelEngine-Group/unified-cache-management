@@ -31,9 +31,11 @@ namespace UC::Trans {
 
 class CudaStream : public Stream {
 protected:
-    cudaStream_t stream_;
+    cudaStream_t stream_{nullptr};
 
 public:
+    ~CudaStream() override;
+
     Status Setup() override;
 
     Status DeviceToHost(void* device, void* host, size_t size) override;

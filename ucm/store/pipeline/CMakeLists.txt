@@ -7,6 +7,9 @@ target_link_libraries(healthbreakerstore PUBLIC storeintf infra_logger metrics)
 file(GLOB_RECURSE UCM_PIPELINE_STORE_CPY_SOURCE_FILES "./cpy/*.cc")
 pybind11_add_module(ucmpipelinestore ${UCM_PIPELINE_STORE_CPY_SOURCE_FILES})
 target_link_libraries(ucmpipelinestore PRIVATE storeintf infra_logger healthbreakerstore)
+set_target_properties(ucmpipelinestore PROPERTIES
+    INSTALL_RPATH "$ORIGIN/../../shared/metrics"
+)
 
 file(RELATIVE_PATH INSTALL_REL_PATH ${UCM_ROOT_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
 install(TARGETS ucmpipelinestore LIBRARY DESTINATION ${INSTALL_REL_PATH} COMPONENT ucm)
