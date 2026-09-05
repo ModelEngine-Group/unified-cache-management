@@ -380,6 +380,37 @@ def finalize_catalog(catalog: object, observations: object) -> dict[str, object]
     )
 
 
+def bind_source_catalog(catalog: object) -> dict[str, object]:
+    """Pin Wheel builds directly to their immutable upstream Builder images."""
+
+    desired = validate_catalog(catalog)
+    if desired.get("schema_version") != 3:
+        raise ValueError("Source Builder binding requires desired Catalog schema 3")
+
+    bound: list[dict[str, object]] = []
+    for raw_item in desired["builders"]:  # type: ignore[index]
+        item = _require_mapping(raw_item, "Builder source binding")
+        source_image = _require_string(item, "source_image", "Builder source binding")
+        separator = source_image.rfind(":")
+        if separator <= source_image.rfind("/"):
+            raise ValueError("Builder source image must include a tag")
+        bound.append(
+            {
+                **copy.deepcopy(item),
+                "target_repository": source_image[:separator],
+                "target_digest": item["source_image_digest"],
+            }
+        )
+
+    return validate_catalog(
+        {
+            "kind": "ucm-builder-catalog",
+            "schema_version": 4,
+            "builders": bound,
+        }
+    )
+
+
 def compute_sync_plan(catalog: object, existing_tags: object) -> dict[str, object]:
     """Return only catalog entries whose exact target tag is absent."""
     validated = validate_catalog(catalog)
