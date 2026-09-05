@@ -152,6 +152,16 @@ def _print_warning_once(logger: logging.Logger, msg: str, *args) -> None:
     logger.warning(msg, *args, stacklevel=3)
 
 
+def _after_fork_child() -> None:
+    _print_debug_once.cache_clear()
+    _print_info_once.cache_clear()
+    _print_warning_once.cache_clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork_child)
+
+
 _RATE_LIMIT_EXTRA = {"ucm_rate_limit": True}
 
 
