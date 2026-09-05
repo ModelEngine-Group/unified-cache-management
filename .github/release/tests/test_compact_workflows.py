@@ -25,6 +25,7 @@ def test_user_facing_release_workflow_names_explain_the_build_lanes() -> None:
         "UCM Nightly Release · Shanghai 02:00"
     )
     assert _load("release-ucm.yml")["name"] == "UCM Reusable Release Core"
+    assert _load("_native-wheel-gate.yml")["name"] == "UCM Native Wheel Gate"
     assert _load("ucm-build-bot.yml")["name"] == (
         "UCM PR Build Robot · Wheel, Image, and Chart"
     )
@@ -165,10 +166,87 @@ def test_release_core_is_input_driven_and_uses_crane_before_plan() -> None:
     assert "docker.io/${DOCKERHUB_USERNAME,,}" not in text
 
 
-def test_pr_gate_keeps_ucm_artifact_builds_in_the_robot_lane() -> None:
+def test_pr_gate_runs_the_native_wheel_matrix_behind_one_stable_check() -> None:
+    workflow = _load("pull-request.yml")
+    assert "feature/**" in workflow["on"]["pull_request"]["branches"]
+    jobs = workflow["jobs"]
+    pre_check = jobs["pre-check"]
+    build = jobs["native-wheel-build"]
+    gate = jobs["native-wheel-compile"]
+
+    assert pre_check["outputs"]["native_wheel_required"] == (
+        "${{ steps.build-impact.outputs.required }}"
+    )
+    impact = next(
+        step for step in pre_check["steps"] if step.get("id") == "build-impact"
+    )
+    for build_input in (
+        "CMakeLists.txt",
+        "ucm/*",
+        "setup.py",
+        "pyproject.toml",
+        "version.ini",
+        ".github/release/ucm_release/*",
+        ".github/release/docker/*",
+        ".github/release/requirements/*",
+        ".github/workflows/_build-wheel.yml",
+        ".github/workflows/_native-wheel-gate.yml",
+    ):
+        assert build_input in impact["run"]
+    assert build["needs"] == "pre-check"
+    assert "native_wheel_required == 'true'" in build["if"]
+    assert build["permissions"] == {"contents": "read", "packages": "read"}
+    assert build["uses"] == "./.github/workflows/_native-wheel-gate.yml"
+    assert build["with"]["source_ref"] == "${{ github.sha }}"
+    assert set(gate["needs"]) == {"pre-check", "native-wheel-build"}
+    assert gate["if"] == "${{ always() }}"
+    assert gate["name"] == "native-wheel-compile"
+    gate_text = yaml.safe_dump(gate)
+    assert "PRE_CHECK_RESULT" in gate_text
+    assert "BUILD_REQUIRED" in gate_text
+    assert "BUILD_RESULT" in gate_text
+    assert jobs["test-e2e-pc-a2"]["if"] == (
+        "github.repository == 'ModelEngine-Group/unified-cache-management'"
+    )
+
     text = (WORKFLOWS / "pull-request.yml").read_text(encoding="utf-8")
-    assert "release-catalog-smoke" not in text
     assert "./.github/workflows/release-ucm.yml" not in text
+
+
+def test_native_wheel_gate_uses_source_builders_without_publication() -> None:
+    workflow = _load("_native-wheel-gate.yml")
+    assert set(workflow["on"]) == {"workflow_call"}
+    assert set(workflow["on"]["workflow_call"]["inputs"]) == {
+        "source_ref",
+        "retention_days",
+    }
+    assert workflow["permissions"] == {"contents": "read", "packages": "read"}
+    jobs = workflow["jobs"]
+    assert set(jobs) == {
+        "inspect-runtimes",
+        "probe-runtimes",
+        "resolve-upstreams",
+        "plan-wheels",
+        "build-wheels",
+    }
+    assert jobs["probe-runtimes"]["uses"] == ("./.github/workflows/_probe-runtime.yml")
+    assert jobs["build-wheels"]["strategy"]["fail-fast"] is False
+    assert jobs["build-wheels"]["strategy"]["matrix"] == (
+        "${{ fromJSON(needs.plan-wheels.outputs.wheel_matrix) }}"
+    )
+    assert jobs["build-wheels"]["uses"] == "./.github/workflows/_build-wheel.yml"
+    assert jobs["build-wheels"]["permissions"] == {
+        "contents": "read",
+        "packages": "read",
+    }
+    text = (WORKFLOWS / "_native-wheel-gate.yml").read_text(encoding="utf-8")
+    assert "builders bind-source" in text
+    assert "compact plan" in text and "--route pr" in text
+    assert "sync-builders.yml" not in text
+    assert "packages: write" not in text
+    assert "docker push" not in text
+    assert "open-release" not in text
+    assert "publish" not in text.lower()
 
 
 def test_release_workflow_has_staged_publication_jobs() -> None:
@@ -1199,6 +1277,7 @@ def test_compact_wheel_passes_dynamic_python_and_platform_to_build() -> None:
     assert 'source_builder="${source_repository}@$(jq -er' in workflow
     assert 'build_wheel "${builder}"' in workflow
     assert 'build_wheel "${source_builder}"' in workflow
+    assert 'if [ "${builder}" = "${source_builder}" ]; then' in workflow
     assert '--rate-limit-marker "${rate_limit_marker}"' in workflow
     assert '--rate-limit-scope "${rate_limit_scope}"' in workflow
     assert 'builder_rate_limit_scope="${builder_repository#ghcr.io/}"' in workflow
@@ -1561,6 +1640,7 @@ def test_cross_job_artifact_names_survive_failed_job_reruns() -> None:
         "_build-image.yml",
         "_build-release-image.yml",
         "_build-chart.yml",
+        "_native-wheel-gate.yml",
         "ucm-build-bot.yml",
     )
     text = "\n".join((WORKFLOWS / name).read_text(encoding="utf-8") for name in names)
