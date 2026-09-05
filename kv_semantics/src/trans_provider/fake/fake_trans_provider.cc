@@ -378,7 +378,7 @@ bool FakeTransProvider::StoreBytes(AsuId asuId, const CacheKey& key, std::uint32
 {
     std::unique_lock<std::shared_mutex> keyLock(KeyMutex(key));
     if (trans_ == nullptr) {
-        UC_ERROR("ASU fake backend trans not initialized asuId={} key={} addr={} length={}.",
+        KV_ERROR("ASU fake backend trans not initialized asuId={} key={} addr={} length={}.",
                  asuId, CacheKeyToHex(key), addr, length);
         return false;
     }
@@ -386,7 +386,7 @@ bool FakeTransProvider::StoreBytes(AsuId asuId, const CacheKey& key, std::uint32
     const auto copyStatus =
         trans_->DeviceToHost(reinterpret_cast<void*>(addr), buffer.data(), length);
     if (!copyStatus.ok()) {
-        UC_ERROR(
+        KV_ERROR(
             "ASU fake backend device-to-host copy failed asuId={} key={} addr={} length={} "
             "message={}.",
             asuId, CacheKeyToHex(key), addr, length, copyStatus.message);
@@ -402,13 +402,13 @@ bool FakeTransProvider::StoreBytes(AsuId asuId, const CacheKey& key, std::uint32
         output.open(path, std::ios::binary | std::ios::in | std::ios::out);
     }
     if (!output) {
-        UC_ERROR("ASU fake backend failed to open store file asuId={} key={} path={}.", asuId,
+        KV_ERROR("ASU fake backend failed to open store file asuId={} key={} path={}.", asuId,
                  CacheKeyToHex(key), path.string());
         return false;
     }
     output.seekp(static_cast<std::streamoff>(offset), std::ios::beg);
     if (!output) {
-        UC_ERROR("ASU fake backend failed to seek store file asuId={} key={} path={} offset={}.",
+        KV_ERROR("ASU fake backend failed to seek store file asuId={} key={} path={} offset={}.",
                  asuId, CacheKeyToHex(key), path.string(), offset);
         return false;
     }
@@ -421,14 +421,14 @@ bool FakeTransProvider::LoadBytes(AsuId asuId, const CacheKey& key, std::uint32_
 {
     std::shared_lock<std::shared_mutex> keyLock(KeyMutex(key));
     if (trans_ == nullptr) {
-        UC_ERROR("ASU fake backend trans not initialized asuId={} key={} addr={} length={}.",
+        KV_ERROR("ASU fake backend trans not initialized asuId={} key={} addr={} length={}.",
                  asuId, CacheKeyToHex(key), addr, length);
         return false;
     }
     const auto path = KeyPath(config_.storePath, asuId, key);
     std::ifstream input(path, std::ios::binary);
     if (!input) {
-        UC_ERROR("ASU fake backend failed to open load file asuId={} key={} path={}.", asuId,
+        KV_ERROR("ASU fake backend failed to open load file asuId={} key={} path={}.", asuId,
                  CacheKeyToHex(key), path.string());
         return false;
     }
@@ -444,7 +444,7 @@ bool FakeTransProvider::LoadBytes(AsuId asuId, const CacheKey& key, std::uint32_
     const auto copyStatus =
         trans_->HostToDevice(buffer.data(), reinterpret_cast<void*>(addr), length);
     if (!copyStatus.ok()) {
-        UC_ERROR(
+        KV_ERROR(
             "ASU fake backend host-to-device copy failed asuId={} key={} addr={} length={} "
             "message={}.",
             asuId, CacheKeyToHex(key), addr, length, copyStatus.message);
@@ -722,7 +722,7 @@ void FakeTransProvider::ProcessIoTask(IoTask& task)
         PackCqeHeader(completion.data(),
                       static_cast<std::uint16_t>(RequestCid(task.request.data())),
                       kCqeInternalError);
-        UC_ERROR("ASU fake backend worker failed code={} message={}", static_cast<int>(status.code),
+        KV_ERROR("ASU fake backend worker failed code={} message={}", static_cast<int>(status.code),
                  status.message);
     }
     PublishCompletion(task.flagBuffer, completion);

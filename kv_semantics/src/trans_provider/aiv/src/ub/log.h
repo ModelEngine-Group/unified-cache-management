@@ -26,10 +26,10 @@
 
 #include "logger.h"
 
-#define UB_LOG_ERROR(...) UC_ERROR(__VA_ARGS__)
-#define UB_LOG_WARN(...) UC_WARN(__VA_ARGS__)
-#define UB_LOG_INFO(...) UC_INFO(__VA_ARGS__)
-#define UB_LOG_DEBUG(...) UC_DEBUG(__VA_ARGS__)
+#define UB_LOG_ERROR(...) KV_ERROR(__VA_ARGS__)
+#define UB_LOG_WARN(...) KV_WARN(__VA_ARGS__)
+#define UB_LOG_INFO(...) KV_INFO(__VA_ARGS__)
+#define UB_LOG_DEBUG(...) KV_DEBUG(__VA_ARGS__)
 
 #define RDMA_LOG_ERROR UB_LOG_ERROR
 #define RDMA_LOG_WARN UB_LOG_WARN

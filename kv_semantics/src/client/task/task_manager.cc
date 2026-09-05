@@ -27,7 +27,7 @@
 #include <string>
 #include <utility>
 #include "kv_client_impl.h"
-#include "logger/logger.h"
+#include "logger.h"
 #include "router/router.h"
 
 namespace kv {
@@ -139,7 +139,7 @@ void ClientTaskManager::CompleteWithError(const ClientTaskPtr& task, const Statu
     std::lock_guard<std::mutex> lock{task->waitMu};
     std::fill(task->entryStatus.begin(), task->entryStatus.end(), status);
     task->finalStatus = status;
-    UC_ERROR("ASU client task failed: client_task_id={} op={} code={} message={}.", task->taskId,
+    KV_ERROR("ASU client task failed: client_task_id={} op={} code={} message={}.", task->taskId,
              AsuOpTypeName(task->opType), static_cast<int>(status.code), status.message);
     task->state.store(ClientTaskState::COMPLETED, std::memory_order_release);
     task->cv.notify_all();
@@ -224,7 +224,7 @@ void ClientTaskManager::Finalize(const ClientTaskPtr& task)
         ++failedTransportTasks;
         const auto itemCount = transportTask->entries.empty() ? transportTask->keys.size()
                                                               : transportTask->entries.size();
-        UC_ERROR(
+        KV_ERROR(
             "ASU client transport task failed: client_task_id={} op={} asuId={} "
             "transport_task_id={} item_count={} code={} message={}.",
             task->taskId, AsuOpTypeName(task->opType), transportTask->asuId, transportTask->taskId,
@@ -235,7 +235,7 @@ void ClientTaskManager::Finalize(const ClientTaskPtr& task)
                                                   : Status::Error(StatusCode::PARTIAL_FAILED,
                                                                   "client task partially failed");
     if (task->finalStatus.ok()) {
-        UC_DEBUG("ASU client task completed: client_task_id={} op={} transport_tasks={}.",
+        KV_DEBUG("ASU client task completed: client_task_id={} op={} transport_tasks={}.",
                  task->taskId, AsuOpTypeName(task->opType), task->transportTasks.size());
     }
     task->state.store(ClientTaskState::COMPLETED, std::memory_order_release);
@@ -345,7 +345,7 @@ Status ClientTaskManager::WaitContext(const ClientTaskPtr& task, std::uint64_t w
             StatusCode::TIMEOUT,
             "client task wait timeout: client_task_id=" + std::to_string(task->taskId) +
                 " op=" + AsuOpTypeName(task->opType) + " wait_ms=" + std::to_string(waitTimeoutMs));
-        UC_ERROR("ASU client task wait timeout: client_task_id={} op={} wait_ms={}.", task->taskId,
+        KV_ERROR("ASU client task wait timeout: client_task_id={} op={} wait_ms={}.", task->taskId,
                  AsuOpTypeName(task->opType), waitTimeoutMs);
     }
     return result.status;

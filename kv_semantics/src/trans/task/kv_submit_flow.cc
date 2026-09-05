@@ -55,7 +55,7 @@ Status TransportTaskExecutor::PrepareTaskSubBatches(
     if (IsEntryBatchOp(ctx.opType)) {
         const auto opType = ctx.opType;
         if (ctx.entries.empty()) {
-            UC_ERROR("Submit entry batch failed: entry batch is empty");
+            KV_ERROR("Submit entry batch failed: entry batch is empty");
             return Status::Error(StatusCode::INVALID_ARGUMENT, "entry batch is empty");
         }
         const auto entries = BatchView<KVBuffer>{ctx.entries.data(), ctx.entries.size()};
@@ -67,7 +67,7 @@ Status TransportTaskExecutor::PrepareTaskSubBatches(
             const auto subBatchStatus =
                 BuildEntrySubBatchRequest(opType, subBatch, subBatchContext);
             if (!subBatchStatus.ok()) {
-                UC_ERROR(
+                KV_ERROR(
                     "Build entry sub-batch request failed index={} batch_size={} code={} "
                     "message={}",
                     index, subBatch.entries.size, static_cast<int>(subBatchStatus.code),
@@ -77,7 +77,7 @@ Status TransportTaskExecutor::PrepareTaskSubBatches(
         }
     } else if (IsKeyBatchOp(ctx.opType)) {
         if (ctx.keys.empty()) {
-            UC_ERROR("Submit key batch failed: key batch is empty");
+            KV_ERROR("Submit key batch failed: key batch is empty");
             return Status::Error(StatusCode::INVALID_ARGUMENT, "key batch is empty");
         }
         const auto keys = BatchView<CacheKey>{ctx.keys.data(), ctx.keys.size()};
@@ -89,7 +89,7 @@ Status TransportTaskExecutor::PrepareTaskSubBatches(
             const auto subBatchStatus =
                 SubmitKeySubBatchRequest(ctx.opType, subBatch, subBatchContext);
             if (!subBatchStatus.ok()) {
-                UC_ERROR("Submit key sub-batch failed index={} batch_size={} code={} message={}",
+                KV_ERROR("Submit key sub-batch failed index={} batch_size={} code={} message={}",
                          index, subBatch.keys.size, static_cast<int>(subBatchStatus.code),
                          subBatchStatus.message);
                 return subBatchStatus;
@@ -99,12 +99,12 @@ Status TransportTaskExecutor::PrepareTaskSubBatches(
         auto& subBatchContext = subBatchContexts.emplace_back();
         const auto subBatchStatus = SubmitKeepAliveRequest(subBatchContext);
         if (!subBatchStatus.ok()) {
-            UC_ERROR("Submit keep-alive request failed code={} message={}",
+            KV_ERROR("Submit keep-alive request failed code={} message={}",
                      static_cast<int>(subBatchStatus.code), subBatchStatus.message);
             return subBatchStatus;
         }
     } else {
-        UC_ERROR("Unsupported transport operation op_type={}", static_cast<int>(ctx.opType));
+        KV_ERROR("Unsupported transport operation op_type={}", static_cast<int>(ctx.opType));
         return Status::Error(StatusCode::UNSUPPORTED, "transport operation is unsupported");
     }
     return Status::OK();
@@ -137,7 +137,7 @@ void TransportTaskExecutor::SendSubBatchBuffers(
     if (sendStatuses.size() != ioBatches.size()) {
         const auto status = Status::Error(StatusCode::INTERNAL_ERROR,
                                           "transport send returned unexpected status count");
-        UC_ERROR("Transport send returned unexpected status count expected={} actual={}",
+        KV_ERROR("Transport send returned unexpected status count expected={} actual={}",
                  ioBatches.size(), sendStatuses.size());
         for (auto& subBatchContext : subBatchContexts) {
             SetSubBatchSendFailed(subBatchContext, status);
@@ -151,7 +151,7 @@ void TransportTaskExecutor::SendSubBatchBuffers(
         const auto& subBatchStatus = sendStatuses[index];
         if (subBatchStatus.ok()) { continue; }
 
-        UC_ERROR("Send sub-batch failed sub_batch_index={} cid={} code={} message={}", index,
+        KV_ERROR("Send sub-batch failed sub_batch_index={} cid={} code={} message={}", index,
                  subBatchContext.cid, static_cast<int>(subBatchStatus.code),
                  subBatchStatus.message);
         SetSubBatchSendFailed(subBatchContext, subBatchStatus);

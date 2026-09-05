@@ -10,8 +10,7 @@ add_library(aiv_provider_foundation OBJECT ${AIV_PROVIDER_FOUNDATION_SOURCES})
 target_include_directories(aiv_provider_foundation
     PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}"
-        "${UCM_ROOT_DIR}/ucm/shared/infra/logger"
-        "${UCM_ROOT_DIR}/ucm/shared/infra/logger/cc")
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../common/logger")
 target_compile_features(aiv_provider_foundation PRIVATE cxx_std_17)
 target_compile_definitions(aiv_provider_foundation PRIVATE SPDLOG_FMT_EXTERNAL)
 target_link_libraries(aiv_provider_foundation

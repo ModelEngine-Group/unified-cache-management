@@ -40,12 +40,12 @@ Status ValidateSqeRequestAttrs(const std::unordered_map<std::string, std::string
         try {
             out = std::stoull(iter->second, nullptr, 0);
             if (out > maxValue) {
-                UC_ERROR("Validate SQE attr failed name={} value={} reason=exceeds_range", name,
+                KV_ERROR("Validate SQE attr failed name={} value={} reason=exceeds_range", name,
                          iter->second);
                 return Status::Error(StatusCode::INVALID_ARGUMENT, name + " exceeds valid range");
             }
         } catch (const std::exception&) {
-            UC_ERROR("Validate SQE attr failed name={} value={} reason=invalid_integer", name,
+            KV_ERROR("Validate SQE attr failed name={} value={} reason=invalid_integer", name,
                      iter->second);
             return Status::Error(StatusCode::INVALID_ARGUMENT, name + " is not a valid integer");
         }
@@ -64,12 +64,12 @@ Status ValidateSqeRequestAttrs(const std::unordered_map<std::string, std::string
         std::uint64_t parsed;
         auto s = parseInteger(name, maxValue, parsed);
         if (s.code == StatusCode::NOT_FOUND) {
-            UC_ERROR("Validate SQE attr failed name={} reason=missing_required", name);
+            KV_ERROR("Validate SQE attr failed name={} reason=missing_required", name);
             return Status::Error(StatusCode::INVALID_ARGUMENT, name + " is required");
         }
         if (!s.ok()) { return s; }
         if (parsed == 0) {
-            UC_ERROR("Validate SQE attr failed name={} reason=must_be_positive", name);
+            KV_ERROR("Validate SQE attr failed name={} reason=must_be_positive", name);
             return Status::Error(StatusCode::INVALID_ARGUMENT, name + " must be greater than zero");
         }
         return Status::OK();
@@ -82,7 +82,7 @@ Status ValidateSqeRequestAttrs(const std::unordered_map<std::string, std::string
         if (value == "1" || value == "0" || value == "true" || value == "false") {
             return Status::OK();
         }
-        UC_ERROR("Validate SQE attr failed name={} value={} reason=invalid_bool", name,
+        KV_ERROR("Validate SQE attr failed name={} value={} reason=invalid_bool", name,
                  iter->second);
         return Status::Error(StatusCode::INVALID_ARGUMENT, name + " is not a valid bool");
     };

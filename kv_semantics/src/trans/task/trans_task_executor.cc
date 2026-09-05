@@ -47,7 +47,7 @@ TransportTaskExecutor::~TransportTaskExecutor()
 {
     const auto status = Shutdown();
     if (!status.ok()) {
-        UC_WARN("TransportTaskExecutor destructor cleanup failed: code={} message={}",
+        KV_WARN("TransportTaskExecutor destructor cleanup failed: code={} message={}",
                 static_cast<int>(status.code), status.message);
     }
 }
@@ -74,7 +74,7 @@ Status TransportTaskExecutor::Init()
             Status::Error(status.code, "failed to register send buffer: " + status.message);
         const auto shutdownStatus = Shutdown();
         if (!shutdownStatus.ok()) {
-            UC_WARN(
+            KV_WARN(
                 "TransportTaskExecutor::Init cleanup failed after send buffer registration "
                 "failure: code={} message={}",
                 static_cast<int>(shutdownStatus.code), shutdownStatus.message);
@@ -88,7 +88,7 @@ Status TransportTaskExecutor::Init()
             Status::Error(status.code, "failed to register flag buffer: " + status.message);
         const auto shutdownStatus = Shutdown();
         if (!shutdownStatus.ok()) {
-            UC_WARN(
+            KV_WARN(
                 "TransportTaskExecutor::Init cleanup failed after flag buffer registration "
                 "failure: code={} message={}",
                 static_cast<int>(shutdownStatus.code), shutdownStatus.message);
@@ -103,7 +103,7 @@ Status TransportTaskExecutor::Shutdown()
     Status finalStatus = Status::OK();
     auto status = UnregisterBufferMemory(flagBufferMrHandle_);
     if (!status.ok()) {
-        UC_WARN("Failed to unregister flag buffer: code={} message={}",
+        KV_WARN("Failed to unregister flag buffer: code={} message={}",
                 static_cast<int>(status.code), status.message);
         finalStatus =
             Status::Error(status.code, "failed to unregister flag buffer: " + status.message);
@@ -111,7 +111,7 @@ Status TransportTaskExecutor::Shutdown()
 
     status = UnregisterBufferMemory(sendBufferMrHandle_);
     if (!status.ok()) {
-        UC_WARN("Failed to unregister send buffer: code={} message={}",
+        KV_WARN("Failed to unregister send buffer: code={} message={}",
                 static_cast<int>(status.code), status.message);
         if (finalStatus.ok()) {
             finalStatus =
@@ -150,7 +150,7 @@ Status TransportTaskExecutor::RegisterBufferMemory(BufferManager& bufferManager,
     if (!status.ok()) {
         const auto unregisterStatus = UnregisterBufferMemory(mrHandle);
         if (!unregisterStatus.ok()) {
-            UC_WARN("Failed to unregister memory after token lookup failure: {}",
+            KV_WARN("Failed to unregister memory after token lookup failure: {}",
                     unregisterStatus.message);
         }
         return Status::Error(StatusCode::INTERNAL_ERROR,
@@ -186,7 +186,7 @@ void TransportTaskExecutor::ReleaseSubBatchResources(TransportSubBatchContext& s
         const auto slotIndex = subBatchContext.sendSge.slot_index;
         auto status = sendBufferManager_.Free(slotIndex);
         if (!status.ok()) {
-            UC_ERROR("Failed to release sub-batch send buffer slot({}): {}", slotIndex,
+            KV_ERROR("Failed to release sub-batch send buffer slot({}): {}", slotIndex,
                      status.message);
         }
         subBatchContext.sendSge = {};
@@ -196,7 +196,7 @@ void TransportTaskExecutor::ReleaseSubBatchResources(TransportSubBatchContext& s
         const auto slotIndex = subBatchContext.flagBuffer.slot_index;
         auto status = flagBufferManager_.Free(slotIndex);
         if (!status.ok()) {
-            UC_ERROR("Failed to release sub-batch flag buffer slot({}): {}", slotIndex,
+            KV_ERROR("Failed to release sub-batch flag buffer slot({}): {}", slotIndex,
                      status.message);
         }
         subBatchContext.flagBuffer = {};
@@ -310,7 +310,7 @@ bool TransportTaskExecutor::Execute(const TransportTaskPtr& task)
     if (status.ok()) { BuildSubBatchSendBuffers(subBatchContexts, ioBatches); }
 
     if (!status.ok()) {
-        UC_ERROR("Abort transport task before send task_id={} code={} message={}", task->taskId,
+        KV_ERROR("Abort transport task before send task_id={} code={} message={}", task->taskId,
                  static_cast<int>(status.code), status.message);
     } else {
         SendSubBatchBuffers(subBatchContexts, ioBatches);
@@ -320,7 +320,7 @@ bool TransportTaskExecutor::Execute(const TransportTaskPtr& task)
     {
         std::lock_guard<std::mutex> lock(task->mutex);
         if (task->Done()) {
-            UC_DEBUG(
+            KV_DEBUG(
                 "TransportTaskExecutor::Execute canceled during process task_id={} sub_batches={}",
                 task->taskId, subBatchContexts.size());
             ReleaseAllSubBatchResources(subBatchContexts);
@@ -331,7 +331,7 @@ bool TransportTaskExecutor::Execute(const TransportTaskPtr& task)
         *task->subBatchContexts = std::move(subBatchContexts);
         task->InitializeRemainingSubBatchCount();
         task->TryFinalizeFromSubBatches();
-        UC_DEBUG(
+        KV_DEBUG(
             "TransportTaskExecutor::Execute submitted task_id={} op_type={} entries={} keys={} "
             "sub_batches={} done={} code={} message={}",
             task->taskId, static_cast<int>(task->opType), task->entries.size(), task->keys.size(),

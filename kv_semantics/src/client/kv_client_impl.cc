@@ -29,7 +29,7 @@
 #include "types.h"
 #include "utils/config_utils.h"
 #include "router/config.h"
-#include "logger/logger.h"
+#include "logger.h"
 #include "router/router.h"
 
 namespace kv {
@@ -527,7 +527,7 @@ Status AsuClientImpl::BuildSnapshot(const GlobalView& view,
     kv::RouterConfig routerConfig;
     auto status = BuildRouterConfigFromAttrs(config_.attrs, routerConfig);
     if (!status.ok()) {
-        UC_ERROR("BuildSnapshot build router config failed: {}", status.message);
+        KV_ERROR("BuildSnapshot build router config failed: {}", status.message);
         return status;
     }
 
@@ -745,7 +745,7 @@ void AsuClientImpl::RequestBackgroundRefresh()
         refreshThread_ = std::thread([this] {
             const auto status = RefreshView();
             if (!status.ok()) {
-                UC_WARN("Background view refresh failed: code={} message={}",
+                KV_WARN("Background view refresh failed: code={} message={}",
                         static_cast<int>(status.code), status.message);
             }
             std::lock_guard<std::mutex> lock{mutex_};

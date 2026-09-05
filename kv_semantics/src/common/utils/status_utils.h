@@ -26,11 +26,11 @@
 #include <string>
 #include <utility>
 #include "types.h"
-#include "logger/logger.h"
+#include "logger.h"
 
 #define ASU_LOG_ERROR_STATUS(code, message)                                   \
     ([&]() {                                                                  \
         std::string asuStatusMessage = (message);                             \
-        UC_ERROR("{}", asuStatusMessage);                                     \
+        KV_ERROR("{}", asuStatusMessage);                                     \
         return Status::Error((code), std::move(asuStatusMessage)); \
     }())

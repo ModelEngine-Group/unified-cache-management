@@ -41,7 +41,7 @@ void UnregisterHostBuffer(void* host);
 void FreeHostMemory(void* host)
 {
     auto ret = aclrtFreeHost(host);
-    if (ret != ACL_SUCCESS) { UC_ERROR("Failed to free host memory addr={} ret={}", host, ret); }
+    if (ret != ACL_SUCCESS) { KV_ERROR("Failed to free host memory addr={} ret={}", host, ret); }
 }
 
 void* AlignUp(void* ptr, std::uintptr_t alignment)
@@ -60,15 +60,15 @@ void ReleaseDeviceMappedHostMemory(void* mappedAddress, aclrtDrvMemHandle handle
 {
     auto ret = aclrtUnmapMem(mappedAddress);
     if (ret != ACL_SUCCESS) {
-        UC_ERROR("Failed to unmap device-mapped host memory addr={} ret={}", mappedAddress, ret);
+        KV_ERROR("Failed to unmap device-mapped host memory addr={} ret={}", mappedAddress, ret);
     }
     ret = aclrtReleaseMemAddress(mappedAddress);
     if (ret != ACL_SUCCESS) {
-        UC_ERROR("Failed to release device-mapped host address addr={} ret={}", mappedAddress, ret);
+        KV_ERROR("Failed to release device-mapped host address addr={} ret={}", mappedAddress, ret);
     }
     ret = aclrtFreePhysical(handle);
     if (ret != ACL_SUCCESS) {
-        UC_ERROR("Failed to free physical device memory handle={} ret={}", handle, ret);
+        KV_ERROR("Failed to free physical device memory handle={} ret={}", handle, ret);
     }
 }
 
@@ -116,7 +116,7 @@ std::shared_ptr<void> AscendBuffer::MakeDeviceMappedHostBuffer(size_t size)
     int32_t deviceId = 0;
     auto ret = aclrtGetDevice(&deviceId);
     if (ret != ACL_SUCCESS) {
-        UC_ERROR("aclrtGetDevice failed, size={} ret={}", size, ret);
+        KV_ERROR("aclrtGetDevice failed, size={} ret={}", size, ret);
         return nullptr;
     }
 
@@ -132,7 +132,7 @@ std::shared_ptr<void> AscendBuffer::MakeDeviceMappedHostBuffer(size_t size)
         aclrtMemGetAllocationGranularity(&prop, ACL_RT_MEM_ALLOC_GRANULARITY_MINIMUM, &granularity);
     constexpr auto maxSize = std::numeric_limits<size_t>::max();
     if (ret != ACL_SUCCESS || granularity == 0 || size > maxSize - (granularity - 1)) {
-        UC_ERROR(
+        KV_ERROR(
             "Invalid device memory allocation granularity, deviceId={} size={} granularity={} "
             "maxSize={} ret={}",
             deviceId, size, granularity, maxSize, ret);
@@ -143,7 +143,7 @@ std::shared_ptr<void> AscendBuffer::MakeDeviceMappedHostBuffer(size_t size)
     aclrtDrvMemHandle handle = nullptr;
     ret = aclrtMallocPhysical(&handle, allocationSize, &prop, 0);
     if (ret != ACL_SUCCESS) {
-        UC_ERROR("aclrtMallocPhysical failed, deviceId={} size={} ret={}", deviceId, allocationSize,
+        KV_ERROR("aclrtMallocPhysical failed, deviceId={} size={} ret={}", deviceId, allocationSize,
                  ret);
         return nullptr;
     }
@@ -151,14 +151,14 @@ std::shared_ptr<void> AscendBuffer::MakeDeviceMappedHostBuffer(size_t size)
     void* mappedAddress = nullptr;
     ret = aclrtReserveMemAddress(&mappedAddress, allocationSize, 0, nullptr, 0);
     if (ret != ACL_SUCCESS) {
-        UC_ERROR("aclrtReserveMemAddress failed, size={} ret={}", allocationSize, ret);
+        KV_ERROR("aclrtReserveMemAddress failed, size={} ret={}", allocationSize, ret);
         aclrtFreePhysical(handle);
         return nullptr;
     }
 
     ret = aclrtMapMem(mappedAddress, allocationSize, 0, handle, 0);
     if (ret != ACL_SUCCESS) {
-        UC_ERROR("aclrtMapMem failed, addr={} size={} ret={}", mappedAddress, allocationSize, ret);
+        KV_ERROR("aclrtMapMem failed, addr={} size={} ret={}", mappedAddress, allocationSize, ret);
         aclrtReleaseMemAddress(mappedAddress);
         aclrtFreePhysical(handle);
         return nullptr;
@@ -171,13 +171,13 @@ std::shared_ptr<void> AscendBuffer::MakeDeviceMappedHostBuffer(size_t size)
     accessDesc.location.id = 0;
     ret = aclrtMemSetAccess(mappedAddress, allocationSize, &accessDesc, 1);
     if (ret != ACL_SUCCESS) {
-        UC_ERROR("Failed to grant host access to device memory addr={} size={} ret={}",
+        KV_ERROR("Failed to grant host access to device memory addr={} size={} ret={}",
                  mappedAddress, allocationSize, ret);
         ReleaseDeviceMappedHostMemory(mappedAddress, handle);
         return nullptr;
     }
 #else
-    UC_ERROR(
+    KV_ERROR(
         "Unsupported ACL version {}.{}: device-mapped host memory requires "
         "aclrtMemSetAccess, minimum supported ACL version is 1.16",
         ACL_MAJOR_VERSION, ACL_MINOR_VERSION);
@@ -205,7 +205,7 @@ std::shared_ptr<void> AscendBuffer::MakeHostMappedDeviceBuffer(size_t size, void
     void* device = nullptr;
     auto status = RegisterHostBuffer(host, size, &device);
     if (!status.ok()) {
-        UC_ERROR("Failed to register host-mapped device memory addr={} size={} status={}", host,
+        KV_ERROR("Failed to register host-mapped device memory addr={} size={} status={}", host,
                  size, status.message);
         FreeHostMemory(allocatedHost);
         return nullptr;

@@ -93,7 +93,7 @@ Status AllocateSubBatchFlagBuffer(KvOpcode opcode, std::size_t batchNum,
     const auto flagBufferSize = GetFlagBufferSize(opcode, batchNum);
     auto status = flagBufferManager.Allocate(flagBufferSize, subBatchContext.flagBuffer);
     if (!status.ok()) {
-        UC_ERROR(
+        KV_ERROR(
             "Allocate sub-batch flag buffer failed opcode={} batch_num={} size={} code={} "
             "message={}",
             static_cast<int>(opcode), batchNum, flagBufferSize, static_cast<int>(status.code),
@@ -149,7 +149,7 @@ Status PackSubBatchRequest(ProtocolManager& protocolManager, BufferManager& send
     auto packedSize = protocolManager.GetPackedSize(opcode, request);
     auto status = sendBufferManager.Allocate(packedSize, subBatchContext.sendSge);
     if (!status.ok()) {
-        UC_ERROR(
+        KV_ERROR(
             "Allocate sub-batch send buffer failed opcode={} cid={} packed_size={} code={} "
             "message={}",
             static_cast<int>(opcode), subBatchContext.cid, packedSize,
@@ -161,7 +161,7 @@ Status PackSubBatchRequest(ProtocolManager& protocolManager, BufferManager& send
     status = protocolManager.PackRequest(
         reinterpret_cast<void*>(subBatchContext.sendSge.local_addr), opcode, request);
     if (!status.ok()) {
-        UC_ERROR("Pack sub-batch request failed opcode={} cid={} code={} message={}",
+        KV_ERROR("Pack sub-batch request failed opcode={} cid={} code={} message={}",
                  static_cast<int>(opcode), subBatchContext.cid, static_cast<int>(status.code),
                  status.message);
         SetSubBatchBuildFailed(subBatchContext, status);
@@ -346,7 +346,7 @@ std::unique_ptr<SqeRequest> BuildSqeRequest(
         case KvOpcode::KeepAlive:
             return std::make_unique<KvKeepAliveRequest>(BuildKeepAliveRequest(cid, flagBuffer));
         default:
-            UC_ERROR("Build SQE request failed: unsupported opcode={} cid={}",
+            KV_ERROR("Build SQE request failed: unsupported opcode={} cid={}",
                      static_cast<int>(opcode), cid);
             return nullptr;
     }

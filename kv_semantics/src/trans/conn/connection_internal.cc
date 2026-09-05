@@ -79,11 +79,11 @@ bool ConnectionChannel::MarkForDrain()
     ChannelState expected = ChannelState::ACTIVE;
     if (!state.compare_exchange_strong(expected, ChannelState::DRAINING,
                                        std::memory_order_acq_rel)) {
-        UC_DEBUG("ConnectionChannel::MarkForDrain CAS FAILED: current_state={} (expected ACTIVE=0)",
+        KV_DEBUG("ConnectionChannel::MarkForDrain CAS FAILED: current_state={} (expected ACTIVE=0)",
                  static_cast<int>(expected));
         return false;
     }
-    UC_DEBUG("ConnectionChannel::MarkForDrain CAS OK: ch_id={} ACTIVE->DRAINING", channelId);
+    KV_DEBUG("ConnectionChannel::MarkForDrain CAS OK: ch_id={} ACTIVE->DRAINING", channelId);
     return true;
 }
 
@@ -101,7 +101,7 @@ std::shared_ptr<ConnectionChannel> ConnectionGroup::AddChannel(ConnectionHandle 
     auto id = nextChannelId_.fetch_add(1, std::memory_order_relaxed);
     auto channel = std::make_shared<ConnectionChannel>(id, this, handle, provider);
     channels.push_back(channel);
-    UC_DEBUG("ConnectionGroup::AddChannel groupId={} ch_id={} totalChannels={}", groupId,
+    KV_DEBUG("ConnectionGroup::AddChannel groupId={} ch_id={} totalChannels={}", groupId,
              channel->GetChannelId(), channels.size());
     return channel;
 }
@@ -112,7 +112,7 @@ void ConnectionGroup::RemoveChannel(ConnectionChannel* channel)
         channels.begin(), channels.end(),
         [channel](const std::shared_ptr<ConnectionChannel>& p) { return p.get() == channel; });
     if (it != channels.end()) {
-        UC_DEBUG("ConnectionGroup::RemoveChannel groupId={} ch_id={} removed, totalChannels={}",
+        KV_DEBUG("ConnectionGroup::RemoveChannel groupId={} ch_id={} removed, totalChannels={}",
                  groupId, channel->GetChannelId(), channels.size() - 1);
         channels.erase(it);
     }

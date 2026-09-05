@@ -42,7 +42,7 @@ Status ConnectionManager::AddGroup(const AsuEndpoint& endpoint, std::uint32_t qp
     if (shuttingDown_.load(std::memory_order_acquire)) {
         return Status::Error(StatusCode::NOT_INITIALIZED, "connection manager shutting down");
     }
-    UC_DEBUG("ConnectionManager::AddGroup endpoint={} qp_num={}", endpoint.ip, qp_num);
+    KV_DEBUG("ConnectionManager::AddGroup endpoint={} qp_num={}", endpoint.ip, qp_num);
 
     std::vector<TransProvider::ConnectionHandle> handles;
     auto createStatus =
@@ -58,7 +58,7 @@ Status ConnectionManager::AddGroup(const AsuEndpoint& endpoint, std::uint32_t qp
         const auto deleteStatuses = provider_.DeleteConnections(handles);
         for (const auto& deleteStatus : deleteStatuses) {
             if (!deleteStatus.ok()) {
-                UC_WARN(
+                KV_WARN(
                     "ConnectionManager::AddGroup cleanup failed after capability query failure: "
                     "code={} message={}",
                     static_cast<int>(deleteStatus.code), deleteStatus.message);
@@ -68,7 +68,7 @@ Status ConnectionManager::AddGroup(const AsuEndpoint& endpoint, std::uint32_t qp
     }
     if (capabilityStatus.code == StatusCode::UNSUPPORTED) {
         capabilities = {};
-        UC_DEBUG(
+        KV_DEBUG(
             "ConnectionManager::AddGroup server capability query is not supported. Use default "
             "configurations instead");
     }
@@ -89,13 +89,13 @@ Status ConnectionManager::AddGroup(const AsuEndpoint& endpoint, std::uint32_t qp
         }
     }
     cacheDirty_.store(false, std::memory_order_release);
-    UC_DEBUG("ConnectionManager::AddGroup OK");
+    KV_DEBUG("ConnectionManager::AddGroup OK");
     return Status::OK();
 }
 
 Status ConnectionManager::Shutdown()
 {
-    UC_DEBUG("ConnectionManager::Shutdown start");
+    KV_DEBUG("ConnectionManager::Shutdown start");
     shuttingDown_.store(true, std::memory_order_release);
     StopRecoverLoop();
 
@@ -111,7 +111,7 @@ Status ConnectionManager::Shutdown()
         groups_.clear();
     }
 
-    UC_DEBUG("ConnectionManager::Shutdown done");
+    KV_DEBUG("ConnectionManager::Shutdown done");
     return Status::OK();
 }
 
@@ -122,12 +122,12 @@ std::shared_ptr<ConnectionChannel> ConnectionManager::SelectConnection()
     auto channel =
         policy == RoutingPolicy::LEAST_LOADED ? SelectByLeastLoaded() : SelectByRoundRobin();
     if (channel) {
-        UC_DEBUG("ConnectionManager::SelectConnection policy={} ch_id={} group_id={} inflight={}",
+        KV_DEBUG("ConnectionManager::SelectConnection policy={} ch_id={} group_id={} inflight={}",
                  policy == RoutingPolicy::LEAST_LOADED ? "LEAST_LOADED" : "ROUND_ROBIN",
                  channel->GetChannelId(), channel->GetGroup()->GetGroupId(),
                  channel->GetInflightCount());
     } else {
-        UC_DEBUG("ConnectionManager::SelectConnection policy={} NO available channel",
+        KV_DEBUG("ConnectionManager::SelectConnection policy={} NO available channel",
                  policy == RoutingPolicy::LEAST_LOADED ? "LEAST_LOADED" : "ROUND_ROBIN");
     }
     return channel;
@@ -153,22 +153,22 @@ void ConnectionManager::ReportFailure(const std::shared_ptr<ConnectionChannel>& 
     if (channel == nullptr) { return; }
     if (shuttingDown_.load(std::memory_order_acquire)) { return; }
     auto oldCount = channel->FetchAddErrorCount(1);
-    UC_DEBUG("ConnectionManager::ReportFailure ch_id={} group_id={} error_count={} threshold={}",
+    KV_DEBUG("ConnectionManager::ReportFailure ch_id={} group_id={} error_count={} threshold={}",
              channel->GetChannelId(), channel->GetGroup()->GetGroupId(), oldCount + 1,
              maxErrorCount_);
     if (oldCount + 1 < maxErrorCount_) {
-        UC_DEBUG("ConnectionManager::ReportFailure below threshold, skip drain");
+        KV_DEBUG("ConnectionManager::ReportFailure below threshold, skip drain");
         return;
     }
 
     if (!channel->MarkForDrain()) {
-        UC_DEBUG(
+        KV_DEBUG(
             "ConnectionManager::ReportFailure MarkForDrain CAS failed "
             "(already draining/failed)");
         return;
     }
 
-    UC_DEBUG("ConnectionManager::ReportFailure MarkForDrain OK, ch_id={} state=DRAINING",
+    KV_DEBUG("ConnectionManager::ReportFailure MarkForDrain OK, ch_id={} state=DRAINING",
              channel->GetChannelId());
     cacheDirty_.store(true, std::memory_order_release);
 
@@ -189,7 +189,7 @@ void ConnectionManager::ReportSuccess(const std::shared_ptr<ConnectionChannel>& 
 
 void ConnectionManager::StartRecoverLoop()
 {
-    UC_DEBUG("ConnectionManager::StartRecoverLoop start");
+    KV_DEBUG("ConnectionManager::StartRecoverLoop start");
     if (recoverWorker_.joinable()) { return; }
     stopRecover_.store(false, std::memory_order_release);
     recoverWorker_ = std::thread(&ConnectionManager::RecoverLoop, this);
@@ -197,14 +197,14 @@ void ConnectionManager::StartRecoverLoop()
 
 void ConnectionManager::StopRecoverLoop()
 {
-    UC_DEBUG("ConnectionManager::StopRecoverLoop start");
+    KV_DEBUG("ConnectionManager::StopRecoverLoop start");
     stopRecover_.store(true, std::memory_order_release);
     if (recoverWorker_.joinable()) { recoverWorker_.join(); }
 }
 
 void ConnectionManager::RecoverLoop()
 {
-    UC_DEBUG("ConnectionManager::RecoverLoop started");
+    KV_DEBUG("ConnectionManager::RecoverLoop started");
     while (!stopRecover_.load(std::memory_order_acquire)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(kRecoverIntervalMs));
         if (stopRecover_.load(std::memory_order_acquire)) { break; }
@@ -225,7 +225,7 @@ void ConnectionManager::RecoverLoop()
                 provider_.CreateConnection(localIp_, ep.ip, ep.port, 1, timeout_, new_handles);
 
             if (!createStatus.ok()) {
-                UC_DEBUG(
+                KV_DEBUG(
                     "ConnectionManager::RecoverLoop RebuildChannel FAILED, keep in drain_list for "
                     "retry group_id={}",
                     gid);
@@ -238,14 +238,14 @@ void ConnectionManager::RecoverLoop()
                 std::unique_lock<std::shared_mutex> lock(structureMu_);
                 grp->RemoveChannel(channel.get());
                 auto new_ch = grp->AddChannel(new_handles[0], &provider_);
-                UC_DEBUG(
+                KV_DEBUG(
                     "ConnectionManager::RecoverLoop RebuildChannel OK: new_ch_id={} group_id={}",
                     new_ch->GetChannelId(), gid);
                 cacheDirty_.store(true, std::memory_order_release);
             }
         }
     }
-    UC_DEBUG("ConnectionManager::RecoverLoop stopped");
+    KV_DEBUG("ConnectionManager::RecoverLoop stopped");
 }
 
 void ConnectionManager::RebuildChannelCache()
@@ -283,7 +283,7 @@ std::shared_ptr<ConnectionChannel> ConnectionManager::SelectByRoundRobin()
             return channel;
         }
     }
-    UC_DEBUG(
+    KV_DEBUG(
         "ConnectionManager::SelectByRoundRobin no available channel: all ACTIVE channels "
         "reached maximum inflight limit, max_inflight_per_channel={}",
         maxInflightPerChannel);
@@ -315,7 +315,7 @@ std::shared_ptr<ConnectionChannel> ConnectionManager::SelectByLeastLoaded()
         selected->IncrementInflight();
         return selected;
     }
-    UC_DEBUG(
+    KV_DEBUG(
         "ConnectionManager::SelectByLeastLoaded no available channel: all ACTIVE channels "
         "reached maximum inflight limit, max_inflight_per_channel={}",
         maxInflightPerChannel);

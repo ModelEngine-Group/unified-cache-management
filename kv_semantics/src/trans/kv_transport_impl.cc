@@ -63,9 +63,9 @@ Status AsuTransportImpl::Init(const std::string& configPath,
 Status AsuTransportImpl::Init(const TransportConfig& config,
                               std::shared_ptr<TransProvider> transProvider)
 {
-    UC_DEBUG("AsuTransportImpl::Init start");
+    KV_DEBUG("AsuTransportImpl::Init start");
     if (worker_.joinable()) {
-        UC_DEBUG("AsuTransportImpl::Init already initialized");
+        KV_DEBUG("AsuTransportImpl::Init already initialized");
         return Status::OK();
     }
     config_ = config;
@@ -79,7 +79,7 @@ Status AsuTransportImpl::Init(const TransportConfig& config,
     }
 
     if (!transProvider_) {
-        UC_ERROR("AsuTransportImpl::Init: TransProvider is null");
+        KV_ERROR("AsuTransportImpl::Init: TransProvider is null");
         return Status::Error(StatusCode::NOT_INITIALIZED, "TransProvider is null");
     }
 
@@ -98,14 +98,14 @@ Status AsuTransportImpl::Init(const TransportConfig& config,
                                                        config_.maxErrorCount);
 
     const std::uint32_t qp_num = config_.qpNum;
-    UC_DEBUG("AsuTransportImpl::Init endpoints={} qp_num={}", config_.endpoints.size(), qp_num);
+    KV_DEBUG("AsuTransportImpl::Init endpoints={} qp_num={}", config_.endpoints.size(), qp_num);
     for (const auto& ep : config_.endpoints) {
         auto s = connManager_->AddGroup(ep, qp_num);
         if (!s.ok()) {
-            UC_DEBUG("AsuTransportImpl::Init AddGroup FAILED: {}", s.message);
+            KV_DEBUG("AsuTransportImpl::Init AddGroup FAILED: {}", s.message);
             const auto shutdownStatus = Shutdown();
             if (!shutdownStatus.ok()) {
-                UC_WARN(
+                KV_WARN(
                     "AsuTransportImpl::Init cleanup failed after AddGroup failure: code={} "
                     "message={}",
                     static_cast<int>(shutdownStatus.code), shutdownStatus.message);
@@ -117,7 +117,7 @@ Status AsuTransportImpl::Init(const TransportConfig& config,
     const auto serverCapabilities = connManager_->GetServerCapabilities();
     for (std::size_t index = 0; index < serverCapabilities.size(); ++index) {
         const auto& capabilities = serverCapabilities[index];
-        UC_INFO(
+        KV_INFO(
             "AsuTransportImpl::Init ServerKvCapabilities group={} queueNum={} ioQueueDepth={} "
             "ioQueueKeyConcurrency={} connectionKeyConcurrency={} singleValueMaxBytes={} "
             "batchValueMaxBytes={} batchStoreKeys={} batchLoadKeys={} deleteKeys={} "
@@ -137,7 +137,7 @@ Status AsuTransportImpl::Init(const TransportConfig& config,
         applyCapLimit(config_.asuDeleteIoNum, capabilities.deleteKeys);
         applyCapLimit(config_.asuQueryIoNum, capabilities.queryKeys);
     }
-    UC_INFO("AsuTransportImpl::Init effective batch limits: store={} load={} delete={} query={}",
+    KV_INFO("AsuTransportImpl::Init effective batch limits: store={} load={} delete={} query={}",
             config_.asuBatchStoreIoNum, config_.asuBatchLoadIoNum, config_.asuDeleteIoNum,
             config_.asuQueryIoNum);
 
@@ -148,7 +148,7 @@ Status AsuTransportImpl::Init(const TransportConfig& config,
     if (!status.ok()) {
         const auto shutdownStatus = Shutdown();
         if (!shutdownStatus.ok()) {
-            UC_WARN(
+            KV_WARN(
                 "AsuTransportImpl::Init cleanup failed after task executor initialization "
                 "failure: code={} message={}",
                 static_cast<int>(shutdownStatus.code), shutdownStatus.message);
@@ -161,7 +161,7 @@ Status AsuTransportImpl::Init(const TransportConfig& config,
     stopCompletionWorker_.store(false, std::memory_order_release);
     worker_ = std::thread(&AsuTransportImpl::WorkerLoop, this);
     completionWorker_ = std::thread(&AsuTransportImpl::CompletionLoop, this);
-    UC_DEBUG("AsuTransportImpl::Init OK: queueDepth={}", queueDepth);
+    KV_DEBUG("AsuTransportImpl::Init OK: queueDepth={}", queueDepth);
     return Status::OK();
 }
 
@@ -215,7 +215,7 @@ Status AsuTransportImpl::Shutdown()
         connManager_.reset();
     }
 
-    UC_DEBUG("AsuTransportImpl::Shutdown OK");
+    KV_DEBUG("AsuTransportImpl::Shutdown OK");
     return finalStatus;
 }
 

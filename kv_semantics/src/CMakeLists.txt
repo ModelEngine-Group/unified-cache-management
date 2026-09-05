@@ -14,13 +14,9 @@ file(GLOB KV_TRANSPORT_SOURCES CONFIGURE_DEPENDS
     trans_provider/aicpu/*.cc
     trans_provider/aiv/*.cc
     trans_provider/fake/*.cc
-)
-file(GLOB LOGGER_SOURCES CONFIGURE_DEPENDS
-    ${UCM_ROOT_DIR}/ucm/shared/infra/logger/*.cc
-    ${UCM_ROOT_DIR}/ucm/shared/infra/logger/cc/*.cc
+    common/logger/*.cc
 )
 list(APPEND KV_TRANSPORT_SOURCES ${KV_COMMON_SOURCES})
-list(APPEND KV_TRANSPORT_SOURCES ${LOGGER_SOURCES})
 add_library(kv_transport SHARED ${KV_TRANSPORT_SOURCES})
 target_include_directories(kv_transport
     PUBLIC
@@ -30,11 +26,9 @@ target_include_directories(kv_transport
         ${CMAKE_CURRENT_SOURCE_DIR}/common/utils
         ${CMAKE_CURRENT_SOURCE_DIR}/common/ds
         ${CMAKE_CURRENT_SOURCE_DIR}/common/runtime
+        ${CMAKE_CURRENT_SOURCE_DIR}/common/logger
         ${CMAKE_CURRENT_SOURCE_DIR}/trans
         ${CMAKE_CURRENT_SOURCE_DIR}/trans_provider
-        ${UCM_ROOT_DIR}/ucm/shared/infra
-        ${UCM_ROOT_DIR}/ucm/shared/infra/logger
-        ${UCM_ROOT_DIR}/ucm/shared/infra/logger/cc
 )
 target_compile_definitions(kv_transport PRIVATE SPDLOG_FMT_EXTERNAL)
 target_link_libraries(kv_transport
@@ -87,8 +81,8 @@ target_include_directories(kv_client
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/common/utils
         ${CMAKE_CURRENT_SOURCE_DIR}/common/ds
+        ${CMAKE_CURRENT_SOURCE_DIR}/common/logger
         ${CMAKE_CURRENT_SOURCE_DIR}/client
-        ${UCM_ROOT_DIR}/ucm/shared/infra
 )
 target_link_libraries(kv_client PUBLIC kv_transport pthread)
 target_compile_definitions(kv_client PRIVATE SPDLOG_FMT_EXTERNAL)
