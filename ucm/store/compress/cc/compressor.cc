@@ -49,6 +49,7 @@ private:
         if (buildType.empty()) { buildType = "Release"; }
         UC_INFO("{}-{}({}).", ns, UCM_COMMIT_ID, buildType);
         UC_INFO("Set {}::StoreBackend to {}.", ns, backend->Readme());
+        UC_INFO("Set {}::CpuAffinityCores to {}.", ns, config.cpuAffinityCores);
     }
 };
 
@@ -62,6 +63,7 @@ Status Compressor::Setup(const Detail::Dictionary& config)
     config.GetNumber("device_id", param.deviceId);
     config.GetNumber("tensor_size", param.tensorSize);
     config.GetNumber("shard_size", param.shardSize);
+    config.GetNumber("compressed_shard_size", param.compressedShardSize);
     config.GetNumber("block_size", param.blockSize);
     config.GetNumber("layer_size", param.layerSize);
     config.GetNumber("compress_ratio", param.compressRatio);
@@ -69,6 +71,7 @@ Status Compressor::Setup(const Detail::Dictionary& config)
     config.GetNumber("decompress_thread_num", param.decompressThreadNum);
     config.GetNumber("timeout_ms", param.timeoutMs);
     config.GetNumber("stream_number", param.streamNumber);
+    config.Get("cpu_affinity_cores", param.cpuAffinityCores);
 
     try {
         impl_ = std::make_shared<CompressorImpl>();
