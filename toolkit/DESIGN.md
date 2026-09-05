@@ -902,3 +902,35 @@ toolkit 应尽早失败，并给出可操作的错误信息：
 - 当前不在 toolkit 中新增 `--platform cuda|ascend` 语义；除非未来 `dev-sandbox` 原项目自己支持显式后端选择参数。
 - 网卡负载监控当前阶段只支持被动监控，不支持主动压测。
 - `ucm-toolkit` 作为独立包安装，不随主 `uc-manager` 包默认安装。
+
+## kv-calc 容量估算设计
+
+`kv-calc`（RFC #1217）是纯计算工具，仅依赖 Python 标准库（`argparse`/`math`/`urllib`/`json`），
+在容器内可离线运行。模型→KV 容量的口径复用并锁定 `docs/source/_static/calculator.js`，
+避免前端与命令行两套公式漂移。
+
+### 逐层 KV profile（回应混合注意力场景）
+
+不做"层数 × KV 头数 × head_dim × token 数"单一全局公式——该公式在混合注意力模型上同时
+高估（把固定状态层当线性增长）与口径错（MLA 应算 latent、滑动窗口层只算窗口、线性层只有
+固定 recurrent 状态）。改为 parts-based 逐层 profile：每层按其注意力类型给出 per-token 字节
+或固定字节，再求和：
+
+- 全量层（MHA/MQA/GQA）：`2 × kv_heads × head_dim × tokens`。
+- MLA 层：`(kv_lora_rank + qk_rope_head_dim) × tokens`（无 ×2，K/V 压到 latent）。
+- DSA 层：MLA latent + Lightning Indexer（`index_head_dim × tokens`，按 indexer 精度）。
+- 滑动窗口层：`min(tokens, sliding_window) × ...`（只保留窗口）。
+- 线性层（Gated DeltaNet）：只有固定 recurrent+conv 状态，不随 token 线性增长。
+- DeepSeek V4：逐层 `compress_ratios` 压缩（`Σ floor(T/ratio) × entry`）+ 滑动窗口保留层
+  + Lightning Indexer，并同时给出 vLLM/vLLM-Ascend 实测 `bytesPerToken`（取自 calculator.js 的
+  `DEEPSEEK_V4_CONFIGS`，部署验证值，权威不改算）。
+
+分类优先级：`architectures[0]` 字符串注册表（精确→族前缀）→ 字段推断兜底（打印 `[INFERRED]`
+提示人工核验）。标准 MLA/GQA 是上面的退化特例，从 `--model-dir`/预置 config 自动识别。
+
+### 不做（本轮，属 RFC 非目标）
+
+- 不做显存/存储可行性判断，不生成 UCM 存储分片/块布局。
+- offload 算法维度（同一混合模型在不同引擎/连接器下"什么算可卸载 KV block"口径不同）列为
+  后续：当前给出的是 in-memory KV 全量口径，未按卸载算法裁剪。
+- 前端 `kv_cache_calculator.html` 迁移到直接调用 Python（单一事实来源）为单独事项。
