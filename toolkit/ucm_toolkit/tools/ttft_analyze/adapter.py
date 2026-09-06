@@ -10,6 +10,8 @@ from . import kv_size, model
 
 def _arch_label(arch: kv_size.ModelArchitecture) -> str:
     arch_type = kv_size.detect_architecture(arch)
+    if arch_type == "hybrid":
+        return "Hybrid (DeepSeek-V4)"
     if arch_type == "dsa":
         return "DSA"
     if arch_type == "mla":

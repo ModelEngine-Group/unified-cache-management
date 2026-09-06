@@ -26,6 +26,9 @@ def make_arch(**overrides):
         qk_rope_head_dim=None,
         index_head_dim=None,
         dtype="bfloat16",
+        compress_ratios=None,
+        model_type=None,
+        quant_method=None,
     )
     base.update(overrides)
     return kv_size.ModelArchitecture(**base)
@@ -61,6 +64,38 @@ class KvSizeTest(unittest.TestCase):
             ),
             "dsa",
         )
+
+    def test_detect_hybrid_architecture(self):
+        self.assertEqual(
+            kv_size.detect_architecture(make_arch(compress_ratios=[0, 0, 4, 128])),
+            "hybrid",
+        )
+
+    def test_hybrid_cache_bytes_vllm(self):
+        arch = make_arch(
+            num_hidden_layers=43,
+            compress_ratios=[0, 0, 4, 128],
+            quant_method="fp8",
+        )
+        expected = int(20058.25 * 2048)
+        self.assertEqual(kv_size.kv_cache_bytes(arch, 2048), expected)
+
+    def test_hybrid_cache_bytes_vllm_ascend(self):
+        arch = make_arch(
+            num_hidden_layers=43,
+            compress_ratios=[0, 0, 4, 128],
+            quant_method="compressed-tensors",
+        )
+        expected = int(19162.5 * 2048)
+        self.assertEqual(kv_size.kv_cache_bytes(arch, 2048), expected)
+
+    def test_hybrid_per_card_shards_by_tp(self):
+        arch = make_arch(
+            num_hidden_layers=43,
+            compress_ratios=[0, 0, 4, 128],
+        )
+        total = kv_size.kv_cache_bytes(arch, 2048)
+        self.assertAlmostEqual(kv_size.per_card_cache_bytes(arch, 2048, 8), total / 8)
 
     def test_per_card_gqa_shards_by_tp(self):
         arch = make_arch()
@@ -140,6 +175,47 @@ class LoadModelArchitectureTest(unittest.TestCase):
             )
             arch = kv_size.load_model_architecture(tmp)
             self.assertEqual(arch.head_dim, 128)
+
+    def test_load_hybrid_v4_flash_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write_config(
+                tmp,
+                {
+                    "hidden_size": 4096,
+                    "num_hidden_layers": 43,
+                    "num_attention_heads": 64,
+                    "num_key_value_heads": 1,
+                    "head_dim": 512,
+                    "qk_rope_head_dim": 64,
+                    "index_head_dim": 128,
+                    "sliding_window": 128,
+                    "compress_ratios": [0, 0, 4, 128],
+                    "model_type": "deepseek_v4",
+                    "torch_dtype": "bfloat16",
+                    "quantization_config": {"quant_method": "fp8"},
+                },
+            )
+            arch = kv_size.load_model_architecture(tmp)
+            self.assertEqual(kv_size.detect_architecture(arch), "hybrid")
+            self.assertIsNotNone(arch.compress_ratios)
+            self.assertEqual(arch.model_type, "deepseek_v4")
+            self.assertEqual(arch.quant_method, "fp8")
+
+    def test_dtype_field_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write_config(
+                tmp,
+                {
+                    "hidden_size": 3072,
+                    "num_hidden_layers": 62,
+                    "num_attention_heads": 48,
+                    "num_key_value_heads": 8,
+                    "head_dim": 128,
+                    "dtype": "bfloat16",
+                },
+            )
+            arch = kv_size.load_model_architecture(tmp)
+            self.assertEqual(arch.dtype, "bfloat16")
 
 
 class ModelTest(unittest.TestCase):
@@ -317,6 +393,55 @@ class ToolkitTest(unittest.TestCase):
                 )
             self.assertEqual(result, 1)
             self.assertIn("bandwidth must be positive", output.getvalue())
+
+    def test_cli_run_hybrid_auto_detect_deployment(self):
+        registry.init_builtin_tools()
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "config.json").write_text(
+                json.dumps(
+                    {
+                        "hidden_size": 4096,
+                        "num_hidden_layers": 43,
+                        "num_attention_heads": 64,
+                        "num_key_value_heads": 1,
+                        "head_dim": 512,
+                        "qk_rope_head_dim": 64,
+                        "index_head_dim": 128,
+                        "compress_ratios": [0, 0, 4, 128],
+                        "model_type": "deepseek_v4",
+                        "torch_dtype": "bfloat16",
+                        "quantization_config": {
+                            "quant_method": "compressed-tensors",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = main(
+                    [
+                        "run",
+                        "ttft-analyze",
+                        "--model-dir",
+                        tmp,
+                        "--posix-bw",
+                        "12",
+                        "--h2d-bw",
+                        "60",
+                        "--input-len",
+                        "2048",
+                        "--ttft-prefill",
+                        "260",
+                        "--ttft-hbm",
+                        "3.2",
+                        "--tp",
+                        "8",
+                    ]
+                )
+            self.assertEqual(result, 0)
+            self.assertIn("Hybrid", output.getvalue())
+            self.assertIn("39244800", output.getvalue())
 
 
 if __name__ == "__main__":
