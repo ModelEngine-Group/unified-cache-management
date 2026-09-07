@@ -9,9 +9,6 @@ shown, so that each parameter lands in the right YAML section.
 - `store_health` is a nested dict under `ucm_connector_config` (8-space indent).
 - Mooncake / YuanRong parameters sit at the same level as Cache / Posix parameters.
 
-:::{dropdown} Full annotated YAML reference
-:animate: fade-in
-
 ```yaml
 # ==================== Top-Level Parameters ====================
 
@@ -303,8 +300,6 @@ ucm_connectors:
       # Optional | int | Default: 1
       yuanrong_posix_max_inflight_gb: 1
 ```
-
-:::
 
 ---
 
