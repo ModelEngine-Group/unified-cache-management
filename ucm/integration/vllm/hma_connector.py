@@ -15,7 +15,6 @@ from vllm.model_executor.models.utils import extract_layer_index
 from vllm.v1.core.sched.output import SchedulerOutput
 
 from ucm.integration.vllm.device import create_device
-from ucm.integration.vllm.request_hasher import RequestHashError
 from ucm.integration.vllm.ucm_connector import (
     UCMDirectConnector,
     _check_shm_capacity,
@@ -896,7 +895,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         assert self.request_block_hasher is not None
         try:
             canonical_hashes = self.request_block_hasher(request)
-        except RequestHashError as e:
+        except Exception as e:
             logger.error(
                 f"request {request.request_id} hash error. " f"{type(e).__name__}: {e}"
             )

@@ -41,7 +41,7 @@ from ucm.integration.vllm.metrics import (
     UCMPromMetrics,
 )
 from ucm.integration.vllm.rank_consistency import RankConsistencyManager
-from ucm.integration.vllm.request_hasher import RequestHasher, RequestHashError
+from ucm.integration.vllm.request_hasher import RequestHasher
 from ucm.logger import init_logger
 from ucm.metrics_config import (
     MULTIPROC_CONSUMER,
@@ -1480,7 +1480,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         assert self.request_block_hasher is not None
         try:
             ucm_block_ids = self.request_block_hasher(request)
-        except RequestHashError as e:
+        except Exception as e:
             logger.error(
                 f"request {request.request_id} hash error. {type(e).__name__}: {e}"
             )
@@ -2612,7 +2612,7 @@ class UCMLiteConnector(KVConnectorBase_V1):
             hash_start = time.perf_counter()
             try:
                 ucm_block_ids = self.request_block_hasher(request)
-            except RequestHashError as e:
+            except Exception as e:
                 logger.error(
                     f"request {request.request_id} hash error. "
                     f"{type(e).__name__}: {e}"

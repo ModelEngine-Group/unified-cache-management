@@ -2,7 +2,6 @@
 
 ## Document status
 
-- Status: Implemented
 - Scope: UCM vLLM integration
 - Primary objective: make external KV prefix-cache keys request-semantic-aware and reproducible across processes without relying on `PYTHONHASHSEED`
 

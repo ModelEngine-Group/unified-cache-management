@@ -25,7 +25,7 @@ from vllm.v1.kv_cache_interface import (
 )
 
 from ucm.integration.vllm.device import create_device
-from ucm.integration.vllm.request_hasher import RequestHasher, RequestHashError
+from ucm.integration.vllm.request_hasher import RequestHasher
 from ucm.integration.vllm.ucm_connector import (
     KVCacheLayout,
     PendingDumpTask,
@@ -956,7 +956,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             group_ucm_block_ids = self.group_manager.compute_all_group_block_ids(
                 request
             )
-        except RequestHashError as e:
+        except Exception as e:
             logger.error(
                 f"request {request.request_id} hash error. " f"{type(e).__name__}: {e}"
             )

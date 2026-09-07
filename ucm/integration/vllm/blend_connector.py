@@ -403,7 +403,7 @@ class UCMBlendConnector(UCMDirectConnector):
             req_stage, prefix_block_hashes, req_chunks_meta, req_chunks_hashes = (
                 self._process_req(request)
             )
-        except RequestHashError as e:
+        except Exception as e:
             logger.error(
                 f"request {request.request_id} hash error. " f"{type(e).__name__}: {e}"
             )

@@ -2,7 +2,6 @@
 
 ## 文档状态
 
-- 状态：已实施（Implemented）
 - 范围：UCM vLLM 集成
 - 核心目标：使外部 KV Prefix Cache Key 感知完整请求语义，并且无需依赖
   `PYTHONHASHSEED` 即可跨进程复现
