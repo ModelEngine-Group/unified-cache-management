@@ -35,13 +35,15 @@ PLATFORM = os.getenv("PLATFORM")
 ENABLE_SPARSE = os.getenv("ENABLE_SPARSE")
 BUILD_UCM_ASU = os.getenv("BUILD_UCM_ASU", "0") not in ("", "0", "false", "False")
 ENABLE_MINDIE = os.getenv("UCM_ENABLE_MINDIE", "0") not in ("", "0", "false", "False")
-BUILD_UCM_ASU_PROVIDER_AIV = os.getenv("BUILD_UCM_ASU_PROVIDER_AIV", "0") not in (
+BUILD_KV_CLIENT_PROVIDER_AIV = os.getenv("BUILD_KV_CLIENT_PROVIDER_AIV", "0") not in (
     "",
     "0",
     "false",
     "False",
 )
-BUILD_UCM_ASU_PROVIDER_AICPU = os.getenv("BUILD_UCM_ASU_PROVIDER_AICPU", "0") not in (
+BUILD_KV_CLIENT_PROVIDER_AICPU = os.getenv(
+    "BUILD_KV_CLIENT_PROVIDER_AICPU", "0"
+) not in (
     "",
     "0",
     "false",
@@ -181,10 +183,10 @@ class CMakeBuild(build_ext):
             cmake_args += ["-DBUILD_UCM_SPARSE=ON"]
         if BUILD_UCM_ASU:
             cmake_args += ["-DBUILD_UCM_ASU=ON"]
-        if BUILD_UCM_ASU_PROVIDER_AIV:
-            cmake_args += ["-DBUILD_UCM_ASU_PROVIDER_AIV=ON"]
-        if BUILD_UCM_ASU_PROVIDER_AICPU:
-            cmake_args += ["-DBUILD_UCM_ASU_PROVIDER_AICPU=ON"]
+        if BUILD_KV_CLIENT_PROVIDER_AIV:
+            cmake_args += ["-DBUILD_KV_CLIENT_PROVIDER_AIV=ON"]
+        if BUILD_KV_CLIENT_PROVIDER_AICPU:
+            cmake_args += ["-DBUILD_KV_CLIENT_PROVIDER_AICPU=ON"]
 
         match PLATFORM:
             case "cuda":

@@ -49,7 +49,7 @@ if(BUILD_UNIT_TESTS)
     endif()
     if(BUILD_UCM_ASU)
         target_link_libraries(ucmstore.test PRIVATE
-            asu_client
+            kv_client
             buffer_pool
             trans
         )

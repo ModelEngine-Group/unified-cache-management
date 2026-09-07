@@ -5,7 +5,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include "asu_transport/types.h"
+#include "kv_types.h"
 
 namespace UC::AsuStore {
 
@@ -36,7 +36,7 @@ struct Config {
     std::size_t blockSize{0};
     std::int32_t deviceId{-1};
     std::string tensorLayout;
-    UC::ASU::TransProviderType transProviderType{UC::ASU::TransProviderType::AICPU};
+    kv::TransProviderType transProviderType{kv::TransProviderType::AICPU};
     std::string fakeBackendPath;
     std::uint64_t fakeBackendLatencyMs{1};
     std::uint64_t fakeBackendWorkerThreads{4};
