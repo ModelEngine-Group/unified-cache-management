@@ -169,12 +169,13 @@ install validation downloads the exact receipt-bound meta/backend URLs,
 verifies their SHA256 digests, and uses production PyPI only for ordinary
 dependencies; index ordering never chooses the UCM distributions. GitHub
 Release notes show version-pinned installation commands only after a complete
-Python-index publication receipt is available. Official PyPI commands install
-one meta-package extra. TestPyPI examples download the meta Wheel and one
-backend Wheel, then install those local files with dependencies from PyPI.
-Package names, versions, and extras come from the receipt; index URLs come from
-the frozen publication configuration. Unpublished channels have no installation
-section.
+Python-index publication receipt is available. Each Runtime capability then
+shows one meta-package extra in the Wheel column. Official PyPI commands use the
+default index; Fork commands name the frozen TestPyPI simple index. Package
+names, versions, and extras come from the receipt. Without a complete receipt,
+the Wheel column keeps its architecture-specific GitHub Release links. The
+strict publication check still downloads exact receipt-bound files before
+installing ordinary dependencies from production PyPI.
 
 Python distribution names are repository-owned and deterministic. The official
 repository publishes canonical `uc-manager*` names. A Fork always prefixes the

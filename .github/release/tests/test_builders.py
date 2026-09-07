@@ -74,6 +74,45 @@ def _all_keys(value: object) -> set[str]:
     return set()
 
 
+def test_source_binding_pins_upstream_builders_without_mutating_desired_catalog() -> (
+    None
+):
+    desired = _catalog()
+
+    bound = builders.bind_source_catalog(desired)
+
+    assert desired["schema_version"] == 3
+    assert bound["schema_version"] == 4
+    assert len(bound["builders"]) == len(desired["builders"])
+    for original, selected in zip(desired["builders"], bound["builders"], strict=True):
+        source_repository, _source_tag = original["source_image"].rsplit(":", 1)
+        assert selected["target_repository"] == source_repository
+        assert selected["target_tag"] == original["target_tag"]
+        assert selected["target_digest"] == original["source_image_digest"]
+        assert original["target_repository"] == "ghcr.io/release-org/" + (
+            "ucm-builder-vllm"
+            if original["accelerator"] == "cuda"
+            else "ucm-builder-vllm-ascend"
+        )
+
+
+def test_source_binding_rejects_an_already_finalized_catalog() -> None:
+    desired = _catalog()
+    observations = {
+        item["id"]: {
+            "target_digest": f"sha256:{index + 1:064x}",
+            "config": {
+                "created": "2026-08-24T00:00:00Z",
+                "config": {"Labels": builders.builder_labels(item)},
+            },
+        }
+        for index, item in enumerate(desired["builders"])
+    }
+
+    with pytest.raises(ValueError, match="desired Catalog schema 3"):
+        builders.bind_source_catalog(builders.finalize_catalog(desired, observations))
+
+
 def test_registry_tag_selection_uses_version_ranges_and_all_winner_variants() -> None:
     product = {
         "id": "vllm-ascend",

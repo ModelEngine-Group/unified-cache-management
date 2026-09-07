@@ -951,6 +951,59 @@ def _capability_label(row: dict[str, Any]) -> str:
     return label
 
 
+def _published_python_installs(manifest: dict[str, Any]) -> dict[str, str]:
+    receipt = manifest.get("pypi")
+    if not receipt or receipt.get("status") != "complete":
+        return {}
+
+    receipt = _mapping(receipt, "release manifest PyPI receipt")
+    target = receipt.get("target")
+    if target not in {"pypi", "testpypi"}:
+        raise ValueError("PyPI installation target is unsupported")
+    meta_projects = []
+    for raw_project in _list(receipt.get("projects"), "release manifest PyPI projects"):
+        project = _mapping(raw_project, "release manifest PyPI project")
+        if project.get("role") == "meta":
+            meta_projects.append(project.get("project"))
+    if len(meta_projects) != 1:
+        raise ValueError(
+            "PyPI installation requires exactly one published meta project"
+        )
+    meta_project = meta_projects[0]
+    version = receipt.get("version")
+    extras = _mapping(receipt.get("extras"), "release manifest PyPI extras")
+    if (
+        not isinstance(meta_project, str)
+        or not meta_project
+        or not isinstance(version, str)
+        or not version
+        or not extras
+    ):
+        raise ValueError("PyPI installation requires complete package coordinates")
+
+    publication = _mapping(
+        _mapping(manifest.get("publish"), "release manifest publish").get("pypi"),
+        "release manifest PyPI publication",
+    )
+    simple_index = str(publication.get("simple_index", ""))
+    index_url = urlparse(simple_index)
+    if index_url.scheme != "https" or not index_url.netloc:
+        raise ValueError("PyPI installation requires a valid simple index")
+    project_url = (
+        f"{index_url.scheme}://{index_url.netloc}/project/"
+        f"{quote(meta_project, safe='')}/{quote(version, safe='')}/"
+    )
+    label = "PyPI" if target == "pypi" else "TestPyPI"
+    index_option = "" if target == "pypi" else f" --index-url {simple_index}"
+    return {
+        str(extra): (
+            f"[{label}]({project_url})<br>"
+            f'`pip install{index_option} "{meta_project}[{extra}]=={version}"`'
+        )
+        for extra in extras
+    }
+
+
 def _render_product_tables(
     manifest: dict[str, Any],
     *,
@@ -959,6 +1012,7 @@ def _render_product_tables(
     link_assets: bool,
 ) -> list[str]:
     wheels = {str(item["id"]): item for item in manifest["wheels"]}
+    python_installs = _published_python_installs(manifest)
     images_by_family: dict[str, list[dict[str, Any]]] = {}
     for image in manifest["images"]:
         images_by_family.setdefault(str(image["family_id"]), []).append(image)
@@ -1131,24 +1185,32 @@ def _render_product_tables(
                     )
             if not packaged_runtime_tags:
                 packaged_runtime_tags.append("—")
-            wheel_links = []
-            wheel_architectures = [
-                architecture
-                for architecture in ("arm64", "amd64")
-                if architecture in row["wheels"]
-            ]
-            wheel_architectures.extend(
-                sorted(set(row["wheels"]) - set(wheel_architectures))
-            )
-            for architecture in wheel_architectures:
-                wheel = row["wheels"][architecture]
-                filename = str(wheel["filename"])
-                label = _architecture_label(architecture)
-                wheel_links.append(
-                    f"[{label}]({asset_urls[filename]})"
-                    if link_assets
-                    else f"`{label}`"
+            runtime_variant = key[1]
+            wheel_cell = python_installs.get(runtime_variant)
+            if python_installs and wheel_cell is None:
+                raise ValueError(
+                    f"published Python packages have no extra for {runtime_variant!r}"
                 )
+            if wheel_cell is None:
+                wheel_links = []
+                wheel_architectures = [
+                    architecture
+                    for architecture in ("arm64", "amd64")
+                    if architecture in row["wheels"]
+                ]
+                wheel_architectures.extend(
+                    sorted(set(row["wheels"]) - set(wheel_architectures))
+                )
+                for architecture in wheel_architectures:
+                    wheel = row["wheels"][architecture]
+                    filename = str(wheel["filename"])
+                    label = _architecture_label(architecture)
+                    wheel_links.append(
+                        f"[{label}]({asset_urls[filename]})"
+                        if link_assets
+                        else f"`{label}`"
+                    )
+                wheel_cell = "<br>".join(wheel_links)
             rendered.append(
                 "| "
                 + " | ".join(
@@ -1157,86 +1219,13 @@ def _render_product_tables(
                         "<br>".join(upstream_runtime_tags),
                         "<br>".join(packaged_runtime_tags),
                         f"`{row['python_abi']}`",
-                        "<br>".join(wheel_links),
+                        wheel_cell,
                     )
                 )
                 + " |"
             )
         rendered.append("")
     return rendered
-
-
-def _render_pypi_installation(manifest: dict[str, Any]) -> list[str]:
-    receipt = manifest.get("pypi")
-    if not receipt or receipt.get("status") != "complete":
-        return []
-
-    target = receipt["target"]
-    title = {"pypi": "PyPI", "testpypi": "TestPyPI"}[target]
-    meta_projects = [
-        project["project"]
-        for project in receipt["projects"]
-        if project["role"] == "meta"
-    ]
-    if len(meta_projects) != 1:
-        raise ValueError(
-            "PyPI installation requires exactly one published meta project"
-        )
-    meta_project = meta_projects[0]
-    version = receipt["version"]
-    publication = manifest["publish"]["pypi"]
-    simple_index = publication["simple_index"]
-    index_url = urlparse(simple_index)
-    project_url = (
-        f"{index_url.scheme}://{index_url.netloc}/project/"
-        f"{quote(meta_project, safe='')}/{quote(version, safe='')}/"
-    )
-    lines = [
-        f"## {title}",
-        "",
-        f"Package: [`{meta_project}=={version}`]({project_url})",
-        "",
-        "Choose **one** extra matching the Runtime, Python ABI, and architecture "
-        "in the tables above. The meta package alone does not install a UCM backend.",
-        "",
-    ]
-    if target == "pypi":
-        lines.extend(["| Extra | Install |", "| --- | --- |"])
-        for extra in sorted(receipt["extras"]):
-            lines.append(
-                f"| `{extra}` | `python -m pip install --index-url {simple_index} "
-                f'"{meta_project}[{extra}]=={version}"` |'
-            )
-        return [*lines, ""]
-
-    lines.extend(
-        [
-            "Download the selected packages from TestPyPI, then install the local "
-            "Wheels with dependencies from PyPI. Run only one of the examples below.",
-            "",
-        ]
-    )
-    for extra, backend_requirement in sorted(receipt["extras"].items()):
-        lines.extend(
-            [
-                "<details>",
-                f"<summary>{extra}</summary>",
-                "",
-                "```bash",
-                'ucm_wheel_dir="$(mktemp -d)"',
-                f"python -m pip download --no-deps --index-url {simple_index} \\",
-                '  --dest "$ucm_wheel_dir" \\',
-                f'  "{meta_project}=={version}" "{backend_requirement}"',
-                "python -m pip install --index-url "
-                f'{publication["dependency_index"]} \\',
-                '  "$ucm_wheel_dir"/*.whl',
-                "```",
-                "",
-                "</details>",
-                "",
-            ]
-        )
-    return lines
 
 
 def render_notes(
@@ -1299,7 +1288,6 @@ def render_notes(
             link_assets=link_assets,
         )
     )
-    lines.extend(_render_pypi_installation(manifest))
     return "\n".join(lines) + "\n"
 
 

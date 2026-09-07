@@ -143,7 +143,11 @@ jobs:
           }
           target_rate_limit_marker="${RUNNER_TEMP}/ucm-wheel-target-rate-limited"
           selected_builder="${builder}"
-          if build_wheel "${builder}" "${RUNNER_TEMP}/ucm-wheel-target-build.log" \
+          if [ "${builder}" = "${source_builder}" ]; then
+            build_wheel "${source_builder}" \
+              "${RUNNER_TEMP}/ucm-wheel-source-build.log"
+          elif build_wheel "${builder}" \
+            "${RUNNER_TEMP}/ucm-wheel-target-build.log" \
             "${target_rate_limit_marker}" "${builder_rate_limit_scope}"; then
             :
           else
