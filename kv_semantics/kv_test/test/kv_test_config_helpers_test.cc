@@ -24,13 +24,13 @@ TEST(KvTestConfigHelpersTest, FakeDefaultsDoNotModifyAivTransport)
 {
     KvTestConfig config;
     kv::TransportConfig fakeConfig;
-    fakeConfig.asuId = 1;
+    fakeConfig.nodeId = 1;
     fakeConfig.providerType = kv::TransProviderType::FAKE;
     fakeConfig.attrs["sc"] = "false";
     config.asuClientConfig.transportConfigs.emplace_back(std::move(fakeConfig));
 
     kv::TransportConfig aivConfig;
-    aivConfig.asuId = 2;
+    aivConfig.nodeId = 2;
     aivConfig.providerType = kv::TransProviderType::AIV;
     aivConfig.attrs["sentinel"] = "unchanged";
     config.asuClientConfig.transportConfigs.emplace_back(std::move(aivConfig));

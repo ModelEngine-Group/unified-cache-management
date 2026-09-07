@@ -40,8 +40,8 @@ MRHandle MakeTestMrHandle(std::uintptr_t value) { return static_cast<MRHandle>(v
 struct TestState {
     std::uint32_t createdTransports{0};
     std::uint32_t createdProviders{0};
-    std::unordered_map<AsuId, TransportConfig> initConfigs;
-    std::unordered_map<AsuId, TransProvider*> initProviders;
+    std::unordered_map<NodeId, TransportConfig> initConfigs;
+    std::unordered_map<NodeId, TransProvider*> initProviders;
     bool failFirstQuery{false};
     bool firstQueryFailed{false};
     StatusCode firstQueryFailureCode{StatusCode::CONNECTION_ERROR};
@@ -62,31 +62,31 @@ struct TestState {
     std::condition_variable storeDispatchCv;
     std::mutex completionMu;
     std::condition_variable completionCv;
-    std::unordered_map<AsuId, Status> queryFailures;
-    std::unordered_map<AsuId, Status> loadFailures;
-    std::unordered_map<AsuId, Status> storeFailures;
-    std::unordered_map<AsuId, Status> deleteFailures;
-    std::unordered_map<AsuId, std::vector<Status>> checkEntryStatus;
-    std::unordered_map<AsuId, Status> checkResultStatus;
-    std::vector<AsuId> registerCalls;
-    std::vector<AsuId> providerBindCalls;
+    std::unordered_map<NodeId, Status> queryFailures;
+    std::unordered_map<NodeId, Status> loadFailures;
+    std::unordered_map<NodeId, Status> storeFailures;
+    std::unordered_map<NodeId, Status> deleteFailures;
+    std::unordered_map<NodeId, std::vector<Status>> checkEntryStatus;
+    std::unordered_map<NodeId, Status> checkResultStatus;
+    std::vector<NodeId> registerCalls;
+    std::vector<NodeId> providerBindCalls;
     std::vector<KVBuffer> submittedEntries;
-    std::vector<AsuId> unregisterCalls;
+    std::vector<NodeId> unregisterCalls;
     bool failRegister{false};
     bool failProviderBind{false};
     bool returnPartialRegister{false};
     bool mismatchRegisterResultCount{false};
     bool failUnregister{false};
-    std::vector<AsuId> queryCalls;
-    std::unordered_map<AsuId, std::size_t> queryKeyCounts;
-    std::unordered_map<AsuId, std::vector<CacheKey>> queryKeys;
-    std::vector<AsuId> loadCalls;
-    std::vector<AsuId> storeCalls;
+    std::vector<NodeId> queryCalls;
+    std::unordered_map<NodeId, std::size_t> queryKeyCounts;
+    std::unordered_map<NodeId, std::vector<CacheKey>> queryKeys;
+    std::vector<NodeId> loadCalls;
+    std::vector<NodeId> storeCalls;
     std::vector<AsuOpType> submittedOpTypes;
-    std::vector<AsuId> deleteCalls;
-    std::vector<AsuId> cancelCalls;
-    std::unordered_map<AsuId, TaskId> childTaskIds;
-    std::unordered_map<AsuId, TaskCompletionCallback> pendingCompletionCallbacks;
+    std::vector<NodeId> deleteCalls;
+    std::vector<NodeId> cancelCalls;
+    std::unordered_map<NodeId, TaskId> childTaskIds;
+    std::unordered_map<NodeId, TaskCompletionCallback> pendingCompletionCallbacks;
     std::size_t completionCallbackCount{0};
 };
 
@@ -94,8 +94,8 @@ namespace {
 
 class ClientTestTransProvider final : public TransProvider {
 public:
-    ClientTestTransProvider(AsuId asuId, std::shared_ptr<TestState> state)
-        : asuId_(asuId), state_(std::move(state))
+    ClientTestTransProvider(NodeId nodeId, std::shared_ptr<TestState> state)
+        : asuId_(nodeId), state_(std::move(state))
     {
     }
 
@@ -177,7 +177,7 @@ public:
     }
 
 private:
-    AsuId asuId_;
+    NodeId asuId_;
     std::shared_ptr<TestState> state_;
 };
 
@@ -192,8 +192,8 @@ public:
     {
         (void)transProvider;
         config_ = config;
-        state_->initConfigs[config_.asuId] = config_;
-        state_->initProviders[config_.asuId] = transProvider.get();
+        state_->initConfigs[config_.nodeId] = config_;
+        state_->initProviders[config_.nodeId] = transProvider.get();
         initialized_ = true;
         return Status::OK();
     }
@@ -222,14 +222,14 @@ public:
             return Status::Error(state_->firstQueryFailureCode, state_->firstQueryFailureMessage);
         }
 
-        state_->queryCalls.emplace_back(config_.asuId);
-        state_->queryKeyCounts[config_.asuId] += keys.size;
-        auto& routedKeys = state_->queryKeys[config_.asuId];
+        state_->queryCalls.emplace_back(config_.nodeId);
+        state_->queryKeyCounts[config_.nodeId] += keys.size;
+        auto& routedKeys = state_->queryKeys[config_.nodeId];
         routedKeys.reserve(routedKeys.size() + keys.size);
         for (std::size_t index = 0; index < keys.size; ++index) {
             routedKeys.emplace_back(keys[index]);
         }
-        auto failureIter = state_->queryFailures.find(config_.asuId);
+        auto failureIter = state_->queryFailures.find(config_.nodeId);
         if (failureIter != state_->queryFailures.end()) { return failureIter->second; }
 
         result.exists.clear();
@@ -258,9 +258,9 @@ public:
                     return status;
                 }
 
-                task->taskId = 4000 + config_.asuId;
+                task->taskId = 4000 + config_.nodeId;
                 TaskResult taskResult;
-                auto statusIter = state_->checkResultStatus.find(config_.asuId);
+                auto statusIter = state_->checkResultStatus.find(config_.nodeId);
                 taskResult.status = statusIter == state_->checkResultStatus.end()
                                         ? Status::OK()
                                         : statusIter->second;
@@ -276,12 +276,12 @@ public:
                     return Status::Error(StatusCode::CONNECTION_ERROR,
                                          "fake load connection error");
                 }
-                auto failureIter = state_->loadFailures.find(config_.asuId);
+                auto failureIter = state_->loadFailures.find(config_.nodeId);
                 if (failureIter != state_->loadFailures.end()) { return failureIter->second; }
 
-                state_->loadCalls.emplace_back(config_.asuId);
-                task->taskId = 1000 + config_.asuId;
-                state_->childTaskIds[config_.asuId] = task->taskId;
+                state_->loadCalls.emplace_back(config_.nodeId);
+                task->taskId = 1000 + config_.nodeId;
+                state_->childTaskIds[config_.nodeId] = task->taskId;
                 Complete(task->entries.size(), std::move(task->onComplete));
                 return Status::OK();
             }
@@ -299,16 +299,16 @@ public:
                     return Status::Error(StatusCode::CONNECTION_ERROR,
                                          "fake store connection error");
                 }
-                auto failureIter = state_->storeFailures.find(config_.asuId);
+                auto failureIter = state_->storeFailures.find(config_.nodeId);
                 if (failureIter != state_->storeFailures.end()) { return failureIter->second; }
                 if (state_->failStoreAfterFirstDispatch && ++state_->storeDispatchAttempts > 1) {
                     return Status::Error(StatusCode::CONNECTION_ERROR,
                                          "fake partial dispatch failure");
                 }
 
-                state_->storeCalls.emplace_back(config_.asuId);
-                task->taskId = 2000 + config_.asuId;
-                state_->childTaskIds[config_.asuId] = task->taskId;
+                state_->storeCalls.emplace_back(config_.nodeId);
+                task->taskId = 2000 + config_.nodeId;
+                state_->childTaskIds[config_.nodeId] = task->taskId;
                 Complete(task->entries.size(), std::move(task->onComplete));
                 return Status::OK();
             }
@@ -318,12 +318,12 @@ public:
                     return Status::Error(StatusCode::CONNECTION_ERROR,
                                          "fake delete connection error");
                 }
-                auto failureIter = state_->deleteFailures.find(config_.asuId);
+                auto failureIter = state_->deleteFailures.find(config_.nodeId);
                 if (failureIter != state_->deleteFailures.end()) { return failureIter->second; }
 
-                state_->deleteCalls.emplace_back(config_.asuId);
-                task->taskId = 3000 + config_.asuId;
-                state_->childTaskIds[config_.asuId] = task->taskId;
+                state_->deleteCalls.emplace_back(config_.nodeId);
+                task->taskId = 3000 + config_.nodeId;
+                state_->childTaskIds[config_.nodeId] = task->taskId;
                 Complete(task->keys.size(), std::move(task->onComplete));
                 return Status::OK();
             }
@@ -336,7 +336,7 @@ public:
 
     Status Cancel(TaskId) override
     {
-        state_->cancelCalls.emplace_back(config_.asuId);
+        state_->cancelCalls.emplace_back(config_.nodeId);
         return Status::OK();
     }
 
@@ -344,10 +344,10 @@ private:
     void Complete(std::size_t entryCount, TaskCompletionCallback onComplete)
     {
         TaskResult result;
-        auto statusIter = state_->checkResultStatus.find(config_.asuId);
+        auto statusIter = state_->checkResultStatus.find(config_.nodeId);
         result.status =
             statusIter == state_->checkResultStatus.end() ? Status::OK() : statusIter->second;
-        auto entryIter = state_->checkEntryStatus.find(config_.asuId);
+        auto entryIter = state_->checkEntryStatus.find(config_.nodeId);
         result.entryStatus = entryIter == state_->checkEntryStatus.end()
                                  ? std::vector<Status>(entryCount, result.status)
                                  : entryIter->second;
@@ -360,7 +360,7 @@ private:
         if (state_->deferCompletionCallbacks) {
             {
                 std::lock_guard<std::mutex> lock{state_->completionMu};
-                state_->pendingCompletionCallbacks[config_.asuId] = std::move(onComplete);
+                state_->pendingCompletionCallbacks[config_.nodeId] = std::move(onComplete);
             }
             state_->completionCv.notify_all();
             return;
@@ -380,13 +380,13 @@ private:
     bool initialized_{false};
 };
 
-bool InvokePendingCompletion(const std::shared_ptr<TestState>& state, AsuId asuId,
+bool InvokePendingCompletion(const std::shared_ptr<TestState>& state, NodeId nodeId,
                              TaskResult result)
 {
     TaskCompletionCallback callback;
     {
         std::lock_guard<std::mutex> lock{state->completionMu};
-        auto callbackIter = state->pendingCompletionCallbacks.find(asuId);
+        auto callbackIter = state->pendingCompletionCallbacks.find(nodeId);
         if (callbackIter == state->pendingCompletionCallbacks.end()) { return false; }
         callback = std::move(callbackIter->second);
         state->pendingCompletionCallbacks.erase(callbackIter);
@@ -396,20 +396,20 @@ bool InvokePendingCompletion(const std::shared_ptr<TestState>& state, AsuId asuI
     return true;
 }
 
-bool WaitForPendingCompletion(const std::shared_ptr<TestState>& state, AsuId asuId)
+bool WaitForPendingCompletion(const std::shared_ptr<TestState>& state, NodeId nodeId)
 {
     std::unique_lock<std::mutex> lock{state->completionMu};
     return state->completionCv.wait_for(lock, std::chrono::milliseconds(100), [&] {
-        return state->pendingCompletionCallbacks.find(asuId) !=
+        return state->pendingCompletionCallbacks.find(nodeId) !=
                state->pendingCompletionCallbacks.end();
     });
 }
 
 class FakeViewServer final : public ViewServer {
 public:
-    explicit FakeViewServer(std::vector<std::vector<AsuId>> views) : views_(std::move(views)) {}
+    explicit FakeViewServer(std::vector<std::vector<NodeId>> views) : views_(std::move(views)) {}
 
-    FakeViewServer(std::vector<std::vector<AsuId>> views, std::vector<std::uint64_t> epochs)
+    FakeViewServer(std::vector<std::vector<NodeId>> views, std::vector<std::uint64_t> epochs)
         : views_(std::move(views)), epochs_(std::move(epochs))
     {
     }
@@ -427,7 +427,7 @@ public:
         ++fetchCount_;
 
         view = GlobalView{};
-        for (auto asuId : views_[index]) { view.asuMap.emplace(asuId, AsuInfo{}); }
+        for (auto nodeId : views_[index]) { view.asuMap.emplace(nodeId, NodeInfo{}); }
         view.viewEpoch = index < epochs_.size() ? epochs_[index] : fetchCount_;
         return Status::OK();
     }
@@ -447,7 +447,7 @@ private:
     mutable std::mutex mutex_;
     std::size_t fetchCount_{0};
     std::size_t failFetchFrom_{0};
-    std::vector<std::vector<AsuId>> views_;
+    std::vector<std::vector<NodeId>> views_;
     std::vector<std::uint64_t> epochs_;
 };
 
@@ -461,7 +461,7 @@ bool WaitForFetchCount(const std::shared_ptr<FakeViewServer>& viewServer,
     return false;
 }
 
-bool CheckUntilComplete(AsuClient& client, TaskId taskId)
+bool CheckUntilComplete(KvClient& client, TaskId taskId)
 {
     for (std::uint32_t attempt = 0; attempt < 100; ++attempt) {
         if (client.Check(taskId)) { return true; }
@@ -472,15 +472,15 @@ bool CheckUntilComplete(AsuClient& client, TaskId taskId)
 
 ViewServerFactory MakeViewServerFactory(const std::shared_ptr<ViewServer>& viewServer)
 {
-    return [viewServer](const AsuClientConfig&) { return viewServer; };
+    return [viewServer](const KvClientConfig&) { return viewServer; };
 }
 
-AsuClientConfig MakeConfig(const std::vector<AsuId>& asuIds)
+KvClientConfig MakeConfig(const std::vector<NodeId>& asuIds)
 {
-    AsuClientConfig config;
-    for (auto asuId : asuIds) {
+    KvClientConfig config;
+    for (auto nodeId : asuIds) {
         TransportConfig transportConfig;
-        transportConfig.asuId = asuId;
+        transportConfig.nodeId = nodeId;
         transportConfig.providerType = TransProviderType::FAKE;
         config.transportConfigs.emplace_back(std::move(transportConfig));
     }
@@ -499,19 +499,19 @@ TransProviderFactory MakeProviderFactory(const std::shared_ptr<TestState>& state
 {
     return [state](const TransportConfig& config, std::shared_ptr<TransProvider>& transProvider) {
         ++state->createdProviders;
-        transProvider = std::make_shared<ClientTestTransProvider>(config.asuId, state);
+        transProvider = std::make_shared<ClientTestTransProvider>(config.nodeId, state);
         return Status::OK();
     };
 }
 
-void ExpectSameAsuSet(std::vector<AsuId> actual, std::vector<AsuId> expected)
+void ExpectSameAsuSet(std::vector<NodeId> actual, std::vector<NodeId> expected)
 {
     std::sort(actual.begin(), actual.end());
     std::sort(expected.begin(), expected.end());
     EXPECT_EQ(actual, expected);
 }
 
-Status QueryAndWait(AsuClient& client, const std::vector<CacheKey>& keys, QueryResult& result,
+Status QueryAndWait(KvClient& client, const std::vector<CacheKey>& keys, QueryResult& result,
                     std::uint64_t timeoutMs = 0)
 {
     TaskId taskId{kInvalidTaskId};
@@ -528,7 +528,7 @@ Status QueryAndWait(AsuClient& client, const std::vector<CacheKey>& keys, QueryR
     return status;
 }
 
-CacheKey FindKeyForAsu(const std::vector<AsuId>& asuIds, AsuId targetAsuId)
+CacheKey FindKeyForAsu(const std::vector<NodeId>& asuIds, NodeId targetAsuId)
 {
     std::vector<kv::NodeId> nodeIds(asuIds.begin(), asuIds.end());
     auto router =
@@ -544,20 +544,20 @@ CacheKey FindKeyForAsu(const std::vector<AsuId>& asuIds, AsuId targetAsuId)
     return {};
 }
 
-std::vector<KVBuffer> BuildRoutedEntries(const std::vector<AsuId>& routeOrder)
+std::vector<KVBuffer> BuildRoutedEntries(const std::vector<NodeId>& routeOrder)
 {
     std::vector<KVBuffer> entries;
     entries.reserve(routeOrder.size());
-    for (auto asuId : routeOrder) {
-        entries.emplace_back(KVBuffer{FindKeyForAsu(routeOrder, asuId), {}});
+    for (auto nodeId : routeOrder) {
+        entries.emplace_back(KVBuffer{FindKeyForAsu(routeOrder, nodeId), {}});
     }
     return entries;
 }
 
-TEST(AsuClientImplTest, Lifecycle_OperationsBeforeInitReturnExpectedErrors)
+TEST(KvClientImplTest, Lifecycle_OperationsBeforeInitReturnExpectedErrors)
 {
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
 
     QueryResult queryResult;
     auto status = QueryAndWait(*client, {MakeCacheKey("k05")}, queryResult);
@@ -574,10 +574,10 @@ TEST(AsuClientImplTest, Lifecycle_OperationsBeforeInitReturnExpectedErrors)
     EXPECT_TRUE(client->Check(1));
 }
 
-TEST(AsuClientImplTest, Lifecycle_InitTwiceReturnsResourceBusy)
+TEST(KvClientImplTest, Lifecycle_InitTwiceReturnsResourceBusy)
 {
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     auto config = MakeConfig({10});
     ASSERT_TRUE(client->Init(config).ok());
 
@@ -586,10 +586,10 @@ TEST(AsuClientImplTest, Lifecycle_InitTwiceReturnsResourceBusy)
     EXPECT_EQ(status.code, StatusCode::RESOURCE_BUSY);
 }
 
-TEST(AsuClientImplTest, Provider_IndependentModeCreatesMemoryProviderAndOnePerTransport)
+TEST(KvClientImplTest, Provider_IndependentModeCreatesMemoryProviderAndOnePerTransport)
 {
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+    auto client = CreateKvClient(MakeFactory(state), MakeProviderFactory(state));
 
     ASSERT_TRUE(client->Init(MakeConfig({10, 20, 30})).ok());
 
@@ -598,12 +598,12 @@ TEST(AsuClientImplTest, Provider_IndependentModeCreatesMemoryProviderAndOnePerTr
     EXPECT_NE(state->initProviders[20], state->initProviders[30]);
 }
 
-TEST(AsuClientImplTest, Provider_SharedModeUsesOneProviderForAllTransports)
+TEST(KvClientImplTest, Provider_SharedModeUsesOneProviderForAllTransports)
 {
     auto state = std::make_shared<TestState>();
     auto config = MakeConfig({10, 20, 30});
     config.sharedProviderMode = SharedProviderMode::SHARED;
-    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+    auto client = CreateKvClient(MakeFactory(state), MakeProviderFactory(state));
 
     ASSERT_TRUE(client->Init(config).ok());
 
@@ -612,12 +612,12 @@ TEST(AsuClientImplTest, Provider_SharedModeUsesOneProviderForAllTransports)
     EXPECT_EQ(state->initProviders[20], state->initProviders[30]);
 }
 
-TEST(AsuClientImplTest, Provider_InvalidSharedModeIsRejected)
+TEST(KvClientImplTest, Provider_InvalidSharedModeIsRejected)
 {
     auto state = std::make_shared<TestState>();
     auto config = MakeConfig({10});
     config.sharedProviderMode = static_cast<SharedProviderMode>(2);
-    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+    auto client = CreateKvClient(MakeFactory(state), MakeProviderFactory(state));
 
     const auto status = client->Init(config);
 
@@ -626,18 +626,18 @@ TEST(AsuClientImplTest, Provider_InvalidSharedModeIsRejected)
     EXPECT_EQ(state->createdTransports, std::uint32_t{0});
 }
 
-TEST(AsuClientImplTest, Provider_SharedModeReusesProviderForAddedTransport)
+TEST(KvClientImplTest, Provider_SharedModeReusesProviderForAddedTransport)
 {
     auto state = std::make_shared<TestState>();
     auto config = MakeConfig({10, 20});
     config.sharedProviderMode = SharedProviderMode::SHARED;
     auto viewServer = std::make_shared<FakeViewServer>(
-        std::vector<std::vector<AsuId>>{
+        std::vector<std::vector<NodeId>>{
             {10},
             {10, 20}
     },
         std::vector<std::uint64_t>{1, 2});
-    auto client = std::make_unique<AsuClientImpl>(
+    auto client = std::make_unique<KvClientImpl>(
         MakeFactory(state), MakeViewServerFactory(viewServer), MakeProviderFactory(state));
     ASSERT_TRUE(client->Init(config).ok());
 
@@ -652,10 +652,10 @@ TEST(AsuClientImplTest, Provider_SharedModeReusesProviderForAddedTransport)
     EXPECT_EQ(state->initProviders[10], state->initProviders[20]);
 }
 
-TEST(AsuClientImplTest, Lifecycle_ShutdownClearsTasksAndRejectsFutureOperations)
+TEST(KvClientImplTest, Lifecycle_ShutdownClearsTasksAndRejectsFutureOperations)
 {
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
 
     TaskId taskId = kInvalidTaskId;
@@ -674,11 +674,11 @@ TEST(AsuClientImplTest, Lifecycle_ShutdownClearsTasksAndRejectsFutureOperations)
     EXPECT_TRUE(client->Check(taskId));
 }
 
-TEST(AsuClientImplTest, Lifecycle_ShutdownDrainsFullTaskQueue)
+TEST(KvClientImplTest, Lifecycle_ShutdownDrainsFullTaskQueue)
 {
     auto state = std::make_shared<TestState>();
     state->blockStoreDispatch = true;
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     auto config = MakeConfig({10});
     config.maxInflightTasks = 2;
     ASSERT_TRUE(client->Init(config).ok());
@@ -722,10 +722,10 @@ TEST(AsuClientImplTest, Lifecycle_ShutdownDrainsFullTaskQueue)
     EXPECT_EQ(state->storeCalls.size(), std::size_t{3});
 }
 
-TEST(AsuClientImplTest, Input_EmptyQueryReturnsEmptyResult)
+TEST(KvClientImplTest, Input_EmptyQueryReturnsEmptyResult)
 {
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
 
     QueryResult result;
@@ -737,10 +737,10 @@ TEST(AsuClientImplTest, Input_EmptyQueryReturnsEmptyResult)
     EXPECT_TRUE(state->queryCalls.empty());
 }
 
-TEST(AsuClientImplTest, Dispatch_UsesSingleProtocolForSingleEntryOperations)
+TEST(KvClientImplTest, Dispatch_UsesSingleProtocolForSingleEntryOperations)
 {
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
 
     TaskId taskId = kInvalidTaskId;
@@ -788,10 +788,10 @@ TEST(AsuClientImplTest, Dispatch_UsesSingleProtocolForSingleEntryOperations)
                                       AsuOpType::BATCH_LOAD}));
 }
 
-TEST(AsuClientImplTest, Input_EmptyStoreCreatesCompletableEmptyTask)
+TEST(KvClientImplTest, Input_EmptyStoreCreatesCompletableEmptyTask)
 {
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
 
     TaskId taskId = kInvalidTaskId;
@@ -806,10 +806,10 @@ TEST(AsuClientImplTest, Input_EmptyStoreCreatesCompletableEmptyTask)
     EXPECT_TRUE(state->storeCalls.empty());
 }
 
-TEST(AsuClientImplTest, Input_EmptyDeleteCreatesCompletableEmptyTask)
+TEST(KvClientImplTest, Input_EmptyDeleteCreatesCompletableEmptyTask)
 {
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
 
     TaskId taskId = kInvalidTaskId;
@@ -824,10 +824,10 @@ TEST(AsuClientImplTest, Input_EmptyDeleteCreatesCompletableEmptyTask)
     EXPECT_TRUE(state->deleteCalls.empty());
 }
 
-TEST(AsuClientImplTest, Input_EmptyRegisterReturnsEmptyResults)
+TEST(KvClientImplTest, Input_EmptyRegisterReturnsEmptyResults)
 {
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
 
     std::vector<RegisteredMemory> results;
@@ -838,7 +838,7 @@ TEST(AsuClientImplTest, Input_EmptyRegisterReturnsEmptyResults)
     EXPECT_TRUE(state->registerCalls.empty());
 }
 
-TEST(AsuClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
+TEST(KvClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
 {
     constexpr const char* kConfigPath = "kv_client_impl_client_config_test.conf";
     {
@@ -864,8 +864,8 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
     }
 
     auto state = std::make_shared<TestState>();
-    std::unique_ptr<AsuClient> client =
-        CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+    std::unique_ptr<KvClient> client =
+        CreateKvClient(MakeFactory(state), MakeProviderFactory(state));
     auto status = client->Init(kConfigPath);
     std::remove(kConfigPath);
 
@@ -877,21 +877,21 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitLoadsClientConfigFile)
     EXPECT_EQ(state->initConfigs[20].endpoints[0].ip, "192.168.1.20");
     EXPECT_EQ(state->initConfigs[20].endpoints[0].protocol, Protocol::ROCE);
     EXPECT_EQ(state->initConfigs[20].deviceId, std::int32_t{6});
-    for (auto asuId : {AsuId{10}, AsuId{20}}) {
-        EXPECT_EQ(state->initConfigs[asuId].sendBufferSlotSize, std::size_t{8192});
-        EXPECT_EQ(state->initConfigs[asuId].sendBufferSlotNum, std::size_t{2});
-        EXPECT_EQ(state->initConfigs[asuId].flagBufferSlotSize, std::size_t{256});
-        EXPECT_EQ(state->initConfigs[asuId].flagBufferSlotNum, std::size_t{32});
-        EXPECT_EQ(state->initConfigs[asuId].asuBatchLoadIoNum, std::size_t{11});
-        EXPECT_EQ(state->initConfigs[asuId].asuBatchStoreIoNum, std::size_t{12});
-        EXPECT_EQ(state->initConfigs[asuId].asuDeleteIoNum, std::size_t{13});
-        EXPECT_EQ(state->initConfigs[asuId].asuQueryIoNum, std::size_t{14});
-        EXPECT_EQ(state->initConfigs[asuId].maxErrorCount, std::uint32_t{5});
-        EXPECT_EQ(state->initConfigs[asuId].completionPollSpinLimit, std::size_t{23});
+    for (auto nodeId : {NodeId{10}, NodeId{20}}) {
+        EXPECT_EQ(state->initConfigs[nodeId].sendBufferSlotSize, std::size_t{8192});
+        EXPECT_EQ(state->initConfigs[nodeId].sendBufferSlotNum, std::size_t{2});
+        EXPECT_EQ(state->initConfigs[nodeId].flagBufferSlotSize, std::size_t{256});
+        EXPECT_EQ(state->initConfigs[nodeId].flagBufferSlotNum, std::size_t{32});
+        EXPECT_EQ(state->initConfigs[nodeId].batchLoadIoNum, std::size_t{11});
+        EXPECT_EQ(state->initConfigs[nodeId].batchStoreIoNum, std::size_t{12});
+        EXPECT_EQ(state->initConfigs[nodeId].deleteIoNum, std::size_t{13});
+        EXPECT_EQ(state->initConfigs[nodeId].queryIoNum, std::size_t{14});
+        EXPECT_EQ(state->initConfigs[nodeId].maxErrorCount, std::uint32_t{5});
+        EXPECT_EQ(state->initConfigs[nodeId].completionPollSpinLimit, std::size_t{23});
     }
 }
 
-TEST(AsuClientImplTest, Config_SeparatesClientAndTransportMaxInflightTasks)
+TEST(KvClientImplTest, Config_SeparatesClientAndTransportMaxInflightTasks)
 {
     constexpr const char* kConfigPath = "kv_client_impl_max_inflight_tasks_test.conf";
     {
@@ -903,8 +903,8 @@ TEST(AsuClientImplTest, Config_SeparatesClientAndTransportMaxInflightTasks)
         configFile << "transport.maxInflightTasks=7\n";
     }
 
-    AsuClientConfig config;
-    const auto status = LoadAsuClientConfig(kConfigPath, config);
+    KvClientConfig config;
+    const auto status = LoadKvClientConfig(kConfigPath, config);
     std::remove(kConfigPath);
 
     ASSERT_TRUE(status.ok()) << status.message;
@@ -916,7 +916,7 @@ TEST(AsuClientImplTest, Config_SeparatesClientAndTransportMaxInflightTasks)
     EXPECT_EQ(config.transportConfigs.front().maxInflightTasks, std::uint32_t{7});
 }
 
-TEST(AsuClientImplTest, Lifecycle_PublicInitRejectsInvalidSharedProviderMode)
+TEST(KvClientImplTest, Lifecycle_PublicInitRejectsInvalidSharedProviderMode)
 {
     constexpr const char* kConfigPath = "kv_client_impl_invalid_shared_provider_test.conf";
     {
@@ -927,7 +927,7 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitRejectsInvalidSharedProviderMode)
     }
 
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+    auto client = CreateKvClient(MakeFactory(state), MakeProviderFactory(state));
     const auto status = client->Init(kConfigPath);
     std::remove(kConfigPath);
 
@@ -936,7 +936,7 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitRejectsInvalidSharedProviderMode)
     EXPECT_EQ(state->createdTransports, std::uint32_t{0});
 }
 
-TEST(AsuClientImplTest, Lifecycle_PublicInitIndependentModeBindsMemoryAcrossMultipleAsus)
+TEST(KvClientImplTest, Lifecycle_PublicInitIndependentModeBindsMemoryAcrossMultipleAsus)
 {
     constexpr const char* kConfigPath = "kv_client_impl_multi_asu_bind_test.conf";
     {
@@ -947,7 +947,7 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitIndependentModeBindsMemoryAcrossMult
     }
 
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+    auto client = CreateKvClient(MakeFactory(state), MakeProviderFactory(state));
     auto status = client->Init(kConfigPath);
     std::remove(kConfigPath);
     ASSERT_TRUE(status.ok()) << status.message;
@@ -957,11 +957,11 @@ TEST(AsuClientImplTest, Lifecycle_PublicInitIndependentModeBindsMemoryAcrossMult
 
     ASSERT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(state->createdProviders, std::uint32_t{3});
-    EXPECT_EQ(state->registerCalls, std::vector<AsuId>({10}));
-    EXPECT_EQ(state->providerBindCalls, std::vector<AsuId>({10, 20}));
+    EXPECT_EQ(state->registerCalls, std::vector<NodeId>({10}));
+    EXPECT_EQ(state->providerBindCalls, std::vector<NodeId>({10, 20}));
 }
 
-TEST(AsuClientImplTest, Routing_UsesRouterConfigFromClientConfigAttrs)
+TEST(KvClientImplTest, Routing_UsesRouterConfigFromClientConfigAttrs)
 {
     auto state = std::make_shared<TestState>();
     auto config = MakeConfig({10, 20});
@@ -974,7 +974,7 @@ TEST(AsuClientImplTest, Routing_UsesRouterConfigFromClientConfigAttrs)
     ASSERT_NE(keyForAsu10, CacheKey{});
     ASSERT_NE(keyForAsu20, CacheKey{});
 
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(config).ok());
 
     TaskId taskId = kInvalidTaskId;
@@ -988,31 +988,31 @@ TEST(AsuClientImplTest, Routing_UsesRouterConfigFromClientConfigAttrs)
     ASSERT_TRUE(status.ok()) << status.message;
     TaskResult result;
     ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
-    EXPECT_EQ(state->storeCalls, std::vector<AsuId>({10}));
+    EXPECT_EQ(state->storeCalls, std::vector<NodeId>({10}));
 }
 
-TEST(AsuClientImplTest, ViewServer_InitFailsWhenViewReferencesMissingTransportConfig)
+TEST(KvClientImplTest, ViewServer_InitFailsWhenViewReferencesMissingTransportConfig)
 {
     auto state = std::make_shared<TestState>();
     auto config = MakeConfig({10});
     auto viewServer = std::make_shared<FakeViewServer>(
-        std::vector<std::vector<AsuId>>{
+        std::vector<std::vector<NodeId>>{
             {10, 20}
     },
         std::vector<std::uint64_t>{1});
     auto client =
-        std::make_unique<AsuClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
 
     auto status = client->Init(config);
 
     EXPECT_EQ(status.code, StatusCode::NOT_FOUND);
-    EXPECT_NE(status.message.find("asuId=20"), std::string::npos);
+    EXPECT_NE(status.message.find("nodeId=20"), std::string::npos);
 }
 
-TEST(AsuClientImplTest, Query_PerKeyKeepsOriginalOrder)
+TEST(KvClientImplTest, Query_PerKeyKeepsOriginalOrder)
 {
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
 
     QueryResult result;
@@ -1025,11 +1025,11 @@ TEST(AsuClientImplTest, Query_PerKeyKeepsOriginalOrder)
     ExpectSameAsuSet(state->queryCalls, {10, 20});
 }
 
-TEST(AsuClientImplTest, QueryAsync_CompletesThroughTransportCallback)
+TEST(KvClientImplTest, QueryAsync_CompletesThroughTransportCallback)
 {
     auto state = std::make_shared<TestState>();
     state->deferCompletionCallbacks = true;
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
 
     TaskId taskId{kInvalidTaskId};
@@ -1053,11 +1053,11 @@ TEST(AsuClientImplTest, QueryAsync_CompletesThroughTransportCallback)
     EXPECT_EQ(result.queryResult->exists, std::vector<std::uint8_t>({1}));
 }
 
-TEST(AsuClientImplTest, Query_PerKeyDispatchFailureCancelsOtherTransports)
+TEST(KvClientImplTest, Query_PerKeyDispatchFailureCancelsOtherTransports)
 {
     auto state = std::make_shared<TestState>();
     state->queryFailures[20] = Status::Error(StatusCode::IO_ERROR, "fake per-key query failure");
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
 
     QueryResult result;
@@ -1068,7 +1068,7 @@ TEST(AsuClientImplTest, Query_PerKeyDispatchFailureCancelsOtherTransports)
     ExpectSameAsuSet(state->queryCalls, {20});
 }
 
-TEST(AsuClientImplTest, Query_PerKeyResultSizeMismatchReturnsPartialFailed)
+TEST(KvClientImplTest, Query_PerKeyResultSizeMismatchReturnsPartialFailed)
 {
     class ShortQueryTransport final : public FakeTransport {
     public:
@@ -1086,7 +1086,7 @@ TEST(AsuClientImplTest, Query_PerKeyResultSizeMismatchReturnsPartialFailed)
     };
 
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient([state] {
+    auto client = CreateKvClient([state] {
         ++state->createdTransports;
         return std::unique_ptr<AsuTransport>(new ShortQueryTransport(state));
     });
@@ -1098,10 +1098,10 @@ TEST(AsuClientImplTest, Query_PerKeyResultSizeMismatchReturnsPartialFailed)
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
 }
 
-TEST(AsuClientImplTest, Query_ComputesPrefixInOriginalKeyOrder)
+TEST(KvClientImplTest, Query_ComputesPrefixInOriginalKeyOrder)
 {
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
 
     QueryResult result;
@@ -1114,12 +1114,12 @@ TEST(AsuClientImplTest, Query_ComputesPrefixInOriginalKeyOrder)
     ExpectSameAsuSet(state->queryCalls, {10, 20});
 }
 
-TEST(AsuClientImplTest, Query_CompletionFailuresDoNotSkipOtherTransports)
+TEST(KvClientImplTest, Query_CompletionFailuresDoNotSkipOtherTransports)
 {
     auto state = std::make_shared<TestState>();
     state->checkResultStatus[10] =
         Status::Error(StatusCode::IO_ERROR, "fake query completion failure");
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
 
     QueryResult result;
@@ -1130,11 +1130,11 @@ TEST(AsuClientImplTest, Query_CompletionFailuresDoNotSkipOtherTransports)
     EXPECT_EQ(result.exists, std::vector<std::uint8_t>({0, 1}));
 }
 
-TEST(AsuClientImplTest, BackgroundRefresh_QueryReturnsErrorWithoutRetry)
+TEST(KvClientImplTest, BackgroundRefresh_QueryReturnsErrorWithoutRetry)
 {
     auto state = std::make_shared<TestState>();
     state->failFirstQuery = true;
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
 
@@ -1149,21 +1149,21 @@ TEST(AsuClientImplTest, BackgroundRefresh_QueryReturnsErrorWithoutRetry)
     EXPECT_EQ(result.exists, std::vector<std::uint8_t>({1}));
 }
 
-TEST(AsuClientImplTest, BackgroundRefresh_QueryDoesNotRefreshNonRefreshableError)
+TEST(KvClientImplTest, BackgroundRefresh_QueryDoesNotRefreshNonRefreshableError)
 {
     auto state = std::make_shared<TestState>();
     state->failFirstQuery = true;
     state->firstQueryFailureCode = StatusCode::INVALID_ARGUMENT;
     state->firstQueryFailureMessage = "fake invalid argument";
     auto viewServer = std::make_shared<FakeViewServer>(
-        std::vector<std::vector<AsuId>>{
+        std::vector<std::vector<NodeId>>{
             {10},
             {10, 20}
     },
         std::vector<std::uint64_t>{1, 2});
     auto config = MakeConfig({10, 20});
     auto client =
-        std::make_unique<AsuClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
     ASSERT_TRUE(client->Init(config).ok());
 
     QueryResult result;
@@ -1174,7 +1174,7 @@ TEST(AsuClientImplTest, BackgroundRefresh_QueryDoesNotRefreshNonRefreshableError
     EXPECT_EQ(state->createdTransports, std::uint32_t{1});
 }
 
-TEST(AsuClientImplTest, BackgroundRefresh_QueryRefreshesOnIoError)
+TEST(KvClientImplTest, BackgroundRefresh_QueryRefreshesOnIoError)
 {
     auto state = std::make_shared<TestState>();
     state->failFirstQuery = true;
@@ -1182,13 +1182,13 @@ TEST(AsuClientImplTest, BackgroundRefresh_QueryRefreshesOnIoError)
     state->firstQueryFailureMessage = "fake io error";
     auto config = MakeConfig({10, 20});
     auto viewServer = std::make_shared<FakeViewServer>(
-        std::vector<std::vector<AsuId>>{
+        std::vector<std::vector<NodeId>>{
             {10},
             {10, 20}
     },
         std::vector<std::uint64_t>{1, 2});
     auto client =
-        std::make_unique<AsuClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
     ASSERT_TRUE(client->Init(config).ok());
 
     QueryResult result;
@@ -1199,7 +1199,7 @@ TEST(AsuClientImplTest, BackgroundRefresh_QueryRefreshesOnIoError)
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
 }
 
-TEST(AsuClientImplTest, BackgroundRefresh_QueryRefreshesOnTimeout)
+TEST(KvClientImplTest, BackgroundRefresh_QueryRefreshesOnTimeout)
 {
     auto state = std::make_shared<TestState>();
     state->failFirstQuery = true;
@@ -1207,13 +1207,13 @@ TEST(AsuClientImplTest, BackgroundRefresh_QueryRefreshesOnTimeout)
     state->firstQueryFailureMessage = "fake timeout";
     auto config = MakeConfig({10, 20});
     auto viewServer = std::make_shared<FakeViewServer>(
-        std::vector<std::vector<AsuId>>{
+        std::vector<std::vector<NodeId>>{
             {10},
             {10, 20}
     },
         std::vector<std::uint64_t>{1, 2});
     auto client =
-        std::make_unique<AsuClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
     ASSERT_TRUE(client->Init(config).ok());
 
     QueryResult result;
@@ -1224,12 +1224,12 @@ TEST(AsuClientImplTest, BackgroundRefresh_QueryRefreshesOnTimeout)
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
 }
 
-TEST(AsuClientImplTest, BackgroundRefresh_QueryReturnsPartialFailedWhenViewFetchFails)
+TEST(KvClientImplTest, BackgroundRefresh_QueryReturnsPartialFailedWhenViewFetchFails)
 {
     auto state = std::make_shared<TestState>();
     state->failFirstQuery = true;
     auto viewServer = std::make_shared<FakeViewServer>(
-        std::vector<std::vector<AsuId>>{
+        std::vector<std::vector<NodeId>>{
             {10},
             {10, 20}
     },
@@ -1237,7 +1237,7 @@ TEST(AsuClientImplTest, BackgroundRefresh_QueryReturnsPartialFailedWhenViewFetch
     viewServer->FailFetchFrom(2);
     auto config = MakeConfig({10, 20});
     auto client =
-        std::make_unique<AsuClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
     ASSERT_TRUE(client->Init(config).ok());
 
     QueryResult result;
@@ -1248,19 +1248,19 @@ TEST(AsuClientImplTest, BackgroundRefresh_QueryReturnsPartialFailedWhenViewFetch
     EXPECT_EQ(state->createdTransports, std::uint32_t{1});
 }
 
-TEST(AsuClientImplTest, BackgroundRefresh_LoadRecordsDispatchErrorWithoutRetry)
+TEST(KvClientImplTest, BackgroundRefresh_LoadRecordsDispatchErrorWithoutRetry)
 {
     auto state = std::make_shared<TestState>();
     state->failFirstLoad = true;
     auto config = MakeConfig({10, 20});
     auto viewServer = std::make_shared<FakeViewServer>(
-        std::vector<std::vector<AsuId>>{
+        std::vector<std::vector<NodeId>>{
             {10},
             {10, 20}
     },
         std::vector<std::uint64_t>{1, 2});
     auto client =
-        std::make_unique<AsuClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
     ASSERT_TRUE(client->Init(config).ok());
 
     TaskId taskId = kInvalidTaskId;
@@ -1282,19 +1282,19 @@ TEST(AsuClientImplTest, BackgroundRefresh_LoadRecordsDispatchErrorWithoutRetry)
     EXPECT_TRUE(state->loadCalls.empty());
 }
 
-TEST(AsuClientImplTest, BackgroundRefresh_StoreRecordsDispatchErrorWithoutRetry)
+TEST(KvClientImplTest, BackgroundRefresh_StoreRecordsDispatchErrorWithoutRetry)
 {
     auto state = std::make_shared<TestState>();
     state->failFirstStore = true;
     auto config = MakeConfig({10, 20});
     auto viewServer = std::make_shared<FakeViewServer>(
-        std::vector<std::vector<AsuId>>{
+        std::vector<std::vector<NodeId>>{
             {10},
             {10, 20}
     },
         std::vector<std::uint64_t>{1, 2});
     auto client =
-        std::make_unique<AsuClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
     ASSERT_TRUE(client->Init(config).ok());
 
     TaskId taskId = kInvalidTaskId;
@@ -1316,19 +1316,19 @@ TEST(AsuClientImplTest, BackgroundRefresh_StoreRecordsDispatchErrorWithoutRetry)
     EXPECT_TRUE(state->storeCalls.empty());
 }
 
-TEST(AsuClientImplTest, BackgroundRefresh_DeleteRecordsDispatchErrorWithoutRetry)
+TEST(KvClientImplTest, BackgroundRefresh_DeleteRecordsDispatchErrorWithoutRetry)
 {
     auto state = std::make_shared<TestState>();
     state->failFirstDelete = true;
     auto config = MakeConfig({10, 20});
     auto viewServer = std::make_shared<FakeViewServer>(
-        std::vector<std::vector<AsuId>>{
+        std::vector<std::vector<NodeId>>{
             {10},
             {10, 20}
     },
         std::vector<std::uint64_t>{1, 2});
     auto client =
-        std::make_unique<AsuClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
     ASSERT_TRUE(client->Init(config).ok());
 
     TaskId taskId = kInvalidTaskId;
@@ -1346,12 +1346,12 @@ TEST(AsuClientImplTest, BackgroundRefresh_DeleteRecordsDispatchErrorWithoutRetry
     EXPECT_TRUE(state->deleteCalls.empty());
 }
 
-TEST(AsuClientImplTest, ViewEpoch_DoesNotPublishSameOrOlderViewEpoch)
+TEST(KvClientImplTest, ViewEpoch_DoesNotPublishSameOrOlderViewEpoch)
 {
     auto state = std::make_shared<TestState>();
     state->failFirstQuery = true;
     auto viewServer = std::make_shared<FakeViewServer>(
-        std::vector<std::vector<AsuId>>{
+        std::vector<std::vector<NodeId>>{
             {10},
             {10, 20},
             {10, 20}
@@ -1359,7 +1359,7 @@ TEST(AsuClientImplTest, ViewEpoch_DoesNotPublishSameOrOlderViewEpoch)
         std::vector<std::uint64_t>{5, 5, 4});
     auto config = MakeConfig({10, 20});
     auto client =
-        std::make_unique<AsuClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
     ASSERT_TRUE(client->Init(config).ok());
 
     QueryResult result;
@@ -1369,15 +1369,15 @@ TEST(AsuClientImplTest, ViewEpoch_DoesNotPublishSameOrOlderViewEpoch)
     EXPECT_EQ(state->createdTransports, std::uint32_t{1});
 }
 
-TEST(AsuClientImplTest, SnapshotRefresh_BuildFailureKeepsOldSnapshot)
+TEST(KvClientImplTest, SnapshotRefresh_BuildFailureKeepsOldSnapshot)
 {
     auto state = std::make_shared<TestState>();
     state->failFirstQuery = true;
     auto config = MakeConfig({10});
-    auto viewServer = std::make_shared<FakeViewServer>(std::vector<std::vector<AsuId>>{{10}, {20}},
+    auto viewServer = std::make_shared<FakeViewServer>(std::vector<std::vector<NodeId>>{{10}, {20}},
                                                        std::vector<std::uint64_t>{1, 2});
     auto client =
-        std::make_unique<AsuClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
     ASSERT_TRUE(client->Init(config).ok());
 
     QueryResult result;
@@ -1389,21 +1389,21 @@ TEST(AsuClientImplTest, SnapshotRefresh_BuildFailureKeepsOldSnapshot)
 
     EXPECT_TRUE(status.ok()) << status.message;
     EXPECT_EQ(state->createdTransports, std::uint32_t{1});
-    EXPECT_EQ(state->queryCalls, std::vector<AsuId>({10}));
+    EXPECT_EQ(state->queryCalls, std::vector<NodeId>({10}));
 }
 
-TEST(AsuClientImplTest, MemoryRegister_RegistersOwnerAndBindsAllIndependentProviders)
+TEST(KvClientImplTest, MemoryRegister_RegistersOwnerAndBindsAllIndependentProviders)
 {
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+    auto client = CreateKvClient(MakeFactory(state), MakeProviderFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10, 20, 30})).ok());
 
     std::vector<RegisteredMemory> results;
     auto status = client->RegisterRegions({MemoryRegion{}, MemoryRegion{}}, results);
 
     EXPECT_TRUE(status.ok()) << status.message;
-    EXPECT_EQ(state->registerCalls, std::vector<AsuId>({10}));
-    EXPECT_EQ(state->providerBindCalls, std::vector<AsuId>({10, 20, 30}));
+    EXPECT_EQ(state->registerCalls, std::vector<NodeId>({10}));
+    EXPECT_EQ(state->providerBindCalls, std::vector<NodeId>({10, 20, 30}));
     ASSERT_EQ(results.size(), std::size_t{2});
     EXPECT_EQ(results[0].handle, MakeTestMrHandle(500));
     EXPECT_EQ(results[1].handle, MakeTestMrHandle(501));
@@ -1411,17 +1411,17 @@ TEST(AsuClientImplTest, MemoryRegister_RegistersOwnerAndBindsAllIndependentProvi
     EXPECT_EQ(results[1].tokenId, std::uint32_t{901});
 }
 
-TEST(AsuClientImplTest, MemoryRegister_NewIndependentProviderBindsRememberedRegions)
+TEST(KvClientImplTest, MemoryRegister_NewIndependentProviderBindsRememberedRegions)
 {
     auto state = std::make_shared<TestState>();
     auto config = MakeConfig({10, 20});
     auto viewServer = std::make_shared<FakeViewServer>(
-        std::vector<std::vector<AsuId>>{
+        std::vector<std::vector<NodeId>>{
             {10},
             {10, 20}
     },
         std::vector<std::uint64_t>{1, 2});
-    auto client = std::make_unique<AsuClientImpl>(
+    auto client = std::make_unique<KvClientImpl>(
         MakeFactory(state), MakeViewServerFactory(viewServer), MakeProviderFactory(state));
     ASSERT_TRUE(client->Init(config).ok());
 
@@ -1437,54 +1437,54 @@ TEST(AsuClientImplTest, MemoryRegister_NewIndependentProviderBindsRememberedRegi
     ASSERT_TRUE(client->Shutdown().ok());
 
     EXPECT_EQ(state->createdProviders, std::uint32_t{3});
-    EXPECT_EQ(state->providerBindCalls, std::vector<AsuId>({10, 20}));
+    EXPECT_EQ(state->providerBindCalls, std::vector<NodeId>({10, 20}));
 }
 
-TEST(AsuClientImplTest, MemoryRegister_PartialRegisterFailureDoesNotBindProviders)
+TEST(KvClientImplTest, MemoryRegister_PartialRegisterFailureDoesNotBindProviders)
 {
     auto state = std::make_shared<TestState>();
     state->returnPartialRegister = true;
-    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+    auto client = CreateKvClient(MakeFactory(state), MakeProviderFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
 
     std::vector<RegisteredMemory> results;
     auto status = client->RegisterRegions({MemoryRegion{}, MemoryRegion{}}, results);
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
-    EXPECT_EQ(state->registerCalls, std::vector<AsuId>({10}));
-    EXPECT_EQ(state->unregisterCalls, std::vector<AsuId>({10}));
+    EXPECT_EQ(state->registerCalls, std::vector<NodeId>({10}));
+    EXPECT_EQ(state->unregisterCalls, std::vector<NodeId>({10}));
     EXPECT_TRUE(results.empty());
 }
 
-TEST(AsuClientImplTest, MemoryRegister_ProviderBindFailureRollsBackOwner)
+TEST(KvClientImplTest, MemoryRegister_ProviderBindFailureRollsBackOwner)
 {
     auto state = std::make_shared<TestState>();
     state->failProviderBind = true;
-    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+    auto client = CreateKvClient(MakeFactory(state), MakeProviderFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
 
     std::vector<RegisteredMemory> results;
     const auto status = client->RegisterRegions({MemoryRegion{}}, results);
 
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
-    EXPECT_EQ(state->registerCalls, std::vector<AsuId>({10}));
-    EXPECT_EQ(state->providerBindCalls, std::vector<AsuId>({10}));
-    EXPECT_EQ(state->unregisterCalls, std::vector<AsuId>({10}));
+    EXPECT_EQ(state->registerCalls, std::vector<NodeId>({10}));
+    EXPECT_EQ(state->providerBindCalls, std::vector<NodeId>({10}));
+    EXPECT_EQ(state->unregisterCalls, std::vector<NodeId>({10}));
     EXPECT_TRUE(results.empty());
 }
 
-TEST(AsuClientImplTest, MemoryRegister_RegisterFailureDoesNotBindProviders)
+TEST(KvClientImplTest, MemoryRegister_RegisterFailureDoesNotBindProviders)
 {
     auto state = std::make_shared<TestState>();
     state->failRegister = true;
     auto config = MakeConfig({10, 20});
     auto viewServer = std::make_shared<FakeViewServer>(
-        std::vector<std::vector<AsuId>>{
+        std::vector<std::vector<NodeId>>{
             {10},
             {10, 20}
     },
         std::vector<std::uint64_t>{1, 2});
-    auto client = std::make_unique<AsuClientImpl>(
+    auto client = std::make_unique<KvClientImpl>(
         MakeFactory(state), MakeViewServerFactory(viewServer), MakeProviderFactory(state));
     ASSERT_TRUE(client->Init(config).ok());
 
@@ -1496,11 +1496,11 @@ TEST(AsuClientImplTest, MemoryRegister_RegisterFailureDoesNotBindProviders)
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
 }
 
-TEST(AsuClientImplTest, MemoryRegister_SuccessWithMismatchedResultCountReturnsInternalError)
+TEST(KvClientImplTest, MemoryRegister_SuccessWithMismatchedResultCountReturnsInternalError)
 {
     auto state = std::make_shared<TestState>();
     state->mismatchRegisterResultCount = true;
-    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+    auto client = CreateKvClient(MakeFactory(state), MakeProviderFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
 
     std::vector<RegisteredMemory> results;
@@ -1509,11 +1509,11 @@ TEST(AsuClientImplTest, MemoryRegister_SuccessWithMismatchedResultCountReturnsIn
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
 }
 
-TEST(AsuClientImplTest, MemoryRegister_ProviderBindFailureIncludesProviderContext)
+TEST(KvClientImplTest, MemoryRegister_ProviderBindFailureIncludesProviderContext)
 {
     auto state = std::make_shared<TestState>();
     state->failProviderBind = true;
-    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+    auto client = CreateKvClient(MakeFactory(state), MakeProviderFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
 
     std::vector<RegisteredMemory> results;
@@ -1523,18 +1523,18 @@ TEST(AsuClientImplTest, MemoryRegister_ProviderBindFailureIncludesProviderContex
     EXPECT_NE(status.message.find("providerIndex=1"), std::string::npos);
 }
 
-TEST(AsuClientImplTest, MemoryRegister_ProviderBindFailureDoesNotCacheResource)
+TEST(KvClientImplTest, MemoryRegister_ProviderBindFailureDoesNotCacheResource)
 {
     auto state = std::make_shared<TestState>();
     state->failProviderBind = true;
     auto config = MakeConfig({10, 20, 30});
     auto viewServer = std::make_shared<FakeViewServer>(
-        std::vector<std::vector<AsuId>>{
+        std::vector<std::vector<NodeId>>{
             {10, 20},
             {10, 20, 30}
     },
         std::vector<std::uint64_t>{1, 2});
-    auto client = std::make_unique<AsuClientImpl>(
+    auto client = std::make_unique<KvClientImpl>(
         MakeFactory(state), MakeViewServerFactory(viewServer), MakeProviderFactory(state));
     ASSERT_TRUE(client->Init(config).ok());
 
@@ -1550,13 +1550,13 @@ TEST(AsuClientImplTest, MemoryRegister_ProviderBindFailureDoesNotCacheResource)
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{3});
-    EXPECT_EQ(state->providerBindCalls, std::vector<AsuId>({10}));
+    EXPECT_EQ(state->providerBindCalls, std::vector<NodeId>({10}));
 }
 
-TEST(AsuClientImplTest, MemoryRegister_UnregisterFailureIncludesAsuContext)
+TEST(KvClientImplTest, MemoryRegister_UnregisterFailureIncludesAsuContext)
 {
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+    auto client = CreateKvClient(MakeFactory(state), MakeProviderFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
 
     std::vector<RegisteredMemory> registeredRegions;
@@ -1570,10 +1570,10 @@ TEST(AsuClientImplTest, MemoryRegister_UnregisterFailureIncludesAsuContext)
     EXPECT_NE(status.message.find("handle_count=1"), std::string::npos);
 }
 
-TEST(AsuClientImplTest, MemoryRegister_UnregisterReleasesBoundProvidersBeforeOwner)
+TEST(KvClientImplTest, MemoryRegister_UnregisterReleasesBoundProvidersBeforeOwner)
 {
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+    auto client = CreateKvClient(MakeFactory(state), MakeProviderFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10, 20, 30})).ok());
 
     std::vector<RegisteredMemory> registeredRegions;
@@ -1583,20 +1583,20 @@ TEST(AsuClientImplTest, MemoryRegister_UnregisterReleasesBoundProvidersBeforeOwn
     const auto status = client->UnregisterRegions({registeredRegions[0].handle});
 
     EXPECT_TRUE(status.ok()) << status.message;
-    EXPECT_EQ(state->unregisterCalls, std::vector<AsuId>({30, 20, 10, 10}));
+    EXPECT_EQ(state->unregisterCalls, std::vector<NodeId>({30, 20, 10, 10}));
 }
 
-TEST(AsuClientImplTest, MemoryRegister_UnregisterRemovesCachedResourceBeforeFutureAsuIsAdded)
+TEST(KvClientImplTest, MemoryRegister_UnregisterRemovesCachedResourceBeforeFutureAsuIsAdded)
 {
     auto state = std::make_shared<TestState>();
     auto config = MakeConfig({10, 20});
     auto viewServer = std::make_shared<FakeViewServer>(
-        std::vector<std::vector<AsuId>>{
+        std::vector<std::vector<NodeId>>{
             {10},
             {10, 20}
     },
         std::vector<std::uint64_t>{1, 2});
-    auto client = std::make_unique<AsuClientImpl>(
+    auto client = std::make_unique<KvClientImpl>(
         MakeFactory(state), MakeViewServerFactory(viewServer), MakeProviderFactory(state));
     ASSERT_TRUE(client->Init(config).ok());
 
@@ -1619,10 +1619,10 @@ TEST(AsuClientImplTest, MemoryRegister_UnregisterRemovesCachedResourceBeforeFutu
     EXPECT_TRUE(state->providerBindCalls.empty());
 }
 
-TEST(AsuClientImplTest, Task_CheckKeepsTaskForWait)
+TEST(KvClientImplTest, Task_CheckKeepsTaskForWait)
 {
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
 
     TaskId taskId = 0;
@@ -1662,10 +1662,10 @@ TEST(ClientTaskTest, TransportTaskCompletionDoesNotReplaceLifecycleState)
     EXPECT_TRUE(ctx.Done());
 }
 
-TEST(AsuClientImplTest, Task_PassesOneCompletionCallbackPerTransportTask)
+TEST(KvClientImplTest, Task_PassesOneCompletionCallbackPerTransportTask)
 {
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10, 20})).ok());
     auto entries = BuildRoutedEntries({10, 20});
     ASSERT_EQ(entries.size(), std::size_t{2});
@@ -1680,11 +1680,11 @@ TEST(AsuClientImplTest, Task_PassesOneCompletionCallbackPerTransportTask)
     EXPECT_EQ(state->completionCallbackCount, std::size_t{2});
 }
 
-TEST(AsuClientImplTest, Task_SubmitReturnsWhileWorkerDispatchIsBlocked)
+TEST(KvClientImplTest, Task_SubmitReturnsWhileWorkerDispatchIsBlocked)
 {
     auto state = std::make_shared<TestState>();
     state->blockStoreDispatch = true;
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
 
     TaskId taskId = kInvalidTaskId;
@@ -1720,11 +1720,11 @@ TEST(AsuClientImplTest, Task_SubmitReturnsWhileWorkerDispatchIsBlocked)
     EXPECT_TRUE(client->Wait(taskId, 100, result).ok());
 }
 
-TEST(AsuClientImplTest, Task_SubmitReturnsResourceBusyWhenQueueIsFull)
+TEST(KvClientImplTest, Task_SubmitReturnsResourceBusyWhenQueueIsFull)
 {
     auto state = std::make_shared<TestState>();
     state->blockStoreDispatch = true;
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     auto config = MakeConfig({10});
     config.maxInflightTasks = 2;
     ASSERT_TRUE(client->Init(config).ok());
@@ -1783,11 +1783,11 @@ TEST(AsuClientImplTest, Task_SubmitReturnsResourceBusyWhenQueueIsFull)
     }
 }
 
-TEST(AsuClientImplTest, Task_CheckUsesClientStateUntilCompletionCallback)
+TEST(KvClientImplTest, Task_CheckUsesClientStateUntilCompletionCallback)
 {
     auto state = std::make_shared<TestState>();
     state->deferCompletionCallbacks = true;
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
 
     TaskId taskId = 0;
@@ -1815,19 +1815,19 @@ TEST(AsuClientImplTest, Task_CheckUsesClientStateUntilCompletionCallback)
     EXPECT_EQ(status.code, StatusCode::TASK_NOT_FOUND);
 }
 
-TEST(AsuClientImplTest, Task_CheckThenWaitHandlesRefreshableChildFailure)
+TEST(KvClientImplTest, Task_CheckThenWaitHandlesRefreshableChildFailure)
 {
     auto state = std::make_shared<TestState>();
     state->checkResultStatus[10] = Status::Error(StatusCode::IO_ERROR, "fake child io error");
     auto config = MakeConfig({10, 20});
     auto viewServer = std::make_shared<FakeViewServer>(
-        std::vector<std::vector<AsuId>>{
+        std::vector<std::vector<NodeId>>{
             {10},
             {10, 20}
     },
         std::vector<std::uint64_t>{1, 2});
     auto client =
-        std::make_unique<AsuClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
     ASSERT_TRUE(client->Init(config).ok());
 
     TaskId taskId = 0;
@@ -1851,13 +1851,13 @@ TEST(AsuClientImplTest, Task_CheckThenWaitHandlesRefreshableChildFailure)
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
 }
 
-TEST(AsuClientImplTest, Task_PartialDispatchFailureWaitsForDispatchedSubtasks)
+TEST(KvClientImplTest, Task_PartialDispatchFailureWaitsForDispatchedSubtasks)
 {
     auto state = std::make_shared<TestState>();
     state->failStoreAfterFirstDispatch = true;
     state->deferCompletionCallbacks = true;
-    auto client = CreateAsuClient(MakeFactory(state));
-    const std::vector<AsuId> asuIds{10, 20, 30};
+    auto client = CreateKvClient(MakeFactory(state));
+    const std::vector<NodeId> asuIds{10, 20, 30};
     ASSERT_TRUE(client->Init(MakeConfig(asuIds)).ok());
     auto entries = BuildRoutedEntries(asuIds);
     ASSERT_EQ(entries.size(), asuIds.size());
@@ -1867,7 +1867,7 @@ TEST(AsuClientImplTest, Task_PartialDispatchFailureWaitsForDispatchedSubtasks)
 
     ASSERT_TRUE(status.ok()) << status.message;
     EXPECT_NE(taskId, kInvalidTaskId);
-    AsuId dispatchedAsuId = 0;
+    NodeId dispatchedAsuId = 0;
     {
         std::unique_lock<std::mutex> lock{state->completionMu};
         ASSERT_TRUE(state->completionCv.wait_for(lock, std::chrono::milliseconds(100), [&] {
@@ -1905,10 +1905,10 @@ TEST(AsuClientImplTest, Task_PartialDispatchFailureWaitsForDispatchedSubtasks)
               1);
 }
 
-TEST(AsuClientImplTest, Task_WaitRemovesTaskAfterCompletion)
+TEST(KvClientImplTest, Task_WaitRemovesTaskAfterCompletion)
 {
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
 
     TaskId taskId = 0;
@@ -1927,11 +1927,11 @@ TEST(AsuClientImplTest, Task_WaitRemovesTaskAfterCompletion)
     EXPECT_EQ(status.code, StatusCode::TASK_NOT_FOUND);
 }
 
-TEST(AsuClientImplTest, Task_WaitTimeoutRemovesTask)
+TEST(KvClientImplTest, Task_WaitTimeoutRemovesTask)
 {
     auto state = std::make_shared<TestState>();
     state->deferCompletionCallbacks = true;
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
 
     TaskId taskId = 0;
@@ -1955,13 +1955,13 @@ TEST(AsuClientImplTest, Task_WaitTimeoutRemovesTask)
     EXPECT_TRUE(InvokePendingCompletion(state, 10, std::move(completionResult)));
 }
 
-TEST(AsuClientImplTest, Task_CheckKeepsEntryStatusInOriginalOrderAcrossAsus)
+TEST(KvClientImplTest, Task_CheckKeepsEntryStatusInOriginalOrderAcrossAsus)
 {
     auto state = std::make_shared<TestState>();
     state->checkEntryStatus[10] = {Status::OK()};
     state->checkEntryStatus[20] = {Status::Error(StatusCode::IO_ERROR, "entry on asu 20")};
     state->checkEntryStatus[30] = {Status::Error(StatusCode::NOT_FOUND, "entry on asu 30")};
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10, 20, 30})).ok());
     auto entries = BuildRoutedEntries({30, 10, 20});
     ASSERT_EQ(entries.size(), std::size_t{3});
@@ -1983,13 +1983,13 @@ TEST(AsuClientImplTest, Task_CheckKeepsEntryStatusInOriginalOrderAcrossAsus)
     EXPECT_EQ(result.entryStatus[2].code, StatusCode::IO_ERROR);
 }
 
-TEST(AsuClientImplTest, Task_LoadKeepsEntryStatusInOriginalOrderAcrossAsus)
+TEST(KvClientImplTest, Task_LoadKeepsEntryStatusInOriginalOrderAcrossAsus)
 {
     auto state = std::make_shared<TestState>();
     state->checkEntryStatus[10] = {Status::OK()};
     state->checkEntryStatus[20] = {Status::Error(StatusCode::IO_ERROR, "load entry on asu 20")};
     state->checkEntryStatus[30] = {Status::Error(StatusCode::NOT_FOUND, "load entry on asu 30")};
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10, 20, 30})).ok());
     auto entries = BuildRoutedEntries({30, 10, 20});
     ASSERT_EQ(entries.size(), std::size_t{3});
@@ -2011,13 +2011,13 @@ TEST(AsuClientImplTest, Task_LoadKeepsEntryStatusInOriginalOrderAcrossAsus)
     EXPECT_EQ(result.entryStatus[2].code, StatusCode::IO_ERROR);
 }
 
-TEST(AsuClientImplTest, Task_DeleteKeepsEntryStatusInOriginalOrderAcrossAsus)
+TEST(KvClientImplTest, Task_DeleteKeepsEntryStatusInOriginalOrderAcrossAsus)
 {
     auto state = std::make_shared<TestState>();
     state->checkEntryStatus[10] = {Status::OK()};
     state->checkEntryStatus[20] = {Status::Error(StatusCode::IO_ERROR, "delete entry on asu 20")};
     state->checkEntryStatus[30] = {Status::Error(StatusCode::NOT_FOUND, "delete entry on asu 30")};
-    auto client = CreateAsuClient(MakeFactory(state));
+    auto client = CreateKvClient(MakeFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10, 20, 30})).ok());
     auto entries = BuildRoutedEntries({30, 10, 20});
     ASSERT_EQ(entries.size(), std::size_t{3});
@@ -2042,15 +2042,15 @@ TEST(AsuClientImplTest, Task_DeleteKeepsEntryStatusInOriginalOrderAcrossAsus)
     EXPECT_EQ(result.entryStatus[2].code, StatusCode::IO_ERROR);
 }
 
-TEST(AsuClientImplTest, SnapshotRefresh_ReusesTransportAndBindsProviderForAddedAsu)
+TEST(KvClientImplTest, SnapshotRefresh_ReusesTransportAndBindsProviderForAddedAsu)
 {
     auto state = std::make_shared<TestState>();
     auto config = MakeConfig({10, 20});
-    auto viewServer = std::make_shared<FakeViewServer>(std::vector<std::vector<AsuId>>{
+    auto viewServer = std::make_shared<FakeViewServer>(std::vector<std::vector<NodeId>>{
         {10},
         {10, 20}
     });
-    auto client = std::make_unique<AsuClientImpl>(
+    auto client = std::make_unique<KvClientImpl>(
         MakeFactory(state), MakeViewServerFactory(viewServer), MakeProviderFactory(state));
     ASSERT_TRUE(client->Init(config).ok());
 
@@ -2065,13 +2065,13 @@ TEST(AsuClientImplTest, SnapshotRefresh_ReusesTransportAndBindsProviderForAddedA
     EXPECT_EQ(status.code, StatusCode::PARTIAL_FAILED);
     ASSERT_TRUE(client->Shutdown().ok());
     EXPECT_EQ(state->createdTransports, std::uint32_t{2});
-    EXPECT_EQ(state->providerBindCalls, std::vector<AsuId>({10, 20}));
+    EXPECT_EQ(state->providerBindCalls, std::vector<NodeId>({10, 20}));
 }
 
-TEST(AsuClientImplTest, MemoryRegister_StoreTaskCarriesMrKeyInEntry)
+TEST(KvClientImplTest, MemoryRegister_StoreTaskCarriesMrKeyInEntry)
 {
     auto state = std::make_shared<TestState>();
-    auto client = CreateAsuClient(MakeFactory(state), MakeProviderFactory(state));
+    auto client = CreateKvClient(MakeFactory(state), MakeProviderFactory(state));
     ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
 
     std::vector<RegisteredMemory> registeredRegions;
@@ -2090,19 +2090,19 @@ TEST(AsuClientImplTest, MemoryRegister_StoreTaskCarriesMrKeyInEntry)
     EXPECT_EQ(*state->submittedEntries[0].mrKey, registeredRegions[0].tokenId);
 }
 
-TEST(AsuClientImplTest,
+TEST(KvClientImplTest,
      SnapshotRefresh_RemovedAsuStopsReceivingNewRequestsButExistingTaskCanComplete)
 {
     auto state = std::make_shared<TestState>();
     auto config = MakeConfig({10, 20});
     auto viewServer = std::make_shared<FakeViewServer>(
-        std::vector<std::vector<AsuId>>{
+        std::vector<std::vector<NodeId>>{
             {10, 20},
             {10}
     },
         std::vector<std::uint64_t>{1, 2});
     auto client =
-        std::make_unique<AsuClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
     ASSERT_TRUE(client->Init(config).ok());
 
     TaskId taskId = 0;
@@ -2124,7 +2124,7 @@ TEST(AsuClientImplTest,
     ASSERT_TRUE(CheckUntilComplete(*client, taskId));
     status = client->Wait(taskId, 100, taskResult);
     EXPECT_TRUE(status.ok()) << status.message;
-    ASSERT_EQ(state->storeCalls, std::vector<AsuId>({20}));
+    ASSERT_EQ(state->storeCalls, std::vector<NodeId>({20}));
 
     status = client->StoreAsync(
         {
@@ -2134,7 +2134,7 @@ TEST(AsuClientImplTest,
     EXPECT_TRUE(status.ok()) << status.message;
     TaskResult secondTaskResult;
     EXPECT_TRUE(client->Wait(taskId, 100, secondTaskResult).ok());
-    EXPECT_EQ(state->storeCalls, std::vector<AsuId>({20, 10}));
+    EXPECT_EQ(state->storeCalls, std::vector<NodeId>({20, 10}));
 }
 
 }  // namespace kv::test

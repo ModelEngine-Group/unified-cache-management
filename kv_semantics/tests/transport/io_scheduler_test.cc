@@ -47,7 +47,7 @@ TEST(IoSchedulerTest, SplitEntryBatchPreservesOrderAndUsesViews)
     }
 
     TransportConfig config;
-    config.asuBatchLoadIoNum = 2;
+    config.batchLoadIoNum = 2;
     IoScheduler scheduler(config);
     const auto batches = scheduler.SplitForAsu(BatchView<KVBuffer>{entries.data(), entries.size()},
                                                AsuOpType::BATCH_LOAD);
@@ -65,10 +65,10 @@ TEST(IoSchedulerTest, SplitEntryBatchPreservesOrderAndUsesViews)
 TEST(IoSchedulerTest, GetSqeIoNumMatchesOperationKind)
 {
     TransportConfig config;
-    config.asuBatchLoadIoNum = 3;
-    config.asuBatchStoreIoNum = 4;
-    config.asuDeleteIoNum = 5;
-    config.asuQueryIoNum = 6;
+    config.batchLoadIoNum = 3;
+    config.batchStoreIoNum = 4;
+    config.deleteIoNum = 5;
+    config.queryIoNum = 6;
     IoScheduler scheduler(config);
 
     EXPECT_EQ(scheduler.GetSqeIoNum(AsuOpType::LOAD), std::size_t{1});
@@ -82,7 +82,7 @@ TEST(IoSchedulerTest, GetSqeIoNumMatchesOperationKind)
 TEST(IoSchedulerTest, SplitByOperationUsesHeldConfig)
 {
     TransportConfig config;
-    config.asuBatchLoadIoNum = 2;
+    config.batchLoadIoNum = 2;
     IoScheduler scheduler(config);
     std::vector<KVBuffer> entries(5);
 

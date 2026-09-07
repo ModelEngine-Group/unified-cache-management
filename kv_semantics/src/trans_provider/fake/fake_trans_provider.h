@@ -90,19 +90,19 @@ private:
     Status ResolveLocalAddress(const void* providerAddr, std::size_t size, void*& localAddr);
     void ProcessIoTask(IoTask& task);
 
-    bool StoreBytes(AsuId asuId, const CacheKey& key, std::uint32_t offset, std::uint64_t addr,
+    bool StoreBytes(NodeId nodeId, const CacheKey& key, std::uint32_t offset, std::uint64_t addr,
                     std::uint32_t length);
-    bool LoadBytes(AsuId asuId, const CacheKey& key, std::uint32_t offset, std::uint64_t addr,
+    bool LoadBytes(NodeId nodeId, const CacheKey& key, std::uint32_t offset, std::uint64_t addr,
                    std::uint32_t length);
-    bool DeleteKey(AsuId asuId, const CacheKey& key);
-    bool ExistsKey(AsuId asuId, const CacheKey& key);
-    Status CompleteStore(AsuId asuId, const std::uint32_t* request, std::uint32_t* flagBuffer);
-    Status CompleteRetrieve(AsuId asuId, const std::uint32_t* request, std::uint32_t* flagBuffer);
-    Status CompleteBatchStore(AsuId asuId, const std::uint32_t* request, std::uint32_t* flagBuffer);
-    Status CompleteBatchRetrieve(AsuId asuId, const std::uint32_t* request,
+    bool DeleteKey(NodeId nodeId, const CacheKey& key);
+    bool ExistsKey(NodeId nodeId, const CacheKey& key);
+    Status CompleteStore(NodeId nodeId, const std::uint32_t* request, std::uint32_t* flagBuffer);
+    Status CompleteRetrieve(NodeId nodeId, const std::uint32_t* request, std::uint32_t* flagBuffer);
+    Status CompleteBatchStore(NodeId nodeId, const std::uint32_t* request, std::uint32_t* flagBuffer);
+    Status CompleteBatchRetrieve(NodeId nodeId, const std::uint32_t* request,
                                  std::uint32_t* flagBuffer);
-    Status CompleteDelete(AsuId asuId, const std::uint32_t* request, std::uint32_t* flagBuffer);
-    Status CompleteExist(AsuId asuId, const std::uint32_t* request, std::uint32_t* flagBuffer);
+    Status CompleteDelete(NodeId nodeId, const std::uint32_t* request, std::uint32_t* flagBuffer);
+    Status CompleteExist(NodeId nodeId, const std::uint32_t* request, std::uint32_t* flagBuffer);
     Status CompleteFakeBackendRequest(const void* sendBuffer, std::uint64_t len,
                                       std::vector<std::uint32_t>& completion);
 

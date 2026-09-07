@@ -35,7 +35,7 @@ namespace kv {
 
 using TaskId = std::uint64_t;
 using MRHandle = std::uint64_t;
-using AsuId = std::uint64_t;
+using NodeId = std::uint64_t;
 constexpr std::size_t kCacheKeySizeBytes = 8;
 using CacheKey = std::array<std::byte, kCacheKeySizeBytes>;
 
@@ -60,26 +60,26 @@ enum class StatusCode {
     INTERNAL_ERROR,
     CANCELED,
 
-    // ASU entry status codes keep raw entry result values in the low byte.
-    ASU_ENTRY_RETRY_ADVISED = 0x0100 | 0x01,
-    ASU_ENTRY_NO_RETRY_ADVISED = 0x0100 | 0x02,
-    ASU_ENTRY_KEY_NOT_FOUND = 0x0100 | 0x03,
-    ASU_ENTRY_DATA_NOT_EXIST = 0x0100 | 0x04,
-    ASU_ENTRY_DELETE_FAILED = 0x0200 | 0x01,
-    ASU_ENTRY_KEY_NOT_EXIST = 0x0300 | 0x00,
-    ASU_ENTRY_KEY_EXIST = 0x0300 | 0x01,
+    // Entry status codes keep raw entry result values in the low byte.
+    ENTRY_RETRY_ADVISED = 0x0100 | 0x01,
+    ENTRY_NO_RETRY_ADVISED = 0x0100 | 0x02,
+    ENTRY_KEY_NOT_FOUND = 0x0100 | 0x03,
+    ENTRY_DATA_NOT_EXIST = 0x0100 | 0x04,
+    ENTRY_DELETE_FAILED = 0x0200 | 0x01,
+    ENTRY_KEY_NOT_EXIST = 0x0300 | 0x00,
+    ENTRY_KEY_EXIST = 0x0300 | 0x01,
 
-    ASU_CQE_INVALID_COMMAND_OPCODE = 0x10000 | 0x001,
-    ASU_CQE_INVALID_FIELD_IN_COMMAND = 0x10000 | 0x002,
-    ASU_CQE_INTERNAL_ERROR = 0x10000 | 0x006,
-    ASU_CQE_WRITE_FAULT = 0x10000 | 0x280,
-    ASU_CQE_UNRECOVERED_READ_ERROR = 0x10000 | 0x281,
-    ASU_CQE_KEY_NOT_EXIST = 0x10000 | 0x701,
-    ASU_CQE_OUT_OF_CREATE_SIZE = 0x10000 | 0x712,
-    ASU_CQE_IO_TIMEOUT = 0x10000 | 0x716,
-    ASU_CQE_KEY_ALREADY_EXISTED = 0x10000 | 0x723,
-    ASU_CQE_RESOURCE_BUSY = 0x10000 | 0x731,
-    ASU_CQE_CHECK_RESULT_BUFFER = 0x10000 | 0x732,
+    CQE_INVALID_COMMAND_OPCODE = 0x10000 | 0x001,
+    CQE_INVALID_FIELD_IN_COMMAND = 0x10000 | 0x002,
+    CQE_INTERNAL_ERROR = 0x10000 | 0x006,
+    CQE_WRITE_FAULT = 0x10000 | 0x280,
+    CQE_UNRECOVERED_READ_ERROR = 0x10000 | 0x281,
+    CQE_KEY_NOT_EXIST = 0x10000 | 0x701,
+    CQE_OUT_OF_CREATE_SIZE = 0x10000 | 0x712,
+    CQE_IO_TIMEOUT = 0x10000 | 0x716,
+    CQE_KEY_ALREADY_EXISTED = 0x10000 | 0x723,
+    CQE_RESOURCE_BUSY = 0x10000 | 0x731,
+    CQE_CHECK_RESULT_BUFFER = 0x10000 | 0x732,
 };
 
 struct Status {
@@ -120,7 +120,7 @@ struct KVBuffer {
     CacheKey key;
     Buffer buffer;
     std::uint32_t offset{0};
-    // Resolved by AsuClient from buffer.handle before the entry reaches the transport.
+    // Resolved by KvClient from buffer.handle before the entry reaches the transport.
     std::optional<std::uint32_t> mrKey;
 };
 
@@ -145,7 +145,7 @@ enum class Protocol {
 
 enum class TransProviderType { AICPU, FAKE, AIV, UNSUPPORTED };
 
-struct AsuEndpoint {
+struct NodeEndpoint {
     std::string ip;
     std::uint16_t port{0};
     Protocol protocol{Protocol::ROCE};
@@ -155,17 +155,17 @@ struct AsuEndpoint {
     std::unordered_map<std::string, std::string> attrs;
 };
 
-struct AsuInfo {
-    std::vector<AsuEndpoint> endpoints;
+struct NodeInfo {
+    std::vector<NodeEndpoint> endpoints;
 };
 
 struct TransportConfig {
     // TODO: 拆分Config，按逻辑模块细化
-    std::string asuName;
-    AsuId asuId{0};
+    std::string nodeName;
+    NodeId nodeId{0};
     // Local logical device ID used by the transport provider.
     std::int32_t deviceId{-1};
-    std::vector<AsuEndpoint> endpoints;
+    std::vector<NodeEndpoint> endpoints;
 
     TransProviderType providerType{TransProviderType::AICPU};
 
@@ -190,10 +190,10 @@ struct TransportConfig {
     // Maximum memory required by a batch store/retrieve response flag buffer.
     std::size_t flagBufferSlotSize{71};
     std::size_t flagBufferSlotNum{4096};
-    std::size_t asuBatchLoadIoNum{110};
-    std::size_t asuBatchStoreIoNum{110};
-    std::size_t asuDeleteIoNum{254};
-    std::size_t asuQueryIoNum{256};
+    std::size_t batchLoadIoNum{110};
+    std::size_t batchStoreIoNum{110};
+    std::size_t deleteIoNum{254};
+    std::size_t queryIoNum{256};
 
     // Transport attrs loaded from config, including SQE request attrs
     // (kv_ns_id, dtype, dspec, lr, sc) and send attrs (kernel_count, quiet_count).
@@ -202,7 +202,7 @@ struct TransportConfig {
 
 enum class SharedProviderMode : std::uint8_t { INDEPENDENT = 0, SHARED = 1 };
 
-struct AsuClientConfig {
+struct KvClientConfig {
     std::string clientId;
     std::vector<std::string> viewServiceAddrs;
 

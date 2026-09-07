@@ -34,7 +34,7 @@
 namespace kv {
 namespace {
 
-void ApplyClientViewEndpointField(AsuEndpoint& endpoint, const std::string& key,
+void ApplyClientViewEndpointField(NodeEndpoint& endpoint, const std::string& key,
                                   const std::string& value)
 {
     if (key == "protocol") {
@@ -63,25 +63,25 @@ void ApplyClientViewEndpointField(AsuEndpoint& endpoint, const std::string& key,
 
 }  // namespace
 
-AsuInfo ParseAsuInfo(const std::string& value)
+NodeInfo ParseAsuInfo(const std::string& value)
 {
-    AsuInfo info;
+    NodeInfo info;
     for (const auto& endpointValue : SplitConfigValue(value, ';')) {
         info.endpoints.emplace_back(ParseClientViewEndpoint(endpointValue));
     }
     return info;
 }
 
-bool TryParseAsuInfoKey(const std::string& key, AsuId& asuId)
+bool TryParseAsuInfoKey(const std::string& key, NodeId& nodeId)
 {
     constexpr const char* kCamelPrefix = "asuInfo.";
     constexpr const char* kSnakePrefix = "asu_info.";
     if (key.rfind(kCamelPrefix, 0) == 0) {
-        asuId = std::stoull(key.substr(std::string{kCamelPrefix}.size()));
+        nodeId = std::stoull(key.substr(std::string{kCamelPrefix}.size()));
         return true;
     }
     if (key.rfind(kSnakePrefix, 0) == 0) {
-        asuId = std::stoull(key.substr(std::string{kSnakePrefix}.size()));
+        nodeId = std::stoull(key.substr(std::string{kSnakePrefix}.size()));
         return true;
     }
     return false;
@@ -97,9 +97,9 @@ bool TryGetTransportAttrKey(const std::string& key, std::string& attrKey)
     return false;
 }
 
-AsuEndpoint ParseClientViewEndpoint(const std::string& value)
+NodeEndpoint ParseClientViewEndpoint(const std::string& value)
 {
-    AsuEndpoint endpoint;
+    NodeEndpoint endpoint;
     if (value.find('=') == std::string::npos) {
         auto parts = SplitConfigValue(value, ':');
         if (!parts.empty()) { endpoint.ip = parts[0]; }
@@ -122,7 +122,7 @@ AsuEndpoint ParseClientViewEndpoint(const std::string& value)
     return endpoint;
 }
 
-Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& config)
+Status LoadKvClientConfig(const std::string& configPath, KvClientConfig& config)
 {
     std::ifstream configFile{configPath};
     if (!configFile.is_open()) {
@@ -130,8 +130,8 @@ Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& confi
         return ASU_LOG_ERROR_STATUS(StatusCode::NOT_FOUND, message);
     }
 
-    config = AsuClientConfig{};
-    std::unordered_map<AsuId, AsuInfo> asuInfos;
+    config = KvClientConfig{};
+    std::unordered_map<NodeId, NodeInfo> asuInfos;
     std::vector<std::pair<std::string, std::string>> transportFields;
     std::string line;
     while (std::getline(configFile, line)) {
@@ -196,14 +196,14 @@ Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& confi
                    key == "asu_ids") {
             for (const auto& asuIdText : SplitConfigValue(value, ',')) {
                 TransportConfig transportConfig;
-                transportConfig.asuId = ParseConfigUint64(asuIdText);
+                transportConfig.nodeId = ParseConfigUint64(asuIdText);
                 config.transportConfigs.emplace_back(std::move(transportConfig));
             }
         } else {
-            AsuId asuId{0};
+            NodeId nodeId{0};
             std::string attrKey;
-            if (TryParseAsuInfoKey(key, asuId)) {
-                asuInfos[asuId] = ParseAsuInfo(value);
+            if (TryParseAsuInfoKey(key, nodeId)) {
+                asuInfos[nodeId] = ParseAsuInfo(value);
             } else if (TryGetTransportAttrKey(key, attrKey)) {
                 transportFields.emplace_back(attrKey, value);
             }
@@ -241,14 +241,14 @@ Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& confi
             transportConfig.attrs.emplace(field);
         }
 
-        auto iter = asuInfos.find(transportConfig.asuId);
+        auto iter = asuInfos.find(transportConfig.nodeId);
         if (iter == asuInfos.end()) { continue; }
         ApplyAsuInfoToTransportConfig(iter->second, transportConfig);
     }
     return Status::OK();
 }
 
-void ApplyAsuInfoToTransportConfig(const AsuInfo& info, TransportConfig& config)
+void ApplyAsuInfoToTransportConfig(const NodeInfo& info, TransportConfig& config)
 {
     if (info.endpoints.empty()) { return; }
 

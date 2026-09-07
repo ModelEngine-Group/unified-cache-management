@@ -235,7 +235,7 @@ These fields are parsed by the ASU client config parser:
 | `batch_topk_affinity.*` | Batch top-k affinity options. |
 
 When `view.config_path` is set, the loaded view is the ASU membership used by
-`AsuClient`. Every ASU id in that view must have a matching `transport.asu_ids`
+`KvClient`. Every ASU id in that view must have a matching `transport.asu_ids`
 entry so Client can build a transport for it. Non-mocked transports also need
 endpoint information such as `asu_info.<id>`. If `view.config_path` is omitted
 and `view_service_addrs` is empty, the default view is derived from
@@ -274,13 +274,13 @@ should not include older `limits.batch_store_max`, `limits.batch_retrieve_max`,
 ## FAKE provider
 
 `transport.provider_type=FAKE` selects the local mock provider while preserving
-the normal `AsuClient` and `AsuTransportImpl` path. ASU transport sends are
+the normal `KvClient` and `AsuTransportImpl` path. ASU transport sends are
 completed by `FakeTransProvider`.
 
 Use this mode to validate:
 
-- `AsuClient` routing and per-ASU subtask splitting
-- `AsuClient` task aggregation, `Wait`, and result merging
+- `KvClient` routing and per-ASU subtask splitting
+- `KvClient` task aggregation, `Wait`, and result merging
 - `AsuTransportImpl` async submit paths for store, retrieve, delete, and query
 - SQE packing into send buffers
 - flag buffer/CQE polling
@@ -317,7 +317,7 @@ If `fake_backend.path` is empty, fake backend uses:
 ```
 
 During this temporary integration stage, fake backend maps each
-`TransportConfig.asuId` into `TransportConfig.attrs["kv_ns_id"]` before
+`TransportConfig.nodeId` into `TransportConfig.attrs["kv_ns_id"]` before
 `Transport::Init`. The packed SQE carries `kv_ns_id`, so the mock backend can
 recover a per-ASU namespace from the send buffer without changing the Transport
 `Send` interface. This is a kv-test-only temporary semantic mapping, not a
@@ -558,7 +558,7 @@ The kv-test layer uses these explicit codes:
 | `1` | Invalid argument or config/result-writer error. |
 | `4` | Consistency check failed. |
 
-ASU client failures are converted to `100 + static_cast<int>(UC::ASU::StatusCode)`
+ASU client failures are converted to `100 + static_cast<int>(kv::StatusCode)`
 so they do not overlap the kv-test layer's exit codes.
 
 ## Examples

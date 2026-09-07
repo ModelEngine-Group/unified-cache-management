@@ -30,11 +30,11 @@
 
 namespace kv {
 
-class AsuClient {
+class KvClient {
 public:
-    virtual ~AsuClient() = default;
+    virtual ~KvClient() = default;
 
-    virtual Status Init(const AsuClientConfig& config) = 0;
+    virtual Status Init(const KvClientConfig& config) = 0;
     virtual Status Init(const std::string& configPath) = 0;
     virtual Status Shutdown() = 0;
 
@@ -57,6 +57,6 @@ public:
 };
 
 // Creates a client wired to the default transport and provider factories.
-std::unique_ptr<AsuClient> CreateAsuClient();
+std::unique_ptr<KvClient> CreateKvClient();
 
 }  // namespace kv

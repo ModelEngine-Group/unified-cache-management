@@ -40,62 +40,63 @@
 namespace {
 
 struct CacheKeyHasher {
-    std::size_t operator()(const UC::ASU::CacheKey& key) const
+    std::size_t operator()(const kv::CacheKey& key) const
     {
-        return std::hash<std::string_view>{}(UC::ASU::CacheKeyView(key));
+        return std::hash<std::string_view>{}(
+            std::string_view(reinterpret_cast<const char*>(key.data()), key.size()));
     }
 };
 
-UC::ASU::MRHandle MakeTestMrHandle(std::uintptr_t value)
+kv::MRHandle MakeTestMrHandle(std::uintptr_t value)
 {
-    return reinterpret_cast<UC::ASU::MRHandle>(value);
+    return reinterpret_cast<kv::MRHandle>(value);
 }
 
-struct FakeAsuClientState {
+struct FakeKvClientState {
     std::vector<UC::AsuStore::Config> initConfigs;
-    std::vector<UC::ASU::KVBuffer> lastLoadEntries;
-    std::vector<UC::ASU::KVBuffer> lastStoreEntries;
-    std::vector<UC::ASU::MemoryRegion> registeredRegions;
+    std::vector<kv::KVBuffer> lastLoadEntries;
+    std::vector<kv::KVBuffer> lastStoreEntries;
+    std::vector<kv::MemoryRegion> registeredRegions;
     std::size_t registrationCalls{0};
     std::size_t shutdownCalls{0};
     bool failRegistration{false};
     bool omitRegisteredHandle{false};
 };
 
-class FakeAsuClient final : public UC::ASU::AsuClient {
+class FakeKvClient final : public kv::KvClient {
 public:
-    explicit FakeAsuClient(std::shared_ptr<FakeAsuClientState> state) : state_(std::move(state)) {}
+    explicit FakeKvClient(std::shared_ptr<FakeKvClientState> state) : state_(std::move(state)) {}
 
-    UC::ASU::Status Init(const UC::ASU::AsuClientConfig& config) override
+    kv::Status Init(const kv::KvClientConfig& config) override
     {
         (void)config;
         initialized_ = true;
-        return UC::ASU::Status::OK();
+        return kv::Status::OK();
     }
 
-    UC::ASU::Status Init(const std::string& configPath) override
+    kv::Status Init(const std::string& configPath) override
     {
         (void)configPath;
         initialized_ = true;
-        return UC::ASU::Status::OK();
+        return kv::Status::OK();
     }
 
-    UC::ASU::Status Shutdown() override
+    kv::Status Shutdown() override
     {
         ++state_->shutdownCalls;
         initialized_ = false;
-        return UC::ASU::Status::OK();
+        return kv::Status::OK();
     }
 
-    UC::ASU::Status QueryAsync(const std::vector<UC::ASU::CacheKey>& keys,
-                               UC::ASU::TaskId& taskId) override
+    kv::Status QueryAsync(const std::vector<kv::CacheKey>& keys,
+                               kv::TaskId& taskId) override
     {
         if (!initialized_) { return NotInitialized(); }
 
-        UC::ASU::TaskResult taskResult;
-        taskResult.status = UC::ASU::Status::OK();
-        taskResult.entryStatus.assign(keys.size(), UC::ASU::Status::OK());
-        UC::ASU::QueryResult result;
+        kv::TaskResult taskResult;
+        taskResult.status = kv::Status::OK();
+        taskResult.entryStatus.assign(keys.size(), kv::Status::OK());
+        kv::QueryResult result;
         result.exists.clear();
         result.exists.reserve(keys.size());
         for (const auto& key : keys) { result.exists.emplace_back(storedKeys_.count(key) != 0); }
@@ -107,60 +108,60 @@ public:
         taskResult.queryResult = std::move(result);
         taskId = nextTaskId_++;
         taskResults_.emplace(taskId, std::move(taskResult));
-        return UC::ASU::Status::OK();
+        return kv::Status::OK();
     }
 
-    UC::ASU::Status LoadAsync(const std::vector<UC::ASU::KVBuffer>& entries,
-                              UC::ASU::TaskId& taskId) override
+    kv::Status LoadAsync(const std::vector<kv::KVBuffer>& entries,
+                              kv::TaskId& taskId) override
     {
         state_->lastLoadEntries = entries;
         return Submit(entries, taskId);
     }
 
-    UC::ASU::Status StoreAsync(const std::vector<UC::ASU::KVBuffer>& entries,
-                               UC::ASU::TaskId& taskId) override
+    kv::Status StoreAsync(const std::vector<kv::KVBuffer>& entries,
+                               kv::TaskId& taskId) override
     {
         state_->lastStoreEntries = entries;
         for (const auto& entry : entries) { storedKeys_.emplace(entry.key); }
         return Submit(entries, taskId);
     }
 
-    UC::ASU::Status BatchLoadAsync(const std::vector<UC::ASU::KVBuffer>& entries,
-                                   UC::ASU::TaskId& taskId) override
+    kv::Status BatchLoadAsync(const std::vector<kv::KVBuffer>& entries,
+                                   kv::TaskId& taskId) override
     {
         return LoadAsync(entries, taskId);
     }
 
-    UC::ASU::Status BatchStoreAsync(const std::vector<UC::ASU::KVBuffer>& entries,
-                                    UC::ASU::TaskId& taskId) override
+    kv::Status BatchStoreAsync(const std::vector<kv::KVBuffer>& entries,
+                                    kv::TaskId& taskId) override
     {
         return StoreAsync(entries, taskId);
     }
 
-    UC::ASU::Status DeleteAsync(const std::vector<UC::ASU::CacheKey>& keys,
-                                UC::ASU::TaskId& taskId) override
+    kv::Status DeleteAsync(const std::vector<kv::CacheKey>& keys,
+                                kv::TaskId& taskId) override
     {
         for (const auto& key : keys) { storedKeys_.erase(key); }
         return Submit(keys.size(), taskId);
     }
 
-    bool Check(UC::ASU::TaskId taskId) override
+    bool Check(kv::TaskId taskId) override
     {
         if (!initialized_) { return true; }
         auto iter = taskResults_.find(taskId);
         return iter == taskResults_.end() ||
-               iter->second.status.code != UC::ASU::StatusCode::IN_PROGRESS;
+               iter->second.status.code != kv::StatusCode::IN_PROGRESS;
     }
 
-    UC::ASU::Status Wait(UC::ASU::TaskId taskId, std::uint64_t timeoutMs,
-                         UC::ASU::TaskResult& result) override
+    kv::Status Wait(kv::TaskId taskId, std::uint64_t timeoutMs,
+                         kv::TaskResult& result) override
     {
         (void)timeoutMs;
         if (!initialized_) { return NotInitialized(); }
 
         auto iter = taskResults_.find(taskId);
         if (iter == taskResults_.end()) {
-            return UC::ASU::Status::Error(UC::ASU::StatusCode::TASK_NOT_FOUND,
+            return kv::Status::Error(kv::StatusCode::TASK_NOT_FOUND,
                                           "fake task not found");
         }
 
@@ -169,9 +170,9 @@ public:
         return result.status;
     }
 
-    UC::ASU::Status RegisterRegions(
-        const std::vector<UC::ASU::MemoryRegion>& regions,
-        std::vector<UC::ASU::RegisteredMemory>& registeredRegions) override
+    kv::Status RegisterRegions(
+        const std::vector<kv::MemoryRegion>& regions,
+        std::vector<kv::RegisteredMemory>& registeredRegions) override
     {
         if (!initialized_) { return NotInitialized(); }
         ++state_->registrationCalls;
@@ -185,56 +186,56 @@ public:
                                          regions.end());
         for (std::size_t index = 0; index < regions.size(); ++index) {
             registeredRegions.emplace_back(
-                UC::ASU::RegisteredMemory{regions[index], MakeTestMrHandle(nextMrHandle_++)});
+                kv::RegisteredMemory{regions[index], MakeTestMrHandle(nextMrHandle_++)});
         }
         if (state_->omitRegisteredHandle) { registeredRegions.clear(); }
-        return UC::ASU::Status::OK();
+        return kv::Status::OK();
     }
 
-    UC::ASU::Status UnregisterRegions(const std::vector<UC::ASU::MRHandle>& handles) override
+    kv::Status UnregisterRegions(const std::vector<kv::MRHandle>& handles) override
     {
         (void)handles;
-        return UC::ASU::Status::OK();
+        return kv::Status::OK();
     }
 
 private:
-    UC::ASU::Status Submit(const std::vector<UC::ASU::KVBuffer>& entries, UC::ASU::TaskId& taskId)
+    kv::Status Submit(const std::vector<kv::KVBuffer>& entries, kv::TaskId& taskId)
     {
         return Submit(entries.size(), taskId);
     }
 
-    UC::ASU::Status Submit(std::size_t entryCount, UC::ASU::TaskId& taskId)
+    kv::Status Submit(std::size_t entryCount, kv::TaskId& taskId)
     {
         if (!initialized_) { return NotInitialized(); }
 
         taskId = nextTaskId_++;
-        UC::ASU::TaskResult result;
-        result.status = UC::ASU::Status::OK();
-        result.entryStatus.assign(entryCount, UC::ASU::Status::OK());
+        kv::TaskResult result;
+        result.status = kv::Status::OK();
+        result.entryStatus.assign(entryCount, kv::Status::OK());
         taskResults_.emplace(taskId, std::move(result));
-        return UC::ASU::Status::OK();
+        return kv::Status::OK();
     }
 
-    static UC::ASU::Status NotInitialized()
+    static kv::Status NotInitialized()
     {
-        return UC::ASU::Status::Error(UC::ASU::StatusCode::NOT_INITIALIZED,
+        return kv::Status::Error(kv::StatusCode::NOT_INITIALIZED,
                                       "fake ASU client is not initialized");
     }
 
-    std::shared_ptr<FakeAsuClientState> state_;
+    std::shared_ptr<FakeKvClientState> state_;
     bool initialized_{false};
-    UC::ASU::TaskId nextTaskId_{1};
+    kv::TaskId nextTaskId_{1};
     std::uintptr_t nextMrHandle_{1};
-    std::unordered_set<UC::ASU::CacheKey, CacheKeyHasher> storedKeys_;
-    std::unordered_map<UC::ASU::TaskId, UC::ASU::TaskResult> taskResults_;
+    std::unordered_set<kv::CacheKey, CacheKeyHasher> storedKeys_;
+    std::unordered_map<kv::TaskId, kv::TaskResult> taskResults_;
 };
 
-std::shared_ptr<FakeAsuClientState> UseFakeClient(UC::AsuStore::AsuStore& store)
+std::shared_ptr<FakeKvClientState> UseFakeClient(UC::AsuStore::AsuStore& store)
 {
-    auto state = std::make_shared<FakeAsuClientState>();
+    auto state = std::make_shared<FakeKvClientState>();
     store.SetClientFactory([state](const UC::AsuStore::Config& config) {
         state->initConfigs.emplace_back(config);
-        return std::make_unique<FakeAsuClient>(state);
+        return std::make_unique<FakeKvClient>(state);
     });
     return state;
 }
@@ -363,7 +364,7 @@ TEST(UCAsuStoreTest, PropagatesWaitTimeout)
     ASSERT_FALSE(state->initConfigs.empty());
     EXPECT_EQ(state->initConfigs.back().waitTimeoutMs, 321);
 
-    auto asuClientConfig = UC::AsuStore::BuildAsuClientConfig(state->initConfigs.back());
+    auto asuClientConfig = UC::AsuStore::BuildKvClientConfig(state->initConfigs.back());
     EXPECT_EQ(asuClientConfig.defaultWaitTimeoutMs, 321);
     EXPECT_EQ(asuClientConfig.timeoutMs, 321);
 
@@ -433,7 +434,7 @@ TEST(UCAsuStoreTest, PropagatesSeparateMaxInflightTasks)
     ASSERT_TRUE(store.Setup(config).Success());
     ASSERT_FALSE(state->initConfigs.empty());
 
-    const auto asuConfig = UC::AsuStore::BuildAsuClientConfig(state->initConfigs.back());
+    const auto asuConfig = UC::AsuStore::BuildKvClientConfig(state->initConfigs.back());
     EXPECT_EQ(asuConfig.maxInflightTasks, std::uint32_t{17});
     ASSERT_EQ(asuConfig.transportConfigs.size(), std::size_t{1});
     EXPECT_EQ(asuConfig.transportConfigs.front().maxInflightTasks, std::uint32_t{23});
@@ -543,13 +544,13 @@ TEST(UCAsuStoreTest, ParsesSharedProviderMode)
     ASSERT_TRUE(store.Setup(config).Success());
     ASSERT_FALSE(state->initConfigs.empty());
     EXPECT_EQ(state->initConfigs.back().sharedProviderMode, 1);
-    const auto asuConfig = UC::AsuStore::BuildAsuClientConfig(state->initConfigs.back());
-    EXPECT_EQ(asuConfig.sharedProviderMode, UC::ASU::SharedProviderMode::SHARED);
+    const auto asuConfig = UC::AsuStore::BuildKvClientConfig(state->initConfigs.back());
+    EXPECT_EQ(asuConfig.sharedProviderMode, kv::SharedProviderMode::SHARED);
     ASSERT_EQ(asuConfig.transportConfigs.size(), std::size_t{2});
-    EXPECT_EQ(asuConfig.transportConfigs[0].asuId, UC::ASU::AsuId{1001});
+    EXPECT_EQ(asuConfig.transportConfigs[0].nodeId, kv::NodeId{1001});
     EXPECT_EQ(asuConfig.transportConfigs[0].endpoints[0].ip, "127.0.0.1");
     EXPECT_EQ(asuConfig.transportConfigs[0].endpoints[0].port, std::uint16_t{12345});
-    EXPECT_EQ(asuConfig.transportConfigs[1].asuId, UC::ASU::AsuId{1002});
+    EXPECT_EQ(asuConfig.transportConfigs[1].nodeId, kv::NodeId{1002});
     EXPECT_EQ(asuConfig.transportConfigs[1].endpoints[0].ip, "127.0.0.2");
     EXPECT_EQ(asuConfig.transportConfigs[1].endpoints[0].port, std::uint16_t{12346});
 }
@@ -641,7 +642,7 @@ TEST(UCAsuStoreTest, PropagatesKvNamespaceToEveryTransport)
     config.kvNsIds = {100};
     config.deviceId = 3;
     config.localIp = "192.168.0.3";
-    config.transProviderType = UC::ASU::TransProviderType::FAKE;
+    config.transProviderType = kv::TransProviderType::FAKE;
 
     for (std::size_t index = 0; index < config.asuIds.size(); ++index) {
         auto transportConfig = UC::AsuStore::BuildTransportConfig(config, index);
@@ -773,7 +774,7 @@ TEST(UCAsuStoreTest, UsesPersistentRegionHandleBeforeSubmitAndKeepsItAfterWait)
     auto config = MakeBaseConfig();
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
     config.Set("asu_ids", std::vector<ssize_t>{1001});
-    std::array<std::byte, UC::ASU::kAsuAlignmentBytes> buffer{};
+    std::array<std::byte, kv::kAsuAlignmentBytes> buffer{};
     RegisterPersistentRanges(config, {
                                          {buffer.data(), buffer.size()}
     });
@@ -784,7 +785,7 @@ TEST(UCAsuStoreTest, UsesPersistentRegionHandleBeforeSubmitAndKeepsItAfterWait)
 
     ASSERT_EQ(state->lastStoreEntries.size(), std::size_t{1});
     ASSERT_EQ(state->registeredRegions.size(), std::size_t{1});
-    EXPECT_NE(state->lastStoreEntries[0].buffer.handle, UC::ASU::kInvalidMRHandle);
+    EXPECT_NE(state->lastStoreEntries[0].buffer.handle, kv::kInvalidMRHandle);
     ASSERT_TRUE(store.Wait(dump.Value()).Success());
 }
 
@@ -799,7 +800,7 @@ TEST(UCAsuStoreTest, PersistentRegionHandleIsSharedByEntriesAndNotReleasedPerTas
     config.Set("tensor_size_list", std::vector<ssize_t>{64, 64});
     config.SetNumber("shard_size", std::size_t{128});
     config.SetNumber("block_size", std::size_t{128});
-    std::array<std::byte, UC::ASU::kAsuAlignmentBytes * 2> buffer{};
+    std::array<std::byte, kv::kAsuAlignmentBytes * 2> buffer{};
     RegisterPersistentRanges(config, {
                                          {buffer.data(), buffer.size()}
     });
@@ -809,7 +810,7 @@ TEST(UCAsuStoreTest, PersistentRegionHandleIsSharedByEntriesAndNotReleasedPerTas
     UC::Detail::TaskDesc task;
     auto block = UC::Test::Detail::TypesHelper::MakeBlockId("c2b2c3d4e5f6789012345678901234ab");
     task.push_back(UC::Detail::Shard{
-        block, 0, {buffer.data(), buffer.data() + UC::ASU::kAsuAlignmentBytes}
+        block, 0, {buffer.data(), buffer.data() + kv::kAsuAlignmentBytes}
     });
 
     auto dump = store.Dump(std::move(task));
@@ -817,7 +818,7 @@ TEST(UCAsuStoreTest, PersistentRegionHandleIsSharedByEntriesAndNotReleasedPerTas
     ASSERT_EQ(state->registeredRegions.size(), std::size_t{1});
     ASSERT_EQ(state->lastStoreEntries.size(), std::size_t{2});
     const auto sharedHandle = state->lastStoreEntries[0].buffer.handle;
-    EXPECT_NE(sharedHandle, UC::ASU::kInvalidMRHandle);
+    EXPECT_NE(sharedHandle, kv::kInvalidMRHandle);
     EXPECT_EQ(state->lastStoreEntries[1].buffer.handle, sharedHandle);
 
     ASSERT_TRUE(store.Wait(dump.Value()).Success());
@@ -834,8 +835,8 @@ TEST(UCAsuStoreTest, ResolvesEachEntryToItsContainingPersistentRegion)
     config.Set("tensor_size_list", std::vector<ssize_t>{64, 64});
     config.SetNumber("shard_size", std::size_t{128});
     config.SetNumber("block_size", std::size_t{128});
-    std::array<std::byte, UC::ASU::kAsuAlignmentBytes> firstBuffer{};
-    std::array<std::byte, UC::ASU::kAsuAlignmentBytes> secondBuffer{};
+    std::array<std::byte, kv::kAsuAlignmentBytes> firstBuffer{};
+    std::array<std::byte, kv::kAsuAlignmentBytes> secondBuffer{};
     RegisterPersistentRanges(config, {
                                          {firstBuffer.data(),  firstBuffer.size() },
                                          {secondBuffer.data(), secondBuffer.size()}
@@ -863,7 +864,7 @@ TEST(UCAsuStoreTest, LookupOnPrefixReturnsLastContiguousHit)
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1", "127.0.0.2"});
     config.Set("asu_ports", std::vector<ssize_t>{12345, 12346});
     config.Set("asu_ids", std::vector<ssize_t>{1001, 1002});
-    std::array<std::byte, UC::ASU::kAsuAlignmentBytes> buffer{};
+    std::array<std::byte, kv::kAsuAlignmentBytes> buffer{};
     RegisterPersistentRanges(config, {
                                          {buffer.data(), buffer.size()}
     });
@@ -915,8 +916,8 @@ TEST(UCAsuStoreTest, TransportModeConfigPathSmoke)
     {
         std::ofstream configFile{kConfigPath};
         ASSERT_TRUE(configFile.is_open());
-        configFile << "asuId=1001\n";
-        configFile << "asuName=asu-store-test\n";
+        configFile << "nodeId=1001\n";
+        configFile << "nodeName=asu-store-test\n";
         configFile << "endpoint=127.0.0.1:12345:tcp\n";
         configFile << "maxInflightTasks=16\n";
     }
@@ -1084,7 +1085,7 @@ TEST(UCAsuStoreTest, UsesLayerwiseMlaTensorOffsets)
 TEST(UCAsuStoreTest, UsesMultiSegmentLayerwiseMlaTensorOffsets)
 {
     constexpr std::size_t shardIndex = 2;
-    constexpr std::size_t alignment = UC::ASU::kAsuAlignmentBytes;
+    constexpr std::size_t alignment = kv::kAsuAlignmentBytes;
     constexpr std::size_t alignedShardSize = alignment * 2;
 
     UC::AsuStore::AsuStore store;
@@ -1154,11 +1155,11 @@ TEST(UCAsuStoreTest, AlignsTensorSizeAndDerivesShardBlockSize)
     ASSERT_FALSE(state->initConfigs.empty());
     ASSERT_EQ(state->initConfigs.back().tensorSizes.size(), std::size_t{1});
     EXPECT_EQ(state->initConfigs.back().tensorSizes[0],
-              static_cast<std::size_t>(UC::ASU::kAsuAlignmentBytes));
+              static_cast<std::size_t>(kv::kAsuAlignmentBytes));
     EXPECT_EQ(state->initConfigs.back().shardSize,
-              static_cast<std::size_t>(UC::ASU::kAsuAlignmentBytes));
+              static_cast<std::size_t>(kv::kAsuAlignmentBytes));
     EXPECT_EQ(state->initConfigs.back().blockSize,
-              static_cast<std::size_t>(UC::ASU::kAsuAlignmentBytes) * 3);
+              static_cast<std::size_t>(kv::kAsuAlignmentBytes) * 3);
 
     auto block = UC::Test::Detail::TypesHelper::MakeBlockId("abb2c3d4e5f6789012345678901234ab");
     UC::Detail::TaskDesc task;
@@ -1169,8 +1170,8 @@ TEST(UCAsuStoreTest, AlignsTensorSizeAndDerivesShardBlockSize)
     ASSERT_TRUE(dump.HasValue()) << dump.Error().ToString();
     ASSERT_FALSE(state->lastStoreEntries.empty());
     EXPECT_EQ(state->lastStoreEntries[0].buffer.region.size,
-              static_cast<std::size_t>(UC::ASU::kAsuAlignmentBytes));
-    EXPECT_EQ(state->lastStoreEntries[0].offset, UC::ASU::kAsuAlignmentBytes * 2);
+              static_cast<std::size_t>(kv::kAsuAlignmentBytes));
+    EXPECT_EQ(state->lastStoreEntries[0].offset, kv::kAsuAlignmentBytes * 2);
 }
 
 TEST(UCAsuStoreTest, AllowsMultipleShardsPerBlock)
@@ -1201,8 +1202,8 @@ TEST(UCAsuStoreTest, UsesLayerwiseGqaKeyValueOffsets)
     config.SetNumber("shard_size", std::size_t{300});
     config.SetNumber("block_size", std::size_t{900});
 
-    std::array<std::byte, UC::ASU::kAsuAlignmentBytes> key{};
-    std::array<std::byte, UC::ASU::kAsuAlignmentBytes> value{};
+    std::array<std::byte, kv::kAsuAlignmentBytes> key{};
+    std::array<std::byte, kv::kAsuAlignmentBytes> value{};
     RegisterPersistentRanges(config, {
                                          {key.data(),   key.size()  },
                                          {value.data(), value.size()}
@@ -1243,7 +1244,7 @@ TEST(UCAsuStoreTest, UsesNonLayerwiseGqaKeyValueOffsets)
     config.SetNumber("shard_size", std::size_t{900});
     config.SetNumber("block_size", std::size_t{900});
 
-    std::array<std::array<std::byte, UC::ASU::kAsuAlignmentBytes>, 6> buffers{};
+    std::array<std::array<std::byte, kv::kAsuAlignmentBytes>, 6> buffers{};
     std::vector<std::pair<void*, std::size_t>> ranges;
     for (auto& buffer : buffers) { ranges.emplace_back(buffer.data(), buffer.size()); }
     RegisterPersistentRanges(config, ranges);

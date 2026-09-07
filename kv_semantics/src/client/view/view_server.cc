@@ -33,9 +33,9 @@
 namespace kv {
 namespace {
 
-AsuInfo ExtractAsuInfo(const TransportConfig& config)
+NodeInfo ExtractAsuInfo(const TransportConfig& config)
 {
-    AsuInfo info;
+    NodeInfo info;
     info.endpoints = config.endpoints;
     return info;
 }
@@ -75,13 +75,13 @@ public:
                 nextView.expireTimeMs = ParseConfigUint64(value);
             } else if (key == "asuIds" || key == "asu_ids") {
                 nextView.asuMap.clear();
-                for (const auto& asuId : SplitConfigValue(value, ',')) {
-                    nextView.asuMap.emplace(ParseConfigUint64(asuId), AsuInfo{});
+                for (const auto& nodeId : SplitConfigValue(value, ',')) {
+                    nextView.asuMap.emplace(ParseConfigUint64(nodeId), NodeInfo{});
                 }
             } else {
-                AsuId asuId{0};
-                if (TryParseAsuInfoKey(key, asuId)) {
-                    nextView.asuMap[asuId] = ParseAsuInfo(value);
+                NodeId nodeId{0};
+                if (TryParseAsuInfoKey(key, nodeId)) {
+                    nextView.asuMap[nodeId] = ParseAsuInfo(value);
                 }
             }
         }
@@ -110,11 +110,11 @@ private:
 
 }  // namespace
 
-GlobalView BuildConfigGlobalView(const AsuClientConfig& config)
+GlobalView BuildConfigGlobalView(const KvClientConfig& config)
 {
     GlobalView view;
     for (const auto& transportConfig : config.transportConfigs) {
-        view.asuMap.emplace(transportConfig.asuId, ExtractAsuInfo(transportConfig));
+        view.asuMap.emplace(transportConfig.nodeId, ExtractAsuInfo(transportConfig));
     }
     return view;
 }
@@ -145,7 +145,7 @@ bool ViewServer::ShouldRefreshView(const TaskResult& result) const
                        [this](const Status& status) { return ShouldRefreshView(status); });
 }
 
-std::shared_ptr<ViewServer> CreateDefaultViewServer(const AsuClientConfig& config)
+std::shared_ptr<ViewServer> CreateDefaultViewServer(const KvClientConfig& config)
 {
     auto viewConfigPath = config.attrs.find("view.config_path");
     if (viewConfigPath != config.attrs.end() && !viewConfigPath->second.empty()) {

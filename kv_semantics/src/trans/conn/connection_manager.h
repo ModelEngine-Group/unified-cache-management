@@ -56,7 +56,7 @@ public:
                       std::uint32_t maxErrorCount = 2);
     ~ConnectionManager();
 
-    Status AddGroup(const AsuEndpoint& endpoint, std::uint32_t qp_num);
+    Status AddGroup(const NodeEndpoint& endpoint, std::uint32_t qp_num);
     Status Shutdown();
 
     std::shared_ptr<ConnectionChannel> SelectConnection();

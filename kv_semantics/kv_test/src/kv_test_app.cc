@@ -335,10 +335,10 @@ void PrintSuccess(const CommandOptions& options, const CommandResult& result)
     PrintBenchSummary(options, result);
 }
 
-Status CreateClient(std::unique_ptr<kv::AsuClient>& client)
+Status CreateClient(std::unique_ptr<kv::KvClient>& client)
 {
     Status status;
-    client = AsuRuntimeProxy::Instance().CreateAsuClient(nullptr, status);
+    client = AsuRuntimeProxy::Instance().CreateKvClient(nullptr, status);
     return status;
 }
 
@@ -425,13 +425,13 @@ int KvTestApp::Run(int argc, char** argv)
     }
 
     CommandResult result;
-    std::unique_ptr<kv::AsuClient> client;
+    std::unique_ptr<kv::KvClient> client;
     status = CreateClient(client);
     if (!status.Ok()) {
         PrintFailure(status);
         return ToExitCode(status);
     }
-    AsuClientRunner clientRunner(std::move(client));
+    KvClientRunner clientRunner(std::move(client));
     status = clientRunner.Init(config);
     if (status.Ok()) { status = RunCommand(effectiveOptions, config, clientRunner, result); }
 
@@ -455,7 +455,7 @@ int KvTestApp::Run(int argc, char** argv)
 }
 
 Status KvTestApp::RunCommand(const CommandOptions& options, const KvTestConfig& config,
-                             AsuClientRunner& clientRunner, CommandResult& result)
+                             KvClientRunner& clientRunner, CommandResult& result)
 {
     switch (options.command) {
         case CommandType::CONNECT: return Status::Success();
@@ -478,7 +478,7 @@ Status KvTestApp::RunCommand(const CommandOptions& options, const KvTestConfig& 
 }
 
 Status KvTestApp::RunStoreLikeCommand(const CommandOptions& options, const KvTestConfig& config,
-                                      AsuClientRunner& clientRunner, CommandResult& result)
+                                      KvClientRunner& clientRunner, CommandResult& result)
 {
     GeneratedData data;
     auto status = generator_.Generate(options, config, data);
@@ -537,7 +537,7 @@ Status KvTestApp::RunStoreLikeCommand(const CommandOptions& options, const KvTes
 }
 
 Status KvTestApp::RunRetrieveLikeCommand(const CommandOptions& options, const KvTestConfig& config,
-                                         AsuClientRunner& clientRunner, CommandResult& result)
+                                         KvClientRunner& clientRunner, CommandResult& result)
 {
     GeneratedData data;
     auto status = generator_.Generate(options, config, data);
@@ -578,7 +578,7 @@ Status KvTestApp::RunRetrieveLikeCommand(const CommandOptions& options, const Kv
 }
 
 Status KvTestApp::RunDeleteCommand(const CommandOptions& options, const KvTestConfig& config,
-                                   AsuClientRunner& clientRunner, CommandResult& result)
+                                   KvClientRunner& clientRunner, CommandResult& result)
 {
     GeneratedData data;
     auto status = generator_.Generate(options, config, data);
@@ -595,7 +595,7 @@ Status KvTestApp::RunDeleteCommand(const CommandOptions& options, const KvTestCo
 }
 
 Status KvTestApp::RunExistCommand(const CommandOptions& options, const KvTestConfig& config,
-                                  AsuClientRunner& clientRunner, CommandResult& result)
+                                  KvClientRunner& clientRunner, CommandResult& result)
 {
     GeneratedData data;
     auto status = generator_.Generate(options, config, data);

@@ -184,7 +184,7 @@ struct HcommProtocolMapping {
 };
 
 struct KvTestConfig {
-    kv::AsuClientConfig asuClientConfig;
+    kv::KvClientConfig asuClientConfig;
     ToolBehaviorConfig behavior;
     HcommProtocolMapping hcommProtocolMapping;
     BenchConfig bench;

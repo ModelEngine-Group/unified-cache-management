@@ -85,7 +85,7 @@ using TransportSubBatchList = std::vector<TransportSubBatchContext>;
 struct TransportTask {
     TransportTask();
 
-    AsuId asuId{0};
+    NodeId nodeId{0};
     TaskId taskId{kInvalidTaskId};
     AsuOpType opType{AsuOpType::QUERY};
     std::weak_ptr<AsuTransport> transport;

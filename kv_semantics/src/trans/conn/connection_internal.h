@@ -82,11 +82,11 @@ private:
 
 class ConnectionGroup {
 public:
-    ConnectionGroup(std::uint32_t id, const AsuEndpoint& ep,
+    ConnectionGroup(std::uint32_t id, const NodeEndpoint& ep,
                     const ServerKvCapabilities& capabilities = {});
 
     std::uint32_t GetGroupId() const { return groupId; }
-    const AsuEndpoint& GetEndpoint() const { return endpoint; }
+    const NodeEndpoint& GetEndpoint() const { return endpoint; }
     const ServerKvCapabilities& GetServerCapabilities() const { return serverCapabilities; }
     const std::vector<std::shared_ptr<ConnectionChannel>>& GetChannels() const { return channels; }
 
@@ -96,7 +96,7 @@ public:
 
 private:
     std::uint32_t groupId{0};
-    AsuEndpoint endpoint;
+    NodeEndpoint endpoint;
     ServerKvCapabilities serverCapabilities;
     std::vector<std::shared_ptr<ConnectionChannel>> channels;
     std::atomic<std::uint32_t> nextChannelId_{0};

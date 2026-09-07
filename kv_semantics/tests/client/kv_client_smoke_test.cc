@@ -123,22 +123,22 @@ private:
     TaskId nextTaskId_{1000};
 };
 
-AsuClientConfig MakeClientConfig()
+KvClientConfig MakeClientConfig()
 {
-    AsuClientConfig config;
+    KvClientConfig config;
     config.clientId = "asu-smoke-client";
     config.defaultWaitTimeoutMs = 100;
 
     TransportConfig first;
-    first.asuName = "asu-smoke-0";
-    first.asuId = 1001;
+    first.nodeName = "asu-smoke-0";
+    first.nodeId = 1001;
     first.providerType = TransProviderType::FAKE;
     first.maxInflightTasks = 64;
     first.timeoutMs = 100;
 
     TransportConfig second;
-    second.asuName = "asu-smoke-1";
-    second.asuId = 1002;
+    second.nodeName = "asu-smoke-1";
+    second.nodeId = 1002;
     second.providerType = TransProviderType::FAKE;
     second.maxInflightTasks = 64;
     second.timeoutMs = 100;
@@ -166,7 +166,7 @@ std::vector<KVBuffer> MakeEntries(std::vector<std::uint8_t>& payload)
     };
 }
 
-void ExpectCompleted(AsuClient& client, TaskId taskId, std::size_t entryCount)
+void ExpectCompleted(KvClient& client, TaskId taskId, std::size_t entryCount)
 {
     TaskResult waitResult;
     auto status = client.Wait(taskId, 500, waitResult);
@@ -180,7 +180,7 @@ void ExpectCompleted(AsuClient& client, TaskId taskId, std::size_t entryCount)
     ASSERT_TRUE(client.Check(taskId));
 }
 
-Status QueryAndWait(AsuClient& client, const std::vector<CacheKey>& keys, QueryResult& result,
+Status QueryAndWait(KvClient& client, const std::vector<CacheKey>& keys, QueryResult& result,
                     std::uint64_t timeoutMs)
 {
     TaskId taskId{kInvalidTaskId};
@@ -201,7 +201,7 @@ Status QueryAndWait(AsuClient& client, const std::vector<CacheKey>& keys, QueryR
 
 TEST(KvClientSmokeTest, ClientAsyncTasksCompleteEndToEnd)
 {
-    auto client = CreateAsuClient([] { return std::make_unique<StubTransport>(); });
+    auto client = CreateKvClient([] { return std::make_unique<StubTransport>(); });
     ASSERT_NE(client, nullptr);
 
     auto status = client->Init(MakeClientConfig());

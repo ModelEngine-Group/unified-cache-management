@@ -67,7 +67,7 @@ std::uint64_t ReadU64(std::uint32_t low, std::uint32_t high)
 
 std::uint32_t RequestCid(const std::uint32_t* request) { return request[0] >> 16; }
 
-AsuId RequestAsuId(const std::uint32_t* request) { return request[1]; }
+NodeId RequestAsuId(const std::uint32_t* request) { return request[1]; }
 
 KvOpcode RequestOpcode(const std::uint32_t* request)
 {
@@ -104,14 +104,14 @@ std::shared_mutex& KeyMutex(const CacheKey& key)
     return g_keyMutexes[KeyHash(key) % kKeyLockCount];
 }
 
-std::filesystem::path AsuRoot(const std::string& storePath, AsuId asuId)
+std::filesystem::path AsuRoot(const std::string& storePath, NodeId nodeId)
 {
-    return std::filesystem::path(storePath) / ("asu-" + std::to_string(asuId));
+    return std::filesystem::path(storePath) / ("asu-" + std::to_string(nodeId));
 }
 
-std::filesystem::path KeyPath(const std::string& storePath, AsuId asuId, const CacheKey& key)
+std::filesystem::path KeyPath(const std::string& storePath, NodeId nodeId, const CacheKey& key)
 {
-    return AsuRoot(storePath, asuId) / KeyFileName(key);
+    return AsuRoot(storePath, nodeId) / KeyFileName(key);
 }
 
 void PackCqeHeader(std::uint32_t* flagBuffer, std::uint16_t cid, std::uint16_t status)
@@ -373,13 +373,13 @@ Status FakeTransProvider::ResolveLocalAddress(const void* providerAddr, std::siz
                          "fake backend IO buffer is not registered");
 }
 
-bool FakeTransProvider::StoreBytes(AsuId asuId, const CacheKey& key, std::uint32_t offset,
+bool FakeTransProvider::StoreBytes(NodeId nodeId, const CacheKey& key, std::uint32_t offset,
                                    std::uint64_t addr, std::uint32_t length)
 {
     std::unique_lock<std::shared_mutex> keyLock(KeyMutex(key));
     if (trans_ == nullptr) {
-        KV_ERROR("ASU fake backend trans not initialized asuId={} key={} addr={} length={}.",
-                 asuId, CacheKeyToHex(key), addr, length);
+        KV_ERROR("ASU fake backend trans not initialized nodeId={} key={} addr={} length={}.",
+                 nodeId, CacheKeyToHex(key), addr, length);
         return false;
     }
     std::vector<char> buffer(length);
@@ -387,14 +387,14 @@ bool FakeTransProvider::StoreBytes(AsuId asuId, const CacheKey& key, std::uint32
         trans_->DeviceToHost(reinterpret_cast<void*>(addr), buffer.data(), length);
     if (!copyStatus.ok()) {
         KV_ERROR(
-            "ASU fake backend device-to-host copy failed asuId={} key={} addr={} length={} "
+            "ASU fake backend device-to-host copy failed nodeId={} key={} addr={} length={} "
             "message={}.",
-            asuId, CacheKeyToHex(key), addr, length, copyStatus.message);
+            nodeId, CacheKeyToHex(key), addr, length, copyStatus.message);
         return false;
     }
 
-    std::filesystem::create_directories(AsuRoot(config_.storePath, asuId));
-    const auto path = KeyPath(config_.storePath, asuId, key);
+    std::filesystem::create_directories(AsuRoot(config_.storePath, nodeId));
+    const auto path = KeyPath(config_.storePath, nodeId, key);
     std::fstream output(path, std::ios::binary | std::ios::in | std::ios::out);
     if (!output) {
         std::ofstream create(path, std::ios::binary);
@@ -402,33 +402,33 @@ bool FakeTransProvider::StoreBytes(AsuId asuId, const CacheKey& key, std::uint32
         output.open(path, std::ios::binary | std::ios::in | std::ios::out);
     }
     if (!output) {
-        KV_ERROR("ASU fake backend failed to open store file asuId={} key={} path={}.", asuId,
+        KV_ERROR("ASU fake backend failed to open store file nodeId={} key={} path={}.", nodeId,
                  CacheKeyToHex(key), path.string());
         return false;
     }
     output.seekp(static_cast<std::streamoff>(offset), std::ios::beg);
     if (!output) {
-        KV_ERROR("ASU fake backend failed to seek store file asuId={} key={} path={} offset={}.",
-                 asuId, CacheKeyToHex(key), path.string(), offset);
+        KV_ERROR("ASU fake backend failed to seek store file nodeId={} key={} path={} offset={}.",
+                 nodeId, CacheKeyToHex(key), path.string(), offset);
         return false;
     }
     output.write(buffer.data(), static_cast<std::streamsize>(buffer.size()));
     return output.good();
 }
 
-bool FakeTransProvider::LoadBytes(AsuId asuId, const CacheKey& key, std::uint32_t offset,
+bool FakeTransProvider::LoadBytes(NodeId nodeId, const CacheKey& key, std::uint32_t offset,
                                   std::uint64_t addr, std::uint32_t length)
 {
     std::shared_lock<std::shared_mutex> keyLock(KeyMutex(key));
     if (trans_ == nullptr) {
-        KV_ERROR("ASU fake backend trans not initialized asuId={} key={} addr={} length={}.",
-                 asuId, CacheKeyToHex(key), addr, length);
+        KV_ERROR("ASU fake backend trans not initialized nodeId={} key={} addr={} length={}.",
+                 nodeId, CacheKeyToHex(key), addr, length);
         return false;
     }
-    const auto path = KeyPath(config_.storePath, asuId, key);
+    const auto path = KeyPath(config_.storePath, nodeId, key);
     std::ifstream input(path, std::ios::binary);
     if (!input) {
-        KV_ERROR("ASU fake backend failed to open load file asuId={} key={} path={}.", asuId,
+        KV_ERROR("ASU fake backend failed to open load file nodeId={} key={} path={}.", nodeId,
                  CacheKeyToHex(key), path.string());
         return false;
     }
@@ -445,30 +445,30 @@ bool FakeTransProvider::LoadBytes(AsuId asuId, const CacheKey& key, std::uint32_
         trans_->HostToDevice(buffer.data(), reinterpret_cast<void*>(addr), length);
     if (!copyStatus.ok()) {
         KV_ERROR(
-            "ASU fake backend host-to-device copy failed asuId={} key={} addr={} length={} "
+            "ASU fake backend host-to-device copy failed nodeId={} key={} addr={} length={} "
             "message={}.",
-            asuId, CacheKeyToHex(key), addr, length, copyStatus.message);
+            nodeId, CacheKeyToHex(key), addr, length, copyStatus.message);
         return false;
     }
     return true;
 }
 
-bool FakeTransProvider::DeleteKey(AsuId asuId, const CacheKey& key)
+bool FakeTransProvider::DeleteKey(NodeId nodeId, const CacheKey& key)
 {
     std::unique_lock<std::shared_mutex> keyLock(KeyMutex(key));
     std::error_code errorCode;
-    std::filesystem::remove(KeyPath(config_.storePath, asuId, key), errorCode);
+    std::filesystem::remove(KeyPath(config_.storePath, nodeId, key), errorCode);
     return !errorCode;
 }
 
-bool FakeTransProvider::ExistsKey(AsuId asuId, const CacheKey& key)
+bool FakeTransProvider::ExistsKey(NodeId nodeId, const CacheKey& key)
 {
     std::shared_lock<std::shared_mutex> keyLock(KeyMutex(key));
     std::error_code errorCode;
-    return std::filesystem::exists(KeyPath(config_.storePath, asuId, key), errorCode);
+    return std::filesystem::exists(KeyPath(config_.storePath, nodeId, key), errorCode);
 }
 
-Status FakeTransProvider::CompleteStore(AsuId asuId, const std::uint32_t* request,
+Status FakeTransProvider::CompleteStore(NodeId nodeId, const std::uint32_t* request,
                                         std::uint32_t* flagBuffer)
 {
     const auto cid = static_cast<std::uint16_t>(RequestCid(request));
@@ -476,14 +476,14 @@ Status FakeTransProvider::CompleteStore(AsuId asuId, const std::uint32_t* reques
     const auto bufferLength = request[8] & 0xFFFFFF;
     const auto offset = request[10];
     const auto key = ReadKey(request + 12);
-    const auto status = StoreBytes(asuId, key, offset, bufferAddr, bufferLength)
+    const auto status = StoreBytes(nodeId, key, offset, bufferAddr, bufferLength)
                             ? kCqeSuccess
                             : kCqeCheckResultBuffer;
     PackCqeHeader(flagBuffer, cid, status);
     return Status::OK();
 }
 
-Status FakeTransProvider::CompleteRetrieve(AsuId asuId, const std::uint32_t* request,
+Status FakeTransProvider::CompleteRetrieve(NodeId nodeId, const std::uint32_t* request,
                                            std::uint32_t* flagBuffer)
 {
     const auto cid = static_cast<std::uint16_t>(RequestCid(request));
@@ -491,14 +491,14 @@ Status FakeTransProvider::CompleteRetrieve(AsuId asuId, const std::uint32_t* req
     const auto bufferLength = request[8] & 0xFFFFFF;
     const auto offset = request[10];
     const auto key = ReadKey(request + 12);
-    const auto status = LoadBytes(asuId, key, offset, bufferAddr, bufferLength)
+    const auto status = LoadBytes(nodeId, key, offset, bufferAddr, bufferLength)
                             ? kCqeSuccess
                             : kCqeCheckResultBuffer;
     PackCqeHeader(flagBuffer, cid, status);
     return Status::OK();
 }
 
-Status FakeTransProvider::CompleteBatchStore(AsuId asuId, const std::uint32_t* request,
+Status FakeTransProvider::CompleteBatchStore(NodeId nodeId, const std::uint32_t* request,
                                              std::uint32_t* flagBuffer)
 {
     const auto cid = static_cast<std::uint16_t>(RequestCid(request));
@@ -508,7 +508,7 @@ Status FakeTransProvider::CompleteBatchStore(AsuId asuId, const std::uint32_t* r
     const auto entries = ReadBatchEntries(request, batchNumber);
     for (std::size_t index = 0; index < entries.size(); ++index) {
         const auto& entry = entries[index];
-        if (!StoreBytes(asuId, entry.key, entry.offset, entry.bufferAddr, entry.length)) {
+        if (!StoreBytes(nodeId, entry.key, entry.offset, entry.bufferAddr, entry.length)) {
             results[index] = kBatchEntryKeyNotFound;
         }
     }
@@ -521,7 +521,7 @@ Status FakeTransProvider::CompleteBatchStore(AsuId asuId, const std::uint32_t* r
     return Status::OK();
 }
 
-Status FakeTransProvider::CompleteBatchRetrieve(AsuId asuId, const std::uint32_t* request,
+Status FakeTransProvider::CompleteBatchRetrieve(NodeId nodeId, const std::uint32_t* request,
                                                 std::uint32_t* flagBuffer)
 {
     const auto cid = static_cast<std::uint16_t>(RequestCid(request));
@@ -531,7 +531,7 @@ Status FakeTransProvider::CompleteBatchRetrieve(AsuId asuId, const std::uint32_t
     const auto entries = ReadBatchEntries(request, batchNumber);
     for (std::size_t index = 0; index < entries.size(); ++index) {
         const auto& entry = entries[index];
-        if (!LoadBytes(asuId, entry.key, entry.offset, entry.bufferAddr, entry.length)) {
+        if (!LoadBytes(nodeId, entry.key, entry.offset, entry.bufferAddr, entry.length)) {
             results[index] = kBatchEntryKeyNotFound;
         }
     }
@@ -544,7 +544,7 @@ Status FakeTransProvider::CompleteBatchRetrieve(AsuId asuId, const std::uint32_t
     return Status::OK();
 }
 
-Status FakeTransProvider::CompleteDelete(AsuId asuId, const std::uint32_t* request,
+Status FakeTransProvider::CompleteDelete(NodeId nodeId, const std::uint32_t* request,
                                          std::uint32_t* flagBuffer)
 {
     const auto cid = static_cast<std::uint16_t>(RequestCid(request));
@@ -553,7 +553,7 @@ Status FakeTransProvider::CompleteDelete(AsuId asuId, const std::uint32_t* reque
 
     const auto keys = ReadKeyEntries(request, batchNumber);
     for (std::size_t index = 0; index < keys.size(); ++index) {
-        if (!DeleteKey(asuId, keys[index])) { results[index] = kDeleteEntryFailed; }
+        if (!DeleteKey(nodeId, keys[index])) { results[index] = kDeleteEntryFailed; }
     }
 
     const auto allOk = std::all_of(results.begin(), results.end(),
@@ -564,7 +564,7 @@ Status FakeTransProvider::CompleteDelete(AsuId asuId, const std::uint32_t* reque
     return Status::OK();
 }
 
-Status FakeTransProvider::CompleteExist(AsuId asuId, const std::uint32_t* request,
+Status FakeTransProvider::CompleteExist(NodeId nodeId, const std::uint32_t* request,
                                         std::uint32_t* flagBuffer)
 {
     const auto cid = static_cast<std::uint16_t>(RequestCid(request));
@@ -575,7 +575,7 @@ Status FakeTransProvider::CompleteExist(AsuId asuId, const std::uint32_t* reques
 
     const auto keys = ReadKeyEntries(request, batchNumber);
     for (std::size_t index = 0; index < keys.size(); ++index) {
-        if (ExistsKey(asuId, keys[index])) {
+        if (ExistsKey(nodeId, keys[index])) {
             results[index] = kExistEntryExist;
             ++existingKeyNumber;
         } else if (!useSeekControl) {
@@ -605,14 +605,14 @@ Status FakeTransProvider::CompleteFakeBackendRequest(const void* sendBuffer, std
     const auto* request = reinterpret_cast<const std::uint32_t*>(sendBuffer);
     completion.assign(CompletionDwordCount(request), 0);
     auto* flagBuffer = completion.data();
-    const auto asuId = RequestAsuId(request);
+    const auto nodeId = RequestAsuId(request);
     switch (RequestOpcode(request)) {
-        case KvOpcode::Store: return CompleteStore(asuId, request, flagBuffer);
-        case KvOpcode::Retrieve: return CompleteRetrieve(asuId, request, flagBuffer);
-        case KvOpcode::BatchStore: return CompleteBatchStore(asuId, request, flagBuffer);
-        case KvOpcode::BatchRetrieve: return CompleteBatchRetrieve(asuId, request, flagBuffer);
-        case KvOpcode::Delete: return CompleteDelete(asuId, request, flagBuffer);
-        case KvOpcode::Exist: return CompleteExist(asuId, request, flagBuffer);
+        case KvOpcode::Store: return CompleteStore(nodeId, request, flagBuffer);
+        case KvOpcode::Retrieve: return CompleteRetrieve(nodeId, request, flagBuffer);
+        case KvOpcode::BatchStore: return CompleteBatchStore(nodeId, request, flagBuffer);
+        case KvOpcode::BatchRetrieve: return CompleteBatchRetrieve(nodeId, request, flagBuffer);
+        case KvOpcode::Delete: return CompleteDelete(nodeId, request, flagBuffer);
+        case KvOpcode::Exist: return CompleteExist(nodeId, request, flagBuffer);
         case KvOpcode::KeepAlive: {
             PackCqeHeader(flagBuffer, static_cast<std::uint16_t>(RequestCid(request)), kCqeSuccess);
             return Status::OK();

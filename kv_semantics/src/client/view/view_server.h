@@ -32,13 +32,13 @@
 
 namespace kv {
 
-struct AsuClientConfig;
+struct KvClientConfig;
 
 // GlobalView carries the routing membership and view metadata.
 struct GlobalView {
     std::uint64_t viewEpoch{0};
     std::uint64_t viewId{0};
-    std::unordered_map<AsuId, AsuInfo> asuMap;
+    std::unordered_map<NodeId, NodeInfo> asuMap;
     std::uint64_t createTimeMs{0};
     std::uint64_t expireTimeMs{0};
 };
@@ -59,9 +59,9 @@ public:
     virtual bool ShouldRefreshView(const TaskResult& result) const;
 };
 
-using ViewServerFactory = std::function<std::shared_ptr<ViewServer>(const AsuClientConfig&)>;
+using ViewServerFactory = std::function<std::shared_ptr<ViewServer>(const KvClientConfig&)>;
 
-std::shared_ptr<ViewServer> CreateDefaultViewServer(const AsuClientConfig& config);
-GlobalView BuildConfigGlobalView(const AsuClientConfig& config);
+std::shared_ptr<ViewServer> CreateDefaultViewServer(const KvClientConfig& config);
+GlobalView BuildConfigGlobalView(const KvClientConfig& config);
 
 }  // namespace kv

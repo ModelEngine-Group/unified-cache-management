@@ -364,7 +364,7 @@ Status BindRegisteredBuffers(BufferSet& buffers)
     return Status::Success();
 }
 
-Status RegisterBenchDeviceBuffers(AsuClientRunner& clientRunner, BenchBufferPool& pool,
+Status RegisterBenchDeviceBuffers(KvClientRunner& clientRunner, BenchBufferPool& pool,
                                   std::uint64_t entryCountPerOperation,
                                   const std::string& keyPrefix,
                                   DeviceAllocationPolicy allocationPolicy,
@@ -383,7 +383,7 @@ Status RegisterBenchDeviceBuffers(AsuClientRunner& clientRunner, BenchBufferPool
     return Status::Success();
 }
 
-Status UnregisterBenchDeviceBuffers(AsuClientRunner& clientRunner, BenchBufferPool& pool)
+Status UnregisterBenchDeviceBuffers(KvClientRunner& clientRunner, BenchBufferPool& pool)
 {
     Status finalStatus = Status::Success();
     for (auto& slot : pool) {
@@ -397,7 +397,7 @@ Status UnregisterBenchDeviceBuffers(AsuClientRunner& clientRunner, BenchBufferPo
 }
 
 Status ExecuteBenchOperation(BenchOpType requestedOp, const KvTestConfig& config,
-                             AsuClientRunner& clientRunner, BenchBufferSlot& slot,
+                             KvClientRunner& clientRunner, BenchBufferSlot& slot,
                              std::uint64_t begin, std::size_t entryCount,
                              std::uint64_t operationIndex, const std::string& keyPrefix,
                              bool useDeviceBuffers, CommandResult& operationResult)
@@ -435,7 +435,7 @@ Status ExecuteBenchOperation(BenchOpType requestedOp, const KvTestConfig& config
 }
 
 OperationOutcome RunBenchOperation(BenchOpType op, const KvTestConfig& config,
-                                   AsuClientRunner& clientRunner, BenchBufferSlot& slot,
+                                   KvClientRunner& clientRunner, BenchBufferSlot& slot,
                                    std::uint64_t begin, std::size_t entryCount,
                                    std::uint64_t operationIndex, const std::string& keyPrefix,
                                    bool useDeviceBuffers)
@@ -459,7 +459,7 @@ OperationOutcome RunBenchOperation(BenchOpType op, const KvTestConfig& config,
 }  // namespace
 
 Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& config,
-                        AsuClientRunner& clientRunner, CommandResult& result) const
+                        KvClientRunner& clientRunner, CommandResult& result) const
 {
     const auto& bench = config.bench;
     if (bench.op == BenchOpType::UNKNOWN) {

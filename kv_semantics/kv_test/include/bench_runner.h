@@ -10,7 +10,7 @@ std::string FormatMiBPerSec(double bytesPerSec);
 class BenchRunner {
 public:
     Status Run(const CommandOptions& options, const KvTestConfig& config,
-               AsuClientRunner& clientRunner, CommandResult& result) const;
+               KvClientRunner& clientRunner, CommandResult& result) const;
 };
 
 }  // namespace kv::bench

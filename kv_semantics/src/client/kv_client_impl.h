@@ -46,34 +46,34 @@ using TransportFactory = std::function<std::unique_ptr<AsuTransport>()>;
 using TransProviderFactory =
     std::function<Status(const TransportConfig&, std::shared_ptr<TransProvider>&)>;
 
-std::unique_ptr<AsuClient> CreateAsuClient(TransportFactory transportFactory);
-std::unique_ptr<AsuClient> CreateAsuClient(TransportFactory transportFactory,
+std::unique_ptr<KvClient> CreateKvClient(TransportFactory transportFactory);
+std::unique_ptr<KvClient> CreateKvClient(TransportFactory transportFactory,
                                            TransProviderFactory transProviderFactory);
 
 // ViewSnapshot is the immutable routing state used by foreground IO and submitted tasks.
 struct ViewSnapshot {
     std::shared_ptr<kv::Router> router;
-    std::vector<AsuId> asuIds;
+    std::vector<NodeId> asuIds;
     GlobalView view;
-    std::unordered_map<AsuId, std::shared_ptr<AsuTransport>> transports;
+    std::unordered_map<NodeId, std::shared_ptr<AsuTransport>> transports;
 };
 
-class AsuClientImpl;
+class KvClientImpl;
 
-// AsuClientImpl coordinates routing, transports, and aggregate task tracking.
-class AsuClientImpl final : public AsuClient {
+// KvClientImpl coordinates routing, transports, and aggregate task tracking.
+class KvClientImpl final : public KvClient {
 public:
     // Builds a client with the provided transport factory.
-    explicit AsuClientImpl(TransportFactory transportFactory,
+    explicit KvClientImpl(TransportFactory transportFactory,
                            ViewServerFactory viewServerFactory = nullptr,
                            TransProviderFactory transProviderFactory = nullptr);
     // Shuts down the client during destruction.
-    ~AsuClientImpl() override;
+    ~KvClientImpl() override;
 
     // Initializes routing and transport resources.
     Status Init(const std::string& configPath) override;
     // Initializes from an already parsed config; intended for internal tests and adapters.
-    Status Init(const AsuClientConfig& config) override;
+    Status Init(const KvClientConfig& config) override;
     // Gracefully drains tracked client tasks and releases resources.
     Status Shutdown() override;
 
@@ -122,7 +122,7 @@ private:
     Status BuildSnapshot(const GlobalView& view, const std::shared_ptr<ViewSnapshot>& oldSnapshot,
                          std::shared_ptr<ViewSnapshot>& snapshot);
     // Creates and initializes a transport for one ASU.
-    Status BuildTransport(AsuId asuId, const AsuInfo& asuInfo,
+    Status BuildTransport(NodeId nodeId, const NodeInfo& asuInfo,
                           std::shared_ptr<AsuTransport>& transport);
     Status BindProviderRegions(const std::shared_ptr<TransProvider>& transProvider,
                                const std::vector<RegisteredMemory>& registeredRegions,
@@ -145,9 +145,9 @@ private:
     // Returns whether a status suggests the published snapshot should be refreshed.
     bool IsRefreshNeeded(const Status& status) const;
     // Extracts sorted ASU ids from a view.
-    static std::vector<AsuId> GetSortedAsuIds(const GlobalView& view);
+    static std::vector<NodeId> GetSortedAsuIds(const GlobalView& view);
     // Parses client config from a file path supplied through the public interface.
-    static Status LoadConfig(const std::string& configPath, AsuClientConfig& config);
+    static Status LoadConfig(const std::string& configPath, KvClientConfig& config);
     // Adds context to a status message.
     static Status WithContext(Status status, const std::string& context);
     // Builds the standard not-initialized status.
@@ -175,11 +175,11 @@ private:
     // Prevents duplicate background refresh workers.
     bool refreshInProgress_{false};
     // Last accepted initialization config.
-    AsuClientConfig config_;
+    KvClientConfig config_;
     // Source for dynamic global views; may be backed by viewServiceAddrs.
     std::shared_ptr<ViewServer> viewServer_;
     // Transport configs indexed by ASU id for snapshot construction.
-    std::unordered_map<AsuId, TransportConfig> transportConfigs_;
+    std::unordered_map<NodeId, TransportConfig> transportConfigs_;
     // Provider-local handles indexed by the canonical handles returned by this client.
     std::vector<ProviderMemoryState> providerMemoryStates_;
     // Provider selected for all client business-memory registration operations.

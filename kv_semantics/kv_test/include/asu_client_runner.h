@@ -7,10 +7,10 @@ namespace kv::bench {
 
 kv::TaskResult BuildEmptyTaskResult();
 
-class AsuClientRunner {
+class KvClientRunner {
 public:
-    explicit AsuClientRunner(std::unique_ptr<kv::AsuClient> client);
-    ~AsuClientRunner();
+    explicit KvClientRunner(std::unique_ptr<kv::KvClient> client);
+    ~KvClientRunner();
 
     Status Init(const KvTestConfig& config);
     Status Shutdown();
@@ -18,8 +18,8 @@ public:
     Status RegisterBuffers(BufferSet& buffers);
     Status UnregisterBuffers(const BufferSet& buffers);
 
-    // SINGLE_ENTRY_PER_CALL maps single Store/Retrieve to one AsuClient call per entry.
-    // ALL_ENTRIES_IN_ONE_CALL maps batch commands to one AsuClient call with all entries.
+    // SINGLE_ENTRY_PER_CALL maps single Store/Retrieve to one KvClient call per entry.
+    // ALL_ENTRIES_IN_ONE_CALL maps batch commands to one KvClient call with all entries.
     Status Store(const BufferSet& buffers, SubmitMode submitMode, std::uint64_t timeoutMs,
                  CommandResult& result);
     Status Retrieve(const BufferSet& buffers, SubmitMode submitMode, std::uint64_t timeoutMs,
@@ -30,7 +30,7 @@ public:
                  CommandResult& result);
 
 private:
-    std::unique_ptr<kv::AsuClient> client_;
+    std::unique_ptr<kv::KvClient> client_;
 };
 
 }  // namespace kv::bench

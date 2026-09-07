@@ -112,9 +112,9 @@ Status AsuRuntimeProxy::Load(const AsuRuntimeLibraryConfig& config)
 
     auto status = LoadSymbol(transportHandle_, "UcmAsuCreateAsuTransport", createTransport_);
     if (!status.Ok()) { return status; }
-    status = LoadSymbol(clientHandle_, "UcmAsuCreateAsuClient", createClient_);
+    status = LoadSymbol(clientHandle_, "UcmAsuCreateKvClient", createClient_);
     if (!status.Ok()) { return status; }
-    return LoadSymbol(clientHandle_, "UcmAsuLoadAsuClientConfig", loadClientConfig_);
+    return LoadSymbol(clientHandle_, "UcmAsuLoadKvClientConfig", loadClientConfig_);
 }
 
 Status AsuRuntimeProxy::EnsureLoaded()
@@ -126,8 +126,8 @@ Status AsuRuntimeProxy::EnsureLoaded()
     return Load(AsuRuntimeLibraryConfig{});
 }
 
-kv::Status AsuRuntimeProxy::LoadAsuClientConfig(const std::string& configPath,
-                                                     kv::AsuClientConfig& config)
+kv::Status AsuRuntimeProxy::LoadKvClientConfig(const std::string& configPath,
+                                                     kv::KvClientConfig& config)
 {
     auto status = EnsureLoaded();
     if (!status.Ok()) {
@@ -136,7 +136,7 @@ kv::Status AsuRuntimeProxy::LoadAsuClientConfig(const std::string& configPath,
     return loadClientConfig_(configPath.c_str(), &config);
 }
 
-std::unique_ptr<kv::AsuClient> AsuRuntimeProxy::CreateAsuClient(
+std::unique_ptr<kv::KvClient> AsuRuntimeProxy::CreateKvClient(
     const kv::TransportFactory* transportFactory, Status& status)
 {
     status = EnsureLoaded();

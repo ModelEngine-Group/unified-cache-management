@@ -13,9 +13,9 @@ public:
     static AsuRuntimeProxy& Instance();
 
     Status Load(const AsuRuntimeLibraryConfig& config);
-    kv::Status LoadAsuClientConfig(const std::string& configPath,
-                                        kv::AsuClientConfig& config);
-    std::unique_ptr<kv::AsuClient> CreateAsuClient(const kv::TransportFactory* transportFactory,
+    kv::Status LoadKvClientConfig(const std::string& configPath,
+                                        kv::KvClientConfig& config);
+    std::unique_ptr<kv::KvClient> CreateKvClient(const kv::TransportFactory* transportFactory,
                                                     Status& status);
     std::unique_ptr<kv::AsuTransport> CreateAsuTransport(Status& status);
 
@@ -24,9 +24,9 @@ private:
 
     Status EnsureLoaded();
 
-    using CreateClientFn = std::unique_ptr<kv::AsuClient> (*)(const kv::TransportFactory*);
+    using CreateClientFn = std::unique_ptr<kv::KvClient> (*)(const kv::TransportFactory*);
     using CreateTransportFn = std::unique_ptr<kv::AsuTransport> (*)();
-    using LoadClientConfigFn = kv::Status (*)(const char*, kv::AsuClientConfig*);
+    using LoadClientConfigFn = kv::Status (*)(const char*, kv::KvClientConfig*);
 
     void* clientHandle_{nullptr};
     void* transportHandle_{nullptr};

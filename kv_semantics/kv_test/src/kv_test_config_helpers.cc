@@ -26,7 +26,7 @@ void PatchFakeBackendTransportConfig(kv::TransportConfig& config,
     config.providerType = kv::TransProviderType::FAKE;
     config.attrs.try_emplace("kernel_count", "1");
     config.attrs.try_emplace("quiet_count", "1");
-    config.attrs["kv_ns_id"] = std::to_string(config.asuId);
+    config.attrs["kv_ns_id"] = std::to_string(config.nodeId);
     config.attrs.try_emplace("dtype", "0");
     config.attrs.try_emplace("dspec", "0");
     config.attrs.try_emplace("lr", "false");
@@ -35,7 +35,7 @@ void PatchFakeBackendTransportConfig(kv::TransportConfig& config,
     config.attrs["fake_backend.worker_threads"] = std::to_string(fakeConfig.workerThreads);
     config.attrs["fake_backend.device_id"] = std::to_string(fakeBackendDeviceId);
     if (config.endpoints.empty()) {
-        kv::AsuEndpoint endpoint;
+        kv::NodeEndpoint endpoint;
         endpoint.ip = "fake_backend";
         endpoint.port = 19001;
         endpoint.protocol = kv::Protocol::TCP;

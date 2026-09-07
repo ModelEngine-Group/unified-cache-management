@@ -33,7 +33,7 @@ namespace {
 TEST(TransTaskUtilsTest, MapsCqeRawStatusToSubBatchStatus)
 {
     EXPECT_TRUE(KvResponseStatusToSubBatchStatus(0x00).ok());
-    EXPECT_EQ(KvResponseStatusToSubBatchStatus(0x731).code, StatusCode::ASU_CQE_RESOURCE_BUSY);
+    EXPECT_EQ(KvResponseStatusToSubBatchStatus(0x731).code, StatusCode::CQE_RESOURCE_BUSY);
     EXPECT_EQ(KvResponseStatusToSubBatchStatus(0xFFFF).code, StatusCode::IO_ERROR);
 }
 
@@ -58,14 +58,14 @@ TEST(TransTaskUtilsTest, CheckResultBufferFillsPerEntryBatchStatus)
     TransportSubBatchContext subBatchContext;
     subBatchContext.opType = AsuOpType::BATCH_LOAD;
     subBatchContext.status =
-        Status::Error(StatusCode::ASU_CQE_CHECK_RESULT_BUFFER, "check result buffer");
+        Status::Error(StatusCode::CQE_CHECK_RESULT_BUFFER, "check result buffer");
     subBatchContext.entryStatus.assign(3, Status::OK());
 
     FillEntryStatusFromCqeResult(response, subBatchContext);
 
     EXPECT_TRUE(subBatchContext.entryStatus[0].ok());
-    EXPECT_EQ(subBatchContext.entryStatus[1].code, StatusCode::ASU_ENTRY_KEY_NOT_FOUND);
-    EXPECT_EQ(subBatchContext.entryStatus[2].code, StatusCode::ASU_ENTRY_DATA_NOT_EXIST);
+    EXPECT_EQ(subBatchContext.entryStatus[1].code, StatusCode::ENTRY_KEY_NOT_FOUND);
+    EXPECT_EQ(subBatchContext.entryStatus[2].code, StatusCode::ENTRY_DATA_NOT_EXIST);
 }
 
 TEST(TransTaskUtilsTest, QueryOkWithoutResultBufferMarksAllKeysExist)
@@ -119,7 +119,7 @@ TEST(TransTaskUtilsTest, QueryCheckResultBufferWithoutSeekControlUsesExistingKey
     subBatchContext.opType = AsuOpType::QUERY;
     subBatchContext.useSeekControl = false;
     subBatchContext.status =
-        Status::Error(StatusCode::ASU_CQE_CHECK_RESULT_BUFFER, "check result buffer");
+        Status::Error(StatusCode::CQE_CHECK_RESULT_BUFFER, "check result buffer");
     subBatchContext.entryStatus.assign(4, Status::OK());
 
     FillEntryStatusFromCqeResult(response, subBatchContext);
@@ -142,7 +142,7 @@ TEST(TransTaskUtilsTest, QueryCheckResultBufferUsesExistEntryStatuses)
     subBatchContext.opType = AsuOpType::QUERY;
     subBatchContext.useSeekControl = true;
     subBatchContext.status =
-        Status::Error(StatusCode::ASU_CQE_CHECK_RESULT_BUFFER, "check result buffer");
+        Status::Error(StatusCode::CQE_CHECK_RESULT_BUFFER, "check result buffer");
     subBatchContext.entryStatus.assign(3, Status::OK());
 
     FillEntryStatusFromCqeResult(response, subBatchContext);
@@ -160,13 +160,13 @@ TEST(TransTaskUtilsTest, MissingResultBufferPropagatesSubBatchError)
     KvResponse response;
     TransportSubBatchContext subBatchContext;
     subBatchContext.opType = AsuOpType::DELETE;
-    subBatchContext.status = Status::Error(StatusCode::ASU_CQE_RESOURCE_BUSY, "busy");
+    subBatchContext.status = Status::Error(StatusCode::CQE_RESOURCE_BUSY, "busy");
     subBatchContext.entryStatus.assign(2, Status::OK());
 
     FillEntryStatusFromCqeResult(response, subBatchContext);
 
-    EXPECT_EQ(subBatchContext.entryStatus[0].code, StatusCode::ASU_CQE_RESOURCE_BUSY);
-    EXPECT_EQ(subBatchContext.entryStatus[1].code, StatusCode::ASU_CQE_RESOURCE_BUSY);
+    EXPECT_EQ(subBatchContext.entryStatus[0].code, StatusCode::CQE_RESOURCE_BUSY);
+    EXPECT_EQ(subBatchContext.entryStatus[1].code, StatusCode::CQE_RESOURCE_BUSY);
 }
 
 }  // namespace

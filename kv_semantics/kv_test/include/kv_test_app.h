@@ -20,15 +20,15 @@ public:
 
 private:
     Status RunCommand(const CommandOptions& options, const KvTestConfig& config,
-                      AsuClientRunner& clientRunner, CommandResult& result);
+                      KvClientRunner& clientRunner, CommandResult& result);
     Status RunStoreLikeCommand(const CommandOptions& options, const KvTestConfig& config,
-                               AsuClientRunner& clientRunner, CommandResult& result);
+                               KvClientRunner& clientRunner, CommandResult& result);
     Status RunRetrieveLikeCommand(const CommandOptions& options, const KvTestConfig& config,
-                                  AsuClientRunner& clientRunner, CommandResult& result);
+                                  KvClientRunner& clientRunner, CommandResult& result);
     Status RunDeleteCommand(const CommandOptions& options, const KvTestConfig& config,
-                            AsuClientRunner& clientRunner, CommandResult& result);
+                            KvClientRunner& clientRunner, CommandResult& result);
     Status RunExistCommand(const CommandOptions& options, const KvTestConfig& config,
-                           AsuClientRunner& clientRunner, CommandResult& result);
+                           KvClientRunner& clientRunner, CommandResult& result);
 
     ArgParser argParser_;
     BenchRunner benchRunner_;

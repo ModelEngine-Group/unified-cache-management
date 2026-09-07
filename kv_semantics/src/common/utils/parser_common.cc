@@ -30,7 +30,7 @@
 namespace kv {
 namespace {
 
-void ApplyTransportEndpointField(AsuEndpoint& endpoint, const std::string& key,
+void ApplyTransportEndpointField(NodeEndpoint& endpoint, const std::string& key,
                                  const std::string& value)
 {
     if (key == "ip" || key == "local.comm_id" || key == "localCommId") {
@@ -126,13 +126,13 @@ bool ApplyTransportIoNumConfigField(TransportConfig& config, const std::string& 
                                     const std::string& value)
 {
     if (key == "batchLoadIoNum" || key == "batch_load_io_num") {
-        config.asuBatchLoadIoNum = static_cast<std::size_t>(ParseConfigUint64(value));
+        config.batchLoadIoNum = static_cast<std::size_t>(ParseConfigUint64(value));
     } else if (key == "batchStoreIoNum" || key == "batch_store_io_num") {
-        config.asuBatchStoreIoNum = static_cast<std::size_t>(ParseConfigUint64(value));
+        config.batchStoreIoNum = static_cast<std::size_t>(ParseConfigUint64(value));
     } else if (key == "deleteIoNum" || key == "delete_io_num") {
-        config.asuDeleteIoNum = static_cast<std::size_t>(ParseConfigUint64(value));
+        config.deleteIoNum = static_cast<std::size_t>(ParseConfigUint64(value));
     } else if (key == "queryIoNum" || key == "query_io_num") {
-        config.asuQueryIoNum = static_cast<std::size_t>(ParseConfigUint64(value));
+        config.queryIoNum = static_cast<std::size_t>(ParseConfigUint64(value));
     } else {
         return false;
     }
@@ -170,9 +170,9 @@ bool ApplyTransportDeviceConfigField(TransportConfig& config, const std::string&
     return false;
 }
 
-AsuEndpoint ParseTransportEndpoint(const std::string& value)
+NodeEndpoint ParseTransportEndpoint(const std::string& value)
 {
-    AsuEndpoint endpoint;
+    NodeEndpoint endpoint;
     if (value.find('=') == std::string::npos) {
         auto parts = SplitConfigValue(value, ':');
         if (!parts.empty()) { endpoint.ip = parts[0]; }

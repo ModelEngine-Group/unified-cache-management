@@ -405,12 +405,12 @@ bool TransportTaskExecutor::Poll(const TransportTaskPtr& task)
 
                 const bool queryResultBufferStatus =
                     subBatchContext.opType == AsuOpType::QUERY &&
-                    subBatchContext.status.code == StatusCode::ASU_CQE_CHECK_RESULT_BUFFER;
+                    subBatchContext.status.code == StatusCode::CQE_CHECK_RESULT_BUFFER;
                 const auto status = subBatchContext.status.ok() || queryResultBufferStatus
                                         ? Status::OK()
                                         : subBatchContext.status;
-                if (status.code == StatusCode::ASU_CQE_INTERNAL_ERROR ||
-                    status.code == StatusCode::ASU_CQE_IO_TIMEOUT) {
+                if (status.code == StatusCode::CQE_INTERNAL_ERROR ||
+                    status.code == StatusCode::CQE_IO_TIMEOUT) {
                     connManager_->ReportFailure(subBatchContext.channel);
                 } else {
                     connManager_->ReportSuccess(subBatchContext.channel);

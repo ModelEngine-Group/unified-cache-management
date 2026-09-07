@@ -36,7 +36,7 @@ namespace kv {
 
 constexpr std::uint32_t kMaxShutdownDrainAttempts = 64;
 
-AsuClientImpl::AsuClientImpl(TransportFactory transportFactory, ViewServerFactory viewServerFactory,
+KvClientImpl::KvClientImpl(TransportFactory transportFactory, ViewServerFactory viewServerFactory,
                              TransProviderFactory transProviderFactory)
     : transportFactory_(std::move(transportFactory)),
       transProviderFactory_(std::move(transProviderFactory)),
@@ -47,17 +47,17 @@ AsuClientImpl::AsuClientImpl(TransportFactory transportFactory, ViewServerFactor
     if (!viewServerFactory_) { viewServerFactory_ = CreateDefaultViewServer; }
 }
 
-AsuClientImpl::~AsuClientImpl() { Shutdown(); }
+KvClientImpl::~KvClientImpl() { Shutdown(); }
 
-Status AsuClientImpl::Init(const std::string& configPath)
+Status KvClientImpl::Init(const std::string& configPath)
 {
-    AsuClientConfig config;
+    KvClientConfig config;
     auto status = LoadConfig(configPath, config);
     if (!status.ok()) { return status; }
     return Init(config);
 }
 
-Status AsuClientImpl::Init(const AsuClientConfig& config)
+Status KvClientImpl::Init(const KvClientConfig& config)
 {
     if (initialized_) {
         return Status::Error(StatusCode::RESOURCE_BUSY, "asu client has already been initialized");
@@ -74,7 +74,7 @@ Status AsuClientImpl::Init(const AsuClientConfig& config)
     }
     transportConfigs_.clear();
     for (const auto& transportConfig : config.transportConfigs) {
-        transportConfigs_[transportConfig.asuId] = transportConfig;
+        transportConfigs_[transportConfig.nodeId] = transportConfig;
     }
     if (config.transportConfigs.empty()) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
@@ -111,13 +111,13 @@ Status AsuClientImpl::Init(const AsuClientConfig& config)
 
     taskQueue_.Setup(queueDepth + 1);
     stopWorker_.store(false, std::memory_order_release);
-    worker_ = std::thread(&AsuClientImpl::WorkerLoop, this);
+    worker_ = std::thread(&KvClientImpl::WorkerLoop, this);
     snapshot_ = std::move(nextSnapshot);
     initialized_ = true;
     return Status::OK();
 }
 
-Status AsuClientImpl::Shutdown()
+Status KvClientImpl::Shutdown()
 {
     std::uint64_t waitTimeoutMs = 0;
     {
@@ -139,7 +139,7 @@ Status AsuClientImpl::Shutdown()
         std::lock_guard<std::mutex> lock{mutex_};
         snapshot = std::move(snapshot_);
         retiredTransports = std::move(retiredTransports_);
-        config_ = AsuClientConfig{};
+        config_ = KvClientConfig{};
         viewServer_.reset();
         transportConfigs_.clear();
     }
@@ -175,41 +175,41 @@ Status AsuClientImpl::Shutdown()
     return finalStatus;
 }
 
-Status AsuClientImpl::QueryAsync(const std::vector<CacheKey>& keys, TaskId& taskId)
+Status KvClientImpl::QueryAsync(const std::vector<CacheKey>& keys, TaskId& taskId)
 {
     auto status = SubmitAsync(AsuOpType::QUERY, keys, taskId);
     if (IsRefreshNeeded(status)) { RequestBackgroundRefresh(); }
     return status;
 }
 
-Status AsuClientImpl::LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
+Status KvClientImpl::LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
 {
     return SubmitAsync(AsuOpType::LOAD, entries, taskId);
 }
 
-Status AsuClientImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
+Status KvClientImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
 {
     return SubmitAsync(AsuOpType::STORE, entries, taskId);
 }
 
-Status AsuClientImpl::BatchLoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
+Status KvClientImpl::BatchLoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
 {
     return SubmitAsync(AsuOpType::BATCH_LOAD, entries, taskId);
 }
 
-Status AsuClientImpl::BatchStoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
+Status KvClientImpl::BatchStoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
 {
     return SubmitAsync(AsuOpType::BATCH_STORE, entries, taskId);
 }
 
-Status AsuClientImpl::DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId)
+Status KvClientImpl::DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId)
 {
     return SubmitAsync(AsuOpType::DELETE, keys, taskId);
 }
 
-bool AsuClientImpl::Check(TaskId taskId) { return taskManager_.Check(taskId); }
+bool KvClientImpl::Check(TaskId taskId) { return taskManager_.Check(taskId); }
 
-Status AsuClientImpl::Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result)
+Status KvClientImpl::Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& result)
 {
     const auto waitMs = timeoutMs == 0 ? config_.defaultWaitTimeoutMs : timeoutMs;
     auto status = taskManager_.Wait(taskId, waitMs, result);
@@ -221,7 +221,7 @@ Status AsuClientImpl::Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& r
     return status;
 }
 
-Status AsuClientImpl::RegisterRegions(const std::vector<MemoryRegion>& regions,
+Status KvClientImpl::RegisterRegions(const std::vector<MemoryRegion>& regions,
                                       std::vector<RegisteredMemory>& registeredRegions)
 {
     bool needRefresh = false;
@@ -230,7 +230,7 @@ Status AsuClientImpl::RegisterRegions(const std::vector<MemoryRegion>& regions,
     return status;
 }
 
-Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regions,
+Status KvClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regions,
                                           std::vector<RegisteredMemory>& registeredRegions,
                                           bool& needRefresh)
 {
@@ -328,7 +328,7 @@ Status AsuClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regio
     return Status::OK();
 }
 
-Status AsuClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& entries,
+Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& entries,
                                   TaskId& taskId)
 {
     auto snapshot = GetSnapshot();
@@ -384,7 +384,7 @@ Status AsuClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>&
     return Status::OK();
 }
 
-Status AsuClientImpl::SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& keys,
+Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& keys,
                                   TaskId& taskId)
 {
     auto snapshot = GetSnapshot();
@@ -431,7 +431,7 @@ Status AsuClientImpl::SubmitAsync(AsuOpType opType, const std::vector<CacheKey>&
     return Status::OK();
 }
 
-void AsuClientImpl::WorkerLoop()
+void KvClientImpl::WorkerLoop()
 {
     auto processTask = [this](ClientTaskPtr ctx) {
         auto status = taskManager_.Process(ctx);
@@ -443,7 +443,7 @@ void AsuClientImpl::WorkerLoop()
     while (taskQueue_.TryPop(ctx)) { processTask(std::move(ctx)); }
 }
 
-Status AsuClientImpl::UnregisterRegions(const std::vector<MRHandle>& handles)
+Status KvClientImpl::UnregisterRegions(const std::vector<MRHandle>& handles)
 {
     std::lock_guard<std::mutex> memoryLock{memoryMu_};
     std::vector<MRHandle> canonicalHandles;
@@ -495,7 +495,7 @@ Status AsuClientImpl::UnregisterRegions(const std::vector<MRHandle>& handles)
     return finalStatus;
 }
 
-Status AsuClientImpl::BuildSnapshot(const GlobalView& view,
+Status KvClientImpl::BuildSnapshot(const GlobalView& view,
                                     const std::shared_ptr<ViewSnapshot>& oldSnapshot,
                                     std::shared_ptr<ViewSnapshot>& snapshot)
 {
@@ -504,24 +504,24 @@ Status AsuClientImpl::BuildSnapshot(const GlobalView& view,
     nextSnapshot->view = view;
 
     for (std::size_t asuIndex = 0; asuIndex < asuIds.size(); ++asuIndex) {
-        auto asuId = asuIds[asuIndex];
+        auto nodeId = asuIds[asuIndex];
         std::shared_ptr<AsuTransport> transport;
         if (oldSnapshot != nullptr) {
-            auto oldIter = oldSnapshot->transports.find(asuId);
+            auto oldIter = oldSnapshot->transports.find(nodeId);
             if (oldIter != oldSnapshot->transports.end()) { transport = oldIter->second; }
         }
 
         if (transport == nullptr) {
-            auto viewIter = view.asuMap.find(asuId);
-            auto asuInfo = viewIter == view.asuMap.end() ? AsuInfo{} : viewIter->second;
-            auto status = BuildTransport(asuId, asuInfo, transport);
+            auto viewIter = view.asuMap.find(nodeId);
+            auto asuInfo = viewIter == view.asuMap.end() ? NodeInfo{} : viewIter->second;
+            auto status = BuildTransport(nodeId, asuInfo, transport);
             if (!status.ok()) {
                 return WithContext(status, "asuIndex=" + std::to_string(asuIndex) +
-                                               " asuId=" + std::to_string(asuId));
+                                               " nodeId=" + std::to_string(nodeId));
             }
         }
 
-        nextSnapshot->transports.emplace(asuId, std::move(transport));
+        nextSnapshot->transports.emplace(nodeId, std::move(transport));
     }
 
     kv::RouterConfig routerConfig;
@@ -539,16 +539,16 @@ Status AsuClientImpl::BuildSnapshot(const GlobalView& view,
     return Status::OK();
 }
 
-Status AsuClientImpl::BuildTransport(AsuId asuId, const AsuInfo& asuInfo,
+Status KvClientImpl::BuildTransport(NodeId nodeId, const NodeInfo& asuInfo,
                                      std::shared_ptr<AsuTransport>& transport)
 {
     TransportConfig config;
     {
         std::lock_guard<std::mutex> lock{mutex_};
-        auto configIter = transportConfigs_.find(asuId);
+        auto configIter = transportConfigs_.find(nodeId);
         if (configIter == transportConfigs_.end()) {
             return Status::Error(StatusCode::NOT_FOUND,
-                                 "transport config not found, asuId=" + std::to_string(asuId));
+                                 "transport config not found, nodeId=" + std::to_string(nodeId));
         }
         config = configIter->second;
     }
@@ -564,24 +564,24 @@ Status AsuClientImpl::BuildTransport(AsuId asuId, const AsuInfo& asuInfo,
         auto status = transProviderFactory_(config, transProvider);
         if (!status.ok()) {
             return WithContext(status,
-                               "create transport provider failed, asuId=" + std::to_string(asuId));
+                               "create transport provider failed, nodeId=" + std::to_string(nodeId));
         }
         if (!transProvider) {
             return Status::Error(
                 StatusCode::INTERNAL_ERROR,
-                "transport provider factory returned null, asuId=" + std::to_string(asuId));
+                "transport provider factory returned null, nodeId=" + std::to_string(nodeId));
         }
     }
 
     auto nextTransport = transportFactory_();
     if (!nextTransport) {
         return Status::Error(StatusCode::INTERNAL_ERROR,
-                             "transport factory returned null, asuId=" + std::to_string(asuId));
+                             "transport factory returned null, nodeId=" + std::to_string(nodeId));
     }
 
     auto status = nextTransport->Init(config, transProvider);
     if (!status.ok()) {
-        return WithContext(status, "init transport failed, asuId=" + std::to_string(asuId));
+        return WithContext(status, "init transport failed, nodeId=" + std::to_string(nodeId));
     }
     if (!createdProvider) {
         transport = std::shared_ptr<AsuTransport>(std::move(nextTransport));
@@ -598,7 +598,7 @@ Status AsuClientImpl::BuildTransport(AsuId asuId, const AsuInfo& asuInfo,
         if (!status.ok()) {
             (void)nextTransport->Shutdown();
             return WithContext(status,
-                               "bind provider memory failed, asuId=" + std::to_string(asuId));
+                               "bind provider memory failed, nodeId=" + std::to_string(nodeId));
         }
     }
     ProviderMemoryState providerState;
@@ -611,7 +611,7 @@ Status AsuClientImpl::BuildTransport(AsuId asuId, const AsuInfo& asuInfo,
     return Status::OK();
 }
 
-Status AsuClientImpl::BindProviderRegions(const std::shared_ptr<TransProvider>& transProvider,
+Status KvClientImpl::BindProviderRegions(const std::shared_ptr<TransProvider>& transProvider,
                                           const std::vector<RegisteredMemory>& registeredRegions,
                                           std::vector<MRHandle>& localHandles)
 {
@@ -655,7 +655,7 @@ Status AsuClientImpl::BindProviderRegions(const std::shared_ptr<TransProvider>& 
     return Status::OK();
 }
 
-Status AsuClientImpl::UnregisterProviderRegions(const std::shared_ptr<TransProvider>& transProvider,
+Status KvClientImpl::UnregisterProviderRegions(const std::shared_ptr<TransProvider>& transProvider,
                                                 const std::vector<MRHandle>& handles)
 {
     if (handles.empty()) { return Status::OK(); }
@@ -686,7 +686,7 @@ Status AsuClientImpl::UnregisterProviderRegions(const std::shared_ptr<TransProvi
     return failure;
 }
 
-Status AsuClientImpl::RefreshView()
+Status KvClientImpl::RefreshView()
 {
     std::shared_ptr<ViewServer> viewServer;
     std::shared_ptr<ViewSnapshot> oldSnapshot;
@@ -734,7 +734,7 @@ Status AsuClientImpl::RefreshView()
     return Status::OK();
 }
 
-void AsuClientImpl::RequestBackgroundRefresh()
+void KvClientImpl::RequestBackgroundRefresh()
 {
     std::thread completedThread;
     {
@@ -756,7 +756,7 @@ void AsuClientImpl::RequestBackgroundRefresh()
     if (completedThread.joinable()) { completedThread.join(); }
 }
 
-void AsuClientImpl::JoinBackgroundRefresh()
+void KvClientImpl::JoinBackgroundRefresh()
 {
     std::thread refreshThread;
     {
@@ -766,7 +766,7 @@ void AsuClientImpl::JoinBackgroundRefresh()
     if (refreshThread.joinable()) { refreshThread.join(); }
 }
 
-Status AsuClientImpl::ShutdownSnapshotTransports(const std::shared_ptr<ViewSnapshot>& snapshot)
+Status KvClientImpl::ShutdownSnapshotTransports(const std::shared_ptr<ViewSnapshot>& snapshot)
 {
     if (!snapshot) { return Status::OK(); }
     Status finalStatus = Status::OK();
@@ -777,24 +777,24 @@ Status AsuClientImpl::ShutdownSnapshotTransports(const std::shared_ptr<ViewSnaps
     return finalStatus;
 }
 
-std::shared_ptr<ViewSnapshot> AsuClientImpl::GetSnapshot() const
+std::shared_ptr<ViewSnapshot> KvClientImpl::GetSnapshot() const
 {
     std::lock_guard<std::mutex> lock{mutex_};
     if (!initialized_) { return nullptr; }
     return snapshot_;
 }
 
-bool AsuClientImpl::IsRefreshNeeded(const Status& status) const
+bool KvClientImpl::IsRefreshNeeded(const Status& status) const
 {
     return viewServer_ != nullptr && viewServer_->ShouldRefreshView(status);
 }
 
-std::vector<AsuId> AsuClientImpl::GetSortedAsuIds(const GlobalView& view)
+std::vector<NodeId> KvClientImpl::GetSortedAsuIds(const GlobalView& view)
 {
-    std::vector<AsuId> asuIds;
+    std::vector<NodeId> asuIds;
     asuIds.reserve(view.asuMap.size());
     for (const auto& item : view.asuMap) {
-        if (item.first != static_cast<AsuId>(kv::kInvalidNodeId)) {
+        if (item.first != static_cast<NodeId>(kv::kInvalidNodeId)) {
             asuIds.emplace_back(item.first);
         }
     }
@@ -802,12 +802,12 @@ std::vector<AsuId> AsuClientImpl::GetSortedAsuIds(const GlobalView& view)
     return asuIds;
 }
 
-Status AsuClientImpl::LoadConfig(const std::string& configPath, AsuClientConfig& config)
+Status KvClientImpl::LoadConfig(const std::string& configPath, KvClientConfig& config)
 {
-    return LoadAsuClientConfig(configPath, config);
+    return LoadKvClientConfig(configPath, config);
 }
 
-Status AsuClientImpl::WithContext(Status status, const std::string& context)
+Status KvClientImpl::WithContext(Status status, const std::string& context)
 {
     if (context.empty()) { return status; }
     if (status.message.empty()) {
@@ -818,42 +818,42 @@ Status AsuClientImpl::WithContext(Status status, const std::string& context)
     return status;
 }
 
-Status AsuClientImpl::NotInitialized()
+Status KvClientImpl::NotInitialized()
 {
     return Status::Error(StatusCode::NOT_INITIALIZED, "asu client is not initialized");
 }
 
-std::unique_ptr<AsuClient> CreateAsuClient()
+std::unique_ptr<KvClient> CreateKvClient()
 {
-    return std::make_unique<AsuClientImpl>(nullptr, nullptr, nullptr);
+    return std::make_unique<KvClientImpl>(nullptr, nullptr, nullptr);
 }
 
-std::unique_ptr<AsuClient> CreateAsuClient(TransportFactory transportFactory)
+std::unique_ptr<KvClient> CreateKvClient(TransportFactory transportFactory)
 {
-    return std::make_unique<AsuClientImpl>(std::move(transportFactory), nullptr, nullptr);
+    return std::make_unique<KvClientImpl>(std::move(transportFactory), nullptr, nullptr);
 }
 
-std::unique_ptr<AsuClient> CreateAsuClient(TransportFactory transportFactory,
+std::unique_ptr<KvClient> CreateKvClient(TransportFactory transportFactory,
                                            TransProviderFactory transProviderFactory)
 {
-    return std::make_unique<AsuClientImpl>(std::move(transportFactory), nullptr,
+    return std::make_unique<KvClientImpl>(std::move(transportFactory), nullptr,
                                            std::move(transProviderFactory));
 }
 
-extern "C" std::unique_ptr<AsuClient> UcmAsuCreateAsuClient(
+extern "C" std::unique_ptr<KvClient> UcmAsuCreateKvClient(
     const TransportFactory* transportFactory)
 {
-    if (transportFactory == nullptr) { return CreateAsuClient(); }
-    return CreateAsuClient(*transportFactory);
+    if (transportFactory == nullptr) { return CreateKvClient(); }
+    return CreateKvClient(*transportFactory);
 }
 
-extern "C" Status UcmAsuLoadAsuClientConfig(const char* configPath, AsuClientConfig* config)
+extern "C" Status UcmAsuLoadKvClientConfig(const char* configPath, KvClientConfig* config)
 {
     if (configPath == nullptr || config == nullptr) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
-                             "UcmAsuLoadAsuClientConfig received null argument");
+                             "UcmAsuLoadKvClientConfig received null argument");
     }
-    return LoadAsuClientConfig(configPath, *config);
+    return LoadKvClientConfig(configPath, *config);
 }
 
 }  // namespace kv

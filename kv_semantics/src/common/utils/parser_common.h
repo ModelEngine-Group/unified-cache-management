@@ -57,6 +57,6 @@ bool ApplyTransportProviderConfigField(TransportConfig& config, const std::strin
 bool ApplyTransportDeviceConfigField(TransportConfig& config, const std::string& key,
                                      const std::string& value);
 
-AsuEndpoint ParseTransportEndpoint(const std::string& value);
+NodeEndpoint ParseTransportEndpoint(const std::string& value);
 
 }  // namespace kv

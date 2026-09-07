@@ -127,10 +127,10 @@ Status LoadTransportConfig(const std::string& configPath, TransportConfig& confi
 
         const auto key = TrimConfigValue(line.substr(0, pos));
         const auto value = TrimConfigValue(line.substr(pos + 1));
-        if (key == "asuName" || key == "asu_name") {
-            config.asuName = value;
-        } else if (key == "asuId" || key == "asu_id") {
-            config.asuId = ParseConfigUint64(value);
+        if (key == "nodeName" || key == "asu_name") {
+            config.nodeName = value;
+        } else if (key == "nodeId" || key == "asu_id") {
+            config.nodeId = ParseConfigUint64(value);
         } else if (key == "endpoint" || key == "endpoints") {
             config.endpoints.clear();
             for (const auto& endpointValue : SplitConfigValue(value, ';')) {

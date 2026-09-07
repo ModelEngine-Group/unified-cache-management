@@ -54,20 +54,20 @@ Status HcommConfigAdapter::ValidateChannelSource(const KvTestConfig& config) con
         if (transportConfig.endpoints.empty()) {
             return Status::Error(kExitInvalidArgument,
                                  "ASU transport endpoint is required for Hcomm channel source, "
-                                 "asuId=" +
-                                     std::to_string(transportConfig.asuId));
+                                 "nodeId=" +
+                                     std::to_string(transportConfig.nodeId));
         }
         for (const auto& endpoint : transportConfig.endpoints) {
             if (endpoint.ip.empty()) {
                 return Status::Error(kExitInvalidArgument,
                                      "ASU endpoint local socket/comm_id is required for Hcomm, "
-                                     "asuId=" +
-                                         std::to_string(transportConfig.asuId));
+                                     "nodeId=" +
+                                         std::to_string(transportConfig.nodeId));
             }
             if (endpoint.port == 0) {
                 return Status::Error(kExitInvalidArgument,
-                                     "ASU endpoint port is required for Hcomm, asuId=" +
-                                         std::to_string(transportConfig.asuId));
+                                     "ASU endpoint port is required for Hcomm, nodeId=" +
+                                         std::to_string(transportConfig.nodeId));
             }
 
             HcommProtocol hcommProtocol{HcommProtocol::ROCE};

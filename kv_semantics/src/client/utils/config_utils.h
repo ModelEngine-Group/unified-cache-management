@@ -29,11 +29,11 @@
 
 namespace kv {
 
-bool TryParseAsuInfoKey(const std::string& key, AsuId& asuId);
+bool TryParseAsuInfoKey(const std::string& key, NodeId& nodeId);
 bool TryGetTransportAttrKey(const std::string& key, std::string& attrKey);
-AsuEndpoint ParseClientViewEndpoint(const std::string& value);
-AsuInfo ParseAsuInfo(const std::string& value);
-Status LoadAsuClientConfig(const std::string& configPath, AsuClientConfig& config);
-void ApplyAsuInfoToTransportConfig(const AsuInfo& info, TransportConfig& config);
+NodeEndpoint ParseClientViewEndpoint(const std::string& value);
+NodeInfo ParseAsuInfo(const std::string& value);
+Status LoadKvClientConfig(const std::string& configPath, KvClientConfig& config);
+void ApplyAsuInfoToTransportConfig(const NodeInfo& info, TransportConfig& config);
 
 }  // namespace kv

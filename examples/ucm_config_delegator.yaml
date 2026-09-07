@@ -35,7 +35,7 @@ ucm_connectors:
       asu_router_type: "RING_HASH"
       asu_ring_hash_virtual_node_count: 128
 
-      # Local software backend. This uses normal AsuClient + AsuTransportImpl submit/CQE paths
+      # Local software backend. This uses normal KvClient + AsuTransportImpl submit/CQE paths
       # and replaces the missing device Send/backend execution with local files.
       asu_fake_backend_path: "/mnt/test"
       asu_fake_backend_latency_ms: 1

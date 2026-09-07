@@ -44,10 +44,10 @@ Status FinalizeQueryResult(CommandResult& result)
     return result.status;
 }
 
-using EntrySubmitMethod = kv::Status (kv::AsuClient::*)(
+using EntrySubmitMethod = kv::Status (kv::KvClient::*)(
     const std::vector<kv::KVBuffer>&, kv::TaskId&);
 
-Status SubmitAndWaitEntries(kv::AsuClient& client,
+Status SubmitAndWaitEntries(kv::KvClient& client,
                             const std::vector<kv::KVBuffer>& entries,
                             EntrySubmitMethod submitMethod, std::uint64_t timeoutMs,
                             const std::string& operation, CommandResult& result)
@@ -69,7 +69,7 @@ Status SubmitAndWaitEntries(kv::AsuClient& client,
     return FinalizeTaskResult(result);
 }
 
-Status SubmitAndWaitKeys(kv::AsuClient& client, const std::vector<kv::CacheKey>& keys,
+Status SubmitAndWaitKeys(kv::KvClient& client, const std::vector<kv::CacheKey>& keys,
                          std::uint64_t timeoutMs, CommandResult& result)
 {
     kv::TaskId taskId{kv::kInvalidTaskId};
@@ -89,7 +89,7 @@ Status SubmitAndWaitKeys(kv::AsuClient& client, const std::vector<kv::CacheKey>&
     return FinalizeTaskResult(result);
 }
 
-Status SubmitEntriesOneByOne(kv::AsuClient& client,
+Status SubmitEntriesOneByOne(kv::KvClient& client,
                              const std::vector<kv::KVBuffer>& entries,
                              EntrySubmitMethod submitMethod, std::uint64_t timeoutMs,
                              const std::string& operation, CommandResult& result)
@@ -128,14 +128,14 @@ Status SubmitEntriesOneByOne(kv::AsuClient& client,
 
 }  // namespace
 
-AsuClientRunner::AsuClientRunner(std::unique_ptr<kv::AsuClient> client)
+KvClientRunner::KvClientRunner(std::unique_ptr<kv::KvClient> client)
     : client_(std::move(client))
 {
 }
 
-AsuClientRunner::~AsuClientRunner() = default;
+KvClientRunner::~KvClientRunner() = default;
 
-Status AsuClientRunner::Init(const KvTestConfig& config)
+Status KvClientRunner::Init(const KvTestConfig& config)
 {
     if (client_ == nullptr) { return Status::Error(kExitInvalidArgument, "asu client is null"); }
 
@@ -143,7 +143,7 @@ Status AsuClientRunner::Init(const KvTestConfig& config)
     return ToKvTestStatus(status, "asu client init");
 }
 
-Status AsuClientRunner::Shutdown()
+Status KvClientRunner::Shutdown()
 {
     if (client_ == nullptr) { return Status::Success(); }
 
@@ -151,7 +151,7 @@ Status AsuClientRunner::Shutdown()
     return ToKvTestStatus(status, "asu client shutdown");
 }
 
-Status AsuClientRunner::RegisterBuffers(BufferSet& buffers)
+Status KvClientRunner::RegisterBuffers(BufferSet& buffers)
 {
     if (client_ == nullptr) { return Status::Error(kExitInvalidArgument, "asu client is null"); }
     if (!buffers.entryRegionIndexes.empty() &&
@@ -187,7 +187,7 @@ Status AsuClientRunner::RegisterBuffers(BufferSet& buffers)
     return Status::Success();
 }
 
-Status AsuClientRunner::UnregisterBuffers(const BufferSet& buffers)
+Status KvClientRunner::UnregisterBuffers(const BufferSet& buffers)
 {
     if (client_ == nullptr) { return Status::Success(); }
 
@@ -206,7 +206,7 @@ Status AsuClientRunner::UnregisterBuffers(const BufferSet& buffers)
     return ToKvTestStatus(status, "unregister buffers");
 }
 
-Status AsuClientRunner::Store(const BufferSet& buffers, SubmitMode submitMode,
+Status KvClientRunner::Store(const BufferSet& buffers, SubmitMode submitMode,
                               std::uint64_t timeoutMs, CommandResult& result)
 {
     if (client_ == nullptr) { return Status::Error(kExitInvalidArgument, "asu client is null"); }
@@ -216,15 +216,15 @@ Status AsuClientRunner::Store(const BufferSet& buffers, SubmitMode submitMode,
     }
 
     if (submitMode == SubmitMode::SINGLE_ENTRY_PER_CALL) {
-        return SubmitEntriesOneByOne(*client_, buffers.entries, &kv::AsuClient::StoreAsync,
+        return SubmitEntriesOneByOne(*client_, buffers.entries, &kv::KvClient::StoreAsync,
                                      timeoutMs, "store", result);
     }
 
-    return SubmitAndWaitEntries(*client_, buffers.entries, &kv::AsuClient::BatchStoreAsync,
+    return SubmitAndWaitEntries(*client_, buffers.entries, &kv::KvClient::BatchStoreAsync,
                                 timeoutMs, "store", result);
 }
 
-Status AsuClientRunner::Retrieve(const BufferSet& buffers, SubmitMode submitMode,
+Status KvClientRunner::Retrieve(const BufferSet& buffers, SubmitMode submitMode,
                                  std::uint64_t timeoutMs, CommandResult& result)
 {
     if (client_ == nullptr) { return Status::Error(kExitInvalidArgument, "asu client is null"); }
@@ -234,15 +234,15 @@ Status AsuClientRunner::Retrieve(const BufferSet& buffers, SubmitMode submitMode
     }
 
     if (submitMode == SubmitMode::SINGLE_ENTRY_PER_CALL) {
-        return SubmitEntriesOneByOne(*client_, buffers.entries, &kv::AsuClient::LoadAsync,
+        return SubmitEntriesOneByOne(*client_, buffers.entries, &kv::KvClient::LoadAsync,
                                      timeoutMs, "retrieve", result);
     }
 
-    return SubmitAndWaitEntries(*client_, buffers.entries, &kv::AsuClient::BatchLoadAsync,
+    return SubmitAndWaitEntries(*client_, buffers.entries, &kv::KvClient::BatchLoadAsync,
                                 timeoutMs, "retrieve", result);
 }
 
-Status AsuClientRunner::Delete(const std::vector<kv::CacheKey>& keys, std::uint64_t timeoutMs,
+Status KvClientRunner::Delete(const std::vector<kv::CacheKey>& keys, std::uint64_t timeoutMs,
                                CommandResult& result)
 {
     if (client_ == nullptr) { return Status::Error(kExitInvalidArgument, "asu client is null"); }
@@ -254,7 +254,7 @@ Status AsuClientRunner::Delete(const std::vector<kv::CacheKey>& keys, std::uint6
     return SubmitAndWaitKeys(*client_, keys, timeoutMs, result);
 }
 
-Status AsuClientRunner::Exist(const std::vector<kv::CacheKey>& keys, std::uint64_t timeoutMs,
+Status KvClientRunner::Exist(const std::vector<kv::CacheKey>& keys, std::uint64_t timeoutMs,
                               CommandResult& result)
 {
     if (client_ == nullptr) { return Status::Error(kExitInvalidArgument, "asu client is null"); }

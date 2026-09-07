@@ -106,9 +106,9 @@ public:
     }
 };
 
-AsuEndpoint MakeEndpoint(const std::string& ip = "10.0.0.1")
+NodeEndpoint MakeEndpoint(const std::string& ip = "10.0.0.1")
 {
-    AsuEndpoint ep;
+    NodeEndpoint ep;
     ep.ip = ip;
     ep.port = 16666;
     return ep;

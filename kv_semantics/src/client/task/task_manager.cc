@@ -225,9 +225,9 @@ void ClientTaskManager::Finalize(const ClientTaskPtr& task)
         const auto itemCount = transportTask->entries.empty() ? transportTask->keys.size()
                                                               : transportTask->entries.size();
         KV_ERROR(
-            "ASU client transport task failed: client_task_id={} op={} asuId={} "
+            "ASU client transport task failed: client_task_id={} op={} nodeId={} "
             "transport_task_id={} item_count={} code={} message={}.",
-            task->taskId, AsuOpTypeName(task->opType), transportTask->asuId, transportTask->taskId,
+            task->taskId, AsuOpTypeName(task->opType), transportTask->nodeId, transportTask->taskId,
             itemCount, static_cast<int>(transportTask->finalStatus.code),
             transportTask->finalStatus.message);
     }
@@ -252,19 +252,19 @@ Status ClientTaskManager::BuildTransportTasks(const ClientTaskPtr& task)
     const auto routes = task->opType == AsuOpType::QUERY || task->opType == AsuOpType::DELETE
                             ? snapshot->router->RouteKeys(ToRouterKeys(task->keys))
                             : snapshot->router->RouteKeys(ExtractEntryKeys(task->entries));
-    for (const auto& [asuId, indices] : routes) {
-        if (snapshot->transports.find(asuId) == snapshot->transports.end()) {
+    for (const auto& [nodeId, indices] : routes) {
+        if (snapshot->transports.find(nodeId) == snapshot->transports.end()) {
             return AddContext(
                 Status::Error(StatusCode::NOT_FOUND, "routed asu transport not found"),
-                "asuId=" + std::to_string(asuId));
+                "nodeId=" + std::to_string(nodeId));
         }
     }
 
     task->transportTasks.reserve(routes.size());
-    for (const auto& [asuId, indices] : routes) {
+    for (const auto& [nodeId, indices] : routes) {
         auto transportTask = std::make_shared<TransportTask>();
-        transportTask->asuId = asuId;
-        transportTask->transport = snapshot->transports.at(asuId);
+        transportTask->nodeId = nodeId;
+        transportTask->transport = snapshot->transports.at(nodeId);
         transportTask->originalIndices.reserve(indices.size());
         if (task->opType == AsuOpType::QUERY || task->opType == AsuOpType::DELETE) {
             transportTask->keys.reserve(indices.size());
@@ -309,7 +309,7 @@ Status ClientTaskManager::DispatchTask(const ClientTaskPtr& task)
         auto status = transport->Submit(transportTask);
         if (!status.ok()) {
             const auto dispatchStatus =
-                AddContext(status, "asuId=" + std::to_string(transportTask->asuId));
+                AddContext(status, "nodeId=" + std::to_string(transportTask->nodeId));
             CompleteUndispatchedTransportTasks(task, taskIndex, dispatchStatus);
             return dispatchStatus;
         }

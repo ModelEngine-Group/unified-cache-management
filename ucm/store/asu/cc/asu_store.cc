@@ -35,7 +35,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
-#include "asu_client/asu_client.h"
+#include "kv_client.h"
 #include "logger/logger.h"
 #include "trans/event.h"
 #include "ucmstore_v1.h"
@@ -46,8 +46,8 @@ enum class TensorLayout { MLA, GQA, HMA };
 
 namespace {
 
-using AsuStatus = UC::ASU::Status;
-using AsuStatusCode = UC::ASU::StatusCode;
+using AsuStatus = kv::Status;
+using AsuStatusCode = kv::StatusCode;
 
 TensorLayout ParseTensorLayout(const std::string& layout)
 {
@@ -67,10 +67,10 @@ std::uint64_t HashAsuKey(const Detail::BlockId& block)
     return static_cast<std::uint64_t>(hasher(block));
 }
 
-UC::ASU::CacheKey MakeAsuKey(const Detail::BlockId& block)
+kv::CacheKey MakeAsuKey(const Detail::BlockId& block)
 {
     const auto hash = HashAsuKey(block);
-    UC::ASU::CacheKey key{};
+    kv::CacheKey key{};
     std::memcpy(key.data(), &hash, key.size());
     return key;
 }
@@ -106,25 +106,25 @@ Status WaitPrerequisiteEvent(std::uintptr_t eventHandle)
     return Trans::Event{eventHandle}.Synchronize();
 }
 
-const char* TransProviderBackendName(UC::ASU::TransProviderType providerType)
+const char* TransProviderBackendName(kv::TransProviderType providerType)
 {
     switch (providerType) {
-        case UC::ASU::TransProviderType::FAKE: return "fake";
-        case UC::ASU::TransProviderType::AIV: return "aiv";
-        case UC::ASU::TransProviderType::AICPU: return "aicpu";
-        case UC::ASU::TransProviderType::UNSUPPORTED: return "unsupported";
+        case kv::TransProviderType::FAKE: return "fake";
+        case kv::TransProviderType::AIV: return "aiv";
+        case kv::TransProviderType::AICPU: return "aicpu";
+        case kv::TransProviderType::UNSUPPORTED: return "unsupported";
     }
     return "unknown";
 }
 
-UC::ASU::TransProviderType ParseTransProviderBackend(std::string backend)
+kv::TransProviderType ParseTransProviderBackend(std::string backend)
 {
     std::transform(backend.begin(), backend.end(), backend.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
-    if (backend == "FAKE") { return UC::ASU::TransProviderType::FAKE; }
-    if (backend == "AIV") { return UC::ASU::TransProviderType::AIV; }
-    if (backend == "AICPU") { return UC::ASU::TransProviderType::AICPU; }
-    return UC::ASU::TransProviderType::UNSUPPORTED;
+    if (backend == "FAKE") { return kv::TransProviderType::FAKE; }
+    if (backend == "AIV") { return kv::TransProviderType::AIV; }
+    if (backend == "AICPU") { return kv::TransProviderType::AICPU; }
+    return kv::TransProviderType::UNSUPPORTED;
 }
 
 bool TryGetStringLike(const Detail::Dictionary& inConfig, const std::string& key,
@@ -162,11 +162,11 @@ void ReadClientAttr(const Detail::Dictionary& inConfig, const std::string& yamlK
 
 }  // namespace
 
-UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t index)
+kv::TransportConfig BuildTransportConfig(const Config& config, std::size_t index)
 {
-    UC::ASU::TransportConfig transportConfig;
-    transportConfig.asuId = static_cast<UC::ASU::AsuId>(config.asuIds[index]);
-    transportConfig.asuName = config.asuNamePrefix + "-" + std::to_string(config.asuIds[index]);
+    kv::TransportConfig transportConfig;
+    transportConfig.nodeId = static_cast<kv::NodeId>(config.asuIds[index]);
+    transportConfig.nodeName = config.asuNamePrefix + "-" + std::to_string(config.asuIds[index]);
     transportConfig.deviceId = config.deviceId;
     transportConfig.timeoutMs = config.waitTimeoutMs;
     transportConfig.maxErrorCount = static_cast<std::uint32_t>(config.maxErrorCount);
@@ -183,12 +183,12 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
     transportConfig.attrs["sc"] = config.sc ? "true" : "false";
 
     if (!config.asuIps.empty()) {
-        UC::ASU::AsuEndpoint endpoint;
+        kv::NodeEndpoint endpoint;
         endpoint.ip = config.asuIps[index];
         endpoint.port = static_cast<std::uint16_t>(config.asuPorts[index]);
         transportConfig.endpoints.emplace_back(std::move(endpoint));
     }
-    if (config.transProviderType == UC::ASU::TransProviderType::FAKE) {
+    if (config.transProviderType == kv::TransProviderType::FAKE) {
         const auto fakeDeviceId = config.deviceId >= 0 ? config.deviceId : 0;
         transportConfig.deviceId = fakeDeviceId;
         transportConfig.attrs.try_emplace("kernel_count", "1");
@@ -203,26 +203,26 @@ UC::ASU::TransportConfig BuildTransportConfig(const Config& config, std::size_t 
             std::to_string(config.fakeBackendWorkerThreads);
         transportConfig.attrs["fake_backend.device_id"] = std::to_string(fakeDeviceId);
         if (transportConfig.endpoints.empty()) {
-            UC::ASU::AsuEndpoint endpoint;
+            kv::NodeEndpoint endpoint;
             endpoint.ip = "fake_backend";
             endpoint.port = 19001;
-            endpoint.protocol = UC::ASU::Protocol::TCP;
+            endpoint.protocol = kv::Protocol::TCP;
             transportConfig.endpoints.emplace_back(std::move(endpoint));
         }
     }
     return transportConfig;
 }
 
-UC::ASU::AsuClientConfig BuildAsuClientConfig(const Config& config)
+kv::KvClientConfig BuildKvClientConfig(const Config& config)
 {
-    UC::ASU::AsuClientConfig asuConfig;
+    kv::KvClientConfig asuConfig;
     asuConfig.clientId = config.clientId;
     asuConfig.viewServiceAddrs = config.viewServiceAddrs;
     asuConfig.maxInflightTasks = static_cast<std::uint32_t>(config.clientMaxInflightTasks);
     asuConfig.defaultWaitTimeoutMs = config.waitTimeoutMs;
     asuConfig.timeoutMs = config.waitTimeoutMs;
     asuConfig.sharedProviderMode =
-        static_cast<UC::ASU::SharedProviderMode>(config.sharedProviderMode);
+        static_cast<kv::SharedProviderMode>(config.sharedProviderMode);
     asuConfig.attrs = config.clientAttrs;
     asuConfig.transportConfigs.reserve(config.asuIds.size());
     for (std::size_t i = 0; i < config.asuIds.size(); ++i) {
@@ -234,7 +234,7 @@ UC::ASU::AsuClientConfig BuildAsuClientConfig(const Config& config)
 class AsuStore final : public StoreV1 {
 public:
 #ifdef ASU_BUILD_TESTS
-    using ClientFactory = std::function<std::unique_ptr<UC::ASU::AsuClient>(const Config&)>;
+    using ClientFactory = std::function<std::unique_ptr<kv::KvClient>(const Config&)>;
 
     void SetClientFactory(ClientFactory factory) { clientFactory_ = std::move(factory); }
 #endif
@@ -258,7 +258,7 @@ public:
         config_ = std::move(config);
         client_ = CreateClient(config_);
 
-        auto asuStatus = config_.configPath.empty() ? client_->Init(BuildAsuClientConfig(config_))
+        auto asuStatus = config_.configPath.empty() ? client_->Init(BuildKvClientConfig(config_))
                                                     : client_->Init(config_.configPath);
         if (!asuStatus.ok()) {
             UC_ERROR("Failed to init ASU client: {}.", asuStatus.message);
@@ -297,7 +297,7 @@ public:
         if (num == 0) { return static_cast<ssize_t>(-1); }
 
         auto keys = BuildBlockKeys(blocks, num);
-        UC::ASU::QueryResult queryResult;
+        kv::QueryResult queryResult;
         auto status = Query(keys, queryResult);
         if (status.code == AsuStatusCode::TIMEOUT) { return static_cast<ssize_t>(-1); }
         if (!status.ok()) {
@@ -323,12 +323,12 @@ private:
     {
         if (!client_) { return Status::Error("ASU client is not initialized"); }
 
-        std::vector<UC::ASU::MemoryRegion> regions;
+        std::vector<kv::MemoryRegion> regions;
         regions.reserve(count);
         for (std::size_t index = 0; index < count; ++index) {
             if (registrations[index].addr == 0 || registrations[index].size == 0) { continue; }
-            UC::ASU::MemoryRegion region;
-            region.memoryType = UC::ASU::MemoryType::DEVICE;
+            kv::MemoryRegion region;
+            region.memoryType = kv::MemoryType::DEVICE;
             region.addr = static_cast<std::uint64_t>(registrations[index].addr);
             region.size = static_cast<std::uint64_t>(registrations[index].size);
             region.deviceId = config_.deviceId;
@@ -336,7 +336,7 @@ private:
         }
         if (regions.empty()) { return Status::OK(); }
 
-        std::vector<UC::ASU::RegisteredMemory> registeredRegions;
+        std::vector<kv::RegisteredMemory> registeredRegions;
         auto status = client_->RegisterRegions(regions, registeredRegions);
         if (!status.ok()) {
             LogAsuStatus("register persistent regions", status);
@@ -363,7 +363,7 @@ private:
 public:
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
-        return Submit(std::move(task), &UC::ASU::AsuClient::BatchLoadAsync);
+        return Submit(std::move(task), &kv::KvClient::BatchLoadAsync);
     }
 
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override
@@ -373,19 +373,19 @@ public:
             UC_ERROR("ASU wait prerequisite event failed: status={}.", status);
             return status;
         }
-        return Submit(std::move(task), &UC::ASU::AsuClient::BatchStoreAsync);
+        return Submit(std::move(task), &kv::KvClient::BatchStoreAsync);
     }
 
     Expected<bool> Check(Detail::TaskHandle taskId) override
     {
-        return client_->Check(static_cast<UC::ASU::TaskId>(taskId));
+        return client_->Check(static_cast<kv::TaskId>(taskId));
     }
 
     Status Wait(Detail::TaskHandle taskId) override
     {
-        UC::ASU::TaskResult result;
+        kv::TaskResult result;
         auto status =
-            client_->Wait(static_cast<UC::ASU::TaskId>(taskId), config_.waitTimeoutMs, result);
+            client_->Wait(static_cast<kv::TaskId>(taskId), config_.waitTimeoutMs, result);
         if (!status.ok()) {
             LogAsuStatus("wait task", status);
             return ConvertStatus(status);
@@ -395,8 +395,8 @@ public:
     }
 
 private:
-    using SubmitFunc = AsuStatus (UC::ASU::AsuClient::*)(const std::vector<UC::ASU::KVBuffer>&,
-                                                         UC::ASU::TaskId&);
+    using SubmitFunc = AsuStatus (kv::KvClient::*)(const std::vector<kv::KVBuffer>&,
+                                                         kv::TaskId&);
 
     Config ParseConfig(const Detail::Dictionary& inConfig)
     {
@@ -473,7 +473,7 @@ private:
         const auto shardsPerBlock = config.blockSize / config.shardSize;
         std::size_t alignedShardSize = 0;
         for (auto& tensorSize : config.tensorSizes) {
-            tensorSize = AlignUp(tensorSize, UC::ASU::kAsuAlignmentBytes);
+            tensorSize = AlignUp(tensorSize, kv::kAsuAlignmentBytes);
             alignedShardSize += tensorSize;
         }
         config.shardSize = alignedShardSize;
@@ -504,7 +504,7 @@ private:
             return Status::InvalidParam("invalid asu_ids");
         }
         if (std::any_of(config.asuIds.begin(), config.asuIds.end(),
-                        [](ssize_t asuId) { return asuId < 0; })) {
+                        [](ssize_t nodeId) { return nodeId < 0; })) {
             return Status::InvalidParam("asu_ids must not contain negative values");
         }
         auto sortedAsuIds = config.asuIds;
@@ -541,15 +541,15 @@ private:
                                             expectedKvNsCount);
             }
         }
-        if (config.transProviderType == UC::ASU::TransProviderType::UNSUPPORTED) {
+        if (config.transProviderType == kv::TransProviderType::UNSUPPORTED) {
             return Status::Unsupported();
         }
         if (config.configPath.empty() &&
-            config.transProviderType == UC::ASU::TransProviderType::AIV && config.deviceId < 0) {
+            config.transProviderType == kv::TransProviderType::AIV && config.deviceId < 0) {
             return Status::InvalidParam(
                 "device_id is required when asu_trans_provider_backend is aiv");
         }
-        if (config.transProviderType == UC::ASU::TransProviderType::FAKE &&
+        if (config.transProviderType == kv::TransProviderType::FAKE &&
             !config.configPath.empty()) {
             return Status::InvalidParam(
                 "asu_trans_provider_backend=fake does not support asu_config_path");
@@ -571,7 +571,7 @@ private:
         if (config.queryTimeoutMs == 0) {
             return Status::InvalidParam("asu_query_timeout_ms must be greater than zero");
         }
-        if (config.transProviderType == UC::ASU::TransProviderType::FAKE &&
+        if (config.transProviderType == kv::TransProviderType::FAKE &&
             config.fakeBackendWorkerThreads == 0) {
             return Status::InvalidParam(
                 "asu_fake_backend_worker_threads must be greater than zero");
@@ -616,12 +616,12 @@ private:
         return Status::OK();
     }
 
-    std::unique_ptr<UC::ASU::AsuClient> CreateClient(const Config& config)
+    std::unique_ptr<kv::KvClient> CreateClient(const Config& config)
     {
 #ifdef ASU_BUILD_TESTS
         if (clientFactory_) { return clientFactory_(config); }
 #endif
-        return UC::ASU::CreateAsuClient();
+        return kv::CreateKvClient();
     }
 
     std::size_t ShardsPerBlock() const { return config_.blockSize / config_.shardSize; }
@@ -687,18 +687,18 @@ private:
         throw std::logic_error("unhandled ASU tensor layout");
     }
 
-    AsuStatus Query(const std::vector<UC::ASU::CacheKey>& keys, UC::ASU::QueryResult& result) const
+    AsuStatus Query(const std::vector<kv::CacheKey>& keys, kv::QueryResult& result) const
     {
-        UC::ASU::TaskId taskId = UC::ASU::kInvalidTaskId;
+        kv::TaskId taskId = kv::kInvalidTaskId;
         auto status = client_->QueryAsync(keys, taskId);
         if (!status.ok()) { return status; }
 
-        UC::ASU::TaskResult taskResult;
+        kv::TaskResult taskResult;
         status = client_->Wait(taskId, config_.queryTimeoutMs, taskResult);
         if (taskResult.queryResult.has_value()) {
             result = std::move(*taskResult.queryResult);
         } else if (status.ok()) {
-            return AsuStatus::Error(UC::ASU::StatusCode::INTERNAL_ERROR,
+            return AsuStatus::Error(kv::StatusCode::INTERNAL_ERROR,
                                     "client query result is missing");
         }
         return status;
@@ -710,7 +710,7 @@ private:
         if (num == 0) { return result; }
 
         auto keys = BuildBlockKeys(blocks, num);
-        UC::ASU::QueryResult queryResult;
+        kv::QueryResult queryResult;
         auto status = Query(keys, queryResult);
         if (status.code == AsuStatusCode::TIMEOUT) { return result; }
         if (!status.ok()) {
@@ -725,10 +725,10 @@ private:
         return result;
     }
 
-    std::vector<UC::ASU::CacheKey> BuildBlockKeys(const Detail::BlockId* blocks,
+    std::vector<kv::CacheKey> BuildBlockKeys(const Detail::BlockId* blocks,
                                                   std::size_t num) const
     {
-        std::vector<UC::ASU::CacheKey> keys;
+        std::vector<kv::CacheKey> keys;
         keys.reserve(num);
         for (std::size_t blockIndex = 0; blockIndex < num; ++blockIndex) {
             keys.emplace_back(MakeAsuKey(blocks[blockIndex]));
@@ -741,7 +741,7 @@ private:
         auto entries = BuildKvBuffers(task);
         if (!entries) { return entries.Error(); }
 
-        UC::ASU::TaskId taskId = UC::ASU::kInvalidTaskId;
+        kv::TaskId taskId = kv::kInvalidTaskId;
         auto status = ((*client_).*submit)(entries.Value(), taskId);
         if (!status.ok()) {
             LogAsuStatus("submit task", status);
@@ -750,9 +750,9 @@ private:
         return static_cast<Detail::TaskHandle>(taskId);
     }
 
-    Expected<std::vector<UC::ASU::KVBuffer>> BuildKvBuffers(const Detail::TaskDesc& task) const
+    Expected<std::vector<kv::KVBuffer>> BuildKvBuffers(const Detail::TaskDesc& task) const
     {
-        std::vector<UC::ASU::KVBuffer> entries;
+        std::vector<kv::KVBuffer> entries;
         entries.reserve(task.size() * config_.tensorSizes.size());
 
         for (const auto& shard : task) {
@@ -764,15 +764,15 @@ private:
             }
             const auto tensorOffsets = BuildTensorOffsets(shard.index);
             for (std::size_t tensorIndex = 0; tensorIndex < shard.addrs.size(); ++tensorIndex) {
-                UC::ASU::KVBuffer entry;
+                kv::KVBuffer entry;
                 entry.key = MakeAsuKey(shard.owner);
-                entry.buffer.region.memoryType = UC::ASU::MemoryType::DEVICE;
+                entry.buffer.region.memoryType = kv::MemoryType::DEVICE;
                 entry.buffer.region.addr =
                     reinterpret_cast<std::uint64_t>(shard.addrs[tensorIndex]);
                 entry.buffer.region.size = config_.tensorSizes[tensorIndex];
                 entry.buffer.region.deviceId = config_.deviceId;
                 entry.buffer.handle = FindPersistentHandle(entry.buffer.region);
-                if (entry.buffer.handle == UC::ASU::kInvalidMRHandle) {
+                if (entry.buffer.handle == kv::kInvalidMRHandle) {
                     return Status::Error("ASU KV buffer is outside registered persistent regions");
                 }
                 entry.offset = static_cast<std::uint32_t>(tensorOffsets[tensorIndex]);
@@ -803,7 +803,7 @@ private:
         UC_INFO("Set AsuStore::FakeBackendWorkerThreads to {}.", config.fakeBackendWorkerThreads);
     }
 
-    UC::ASU::MRHandle FindPersistentHandle(const UC::ASU::MemoryRegion& region) const
+    kv::MRHandle FindPersistentHandle(const kv::MemoryRegion& region) const
     {
         std::lock_guard<std::mutex> lock(persistentRegionsMu_);
         for (const auto& persistent : persistentRegions_) {
@@ -813,17 +813,17 @@ private:
             const auto offset = region.addr - persistent.region.addr;
             if (offset <= persistent.region.size - region.size) { return persistent.handle; }
         }
-        return UC::ASU::kInvalidMRHandle;
+        return kv::kInvalidMRHandle;
     }
 
     struct RegisteredPersistentRegion {
-        UC::ASU::MemoryRegion region;
-        UC::ASU::MRHandle handle{UC::ASU::kInvalidMRHandle};
+        kv::MemoryRegion region;
+        kv::MRHandle handle{kv::kInvalidMRHandle};
     };
 
     Config config_;
     TensorLayout tensorLayout_{TensorLayout::MLA};
-    std::unique_ptr<UC::ASU::AsuClient> client_;
+    std::unique_ptr<kv::KvClient> client_;
     mutable std::mutex persistentRegionsMu_;
     std::vector<RegisteredPersistentRegion> persistentRegions_;
 #ifdef ASU_BUILD_TESTS

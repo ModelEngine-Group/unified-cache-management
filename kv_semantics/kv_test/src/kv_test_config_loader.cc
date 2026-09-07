@@ -189,7 +189,7 @@ Status KvTestConfigLoader::Load(const std::string& configPath, KvTestConfig& con
         if (!status.Ok()) { return status; }
 
         auto asuStatus =
-            AsuRuntimeProxy::Instance().LoadAsuClientConfig(configPath, config.asuClientConfig);
+            AsuRuntimeProxy::Instance().LoadKvClientConfig(configPath, config.asuClientConfig);
         status = ToKvTestConfigStatus(asuStatus);
         if (!status.Ok()) { return status; }
 

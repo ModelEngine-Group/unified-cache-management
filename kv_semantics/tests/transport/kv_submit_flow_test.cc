@@ -404,7 +404,7 @@ TEST(AsuSubmitFlowTest, SendSubBatchBuffersReportsSendFailures)
 
     transport.connManager_ =
         std::make_unique<ConnectionManager>(*transport.transProvider_, "", 5000);
-    ASSERT_TRUE(transport.connManager_->AddGroup(AsuEndpoint{}, 1).ok());
+    ASSERT_TRUE(transport.connManager_->AddGroup(NodeEndpoint{}, 1).ok());
     auto channel0 = transport.connManager_->SelectConnection();
     auto channel1 = transport.connManager_->SelectConnection();
     ASSERT_NE(channel0, nullptr);
@@ -442,7 +442,7 @@ TEST_F(AsuSubmitFlowBufferTest, BuildSubBatchSendBuffersUsesHostPinnedDeviceAddr
 
     transport_->connManager_ =
         std::make_unique<ConnectionManager>(*transport_->transProvider_, "", 5000);
-    ASSERT_TRUE(transport_->connManager_->AddGroup(AsuEndpoint{}, 1).ok());
+    ASSERT_TRUE(transport_->connManager_->AddGroup(NodeEndpoint{}, 1).ok());
 
     std::vector<TransportSubBatchContext> subBatchContexts(1);
     auto& subBatchContext = subBatchContexts[0];

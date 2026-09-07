@@ -21,7 +21,7 @@ TEST(ViewServerTest, ConfigFileViewServerLoadsView)
                    << "remote_send_addr=0x100000000\n";
     }
 
-    AsuClientConfig config;
+    KvClientConfig config;
     config.viewServiceAddrs = {kConfigPath};
     auto viewServer = CreateDefaultViewServer(config);
 
@@ -45,10 +45,10 @@ TEST(ViewServerTest, ConfigFileViewServerLoadsView)
 
 TEST(ViewServerTest, ConfigBackedViewServerBuildsViewFromTransportConfigs)
 {
-    AsuClientConfig config;
+    KvClientConfig config;
     TransportConfig transportConfig;
-    transportConfig.asuId = 10;
-    AsuEndpoint endpoint;
+    transportConfig.nodeId = 10;
+    NodeEndpoint endpoint;
     endpoint.ip = "127.0.0.1";
     endpoint.port = 6000;
     endpoint.protocol = Protocol::ROCE;
@@ -69,7 +69,7 @@ TEST(ViewServerTest, ConfigBackedViewServerBuildsViewFromTransportConfigs)
 
 TEST(ViewServerTest, PublishAndRefreshPolicies)
 {
-    AsuClientConfig config;
+    KvClientConfig config;
     auto viewServer = CreateDefaultViewServer(config);
 
     GlobalView published;

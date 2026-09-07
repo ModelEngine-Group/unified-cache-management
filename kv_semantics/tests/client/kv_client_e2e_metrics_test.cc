@@ -154,7 +154,7 @@ public:
 
     void PrintReport(const std::string& name) const
     {
-        std::cout << "[AsuClientE2E] " << name << '\n';
+        std::cout << "[KvClientE2E] " << name << '\n';
         for (auto kind : {OperationKind::STORE, OperationKind::QUERY, OperationKind::LOAD,
                           OperationKind::DELETE}) {
             const auto summary = Summarize(kind);
@@ -195,21 +195,21 @@ struct ResourceSnapshot {
 
 struct ClusterState {
     mutable std::mutex mutex;
-    std::unordered_set<AsuId> activeAsus;
-    std::unordered_map<AsuId,
+    std::unordered_set<NodeId> activeAsus;
+    std::unordered_map<NodeId,
                        std::unordered_map<CacheKey, std::vector<std::uint8_t>, CacheKeyHasher>>
         stores;
     std::unordered_map<TaskId, TaskResult> tasks;
-    std::unordered_map<AsuId, std::size_t> queryCalls;
-    std::unordered_map<AsuId, std::size_t> loadCalls;
-    std::unordered_map<AsuId, std::size_t> storeCalls;
-    std::unordered_map<AsuId, std::size_t> deleteCalls;
+    std::unordered_map<NodeId, std::size_t> queryCalls;
+    std::unordered_map<NodeId, std::size_t> loadCalls;
+    std::unordered_map<NodeId, std::size_t> storeCalls;
+    std::unordered_map<NodeId, std::size_t> deleteCalls;
     TaskId nextTaskId{1};
     std::size_t createdTransports{0};
     std::size_t shutdownTransports{0};
     std::size_t forcedQueryFailures{0};
 
-    void SetActiveAsus(const std::vector<AsuId>& asuIds)
+    void SetActiveAsus(const std::vector<NodeId>& asuIds)
     {
         std::lock_guard<std::mutex> lock{mutex};
         activeAsus.clear();
@@ -249,7 +249,7 @@ struct ClusterState {
     std::size_t TouchedAsuCount() const
     {
         std::lock_guard<std::mutex> lock{mutex};
-        std::unordered_set<AsuId> touched;
+        std::unordered_set<NodeId> touched;
         for (const auto& item : queryCalls) { touched.insert(item.first); }
         for (const auto& item : loadCalls) { touched.insert(item.first); }
         for (const auto& item : storeCalls) { touched.insert(item.first); }
@@ -257,17 +257,17 @@ struct ClusterState {
         return touched.size();
     }
 
-    std::size_t OperationCalls(AsuId asuId) const
+    std::size_t OperationCalls(NodeId nodeId) const
     {
         std::lock_guard<std::mutex> lock{mutex};
-        return CountCalls(queryCalls, asuId) + CountCalls(loadCalls, asuId) +
-               CountCalls(storeCalls, asuId) + CountCalls(deleteCalls, asuId);
+        return CountCalls(queryCalls, nodeId) + CountCalls(loadCalls, nodeId) +
+               CountCalls(storeCalls, nodeId) + CountCalls(deleteCalls, nodeId);
     }
 
 private:
-    static std::size_t CountCalls(const std::unordered_map<AsuId, std::size_t>& calls, AsuId asuId)
+    static std::size_t CountCalls(const std::unordered_map<NodeId, std::size_t>& calls, NodeId nodeId)
     {
-        auto iter = calls.find(asuId);
+        auto iter = calls.find(nodeId);
         return iter == calls.end() ? 0 : iter->second;
     }
 };
@@ -342,8 +342,8 @@ public:
             return Status::Error(StatusCode::CONNECTION_ERROR, "forced stale-view query failure");
         }
 
-        ++state_->queryCalls[config_.asuId];
-        const auto& store = state_->stores[config_.asuId];
+        ++state_->queryCalls[config_.nodeId];
+        const auto& store = state_->stores[config_.nodeId];
         result.exists.assign(keys.size, 0);
         result.prefixHitKeys = 0;
         for (std::size_t index = 0; index < keys.size; ++index) {
@@ -407,10 +407,10 @@ public:
             return status;
         }
 
-        ++state_->loadCalls[config_.asuId];
+        ++state_->loadCalls[config_.nodeId];
         std::vector<Status> entryStatus;
         entryStatus.reserve(entries.size);
-        auto& store = state_->stores[config_.asuId];
+        auto& store = state_->stores[config_.nodeId];
         for (std::size_t index = 0; index < entries.size; ++index) {
             const auto& entry = entries[index];
             auto iter = store.find(entry.key);
@@ -446,10 +446,10 @@ public:
             return status;
         }
 
-        ++state_->storeCalls[config_.asuId];
+        ++state_->storeCalls[config_.nodeId];
         std::vector<Status> entryStatus;
         entryStatus.reserve(entries.size);
-        auto& store = state_->stores[config_.asuId];
+        auto& store = state_->stores[config_.nodeId];
         for (std::size_t index = 0; index < entries.size; ++index) {
             const auto& entry = entries[index];
             if (!IsBufferUsable(entry.buffer.region)) {
@@ -477,10 +477,10 @@ public:
             return status;
         }
 
-        ++state_->deleteCalls[config_.asuId];
+        ++state_->deleteCalls[config_.nodeId];
         std::vector<Status> entryStatus;
         entryStatus.reserve(keys.size);
-        auto& store = state_->stores[config_.asuId];
+        auto& store = state_->stores[config_.nodeId];
         for (std::size_t index = 0; index < keys.size; ++index) {
             const auto& key = keys[index];
             if (store.erase(key) == 0) {
@@ -505,7 +505,7 @@ private:
             return Status::Error(StatusCode::NOT_INITIALIZED,
                                  "fake ASU transport is not initialized");
         }
-        if (state_->activeAsus.find(config_.asuId) == state_->activeAsus.end()) {
+        if (state_->activeAsus.find(config_.nodeId) == state_->activeAsus.end()) {
             return Status::Error(StatusCode::CONNECTION_ERROR,
                                  "fake ASU has been removed from active view");
         }
@@ -519,7 +519,7 @@ private:
 
 class DynamicViewServer final : public ViewServer {
 public:
-    DynamicViewServer(std::shared_ptr<ClusterState> state, std::vector<AsuId> asuIds)
+    DynamicViewServer(std::shared_ptr<ClusterState> state, std::vector<NodeId> asuIds)
         : state_(std::move(state)), asuIds_(std::move(asuIds))
     {
         state_->SetActiveAsus(asuIds_);
@@ -530,12 +530,12 @@ public:
         std::lock_guard<std::mutex> lock{mutex_};
         view = GlobalView{};
         view.viewEpoch = epoch_;
-        for (auto asuId : asuIds_) { view.asuMap.emplace(asuId, AsuInfo{}); }
+        for (auto nodeId : asuIds_) { view.asuMap.emplace(nodeId, NodeInfo{}); }
         ++fetchCount_;
         return Status::OK();
     }
 
-    void Publish(std::vector<AsuId> asuIds)
+    void Publish(std::vector<NodeId> asuIds)
     {
         {
             std::lock_guard<std::mutex> lock{mutex_};
@@ -552,7 +552,7 @@ public:
     }
 
 private:
-    std::vector<AsuId> AsuIds() const
+    std::vector<NodeId> AsuIds() const
     {
         std::lock_guard<std::mutex> lock{mutex_};
         return asuIds_;
@@ -560,20 +560,20 @@ private:
 
     std::shared_ptr<ClusterState> state_;
     mutable std::mutex mutex_;
-    std::vector<AsuId> asuIds_;
+    std::vector<NodeId> asuIds_;
     std::uint64_t epoch_{1};
     std::size_t fetchCount_{0};
 };
 
-AsuClientConfig MakeClientConfig(const std::vector<AsuId>& allAsuIds)
+KvClientConfig MakeClientConfig(const std::vector<NodeId>& allAsuIds)
 {
-    AsuClientConfig config;
+    KvClientConfig config;
     config.clientId = "asu-client-e2e-metrics-test";
     config.defaultWaitTimeoutMs = 1000;
-    for (auto asuId : allAsuIds) {
+    for (auto nodeId : allAsuIds) {
         TransportConfig transportConfig;
-        transportConfig.asuId = asuId;
-        transportConfig.asuName = "fake-asu-" + std::to_string(asuId);
+        transportConfig.nodeId = nodeId;
+        transportConfig.nodeName = "fake-asu-" + std::to_string(nodeId);
         transportConfig.providerType = TransProviderType::FAKE;
         transportConfig.maxInflightTasks = 1024;
         config.transportConfigs.emplace_back(std::move(transportConfig));
@@ -583,7 +583,7 @@ AsuClientConfig MakeClientConfig(const std::vector<AsuId>& allAsuIds)
 
 ViewServerFactory MakeViewServerFactory(const std::shared_ptr<ViewServer>& viewServer)
 {
-    return [viewServer](const AsuClientConfig&) { return viewServer; };
+    return [viewServer](const KvClientConfig&) { return viewServer; };
 }
 
 TransportFactory MakeFactory(const std::shared_ptr<ClusterState>& state)
@@ -672,7 +672,7 @@ bool EntryStatusesOk(const TaskResult& result, std::size_t expectedCount)
                        [](const Status& status) { return status.ok(); });
 }
 
-Status QueryAndWait(AsuClient& client, const std::vector<CacheKey>& keys, QueryResult& result,
+Status QueryAndWait(KvClient& client, const std::vector<CacheKey>& keys, QueryResult& result,
                     std::uint64_t timeoutMs = 0)
 {
     TaskId taskId{kInvalidTaskId};
@@ -689,7 +689,7 @@ Status QueryAndWait(AsuClient& client, const std::vector<CacheKey>& keys, QueryR
     return status;
 }
 
-bool StoreAndMeasure(AsuClient& client, const std::vector<KVBuffer>& entries, std::uint64_t bytes,
+bool StoreAndMeasure(KvClient& client, const std::vector<KVBuffer>& entries, std::uint64_t bytes,
                      MetricsRecorder& metrics)
 {
     TaskId taskId{kInvalidTaskId};
@@ -703,7 +703,7 @@ bool StoreAndMeasure(AsuClient& client, const std::vector<KVBuffer>& entries, st
     return correct;
 }
 
-bool LoadAndMeasure(AsuClient& client, const std::vector<KVBuffer>& entries,
+bool LoadAndMeasure(KvClient& client, const std::vector<KVBuffer>& entries,
                     const std::vector<std::vector<std::uint8_t>>& expected,
                     const std::vector<std::vector<std::uint8_t>>& actual, std::uint64_t bytes,
                     MetricsRecorder& metrics)
@@ -720,7 +720,7 @@ bool LoadAndMeasure(AsuClient& client, const std::vector<KVBuffer>& entries,
     return correct;
 }
 
-bool QueryAndMeasure(AsuClient& client, const std::vector<CacheKey>& keys,
+bool QueryAndMeasure(KvClient& client, const std::vector<CacheKey>& keys,
                      const std::vector<std::uint8_t>& expected, MetricsRecorder& metrics)
 {
     QueryResult result;
@@ -731,7 +731,7 @@ bool QueryAndMeasure(AsuClient& client, const std::vector<CacheKey>& keys,
     return correct;
 }
 
-bool DeleteAndMeasure(AsuClient& client, const std::vector<CacheKey>& keys,
+bool DeleteAndMeasure(KvClient& client, const std::vector<CacheKey>& keys,
                       MetricsRecorder& metrics)
 {
     TaskId taskId{kInvalidTaskId};
@@ -787,9 +787,9 @@ void ExpectStoreAndLoadSummaries(const MetricsRecorder& metrics)
 TEST(KvClientE2EMetricsTest, NormalWorkloadReportsPrecisionPerformanceAndResources)
 {
     auto state = std::make_shared<ClusterState>();
-    auto viewServer = std::make_shared<DynamicViewServer>(state, std::vector<AsuId>{1, 2, 3});
+    auto viewServer = std::make_shared<DynamicViewServer>(state, std::vector<NodeId>{1, 2, 3});
     auto client =
-        std::make_unique<AsuClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
     ASSERT_TRUE(client->Init(MakeClientConfig({1, 2, 3})).ok());
 
     MetricsRecorder metrics;
@@ -843,9 +843,9 @@ TEST(KvClientE2EMetricsTest, NormalWorkloadReportsPrecisionPerformanceAndResourc
 TEST(KvClientE2EMetricsTest, DiskMembershipChangesRefreshAndContinueWorkload)
 {
     auto state = std::make_shared<ClusterState>();
-    auto viewServer = std::make_shared<DynamicViewServer>(state, std::vector<AsuId>{1, 2});
+    auto viewServer = std::make_shared<DynamicViewServer>(state, std::vector<NodeId>{1, 2});
     auto client =
-        std::make_unique<AsuClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
+        std::make_unique<KvClientImpl>(MakeFactory(state), MakeViewServerFactory(viewServer));
     ASSERT_TRUE(client->Init(MakeClientConfig({1, 2, 3})).ok());
 
     MetricsRecorder metrics;

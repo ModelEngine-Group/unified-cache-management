@@ -58,16 +58,16 @@ Status ResultBufferEntryToStatus(AsuOpType opType, std::uint8_t rawResult)
 
     if (opType == AsuOpType::BATCH_STORE || opType == AsuOpType::BATCH_LOAD) {
         switch (EntryStatusCode(opType, rawResult)) {
-            case StatusCode::ASU_ENTRY_RETRY_ADVISED:
-                return Status::Error(StatusCode::ASU_ENTRY_RETRY_ADVISED,
+            case StatusCode::ENTRY_RETRY_ADVISED:
+                return Status::Error(StatusCode::ENTRY_RETRY_ADVISED,
                                      "general error, retry advised");
-            case StatusCode::ASU_ENTRY_NO_RETRY_ADVISED:
-                return Status::Error(StatusCode::ASU_ENTRY_NO_RETRY_ADVISED,
+            case StatusCode::ENTRY_NO_RETRY_ADVISED:
+                return Status::Error(StatusCode::ENTRY_NO_RETRY_ADVISED,
                                      "general error, no retry advised");
-            case StatusCode::ASU_ENTRY_KEY_NOT_FOUND:
-                return Status::Error(StatusCode::ASU_ENTRY_KEY_NOT_FOUND, "key not found");
-            case StatusCode::ASU_ENTRY_DATA_NOT_EXIST:
-                return Status::Error(StatusCode::ASU_ENTRY_DATA_NOT_EXIST, "data not exist");
+            case StatusCode::ENTRY_KEY_NOT_FOUND:
+                return Status::Error(StatusCode::ENTRY_KEY_NOT_FOUND, "key not found");
+            case StatusCode::ENTRY_DATA_NOT_EXIST:
+                return Status::Error(StatusCode::ENTRY_DATA_NOT_EXIST, "data not exist");
             default:
                 return Status::Error(StatusCode::IO_ERROR, "unknown ASU entry key result is " +
                                                                std::to_string(rawResult));
@@ -76,8 +76,8 @@ Status ResultBufferEntryToStatus(AsuOpType opType, std::uint8_t rawResult)
 
     if (opType == AsuOpType::DELETE) {
         switch (EntryStatusCode(opType, rawResult)) {
-            case StatusCode::ASU_ENTRY_DELETE_FAILED:
-                return Status::Error(StatusCode::ASU_ENTRY_DELETE_FAILED, "delete failed");
+            case StatusCode::ENTRY_DELETE_FAILED:
+                return Status::Error(StatusCode::ENTRY_DELETE_FAILED, "delete failed");
             default:
                 return Status::Error(StatusCode::IO_ERROR,
                                      "unknown ASU delete result is " + std::to_string(rawResult));
@@ -86,10 +86,10 @@ Status ResultBufferEntryToStatus(AsuOpType opType, std::uint8_t rawResult)
 
     if (opType == AsuOpType::QUERY) {
         switch (EntryStatusCode(opType, rawResult)) {
-            case StatusCode::ASU_ENTRY_KEY_NOT_EXIST:
-                return Status::Error(StatusCode::ASU_ENTRY_KEY_NOT_EXIST, "key not exist");
-            case StatusCode::ASU_ENTRY_KEY_EXIST:
-                return Status::Error(StatusCode::ASU_ENTRY_KEY_EXIST, "key exist");
+            case StatusCode::ENTRY_KEY_NOT_EXIST:
+                return Status::Error(StatusCode::ENTRY_KEY_NOT_EXIST, "key not exist");
+            case StatusCode::ENTRY_KEY_EXIST:
+                return Status::Error(StatusCode::ENTRY_KEY_EXIST, "key exist");
             default:
                 return Status::Error(StatusCode::IO_ERROR,
                                      "unknown ASU exist result is " + std::to_string(rawResult));
@@ -106,31 +106,31 @@ Status KvResponseStatusToSubBatchStatus(std::uint16_t rawStatus)
     if (rawStatus == 0x00) { return Status::OK(); }
 
     switch (CqeStatusCode(rawStatus)) {
-        case StatusCode::ASU_CQE_INVALID_COMMAND_OPCODE:
-            return Status::Error(StatusCode::ASU_CQE_INVALID_COMMAND_OPCODE,
+        case StatusCode::CQE_INVALID_COMMAND_OPCODE:
+            return Status::Error(StatusCode::CQE_INVALID_COMMAND_OPCODE,
                                  "Invalid Command Opcode");
-        case StatusCode::ASU_CQE_INVALID_FIELD_IN_COMMAND:
-            return Status::Error(StatusCode::ASU_CQE_INVALID_FIELD_IN_COMMAND,
+        case StatusCode::CQE_INVALID_FIELD_IN_COMMAND:
+            return Status::Error(StatusCode::CQE_INVALID_FIELD_IN_COMMAND,
                                  "Invalid Field in Command");
-        case StatusCode::ASU_CQE_INTERNAL_ERROR:
-            return Status::Error(StatusCode::ASU_CQE_INTERNAL_ERROR, "Internal Error");
-        case StatusCode::ASU_CQE_WRITE_FAULT:
-            return Status::Error(StatusCode::ASU_CQE_WRITE_FAULT, "Write fault");
-        case StatusCode::ASU_CQE_UNRECOVERED_READ_ERROR:
-            return Status::Error(StatusCode::ASU_CQE_UNRECOVERED_READ_ERROR,
+        case StatusCode::CQE_INTERNAL_ERROR:
+            return Status::Error(StatusCode::CQE_INTERNAL_ERROR, "Internal Error");
+        case StatusCode::CQE_WRITE_FAULT:
+            return Status::Error(StatusCode::CQE_WRITE_FAULT, "Write fault");
+        case StatusCode::CQE_UNRECOVERED_READ_ERROR:
+            return Status::Error(StatusCode::CQE_UNRECOVERED_READ_ERROR,
                                  "Unrecovered Read Error");
-        case StatusCode::ASU_CQE_KEY_NOT_EXIST:
-            return Status::Error(StatusCode::ASU_CQE_KEY_NOT_EXIST, "Key Not Exist");
-        case StatusCode::ASU_CQE_OUT_OF_CREATE_SIZE:
-            return Status::Error(StatusCode::ASU_CQE_OUT_OF_CREATE_SIZE, "Out of Create Size");
-        case StatusCode::ASU_CQE_IO_TIMEOUT:
-            return Status::Error(StatusCode::ASU_CQE_IO_TIMEOUT, "IO TimeOut");
-        case StatusCode::ASU_CQE_KEY_ALREADY_EXISTED:
-            return Status::Error(StatusCode::ASU_CQE_KEY_ALREADY_EXISTED, "Key already Existed");
-        case StatusCode::ASU_CQE_RESOURCE_BUSY:
-            return Status::Error(StatusCode::ASU_CQE_RESOURCE_BUSY, "Resource Busy");
-        case StatusCode::ASU_CQE_CHECK_RESULT_BUFFER:
-            return Status::Error(StatusCode::ASU_CQE_CHECK_RESULT_BUFFER,
+        case StatusCode::CQE_KEY_NOT_EXIST:
+            return Status::Error(StatusCode::CQE_KEY_NOT_EXIST, "Key Not Exist");
+        case StatusCode::CQE_OUT_OF_CREATE_SIZE:
+            return Status::Error(StatusCode::CQE_OUT_OF_CREATE_SIZE, "Out of Create Size");
+        case StatusCode::CQE_IO_TIMEOUT:
+            return Status::Error(StatusCode::CQE_IO_TIMEOUT, "IO TimeOut");
+        case StatusCode::CQE_KEY_ALREADY_EXISTED:
+            return Status::Error(StatusCode::CQE_KEY_ALREADY_EXISTED, "Key already Existed");
+        case StatusCode::CQE_RESOURCE_BUSY:
+            return Status::Error(StatusCode::CQE_RESOURCE_BUSY, "Resource Busy");
+        case StatusCode::CQE_CHECK_RESULT_BUFFER:
+            return Status::Error(StatusCode::CQE_CHECK_RESULT_BUFFER,
                                  "Batched Result, check result buffer for entry errors");
         default:
             return Status::Error(StatusCode::IO_ERROR,
@@ -142,8 +142,8 @@ void FillEntryStatusFromCqeResult(const KvResponse& response, AsuOpType opType,
                                   bool useSeekControl, Status& status,
                                   std::vector<Status>& entryStatus)
 {
-    const auto keyExist = Status::Error(StatusCode::ASU_ENTRY_KEY_EXIST, "key exist");
-    const auto keyNotExist = Status::Error(StatusCode::ASU_ENTRY_KEY_NOT_EXIST, "key not exist");
+    const auto keyExist = Status::Error(StatusCode::ENTRY_KEY_EXIST, "key exist");
+    const auto keyNotExist = Status::Error(StatusCode::ENTRY_KEY_NOT_EXIST, "key not exist");
     const bool isQuery = opType == AsuOpType::QUERY;
 
     if (status.ok()) {
@@ -151,7 +151,7 @@ void FillEntryStatusFromCqeResult(const KvResponse& response, AsuOpType opType,
         return;
     }
 
-    if (isQuery && !useSeekControl && status.code == StatusCode::ASU_CQE_CHECK_RESULT_BUFFER) {
+    if (isQuery && !useSeekControl && status.code == StatusCode::CQE_CHECK_RESULT_BUFFER) {
         const auto existingKeyCount =
             std::min(entryStatus.size(), static_cast<std::size_t>(response.existing_key_number));
         std::fill(entryStatus.begin(), entryStatus.end(), keyNotExist);
@@ -159,7 +159,7 @@ void FillEntryStatusFromCqeResult(const KvResponse& response, AsuOpType opType,
         return;
     }
 
-    if (status.code != StatusCode::ASU_CQE_CHECK_RESULT_BUFFER ||
+    if (status.code != StatusCode::CQE_CHECK_RESULT_BUFFER ||
         response.result_buffer.empty()) {
         std::fill(entryStatus.begin(), entryStatus.end(), status);
         return;
@@ -175,7 +175,7 @@ QueryResult BuildQueryResultFromEntryStatus(const std::vector<Status>& entryStat
     QueryResult queryResult;
     queryResult.exists.assign(entryStatus.size(), 0);
     for (std::size_t index = 0; index < entryStatus.size(); ++index) {
-        queryResult.exists[index] = entryStatus[index].code == StatusCode::ASU_ENTRY_KEY_EXIST;
+        queryResult.exists[index] = entryStatus[index].code == StatusCode::ENTRY_KEY_EXIST;
         if (queryResult.prefixHitKeys == index && queryResult.exists[index] != 0) {
             ++queryResult.prefixHitKeys;
         }

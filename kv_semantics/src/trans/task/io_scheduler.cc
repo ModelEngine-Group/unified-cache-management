@@ -54,10 +54,10 @@ std::vector<ScheduledBatch> SplitBatchView(const BatchView<Value>& view, std::si
 }  // namespace
 
 IoScheduler::IoScheduler(const TransportConfig& config)
-    : batchLoadIoNum_(config.asuBatchLoadIoNum),
-      batchStoreIoNum_(config.asuBatchStoreIoNum),
-      deleteIoNum_(config.asuDeleteIoNum),
-      queryIoNum_(config.asuQueryIoNum)
+    : batchLoadIoNum_(config.batchLoadIoNum),
+      batchStoreIoNum_(config.batchStoreIoNum),
+      deleteIoNum_(config.deleteIoNum),
+      queryIoNum_(config.queryIoNum)
 {
 }
 

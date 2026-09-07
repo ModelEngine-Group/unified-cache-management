@@ -132,14 +132,14 @@ Status AsuTransportImpl::Init(const TransportConfig& config,
                 cfgField = std::min(cfgField, static_cast<std::size_t>(capValue));
             }
         };
-        applyCapLimit(config_.asuBatchStoreIoNum, capabilities.batchStoreKeys);
-        applyCapLimit(config_.asuBatchLoadIoNum, capabilities.batchLoadKeys);
-        applyCapLimit(config_.asuDeleteIoNum, capabilities.deleteKeys);
-        applyCapLimit(config_.asuQueryIoNum, capabilities.queryKeys);
+        applyCapLimit(config_.batchStoreIoNum, capabilities.batchStoreKeys);
+        applyCapLimit(config_.batchLoadIoNum, capabilities.batchLoadKeys);
+        applyCapLimit(config_.deleteIoNum, capabilities.deleteKeys);
+        applyCapLimit(config_.queryIoNum, capabilities.queryKeys);
     }
     KV_INFO("AsuTransportImpl::Init effective batch limits: store={} load={} delete={} query={}",
-            config_.asuBatchStoreIoNum, config_.asuBatchLoadIoNum, config_.asuDeleteIoNum,
-            config_.asuQueryIoNum);
+            config_.batchStoreIoNum, config_.batchLoadIoNum, config_.deleteIoNum,
+            config_.queryIoNum);
 
     connManager_->StartRecoverLoop();
 

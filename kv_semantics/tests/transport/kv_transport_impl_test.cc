@@ -187,7 +187,7 @@ TEST_F(TransportTaskCompletionTest, FailureCqeAccumulatesWithoutSuccessReset)
 {
     auto* provider = transport_->transProvider_.get();
     transport_->connManager_ = std::make_unique<ConnectionManager>(*provider, "", 5000, 3);
-    ASSERT_TRUE(transport_->connManager_->AddGroup(AsuEndpoint{}, 1).ok());
+    ASSERT_TRUE(transport_->connManager_->AddGroup(NodeEndpoint{}, 1).ok());
     auto channel = transport_->connManager_->SelectConnection();
     ASSERT_NE(channel, nullptr);
     transport_->connManager_->ReportFailure(channel);
@@ -214,14 +214,14 @@ TEST_F(TransportTaskCompletionTest, FailureCqeAccumulatesWithoutSuccessReset)
 
     EXPECT_EQ(channel->GetErrorCount(), std::uint32_t{2});
     EXPECT_EQ(channel->GetState(), ChannelState::ACTIVE);
-    EXPECT_EQ(subBatchContext.status.code, StatusCode::ASU_CQE_IO_TIMEOUT);
+    EXPECT_EQ(subBatchContext.status.code, StatusCode::CQE_IO_TIMEOUT);
 }
 
 TEST_F(TransportTaskCompletionTest, PollTaskCompletionsTimesOutAndReleasesResources)
 {
     auto* provider = transport_->transProvider_.get();
     transport_->connManager_ = std::make_unique<ConnectionManager>(*provider, "", 5000, 2);
-    ASSERT_TRUE(transport_->connManager_->AddGroup(AsuEndpoint{}, 1).ok());
+    ASSERT_TRUE(transport_->connManager_->AddGroup(NodeEndpoint{}, 1).ok());
     auto channel = transport_->connManager_->SelectConnection();
     ASSERT_NE(channel, nullptr);
 
@@ -267,7 +267,7 @@ TEST_F(TransportTaskCompletionTest, ExecutionTimeoutCountsEachSubBatch)
 {
     auto* provider = transport_->transProvider_.get();
     transport_->connManager_ = std::make_unique<ConnectionManager>(*provider, "", 5000, 2);
-    ASSERT_TRUE(transport_->connManager_->AddGroup(AsuEndpoint{}, 1).ok());
+    ASSERT_TRUE(transport_->connManager_->AddGroup(NodeEndpoint{}, 1).ok());
     auto channel = transport_->connManager_->SelectConnection();
     ASSERT_NE(channel, nullptr);
     auto sameChannel = transport_->connManager_->SelectConnection();
@@ -325,7 +325,7 @@ TEST_F(TransportTaskCompletionTest, ReleaseSubBatchResourcesReleasesChannelInfli
 {
     StubTransProvider provider;
     ConnectionManager connManager(provider, "", 5000);
-    ASSERT_TRUE(connManager.AddGroup(AsuEndpoint{}, 1).ok());
+    ASSERT_TRUE(connManager.AddGroup(NodeEndpoint{}, 1).ok());
     auto channel = connManager.SelectConnection();
     ASSERT_NE(channel, nullptr);
     ASSERT_EQ(channel->GetInflightCount(), std::uint32_t{1});

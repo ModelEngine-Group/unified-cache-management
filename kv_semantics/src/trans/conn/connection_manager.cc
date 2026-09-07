@@ -37,7 +37,7 @@ ConnectionManager::ConnectionManager(TransProvider& provider, const std::string&
 
 ConnectionManager::~ConnectionManager() { Shutdown(); }
 
-Status ConnectionManager::AddGroup(const AsuEndpoint& endpoint, std::uint32_t qp_num)
+Status ConnectionManager::AddGroup(const NodeEndpoint& endpoint, std::uint32_t qp_num)
 {
     if (shuttingDown_.load(std::memory_order_acquire)) {
         return Status::Error(StatusCode::NOT_INITIALIZED, "connection manager shutting down");
@@ -217,7 +217,7 @@ void ConnectionManager::RecoverLoop()
 
         for (auto& channel : to_recover) {
             ConnectionGroup* grp = channel->GetGroup();
-            AsuEndpoint ep = grp->GetEndpoint();
+            NodeEndpoint ep = grp->GetEndpoint();
             std::uint32_t gid = grp->GetGroupId();
 
             std::vector<TransProvider::ConnectionHandle> new_handles;
