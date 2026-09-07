@@ -25,7 +25,7 @@
 
 #include <string>
 #include <utility>
-#include "types.h"
+#include "kv_types.h"
 #include "logger.h"
 
 #define ASU_LOG_ERROR_STATUS(code, message)                                   \

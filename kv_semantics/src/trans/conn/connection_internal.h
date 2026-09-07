@@ -30,7 +30,7 @@
 #include <vector>
 #include "kv_transport.h"
 #include "trans_provider.h"
-#include "types.h"
+#include "kv_types.h"
 #include "connection_manager.h"
 
 namespace kv {

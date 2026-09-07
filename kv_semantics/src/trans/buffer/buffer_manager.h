@@ -28,7 +28,7 @@
 #include <memory>
 #include <string>
 #include "trans_provider.h"
-#include "types.h"
+#include "kv_types.h"
 #include "index_pool.h"
 
 namespace kv {

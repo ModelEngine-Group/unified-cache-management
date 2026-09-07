@@ -31,7 +31,7 @@
 #include <memory>
 #include <mutex>
 #include <vector>
-#include "types.h"
+#include "kv_types.h"
 #include "trans_types.h"
 
 namespace kv {

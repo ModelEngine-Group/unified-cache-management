@@ -25,7 +25,7 @@
 
 #include <cstdint>
 #include <vector>
-#include "types.h"
+#include "kv_types.h"
 #include "task_context.h"
 #include "proto/kv_protocol.h"
 

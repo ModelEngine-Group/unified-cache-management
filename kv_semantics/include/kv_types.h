@@ -39,6 +39,9 @@ using NodeId = std::uint64_t;
 constexpr std::size_t kCacheKeySizeBytes = 8;
 using CacheKey = std::array<std::byte, kCacheKeySizeBytes>;
 
+// KV protocol requires 512B alignment for device buffers and offsets.
+constexpr std::uint32_t kAlignmentBytes = 512;
+
 constexpr TaskId kInvalidTaskId = 0;
 constexpr MRHandle kInvalidMRHandle = 0;
 

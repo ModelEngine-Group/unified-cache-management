@@ -29,7 +29,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include "types.h"
+#include "kv_types.h"
 #include "trans_types.h"
 
 namespace kv {
@@ -48,7 +48,6 @@ enum class DptrType : std::uint8_t { Standard = 0x40, Batch = 0x1 };
 
 constexpr std::size_t kSqeDwordCount = 16;
 constexpr std::uint32_t kFixedBits = 0x3;
-constexpr std::uint32_t kAlignmentBytes = kAsuAlignmentBytes;
 constexpr std::size_t kBatchEntrySizeBytes = 36;
 constexpr std::size_t kBatchEntryDwordCount = 9;
 constexpr std::size_t kKeyEntrySizeBytes = 16;

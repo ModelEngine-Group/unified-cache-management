@@ -29,7 +29,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
-#include "types.h"
+#include "kv_types.h"
 
 namespace kv {
 
@@ -50,8 +50,6 @@ inline std::string CacheKeyToHex(const CacheKey& key)
     }
     return text;
 }
-
-constexpr std::uint32_t kAsuAlignmentBytes = 512;  // KV protocol requires 512B alignment
 
 struct ServerKvCapabilities {
     // A zero limit means that the provider did not advertise that capability.

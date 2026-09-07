@@ -24,7 +24,7 @@
 #include "simu_trans.h"
 #include <cstdint>
 #include <cstring>
-#include "types.h"
+#include "kv_types.h"
 
 namespace kv::runtime {
 

@@ -11,7 +11,7 @@ namespace {
 constexpr int kExitInvalidArgument = 1;
 
 constexpr std::uint8_t kRetrieveBufferInitialValue = 0xA5;
-constexpr std::size_t kDeviceBufferAlignment = kv::kAsuAlignmentBytes;
+constexpr std::size_t kDeviceBufferAlignment = kv::kAlignmentBytes;
 constexpr std::size_t kDeviceMrRegisterAlignment = 2ULL * 1024ULL * 1024ULL;
 
 runtime::Trans* GetThreadTrans()

@@ -31,7 +31,7 @@
 #include <unordered_map>
 #include <vector>
 #include "kv_client.h"
-#include "types.h"
+#include "kv_types.h"
 #include "task/task_manager.h"
 #include "spsc_ring_queue.h"
 #include "view/view_server.h"

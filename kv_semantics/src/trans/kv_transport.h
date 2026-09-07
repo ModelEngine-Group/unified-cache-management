@@ -30,7 +30,7 @@
 #include <unordered_map>
 #include <vector>
 #include "trans_provider.h"
-#include "types.h"
+#include "kv_types.h"
 
 namespace kv {
 

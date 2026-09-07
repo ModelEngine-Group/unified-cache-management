@@ -26,7 +26,7 @@
 #include <limits>
 #include <thread>
 #include <utility>
-#include "types.h"
+#include "kv_types.h"
 #include "utils/config_utils.h"
 #include "router/config.h"
 #include "logger.h"

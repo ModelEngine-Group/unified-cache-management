@@ -28,7 +28,7 @@
 #include <fmt/format.h>
 #include "ascend_buffer.h"
 #include "ascend_trans.h"
-#include "types.h"
+#include "kv_types.h"
 
 namespace kv::runtime {
 

@@ -177,8 +177,8 @@ public:
         if (!initialized_) { return NotInitialized(); }
         ++state_->registrationCalls;
         if (state_->failRegistration) {
-            return UC::ASU::Status::Error(UC::ASU::StatusCode::NOT_INITIALIZED,
-                                          "injected registration failure");
+            return kv::Status::Error(kv::StatusCode::NOT_INITIALIZED,
+                                     "injected registration failure");
         }
         registeredRegions.clear();
         registeredRegions.reserve(regions.size());
@@ -691,7 +691,7 @@ TEST(UCAsuStoreTest, TransportModeSmoke)
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
     config.Set("asu_ids", std::vector<ssize_t>{1001});
-    std::array<std::byte, UC::ASU::kAsuAlignmentBytes> buffer{};
+    std::array<std::byte, kv::kAlignmentBytes> buffer{};
     RegisterPersistentRanges(config, {
                                          {buffer.data(), buffer.size()}
     });
@@ -710,7 +710,7 @@ TEST(UCAsuStoreTest, ClientModeSmoke)
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1", "127.0.0.2"});
     config.Set("asu_ports", std::vector<ssize_t>{12345, 12346});
     config.Set("asu_ids", std::vector<ssize_t>{1001, 1002});
-    std::array<std::byte, UC::ASU::kAsuAlignmentBytes> buffer{};
+    std::array<std::byte, kv::kAlignmentBytes> buffer{};
     RegisterPersistentRanges(config, {
                                          {buffer.data(), buffer.size()}
     });
@@ -774,7 +774,7 @@ TEST(UCAsuStoreTest, UsesPersistentRegionHandleBeforeSubmitAndKeepsItAfterWait)
     auto config = MakeBaseConfig();
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
     config.Set("asu_ids", std::vector<ssize_t>{1001});
-    std::array<std::byte, kv::kAsuAlignmentBytes> buffer{};
+    std::array<std::byte, kv::kAlignmentBytes> buffer{};
     RegisterPersistentRanges(config, {
                                          {buffer.data(), buffer.size()}
     });
@@ -800,7 +800,7 @@ TEST(UCAsuStoreTest, PersistentRegionHandleIsSharedByEntriesAndNotReleasedPerTas
     config.Set("tensor_size_list", std::vector<ssize_t>{64, 64});
     config.SetNumber("shard_size", std::size_t{128});
     config.SetNumber("block_size", std::size_t{128});
-    std::array<std::byte, kv::kAsuAlignmentBytes * 2> buffer{};
+    std::array<std::byte, kv::kAlignmentBytes * 2> buffer{};
     RegisterPersistentRanges(config, {
                                          {buffer.data(), buffer.size()}
     });
@@ -810,7 +810,7 @@ TEST(UCAsuStoreTest, PersistentRegionHandleIsSharedByEntriesAndNotReleasedPerTas
     UC::Detail::TaskDesc task;
     auto block = UC::Test::Detail::TypesHelper::MakeBlockId("c2b2c3d4e5f6789012345678901234ab");
     task.push_back(UC::Detail::Shard{
-        block, 0, {buffer.data(), buffer.data() + kv::kAsuAlignmentBytes}
+        block, 0, {buffer.data(), buffer.data() + kv::kAlignmentBytes}
     });
 
     auto dump = store.Dump(std::move(task));
@@ -835,8 +835,8 @@ TEST(UCAsuStoreTest, ResolvesEachEntryToItsContainingPersistentRegion)
     config.Set("tensor_size_list", std::vector<ssize_t>{64, 64});
     config.SetNumber("shard_size", std::size_t{128});
     config.SetNumber("block_size", std::size_t{128});
-    std::array<std::byte, kv::kAsuAlignmentBytes> firstBuffer{};
-    std::array<std::byte, kv::kAsuAlignmentBytes> secondBuffer{};
+    std::array<std::byte, kv::kAlignmentBytes> firstBuffer{};
+    std::array<std::byte, kv::kAlignmentBytes> secondBuffer{};
     RegisterPersistentRanges(config, {
                                          {firstBuffer.data(),  firstBuffer.size() },
                                          {secondBuffer.data(), secondBuffer.size()}
@@ -864,7 +864,7 @@ TEST(UCAsuStoreTest, LookupOnPrefixReturnsLastContiguousHit)
     config.Set("asu_ips", std::vector<std::string>{"127.0.0.1", "127.0.0.2"});
     config.Set("asu_ports", std::vector<ssize_t>{12345, 12346});
     config.Set("asu_ids", std::vector<ssize_t>{1001, 1002});
-    std::array<std::byte, kv::kAsuAlignmentBytes> buffer{};
+    std::array<std::byte, kv::kAlignmentBytes> buffer{};
     RegisterPersistentRanges(config, {
                                          {buffer.data(), buffer.size()}
     });
@@ -897,7 +897,7 @@ TEST(UCAsuStoreTest, ClientModeConfigPathSmoke)
     UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("asu_config_path", std::string{kConfigPath});
-    std::array<std::byte, UC::ASU::kAsuAlignmentBytes> buffer{};
+    std::array<std::byte, kv::kAlignmentBytes> buffer{};
     RegisterPersistentRanges(config, {
                                          {buffer.data(), buffer.size()}
     });
@@ -927,7 +927,7 @@ TEST(UCAsuStoreTest, TransportModeConfigPathSmoke)
     auto config = MakeBaseConfig();
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_config_path", std::string{kConfigPath});
-    std::array<std::byte, UC::ASU::kAsuAlignmentBytes> buffer{};
+    std::array<std::byte, kv::kAlignmentBytes> buffer{};
     RegisterPersistentRanges(config, {
                                          {buffer.data(), buffer.size()}
     });
@@ -971,9 +971,9 @@ TEST(UCAsuStoreTest, UsesNonLayerwiseMlaTensorOffsets)
     config.SetNumber("shard_size", std::size_t{360});
     config.SetNumber("block_size", std::size_t{360});
 
-    std::array<std::byte, UC::ASU::kAsuAlignmentBytes> first{};
-    std::array<std::byte, UC::ASU::kAsuAlignmentBytes> second{};
-    std::array<std::byte, UC::ASU::kAsuAlignmentBytes> third{};
+    std::array<std::byte, kv::kAlignmentBytes> first{};
+    std::array<std::byte, kv::kAlignmentBytes> second{};
+    std::array<std::byte, kv::kAlignmentBytes> third{};
     RegisterPersistentRanges(config, {
                                          {first.data(),  first.size() },
                                          {second.data(), second.size()},
@@ -1061,7 +1061,7 @@ TEST(UCAsuStoreTest, UsesLayerwiseMlaTensorOffsets)
     config.SetNumber("shard_size", std::size_t{128});
     config.SetNumber("block_size", std::size_t{384});
 
-    std::array<std::byte, UC::ASU::kAsuAlignmentBytes> buffer{};
+    std::array<std::byte, kv::kAlignmentBytes> buffer{};
     RegisterPersistentRanges(config, {
                                          {buffer.data(), buffer.size()}
     });
@@ -1085,7 +1085,7 @@ TEST(UCAsuStoreTest, UsesLayerwiseMlaTensorOffsets)
 TEST(UCAsuStoreTest, UsesMultiSegmentLayerwiseMlaTensorOffsets)
 {
     constexpr std::size_t shardIndex = 2;
-    constexpr std::size_t alignment = kv::kAsuAlignmentBytes;
+    constexpr std::size_t alignment = kv::kAlignmentBytes;
     constexpr std::size_t alignedShardSize = alignment * 2;
 
     UC::AsuStore::AsuStore store;
@@ -1146,7 +1146,7 @@ TEST(UCAsuStoreTest, AlignsTensorSizeAndDerivesShardBlockSize)
     config.SetNumber("shard_size", std::size_t{100});
     config.SetNumber("block_size", std::size_t{300});
 
-    std::array<std::byte, UC::ASU::kAsuAlignmentBytes> buffer{};
+    std::array<std::byte, kv::kAlignmentBytes> buffer{};
     RegisterPersistentRanges(config, {
                                          {buffer.data(), buffer.size()}
     });
@@ -1155,11 +1155,11 @@ TEST(UCAsuStoreTest, AlignsTensorSizeAndDerivesShardBlockSize)
     ASSERT_FALSE(state->initConfigs.empty());
     ASSERT_EQ(state->initConfigs.back().tensorSizes.size(), std::size_t{1});
     EXPECT_EQ(state->initConfigs.back().tensorSizes[0],
-              static_cast<std::size_t>(kv::kAsuAlignmentBytes));
+              static_cast<std::size_t>(kv::kAlignmentBytes));
     EXPECT_EQ(state->initConfigs.back().shardSize,
-              static_cast<std::size_t>(kv::kAsuAlignmentBytes));
+              static_cast<std::size_t>(kv::kAlignmentBytes));
     EXPECT_EQ(state->initConfigs.back().blockSize,
-              static_cast<std::size_t>(kv::kAsuAlignmentBytes) * 3);
+              static_cast<std::size_t>(kv::kAlignmentBytes) * 3);
 
     auto block = UC::Test::Detail::TypesHelper::MakeBlockId("abb2c3d4e5f6789012345678901234ab");
     UC::Detail::TaskDesc task;
@@ -1170,8 +1170,8 @@ TEST(UCAsuStoreTest, AlignsTensorSizeAndDerivesShardBlockSize)
     ASSERT_TRUE(dump.HasValue()) << dump.Error().ToString();
     ASSERT_FALSE(state->lastStoreEntries.empty());
     EXPECT_EQ(state->lastStoreEntries[0].buffer.region.size,
-              static_cast<std::size_t>(kv::kAsuAlignmentBytes));
-    EXPECT_EQ(state->lastStoreEntries[0].offset, kv::kAsuAlignmentBytes * 2);
+              static_cast<std::size_t>(kv::kAlignmentBytes));
+    EXPECT_EQ(state->lastStoreEntries[0].offset, kv::kAlignmentBytes * 2);
 }
 
 TEST(UCAsuStoreTest, AllowsMultipleShardsPerBlock)
@@ -1202,8 +1202,8 @@ TEST(UCAsuStoreTest, UsesLayerwiseGqaKeyValueOffsets)
     config.SetNumber("shard_size", std::size_t{300});
     config.SetNumber("block_size", std::size_t{900});
 
-    std::array<std::byte, kv::kAsuAlignmentBytes> key{};
-    std::array<std::byte, kv::kAsuAlignmentBytes> value{};
+    std::array<std::byte, kv::kAlignmentBytes> key{};
+    std::array<std::byte, kv::kAlignmentBytes> value{};
     RegisterPersistentRanges(config, {
                                          {key.data(),   key.size()  },
                                          {value.data(), value.size()}
@@ -1244,7 +1244,7 @@ TEST(UCAsuStoreTest, UsesNonLayerwiseGqaKeyValueOffsets)
     config.SetNumber("shard_size", std::size_t{900});
     config.SetNumber("block_size", std::size_t{900});
 
-    std::array<std::array<std::byte, kv::kAsuAlignmentBytes>, 6> buffers{};
+    std::array<std::array<std::byte, kv::kAlignmentBytes>, 6> buffers{};
     std::vector<std::pair<void*, std::size_t>> ranges;
     for (auto& buffer : buffers) { ranges.emplace_back(buffer.data(), buffer.size()); }
     RegisterPersistentRanges(config, ranges);
@@ -1328,7 +1328,7 @@ TEST(UCAsuStoreTest, RejectsInvalidKvCacheConfigBeforeClientInit)
 TEST(UCAsuStoreTest, RegistrationFailureShutsDownClient)
 {
     for (const bool missingHandle : {false, true}) {
-        auto state = std::make_shared<FakeAsuClientState>();
+        auto state = std::make_shared<FakeKvClientState>();
         {
             UC::AsuStore::AsuStore store;
             state = UseFakeClient(store);

@@ -473,7 +473,7 @@ private:
         const auto shardsPerBlock = config.blockSize / config.shardSize;
         std::size_t alignedShardSize = 0;
         for (auto& tensorSize : config.tensorSizes) {
-            tensorSize = AlignUp(tensorSize, kv::kAsuAlignmentBytes);
+            tensorSize = AlignUp(tensorSize, kv::kAlignmentBytes);
             alignedShardSize += tensorSize;
         }
         config.shardSize = alignedShardSize;
