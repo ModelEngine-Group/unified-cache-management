@@ -10,5 +10,5 @@ target_link_libraries(kv_buffer_runtime
 target_include_directories(kv_buffer_runtime
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/..
-        ${UCM_ROOT_DIR}/kv_semantics/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../../../include
 )

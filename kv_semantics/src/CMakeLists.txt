@@ -92,7 +92,7 @@ if(BUILD_UNIT_TESTS)
     target_compile_definitions(kv_transport PRIVATE ASU_BUILD_TESTS)
 endif()
 
-file(RELATIVE_PATH INSTALL_REL_PATH ${UCM_ROOT_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
+set(INSTALL_REL_PATH "kv_semantics/src")
 set_target_properties(kv_client PROPERTIES INSTALL_RPATH "$ORIGIN")
 set_target_properties(kv_transport PROPERTIES INSTALL_RPATH "$ORIGIN")
 install(TARGETS kv_client kv_transport LIBRARY DESTINATION ${INSTALL_REL_PATH} COMPONENT ucm)
