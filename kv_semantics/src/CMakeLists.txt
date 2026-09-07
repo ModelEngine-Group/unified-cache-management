@@ -48,23 +48,23 @@ if(BUILD_KV_CLIENT_PROVIDER_FAKE)
 endif()
 
 if(BUILD_KV_CLIENT_PROVIDER_AIV)
-    if(NOT DEFINED ASU_AIV_PROVIDER_ROOT)
-        if(DEFINED ENV{ASU_AIV_PROVIDER_ROOT})
-            set(ASU_AIV_PROVIDER_ROOT "$ENV{ASU_AIV_PROVIDER_ROOT}" CACHE PATH "Install prefix of libumc.a")
+    if(NOT DEFINED KV_CLIENT_AIV_PROVIDER_ROOT)
+        if(DEFINED ENV{KV_CLIENT_AIV_PROVIDER_ROOT})
+            set(KV_CLIENT_AIV_PROVIDER_ROOT "$ENV{KV_CLIENT_AIV_PROVIDER_ROOT}" CACHE PATH "Install prefix of libumc.a")
         else()
-            set(ASU_AIV_PROVIDER_ROOT "" CACHE PATH "Install prefix of libumc.a")
+            set(KV_CLIENT_AIV_PROVIDER_ROOT "" CACHE PATH "Install prefix of libumc.a")
         endif()
     endif()
 
     find_library(ASU_AIV_PROVIDER_LIB
         NAMES libumc.a umc
         HINTS
-            ${ASU_AIV_PROVIDER_ROOT}/lib
-            ${ASU_AIV_PROVIDER_ROOT}/lib64
+            ${KV_CLIENT_AIV_PROVIDER_ROOT}/lib
+            ${KV_CLIENT_AIV_PROVIDER_ROOT}/lib64
         NO_DEFAULT_PATH
     )
     if(NOT ASU_AIV_PROVIDER_LIB)
-        message(FATAL_ERROR "Cannot find libumc.a under ASU_AIV_PROVIDER_ROOT=${ASU_AIV_PROVIDER_ROOT}")
+        message(FATAL_ERROR "Cannot find libumc.a under KV_CLIENT_AIV_PROVIDER_ROOT=${KV_CLIENT_AIV_PROVIDER_ROOT}")
     endif()
 
     message(STATUS "KV AIV provider lib: ${ASU_AIV_PROVIDER_LIB}")

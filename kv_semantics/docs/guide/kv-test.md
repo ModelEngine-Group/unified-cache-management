@@ -17,7 +17,7 @@ artifacts and loaded by `kv-test` at runtime with `dlopen`.
 `kv-test` is included only when ASU support is enabled:
 
 ```bash
-cmake -S . -B build-kv-test -DBUILD_UCM_ASU=ON -DBUILD_UCM_STORE=OFF -DBUILD_UNIT_TESTS=OFF -DRUNTIME_ENVIRONMENT=ascend -DBUILD_UCM_ASU_PROVIDER_FAKE=ON
+cmake -S . -B build-kv-test -DBUILD_UCM_ASU=ON -DBUILD_UCM_STORE=OFF -DBUILD_UNIT_TESTS=OFF -DRUNTIME_ENVIRONMENT=ascend -DBUILD_KV_CLIENT_PROVIDER_FAKE=ON
 cmake --build build-kv-test --target asu_transport asu_client
 cmake --build build-kv-test --target kv-test
 ```
@@ -26,15 +26,15 @@ Provider implementations are selected at build time:
 
 | CMake option | Default | Extra dependency |
 | --- | --- | --- |
-| `BUILD_UCM_ASU_PROVIDER_AICPU` | `OFF` | Reserved for the AICPU provider library. |
-| `BUILD_UCM_ASU_PROVIDER_FAKE` | `ON` | None. |
-| `BUILD_UCM_ASU_PROVIDER_AIV` | `OFF` | `libumc.a`, found through `ASU_AIV_PROVIDER_ROOT`. |
+| `BUILD_KV_CLIENT_PROVIDER_AICPU` | `OFF` | Reserved for the AICPU provider library. |
+| `BUILD_KV_CLIENT_PROVIDER_FAKE` | `ON` | None. |
+| `BUILD_KV_CLIENT_PROVIDER_AIV` | `OFF` | `libumc.a`, found through `KV_CLIENT_AIV_PROVIDER_ROOT`. |
 
 The configured `transport.provider_type` must be built into `asu_transport`.
 For example, real AIV testing needs:
 
 ```bash
-cmake -S . -B build-kv-test -DBUILD_UCM_ASU=ON -DBUILD_UCM_STORE=OFF -DBUILD_UNIT_TESTS=OFF -DRUNTIME_ENVIRONMENT=ascend -DBUILD_UCM_ASU_PROVIDER_FAKE=ON -DBUILD_UCM_ASU_PROVIDER_AIV=ON -DASU_AIV_PROVIDER_ROOT=/path/to/aiv/provider
+cmake -S . -B build-kv-test -DBUILD_UCM_ASU=ON -DBUILD_UCM_STORE=OFF -DBUILD_UNIT_TESTS=OFF -DRUNTIME_ENVIRONMENT=ascend -DBUILD_KV_CLIENT_PROVIDER_FAKE=ON -DBUILD_KV_CLIENT_PROVIDER_AIV=ON -DKV_CLIENT_AIV_PROVIDER_ROOT=/path/to/aiv/provider
 ```
 
 The same build can be started from any working directory with:
@@ -67,7 +67,7 @@ ucm/transport/kv/kv-test/kv_test.conf
 The bundled example view file is:
 
 ```text
-ucm/transport/kv/kv-test/kv_client_view.conf
+kv_semantics/kv_test/kv_client_view.conf
 ```
 
 The sample config uses relative paths such as `view.config_path`,
@@ -184,7 +184,7 @@ fake_backend.path=./kv-test-fake-backend-store
 fake_backend.latency_ms=1
 fake_backend.worker_threads=4
 
-view.config_path=./ucm/transport/kv/kv-test/kv_client_view.conf
+view.config_path=./kv_semantics/kv_test/kv_client_view.conf
 hash_table.type=RING_HASH
 ring_hash.virtual_node_count=128
 

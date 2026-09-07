@@ -26,7 +26,7 @@ Status CreateTransProvider(const TransportConfig& config,
 #else
             return Status::Error(
                 StatusCode::UNSUPPORTED,
-                "AICPU trans provider is not built; enable BUILD_UCM_ASU_PROVIDER_AICPU");
+                "AICPU trans provider is not built; enable BUILD_KV_CLIENT_PROVIDER_AICPU");
 #endif
         case TransProviderType::FAKE:
 #ifdef UCM_ASU_ENABLE_FAKE_PROVIDER
@@ -42,7 +42,7 @@ Status CreateTransProvider(const TransportConfig& config,
 #else
             return Status::Error(
                 StatusCode::UNSUPPORTED,
-                "FAKE trans provider is not built; enable BUILD_UCM_ASU_PROVIDER_FAKE");
+                "FAKE trans provider is not built; enable BUILD_KV_CLIENT_PROVIDER_FAKE");
 #endif
         case TransProviderType::AIV:
 #ifdef UCM_ASU_ENABLE_AIV_PROVIDER
@@ -51,8 +51,8 @@ Status CreateTransProvider(const TransportConfig& config,
 #else
             return Status::Error(
                 StatusCode::UNSUPPORTED,
-                "AIV trans provider is not built; enable BUILD_UCM_ASU_PROVIDER_AIV and set "
-                "ASU_AIV_PROVIDER_ROOT");
+                "AIV trans provider is not built; enable BUILD_KV_CLIENT_PROVIDER_AIV and set "
+                "KV_CLIENT_AIV_PROVIDER_ROOT");
 #endif
         case TransProviderType::UNSUPPORTED:
             return Status::Error(StatusCode::UNSUPPORTED,
