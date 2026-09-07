@@ -11,7 +11,13 @@ from .ucm_kv_cache import (
     UCMKVCacheSpec,
     parse_kv_cache_config,
 )
-from .ucm_proxy import UCMProxy, UCMProxyAdapter
+from .ucm_proxy import (
+    SimpleFileUCMProxy,
+    TorchTensorByteAccess,
+    UCMByteAccess,
+    UCMProxy,
+    UCMProxyAdapter,
+)
 from .ucm_scheduler import UCMLookupCoordinator, UCMDispatcher
 
 __all__ = [
@@ -24,6 +30,9 @@ __all__ = [
     "UCMLookupCoordinator",
     "UCMProxy",
     "UCMProxyAdapter",
+    "UCMByteAccess",
     "UCMRuntimeContext",
+    "SimpleFileUCMProxy",
+    "TorchTensorByteAccess",
     "parse_kv_cache_config",
 ]

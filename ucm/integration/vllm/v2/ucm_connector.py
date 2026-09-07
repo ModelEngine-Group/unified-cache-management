@@ -128,6 +128,7 @@ class UCMConnector:
         if self.context.role != "worker":
             raise RuntimeError("KV cache registration is only available on worker")
         self.layout = UCMKVCacheLayout(self.spec, kv_caches, num_blocks=num_blocks)
+        self.proxy.register_tensors(kv_caches)
 
     def bind_connector_metadata(self, metadata: UCMConnectorMetadata) -> None:
         self.metadata = metadata

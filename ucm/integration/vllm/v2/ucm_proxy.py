@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import importlib
+import os
 from dataclasses import dataclass
-from typing import Any, Protocol, Sequence, runtime_checkable
+from pathlib import Path
+from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
+from uuid import uuid4
 
 
 class UCMProxyError(RuntimeError):
@@ -31,6 +35,194 @@ class UCMProxy(Protocol):
     ) -> Any: ...
 
     def wait(self, task: Any) -> None: ...
+
+
+@runtime_checkable
+class UCMByteAccess(Protocol):
+    """Copy byte ranges between integer pointers and host bytes."""
+
+    def register_tensors(self, kv_caches: Mapping[str, Any]) -> None: ...
+
+    def synchronize(self) -> None: ...
+
+    def read(self, ptr: int, size: int) -> bytes: ...
+
+    def write(self, ptr: int, payload: bytes) -> None: ...
+
+
+def _tensor_views(value: Any) -> tuple[Any, ...]:
+    torch = importlib.import_module("torch")
+    if isinstance(value, torch.Tensor):
+        return (value,)
+    if isinstance(value, (tuple, list)):
+        result: list[Any] = []
+        for item in value:
+            result.extend(_tensor_views(item))
+        return tuple(result)
+    raise TypeError(f"Unsupported KV cache value: {type(value).__name__}")
+
+
+class TorchTensorByteAccess:
+    """Resolve raw pointers against registered Torch CPU/CUDA/NPU storages."""
+
+    def __init__(self) -> None:
+        self._buffers: list[tuple[int, int, Any]] = []
+        self._devices: set[Any] = set()
+
+    def register_tensors(self, kv_caches: Mapping[str, Any]) -> None:
+        torch = importlib.import_module("torch")
+        buffers: list[tuple[int, int, Any]] = []
+        devices: set[Any] = set()
+        seen: set[tuple[int, int]] = set()
+        for value in kv_caches.values():
+            for tensor in _tensor_views(value):
+                storage = tensor.untyped_storage()
+                base = int(storage.data_ptr())
+                size = int(storage.nbytes())
+                if not base or size <= 0 or (base, size) in seen:
+                    continue
+                seen.add((base, size))
+                byte_view = torch.empty(
+                    0, dtype=torch.uint8, device=tensor.device
+                ).set_(storage, 0, (size,), (1,))
+                buffers.append((base, base + size, byte_view))
+                devices.add(tensor.device)
+        if not buffers:
+            raise ValueError("No non-empty KV cache tensor storage was registered")
+        self._buffers = buffers
+        self._devices = devices
+
+    def synchronize(self) -> None:
+        torch = importlib.import_module("torch")
+        for device in self._devices:
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            elif device.type == "npu":
+                npu = getattr(torch, "npu", None)
+                if npu is None:
+                    raise RuntimeError("Torch NPU support is unavailable")
+                npu.synchronize(device)
+
+    def _view(self, ptr: int, size: int) -> Any:
+        for base, end, tensor in self._buffers:
+            if base <= ptr and ptr + size <= end:
+                offset = ptr - base
+                return tensor[offset : offset + size]
+        raise ValueError(
+            f"Pointer range [{ptr}, {ptr + size}) is outside registered KV caches"
+        )
+
+    def read(self, ptr: int, size: int) -> bytes:
+        return self._view(ptr, size).cpu().numpy().tobytes()
+
+    def write(self, ptr: int, payload: bytes) -> None:
+        torch = importlib.import_module("torch")
+        target = self._view(ptr, len(payload))
+        source = torch.frombuffer(bytearray(payload), dtype=torch.uint8)
+        target.copy_(source.to(target.device))
+
+
+class SimpleFileUCMProxy:
+    """Minimal standalone byte-range Proxy for synchronous v2 bulk I/O.
+
+    A record is stored as one raw file named by its 16-byte key.  Dump calls
+    must provide every byte in each record exactly once.  Publication uses an
+    atomic rename, so lookup never observes a partially written record.
+    """
+
+    _SUFFIX = ".ucm"
+
+    def __init__(
+        self,
+        root: str | os.PathLike[str],
+        byte_access: UCMByteAccess | None = None,
+    ) -> None:
+        self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.byte_access = byte_access or TorchTensorByteAccess()
+
+    def register_tensors(self, kv_caches: Mapping[str, Any]) -> None:
+        self.byte_access.register_tensors(kv_caches)
+
+    def _path(self, key: bytes) -> Path:
+        return self.root / f"{bytes(key).hex()}{self._SUFFIX}"
+
+    def lookup(self, block_ids: Sequence[bytes]) -> tuple[bool, ...]:
+        return tuple(self._path(key).is_file() for key in block_ids)
+
+    @staticmethod
+    def _records(
+        block_ids: Sequence[bytes],
+        offsets: Sequence[int],
+        ptrs: Sequence[int],
+        sizes: Sequence[int],
+    ) -> dict[bytes, list[tuple[int, int, int]]]:
+        records: dict[bytes, list[tuple[int, int, int]]] = {}
+        for key, offset, ptr, size in zip(
+            block_ids, offsets, ptrs, sizes, strict=True
+        ):
+            records.setdefault(bytes(key), []).append(
+                (int(offset), int(ptr), int(size))
+            )
+        return records
+
+    @staticmethod
+    def _record_size(key: bytes, segments: list[tuple[int, int, int]]) -> int:
+        cursor = 0
+        for offset, _ptr, size in sorted(segments):
+            if offset != cursor:
+                kind = "overlap" if offset < cursor else "gap"
+                raise ValueError(
+                    f"Record {key.hex()} has a {kind} at byte {cursor}: "
+                    f"next offset={offset}"
+                )
+            cursor += size
+        if cursor <= 0:
+            raise ValueError(f"Record {key.hex()} is empty")
+        return cursor
+
+    def dump(self, block_ids, offsets, ptrs, sizes) -> None:
+        records = self._records(block_ids, offsets, ptrs, sizes)
+        self.byte_access.synchronize()
+        for key, segments in records.items():
+            record_size = self._record_size(key, segments)
+            record = bytearray(record_size)
+            for offset, ptr, size in segments:
+                payload = self.byte_access.read(ptr, size)
+                if len(payload) != size:
+                    raise RuntimeError(
+                        f"Byte access returned {len(payload)} bytes, expected {size}"
+                    )
+                record[offset : offset + size] = payload
+            target = self._path(key)
+            temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
+            try:
+                temporary.write_bytes(record)
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
+
+    def load(self, block_ids, offsets, ptrs, sizes) -> None:
+        records = self._records(block_ids, offsets, ptrs, sizes)
+        for key, segments in records.items():
+            path = self._path(key)
+            try:
+                record = path.read_bytes()
+            except FileNotFoundError as exc:
+                raise KeyError(f"UCM record not found: {key.hex()}") from exc
+            for offset, ptr, size in segments:
+                end = offset + size
+                if end > len(record):
+                    raise ValueError(
+                        f"Load range [{offset}, {end}) exceeds record "
+                        f"{key.hex()} size {len(record)}"
+                    )
+                self.byte_access.write(ptr, record[offset:end])
+        self.byte_access.synchronize()
+
+    def wait(self, task: Any) -> None:
+        if task is not None:
+            raise ValueError(f"SimpleFileUCMProxy is synchronous, got task {task!r}")
 
 
 @dataclass(frozen=True)
@@ -61,7 +253,9 @@ class UCMProxyAdapter:
         keys = tuple(bytes(key) for key in block_ids)
         invalid = [index for index, key in enumerate(keys) if len(key) != 16]
         if invalid:
-            raise ValueError(f"UCM block IDs must be 16 bytes; invalid indexes={invalid}")
+            raise ValueError(
+                f"UCM block IDs must be 16 bytes; invalid indexes={invalid}"
+            )
         return keys
 
     def lookup(self, block_ids: Sequence[bytes]) -> tuple[bool, ...]:
@@ -75,6 +269,11 @@ class UCMProxyAdapter:
                 f"Proxy lookup returned {len(result)} results for {len(keys)} keys"
             )
         return result
+
+    def register_tensors(self, kv_caches: Mapping[str, Any]) -> None:
+        register = getattr(self._proxy, "register_tensors", None)
+        if callable(register):
+            register(kv_caches)
 
     def _wait(self, operation: str, task: Any) -> None:
         if task is None:
