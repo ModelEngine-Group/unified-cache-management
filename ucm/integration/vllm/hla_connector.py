@@ -767,7 +767,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             return False
 
         if (
-            current_platform.device_type != "npu"
+            current_platform.device_type not in ("npu", "cpu")
             and not current_platform.is_cuda_alike()
         ):
             return False
