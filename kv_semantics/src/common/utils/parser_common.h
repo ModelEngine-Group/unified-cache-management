@@ -41,8 +41,8 @@ std::string NormalizeAttrValue(std::string value);
 std::string ToLower(std::string value);
 bool GetAttr(const std::unordered_map<std::string, std::string>& attrs, const std::string& key,
              std::string& value);
-bool GetUint64Attr(const std::unordered_map<std::string, std::string>& attrs, const std::string& key,
-                   std::uint64_t& value);
+bool GetUint64Attr(const std::unordered_map<std::string, std::string>& attrs,
+                   const std::string& key, std::uint64_t& value);
 bool GetBoolAttr(const std::unordered_map<std::string, std::string>& attrs, const std::string& key,
                  bool& value);
 

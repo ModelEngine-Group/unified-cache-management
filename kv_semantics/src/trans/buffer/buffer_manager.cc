@@ -141,8 +141,7 @@ Status BufferManager::Init(std::string name, MemoryType type, std::size_t slot_c
     if (!allocStatus.ok()) { return allocStatus; }
 
     if (memory_type_ == MemoryType::DEVICE) {
-        if (const auto memStatus = runtime::Memset(region_.localAddr, total, 0);
-            !memStatus.ok()) {
+        if (const auto memStatus = runtime::Memset(region_.localAddr, total, 0); !memStatus.ok()) {
             region_.Reset();
             return Status::Error(StatusCode::INTERNAL_ERROR, name_ + ": failed to zero memory");
         }

@@ -18,7 +18,7 @@ Status CopyHostToDevice(const std::vector<std::uint8_t>& hostBuffer, std::uintpt
                         const std::string& context);
 kv::MemoryRegion MakeHostRegion(std::vector<std::uint8_t>& buffer);
 kv::MemoryRegion MakeDeviceRegion(std::uint64_t addr, std::size_t size,
-                                       std::int32_t logicalDeviceId);
+                                  std::int32_t logicalDeviceId);
 kv::KVBuffer MakeKvBuffer(const kv::CacheKey& key, const kv::MemoryRegion& region);
 
 class BufferAllocator {

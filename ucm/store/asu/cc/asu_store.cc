@@ -221,8 +221,7 @@ kv::KvClientConfig BuildKvClientConfig(const Config& config)
     asuConfig.maxInflightTasks = static_cast<std::uint32_t>(config.clientMaxInflightTasks);
     asuConfig.defaultWaitTimeoutMs = config.waitTimeoutMs;
     asuConfig.timeoutMs = config.waitTimeoutMs;
-    asuConfig.sharedProviderMode =
-        static_cast<kv::SharedProviderMode>(config.sharedProviderMode);
+    asuConfig.sharedProviderMode = static_cast<kv::SharedProviderMode>(config.sharedProviderMode);
     asuConfig.attrs = config.clientAttrs;
     asuConfig.transportConfigs.reserve(config.asuIds.size());
     for (std::size_t i = 0; i < config.asuIds.size(); ++i) {
@@ -384,8 +383,7 @@ public:
     Status Wait(Detail::TaskHandle taskId) override
     {
         kv::TaskResult result;
-        auto status =
-            client_->Wait(static_cast<kv::TaskId>(taskId), config_.waitTimeoutMs, result);
+        auto status = client_->Wait(static_cast<kv::TaskId>(taskId), config_.waitTimeoutMs, result);
         if (!status.ok()) {
             LogAsuStatus("wait task", status);
             return ConvertStatus(status);
@@ -395,8 +393,7 @@ public:
     }
 
 private:
-    using SubmitFunc = AsuStatus (kv::KvClient::*)(const std::vector<kv::KVBuffer>&,
-                                                         kv::TaskId&);
+    using SubmitFunc = AsuStatus (kv::KvClient::*)(const std::vector<kv::KVBuffer>&, kv::TaskId&);
 
     Config ParseConfig(const Detail::Dictionary& inConfig)
     {
@@ -544,13 +541,12 @@ private:
         if (config.transProviderType == kv::TransProviderType::UNSUPPORTED) {
             return Status::Unsupported();
         }
-        if (config.configPath.empty() &&
-            config.transProviderType == kv::TransProviderType::AIV && config.deviceId < 0) {
+        if (config.configPath.empty() && config.transProviderType == kv::TransProviderType::AIV &&
+            config.deviceId < 0) {
             return Status::InvalidParam(
                 "device_id is required when asu_trans_provider_backend is aiv");
         }
-        if (config.transProviderType == kv::TransProviderType::FAKE &&
-            !config.configPath.empty()) {
+        if (config.transProviderType == kv::TransProviderType::FAKE && !config.configPath.empty()) {
             return Status::InvalidParam(
                 "asu_trans_provider_backend=fake does not support asu_config_path");
         }
@@ -725,8 +721,7 @@ private:
         return result;
     }
 
-    std::vector<kv::CacheKey> BuildBlockKeys(const Detail::BlockId* blocks,
-                                                  std::size_t num) const
+    std::vector<kv::CacheKey> BuildBlockKeys(const Detail::BlockId* blocks, std::size_t num) const
     {
         std::vector<kv::CacheKey> keys;
         keys.reserve(num);

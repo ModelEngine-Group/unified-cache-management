@@ -22,10 +22,10 @@
  * SOFTWARE.
  * */
 #include "utils/trans_task_utils.h"
-#include "task/trans_task_manager.h"
 #include <cstddef>
 #include <cstdint>
 #include <gtest/gtest.h>
+#include "task/trans_task_manager.h"
 
 namespace kv::test {
 namespace {

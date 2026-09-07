@@ -40,8 +40,8 @@
 #include <thread>
 #include <utility>
 #include <vector>
-#include "proto/kv_protocol.h"
 #include "logger.h"
+#include "proto/kv_protocol.h"
 
 namespace kv {
 namespace {

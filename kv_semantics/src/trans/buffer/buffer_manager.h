@@ -27,9 +27,9 @@
 #include <cstdint>
 #include <memory>
 #include <string>
-#include "trans_provider.h"
-#include "kv_types.h"
 #include "index_pool.h"
+#include "kv_types.h"
+#include "trans_provider.h"
 
 namespace kv {
 

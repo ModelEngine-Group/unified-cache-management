@@ -30,9 +30,9 @@
 #define private public
 #include "kv_transport_impl.h"
 #undef private
-#include "trans_provider.h"
 #include "buffer/buffer_manager.h"
 #include "conn/connection_internal.h"
+#include "trans_provider.h"
 
 namespace kv::test {
 namespace {

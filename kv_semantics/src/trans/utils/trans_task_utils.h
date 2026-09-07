@@ -26,16 +26,15 @@
 #include <cstdint>
 #include <vector>
 #include "kv_types.h"
-#include "task_context.h"
 #include "proto/kv_protocol.h"
+#include "task_context.h"
 
 namespace kv {
 
 Status KvResponseStatusToSubBatchStatus(std::uint16_t rawStatus);
 
-void FillEntryStatusFromCqeResult(const KvResponse& response, AsuOpType opType,
-                                  bool useSeekControl, Status& status,
-                                  std::vector<Status>& entryStatus);
+void FillEntryStatusFromCqeResult(const KvResponse& response, AsuOpType opType, bool useSeekControl,
+                                  Status& status, std::vector<Status>& entryStatus);
 
 QueryResult BuildQueryResultFromEntryStatus(const std::vector<Status>& entryStatus);
 

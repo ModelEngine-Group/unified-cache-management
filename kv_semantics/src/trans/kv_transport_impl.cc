@@ -29,10 +29,10 @@
 #include <string>
 #include <thread>
 #include <utility>
-#include "kv_transport.h"
-#include "trans_provider.h"
 #include "conn/connection_manager.h"
+#include "kv_transport.h"
 #include "logger.h"
+#include "trans_provider.h"
 #include "utils/trans_config_utils.h"
 
 namespace kv {

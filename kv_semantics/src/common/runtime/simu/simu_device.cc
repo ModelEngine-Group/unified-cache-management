@@ -21,11 +21,11 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "device.h"
 #include <fmt/format.h>
+#include "device.h"
+#include "kv_types.h"
 #include "simu_buffer.h"
 #include "simu_trans.h"
-#include "kv_types.h"
 
 namespace kv::runtime {
 
@@ -35,7 +35,7 @@ Status Device::Setup(int32_t deviceId)
 {
     if (deviceId < 0) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
-                                  fmt::format("invalid device id({})", deviceId));
+                             fmt::format("invalid device id({})", deviceId));
     }
     return Status::OK();
 }
@@ -44,7 +44,7 @@ Status Device::Reset(int32_t deviceId)
 {
     if (deviceId < 0) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
-                                  fmt::format("invalid device id({})", deviceId));
+                             fmt::format("invalid device id({})", deviceId));
     }
     return Status::OK();
 }

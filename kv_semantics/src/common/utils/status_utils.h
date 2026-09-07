@@ -28,9 +28,9 @@
 #include "kv_types.h"
 #include "logger.h"
 
-#define ASU_LOG_ERROR_STATUS(code, message)                                   \
-    ([&]() {                                                                  \
-        std::string asuStatusMessage = (message);                             \
-        KV_ERROR("{}", asuStatusMessage);                                     \
+#define ASU_LOG_ERROR_STATUS(code, message)                        \
+    ([&]() {                                                       \
+        std::string asuStatusMessage = (message);                  \
+        KV_ERROR("{}", asuStatusMessage);                          \
         return Status::Error((code), std::move(asuStatusMessage)); \
     }())

@@ -78,8 +78,7 @@ std::vector<std::uint8_t> GenerateValueBytes(const kv::CacheKey& key, std::uint6
                                              std::uint64_t valueSize)
 {
     std::vector<std::uint8_t> value(static_cast<std::size_t>(valueSize));
-    std::uint64_t state =
-        HashString(HashUint64(kFnvOffsetBasis64, seed), kv::CacheKeyView(key));
+    std::uint64_t state = HashString(HashUint64(kFnvOffsetBasis64, seed), kv::CacheKeyView(key));
     for (std::size_t offset = 0; offset < value.size();) {
         const std::uint64_t random = SplitMix64Next(state);
         for (std::uint32_t byteIndex = 0; byteIndex < 8 && offset < value.size();

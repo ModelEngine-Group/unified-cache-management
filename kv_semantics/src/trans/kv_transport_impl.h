@@ -30,12 +30,12 @@
 #include <string>
 #include <thread>
 #include <vector>
-#include "kv_transport.h"
-#include "trans_provider.h"
 #include "conn/connection_manager.h"
+#include "kv_transport.h"
 #include "spsc_ring_queue.h"
 #include "task/trans_task_executor.h"
 #include "task/trans_task_manager.h"
+#include "trans_provider.h"
 
 namespace kv {
 

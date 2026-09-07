@@ -99,8 +99,8 @@ void SetValueComparison(ConsistencySummary& summary, const kv::CacheKey& key,
     summary.actual = "digest=" + actualDigest;
 }
 
-void SetExistComparison(ConsistencySummary& summary, const kv::CacheKey& key,
-                        bool expectedExists, bool actualExists)
+void SetExistComparison(ConsistencySummary& summary, const kv::CacheKey& key, bool expectedExists,
+                        bool actualExists)
 {
     summary.key = CacheKeyToHex(key);
     summary.expected = expectedExists ? "exists=true" : "exists=false";

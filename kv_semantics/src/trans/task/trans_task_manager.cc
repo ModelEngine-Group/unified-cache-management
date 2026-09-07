@@ -5,7 +5,7 @@
 namespace kv {
 
 void FillEntryStatusFromCqeResult(const KvResponse& response,
-                                 TransportSubBatchContext& subBatchContext)
+                                  TransportSubBatchContext& subBatchContext)
 {
     FillEntryStatusFromCqeResult(response, subBatchContext.opType, subBatchContext.useSeekControl,
                                  subBatchContext.status, subBatchContext.entryStatus);

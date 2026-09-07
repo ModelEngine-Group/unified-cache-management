@@ -79,6 +79,6 @@ struct RouterConfig {
 // Returns Status to report invalid attribute values; this cross-module
 // dependency on ASU's Status type is a transitional layering wrinkle.
 Status BuildRouterConfigFromAttrs(const std::unordered_map<std::string, std::string>& attrs,
-                                             RouterConfig& config);
+                                  RouterConfig& config);
 
 }  // namespace kv

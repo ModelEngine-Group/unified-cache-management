@@ -18,8 +18,8 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#include "utils/config_utils.h"
 #include "router/router.h"
+#include "utils/config_utils.h"
 
 namespace kv::test {
 
@@ -531,8 +531,7 @@ Status QueryAndWait(KvClient& client, const std::vector<CacheKey>& keys, QueryRe
 CacheKey FindKeyForAsu(const std::vector<NodeId>& asuIds, NodeId targetAsuId)
 {
     std::vector<kv::NodeId> nodeIds(asuIds.begin(), asuIds.end());
-    auto router =
-        kv::CreateRouter(nodeIds, kv::HashFunction{}, kv::RouterConfig{});
+    auto router = kv::CreateRouter(nodeIds, kv::HashFunction{}, kv::RouterConfig{});
     for (std::uint32_t index = 1; index < 1000000; ++index) {
         std::uint64_t combined = (static_cast<std::uint64_t>(targetAsuId) << 32) | index;
         CacheKey cacheKey{};

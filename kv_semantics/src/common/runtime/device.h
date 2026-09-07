@@ -27,8 +27,8 @@
 #include <cstdint>
 #include <memory>
 #include "buffer.h"
-#include "trans.h"
 #include "kv_types.h"
+#include "trans.h"
 
 namespace kv::runtime {
 

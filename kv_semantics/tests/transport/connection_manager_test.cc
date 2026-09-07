@@ -29,8 +29,8 @@
 #include <set>
 #include <thread>
 #include <vector>
-#include "trans_provider.h"
 #include "conn/connection_internal.h"
+#include "trans_provider.h"
 
 namespace kv::test {
 namespace {

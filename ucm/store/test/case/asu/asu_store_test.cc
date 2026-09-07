@@ -88,8 +88,7 @@ public:
         return kv::Status::OK();
     }
 
-    kv::Status QueryAsync(const std::vector<kv::CacheKey>& keys,
-                               kv::TaskId& taskId) override
+    kv::Status QueryAsync(const std::vector<kv::CacheKey>& keys, kv::TaskId& taskId) override
     {
         if (!initialized_) { return NotInitialized(); }
 
@@ -111,35 +110,31 @@ public:
         return kv::Status::OK();
     }
 
-    kv::Status LoadAsync(const std::vector<kv::KVBuffer>& entries,
-                              kv::TaskId& taskId) override
+    kv::Status LoadAsync(const std::vector<kv::KVBuffer>& entries, kv::TaskId& taskId) override
     {
         state_->lastLoadEntries = entries;
         return Submit(entries, taskId);
     }
 
-    kv::Status StoreAsync(const std::vector<kv::KVBuffer>& entries,
-                               kv::TaskId& taskId) override
+    kv::Status StoreAsync(const std::vector<kv::KVBuffer>& entries, kv::TaskId& taskId) override
     {
         state_->lastStoreEntries = entries;
         for (const auto& entry : entries) { storedKeys_.emplace(entry.key); }
         return Submit(entries, taskId);
     }
 
-    kv::Status BatchLoadAsync(const std::vector<kv::KVBuffer>& entries,
-                                   kv::TaskId& taskId) override
+    kv::Status BatchLoadAsync(const std::vector<kv::KVBuffer>& entries, kv::TaskId& taskId) override
     {
         return LoadAsync(entries, taskId);
     }
 
     kv::Status BatchStoreAsync(const std::vector<kv::KVBuffer>& entries,
-                                    kv::TaskId& taskId) override
+                               kv::TaskId& taskId) override
     {
         return StoreAsync(entries, taskId);
     }
 
-    kv::Status DeleteAsync(const std::vector<kv::CacheKey>& keys,
-                                kv::TaskId& taskId) override
+    kv::Status DeleteAsync(const std::vector<kv::CacheKey>& keys, kv::TaskId& taskId) override
     {
         for (const auto& key : keys) { storedKeys_.erase(key); }
         return Submit(keys.size(), taskId);
@@ -153,16 +148,14 @@ public:
                iter->second.status.code != kv::StatusCode::IN_PROGRESS;
     }
 
-    kv::Status Wait(kv::TaskId taskId, std::uint64_t timeoutMs,
-                         kv::TaskResult& result) override
+    kv::Status Wait(kv::TaskId taskId, std::uint64_t timeoutMs, kv::TaskResult& result) override
     {
         (void)timeoutMs;
         if (!initialized_) { return NotInitialized(); }
 
         auto iter = taskResults_.find(taskId);
         if (iter == taskResults_.end()) {
-            return kv::Status::Error(kv::StatusCode::TASK_NOT_FOUND,
-                                          "fake task not found");
+            return kv::Status::Error(kv::StatusCode::TASK_NOT_FOUND, "fake task not found");
         }
 
         result = iter->second;
@@ -170,9 +163,8 @@ public:
         return result.status;
     }
 
-    kv::Status RegisterRegions(
-        const std::vector<kv::MemoryRegion>& regions,
-        std::vector<kv::RegisteredMemory>& registeredRegions) override
+    kv::Status RegisterRegions(const std::vector<kv::MemoryRegion>& regions,
+                               std::vector<kv::RegisteredMemory>& registeredRegions) override
     {
         if (!initialized_) { return NotInitialized(); }
         ++state_->registrationCalls;
@@ -219,7 +211,7 @@ private:
     static kv::Status NotInitialized()
     {
         return kv::Status::Error(kv::StatusCode::NOT_INITIALIZED,
-                                      "fake ASU client is not initialized");
+                                 "fake ASU client is not initialized");
     }
 
     std::shared_ptr<FakeKvClientState> state_;
@@ -1156,8 +1148,7 @@ TEST(UCAsuStoreTest, AlignsTensorSizeAndDerivesShardBlockSize)
     ASSERT_EQ(state->initConfigs.back().tensorSizes.size(), std::size_t{1});
     EXPECT_EQ(state->initConfigs.back().tensorSizes[0],
               static_cast<std::size_t>(kv::kAlignmentBytes));
-    EXPECT_EQ(state->initConfigs.back().shardSize,
-              static_cast<std::size_t>(kv::kAlignmentBytes));
+    EXPECT_EQ(state->initConfigs.back().shardSize, static_cast<std::size_t>(kv::kAlignmentBytes));
     EXPECT_EQ(state->initConfigs.back().blockSize,
               static_cast<std::size_t>(kv::kAlignmentBytes) * 3);
 

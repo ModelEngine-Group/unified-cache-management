@@ -34,16 +34,12 @@ public:
     virtual ~Trans() = default;
 
     virtual Status DeviceToHost(void* device, void* host, size_t size) = 0;
-    virtual Status DeviceToHost(void* device[], void* host[], size_t size,
-                                     size_t number) = 0;
-    virtual Status DeviceToHost(void* device[], void* host, size_t size,
-                                     size_t number) = 0;
+    virtual Status DeviceToHost(void* device[], void* host[], size_t size, size_t number) = 0;
+    virtual Status DeviceToHost(void* device[], void* host, size_t size, size_t number) = 0;
 
     virtual Status HostToDevice(void* host, void* device, size_t size) = 0;
-    virtual Status HostToDevice(void* host[], void* device[], size_t size,
-                                      size_t number) = 0;
-    virtual Status HostToDevice(void* host, void* device[], size_t size,
-                                      size_t number) = 0;
+    virtual Status HostToDevice(void* host[], void* device[], size_t size, size_t number) = 0;
+    virtual Status HostToDevice(void* host, void* device[], size_t size, size_t number) = 0;
 };
 
 }  // namespace kv::runtime

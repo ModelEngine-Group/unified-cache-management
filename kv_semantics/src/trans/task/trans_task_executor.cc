@@ -27,9 +27,9 @@
 #include <cstdint>
 #include <string>
 #include <utility>
-#include "utils/trans_task_utils.h"
 #include "conn/connection_internal.h"
 #include "logger.h"
+#include "utils/trans_task_utils.h"
 
 namespace kv {
 

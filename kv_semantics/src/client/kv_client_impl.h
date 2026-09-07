@@ -32,8 +32,8 @@
 #include <vector>
 #include "kv_client.h"
 #include "kv_types.h"
-#include "task/task_manager.h"
 #include "spsc_ring_queue.h"
+#include "task/task_manager.h"
 #include "view/view_server.h"
 
 namespace kv {
@@ -48,7 +48,7 @@ using TransProviderFactory =
 
 std::unique_ptr<KvClient> CreateKvClient(TransportFactory transportFactory);
 std::unique_ptr<KvClient> CreateKvClient(TransportFactory transportFactory,
-                                           TransProviderFactory transProviderFactory);
+                                         TransProviderFactory transProviderFactory);
 
 // ViewSnapshot is the immutable routing state used by foreground IO and submitted tasks.
 struct ViewSnapshot {
@@ -65,8 +65,8 @@ class KvClientImpl final : public KvClient {
 public:
     // Builds a client with the provided transport factory.
     explicit KvClientImpl(TransportFactory transportFactory,
-                           ViewServerFactory viewServerFactory = nullptr,
-                           TransProviderFactory transProviderFactory = nullptr);
+                          ViewServerFactory viewServerFactory = nullptr,
+                          TransProviderFactory transProviderFactory = nullptr);
     // Shuts down the client during destruction.
     ~KvClientImpl() override;
 

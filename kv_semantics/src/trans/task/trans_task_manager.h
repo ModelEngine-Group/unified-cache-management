@@ -27,9 +27,9 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
-#include "kv_transport.h"
 #include "buffer/buffer_manager.h"
 #include "conn/connection_manager.h"
+#include "kv_transport.h"
 #include "task_context.h"
 #include "task_manager_base.h"
 

@@ -28,10 +28,10 @@
 #include <functional>
 #include <memory>
 #include <vector>
-#include "kv_transport.h"
-#include "trans_provider.h"
-#include "kv_types.h"
 #include "connection_manager.h"
+#include "kv_transport.h"
+#include "kv_types.h"
+#include "trans_provider.h"
 
 namespace kv {
 

@@ -4,8 +4,7 @@
 
 namespace kv::bench {
 
-Status StringToCacheKey(const std::string& value, const std::string& source,
-                        kv::CacheKey& key);
+Status StringToCacheKey(const std::string& value, const std::string& source, kv::CacheKey& key);
 Status ValidateGeneratedData(const GeneratedData& data, const std::string& operation);
 
 class KeyValueGenerator {

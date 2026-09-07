@@ -96,9 +96,7 @@ kv::RouterType ParseRouterType(const std::string& value, kv::RouterType fallback
     if (type == "MAGLEV" || type == "MAGLEV_FULL_SPREAD") {
         return kv::RouterType::MAGLEV_FULL_SPREAD;
     }
-    if (type == "CONTIGUOUS_BLOCK_AFFINITY") {
-        return kv::RouterType::CONTIGUOUS_BLOCK_AFFINITY;
-    }
+    if (type == "CONTIGUOUS_BLOCK_AFFINITY") { return kv::RouterType::CONTIGUOUS_BLOCK_AFFINITY; }
     if (type == "BATCH_TOPK_AFFINITY") { return kv::RouterType::BATCH_TOPK_AFFINITY; }
     return fallback;
 }

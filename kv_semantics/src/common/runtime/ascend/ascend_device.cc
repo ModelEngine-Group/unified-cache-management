@@ -21,13 +21,13 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include "device.h"
 #include <acl/acl.h>
 #include <cstdint>
-#include <string>
 #include <fmt/format.h>
+#include <string>
 #include "ascend_buffer.h"
 #include "ascend_trans.h"
+#include "device.h"
 #include "kv_types.h"
 
 namespace kv::runtime {
@@ -44,7 +44,7 @@ Status Device::Setup(int32_t deviceId)
 {
     if (deviceId < 0) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
-                                  fmt::format("invalid device id({})", deviceId));
+                             fmt::format("invalid device id({})", deviceId));
     }
     auto ret = aclrtSetDevice(deviceId);
     if (ret == ACL_SUCCESS) { return Status::OK(); }
@@ -55,20 +55,18 @@ Status Device::Reset(int32_t deviceId)
 {
     if (deviceId < 0) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
-                                  fmt::format("invalid device id({})", deviceId));
+                             fmt::format("invalid device id({})", deviceId));
     }
     const auto ret = aclrtResetDevice(deviceId);
     return ret == ACL_SUCCESS ? Status::OK()
-                              : Status::Error(StatusCode::INTERNAL_ERROR,
-                                                       std::to_string(ret));
+                              : Status::Error(StatusCode::INTERNAL_ERROR, std::to_string(ret));
 }
 
 Status Device::Finalize()
 {
     const auto ret = aclFinalize();
     return ret == ACL_SUCCESS ? Status::OK()
-                              : Status::Error(StatusCode::INTERNAL_ERROR,
-                                                       std::to_string(ret));
+                              : Status::Error(StatusCode::INTERNAL_ERROR, std::to_string(ret));
 }
 
 std::unique_ptr<Buffer> Device::MakeBuffer()

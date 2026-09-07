@@ -35,9 +35,9 @@
 #define private public
 #include "kv_transport_impl.h"
 #undef private
-#include "trans_provider.h"
 #include "buffer/buffer_manager.h"
 #include "proto/kv_protocol.h"
+#include "trans_provider.h"
 #include "utils/trans_config_utils.h"
 
 namespace kv::test {

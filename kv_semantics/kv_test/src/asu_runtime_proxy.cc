@@ -127,7 +127,7 @@ Status AsuRuntimeProxy::EnsureLoaded()
 }
 
 kv::Status AsuRuntimeProxy::LoadKvClientConfig(const std::string& configPath,
-                                                     kv::KvClientConfig& config)
+                                               kv::KvClientConfig& config)
 {
     auto status = EnsureLoaded();
     if (!status.Ok()) {

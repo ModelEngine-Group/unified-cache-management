@@ -13,10 +13,9 @@ public:
     static AsuRuntimeProxy& Instance();
 
     Status Load(const AsuRuntimeLibraryConfig& config);
-    kv::Status LoadKvClientConfig(const std::string& configPath,
-                                        kv::KvClientConfig& config);
+    kv::Status LoadKvClientConfig(const std::string& configPath, kv::KvClientConfig& config);
     std::unique_ptr<kv::KvClient> CreateKvClient(const kv::TransportFactory* transportFactory,
-                                                    Status& status);
+                                                 Status& status);
     std::unique_ptr<kv::AsuTransport> CreateAsuTransport(Status& status);
 
 private:

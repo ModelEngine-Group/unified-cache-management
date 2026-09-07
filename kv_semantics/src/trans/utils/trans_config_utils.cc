@@ -26,8 +26,8 @@
 #include <limits>
 #include <utility>
 #include "kv_transport.h"
-#include "parser_common.h"
 #include "logger.h"
+#include "parser_common.h"
 
 namespace kv {
 

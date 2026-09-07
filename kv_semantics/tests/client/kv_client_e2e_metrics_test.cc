@@ -265,7 +265,8 @@ struct ClusterState {
     }
 
 private:
-    static std::size_t CountCalls(const std::unordered_map<NodeId, std::size_t>& calls, NodeId nodeId)
+    static std::size_t CountCalls(const std::unordered_map<NodeId, std::size_t>& calls,
+                                  NodeId nodeId)
     {
         auto iter = calls.find(nodeId);
         return iter == calls.end() ? 0 : iter->second;
@@ -731,8 +732,7 @@ bool QueryAndMeasure(KvClient& client, const std::vector<CacheKey>& keys,
     return correct;
 }
 
-bool DeleteAndMeasure(KvClient& client, const std::vector<CacheKey>& keys,
-                      MetricsRecorder& metrics)
+bool DeleteAndMeasure(KvClient& client, const std::vector<CacheKey>& keys, MetricsRecorder& metrics)
 {
     TaskId taskId{kInvalidTaskId};
     const auto start = std::chrono::steady_clock::now();

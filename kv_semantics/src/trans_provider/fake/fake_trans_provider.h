@@ -31,9 +31,9 @@
 #include <unordered_map>
 #include <vector>
 #include "kv_transport.h"
-#include "trans_provider.h"
 #include "runtime/device.h"
 #include "runtime/trans.h"
+#include "trans_provider.h"
 
 namespace kv {
 
@@ -98,7 +98,8 @@ private:
     bool ExistsKey(NodeId nodeId, const CacheKey& key);
     Status CompleteStore(NodeId nodeId, const std::uint32_t* request, std::uint32_t* flagBuffer);
     Status CompleteRetrieve(NodeId nodeId, const std::uint32_t* request, std::uint32_t* flagBuffer);
-    Status CompleteBatchStore(NodeId nodeId, const std::uint32_t* request, std::uint32_t* flagBuffer);
+    Status CompleteBatchStore(NodeId nodeId, const std::uint32_t* request,
+                              std::uint32_t* flagBuffer);
     Status CompleteBatchRetrieve(NodeId nodeId, const std::uint32_t* request,
                                  std::uint32_t* flagBuffer);
     Status CompleteDelete(NodeId nodeId, const std::uint32_t* request, std::uint32_t* flagBuffer);

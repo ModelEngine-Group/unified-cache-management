@@ -26,8 +26,8 @@
 #include <cstdint>
 #include <limits>
 #include <string>
-#include "logger.h"
 #include "kv_types.h"
+#include "logger.h"
 
 namespace kv::runtime {
 

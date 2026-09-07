@@ -27,17 +27,17 @@
 #include <thread>
 #include <utility>
 #include "kv_types.h"
-#include "utils/config_utils.h"
-#include "router/config.h"
 #include "logger.h"
+#include "router/config.h"
 #include "router/router.h"
+#include "utils/config_utils.h"
 
 namespace kv {
 
 constexpr std::uint32_t kMaxShutdownDrainAttempts = 64;
 
 KvClientImpl::KvClientImpl(TransportFactory transportFactory, ViewServerFactory viewServerFactory,
-                             TransProviderFactory transProviderFactory)
+                           TransProviderFactory transProviderFactory)
     : transportFactory_(std::move(transportFactory)),
       transProviderFactory_(std::move(transProviderFactory)),
       viewServerFactory_(std::move(viewServerFactory))
@@ -222,7 +222,7 @@ Status KvClientImpl::Wait(TaskId taskId, std::uint64_t timeoutMs, TaskResult& re
 }
 
 Status KvClientImpl::RegisterRegions(const std::vector<MemoryRegion>& regions,
-                                      std::vector<RegisteredMemory>& registeredRegions)
+                                     std::vector<RegisteredMemory>& registeredRegions)
 {
     bool needRefresh = false;
     auto status = RegisterRegionsOnce(regions, registeredRegions, needRefresh);
@@ -231,8 +231,8 @@ Status KvClientImpl::RegisterRegions(const std::vector<MemoryRegion>& regions,
 }
 
 Status KvClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& regions,
-                                          std::vector<RegisteredMemory>& registeredRegions,
-                                          bool& needRefresh)
+                                         std::vector<RegisteredMemory>& registeredRegions,
+                                         bool& needRefresh)
 {
     auto snapshot = GetSnapshot();
     if (!snapshot) { return NotInitialized(); }
@@ -329,7 +329,7 @@ Status KvClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& region
 }
 
 Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& entries,
-                                  TaskId& taskId)
+                                 TaskId& taskId)
 {
     auto snapshot = GetSnapshot();
     if (!snapshot || !snapshot->router || snapshot->transports.empty()) {
@@ -385,7 +385,7 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& 
 }
 
 Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& keys,
-                                  TaskId& taskId)
+                                 TaskId& taskId)
 {
     auto snapshot = GetSnapshot();
     if (!snapshot || !snapshot->router || snapshot->transports.empty()) {
@@ -496,8 +496,8 @@ Status KvClientImpl::UnregisterRegions(const std::vector<MRHandle>& handles)
 }
 
 Status KvClientImpl::BuildSnapshot(const GlobalView& view,
-                                    const std::shared_ptr<ViewSnapshot>& oldSnapshot,
-                                    std::shared_ptr<ViewSnapshot>& snapshot)
+                                   const std::shared_ptr<ViewSnapshot>& oldSnapshot,
+                                   std::shared_ptr<ViewSnapshot>& snapshot)
 {
     auto nextSnapshot = std::make_shared<ViewSnapshot>();
     auto asuIds = GetSortedAsuIds(view);
@@ -532,15 +532,14 @@ Status KvClientImpl::BuildSnapshot(const GlobalView& view,
     }
 
     std::vector<kv::NodeId> nodeIds(asuIds.begin(), asuIds.end());
-    nextSnapshot->router =
-        kv::CreateRouter(nodeIds, kv::HashFunction{}, routerConfig);
+    nextSnapshot->router = kv::CreateRouter(nodeIds, kv::HashFunction{}, routerConfig);
     nextSnapshot->asuIds = std::move(asuIds);
     snapshot = std::move(nextSnapshot);
     return Status::OK();
 }
 
 Status KvClientImpl::BuildTransport(NodeId nodeId, const NodeInfo& asuInfo,
-                                     std::shared_ptr<AsuTransport>& transport)
+                                    std::shared_ptr<AsuTransport>& transport)
 {
     TransportConfig config;
     {
@@ -563,8 +562,8 @@ Status KvClientImpl::BuildTransport(NodeId nodeId, const NodeInfo& asuInfo,
     if (createdProvider) {
         auto status = transProviderFactory_(config, transProvider);
         if (!status.ok()) {
-            return WithContext(status,
-                               "create transport provider failed, nodeId=" + std::to_string(nodeId));
+            return WithContext(
+                status, "create transport provider failed, nodeId=" + std::to_string(nodeId));
         }
         if (!transProvider) {
             return Status::Error(
@@ -612,8 +611,8 @@ Status KvClientImpl::BuildTransport(NodeId nodeId, const NodeInfo& asuInfo,
 }
 
 Status KvClientImpl::BindProviderRegions(const std::shared_ptr<TransProvider>& transProvider,
-                                          const std::vector<RegisteredMemory>& registeredRegions,
-                                          std::vector<MRHandle>& localHandles)
+                                         const std::vector<RegisteredMemory>& registeredRegions,
+                                         std::vector<MRHandle>& localHandles)
 {
     localHandles.clear();
     if (registeredRegions.empty()) { return Status::OK(); }
@@ -656,7 +655,7 @@ Status KvClientImpl::BindProviderRegions(const std::shared_ptr<TransProvider>& t
 }
 
 Status KvClientImpl::UnregisterProviderRegions(const std::shared_ptr<TransProvider>& transProvider,
-                                                const std::vector<MRHandle>& handles)
+                                               const std::vector<MRHandle>& handles)
 {
     if (handles.empty()) { return Status::OK(); }
     if (!transProvider) {
@@ -834,14 +833,13 @@ std::unique_ptr<KvClient> CreateKvClient(TransportFactory transportFactory)
 }
 
 std::unique_ptr<KvClient> CreateKvClient(TransportFactory transportFactory,
-                                           TransProviderFactory transProviderFactory)
+                                         TransProviderFactory transProviderFactory)
 {
     return std::make_unique<KvClientImpl>(std::move(transportFactory), nullptr,
-                                           std::move(transProviderFactory));
+                                          std::move(transProviderFactory));
 }
 
-extern "C" std::unique_ptr<KvClient> UcmAsuCreateKvClient(
-    const TransportFactory* transportFactory)
+extern "C" std::unique_ptr<KvClient> UcmAsuCreateKvClient(const TransportFactory* transportFactory)
 {
     if (transportFactory == nullptr) { return CreateKvClient(); }
     return CreateKvClient(*transportFactory);

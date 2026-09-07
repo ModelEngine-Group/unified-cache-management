@@ -33,9 +33,9 @@
 #include <thread>
 #include <vector>
 #include "kv_transport.h"
-#include "trans_provider.h"
 #include "kv_types.h"
 #include "proto/kv_protocol.h"
+#include "trans_provider.h"
 
 namespace kv {
 

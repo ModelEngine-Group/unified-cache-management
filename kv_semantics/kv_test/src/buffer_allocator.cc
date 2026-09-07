@@ -61,8 +61,8 @@ Status BuildDeviceBuffers(BufferSet& buffers, DeviceAllocationPolicy allocationP
     return Status::Success();
 }
 
-kv::MemoryRegion MakeRegion(BufferSet& buffers, std::size_t index,
-                                 PayloadBufferPlacement placement, std::int32_t logicalDeviceId)
+kv::MemoryRegion MakeRegion(BufferSet& buffers, std::size_t index, PayloadBufferPlacement placement,
+                            std::int32_t logicalDeviceId)
 {
     if (placement != PayloadBufferPlacement::HOST) {
         const auto baseAddr =
@@ -134,7 +134,7 @@ Status CopyHostToDevice(const std::vector<std::uint8_t>& hostBuffer, std::uintpt
     }
     const auto status =
         trans->HostToDevice(const_cast<void*>(static_cast<const void*>(hostBuffer.data())),
-                             reinterpret_cast<void*>(deviceAddr), hostBuffer.size());
+                            reinterpret_cast<void*>(deviceAddr), hostBuffer.size());
     if (!status.ok()) {
         const auto contextText = context.empty() ? "" : " " + context;
         return Status::Error(kExitInvalidArgument,
@@ -156,7 +156,7 @@ kv::MemoryRegion MakeHostRegion(std::vector<std::uint8_t>& buffer)
 }
 
 kv::MemoryRegion MakeDeviceRegion(std::uint64_t addr, std::size_t size,
-                                       std::int32_t logicalDeviceId)
+                                  std::int32_t logicalDeviceId)
 {
     kv::MemoryRegion region;
     region.memoryType = kv::MemoryType::DEVICE;
@@ -251,7 +251,7 @@ Status BufferAllocator::CopyDeviceBuffersToHost(BufferSet& buffers) const
         if (hostBuffer.empty()) { continue; }
         const auto status =
             trans->DeviceToHost(reinterpret_cast<void*>(buffers.entries[index].buffer.region.addr),
-                                 hostBuffer.data(), hostBuffer.size());
+                                hostBuffer.data(), hostBuffer.size());
         if (!status.ok()) {
             return Status::Error(
                 kExitInvalidArgument,

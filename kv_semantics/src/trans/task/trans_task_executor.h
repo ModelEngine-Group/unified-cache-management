@@ -28,12 +28,12 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
-#include "trans_provider.h"
 #include "buffer/buffer_manager.h"
 #include "conn/connection_manager.h"
-#include "task/io_scheduler.h"
 #include "proto/kv_protocol.h"
+#include "task/io_scheduler.h"
 #include "task/trans_task_manager.h"
+#include "trans_provider.h"
 
 namespace kv {
 

@@ -107,8 +107,7 @@ Status KvResponseStatusToSubBatchStatus(std::uint16_t rawStatus)
 
     switch (CqeStatusCode(rawStatus)) {
         case StatusCode::CQE_INVALID_COMMAND_OPCODE:
-            return Status::Error(StatusCode::CQE_INVALID_COMMAND_OPCODE,
-                                 "Invalid Command Opcode");
+            return Status::Error(StatusCode::CQE_INVALID_COMMAND_OPCODE, "Invalid Command Opcode");
         case StatusCode::CQE_INVALID_FIELD_IN_COMMAND:
             return Status::Error(StatusCode::CQE_INVALID_FIELD_IN_COMMAND,
                                  "Invalid Field in Command");
@@ -117,8 +116,7 @@ Status KvResponseStatusToSubBatchStatus(std::uint16_t rawStatus)
         case StatusCode::CQE_WRITE_FAULT:
             return Status::Error(StatusCode::CQE_WRITE_FAULT, "Write fault");
         case StatusCode::CQE_UNRECOVERED_READ_ERROR:
-            return Status::Error(StatusCode::CQE_UNRECOVERED_READ_ERROR,
-                                 "Unrecovered Read Error");
+            return Status::Error(StatusCode::CQE_UNRECOVERED_READ_ERROR, "Unrecovered Read Error");
         case StatusCode::CQE_KEY_NOT_EXIST:
             return Status::Error(StatusCode::CQE_KEY_NOT_EXIST, "Key Not Exist");
         case StatusCode::CQE_OUT_OF_CREATE_SIZE:
@@ -138,9 +136,8 @@ Status KvResponseStatusToSubBatchStatus(std::uint16_t rawStatus)
     }
 }
 
-void FillEntryStatusFromCqeResult(const KvResponse& response, AsuOpType opType,
-                                  bool useSeekControl, Status& status,
-                                  std::vector<Status>& entryStatus)
+void FillEntryStatusFromCqeResult(const KvResponse& response, AsuOpType opType, bool useSeekControl,
+                                  Status& status, std::vector<Status>& entryStatus)
 {
     const auto keyExist = Status::Error(StatusCode::ENTRY_KEY_EXIST, "key exist");
     const auto keyNotExist = Status::Error(StatusCode::ENTRY_KEY_NOT_EXIST, "key not exist");
@@ -159,8 +156,7 @@ void FillEntryStatusFromCqeResult(const KvResponse& response, AsuOpType opType,
         return;
     }
 
-    if (status.code != StatusCode::CQE_CHECK_RESULT_BUFFER ||
-        response.result_buffer.empty()) {
+    if (status.code != StatusCode::CQE_CHECK_RESULT_BUFFER || response.result_buffer.empty()) {
         std::fill(entryStatus.begin(), entryStatus.end(), status);
         return;
     }

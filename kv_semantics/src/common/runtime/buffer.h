@@ -40,7 +40,7 @@ public:
 
     virtual bool SupportsHostMappedDeviceBuffer() const { return false; }
     virtual std::shared_ptr<void> MakeHostMappedDeviceBuffer(size_t size,
-                                                            void** pDevice = nullptr) = 0;
+                                                             void** pDevice = nullptr) = 0;
 
     virtual bool SupportsDeviceMappedHostBuffer() const { return false; }
     virtual std::shared_ptr<void> MakeDeviceMappedHostBuffer(size_t size) = 0;
