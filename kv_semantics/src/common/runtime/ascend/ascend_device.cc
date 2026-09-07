@@ -1,0 +1,90 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * */
+#include <acl/acl.h>
+#include <cstdint>
+#include <fmt/format.h>
+#include <string>
+#include "ascend_buffer.h"
+#include "ascend_trans.h"
+#include "device.h"
+#include "kv_types.h"
+
+namespace kv::runtime {
+
+Status Device::Init()
+{
+    const auto ret = aclInit(nullptr);
+    if (ret == ACL_SUCCESS) { return Status::OK(); }
+    if (ret == ACL_ERROR_REPEAT_INITIALIZE) { return Status::OK(); }
+    return Status::Error(StatusCode::INTERNAL_ERROR, std::to_string(ret));
+}
+
+Status Device::Setup(int32_t deviceId)
+{
+    if (deviceId < 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             fmt::format("invalid device id({})", deviceId));
+    }
+    auto ret = aclrtSetDevice(deviceId);
+    if (ret == ACL_SUCCESS) { return Status::OK(); }
+    return Status::Error(StatusCode::INTERNAL_ERROR, std::to_string(ret));
+}
+
+Status Device::Reset(int32_t deviceId)
+{
+    if (deviceId < 0) {
+        return Status::Error(StatusCode::INVALID_ARGUMENT,
+                             fmt::format("invalid device id({})", deviceId));
+    }
+    const auto ret = aclrtResetDevice(deviceId);
+    return ret == ACL_SUCCESS ? Status::OK()
+                              : Status::Error(StatusCode::INTERNAL_ERROR, std::to_string(ret));
+}
+
+Status Device::Finalize()
+{
+    const auto ret = aclFinalize();
+    return ret == ACL_SUCCESS ? Status::OK()
+                              : Status::Error(StatusCode::INTERNAL_ERROR, std::to_string(ret));
+}
+
+std::unique_ptr<Buffer> Device::MakeBuffer()
+{
+    try {
+        return std::make_unique<AscendBuffer>();
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+std::unique_ptr<Trans> Device::MakeTrans()
+{
+    try {
+        return std::make_unique<AscendTrans>();
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+}  // namespace kv::runtime
