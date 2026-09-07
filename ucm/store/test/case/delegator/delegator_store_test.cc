@@ -38,8 +38,6 @@ TEST(UCDelegatorStoreTest, FactoryReturnsStoreV1)
     auto store = CreateStore();
     ASSERT_NE(store, nullptr);
     EXPECT_EQ(store->Readme(), "DelegatorStore");
-    EXPECT_FALSE(store->NeedRegisterKVCaches());
-    EXPECT_TRUE(store->RegisterKVCaches(nullptr, 0).Success());
 
     Detail::BlockId block{};
     EXPECT_FALSE(store->Lookup(&block, 1));

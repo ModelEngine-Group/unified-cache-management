@@ -44,11 +44,6 @@ public:
                 (override));
     MOCK_METHOD((UC::Expected<bool>), Check, (UC::Detail::TaskHandle taskId), (override));
     MOCK_METHOD((UC::Status), Wait, (UC::Detail::TaskHandle taskId), (override));
-    bool NeedRegisterKVCaches() const override { return false; }
-    Status RegisterKVCaches(const UC::KVCacheRegistration*, std::size_t) override
-    {
-        return Status::OK();
-    }
 };
 
 }  // namespace UC::Test::Detail

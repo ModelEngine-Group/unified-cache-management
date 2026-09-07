@@ -202,13 +202,3 @@ class UcmKVStoreBaseV1(ABC):
             ``True`` if the task has finished, ``False`` if still in-flight.
         """
         pass
-
-    @abstractmethod
-    def need_register_kv_caches(self) -> bool:
-        """Return whether this store requires KV-cache registration."""
-        pass
-
-    @abstractmethod
-    def register_kv_caches(self, registrations: np.ndarray) -> None:
-        """Register pre-collected KV-cache memory regions for this store."""
-        pass

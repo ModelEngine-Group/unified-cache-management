@@ -255,9 +255,3 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
             ``True`` if the task has finished, ``False`` if still in-flight.
         """
         return self.store.Check(task.task_id)
-
-    def need_register_kv_caches(self) -> bool:
-        return False
-
-    def register_kv_caches(self, registrations: np.ndarray) -> None:
-        return

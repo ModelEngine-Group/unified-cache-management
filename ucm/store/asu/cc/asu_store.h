@@ -30,6 +30,8 @@ struct Config {
     std::uint64_t completionPollSpinLimit{16};
     std::uint64_t maxInflightBytes{1ULL << 30};
     std::vector<std::size_t> tensorSizes;
+    std::vector<std::uintptr_t> gpuKvBufferAddrs;
+    std::vector<std::size_t> gpuKvBufferSizes;
     std::size_t shardSize{0};
     std::size_t blockSize{0};
     std::int32_t deviceId{-1};

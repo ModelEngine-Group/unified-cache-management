@@ -41,11 +41,6 @@ public:
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override;
     Expected<bool> Check(Detail::TaskHandle taskId) override;
     Status Wait(Detail::TaskHandle taskId) override;
-    bool NeedRegisterKVCaches() const override { return false; }
-    Status RegisterKVCaches(const KVCacheRegistration*, std::size_t) override
-    {
-        return Status::OK();
-    }
 
 private:
     std::shared_ptr<Ds3fsStoreImpl> impl_;

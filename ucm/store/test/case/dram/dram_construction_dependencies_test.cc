@@ -35,7 +35,6 @@ TEST(DramStoreConstructionTest, FactorySurvivesInvalidSetup)
     std::unique_ptr<StoreV1> store(MakeDramStore());
     ASSERT_NE(store, nullptr);
     EXPECT_FALSE(store->Readme().empty());
-    EXPECT_TRUE(store->NeedRegisterKVCaches());
 
     Detail::Dictionary invalid;
     EXPECT_TRUE(store->Setup(invalid).Failure());

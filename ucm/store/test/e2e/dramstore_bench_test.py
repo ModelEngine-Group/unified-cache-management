@@ -50,7 +50,6 @@ import importlib.util
 import os
 import secrets
 import statistics
-import struct
 import sys
 import time
 
@@ -159,15 +158,6 @@ class BareDramStore:
 
     def wait(self, task_id):
         self._ds.Wait(task_id)
-
-    def need_register_kv_caches(self):
-        return bool(self._ds.NeedRegisterKVCaches())
-
-    def register_kv_caches(self, addr_size_pairs):
-        buf = bytearray()
-        for addr, size in addr_size_pairs:
-            buf += struct.pack("<QQ", int(addr), int(size))
-        self._ds.RegisterKVCaches(bytes(buf))
 
     def dump(self, block_ids, shard_index, addrs):
         return self._ds.Dump(
@@ -354,9 +344,6 @@ def main():
     os.environ.setdefault("UC_LOGGER_LEVEL", "info")
 
     ucmdramstore = load_ucmdramstore(args.so_dir)
-    worker = BareDramStore(make_dram_config(args, "worker"), ucmdramstore)
-    scheduler = worker  # single-peer: worker does lookup+dump+load, one hixl engine
-
     shards = args.layer_size * args.chunk_size
     count = args.request_size * shards
     # NPU device memory: aclrtMalloc'd buffers; ptr == addr == device pointer.
@@ -366,10 +353,11 @@ def main():
     dst_regs, dst_total = build_device_regions(
         args.tensor_size, shards, args.request_size
     )
-    if worker.need_register_kv_caches():
-        worker.register_kv_caches(
-            [(src_regs[0].addr, src_total), (dst_regs[0].addr, dst_total)]
-        )
+    config = make_dram_config(args, "worker")
+    config["gpu_kv_buffer_addrs"] = [int(src_regs[0].addr), int(dst_regs[0].addr)]
+    config["gpu_kv_buffer_sizes"] = [int(src_total), int(dst_total)]
+    worker = BareDramStore(config, ucmdramstore)
+    scheduler = worker  # single-peer: worker does lookup+dump+load, one hixl engine
     print(
         f"[debug] registered {len(src_regs) + len(dst_regs)} regions", file=sys.stderr
     )

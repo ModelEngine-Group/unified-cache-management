@@ -49,11 +49,6 @@ public:
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override;
     Expected<bool> Check(Detail::TaskHandle task) override;
     Status Wait(Detail::TaskHandle task) override;
-    bool NeedRegisterKVCaches() const override { return false; }
-    Status RegisterKVCaches(const KVCacheRegistration*, std::size_t) override
-    {
-        return Status::OK();
-    }
 
 private:
     std::shared_ptr<StoreV1> backend_;
@@ -146,20 +141,19 @@ Status DelegatorStore::Setup(const Detail::Dictionary& input)
         }
     }
 
-    auto status = backend_->Setup(input);
-    if (status.Failure()) {
-        backend_.reset();
-        return status;
-    }
-
     if (config.role == "scheduler") {
+        auto status = backend_->Setup(input);
+        if (status.Failure()) {
+            backend_.reset();
+            return status;
+        }
         setup_ = true;
         UC_INFO("DelegatorStore setup in scheduler query-only mode with {}.", backend_->Readme());
         return Status::OK();
     }
 
     auto created = Executor::Create(backend_, std::move(config.tensorSizes), config.deviceId,
-                                    config.bufferNumber, config.streamNumber);
+                                    config.bufferNumber, config.streamNumber, input);
     if (!created) {
         backend_.reset();
         return created.Error();

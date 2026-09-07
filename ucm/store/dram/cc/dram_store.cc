@@ -70,10 +70,9 @@ public:
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override;
     Expected<bool> Check(Detail::TaskHandle taskId) override;
     Status Wait(Detail::TaskHandle taskId) override;
-    bool NeedRegisterKVCaches() const override;
-    Status RegisterKVCaches(const KVCacheRegistration* registrations, std::size_t count) override;
 
 private:
+    Status RegisterKVCaches(const KVCacheRegistration* registrations, std::size_t count);
     Expected<Detail::TaskHandle> SubmitTransfer(OpType op, Detail::TaskDesc task);
     Status Start();
 
@@ -81,6 +80,17 @@ private:
     {
         config_ = std::make_unique<DramConfig>(std::move(parsed));
         auto status = Compose();
+
+        if (status.Success() && config_->role == Role::WORKER) {
+            std::vector<KVCacheRegistration> registrations;
+            registrations.reserve(config_->gpuKvBufferAddrs.size());
+            for (std::size_t index = 0; index < config_->gpuKvBufferAddrs.size(); ++index) {
+                registrations.push_back(
+                    {config_->gpuKvBufferAddrs[index], config_->gpuKvBufferSizes[index]});
+            }
+            status = RegisterKVCaches(registrations.data(), registrations.size());
+        }
+        if (status.Success()) { status = Start(); }
 
         if (status.Failure()) {
             StopGraph();
@@ -178,7 +188,7 @@ private:
                                                    ? nodeScheduler_->Post(request)
                                                    : Status::Error("NodeScheduler is unavailable");
                                     }});
-        return config_->role == Role::SCHEDULER ? Start() : Status::OK();
+        return Status::OK();
 #else
         return Status::Unsupported();
 #endif
@@ -326,11 +336,6 @@ Expected<bool> DramStore::Check(Detail::TaskHandle taskId) { return taskManager_
 
 Status DramStore::Wait(Detail::TaskHandle taskId) { return taskManager_->WaitTransfer(taskId); }
 
-bool DramStore::NeedRegisterKVCaches() const
-{
-    return !config_ || config_->role != Role::SCHEDULER;
-}
-
 Status DramStore::RegisterKVCaches(const KVCacheRegistration* registrations, std::size_t count)
 {
     if (count != 0 && registrations == nullptr) {
@@ -376,8 +381,7 @@ Status DramStore::RegisterKVCaches(const KVCacheRegistration* registrations, std
     }
 
     UC_INFO("DramStore KV caches registered, count={}", count);
-    // RegisterKVCaches is the final initialization hook for the worker role.
-    return Start();
+    return Status::OK();
 }
 
 }  // namespace UC::Dram

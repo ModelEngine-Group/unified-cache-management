@@ -289,6 +289,17 @@ Expected<DramConfig> DramConfig::Parse(const Detail::Dictionary& dictionary)
         }
         result.tensorSizes.assign(tensorSizes.begin(), tensorSizes.end());
 
+        std::vector<std::size_t> gpuKvBufferAddrs;
+        if (dictionary.Contains("gpu_kv_buffer_addrs")) {
+            status = NumberList(dictionary, "gpu_kv_buffer_addrs", &gpuKvBufferAddrs);
+            if (status.Failure()) { return status; }
+        }
+        result.gpuKvBufferAddrs.assign(gpuKvBufferAddrs.begin(), gpuKvBufferAddrs.end());
+        if (dictionary.Contains("gpu_kv_buffer_sizes")) {
+            status = NumberList(dictionary, "gpu_kv_buffer_sizes", &result.gpuKvBufferSizes);
+            if (status.Failure()) { return status; }
+        }
+
         status = result.Validate();
         if (status.Failure()) { return status; }
         return result;
@@ -299,6 +310,14 @@ Expected<DramConfig> DramConfig::Parse(const Detail::Dictionary& dictionary)
 
 Status DramConfig::Validate() const
 {
+    if (gpuKvBufferAddrs.size() != gpuKvBufferSizes.size()) {
+        return Status::InvalidParam("GPU KV cache address/size list lengths differ");
+    }
+    for (std::size_t index = 0; index < gpuKvBufferAddrs.size(); ++index) {
+        if (gpuKvBufferAddrs[index] == 0 || gpuKvBufferSizes[index] == 0) {
+            return Status::InvalidParam("invalid GPU KV cache range at index({})", index);
+        }
+    }
     if (localControlHost.empty() || localControlPort == 0 || localHost.empty() ||
         localTransportManagerId.empty()) {
         return Status::InvalidParam("local DramStore transport configuration is invalid");

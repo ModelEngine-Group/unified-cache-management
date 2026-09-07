@@ -266,6 +266,21 @@ public:
             return ConvertStatus(asuStatus);
         }
 
+        if (config_.role == "worker" && !config_.gpuKvBufferAddrs.empty()) {
+            std::vector<KVCacheRegistration> registrations;
+            registrations.reserve(config_.gpuKvBufferAddrs.size());
+            for (std::size_t index = 0; index < config_.gpuKvBufferAddrs.size(); ++index) {
+                registrations.push_back(
+                    {config_.gpuKvBufferAddrs[index], config_.gpuKvBufferSizes[index]});
+            }
+            status = RegisterKVCaches(registrations.data(), registrations.size());
+            if (status.Failure()) {
+                LogAsuStatus("shutdown after registration failure", client_->Shutdown());
+                client_.reset();
+                return status;
+            }
+        }
+
         ShowConfig(config_);
         return Status::OK();
     }
@@ -303,10 +318,8 @@ public:
         (void)num;
     }
 
-    bool NeedRegisterKVCaches() const override { return true; }
-
-    Status RegisterKVCaches(const UC::KVCacheRegistration* registrations,
-                            std::size_t count) override
+private:
+    Status RegisterKVCaches(const UC::KVCacheRegistration* registrations, std::size_t count)
     {
         if (!client_) { return Status::Error("ASU client is not initialized"); }
 
@@ -329,6 +342,9 @@ public:
             LogAsuStatus("register persistent regions", status);
             return ConvertStatus(status);
         }
+        if (registeredRegions.size() != regions.size()) {
+            return Status::Error("ASU registered region count mismatch");
+        }
         std::vector<RegisteredPersistentRegion> registered;
         registered.reserve(regions.size());
         for (std::size_t index = 0; index < regions.size(); ++index) {
@@ -344,6 +360,7 @@ public:
         return Status::OK();
     }
 
+public:
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
         return Submit(std::move(task), &UC::ASU::AsuClient::BatchLoadAsync);
@@ -403,6 +420,8 @@ private:
         inConfig.GetNumber("asu_transport_max_inflight_tasks", config.transportMaxInflightTasks);
         inConfig.GetNumber("asu_completion_poll_spin_limit", config.completionPollSpinLimit);
         inConfig.GetNumber("asu_max_inflight_bytes", config.maxInflightBytes);
+        inConfig.GetNumbers("gpu_kv_buffer_addrs", config.gpuKvBufferAddrs);
+        inConfig.GetNumbers("gpu_kv_buffer_sizes", config.gpuKvBufferSizes);
         inConfig.GetNumber("shard_size", config.shardSize);
         inConfig.GetNumber("block_size", config.blockSize);
         inConfig.GetNumber("device_id", config.deviceId);
@@ -463,6 +482,18 @@ private:
 
     Status CheckConfig(const Config& config)
     {
+        if (config.gpuKvBufferAddrs.size() != config.gpuKvBufferSizes.size()) {
+            return Status::InvalidParam("GPU KV cache address/size list lengths differ");
+        }
+        for (std::size_t index = 0; index < config.gpuKvBufferAddrs.size(); ++index) {
+            if (config.gpuKvBufferAddrs[index] == 0 || config.gpuKvBufferSizes[index] == 0 ||
+                config.gpuKvBufferAddrs[index] >
+                    static_cast<std::uintptr_t>(std::numeric_limits<ssize_t>::max()) ||
+                config.gpuKvBufferSizes[index] >
+                    static_cast<std::size_t>(std::numeric_limits<ssize_t>::max())) {
+                return Status::InvalidParam("invalid GPU KV cache range at index({})", index);
+            }
+        }
         if (config.sharedProviderMode != 0 && config.sharedProviderMode != 1) {
             return Status::InvalidParam("asu_shared_provider must be 0 or 1");
         }

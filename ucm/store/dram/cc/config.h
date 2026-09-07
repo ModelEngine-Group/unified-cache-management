@@ -57,6 +57,8 @@ struct DramConfig {
     std::size_t replySlotCount{0};
     std::uint32_t replySlotSize{0};
     std::vector<std::uint64_t> tensorSizes;
+    std::vector<std::uintptr_t> gpuKvBufferAddrs;
+    std::vector<std::size_t> gpuKvBufferSizes;
 
     static Expected<DramConfig> Parse(const Detail::Dictionary& dictionary);
     Status Validate() const;

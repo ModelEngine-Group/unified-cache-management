@@ -77,7 +77,16 @@ public:
 
     explicit FakeStore(std::size_t payload_size) : payload_size_{payload_size} {}
 
-    Status Setup(const Detail::Dictionary&) override { return Status::OK(); }
+    Status Setup(const Detail::Dictionary& config) override
+    {
+        std::vector<uintptr_t> addrs;
+        std::vector<size_t> sizes;
+        config.GetNumbers("gpu_kv_buffer_addrs", addrs);
+        config.GetNumbers("gpu_kv_buffer_sizes", sizes);
+        if (addrs.size() != 1 || sizes.size() != 1) { return Status::InvalidParam(); }
+        const KVCacheRegistration registration{addrs[0], sizes[0]};
+        return RegisterKVCaches(&registration, 1);
+    }
 
     std::string Readme() const override { return "FakeStore"; }
 
@@ -90,9 +99,8 @@ public:
 
     void Prefetch(const Detail::BlockId*, size_t) override {}
 
-    bool NeedRegisterKVCaches() const override { return true; }
-
-    Status RegisterKVCaches(const KVCacheRegistration* registrations, std::size_t count) override
+private:
+    Status RegisterKVCaches(const KVCacheRegistration* registrations, std::size_t count)
     {
         if (registrations == nullptr || count != 1 || registrations[0].addr == 0 ||
             registrations[0].size == 0) {
@@ -103,6 +111,7 @@ public:
         return Status::OK();
     }
 
+public:
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
         if (task.empty()) { return Status::InvalidParam(); }

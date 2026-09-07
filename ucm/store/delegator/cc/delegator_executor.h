@@ -56,8 +56,8 @@ public:
 
     static Expected<std::unique_ptr<Executor>> Create(
         std::shared_ptr<StoreV1> backend, std::vector<std::size_t> tensorSizes,
-        std::int32_t deviceId, std::size_t slotNum,
-        std::size_t streamNumber = kDefaultStreamNumber);
+        std::int32_t deviceId, std::size_t slotNum, std::size_t streamNumber = kDefaultStreamNumber,
+        const Detail::Dictionary& backendConfig = {});
     ~Executor();
 
     Executor(const Executor&) = delete;
@@ -122,7 +122,8 @@ private:
     };
 
     Status ValidateTask(const Detail::TaskDesc& task, Operation operation) const;
-    Status Start(std::size_t payloadSize, std::size_t slotNum);
+    Status Start(std::size_t payloadSize, std::size_t slotNum,
+                 const Detail::Dictionary& backendConfig);
     Expected<Detail::TaskDesc> MakeBackendTask(const TransferGroup& group) const;
 
     Status GatherAsync(const TransferGroup& group, CopyStream& streams);

@@ -42,11 +42,6 @@ public:
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) { return NextId(); }
     Expected<bool> Check(Detail::TaskHandle taskId) { return true; }
     Status Wait(Detail::TaskHandle taskId) { return Status::OK(); }
-    bool NeedRegisterKVCaches() const override { return false; }
-    Status RegisterKVCaches(const KVCacheRegistration*, std::size_t) override
-    {
-        return Status::OK();
-    }
 
 private:
     static Detail::TaskHandle NextId() noexcept

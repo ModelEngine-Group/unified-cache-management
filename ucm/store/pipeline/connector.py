@@ -157,12 +157,6 @@ class UcmPipelineStore(UcmKVStoreBaseV1):
     def check(self, task: Task) -> bool:
         return self.store_.Check(task.task_id)
 
-    def need_register_kv_caches(self) -> bool:
-        return self.store_.NeedRegisterKVCaches()
-
-    def register_kv_caches(self, registrations: np.ndarray) -> None:
-        self.store_.RegisterKVCaches(registrations)
-
 
 def _cache_ds3fs_pipeline_builder(
     config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore

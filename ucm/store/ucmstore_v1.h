@@ -156,11 +156,6 @@ public:
      */
     virtual Status Wait(Detail::TaskHandle taskId) = 0;
 
-    virtual bool NeedRegisterKVCaches() const = 0;
-
-    virtual Status RegisterKVCaches(const KVCacheRegistration* registrations,
-                                    std::size_t count) = 0;
-
 protected:
     /**
      * @brief Protected default constructor.

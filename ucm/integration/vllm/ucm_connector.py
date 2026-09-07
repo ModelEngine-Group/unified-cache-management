@@ -321,6 +321,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self,
         kv_cache_layout: Optional[KVCacheLayout],
         cpu_affinity_cores: Optional[list[int]] = None,
+        registrations: Optional[np.ndarray] = None,
     ) -> UcmKVStoreBaseV1:
         if len(self.connector_configs) != 1:
             raise RuntimeError(
@@ -332,6 +333,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
         name = self.connector_configs[0]["ucm_connector_name"]
         module_path = self.connector_configs[0].get("ucm_connector_module_path", None)
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
+        config.pop("gpu_kv_buffer_addrs", None)
+        config.pop("gpu_kv_buffer_sizes", None)
         config.setdefault("share_buffer_enable", self.is_mla)
         if "storage_backends" in config:
             backends = [path for path in config["storage_backends"].split(":")]
@@ -349,6 +352,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
             config["shard_size"] = kv_cache_layout.shard_size * self.blocks_per_chunk
             config["block_size"] = kv_cache_layout.block_size * self.blocks_per_chunk
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
+            if registrations is not None and len(registrations):
+                config["gpu_kv_buffer_addrs"] = [
+                    int(item["addr"]) for item in registrations
+                ]
+                config["gpu_kv_buffer_sizes"] = [
+                    int(item["size"]) for item in registrations
+                ]
             if cpu_affinity_cores:
                 config["cpu_affinity_cores"] = list(cpu_affinity_cores)
         else:
@@ -400,10 +410,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
             else (None, None)
         )
 
-        self.store = self._create_store(self.kv_cache_layout, store_cores)
-        if self.store.need_register_kv_caches():
-            registrations = self._collect_kv_cache_registrations()
-            self.store.register_kv_caches(registrations)
+        registrations = self._collect_kv_cache_registrations()
+        self.store = self._create_store(
+            self.kv_cache_layout, store_cores, registrations
+        )
 
         if worker_cores:
             try:

@@ -212,5 +212,35 @@ TEST(DramConfigTest, RejectsInvalidRoleAndWorkerPortOverflow)
     EXPECT_FALSE(DramConfig::Parse(hixlOverflow));
 }
 
+TEST(DramConfigTest, ParsesKvCacheRegistrationConfig)
+{
+    auto input = BaseConfig();
+    input.Set("gpu_kv_buffer_addrs", std::vector<ssize_t>{0x1000, 0x2000});
+    input.Set("gpu_kv_buffer_sizes", std::vector<ssize_t>{1024, 2048});
+    auto parsed = DramConfig::Parse(input);
+    ASSERT_TRUE(parsed);
+    EXPECT_EQ(parsed.Value().gpuKvBufferAddrs, (std::vector<uintptr_t>{0x1000, 0x2000}));
+    EXPECT_EQ(parsed.Value().gpuKvBufferSizes, (std::vector<std::size_t>{1024, 2048}));
+}
+
+TEST(DramConfigTest, RejectsInvalidKvCacheRegistrationConfig)
+{
+    for (const auto value : {ssize_t{0}, ssize_t{-1}}) {
+        auto input = BaseConfig();
+        input.Set("gpu_kv_buffer_addrs", std::vector<ssize_t>{value});
+        input.Set("gpu_kv_buffer_sizes", std::vector<ssize_t>{1024});
+        EXPECT_FALSE(DramConfig::Parse(input));
+        input.Set("gpu_kv_buffer_addrs", std::vector<ssize_t>{0x1000});
+        input.Set("gpu_kv_buffer_sizes", std::vector<ssize_t>{value});
+        EXPECT_FALSE(DramConfig::Parse(input));
+    }
+    auto input = BaseConfig();
+    input.Set("gpu_kv_buffer_addrs", std::vector<ssize_t>{0x1000});
+    EXPECT_FALSE(DramConfig::Parse(input));
+    input = BaseConfig();
+    input.Set("gpu_kv_buffer_sizes", std::vector<ssize_t>{1024});
+    EXPECT_FALSE(DramConfig::Parse(input));
+}
+
 }  // namespace
 }  // namespace UC::Dram

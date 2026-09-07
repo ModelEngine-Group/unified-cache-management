@@ -81,7 +81,8 @@ Status BindDevice(std::int32_t deviceId)
 Expected<std::unique_ptr<Executor>> Executor::Create(std::shared_ptr<StoreV1> backend,
                                                      std::vector<std::size_t> tensorSizes,
                                                      std::int32_t deviceId, std::size_t slotNum,
-                                                     std::size_t streamNumber)
+                                                     std::size_t streamNumber,
+                                                     const Detail::Dictionary& backendConfig)
 {
     if (backend == nullptr || deviceId < 0 || slotNum == 0 || streamNumber == 0 ||
         tensorSizes.empty()) {
@@ -104,7 +105,7 @@ Expected<std::unique_ptr<Executor>> Executor::Create(std::shared_ptr<StoreV1> ba
     if (!executor) { return Status::OutOfMemory(); }
 
     try {
-        status = executor->Start(payloadSize, slotNum);
+        status = executor->Start(payloadSize, slotNum, backendConfig);
     } catch (const std::bad_alloc&) {
         return Status::OutOfMemory();
     } catch (const std::system_error& error) {
@@ -124,19 +125,24 @@ Executor::Executor(std::shared_ptr<StoreV1> backend, std::vector<std::size_t> te
 {
 }
 
-Status Executor::Start(std::size_t payloadSize, std::size_t slotNum)
+Status Executor::Start(std::size_t payloadSize, std::size_t slotNum,
+                       const Detail::Dictionary& backendConfig)
 {
     auto status = bufferPool_.Init("delegator_buffer_pool", BufferPool::MemoryType::Device,
                                    payloadSize, slotNum, false, kBufferAlignment);
     if (status.Failure()) { return status; }
     slotNum_ = slotNum;
-    if (backend_->NeedRegisterKVCaches()) {
-        const KVCacheRegistration registration{
-            reinterpret_cast<std::uintptr_t>(bufferPool_.GetDeviceAddr()),
-            bufferPool_.GetTotalSize()};
-        status = backend_->RegisterKVCaches(&registration, 1);
-        if (status.Failure()) { return status; }
+    const auto address = reinterpret_cast<std::uintptr_t>(bufferPool_.GetDeviceAddr());
+    const auto size = bufferPool_.GetTotalSize();
+    if (address > static_cast<std::uintptr_t>(std::numeric_limits<ssize_t>::max()) ||
+        size > static_cast<std::size_t>(std::numeric_limits<ssize_t>::max())) {
+        return Status::InvalidParam("delegator buffer range cannot be represented in config");
     }
+    auto config = backendConfig;
+    config.Set("gpu_kv_buffer_addrs", std::vector<ssize_t>{static_cast<ssize_t>(address)});
+    config.Set("gpu_kv_buffer_sizes", std::vector<ssize_t>{static_cast<ssize_t>(size)});
+    status = backend_->Setup(config);
+    if (status.Failure()) { return status; }
     availableSlots_ = slotNum;
 
     std::promise<Status> dumpStarted;
