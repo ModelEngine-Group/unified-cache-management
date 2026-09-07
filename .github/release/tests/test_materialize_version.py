@@ -18,7 +18,7 @@ SPEC.loader.exec_module(materialize)
 VERSION_CONFIG = (
     "UCM_VERSION=0.7.62\n"
     "UCM_SUPPORTED_VLLM_VERSIONS=0.27.1\n"
-    "UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26.0rc\n"
+    "UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26\n"
 )
 
 
@@ -324,21 +324,21 @@ def test_tag_base_must_match_version_config(tmp_path: Path, tag: str) -> None:
         materialize.validate_tag_against_config(tag.replace("0.7.62", "0.7.63"), config)
 
 
-def test_version_config_supports_keywords_and_explicit_tags() -> None:
+def test_version_config_supports_minor_patch_and_explicit_tag_selectors() -> None:
     parsed = materialize.version_config.parse(
         "UCM_VERSION=0.9.3\n"
-        "UCM_SUPPORTED_VLLM_VERSIONS=0.27.1,latest\n"
-        "UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.25.1rc@nightly-releases-v0.25.1rc\n"
+        "UCM_SUPPORTED_VLLM_VERSIONS=0.27,0.28.1\n"
+        "UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.25@nightly-releases-v0.25.1rc\n"
     )
 
     assert parsed["supported_runtimes"]["vllm"] == [
-        {"raw": "0.27.1", "keyword": "0.27.1", "tag": None},
-        {"raw": "latest", "keyword": "latest", "tag": None},
+        {"raw": "0.27", "version": "0.27", "tag": None},
+        {"raw": "0.28.1", "version": "0.28.1", "tag": None},
     ]
     assert parsed["supported_runtimes"]["vllm-ascend"] == [
         {
-            "raw": "0.25.1rc@nightly-releases-v0.25.1rc",
-            "keyword": "0.25.1rc",
+            "raw": "0.25@nightly-releases-v0.25.1rc",
+            "version": "0.25",
             "tag": "nightly-releases-v0.25.1rc",
         }
     ]
@@ -348,9 +348,11 @@ def test_version_config_supports_keywords_and_explicit_tags() -> None:
     "text",
     [
         "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27.1\n",
-        "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27.1,0.27.1\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26.0rc\n",
-        "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=bad keyword\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26.0rc\n",
-        "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27.1@bad/tag\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26.0rc\n",
+        "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27,0.27\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26\n",
+        "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27,0.27.1\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26\n",
+        "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=latest\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26\n",
+        "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27.1rc\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26\n",
+        "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27.1@bad/tag\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26\n",
     ],
 )
 def test_version_config_rejects_missing_duplicate_or_invalid_selectors(

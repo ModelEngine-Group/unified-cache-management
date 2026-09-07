@@ -33,12 +33,33 @@ def _canonical_version(value: str, context: str) -> str:
     return value
 
 
-def runtime_keyword(value: object, context: str) -> str:
-    """Validate one literal Registry-tag keyword without version normalization."""
+def runtime_selector_version(value: object, context: str) -> str:
+    """Validate one canonical Runtime minor or patch selector."""
 
-    if not isinstance(value, str) or OCI_TAG_PATTERN.fullmatch(value) is None:
-        raise ValueError(f"{context} must be a valid literal OCI tag keyword")
+    if not isinstance(value, str):
+        raise ValueError(f"{context} must be a canonical X.Y or X.Y.Z version")
+    try:
+        parsed = Version(value)
+    except InvalidVersion as error:
+        raise ValueError(
+            f"{context} must be a canonical X.Y or X.Y.Z version"
+        ) from error
+    if (
+        str(parsed) != value
+        or parsed.epoch != 0
+        or parsed.pre is not None
+        or parsed.post is not None
+        or parsed.dev is not None
+        or parsed.local is not None
+        or len(parsed.release) not in {2, 3}
+    ):
+        raise ValueError(f"{context} must be a canonical X.Y or X.Y.Z version")
     return value
+
+
+def _selector_ranges_overlap(left: Version, right: Version) -> bool:
+    prefix_length = min(len(left.release), len(right.release))
+    return left.release[:prefix_length] == right.release[:prefix_length]
 
 
 def _assignments(text: str, source: str) -> dict[str, str]:
@@ -70,13 +91,13 @@ def _assignments(text: str, source: str) -> dict[str, str]:
 
 def _selectors(value: str, product_id: str) -> list[dict[str, str | None]]:
     result: list[dict[str, str | None]] = []
-    seen: set[tuple[str, str | None]] = set()
+    selected_ranges: list[Version] = []
     for index, token in enumerate(value.split(","), start=1):
         context = f"{SUPPORTED_VERSION_KEYS[product_id]}[{index}]"
         if not token or token.strip() != token:
             raise ValueError(f"{context} must be a non-empty selector without spaces")
-        raw_keyword, separator, raw_tag = token.partition("@")
-        keyword = runtime_keyword(raw_keyword, f"{context} keyword")
+        raw_version, separator, raw_tag = token.partition("@")
+        version = runtime_selector_version(raw_version, f"{context} version")
         tag: str | None = None
         if separator:
             if (
@@ -86,14 +107,17 @@ def _selectors(value: str, product_id: str) -> list[dict[str, str | None]]:
             ):
                 raise ValueError(f"{context} has an invalid OCI tag")
             tag = raw_tag
-        identity = (keyword, tag)
-        if identity in seen:
-            raise ValueError(f"{context} duplicates an earlier selector")
-        seen.add(identity)
+        parsed_version = Version(version)
+        if any(
+            _selector_ranges_overlap(parsed_version, earlier)
+            for earlier in selected_ranges
+        ):
+            raise ValueError(f"{context} overlaps an earlier selector")
+        selected_ranges.append(parsed_version)
         result.append(
             {
-                "raw": keyword if tag is None else f"{keyword}@{tag}",
-                "keyword": keyword,
+                "raw": version if tag is None else f"{version}@{tag}",
+                "version": version,
                 "tag": tag,
             }
         )

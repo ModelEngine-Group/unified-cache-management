@@ -1,0 +1,228 @@
+name: UCM Native Wheel Gate
+
+on:
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Exact PR merge commit to compile
+        type: string
+        required: true
+      retention_days:
+        description: Retention for diagnostic Gate artifacts
+        type: number
+        required: false
+        default: 7
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  inspect-runtimes:
+    name: Inspect configured Runtime range
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      inputs_artifact: ${{ steps.inspect.outputs.inputs_artifact }}
+      probe_matrix: ${{ steps.inspect.outputs.probe_matrix }}
+      has_probe_fallback: ${{ steps.inspect.outputs.has_probe_fallback }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - run: >-
+          python -m pip install --disable-pip-version-check --no-cache-dir
+          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+      - name: Install crane
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/crane"
+          curl -fsSL --retry 3 \
+            https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz \
+            | tar -xz -C "${RUNNER_TEMP}/crane" crane
+          echo "${RUNNER_TEMP}/crane" >>"${GITHUB_PATH}"
+      - id: inspect
+        name: Select and inspect Runtime manifests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p out/inputs
+          PYTHONPATH=.github/release python -m ucm_release upstreams candidates \
+            --output out/inputs/runtime-candidates.json >/dev/null
+          jq -er '.references[]' out/inputs/runtime-candidates.json \
+            >out/inputs/runtime-refs.txt
+          PYTHONPATH=.github/release python -m ucm_release runtime inspect \
+            --references-file out/inputs/runtime-refs.txt \
+            --output out/inputs/runtime-inspection.json >/dev/null
+          artifact="ucm-native-wheel-inputs-run-${GITHUB_RUN_ID}"
+          {
+            echo "inputs_artifact=${artifact}"
+            echo "probe_matrix=$(jq -c 'if (.probe_matrix.include | length) > 0 then .probe_matrix else {include:[.members[0]]} end' out/inputs/runtime-inspection.json)"
+            echo "has_probe_fallback=$(jq -r '.probe_matrix.include | length > 0' out/inputs/runtime-inspection.json)"
+          } >>"${GITHUB_OUTPUT}"
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ${{ steps.inspect.outputs.inputs_artifact }}
+          path: out/inputs/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: ${{ inputs.retention_days }}
+
+  probe-runtimes:
+    name: Capability check · ${{ matrix.runtime_ref }} · ${{ matrix.cpu_arch }}
+    needs: inspect-runtimes
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.inspect-runtimes.outputs.probe_matrix) }}
+    uses: ./.github/workflows/_probe-runtime.yml
+    with:
+      probe_id: ${{ matrix.probe_id }}
+      runtime_ref: ${{ matrix.runtime_ref }}
+      image_reference: ${{ matrix.image_reference }}
+      platform: ${{ matrix.platform }}
+      accelerator: ${{ matrix.accelerator }}
+      runner: ${{ matrix.runner }}
+      enabled: ${{ matrix.fallback_required }}
+      retention_days: ${{ inputs.retention_days }}
+
+  resolve-upstreams:
+    name: Resolve Runtime capabilities and upstream Builders
+    needs: [inspect-runtimes, probe-runtimes]
+    if: >-
+      ${{
+        always() &&
+        needs.inspect-runtimes.result == 'success' &&
+        (needs.probe-runtimes.result == 'success' ||
+         needs.probe-runtimes.result == 'skipped')
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      selection_artifact: ${{ steps.resolve.outputs.selection_artifact }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - run: >-
+          python -m pip install --disable-pip-version-check --no-cache-dir
+          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+      - name: Install crane
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/crane"
+          curl -fsSL --retry 3 \
+            https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz \
+            | tar -xz -C "${RUNNER_TEMP}/crane" crane
+          echo "${RUNNER_TEMP}/crane" >>"${GITHUB_PATH}"
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          name: ${{ needs.inspect-runtimes.outputs.inputs_artifact }}
+          path: input/runtimes
+      - uses: actions/download-artifact@v4.3.0
+        if: needs.inspect-runtimes.outputs.has_probe_fallback == 'true'
+        with:
+          pattern: ucm-runtime-probe-*-run-${{ github.run_id }}
+          path: input/probes
+      - id: resolve
+        run: |
+          set -euo pipefail
+          mkdir -p out/selection input/probes
+          PYTHONPATH=.github/release python -m ucm_release runtime aggregate \
+            --inspection input/runtimes/runtime-inspection.json \
+            --probe-dir input/probes \
+            --output out/selection/runtime-probe.json >/dev/null
+          PYTHONPATH=.github/release python -m ucm_release upstreams resolve \
+            --candidates input/runtimes/runtime-candidates.json \
+            --runtime-probe out/selection/runtime-probe.json \
+            --output out/selection/runtime-selection.json >/dev/null
+          artifact="ucm-native-wheel-selection-run-${GITHUB_RUN_ID}"
+          echo "selection_artifact=${artifact}" >>"${GITHUB_OUTPUT}"
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ${{ steps.resolve.outputs.selection_artifact }}
+          path: out/selection/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: ${{ inputs.retention_days }}
+
+  plan-wheels:
+    name: Plan complete native Wheel matrix
+    needs: resolve-upstreams
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      plan_artifact: ${{ steps.plan.outputs.plan_artifact }}
+      wheel_matrix: ${{ steps.plan.outputs.wheel_matrix }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - run: >-
+          python -m pip install --disable-pip-version-check --no-cache-dir
+          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          name: ${{ needs.resolve-upstreams.outputs.selection_artifact }}
+          path: input/selection
+      - id: plan
+        name: Bind source Builders and generate Wheel tasks
+        run: |
+          set -euo pipefail
+          mkdir -p out/plan
+          PYTHONPATH=.github/release python -m ucm_release builders discover \
+            --selection input/selection/runtime-selection.json \
+            --output out/plan/builder-catalog.desired.json >/dev/null
+          PYTHONPATH=.github/release python -m ucm_release builders bind-source \
+            --catalog out/plan/builder-catalog.desired.json \
+            --output out/plan/builder-catalog.json >/dev/null
+          PYTHONPATH=.github/release python -m ucm_release compact plan \
+            --runtime-selection input/selection/runtime-selection.json \
+            --builder-catalog out/plan/builder-catalog.json --route pr \
+            --output out/plan/release-plan.json >/dev/null
+          wheel_matrix="$(jq -ce '.wheel_matrix' out/plan/release-plan.json)"
+          test "$(jq '.include | length' <<<"${wheel_matrix}")" -gt 0
+          artifact="ucm-native-wheel-plan-run-${GITHUB_RUN_ID}"
+          {
+            echo "plan_artifact=${artifact}"
+            echo "wheel_matrix=${wheel_matrix}"
+          } >>"${GITHUB_OUTPUT}"
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ${{ steps.plan.outputs.plan_artifact }}
+          path: out/plan/release-plan.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: ${{ inputs.retention_days }}
+
+  build-wheels:
+    name: Wheel · ${{ matrix.label }}
+    needs: plan-wheels
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan-wheels.outputs.wheel_matrix) }}
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/_build-wheel.yml
+    with:
+      wheel_id: ${{ matrix.id }}
+      runner: ${{ matrix.runner }}
+      plan_artifact: ${{ needs.plan-wheels.outputs.plan_artifact }}
+      source_ref: ${{ inputs.source_ref }}
+      retention_days: ${{ inputs.retention_days }}

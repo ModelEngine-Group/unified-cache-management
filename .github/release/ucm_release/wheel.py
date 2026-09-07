@@ -1378,7 +1378,38 @@ def _materialized_source_version_bytes(
                 "\n".join(migrated_lines) + "\n", source_version, source=source
             )
         except ValueError:
-            raise error
+            # Historical source owns the selector grammar that shipped with
+            # that commit. Validate its exact assignment surface, but do not
+            # reinterpret old selectors with the current release rules.
+            assignments: dict[str, str] = {}
+            for line in migrated_lines:
+                key, separator, value = line.partition("=")
+                if (
+                    not separator
+                    or not key
+                    or not value
+                    or key in assignments
+                    or key not in version_config.VERSION_KEYS
+                ):
+                    raise error
+                assignments[key] = value
+            if set(assignments) != set(version_config.VERSION_KEYS):
+                raise error
+            try:
+                Version(assignments[version_config.UCM_VERSION_KEY])
+            except InvalidVersion:
+                raise error
+            materialized = (
+                "\n".join(
+                    (
+                        f"{current_prefix}{source_version}"
+                        if line.startswith(current_prefix)
+                        else line
+                    )
+                    for line in migrated_lines
+                )
+                + "\n"
+            ).encode()
         if not materialized.startswith(current_prefix.encode()):
             raise error
         return legacy_prefix.encode() + materialized[len(current_prefix) :]

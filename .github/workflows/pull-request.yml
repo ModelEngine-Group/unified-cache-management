@@ -2,7 +2,7 @@ name: 'Pull Request Gate'
 
 on:
   pull_request:
-    branches: [ "dev*", "main", "*release", "feature*" ]
+    branches: [ "dev*", "main", "*release", "feature/**" ]
 
 permissions:
   contents: read
@@ -11,6 +11,8 @@ permissions:
 jobs:
   pre-check:
     runs-on: ubuntu-latest
+    outputs:
+      native_wheel_required: ${{ steps.build-impact.outputs.required }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -18,20 +20,24 @@ jobs:
 
       - id: fetch_base_and_pr_branches
         env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_CLONE_URL: ${{ github.event.pull_request.head.repo.clone_url }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          git fetch origin ${{ github.base_ref }}
+          git fetch origin "${BASE_REF}"
 
-          if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
+          if [ "${HEAD_REPOSITORY}" != "${REPOSITORY}" ]; then
             echo "PR is from a fork, adding remote."
-            git remote add fork ${{ github.event.pull_request.head.repo.clone_url }}
-            git fetch fork $HEAD_REF
-            HEAD_BRANCH_NAME=fork/$HEAD_REF
-            echo "HEAD_BRANCH_NAME=$HEAD_BRANCH_NAME" >> $GITHUB_OUTPUT
+            git remote add fork "${HEAD_CLONE_URL}"
+            git fetch fork "${HEAD_REF}"
+            HEAD_BRANCH_NAME="fork/${HEAD_REF}"
+            echo "HEAD_BRANCH_NAME=${HEAD_BRANCH_NAME}" >>"${GITHUB_OUTPUT}"
           else
-            git fetch origin $HEAD_REF
-            HEAD_BRANCH_NAME=origin/$HEAD_REF
-            echo "HEAD_BRANCH_NAME=$HEAD_BRANCH_NAME" >> $GITHUB_OUTPUT
+            git fetch origin "${HEAD_REF}"
+            HEAD_BRANCH_NAME="origin/${HEAD_REF}"
+            echo "HEAD_BRANCH_NAME=${HEAD_BRANCH_NAME}" >>"${GITHUB_OUTPUT}"
           fi
 
       # protect the workflows dir, only allow specific users to modify
@@ -73,9 +79,67 @@ jobs:
             exit 1
           fi
 
+      - id: build-impact
+        name: Detect native Wheel build inputs
+        run: |
+          set -euo pipefail
+          required=false
+          while IFS= read -r path; do
+            case "${path}" in
+              CMakeLists.txt|cmake/*|ucm/*|setup.py|pyproject.toml|MANIFEST.in|version.ini|ucm_patch.pth|README.md|LICENSE|scripts/materialize_version.py|.github/release/ucm_release/*|.github/release/docker/*|.github/release/requirements/*|.github/release/release.yaml|.github/release/platforms.yaml|.github/actions/download-artifact-retry/*|.github/workflows/_build-wheel.yml|.github/workflows/_probe-runtime.yml|.github/workflows/_native-wheel-gate.yml|.github/workflows/release-ucm.yml|.github/workflows/pull-request.yml)
+                required=true
+                break
+                ;;
+            esac
+          done < <(git diff --name-only \
+            "origin/${{ github.base_ref }}...${{ steps.fetch_base_and_pr_branches.outputs.HEAD_BRANCH_NAME }}")
+          echo "required=${required}" >>"${GITHUB_OUTPUT}"
+
   lint-and-unit-tests:
     needs: pre-check
     uses: ./.github/workflows/lint-and-test.yml
+
+  native-wheel-build:
+    name: Native Wheel Matrix
+    needs: pre-check
+    if: needs.pre-check.outputs.native_wheel_required == 'true'
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/_native-wheel-gate.yml
+    with:
+      source_ref: ${{ github.sha }}
+      retention_days: 7
+
+  native-wheel-compile:
+    name: native-wheel-compile
+    needs: [pre-check, native-wheel-build]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Require the applicable native Wheel build
+        env:
+          PRE_CHECK_RESULT: ${{ needs.pre-check.result }}
+          BUILD_REQUIRED: ${{ needs.pre-check.outputs.native_wheel_required }}
+          BUILD_RESULT: ${{ needs.native-wheel-build.result }}
+        run: |
+          set -euo pipefail
+          if [ "${PRE_CHECK_RESULT}" != success ]; then
+            echo "Native Wheel Gate cannot pass because pre-check did not succeed" >&2
+            exit 1
+          fi
+          if [ "${BUILD_REQUIRED}" != true ]; then
+            echo "Native Wheel Gate is not required for this PR"
+            exit 0
+          fi
+          if [ "${BUILD_RESULT}" != success ]; then
+            echo "Native Wheel Gate failed: ${BUILD_RESULT}" >&2
+            exit 1
+          fi
+          echo "All planned native Wheels compiled successfully"
 
   test-build-vllm-ascend:
     timeout-minutes: 25
@@ -177,6 +241,7 @@ jobs:
     timeout-minutes: 20
     runs-on: [self-hosted, npu, a2]
     needs: lint-and-unit-tests
+    if: github.repository == 'ModelEngine-Group/unified-cache-management'
     permissions:
       checks: write
       pull-requests: write
@@ -225,7 +290,7 @@ jobs:
           SHORT_SHA=$(echo '${{ github.sha }}' | cut -c1-7)
           REF_NAME=$(echo '${{ github.ref_name }}' | tr '/' '-')
           VERSION="${REF_NAME}-${DATE}-${{ github.run_number }}-${SHORT_SHA}"
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >>"${GITHUB_OUTPUT}"
           echo "Docker image version: ${VERSION}"
 
       - name: Build

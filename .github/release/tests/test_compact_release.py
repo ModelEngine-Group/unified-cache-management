@@ -34,8 +34,8 @@ def _fixture_policy(
         dockerhub_namespace="docker.io/release-test",
     )
     selectors = {
-        "vllm": [{"raw": "0.22.1", "keyword": "0.22.1", "tag": None}],
-        "vllm-ascend": [{"raw": "0.22.1rc1", "keyword": "0.22.1rc1", "tag": None}],
+        "vllm": [{"raw": "0.22.1", "version": "0.22.1", "tag": None}],
+        "vllm-ascend": [{"raw": "0.22.1", "version": "0.22.1", "tag": None}],
     }
     resolved["runtime_selectors"] = copy.deepcopy(selectors)
     for product in resolved["products"]:
@@ -88,6 +88,30 @@ def _all_keys(value: object) -> set[str]:
     if isinstance(value, list):
         return {key for item in value for key in _all_keys(item)}
     return set()
+
+
+def test_pr_plan_can_build_directly_from_pinned_upstream_builders() -> None:
+    formal, selection, _finalized_catalog = _inputs()
+    desired = builders.catalog_from_selection(
+        selection,
+        owner="release-org",
+        formal_policy=formal,
+    )
+
+    plan = compact.resolve_plan(
+        formal,
+        runtime_selection=selection,
+        builder_catalog=builders.bind_source_catalog(desired),
+        route="pr",
+    )
+
+    builds = {item["id"]: item for item in selection["wheel_builds"]}
+    assert len(plan["wheels"]) == len(builds)
+    for wheel in plan["wheels"]:
+        build = builds[wheel["id"]]
+        source_repository, _source_tag = build["source_image"].rsplit(":", 1)
+        assert wheel["builder"]["repository"] == source_repository
+        assert wheel["builder"]["digest"] == build["source_image_digest"]
 
 
 def _write_wheel_fixture(
