@@ -89,10 +89,6 @@ target_include_directories(kv_client
 target_link_libraries(kv_client PUBLIC kv_transport pthread)
 target_compile_definitions(kv_client PRIVATE SPDLOG_FMT_EXTERNAL)
 
-if(BUILD_UNIT_TESTS)
-    target_compile_definitions(kv_transport PRIVATE ASU_BUILD_TESTS)
-endif()
-
 set(INSTALL_REL_PATH "kv_semantics/src")
 set_target_properties(kv_client PROPERTIES INSTALL_RPATH "$ORIGIN")
 set_target_properties(kv_transport PROPERTIES INSTALL_RPATH "$ORIGIN")

@@ -1,3 +1,4 @@
+#include "kv_runtime_proxy.h"
 #include <cstdlib>
 #include <dlfcn.h>
 #include <filesystem>
@@ -5,7 +6,6 @@
 #include <unistd.h>
 #include <utility>
 #include <vector>
-#include "kv_runtime_proxy.h"
 
 namespace kv::bench {
 
