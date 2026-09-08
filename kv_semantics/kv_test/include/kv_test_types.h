@@ -119,6 +119,7 @@ struct CommandOptions {
     std::uint64_t keyEnd{0};
     std::uint64_t seed{0};
     std::uint64_t valueSize{0};
+    std::uint64_t ioIntervalUs{0};
     std::uint32_t batchSize{0};
     std::uint32_t concurrency{0};
     std::uint64_t durationSec{0};
@@ -139,6 +140,7 @@ struct CommandOptions {
 struct BenchConfig {
     BenchOpType op{BenchOpType::UNKNOWN};
     std::uint64_t ioSize{0};
+    std::uint64_t ioIntervalUs{0};
     std::uint32_t concurrency{0};
     std::uint64_t durationSec{0};
     std::uint64_t ioCount{0};

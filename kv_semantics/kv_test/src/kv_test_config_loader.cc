@@ -211,6 +211,7 @@ Status KvTestConfigLoader::Load(const std::string& configPath, KvTestConfig& con
         GetUint64Any(values, {"limits.memory_max_bytes"}, config.memoryMaxBytes);
 
         GetUint64Any(values, {"bench.io_size"}, config.bench.ioSize);
+        GetUint64Any(values, {"bench.io_interval_us"}, config.bench.ioIntervalUs);
         GetUint32Any(values, {"bench.concurrency"}, config.bench.concurrency);
         GetUint64Any(values, {"bench.duration_sec"}, config.bench.durationSec);
         GetUint64Any(values, {"bench.io_count"}, config.bench.ioCount);

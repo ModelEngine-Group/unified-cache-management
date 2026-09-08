@@ -56,6 +56,7 @@ CommandOptions BuildEffectiveOptions(const CommandOptions& options, const KvTest
     effective.valueSize = options.command == CommandType::BENCH
                               ? config.bench.ioSize
                               : EffectiveValueSize(options, config);
+    effective.ioIntervalUs = config.bench.ioIntervalUs;
     effective.keyPrefix = EffectiveKeyPrefix(options, config);
     effective.batchSize = config.bench.batchSize;
     effective.timeoutMs = config.asuClientConfig.defaultWaitTimeoutMs;

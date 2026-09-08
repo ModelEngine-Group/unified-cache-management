@@ -47,6 +47,14 @@ Status FinalizeQueryResult(CommandResult& result)
 using EntrySubmitMethod = kv::Status (kv::KvClient::*)(const std::vector<kv::KVBuffer>&,
                                                        kv::TaskId&);
 
+Status SubmitEntriesAsync(kv::KvClient& client, const std::vector<kv::KVBuffer>& entries,
+                          EntrySubmitMethod submitMethod, const std::string& operation,
+                          kv::TaskId& taskId)
+{
+    auto status = (client.*submitMethod)(entries, taskId);
+    return ToKvTestStatus(status, operation);
+}
+
 Status SubmitAndWaitEntries(kv::KvClient& client, const std::vector<kv::KVBuffer>& entries,
                             EntrySubmitMethod submitMethod, std::uint64_t timeoutMs,
                             const std::string& operation, CommandResult& result)
@@ -234,6 +242,39 @@ Status KvClientRunner::Retrieve(const BufferSet& buffers, SubmitMode submitMode,
 
     return SubmitAndWaitEntries(*client_, buffers.entries, &kv::KvClient::BatchLoadAsync, timeoutMs,
                                 "retrieve", result);
+}
+
+Status KvClientRunner::SubmitStore(const BufferSet& buffers, SubmitMode submitMode,
+                                   kv::TaskId& taskId)
+{
+    if (client_ == nullptr) { return Status::Error(kExitInvalidArgument, "asu client is null"); }
+    const auto submitMethod = submitMode == SubmitMode::SINGLE_ENTRY_PER_CALL
+                                  ? static_cast<EntrySubmitMethod>(&kv::KvClient::StoreAsync)
+                                  : static_cast<EntrySubmitMethod>(&kv::KvClient::BatchStoreAsync);
+    return SubmitEntriesAsync(*client_, buffers.entries, submitMethod, "store", taskId);
+}
+
+Status KvClientRunner::SubmitRetrieve(const BufferSet& buffers, SubmitMode submitMode,
+                                      kv::TaskId& taskId)
+{
+    if (client_ == nullptr) { return Status::Error(kExitInvalidArgument, "asu client is null"); }
+    const auto submitMethod = submitMode == SubmitMode::SINGLE_ENTRY_PER_CALL
+                                  ? &kv::KvClient::LoadAsync
+                                  : &kv::KvClient::BatchLoadAsync;
+    return SubmitEntriesAsync(*client_, buffers.entries, submitMethod, "retrieve", taskId);
+}
+
+Status KvClientRunner::Wait(kv::TaskId taskId, std::uint64_t timeoutMs, CommandResult& result)
+{
+    if (client_ == nullptr) { return Status::Error(kExitInvalidArgument, "asu client is null"); }
+
+    auto status = client_->Wait(taskId, timeoutMs, result.taskResult);
+    if (!status.ok()) {
+        if (result.taskResult.status.ok()) { result.taskResult.status = status; }
+        result.status = ToKvTestStatus(status, "wait");
+        return result.status;
+    }
+    return FinalizeTaskResult(result);
 }
 
 Status KvClientRunner::Delete(const std::vector<kv::CacheKey>& keys, std::uint64_t timeoutMs,

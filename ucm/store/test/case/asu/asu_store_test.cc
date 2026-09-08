@@ -319,7 +319,7 @@ TEST(UCAsuStoreTest, DumpPassesPrerequisiteEventToClient)
     auto state = UseFakeClient(store);
     auto config = MakeBaseConfig();
     config.Set("asu_ids", std::vector<ssize_t>{1001});
-    std::array<std::byte, kv::kAsuAlignmentBytes> buffer{};
+    std::array<std::byte, kv::kAlignmentBytes> buffer{};
     RegisterPersistentRanges(config, {
                                          {buffer.data(), buffer.size()}
     });
