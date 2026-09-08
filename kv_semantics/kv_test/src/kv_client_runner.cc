@@ -1,7 +1,7 @@
-﻿#include <algorithm>
+﻿#include "kv_client_runner.h"
+#include <algorithm>
 #include <unordered_set>
 #include "kv_client.h"
-#include "kv_client_runner.h"
 
 namespace kv::bench {
 
@@ -244,8 +244,8 @@ Status KvClientRunner::Retrieve(const BufferSet& buffers, SubmitMode submitMode,
                                 "retrieve", result);
 }
 
-Status KvClientRunner::SubmitStore(const BufferSet& buffers, SubmitMode submitMode,
-                                   kv::TaskId& taskId)
+Status KvClientRunner::StoreAsync(const BufferSet& buffers, SubmitMode submitMode,
+                                  kv::TaskId& taskId)
 {
     if (client_ == nullptr) { return Status::Error(kExitInvalidArgument, "asu client is null"); }
     const auto submitMethod = submitMode == SubmitMode::SINGLE_ENTRY_PER_CALL
@@ -254,8 +254,8 @@ Status KvClientRunner::SubmitStore(const BufferSet& buffers, SubmitMode submitMo
     return SubmitEntriesAsync(*client_, buffers.entries, submitMethod, "store", taskId);
 }
 
-Status KvClientRunner::SubmitRetrieve(const BufferSet& buffers, SubmitMode submitMode,
-                                      kv::TaskId& taskId)
+Status KvClientRunner::RetrieveAsync(const BufferSet& buffers, SubmitMode submitMode,
+                                     kv::TaskId& taskId)
 {
     if (client_ == nullptr) { return Status::Error(kExitInvalidArgument, "asu client is null"); }
     const auto submitMethod = submitMode == SubmitMode::SINGLE_ENTRY_PER_CALL

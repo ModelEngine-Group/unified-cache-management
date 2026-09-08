@@ -422,8 +422,8 @@ Status SubmitBenchOperation(BenchOpType requestedOp, const KvTestConfig& config,
     status = BindRegisteredBuffers(buffers);
     if (!status.Ok()) { return status; }
 
-    return isRead ? clientRunner.SubmitRetrieve(buffers, submitMode, taskId)
-                  : clientRunner.SubmitStore(buffers, submitMode, taskId);
+    return isRead ? clientRunner.RetrieveAsync(buffers, submitMode, taskId)
+                  : clientRunner.StoreAsync(buffers, submitMode, taskId);
 }
 
 OperationOutcome WaitBenchOperation(const KvTestConfig& config, KvClientRunner& clientRunner,
