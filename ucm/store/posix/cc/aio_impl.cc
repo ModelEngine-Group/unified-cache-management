@@ -95,10 +95,8 @@ static inline int32_t AioSetup(int32_t nEvents, aio_context_t* pCtx)
 
 static std::string AioSetupErrorMessage(int32_t eno, size_t requestedEvents)
 {
-    auto message = fmt::format(
-        "Failed to initialize UCM Posix AIO: io_setup(requested_events={}) failed "
-        "with errno={} ({}).",
-        requestedEvents, eno, strerror(eno));
+    auto message = fmt::format("UCM Posix AIO: io_setup({}) failed with errno={} ({}).",
+                               requestedEvents, eno, strerror(eno));
     if (eno == EAGAIN) {
         auto readLimit = [](const char* path) -> std::string {
             std::ifstream input(path);
@@ -109,17 +107,12 @@ static std::string AioSetupErrorMessage(int32_t eno, size_t requestedEvents)
         const auto aioNr = readLimit("/proc/sys/fs/aio-nr");
         const auto aioMaxNr = readLimit("/proc/sys/fs/aio-max-nr");
         message += fmt::format(
-            " System-wide AIO quota may be exhausted or concurrently requested by other "
-            "instances. Post-failure snapshot: fs.aio-nr={}, fs.aio-max-nr={} "
-            "(values may change during concurrent startup or shutdown). "
-            "Check with 'sysctl fs.aio-nr fs.aio-max-nr'. Ask the host administrator to "
-            "increase fs.aio-max-nr, or reduce the number of concurrent Posix AIO instances; "
-            "each instance requests {} events.",
-            aioNr, aioMaxNr, requestedEvents);
+            " Possible AIO quota exhaustion: fs.aio-nr={}, fs.aio-max-nr={} (snapshot). "
+            "Increase the host limit, e.g. 'sudo sysctl -w fs.aio-max-nr=1048576' "
+            "(choose a value above the current limit), or run fewer AIO instances.",
+            aioNr, aioMaxNr);
     } else if (eno == ENOMEM) {
-        message += " Insufficient kernel resources to create the AIO context. Check available "
-                   "memory and system/container resource limits; increasing fs.aio-max-nr "
-                   "alone does not resolve this allocation failure.";
+        message += " Insufficient kernel resources; check available memory and resource limits.";
     }
     return message;
 }
