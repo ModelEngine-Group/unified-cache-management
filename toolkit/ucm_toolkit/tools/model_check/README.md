@@ -87,12 +87,28 @@ ucm-toolkit run model-check --model /path/to/model --tokens 1024 --block-size 12
 # CPU (official vLLM CPU build + PLATFORM=simu UCM; no accelerator needed)
 ucm-toolkit run model-check --model /path/to/model --tokens 1024 --block-size 128 \
     --storage-backends /path/to/ucm_storage
+
+# Explicit connector-v2 validation (the legacy module remains the default)
+ucm-toolkit run model-check \
+    --connector-module-path ucm.integration.vllm.v2.ucm_connector \
+    --model /path/to/model --tokens 1024 --block-size 128 \
+    --storage-backends /path/to/ucm_storage
 ```
 
 `adapter.py` picks the launcher automatically: `vllm_ascend` installed →
 `ascend`; vLLM package version contains `+cpu` → `cpu`; plain vLLM → `cuda`.
 All knobs are also available as environment variables (`UCM_MODEL_CHECK_*`,
 see `config.py`).
+
+Both implementations expose the same `UCMConnector` facade.  The module path
+selects the implementation: `ucm.integration.vllm.ucm_connector` for legacy,
+or `ucm.integration.vllm.v2.ucm_connector` for v2.  The v2 facade uses the
+synchronous byte-range file Proxy and stores records below
+`<storage_backends>/.ucm-v2/<device>-<dtype>-<policy>-b<scheduler-block>-c<chunk>/`,
+so v2 files cannot be mistaken for legacy Store records or another platform's
+layout.  The v2 check fills and compares
+each selected `(key, offset, ptr, size)` range with a position-dependent byte
+pattern; this catches sub-block offset errors that block-constant fills miss.
 
 Success looks like:
 

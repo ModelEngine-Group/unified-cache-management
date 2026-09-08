@@ -125,6 +125,7 @@ def make_config(
     storage_backends: str,
     use_layerwise: bool,
     device: str,
+    connector_module_path: str = "ucm.integration.vllm.ucm_connector",
 ) -> Any:
     """Create a one-rank vLLM configuration for the synthetic request."""
 
@@ -135,7 +136,7 @@ def make_config(
         KVTransferConfig,
         {
             "kv_connector": "UCMConnector",
-            "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
+            "kv_connector_module_path": connector_module_path,
             "kv_role": "kv_both",
             "kv_connector_extra_config": make_ucm_config(
                 store_pipeline,
@@ -687,17 +688,73 @@ def make_cache(
 def make_worker(fixture: CacheFixture) -> Any:
     """Create the worker-side UCM connector and bind the real KV tensors."""
 
+    log_cache_layout(fixture)
+    from vllm.distributed.kv_transfer.kv_connector.factory import KVConnectorFactory
     from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorRole
 
-    from ucm.integration.vllm.ucm_connector import UCMConnector
-
-    connector = UCMConnector(
-        fixture.vllm_config,
-        KVConnectorRole.WORKER,
-        fixture.kv_cache_config,
+    connector = KVConnectorFactory.create_connector(
+        fixture.vllm_config, KVConnectorRole.WORKER, fixture.kv_cache_config
     )
     connector.register_kv_caches(fixture.kv_caches)
     return connector
+
+
+def _runtime_tensor_signature(value: Any) -> tuple[Any, ...]:
+    if isinstance(value, (tuple, list)):
+        return tuple(_runtime_tensor_signature(item) for item in value)
+    shape = tuple(int(item) for item in value.shape)
+    stride = tuple(int(value.stride(index)) for index in range(len(shape)))
+    return (str(value.device), str(value.dtype), shape, stride)
+
+
+def log_cache_layout(fixture: CacheFixture) -> None:
+    """Print deduplicated config/runtime layouts before connector parsing."""
+
+    config = fixture.kv_cache_config
+    raw_by_layer = {
+        layer_name: raw
+        for raw in getattr(config, "kv_cache_tensors", ())
+        for layer_name in raw.shared_by
+    }
+    log(
+        "KVCacheConfig: "
+        f"num_blocks={config.num_blocks}, "
+        f"groups={len(config.kv_cache_groups)}, "
+        f"raw_tensors={len(getattr(config, 'kv_cache_tensors', ()))}"
+    )
+    for group_id, group in enumerate(config.kv_cache_groups):
+        nested = getattr(group.kv_cache_spec, "kv_cache_specs", None) or {}
+        signatures: dict[tuple[Any, ...], list[str]] = {}
+        for layer_name in group.layer_names:
+            layer_spec = nested.get(layer_name, group.kv_cache_spec)
+            raw = raw_by_layer.get(layer_name)
+            raw_signature = (
+                int(getattr(raw, "block_stride", 0)),
+                int(getattr(raw, "size", 0)),
+            )
+            signature = (
+                type(layer_spec).__name__,
+                int(getattr(layer_spec, "block_size", 0)),
+                int(
+                    getattr(
+                        layer_spec,
+                        "storage_block_size",
+                        getattr(layer_spec, "block_size", 0),
+                    )
+                ),
+                tuple(getattr(layer_spec, "shapes", ()) or ()),
+                raw_signature,
+                _runtime_tensor_signature(fixture.kv_caches[layer_name]),
+            )
+            signatures.setdefault(signature, []).append(layer_name)
+        for signature, layer_names in signatures.items():
+            raw = raw_by_layer.get(layer_names[0])
+            log(
+                f"KV group {group_id}: count={len(layer_names)}, "
+                f"example={layer_names[0]}, "
+                f"example_raw_offset={int(getattr(raw, 'offset', 0))}, "
+                f"signature={signature}"
+            )
 
 
 # Scheduler request construction and dispatch.
@@ -784,7 +841,10 @@ def make_prompt_tokens(num_tokens: int, salt: int) -> list[int]:
 
 
 def source_prompt_tokens(
-    prompt_token_ids: list[int], kv_cache_config: Any, hash_block_size: int
+    prompt_token_ids: list[int],
+    kv_cache_config: Any,
+    hash_block_size: int,
+    connector_alignment: int | None = None,
 ) -> list[int]:
     """Keep the source prefix at a complete multi-group KV boundary."""
 
@@ -799,6 +859,8 @@ def source_prompt_tokens(
         if specs:
             spec = next(iter(specs.values()))
         block_sizes.append(int(spec.block_size))
+    if connector_alignment is not None:
+        block_sizes.append(int(connector_alignment))
     lcm_block_size = math.lcm(*block_sizes)
     source_tokens = len(prompt_token_ids) - hash_block_size
     source_tokens = source_tokens // lcm_block_size * lcm_block_size
@@ -988,6 +1050,14 @@ def finish_async_dumps(worker: Any, request_id: str) -> None:
 def metadata_key_count(metadata: Any, phase: str) -> int:
     """Count UCM keys in ordinary or FAWA dispatch metadata."""
 
+    v2_requests = getattr(metadata, "requests", None)
+    if v2_requests is not None:
+        return sum(
+            len(plan.keys)
+            for request_meta in v2_requests.values()
+            for plan in getattr(request_meta, f"{phase}_plans")
+        )
+
     total = 0
     for request_meta in getattr(metadata, "request_meta", {}).values():
         native = f"{phase}_block_ids"
@@ -996,6 +1066,77 @@ def metadata_key_count(metadata: Any, phase: str) -> int:
         elif hasattr(request_meta, f"{phase}_keys"):
             total += len(getattr(request_meta, f"{phase}_keys"))
     return total
+
+
+def _v2_batch(worker: Any, metadata: Any, phase: str) -> Any | None:
+    """Build the exact v2 pointer batch, or return None for legacy metadata."""
+
+    if not hasattr(metadata, "requests"):
+        return None
+    connector = getattr(worker, "connector", worker)
+    layout = getattr(connector, "layout", None)
+    if layout is None:
+        raise ValueError("connector v2 worker has no registered KV-cache layout")
+    builder = getattr(layout, f"build_{phase}_batches")
+    return builder(metadata)
+
+
+def _v2_segment_payload(key: bytes, offset: int, size: int) -> bytes:
+    """Generate position-dependent bytes without retaining a second KV copy."""
+
+    seed = hashlib.sha256(bytes(key) + int(offset).to_bytes(8, "little")).digest()
+    pattern = bytes((seed[index % len(seed)] + index) % 251 for index in range(251))
+    return (pattern * ((size + len(pattern) - 1) // len(pattern)))[:size]
+
+
+def fill_v2_dump_segments(
+    fixture: Any,
+    worker: Any,
+    metadata: Any,
+) -> int:
+    """Fill every v2 dump byte range with a deterministic offset pattern."""
+
+    from ucm.integration.vllm.v2.ucm_proxy import TorchTensorByteAccess
+
+    batch = _v2_batch(worker, metadata, "dump")
+    if batch is None:
+        raise ValueError("fill_v2_dump_segments received legacy metadata")
+    access = TorchTensorByteAccess()
+    access.register_tensors(fixture.kv_caches)
+    for key, offset, ptr, size in zip(
+        batch.block_ids, batch.offsets, batch.ptrs, batch.sizes, strict=True
+    ):
+        access.write(ptr, _v2_segment_payload(key, offset, size))
+    access.synchronize()
+    return len(batch.sizes)
+
+
+def compare_v2_load_segments(
+    fixture: Any,
+    worker: Any,
+    metadata: Any,
+) -> int:
+    """Compare loaded v2 ranges against their key/offset-derived byte pattern."""
+
+    from ucm.integration.vllm.v2.ucm_proxy import TorchTensorByteAccess
+
+    batch = _v2_batch(worker, metadata, "load")
+    if batch is None:
+        raise ValueError("compare_v2_load_segments received legacy metadata")
+    access = TorchTensorByteAccess()
+    access.register_tensors(fixture.kv_caches)
+    access.synchronize()
+    for index, (key, offset, ptr, size) in enumerate(
+        zip(batch.block_ids, batch.offsets, batch.ptrs, batch.sizes, strict=True)
+    ):
+        expected = _v2_segment_payload(key, offset, size)
+        actual = access.read(ptr, size)
+        if actual != expected:
+            raise AssertionError(
+                "connector v2 byte mismatch: "
+                f"segment={index}, key={key.hex()}, offset={offset}, size={size}"
+            )
+    return len(batch.sizes)
 
 
 def _fawa_segments(
@@ -1342,6 +1483,12 @@ def compare_loaded_blocks(
 ) -> int:
     """Compare saved source blocks with their loaded target blocks."""
 
+    if hasattr(load_metadata, "requests"):
+        compared = compare_v2_load_segments(fixture, worker, load_metadata)
+        if not compared:
+            raise AssertionError("no loaded connector v2 byte ranges were compared")
+        return compared
+
     connector = getattr(worker, "connector", None)
     source_segments = _fawa_segments(save_metadata, "dump", connector)
     target_segments = _fawa_segments(load_metadata, "load", connector)
@@ -1486,6 +1633,7 @@ def schedule(
     tokens: int,
     request_token_salt: int,
     patch_groups: Callable[[Any], None] | None = None,
+    worker: Any | None = None,
 ) -> RequestDispatchFixture:
     """Schedule the aligned source request and return its UCM dump metadata."""
 
@@ -1501,8 +1649,13 @@ def schedule(
     _, hash_block_size = get_scheduler_and_hash_block_size(
         fixture.vllm_config, fixture.kv_cache_config
     )
+    connector = getattr(worker, "connector", worker)
+    connector_spec = getattr(connector, "spec", None)
     source_token_ids = source_prompt_tokens(
-        prompt_token_ids, fixture.kv_cache_config, hash_block_size
+        prompt_token_ids,
+        fixture.kv_cache_config,
+        hash_block_size,
+        getattr(connector_spec, "alignment_block_size", None),
     )
     source = schedule_source(
         fixture, "ucm-kv-shape-check-source", source_token_ids, patch_groups
@@ -1537,11 +1690,20 @@ def verify(
             "check UCM persist thresholds."
         )
 
-    native_blocks = (
-        _fawa_segments(save_metadata, "dump", getattr(worker, "connector", None))
-        is not None
-    )
-    saved = save_source(fixture, source_ids, synchronize, native_blocks)
+    v2_dump_batch = _v2_batch(worker, save_metadata, "dump")
+    if v2_dump_batch is not None:
+        filled = fill_v2_dump_segments(fixture, worker, save_metadata)
+        if not filled:
+            raise UnsupportedEnvironment(
+                "Scheduler/UCM v2 metadata selected no dump byte ranges."
+            )
+        saved = []
+    else:
+        native_blocks = (
+            _fawa_segments(save_metadata, "dump", getattr(worker, "connector", None))
+            is not None
+        )
+        saved = save_source(fixture, source_ids, synchronize, native_blocks)
     worker.bind_connector_metadata(save_metadata)
     worker.start_load_kv(build_forward_context(fixture.kv_caches))
     call_worker_layer_hooks(worker, fixture, save=True)
@@ -1565,7 +1727,8 @@ def verify(
         overlap = (set(source_group) & set(target_group)) - {NATIVE_NULL_BLOCK_ID}
         if overlap:
             raise UnsupportedEnvironment(
-                f"Scheduler reused source physical block ids for target load: {sorted(overlap)}"
+                "Scheduler reused source physical block ids for target load: "
+                f"{sorted(overlap)}"
             )
     load_metadata = target.scheduler_output.kv_connector_metadata
     load_count = metadata_key_count(load_metadata, "load")

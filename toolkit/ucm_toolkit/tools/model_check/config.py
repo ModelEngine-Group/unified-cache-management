@@ -17,6 +17,8 @@ STORAGE_BACKENDS_ENV = "UCM_MODEL_CHECK_STORAGE_BACKENDS"
 DEVICE_ENV = "UCM_MODEL_CHECK_DEVICE_ID"
 DTYPE_ENV = "UCM_MODEL_CHECK_DTYPE"
 KV_CACHE_DTYPE_ENV = "UCM_MODEL_CHECK_KV_CACHE_DTYPE"
+CONNECTOR_MODULE_PATH_ENV = "UCM_MODEL_CHECK_CONNECTOR_MODULE_PATH"
+LEGACY_CONNECTOR_MODULE = "ucm.integration.vllm.ucm_connector"
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -68,6 +70,7 @@ class ModelCheckConfig:
     visible_devices: str
     dtype: str
     kv_cache_dtype: str
+    connector_module_path: str
 
 
 def load_config() -> ModelCheckConfig:
@@ -83,4 +86,7 @@ def load_config() -> ModelCheckConfig:
         visible_devices=os.environ.get(DEVICE_ENV, "0"),
         dtype=os.environ.get(DTYPE_ENV, "auto"),
         kv_cache_dtype=os.environ.get(KV_CACHE_DTYPE_ENV, "auto"),
+        connector_module_path=os.environ.get(
+            CONNECTOR_MODULE_PATH_ENV, LEGACY_CONNECTOR_MODULE
+        ),
     )

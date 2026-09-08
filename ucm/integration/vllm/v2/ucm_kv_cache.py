@@ -6,7 +6,7 @@ import math
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Iterable, Literal, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from .ucm_proxy import UCMProxyBatch
 
@@ -23,6 +23,7 @@ class UCMLayerSpec:
     layer_name: str
     layer_index: int
     kv_cache_spec: Any
+    storage_block_size: int
 
 
 @dataclass(frozen=True)
@@ -40,14 +41,22 @@ class UCMKVCacheGroupInfo:
     def num_layers(self) -> int:
         return len(self.layers)
 
+    @property
+    def is_state_snapshot(self) -> bool:
+        return (
+            UCMGroupTag.STATE in self.tags
+            and UCMGroupTag.SLIDING_WINDOW not in self.tags
+        )
+
 
 @dataclass(frozen=True)
 class UCMKVCacheSpec:
     groups: tuple[UCMKVCacheGroupInfo, ...]
     scheduler_block_size: int
     alignment_block_size: int
-    mode: Literal["direct", "hybrid", "dsv4"]
     chunk_size: int
+    device_type: str
+    is_dsv4: bool
 
     @property
     def attn_groups(self) -> tuple[UCMKVCacheGroupInfo, ...]:
@@ -60,6 +69,23 @@ class UCMKVCacheSpec:
     @property
     def sw_groups(self) -> tuple[UCMKVCacheGroupInfo, ...]:
         return tuple(g for g in self.groups if UCMGroupTag.SLIDING_WINDOW in g.tags)
+
+    @property
+    def fa_groups(self) -> tuple[UCMKVCacheGroupInfo, ...]:
+        return tuple(
+            group
+            for group in self.groups
+            if UCMGroupTag.ATTENTION in group.tags
+            and UCMGroupTag.SLIDING_WINDOW not in group.tags
+        )
+
+    @property
+    def wa_groups(self) -> tuple[UCMKVCacheGroupInfo, ...]:
+        return tuple(
+            group
+            for group in self.groups
+            if UCMGroupTag.SLIDING_WINDOW in group.tags
+        )
 
     @property
     def c4a_group(self) -> UCMKVCacheGroupInfo | None:
@@ -94,11 +120,15 @@ def _concrete_specs(group: Any) -> tuple[tuple[str, Any], ...]:
     return tuple((name, group_spec) for name in names)
 
 
-def _classify(group: Any, concrete: Sequence[tuple[str, Any]]) -> frozenset[UCMGroupTag]:
+def _classify(
+    group: Any, concrete: Sequence[tuple[str, Any]]
+) -> frozenset[UCMGroupTag]:
     names = tuple(name.lower() for name, _ in concrete)
     specs = tuple(spec for _, spec in concrete) or (group.kv_cache_spec,)
     type_names = tuple(type(spec).__name__.lower() for spec in specs)
-    has_window = any(getattr(spec, "sliding_window", None) is not None for spec in specs)
+    has_window = any(
+        getattr(spec, "sliding_window", None) is not None for spec in specs
+    )
     is_mamba = any("mamba" in name for name in type_names)
     is_compressor = any("compressor" in name or "state_cache" in name for name in names)
     is_c4 = any(
@@ -123,8 +153,9 @@ def parse_kv_cache_config(
     *,
     scheduler_block_size: int,
     chunk_size: int | None = None,
+    device_type: str = "npu",
 ) -> UCMKVCacheSpec:
-    """Parse the vLLM 0.26 KVCacheConfig using only its stable fields."""
+    """Describe logical groups and per-layer storage from KVCacheConfig."""
 
     raw_groups = tuple(getattr(kv_cache_config, "kv_cache_groups", ()))
     if not raw_groups:
@@ -132,7 +163,9 @@ def parse_kv_cache_config(
     if scheduler_block_size <= 0:
         raise ValueError("scheduler_block_size must be positive")
 
-    classified: list[tuple[Any, tuple[tuple[str, Any], ...], frozenset[UCMGroupTag]]] = []
+    classified: list[
+        tuple[Any, tuple[tuple[str, Any], ...], frozenset[UCMGroupTag]]
+    ] = []
     dsv4 = False
     for raw_group in raw_groups:
         concrete = _concrete_specs(raw_group)
@@ -144,32 +177,31 @@ def parse_kv_cache_config(
         ):
             dsv4 = True
 
-    hybrid = len(raw_groups) > 1 and any(
-        UCMGroupTag.STATE in tags or UCMGroupTag.SLIDING_WINDOW in tags
-        for _, _, tags in classified
-    )
-    mode: Literal["direct", "hybrid", "dsv4"] = (
-        "dsv4" if dsv4 else "hybrid" if hybrid else "direct"
-    )
-    if mode != "direct" and chunk_size is not None:
-        raise ValueError(f"custom chunk_size is not supported for {mode}")
+    device_type = str(device_type).lower()
+    if len(raw_groups) != 1 and chunk_size is not None:
+        raise ValueError("custom chunk_size is supported only for a single KV group")
 
     c4_sizes: set[int] = set()
-    if mode == "dsv4":
+    if dsv4:
         for raw_group, concrete, tags in classified:
             if UCMGroupTag.C4A in tags:
                 c4_sizes.add(int(getattr(raw_group.kv_cache_spec, "block_size")))
         if len(c4_sizes) != 1:
             raise ValueError(
-                f"DeepSeek V4 requires exactly one C4A block size, got {sorted(c4_sizes)}"
+                "DeepSeek V4 requires exactly one C4A block size, got "
+                f"{sorted(c4_sizes)}"
             )
-        canonical_size = c4_sizes.pop() * 4
+        c4_size = c4_sizes.pop()
+        # Ascend 0.26 reports the C4 storage span as block_size. Official
+        # vLLM 0.27 reports the logical span and exposes storage_block_size
+        # separately on each concrete spec.
+        canonical_size = c4_size * 4 if device_type == "npu" else scheduler_block_size
     else:
         canonical_size = scheduler_block_size
 
     groups: list[UCMKVCacheGroupInfo] = []
     attention_compress_ratio_by_layer: dict[int, int] = {}
-    if mode == "dsv4":
+    if dsv4:
         for _, concrete, tags in classified:
             if UCMGroupTag.ATTENTION not in tags or UCMGroupTag.SLIDING_WINDOW in tags:
                 continue
@@ -183,16 +215,27 @@ def parse_kv_cache_config(
         compress_ratio = int(getattr(representative, "compress_ratio", 1))
         token_block_size = (
             physical_block_size * compress_ratio
-            if mode == "dsv4"
+            if dsv4 and device_type == "npu"
             else physical_block_size
         )
-        hash_block_size = canonical_size if mode == "dsv4" else physical_block_size
-        layers = tuple(
-            UCMLayerSpec(name, _layer_index(name, index), spec)
-            for index, (name, spec) in enumerate(concrete)
-        )
+        hash_block_size = canonical_size if dsv4 else physical_block_size
+        layers: list[UCMLayerSpec] = []
+        for index, (name, spec) in enumerate(concrete):
+            storage_block_size = (
+                getattr(spec, "storage_block_size", None)
+                if device_type != "npu"
+                else getattr(spec, "block_size", None)
+            )
+            layers.append(
+                UCMLayerSpec(
+                    name,
+                    _layer_index(name, index),
+                    spec,
+                    int(storage_block_size or physical_block_size),
+                )
+            )
         tail_tokens: int | None = None
-        if mode == "dsv4" and UCMGroupTag.SLIDING_WINDOW in tags:
+        if dsv4 and UCMGroupTag.SLIDING_WINDOW in tags:
             tails: set[int] = set()
             for fallback, (name, concrete_spec) in enumerate(concrete):
                 window = int(getattr(concrete_spec, "sliding_window"))
@@ -217,36 +260,69 @@ def parse_kv_cache_config(
         groups.append(
             UCMKVCacheGroupInfo(
                 group_id=group_id,
-                layers=layers,
+                layers=tuple(layers),
                 group_spec=raw_group.kv_cache_spec,
                 token_block_size=token_block_size,
                 hash_block_size=hash_block_size,
                 tags=tags,
                 tail_tokens=tail_tokens,
-                is_eagle_group=any("eagle" in layer.layer_name.lower() for layer in layers),
+                is_eagle_group=any(
+                    "eagle" in layer.layer_name.lower() for layer in layers
+                ),
             )
         )
 
-    if mode == "direct":
+    state_groups = tuple(group for group in groups if group.is_state_snapshot)
+    if dsv4:
+        selected_chunk = canonical_size
+        alignment = canonical_size
+    elif len(groups) == 1:
         selected_chunk = chunk_size or scheduler_block_size
-        if selected_chunk < scheduler_block_size or selected_chunk % scheduler_block_size:
+        if (
+            selected_chunk < scheduler_block_size
+            or selected_chunk % scheduler_block_size
+        ):
             raise ValueError(
                 "chunk_size must be a positive multiple of scheduler_block_size"
             )
         alignment = scheduler_block_size
-    elif mode == "hybrid":
+    elif state_groups:
         selected_chunk = scheduler_block_size
         alignment = math.lcm(*(group.token_block_size for group in groups))
     else:
-        selected_chunk = canonical_size
-        alignment = canonical_size
+        selected_chunk = scheduler_block_size
+        alignment = math.lcm(*(group.token_block_size for group in groups))
+
+    if dsv4:
+        fa_group_ids = {
+            group.group_id
+            for group in groups
+            if UCMGroupTag.ATTENTION in group.tags
+            and UCMGroupTag.SLIDING_WINDOW not in group.tags
+        }
+        wa_group_ids = {
+            group.group_id
+            for group in groups
+            if UCMGroupTag.SLIDING_WINDOW in group.tags
+        }
+        all_group_ids = {group.group_id for group in groups}
+        if (
+            not fa_group_ids
+            or not wa_group_ids
+            or fa_group_ids | wa_group_ids != all_group_ids
+        ):
+            raise ValueError(
+                "DeepSeek V4 groups must partition into full-attention FA "
+                "and sliding/state WA groups"
+            )
 
     return UCMKVCacheSpec(
         groups=tuple(groups),
         scheduler_block_size=scheduler_block_size,
         alignment_block_size=alignment,
-        mode=mode,
         chunk_size=selected_chunk,
+        device_type=device_type,
+        is_dsv4=dsv4,
     )
 
 
@@ -283,11 +359,15 @@ def _tensor_views(tensor: Any) -> tuple[Any, ...]:
         return tuple(tensor)
     shape = tuple(int(value) for value in tensor.shape)
     if len(shape) == 5:
-        raise ValueError(
-            "Standalone 5-D combined KV tensors are not part of the verified "
-            "Ascend vLLM 0.26 layouts; pass explicit component views or add a "
-            "platform fixture before enabling this shape"
-        )
+        if shape[1] != 2 or not callable(getattr(tensor, "unbind", None)):
+            raise ValueError(
+                "Verified vLLM 0.27 combined KV tensors require dimension 1 "
+                f"to be the two-component K/V axis, got shape={shape}"
+            )
+        views = tuple(tensor.unbind(1))
+        if len(views) != 2:
+            raise ValueError(f"Combined KV tensor did not produce K/V views: {shape}")
+        return views
     return (tensor,)
 
 
@@ -382,6 +462,107 @@ def _view_layout(
     )
 
 
+def _dtype_size(dtype: Any) -> int:
+    itemsize = getattr(dtype, "itemsize", None)
+    if itemsize is not None:
+        return int(itemsize)
+    import importlib
+
+    torch = importlib.import_module("torch")
+    return int(torch.empty((), dtype=dtype).element_size())
+
+
+def _state_view_layouts(
+    value: Any,
+    layer: UCMLayerSpec,
+    *,
+    num_blocks: int,
+    device_type: str,
+) -> tuple[UCMTensorViewLayout, ...]:
+    """Resolve an explicit state tuple or vLLM 0.27 CPU raw byte page."""
+
+    raw_views = _tensor_views(value)
+    expected_shapes = tuple(
+        tuple(int(item) for item in shape)
+        for shape in (getattr(layer.kv_cache_spec, "shapes", None) or ())
+    )
+    actual_shapes = tuple(
+        tuple(int(item) for item in view.shape[1:]) for view in raw_views
+    )
+    if not expected_shapes:
+        return tuple(
+            _view_layout(
+                view,
+                layer.storage_block_size,
+                num_blocks=num_blocks,
+                state_snapshot=True,
+            )
+            for view in raw_views
+        )
+    if expected_shapes and actual_shapes == expected_shapes:
+        return tuple(
+            _view_layout(
+                view,
+                layer.storage_block_size,
+                num_blocks=num_blocks,
+                state_snapshot=True,
+            )
+            for view in raw_views
+        )
+
+    if device_type != "cpu" or len(raw_views) != 1 or not expected_shapes:
+        raise ValueError(
+            f"State components for {layer.layer_name} do not match spec shapes: "
+            f"{actual_shapes} != {expected_shapes}"
+        )
+
+    raw = raw_views[0]
+    shape = tuple(int(item) for item in raw.shape)
+    strides = tuple(int(raw.stride(index)) for index in range(len(shape)))
+    element_size = int(raw.element_size())
+    if shape[0] != num_blocks or element_size != 1:
+        raise ValueError(
+            "vLLM 0.27 CPU state backing must be one byte page per block: "
+            f"shape={shape}, element_size={element_size}, num_blocks={num_blocks}"
+        )
+    row_stride = strides[0] * element_size
+    row_payload = _row_payload_bytes(shape, strides, element_size)
+    page_size = int(getattr(layer.kv_cache_spec, "page_size_bytes", row_stride))
+    if row_payload != row_stride or row_stride != page_size:
+        raise ValueError(
+            "vLLM 0.27 CPU state backing must be a dense padded page: "
+            f"shape={shape}, strides={strides}, page_size={page_size}"
+        )
+
+    dtypes = tuple(getattr(layer.kv_cache_spec, "dtypes", ()) or ())
+    if len(dtypes) != len(expected_shapes):
+        raise ValueError(
+            f"State spec for {layer.layer_name} must provide one dtype per shape"
+        )
+    offset = 0
+    layouts: list[UCMTensorViewLayout] = []
+    for component_shape, dtype in zip(expected_shapes, dtypes, strict=True):
+        component_size = math.prod(component_shape) * _dtype_size(dtype)
+        if offset + component_size > row_stride:
+            raise ValueError(
+                f"State components exceed padded page for {layer.layer_name}"
+            )
+        layouts.append(
+            UCMTensorViewLayout(
+                base_ptr=int(raw.data_ptr()) + offset,
+                row_stride_bytes=row_stride,
+                token_stride_bytes=component_size,
+                tokens_per_row=1,
+                rows_per_vllm_block=1,
+                bytes_per_token=component_size,
+                row_payload_bytes=component_size,
+                buffer_size_bytes=(num_blocks - 1) * row_stride + component_size,
+            )
+        )
+        offset += component_size
+    return tuple(layouts)
+
+
 class UCMKVCacheLayout:
     """Ragged, per-layer physical layout with deterministic record offsets."""
 
@@ -406,43 +587,27 @@ class UCMKVCacheLayout:
             ):
                 if layer.layer_name not in kv_caches:
                     raise ValueError(f"Missing KV cache tensor for {layer.layer_name}")
-                physical_block_size = int(
-                    getattr(layer.kv_cache_spec, "block_size", group.token_block_size)
-                )
-                raw_views = _tensor_views(kv_caches[layer.layer_name])
-                is_hybrid_state = (
-                    spec.mode == "hybrid" and UCMGroupTag.STATE in group.tags
-                )
-                if is_hybrid_state:
-                    expected_shapes = getattr(layer.kv_cache_spec, "shapes", None)
-                    if expected_shapes is not None:
-                        expected_shapes = tuple(
-                            tuple(int(value) for value in shape)
-                            for shape in expected_shapes
-                        )
-                        actual_shapes = tuple(
-                            tuple(int(value) for value in view.shape[1:])
-                            for view in raw_views
-                        )
-                        if actual_shapes != expected_shapes:
-                            raise ValueError(
-                                f"State components for {layer.layer_name} do not "
-                                f"match spec shapes: {actual_shapes} != {expected_shapes}"
-                            )
-                parsed_views = tuple(
-                    _view_layout(
-                        view,
-                        physical_block_size,
+                if group.is_state_snapshot:
+                    parsed_views = _state_view_layouts(
+                        kv_caches[layer.layer_name],
+                        layer,
                         num_blocks=num_blocks,
-                        state_snapshot=is_hybrid_state,
+                        device_type=spec.device_type,
                     )
-                    for view in raw_views
-                )
-                if is_hybrid_state and any(
+                else:
+                    parsed_views = tuple(
+                        _view_layout(
+                            view,
+                            layer.storage_block_size,
+                            num_blocks=num_blocks,
+                        )
+                        for view in _tensor_views(kv_caches[layer.layer_name])
+                    )
+                if group.is_state_snapshot and any(
                     view.rows_per_vllm_block != 1 for view in parsed_views
                 ):
                     raise ValueError(
-                        "Verified Ascend state components require exactly one "
+                        "State components require exactly one "
                         f"physical row per vLLM block for {layer.layer_name}"
                     )
                 item = UCMLayerKVCacheLayout(
@@ -456,10 +621,14 @@ class UCMKVCacheLayout:
         self.groups = groups
         self.layers = layers
 
-    def build_load_batches(self, metadata: Any, layer_name: str | None = None) -> UCMProxyBatch:
+    def build_load_batches(
+        self, metadata: Any, layer_name: str | None = None
+    ) -> UCMProxyBatch:
         return self._build_batches(metadata, "load_plans", layer_name)
 
-    def build_dump_batches(self, metadata: Any, layer_name: str | None = None) -> UCMProxyBatch:
+    def build_dump_batches(
+        self, metadata: Any, layer_name: str | None = None
+    ) -> UCMProxyBatch:
         return self._build_batches(metadata, "dump_plans", layer_name)
 
     def _build_batches(
@@ -534,7 +703,7 @@ class UCMKVCacheLayout:
         token_start: int,
         token_end: int,
     ) -> tuple[tuple[int, int], ...]:
-        if self.spec.mode == "hybrid" and UCMGroupTag.STATE in group.tags:
+        if group.is_state_snapshot:
             logical_block = max((token_end - 1) // group.token_block_size, 0)
             if logical_block not in block_map:
                 raise ValueError(
@@ -552,7 +721,9 @@ class UCMKVCacheLayout:
                 ptr = view.base_ptr + (first_row + row) * view.row_stride_bytes
                 size = view.row_payload_bytes
                 if ptr + size > view.base_ptr + view.buffer_size_bytes:
-                    raise ValueError("KV cache state segment exceeds registered tensor buffer")
+                    raise ValueError(
+                        "KV cache state segment exceeds registered tensor buffer"
+                    )
                 result.append((ptr, size))
             return tuple(result)
         result: list[tuple[int, int]] = []
@@ -587,7 +758,10 @@ class UCMKVCacheLayout:
             numerator_end = (
                 logical_end - logical_block * group.token_block_size
             ) * storage_tokens
-            if numerator_begin % group.token_block_size or numerator_end % group.token_block_size:
+            if (
+                numerator_begin % group.token_block_size
+                or numerator_end % group.token_block_size
+            ):
                 raise ValueError(
                     "Logical token range cannot be represented exactly by tensor layout"
                 )
@@ -609,7 +783,9 @@ class UCMKVCacheLayout:
                 )
                 size = (row_end - physical_begin) * view.bytes_per_token
                 if ptr + size > view.base_ptr + view.buffer_size_bytes:
-                    raise ValueError("KV cache segment exceeds registered tensor buffer")
+                    raise ValueError(
+                        "KV cache segment exceeds registered tensor buffer"
+                    )
                 append_segment(ptr, size)
                 physical_begin = row_end
         return tuple(result)

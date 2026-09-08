@@ -64,6 +64,7 @@ store_pipeline = config.store_pipeline
 storage_backends = config.storage_backends
 dtype = config.dtype
 kv_cache_dtype = config.kv_cache_dtype
+connector_module_path = config.connector_module_path
 trust_remote_code = True
 request_token_salt = time.time_ns() ^ os.getpid()
 
@@ -110,6 +111,7 @@ def make_config() -> Any:
         storage_backends,
         use_layerwise,
         "cpu",
+        connector_module_path,
     )
     # CPU 平台对 MLA 模型强制禁用 chunked prefill（vllm/platforms/cpu.py），
     # prefix caching 需与 UCM 的部署形态一致（UCM 接管前缀查找，本地 HBM
@@ -417,7 +419,9 @@ def main() -> int:
         # UCM's MLA shared buffer is created by the worker.  The scheduler reads
         # the worker-published id, so initialize the worker before Scheduler.
         worker = make_worker(fixture)
-        dispatch = schedule(fixture, tokens, request_token_salt, patch_groups)
+        dispatch = schedule(
+            fixture, tokens, request_token_salt, patch_groups, worker
+        )
         verify(fixture, dispatch, worker, torch.cpu.synchronize)
         return 0
     finally:
