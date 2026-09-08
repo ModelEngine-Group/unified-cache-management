@@ -6,7 +6,6 @@ v2 contract is validated.  Importing it does not alter connector registration.
 
 from .ucm_connector import UCMConnector, UCMConnectorMetadata, UCMRuntimeContext
 from .ucm_kv_cache import (
-    UCMGroupTag,
     UCMKVCacheLayout,
     UCMKVCacheSpec,
     parse_kv_cache_config,
@@ -24,7 +23,6 @@ __all__ = [
     "UCMConnector",
     "UCMConnectorMetadata",
     "UCMDispatcher",
-    "UCMGroupTag",
     "UCMKVCacheLayout",
     "UCMKVCacheSpec",
     "UCMLookupCoordinator",

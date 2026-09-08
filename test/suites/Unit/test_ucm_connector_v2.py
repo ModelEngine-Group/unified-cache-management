@@ -33,6 +33,7 @@ for package_name in (
     "vllm.distributed.kv_transfer",
     "vllm.distributed.kv_transfer.kv_connector",
     "vllm.distributed.kv_transfer.kv_connector.v1",
+    "vllm.v1",
 ):
     package = types.ModuleType(package_name)
     package.__path__ = []
@@ -62,8 +63,75 @@ vllm_base.KVConnectorRole = KVConnectorRole
 vllm_base.SupportsHMA = SupportsHMA
 sys.modules[vllm_base.__name__] = vllm_base
 
+vllm_kv_cache_interface = types.ModuleType("vllm.v1.kv_cache_interface")
+
+
+class KVCacheSpecKind(str, enum.Enum):
+    FULL_ATTENTION = "full_attention"
+    MLA_ATTENTION = "mla_attention"
+    SLIDING_WINDOW = "sliding_window"
+    SLIDING_WINDOW_MLA = "sliding_window_mla"
+    MAMBA = "mamba"
+    UNKNOWN = "unknown"
+
+
+class _KVCacheSpec:
+    pass
+
+
+class _AttentionSpec(_KVCacheSpec):
+    pass
+
+
+class _FullAttentionSpec(_AttentionSpec):
+    pass
+
+
+class _MLAAttentionSpec(_FullAttentionSpec):
+    pass
+
+
+class _SlidingWindowSpec(_AttentionSpec):
+    pass
+
+
+class _SlidingWindowMLASpec(_SlidingWindowSpec):
+    pass
+
+
+class _MambaSpec(_KVCacheSpec):
+    pass
+
+
+def get_kv_cache_spec_kind(spec):
+    if isinstance(spec, _SlidingWindowMLASpec):
+        return KVCacheSpecKind.SLIDING_WINDOW_MLA
+    if isinstance(spec, _MLAAttentionSpec):
+        return KVCacheSpecKind.MLA_ATTENTION
+    if isinstance(spec, _FullAttentionSpec):
+        return KVCacheSpecKind.FULL_ATTENTION
+    if isinstance(spec, _SlidingWindowSpec):
+        return KVCacheSpecKind.SLIDING_WINDOW
+    if isinstance(spec, _MambaSpec):
+        return KVCacheSpecKind.MAMBA
+    return KVCacheSpecKind.UNKNOWN
+
+
+for name, value in (
+    ("KVCacheSpecKind", KVCacheSpecKind),
+    ("KVCacheSpec", _KVCacheSpec),
+    ("AttentionSpec", _AttentionSpec),
+    ("FullAttentionSpec", _FullAttentionSpec),
+    ("MLAAttentionSpec", _MLAAttentionSpec),
+    ("SlidingWindowSpec", _SlidingWindowSpec),
+    ("SlidingWindowMLASpec", _SlidingWindowMLASpec),
+    ("MambaSpec", _MambaSpec),
+    ("get_kv_cache_spec_kind", get_kv_cache_spec_kind),
+):
+    setattr(vllm_kv_cache_interface, name, value)
+sys.modules[vllm_kv_cache_interface.__name__] = vllm_kv_cache_interface
+
 from ucm.integration.vllm.v2.ucm_kv_cache import (  # noqa: E402
-    UCMGroupTag,
     UCMKVCacheLayout,
     parse_kv_cache_config,
 )
@@ -83,7 +151,7 @@ from ucm.integration.vllm.v2.ucm_scheduler import (  # noqa: E402
 
 
 @dataclass
-class FullAttentionSpec:
+class FullAttentionSpec(_FullAttentionSpec):
     block_size: int
     compress_ratio: int = 1
     sliding_window: int | None = None
@@ -91,7 +159,15 @@ class FullAttentionSpec:
 
 
 @dataclass
-class MambaSpec:
+class MLAAttentionSpec(_MLAAttentionSpec):
+    block_size: int
+    compress_ratio: int = 1
+    sliding_window: int | None = None
+    storage_block_size: int | None = None
+
+
+@dataclass
+class MambaSpec(_MambaSpec):
     block_size: int
     mamba_cache_mode: str = "align"
     shapes: tuple[tuple[int, ...], ...] | None = None
@@ -100,7 +176,7 @@ class MambaSpec:
 
 
 @dataclass
-class AscendSlidingWindowMLASpec:
+class AscendSlidingWindowMLASpec(_SlidingWindowMLASpec):
     block_size: int
     compress_ratio: int
     sliding_window: int
@@ -141,11 +217,14 @@ def captured_spec(value, layer_name=""):
         return result
     if "shapes" in value:
         name = "MambaSpec"
+        base = _MambaSpec
     elif fields.get("sliding_window") is not None:
         name = "AscendSlidingWindowMLASpec"
+        base = _SlidingWindowMLASpec
     else:
-        name = "FullAttentionSpec"
-    spec_type = type(name, (), {})
+        name = "MLAAttentionSpec"
+        base = _MLAAttentionSpec
+    spec_type = type(name, (base,), {})
     result = spec_type()
     for key, item in fields.items():
         setattr(result, key, item)
@@ -333,7 +412,7 @@ class KVCacheSpecTest(unittest.TestCase):
     def test_dsv4_derives_canonical_size_once(self):
         parsed = parse_kv_cache_config(
             config(
-                group(["model.layers.2.attn"], FullAttentionSpec(128, 4)),
+                group(["model.layers.2.attn"], MLAAttentionSpec(128, 4)),
                 group(
                     ["model.layers.0.swa_cache"],
                     AscendSlidingWindowMLASpec(128, 1, 4096),
@@ -350,7 +429,31 @@ class KVCacheSpecTest(unittest.TestCase):
         self.assertEqual(parsed.chunk_size, 512)
         self.assertEqual(parsed.c4a_group.group_id, 0)
         self.assertEqual(parsed.groups[2].token_block_size, 512)
-        self.assertIn(UCMGroupTag.STATE, parsed.groups[2].tags)
+        self.assertEqual(
+            parsed.groups[2].kinds,
+            frozenset((KVCacheSpecKind.SLIDING_WINDOW_MLA,)),
+        )
+        self.assertTrue(parsed.groups[2].is_attention)
+        self.assertTrue(parsed.groups[2].is_sliding_window)
+
+    def test_full_attention_with_window_metadata_is_not_sliding(self):
+        parsed = parse_kv_cache_config(
+            config(
+                group(
+                    ["model.layers.0.attn"],
+                    FullAttentionSpec(128, sliding_window=4096),
+                )
+            ),
+            scheduler_block_size=128,
+        )
+
+        self.assertEqual(
+            parsed.groups[0].kinds,
+            frozenset((KVCacheSpecKind.FULL_ATTENTION,)),
+        )
+        self.assertTrue(parsed.groups[0].is_attention)
+        self.assertFalse(parsed.groups[0].is_sliding_window)
+        self.assertFalse(parsed.is_dsv4)
 
     def test_hybrid_rejects_custom_chunk(self):
         with self.assertRaisesRegex(ValueError, "custom chunk_size"):
@@ -605,7 +708,7 @@ class HashAndLookupTest(unittest.TestCase):
     def test_dsv4_requires_fa_prefix_and_latest_wa_boundary(self):
         parsed = parse_kv_cache_config(
             config(
-                group(["model.layers.2.attn"], FullAttentionSpec(128, 4)),
+                group(["model.layers.2.attn"], MLAAttentionSpec(128, 4)),
                 group(
                     ["model.layers.0.swa_cache"],
                     AscendSlidingWindowMLASpec(128, 1, 4096),
@@ -635,7 +738,7 @@ class HashAndLookupTest(unittest.TestCase):
     def test_dsv4_full_hit_leaves_one_complete_canonical_block(self):
         parsed = parse_kv_cache_config(
             config(
-                group(["model.layers.2.attn"], FullAttentionSpec(128, 4)),
+                group(["model.layers.2.attn"], MLAAttentionSpec(128, 4)),
                 group(
                     ["model.layers.0.swa_cache"],
                     AscendSlidingWindowMLASpec(128, 1, 4096),
@@ -1004,8 +1107,8 @@ class DispatcherLifecycleTest(unittest.TestCase):
     def test_dsv4_wa_dispatch_uses_only_final_boundary_and_real_tails(self):
         parsed = parse_kv_cache_config(
             config(
-                group(["model.layers.2.attn"], FullAttentionSpec(128, 4)),
-                group(["model.layers.3.attn"], FullAttentionSpec(128, 128)),
+                group(["model.layers.2.attn"], MLAAttentionSpec(128, 4)),
+                group(["model.layers.3.attn"], MLAAttentionSpec(128, 128)),
                 group(
                     ["model.layers.0.swa_cache"],
                     AscendSlidingWindowMLASpec(128, 1, 128),
@@ -1417,8 +1520,8 @@ class RaggedLayoutTest(unittest.TestCase):
     def test_dsv4_canonical_subrange_selects_intersecting_large_page(self):
         parsed = parse_kv_cache_config(
             config(
-                group(["model.layers.2.attn"], FullAttentionSpec(128, 4)),
-                group(["model.layers.3.attn"], FullAttentionSpec(128, 128)),
+                group(["model.layers.2.attn"], MLAAttentionSpec(128, 4)),
+                group(["model.layers.3.attn"], MLAAttentionSpec(128, 128)),
                 group(
                     ["model.layers.0.swa_cache"],
                     AscendSlidingWindowMLASpec(128, 1, 4096),

@@ -5,17 +5,19 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any, Iterable, Mapping, Sequence
+
+from vllm.v1.kv_cache_interface import (
+    KVCacheSpecKind,
+    get_kv_cache_spec_kind,
+)
 
 from .ucm_proxy import UCMProxyBatch
 
 
-class UCMGroupTag(Enum):
-    ATTENTION = "attention"
-    STATE = "state"
-    SLIDING_WINDOW = "sliding_window"
-    C4A = "c4a"
+_SLIDING_KINDS = frozenset(
+    (KVCacheSpecKind.SLIDING_WINDOW, KVCacheSpecKind.SLIDING_WINDOW_MLA)
+)
 
 
 @dataclass(frozen=True)
@@ -33,7 +35,8 @@ class UCMKVCacheGroupInfo:
     group_spec: Any
     token_block_size: int
     hash_block_size: int
-    tags: frozenset[UCMGroupTag]
+    kinds: frozenset[KVCacheSpecKind]
+    is_c4a: bool = False
     tail_tokens: int | None = None
     is_eagle_group: bool = False
 
@@ -42,11 +45,16 @@ class UCMKVCacheGroupInfo:
         return len(self.layers)
 
     @property
+    def is_attention(self) -> bool:
+        return KVCacheSpecKind.MAMBA not in self.kinds
+
+    @property
+    def is_sliding_window(self) -> bool:
+        return not self.kinds.isdisjoint(_SLIDING_KINDS)
+
+    @property
     def is_state_snapshot(self) -> bool:
-        return (
-            UCMGroupTag.STATE in self.tags
-            and UCMGroupTag.SLIDING_WINDOW not in self.tags
-        )
+        return KVCacheSpecKind.MAMBA in self.kinds
 
 
 @dataclass(frozen=True)
@@ -60,36 +68,31 @@ class UCMKVCacheSpec:
 
     @property
     def attn_groups(self) -> tuple[UCMKVCacheGroupInfo, ...]:
-        return tuple(g for g in self.groups if UCMGroupTag.ATTENTION in g.tags)
+        return tuple(group for group in self.groups if group.is_attention)
 
     @property
     def state_groups(self) -> tuple[UCMKVCacheGroupInfo, ...]:
-        return tuple(g for g in self.groups if UCMGroupTag.STATE in g.tags)
+        return tuple(group for group in self.groups if group.is_state_snapshot)
 
     @property
     def sw_groups(self) -> tuple[UCMKVCacheGroupInfo, ...]:
-        return tuple(g for g in self.groups if UCMGroupTag.SLIDING_WINDOW in g.tags)
+        return tuple(group for group in self.groups if group.is_sliding_window)
 
     @property
     def fa_groups(self) -> tuple[UCMKVCacheGroupInfo, ...]:
         return tuple(
             group
             for group in self.groups
-            if UCMGroupTag.ATTENTION in group.tags
-            and UCMGroupTag.SLIDING_WINDOW not in group.tags
+            if group.is_attention and not group.is_sliding_window
         )
 
     @property
     def wa_groups(self) -> tuple[UCMKVCacheGroupInfo, ...]:
-        return tuple(
-            group
-            for group in self.groups
-            if UCMGroupTag.SLIDING_WINDOW in group.tags
-        )
+        return tuple(group for group in self.groups if group.is_sliding_window)
 
     @property
     def c4a_group(self) -> UCMKVCacheGroupInfo | None:
-        matches = tuple(g for g in self.groups if UCMGroupTag.C4A in g.tags)
+        matches = tuple(group for group in self.groups if group.is_c4a)
         if len(matches) > 1:
             raise ValueError("More than one C4A group was classified")
         return matches[0] if matches else None
@@ -122,30 +125,26 @@ def _concrete_specs(group: Any) -> tuple[tuple[str, Any], ...]:
 
 def _classify(
     group: Any, concrete: Sequence[tuple[str, Any]]
-) -> frozenset[UCMGroupTag]:
-    names = tuple(name.lower() for name, _ in concrete)
+) -> tuple[frozenset[KVCacheSpecKind], bool]:
     specs = tuple(spec for _, spec in concrete) or (group.kv_cache_spec,)
-    type_names = tuple(type(spec).__name__.lower() for spec in specs)
-    has_window = any(
-        getattr(spec, "sliding_window", None) is not None for spec in specs
+    spec_kinds = tuple(get_kv_cache_spec_kind(spec) for spec in specs)
+    unknown = tuple(
+        type(spec).__qualname__
+        for spec, kind in zip(specs, spec_kinds)
+        if kind == KVCacheSpecKind.UNKNOWN
     )
-    is_mamba = any("mamba" in name for name in type_names)
-    is_compressor = any("compressor" in name or "state_cache" in name for name in names)
-    is_c4 = any(
+    if unknown:
+        raise TypeError(f"Unsupported KV cache spec types: {sorted(set(unknown))}")
+
+    kinds = frozenset(spec_kinds)
+    if KVCacheSpecKind.MAMBA in kinds and len(kinds) != 1:
+        raise TypeError(f"Mamba and attention specs cannot share a KV group: {kinds}")
+    is_c4a = any(
         getattr(spec, "compress_ratio", 1) == 4
-        and getattr(spec, "sliding_window", None) is None
-        for spec in specs
+        and kind == KVCacheSpecKind.MLA_ATTENTION
+        for spec, kind in zip(specs, spec_kinds)
     )
-    tags: set[UCMGroupTag] = set()
-    if has_window:
-        tags.add(UCMGroupTag.SLIDING_WINDOW)
-    if is_mamba or is_compressor:
-        tags.add(UCMGroupTag.STATE)
-    else:
-        tags.add(UCMGroupTag.ATTENTION)
-    if is_c4:
-        tags.update((UCMGroupTag.ATTENTION, UCMGroupTag.C4A))
-    return frozenset(tags)
+    return kinds, is_c4a
 
 
 def parse_kv_cache_config(
@@ -164,17 +163,14 @@ def parse_kv_cache_config(
         raise ValueError("scheduler_block_size must be positive")
 
     classified: list[
-        tuple[Any, tuple[tuple[str, Any], ...], frozenset[UCMGroupTag]]
+        tuple[Any, tuple[tuple[str, Any], ...], frozenset[KVCacheSpecKind], bool]
     ] = []
     dsv4 = False
     for raw_group in raw_groups:
         concrete = _concrete_specs(raw_group)
-        tags = _classify(raw_group, concrete)
-        classified.append((raw_group, concrete, tags))
-        if any(
-            "slidingwindowmla" in type(spec).__name__.replace("_", "").lower()
-            for _, spec in concrete
-        ):
+        kinds, is_c4a = _classify(raw_group, concrete)
+        classified.append((raw_group, concrete, kinds, is_c4a))
+        if KVCacheSpecKind.SLIDING_WINDOW_MLA in kinds:
             dsv4 = True
 
     device_type = str(device_type).lower()
@@ -183,8 +179,8 @@ def parse_kv_cache_config(
 
     c4_sizes: set[int] = set()
     if dsv4:
-        for raw_group, concrete, tags in classified:
-            if UCMGroupTag.C4A in tags:
+        for raw_group, _, _, is_c4a in classified:
+            if is_c4a:
                 c4_sizes.add(int(getattr(raw_group.kv_cache_spec, "block_size")))
         if len(c4_sizes) != 1:
             raise ValueError(
@@ -202,14 +198,14 @@ def parse_kv_cache_config(
     groups: list[UCMKVCacheGroupInfo] = []
     attention_compress_ratio_by_layer: dict[int, int] = {}
     if dsv4:
-        for _, concrete, tags in classified:
-            if UCMGroupTag.ATTENTION not in tags or UCMGroupTag.SLIDING_WINDOW in tags:
+        for _, concrete, kinds, _ in classified:
+            if KVCacheSpecKind.MAMBA in kinds or not kinds.isdisjoint(_SLIDING_KINDS):
                 continue
             for fallback, (name, concrete_spec) in enumerate(concrete):
                 attention_compress_ratio_by_layer[_layer_index(name, fallback)] = int(
                     getattr(concrete_spec, "compress_ratio", 1)
                 )
-    for group_id, (raw_group, concrete, tags) in enumerate(classified):
+    for group_id, (raw_group, concrete, kinds, is_c4a) in enumerate(classified):
         representative = concrete[0][1] if concrete else raw_group.kv_cache_spec
         physical_block_size = int(getattr(raw_group.kv_cache_spec, "block_size"))
         compress_ratio = int(getattr(representative, "compress_ratio", 1))
@@ -235,7 +231,7 @@ def parse_kv_cache_config(
                 )
             )
         tail_tokens: int | None = None
-        if dsv4 and UCMGroupTag.SLIDING_WINDOW in tags:
+        if dsv4 and not kinds.isdisjoint(_SLIDING_KINDS):
             tails: set[int] = set()
             for fallback, (name, concrete_spec) in enumerate(concrete):
                 window = int(getattr(concrete_spec, "sliding_window"))
@@ -264,7 +260,8 @@ def parse_kv_cache_config(
                 group_spec=raw_group.kv_cache_spec,
                 token_block_size=token_block_size,
                 hash_block_size=hash_block_size,
-                tags=tags,
+                kinds=kinds,
+                is_c4a=is_c4a,
                 tail_tokens=tail_tokens,
                 is_eagle_group=any(
                     "eagle" in layer.layer_name.lower() for layer in layers
@@ -297,13 +294,12 @@ def parse_kv_cache_config(
         fa_group_ids = {
             group.group_id
             for group in groups
-            if UCMGroupTag.ATTENTION in group.tags
-            and UCMGroupTag.SLIDING_WINDOW not in group.tags
+            if group.is_attention and not group.is_sliding_window
         }
         wa_group_ids = {
             group.group_id
             for group in groups
-            if UCMGroupTag.SLIDING_WINDOW in group.tags
+            if group.is_sliding_window
         }
         all_group_ids = {group.group_id for group in groups}
         if (
