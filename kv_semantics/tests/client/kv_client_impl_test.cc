@@ -787,6 +787,36 @@ TEST(KvClientImplTest, Dispatch_UsesSingleProtocolForSingleEntryOperations)
                                       AsuOpType::BATCH_LOAD}));
 }
 
+TEST(KvClientImplTest, Dispatch_EventAwareStoreUsesStoreProtocols)
+{
+    auto state = std::make_shared<TestState>();
+    auto client = CreateKvClient(MakeFactory(state));
+    ASSERT_TRUE(client->Init(MakeConfig({10})).ok());
+
+    TaskId taskId = kInvalidTaskId;
+    ASSERT_TRUE(client
+                    ->StoreAsync(
+                        {
+                            KVBuffer{MakeCacheKey("store-single"), {}}
+    },
+                        taskId, 0)
+                    .ok());
+    TaskResult result;
+    ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
+
+    ASSERT_TRUE(client
+                    ->BatchStoreAsync(
+                        {
+                            KVBuffer{MakeCacheKey("store-batch"), {}}
+    },
+                        taskId, 0)
+                    .ok());
+    ASSERT_TRUE(client->Wait(taskId, 100, result).ok());
+
+    EXPECT_EQ(state->submittedOpTypes,
+              std::vector<AsuOpType>({AsuOpType::STORE, AsuOpType::BATCH_STORE}));
+}
+
 TEST(KvClientImplTest, Input_EmptyStoreCreatesCompletableEmptyTask)
 {
     auto state = std::make_shared<TestState>();
@@ -1952,6 +1982,7 @@ TEST(KvClientImplTest, Task_WaitTimeoutRemovesTask)
     completionResult.status = Status::OK();
     completionResult.entryStatus = {Status::OK()};
     EXPECT_TRUE(InvokePendingCompletion(state, 10, std::move(completionResult)));
+    EXPECT_EQ(client->Wait(taskId, 100, result).code, StatusCode::TASK_NOT_FOUND);
 }
 
 TEST(KvClientImplTest, Task_CheckKeepsEntryStatusInOriginalOrderAcrossAsus)

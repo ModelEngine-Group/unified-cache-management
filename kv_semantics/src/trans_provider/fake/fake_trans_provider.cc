@@ -334,11 +334,11 @@ FakeTransProvider::FakeTransProvider(FakeTransProviderConfig config)
       workerPool_(std::make_unique<WorkerPool>(*this, config_.workerThreads))
 {
     if (config_.completeImmediately) {
-        UC_INFO(
+        KV_INFO(
             "Fake provider immediate completion is enabled; requests bypass fake-backend "
             "execution and Exist requests report all keys as missing");
     }
-    if (SetupDeviceRuntime().ok()) { stream_ = device_.MakeStream(); }
+    if (SetupDeviceRuntime().ok()) { trans_ = device_.MakeTrans(); }
 }
 
 FakeTransProvider::~FakeTransProvider() = default;

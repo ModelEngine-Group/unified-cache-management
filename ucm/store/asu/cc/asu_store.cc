@@ -37,7 +37,6 @@
 #include <utility>
 #include "kv_client.h"
 #include "logger/logger.h"
-#include "trans/event.h"
 #include "ucmstore_v1.h"
 
 namespace UC::AsuStore {
@@ -99,11 +98,6 @@ void LogAsuStatus(const char* operation, const AsuStatus& status)
 
     UC_ERROR("ASU {} failed: code={}, message={}.", operation, static_cast<int>(status.code),
              status.message);
-}
-
-Status WaitPrerequisiteEvent(std::uintptr_t eventHandle)
-{
-    return Trans::Event{eventHandle}.Synchronize();
 }
 
 const char* TransProviderBackendName(kv::TransProviderType providerType)
@@ -364,17 +358,12 @@ private:
 public:
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
-        return Submit(std::move(task), &kv::KvClient::BatchLoadAsync);
+        return Submit(std::move(task), false);
     }
 
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override
     {
-        auto status = WaitPrerequisiteEvent(task.prerequisiteHandle);
-        if (status.Failure()) {
-            UC_ERROR("ASU wait prerequisite event failed: status={}.", status);
-            return status;
-        }
-        return Submit(std::move(task), &kv::KvClient::BatchStoreAsync);
+        return Submit(std::move(task), true);
     }
 
     Expected<bool> Check(Detail::TaskHandle taskId) override
@@ -390,12 +379,24 @@ public:
             LogAsuStatus("wait task", status);
             return ConvertStatus(status);
         }
-        LogAsuStatus("task result wait", result.status);
         return ConvertStatus(result.status);
     }
 
 private:
-    using SubmitFunc = AsuStatus (kv::KvClient::*)(const std::vector<kv::KVBuffer>&, kv::TaskId&);
+    Expected<Detail::TaskHandle> Submit(Detail::TaskDesc task, bool store)
+    {
+        auto entries = BuildKvBuffers(task);
+        if (!entries) { return entries.Error(); }
+        kv::TaskId taskId = kv::kInvalidTaskId;
+        auto status =
+            store ? client_->BatchStoreAsync(entries.Value(), taskId, task.prerequisiteHandle)
+                  : client_->BatchLoadAsync(entries.Value(), taskId);
+        if (!status.ok()) {
+            LogAsuStatus("submit task", status);
+            return ConvertStatus(status);
+        }
+        return static_cast<Detail::TaskHandle>(taskId);
+    }
 
     Config ParseConfig(const Detail::Dictionary& inConfig)
     {
@@ -733,20 +734,6 @@ private:
             keys.emplace_back(MakeAsuKey(blocks[blockIndex]));
         }
         return keys;
-    }
-
-    Expected<Detail::TaskHandle> Submit(Detail::TaskDesc task, SubmitFunc submit)
-    {
-        auto entries = BuildKvBuffers(task);
-        if (!entries) { return entries.Error(); }
-
-        kv::TaskId taskId = kv::kInvalidTaskId;
-        auto status = ((*client_).*submit)(entries.Value(), taskId);
-        if (!status.ok()) {
-            LogAsuStatus("submit task", status);
-            return ConvertStatus(status);
-        }
-        return static_cast<Detail::TaskHandle>(taskId);
     }
 
     Expected<std::vector<kv::KVBuffer>> BuildKvBuffers(const Detail::TaskDesc& task) const

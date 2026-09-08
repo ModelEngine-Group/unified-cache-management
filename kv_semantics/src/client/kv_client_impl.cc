@@ -26,6 +26,8 @@
 #include <limits>
 #include <thread>
 #include <utility>
+#include "device.h"
+#include "event.h"
 #include "kv_types.h"
 #include "logger.h"
 #include "router/config.h"
@@ -187,6 +189,12 @@ Status KvClientImpl::LoadAsync(const std::vector<KVBuffer>& entries, TaskId& tas
     return SubmitAsync(AsuOpType::LOAD, entries, taskId);
 }
 
+Status KvClientImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                                std::uintptr_t eventHandle)
+{
+    return SubmitAsync(AsuOpType::STORE, entries, taskId, eventHandle);
+}
+
 Status KvClientImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
 {
     return SubmitAsync(AsuOpType::STORE, entries, taskId);
@@ -195,6 +203,12 @@ Status KvClientImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId& ta
 Status KvClientImpl::BatchLoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
 {
     return SubmitAsync(AsuOpType::BATCH_LOAD, entries, taskId);
+}
+
+Status KvClientImpl::BatchStoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                                     std::uintptr_t eventHandle)
+{
+    return SubmitAsync(AsuOpType::BATCH_STORE, entries, taskId, eventHandle);
 }
 
 Status KvClientImpl::BatchStoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
@@ -329,7 +343,7 @@ Status KvClientImpl::RegisterRegionsOnce(const std::vector<MemoryRegion>& region
 }
 
 Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& entries,
-                                 TaskId& taskId)
+                                 TaskId& taskId, std::uintptr_t eventHandle)
 {
     auto snapshot = GetSnapshot();
     if (!snapshot || !snapshot->router || snapshot->transports.empty()) {
@@ -346,6 +360,7 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& 
 
     auto ctx = std::make_unique<ClientTask>();
     ctx->opType = opType;
+    ctx->prerequisiteEventHandle = eventHandle;
     ctx->viewSnapshot = snapshot;
     ctx->entries = entries;
     {
@@ -433,8 +448,19 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& 
 
 void KvClientImpl::WorkerLoop()
 {
-    auto processTask = [this](ClientTaskPtr ctx) {
-        auto status = taskManager_.Process(ctx);
+    runtime::Device device;
+    const auto deviceId = config_.transportConfigs.front().deviceId;
+    const auto deviceStatus = deviceId >= 0 ? device.Setup(deviceId) : Status::OK();
+    auto processTask = [this, &deviceStatus](ClientTaskPtr ctx) {
+        auto status = deviceStatus;
+        if (status.ok() && ctx->prerequisiteEventHandle != 0) {
+            status = runtime::SynchronizeEvent(ctx->prerequisiteEventHandle);
+        }
+        if (status.ok()) {
+            status = taskManager_.Process(ctx);
+        } else {
+            ClientTaskManager::CompleteWithError(ctx, status);
+        }
         if (IsRefreshNeeded(status)) { RequestBackgroundRefresh(); }
     };
     taskQueue_.ConsumerLoop(stopWorker_, processTask);

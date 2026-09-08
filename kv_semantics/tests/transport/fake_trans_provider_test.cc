@@ -16,6 +16,9 @@
 namespace kv::test {
 namespace {
 
+constexpr std::uint16_t kCqeSuccess = 0x000;
+constexpr std::uint16_t kCqeCheckResultBuffer = 0x732;
+
 std::string FakeBackendKeyFileName(const CacheKey& key)
 {
     std::uint64_t hash = 1469598103934665603ULL;
