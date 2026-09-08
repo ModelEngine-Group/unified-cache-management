@@ -4,15 +4,26 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING
 
 from vllm.v1.kv_cache_interface import (
     KVCacheSpecKind,
     get_kv_cache_spec_kind,
 )
 
-from .ucm_proxy import UCMProxyBatch
+from .ucm_proxy import KVCacheValue, UCMProxyBatch
+
+if TYPE_CHECKING:
+    import torch
+    from vllm.v1.kv_cache_interface import (
+        KVCacheConfig,
+        KVCacheGroupSpec,
+        KVCacheSpec,
+    )
+
+    from .ucm_scheduler import UCMConnectorMetadata, UCMGroupDispatchPlan
 
 
 _SLIDING_KINDS = frozenset(
@@ -24,7 +35,7 @@ _SLIDING_KINDS = frozenset(
 class UCMLayerSpec:
     layer_name: str
     layer_index: int
-    kv_cache_spec: Any
+    kv_cache_spec: "KVCacheSpec"
     storage_block_size: int
 
 
@@ -32,7 +43,7 @@ class UCMLayerSpec:
 class UCMKVCacheGroupInfo:
     group_id: int
     layers: tuple[UCMLayerSpec, ...]
-    group_spec: Any
+    group_spec: "KVCacheSpec"
     token_block_size: int
     hash_block_size: int
     kinds: frozenset[KVCacheSpecKind]
@@ -111,7 +122,9 @@ def _layer_index(layer_name: str, fallback: int) -> int:
     return int(match.group(1)) if match else fallback
 
 
-def _concrete_specs(group: Any) -> tuple[tuple[str, Any], ...]:
+def _concrete_specs(
+    group: "KVCacheGroupSpec",
+) -> tuple[tuple[str, "KVCacheSpec"], ...]:
     group_spec = group.kv_cache_spec
     nested = getattr(group_spec, "kv_cache_specs", None)
     names = tuple(getattr(group, "layer_names", ()))
@@ -124,7 +137,8 @@ def _concrete_specs(group: Any) -> tuple[tuple[str, Any], ...]:
 
 
 def _classify(
-    group: Any, concrete: Sequence[tuple[str, Any]]
+    group: "KVCacheGroupSpec",
+    concrete: Sequence[tuple[str, "KVCacheSpec"]],
 ) -> tuple[frozenset[KVCacheSpecKind], bool]:
     specs = tuple(spec for _, spec in concrete) or (group.kv_cache_spec,)
     spec_kinds = tuple(get_kv_cache_spec_kind(spec) for spec in specs)
@@ -148,7 +162,7 @@ def _classify(
 
 
 def parse_kv_cache_config(
-    kv_cache_config: Any,
+    kv_cache_config: "KVCacheConfig",
     *,
     scheduler_block_size: int,
     chunk_size: int | None = None,
@@ -163,7 +177,12 @@ def parse_kv_cache_config(
         raise ValueError("scheduler_block_size must be positive")
 
     classified: list[
-        tuple[Any, tuple[tuple[str, Any], ...], frozenset[KVCacheSpecKind], bool]
+        tuple[
+            "KVCacheGroupSpec",
+            tuple[tuple[str, "KVCacheSpec"], ...],
+            frozenset[KVCacheSpecKind],
+            bool,
+        ]
     ] = []
     dsv4 = False
     for raw_group in raw_groups:
@@ -296,11 +315,7 @@ def parse_kv_cache_config(
             for group in groups
             if group.is_attention and not group.is_sliding_window
         }
-        wa_group_ids = {
-            group.group_id
-            for group in groups
-            if group.is_sliding_window
-        }
+        wa_group_ids = {group.group_id for group in groups if group.is_sliding_window}
         all_group_ids = {group.group_id for group in groups}
         if (
             not fa_group_ids
@@ -348,7 +363,7 @@ class UCMGroupKVCacheLayout:
     layers: tuple[UCMLayerKVCacheLayout, ...]
 
 
-def _tensor_views(tensor: Any) -> tuple[Any, ...]:
+def _tensor_views(tensor: KVCacheValue) -> tuple["torch.Tensor", ...]:
     if isinstance(tensor, (tuple, list)):
         if not tensor:
             raise ValueError("KV cache component tuple must not be empty")
@@ -389,7 +404,7 @@ def _row_payload_bytes(
 
 
 def _view_layout(
-    tensor: Any,
+    tensor: "torch.Tensor",
     expected_block_size: int,
     *,
     num_blocks: int,
@@ -458,7 +473,7 @@ def _view_layout(
     )
 
 
-def _dtype_size(dtype: Any) -> int:
+def _dtype_size(dtype: "torch.dtype") -> int:
     itemsize = getattr(dtype, "itemsize", None)
     if itemsize is not None:
         return int(itemsize)
@@ -469,7 +484,7 @@ def _dtype_size(dtype: Any) -> int:
 
 
 def _state_view_layouts(
-    value: Any,
+    value: KVCacheValue,
     layer: UCMLayerSpec,
     *,
     num_blocks: int,
@@ -565,7 +580,7 @@ class UCMKVCacheLayout:
     def __init__(
         self,
         spec: UCMKVCacheSpec,
-        kv_caches: Mapping[str, Any],
+        kv_caches: Mapping[str, KVCacheValue],
         *,
         num_blocks: int,
     ) -> None:
@@ -618,31 +633,41 @@ class UCMKVCacheLayout:
         self.layers = layers
 
     def build_load_batches(
-        self, metadata: Any, layer_name: str | None = None
+        self, metadata: "UCMConnectorMetadata", layer_name: str | None = None
     ) -> UCMProxyBatch:
-        return self._build_batches(metadata, "load_plans", layer_name)
+        plans = (
+            plan
+            for request_meta in metadata.requests.values()
+            for plan in request_meta.load_plans
+        )
+        return self._build_batches(plans, layer_name)
 
     def build_dump_batches(
-        self, metadata: Any, layer_name: str | None = None
+        self, metadata: "UCMConnectorMetadata", layer_name: str | None = None
     ) -> UCMProxyBatch:
-        return self._build_batches(metadata, "dump_plans", layer_name)
+        plans = (
+            plan
+            for request_meta in metadata.requests.values()
+            for plan in request_meta.dump_plans
+        )
+        return self._build_batches(plans, layer_name)
 
     def _build_batches(
-        self, metadata: Any, plan_attribute: str, layer_name: str | None
+        self,
+        plans: Iterable["UCMGroupDispatchPlan"],
+        layer_name: str | None,
     ) -> UCMProxyBatch:
         keys: list[bytes] = []
         offsets: list[int] = []
         ptrs: list[int] = []
         sizes: list[int] = []
-        request_metas: Iterable[Any] = getattr(metadata, "requests", {}).values()
-        for request_meta in request_metas:
-            for plan in getattr(request_meta, plan_attribute):
-                self._append_plan(plan, layer_name, keys, offsets, ptrs, sizes)
+        for plan in plans:
+            self._append_plan(plan, layer_name, keys, offsets, ptrs, sizes)
         return UCMProxyBatch(tuple(keys), tuple(offsets), tuple(ptrs), tuple(sizes))
 
     def _append_plan(
         self,
-        plan: Any,
+        plan: "UCMGroupDispatchPlan",
         layer_name: str | None,
         keys: list[bytes],
         offsets: list[int],
@@ -711,7 +736,7 @@ class UCMKVCacheLayout:
                 raise ValueError(
                     f"vLLM block ID {block_id} is outside [0, {self.num_blocks})"
                 )
-            result: list[tuple[int, int]] = []
+            state_segments: list[tuple[int, int]] = []
             first_row = block_id * view.rows_per_vllm_block
             for row in range(view.rows_per_vllm_block):
                 ptr = view.base_ptr + (first_row + row) * view.row_stride_bytes
@@ -720,8 +745,8 @@ class UCMKVCacheLayout:
                     raise ValueError(
                         "KV cache state segment exceeds registered tensor buffer"
                     )
-                result.append((ptr, size))
-            return tuple(result)
+                state_segments.append((ptr, size))
+            return tuple(state_segments)
         result: list[tuple[int, int]] = []
 
         def append_segment(ptr: int, size: int) -> None:
@@ -764,9 +789,7 @@ class UCMKVCacheLayout:
             physical_begin = numerator_begin // group.token_block_size
             physical_end = numerator_end // group.token_block_size
             while physical_begin < physical_end:
-                row_in_block, token_in_row = divmod(
-                    physical_begin, view.tokens_per_row
-                )
+                row_in_block, token_in_row = divmod(physical_begin, view.tokens_per_row)
                 row_end = min(
                     physical_end,
                     (row_in_block + 1) * view.tokens_per_row,

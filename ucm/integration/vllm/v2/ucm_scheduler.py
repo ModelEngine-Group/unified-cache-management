@@ -5,17 +5,25 @@ from __future__ import annotations
 import hashlib
 import math
 import pickle
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, Sequence
+from typing import TYPE_CHECKING, Literal
+
+from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorMetadata
 
 from .ucm_kv_cache import UCMKVCacheGroupInfo, UCMKVCacheSpec
 from .ucm_proxy import UCMProxyAdapter
+
+if TYPE_CHECKING:
+    from vllm.config import VllmConfig
+    from vllm.v1.core.sched.output import SchedulerOutput
+    from vllm.v1.request import Request
 
 
 class RequestHasher:
     """MD5 hasher compatible with the existing connector namespace format."""
 
-    def __init__(self, vllm_config: Any, rank_id: int | None) -> None:
+    def __init__(self, vllm_config: "VllmConfig", rank_id: int | None) -> None:
         speculative = getattr(vllm_config, "speculative_config", None)
         spec_info = ""
         if speculative is not None:
@@ -36,9 +44,11 @@ class RequestHasher:
         )
         self.meta_bytes = meta.encode("utf-8")
 
-    def __call__(self, value: Any) -> bytes:
-        payload = value if isinstance(value, bytes) else pickle.dumps(
-            value, protocol=pickle.HIGHEST_PROTOCOL
+    def __call__(self, value: object) -> bytes:
+        payload = (
+            value
+            if isinstance(value, bytes)
+            else pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
         )
         return hashlib.md5(self.meta_bytes + payload).digest()
 
@@ -87,13 +97,13 @@ class RequestDispatchMeta:
 
 
 @dataclass
-class UCMConnectorMetadata:
+class UCMConnectorMetadata(KVConnectorMetadata):
     requests: dict[str, RequestDispatchMeta] = field(default_factory=dict)
     preempted_req_ids: set[str] = field(default_factory=set)
     finished_req_ids: set[str] = field(default_factory=set)
 
 
-def _token_ids(request: Any) -> tuple[int, ...]:
+def _token_ids(request: "Request") -> tuple[int, ...]:
     values = getattr(request, "all_token_ids", None)
     if values is None:
         values = getattr(request, "prompt_token_ids", None)
@@ -182,7 +192,7 @@ class UCMLookupCoordinator:
         # boundary to the previous key boundary.
         return min(max((first + count) * key_tokens, hbm_tokens), candidate_end)
 
-    def lookup(self, request: Any, num_computed_tokens: int) -> UCMLookupResult:
+    def lookup(self, request: "Request", num_computed_tokens: int) -> UCMLookupResult:
         if num_computed_tokens < 0:
             raise ValueError("num_computed_tokens must not be negative")
         token_ids = _token_ids(request)
@@ -230,7 +240,8 @@ class UCMLookupCoordinator:
         all_boundaries = tuple(
             range(
                 self.spec.alignment_block_size,
-                len(token_ids) // self.spec.alignment_block_size
+                len(token_ids)
+                // self.spec.alignment_block_size
                 * self.spec.alignment_block_size
                 + 1,
                 self.spec.alignment_block_size,
@@ -276,9 +287,7 @@ class UCMLookupCoordinator:
             else:
                 restore_end = hbm
         visible_end = min(restore_end, max(len(token_ids) - self.recompute_tokens, 0))
-        return UCMLookupResult(
-            max(visible_end - hbm, 0), restore_end, tuple(all_keys)
-        )
+        return UCMLookupResult(max(visible_end - hbm, 0), restore_end, tuple(all_keys))
 
     def _lookup_dsv4(self, token_ids: Sequence[int], hbm: int) -> UCMLookupResult:
         unit = self.spec.chunk_size
@@ -312,7 +321,7 @@ class UCMDispatcher:
         self.requests: dict[str, RequestState] = {}
 
     def record_lookup(
-        self, request: Any, hbm_hit_tokens: int, result: UCMLookupResult
+        self, request: "Request", hbm_hit_tokens: int, result: UCMLookupResult
     ) -> RequestState:
         request_id = str(request.request_id)
         state = RequestState(
@@ -354,7 +363,7 @@ class UCMDispatcher:
 
     def build_metadata(
         self,
-        scheduled_tokens: MappingLike,
+        scheduled_tokens: Mapping[str, int],
         *,
         preempted_req_ids: Sequence[str] = (),
         finished_req_ids: Sequence[str] = (),
@@ -375,7 +384,7 @@ class UCMDispatcher:
         return metadata
 
     def build_from_scheduler_output(
-        self, scheduler_output: Any
+        self, scheduler_output: "SchedulerOutput"
     ) -> UCMConnectorMetadata:
         """Consume the vLLM 0.26 SchedulerOutput shape.
 
@@ -436,8 +445,10 @@ class UCMDispatcher:
         plans: list[UCMGroupDispatchPlan] = []
         if token_end <= token_start:
             return ()
+        hash_groups: tuple[int | Literal["FA", "WA"], ...]
+        units: tuple[int, ...]
         if self.spec.is_dsv4:
-            hash_groups: tuple[int | Literal["FA", "WA"], ...] = ("FA", "WA")
+            hash_groups = ("FA", "WA")
             units = (self.spec.chunk_size, self.spec.chunk_size)
         else:
             hash_groups = tuple(range(len(self.spec.groups)))
@@ -518,7 +529,3 @@ class UCMDispatcher:
         if hash_group == "FA":
             return self.spec.fa_groups
         return self.spec.wa_groups
-
-
-class MappingLike:
-    def items(self): ...

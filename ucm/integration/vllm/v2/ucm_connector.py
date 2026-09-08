@@ -5,11 +5,13 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorBase_V1,
+    KVConnectorMetadata,
     KVConnectorRole,
+    KVConnectorWorkerMetadata,
     SupportsHMA,
 )
 
@@ -26,6 +28,17 @@ from .ucm_scheduler import (
     UCMLookupCoordinator,
 )
 
+if TYPE_CHECKING:
+    import torch
+    from vllm.config import VllmConfig
+    from vllm.forward_context import ForwardContext
+    from vllm.v1.attention.backend import AttentionMetadata
+    from vllm.v1.core.kv_cache_manager import KVCacheBlocks
+    from vllm.v1.core.sched.output import SchedulerOutput
+    from vllm.v1.kv_cache_interface import KVCacheConfig
+    from vllm.v1.outputs import KVConnectorOutput
+    from vllm.v1.request import Request
+
 
 @dataclass(frozen=True)
 class UCMRuntimeContext:
@@ -38,7 +51,7 @@ class UCMRuntimeContext:
     @classmethod
     def from_vllm_config(
         cls,
-        vllm_config: Any,
+        vllm_config: "VllmConfig",
         role: KVConnectorRole,
         *,
         rank: int | None = None,
@@ -68,20 +81,20 @@ class UCMRuntimeContext:
 
 
 @dataclass
-class UCMWorkerMetadata:
+class UCMWorkerMetadata(KVConnectorWorkerMetadata):
     load_failed_reqs: set[str] = field(default_factory=set)
 
     def mark_failed(self, request_id: str) -> None:
         self.load_failed_reqs.add(request_id)
 
-    def aggregate(self, other: Any) -> "UCMWorkerMetadata":
+    def aggregate(self, other: KVConnectorWorkerMetadata) -> "UCMWorkerMetadata":
         if not isinstance(other, UCMWorkerMetadata):
             raise TypeError(f"Cannot aggregate {type(other).__name__}")
         self.load_failed_reqs.update(other.load_failed_reqs)
         return self
 
 
-def _load_launch_config(vllm_config: Any) -> dict[str, Any]:
+def _load_launch_config(vllm_config: "VllmConfig") -> dict[str, Any]:
     kv_transfer_config = vllm_config.kv_transfer_config
     extra_config = getattr(kv_transfer_config, "kv_connector_extra_config", None)
     if not extra_config:
@@ -104,13 +117,19 @@ def _storage_root(launch_config: dict[str, Any]) -> Path:
     if explicit:
         return Path(str(explicit))
 
-    connectors = launch_config.get("ucm_connectors") or ()
-    if len(connectors) != 1:
+    connectors = launch_config.get("ucm_connectors")
+    if (
+        not isinstance(connectors, (list, tuple))
+        or len(connectors) != 1
+        or not isinstance(connectors[0], dict)
+    ):
         raise ValueError(
             "connector v2 requires exactly one ucm_connectors entry or "
             "v2_storage_path"
         )
     store_config = connectors[0].get("ucm_connector_config") or {}
+    if not isinstance(store_config, dict):
+        raise ValueError("ucm_connector_config must be a mapping")
     backends = store_config.get("storage_backends")
     if isinstance(backends, (list, tuple)):
         backends = backends[0] if backends else None
@@ -121,7 +140,7 @@ def _storage_root(launch_config: dict[str, Any]) -> Path:
     return Path(str(backends))
 
 
-def _worker_rank(vllm_config: Any) -> int:
+def _worker_rank(vllm_config: "VllmConfig") -> int:
     configured = getattr(vllm_config.parallel_config, "rank", None)
     if configured is not None:
         return int(configured)
@@ -135,9 +154,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
 
     def __init__(
         self,
-        vllm_config: Any,
+        vllm_config: "VllmConfig",
         role: KVConnectorRole,
-        kv_cache_config: Any,
+        kv_cache_config: "KVCacheConfig",
     ) -> None:
         super().__init__(vllm_config, role, kv_cache_config)
         launch_config = _load_launch_config(vllm_config)
@@ -150,9 +169,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         hasher = RequestHasher(vllm_config, 0)
         base_seed = hasher("UCM_HASH_SEED")
 
-        self.context = UCMRuntimeContext.from_vllm_config(
-            vllm_config, role, rank=rank
-        )
+        self.context = UCMRuntimeContext.from_vllm_config(vllm_config, role, rank=rank)
         self.spec: UCMKVCacheSpec = parse_kv_cache_config(
             kv_cache_config,
             scheduler_block_size=scheduler_block_size,
@@ -167,9 +184,8 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         )
         root = _storage_root(launch_config) / ".ucm-v2" / namespace
         self._proxy = UCMProxyAdapter(SimpleFileUCMProxy(root))
-        self.metadata: UCMConnectorMetadata | None = None
         self.layout: UCMKVCacheLayout | None = None
-        self.worker_metadata = UCMWorkerMetadata()
+        self._worker_metadata = UCMWorkerMetadata()
         self._invalid_block_ids: set[int] = set()
         self.dispatcher = UCMDispatcher(self.spec) if is_scheduler else None
         self.lookup_coordinator = (
@@ -192,51 +208,47 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         return self.spec.scheduler_block_size
 
     def get_num_new_matched_tokens(
-        self, request: Any, num_computed_tokens: int
-    ) -> tuple[int, bool]:
+        self, request: "Request", num_computed_tokens: int
+    ) -> tuple[int | None, bool]:
         if self.lookup_coordinator is None or self.dispatcher is None:
             raise RuntimeError("lookup is only available on the scheduler role")
         result = self.lookup_coordinator.lookup(request, num_computed_tokens)
         self.dispatcher.record_lookup(request, num_computed_tokens, result)
         return result.external_hit_tokens, False
 
-    def build_connector_meta(self, scheduler_output: Any) -> UCMConnectorMetadata:
+    def build_connector_meta(
+        self, scheduler_output: "SchedulerOutput"
+    ) -> UCMConnectorMetadata:
         if self.dispatcher is None:
             raise RuntimeError("dispatch is only available on the scheduler role")
         return self.dispatcher.build_from_scheduler_output(scheduler_output)
 
     def update_state_after_alloc(
-        self, request: Any, blocks: Any, num_external_tokens: int
+        self,
+        request: "Request",
+        blocks: "KVCacheBlocks",
+        num_external_tokens: int,
     ) -> None:
         # vLLM 0.26 SchedulerOutput is the single source of truth for complete
         # new/resumed block tables and cached-request deltas.
         return None
 
-    def register_kv_caches(
-        self, kv_caches: Any, *, num_blocks: int | None = None
-    ) -> None:
+    def register_kv_caches(self, kv_caches: dict[str, "torch.Tensor"]) -> None:
         if self.context.role != KVConnectorRole.WORKER:
             raise RuntimeError("KV cache registration is only available on worker")
-        if num_blocks is None:
-            num_blocks = int(self._kv_cache_config.num_blocks)
+        num_blocks = int(self._kv_cache_config.num_blocks)
         self.layout = UCMKVCacheLayout(self.spec, kv_caches, num_blocks=num_blocks)
         self._proxy.register_tensors(kv_caches)
 
-    def bind_connector_metadata(self, metadata: UCMConnectorMetadata) -> None:
-        self.metadata = metadata
-
-    def clear_connector_metadata(self) -> None:
-        self.metadata = None
-
-    def has_connector_metadata(self) -> bool:
-        return self.metadata is not None
-
-    def start_load_kv(self, _forward_context: Any = None) -> None:
-        if self.metadata is None:
+    def start_load_kv(self, forward_context: "ForwardContext", **kwargs: Any) -> None:
+        if not self.has_connector_metadata():
             return
+        metadata = self._get_connector_metadata()
+        if not isinstance(metadata, UCMConnectorMetadata):
+            raise TypeError(f"Unexpected connector metadata: {type(metadata).__name__}")
         if self.layout is None:
             raise RuntimeError("register_kv_caches must run before loading")
-        for request_id, request in self.metadata.requests.items():
+        for request_id, request in metadata.requests.items():
             request_metadata = UCMConnectorMetadata(requests={request_id: request})
             batch = self.layout.build_load_batches(request_metadata)
             try:
@@ -244,7 +256,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                     batch.block_ids, batch.offsets, batch.ptrs, batch.sizes
                 )
             except UCMProxyError:
-                self.worker_metadata.mark_failed(request_id)
+                self._worker_metadata.mark_failed(request_id)
                 self._invalid_block_ids.update(
                     block_id
                     for plan in request.load_plans
@@ -254,25 +266,34 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         # Synchronous load errors are returned through vLLM's invalid-block and
         # worker-metadata channels; aborting here would bypass those channels.
 
-    def wait_for_layer_load(self, _layer_name: str) -> None:
+    def wait_for_layer_load(self, layer_name: str) -> None:
         return None
 
-    def save_kv_layer(self, _layer_name: str, *_args: Any, **_kwargs: Any) -> None:
+    def save_kv_layer(
+        self,
+        layer_name: str,
+        kv_layer: "torch.Tensor",
+        attn_metadata: "AttentionMetadata",
+        **kwargs: Any,
+    ) -> None:
         return None
 
     def wait_for_save(self) -> None:
-        if self.metadata is None:
+        if not self.has_connector_metadata():
             return
+        metadata = self._get_connector_metadata()
+        if not isinstance(metadata, UCMConnectorMetadata):
+            raise TypeError(f"Unexpected connector metadata: {type(metadata).__name__}")
         if self.layout is None:
             raise RuntimeError("register_kv_caches must run before saving")
-        batch = self.layout.build_dump_batches(self.metadata)
+        batch = self.layout.build_dump_batches(metadata)
         self._proxy.dump(batch.block_ids, batch.offsets, batch.ptrs, batch.sizes)
 
     def build_connector_worker_meta(self) -> UCMWorkerMetadata | None:
-        if not self.worker_metadata.load_failed_reqs:
+        if not self._worker_metadata.load_failed_reqs:
             return None
-        result = self.worker_metadata
-        self.worker_metadata = UCMWorkerMetadata()
+        result = self._worker_metadata
+        self._worker_metadata = UCMWorkerMetadata()
         return result
 
     def get_block_ids_with_load_errors(self) -> set[int]:
@@ -280,7 +301,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         self._invalid_block_ids = set()
         return result
 
-    def update_connector_output(self, connector_output: Any) -> None:
+    def update_connector_output(self, connector_output: "KVConnectorOutput") -> None:
         if self.dispatcher is None:
             return
         metadata = getattr(connector_output, "kv_connector_worker_meta", None)
@@ -289,18 +310,18 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         for request_id in metadata.load_failed_reqs:
             self.dispatcher.requests.pop(request_id, None)
 
-    def handle_preemptions(self, kv_connector_metadata: Any) -> None:
+    def handle_preemptions(self, kv_connector_metadata: KVConnectorMetadata) -> None:
         # Bulk v2 I/O is synchronous, so no transfer owns preempted blocks.
         return None
 
     def request_finished(
-        self, request: Any, block_ids: list[int]
+        self, request: "Request", block_ids: list[int]
     ) -> tuple[bool, dict[str, Any] | None]:
         return False, None
 
     def request_finished_all_groups(
         self,
-        request: Any,
+        request: "Request",
         block_ids: tuple[list[int], ...],
     ) -> tuple[bool, dict[str, Any] | None]:
         return False, None

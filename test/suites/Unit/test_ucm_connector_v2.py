@@ -1,5 +1,6 @@
-import json
 import enum
+import inspect
+import json
 import sys
 import tempfile
 import types
@@ -52,6 +53,30 @@ class KVConnectorBaseV1:
         self._vllm_config = vllm_config
         self._role = role
         self._kv_cache_config = kv_cache_config
+        self._connector_metadata = None
+
+    def bind_connector_metadata(self, metadata):
+        self._connector_metadata = metadata
+
+    def clear_connector_metadata(self):
+        self._connector_metadata = None
+
+    def has_connector_metadata(self):
+        return self._connector_metadata is not None
+
+    def _get_connector_metadata(self):
+        if self._connector_metadata is None:
+            raise AssertionError("connector metadata is not bound")
+        return self._connector_metadata
+
+
+class KVConnectorMetadata:
+    pass
+
+
+class KVConnectorWorkerMetadata:
+    def aggregate(self, other):
+        raise NotImplementedError
 
 
 class SupportsHMA:
@@ -59,7 +84,9 @@ class SupportsHMA:
 
 
 vllm_base.KVConnectorBase_V1 = KVConnectorBaseV1
+vllm_base.KVConnectorMetadata = KVConnectorMetadata
 vllm_base.KVConnectorRole = KVConnectorRole
+vllm_base.KVConnectorWorkerMetadata = KVConnectorWorkerMetadata
 vllm_base.SupportsHMA = SupportsHMA
 sys.modules[vllm_base.__name__] = vllm_base
 
@@ -135,7 +162,10 @@ from ucm.integration.vllm.v2.ucm_kv_cache import (  # noqa: E402
     UCMKVCacheLayout,
     parse_kv_cache_config,
 )
-from ucm.integration.vllm.v2.ucm_connector import UCMConnector  # noqa: E402
+from ucm.integration.vllm.v2.ucm_connector import (  # noqa: E402
+    UCMConnector,
+    UCMWorkerMetadata,
+)
 from ucm.integration.vllm.v2.ucm_proxy import (  # noqa: E402
     SimpleFileUCMProxy,
     UCMProxyAdapter,
@@ -199,8 +229,8 @@ def group(names, specs):
     return SimpleNamespace(layer_names=list(names), kv_cache_spec=spec)
 
 
-def config(*groups):
-    return SimpleNamespace(kv_cache_groups=list(groups))
+def config(*groups, num_blocks=8):
+    return SimpleNamespace(kv_cache_groups=list(groups), num_blocks=num_blocks)
 
 
 def captured_spec(value, layer_name=""):
@@ -536,6 +566,42 @@ class KVCacheSpecTest(unittest.TestCase):
         self.assertEqual(
             tuple(group.group_id for group in parsed.wa_groups), (1, 2, 3, 4)
         )
+
+
+class ConnectorSPIContractTest(unittest.TestCase):
+    def test_metadata_implements_vllm_contracts(self):
+        self.assertTrue(issubclass(UCMConnectorMetadata, KVConnectorMetadata))
+        self.assertTrue(issubclass(UCMWorkerMetadata, KVConnectorWorkerMetadata))
+
+    def test_public_override_parameter_names_match_vllm(self):
+        expected = {
+            "__init__": ("self", "vllm_config", "role", "kv_cache_config"),
+            "register_kv_caches": ("self", "kv_caches"),
+            "start_load_kv": ("self", "forward_context", "kwargs"),
+            "wait_for_layer_load": ("self", "layer_name"),
+            "save_kv_layer": (
+                "self",
+                "layer_name",
+                "kv_layer",
+                "attn_metadata",
+                "kwargs",
+            ),
+            "update_state_after_alloc": (
+                "self",
+                "request",
+                "blocks",
+                "num_external_tokens",
+            ),
+            "build_connector_meta": ("self", "scheduler_output"),
+            "update_connector_output": ("self", "connector_output"),
+            "handle_preemptions": ("self", "kv_connector_metadata"),
+        }
+        for method_name, parameter_names in expected.items():
+            with self.subTest(method=method_name):
+                method = getattr(UCMConnector, method_name)
+                self.assertEqual(
+                    tuple(inspect.signature(method).parameters), parameter_names
+                )
 
 
 class HashAndLookupTest(unittest.TestCase):
@@ -885,8 +951,7 @@ class ProxyAdapterTest(unittest.TestCase):
                 config(group(["model.layers.0.attn"], FullAttentionSpec(4))),
             )
         connector.register_kv_caches(
-            {"model.layers.0.attn": FakeTensor(0x1000, (8, 4, 2), (8, 2, 1))},
-            num_blocks=8,
+            {"model.layers.0.attn": FakeTensor(0x1000, (8, 4, 2), (8, 2, 1))}
         )
         from ucm.integration.vllm.v2.ucm_scheduler import (
             RequestDispatchMeta,
@@ -908,7 +973,7 @@ class ProxyAdapterTest(unittest.TestCase):
             )
         )
 
-        connector.start_load_kv()
+        connector.start_load_kv(None)
 
         self.assertEqual(
             connector.build_connector_worker_meta().load_failed_reqs, {"failed"}
@@ -935,8 +1000,7 @@ class ProxyAdapterTest(unittest.TestCase):
                 config(group(["model.layers.0.attn"], FullAttentionSpec(4))),
             )
         connector.register_kv_caches(
-            {"model.layers.0.attn": FakeTensor(0x1000, (8, 4, 2), (8, 2, 1))},
-            num_blocks=8,
+            {"model.layers.0.attn": FakeTensor(0x1000, (8, 4, 2), (8, 2, 1))}
         )
         from ucm.integration.vllm.v2.ucm_scheduler import (
             RequestDispatchMeta,
@@ -964,7 +1028,7 @@ class ProxyAdapterTest(unittest.TestCase):
             )
         )
 
-        connector.start_load_kv()
+        connector.start_load_kv(None)
 
         self.assertEqual(
             connector.build_connector_worker_meta().load_failed_reqs, {"failed"}
@@ -1151,9 +1215,7 @@ class DispatcherLifecycleTest(unittest.TestCase):
             if plan.hash_group == "WA"
         )
 
-        self.assertEqual(
-            tuple(item.group_id for item in fa_plan.vllm_blocks), (0, 1)
-        )
+        self.assertEqual(tuple(item.group_id for item in fa_plan.vllm_blocks), (0, 1))
         self.assertEqual(wa_plan.keys, (wa_keys[1],))
         self.assertEqual(
             tuple(

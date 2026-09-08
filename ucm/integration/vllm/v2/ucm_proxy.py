@@ -4,17 +4,26 @@ from __future__ import annotations
 
 import importlib
 import os
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, TypeAlias, runtime_checkable
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    import torch
+
+    KVCacheValue: TypeAlias = (
+        torch.Tensor | tuple[torch.Tensor, ...] | list[torch.Tensor]
+    )
+else:
+    KVCacheValue: TypeAlias = object
 
 
 class UCMProxyError(RuntimeError):
     """Normalized error raised by the v2 Proxy adapter."""
 
 
-@runtime_checkable
 class UCMProxy(Protocol):
     def lookup(self, block_ids: Sequence[bytes]) -> Sequence[bool]: ...
 
@@ -24,7 +33,7 @@ class UCMProxy(Protocol):
         offsets: Sequence[int],
         ptrs: Sequence[int],
         sizes: Sequence[int],
-    ) -> Any: ...
+    ) -> object | None: ...
 
     def dump(
         self,
@@ -32,16 +41,24 @@ class UCMProxy(Protocol):
         offsets: Sequence[int],
         ptrs: Sequence[int],
         sizes: Sequence[int],
-    ) -> Any: ...
+    ) -> object | None: ...
 
-    def wait(self, task: Any) -> None: ...
+
+@runtime_checkable
+class UCMProxyWaiter(Protocol):
+    def wait(self, task: object) -> None: ...
+
+
+@runtime_checkable
+class UCMProxyTensorRegistration(Protocol):
+    def register_tensors(self, kv_caches: Mapping[str, KVCacheValue]) -> None: ...
 
 
 @runtime_checkable
 class UCMByteAccess(Protocol):
     """Copy byte ranges between integer pointers and host bytes."""
 
-    def register_tensors(self, kv_caches: Mapping[str, Any]) -> None: ...
+    def register_tensors(self, kv_caches: Mapping[str, KVCacheValue]) -> None: ...
 
     def synchronize(self) -> None: ...
 
@@ -50,12 +67,12 @@ class UCMByteAccess(Protocol):
     def write(self, ptr: int, payload: bytes) -> None: ...
 
 
-def _tensor_views(value: Any) -> tuple[Any, ...]:
-    torch = importlib.import_module("torch")
-    if isinstance(value, torch.Tensor):
+def _tensor_views(value: KVCacheValue) -> tuple[torch.Tensor, ...]:
+    torch_module = importlib.import_module("torch")
+    if isinstance(value, torch_module.Tensor):
         return (value,)
     if isinstance(value, (tuple, list)):
-        result: list[Any] = []
+        result: list[torch.Tensor] = []
         for item in value:
             result.extend(_tensor_views(item))
         return tuple(result)
@@ -66,13 +83,13 @@ class TorchTensorByteAccess:
     """Resolve raw pointers against registered Torch CPU/CUDA/NPU storages."""
 
     def __init__(self) -> None:
-        self._buffers: list[tuple[int, int, Any]] = []
-        self._devices: set[Any] = set()
+        self._buffers: list[tuple[int, int, torch.Tensor]] = []
+        self._devices: set[torch.device] = set()
 
-    def register_tensors(self, kv_caches: Mapping[str, Any]) -> None:
-        torch = importlib.import_module("torch")
-        buffers: list[tuple[int, int, Any]] = []
-        devices: set[Any] = set()
+    def register_tensors(self, kv_caches: Mapping[str, KVCacheValue]) -> None:
+        torch_module = importlib.import_module("torch")
+        buffers: list[tuple[int, int, torch.Tensor]] = []
+        devices: set[torch.device] = set()
         seen: set[tuple[int, int]] = set()
         for value in kv_caches.values():
             for tensor in _tensor_views(value):
@@ -82,8 +99,8 @@ class TorchTensorByteAccess:
                 if not base or size <= 0 or (base, size) in seen:
                     continue
                 seen.add((base, size))
-                byte_view = torch.empty(
-                    0, dtype=torch.uint8, device=tensor.device
+                byte_view = torch_module.empty(
+                    0, dtype=torch_module.uint8, device=tensor.device
                 ).set_(storage, 0, (size,), (1,))
                 buffers.append((base, base + size, byte_view))
                 devices.add(tensor.device)
@@ -93,17 +110,17 @@ class TorchTensorByteAccess:
         self._devices = devices
 
     def synchronize(self) -> None:
-        torch = importlib.import_module("torch")
+        torch_module = importlib.import_module("torch")
         for device in self._devices:
             if device.type == "cuda":
-                torch.cuda.synchronize(device)
+                torch_module.cuda.synchronize(device)
             elif device.type == "npu":
-                npu = getattr(torch, "npu", None)
+                npu = getattr(torch_module, "npu", None)
                 if npu is None:
                     raise RuntimeError("Torch NPU support is unavailable")
                 npu.synchronize(device)
 
-    def _view(self, ptr: int, size: int) -> Any:
+    def _view(self, ptr: int, size: int) -> torch.Tensor:
         for base, end, tensor in self._buffers:
             if base <= ptr and ptr + size <= end:
                 offset = ptr - base
@@ -116,9 +133,9 @@ class TorchTensorByteAccess:
         return self._view(ptr, size).cpu().numpy().tobytes()
 
     def write(self, ptr: int, payload: bytes) -> None:
-        torch = importlib.import_module("torch")
+        torch_module = importlib.import_module("torch")
         target = self._view(ptr, len(payload))
-        source = torch.frombuffer(bytearray(payload), dtype=torch.uint8)
+        source = torch_module.frombuffer(bytearray(payload), dtype=torch_module.uint8)
         target.copy_(source.to(target.device))
 
 
@@ -141,7 +158,7 @@ class SimpleFileUCMProxy:
         self.root.mkdir(parents=True, exist_ok=True)
         self.byte_access = byte_access or TorchTensorByteAccess()
 
-    def register_tensors(self, kv_caches: Mapping[str, Any]) -> None:
+    def register_tensors(self, kv_caches: Mapping[str, KVCacheValue]) -> None:
         self.byte_access.register_tensors(kv_caches)
 
     def _path(self, key: bytes) -> Path:
@@ -158,9 +175,7 @@ class SimpleFileUCMProxy:
         sizes: Sequence[int],
     ) -> dict[bytes, list[tuple[int, int, int]]]:
         records: dict[bytes, list[tuple[int, int, int]]] = {}
-        for key, offset, ptr, size in zip(
-            block_ids, offsets, ptrs, sizes, strict=True
-        ):
+        for key, offset, ptr, size in zip(block_ids, offsets, ptrs, sizes, strict=True):
             records.setdefault(bytes(key), []).append(
                 (int(offset), int(ptr), int(size))
             )
@@ -181,7 +196,13 @@ class SimpleFileUCMProxy:
             raise ValueError(f"Record {key.hex()} is empty")
         return cursor
 
-    def dump(self, block_ids, offsets, ptrs, sizes) -> None:
+    def dump(
+        self,
+        block_ids: Sequence[bytes],
+        offsets: Sequence[int],
+        ptrs: Sequence[int],
+        sizes: Sequence[int],
+    ) -> None:
         records = self._records(block_ids, offsets, ptrs, sizes)
         self.byte_access.synchronize()
         for key, segments in records.items():
@@ -202,7 +223,13 @@ class SimpleFileUCMProxy:
             finally:
                 temporary.unlink(missing_ok=True)
 
-    def load(self, block_ids, offsets, ptrs, sizes) -> None:
+    def load(
+        self,
+        block_ids: Sequence[bytes],
+        offsets: Sequence[int],
+        ptrs: Sequence[int],
+        sizes: Sequence[int],
+    ) -> None:
         records = self._records(block_ids, offsets, ptrs, sizes)
         for key, segments in records.items():
             path = self._path(key)
@@ -220,7 +247,7 @@ class SimpleFileUCMProxy:
                 self.byte_access.write(ptr, record[offset:end])
         self.byte_access.synchronize()
 
-    def wait(self, task: Any) -> None:
+    def wait(self, task: object) -> None:
         if task is not None:
             raise ValueError(f"SimpleFileUCMProxy is synchronous, got task {task!r}")
 
@@ -270,21 +297,19 @@ class UCMProxyAdapter:
             )
         return result
 
-    def register_tensors(self, kv_caches: Mapping[str, Any]) -> None:
-        register = getattr(self._proxy, "register_tensors", None)
-        if callable(register):
-            register(kv_caches)
+    def register_tensors(self, kv_caches: Mapping[str, KVCacheValue]) -> None:
+        if isinstance(self._proxy, UCMProxyTensorRegistration):
+            self._proxy.register_tensors(kv_caches)
 
-    def _wait(self, operation: str, task: Any) -> None:
+    def _wait(self, operation: str, task: object | None) -> None:
         if task is None:
             return
-        wait = getattr(self._proxy, "wait", None)
-        if not callable(wait):
+        if not isinstance(self._proxy, UCMProxyWaiter):
             raise UCMProxyError(
                 f"Proxy {operation} returned an asynchronous task but does not "
                 "provide wait(task)"
             )
-        wait(task)
+        self._proxy.wait(task)
 
     def _batch(
         self,
