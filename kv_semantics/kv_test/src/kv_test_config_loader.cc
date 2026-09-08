@@ -48,6 +48,14 @@ std::uint32_t ParseUint32(const std::string& value)
     return static_cast<std::uint32_t>(result);
 }
 
+bool ParseBool(std::string value)
+{
+    value = NormalizeKey(value);
+    if (value == "1" || value == "true") { return true; }
+    if (value == "0" || value == "false") { return false; }
+    throw std::invalid_argument("invalid boolean");
+}
+
 std::unordered_map<std::string, std::string> LoadKeyValueFile(const std::string& configPath,
                                                               Status& status)
 {
@@ -201,6 +209,12 @@ Status KvTestConfigLoader::Load(const std::string& configPath, KvTestConfig& con
                      config.fakeBackend.latencyMs);
         GetUint64Any(values, {"fake_backend.worker_threads", "fakebackend.worker_threads"},
                      config.fakeBackend.workerThreads);
+        std::string completeImmediately;
+        if (GetStringAny(values,
+                         {"fake_backend.complete_immediately", "fakebackend.complete_immediately"},
+                         completeImmediately)) {
+            config.fakeBackend.completeImmediately = ParseBool(completeImmediately);
+        }
 
         GetStringAny(values, {"kv.key_prefix"}, config.keyPrefix);
 

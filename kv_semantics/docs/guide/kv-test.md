@@ -183,6 +183,7 @@ wait_timeout_ms=5000
 fake_backend.path=./kv-test-fake-backend-store
 fake_backend.latency_ms=1
 fake_backend.worker_threads=4
+fake_backend.complete_immediately=true
 
 view.config_path=./kv_semantics/kv_test/kv_client_view.conf
 hash_table.type=RING_HASH
@@ -253,6 +254,7 @@ These fields are parsed by `kv-test` itself:
 | `fake_backend.path` | FAKE provider storage root. Defaults to `./kv-test-fake-backend-store`. |
 | `fake_backend.latency_ms` | Mock backend completion delay in milliseconds. Default is `1`. |
 | `fake_backend.worker_threads` | Number of FAKE provider IO workers. Default is `4`. |
+| `fake_backend.complete_immediately` | Complete FAKE provider requests without backend IO. Default is `false`. |
 | `kv.key_prefix` | Prefix for count-based key generation. |
 | `kv.seed` | Seed for deterministic value generation. |
 | `kv.value_size` | Value size for normal commands. |
@@ -300,7 +302,7 @@ Mocked or not covered in this mode:
 
 For every transport configured with the FAKE provider, kv-test fills required
 SQE/send attrs and passes `fake_backend.path`, `fake_backend.latency_ms`,
-`fake_backend.worker_threads`, and `fake_backend.device_id` through
+`fake_backend.worker_threads`, `fake_backend.complete_immediately`, and `fake_backend.device_id` through
 `TransportConfig.attrs`. Other provider entries are left unchanged.
 `FakeTransProvider::CreateConnection` returns placeholder connection handles so
 `ConnectionManager` can create channels during this software-only integration

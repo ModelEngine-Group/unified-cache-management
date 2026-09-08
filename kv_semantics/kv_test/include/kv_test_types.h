@@ -159,6 +159,7 @@ struct KvTestFakeBackendConfig {
     std::string storePath;
     std::uint64_t latencyMs{1};
     std::uint64_t workerThreads{4};
+    bool completeImmediately{false};
 };
 
 struct AsuRuntimeLibraryConfig {
