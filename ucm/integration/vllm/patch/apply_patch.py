@@ -288,6 +288,7 @@ def apply_all_patches() -> None:
             case "0.26.0":
                 logger.info("UCM patching vllm-ascend 0.26.0 for CPU affinity...")
                 import ucm.integration.vllm.patch.v0260.vllm_ascend.cpu_binding_patch
+                import ucm.integration.vllm.patch.v0260.vllm_ascend.minimax_m3_kv_transfer_patch
             case _:
                 pass
 
