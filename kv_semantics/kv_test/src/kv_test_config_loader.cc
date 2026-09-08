@@ -6,7 +6,7 @@
 #include <limits>
 #include <stdexcept>
 #include <unordered_map>
-#include "asu_runtime_proxy.h"
+#include "kv_runtime_proxy.h"
 
 namespace kv::bench {
 

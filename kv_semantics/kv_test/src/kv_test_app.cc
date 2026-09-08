@@ -6,7 +6,7 @@
 #include <iostream>
 #include <sstream>
 #include <unordered_map>
-#include "asu_runtime_proxy.h"
+#include "kv_runtime_proxy.h"
 #include "kv_test_config_helpers.h"
 #include "payload_buffer_runtime.h"
 

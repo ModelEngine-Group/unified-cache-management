@@ -11,14 +11,14 @@ that library, then reads kv-test-specific options from the same file.
 ## Build and environment
 
 `kv-test` is built from `ucm/transport/kv/kv-test/CMakeLists.txt`. The
-`asu_client` and `asu_transport` shared libraries are built as separate
+`kv_client` and `kv_transport` shared libraries are built as separate
 artifacts and loaded by `kv-test` at runtime with `dlopen`.
 
 `kv-test` is included only when ASU support is enabled:
 
 ```bash
 cmake -S . -B build-kv-test -DBUILD_UCM_ASU=ON -DBUILD_UCM_STORE=OFF -DBUILD_UNIT_TESTS=OFF -DRUNTIME_ENVIRONMENT=ascend -DBUILD_KV_CLIENT_PROVIDER_FAKE=ON
-cmake --build build-kv-test --target asu_transport asu_client
+cmake --build build-kv-test --target kv_transport kv_client
 cmake --build build-kv-test --target kv-test
 ```
 
@@ -30,7 +30,7 @@ Provider implementations are selected at build time:
 | `BUILD_KV_CLIENT_PROVIDER_FAKE` | `ON` | None. |
 | `BUILD_KV_CLIENT_PROVIDER_AIV` | `OFF` | `libumc.a`, found through `KV_CLIENT_AIV_PROVIDER_ROOT`. |
 
-The configured `transport.provider_type` must be built into `asu_transport`.
+The configured `transport.provider_type` must be built into `kv_transport`.
 For example, real AIV testing needs:
 
 ```bash

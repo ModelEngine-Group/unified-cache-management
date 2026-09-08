@@ -1,7 +1,7 @@
-﻿#include "asu_client_runner.h"
-#include <algorithm>
+﻿#include <algorithm>
 #include <unordered_set>
 #include "kv_client.h"
+#include "kv_client_runner.h"
 
 namespace kv::bench {
 
