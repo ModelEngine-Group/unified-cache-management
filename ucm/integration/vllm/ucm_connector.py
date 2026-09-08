@@ -1,4 +1,4 @@
-﻿import copy
+import copy
 import glob
 import hashlib
 import math
@@ -172,6 +172,36 @@ def _check_shm_capacity(cache_buffer_capacity_gb: int) -> None:
             f"Either increase the size of {_SHM_DIR} (e.g. remount tmpfs with a "
             f"larger size= option) or decrease cache_buffer_capacity_gb."
         )
+
+
+def validate_hybrid_kv_load_failure_policy(vllm_config: "VllmConfig") -> None:
+    """Guard hybrid (HMA/HLA) connectors against unsupported load-failure policy.
+
+    vLLM's ``KVTransferConfig`` defaults ``kv_load_failure_policy`` to "fail";
+    when it is set to "recompute", load failures trigger scheduler recompute
+    paths that UCM's hybrid/multi-group connectors (UCMFAWAConnector /
+    UCMHybridLinearAttentionConnector) do not currently implement. Reject the
+    combination up front so the user gets an actionable message instead of a
+    runtime failure later.
+
+    For MultiConnector, vLLM rebuilds each child ``VllmConfig`` from only the
+    child dict (``KVTransferConfig(**ktc)``), so outer fields are not inherited.
+    ``multi_connector_policy_patch`` propagates the top-level policy into each
+    child so this check also fires in that case.
+    """
+    # Older vLLM versions (<= 0.23) may not define the field at all; treat
+    # them as "fail", which is the upstream default and is safe for UCM.
+    ktc = getattr(vllm_config, "kv_transfer_config", None)
+    if ktc is None:
+        return
+    if getattr(ktc, "kv_load_failure_policy", "fail") != "recompute":
+        return
+    raise RuntimeError(
+        "UCM hybrid/multi-group KV cache connectors (HMA/HLA) do not "
+        "currently support kv_load_failure_policy='recompute'. "
+        "Please set kv_load_failure_policy='fail' in --kv-transfer-config. "
+        "For MultiConnector, set it on the top-level kv-transfer-config."
+    )
 
 
 def _drop_null_vllm_blocks(
