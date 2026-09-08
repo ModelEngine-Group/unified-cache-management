@@ -188,6 +188,21 @@ def parse_kv_cache_config(
     for raw_group in raw_groups:
         concrete = _concrete_specs(raw_group)
         kinds, is_c4a = _classify(raw_group, concrete)
+        if KVCacheSpecKind.MAMBA in kinds:
+            modes = {
+                str(getattr(spec, "mamba_cache_mode", None)) for _, spec in concrete
+            }
+            if modes != {"align"}:
+                raise ValueError(
+                    "connector v2 supports Mamba state only with "
+                    f"mamba_cache_mode='align', got {sorted(modes)}"
+                )
+            block_sizes = {int(getattr(spec, "block_size")) for _, spec in concrete}
+            if block_sizes != {scheduler_block_size}:
+                raise ValueError(
+                    "Mamba align block size must equal cache_config.block_size="
+                    f"{scheduler_block_size}, got {sorted(block_sizes)}"
+                )
         classified.append((raw_group, concrete, kinds, is_c4a))
         if KVCacheSpecKind.SLIDING_WINDOW_MLA in kinds:
             dsv4 = True
@@ -289,6 +304,18 @@ def parse_kv_cache_config(
         )
 
     state_groups = tuple(group for group in groups if group.is_state_snapshot)
+    if state_groups:
+        mismatched_groups = {
+            group.group_id: group.token_block_size
+            for group in groups
+            if group.token_block_size != scheduler_block_size
+        }
+        if mismatched_groups:
+            raise ValueError(
+                "Mamba align requires every KV group block size to equal "
+                f"cache_config.block_size={scheduler_block_size}, got "
+                f"{mismatched_groups}"
+            )
     if dsv4:
         selected_chunk = canonical_size
         alignment = canonical_size
@@ -304,7 +331,9 @@ def parse_kv_cache_config(
         alignment = scheduler_block_size
     elif state_groups:
         selected_chunk = scheduler_block_size
-        alignment = math.lcm(*(group.token_block_size for group in groups))
+        # In Mamba align mode vLLM makes the state checkpoint block equal to
+        # the final attention/cache block after platform block-size alignment.
+        alignment = scheduler_block_size
     else:
         selected_chunk = scheduler_block_size
         alignment = math.lcm(*(group.token_block_size for group in groups))

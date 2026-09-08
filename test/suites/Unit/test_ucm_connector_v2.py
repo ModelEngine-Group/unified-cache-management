@@ -429,15 +429,48 @@ class KVCacheSpecTest(unittest.TestCase):
         parsed = parse_kv_cache_config(
             config(
                 group(["model.layers.0.attn"], FullAttentionSpec(128)),
-                group(["model.layers.1.mixer"], MambaSpec(256)),
+                group(["model.layers.1.mixer"], MambaSpec(128)),
             ),
             scheduler_block_size=128,
         )
 
         self.assertFalse(parsed.is_dsv4)
-        self.assertEqual(parsed.alignment_block_size, 256)
+        self.assertEqual(parsed.alignment_block_size, 128)
         self.assertEqual(tuple(g.group_id for g in parsed.attn_groups), (0,))
         self.assertEqual(tuple(g.group_id for g in parsed.state_groups), (1,))
+
+    def test_hybrid_rejects_non_align_mamba(self):
+        with self.assertRaisesRegex(ValueError, "mamba_cache_mode='align'"):
+            parse_kv_cache_config(
+                config(
+                    group(["model.layers.0.attn"], FullAttentionSpec(128)),
+                    group(
+                        ["model.layers.1.mixer"],
+                        MambaSpec(128, mamba_cache_mode="none"),
+                    ),
+                ),
+                scheduler_block_size=128,
+            )
+
+    def test_hybrid_rejects_misaligned_mamba_block(self):
+        with self.assertRaisesRegex(ValueError, "Mamba align block size"):
+            parse_kv_cache_config(
+                config(
+                    group(["model.layers.0.attn"], FullAttentionSpec(128)),
+                    group(["model.layers.1.mixer"], MambaSpec(256)),
+                ),
+                scheduler_block_size=128,
+            )
+
+    def test_hybrid_rejects_misaligned_attention_block(self):
+        with self.assertRaisesRegex(ValueError, "every KV group block size"):
+            parse_kv_cache_config(
+                config(
+                    group(["model.layers.0.attn"], FullAttentionSpec(256)),
+                    group(["model.layers.1.mixer"], MambaSpec(128)),
+                ),
+                scheduler_block_size=128,
+            )
 
     def test_dsv4_derives_canonical_size_once(self):
         parsed = parse_kv_cache_config(
@@ -490,7 +523,7 @@ class KVCacheSpecTest(unittest.TestCase):
             parse_kv_cache_config(
                 config(
                     group(["model.layers.0.attn"], FullAttentionSpec(128)),
-                    group(["model.layers.1.mixer"], MambaSpec(256)),
+                    group(["model.layers.1.mixer"], MambaSpec(128)),
                 ),
                 scheduler_block_size=128,
                 chunk_size=512,
@@ -516,19 +549,11 @@ class KVCacheSpecTest(unittest.TestCase):
         glm = parse_kv_cache_config(
             captured_config(required["glm"]), scheduler_block_size=128
         )
-        kimi = parse_kv_cache_config(
-            captured_config(required["kimi"]), scheduler_block_size=256
-        )
         dsv4 = parse_kv_cache_config(
             captured_config(required["dsv4"]), scheduler_block_size=8
         )
 
         self.assertEqual((glm.is_dsv4, len(glm.groups)), (False, 1))
-        self.assertEqual(
-            (kimi.is_dsv4, len(kimi.attn_groups), len(kimi.state_groups)),
-            (False, 1, 3),
-        )
-        self.assertEqual(kimi.alignment_block_size, 3072)
         self.assertEqual((dsv4.is_dsv4, len(dsv4.groups)), (True, 6))
         self.assertEqual(dsv4.c4a_group.group_id, 0)
         self.assertEqual(dsv4.chunk_size, 512)
@@ -540,6 +565,14 @@ class KVCacheSpecTest(unittest.TestCase):
             tuple(group.tail_tokens for group in dsv4.groups[2:]),
             (128, 128, 4, 0),
         )
+
+        # This A-chain capture predates platform block-size alignment. It has
+        # Attention=768, Mamba=1024 and mamba_cache_mode=none, so it must not
+        # be accepted as a production Kimi align layout.
+        with self.assertRaisesRegex(ValueError, "mamba_cache_mode='align'"):
+            parse_kv_cache_config(
+                captured_config(required["kimi"]), scheduler_block_size=768
+            )
 
     def test_real_cpu_dsv4_capture_uses_fa_and_wa_groups(self):
         path = (
@@ -692,7 +725,7 @@ class HashAndLookupTest(unittest.TestCase):
         parsed = parse_kv_cache_config(
             config(
                 group(["model.layers.0.attn"], FullAttentionSpec(128)),
-                group(["model.layers.1.mixer"], MambaSpec(256)),
+                group(["model.layers.1.mixer"], MambaSpec(128)),
             ),
             scheduler_block_size=128,
         )
@@ -719,7 +752,7 @@ class HashAndLookupTest(unittest.TestCase):
         parsed = parse_kv_cache_config(
             config(
                 group(["model.layers.0.attn"], FullAttentionSpec(128)),
-                group(["model.layers.1.mixer"], MambaSpec(256)),
+                group(["model.layers.1.mixer"], MambaSpec(128)),
             ),
             scheduler_block_size=128,
         )
@@ -740,20 +773,20 @@ class HashAndLookupTest(unittest.TestCase):
                     attn_keys[boundary // 128 - 1],
                 )
             )
-            for boundary in (256, 512, 768, 1024)
+            for boundary in range(128, 1025, 128)
         )
         proxy.present.update((*attn_keys, *state_keys))
 
         result = coordinator.lookup(request, 0)
 
-        self.assertEqual(result.restore_end_tokens, 768)
-        self.assertEqual(result.external_hit_tokens, 768)
+        self.assertEqual(result.restore_end_tokens, 896)
+        self.assertEqual(result.external_hit_tokens, 896)
 
     def test_hybrid_miss_still_returns_state_keys_for_later_dump(self):
         parsed = parse_kv_cache_config(
             config(
                 group(["model.layers.0.attn"], FullAttentionSpec(128)),
-                group(["model.layers.1.mixer"], MambaSpec(256)),
+                group(["model.layers.1.mixer"], MambaSpec(128)),
             ),
             scheduler_block_size=128,
         )
@@ -769,7 +802,7 @@ class HashAndLookupTest(unittest.TestCase):
 
         self.assertEqual(result.external_hit_tokens, 0)
         self.assertEqual(len(result.group_ucm_block_ids[0]), 8)
-        self.assertEqual(len(result.group_ucm_block_ids[1]), 4)
+        self.assertEqual(len(result.group_ucm_block_ids[1]), 8)
 
     def test_dsv4_requires_fa_prefix_and_latest_wa_boundary(self):
         parsed = parse_kv_cache_config(
@@ -1425,7 +1458,7 @@ class RaggedLayoutTest(unittest.TestCase):
                 group(
                     ["model.layers.0.self_attn"],
                     MambaSpec(
-                        1024,
+                        768,
                         shapes=((3, 4608), (12, 128, 128)),
                     ),
                 ),
@@ -1466,7 +1499,7 @@ class RaggedLayoutTest(unittest.TestCase):
         )
 
         plan = UCMGroupDispatchPlan(
-            0, (key,), 0, 2048, 3072, (UCMGroupBlockIds(1, 2, (1,)),)
+            0, (key,), 0, 1536, 2304, (UCMGroupBlockIds(1, 2, (1,)),)
         )
         metadata = UCMConnectorMetadata(
             requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
@@ -1642,7 +1675,7 @@ class RaggedLayoutTest(unittest.TestCase):
         parsed = parse_kv_cache_config(
             config(
                 group(["model.layers.0.attn"], FullAttentionSpec(128)),
-                group(["model.layers.1.mixer"], MambaSpec(256)),
+                group(["model.layers.1.mixer"], MambaSpec(128)),
             ),
             scheduler_block_size=128,
         )
@@ -1659,10 +1692,10 @@ class RaggedLayoutTest(unittest.TestCase):
             UCMLookupResult(
                 512,
                 512,
-                ((b"a" * 16,) * 4, (b"s" * 16,) * 2),
+                ((b"a" * 16,) * 4, (b"s" * 16,) * 4),
             ),
         )
-        state.group_vllm_block_ids = ([1, 2, 3, 4], [0, 6])
+        state.group_vllm_block_ids = ([1, 2, 3, 4], [0, 1, 2, 6])
 
         metadata = dispatcher.build_metadata({"r": 1})
         batch = layout.build_load_batches(metadata)
