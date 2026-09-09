@@ -714,7 +714,8 @@ def log_cache_layout(fixture: CacheFixture) -> None:
     raw_by_layer = {
         layer_name: raw
         for raw in getattr(config, "kv_cache_tensors", ())
-        for layer_name in raw.shared_by
+        # vllm 0.29: KVCacheTensor.shared_by 改名 layers（L 序）
+        for layer_name in (getattr(raw, "layers", None) or raw.shared_by)
     }
     log(
         "KVCacheConfig: "

@@ -99,6 +99,10 @@ def _model_uses_mamba(vllm_config: Any) -> bool:
 
 
 def make_config() -> Any:
+    # vllm 0.29：必须先中性化 CPU 平台的 MLA config 特化（强制 block=16、
+    # 强制关 prefix caching/chunked prefill——Kimi 的 mamba_block_size 校验
+    # 会因此失败），CUDA-sim 才能拿到 GPU 口径的配置。幂等。
+    _patch_cpu_platform_config_for_sim()
     vllm_config = make_common_config(
         model,
         tokens,
@@ -128,10 +132,56 @@ def make_config() -> Any:
 # ---------------------------------------------------------------------------
 
 
+# CUDA-sim 约束（vllm 0.29 官方源码真实声明，与 docs/kv-layout-ascend-20260905
+# tools/capture_mocked.py 的 _CUDA_SIM_CONSTRAINTS 保持一致）：
+#   FLASH_ATTN (flash_attn.py): MultipleOf(16)，不声明布局 → 默认偏好 LBNHC
+#   FlashMLA (mla/flashmla.py): [64]，不声明布局
+# indexer/SWA/DSV4 主层不走 selector（模型代码显式引用真实 backend 类），
+# 约束天然生效，无需模拟。
+_CUDA_SIM_CONSTRAINTS = {
+    "gqa": {"kernel_blocks": [16], "layouts": None},
+    "mla": {"kernel_blocks": [64], "layouts": None},
+}
+
+
+def _patch_cpu_platform_config_for_sim() -> None:
+    """vllm 0.29 CUDA-sim：中性化 CpuPlatform.check_and_update_config 的 MLA 特化。
+
+    0.29 的 CPU 平台在 config 阶段对 MLA 模型做三件 CUDA 上没有的事：
+    block_size 强制 16（CPU 参考解码 kernel 的限制）、强制关闭 chunked
+    prefill + prefix caching（Kimi 的 mamba_block_size 校验会因此直接失败）、
+    GDN mamba dtype 重置 float32。CUDA-sim 按 GPU 口径：放行原方法后按
+    入参还原这三组值；其余 CPU 逻辑保持不变。幂等，可重复调用。"""
+    from vllm.platforms.cpu import CpuPlatform
+
+    if getattr(CpuPlatform.check_and_update_config, "_ucm_sim_patched", False):
+        return
+    orig = CpuPlatform.check_and_update_config.__func__
+
+    def _sim_safe(cls, vllm_config):
+        cc = vllm_config.cache_config
+        sc = vllm_config.scheduler_config
+        saved = (cc.block_size, cc.user_specified_block_size,
+                 cc.enable_prefix_caching, cc.mamba_ssm_cache_dtype,
+                 sc.enable_chunked_prefill, sc.max_num_batched_tokens)
+        try:
+            orig(cls, vllm_config)
+        finally:
+            (cc.block_size, cc.user_specified_block_size,
+             cc.enable_prefix_caching, cc.mamba_ssm_cache_dtype,
+             sc.enable_chunked_prefill, sc.max_num_batched_tokens) = saved
+
+    _sim_safe._ucm_sim_patched = True
+    CpuPlatform.check_and_update_config = classmethod(_sim_safe)
+
+
 def _patch_cpu_runtime() -> None:
-    """官方 vLLM CPU 构建没有 MLA/GQA attention backend 与 MLA prefill backend，
-    CPU 平台还会拒绝 torch.cuda 系列调用。布局捕获不需要 backend 实现，
-    在模型构造前注入假 backend 与占位即可（与 capture_mocked --variant official 相同）。"""
+    """官方 vLLM CPU 构建没有 CUDA attention backend（0.29 有 CPU_MLA 但
+    kernel block=16，sparse 直接被平台拒绝）。布局/逐字节比对不需要真
+    kernel：注入带 CUDA 真值约束的假 backend（CUDA-sim）——0.29 的张量
+    shape/stride 由 vllm 布局系统按这些约束计算（allocate_kv_cache 单底衬 +
+    create_kv_cache_views），register_kv_caches 收到的视图即 GPU 形状。
+    forward/metadata 仅占位（model-check 只 schedule，无 forward）。"""
 
     from vllm.v1.attention.backend import (
         AttentionBackend, AttentionImpl, AttentionMetadataBuilder)
@@ -167,8 +217,11 @@ def _patch_cpu_runtime() -> None:
             # model-check 只做 schedule（无 forward），metadata 不会被消费
             return None
 
-    class _FakeBackend(AttentionBackend):
+    class _CUDASimBackend(AttentionBackend):
         _mla = False
+        # CUDA-sim 约束由 _apply_sim 填充；[128] 是 0.27 及更早的旧行为兜底
+        _kernel_blocks: list = [128]
+        _layouts: tuple | None = None
 
         @classmethod
         def get_name(cls) -> str:
@@ -183,11 +236,10 @@ def _patch_cpu_runtime() -> None:
             return _FakeBuilder
 
         @classmethod
-        def get_kv_cache_shape(cls, num_blocks, block_size,
-                               num_kv_heads, head_size,
+        def get_kv_cache_shape(cls, num_blocks, block_size, num_kv_heads, head_size,
                                cache_dtype_str="auto", **kwargs):
-            # vllm 0.27 按 backend 的 shape 创建 KV 缓冲：GQA 是 K/V 合并 5D
-            # （与官方 FLASH_ATTN 一致），MLA 是 4D。
+            # vllm 0.27 及更早按 backend 的 shape 创建 KV 缓冲（0.29 runner
+            # 路径已移除此调用，仅作旧版后备）：GQA 是 K/V 合并 5D，MLA 是 4D
             if cls._mla:
                 return (num_blocks, block_size, num_kv_heads, head_size)
             return (num_blocks, 2, block_size, num_kv_heads, head_size)
@@ -196,21 +248,41 @@ def _patch_cpu_runtime() -> None:
         def is_mla(cls) -> bool:
             return cls._mla
 
+        @classmethod
+        def get_supported_kernel_block_sizes(cls) -> list:
+            return list(cls._kernel_blocks)
+
+        @classmethod
+        def supported_kv_cache_layouts(cls):
+            # None = 不声明（vllm 0.29 走默认布局偏好 LBNHC 优先）
+            return cls._layouts
+
         @staticmethod
         def get_required_kv_cache_layout():
             return None
 
-    class _FakeMLABackend(_FakeBackend):
-        _mla = True
+    _FakeMLABackend = type("FakeMLABackend", (_CUDASimBackend,), {"_mla": True})
+    _FakeGQABackend = type(
+        "FakeGQABackend", (_CUDASimBackend,), {"_mla": False})
 
-    class _FakeGQABackend(_FakeBackend):
-        _mla = False
+    def _gqa_name(cls) -> str:
+        # vllm 0.27+ 会把 backend 名转成 AttentionBackendEnum 校验；
+        # CPU_ATTN 是合法枚举名。
+        return "CPU_ATTN"
 
-        @classmethod
-        def get_name(cls) -> str:
-            # vllm 0.27 会把 backend 名转成 AttentionBackendEnum 校验；
-            # CPU_ATTN 是合法枚举名（0.26 不校验名字，同样安全）。
-            return "CPU_ATTN"
+    _FakeGQABackend.get_name = classmethod(_gqa_name)
+
+    def _apply_sim(cls, spec: dict) -> None:
+        layouts = spec["layouts"]
+        if layouts is not None:
+            from vllm.v1.kv_cache_layout import KVCacheLayout
+
+            layouts = tuple(getattr(KVCacheLayout, n) for n in layouts)
+        cls._kernel_blocks = list(spec["kernel_blocks"])
+        cls._layouts = layouts
+
+    _apply_sim(_FakeMLABackend, _CUDA_SIM_CONSTRAINTS["mla"])
+    _apply_sim(_FakeGQABackend, _CUDA_SIM_CONSTRAINTS["gqa"])
 
     import vllm.v1.attention.selector as sel
 
