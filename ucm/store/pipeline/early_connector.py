@@ -1,14 +1,34 @@
 """Early-only pipeline assembled from native Store subclasses."""
 
-import copy
-from pathlib import Path
-
 import numpy as np
 
 from ucm.integration.vllm.early_lookup import current_lookup
-from ucm.store.ucmstore_v1 import UcmKVStoreBaseV1
 
-from .connector import UcmPipelineStore, _preload_metrics, ucmpipelinestore
+from .connector import UcmPipelineStore, UcmPipelineStoreBuilder, ucmpipelinestore
+
+_EARLY_PIPELINE = "Early(Cache|Posix)"
+
+
+class _EarlyStack:
+    """Adapt factory names while the native builder configures the same pipeline."""
+
+    def __init__(self, pipeline):
+        self.pipeline = pipeline
+
+    def Stack(self, name, path, config):
+        if name not in ("Cache", "Posix"):
+            raise ValueError(f"unsupported Early store: {name}")
+        self.pipeline.Stack(f"Early{name}", path, config)
+
+
+def _build_early_pipeline(config, pipeline):
+    builder = UcmPipelineStoreBuilder.get("Cache|Posix")
+    if builder is None:
+        raise ValueError("unknown store pipeline: Cache|Posix")
+    builder(dict(config, store_pipeline="Cache|Posix"), _EarlyStack(pipeline))
+
+
+UcmPipelineStoreBuilder.register(_EARLY_PIPELINE, _build_early_pipeline)
 
 
 class EarlyPipelineStore(UcmPipelineStore):
@@ -19,23 +39,9 @@ class EarlyPipelineStore(UcmPipelineStore):
                 f"Early supports only store_pipeline='Cache|Posix', got {pipeline!r}"
             )
 
-        UcmKVStoreBaseV1.__init__(self, config)
-        self.store_ = ucmpipelinestore.PipelineStore()
-        store_dir = Path(__file__).resolve().parent.parent
-        posix_config = copy.deepcopy(config)
-        if config.get("device_id", -1) >= 0:
-            posix_config["tensor_size"] = config["shard_size"]
-        _preload_metrics(store_dir)
-        self.store_.Stack(
-            "EarlyPosix",
-            str(store_dir / "posix/libposixstore.so"),
-            posix_config,
-        )
-        self.store_.Stack(
-            "EarlyCache",
-            str(store_dir / "cache/libcachestore.so"),
-            config,
-        )
+        super().__init__(dict(config, store_pipeline=_EARLY_PIPELINE))
+        # The internal builder key changes selection only, not the user's config.
+        self.config = config
 
     def lookup_on_prefix(self, block_ids: list[bytes]) -> int:
         context = current_lookup.get()

@@ -19,6 +19,7 @@ from ucm.integration.vllm.early_connector import (
 from ucm.integration.vllm.early_lookup import current_lookup
 from ucm.integration.vllm.early_prefetch import EarlyScheduler, Job
 from ucm.integration.vllm.rank_consistency import RankConsistencyManager
+from ucm.store.pipeline import connector as native_store
 from ucm.store.pipeline import early_connector as early_store
 from ucm.store.pipeline.early_connector import EarlyPipelineStore
 
@@ -238,4 +239,45 @@ def test_early_binding_error_is_not_replaced(connector, monkeypatch):
     )
     with pytest.raises(RuntimeError) as raised:
         connector.store.prefetch_reserved(7)
+    assert raised.value is error
+
+
+@pytest.mark.parametrize("early", [False, True])
+def test_pipeline_builder_preserves_native_config_and_instance(monkeypatch, early):
+    pipeline = Mock()
+    factory = Mock(return_value=pipeline)
+    monkeypatch.setattr(native_store.ucmpipelinestore, "PipelineStore", factory)
+    monkeypatch.setattr(native_store, "_preload_metrics", Mock())
+    native_builder = native_store.UcmPipelineStoreBuilder.get("Cache|Posix")
+    builder = Mock(wraps=native_builder)
+    monkeypatch.setitem(
+        native_store.UcmPipelineStoreBuilder.registry_, "Cache|Posix", builder
+    )
+    config = {"store_pipeline": "Cache|Posix", "device_id": 0, "shard_size": 4096}
+    cls = EarlyPipelineStore if early else native_store.UcmPipelineStore
+    store = cls(config)
+    factory.assert_called_once_with()
+    builder.assert_called_once()
+    assert store.store_ is pipeline
+    assert store.config is config
+    assert config == {
+        "store_pipeline": "Cache|Posix", "device_id": 0, "shard_size": 4096
+    }
+    calls = pipeline.Stack.call_args_list
+    prefix = "Early" if early else ""
+    assert [call.args[0] for call in calls] == [f"{prefix}Posix", f"{prefix}Cache"]
+    assert calls[0].args[2]["tensor_size"] == config["shard_size"]
+    assert calls[1].args[2] == config
+
+
+def test_pipeline_builder_preserves_native_error(monkeypatch):
+    monkeypatch.setattr(native_store.ucmpipelinestore, "PipelineStore", Mock())
+    error = ValueError("native builder failed")
+    monkeypatch.setitem(
+        native_store.UcmPipelineStoreBuilder.registry_,
+        "Cache|Posix",
+        Mock(side_effect=error),
+    )
+    with pytest.raises(ValueError) as raised:
+        EarlyPipelineStore({"store_pipeline": "Cache|Posix", "device_id": -1})
     assert raised.value is error
