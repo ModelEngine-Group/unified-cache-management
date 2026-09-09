@@ -46,7 +46,7 @@ namespace {
 
 TEST(TransportConfigParserTest, LoadsMaxErrorCount)
 {
-    constexpr const char* kConfigPath = "asu_transport_max_error_count_test.conf";
+    constexpr const char* kConfigPath = "kv_client_transport_max_error_count_test.conf";
     {
         std::ofstream configFile{kConfigPath};
         ASSERT_TRUE(configFile.is_open());
@@ -65,7 +65,7 @@ TEST(TransportConfigParserTest, LoadsMaxErrorCount)
 
 TEST(TransportConfigParserTest, LoadsCompletionPollSpinLimit)
 {
-    constexpr const char* kConfigPath = "asu_transport_completion_poll_spin_limit_test.conf";
+    constexpr const char* kConfigPath = "kv_client_transport_completion_poll_spin_limit_test.conf";
     {
         std::ofstream configFile{kConfigPath};
         ASSERT_TRUE(configFile.is_open());

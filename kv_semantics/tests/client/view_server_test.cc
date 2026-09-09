@@ -9,7 +9,7 @@ namespace {
 
 TEST(ViewServerTest, ConfigFileViewServerLoadsView)
 {
-    constexpr const char* kConfigPath = "asu_view_server_test.conf";
+    constexpr const char* kConfigPath = "kv_client_view_server_test.conf";
     {
         std::ofstream configFile{kConfigPath};
         ASSERT_TRUE(configFile.is_open());

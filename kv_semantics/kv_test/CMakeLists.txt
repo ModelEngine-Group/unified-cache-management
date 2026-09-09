@@ -1,7 +1,7 @@
 add_executable(kv-test
     src/arg_parser.cc
-    src/asu_client_runner.cc
-    src/asu_runtime_proxy.cc
+    src/kv_client_runner.cc
+    src/kv_runtime_proxy.cc
     src/bench_runner.cc
     src/buffer_allocator.cc
     src/consistency_checker.cc

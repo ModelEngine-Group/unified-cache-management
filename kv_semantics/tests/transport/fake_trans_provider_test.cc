@@ -16,6 +16,9 @@
 namespace kv::test {
 namespace {
 
+constexpr std::uint16_t kCqeSuccess = 0x000;
+constexpr std::uint16_t kCqeCheckResultBuffer = 0x732;
+
 std::string FakeBackendKeyFileName(const CacheKey& key)
 {
     std::uint64_t hash = 1469598103934665603ULL;
@@ -135,6 +138,59 @@ TEST(FakeTransProviderTest, ParsesWorkerThreadCount)
     TransportConfig config;
     config.attrs["fake_backend.worker_threads"] = "6";
     EXPECT_EQ(MakeFakeTransProviderConfig(config).workerThreads, 6U);
+}
+
+TEST(FakeTransProviderTest, ParsesImmediateCompletionMode)
+{
+    TransportConfig config;
+    config.attrs["fake_backend.complete_immediately"] = "true";
+    EXPECT_TRUE(MakeFakeTransProviderConfig(config).completeImmediately);
+}
+
+TEST(FakeTransProviderTest, ImmediateCompletionBypassesBackendExecution)
+{
+    FakeTransProviderConfig config;
+    config.completeImmediately = true;
+    config.latencyMs = 1000;
+    FakeTransProvider provider(config);
+
+    constexpr std::uint16_t cid = 11;
+    std::array<std::uint32_t, kSqeDwordCount> request{};
+    request[0] = 0xFFU | (static_cast<std::uint32_t>(cid) << 16);
+    std::vector<std::uint32_t> completion;
+
+    const auto status = provider.CompleteFakeBackendRequest(
+        request.data(), request.size() * sizeof(std::uint32_t), completion);
+
+    EXPECT_TRUE(status.ok()) << status.message;
+    ASSERT_EQ(completion.size(), kCqeDwordCount);
+    EXPECT_EQ(completion[3] & 0xFFFF, cid);
+    EXPECT_EQ(completion[3] >> 17, kCqeSuccess);
+}
+
+TEST(FakeTransProviderTest, ImmediateCompletionReportsAllQueriedKeysMissing)
+{
+    FakeTransProviderConfig config;
+    config.completeImmediately = true;
+    FakeTransProvider provider(config);
+
+    CacheKey first{};
+    first[0] = std::byte{1};
+    CacheKey second{};
+    second[0] = std::byte{2};
+    for (const bool useSeekControl : {false, true}) {
+        const auto request = BuildExistRequest({first, second}, useSeekControl);
+        std::vector<std::uint32_t> completion;
+
+        const auto status = provider.CompleteFakeBackendRequest(
+            request.data(), request.size() * sizeof(std::uint32_t), completion);
+
+        EXPECT_TRUE(status.ok()) << status.message;
+        ASSERT_EQ(completion.size(), kCqeDwordCount + 1);
+        EXPECT_EQ(completion[0] & 0xFFFF, 0U);
+        EXPECT_EQ(completion[3] >> 17, kCqeCheckResultBuffer);
+        EXPECT_EQ(completion[kCqeDwordCount], 0U);
+    }
 }
 
 TEST(FakeTransProviderTest, ExistHonorsSeekControl)

@@ -21,59 +21,16 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#include <fmt/format.h>
-#include "device.h"
-#include "event.h"
+#ifndef KV_SEMANTICS_RUNTIME_EVENT_H
+#define KV_SEMANTICS_RUNTIME_EVENT_H
+
+#include <cstdint>
 #include "kv_types.h"
-#include "simu_buffer.h"
-#include "simu_trans.h"
 
 namespace kv::runtime {
 
-Status SynchronizeEvent(std::uintptr_t eventHandle)
-{
-    (void)eventHandle;
-    return Status::OK();
-}
-
-Status Device::Init() { return Status::OK(); }
-
-Status Device::Setup(int32_t deviceId)
-{
-    if (deviceId < 0) {
-        return Status::Error(StatusCode::INVALID_ARGUMENT,
-                             fmt::format("invalid device id({})", deviceId));
-    }
-    return Status::OK();
-}
-
-Status Device::Reset(int32_t deviceId)
-{
-    if (deviceId < 0) {
-        return Status::Error(StatusCode::INVALID_ARGUMENT,
-                             fmt::format("invalid device id({})", deviceId));
-    }
-    return Status::OK();
-}
-
-Status Device::Finalize() { return Status::OK(); }
-
-std::unique_ptr<Buffer> Device::MakeBuffer()
-{
-    try {
-        return std::make_unique<SimuBuffer>();
-    } catch (...) {
-        return nullptr;
-    }
-}
-
-std::unique_ptr<Trans> Device::MakeTrans()
-{
-    try {
-        return std::make_unique<SimuTrans>();
-    } catch (...) {
-        return nullptr;
-    }
-}
+Status SynchronizeEvent(std::uintptr_t eventHandle);
 
 }  // namespace kv::runtime
+
+#endif  // KV_SEMANTICS_RUNTIME_EVENT_H

@@ -40,6 +40,7 @@ struct Config {
     std::string fakeBackendPath;
     std::uint64_t fakeBackendLatencyMs{1};
     std::uint64_t fakeBackendWorkerThreads{4};
+    bool fakeBackendCompleteImmediately{false};
     ssize_t sharedProviderMode{0};
     bool sc{true};
     std::unordered_map<std::string, std::string> clientAttrs;

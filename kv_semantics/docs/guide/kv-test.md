@@ -11,14 +11,14 @@ that library, then reads kv-test-specific options from the same file.
 ## Build and environment
 
 `kv-test` is built from `ucm/transport/kv/kv-test/CMakeLists.txt`. The
-`asu_client` and `asu_transport` shared libraries are built as separate
+`kv_client` and `kv_transport` shared libraries are built as separate
 artifacts and loaded by `kv-test` at runtime with `dlopen`.
 
 `kv-test` is included only when ASU support is enabled:
 
 ```bash
 cmake -S . -B build-kv-test -DBUILD_UCM_ASU=ON -DBUILD_UCM_STORE=OFF -DBUILD_UNIT_TESTS=OFF -DRUNTIME_ENVIRONMENT=ascend -DBUILD_KV_CLIENT_PROVIDER_FAKE=ON
-cmake --build build-kv-test --target asu_transport asu_client
+cmake --build build-kv-test --target kv_transport kv_client
 cmake --build build-kv-test --target kv-test
 ```
 
@@ -30,7 +30,7 @@ Provider implementations are selected at build time:
 | `BUILD_KV_CLIENT_PROVIDER_FAKE` | `ON` | None. |
 | `BUILD_KV_CLIENT_PROVIDER_AIV` | `OFF` | `libumc.a`, found through `KV_CLIENT_AIV_PROVIDER_ROOT`. |
 
-The configured `transport.provider_type` must be built into `asu_transport`.
+The configured `transport.provider_type` must be built into `kv_transport`.
 For example, real AIV testing needs:
 
 ```bash
@@ -113,7 +113,7 @@ Supported commands:
 | `batch-retrieve` | Retrieves all selected entries in one ASU client call. |
 | `power-cycle prepare` | Same execution path as `batch-store`/store-like commands. |
 | `power-cycle verify` | Same execution path as retrieve-like commands and always performs value consistency checking. |
-| `bench` | Runs a synchronous benchmark loop for `store`, `retrieve`, `batch-store`, `batch-retrieve`, or `mix`. |
+| `bench` | Runs an asynchronous, interval-driven benchmark for `store`, `retrieve`, `batch-store`, `batch-retrieve`, or `mix`. |
 
 ## Common options
 
@@ -183,6 +183,7 @@ wait_timeout_ms=5000
 fake_backend.path=./kv-test-fake-backend-store
 fake_backend.latency_ms=1
 fake_backend.worker_threads=4
+fake_backend.complete_immediately=true
 
 view.config_path=./kv_semantics/kv_test/kv_client_view.conf
 hash_table.type=RING_HASH
@@ -203,6 +204,7 @@ kv.count=16
 limits.memory_max_bytes=4294967296
 
 bench.io_size=4096
+bench.io_interval_us=1000
 bench.concurrency=1
 bench.duration_sec=10
 bench.warmup_sec=1
@@ -252,13 +254,15 @@ These fields are parsed by `kv-test` itself:
 | `fake_backend.path` | FAKE provider storage root. Defaults to `./kv-test-fake-backend-store`. |
 | `fake_backend.latency_ms` | Mock backend completion delay in milliseconds. Default is `1`. |
 | `fake_backend.worker_threads` | Number of FAKE provider IO workers. Default is `4`. |
+| `fake_backend.complete_immediately` | Complete FAKE provider requests without backend IO. Default is `false`. |
 | `kv.key_prefix` | Prefix for count-based key generation. |
 | `kv.seed` | Seed for deterministic value generation. |
 | `kv.value_size` | Value size for normal commands. |
 | `kv.count` | Default count for count-based generation. |
 | `limits.memory_max_bytes` | Maximum value payload bytes held by kv-test. For normal commands this limits generated value bytes. For `bench`, this limits the reusable buffer pool. Default is 4 GiB. |
 | `bench.io_size` | Bench value size for one key. Must not exceed the protocol 24-bit length limit `0xFFFFFF`. |
-| `bench.concurrency` | Number of benchmark operations launched concurrently in one wave. |
+| `bench.io_interval_us` | Interval between asynchronous I/O submissions in microseconds. Must be greater than zero. |
+| `bench.concurrency` | Number of completion waiter threads and reusable benchmark buffer slots. |
 | `bench.duration_sec` | Measured benchmark duration. Must be greater than zero. |
 | `bench.warmup_sec` | Warmup duration. |
 | `bench.read_ratio` | Read ratio used by `bench mix`. |
@@ -298,7 +302,7 @@ Mocked or not covered in this mode:
 
 For every transport configured with the FAKE provider, kv-test fills required
 SQE/send attrs and passes `fake_backend.path`, `fake_backend.latency_ms`,
-`fake_backend.worker_threads`, and `fake_backend.device_id` through
+`fake_backend.worker_threads`, `fake_backend.complete_immediately`, and `fake_backend.device_id` through
 `TransportConfig.attrs`. Other provider entries are left unchanged.
 `FakeTransProvider::CreateConnection` returns placeholder connection handles so
 `ConnectionManager` can create channels during this software-only integration
@@ -465,6 +469,7 @@ Requirements:
 
 - `bench.op` must be set by config, positional op, `--op`, or `--bench-op`.
 - `bench.concurrency` must be greater than zero.
+- `bench.io_interval_us` must be greater than zero.
 - `bench.duration_sec` must be greater than zero.
 - `bench.io_size` must be greater than zero.
 - `bench.io_size` must be less than or equal to `0xFFFFFF`.
@@ -473,13 +478,15 @@ Requirements:
   zero.
 - For `mix`, `read_ratio + write_ratio` must equal `100`.
 
-The benchmark runner launches one asynchronous task per operation in a wave.
-Each wave contains up to `concurrency` operations.
+The benchmark runner submits one asynchronous task every `bench.io_interval_us`.
+Submission does not wait for the preceding task to complete. Completion waiters
+collect results in the background, and the runner drains all outstanding tasks
+after the final submission.
 
-Bench uses a fixed reusable buffer pool instead of pre-generating all data for
-the whole run. The pool holds `entries_per_operation * concurrency` buffers of
-`bench.io_size` bytes. Each new batch updates metadata for the selected slot and
-reuses its value buffers.
+Bench starts with `concurrency` reusable buffer slots. If every slot is still in
+flight when the next interval expires, the pool grows instead of delaying the
+submission. Completed tasks return their slots to the pool. Pool growth remains
+subject to `limits.memory_max_bytes`.
 
 With `--progress`, bench prints one measured progress line per second instead
 of rewriting a terminal line. The final summary and report output are still

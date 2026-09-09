@@ -59,6 +59,7 @@ struct FakeKvClientState {
     std::vector<kv::MemoryRegion> registeredRegions;
     std::size_t registrationCalls{0};
     std::size_t shutdownCalls{0};
+    std::uintptr_t lastStoreEventHandle{0};
     bool failRegistration{false};
     bool omitRegisteredHandle{false};
 };
@@ -123,6 +124,13 @@ public:
         return Submit(entries, taskId);
     }
 
+    kv::Status StoreAsync(const std::vector<kv::KVBuffer>& entries, kv::TaskId& taskId,
+                          std::uintptr_t eventHandle) override
+    {
+        state_->lastStoreEventHandle = eventHandle;
+        return StoreAsync(entries, taskId);
+    }
+
     kv::Status BatchLoadAsync(const std::vector<kv::KVBuffer>& entries, kv::TaskId& taskId) override
     {
         return LoadAsync(entries, taskId);
@@ -132,6 +140,13 @@ public:
                                kv::TaskId& taskId) override
     {
         return StoreAsync(entries, taskId);
+    }
+
+    kv::Status BatchStoreAsync(const std::vector<kv::KVBuffer>& entries, kv::TaskId& taskId,
+                               std::uintptr_t eventHandle) override
+    {
+        state_->lastStoreEventHandle = eventHandle;
+        return BatchStoreAsync(entries, taskId);
     }
 
     kv::Status DeleteAsync(const std::vector<kv::CacheKey>& keys, kv::TaskId& taskId) override
@@ -298,6 +313,26 @@ void ExpectLoadDumpSmoke(UC::StoreV1& store, const UC::Detail::BlockId& block, v
 
 }  // namespace
 
+TEST(UCAsuStoreTest, DumpPassesPrerequisiteEventToClient)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    std::array<std::byte, kv::kAlignmentBytes> buffer{};
+    RegisterPersistentRanges(config, {
+                                         {buffer.data(), buffer.size()}
+    });
+    ASSERT_TRUE(store.Setup(config).Success());
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockId("a2b2c3d4e5f6789012345678901234ab");
+    auto task = MakeTask(block, buffer.data());
+    task.prerequisiteHandle = 123;
+    auto dump = store.Dump(std::move(task));
+    ASSERT_TRUE(dump.HasValue());
+    EXPECT_TRUE(store.Wait(dump.Value()).Success());
+    EXPECT_EQ(state->lastStoreEventHandle, std::uintptr_t{123});
+}
+
 TEST(UCAsuStoreTest, TransportModeRejectsMultipleAsus)
 {
     UC::AsuStore::AsuStore store;
@@ -463,6 +498,23 @@ TEST(UCAsuStoreTest, PropagatesFakeBackendWorkerThreads)
 
     const auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
     EXPECT_EQ(transportConfig.attrs.at("fake_backend.worker_threads"), "8");
+    EXPECT_EQ(transportConfig.attrs.at("fake_backend.complete_immediately"), "false");
+}
+
+TEST(UCAsuStoreTest, PropagatesFakeBackendCompleteImmediately)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_trans_provider_backend", std::string{"fake"});
+    config.Set("asu_fake_backend_complete_immediately", true);
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+
+    const auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+    EXPECT_EQ(transportConfig.attrs.at("fake_backend.complete_immediately"), "true");
 }
 
 TEST(UCAsuStoreTest, RejectsMissingKvNamespaces)
