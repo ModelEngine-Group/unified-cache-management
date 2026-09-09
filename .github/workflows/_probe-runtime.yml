@@ -1,0 +1,132 @@
+name: Resolve one Runtime member capability
+
+on:
+  workflow_call:
+    inputs:
+      probe_id:
+        type: string
+        required: true
+      runtime_ref:
+        type: string
+        required: true
+      image_reference:
+        type: string
+        required: true
+      platform:
+        type: string
+        required: true
+      accelerator:
+        type: string
+        required: true
+      runner:
+        type: string
+        required: true
+      enabled:
+        type: boolean
+        required: true
+      retention_days:
+        type: number
+        required: false
+        default: 7
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Probe
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: jlumbroso/free-disk-space@v1.3.1
+        if: ${{ inputs.enabled }}
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+      - id: probe
+        name: Read Runtime capability
+        if: ${{ inputs.enabled }}
+        env:
+          PROBE_ID: ${{ inputs.probe_id }}
+          IMAGE_REFERENCE: ${{ inputs.image_reference }}
+          PLATFORM: ${{ inputs.platform }}
+          ACCELERATOR: ${{ inputs.accelerator }}
+          RUNTIME_REF: ${{ inputs.runtime_ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          write_probe_failure() {
+            exit_code=$?
+            jq -n --arg probe_id "${PROBE_ID}" \
+              --arg runtime_ref "${RUNTIME_REF}" \
+              --arg detail "runtime capability probe failed; inspect this matrix job log" \
+              '{stage:"probe",reason:"runtime-probe-failed",detail:$detail,
+                probe_id:$probe_id,runtime_ref:$runtime_ref}' \
+              >out/runtime-probe-failure.json
+            exit "${exit_code}"
+          }
+          trap write_probe_failure ERR
+          docker pull --platform "${PLATFORM}" "${IMAGE_REFERENCE}"
+          facts="$(docker run --rm --platform "${PLATFORM}" --entrypoint sh \
+            -e EXPECTED_ACCELERATOR="${ACCELERATOR}" "${IMAGE_REFERENCE}" -c '
+              set -eu
+              python_bin="$(command -v python3 || command -v python)"
+              python_version="$(${python_bin} -c \
+                "import sys; print(\"%d.%d\" % sys.version_info[:2])")"
+              . /etc/os-release
+              glibc_version="$(ldd --version 2>&1 | head -n 1)"
+              cuda_version="${CUDA_VERSION:-}"
+              cann_version="${CANN_VERSION:-${ASCEND_TOOLKIT_HOME:-${ASCEND_HOME_PATH:-}}}"
+              has_numeric_version() {
+                printf "%s\n" "$1" | grep -Eq "[0-9]+\.[0-9]+"
+              }
+              if [ "${EXPECTED_ACCELERATOR}" = cuda ] && \
+                 ! has_numeric_version "${cuda_version}"; then
+                cuda_version="$(nvcc --version 2>/dev/null | tail -n 1 || true)"
+              fi
+              if [ "${EXPECTED_ACCELERATOR}" = ascend ] && \
+                 ! has_numeric_version "${cann_version}"; then
+                cann_root="${ASCEND_TOOLKIT_HOME:-${ASCEND_HOME_PATH:-/usr/local/Ascend}}"
+                version_file="$(find -L "${cann_root}" -type f \
+                  \( -name version.info -o -name version.cfg \) -print -quit 2>/dev/null || true)"
+                if [ -z "${version_file}" ] && [ "${cann_root}" != /usr/local/Ascend ]; then
+                  version_file="$(find /usr/local/Ascend -type f \
+                    \( -name version.info -o -name version.cfg \) -print -quit 2>/dev/null || true)"
+                fi
+                [ -z "${version_file}" ] || cann_version="$(head -n 1 "${version_file}")"
+              fi
+              printf "%s\037%s\037%s\037%s\037%s\037%s\037%s" \
+                "${python_version}" "${ID}" "${VERSION_ID}" "${glibc_version}" \
+                "${cuda_version}" "${cann_version}" "${SOC_VERSION:-na}"
+            ')"
+          IFS=$'\x1f' read -r python_version os_id os_version glibc_version \
+            cuda_version cann_version soc_version <<<"${facts}"
+          jq -n \
+            --arg probe_id "${PROBE_ID}" \
+            --arg python_version "${python_version}" \
+            --arg os_id "${os_id}" \
+            --arg os_version "${os_version}" \
+            --arg glibc_version "${glibc_version}" \
+            --arg cuda_version "${cuda_version}" \
+            --arg cann_version "${cann_version}" \
+            --arg soc_version "${soc_version}" \
+            '{probe_id:$probe_id,python_version:$python_version,os_id:$os_id,
+              os_version:$os_version,glibc_version:$glibc_version,
+              cuda_version:$cuda_version,cann_version:$cann_version,
+              soc_version:$soc_version}' >out/runtime-probe-raw.json
+      - name: Accept complete Crane config facts
+        if: ${{ !inputs.enabled }}
+        run: echo "Crane config supplied all required capability fields"
+      - uses: actions/upload-artifact@v4.6.2
+        if: ${{ inputs.enabled && always() && steps.probe.outcome != 'skipped' }}
+        with:
+          name: ucm-runtime-probe-${{ inputs.probe_id }}-run-${{ github.run_id }}
+          path: out/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: ${{ inputs.retention_days }}

@@ -1,0 +1,98 @@
+# syntax=docker/dockerfile:1.12.1
+ARG UCM_BUILDER_IMAGE
+
+FROM ${UCM_BUILDER_IMAGE} AS build
+
+ARG UCM_CPU_ARCH
+ARG UCM_PLATFORM
+ARG UCM_PYTHON_VERSION
+ARG UCM_PYTHON_ABI
+ARG UCM_TARGET_PLATFORM_TAG
+ARG SOURCE_DATE_EPOCH
+
+SHELL ["/bin/bash", "-euxo", "pipefail", "-c"]
+ENV PLATFORM="${UCM_PLATFORM}" \
+    UCM_BUILD_CPU_ARCH="${UCM_CPU_ARCH}" \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}"
+
+COPY . /workspace/ucm
+WORKDIR /workspace/ucm
+
+RUN python_candidate="/opt/python/${UCM_PYTHON_ABI}-${UCM_PYTHON_ABI}/bin/python"; \
+    if [[ -x "${python_candidate}" ]]; then \
+      selected_python="${python_candidate}"; \
+    elif command -v "python${UCM_PYTHON_VERSION}" >/dev/null; then \
+      selected_python="$(command -v "python${UCM_PYTHON_VERSION}")"; \
+    elif command -v python3 >/dev/null; then \
+      selected_python="$(command -v python3)"; \
+    else \
+      echo "Builder has no usable Python" >&2; exit 1; \
+    fi; \
+    ln -sf "${selected_python}" /usr/local/bin/ucm-python; \
+    test "$(ucm-python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" \
+      = "${UCM_PYTHON_VERSION}"
+
+RUN ucm-python -m pip install --no-cache-dir --only-binary=:all: \
+      -r .ucm-compact/build-requirements.txt
+# AlmaLinux 9 falsely marks baseline crt1/Scrt1 objects as x86-64-v2.
+# Link against corrected copies and keep auditwheel's ISA check enabled.
+RUN python_scripts="$(ucm-python -c \
+      'import sysconfig; print(sysconfig.get_path("scripts"))')" && \
+    PATH="${python_scripts}:${PATH}" && \
+    command -v patchelf >/dev/null && \
+    test -n "${UCM_TARGET_PLATFORM_TAG}" && \
+    test "${SOURCE_DATE_EPOCH}" -ge 315532800 && \
+    mkdir -p /tmp/ucm-raw-wheel /out && \
+    if [[ "${PLATFORM}" == ascend* && \
+          "${UCM_CPU_ARCH}" == "amd64" && \
+          "${UCM_TARGET_PLATFORM_TAG}" == "manylinux_2_34_x86_64" ]]; then \
+      baseline_crt_dir=/tmp/ucm-baseline-crt; \
+      mkdir -p "${baseline_crt_dir}"; \
+      for crt_name in crt1.o Scrt1.o; do \
+        crt_source="$(c++ -print-file-name="${crt_name}")"; \
+        test "${crt_source}" != "${crt_name}"; \
+        test -f "${crt_source}"; \
+        ucm-python .github/release/ucm_release/crt.py \
+          "${crt_source}" "${baseline_crt_dir}/${crt_name}"; \
+        test "$(c++ "-B${baseline_crt_dir}/" -print-file-name="${crt_name}")" \
+          = "${baseline_crt_dir}/${crt_name}"; \
+      done; \
+      export CXXFLAGS="${CXXFLAGS:-} -march=x86-64 -mtune=generic"; \
+      export LDFLAGS="-B${baseline_crt_dir}/ ${LDFLAGS:-}"; \
+    fi && \
+    ucm-python -m build --no-isolation --wheel \
+      --outdir /tmp/ucm-raw-wheel && \
+    mapfile -t auditwheel_excludes \
+      <.ucm-compact/auditwheel-exclude-patterns.txt && \
+    repair_args=() && \
+    for library in "${auditwheel_excludes[@]}"; do \
+      repair_args+=(--exclude "${library}"); \
+    done && \
+    raw_wheel="$(find /tmp/ucm-raw-wheel -maxdepth 1 -type f \
+      -name '*.whl' -print -quit)" && \
+    test -n "${raw_wheel}" && \
+    test "$(find /tmp/ucm-raw-wheel -maxdepth 1 -type f \
+      -name '*.whl' | wc -l | tr -d ' ')" = 1 && \
+    ucm-python -m auditwheel -v repair \
+      --only-plat \
+      --plat "${UCM_TARGET_PLATFORM_TAG}" \
+      "${repair_args[@]}" \
+      --wheel-dir /out "${raw_wheel}" 2>&1 \
+      | tee /out/auditwheel-repair.txt && \
+    if grep -Fq 'Grafting:' /out/auditwheel-repair.txt; then \
+      echo "auditwheel grafted an unplanned external library" >&2; \
+      exit 1; \
+    fi && \
+    repaired_wheel="$(find /out -maxdepth 1 -type f \
+      -name '*.whl' -print -quit)" && \
+    test -n "${repaired_wheel}" && \
+    test "$(find /out -maxdepth 1 -type f \
+      -name '*.whl' | wc -l | tr -d ' ')" = 1 && \
+    ucm-python -m auditwheel -v show "${repaired_wheel}" 2>&1 \
+      | tee /out/auditwheel-show.txt
+
+FROM scratch AS wheel
+COPY --from=build /out/ /

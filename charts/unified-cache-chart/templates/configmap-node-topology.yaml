@@ -1,0 +1,24 @@
+{{- if .Values.servingEngineSpec.enableEngine -}}
+{{- $topo := default (dict) .Values.nodeTopologyConfig -}}
+{{- if not (empty $topo) -}}
+{{/*
+nodeTopologyConfig 的 per-node 环境变量：一个节点名一个 data key（挂成同名文件）。
+引擎 Pod 把整个 ConfigMap 挂到 /etc/node-topology-config，entrypoint 按 $NODE_NAME 读取对应文件；
+落到未列出的节点时找不到文件即跳过（不报错）。配套 nodeAffinity 一般会把 Pod 限定到这些节点。
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-node-topology
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Release.Name }}
+data:
+{{- range $node, $env := $topo }}
+  {{ $node }}: |
+{{- range $k, $v := (default (dict) $env) }}
+    {{ $k }}={{ $v | quote }}
+{{- end }}
+{{- end }}
+{{- end -}}
+{{- end -}}

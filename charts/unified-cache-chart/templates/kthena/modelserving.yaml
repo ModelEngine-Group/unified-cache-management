@@ -1,0 +1,654 @@
+{{/*
+True when the chart itself owns interface env: autoDetectInterface on,
+forceInterface set, or nodeTopologyConfig non-empty.
+Usage: include "chart.skipImageIfaceDetect" $
+*/}}
+{{- define "chart.skipImageIfaceDetect" -}}
+{{- $root := . -}}
+{{- $auto := true -}}
+{{- if hasKey $root.Values "autoDetectInterface" -}}{{- $auto = $root.Values.autoDetectInterface -}}{{- end -}}
+{{- $force := not (empty (default "" $root.Values.forceInterface)) -}}
+{{- $topo := not (empty $root.Values.nodeTopologyConfig) -}}
+{{- ternary "true" "false" (or $auto $force $topo) -}}
+{{- end -}}
+
+{{/*
+Emit the interface auto-detection env trio shared by the engine pod.
+Usage: {{- include "chart.ifaceEnv" $ | nindent <N> }}
+*/}}
+{{- define "chart.ifaceEnv" -}}
+{{- $root := . -}}
+{{- $auto := true -}}
+{{- if hasKey $root.Values "autoDetectInterface" -}}{{- $auto = $root.Values.autoDetectInterface -}}{{- end -}}
+- name: UC_SKIP_IFACE_AUTO_DETECT
+  value: {{ include "chart.skipImageIfaceDetect" $root | quote }}
+- name: UC_AUTO_DETECT_IFACE
+  value: {{ ternary "true" "false" $auto | quote }}
+- name: UC_FORCE_IFACE
+  value: {{ default "" $root.Values.forceInterface | quote }}
+{{- end -}}
+
+{{/*
+Validate modelSpec.vllmArgs schema for the native vllm serve path.
+*/}}
+{{- define "chart.validateVllmArgs" -}}
+{{- $modelSpec := index . 0 -}}
+{{- $root := index . 1 -}}
+{{- $args := default "" $modelSpec.vllmArgs -}}
+{{- if gt (len .) 2 -}}{{- $args = default "" (index . 2) -}}{{- end -}}
+{{- if not (kindIs "string" $args) -}}
+{{- fail "vllmArgs must be a block string of native vLLM CLI arguments" -}}
+{{- end -}}
+{{/* kthena-only：网络/DP LB 参数 + --kv-transfer-config 均由 chart 接管（后者由 runtime resolver 生成），禁止用户写。 */}}
+{{- $managedArgs := list "--host" "--port" "--headless" "--data-parallel-address" "-dpa" "--data-parallel-rpc-port" "-dpp" "--data-parallel-start-rank" "-dpr" "--data-parallel-hybrid-lb" "--data-parallel-external-lb" "--data-parallel-rank" "--kv-transfer-config" "--served-model-name" "--config" -}}
+{{- if gt (len .) 3 -}}
+{{- $role := index . 3 -}}
+{{- if include "chart.kvTransferTemplate" (list $role $modelSpec $root) -}}
+{{/* vLLM 0.18 rewrites kv_transfer_config when native KV offloading is set. */}}
+{{- $managedArgs = append $managedArgs "--kv-offloading-size" -}}
+{{- $managedArgs = append $managedArgs "--kv-offloading-backend" -}}
+{{- end -}}
+{{- end -}}
+{{- $layoutArgs := list "--tensor-parallel-size" "--data-parallel-size" "--pipeline-parallel-size" "--prefill-context-parallel-size" "--decode-context-parallel-size" "--context-parallel-size" -}}
+{{- range $line := splitList "\n" $args -}}
+{{- $trimmed := trim $line -}}
+{{- if and $trimmed (not (hasPrefix "#" $trimmed)) -}}
+{{- $fields := splitList " " (trim (regexReplaceAll "[ \t]+" $trimmed " ")) -}}
+{{- range $rawField := $fields -}}
+{{/* shlex concatenates quoted/backslash-escaped token fragments; normalize them for the Helm fast-fail. */}}
+{{- $field := replace "_" "-" (replace "\\" "" (replace "'" "" (replace "\"" "" $rawField))) -}}
+{{- $optionName := first (splitList "=" $field) -}}
+{{- $optionBase := first (splitList "." $optionName) -}}
+{{- range $managed := $managedArgs -}}
+{{- $isLong := hasPrefix "--" $optionBase -}}
+{{- $isShort := and (hasPrefix "-" $optionBase) (not $isLong) -}}
+{{- if or (and $isLong (hasPrefix $optionBase $managed)) (and $isShort (eq $optionBase $managed)) -}}
+{{- fail (printf "servingEngineSpec.modelSpec.vllmArgs must not set chart-managed argument %s" $managed) -}}
+{{- end -}}
+{{- end -}}
+{{- range $layout := $layoutArgs -}}
+{{- if and (hasPrefix "--" $optionBase) (hasPrefix $optionBase $layout) (ne $optionBase $layout) -}}
+{{- fail (printf "servingEngineSpec.modelSpec.vllmArgs must use the full parallel-layout option %s, not abbreviation %s" $layout $optionBase) -}}
+{{- end -}}
+{{- if and (eq $optionBase $layout) (ne $optionName $optionBase) -}}
+{{- fail (printf "servingEngineSpec.modelSpec.vllmArgs must not use dotted form for parallel-layout option %s" $layout) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Get pod security context for serving engine (component-specific override)
+*/}}
+{{- define "chart.enginePodSecurityContext" -}}
+{{- if .Values.servingEngineSpec.securityContext }}
+{{- toYaml .Values.servingEngineSpec.securityContext }}
+{{- end }}
+{{- end }}
+
+{{/*
+Get container security context for serving engine (component-specific override).
+(rdma 封装已删除：RDMA 所需 IPC_LOCK 直接写进 servingEngineSpec.containerSecurityContext.capabilities.add)
+*/}}
+{{- define "chart.engineContainerSecurityContext" -}}
+{{- with .Values.servingEngineSpec.containerSecurityContext -}}
+{{ toYaml . }}
+{{- end -}}
+{{- end }}
+
+{{/*
+获取 vLLM 镜像
+Usage: include "chart.getVllmImage" (list $modelSpec $)
+*/}}
+{{- define "chart.getVllmImage" -}}
+{{- $modelSpec := index . 0 -}}
+{{- $global := index . 1 -}}
+{{- $image := required "images.image or servingEngineSpec.modelSpec.image is required; set it to a public vLLM/UCM runtime image" (default $global.Values.images.image $modelSpec.image) -}}
+{{- include "chart.resolveImageWithRegistry" (list $image $global) -}}
+{{- end -}}
+
+{{/*
+获取 vLLM 镜像拉取策略
+Usage: include "chart.getVllmImagePullPolicy" (list $modelSpec $)
+*/}}
+{{- define "chart.getVllmImagePullPolicy" -}}
+{{- $modelSpec := index . 0 -}}
+{{- $global := index . 1 -}}
+{{- if $modelSpec.imagePullPolicy -}}
+{{- $modelSpec.imagePullPolicy -}}
+{{- else -}}
+{{- $global.Values.images.pullPolicy | default "IfNotPresent" -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Get primary unified storage mount path for HF_HOME.
+Usage: include "chart.primaryStorageMountPath" (list $modelSpec)
+*/}}
+{{- define "chart.primaryStorageMountPath" -}}
+{{- $modelSpec := index . 0 -}}
+{{- $storage := default (dict) $modelSpec.storage -}}
+{{- $unifiedStorage := default (list) $storage.unifiedcacheStorage -}}
+{{- if and (eq (include "chart.ucmConfigEnabled" (list $modelSpec)) "true") (gt (len $unifiedStorage) 0) -}}
+{{- (index $unifiedStorage 0).mountPath -}}
+{{- else -}}
+{{- "/tmp" -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Render storage volumeMount list entries.
+Usage: include "chart.renderStorageVolumeMounts" (list $ $storageList)
+*/}}
+{{- define "chart.renderStorageVolumeMounts" -}}
+{{- $root := index . 0 -}}
+{{- $storageList := index . 1 -}}
+{{- range $storage := $storageList }}
+- name: {{ include "chart.storageVolumeName" (list $root $storage) }}
+  mountPath: {{ $storage.mountPath }}
+  {{- if hasKey $storage "subPath" }}
+  subPath: {{ $storage.subPath }}
+  {{- end }}
+  {{- if hasKey $storage "subPathExpr" }}
+  subPathExpr: {{ $storage.subPathExpr }}
+  {{- end }}
+  {{- if hasKey $storage "readOnly" }}
+  readOnly: {{ $storage.readOnly }}
+  {{- end }}
+{{- end }}
+{{- end -}}
+
+{{/*
+Render storage volume list entries.
+Usage: include "chart.renderStorageVolumes" (list $ $modelSpec $storageList)
+*/}}
+{{- define "chart.renderStorageVolumes" -}}
+{{- $root := index . 0 -}}
+{{- $modelSpec := index . 1 -}}
+{{- $storageList := index . 2 -}}
+{{- range $storage := $storageList }}
+- name: {{ include "chart.storageVolumeName" (list $root $storage) }}
+  {{- if hasKey $storage "dynamicPVC" }}
+  persistentVolumeClaim:
+    claimName: {{ include "chart.storageDynamicPvcClaimName" (list $root $modelSpec $storage) | quote }}
+  {{- else if hasKey $storage "staticPVC" }}
+  persistentVolumeClaim:
+    claimName: {{ include "chart.storageStaticPvcClaimName" (list $root $modelSpec $storage) | quote }}
+  {{- else if hasKey $storage "persistentVolumeClaim" }}
+  persistentVolumeClaim:
+    {{- toYaml $storage.persistentVolumeClaim | nindent 4 }}
+  {{- else if hasKey $storage "hostPath" }}
+  hostPath:
+    {{- toYaml $storage.hostPath | nindent 4 }}
+  {{- else if hasKey $storage "csi" }}
+  csi:
+    {{- toYaml $storage.csi | nindent 4 }}
+  {{- else if hasKey $storage "nfs" }}
+  nfs:
+    {{- toYaml $storage.nfs | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end -}}
+
+{{/*
+chart.defaultAntiAffinity: 默认 hostname 反亲和——PD 防 kv_port 冲突；多机(workerReplicas>0) 让 entry+worker 分散到不同节点。
+列 0 渲染，调用方 nindent 注入。Usage: include "chart.defaultAntiAffinity" (list $role $modelSpec $)
+*/}}
+{{- define "chart.defaultAntiAffinity" -}}
+{{- $role := index . 0 -}}
+{{- $modelSpec := index . 1 -}}
+{{- $ := index . 2 -}}
+podAntiAffinity:
+  requiredDuringSchedulingIgnoredDuringExecution:
+    - labelSelector:
+        matchLabels:
+          modelserving.volcano.sh/name: {{ include "chart.kthenaName" (list $modelSpec $) }}
+          modelserving.volcano.sh/role: {{ $role.name }}
+      topologyKey: kubernetes.io/hostname
+{{- end -}}
+
+{{/*
+chart.kthenaProbe: 仅 entry(leader) 探针——entry 才起 HTTP API，自探 127.0.0.1:$POD_PORT/health。
+worker(--headless) 本地无 HTTP 服务，故 workerTemplate 不渲染探针（见 kthenaPodSpec 的 $kind 分支）；
+避免「worker 探 leader」的跨 pod liveness 反模式（leader 挂→健康 worker churn 重启；worker 自身卡死→探针仍绿漏检）。
+"挂掉同时拉起" 由 ModelServing.recoveryPolicy=ServingGroupRecreate + gang 保证（worker 进程随 leader 失联自退触发整组重建）；
+探针只暴露不健康，不负责可用性。worker hang(不退) 的兜底见 doc §5 Phase0（entrypoint watchdog → exit 1 让整 pod 失败）。
+列 0 渲染，调用方 nindent 到 container key 层级。Usage: include "chart.kthenaProbe" $
+*/}}
+{{- define "chart.kthenaProbe" -}}
+{{/* 参数取自 values：modelSpec.probes（按模型覆盖）> servingEngineSpec.probes > 下列内建默认。dig 取值（bool false 安全）。 */}}
+{{- $svc := default (dict) $.Values.servingEngineSpec.probes -}}
+{{- $mdl := default (dict) (default (dict) $.Values.servingEngineSpec.modelSpec).probes -}}
+{{- $path := dig "healthPath" (dig "healthPath" "/health" $svc) $mdl -}}
+{{- $cmd := printf "curl -sf --max-time 2 \"http://127.0.0.1:${POD_PORT}%s\" >/dev/null" $path -}}
+{{- $defs := dict "startup" (dict "n" "startupProbe" "d" 300 "p" 20 "f" 180) "liveness" (dict "n" "livenessProbe" "d" 60 "p" 60 "f" 5) "readiness" (dict "n" "readinessProbe" "d" 60 "p" 20 "f" 3) -}}
+{{- $out := list -}}
+{{- range $k := (list "startup" "liveness" "readiness") -}}
+{{- $def := index $defs $k -}}
+{{- if dig $k "enabled" (dig $k "enabled" true $svc) $mdl -}}
+{{- $delay := dig $k "initialDelaySeconds" (dig $k "initialDelaySeconds" $def.d $svc) $mdl -}}
+{{- $period := dig $k "periodSeconds" (dig $k "periodSeconds" $def.p $svc) $mdl -}}
+{{- $fail := dig $k "failureThreshold" (dig $k "failureThreshold" $def.f $svc) $mdl -}}
+{{- $out = append $out (printf "%s:\n  exec:\n    command: [ \"sh\", \"-c\", %s ]\n  initialDelaySeconds: %v\n  periodSeconds: %v\n  failureThreshold: %v" $def.n ($cmd | quote) $delay $period $fail) -}}
+{{- end -}}
+{{- end -}}
+{{- join "\n" $out -}}
+{{- end -}}
+
+{{/*
+chart.kthenaPodSpec: 渲染一个 kthena role 的 PodSpec（entry/worker 共用，运行时按 WORKER_INDEX 分流）。
+列 0 缩进输出，调用方用 nindent 注入到 entryTemplate.spec / workerTemplate.spec。
+chip-agnostic：不据 chipType 设 backend（镜像/vLLM 自探，chipType/chipExtraStorage 已删除）；资源 raw toYaml。
+Usage: include "chart.kthenaPodSpec" (list $role $modelSpec $)
+*/}}
+{{- define "chart.kthenaPodSpec" -}}
+{{- $role := index . 0 -}}
+{{- $modelSpec := index . 1 -}}
+{{- $ := index . 2 -}}
+{{- $kind := "entry" -}}{{- if gt (len .) 3 -}}{{- $kind = index . 3 -}}{{- end -}}
+{{- $roleArgs := default (default "" $modelSpec.vllmArgs) $role.vllmArgs -}}
+{{- include "chart.validateVllmArgs" (list $modelSpec $ $roleArgs $role) -}}
+{{- $tpSize := include "chart.vllmTpSize" (list $roleArgs) -}}
+{{- $storage := default (dict) $modelSpec.storage -}}
+{{- $extraStorage := default (list) $storage.extraStorage -}}
+{{- $unifiedStorage := default (list) $storage.unifiedcacheStorage -}}
+{{- $vllmArgsCM := printf "%s-%s-vllm-args" $.Release.Name $role.name -}}
+{{- $roleHooks := include "chart.resolveHooks" (list $role $modelSpec) | fromYaml -}}
+{{- $hostIPC := ternary $modelSpec.hostIPC (default false $.Values.servingEngineSpec.hostIPC) (hasKey $modelSpec "hostIPC") -}}
+{{- $hostNetwork := ternary (default false $modelSpec.hostNetwork) (default false $.Values.servingEngineSpec.hostNetwork) (hasKey $modelSpec "hostNetwork") -}}
+{{- $replicaCount := add 1 (int (default 0 $role.workerReplicas)) -}}
+{{- $hybridRole := and (eq (include "chart.hybridDataParallelEnabled" (list $modelSpec)) "true") (gt (int (default 0 $role.workerReplicas)) 0) -}}
+{{- $pd := default (dict) $modelSpec.pd -}}
+{{- $kvRole := include "chart.kvRoleOf" (list $role $modelSpec) -}}
+{{- $moonMasterOnRole := and (eq (include "chart.pdMooncakeMasterEnabled" (list $modelSpec $)) "true") $kvRole -}}
+{{- if $moonMasterOnRole -}}{{- include "chart.validateMooncakeMaster" (list $modelSpec $) -}}{{- end -}}
+{{- $topo := default (dict) $.Values.nodeTopologyConfig -}}
+{{/* KV JSON、UCM runtime env 与卷共用同一 role-level capability 判定。 */}}
+{{- $ucmOnRole := eq (include "chart.usesUcmForRole" (list $role $modelSpec)) "true" -}}
+{{- if or (hasKey $modelSpec "hostNetwork") $.Values.servingEngineSpec.hostNetwork }}
+{{/* 用已算好的 $hostNetwork（ternary+hasKey），避免 default 把布尔 false 当空值而无法关闭 host 网络 */}}
+hostNetwork: {{ $hostNetwork }}
+{{- end }}
+{{/* dnsPolicy 跟随生效的 host 网络状态：host 网络开才用 ClusterFirstWithHostNet；关则仅在模型显式指定时下发 */}}
+{{- if $hostNetwork }}
+dnsPolicy: {{ default "ClusterFirstWithHostNet" (default $.Values.servingEngineSpec.dnsPolicy $modelSpec.dnsPolicy) | quote }}
+{{- else if hasKey $modelSpec "dnsPolicy" }}
+dnsPolicy: {{ $modelSpec.dnsPolicy | quote }}
+{{- end }}
+{{- if $hostIPC }}
+hostIPC: true
+{{- end }}
+{{- /* Pod 优雅终止上限（preStop 耗时从中扣除，超限仅留 ~2s 即 SIGKILL）。
+     与 kthena 的 spec.template.restartGracePeriodSeconds 互不替代：后者=controller 出错后等多久再重建组。 */}}
+{{- if $modelSpec.terminationGracePeriodSeconds }}
+terminationGracePeriodSeconds: {{ $modelSpec.terminationGracePeriodSeconds }}
+{{- end }}
+{{- if include "chart.enginePodSecurityContext" $ }}
+securityContext:
+  {{- include "chart.enginePodSecurityContext" $ | nindent 2 }}
+{{- end }}
+{{- if $role.runtimeClassName }}
+runtimeClassName: {{ $role.runtimeClassName }}
+{{- end }}
+{{/* nodeSelector：role > modelSpec > servingEngineSpec 回退 */}}
+{{- $nodeSelector := $role.nodeSelector | default $modelSpec.nodeSelector | default $.Values.servingEngineSpec.nodeSelector -}}
+{{- with $nodeSelector }}
+nodeSelector:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{/* tolerations：合并 servingEngineSpec + modelSpec + role 三级 */}}
+{{- $tolerations := concat (default (list) $.Values.servingEngineSpec.tolerations) (default (list) $modelSpec.tolerations) (default (list) $role.tolerations) -}}
+{{- with $tolerations }}
+tolerations:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{/* affinity 合并策略（三者并存而非互斥）：
+     1) 显式 affinity（role > modelSpec > servingEngineSpec）整体保留为基底；
+     2) nodeTopologyConfig 非空 → 把 hostname In[节点] 作为硬约束 AND 进 nodeAffinity 的每个 nodeSelectorTerm
+        （nodeSelectorTerms 之间是 OR，同一 term 内 matchExpressions 是 AND，故按 term 分发即得「用户约束 AND 拓扑节点」）。
+        必须始终生效：node-topology ConfigMap/挂载仅按 topo 非空注入，若调度不限制到这些节点，pod 可能落到无拓扑 ENV 的节点而静默丢网卡配置。
+     3) 多机/PD 且用户未自带 podAntiAffinity → 补默认 hostname 反亲和分散。 */}}
+{{- $userAffinity := $role.affinity | default $modelSpec.affinity | default $.Values.servingEngineSpec.affinity -}}
+{{- $defaultAntiAffinity := and (or (eq (include "chart.pdEnabled" (list $modelSpec)) "true") (gt (int (default 0 $role.workerReplicas)) 0)) (ne (default true $pd.antiAffinity) false) -}}
+{{/* fromYaml(toYaml) 深拷贝，避免 set 改到 Values（entry/worker 同 spec 多次渲染会串） */}}
+{{- $affinity := dict -}}
+{{- if $userAffinity -}}{{- $affinity = fromYaml (toYaml $userAffinity) -}}{{- end -}}
+{{- if not (empty $topo) -}}
+{{- $hostExpr := dict "key" "kubernetes.io/hostname" "operator" "In" "values" (keys $topo | sortAlpha) -}}
+{{- $na := default (dict) $affinity.nodeAffinity -}}
+{{- $req := default (dict) $na.requiredDuringSchedulingIgnoredDuringExecution -}}
+{{- $terms := default (list) $req.nodeSelectorTerms -}}
+{{- if eq (len $terms) 0 -}}
+{{- $terms = list (dict "matchExpressions" (list $hostExpr)) -}}
+{{- else -}}
+{{- $merged := list -}}
+{{- range $t := $terms -}}
+{{- $_ := set $t "matchExpressions" (append (default (list) $t.matchExpressions) $hostExpr) -}}
+{{- $merged = append $merged $t -}}
+{{- end -}}
+{{- $terms = $merged -}}
+{{- end -}}
+{{- $_ := set $req "nodeSelectorTerms" $terms -}}
+{{- $_ := set $na "requiredDuringSchedulingIgnoredDuringExecution" $req -}}
+{{- $_ := set $affinity "nodeAffinity" $na -}}
+{{- end -}}
+{{- if and $defaultAntiAffinity (not (hasKey $affinity "podAntiAffinity")) -}}
+{{- $_ := set $affinity "podAntiAffinity" (index (fromYaml (include "chart.defaultAntiAffinity" (list $role $modelSpec $))) "podAntiAffinity") -}}
+{{- end -}}
+{{- if gt (len $affinity) 0 }}
+affinity:
+  {{- toYaml $affinity | nindent 2 }}
+{{- end }}
+{{- if $modelSpec.imagePullSecret }}
+imagePullSecrets:
+  - name: {{ $modelSpec.imagePullSecret }}
+{{- end }}
+{{/* Chart 不创建或绑定 RBAC；仅透传用户预先创建的 ServiceAccount。 */}}
+{{- if $modelSpec.serviceAccountName }}
+serviceAccountName: {{ $modelSpec.serviceAccountName }}
+{{- end }}
+containers:
+  - name: vllm
+    image: {{ include "chart.getVllmImage" (list $modelSpec $) }}
+    imagePullPolicy: {{ include "chart.getVllmImagePullPolicy" (list $modelSpec $) }}
+    {{- if include "chart.engineContainerSecurityContext" $ }}
+    securityContext:
+      {{- include "chart.engineContainerSecurityContext" $ | nindent 6 }}
+    {{- end }}
+    command: [ "/bin/bash","-c","/vllm-workspace/UnifiedCache/entrypoint/args-entrypoint.sh" ]
+    env:
+      - name: UC_KTHENA
+        value: "1"
+      - name: REPLICA_COUNT
+        value: {{ $replicaCount | quote }}
+      - name: PYTHONHASHSEED
+        value: "123456"
+      - name: HF_HOME
+        value: {{ include "chart.primaryStorageMountPath" (list $modelSpec) | quote }}
+      - name: NODE_IP
+        valueFrom: { fieldRef: { fieldPath: status.hostIP } }
+      - name: HOST_IP
+        valueFrom: { fieldRef: { fieldPath: status.hostIP } }
+      - name: NODE_NAME
+        valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+      - name: POD_IP
+        valueFrom: { fieldRef: { fieldPath: status.podIP } }
+      - name: POD_NAME
+        valueFrom: { fieldRef: { fieldPath: metadata.name } }
+      - name: POD_NAMESPACE
+        valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+    {{- if $kvRole }}
+      - name: UC_PD_GROUP_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.labels['modelserving.volcano.sh/group-name']
+      - name: UC_PD_ROLE_ID
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.labels['modelserving.volcano.sh/role-id']
+    {{- end }}
+      - name: POD_PORT
+        value: "{{ include "chart.container-port" $ }}"
+    {{- if gt (len $roleHooks) 0 }}
+      {{- /* 钩子 entry/worker 分流的可靠判据：$kind 是渲染期确定事实；
+           NODE_RANK=WORKER_INDEX 的注入约定未实证（worker 或为 0 基编号），仅作 fallback */}}
+      - name: UC_POD_KIND
+        value: {{ $kind | quote }}
+    {{- end }}
+      - name: UC_USES_UCM
+        value: {{ ternary "true" "false" $ucmOnRole | quote }}
+    {{- if $ucmOnRole }}
+      - name: VLLM_RPC_TIMEOUT
+        value: "1000000"
+      - name: DATA_DIRS
+        value: {{ include "chart.ucmStorageBackends" (list $modelSpec) | quote }}
+    {{- end }}
+    {{- include "chart.ifaceEnv" $ | nindent 6 }}
+    {{- if $tpSize }}
+      - name: TENSOR_PARALLEL_SIZE
+        value: {{ $tpSize | quote }}
+    {{- end }}
+    {{- if $moonMasterOnRole }}
+      - name: MOONCAKE_MASTER
+        value: {{ include "chart.mooncakeMasterRpcAddress" $ | quote }}
+      - name: MOONCAKE_CONFIG_PATH
+        value: {{ include "chart.mooncakeConfigPath" $ | quote }}
+    {{- $segment := include "chart.mooncakeGlobalSegmentSize" $ }}
+    {{- if $segment }}
+      - name: MOONCAKE_GLOBAL_SEGMENT_SIZE
+        value: {{ $segment | quote }}
+    {{- end }}
+    {{- with (default (dict) $.Values.mooncakeMaster).client.env }}
+    {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- end }}
+    {{- if $modelSpec.hf_token }}
+      - name: HF_TOKEN
+      {{- if kindIs "string" $modelSpec.hf_token }}
+        valueFrom:
+          secretKeyRef:
+            name: {{ $.Release.Name }}-secrets
+            key: hf_token_{{ $modelSpec.name }}
+      {{- else }}
+        valueFrom:
+          secretKeyRef:
+            name: {{ $modelSpec.hf_token.secretName }}
+            key: {{ $modelSpec.hf_token.secretKey }}
+      {{- end }}
+    {{- end }}
+    {{- $vllmApiKey := $.Values.servingEngineSpec.vllmApiKey }}
+    {{- if $vllmApiKey }}
+      - name: VLLM_API_KEY
+      {{- if kindIs "string" $vllmApiKey }}
+        valueFrom:
+          secretKeyRef:
+            name: {{ $.Release.Name }}-secrets
+            key: vllmApiKey
+      {{- else }}
+        valueFrom:
+          secretKeyRef:
+            name: {{ $vllmApiKey.secretName }}
+            key: {{ $vllmApiKey.secretKey }}
+      {{- end }}
+    {{- end }}
+    {{- with $modelSpec.env }}
+    {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- if or $.Values.servingEngineSpec.configs $modelSpec.envFromSecret }}
+    envFrom:
+    {{- if $.Values.servingEngineSpec.configs }}
+      - configMapRef:
+          name: "{{ $.Release.Name }}-configs"
+    {{- end }}
+    {{- if $modelSpec.envFromSecret }}
+      - secretRef:
+          name: {{ $modelSpec.envFromSecret.name }}
+    {{- end }}
+    {{- end }}
+    ports:
+      - name: {{ include "chart.container-port-name" $ }}
+        containerPort: {{ include "chart.container-port" $ }}
+        {{- if $hostNetwork }}
+        hostPort: {{ include "chart.container-port" $ }}   {{/* hostNetwork 下声明 hostPort：调度器据此把每个 vLLM 排到不同节点，避免同机 8000 冲突 */}}
+        {{- end }}
+    {{- if or (ne $kind "worker") $hybridRole }}
+    {{- include "chart.kthenaProbe" $ | nindent 4 }}
+    {{- end }}
+    {{- if hasKey $roleHooks "preStop" }}
+    {{- /* K8s 原生 preStop：仅覆盖 API 删除/驱逐/滚更等优雅路径，容器 crash 不触发（注册型用例须外部 TTL 兜底）。
+         entry/worker 均渲染，脚本内可用 UC_POD_KIND 自行分流。 */}}
+    lifecycle:
+      preStop:
+        exec:
+          command: [ "/bin/bash", "/vllm-workspace/UnifiedCache/entrypoint/hook-pre-stop.sh" ]
+    {{- end }}
+    resources:
+      {{- toYaml $role.resources | nindent 6 }}
+    volumeMounts:
+      - name: entrypoint-config
+        mountPath: /vllm-workspace/UnifiedCache/entrypoint
+        readOnly: true
+    {{- if $moonMasterOnRole }}
+      - name: mooncake-config
+        mountPath: {{ include "chart.mooncakeConfigMountDir" $ }}
+        readOnly: true
+    {{- end }}
+    {{- if not (empty $topo) }}
+      - name: node-topology-config
+        mountPath: /etc/node-topology-config
+        readOnly: true
+    {{- end }}
+    {{- if $ucmOnRole }}
+      - name: ucm-config-runtime
+        mountPath: /vllm-workspace/UnifiedCache/config
+      - name: ucm-config-template
+        mountPath: /vllm-workspace/UnifiedCache/config/ucm_config.template.yaml
+        subPath: ucm_config.yaml
+        readOnly: true
+    {{/* UCM 缓存盘（unifiedcacheStorage）：其 mountPath 即 storage_backends（见 chart.ucmStorageBackends）。
+         必须随 UCM 一起挂进 pod，否则 posix store AddStorageBackend 找不到目录报 -50002,2 (ENOENT)。 */}}
+    {{- if gt (len $unifiedStorage) 0 }}
+    {{- include "chart.renderStorageVolumeMounts" (list $ $unifiedStorage) | nindent 6 }}
+    {{- end }}
+    {{- end }}
+    {{- if or $tpSize (not (empty $modelSpec.shmSize)) }}
+      - name: shm
+        mountPath: /dev/shm
+    {{- end }}
+    {{- if gt (len $extraStorage) 0 }}
+    {{- include "chart.renderStorageVolumeMounts" (list $ $extraStorage) | nindent 6 }}
+    {{- end }}
+volumes:
+  - name: entrypoint-config
+    projected:
+      defaultMode: 0755
+      sources:
+        - configMap:
+            name: {{ $.Release.Name }}-entrypoint-common
+        - configMap:
+            name: {{ $.Release.Name }}-vllm-args        # 共享脚本 args-entrypoint.sh / parse-vllm-args.py
+        - configMap:
+            name: {{ $vllmArgsCM }}                      # 本 role 的 vllm.args（per-role）
+        {{- if gt (len $roleHooks) 0 }}
+        - configMap:
+            name: {{ $.Release.Name }}-{{ $role.name }}-hooks   # 本 role 生命周期钩子脚本（条件与 configmap-hooks.yaml 同源：chart.resolveHooks 判空）
+        {{- end }}
+  {{- if $moonMasterOnRole }}
+  - name: mooncake-config
+    configMap:
+      name: {{ include "chart.mooncakeClientConfigName" $ }}
+  {{- end }}
+  {{- if not (empty $topo) }}
+  - name: node-topology-config
+    configMap:
+      name: {{ $.Release.Name }}-node-topology   # 按节点名一 key 一文件，entrypoint 按 $NODE_NAME 读取
+  {{- end }}
+  {{- if $ucmOnRole }}
+  - name: ucm-config-template
+    configMap:
+      name: {{ $.Release.Name }}-ucm-config
+  - name: ucm-config-runtime
+    emptyDir: {}
+  {{- if gt (len $unifiedStorage) 0 }}
+  {{- include "chart.renderStorageVolumes" (list $ $modelSpec $unifiedStorage) | nindent 2 }}
+  {{- end }}
+  {{- end }}
+  {{- if or $tpSize (not (empty $modelSpec.shmSize)) }}
+  - name: shm
+    emptyDir:
+      medium: Memory
+      sizeLimit: {{ default "128Gi" $modelSpec.shmSize }}
+  {{- end }}
+  {{- if gt (len $extraStorage) 0 }}
+  {{- include "chart.renderStorageVolumes" (list $ $modelSpec $extraStorage) | nindent 2 }}
+  {{- end }}
+{{- end -}}
+
+{{- if .Values.servingEngineSpec.enableEngine -}}
+{{- $modelSpec := .Values.servingEngineSpec.modelSpec -}}
+{{- $_ := include "chart.getVllmImage" (list $modelSpec $) -}}
+{{- $name := include "chart.kthenaName" (list $modelSpec $) -}}
+{{- if not $modelSpec.roles -}}
+{{- fail "需要 servingEngineSpec.modelSpec.roles[]（单/双机=1 role name engine；PD=多 role + modelSpec.pd 配对）" -}}
+{{- end -}}
+{{/* <release>-<modelSpec.name> 会作为 label 值用于 Service selector / podAntiAffinity，K8s label 值上限 63 字符，超长会被 apiserver 拒绝。提前 fail 给出清晰报错。 */}}
+{{- if gt (len $name) 63 -}}
+{{- fail (printf "生成的资源名 %q 共 %d 字符，超过 63（= Release.Name + \"-\" + modelSpec.name）。它会作为 label 值用于 Service selector / podAntiAffinity，请缩短 release 名或 modelSpec.name。" $name (len $name)) -}}
+{{- end -}}
+apiVersion: workload.serving.volcano.sh/v1alpha1
+kind: ModelServing
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    model: {{ $modelSpec.name }}
+    helm-release-name: {{ .Release.Name }}
+  {{- if hasKey $modelSpec "annotations" }}
+  annotations:
+    {{- toYaml $modelSpec.annotations | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ default 1 $modelSpec.replicas }}
+  {{- if .Values.servingEngineSpec.schedulerName }}
+  schedulerName: {{ .Values.servingEngineSpec.schedulerName }}
+  {{- end }}
+  {{- if $modelSpec.recoveryPolicy }}
+  recoveryPolicy: {{ $modelSpec.recoveryPolicy }}
+  {{- end }}
+  {{- with $modelSpec.rolloutStrategy }}
+  rolloutStrategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with $modelSpec.plugins }}
+  plugins:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  template:
+    {{- if $modelSpec.restartGracePeriodSeconds }}
+    restartGracePeriodSeconds: {{ $modelSpec.restartGracePeriodSeconds }}
+    {{- end }}
+    {{- with $modelSpec.gangPolicy }}
+    gangPolicy:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with $modelSpec.networkTopology }}
+    networkTopology:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    roles:
+    {{- range $role := $modelSpec.roles }}
+      - name: {{ $role.name }}
+        replicas: {{ default 1 $role.replicas }}
+        workerReplicas: {{ default 0 $role.workerReplicas }}
+        entryTemplate:
+          metadata:
+            labels:
+              model: {{ $modelSpec.name }}
+              helm-release-name: {{ $.Release.Name }}
+            {{- if hasKey $modelSpec "podAnnotations" }}
+            annotations:
+              {{- toYaml $modelSpec.podAnnotations | nindent 14 }}
+            {{- end }}
+          spec:
+            {{- include "chart.kthenaPodSpec" (list $role $modelSpec $ "entry") | nindent 12 }}
+        {{- if gt (int (default 0 $role.workerReplicas)) 0 }}
+        workerTemplate:
+          metadata:
+            labels:
+              model: {{ $modelSpec.name }}
+              helm-release-name: {{ $.Release.Name }}
+            {{- if hasKey $modelSpec "podAnnotations" }}
+            annotations:
+              {{- toYaml $modelSpec.podAnnotations | nindent 14 }}
+            {{- end }}
+          spec:
+            {{- include "chart.kthenaPodSpec" (list $role $modelSpec $ "worker") | nindent 12 }}
+        {{- else }}
+        workerTemplate:
+          spec:
+            containers: []
+        {{- end }}
+    {{- end }}
+{{- end }}

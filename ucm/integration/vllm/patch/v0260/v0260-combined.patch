@@ -42,7 +42,7 @@ index b77d0141..cd15e77c 100644
  
      def _handle_invalid_blocks(
 diff --git a/vllm-ascend/vllm_ascend/cpu_binding.py b/vllm-ascend/vllm_ascend/cpu_binding.py
-index 0cbc0e2..b80af45 100644
+index cc55125b0..2d37d189c 100644
 --- a/vllm-ascend/vllm_ascend/cpu_binding.py
 +++ b/vllm-ascend/vllm_ascend/cpu_binding.py
 @@ -30,6 +30,81 @@ DEVICE_BINDING_MODE: dict["AscendDeviceType", str] = {
@@ -127,7 +127,7 @@ index 0cbc0e2..b80af45 100644
  
  def is_arm_cpu() -> bool:
      arch = platform.machine().lower()
-@@ -214,6 +289,8 @@ class CpuAlloc:
+@@ -215,6 +290,8 @@ class CpuAlloc:
          self.assign_main: dict[int, list[int]] = {}
          self.assign_acl: dict[int, list[int]] = {}
          self.assign_rel: dict[int, list[int]] = {}
@@ -136,7 +136,7 @@ index 0cbc0e2..b80af45 100644
          self.uvb_cpu_pool: list[int] = []
  
      @staticmethod
-@@ -592,11 +669,41 @@ class CpuAlloc:
+@@ -593,11 +670,41 @@ class CpuAlloc:
          # Keep only visible NPUs in the final binding pool. Non-visible NPUs are used only to avoid overlap.
          self.npu_cpu_pool = {npu: final[npu] for npu in self.device_info.running_npu_list}
  
@@ -180,14 +180,15 @@ index 0cbc0e2..b80af45 100644
  
      def _allocate_ascend_950_roles(self) -> None:
          self.assign_main = {npu: cpu_pool for npu, cpu_pool in self.npu_cpu_pool.items()}
-@@ -625,10 +732,22 @@ class CpuAlloc:
+@@ -625,10 +732,23 @@ class CpuAlloc:
+ 
      def print_plan(self) -> None:
          logger.info("The CPU allocation plan is as follows:")
-         current_npu = self.device_info.running_npu_list[self.rank_id]
 -        if self._is_ascend_950():
--            self._print_ascend_950_plan(current_npu)
+-            self._print_ascend_950_plan(self.current_npu)
 -            return
--        self._print_default_plan(current_npu)
+-        self._print_default_plan(self.current_npu)
++        current_npu = self.current_npu
 +        main = " ".join(map(str, self.assign_main[current_npu]))
 +        ucm = " ".join(map(str, self.assign_ucm.get(current_npu, [])))
 +        ucm_health = " ".join(
@@ -207,24 +208,21 @@ index 0cbc0e2..b80af45 100644
  
      def _print_ascend_950_plan(self, current_npu: int) -> None:
          main = " ".join(map(str, self.assign_main[current_npu]))
-@@ -675,10 +794,50 @@ class CpuAlloc:
+@@ -675,10 +795,46 @@ class CpuAlloc:
          )
  
      def bind_threads(self) -> None:
-+        self._bind_ucm_threads()
-         if self._is_ascend_950():
+-        if self._is_ascend_950():
 -            self.bind_ascend_950_threads()
 -            return
 -        self._bind_default_threads()
-+            main_pid = str(psutil.Process().pid)
-+            current_npu = self.device_info.running_npu_list[self.rank_id]
-+            self.bind_memory(main_pid, current_npu)
++        self._bind_ucm_threads()
 +
 +    def _bind_ucm_threads(self) -> None:
 +        thread_message, _ = execute_command(["ps", "-Te"])
 +        threads_map = self.get_threads_map(thread_message)
 +        main_pid = str(psutil.Process().pid)
-+        current_npu = self.device_info.running_npu_list[self.rank_id]
++        current_npu = self.current_npu
 +        self.bind(main_pid, self.assign_main[current_npu], True)
 +
 +        ucm_cores = self.assign_ucm.get(current_npu, [])

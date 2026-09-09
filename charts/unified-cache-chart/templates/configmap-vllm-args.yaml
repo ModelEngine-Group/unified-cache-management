@@ -1,0 +1,401 @@
+{{/* chart.vllmDpSize: 从 vllmArgs 解析 --data-parallel-size（缺省 1，不误匹配 -size-local）。
+Usage: include "chart.vllmDpSize" (list $vllmArgs) */}}
+{{- define "chart.vllmDpSize" -}}
+{{- $args := default "" (index . 0) -}}
+{{- $result := "1" -}}
+{{- range $line := splitList "\n" $args -}}
+{{- $trimmed := trim $line -}}
+{{- if and $trimmed (not (hasPrefix "#" $trimmed)) -}}
+{{- $fields := splitList " " (trim (regexReplaceAll "[ \t]+" $trimmed " ")) -}}
+{{- range $i, $f := $fields -}}
+{{- if and (or (eq $f "--data-parallel-size") (eq $f "-dp")) (lt (add $i 1) (len $fields)) -}}
+{{- $result = trim (index $fields (add $i 1)) -}}
+{{- else if hasPrefix "--data-parallel-size=" $f -}}
+{{- $result = trim (trimPrefix "--data-parallel-size=" $f) -}}
+{{- else if hasPrefix "-dp=" $f -}}
+{{- $result = trim (trimPrefix "-dp=" $f) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $result -}}
+{{- end -}}
+
+{{/*
+Render the role's connector JSON template. Instance identity is deliberately left
+as exact sentinels and is resolved inside the Pod immediately before vLLM starts.
+*/}}
+{{- define "chart.kvTransferTemplate" -}}
+{{- $role := index . 0 -}}
+{{- $modelSpec := index . 1 -}}
+{{- $pdEnabled := eq (include "chart.pdEnabled" (list $modelSpec)) "true" -}}
+{{- $kvRole := include "chart.kvRoleOf" (list $role $modelSpec) -}}
+{{- if and $pdEnabled $kvRole -}}
+{{- $pd := $modelSpec.pd -}}
+{{- $kv := $pd.kvTransfer -}}
+{{- $connector := $kv.connector -}}
+{{- $capability := include "chart.kvTransferCapability" (list $connector) | fromYaml -}}
+{{- $tpP := 1 -}}{{- $dpP := 1 -}}{{- $ppP := 1 -}}{{- $tpD := 1 -}}{{- $dpD := 1 -}}{{- $ppD := 1 -}}
+{{- range $candidate := $modelSpec.roles -}}
+{{- $args := default (default "" $modelSpec.vllmArgs) $candidate.vllmArgs -}}
+{{- if eq $candidate.name $pd.prefill -}}
+{{- $tpP = int (include "chart.vllmArgInt" (list $args (list "--tensor-parallel-size" "-tp") 1)) -}}
+{{- $dpP = int (include "chart.vllmArgInt" (list $args (list "--data-parallel-size" "-dp") 1)) -}}
+{{- $ppP = int (include "chart.vllmArgInt" (list $args (list "--pipeline-parallel-size" "-pp") 1)) -}}
+{{- end -}}
+{{- if eq $candidate.name $pd.decode -}}
+{{- $tpD = int (include "chart.vllmArgInt" (list $args (list "--tensor-parallel-size" "-tp") 1)) -}}
+{{- $dpD = int (include "chart.vllmArgInt" (list $args (list "--data-parallel-size" "-dp") 1)) -}}
+{{- $ppD = int (include "chart.vllmArgInt" (list $args (list "--pipeline-parallel-size" "-pp") 1)) -}}
+{{- end -}}
+{{- end -}}
+{{- $parallel := dict "prefill" (dict "dp_size" $dpP "tp_size" $tpP "pp_size" $ppP) "decode" (dict "dp_size" $dpD "tp_size" $tpD "pp_size" $ppD) -}}
+{{- $selected := dict "kv_connector" $connector "kv_role" (printf "kv_%s" $kvRole) "engine_id" "__UC_ENGINE_ID__" -}}
+{{- if get $capability "usesPort" -}}
+{{- $_ := set $selected "kv_port" "__UC_KV_PORT__" -}}
+{{- $_ := set $selected "kv_connector_extra_config" $parallel -}}
+{{- end -}}
+{{- if get $capability "v1" -}}
+{{- $_ := set $selected "kv_rank" (ternary 0 1 (eq $kvRole "producer")) -}}
+{{- end -}}
+{{- if eq $connector "NixlConnector" -}}
+{{- $_ := set $selected "kv_load_failure_policy" "fail" -}}
+{{- end -}}
+{{- if eq (include "chart.usesUcmForRole" (list $role $modelSpec)) "true" -}}
+{{- $transport := deepCopy $selected -}}
+{{- $_ := unset $transport "engine_id" -}}
+{{- $ucm := dict "kv_connector" "UCMConnector" "kv_role" "kv_both" "kv_connector_module_path" "ucm.integration.vllm.ucm_connector" "kv_connector_extra_config" (dict "UCM_CONFIG_FILE" "/vllm-workspace/UnifiedCache/config/ucm_config.runtime.yaml") -}}
+{{- toJson (dict "kv_connector" "MultiConnector" "kv_role" "kv_producer" "engine_id" "__UC_ENGINE_ID__" "kv_connector_extra_config" (dict "connectors" (list $transport $ucm))) -}}
+{{- else -}}
+{{- toJson $selected -}}
+{{- end -}}
+{{- else if and (not $pdEnabled) (eq (include "chart.usesUcmForRole" (list $role $modelSpec)) "true") -}}
+{{- toJson (dict "kv_connector" "UCMConnector" "kv_role" "kv_both" "kv_connector_module_path" "ucm.integration.vllm.ucm_connector" "kv_connector_extra_config" (dict "UCM_CONFIG_FILE" "/vllm-workspace/UnifiedCache/config/ucm_config.runtime.yaml")) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* Runtime identity metadata paired with chart.kvTransferTemplate. */}}
+{{- define "chart.kvTransferMeta" -}}
+{{- $role := index . 0 -}}
+{{- $modelSpec := index . 1 -}}
+{{- $root := index . 2 -}}
+{{- if eq (include "chart.pdEnabled" (list $modelSpec)) "true" -}}
+{{- $pd := $modelSpec.pd -}}
+{{- $kv := $pd.kvTransfer -}}
+{{- $kvRole := include "chart.kvRoleOf" (list $role $modelSpec) -}}
+{{- if $kvRole -}}
+{{- $prefillReplicas := 0 -}}{{- $decodeReplicas := 0 -}}{{- $portSpan := 1 -}}
+{{- range $candidate := $modelSpec.roles -}}
+{{- if or (eq $candidate.name $pd.prefill) (eq $candidate.name $pd.decode) -}}
+{{- $args := default (default "" $modelSpec.vllmArgs) $candidate.vllmArgs -}}
+{{- $candidateSpan := int (include "chart.kvTransferPortSpan" (list $args)) -}}
+{{- if gt $candidateSpan $portSpan -}}{{- $portSpan = $candidateSpan -}}{{- end -}}
+{{- $candidateReplicas := 1 -}}{{- if hasKey $candidate "replicas" -}}{{- $candidateReplicas = int $candidate.replicas -}}{{- end -}}
+{{- if eq $candidate.name $pd.prefill -}}{{- $prefillReplicas = $candidateReplicas -}}{{- end -}}
+{{- if eq $candidate.name $pd.decode -}}{{- $decodeReplicas = $candidateReplicas -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $meta := dict "schemaVersion" 1 "dynamicIdentity" true "connector" $kv.connector "roleKind" $kvRole "roleName" $role.name "groupNamePrefix" (printf "%s-" (include "chart.kthenaName" (list $modelSpec $root))) "prefillReplicas" $prefillReplicas "decodeReplicas" $decodeReplicas "identity" $kv.identity -}}
+{{- $capability := include "chart.kvTransferCapability" (list $kv.connector) | fromYaml -}}
+{{- if get $capability "usesPort" -}}{{- $_ := set $meta "portSpan" $portSpan -}}{{- end -}}
+{{- toJson $meta -}}
+{{- end -}}
+{{- else if eq (include "chart.usesUcmForRole" (list $role $modelSpec)) "true" -}}
+{{- toJson (dict "schemaVersion" 1 "dynamicIdentity" false "connector" "UCMConnector") -}}
+{{- end -}}
+{{- end -}}
+
+{{- if .Values.servingEngineSpec.enableEngine -}}
+{{- $modelSpec := .Values.servingEngineSpec.modelSpec }}
+{{- $ucmConfigEnabled := eq (include "chart.ucmConfigEnabled" (list $modelSpec)) "true" }}
+{{- $anyHooks := eq (include "chart.anyRoleHasHooks" (list $modelSpec)) "true" }}
+{{- $hybridDataParallel := eq (include "chart.hybridDataParallelEnabled" (list $modelSpec)) "true" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $.Release.Name }}-vllm-args
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $.Release.Name }}
+data:
+  args-entrypoint.sh: |
+    #!/bin/bash
+    set -e
+
+    ENTRYPOINT_DIR="/vllm-workspace/UnifiedCache/entrypoint"
+    source "${ENTRYPOINT_DIR}/common-entrypoint.sh"
+
+    append_vllm_args() {
+      local args_tmp
+      local arg
+      local managed
+      local layout
+      local option_name
+      local -a managed_args=(
+        --host
+        --port
+        --headless
+        --data-parallel-address
+        -dpa
+        --data-parallel-rpc-port
+        -dpp
+        --data-parallel-start-rank
+        -dpr
+        --data-parallel-hybrid-lb
+        --data-parallel-external-lb
+        --data-parallel-rank
+        --kv-transfer-config
+        --served-model-name
+        --config
+      )
+      local -a layout_args=(
+        --tensor-parallel-size
+        --data-parallel-size
+        --pipeline-parallel-size
+        --prefill-context-parallel-size
+        --decode-context-parallel-size
+        --context-parallel-size
+      )
+      if [[ -f "${ENTRYPOINT_DIR}/kv-transfer.template.json" || -f "${ENTRYPOINT_DIR}/kv-transfer.meta.json" ]]; then
+        # vLLM rewrites an existing kv_transfer_config when native KV
+        # offloading is enabled, which would silently replace the chart connector.
+        managed_args+=( --kv-offloading-size --kv-offloading-backend )
+      fi
+      args_tmp="$(mktemp)"
+      python3 "${ENTRYPOINT_DIR}/parse-vllm-args.py" "${VLLM_ARGS_FILE}" > "${args_tmp}"
+      while IFS= read -r -d '' arg; do
+        option_name="${arg%%=*}"
+        option_name="${option_name//_/-}"
+        option_name="${option_name%%.*}"
+        for managed in "${managed_args[@]}"; do
+          # vLLM's FlexibleArgumentParser accepts underscore aliases and
+          # argparse-style unambiguous long-option abbreviations.
+          if [[ ( "${option_name}" == --* && "${managed}" == "${option_name}"* ) ||
+                ( "${option_name}" == -* && "${option_name}" != --* && "${managed}" == "${option_name}" ) ]]; then
+            echo "[ERROR] ${arg} is chart-managed and must not be set in vllmArgs" >&2
+            rm -f "${args_tmp}"
+            return 1
+          fi
+        done
+        for layout in "${layout_args[@]}"; do
+          if [[ "${option_name}" == --* && "${layout}" == "${option_name}"* && "${layout}" != "${option_name}" ]]; then
+            echo "[ERROR] ${arg} abbreviates parallel-layout option ${layout}; use its full name" >&2
+            rm -f "${args_tmp}"
+            return 1
+          fi
+        done
+        cmd+=("${arg}")
+      done < "${args_tmp}"
+      rm -f "${args_tmp}"
+    }
+
+    append_kv_transfer_config() {
+      local template_file="${ENTRYPOINT_DIR}/kv-transfer.template.json"
+      local meta_file="${ENTRYPOINT_DIR}/kv-transfer.meta.json"
+      local resolved
+      local arg
+      local option_name
+      local output_file
+      for arg in "${cmd[@]}"; do
+        option_name="${arg%%=*}"
+        option_name="${option_name//_/-}"
+        option_name="${option_name%%.*}"
+        if [[ "${option_name}" == --* && "--kv-transfer-config" == "${option_name}"* ]]; then
+            echo "[ERROR] --kv-transfer-config is chart-managed and must not be set in vllmArgs" >&2
+            return 1
+        fi
+      done
+      if [[ ! -f "${template_file}" && ! -f "${meta_file}" ]]; then
+        return 0
+      fi
+      if [[ ! -f "${template_file}" || ! -f "${meta_file}" ]]; then
+        echo "[ERROR] KV transfer template/meta must be projected together" >&2
+        return 1
+      fi
+      output_file="$(mktemp)"
+      if ! python3 "${ENTRYPOINT_DIR}/resolve-kv-transfer-config.py" \
+          --template "${template_file}" \
+          --meta "${meta_file}" \
+          --output "${output_file}"; then
+        rm -f "${output_file}"
+        return 1
+      fi
+      if [[ ! -s "${output_file}" ]]; then
+        echo "[ERROR] KV transfer resolver produced no output" >&2
+        rm -f "${output_file}"
+        return 1
+      fi
+      resolved="$(<"${output_file}")"
+      rm -f "${output_file}"
+      cmd+=( --kv-transfer-config "${resolved}" )
+    }
+
+    print_server_args() {
+      echo "[INFO] startup mode: vllmArgs"
+      echo "[INFO] vllm args file: ${VLLM_ARGS_FILE}"
+      echo "[INFO] node rank: ${NODE}"
+      echo "[INFO] master_ip=${master_ip} worker_ip=${worker_ip} server_port=${server_port}"
+      printf '[INFO] server command:'
+      printf ' %q' "${cmd[@]}"
+      printf '\n'
+    }
+
+    # Downward API identity and the role-level UCM decision are immutable inputs.
+    # Lock them before sourcing topology/profile/hooks so one logical role replica
+    # cannot be made to collide with another at runtime.
+    readonly UC_PD_GROUP_NAME UC_PD_ROLE_ID UC_USES_UCM
+    prepare_common_runtime
+    readonly VLLM_ARGS_FILE
+{{- if $anyHooks }}
+
+    # preStart 钩子：source 同 shell 执行（export 直达 vllm 进程）；任一命令失败由 set -e 截停（=启动失败）。
+    # source 不放 if 条件位（条件上下文会抑制 errexit）。此时托管网络变量已就绪、cmd 尚未构建，
+    # 钩子内 export 覆盖 dp_rpc_port/server_port/MASTER_IP 等托管值会生效于随后拼出的 vllm 命令（慎用）。
+    if [[ -f "${ENTRYPOINT_DIR}/hook-pre-start.sh" ]]; then
+      echo "[INFO] running preStart hook (sourced)"
+      source "${ENTRYPOINT_DIR}/hook-pre-start.sh"
+      echo "[INFO] preStart hook done"
+    fi
+{{- end }}
+
+    # vLLM 0.18 can override CLI/default DP layout from VLLM_DP_* after
+    # Helm has calculated connector metadata and the Mooncake port span.
+    # For a chart-owned KV config, remove every such alternate input after
+    # profile/topology/preStart have run and immediately before building argv.
+    if [[ -f "${ENTRYPOINT_DIR}/kv-transfer.template.json" || -f "${ENTRYPOINT_DIR}/kv-transfer.meta.json" ]]; then
+      for kv_env_name in \
+        VLLM_DP_SIZE VLLM_DP_RANK VLLM_DP_RANK_LOCAL \
+        VLLM_DP_MASTER_IP VLLM_DP_MASTER_PORT; do
+        if [[ -n "${!kv_env_name:-}" ]]; then
+          echo "[WARN] ignoring ${kv_env_name}: parallel layout is chart-managed while KV transfer is active" >&2
+        fi
+        unset "${kv_env_name}"
+      done
+    fi
+
+    cmd=(
+      vllm
+      serve
+      {{ $modelSpec.modelPath | quote }}
+      --served-model-name {{ include "chart.servedModelName" $modelSpec | quote }}
+    )
+
+    if [[ "${REPLICA_COUNT}" == "1" ]]; then
+      cmd+=( --host 0.0.0.0 --port "{{ include "chart.container-port" $ }}" )
+{{- if $hybridDataParallel }}
+    else
+      cmd+=( --host 0.0.0.0 --port "{{ include "chart.container-port" $ }}" --data-parallel-hybrid-lb )
+{{- else }}
+    elif [[ "${NODE_RANK:-0}" == "0" ]]; then
+      cmd+=( --host 0.0.0.0 --port "{{ include "chart.container-port" $ }}" )
+    else
+      cmd+=( --headless )
+{{- end }}
+    fi
+
+    if [[ "${REPLICA_COUNT}" != "1" ]]; then
+      cmd+=( --data-parallel-address "${MASTER_IP}" --data-parallel-rpc-port "${dp_rpc_port}" )
+    fi
+
+    {{- if $modelSpec.chatTemplate }}
+    cmd+=( --chat-template {{ $modelSpec.chatTemplate | quote }} )
+    {{- end }}
+
+    append_vllm_args
+    append_kv_transfer_config
+
+    # 多机 DP：注入 --data-parallel-start-rank（= NODE_RANK × 本节点 dp_size_local）。
+    # 缺失时各节点都默认 start-rank=0，worker 的 DP rank 与 head 的 rank0 撞号，
+    # vLLM 启动握手即报 "HELLO message from remote engine 0, expected it to be local"。
+    if [[ "${REPLICA_COUNT}" != "1" ]]; then
+      dp_size_local=1
+      for ((i=0; i<${#cmd[@]}; i++)); do
+        case "${cmd[$i]}" in
+          --data-parallel-size-local|-dpl)      dp_size_local="${cmd[$((i+1))]}"; break ;;
+          --data-parallel-size-local=*|-dpl=*)  dp_size_local="${cmd[$i]#*=}";    break ;;
+        esac
+      done
+      cmd+=( --data-parallel-start-rank "$(( ${NODE_RANK:-0} * dp_size_local ))" )
+    fi
+
+    print_server_args
+{{- if $anyHooks }}
+
+    # postReady 钩子：后台 watcher 轮询 /health，就绪后执行一次；standard 仅 entry，hybrid 的多机 role 包含 worker。
+    # exec 原地换映像不换 PID，watcher 父进程恒为 PID 1（届时已是 vllm），stdout 继承容器日志 FD 继续可见；
+    # watcher 结束后留一个 defunct 条目直到 Pod 终止，属预期（PID 1 不 wait 未知子进程）。
+    if [[ -f "${ENTRYPOINT_DIR}/hook-post-ready.sh" && ( "${UC_POD_KIND:-entry}" == "entry"{{- if $hybridDataParallel }} || "${REPLICA_COUNT}" != "1"{{- end }} ) ]]; then
+      (
+        set +e   # 子 shell 继承父 errexit，未就绪期 curl 必失败，先关掉
+        until curl -sf -m 2 "http://127.0.0.1:${POD_PORT}/health" >/dev/null; do
+          echo "[hook-post-ready] waiting for /health ..."
+          sleep 5
+        done
+        echo "[hook-post-ready] server ready, running hook"
+        if bash "${ENTRYPOINT_DIR}/hook-post-ready.sh"; then
+          echo "[hook-post-ready] done"
+        else
+          echo "[hook-post-ready][WARN] hook failed"
+        fi
+      ) &
+    fi
+{{- end }}
+
+    exec "${cmd[@]}"
+
+  parse-vllm-args.py: |
+    #!/usr/bin/env python3
+    import shlex
+    import sys
+
+
+    def main() -> int:
+        path = sys.argv[1]
+        try:
+            lines = open(path, encoding="utf-8").read().splitlines()
+        except FileNotFoundError:
+            lines = []
+
+        for line_no, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            try:
+                parts = shlex.split(stripped, comments=False, posix=True)
+            except ValueError as exc:
+                print(f"[ERROR] invalid vllmArgs line {line_no}: {exc}", file=sys.stderr)
+                return 1
+            for part in parts:
+                sys.stdout.buffer.write(part.encode())
+                sys.stdout.buffer.write(b"\0")
+        return 0
+
+
+    if __name__ == "__main__":
+        raise SystemExit(main())
+
+  resolve-kv-transfer-config.py: |
+{{ $.Files.Get "files/resolve-kv-transfer-config.py" | indent 4 }}
+
+  # 上面 {{ $.Release.Name }}-vllm-args 仅放共享脚本；各 role 的 vllm.args 分到 per-role ConfigMap（见下）。
+{{- range $role := $modelSpec.roles }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $.Release.Name }}-{{ $role.name }}-vllm-args
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $.Release.Name }}
+data:
+  vllm.args: |
+{{ default (default "" $modelSpec.vllmArgs) $role.vllmArgs | nindent 4 }}
+{{- $kvTemplate := include "chart.kvTransferTemplate" (list $role $modelSpec $) }}
+{{- if $kvTemplate }}
+  kv-transfer.template.json: |
+{{ $kvTemplate | fromJson | toPrettyJson | nindent 4 }}
+  kv-transfer.meta.json: |
+{{ include "chart.kvTransferMeta" (list $role $modelSpec $) | fromJson | toPrettyJson | nindent 4 }}
+{{- end }}
+{{- end }}
+{{- end }}

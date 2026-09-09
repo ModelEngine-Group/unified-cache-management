@@ -740,6 +740,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         """Return a log-friendly store config without dumping large size lists."""
 
         summary = dict(config)
+        # CacheStore initialization logs the runtime IO aggregation configuration.
+        summary.pop("cache_io_aggregation", None)
         tensor_size_list = summary.pop("tensor_size_list", None)
         if tensor_size_list is not None:
             tensor_sizes = [int(size) for size in tensor_size_list]

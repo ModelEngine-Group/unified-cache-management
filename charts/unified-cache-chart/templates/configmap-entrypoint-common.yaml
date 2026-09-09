@@ -1,0 +1,96 @@
+{{- if .Values.servingEngineSpec.enableEngine -}}
+{{- $modelSpec := .Values.servingEngineSpec.modelSpec }}
+{{- $ucmConfigEnabled := eq (include "chart.ucmConfigEnabled" (list $modelSpec)) "true" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $.Release.Name }}-entrypoint-common
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $.Release.Name }}
+data:
+  common-entrypoint.sh: |
+    #!/bin/bash
+    set -e
+
+    ENTRYPOINT_DIR="/vllm-workspace/UnifiedCache/entrypoint"
+    readonly ENTRYPOINT_DIR
+    VLLM_SCRIPT_DIR="/vllm-workspace/UnifiedCache/deploy/script"
+    UCM_TEMPLATE_DEFAULT="/vllm-workspace/UnifiedCache/config/ucm_config.template.yaml"
+    UCM_RUNTIME_DEFAULT="/vllm-workspace/UnifiedCache/config/ucm_config.runtime.yaml"
+
+    prepare_ucm_runtime_config() {
+      export UCM_CONFIG_TEMPLATE_FILE="${UCM_CONFIG_TEMPLATE_FILE:-${UCM_TEMPLATE_DEFAULT}}"
+      export UCM_CONFIG_FILE="${UCM_CONFIG_FILE:-${UCM_RUNTIME_DEFAULT}}"
+      if [[ "${UC_USES_UCM:-false}" != "true" ]]; then
+        return 0
+      fi
+    {{- if $ucmConfigEnabled }}
+      if [[ -f "${UCM_CONFIG_TEMPLATE_FILE}" ]]; then
+        mkdir -p "$(dirname "${UCM_CONFIG_FILE}")"
+        cp "${UCM_CONFIG_TEMPLATE_FILE}" "${UCM_CONFIG_FILE}"
+        echo "[INFO] copied UCM template to runtime config: ${UCM_CONFIG_FILE}"
+      else
+        echo "[WARN] UCM template file not found: ${UCM_CONFIG_TEMPLATE_FILE}"
+      fi
+    {{- end }}
+    }
+
+    prepare_runtime_env() {
+      source /etc/profile || true
+      source ~/.bashrc || true
+
+      # Ascend CANN runtime env: non-login/non-interactive shells do not load
+      # set_env.sh automatically. Source it when present so the same entrypoint
+      # remains usable by both CUDA and Ascend runtime images.
+      if [[ -f /usr/local/Ascend/ascend-toolkit/set_env.sh ]]; then
+        export LD_LIBRARY_PATH="/usr/local/lib:/usr/local/Ascend/driver/lib64:/usr/local/Ascend/ascend-toolkit/latest/lib64:${LD_LIBRARY_PATH:-}"
+        source /usr/local/Ascend/ascend-toolkit/set_env.sh || true
+        echo "[INFO] sourced Ascend CANN env: /usr/local/Ascend/ascend-toolkit/set_env.sh"
+      fi
+
+      export CONFIG_FILE="${CONFIG_FILE:-${ENTRYPOINT_DIR}/config.properties}"
+      export VLLM_ARGS_FILE="${ENTRYPOINT_DIR}/vllm.args"
+      export master_ip="${master_ip:-${MASTER_IP}}"
+      export worker_ip="${worker_ip:-${POD_IP}}"
+      export server_host="${server_host:-0.0.0.0}"
+      export server_port="${server_port:-{{ include "chart.container-port" $ }}}"
+      export node_num="${node_num:-${REPLICA_COUNT}}"
+      export dp_rpc_port="${dp_rpc_port:-13389}"
+      export ucm_config_yaml_path="${ucm_config_yaml_path:-${UCM_CONFIG_FILE}}"
+      export NODE="${NODE_RANK:-0}"
+    }
+
+    verify_ascend_mooncake_runtime() {
+      local mooncake_config="${MOONCAKE_CONFIG_PATH:-}"
+      [[ -z "$mooncake_config" || ! -f "$mooncake_config" ]] && return 0
+      if ! grep -Eq '"protocol"[[:space:]]*:[[:space:]]*"ascend"' "$mooncake_config"; then
+        return 0
+      fi
+
+      local missing=0
+      if [[ ! -r /etc/hccn.conf ]]; then
+        echo "[ERROR] Ascend Mooncake requires readable /etc/hccn.conf; mount host /etc/hccn.conf into the engine pod" >&2
+        missing=1
+      fi
+      if [[ ! -x /usr/local/Ascend/driver/tools/hccn_tool ]]; then
+        echo "[ERROR] Ascend Mooncake requires executable /usr/local/Ascend/driver/tools/hccn_tool; mount it from the host driver tools" >&2
+        missing=1
+      fi
+      if [[ "$missing" != "0" ]]; then
+        exit 1
+      fi
+      echo "[INFO] verified Ascend Mooncake host mounts: /etc/hccn.conf and hccn_tool"
+    }
+
+    prepare_common_runtime() {
+      source "${ENTRYPOINT_DIR}/node-topology-setup.sh"
+      prepare_ucm_runtime_config
+      prepare_runtime_env
+      verify_ascend_mooncake_runtime
+    }
+
+  node-topology-setup.sh: |
+{{ (.Files.Get "files/node-topology-setup.sh") | nindent 4 }}
+
+{{- end }}

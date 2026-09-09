@@ -26,6 +26,7 @@ import atexit
 import os
 import subprocess
 import sys
+import sysconfig
 
 from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext
@@ -36,6 +37,21 @@ ENABLE_SPARSE = os.getenv("ENABLE_SPARSE")
 ENABLE_MINDIE = os.getenv("UCM_ENABLE_MINDIE", "0") not in ("", "0", "false", "False")
 ENABLE_GDR = os.getenv("ENABLE_GDR", "0") not in ("", "0", "false", "False")
 ASCEND_ROOT = os.getenv("ASCEND_ROOT")
+
+
+def get_package_version() -> str:
+    version_path = os.path.join(ROOT_DIR, "version.ini")
+    try:
+        with open(version_path, encoding="utf-8") as version_file:
+            for line in version_file:
+                key, separator, value = line.strip().partition("=")
+                if separator and key == "UCM_VERSION" and value:
+                    return value
+    except OSError as error:
+        raise RuntimeError(
+            f"cannot read package version from {version_path}"
+        ) from error
+    raise RuntimeError(f"UCM_VERSION is missing from {version_path}")
 
 
 def get_abi_flag_from_env() -> str:
@@ -159,6 +175,9 @@ class CMakeBuild(build_ext):
         cmake_args = [
             "-DCMAKE_BUILD_TYPE=Release",
             f"-DPYTHON_EXECUTABLE={sys.executable}",
+            f"-DPython_EXECUTABLE={sys.executable}",
+            f"-DPython_INCLUDE_DIR={sysconfig.get_path('include')}",
+            f"-DPython_ROOT_DIR={sys.prefix}",
             f"-DCMAKE_INSTALL_PREFIX={install_dir}",
         ]
 
@@ -174,6 +193,21 @@ class CMakeBuild(build_ext):
 
         if ASCEND_ROOT:
             cmake_args += [f"-DASCEND_ROOT={ASCEND_ROOT}"]
+
+        build_cpu_arch = os.getenv("UCM_BUILD_CPU_ARCH")
+        if is_ascend() and build_cpu_arch:
+            ascend_subdirectory = {
+                "amd64": "x86_64-linux",
+                "arm64": "aarch64-linux",
+            }.get(build_cpu_arch)
+            if ascend_subdirectory is None:
+                raise RuntimeError(
+                    f"unsupported build CPU architecture: {build_cpu_arch}"
+                )
+            cmake_args += [
+                "-DASCEND_ARCH_DIR="
+                f"/usr/local/Ascend/ascend-toolkit/latest/{ascend_subdirectory}"
+            ]
 
         match PLATFORM:
             case "cuda":
@@ -243,7 +277,7 @@ def inject_pth():
 
 setup(
     name="uc-manager",
-    version="0.6.0",
+    version=get_package_version(),
     description="Unified Cache Management",
     author="Unified Cache Team",
     packages=[
