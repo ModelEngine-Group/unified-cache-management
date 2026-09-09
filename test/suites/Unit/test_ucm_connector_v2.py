@@ -1283,7 +1283,7 @@ class RaggedLayoutTest(unittest.TestCase):
             num_blocks=8,
         )
 
-        view = layout.layers["model.layers.0.attn"].views[0]
+        view = layout.layers["model.layers.0.attn"].component_views[0]
         self.assertEqual(parsed.groups[0].token_block_size, 256)
         self.assertEqual(view.tokens_per_row, 64)
 
@@ -1318,11 +1318,11 @@ class RaggedLayoutTest(unittest.TestCase):
             num_blocks=8,
         )
 
-        views = layout.layers["model.layers.0.mixer"].views
+        views = layout.layers["model.layers.0.mixer"].component_views
         self.assertEqual(tuple(view.base_ptr for view in views), (0x1000, 0x1008))
         self.assertEqual(tuple(view.row_stride_bytes for view in views), (64, 64))
         self.assertEqual(tuple(view.row_payload_bytes for view in views), (8, 8))
-        regions = layout.layers["model.layers.0.mixer"].block_regions
+        regions = layout.layers["model.layers.0.mixer"].full_block_regions
         self.assertEqual(len(regions), 1)
         self.assertEqual(
             (
@@ -1378,17 +1378,25 @@ class RaggedLayoutTest(unittest.TestCase):
         )
 
         self.assertEqual(
-            tuple(view.base_ptr for view in layout.layers["model.layers.0.attn"].views),
+            tuple(
+                view.base_ptr
+                for view in layout.layers["model.layers.0.attn"].component_views
+            ),
             (0x1000, 0x2000),
         )
         self.assertEqual(
-            tuple(view.base_ptr for view in layout.layers["model.layers.1.attn"].views),
+            tuple(
+                view.base_ptr
+                for view in layout.layers["model.layers.1.attn"].component_views
+            ),
             (0x3000,),
         )
         self.assertEqual(
             tuple(
                 region.base_ptr
-                for region in layout.layers["model.layers.0.attn"].block_regions
+                for region in layout.layers[
+                    "model.layers.0.attn"
+                ].full_block_regions
             ),
             (0x1000, 0x2000),
         )
@@ -1412,17 +1420,20 @@ class RaggedLayoutTest(unittest.TestCase):
         )
 
         self.assertEqual(
-            tuple(view.base_ptr for view in layout.layers["model.layers.0.attn"].views),
+            tuple(
+                view.base_ptr
+                for view in layout.layers["model.layers.0.attn"].component_views
+            ),
             (0x1000, 0x1018),
         )
         self.assertEqual(
             tuple(
                 view.row_stride_bytes
-                for view in layout.layers["model.layers.0.attn"].views
+                for view in layout.layers["model.layers.0.attn"].component_views
             ),
             (48, 48),
         )
-        regions = layout.layers["model.layers.0.attn"].block_regions
+        regions = layout.layers["model.layers.0.attn"].full_block_regions
         self.assertEqual(len(regions), 1)
         self.assertEqual(
             (
