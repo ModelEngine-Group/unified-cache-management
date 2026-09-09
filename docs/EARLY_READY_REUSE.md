@@ -67,3 +67,30 @@ identity 仍可信，hash IDs 可以复用。无 job 或 identity 已变化时�
 上下文在 `finally` 中恢复，其他 Connector 和后台线程不受这一临时控制影响。
 
 Early 关闭时，已有工厂选择原生 Connector，以上覆盖不参与执行。
+
+## 存储侧继承与组合
+
+`EarlyPipelineStore.__init__()` 通过 `super()` 执行原生初始化。一个内部 builder
+注册项调用原生 `Cache|Posix` builder，短生命周期的 `_EarlyStack` 只将 Cache、
+Posix 的工厂名称映射到 Early 工厂。配置转换、库路径和 metrics 预加载仍由原生
+builder 完成。适配器持有同一个 Pipeline 的引用，不分配第二套存储或线程。
+内部注册名仅用于选择 builder，用户配置保持 `Cache|Posix`。
+
+三个 Early 绑定是独立模块函数，使用原生 `PipelineStore::Self()` 获取既有入口，
+包含原生 health wrapper。原生 C++ PipelineStore 类不增加方法。绑定同步调用
+期间保留 Pipeline 和 buffer 参数的生命周期，释放 GIL 后调用存储；失败使用
+原生模块注册的异常类型。释放 reservation 不受 unhealthy 状态阻挡。
+
+`EarlyCacheStore::Setup()` 先调用父类 Setup，再复用同一个私有 ParseConfig，
+不维护第二份配置字段和默认值。CacheStore 向这一 Early 子类授予 friend 权限，
+原有私有变量和函数仍保持 private；不暴露 BufferManager getter。
+
+`ReservedPrefetch` 通过原生 Handle 的 GetState/FailureStatus 完成可取消等待，
+等待策略不进入原生 Handle。需要分配时，TryGet 调用原生私有 Alloc 并提供尝试
+次数上限；普通 Get/Prealloc 不提供上限，保留原生等待语义。原生槽位查找、回收、
+锁、引用计数和初始化只有一份实现。
+
+`SpaceLayout::StorageBackend()` 保持 private。只有 friend PosixReadLease 调用
+这一原生路由，消费者与删除 guard 因而仍使用同一个后端和 block identity。
+friend 改动是显式的类级访问授权；它没有将成员改为 public/protected，也不是
+原生零修改。删除 guard、实际 unlink 和原生 GC 的周期重试仍沿用既有接入。
