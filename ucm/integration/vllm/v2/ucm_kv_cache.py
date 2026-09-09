@@ -148,6 +148,24 @@ def _concrete_specs(
     return tuple((name, group_spec) for name in names)
 
 
+def _spec_compress_ratio(spec: "KVCacheSpec") -> int:
+    """Compression ratio of one stored state (DSV4 C4A = 4).
+
+    vllm <= 0.27 names the field ``compress_ratio``; vllm 0.29 renamed it to
+    ``tokens_per_state`` (vLLM #51718) with identical semantics for DSV4
+    (int > 1 compresses multiple tokens into one stored state). Mamba specs
+    carry a -1 sentinel on 0.29 which is not meaningful as a ratio; callers
+    only read this on attention/MLA specs.
+    """
+    value = getattr(spec, "compress_ratio", None)
+    if value is None:
+        value = getattr(spec, "tokens_per_state", 1)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 1
+
+
 def _classify(
     group: "KVCacheGroupSpec",
     concrete: Sequence[tuple[str, "KVCacheSpec"]],
@@ -166,7 +184,7 @@ def _classify(
     if KVCacheSpecKind.MAMBA in kinds and len(kinds) != 1:
         raise TypeError(f"Mamba and attention specs cannot share a KV group: {kinds}")
     is_c4a = any(
-        getattr(spec, "compress_ratio", 1) == 4
+        _spec_compress_ratio(spec) == 4
         and kind == KVCacheSpecKind.MLA_ATTENTION
         for spec, kind in zip(specs, spec_kinds)
     )
@@ -248,13 +266,13 @@ def parse_kv_cache_config(
             if KVCacheSpecKind.MAMBA in kinds or not kinds.isdisjoint(_SLIDING_KINDS):
                 continue
             for fallback, (name, concrete_spec) in enumerate(concrete):
-                attention_compress_ratio_by_layer[_layer_index(name, fallback)] = int(
-                    getattr(concrete_spec, "compress_ratio", 1)
+                attention_compress_ratio_by_layer[_layer_index(name, fallback)] = (
+                    _spec_compress_ratio(concrete_spec)
                 )
     for group_id, (raw_group, concrete, kinds, is_c4a) in enumerate(classified):
         representative = concrete[0][1] if concrete else raw_group.kv_cache_spec
         physical_block_size = int(getattr(raw_group.kv_cache_spec, "block_size"))
-        compress_ratio = int(getattr(representative, "compress_ratio", 1))
+        compress_ratio = _spec_compress_ratio(representative)
         token_block_size = (
             physical_block_size * compress_ratio
             if dsv4 and device_type == "npu"
