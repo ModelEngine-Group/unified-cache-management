@@ -1,6 +1,8 @@
 // Exercise the exported factory and native transfers, not a separately built buffer.
 #include <array>
+#include <chrono>
 #include <cstring>
+#include <future>
 #include <gtest/gtest.h>
 #include "cache/cc/reserved_prefetch.h"
 #include "detail/mock_store.h"
@@ -154,4 +156,47 @@ TEST(UCCacheEarlyStoreTest, PartialL1RequiresReadableL2AndKeepsOnlyContinuousPre
     EXPECT_EQ(copied.Value().l2ReadShards, 1);
     early.Release(reserved.Value().handle);
     EXPECT_TRUE(backend.lease.expired());
+}
+
+TEST(UCCacheEarlyStoreTest, BoundedAllocationPreservesPinnedNativeEntries)
+{
+    Backend backend;
+    UC::CacheStore::Config config;
+    config.uniqueId = UC::Test::Detail::Random().RandomString(16);
+    config.deviceId = 0;
+    config.shardSize = config.blockSize = 4096;
+    config.bufferCapacity = 4 * config.shardSize;
+    config.loadExclusiveBufferNumber = 0;
+    config.shareBufferEnable = false;
+    config.storeBackend = &backend;
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(config).Success());
+    auto* buffer = manager.GetTransBuffer();
+    std::array<UC::CacheStore::TransBuffer::Handle, 4> pins;
+    for (size_t i = 0; i < pins.size(); ++i) {
+        UC::Detail::BlockId block{};
+        block[0] = std::byte(i);
+        pins[i] = buffer->Get(block, 0);
+        ASSERT_TRUE(pins[i]);
+        std::memset(pins[i].Data(), 0x30 + i, config.shardSize);
+        pins[i].MarkReady();
+    }
+    UC::Detail::BlockId missing{};
+    missing[0] = std::byte{9};
+    auto attempt = std::async(std::launch::async, [&] { return buffer->TryGet(missing, 0); });
+    const auto completed = attempt.wait_for(std::chrono::seconds(1));
+    // Release capacity even if a regression accidentally uses unbounded Alloc,
+    // so that the failing test can join its worker instead of hanging the suite.
+    pins[0] = {};
+    auto result = attempt.get();
+    EXPECT_EQ(completed, std::future_status::ready);
+    EXPECT_FALSE(result);
+    result = {};
+    for (size_t i = 1; i < pins.size(); ++i) {
+        EXPECT_TRUE(pins[i].Ready());
+        EXPECT_EQ(static_cast<unsigned char*>(pins[i].Data())[0], 0x30 + i);
+    }
+    auto native = buffer->Get(missing, 0);
+    EXPECT_TRUE(native);
+    EXPECT_TRUE(native.Owner());
 }

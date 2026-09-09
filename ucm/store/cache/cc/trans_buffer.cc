@@ -606,7 +606,7 @@ TransBuffer::Handle TransBuffer::TryGet(const Detail::BlockId& blockId, size_t s
         strategy_->BucketUnlock(bucket);
         return Handle{this, node, owner};
     }
-    node = TryAlloc(blockId, shardIdx, bucket);
+    node = Alloc(blockId, shardIdx, bucket, false, 2 * strategy_->NodeCount());
     strategy_->BucketUnlock(bucket);
     return Handle{this, node, true};
 }
@@ -695,43 +695,10 @@ size_t TransBuffer::FindAt(size_t iBucket, const Detail::BlockId& blockId, size_
 }
 
 size_t TransBuffer::Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_t iBucket,
-                          bool allowReserved)
+                          bool allowReserved, std::optional<size_t> maxAttempts)
 {
-    for (;;) {
+    for (size_t attempts = 0; !maxAttempts || attempts < *maxAttempts; ++attempts) {
         auto iNode = strategy_->FetchNode(allowReserved);
-        auto meta = strategy_->MetaAt(iNode);
-        strategy_->NodeLock(iNode);
-        if (meta->reference > 0) {
-            strategy_->NodeUnlock(iNode);
-            continue;
-        }
-        const auto oldBucket = meta->hash;
-        if (oldBucket != iBucket) {
-            if (oldBucket != invalidIndex) {
-                if (!strategy_->BucketTryLock(oldBucket)) {
-                    strategy_->NodeUnlock(iNode);
-                    continue;
-                }
-                Remove(oldBucket, iNode);
-                strategy_->BucketUnlock(oldBucket);
-            }
-            MoveTo(iBucket, iNode);
-        }
-        ++meta->reference;
-        strategy_->MarkAccessed(iNode);
-        meta->block = blockId;
-        meta->shard = shardIdx;
-        meta->state.store(State::LOADING, std::memory_order_relaxed);
-        meta->errorCode.store(Status::OK().Underlying(), std::memory_order_relaxed);
-        strategy_->NodeUnlock(iNode);
-        return iNode;
-    }
-}
-
-size_t TransBuffer::TryAlloc(const Detail::BlockId& blockId, size_t shardIdx, size_t iBucket)
-{
-    for (size_t attempts = 0; attempts < 2 * strategy_->NodeCount(); ++attempts) {
-        auto iNode = strategy_->FetchNode(false);
         auto meta = strategy_->MetaAt(iNode);
         strategy_->NodeLock(iNode);
         if (meta->reference > 0) {
