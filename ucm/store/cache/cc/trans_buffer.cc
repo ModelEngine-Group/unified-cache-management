@@ -23,7 +23,6 @@
  * */
 #include "trans_buffer.h"
 #include <atomic>
-#include <chrono>
 #include <filesystem>
 #include <thread>
 #include <unistd.h>
@@ -845,21 +844,6 @@ void TransBuffer::MarkFailed(Index pos, const Status& status)
     auto meta = strategy_->MetaAt(pos);
     meta->errorCode.store(status.Underlying(), std::memory_order_release);
     meta->state.store(State::FAILED, std::memory_order_release);
-}
-
-Status TransBuffer::WaitReady(Index pos, size_t timeoutMs, const std::atomic<bool>& cancelled)
-{
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
-    for (;;) {
-        if (cancelled.load()) { return Status::Error("reserved prefetch cancelled"); }
-        const auto state = GetState(pos);
-        if (state == State::READY) { return Status::OK(); }
-        if (state == State::FAILED) { return FailureStatus(pos); }
-        if (std::chrono::steady_clock::now() >= deadline) {
-            return Status::Error("shared shard readiness timeout");
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
 }
 
 void TransBuffer::MarkNotReady(Index pos)

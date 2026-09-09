@@ -25,7 +25,6 @@
 #define UNIFIEDCACHE_CACHE_STORE_CC_TRANS_BUFFER_H
 
 #include <limits>
-#include <atomic>
 #include <memory>
 #include "global_config.h"
 #include "status/status.h"
@@ -92,8 +91,6 @@ public:
         Status FailureStatus() const { return buf_->FailureStatus(pos_); }
         void MarkReady() { buf_->MarkReady(pos_); };
         void MarkFailed(const Status& status) { buf_->MarkFailed(pos_, status); }
-        Status WaitReady(size_t timeoutMs, const std::atomic<bool>& cancelled)
-        { return buf_->WaitReady(pos_, timeoutMs, cancelled); }
 
     private:
         friend class TransBuffer;
@@ -138,7 +135,6 @@ private:
     void MarkReady(Index pos);
     void MarkFailed(Index pos, const Status& status);
     void MarkNotReady(Index pos);
-    Status WaitReady(Index pos, size_t timeoutMs, const std::atomic<bool>& cancelled);
 };
 
 }  // namespace UC::CacheStore

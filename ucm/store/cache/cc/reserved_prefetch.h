@@ -2,7 +2,9 @@
 #define UCM_CACHE_RESERVED_PREFETCH_H
 
 #include <atomic>
+#include <chrono>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 #include "buffer_manager.h"
 
@@ -23,6 +25,22 @@ class ReservedPrefetch {
     std::mutex mutex_;
     uint64_t next_{1};
     std::unordered_map<uint64_t, std::shared_ptr<Reservation>> reservations_;
+
+    static Status WaitReady(const TransBuffer::Handle& pin, size_t timeoutMs,
+                            const std::atomic<bool>& cancelled)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+        for (;;) {
+            if (cancelled.load()) { return Status::Error("reserved prefetch cancelled"); }
+            const auto state = pin.GetState();
+            if (state == TransBuffer::State::READY) { return Status::OK(); }
+            if (state == TransBuffer::State::FAILED) { return pin.FailureStatus(); }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                return Status::Error("shared shard readiness timeout");
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
 
 public:
     ReservedPrefetch(BufferManager* manager, StoreV1* backend, size_t blockSize,
@@ -129,7 +147,7 @@ public:
                 for (auto index : owners) { r.pins[index].MarkReady(); }
             }
             for (auto& pin : r.pins) {
-                auto status = pin.WaitReady(timeoutMs_, r.cancelled);
+                auto status = WaitReady(pin, timeoutMs_, r.cancelled);
                 if (status.Failure()) { return status; }
             }
             return Status::OK();
