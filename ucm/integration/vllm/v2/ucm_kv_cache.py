@@ -718,7 +718,13 @@ def _state_layouts(
     row_stride = strides[0] * element_size
     row_payload = _row_payload_bytes(shape, strides, element_size)
     page_size = int(getattr(layer.kv_cache_spec, "page_size_bytes", row_stride))
-    if row_payload != row_stride or row_stride != page_size:
+    # vllm <= 0.27 exposes C = the full padded page (row_payload == row_stride
+    # == page_size, padding at the page tail). vllm 0.29 exposes C = the dense
+    # state content only, with the page padding between blocks
+    # (row_payload <= row_stride == page_size). Components are carved from the
+    # front of each page in both forms; the page padding stays outside the
+    # record either way.
+    if row_stride != page_size or row_payload > row_stride:
         raise ValueError(
             "Combined state backing must be a dense padded page: "
             f"shape={shape}, strides={strides}, page_size={page_size}"
