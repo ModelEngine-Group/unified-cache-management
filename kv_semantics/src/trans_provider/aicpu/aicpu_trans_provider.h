@@ -7,10 +7,10 @@
 
 namespace kv {
 
-class AICPUProvider : public TransProvider {
+class AICPUTransProvider : public TransProvider {
 public:
-    explicit AICPUProvider(const TransportConfig& config);
-    ~AICPUProvider() override;
+    explicit AICPUTransProvider(const TransportConfig& config);
+    ~AICPUTransProvider() override;
 
     Status CreateConnection(const std::string& localIp, const std::string& remoteIp, uint32_t port,
                             uint32_t qpNum, uint32_t timeout,
