@@ -447,14 +447,28 @@ def _row_payload_bytes(
     The verified Ascend layouts may pad between rows, but each component payload
     after dimension 0 is dense.  Copying ``stride(0)`` bytes would incorrectly
     include another component (notably Kimi's shared Attention/Mamba page).
+
+    vllm 0.29 views permute the trailing dims per the resolved KVCacheLayout
+    (e.g. LBNHC orders memory [B, N, H, C] while the view exposes [B, H, N, C]),
+    so a dense permutation of dims 1.. is accepted as well: sorted by stride,
+    consecutive dims must tile exactly (still rejects padding / foreign bytes).
     """
 
     expected_stride = 1
     for size, stride in zip(reversed(shape[1:]), reversed(strides[1:])):
         if stride != expected_stride:
+            break
+        expected_stride *= size
+    else:
+        return expected_stride * element_size
+
+    pairs = sorted(zip(strides[1:], shape[1:]))
+    expected_stride = 1
+    for stride, size in pairs:
+        if stride != expected_stride:
             raise ValueError(
-                "KV tensor trailing dimensions must be dense; "
-                f"shape={shape}, strides={strides}"
+                "KV tensor trailing dimensions must be dense (C-order or a "
+                f"dense permutation); shape={shape}, strides={strides}"
             )
         expected_stride *= size
     return expected_stride * element_size
@@ -493,22 +507,39 @@ def _view_layout(
         tokens_per_row = 1
         bytes_per_token = row_payload
     else:
-        # Verified attention layouts use dimension 1 as the storage-token axis.
-        # For example, Kimi MLA stores one logical block as six kernel rows.
+        # vllm <= 0.27 attention views keep the token axis on dimension 1 with
+        # C-order trailing dims (e.g. Kimi MLA stores one logical block as six
+        # kernel rows). vllm 0.29 exposes uniform [B, H, N, C] views whose dims
+        # are permuted by the resolved KVCacheLayout, so the token axis moves
+        # (LBNHC: N sits on dim 2). Try the legacy dim-1 reading first, then
+        # fall back to deriving the axis from the block geometry.
         tokens_per_row = shape[1]
-        if rows_per_block * tokens_per_row != expected_block_size:
-            raise ValueError(
-                "KV tensor does not match the concrete cache spec: "
-                f"rows_per_vllm_block={rows_per_block}, "
-                f"tokens_per_row={tokens_per_row}, "
-                f"expected physical block_size={expected_block_size}"
-            )
         bytes_per_token = strides[1] * element_size
-        if tokens_per_row * bytes_per_token != row_payload:
-            raise ValueError(
-                "KV tensor token axis does not cover a dense row payload: "
-                f"shape={shape}, strides={strides}"
-            )
+        if (
+            rows_per_block * tokens_per_row != expected_block_size
+            or tokens_per_row * bytes_per_token != row_payload
+        ):
+            if expected_block_size % rows_per_block:
+                raise ValueError(
+                    "KV tensor does not match the concrete cache spec: "
+                    f"rows_per_vllm_block={rows_per_block}, "
+                    f"expected physical block_size={expected_block_size}"
+                )
+            tokens_per_row = expected_block_size // rows_per_block
+            token_axes = [
+                dim
+                for dim in range(1, len(shape))
+                if shape[dim] == tokens_per_row
+                and strides[dim] * element_size * tokens_per_row == row_payload
+            ]
+            if not token_axes:
+                raise ValueError(
+                    "KV tensor token axis does not match a dense row payload: "
+                    f"shape={shape}, strides={strides}, "
+                    f"tokens_per_row={tokens_per_row}, "
+                    f"row_payload={row_payload}"
+                )
+            bytes_per_token = row_payload // tokens_per_row
     return UCMTensorViewLayout(
         base_ptr=int(tensor.data_ptr()),
         row_stride_bytes=row_stride,
