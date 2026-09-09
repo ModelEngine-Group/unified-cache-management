@@ -40,14 +40,14 @@ TEST_F(UCPosixReadLeaseTest, PartialFailureAndExceptionReleaseAllAcquiredFiles)
     ASSERT_EQ(layout.Setup(config), Status::OK());
     BlockId blocks[2]{};
     blocks[1][0] = std::byte{1};
-    auto writer = PosixReadLease::AcquireRemoveGuard(layout.StorageBackend(blocks[1]), blocks[1]);
+    auto writer = PosixReadLease::AcquireRemoveGuardForLayout(layout, blocks[1]);
     ASSERT_TRUE(writer);
     const auto before = OpenFiles();
     for (size_t i = 0; i < 32; ++i) {
         auto failed = PosixReadLease::Acquire(layout, blocks, 2);
         ASSERT_FALSE(failed);
         EXPECT_EQ(failed.Error(), Status::Retry());
-        auto released = PosixReadLease::AcquireRemoveGuard(layout.StorageBackend(blocks[0]), blocks[0]);
+        auto released = PosixReadLease::AcquireRemoveGuardForLayout(layout, blocks[0]);
         ASSERT_TRUE(released);  // The first lock of the failed batch is gone.
     }
     EXPECT_EQ(OpenFiles(), before);
@@ -59,7 +59,7 @@ TEST_F(UCPosixReadLeaseTest, PartialFailureAndExceptionReleaseAllAcquiredFiles)
     } catch (const std::runtime_error&) {}
     EXPECT_EQ(OpenFiles(), before - 1);
     for (auto& block : blocks) {
-        auto released = PosixReadLease::AcquireRemoveGuard(layout.StorageBackend(block), block);
+        auto released = PosixReadLease::AcquireRemoveGuardForLayout(layout, block);
         EXPECT_TRUE(released);
     }
     struct stat st {};
@@ -80,7 +80,7 @@ TEST_F(UCPosixReadLeaseTest, PartialOpenFailureUsesNativeErrorAndClosesEarlierBa
     for (unsigned i = 0; i < 256 && !(found[0] && found[1]); ++i) {
         BlockId key{};
         key[0] = std::byte(i);
-        auto index = layout.StorageBackend(key) == other + "/" ? 1 : 0;
+        auto index = layout.DataFilePath(key, false).rfind(other + "/", 0) == 0 ? 1 : 0;
         blocks[index] = key;
         found[index] = true;
     }
@@ -91,7 +91,7 @@ TEST_F(UCPosixReadLeaseTest, PartialOpenFailureUsesNativeErrorAndClosesEarlierBa
     ASSERT_FALSE(failed);
     EXPECT_EQ(failed.Error(), Status::OsApiError());
     EXPECT_EQ(OpenFiles(), before);
-    auto first = PosixReadLease::AcquireRemoveGuard(layout.StorageBackend(blocks[0]), blocks[0]);
+    auto first = PosixReadLease::AcquireRemoveGuardForLayout(layout, blocks[0]);
     EXPECT_TRUE(first);
 }
 

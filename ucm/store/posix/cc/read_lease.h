@@ -72,6 +72,12 @@ public:
         return Status::OutOfMemory();
     }
 
+    static Expected<std::shared_ptr<void>> AcquireRemoveGuardForLayout(
+        const SpaceLayout& layout, const Detail::BlockId& block)
+    {
+        return AcquireRemoveGuard(layout.StorageBackend(block), block);
+    }
+
     Status Lock(const std::string& backend, const Detail::BlockId& block, bool writer = false)
     {
         auto path = backend + ".ucm_read_leases";

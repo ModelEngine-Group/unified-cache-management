@@ -41,6 +41,8 @@
 namespace UC::CacheStore {
 
 class CacheStore : public StoreV1 {
+    friend class EarlyCacheStore;
+
     BufferManager bufferMgr_;
     bool transEnable_{false};
     TransManager transMgr_;
@@ -132,9 +134,6 @@ public:
         }
         return s;
     }
-
-protected:
-    BufferManager& GetBufferManager() { return bufferMgr_; }
 
 private:
     Config ParseConfig(const Detail::Dictionary& config)
@@ -294,21 +293,11 @@ public:
         auto status = CacheStore::Setup(config);
         if (status.Failure()) { return status; }
 
-        int32_t deviceId{-1};
-        bool loadBackendOnly{false};
-        StoreV1* backend{nullptr};
-        size_t blockSize{0};
-        size_t shardSize{0};
-        size_t timeoutMs{30000};
-        config.GetNumber("device_id", deviceId);
-        config.Get("cache_load_backend_only", loadBackendOnly);
-        config.Get("store_backend", backend);
-        config.GetNumber("block_size", blockSize);
-        config.GetNumber("shard_size", shardSize);
-        config.GetNumber("timeout_ms", timeoutMs);
-        if (deviceId >= 0 && !loadBackendOnly) {
+        const auto param = ParseConfig(config);
+        if (param.deviceId >= 0 && !param.cacheLoadBackendOnly) {
             early_ = std::make_unique<ReservedPrefetch>(
-                &GetBufferManager(), backend, blockSize, shardSize, timeoutMs);
+                &bufferMgr_, param.storeBackend, param.blockSize, param.shardSize,
+                param.timeoutMs);
         }
         return Status::OK();
     }
