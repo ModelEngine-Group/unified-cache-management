@@ -28,6 +28,7 @@
 #include "logger/logger.h"
 #include "trans/cuda/gdr/gdr_config.h"
 #include "trans_manager.h"
+#include "reserved_prefetch.h"
 
 #ifndef UCM_RUNTIME_ASCEND_IO_AGGREGATION
 #define UCM_RUNTIME_ASCEND_IO_AGGREGATION 0
@@ -131,6 +132,9 @@ public:
         }
         return s;
     }
+
+protected:
+    BufferManager& GetBufferManager() { return bufferMgr_; }
 
 private:
     Config ParseConfig(const Detail::Dictionary& config)
@@ -279,6 +283,51 @@ private:
     }
 };
 
+// Keep the native store's initialization, transfer queues and buffer ownership.
+// Reservations are destroyed before the base store releases those resources.
+class EarlyCacheStore final : public CacheStore {
+    std::unique_ptr<ReservedPrefetch> early_;
+
+public:
+    Status Setup(const Detail::Dictionary& config) override
+    {
+        auto status = CacheStore::Setup(config);
+        if (status.Failure()) { return status; }
+
+        int32_t deviceId{-1};
+        bool loadBackendOnly{false};
+        StoreV1* backend{nullptr};
+        size_t blockSize{0};
+        size_t shardSize{0};
+        size_t timeoutMs{30000};
+        config.GetNumber("device_id", deviceId);
+        config.Get("cache_load_backend_only", loadBackendOnly);
+        config.Get("store_backend", backend);
+        config.GetNumber("block_size", blockSize);
+        config.GetNumber("shard_size", shardSize);
+        config.GetNumber("timeout_ms", timeoutMs);
+        if (deviceId >= 0 && !loadBackendOnly) {
+            early_ = std::make_unique<ReservedPrefetch>(
+                &GetBufferManager(), backend, blockSize, shardSize, timeoutMs);
+        }
+        return Status::OK();
+    }
+
+    Expected<PrefixReservation> ReservePrefix(const Detail::BlockId* blocks, size_t num) override
+    {
+        if (!early_) { return Status::Error("Early reservation disabled"); }
+        return early_->Reserve(blocks, num);
+    }
+    Expected<PrefetchResult> PrefetchReserved(uint64_t handle) override
+    {
+        if (!early_) { return Status::Error("Early reservation disabled"); }
+        return early_->Prefetch(handle);
+    }
+    void ReleaseReservation(uint64_t handle) override
+    { if (early_) { early_->Release(handle); } }
+};
+
 }  // namespace UC::CacheStore
 
 extern "C" UC::StoreV1* MakeCacheStore() { return new UC::CacheStore::CacheStore(); }
+extern "C" UC::StoreV1* MakeEarlyCacheStore() { return new UC::CacheStore::EarlyCacheStore(); }

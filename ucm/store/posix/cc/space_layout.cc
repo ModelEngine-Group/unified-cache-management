@@ -71,6 +71,7 @@ std::vector<std::string> GenerateHexStrings(const size_t n)
 
 Status SpaceLayout::Setup(const Config& config)
 {
+    acquireRemoveGuard_ = config.acquireRemoveGuard;
     dataDirShardBytes_ = config.dataDirShardBytes;
     dataDirShard_ = dataDirShardBytes_ > 0;
     auto status = Status::OK();
@@ -120,6 +121,15 @@ Status SpaceLayout::CommitFile(const Detail::BlockId& blockId, bool success) con
 
 Status SpaceLayout::RemoveFile(const Detail::BlockId& blockId) const
 {
+    std::shared_ptr<void> guard;
+    if (acquireRemoveGuard_) {
+        auto acquired = acquireRemoveGuard_(StorageBackend(blockId), blockId);
+        if (!acquired) {
+            deferredDeletion_.store(true);
+            return acquired.Error();
+        }
+        guard = std::move(acquired.Value());
+    }
     PosixFile{DataFilePath(blockId, false)}.Remove();
     return Status::OK();
 }

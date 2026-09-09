@@ -143,6 +143,8 @@ void ShardGarbageCollector::RunGcCycle()
         }
         bool gcLimited = Execute();
         rounds++;
+        // A deletion guard deferred reclamation. Retry at the existing GC interval.
+        if (layout_->TakeDeferredDeletion()) { break; }
         if (gcLimited) { continue; }
         std::tie(trigger, avgFilesPerShard, threshold) = ShouldTrigger();
     }

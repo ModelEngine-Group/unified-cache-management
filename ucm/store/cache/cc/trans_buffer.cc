@@ -23,6 +23,7 @@
  * */
 #include "trans_buffer.h"
 #include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <thread>
 #include <unistd.h>
@@ -92,6 +93,8 @@ public:
     virtual void NodeUnlock(size_t iNode) = 0;
     virtual size_t& FirstAt(size_t iBucket) = 0;
     virtual size_t FetchNode(bool allowReserved) = 0;
+    virtual size_t NodeCount() const = 0;
+    bool CanReserve(size_t index) const { return index < NodeCount() - base_.reservedNumber; }
     virtual void* DataAt(size_t iNode) = 0;
     virtual void* DeviceDataAt(size_t iNode) = 0;
     virtual BufferMetaNode* MetaAt(size_t iNode) = 0;
@@ -219,6 +222,7 @@ public:
     void NodeLock(size_t iNode) override { nodeLocks_[iNode].Lock(); }
     void NodeUnlock(size_t iNode) override { nodeLocks_[iNode].Unlock(); }
     size_t& FirstAt(size_t iBucket) override { return header_.buckets[iBucket]; }
+    size_t NodeCount() const override { return header_.nNode; }
     size_t FetchNode(bool allowReserved) override
     {
         const auto total = header_.nNode - (allowReserved ? 0 : base_.reservedNumber);
@@ -484,6 +488,7 @@ public:
     void NodeLock(size_t iNode) override { header_->nodeLocks[iNode].Lock(); }
     void NodeUnlock(size_t iNode) override { header_->nodeLocks[iNode].Unlock(); }
     size_t& FirstAt(size_t iBucket) override { return header_->buckets[iBucket]; }
+    size_t NodeCount() const override { return header_->nNode; }
     size_t FetchNode(bool allowReserved) override
     {
         const auto total = header_->nNode - (allowReserved ? 0 : base_.reservedNumber);
@@ -587,6 +592,55 @@ TransBuffer::Handle TransBuffer::Get(const Detail::BlockId& blockId, size_t shar
     return Handle(this, iNode, true);
 }
 
+TransBuffer::Handle TransBuffer::TryGet(const Detail::BlockId& blockId, size_t shardIdx)
+{
+    auto bucket = Hash(blockId, shardIdx);
+    bool owner = false;
+    strategy_->BucketLock(bucket);
+    auto node = FindAt(bucket, blockId, shardIdx, owner);
+    if (node != invalidIndex) {
+        if (!strategy_->CanReserve(node)) {
+            Release(node);
+            strategy_->BucketUnlock(bucket);
+            return {};
+        }
+        strategy_->BucketUnlock(bucket);
+        return Handle{this, node, owner};
+    }
+    node = TryAlloc(blockId, shardIdx, bucket);
+    strategy_->BucketUnlock(bucket);
+    return Handle{this, node, true};
+}
+
+TransBuffer::Handle TransBuffer::PinReady(const Detail::BlockId& blockId, size_t shardIdx,
+                                        bool* capacityConflict)
+{
+    auto bucket = Hash(blockId, shardIdx);
+    strategy_->BucketLock(bucket);
+    auto node = strategy_->FirstAt(bucket);
+    Handle result;
+    while (node != invalidIndex) {
+        auto meta = strategy_->MetaAt(node);
+        if (meta->block == blockId && meta->shard == shardIdx) {
+            if (capacityConflict && !strategy_->CanReserve(node)) {
+                *capacityConflict = true;
+                break;
+            }
+            strategy_->NodeLock(node);
+            if (meta->state.load(std::memory_order_acquire) == State::READY) {
+                ++meta->reference;
+                strategy_->MarkAccessed(node);
+                result = Handle(this, node, false);
+            }
+            strategy_->NodeUnlock(node);
+            break;
+        }
+        node = meta->next;
+    }
+    strategy_->BucketUnlock(bucket);
+    return result;
+}
+
 void TransBuffer::Prealloc(const Detail::BlockId& blockId, size_t shardIdx, bool allowReserved)
 {
     auto iBucket = Hash(blockId, shardIdx);
@@ -675,6 +729,40 @@ size_t TransBuffer::Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_
     }
 }
 
+size_t TransBuffer::TryAlloc(const Detail::BlockId& blockId, size_t shardIdx, size_t iBucket)
+{
+    for (size_t attempts = 0; attempts < 2 * strategy_->NodeCount(); ++attempts) {
+        auto iNode = strategy_->FetchNode(false);
+        auto meta = strategy_->MetaAt(iNode);
+        strategy_->NodeLock(iNode);
+        if (meta->reference > 0) {
+            strategy_->NodeUnlock(iNode);
+            continue;
+        }
+        const auto oldBucket = meta->hash;
+        if (oldBucket != iBucket) {
+            if (oldBucket != invalidIndex) {
+                if (!strategy_->BucketTryLock(oldBucket)) {
+                    strategy_->NodeUnlock(iNode);
+                    continue;
+                }
+                Remove(oldBucket, iNode);
+                strategy_->BucketUnlock(oldBucket);
+            }
+            MoveTo(iBucket, iNode);
+        }
+        ++meta->reference;
+        strategy_->MarkAccessed(iNode);
+        meta->block = blockId;
+        meta->shard = shardIdx;
+        meta->state.store(State::LOADING, std::memory_order_relaxed);
+        meta->errorCode.store(Status::OK().Underlying(), std::memory_order_relaxed);
+        strategy_->NodeUnlock(iNode);
+        return iNode;
+    }
+    return invalidIndex;
+}
+
 void TransBuffer::MoveTo(size_t iBucket, size_t iNode)
 {
     auto meta = strategy_->MetaAt(iNode);
@@ -757,6 +845,21 @@ void TransBuffer::MarkFailed(Index pos, const Status& status)
     auto meta = strategy_->MetaAt(pos);
     meta->errorCode.store(status.Underlying(), std::memory_order_release);
     meta->state.store(State::FAILED, std::memory_order_release);
+}
+
+Status TransBuffer::WaitReady(Index pos, size_t timeoutMs, const std::atomic<bool>& cancelled)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    for (;;) {
+        if (cancelled.load()) { return Status::Error("reserved prefetch cancelled"); }
+        const auto state = GetState(pos);
+        if (state == State::READY) { return Status::OK(); }
+        if (state == State::FAILED) { return FailureStatus(pos); }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return Status::Error("shared shard readiness timeout");
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 }
 
 void TransBuffer::MarkNotReady(Index pos)

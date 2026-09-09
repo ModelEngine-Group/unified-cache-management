@@ -55,6 +55,23 @@ public:
     Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override;
     Expected<ssize_t> LookupOnReverse(const Detail::BlockId* blocks, size_t num) override;
     void Prefetch(const Detail::BlockId* blocks, size_t num) override;
+    Expected<std::shared_ptr<ReadLease>> AcquireReadLease(
+        const Detail::BlockId* blocks, size_t num) override
+    {
+        if (!Enabled()) { return Status::StoreUnhealthy(); }
+        return store_->AcquireReadLease(blocks, num);
+    }
+    Expected<PrefixReservation> ReservePrefix(const Detail::BlockId* blocks, size_t num) override
+    {
+        if (!Enabled()) { return Status::StoreUnhealthy(); }
+        return store_->ReservePrefix(blocks, num);
+    }
+    Expected<PrefetchResult> PrefetchReserved(uint64_t handle) override
+    {
+        if (!Enabled()) { return Status::StoreUnhealthy(); }
+        return store_->PrefetchReserved(handle);
+    }
+    void ReleaseReservation(uint64_t handle) override { store_->ReleaseReservation(handle); }
     Status CheckHealth() override;
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override;
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override;

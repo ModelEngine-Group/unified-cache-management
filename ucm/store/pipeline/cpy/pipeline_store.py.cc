@@ -195,6 +195,42 @@ public:
         }
     }
     uintptr_t Self() const { return (uintptr_t)(void*)StoreBack(); }
+    py::dict ReservePrefix(const py::buffer& ids)
+    {
+        BufferArrayView<Detail::BlockId> view{ids};
+        PrefixReservation result;
+        {
+            py::gil_scoped_release release;
+            auto reservation = StoreBack()->ReservePrefix(view.data, view.num);
+            if (!reservation) { ThrowError(reservation.Error()); }
+            result = reservation.Value();
+        }
+        py::dict out;
+        out["handle"] = result.handle;
+        out["total_hit_blocks"] = result.totalHitBlocks;
+        out["remaining_l2_work"] = result.remainingL2Work;
+        return out;
+    }
+    py::dict PrefetchReserved(uint64_t handle)
+    {
+        PrefetchResult result;
+        {
+            py::gil_scoped_release release;
+            auto transfer = StoreBack()->PrefetchReserved(handle);
+            if (!transfer) { ThrowError(transfer.Error()); }
+            result = transfer.Value();
+        }
+        py::dict out;
+        out["l2_read_shards"] = result.l2ReadShards;
+        out["l2_read_bytes"] = result.l2ReadBytes;
+        out["coalesced_shards"] = result.coalescedShards;
+        return out;
+    }
+    void ReleaseReservation(uint64_t handle)
+    {
+        py::gil_scoped_release release;
+        StoreBack()->ReleaseReservation(handle);
+    }
     pybind11::bytes Lookup(const pybind11::buffer& ids)
     {
         BufferArrayView<Detail::BlockId> idArr{ids};
@@ -281,6 +317,9 @@ PYBIND11_MODULE(ucmpipelinestore, m)
     s.def(py::init<>());
     s.def("Stack", &PipelineStore::Stack);
     s.def("Self", &PipelineStore::Self);
+    s.def("ReservePrefix", &PipelineStore::ReservePrefix, py::arg("ids").noconvert());
+    s.def("PrefetchReserved", &PipelineStore::PrefetchReserved);
+    s.def("ReleaseReservation", &PipelineStore::ReleaseReservation);
     s.def("Lookup", &PipelineStore::Lookup, py::arg("ids").noconvert());
     s.def("LookupOnPrefix", &PipelineStore::LookupOnPrefix, py::arg("ids").noconvert());
     s.def("LookupOnReverse", &PipelineStore::LookupOnReverse, py::arg("ids").noconvert());

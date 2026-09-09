@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_POSIX_STORE_CC_SPACE_LAYOUT_H
 
 #include <ctime>
+#include <atomic>
 #include "global_config.h"
 #include "status/status.h"
 #include "type/types.h"
@@ -42,6 +43,8 @@ private:
     std::vector<std::string> shards_;
     bool dataDirShard_;
     size_t dataDirShardBytes_;
+    Config::RemoveGuard acquireRemoveGuard_{nullptr};
+    mutable std::atomic<bool> deferredDeletion_{false};
 
 public:
     Status Setup(const Config& config);
@@ -49,6 +52,8 @@ public:
     std::vector<std::string> HealthCheckPaths(const Detail::BlockId& blockId, bool activated) const;
     Status CommitFile(const Detail::BlockId& blockId, bool success) const;
     Status RemoveFile(const Detail::BlockId& blockId) const;
+    bool TakeDeferredDeletion() const { return deferredDeletion_.exchange(false); }
+    std::string StorageBackend(const Detail::BlockId& blockId) const;
     std::vector<std::string> SampleShards(double sampleRatio) const;
     size_t CountFilesInShard(const std::string& shard) const;
     std::vector<Detail::BlockId> GetOldestFiles(const std::string& shard, double recyclePercent,
@@ -62,7 +67,6 @@ private:
     Status AddStorageBackend(const std::string& path);
     Status AddFirstStorageBackend(const std::string& path);
     Status AddSecondaryStorageBackend(const std::string& path);
-    std::string StorageBackend(const Detail::BlockId& blockId) const;
     std::string DataFilePath(const std::string& backend, const Detail::BlockId& blockId,
                              bool activated) const;
     std::string FileShardName(const std::string& fileName) const

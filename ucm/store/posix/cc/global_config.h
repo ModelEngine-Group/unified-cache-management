@@ -26,10 +26,17 @@
 
 #include <string>
 #include <vector>
+#include <memory>
+#include "status/status.h"
+#include "type/types.h"
 
 namespace UC::PosixStore {
 
 struct Config {
+    // Optional deletion guard, acquired before unlink and retained until it returns.
+    using RemoveGuard = Expected<std::shared_ptr<void>> (*)(const std::string&,
+                                                           const Detail::BlockId&);
+    RemoveGuard acquireRemoveGuard{nullptr};
     std::vector<std::string> storageBackends{};
     int32_t deviceId{-1};
     size_t tensorSize{0};

@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_CACHE_STORE_CC_TRANS_BUFFER_H
 
 #include <limits>
+#include <atomic>
 #include <memory>
 #include "global_config.h"
 #include "status/status.h"
@@ -91,6 +92,8 @@ public:
         Status FailureStatus() const { return buf_->FailureStatus(pos_); }
         void MarkReady() { buf_->MarkReady(pos_); };
         void MarkFailed(const Status& status) { buf_->MarkFailed(pos_, status); }
+        Status WaitReady(size_t timeoutMs, const std::atomic<bool>& cancelled)
+        { return buf_->WaitReady(pos_, timeoutMs, cancelled); }
 
     private:
         friend class TransBuffer;
@@ -111,6 +114,9 @@ public:
     Status Setup(const Config& config);
     Handle Get(const Detail::BlockId& blockId, size_t shardIdx, bool allowReserved = false,
                bool isLoad = false);
+    Handle TryGet(const Detail::BlockId& blockId, size_t shardIdx);
+    Handle PinReady(const Detail::BlockId& blockId, size_t shardIdx,
+                    bool* capacityConflict = nullptr);
     void Prealloc(const Detail::BlockId& blockId, size_t shardIdx, bool allowReserved = false);
     bool Exist(const Detail::BlockId& blockId, size_t shardIdx);
 
@@ -119,6 +125,7 @@ private:
     size_t FindAt(size_t iBucket, const Detail::BlockId& blockId, size_t shardIdx, bool& owner);
     size_t Alloc(const Detail::BlockId& blockId, size_t shardIdx, size_t iBucket,
                  bool allowReserved = false);
+    size_t TryAlloc(const Detail::BlockId& blockId, size_t shardIdx, size_t iBucket);
     void MoveTo(size_t iBucket, size_t iNode);
     void Remove(size_t iBucket, size_t iNode);
     void* DataAt(Index pos);
@@ -131,6 +138,7 @@ private:
     void MarkReady(Index pos);
     void MarkFailed(Index pos, const Status& status);
     void MarkNotReady(Index pos);
+    Status WaitReady(Index pos, size_t timeoutMs, const std::atomic<bool>& cancelled);
 };
 
 }  // namespace UC::CacheStore

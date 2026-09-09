@@ -27,8 +27,22 @@
 #include "status/status.h"
 #include "type/dictionary.h"
 #include "type/types.h"
+#include <memory>
 
 namespace UC {
+
+// An implementation owns the resource; destruction releases it, including on errors.
+struct ReadLease { virtual ~ReadLease() = default; };
+struct PrefixReservation {
+    uint64_t handle{0};
+    size_t totalHitBlocks{0};
+    size_t remainingL2Work{0};  // shards not READY at reservation time (includes peer I/O)
+};
+struct PrefetchResult {
+    size_t l2ReadShards{0};
+    size_t l2ReadBytes{0};
+    size_t coalescedShards{0};
+};
 
 /**
  * @brief Abstract interface for a key-value store that supports
@@ -128,6 +142,16 @@ public:
      * @note Default implementation does nothing.
      */
     virtual void Prefetch(const Detail::BlockId* blocks, size_t num) = 0;
+
+    // Optional Early operations. Unsupported stores preserve their native behavior.
+    virtual Expected<std::shared_ptr<ReadLease>> AcquireReadLease(
+        const Detail::BlockId*, size_t)
+    { return Status::Error("read leases unsupported"); }
+    virtual Expected<PrefixReservation> ReservePrefix(const Detail::BlockId*, size_t)
+    { return Status::Error("prefix reservation unsupported"); }
+    virtual Expected<PrefetchResult> PrefetchReserved(uint64_t)
+    { return Status::Error("reserved prefetch unsupported"); }
+    virtual void ReleaseReservation(uint64_t) {}
 
     /**
      * @brief Check whether this store's own read/write path is healthy.

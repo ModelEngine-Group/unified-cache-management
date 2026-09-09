@@ -28,6 +28,7 @@
 #include "logger/logger.h"
 #include "metrics_api.h"
 #include "posix_file.h"
+#include "read_lease.h"
 #include "space_manager.h"
 #include "trans_manager.h"
 #include "type/random_block_id.h"
@@ -70,6 +71,7 @@ public:
     Status Setup(const Detail::Dictionary& inConfig) override
     {
         auto config = ParseConfig(inConfig);
+        Configure(inConfig, config);
         auto s = CheckConfig(config);
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed to check config params: {}.", s);
@@ -165,6 +167,10 @@ public:
         if (s.Failure()) [[unlikely]] { UC_ERROR("Failed({}) to wait task({}).", s, taskId); }
         return s;
     }
+
+protected:
+    virtual void Configure(const Detail::Dictionary&, Config&) {}
+    const SpaceLayout* GetLayout() const { return spaceMgr_.GetLayout(); }
 
 private:
     static void RecordLookupQueries(size_t count)
@@ -367,6 +373,22 @@ private:
     }
 };
 
+class EarlyPosixStore final : public PosixStore {
+protected:
+    void Configure(const Detail::Dictionary&, Config& config) override
+    {
+        config.acquireRemoveGuard = PosixReadLease::AcquireRemoveGuard;
+    }
+
+public:
+    Expected<std::shared_ptr<ReadLease>> AcquireReadLease(
+        const Detail::BlockId* blocks, size_t num) override
+    {
+        return PosixReadLease::Acquire(*GetLayout(), blocks, num);
+    }
+};
+
 }  // namespace UC::PosixStore
 
 extern "C" UC::StoreV1* MakePosixStore() { return new UC::PosixStore::PosixStore(); }
+extern "C" UC::StoreV1* MakeEarlyPosixStore() { return new UC::PosixStore::EarlyPosixStore(); }
