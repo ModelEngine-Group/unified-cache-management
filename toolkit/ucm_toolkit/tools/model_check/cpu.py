@@ -371,10 +371,58 @@ def _patch_cpu_runtime() -> None:
     _plat.get_device_capability = lambda: _Cap(10, 0)  # type: ignore[method-assign]
 
 
+def _patch_fused_moe_stub() -> None:
+    """FusedMoE 桩：不建专家权重、不选 MoE backend（kv_cache_spec 不读 MLP）。
+
+    vllm 0.29 的 select_unquantized_moe_backend 会在 CPU 构建上拒绝部分模型的
+    MoE 配置（如 Kimi-K3 的 LatentMoE，NotImplementedError）。model-check 与
+    capture_mocked 同思路：在 initialize_model 之前（模型模块尚未 import，
+    from-import 解析到桩）替换工厂与 RoutedExperts。桩只保留构造期被读取的
+    路由/量化属性。"""
+
+    import torch.nn as nn
+    from vllm.model_executor.layers.fused_moe import layer as _fm_layer
+    import vllm.model_executor.layers.fused_moe as _fm_pkg
+    from vllm.model_executor.layers.fused_moe.routed_experts import (
+        RoutedExperts as _RoutedExperts)
+
+    def _stub_factory(*args, **kwargs):
+        m = nn.Module()
+        m.num_experts = kwargs.get("num_experts", 0)
+        m.num_local_experts = m.num_experts
+        m.gate = None
+        m.experts = None
+        m.shared_experts = None
+        return m
+
+    def _stub_re(self, *args, **kwargs):
+        nn.Module.__init__(self)
+        self.use_grouped_topk = kwargs.get("use_grouped_topk", False)
+        self.renormalize = kwargs.get("renormalize", True)
+        self.topk_group = kwargs.get("topk_group", None)
+        self.num_expert_group = kwargs.get("num_expert_group", None)
+        self.custom_routing_function = kwargs.get("custom_routing_function", None)
+        self.scoring_func = kwargs.get("scoring_func", "softmax")
+        self.routed_scaling_factor = kwargs.get("routed_scaling_factor", 1.0)
+        self.e_score_correction_bias = kwargs.get("e_score_correction_bias", None)
+        self.apply_router_weight_on_input = kwargs.get(
+            "apply_router_weight_on_input", False)
+        self.quant_config = kwargs.get("quant_config", None)
+        self.quant_method = kwargs.get("quant_method", None)
+        self.expert_map_manager = kwargs.get("expert_map_manager", None)
+        self._ascend_moe_lora_context = kwargs.get(
+            "_ascend_moe_lora_context", None)
+
+    _fm_layer.FusedMoEFactory = _stub_factory
+    _fm_pkg.FusedMoEFactory = _stub_factory
+    _RoutedExperts.__init__ = _stub_re
+
+
 def make_model(vllm_config: Any) -> tuple[Any, Any]:
     """Build the production model structure on the meta device (official vLLM)."""
 
     _patch_cpu_runtime()
+    _patch_fused_moe_stub()
 
     from vllm.model_executor.model_loader.utils import initialize_model
 
