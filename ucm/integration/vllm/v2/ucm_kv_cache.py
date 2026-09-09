@@ -528,33 +528,30 @@ def _view_layout(
         # vllm <= 0.27 attention views keep the token axis on dimension 1 with
         # C-order trailing dims (e.g. Kimi MLA stores one logical block as six
         # kernel rows). vllm 0.29 exposes uniform [B, H, N, C] views whose dims
-        # are permuted by the resolved KVCacheLayout, so the token axis moves
-        # (LBNHC: N sits on dim 2). Try the legacy dim-1 reading first, then
-        # fall back to deriving the axis from the block geometry.
+        # are permuted by the resolved KVCacheLayout, and whose N axis counts
+        # *stored states*, not raw tokens: DSV4's C4A cache stores one 584B
+        # state per 4 tokens (256-token block -> 64 states), the C128A variant
+        # and its indexer store 2/64 states per 256-token block. Try the legacy
+        # dim-1 reading first, then derive the row geometry arithmetically: the
+        # row payload must tile the expected block exactly.
         tokens_per_row = shape[1]
         bytes_per_token = strides[1] * element_size
         if (
             rows_per_block * tokens_per_row != expected_block_size
             or tokens_per_row * bytes_per_token != row_payload
         ):
-            if expected_block_size % rows_per_block:
-                raise ValueError(
-                    "KV tensor does not match the concrete cache spec: "
-                    f"rows_per_vllm_block={rows_per_block}, "
-                    f"expected physical block_size={expected_block_size}"
-                )
             tokens_per_row = expected_block_size // rows_per_block
-            token_axes = [
-                dim
-                for dim in range(1, len(shape))
-                if shape[dim] == tokens_per_row
-                and strides[dim] * element_size * tokens_per_row == row_payload
-            ]
-            if not token_axes:
+            if (
+                expected_block_size % rows_per_block
+                or tokens_per_row <= 0
+                or row_payload % tokens_per_row
+            ):
                 raise ValueError(
-                    "KV tensor token axis does not match a dense row payload: "
-                    f"shape={shape}, strides={strides}, "
-                    f"tokens_per_row={tokens_per_row}, "
+                    "KV tensor does not match a dense row-payload tiling of "
+                    "the block: shape="
+                    f"{shape}, strides={strides}, "
+                    f"rows_per_vllm_block={rows_per_block}, "
+                    f"expected_block_size={expected_block_size}, "
                     f"row_payload={row_payload}"
                 )
             bytes_per_token = row_payload // tokens_per_row
