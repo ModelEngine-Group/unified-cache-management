@@ -19,6 +19,7 @@ from ucm.integration.vllm.early_connector import (
 from ucm.integration.vllm.early_lookup import current_lookup
 from ucm.integration.vllm.early_prefetch import EarlyScheduler, Job
 from ucm.integration.vllm.rank_consistency import RankConsistencyManager
+from ucm.store.pipeline import early_connector as early_store
 from ucm.store.pipeline.early_connector import EarlyPipelineStore
 
 
@@ -208,3 +209,33 @@ def test_exception_restores_trace_and_store_lookup_behavior(connector):
     assert connector.enable_record_traces is True
     assert connector.store.lookup_on_prefix([b"a" * 16, b"b" * 16]) == 1
     connector.store.store_.LookupOnPrefix.assert_called_once()
+
+
+def test_early_bindings_receive_the_existing_pipeline(connector, monkeypatch):
+    reserve = Mock(
+        return_value={"handle": 7, "total_hit_blocks": 2, "remaining_l2_work": 0}
+    )
+    prefetch = Mock(return_value={"l2_read_shards": 0})
+    release = Mock()
+    monkeypatch.setattr(early_store.ucmpipelinestore, "EarlyReservePrefix", reserve)
+    monkeypatch.setattr(early_store.ucmpipelinestore, "EarlyPrefetchReserved", prefetch)
+    monkeypatch.setattr(early_store.ucmpipelinestore, "EarlyReleaseReservation", release)
+    store = connector.store
+    blocks = [b"a" * 16, b"b" * 16]
+    assert store.reserve_prefix(blocks)["handle"] == 7
+    assert reserve.call_args.args[0] is store.store_
+    assert reserve.call_args.args[1].tobytes() == b"".join(blocks)
+    assert store.prefetch_reserved(7) == {"l2_read_shards": 0}
+    prefetch.assert_called_once_with(store.store_, 7)
+    store.release_reservation(7)
+    release.assert_called_once_with(store.store_, 7)
+
+
+def test_early_binding_error_is_not_replaced(connector, monkeypatch):
+    error = RuntimeError("native backend failed")
+    monkeypatch.setattr(
+        early_store.ucmpipelinestore, "EarlyPrefetchReserved", Mock(side_effect=error)
+    )
+    with pytest.raises(RuntimeError) as raised:
+        connector.store.prefetch_reserved(7)
+    assert raised.value is error

@@ -49,12 +49,12 @@ class EarlyPipelineStore(UcmPipelineStore):
         return super().lookup_on_prefix(block_ids)
 
     def reserve_prefix(self, block_ids: list[bytes]) -> dict:
-        return self.store_.ReservePrefix(
-            np.frombuffer(b"".join(block_ids), dtype=np.uint8)
+        return ucmpipelinestore.EarlyReservePrefix(
+            self.store_, np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         )
 
     def prefetch_reserved(self, handle: int) -> dict:
-        return self.store_.PrefetchReserved(handle)
+        return ucmpipelinestore.EarlyPrefetchReserved(self.store_, handle)
 
     def release_reservation(self, handle: int) -> None:
-        self.store_.ReleaseReservation(handle)
+        ucmpipelinestore.EarlyReleaseReservation(self.store_, handle)
