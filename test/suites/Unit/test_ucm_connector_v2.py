@@ -1287,7 +1287,7 @@ class RaggedLayoutTest(unittest.TestCase):
         self.assertEqual(parsed.groups[0].token_block_size, 256)
         self.assertEqual(view.tokens_per_row, 64)
 
-    def test_cpu_mamba_raw_page_is_split_from_spec_shapes_and_dtypes(self):
+    def test_combined_mamba_raw_page_uses_one_io_region(self):
         parsed = parse_kv_cache_config(
             config(
                 group(
@@ -1322,6 +1322,32 @@ class RaggedLayoutTest(unittest.TestCase):
         self.assertEqual(tuple(view.base_ptr for view in views), (0x1000, 0x1008))
         self.assertEqual(tuple(view.row_stride_bytes for view in views), (64, 64))
         self.assertEqual(tuple(view.row_payload_bytes for view in views), (8, 8))
+        regions = layout.layers["model.layers.0.mixer"].block_regions
+        self.assertEqual(len(regions), 1)
+        self.assertEqual(
+            (
+                regions[0].base_ptr,
+                regions[0].block_stride_bytes,
+                regions[0].block_payload_bytes,
+            ),
+            (0x1000, 64, 16),
+        )
+
+        from ucm.integration.vllm.v2.ucm_scheduler import (
+            RequestDispatchMeta,
+            UCMGroupBlockIds,
+            UCMGroupDispatchPlan,
+        )
+
+        key = b"m" * 16
+        plan = UCMGroupDispatchPlan(0, (key,), 0, 0, 4, (UCMGroupBlockIds(0, 0, (3,)),))
+        metadata = UCMConnectorMetadata(
+            requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
+        )
+        batch = layout.build_load_batches(metadata)
+        self.assertEqual(batch.ptrs, (0x1000 + 3 * 64,))
+        self.assertEqual(batch.sizes, (16,))
+        self.assertEqual(batch.offsets, (0,))
 
     def test_explicit_components_and_4d_ascend_view_are_supported(self):
         parsed = parse_kv_cache_config(
@@ -1359,8 +1385,15 @@ class RaggedLayoutTest(unittest.TestCase):
             tuple(view.base_ptr for view in layout.layers["model.layers.1.attn"].views),
             (0x3000,),
         )
+        self.assertEqual(
+            tuple(
+                region.base_ptr
+                for region in layout.layers["model.layers.0.attn"].block_regions
+            ),
+            (0x1000, 0x2000),
+        )
 
-    def test_vllm_027_combined_5d_tensor_splits_k_and_v(self):
+    def test_vllm_027_block_major_kv_uses_one_io_region(self):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(4))),
             scheduler_block_size=4,
@@ -1389,6 +1422,41 @@ class RaggedLayoutTest(unittest.TestCase):
             ),
             (48, 48),
         )
+        regions = layout.layers["model.layers.0.attn"].block_regions
+        self.assertEqual(len(regions), 1)
+        self.assertEqual(
+            (
+                regions[0].base_ptr,
+                regions[0].block_stride_bytes,
+                regions[0].block_payload_bytes,
+            ),
+            (0x1000, 48, 48),
+        )
+
+        from ucm.integration.vllm.v2.ucm_scheduler import (
+            RequestDispatchMeta,
+            UCMGroupBlockIds,
+            UCMGroupDispatchPlan,
+        )
+
+        key = b"v" * 16
+        plan = UCMGroupDispatchPlan(
+            0,
+            (key,),
+            0,
+            0,
+            8,
+            (UCMGroupBlockIds(0, 0, (3, 4)),),
+        )
+        metadata = UCMConnectorMetadata(
+            requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
+        )
+        batch = layout.build_load_batches(metadata)
+        # One key is one task, but each vLLM block remains one native page.
+        self.assertEqual(batch.block_ids, (key, key))
+        self.assertEqual(batch.ptrs, (0x1000 + 3 * 48, 0x1000 + 4 * 48))
+        self.assertEqual(batch.sizes, (48, 48))
+        self.assertEqual(batch.offsets, (0, 48))
 
     def test_unknown_5d_axis_order_fails_fast(self):
         parsed = parse_kv_cache_config(
@@ -1396,7 +1464,7 @@ class RaggedLayoutTest(unittest.TestCase):
             scheduler_block_size=4,
         )
 
-        with self.assertRaisesRegex(ValueError, "require dimension 1"):
+        with self.assertRaisesRegex(ValueError, "require block-major shape"):
             UCMKVCacheLayout(
                 parsed,
                 {
@@ -1408,6 +1476,48 @@ class RaggedLayoutTest(unittest.TestCase):
                 },
                 num_blocks=8,
             )
+
+    def test_partial_range_does_not_merge_across_adjacent_blocks(self):
+        parsed = parse_kv_cache_config(
+            config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
+            scheduler_block_size=128,
+        )
+        layout = UCMKVCacheLayout(
+            parsed,
+            {
+                "model.layers.0.attn": FakeTensor(
+                    0x1000,
+                    (8, 128, 1),
+                    (128, 1, 1),
+                )
+            },
+            num_blocks=8,
+        )
+
+        from ucm.integration.vllm.v2.ucm_scheduler import (
+            RequestDispatchMeta,
+            UCMGroupBlockIds,
+            UCMGroupDispatchPlan,
+        )
+
+        key = b"p" * 16
+        plan = UCMGroupDispatchPlan(
+            0,
+            (key,),
+            0,
+            64,
+            192,
+            (UCMGroupBlockIds(0, 0, (2, 3)),),
+        )
+        metadata = UCMConnectorMetadata(
+            requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
+        )
+        batch = layout.build_load_batches(metadata)
+
+        self.assertEqual(batch.block_ids, (key, key))
+        self.assertEqual(batch.ptrs, (0x1000 + 2 * 128 + 64, 0x1000 + 3 * 128))
+        self.assertEqual(batch.sizes, (64, 64))
+        self.assertEqual(batch.offsets, (0, 64))
 
     def test_kimi_mla_six_kernel_rows_coalesce_per_component(self):
         parsed = parse_kv_cache_config(
