@@ -39,6 +39,13 @@ class EarlyPipelineStore(UcmPipelineStore):
                 f"Early supports only store_pipeline='Cache|Posix', got {pipeline!r}"
             )
 
+        required = (
+            "EarlyReservePrefix", "EarlyPrefetchReserved", "EarlyReleaseReservation"
+        )
+        if not all(callable(getattr(ucmpipelinestore, name, None)) for name in required):
+            raise RuntimeError(
+                "Early pipeline bindings are missing; rebuild UCM for this source"
+            )
         super().__init__(dict(config, store_pipeline=_EARLY_PIPELINE))
         # The internal builder key changes selection only, not the user's config.
         self.config = config

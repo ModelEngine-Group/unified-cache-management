@@ -281,3 +281,14 @@ def test_pipeline_builder_preserves_native_error(monkeypatch):
     with pytest.raises(ValueError) as raised:
         EarlyPipelineStore({"store_pipeline": "Cache|Posix", "device_id": -1})
     assert raised.value is error
+
+
+def test_missing_early_bindings_fail_before_pipeline_creation(monkeypatch):
+    factory = Mock()
+    monkeypatch.setattr(native_store.ucmpipelinestore, "PipelineStore", factory)
+    monkeypatch.delattr(
+        native_store.ucmpipelinestore, "EarlyPrefetchReserved", raising=False
+    )
+    with pytest.raises(RuntimeError, match="bindings are missing"):
+        EarlyPipelineStore({"store_pipeline": "Cache|Posix", "device_id": -1})
+    factory.assert_not_called()
