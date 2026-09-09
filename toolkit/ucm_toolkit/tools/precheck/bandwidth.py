@@ -12,6 +12,7 @@ benchmark is Linux-only (posix mmap + the ucm ``.so``).
 
 from __future__ import annotations
 
+import importlib.machinery
 import multiprocessing
 import os
 import secrets
@@ -598,6 +599,15 @@ def _human_bytes(n: int) -> str:
     return f"{n}B"
 
 
+def _path_resolves_to_repo_root(path: str, repo_root: str) -> bool:
+    """Return whether a sys.path entry points at the ucm repo root."""
+    try:
+        candidate = os.path.realpath(path or os.getcwd())
+    except OSError:
+        return False
+    return candidate == repo_root
+
+
 def _read_aio_limits() -> Tuple[int, int]:
     """Read kernel aio limits from /proc/sys/fs/.
 
@@ -741,17 +751,67 @@ def check_bandwidth(cfg: PrecheckConfig) -> CheckResult:
         os.environ.setdefault(_k, _v)
 
     # Verify ucm is importable before spawning workers.
+    # The source-tree ucm/ (incomplete — missing compiled artifacts like
+    # ucmlogger) can shadow the installed package at site-packages when the
+    # repo root is on sys.path (CWD, PYTHONPATH, or an editable-install .pth).
+    # The ucm_patch.pth boot hook (installed with ucm) imports
+    # ucm.integration.* at Python startup; with the repo root on sys.path that
+    # boot import loads the INCOMPLETE source tree and leaves its submodules
+    # cached in sys.modules.  So: drop repo-root entries from sys.path AND
+    # purge any cached ucm.* submodules (only if ucm is still importable
+    # without the repo root), forcing a fresh import from site-packages.
+    # Workers (forked) inherit the fix.
+    _repo_root = os.path.realpath(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), *([".."] * 4))
+    )
+    _saved_path = sys.path[:]
+    _clean_path = [
+        p for p in sys.path if not _path_resolves_to_repo_root(p, _repo_root)
+    ]
+    if len(_clean_path) != len(sys.path) and (
+        importlib.machinery.PathFinder.find_spec("ucm", _clean_path) is not None
+    ):
+        sys.path[:] = _clean_path
+        for _m in [k for k in list(sys.modules) if k == "ucm" or k.startswith("ucm.")]:
+            del sys.modules[_m]
     try:
         import ucm  # noqa: F401
     except Exception as exc:
+        sys.path[:] = _saved_path  # restore for error handling
+        # Distinguish "ucm not installed" from "installed but import fails"
+        # (e.g. the source tree shadows site-packages, or a dependency like
+        # wrapt is missing).
+        ucm_installed = True
+        try:
+            from importlib.metadata import version as _pkg_version
+
+            _pkg_version("uc-manager")
+        except Exception:
+            ucm_installed = False
+        if ucm_installed:
+            detail = (
+                f"ucm is installed (site-packages) but import failed "
+                f"({type(exc).__name__}: {exc}); "
+                f"if running from the ucm source tree, the source ucm/ "
+                f"may shadow the installed package — try running from a "
+                f"different directory"
+            )
+            remediation = (
+                f"fix the import error ({exc}); "
+                f"common cause: source tree shadows installed package "
+                f"or missing dependency (pip install wrapt)"
+            )
+        else:
+            detail = f"ucm not installed ({type(exc).__name__}: {exc})"
+            remediation = "install ucm (with the built C++ posix store) to benchmark"
         return CheckResult(
             name="bandwidth",
             severity=WARN,
             status=STATUS_SKIP,
             value="-",
             threshold=f">= {cfg.bandwidth.threshold_gb} GB/s",
-            detail=f"skipped: ucm not importable ({type(exc).__name__}: {exc})",
-            remediation="install ucm (with the built C++ posix store) to benchmark",
+            detail=detail,
+            remediation=remediation,
             raw={"mount_path": cfg.mount_path},
         )
 
@@ -872,6 +932,7 @@ def check_bandwidth(cfg: PrecheckConfig) -> CheckResult:
     }
 
     if not metric_best:
+        sys.path[:] = _saved_path
         return CheckResult(
             name="bandwidth",
             severity=WARN,
@@ -908,6 +969,7 @@ def check_bandwidth(cfg: PrecheckConfig) -> CheckResult:
             "check the mount-point disk/NVMe throughput; try the aio engine, "
             "raise --workers, or confirm io_direct/O_DIRECT settings"
         )
+    sys.path[:] = _saved_path
     return CheckResult(
         name="bandwidth",
         severity=WARN,

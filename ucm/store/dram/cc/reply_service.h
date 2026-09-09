@@ -68,6 +68,8 @@ public:
     Status Start();
     void Shutdown();
 
+    // Acquire and Release may invoke device-runtime operations. The calling thread must have
+    // initialized the device context configured by Options::deviceId.
     Expected<ReplySlot> Acquire(const RequestToken& token, OpType op, std::size_t entryCount);
     Status Release(const RequestToken& token, const ReplySlot& slot) noexcept;
 

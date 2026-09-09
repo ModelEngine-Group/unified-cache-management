@@ -612,14 +612,8 @@ bool TransBuffer::ExistAt(size_t iBucket, const Detail::BlockId& blockId, size_t
     auto iNode = strategy_->FirstAt(iBucket);
     while (iNode != invalidIndex) {
         auto meta = strategy_->MetaAt(iNode);
-        strategy_->NodeLock(iNode);
-        if (meta->block == blockId && meta->shard == shardIdx) {
-            strategy_->NodeUnlock(iNode);
-            return true;
-        }
-        auto next = meta->next;
-        strategy_->NodeUnlock(iNode);
-        iNode = next;
+        if (meta->block == blockId && meta->shard == shardIdx) { return true; }
+        iNode = meta->next;
     }
     return false;
 }
@@ -630,8 +624,8 @@ size_t TransBuffer::FindAt(size_t iBucket, const Detail::BlockId& blockId, size_
     auto iNode = strategy_->FirstAt(iBucket);
     while (iNode != invalidIndex) {
         auto meta = strategy_->MetaAt(iNode);
-        strategy_->NodeLock(iNode);
         if (meta->block == blockId && meta->shard == shardIdx) {
+            strategy_->NodeLock(iNode);
             owner = meta->reference == 0;
             if (owner && meta->state.load(std::memory_order_relaxed) == State::FAILED) {
                 meta->state.store(State::LOADING, std::memory_order_relaxed);
@@ -642,9 +636,7 @@ size_t TransBuffer::FindAt(size_t iBucket, const Detail::BlockId& blockId, size_
             strategy_->NodeUnlock(iNode);
             break;
         }
-        auto next = meta->next;
-        strategy_->NodeUnlock(iNode);
-        iNode = next;
+        iNode = meta->next;
     }
     return iNode;
 }

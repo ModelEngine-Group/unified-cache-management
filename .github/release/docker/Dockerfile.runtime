@@ -1,0 +1,11 @@
+# syntax=docker/dockerfile:1.12.1
+ARG BASE_IMAGE
+
+FROM ${BASE_IMAGE} AS runtime
+
+ARG UCM_WHEEL
+COPY ${UCM_WHEEL} /tmp/${UCM_WHEEL}
+COPY --chmod=0644 ucm_config_example.yaml /workspace/ucm_config_example.yaml
+RUN python3 -m pip install --disable-pip-version-check --no-cache-dir \
+      --index-url https://pypi.org/simple \
+      /tmp/${UCM_WHEEL}

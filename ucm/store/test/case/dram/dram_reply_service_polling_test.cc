@@ -218,6 +218,8 @@ TEST(UCDramReplyServicePollingTest, AllowsShutdownWithAbandonedLease)
 
 TEST(UCDramReplyServicePollingTest, EventPublisherExceptionIsFatal)
 {
+    const auto deathTestStyle = GTEST_FLAG_GET(death_test_style);
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
     EXPECT_DEATH(
         {
             std::promise<void> publishAttempted;
@@ -246,6 +248,7 @@ TEST(UCDramReplyServicePollingTest, EventPublisherExceptionIsFatal)
             }
         },
         "");
+    GTEST_FLAG_SET(death_test_style, deathTestStyle);
 }
 
 }  // namespace

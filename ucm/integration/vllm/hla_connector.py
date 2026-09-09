@@ -855,7 +855,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             config["storage_backends"] = backends
         config["unique_id"] = f"{self.unique_id}{unique_id_suffix}"
         if self._role == KVConnectorRole.WORKER:
-            config["device_id"] = self.local_rank
+            config["device_id"] = self.device_id
             tensor_size_list = _normalize_tensor_size_list(
                 tensor_size_list_override
                 if tensor_size_list_override is not None
@@ -920,9 +920,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
         enable_affinity = _use_ucm_connector_cpu_affinity()
         worker_cores, store_cores = (
-            self.device.split_cores(self.local_rank)
-            if enable_affinity
-            else (None, None)
+            self.device.split_cores(self.device_id) if enable_affinity else (None, None)
         )
 
         self.store = self._create_store(
@@ -1624,9 +1622,7 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
 
         enable_affinity = _use_ucm_connector_cpu_affinity()
         worker_cores, store_cores = (
-            self.device.split_cores(self.local_rank)
-            if enable_affinity
-            else (None, None)
+            self.device.split_cores(self.device_id) if enable_affinity else (None, None)
         )
 
         self.store = self._create_store(

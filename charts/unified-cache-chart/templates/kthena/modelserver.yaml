@@ -1,0 +1,45 @@
+{{- if .Values.servingEngineSpec.enableEngine -}}
+{{- $modelSpec := .Values.servingEngineSpec.modelSpec -}}
+{{- $pd := default (dict) $modelSpec.pd -}}
+{{- $pdEnabled := eq (include "chart.pdEnabled" (list $modelSpec)) "true" -}}
+{{- $hybridDataParallel := eq (include "chart.hybridDataParallelEnabled" (list $modelSpec)) "true" -}}
+{{- $router := default (dict) $modelSpec.router -}}
+{{- if or $pdEnabled $router.enabled -}}
+{{- $name := include "chart.kthenaName" (list $modelSpec $) -}}
+apiVersion: networking.serving.volcano.sh/v1alpha1
+kind: ModelServer
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  inferenceEngine: {{ default "vLLM" $router.inferenceEngine | quote }}
+  model: {{ include "chart.servedModelName" $modelSpec | quote }}
+  workloadPort:
+    port: {{ include "chart.container-port" . }}
+    {{- if $router.workloadProtocol }}
+    protocol: {{ $router.workloadProtocol }}
+    {{- end }}
+  {{- with $router.trafficPolicy }}
+  trafficPolicy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  workloadSelector:
+    matchLabels:
+      modelserving.volcano.sh/name: {{ $name }}
+      {{- if not $hybridDataParallel }}
+      modelserving.volcano.sh/entry: "true"
+      {{- end }}
+    {{- if $pdEnabled }}
+    pdGroup:
+      groupKey: {{ default "modelserving.volcano.sh/group-name" $pd.groupKey | quote }}
+      prefillLabels:
+        modelserving.volcano.sh/role: {{ required "modelSpec.pd.prefill 必填（指向 roles[].name）" $pd.prefill }}
+      decodeLabels:
+        modelserving.volcano.sh/role: {{ required "modelSpec.pd.decode 必填（指向 roles[].name）" $pd.decode }}
+    {{- end }}
+  {{- if $pdEnabled }}
+  kvConnector:
+    type: {{ $pd.kvTransfer.routerType }}
+  {{- end }}
+{{- end }}
+{{- end }}

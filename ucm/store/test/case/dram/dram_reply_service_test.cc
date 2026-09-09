@@ -156,6 +156,11 @@ TEST_F(UCDramReplyServiceTest, SupportsConcurrentLeases)
     owners.reserve(kOwnerCount);
     for (std::size_t owner = 0; owner < kOwnerCount; ++owner) {
         owners.emplace_back([&, owner] {
+            Trans::Device device;
+            if (device.Setup(0).Failure()) {
+                failed.store(true, std::memory_order_relaxed);
+                return;
+            }
             for (std::size_t iteration = 0; iteration < kIterations; ++iteration) {
                 const auto token = Token(owner + 1, owner * kIterations + iteration + 1);
                 auto slot = service->Acquire(token, OpType::LOOKUP, 1);

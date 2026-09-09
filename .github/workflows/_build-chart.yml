@@ -1,0 +1,91 @@
+name: Package UCM Helm Chart
+
+on:
+  workflow_call:
+    inputs:
+      plan_artifact:
+        type: string
+        required: true
+      source_ref:
+        type: string
+        required: false
+        default: ""
+      retention_days:
+        type: number
+        required: false
+        default: 7
+    outputs:
+      chart_artifact:
+        description: Chart artifact produced by this run
+        value: ${{ jobs.package.outputs.chart_artifact }}
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      chart_artifact: ${{ steps.package.outputs.chart_artifact }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: azure/setup-helm@v4.3.1
+        with:
+          version: v3.15.3
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - run: >-
+          python -m pip install --disable-pip-version-check --no-cache-dir
+          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+      - uses: ./.github/actions/download-artifact-retry
+        with:
+          name: ${{ inputs.plan_artifact }}
+          path: input/plan
+      - id: package
+        name: Validate and package Chart
+        run: |
+          set -euo pipefail
+          plan=input/plan/release-plan.json
+          python scripts/materialize_version.py \
+            --version "$(jq -er '.version' "${plan}")" >/dev/null
+          app_version="$(PYTHONPATH=.github/release python -c \
+            'from ucm_release.core import read_version; print(read_version())')"
+          chart_version="$(jq -er '.chart.version' "${plan}")"
+          test "$(jq -r '.chart.app_version' "${plan}")" = "${app_version}"
+          test "$(jq -r '.chart.version' "${plan}")" = "${chart_version}"
+          source="$(jq -r '.chart.source' "${plan}")"
+          mkdir -p out/rendered out/chart
+          helm lint "${source}"
+          while IFS=$'\t' read -r product variant repository tag; do
+            values="$(jq -er --arg product "${product}" \
+              '.chart.smoke_values[$product]' "${plan}")"
+            expected=huawei.com/Ascend910
+            [ "${product}" = vllm ] && expected=nvidia.com/gpu
+            test -n "${values}"
+            helm template "ucm-${variant}" "${source}" --values "${values}" \
+              --set-string "images.image=${repository}:${tag}" \
+              >"out/rendered/${product}-${variant}.yaml"
+            grep -Fq "${repository}:${tag}" "out/rendered/${product}-${variant}.yaml"
+            grep -Fq "${expected}" "out/rendered/${product}-${variant}.yaml"
+          done < <(jq -r '.families[] | [.product_id,.variant,.target_repository,.target_tag] | @tsv' "${plan}")
+          helm package "${source}" \
+            --version "${chart_version}" \
+            --app-version "${app_version}" \
+            --destination out/chart
+          test "$(find out/chart -maxdepth 1 -type f -name '*.tgz' | wc -l | tr -d ' ')" = 1
+          echo "chart_artifact=ucm-chart-run-${GITHUB_RUN_ID}" \
+            >>"${GITHUB_OUTPUT}"
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ${{ steps.package.outputs.chart_artifact }}
+          path: out/chart/*.tgz
+          if-no-files-found: error
+          overwrite: true
+          retention-days: ${{ inputs.retention_days }}

@@ -1,0 +1,57 @@
+{{/*
+生命周期钩子 per-role ConfigMap。
+仅当该 role 解析后有任一钩子才渲染；判空必须与 modelserving.yaml 的 projected source 追加条件
+共用 chart.resolveHooks（两处漂移 = Pod 引用不存在的 CM → 永久 ContainerCreating + FailedMount）。
+包壳按执行方式分两种：
+  - hook-pre-start.sh 被 args-entrypoint.sh `source`（同 shell）：只加注释头，不加任何 set/exec 行
+    ——父 shell 已有 set -e；加 set -euo pipefail 会把 pipefail/nounset 泄漏进 entrypoint。
+  - hook-post-ready.sh / hook-pre-stop.sh 以子进程 bash 执行：包壳自带 set -e（否则多行脚本
+    中间失败、末行成功 → 整体退出码 0，失败语义失效）；pre-stop 另重定向输出进容器日志。
+*/}}
+{{- if .Values.servingEngineSpec.enableEngine -}}
+{{- $modelSpec := .Values.servingEngineSpec.modelSpec -}}
+{{/* projected 卷键冲突是静默后者覆盖：hook 文件名不得与 entrypoint 卷其他 source 的键重名。
+     改任一侧键名时同步维护 $reservedKeys（模板期断言挡住）。 */}}
+{{- $reservedKeys := list "args-entrypoint.sh" "parse-vllm-args.py" "vllm.args" "common-entrypoint.sh" "node-topology-setup.sh" -}}
+{{- range $f := list "hook-pre-start.sh" "hook-post-ready.sh" "hook-pre-stop.sh" -}}
+{{- if has $f $reservedKeys -}}
+{{- fail (printf "hooks 文件名 %s 与 entrypoint projected 卷既有键冲突（会被静默覆盖），需改名" $f) -}}
+{{- end -}}
+{{- end -}}
+{{- range $role := $modelSpec.roles }}
+{{- $hooks := include "chart.resolveHooks" (list $role $modelSpec) | fromYaml }}
+{{- if gt (len $hooks) 0 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $.Release.Name }}-{{ $role.name }}-hooks
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $.Release.Name }}
+data:
+{{- if hasKey $hooks "preStart" }}
+  hook-pre-start.sh: |
+    # uc-stack preStart 钩子 —— 由 args-entrypoint.sh `source` 执行（同 shell，非 K8s 原生钩子）：
+    #   可读全部运行时变量（MASTER_IP/NODE_RANK/UCM_CONFIG_FILE/...），export 的变量直达 vllm 进程；
+    #   任一命令失败即启动失败（父 shell set -e）；提前结束用 return 0，禁止 exit（exit 会终止 entrypoint，
+    #   vllm 永不启动且容器以"成功"退出）；顶层禁用 local；勿覆盖 cmd/ENTRYPOINT_DIR/VLLM_ARGS_FILE 等内部变量。
+{{ $hooks.preStart | nindent 4 }}
+{{- end }}
+{{- if hasKey $hooks "postReady" }}
+  hook-post-ready.sh: |
+    #!/bin/bash
+    set -e
+{{ $hooks.postReady | nindent 4 }}
+{{- end }}
+{{- if hasKey $hooks "preStop" }}
+  hook-pre-stop.sh: |
+    #!/bin/bash
+    set -e
+    # K8s exec 钩子 stdout 不进容器日志（仅失败进事件且截断）：重定向到 PID 1 stdout（容器日志流）
+    exec >>/proc/1/fd/1 2>&1
+{{ $hooks.preStop | nindent 4 }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

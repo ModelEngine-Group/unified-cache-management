@@ -159,27 +159,17 @@ Expected<DramConfig> DramConfig::Parse(const Detail::Dictionary& dictionary)
             return Status::InvalidParam("unsupported router_type({})", routerType);
         }
 
-        std::size_t deviceId = 0;
-        status = OptionalSize(dictionary, "device_id", &deviceId);
-        if (status.Failure() || deviceId > 65) {
-            return status.Failure() ? status : Status::InvalidParam("device_id is out of range");
+        ssize_t deviceId = result.deviceId;
+        dictionary.GetNumber("device_id", deviceId);
+        if (deviceId < std::numeric_limits<std::int32_t>::min() || deviceId > 65) {
+            return Status::InvalidParam("device_id is out of range");
         }
         result.deviceId = static_cast<std::int32_t>(deviceId);
-        result.nodeScheduler.deviceId = result.deviceId;
-
-        if (dictionary.Contains("role")) {
-            std::string roleStr;
-            dictionary.Get("role", roleStr);
-            if (roleStr == "scheduler") {
-                result.role = Role::SCHEDULER;
-            } else if (roleStr != "worker") {
-                return Status::InvalidParam("unsupported role({})", roleStr);
-            }
-        }
+        result.nodeScheduler.deviceId = result.RuntimeDeviceId();
 
         std::size_t hixlListenPort = result.hixlListenPort;
         status = OptionalSize(dictionary, "hixl_listen_port", &hixlListenPort);
-        const auto hixlPortOffset = result.role == Role::WORKER ? 1U : 0U;
+        const auto hixlPortOffset = result.GetRole() == Role::SCHEDULER ? 0U : 1U;
         if (status.Failure() || hixlListenPort == 0 ||
             hixlListenPort > std::numeric_limits<std::uint16_t>::max() - hixlPortOffset) {
             return status.Failure() ? status
@@ -195,7 +185,7 @@ Expected<DramConfig> DramConfig::Parse(const Detail::Dictionary& dictionary)
         status = ParseControlEndpoint(result.localTransportManagerId, "local_transport_manager_id",
                                       &managerHost, &managerPort);
         if (status.Failure()) { return status; }
-        if (result.role == Role::WORKER) {
+        if (result.GetRole() == Role::WORKER) {
             const auto offset = static_cast<std::uint32_t>(result.deviceId) + 1;
             if (result.localControlPort > std::numeric_limits<std::uint16_t>::max() - offset ||
                 managerPort > std::numeric_limits<std::uint16_t>::max() - offset) {
@@ -289,6 +279,17 @@ Expected<DramConfig> DramConfig::Parse(const Detail::Dictionary& dictionary)
         }
         result.tensorSizes.assign(tensorSizes.begin(), tensorSizes.end());
 
+        std::vector<std::size_t> gpuKvBufferAddrs;
+        if (dictionary.Contains("gpu_kv_buffer_addrs")) {
+            status = NumberList(dictionary, "gpu_kv_buffer_addrs", &gpuKvBufferAddrs);
+            if (status.Failure()) { return status; }
+        }
+        result.gpuKvBufferAddrs.assign(gpuKvBufferAddrs.begin(), gpuKvBufferAddrs.end());
+        if (dictionary.Contains("gpu_kv_buffer_sizes")) {
+            status = NumberList(dictionary, "gpu_kv_buffer_sizes", &result.gpuKvBufferSizes);
+            if (status.Failure()) { return status; }
+        }
+
         status = result.Validate();
         if (status.Failure()) { return status; }
         return result;
@@ -337,8 +338,18 @@ Status DramConfig::Validate() const
     if (nodeScheduler.reconnectInterval.count() <= 0) {
         return Status::InvalidParam("DramStore reconnect interval must be positive");
     }
-    if (role != Role::SCHEDULER && tensorSizes.empty()) {
+    if (GetRole() == Role::WORKER && tensorSizes.empty()) {
         return Status::InvalidParam("tensor_size_list must not be empty");
+    }
+    if (gpuKvBufferAddrs.size() != gpuKvBufferSizes.size()) {
+        return Status::InvalidParam(
+            "gpu_kv_buffer_addrs({}) and gpu_kv_buffer_sizes({}) must have the same size",
+            gpuKvBufferAddrs.size(), gpuKvBufferSizes.size());
+    }
+    for (std::size_t index = 0; index < gpuKvBufferAddrs.size(); ++index) {
+        if (gpuKvBufferAddrs[index] == 0 || gpuKvBufferSizes[index] == 0) {
+            return Status::InvalidParam("invalid GPU KV buffer at index({})", index);
+        }
     }
     return Status::OK();
 }

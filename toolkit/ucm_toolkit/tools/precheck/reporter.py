@@ -101,6 +101,8 @@ def render_text(results: List[CheckResult], color: bool = True) -> str:
         lines.append(f"{icon} {r.name.ljust(_NAME_WIDTH)} {r.value}".rstrip())
         if r.threshold:
             lines.append(_color(f"{'':8}threshold: {r.threshold}", _DIM, color))
+        if r.detail and r.status in (STATUS_WARN, STATUS_FAIL, STATUS_SKIP):
+            lines.append(_color(f"{'':8}{r.detail}", _DIM, color))
         if r.remediation and r.status in (STATUS_WARN, STATUS_FAIL, STATUS_SKIP):
             lines.append(_color(f"{'':8}fix: {r.remediation}", _YELLOW, color))
     lines.append(_color(_RULE, _DIM, color))

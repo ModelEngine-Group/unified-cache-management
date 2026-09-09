@@ -45,8 +45,9 @@ struct DramConfig {
     std::uint16_t localControlPort{0};
     std::string localHost;
     std::string localTransportManagerId;
-    std::int32_t deviceId{0};
-    Role role{Role::WORKER};
+    // Scheduler currently omits device_id and defaults to -1; an explicit scheduler deviceId must
+    // be negative.
+    std::int32_t deviceId{-1};
     std::uint16_t hixlListenPort{36666};
     bool enableHixlCs{false};
     UC::Router::RouterType routerType{UC::Router::RouterType::RING_HASH_FULL_SPREAD};
@@ -57,6 +58,15 @@ struct DramConfig {
     std::size_t replySlotCount{0};
     std::uint32_t replySlotSize{0};
     std::vector<std::uint64_t> tensorSizes;
+    std::vector<std::uintptr_t> gpuKvBufferAddrs;
+    std::vector<std::size_t> gpuKvBufferSizes;
+
+    Role GetRole() const noexcept { return deviceId < 0 ? Role::SCHEDULER : Role::WORKER; }
+    // Scheduler uses device 0 for the runtime resources required by DramStore.
+    std::int32_t RuntimeDeviceId() const noexcept
+    {
+        return GetRole() == Role::SCHEDULER ? 0 : deviceId;
+    }
 
     static Expected<DramConfig> Parse(const Detail::Dictionary& dictionary);
     Status Validate() const;
