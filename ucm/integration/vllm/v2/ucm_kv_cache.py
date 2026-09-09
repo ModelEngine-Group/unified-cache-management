@@ -286,6 +286,18 @@ def parse_kv_cache_config(
                 if device_type != "npu"
                 else getattr(spec, "block_size", None)
             )
+            if storage_block_size is None:
+                # vllm 0.29 dropped spec.storage_block_size. The storage axis
+                # spans block_size / tokens_per_state stored states (DSV4 C4A:
+                # 256/4=64 states; C128A: 256/128=2); uncompressed specs keep
+                # the full block. Mirrors the 0.27 storage_block_size
+                # semantics that the view layout below expects.
+                logical = int(getattr(spec, "block_size"))
+                ratio = _spec_compress_ratio(spec)
+                if ratio > 1 and logical % ratio == 0:
+                    storage_block_size = logical // ratio
+                else:
+                    storage_block_size = logical
             layers.append(
                 UCMLayerSpec(
                     name,
