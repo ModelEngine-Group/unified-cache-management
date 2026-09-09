@@ -6,7 +6,7 @@
 #include <iostream>
 #include <sstream>
 #include <unordered_map>
-#include "asu_runtime_proxy.h"
+#include "kv_runtime_proxy.h"
 #include "kv_test_config_helpers.h"
 #include "payload_buffer_runtime.h"
 
@@ -56,6 +56,7 @@ CommandOptions BuildEffectiveOptions(const CommandOptions& options, const KvTest
     effective.valueSize = options.command == CommandType::BENCH
                               ? config.bench.ioSize
                               : EffectiveValueSize(options, config);
+    effective.ioIntervalUs = config.bench.ioIntervalUs;
     effective.keyPrefix = EffectiveKeyPrefix(options, config);
     effective.batchSize = config.bench.batchSize;
     effective.timeoutMs = config.asuClientConfig.defaultWaitTimeoutMs;

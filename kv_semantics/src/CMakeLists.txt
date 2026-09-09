@@ -83,14 +83,11 @@ target_include_directories(kv_client
         ${CMAKE_CURRENT_SOURCE_DIR}/common/utils
         ${CMAKE_CURRENT_SOURCE_DIR}/common/ds
         ${CMAKE_CURRENT_SOURCE_DIR}/common/logger
+        ${CMAKE_CURRENT_SOURCE_DIR}/common/runtime
         ${CMAKE_CURRENT_SOURCE_DIR}/client
 )
 target_link_libraries(kv_client PUBLIC kv_transport pthread)
 target_compile_definitions(kv_client PRIVATE SPDLOG_FMT_EXTERNAL)
-
-if(BUILD_UNIT_TESTS)
-    target_compile_definitions(kv_transport PRIVATE ASU_BUILD_TESTS)
-endif()
 
 set(INSTALL_REL_PATH "kv_semantics/src")
 set_target_properties(kv_client PROPERTIES INSTALL_RPATH "$ORIGIN")

@@ -28,9 +28,18 @@
 #include "ascend_buffer.h"
 #include "ascend_trans.h"
 #include "device.h"
+#include "event.h"
 #include "kv_types.h"
 
 namespace kv::runtime {
+
+Status SynchronizeEvent(std::uintptr_t eventHandle)
+{
+    if (eventHandle == 0) { return Status::OK(); }
+    const auto ret = aclrtSynchronizeEvent(reinterpret_cast<aclrtEvent>(eventHandle));
+    return ret == ACL_SUCCESS ? Status::OK()
+                              : Status::Error(StatusCode::INTERNAL_ERROR, std::to_string(ret));
+}
 
 Status Device::Init()
 {

@@ -102,6 +102,7 @@ write_fake_backend_config() {
         echo "limits.memory_max_bytes=4294967296"
         echo
         echo "bench.io_size=4096"
+        echo "bench.io_interval_us=1000"
         echo "bench.concurrency=1"
         echo "bench.duration_sec=1"
         echo "bench.io_count=0"

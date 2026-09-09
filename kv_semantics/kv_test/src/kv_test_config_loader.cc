@@ -6,7 +6,7 @@
 #include <limits>
 #include <stdexcept>
 #include <unordered_map>
-#include "asu_runtime_proxy.h"
+#include "kv_runtime_proxy.h"
 
 namespace kv::bench {
 
@@ -46,6 +46,14 @@ std::uint32_t ParseUint32(const std::string& value)
         throw std::out_of_range("uint32 overflow");
     }
     return static_cast<std::uint32_t>(result);
+}
+
+bool ParseBool(std::string value)
+{
+    value = NormalizeKey(value);
+    if (value == "1" || value == "true") { return true; }
+    if (value == "0" || value == "false") { return false; }
+    throw std::invalid_argument("invalid boolean");
 }
 
 std::unordered_map<std::string, std::string> LoadKeyValueFile(const std::string& configPath,
@@ -201,6 +209,12 @@ Status KvTestConfigLoader::Load(const std::string& configPath, KvTestConfig& con
                      config.fakeBackend.latencyMs);
         GetUint64Any(values, {"fake_backend.worker_threads", "fakebackend.worker_threads"},
                      config.fakeBackend.workerThreads);
+        std::string completeImmediately;
+        if (GetStringAny(values,
+                         {"fake_backend.complete_immediately", "fakebackend.complete_immediately"},
+                         completeImmediately)) {
+            config.fakeBackend.completeImmediately = ParseBool(completeImmediately);
+        }
 
         GetStringAny(values, {"kv.key_prefix"}, config.keyPrefix);
 
@@ -211,6 +225,7 @@ Status KvTestConfigLoader::Load(const std::string& configPath, KvTestConfig& con
         GetUint64Any(values, {"limits.memory_max_bytes"}, config.memoryMaxBytes);
 
         GetUint64Any(values, {"bench.io_size"}, config.bench.ioSize);
+        GetUint64Any(values, {"bench.io_interval_us"}, config.bench.ioIntervalUs);
         GetUint32Any(values, {"bench.concurrency"}, config.bench.concurrency);
         GetUint64Any(values, {"bench.duration_sec"}, config.bench.durationSec);
         GetUint64Any(values, {"bench.io_count"}, config.bench.ioCount);

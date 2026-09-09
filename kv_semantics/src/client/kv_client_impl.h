@@ -83,10 +83,14 @@ public:
     Status LoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) override;
     // Submits store operations to routed transports.
     Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) override;
+    Status StoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                      std::uintptr_t eventHandle) override;
     // Submits batch load operations to routed transports.
     Status BatchLoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) override;
     // Submits batch store operations to routed transports.
     Status BatchStoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId) override;
+    Status BatchStoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
+                           std::uintptr_t eventHandle) override;
     // Submits delete operations to routed transports.
     Status DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId) override;
 
@@ -108,7 +112,8 @@ private:
     };
 
     // Creates and queues one entry-based client task.
-    Status SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& entries, TaskId& taskId);
+    Status SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& entries, TaskId& taskId,
+                       std::uintptr_t eventHandle = 0);
     // Creates and queues one key-based client task.
     Status SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& keys, TaskId& taskId);
 

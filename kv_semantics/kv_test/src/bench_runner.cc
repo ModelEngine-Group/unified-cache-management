@@ -42,6 +42,7 @@ struct OperationOutcome {
     Status status;
     double latencyUs{0.0};
     std::size_t entryCount{0};
+    std::size_t bufferSlotIndex{0};
     std::uint64_t bytes{0};
 };
 
@@ -236,7 +237,8 @@ Status SyncBenchDeviceBuffers(const KvTestConfig& config, BenchBufferSlot& slot,
 }
 
 Status BuildBenchBufferPool(const KvTestConfig& config, bool useDeviceBuffers,
-                            std::uint64_t entryCountPerOperation, BenchBufferPool& pool)
+                            std::uint64_t entryCountPerOperation, std::size_t slotCount,
+                            BenchBufferPool& pool)
 {
     const auto& bench = config.bench;
     const auto allocationPolicy = AllocationPolicyForConfig(config);
@@ -245,7 +247,7 @@ Status BuildBenchBufferPool(const KvTestConfig& config, bool useDeviceBuffers,
         if (!status.Ok()) { return status; }
     }
 
-    pool.resize(bench.concurrency);
+    pool.resize(slotCount);
     for (std::size_t slotIndex = 0; slotIndex < pool.size(); ++slotIndex) {
         auto& buffers = pool[slotIndex].buffers;
         buffers.ownedBuffers.reserve(static_cast<std::size_t>(entryCountPerOperation));
@@ -364,18 +366,17 @@ Status BindRegisteredBuffers(BufferSet& buffers)
     return Status::Success();
 }
 
-Status RegisterBenchDeviceBuffers(KvClientRunner& clientRunner, BenchBufferPool& pool,
-                                  std::uint64_t entryCountPerOperation,
-                                  const std::string& keyPrefix,
-                                  DeviceAllocationPolicy allocationPolicy,
-                                  std::int32_t logicalDeviceId)
+Status RegisterBenchBuffers(KvClientRunner& clientRunner, BenchBufferPool& pool,
+                            std::uint64_t entryCountPerOperation, const std::string& keyPrefix,
+                            bool useDeviceBuffers, DeviceAllocationPolicy allocationPolicy,
+                            std::int32_t logicalDeviceId)
 {
     for (std::size_t slotIndex = 0; slotIndex < pool.size(); ++slotIndex) {
         auto& slot = pool[slotIndex];
         auto status =
             PrepareBenchBuffers(slot, slotIndex * entryCountPerOperation,
                                 static_cast<std::size_t>(entryCountPerOperation), keyPrefix,
-                                /*useDeviceBuffers=*/true, allocationPolicy, logicalDeviceId);
+                                useDeviceBuffers, allocationPolicy, logicalDeviceId);
         if (!status.Ok()) { return status; }
         status = clientRunner.RegisterBuffers(slot.buffers);
         if (!status.Ok()) { return status; }
@@ -383,7 +384,7 @@ Status RegisterBenchDeviceBuffers(KvClientRunner& clientRunner, BenchBufferPool&
     return Status::Success();
 }
 
-Status UnregisterBenchDeviceBuffers(KvClientRunner& clientRunner, BenchBufferPool& pool)
+Status UnregisterBenchBuffers(KvClientRunner& clientRunner, BenchBufferPool& pool)
 {
     Status finalStatus = Status::Success();
     for (auto& slot : pool) {
@@ -396,11 +397,11 @@ Status UnregisterBenchDeviceBuffers(KvClientRunner& clientRunner, BenchBufferPoo
     return finalStatus;
 }
 
-Status ExecuteBenchOperation(BenchOpType requestedOp, const KvTestConfig& config,
-                             KvClientRunner& clientRunner, BenchBufferSlot& slot,
-                             std::uint64_t begin, std::size_t entryCount,
-                             std::uint64_t operationIndex, const std::string& keyPrefix,
-                             bool useDeviceBuffers, CommandResult& operationResult)
+Status SubmitBenchOperation(BenchOpType requestedOp, const KvTestConfig& config,
+                            KvClientRunner& clientRunner, BenchBufferSlot& slot,
+                            std::uint64_t begin, std::size_t entryCount,
+                            std::uint64_t operationIndex, const std::string& keyPrefix,
+                            bool useDeviceBuffers, kv::TaskId& taskId)
 {
     const auto& bench = config.bench;
     const bool isRead = IsBenchReadOperation(requestedOp, operationIndex, bench);
@@ -418,33 +419,21 @@ Status ExecuteBenchOperation(BenchOpType requestedOp, const KvTestConfig& config
         if (!status.Ok()) { return status; }
     }
 
-    status =
-        useDeviceBuffers ? BindRegisteredBuffers(buffers) : clientRunner.RegisterBuffers(buffers);
+    status = BindRegisteredBuffers(buffers);
     if (!status.Ok()) { return status; }
 
-    status =
-        isRead ? clientRunner.Retrieve(buffers, submitMode,
-                                       config.asuClientConfig.defaultWaitTimeoutMs, operationResult)
-               : clientRunner.Store(buffers, submitMode,
-                                    config.asuClientConfig.defaultWaitTimeoutMs, operationResult);
-    if (useDeviceBuffers) { return status; }
-
-    auto unregisterStatus = clientRunner.UnregisterBuffers(buffers);
-    if (status.Ok() && !unregisterStatus.Ok()) { status = unregisterStatus; }
-    return status;
+    return isRead ? clientRunner.RetrieveAsync(buffers, submitMode, taskId)
+                  : clientRunner.StoreAsync(buffers, submitMode, taskId);
 }
 
-OperationOutcome RunBenchOperation(BenchOpType op, const KvTestConfig& config,
-                                   KvClientRunner& clientRunner, BenchBufferSlot& slot,
-                                   std::uint64_t begin, std::size_t entryCount,
-                                   std::uint64_t operationIndex, const std::string& keyPrefix,
-                                   bool useDeviceBuffers)
+OperationOutcome WaitBenchOperation(const KvTestConfig& config, KvClientRunner& clientRunner,
+                                    kv::TaskId taskId,
+                                    std::chrono::steady_clock::time_point operationStart,
+                                    std::size_t entryCount, std::size_t bufferSlotIndex)
 {
     CommandResult operationResult;
-    const auto operationStart = std::chrono::steady_clock::now();
     auto opStatus =
-        ExecuteBenchOperation(op, config, clientRunner, slot, begin, entryCount, operationIndex,
-                              keyPrefix, useDeviceBuffers, operationResult);
+        clientRunner.Wait(taskId, config.asuClientConfig.defaultWaitTimeoutMs, operationResult);
     const auto operationEnd = std::chrono::steady_clock::now();
 
     OperationOutcome outcome;
@@ -452,6 +441,7 @@ OperationOutcome RunBenchOperation(BenchOpType op, const KvTestConfig& config,
     outcome.latencyUs =
         std::chrono::duration<double, std::micro>(operationEnd - operationStart).count();
     outcome.entryCount = entryCount;
+    outcome.bufferSlotIndex = bufferSlotIndex;
     outcome.bytes = entryCount * config.bench.ioSize;
     return outcome;
 }
@@ -467,6 +457,14 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
     }
     if (bench.concurrency == 0) {
         return Status::Error(kExitInvalidArgument, "bench concurrency must be greater than zero");
+    }
+    if (bench.ioIntervalUs == 0) {
+        return Status::Error(kExitInvalidArgument,
+                             "bench io_interval_us must be greater than zero");
+    }
+    if (bench.ioIntervalUs >
+        static_cast<std::uint64_t>(std::numeric_limits<std::chrono::microseconds::rep>::max())) {
+        return Status::Error(kExitInvalidArgument, "bench io_interval_us exceeds supported range");
     }
     if (bench.durationSec == 0 && bench.ioCount == 0) {
         return Status::Error(kExitInvalidArgument,
@@ -503,7 +501,8 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
     const auto allocationPolicy = AllocationPolicyForConfig(config);
     const auto logicalDeviceId = ResolvePayloadDeviceId(config);
     BenchBufferPool bufferPool;
-    status = BuildBenchBufferPool(config, useDeviceBuffers, entryCountPerOperation, bufferPool);
+    status = BuildBenchBufferPool(config, useDeviceBuffers, entryCountPerOperation,
+                                  bench.concurrency, bufferPool);
     if (!status.Ok()) { return status; }
     if (useDeviceBuffers &&
         (bench.op == BenchOpType::STORE || bench.op == BenchOpType::BATCH_STORE)) {
@@ -511,24 +510,20 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
                                              static_cast<std::size_t>(entryCountPerOperation));
         if (!status.Ok()) { return status; }
     }
-    if (useDeviceBuffers) {
-        status = RegisterBenchDeviceBuffers(clientRunner, bufferPool, entryCountPerOperation,
-                                            keyPrefix, allocationPolicy, logicalDeviceId);
-        if (!status.Ok()) {
-            (void)UnregisterBenchDeviceBuffers(clientRunner, bufferPool);
-            return status;
-        }
+    status = RegisterBenchBuffers(clientRunner, bufferPool, entryCountPerOperation, keyPrefix,
+                                  useDeviceBuffers, allocationPolicy, logicalDeviceId);
+    if (!status.Ok()) {
+        (void)UnregisterBenchBuffers(clientRunner, bufferPool);
+        return status;
     }
 
     std::unique_ptr<BenchExecutor> executor;
-    if (bench.concurrency > 1) {
-        try {
-            executor = std::make_unique<BenchExecutor>(bench.concurrency);
-        } catch (const std::system_error& error) {
-            if (useDeviceBuffers) { (void)UnregisterBenchDeviceBuffers(clientRunner, bufferPool); }
-            return Status::Error(kExitInvalidArgument,
-                                 "bench worker creation failed: " + std::string(error.what()));
-        }
+    try {
+        executor = std::make_unique<BenchExecutor>(bench.concurrency);
+    } catch (const std::system_error& error) {
+        (void)UnregisterBenchBuffers(clientRunner, bufferPool);
+        return Status::Error(kExitInvalidArgument,
+                             "bench worker creation failed: " + std::string(error.what()));
     }
 
     using Clock = std::chrono::steady_clock;
@@ -546,6 +541,13 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
                         bool collectStats) -> Status {
         const auto phaseStart = Clock::now();
         const auto phaseEnd = phaseStart + std::chrono::seconds(durationSec);
+        auto nextSubmit = phaseStart;
+        const auto ioInterval = std::chrono::microseconds(bench.ioIntervalUs);
+        std::deque<std::future<OperationOutcome>> pending;
+        std::deque<std::size_t> availableSlots;
+        for (std::size_t slotIndex = 0; slotIndex < bufferPool.size(); ++slotIndex) {
+            availableSlots.emplace_back(slotIndex);
+        }
         std::uint64_t scheduledEntryCount = 0;
         std::uint64_t windowOperationCount = 0;
         std::uint64_t windowEntryCount = 0;
@@ -568,124 +570,145 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
             if (options.progress) { PrintProgressSample(sample, operationsPerSec); }
         };
 
+        auto recordOutcome = [&](const OperationOutcome& outcome) {
+            if (!outcome.status.Ok()) {
+                ++result.benchMetrics.errorCount;
+                if (collectStats) { ++windowErrors; }
+                result.status = outcome.status;
+                return outcome.status;
+            }
+            if (!collectStats) { return Status::Success(); }
+
+            measuredLatenciesUs.push_back(outcome.latencyUs);
+            ++result.benchMetrics.completedOperations;
+            result.benchMetrics.completedEntries += outcome.entryCount;
+            result.benchMetrics.completedBytes += outcome.bytes;
+            ++windowOperationCount;
+            windowEntryCount += outcome.entryCount;
+            windowBytes += outcome.bytes;
+            windowLatencyUs += outcome.latencyUs;
+
+            const auto elapsedSec =
+                std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - phaseStart)
+                    .count() +
+                1;
+            if (static_cast<std::uint64_t>(elapsedSec) != currentSecond) {
+                emitProgressSample(windowOperationCount);
+                currentSecond = static_cast<std::uint64_t>(elapsedSec);
+                windowOperationCount = 0;
+                windowEntryCount = 0;
+                windowBytes = 0;
+                windowErrors = 0;
+                windowLatencyUs = 0.0;
+            }
+            return Status::Success();
+        };
+
+        auto drainPending = [&](bool waitForAll) {
+            Status finalStatus = Status::Success();
+            for (auto iter = pending.begin(); iter != pending.end();) {
+                if (!waitForAll &&
+                    iter->wait_for(std::chrono::microseconds(0)) != std::future_status::ready) {
+                    ++iter;
+                    continue;
+                }
+                auto outcome = iter->get();
+                iter = pending.erase(iter);
+                availableSlots.emplace_back(outcome.bufferSlotIndex);
+                auto outcomeStatus = recordOutcome(outcome);
+                if (finalStatus.Ok() && !outcomeStatus.Ok()) { finalStatus = outcomeStatus; }
+            }
+            return finalStatus;
+        };
+
         auto shouldContinue = [&]() {
             return ioCount == 0 ? Clock::now() < phaseEnd : scheduledEntryCount < ioCount;
         };
 
         while (shouldContinue()) {
-            std::vector<std::future<OperationOutcome>> futures;
-            std::vector<OperationOutcome> inlineOutcomes;
-            futures.reserve(bench.concurrency);
-            inlineOutcomes.reserve(bench.concurrency);
-            for (std::uint32_t inFlight = 0; inFlight < bench.concurrency && shouldContinue();
-                 ++inFlight) {
-                const auto begin =
-                    static_cast<std::size_t>((operationIndex * entryCountPerOperation) % keyCount);
-                const auto available = keyCount - begin;
-                const auto remainingEntryCount =
-                    ioCount == 0 ? entryCountPerOperation : ioCount - scheduledEntryCount;
-                const auto currentEntryCount = static_cast<std::size_t>(
-                    std::min({entryCountPerOperation, static_cast<std::uint64_t>(available),
-                              remainingEntryCount}));
-                scheduledEntryCount += currentEntryCount;
-                const auto currentOperationIndex = operationIndex++;
-                auto* bufferSlot = &bufferPool[inFlight];
+            std::this_thread::sleep_until(nextSubmit);
+            if (ioCount == 0 && Clock::now() >= phaseEnd) { break; }
 
-                if (bench.concurrency == 1) {
-                    inlineOutcomes.emplace_back(RunBenchOperation(
-                        bench.op, config, clientRunner, *bufferSlot, begin, currentEntryCount,
-                        currentOperationIndex, keyPrefix, useDeviceBuffers));
-                    continue;
-                }
-
-                try {
-                    futures.emplace_back(executor->Submit([&, begin, currentEntryCount,
-                                                           currentOperationIndex,
-                                                           bufferSlot]() -> OperationOutcome {
-                        return RunBenchOperation(bench.op, config, clientRunner, *bufferSlot, begin,
-                                                 currentEntryCount, currentOperationIndex,
-                                                 keyPrefix, useDeviceBuffers);
-                    }));
-                } catch (const std::exception& error) {
-                    return Status::Error(
-                        kExitInvalidArgument,
-                        "bench operation submission failed: " + std::string(error.what()));
-                }
+            auto drainStatus = drainPending(false);
+            if (!drainStatus.Ok()) {
+                (void)drainPending(true);
+                return drainStatus;
             }
 
-            for (auto& outcome : inlineOutcomes) {
-                if (!outcome.status.Ok()) {
-                    ++result.benchMetrics.errorCount;
-                    if (collectStats) { ++windowErrors; }
-                    result.status = outcome.status;
-                    return outcome.status;
+            const auto begin =
+                static_cast<std::size_t>((operationIndex * entryCountPerOperation) % keyCount);
+            const auto available = keyCount - begin;
+            const auto remainingEntryCount =
+                ioCount == 0 ? entryCountPerOperation : ioCount - scheduledEntryCount;
+            const auto currentEntryCount = static_cast<std::size_t>(
+                std::min({entryCountPerOperation, static_cast<std::uint64_t>(available),
+                          remainingEntryCount}));
+            scheduledEntryCount += currentEntryCount;
+            const auto currentOperationIndex = operationIndex++;
+            if (availableSlots.empty()) {
+                const auto newPoolEntryCount =
+                    entryCountPerOperation * static_cast<std::uint64_t>(bufferPool.size() + 1);
+                auto growStatus =
+                    ValidateBenchBufferConfig(bench, newPoolEntryCount, config.memoryMaxBytes);
+                if (!growStatus.Ok()) {
+                    (void)drainPending(true);
+                    return growStatus;
                 }
 
-                if (!collectStats) { continue; }
-
-                measuredLatenciesUs.push_back(outcome.latencyUs);
-                ++result.benchMetrics.completedOperations;
-                result.benchMetrics.completedEntries += outcome.entryCount;
-                result.benchMetrics.completedBytes += outcome.bytes;
-                ++windowOperationCount;
-                windowEntryCount += outcome.entryCount;
-                windowBytes += outcome.bytes;
-                windowLatencyUs += outcome.latencyUs;
-
-                const auto operationEnd = Clock::now();
-                const auto elapsedSec =
-                    std::chrono::duration_cast<std::chrono::seconds>(operationEnd - phaseStart)
-                        .count() +
-                    1;
-                if (static_cast<std::uint64_t>(elapsedSec) != currentSecond) {
-                    emitProgressSample(windowOperationCount);
-
-                    currentSecond = static_cast<std::uint64_t>(elapsedSec);
-                    windowOperationCount = 0;
-                    windowEntryCount = 0;
-                    windowBytes = 0;
-                    windowErrors = 0;
-                    windowLatencyUs = 0.0;
+                BenchBufferPool newSlot;
+                growStatus = BuildBenchBufferPool(config, useDeviceBuffers, entryCountPerOperation,
+                                                  1, newSlot);
+                if (growStatus.Ok() && useDeviceBuffers &&
+                    (bench.op == BenchOpType::STORE || bench.op == BenchOpType::BATCH_STORE)) {
+                    growStatus = SyncStoreBenchDeviceBuffers(
+                        config, newSlot, static_cast<std::size_t>(entryCountPerOperation));
                 }
+                if (growStatus.Ok()) {
+                    growStatus = RegisterBenchBuffers(clientRunner, newSlot, entryCountPerOperation,
+                                                      keyPrefix, useDeviceBuffers, allocationPolicy,
+                                                      logicalDeviceId);
+                }
+                if (!growStatus.Ok()) {
+                    (void)UnregisterBenchBuffers(clientRunner, newSlot);
+                    (void)drainPending(true);
+                    return growStatus;
+                }
+                bufferPool.emplace_back(std::move(newSlot.front()));
+                availableSlots.emplace_back(bufferPool.size() - 1);
+            }
+            const auto bufferSlotIndex = availableSlots.front();
+            availableSlots.pop_front();
+            auto& bufferSlot = bufferPool[bufferSlotIndex];
+            kv::TaskId taskId{kv::kInvalidTaskId};
+            const auto operationStart = Clock::now();
+            auto submitStatus = SubmitBenchOperation(
+                bench.op, config, clientRunner, bufferSlot, begin, currentEntryCount,
+                currentOperationIndex, keyPrefix, useDeviceBuffers, taskId);
+            if (!submitStatus.Ok()) {
+                availableSlots.emplace_back(bufferSlotIndex);
+                (void)drainPending(true);
+                return submitStatus;
             }
 
-            for (auto& future : futures) {
-                auto outcome = future.get();
-                if (!outcome.status.Ok()) {
-                    ++result.benchMetrics.errorCount;
-                    if (collectStats) { ++windowErrors; }
-                    result.status = outcome.status;
-                    return outcome.status;
-                }
-
-                if (!collectStats) { continue; }
-
-                measuredLatenciesUs.push_back(outcome.latencyUs);
-                ++result.benchMetrics.completedOperations;
-                result.benchMetrics.completedEntries += outcome.entryCount;
-                result.benchMetrics.completedBytes += outcome.bytes;
-                ++windowOperationCount;
-                windowEntryCount += outcome.entryCount;
-                windowBytes += outcome.bytes;
-                windowLatencyUs += outcome.latencyUs;
-
-                const auto operationEnd = Clock::now();
-                const auto elapsedSec =
-                    std::chrono::duration_cast<std::chrono::seconds>(operationEnd - phaseStart)
-                        .count() +
-                    1;
-                if (static_cast<std::uint64_t>(elapsedSec) != currentSecond) {
-                    emitProgressSample(windowOperationCount);
-
-                    currentSecond = static_cast<std::uint64_t>(elapsedSec);
-                    windowOperationCount = 0;
-                    windowEntryCount = 0;
-                    windowBytes = 0;
-                    windowErrors = 0;
-                    windowLatencyUs = 0.0;
-                }
+            try {
+                pending.emplace_back(executor->Submit([&, taskId, operationStart, currentEntryCount,
+                                                       bufferSlotIndex]() -> OperationOutcome {
+                    return WaitBenchOperation(config, clientRunner, taskId, operationStart,
+                                              currentEntryCount, bufferSlotIndex);
+                }));
+            } catch (const std::exception& error) {
+                (void)WaitBenchOperation(config, clientRunner, taskId, operationStart,
+                                         currentEntryCount, bufferSlotIndex);
+                availableSlots.emplace_back(bufferSlotIndex);
+                (void)drainPending(true);
+                return Status::Error(kExitInvalidArgument, "bench completion submission failed: " +
+                                                               std::string(error.what()));
             }
+            nextSubmit += ioInterval;
         }
+
+        auto drainStatus = drainPending(true);
+        if (!drainStatus.Ok()) { return drainStatus; }
 
         if (collectStats && (windowOperationCount != 0 || windowErrors != 0)) {
             emitProgressSample(windowOperationCount);
@@ -698,7 +721,7 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
         status = runPhase(bench.warmupSec, 0, false);
         if (!status.Ok()) {
             executor.reset();
-            if (useDeviceBuffers) { (void)UnregisterBenchDeviceBuffers(clientRunner, bufferPool); }
+            (void)UnregisterBenchBuffers(clientRunner, bufferPool);
             return status;
         }
     }
@@ -707,8 +730,7 @@ Status BenchRunner::Run(const CommandOptions& options, const KvTestConfig& confi
     status = runPhase(bench.durationSec, bench.ioCount, true);
     const auto measureEnd = Clock::now();
     executor.reset();
-    auto cleanupStatus = useDeviceBuffers ? UnregisterBenchDeviceBuffers(clientRunner, bufferPool)
-                                          : Status::Success();
+    auto cleanupStatus = UnregisterBenchBuffers(clientRunner, bufferPool);
     if (status.Ok() && !cleanupStatus.Ok()) { status = cleanupStatus; }
     if (!status.Ok()) { return status; }
 

@@ -28,6 +28,7 @@ TEST(KvTestConfigHelpersTest, FakeDefaultsDoNotModifyAivTransport)
     fakeConfig.providerType = kv::TransProviderType::FAKE;
     fakeConfig.attrs["sc"] = "false";
     config.asuClientConfig.transportConfigs.emplace_back(std::move(fakeConfig));
+    config.fakeBackend.completeImmediately = true;
 
     kv::TransportConfig aivConfig;
     aivConfig.nodeId = 2;
@@ -43,6 +44,7 @@ TEST(KvTestConfigHelpersTest, FakeDefaultsDoNotModifyAivTransport)
     EXPECT_EQ(patchedFake.attrs.at("sc"), "false");
     EXPECT_EQ(patchedFake.attrs.at("fake_backend.path"), "./kv-test-fake-backend-store");
     EXPECT_EQ(patchedFake.attrs.at("fake_backend.worker_threads"), "4");
+    EXPECT_EQ(patchedFake.attrs.at("fake_backend.complete_immediately"), "true");
 
     const auto& unchangedAiv = config.asuClientConfig.transportConfigs[1];
     EXPECT_EQ(unchangedAiv.providerType, kv::TransProviderType::AIV);

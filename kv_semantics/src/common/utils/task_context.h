@@ -118,6 +118,7 @@ using TransportTaskPtr = std::shared_ptr<TransportTask>;
 struct ClientTask {
     TaskId taskId{kInvalidTaskId};
     AsuOpType opType{AsuOpType::LOAD};
+    std::uintptr_t prerequisiteEventHandle{0};
     std::shared_ptr<ViewSnapshot> viewSnapshot;
     std::vector<KVBuffer> entries;
     std::vector<CacheKey> keys;
