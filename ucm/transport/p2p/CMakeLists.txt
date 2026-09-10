@@ -86,6 +86,7 @@ find_library(P2P_METADEF_LIBRARY
 
 set(P2P_TRANSPORT_SOURCES
     src/common/binary_codec.cpp
+    src/common/thread_pool.cpp
     src/control/control_channel.cpp
     src/control/control_protocol.cpp
     src/core/memory_region_manager.cpp
