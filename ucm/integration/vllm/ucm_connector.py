@@ -2863,6 +2863,18 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         else:
             self.connector = UCMDirectConnector(vllm_config, role, kv_cache_config)
 
+    @property
+    def requires_kv_delivery(self) -> bool:
+        """UCM is a best-effort cache, not a P/D disaggregation producer.
+
+        Returning False keeps drop_stale_output=False so preempted requests
+        are protected by the stale-output guard in the scheduler, which
+        prevents the deadlock under async_scheduling + defer_block_free
+        where all running requests get preempted into deferred_frees and
+        no non-empty batch is ever produced to drain them.
+        """
+        return False
+
     @_record_connector_interface_duration
     def get_block_size(self) -> int:
         return self.connector.get_block_size()
