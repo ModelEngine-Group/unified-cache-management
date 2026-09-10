@@ -63,9 +63,8 @@ public:
 
     Status Connect(const ::UC::Dram::Connect& command) noexcept override
     {
-        return command.transportManagerId.empty()
-                   ? Status::InvalidParam("remote TransportManager id is missing")
-                   : Status::OK();
+        return command.peerAddr.empty() ? Status::InvalidParam("peer address is missing")
+                                        : Status::OK();
     }
     Status Fence(const ::UC::Dram::FenceEpoch&) noexcept override { return Status::OK(); }
     void Stop() override { stopCount_.fetch_add(1, std::memory_order_relaxed); }
@@ -84,12 +83,12 @@ std::shared_ptr<MockTransportBackend> CreateMockTransportBackend()
 
 std::string TestManagerId(std::uint16_t port) { return "127.0.0.1:" + std::to_string(port); }
 
-TEST(UCDramTransportBackendTest, ConnectionRequiresTransportManagerId)
+TEST(UCDramTransportBackendTest, ConnectionRequiresPeerAddress)
 {
     auto backend = CreateMockTransportBackend();
     Connect command{1, kDefaultLaneId, 1, TestManagerId(1234)};
     EXPECT_TRUE(backend->Connect(command).Success());
-    command.transportManagerId.clear();
+    command.peerAddr.clear();
     EXPECT_EQ(backend->Connect(command), Status::InvalidParam());
 }
 

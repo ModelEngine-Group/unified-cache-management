@@ -26,7 +26,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
-#include <unordered_map>
 #include <vector>
 #include "core/transport.h"
 #include "eviction_policy.h"
@@ -59,9 +58,6 @@ struct DramPoolConfig {
     std::vector<std::int32_t> transportDeviceIds{0};
     std::uint16_t hixlListenPort{26666};
     bool enableHixlCs{false};
-    // Cluster-wide routing from the request channel address to the transport identity.
-    std::unordered_map<std::string, transport::ManagerID> twoSidedToOneSided{};
-
     // Zero disables the HTTP health endpoint.
     std::uint16_t healthPort{0};
 

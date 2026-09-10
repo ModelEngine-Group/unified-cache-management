@@ -3,19 +3,11 @@
 # Launch parameters stay on the command line:
 #   --addr, --pool-size-gb, --kvcache-block-sizes,
 #   --kvcache-block-proportions, --ttl-minutes, and --config.
-
 transport:
   device_ids: [0, 1, 2]
   hixl:
     listen_port: 26666
     enable_hixl_cs: false
-  # Cluster-wide request-channel to transport-endpoint routing.
-  endpoints:
-    - two_sided: "127.0.0.1:9000"
-      one_sided: "127.0.0.1:4501"
-    - two_sided: "127.0.0.1:9001"
-      one_sided: "127.0.0.1:4502"
-
 # Set a nonzero port to expose GET /health on the IP supplied by --addr.
 health:
   port: 0

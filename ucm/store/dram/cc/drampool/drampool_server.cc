@@ -28,7 +28,6 @@
 #include <string>
 #include <type_traits>
 #include <utility>
-#include "channels/tcp/tcp_message_channel.h"
 #include "core/transport_manager.h"
 #include "logger/logger.h"
 #include "metadata.h"
@@ -112,10 +111,8 @@ Status DramPoolServer::Start()
         if (auto status = StartCompletionPoller(); status.Failure()) { return status; }
         if (auto status = StartTaskWorker(); status.Failure()) { return status; }
         if (auto status = StartGCThread(); status.Failure()) { return status; }
-        if (auto status = StartRequestReceiver(); status.Failure()) { return status; }
-        // Start transport listeners only after every request consumer is ready.
         if (auto status = StartTransportService(); status.Failure()) { return status; }
-        if (auto status = StartTcpMessageChannel(); status.Failure()) { return status; }
+        if (auto status = StartRequestReceiver(); status.Failure()) { return status; }
         state_ = ServerState::Running;
     } catch (const std::exception& error) {
         return Status::Error(std::string{"DramPoolServer start failed: "} + error.what());
@@ -227,12 +224,7 @@ Status DramPoolServer::InitQueues()
 
 Status DramPoolServer::InitTransportManager()
 {
-    const auto localEndpoint = g_config.twoSidedToOneSided.find(g_config.addr.ToString());
-    if (localEndpoint == g_config.twoSidedToOneSided.end()) {
-        return Status::InvalidParam("local static transport endpoint is not configured");
-    }
-    transportManager_ = std::make_unique<transport::TransportManager>(localEndpoint->second);
-    tcpMessageChannel_ = std::make_unique<transport::TcpMessageChannel>();
+    transportManager_ = std::make_unique<transport::TransportManager>(g_config.addr.ToString());
     return Status::OK();
 }
 
@@ -241,21 +233,10 @@ Status DramPoolServer::StartTransportService()
     if (!transportManager_) {
         return Status::InvalidParam("DramPool transport manager is not initialized");
     }
-    const auto localControlId = g_config.addr.ToString();
-    const auto localEndpoint = g_config.twoSidedToOneSided.find(localControlId);
-    if (localEndpoint == g_config.twoSidedToOneSided.end()) {
-        return Status::InvalidParam("local static transport endpoint is not configured");
-    }
     transport::HixlInitAttrs attrs;
     // DramPool actively connects to DramStore. Client HIXL instances use a
     // host-only engine ID and therefore do not open an HIXL listening port.
-    transport::Endpoint managerEndpoint;
-    if (auto status = ParseDramPoolEndpoint("transport local one_sided", localEndpoint->second,
-                                            managerEndpoint);
-        status.Failure()) {
-        return status;
-    }
-    attrs.ip = managerEndpoint.host;
+    attrs.ip = g_config.addr.host;
     attrs.role = transport::HixlRole::Client;
     UC_DEBUG("DramPool HIXL configured: listen_port={} enable_cs={}", g_config.hixlListenPort,
              g_config.enableHixlCs);
@@ -277,8 +258,7 @@ Status DramPoolServer::StartTransportService()
     if (auto registerStatus = RegisterBufferPools(); registerStatus.Failure()) {
         return registerStatus;
     }
-    // Accept metadata exchanges initiated by DramStore. DramPool peer routing remains
-    // static and does not actively call ExchangeMetadata().
+    // Start the Manager channel after transports and registered memory are ready.
     status = transportManager_->Init();
     if (status.Failure()) { return status; }
     return Status::OK();
@@ -303,22 +283,6 @@ Status DramPoolServer::RegisterBufferPools()
     transport::MemoryHandle handle = transport::kInvalidMemoryHandle;
     const auto flagStatus = transportManager_->RegisterMemory(flagBufferRegion, handle);
     if (flagStatus.Failure()) { return flagStatus; }
-    return Status::OK();
-}
-
-Status DramPoolServer::StartTcpMessageChannel()
-{
-    if (!tcpMessageChannel_) {
-        return Status::InvalidParam("DramPool TCP message channel is not initialized");
-    }
-
-    const auto channelStatus = tcpMessageChannel_->Init(g_config.addr);
-    if (channelStatus.Failure()) { return channelStatus; }
-    {
-        std::lock_guard<std::mutex> waitGuard(requestReceiverWaitMutex_);
-        tcpMessageChannelReady_ = true;
-    }
-    requestReceiverWaitCv_.notify_one();
     return Status::OK();
 }
 
@@ -369,14 +333,11 @@ Status DramPoolServer::StartTaskWorker()
 
 Status DramPoolServer::StartRequestReceiver()
 {
-    if (!runtime_ || !tcpMessageChannel_) {
+    if (!runtime_ || !transportManager_) {
         return Status::InvalidParam("DramPool RequestReceiver dependencies are not initialized");
     }
     try {
-        {
-            std::lock_guard<std::mutex> waitGuard(requestReceiverWaitMutex_);
-            requestReceiverStop_.store(false, std::memory_order_release);
-        }
+        requestReceiverStop_.store(false, std::memory_order_release);
         requestReceiverThread_ = std::thread(&DramPoolServer::RequestReceiveLoop, this);
     } catch (const std::exception& e) {
         requestReceiverStop_.store(true, std::memory_order_release);
@@ -398,30 +359,10 @@ Status DramPoolServer::StartGCThread()
     return Status::OK();
 }
 
-void DramPoolServer::StopTcpMessageChannel()
-{
-    {
-        std::lock_guard<std::mutex> waitGuard(requestReceiverWaitMutex_);
-        tcpMessageChannelReady_ = false;
-    }
-    if (tcpMessageChannel_) {
-        UC_DEBUG("DramPool shutdown stopping TCP message channel");
-        const auto status = tcpMessageChannel_->Shutdown();
-        if (status.Failure()) {
-            UC_ERROR_UNLIMITED("DramPool TCP message channel shutdown failed, error={}", status);
-        }
-    }
-}
-
 void DramPoolServer::StopRequestReceiver()
 {
     UC_DEBUG("DramPool shutdown stopping RequestReceiver and TCP ingress");
-    {
-        std::lock_guard<std::mutex> waitGuard(requestReceiverWaitMutex_);
-        requestReceiverStop_.store(true, std::memory_order_release);
-    }
-    requestReceiverWaitCv_.notify_one();
-    StopTcpMessageChannel();
+    requestReceiverStop_.store(true, std::memory_order_release);
     if (requestReceiverThread_.joinable()) {
         UC_DEBUG("DramPool shutdown waiting for RequestReceiver thread");
         requestReceiverThread_.join();
@@ -478,16 +419,11 @@ void DramPoolServer::TaskWorkerLoop()
 void DramPoolServer::RequestReceiveLoop()
 {
     UC_INFO_UNLIMITED("DramPool RequestReceiver started, addr={}", g_config.addr.ToString());
-    if (!WaitForChannelReady()) {
-        UC_INFO_UNLIMITED("DramPool RequestReceiver stopped before TCP channel became ready");
-        return;
-    }
-
     const auto idleWait = std::chrono::microseconds(g_config.requestReceiverIdleWaitUs);
     while (!requestReceiverStop_.load(std::memory_order_acquire)) {
-        transport::Endpoint controlPeer;
+        transport::ManagerID transportPeer;
         transport::Metadata received;
-        const auto receiveStatus = tcpMessageChannel_->Receive(controlPeer, received);
+        const auto receiveStatus = transportManager_->Receive(transportPeer, received);
         if (requestReceiverStop_.load(std::memory_order_acquire)) { break; }
         if (receiveStatus.Failure()) {
             UC_ERROR("RequestReceiver TCP message channel stopped unexpectedly");
@@ -498,25 +434,15 @@ void DramPoolServer::RequestReceiveLoop()
         const auto unpackStatus =
             runtime_->protocol.UnpackRequest(received.data(), received.size(), request);
         if (unpackStatus.Failure()) {
-            UC_WARN("RequestReceiver rejected KV request from {}: {}", controlPeer.ToString(),
-                    unpackStatus);
-            continue;
-        }
-
-        const auto controlPeerId = controlPeer.ToString();
-        const auto peerIt = g_config.twoSidedToOneSided.find(controlPeerId);
-        if (peerIt == g_config.twoSidedToOneSided.end()) {
-            UC_WARN("RequestReceiver rejected unconfigured control peer, request_id={}, peer={}",
-                    request->request_id, controlPeerId);
+            UC_WARN("RequestReceiver rejected KV request from {}: {}", transportPeer, unpackStatus);
             continue;
         }
 
         auto task = std::make_unique<RequestTask>();
         task->request = std::move(request);
-        task->peer_one_sided_id = peerIt->second;
-        UC_DEBUG("RequestReceiver received request, request_id={}, opcode={}, control={}, peer={}",
-                 task->request->request_id, static_cast<int>(task->request->opcode), controlPeerId,
-                 task->peer_one_sided_id);
+        task->peer_one_sided_id = transportPeer;
+        UC_DEBUG("RequestReceiver received request, request_id={}, opcode={}, peer={}",
+                 task->request->request_id, static_cast<int>(task->request->opcode), transportPeer);
         // This bounded handoff keeps transport I/O separate from potentially slow request handling.
         bool queueFullLogged = false;
         while (!requestReceiverStop_.load(std::memory_order_acquire)) {
@@ -531,15 +457,6 @@ void DramPoolServer::RequestReceiveLoop()
         }
     }
     UC_INFO_UNLIMITED("DramPool RequestReceiver stopped");
-}
-
-bool DramPoolServer::WaitForChannelReady()
-{
-    std::unique_lock<std::mutex> waitLock(requestReceiverWaitMutex_);
-    requestReceiverWaitCv_.wait(waitLock, [this]() {
-        return tcpMessageChannelReady_ || requestReceiverStop_.load(std::memory_order_acquire);
-    });
-    return tcpMessageChannelReady_ && !requestReceiverStop_.load(std::memory_order_acquire);
 }
 
 void DramPoolServer::CompletionPollerLoop()
@@ -574,7 +491,6 @@ void DramPoolServer::ResetInitializedComponents()
     protocolManager_.reset();
     metadataManager_.reset();
     UC_DEBUG("DramPool cleanup releasing TCP channel and memory pools");
-    tcpMessageChannel_.reset();
     flagBufferPool_.reset();
     bufferManager_.reset();
     UC_DEBUG("DramPool cleanup releasing transport manager");

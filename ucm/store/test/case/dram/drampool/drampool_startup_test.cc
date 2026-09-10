@@ -37,7 +37,7 @@
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
-#include "channels/tcp/tcp_message_channel.h"
+#include "core/transport_manager.h"
 #include "kv_protocol.h"
 #include "logger/logger.h"
 #endif
@@ -122,12 +122,7 @@ DramPoolConfig MakeValidConfig()
         status.Failure()) {
         throw std::runtime_error(status.ToString());
     }
-    const auto originalLocalId = config.addr.ToString();
     config.addr.port = FindAvailableTcpPort();
-    const auto oneSidedPort = FindDistinctTcpPort(config.addr.port);
-    config.twoSidedToOneSided.erase(originalLocalId);
-    config.twoSidedToOneSided.emplace(config.addr.ToString(),
-                                      "127.0.0.1:" + std::to_string(oneSidedPort));
     return config;
 }
 
@@ -315,8 +310,6 @@ TEST(DramPoolRuntimeConfigTest, LoadsRepositoryExample)
     const auto status = ParseYamlConfig(RepositoryRuntimeConfigPath().string(), config);
 
     ASSERT_TRUE(status.Success()) << status.ToString();
-    ASSERT_EQ(config.twoSidedToOneSided.size(), 2U);
-    EXPECT_EQ(config.twoSidedToOneSided.at("127.0.0.1:9000"), "127.0.0.1:4501");
     EXPECT_EQ(config.requestQueueDepth, 65536U);
     EXPECT_EQ(config.completionQueueDepth, 65536U);
     EXPECT_EQ(config.requestReceiverIdleWaitUs, 100U);
@@ -481,18 +474,16 @@ TEST(DramPoolServerTest, RequestReceiverLogsReceivedRequestFields)
         config.poolBlockProportions = {1};
         config.poolSlotCounts = {1};
         config.gcEnabled = false;
-        const transport::Endpoint clientControl{"127.0.0.1", FindDistinctTcpPort(config.addr.port)};
-        const auto clientOneSidedPort = FindDistinctTcpPort(config.addr.port, clientControl.port);
-        config.twoSidedToOneSided.emplace(clientControl.ToString(),
-                                          "127.0.0.1:" + std::to_string(clientOneSidedPort));
+        const transport::Endpoint clientEndpoint{"127.0.0.1",
+                                                 FindDistinctTcpPort(config.addr.port)};
         ScopedDramPoolConfig configScope(std::move(config));
 
         DramPoolServer server;
-        transport::TcpMessageChannel client;
+        transport::TransportManager client(clientEndpoint.ToString());
         ProtocolManager protocol;
         if (server.Init().Failure()) { ::_exit(1); }
         if (server.Start().Failure()) { ::_exit(2); }
-        if (client.Init(clientControl).Failure()) { ::_exit(3); }
+        if (client.Init().Failure()) { ::_exit(3); }
 
         KvLookupRequest request;
         request.opcode = OpType::LOOKUP;
@@ -504,7 +495,7 @@ TEST(DramPoolServerTest, RequestReceiverLogsReceivedRequestFields)
         const auto packedSize = protocol.GetPackedRequestSize(request.opcode, request);
         std::vector<std::uint8_t> packed(packedSize);
         if (protocol.PackRequest(packed.data(), request.opcode, request).Failure()) { ::_exit(4); }
-        if (client.Send(g_config.addr, packed.data(), packed.size()).Failure()) { ::_exit(5); }
+        if (client.Send(g_config.addr.ToString(), packed).Failure()) { ::_exit(5); }
 
         const auto expected =
             "RequestReceiver received request, request_id=" + std::to_string(kRequestId) +

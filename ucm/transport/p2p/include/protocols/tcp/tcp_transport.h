@@ -20,37 +20,46 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * */
+ */
+
 #pragma once
 
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <thread>
 #include "core/transport.h"
 
 namespace transport {
 
-enum class ManagerMessageType : uint8_t {
-    ConnectRequest = 0,
-    DisconnectRequest = 1,
-    ControlResponse = 2,
-    Data = 3,
-};
+class TcpTransport final {
+public:
+    using Socket = int;
+    using AcceptHandler = std::function<void(Socket)>;
+    static constexpr Socket kInvalidSocket = -1;
 
-#pragma pack(push, 1)
-struct ManagerMessageProtocol {
-    uint32_t body_size;
-    // Reserved for Data messages.
-    uint64_t request_id;
-    // Reserved for ControlResponse and Data messages.
-    TransportProtocol protocol;
-    // Reserved for request and Data messages.
-    int32_t status;
-    uint32_t source_size;
-    uint32_t payload_size;
-    ManagerMessageType type;
-    uint8_t reserved[7];
-};
-#pragma pack(pop)
+    TcpTransport() = default;
+    ~TcpTransport();
 
-static_assert(sizeof(ManagerMessageProtocol) == 36, "unexpected manager message protocol size");
+    TcpTransport(const TcpTransport&) = delete;
+    TcpTransport& operator=(const TcpTransport&) = delete;
+
+    Status StartAccepting(const Endpoint& endpoint, AcceptHandler handler);
+    Status Connect(const Endpoint& endpoint, Socket& socket) const;
+    Status Send(Socket socket, const void* data, std::size_t length) const;
+    Status Receive(Socket socket, void* data, std::size_t capacity, std::size_t& received) const;
+    void Stop();
+
+    static void Close(Socket socket);
+
+private:
+    void AcceptLoop();
+
+    Socket listen_socket_ = kInvalidSocket;
+    AcceptHandler accept_handler_;
+    std::thread accept_thread_;
+    std::atomic<bool> stopping_{false};
+};
 
 }  // namespace transport

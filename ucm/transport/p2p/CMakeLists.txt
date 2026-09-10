@@ -87,11 +87,10 @@ find_library(P2P_METADEF_LIBRARY
 set(P2P_TRANSPORT_SOURCES
     src/common/binary_codec.cpp
     src/common/thread_pool.cpp
-    src/control/control_channel.cpp
-    src/control/control_protocol.cpp
+    src/protocols/tcp/tcp_transport.cpp
+    src/core/channel_manager.cpp
     src/core/memory_region_manager.cpp
     src/core/transport_manager.cpp
-    src/channels/tcp/tcp_message_channel.cpp
 )
 
 set(P2P_HIXL_AVAILABLE OFF)
