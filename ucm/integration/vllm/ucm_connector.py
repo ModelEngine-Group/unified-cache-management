@@ -2764,6 +2764,15 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             role=role,
             kv_cache_config=kv_cache_config,
         )
+        enable_ucm_patch = os.getenv("ENABLE_UCM_PATCH")
+        vllm_cpu_affinity = os.getenv("VLLM_CPU_AFFINITY")
+        if enable_ucm_patch is None or vllm_cpu_affinity is None:
+            logger.warning(
+                f"[UCM ENV CHECK] ENABLE_UCM_PATCH={enable_ucm_patch!r}, "
+                f"VLLM_CPU_AFFINITY={vllm_cpu_affinity!r}, "
+                f"device_type={getattr(current_platform, 'device_type', None)!r}, "
+                f"role={role}, pid={os.getpid()}"
+            )
         self.connector: KVConnectorBase_V1
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id.rsplit("_dp", 1)[0]
