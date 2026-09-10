@@ -42,7 +42,7 @@ Metric names distinguish Store types, while labels distinguish vLLM instances an
 
 ### 2.1 Synchronization Delay in Connector Mode
 
-The health threads continue to run inside UCM at their configured interval, but connector metrics are synchronized to `/metrics` only when vLLM calls `get_kv_connector_stats()`. With no inference requests, the health metrics in Prometheus do not update even if the background probe result has changed.
+The health threads continue to run inside UCM at their configured interval. During inference, vLLM synchronizes their metrics through `get_kv_connector_stats()`. On vLLM 0.18 or later, `ENABLE_UCM_PATCH=1` also enables periodic idle collection for vLLM and vllm-ascend, so background probe changes can reach `/metrics` without an inference request. Set `ENABLE_UCM_IDLE_METRICS=0` in every API Server environment before startup to disable only idle collection; health probes and inference-triggered metric updates continue. Updates depend on both the probe interval and the idle collection cadence. See [Idle collection](metrics.md#idle-collection) for prerequisites and timing. Without idle collection, health metrics remain unchanged in the vLLM connector registry until inference triggers synchronization.
 
 ## 3. Recommended Aggregation
 

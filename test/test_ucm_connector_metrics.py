@@ -1,4 +1,5 @@
 import ast
+import asyncio
 import importlib
 import json
 import math
@@ -350,6 +351,7 @@ def _install_stubs():
         KVCacheConfig=type("KVCacheConfig", (), {}),
         KVCacheSpec=type("KVCacheSpec", (), {}),
         MambaSpec=type("MambaSpec", (), {}),
+        MLAAttentionSpec=type("MLAAttentionSpec", (), {}),
         SlidingWindowSpec=type("SlidingWindowSpec", (), {}),
         UniformTypeKVCacheSpecs=type("UniformTypeKVCacheSpecs", (), {}),
     )
@@ -360,6 +362,7 @@ def _install_stubs():
     _install_module(
         "ucm.integration.vllm.device",
         create_device=lambda *args, **kwargs: None,
+        get_current_device_id=lambda: 0,
     )
     _install_module("ucm.logger", init_logger=lambda name: _Logger())
     _install_module("ucm.shared.metrics", ucmmetrics=fake_ucmmetrics)
@@ -564,6 +567,402 @@ def _reset_fakes():
     import ucm.metrics_dispatcher as dispatcher_module
 
     dispatcher_module._DISPATCHER = None
+
+
+@pytest.fixture
+def idle_metrics(monkeypatch, request):
+    from ucm.integration.vllm.patch import idle_metrics_patch as patch
+
+    enabled = getattr(request, "param", None)
+    if enabled is None:
+        monkeypatch.delenv("ENABLE_UCM_IDLE_METRICS", raising=False)
+    else:
+        monkeypatch.setenv("ENABLE_UCM_IDLE_METRICS", enabled)
+
+    class Core:
+        def __init__(self, index, scheduler_connector=None, workers=()):
+            self.engine_index = index
+            self.scheduler = SimpleNamespace(
+                get_kv_connector=lambda: scheduler_connector,
+                has_requests=lambda: self.requests,
+            )
+            self.requests = False
+            self.engines_running = False
+            self.batch_queue = []
+            self.workers = workers
+            self.rpc_calls = 0
+
+        def has_work(self):
+            return (
+                self.engines_running
+                or self.scheduler.has_requests()
+                or bool(self.batch_queue)
+            )
+
+        def collective_rpc(self, method):
+            assert method == "ucm_get_kv_connector_stats"
+            self.rpc_calls += 1
+            return [patch._read_connector_stats(worker) for worker in self.workers]
+
+    class Client:
+        def __init__(self, cores):
+            self.cores = cores
+            self.core_engines = list(cores)
+            self.calls = []
+
+        async def _call_utility_async(self, method, *args, engine):
+            self.calls.append(engine)
+            await asyncio.sleep(0)
+            core = self.cores[engine]
+            if isinstance(core, Exception):
+                raise core
+            return getattr(core, method)(*args)
+
+    class LLM:
+        def __init__(self, client, prom):
+            self.engine_core = client
+            self.log_calls = 0
+            self.logger_manager = SimpleNamespace(stat_loggers=[PromLogger(prom)])
+
+        async def do_log_stats(self):
+            self.log_calls += 1
+
+    class PromLogger:
+        def __init__(self, prom):
+            self.kv_connector_prom = SimpleNamespace(
+                prom_metrics=prom,
+                observe=prom.observe if prom is not None else None,
+            )
+
+    class MultiProm:
+        def __init__(self, children):
+            self._prom_metrics = children
+
+        def observe(self, data, engine_idx):
+            for name, stats in data.items():
+                self._prom_metrics[name].observe(stats["data"], engine_idx)
+
+    for name, attributes in (
+        (
+            "vllm.distributed.kv_transfer.kv_connector.v1.multi_connector",
+            {"MultiKVConnectorPromMetrics": MultiProm},
+        ),
+        ("vllm.v1.metrics.loggers", {"PrometheusStatLogger": PromLogger}),
+    ):
+        module = ModuleType(name)
+        module.__dict__.update(attributes)
+        monkeypatch.setitem(sys.modules, name, module)
+    patch._patch_engine_core(SimpleNamespace(EngineCoreProc=Core))
+    patch._patch_engine_client(SimpleNamespace(AsyncMPClient=Client))
+    patch._patch_async_llm(SimpleNamespace(AsyncLLM=LLM))
+    return SimpleNamespace(
+        patch=patch, Core=Core, Client=Client, LLM=LLM, MultiProm=MultiProm
+    )
+
+
+@pytest.mark.parametrize("busy_state", ["requests", "engines_running", "batch_queue"])
+def test_idle_metrics_skips_busy_engine_without_draining(idle_metrics, busy_state):
+    def unexpected_drain():
+        pytest.fail("Busy engine must not drain scheduler or worker stats")
+
+    connector = SimpleNamespace(get_kv_connector_stats=unexpected_drain)
+    core = idle_metrics.Core(0, connector, [connector])
+    setattr(core, busy_state, [object()] if busy_state == "batch_queue" else True)
+    assert core.ucm_collect_idle_metrics(5) is None
+    assert core.rpc_calls == 0
+
+
+def test_idle_metrics_hooks_apply_after_other_ucm_patches(monkeypatch):
+    import runpy
+
+    from ucm.integration.vllm.patch import utils
+
+    core_module = ModuleType("vllm.v1.engine.core")
+    core_module._ucm_patched = True
+    core_module.EngineCoreProc = type("EngineCoreProc", (), {})
+    monkeypatch.setitem(sys.modules, core_module.__name__, core_module)
+    deferred = []
+
+    def defer(name):
+        def register(callback):
+            deferred.append(name)
+            return callback
+
+        return register
+
+    monkeypatch.setattr(utils, "when_imported", defer)
+    runpy.run_path(str(REPO_ROOT / "ucm/integration/vllm/patch/idle_metrics_patch.py"))
+    assert callable(core_module.EngineCoreProc.ucm_collect_idle_metrics)
+    assert set(deferred) == {
+        "vllm.v1.worker.worker_base",
+        "vllm.v1.engine.core_client",
+        "vllm.v1.engine.async_llm",
+    }
+
+
+def test_idle_metrics_throttle_and_resume_do_not_duplicate(idle_metrics, monkeypatch):
+    _reset_fakes()
+    config = _metrics_config()
+    connector = UCMConnector.__new__(UCMConnector)
+    connector._vllm_metrics_enabled = True
+    connector._metrics_dispatcher = get_metrics_dispatcher(config)
+    connector._vllm_metric_definitions = get_vllm_connector_metric_definitions(config)
+    connector._worker_rank = 2
+    core = idle_metrics.Core(
+        3, SimpleNamespace(get_kv_connector_stats=lambda: None), [connector]
+    )
+    monkeypatch.setattr(idle_metrics.patch.time, "monotonic", lambda: 100)
+    fake_ucmmetrics.snapshot = (
+        {"load_bytes_total": 20},
+        {"test_health": 1},
+        {"load_duration": ([1, 0, 0], 30)},
+    )
+    index, data = core.ucm_collect_idle_metrics(5)
+    assert index == 3
+    assert data["counters_by_rank"]["2"] == {"load_bytes_total": 20}
+    assert data["histograms_by_rank"]["2"]["load_duration"]["bucket_counts"] == [
+        1,
+        0,
+        0,
+    ]
+    assert connector.get_kv_connector_stats() is None
+    assert connector._metrics_dispatcher.get_stats_and_clear("multiproc")[0] == {
+        "load_bytes_total": 20
+    }
+
+    fake_ucmmetrics.snapshot = ({"load_bytes_total": 7}, {"test_health": 0}, {})
+    drain_count = len(fake_ucmmetrics.drained)
+    assert core.ucm_collect_idle_metrics(5) is None
+    assert len(fake_ucmmetrics.drained) == drain_count
+    monkeypatch.setattr(idle_metrics.patch.time, "monotonic", lambda: 105)
+    _, data = core.ucm_collect_idle_metrics(5)
+    assert data["gauges_by_rank"]["2"] == {"test_health": 0}
+    assert data["counters_by_rank"]["2"] == {"load_bytes_total": 7}
+    assert core.rpc_calls == 2
+    fake_ucmmetrics.snapshot = ({"load_bytes_total": 4}, {}, {})
+    resumed = connector.get_kv_connector_stats()
+    assert resumed.data["counters_by_rank"]["2"] == {"load_bytes_total": 4}
+
+
+@pytest.mark.parametrize(
+    "idle_metrics", [None, "1", "TRUE", "yes", " on "], indirect=True
+)
+def test_idle_metrics_publish_all_dp_workers_and_scheduler(idle_metrics):
+    _reset_fakes()
+    cores = {}
+    for index in (0, 1):
+        connectors = []
+        for rank in ("scheduler", str(index * 2), str(index * 2 + 1)):
+            stats = UCMConnectorStats(worker_rank=rank)
+            stats.record({"test_health": index}, {"test_health": "gauge"})
+            stats.record({"load_bytes_total": 10}, {"load_bytes_total": "counter"})
+            connectors.append(
+                SimpleNamespace(get_kv_connector_stats=stats.clone_and_reset)
+            )
+        cores[bytes([index])] = idle_metrics.Core(index, connectors[0], connectors[1:])
+    client = idle_metrics.Client(cores)
+    prom = UCMPromMetrics(
+        _vllm_config(_metrics_config()),
+        _metric_types(),
+        ["model_name", "engine"],
+        {0: ["model-a", "0"], 1: ["model-a", "1"]},
+    )
+    llm = idle_metrics.LLM(client, prom)
+    # Repeated registration must not wrap logging or collect twice.
+    idle_metrics.patch._patch_async_llm(SimpleNamespace(AsyncLLM=type(llm)))
+    asyncio.run(llm.do_log_stats())
+    assert llm.log_calls == 1
+    assert client.calls == [b"\x00", b"\x01"]
+    for index in (0, 1):
+        for rank in ("scheduler", str(index * 2), str(index * 2 + 1)):
+            labels = ("model-a", str(index), rank)
+            assert FakeGauge.created["ucm:test_health"].children[labels].set_values == [
+                index
+            ]
+            assert FakeCounter.created["ucm:load_bytes_total"].children[
+                labels
+            ].increments == [10]
+
+
+@pytest.mark.parametrize("mode", ["no_logger", "no_ucm", "disabled"])
+def test_idle_metrics_disabled_does_not_rpc(idle_metrics, mode):
+    _reset_fakes()
+    config = _metrics_config()
+    if mode == "disabled":
+        config["consumers"]["vllm_connector"] = False
+    prom = UCMConnector.build_prom_metrics(
+        _vllm_config(config), _metric_types(), ["engine"], {0: ["0"]}
+    )
+    if mode == "no_ucm":
+        prom = SimpleNamespace(observe=lambda *args: pytest.fail("Unexpected observe"))
+    client = idle_metrics.Client({})
+    llm = idle_metrics.LLM(client, prom)
+    if mode == "no_logger":
+        llm.logger_manager = None
+    asyncio.run(llm.do_log_stats())
+    assert client.calls == []
+    assert llm.log_calls == 1
+
+
+@pytest.mark.parametrize("idle_metrics", ["0", "false", "OFF", "no"], indirect=True)
+@pytest.mark.parametrize("nested", [False, True])
+def test_idle_collection_switch_preserves_inference_metrics(idle_metrics, nested):
+    _reset_fakes()
+    config = _metrics_config()
+    connector = UCMConnector.__new__(UCMConnector)
+    connector._vllm_metrics_enabled = True
+    connector._metrics_dispatcher = get_metrics_dispatcher(config)
+    connector._vllm_metric_definitions = get_vllm_connector_metric_definitions(config)
+    connector._worker_rank = 0
+    core = idle_metrics.Core(0, connector, [connector])
+    client = idle_metrics.Client({b"0": core})
+    prom = UCMConnector.build_prom_metrics(
+        _vllm_config(config), _metric_types(), ["engine"], {0: ["0"]}
+    )
+    sink = idle_metrics.MultiProm({"UCM": prom}) if nested else prom
+    llm = idle_metrics.LLM(client, sink)
+    fake_ucmmetrics.snapshot = ({"load_bytes_total": 20}, {"test_health": 1}, {})
+
+    asyncio.run(llm.do_log_stats())
+    assert llm.log_calls == 1
+    assert client.calls == []
+    assert core.rpc_calls == 0
+    assert fake_ucmmetrics.drained == []
+
+    stats = connector.get_kv_connector_stats()
+    prom.observe(stats.data, 0)
+    assert FakeCounter.created["ucm:load_bytes_total"].children[
+        ("0", "0")
+    ].increments == [20]
+    assert FakeGauge.created["ucm:test_health"].children[("0", "0")].set_values == [1]
+
+
+@pytest.mark.parametrize("interval", [0, -1, math.inf, math.nan])
+def test_idle_metrics_rejects_invalid_interval(interval):
+    config = _metrics_config()
+    config["log_interval"] = interval
+    with pytest.raises(ValueError, match="log_interval must be finite and > 0"):
+        UCMPromMetrics(_vllm_config(config), _metric_types(), ["engine"], {0: ["0"]})
+
+
+@pytest.mark.parametrize("use_to_dict", [False, True])
+@pytest.mark.parametrize("nested", [False, True])
+def test_idle_metrics_serialization_and_dp_failure(
+    idle_metrics, monkeypatch, use_to_dict, nested
+):
+    import msgspec
+
+    _reset_fakes()
+    prom = UCMPromMetrics(
+        _vllm_config(_metrics_config()), _metric_types(), ["engine"], {1: ["1"]}
+    )
+
+    class MultiStats(KVConnectorStats):
+        def to_dict(self):
+            return {name: child.to_dict() for name, child in self.data.items()}
+
+    if use_to_dict:
+        monkeypatch.setattr(
+            KVConnectorStats, "to_dict", lambda self: self.data, raising=False
+        )
+
+        def observe(self, data, engine_idx):
+            for name, child in data.items():
+                self._prom_metrics[name].observe(child, engine_idx)
+
+        monkeypatch.setattr(idle_metrics.MultiProm, "observe", observe)
+
+    stats = UCMConnectorStats(worker_rank=3)
+    stats.record({"test_health": 0}, {"test_health": "gauge"})
+    stats.record({"load_bytes_total": 10}, {"load_bytes_total": "counter"})
+    stats.record({"load_duration": 25}, {"load_duration": "histogram"})
+    payload = stats
+    sink = prom
+    if nested:
+        stats_class = MultiStats if use_to_dict else KVConnectorStats
+        payload = stats_class(data={"outer": stats_class(data={"UCM": stats})})
+        sink = idle_metrics.MultiProm({"outer": idle_metrics.MultiProm({"UCM": prom})})
+    core = idle_metrics.Core(1, SimpleNamespace(get_kv_connector_stats=lambda: payload))
+
+    collect = core.ucm_collect_idle_metrics
+
+    def collect_over_wire(interval):
+        return msgspec.msgpack.decode(msgspec.msgpack.encode(collect(interval)))
+
+    core.ucm_collect_idle_metrics = collect_over_wire
+    client = idle_metrics.Client({b"0": RuntimeError("unavailable"), b"1": core})
+    llm = idle_metrics.LLM(client, sink)
+    asyncio.run(llm.do_log_stats())
+    assert FakeGauge.created["ucm:test_health"].children[("1", "3")].set_values == [0]
+    assert FakeCounter.created["ucm:load_bytes_total"].children[
+        ("1", "3")
+    ].increments == [10]
+    assert FakeHistogram.created["ucm:load_duration"].children[
+        ("1", "3")
+    ].observations == [25]
+    assert not llm._ucm_idle_metrics_running
+
+
+def test_idle_metrics_single_inflight_and_cancellation(idle_metrics):
+    _reset_fakes()
+    prom = UCMPromMetrics(
+        _vllm_config(_metrics_config()), _metric_types(), ["engine"], {0: ["0"]}
+    )
+
+    async def run():
+        started = asyncio.Event()
+        calls = []
+
+        async def collect(interval):
+            calls.append(interval)
+            started.set()
+            await asyncio.Event().wait()
+
+        llm = idle_metrics.LLM(
+            SimpleNamespace(ucm_collect_idle_metrics_async=collect), prom
+        )
+        task = asyncio.create_task(llm.do_log_stats())
+        await started.wait()
+        await llm.do_log_stats()
+        assert calls == [5]
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not llm._ucm_idle_metrics_running
+        assert llm.log_calls == 2
+
+    asyncio.run(run())
+
+
+def test_idle_metrics_worker_extension_supports_gpu_and_npu(idle_metrics, monkeypatch):
+    class WorkerBase:
+        pass
+
+    class GPUWorker(WorkerBase):
+        pass
+
+    class NPUWorker(WorkerBase):
+        pass
+
+    def failed_stats():
+        raise RuntimeError("metrics backend unavailable")
+
+    module = ModuleType("vllm.distributed.kv_transfer")
+    module.has_kv_transfer_group = lambda: True
+    stats = UCMConnectorStats(worker_rank=0)
+    module.get_kv_transfer_group = lambda: SimpleNamespace(
+        get_kv_connector_stats=lambda: stats
+    )
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    idle_metrics.patch._patch_worker(SimpleNamespace(WorkerBase=WorkerBase))
+    for worker in (GPUWorker(), NPUWorker()):
+        assert worker.ucm_get_kv_connector_stats() is stats
+    module.get_kv_transfer_group = lambda: SimpleNamespace(
+        get_kv_connector_stats=failed_stats
+    )
+    assert GPUWorker().ucm_get_kv_connector_stats() is None
+    module.has_kv_transfer_group = lambda: False
+    assert NPUWorker().ucm_get_kv_connector_stats() is None
 
 
 def test_config_definitions_register_enable_list_and_metric_names():
