@@ -1,0 +1,23 @@
+组,指标名,类型,功能,埋点位置,实现方式
+A,drampool_dump_requests_total,Counter,DUMP请求量,task_worker.cc ProcessOneRequest() DUMP分支 L75,MetricsCount(+1)
+A,drampool_load_requests_total,Counter,LOAD请求量,task_worker.cc ProcessOneRequest() LOAD分支 L80,MetricsCount(+1)
+A,drampool_lookup_requests_total,Counter,LOOKUP请求量,task_worker.cc ProcessOneRequest() LOOKUP分支 L85,MetricsCount(+1)
+B,drampool_dump_bytes_total,Counter,DUMP成功预留字节数,task_worker.cc ProcessDump() entries循环 L128-146,循环内累加Σ entry.len 循环外一次MetricsCount
+B,drampool_dump_storebegin_failures_total,Counter,StoreBegin真失败计数（DuplicateKey为正常结果不计入）,task_worker.cc ProcessDump() L133-140,MetricsCount(+1)
+B,drampool_dump_submit_failures_total,Counter,传输提交失败计数,task_worker.cc ProcessDump() L159-168,MetricsCount(+1)
+B,drampool_dump_prepare_duration_ms,Histogram,DUMP准备阶段耗时（入口→ExecuteAsync返回 含驱逐重试）,task_worker.cc ProcessDump() 入口L95构造 L159-168失败分支Disarm,ScopedTimer RAII 仅成功路径观测
+C,drampool_load_bytes_total,Counter,LOAD成功传输字节数,task_worker.cc ProcessLoad() entries循环 L184-227,循环内累加Σ entry.len 循环外一次MetricsCount
+C,drampool_load_miss_entries_total,Counter,LoadBegin失败entry数（含长度不匹配 业务影响一致）,task_worker.cc ProcessLoad() L187-192,MetricsCount(+1)
+C,drampool_load_submit_failures_total,Counter,传输提交失败计数,task_worker.cc ProcessLoad() L221-230,MetricsCount(+1)
+C,drampool_load_prepare_duration_ms,Histogram,LOAD准备阶段耗时,task_worker.cc ProcessLoad() 入口L184构造 L221-230失败分支Disarm,ScopedTimer RAII
+D,drampool_lookup_hit_entries_total,Counter,LOOKUP命中entry数,task_worker.cc ProcessLookup() 扫描循环 L274-278,循环内累计hits 循环外一次上报
+D,drampool_lookup_miss_entries_total,Counter,LOOKUP未命中entry数,task_worker.cc ProcessLookup() L274-278,循环外一次上报（batch_size - hits）
+E,drampool_dump_transfer_duration_ms,Histogram,DUMP数据传输时长（终态时刻 - submit_ms）,completion_poller.cc SettleDataTransfer() 统一出口 L260,MetricsObserve(now - submit_ms) 一处覆盖三条终态路径
+E,drampool_load_transfer_duration_ms,Histogram,LOAD数据传输时长,completion_poller.cc SettleDataTransfer() 统一出口 L260,MetricsObserve 按opcode二选一
+E,drampool_dump_transfer_failures_total,Counter,DUMP传输终态非Completed计数,completion_poller.cc SettleDataTransfer() L260,MetricsCount(+1)
+E,drampool_load_transfer_failures_total,Counter,LOAD传输终态非Completed计数,completion_poller.cc SettleDataTransfer() L260,MetricsCount(+1)
+E,drampool_response_rtt_ms,Histogram,响应写回端到端RTT（发起→客户端flag落地）,completion_poller.cc PollResponseTransfer() Completed分支 L255后,MetricsObserve(now - submit_ms)
+E,drampool_response_transfer_failures_total,Counter,响应写回失败计数（GetStatus异常或Failed终态）,completion_poller.cc PollResponseTransfer() L228-233与L248-252,MetricsCount(+1)
+E,drampool_response_submit_failures_total,Counter,响应本地提交失败计数（Pack/ExecuteAsync失败）,completion_poller.cc SubmitResponse() L187-191与L205-211,MetricsCount(+1)
+F,drampool_metadata_entry_count,Gauge,元数据条目总数,drampool_server.cc GCThreadLoop() L552-561,MetricsSet(GetKeyCnt()) 覆盖写（接口已存在）
+F,drampool_buffer_pool_usage_ratio_<slot_size>,Gauge（动态注册）,各block size池用量占比,drampool_server.cc GCThreadLoop() L552-561 遍历poolBlockSizes,启动期按尺寸动态CreateStats + BufferManager.GetUsedSlotRatio()（新增原子记账）
