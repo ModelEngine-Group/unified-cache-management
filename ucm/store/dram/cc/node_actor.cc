@@ -403,8 +403,7 @@ void NodeActor::Handle(FenceCompleted event, TimePoint now)
 void NodeActor::TryConnect(TimePoint now)
 {
     TransportCommand command{
-        Connect{config_.endpoint.nodeId, kDefaultLaneId, epoch_,
-                config_.endpoint.transportManagerId}
+        Connect{config_.endpoint.nodeId, kDefaultLaneId, epoch_, config_.endpoint.peerAddr}
     };
     const auto status = dependencies_.submitTransport(command);
     if (status.Success()) {
@@ -514,19 +513,17 @@ void NodeActor::Handle(ConnectCompleted event, TimePoint now)
         state_ = NodeState::ACTIVE;
         assert(activeRequests_.empty());
         nextActionAt_ = TimePoint::max();
-        UC_INFO(
-            "DramStore node connected, node_id={} epoch={} endpoint={}:{} "
-            "pending_requests={}",
-            config_.endpoint.nodeId, epoch_, config_.endpoint.controlHost,
-            config_.endpoint.controlPort, pendingRequests_.size());
+        UC_INFO("DramStore node connected, node_id={} epoch={} endpoint={} pending_requests={}",
+                config_.endpoint.nodeId, epoch_, config_.endpoint.peerAddr,
+                pendingRequests_.size());
     } else {
         state_ = NodeState::DISCONNECTED;
         nextActionAt_ = now + config_.reconnectInterval;
         UC_WARN(
-            "DramStore node connect failed, node_id={} epoch={} endpoint={}:{} status={} "
+            "DramStore node connect failed, node_id={} epoch={} endpoint={} status={} "
             "retry_after_ms={}",
-            config_.endpoint.nodeId, epoch_, config_.endpoint.controlHost,
-            config_.endpoint.controlPort, event.status, config_.reconnectInterval.count());
+            config_.endpoint.nodeId, epoch_, config_.endpoint.peerAddr, event.status,
+            config_.reconnectInterval.count());
     }
 }
 
