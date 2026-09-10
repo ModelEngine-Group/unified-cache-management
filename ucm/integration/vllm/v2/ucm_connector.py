@@ -149,6 +149,85 @@ def _worker_rank(vllm_config: "VllmConfig") -> int:
     return int(get_world_group().rank)
 
 
+def _jsonable(value: Any) -> Any:
+    """Best-effort JSON rendering for raw KVCacheConfig payloads."""
+
+    import enum as _enum
+    from dataclasses import fields as _fields, is_dataclass as _is_dataclass
+
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, _enum.Enum):
+        return str(value)
+    if _is_dataclass(value):
+        return {f.name: _jsonable(getattr(value, f.name)) for f in _fields(value)}
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if type(value).__module__.split(".")[0] == "torch":
+        return str(value)
+    # Plain objects (e.g. slot wrappers): expose their attributes so
+    # SimpleNamespace-style entries serialize like their dataclass twins.
+    slots = getattr(value, "__slots__", None)
+    if slots:
+        return {
+            name: _jsonable(getattr(value, name))
+            for name in slots
+            if hasattr(value, name)
+        }
+    value_vars = getattr(value, "__dict__", None)
+    if isinstance(value_vars, dict) and value_vars:
+        return {str(key): _jsonable(item) for key, item in value_vars.items()}
+    return repr(value)
+
+
+def _dump_raw_kv_cache_config(kv_cache_config: Any, rank: int | None) -> None:
+    """Write the raw KVCacheConfig vLLM handed over to a JSON file.
+
+    Enabled by ``UCM_V2_DUMP_CONFIG=<path>``; a ``%d`` in the path receives
+    the worker rank so tensor-parallel shards can be captured side by side.
+    """
+
+    import json
+
+    raw_path = os.environ.get("UCM_V2_DUMP_CONFIG", "")
+    if not raw_path:
+        return
+    path = Path(raw_path % rank if "%d" in raw_path or "%s" in raw_path else raw_path)
+
+    groups = []
+    for group in getattr(kv_cache_config, "kv_cache_groups", ()) or ():
+        groups.append(
+            {
+                "layer_names": list(getattr(group, "layer_names", ()) or ()),
+                "is_eagle_group": bool(getattr(group, "is_eagle_group", False)),
+                "kv_cache_spec": _jsonable(group.kv_cache_spec),
+            }
+        )
+    payload = {
+        "num_blocks": int(getattr(kv_cache_config, "num_blocks", 0)),
+        "kv_cache_tensors": [
+            _jsonable(tensor)
+            for tensor in getattr(kv_cache_config, "kv_cache_tensors", ()) or ()
+        ],
+        "kv_cache_groups": groups,
+        "prefix_cache_retention_interval": int(
+            getattr(kv_cache_config, "prefix_cache_retention_interval", 0) or 0
+        ),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as stream:
+        json.dump(payload, stream, indent=2, ensure_ascii=False)
+    print(
+        f"[ucm-v2] raw KVCacheConfig dumped to {path} "
+        f"(num_blocks={payload['num_blocks']}, "
+        f"tensors={len(payload['kv_cache_tensors'])}, "
+        f"groups={len(groups)})",
+        flush=True,
+    )
+
+
 class UCMConnector(KVConnectorBase_V1, SupportsHMA):
     """One v2 lifecycle facade for grouped caches and the DSV4 policy."""
 
@@ -166,6 +245,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             chunk_size = int(chunk_size)
         is_scheduler = role == KVConnectorRole.SCHEDULER
         rank = None if is_scheduler else _worker_rank(vllm_config)
+        _dump_raw_kv_cache_config(kv_cache_config, rank)
         hasher = RequestHasher(vllm_config, 0)
         base_seed = hasher("UCM_HASH_SEED")
 

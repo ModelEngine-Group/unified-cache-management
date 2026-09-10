@@ -2065,5 +2065,67 @@ class DeclaredLayoutModelTest(unittest.TestCase):
             UCMKVCacheLayout(parsed, caches, num_blocks=8, kv_cache_tensors=partial)
 
 
+
+class RawConfigDumpTest(unittest.TestCase):
+    """UCM_V2_DUMP_CONFIG serializes the raw KVCacheConfig vLLM handed over."""
+
+    def _connector(self, tmp, path_template):
+        from ucm.integration.vllm.v2.ucm_connector import UCMConnector
+
+        kv_cache_config = SimpleNamespace(
+            num_blocks=4,
+            kv_cache_tensors=(
+                SimpleNamespace(
+                    size=192,
+                    layers=("model.layers.0.attn", "model.layers.1.attn"),
+                    offset=0,
+                    layer_stride=96,
+                    block_stride=12,
+                ),
+            ),
+            kv_cache_groups=(
+                SimpleNamespace(
+                    layer_names=["model.layers.0.attn", "model.layers.1.attn"],
+                    is_eagle_group=False,
+                    kv_cache_spec=FullAttentionSpec(12),
+                ),
+            ),
+            prefix_cache_retention_interval=0,
+        )
+        os.environ["UCM_V2_DUMP_CONFIG"] = str(tmp / path_template)
+        try:
+            return UCMConnector(
+                vllm_config(),
+                KVConnectorRole.WORKER,
+                kv_cache_config,
+            )
+        finally:
+            os.environ.pop("UCM_V2_DUMP_CONFIG", None)
+
+    def test_dumps_raw_config_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            self._connector(tmp, "raw_config.json")
+            payload = json.loads(
+                (tmp / "raw_config.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(payload["num_blocks"], 4)
+            self.assertEqual(len(payload["kv_cache_tensors"]), 1)
+            tensor = payload["kv_cache_tensors"][0]
+            self.assertEqual(tensor["block_stride"], 12)
+            self.assertEqual(
+                tensor["layers"], ["model.layers.0.attn", "model.layers.1.attn"]
+            )
+            group = payload["kv_cache_groups"][0]
+            self.assertEqual(group["layer_names"], group["layer_names"])
+            self.assertIn("block_size", group["kv_cache_spec"])
+
+    def test_percent_d_receives_rank(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            self._connector(tmp, "raw_config_rank%d.json")
+            self.assertTrue((tmp / "raw_config_rank0.json").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
