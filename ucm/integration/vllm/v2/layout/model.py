@@ -128,36 +128,6 @@ class LayerSlot:
     regions: tuple[BlockRegion, ...]
 
 
-def merge_io_entries(
-    entries: Sequence[tuple[bytes, int, int, int]],
-) -> tuple[tuple[bytes, int, int, int], ...]:
-    """Merge batch entries that are contiguous in both record and memory.
-
-    ``entries`` are ``(key, record_offset, ptr, size)`` tuples in dispatch
-    order.  Two entries merge only when they belong to the same record, sit
-    at adjacent record offsets, and map to adjacent memory, so the merged
-    transfer reads exactly the bytes the separate transfers would have, in
-    the same order.  This keeps the record layout a pure function of the
-    logical dispatch plan: dump and load batches (whose physical block ids
-    differ by construction) merge their own entries independently and still
-    agree on where every byte sits inside the record.
-    """
-
-    merged: list[tuple[bytes, int, int, int]] = []
-    for key, offset, ptr, size in entries:
-        if (
-            merged
-            and merged[-1][0] == key
-            and merged[-1][1] + merged[-1][3] == offset
-            and merged[-1][2] + merged[-1][3] == ptr
-        ):
-            previous = merged[-1]
-            merged[-1] = (key, previous[1], previous[2], previous[3] + size)
-        else:
-            merged.append((key, offset, ptr, size))
-    return tuple(merged)
-
-
 class LayoutModel:
     """Resolved per-layer placement plus ragged block/token addressing."""
 

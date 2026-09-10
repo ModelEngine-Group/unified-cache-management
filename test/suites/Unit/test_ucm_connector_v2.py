@@ -1464,12 +1464,13 @@ class RaggedLayoutTest(unittest.TestCase):
             requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
         )
         batch = layout.build_load_batches(metadata)
-        # One key is one task; adjacent blocks with dense pages coalesce
-        # into one contiguous range instead of two native pages.
-        self.assertEqual(batch.block_ids, (key,))
-        self.assertEqual(batch.ptrs, (0x1000 + 3 * 48,))
-        self.assertEqual(batch.sizes, (96,))
-        self.assertEqual(batch.offsets, (0,))
+        # One key is one task, but each vLLM block remains one native page:
+        # batches enumerate segments in logical order without merging, which
+        # keeps the record layout a pure function of the dispatch plan.
+        self.assertEqual(batch.block_ids, (key, key))
+        self.assertEqual(batch.ptrs, (0x1000 + 3 * 48, 0x1000 + 4 * 48))
+        self.assertEqual(batch.sizes, (48, 48))
+        self.assertEqual(batch.offsets, (0, 48))
 
     def test_unknown_5d_axis_order_fails_fast(self):
         parsed = parse_kv_cache_config(
@@ -1490,7 +1491,7 @@ class RaggedLayoutTest(unittest.TestCase):
                 num_blocks=8,
             )
 
-    def test_partial_range_merges_across_adjacent_blocks(self):
+    def test_partial_range_keeps_block_wise_entries(self):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
             scheduler_block_size=128,
@@ -1527,12 +1528,13 @@ class RaggedLayoutTest(unittest.TestCase):
         )
         batch = layout.build_load_batches(metadata)
 
-        # The tail of block 2 and the head of block 3 are contiguous in
-        # memory, so the record keeps one range covering both.
-        self.assertEqual(batch.block_ids, (key,))
-        self.assertEqual(batch.ptrs, (0x1000 + 2 * 128 + 64,))
-        self.assertEqual(batch.sizes, (128,))
-        self.assertEqual(batch.offsets, (0,))
+        # The tail of block 2 and the head of block 3 stay separate entries
+        # even though they are contiguous in memory: record positions are a
+        # function of the logical enumeration, never of physical adjacency.
+        self.assertEqual(batch.block_ids, (key, key))
+        self.assertEqual(batch.ptrs, (0x1000 + 2 * 128 + 64, 0x1000 + 3 * 128))
+        self.assertEqual(batch.sizes, (64, 64))
+        self.assertEqual(batch.offsets, (0, 64))
 
     def test_dump_and_load_survive_different_physical_block_layouts(self):
         # Dump and load address different vLLM blocks (the source request is
@@ -1578,12 +1580,11 @@ class RaggedLayoutTest(unittest.TestCase):
             requests={"r": RequestDispatchMeta("r", dump_plans=(dump_plan,))}
         )
         dump_batch = layout.build_dump_batches(dump_meta)
-        # Blocks 3 and 4 are adjacent, so the dump side merges them.
-        self.assertEqual(dump_batch.sizes, (96,))
-        self.assertEqual(len(dump_batch.sizes), 1)
+        # Blocks 3 and 4 are enumerated separately even though adjacent.
+        self.assertEqual(dump_batch.sizes, (48, 48))
 
-        # The load lands on scattered blocks and must not merge; the record
-        # positions of both logical blocks stay where the dump put them.
+        # The load lands on scattered blocks; the record positions of both
+        # logical blocks stay where the dump put them.
         load_plan = UCMGroupDispatchPlan(
             0, (key,), 0, 0, 16, (UCMGroupBlockIds(0, 0, (6, 2)),)
         )

@@ -20,7 +20,7 @@ from vllm.v1.kv_cache_interface import (
 )
 
 from .layout import build_layout_model
-from .layout.model import LAYOUT_DEBUG, layout_debug, merge_io_entries
+from .layout.model import LAYOUT_DEBUG, layout_debug
 from .ucm_proxy import KVCacheValue, UCMProxyBatch
 
 if TYPE_CHECKING:
@@ -473,20 +473,17 @@ class UCMKVCacheLayout:
         plans: Iterable["UCMGroupDispatchPlan"],
         layer_name: str | None,
     ) -> UCMProxyBatch:
-        entries: list[tuple[bytes, int, int, int]] = []
+        keys: list[bytes] = []
+        offsets: list[int] = []
+        ptrs: list[int] = []
+        sizes: list[int] = []
         for plan in plans:
-            entries.extend(self._iter_plan_segments(plan, layer_name))
-        # Merge only what is contiguous in both the record and memory, so the
-        # record layout stays a pure function of the logical dispatch plan:
-        # dump and load batches (whose physical block ids differ) merge their
-        # own entries and still agree on every byte's record position.
-        merged = merge_io_entries(entries)
-        return UCMProxyBatch(
-            tuple(key for key, _, _, _ in merged),
-            tuple(offset for _, offset, _, _ in merged),
-            tuple(ptr for _, _, ptr, _ in merged),
-            tuple(size for _, _, _, size in merged),
-        )
+            for key, offset, ptr, size in self._iter_plan_segments(plan, layer_name):
+                keys.append(key)
+                offsets.append(offset)
+                ptrs.append(ptr)
+                sizes.append(size)
+        return UCMProxyBatch(tuple(keys), tuple(offsets), tuple(ptrs), tuple(sizes))
 
     def _iter_plan_segments(
         self,
