@@ -184,17 +184,22 @@ from ucm.integration.vllm.v2.ucm_scheduler import (  # noqa: E402
 @dataclass
 class FullAttentionSpec(_FullAttentionSpec):
     block_size: int
-    compress_ratio: int = 1
+    tokens_per_state: int = 1
     sliding_window: int | None = None
-    storage_block_size: int | None = None
 
 
 @dataclass
 class MLAAttentionSpec(_MLAAttentionSpec):
     block_size: int
-    compress_ratio: int = 1
+    tokens_per_state: int = 1
     sliding_window: int | None = None
-    storage_block_size: int | None = None
+
+
+@dataclass
+class AscendMLAAttentionSpec(MLAAttentionSpec):
+    """Ascend 0.26 spelling: the compression ratio is compress_ratio."""
+
+    compress_ratio: int = 1
 
 
 @dataclass
@@ -211,6 +216,7 @@ class AscendSlidingWindowMLASpec(_SlidingWindowMLASpec):
     block_size: int
     compress_ratio: int
     sliding_window: int
+    tokens_per_state: int = 1
 
 
 @dataclass
@@ -395,22 +401,6 @@ class FakeTensor:
         return self._element_size
 
 
-class FakeCombinedTensor(FakeTensor):
-    def unbind(self, dim):
-        if dim != 1 or self.shape[1] != 2:
-            raise ValueError("only the K/V component axis can be unbound")
-        component_shape = (self.shape[0], *self.shape[2:])
-        component_strides = (self._strides[0], *self._strides[2:])
-        component_bytes = self._strides[1] * self._element_size
-        return tuple(
-            FakeTensor(
-                self._ptr + index * component_bytes,
-                component_shape,
-                component_strides,
-                self._element_size,
-            )
-            for index in range(2)
-        )
 
 
 class KVCacheSpecTest(unittest.TestCase):
@@ -580,13 +570,13 @@ class KVCacheSpecTest(unittest.TestCase):
             REPO_ROOT.parent
             / "docs"
             / "kv-layout-ascend-20260905"
-            / "vllm-027"
+            / "vllm-029"
             / "results"
             / "runtime"
-            / "dsv4_official_256.runtime_kvcache_config.json"
+            / "dsv4_official_029_256.runtime_kvcache_config.json"
         )
         if not path.exists():
-            self.skipTest("workspace vLLM 0.27 runtime capture is unavailable")
+            self.skipTest("workspace vLLM 0.29 runtime capture is unavailable")
 
         parsed = parse_kv_cache_config(
             captured_config(path),
@@ -596,9 +586,11 @@ class KVCacheSpecTest(unittest.TestCase):
 
         self.assertTrue(parsed.is_dsv4)
         self.assertEqual(parsed.chunk_size, 256)
-        self.assertEqual(tuple(group.group_id for group in parsed.fa_groups), (0,))
+        # FA is the 256-token indexer+attention group; WA covers both SWA
+        # groups and both compressor state groups.
+        self.assertEqual(tuple(group.group_id for group in parsed.fa_groups), (2,))
         self.assertEqual(
-            tuple(group.group_id for group in parsed.wa_groups), (1, 2, 3, 4)
+            tuple(group.group_id for group in parsed.wa_groups), (0, 1, 3, 4)
         )
 
 
@@ -1261,12 +1253,14 @@ class DispatcherLifecycleTest(unittest.TestCase):
 
 
 class RaggedLayoutTest(unittest.TestCase):
-    def test_cpu_attention_uses_storage_block_size_from_concrete_spec(self):
+    def test_cpu_attention_derives_storage_axis_from_tokens_per_state(self):
+        # vLLM 0.29 dropped spec.storage_block_size; the storage axis is
+        # derived as block_size // tokens_per_state (DSV4 C4A: 256/4 = 64).
         parsed = parse_kv_cache_config(
             config(
                 group(
                     ["model.layers.0.attn"],
-                    FullAttentionSpec(256, storage_block_size=64),
+                    FullAttentionSpec(256, tokens_per_state=4),
                 )
             ),
             scheduler_block_size=256,
@@ -1402,83 +1396,13 @@ class RaggedLayoutTest(unittest.TestCase):
             (0x1000, 0x2000),
         )
 
-    def test_vllm_027_block_major_kv_uses_one_io_region(self):
-        parsed = parse_kv_cache_config(
-            config(group(["model.layers.0.attn"], FullAttentionSpec(4))),
-            scheduler_block_size=4,
-        )
-
-        layout = UCMKVCacheLayout(
-            parsed,
-            {
-                "model.layers.0.attn": FakeCombinedTensor(
-                    0x1000,
-                    (8, 2, 4, 2, 3),
-                    (48, 24, 6, 3, 1),
-                )
-            },
-            num_blocks=8,
-        )
-
-        self.assertEqual(
-            tuple(
-                view.base_ptr
-                for view in layout.layers["model.layers.0.attn"].components
-            ),
-            (0x1000, 0x1018),
-        )
-        self.assertEqual(
-            tuple(
-                view.row_stride_bytes
-                for view in layout.layers["model.layers.0.attn"].components
-            ),
-            (48, 48),
-        )
-        regions = layout.layers["model.layers.0.attn"].regions
-        self.assertEqual(len(regions), 1)
-        self.assertEqual(
-            (
-                regions[0].base_ptr,
-                regions[0].block_stride,
-                regions[0].payload_bytes,
-            ),
-            (0x1000, 48, 48),
-        )
-
-        from ucm.integration.vllm.v2.ucm_scheduler import (
-            RequestDispatchMeta,
-            UCMGroupBlockIds,
-            UCMGroupDispatchPlan,
-        )
-
-        key = b"v" * 16
-        plan = UCMGroupDispatchPlan(
-            0,
-            (key,),
-            0,
-            0,
-            8,
-            (UCMGroupBlockIds(0, 0, (3, 4)),),
-        )
-        metadata = UCMConnectorMetadata(
-            requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
-        )
-        batch = layout.build_load_batches(metadata)
-        # One key is one task, but each vLLM block remains one native page:
-        # batches enumerate segments in logical order without merging, which
-        # keeps the record layout a pure function of the dispatch plan.
-        self.assertEqual(batch.block_ids, (key, key))
-        self.assertEqual(batch.ptrs, (0x1000 + 3 * 48, 0x1000 + 4 * 48))
-        self.assertEqual(batch.sizes, (48, 48))
-        self.assertEqual(batch.offsets, (0, 48))
-
     def test_unknown_5d_axis_order_fails_fast(self):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(4))),
             scheduler_block_size=4,
         )
 
-        with self.assertRaisesRegex(ValueError, "require block-major shape"):
+        with self.assertRaisesRegex(ValueError, "2-D, 3-D, or 4-D"):
             UCMKVCacheLayout(
                 parsed,
                 {
@@ -1550,10 +1474,10 @@ class RaggedLayoutTest(unittest.TestCase):
         layout = UCMKVCacheLayout(
             parsed,
             {
-                "model.layers.0.attn": FakeCombinedTensor(
+                "model.layers.0.attn": FakeTensor(
                     0x1000,
-                    (8, 2, 4, 2, 3),
-                    (48, 24, 6, 3, 1),
+                    (8, 8, 6),
+                    (48, 6, 1),
                 )
             },
             num_blocks=8,
@@ -2059,6 +1983,24 @@ class DeclaredLayoutModelTest(unittest.TestCase):
             declared_layout.model.backings[0].base_ptr,
             0x1000,
         )
+
+    def test_describe_summarizes_placements(self):
+        parsed, caches, declarations = self._fixture()
+        layout = UCMKVCacheLayout(
+            parsed,
+            caches,
+            num_blocks=8,
+            kv_cache_tensors=declarations,
+        )
+
+        summary = layout.model.describe()
+        self.assertIn("[declared]", summary)
+        self.assertIn("8 blocks x 1 backing(s)", summary)
+        self.assertIn("layer_stride=96", summary)
+        self.assertIn("block_stride=12", summary)
+        # Both layers collapse into one geometry line.
+        self.assertIn("(2 layers)", summary)
+        self.assertIn("states/row=4", summary)
 
     def test_assert_mode_cross_checks_both_models(self):
         parsed, caches, declarations = self._fixture()

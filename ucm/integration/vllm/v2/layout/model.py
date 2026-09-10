@@ -138,6 +138,7 @@ class LayoutModel:
         descriptors: Sequence[TensorDescriptor],
         groups: Mapping[int, tuple[LayerSlot, ...]],
         num_blocks: int,
+        mode: str = "",
     ) -> None:
         if num_blocks <= 0:
             raise ValueError("num_blocks must be positive")
@@ -150,6 +151,7 @@ class LayoutModel:
             for slot in group_slots
         }
         self.num_blocks = num_blocks
+        self.mode = mode
 
     def log_registration(
         self, group_id: int, slot: LayerSlot, *, state: bool
@@ -177,6 +179,127 @@ class LayoutModel:
                 f"block_payload={region.payload_bytes} "
                 f"buffer={region.buffer_size_bytes}"
             )
+
+    def describe(self) -> str:
+        """One human-readable page describing the resolved KV cache layout.
+
+        Groups layers by their placement signature so 60-layer models print
+        as a handful of lines: same geometry -> one line with the layer
+        range, instead of one line per layer.  Every line answers the same
+        question -- where do this layer's blocks live and how are they
+        addressed -- using the six-line placement arithmetic.
+        """
+
+        def _fmt_bytes(value: int) -> str:
+            if value == 0:
+                return "0"
+            if value % (1024**3) == 0:
+                return f"{value // 1024**3}G"
+            if value % (1024**2) == 0:
+                return f"{value // 1024**2}M"
+            if value % 1024 == 0:
+                return f"{value // 1024}K"
+            return str(value)
+
+        def _geometry_signature(slot: LayerSlot) -> tuple:
+            # Geometry only: base pointers differ per layer by design, so
+            # they must not keep same-geometry layers from collapsing.
+            return (
+                tuple(
+                    (
+                        component.block_stride,
+                        component.row_stride_bytes,
+                        component.rows_per_block,
+                        component.states_per_row,
+                        component.bytes_per_state,
+                        component.buffer_size_bytes,
+                    )
+                    for component in slot.components
+                ),
+                tuple(
+                    (region.block_stride, region.payload_bytes, region.buffer_size_bytes)
+                    for region in slot.regions
+                ),
+            )
+
+        def _layer_range(names: Sequence[str]) -> str:
+            if len(names) == 1:
+                return names[0]
+            return f"{names[0]} .. {names[-1]} ({len(names)} layers)"
+
+        lines: list[str] = []
+        backing_total = sum(b.size_bytes for b in self.backings)
+        lines.append(
+            f"KV cache layout [{self.mode or 'layout'}]: "
+            f"{self.num_blocks} blocks x {len(self.backings)} backing(s), "
+            f"total {_fmt_bytes(backing_total)}"
+        )
+        for backing in self.backings:
+            lines.append(
+                f"  backing #{backing.backing_id}: "
+                f"base={backing.base_ptr:#x} size={_fmt_bytes(backing.size_bytes)}"
+            )
+
+        lines.append(
+            "  placement: layer L block b -> "
+            "backing + offset + L*layer_stride + b*block_stride"
+        )
+        for descriptor in self.descriptors:
+            layers = descriptor.layers
+            stride_kind = (
+                "layers-interleaved-in-block"
+                if descriptor.block_stride > descriptor.layer_stride > 0
+                else "layer-contiguous"
+                if descriptor.layer_stride > 0
+                else "per-tensor-overlay"
+            )
+            backing = next(
+                (b for b in self.backings if b.backing_id == descriptor.backing_id),
+                None,
+            )
+            lines.append(
+                f"  tensor #{descriptor.descriptor_id}"
+                f" (backing #{descriptor.backing_id}"
+                f"{f' base={backing.base_ptr:#x}' if backing else ''}): "
+                f"{_layer_range(layers)} | offset={_fmt_bytes(descriptor.offset)} "
+                f"layer_stride={_fmt_bytes(descriptor.layer_stride)} "
+                f"block_stride={_fmt_bytes(descriptor.block_stride)} "
+                f"[{stride_kind}]"
+            )
+
+        lines.append("  per-layer geometry:")
+        for group_id in sorted(self.groups):
+            slots = self.groups[group_id]
+            # Collapse slots that share identical geometry into one line.
+            collapsed: list[tuple[tuple, list[str]]] = []
+            for slot in slots:
+                signature = _geometry_signature(slot)
+                for existing_signature, names in collapsed:
+                    if existing_signature == signature:
+                        names.append(slot.layer_name)
+                        break
+                else:
+                    collapsed.append((signature, [slot.layer_name]))
+            for _, names in collapsed:
+                representative = self.slots[names[0]]
+                component = representative.components[0] if representative.components else None
+                region = representative.regions[0] if representative.regions else None
+                parts = [f"group {group_id}: {_layer_range(names)}"]
+                if component is not None:
+                    parts.append(
+                        f"block={_fmt_bytes(component.block_stride)} "
+                        f"rows/block={component.rows_per_block} "
+                        f"states/row={component.states_per_row} "
+                        f"state={component.bytes_per_state}B"
+                    )
+                    if region is not None and region.payload_bytes != component.block_stride:
+                        parts.append(
+                            f"content={_fmt_bytes(region.payload_bytes)} "
+                            f"(page-padded)"
+                        )
+                parts.append(f"components={len(representative.components)}")
+                lines.append("    " + " | ".join(parts))
+        return "\n".join(lines)
 
     def resolve_block_id(
         self, logical_block: int, block_map: Mapping[int, int]

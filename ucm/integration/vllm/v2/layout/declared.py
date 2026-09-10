@@ -230,6 +230,7 @@ def build(
         ),
         groups=groups,
         num_blocks=num_blocks,
+        mode="declared",
     )
     for group_id, group_slots in groups.items():
         for slot in group_slots:
