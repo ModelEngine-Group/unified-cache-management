@@ -1,11 +1,15 @@
-"""Read-only KV-cache description and ragged runtime layout for connector v2."""
+"""Semantic KV-cache description and the dump/load batch orchestrator for connector v2.
+
+Physical placement -- where every layer's blocks and states sit -- lives in
+``.layout``.  This module keeps the semantic layer (groups, cache kinds,
+block sizing, the DSV4 policy) and walks dispatch plans over the layout
+model to produce proxy batches with deterministic record offsets.
+"""
 
 from __future__ import annotations
 
 import math
-import os
 import re
-import sys
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -15,32 +19,24 @@ from vllm.v1.kv_cache_interface import (
     get_kv_cache_spec_kind,
 )
 
+from .layout import build_layout_model
+from .layout.model import LAYOUT_DEBUG, layout_debug
 from .ucm_proxy import KVCacheValue, UCMProxyBatch
 
 if TYPE_CHECKING:
-    import torch
     from vllm.v1.kv_cache_interface import (
         KVCacheConfig,
         KVCacheGroupSpec,
         KVCacheSpec,
     )
 
+    from .layout.model import LayoutModel, LayerSlot
     from .ucm_scheduler import UCMConnectorMetadata, UCMGroupDispatchPlan
 
 
 _SLIDING_KINDS = frozenset(
     (KVCacheSpecKind.SLIDING_WINDOW, KVCacheSpecKind.SLIDING_WINDOW_MLA)
 )
-
-# Debug trace for the v2 layout: set UCM_V2_LAYOUT_DEBUG=1 to log, on stderr,
-# what UCMKVCacheLayout registers per layer and which pointer each allocated
-# vLLM block resolves to.  Zero cost when disabled.
-_LAYOUT_DEBUG = os.environ.get("UCM_V2_LAYOUT_DEBUG", "0") not in ("", "0")
-
-
-def _layout_debug(message: str) -> None:
-    if _LAYOUT_DEBUG:
-        print(f"[ucm-v2-layout] {message}", file=sys.stderr, flush=True)
 
 
 @dataclass(frozen=True)
@@ -398,15 +394,15 @@ def parse_kv_cache_config(
                 "and sliding/state WA groups"
             )
 
-    if _LAYOUT_DEBUG:
+    if LAYOUT_DEBUG:
         for group in groups:
             kind_names = ",".join(sorted(kind.value for kind in group.kinds))
-            _layout_debug(
+            layout_debug(
                 f"spec group={group.group_id} layers={group.num_layers} "
                 f"kinds={{{kind_names}}} token_block={group.token_block_size} "
                 f"hash_block={group.hash_block_size} tail={group.tail_tokens}"
             )
-        _layout_debug(
+        layout_debug(
             f"spec scheduler_block={scheduler_block_size} "
             f"alignment={alignment} chunk={selected_chunk} "
             f"device={device_type} dsv4={dsv4}"
@@ -422,371 +418,6 @@ def parse_kv_cache_config(
     )
 
 
-@dataclass(frozen=True)
-class UCMTensorViewLayout:
-    base_ptr: int
-    row_stride_bytes: int
-    tokens_per_row: int
-    rows_per_vllm_block: int
-    bytes_per_token: int
-    buffer_size_bytes: int
-
-    @property
-    def row_payload_bytes(self) -> int:
-        return self.tokens_per_row * self.bytes_per_token
-
-
-@dataclass(frozen=True)
-class UCMBlockIORegion:
-    """One naturally contiguous IO region for each vLLM physical block."""
-
-    base_ptr: int
-    block_stride_bytes: int
-    block_payload_bytes: int
-    buffer_size_bytes: int
-
-
-@dataclass(frozen=True)
-class UCMLayerKVCacheLayout:
-    layer_name: str
-    layer_index: int
-    group_id: int
-    component_views: tuple[UCMTensorViewLayout, ...]
-    full_block_regions: tuple[UCMBlockIORegion, ...]
-
-
-@dataclass(frozen=True)
-class UCMGroupKVCacheLayout:
-    group_id: int
-    layers: tuple[UCMLayerKVCacheLayout, ...]
-
-
-def _component_tensors(value: KVCacheValue) -> tuple["torch.Tensor", ...]:
-    if isinstance(value, (tuple, list)):
-        if not value:
-            raise ValueError("KV cache component tuple must not be empty")
-        return tuple(value)
-    return (value,)
-
-
-def _row_payload_bytes(
-    shape: tuple[int, ...], strides: tuple[int, ...], element_size: int
-) -> int:
-    """Return one row's payload and reject non-dense trailing dimensions.
-
-    The verified Ascend layouts may pad between rows, but each component payload
-    after dimension 0 is dense.  Copying ``stride(0)`` bytes would incorrectly
-    include another component (notably Kimi's shared Attention/Mamba page).
-
-    vllm 0.29 views permute the trailing dims per the resolved KVCacheLayout
-    (e.g. LBNHC orders memory [B, N, H, C] while the view exposes [B, H, N, C]),
-    so a dense permutation of dims 1.. is accepted as well: sorted by stride,
-    consecutive dims must tile exactly (still rejects padding / foreign bytes).
-    """
-
-    expected_stride = 1
-    for size, stride in zip(reversed(shape[1:]), reversed(strides[1:])):
-        if stride != expected_stride:
-            break
-        expected_stride *= size
-    else:
-        return expected_stride * element_size
-
-    pairs = sorted(zip(strides[1:], shape[1:]))
-    expected_stride = 1
-    for stride, size in pairs:
-        if stride != expected_stride:
-            raise ValueError(
-                "KV tensor trailing dimensions must be dense (C-order or a "
-                f"dense permutation); shape={shape}, strides={strides}"
-            )
-        expected_stride *= size
-    return expected_stride * element_size
-
-
-def _view_layout(
-    tensor: "torch.Tensor",
-    expected_block_size: int,
-    *,
-    num_blocks: int,
-    state_snapshot: bool = False,
-) -> UCMTensorViewLayout:
-    shape = tuple(int(value) for value in tensor.shape)
-    if len(shape) < 2 or len(shape) > 4:
-        raise ValueError(
-            "KV component views must be 2-D, 3-D, or 4-D, "
-            f"got shape={shape}"
-        )
-    if any(value <= 0 for value in shape):
-        raise ValueError(f"KV tensor dimensions must be positive, got shape={shape}")
-    if shape[0] % num_blocks:
-        raise ValueError(
-            f"KV tensor first dimension {shape[0]} is not divisible by "
-            f"num_blocks={num_blocks}"
-        )
-    element_size = int(tensor.element_size())
-    strides = tuple(int(tensor.stride(index)) for index in range(len(shape)))
-    row_stride = strides[0] * element_size
-    row_payload = _row_payload_bytes(shape, strides, element_size)
-    if row_stride < row_payload:
-        raise ValueError(
-            f"KV tensor row stride {row_stride} is smaller than payload {row_payload}"
-        )
-    rows_per_block = shape[0] // num_blocks
-    if state_snapshot:
-        tokens_per_row = 1
-        bytes_per_token = row_payload
-    else:
-        # vllm <= 0.27 attention views keep the token axis on dimension 1 with
-        # C-order trailing dims (e.g. Kimi MLA stores one logical block as six
-        # kernel rows). vllm 0.29 exposes uniform [B, H, N, C] views whose dims
-        # are permuted by the resolved KVCacheLayout, and whose N axis counts
-        # *stored states*, not raw tokens: DSV4's C4A cache stores one 584B
-        # state per 4 tokens (256-token block -> 64 states), the C128A variant
-        # and its indexer store 2/64 states per 256-token block. Try the legacy
-        # dim-1 reading first, then derive the row geometry arithmetically: the
-        # row payload must tile the expected block exactly.
-        tokens_per_row = shape[1]
-        bytes_per_token = strides[1] * element_size
-        if (
-            rows_per_block * tokens_per_row != expected_block_size
-            or tokens_per_row * bytes_per_token != row_payload
-        ):
-            tokens_per_row = expected_block_size // rows_per_block
-            if (
-                expected_block_size % rows_per_block
-                or tokens_per_row <= 0
-                or row_payload % tokens_per_row
-            ):
-                raise ValueError(
-                    "KV tensor does not match a dense row-payload tiling of "
-                    "the block: shape="
-                    f"{shape}, strides={strides}, "
-                    f"rows_per_vllm_block={rows_per_block}, "
-                    f"expected_block_size={expected_block_size}, "
-                    f"row_payload={row_payload}"
-                )
-            bytes_per_token = row_payload // tokens_per_row
-    return UCMTensorViewLayout(
-        base_ptr=int(tensor.data_ptr()),
-        row_stride_bytes=row_stride,
-        tokens_per_row=tokens_per_row,
-        rows_per_vllm_block=rows_per_block,
-        bytes_per_token=bytes_per_token,
-        buffer_size_bytes=(shape[0] - 1) * row_stride + row_payload,
-    )
-
-
-def _full_block_region_from_view(
-    view: UCMTensorViewLayout,
-) -> UCMBlockIORegion | None:
-    """Return a full-block region when all of its dimension-0 slices are dense."""
-
-    if view.rows_per_vllm_block > 1 and view.row_stride_bytes != view.row_payload_bytes:
-        return None
-    block_stride = view.rows_per_vllm_block * view.row_stride_bytes
-    block_payload = view.rows_per_vllm_block * view.row_payload_bytes
-    return UCMBlockIORegion(
-        base_ptr=view.base_ptr,
-        block_stride_bytes=block_stride,
-        block_payload_bytes=block_payload,
-        buffer_size_bytes=view.buffer_size_bytes,
-    )
-
-
-def _full_block_regions_from_views(
-    views: Sequence[UCMTensorViewLayout],
-) -> tuple[UCMBlockIORegion, ...]:
-    regions = tuple(_full_block_region_from_view(view) for view in views)
-    if any(region is None for region in regions):
-        return ()
-    return tuple(region for region in regions if region is not None)
-
-
-def _raw_block_region(
-    tensor: "torch.Tensor",
-    *,
-    num_blocks: int,
-    payload_bytes: int | None = None,
-) -> UCMBlockIORegion:
-    """Describe one block-major tensor as one native IO page per block."""
-
-    shape = tuple(int(value) for value in tensor.shape)
-    if len(shape) < 2 or shape[0] != num_blocks:
-        raise ValueError(
-            "Block-major KV tensor must have num_blocks on dimension 0, "
-            f"got shape={shape}, num_blocks={num_blocks}"
-        )
-    element_size = int(tensor.element_size())
-    strides = tuple(int(tensor.stride(index)) for index in range(len(shape)))
-    block_stride = strides[0] * element_size
-    dense_payload = _row_payload_bytes(shape, strides, element_size)
-    if block_stride < dense_payload:
-        raise ValueError(
-            f"KV block stride {block_stride} is smaller than payload {dense_payload}"
-        )
-    block_payload = dense_payload if payload_bytes is None else int(payload_bytes)
-    if block_payload <= 0 or block_payload > dense_payload:
-        raise ValueError(
-            f"KV block payload {block_payload} is outside dense page size "
-            f"{dense_payload}"
-        )
-    return UCMBlockIORegion(
-        base_ptr=int(tensor.data_ptr()),
-        block_stride_bytes=block_stride,
-        block_payload_bytes=block_payload,
-        buffer_size_bytes=(num_blocks - 1) * block_stride + block_payload,
-    )
-
-
-def _attention_layouts(
-    value: KVCacheValue,
-    layer: UCMLayerSpec,
-    *,
-    num_blocks: int,
-) -> tuple[tuple[UCMTensorViewLayout, ...], tuple[UCMBlockIORegion, ...]]:
-    """Resolve actual component containers without imposing a platform policy."""
-
-    if isinstance(value, (tuple, list)):
-        component_tensors = _component_tensors(value)
-        combined_tensor = None
-    else:
-        shape = tuple(int(item) for item in value.shape)
-        combined_tensor = value if len(shape) == 5 else None
-        if combined_tensor is None:
-            component_tensors = (value,)
-        else:
-            if (
-                shape[0] != num_blocks
-                or shape[1] != 2
-                or not callable(getattr(value, "unbind", None))
-            ):
-                raise ValueError(
-                    "Verified combined K/V tensors require block-major shape "
-                    f"(num_blocks, 2, ...), got shape={shape}, "
-                    f"num_blocks={num_blocks}"
-                )
-            component_tensors = tuple(value.unbind(1))
-            if len(component_tensors) != 2:
-                raise ValueError(
-                    f"Combined KV tensor did not produce K/V views: {shape}"
-                )
-
-    component_views = tuple(
-        _view_layout(
-            component,
-            layer.storage_block_size,
-            num_blocks=num_blocks,
-        )
-        for component in component_tensors
-    )
-    if combined_tensor is None:
-        return component_views, _full_block_regions_from_views(component_views)
-
-    # Keep a combined block-major K/V tensor together for full-block IO.
-    return component_views, (
-        _raw_block_region(combined_tensor, num_blocks=num_blocks),
-    )
-
-
-def _dtype_size(dtype: "torch.dtype") -> int:
-    itemsize = getattr(dtype, "itemsize", None)
-    if itemsize is not None:
-        return int(itemsize)
-    import importlib
-
-    torch = importlib.import_module("torch")
-    return int(torch.empty((), dtype=dtype).element_size())
-
-
-def _state_layouts(
-    value: KVCacheValue,
-    layer: UCMLayerSpec,
-    *,
-    num_blocks: int,
-) -> tuple[tuple[UCMTensorViewLayout, ...], tuple[UCMBlockIORegion, ...]]:
-    """Resolve an explicit component tuple or one combined raw state page."""
-
-    component_tensors = _component_tensors(value)
-    expected_shapes = tuple(
-        tuple(int(item) for item in shape)
-        for shape in (getattr(layer.kv_cache_spec, "shapes", None) or ())
-    )
-    actual_shapes = tuple(
-        tuple(int(item) for item in tensor.shape[1:]) for tensor in component_tensors
-    )
-    if not expected_shapes or actual_shapes == expected_shapes:
-        component_views = tuple(
-            _view_layout(
-                tensor,
-                layer.storage_block_size,
-                num_blocks=num_blocks,
-                state_snapshot=True,
-            )
-            for tensor in component_tensors
-        )
-        return component_views, _full_block_regions_from_views(component_views)
-
-    if len(component_tensors) != 1 or not expected_shapes:
-        raise ValueError(
-            f"State components for {layer.layer_name} do not match spec shapes: "
-            f"{actual_shapes} != {expected_shapes}"
-        )
-
-    raw = component_tensors[0]
-    shape = tuple(int(item) for item in raw.shape)
-    strides = tuple(int(raw.stride(index)) for index in range(len(shape)))
-    element_size = int(raw.element_size())
-    if shape[0] != num_blocks or element_size != 1:
-        raise ValueError(
-            "Combined state backing must be one byte page per block: "
-            f"shape={shape}, element_size={element_size}, num_blocks={num_blocks}"
-        )
-    row_stride = strides[0] * element_size
-    row_payload = _row_payload_bytes(shape, strides, element_size)
-    page_size = int(getattr(layer.kv_cache_spec, "page_size_bytes", row_stride))
-    # vllm <= 0.27 exposes C = the full padded page (row_payload == row_stride
-    # == page_size, padding at the page tail). vllm 0.29 exposes C = the dense
-    # state content only, with the page padding between blocks
-    # (row_payload <= row_stride == page_size). Components are carved from the
-    # front of each page in both forms; the page padding stays outside the
-    # record either way.
-    if row_stride != page_size or row_payload > row_stride:
-        raise ValueError(
-            "Combined state backing must be a dense padded page: "
-            f"shape={shape}, strides={strides}, page_size={page_size}"
-        )
-
-    dtypes = tuple(getattr(layer.kv_cache_spec, "dtypes", ()) or ())
-    if len(dtypes) != len(expected_shapes):
-        raise ValueError(
-            f"State spec for {layer.layer_name} must provide one dtype per shape"
-        )
-    offset = 0
-    layouts: list[UCMTensorViewLayout] = []
-    for component_shape, dtype in zip(expected_shapes, dtypes, strict=True):
-        component_size = math.prod(component_shape) * _dtype_size(dtype)
-        if offset + component_size > row_stride:
-            raise ValueError(
-                f"State components exceed padded page for {layer.layer_name}"
-            )
-        layouts.append(
-            UCMTensorViewLayout(
-                base_ptr=int(raw.data_ptr()) + offset,
-                row_stride_bytes=row_stride,
-                tokens_per_row=1,
-                rows_per_vllm_block=1,
-                bytes_per_token=component_size,
-                buffer_size_bytes=(num_blocks - 1) * row_stride + component_size,
-            )
-        )
-        offset += component_size
-    # Keep the meaningful conv/SSM payload together because the actual runtime
-    # value is one block-major page.  Page padding remains outside the record.
-    region = _raw_block_region(raw, num_blocks=num_blocks, payload_bytes=offset)
-    return tuple(layouts), (region,)
-
-
 class UCMKVCacheLayout:
     """Ragged, per-layer physical layout with deterministic record offsets."""
 
@@ -796,78 +427,26 @@ class UCMKVCacheLayout:
         kv_caches: Mapping[str, KVCacheValue],
         *,
         num_blocks: int,
+        kv_cache_tensors: Sequence[object] = (),
     ) -> None:
         if num_blocks <= 0:
             raise ValueError("num_blocks must be positive")
         self.spec = spec
         self.num_blocks = num_blocks
-        groups: dict[int, UCMGroupKVCacheLayout] = {}
-        layers: dict[str, UCMLayerKVCacheLayout] = {}
-        for group in spec.groups:
-            group_layers: list[UCMLayerKVCacheLayout] = []
-            for layer in sorted(
-                group.layers,
-                key=lambda item: (item.layer_index, item.layer_name),
-            ):
-                if layer.layer_name not in kv_caches:
-                    raise ValueError(f"Missing KV cache tensor for {layer.layer_name}")
-                if group.is_state_snapshot:
-                    component_views, full_block_regions = _state_layouts(
-                        kv_caches[layer.layer_name],
-                        layer,
-                        num_blocks=num_blocks,
-                    )
-                else:
-                    component_views, full_block_regions = _attention_layouts(
-                        kv_caches[layer.layer_name],
-                        layer,
-                        num_blocks=num_blocks,
-                    )
-                if group.is_state_snapshot and any(
-                    view.rows_per_vllm_block != 1 for view in component_views
-                ):
-                    raise ValueError(
-                        "State components require exactly one "
-                        f"physical row per vLLM block for {layer.layer_name}"
-                    )
-                if _LAYOUT_DEBUG:
-                    for view_index, view in enumerate(component_views):
-                        _layout_debug(
-                            f"register num_blocks={num_blocks} "
-                            f"group={group.group_id} layer={layer.layer_name} "
-                            f"view={view_index} "
-                            f"state={int(group.is_state_snapshot)} "
-                            f"base_ptr={view.base_ptr:#x} "
-                            f"rows_per_block={view.rows_per_vllm_block} "
-                            f"tokens_per_row={view.tokens_per_row} "
-                            f"row_stride={view.row_stride_bytes} "
-                            f"payload={view.row_payload_bytes} "
-                            f"bytes_per_token={view.bytes_per_token} "
-                            f"buffer={view.buffer_size_bytes}"
-                        )
-                    for region_index, region in enumerate(full_block_regions):
-                        _layout_debug(
-                            f"io-region group={group.group_id} "
-                            f"layer={layer.layer_name} region={region_index} "
-                            f"base_ptr={region.base_ptr:#x} "
-                            f"block_stride={region.block_stride_bytes} "
-                            f"block_payload={region.block_payload_bytes} "
-                            f"buffer={region.buffer_size_bytes}"
-                        )
-                item = UCMLayerKVCacheLayout(
-                    layer.layer_name,
-                    layer.layer_index,
-                    group.group_id,
-                    component_views,
-                    full_block_regions,
-                )
-                group_layers.append(item)
-                layers[layer.layer_name] = item
-            groups[group.group_id] = UCMGroupKVCacheLayout(
-                group.group_id, tuple(group_layers)
-            )
-        self.groups = groups
-        self.layers = layers
+        self.model: LayoutModel = build_layout_model(
+            spec,
+            kv_caches,
+            num_blocks=num_blocks,
+            kv_cache_tensors=kv_cache_tensors,
+        )
+
+    @property
+    def groups(self) -> Mapping[int, tuple["LayerSlot", ...]]:
+        return self.model.groups
+
+    @property
+    def layers(self) -> Mapping[str, "LayerSlot"]:
+        return self.model.slots
 
     def build_load_batches(
         self, metadata: "UCMConnectorMetadata", layer_name: str | None = None
@@ -924,13 +503,13 @@ class UCMKVCacheLayout:
             }
             for selection in plan.vllm_blocks
         }
-        if _LAYOUT_DEBUG:
+        if LAYOUT_DEBUG:
             for group_id in sorted(block_maps):
                 block_map = block_maps[group_id]
                 pairs = sorted(block_map.items())
                 shown = ",".join(f"{k}->{v}" for k, v in pairs[:8])
                 more = "" if len(pairs) <= 8 else ",..."
-                _layout_debug(
+                layout_debug(
                     f"plan hash_group={plan.hash_group} group={group_id} "
                     f"tokens=[{plan.token_start},{plan.token_end}) "
                     f"keys={len(plan.keys)} vllm_blocks {{{shown}{more}}}"
@@ -941,216 +520,27 @@ class UCMKVCacheLayout:
             key_end = key_start + key_tokens
             for group_id in sorted(block_maps):
                 group_info = self.spec.groups[group_id]
-                group_layout = self.groups[group_id]
                 group_key_start = key_start
                 if plan.hash_group == "WA":
                     if not group_info.tail_tokens:
                         continue
                     group_key_start = max(key_end - group_info.tail_tokens, 0)
-                for layer in group_layout.layers:
-                    segments = self._segments_for_full_blocks(
-                        group_info,
-                        layer.full_block_regions,
-                        block_maps[group_id],
-                        group_key_start,
-                        key_end,
-                        layer_name=layer.layer_name,
+                for slot in self.model.groups[group_id]:
+                    segments = self.model.layer_segments(
+                        slot,
+                        block_map=block_maps[group_id],
+                        token_start=group_key_start,
+                        token_end=key_end,
+                        token_block_size=group_info.token_block_size,
+                        state=group_info.is_state_snapshot,
                     )
-                    if segments is None:
-                        segments = tuple(
-                            segment
-                            for view in layer.component_views
-                            for segment in self._segments_for_view(
-                                group_info,
-                                view,
-                                block_maps[group_id],
-                                group_key_start,
-                                key_end,
-                                layer_name=layer.layer_name,
-                            )
-                        )
                     for ptr, size in segments:
-                        if layer_name is None or layer.layer_name == layer_name:
+                        if layer_name is None or slot.layer_name == layer_name:
                             yield key, record_offset, ptr, size
                         record_offset += size
-            if _LAYOUT_DEBUG:
-                _layout_debug(
+            if LAYOUT_DEBUG:
+                layout_debug(
                     f"record key={key.hex()[:16]}... tokens="
                     f"[{key_start},{key_end}) groups={sorted(block_maps)} "
                     f"record_size={record_offset}"
                 )
-
-    def _resolve_block_id(
-        self,
-        group_id: int,
-        logical_block: int,
-        block_map: Mapping[int, int],
-    ) -> int:
-        if logical_block not in block_map:
-            raise ValueError(
-                f"Missing vLLM block {logical_block} for group {group_id}"
-            )
-        block_id = block_map[logical_block]
-        if block_id < 0 or block_id >= self.num_blocks:
-            raise ValueError(
-                f"vLLM block ID {block_id} is outside [0, {self.num_blocks})"
-            )
-        return block_id
-
-    def _segments_for_full_blocks(
-        self,
-        group: UCMKVCacheGroupInfo,
-        regions: Sequence[UCMBlockIORegion],
-        block_map: Mapping[int, int],
-        token_start: int,
-        token_end: int,
-        *,
-        layer_name: str = "",
-    ) -> tuple[tuple[int, int], ...] | None:
-        if not regions:
-            return None
-        logical_blocks: tuple[int, ...]
-        if group.is_state_snapshot:
-            logical_blocks = (max((token_end - 1) // group.token_block_size, 0),)
-        else:
-            first = token_start // group.token_block_size
-            last = (token_end - 1) // group.token_block_size
-            logical_blocks = tuple(range(first, last + 1))
-            if any(
-                max(token_start, block * group.token_block_size)
-                != block * group.token_block_size
-                or min(token_end, (block + 1) * group.token_block_size)
-                != (block + 1) * group.token_block_size
-                for block in logical_blocks
-            ):
-                return None
-
-        result: list[tuple[int, int]] = []
-        # Preserve the component structure exposed by the runtime value.  A
-        # combined block-major tensor has one region; an Ascend tuple/list has
-        # one region per explicit K/V, index/scale, or conv/SSM component.
-        for region in regions:
-            for logical_block in logical_blocks:
-                block_id = self._resolve_block_id(
-                    group.group_id, logical_block, block_map
-                )
-                ptr = region.base_ptr + block_id * region.block_stride_bytes
-                size = region.block_payload_bytes
-                if ptr + size > region.base_ptr + region.buffer_size_bytes:
-                    raise ValueError(
-                        "KV cache IO region exceeds registered tensor buffer"
-                    )
-                if _LAYOUT_DEBUG:
-                    _layout_debug(
-                        f"io-segment group={group.group_id} layer={layer_name} "
-                        f"block={block_id} ptr={ptr:#x} size={size}"
-                    )
-                result.append((ptr, size))
-        return tuple(result)
-
-    def _segments_for_view(
-        self,
-        group: UCMKVCacheGroupInfo,
-        view: UCMTensorViewLayout,
-        block_map: Mapping[int, int],
-        token_start: int,
-        token_end: int,
-        *,
-        layer_name: str = "",
-    ) -> tuple[tuple[int, int], ...]:
-        if group.is_state_snapshot:
-            logical_block = max((token_end - 1) // group.token_block_size, 0)
-            block_id = self._resolve_block_id(
-                group.group_id, logical_block, block_map
-            )
-            first_row = block_id * view.rows_per_vllm_block
-            view_offset = first_row * view.row_stride_bytes
-            if _LAYOUT_DEBUG:
-                _layout_debug(
-                    f"state-segment group={group.group_id} "
-                    f"layer={layer_name} block={block_id} "
-                    f"rows={view.rows_per_vllm_block} "
-                    f"ptr={view.base_ptr + view_offset:#x} "
-                    f"view_off={view_offset} "
-                    f"size={view.rows_per_vllm_block * view.row_payload_bytes}"
-                )
-            state_segments: list[tuple[int, int]] = []
-            for row in range(view.rows_per_vllm_block):
-                ptr = view.base_ptr + (first_row + row) * view.row_stride_bytes
-                size = view.row_payload_bytes
-                if ptr + size > view.base_ptr + view.buffer_size_bytes:
-                    raise ValueError(
-                        "KV cache state segment exceeds registered tensor buffer"
-                    )
-                state_segments.append((ptr, size))
-            return tuple(state_segments)
-        result: list[tuple[int, int]] = []
-        previous_block_id: int | None = None
-
-        def append_segment(ptr: int, size: int, block_id: int) -> None:
-            nonlocal previous_block_id
-            if not size:
-                return
-            if (
-                result
-                and previous_block_id == block_id
-                and result[-1][0] + result[-1][1] == ptr
-            ):
-                previous_ptr, previous_size = result[-1]
-                result[-1] = (previous_ptr, previous_size + size)
-            else:
-                result.append((ptr, size))
-            previous_block_id = block_id
-
-        first = token_start // group.token_block_size
-        last = (token_end - 1) // group.token_block_size
-        for logical_block in range(first, last + 1):
-            block_id = self._resolve_block_id(
-                group.group_id, logical_block, block_map
-            )
-            logical_begin = max(token_start, logical_block * group.token_block_size)
-            logical_end = min(token_end, (logical_block + 1) * group.token_block_size)
-            storage_tokens = view.rows_per_vllm_block * view.tokens_per_row
-            numerator_begin = (
-                logical_begin - logical_block * group.token_block_size
-            ) * storage_tokens
-            numerator_end = (
-                logical_end - logical_block * group.token_block_size
-            ) * storage_tokens
-            if (
-                numerator_begin % group.token_block_size
-                or numerator_end % group.token_block_size
-            ):
-                raise ValueError(
-                    "Logical token range cannot be represented exactly by tensor layout"
-                )
-            physical_begin = numerator_begin // group.token_block_size
-            physical_end = numerator_end // group.token_block_size
-            while physical_begin < physical_end:
-                row_in_block, token_in_row = divmod(physical_begin, view.tokens_per_row)
-                row_end = min(
-                    physical_end,
-                    (row_in_block + 1) * view.tokens_per_row,
-                )
-                row_index = block_id * view.rows_per_vllm_block + row_in_block
-                ptr = (
-                    view.base_ptr
-                    + row_index * view.row_stride_bytes
-                    + token_in_row * view.bytes_per_token
-                )
-                size = (row_end - physical_begin) * view.bytes_per_token
-                if ptr + size > view.base_ptr + view.buffer_size_bytes:
-                    raise ValueError(
-                        "KV cache segment exceeds registered tensor buffer"
-                    )
-                if _LAYOUT_DEBUG:
-                    _layout_debug(
-                        f"segment group={group.group_id} layer={layer_name} "
-                        f"block={block_id} row={row_in_block}/"
-                        f"{view.rows_per_vllm_block} "
-                        f"tokens=[{logical_begin},{logical_end}) "
-                        f"ptr={ptr:#x} view_off={ptr - view.base_ptr} size={size}"
-                    )
-                append_segment(ptr, size, block_id)
-                physical_begin = row_end
-        return tuple(result)

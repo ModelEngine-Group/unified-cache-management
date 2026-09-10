@@ -1,6 +1,7 @@
 import enum
 import inspect
 import json
+import os
 import sys
 import tempfile
 import types
@@ -1283,9 +1284,9 @@ class RaggedLayoutTest(unittest.TestCase):
             num_blocks=8,
         )
 
-        view = layout.layers["model.layers.0.attn"].component_views[0]
+        view = layout.layers["model.layers.0.attn"].components[0]
         self.assertEqual(parsed.groups[0].token_block_size, 256)
-        self.assertEqual(view.tokens_per_row, 64)
+        self.assertEqual(view.states_per_row, 64)
 
     def test_combined_mamba_raw_page_uses_one_io_region(self):
         parsed = parse_kv_cache_config(
@@ -1318,17 +1319,17 @@ class RaggedLayoutTest(unittest.TestCase):
             num_blocks=8,
         )
 
-        views = layout.layers["model.layers.0.mixer"].component_views
+        views = layout.layers["model.layers.0.mixer"].components
         self.assertEqual(tuple(view.base_ptr for view in views), (0x1000, 0x1008))
         self.assertEqual(tuple(view.row_stride_bytes for view in views), (64, 64))
         self.assertEqual(tuple(view.row_payload_bytes for view in views), (8, 8))
-        regions = layout.layers["model.layers.0.mixer"].full_block_regions
+        regions = layout.layers["model.layers.0.mixer"].regions
         self.assertEqual(len(regions), 1)
         self.assertEqual(
             (
                 regions[0].base_ptr,
-                regions[0].block_stride_bytes,
-                regions[0].block_payload_bytes,
+                regions[0].block_stride,
+                regions[0].payload_bytes,
             ),
             (0x1000, 64, 16),
         )
@@ -1380,14 +1381,14 @@ class RaggedLayoutTest(unittest.TestCase):
         self.assertEqual(
             tuple(
                 view.base_ptr
-                for view in layout.layers["model.layers.0.attn"].component_views
+                for view in layout.layers["model.layers.0.attn"].components
             ),
             (0x1000, 0x2000),
         )
         self.assertEqual(
             tuple(
                 view.base_ptr
-                for view in layout.layers["model.layers.1.attn"].component_views
+                for view in layout.layers["model.layers.1.attn"].components
             ),
             (0x3000,),
         )
@@ -1396,7 +1397,7 @@ class RaggedLayoutTest(unittest.TestCase):
                 region.base_ptr
                 for region in layout.layers[
                     "model.layers.0.attn"
-                ].full_block_regions
+                ].regions
             ),
             (0x1000, 0x2000),
         )
@@ -1422,24 +1423,24 @@ class RaggedLayoutTest(unittest.TestCase):
         self.assertEqual(
             tuple(
                 view.base_ptr
-                for view in layout.layers["model.layers.0.attn"].component_views
+                for view in layout.layers["model.layers.0.attn"].components
             ),
             (0x1000, 0x1018),
         )
         self.assertEqual(
             tuple(
                 view.row_stride_bytes
-                for view in layout.layers["model.layers.0.attn"].component_views
+                for view in layout.layers["model.layers.0.attn"].components
             ),
             (48, 48),
         )
-        regions = layout.layers["model.layers.0.attn"].full_block_regions
+        regions = layout.layers["model.layers.0.attn"].regions
         self.assertEqual(len(regions), 1)
         self.assertEqual(
             (
                 regions[0].base_ptr,
-                regions[0].block_stride_bytes,
-                regions[0].block_payload_bytes,
+                regions[0].block_stride,
+                regions[0].payload_bytes,
             ),
             (0x1000, 48, 48),
         )
@@ -1924,6 +1925,122 @@ class RaggedLayoutTest(unittest.TestCase):
 
         self.assertEqual(memory.read(0x1000 + 7 * 8, 8), source_k)
         self.assertEqual(memory.read(0x2000 + 7 * 12, 12), source_v)
+
+
+class DeclaredLayoutModelTest(unittest.TestCase):
+    """The declared mode must mirror vLLM's own packed-tensor placements."""
+
+    def _fixture(self):
+        parsed = parse_kv_cache_config(
+            config(
+                group(
+                    ["model.layers.0.attn", "model.layers.1.attn"],
+                    {
+                        "model.layers.0.attn": FullAttentionSpec(4),
+                        "model.layers.1.attn": FullAttentionSpec(4),
+                    },
+                )
+            ),
+            scheduler_block_size=4,
+            device_type="cpu",
+        )
+        # Two dense per-layer tensors, 12-byte blocks, 8 blocks each: the
+        # declared placement packs them 96 bytes apart in one backing.
+        caches = {
+            "model.layers.0.attn": FakeTensor(0x1000, (8, 4, 3), (12, 3, 1)),
+            "model.layers.1.attn": FakeTensor(0x1060, (8, 4, 3), (12, 3, 1)),
+        }
+        declarations = (
+            SimpleNamespace(
+                size=192,
+                layers=("model.layers.0.attn", "model.layers.1.attn"),
+                offset=0,
+                layer_stride=96,
+                block_stride=12,
+            ),
+        )
+        return parsed, caches, declarations
+
+    def test_declared_mode_matches_inferred_mode(self):
+        parsed, caches, declarations = self._fixture()
+
+        declared_layout = UCMKVCacheLayout(
+            parsed,
+            caches,
+            num_blocks=8,
+            kv_cache_tensors=declarations,
+        )
+        inferred_layout = UCMKVCacheLayout(parsed, caches, num_blocks=8)
+
+        self.assertEqual(declared_layout.model.slots, inferred_layout.model.slots)
+        self.assertEqual(len(declared_layout.model.descriptors), 1)
+        self.assertEqual(declared_layout.model.descriptors[0].layer_stride, 96)
+        self.assertEqual(
+            declared_layout.model.backings[0].base_ptr,
+            0x1000,
+        )
+
+    def test_assert_mode_cross_checks_both_models(self):
+        parsed, caches, declarations = self._fixture()
+        previous = os.environ.get("UCM_V2_DESCRIPTOR_SOURCE")
+        os.environ["UCM_V2_DESCRIPTOR_SOURCE"] = "assert"
+        try:
+            layout = UCMKVCacheLayout(
+                parsed,
+                caches,
+                num_blocks=8,
+                kv_cache_tensors=declarations,
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("UCM_V2_DESCRIPTOR_SOURCE", None)
+            else:
+                os.environ["UCM_V2_DESCRIPTOR_SOURCE"] = previous
+        self.assertEqual(len(layout.model.descriptors), 1)
+
+    def test_disagreeing_block_stride_is_rejected(self):
+        parsed, caches, _ = self._fixture()
+        bad = (
+            SimpleNamespace(
+                size=192,
+                layers=("model.layers.0.attn", "model.layers.1.attn"),
+                offset=0,
+                layer_stride=96,
+                block_stride=13,
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "block stride"):
+            UCMKVCacheLayout(parsed, caches, num_blocks=8, kv_cache_tensors=bad)
+
+    def test_disagreeing_layer_stride_is_rejected(self):
+        parsed, caches, _ = self._fixture()
+        bad = (
+            SimpleNamespace(
+                size=192,
+                layers=("model.layers.0.attn", "model.layers.1.attn"),
+                offset=0,
+                layer_stride=97,
+                block_stride=12,
+            ),
+        )
+        # A wrong stride breaks the page bounds first; both messages name the
+        # disagreement with the declared placement.
+        with self.assertRaisesRegex(ValueError, "declared"):
+            UCMKVCacheLayout(parsed, caches, num_blocks=8, kv_cache_tensors=bad)
+
+    def test_uncovered_layer_is_rejected(self):
+        parsed, caches, _ = self._fixture()
+        partial = (
+            SimpleNamespace(
+                size=192,
+                layers=("model.layers.0.attn",),
+                offset=0,
+                layer_stride=96,
+                block_stride=12,
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "No declared tensor covers"):
+            UCMKVCacheLayout(parsed, caches, num_blocks=8, kv_cache_tensors=partial)
 
 
 if __name__ == "__main__":
