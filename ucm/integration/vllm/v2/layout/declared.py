@@ -187,16 +187,6 @@ def build(
                 )
 
     for declaration in declarations:
-        descriptor_span = (
-            declaration.offset
-            + (len(declaration.layers) - 1) * declaration.layer_stride
-            + num_blocks * declaration.block_stride
-        )
-        if descriptor_span > backing_size:
-            raise ValueError(
-                f"Declared tensor {declaration.descriptor_id} spans "
-                f"{descriptor_span} bytes, beyond the {backing_size}-byte backing"
-            )
         previous_base: int | None = None
         for name in declaration.layers:
             base = first_bases[name]
@@ -210,6 +200,20 @@ def build(
                     f"({previous_base:#x} -> {base:#x})"
                 )
             previous_base = base
+
+    # Every registered structure must end inside the backing.  The buffer
+    # bound already reaches the last row of the last block, so this holds the
+    # descriptor span without assuming padding after the final block
+    # (interleaved DSV4 pages are far smaller than their block stride).
+    backing_end = anchor_base + backing_size
+    for slot in slots_by_name.values():
+        for structure in (*slot.components, *slot.regions):
+            if structure.base_ptr + structure.buffer_size_bytes > backing_end:
+                raise ValueError(
+                    f"Layer {slot.layer_name}: structure at "
+                    f"{structure.base_ptr:#x} extends beyond the backing end "
+                    f"{backing_end:#x}"
+                )
 
     model = LayoutModel(
         backings=(BackingAllocation(0, anchor_base, backing_size),),
