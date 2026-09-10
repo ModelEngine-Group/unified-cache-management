@@ -137,13 +137,14 @@ def _check_meta_model(model_config: Any) -> Any:
         resolve_layer_indices,
     )
     from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+    from .sglang_compat import server_args_guard
 
     load_config = LoadConfig()
     old_dtype = torch.get_default_dtype()
     try:
         torch.set_default_dtype(model_config.dtype)
         quant_config = _get_quantization_config(model_config, load_config)
-        with _single_rank_model_parallel():
+        with server_args_guard(), _single_rank_model_parallel():
             with torch.device("meta"), _meta_device_guard(torch):
                 model = _initialize_model(model_config, load_config, quant_config)
             resolve_layer_indices(

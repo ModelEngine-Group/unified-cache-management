@@ -8,6 +8,7 @@ import sys
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +30,7 @@ from ucm_toolkit.tools.sglang_model_check.runner import (  # noqa: E402
 )
 from ucm_toolkit.tools.sglang_model_check.sglang_compat.inspector import (  # noqa: E402
     _linear_attention,
+    server_args_guard,
     supported_platforms_for_quantization,
 )
 
@@ -261,6 +263,15 @@ class SglangModelCheckToolkitTest(unittest.TestCase):
         )
         self.assertEqual(supported_platforms_for_quantization("NVFP4"), ["cuda"])
         self.assertIsNone(supported_platforms_for_quantization("awq"))
+
+    def test_server_args_guard_reuses_published_context(self):
+        runtime = SimpleNamespace(get_server_args=lambda: object())
+        with patch(
+            "ucm_toolkit.tools.sglang_model_check.sglang_compat.inspector.importlib.import_module",
+            return_value=runtime,
+        ):
+            with server_args_guard():
+                pass
 
 
 if __name__ == "__main__":

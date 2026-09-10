@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.metadata
+from contextlib import contextmanager
 from typing import Any
 
 
@@ -14,6 +15,39 @@ def _optional_callable(module_name: str, name: str):
         return None
     value = getattr(module, name, None)
     return value if callable(value) else None
+
+
+@contextmanager
+def server_args_guard():
+    """Publish SGLang's minimal scoped test context when no Engine did so.
+
+    Newer SGLang model constructors read process-wide ServerArgs even during
+    weight-free initialization.  RuntimeContext.override_server_args() is the
+    framework-provided reversible boundary for tests and offline tools.
+    """
+    runtime = importlib.import_module("sglang.srt.runtime_context")
+    get_server_args = getattr(runtime, "get_server_args", None)
+    if callable(get_server_args):
+        try:
+            get_server_args()
+            yield
+            return
+        except ValueError as exc:
+            if "server args" not in str(exc).lower():
+                raise
+
+    get_context = getattr(runtime, "get_context", None)
+    context = get_context() if callable(get_context) else None
+    override = getattr(context, "override_server_args", None)
+    if callable(override):
+        with override():
+            yield
+        return
+
+    raise RuntimeError(
+        "this SGLang version requires global ServerArgs during model init but "
+        "does not expose RuntimeContext.override_server_args()"
+    )
 
 
 def _call_bool(module_name: str, name: str, argument: Any):
