@@ -143,22 +143,23 @@ def _check_meta_model(model_config: Any) -> Any:
     old_dtype = torch.get_default_dtype()
     try:
         torch.set_default_dtype(model_config.dtype)
-        quant_config = _get_quantization_config(model_config, load_config)
-        with server_args_guard(), _single_rank_model_parallel():
-            with torch.device("meta"), _meta_device_guard(torch):
-                model = _initialize_model(model_config, load_config, quant_config)
-            resolve_layer_indices(
-                model=model,
-                model_config=model_config,
-                is_draft_worker=False,
-                spec_algorithm=SpeculativeAlgorithm.NONE,
-            )
-            return model
+        with server_args_guard():
+            quant_config = _get_quantization_config(model_config, load_config)
+            with _single_rank_model_parallel():
+                with torch.device("meta"), _meta_device_guard(torch):
+                    model = _initialize_model(model_config, load_config, quant_config)
+                resolve_layer_indices(
+                    model=model,
+                    model_config=model_config,
+                    is_draft_worker=False,
+                    spec_algorithm=SpeculativeAlgorithm.NONE,
+                )
+                return model
     except Exception as exc:
         raise CheckFailure(
             "META_MODEL_INIT_UNSUPPORTED",
             "meta_model_init",
-            f"{type(exc).__name__}: {exc}",
+            f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}",
         ) from exc
     finally:
         torch.set_default_dtype(old_dtype)
