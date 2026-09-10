@@ -20,7 +20,8 @@ class CheckResult:
     cache_requirements: dict[str, Any] = field(default_factory=dict)
     ucm_capabilities: dict[str, Any] = field(default_factory=dict)
     roundtrip: dict[str, Any] = field(default_factory=dict)
-    schema_version: int = 1
+    environment: dict[str, Any] = field(default_factory=dict)
+    schema_version: int = 2
     framework: str = "sglang"
 
     def succeed(self, stage: str, reason: str = "") -> None:

@@ -40,3 +40,14 @@ of Mamba, SWA, DSA indexer, or DeepSeek-V4 compatibility.
 
 Use `--skip-meta-model` only for a weaker configuration-only scan. A successful
 result in that mode does not prove that the SGLang model class can be built.
+
+Use `--platform auto|cuda|rocm|ascend|xpu|cpu` to select platform-specific
+visibility and reporting. Auto prefers an existing Ascend environment or
+`torch_npu`; otherwise it selects CUDA. The JSON `environment` field records
+the detected SGLang version and platform. Accelerator-specific formats such as
+NVFP4 are rejected on incompatible platforms.
+
+Use `--platform auto|cuda|rocm|ascend|xpu|cpu` to select the accelerator family.
+The child process sets only the matching visibility variable. Accelerator-specific
+quantization such as NVFP4 is rejected on a non-CUDA platform before meta-model
+construction.

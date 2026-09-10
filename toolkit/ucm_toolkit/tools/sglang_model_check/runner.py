@@ -27,52 +27,9 @@ class CheckFailure(RuntimeError):
 
 
 def _model_facts(model_config: Any) -> dict[str, Any]:
-    from sglang.srt.configs.hybrid_arch import mambaish_config
-    from sglang.srt.configs.model_config import (
-        is_deepseek_dsa,
-        is_deepseek_v4,
-        is_minimax_sparse,
-        uses_kda_attention,
-    )
+    from .sglang_compat import collect_model_facts
 
-    hf_config = model_config.hf_config
-    text_config = model_config.hf_text_config
-    architectures = list(getattr(hf_config, "architectures", None) or [])
-    try:
-        has_linear_attention = bool(mambaish_config(model_config))
-    except Exception:
-        has_linear_attention = uses_kda_attention(text_config)
-
-    attention_arch = getattr(model_config.attention_arch, "name", None)
-    if attention_arch is None:
-        attention_arch = str(model_config.attention_arch).split(".")[-1]
-
-    try:
-        from sglang.srt.mem_cache.hicache_storage import PoolName
-
-        sglang_pool_names = [str(item.value) for item in PoolName]
-    except Exception:
-        sglang_pool_names = []
-
-    return {
-        "architectures": architectures,
-        "model_type": getattr(hf_config, "model_type", None),
-        "attention_arch": attention_arch,
-        "is_hybrid_swa": bool(getattr(model_config, "is_hybrid_swa", False)),
-        "has_linear_attention": has_linear_attention,
-        "is_dsa": is_deepseek_dsa(text_config),
-        "is_deepseek_v4": is_deepseek_v4(hf_config),
-        "is_minimax_sparse": is_minimax_sparse(hf_config),
-        "num_layers": int(
-            max(
-                getattr(model_config, "num_hidden_layers", 0),
-                getattr(model_config, "num_attention_layers", 0),
-            )
-        ),
-        "dtype": str(model_config.dtype),
-        "quantization": getattr(model_config, "quantization", None),
-        "sglang_pool_names": sglang_pool_names,
-    }
+    return collect_model_facts(model_config)
 
 
 def _redirect_device(value: Any) -> Any:
@@ -569,6 +526,7 @@ def _roundtrip(
 def run(config: CheckConfig) -> CheckResult:
     result = CheckResult(model=config.model, mode=config.mode)
     try:
+        from .sglang_compat import environment_info, refine_facts_from_model
         from sglang.srt.configs.model_config import ModelConfig
         from sglang.srt.mem_cache.hicache_storage import HiCacheStorage
         from ucm.integration.sglang.unifiedcache_store import UnifiedCacheStore
@@ -578,7 +536,37 @@ def run(config: CheckConfig) -> CheckResult:
             trust_remote_code=config.trust_remote_code,
             dtype=config.dtype,
         )
+        result.environment = environment_info()
+        result.environment["requested_platform"] = config.platform
         facts = _model_facts(model_config)
+
+        supported_platforms = facts.get("supported_platforms")
+        detected_platform = result.environment.get("platform")
+        if supported_platforms and detected_platform not in supported_platforms:
+            result.model_info = facts
+            result.fail(
+                "PLATFORM_UNSUPPORTED",
+                "platform_check",
+                f"quantization {facts.get('quantization')!r} requires one of "
+                f"{supported_platforms}, detected {detected_platform!r}",
+            )
+            return result
+
+        model = None
+        if not config.skip_meta_model:
+            model = _check_meta_model(model_config)
+            facts = refine_facts_from_model(facts, model)
+
+        linear_model = facts.get("has_linear_attention")
+        if linear_model is None:
+            result.model_info = facts
+            result.fail(
+                "CACHE_REQUIREMENTS_UNDETERMINED",
+                "model_inspection",
+                "SGLang compatibility layer could not determine whether the "
+                "model uses linear-attention state; refusing to assume a v1 KV-only model",
+            )
+            return result
         requirements = requirements_from_facts(facts, host_layout=config.layout)
         capabilities = infer_capabilities(UnifiedCacheStore, HiCacheStorage)
         result.model_info = facts
@@ -594,8 +582,7 @@ def run(config: CheckConfig) -> CheckResult:
             )
             return result
 
-        if not config.skip_meta_model:
-            model = _check_meta_model(model_config)
+        if model is not None:
             del model
 
         if config.mode == "roundtrip":

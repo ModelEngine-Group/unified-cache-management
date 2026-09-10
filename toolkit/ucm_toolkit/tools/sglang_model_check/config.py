@@ -15,6 +15,7 @@ class CheckConfig:
     model: str
     mode: str = "inspect"
     device_id: str = "0"
+    platform: str = "auto"
     page_size: int = 64
     pages: int = 2
     layout: str = "page_first"

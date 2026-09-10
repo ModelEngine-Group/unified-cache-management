@@ -27,6 +27,10 @@ from ucm_toolkit.tools.sglang_model_check.runner import (  # noqa: E402
     _result_for_pool,
     _roundtrip,
 )
+from ucm_toolkit.tools.sglang_model_check.sglang_compat.inspector import (  # noqa: E402
+    _linear_attention,
+    supported_platforms_for_quantization,
+)
 
 
 class SglangModelCheckToolkitTest(unittest.TestCase):
@@ -229,6 +233,34 @@ class SglangModelCheckToolkitTest(unittest.TestCase):
         self.assertEqual(
             raised.exception.code, "CHECKER_RUNTIME_POOL_PROBE_REQUIRED"
         )
+
+    def test_linear_detection_does_not_require_uses_kda_attention(self):
+        config = type(
+            "Config",
+            (),
+            {"linear_attn_registry_result": None, "hf_text_config": object()},
+        )()
+
+        def optional(module, name):
+            if name == "mambaish_config":
+                return lambda _: object()
+            return None
+
+        with patch(
+            "ucm_toolkit.tools.sglang_model_check.sglang_compat.inspector._optional_callable",
+            side_effect=optional,
+        ):
+            value, source, error = _linear_attention(config)
+        self.assertTrue(value)
+        self.assertEqual(source, "mambaish_config")
+        self.assertIsNone(error)
+
+    def test_nvfp4_is_reported_as_cuda_specific(self):
+        self.assertEqual(
+            supported_platforms_for_quantization("modelopt_fp4"), ["cuda"]
+        )
+        self.assertEqual(supported_platforms_for_quantization("NVFP4"), ["cuda"])
+        self.assertIsNone(supported_platforms_for_quantization("awq"))
 
 
 if __name__ == "__main__":

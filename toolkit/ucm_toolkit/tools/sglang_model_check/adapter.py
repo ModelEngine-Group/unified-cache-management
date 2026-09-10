@@ -31,6 +31,12 @@ class SglangModelCheckTool(ToolAdapter):
             help="inspect requirements, or additionally perform UCM host-cache IO",
         )
         parser.add_argument("--device-id", default="0")
+        parser.add_argument(
+            "--platform",
+            choices=("auto", "cuda", "rocm", "ascend", "xpu", "cpu"),
+            default="auto",
+            help="accelerator platform used for compatibility reporting and visibility",
+        )
         parser.add_argument("--page-size", type=int, default=64)
         parser.add_argument("--pages", type=int, default=2)
         parser.add_argument(
@@ -82,6 +88,7 @@ class SglangModelCheckTool(ToolAdapter):
             model=args.model,
             mode=args.mode,
             device_id=args.device_id,
+            platform=args.platform,
             page_size=args.page_size,
             pages=args.pages,
             layout=args.layout,
@@ -95,8 +102,24 @@ class SglangModelCheckTool(ToolAdapter):
         )
         env = os.environ.copy()
         env[CONFIG_ENV] = config.to_json()
-        env["CUDA_VISIBLE_DEVICES"] = args.device_id
-        env["ASCEND_RT_VISIBLE_DEVICES"] = args.device_id
+        platform = args.platform
+        if platform == "auto":
+            ascend_env = env.get("ASCEND_RT_VISIBLE_DEVICES") or env.get(
+                "ASCEND_VISIBLE_DEVICES"
+            )
+            platform = (
+                "ascend"
+                if ascend_env or importlib.util.find_spec("torch_npu") is not None
+                else "cuda"
+            )
+        if platform in {"cuda", "rocm"}:
+            env["CUDA_VISIBLE_DEVICES"] = args.device_id
+            env.pop("ASCEND_RT_VISIBLE_DEVICES", None)
+        elif platform == "ascend":
+            env["ASCEND_RT_VISIBLE_DEVICES"] = args.device_id
+            env.pop("CUDA_VISIBLE_DEVICES", None)
+        elif platform == "xpu":
+            env["ZE_AFFINITY_MASK"] = args.device_id
         module = f"{__package__}.runner"
         return run_command([sys.executable, "-m", module], env=env)
 
