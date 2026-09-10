@@ -7,8 +7,8 @@ descriptor.  The result is a :class:`~ucm.integration.vllm.v2.layout.model.Layou
 indistinguishable in kind from the declared one, so nothing downstream needs
 to know which mode produced it.
 
-Older spec spellings (``compress_ratio``, ``storage_block_size``, the Ascend
-C4 storage span) are already translated by the time they get here: the
+Ascend 0.26 spec spellings (``compress_ratio``, the C4 storage span reported
+as ``block_size``) are already translated by the time they get here: the
 semantic layer guarantees ``layer.storage_block_size`` is the number of stored
 states one manager block spans.
 """
@@ -116,6 +116,7 @@ def build(
         descriptors=descriptors,
         groups=groups,
         num_blocks=num_blocks,
+        mode="inferred",
     )
     for group_id, group_slots in groups.items():
         for slot in group_slots:

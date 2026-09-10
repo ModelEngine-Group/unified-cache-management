@@ -7,10 +7,10 @@ IO region is -- and both answer them from the tensors that
 addressing comes from (official declarations vs. synthesis), which this
 module deliberately does not know about.
 
-Legacy spec spellings (``compress_ratio`` vs ``tokens_per_state``,
-``storage_block_size``) are translated by the semantic layer before they
-reach here: ``layer.storage_block_size`` is always the number of stored
-states one manager block spans.
+The semantic layer translates every spec spelling before it reaches here:
+``layer.storage_block_size`` is always the number of stored states one
+manager block spans (Ascend 0.26 reports it as ``block_size``, vLLM 0.29
+derives it as ``block_size // tokens_per_state``).
 """
 
 from __future__ import annotations
@@ -108,14 +108,14 @@ def component(
         states_per_row = 1
         bytes_per_state = payload
     else:
-        # vLLM <= 0.27 attention views keep the token axis on dimension 1 with
+        # Ascend 0.26 attention views keep the token axis on dimension 1 with
         # C-order trailing dims (e.g. Kimi MLA stores one logical block as six
         # kernel rows). vLLM 0.29 exposes uniform [B, H, N, C] views whose dims
         # are permuted by the resolved KVCacheLayout, and whose N axis counts
         # *stored states*, not raw tokens: DSV4's C4A cache stores one 584B
         # state per 4 tokens (256-token block -> 64 states), the C128A variant
-        # and its indexer store 2/64 states per 256-token block. Try the legacy
-        # dim-1 reading first, then derive the row geometry arithmetically: the
+        # and its indexer store 2/64 states per 256-token block. Try the dim-1
+        # reading first, then derive the row geometry arithmetically: the
         # row payload must tile the expected block exactly.
         states_per_row = shape[1]
         bytes_per_state = strides[1] * element_size
@@ -176,42 +176,6 @@ def dense_regions(
     return tuple(region for region in regions if region is not None)
 
 
-def raw_region(
-    tensor: "torch.Tensor",
-    *,
-    num_blocks: int,
-    payload_bytes: int | None = None,
-) -> BlockRegion:
-    """Describe one block-major tensor as one native IO page per block."""
-
-    shape = tuple(int(value) for value in tensor.shape)
-    if len(shape) < 2 or shape[0] != num_blocks:
-        raise ValueError(
-            "Block-major KV tensor must have num_blocks on dimension 0, "
-            f"got shape={shape}, num_blocks={num_blocks}"
-        )
-    element_size = int(tensor.element_size())
-    strides = tuple(int(tensor.stride(index)) for index in range(len(shape)))
-    block_stride = strides[0] * element_size
-    dense_payload = row_payload_bytes(shape, strides, element_size)
-    if block_stride < dense_payload:
-        raise ValueError(
-            f"KV block stride {block_stride} is smaller than payload {dense_payload}"
-        )
-    payload = dense_payload if payload_bytes is None else int(payload_bytes)
-    if payload <= 0 or payload > dense_payload:
-        raise ValueError(
-            f"KV block payload {payload} is outside dense page size "
-            f"{dense_payload}"
-        )
-    return BlockRegion(
-        base_ptr=int(tensor.data_ptr()),
-        block_stride=block_stride,
-        payload_bytes=payload,
-        buffer_size_bytes=(num_blocks - 1) * block_stride + payload,
-    )
-
-
 def dtype_size(dtype: "torch.dtype") -> int:
     itemsize = getattr(dtype, "itemsize", None)
     if itemsize is not None:
@@ -242,42 +206,19 @@ def attention_structures(
     *,
     num_blocks: int,
 ) -> tuple[tuple[ComponentSlot, ...], tuple[BlockRegion, ...]]:
-    """Resolve actual component containers without imposing a platform policy."""
+    """Resolve actual component containers without imposing a platform policy.
 
-    if isinstance(value, (tuple, list)):
-        tensors = component_tensors(value)
-        combined_tensor = None
-    else:
-        shape = tuple(int(item) for item in value.shape)
-        combined_tensor = value if len(shape) == 5 else None
-        if combined_tensor is None:
-            tensors = (value,)
-        else:
-            if (
-                shape[0] != num_blocks
-                or shape[1] != 2
-                or not callable(getattr(value, "unbind", None))
-            ):
-                raise ValueError(
-                    "Verified combined K/V tensors require block-major shape "
-                    f"(num_blocks, 2, ...), got shape={shape}, "
-                    f"num_blocks={num_blocks}"
-                )
-            tensors = tuple(value.unbind(1))
-            if len(tensors) != 2:
-                raise ValueError(
-                    f"Combined KV tensor did not produce K/V views: {shape}"
-                )
+    Ascend 0.26 hands over explicit K/V (and index/scale) tuples; vLLM 0.29
+    hands over one packed view per layer.  Both become one ComponentSlot per
+    tensor; higher-rank views are rejected by :func:`component`.
+    """
 
+    tensors = component_tensors(value)
     components = tuple(
         component(tensor, layer.storage_block_size, num_blocks=num_blocks)
         for tensor in tensors
     )
-    if combined_tensor is None:
-        return components, dense_regions(components)
-
-    # Keep a combined block-major K/V tensor together for full-block IO.
-    return components, (raw_region(combined_tensor, num_blocks=num_blocks),)
+    return components, dense_regions(components)
 
 
 def state_structures(
@@ -326,7 +267,7 @@ def state_structures(
     page_stride = strides[0] * element_size
     payload = row_payload_bytes(shape, strides, element_size)
     page_size = int(getattr(layer.kv_cache_spec, "page_size_bytes", page_stride))
-    # vLLM <= 0.27 exposes C = the full padded page (payload == page_stride
+    # Ascend 0.26 exposes C = the full padded page (payload == page_stride
     # == page_size, padding at the page tail). vLLM 0.29 exposes C = the dense
     # state content only, with the page padding between blocks
     # (payload <= page_stride == page_size). Components are carved from the

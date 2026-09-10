@@ -147,7 +147,7 @@ def _concrete_specs(
 def _spec_compress_ratio(spec: "KVCacheSpec") -> int:
     """Compression ratio of one stored state (DSV4 C4A = 4).
 
-    vllm <= 0.27 names the field ``compress_ratio``; vllm 0.29 renamed it to
+    Ascend 0.26 names the field ``compress_ratio``; vLLM 0.29 renamed it to
     ``tokens_per_state`` (vLLM #51718) with identical semantics for DSV4
     (int > 1 compresses multiple tokens into one stored state). Mamba specs
     carry a -1 sentinel on 0.29 which is not meaningful as a ratio; callers
@@ -248,9 +248,9 @@ def parse_kv_cache_config(
                 f"{sorted(c4_sizes)}"
             )
         c4_size = c4_sizes.pop()
-        # Ascend 0.26 reports the C4 storage span as block_size. Official
-        # vLLM 0.27 reports the logical span and exposes storage_block_size
-        # separately on each concrete spec.
+        # Ascend 0.26 reports the C4 storage span as block_size; vLLM 0.29
+        # reports the logical span and derives the storage axis from
+        # tokens_per_state.
         canonical_size = c4_size * 4 if device_type == "npu" else scheduler_block_size
     else:
         canonical_size = scheduler_block_size
@@ -277,29 +277,25 @@ def parse_kv_cache_config(
         hash_block_size = canonical_size if dsv4 else physical_block_size
         layers: list[UCMLayerSpec] = []
         for index, (name, spec) in enumerate(concrete):
-            storage_block_size = (
-                getattr(spec, "storage_block_size", None)
-                if device_type != "npu"
-                else getattr(spec, "block_size", None)
-            )
-            if storage_block_size is None:
-                # vllm 0.29 dropped spec.storage_block_size. The storage axis
-                # spans block_size / tokens_per_state stored states (DSV4 C4A:
-                # 256/4=64 states; C128A: 256/128=2); uncompressed specs keep
-                # the full block. Mirrors the 0.27 storage_block_size
-                # semantics that the view layout below expects.
-                logical = int(getattr(spec, "block_size"))
-                ratio = _spec_compress_ratio(spec)
-                if ratio > 1 and logical % ratio == 0:
-                    storage_block_size = logical // ratio
-                else:
-                    storage_block_size = logical
+            # Normalize to the number of stored states one manager block
+            # spans.  Ascend 0.26 reports the C4 storage span as block_size
+            # directly; vLLM 0.29 reports the logical span and the storage
+            # axis is block_size // tokens_per_state (DSV4 C4A: 256/4=64
+            # states; C128A: 256/128=2; uncompressed specs keep the block).
+            logical = int(getattr(spec, "block_size"))
+            ratio = _spec_compress_ratio(spec)
+            if device_type == "npu":
+                storage_block_size = logical
+            elif ratio > 1 and logical % ratio == 0:
+                storage_block_size = logical // ratio
+            else:
+                storage_block_size = logical
             layers.append(
                 UCMLayerSpec(
                     name,
                     _layer_index(name, index),
                     spec,
-                    int(storage_block_size or physical_block_size),
+                    storage_block_size,
                 )
             )
         tail_tokens: int | None = None
@@ -439,6 +435,11 @@ class UCMKVCacheLayout:
             num_blocks=num_blocks,
             kv_cache_tensors=kv_cache_tensors,
         )
+        if LAYOUT_DEBUG:
+            # One consolidated page describing every placement decision; the
+            # per-layer register lines follow from the builders.
+            for line in self.model.describe().splitlines():
+                layout_debug(line)
 
     @property
     def groups(self) -> Mapping[int, tuple["LayerSlot", ...]]:
