@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     )
 
     from .layout.model import LayoutModel, LayerSlot
+    from .layout.group import GroupLayout
     from .ucm_scheduler import UCMConnectorMetadata, UCMGroupDispatchPlan
 
 
@@ -449,6 +450,12 @@ class UCMKVCacheLayout:
     def layers(self) -> Mapping[str, "LayerSlot"]:
         return self.model.slots
 
+    @property
+    def group_layouts(self) -> Mapping[int, "GroupLayout"]:
+        """Per-group addressing plans; queries only translate block IDs."""
+
+        return self.model.group_layouts
+
     def build_load_batches(
         self, metadata: "UCMConnectorMetadata", layer_name: str | None = None
     ) -> UCMProxyBatch:
@@ -491,6 +498,14 @@ class UCMKVCacheLayout:
         plan: "UCMGroupDispatchPlan",
         layer_name: str | None,
     ) -> Iterator[tuple[bytes, int, int, int]]:
+        """Scheduler shell around the layout model's group addressing.
+
+        This layer owns the dispatch semantics -- key splitting, block-map
+        resolution, WA tail windows, state-block selection, record offsets
+        across groups -- and delegates the byte-span arithmetic to each
+        group's precomputed ``GroupLayout``.
+        """
+
         if not plan.keys:
             return
         token_count = plan.token_end - plan.token_start
@@ -526,19 +541,25 @@ class UCMKVCacheLayout:
                     if not group_info.tail_tokens:
                         continue
                     group_key_start = max(key_end - group_info.tail_tokens, 0)
-                for slot in self.model.groups[group_id]:
-                    segments = self.model.layer_segments(
-                        slot,
-                        block_map=block_maps[group_id],
-                        token_start=group_key_start,
-                        token_end=key_end,
-                        token_block_size=group_info.token_block_size,
-                        state=group_info.is_state_snapshot,
+                group_layout = self.model.group_layouts[group_id]
+                if group_info.is_state_snapshot:
+                    # A state snapshot lives in the last block of its range.
+                    entries, record_offset = group_layout.state_record_segments(
+                        record_offset,
+                        block_maps[group_id],
+                        key_end,
+                        layer_name,
                     )
-                    for ptr, size in segments:
-                        if layer_name is None or slot.layer_name == layer_name:
-                            yield key, record_offset, ptr, size
-                        record_offset += size
+                else:
+                    entries, record_offset = group_layout.record_segments(
+                        record_offset,
+                        block_maps[group_id],
+                        group_key_start,
+                        key_end,
+                        layer_name,
+                    )
+                for ptr, size, offset in entries:
+                    yield key, offset, ptr, size
             if LAYOUT_DEBUG:
                 layout_debug(
                     f"record key={key.hex()[:16]}... tokens="

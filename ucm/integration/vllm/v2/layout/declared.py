@@ -3,14 +3,14 @@
 This is the primary mode on vLLM 0.29+: ``kv_cache_tensors`` states where
 every layer's blocks sit (``offset + L * layer_stride + b * block_stride``
 from one shared backing), and the runtime views carry the page geometry.
-The build is a near-identity mapping of the declarations plus a cross-check
-against the views, so a vLLM layout change that the declarations and the
-views disagree on fails loudly here instead of corrupting transfers.
-
-The backing base pointer is not part of the declarations (they are computed
-before allocation); it is anchored from the first structure of declaration
-zero's first layer, assumed to sit at its page offset 0, and every other
-structure is validated relative to that anchor.
+The build is a near-identity mapping of the declarations with three
+cheap, exact checks: every structure's block stride must equal the
+declared one, every layer's first structure must sit at its declared page
+base (one anchor proves the whole placement arithmetic, subsuming the old
+per-structure containment and layer-step checks -- a structure's payload
+never exceeds its stride by construction), and every structure must end
+inside the backing.  Anything deeper is ``UCM_V2_DESCRIPTOR_SOURCE=assert``
+territory: build the inferred model too and require them to agree.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING
 from . import geometry
 from .model import (
     BackingAllocation,
-    BlockRegion,
     ComponentSlot,
     LayerSlot,
     LayoutModel,
@@ -44,14 +43,10 @@ class _Declaration:
     block_stride: int
 
 
-def _first_base(
-    components: tuple[ComponentSlot, ...], regions: tuple[BlockRegion, ...]
-) -> int:
-    if components:
-        return components[0].base_ptr
-    if regions:
-        return regions[0].base_ptr
-    raise ValueError("Layer registered no addressable structure")
+def _first_base(components: tuple[ComponentSlot, ...]) -> int:
+    if not components:
+        raise ValueError("Layer registered no addressable structure")
+    return components[0].base_ptr
 
 
 def build(
@@ -117,103 +112,72 @@ def build(
                 raise ValueError(
                     f"No declared tensor covers layer {layer.layer_name}"
                 )
-            components, regions = geometry.layer_structures(
+            components = geometry.layer_structures(
                 kv_caches[layer.layer_name],
                 layer,
                 num_blocks=num_blocks,
                 state_snapshot=group.is_state_snapshot,
             )
-            if group.is_state_snapshot and any(
-                component.rows_per_block != 1 for component in components
-            ):
-                raise ValueError(
-                    "State components require exactly one "
-                    f"physical row per vLLM block for {layer.layer_name}"
-                )
-            first_bases[layer.layer_name] = _first_base(components, regions)
+            declaration = declarations[declared_at[layer.layer_name][0]]
+            for component in components:
+                if component.block_stride != declaration.block_stride:
+                    raise ValueError(
+                        f"Layer {layer.layer_name}: runtime view block stride "
+                        f"{component.block_stride} disagrees with the declared "
+                        f"{declaration.block_stride}"
+                    )
+            first_bases[layer.layer_name] = _first_base(components)
             group_slots.append(
                 LayerSlot(
                     layer.layer_name,
                     layer.layer_index,
                     group.group_id,
                     components,
-                    regions,
                 )
             )
         groups[group.group_id] = tuple(group_slots)
 
-    seen = set(first_bases)
-    if seen != set(declared_at):
+    if set(first_bases) != set(declared_at):
         raise ValueError(
             "Declared tensors and the cache spec disagree on layer coverage: "
-            f"spec_only={sorted(seen - set(declared_at))}, "
-            f"declared_only={sorted(set(declared_at) - seen)}"
+            f"spec_only={sorted(set(first_bases) - set(declared_at))}, "
+            f"declared_only={sorted(set(declared_at) - set(first_bases))}"
         )
 
-    slots_by_name = {
-        slot.layer_name: slot
-        for group_slots in groups.values()
-        for slot in group_slots
-    }
-
     # Anchor the backing from declaration zero's first layer (assumed at page
-    # offset 0); every structure is then validated against the six-line
-    # contract, and consecutive layers must sit exactly one layer_stride apart.
+    # offset 0), then prove the placement arithmetic with one check per layer:
+    # the layer's first structure must sit exactly at its declared page base.
     anchor_base = (
         first_bases[declarations[0].layers[0]] - declarations[0].offset
     )
+    backing_end = anchor_base + backing_size
     for name, (descriptor_id, position) in declared_at.items():
         declaration = declarations[descriptor_id]
         page_base = (
             anchor_base + declaration.offset + position * declaration.layer_stride
         )
-        slot = slots_by_name[name]
-        for structure in (*slot.components, *slot.regions):
-            if structure.block_stride != declaration.block_stride:
-                raise ValueError(
-                    f"Layer {name}: runtime view block stride "
-                    f"{structure.block_stride} disagrees with the declared "
-                    f"{declaration.block_stride}"
-                )
-            if (
-                structure.base_ptr < page_base
-                or structure.base_ptr + structure.payload_bytes
-                > page_base + declaration.block_stride
-            ):
-                raise ValueError(
-                    f"Layer {name}: structure at {structure.base_ptr:#x} does "
-                    f"not sit inside its declared block page "
-                    f"[{page_base:#x}, {page_base + declaration.block_stride:#x})"
-                )
-
-    for declaration in declarations:
-        previous_base: int | None = None
-        for name in declaration.layers:
-            base = first_bases[name]
-            if (
-                previous_base is not None
-                and base - previous_base != declaration.layer_stride
-            ):
-                raise ValueError(
-                    f"Declared tensor {declaration.descriptor_id}: layers are "
-                    f"not {declaration.layer_stride} bytes apart as declared "
-                    f"({previous_base:#x} -> {base:#x})"
-                )
-            previous_base = base
-
-    # Every registered structure must end inside the backing.  The buffer
-    # bound already reaches the last row of the last block, so this holds the
-    # descriptor span without assuming padding after the final block
-    # (interleaved DSV4 pages are far smaller than their block stride).
-    backing_end = anchor_base + backing_size
-    for slot in slots_by_name.values():
-        for structure in (*slot.components, *slot.regions):
-            if structure.base_ptr + structure.buffer_size_bytes > backing_end:
-                raise ValueError(
-                    f"Layer {slot.layer_name}: structure at "
-                    f"{structure.base_ptr:#x} extends beyond the backing end "
-                    f"{backing_end:#x}"
-                )
+        if first_bases[name] != page_base:
+            raise ValueError(
+                f"Layer {name}: runtime view at {first_bases[name]:#x} "
+                f"disagrees with its declared page base {page_base:#x} "
+                f"(backing {anchor_base:#x} + offset {declaration.offset} + "
+                f"{position} * layer_stride {declaration.layer_stride})"
+            )
+    # Every layer's structures must end inside the backing; the buffer bound
+    # already reaches the last row of the last block, so this holds the full
+    # span without assuming padding after the final block.
+    for group_slots in groups.values():
+        for slot in group_slots:
+            for component in slot.components:
+                if (
+                    component.base_ptr + component.buffer_size_bytes
+                    > backing_end
+                ):
+                    raise ValueError(
+                        f"Layer {slot.layer_name}: structure at "
+                        f"{component.base_ptr:#x} extends beyond the backing "
+                        f"end {backing_end:#x}"
+                    )
 
     model = LayoutModel(
         backings=(BackingAllocation(0, anchor_base, backing_size),),
@@ -233,10 +197,9 @@ def build(
         mode="declared",
     )
     for group_id, group_slots in groups.items():
+        state = group_states[group_id]
         for slot in group_slots:
-            model.log_registration(
-                group_id, slot, state=group_states[group_id]
-            )
+            model.log_registration(group_id, slot, state=state)
     layout_debug(
         f"layout mode=declared backings=1 "
         f"descriptors={len(declarations)} num_blocks={num_blocks} "

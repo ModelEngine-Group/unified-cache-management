@@ -52,28 +52,21 @@ def build(
         ):
             if layer.layer_name not in kv_caches:
                 raise ValueError(f"Missing KV cache tensor for {layer.layer_name}")
-            components, regions = geometry.layer_structures(
+            components = geometry.layer_structures(
                 kv_caches[layer.layer_name],
                 layer,
                 num_blocks=num_blocks,
                 state_snapshot=group.is_state_snapshot,
             )
-            if group.is_state_snapshot and any(
-                component.rows_per_block != 1 for component in components
-            ):
-                raise ValueError(
-                    "State components require exactly one "
-                    f"physical row per vLLM block for {layer.layer_name}"
-                )
             # Structures sharing (base address, block stride) describe the same
             # set of physical pages; group them under one descriptor.
-            for structure in (*components, *regions):
-                backing_max[structure.base_ptr] = max(
-                    backing_max.get(structure.base_ptr, 0),
-                    structure.buffer_size_bytes,
+            for component in components:
+                backing_max[component.base_ptr] = max(
+                    backing_max.get(component.base_ptr, 0),
+                    component.buffer_size_bytes,
                 )
                 layers = descriptor_layers.setdefault(
-                    (structure.base_ptr, structure.block_stride), []
+                    (component.base_ptr, component.block_stride), []
                 )
                 if layer.layer_name not in layers:
                     layers.append(layer.layer_name)
@@ -83,7 +76,6 @@ def build(
                     layer.layer_index,
                     group.group_id,
                     components,
-                    regions,
                 )
             )
         groups[group.group_id] = tuple(group_slots)

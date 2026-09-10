@@ -1317,13 +1317,16 @@ class RaggedLayoutTest(unittest.TestCase):
         self.assertEqual(tuple(view.base_ptr for view in views), (0x1000, 0x1008))
         self.assertEqual(tuple(view.row_stride_bytes for view in views), (64, 64))
         self.assertEqual(tuple(view.row_payload_bytes for view in views), (8, 8))
-        regions = layout.layers["model.layers.0.mixer"].regions
-        self.assertEqual(len(regions), 1)
+        # The two components sit contiguously at the page front, so the
+        # group compiles them into one whole-block run; page padding (the
+        # 64-byte stride vs. the 16-byte content) stays outside it.
+        group_layout = layout.group_layouts[0]
+        self.assertEqual(len(group_layout.runs), 1)
         self.assertEqual(
             (
-                regions[0].base_ptr,
-                regions[0].block_stride,
-                regions[0].payload_bytes,
+                group_layout.runs[0].base_ptr,
+                group_layout.runs[0].block_stride,
+                group_layout.runs[0].size,
             ),
             (0x1000, 64, 16),
         )
@@ -1386,14 +1389,13 @@ class RaggedLayoutTest(unittest.TestCase):
             ),
             (0x3000,),
         )
+        # Layer 0's two components are not adjacent, so they stay separate
+        # runs; layer 1's 4-D view is a single dense kernel row per block
+        # (trailing dims permuted, 24-byte payload == row stride).
+        group_layout = layout.group_layouts[0]
         self.assertEqual(
-            tuple(
-                region.base_ptr
-                for region in layout.layers[
-                    "model.layers.0.attn"
-                ].regions
-            ),
-            (0x1000, 0x2000),
+            tuple((run.base_ptr, run.size) for run in group_layout.runs),
+            ((0x1000, 12), (0x2000, 12), (0x3000, 24)),
         )
 
     def test_unknown_5d_axis_order_fails_fast(self):
@@ -1685,15 +1687,168 @@ class RaggedLayoutTest(unittest.TestCase):
 
         batch = layout.build_load_batches(metadata)
 
-        self.assertEqual(batch.offsets, (0, 512, 1024, 1280, 1536, 1920))
-        self.assertEqual(batch.sizes, (512, 512, 256, 256, 384, 384))
+        # Records are block-major: each plan block contributes its whole
+        # record (1152 bytes: layer 0 K 512 + V 256 + layer 1 K 384 -- three
+        # separate runs, since neither their strides nor their block-0
+        # addresses chain) before the next block starts.
+        self.assertEqual(batch.offsets, (0, 512, 768, 1152, 1664, 1920))
+        self.assertEqual(batch.sizes, (512, 256, 384, 512, 256, 384))
         self.assertEqual(
             batch.ptrs,
-            (0x1400, 0x1A00, 0x3200, 0x3500, 0x5300, 0x5780),
+            (0x1400, 0x3200, 0x5300, 0x1A00, 0x3500, 0x5780),
         )
+        # A layerwise (filtered) batch must address the very same record
+        # coordinates: a layerwise load lands exactly where the full record
+        # was dumped.
         layer_batch = layout.build_load_batches(metadata, "model.layers.1.attn")
-        self.assertEqual(layer_batch.offsets, (1536, 1920))
+        self.assertEqual(layer_batch.offsets, (768, 1920))
         self.assertEqual(layer_batch.sizes, (384, 384))
+        self.assertEqual(layer_batch.ptrs, (0x5300, 0x5780))
+        full_positions = {
+            (ptr, size): offset
+            for ptr, size, offset in zip(batch.ptrs, batch.sizes, batch.offsets)
+        }
+        for ptr, size, offset in zip(
+            layer_batch.ptrs, layer_batch.sizes, layer_batch.offsets
+        ):
+            self.assertEqual(full_positions[(ptr, size)], offset)
+
+    def test_layer_contiguous_views_compile_to_one_run_per_layer(self):
+        # GLM-style placement: layer 1 sits after *all* of layer 0's blocks,
+        # so the two layers cannot share one (base, stride, size) run -- a
+        # merged span would swallow layer 0's other blocks.  Each layer gets
+        # its own run; dense multi-row views (Kimi's six kernel rows, the
+        # shared mamba page) are what actually merge.
+        parsed = parse_kv_cache_config(
+            config(
+                group(
+                    ["model.layers.0.attn", "model.layers.1.attn"],
+                    {
+                        "model.layers.0.attn": FullAttentionSpec(4),
+                        "model.layers.1.attn": FullAttentionSpec(4),
+                    },
+                )
+            ),
+            scheduler_block_size=4,
+        )
+        layout = UCMKVCacheLayout(
+            parsed,
+            {
+                "model.layers.0.attn": FakeTensor(0x1000, (8, 4, 3), (12, 3, 1)),
+                "model.layers.1.attn": FakeTensor(0x1000 + 8 * 12, (8, 4, 3), (12, 3, 1)),
+            },
+            num_blocks=8,
+        )
+        group_layout = layout.group_layouts[0]
+        self.assertEqual(
+            tuple(
+                (run.base_ptr, run.block_stride, run.size)
+                for run in group_layout.runs
+            ),
+            ((0x1000, 12, 12), (0x1000 + 8 * 12, 12, 12)),
+        )
+        self.assertEqual(group_layout.block_record_size, 24)
+
+        from ucm.integration.vllm.v2.ucm_scheduler import (
+            RequestDispatchMeta,
+            UCMGroupBlockIds,
+            UCMGroupDispatchPlan,
+        )
+
+        key = b"r" * 16
+        plan = UCMGroupDispatchPlan(
+            0, (key,), 0, 0, 8, (UCMGroupBlockIds(0, 0, (2, 5)),)
+        )
+        metadata = UCMConnectorMetadata(
+            requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
+        )
+        batch = layout.build_load_batches(metadata)
+        # Block-major records; adjacent physical blocks never merge into one
+        # entry: cross-block adjacency is an allocation accident, not a
+        # layout property.
+        self.assertEqual(batch.sizes, (12, 12, 12, 12))
+        self.assertEqual(batch.offsets, (0, 12, 24, 36))
+        self.assertEqual(
+            batch.ptrs,
+            (
+                0x1000 + 2 * 12,
+                0x1000 + 8 * 12 + 2 * 12,
+                0x1000 + 5 * 12,
+                0x1000 + 8 * 12 + 5 * 12,
+            ),
+        )
+
+        # The public segments() API answers the same spans without records.
+        self.assertEqual(
+            group_layout.segments((2, 5)),
+            (
+                (0x1000 + 2 * 12, 12),
+                (0x1000 + 8 * 12 + 2 * 12, 12),
+                (0x1000 + 5 * 12, 12),
+                (0x1000 + 8 * 12 + 5 * 12, 12),
+            ),
+        )
+        self.assertEqual(
+            group_layout.segments((2,), layers=("model.layers.1.attn",)),
+            ((0x1000 + 8 * 12 + 2 * 12, 12),),
+        )
+
+    def test_layerwise_batches_of_every_layer_tile_the_full_record(self):
+        # Whatever the layout, unioning each layer's filtered batch must
+        # reproduce the full batch exactly -- same entries, same record
+        # coordinates.  This is the layerwise-consumer contract.
+        parsed = parse_kv_cache_config(
+            config(
+                group(
+                    ["model.layers.0.attn", "model.layers.1.attn"],
+                    {
+                        "model.layers.0.attn": FullAttentionSpec(128),
+                        "model.layers.1.attn": FullAttentionSpec(128),
+                    },
+                )
+            ),
+            scheduler_block_size=128,
+        )
+        caches = {
+            "model.layers.0.attn": (
+                FakeTensor(0x1000, (8, 128, 4), (512, 4, 1)),
+                FakeTensor(0x3000, (8, 128, 2), (256, 2, 1)),
+            ),
+            "model.layers.1.attn": (FakeTensor(0x5000, (8, 128, 3), (384, 3, 1)),),
+        }
+        layout = UCMKVCacheLayout(parsed, caches, num_blocks=8)
+        from ucm.integration.vllm.v2.ucm_scheduler import (
+            RequestDispatchMeta,
+            UCMGroupBlockIds,
+            UCMGroupDispatchPlan,
+        )
+
+        key = b"t" * 16
+        plan = UCMGroupDispatchPlan(
+            0, (key,), 0, 0, 256, (UCMGroupBlockIds(0, 0, (2, 5)),)
+        )
+        metadata = UCMConnectorMetadata(
+            requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
+        )
+        full = layout.build_load_batches(metadata)
+        union: dict[tuple[int, int, int], None] = {}
+        for layer_name in ("model.layers.0.attn", "model.layers.1.attn"):
+            layer_batch = layout.build_load_batches(metadata, layer_name)
+            self.assertTrue(layer_batch.block_ids)
+            for ptr, size, offset in zip(
+                layer_batch.ptrs, layer_batch.sizes, layer_batch.offsets
+            ):
+                self.assertNotIn((ptr, size, offset), union)
+                union[(ptr, size, offset)] = None
+        self.assertEqual(
+            sorted(union),
+            sorted(
+                (ptr, size, offset)
+                for ptr, size, offset in zip(
+                    full.ptrs, full.sizes, full.offsets
+                )
+            ),
+        )
 
     def test_glm_indexer_k_and_scale_keep_separate_runtime_addressing(self):
         parsed = parse_kv_cache_config(

@@ -16,10 +16,9 @@ derives it as ``block_size // tokens_per_state``).
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from .model import BlockRegion, ComponentSlot
+from .model import ComponentSlot
 
 if TYPE_CHECKING:
     import torch
@@ -108,36 +107,35 @@ def component(
         states_per_row = 1
         bytes_per_state = payload
     else:
-        # Ascend 0.26 attention views keep the token axis on dimension 1 with
-        # C-order trailing dims (e.g. Kimi MLA stores one logical block as six
-        # kernel rows). vLLM 0.29 exposes uniform [B, H, N, C] views whose dims
-        # are permuted by the resolved KVCacheLayout, and whose N axis counts
-        # *stored states*, not raw tokens: DSV4's C4A cache stores one 584B
-        # state per 4 tokens (256-token block -> 64 states), the C128A variant
-        # and its indexer store 2/64 states per 256-token block. Try the dim-1
-        # reading first, then derive the row geometry arithmetically: the
-        # row payload must tile the expected block exactly.
-        states_per_row = shape[1]
-        bytes_per_state = strides[1] * element_size
-        if (
-            rows_per_block * states_per_row != expected_block_size
-            or states_per_row * bytes_per_state != payload
-        ):
-            states_per_row = expected_block_size // rows_per_block
-            if (
-                expected_block_size % rows_per_block
-                or states_per_row <= 0
-                or payload % states_per_row
-            ):
-                raise ValueError(
-                    "KV tensor does not match a dense row-payload tiling of "
-                    "the block: shape="
-                    f"{shape}, strides={strides}, "
-                    f"rows_per_block={rows_per_block}, "
-                    f"expected_block_size={expected_block_size}, "
-                    f"row_payload={payload}"
-                )
-            bytes_per_state = payload // states_per_row
+        # Views flatten (tokens-per-row, heads, dims) into dim-0 slices; the
+        # stored-state axis is derived arithmetically from the block size:
+        # one block spans exactly expected_block_size states and the row
+        # payload must tile them evenly.  Ascend 0.26 attention views keep
+        # the token axis on dimension 1 with C-order trailing dims (Kimi MLA
+        # stores one logical block as six kernel rows); vLLM 0.29 exposes
+        # permuted [B, H, N, C] views whose N axis counts *stored states*
+        # (DSV4's C4A cache stores one 584B state per 4 tokens).  The
+        # arithmetic reading answers both spellings identically -- the two
+        # agree whenever the dim-1 reading is valid at all -- so no probing
+        # is needed.
+        if expected_block_size % rows_per_block:
+            raise ValueError(
+                "KV tensor does not match a dense row-payload tiling of "
+                f"the block: shape={shape}, strides={strides}, "
+                f"rows_per_block={rows_per_block}, "
+                f"expected_block_size={expected_block_size}, "
+                f"row_payload={payload}"
+            )
+        states_per_row = expected_block_size // rows_per_block
+        if states_per_row <= 0 or payload % states_per_row:
+            raise ValueError(
+                "KV tensor does not match a dense row-payload tiling of "
+                f"the block: shape={shape}, strides={strides}, "
+                f"rows_per_block={rows_per_block}, "
+                f"expected_block_size={expected_block_size}, "
+                f"row_payload={payload}"
+            )
+        bytes_per_state = payload // states_per_row
     return ComponentSlot(
         base_ptr=int(tensor.data_ptr()),
         block_stride=rows_per_block * row_stride,
@@ -147,33 +145,6 @@ def component(
         bytes_per_state=bytes_per_state,
         buffer_size_bytes=(shape[0] - 1) * row_stride + payload,
     )
-
-
-def dense_region(component_slot: ComponentSlot) -> BlockRegion | None:
-    """Return a full-block region when all of its dimension-0 slices are dense."""
-
-    if (
-        component_slot.rows_per_block > 1
-        and component_slot.row_stride_bytes != component_slot.row_payload_bytes
-    ):
-        return None
-    return BlockRegion(
-        base_ptr=component_slot.base_ptr,
-        block_stride=component_slot.rows_per_block * component_slot.row_stride_bytes,
-        payload_bytes=(
-            component_slot.rows_per_block * component_slot.row_payload_bytes
-        ),
-        buffer_size_bytes=component_slot.buffer_size_bytes,
-    )
-
-
-def dense_regions(
-    components: Sequence[ComponentSlot],
-) -> tuple[BlockRegion, ...]:
-    regions = tuple(dense_region(component_slot) for component_slot in components)
-    if any(region is None for region in regions):
-        return ()
-    return tuple(region for region in regions if region is not None)
 
 
 def dtype_size(dtype: "torch.dtype") -> int:
@@ -192,8 +163,8 @@ def layer_structures(
     *,
     num_blocks: int,
     state_snapshot: bool,
-) -> tuple[tuple[ComponentSlot, ...], tuple[BlockRegion, ...]]:
-    """Resolve one layer's components and whole-block IO regions."""
+) -> tuple[ComponentSlot, ...]:
+    """Resolve one layer's components."""
 
     if state_snapshot:
         return state_structures(value, layer, num_blocks=num_blocks)
@@ -205,7 +176,7 @@ def attention_structures(
     layer: "UCMLayerSpec",
     *,
     num_blocks: int,
-) -> tuple[tuple[ComponentSlot, ...], tuple[BlockRegion, ...]]:
+) -> tuple[ComponentSlot, ...]:
     """Resolve actual component containers without imposing a platform policy.
 
     Ascend 0.26 hands over explicit K/V (and index/scale) tuples; vLLM 0.29
@@ -214,11 +185,10 @@ def attention_structures(
     """
 
     tensors = component_tensors(value)
-    components = tuple(
+    return tuple(
         component(tensor, layer.storage_block_size, num_blocks=num_blocks)
         for tensor in tensors
     )
-    return components, dense_regions(components)
 
 
 def state_structures(
@@ -226,7 +196,7 @@ def state_structures(
     layer: "UCMLayerSpec",
     *,
     num_blocks: int,
-) -> tuple[tuple[ComponentSlot, ...], tuple[BlockRegion, ...]]:
+) -> tuple[ComponentSlot, ...]:
     """Resolve an explicit component tuple or one combined raw state page."""
 
     tensors = component_tensors(value)
@@ -238,7 +208,7 @@ def state_structures(
         tuple(int(item) for item in tensor.shape[1:]) for tensor in tensors
     )
     if not expected_shapes or actual_shapes == expected_shapes:
-        components = tuple(
+        return tuple(
             component(
                 tensor,
                 layer.storage_block_size,
@@ -247,7 +217,6 @@ def state_structures(
             )
             for tensor in tensors
         )
-        return components, dense_regions(components)
 
     if len(tensors) != 1 or not expected_shapes:
         raise ValueError(
@@ -304,12 +273,7 @@ def state_structures(
             )
         )
         offset += component_size
-    # Keep the meaningful conv/SSM payload together because the actual runtime
-    # value is one block-major page.  Page padding remains outside the record.
-    region = BlockRegion(
-        base_ptr=int(raw.data_ptr()),
-        block_stride=page_stride,
-        payload_bytes=offset,
-        buffer_size_bytes=(num_blocks - 1) * page_stride + offset,
-    )
-    return tuple(components), (region,)
+    # The components are carved from the front of each page, contiguous by
+    # construction, so the group's run builder merges them into one span
+    # per block; the page padding stays outside the record either way.
+    return tuple(components)

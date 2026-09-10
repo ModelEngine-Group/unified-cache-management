@@ -3,8 +3,8 @@
 ``UCM_V2_DESCRIPTOR_SOURCE=assert`` builds the layout model both ways and
 runs this check, so the synthesized declarations can be proven equivalent to
 the official ones before anything depends on either.  The comparison covers
-what addressing actually consumes -- per-layer components, regions, and
-block strides -- which both modes derive independently (the declared mode
+what addressing actually consumes -- per-layer components and their block
+strides -- which both modes derive independently (the declared mode
 resolves bases through the declarations, the inferred mode through the raw
 view pointers).  Backing and descriptor granularity is deliberately mode
 specific and not compared.
@@ -32,20 +32,9 @@ def assert_models_agree(declared_model: LayoutModel, inferred_model: LayoutModel
     for name in sorted(declared_names):
         declared_slot: LayerSlot = declared_model.slots[name]
         inferred_slot: LayerSlot = inferred_model.slots[name]
-        if declared_slot == inferred_slot:
-            continue
-        mismatched = [
-            index
-            for index, (declared, inferred) in enumerate(
-                zip(declared_slot.components, inferred_slot.components)
+        if declared_slot != inferred_slot:
+            raise ValueError(
+                f"Layout models disagree on layer {name}: "
+                f"components {declared_slot.components!r} != "
+                f"{inferred_slot.components!r}"
             )
-            if declared != inferred
-        ]
-        raise ValueError(
-            f"Layout models disagree on layer {name}: "
-            f"components {declared_slot.components!r} != "
-            f"{inferred_slot.components!r}, "
-            f"regions {declared_slot.regions!r} != "
-            f"{inferred_slot.regions!r} "
-            f"(first mismatching component index: {mismatched})"
-        )
