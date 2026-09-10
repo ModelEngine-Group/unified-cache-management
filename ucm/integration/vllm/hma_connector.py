@@ -1490,8 +1490,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         if fa_dump_keys:
             event_handle = self._get_dump_event_handle()
             fa_ptrs = np.vstack(fa_ptr_rows)
-            if dump_request_ids not in self.tp_dump_tasks:
-                self.tp_dump_tasks[dump_request_ids] = []
             try:
                 fa_dump_task = self._submit_dump_task(
                     "FA",
@@ -1501,7 +1499,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     event_handle,
                     fa_dump_blocks_by_request,
                 )
-                self.tp_dump_tasks[dump_request_ids].append(fa_dump_task)
+                self.tp_dump_tasks.setdefault(dump_request_ids, []).append(fa_dump_task)
                 save_bytes += fa_dump_task.key_count * self.file_size["FA"]
             except Exception as e:
                 self.device.destroy_event_handle(event_handle)
@@ -1511,10 +1509,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             event_handle = self._get_dump_event_handle()
             window_ptrs = np.vstack(wa_ptr_rows)
             try:
-                # Sliding-window blocks can be released and reused by the next
-                # allocate_slots() call while the request is still running.
-                # Wait for the WA dump here so the store no longer references
-                # those source blocks when wait_for_save() returns.
                 wa_dump_task = self._submit_dump_task(
                     "WA",
                     self.wa_store,
@@ -1523,18 +1517,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     event_handle,
                     wa_dump_blocks_by_request,
                 )
+                self.tp_dump_tasks.setdefault(dump_request_ids, []).append(wa_dump_task)
                 save_bytes += wa_dump_task.key_count * self.file_size["WA"]
-                try:
-                    self._rank_consistency.wait_dump(wa_dump_task.task)
-                except Exception as e:
-                    logger.error(
-                        "Synchronous FAWA WA dump task failed; external cache "
-                        f"may miss. keys={wa_dump_task.key_count}, "
-                        f"{type(e).__name__}: {e}"
-                    )
-                    self._record_counter("connector_dump_wait_errors_total")
-                finally:
-                    self.device.destroy_event_handle(wa_dump_task.event_handle)
             except Exception as e:
                 self.device.destroy_event_handle(event_handle)
                 logger.error(f"dump FAWA WA kv cache failed. {type(e).__name__}: {e}")
@@ -1580,20 +1564,23 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             else:
                 self.tp_dump_tasks.pop(request_ids, None)
 
-    def _drain_best_effort_dump_tasks(self, finished_req_ids: set[str]) -> None:
+    def _drain_best_effort_dump_tasks(
+        self, request_ids: Optional[set[str]] = None
+    ) -> None:
         """Best-effort wait for FAWA dump tasks.
 
         Dump failures only mean the external cache may miss later. They must not
         block vLLM from releasing HBM blocks, so failed tasks are logged and then
-        removed from tracking.
+        removed from tracking. If ``request_ids`` is None, drain every pending
+        task; otherwise drain only task batches containing one of those requests.
         """
-        if not finished_req_ids:
+        if request_ids is not None and not request_ids:
             return
 
         finished_chunk_req_ids = []
-        for request_ids, dump_tasks in self.tp_dump_tasks.items():
-            if finished_req_ids.intersection(request_ids):
-                finished_chunk_req_ids.append(request_ids)
+        for chunk_request_ids, dump_tasks in self.tp_dump_tasks.items():
+            if request_ids is None or request_ids.intersection(chunk_request_ids):
+                finished_chunk_req_ids.append(chunk_request_ids)
                 for dump_task in dump_tasks:
                     try:
                         self._rank_consistency.wait_dump(dump_task.task)
@@ -1612,7 +1599,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
 
     def handle_preemptions(self, kv_connector_metadata: UCMFAWAConnectorMetadata):
         # Worker side method
-        self._drain_best_effort_dump_tasks(kv_connector_metadata.preempted_req_ids)
+        # This hook runs before the next load/forward can overwrite cache data.
+        # Drain all previous-step dumps, not only explicitly preempted requests:
+        # a running request's sliding-window blocks may also be recycled by the
+        # next allocate_slots() call.
+        self._drain_best_effort_dump_tasks()
 
     def get_finished(
         self,
