@@ -26,11 +26,27 @@ def server_args_guard():
     framework-provided reversible boundary for tests and offline tools.
     """
     runtime = importlib.import_module("sglang.srt.runtime_context")
+
+    @contextmanager
+    def single_rank_parallel():
+        get_parallel = getattr(runtime, "get_parallel", None)
+        parallel = get_parallel() if callable(get_parallel) else None
+        override = getattr(parallel, "override", None)
+        if not callable(override):
+            yield
+            return
+        with override(
+            attn_dp_size=1,
+            attn_dp_rank=0,
+        ):
+            yield
+
     get_server_args = getattr(runtime, "get_server_args", None)
     if callable(get_server_args):
         try:
             get_server_args()
-            yield
+            with single_rank_parallel():
+                yield
             return
         except ValueError as exc:
             if "server args" not in str(exc).lower():
@@ -41,7 +57,8 @@ def server_args_guard():
     override = getattr(context, "override_server_args", None)
     if callable(override):
         with override():
-            yield
+            with single_rank_parallel():
+                yield
         return
 
     raise RuntimeError(
