@@ -1534,6 +1534,82 @@ class RaggedLayoutTest(unittest.TestCase):
         self.assertEqual(batch.sizes, (128,))
         self.assertEqual(batch.offsets, (0,))
 
+    def test_dump_and_load_survive_different_physical_block_layouts(self):
+        # Dump and load address different vLLM blocks (the source request is
+        # freed before the target allocates), so their physical adjacency
+        # differs.  Record positions must stay a function of the logical
+        # dispatch plan alone: entry merging may only join ranges that are
+        # contiguous in both the record and memory, never reorder or drop
+        # them based on physical addresses.
+        parsed = parse_kv_cache_config(
+            config(group(["model.layers.0.attn"], FullAttentionSpec(8))),
+            scheduler_block_size=8,
+        )
+        layout = UCMKVCacheLayout(
+            parsed,
+            {
+                "model.layers.0.attn": FakeCombinedTensor(
+                    0x1000,
+                    (8, 2, 4, 2, 3),
+                    (48, 24, 6, 3, 1),
+                )
+            },
+            num_blocks=8,
+        )
+        memory = ByteMemory()
+        source_first = bytes(range(48))
+        source_second = bytes(value + 100 for value in range(48))
+        memory.write(0x1000 + 3 * 48, source_first)
+        memory.write(0x1000 + 4 * 48, source_second)
+
+        from ucm.integration.vllm.v2.ucm_proxy import UCMProxyAdapter
+        from ucm.integration.vllm.v2.ucm_scheduler import (
+            RequestDispatchMeta,
+            UCMGroupBlockIds,
+            UCMGroupDispatchPlan,
+        )
+
+        key = b"d" * 16
+        adapter = UCMProxyAdapter(InMemoryByteProxy(memory))
+        dump_plan = UCMGroupDispatchPlan(
+            0, (key,), 0, 0, 16, (UCMGroupBlockIds(0, 0, (3, 4)),)
+        )
+        dump_meta = UCMConnectorMetadata(
+            requests={"r": RequestDispatchMeta("r", dump_plans=(dump_plan,))}
+        )
+        dump_batch = layout.build_dump_batches(dump_meta)
+        # Blocks 3 and 4 are adjacent, so the dump side merges them.
+        self.assertEqual(dump_batch.sizes, (96,))
+        self.assertEqual(len(dump_batch.sizes), 1)
+
+        # The load lands on scattered blocks and must not merge; the record
+        # positions of both logical blocks stay where the dump put them.
+        load_plan = UCMGroupDispatchPlan(
+            0, (key,), 0, 0, 16, (UCMGroupBlockIds(0, 0, (6, 2)),)
+        )
+        load_meta = UCMConnectorMetadata(
+            requests={"r": RequestDispatchMeta("r", load_plans=(load_plan,))}
+        )
+        load_batch = layout.build_load_batches(load_meta)
+        self.assertEqual(load_batch.sizes, (48, 48))
+        self.assertEqual(load_batch.offsets, (0, 48))
+        self.assertEqual(load_batch.ptrs, (0x1000 + 6 * 48, 0x1000 + 2 * 48))
+
+        adapter.dump(
+            dump_batch.block_ids,
+            dump_batch.offsets,
+            dump_batch.ptrs,
+            dump_batch.sizes,
+        )
+        adapter.load(
+            load_batch.block_ids,
+            load_batch.offsets,
+            load_batch.ptrs,
+            load_batch.sizes,
+        )
+        self.assertEqual(memory.read(0x1000 + 6 * 48, 48), source_first)
+        self.assertEqual(memory.read(0x1000 + 2 * 48, 48), source_second)
+
     def test_kimi_mla_six_kernel_rows_coalesce_per_component(self):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.3.self_attn.attn"], FullAttentionSpec(768))),
