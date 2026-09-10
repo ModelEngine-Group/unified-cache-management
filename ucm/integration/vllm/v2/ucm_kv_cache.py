@@ -20,7 +20,7 @@ from vllm.v1.kv_cache_interface import (
 )
 
 from .layout import build_layout_model
-from .layout.model import LAYOUT_DEBUG, layout_debug
+from .layout.model import LAYOUT_DEBUG, coalesce_segments, layout_debug
 from .ucm_proxy import KVCacheValue, UCMProxyBatch
 
 if TYPE_CHECKING:
@@ -515,7 +515,7 @@ class UCMKVCacheLayout:
                     f"keys={len(plan.keys)} vllm_blocks {{{shown}{more}}}"
                 )
         for key_index, key in enumerate(plan.keys):
-            record_offset = 0
+            collected: list[tuple[int, int, str]] = []
             key_start = plan.token_start + key_index * key_tokens
             key_end = key_start + key_tokens
             for group_id in sorted(block_maps):
@@ -534,10 +534,16 @@ class UCMKVCacheLayout:
                         token_block_size=group_info.token_block_size,
                         state=group_info.is_state_snapshot,
                     )
-                    for ptr, size in segments:
-                        if layer_name is None or slot.layer_name == layer_name:
-                            yield key, record_offset, ptr, size
-                        record_offset += size
+                    collected.extend(
+                        (ptr, size, slot.layer_name) for ptr, size in segments
+                    )
+            # Offsets come from the coalesced full record, so per-layer
+            # batches address the same record positions as full ones.
+            record_offset = 0
+            for ptr, size, owners in coalesce_segments(collected):
+                if layer_name is None or layer_name in owners:
+                    yield key, record_offset, ptr, size
+                record_offset += size
             if LAYOUT_DEBUG:
                 layout_debug(
                     f"record key={key.hex()[:16]}... tokens="

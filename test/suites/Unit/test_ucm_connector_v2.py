@@ -1464,11 +1464,12 @@ class RaggedLayoutTest(unittest.TestCase):
             requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
         )
         batch = layout.build_load_batches(metadata)
-        # One key is one task, but each vLLM block remains one native page.
-        self.assertEqual(batch.block_ids, (key, key))
-        self.assertEqual(batch.ptrs, (0x1000 + 3 * 48, 0x1000 + 4 * 48))
-        self.assertEqual(batch.sizes, (48, 48))
-        self.assertEqual(batch.offsets, (0, 48))
+        # One key is one task; adjacent blocks with dense pages coalesce
+        # into one contiguous range instead of two native pages.
+        self.assertEqual(batch.block_ids, (key,))
+        self.assertEqual(batch.ptrs, (0x1000 + 3 * 48,))
+        self.assertEqual(batch.sizes, (96,))
+        self.assertEqual(batch.offsets, (0,))
 
     def test_unknown_5d_axis_order_fails_fast(self):
         parsed = parse_kv_cache_config(
@@ -1489,7 +1490,7 @@ class RaggedLayoutTest(unittest.TestCase):
                 num_blocks=8,
             )
 
-    def test_partial_range_does_not_merge_across_adjacent_blocks(self):
+    def test_partial_range_merges_across_adjacent_blocks(self):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
             scheduler_block_size=128,
@@ -1526,10 +1527,12 @@ class RaggedLayoutTest(unittest.TestCase):
         )
         batch = layout.build_load_batches(metadata)
 
-        self.assertEqual(batch.block_ids, (key, key))
-        self.assertEqual(batch.ptrs, (0x1000 + 2 * 128 + 64, 0x1000 + 3 * 128))
-        self.assertEqual(batch.sizes, (64, 64))
-        self.assertEqual(batch.offsets, (0, 64))
+        # The tail of block 2 and the head of block 3 are contiguous in
+        # memory, so the record keeps one range covering both.
+        self.assertEqual(batch.block_ids, (key,))
+        self.assertEqual(batch.ptrs, (0x1000 + 2 * 128 + 64,))
+        self.assertEqual(batch.sizes, (128,))
+        self.assertEqual(batch.offsets, (0,))
 
     def test_kimi_mla_six_kernel_rows_coalesce_per_component(self):
         parsed = parse_kv_cache_config(

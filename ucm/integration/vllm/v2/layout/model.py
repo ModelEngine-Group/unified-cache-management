@@ -128,6 +128,53 @@ class LayerSlot:
     regions: tuple[BlockRegion, ...]
 
 
+def coalesce_segments(
+    segments: Sequence[tuple[int, int, str | None]],
+) -> tuple[tuple[int, int, frozenset[str]], ...]:
+    """Drop duplicate IO ranges and merge adjacent ones, per record.
+
+    ``segments`` are ``(ptr, size, layer_name)`` triples in dispatch order.
+    Overlay layouts expose the same physical bytes through several layers
+    (Kimi's shared Attention/Mamba page arrives once per group), and
+    consecutive blocks are contiguous whenever content fills the block
+    stride; transferring each byte range once keeps the transfer count
+    proportional to the data rather than to the layer count.  Duplicate
+    ranges read the same bytes, so dropping them keeps the record
+    byte-identical for merged ranges and content-identical for
+    deduplicated ones; owners accumulate so per-layer batches still find
+    their segments.
+    """
+
+    ranges: list[list[int]] = []
+    owners: list[set[str]] = []
+    index: dict[tuple[int, int], int] = {}
+    for ptr, size, layer in segments:
+        if size <= 0:
+            continue
+        key = (ptr, size)
+        position = index.get(key)
+        if position is not None:
+            if layer is not None:
+                owners[position].add(layer)
+            continue
+        if ranges and ranges[-1][0] + ranges[-1][1] == ptr:
+            ranges[-1][1] += size
+            position = len(ranges) - 1
+        else:
+            ranges.append([ptr, size])
+            owners.append(set())
+            position = len(ranges) - 1
+        if layer is not None:
+            owners[position].add(layer)
+        index[key] = position
+    return tuple(
+        (ptr, size, frozenset(layer_names))
+        for (ptr, size), layer_names in zip(
+            (tuple(range_) for range_ in ranges), owners
+        )
+    )
+
+
 class LayoutModel:
     """Resolved per-layer placement plus ragged block/token addressing."""
 
