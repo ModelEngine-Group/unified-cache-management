@@ -1,6 +1,9 @@
 if(BUILD_UNIT_TESTS)
     include(GoogleTest)
     file(GLOB_RECURSE UCMSTORE_TEST_SOURCE_FILES "./case/*.cc")
+    if(NOT BUILD_UCM_ASU)
+        list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX ".*[/\\\\]asu[/\\\\].*")
+    endif()
     if(NOT TARGET dramstore)
         list(FILTER UCMSTORE_TEST_SOURCE_FILES EXCLUDE REGEX ".*[/\\\\]dram[/\\\\].*")
     endif()
@@ -26,6 +29,14 @@ if(BUILD_UNIT_TESTS)
     if(TARGET yuanrongstore)
         target_compile_definitions(ucmstore.test PRIVATE UCM_YUANRONG_TESTING)
         target_link_libraries(ucmstore.test PRIVATE yuanrongstore)
+    endif()
+    if(BUILD_UCM_ASU)
+        target_link_libraries(ucmstore.test PRIVATE
+            kv_client
+            buffer_pool
+            trans
+        )
+        target_compile_definitions(ucmstore.test PRIVATE ASU_BUILD_TESTS)
     endif()
     target_link_libraries(ucmstore.test PRIVATE delegator delegator_store)
     gtest_discover_tests(ucmstore.test)
