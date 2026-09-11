@@ -70,7 +70,7 @@ if TYPE_CHECKING:
     from vllm.forward_context import ForwardContext
     from vllm.v1.core.kv_cache_manager import KVCacheBlocks
     from vllm.v1.kv_cache_interface import KVCacheConfig
-    from vllm.v1.request import Request
+    from vllm.v1.request import Request, RequestStatus
 
 from ucm.sparse.state import has_ucm_sparse
 
@@ -1521,10 +1521,16 @@ class UCMDirectConnector(KVConnectorBase_V1):
     ) -> tuple[int, bool]:
         assert num_computed_tokens % self.block_size == 0
         hbm_hit_block_num = num_computed_tokens // self.block_size
+        if request.status == RequestStatus.PREEMPTED:
+            self.requests_meta.pop(request.request_id, None)
 
-        ucm_block_ids = self.generate_hash(
-            self.hash_block_size, request.all_token_ids, self._seed
-        )
+        if request.request_id not in self.requests_meta:
+            ucm_block_ids = self.generate_hash(
+                self.hash_block_size, request.all_token_ids, self._seed
+            )
+        else:
+            request_mate = self.requests_meta[request.request_id]
+            ucm_block_ids = request_mate.ucm_block_ids
 
         if (
             self.enable_record_traces
