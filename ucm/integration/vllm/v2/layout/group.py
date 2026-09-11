@@ -79,10 +79,12 @@ class GroupLayout:
         if self.num_blocks <= 0:
             raise ValueError("num_blocks must be positive")
 
-        # Walk the group's layers once, in model order; every component
-        # of every layer is one whole-block entry read straight from its
-        # view.  Declared layers cross-check their block stride (the one
-        # exact consistency check between declarations and views).
+        # Walk the group's layers once, in layer order.  One model layer
+        # contributes several layer names (attn, indexer.k_cache,
+        # swa_cache, compressor states all belong to layer 5), so
+        # layer_index is the order key and the name is only a stable
+        # tiebreak within the same layer -- the record layout must not
+        # depend on the config's enumeration order.
         ordered_layers = sorted(
             group.layers, key=lambda item: (item.layer_index, item.layer_name)
         )
