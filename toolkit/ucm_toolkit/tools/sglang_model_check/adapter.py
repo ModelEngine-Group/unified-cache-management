@@ -108,6 +108,10 @@ class SglangModelCheckTool(ToolAdapter):
         )
         env = os.environ.copy()
         env[CONFIG_ENV] = config.to_json()
+        # Keep stdout/stderr suitable for machine-readable checker output. Model
+        # generation settings such as top_p are irrelevant to this offline check.
+        env["TRANSFORMERS_VERBOSITY"] = "error"
+        env["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "1"
         platform = args.platform
         if platform == "auto":
             ascend_env = env.get("ASCEND_RT_VISIBLE_DEVICES") or env.get(

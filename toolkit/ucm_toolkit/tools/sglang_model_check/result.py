@@ -13,6 +13,7 @@ class CheckResult:
     model: str
     mode: str
     supported: bool = False
+    status: str = "inconclusive"
     code: str = "INTERNAL_ERROR"
     stage: str = "startup"
     reason: str = ""
@@ -26,12 +27,18 @@ class CheckResult:
 
     def succeed(self, stage: str, reason: str = "") -> None:
         self.supported = True
+        self.status = "compatible"
         self.code = "PASS"
         self.stage = stage
         self.reason = reason
 
     def fail(self, code: str, stage: str, reason: str) -> None:
         self.supported = False
+        self.status = (
+            "inconclusive"
+            if code == "CHECKER_RUNTIME_POOL_PROBE_REQUIRED"
+            else "incompatible"
+        )
         self.code = code
         self.stage = stage
         self.reason = reason

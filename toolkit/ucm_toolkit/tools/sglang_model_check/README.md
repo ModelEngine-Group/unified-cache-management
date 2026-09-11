@@ -46,6 +46,11 @@ include detection sources, detection errors, full tracebacks, and roundtrip
 details. `--output` writes the same summary or verbose representation shown on
 standard output.
 
+Use the `status` field for automation: `compatible`, `inconclusive`, or
+`incompatible`. In particular, `CHECKER_RUNTIME_POOL_PROBE_REQUIRED` is
+`inconclusive`, not evidence that the model is incompatible. The legacy
+`supported` boolean remains available for backward compatibility.
+
 Use `--platform auto|cuda|rocm|ascend|xpu|cpu` to select the accelerator family.
 Auto prefers an existing Ascend environment or `torch_npu`; otherwise it selects
 CUDA. The child process sets only the matching visibility variable, and the JSON

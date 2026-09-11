@@ -294,6 +294,23 @@ class SglangModelCheckToolkitTest(unittest.TestCase):
         self.assertIn("Traceback", verbose["reason"])
         self.assertIn("detection_sources", verbose["model_info"])
 
+    def test_result_exposes_compatible_and_inconclusive_status(self):
+        result = CheckResult(model="model", mode="inspect")
+        result.succeed("inspect", "passed")
+        self.assertTrue(result.supported)
+        self.assertEqual(result.status, "compatible")
+
+        result.fail(
+            "CHECKER_RUNTIME_POOL_PROBE_REQUIRED",
+            "roundtrip_prepare",
+            "runtime pool required",
+        )
+        self.assertFalse(result.supported)
+        self.assertEqual(result.status, "inconclusive")
+
+        result.fail("UCM_STORAGE_API_UNSUPPORTED", "capability_check", "v2")
+        self.assertEqual(result.status, "incompatible")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -594,11 +594,15 @@ def run(config: CheckConfig) -> CheckResult:
         else:
             qualifier = "config-only" if config.skip_meta_model else "meta-model"
             if requirements.is_hybrid:
-                qualifier += "; specialized runtime pools were not constructed"
-            result.succeed(
-                "inspect",
-                f"{qualifier} structural checks passed; storage IO was not probed",
-            )
+                reason = (
+                    f"{qualifier} structural checks passed; UCM v2 API is available; "
+                    "specialized runtime pools and storage IO were not probed"
+                )
+            else:
+                reason = (
+                    f"{qualifier} structural checks passed; storage IO was not probed"
+                )
+            result.succeed("inspect", reason)
         return result
     except CheckFailure as exc:
         result.fail(exc.code, exc.stage, exc.reason)
