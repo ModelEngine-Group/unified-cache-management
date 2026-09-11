@@ -1,16 +1,21 @@
-"""Build the layout model from vLLM's packed-tensor declarations.
+"""Build the layout model from vLLM's KVCacheConfig and runtime views.
 
-This is the primary mode on vLLM 0.29+: ``kv_cache_tensors`` states where
-every layer's blocks sit (``offset + L * layer_stride + b * block_stride``
-from one shared backing), and the runtime views carry the page geometry.
-The build is a near-identity mapping of the declarations with three
-cheap, exact checks: every structure's block stride must equal the
-declared one, every layer's first structure must sit at its declared page
-base (one anchor proves the whole placement arithmetic, subsuming the old
-per-structure containment and layer-step checks -- a structure's payload
-never exceeds its stride by construction), and every structure must end
-inside the backing.  Anything deeper is ``UCM_V2_DESCRIPTOR_SOURCE=assert``
-territory: build the inferred model too and require them to agree.
+One builder serves both generations, because the runtime views are
+always the addressing source of truth: vLLM's allocation logic carves
+every layer's view (data_ptr/shape/stride) at its final address, whether
+the version packs all layers into one declared backing (0.29
+``kv_cache_tensors`` with per-layer strides) or allocates one tensor per
+view (0.26 -- per-tensor overlay, the Ascend layout).  Declarations
+therefore only feed the model's descriptive layer and three exact
+consistency checks against the views:
+
+* every view's block stride equals the declared one,
+* every layer's first view sits at its declared page base
+  (``backing + offset + position * layer_stride``),
+* every view ends inside the declared backing.
+
+Without declarations (vLLM 0.26) the model carries no descriptors and
+describes the per-tensor overlay directly.
 """
 
 from __future__ import annotations
@@ -22,7 +27,6 @@ from typing import TYPE_CHECKING
 from . import geometry
 from .model import (
     BackingAllocation,
-    ComponentSlot,
     LayerSlot,
     LayoutModel,
     TensorDescriptor,
@@ -43,27 +47,18 @@ class _Declaration:
     block_stride: int
 
 
-def _first_base(components: tuple[ComponentSlot, ...]) -> int:
-    if not components:
-        raise ValueError("Layer registered no addressable structure")
-    return components[0].base_ptr
-
-
-def build(
-    spec: "UCMKVCacheSpec",
+def _parse_declarations(
     kv_cache_tensors: Sequence[object],
-    kv_caches: Mapping[str, "KVCacheValue"],
-    *,
-    num_blocks: int,
-) -> LayoutModel:
-    if not kv_cache_tensors:
-        raise ValueError("declared layout mode requires kv_cache_tensors")
+) -> tuple[tuple[_Declaration, ...], dict[str, tuple[int, int]]]:
+    """Parse ``kv_cache_tensors``; undeclared configs yield nothing."""
 
     declarations: list[_Declaration] = []
     declared_at: dict[str, tuple[int, int]] = {}
     sizes: set[int] = set()
     for entry in kv_cache_tensors:
-        layers = tuple(str(name) for name in getattr(entry, "layers", ()) or ())
+        layers = tuple(
+            str(name) for name in getattr(entry, "layers", ()) or ()
+        )
         if not layers:
             raise ValueError("A declared KV cache tensor covers no layers")
         declaration = _Declaration(
@@ -87,14 +82,25 @@ def build(
             declared_at[name] = (declaration.descriptor_id, position)
         declarations.append(declaration)
         sizes.add(int(getattr(entry, "size")))
+    if declarations:
+        # vLLM 0.29 allocates exactly one backing per worker; every
+        # declaration reports its total size.
+        if len(sizes) != 1:
+            raise ValueError(
+                "Declared KV cache tensors disagree on the backing size: "
+                f"{sorted(sizes)}"
+            )
+    return tuple(declarations), declared_at
 
-    # vLLM 0.29 allocates exactly one backing per worker; every declaration
-    # reports its total size.
-    if len(sizes) != 1:
-        raise ValueError(
-            f"Declared KV cache tensors disagree on the backing size: {sorted(sizes)}"
-        )
-    backing_size = sizes.pop()
+
+def build(
+    spec: "UCMKVCacheSpec",
+    kv_caches: Mapping[str, "KVCacheValue"],
+    *,
+    num_blocks: int,
+    kv_cache_tensors: Sequence[object] = (),
+) -> LayoutModel:
+    declarations, declared_at = _parse_declarations(kv_cache_tensors)
 
     groups: dict[int, tuple[LayerSlot, ...]] = {}
     group_states: dict[int, bool] = {}
@@ -108,7 +114,7 @@ def build(
         ):
             if layer.layer_name not in kv_caches:
                 raise ValueError(f"Missing KV cache tensor for {layer.layer_name}")
-            if layer.layer_name not in declared_at:
+            if declarations and layer.layer_name not in declared_at:
                 raise ValueError(
                     f"No declared tensor covers layer {layer.layer_name}"
                 )
@@ -118,15 +124,21 @@ def build(
                 num_blocks=num_blocks,
                 state_snapshot=group.is_state_snapshot,
             )
-            declaration = declarations[declared_at[layer.layer_name][0]]
-            for component in components:
-                if component.block_stride != declaration.block_stride:
-                    raise ValueError(
-                        f"Layer {layer.layer_name}: runtime view block stride "
-                        f"{component.block_stride} disagrees with the declared "
-                        f"{declaration.block_stride}"
-                    )
-            first_bases[layer.layer_name] = _first_base(components)
+            if not components:
+                raise ValueError(
+                    f"Layer {layer.layer_name} registered no addressable structure"
+                )
+            placement = declared_at.get(layer.layer_name)
+            if placement is not None:
+                declaration = declarations[placement[0]]
+                for component in components:
+                    if component.block_stride != declaration.block_stride:
+                        raise ValueError(
+                            f"Layer {layer.layer_name}: runtime view block "
+                            f"stride {component.block_stride} disagrees with "
+                            f"the declared {declaration.block_stride}"
+                        )
+            first_bases[layer.layer_name] = components[0].base_ptr
             group_slots.append(
                 LayerSlot(
                     layer.layer_name,
@@ -137,6 +149,21 @@ def build(
             )
         groups[group.group_id] = tuple(group_slots)
 
+    if not declarations:
+        model = LayoutModel(
+            backings=(),
+            descriptors=(),
+            groups=groups,
+            num_blocks=num_blocks,
+            mode="per-tensor",
+        )
+        _log(model, groups, group_states)
+        layout_debug(
+            f"layout mode=per-tensor backings=0 descriptors=0 "
+            f"num_blocks={num_blocks}"
+        )
+        return model
+
     if set(first_bases) != set(declared_at):
         raise ValueError(
             "Declared tensors and the cache spec disagree on layer coverage: "
@@ -144,12 +171,12 @@ def build(
             f"declared_only={sorted(set(declared_at) - set(first_bases))}"
         )
 
-    # Anchor the backing from declaration zero's first layer (assumed at page
-    # offset 0), then prove the placement arithmetic with one check per layer:
-    # the layer's first structure must sit exactly at its declared page base.
-    anchor_base = (
-        first_bases[declarations[0].layers[0]] - declarations[0].offset
-    )
+    # Anchor the backing from declaration zero's first layer (assumed at
+    # page offset 0), then prove the placement arithmetic with one check
+    # per layer: the layer's first view must sit exactly at its declared
+    # page base.  Every view must end inside the backing.
+    anchor_base = first_bases[declarations[0].layers[0]] - declarations[0].offset
+    backing_size = int(getattr(kv_cache_tensors[0], "size"))
     backing_end = anchor_base + backing_size
     for name, (descriptor_id, position) in declared_at.items():
         declaration = declarations[descriptor_id]
@@ -163,16 +190,10 @@ def build(
                 f"(backing {anchor_base:#x} + offset {declaration.offset} + "
                 f"{position} * layer_stride {declaration.layer_stride})"
             )
-    # Every layer's structures must end inside the backing; the buffer bound
-    # already reaches the last row of the last block, so this holds the full
-    # span without assuming padding after the final block.
     for group_slots in groups.values():
         for slot in group_slots:
             for component in slot.components:
-                if (
-                    component.base_ptr + component.buffer_size_bytes
-                    > backing_end
-                ):
+                if component.base_ptr + component.buffer_size_bytes > backing_end:
                     raise ValueError(
                         f"Layer {slot.layer_name}: structure at "
                         f"{component.base_ptr:#x} extends beyond the backing "
@@ -196,13 +217,21 @@ def build(
         num_blocks=num_blocks,
         mode="declared",
     )
-    for group_id, group_slots in groups.items():
-        state = group_states[group_id]
-        for slot in group_slots:
-            model.log_registration(group_id, slot, state=state)
+    _log(model, groups, group_states)
     layout_debug(
         f"layout mode=declared backings=1 "
         f"descriptors={len(declarations)} num_blocks={num_blocks} "
         f"backing_base={anchor_base:#x}"
     )
     return model
+
+
+def _log(
+    model: LayoutModel,
+    groups: Mapping[int, tuple[LayerSlot, ...]],
+    group_states: Mapping[int, bool],
+) -> None:
+    for group_id, group_slots in groups.items():
+        state = group_states[group_id]
+        for slot in group_slots:
+            model.log_registration(group_id, slot, state=state)

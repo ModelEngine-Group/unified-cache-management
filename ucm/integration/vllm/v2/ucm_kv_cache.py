@@ -544,20 +544,16 @@ class UCMKVCacheLayout:
                 group_layout = self.model.group_layouts[group_id]
                 if group_info.is_state_snapshot:
                     # A state snapshot lives in the last block of its range.
-                    entries, record_offset = group_layout.state_record_segments(
-                        record_offset,
-                        block_maps[group_id],
-                        key_end,
-                        layer_name,
+                    spans = group_layout.state_plan_range(
+                        block_maps[group_id], key_end
                     )
                 else:
-                    entries, record_offset = group_layout.record_segments(
-                        record_offset,
-                        block_maps[group_id],
-                        group_key_start,
-                        key_end,
-                        layer_name,
+                    spans = group_layout.plan_spans(
+                        block_maps[group_id], group_key_start, key_end
                     )
+                entries, record_offset = group_layout.emit_record(
+                    spans, record_offset, layer_name
+                )
                 for ptr, size, offset in entries:
                     yield key, offset, ptr, size
             if LAYOUT_DEBUG:

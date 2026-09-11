@@ -101,6 +101,16 @@ def component(
             f"KV tensor row stride {row_stride} is smaller than payload {payload}"
         )
     rows_per_block = shape[0] // num_blocks
+    if rows_per_block > 1 and row_stride != payload:
+        # Align-family layouts (mamba/state models, Kimi MLA) store a
+        # block's kernel rows densely by design; a padded multi-row view
+        # is a layout we have never seen and cannot address correctly
+        # with a single span, so fail fast instead of copying garbage.
+        raise ValueError(
+            "Padded multi-row blocks are not a supported layout "
+            f"(shape={shape}, strides={strides}, row_stride={row_stride}, "
+            f"row_payload={payload})"
+        )
     states_per_row: int
     bytes_per_state: int
     if state_snapshot:
@@ -197,7 +207,16 @@ def state_structures(
     *,
     num_blocks: int,
 ) -> tuple[ComponentSlot, ...]:
-    """Resolve an explicit component tuple or one combined raw state page."""
+    """Resolve an explicit component tuple or one combined raw state page.
+
+    The combined page stays a single component: whole-block state IO is a
+    byte copy, so the conv/SSM split the spec describes adds no addressing
+    information.  Ascend 0.26 exposes C = the full padded page (payload ==
+    page_stride == page_size, padding at the tail); vLLM 0.29 exposes C =
+    the dense state content only (payload <= page_stride == page_size,
+    padding between blocks).  Either way the record carries the content
+    and the padding stays outside.
+    """
 
     tensors = component_tensors(value)
     expected_shapes = tuple(
@@ -218,7 +237,7 @@ def state_structures(
             for tensor in tensors
         )
 
-    if len(tensors) != 1 or not expected_shapes:
+    if len(tensors) != 1:
         raise ValueError(
             f"State components for {layer.layer_name} do not match spec shapes: "
             f"{actual_shapes} != {expected_shapes}"
@@ -236,44 +255,33 @@ def state_structures(
     page_stride = strides[0] * element_size
     payload = row_payload_bytes(shape, strides, element_size)
     page_size = int(getattr(layer.kv_cache_spec, "page_size_bytes", page_stride))
-    # Ascend 0.26 exposes C = the full padded page (payload == page_stride
-    # == page_size, padding at the page tail). vLLM 0.29 exposes C = the dense
-    # state content only, with the page padding between blocks
-    # (payload <= page_stride == page_size). Components are carved from the
-    # front of each page in both forms; the page padding stays outside the
-    # record either way.
     if page_stride != page_size or payload > page_stride:
         raise ValueError(
             "Combined state backing must be a dense padded page: "
             f"shape={shape}, strides={strides}, page_size={page_size}"
         )
-
     dtypes = tuple(getattr(layer.kv_cache_spec, "dtypes", ()) or ())
     if len(dtypes) != len(expected_shapes):
         raise ValueError(
             f"State spec for {layer.layer_name} must provide one dtype per shape"
         )
-    offset = 0
-    components: list[ComponentSlot] = []
-    for component_shape, dtype in zip(expected_shapes, dtypes, strict=True):
-        component_size = math.prod(component_shape) * dtype_size(dtype)
-        if offset + component_size > page_stride:
-            raise ValueError(
-                f"State components exceed padded page for {layer.layer_name}"
-            )
-        components.append(
-            ComponentSlot(
-                base_ptr=int(raw.data_ptr()) + offset,
-                block_stride=page_stride,
-                row_stride_bytes=page_stride,
-                rows_per_block=1,
-                states_per_row=1,
-                bytes_per_state=component_size,
-                buffer_size_bytes=(num_blocks - 1) * page_stride + component_size,
-            )
+    content = sum(
+        math.prod(component_shape) * dtype_size(dtype)
+        for component_shape, dtype in zip(expected_shapes, dtypes, strict=True)
+    )
+    if content > payload:
+        raise ValueError(
+            f"State components ({content}B) exceed the page content "
+            f"({payload}B) for {layer.layer_name}"
         )
-        offset += component_size
-    # The components are carved from the front of each page, contiguous by
-    # construction, so the group's run builder merges them into one span
-    # per block; the page padding stays outside the record either way.
-    return tuple(components)
+    return (
+        ComponentSlot(
+            base_ptr=int(raw.data_ptr()),
+            block_stride=page_stride,
+            row_stride_bytes=page_stride,
+            rows_per_block=1,
+            states_per_row=1,
+            bytes_per_state=content,
+            buffer_size_bytes=(num_blocks - 1) * page_stride + content,
+        ),
+    )

@@ -1,30 +1,23 @@
-"""Precomputed per-group block addressing for connector v2.
+"""Per-group addressing for connector v2: the views are the truth.
 
-:class:`GroupLayout` resolves one KV group's placement once, at init, into
-two structures that queries only translate:
+Every layer component is one whole-block span taken straight from its
+runtime view -- ``view.data_ptr() + block_id * block_stride`` with the
+view's payload -- because vLLM's allocation logic carves each view at
+its final address (0.26: one allocation per view, never adjacent; 0.29:
+one packed backing, views strided per the declarations).  Nothing
+probes or re-derives placement.
 
-* **Runs** -- contiguous whole-block byte spans.  The group's structures
-  (every component of every layer, split into kernel rows) are walked in
-  slot order; consecutive spans that touch and share one block stride
-  collapse into a shared run.  Because the merge follows from the
-  placement arithmetic, it holds identically for every block, so dump and
-  load produce the same entries however vLLM scatters physical blocks.
-* **Row tables** -- the flat per-component facts (row stride, states per
-  row, bytes per state, token-to-state scale) needed to cut a token range
-  out of a block (DSV4's sub-block hash granularity, sliding-window
-  tails).
+One special case: on interleaved declared layouts (DSV4 0.29,
+``layer_stride < block_stride`` -- a descriptor's layer pages tile each
+block slot), whole-batch queries take one descriptor-sized span per
+block, ``layer_count * layer_stride`` bytes with the page paddings
+riding along, endpoints from the declarations' own arithmetic.  Layered
+and sub-block queries stay per-view exact and never touch padding.
 
-Records are block-major: one plan block contributes its runs in order, so
-a layer's position inside a record is an init-time constant.  Filtered
-(layerwise) batches therefore address the very same record coordinates as
-full ones -- a layerwise load writes into the record a full dump wrote.
-Blocks never merge with each other: cross-block adjacency is an
-allocation accident, not a layout property.
-
-The layerwise contract (every layer, every step, save and load) keeps the
-whole-block path pure translation: one multiply-add per block plus a walk
-of precomputed slices.  Sub-block ranges take the row-table walk, which
-merges only what is actually contiguous.
+Records are block-major, one span per layer; every segment locates
+itself as ``record_base + entry_offset + in-component offset``, so a
+layerwise batch addresses the very same record bytes a full batch
+produced.  Blocks never merge with each other.
 """
 
 from __future__ import annotations
@@ -37,42 +30,23 @@ from .model import (
     LAYOUT_DEBUG,
     ComponentSlot,
     LayerSlot,
+    TensorDescriptor,
     layout_debug,
 )
 
 
 @dataclass(frozen=True)
-class SegmentRun:
-    """One contiguous whole-block byte span shared by adjacent structures.
-
-    Block ``b`` addresses the span at ``base_ptr + b * block_stride``;
-    ``record_start`` is the span's offset inside one block's record.
-    """
+class DescriptorSpan:
+    """A descriptor's contiguous per-block span on interleaved layouts."""
 
     base_ptr: int
     block_stride: int
-    size: int
-    record_start: int
-
-
-@dataclass(frozen=True)
-class _LayerSlice:
-    """One layer's whole-block bytes inside one run (its rows merged)."""
-
-    run_index: int
-    offset: int
-    size: int
+    span_bytes: int  # layer_count * layer_stride, page paddings included
+    record_start: int  # span start inside one block's record
 
 
 class GroupLayout:
-    """Init-time addressing plan for one KV group.
-
-    ``segments`` answers "which (ptr, size) byte spans back these blocks x
-    layers x tokens"; ``record_segments``/``state_record_segments`` add the
-    record coordinates the proxy batches need.  Everything structural --
-    run merging, per-layer slices, record positions -- is computed here
-    once; the queries only translate block IDs.
-    """
+    """Init-time addressing plan for one KV group; queries only translate."""
 
     def __init__(
         self,
@@ -81,104 +55,133 @@ class GroupLayout:
         *,
         token_block_size: int,
         num_blocks: int,
+        descriptors: Sequence[TensorDescriptor] = (),
     ) -> None:
-        if num_blocks <= 0:
-            raise ValueError("num_blocks must be positive")
-        if token_block_size <= 0:
-            raise ValueError("token_block_size must be positive")
+        if num_blocks <= 0 or token_block_size <= 0:
+            raise ValueError("num_blocks and token_block_size must be positive")
         self.group_id = group_id
         self.slots = tuple(slots)
         self.token_block_size = token_block_size
         self.num_blocks = num_blocks
 
-        # Runs are built from per-row spans: a component whose kernel rows
-        # are padded (row_stride > row payload) is not contiguous inside a
-        # block, so its rows stay separate runs, exactly like the row walk
-        # would emit them.
-        runs: list[list[int]] = []
-        layer_slices: dict[str, list[_LayerSlice]] = {}
-        # (slot, component, scale numerator, scale denominator) for the
-        # sub-block row walk; states = local_tokens * num / den exactly.
-        structures: list[tuple[LayerSlot, ComponentSlot, int, int]] = []
+        # Block-First special case; empty unless the group's layers tile
+        # block slots under one declaration set.
+        self.descriptor_spans, layer_spans = self._resolve_spans(descriptors)
+
+        # One entry per component: (slot, component, record_offset,
+        # scale_num, scale_den).  record_offset locates the component
+        # inside one block's record; scale maps tokens to stored states.
+        self.entries: list[tuple] = []
+        record = 0
         for slot in self.slots:
-            entries: list[_LayerSlice] = []
+            span = layer_spans.get(
+                slot.layer_name,
+                sum(c.payload_bytes for c in slot.components),
+            )
+            offset = record
             for component in slot.components:
-                if (
-                    component.base_ptr
-                    + (num_blocks - 1) * component.block_stride
-                    + component.payload_bytes
-                    > component.base_ptr + component.buffer_size_bytes
-                ):
-                    raise ValueError(
-                        f"KV cache layout for {slot.layer_name} exceeds its "
-                        "registered tensor buffer"
-                    )
-                for row in range(component.rows_per_block):
-                    span_base = component.base_ptr + row * component.row_stride_bytes
-                    span_size = component.row_payload_bytes
-                    if (
-                        runs
-                        and runs[-1][1] == component.block_stride
-                        and runs[-1][0] + runs[-1][2] == span_base
-                    ):
-                        runs[-1][2] += span_size
-                    else:
-                        runs.append([span_base, component.block_stride, span_size])
-                    entries.append(
-                        _LayerSlice(
-                            len(runs) - 1,
-                            span_base - runs[-1][0],
-                            span_size,
-                        )
-                    )
-                divisor = math.gcd(component.states_per_block, token_block_size)
-                structures.append(
+                self._check_bounds(slot, component)
+                divisor = math.gcd(
+                    component.states_per_block, token_block_size
+                )
+                self.entries.append(
                     (
                         slot,
                         component,
+                        offset,
                         component.states_per_block // divisor,
                         token_block_size // divisor,
                     )
                 )
-            # Merge the layer's consecutive slices that share one run (its
-            # dense rows and contiguous components); padded rows or foreign
-            # components in between keep the slices apart.
-            merged: list[_LayerSlice] = []
-            for entry in entries:
-                if (
-                    merged
-                    and merged[-1].run_index == entry.run_index
-                    and merged[-1].offset + merged[-1].size == entry.offset
-                ):
-                    merged[-1] = _LayerSlice(
-                        entry.run_index,
-                        merged[-1].offset,
-                        merged[-1].size + entry.size,
-                    )
-                else:
-                    merged.append(entry)
-            layer_slices[slot.layer_name] = merged
-
-        record_start = 0
-        frozen_runs: list[SegmentRun] = []
-        for base_ptr, block_stride, size in runs:
-            frozen_runs.append(SegmentRun(base_ptr, block_stride, size, record_start))
-            record_start += size
-        self.runs = tuple(frozen_runs)
-        self.block_record_size = record_start
-        self.layer_slices = {
-            name: tuple(slices) for name, slices in layer_slices.items()
-        }
-        self._structures = tuple(structures)
+                offset += component.payload_bytes
+            record += span
+        self.record_size = record
         if LAYOUT_DEBUG:
             layout_debug(
                 f"group-layout group={group_id} layers={len(self.slots)} "
-                f"runs={len(self.runs)} record_per_block={record_start} "
-                f"token_block={token_block_size}"
+                f"entries={len(self.entries)} "
+                f"descriptor-spans={len(self.descriptor_spans)} "
+                f"record_per_block={record} token_block={token_block_size}"
+            )
+
+    def _resolve_spans(
+        self, descriptors: Sequence[TensorDescriptor]
+    ) -> tuple[tuple[DescriptorSpan, ...], dict[str, int]]:
+        """Interleaved-layout spans and each layer's record span.
+
+        Falls back to the per-view record (empty spans) unless every
+        layer of the group is single-component, covered by one
+        interleaved descriptor (``0 < layer_stride < block_stride``)
+        that stays inside the group, and every page fits its slot.
+        """
+
+        if not descriptors:
+            return (), {}
+        descriptor_at: dict[str, tuple[TensorDescriptor, int]] = {}
+        for descriptor in descriptors:
+            for position, name in enumerate(descriptor.layers):
+                descriptor_at.setdefault(name, (descriptor, position))
+        grouped: dict[int, list[str]] = {}
+        for slot in self.slots:
+            placement = descriptor_at.get(slot.layer_name)
+            if placement is None or len(slot.components) != 1:
+                return (), {}
+            descriptor, _ = placement
+            component = slot.components[0]
+            if (
+                not 0 < descriptor.layer_stride < descriptor.block_stride
+                or component.payload_bytes > descriptor.layer_stride
+            ):
+                return (), {}
+            grouped.setdefault(descriptor.descriptor_id, []).append(
+                slot.layer_name
+            )
+        for descriptor in descriptors:
+            names = grouped.get(descriptor.descriptor_id)
+            if names and len(names) != len(descriptor.layers):
+                return (), {}
+        spans: list[DescriptorSpan] = []
+        record = 0
+        for descriptor in descriptors:
+            names = grouped.get(descriptor.descriptor_id)
+            if not names:
+                continue
+            first = self._slot_of(descriptor.layers[0])
+            span = DescriptorSpan(
+                base_ptr=first.components[0].base_ptr,
+                block_stride=descriptor.block_stride,
+                span_bytes=len(descriptor.layers) * descriptor.layer_stride,
+                record_start=record,
+            )
+            spans.append(span)
+            record += span.span_bytes
+        layer_spans = {
+            name: descriptor.layer_stride
+            for name, (descriptor, _) in descriptor_at.items()
+            if any(s.layer_name == name for s in self.slots)
+        }
+        return tuple(spans), layer_spans
+
+    def _slot_of(self, layer_name: str) -> LayerSlot:
+        for slot in self.slots:
+            if slot.layer_name == layer_name:
+                return slot
+        raise ValueError(f"Unknown layer {layer_name}")
+
+    def _check_bounds(self, slot: LayerSlot, component: ComponentSlot) -> None:
+        if (
+            component.base_ptr
+            + (self.num_blocks - 1) * component.block_stride
+            + component.payload_bytes
+            > component.base_ptr + component.buffer_size_bytes
+        ):
+            raise ValueError(
+                f"KV cache layout for {slot.layer_name} exceeds its "
+                "registered tensor buffer"
             )
 
     # ------------------------------------------------------------------
-    # Public queries
+    # Queries
     # ------------------------------------------------------------------
 
     def segments(
@@ -190,15 +193,16 @@ class GroupLayout:
         """(ptr, size) byte spans backing the given blocks.
 
         ``block_ids`` are physical block IDs carrying ``token_range`` in
-        order (block ``i`` holds the range's ``i``-th slice); ``layers``
-        restricts the answer to those layer names (None = every layer of
-        the group); ``token_range`` is an absolute ``(start, end)`` token
-        window (None = whole blocks).
+        order; ``layers`` restricts the answer to those layer names
+        (None = every layer); ``token_range`` is an absolute ``(start,
+        end)`` token window (None = whole blocks).
         """
 
         selected = None if layers is None else frozenset(layers)
         if selected is not None:
-            unknown = selected.difference(self.layer_slices)
+            unknown = selected.difference(
+                slot.layer_name for slot in self.slots
+            )
             if unknown:
                 raise ValueError(
                     f"Unknown layers for group {self.group_id}: {sorted(unknown)}"
@@ -213,44 +217,23 @@ class GroupLayout:
         entries, _ = self._emit(spans, 0, selected)
         return tuple((ptr, size) for ptr, size, _ in entries)
 
-    def record_segments(
+    def emit_record(
         self,
+        spans: Sequence[tuple[int, int, int]],
         base: int,
-        block_map: Mapping[int, int],
-        token_start: int,
-        token_end: int,
         layer_name: str | None = None,
     ) -> tuple[list[tuple[int, int, int]], int]:
-        """Segments with record offsets for one plan's token range.
+        """Segments with record offsets for the given block spans.
 
-        Returns ``(entries, next_base)`` where each entry is
-        ``(ptr, size, record_offset)`` and ``next_base`` is the record
-        offset after this group's (full, unfiltered) record.  ``layer_name``
-        filters what is emitted but never moves anything: filtered and
-        unfiltered batches share record coordinates, so a layerwise load
-        writes into the record a full dump produced.  A ``layer_name`` from
-        another group simply emits nothing.
+        Returns ``(entries, next_base)``; each entry is ``(ptr, size,
+        record_offset)``.  ``layer_name`` filters what is emitted but
+        never moves anything -- filtered and unfiltered batches share
+        record coordinates, so a layerwise load writes into the record a
+        full dump produced.  A layer from another group emits nothing.
+        State snapshots pass the spans of the last block of the request
+        (:meth:`state_plan_range`).
         """
 
-        spans = self.plan_spans(block_map, token_start, token_end)
-        selected = None if layer_name is None else frozenset((layer_name,))
-        return self._emit(spans, base, selected)
-
-    def state_record_segments(
-        self,
-        base: int,
-        block_map: Mapping[int, int],
-        token_end: int,
-        layer_name: str | None = None,
-    ) -> tuple[list[tuple[int, int, int]], int]:
-        """State snapshots: the last complete block of the token range."""
-
-        logical = max((token_end - 1) // self.token_block_size, 0)
-        if logical not in block_map:
-            raise ValueError(f"Missing vLLM block {logical} in the plan")
-        spans = (
-            (self._checked_block(block_map[logical]), 0, self.token_block_size),
-        )
         selected = None if layer_name is None else frozenset((layer_name,))
         return self._emit(spans, base, selected)
 
@@ -297,14 +280,25 @@ class GroupLayout:
         """spans_for_range over a plan's logical->physical block map."""
 
         token_block_size = self.token_block_size
-        first = token_start // token_block_size
-        last = (token_end - 1) // token_block_size
-        block_ids = []
-        for logical in range(first, last + 1):
-            if logical not in block_map:
-                raise ValueError(f"Missing vLLM block {logical} in the plan")
-            block_ids.append(block_map[logical])
+        block_ids = [
+            block_map[logical]
+            for logical in range(
+                token_start // token_block_size,
+                (token_end - 1) // token_block_size + 1,
+            )
+        ]
         return self.spans_for_range(block_ids, token_start, token_end)
+
+    def state_plan_range(
+        self, block_map: Mapping[int, int], token_end: int
+    ) -> tuple[tuple[int, int, int], ...]:
+        """Spans of the last complete block holding a state snapshot."""
+
+        logical = max((token_end - 1) // self.token_block_size, 0)
+        if logical not in block_map:
+            raise ValueError(f"Missing vLLM block {logical} in the plan")
+        block = self._checked_block(block_map[logical])
+        return ((block, 0, self.token_block_size),)
 
     # ------------------------------------------------------------------
     # Emission
@@ -323,141 +317,110 @@ class GroupLayout:
         base: int,
         selected: frozenset[str] | None,
     ) -> tuple[list[tuple[int, int, int]], int]:
-        """Dispatch to the whole-block fast path or the row-table walk."""
-
         token_block_size = self.token_block_size
         if all(
             local_start == 0 and local_end == token_block_size
             for _, local_start, local_end in spans
         ):
-            return self._emit_whole(spans, base, selected)
-        return self._emit_partial(spans, base, selected)
+            entries = self._whole(spans, base, selected)
+        else:
+            entries = self._partial(spans, base, selected)
+        return entries, base + len(spans) * self.record_size
 
-    def _emit_whole(
+    def _whole(
         self,
         spans: Sequence[tuple[int, int, int]],
         base: int,
         selected: frozenset[str] | None,
-    ) -> tuple[list[tuple[int, int, int]], int]:
-        """Precomputed runs (or selected layers' slices inside them)."""
-
-        record_size = self.block_record_size
-        next_base = base + len(spans) * record_size
-        slices = self._selected_slices(selected)
-        entries: list[tuple[int, int, int]] = []
+    ) -> list[tuple[int, int, int]]:
+        if selected is None and self.descriptor_spans:
+            # Whole batches on interleaved layouts: one descriptor-sized
+            # span per block, paddings riding inside.
+            entries = []
+            for ordinal, (block_id, _, _) in enumerate(spans):
+                record_base = base + ordinal * self.record_size
+                for span in self.descriptor_spans:
+                    ptr = span.base_ptr + block_id * span.block_stride
+                    if LAYOUT_DEBUG:
+                        layout_debug(
+                            f"io-span group={self.group_id} block={block_id} "
+                            f"ptr={ptr:#x} size={span.span_bytes} "
+                            f"record={record_base + span.record_start}"
+                        )
+                    entries.append(
+                        (ptr, span.span_bytes, record_base + span.record_start)
+                    )
+            return entries
+        entries = []
         for ordinal, (block_id, _, _) in enumerate(spans):
-            record_base = base + ordinal * record_size
-            for run_index, offset, size in slices:
-                run = self.runs[run_index]
-                ptr = run.base_ptr + block_id * run.block_stride + offset
+            record_base = base + ordinal * self.record_size
+            for slot, component, offset, _, _ in self.entries:
+                if selected is not None and slot.layer_name not in selected:
+                    continue
+                ptr = component.base_ptr + block_id * component.block_stride
                 if LAYOUT_DEBUG:
                     layout_debug(
-                        f"io-segment group={self.group_id} block={block_id} "
-                        f"ptr={ptr:#x} size={size} "
-                        f"record={record_base + run.record_start + offset}"
+                        f"io-segment group={self.group_id} "
+                        f"layer={slot.layer_name} block={block_id} "
+                        f"ptr={ptr:#x} size={component.payload_bytes} "
+                        f"record={record_base + offset}"
                     )
                 entries.append(
-                    (ptr, size, record_base + run.record_start + offset)
+                    (ptr, component.payload_bytes, record_base + offset)
                 )
-        return entries, next_base
+        return entries
 
-    def _selected_slices(
-        self, selected: frozenset[str] | None
-    ) -> tuple[tuple[int, int, int], ...]:
-        """(run, offset, size) slices covering the selection.
-
-        With no filter every run is one slice; a layer filter takes the
-        selected layers' whole-block slices, merged inside shared runs.
-        """
-
-        if selected is None:
-            return tuple((index, 0, run.size) for index, run in enumerate(self.runs))
-        merged: list[tuple[int, int, int]] = []
-        for slot in self.slots:
-            if slot.layer_name not in selected:
-                continue
-            for entry in self.layer_slices[slot.layer_name]:
-                if (
-                    merged
-                    and merged[-1][0] == entry.run_index
-                    and merged[-1][1] + merged[-1][2] == entry.offset
-                ):
-                    merged[-1] = (
-                        entry.run_index,
-                        merged[-1][1],
-                        merged[-1][2] + entry.size,
-                    )
-                else:
-                    merged.append((entry.run_index, entry.offset, entry.size))
-        return tuple(merged)
-
-    def _emit_partial(
+    def _partial(
         self,
         spans: Sequence[tuple[int, int, int]],
         base: int,
         selected: frozenset[str] | None,
-    ) -> tuple[list[tuple[int, int, int]], int]:
-        """Row-table walk for ranges that cut into blocks.
+    ) -> list[tuple[int, int, int]]:
+        """Row-table walk for ranges that cut into blocks."""
 
-        Structures are enumerated in slot order so record positions are a
-        function of the logical enumeration alone; contiguous segments
-        merge, but never across an unselected structure -- a filtered
-        batch must not swallow bytes the filter excluded.
-        """
-
-        entries: list[tuple[int, int, int]] = []
-        offset = base
-        open_ptr: int | None = None
-        open_size = 0
-        open_offset = 0
-        for block_id, local_start, local_end in spans:
-            open_ptr = None  # a block boundary always splits the merge
-            for slot, component, scale_num, scale_den in self._structures:
-                selected_here = selected is None or slot.layer_name in selected
-                for ptr, size in _component_segments(
-                    component,
-                    scale_num,
-                    scale_den,
-                    block_id,
-                    local_start,
-                    local_end,
+        entries = []
+        for ordinal, (block_id, local_start, local_end) in enumerate(spans):
+            record_base = base + ordinal * self.record_size
+            for slot, component, offset, scale_num, scale_den in self.entries:
+                if selected is not None and slot.layer_name not in selected:
+                    continue
+                component_base = (
+                    component.base_ptr + block_id * component.block_stride
+                )
+                for rel, size in _component_segments(
+                    component, scale_num, scale_den, local_start, local_end
                 ):
-                    if (
-                        selected_here
-                        and open_ptr is not None
-                        and open_ptr + open_size == ptr
-                    ):
-                        open_size += size
-                    else:
-                        if open_ptr is not None:
-                            entries.append((open_ptr, open_size, open_offset))
-                        if selected_here:
-                            open_ptr, open_size, open_offset = ptr, size, offset
-                        else:
-                            open_ptr = None
-                    offset += size
                     if LAYOUT_DEBUG:
                         layout_debug(
                             f"segment group={self.group_id} "
                             f"layer={slot.layer_name} block={block_id} "
                             f"tokens=[{local_start},{local_end}) "
-                            f"ptr={ptr:#x} size={size} open={selected_here}"
+                            f"ptr={component_base + rel:#x} size={size} "
+                            f"record={record_base + offset + rel}"
                         )
-            if open_ptr is not None:
-                entries.append((open_ptr, open_size, open_offset))
-                open_ptr = None
-        return entries, offset
+                    entries.append(
+                        (
+                            component_base + rel,
+                            size,
+                            record_base + offset + rel,
+                        )
+                    )
+        return entries
 
 
 def _component_segments(
     component: ComponentSlot,
     scale_num: int,
     scale_den: int,
-    block_id: int,
     local_start: int,
     local_end: int,
 ) -> list[tuple[int, int]]:
-    """Merged byte spans of one component for a block-local token window."""
+    """Merged byte spans of one component's block for a token window.
+
+    Returns ``(offset_from_block_base, size)`` pairs; ``scale_num /
+    scale_den`` maps block-local tokens to stored states (identity
+    unless the cache compresses several tokens into one state).
+    """
 
     begin_num = local_start * scale_num
     end_num = local_end * scale_num
@@ -468,21 +431,18 @@ def _component_segments(
     state_begin = begin_num // scale_den
     state_end = end_num // scale_den
     states_per_row = component.states_per_row
-    bytes_per_state = component.bytes_per_state
-    base = component.base_ptr + block_id * component.block_stride
     segments: list[tuple[int, int]] = []
     while state_begin < state_end:
         row_in_block, state_in_row = divmod(state_begin, states_per_row)
         row_end = min(state_end, (row_in_block + 1) * states_per_row)
-        ptr = (
-            base
-            + row_in_block * component.row_stride_bytes
-            + state_in_row * bytes_per_state
+        offset = (
+            row_in_block * component.row_stride_bytes
+            + state_in_row * component.bytes_per_state
         )
-        size = (row_end - state_begin) * bytes_per_state
-        if segments and segments[-1][0] + segments[-1][1] == ptr:
+        size = (row_end - state_begin) * component.bytes_per_state
+        if segments and segments[-1][0] + segments[-1][1] == offset:
             segments[-1] = (segments[-1][0], segments[-1][1] + size)
         else:
-            segments.append((ptr, size))
+            segments.append((offset, size))
         state_begin = row_end
     return segments

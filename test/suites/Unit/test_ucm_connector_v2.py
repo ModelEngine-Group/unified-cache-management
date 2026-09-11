@@ -1313,21 +1313,19 @@ class RaggedLayoutTest(unittest.TestCase):
             num_blocks=8,
         )
 
+        # The combined byte page stays a single component: whole-block
+        # state IO is a byte copy, so the conv/SSM split the spec
+        # describes adds no addressing information.  The entry carries
+        # the content (16B); the page padding (64-byte stride) stays
+        # outside the record.
         views = layout.layers["model.layers.0.mixer"].components
-        self.assertEqual(tuple(view.base_ptr for view in views), (0x1000, 0x1008))
-        self.assertEqual(tuple(view.row_stride_bytes for view in views), (64, 64))
-        self.assertEqual(tuple(view.row_payload_bytes for view in views), (8, 8))
-        # The two components sit contiguously at the page front, so the
-        # group compiles them into one whole-block run; page padding (the
-        # 64-byte stride vs. the 16-byte content) stays outside it.
+        self.assertEqual(len(views), 1)
+        self.assertEqual(views[0].base_ptr, 0x1000)
         group_layout = layout.group_layouts[0]
-        self.assertEqual(len(group_layout.runs), 1)
+        self.assertEqual(len(group_layout.entries), 1)
+        slot, component, offset, _, _ = group_layout.entries[0]
         self.assertEqual(
-            (
-                group_layout.runs[0].base_ptr,
-                group_layout.runs[0].block_stride,
-                group_layout.runs[0].size,
-            ),
+            (component.base_ptr, component.block_stride, component.payload_bytes),
             (0x1000, 64, 16),
         )
 
@@ -1389,12 +1387,15 @@ class RaggedLayoutTest(unittest.TestCase):
             ),
             (0x3000,),
         )
-        # Layer 0's two components are not adjacent, so they stay separate
-        # runs; layer 1's 4-D view is a single dense kernel row per block
-        # (trailing dims permuted, 24-byte payload == row stride).
+        # One entry per component, straight from its view: layer 0's two
+        # tensors, then layer 1's single 4-D view (trailing dims permuted,
+        # 24-byte payload == row stride).
         group_layout = layout.group_layouts[0]
         self.assertEqual(
-            tuple((run.base_ptr, run.size) for run in group_layout.runs),
+            tuple(
+                (component.base_ptr, component.payload_bytes)
+                for _, component, _, _, _ in group_layout.entries
+            ),
             ((0x1000, 12), (0x2000, 12), (0x3000, 24)),
         )
 
@@ -1457,10 +1458,13 @@ class RaggedLayoutTest(unittest.TestCase):
         # The tail of block 2 and the head of block 3 stay separate entries
         # even though they are contiguous in memory: record positions are a
         # function of the logical enumeration, never of physical adjacency.
+        # Partial blocks still occupy full block-record slots (holes stay
+        # zero): block 2's window sits at its in-block offset 64, block 3's
+        # at slot 128.
         self.assertEqual(batch.block_ids, (key, key))
         self.assertEqual(batch.ptrs, (0x1000 + 2 * 128 + 64, 0x1000 + 3 * 128))
         self.assertEqual(batch.sizes, (64, 64))
-        self.assertEqual(batch.offsets, (0, 64))
+        self.assertEqual(batch.offsets, (64, 128))
 
     def test_dump_and_load_survive_different_physical_block_layouts(self):
         # Dump and load address different vLLM blocks (the source request is
@@ -1713,12 +1717,104 @@ class RaggedLayoutTest(unittest.TestCase):
         ):
             self.assertEqual(full_positions[(ptr, size)], offset)
 
-    def test_layer_contiguous_views_compile_to_one_run_per_layer(self):
-        # GLM-style placement: layer 1 sits after *all* of layer 0's blocks,
-        # so the two layers cannot share one (base, stride, size) run -- a
-        # merged span would swallow layer 0's other blocks.  Each layer gets
-        # its own run; dense multi-row views (Kimi's six kernel rows, the
-        # shared mamba page) are what actually merge.
+    def test_interleaved_declarations_take_one_span_per_block(self):
+        # Block First (DSV4 0.29): one descriptor's layer pages tile each
+        # block slot (layer_stride < block_stride).  Whole batches collapse
+        # to one descriptor-sized span per block -- paddings riding inside
+        # -- while layered and sub-block queries stay per-view exact and
+        # address the very same record coordinates.
+        parsed = parse_kv_cache_config(
+            config(group(["model.layers.0.attn", "model.layers.1.attn"],
+                         {"model.layers.0.attn": FullAttentionSpec(256, 4),
+                          "model.layers.1.attn": FullAttentionSpec(256, 4)})),
+            scheduler_block_size=256,
+            device_type="cpu",
+        )
+        num_blocks = 4
+        page = 4096  # 64 states x 64B, dense
+        layer_stride = page
+        block_stride = 2 * page  # both layers' pages tile one slot
+        caches = {
+            "model.layers.0.attn": FakeTensor(
+                0x1000, (num_blocks, 64, 64), (block_stride, 64, 1)
+            ),
+            "model.layers.1.attn": FakeTensor(
+                0x1000 + page, (num_blocks, 64, 64), (block_stride, 64, 1)
+            ),
+        }
+        declarations = (
+            SimpleNamespace(
+                size=num_blocks * block_stride,
+                layers=("model.layers.0.attn", "model.layers.1.attn"),
+                offset=0,
+                layer_stride=layer_stride,
+                block_stride=block_stride,
+            ),
+        )
+        layout = UCMKVCacheLayout(
+            parsed, caches, num_blocks=num_blocks, kv_cache_tensors=declarations
+        )
+        group_layout = layout.group_layouts[0]
+        self.assertEqual(len(group_layout.descriptor_spans), 1)
+        span = group_layout.descriptor_spans[0]
+        self.assertEqual(
+            (span.base_ptr, span.block_stride, span.span_bytes),
+            (0x1000, block_stride, 2 * layer_stride),
+        )
+        # The record is slot-sized: both layers' page slots, paddings and all.
+        self.assertEqual(group_layout.record_size, 2 * layer_stride)
+
+        from ucm.integration.vllm.v2.ucm_scheduler import (
+            RequestDispatchMeta,
+            UCMGroupBlockIds,
+            UCMGroupDispatchPlan,
+        )
+
+        key = b"b" * 16
+        plan = UCMGroupDispatchPlan(
+            0, (key,), 0, 0, 256, (UCMGroupBlockIds(0, 0, (2,)),)
+        )
+        metadata = UCMConnectorMetadata(
+            requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
+        )
+        batch = layout.build_load_batches(metadata)
+        # Whole batch: one span covering both layers' pages of block 2.
+        self.assertEqual(batch.ptrs, (0x1000 + 2 * block_stride,))
+        self.assertEqual(batch.sizes, (2 * layer_stride,))
+        self.assertEqual(batch.offsets, (0,))
+
+        # Layered batch: layer 1's page only, at its in-slot record offset
+        # (one page in) -- the same bytes the whole-batch span covered.
+        layer_batch = layout.build_load_batches(metadata, "model.layers.1.attn")
+        self.assertEqual(layer_batch.ptrs, (0x1000 + page + 2 * block_stride,))
+        self.assertEqual(layer_batch.sizes, (page,))
+        self.assertEqual(layer_batch.offsets, (page,))
+
+        # The public segments() API mirrors both shapes.
+        self.assertEqual(
+            group_layout.segments((2,)), ((0x1000 + 2 * block_stride, 2 * page),)
+        )
+        self.assertEqual(
+            group_layout.segments((2,), layers=("model.layers.1.attn",)),
+            ((0x1000 + page + 2 * block_stride, page),),
+        )
+
+        # Sub-block token ranges never use the descriptor span: they walk
+        # the layer's own view and stay payload-exact (128 tokens at the
+        # 4:1 compression = 32 states x 64B = 2048B).
+        self.assertEqual(
+            group_layout.segments(
+                (2,), layers=("model.layers.0.attn",), token_range=(0, 128)
+            ),
+            ((0x1000 + 2 * block_stride, 2048),),
+        )
+
+    def test_layer_contiguous_views_compile_to_one_entry_per_layer(self):
+        # GLM-style placement: layer 1 sits after *all* of layer 0's
+        # blocks.  Each layer keeps its own whole-block entry read
+        # straight off its view; nothing merges by probing pointers
+        # (0.26's per-view allocations and layer-contiguous layouts are
+        # never adjacent inside a block by design).
         parsed = parse_kv_cache_config(
             config(
                 group(
@@ -1742,12 +1838,12 @@ class RaggedLayoutTest(unittest.TestCase):
         group_layout = layout.group_layouts[0]
         self.assertEqual(
             tuple(
-                (run.base_ptr, run.block_stride, run.size)
-                for run in group_layout.runs
+                (component.base_ptr, component.block_stride, component.payload_bytes)
+                for _, component, _, _, _ in group_layout.entries
             ),
             ((0x1000, 12, 12), (0x1000 + 8 * 12, 12, 12)),
         )
-        self.assertEqual(group_layout.block_record_size, 24)
+        self.assertEqual(group_layout.record_size, 24)
 
         from ucm.integration.vllm.v2.ucm_scheduler import (
             RequestDispatchMeta,
@@ -2156,24 +2252,29 @@ class DeclaredLayoutModelTest(unittest.TestCase):
         # Both layers collapse into one geometry line.
         self.assertIn("(2 layers)", summary)
         self.assertIn("states/row=4", summary)
+        # Group addressing: one entry per layer, no descriptor spans (a
+        # layer-contiguous layout does not tile block slots).
+        self.assertIn("entries=2", summary)
+        self.assertIn("record/block=24", summary)
+        self.assertNotIn("descriptor-spans", summary)
 
-    def test_assert_mode_cross_checks_both_models(self):
+    def test_assert_mode_is_retired(self):
         parsed, caches, declarations = self._fixture()
         previous = os.environ.get("UCM_V2_DESCRIPTOR_SOURCE")
         os.environ["UCM_V2_DESCRIPTOR_SOURCE"] = "assert"
         try:
-            layout = UCMKVCacheLayout(
-                parsed,
-                caches,
-                num_blocks=8,
-                kv_cache_tensors=declarations,
-            )
+            with self.assertRaisesRegex(ValueError, "retired"):
+                UCMKVCacheLayout(
+                    parsed,
+                    caches,
+                    num_blocks=8,
+                    kv_cache_tensors=declarations,
+                )
         finally:
             if previous is None:
                 os.environ.pop("UCM_V2_DESCRIPTOR_SOURCE", None)
             else:
                 os.environ["UCM_V2_DESCRIPTOR_SOURCE"] = previous
-        self.assertEqual(len(layout.model.descriptors), 1)
 
     def test_disagreeing_block_stride_is_rejected(self):
         parsed, caches, _ = self._fixture()

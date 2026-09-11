@@ -212,6 +212,11 @@ class LayoutModel:
             f"{self.num_blocks} blocks x {len(self.backings)} backing(s), "
             f"total {_fmt_bytes(backing_total)}"
         )
+        if not self.descriptors:
+            lines.append(
+                "  per-tensor overlay: one allocation per runtime view "
+                "(vLLM 0.26 / Ascend; no packed declarations)"
+            )
         for backing in self.backings:
             lines.append(
                 f"  backing #{backing.backing_id}: "
@@ -285,17 +290,14 @@ class LayoutModel:
             lines.append("  group addressing:")
             for group_id in sorted(self.group_layouts):
                 group_layout = self.group_layouts[group_id]
-                shared_runs = {
-                    entry.run_index
-                    for slices in group_layout.layer_slices.values()
-                    for entry in slices
-                }
-                merged = len(shared_runs) < len(group_layout.runs)
                 parts = [
                     f"group {group_id}: {len(group_layout.slots)} layers",
-                    f"runs={len(group_layout.runs)}"
-                    f"{' (merged)' if merged else ''}",
-                    f"record/block={_fmt_bytes(group_layout.block_record_size)}",
+                    f"entries={len(group_layout.entries)}",
+                    f"record/block={_fmt_bytes(group_layout.record_size)}",
                 ]
+                if group_layout.descriptor_spans:
+                    parts.append(
+                        f"descriptor-spans={len(group_layout.descriptor_spans)}"
+                    )
                 lines.append("    " + " | ".join(parts))
         return "\n".join(lines)
