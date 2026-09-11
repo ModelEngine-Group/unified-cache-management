@@ -28,8 +28,8 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from . import geometry
-from .geometry import ComponentSlot, LAYOUT_DEBUG, layout_debug
+from . import view
+from .view import Component, LAYOUT_DEBUG, layout_debug
 
 
 @dataclass(frozen=True)
@@ -94,9 +94,9 @@ class GroupLayout:
         ordered_layers = sorted(
             layers, key=lambda item: (item.layer_index, item.layer_name)
         )
-        components_at: dict[str, tuple[ComponentSlot, ...]] = {}
+        components_at: dict[str, tuple[Component, ...]] = {}
         for layer in ordered_layers:
-            components = geometry.layer_structures(
+            components = view.layer_structures(
                 kv_caches[layer.layer_name],
                 layer,
                 state_snapshot=state_snapshot,
@@ -168,7 +168,7 @@ class GroupLayout:
     def _descriptor_spans(
         self,
         ordered_layers: Sequence,
-        components_at: Mapping[str, tuple[ComponentSlot, ...]],
+        components_at: Mapping[str, tuple[Component, ...]],
         descriptors: Sequence[TensorDescriptor],
     ) -> tuple[DescriptorSpan, ...]:
         """Block First special case; empty unless this group's layers tile
@@ -419,7 +419,7 @@ class GroupLayout:
 
 
 def _component_segments(
-    component: ComponentSlot,
+    component: Component,
     scale_num: int,
     scale_den: int,
     local_start: int,

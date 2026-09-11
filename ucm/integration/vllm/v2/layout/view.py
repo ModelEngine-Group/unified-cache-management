@@ -1,10 +1,10 @@
-"""View geometry: read addressing facts straight off the runtime views.
+"""Read addressing facts straight off the runtime views.
 
 The views vLLM hands over at ``register_kv_caches`` are the addressing
 source of truth -- each view's data_ptr/shape/stride already encodes
 where its layer's blocks sit (0.26: one allocation per view; 0.29: one
 packed backing, views strided per the declarations).  This module turns
-a view into a :class:`ComponentSlot`; the spec contributes the only two
+a view into a :class:`Component`; the spec contributes the only two
 facts views cannot express: the token->state compression ratio and the
 state-page component layout.
 """
@@ -35,8 +35,8 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
-class ComponentSlot:
-    """One component's geometry, read straight off its runtime view.
+class Component:
+    """One component's addressing facts, read straight off its runtime view.
 
     ``base_ptr`` is the view's block-0 address; block ``b`` starts at
     ``base_ptr + b * block_stride`` and holds ``payload_bytes`` of
@@ -95,7 +95,7 @@ def component(
     tensor: "torch.Tensor",
     layer: "UCMLayerSpec",
     state_snapshot: bool = False,
-) -> ComponentSlot:
+) -> Component:
     """Derive one component's placement from its runtime view.
 
     The layer spec carries the two facts the view cannot express: the
@@ -162,7 +162,7 @@ def component(
                 f"row_payload={payload}"
             )
         bytes_per_state = payload // states_per_row
-    return ComponentSlot(
+    return Component(
         base_ptr=int(tensor.data_ptr()),
         block_stride=rows_per_block * row_stride,
         row_stride_bytes=row_stride,
@@ -177,7 +177,7 @@ def layer_structures(
     layer: "UCMLayerSpec",
     *,
     state_snapshot: bool,
-) -> tuple[ComponentSlot, ...]:
+) -> tuple[Component, ...]:
     """Resolve one layer's components (attention or state snapshot).
 
     ``value`` is whatever ``register_kv_caches`` handed over -- one view
@@ -194,7 +194,7 @@ def layer_structures(
 def state_structures(
     tensors: tuple["torch.Tensor", ...],
     layer: "UCMLayerSpec",
-) -> tuple[ComponentSlot, ...]:
+) -> tuple[Component, ...]:
     """Resolve an explicit component tuple or one combined raw state page.
 
     The combined page stays a single component: whole-block state IO is
@@ -257,7 +257,7 @@ def state_structures(
             f"({payload}B) for {layer.layer_name}"
         )
     return (
-        ComponentSlot(
+        Component(
             base_ptr=int(raw.data_ptr()),
             block_stride=page_stride,
             row_stride_bytes=page_stride,
