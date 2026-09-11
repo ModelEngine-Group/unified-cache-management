@@ -805,6 +805,7 @@ class HashAndLookupTest(unittest.TestCase):
                     ["model.layers.0.swa_cache"],
                     AscendSlidingWindowMLASpec(128, 1, 4096),
                 ),
+                num_blocks=4,
             ),
             scheduler_block_size=16,
         )
@@ -835,6 +836,7 @@ class HashAndLookupTest(unittest.TestCase):
                     ["model.layers.0.swa_cache"],
                     AscendSlidingWindowMLASpec(128, 1, 4096),
                 ),
+                num_blocks=4,
             ),
             scheduler_block_size=16,
         )
@@ -1275,7 +1277,6 @@ class RaggedLayoutTest(unittest.TestCase):
                     (512, 8, 1),
                 )
             },
-            num_blocks=8,
         )
 
         _, component, _, _, _ = layout.group_layouts[0].entries[0]
@@ -1310,7 +1311,6 @@ class RaggedLayoutTest(unittest.TestCase):
                     (64, 64, 64, 1),
                 )
             },
-            num_blocks=8,
         )
 
         # The combined byte page stays a single component: whole-block
@@ -1367,7 +1367,6 @@ class RaggedLayoutTest(unittest.TestCase):
                 "model.layers.0.attn": components,
                 "model.layers.1.attn": ascend_4d,
             },
-            num_blocks=8,
         )
 
         self.assertEqual(
@@ -1409,7 +1408,6 @@ class RaggedLayoutTest(unittest.TestCase):
                         (192, 24, 6, 3, 1),
                     )
                 },
-                num_blocks=8,
             )
 
     def test_partial_range_keeps_block_wise_entries(self):
@@ -1426,7 +1424,6 @@ class RaggedLayoutTest(unittest.TestCase):
                     (128, 1, 1),
                 )
             },
-            num_blocks=8,
         )
 
         from ucm.integration.vllm.v2.ucm_scheduler import (
@@ -1480,7 +1477,6 @@ class RaggedLayoutTest(unittest.TestCase):
                     (48, 6, 1),
                 )
             },
-            num_blocks=8,
         )
         memory = ByteMemory()
         source_first = bytes(range(48))
@@ -1537,7 +1533,7 @@ class RaggedLayoutTest(unittest.TestCase):
 
     def test_kimi_mla_six_kernel_rows_coalesce_per_component(self):
         parsed = parse_kv_cache_config(
-            config(group(["model.layers.3.self_attn.attn"], FullAttentionSpec(768))),
+            config(group(["model.layers.3.self_attn.attn"], FullAttentionSpec(768)), num_blocks=2),
             scheduler_block_size=768,
         )
         caches = {
@@ -1556,7 +1552,7 @@ class RaggedLayoutTest(unittest.TestCase):
                 ),
             )
         }
-        layout = UCMKVCacheLayout(parsed, caches, num_blocks=2)
+        layout = UCMKVCacheLayout(parsed, caches)
         key = b"k" * 16
         from ucm.integration.vllm.v2.ucm_scheduler import (
             RequestDispatchMeta,
@@ -1588,6 +1584,7 @@ class RaggedLayoutTest(unittest.TestCase):
                         shapes=((3, 4608), (12, 128, 128)),
                     ),
                 ),
+                num_blocks=2,
             ),
             scheduler_block_size=768,
         )
@@ -1616,7 +1613,7 @@ class RaggedLayoutTest(unittest.TestCase):
                 ),
             ),
         }
-        layout = UCMKVCacheLayout(parsed, caches, num_blocks=num_blocks)
+        layout = UCMKVCacheLayout(parsed, caches)
         key = b"s" * 16
         from ucm.integration.vllm.v2.ucm_scheduler import (
             RequestDispatchMeta,
@@ -1664,7 +1661,7 @@ class RaggedLayoutTest(unittest.TestCase):
             ),
             "model.layers.1.attn": (FakeTensor(0x5000, (8, 128, 3), (384, 3, 1)),),
         }
-        layout = UCMKVCacheLayout(parsed, caches, num_blocks=8)
+        layout = UCMKVCacheLayout(parsed, caches)
         proxy = FakeProxy()
         coordinator = UCMLookupCoordinator(
             parsed,
@@ -1720,7 +1717,8 @@ class RaggedLayoutTest(unittest.TestCase):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn", "model.layers.1.attn"],
                          {"model.layers.0.attn": FullAttentionSpec(256, 4),
-                          "model.layers.1.attn": FullAttentionSpec(256, 4)})),
+                          "model.layers.1.attn": FullAttentionSpec(256, 4)}),
+                   num_blocks=4),
             scheduler_block_size=256,
             device_type="cpu",
         )
@@ -1746,7 +1744,7 @@ class RaggedLayoutTest(unittest.TestCase):
             ),
         )
         layout = UCMKVCacheLayout(
-            parsed, caches, num_blocks=num_blocks, kv_cache_tensors=declarations
+            parsed, caches, kv_cache_tensors=declarations
         )
         group_layout = layout.group_layouts[0]
         self.assertEqual(len(group_layout.descriptor_spans), 1)
@@ -1827,7 +1825,6 @@ class RaggedLayoutTest(unittest.TestCase):
                 "model.layers.0.attn": FakeTensor(0x1000, (8, 4, 3), (12, 3, 1)),
                 "model.layers.1.attn": FakeTensor(0x1000 + 8 * 12, (8, 4, 3), (12, 3, 1)),
             },
-            num_blocks=8,
         )
         group_layout = layout.group_layouts[0]
         self.assertEqual(
@@ -1906,7 +1903,7 @@ class RaggedLayoutTest(unittest.TestCase):
             ),
             "model.layers.1.attn": (FakeTensor(0x5000, (8, 128, 3), (384, 3, 1)),),
         }
-        layout = UCMKVCacheLayout(parsed, caches, num_blocks=8)
+        layout = UCMKVCacheLayout(parsed, caches)
         from ucm.integration.vllm.v2.ucm_scheduler import (
             RequestDispatchMeta,
             UCMGroupBlockIds,
@@ -1942,7 +1939,7 @@ class RaggedLayoutTest(unittest.TestCase):
 
     def test_glm_indexer_k_and_scale_keep_separate_runtime_addressing(self):
         parsed = parse_kv_cache_config(
-            config(group(["model.layers.0.indexer"], FullAttentionSpec(128))),
+            config(group(["model.layers.0.indexer"], FullAttentionSpec(128)), num_blocks=4),
             scheduler_block_size=128,
         )
         num_blocks = 4
@@ -1961,7 +1958,6 @@ class RaggedLayoutTest(unittest.TestCase):
                     ),
                 )
             },
-            num_blocks=num_blocks,
         )
         key = b"g" * 16
         from ucm.integration.vllm.v2.ucm_scheduler import (
@@ -1992,6 +1988,7 @@ class RaggedLayoutTest(unittest.TestCase):
                     ["model.layers.0.swa_cache"],
                     AscendSlidingWindowMLASpec(128, 1, 4096),
                 ),
+                num_blocks=4,
             ),
             scheduler_block_size=16,
         )
@@ -2017,7 +2014,7 @@ class RaggedLayoutTest(unittest.TestCase):
                 element_size=2,
             ),
         }
-        layout = UCMKVCacheLayout(parsed, caches, num_blocks=4)
+        layout = UCMKVCacheLayout(parsed, caches)
         key = b"k" * 16
         from ucm.integration.vllm.v2.ucm_scheduler import (
             RequestDispatchMeta,
@@ -2054,7 +2051,7 @@ class RaggedLayoutTest(unittest.TestCase):
             "model.layers.0.attn": FakeTensor(0x1000, (8, 128, 4), (512, 4, 1)),
             "model.layers.1.mixer": FakeTensor(0x5000, (8, 64, 4), (256, 4, 1)),
         }
-        layout = UCMKVCacheLayout(parsed, caches, num_blocks=8)
+        layout = UCMKVCacheLayout(parsed, caches)
         dispatcher = UCMDispatcher(parsed)
         request = FakeRequest("r", 512)
         state = dispatcher.record_lookup(
@@ -2089,7 +2086,7 @@ class RaggedLayoutTest(unittest.TestCase):
                 FakeTensor(0x2000, (8, 4, 3), (12, 3, 1)),
             )
         }
-        layout = UCMKVCacheLayout(parsed, caches, num_blocks=8)
+        layout = UCMKVCacheLayout(parsed, caches)
         key = b"z" * 16
         from ucm.integration.vllm.v2.ucm_scheduler import (
             RequestDispatchMeta,
@@ -2220,10 +2217,9 @@ class DeclaredLayoutModelTest(unittest.TestCase):
         declared = UCMKVCacheLayout(
             parsed,
             caches,
-            num_blocks=8,
             kv_cache_tensors=declarations,
         )
-        undeclared = UCMKVCacheLayout(parsed, caches, num_blocks=8)
+        undeclared = UCMKVCacheLayout(parsed, caches)
 
         for group_id, declared_layout in declared.group_layouts.items():
             undeclared_layout = undeclared.group_layouts[group_id]
@@ -2243,7 +2239,7 @@ class DeclaredLayoutModelTest(unittest.TestCase):
             ),
         )
         with self.assertRaisesRegex(ValueError, "block stride"):
-            UCMKVCacheLayout(parsed, caches, num_blocks=8, kv_cache_tensors=bad)
+            UCMKVCacheLayout(parsed, caches, kv_cache_tensors=bad)
 
     def test_assert_mode_is_retired(self):
         parsed, caches, declarations = self._fixture()
@@ -2254,7 +2250,6 @@ class DeclaredLayoutModelTest(unittest.TestCase):
                 UCMKVCacheLayout(
                     parsed,
                     caches,
-                    num_blocks=8,
                     kv_cache_tensors=declarations,
                 )
         finally:
@@ -2275,7 +2270,7 @@ class DeclaredLayoutModelTest(unittest.TestCase):
             ),
         )
         with self.assertRaisesRegex(ValueError, "block stride"):
-            UCMKVCacheLayout(parsed, caches, num_blocks=8, kv_cache_tensors=bad)
+            UCMKVCacheLayout(parsed, caches, kv_cache_tensors=bad)
 
 
 class RawConfigDumpTest(unittest.TestCase):

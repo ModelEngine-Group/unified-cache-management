@@ -204,14 +204,6 @@ def component(
     )
 
 
-def component_tensors(value: "KVCacheValue") -> tuple["torch.Tensor", ...]:
-    if isinstance(value, (tuple, list)):
-        if not value:
-            raise ValueError("KV cache component tuple must not be empty")
-        return tuple(value)
-    return (value,)
-
-
 def layer_structures(
     value: "KVCacheValue",
     layer: "UCMLayerSpec",
@@ -219,11 +211,16 @@ def layer_structures(
     num_blocks: int,
     state_snapshot: bool,
 ) -> tuple[ComponentSlot, ...]:
-    """Resolve one layer's components (attention or state snapshot)."""
+    """Resolve one layer's components (attention or state snapshot).
 
+    ``value`` is whatever ``register_kv_caches`` handed over -- one view
+    (0.29 packed layouts) or a tuple of views (0.26 k/v, latent+rope,
+    indexer k+scale, mamba states); normalized to a tuple up front.
+    """
+
+    tensors = value if isinstance(value, (tuple, list)) else (value,)
     if state_snapshot:
-        return state_structures(value, layer, num_blocks=num_blocks)
-    tensors = component_tensors(value)
+        return state_structures(tensors, layer, num_blocks=num_blocks)
     return tuple(
         component(tensor, layer.storage_block_size, num_blocks=num_blocks)
         for tensor in tensors
@@ -231,7 +228,7 @@ def layer_structures(
 
 
 def state_structures(
-    value: "KVCacheValue",
+    tensors: tuple["torch.Tensor", ...],
     layer: "UCMLayerSpec",
     *,
     num_blocks: int,
@@ -246,7 +243,6 @@ def state_structures(
     page_stride == page_size, padding between blocks).
     """
 
-    tensors = component_tensors(value)
     expected_shapes = tuple(
         tuple(int(item) for item in shape)
         for shape in (getattr(layer.kv_cache_spec, "shapes", None) or ())

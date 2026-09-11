@@ -316,11 +316,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
     def register_kv_caches(self, kv_caches: dict[str, "torch.Tensor"]) -> None:
         if self.context.role != KVConnectorRole.WORKER:
             raise RuntimeError("KV cache registration is only available on worker")
-        num_blocks = int(self._kv_cache_config.num_blocks)
         self.layout = UCMKVCacheLayout(
             self.spec,
             kv_caches,
-            num_blocks=num_blocks,
             kv_cache_tensors=getattr(self._kv_cache_config, "kv_cache_tensors", ()),
         )
         self._proxy.register_tensors(kv_caches)

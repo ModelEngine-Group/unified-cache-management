@@ -79,6 +79,7 @@ class UCMKVCacheGroupInfo:
 @dataclass(frozen=True)
 class UCMKVCacheSpec:
     groups: tuple[UCMKVCacheGroupInfo, ...]
+    num_blocks: int
     scheduler_block_size: int
     alignment_block_size: int
     chunk_size: int
@@ -406,6 +407,7 @@ def parse_kv_cache_config(
 
     return UCMKVCacheSpec(
         groups=tuple(groups),
+        num_blocks=int(getattr(kv_cache_config, "num_blocks", 0)),
         scheduler_block_size=scheduler_block_size,
         alignment_block_size=alignment,
         chunk_size=selected_chunk,
@@ -422,17 +424,15 @@ class UCMKVCacheLayout:
         spec: UCMKVCacheSpec,
         kv_caches: Mapping[str, KVCacheValue],
         *,
-        num_blocks: int,
         kv_cache_tensors: Sequence[object] = (),
     ) -> None:
-        if num_blocks <= 0:
+        if spec.num_blocks <= 0:
             raise ValueError("num_blocks must be positive")
         self.spec = spec
-        self.num_blocks = num_blocks
+        self.num_blocks = spec.num_blocks
         self.group_layouts: Mapping[int, "GroupLayout"] = build_group_layouts(
             spec,
             kv_caches,
-            num_blocks=num_blocks,
             kv_cache_tensors=kv_cache_tensors,
         )
 

@@ -55,7 +55,6 @@ def build_group_layouts(
     spec: "UCMKVCacheSpec",
     kv_caches: Mapping[str, "KVCacheValue"],
     *,
-    num_blocks: int,
     kv_cache_tensors: Sequence[object] = (),
 ) -> dict[int, GroupLayout]:
     """One :class:`GroupLayout` per KV group of the parsed spec."""
@@ -76,7 +75,7 @@ def build_group_layouts(
             group.layers,
             kv_caches,
             token_block_size=group.token_block_size,
-            num_blocks=num_blocks,
+            num_blocks=spec.num_blocks,
             state_snapshot=group.is_state_snapshot,
             descriptors=descriptors,
         )
