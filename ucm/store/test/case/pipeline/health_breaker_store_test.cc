@@ -400,7 +400,7 @@ TEST(UCHealthBreakerStoreTest, HealthyOperationsPassThroughWithoutChangingWindow
 TEST(UCHealthBreakerStoreTest, StoreHealthConfigDefaults)
 {
     StoreHealthConfig config;
-    EXPECT_FALSE(config.enabled);
+    EXPECT_TRUE(config.enabled);
     EXPECT_EQ(config.healthCheckInterval, std::chrono::seconds(10));
     EXPECT_EQ(config.healthCheckTimeout, std::chrono::seconds(3));
 }

@@ -2,6 +2,7 @@
 
 import ast
 import importlib.util
+import os
 import sys
 import time
 from collections import defaultdict
@@ -236,8 +237,12 @@ def connector_symbols(runtime, monkeypatch):
         KVConnectorRole=SimpleNamespace(WORKER="worker", SCHEDULER="scheduler"),
         UCMLiteConnector=Mock(),
         logger=Mock(),
+        os=os,
         time=time,
         ucmmetrics=Mock(),
+        current_platform=SimpleNamespace(
+            device_type="npu" if runtime.backend == "ascend" else "cuda"
+        ),
     )
     monitor_tree = ast.parse(
         (
@@ -296,6 +301,8 @@ def test_dense_to_sparse_load_chain_reaches_every_layer(runtime, connector_symbo
     connector._connector_metadata = metadata
     connector._get_connector_metadata = lambda: metadata
     connector._dumped_layer_ids = set()
+    connector._layerwise_load_start_by_layer = {}
+    connector._record_layerwise_load_duration = Mock(return_value=False)
     connector.load_tasks = defaultdict(dict)
     connector.request_data = []
     connector._failure_req_ids = set()
@@ -306,10 +313,11 @@ def test_dense_to_sparse_load_chain_reaches_every_layer(runtime, connector_symbo
     connector.layer_ids = list(range(60))
     connector.layer_name_to_id = dict(zip(names, range(60)))
     connector.kv_cache_layout = Mock()
+    connector.kv_cache_layout.shard_size = 1
     connector.kv_cache_layout.extract_block_addrs.return_value = np.zeros((60, 1, 3))
     loaded, waited, saved = [], [], []
 
-    def submit(layer_id, row, meta):
+    def submit(layer_id, row, meta, load_start=None):
         assert row == layer_id
         loaded.append(layer_id)
         connector.load_tasks[layer_id]["request"] = layer_id

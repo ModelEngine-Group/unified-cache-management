@@ -111,6 +111,7 @@ public:
     Status Setup(const Config& config);
     Handle Get(const Detail::BlockId& blockId, size_t shardIdx, bool allowReserved = false,
                bool isLoad = false);
+    void Prealloc(const Detail::BlockId& blockId, size_t shardIdx, bool allowReserved = false);
     bool Exist(const Detail::BlockId& blockId, size_t shardIdx);
 
 private:

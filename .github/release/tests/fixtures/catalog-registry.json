@@ -1,0 +1,153 @@
+{
+  "repositories": {
+    "docker.io/vllm/vllm-openai": {
+      "pages": [
+        {
+          "tags": [
+            "v0.22.0-cu129",
+            "v0.22.1-cu129",
+            "v0.22.1-aarch64-cu129",
+            "nightly"
+          ]
+        }
+      ]
+    },
+    "quay.io/ascend/vllm-ascend": {
+      "pages": [
+        {
+          "tags": [
+            "v0.22.1rc1",
+            "v0.22.1rc1-310p",
+            "v0.22.1rc1-a3",
+            "v0.22.1rc1-a5"
+          ]
+        }
+      ]
+    },
+    "docker.io/pytorch/manylinux2_28-builder": {
+      "pages": [{"tags": ["cuda12.9", "cuda12.9-v2.10.0-rc1"]}]
+    },
+    "docker.io/pytorch/manylinuxaarch64-builder": {
+      "pages": [{"tags": ["cuda12.9", "cuda12.9-v2.10.0-rc1"]}]
+    },
+    "quay.io/ascend/manylinux": {
+      "pages": [
+        {
+          "tags": [
+            "9.0.0-310p-manylinux_2_28-py3.12",
+            "9.0.1-910b-manylinux_2_34-py3.12",
+            "9.0.1-a3-manylinux_2_34-py3.12"
+          ]
+        }
+      ]
+    }
+  },
+  "source_image_members": {
+    "docker.io/pytorch/manylinux2_28-builder:cuda12.9": {
+      "amd64": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "docker.io/pytorch/manylinuxaarch64-builder:cuda12.9": {
+      "arm64": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "quay.io/ascend/manylinux:9.0.1-910b-manylinux_2_34-py3.12": {
+      "amd64": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "quay.io/ascend/manylinux:9.0.1-a3-manylinux_2_34-py3.12": {
+      "arm64": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  },
+  "runtime_probe": {
+    "kind": "ucm-runtime-probe",
+    "schema_version": 2,
+    "probes": [
+      {
+        "probe_id": "runtime-001-amd64",
+        "request_id": "runtime-001",
+        "product_id": "vllm",
+        "runtime_ref": "docker.io/vllm/vllm-openai:v0.22.1-cu129",
+        "repository": "docker.io/vllm/vllm-openai",
+        "tag": "v0.22.1-cu129",
+        "target_repository": "ghcr.io/release-org/vllm-openai",
+        "runtime_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "cpu_arch": "amd64",
+        "platform": "linux/amd64",
+        "runner": "ubuntu-24.04",
+        "image_reference": "docker.io/vllm/vllm-openai@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1",
+        "backend": "cuda",
+        "accelerator_runtime": "cuda-12.9",
+        "soc_version": "na",
+        "python_version": "3.12",
+        "python_abi": "cp312",
+        "os_id": "ubuntu",
+        "os_version": "22.04",
+        "glibc_version": "2.35"
+      },
+      {
+        "probe_id": "runtime-001-arm64",
+        "request_id": "runtime-001",
+        "product_id": "vllm",
+        "runtime_ref": "docker.io/vllm/vllm-openai:v0.22.1-cu129",
+        "repository": "docker.io/vllm/vllm-openai",
+        "tag": "v0.22.1-cu129",
+        "target_repository": "ghcr.io/release-org/vllm-openai",
+        "runtime_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "cpu_arch": "arm64",
+        "platform": "linux/arm64",
+        "runner": "ubuntu-24.04-arm",
+        "image_reference": "docker.io/vllm/vllm-openai@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2",
+        "backend": "cuda",
+        "accelerator_runtime": "cuda-12.9",
+        "soc_version": "na",
+        "python_version": "3.12",
+        "python_abi": "cp312",
+        "os_id": "ubuntu",
+        "os_version": "22.04",
+        "glibc_version": "2.35"
+      },
+      {
+        "probe_id": "runtime-002-amd64",
+        "request_id": "runtime-002",
+        "product_id": "vllm-ascend",
+        "runtime_ref": "quay.io/ascend/vllm-ascend:v0.22.1rc1",
+        "repository": "quay.io/ascend/vllm-ascend",
+        "tag": "v0.22.1rc1",
+        "target_repository": "ghcr.io/release-org/vllm-ascend",
+        "runtime_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "cpu_arch": "amd64",
+        "platform": "linux/amd64",
+        "runner": "ubuntu-24.04",
+        "image_reference": "quay.io/ascend/vllm-ascend@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb1",
+        "backend": "cann-a2",
+        "accelerator_runtime": "cann-9.0.1",
+        "soc_version": "ascend910b1",
+        "python_version": "3.12",
+        "python_abi": "cp312",
+        "os_id": "ubuntu",
+        "os_version": "22.04",
+        "glibc_version": "2.35"
+      },
+      {
+        "probe_id": "runtime-003-arm64",
+        "request_id": "runtime-003",
+        "product_id": "vllm-ascend",
+        "runtime_ref": "quay.io/ascend/vllm-ascend:v0.22.1rc1-a3",
+        "repository": "quay.io/ascend/vllm-ascend",
+        "tag": "v0.22.1rc1-a3",
+        "target_repository": "ghcr.io/release-org/vllm-ascend",
+        "runtime_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "cpu_arch": "arm64",
+        "platform": "linux/arm64",
+        "runner": "ubuntu-24.04-arm",
+        "image_reference": "quay.io/ascend/vllm-ascend@sha256:ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc1",
+        "backend": "cann-a3",
+        "accelerator_runtime": "cann-9.0.1",
+        "soc_version": "ascend910_9391",
+        "python_version": "3.12",
+        "python_abi": "cp312",
+        "os_id": "ubuntu",
+        "os_version": "22.04",
+        "glibc_version": "2.35"
+      }
+    ]
+  }
+}

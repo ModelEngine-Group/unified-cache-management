@@ -24,7 +24,6 @@
 #ifndef UNIFIEDCACHE_TRANS_DEVICE_H
 #define UNIFIEDCACHE_TRANS_DEVICE_H
 
-#include <cstddef>
 #include <cstdint>
 #include "buffer.h"
 #include "stream.h"
@@ -33,9 +32,13 @@ namespace UC::Trans {
 
 class Device {
 public:
+    Status Init();
     Status Setup(int32_t deviceId);
+    Status Reset(int32_t deviceId);
+    Status Finalize();
     std::unique_ptr<Stream> MakeStream();
     std::shared_ptr<Stream> MakeSharedStream();
+    std::shared_ptr<Stream> MakeIoAggregationStream();
     std::shared_ptr<Stream> MakeSdmaDirectStream();
     std::unique_ptr<Stream> MakeGdrStream();
     std::unique_ptr<Stream> MakeSMStream();

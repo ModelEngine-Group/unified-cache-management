@@ -24,11 +24,17 @@
 #ifndef UNIFIEDCACHE_POSIX_STORE_CC_SPACE_LAYOUT_H
 #define UNIFIEDCACHE_POSIX_STORE_CC_SPACE_LAYOUT_H
 
+#include <ctime>
 #include "global_config.h"
 #include "status/status.h"
 #include "type/types.h"
 
 namespace UC::PosixStore {
+
+struct FileInfo {
+    Detail::BlockId blockId;
+    time_t mtime;
+};
 
 class SpaceLayout {
 private:
@@ -47,6 +53,9 @@ public:
     size_t CountFilesInShard(const std::string& shard) const;
     std::vector<Detail::BlockId> GetOldestFiles(const std::string& shard, double recyclePercent,
                                                 size_t maxRecycleCount) const;
+    std::vector<FileInfo> GetColdestCandidates(const std::string& shard, double candidatePercent,
+                                               size_t maxCandidateCount) const;
+    std::string ShardOf(const Detail::BlockId& blockId) const;
 
 private:
     std::vector<std::string> RelativeRoots() const;

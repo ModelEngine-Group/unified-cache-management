@@ -111,6 +111,12 @@ CREATE TABLE IF NOT EXISTS metadata (
             for row in rows
         ]
 
+    def list_metric_names(self) -> list[str]:
+        rows = self.conn.execute(
+            "SELECT DISTINCT name FROM series ORDER BY name"
+        ).fetchall()
+        return [str(row[0]) for row in rows]
+
     def samples_for_series(
         self, series_id: int, start_ms: int, end_ms: int
     ) -> list[tuple[int, float]]:

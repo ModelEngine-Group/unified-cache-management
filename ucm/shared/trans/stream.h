@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <functional>
 #include <vector>
+#include "event.h"
 #include "status/status.h"
 
 namespace UC::Trans {
@@ -49,6 +50,17 @@ public:
     virtual Status HostToDeviceAsync(void* host, void* device, size_t size) = 0;
     virtual Status HostToDeviceAsync(void* host[], void* device[], size_t size, size_t number) = 0;
     virtual Status HostToDeviceAsync(void* host, void* device[], size_t size, size_t number) = 0;
+
+    virtual Status DeviceToDevice(void* source, void* destination, size_t size) = 0;
+    virtual Status DeviceToDevice(void* source[], void* destination[], size_t size,
+                                  size_t number) = 0;
+    virtual Status DeviceToDevice(void* source[], void* destination, size_t size,
+                                  size_t number) = 0;
+    virtual Status DeviceToDeviceAsync(void* source, void* destination, size_t size) = 0;
+    virtual Status DeviceToDeviceAsync(void* source[], void* destination[], size_t size,
+                                       size_t number) = 0;
+    virtual Status DeviceToDeviceAsync(void* source[], void* destination, size_t size,
+                                       size_t number) = 0;
     virtual Status HostToDeviceAsync(void* host, void* device[], const std::vector<size_t>& sizes)
     {
         size_t offset = 0;
@@ -81,7 +93,7 @@ public:
     }
     virtual Status AppendCallback(std::function<void(bool)> cb) = 0;
     virtual Status Synchronized() = 0;
-    virtual Status WaitEvent(void* event) = 0;
+    virtual Status WaitEvent(const Event& event) = 0;
 };
 
 }  // namespace UC::Trans

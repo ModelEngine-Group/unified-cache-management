@@ -20,7 +20,7 @@ from ucm_toolkit.tools.metrics_view.terminal_view_metrics.storage import Metrics
 
 
 class MetricsViewTierConfigTest(unittest.TestCase):
-    def test_tier_hit_rates_use_final_shard_source_counters(self):
+    def test_tier_hit_rates_use_load_source_counters(self):
         config = load_config("metrics_lite")
         metrics = {metric["name"]: metric for metric in config["metrics"]}
         names = metric_names_for_scrape(config)
@@ -39,8 +39,8 @@ class MetricsViewTierConfigTest(unittest.TestCase):
             {
                 "vllm:prefix_cache_hits_total",
                 "vllm:prefix_cache_queries_total",
-                "ucm:cache_load_success_shards_total",
-                "ucm:cache_posix_load_success_shards_total",
+                "ucm:cache_load_shards_total",
+                "ucm:cache_load_wait_shards_total",
                 "ucm:yuanrong_load_success_shards_total",
                 "ucm:yuanrong_lookup_miss_posix_load_success_shards_total",
                 "ucm:yuanrong_load_fallback_posix_load_success_shards_total",
@@ -115,8 +115,8 @@ vllm:prefix_cache_hits_total 10
 vllm:prefix_cache_queries_total 20
 vllm:external_prefix_cache_hits_total 5
 vllm:external_prefix_cache_queries_total 10
-ucm:cache_load_success_shards_total 10
-ucm:cache_posix_load_success_shards_total 5
+ucm:cache_load_shards_total 15
+ucm:cache_load_wait_shards_total 5
 ucm:yuanrong_load_success_shards_total 0
 ucm:yuanrong_lookup_miss_posix_load_success_shards_total 0
 ucm:yuanrong_load_fallback_posix_load_success_shards_total 0
@@ -126,8 +126,8 @@ vllm:prefix_cache_hits_total 30
 vllm:prefix_cache_queries_total 120
 vllm:external_prefix_cache_hits_total 45
 vllm:external_prefix_cache_queries_total 110
-ucm:cache_load_success_shards_total 85
-ucm:cache_posix_load_success_shards_total 30
+ucm:cache_load_shards_total 115
+ucm:cache_load_wait_shards_total 30
 ucm:yuanrong_load_success_shards_total 0
 ucm:yuanrong_lookup_miss_posix_load_success_shards_total 0
 ucm:yuanrong_load_fallback_posix_load_success_shards_total 0

@@ -109,9 +109,9 @@ persist_token_threshold: 0
 
 Parameters inside `ucm_connector_config`:
 
-* **store_health.enabled** *(optional, default: false)*
+* **store_health.enabled** *(optional, default: true)*
   Whether to wrap each Store in the Pipeline with `HealthBreakerStore`.
-  Set it to `true` to enable automatic health probing, circuit breaking, and recovery.
+  Set it to `false` to disable automatic health probing, circuit breaking, and recovery.
   This setting does not control a Breaker explicitly added as a Store by a custom Pipeline implementation.
 
 * **io_direct** (optional, default: `false`):  

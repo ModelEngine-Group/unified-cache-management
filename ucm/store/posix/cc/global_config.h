@@ -36,7 +36,7 @@ struct Config {
     size_t shardSize{0};
     size_t blockSize{0};
     std::string ioEngine{"psync"};  // "aio", "psync"
-    bool ioDirect{false};
+    bool ioDirect{true};
     std::vector<ssize_t> cpuAffinityCores{};
     size_t dataTransConcurrency{128};
     size_t lookupConcurrency{16};
@@ -46,6 +46,8 @@ struct Config {
     size_t dataDirShardBytes{3};
     bool posixGcEnable{true};
     double posixGcRecyclePercent{0.1};
+    bool posixGcPreciseMode{true};
+    double posixGcCandidateExtraPercent{0.1};
     size_t posixGcConcurrency{16};
     size_t posixGcCheckIntervalSec{30};
     size_t posixCapacityGb{0};

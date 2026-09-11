@@ -31,9 +31,11 @@ namespace UC::Trans {
 
 class CudaStream : public Stream {
 protected:
-    cudaStream_t stream_;
+    cudaStream_t stream_{nullptr};
 
 public:
+    ~CudaStream() override;
+
     Status Setup() override;
 
     Status DeviceToHost(void* device, void* host, size_t size) override;
@@ -50,9 +52,18 @@ public:
     Status HostToDeviceAsync(void* host[], void* device[], size_t size, size_t number) override;
     Status HostToDeviceAsync(void* host, void* device[], size_t size, size_t number) override;
 
+    Status DeviceToDevice(void* source, void* destination, size_t size) override;
+    Status DeviceToDevice(void* source[], void* destination[], size_t size, size_t number) override;
+    Status DeviceToDevice(void* source[], void* destination, size_t size, size_t number) override;
+    Status DeviceToDeviceAsync(void* source, void* destination, size_t size) override;
+    Status DeviceToDeviceAsync(void* source[], void* destination[], size_t size,
+                               size_t number) override;
+    Status DeviceToDeviceAsync(void* source[], void* destination, size_t size,
+                               size_t number) override;
+
     Status AppendCallback(std::function<void(bool)> cb) override;
     Status Synchronized() override;
-    Status WaitEvent(void* event) override;
+    Status WaitEvent(const Event& event) override;
 };
 
 }  // namespace UC::Trans

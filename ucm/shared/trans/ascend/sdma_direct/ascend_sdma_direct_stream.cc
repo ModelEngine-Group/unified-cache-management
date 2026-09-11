@@ -110,6 +110,36 @@ Status AscendSdmaDirectStream::DeviceToHostAsync(void* device[], void* host,
     return copier_->SubmitDumpObject(device, host, sizes);
 }
 
+Status AscendSdmaDirectStream::DeviceToDevice(void*, void*, size_t)
+{
+    return Unsupported("DeviceToDevice");
+}
+
+Status AscendSdmaDirectStream::DeviceToDevice(void*[], void*[], size_t, size_t)
+{
+    return Unsupported("DeviceToDevice");
+}
+
+Status AscendSdmaDirectStream::DeviceToDevice(void*[], void*, size_t, size_t)
+{
+    return Unsupported("DeviceToDevice");
+}
+
+Status AscendSdmaDirectStream::DeviceToDeviceAsync(void*, void*, size_t)
+{
+    return Unsupported("DeviceToDeviceAsync");
+}
+
+Status AscendSdmaDirectStream::DeviceToDeviceAsync(void*[], void*[], size_t, size_t)
+{
+    return Unsupported("DeviceToDeviceAsync");
+}
+
+Status AscendSdmaDirectStream::DeviceToDeviceAsync(void*[], void*, size_t, size_t)
+{
+    return Unsupported("DeviceToDeviceAsync");
+}
+
 Status AscendSdmaDirectStream::AppendCallback(std::function<void(bool)> cb)
 {
     (void)cb;
@@ -122,7 +152,7 @@ Status AscendSdmaDirectStream::Synchronized()
     return copier_->Synchronize();
 }
 
-Status AscendSdmaDirectStream::WaitEvent(void* event)
+Status AscendSdmaDirectStream::WaitEvent(const Event& event)
 {
     if (!copier_) { return Status::OK(); }
     return copier_->WaitEvent(event);

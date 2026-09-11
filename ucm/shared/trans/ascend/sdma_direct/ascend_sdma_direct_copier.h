@@ -13,6 +13,7 @@
 #include <vector>
 #include "../ffts/ffts_sdma_dispatcher.h"
 #include "status/status.h"
+#include "trans/event.h"
 
 namespace UC::Trans {
 
@@ -29,7 +30,7 @@ public:
     AscendSdmaDirectCopier& operator=(const AscendSdmaDirectCopier&) = delete;
 
     Status Setup();
-    Status WaitEvent(void* event);
+    Status WaitEvent(const Event& event);
     Status SubmitLoadObject(const void* hostDevicePtr, void** devices,
                             const std::vector<size_t>& sizes);
     Status SubmitDumpObject(void** devices, void* hostDevicePtr, const std::vector<size_t>& sizes);

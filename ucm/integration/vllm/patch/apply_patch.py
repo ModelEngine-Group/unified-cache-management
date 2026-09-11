@@ -43,14 +43,26 @@ ENABLE_SPARSE = os.getenv("ENABLE_SPARSE", "0").lower() in (
 ENABLE_UCM_PATCH = os.environ.get("ENABLE_UCM_PATCH", "").lower() in ("1", "true")
 
 
+def _strip_build(v: Optional[str]) -> Optional[str]:
+    """Strip only build/local metadata (the +xxx suffix), e.g. 0.26.0+empty -> 0.26.0."""
+    if not v:
+        return None
+    return str(v).strip().split("+", 1)[0]
+
+
+def _norm_version(v: Optional[str]) -> Optional[str]:
+    v = _strip_build(v)
+    if not v:
+        return None
+    # common suffixes: 0.11.0.post1 / 0.11.0rc1 / 0.11.0.dev1
+    v = v.split(".post", 1)[0]
+    v = v.split("rc", 1)[0]
+    v = v.split(".dev", 1)[0]
+    return v
+
+
 def _read_vllm_ascend_version_raw() -> Optional[str]:
     """Read vllm_ascend version string, stripping only build metadata (+xxx)."""
-
-    def _strip_build(v: Optional[str]) -> Optional[str]:
-        if not v:
-            return None
-        return str(v).strip().split("+", 1)[0]
-
     try:
         from importlib.metadata import PackageNotFoundError, version
 
@@ -70,17 +82,6 @@ def _read_vllm_ascend_version_raw() -> Optional[str]:
         return None
 
 
-def _norm_vllm_ascend_version(v: Optional[str]) -> Optional[str]:
-    if not v:
-        return None
-    # common suffixes: 0.11.0.post1 / 0.11.0rc1 / 0.11.0.dev1
-    v = v.split("+", 1)[0]
-    v = v.split(".post", 1)[0]
-    v = v.split("rc", 1)[0]
-    v = v.split(".dev", 1)[0]
-    return v
-
-
 def get_vllm_ascend_version_full() -> Optional[str]:
     """Detect vllm_ascend version preserving rc/post suffixes (e.g. 0.18.0rc1)."""
     return _read_vllm_ascend_version_raw()
@@ -88,57 +89,38 @@ def get_vllm_ascend_version_full() -> Optional[str]:
 
 def get_vllm_ascend_version() -> Optional[str]:
     """Detect normalized vllm_ascend version (e.g. 0.18.0rc1 -> 0.18.0)."""
-    return _norm_vllm_ascend_version(_read_vllm_ascend_version_raw())
-
-
-def get_vllm_ascend_patch_version(
-    vllm_version: Optional[str] = None,
-) -> Optional[str]:
-    raw_version = _read_vllm_ascend_version_raw()
-    ascend_version = _norm_vllm_ascend_version(raw_version)
-    if not raw_version or ".dev" not in raw_version:
-        return ascend_version
-
-    if vllm_version is None:
-        vllm_version = get_vllm_version()
-    compatible_version = _norm_vllm_ascend_version(vllm_version)
-    if (
-        compatible_version
-        and compatible_version != ascend_version
-        and compatible_version in get_supported_versions()
-    ):
-        logger.warning(
-            "vllm-ascend reports development version %s, but vLLM is %s; "
-            "using %s for vllm-ascend patch selection.",
-            raw_version,
-            vllm_version,
-            compatible_version,
-        )
-        return compatible_version
-    return ascend_version
+    return _norm_version(_read_vllm_ascend_version_raw())
 
 
 _vllm_version: Optional[str] = None
 
 
-def get_vllm_version() -> Optional[str]:
-    """Detect vLLM version."""
-    global _vllm_version
-    if _vllm_version is not None:
-        return _vllm_version
-
+def _read_vllm_version_raw() -> Optional[str]:
+    """Read vLLM version string from the installed module, stripping build metadata."""
     try:
-        # Try to get version from vllm module
         import vllm as vllm_pkg
 
-        vllm_version = vllm_pkg.__version__
-        return vllm_version
+        return _strip_build(getattr(vllm_pkg, "__version__", None))
     except ImportError:
         logger.warning("vLLM is not installed")
         return None
     except Exception as e:
         logger.warning(f"Failed to detect vLLM version: {e}")
         return None
+
+
+def get_vllm_version_full() -> Optional[str]:
+    """Detect vLLM version preserving rc/post suffixes (e.g. 0.26.0rc1)."""
+    return _read_vllm_version_raw()
+
+
+def get_vllm_version() -> Optional[str]:
+    """Detect normalized vLLM version (e.g. 0.26.0+empty / 0.26.0rc1 -> 0.26.0)."""
+    global _vllm_version
+    if _vllm_version is not None:
+        return _vllm_version
+    _vllm_version = _norm_version(_read_vllm_version_raw())
+    return _vllm_version
 
 
 def get_supported_versions() -> list[str]:
@@ -181,7 +163,23 @@ def apply_all_patches() -> None:
                 f"Versions applicable for UCM patches: {', '.join(supported_versions)}."
             )
 
-        ascend_version = get_vllm_ascend_patch_version(version)
+        ascend_version = get_vllm_ascend_version()
+        logger.info(
+            f"Detected vLLM version: {get_vllm_version_full()} "
+            f"(normalized: {version})"
+        )
+        logger.info(
+            f"Detected vllm-ascend version: {get_vllm_ascend_version_full()} "
+            f"(normalized: {ascend_version})"
+        )
+        # vLLM and vllm-ascend share per-version patch directories (v0XYZ), so
+        # their versions must align; when they disagree, vLLM is authoritative.
+        if ascend_version is not None and ascend_version != version:
+            logger.warning(
+                f"vllm-ascend version ({ascend_version}) differs from vLLM version "
+                f"({version}); aligning vllm-ascend patch selection to {version}."
+            )
+            ascend_version = version
         # UCM PATCH: vllm-ascend registers UCMConnector as an alias for the
         # concrete UCMConnectorV1 class used by MultiConnector metrics.
         if ascend_version in {
@@ -226,6 +224,18 @@ def apply_all_patches() -> None:
         # bind_memory is a no-op before bind_threads replacement is installed.
         logger.info("UCM patching vllm-ascend bind_memory to no-op...")
         import ucm.integration.vllm.patch.bind_memory_patch
+
+        # The CPU binding patch is version-independent since 0.26.0: the fixed
+        # implementation wraps the upstream CpuAlloc methods (see
+        # cpu_binding_affinity_patch.*_fixed), so every release >= 0.26.0 is
+        # patched here; older versions keep their per-version cpu_binding
+        # patches inside the match below. @when_imported is self-guarding
+        # (only fires when vllm_ascend.cpu_binding exists).
+        if ascend_version is not None and tuple(
+            int(part) for part in ascend_version.split(".")
+        )[:2] >= (0, 26):
+            logger.info("UCM patching vllm-ascend CPU binding (fixed impl)...")
+            import ucm.integration.vllm.patch.v0260.vllm_ascend.cpu_binding_patch
 
         match ascend_version:
             case "0.11.0":
@@ -286,9 +296,6 @@ def apply_all_patches() -> None:
                 )
                 import ucm.integration.vllm.patch.v0251.vllm_ascend.ascend_hybrid_cache_patch
                 import ucm.integration.vllm.patch.v0251.vllm_ascend.cpu_binding_patch
-            case "0.26.0":
-                logger.info("UCM patching vllm-ascend 0.26.0 for CPU affinity...")
-                import ucm.integration.vllm.patch.v0260.vllm_ascend.cpu_binding_patch
             case _:
                 pass
 

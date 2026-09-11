@@ -1,0 +1,75 @@
+name: Cleanup one UCM Tag Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact Stable, Prerelease, Draft, or Nightly Tag
+        type: string
+        required: true
+      fail_resource:
+        description: Optional exact resource for three synthetic HTTP 503 attempts
+        type: string
+        required: false
+        default: ""
+
+concurrency:
+  group: ucm-release-cleanup-${{ github.repository_id }}-${{ inputs.tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    name: Cleanup · ${{ inputs.tag }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: ${{ github.repository == 'ModelEngine-Group/unified-cache-management' && 'release-production' || 'fork-preview' }}
+    permissions:
+      actions: write
+      contents: write
+      packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      CLEANUP_TAG: ${{ inputs.tag }}
+      FAIL_RESOURCE: ${{ inputs.fail_resource }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: develop
+          persist-credentials: false
+      - name: Install Crane
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/crane"
+          curl -fsSL --retry 3 \
+            https://github.com/google/go-containerregistry/releases/download/v0.20.3/go-containerregistry_Linux_x86_64.tar.gz \
+            | tar -xz -C "${RUNNER_TEMP}/crane" crane
+          echo "${RUNNER_TEMP}/crane" >>"${GITHUB_PATH}"
+      - name: Validate Docker Hub credentials when configured
+        if: ${{ env.DOCKERHUB_USERNAME != '' || env.DOCKERHUB_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          test -n "${DOCKERHUB_USERNAME}" && test -n "${DOCKERHUB_TOKEN}"
+      - name: Authenticate to DockerHub when configured
+        if: >-
+          ${{
+            env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
+          }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${DOCKERHUB_TOKEN}" | docker login docker.io \
+            --username "${DOCKERHUB_USERNAME}" --password-stdin
+      - name: Delete manifest resources in recovery-preserving phases
+        run: |
+          set -euo pipefail
+          test "${GH_REPO}" = "${GITHUB_REPOSITORY}"
+          args=(tag --repository "${GH_REPO}" --tag "${CLEANUP_TAG}")
+          if [ -n "${FAIL_RESOURCE}" ]; then
+            args+=(--fail-resource "${FAIL_RESOURCE}")
+          fi
+          python .github/release/ucm_release/cleanup.py "${args[@]}"

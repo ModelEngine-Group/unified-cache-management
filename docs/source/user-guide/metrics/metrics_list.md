@@ -1,207 +1,257 @@
 # UCM Metrics Reference
 
-## 3. Metrics Exported by Default
+## 1. Metrics Exported by Default
 
-The tables below use the default `ucm:` prefix. The default configuration contains 67 Counters, 4 Gauges, and 70 Histograms. Unless a metric name or description states otherwise, duration metrics use milliseconds, bandwidth metrics use GB/s, and accumulated byte counts use bytes.
+The tables below use the default `ucm:` prefix. The default configuration contains 78 Counters, 14 Gauges, and 64 Histograms.
 
-### 3.1 Counters
+See [UCM Health Metrics](health_metrics.md) for Store health metrics and recommended aggregation.
 
-#### Cache Store
+### 1.1 Connector
 
-| Metric | Description |
-| --- | --- |
-| `ucm:cache_lookup_hit_blocks_total` | Blocks served directly by Cache Lookup without descending to the backend |
-| `ucm:cache_lookup_miss_blocks_total` | Blocks missed by Cache Lookup and passed to the backend |
-| `ucm:cache_load_blocks_total` | Total blocks processed by Cache Load |
-| `ucm:cache_dump_blocks_total` | Total blocks processed by Cache Dump |
-| `ucm:cache_load_shards_total` | Total shards dispatched by Cache Load |
-| `ucm:cache_load_backend_shards_total` | Shards that actually descend to the backend during Cache buffer allocation |
-| `ucm:cache_dump_shards_total` | Total shards dispatched by Cache Dump |
-| `ucm:cache_dump_backend_shards_total` | Owner shards actually written to the backend |
-| `ucm:cache_load_queue_full_total` | Cache Load submissions rejected because the waiting queue is full |
-| `ucm:cache_dump_queue_full_total` | Cache Dump submissions rejected because the waiting queue is full |
-| `ucm:cache_backend_load_submit_errors_total` | Failures when Cache submits a Load to the backend |
-| `ucm:cache_backend_load_wait_errors_total` | Failures while Cache waits for a backend Load |
-| `ucm:cache_backend_dump_submit_errors_total` | Failures when Cache submits a Dump to the backend |
-| `ucm:cache_backend_dump_wait_errors_total` | Failures while Cache waits for a backend Dump |
-| `ucm:cache_h2d_errors_total` | Cache H2D transfer or stream synchronization failures |
-| `ucm:cache_d2h_errors_total` | Cache D2H transfer, event wait, or stream synchronization failures |
-| `ucm:cache_load_bytes_total` | Cumulative bytes loaded through the Cache stage |
-| `ucm:cache_dump_bytes_total` | Cumulative bytes dumped through the Cache stage |
+#### Counters
 
-#### Posix Store
+| Metric                                  | Description                                                       |
+| --------------------------------------- | ----------------------------------------------------------------- |
+| `ucm:load_bytes_total`                | Cumulative bytes successfully loaded through Connector transfer paths |
+| `ucm:save_bytes_total`                | Cumulative bytes successfully submitted through Connector save paths  |
+| `ucm:total_prefix_query_tokens_total` | Total prefix-cache query tokens observed by the UCM Connector     |
+| `ucm:gpu_hbm_hit_tokens_total`        | Prefix tokens already found in GPU/HBM before UCM Lookup          |
+| `ucm:ucm_hit_tokens_total`            | Prefix tokens hit by the UCM Connector                            |
+| `ucm:total_prefix_query_blocks_total` | Total complete prefix blocks queried by the UCM Connector         |
+| `ucm:gpu_hbm_hit_blocks_total`        | Complete prefix blocks already found in GPU/HBM before UCM Lookup |
 
-| Metric | Description |
-| --- | --- |
-| `ucm:posix_s2h_bytes_total` | Cumulative bytes read from Posix storage into host buffers |
-| `ucm:posix_h2s_bytes_total` | Cumulative bytes written from host buffers to Posix storage |
-| `ucm:posix_lookup_query_blocks_total` | Total blocks submitted to Posix Lookup |
-| `ucm:posix_lookup_hit_blocks_total` | Blocks found by Posix Lookup |
-| `ucm:posix_healthy_count_total` | Successful Posix health probes |
-| `ucm:posix_unhealthy_count_total` | Failed Posix health probes |
-| `ucm:posix_aio_timeout_total` | Posix AIO task or submission timeouts |
-| `ucm:posix_io_timeout_total` | Posix synchronous I/O worker task timeouts |
-| `ucm:posix_open_errors_total` | Posix file-open failures |
-| `ucm:posix_io_errors_total` | Posix read, write, or AIO completion failures |
+#### Gauges
 
-#### Mooncake Store
+No Connector-specific Gauges are exported by default.
 
-| Metric | Description |
-| --- | --- |
-| `ucm:mooncake_load_blocks_total` | Total blocks processed by the Mooncake Load stage |
-| `ucm:mooncake_dump_blocks_total` | Total blocks processed by the Mooncake Dump stage |
-| `ucm:mooncake_lookup_hit_blocks_total` | Blocks found directly by Mooncake Lookup before descending to the backend |
-| `ucm:mooncake_healthy_count_total` | Successful Mooncake health probes |
-| `ucm:mooncake_unhealthy_count_total` | Failed Mooncake health probes |
-| `ucm:mooncake_load_bytes_total` | Cumulative bytes loaded through the Mooncake stage |
-| `ucm:mooncake_dump_bytes_total` | Cumulative bytes dumped through the Mooncake stage |
-| `ucm:mooncake_load_hit_shards_total` | Load shards served directly by Mooncake |
-| `ucm:mooncake_load_miss_shards_total` | Load shards that miss Mooncake and descend to the backend or are recomputed |
-| `ucm:mooncake_load_backend_shards_total` | Load shards submitted to the backend after a Mooncake miss |
-| `ucm:mooncake_dump_existing_shards_total` | Dump shards already present in Mooncake |
-| `ucm:mooncake_dump_missing_shards_total` | Missing Dump shards written to Mooncake |
-| `ucm:mooncake_dump_backend_shards_total` | Dump shards archived to the backend |
-| `ucm:mooncake_load_queue_full_total` | Mooncake Load submissions rejected because the waiting queue is full |
-| `ucm:mooncake_dump_queue_full_total` | Mooncake Dump submissions rejected because the waiting queue is full |
-| `ucm:mooncake_get_errors_total` | Mooncake batch-get failures |
-| `ucm:mooncake_put_errors_total` | Mooncake batch-put failures |
-| `ucm:mooncake_backend_load_submit_errors_total` | Mooncake backend Load submission failures |
-| `ucm:mooncake_backend_load_wait_errors_total` | Failures while waiting for a Mooncake backend Load |
-| `ucm:mooncake_backend_dump_submit_errors_total` | Mooncake backend Dump submission failures |
-| `ucm:mooncake_backend_dump_wait_errors_total` | Failures while waiting for a Mooncake backend Dump |
-| `ucm:mooncake_h2d_errors_total` | Mooncake H2D transfer or synchronization failures |
-| `ucm:mooncake_d2h_errors_total` | Mooncake D2H transfer, event wait, or synchronization failures |
-| `ucm:mooncake_h2d_bytes_total` | Cumulative bytes copied from host to device by Mooncake |
-| `ucm:mooncake_d2h_bytes_total` | Cumulative bytes copied from device to host by Mooncake |
+#### Histograms
 
-#### Connector
+| Metric                                                    | Description                                                                |
+| --------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `ucm:save_duration`                                     | Duration from entering `wait_for_save` until asynchronous Dump completion |
+| `ucm:save_completion_wait_duration`                     | Time actually blocked while confirming asynchronous Dump completion        |
+| `ucm:interval_lookup_hit_rates`                         | Per-request UCM Lookup hit-rate distribution                               |
+| `ucm:connector_get_block_size_duration_ms`              | Duration of Connector interface `get_block_size`                          |
+| `ucm:connector_get_kv_connector_stats_duration_ms`      | Duration of Connector interface `get_kv_connector_stats`                  |
+| `ucm:connector_get_num_new_matched_tokens_duration_ms`  | Duration of Connector interface `get_num_new_matched_tokens`              |
+| `ucm:connector_update_state_after_alloc_duration_ms`    | Duration of Connector interface `update_state_after_alloc`                |
+| `ucm:connector_register_kv_caches_duration_ms`          | Duration of Connector interface `register_kv_caches`                      |
+| `ucm:connector_build_connector_meta_duration_ms`        | Duration of Connector interface `build_connector_meta`                    |
+| `ucm:connector_bind_connector_metadata_duration_ms`     | Duration of Connector interface `bind_connector_metadata`                 |
+| `ucm:connector_handle_preemptions_duration_ms`          | Duration of Connector interface `handle_preemptions`                      |
+| `ucm:connector_has_connector_metadata_duration_ms`      | Duration of Connector interface `has_connector_metadata`                  |
+| `ucm:connector_start_load_kv_duration_ms`               | Duration of Connector interface `start_load_kv`                           |
+| `ucm:connector_wait_for_layer_load_duration_ms`         | Duration of Connector interface `wait_for_layer_load`                     |
+| `ucm:connector_save_kv_layer_duration_ms`               | Duration of Connector interface `save_kv_layer`                           |
+| `ucm:connector_wait_for_save_duration_ms`               | Duration of Connector interface `wait_for_save`                           |
+| `ucm:connector_request_finished_all_groups_duration_ms` | Duration of Connector interface `request_finished_all_groups`             |
+| `ucm:connector_request_finished_duration_ms`            | Duration of Connector interface `request_finished`                        |
+| `ucm:connector_get_finished_duration_ms`                | Duration of Connector interface `get_finished`                            |
+| `ucm:connector_build_connector_worker_meta_duration_ms` | Duration of Connector interface `build_connector_worker_meta`             |
+| `ucm:connector_update_connector_output_duration_ms`     | Duration of Connector interface `update_connector_output`                 |
+| `ucm:connector_clear_connector_metadata_duration_ms`    | Duration of Connector interface `clear_connector_metadata`                |
+| `ucm:layerwise_layer_load_duration_ms`                  | Per-layer wall-clock time from layer load start to `wait_for_layer_load` return |
+| `ucm:layerwise_batch_load_duration_sum_ms`              | Sum of per-layer load durations within one Layerwise batch               |
 
-| Metric | Description |
-| --- | --- |
-| `ucm:load_bytes_total` | Cumulative bytes loaded by all `start_load_kv` calls |
-| `ucm:save_bytes_total` | Cumulative bytes saved by all `wait_for_save` calls |
-| `ucm:total_prefix_query_tokens_total` | Total prefix-cache query tokens observed by the UCM connector |
-| `ucm:gpu_hbm_hit_tokens_total` | Prefix tokens already found in GPU/HBM before UCM Lookup |
-| `ucm:ucm_hit_tokens_total` | Prefix tokens hit by the UCM connector |
-| `ucm:total_prefix_query_blocks_total` | Total complete prefix blocks queried by the UCM connector |
-| `ucm:gpu_hbm_hit_blocks_total` | Complete prefix blocks already found in GPU/HBM before UCM Lookup |
-| `ucm:connector_lookup_errors_total` | Connector Lookup errors handled as cache misses |
-| `ucm:connector_load_submit_errors_total` | Connector Load submission failures |
-| `ucm:connector_load_wait_errors_total` | Connector Load wait failures |
-| `ucm:connector_load_invalid_requests_total` | Events in which a Load failure invalidates request blocks |
-| `ucm:connector_load_invalid_blocks_total` | Newly invalidated vLLM block IDs caused by Load failures |
-| `ucm:connector_dump_submit_errors_total` | Connector Dump submission failures |
-| `ucm:connector_dump_wait_errors_total` | Connector Dump wait failures |
+### 1.2 Cache Store
 
-### 3.2 Gauges
+#### Counters
 
-See [UCM Health Metrics](health_metrics.md) for Store health Counters, Gauges, and recommended aggregation.
+| Metric                                        | Description                                                                |
+| --------------------------------------------- | -------------------------------------------------------------------------- |
+| `ucm:cache_lookup_hit_blocks_total`         | Blocks served directly by Cache Lookup without descending to the backend   |
+| `ucm:cache_lookup_miss_blocks_total`        | Blocks missed by Cache Lookup and passed to the backend                    |
+| `ucm:cache_load_shards_total`               | Total shards whose Cache buffer state was inspected during Load            |
+| `ucm:cache_load_wait_shards_total`          | Shards whose Cache buffer was not Ready when acquired and required waiting |
+| `ucm:cache_load_backend_shards_total`       | Shards that descend to the backend during Cache buffer allocation          |
+| `ucm:cache_load_success_shards_total`       | Shards successfully loaded from an already-ready Cache buffer to device    |
+| `ucm:cache_posix_load_success_shards_total` | Shards successfully loaded to device after waiting for Posix to fill Cache |
+| `ucm:cache_dump_shards_total`               | Total shard descriptors processed by Cache Dump, including failed tasks    |
+| `ucm:cache_dump_backend_shards_total`       | Owner shards actually written to the backend                               |
+| `ucm:cache_load_bytes_total`                | Cumulative bytes loaded through the Cache stage                            |
+| `ucm:cache_dump_bytes_total`                | Cumulative bytes dumped through the Cache stage                            |
 
-| Metric | Description |
-| --- | --- |
-| `ucm:cache_lookup_hit_rate` | Instantaneous hit rate of the most recent Cache Lookup |
-| `ucm:posix_store_health` | Effective Posix circuit-breaker state: 1 is available and 0 is fused |
-| `ucm:mooncake_store_health` | Effective Mooncake circuit-breaker state: 1 is available and 0 is fused |
-| `ucm:posix_gc_running` | Posix garbage collection state: 1 is running and 0 is idle |
+For a Cache | Posix pipeline, the Cache load share is `(total shards - wait shards) / total shards`, and the Posix load share is `wait shards / total shards`. Grafana and Metrics View apply these shares to the external-cache hit rate.
 
-### 3.3 Histograms
+#### Gauges
 
-#### Connector Base Metrics
+No Cache Store-specific Gauges are exported by default.
 
-| Metric | Description |
-| --- | --- |
-| `ucm:load_requests_num` | Requests involved in one UCM Load |
-| `ucm:load_blocks_num` | Blocks involved in one UCM Load |
-| `ucm:load_duration` | UCM Connector Load duration |
-| `ucm:load_speed` | UCM Connector Load throughput in GB/s |
-| `ucm:save_requests_num` | Requests involved in one UCM Save |
-| `ucm:save_blocks_num` | Blocks involved in one UCM Save |
-| `ucm:save_duration` | Duration from entering `wait_for_save` until asynchronous Dump completion |
-| `ucm:save_completion_wait_duration` | Time actually blocked while confirming asynchronous Dump completion |
-| `ucm:interval_lookup_hit_rates` | Per-request UCM Lookup hit-rate distribution |
+#### Histograms
 
-#### Cache Store
+| Metric                                        | Description                                                                              |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `ucm:cache_lookup_duration_ms`              | Cache buffer scan time for `Lookup`, `LookupOnPrefix`, or `LookupOnReverse`; no samples are produced when shared memory is disabled because Lookup goes directly to the lower Store |
+| `ucm:cache_lookup_backend_duration_ms`      | Backend Lookup wall-clock time when there is no buffer or the buffer misses              |
+| `ucm:cache_load_duration_ms`                | End-to-end Cache-stage Load task duration                                                |
+| `ucm:cache_dump_duration_ms`                | End-to-end Cache-stage Dump task duration                                                |
+| `ucm:cache_load_bandwidth_gbps`             | Effective bandwidth over the complete Cache Load task lifecycle                          |
+| `ucm:cache_dump_bandwidth_gbps`             | Effective bandwidth over the complete Cache Dump task lifecycle                          |
+| `ucm:cache_load_queue_wait_duration_ms`     | Time a Cache Load task waits before a dispatch worker picks it up                        |
+| `ucm:cache_dump_queue_wait_duration_ms`     | Time a Cache Dump task waits before a dispatch worker picks it up                        |
+| `ucm:cache_load_backend_submit_duration_ms` | Time to allocate a Cache buffer and synchronously submit the backend Load                |
+| `ucm:cache_shard_backend_wait_ms`           | Time one shard waits for the backend to become ready before H2D submission               |
+| `ucm:cache_h2d_submit_ms`                   | CPU overhead of one asynchronous shard H2D submission, excluding transfer time           |
+| `ucm:cache_h2d_sync_ms`                     | Remaining H2D stream drain time after the final shard submission                         |
+| `ucm:cache_dump_mkbuf_duration_ms`          | Cache Dump buffer allocation/reuse and asynchronous D2H submission time                  |
+| `ucm:cache_dump_prereq_wait_ms`             | Time waiting for the layer KV-ready compute event before D2H starts                      |
+| `ucm:cache_d2h_duration_ms`                 | Cache Dump stream synchronization time, including prerequisite compute wait and D2H copy |
+| `ucm:cache_dump_backend_submit_duration_ms` | Time to synchronously submit the buffer to the lower Store                               |
+| `ucm:cache_dump_backend_wait_duration_ms`   | Time waiting for the lower Store to complete the write                                   |
 
-| Metric | Description |
-| --- | --- |
-| `ucm:cache_lookup_duration_ms` | Wall-clock time of one Cache buffer `Lookup`/`LookupOnPrefix` call |
-| `ucm:cache_lookup_backend_duration_ms` | Backend Lookup wall-clock time when there is no buffer or the buffer misses |
-| `ucm:cache_load_duration_ms` | End-to-end Cache-stage Load task duration |
-| `ucm:cache_dump_duration_ms` | End-to-end Cache-stage Dump task duration |
-| `ucm:cache_load_bandwidth_gbps` | Effective bandwidth over the complete Cache Load task lifecycle |
-| `ucm:cache_dump_bandwidth_gbps` | Effective bandwidth over the complete Cache Dump task lifecycle |
-| `ucm:cache_load_queue_wait_duration_ms` | Time a Cache Load task waits before a dispatch worker picks it up |
-| `ucm:cache_dump_queue_wait_duration_ms` | Time a Cache Dump task waits before a dispatch worker picks it up |
-| `ucm:cache_load_backend_submit_duration_ms` | Time to allocate a Cache buffer and synchronously submit the backend Load |
-| `ucm:cache_shard_backend_wait_ms` | Time one shard waits for the backend to become ready before H2D submission |
-| `ucm:cache_h2d_submit_ms` | CPU overhead of one asynchronous shard H2D submission, excluding transfer time |
-| `ucm:cache_h2d_sync_ms` | Remaining H2D stream drain time after the final shard submission |
-| `ucm:cache_dump_mkbuf_duration_ms` | Cache Dump buffer allocation/reuse and asynchronous D2H submission time |
-| `ucm:cache_dump_prereq_wait_ms` | Time waiting for the layer KV-ready compute event before D2H starts |
-| `ucm:cache_d2h_duration_ms` | Cache Dump stream synchronization time, including prerequisite compute wait and D2H copy |
-| `ucm:cache_dump_backend_submit_duration_ms` | Time to synchronously submit the buffer to the lower Store |
-| `ucm:cache_dump_backend_wait_duration_ms` | Time waiting for the lower Store to complete the write |
+### 1.3 Posix Store
 
-#### Posix Store
+#### Counters
 
-| Metric | Description |
-| --- | --- |
-| `ucm:posix_load_task_duration_ms` | End-to-end Posix Load task duration from submission until the final shard completes |
-| `ucm:posix_dump_task_duration_ms` | End-to-end Posix Dump task duration from submission until the final shard completes |
-| `ucm:posix_s2h_bandwidth_gbps` | Per-task Posix read bandwidth |
-| `ucm:posix_h2s_bandwidth_gbps` | Per-task Posix write bandwidth |
-| `ucm:posix_load_queue_wait_duration_ms` | Time a Posix Load task waits before the first worker picks it up |
-| `ucm:posix_dump_queue_wait_duration_ms` | Time a Posix Dump task waits before the first worker picks it up |
+| Metric                                  | Description                                                 |
+| --------------------------------------- | ----------------------------------------------------------- |
+| `ucm:posix_s2h_bytes_total`           | Cumulative bytes read from Posix storage into host buffers  |
+| `ucm:posix_h2s_bytes_total`           | Cumulative bytes written from host buffers to Posix storage |
+| `ucm:posix_lookup_query_blocks_total` | Total blocks submitted to Posix Lookup                      |
+| `ucm:posix_lookup_hit_blocks_total`   | Blocks found by Posix Lookup                                |
 
-#### Mooncake Store
+#### Gauges
 
-| Metric | Description |
-| --- | --- |
-| `ucm:mooncake_load_duration_ms` | End-to-end Mooncake Load task duration |
-| `ucm:mooncake_dump_duration_ms` | End-to-end Mooncake Dump task duration |
-| `ucm:mooncake_load_bandwidth_gbps` | Effective Mooncake-stage Load bandwidth |
-| `ucm:mooncake_dump_bandwidth_gbps` | Effective Mooncake-stage Dump bandwidth |
-| `ucm:mooncake_load_queue_wait_duration_ms` | Time a Mooncake Load task waits before a dispatch worker picks it up |
-| `ucm:mooncake_dump_queue_wait_duration_ms` | Time a Mooncake Dump task waits before a dispatch worker picks it up |
-| `ucm:mooncake_get_duration_ms` | Mooncake batch-get duration on the Load path |
-| `ucm:mooncake_exists_duration_ms` | Mooncake batch-exists check duration on the Dump path |
-| `ucm:mooncake_put_duration_ms` | Mooncake batch-put duration on the Dump path |
-| `ucm:mooncake_load_backend_submit_duration_ms` | Time to submit a backend Load after a Mooncake miss |
-| `ucm:mooncake_backend_load_wait_duration_ms` | Time waiting for the backend to load missing shards |
-| `ucm:mooncake_h2d_duration_ms` | Mooncake Load H2D stream drain time |
-| `ucm:mooncake_dump_prereq_wait_ms` | Time waiting for the prerequisite compute event before a Mooncake put |
-| `ucm:mooncake_d2h_duration_ms` | Mooncake D2H stream drain time required for backend archival |
-| `ucm:mooncake_dump_backend_submit_duration_ms` | Time to submit a backend Dump after the D2H archival copy |
-| `ucm:mooncake_dump_backend_wait_duration_ms` | Time waiting for backend archival to complete |
+| Metric                             | Description                                                    |
+| ---------------------------------- | -------------------------------------------------------------- |
+| `ucm:posix_store_used_bytes`     | Estimated logical Posix Store usage in bytes from GC sampling  |
+| `ucm:posix_store_capacity_bytes` | Configured logical Posix Store capacity in bytes               |
+| `ucm:posix_store_usage_ratio`    | Estimated logical Posix Store usage ratio                      |
+| `ucm:posix_store_health`         | Effective circuit-breaker state: 1 is available and 0 is fused |
+| `ucm:posix_gc_running`           | Garbage collection state: 1 is running and 0 is idle           |
 
-#### Layerwise
+#### Histograms
 
-| Metric | Description |
-| --- | --- |
-| `ucm:layerwise_batch_total_ms` | Total batch wall-clock time from entering `start_load_kv` until `wait_for_save` returns |
-| `ucm:layerwise_batch_total_load_only_ms` | Total wall-clock time of a load-only layerwise batch |
-| `ucm:layerwise_batch_total_save_only_ms` | Total wall-clock time of a save-only layerwise batch |
-| `ucm:layerwise_batch_total_load_save_ms` | Total wall-clock time of a layerwise batch containing Load and Save |
-| `ucm:layerwise_batch_total_no_transfer_ms` | Total wall-clock time of a layerwise batch with no Load or Save transfer |
-| `ucm:layerwise_batch_load_wait_total_load_only_ms` | Sum of all `wait_for_layer_load` blocking time in a load-only batch |
-| `ucm:layerwise_batch_load_wait_total_load_save_ms` | Sum of all `wait_for_layer_load` blocking time in a load-and-save batch |
-| `ucm:layerwise_batch_save_tail_save_only_ms` | `wait_for_save` tail duration in a save-only batch |
-| `ucm:layerwise_batch_save_tail_load_save_ms` | `wait_for_save` tail duration in a load-and-save batch |
-| `ucm:layerwise_wait_blocking_ms` | Time blocked by one `wait_for_layer_load`; values near zero indicate good overlap |
-| `ucm:layerwise_wait_tasks_count` | Request Load tasks awaited by one layer wait |
-| `ucm:layerwise_inter_wait_interval_ms` | Interval between consecutive `wait_for_layer_load` calls |
-| `ucm:layerwise_next_layer_submit_ms` | Time to submit the next layer's Load task in `wait_for_layer_load` |
-| `ucm:layerwise_first_layer_submit_ms` | Time to submit the first layer's Load task in `start_load_kv` |
-| `ucm:layerwise_first_layer_requests` | Requests whose first-layer Load is submitted in `start_load_kv` |
-| `ucm:layerwise_save_submit_ms` | Time to submit one layer's Dump task in `save_kv_layer` |
-| `ucm:layerwise_save_tail_total_ms` | Compatibility metric; Layerwise no longer waits for Dump completion in `wait_for_save` |
+| Metric                                    | Description                                                                         |
+| ----------------------------------------- | ----------------------------------------------------------------------------------- |
+| `ucm:posix_load_task_duration_ms`       | End-to-end Posix Load task duration from submission until the final shard completes |
+| `ucm:posix_dump_task_duration_ms`       | End-to-end Posix Dump task duration from submission until the final shard completes |
+| `ucm:posix_s2h_bandwidth_gbps`          | Per-task Posix read bandwidth                                                       |
+| `ucm:posix_h2s_bandwidth_gbps`          | Per-task Posix write bandwidth                                                      |
+| `ucm:posix_load_queue_wait_duration_ms` | Time a Posix Load task waits before the first worker picks it up                    |
+| `ucm:posix_dump_queue_wait_duration_ms` | Time a Posix Dump task waits before the first worker picks it up                    |
 
-#### FAWA
+### 1.4 YuanRong Store
 
-| Metric | Description |
-| --- | --- |
-| `ucm:fawa_scheduler_lookup_external_hit_blocks_ms` | Scheduler Store Lookup duration |
-| `ucm:fawa_scheduler_get_num_new_matched_tokens_ms` | Total Store Lookup and block-hash generation duration |
-| `ucm:fawa_worker_wait_wait_all_load_task_ms` | Worker Store Load wait duration |
-| `ucm:fawa_worker_start_load_kv_ms` | Worker Store Load task construction and submission duration |
-| `ucm:fawa_worker_wait_for_save_ms` | Worker Store Dump duration |
+#### Counters
+
+| Metric                                                         | Description                                                                   |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `ucm:yuanrong_load_success_shards_total`                     | Shards successfully loaded from YuanRong to device                            |
+| `ucm:yuanrong_lookup_miss_posix_load_success_shards_total`   | Shards successfully loaded from Posix after a YuanRong Lookup miss            |
+| `ucm:yuanrong_load_fallback_posix_load_success_shards_total` | Shards successfully loaded from Posix after a YuanRong Load failure           |
+| `ucm:yuanrong_local_dram_load_hits_total`                    | Estimated YuanRong local DRAM Get hits forwarded from`kv_resource.log`      |
+| `ucm:yuanrong_remote_load_hits_total`                        | Estimated YuanRong remote-worker Get hits forwarded from`kv_resource.log`   |
+| `ucm:yuanrong_local_ssd_load_hits_total`                     | Estimated YuanRong local spill-SSD Get hits forwarded from`kv_resource.log` |
+| `ucm:yuanrong_l2_load_hits_total`                            | YuanRong L2 persistence Get hits forwarded from`kv_resource.log`            |
+
+#### Gauges
+
+| Metric                                                      | Description                                                            |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `ucm:yuanrong_dram_used_bytes`                            | YuanRong physical shared-memory usage in bytes                         |
+| `ucm:yuanrong_dram_capacity_bytes`                        | YuanRong shared-memory capacity in bytes                               |
+| `ucm:yuanrong_dram_usage_ratio`                           | YuanRong physical shared-memory usage ratio                            |
+| `ucm:yuanrong_ssd_used_bytes`                             | YuanRong physical spill-disk usage in bytes                            |
+| `ucm:yuanrong_ssd_capacity_bytes`                         | YuanRong spill-disk capacity in bytes                                  |
+| `ucm:yuanrong_ssd_usage_ratio`                            | YuanRong physical spill-disk usage ratio                               |
+| `ucm:yuanrong_resource_log_last_update_timestamp_seconds` | Unix timestamp of the latest YuanRong resource snapshot parsed by UCM  |
+| `ucm:yuanrong_resource_log_reporter_leader`               | Whether this UCM process is the host YuanRong resource reporter leader |
+
+#### Histograms
+
+No YuanRong-specific Histograms are exported by default.
+
+### 1.5 Mooncake Store
+
+#### Counters
+
+| Metric                                      | Description                                                                 |
+| ------------------------------------------- | --------------------------------------------------------------------------- |
+| `ucm:mooncake_load_blocks_total`          | Total blocks processed by the Mooncake Load stage                           |
+| `ucm:mooncake_dump_blocks_total`          | Total blocks processed by the Mooncake Dump stage                           |
+| `ucm:mooncake_lookup_hit_blocks_total`    | Blocks found directly by Mooncake Lookup before descending to the backend   |
+| `ucm:mooncake_load_bytes_total`           | Cumulative bytes loaded through the Mooncake stage                          |
+| `ucm:mooncake_dump_bytes_total`           | Cumulative bytes dumped through the Mooncake stage                          |
+| `ucm:mooncake_load_hit_shards_total`      | Load shards served directly by Mooncake                                     |
+| `ucm:mooncake_load_miss_shards_total`     | Load shards that miss Mooncake and descend to the backend or are recomputed |
+| `ucm:mooncake_load_backend_shards_total`  | Load shards submitted to the backend after a Mooncake miss                  |
+| `ucm:mooncake_dump_existing_shards_total` | Dump shards already present in Mooncake                                     |
+| `ucm:mooncake_dump_missing_shards_total`  | Missing Dump shards written to Mooncake                                     |
+| `ucm:mooncake_dump_backend_shards_total`  | Dump shards archived to the backend                                         |
+| `ucm:mooncake_h2d_bytes_total`            | Cumulative bytes copied from host to device by Mooncake                     |
+| `ucm:mooncake_d2h_bytes_total`            | Cumulative bytes copied from device to host by Mooncake                     |
+
+#### Gauges
+
+| Metric                        | Description                                                    |
+| ----------------------------- | -------------------------------------------------------------- |
+| `ucm:mooncake_store_health` | Effective circuit-breaker state: 1 is available and 0 is fused |
+
+#### Histograms
+
+| Metric                                           | Description                                                           |
+| ------------------------------------------------ | --------------------------------------------------------------------- |
+| `ucm:mooncake_load_duration_ms`                | End-to-end Mooncake Load task duration                                |
+| `ucm:mooncake_dump_duration_ms`                | End-to-end Mooncake Dump task duration                                |
+| `ucm:mooncake_load_bandwidth_gbps`             | Effective Mooncake-stage Load bandwidth                               |
+| `ucm:mooncake_dump_bandwidth_gbps`             | Effective Mooncake-stage Dump bandwidth                               |
+| `ucm:mooncake_load_queue_wait_duration_ms`     | Time a Mooncake Load task waits before a dispatch worker picks it up  |
+| `ucm:mooncake_dump_queue_wait_duration_ms`     | Time a Mooncake Dump task waits before a dispatch worker picks it up  |
+| `ucm:mooncake_get_duration_ms`                 | Mooncake batch-get duration on the Load path                          |
+| `ucm:mooncake_exists_duration_ms`              | Mooncake batch-exists check duration on the Dump path                 |
+| `ucm:mooncake_put_duration_ms`                 | Mooncake batch-put duration on the Dump path                          |
+| `ucm:mooncake_load_backend_submit_duration_ms` | Time to submit a backend Load after a Mooncake miss                   |
+| `ucm:mooncake_backend_load_wait_duration_ms`   | Time waiting for the backend to load missing shards                   |
+| `ucm:mooncake_h2d_duration_ms`                 | Mooncake Load H2D stream drain time                                   |
+| `ucm:mooncake_dump_prereq_wait_ms`             | Time waiting for the prerequisite compute event before a Mooncake put |
+| `ucm:mooncake_d2h_duration_ms`                 | Mooncake D2H stream drain time required for backend archival          |
+| `ucm:mooncake_dump_backend_submit_duration_ms` | Time to submit a backend Dump after the D2H archival copy             |
+| `ucm:mooncake_dump_backend_wait_duration_ms`   | Time waiting for backend archival to complete                         |
+
+## 2. Raw Metrics Usage
+
+### 2.1 Hit Rate
+
+Use a layered calculation instead of calculating each Store hit rate independently. First calculate the total hit rate at the boundary of two adjacent cache layers. Then split that total according to the actual load-source ratio reported by those layers. This keeps the numerator and denominator semantics consistent across the hierarchy and provides the most accurate tier-level estimate.
+
+For example, the external-cache hit rate can be calculated from vLLM token Counters:
+
+```text
+external_cache_hit_rate = external_hit / external_query
+                          * (1 - hbm_hit / hbm_query)
+```
+
+For a Cache | Posix pipeline, split the external-cache hit rate using shard Counters:
+
+```text
+cache_share = (cache_load_shards - cache_load_wait_shards)
+              / cache_load_shards
+posix_share = cache_load_wait_shards / cache_load_shards
+
+cache_hit_rate = external_cache_hit_rate * cache_share
+posix_hit_rate = external_cache_hit_rate * posix_share
+```
+
+Apply the same approach to other layered Stores: calculate their combined hit rate first, then split it using Counters that represent the actual load source. Use `rate()` or `increase()` over the same time range for every Counter in a formula, and do not mix token, block, and shard counts within the same ratio.
+
+### 2.2 Bandwidth
+
+UCM exposes two useful bandwidth views with different meanings:
+
+- The `*_bandwidth_gbps` Histograms record effective bandwidth for individual tasks. They show instantaneous task speed and its distribution, such as p50, p90, and p99, but they do not represent total system throughput.
+- Average system bandwidth should be calculated as total transferred bytes divided by elapsed time. It includes concurrency and idle periods, so it represents the overall throughput observed during the selected time range.
+
+Use a cumulative byte Counter for the required Store and transfer direction. For example:
+
+```promql
+sum(rate(ucm:cache_load_bytes_total[$__rate_interval])) / 1e9
+```
+
+Equivalently, for a fixed time range:
+
+```text
+average_bandwidth_GBps = increase(transferred_bytes_total) / elapsed_seconds / 1e9
+```
+
+Sum byte rates across workers before converting to GB/s. Keep Load and Dump, or read and write, as separate series. Do not average per-task bandwidth values to estimate system throughput.

@@ -23,6 +23,9 @@
  * */
 #include <acl/acl.h>
 #include "ascend_buffer.h"
+#if UCM_RUNTIME_ASCEND_IO_AGGREGATION
+#include "io_aggregation/ascend_io_aggregation_stream.h"
+#endif
 #if UCM_RUNTIME_ASCEND_SDMA_DIRECT
 #include "sdma_direct/ascend_sdma_direct_stream.h"
 #endif
@@ -31,12 +34,33 @@
 
 namespace UC::Trans {
 
+Status Device::Init()
+{
+    const auto ret = aclInit(nullptr);
+    if (ret == ACL_SUCCESS) { return Status::OK(); }
+    if (ret == ACL_ERROR_REPEAT_INITIALIZE) { return Status::DuplicateKey(); }
+    return Status{ret, std::to_string(ret)};
+}
+
 Status Device::Setup(int32_t deviceId)
 {
     if (deviceId < 0) { return Status::Error(fmt::format("invalid device id({})", deviceId)); }
     auto ret = aclrtSetDevice(deviceId);
     if (ret == ACL_SUCCESS) { return Status::OK(); }
     return Status{ret, std::to_string(ret)};
+}
+
+Status Device::Reset(int32_t deviceId)
+{
+    if (deviceId < 0) { return Status::Error(fmt::format("invalid device id({})", deviceId)); }
+    const auto ret = aclrtResetDevice(deviceId);
+    return ret == ACL_SUCCESS ? Status::OK() : Status{ret, std::to_string(ret)};
+}
+
+Status Device::Finalize()
+{
+    const auto ret = aclFinalize();
+    return ret == ACL_SUCCESS ? Status::OK() : Status{ret, std::to_string(ret)};
 }
 
 std::unique_ptr<Stream> Device::MakeStream()
@@ -63,6 +87,21 @@ std::shared_ptr<Stream> Device::MakeSharedStream()
     return nullptr;
 }
 
+std::shared_ptr<Stream> Device::MakeIoAggregationStream()
+{
+#if UCM_RUNTIME_ASCEND_IO_AGGREGATION
+    std::shared_ptr<AscendIoAggregationStream> stream = nullptr;
+    try {
+        stream = std::make_shared<AscendIoAggregationStream>();
+    } catch (...) {
+        return nullptr;
+    }
+    if (stream->Setup().Success()) { return stream; }
+#else
+#endif
+    return nullptr;
+}
+
 std::shared_ptr<Stream> Device::MakeSdmaDirectStream()
 {
 #if UCM_RUNTIME_ASCEND_SDMA_DIRECT
@@ -73,8 +112,10 @@ std::shared_ptr<Stream> Device::MakeSdmaDirectStream()
         return nullptr;
     }
     if (stream->Setup().Success()) { return stream; }
-#endif
     return nullptr;
+#else
+    return nullptr;
+#endif
 }
 
 std::unique_ptr<Stream> Device::MakeGdrStream() { return nullptr; }

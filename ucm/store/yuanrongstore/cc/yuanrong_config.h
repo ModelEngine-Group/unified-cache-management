@@ -63,7 +63,7 @@ struct Config {
     size_t posixDumpBatchSize{0};
     size_t posixMaxInflightGb{1};
     std::vector<ssize_t> cpuAffinityCores{};
-    bool ioDirect{false};
+    bool ioDirect{true};
     std::string posixIoEngine{"psync"};
 
     std::vector<uintptr_t> gpuKvBufferAddrs{};

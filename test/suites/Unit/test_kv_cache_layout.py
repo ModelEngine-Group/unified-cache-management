@@ -106,7 +106,7 @@ class FakeCombinedTensor(FakeTensor):
 
 
 class FakeTorch:
-    Tensor = FakeTensor
+    Tensor = (FakeTensor, FakeCombinedTensor)
 
 
 class FakeLogger:
@@ -209,6 +209,7 @@ def _build_layout(
 def _build_cuda_shared_layout(
     entries: list[tuple[str, int, int] | tuple[str, int, int, int]],
 ):
+    num_blocks = 3
     next_ptr = 0x100000
     kvcaches = {}
     tensor_ptrs = {}
@@ -220,13 +221,14 @@ def _build_cuda_shared_layout(
             kvcaches[layer_name] = FakeCombinedTensor(
                 next_ptr,
                 block_stride,
+                num_blocks=num_blocks,
                 element_size=element_size,
             )
         else:
             kvcaches[layer_name] = FakeTensor(
                 next_ptr,
                 block_stride,
-                num_blocks=3,
+                num_blocks=num_blocks,
                 element_size=element_size,
                 dimensions=dimensions,
             )

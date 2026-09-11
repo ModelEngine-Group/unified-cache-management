@@ -24,6 +24,9 @@
 #ifndef UNIFIEDCACHE_CACHE_STORE_CC_COPY_STREAM_H
 #define UNIFIEDCACHE_CACHE_STORE_CC_COPY_STREAM_H
 
+#include <functional>
+#include <memory>
+#include <vector>
 #include "logger/logger.h"
 #include "status/status.h"
 #include "trans/device.h"
@@ -63,6 +66,30 @@ public:
         }
         deviceId_ = deviceId;
         streamNumber_ = streamNumber;
+        streamIndex_ = 0;
+        return Status::OK();
+    }
+
+    Status SetupIoAggregation(const int32_t deviceId, const bool useGdr)
+    {
+        if (useGdr) {
+            return Status::InvalidParam("GDR stream is incompatible with cache IO aggregation");
+        }
+        Trans::Device device;
+        auto s = device.Setup(deviceId);
+        if (s.Failure()) [[unlikely]] {
+            UC_ERROR("Failed({}) to setup device({}).", s, deviceId);
+            return s;
+        }
+        auto stream = device.MakeIoAggregationStream();
+        if (!stream) [[unlikely]] {
+            UC_ERROR("Failed to make cache IO aggregation stream on device({}).", deviceId);
+            return Status::Error();
+        }
+        streams_.clear();
+        streams_.push_back(std::move(stream));
+        deviceId_ = deviceId;
+        streamNumber_ = 1;
         streamIndex_ = 0;
         return Status::OK();
     }
@@ -115,7 +142,7 @@ public:
         if (!stream) [[unlikely]] { return Status::Error("copy stream is not setup"); }
         return stream->DeviceToHostAsync(device, host, sizes);
     }
-    Status WaitEvent(void* event) noexcept
+    Status WaitEvent(const Trans::Event& event) noexcept
     {
         auto status = Status::OK();
         for (auto& stream : streams_) {

@@ -1,0 +1,283 @@
+name: Build, verify, and publish one trusted Tag image
+
+on:
+  workflow_call:
+    inputs:
+      image_id:
+        type: string
+        required: true
+      runner:
+        type: string
+        required: true
+      plan_artifact:
+        type: string
+        required: true
+      source_ref:
+        type: string
+        required: true
+      publication_scope:
+        type: string
+        required: true
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: false
+      DOCKERHUB_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    name: Build, verify, and publish
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 180
+    environment: ${{ inputs.publication_scope == 'official' && 'release-production' || 'fork-preview' }}
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - run: >-
+          python -m pip install --disable-pip-version-check --no-cache-dir
+          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+      - uses: ./.github/actions/download-artifact-retry
+        with:
+          name: ${{ inputs.plan_artifact }}
+          path: input/plan
+      - id: task
+        name: Select trusted Tag image task
+        env:
+          IMAGE_ID: ${{ inputs.image_id }}
+          PUBLICATION_SCOPE: ${{ inputs.publication_scope }}
+        run: |
+          set -euo pipefail
+          plan=input/plan/release-plan.json
+          test "$(jq -r '.route' "${plan}")" = release
+          jq -e --arg scope "${PUBLICATION_SCOPE}" \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            '.publication_scope == $scope and
+             (.repository | ascii_downcase) == ($repository | ascii_downcase)' \
+            "${plan}" >/dev/null
+          jq -e '(.publish.ghcr.enabled == true) or
+                 (.publish.dockerhub.enabled == true)' "${plan}" >/dev/null
+          mkdir -p out/receipts context
+          PYTHONPATH=.github/release python -m ucm_release compact select \
+            --plan "${plan}" --kind image --id "${IMAGE_ID}" \
+            --output out/image-task.json >/dev/null
+          wheel_id="$(jq -r '.wheel_id' out/image-task.json)"
+          target_ref="$(jq -er --arg image "${IMAGE_ID}" \
+            '.families[].members[] | select(.image_id == $image) | .reference' \
+            "${plan}")"
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          case "${target_ref}" in
+            "ghcr.io/${owner}/"*:*) ;;
+            *) echo "GHCR member target is outside current owner namespace" >&2; exit 2 ;;
+          esac
+          dockerhub_ref=""
+          if [ "$(jq -r '.publish.dockerhub.enabled' "${plan}")" = true ]; then
+            namespace="$(jq -er '.publish.dockerhub.namespace' "${plan}")"
+            case "${namespace}" in
+              docker.io/*) ;;
+              *) echo "Docker Hub namespace is outside docker.io" >&2; exit 2 ;;
+            esac
+            repository="${target_ref%:*}"
+            tag="${target_ref##*:}"
+            dockerhub_ref="${namespace}/${repository##*/}:${tag}"
+          fi
+          receipt="out/receipts/member-${IMAGE_ID}.json"
+          jq -n --arg id "${IMAGE_ID}" \
+            '{kind:"ucm-image-member-receipt",schema_version:1,id:$id,
+              status:"failed",targets:[]}' >"${receipt}"
+          {
+            echo "wheel_artifact=ucm-wheel-${wheel_id}-run-${GITHUB_RUN_ID}"
+            echo "target_ref=${target_ref}"
+            echo "dockerhub_ref=${dockerhub_ref}"
+            echo "receipt=${receipt}"
+          } >>"${GITHUB_OUTPUT}"
+      - uses: ./.github/actions/download-artifact-retry
+        with:
+          name: ${{ steps.task.outputs.wheel_artifact }}
+          path: input/wheel
+      - uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+      - uses: docker/setup-buildx-action@v3.11.1
+      - name: Build install-only Runtime image
+        run: |
+          set -euo pipefail
+          wheel="$(find input/wheel -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "${wheel}"
+          cp .github/release/docker/Dockerfile.runtime context/Dockerfile
+          cp examples/ucm_config_example.yaml context/ucm_config_example.yaml
+          cp "${wheel}" "context/$(basename "${wheel}")"
+          base="$(jq -er '.runtime.image_reference' out/image-task.json)"
+          docker buildx build \
+            --platform "$(jq -r '.platform' out/image-task.json)" \
+            --file context/Dockerfile --target runtime \
+            --build-arg "BASE_IMAGE=${base}" \
+            --build-arg "UCM_WHEEL=$(basename "${wheel}")" \
+            --output type=oci,dest=out/image.oci.tar \
+            --progress plain context
+          test -s out/image.oci.tar
+      - name: Verify Runtime glibc, Python, OS, and UCM import
+        env:
+          IMAGE_ID: ${{ inputs.image_id }}
+        run: |
+          set -euo pipefail
+          for setup_attempt in 1 2 3; do
+            if sudo apt-get update && sudo apt-get install --yes skopeo; then
+              break
+            fi
+            if [ "${setup_attempt}" -eq 3 ]; then
+              echo "skopeo setup failed after ${setup_attempt} attempts" >&2
+              exit 1
+            fi
+            setup_wait=$((setup_attempt * 5))
+            echo "skopeo setup failed; retrying in ${setup_wait}s" >&2
+            sleep "${setup_wait}"
+          done
+          local_tag="ucm-runtime-check:${IMAGE_ID}"
+          wheel_glibc_floor="$(jq -er '.glibc_floor | select(type == "string")' \
+            input/wheel/wheel-result.json)"
+          runtime_requirements="$(jq -ce '.dependencies | select(type == "array")' \
+            input/wheel/wheel-result.json)"
+          deferred_external_libraries="$(jq -ce \
+            '.deferred_external_libraries | select(type == "array")' \
+            input/wheel/wheel-result.json)"
+          config_sha256="$(sha256sum examples/ucm_config_example.yaml | cut -d' ' -f1)"
+          skopeo copy "oci-archive:out/image.oci.tar" "docker-daemon:${local_tag}"
+          docker run --rm --entrypoint sh \
+            -e DEFERRED_EXTERNAL_LIBRARIES="${deferred_external_libraries}" \
+            -e EXPECTED_PYTHON="$(jq -r '.runtime.python_version' out/image-task.json)" \
+            -e EXPECTED_OS_ID="$(jq -r '.runtime.os_id' out/image-task.json)" \
+            -e EXPECTED_OS_VERSION="$(jq -r '.runtime.os_version' out/image-task.json)" \
+            -e EXPECTED_WHEEL_GLIBC_FLOOR="${wheel_glibc_floor}" \
+            -e EXPECTED_BACKEND_DISTRIBUTION="$(jq -r '.distribution' input/wheel/wheel-result.json)" \
+            -e EXPECTED_UCM_VERSION="$(jq -r '.version' input/wheel/wheel-result.json)" \
+            -e EXPECTED_EXTERNAL_LIBRARIES="$(jq -c '.external_libraries' input/wheel/wheel-result.json)" \
+            -e EXPECTED_RUNTIME_REQUIREMENTS="${runtime_requirements}" \
+            -e EXPECTED_UCM_CONFIG_SHA256="${config_sha256}" \
+            -v "${PWD}/.github/release/validate_wheel_runtime.py:/tmp/validate_wheel_runtime.py:ro" \
+            "${local_tag}" -c '
+              set -eu
+              ldd_output="$(ldd --version 2>&1)"
+              actual_glibc="$(python3 -c "import re, sys; match = re.search(r\"[0-9]+(?:\\.[0-9]+)+\", sys.argv[1]); print(match.group(0) if match else \"\")" "${ldd_output}")"
+              wheel_glibc_floor="${EXPECTED_WHEEL_GLIBC_FLOOR#GLIBC_}"
+              test -n "${actual_glibc}"
+              test -n "${wheel_glibc_floor}"
+              printf "Runtime glibc: actual=%s wheel-floor=%s\n" \
+                "${actual_glibc}" "${EXPECTED_WHEEL_GLIBC_FLOOR}"
+              python3 -c "import sys; parse=lambda value: tuple(map(int, value.split(\".\"))); sys.exit(0 if parse(sys.argv[1]) >= parse(sys.argv[2]) else 1)" \
+                "${actual_glibc}" "${wheel_glibc_floor}"
+              actual_python="$(python3 -c \
+                "import sys; print(\"%d.%d\" % sys.version_info[:2])")"
+              test "${actual_python}" = "${EXPECTED_PYTHON}"
+              . /etc/os-release
+              if [ "${EXPECTED_OS_ID}" != linux ] && \
+                 [ "${EXPECTED_OS_ID}" != unreported ]; then
+                test "$(printf %s "${ID}" | tr "[:upper:]" "[:lower:]")" = \
+                  "$(printf %s "${EXPECTED_OS_ID}" | tr "[:upper:]" "[:lower:]")"
+              fi
+              if [ "${EXPECTED_OS_VERSION}" != unreported ]; then
+                test "${VERSION_ID}" = "${EXPECTED_OS_VERSION}"
+              fi
+              printf "Runtime OS: actual=%s:%s planned=%s:%s\n" \
+                "${ID}" "${VERSION_ID}" "${EXPECTED_OS_ID}" "${EXPECTED_OS_VERSION}"
+              python3 -c "import hashlib, os, pathlib; path=pathlib.Path(\"/workspace/ucm_config_example.yaml\"); actual=hashlib.sha256(path.read_bytes()).hexdigest(); assert actual == os.environ[\"EXPECTED_UCM_CONFIG_SHA256\"], actual"
+              python3 /tmp/validate_wheel_runtime.py
+            '
+      - name: Publish verified Profile members and record digests
+        env:
+          TARGET_REF: ${{ steps.task.outputs.target_ref }}
+          DOCKERHUB_REF: ${{ steps.task.outputs.dockerhub_ref }}
+          RECEIPT: ${{ steps.task.outputs.receipt }}
+          IMAGE_ID: ${{ inputs.image_id }}
+          GITHUB_TOKEN: ${{ github.token }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          plan=input/plan/release-plan.json
+          targets='[]'
+          publish_member() {
+            local channel="$1" reference="$2" digest_file="$3"
+            if [ "${channel}" = ghcr ]; then
+              owner="${GITHUB_REPOSITORY_OWNER,,}"
+              case "${reference}" in
+                "ghcr.io/${owner}/"*:*) ;;
+                *) echo "GHCR member target is outside current owner namespace" >&2; return 2 ;;
+              esac
+              printf '%s' "${GITHUB_TOKEN}" | docker login ghcr.io \
+                --username "${GITHUB_ACTOR}" --password-stdin || return 1
+            else
+              namespace="$(jq -er '.publish.dockerhub.namespace' "${plan}")"
+              case "${reference}" in
+                "${namespace}/"*:*) ;;
+                *) echo "Docker Hub member is outside the planned namespace" >&2; return 2 ;;
+              esac
+              test -n "${DOCKERHUB_USERNAME}" && test -n "${DOCKERHUB_TOKEN}"
+              printf '%s' "${DOCKERHUB_TOKEN}" | docker login docker.io \
+                --username "${DOCKERHUB_USERNAME}" --password-stdin || return 1
+            fi
+            skopeo copy "oci-archive:out/image.oci.tar" \
+              "docker://${reference}" || return 1
+            skopeo inspect --format '{{.Digest}}' "docker://${reference}" \
+              >"${digest_file}" || return 1
+          }
+          publish_channel() {
+            local channel="$1" reference="$2"
+            local digest_file="${RUNNER_TEMP}/ucm-image-${channel}-digest"
+            local attempt sleep_seconds digest
+            for attempt in 1 2 3; do
+              if publish_member "${channel}" "${reference}" "${digest_file}"; then
+                break
+              fi
+              if [ "${attempt}" -eq 3 ]; then
+                echo "${channel} member publication failed after ${attempt} attempts" >&2
+                return 1
+              fi
+              sleep_seconds=$((attempt * 10))
+              echo "${channel} member publication attempt ${attempt} failed; retrying in ${sleep_seconds}s" >&2
+              sleep "${sleep_seconds}"
+            done
+            digest="$(<"${digest_file}")"
+            test -n "${digest}"
+            targets="$(jq -c --arg channel "${channel}" \
+              --arg reference "${reference}" --arg digest "${digest}" \
+              '. + [{channel:$channel,reference:$reference,digest:$digest}]' \
+              <<<"${targets}")"
+            jq -n --arg id "${IMAGE_ID}" --argjson targets "${targets}" \
+              '{kind:"ucm-image-member-receipt",schema_version:1,id:$id,
+                status:"failed",targets:$targets}' >"${RECEIPT}"
+          }
+          if [ "$(jq -r '.publish.ghcr.enabled' "${plan}")" = true ]; then
+            publish_channel ghcr "${TARGET_REF}"
+          fi
+          if [ "$(jq -r '.publish.dockerhub.enabled' "${plan}")" = true ]; then
+            test -n "${DOCKERHUB_REF}"
+            publish_channel dockerhub "${DOCKERHUB_REF}"
+          fi
+          jq -n --arg id "${IMAGE_ID}" --argjson targets "${targets}" \
+            '{kind:"ucm-image-member-receipt",schema_version:1,id:$id,
+              status:"published",targets:$targets}' \
+            >"${RECEIPT}"
+      - uses: actions/upload-artifact@v4.6.2
+        if: ${{ always() }}
+        with:
+          name: ucm-image-member-receipt-${{ inputs.image_id }}-run-${{ github.run_id }}
+          path: out/receipts/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 90

@@ -30,6 +30,9 @@ class TierObservabilitySourceTest(unittest.TestCase):
             "if (shardTask.bufferHandle.Owner() && " "!shardTask.bufferHandle.Ready())"
         )
         self.assertLess(source.index(source_assignment), source.index(owner_branch))
+        self.assertIn('"cache_load_shards_total"', source)
+        self.assertIn('"cache_load_wait_shards_total"', source)
+        self.assertIn("if (shardTask.fromPosix) { waitShardCount++; }", source)
         self.assertIn('"cache_load_success_shards_total"', source)
         self.assertIn('"cache_posix_load_success_shards_total"', source)
         self.assertNotIn("tpSize", source)

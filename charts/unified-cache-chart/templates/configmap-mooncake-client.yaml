@@ -1,0 +1,19 @@
+{{- if .Values.servingEngineSpec.enableEngine -}}
+{{- $modelSpec := .Values.servingEngineSpec.modelSpec -}}
+{{- if eq (include "chart.pdMooncakeMasterRequested" (list $modelSpec $)) "true" -}}
+{{- include "chart.validateMooncakeMaster" (list $modelSpec $) -}}
+{{- $moonCfg := include "chart.mooncakeClientConfigResolved" . | fromYaml -}}
+{{- $_ := set $moonCfg "master_server_address" (include "chart.mooncakeMasterRpcAddress" .) -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "chart.mooncakeClientConfigName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: mooncake-client-config
+    app.kubernetes.io/instance: {{ .Release.Name }}
+data:
+  mooncake.json: |
+{{ toPrettyJson $moonCfg | nindent 4 }}
+{{- end -}}
+{{- end -}}

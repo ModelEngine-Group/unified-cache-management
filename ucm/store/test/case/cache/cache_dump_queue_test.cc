@@ -60,6 +60,7 @@ TEST_F(UCCacheDumpQueueTest, DumpOneBlock)
     config.bufferCapacity = config.shardSize * 1024;
     config.uniqueId = rd.RandomString(10);
     config.shareBufferEnable = true;
+    config.loadExclusiveBufferNumber = 0;
     TransBuffer buffer;
     DumpQueue dumpQ;
     auto s = buffer.Setup(config);
@@ -97,6 +98,7 @@ TEST_F(UCCacheDumpQueueTest, DumpBlockWhileBackendSubmitFailed)
     config.bufferCapacity = config.shardSize * 1024;
     config.uniqueId = rd.RandomString(10);
     config.shareBufferEnable = true;
+    config.loadExclusiveBufferNumber = 0;
     TransBuffer buffer;
     DumpQueue dumpQ;
     auto s = buffer.Setup(config);
@@ -133,6 +135,7 @@ TEST_F(UCCacheDumpQueueTest, DumpBlockWhileBackendUnhealthy)
     config.bufferCapacity = config.shardSize * 1024;
     config.uniqueId = rd.RandomString(10);
     config.shareBufferEnable = true;
+    config.loadExclusiveBufferNumber = 0;
     TransBuffer buffer;
     DumpQueue dumpQ;
     auto s = buffer.Setup(config);

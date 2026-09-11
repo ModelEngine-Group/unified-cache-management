@@ -10,6 +10,7 @@
 | `posix-aio` | `posix_aio` | 可运行 | 运行 `ucm/store/test/e2e/posixstore_aio_test.py`，测试 POSIX AIO store 的 dump/load 性能。 | [posix-aio README](ucm_toolkit/tools/posix_aio/README.md) |
 | `nic-monitor` | `nic_monitor` | 可运行 | 监控物理网卡实时流量、后台采样落盘，并生成阶段统计。 | [nic-monitor README](ucm_toolkit/tools/nic_monitor/README.md) |
 | `metrics-view` | `metrics_view`, `terminal-metrics`, `terminal_metrics` | 可运行 | 采集 Prometheus/OpenMetrics 样本到 SQLite，并在终端查询聚合指标。 | [metrics-view README](ucm_toolkit/tools/metrics_view/README.md) |
+| `precheck` | `pre_check` | 可运行 | 在 UCM 部署前于宿主机本地运行环境预检，校验 serving-stack/uc-manager 版本、加速卡驱动（CUDA 算力或昇腾 HDK）、内核版本、`/dev/shm` 及 posix store 带宽，输出 `PASS`/`WARN`/`FAIL` 并对失败项给出修复建议（RFC #1208）。 | [precheck README](ucm_toolkit/tools/precheck/README.md) |
 
 各子工具的依赖、参数、示例与常见问题都在各自 README 中说明。
 
@@ -46,6 +47,7 @@ python -m pip install -e toolkit
 | `posix-aio` | 需先安装 UCM 主软件包（unified-cache-management）及其 native 扩展，并需要 `numpy`。 |
 | `nic-monitor` | Linux、`bash`、`ethtool`，并且需要 root 或 sudo 权限读取网卡统计。 |
 | `metrics-view` | 仅依赖 Python 标准库（`sqlite3` 内置）；采集需要可访问的 Prometheus/OpenMetrics `/metrics` HTTP 接口。 |
+| `precheck` | 核心检查仅依赖 Python 标准库；带宽基准需要已安装 UCM 主软件包（native 扩展）与 `numpy`，且仅 Linux 可运行。 |
 
 `dev-sandbox` 的后端探测优先级与切换方式见 [dev-sandbox README](ucm_toolkit/tools/dev_sandbox/README.md#依赖)。
 
@@ -67,6 +69,7 @@ ucm-toolkit doctor
 ucm-toolkit doctor dev-sandbox
 ucm-toolkit doctor posix-aio
 ucm-toolkit doctor nic-monitor
+ucm-toolkit doctor precheck
 ```
 
 构建工具：

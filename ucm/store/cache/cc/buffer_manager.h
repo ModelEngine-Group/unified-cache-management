@@ -115,10 +115,6 @@ private:
                                  static_cast<double>(hitCount));
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_lookup_miss_blocks_total"),
                                  static_cast<double>(num - hitCount));
-        if (num > 0) {
-            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_lookup_hit_rate"),
-                                     static_cast<double>(hitCount) / static_cast<double>(num));
-        }
     }
     Expected<std::vector<uint8_t>> LookupFast(const Detail::BlockId* blocks, size_t num)
     {

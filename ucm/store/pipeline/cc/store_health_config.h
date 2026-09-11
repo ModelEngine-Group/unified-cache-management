@@ -31,7 +31,7 @@
 namespace UC::PipelineStore {
 
 struct StoreHealthConfig {
-    bool enabled{false};
+    bool enabled{true};
     std::chrono::milliseconds healthCheckInterval{std::chrono::seconds(10)};
     std::chrono::milliseconds healthCheckTimeout{std::chrono::seconds(3)};
     size_t healthWindowSize{8};

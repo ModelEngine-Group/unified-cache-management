@@ -31,72 +31,56 @@ def _load_apply_patch_module():
     return module, logger
 
 
-def test_release_version_keeps_vllm_ascend_patch_version():
-    module, logger = _load_apply_patch_module()
-    with patch.object(
-        module,
-        "_read_vllm_ascend_version_raw",
-        return_value="0.19.1rc2",
-    ):
-        assert module.get_vllm_ascend_patch_version("0.26.0") == "0.19.1"
-    logger.warning.assert_not_called()
-
-
 @pytest.mark.parametrize(
-    "vllm_version,expected", [("0.26.0+empty", "0.26.0"), ("0.27.1+empty", "0.27.1")]
-)
-def test_development_version_uses_matching_vllm_patch_version(vllm_version, expected):
-    module, logger = _load_apply_patch_module()
-    with patch.object(
-        module,
-        "_read_vllm_ascend_version_raw",
-        return_value="0.19.1rc2.dev1475",
-    ):
-        assert module.get_vllm_ascend_patch_version(vllm_version) == expected
-    logger.warning.assert_called_once()
-
-
-def test_development_version_keeps_supported_matching_version():
-    module, logger = _load_apply_patch_module()
-    with patch.object(
-        module,
-        "_read_vllm_ascend_version_raw",
-        return_value="0.26.0.dev12",
-    ):
-        assert module.get_vllm_ascend_patch_version("0.26.0") == "0.26.0"
-    logger.warning.assert_not_called()
-
-
-def test_development_version_does_not_select_unsupported_vllm_version():
-    module, logger = _load_apply_patch_module()
-    with patch.object(
-        module,
-        "_read_vllm_ascend_version_raw",
-        return_value="0.19.1rc2.dev1475",
-    ):
-        assert module.get_vllm_ascend_patch_version("0.29.0") == "0.19.1"
-    logger.warning.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    "ascend_version,expected",
+    "raw_version,expected",
     [
-        (None, False),
-        ("0.25.1", False),
-        ("0.25.99", False),
-        ("0.26.0", True),
-        ("0.26.0rc1", True),
-        ("0.26.0.post1+build", True),
-        ("0.26.1", True),
-        ("0.27.1", True),
-        ("0.28.0", True),
-        ("0.100.0", True),
-        ("1.0.0", True),
-        ("0.19.1rc2.dev1475", True),
+        (None, None),
+        ("", None),
+        ("0.26.0", "0.26.0"),
+        ("0.26.0rc1", "0.26.0"),
+        ("0.26.0.post1+build", "0.26.0"),
+        ("0.26.0.dev12", "0.26.0"),
+        ("0.19.1rc2.dev1475", "0.19.1"),
+        (" 0.27.1+empty ", "0.27.1"),
+    ],
+)
+def test_installed_versions_normalize_suffixes(raw_version, expected):
+    module, logger = _load_apply_patch_module()
+    with (
+        patch.object(module, "_read_vllm_version_raw", return_value=raw_version),
+        patch.object(module, "_read_vllm_ascend_version_raw", return_value=raw_version),
+    ):
+        assert module.get_vllm_version() == expected
+        assert module.get_vllm_ascend_version() == expected
+    logger.warning.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "vllm_version,ascend_version,expected",
+    [
+        ("0.27.1", None, False),
+        ("0.25.1", "0.25.1", False),
+        ("0.25.99", "0.25.99", False),
+        ("0.26.0", "0.26.0", True),
+        ("0.26.0rc1", "0.26.0rc1", True),
+        ("0.26.0.post1+build", "0.26.0.post1+build", True),
+        ("0.26.0.dev12", "0.26.0.dev12", True),
+        ("0.26.1", "0.26.1", True),
+        ("0.27.1", "0.27.1", True),
+        ("0.28.0", "0.28.0", True),
+        ("0.100.0", "0.100.0", True),
+        ("1.0.0", "1.0.0", True),
+        ("0.26.0+empty", "0.19.1rc2.dev1475", True),
+        ("0.27.1+empty", "0.19.1rc2.dev1475", True),
+        ("0.27.1", "0.19.1rc2", True),
+        ("0.29.0", "0.19.1rc2.dev1475", True),
+        ("0.25.1", "0.27.1", False),
     ],
 )
 @pytest.mark.parametrize("enabled", [False, True])
-def test_m3_patch_routing_uses_ascend_version_range(ascend_version, expected, enabled):
+def test_m3_patch_routing_uses_aligned_version_range(
+    vllm_version, ascend_version, expected, enabled
+):
     module, _ = _load_apply_patch_module()
     imported = []
     original_import = __import__
@@ -109,7 +93,7 @@ def test_m3_patch_routing_uses_ascend_version_range(ascend_version, expected, en
 
     with (
         patch.object(module, "ENABLE_UCM_PATCH", enabled),
-        patch.object(module, "get_vllm_version", return_value="0.27.1"),
+        patch.object(module, "_read_vllm_version_raw", return_value=vllm_version),
         patch.object(
             module, "_read_vllm_ascend_version_raw", return_value=ascend_version
         ),
@@ -122,8 +106,9 @@ def test_m3_patch_routing_uses_ascend_version_range(ascend_version, expected, en
     assert (prefix + "v0260.vllm_ascend.minimax_m3_kv_transfer_patch" in imported) is (
         enabled and expected
     )
-    if ascend_version in {"0.26.1", "0.27.1", "0.28.0", "0.100.0", "1.0.0"}:
-        assert prefix + "v0260.vllm_ascend.cpu_binding_patch" not in imported
+    assert (prefix + "v0260.vllm_ascend.cpu_binding_patch" in imported) is (
+        enabled and expected
+    )
 
 
 def test_vllm_0271_is_an_explicitly_supported_patch_version():
