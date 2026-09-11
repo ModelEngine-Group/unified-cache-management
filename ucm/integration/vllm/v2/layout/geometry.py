@@ -218,7 +218,7 @@ def layer_structures(
     indexer k+scale, mamba states); normalized to a tuple up front.
     """
 
-    tensors = value if isinstance(value, (tuple, list)) else (value,)
+    tensors = tuple(value) if isinstance(value, (tuple, list)) else (value,)
     if state_snapshot:
         return state_structures(tensors, layer, num_blocks=num_blocks)
     return tuple(
