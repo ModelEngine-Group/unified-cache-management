@@ -36,6 +36,7 @@ public:
     Status Setup(int32_t deviceId);
     Status Reset(int32_t deviceId);
     Status Finalize();
+    static Status ResolvePhysicalDeviceId(int32_t logicalDeviceId, int32_t& physicalDeviceId);
     std::unique_ptr<Stream> MakeStream();
     std::shared_ptr<Stream> MakeSharedStream();
     std::shared_ptr<Stream> MakeIoAggregationStream();

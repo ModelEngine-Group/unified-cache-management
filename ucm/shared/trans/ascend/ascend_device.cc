@@ -63,6 +63,15 @@ Status Device::Finalize()
     return ret == ACL_SUCCESS ? Status::OK() : Status{ret, std::to_string(ret)};
 }
 
+Status Device::ResolvePhysicalDeviceId(int32_t logicalDeviceId, int32_t& physicalDeviceId)
+{
+    const auto ret = aclrtGetPhyDevIdByLogicDevId(logicalDeviceId, &physicalDeviceId);
+    return ret == ACL_SUCCESS
+               ? Status::OK()
+               : Status::Error(fmt::format("aclrtGetPhyDevIdByLogicDevId({}) returned {}",
+                                           logicalDeviceId, static_cast<int>(ret)));
+}
+
 std::unique_ptr<Stream> Device::MakeStream()
 {
     std::unique_ptr<Stream> stream = nullptr;

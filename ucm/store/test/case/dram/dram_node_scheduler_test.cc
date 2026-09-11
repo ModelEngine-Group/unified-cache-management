@@ -48,8 +48,7 @@ IoEntry Entry(std::uint8_t value)
 
 NodeEndpoint Endpoint(NodeId nodeId)
 {
-    return NodeEndpoint{nodeId, "127.0.0.1", static_cast<std::uint16_t>(10000 + nodeId),
-                        "127.0.0.1:" + std::to_string(20000 + nodeId)};
+    return NodeEndpoint{nodeId, "127.0.0.1:" + std::to_string(20000 + nodeId)};
 }
 
 NodeLimits Limits(std::size_t maxInflightRequests) { return NodeLimits{maxInflightRequests, 8}; }

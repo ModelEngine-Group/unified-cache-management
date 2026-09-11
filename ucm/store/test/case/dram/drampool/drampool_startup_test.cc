@@ -37,7 +37,7 @@
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
-#include "channels/tcp/tcp_message_channel.h"
+#include "core/transport_manager.h"
 #include "kv_protocol.h"
 #include "logger/logger.h"
 #endif
@@ -103,9 +103,6 @@ DramPoolConfig MakeValidConfig()
         "drampool",
         "--addr",
         "127.0.0.1:9000",
-        "--nics",
-        "mlx5_0",
-        "mlx5_1",
         "--pool-size-gb",
         "1",
         "--kvcache-block-sizes",
@@ -116,7 +113,7 @@ DramPoolConfig MakeValidConfig()
         "30",
     };
     DramPoolConfig config;
-    if (const auto status = ParseCommandLine(14, const_cast<char**>(argv), config);
+    if (const auto status = ParseCommandLine(11, const_cast<char**>(argv), config);
         status.Failure()) {
         throw std::runtime_error(status.ToString());
     }
@@ -125,12 +122,7 @@ DramPoolConfig MakeValidConfig()
         status.Failure()) {
         throw std::runtime_error(status.ToString());
     }
-    const auto originalLocalId = config.addr.ToString();
     config.addr.port = FindAvailableTcpPort();
-    const auto oneSidedPort = FindDistinctTcpPort(config.addr.port);
-    config.twoSidedToOneSided.erase(originalLocalId);
-    config.twoSidedToOneSided.emplace(config.addr.ToString(),
-                                      "127.0.0.1:" + std::to_string(oneSidedPort));
     return config;
 }
 
@@ -247,9 +239,6 @@ TEST(DramPoolConfigTest, ParsesLaunchOptions)
         "drampool",
         "--addr",
         "127.0.0.1:9000",
-        "--nics",
-        "mlx5_0",
-        "mlx5_1",
         "--pool-size-gb",
         "128",
         "--kvcache-block-sizes",
@@ -263,12 +252,11 @@ TEST(DramPoolConfigTest, ParsesLaunchOptions)
     };
     DramPoolConfig config;
 
-    const auto status = ParseCommandLine(16, const_cast<char**>(argv), config);
+    const auto status = ParseCommandLine(13, const_cast<char**>(argv), config);
 
     ASSERT_TRUE(status.Success()) << status.ToString();
     EXPECT_EQ(config.addr.host, "127.0.0.1");
     EXPECT_EQ(config.addr.port, 9000U);
-    EXPECT_EQ(config.nics, (std::vector<std::string>{"mlx5_0", "mlx5_1"}));
     EXPECT_EQ(config.poolSizeGb, 128U);
     EXPECT_EQ(config.poolBlockSizes, (std::vector<std::uint64_t>{4096, 8192}));
     EXPECT_EQ(config.poolBlockProportions, (std::vector<std::uint32_t>{1, 3}));
@@ -280,12 +268,12 @@ TEST(DramPoolConfigTest, ParsesLaunchOptions)
 TEST(DramPoolConfigTest, DefaultsBlockProportionsAndTtl)
 {
     const char* argv[] = {
-        "drampool",          "--addr=127.0.0.1:9000",      "--nics=mlx5_0",
-        "--pool-size-gb=64", "--kvcache-block-sizes=4096", "8192",
+        "drampool", "--addr=127.0.0.1:9000", "--pool-size-gb=64", "--kvcache-block-sizes=4096",
+        "8192",
     };
     DramPoolConfig config;
 
-    const auto status = ParseCommandLine(6, const_cast<char**>(argv), config);
+    const auto status = ParseCommandLine(5, const_cast<char**>(argv), config);
 
     ASSERT_TRUE(status.Success()) << status.ToString();
     EXPECT_EQ(config.poolBlockProportions, (std::vector<std::uint32_t>{1, 1}));
@@ -297,12 +285,14 @@ TEST(DramPoolConfigTest, DefaultsBlockProportionsAndTtl)
 TEST(DramPoolConfigTest, ResolvesGiBSlotCountsWithAlignedStride)
 {
     const char* argv[] = {
-        "drampool",         "--addr=127.0.0.1:9000",      "--nics=mlx5_0",
-        "--pool-size-gb=1", "--kvcache-block-sizes=4097",
+        "drampool",
+        "--addr=127.0.0.1:9000",
+        "--pool-size-gb=1",
+        "--kvcache-block-sizes=4097",
     };
     DramPoolConfig config;
 
-    const auto status = ParseCommandLine(5, const_cast<char**>(argv), config);
+    const auto status = ParseCommandLine(4, const_cast<char**>(argv), config);
 
     ASSERT_TRUE(status.Success()) << status.ToString();
     EXPECT_EQ(config.poolSlotCounts, (std::vector<std::uint32_t>{258'111}));
@@ -311,17 +301,15 @@ TEST(DramPoolConfigTest, ResolvesGiBSlotCountsWithAlignedStride)
 TEST(DramPoolRuntimeConfigTest, LoadsRepositoryExample)
 {
     const char* argv[] = {
-        "drampool",       "--addr", "127.0.0.1:9000",        "--nics", "mlx5_0",
-        "--pool-size-gb", "1",      "--kvcache-block-sizes", "4096",
+        "drampool", "--addr", "127.0.0.1:9000", "--pool-size-gb", "1", "--kvcache-block-sizes",
+        "4096",
     };
     DramPoolConfig config;
-    ASSERT_TRUE(ParseCommandLine(9, const_cast<char**>(argv), config).Success());
+    ASSERT_TRUE(ParseCommandLine(7, const_cast<char**>(argv), config).Success());
 
     const auto status = ParseYamlConfig(RepositoryRuntimeConfigPath().string(), config);
 
     ASSERT_TRUE(status.Success()) << status.ToString();
-    ASSERT_EQ(config.twoSidedToOneSided.size(), 2U);
-    EXPECT_EQ(config.twoSidedToOneSided.at("127.0.0.1:9000"), "127.0.0.1:4501");
     EXPECT_EQ(config.requestQueueDepth, 65536U);
     EXPECT_EQ(config.completionQueueDepth, 65536U);
     EXPECT_EQ(config.requestReceiverIdleWaitUs, 100U);
@@ -346,13 +334,6 @@ TEST(DramPoolConfigTest, RejectsInvalidCommandLines)
         EXPECT_TRUE(ParseCommandLine(1, const_cast<char**>(argv), config).Failure());
     }
     {
-        const char* argv[] = {
-            "drampool", "--addr", "127.0.0.1:9000", "--pool-size-gb", "1", "--kvcache-block-sizes",
-            "4096"};
-        DramPoolConfig config;
-        EXPECT_TRUE(ParseCommandLine(7, const_cast<char**>(argv), config).Failure());
-    }
-    {
         const char* argv[] = {"drampool", "--config"};
         DramPoolConfig config;
         EXPECT_TRUE(ParseCommandLine(2, const_cast<char**>(argv), config).Failure());
@@ -361,24 +342,24 @@ TEST(DramPoolConfigTest, RejectsInvalidCommandLines)
         const char* argv[] = {
             "drampool",
             "--addr=127.0.0.1:9000",
-            "--nics=mlx5_0",
             "--pool-size-gb=1",
             "--kvcache-block-sizes=4096",
             "--config=first.yaml",
             "--config=second.yaml",
         };
         DramPoolConfig config;
-        const auto status = ParseCommandLine(7, const_cast<char**>(argv), config);
+        const auto status = ParseCommandLine(6, const_cast<char**>(argv), config);
         EXPECT_TRUE(status.Failure());
         EXPECT_NE(status.ToString().find("--config may be specified once"), std::string::npos);
     }
     {
         const char* argv[] = {
-            "drampool",         "--addr=127.0.0.1:9000",      "--nics=mlx5_0",
-            "--pool-size-gb=1", "--kvcache-block-sizes=4096", "--config=   ",
+            "drampool",         "--addr=127.0.0.1:9000",
+            "--pool-size-gb=1", "--kvcache-block-sizes=4096",
+            "--config=   ",
         };
         DramPoolConfig config;
-        const auto status = ParseCommandLine(6, const_cast<char**>(argv), config);
+        const auto status = ParseCommandLine(5, const_cast<char**>(argv), config);
         EXPECT_TRUE(status.Failure());
         EXPECT_NE(status.ToString().find("--config must not be blank"), std::string::npos);
     }
@@ -387,8 +368,6 @@ TEST(DramPoolConfigTest, RejectsInvalidCommandLines)
             "drampool",
             "--addr",
             "127.0.0.1:9000",
-            "--nics",
-            "mlx5_0",
             "--pool-size-gb",
             "1",
             "--kvcache-block-sizes",
@@ -400,21 +379,15 @@ TEST(DramPoolConfigTest, RejectsInvalidCommandLines)
             "0",
         };
         DramPoolConfig config;
-        EXPECT_TRUE(ParseCommandLine(14, const_cast<char**>(argv), config).Failure());
+        EXPECT_TRUE(ParseCommandLine(12, const_cast<char**>(argv), config).Failure());
     }
     {
         const char* argv[] = {
-            "drampool",
-            "--addr",
-            "127.0.0.1:9000",
-            "--nics",
-            "mlx5_0",
-            "--pool-size-gb=-1",
-            "--kvcache-block-sizes",
+            "drampool", "--addr", "127.0.0.1:9000", "--pool-size-gb=-1", "--kvcache-block-sizes",
             "4096",
         };
         DramPoolConfig config;
-        EXPECT_TRUE(ParseCommandLine(8, const_cast<char**>(argv), config).Failure());
+        EXPECT_TRUE(ParseCommandLine(6, const_cast<char**>(argv), config).Failure());
     }
     {
         const char* argv[] = {"drampool", "--pool-size-gb", "0"};
@@ -448,8 +421,6 @@ TEST(DramPoolConfigTest, RejectsInvalidCommandLines)
             "drampool",
             "--addr",
             "127.0.0.1:9000",
-            "--nics",
-            "mlx5_0",
             "--pool-size-gb",
             "1",
             "--kvcache-block-proportions",
@@ -459,17 +430,17 @@ TEST(DramPoolConfigTest, RejectsInvalidCommandLines)
             "8192",
         };
         DramPoolConfig config;
-        const auto status = ParseCommandLine(12, const_cast<char**>(argv), config);
+        const auto status = ParseCommandLine(10, const_cast<char**>(argv), config);
         EXPECT_TRUE(status.Failure());
         EXPECT_NE(status.ToString().find("must have the same length"), std::string::npos);
     }
     {
         const char* argv[] = {
-            "drampool",       "--addr", "127.0.0.1:bad",         "--nics", "mlx5_0",
-            "--pool-size-gb", "1",      "--kvcache-block-sizes", "4096",
+            "drampool", "--addr", "127.0.0.1:bad", "--pool-size-gb", "1", "--kvcache-block-sizes",
+            "4096",
         };
         DramPoolConfig config;
-        EXPECT_TRUE(ParseCommandLine(9, const_cast<char**>(argv), config).Failure());
+        EXPECT_TRUE(ParseCommandLine(7, const_cast<char**>(argv), config).Failure());
     }
 }
 
@@ -503,18 +474,16 @@ TEST(DramPoolServerTest, RequestReceiverLogsReceivedRequestFields)
         config.poolBlockProportions = {1};
         config.poolSlotCounts = {1};
         config.gcEnabled = false;
-        const transport::Endpoint clientControl{"127.0.0.1", FindDistinctTcpPort(config.addr.port)};
-        const auto clientOneSidedPort = FindDistinctTcpPort(config.addr.port, clientControl.port);
-        config.twoSidedToOneSided.emplace(clientControl.ToString(),
-                                          "127.0.0.1:" + std::to_string(clientOneSidedPort));
+        const transport::Endpoint clientEndpoint{"127.0.0.1",
+                                                 FindDistinctTcpPort(config.addr.port)};
         ScopedDramPoolConfig configScope(std::move(config));
 
         DramPoolServer server;
-        transport::TcpMessageChannel client;
+        transport::TransportManager client(clientEndpoint.ToString());
         ProtocolManager protocol;
         if (server.Init().Failure()) { ::_exit(1); }
         if (server.Start().Failure()) { ::_exit(2); }
-        if (client.Init(clientControl).Failure()) { ::_exit(3); }
+        if (client.Init().Failure()) { ::_exit(3); }
 
         KvLookupRequest request;
         request.opcode = OpType::LOOKUP;
@@ -526,7 +495,7 @@ TEST(DramPoolServerTest, RequestReceiverLogsReceivedRequestFields)
         const auto packedSize = protocol.GetPackedRequestSize(request.opcode, request);
         std::vector<std::uint8_t> packed(packedSize);
         if (protocol.PackRequest(packed.data(), request.opcode, request).Failure()) { ::_exit(4); }
-        if (client.Send(g_config.addr, packed.data(), packed.size()).Failure()) { ::_exit(5); }
+        if (client.Send(g_config.addr.ToString(), packed).Failure()) { ::_exit(5); }
 
         const auto expected =
             "RequestReceiver received request, request_id=" + std::to_string(kRequestId) +
@@ -649,12 +618,12 @@ TEST(DramPoolDaemonTest, ReturnsWhenRuntimeYamlIsMissing)
     {
         ScopedCurrentPath pathScope(emptyDirectory);
         const char* argv[] = {
-            "drampool",       "--addr", "127.0.0.1:19000",       "--nics", "mlx5_0",
-            "--pool-size-gb", "1",      "--kvcache-block-sizes", "4096",
+            "drampool", "--addr", "127.0.0.1:19000", "--pool-size-gb", "1", "--kvcache-block-sizes",
+            "4096",
         };
         DramPoolDaemon daemon;
 
-        EXPECT_EQ(daemon.Run(9, const_cast<char**>(argv)), 1);
+        EXPECT_EQ(daemon.Run(7, const_cast<char**>(argv)), 1);
     }
     std::filesystem::remove(emptyDirectory);
 }
@@ -664,9 +633,8 @@ TEST(DramPoolDaemonTest, ReturnsWhenConfiguredRuntimeYamlIsMissing)
     const auto missingPath =
         (std::filesystem::temp_directory_path() / "drampool_missing_explicit.yaml").string();
     std::vector<std::string> arguments = {
-        "drampool",       "--addr", "127.0.0.1:19000",       "--nics", "mlx5_0",
-        "--pool-size-gb", "1",      "--kvcache-block-sizes", "4096",   "--config",
-        missingPath,
+        "drampool", "--addr",   "127.0.0.1:19000", "--pool-size-gb", "1", "--kvcache-block-sizes",
+        "4096",     "--config", missingPath,
     };
     std::vector<char*> argv;
     argv.reserve(arguments.size());
@@ -690,9 +658,9 @@ TEST(DramPoolDaemonTest, RunsUntilSigtermAndShutsDownCleanly)
         std::filesystem::current_path(runtimeDirectory);
         const auto serviceEndpoint = "127.0.0.1:" + std::to_string(servicePort);
         std::vector<std::string> arguments = {
-            "drampool",        "--addr", serviceEndpoint,         "--nics", "mlx5_0",
-            "--pool-size-gb",  "1",      "--kvcache-block-sizes", "4096",   "--config",
-            runtimeConfigPath,
+            "drampool",       "--addr",   serviceEndpoint,
+            "--pool-size-gb", "1",        "--kvcache-block-sizes",
+            "4096",           "--config", runtimeConfigPath,
         };
         std::vector<char*> argv;
         argv.reserve(arguments.size());

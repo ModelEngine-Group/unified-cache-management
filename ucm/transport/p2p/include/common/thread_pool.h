@@ -20,46 +20,35 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * */
+ */
+
 #pragma once
 
-#include <cstdint>
-#include <map>
+#include <cstddef>
+#include <functional>
 #include <memory>
-#include <string>
-#include "acl/acl.h"
-#include "core/transport.h"
-
-namespace hixl {
-class Hixl;
-}
+#include "status/status.h"
 
 namespace transport {
 
-// Owns the resources of one HIXL engine. Calls into the engine are made by HixlTransport.
-class HixlInstance final {
+class ThreadPool final {
 public:
-    HixlInstance(Endpoint local_endpoint, int32_t device_id);
-    ~HixlInstance();
+    using Task = std::function<void()>;
 
-    HixlInstance(const HixlInstance&) = delete;
-    HixlInstance& operator=(const HixlInstance&) = delete;
+    explicit ThreadPool(std::size_t max_threads = 0);
+    ~ThreadPool();
 
-    Status Initialize(const std::map<std::string, std::string>& options);
-    void Finalize();
+    ThreadPool(const ThreadPool&) = delete;
+    ThreadPool& operator=(const ThreadPool&) = delete;
 
-    hixl::Hixl& Engine();
-    aclrtContext Context() const;
-    const Endpoint& LocalEndpoint() const;
-    int32_t LogicalDeviceId() const;
-    int32_t PhysicalDeviceId() const;
+    UC::Status Submit(Task task);
+    void Shutdown();
 
 private:
-    Endpoint local_endpoint_;
-    int32_t device_id_ = -1;
-    int32_t physical_device_id_ = -1;
-    aclrtContext context_ = nullptr;
-    std::unique_ptr<hixl::Hixl> engine_;
+    struct State;
+    static void RunWorker(const std::shared_ptr<State>& state);
+
+    std::shared_ptr<State> state_;
 };
 
 }  // namespace transport
