@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import math
 import os
-import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from vllm.model_executor.models.utils import extract_layer_index
 from vllm.v1.kv_cache_interface import (
     KVCacheSpecKind,
     get_kv_cache_spec_kind,
@@ -130,11 +130,6 @@ class UCMKVCacheSpec:
             for group in self.groups
             for layer in group.layers
         }
-
-
-def _layer_index(layer_name: str, fallback: int) -> int:
-    match = re.search(r"(?:layers|layer)\.(\d+)", layer_name)
-    return int(match.group(1)) if match else fallback
 
 
 def _concrete_specs(
@@ -321,7 +316,7 @@ def parse_kv_cache_config(
             if KVCacheSpecKind.MAMBA in kinds or not kinds.isdisjoint(_SLIDING_KINDS):
                 continue
             for fallback, (name, concrete_spec) in enumerate(concrete):
-                attention_compress_ratio_by_layer[_layer_index(name, fallback)] = (
+                attention_compress_ratio_by_layer[extract_layer_index(name)] = (
                     _spec_compress_ratio(concrete_spec)
                 )
     num_blocks = int(getattr(kv_cache_config, "num_blocks", 0))
@@ -353,7 +348,7 @@ def parse_kv_cache_config(
             layers.append(
                 UCMLayerSpec(
                     name,
-                    _layer_index(name, index),
+                    extract_layer_index(name),
                     spec,
                     storage_block_size,
                     num_blocks,
@@ -368,7 +363,7 @@ def parse_kv_cache_config(
                 if name.lower().endswith("swa_cache"):
                     tail = window
                 else:
-                    layer_index = _layer_index(name, fallback)
+                    layer_index = extract_layer_index(name)
                     if layer_index not in attention_compress_ratio_by_layer:
                         raise ValueError(
                             "Cannot find matching full-attention compression ratio "

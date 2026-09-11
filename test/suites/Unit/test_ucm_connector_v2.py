@@ -91,6 +91,30 @@ vllm_base.KVConnectorWorkerMetadata = KVConnectorWorkerMetadata
 vllm_base.SupportsHMA = SupportsHMA
 sys.modules[vllm_base.__name__] = vllm_base
 
+vllm_model_utils = types.ModuleType("vllm.model_executor.models.utils")
+
+
+def extract_layer_index(layer_name, num_attn_module=1):
+    subnames = layer_name.split(".")
+    int_vals = []
+    for subname in subnames:
+        try:
+            int_vals.append(int(subname))
+        except ValueError:
+            continue
+    return int_vals[-1] if int_vals else 0
+
+
+vllm_model_utils.extract_layer_index = extract_layer_index
+vllm_model_executor = types.ModuleType("vllm.model_executor")
+vllm_model_executor.__path__ = []
+vllm_models = types.ModuleType("vllm.model_executor.models")
+vllm_models.__path__ = []
+sys.modules.setdefault("vllm.model_executor", vllm_model_executor)
+sys.modules.setdefault("vllm.model_executor.models", vllm_models)
+sys.modules.setdefault(vllm_model_utils.__name__, vllm_model_utils)
+
+
 vllm_kv_cache_interface = types.ModuleType("vllm.v1.kv_cache_interface")
 
 
