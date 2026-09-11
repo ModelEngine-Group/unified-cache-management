@@ -284,7 +284,8 @@ def state_structures(
             f"State spec for {layer.layer_name} must provide one dtype per shape"
         )
     content = sum(
-        math.prod(component_shape) * dtype_size(dtype)
+        # torch.dtype (and the test doubles) carry itemsize directly.
+        math.prod(component_shape) * dtype.itemsize
         for component_shape, dtype in zip(expected_shapes, dtypes, strict=True)
     )
     if content > payload:
@@ -302,9 +303,3 @@ def state_structures(
             bytes_per_state=content,
         ),
     )
-
-
-def dtype_size(dtype: "torch.dtype") -> int:
-    # torch.dtype carries itemsize; test doubles duck-type the same
-    # attribute, so no torch import is needed here.
-    return int(dtype.itemsize)
