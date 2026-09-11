@@ -50,7 +50,6 @@ class ComponentSlot:
         "rows_per_block",
         "states_per_row",
         "bytes_per_state",
-        "buffer_size_bytes",
     )
 
     def __init__(
@@ -61,7 +60,6 @@ class ComponentSlot:
         rows_per_block: int,
         states_per_row: int,
         bytes_per_state: int,
-        buffer_size_bytes: int,
     ) -> None:
         self.base_ptr = base_ptr
         self.block_stride = block_stride
@@ -69,7 +67,6 @@ class ComponentSlot:
         self.rows_per_block = rows_per_block
         self.states_per_row = states_per_row
         self.bytes_per_state = bytes_per_state
-        self.buffer_size_bytes = buffer_size_bytes
 
     @property
     def states_per_block(self) -> int:
@@ -98,7 +95,6 @@ class ComponentSlot:
             and self.rows_per_block == other.rows_per_block
             and self.states_per_row == other.states_per_row
             and self.bytes_per_state == other.bytes_per_state
-            and self.buffer_size_bytes == other.buffer_size_bytes
         )
 
 
@@ -171,26 +167,25 @@ def component(
     states_per_row: int
     bytes_per_state: int
     if state_snapshot:
+        # A state snapshot (mamba/SSM page) has no per-token axis: the
+        # whole row payload is one indivisible record.
         states_per_row = 1
         bytes_per_state = payload
     else:
-        # The stored-state axis is derived arithmetically from the block
-        # size: one block spans exactly expected_block_size states and
-        # the row payload must tile them evenly.  This answers both the
-        # Ascend 0.26 token-axis dialect (Kimi MLA: one logical block as
-        # dense kernel rows) and the vLLM 0.29 permuted [B, H, N, C]
-        # views (N counts stored states, e.g. DSV4's C4A compresses 4
-        # tokens into one 584B state) identically.
-        if expected_block_size % rows_per_block:
-            raise ValueError(
-                "KV tensor does not match a dense row-payload tiling of "
-                f"the block: shape={shape}, strides={strides}, "
-                f"rows_per_block={rows_per_block}, "
-                f"expected_block_size={expected_block_size}, "
-                f"row_payload={payload}"
-            )
-        states_per_row = expected_block_size // rows_per_block
-        if states_per_row <= 0 or payload % states_per_row:
+        # Map the spec's block size onto the view's rows.  A block spans
+        # exactly expected_block_size stored states -- one per token, or
+        # one per tokens_per_state on compressed caches (DSV4's C4A:
+        # 256-token block = 64 states of 584B).  States never straddle
+        # kernel rows, so each row holds expected_block_size //
+        # rows_per_block states, each payload // states_per_row bytes.
+        # One derivation covers the Ascend 0.26 token-axis dialect
+        # (Kimi MLA: one logical block as dense kernel rows) and the
+        # vLLM 0.29 permuted [B, H, N, C] views (N counts stored states)
+        # identically.
+        states_per_row, remainder = divmod(
+            expected_block_size, rows_per_block
+        )
+        if remainder or states_per_row <= 0 or payload % states_per_row:
             raise ValueError(
                 "KV tensor does not match a dense row-payload tiling of "
                 f"the block: shape={shape}, strides={strides}, "
@@ -206,7 +201,6 @@ def component(
         rows_per_block=rows_per_block,
         states_per_row=states_per_row,
         bytes_per_state=bytes_per_state,
-        buffer_size_bytes=(shape[0] - 1) * row_stride + payload,
     )
 
 
@@ -316,7 +310,6 @@ def state_structures(
             rows_per_block=1,
             states_per_row=1,
             bytes_per_state=content,
-            buffer_size_bytes=(num_blocks - 1) * page_stride + content,
         ),
     )
 
