@@ -33,7 +33,9 @@ from . import view
 from .view import Component, LAYOUT_DEBUG, layout_debug
 
 if TYPE_CHECKING:
-    from ..ucm_kv_cache import UCMKVCacheGroupInfo
+    import torch
+
+    from ..ucm_kv_cache import UCMKVCacheGroupInfo, UCMLayerSpec
 
 
 @dataclass(frozen=True)
@@ -71,7 +73,9 @@ class GroupLayout:
     """
 
     def __init__(
-        self, group: "UCMKVCacheGroupInfo", kv_caches: Mapping
+        self,
+        group: "UCMKVCacheGroupInfo",
+        kv_caches: "Mapping[str, torch.Tensor | tuple[torch.Tensor, ...] | list[torch.Tensor]]",
     ) -> None:
         self.group_id = group.group_id
         self.token_block_size = group.token_block_size
@@ -160,7 +164,7 @@ class GroupLayout:
 
     def _descriptor_spans(
         self,
-        ordered_layers: Sequence,
+        ordered_layers: "Sequence[UCMLayerSpec]",
         components_at: Mapping[str, tuple[Component, ...]],
     ) -> tuple[DescriptorSpan, ...]:
         """Block First special case; empty unless this group's layers tile
