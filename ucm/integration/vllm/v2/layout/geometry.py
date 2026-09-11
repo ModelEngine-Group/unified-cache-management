@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 import os
 import sys
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 # Debug trace for the v2 layout: set UCM_V2_LAYOUT_DEBUG=1 to log, on
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
     from ..ucm_kv_cache import UCMLayerSpec
 
 
+@dataclass(frozen=True, slots=True)
 class ComponentSlot:
     """One component's geometry, read straight off its runtime view.
 
@@ -42,30 +44,12 @@ class ComponentSlot:
     kernel row, ``rows_per_block`` rows).
     """
 
-    __slots__ = (
-        "base_ptr",
-        "block_stride",
-        "row_stride_bytes",
-        "rows_per_block",
-        "states_per_row",
-        "bytes_per_state",
-    )
-
-    def __init__(
-        self,
-        base_ptr: int,
-        block_stride: int,
-        row_stride_bytes: int,
-        rows_per_block: int,
-        states_per_row: int,
-        bytes_per_state: int,
-    ) -> None:
-        self.base_ptr = base_ptr
-        self.block_stride = block_stride
-        self.row_stride_bytes = row_stride_bytes
-        self.rows_per_block = rows_per_block
-        self.states_per_row = states_per_row
-        self.bytes_per_state = bytes_per_state
+    base_ptr: int
+    block_stride: int
+    row_stride_bytes: int
+    rows_per_block: int
+    states_per_row: int
+    bytes_per_state: int
 
     @property
     def states_per_block(self) -> int:
@@ -74,27 +58,6 @@ class ComponentSlot:
     @property
     def payload_bytes(self) -> int:
         return self.rows_per_block * self.states_per_row * self.bytes_per_state
-
-    def __repr__(self) -> str:
-        return (
-            f"ComponentSlot(base_ptr={self.base_ptr:#x}, "
-            f"block_stride={self.block_stride}, "
-            f"rows_per_block={self.rows_per_block}, "
-            f"states_per_row={self.states_per_row}, "
-            f"bytes_per_state={self.bytes_per_state})"
-        )
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, ComponentSlot):
-            return NotImplemented
-        return (
-            self.base_ptr == other.base_ptr
-            and self.block_stride == other.block_stride
-            and self.row_stride_bytes == other.row_stride_bytes
-            and self.rows_per_block == other.rows_per_block
-            and self.states_per_row == other.states_per_row
-            and self.bytes_per_state == other.bytes_per_state
-        )
 
 
 def row_payload_bytes(
