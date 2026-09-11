@@ -1,23 +1,39 @@
-组,指标名,类型,功能,埋点位置,实现方式
-A,drampool_dump_requests_total,Counter,DUMP请求量,task_worker.cc ProcessOneRequest() DUMP分支 L75,MetricsCount(+1)
-A,drampool_load_requests_total,Counter,LOAD请求量,task_worker.cc ProcessOneRequest() LOAD分支 L80,MetricsCount(+1)
-A,drampool_lookup_requests_total,Counter,LOOKUP请求量,task_worker.cc ProcessOneRequest() LOOKUP分支 L85,MetricsCount(+1)
-B,drampool_dump_bytes_total,Counter,DUMP成功预留字节数,task_worker.cc ProcessDump() entries循环 L128-146,循环内累加Σ entry.len 循环外一次MetricsCount
-B,drampool_dump_storebegin_failures_total,Counter,StoreBegin真失败计数（DuplicateKey为正常结果不计入）,task_worker.cc ProcessDump() L133-140,MetricsCount(+1)
-B,drampool_dump_submit_failures_total,Counter,传输提交失败计数,task_worker.cc ProcessDump() L159-168,MetricsCount(+1)
-B,drampool_dump_prepare_duration_ms,Histogram,DUMP准备阶段耗时（入口→ExecuteAsync返回 含驱逐重试）,task_worker.cc ProcessDump() 入口L95构造 L159-168失败分支Disarm,ScopedTimer RAII 仅成功路径观测
-C,drampool_load_bytes_total,Counter,LOAD成功传输字节数,task_worker.cc ProcessLoad() entries循环 L184-227,循环内累加Σ entry.len 循环外一次MetricsCount
-C,drampool_load_miss_entries_total,Counter,LoadBegin失败entry数（含长度不匹配 业务影响一致）,task_worker.cc ProcessLoad() L187-192,MetricsCount(+1)
-C,drampool_load_submit_failures_total,Counter,传输提交失败计数,task_worker.cc ProcessLoad() L221-230,MetricsCount(+1)
-C,drampool_load_prepare_duration_ms,Histogram,LOAD准备阶段耗时,task_worker.cc ProcessLoad() 入口L184构造 L221-230失败分支Disarm,ScopedTimer RAII
-D,drampool_lookup_hit_entries_total,Counter,LOOKUP命中entry数,task_worker.cc ProcessLookup() 扫描循环 L274-278,循环内累计hits 循环外一次上报
-D,drampool_lookup_miss_entries_total,Counter,LOOKUP未命中entry数,task_worker.cc ProcessLookup() L274-278,循环外一次上报（batch_size - hits）
-E,drampool_dump_transfer_duration_ms,Histogram,DUMP数据传输时长（终态时刻 - submit_ms）,completion_poller.cc SettleDataTransfer() 统一出口 L260,MetricsObserve(now - submit_ms) 一处覆盖三条终态路径
-E,drampool_load_transfer_duration_ms,Histogram,LOAD数据传输时长,completion_poller.cc SettleDataTransfer() 统一出口 L260,MetricsObserve 按opcode二选一
-E,drampool_dump_transfer_failures_total,Counter,DUMP传输终态非Completed计数,completion_poller.cc SettleDataTransfer() L260,MetricsCount(+1)
-E,drampool_load_transfer_failures_total,Counter,LOAD传输终态非Completed计数,completion_poller.cc SettleDataTransfer() L260,MetricsCount(+1)
-E,drampool_response_rtt_ms,Histogram,响应写回端到端RTT（发起→客户端flag落地）,completion_poller.cc PollResponseTransfer() Completed分支 L255后,MetricsObserve(now - submit_ms)
-E,drampool_response_transfer_failures_total,Counter,响应写回失败计数（GetStatus异常或Failed终态）,completion_poller.cc PollResponseTransfer() L228-233与L248-252,MetricsCount(+1)
-E,drampool_response_submit_failures_total,Counter,响应本地提交失败计数（Pack/ExecuteAsync失败）,completion_poller.cc SubmitResponse() L187-191与L205-211,MetricsCount(+1)
-F,drampool_metadata_entry_count,Gauge,元数据条目总数,drampool_server.cc GCThreadLoop() L552-561,MetricsSet(GetKeyCnt()) 覆盖写（接口已存在）
-F,drampool_buffer_pool_usage_ratio_<slot_size>,Gauge（动态注册）,各block size池用量占比,drampool_server.cc GCThreadLoop() L552-561 遍历poolBlockSizes,启动期按尺寸动态CreateStats + BufferManager.GetUsedSlotRatio()（新增原子记账）
+组,指标名,类型,功能（测什么/反映什么/怎么用）,埋点位置,实现方式
+A,drampool_dump_requests_total,Counter,测累计接收并处理的DUMP请求数（每请求+1 与batch内entry数无关）；反映写入负载规模；用于负载构成分析与写入侧rate类指标分母,task_worker.cc ProcessOneRequest() DUMP分支 L75,MetricsCount(+1)
+A,drampool_load_requests_total,Counter,测累计接收并处理的LOAD请求数；反映读取负载规模；作为读取侧rate类指标（miss/transfer时长）分母基准,task_worker.cc ProcessOneRequest() LOAD分支 L80,MetricsCount(+1)
+A,drampool_lookup_requests_total,Counter,测累计接收并处理的LOOKUP请求数；反映查询负载规模；作为换算单请求查询成本的分母,task_worker.cc ProcessOneRequest() LOOKUP分支 L85,MetricsCount(+1)
+B,drampool_dump_bytes_total,Counter,测成功预留缓冲的DUMP entry字节总量（重复写与分配失败不计 传输失败回滚不回退本计数）；反映DUMP吞吐规模（预留成功口径）；用于吞吐趋势/带宽推导/容量规划,task_worker.cc ProcessDump() entries循环 L128-146,循环内累加Σ entry.len 循环外一次MetricsCount
+B,drampool_dump_storebegin_failures_total,Counter,测StoreBegin真失败entry数（缓冲分配失败或分片注册失败 重复写为幂等正常结果不计入）；反映内存压力或元数据状态异常（内存不足的直接归因指标 §3.1第三类）；持续增长时结合G组allocate直方图区分两类原因,task_worker.cc ProcessDump() L133-140,MetricsCount(+1)
+B,drampool_dump_prepare_duration_ms,Histogram,测DUMP入口到传输提交完成的本地准备耗时（逐entry StoreBegin+缓冲分配+驱逐重试+提交 不含数据传输本身）；反映写入路径服务端CPU侧开销；P99高时用G组指标按阶段归因,task_worker.cc ProcessDump() 入口L95构造 L159-168失败分支Disarm,ScopedTimer RAII 仅成功路径观测
+C,drampool_load_bytes_total,Counter,测成功加引用的LOAD entry字节总量（未命中与长度不匹配不计）；反映LOAD吞吐规模（加引用成功口径）；用于读取吞吐趋势与读取带宽推导,task_worker.cc ProcessLoad() entries循环 L184-227,循环内累加Σ entry.len 循环外一次MetricsCount
+C,drampool_load_miss_entries_total,Counter,测LOAD未取到数据的entry数（key不存在/状态非READY/请求长度大于存储长度均计入 对客户端都是没取到）；反映读取未命中规模；突增说明读取了被驱逐/过期/尚未写完的数据,task_worker.cc ProcessLoad() L187-192,MetricsCount(+1)
+C,drampool_load_prepare_duration_ms,Histogram,测LOAD入口到传输提交完成的本地准备耗时（逐entry LoadBegin+长度校验+提交 不含传输）；反映读取路径服务端CPU侧开销；与G组loadbegin直方图联动归因,task_worker.cc ProcessLoad() 入口L184构造 L221-230失败分支Disarm,ScopedTimer RAII
+D,drampool_lookup_hit_entries_total,Counter,测LOOKUP中存在且READY（命中并刷新TTL lease）的entry数；反映查询命中规模；命中率的分子,task_worker.cc ProcessLookup() 扫描循环 L274-278,循环内累计hits 循环外一次上报
+D,drampool_lookup_miss_entries_total,Counter,测LOOKUP中不存在或非READY的entry数（batch_size−hits 每batch一次上报）；反映查询未命中规模；突增说明查询了被驱逐/过期的前缀 通常先于LOAD miss出现,task_worker.cc ProcessLookup() L274-278,循环外一次上报
+D,drampool_lookup_scan_duration_ms,Histogram,测每batch一次的LOOKUP元数据扫描总耗时（ΣExist+结果填充 不含响应写回）；反映LOOKUP服务端主体处理时长（LOOKUP无数据传输）；均值÷平均batch_size=单key查询成本 P99高=分片读锁竞争或lease刷新开销,task_worker.cc ProcessLookup() 扫描循环外层 L273构造 L284前析构,ScopedTimer RAII batch粒度 规避C3溢出
+E,drampool_dump_transfer_duration_ms,Histogram,测DUMP数据传输从提交（submit_ms）到终态（Completed/Failed/GetStatus异常）的异步耗时（涵盖网络与对端读取）；反映实际搬运能力；rate(bytes)/均值=传输带宽 与prepare相加近似DUMP服务端端到端,completion_poller.cc SettleDataTransfer() 统一出口 L260起,MetricsObserve(now - submit_ms) 一处覆盖三条终态路径
+E,drampool_load_transfer_duration_ms,Histogram,同上LOAD侧（池→客户端写入方向搬运时长）；反映读取侧搬运能力；带宽推导同上,completion_poller.cc SettleDataTransfer() 按opcode二选一,MetricsObserve
+E,drampool_transfer_failures_total,Counter,测数据传输以非Completed终态结束的请求数（DUMP/LOAD合并大类 §3.1第三类；Failed或GetStatus异常均计）；反映传输失败率；增长需排查对端网络/连接状态（与opcode无关 低频不细分）,completion_poller.cc SettleDataTransfer() 统一出口（terminalStatus != Completed DUMP/LOAD同点合并计数）,MetricsCount(+1)
+E,drampool_response_rtt_ms,Histogram,测响应传输提交成功（ExecuteAsync成功后写submit_ms）到写回客户端内存完成（Completed）的耗时（flag池排队与Pack在提交前 不在窗口内）；反映结果返回阶段的传输时延；P99高=对端写入慢或写回链路异常（flag池背压由retry_total/flag_pool_usage_ratio/inflight覆盖）,completion_poller.cc PollResponseTransfer() Completed分支 L255后（起点submit_ms L215）,MetricsObserve(now - submit_ms)
+E,drampool_response_failures_total,Counter,测响应返回链路失败计数（本地提交失败Pack/ExecuteAsync+写回传输失败 DUMP/LOAD合并大类 §3.1第三类 flag池NoSpace属重试不算）；反映结果返回通道健康度；增长锁定响应链路故障域 结合WARN日志定位提交/写回哪一环,completion_poller.cc SubmitResponse() L187-191与L205-211 + PollResponseTransfer() L228-233与L248-252 四点合并,MetricsCount(+1)
+E,drampool_submit_failures_total,Counter,测数据传输提交失败的请求数（DUMP/LOAD合并大类 §3.1第三类；ExecuteAsync失败或handle无效 LOAD侧整批已LoadEnd释放引用）；反映传输子系统提交路径健康度；增长指向传输子系统初始化/资源异常 客户端整批失败,task_worker.cc ProcessDump() L159-168 + ProcessLoad() L221-230 两点合并,MetricsCount(+1)
+F,drampool_metadata_entry_count,Gauge,测当前池内缓存条目（block）总数（1024分片求和）；反映元数据规模容量水位；增长斜率反映写入/驱逐平衡 配合usage_ratio判断驱逐压力区,drampool_server.cc GCThreadLoop() L552-561,MetricsSet(GetKeyCnt()) 覆盖写（接口已存在）
+F,drampool_buffer_pool_usage_ratio_<slot_size>,Gauge（动态注册 每block size一个）,测各block尺寸池已用槽位占比（used/slot count）；反映分尺寸内存水位；逼近1=该尺寸池即将触发驱逐重试（DUMP prepare抖动前兆） 容量规划第一信号,drampool_server.cc GCThreadLoop() L552-561 遍历poolBlockSizes,启动期按尺寸动态CreateStats + BufferManager.GetUsedSlotRatio()（新增原子记账）
+F,drampool_flag_pool_usage_ratio,Gauge,测flag响应缓冲池已用槽位占比（used/flagBufferSlotCount）；反映响应回填缓冲水位 逼近1=B2链（flag池NoSpace→response_buffer_retry）前兆信号；用于flag池扩容决策的交叉验证（此前无水位指标可查 §3.1第四类）,completion_poller.cc 调用点记账（§4.3）：SubmitResponse() Allocate成功（L164）+1 ReleaseResponseBuffer Free成功（L38）-1 PollPendingCompletions()每轮尾部上报,MetricsSet(flagSlotsUsed_/slotCount) 单线程普通size_t记账 无需atomic
+G,drampool_metadata_storebegin_duration_ms,Histogram,测每次MetadataManager::StoreBegin（每DUMP entry一次）的总耗时=缓冲分配（含驱逐重试）+分片注册；反映DUMP写路径元数据开销总视角；P99抬高时按allocate/register两阶段直方图归因,metadata.cc MetadataManager::StoreBegin() 入口（覆盖成功/失败/重试全程）,ScopedTimer RAII µs计时 以ms(double)入直方图
+G,drampool_metadata_allocate_duration_ms,Histogram,测StoreBegin内缓冲分配阶段耗时（首次Allocate NoSpace触发周期驱逐重试 再NoSpace触发深度驱逐重试 含驱逐耗时 与evict_sync嵌套）；反映拿到一块缓冲的真实成本；高且evict占比高=内存压力 高而evict占比低=共享BufferPool Allocate本身慢,metadata.cc MetadataManager::StoreBegin() 分配段独立作用域（L180-189对应段）,ScopedTimer RAII
+G,drampool_metadata_shard_register_duration_ms,Histogram,测StoreBegin内分片注册阶段耗时（ShardMetadata::StoreBegin：分片写锁+重复检查+双驱逐策略AddKey+map emplace 失败含回滚Free）；反映元数据注册成本；高=分片写锁竞争或LRU/TTL链表操作开销大,metadata.cc shards_[idx]->StoreBegin() 调用处（L196）,ScopedTimer RAII
+G,drampool_metadata_evict_sync_duration_ms,Histogram,测业务线程内同步驱逐单次耗时（StoreBegin分配NoSpace触发 含周期/深度两级）；反映驱逐对DUMP请求的直接拖慢（TaskWorker线程内执行 阻塞当前请求后续entry）；增长=内存压力直接信号 与usage_ratio交叉验证,metadata.cc MetadataManager::StoreBegin() 两处EvictOneShard调用处（L183/L187）,ScopedTimer RAII
+G,drampool_metadata_storeend_duration_ms,Histogram,测每次StoreEnd（DUMP传输Completed后entry INITIALIZED→READY）耗时（CompletionPoller线程执行）；反映DUMP终态结算成本；高=分片读锁竞争（GC每秒全分片扫描持读锁）,metadata.cc ShardMetadata::StoreEnd() 函数体（覆盖全部调用路径）,ScopedTimer RAII
+G,drampool_metadata_loadbegin_duration_ms,Histogram,测每次LoadBegin（查key+TryIncRef加引用+双驱逐策略AccessKey）耗时；反映LOAD读路径元数据开销；高=读锁竞争或策略AccessKey（LRU move-to-front/TTL更新）开销大,metadata.cc ShardMetadata::LoadBegin() 函数体,ScopedTimer RAII
+G,drampool_metadata_loadend_duration_ms,Histogram,测每次LoadEnd（TryDecRef减引用）耗时（出现在poller终态结算/len不匹配回滚/提交失败回滚三类路径）；反映引用释放成本（单次应近常数）；异常升高=锁竞争,metadata.cc ShardMetadata::LoadEnd() 函数体,ScopedTimer RAII
+G,drampool_metadata_evict_gc_duration_ms,Histogram,测后台GC每轮全分片驱逐扫描总耗时（PerformEvict整轮=1024 shard之和 每gcIntervalMs默认1s一轮）；反映GC对系统的持续开销；均值÷gcIntervalMs=GC线程占空比 高=频繁持锁干扰业务（storeend/loadbegin变慢的常见外因）,drampool_server.cc GCThreadLoop() PerformEvict()调用处（L554）,ScopedTimer RAII
+H,drampool_queue_request_enqueued_total,Counter,测累计成功进入requestQueue的请求数（TryPush成功+1）；反映接收侧入口流量（已入队待处理口径 与A组已开始处理相差排队数）；与dequeued差值=requestQueue当前排队数（§4.6恒等推导）,drampool_server.cc RequestReceiveLoop() TryPush成功后（L517）,MetricsCount
+H,drampool_queue_request_dequeued_total,Counter,测累计TaskWorker从requestQueue取出的请求数（TryPop成功+1）；反映TaskWorker消费速率；与enqueued组成SPSC无丢弃恒等式（排队数=入队-出队）,task_worker.cc Run() TryPop成功后（L49）,MetricsCount
+H,drampool_queue_request_full_total,Counter,测requestQueue满TryPush失败事件数（每次失败+1按次计）；反映接收线程被阻塞强度（阻塞时长≈full数×requestReceiverIdleWaitUs 100µs）；增长=TaskWorker消费跟不上或下游反压传导（阻塞链B1） 高概率压力场景核心告警信号,drampool_server.cc TryPush失败分支（L518-523 WARN处）,MetricsCount
+H,drampool_queue_request_enqueue_wait_ms,Histogram,测每请求从准备入队到TryPush成功的入队前等待时长（含满重试sleep 未排队≈0）；反映客户端可感知的接收背压延迟；P99抬高必伴随full_total增长 分位数估计单请求接收延迟,drampool_server.cc 入队重试循环外ScopedTimer（L516前构造）,ScopedTimer RAII
+H,drampool_queue_completion_enqueued_total,Counter,测累计成功进入completionQueue的完成记录数（Push自旋至成功恒+1）；反映完成流生产速率；与dequeued差值=completionQueue当前排队数,task_worker.cc SubmitCompletion() Push成功后（L326）,MetricsCount
+H,drampool_queue_completion_dequeued_total,Counter,测累计CompletionPoller从completionQueue取出的完成记录数（FillPendingWindow+1）；反映完成流消费速率；与enqueued组成恒等式（排队数=入队-出队）,completion_poller.cc FillPendingWindow() TryPop成功后（L71-72）,MetricsCount
+H,drampool_queue_completion_full_total,Counter,测completionQueue满SubmitCompletion被迫自旋等待事件数（Push前TryPush探测 失败+1后仍退回Push不改行为）；反映TaskWorker停摆位置与强度（既不取新请求也不响应stop）；增长=Poller消费不足 随后request_full连锁增长（阻塞链B3） 停摆无日志兜底 此指标为唯一观测手段,task_worker.cc SubmitCompletion() TryPush探测失败分支（L320-328微改造 §10-12）,MetricsCount + TryPush探测
+H,drampool_queue_completion_inflight,Gauge,测Poller pending窗口内在途完成记录数（等终态/等响应提交/等写回 每轮覆盖写）；反映完成链路第二级缓冲占用；持续逼近pollerPendingDepth（默认64）=拉取停摆 与completion_full互相印证,completion_poller.cc PollPendingCompletions() 每轮尾部,MetricsSet(pending_.size())
+H,drampool_queue_response_buffer_retry_total,Counter,测响应flag缓冲池NoSpace SubmitResponse留pending下轮重试事件数；反映响应缓冲供给不足（不阻塞Poller线程 但阻塞该请求响应提交）；增长=响应突发超slot供给或写回慢未释放槽位 与response_rtt_ms P99联动（缓冲链B2）,completion_poller.cc SubmitResponse() NoSpace分支（L166-172 WARN处）,MetricsCount
