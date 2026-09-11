@@ -70,14 +70,7 @@ def build_group_layouts(
         )
     descriptors = _parse_descriptors(kv_cache_tensors) if has_declarations else ()
     return {
-        group.group_id: GroupLayout(
-            group.group_id,
-            group.layers,
-            kv_caches,
-            token_block_size=group.token_block_size,
-            state_snapshot=group.is_state_snapshot,
-            descriptors=descriptors,
-        )
+        group.group_id: GroupLayout(group, kv_caches, descriptors=descriptors)
         for group in spec.groups
     }
 

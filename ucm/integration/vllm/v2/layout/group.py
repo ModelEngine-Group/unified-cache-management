@@ -27,9 +27,13 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from . import view
 from .view import Component, LAYOUT_DEBUG, layout_debug
+
+if TYPE_CHECKING:
+    from ..ucm_kv_cache import UCMKVCacheGroupInfo
 
 
 @dataclass(frozen=True)
@@ -68,16 +72,15 @@ class GroupLayout:
 
     def __init__(
         self,
-        group_id: int,
-        layers: Sequence,
+        group: "UCMKVCacheGroupInfo",
         kv_caches: Mapping,
         *,
-        token_block_size: int,
-        state_snapshot: bool = False,
         descriptors: Sequence[TensorDescriptor] = (),
     ) -> None:
-        self.group_id = group_id
-        self.token_block_size = token_block_size
+        self.group_id = group.group_id
+        self.token_block_size = group.token_block_size
+        state_snapshot = group.is_state_snapshot
+        layers = group.layers
         self.num_blocks = layers[0].num_blocks
         if self.num_blocks <= 0:
             raise ValueError("num_blocks must be positive")
@@ -143,7 +146,7 @@ class GroupLayout:
             offset = record
             for component in components:
                 divisor = math.gcd(
-                    component.states_per_block, token_block_size
+                    component.states_per_block, self.token_block_size
                 )
                 self.entries.append(
                     (
@@ -151,7 +154,7 @@ class GroupLayout:
                         component,
                         offset,
                         component.states_per_block // divisor,
-                        token_block_size // divisor,
+                        self.token_block_size // divisor,
                     )
                 )
                 offset += component.payload_bytes
@@ -159,10 +162,10 @@ class GroupLayout:
         self.record_size = record
         if LAYOUT_DEBUG:
             layout_debug(
-                f"group-layout group={group_id} "
+                f"group-layout group={self.group_id} "
                 f"layers={len(self.layer_names)} entries={len(self.entries)} "
                 f"descriptor-spans={len(self.descriptor_spans)} "
-                f"record_per_block={record} token_block={token_block_size}"
+                f"record_per_block={record} token_block={self.token_block_size}"
             )
 
     def _descriptor_spans(
