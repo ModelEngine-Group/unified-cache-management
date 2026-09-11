@@ -3212,3 +3212,11 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             Empty set if no load errors occurred.
         """
         return self.connector.get_block_ids_with_load_errors()
+
+    @_record_connector_interface_duration
+    def set_xfer_handshake_metadata_pp_aware(self, metadata) -> None:
+        logger.info(
+            "UCMConnector ignores PP-disaggregated handshake metadata: %s",
+            list(metadata.keys()),
+        )
+        return
