@@ -35,6 +35,7 @@ from vllm.model_executor.models.utils import extract_layer_index
 from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.outputs import KVConnectorOutput
+from vllm.v1.request import RequestStatus
 
 from ucm.integration.vllm.device import create_device, get_current_device_id
 from ucm.integration.vllm.metrics import (
@@ -1521,10 +1522,16 @@ class UCMDirectConnector(KVConnectorBase_V1):
     ) -> tuple[int, bool]:
         assert num_computed_tokens % self.block_size == 0
         hbm_hit_block_num = num_computed_tokens // self.block_size
+        if request.status == RequestStatus.PREEMPTED:
+            self.requests_meta.pop(request.request_id, None)
 
-        ucm_block_ids = self.generate_hash(
-            self.hash_block_size, request.all_token_ids, self._seed
-        )
+        if request.request_id not in self.requests_meta:
+            ucm_block_ids = self.generate_hash(
+                self.hash_block_size, request.all_token_ids, self._seed
+            )
+        else:
+            request_mate = self.requests_meta[request.request_id]
+            ucm_block_ids = request_mate.ucm_block_ids
 
         if (
             self.enable_record_traces
@@ -1547,7 +1554,26 @@ class UCMDirectConnector(KVConnectorBase_V1):
             )
             return 0, False
 
-        external_block_ids = ucm_block_ids[hbm_hit_block_num * self.cp_world_size :]
+        # Waiting-queue requests are re-checked often. Resume from the last
+        # previously-hit block only when this request is already in
+        # requests_meta AND hbm_hit_block_num did not decrease. Otherwise (first
+        # lookup, or HBM hit boundary moved) do a full prefix lookup from
+        # hbm_hit_block_num. If the last previously-hit block is gone, fall
+        # back to that same full lookup.
+        lookup_start_block_num = hbm_hit_block_num
+        resume_from_last_hit = False
+        if request.request_id in self.requests_meta:
+            req_meta = self.requests_meta[request.request_id]
+            if (
+                req_meta.hbm_hit_block_num <= hbm_hit_block_num
+                and req_meta.total_hit_block_num > hbm_hit_block_num
+            ):
+                lookup_start_block_num = req_meta.total_hit_block_num - 1
+                resume_from_last_hit = True
+
+        external_block_ids = ucm_block_ids[
+            lookup_start_block_num * self.cp_world_size :
+        ]
         external_hit_blocks = 0
         if external_block_ids:
             try:
@@ -1557,7 +1583,24 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     )
                     + 1
                 )
-                external_hit_blocks = external_hit_hashes // self.cp_world_size
+                if resume_from_last_hit and external_hit_hashes == 0:
+                    lookup_start_block_num = hbm_hit_block_num
+                    external_block_ids = ucm_block_ids[
+                        hbm_hit_block_num * self.cp_world_size :
+                    ]
+                    if external_block_ids:
+                        external_hit_hashes = (
+                            self._rank_consistency.lookup_on_prefix(
+                                self.store, external_block_ids
+                            )
+                            + 1
+                        )
+                    else:
+                        external_hit_hashes = 0
+                found_blocks = external_hit_hashes // self.cp_world_size
+                external_hit_blocks = (
+                    lookup_start_block_num - hbm_hit_block_num
+                ) + found_blocks
             except Exception as e:
                 logger.error(
                     f"request {request.request_id} look up error. {type(e).__name__}: {e}"
