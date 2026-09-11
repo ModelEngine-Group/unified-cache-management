@@ -216,6 +216,9 @@ def apply_all_patches() -> None:
             logger.info("UCM patching vllm for load-failure recovery...")
             import ucm.integration.vllm.patch.load_failure_patch
 
+            logger.info("UCM patching vllm MultiConnector policy propagation...")
+            import ucm.integration.vllm.patch.multi_connector_policy_patch
+
         # vllm_ascend patches
         # Disable CpuAlloc.bind_memory BEFORE any cpu_binding_patch so that
         # bind_memory is a no-op before bind_threads replacement is installed.

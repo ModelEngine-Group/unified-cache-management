@@ -37,6 +37,7 @@ from ucm.integration.vllm.ucm_connector import (
     _scheduler_read_block_size,
     _short_list,
     _use_ucm_connector_cpu_affinity,
+    validate_hybrid_kv_load_failure_policy,
 )
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmetrics
@@ -795,6 +796,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         role: KVConnectorRole,
         kv_cache_config: "KVCacheConfig",
     ):
+        validate_hybrid_kv_load_failure_policy(vllm_config)
         super().__init__(
             vllm_config=vllm_config, role=role, kv_cache_config=kv_cache_config
         )
