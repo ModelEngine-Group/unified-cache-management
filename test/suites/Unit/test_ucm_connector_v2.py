@@ -1278,9 +1278,9 @@ class RaggedLayoutTest(unittest.TestCase):
             num_blocks=8,
         )
 
-        view = layout.layers["model.layers.0.attn"].components[0]
+        _, component, _, _, _ = layout.group_layouts[0].entries[0]
         self.assertEqual(parsed.groups[0].token_block_size, 256)
-        self.assertEqual(view.states_per_row, 64)
+        self.assertEqual(component.states_per_row, 64)
 
     def test_combined_mamba_raw_page_uses_one_io_region(self):
         parsed = parse_kv_cache_config(
@@ -1318,12 +1318,9 @@ class RaggedLayoutTest(unittest.TestCase):
         # describes adds no addressing information.  The entry carries
         # the content (16B); the page padding (64-byte stride) stays
         # outside the record.
-        views = layout.layers["model.layers.0.mixer"].components
-        self.assertEqual(len(views), 1)
-        self.assertEqual(views[0].base_ptr, 0x1000)
         group_layout = layout.group_layouts[0]
         self.assertEqual(len(group_layout.entries), 1)
-        slot, component, offset, _, _ = group_layout.entries[0]
+        _, component, offset, _, _ = group_layout.entries[0]
         self.assertEqual(
             (component.base_ptr, component.block_stride, component.payload_bytes),
             (0x1000, 64, 16),
@@ -1375,17 +1372,14 @@ class RaggedLayoutTest(unittest.TestCase):
 
         self.assertEqual(
             tuple(
-                view.base_ptr
-                for view in layout.layers["model.layers.0.attn"].components
+                (layer_name, component.base_ptr)
+                for layer_name, component, _, _, _ in layout.group_layouts[0].entries
             ),
-            (0x1000, 0x2000),
-        )
-        self.assertEqual(
-            tuple(
-                view.base_ptr
-                for view in layout.layers["model.layers.1.attn"].components
+            (
+                ("model.layers.0.attn", 0x1000),
+                ("model.layers.0.attn", 0x2000),
+                ("model.layers.1.attn", 0x3000),
             ),
-            (0x3000,),
         )
         # One entry per component, straight from its view: layer 0's two
         # tensors, then layer 1's single 4-D view (trailing dims permuted,
@@ -2216,54 +2210,47 @@ class DeclaredLayoutModelTest(unittest.TestCase):
         )
         return parsed, caches, declarations
 
-    def test_declared_mode_matches_inferred_mode(self):
+    def test_declarations_only_feed_the_block_first_special_case(self):
+        # Layer-contiguous placements (layer_stride >= block_stride is
+        # false here: 96 > 12 means layer-outermost) do not tile block
+        # slots, so declarations change nothing: with or without them the
+        # entries and the records are identical.
         parsed, caches, declarations = self._fixture()
 
-        declared_layout = UCMKVCacheLayout(
+        declared = UCMKVCacheLayout(
             parsed,
             caches,
             num_blocks=8,
             kv_cache_tensors=declarations,
         )
-        inferred_layout = UCMKVCacheLayout(parsed, caches, num_blocks=8)
+        undeclared = UCMKVCacheLayout(parsed, caches, num_blocks=8)
 
-        self.assertEqual(declared_layout.model.slots, inferred_layout.model.slots)
-        self.assertEqual(len(declared_layout.model.descriptors), 1)
-        self.assertEqual(declared_layout.model.descriptors[0].layer_stride, 96)
-        self.assertEqual(
-            declared_layout.model.backings[0].base_ptr,
-            0x1000,
+        for group_id, declared_layout in declared.group_layouts.items():
+            undeclared_layout = undeclared.group_layouts[group_id]
+            self.assertEqual(declared_layout.entries, undeclared_layout.entries)
+            self.assertEqual(declared_layout.record_size, undeclared_layout.record_size)
+            self.assertEqual(declared_layout.descriptor_spans, ())
+
+    def test_disagreeing_block_stride_is_rejected(self):
+        parsed, caches, _ = self._fixture()
+        bad = (
+            SimpleNamespace(
+                size=192,
+                layers=("model.layers.0.attn", "model.layers.1.attn"),
+                offset=0,
+                layer_stride=96,
+                block_stride=13,
+            ),
         )
-
-    def test_describe_summarizes_placements(self):
-        parsed, caches, declarations = self._fixture()
-        layout = UCMKVCacheLayout(
-            parsed,
-            caches,
-            num_blocks=8,
-            kv_cache_tensors=declarations,
-        )
-
-        summary = layout.model.describe()
-        self.assertIn("[declared]", summary)
-        self.assertIn("8 blocks x 1 backing(s)", summary)
-        self.assertIn("layer_stride=96", summary)
-        self.assertIn("block_stride=12", summary)
-        # Both layers collapse into one geometry line.
-        self.assertIn("(2 layers)", summary)
-        self.assertIn("states/row=4", summary)
-        # Group addressing: one entry per layer, no descriptor spans (a
-        # layer-contiguous layout does not tile block slots).
-        self.assertIn("entries=2", summary)
-        self.assertIn("record/block=24", summary)
-        self.assertNotIn("descriptor-spans", summary)
+        with self.assertRaisesRegex(ValueError, "block stride"):
+            UCMKVCacheLayout(parsed, caches, num_blocks=8, kv_cache_tensors=bad)
 
     def test_assert_mode_is_retired(self):
         parsed, caches, declarations = self._fixture()
         previous = os.environ.get("UCM_V2_DESCRIPTOR_SOURCE")
         os.environ["UCM_V2_DESCRIPTOR_SOURCE"] = "assert"
         try:
-            with self.assertRaisesRegex(ValueError, "retired"):
+            with self.assertRaisesRegex(ValueError, "assert"):
                 UCMKVCacheLayout(
                     parsed,
                     caches,
@@ -2289,37 +2276,6 @@ class DeclaredLayoutModelTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "block stride"):
             UCMKVCacheLayout(parsed, caches, num_blocks=8, kv_cache_tensors=bad)
-
-    def test_disagreeing_layer_stride_is_rejected(self):
-        parsed, caches, _ = self._fixture()
-        bad = (
-            SimpleNamespace(
-                size=192,
-                layers=("model.layers.0.attn", "model.layers.1.attn"),
-                offset=0,
-                layer_stride=97,
-                block_stride=12,
-            ),
-        )
-        # A wrong stride breaks the page bounds first; both messages name the
-        # disagreement with the declared placement.
-        with self.assertRaisesRegex(ValueError, "declared"):
-            UCMKVCacheLayout(parsed, caches, num_blocks=8, kv_cache_tensors=bad)
-
-    def test_uncovered_layer_is_rejected(self):
-        parsed, caches, _ = self._fixture()
-        partial = (
-            SimpleNamespace(
-                size=192,
-                layers=("model.layers.0.attn",),
-                offset=0,
-                layer_stride=96,
-                block_stride=12,
-            ),
-        )
-        with self.assertRaisesRegex(ValueError, "No declared tensor covers"):
-            UCMKVCacheLayout(parsed, caches, num_blocks=8, kv_cache_tensors=partial)
-
 
 
 class RawConfigDumpTest(unittest.TestCase):

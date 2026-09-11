@@ -19,8 +19,8 @@ from vllm.v1.kv_cache_interface import (
     get_kv_cache_spec_kind,
 )
 
-from .layout import build_layout_model
-from .layout.model import LAYOUT_DEBUG, layout_debug
+from .layout import build_group_layouts
+from .layout.geometry import LAYOUT_DEBUG, layout_debug
 from .ucm_proxy import KVCacheValue, UCMProxyBatch
 
 if TYPE_CHECKING:
@@ -30,7 +30,6 @@ if TYPE_CHECKING:
         KVCacheSpec,
     )
 
-    from .layout.model import LayoutModel, LayerSlot
     from .layout.group import GroupLayout
     from .ucm_scheduler import UCMConnectorMetadata, UCMGroupDispatchPlan
 
@@ -430,31 +429,12 @@ class UCMKVCacheLayout:
             raise ValueError("num_blocks must be positive")
         self.spec = spec
         self.num_blocks = num_blocks
-        self.model: LayoutModel = build_layout_model(
+        self.group_layouts: Mapping[int, "GroupLayout"] = build_group_layouts(
             spec,
             kv_caches,
             num_blocks=num_blocks,
             kv_cache_tensors=kv_cache_tensors,
         )
-        if LAYOUT_DEBUG:
-            # One consolidated page describing every placement decision; the
-            # per-layer register lines follow from the builders.
-            for line in self.model.describe().splitlines():
-                layout_debug(line)
-
-    @property
-    def groups(self) -> Mapping[int, tuple["LayerSlot", ...]]:
-        return self.model.groups
-
-    @property
-    def layers(self) -> Mapping[str, "LayerSlot"]:
-        return self.model.slots
-
-    @property
-    def group_layouts(self) -> Mapping[int, "GroupLayout"]:
-        """Per-group addressing plans; queries only translate block IDs."""
-
-        return self.model.group_layouts
 
     def build_load_batches(
         self, metadata: "UCMConnectorMetadata", layer_name: str | None = None
@@ -541,7 +521,7 @@ class UCMKVCacheLayout:
                     if not group_info.tail_tokens:
                         continue
                     group_key_start = max(key_end - group_info.tail_tokens, 0)
-                group_layout = self.model.group_layouts[group_id]
+                group_layout = self.group_layouts[group_id]
                 if group_info.is_state_snapshot:
                     # A state snapshot lives in the last block of its range.
                     spans = group_layout.state_plan_range(

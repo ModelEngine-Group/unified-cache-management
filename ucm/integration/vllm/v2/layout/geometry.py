@@ -1,24 +1,31 @@
-"""Runtime-view geometry shared by the declared and inferred layout modes.
+"""View geometry: read addressing facts straight off the runtime views.
 
-Both modes must answer the same physical questions -- where a layer's
-components live, how kernel rows tile a block, what one block's contiguous
-IO region is -- and both answer them from the tensors that
-``register_kv_caches`` hands over.  The modes differ only in where the base
-addressing comes from (official declarations vs. synthesis), which this
-module deliberately does not know about.
-
-The semantic layer translates every spec spelling before it reaches here:
-``layer.storage_block_size`` is always the number of stored states one
-manager block spans (Ascend 0.26 reports it as ``block_size``, vLLM 0.29
-derives it as ``block_size // tokens_per_state``).
+The views vLLM hands over at ``register_kv_caches`` are the addressing
+source of truth -- each view's data_ptr/shape/stride already encodes
+where its layer's blocks sit (0.26: one allocation per view; 0.29: one
+packed backing, views strided per the declarations).  This module turns
+a view into a :class:`ComponentSlot`; the spec contributes the only two
+facts views cannot express: the token->state compression ratio and the
+state-page component layout.
 """
 
 from __future__ import annotations
 
 import math
+import os
+import sys
 from typing import TYPE_CHECKING
 
-from .model import ComponentSlot
+# Debug trace for the v2 layout: set UCM_V2_LAYOUT_DEBUG=1 to log, on
+# stderr, the group layout each group compiled to and which pointer each
+# dispatched vLLM block resolves to.  Zero cost when disabled.
+LAYOUT_DEBUG = os.environ.get("UCM_V2_LAYOUT_DEBUG", "0") not in ("", "0")
+
+
+def layout_debug(message: str) -> None:
+    if LAYOUT_DEBUG:
+        print(f"[ucm-v2-layout] {message}", file=sys.stderr, flush=True)
+
 
 if TYPE_CHECKING:
     import torch
@@ -27,27 +34,83 @@ if TYPE_CHECKING:
     from ..ucm_proxy import KVCacheValue
 
 
-def component_tensors(value: "KVCacheValue") -> tuple["torch.Tensor", ...]:
-    if isinstance(value, (tuple, list)):
-        if not value:
-            raise ValueError("KV cache component tuple must not be empty")
-        return tuple(value)
-    return (value,)
+class ComponentSlot:
+    """One component's geometry, read straight off its runtime view.
+
+    ``base_ptr`` is the view's block-0 address; block ``b`` starts at
+    ``base_ptr + b * block_stride`` and holds ``payload_bytes`` of
+    content (``states_per_row`` states of ``bytes_per_state`` bytes per
+    kernel row, ``rows_per_block`` rows).
+    """
+
+    __slots__ = (
+        "base_ptr",
+        "block_stride",
+        "row_stride_bytes",
+        "rows_per_block",
+        "states_per_row",
+        "bytes_per_state",
+        "buffer_size_bytes",
+    )
+
+    def __init__(
+        self,
+        base_ptr: int,
+        block_stride: int,
+        row_stride_bytes: int,
+        rows_per_block: int,
+        states_per_row: int,
+        bytes_per_state: int,
+        buffer_size_bytes: int,
+    ) -> None:
+        self.base_ptr = base_ptr
+        self.block_stride = block_stride
+        self.row_stride_bytes = row_stride_bytes
+        self.rows_per_block = rows_per_block
+        self.states_per_row = states_per_row
+        self.bytes_per_state = bytes_per_state
+        self.buffer_size_bytes = buffer_size_bytes
+
+    @property
+    def states_per_block(self) -> int:
+        return self.rows_per_block * self.states_per_row
+
+    @property
+    def payload_bytes(self) -> int:
+        return self.rows_per_block * self.states_per_row * self.bytes_per_state
+
+    def __repr__(self) -> str:
+        return (
+            f"ComponentSlot(base_ptr={self.base_ptr:#x}, "
+            f"block_stride={self.block_stride}, "
+            f"rows_per_block={self.rows_per_block}, "
+            f"states_per_row={self.states_per_row}, "
+            f"bytes_per_state={self.bytes_per_state})"
+        )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, ComponentSlot):
+            return NotImplemented
+        return (
+            self.base_ptr == other.base_ptr
+            and self.block_stride == other.block_stride
+            and self.row_stride_bytes == other.row_stride_bytes
+            and self.rows_per_block == other.rows_per_block
+            and self.states_per_row == other.states_per_row
+            and self.bytes_per_state == other.bytes_per_state
+            and self.buffer_size_bytes == other.buffer_size_bytes
+        )
 
 
 def row_payload_bytes(
     shape: tuple[int, ...], strides: tuple[int, ...], element_size: int
 ) -> int:
-    """Return one row's payload and reject non-dense trailing dimensions.
+    """One row's payload; rejects non-dense trailing dimensions.
 
-    The verified Ascend layouts may pad between rows, but each component payload
-    after dimension 0 is dense.  Copying ``stride(0)`` bytes would incorrectly
-    include another component (notably Kimi's shared Attention/Mamba page).
-
-    vLLM 0.29 views permute the trailing dims per the resolved KVCacheLayout
-    (e.g. LBNHC orders memory [B, N, H, C] while the view exposes [B, H, N, C]),
-    so a dense permutation of dims 1.. is accepted as well: sorted by stride,
-    consecutive dims must tile exactly (still rejects padding / foreign bytes).
+    The verified layouts may pad between rows, but each component's
+    payload after dimension 0 is dense (possibly a dense permutation of
+    dims 1.., as the vLLM 0.29 [B, H, N, C] views over [B, N, H, C]
+    memory).
     """
 
     expected_stride = 1
@@ -85,8 +148,6 @@ def component(
             "KV component views must be 2-D, 3-D, or 4-D, "
             f"got shape={shape}"
         )
-    if any(value <= 0 for value in shape):
-        raise ValueError(f"KV tensor dimensions must be positive, got shape={shape}")
     if shape[0] % num_blocks:
         raise ValueError(
             f"KV tensor first dimension {shape[0]} is not divisible by "
@@ -96,10 +157,6 @@ def component(
     strides = tuple(int(tensor.stride(index)) for index in range(len(shape)))
     row_stride = strides[0] * element_size
     payload = row_payload_bytes(shape, strides, element_size)
-    if row_stride < payload:
-        raise ValueError(
-            f"KV tensor row stride {row_stride} is smaller than payload {payload}"
-        )
     rows_per_block = shape[0] // num_blocks
     if rows_per_block > 1 and row_stride != payload:
         # Align-family layouts (mamba/state models, Kimi MLA) store a
@@ -117,17 +174,13 @@ def component(
         states_per_row = 1
         bytes_per_state = payload
     else:
-        # Views flatten (tokens-per-row, heads, dims) into dim-0 slices; the
-        # stored-state axis is derived arithmetically from the block size:
-        # one block spans exactly expected_block_size states and the row
-        # payload must tile them evenly.  Ascend 0.26 attention views keep
-        # the token axis on dimension 1 with C-order trailing dims (Kimi MLA
-        # stores one logical block as six kernel rows); vLLM 0.29 exposes
-        # permuted [B, H, N, C] views whose N axis counts *stored states*
-        # (DSV4's C4A cache stores one 584B state per 4 tokens).  The
-        # arithmetic reading answers both spellings identically -- the two
-        # agree whenever the dim-1 reading is valid at all -- so no probing
-        # is needed.
+        # The stored-state axis is derived arithmetically from the block
+        # size: one block spans exactly expected_block_size states and
+        # the row payload must tile them evenly.  This answers both the
+        # Ascend 0.26 token-axis dialect (Kimi MLA: one logical block as
+        # dense kernel rows) and the vLLM 0.29 permuted [B, H, N, C]
+        # views (N counts stored states, e.g. DSV4's C4A compresses 4
+        # tokens into one 584B state) identically.
         if expected_block_size % rows_per_block:
             raise ValueError(
                 "KV tensor does not match a dense row-payload tiling of "
@@ -157,14 +210,12 @@ def component(
     )
 
 
-def dtype_size(dtype: "torch.dtype") -> int:
-    itemsize = getattr(dtype, "itemsize", None)
-    if itemsize is not None:
-        return int(itemsize)
-    import importlib
-
-    torch = importlib.import_module("torch")
-    return int(torch.empty((), dtype=dtype).element_size())
+def component_tensors(value: "KVCacheValue") -> tuple["torch.Tensor", ...]:
+    if isinstance(value, (tuple, list)):
+        if not value:
+            raise ValueError("KV cache component tuple must not be empty")
+        return tuple(value)
+    return (value,)
 
 
 def layer_structures(
@@ -174,26 +225,10 @@ def layer_structures(
     num_blocks: int,
     state_snapshot: bool,
 ) -> tuple[ComponentSlot, ...]:
-    """Resolve one layer's components."""
+    """Resolve one layer's components (attention or state snapshot)."""
 
     if state_snapshot:
         return state_structures(value, layer, num_blocks=num_blocks)
-    return attention_structures(value, layer, num_blocks=num_blocks)
-
-
-def attention_structures(
-    value: "KVCacheValue",
-    layer: "UCMLayerSpec",
-    *,
-    num_blocks: int,
-) -> tuple[ComponentSlot, ...]:
-    """Resolve actual component containers without imposing a platform policy.
-
-    Ascend 0.26 hands over explicit K/V (and index/scale) tuples; vLLM 0.29
-    hands over one packed view per layer.  Both become one ComponentSlot per
-    tensor; higher-rank views are rejected by :func:`component`.
-    """
-
     tensors = component_tensors(value)
     return tuple(
         component(tensor, layer.storage_block_size, num_blocks=num_blocks)
@@ -209,13 +244,12 @@ def state_structures(
 ) -> tuple[ComponentSlot, ...]:
     """Resolve an explicit component tuple or one combined raw state page.
 
-    The combined page stays a single component: whole-block state IO is a
-    byte copy, so the conv/SSM split the spec describes adds no addressing
-    information.  Ascend 0.26 exposes C = the full padded page (payload ==
-    page_stride == page_size, padding at the tail); vLLM 0.29 exposes C =
-    the dense state content only (payload <= page_stride == page_size,
-    padding between blocks).  Either way the record carries the content
-    and the padding stays outside.
+    The combined page stays a single component: whole-block state IO is
+    a byte copy, so the conv/SSM split the spec describes adds no
+    addressing information.  Ascend 0.26 exposes C = the full padded
+    page (payload == page_stride == page_size, padding at the tail);
+    vLLM 0.29 exposes C = the dense state content only (payload <=
+    page_stride == page_size, padding between blocks).
     """
 
     tensors = component_tensors(value)
@@ -285,3 +319,13 @@ def state_structures(
             buffer_size_bytes=(num_blocks - 1) * page_stride + content,
         ),
     )
+
+
+def dtype_size(dtype: "torch.dtype") -> int:
+    itemsize = getattr(dtype, "itemsize", None)
+    if itemsize is not None:
+        return int(itemsize)
+    import importlib
+
+    torch = importlib.import_module("torch")
+    return int(torch.empty((), dtype=dtype).element_size())
