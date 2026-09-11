@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.machinery
+import importlib.resources
 import math
 import os
 import sys
@@ -73,7 +74,16 @@ class PosixAioTool(ToolAdapter):
     aliases = ("posix_aio",)
     description = "Run the POSIX AIO store test script."
     buildable = False
-    script_path = "ucm/store/test/e2e/posixstore_aio_test.py"
+
+    def _script(self) -> Path:
+        """Installed location of posixstore_aio_test.py (shipped by the ucm package)."""
+        try:
+            base = importlib.resources.files("ucm")
+        except ModuleNotFoundError as exc:
+            raise ScriptNotFoundError(
+                "ucm package not installed; install uc-manager first"
+            ) from exc
+        return Path(base) / "store" / "test" / "e2e" / "posixstore_aio_test.py"
 
     def add_run_args(self, parser: argparse.ArgumentParser) -> None:
         """Register POSIX AIO run arguments."""
@@ -233,7 +243,7 @@ class PosixAioTool(ToolAdapter):
         return env
 
     def _launch(self, forwarded_args: list[str]) -> int:
-        script = registry.resolve_repo_path(self.script_path or "")
+        script = self._script()
         if not script.exists():
             raise ScriptNotFoundError(str(script))
         env = self._make_env()
@@ -383,7 +393,7 @@ class PosixAioTool(ToolAdapter):
         else:
             forwarded = self._forward_args(args)
         if args.dry_run:
-            script = registry.resolve_repo_path(self.script_path or "")
+            script = self._script()
             cmd = [sys.executable, str(script), *forwarded]
             print("[dry-run] would run: " + " ".join(cmd))
             return 0
@@ -391,7 +401,11 @@ class PosixAioTool(ToolAdapter):
 
     def doctor(self, args: argparse.Namespace | None = None) -> int:
         """Inspect POSIX AIO script availability."""
-        script = registry.resolve_repo_path(self.script_path or "")
+        try:
+            script = self._script()
+        except ScriptNotFoundError as exc:
+            print(f"{self.name}: script MISSING ({exc})")
+            return 1
         status = "OK" if script.exists() else "MISSING"
         print(f"{self.name}: {script} {status}")
         return 0 if script.exists() else 1
