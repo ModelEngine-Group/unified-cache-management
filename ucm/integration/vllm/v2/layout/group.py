@@ -71,17 +71,11 @@ class GroupLayout:
     """
 
     def __init__(
-        self,
-        group: "UCMKVCacheGroupInfo",
-        kv_caches: Mapping,
-        *,
-        descriptors: Sequence[TensorDescriptor] = (),
+        self, group: "UCMKVCacheGroupInfo", kv_caches: Mapping
     ) -> None:
         self.group_id = group.group_id
         self.token_block_size = group.token_block_size
-        state_snapshot = group.is_state_snapshot
-        layers = group.layers
-        self.num_blocks = layers[0].num_blocks
+        self.num_blocks = group.layers[0].num_blocks
         if self.num_blocks <= 0:
             raise ValueError("num_blocks must be positive")
 
@@ -89,48 +83,42 @@ class GroupLayout:
         # of every layer is one whole-block entry read straight from its
         # view.  Declared layers cross-check their block stride (the one
         # exact consistency check between declarations and views).
-        descriptor_at = {
-            name: descriptor
-            for descriptor in descriptors
-            for name in descriptor.layers
-        }
         ordered_layers = sorted(
-            layers, key=lambda item: (item.layer_index, item.layer_name)
+            group.layers, key=lambda item: (item.layer_index, item.layer_name)
         )
         components_at: dict[str, tuple[Component, ...]] = {}
         for layer in ordered_layers:
             components = view.layer_structures(
                 kv_caches[layer.layer_name],
                 layer,
-                state_snapshot=state_snapshot,
+                state_snapshot=group.is_state_snapshot,
             )
             if not components:
                 raise ValueError(
                     f"Layer {layer.layer_name} registered no addressable view"
                 )
-            descriptor = descriptor_at.get(layer.layer_name)
-            if descriptor is not None:
+            if layer.descriptor is not None:
                 for component in components:
-                    if component.block_stride != descriptor.block_stride:
+                    if component.block_stride != layer.descriptor.block_stride:
                         raise ValueError(
                             f"Layer {layer.layer_name}: view block stride "
                             f"{component.block_stride} disagrees with the "
-                            f"declared {descriptor.block_stride}"
+                            f"declared {layer.descriptor.block_stride}"
                         )
             components_at[layer.layer_name] = components
 
         self.layer_names = [layer.layer_name for layer in ordered_layers]
         self.descriptor_spans = self._descriptor_spans(
-            ordered_layers, components_at, descriptors
+            ordered_layers, components_at
         )
         # Interleaved layouts: each layer's record span is its page slot
         # (layer_stride, paddings riding inside); otherwise the layer's
         # components' payloads.
         layer_spans = (
             {
-                name: descriptor.layer_stride
-                for descriptor in descriptors
-                for name in descriptor.layers
+                layer.layer_name: layer.descriptor.layer_stride
+                for layer in ordered_layers
+                if layer.descriptor is not None
             }
             if self.descriptor_spans
             else {}
@@ -172,19 +160,22 @@ class GroupLayout:
         self,
         ordered_layers: Sequence,
         components_at: Mapping[str, tuple[Component, ...]],
-        descriptors: Sequence[TensorDescriptor],
     ) -> tuple[DescriptorSpan, ...]:
         """Block First special case; empty unless this group's layers tile
         block slots under whole interleaved declarations."""
 
+        descriptors = []
+        seen = set()
+        for layer in ordered_layers:
+            if layer.descriptor is None or id(layer.descriptor) in seen:
+                continue
+            seen.add(id(layer.descriptor))
+            descriptors.append(layer.descriptor)
         if not descriptors:
             return ()
         grouped: dict[int, list[str]] = {}
         for layer in ordered_layers:
-            descriptor = next(
-                (d for d in descriptors if layer.layer_name in d.layers),
-                None,
-            )
+            descriptor = layer.descriptor
             components = components_at[layer.layer_name]
             if descriptor is None or len(components) != 1:
                 return ()

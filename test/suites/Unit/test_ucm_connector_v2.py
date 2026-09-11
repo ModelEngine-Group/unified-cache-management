@@ -236,8 +236,12 @@ def group(names, specs):
     return SimpleNamespace(layer_names=list(names), kv_cache_spec=spec)
 
 
-def config(*groups, num_blocks=8):
-    return SimpleNamespace(kv_cache_groups=list(groups), num_blocks=num_blocks)
+def config(*groups, num_blocks=8, tensors=()):
+    return SimpleNamespace(
+        kv_cache_groups=list(groups),
+        num_blocks=num_blocks,
+        kv_cache_tensors=tensors,
+    )
 
 
 def captured_spec(value, layer_name=""):
@@ -1714,26 +1718,10 @@ class RaggedLayoutTest(unittest.TestCase):
         # to one descriptor-sized span per block -- paddings riding inside
         # -- while layered and sub-block queries stay per-view exact and
         # address the very same record coordinates.
-        parsed = parse_kv_cache_config(
-            config(group(["model.layers.0.attn", "model.layers.1.attn"],
-                         {"model.layers.0.attn": FullAttentionSpec(256, 4),
-                          "model.layers.1.attn": FullAttentionSpec(256, 4)}),
-                   num_blocks=4),
-            scheduler_block_size=256,
-            device_type="cpu",
-        )
         num_blocks = 4
         page = 4096  # 64 states x 64B, dense
         layer_stride = page
         block_stride = 2 * page  # both layers' pages tile one slot
-        caches = {
-            "model.layers.0.attn": FakeTensor(
-                0x1000, (num_blocks, 64, 64), (block_stride, 64, 1)
-            ),
-            "model.layers.1.attn": FakeTensor(
-                0x1000 + page, (num_blocks, 64, 64), (block_stride, 64, 1)
-            ),
-        }
         declarations = (
             SimpleNamespace(
                 size=num_blocks * block_stride,
@@ -1743,9 +1731,23 @@ class RaggedLayoutTest(unittest.TestCase):
                 block_stride=block_stride,
             ),
         )
-        layout = UCMKVCacheLayout(
-            parsed, caches, kv_cache_tensors=declarations
+        parsed = parse_kv_cache_config(
+            config(group(["model.layers.0.attn", "model.layers.1.attn"],
+                         {"model.layers.0.attn": FullAttentionSpec(256, 4),
+                          "model.layers.1.attn": FullAttentionSpec(256, 4)}),
+                   num_blocks=4, tensors=declarations),
+            scheduler_block_size=256,
+            device_type="cpu",
         )
+        caches = {
+            "model.layers.0.attn": FakeTensor(
+                0x1000, (num_blocks, 64, 64), (block_stride, 64, 1)
+            ),
+            "model.layers.1.attn": FakeTensor(
+                0x1000 + page, (num_blocks, 64, 64), (block_stride, 64, 1)
+            ),
+        }
+        layout = UCMKVCacheLayout(parsed, caches)
         group_layout = layout.group_layouts[0]
         self.assertEqual(len(group_layout.descriptor_spans), 1)
         span = group_layout.descriptor_spans[0]
@@ -2176,26 +2178,9 @@ class RaggedLayoutTest(unittest.TestCase):
 class DeclaredLayoutModelTest(unittest.TestCase):
     """The declared mode must mirror vLLM's own packed-tensor placements."""
 
-    def _fixture(self):
-        parsed = parse_kv_cache_config(
-            config(
-                group(
-                    ["model.layers.0.attn", "model.layers.1.attn"],
-                    {
-                        "model.layers.0.attn": FullAttentionSpec(4),
-                        "model.layers.1.attn": FullAttentionSpec(4),
-                    },
-                )
-            ),
-            scheduler_block_size=4,
-            device_type="cpu",
-        )
-        # Two dense per-layer tensors, 12-byte blocks, 8 blocks each: the
-        # declared placement packs them 96 bytes apart in one backing.
-        caches = {
-            "model.layers.0.attn": FakeTensor(0x1000, (8, 4, 3), (12, 3, 1)),
-            "model.layers.1.attn": FakeTensor(0x1060, (8, 4, 3), (12, 3, 1)),
-        }
+    def _fixture(self, tensors=None):
+        # Two dense per-layer tensors, 12-byte blocks, 8 blocks each; the
+        # default declared placement packs them 96 bytes apart in one backing.
         declarations = (
             SimpleNamespace(
                 size=192,
@@ -2205,21 +2190,33 @@ class DeclaredLayoutModelTest(unittest.TestCase):
                 block_stride=12,
             ),
         )
-        return parsed, caches, declarations
+        parsed = parse_kv_cache_config(
+            config(
+                group(
+                    ["model.layers.0.attn", "model.layers.1.attn"],
+                    {
+                        "model.layers.0.attn": FullAttentionSpec(4),
+                        "model.layers.1.attn": FullAttentionSpec(4),
+                    },
+                ),
+                tensors=declarations if tensors is None else tensors,
+            ),
+            scheduler_block_size=4,
+            device_type="cpu",
+        )
+        caches = {
+            "model.layers.0.attn": FakeTensor(0x1000, (8, 4, 3), (12, 3, 1)),
+            "model.layers.1.attn": FakeTensor(0x1060, (8, 4, 3), (12, 3, 1)),
+        }
+        return parsed, caches
 
     def test_declarations_only_feed_the_block_first_special_case(self):
         # Layer-contiguous placements (layer_stride >= block_stride is
         # false here: 96 > 12 means layer-outermost) do not tile block
         # slots, so declarations change nothing: with or without them the
         # entries and the records are identical.
-        parsed, caches, declarations = self._fixture()
-
-        declared = UCMKVCacheLayout(
-            parsed,
-            caches,
-            kv_cache_tensors=declarations,
-        )
-        undeclared = UCMKVCacheLayout(parsed, caches)
+        declared = UCMKVCacheLayout(*self._fixture())
+        undeclared = UCMKVCacheLayout(*self._fixture(tensors=()))
 
         for group_id, declared_layout in declared.group_layouts.items():
             undeclared_layout = undeclared.group_layouts[group_id]
@@ -2228,7 +2225,6 @@ class DeclaredLayoutModelTest(unittest.TestCase):
             self.assertEqual(declared_layout.descriptor_spans, ())
 
     def test_disagreeing_block_stride_is_rejected(self):
-        parsed, caches, _ = self._fixture()
         bad = (
             SimpleNamespace(
                 size=192,
@@ -2239,39 +2235,19 @@ class DeclaredLayoutModelTest(unittest.TestCase):
             ),
         )
         with self.assertRaisesRegex(ValueError, "block stride"):
-            UCMKVCacheLayout(parsed, caches, kv_cache_tensors=bad)
+            UCMKVCacheLayout(*self._fixture(tensors=bad))
 
     def test_assert_mode_is_retired(self):
-        parsed, caches, declarations = self._fixture()
         previous = os.environ.get("UCM_V2_DESCRIPTOR_SOURCE")
         os.environ["UCM_V2_DESCRIPTOR_SOURCE"] = "assert"
         try:
             with self.assertRaisesRegex(ValueError, "assert"):
-                UCMKVCacheLayout(
-                    parsed,
-                    caches,
-                    kv_cache_tensors=declarations,
-                )
+                UCMKVCacheLayout(*self._fixture())
         finally:
             if previous is None:
                 os.environ.pop("UCM_V2_DESCRIPTOR_SOURCE", None)
             else:
                 os.environ["UCM_V2_DESCRIPTOR_SOURCE"] = previous
-
-    def test_disagreeing_block_stride_is_rejected(self):
-        parsed, caches, _ = self._fixture()
-        bad = (
-            SimpleNamespace(
-                size=192,
-                layers=("model.layers.0.attn", "model.layers.1.attn"),
-                offset=0,
-                layer_stride=96,
-                block_stride=13,
-            ),
-        )
-        with self.assertRaisesRegex(ValueError, "block stride"):
-            UCMKVCacheLayout(parsed, caches, kv_cache_tensors=bad)
-
 
 class RawConfigDumpTest(unittest.TestCase):
     """UCM_V2_DUMP_CONFIG serializes the raw KVCacheConfig vLLM handed over."""

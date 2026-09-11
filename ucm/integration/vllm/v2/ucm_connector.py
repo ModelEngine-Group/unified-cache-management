@@ -205,12 +205,13 @@ def _dump_raw_kv_cache_config(kv_cache_config: Any, rank: int | None) -> None:
                 "kv_cache_spec": _jsonable(group.kv_cache_spec),
             }
         )
+    tensors = [
+        _jsonable(tensor)
+        for tensor in getattr(kv_cache_config, "kv_cache_tensors", ()) or ()
+    ]
     payload = {
         "num_blocks": int(getattr(kv_cache_config, "num_blocks", 0)),
-        "kv_cache_tensors": [
-            _jsonable(tensor)
-            for tensor in getattr(kv_cache_config, "kv_cache_tensors", ()) or ()
-        ],
+        "kv_cache_tensors": tensors,
         "kv_cache_groups": groups,
         "prefix_cache_retention_interval": int(
             getattr(kv_cache_config, "prefix_cache_retention_interval", 0) or 0
@@ -222,7 +223,7 @@ def _dump_raw_kv_cache_config(kv_cache_config: Any, rank: int | None) -> None:
     print(
         f"[ucm-v2] raw KVCacheConfig dumped to {path} "
         f"(num_blocks={payload['num_blocks']}, "
-        f"tensors={len(payload['kv_cache_tensors'])}, "
+        f"tensors={len(tensors)}, "
         f"groups={len(groups)})",
         flush=True,
     )
@@ -316,11 +317,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
     def register_kv_caches(self, kv_caches: dict[str, "torch.Tensor"]) -> None:
         if self.context.role != KVConnectorRole.WORKER:
             raise RuntimeError("KV cache registration is only available on worker")
-        self.layout = UCMKVCacheLayout(
-            self.spec,
-            kv_caches,
-            kv_cache_tensors=getattr(self._kv_cache_config, "kv_cache_tensors", ()),
-        )
+        self.layout = UCMKVCacheLayout(self.spec, kv_caches)
         self._proxy.register_tensors(kv_caches)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs: Any) -> None:

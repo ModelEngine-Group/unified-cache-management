@@ -9,6 +9,7 @@ model to produce proxy batches with deterministic record offsets.
 from __future__ import annotations
 
 import math
+import os
 import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -20,7 +21,8 @@ from vllm.v1.kv_cache_interface import (
 )
 
 from .layout import build_group_layouts
-from .layout.geometry import LAYOUT_DEBUG, layout_debug
+from .layout.group import TensorDescriptor
+from .layout.view import LAYOUT_DEBUG, layout_debug
 from .ucm_proxy import KVCacheValue, UCMProxyBatch
 
 if TYPE_CHECKING:
@@ -46,6 +48,10 @@ class UCMLayerSpec:
     kv_cache_spec: "KVCacheSpec"
     storage_block_size: int
     num_blocks: int
+    # 0.29 placement: the declaration covering this layer and the
+    # layer's position in it; None on 0.26 (per-tensor overlay).
+    descriptor: "TensorDescriptor | None" = None
+    descriptor_position: int = 0
 
 
 @dataclass(frozen=True)
@@ -157,6 +163,8 @@ def _spec_compress_ratio(spec: "KVCacheSpec") -> int:
     value = getattr(spec, "compress_ratio", None)
     if value is None:
         value = getattr(spec, "tokens_per_state", 1)
+    if value is None:
+        return 1
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -188,6 +196,39 @@ def _classify(
     return kinds, is_c4a
 
 
+def _parse_descriptors(
+    kv_cache_tensors: "Sequence[object]",
+) -> tuple[tuple["TensorDescriptor", ...], dict[str, tuple["TensorDescriptor", int]]]:
+    """Mirror vLLM 0.29 kv_cache_tensors; undeclared configs yield ()."""
+
+    descriptors: list["TensorDescriptor"] = []
+    declared_at: dict[str, tuple["TensorDescriptor", int]] = {}
+    for entry in kv_cache_tensors:
+        layers = tuple(str(name) for name in getattr(entry, "layers", ()) or ())
+        if not layers:
+            raise ValueError("A declared KV cache tensor covers no layers")
+        descriptor = TensorDescriptor(
+            layers=layers,
+            offset=int(getattr(entry, "offset", 0)),
+            layer_stride=int(getattr(entry, "layer_stride")),
+            block_stride=int(getattr(entry, "block_stride")),
+        )
+        if (
+            descriptor.offset < 0
+            or descriptor.layer_stride < 0
+            or descriptor.block_stride <= 0
+        ):
+            raise ValueError(f"Invalid declared placement: {descriptor}")
+        for position, name in enumerate(layers):
+            if name in declared_at:
+                raise ValueError(
+                    f"Layer {name} is covered by more than one declared tensor"
+                )
+            declared_at[name] = (descriptor, position)
+        descriptors.append(descriptor)
+    return tuple(descriptors), declared_at
+
+
 def parse_kv_cache_config(
     kv_cache_config: "KVCacheConfig",
     *,
@@ -197,6 +238,23 @@ def parse_kv_cache_config(
 ) -> UCMKVCacheSpec:
     """Describe logical groups and per-layer storage from KVCacheConfig."""
 
+    source = os.environ.get("UCM_V2_DESCRIPTOR_SOURCE", "auto").strip().lower()
+    source = source or "auto"
+    if source not in ("auto", "declared"):
+        raise ValueError(f"Unknown UCM_V2_DESCRIPTOR_SOURCE={source!r}")
+    kv_cache_tensors = tuple(
+        getattr(kv_cache_config, "kv_cache_tensors", ()) or ()
+    )
+    has_declarations = bool(kv_cache_tensors) and all(
+        getattr(tensor, "layers", None) is not None for tensor in kv_cache_tensors
+    )
+    if source == "declared" and not has_declarations:
+        raise ValueError(
+            "UCM_V2_DESCRIPTOR_SOURCE=declared requires declared tensors"
+        )
+    _, declared_at = _parse_descriptors(
+        kv_cache_tensors if has_declarations else ()
+    )
     raw_groups = tuple(getattr(kv_cache_config, "kv_cache_groups", ()))
     if not raw_groups:
         raise ValueError("kv_cache_config.kv_cache_groups must not be empty")
@@ -266,6 +324,7 @@ def parse_kv_cache_config(
                 attention_compress_ratio_by_layer[_layer_index(name, fallback)] = (
                     _spec_compress_ratio(concrete_spec)
                 )
+    num_blocks = int(getattr(kv_cache_config, "num_blocks", 0))
     for group_id, (raw_group, concrete, kinds, is_c4a) in enumerate(classified):
         representative = concrete[0][1] if concrete else raw_group.kv_cache_spec
         physical_block_size = int(getattr(raw_group.kv_cache_spec, "block_size"))
@@ -276,7 +335,6 @@ def parse_kv_cache_config(
             else physical_block_size
         )
         hash_block_size = canonical_size if dsv4 else physical_block_size
-        num_blocks = int(getattr(kv_cache_config, "num_blocks", 0))
         layers: list[UCMLayerSpec] = []
         for index, (name, spec) in enumerate(concrete):
             # Normalize to the number of stored states one manager block
@@ -299,6 +357,7 @@ def parse_kv_cache_config(
                     spec,
                     storage_block_size,
                     num_blocks,
+                    *(declared_at.get(name, (None, 0))),
                 )
             )
         tail_tokens: int | None = None
@@ -424,14 +483,10 @@ class UCMKVCacheLayout:
         self,
         spec: UCMKVCacheSpec,
         kv_caches: Mapping[str, KVCacheValue],
-        *,
-        kv_cache_tensors: Sequence[object] = (),
     ) -> None:
         self.spec = spec
         self.group_layouts: Mapping[int, "GroupLayout"] = build_group_layouts(
-            spec,
-            kv_caches,
-            kv_cache_tensors=kv_cache_tensors,
+            spec, kv_caches
         )
 
     def build_load_batches(
