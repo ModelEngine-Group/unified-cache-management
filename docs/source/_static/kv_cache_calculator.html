@@ -103,10 +103,11 @@
                             <input type="number" id="tp" class="form-input" value="1" min="1">
                         </div>
 
-                        <!-- Data Parallelism -->
+                        <!-- vLLM Block Size -->
                         <div class="form-group">
-                            <label class="form-label">Data Parallelism (DP)</label>
-                            <input type="number" id="dp" class="form-input" value="1" min="1">
+                            <label class="form-label">vLLM Block Size</label>
+                            <input type="number" id="block-size" class="form-input" value="128" min="1">
+                            <div class="text-sm text-secondary mt-1" style="font-size: 0.75rem; color: var(--text-secondary);">Hash / allocation granularity (default 128)</div>
                         </div>
                     </div>
 
@@ -147,13 +148,16 @@
                         <select id="hybrid-model-select" class="form-select" onchange="onHybridModelSelect()">
                             <option value="deepseek-ai/DeepSeek-V4-Pro">DeepSeek V4 Pro</option>
                             <option value="deepseek-ai/DeepSeek-V4-Flash">DeepSeek V4 Flash</option>
+                            <option value="Qwen/Qwen3.6-35B-A3B">Qwen3.6-35B-A3B</option>
+                            <option value="Qwen/Qwen3.6-27B">Qwen3.6-27B</option>
+                            <option value="moonshot/Kimi-K3">Kimi-K3</option>
                         </select>
                     </div>
 
                     <!-- Deployment Method (instead of Data Type) -->
                     <div class="form-group">
                         <label class="form-label">Deployment Method</label>
-                        <select id="hybrid-deployment" class="form-select" onchange="currentDeployment = this.value;">
+                        <select id="hybrid-deployment" class="form-select" onchange="currentDeployment = this.value; updateHybridBlockSizeOptions();">
                             <option value="vllm">vLLM</option>
                             <option value="vllm-ascend">vLLM-Ascend</option>
                         </select>
@@ -182,10 +186,34 @@
                             <input type="number" id="hybrid-tp" class="form-input" value="1" min="1">
                         </div>
 
-                        <!-- Data Parallelism -->
+                        <!-- Chunk Prefill Size (linear-attention models) -->
                         <div class="form-group">
-                            <label class="form-label">Data Parallelism (DP)</label>
-                            <input type="number" id="hybrid-dp" class="form-input" value="1" min="1">
+                            <label class="form-label">Chunk Prefill Size</label>
+                            <input type="number" id="hybrid-chunk-prefill" class="form-input" value="2048" min="1">
+                            <div class="text-sm text-secondary mt-1" style="font-size: 0.75rem; color: var(--text-secondary);">Set by the vLLM --max-num-batched-tokens argument</div>
+                        </div>
+                    </div>
+
+                    <!-- Input Parameters Row 3 (DeepSeek V4 specific; shown/hidden by JS) -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 0.75rem;">
+                        <!-- vLLM Block Size (DS V4 only) -->
+                        <div class="form-group" id="hybrid-vllm-block-size-group" style="display: none;">
+                            <label class="form-label">vLLM Block Size</label>
+                            <select id="hybrid-base-block-size" class="form-select">
+                                <option value="32">32</option>
+                                <option value="64">64</option>
+                                <option value="128" selected>128</option>
+                                <option value="256">256</option>
+                            </select>
+                        </div>
+
+                        <!-- MTP Toggle (models with mtp_supported only) -->
+                        <div class="form-group" id="hybrid-mtp-group" style="display: none;">
+                            <label class="form-label">MTP</label>
+                            <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.8rem; color: var(--text-primary); padding: 0.5rem 0;">
+                                <input type="checkbox" id="hybrid-mtp" checked style="width: 16px; height: 16px; cursor: pointer; accent-color: var(--accent-primary);">
+                                <span>Enabled</span>
+                            </label>
                         </div>
                     </div>
 
