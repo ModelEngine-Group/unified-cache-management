@@ -69,7 +69,7 @@ if TYPE_CHECKING:
     from vllm.forward_context import ForwardContext
     from vllm.v1.core.kv_cache_manager import KVCacheBlocks
     from vllm.v1.kv_cache_interface import KVCacheConfig
-    from vllm.v1.request import Request
+    from vllm.v1.request import Request, RequestStatus
 
 from ucm.sparse.state import has_ucm_sparse
 
@@ -1797,15 +1797,21 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self._async_load_req_ids.discard(request.request_id)
         assert num_computed_tokens % self.block_size == 0
         hbm_hit_block_num = num_computed_tokens // self.block_size
+        if request.status == RequestStatus.PREEMPTED:
+            self.requests_meta.pop(request.request_id, None)
 
-        assert self.request_block_hasher is not None
-        try:
-            ucm_block_ids = self.request_block_hasher(request)
-        except Exception as e:
-            logger.error(
-                f"request {request.request_id} hash error. {type(e).__name__}: {e}"
-            )
-            return 0, False
+        if request.request_id not in self.requests_meta:
+            assert self.request_block_hasher is not None
+            try:
+                ucm_block_ids = self.request_block_hasher(request)
+            except Exception as e:
+                logger.error(
+                    f"request {request.request_id} hash error. {type(e).__name__}: {e}"
+                )
+                return 0, False
+        else:
+            request_mate = self.requests_meta[request.request_id]
+            ucm_block_ids = request_mate.ucm_block_ids
 
         if (
             self.enable_record_traces
