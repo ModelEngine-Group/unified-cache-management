@@ -32,8 +32,9 @@ def stub_module(monkeypatch, name, **attrs):
     return module
 
 
-@pytest.fixture
-def runtime(monkeypatch):
+@pytest.fixture(params=["ascend", "cuda"])
+def runtime(monkeypatch, request):
+    backend = request.param
     logger = Mock()
     stub_module(monkeypatch, "ucm.logger", init_logger=lambda _: logger)
     hooks = {}
@@ -50,7 +51,10 @@ def runtime(monkeypatch):
     )
     connector = Mock()
     connector.has_connector_metadata.return_value = True
-    ctx = SimpleNamespace(attn_metadata={"layer.attn": object()})
+    ctx = SimpleNamespace(
+        attn_metadata={"layer.attn": object()},
+        slot_mapping={"layer.attn": object()},
+    )
     transfer = stub_module(
         monkeypatch,
         "vllm.distributed.kv_transfer",
@@ -59,12 +63,24 @@ def runtime(monkeypatch):
         get_kv_transfer_group=Mock(return_value=connector),
     )
     stub_module(monkeypatch, "vllm.forward_context", get_forward_context=lambda: ctx)
-    module = load_module(
-        PATCH_ROOT / "v0260/vllm_ascend/minimax_m3_kv_transfer_patch.py",
-        "m3_kv_patch_test",
-    )
+    if backend == "ascend":
+        patch_path = "v0260/vllm_ascend/minimax_m3_kv_transfer_patch.py"
+        model_module = "vllm_ascend.models.minimax_m3.minimax_m3"
+        method_name = "_run_sparse_attention"
+    else:
+        patch_path = "v0271/vllm/minimax_m3_kv_transfer_patch.py"
+        model_module = "vllm.models.minimax_m3.nvidia.model"
+        method_name = "forward"
+    module = load_module(PATCH_ROOT / patch_path, f"m3_{backend}_kv_patch_test")
     return SimpleNamespace(
-        patch=module, connector=connector, ctx=ctx, transfer=transfer, hooks=hooks
+        patch=module,
+        connector=connector,
+        ctx=ctx,
+        transfer=transfer,
+        hooks=hooks,
+        backend=backend,
+        model_module=model_module,
+        method_name=method_name,
     )
 
 
@@ -72,7 +88,9 @@ def make_layer(runtime, trace, layer_name="layer.attn"):
     class SparseAttention:
         def __init__(self):
             self.layer_name = layer_name
-            self.kv_cache = (object(), object())
+            self.kv_cache = (
+                (object(), object()) if runtime.backend == "ascend" else object()
+            )
             self.indexer_cache = []
 
         def _run_sparse_attention(self, query, *, index_key):
@@ -82,9 +100,18 @@ def make_layer(runtime, trace, layer_name="layer.attn"):
             trace.append(("attention", self.layer_name))
             return query
 
+        def forward(self, query, *, index_key):
+            result = self._run_sparse_attention(query, index_key=index_key)
+            trace.append(("o_proj", self.layer_name))
+            return result
+
     module = SimpleNamespace(MiniMaxM3SparseAttention=SparseAttention)
     runtime.patch.patch_minimax_m3_kv_hooks(module)
     return module, SparseAttention()
+
+
+def run_layer(runtime, layer, *args, **kwargs):
+    return getattr(layer, runtime.method_name)(*args, **kwargs)
 
 
 def test_sparse_hooks_wrap_both_cache_updates_and_preserve_arguments(runtime):
@@ -102,14 +129,16 @@ def test_sparse_hooks_wrap_both_cache_updates_and_preserve_arguments(runtime):
         trace.append(("save", name))
 
     runtime.connector.save_kv_layer.side_effect = save
-    assert layer._run_sparse_attention("query", index_key="index") == "query"
-    assert [event[0] for event in trace] == [
+    assert run_layer(runtime, layer, "query", index_key="index") == "query"
+    expected = [
         "wait",
         "update_kv",
         "update_indexer",
         "attention",
-        "save",
     ]
+    if runtime.backend == "cuda":
+        expected.append("o_proj")
+    assert [event[0] for event in trace] == expected + ["save"]
     runtime.connector.wait_for_layer_load.assert_called_once_with("layer.attn")
     runtime.connector.save_kv_layer.assert_called_once()
 
@@ -128,8 +157,8 @@ def test_profile_and_no_transfer_do_not_call_hooks(runtime, inactive):
     else:
         runtime.ctx.attn_metadata = None
     _, layer = make_layer(runtime, trace)
-    layer._run_sparse_attention("q", index_key="i")
-    assert len(trace) == 3
+    run_layer(runtime, layer, "q", index_key="i")
+    assert len(trace) == (4 if runtime.backend == "cuda" else 3)
     runtime.connector.wait_for_layer_load.assert_not_called()
     runtime.connector.save_kv_layer.assert_not_called()
 
@@ -144,6 +173,9 @@ def test_hook_errors_propagate_without_saving_failed_attention(runtime, failure)
             if failure == "attention":
                 raise RuntimeError("attention failed")
 
+        def forward(self):
+            return self._run_sparse_attention()
+
     runtime.patch.patch_minimax_m3_kv_hooks(
         SimpleNamespace(MiniMaxM3SparseAttention=SparseAttention)
     )
@@ -152,7 +184,7 @@ def test_hook_errors_propagate_without_saving_failed_attention(runtime, failure)
     if failure == "save":
         runtime.connector.save_kv_layer.side_effect = RuntimeError("save failed")
     with pytest.raises(RuntimeError, match=failure):
-        SparseAttention()._run_sparse_attention()
+        run_layer(runtime, SparseAttention())
     if failure != "save":
         runtime.connector.save_kv_layer.assert_not_called()
 
@@ -290,6 +322,7 @@ def test_dense_to_sparse_load_chain_reaches_every_layer(runtime, connector_symbo
     )
     runtime.transfer.get_kv_transfer_group.return_value = connector
     runtime.ctx.attn_metadata = dict.fromkeys(names, object())
+    runtime.ctx.slot_mapping = dict.fromkeys(names, object())
     connector.start_load_kv(runtime.ctx)
     for i, name in enumerate(names):
         if i < 3:
@@ -297,7 +330,7 @@ def test_dense_to_sparse_load_chain_reaches_every_layer(runtime, connector_symbo
             connector.save_kv_layer(name)
         else:
             _, layer = make_layer(runtime, [], name)
-            layer._run_sparse_attention("q", index_key="i")
+            run_layer(runtime, layer, "q", index_key="i")
     assert loaded == waited == saved == list(range(60))
     assert not connector.load_tasks
 
@@ -429,25 +462,26 @@ def test_full_hit_recompute_protection_is_preserved(
 
 
 def test_patch_registers_only_sparse_attention_hook(runtime):
-    assert set(runtime.hooks) == {
-        "vllm_ascend.models.minimax_m3.minimax_m3",
-    }
-    tree = ast.parse((PATCH_ROOT / "apply_patch.py").read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.match_case) and isinstance(
-            node.pattern, ast.MatchValue
-        ):
-            if (
-                isinstance(node.pattern.value, ast.Constant)
-                and node.pattern.value.value == "0.26.0"
-            ):
-                assert any(
-                    isinstance(stmt, ast.Import)
-                    and any(
-                        name.name.endswith("minimax_m3_kv_transfer_patch")
-                        for name in stmt.names
-                    )
-                    for stmt in node.body
-                )
-                return
-    pytest.fail("Missing vLLM-Ascend 0.26.0 patch route")
+    assert set(runtime.hooks) == {runtime.model_module}
+
+
+@pytest.mark.parametrize("missing", ["class", "method"])
+def test_incompatible_model_interface_fails_explicitly(runtime, missing):
+    module = SimpleNamespace()
+    if missing == "method":
+        module.MiniMaxM3SparseAttention = type("SparseAttention", (), {})
+    with pytest.raises(RuntimeError, match="check compatibility"):
+        runtime.patch.patch_minimax_m3_kv_hooks(module)
+
+
+@pytest.mark.parametrize("slot_mapping", [None, {}, {"other.layer": object()}])
+def test_only_cuda_profile_uses_slot_mapping_guard(runtime, slot_mapping):
+    runtime.ctx.slot_mapping = slot_mapping
+    _, layer = make_layer(runtime, [])
+    run_layer(runtime, layer, "q", index_key="i")
+    if runtime.backend == "cuda":
+        runtime.connector.wait_for_layer_load.assert_not_called()
+        runtime.connector.save_kv_layer.assert_not_called()
+    else:
+        runtime.connector.wait_for_layer_load.assert_called_once()
+        runtime.connector.save_kv_layer.assert_called_once()

@@ -1,4 +1,4 @@
-"""Connect M3 sparse attention to UCM's layerwise KV hooks."""
+"""Connect CUDA M3 sparse attention to UCM's layerwise KV hooks."""
 
 from functools import wraps
 
@@ -8,7 +8,7 @@ from ucm.logger import init_logger
 logger = init_logger(__name__)
 
 
-@when_imported("vllm_ascend.models.minimax_m3.minimax_m3")
+@when_imported("vllm.models.minimax_m3.nvidia.model")
 def patch_minimax_m3_kv_hooks(mod):
     from vllm.distributed.kv_transfer import (
         get_kv_transfer_group,
@@ -18,28 +18,33 @@ def patch_minimax_m3_kv_hooks(mod):
     from vllm.forward_context import get_forward_context
 
     layer_cls = getattr(mod, "MiniMaxM3SparseAttention", None)
-    original = getattr(layer_cls, "_run_sparse_attention", None)
+    original = getattr(layer_cls, "forward", None)
     if not callable(original):
         raise RuntimeError(
-            "UCM MiniMax M3 Ascend KV hooks require "
-            "MiniMaxM3SparseAttention._run_sparse_attention; "
-            "check compatibility with the installed vllm-ascend version."
+            "UCM MiniMax M3 CUDA KV hooks require MiniMaxM3SparseAttention.forward; "
+            "check compatibility with the installed vLLM version."
         )
     if getattr(original, "_ucm_kv_hooks_patched", False):
         return
 
     @wraps(original)
-    def run_sparse_attention(self, *args, **kwargs):
+    def forward(self, *args, **kwargs):
         if not has_kv_transfer_group() or not is_v1_kv_transfer_group():
             return original(self, *args, **kwargs)
 
         connector = get_kv_transfer_group()
-        metadata = get_forward_context().attn_metadata
+        context = get_forward_context()
+        metadata = context.attn_metadata
         if not connector.has_connector_metadata() or not isinstance(metadata, dict):
             return original(self, *args, **kwargs)
+        if (
+            not isinstance(context.slot_mapping, dict)
+            or self.layer_name not in context.slot_mapping
+        ):
+            return original(self, *args, **kwargs)
 
-        # One UCM row owns K, V and Indexer. Wait before either cache is updated
-        # and save only after both updates; an Indexer-only hook is too early.
+        # CUDA writes both caches before _run_attention. Bracket forward so the
+        # load precedes those writes; saving after o_proj only delays overlap.
         connector.wait_for_layer_load(self.layer_name)
         result = original(self, *args, **kwargs)
         connector.save_kv_layer(
@@ -47,6 +52,6 @@ def patch_minimax_m3_kv_hooks(mod):
         )
         return result
 
-    run_sparse_attention._ucm_kv_hooks_patched = True
-    layer_cls._run_sparse_attention = run_sparse_attention
-    logger.info("UCM MiniMax M3 sparse-attention KV hooks applied")
+    forward._ucm_kv_hooks_patched = True
+    layer_cls.forward = forward
+    logger.info("UCM MiniMax M3 CUDA sparse-attention KV hooks applied")
