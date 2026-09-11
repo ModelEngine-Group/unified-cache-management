@@ -75,7 +75,6 @@ def build_group_layouts(
             group.layers,
             kv_caches,
             token_block_size=group.token_block_size,
-            num_blocks=spec.num_blocks,
             state_snapshot=group.is_state_snapshot,
             descriptors=descriptors,
         )

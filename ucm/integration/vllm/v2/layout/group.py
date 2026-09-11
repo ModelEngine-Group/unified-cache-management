@@ -73,13 +73,14 @@ class GroupLayout:
         kv_caches: Mapping,
         *,
         token_block_size: int,
-        num_blocks: int,
         state_snapshot: bool = False,
         descriptors: Sequence[TensorDescriptor] = (),
     ) -> None:
         self.group_id = group_id
         self.token_block_size = token_block_size
-        self.num_blocks = num_blocks
+        self.num_blocks = layers[0].num_blocks
+        if self.num_blocks <= 0:
+            raise ValueError("num_blocks must be positive")
 
         # Walk the group's layers once, in model order; every component
         # of every layer is one whole-block entry read straight from its
@@ -98,7 +99,6 @@ class GroupLayout:
             components = geometry.layer_structures(
                 kv_caches[layer.layer_name],
                 layer,
-                num_blocks=num_blocks,
                 state_snapshot=state_snapshot,
             )
             if not components:

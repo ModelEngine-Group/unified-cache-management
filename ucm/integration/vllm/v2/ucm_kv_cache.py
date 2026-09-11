@@ -45,6 +45,7 @@ class UCMLayerSpec:
     layer_index: int
     kv_cache_spec: "KVCacheSpec"
     storage_block_size: int
+    num_blocks: int
 
 
 @dataclass(frozen=True)
@@ -79,7 +80,6 @@ class UCMKVCacheGroupInfo:
 @dataclass(frozen=True)
 class UCMKVCacheSpec:
     groups: tuple[UCMKVCacheGroupInfo, ...]
-    num_blocks: int
     scheduler_block_size: int
     alignment_block_size: int
     chunk_size: int
@@ -276,6 +276,7 @@ def parse_kv_cache_config(
             else physical_block_size
         )
         hash_block_size = canonical_size if dsv4 else physical_block_size
+        num_blocks = int(getattr(kv_cache_config, "num_blocks", 0))
         layers: list[UCMLayerSpec] = []
         for index, (name, spec) in enumerate(concrete):
             # Normalize to the number of stored states one manager block
@@ -297,6 +298,7 @@ def parse_kv_cache_config(
                     _layer_index(name, index),
                     spec,
                     storage_block_size,
+                    num_blocks,
                 )
             )
         tail_tokens: int | None = None
@@ -407,7 +409,6 @@ def parse_kv_cache_config(
 
     return UCMKVCacheSpec(
         groups=tuple(groups),
-        num_blocks=int(getattr(kv_cache_config, "num_blocks", 0)),
         scheduler_block_size=scheduler_block_size,
         alignment_block_size=alignment,
         chunk_size=selected_chunk,
@@ -426,10 +427,7 @@ class UCMKVCacheLayout:
         *,
         kv_cache_tensors: Sequence[object] = (),
     ) -> None:
-        if spec.num_blocks <= 0:
-            raise ValueError("num_blocks must be positive")
         self.spec = spec
-        self.num_blocks = spec.num_blocks
         self.group_layouts: Mapping[int, "GroupLayout"] = build_group_layouts(
             spec,
             kv_caches,

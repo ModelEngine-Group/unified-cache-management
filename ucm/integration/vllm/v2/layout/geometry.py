@@ -31,7 +31,6 @@ if TYPE_CHECKING:
     import torch
 
     from ..ucm_kv_cache import UCMLayerSpec
-    from ..ucm_proxy import KVCacheValue
 
 
 class ComponentSlot:
@@ -131,12 +130,18 @@ def row_payload_bytes(
 
 def component(
     tensor: "torch.Tensor",
-    expected_block_size: int,
-    *,
-    num_blocks: int,
+    layer: "UCMLayerSpec",
     state_snapshot: bool = False,
 ) -> ComponentSlot:
-    """Derive one component's placement from its runtime view."""
+    """Derive one component's placement from its runtime view.
+
+    The layer spec carries the two facts the view cannot express: the
+    number of stored states one block spans (storage_block_size) and how
+    many blocks the view's dim 0 tiles (num_blocks).
+    """
+
+    expected_block_size = layer.storage_block_size
+    num_blocks = layer.num_blocks
 
     shape = tuple(int(value) for value in tensor.shape)
     if len(shape) < 2 or len(shape) > 4:
@@ -205,10 +210,9 @@ def component(
 
 
 def layer_structures(
-    value: "KVCacheValue",
+    value: "torch.Tensor | tuple[torch.Tensor, ...] | list[torch.Tensor]",
     layer: "UCMLayerSpec",
     *,
-    num_blocks: int,
     state_snapshot: bool,
 ) -> tuple[ComponentSlot, ...]:
     """Resolve one layer's components (attention or state snapshot).
@@ -220,18 +224,13 @@ def layer_structures(
 
     tensors = tuple(value) if isinstance(value, (tuple, list)) else (value,)
     if state_snapshot:
-        return state_structures(tensors, layer, num_blocks=num_blocks)
-    return tuple(
-        component(tensor, layer.storage_block_size, num_blocks=num_blocks)
-        for tensor in tensors
-    )
+        return state_structures(tensors, layer)
+    return tuple(component(tensor, layer) for tensor in tensors)
 
 
 def state_structures(
     tensors: tuple["torch.Tensor", ...],
     layer: "UCMLayerSpec",
-    *,
-    num_blocks: int,
 ) -> tuple[ComponentSlot, ...]:
     """Resolve an explicit component tuple or one combined raw state page.
 
@@ -252,13 +251,7 @@ def state_structures(
     )
     if not expected_shapes or actual_shapes == expected_shapes:
         return tuple(
-            component(
-                tensor,
-                layer.storage_block_size,
-                num_blocks=num_blocks,
-                state_snapshot=True,
-            )
-            for tensor in tensors
+            component(tensor, layer, state_snapshot=True) for tensor in tensors
         )
 
     if len(tensors) != 1:
@@ -271,6 +264,7 @@ def state_structures(
     shape = tuple(int(item) for item in raw.shape)
     strides = tuple(int(raw.stride(index)) for index in range(len(shape)))
     element_size = int(raw.element_size())
+    num_blocks = layer.num_blocks
     if shape[0] != num_blocks or element_size != 1:
         raise ValueError(
             "Combined state backing must be one byte page per block: "
@@ -311,10 +305,6 @@ def state_structures(
 
 
 def dtype_size(dtype: "torch.dtype") -> int:
-    itemsize = getattr(dtype, "itemsize", None)
-    if itemsize is not None:
-        return int(itemsize)
-    import importlib
-
-    torch = importlib.import_module("torch")
-    return int(torch.empty((), dtype=dtype).element_size())
+    # torch.dtype carries itemsize; test doubles duck-type the same
+    # attribute, so no torch import is needed here.
+    return int(dtype.itemsize)
