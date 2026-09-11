@@ -26,6 +26,7 @@ class CheckConfig:
     connector_name: str = "UcmPipelineStore"
     connector_module_path: str | None = None
     output: str | None = None
+    verbose: bool = False
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "CheckConfig":

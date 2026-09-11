@@ -62,6 +62,11 @@ class SglangModelCheckTool(ToolAdapter):
         parser.add_argument("--connector-name", default="UcmPipelineStore")
         parser.add_argument("--connector-module-path")
         parser.add_argument("--output", help="also write the JSON result to this path")
+        parser.add_argument(
+            "--verbose",
+            action="store_true",
+            help="include detection sources, full environment details and traceback",
+        )
 
     def _parser(self) -> argparse.ArgumentParser:
         parser = argparse.ArgumentParser(
@@ -99,6 +104,7 @@ class SglangModelCheckTool(ToolAdapter):
             connector_name=args.connector_name,
             connector_module_path=args.connector_module_path,
             output=args.output,
+            verbose=args.verbose,
         )
         env = os.environ.copy()
         env[CONFIG_ENV] = config.to_json()

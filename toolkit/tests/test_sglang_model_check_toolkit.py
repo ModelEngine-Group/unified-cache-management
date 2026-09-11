@@ -22,6 +22,7 @@ from ucm_toolkit.tools.sglang_model_check.compatibility import (  # noqa: E402
     requirements_from_facts,
 )
 from ucm_toolkit.tools.sglang_model_check.config import CONFIG_ENV  # noqa: E402
+from ucm_toolkit.tools.sglang_model_check.result import CheckResult  # noqa: E402
 from ucm_toolkit.tools.sglang_model_check.runner import (  # noqa: E402
     CheckFailure,
     _require_page_results,
@@ -272,6 +273,26 @@ class SglangModelCheckToolkitTest(unittest.TestCase):
         ):
             with server_args_guard():
                 pass
+
+    def test_result_defaults_to_summary_and_verbose_preserves_details(self):
+        result = CheckResult(model="/models/test", mode="inspect")
+        result.reason = "ImportError: missing helper\nTraceback: details"
+        result.model_info = {
+            "architectures": ["TestForCausalLM"],
+            "model_type": "test",
+            "detection_sources": {"linear_attention": "mambaish_config"},
+        }
+        result.roundtrip = {}
+        summary = result.to_dict()
+        self.assertEqual(summary["detail_level"], "summary")
+        self.assertEqual(summary["reason"], "ImportError: missing helper")
+        self.assertNotIn("detection_sources", summary["model_info"])
+        self.assertNotIn("roundtrip", summary)
+
+        verbose = result.to_dict(verbose=True)
+        self.assertEqual(verbose["detail_level"], "verbose")
+        self.assertIn("Traceback", verbose["reason"])
+        self.assertIn("detection_sources", verbose["model_info"])
 
 
 if __name__ == "__main__":

@@ -615,7 +615,7 @@ def run(config: CheckConfig) -> CheckResult:
 def main() -> int:
     config = CheckConfig.from_env()
     result = run(config)
-    emit_result(result, config.output)
+    emit_result(result, config.output, verbose=config.verbose)
     return 0 if result.supported else 1
 
 
