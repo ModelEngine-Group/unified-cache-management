@@ -1477,13 +1477,11 @@ class RaggedLayoutTest(unittest.TestCase):
         # The tail of block 2 and the head of block 3 stay separate entries
         # even though they are contiguous in memory: record positions are a
         # function of the logical enumeration, never of physical adjacency.
-        # Partial blocks still occupy full block-record slots (holes stay
-        # zero): block 2's window sits at its in-block offset 64, block 3's
-        # at slot 128.
+        # Segments pack back to back -- the proxy requires a gapless record.
         self.assertEqual(batch.block_ids, (key, key))
         self.assertEqual(batch.ptrs, (0x1000 + 2 * 128 + 64, 0x1000 + 3 * 128))
         self.assertEqual(batch.sizes, (64, 64))
-        self.assertEqual(batch.offsets, (64, 128))
+        self.assertEqual(batch.offsets, (0, 64))
 
     def test_dump_and_load_survive_different_physical_block_layouts(self):
         # Dump and load address different vLLM blocks (the source request is

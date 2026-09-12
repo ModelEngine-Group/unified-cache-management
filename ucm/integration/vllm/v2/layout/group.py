@@ -346,9 +346,9 @@ class GroupLayout:
             for _, local_start, local_end in spans
         ):
             entries = self._whole(spans, base, selected)
-        else:
-            entries = self._partial(spans, base, selected)
-        return entries, base + len(spans) * self.record_size
+            # Whole blocks tile the record: one slot per block.
+            return entries, base + len(spans) * self.record_size
+        return self._partial(spans, base, selected)
 
     def _whole(
         self,
@@ -395,37 +395,57 @@ class GroupLayout:
         spans: Sequence[tuple[int, int, int]],
         base: int,
         selected: frozenset[str] | None,
-    ) -> list[tuple[int, int, int]]:
-        """Row-table walk for ranges that cut into blocks."""
+    ) -> tuple[list[tuple[int, int, int]], int]:
+        """Row-table walk for ranges that cut into blocks.
 
-        entries = []
-        for ordinal, (block_id, local_start, local_end) in enumerate(spans):
-            record_base = base + ordinal * self.record_size
-            for layer_name, component, offset, scale_num, scale_den in self.entries:
-                if selected is not None and layer_name not in selected:
-                    continue
+        Segments pack back to back into the record (the proxy requires a
+        gapless record), so unselected layers still advance the cursor --
+        filtered and unfiltered batches share coordinates.  Contiguous
+        pieces within one block merge; blocks never merge with each other.
+        Returns ``(entries, next_base)`` with the record cursor after the
+        last segment -- the record is exactly as long as the segments.
+        """
+
+        entries: list[tuple[int, int, int]] = []
+        record = base
+        for block_id, local_start, local_end in spans:
+            open_ptr: int | None = None
+            open_size = 0
+            open_offset = 0
+            for layer_name, component, _, scale_num, scale_den in self.entries:
+                selected_here = selected is None or layer_name in selected
                 component_base = (
                     component.base_ptr + block_id * component.block_stride
                 )
                 for rel, size in _component_segments(
                     component, scale_num, scale_den, local_start, local_end
                 ):
+                    ptr = component_base + rel
+                    if not selected_here:
+                        # Unselected bytes still occupy the record, and a
+                        # segment may not span them.
+                        if open_ptr is not None:
+                            entries.append((open_ptr, open_size, open_offset))
+                            open_ptr = None
+                        record += size
+                        continue
+                    if open_ptr is not None and open_ptr + open_size == ptr:
+                        open_size += size
+                    else:
+                        if open_ptr is not None:
+                            entries.append((open_ptr, open_size, open_offset))
+                        open_ptr, open_size, open_offset = ptr, size, record
+                    record += size
                     if LAYOUT_DEBUG:
                         layout_debug(
                             f"segment group={self.group_id} "
                             f"layer={layer_name} block={block_id} "
                             f"tokens=[{local_start},{local_end}) "
-                            f"ptr={component_base + rel:#x} size={size} "
-                            f"record={record_base + offset + rel}"
+                            f"ptr={ptr:#x} size={size} record={record - size}"
                         )
-                    entries.append(
-                        (
-                            component_base + rel,
-                            size,
-                            record_base + offset + rel,
-                        )
-                    )
-        return entries
+            if open_ptr is not None:
+                entries.append((open_ptr, open_size, open_offset))
+        return entries, record
 
 
 def _component_segments(
