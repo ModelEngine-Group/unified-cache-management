@@ -63,6 +63,9 @@ struct Config {
     bool useGdr{false};
     bool cacheIOAggregation{false};
     bool cacheSdmaDirect{UCM_RUNTIME_ASCEND_SDMA_DIRECT};
+    bool cacheUseHostBuffer{false};
+    size_t h2hWorkerNumber{4};
+    size_t h2hQueueDepth{1024};
     size_t localRankSize{8};
 
     size_t EffectiveStreamNumber() const noexcept { return cacheSdmaDirect ? 1 : streamNumber; }
