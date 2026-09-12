@@ -12,8 +12,9 @@ import math
 import os
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
+import numpy as np
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.v1.kv_cache_interface import (
     KVCacheSpecKind,
@@ -32,7 +33,7 @@ if TYPE_CHECKING:
         KVCacheSpec,
     )
 
-    from .layout.group import GroupLayout
+    from .layout.group import KVCacheGroupLayout
     from .ucm_scheduler import UCMConnectorMetadata, UCMGroupDispatchPlan
 
 
@@ -43,6 +44,8 @@ _SLIDING_KINDS = frozenset(
 
 @dataclass(frozen=True)
 class UCMLayerSpec:
+    """One registered layer; storage_block_size counts stored states, not tokens."""
+
     layer_name: str
     layer_index: int
     kv_cache_spec: "KVCacheSpec"
@@ -56,6 +59,8 @@ class UCMLayerSpec:
 
 @dataclass(frozen=True)
 class UCMKVCacheGroupInfo:
+    """One native KV group; token_block_size is tokens covered by one block ID."""
+
     group_id: int
     layers: tuple[UCMLayerSpec, ...]
     group_spec: "KVCacheSpec"
@@ -85,6 +90,13 @@ class UCMKVCacheGroupInfo:
 
 @dataclass(frozen=True)
 class UCMKVCacheSpec:
+    """UCM policy sizes, all in tokens.
+
+    scheduler_block_size is the historical name for CacheConfig.block_size,
+    not vLLM's resolved scheduler granularity. chunk_size is UCM's record/hash
+    unit; neither adds a new native block-allocation setting.
+    """
+
     groups: tuple[UCMKVCacheGroupInfo, ...]
     scheduler_block_size: int
     alignment_block_size: int
@@ -146,7 +158,7 @@ def _concrete_specs(
     return tuple((name, group_spec) for name in names)
 
 
-def _spec_compress_ratio(spec: "KVCacheSpec") -> int:
+def _spec_tokens_per_state(spec: "KVCacheSpec") -> int:
     """Compression ratio of one stored state (DSV4 C4A = 4).
 
     Ascend 0.26 names the field ``compress_ratio``; vLLM 0.29 renamed it to
@@ -166,9 +178,22 @@ def _spec_compress_ratio(spec: "KVCacheSpec") -> int:
         return 1
 
 
+def _layer_index(name: str, device_type: str, num_hidden_layers: int | None) -> int:
+    """Ascend MTP uses local IDs; official 0.29 already uses global IDs."""
+    index = extract_layer_index(name)
+    if device_type.lower() == "npu" and "mtp" in name.split("."):
+        if num_hidden_layers is None or num_hidden_layers <= 0:
+            raise ValueError("MTP layer IDs require model num_hidden_layers")
+        if index < num_hidden_layers:
+            index += num_hidden_layers
+    return index
+
+
 def _classify(
     group: "KVCacheGroupSpec",
     concrete: Sequence[tuple[str, "KVCacheSpec"]],
+    attention_tokens_per_state: Mapping[int, int],
+    layer_indices: Mapping[str, int],
 ) -> tuple[frozenset[KVCacheSpecKind], bool]:
     specs = tuple(spec for _, spec in concrete) or (group.kv_cache_spec,)
     spec_kinds = tuple(get_kv_cache_spec_kind(spec) for spec in specs)
@@ -184,9 +209,12 @@ def _classify(
     if KVCacheSpecKind.MAMBA in kinds and len(kinds) != 1:
         raise TypeError(f"Mamba and attention specs cannot share a KV group: {kinds}")
     is_c4a = any(
-        _spec_compress_ratio(spec) == 4
+        attention_tokens_per_state.get(
+            layer_indices[name], _spec_tokens_per_state(spec)
+        )
+        == 4
         and kind == KVCacheSpecKind.MLA_ATTENTION
-        for spec, kind in zip(specs, spec_kinds)
+        for (name, spec), kind in zip(concrete, spec_kinds)
     )
     return kinds, is_c4a
 
@@ -230,26 +258,31 @@ def parse_kv_cache_config(
     scheduler_block_size: int,
     chunk_size: int | None = None,
     device_type: str = "npu",
+    attention_tokens_per_state: Mapping[int, int] | None = None,
+    num_hidden_layers: int | None = None,
 ) -> UCMKVCacheSpec:
-    """Describe logical groups and per-layer storage from KVCacheConfig."""
+    """Describe logical groups and per-layer storage from KVCacheConfig.
+
+    vLLM 0.29's scheduler replaces a UniformTypeKVCacheSpecs map with one
+    representative spec. For DSV4 that loses C4/C128 per-layer ratios.
+    The connector supplies attention_tokens_per_state from the model config
+    on both scheduler and worker; direct callers with full specs can omit it.
+    This mapping applies to full attention, never compressor state tensors.
+    """
+
+    attention_tokens_per_state = attention_tokens_per_state or {}
 
     source = os.environ.get("UCM_V2_DESCRIPTOR_SOURCE", "auto").strip().lower()
     source = source or "auto"
     if source not in ("auto", "declared"):
         raise ValueError(f"Unknown UCM_V2_DESCRIPTOR_SOURCE={source!r}")
-    kv_cache_tensors = tuple(
-        getattr(kv_cache_config, "kv_cache_tensors", ()) or ()
-    )
+    kv_cache_tensors = tuple(getattr(kv_cache_config, "kv_cache_tensors", ()) or ())
     has_declarations = bool(kv_cache_tensors) and all(
         getattr(tensor, "layers", None) is not None for tensor in kv_cache_tensors
     )
     if source == "declared" and not has_declarations:
-        raise ValueError(
-            "UCM_V2_DESCRIPTOR_SOURCE=declared requires declared tensors"
-        )
-    _, declared_at = _parse_descriptors(
-        kv_cache_tensors if has_declarations else ()
-    )
+        raise ValueError("UCM_V2_DESCRIPTOR_SOURCE=declared requires declared tensors")
+    _, declared_at = _parse_descriptors(kv_cache_tensors if has_declarations else ())
     raw_groups = tuple(getattr(kv_cache_config, "kv_cache_groups", ()))
     if not raw_groups:
         raise ValueError("kv_cache_config.kv_cache_groups must not be empty")
@@ -265,9 +298,16 @@ def parse_kv_cache_config(
         ]
     ] = []
     dsv4 = False
+    layer_indices: dict[str, int] = {}
     for raw_group in raw_groups:
         concrete = _concrete_specs(raw_group)
-        kinds, is_c4a = _classify(raw_group, concrete)
+        layer_indices.update(
+            (name, _layer_index(name, device_type, num_hidden_layers))
+            for name, _ in concrete
+        )
+        kinds, is_c4a = _classify(
+            raw_group, concrete, attention_tokens_per_state, layer_indices
+        )
         if KVCacheSpecKind.MAMBA in kinds:
             modes = {
                 str(getattr(spec, "mamba_cache_mode", None)) for _, spec in concrete
@@ -310,20 +350,22 @@ def parse_kv_cache_config(
         canonical_size = scheduler_block_size
 
     groups: list[UCMKVCacheGroupInfo] = []
-    attention_compress_ratio_by_layer: dict[int, int] = {}
+    attention_tokens_per_state_by_layer: dict[int, int] = {}
     if dsv4:
         for _, concrete, kinds, _ in classified:
             if KVCacheSpecKind.MAMBA in kinds or not kinds.isdisjoint(_SLIDING_KINDS):
                 continue
-            for fallback, (name, concrete_spec) in enumerate(concrete):
-                attention_compress_ratio_by_layer[extract_layer_index(name)] = (
-                    _spec_compress_ratio(concrete_spec)
+            for name, concrete_spec in concrete:
+                attention_tokens_per_state_by_layer[layer_indices[name]] = (
+                    attention_tokens_per_state.get(
+                        layer_indices[name], _spec_tokens_per_state(concrete_spec)
+                    )
                 )
     num_blocks = int(getattr(kv_cache_config, "num_blocks", 0))
     for group_id, (raw_group, concrete, kinds, is_c4a) in enumerate(classified):
         representative = concrete[0][1] if concrete else raw_group.kv_cache_spec
         physical_block_size = int(getattr(raw_group.kv_cache_spec, "block_size"))
-        compress_ratio = _spec_compress_ratio(representative)
+        compress_ratio = _spec_tokens_per_state(representative)
         token_block_size = (
             physical_block_size * compress_ratio
             if dsv4 and device_type == "npu"
@@ -332,13 +374,15 @@ def parse_kv_cache_config(
         hash_block_size = canonical_size if dsv4 else physical_block_size
         layers: list[UCMLayerSpec] = []
         for index, (name, spec) in enumerate(concrete):
-            # Normalize to the number of stored states one manager block
+            # Normalize to the number of stored states one group block
             # spans.  Ascend 0.26 reports the C4 storage span as block_size
             # directly; vLLM 0.29 reports the logical span and the storage
             # axis is block_size // tokens_per_state (DSV4 C4A: 256/4=64
             # states; C128A: 256/128=2; uncompressed specs keep the block).
             logical = int(getattr(spec, "block_size"))
-            ratio = _spec_compress_ratio(spec)
+            ratio = _spec_tokens_per_state(spec)
+            if dsv4 and kinds.isdisjoint(_SLIDING_KINDS):
+                ratio = attention_tokens_per_state_by_layer[layer_indices[name]]
             if device_type == "npu":
                 storage_block_size = logical
             elif ratio > 1 and logical % ratio == 0:
@@ -348,7 +392,7 @@ def parse_kv_cache_config(
             layers.append(
                 UCMLayerSpec(
                     name,
-                    extract_layer_index(name),
+                    layer_indices[name],
                     spec,
                     storage_block_size,
                     num_blocks,
@@ -358,18 +402,18 @@ def parse_kv_cache_config(
         tail_tokens: int | None = None
         if dsv4 and not kinds.isdisjoint(_SLIDING_KINDS):
             tails: set[int] = set()
-            for fallback, (name, concrete_spec) in enumerate(concrete):
+            for name, concrete_spec in concrete:
                 window = int(getattr(concrete_spec, "sliding_window"))
                 if name.lower().endswith("swa_cache"):
                     tail = window
                 else:
-                    layer_index = extract_layer_index(name)
-                    if layer_index not in attention_compress_ratio_by_layer:
+                    layer_index = layer_indices[name]
+                    if layer_index not in attention_tokens_per_state_by_layer:
                         raise ValueError(
                             "Cannot find matching full-attention compression ratio "
                             f"for DSV4 layer {layer_index}"
                         )
-                    tail = window - attention_compress_ratio_by_layer[layer_index]
+                    tail = window - attention_tokens_per_state_by_layer[layer_index]
                 if tail < 0:
                     raise ValueError(f"Negative DSV4 tail for {name}: {tail}")
                 tails.add(tail)
@@ -471,6 +515,19 @@ def parse_kv_cache_config(
     )
 
 
+class _GroupWindows(NamedTuple):
+    """One key's hash window over one group, as per-block windows.
+
+    ``block_ids`` are physical ids carrying the windows in logical order;
+    ``whole`` marks a window that covers every block entirely.
+    """
+
+    block_ids: list[int]
+    local_starts: list[int]
+    local_ends: list[int]
+    whole: bool
+
+
 class UCMKVCacheLayout:
     """Ragged, per-layer physical layout with deterministic record offsets."""
 
@@ -480,58 +537,103 @@ class UCMKVCacheLayout:
         kv_caches: Mapping[str, KVCacheValue],
     ) -> None:
         self.spec = spec
-        self.group_layouts: Mapping[int, "GroupLayout"] = build_group_layouts(
+        self.group_layouts: Mapping[int, "KVCacheGroupLayout"] = build_group_layouts(
             spec, kv_caches
         )
+        # A callback may name only attention, while indexer and other caches
+        # of the same model layer have distinct registered names/groups.
+        self.layer_id_by_name = {
+            layer.layer_name: layer.layer_index
+            for group in spec.groups
+            for layer in group.layers
+        }
+        names_by_id: dict[int, list[str]] = {}
+        for name, layer_id in self.layer_id_by_name.items():
+            names_by_id.setdefault(layer_id, []).append(name)
+        self.layer_names_by_id = {
+            layer_id: frozenset(names) for layer_id, names in names_by_id.items()
+        }
+
+    def _selected_layer_names(
+        self, layer_name: str | None, layer_id: int | None
+    ) -> frozenset[str] | None:
+        if layer_name is not None and layer_id is not None:
+            raise ValueError("Specify either layer_name or layer_id")
+        if layer_id is not None:
+            return self.layer_names_by_id[layer_id]
+        return None if layer_name is None else frozenset((layer_name,))
 
     def build_load_batches(
-        self, metadata: "UCMConnectorMetadata", layer_name: str | None = None
+        self,
+        metadata: "UCMConnectorMetadata",
+        layer_name: str | None = None,
+        *,
+        layer_id: int | None = None,
     ) -> UCMProxyBatch:
+        """Select one cache name or all names of one model layer across groups."""
         plans = (
             plan
             for request_meta in metadata.requests.values()
             for plan in request_meta.load_plans
         )
-        return self._build_batches(plans, layer_name)
+        return self._build_batches(
+            plans, self._selected_layer_names(layer_name, layer_id)
+        )
 
     def build_dump_batches(
-        self, metadata: "UCMConnectorMetadata", layer_name: str | None = None
+        self,
+        metadata: "UCMConnectorMetadata",
+        layer_name: str | None = None,
+        *,
+        layer_id: int | None = None,
     ) -> UCMProxyBatch:
+        """Select memory ranges; a filtered batch may not be a complete record.
+
+        Layerwise saving needs a backend that accumulates partial records and
+        publishes only when complete. SimpleFileUCMProxy.dump requires the
+        whole record and must not be called once per filtered layer batch.
+        """
         plans = (
             plan
             for request_meta in metadata.requests.values()
             for plan in request_meta.dump_plans
         )
-        return self._build_batches(plans, layer_name)
+        return self._build_batches(
+            plans, self._selected_layer_names(layer_name, layer_id)
+        )
 
     def _build_batches(
         self,
         plans: Iterable["UCMGroupDispatchPlan"],
-        layer_name: str | None,
+        layer_names: frozenset[str] | None,
     ) -> UCMProxyBatch:
         keys: list[bytes] = []
         offsets: list[int] = []
         ptrs: list[int] = []
         sizes: list[int] = []
         for plan in plans:
-            for key, offset, ptr, size in self._iter_plan_segments(plan, layer_name):
-                keys.append(key)
-                offsets.append(offset)
-                ptrs.append(ptr)
-                sizes.append(size)
+            for key, group_ptrs, group_sizes, group_offsets in self._iter_plan_segments(
+                plan, layer_names
+            ):
+                keys.extend((key,) * len(group_ptrs))
+                ptrs.extend(group_ptrs)
+                sizes.extend(group_sizes)
+                offsets.extend(group_offsets)
         return UCMProxyBatch(tuple(keys), tuple(offsets), tuple(ptrs), tuple(sizes))
 
     def _iter_plan_segments(
         self,
         plan: "UCMGroupDispatchPlan",
-        layer_name: str | None,
-    ) -> Iterator[tuple[bytes, int, int, int]]:
-        """Scheduler shell around the layout model's group addressing.
+        layer_names: frozenset[str] | None,
+    ) -> Iterator[tuple[bytes, list[int], list[int], list[int]]]:
+        """Scheduler shell around the group layouts' column addressing.
 
         This layer owns the dispatch semantics -- key splitting, block-map
-        resolution, WA tail windows, state-block selection, record offsets
-        across groups -- and delegates the byte-span arithmetic to each
-        group's precomputed ``GroupLayout``.
+        resolution, WA tail windows, state-block selection -- and the
+        per-hash-block record ledger.  Layouts only answer (ptr, size)
+        grids; this shell places them in one key's record: each group's
+        contribution starts at the running block_offset, and the next
+        group continues after it.
         """
 
         if not plan.keys:
@@ -559,34 +661,154 @@ class UCMKVCacheLayout:
                     f"keys={len(plan.keys)} vllm_blocks {{{shown}{more}}}"
                 )
         for key_index, key in enumerate(plan.keys):
-            record_offset = 0
+            block_offset = 0
             key_start = plan.token_start + key_index * key_tokens
             key_end = key_start + key_tokens
             for group_id in sorted(block_maps):
                 group_info = self.spec.groups[group_id]
-                group_key_start = key_start
-                if plan.hash_group == "WA":
-                    if not group_info.tail_tokens:
-                        continue
-                    group_key_start = max(key_end - group_info.tail_tokens, 0)
+                if plan.hash_group == "WA" and not group_info.tail_tokens:
+                    continue
                 group_layout = self.group_layouts[group_id]
-                if group_info.is_state_snapshot:
-                    # A state snapshot lives in the last block of its range.
-                    spans = group_layout.state_plan_range(
-                        block_maps[group_id], key_end
-                    )
-                else:
-                    spans = group_layout.plan_spans(
-                        block_maps[group_id], group_key_start, key_end
-                    )
-                entries, record_offset = group_layout.emit_record(
-                    spans, record_offset, layer_name
+                windows = self._key_windows(
+                    plan, group_info, group_layout, block_maps[group_id],
+                    key_start, key_end,
                 )
-                for ptr, size, offset in entries:
-                    yield key, offset, ptr, size
+                mask = (
+                    None
+                    if layer_names is None
+                    else group_layout.view_mask(layer_names=layer_names)
+                )
+                ptrs, sizes, offsets, record_bytes = self._group_record(
+                    group_layout, windows, mask
+                )
+                if ptrs:
+                    yield (
+                        key,
+                        ptrs,
+                        sizes,
+                        [offset + block_offset for offset in offsets],
+                    )
+                block_offset += record_bytes
             if LAYOUT_DEBUG:
                 layout_debug(
                     f"record key={key.hex()[:16]}... tokens="
                     f"[{key_start},{key_end}) groups={sorted(block_maps)} "
-                    f"record_size={record_offset}"
+                    f"record_size={block_offset}"
                 )
+
+    def _key_windows(
+        self,
+        plan: "UCMGroupDispatchPlan",
+        group_info: UCMKVCacheGroupInfo,
+        group_layout: "KVCacheGroupLayout",
+        block_map: Mapping[int, int],
+        key_start: int,
+        key_end: int,
+    ) -> "_GroupWindows":
+        """One key's hash window over one group, as per-block windows.
+
+        Logical block ordinals carry the record; physical ids only
+        address.  A state snapshot contributes the last complete block
+        as one indivisible page; a WA group stores only its tail window.
+        """
+
+        token_block = group_layout.token_block_size
+        if group_info.is_state_snapshot:
+            logical = max((key_end - 1) // token_block, 0)
+            return _GroupWindows([block_map[logical]], [0], [token_block], True)
+        window_start = key_start
+        if plan.hash_group == "WA":
+            window_start = max(key_end - (group_info.tail_tokens or 0), 0)
+        first = window_start // token_block
+        stop = (key_end - 1) // token_block + 1
+        block_ids = [block_map[logical] for logical in range(first, stop)]
+        starts = [
+            max(window_start - (first + ordinal) * token_block, 0)
+            for ordinal in range(stop - first)
+        ]
+        ends = [
+            min(key_end - (first + ordinal) * token_block, token_block)
+            for ordinal in range(stop - first)
+        ]
+        whole = all(
+            start == 0 and end == token_block for start, end in zip(starts, ends)
+        )
+        return _GroupWindows(block_ids, starts, ends, whole)
+
+    def _group_record(
+        self,
+        group_layout: "KVCacheGroupLayout",
+        windows: "_GroupWindows",
+        mask: "np.ndarray | None",
+    ) -> tuple[list[int], list[int], list[int], int]:
+        """Place one group's windows in the key's record.
+
+        Three ledgers, one per group shape:
+
+        - Block First, whole and unfiltered: the block slot is one IO
+          span, paddings riding inside (``block_first_segments``).
+        - Block First, layered or sub-block: the slot-image ledger --
+          offsets are the descriptor anchors, so a layered load lands
+          exactly where the span's bytes were dumped.
+        - Everything else: layer-major per hash window.  View L's slot
+          starts after every earlier view's window bytes: with four
+          vLLM blocks per hash and per-block layer size ``s_l``, layer
+          0 lands at 0, layer 1 at ``4 * s_0``, layer 2 at
+          ``4 * (s_0 + s_1)``, ...  Unselected views still occupy their
+          bytes, so a layerwise batch addresses the very same slots.
+
+        Returns flattened (ptrs, sizes, offsets) and the group's record
+        size -- the block_offset the next group continues from.
+        """
+
+        span = group_layout.block_first if windows.whole else None
+        if span is not None and mask is None:
+            ptrs, sizes = group_layout.block_first_segments(windows.block_ids)
+            offsets = (
+                np.arange(len(windows.block_ids), dtype=np.int64)
+                * group_layout.record_size
+            )
+            return (
+                ptrs.tolist(),
+                sizes.tolist(),
+                offsets.tolist(),
+                len(windows.block_ids) * group_layout.record_size,
+            )
+        ptrs, sizes = group_layout.extract_segments(
+            windows.block_ids, windows.local_starts, windows.local_ends
+        )
+        if span is not None:
+            # Slot-image ledger: block-major rows at their anchors.
+            offsets = (
+                np.arange(len(windows.block_ids), dtype=np.int64)[:, None]
+                * group_layout.record_size
+                + group_layout.record_slots
+            )
+            record_bytes = len(windows.block_ids) * group_layout.record_size
+        else:
+            # Layer-major ledger: view slots by window bytes, blocks
+            # packed inside each view's slot.
+            view_bytes = sizes.sum(axis=0)
+            view_slots = np.cumsum(view_bytes) - view_bytes
+            within_view = np.cumsum(sizes, axis=0) - sizes
+            offsets = view_slots + within_view
+            record_bytes = int(view_bytes.sum())
+        if mask is not None:
+            ptrs = ptrs[:, mask]
+            sizes = sizes[:, mask]
+            offsets = offsets[:, mask]
+        # Slot-image records read block-major; layer-major records read
+        # view-major (each view's blocks back to back).
+        if span is not None:
+            return (
+                ptrs.reshape(-1).tolist(),
+                sizes.reshape(-1).tolist(),
+                offsets.reshape(-1).tolist(),
+                record_bytes,
+            )
+        return (
+            ptrs.T.reshape(-1).tolist(),
+            sizes.T.reshape(-1).tolist(),
+            offsets.T.reshape(-1).tolist(),
+            record_bytes,
+        )

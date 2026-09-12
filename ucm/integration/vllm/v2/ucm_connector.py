@@ -240,7 +240,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
     ) -> None:
         super().__init__(vllm_config, role, kv_cache_config)
         launch_config = _load_launch_config(vllm_config)
-        scheduler_block_size = int(vllm_config.cache_config.block_size)
+        cache_block_size = int(vllm_config.cache_config.block_size)
         chunk_size = launch_config.get("chunk_size")
         if chunk_size is not None:
             chunk_size = int(chunk_size)
@@ -251,11 +251,26 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         base_seed = hasher("UCM_HASH_SEED")
 
         self.context = UCMRuntimeContext.from_vllm_config(vllm_config, role, rank=rank)
+        # The scheduler's representative group spec can hide DSV4's per-layer
+        # C4/C128 ratios. Read the same model metadata on both sides. Ratios of
+        # zero denote uncompressed layers, as in vLLM's DSV4 attention module.
+        text_config = getattr(vllm_config.model_config, "hf_text_config", None)
+        compress_ratios = getattr(text_config, "compress_ratios", ()) or ()
+        num_layers = int(
+            getattr(text_config, "num_hidden_layers", len(compress_ratios))
+        )
+        attention_tokens_per_state = {
+            index: max(1, int(ratio))
+            for index, ratio in enumerate(compress_ratios)
+            if index < num_layers
+        }
         self.spec: UCMKVCacheSpec = parse_kv_cache_config(
             kv_cache_config,
-            scheduler_block_size=scheduler_block_size,
+            scheduler_block_size=cache_block_size,
             chunk_size=chunk_size,
             device_type=self.context.device_type,
+            attention_tokens_per_state=attention_tokens_per_state,
+            num_hidden_layers=num_layers,
         )
         dtype = str(vllm_config.model_config.dtype).rsplit(".", 1)[-1]
         policy = "dsv4" if self.spec.is_dsv4 else "grouped"

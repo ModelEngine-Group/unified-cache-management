@@ -429,8 +429,6 @@ class FakeTensor:
         return self._element_size
 
 
-
-
 class KVCacheSpecTest(unittest.TestCase):
     def test_direct_custom_chunk_keeps_base_hash_size(self):
         parsed = parse_kv_cache_config(
@@ -620,6 +618,145 @@ class KVCacheSpecTest(unittest.TestCase):
         self.assertEqual(
             tuple(group.group_id for group in parsed.wa_groups), (0, 1, 3, 4)
         )
+        self.assertEqual(
+            tuple(group.tail_tokens for group in parsed.wa_groups), (128, 128, 4, 0)
+        )
+        # Replay the captured 43-layer worker config through the scheduler's
+        # representative-spec conversion, using the captured per-layer ratios
+        # as the model metadata. Tensor placement is irrelevant on this side.
+        ratios = {
+            layer.layer_index: layer.kv_cache_spec.tokens_per_state
+            for fa_group in parsed.fa_groups
+            for layer in fa_group.layers
+        }
+        scheduler_groups = []
+        for raw_group in captured_config(path).kv_cache_groups:
+            nested = raw_group.kv_cache_spec.kv_cache_specs
+            scheduler_groups.append(
+                group(raw_group.layer_names, next(iter(nested.values())))
+            )
+        scheduler_spec = parse_kv_cache_config(
+            config(*scheduler_groups),
+            scheduler_block_size=256,
+            device_type="cpu",
+            attention_tokens_per_state=ratios,
+        )
+        self.assertEqual(
+            tuple(group.tail_tokens for group in scheduler_spec.wa_groups),
+            (128, 128, 4, 0),
+        )
+
+    def test_dsv4_scheduler_and_worker_share_model_compression_ratios(self):
+        c4_name = "model.layers.2.attn"
+        c128_name = "model.layers.3.attn"
+        fa_specs = {
+            c4_name: MLAAttentionSpec(256, tokens_per_state=4),
+            c128_name: MLAAttentionSpec(256, tokens_per_state=128),
+        }
+        windows = (
+            group(
+                ["model.layers.2.attn.swa_cache"],
+                AscendSlidingWindowMLASpec(64, 1, 128),
+            ),
+            group(
+                ["model.layers.2.attn.compressor.state_cache"],
+                AscendSlidingWindowMLASpec(4, 1, 8),
+            ),
+            group(
+                ["model.layers.3.attn.compressor.state_cache"],
+                AscendSlidingWindowMLASpec(8, 1, 128),
+            ),
+        )
+        runtime_config = vllm_config()
+        runtime_config.cache_config.block_size = 256
+        runtime_config.model_config.hf_text_config = SimpleNamespace(
+            compress_ratios=[0, 0, 4, 128],
+            num_hidden_layers=4,
+        )
+        worker = UCMConnector(
+            runtime_config,
+            KVConnectorRole.WORKER,
+            config(group(fa_specs, fa_specs), *windows),
+        )
+        self.assertEqual([g.tail_tokens for g in worker.spec.wa_groups], [128, 4, 0])
+        for representative in fa_specs.values():
+            with self.subTest(representative=representative.tokens_per_state):
+                scheduler = UCMConnector(
+                    runtime_config,
+                    KVConnectorRole.SCHEDULER,
+                    config(group(fa_specs, representative), *windows),
+                )
+                self.assertEqual(
+                    [g.tail_tokens for g in scheduler.spec.wa_groups],
+                    [128, 4, 0],
+                )
+                self.assertEqual(scheduler.spec.c4a_group.group_id, 0)
+                self.assertEqual(
+                    [
+                        layer.storage_block_size
+                        for layer in scheduler.spec.groups[0].layers
+                    ],
+                    [64, 2],
+                )
+
+
+class MtpLayerIndexTest(unittest.TestCase):
+    def test_native_numbering(self):
+        from ucm.integration.vllm.v2.ucm_kv_cache import _layer_index
+
+        for name, device, expected in (
+            ("model.layers.0.attn", "npu", 0),
+            ("mtp.0.attn", "npu", 43),
+            ("model.mtp.1.indexer", "npu", 44),
+            ("mtp.43.attn", "npu", 43),
+            ("model.layers.43.attn", "cpu", 43),
+            ("model.layers.44.attn", "cuda", 44),
+        ):
+            with self.subTest(name=name, device=device):
+                self.assertEqual(_layer_index(name, device, 43), expected)
+        with self.assertRaisesRegex(ValueError, "num_hidden_layers"):
+            _layer_index("mtp.0.attn", "npu", None)
+
+    def test_mtp_identity_is_shared_by_selection_ratio_and_tail(self):
+        raw = config(
+            group(["model.layers.0.attn"], AscendMLAAttentionSpec(4, compress_ratio=4)),
+            group(["mtp.0.attn"], AscendMLAAttentionSpec(4, compress_ratio=128)),
+            group(["mtp.0.swa_cache"], AscendSlidingWindowMLASpec(4, 1, 4)),
+            group(
+                ["mtp.0.compressor.state_cache"], AscendSlidingWindowMLASpec(4, 1, 128)
+            ),
+        )
+        cfg = vllm_config()
+        cfg.device_config.device_type = "npu"
+        cfg.model_config.hf_text_config = SimpleNamespace(
+            num_hidden_layers=4, compress_ratios=[4, 0, 0, 0]
+        )
+        with tempfile.TemporaryDirectory() as path:
+            cfg.kv_transfer_config.kv_connector_extra_config["v2_storage_path"] = path
+            parsed = UCMConnector(cfg, KVConnectorRole.SCHEDULER, raw).spec
+        self.assertFalse(parsed.groups[1].is_c4a)
+        self.assertEqual(parsed.groups[1].token_block_size, 512)
+        self.assertEqual(parsed.groups[3].tail_tokens, 0)
+        names = [layer.layer_name for g in parsed.groups for layer in g.layers]
+        layout = UCMKVCacheLayout(
+            parsed,
+            {
+                name: FakeTensor(0x1000 * (i + 1), (8, 4, 1), (4, 1, 1))
+                for i, name in enumerate(names)
+            },
+        )
+        self.assertEqual(layout.layer_names_by_id[0], {"model.layers.0.attn"})
+        self.assertEqual(set(layout.layer_names_by_id[4]), set(names[1:]))
+        # Group-level columns: model layer 0 belongs to group 0 only, so
+        # group 1 answers nothing for it; layer 4 names live in group 1.
+        self.assertFalse(
+            layout.group_layouts[1].view_mask(layer_ids=[0]).any()
+        )
+        group1 = layout.group_layouts[1]
+        whole = group1.extract_segments(
+            [1], [0], [group1.token_block_size], layer_ids=[4]
+        )
+        self.assertTrue(whole[0].size)
 
 
 class ConnectorSPIContractTest(unittest.TestCase):
@@ -1307,9 +1444,13 @@ class RaggedLayoutTest(unittest.TestCase):
             },
         )
 
-        _, component, _, _, _ = layout.group_layouts[0].entries[0]
+        component = layout.group_layouts[0]
         self.assertEqual(parsed.groups[0].token_block_size, 256)
-        self.assertEqual(component.states_per_row, 64)
+        # One stored state per 4 tokens: the block spans 64 states.
+        self.assertEqual(
+            (int(component.states_per_block[0]), int(component.state_strides[0])),
+            (64, 8),
+        )
 
     def test_combined_mamba_raw_page_uses_one_io_region(self):
         parsed = parse_kv_cache_config(
@@ -1343,15 +1484,19 @@ class RaggedLayoutTest(unittest.TestCase):
 
         # The combined byte page stays a single component: whole-block
         # state IO is a byte copy, so the conv/SSM split the spec
-        # describes adds no addressing information.  The entry carries
+        # describes adds no addressing information.  The view carries
         # the content (16B); the page padding (64-byte stride) stays
         # outside the record.
         group_layout = layout.group_layouts[0]
-        self.assertEqual(len(group_layout.entries), 1)
-        _, component, offset, _, _ = group_layout.entries[0]
+        self.assertEqual(len(group_layout.layer_names), 1)
         self.assertEqual(
-            (component.base_ptr, component.block_stride, component.payload_bytes),
-            (0x1000, 64, 16),
+            (
+                int(group_layout.base_ptrs[0]),
+                int(group_layout.block_strides[0]),
+                int(group_layout.payload_bytes[0]),
+                int(group_layout.record_slots[0]),
+            ),
+            (0x1000, 64, 16, 0),
         )
 
         from ucm.integration.vllm.v2.ucm_scheduler import (
@@ -1398,24 +1543,24 @@ class RaggedLayoutTest(unittest.TestCase):
         )
 
         self.assertEqual(
-            tuple(
-                (layer_name, component.base_ptr)
-                for layer_name, component, _, _, _ in layout.group_layouts[0].entries
-            ),
+            tuple(zip(layout.group_layouts[0].layer_names,
+                      layout.group_layouts[0].base_ptrs.tolist())),
             (
                 ("model.layers.0.attn", 0x1000),
                 ("model.layers.0.attn", 0x2000),
                 ("model.layers.1.attn", 0x3000),
             ),
         )
-        # One entry per component, straight from its view: layer 0's two
+        # One column per component, straight from its view: layer 0's two
         # tensors, then layer 1's single 4-D view (trailing dims permuted,
         # 24-byte payload == row stride).
         group_layout = layout.group_layouts[0]
         self.assertEqual(
             tuple(
-                (component.base_ptr, component.payload_bytes)
-                for _, component, _, _, _ in group_layout.entries
+                (int(base_ptr), int(payload))
+                for base_ptr, payload in zip(
+                    group_layout.base_ptrs, group_layout.payload_bytes
+                )
             ),
             ((0x1000, 12), (0x2000, 12), (0x3000, 24)),
         )
@@ -1482,6 +1627,62 @@ class RaggedLayoutTest(unittest.TestCase):
         self.assertEqual(batch.ptrs, (0x1000 + 2 * 128 + 64, 0x1000 + 3 * 128))
         self.assertEqual(batch.sizes, (64, 64))
         self.assertEqual(batch.offsets, (0, 64))
+
+    def test_partial_records_roundtrip_through_real_file_proxy(self):
+        # Exercise the real Proxy's complete-record contract. A memory stub
+        # that silently zero-fills holes can hide incorrect file offsets.
+        parsed = parse_kv_cache_config(
+            config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
+            scheduler_block_size=128,
+        )
+        layout = UCMKVCacheLayout(
+            parsed,
+            {"model.layers.0.attn": FakeTensor(0x1000, (8, 128, 1), (128, 1, 1))},
+        )
+        from ucm.integration.vllm.v2.ucm_scheduler import (
+            RequestDispatchMeta,
+            UCMGroupBlockIds,
+            UCMGroupDispatchPlan,
+        )
+
+        key = b"p" * 16
+
+        def batch(phase, block_ids):
+            plan = UCMGroupDispatchPlan(
+                0,
+                (key,),
+                0,
+                64,
+                192,
+                (UCMGroupBlockIds(0, 0, block_ids),),
+            )
+            metadata = UCMConnectorMetadata(
+                requests={
+                    "r": RequestDispatchMeta("r", **{phase + "_plans": (plan,)}),
+                }
+            )
+            return getattr(layout, "build_" + phase + "_batches")(metadata)
+
+        memory = ByteMemory()
+        memory.write(0x1000, b"\xef" * 1024)
+        memory.write(0x1000 + 2 * 128, bytes(range(128)))
+        memory.write(0x1000 + 3 * 128, bytes(range(128, 256)))
+        expected = bytes(range(64, 192))
+        dumped = batch("dump", (2, 3))
+        loaded = batch("load", (7, 5))
+        with tempfile.TemporaryDirectory() as directory:
+            proxy = SimpleFileUCMProxy(directory, MemoryByteAccess(memory))
+            proxy.dump(dumped.block_ids, dumped.offsets, dumped.ptrs, dumped.sizes)
+            self.assertEqual(
+                (Path(directory) / (key.hex() + ".ucm")).read_bytes(), expected
+            )
+            proxy.load(loaded.block_ids, loaded.offsets, loaded.ptrs, loaded.sizes)
+        self.assertEqual(
+            memory.read(0x1000 + 7 * 128, 128), b"\xef" * 64 + expected[:64]
+        )
+        self.assertEqual(
+            memory.read(0x1000 + 5 * 128, 128), expected[64:] + b"\xef" * 64
+        )
 
     def test_dump_and_load_survive_different_physical_block_layouts(self):
         # Dump and load address different vLLM blocks (the source request is
@@ -1559,7 +1760,10 @@ class RaggedLayoutTest(unittest.TestCase):
 
     def test_kimi_mla_six_kernel_rows_coalesce_per_component(self):
         parsed = parse_kv_cache_config(
-            config(group(["model.layers.3.self_attn.attn"], FullAttentionSpec(768)), num_blocks=2),
+            config(
+                group(["model.layers.3.self_attn.attn"], FullAttentionSpec(768)),
+                num_blocks=2,
+            ),
             scheduler_block_size=768,
         )
         caches = {
@@ -1708,21 +1912,21 @@ class RaggedLayoutTest(unittest.TestCase):
 
         batch = layout.build_load_batches(metadata)
 
-        # Records are block-major: each plan block contributes its whole
-        # record (1152 bytes: layer 0 K 512 + V 256 + layer 1 K 384 -- three
-        # separate runs, since neither their strides nor their block-0
-        # addresses chain) before the next block starts.
-        self.assertEqual(batch.offsets, (0, 512, 768, 1152, 1664, 1920))
-        self.assertEqual(batch.sizes, (512, 256, 384, 512, 256, 384))
+        # Records are layer-major per hash window: each view's window bytes
+        # are contiguous across the window's blocks (layer 0 K 512 + V 256,
+        # layer 1 K 384 -- three separate runs, since neither their strides
+        # nor their block-0 addresses chain), then the next view follows.
+        self.assertEqual(batch.offsets, (0, 512, 1024, 1280, 1536, 1920))
+        self.assertEqual(batch.sizes, (512, 512, 256, 256, 384, 384))
         self.assertEqual(
             batch.ptrs,
-            (0x1400, 0x3200, 0x5300, 0x1A00, 0x3500, 0x5780),
+            (0x1400, 0x1A00, 0x3200, 0x3500, 0x5300, 0x5780),
         )
         # A layerwise (filtered) batch must address the very same record
         # coordinates: a layerwise load lands exactly where the full record
         # was dumped.
         layer_batch = layout.build_load_batches(metadata, "model.layers.1.attn")
-        self.assertEqual(layer_batch.offsets, (768, 1920))
+        self.assertEqual(layer_batch.offsets, (1536, 1920))
         self.assertEqual(layer_batch.sizes, (384, 384))
         self.assertEqual(layer_batch.ptrs, (0x5300, 0x5780))
         full_positions = {
@@ -1754,10 +1958,17 @@ class RaggedLayoutTest(unittest.TestCase):
             ),
         )
         parsed = parse_kv_cache_config(
-            config(group(["model.layers.0.attn", "model.layers.1.attn"],
-                         {"model.layers.0.attn": FullAttentionSpec(256, 4),
-                          "model.layers.1.attn": FullAttentionSpec(256, 4)}),
-                   num_blocks=4, tensors=declarations),
+            config(
+                group(
+                    ["model.layers.0.attn", "model.layers.1.attn"],
+                    {
+                        "model.layers.0.attn": FullAttentionSpec(256, 4),
+                        "model.layers.1.attn": FullAttentionSpec(256, 4),
+                    },
+                ),
+                num_blocks=4,
+                tensors=declarations,
+            ),
             scheduler_block_size=256,
             device_type="cpu",
         )
@@ -1806,24 +2017,26 @@ class RaggedLayoutTest(unittest.TestCase):
         self.assertEqual(layer_batch.sizes, (page,))
         self.assertEqual(layer_batch.offsets, (page,))
 
-        # The public segments() API mirrors both shapes.
+        # The public extract_segments API mirrors both shapes: the whole
+        # unfiltered window is the group span, layered queries the view
+        # grid (block 2, layer 1's page).
+        span_ptrs, span_sizes = group_layout.block_first_segments((2,))
         self.assertEqual(
-            group_layout.segments((2,)), ((0x1000 + 2 * block_stride, 2 * page),)
+            (span_ptrs.tolist(), span_sizes.tolist()),
+            ([0x1000 + 2 * block_stride], [2 * page]),
         )
+        grid_ptrs, grid_sizes = group_layout.extract_segments([2], [0], [256])
         self.assertEqual(
-            group_layout.segments((2,), layers=("model.layers.1.attn",)),
-            ((0x1000 + page + 2 * block_stride, page),),
+            grid_ptrs[:, 1].tolist(), [0x1000 + page + 2 * block_stride]
         )
+        self.assertEqual(grid_sizes[:, 1].tolist(), [page])
 
-        # Sub-block token ranges never use the descriptor span: they walk
+        # Sub-block token windows never use the descriptor span: they walk
         # the layer's own view and stay payload-exact (128 tokens at the
         # 4:1 compression = 32 states x 64B = 2048B).
-        self.assertEqual(
-            group_layout.segments(
-                (2,), layers=("model.layers.0.attn",), token_range=(0, 128)
-            ),
-            ((0x1000 + 2 * block_stride, 2048),),
-        )
+        window_ptrs, window_sizes = group_layout.extract_segments([2], [0], [128])
+        self.assertEqual(window_ptrs[:, 0].tolist(), [0x1000 + 2 * block_stride])
+        self.assertEqual(window_sizes[:, 0].tolist(), [2048])
 
     def test_tiled_group_spans_chain_two_descriptors(self):
         # The DSV4 shape: one group, several descriptors tiling the block
@@ -1851,8 +2064,12 @@ class RaggedLayoutTest(unittest.TestCase):
         parsed = parse_kv_cache_config(
             config(
                 group(
-                    ["model.layers.0.attn", "model.layers.1.attn",
-                     "model.layers.0.indexer.k", "model.layers.1.indexer.k"],
+                    [
+                        "model.layers.0.attn",
+                        "model.layers.1.attn",
+                        "model.layers.0.indexer.k",
+                        "model.layers.1.indexer.k",
+                    ],
                     {
                         "model.layers.0.attn": FullAttentionSpec(256, 4),
                         "model.layers.1.attn": FullAttentionSpec(256, 4),
@@ -1893,7 +2110,7 @@ class RaggedLayoutTest(unittest.TestCase):
         self.assertEqual(group_layout.record_size, slot)
 
         # Layered anchors follow the tile chain, not the layer order.
-        offsets = {name: offset for name, _, offset, _, _ in group_layout.entries}
+        offsets = dict(zip(group_layout.layer_names, group_layout.record_slots.tolist()))
         self.assertEqual(
             offsets,
             {
@@ -1949,18 +2166,29 @@ class RaggedLayoutTest(unittest.TestCase):
             parsed,
             {
                 "model.layers.0.attn": FakeTensor(0x1000, (8, 4, 3), (12, 3, 1)),
-                "model.layers.1.attn": FakeTensor(0x1000 + 8 * 12, (8, 4, 3), (12, 3, 1)),
+                "model.layers.1.attn": FakeTensor(
+                    0x1000 + 8 * 12, (8, 4, 3), (12, 3, 1)
+                ),
             },
         )
         group_layout = layout.group_layouts[0]
         self.assertEqual(
             tuple(
-                (component.base_ptr, component.block_stride, component.payload_bytes)
-                for _, component, _, _, _ in group_layout.entries
+                (int(base_ptr), int(stride), int(payload))
+                for base_ptr, stride, payload in zip(
+                    group_layout.base_ptrs,
+                    group_layout.block_strides,
+                    group_layout.payload_bytes,
+                )
             ),
             ((0x1000, 12, 12), (0x1000 + 8 * 12, 12, 12)),
         )
         self.assertEqual(group_layout.record_size, 24)
+        self.assertEqual(
+            group_layout.layer_names,
+            ("model.layers.0.attn", "model.layers.1.attn"),
+        )
+        self.assertEqual(group_layout.record_slots.tolist(), [0, 12])
 
         from ucm.integration.vllm.v2.ucm_scheduler import (
             RequestDispatchMeta,
@@ -1978,32 +2206,38 @@ class RaggedLayoutTest(unittest.TestCase):
         batch = layout.build_load_batches(metadata)
         # Block-major records; adjacent physical blocks never merge into one
         # entry: cross-block adjacency is an allocation accident, not a
-        # layout property.
+        # Records are layer-major per hash window: view 0's blocks, then
+        # view 1's blocks -- each view's window bytes contiguous.
         self.assertEqual(batch.sizes, (12, 12, 12, 12))
         self.assertEqual(batch.offsets, (0, 12, 24, 36))
         self.assertEqual(
             batch.ptrs,
             (
                 0x1000 + 2 * 12,
-                0x1000 + 8 * 12 + 2 * 12,
                 0x1000 + 5 * 12,
+                0x1000 + 8 * 12 + 2 * 12,
                 0x1000 + 8 * 12 + 5 * 12,
             ),
         )
 
-        # The public segments() API answers the same spans without records.
-        self.assertEqual(
-            group_layout.segments((2, 5)),
-            (
-                (0x1000 + 2 * 12, 12),
-                (0x1000 + 8 * 12 + 2 * 12, 12),
-                (0x1000 + 5 * 12, 12),
-                (0x1000 + 8 * 12 + 5 * 12, 12),
-            ),
+        # The extract_segments grid answers the same spans without
+        # records: rows are blocks, columns views.
+        whole = group_layout.token_block_size
+        grid_ptrs, grid_sizes = group_layout.extract_segments(
+            [2, 5], [0, 0], [whole, whole]
         )
         self.assertEqual(
-            group_layout.segments((2,), layers=("model.layers.1.attn",)),
-            ((0x1000 + 8 * 12 + 2 * 12, 12),),
+            grid_ptrs.tolist(),
+            [
+                [0x1000 + 2 * 12, 0x1000 + 8 * 12 + 2 * 12],
+                [0x1000 + 5 * 12, 0x1000 + 8 * 12 + 5 * 12],
+            ],
+        )
+        self.assertEqual(grid_sizes.tolist(), [[12, 12], [12, 12]])
+        mask = group_layout.view_mask(layer_names=("model.layers.1.attn",))
+        self.assertEqual(
+            grid_ptrs[:, mask].tolist(),
+            [[0x1000 + 8 * 12 + 2 * 12], [0x1000 + 8 * 12 + 5 * 12]],
         )
 
     def test_layerwise_batches_of_every_layer_tile_the_full_record(self):
@@ -2057,15 +2291,15 @@ class RaggedLayoutTest(unittest.TestCase):
             sorted(union),
             sorted(
                 (ptr, size, offset)
-                for ptr, size, offset in zip(
-                    full.ptrs, full.sizes, full.offsets
-                )
+                for ptr, size, offset in zip(full.ptrs, full.sizes, full.offsets)
             ),
         )
 
     def test_glm_indexer_k_and_scale_keep_separate_runtime_addressing(self):
         parsed = parse_kv_cache_config(
-            config(group(["model.layers.0.indexer"], FullAttentionSpec(128)), num_blocks=4),
+            config(
+                group(["model.layers.0.indexer"], FullAttentionSpec(128)), num_blocks=4
+            ),
             scheduler_block_size=128,
         )
         num_blocks = 4
@@ -2104,6 +2338,137 @@ class RaggedLayoutTest(unittest.TestCase):
         self.assertEqual(batch.ptrs, (k_base + 2 * 16384, scale_base + 2 * 256))
         self.assertEqual(batch.sizes, (16384, 256))
         self.assertEqual(batch.offsets, (0, 16384))
+
+    def test_model_layer_selection_spans_cache_names_and_groups(self):
+        from ucm.integration.vllm.v2.ucm_scheduler import (
+            RequestDispatchMeta,
+            UCMGroupBlockIds,
+            UCMGroupDispatchPlan,
+        )
+
+        packed_names = [
+            "model.layers.1.attn",
+            "model.layers.2.attn",
+            "model.layers.2.indexer",
+            "model.layers.3.attn",
+        ]
+        aux_names = ["model.layers.1.aux", "model.layers.2.aux"]
+        parsed = parse_kv_cache_config(
+            config(
+                group(packed_names, FullAttentionSpec(4)),
+                group(aux_names, FullAttentionSpec(4)),
+                tensors=(
+                    SimpleNamespace(
+                        layers=packed_names,
+                        offset=0,
+                        layer_stride=8,
+                        block_stride=64,
+                    ),
+                ),
+            ),
+            scheduler_block_size=4,
+            device_type="cpu",
+        )
+        caches = {
+            name: FakeTensor(0x1000 + index * 8, (8, 4, 1), (64, 1, 1))
+            for index, name in enumerate(packed_names)
+        }
+        caches.update(
+            {
+                name: FakeTensor(0x4000 + index * 0x1000, (8, 4, 1), (4, 1, 1))
+                for index, name in enumerate(aux_names)
+            }
+        )
+        layout = UCMKVCacheLayout(parsed, caches)
+        layer_id = layout.layer_id_by_name["model.layers.2.attn"]
+        self.assertEqual(layer_id, 2)
+        self.assertEqual(
+            layout.layer_names_by_id[layer_id],
+            frozenset(
+                (
+                    "model.layers.2.attn",
+                    "model.layers.2.indexer",
+                    "model.layers.2.aux",
+                )
+            ),
+        )
+
+        def metadata(block0, block1, start, end):
+            plan = UCMGroupDispatchPlan(
+                "FA",
+                (b"record",),
+                0,
+                start,
+                end,
+                (UCMGroupBlockIds(0, 0, (block0,)), UCMGroupBlockIds(1, 0, (block1,))),
+            )
+            return UCMConnectorMetadata(
+                requests={
+                    "r": RequestDispatchMeta(
+                        "r", load_plans=(plan,), dump_plans=(plan,)
+                    ),
+                }
+            )
+
+        # Whole Block First IO includes padding; partial IO compacts its
+        # windows. Model-layer selection must preserve both record formats.
+        for start, end, offsets in ((0, 4, (8, 16, 36)), (1, 3, (2, 4, 10))):
+            with (
+                self.subTest(window=(start, end)),
+                tempfile.TemporaryDirectory() as path,
+            ):
+                source_meta = metadata(1, 2, start, end)
+                target_meta = metadata(3, 4, start, end)
+                source = layout.build_dump_batches(source_meta)
+                target = layout.build_load_batches(target_meta)
+                source_layer = layout.build_dump_batches(source_meta, layer_id=layer_id)
+                target_layer = layout.build_load_batches(target_meta, layer_id=layer_id)
+                self.assertEqual(source_layer.offsets, offsets)
+                self.assertEqual(target_layer.offsets, offsets)
+                exact = layout.build_load_batches(target_meta, "model.layers.2.attn")
+                self.assertEqual(exact.offsets, offsets[:1])
+                window = layout.group_layouts[0].extract_segments(
+                    [3], [start], [end], layer_ids=[2]
+                )
+                self.assertEqual(
+                    tuple(zip(window[0].reshape(-1).tolist(),
+                              window[1].reshape(-1).tolist())),
+                    tuple(zip(target_layer.ptrs[:2], target_layer.sizes[:2])),
+                )
+                with self.assertRaisesRegex(ValueError, "either"):
+                    layout.build_load_batches(
+                        target_meta, "model.layers.2.attn", layer_id=2
+                    )
+                with self.assertRaises(KeyError):
+                    layout.build_load_batches(target_meta, layer_id=99)
+
+                memory = ByteMemory()
+                for ptr, size in zip(target.ptrs, target.sizes):
+                    memory.write(ptr, b"\xef" * size)
+                for offset, ptr, size in zip(source.offsets, source.ptrs, source.sizes):
+                    memory.write(ptr, bytes((offset + i) % 251 for i in range(size)))
+                proxy = SimpleFileUCMProxy(
+                    Path(path), byte_access=MemoryByteAccess(memory)
+                )
+                proxy.dump(source.block_ids, source.offsets, source.ptrs, source.sizes)
+                proxy.load(
+                    target_layer.block_ids,
+                    target_layer.offsets,
+                    target_layer.ptrs,
+                    target_layer.sizes,
+                )
+                for offset, ptr, size in zip(target.offsets, target.ptrs, target.sizes):
+                    expected = bytearray(b"\xef" * size)
+                    for selected_offset, selected_size in zip(
+                        target_layer.offsets, target_layer.sizes
+                    ):
+                        if offset <= selected_offset < offset + size:
+                            begin = selected_offset - offset
+                            expected[begin : begin + selected_size] = bytes(
+                                (selected_offset + i) % 251
+                                for i in range(selected_size)
+                            )
+                    self.assertEqual(memory.read(ptr, size), bytes(expected))
 
     def test_dsv4_canonical_subrange_selects_intersecting_large_page(self):
         parsed = parse_kv_cache_config(
@@ -2344,7 +2709,19 @@ class DeclaredLayoutModelTest(unittest.TestCase):
 
         for group_id, declared_layout in declared.group_layouts.items():
             undeclared_layout = undeclared.group_layouts[group_id]
-            self.assertEqual(declared_layout.entries, undeclared_layout.entries)
+            self.assertEqual(
+                declared_layout.layer_names, undeclared_layout.layer_names
+            )
+            for column in (
+                "base_ptrs",
+                "block_strides",
+                "payload_bytes",
+                "record_slots",
+            ):
+                self.assertEqual(
+                    getattr(declared_layout, column).tolist(),
+                    getattr(undeclared_layout, column).tolist(),
+                )
             self.assertEqual(declared_layout.record_size, undeclared_layout.record_size)
             self.assertIsNone(declared_layout.block_first)
 
@@ -2372,6 +2749,7 @@ class DeclaredLayoutModelTest(unittest.TestCase):
                 os.environ.pop("UCM_V2_DESCRIPTOR_SOURCE", None)
             else:
                 os.environ["UCM_V2_DESCRIPTOR_SOURCE"] = previous
+
 
 class RawConfigDumpTest(unittest.TestCase):
     """UCM_V2_DUMP_CONFIG serializes the raw KVCacheConfig vLLM handed over."""
@@ -2413,9 +2791,7 @@ class RawConfigDumpTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             self._connector(tmp, "raw_config.json")
-            payload = json.loads(
-                (tmp / "raw_config.json").read_text(encoding="utf-8")
-            )
+            payload = json.loads((tmp / "raw_config.json").read_text(encoding="utf-8"))
             self.assertEqual(payload["num_blocks"], 4)
             self.assertEqual(len(payload["kv_cache_tensors"]), 1)
             tensor = payload["kv_cache_tensors"][0]

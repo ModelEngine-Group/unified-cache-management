@@ -4,7 +4,7 @@ The views vLLM hands over at ``register_kv_caches`` are the addressing
 source of truth -- each view's data_ptr/shape/stride already encodes
 where its layer's blocks sit (0.26: one allocation per view; 0.29: one
 packed backing, views strided per the declarations).  This module turns
-a view into a :class:`Component`; the spec contributes the only two
+a view into a :class:`TensorView`; the spec contributes the only two
 facts views cannot express: the token->state compression ratio and the
 state-page component layout.
 """
@@ -35,17 +35,17 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
-class Component:
-    """One component's addressing facts, read straight off its runtime view.
+class TensorView:
+    """One tensor's addressing facts, read straight off its runtime view.
 
     ``base_ptr`` is the view's block-0 address; block ``b`` starts at
-    ``base_ptr + b * block_stride`` and holds ``payload_bytes`` of
+    ``base_ptr + b * block_stride_bytes`` and holds ``payload_bytes`` of
     content (``states_per_row`` states of ``bytes_per_state`` bytes per
     kernel row, ``rows_per_block`` rows).
     """
 
     base_ptr: int
-    block_stride: int
+    block_stride_bytes: int
     row_stride_bytes: int
     rows_per_block: int
     states_per_row: int
@@ -91,11 +91,11 @@ def row_payload_bytes(
     return expected_stride * element_size
 
 
-def component(
+def build_tensor_view(
     tensor: "torch.Tensor",
     layer: "UCMLayerSpec",
     state_snapshot: bool = False,
-) -> Component:
+) -> TensorView:
     """Derive one component's placement from its runtime view.
 
     The layer spec carries the two facts the view cannot express: the
@@ -109,8 +109,7 @@ def component(
     shape = tuple(int(value) for value in tensor.shape)
     if len(shape) < 2 or len(shape) > 4:
         raise ValueError(
-            "KV component views must be 2-D, 3-D, or 4-D, "
-            f"got shape={shape}"
+            "KV component views must be 2-D, 3-D, or 4-D, " f"got shape={shape}"
         )
     if shape[0] % num_blocks:
         raise ValueError(
@@ -146,13 +145,13 @@ def component(
         # 256-token block = 64 states of 584B).  States never straddle
         # kernel rows, so each row holds expected_block_size //
         # rows_per_block states, each payload // states_per_row bytes.
-        # One derivation covers the Ascend 0.26 token-axis dialect
+        # This derivation covers the Ascend 0.26 token-axis dialect
         # (Kimi MLA: one logical block as dense kernel rows) and the
         # vLLM 0.29 permuted [B, H, N, C] views (N counts stored states)
-        # identically.
-        states_per_row, remainder = divmod(
-            expected_block_size, rows_per_block
-        )
+        # identically for whole blocks. Partial-token IO requires states
+        # to be contiguous in memory (NHC, or H=1 as in DSV4). General
+        # H>1 HNC slicing is not represented by this addressing model.
+        states_per_row, remainder = divmod(expected_block_size, rows_per_block)
         if remainder or states_per_row <= 0 or payload % states_per_row:
             raise ValueError(
                 "KV tensor does not match a dense row-payload tiling of "
@@ -162,9 +161,9 @@ def component(
                 f"row_payload={payload}"
             )
         bytes_per_state = payload // states_per_row
-    return Component(
+    return TensorView(
         base_ptr=int(tensor.data_ptr()),
-        block_stride=rows_per_block * row_stride,
+        block_stride_bytes=rows_per_block * row_stride,
         row_stride_bytes=row_stride,
         rows_per_block=rows_per_block,
         states_per_row=states_per_row,
@@ -172,29 +171,30 @@ def component(
     )
 
 
-def layer_structures(
+def build_tensor_views(
     value: "torch.Tensor | tuple[torch.Tensor, ...] | list[torch.Tensor]",
     layer: "UCMLayerSpec",
     *,
     state_snapshot: bool,
-) -> tuple[Component, ...]:
-    """Resolve one layer's components (attention or state snapshot).
+) -> tuple[TensorView, ...]:
+    """Resolve one layer name's tensor views (attention or state snapshot).
 
     ``value`` is whatever ``register_kv_caches`` handed over -- one view
     (0.29 packed layouts) or a tuple of views (0.26 k/v, latent+rope,
-    indexer k+scale, mamba states); normalized to a tuple up front.
+    indexer k+scale, mamba states); normalized to a tuple up front.  The
+    group layout flattens these into its per-view columns in layer order.
     """
 
     tensors = tuple(value) if isinstance(value, (tuple, list)) else (value,)
     if state_snapshot:
-        return state_structures(tensors, layer)
-    return tuple(component(tensor, layer) for tensor in tensors)
+        return _state_tensor_views(tensors, layer)
+    return tuple(build_tensor_view(tensor, layer) for tensor in tensors)
 
 
-def state_structures(
+def _state_tensor_views(
     tensors: tuple["torch.Tensor", ...],
     layer: "UCMLayerSpec",
-) -> tuple[Component, ...]:
+) -> tuple[TensorView, ...]:
     """Resolve an explicit component tuple or one combined raw state page.
 
     The combined page stays a single component: whole-block state IO is
@@ -214,7 +214,7 @@ def state_structures(
     )
     if not expected_shapes or actual_shapes == expected_shapes:
         return tuple(
-            component(tensor, layer, state_snapshot=True) for tensor in tensors
+            build_tensor_view(tensor, layer, state_snapshot=True) for tensor in tensors
         )
 
     if len(tensors) != 1:
@@ -257,9 +257,9 @@ def state_structures(
             f"({payload}B) for {layer.layer_name}"
         )
     return (
-        Component(
+        TensorView(
             base_ptr=int(raw.data_ptr()),
-            block_stride=page_stride,
+            block_stride_bytes=page_stride,
             row_stride_bytes=page_stride,
             rows_per_block=1,
             states_per_row=1,
