@@ -1,9 +1,15 @@
-#ifndef __TUNSTALL_BF16_H__
-#define __TUNSTALL_BF16_H__
+#ifndef TUNSTALL_BF16_R200_H
+#define TUNSTALL_BF16_R200_H
 
 #include <cstddef>
 #include <cstdint>
 #include "tunstall.h"
+
+enum class R200PayloadMode : uint8_t {
+    TUNSTALL,
+    FP8_FALLBACK,
+    INVALID,
+};
 
 // p_src 里有 n_bf16 个 BF16
 // 把它们压缩到 p_dst 里，占 n_bf16 字节
@@ -26,4 +32,8 @@ extern int TunstallDecompressBF16Inplace(
                       // 字节，解压后占据 p_data[0:n_bf16*2] 字节
     size_t n_bf16);
 
-#endif  // __TUNSTALL_BF16_H__
+// Infer the decoder path from an R200 payload. payload_bytes equals n_bf16 because
+// every R200 payload occupies one byte per BF16 value.
+extern R200PayloadMode TunstallGetBF16R200Mode(const uint8_t* p_src, size_t payload_bytes) noexcept;
+
+#endif  // TUNSTALL_BF16_R200_H
