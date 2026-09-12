@@ -200,6 +200,10 @@ async def send_request_to_service(
     req_data["max_tokens"] = 1
     if "stream_options" in req_data:
         del req_data["stream_options"]
+    # min_tokens must be removed when max_tokens is forced to 1, otherwise
+    # min_tokens > max_tokens causes the vLLM backend to reject the request.
+    if "min_tokens" in req_data:
+        del req_data["min_tokens"]
     headers = {
         "Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}",
         "X-Request-Id": request_id,
@@ -252,6 +256,11 @@ async def _handle_completions(api: str, request: Request):
             prefill_req_data["max_tokens"] = 1
             if "stream_options" in prefill_req_data:
                 del prefill_req_data["stream_options"]
+            # min_tokens must be removed when max_tokens is forced to 1,
+            # otherwise min_tokens > max_tokens causes the vLLM backend to
+            # reject the prefill request.
+            if "min_tokens" in prefill_req_data:
+                del prefill_req_data["min_tokens"]
 
             response = await prefill_client_info["client"].post(
                 api, json=prefill_req_data, headers=headers
