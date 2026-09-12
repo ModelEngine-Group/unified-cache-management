@@ -29,7 +29,9 @@
 #include <fstream>
 #include <gtest/gtest.h>
 #include <spdlog/spdlog.h>
+#include <sys/wait.h>
 #include <thread>
+#include <unistd.h>
 
 using namespace UC::Logger;
 
@@ -135,4 +137,46 @@ TEST_F(UCLoggerTest, FileOnlyLogEventuallyReachesVllmFile)
     Flush();
 
     ASSERT_TRUE(WaitFor([&] { return AnyLogFileContains(test_log_dir_, "vllm-", msg); }));
+}
+
+TEST_F(UCLoggerTest, ForkedChildCreatesIndependentLoggers)
+{
+    const std::string parent_capture = "parent capture initialized before fork";
+    LogFileOnly(Level::WARN, "logger_test.cc", "ForkedChildCreatesIndependentLoggers", 100,
+                std::string(parent_capture));
+    Flush();
+    ASSERT_TRUE(
+        WaitFor([&] { return AnyLogFileContains(test_log_dir_, "vllm-", parent_capture); }));
+
+    const pid_t child_pid = fork();
+    ASSERT_NE(child_pid, -1);
+    if (child_pid == 0) {
+        const std::string ucm_message = "fork child ucm logger message";
+        const std::string vllm_message = "fork child vllm logger message";
+        Log(Level::WARN, "logger_test.cc", "ForkedChildCreatesIndependentLoggers", 110,
+            std::string(ucm_message));
+        LogFileOnly(Level::WARN, "logger_test.cc", "ForkedChildCreatesIndependentLoggers", 112,
+                    std::string(vllm_message));
+        Flush();
+
+        const auto ucm_path =
+            std::filesystem::path(test_log_dir_) / ("ucm-" + std::to_string(getpid()) + ".log");
+        const auto vllm_path =
+            std::filesystem::path(test_log_dir_) / ("vllm-" + std::to_string(getpid()) + ".log");
+        const bool logged = WaitFor([&] {
+            return FileContains(ucm_path, ucm_message) && FileContains(vllm_path, vllm_message);
+        });
+        _exit(logged ? 0 : 1);
+    }
+
+    int status = 0;
+    ASSERT_EQ(waitpid(child_pid, &status, 0), child_pid);
+    ASSERT_TRUE(WIFEXITED(status));
+    EXPECT_EQ(WEXITSTATUS(status), 0);
+    EXPECT_TRUE(FileContains(
+        std::filesystem::path(test_log_dir_) / ("ucm-" + std::to_string(child_pid) + ".log"),
+        "fork child ucm logger message"));
+    EXPECT_TRUE(FileContains(
+        std::filesystem::path(test_log_dir_) / ("vllm-" + std::to_string(child_pid) + ".log"),
+        "fork child vllm logger message"));
 }
