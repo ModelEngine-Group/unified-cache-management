@@ -53,13 +53,17 @@ class TensorDescriptor:
 
 
 @dataclass(frozen=True)
-class DescriptorSpan:
-    """A descriptor's contiguous per-block span on interleaved layouts."""
+class BlockFirstSpan:
+    """One group's contiguous per-block span on a Block First layout.
 
-    base_ptr: int
+    The group's descriptors tile the block slot back to back (offset
+    chain, paddings riding inside), so one block of this group is one
+    IO span: every layer page of every descriptor in it.
+    """
+
+    base_ptr: int  # first layer of the first (lowest-offset) descriptor
     block_stride: int
-    span_bytes: int  # layer_count * layer_stride, page paddings included
-    record_start: int  # span start inside one block's record
+    span_bytes: int  # sum of per-descriptor layer_count * layer_stride
 
 
 class GroupLayout:
@@ -114,100 +118,108 @@ class GroupLayout:
             components_at[layer.layer_name] = components
 
         self.layer_names = [layer.layer_name for layer in ordered_layers]
-        self.descriptor_spans = self._descriptor_spans(
+        self.block_first, tile_starts = self._block_first_span(
             ordered_layers, components_at
         )
-        # Interleaved layouts: each layer's record span is its page slot
-        # (layer_stride, paddings riding inside); otherwise the layer's
-        # components' payloads.
-        layer_spans = (
-            {
-                layer.layer_name: layer.descriptor.layer_stride
-                for layer in ordered_layers
-                if layer.descriptor is not None
-            }
-            if self.descriptor_spans
-            else {}
-        )
         self.entries: list[tuple] = []
-        record = 0
-        for layer in ordered_layers:
-            components = components_at[layer.layer_name]
-            span = layer_spans.get(
-                layer.layer_name,
-                sum(c.payload_bytes for c in components),
-            )
-            offset = record
-            for component in components:
-                divisor = math.gcd(
-                    component.states_per_block, self.token_block_size
+        if tile_starts is not None:
+            assert self.block_first is not None  # set together with starts
+            # Block First record: a layer's anchor is its page slot inside
+            # its descriptor's tile -- the very coordinates the span's
+            # bytes land at, so layered queries address the same record a
+            # whole-batch span wrote.
+            for layer in ordered_layers:
+                descriptor = layer.descriptor
+                assert descriptor is not None  # checked by the builder
+                offset = tile_starts[id(descriptor)] + (
+                    layer.descriptor_position * descriptor.layer_stride
                 )
-                self.entries.append(
-                    (
-                        layer.layer_name,
-                        component,
-                        offset,
-                        component.states_per_block // divisor,
-                        self.token_block_size // divisor,
+                for component in components_at[layer.layer_name]:
+                    self.entries.append(
+                        self._entry(layer, component, offset)
                     )
-                )
-                offset += component.payload_bytes
-            record += span
-        self.record_size = record
+            self.record_size = self.block_first.span_bytes
+        else:
+            record = 0
+            for layer in ordered_layers:
+                for component in components_at[layer.layer_name]:
+                    self.entries.append(
+                        self._entry(layer, component, record)
+                    )
+                    record += component.payload_bytes
+            self.record_size = record
         if LAYOUT_DEBUG:
             layout_debug(
                 f"group-layout group={self.group_id} "
                 f"layers={len(self.layer_names)} entries={len(self.entries)} "
-                f"descriptor-spans={len(self.descriptor_spans)} "
-                f"record_per_block={record} token_block={self.token_block_size}"
+                f"block-first={int(self.block_first is not None)} "
+                f"record_per_block={self.record_size} token_block={self.token_block_size}"
             )
 
-    def _descriptor_spans(
+    def _block_first_span(
         self,
         ordered_layers: "Sequence[UCMLayerSpec]",
         components_at: Mapping[str, tuple[Component, ...]],
-    ) -> tuple[DescriptorSpan, ...]:
-        """Block First special case; empty unless this group's layers tile
-        block slots under whole interleaved declarations."""
+    ) -> tuple[BlockFirstSpan | None, dict[int, int] | None]:
+        """The group's Block First span, or ``(None, None)`` to stay per-view.
+
+        The group's descriptors tile its block slot back to back (one
+        block is owned by one group, and vLLM places the group's
+        descriptors at consecutive offsets), so the whole group is one
+        IO span per block.  Requires: every declared layer has a single
+        component, every descriptor is interleaved
+        (``0 < layer_stride < block_stride``) with its pages fitting the
+        stride, and the descriptors' offset chain is gapless.
+        """
 
         descriptors = []
         seen = set()
         for layer in ordered_layers:
-            if layer.descriptor is None or id(layer.descriptor) in seen:
+            if layer.descriptor is None:
+                return None, None  # mixed groups keep the per-view record
+            if id(layer.descriptor) in seen:
                 continue
             seen.add(id(layer.descriptor))
             descriptors.append(layer.descriptor)
-        if not descriptors:
-            return ()
-        grouped: dict[int, list[str]] = {}
-        for layer in ordered_layers:
-            descriptor = layer.descriptor
-            components = components_at[layer.layer_name]
-            if descriptor is None or len(components) != 1:
-                return ()
-            if not 0 < descriptor.layer_stride < descriptor.block_stride:
-                return ()  # layer-contiguous placements do not tile slots
-            if components[0].payload_bytes > descriptor.layer_stride:
-                return ()
-            grouped.setdefault(id(descriptor), []).append(layer.layer_name)
-        spans: list[DescriptorSpan] = []
-        record = 0
+        tiles = []
         for descriptor in descriptors:
-            names = grouped.get(id(descriptor))
-            if not names:
-                continue
-            if len(names) != len(descriptor.layers):
-                return ()  # descriptor spans layers outside this group
-            spans.append(
-                DescriptorSpan(
-                    base_ptr=components_at[descriptor.layers[0]][0].base_ptr,
-                    block_stride=descriptor.block_stride,
-                    span_bytes=len(descriptor.layers) * descriptor.layer_stride,
-                    record_start=record,
-                )
+            components = components_at[descriptor.layers[0]]
+            if len(components) != 1:
+                return None, None  # multi-view layers keep the per-view record
+            if not 0 < descriptor.layer_stride < descriptor.block_stride:
+                return None, None  # layer-contiguous placements do not tile
+            if components[0].payload_bytes > descriptor.layer_stride:
+                return None, None
+            tiles.append(
+                (descriptor, len(descriptor.layers) * descriptor.layer_stride)
             )
-            record += len(descriptor.layers) * descriptor.layer_stride
-        return tuple(spans)
+        tiles.sort(key=lambda item: item[0].offset)
+        starts: dict[int, int] = {}
+        record = 0
+        for descriptor, tile_bytes in tiles:
+            if descriptor.offset != record:
+                return None, None  # offset chain must be gapless
+            starts[id(descriptor)] = record
+            record += tile_bytes
+        first_descriptor = tiles[0][0]
+        span = BlockFirstSpan(
+            base_ptr=components_at[first_descriptor.layers[0]][0].base_ptr,
+            block_stride=first_descriptor.block_stride,
+            span_bytes=record,
+        )
+        return span, starts
+
+    def _entry(self, layer, component, offset: int) -> tuple:
+        divisor = math.gcd(
+            component.states_per_block, self.token_block_size
+        )
+        return (
+            layer.layer_name,
+            component,
+            offset,
+            component.states_per_block // divisor,
+            self.token_block_size // divisor,
+        )
 
     # ------------------------------------------------------------------
     # Queries
@@ -345,22 +357,20 @@ class GroupLayout:
         selected: frozenset[str] | None,
     ) -> list[tuple[int, int, int]]:
         entries = []
-        if selected is None and self.descriptor_spans:
-            # Whole batches on interleaved layouts: one descriptor-sized
-            # span per block, paddings riding inside.
+        if selected is None and self.block_first is not None:
+            # Whole batches on Block First layouts: the group's entire
+            # block slot is one span, paddings riding inside.
+            span = self.block_first
             for ordinal, (block_id, _, _) in enumerate(spans):
                 record_base = base + ordinal * self.record_size
-                for span in self.descriptor_spans:
-                    ptr = span.base_ptr + block_id * span.block_stride
-                    if LAYOUT_DEBUG:
-                        layout_debug(
-                            f"io-span group={self.group_id} block={block_id} "
-                            f"ptr={ptr:#x} size={span.span_bytes} "
-                            f"record={record_base + span.record_start}"
-                        )
-                    entries.append(
-                        (ptr, span.span_bytes, record_base + span.record_start)
+                ptr = span.base_ptr + block_id * span.block_stride
+                if LAYOUT_DEBUG:
+                    layout_debug(
+                        f"io-span group={self.group_id} block={block_id} "
+                        f"ptr={ptr:#x} size={span.span_bytes} "
+                        f"record={record_base}"
                     )
+                entries.append((ptr, span.span_bytes, record_base))
             return entries
         for ordinal, (block_id, _, _) in enumerate(spans):
             record_base = base + ordinal * self.record_size

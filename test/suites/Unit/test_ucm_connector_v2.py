@@ -1773,8 +1773,8 @@ class RaggedLayoutTest(unittest.TestCase):
         }
         layout = UCMKVCacheLayout(parsed, caches)
         group_layout = layout.group_layouts[0]
-        self.assertEqual(len(group_layout.descriptor_spans), 1)
-        span = group_layout.descriptor_spans[0]
+        span = group_layout.block_first
+        self.assertIsNotNone(span)
         self.assertEqual(
             (span.base_ptr, span.block_stride, span.span_bytes),
             (0x1000, block_stride, 2 * layer_stride),
@@ -1826,6 +1826,108 @@ class RaggedLayoutTest(unittest.TestCase):
             ),
             ((0x1000 + 2 * block_stride, 2048),),
         )
+
+    def test_tiled_group_spans_chain_two_descriptors(self):
+        # The DSV4 shape: one group, several descriptors tiling the block
+        # slot back to back, with their layers interleaved in layer order.
+        # The whole group is one span per block; each layer's record
+        # anchor is its page slot inside its own descriptor's tile --
+        # not the layer-order running sum (which would interleave two
+        # tiles' strides and land layered queries at wrong offsets).
+        num_blocks = 4
+        slot = 12288
+        declarations = (
+            SimpleNamespace(
+                layers=("model.layers.0.attn", "model.layers.1.attn"),
+                offset=0,
+                layer_stride=4096,
+                block_stride=slot,
+            ),
+            SimpleNamespace(
+                layers=("model.layers.0.indexer.k", "model.layers.1.indexer.k"),
+                offset=2 * 4096,  # right after the first tile
+                layer_stride=2048,
+                block_stride=slot,
+            ),
+        )
+        parsed = parse_kv_cache_config(
+            config(
+                group(
+                    ["model.layers.0.attn", "model.layers.1.attn",
+                     "model.layers.0.indexer.k", "model.layers.1.indexer.k"],
+                    {
+                        "model.layers.0.attn": FullAttentionSpec(256, 4),
+                        "model.layers.1.attn": FullAttentionSpec(256, 4),
+                        "model.layers.0.indexer.k": FullAttentionSpec(256, 8),
+                        "model.layers.1.indexer.k": FullAttentionSpec(256, 8),
+                    },
+                ),
+                num_blocks=num_blocks,
+                tensors=declarations,
+            ),
+            scheduler_block_size=256,
+            device_type="cpu",
+        )
+        caches = {
+            "model.layers.0.attn": FakeTensor(
+                0x1000, (num_blocks, 64, 64), (slot, 64, 1)
+            ),
+            "model.layers.1.attn": FakeTensor(
+                0x1000 + 4096, (num_blocks, 64, 64), (slot, 64, 1)
+            ),
+            "model.layers.0.indexer.k": FakeTensor(
+                0x1000 + 8192, (num_blocks, 32, 64), (slot, 64, 1)
+            ),
+            "model.layers.1.indexer.k": FakeTensor(
+                0x1000 + 8192 + 2048, (num_blocks, 32, 64), (slot, 64, 1)
+            ),
+        }
+        layout = UCMKVCacheLayout(parsed, caches)
+        group_layout = layout.group_layouts[0]
+
+        # One group-level span: both tiles chained, slot-sized.
+        span = group_layout.block_first
+        self.assertIsNotNone(span)
+        self.assertEqual(
+            (span.base_ptr, span.block_stride, span.span_bytes),
+            (0x1000, slot, slot),
+        )
+        self.assertEqual(group_layout.record_size, slot)
+
+        # Layered anchors follow the tile chain, not the layer order.
+        offsets = {name: offset for name, _, offset, _, _ in group_layout.entries}
+        self.assertEqual(
+            offsets,
+            {
+                "model.layers.0.attn": 0,
+                "model.layers.0.indexer.k": 8192,
+                "model.layers.1.attn": 4096,
+                "model.layers.1.indexer.k": 10240,
+            },
+        )
+
+        # A whole batch is one span per block; the layered batch for
+        # layer 1's attention lands at its tile-slot record offset.
+        from ucm.integration.vllm.v2.ucm_scheduler import (
+            RequestDispatchMeta,
+            UCMGroupBlockIds,
+            UCMGroupDispatchPlan,
+        )
+
+        key = b"c" * 16
+        plan = UCMGroupDispatchPlan(
+            0, (key,), 0, 0, 256, (UCMGroupBlockIds(0, 0, (3,)),)
+        )
+        metadata = UCMConnectorMetadata(
+            requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
+        )
+        batch = layout.build_load_batches(metadata)
+        self.assertEqual(batch.ptrs, (0x1000 + 3 * slot,))
+        self.assertEqual(batch.sizes, (slot,))
+        layer_batch = layout.build_load_batches(metadata, "model.layers.1.attn")
+        self.assertEqual(layer_batch.ptrs, (0x1000 + 4096 + 3 * slot,))
+        self.assertEqual(layer_batch.sizes, (4096,))
+        self.assertEqual(layer_batch.offsets, (4096,))
 
     def test_layer_contiguous_views_compile_to_one_entry_per_layer(self):
         # GLM-style placement: layer 1 sits after *all* of layer 0's
@@ -2246,7 +2348,7 @@ class DeclaredLayoutModelTest(unittest.TestCase):
             undeclared_layout = undeclared.group_layouts[group_id]
             self.assertEqual(declared_layout.entries, undeclared_layout.entries)
             self.assertEqual(declared_layout.record_size, undeclared_layout.record_size)
-            self.assertEqual(declared_layout.descriptor_spans, ())
+            self.assertIsNone(declared_layout.block_first)
 
     def test_disagreeing_block_stride_is_rejected(self):
         bad = (
