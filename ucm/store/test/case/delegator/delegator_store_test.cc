@@ -37,7 +37,11 @@ std::unique_ptr<StoreV1> CreateStore() { return std::unique_ptr<StoreV1>{MakeDel
 
 class FakeBackend final : public StoreV1 {
 public:
-    Status Setup(const Detail::Dictionary&) override { return Status::OK(); }
+    Status Setup(const Detail::Dictionary&) override
+    {
+        ++setupCalls;
+        return Status::OK();
+    }
 
     std::string Readme() const override { return "FakeBackend"; }
 
@@ -65,6 +69,8 @@ public:
     Expected<bool> Check(Detail::TaskHandle) override { return true; }
 
     Status Wait(Detail::TaskHandle) override { return Status::OK(); }
+
+    std::size_t setupCalls{0};
 };
 
 StoreV1* MakeFakeBackend() { return new FakeBackend(); }
@@ -119,6 +125,27 @@ TEST(UCDelegatorStoreTest, InjectsGenericBackendForScheduler)
     EXPECT_EQ(lookup.Value()[0], 1);
     EXPECT_EQ(store->LookupOnPrefix(&block, 1).Value(), 0);
     EXPECT_EQ(store->LookupOnReverse(&block, 1).Value(), 0);
+}
+
+TEST(UCDelegatorStoreTest, UsesPipelineBackendWithoutTakingOwnershipOrSettingItUp)
+{
+    BackendFactoryReset reset;
+    FakeBackend backend;
+
+    auto store = CreateStore();
+    Detail::Dictionary config;
+    config.Set<StoreV1*>("store_backend", &backend);
+    config.SetNumber("device_id", -1);
+
+    ASSERT_TRUE(store->Setup(config).Success());
+    EXPECT_EQ(backend.setupCalls, std::size_t{0});
+    EXPECT_EQ(store->Readme(), "DelegatorStore(FakeBackend)");
+
+    Detail::BlockId block{};
+    auto lookup = store->Lookup(&block, 1);
+    ASSERT_TRUE(lookup);
+    ASSERT_EQ(lookup.Value().size(), std::size_t{1});
+    EXPECT_EQ(lookup.Value()[0], 1);
 }
 
 }  // namespace
