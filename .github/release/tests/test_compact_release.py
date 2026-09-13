@@ -90,6 +90,30 @@ def _all_keys(value: object) -> set[str]:
     return set()
 
 
+def test_pr_plan_can_build_directly_from_pinned_upstream_builders() -> None:
+    formal, selection, _finalized_catalog = _inputs()
+    desired = builders.catalog_from_selection(
+        selection,
+        owner="release-org",
+        formal_policy=formal,
+    )
+
+    plan = compact.resolve_plan(
+        formal,
+        runtime_selection=selection,
+        builder_catalog=builders.bind_source_catalog(desired),
+        route="pr",
+    )
+
+    builds = {item["id"]: item for item in selection["wheel_builds"]}
+    assert len(plan["wheels"]) == len(builds)
+    for wheel in plan["wheels"]:
+        build = builds[wheel["id"]]
+        source_repository, _source_tag = build["source_image"].rsplit(":", 1)
+        assert wheel["builder"]["repository"] == source_repository
+        assert wheel["builder"]["digest"] == build["source_image_digest"]
+
+
 def _write_wheel_fixture(
     path: Path,
     metadata_tag: str,

@@ -1335,6 +1335,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             backends = [path for path in config["storage_backends"].split(":")]
             config["storage_backends"] = backends
         config["unique_id"] = f"{self.unique_id}"
+        config["tensor_layout"] = "mla" if self.is_mla else "gqa"
         if self._role == KVConnectorRole.WORKER:
             config["device_id"] = self.device_id
             tensor_size_list = kv_cache_layout.tensor_size_list * self.blocks_per_chunk
@@ -2763,6 +2764,15 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             role=role,
             kv_cache_config=kv_cache_config,
         )
+        enable_ucm_patch = os.getenv("ENABLE_UCM_PATCH")
+        vllm_cpu_affinity = os.getenv("VLLM_CPU_AFFINITY")
+        if enable_ucm_patch is None or vllm_cpu_affinity is None:
+            logger.warning(
+                f"[UCM ENV CHECK] ENABLE_UCM_PATCH={enable_ucm_patch!r}, "
+                f"VLLM_CPU_AFFINITY={vllm_cpu_affinity!r}, "
+                f"device_type={getattr(current_platform, 'device_type', None)!r}, "
+                f"role={role}, pid={os.getpid()}"
+            )
         self.connector: KVConnectorBase_V1
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id.rsplit("_dp", 1)[0]
@@ -2861,6 +2871,18 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             self.connector = UCMLayerWiseConnector(vllm_config, role, kv_cache_config)
         else:
             self.connector = UCMDirectConnector(vllm_config, role, kv_cache_config)
+
+    @property
+    def requires_kv_delivery(self) -> bool:
+        """UCM is a best-effort cache, not a P/D disaggregation producer.
+
+        Returning False keeps drop_stale_output=False so preempted requests
+        are protected by the stale-output guard in the scheduler, which
+        prevents the deadlock under async_scheduling + defer_block_free
+        where all running requests get preempted into deferred_frees and
+        no non-empty batch is ever produced to drain them.
+        """
+        return False
 
     @_record_connector_interface_duration
     def get_block_size(self) -> int:
