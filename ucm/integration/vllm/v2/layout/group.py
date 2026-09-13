@@ -77,7 +77,7 @@ class BlockFirstSpan:
 
     base_ptr: int  # first layer of the first (lowest-offset) descriptor
     block_stride: int
-    span_bytes: int  # sum of per-descriptor layer_count * layer_stride
+    block_bytes: int  # sum of per-descriptor layer_count * layer_stride
 
 
 class KVCacheGroupLayout:
@@ -179,7 +179,7 @@ class KVCacheGroupLayout:
                 )
                 slots.extend((anchor,) * len(views_by_name[layer.layer_name]))
             self.record_slots = np.asarray(slots, dtype=np.int64)
-            self.record_size = self.block_first.span_bytes
+            self.record_size = self.block_first.block_bytes
         else:
             # Layer First record: per-view payload slots, back to back.
             self.record_slots = np.concatenate(
@@ -232,17 +232,17 @@ class KVCacheGroupLayout:
             tiles.append((descriptor, len(descriptor.layers) * descriptor.layer_stride))
         tiles.sort(key=lambda item: item[0].offset)
         starts: dict[int, int] = {}
-        record = 0
+        chain_offset = 0
         for descriptor, tile_bytes in tiles:
-            if descriptor.offset != record:
+            if descriptor.offset != chain_offset:
                 return None, None  # offset chain must be gapless
-            starts[id(descriptor)] = record
-            record += tile_bytes
+            starts[id(descriptor)] = chain_offset
+            chain_offset += tile_bytes
         first_descriptor = tiles[0][0]
         span = BlockFirstSpan(
             base_ptr=views_by_name[first_descriptor.layers[0]][0].base_ptr,
             block_stride=first_descriptor.block_stride,
-            span_bytes=record,
+            block_bytes=chain_offset,
         )
         return span, starts
 
@@ -340,7 +340,7 @@ class KVCacheGroupLayout:
         blocks = np.asarray(block_ids, dtype=np.int64)
         self._checked_blocks(blocks)
         ptrs = span.base_ptr + blocks * span.block_stride
-        sizes = np.full(len(blocks), span.span_bytes, dtype=np.int64)
+        sizes = np.full(len(blocks), span.block_bytes, dtype=np.int64)
         return ptrs, sizes
 
     def _checked_blocks(self, blocks: np.ndarray) -> None:

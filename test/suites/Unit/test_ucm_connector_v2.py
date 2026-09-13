@@ -1985,7 +1985,7 @@ class RaggedLayoutTest(unittest.TestCase):
         span = group_layout.block_first
         self.assertIsNotNone(span)
         self.assertEqual(
-            (span.base_ptr, span.block_stride, span.span_bytes),
+            (span.base_ptr, span.block_stride, span.block_bytes),
             (0x1000, block_stride, 2 * layer_stride),
         )
         # The record is slot-sized: both layers' page slots, paddings and all.
@@ -2104,7 +2104,7 @@ class RaggedLayoutTest(unittest.TestCase):
         span = group_layout.block_first
         self.assertIsNotNone(span)
         self.assertEqual(
-            (span.base_ptr, span.block_stride, span.span_bytes),
+            (span.base_ptr, span.block_stride, span.block_bytes),
             (0x1000, slot, slot),
         )
         self.assertEqual(group_layout.record_size, slot)
