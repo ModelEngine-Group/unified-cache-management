@@ -11,10 +11,10 @@ into parallel columns, one row per tensor view:
     block_strides     bytes between consecutive blocks
     state_strides     bytes between consecutive stored states
     states_per_block  stored states one block spans
-    record_slots      the view's slot in a whole-block record (Block First:
+    block_slots      the view's slot in a whole-block record (Block First:
                      its page position in the descriptor tile chain; else
                      the payload prefix)
-    record_size       one block's whole-record bytes
+    block_size_bytes       one block's whole-record bytes
 
 Accepted views have dense rows (view.py), so the states inside a block are
 evenly spaced by ``state_strides`` and every token window is one span per
@@ -27,7 +27,7 @@ view -- whole blocks included (``local_start = 0``):
 
 ``extract_segments`` is that formula as array arithmetic over the columns.
 It knows no record and no scheduling; the shell composes per-hash-block
-record offsets from ``record_slots``/``record_size``.  Two special cases:
+record offsets from ``block_slots``/``block_size_bytes``.  Two special cases:
 a state group's pages are indivisible checkpoints, so windows are forced
 to whole blocks; and Block First layouts (0.29 declared, ``layer_stride <
 block_stride``) tile their block slot with the descriptors' layer pages,
@@ -67,7 +67,7 @@ class TensorDescriptor:
 
 
 @dataclass(frozen=True)
-class BlockFirstSpan:
+class BlockFirstView:
     """One group's contiguous per-block span on a Block First layout.
 
     The group's descriptors tile the block slot back to back (offset
@@ -77,7 +77,7 @@ class BlockFirstSpan:
 
     base_ptr: int  # first layer of the first (lowest-offset) descriptor
     block_stride: int
-    block_bytes: int  # sum of per-descriptor layer_count * layer_stride
+    block_size_bytes: int  # sum of per-descriptor layer_count * layer_stride
 
 
 class KVCacheGroupLayout:
@@ -85,7 +85,7 @@ class KVCacheGroupLayout:
 
     ``extract_segments`` answers (ptr, size) grids for per-block token
     windows; ``block_first_segments`` the group-span special case;
-    ``record_slots``/``record_size`` carry the whole-block record ledger
+    ``block_slots``/``block_size_bytes`` carry the whole-block record ledger
     for the shell.
     """
 
@@ -161,10 +161,10 @@ class KVCacheGroupLayout:
             layer_slices[layer_id] = slice(first.start, row + 1)
         self.layer_slices = layer_slices
 
-        self.block_first, tile_starts = self._block_first_span(
+        self.block_first, block_starts = self._block_first_span(
             ordered_layers, views_by_name
         )
-        if tile_starts is not None:
+        if block_starts is not None:
             assert self.block_first is not None  # set together with starts
             # Block First record: a layer's slot is its page position inside
             # its descriptor's tile -- the very coordinates the span's bytes
@@ -174,32 +174,31 @@ class KVCacheGroupLayout:
             for layer in ordered_layers:
                 descriptor = layer.descriptor
                 assert descriptor is not None  # checked by the builder
-                anchor = tile_starts[id(descriptor)] + (
+                anchor = block_starts[id(descriptor)] + (
                     layer.descriptor_position * descriptor.layer_stride
                 )
                 slots.extend((anchor,) * len(views_by_name[layer.layer_name]))
-            self.record_slots = np.asarray(slots, dtype=np.int64)
-            self.record_size = self.block_first.block_bytes
+            self.block_slots = np.asarray(slots, dtype=np.int64)
+            self.block_size_bytes = self.block_first.block_size_bytes
         else:
-            # Layer First record: per-view payload slots, back to back.
-            self.record_slots = np.concatenate(
-                (np.zeros(1, dtype=np.int64), np.cumsum(self.payload_bytes)[:-1])
-            )
-            self.record_size = int(self.payload_bytes.sum())
+            # Layer First record: per-view payload slots, back to back --
+            # view i's slot is the sum of the payloads before it.
+            self.block_slots = np.cumsum(self.payload_bytes) - self.payload_bytes
+            self.block_size_bytes = int(self.payload_bytes.sum())
         if LAYOUT_DEBUG:
             layout_debug(
                 f"group-layout group={self.group_id} "
                 f"layers={len(set(self.layer_names))} views={len(self.layer_names)} "
                 f"state={int(self.is_state_snapshot)} "
                 f"block-first={int(self.block_first is not None)} "
-                f"record_per_block={self.record_size} token_block={self.token_block_size}"
+                f"block_size_bytes={self.block_size_bytes} token_block={self.token_block_size}"
             )
 
     def _block_first_span(
         self,
         ordered_layers: "Sequence[UCMLayerSpec]",
         views_by_name: Mapping[str, tuple[TensorView, ...]],
-    ) -> tuple[BlockFirstSpan | None, dict[int, int] | None]:
+    ) -> tuple[BlockFirstView | None, dict[int, int] | None]:
         """The group's Block First span, or ``(None, None)`` to stay per-view.
 
         The group's descriptors tile its block slot back to back (one
@@ -239,10 +238,10 @@ class KVCacheGroupLayout:
             starts[id(descriptor)] = block_offset
             block_offset += tile_bytes
         first_descriptor = tiles[0][0]
-        span = BlockFirstSpan(
+        span = BlockFirstView(
             base_ptr=views_by_name[first_descriptor.layers[0]][0].base_ptr,
             block_stride=first_descriptor.block_stride,
-            block_bytes=block_offset,
+            block_size_bytes=block_offset,
         )
         return span, starts
 
@@ -340,7 +339,7 @@ class KVCacheGroupLayout:
         blocks = np.asarray(block_ids, dtype=np.int64)
         self._checked_blocks(blocks)
         ptrs = span.base_ptr + blocks * span.block_stride
-        sizes = np.full(len(blocks), span.block_bytes, dtype=np.int64)
+        sizes = np.full(len(blocks), span.block_size_bytes, dtype=np.int64)
         return ptrs, sizes
 
     def _checked_blocks(self, blocks: np.ndarray) -> None:

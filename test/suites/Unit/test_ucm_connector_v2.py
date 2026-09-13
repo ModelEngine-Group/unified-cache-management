@@ -438,7 +438,6 @@ class KVCacheSpecTest(unittest.TestCase):
         )
 
         self.assertFalse(parsed.is_dsv4)
-        self.assertEqual(parsed.groups[0].hash_block_size, 128)
         self.assertEqual(parsed.chunk_size, 512)
         self.assertEqual(parsed.layer_to_group["model.layers.0.attn"], 0)
 
@@ -452,7 +451,6 @@ class KVCacheSpecTest(unittest.TestCase):
         )
 
         self.assertFalse(parsed.is_dsv4)
-        self.assertEqual(parsed.alignment_block_size, 128)
         self.assertEqual(tuple(g.group_id for g in parsed.attn_groups), (0,))
         self.assertEqual(tuple(g.group_id for g in parsed.state_groups), (1,))
 
@@ -492,7 +490,7 @@ class KVCacheSpecTest(unittest.TestCase):
     def test_dsv4_derives_canonical_size_once(self):
         parsed = parse_kv_cache_config(
             config(
-                group(["model.layers.2.attn"], MLAAttentionSpec(128, 4)),
+                group(["model.layers.2.attn"], AscendMLAAttentionSpec(128, compress_ratio=4)),
                 group(
                     ["model.layers.0.swa_cache"],
                     AscendSlidingWindowMLASpec(128, 1, 4096),
@@ -507,7 +505,6 @@ class KVCacheSpecTest(unittest.TestCase):
 
         self.assertTrue(parsed.is_dsv4)
         self.assertEqual(parsed.chunk_size, 512)
-        self.assertEqual(parsed.c4a_group.group_id, 0)
         self.assertEqual(parsed.groups[2].token_block_size, 512)
         self.assertEqual(
             parsed.groups[2].kinds,
@@ -572,7 +569,6 @@ class KVCacheSpecTest(unittest.TestCase):
 
         self.assertEqual((glm.is_dsv4, len(glm.groups)), (False, 1))
         self.assertEqual((dsv4.is_dsv4, len(dsv4.groups)), (True, 6))
-        self.assertEqual(dsv4.c4a_group.group_id, 0)
         self.assertEqual(dsv4.chunk_size, 512)
         self.assertEqual(tuple(group.group_id for group in dsv4.fa_groups), (0, 1))
         self.assertEqual(
@@ -690,7 +686,6 @@ class KVCacheSpecTest(unittest.TestCase):
                     [g.tail_tokens for g in scheduler.spec.wa_groups],
                     [128, 4, 0],
                 )
-                self.assertEqual(scheduler.spec.c4a_group.group_id, 0)
                 self.assertEqual(
                     [
                         layer.storage_block_size
@@ -734,7 +729,6 @@ class MtpLayerIndexTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as path:
             cfg.kv_transfer_config.kv_connector_extra_config["v2_storage_path"] = path
             parsed = UCMConnector(cfg, KVConnectorRole.SCHEDULER, raw).spec
-        self.assertFalse(parsed.groups[1].is_c4a)
         self.assertEqual(parsed.groups[1].token_block_size, 512)
         self.assertEqual(parsed.groups[3].tail_tokens, 0)
         names = [layer.layer_name for g in parsed.groups for layer in g.layers]
@@ -834,7 +828,7 @@ class HashAndLookupTest(unittest.TestCase):
             parsed, UCMProxyAdapter(proxy), self.hasher, b"seed", recompute_tokens=0
         )
         request = FakeRequest("r", 512)
-        keys = coordinator._attention_keys(request.all_token_ids, parsed.groups[0])
+        keys = coordinator._legacy_attention_keys(request.all_token_ids)
         proxy.present.update((keys[0], keys[2], keys[3]))
 
         result = coordinator.lookup(request, 0)
@@ -871,7 +865,7 @@ class HashAndLookupTest(unittest.TestCase):
         )
         request = FakeRequest("r", 512)
         proxy.present.update(
-            coordinator._attention_keys(request.all_token_ids, parsed.groups[0])
+            coordinator._legacy_attention_keys(request.all_token_ids)
         )
 
         result = coordinator.lookup(request, 0)
@@ -892,13 +886,13 @@ class HashAndLookupTest(unittest.TestCase):
             parsed, UCMProxyAdapter(proxy), self.hasher, b"seed", recompute_tokens=0
         )
         request = FakeRequest("r", 1024)
-        attn_keys = coordinator._chain(
-            request.all_token_ids, 128, coordinator._group_seed(0)
+        fa_keys = coordinator._chain(
+            request.all_token_ids, 128, coordinator.hasher(b"FA_Block")
         )
-        proxy.present.update(attn_keys)
-        state_512 = self.hasher(
-            (coordinator._group_seed(1), b"UCM_MAMBA_ALIGN_STATE", 512, attn_keys[3])
-        )
+        proxy.present.update(fa_keys)
+        state_512 = coordinator._chain(
+            request.all_token_ids, 128, coordinator.hasher(b"State_Block")
+        )[3]
         proxy.present.add(state_512)
 
         result = coordinator.lookup(request, 0)
@@ -919,21 +913,13 @@ class HashAndLookupTest(unittest.TestCase):
             parsed, UCMProxyAdapter(proxy), self.hasher, b"seed"
         )
         request = FakeRequest("r", 1024)
-        attn_keys = coordinator._chain(
-            request.all_token_ids, 128, coordinator._group_seed(0)
+        fa_keys = coordinator._chain(
+            request.all_token_ids, 128, coordinator.hasher(b"FA_Block")
         )
-        state_keys = tuple(
-            self.hasher(
-                (
-                    coordinator._group_seed(1),
-                    b"UCM_MAMBA_ALIGN_STATE",
-                    boundary,
-                    attn_keys[boundary // 128 - 1],
-                )
-            )
-            for boundary in range(128, 1025, 128)
+        state_keys = coordinator._chain(
+            request.all_token_ids, 128, coordinator.hasher(b"State_Block")
         )
-        proxy.present.update((*attn_keys, *state_keys))
+        proxy.present.update((*fa_keys, *state_keys))
 
         result = coordinator.lookup(request, 0)
 
@@ -965,7 +951,7 @@ class HashAndLookupTest(unittest.TestCase):
     def test_dsv4_requires_fa_prefix_and_latest_wa_boundary(self):
         parsed = parse_kv_cache_config(
             config(
-                group(["model.layers.2.attn"], MLAAttentionSpec(128, 4)),
+                group(["model.layers.2.attn"], AscendMLAAttentionSpec(128, compress_ratio=4)),
                 group(
                     ["model.layers.0.swa_cache"],
                     AscendSlidingWindowMLASpec(128, 1, 4096),
@@ -996,7 +982,7 @@ class HashAndLookupTest(unittest.TestCase):
     def test_dsv4_full_hit_leaves_one_complete_canonical_block(self):
         parsed = parse_kv_cache_config(
             config(
-                group(["model.layers.2.attn"], MLAAttentionSpec(128, 4)),
+                group(["model.layers.2.attn"], AscendMLAAttentionSpec(128, compress_ratio=4)),
                 group(
                     ["model.layers.0.swa_cache"],
                     AscendSlidingWindowMLASpec(128, 1, 4096),
@@ -1364,8 +1350,8 @@ class DispatcherLifecycleTest(unittest.TestCase):
     def test_dsv4_wa_dispatch_uses_only_final_boundary_and_real_tails(self):
         parsed = parse_kv_cache_config(
             config(
-                group(["model.layers.2.attn"], MLAAttentionSpec(128, 4)),
-                group(["model.layers.3.attn"], MLAAttentionSpec(128, 128)),
+                group(["model.layers.2.attn"], AscendMLAAttentionSpec(128, compress_ratio=4)),
+                group(["model.layers.3.attn"], AscendMLAAttentionSpec(128, compress_ratio=128)),
                 group(
                     ["model.layers.0.swa_cache"],
                     AscendSlidingWindowMLASpec(128, 1, 128),
@@ -1455,8 +1441,9 @@ class RaggedLayoutTest(unittest.TestCase):
     def test_combined_mamba_raw_page_uses_one_io_region(self):
         parsed = parse_kv_cache_config(
             config(
+                group(["model.layers.0.attn"], FullAttentionSpec(4)),
                 group(
-                    ["model.layers.0.mixer"],
+                    ["model.layers.1.mixer"],
                     MambaSpec(
                         4,
                         shapes=((2, 2), (2,)),
@@ -1466,7 +1453,7 @@ class RaggedLayoutTest(unittest.TestCase):
                         ),
                         page_size_bytes=64,
                     ),
-                )
+                ),
             ),
             scheduler_block_size=4,
             device_type="cpu",
@@ -1474,11 +1461,12 @@ class RaggedLayoutTest(unittest.TestCase):
         layout = UCMKVCacheLayout(
             parsed,
             {
-                "model.layers.0.mixer": FakeTensor(
+                "model.layers.0.attn": FakeTensor(0x800, (8, 4, 1), (4, 1, 1)),
+                "model.layers.1.mixer": FakeTensor(
                     0x1000,
                     (8, 1, 1, 64),
                     (64, 64, 64, 1),
-                )
+                ),
             },
         )
 
@@ -1487,14 +1475,14 @@ class RaggedLayoutTest(unittest.TestCase):
         # describes adds no addressing information.  The view carries
         # the content (16B); the page padding (64-byte stride) stays
         # outside the record.
-        group_layout = layout.group_layouts[0]
+        group_layout = layout.group_layouts[1]
         self.assertEqual(len(group_layout.layer_names), 1)
         self.assertEqual(
             (
                 int(group_layout.base_ptrs[0]),
                 int(group_layout.block_strides[0]),
                 int(group_layout.payload_bytes[0]),
-                int(group_layout.record_slots[0]),
+                int(group_layout.block_slots[0]),
             ),
             (0x1000, 64, 16, 0),
         )
@@ -1506,7 +1494,9 @@ class RaggedLayoutTest(unittest.TestCase):
         )
 
         key = b"m" * 16
-        plan = UCMGroupDispatchPlan(0, (key,), 0, 0, 4, (UCMGroupBlockIds(0, 0, (3,)),))
+        plan = UCMGroupDispatchPlan(
+            "State", (key,), 0, 0, 4, (UCMGroupBlockIds(1, 0, (3,)),)
+        )
         metadata = UCMConnectorMetadata(
             requests={"r": RequestDispatchMeta("r", load_plans=(plan,))}
         )
@@ -1985,11 +1975,11 @@ class RaggedLayoutTest(unittest.TestCase):
         span = group_layout.block_first
         self.assertIsNotNone(span)
         self.assertEqual(
-            (span.base_ptr, span.block_stride, span.block_bytes),
+            (span.base_ptr, span.block_stride, span.block_size_bytes),
             (0x1000, block_stride, 2 * layer_stride),
         )
         # The record is slot-sized: both layers' page slots, paddings and all.
-        self.assertEqual(group_layout.record_size, 2 * layer_stride)
+        self.assertEqual(group_layout.block_size_bytes, 2 * layer_stride)
 
         from ucm.integration.vllm.v2.ucm_scheduler import (
             RequestDispatchMeta,
@@ -2104,13 +2094,13 @@ class RaggedLayoutTest(unittest.TestCase):
         span = group_layout.block_first
         self.assertIsNotNone(span)
         self.assertEqual(
-            (span.base_ptr, span.block_stride, span.block_bytes),
+            (span.base_ptr, span.block_stride, span.block_size_bytes),
             (0x1000, slot, slot),
         )
-        self.assertEqual(group_layout.record_size, slot)
+        self.assertEqual(group_layout.block_size_bytes, slot)
 
         # Layered anchors follow the tile chain, not the layer order.
-        offsets = dict(zip(group_layout.layer_names, group_layout.record_slots.tolist()))
+        offsets = dict(zip(group_layout.layer_names, group_layout.block_slots.tolist()))
         self.assertEqual(
             offsets,
             {
@@ -2183,12 +2173,12 @@ class RaggedLayoutTest(unittest.TestCase):
             ),
             ((0x1000, 12, 12), (0x1000 + 8 * 12, 12, 12)),
         )
-        self.assertEqual(group_layout.record_size, 24)
+        self.assertEqual(group_layout.block_size_bytes, 24)
         self.assertEqual(
             group_layout.layer_names,
             ("model.layers.0.attn", "model.layers.1.attn"),
         )
-        self.assertEqual(group_layout.record_slots.tolist(), [0, 12])
+        self.assertEqual(group_layout.block_slots.tolist(), [0, 12])
 
         from ucm.integration.vllm.v2.ucm_scheduler import (
             RequestDispatchMeta,
@@ -2473,8 +2463,8 @@ class RaggedLayoutTest(unittest.TestCase):
     def test_dsv4_canonical_subrange_selects_intersecting_large_page(self):
         parsed = parse_kv_cache_config(
             config(
-                group(["model.layers.2.attn"], MLAAttentionSpec(128, 4)),
-                group(["model.layers.3.attn"], MLAAttentionSpec(128, 128)),
+                group(["model.layers.2.attn"], AscendMLAAttentionSpec(128, compress_ratio=4)),
+                group(["model.layers.3.attn"], AscendMLAAttentionSpec(128, compress_ratio=128)),
                 group(
                     ["model.layers.0.swa_cache"],
                     AscendSlidingWindowMLASpec(128, 1, 4096),
@@ -2716,13 +2706,13 @@ class DeclaredLayoutModelTest(unittest.TestCase):
                 "base_ptrs",
                 "block_strides",
                 "payload_bytes",
-                "record_slots",
+                "block_slots",
             ):
                 self.assertEqual(
                     getattr(declared_layout, column).tolist(),
                     getattr(undeclared_layout, column).tolist(),
                 )
-            self.assertEqual(declared_layout.record_size, undeclared_layout.record_size)
+            self.assertEqual(declared_layout.block_size_bytes, undeclared_layout.block_size_bytes)
             self.assertIsNone(declared_layout.block_first)
 
     def test_disagreeing_block_stride_is_rejected(self):

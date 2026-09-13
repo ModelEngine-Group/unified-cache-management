@@ -12,7 +12,7 @@ import math
 import os
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 import numpy as np
 from vllm.model_executor.models.utils import extract_layer_index
@@ -65,9 +65,7 @@ class UCMKVCacheGroupInfo:
     layers: tuple[UCMLayerSpec, ...]
     group_spec: "KVCacheSpec"
     token_block_size: int
-    hash_block_size: int
     kinds: frozenset[KVCacheSpecKind]
-    is_c4a: bool = False
     tail_tokens: int | None = None
     is_eagle_group: bool = False
 
@@ -93,16 +91,29 @@ class UCMKVCacheSpec:
     """UCM policy sizes, all in tokens.
 
     scheduler_block_size is the historical name for CacheConfig.block_size,
-    not vLLM's resolved scheduler granularity. chunk_size is UCM's record/hash
-    unit; neither adds a new native block-allocation setting.
+    not vLLM's resolved scheduler granularity. chunk_size is UCM's
+    cache_block_size: the record/hash unit every chain works at. is_dsv4
+    is a key-namespace label only -- no behavior forks on it.
     """
 
     groups: tuple[UCMKVCacheGroupInfo, ...]
     scheduler_block_size: int
-    alignment_block_size: int
     chunk_size: int
     device_type: str
     is_dsv4: bool
+
+    @property
+    def alignment_block_size(self) -> int:
+        """The multi-group boundary every external store aligns to.
+
+        The model-check harness trims its source prompt to a multiple of
+        this (lcm with the native group block sizes), so a dump always
+        covers complete cache blocks of every group.  The cache_block_size
+        is that boundary: FA chains hash at it and every group's window
+        within it is whole or a measured fraction.
+        """
+
+        return self.chunk_size
 
     @property
     def attn_groups(self) -> tuple[UCMKVCacheGroupInfo, ...]:
@@ -128,12 +139,30 @@ class UCMKVCacheSpec:
     def wa_groups(self) -> tuple[UCMKVCacheGroupInfo, ...]:
         return tuple(group for group in self.groups if group.is_sliding_window)
 
-    @property
-    def c4a_group(self) -> UCMKVCacheGroupInfo | None:
-        matches = tuple(group for group in self.groups if group.is_c4a)
-        if len(matches) > 1:
-            raise ValueError("More than one C4A group was classified")
-        return matches[0] if matches else None
+    def dispatch_chains(
+        self,
+    ) -> tuple[tuple[Literal["FA", "WA", "State"], tuple["UCMKVCacheGroupInfo", ...]], ...]:
+        """The chains every dump/load works over, in key order: FA, WA, State.
+
+        FA holds the full-attention groups; WA the sliding groups that
+        re-store a window tail (tail 0 groups store nothing); State the
+        mamba snapshot groups. Empty chains are absent, and
+        ``group_ucm_block_ids`` / dispatch plans index these in order.
+        """
+
+        chains: list[
+            tuple[Literal["FA", "WA", "State"], tuple[UCMKVCacheGroupInfo, ...]]
+        ] = []
+        if self.fa_groups:
+            chains.append(("FA", self.fa_groups))
+        wa_stored = tuple(
+            group for group in self.wa_groups if (group.tail_tokens or 0) > 0
+        )
+        if wa_stored:
+            chains.append(("WA", wa_stored))
+        if self.state_groups:
+            chains.append(("State", self.state_groups))
+        return tuple(chains)
 
     @property
     def layer_to_group(self) -> Mapping[str, int]:
@@ -163,9 +192,9 @@ def _spec_tokens_per_state(spec: "KVCacheSpec") -> int:
 
     Ascend 0.26 names the field ``compress_ratio``; vLLM 0.29 renamed it to
     ``tokens_per_state`` (vLLM #51718) with identical semantics for DSV4
-    (int > 1 compresses multiple tokens into one stored state). Mamba specs
-    carry a -1 sentinel on 0.29 which is not meaningful as a ratio; callers
-    only read this on attention/MLA specs.
+    (int > 1 compresses multiple tokens into one stored state). Mamba
+    specs carry a -1 sentinel on 0.29 which callers treat as no
+    compression; sliding and state groups carry 1.
     """
     value = getattr(spec, "compress_ratio", None)
     if value is None:
@@ -192,9 +221,7 @@ def _layer_index(name: str, device_type: str, num_hidden_layers: int | None) -> 
 def _classify(
     group: "KVCacheGroupSpec",
     concrete: Sequence[tuple[str, "KVCacheSpec"]],
-    attention_tokens_per_state: Mapping[int, int],
-    layer_indices: Mapping[str, int],
-) -> tuple[frozenset[KVCacheSpecKind], bool]:
+) -> frozenset[KVCacheSpecKind]:
     specs = tuple(spec for _, spec in concrete) or (group.kv_cache_spec,)
     spec_kinds = tuple(get_kv_cache_spec_kind(spec) for spec in specs)
     unknown = tuple(
@@ -208,15 +235,7 @@ def _classify(
     kinds = frozenset(spec_kinds)
     if KVCacheSpecKind.MAMBA in kinds and len(kinds) != 1:
         raise TypeError(f"Mamba and attention specs cannot share a KV group: {kinds}")
-    is_c4a = any(
-        attention_tokens_per_state.get(
-            layer_indices[name], _spec_tokens_per_state(spec)
-        )
-        == 4
-        and kind == KVCacheSpecKind.MLA_ATTENTION
-        for (name, spec), kind in zip(concrete, spec_kinds)
-    )
-    return kinds, is_c4a
+    return kinds
 
 
 def _parse_descriptors(
@@ -294,7 +313,6 @@ def parse_kv_cache_config(
             "KVCacheGroupSpec",
             tuple[tuple[str, "KVCacheSpec"], ...],
             frozenset[KVCacheSpecKind],
-            bool,
         ]
     ] = []
     dsv4 = False
@@ -305,9 +323,7 @@ def parse_kv_cache_config(
             (name, _layer_index(name, device_type, num_hidden_layers))
             for name, _ in concrete
         )
-        kinds, is_c4a = _classify(
-            raw_group, concrete, attention_tokens_per_state, layer_indices
-        )
+        kinds = _classify(raw_group, concrete)
         if KVCacheSpecKind.MAMBA in kinds:
             modes = {
                 str(getattr(spec, "mamba_cache_mode", None)) for _, spec in concrete
@@ -323,7 +339,7 @@ def parse_kv_cache_config(
                     "Mamba align block size must equal cache_config.block_size="
                     f"{scheduler_block_size}, got {sorted(block_sizes)}"
                 )
-        classified.append((raw_group, concrete, kinds, is_c4a))
+        classified.append((raw_group, concrete, kinds))
         if KVCacheSpecKind.SLIDING_WINDOW_MLA in kinds:
             dsv4 = True
 
@@ -331,28 +347,34 @@ def parse_kv_cache_config(
     if len(raw_groups) != 1 and chunk_size is not None:
         raise ValueError("custom chunk_size is supported only for a single KV group")
 
-    c4_sizes: set[int] = set()
-    if dsv4:
-        for raw_group, _, _, is_c4a in classified:
-            if is_c4a:
-                c4_sizes.add(int(getattr(raw_group.kv_cache_spec, "block_size")))
-        if len(c4_sizes) != 1:
-            raise ValueError(
-                "DeepSeek V4 requires exactly one C4A block size, got "
-                f"{sorted(c4_sizes)}"
-            )
-        c4_size = c4_sizes.pop()
-        # Ascend 0.26 reports the C4 storage span as block_size; vLLM 0.29
-        # reports the logical span and derives the storage axis from
-        # tokens_per_state.
-        canonical_size = c4_size * 4 if device_type == "npu" else scheduler_block_size
+    # cache_block_size defaults to a compressed group's token span: a
+    # group is compressed when any attention layer folds tokens
+    # (compress_ratio on 0.26 / tokens_per_state on 0.29).  With several
+    # compressed groups the finest ratio wins (DSV4: C4A 4 beats C128A
+    # 128); a ratio tie picks either group -- same-ratio groups normally
+    # share one token span anyway.
+    compressed: list[tuple[int, int]] = []  # (group ratio, token_block)
+    for raw_group, concrete, kinds in classified:
+        if KVCacheSpecKind.MAMBA in kinds or not kinds.isdisjoint(_SLIDING_KINDS):
+            continue
+        ratios = [_spec_tokens_per_state(spec) for _, spec in concrete]
+        if max(ratios, default=1) <= 1:
+            continue
+        representative = concrete[0][1] if concrete else raw_group.kv_cache_spec
+        block = int(getattr(representative, "block_size"))
+        ascend_ratio = getattr(representative, "compress_ratio", None)
+        token_block = block * int(ascend_ratio) if ascend_ratio else block
+        compressed.append((min(ratios), token_block))
+    has_compression = bool(compressed)
+    if has_compression:
+        canonical_size = min(compressed)[1]
     else:
         canonical_size = scheduler_block_size
 
     groups: list[UCMKVCacheGroupInfo] = []
     attention_tokens_per_state_by_layer: dict[int, int] = {}
-    if dsv4:
-        for _, concrete, kinds, _ in classified:
+    if has_compression:
+        for _, concrete, kinds in classified:
             if KVCacheSpecKind.MAMBA in kinds or not kinds.isdisjoint(_SLIDING_KINDS):
                 continue
             for name, concrete_spec in concrete:
@@ -362,16 +384,23 @@ def parse_kv_cache_config(
                     )
                 )
     num_blocks = int(getattr(kv_cache_config, "num_blocks", 0))
-    for group_id, (raw_group, concrete, kinds, is_c4a) in enumerate(classified):
+    for group_id, (raw_group, concrete, kinds) in enumerate(classified):
         representative = concrete[0][1] if concrete else raw_group.kv_cache_spec
         physical_block_size = int(getattr(raw_group.kv_cache_spec, "block_size"))
-        compress_ratio = _spec_tokens_per_state(representative)
-        token_block_size = (
-            physical_block_size * compress_ratio
-            if dsv4 and device_type == "npu"
-            else physical_block_size
-        )
-        hash_block_size = canonical_size if dsv4 else physical_block_size
+        if KVCacheSpecKind.MAMBA in kinds:
+            # Mamba state blocks follow the scheduler block (align check
+            # above); they never fold tokens.
+            token_block_size = physical_block_size
+        else:
+            # Ascend 0.26 attention specs report the storage span and
+            # carry compress_ratio: the token span is the product.  vLLM
+            # 0.29 reports token spans directly, so its spec block is
+            # already the token span.
+            ascend_ratio = getattr(representative, "compress_ratio", None)
+            token_block_size = (
+                physical_block_size * int(ascend_ratio) if ascend_ratio
+                else physical_block_size
+            )
         layers: list[UCMLayerSpec] = []
         for index, (name, spec) in enumerate(concrete):
             # Normalize to the number of stored states one group block
@@ -381,7 +410,7 @@ def parse_kv_cache_config(
             # states; C128A: 256/128=2; uncompressed specs keep the block).
             logical = int(getattr(spec, "block_size"))
             ratio = _spec_tokens_per_state(spec)
-            if dsv4 and kinds.isdisjoint(_SLIDING_KINDS):
+            if has_compression and kinds.isdisjoint(_SLIDING_KINDS):
                 ratio = attention_tokens_per_state_by_layer[layer_indices[name]]
             if device_type == "npu":
                 storage_block_size = logical
@@ -400,7 +429,12 @@ def parse_kv_cache_config(
                 )
             )
         tail_tokens: int | None = None
-        if dsv4 and not kinds.isdisjoint(_SLIDING_KINDS):
+        if not kinds.isdisjoint(_SLIDING_KINDS):
+            # What a sliding group re-stores at each hash boundary -- not
+            # necessarily the whole window: swa_cache keeps the full
+            # window, a compressor state cache keeps window minus its
+            # layer's compression ratio, and window == ratio leaves
+            # nothing to store (tail 0 groups join no chain).
             tails: set[int] = set()
             for name, concrete_spec in concrete:
                 window = int(getattr(concrete_spec, "sliding_window"))
@@ -411,15 +445,15 @@ def parse_kv_cache_config(
                     if layer_index not in attention_tokens_per_state_by_layer:
                         raise ValueError(
                             "Cannot find matching full-attention compression ratio "
-                            f"for DSV4 layer {layer_index}"
+                            f"for sliding layer {layer_index}"
                         )
                     tail = window - attention_tokens_per_state_by_layer[layer_index]
                 if tail < 0:
-                    raise ValueError(f"Negative DSV4 tail for {name}: {tail}")
+                    raise ValueError(f"Negative sliding tail for {name}: {tail}")
                 tails.add(tail)
             if len(tails) != 1:
                 raise ValueError(
-                    f"DSV4 group {group_id} has inconsistent tail sizes {sorted(tails)}"
+                    f"Group {group_id} has inconsistent tail sizes {sorted(tails)}"
                 )
             tail_tokens = tails.pop()
         groups.append(
@@ -428,9 +462,7 @@ def parse_kv_cache_config(
                 layers=tuple(layers),
                 group_spec=raw_group.kv_cache_spec,
                 token_block_size=token_block_size,
-                hash_block_size=hash_block_size,
                 kinds=kinds,
-                is_c4a=is_c4a,
                 tail_tokens=tail_tokens,
                 is_eagle_group=any(
                     "eagle" in layer.layer_name.lower() for layer in layers
@@ -440,6 +472,11 @@ def parse_kv_cache_config(
 
     state_groups = tuple(group for group in groups if group.is_state_snapshot)
     if state_groups:
+        if not any(group.is_attention for group in groups):
+            raise ValueError(
+                "State-only KV cache groups are unsupported: mamba snapshots "
+                "restore behind a full-attention prefix"
+            )
         mismatched_groups = {
             group.group_id: group.token_block_size
             for group in groups
@@ -451,9 +488,8 @@ def parse_kv_cache_config(
                 f"cache_config.block_size={scheduler_block_size}, got "
                 f"{mismatched_groups}"
             )
-    if dsv4:
+    if has_compression:
         selected_chunk = canonical_size
-        alignment = canonical_size
     elif len(groups) == 1:
         selected_chunk = chunk_size or scheduler_block_size
         if (
@@ -463,33 +499,8 @@ def parse_kv_cache_config(
             raise ValueError(
                 "chunk_size must be a positive multiple of scheduler_block_size"
             )
-        alignment = scheduler_block_size
-    elif state_groups:
-        selected_chunk = scheduler_block_size
-        # In Mamba align mode vLLM makes the state checkpoint block equal to
-        # the final attention/cache block after platform block-size alignment.
-        alignment = scheduler_block_size
     else:
         selected_chunk = scheduler_block_size
-        alignment = math.lcm(*(group.token_block_size for group in groups))
-
-    if dsv4:
-        fa_group_ids = {
-            group.group_id
-            for group in groups
-            if group.is_attention and not group.is_sliding_window
-        }
-        wa_group_ids = {group.group_id for group in groups if group.is_sliding_window}
-        all_group_ids = {group.group_id for group in groups}
-        if (
-            not fa_group_ids
-            or not wa_group_ids
-            or fa_group_ids | wa_group_ids != all_group_ids
-        ):
-            raise ValueError(
-                "DeepSeek V4 groups must partition into full-attention FA "
-                "and sliding/state WA groups"
-            )
 
     if LAYOUT_DEBUG:
         for group in groups:
@@ -497,18 +508,17 @@ def parse_kv_cache_config(
             layout_debug(
                 f"spec group={group.group_id} layers={group.num_layers} "
                 f"kinds={{{kind_names}}} token_block={group.token_block_size} "
-                f"hash_block={group.hash_block_size} tail={group.tail_tokens}"
+                f"tail={group.tail_tokens}"
             )
         layout_debug(
             f"spec scheduler_block={scheduler_block_size} "
-            f"alignment={alignment} chunk={selected_chunk} "
+            f"chunk={selected_chunk} "
             f"device={device_type} dsv4={dsv4}"
         )
 
     return UCMKVCacheSpec(
         groups=tuple(groups),
         scheduler_block_size=scheduler_block_size,
-        alignment_block_size=alignment,
         chunk_size=selected_chunk,
         device_type=device_type,
         is_dsv4=dsv4,
@@ -766,13 +776,13 @@ class UCMKVCacheLayout:
             ptrs, sizes = group_layout.block_first_segments(windows.block_ids)
             offsets = (
                 np.arange(len(windows.block_ids), dtype=np.int64)
-                * group_layout.record_size
+                * group_layout.block_size_bytes
             )
             return (
                 ptrs.tolist(),
                 sizes.tolist(),
                 offsets.tolist(),
-                len(windows.block_ids) * group_layout.record_size,
+                len(windows.block_ids) * group_layout.block_size_bytes,
             )
         ptrs, sizes = group_layout.extract_segments(
             windows.block_ids, windows.local_starts, windows.local_ends
@@ -781,10 +791,10 @@ class UCMKVCacheLayout:
             # Slot-image ledger: block-major rows at their anchors.
             offsets = (
                 np.arange(len(windows.block_ids), dtype=np.int64)[:, None]
-                * group_layout.record_size
-                + group_layout.record_slots
+                * group_layout.block_size_bytes
+                + group_layout.block_slots
             )
-            record_bytes = len(windows.block_ids) * group_layout.record_size
+            record_bytes = len(windows.block_ids) * group_layout.block_size_bytes
         else:
             # Layer-major ledger: view slots by window bytes, blocks
             # packed inside each view's slot.
