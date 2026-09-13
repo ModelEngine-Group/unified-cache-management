@@ -40,24 +40,16 @@ class TensorView:
 
     ``base_ptr`` is the view's block-0 address; block ``b`` starts at
     ``base_ptr + b * block_stride_bytes`` and holds ``payload_bytes`` of
-    content (``states_per_row`` states of ``bytes_per_state`` bytes per
-    kernel row, ``rows_per_block`` rows).
+    content as ``states_per_block`` states of ``bytes_per_state`` bytes,
+    evenly spaced (dense-row views; the row geometry is a derivation
+    detail, consumed inside :func:`build_tensor_view` only).
     """
 
     base_ptr: int
     block_stride_bytes: int
-    row_stride_bytes: int
-    rows_per_block: int
-    states_per_row: int
+    states_per_block: int
     bytes_per_state: int
-
-    @property
-    def states_per_block(self) -> int:
-        return self.rows_per_block * self.states_per_row
-
-    @property
-    def payload_bytes(self) -> int:
-        return self.rows_per_block * self.states_per_row * self.bytes_per_state
+    payload_bytes: int
 
 
 def row_payload_bytes(
@@ -131,12 +123,12 @@ def build_tensor_view(
             f"(shape={shape}, strides={strides}, row_stride={row_stride}, "
             f"row_payload={payload})"
         )
-    states_per_row: int
+    states_per_block: int
     bytes_per_state: int
     if state_snapshot:
-        # A state snapshot (mamba/SSM page) has no per-token axis: the
-        # whole row payload is one indivisible record.
-        states_per_row = 1
+        # A state snapshot (mamba/SSM page) has no per-token axis: each
+        # row is one indivisible record.
+        states_per_block = rows_per_block
         bytes_per_state = payload
     else:
         # Map the spec's block size onto the view's rows.  A block spans
@@ -160,14 +152,14 @@ def build_tensor_view(
                 f"expected_block_size={expected_block_size}, "
                 f"row_payload={payload}"
             )
+        states_per_block = expected_block_size
         bytes_per_state = payload // states_per_row
     return TensorView(
         base_ptr=int(tensor.data_ptr()),
         block_stride_bytes=rows_per_block * row_stride,
-        row_stride_bytes=row_stride,
-        rows_per_block=rows_per_block,
-        states_per_row=states_per_row,
+        states_per_block=states_per_block,
         bytes_per_state=bytes_per_state,
+        payload_bytes=rows_per_block * payload,
     )
 
 
@@ -260,9 +252,8 @@ def _state_tensor_views(
         TensorView(
             base_ptr=int(raw.data_ptr()),
             block_stride_bytes=page_stride,
-            row_stride_bytes=page_stride,
-            rows_per_block=1,
-            states_per_row=1,
+            states_per_block=1,
             bytes_per_state=content,
+            payload_bytes=content,
         ),
     )
