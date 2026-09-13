@@ -1,4 +1,4 @@
-"""Build staged Release state and the compact public cleanup manifest."""
+"""Build staged Release state and the public install and cleanup manifest."""
 
 from __future__ import annotations
 
@@ -12,16 +12,21 @@ from typing import Any
 from urllib.parse import quote, urlparse
 
 if __package__:
-    from . import wheel_audit
+    from . import manifest as public_manifest
+    from . import release_body, runtime, toolkit, wheel_audit
 else:
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import manifest as public_manifest
+    import release_body
+    import runtime
     import wheel_audit
+    from ucm_release import toolkit
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 STATE_KIND = "ucm-release-state"
 STATE_SCHEMA_VERSION = 3
-PUBLIC_MANIFEST_KIND = "ucm-release-manifest"
-PUBLIC_MANIFEST_SCHEMA_VERSION = 6
-PUBLIC_MANIFEST_FILENAME = "release-manifest.json"
 
 
 def _load_json(path: Path) -> Any:
@@ -210,23 +215,6 @@ def _family_map(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return families
 
 
-def _expected_targets(plan: dict[str, Any], reference: str) -> dict[str, str]:
-    publish = _mapping(plan.get("publish"), "release plan publish")
-    expected: dict[str, str] = {}
-    if _mapping(publish.get("ghcr"), "release plan GHCR").get("enabled") is True:
-        expected["ghcr"] = reference
-    dockerhub = _mapping(publish.get("dockerhub"), "release plan Docker Hub")
-    if dockerhub.get("enabled") is True:
-        repository, separator, tag = reference.rpartition(":")
-        if not separator or not repository or not tag:
-            raise ValueError(f"planned image reference is invalid: {reference!r}")
-        namespace = dockerhub.get("namespace")
-        if not isinstance(namespace, str) or not namespace:
-            raise ValueError("enabled Docker Hub publication has no namespace")
-        expected["dockerhub"] = f"{namespace}/{repository.rsplit('/', 1)[-1]}:{tag}"
-    return expected
-
-
 def _meta_artifact(
     plan: dict[str, Any], meta_root: Path | None
 ) -> tuple[dict[str, Any] | None, Path | None]:
@@ -267,12 +255,13 @@ def _meta_artifact(
     return copy.deepcopy(result), wheel_path
 
 
-def build_artifacts_manifest(
+def build_release_state(
     plan: dict[str, Any],
     wheels_root: Path,
     chart_root: Path,
     meta_root: Path | None = None,
     *,
+    toolkit_root: Path | None = None,
     actions_run_id: int,
 ) -> tuple[dict[str, Any], list[tuple[str, str]]]:
     """Validate Wheel/Chart outputs and return the artifacts-ready manifest."""
@@ -330,6 +319,7 @@ def build_artifacts_manifest(
         raise ValueError("Wheel result filenames must be unique")
 
     meta_result, meta_wheel_path = _meta_artifact(plan, meta_root)
+    toolkit_result, toolkit_wheel_path = toolkit.load_artifact(plan, toolkit_root)
     chart_path = _one(sorted(chart_root.rglob("*.tgz")), "Chart package")
     checksums: list[tuple[str, str]] = []
     wheels: list[dict[str, Any]] = []
@@ -356,6 +346,8 @@ def build_artifacts_manifest(
     checksums.append((chart_digest, chart_path.name))
     if meta_result is not None and meta_wheel_path is not None:
         checksums.append((_sha256(meta_wheel_path), str(meta_result["filename"])))
+    if toolkit_result is not None:
+        checksums.append((_sha256(toolkit_wheel_path), toolkit_result["filename"]))
     families = _family_map(plan)
     images = []
     for raw in _list(plan.get("images"), "release plan Images"):
@@ -371,7 +363,7 @@ def build_artifacts_manifest(
             ],
             f"Image {item.get('id')!r} family member",
         )
-        expected_targets = _expected_targets(plan, member["reference"])
+        expected_targets = runtime.image_publication_targets(plan, member["reference"])
         images.append(
             {
                 "id": item["id"],
@@ -388,7 +380,9 @@ def build_artifacts_manifest(
 
     family_records = []
     for family in sorted(families.values(), key=lambda item: str(item["id"])):
-        expected_targets = _expected_targets(plan, family["published_reference"])
+        expected_targets = runtime.image_publication_targets(
+            plan, family["published_reference"]
+        )
         family_records.append(
             {
                 "id": family["id"],
@@ -442,6 +436,8 @@ def build_artifacts_manifest(
     }
     if meta_result is not None:
         manifest["meta_package"] = meta_result
+    if toolkit_result is not None:
+        manifest["toolkit_package"] = toolkit_result
     return manifest, sorted(checksums, key=lambda item: item[1])
 
 
@@ -523,7 +519,9 @@ def validate_member_receipts(
             ],
             f"Image {image_id!r} family member",
         )
-        expected[image_id] = _expected_targets(plan, str(member["reference"]))
+        expected[image_id] = runtime.image_publication_targets(
+            plan, str(member["reference"])
+        )
     receipts = _receipt_map(receipts_root, "ucm-image-member-receipt")
     if set(receipts) != set(expected):
         raise ValueError("member receipts do not exactly cover planned Images")
@@ -534,28 +532,6 @@ def validate_member_receipts(
         if receipt.get("status") != "published":
             raise ValueError(f"Image {image_id} receipt is not published")
     return receipts
-
-
-def validate_pypi_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
-    """Validate the receipt envelope before exact state comparison."""
-    if (
-        set(receipt)
-        != {
-            "kind",
-            "schema_version",
-            "status",
-            "version",
-            "target",
-            "repository_url",
-            "projects",
-            "extras",
-        }
-        or receipt.get("schema_version") != 2
-    ):
-        raise ValueError("PyPI publication receipt has an invalid contract")
-    if receipt.get("status") != "complete":
-        raise ValueError("PyPI publication receipt is not complete")
-    return copy.deepcopy(receipt)
 
 
 def _pypi_receipt(receipts_root: Path) -> dict[str, Any] | None:
@@ -569,66 +545,10 @@ def _pypi_receipt(receipts_root: Path) -> dict[str, Any] | None:
         raise ValueError("PyPI publication receipt is duplicated")
     if not matches:
         return None
-    return validate_pypi_receipt(matches[0])
+    return public_manifest.validate_pypi_receipt(matches[0])
 
 
-def _expected_pypi_projects(state: dict[str, Any]) -> list[dict[str, Any]]:
-    version = state["release"]["version"]
-    grouped: dict[str, dict[str, Any]] = {}
-    for raw_wheel in _list(state.get("wheels"), "release state Wheels"):
-        wheel = _mapping(raw_wheel, "release state Wheel")
-        project = wheel.get("distribution")
-        filename = wheel.get("filename")
-        digest = wheel.get("sha256")
-        if (
-            not isinstance(project, str)
-            or not project
-            or not isinstance(filename, str)
-            or not filename
-            or not isinstance(digest, str)
-            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
-        ):
-            raise ValueError("release state Wheel has invalid PyPI coordinates")
-        record = grouped.setdefault(
-            project,
-            {
-                "project": project,
-                "version": version,
-                "role": "backend",
-                "files": [],
-            },
-        )
-        record["files"].append({"filename": filename, "sha256": f"sha256:{digest}"})
-    if not grouped:
-        raise ValueError("release state has no backend Wheels for PyPI")
-    backends = sorted(grouped.values(), key=lambda item: item["project"])
-    for backend in backends:
-        backend["files"].sort(key=lambda item: item["filename"])
-
-    meta = _mapping(state.get("meta_package"), "release state meta package")
-    meta_digest = meta.get("sha256")
-    meta_distribution = meta.get("distribution")
-    if (
-        not isinstance(meta_distribution, str)
-        or not meta_distribution
-        or meta.get("version") != version
-        or not isinstance(meta.get("filename"), str)
-        or not isinstance(meta_digest, str)
-        or _DIGEST.fullmatch(meta_digest) is None
-    ):
-        raise ValueError("release state meta package has invalid PyPI coordinates")
-    return [
-        *backends,
-        {
-            "project": meta_distribution,
-            "version": version,
-            "role": "meta",
-            "files": [{"filename": meta["filename"], "sha256": meta_digest}],
-        },
-    ]
-
-
-def finalize_manifest(
+def finalize_release_state(
     manifest: dict[str, Any],
     receipts_root: Path,
     *,
@@ -675,7 +595,9 @@ def finalize_manifest(
             )
             if pypi_receipt.get("extras") != meta_package.get("extras"):
                 raise ValueError("PyPI receipt extras do not match the meta package")
-            if pypi_receipt.get("projects") != _expected_pypi_projects(result):
+            if pypi_receipt.get("projects") != public_manifest.expected_pypi_projects(
+                result
+            ):
                 raise ValueError("PyPI receipt files do not match release artifacts")
             result["pypi"] = pypi_receipt
         elif pypi_receipt is not None:
@@ -777,115 +699,6 @@ def finalize_manifest(
     else:
         result["release"]["status"] = "complete"
     return result
-
-
-def _published_references(records: list[dict[str, Any]], *, channel: str) -> list[str]:
-    references = {
-        str(target["reference"])
-        for record in records
-        if record.get("status") == "published"
-        for target in _list(record.get("targets"), "publication targets")
-        if _mapping(target, "publication target").get("channel") == channel
-    }
-    return sorted(references)
-
-
-def build_public_manifest(
-    state: dict[str, Any], release_document: dict[str, Any]
-) -> dict[str, Any]:
-    """Project completed internal state into the exact public schema-v6 surface."""
-    release = _mapping(state.get("release"), "release state release")
-    tag = release.get("git_tag")
-    if release.get("status") != "complete":
-        raise ValueError("public release manifest requires complete publication")
-    if release_document.get("tag_name") != tag:
-        raise ValueError("GitHub Release does not match the release state tag")
-    release_type = release.get("release_type")
-    if release_type not in {"stable", "prerelease", "draft", "nightly"}:
-        raise ValueError("release state has an invalid release type")
-    actions_run_id = release.get("actions_run_id")
-    if (
-        not isinstance(actions_run_id, int)
-        or isinstance(actions_run_id, bool)
-        or actions_run_id < 1
-    ):
-        raise ValueError("release state has an invalid Actions run ID")
-
-    asset_names = {
-        str(_mapping(asset, "GitHub Release asset").get("name", ""))
-        for asset in _list(release_document.get("assets"), "GitHub Release assets")
-    }
-    if "" in asset_names:
-        raise ValueError("GitHub Release contains an unnamed asset")
-    asset_names.add(PUBLIC_MANIFEST_FILENAME)
-
-    images = [
-        _mapping(item, "release state image")
-        for item in _list(state.get("images"), "release state images")
-    ]
-    families = [
-        _mapping(item, "release state family")
-        for item in _list(state.get("families"), "release state families")
-    ]
-    indexes = [item for item in families if item.get("create_index") is True]
-    chart = _mapping(state.get("chart"), "release state Chart")
-    chart_oci = chart.get("oci_reference")
-    if chart_oci is not None and (not isinstance(chart_oci, str) or not chart_oci):
-        raise ValueError("release state Chart OCI reference is invalid")
-    return {
-        "kind": PUBLIC_MANIFEST_KIND,
-        "schema_version": PUBLIC_MANIFEST_SCHEMA_VERSION,
-        "tag": tag,
-        "release_type": release_type,
-        "actions_run_id": actions_run_id,
-        "chart_oci": chart_oci,
-        "runtime_images": {
-            channel: {
-                "members": _published_references(images, channel=channel),
-                "indexes": _published_references(indexes, channel=channel),
-            }
-            for channel in ("ghcr", "dockerhub")
-        },
-        "github_release_assets": sorted(asset_names),
-    }
-
-
-def _github_asset_urls(
-    manifest: dict[str, Any], release_document: dict[str, Any]
-) -> dict[str, str]:
-    release = _mapping(manifest.get("release"), "release manifest release")
-    if release_document.get("tag_name") != release.get("git_tag"):
-        raise ValueError("GitHub Release does not match the release manifest tag")
-
-    urls: dict[str, str] = {}
-    for index, raw_asset in enumerate(
-        _list(release_document.get("assets"), "GitHub Release assets")
-    ):
-        asset = _mapping(raw_asset, f"GitHub Release assets[{index}]")
-        name = asset.get("name")
-        url = asset.get("browser_download_url")
-        parsed = urlparse(url) if isinstance(url, str) else None
-        if (
-            not isinstance(name, str)
-            or not name
-            or name in urls
-            or parsed is None
-            or parsed.scheme != "https"
-            or parsed.netloc != "github.com"
-        ):
-            raise ValueError("GitHub Release assets contain an invalid entry")
-        urls[name] = url
-
-    required = {
-        str(item["filename"])
-        for item in _list(manifest.get("wheels"), "release manifest Wheels")
-    }
-    chart = _mapping(manifest.get("chart"), "release manifest Chart")
-    required.add(str(chart.get("filename", "")))
-    missing = sorted(required - urls.keys())
-    if missing:
-        raise ValueError(f"GitHub Release is missing required assets: {missing}")
-    return urls
 
 
 def _target_repository(reference: str, context: str) -> str:
@@ -994,7 +807,14 @@ def _published_python_installs(manifest: dict[str, Any]) -> dict[str, str]:
         f"{quote(meta_project, safe='')}/{quote(version, safe='')}/"
     )
     label = "PyPI" if target == "pypi" else "TestPyPI"
-    index_option = "" if target == "pypi" else f" --index-url {simple_index}"
+    index_option = ""
+    if target == "testpypi":
+        dependency_index = publication.get(
+            "dependency_index", "https://pypi.org/simple/"
+        )
+        index_option = (
+            f" --index-url {simple_index} --extra-index-url {dependency_index}"
+        )
     return {
         str(extra): (
             f"[{label}]({project_url})<br>"
@@ -1288,16 +1108,28 @@ def render_notes(
             link_assets=link_assets,
         )
     )
+    toolkit_package = manifest.get("toolkit_package")
+    if toolkit_package is not None:
+        filename = toolkit_package["filename"]
+        lines.extend(["", "## Toolkit", ""])
+        if link_assets:
+            lines.append(f"[{filename}]({asset_urls[filename]})")
+        else:
+            lines.append(f"`{filename}`")
+        lines.append(
+            "Install the optional `toolkit` extra with the same-version meta package, or install this Wheel independently."
+        )
     return "\n".join(lines) + "\n"
 
 
 def _artifacts(arguments: argparse.Namespace) -> None:
     plan = _mapping(_load_json(arguments.plan), "release plan")
-    manifest, _ = build_artifacts_manifest(
+    manifest, _ = build_release_state(
         plan,
         arguments.wheels,
         arguments.chart,
         arguments.meta,
+        toolkit_root=arguments.toolkit,
         actions_run_id=arguments.run_id,
     )
     _write_json(arguments.output / "release-state.json", manifest)
@@ -1305,7 +1137,7 @@ def _artifacts(arguments: argparse.Namespace) -> None:
 
 def _finalize(arguments: argparse.Namespace) -> None:
     manifest = _mapping(_load_json(arguments.manifest), "release manifest")
-    result = finalize_manifest(
+    result = finalize_release_state(
         manifest,
         arguments.receipts,
         build_outcome=arguments.build_outcome,
@@ -1323,14 +1155,15 @@ def _notes(arguments: argparse.Namespace) -> None:
     release_document = _mapping(
         _load_json(arguments.release), "GitHub Release document"
     )
-    asset_urls = _github_asset_urls(manifest, release_document)
+    asset_urls = public_manifest.asset_urls(manifest, release_document)
+    notes = render_notes(
+        manifest,
+        repository=arguments.repository,
+        asset_urls=asset_urls,
+        link_assets=release_document.get("draft") is not True,
+    )
     (arguments.output / "release-notes.md").write_text(
-        render_notes(
-            manifest,
-            repository=arguments.repository,
-            asset_urls=asset_urls,
-            link_assets=release_document.get("draft") is not True,
-        ),
+        release_body.merge_body(release_document.get("body"), notes),
         encoding="utf-8",
     )
 
@@ -1341,8 +1174,8 @@ def _manifest(arguments: argparse.Namespace) -> None:
         _load_json(arguments.release), "GitHub Release document"
     )
     _write_json(
-        arguments.output / PUBLIC_MANIFEST_FILENAME,
-        build_public_manifest(state, release_document),
+        arguments.output / public_manifest.RELEASE_MANIFEST_FILENAME,
+        public_manifest.build_manifest(state, release_document),
     )
 
 
@@ -1359,6 +1192,7 @@ def build_parser() -> argparse.ArgumentParser:
     artifacts.add_argument("--wheels", type=Path, required=True)
     artifacts.add_argument("--chart", type=Path, required=True)
     artifacts.add_argument("--meta", type=Path)
+    artifacts.add_argument("--toolkit", type=Path)
     artifacts.add_argument("--run-id", type=int, required=True)
     artifacts.add_argument("--output", type=Path, required=True)
     artifacts.set_defaults(func=_artifacts)

@@ -45,7 +45,7 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - uses: ./.github/actions/download-artifact-retry
         with:
           name: ${{ inputs.plan_artifact }}
@@ -67,7 +67,7 @@ jobs:
           jq -e '(.publish.ghcr.enabled == true) or
                  (.publish.dockerhub.enabled == true)' "${plan}" >/dev/null
           mkdir -p out/receipts context
-          PYTHONPATH=.github/release python -m ucm_release compact select \
+          PYTHONPATH=.github/release python -m ucm_release plan select \
             --plan "${plan}" --kind image --id "${IMAGE_ID}" \
             --output out/image-task.json >/dev/null
           wheel_id="$(jq -r '.wheel_id' out/image-task.json)"

@@ -1,5 +1,17 @@
 # posix-aio
 
+`posix-aio` measures how quickly UCM POSIX Store saves and reads KV data. It performs actual dump/load operations in a selected directory without starting an inference service, helping you assess the storage path at a chosen data size and concurrency.
+
+Use it when:
+
+- Comparing disks or mount paths under the same workload before choosing a cache directory.
+- Investigating slow KV saves or reads by comparing I/O engines, concurrency and Direct I/O settings.
+- Generating test sizes from a model configuration to approximate that model's KV blocks.
+
+Results include per-epoch dump/load timings and bandwidth for comparing storage settings. Measurements cover the Store I/O path and depend on page-cache behavior and I/O mode; time to first token still needs validation in the inference service.
+
+## Test modes
+
 Invokes `ucm/store/test/e2e/posixstore_aio_test.py` from the repository to perform dump/load performance testing via `UcmPipelineStore`, for evaluating UCM POSIX store disk read/write bandwidth. IO engine (`posix_io_engine`, psync/aio), transfer concurrency (`posix_data_trans_concurrency`), and O_DIRECT (`io_direct`) are all configurable via CLI.
 
 Two usage modes are supported:

@@ -2,7 +2,6 @@
 
 UCM Trace 模式是一种轻量级的诊断和评估模式，在推理过程中记录每个请求的跟踪信息，**不**执行任何实际的 KV cache dump/load 操作。Trace 模式允许您收集真实的请求流量数据，并在提交完整的 UCM 存储部署之前模拟 UCM 可以提供的理论 KV cache 命中率。
 
-建议首先使用 Trace 模式收集命中率统计信息，并与相关项目成员确认是否采用 UCM。
 
 ## 概述
 
@@ -13,12 +12,7 @@ UCM Trace 模式是一种轻量级的诊断和评估模式，在推理过程中�
 | `enable_record_traces` | `false` | 记录每个请求的跟踪（timestamp, input_length, output_length, hash_ids）。每个 hash_id 占用 32 字节。 |
 | `use_lite` | `false` | 切换到 **UCM Lite Connector**，它与 Fake Store 一起工作，跳过所有实际的 KV dump/load 操作。 |
 
-当两者都启用时，`UCMConnector` 内部实例化 `UCMLiteConnector` 而不是常规的存储后端 connector。Lite connector：
-
-- 计算真实 UCM 部署将使用的相同块哈希 ID。
-- 在首次查找时为每个请求记录跟踪记录。
-- 返回 `0` 外部命中令牌（没有真实的 store 可以查找），因此推理正确性不受影响，不持久化 KV 数据。
-- 将所有 KV 传输钩子（`start_load_kv`、`save_kv_layer`、`wait_for_save` 等）实现为空操作。
+启用后只记录请求与块标识，不执行真实 KV 读写，也不减少本次推理计算。分析结果用于估计复用机会，实际存储收益需另行测量。
 
 ### 记录的跟踪格式
 
@@ -63,8 +57,8 @@ use_lite: true
 
 ```bash
 export UCM_LOG_PATH=/workspace/ucm-trace-logs
-export UCM_LOG_MAX_SIZE=256      # 每文件 256 MiB
-export UCM_LOG_MAX_FILES=50     # 每进程保留最多 50 个轮转文件
+export UCM_LOG_MAX_SIZE=256      # 256 MiB per file
+export UCM_LOG_MAX_FILES=50     # keep up to 50 rotated files per process
 export UCM_LOG_LEVEL=info
 ```
 
@@ -138,5 +132,3 @@ python benchmarks/auto_trace_analysis.py \
 - **请求生命周期**：请求的块保持可重用的时间长度（平均值、P90、P95）
 
 这些指标帮助您评估 UCM 是否适合您的工作负载，以及为每个存储层分配多少容量。
-
-有关完整的文档，请参阅原始 UCM 文档中的详细 Trace 模式指南。

@@ -96,6 +96,26 @@ scrape_configs:
           - "<vllm-ip>:8000"
 ```
 
+Set the scrape target to an engine address and port reachable from the Prometheus container, such as the quickstart host's actual IP and port 7800. Do not use the Prometheus container's own `127.0.0.1`.
+
+From the host directory containing `prometheus.yml`, create the network and persistent volume, then start Prometheus:
+
+```bash
+docker network create ucm-monitoring
+docker volume create prometheus-data
+
+docker run -d \
+  --name prometheus \
+  --restart unless-stopped \
+  --network ucm-monitoring \
+  -p 9090:9090 \
+  -v "$PWD/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+  -v prometheus-data:/prometheus \
+  prom/prometheus
+```
+
+Open `http://<prometheus-host>:9090/targets`, confirm the `vllm` target is **UP**, then query `ucm:` metrics. Reuse `ucm-monitoring` when the network already exists.
+
 ### Install Grafana
 
 Create a persistent volume and start Grafana:
@@ -106,6 +126,7 @@ docker volume create grafana-data
 docker run -d \
   --name grafana \
   --restart unless-stopped \
+  --network ucm-monitoring \
   -p 3000:3000 \
   -v grafana-data:/var/lib/grafana \
   grafana/grafana
@@ -122,6 +143,8 @@ In Grafana, go to **Connections** → **Add new connection**, search for **Prome
 - Authentication: **No authentication** for an unauthenticated local deployment
 - Select **Save & test** and verify that Grafana can query Prometheus
 
+The shared `ucm-monitoring` network resolves the hostname `prometheus`. For Grafana running elsewhere, use a Prometheus address reachable from that environment.
+
 ### Import UCM Dashboards
 
 Go to **Dashboards** → **New** → **Import**, upload the required dashboard JSON file, select the Prometheus data source,
@@ -132,7 +155,24 @@ UCM provides these dashboards:
 | File | Purpose |
 | --- | --- |
 | `examples/metrics/grafana_vllm.json` | vLLM request latency, token throughput, scheduler state, and cache state |
-| `examples/metrics/grafana_ucm_overview.json` | vLLM/UCM overview, input and output token counts, Store health, and probe trends |
+| `examples/metrics/grafana_store.json` | Store lookup, load, dump, bandwidth, and cache activity |
 | `examples/metrics/grafana_connector.json` | Connector Lookup/Load/Save request counts, block counts, durations, throughput, and errors |
 
-For complete metrics documentation, see the detailed metrics guide in the original UCM documentation.
+## Inspect metrics from a terminal
+
+You can inspect the engine endpoint without Prometheus/Grafana. From the UCM checkout root in a terminal that can reach the endpoint, run:
+
+```bash
+python3 -m pip install -e toolkit
+ucm-toolkit run metrics-view list-configs
+ucm-toolkit run metrics-view check \
+  --url http://127.0.0.1:7800/metrics \
+  --config store
+```
+
+This inspects the current snapshot. See [metrics-view operations](../../toolkit/user/metrics-view.md) for background collection, time-window queries and MLA TP parameters.
+
+## Reference
+
+- [Metric definitions](metrics-reference.md)
+- [Store health metrics](health-metrics.md)

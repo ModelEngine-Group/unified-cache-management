@@ -1,8 +1,37 @@
 {% extends "base.html" %}
 
+{% block site_meta %}
+  {{ super() }}
+  <meta name="readthedocs-addons-api-version" content="1">
+  <script id="ucm-runtime-repositories" type="application/json">{{ config.extra.runtime_repositories | default({}) | tojson }}</script>
+{% endblock %}
+
+{% block header %}
+  {{ super() }}
+  <template id="ucm-rtd-navigation">
+    <div class="md-version ucm-rtd-version">
+      <button type="button" class="md-version__current" aria-label="{{ lang.t('select.version') }}"></button>
+      <ul class="md-version__list"></ul>
+    </div>
+    <div class="md-header__option ucm-rtd-language">
+      <div class="md-select">
+        <button type="button" class="md-header__button md-icon" aria-label="{{ lang.t('select.language') }}">
+          {% include ".icons/material/translate.svg" %}
+        </button>
+        <div class="md-select__inner">
+          <ul class="md-select__list"></ul>
+        </div>
+      </div>
+    </div>
+  </template>
+{% endblock %}
+
 <!-- KaTeX math rendering (CDN-loaded so it works under the i18n folder layout) -->
 {% block extrahead %}
   {{ super() }}
+  {% if page and page.file.src_uri in ["en/index.md", "zh/index.md"] %}
+    <link rel="stylesheet" href="{{ 'assets/stylesheets/home.css' | url }}">
+  {% endif %}
   <link rel="stylesheet" href="https://unpkg.com/katex@0.16.11/dist/katex.min.css">
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jost:wght@300;400;500;600;700&display=swap">
   <style>
@@ -55,8 +84,21 @@
   </style>
 {% endblock %}
 
+{% block content %}
+  {% if page and page.file.src_uri in ["en/index.md", "zh/index.md"] %}
+    <div class="ucm-home">
+      {{ super() }}
+    </div>
+  {% else %}
+    {{ super() }}
+  {% endif %}
+{% endblock %}
+
 {% block scripts %}
   {{ super() }}
+  {% if page and page.file.src_uri in ["en/user-guide/quick_start/index.md", "zh/user-guide/quick_start/index.md"] %}
+    <script src="{{ 'assets/quickstart.js' | url }}"></script>
+  {% endif %}
   <script src="https://unpkg.com/katex@0.16.11/dist/katex.min.js"></script>
   <script src="https://unpkg.com/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
   <script>

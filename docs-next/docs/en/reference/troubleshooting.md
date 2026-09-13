@@ -1,26 +1,13 @@
 # Troubleshooting
 
-This page lists common error codes, log messages, and troubleshooting steps for UCM.
+Start with the stage that failed. Read its logs, then check the relevant configuration and dependencies.
 
-## Error Codes
-
-UCM uses the following error codes in its underlying C++ stores. These codes appear in log messages and exception outputs.
-
-| Error Code | Name | Meaning | Common Cause |
-|------------|------|---------|--------------|
-| **0** | `OK` | Success | Operation completed normally |
-| **-1** | `Error` | General error | Unclassified error, check the attached message |
-| **-50000** | `InvalidParam` | Invalid parameter | Parameter is illegal, empty, or has wrong format |
-| **-50001** | `OutOfMemory` | Out of memory | Memory allocation failed |
-| **-50002** | `OsApiError` | OS API error | System call failed (e.g. file I/O, thread operation) |
-| **-50003** | `DuplicateKey` | Duplicate key | Attempting to insert a key that already exists |
-| **-50004** | `Retry` | Retry required | Transient error, retry recommended |
-| **-50005** | `NotFound` | Not found | Requested object or resource does not exist |
-| **-50006** | `SerializeFailed` | Serialization failed | Error during data serialization |
-| **-50007** | `DeserializeFailed` | Deserialization failed | Error during data deserialization |
-| **-50008** | `Unsupported` | Unsupported operation | Feature or operation not supported in current context |
-| **-50009** | `NoSpace` | No space | Storage space (disk/cache) is full |
-| **-50010** | `Timeout` | Timeout | Operation timed out |
+| Symptom | Start here |
+| --- | --- |
+| Installation or initialization fails | Installation and configuration issues below |
+| Service works but cache is not reused | [External-cache verification](../user-guide/observability/verify-cache.md) |
+| Storage operations are blocked | [Storage health](../user-guide/observability/health-metrics.md) |
+| Only an error code is available | [Error code reference](error-codes.md) |
 
 ## Common Issues
 
@@ -57,7 +44,7 @@ pip install -v -e . --no-build-isolation
 
 **Cause**: Building C++ extensions requires a proper compiler environment. On some systems, `--no-build-isolation` may fail if the build toolchain is not set up.
 
-**Solution**: Use the pre-built Docker image or wheel package from [PyPI](https://pypi.org/project/uc-manager/) instead.
+**Solution**: Select a published runtime image or a Wheel with its backend extra from [Installation](../user-guide/quick_start/index.md).
 
 ---
 
@@ -77,7 +64,7 @@ invalid param ... InvalidParam(...)
 
 **Solution**:
 1. Check YAML syntax: validate with `python -c "import yaml; yaml.safe_load(open('your_config.yaml'))"`
-2. Verify parameter names match the [Pipeline Store](https://ucm.readthedocs.io/en/latest/user-guide/prefix-cache/pipeline_store.html) or [NFS Store](https://ucm.readthedocs.io/en/latest/user-guide/prefix-cache/nfs_store.html) documentation
+2. Verify parameter names match the [Pipeline Store](../developer-guide/cache-configuration/pipeline.md) or [NFS Store](../developer-guide/cache-configuration/nfs.md) documentation
 3. Ensure `storage_backends` path is a valid string, not empty
 
 #### `UCM_CONFIG_FILE` not found
@@ -127,7 +114,7 @@ unknown store pipeline: <name>
 **Solution**:
 1. Check system memory: `free -h`
 2. Check shared memory: `df -h /dev/shm`
-3. Reduce `cache_buffer_capacity_gb` in the config (default is 256 GB)
+3. Set a positive explicit `cache_buffer_capacity_gb` appropriate to the host. Without one, native Cache Store uses 256 GiB with shared buffers or 32 GiB per unshared worker; the vLLM shared-buffer path supplies 128 GiB. Account for every unshared worker on the host.
 4. When running multiple DP instances on one node, reduce the value proportionally
 
 #### Error Code -50002 (OsApiError)
@@ -152,7 +139,7 @@ unknown store pipeline: <name>
 
 **Solution**:
 1. Check disk space: `df -h <storage_backends_path>`
-2. Set `posix_capacity_gb` to a value matching your available disk capacity (e.g. set to 80% of actual capacity)
+2. Set `posix_capacity_gb` within the capacity budget available to this deployment; leave space for other users of the filesystem.
 3. GC is automatically enabled when `posix_capacity_gb > 0` — verify it is set correctly
 
 #### Error Code -50010 (Timeout)
@@ -163,11 +150,11 @@ unknown store pipeline: <name>
 - `timeout_ms` is set too low for the workload
 
 **Solution**:
-1. Test storage bandwidth using `vdbench` or `fio` on the mount point or local disk to verify the environment is healthy
+1. Inspect storage latency, I/O errors, and UCM task timings. If a benchmark is needed, use a dedicated test directory and an approved storage workload.
 2. Check system load: `top` or `htop`
 3. Check network: `ping` and `iperf` for NFS over network
-4. Increase `timeout_ms` if needed (default 30000 ms)
-5. For NFS mounts, check mount options — adding `noac` or adjusting `actimeo` may help
+4. Set `timeout_ms` inside `ucm_connector_config` if a measured operation needs a larger timeout (default 30000 ms); a YAML-root key does not configure Store I/O.
+5. For NFS, check the client/server logs and mount options against the storage deployment requirements before changing cache or consistency settings.
 
 ---
 
@@ -180,18 +167,18 @@ unknown store pipeline: <name>
 request_id: xxx, total_blocks_num: N, hit hbm: 0, hit external: 0
 ```
 
-**Cause**: First-time requests have no cached KV blocks. Subsequent requests with the same prefix should show hits.
+**Cause**: A first request has no reusable external blocks. Later requests require successful writes, matching token prefixes/model identity, enough full blocks, and the same cache geometry.
 
 **Solution**:
-1. Run the same request twice — the second should hit cached blocks
-2. Verify `--no-enable-prefix-caching` is not accidentally enabled (it disables vLLM's native HBM prefix cache, used only for SSD benchmarking)
-3. Verify the `UCM_CONFIG_FILE` path is correct in the launch command
+1. Verify the `UCM_CONFIG_FILE` path and effective Store configuration in the startup log.
+2. Check completed writes and replay an identical multi-block prompt after restarting the engine while preserving storage. See the [external-cache check](../user-guide/quick_start/index.md#vllm-verify-the-service-and-external-cache).
+3. Inspect UCM hit tokens and load activity separately from native HBM cache hits; native prefix caching and external UCM reuse are distinct paths.
 
 #### `Unsupported device platform for UCMDirectConnector`
 
 **Cause**: The current platform is neither CUDA nor Ascend NPU.
 
-**Solution**: UCM currently supports CUDA and Ascend platforms only. Check the [Support Matrix](../user-guide/support-matrix/support_matrix.md) for details.
+**Solution**: This error describes the selected vLLM direct-connector path. Match the connector and engine to the actual device; it is not a statement that every UCM component supports only these two platforms. Check the [Support Matrix](../user-guide/support-matrix/index.md) and the selected build.
 
 #### KV dump/load errors
 
@@ -211,7 +198,7 @@ submit dump task failed. <error>
    [UC][D] Cache task(...) dispatching.
    [UC][D] Posix task(...) dispatching.
    ```
-3. Check if the error code matches one from the [Error Codes](#error-codes) table above
+3. Check if the error code matches one from the [error code reference](error-codes.md)
 
 ---
 

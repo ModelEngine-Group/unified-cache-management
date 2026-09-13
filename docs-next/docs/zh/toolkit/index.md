@@ -1,45 +1,48 @@
 # UCM Toolkit 用户文档
 
-`ucm-toolkit` 是 UCM 仓库里的统一工具入口，用来集中调用性能测试、POSIX AIO 测试、物理网卡流量监控、指标采集等辅助工具。它本身是一个独立 Python 包，不会随主 UCM 包自动安装。
+UCM 工具集用于部署前的环境检查与容量规划，以及运行中的指标观察和性能排查。可以根据当前问题，分别检查宿主机、测量存储和设备拷贝带宽，或记录服务指标与网卡流量。
+
+其中五个命令行工具通过 `ucm-toolkit` 统一调用。它是独立 Python 包，需要单独安装；KV Cache 计算器直接在文档页面使用，无需安装 CLI。
 
 ## 工具列表
 
-| 工具 | 别名 | 类型 | 功能 | 详细文档 |
-| --- | --- | --- | --- | --- |
-| `dev-sandbox` | `dev_sandbox` | 需构建、可运行 | 测量主机内存到设备显存的拷贝带宽及磁盘 AIO 吞吐（C++ 测试程序，使用前需先构建），包含 `copy`、`trans`、`aio` 三个子功能。 | [dev-sandbox 文档](user/dev-sandbox.md) |
-| `posix-aio` | `posix_aio` | 可运行 | 运行 `ucm/store/test/e2e/posixstore_aio_test.py`，测试 POSIX AIO store 的 dump/load 性能。 | [posix-aio 文档](user/posix-aio.md) |
-| `nic-monitor` | `nic_monitor` | 可运行 | 监控物理网卡实时流量、后台采样落盘，并生成阶段统计。 | [nic-monitor 文档](user/nic-monitor.md) |
-| `metrics-view` | `metrics_view`, `terminal-metrics`, `terminal_metrics` | 可运行 | 采集 Prometheus/OpenMetrics 样本到 SQLite，并在终端查询聚合指标。 | [metrics-view 文档](user/metrics-view.md) |
-| `precheck` | `pre_check` | 可运行 | 在 UCM 部署前于宿主机本地运行环境预检，校验 serving-stack/uc-manager 版本、加速卡驱动（CUDA 算力或昇腾 HDK）、内核版本、`/dev/shm` 及 posix store 带宽，输出 `PASS`/`WARN`/`FAIL` 并对失败项给出修复建议（RFC #1208）。 | [precheck 文档](user/precheck.md) |
+| 要解决的问题 | 工具 | 能获得什么 |
+| --- | --- | --- |
+| 部署前需要检查驱动、内核和共享内存是否满足预检条件 | [precheck](user/precheck.md) | 环境检查结果、异常处理建议和可选的存储带宽报告 |
+| KV 保存或读取慢，需要比较存储路径与 I/O 参数 | [posix-aio](user/posix-aio.md) | UCM POSIX Store 的 dump/load 耗时与带宽 |
+| 服务已启动，需要查看缓存命中率、请求延迟和加载带宽 | [metrics-view](user/metrics-view.md) | 终端指标快照，或持续采集后按时间窗口查询的结果 |
+| 跨节点传输慢，需要观察网卡负载与流量分布 | [nic-monitor](user/nic-monitor.md) | 各物理网卡的收发速率、利用率和可回看的 CSV 记录 |
+| KV 加载慢，需要单独测量主机与设备间的拷贝环节 | [dev-sandbox](user/dev-sandbox.md) | 选定拷贝、传输或 I/O 测试场景的耗时与带宽 |
+| 调整上下文长度、批大小或并行度前，需要估算 KV 内存需求 | [KV Cache 计算器](kv-cache-calculator.md) | 按模型与执行参数估算的 KV 容量，以及给定 KV 内存预算下的 token 容量 |
 
-各子工具的依赖、参数、示例与常见问题都在各自文档中说明。
+各工具页面先介绍用途与适用场景，再说明依赖、参数和使用示例。部署前可先做环境预检；服务运行后结合指标与网卡流量缩小排查范围，再对存储或设备拷贝环节做独立测试。
 
 ## 安装
 
-推荐在仓库根目录使用 editable 安装：
+Toolkit 可独立安装，也可以通过 UCM 的可选插件入口安装。下面的命令来自当前文档版本的发布清单，RC 页面会固定到对应 RC 版本。
+
+<div data-toolkit-install data-locale="zh">正在加载本版本的 Toolkit 安装命令……</div>
+
+正式 PyPI 包的安装形式如下；同时选择计算后端时可以组合 extras：
 
 ```bash
-python -m pip install -e toolkit
-```
-
-安装后确认入口可用：
-
-```bash
-ucm-toolkit --help
+pip install ucm-toolkit
+pip install 'uc-manager[toolkit]'
+pip install 'uc-manager[cu130,toolkit]'
 ucm-toolkit list
 ```
 
-如果希望隔离环境，可以先创建虚拟环境：
+`[toolkit]` 不会自动安装 CUDA/CANN 后端。`dev-sandbox` 随包提供源码，使用本机 SDK 按需编译：
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -e toolkit
+ucm-toolkit build dev-sandbox
 ```
+
+源码开发仍支持在仓库根目录执行 `python -m pip install -e toolkit`。
 
 ## 依赖
 
-基础 CLI 只依赖 Python 标准库和 `setuptools`。不同工具还需要额外系统依赖，概览如下（详见各子工具文档）：
+基础 CLI 只依赖 Python 标准库。不同工具还需要额外系统依赖，概览如下（详见各子工具文档）：
 
 | 功能 | 依赖 |
 | --- | --- |

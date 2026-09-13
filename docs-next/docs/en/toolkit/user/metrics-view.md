@@ -1,6 +1,14 @@
 # metrics-view
 
-Collects Prometheus/OpenMetrics `/metrics` samples into SQLite and queries aggregated UCM/vLLM metrics in the terminal. Suitable for observing tiered KV cache hit rates, bandwidth, and other metrics in environments without Prometheus/Grafana.
+`metrics-view` displays metrics from running UCM/vLLM services in the terminal. It reads the service's Prometheus/OpenMetrics `/metrics` endpoint and aggregates request latency, tiered KV cache hit rates and read/write bandwidth, making service behavior visible without deploying Prometheus/Grafana.
+
+Use it when:
+
+- Checking hit rates and load metrics to see whether repeated requests reuse cached KV after integrating UCM.
+- Comparing latency, hit rates and bandwidth across time windows during load tests or configuration changes.
+- Collecting multiple endpoints in a P/D deployment and querying by instance or worker labels.
+
+You can inspect one snapshot or continuously collect samples into SQLite and query a selected time range later. Available metrics depend on what the service exposes. Use continuous collection and time-window queries to examine bandwidth changes over time.
 
 ← Back to [UCM Toolkit](../index.md)
 

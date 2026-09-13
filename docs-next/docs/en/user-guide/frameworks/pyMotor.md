@@ -1,41 +1,21 @@
-# pyMotor
+# Use UCM with pyMotor
 
-**pyMotor** (MindIE-Motor) is an Ascend-native distributed inference serving
-framework that runs vLLM-style prefill/decode (PD) disaggregation on Atlas
-hardware. A pyMotor cluster is described as Kubernetes-style configs — a
-Coordinator plus Engine Pods driven by `user_config.json` and `deploy.py` —
-which makes deployment, scaling, and failover declared and reproducible.
+Follow the [official MindIE-Motor UCM guide](https://mindie-motor.readthedocs.io/zh-cn/latest/user_guide/features/kv_cache_store/backend/ucm/) for deployment. This page explains the Connector composition.
 
-pyMotor serves vLLM-compatible engines on Ascend and ships with features such
-as manual scaling, primary/standby failover, request tracing, PD-role
-rescheduling, and container snapshot.
+## Integration
 
-UCM plugs into pyMotor as a persistent KV cache store backend
-(`UCMConnector` / `UcmPipelineStore`): prefill writes the KVCache once, and
-later requests that share the same prefix reuse it instead of recomputing.
+Prefill combines Mooncake transport and UCMConnector through MultiConnector. Mooncake transfers the current request's P/D KV; UCM reuses prefixes across requests. Decode uses matching Mooncake transport.
+
+## Configuration
+
+- Transport occupies `connectors[0]`, UCMConnector `connectors[1]`. Do not configure AscendStoreConnector with `backend: ucm`.
+- Match `storage_backends` to the volume's `mount_path`; allow Cache buffer headroom in `dshm_size`.
+- See [Cache Configuration](../../developer-guide/cache-configuration/index.md) and [Filesystem Pipeline](../../developer-guide/cache-configuration/pipeline.md) for Store settings.
 
 ## Deployment
 
-Installation and deployment are covered by the official MindIE-Motor
-documentation:
+Follow the official [UCM preparation](https://mindie-motor.readthedocs.io/zh-cn/latest/user_guide/features/kv_cache_store/backend/ucm/#准备-ucm), [configuration](https://mindie-motor.readthedocs.io/zh-cn/latest/user_guide/features/kv_cache_store/backend/ucm/#修改-user_configjson) and [deployment](https://mindie-motor.readthedocs.io/zh-cn/latest/user_guide/features/kv_cache_store/backend/ucm/#部署和删除) sections.
 
-| Task | Guide |
-| --- | --- |
-| Documentation home | [MindIE-Motor docs](https://mindie-motor.readthedocs.io/zh-cn/latest/) |
-| Environment preparation | [Official guide](https://mindie-motor.readthedocs.io/zh-cn/latest/user_guide/environment_preparation/) |
-| Quick start | [Official guide](https://mindie-motor.readthedocs.io/zh-cn/latest/user_guide/quick_start_motor/) |
-| Kubernetes deployment — PD disaggregation | [Official guide](https://mindie-motor.readthedocs.io/zh-cn/latest/user_guide/deployment/k8s/pd_disaggregation_deployment/) |
-| Kubernetes deployment — PD aggregation | [Official guide](https://mindie-motor.readthedocs.io/zh-cn/latest/user_guide/deployment/k8s/pd_aggregation_deployment/) |
-| Standalone Coordinator deployment | [Official guide](https://mindie-motor.readthedocs.io/zh-cn/latest/user_guide/deployment/standalone/) |
+## Verification
 
-## UCM as the KV cache store backend
-
-To run pyMotor with UCM as its persistent KV cache store, follow the dedicated
-integration guide:
-
-- [UCM backend for pyMotor KV cache store](https://mindie-motor.readthedocs.io/zh-cn/latest/user_guide/features/kv_cache_store/backend/ucm/)
-
-It walks through installing the UCM wheel in the prefill role, mounting the
-shared cache storage under `motor_deploy_config.storage`, wiring the
-`MultiConnector` (Mooncake in front, `UCMConnector` in position 2) for prefill,
-and verifying KVCache hits on repeat requests.
+Check Prefill external hits, completed loads and errors. HBM hits alone do not establish UCM reuse; follow [external-cache verification](../observability/verify-cache.md).

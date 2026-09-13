@@ -1,6 +1,14 @@
 # metrics-view
 
-采集 Prometheus/OpenMetrics `/metrics` 样本到 SQLite，并在终端查询聚合后的 UCM/vLLM 指标。适合在没有 Prometheus/Grafana 的环境中观察分层 KV cache 命中率、带宽等指标。
+`metrics-view` 是面向运行中 UCM/vLLM 服务的终端指标查看工具。它读取服务暴露的 Prometheus/OpenMetrics `/metrics` 接口，将请求延迟、分层 KV cache 命中率和读写带宽等指标聚合展示，便于在尚未部署 Prometheus/Grafana 时观察服务行为。
+
+适合在以下情况下使用：
+
+- 接入 UCM 后，通过命中率和加载指标观察重复请求是否复用了缓存。
+- 压测或调整配置时，按时间窗口比较请求延迟、命中率与带宽的变化。
+- P/D 分离部署中，从多个指标端点采集数据，再按实例或 worker 标签查询。
+
+可以即时查看一次快照，也可以持续采样到 SQLite，随后在终端查询指定时间范围。可展示的指标取决于服务实际暴露的数据；观察一段时间内的带宽变化时，应使用持续采集和窗口查询。
 
 ← 返回 [UCM Toolkit 文档](../index.md)
 

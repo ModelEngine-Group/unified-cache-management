@@ -1,10 +1,12 @@
-# Deployment Frameworks
+# Deployment
 
-Guides for deploying UCM with upstream serving and orchestration frameworks.
+Engine quickstarts connect one service to UCM. This section covers how to organize processes and cluster resources and where clients enter the service.
 
-## Supported frameworks
+| Task | Guide | Main prerequisites |
+| --- | --- | --- |
+| Deploy a model with Docker | [Docker: Model Tour](../model-tour/index.md) | Model-specific images, devices, weights, and startup configuration |
+| Manage model instances on Kubernetes | [Helm deployment](kubernetes/deploy.md) | Cluster dependencies, model configuration, images and storage |
+| Use the pyMotor serving framework | [pyMotor](pyMotor.md) | Compatible Ascend runtime and framework settings |
+| Run Prefill and Decode separately | [PD deployment](../capabilities/pd-disaggregation/index.md) | Request coordination, a KV handoff path and compatible P/D instances |
 
-- [Kubernetes](kubernetes.md) — deploy single, multi-node, and PD inference
-  engines with the kthena-based Helm chart
-- [pyMotor](pyMotor.md) — run vLLM-style PD disaggregation on Ascend with UCM
-  as the persistent KV cache store backend
+Establish the target model and cache path with an [engine quickstart](../quick_start/index.md) before expanding. Use [operations](../observability/index.md) to check the request entry point, external reuse and backend state.

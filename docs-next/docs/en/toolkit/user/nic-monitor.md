@@ -1,6 +1,16 @@
 # nic-monitor
 
-Monitors Linux physical NICs. The script finds physical NICs via `/sys/class/net`, reads vendor statistics counters via `ethtool` first, falling back to `/proc/net/dev` on failure. It supports foreground real-time refresh or background sampling to disk with phase statistics.
+`nic-monitor` observes send/receive rates and utilization on Linux physical NICs. During cross-node KV loading or network-storage access, it helps identify which NICs carry traffic, whether load is concentrated on one interface and whether utilization approaches link capacity.
+
+Use it when:
+
+- Inspecting network load and traffic distribution during slow P/D transfers or remote-cache reads.
+- Recording NIC traffic during a load test to compare busy periods with increases in request latency.
+- Comparing send/receive rates across a multi-NIC deployment to identify uneven load.
+
+Foreground mode displays live statistics; background mode saves CSV samples and interval reports that can also be visualized as charts. Statistics cover all traffic on each physical NIC, so use service metrics alongside them to attribute activity to UCM requests.
+
+The script discovers physical NICs through `/sys/class/net`, reads vendor counters through `ethtool` first, and falls back to `/proc/net/dev` on failure.
 
 ← Back to [UCM Toolkit](../index.md)
 

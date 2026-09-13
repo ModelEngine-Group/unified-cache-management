@@ -1,13 +1,14 @@
-# Observability
+# Operations
 
-UCM provides comprehensive observability capabilities to monitor and analyze the performance of your KV cache management system.
+First establish that requests complete, then verify external reuse, then investigate performance and failures. Service health describes the engine, a cache hit describes matching, and transfer/error metrics describe storage operations.
 
-## Key Features
+| Question | Guide |
+| --- | --- |
+| Is external reuse actually enabled? | [Verify external cache](verify-cache.md) |
+| How do I collect and view metrics? | [Metrics setup](metrics.md) |
+| Why has a backend stopped accepting cache work? | [Storage health](health-metrics.md) |
+| How can I estimate prefix reuse opportunities? | [Trace mode](../diagnostics/trace-mode.md) |
+| What should I check after an error or failed initialization? | [Troubleshooting](../../reference/troubleshooting.md) |
+| What are the units, labels and denominators? | [Metric semantics](metrics-reference.md) |
 
-- **Prometheus Metrics**: Export detailed metrics through the vLLM connector
-- **Grafana Dashboards**: Pre-built dashboards for visualization
-- **Real-time Monitoring**: Track cache hit rates, latency, throughput, and more
-
-## Available Documentation
-
-- **[Metrics](metrics.md)**: Complete guide on configuring and using UCM metrics with Prometheus and Grafana
+Compare latency and throughput under the same workload. The [toolkit](../../toolkit/index.md) supports ad hoc metric and network inspection.

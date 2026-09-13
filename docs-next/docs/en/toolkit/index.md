@@ -1,46 +1,48 @@
 # UCM Toolkit
 
-`ucm-toolkit` is the unified tool entry point in the UCM repository, providing centralized access to performance testing, POSIX AIO testing, physical NIC traffic monitoring, metrics collection, and other auxiliary tools. It is a standalone Python package that is not automatically installed with the main UCM package.
+The UCM toolkit supports environment checks and capacity planning before deployment, plus metrics inspection and performance diagnosis during operation. Choose a tool to inspect the host, measure storage or device-copy bandwidth, or record serving metrics and NIC traffic.
+
+Five command-line tools share the `ucm-toolkit` entry point, a standalone Python package that requires a separate installation. The KV Cache calculator runs directly in this documentation site and needs no CLI installation.
 
 ## Tool List
 
-| Tool | Alias | Type | Description | Documentation |
-| --- | --- | --- | --- | --- |
-| `precheck` | `pre_check` | Runnable | Runs environment pre-checks locally on the UCM deployment host before UCM starts, verifying serving-stack/uc-manager versions, accelerator drivers (CUDA compute capability or Ascend HDK), kernel version, `/dev/shm` and posix store bandwidth, outputting `PASS`/`WARN`/`FAIL` with remediation advice for failures (RFC #1208). | [Precheck](user/precheck.md) |
-| `posix-aio` | `posix_aio` | Runnable | Runs `ucm/store/test/e2e/posixstore_aio_test.py` to test POSIX AIO store dump/load performance. | [POSIX AIO](user/posix-aio.md) |
-| `metrics-view` | `metrics_view`, `terminal-metrics`, `terminal_metrics` | Runnable | Collects Prometheus/OpenMetrics samples to SQLite and queries aggregated metrics in the terminal. | [Metrics View](user/metrics-view.md) |
-| `nic-monitor` | `nic_monitor` | Runnable | Monitors physical NIC real-time traffic, background sampling to disk, and generates phase statistics. | [NIC Monitor](user/nic-monitor.md) |
-| `dev-sandbox` | `dev_sandbox` | Buildable, runnable | Measures host-to-device memory copy bandwidth and disk AIO throughput (C++ test program, requires building before use), includes `copy`, `trans`, and `aio` sub-features. | [Dev Sandbox](user/dev-sandbox.md) |
-| KV Cache Calculator | - | - | Estimate KV cache memory usage for your model configuration. | [KV Cache Calculator](kv-cache-calculator.md) |
+| Problem to investigate | Tool | What you get |
+| --- | --- | --- |
+| Check drivers, kernel and shared memory against precheck criteria before deployment | [precheck](user/precheck.md) | Environment results, remediation advice and an optional storage bandwidth report |
+| KV saves or reads are slow; compare storage paths and I/O settings | [posix-aio](user/posix-aio.md) | UCM POSIX Store dump/load timings and bandwidth |
+| Inspect cache hit rates, request latency and load bandwidth in a running service | [metrics-view](user/metrics-view.md) | Terminal metric snapshots or time-window queries over collected samples |
+| Cross-node transfers are slow; inspect NIC load and traffic distribution | [nic-monitor](user/nic-monitor.md) | Per-NIC send/receive rates, utilization and CSV records for later review |
+| KV loading is slow; measure the host-to-device copy step independently | [dev-sandbox](user/dev-sandbox.md) | Timings and bandwidth for selected copy, transfer or I/O test cases |
+| Estimate KV memory needs before changing context length, batch size or parallelism | [KV Cache calculator](kv-cache-calculator.md) | KV capacity estimates from model and execution settings, and token capacity for a given KV memory budget |
 
-Dependencies, parameters, examples, and FAQs for each tool are documented in their respective pages.
+Each tool page introduces its purpose and use cases before dependencies, parameters and examples. Start with an environment precheck before deployment. Once the service is running, use metrics and NIC traffic to narrow the investigation, then test storage or device copies independently.
 
 ## Installation
 
-Editable install from the repository root is recommended:
+Install Toolkit independently or through the optional UCM extra. The following commands come from this documentation version's release manifest and pin RC pages to the corresponding RC version.
+
+<div data-toolkit-install data-locale="en">Loading Toolkit installation commands for this version...</div>
+
+The production PyPI installation forms also support combining a backend with Toolkit:
 
 ```bash
-python -m pip install -e toolkit
-```
-
-Verify the entry point is available after installation:
-
-```bash
-ucm-toolkit --help
+pip install ucm-toolkit
+pip install 'uc-manager[toolkit]'
+pip install 'uc-manager[cu130,toolkit]'
 ucm-toolkit list
 ```
 
-To isolate the environment, create a virtual environment first:
+The `[toolkit]` extra does not select a CUDA/CANN backend. The package includes dev-sandbox sources, compiled on demand using your local SDK:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -e toolkit
+ucm-toolkit build dev-sandbox
 ```
+
+For source development, `python -m pip install -e toolkit` remains supported from the repository root.
 
 ## Dependencies
 
-The base CLI only depends on the Python standard library and `setuptools`. Individual tools require additional system dependencies as summarized below (see each tool's documentation for details):
+The base CLI only depends on the Python standard library. Individual tools require additional system dependencies as summarized below (see each tool's documentation for details):
 
 | Feature | Dependencies |
 | --- | --- |

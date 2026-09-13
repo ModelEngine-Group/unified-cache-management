@@ -1,31 +1,22 @@
-# How to Add a New Metric
+# Metrics development
 
-UCM metrics are defined in YAML, registered by `PrometheusStatsLogger`, updated
-from Python or C++ code, and exported through vLLM's Prometheus `/metrics`
-endpoint.
+Define the operation, unit and aggregation scope before adding a metric at the point where that operation occurs. A shared Dispatcher distributes native UCM statistics; the default path exports them through vLLM's KV Connector to the engine's `/metrics` endpoint.
 
-## Registration Model
+## Default collection path
 
-The metrics config drives registration:
+1. `UCMConnector._setup_ucm_metrics()` reads launch configuration. Without a custom catalog it uses built-in definitions. Inline `metrics_config` or `metrics_config_path` supplies a complete replacement.
+2. `setup_ucm_metrics()` registers native Counters, Gauges and Histograms from definitions, including configured bucket boundaries.
+3. Python or C++ updates the native statistics where operations occur.
+4. `MetricsDispatcher` drains native increments into separate buffers for enabled consumers, preventing consumers from consuming one another's data.
+5. When vLLM calls `get_kv_connector_stats()`, UCM retrieves the `vllm_connector` buffer and passes Connector statistics to vLLM's Prometheus bridge.
 
-1. `PrometheusStatsLogger` reads the configured YAML file.
-2. It creates `prometheus_client` Counter, Gauge, and Histogram objects with
-   `model_name` and `worker_id` labels.
-3. For histograms, it reads the Python Prometheus histogram bucket boundaries
-   and passes those buckets to the C++ metrics library.
-4. C++ stores counter, gauge, and histogram bucket deltas in per-thread double
-   buffers.
-5. The observability thread periodically calls `get_all_stats_and_clear()` and
-   applies the deltas to `prometheus_client`.
+Default labels include engine labels and `worker_rank`. The optional `multiproc` consumer uses `PrometheusStatsLogger`, a periodic logger and `worker_id`. This is a separate path, not the default Connector registration/export process.
 
-Histograms are aggregated into buckets on the update path. They do not store raw
-sample vectors, and there is no `histogram_max_length` setting. The C++ metrics
-library appends a `+Inf` bucket during registration when needed.
+## Define a metric
 
-## Step 1: Define the Metric in YAML
+Put runtime custom metrics in the deployed metrics YAML. For additions to the default set, update both `examples/metrics/metrics_configs.yaml` and `ucm/default_metrics_config.py`. The existing `test_default_metrics_config_matches_example_yaml` checks their consistency.
 
-Add the metric to `examples/metrics/metrics_configs.yaml` or to the metrics
-config used by your deployment.
+This fragment illustrates definitions and belongs inside a complete metrics configuration:
 
 ```yaml
 counter:
@@ -43,20 +34,11 @@ histogram:
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100]
 ```
 
-Use these metric types as follows:
+Counters take positive increments, Gauges take current values and Histograms take observations. Configure buckets in ascending order; registration adds `+Inf` when needed. Keep a fixed event scope and unit: interface calls, transfer shards and user requests are different quantities.
 
-- Counter: pass positive increments.
-- Gauge: pass the latest value.
-- Histogram: pass one observation; UCM assigns it to the configured bucket.
+## Update at the operation boundary
 
-Histogram buckets should be sorted in ascending order. You do not need to add
-`+Inf` in YAML; it is added during registration.
-
-## Step 2: Update the Metric
-
-### Python
-
-Import `ucmmetrics` and update the metric by name:
+The caller measures `cost_ms` in this Python example:
 
 ```python
 from ucm.shared.metrics import ucmmetrics
@@ -65,56 +47,57 @@ ucmmetrics.update_stats("my_stage_duration_ms", cost_ms)
 ucmmetrics.update_stats({"my_events_total": 1.0})
 ```
 
-### C++
-
-Link the `metrics` library in the target that emits the metric:
+Link the C++ target to `metrics` and use the API with UCM include paths configured:
 
 ```cmake
-target_link_libraries(xxxstore PUBLIC storeinfra metrics)
+target_link_libraries(xxxstore PUBLIC storeintf metrics)
 ```
 
-Include the metrics API and update the metric:
-
-```c++
+```cpp
 #include "metrics_api.h"
 
 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("my_stage_duration_ms"), costMs);
 UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("my_events_total"), 1.0);
 ```
 
-Use `NAME_TO_METRIC_ID("metric_name")` on C++ hot paths. It caches metric ID
-resolution behind a function-local static object and avoids repeated metric name
-hashing after the first successful resolution. The string overload is still
-available for non-hot code paths.
+`NAME_TO_METRIC_ID` caches the ID for hot paths. Producers do not need to create/register metrics again and must not independently drain global statistics around the Dispatcher.
 
-Do not add separate `metrics_config` checks around metric updates. If a metric is
-not registered, the cached ID path records the miss and returns quickly until the
-registration epoch changes.
+Update a successful-completion metric only on success. Name submission metrics accordingly. Explain whether durations or bytes include errors and cancellations in the definition or [metric reference](../user-guide/observability/metrics-reference.md).
 
-## Step 3: Add Dashboard Panels
+## Load the metric configuration
 
-If the metric should be visible in Grafana, add it to the dashboard that matches
-its layer:
+Copy the complete metrics catalog, add the definitions above, and point the serving configuration to it. The fragment below belongs at the root of the existing UCM YAML; it does not replace the Store configuration. Restart the engine to register the updated catalog before producing values.
 
-| Dashboard | Metric scope |
-|-----------|--------------|
-| `examples/metrics/grafana_connector.json` | Connector-level metrics. |
-| `examples/metrics/grafana_pipeline_store.json` | Cache Store and Posix Store metrics. |
-| `examples/metrics/grafana_layerwise.json` | Layerwise connector metrics. |
-| `examples/metrics/grafana_vllm.json` | vLLM service-side metrics. |
+```yaml
+enable_metrics: true
+metrics_config_path: /etc/ucm/metrics_configs.yaml
+```
 
-The dashboards use a `job` selector with regex matching, so the default **All**
-selection also works for metrics without a `job` label.
+## Verify export and presentation
 
-## Useful PromQL Patterns
+Load a configuration containing the definition, trigger the operation and check the actual exported name, unit, labels and delta. The default prefix is `ucm:`; consumer configuration can change names and scales. A metric may be absent or unchanged when its operation has not run or Connector statistics have not been collected.
 
-Counter throughput:
+For example, query the Counter rate:
+
+```promql
+rate(ucm:my_events_total[5m])
+```
+
+Use buckets for histogram quantiles and preserve `le` when aggregating. See [metric semantics](../user-guide/observability/metrics-reference.md) for other queries. For dashboards, update the appropriate `grafana_connector.json`, `grafana_store.json` or `grafana_vllm.json`, retaining model, instance and worker selectors.
+
+Read `ucm/metrics_config.py`, `ucm/metrics_dispatcher.py`, `ucm/integration/vllm/ucm_connector.py` and `ucm/integration/vllm/metrics.py` in order. Collection setup belongs in the [user guide](../user-guide/observability/metrics.md).
+
+### Dashboard query examples
+
+The following use the Grafana model and interval variables from the original guide. For per-worker views, retain the dashboard's worker grouping in addition to `le`.
+
+Counter throughput：
 
 ```promql
 rate(ucm:my_events_total{model_name="$model_name"}[$__rate_interval])
 ```
 
-Histogram average:
+Histogram average：
 
 ```promql
 sum(rate(ucm:my_stage_duration_ms_sum{model_name="$model_name"}[$__rate_interval]))
@@ -122,7 +105,7 @@ sum(rate(ucm:my_stage_duration_ms_sum{model_name="$model_name"}[$__rate_interval
 sum(rate(ucm:my_stage_duration_ms_count{model_name="$model_name"}[$__rate_interval]))
 ```
 
-Histogram quantile:
+Histogram quantile：
 
 ```promql
 histogram_quantile(
@@ -132,18 +115,3 @@ histogram_quantile(
   )
 )
 ```
-
-When a dashboard supports the `View` selector, keep the existing
-`${perWorker:raw}` grouping pattern so Aggregated and Per Worker modes continue
-to work.
-
-## Implementation Notes
-
-- `ucmmetrics.set_up()` is called by `PrometheusStatsLogger`; the old
-  `max_vector_len` argument is kept only for API compatibility and is ignored.
-- `ucmmetrics.create_stats(name, metric_type, buckets)` is normally called by
-  `PrometheusStatsLogger`, not by metric emitters.
-- `get_all_stats_and_clear()` returns counter, gauge, and histogram deltas.
-  Python applies those deltas to `prometheus_client`, which owns the cumulative
-  Prometheus exposition and multiprocess files.
-- Histogram deltas are returned to Python as `(bucket_counts, sum_delta)`.

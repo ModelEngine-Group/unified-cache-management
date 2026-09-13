@@ -9,16 +9,12 @@ MiniMax model tutorials currently published by vLLM Ascend.
 | MiniMax-M2 | [Official guide](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/MiniMax-M2.html) |
 | MiniMax-M3 | [Official guide](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/MiniMax-M3.html) |
 
-## Serving engine
+## Enable UCM with this model
 
-=== "vLLM"
-
-    --8<-- "docs/en/user-guide/model-tour/minimax/vllm.md"
-
-=== "vLLM Ascend"
-
-    --8<-- "docs/en/user-guide/model-tour/minimax/ascend.md"
-
-=== "SGLang"
-
-    --8<-- "docs/en/user-guide/model-tour/minimax/sglang.md"
+Use the official recipe above for the model's engine settings, then follow the
+[vLLM](../../quick_start/index.md#vllm),
+[vLLM-Ascend](../../quick_start/index.md#vllm-ascend), or
+[SGLang](../../quick_start/index.md#sglang) integration guide. Confirm the
+model and feature in the [support matrix](../../support-matrix/index.md).
+An official engine tutorial establishes engine usage; it does not independently
+verify UCM external-cache behavior for that model.

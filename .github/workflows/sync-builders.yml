@@ -38,7 +38,7 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - uses: docker/setup-buildx-action@v3.11.1
       - uses: actions/download-artifact@v4.3.0
         with:
@@ -301,7 +301,7 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - uses: actions/download-artifact@v4.3.0
         with:
           name: ${{ needs.prepare.outputs.prepared_catalog_artifact }}

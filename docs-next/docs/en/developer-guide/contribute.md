@@ -76,7 +76,7 @@ python3 -m venv .venv
 source ./.venv/bin/activate
 
 # Clone UCM and install
-git clone https://github.com/ModelEngine-Group/unified-cache-management.git 
+git clone https://github.com/ModelEngine-Group/unified-cache-management.git
 cd unified-cache-management
 
 # Install lint requirement and enable pre-commit hook
@@ -129,15 +129,14 @@ Once all requirements are satisfied, the “Squash and merge” button will beco
 ### Building the docs
 
 The new documentation site lives under `docs-next/` and is built with MkDocs
-Material. The legacy Sphinx site under `docs/` stays in place until the
-MkDocs site passes review.
+Material. Keep matching English/Chinese paths and update navigation and links together.
 
 ```shell
 # Install documentation dependencies.
 cd unified-cache-management/docs-next
-python3 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 
 # Serve the site locally with live reload.
 mkdocs serve
@@ -146,7 +145,7 @@ python tools/site.py serve
 
 # Build a strict production build for both languages.
 python tools/site.py build --lang en --strict
-python tools/site.py build --lang zh-cn --strict
+python tools/site.py build --lang zh --strict
 
 # Validate the whole site (strict build across languages).
 python tools/site.py validate

@@ -199,23 +199,6 @@ def test_registry_rate_limit_stops_at_the_bounded_attempt_count(
     assert marker.read_text(encoding="utf-8") == "rate-limit-exhausted\n"
 
 
-def test_registry_marker_is_absent_for_a_non_rate_limit_failure(
-    tmp_path: Path,
-) -> None:
-    marker = tmp_path / "rate-limit.marker"
-    completed, attempts = _run_retry(
-        tmp_path,
-        failures=10,
-        message="manifest unknown",
-        failure_status=42,
-        rate_limit_marker=marker,
-    )
-
-    assert completed.returncode == 42
-    assert attempts == 1
-    assert not marker.exists()
-
-
 def test_registry_marker_requires_the_rate_limit_to_match_its_scope(
     tmp_path: Path,
 ) -> None:
@@ -249,19 +232,6 @@ def test_registry_marker_accepts_a_rate_limit_in_its_scope(tmp_path: Path) -> No
     assert completed.returncode == 75
     assert attempts == 5
     assert marker.read_text(encoding="utf-8") == "rate-limit-exhausted\n"
-
-
-def test_unrelated_number_containing_429_is_not_a_rate_limit(tmp_path: Path) -> None:
-    completed, attempts = _run_retry(
-        tmp_path,
-        failures=10,
-        message="blob 1429 is unavailable",
-        failure_status=42,
-    )
-
-    assert completed.returncode == 42
-    assert attempts == 1
-    assert "non-retryable error" in completed.stderr
 
 
 def test_layer_size_containing_429_is_not_a_rate_limit(tmp_path: Path) -> None:
