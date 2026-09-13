@@ -695,13 +695,25 @@ jobs:
       runner: ${{ matrix.runner }}
       plan_artifact: ${{ needs.select-plan.outputs.plan_artifact }}
 
+  build-toolkit:
+    name: Wheel · Toolkit
+    needs: select-plan
+    if: ${{ always() && needs.select-plan.result == 'success' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_build-toolkit.yml
+    with:
+      source_ref: ${{ needs.select-plan.outputs.source_ref }}
+      plan_artifact: ${{ needs.select-plan.outputs.plan_artifact }}
+
   build-images:
     name: Image · ${{ matrix.label }}
-    needs: [permission-check, select-plan, build-wheels]
+    needs: [permission-check, select-plan, build-wheels, build-toolkit]
     if: >-
       ${{
         always() && needs.select-plan.result == 'success' &&
-        needs.build-wheels.result == 'success'
+        needs.build-wheels.result == 'success' &&
+        needs.build-toolkit.result == 'success'
       }}
     strategy:
       fail-fast: false

@@ -61,7 +61,7 @@ Prepare two available devices for `--tensor-parallel-size 2` and a matching host
 
     #### Install UCM inside the container {#vllm-wheel}
 
-    After entering the container, install the matching UCM backend with the following commands. Install only this backend extra.
+    After entering the container, install the matching UCM backend<span data-requires="toolkit" hidden> and Toolkit</span> with the following commands. See the [Toolkit guide](../../toolkit/index.md) for tool usage.
 
     <div data-command-template markdown="1">
 
@@ -265,7 +265,7 @@ Prepare two available devices for `--tensor-parallel-size 2` and a matching host
 
     #### Install UCM inside the container {#vllm-ascend-wheel}
 
-    After entering the container, install the matching UCM backend with the following commands. Install only this backend extra.
+    After entering the container, install the matching UCM backend<span data-requires="toolkit" hidden> and Toolkit</span> with the following commands. See the [Toolkit guide](../../toolkit/index.md) for tool usage.
 
     <div data-command-template markdown="1">
 

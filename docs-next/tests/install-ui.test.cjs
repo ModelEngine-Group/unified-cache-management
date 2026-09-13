@@ -191,6 +191,31 @@ test("pip preserves official, fork and direct Wheel publication contracts", () =
   assert.equal(select(manifest, {engine: "vllm-ascend"}).pipCommand, 'pip install "' + manifest.wheels[1].url + '"');
 });
 
+test("Quickstart installs Toolkit together with the selected backend when published", () => {
+  const manifest = fixture();
+  manifest.toolkit = {
+    distribution: "ucm-toolkit", version: "0.9.3",
+    url: "https://github.com/example/ucm/releases/download/v0.9.3/ucm_toolkit-0.9.3-py3-none-any.whl",
+  };
+  assert.equal(select(manifest, {architecture: "amd64"}).pipCommand,
+    'pip install "uc-manager[cu130,toolkit]==0.9.3"');
+  assert.equal(select(manifest, {engine: "vllm-ascend"}).pipCommand,
+    'pip install "uc-manager[cann901-a2,toolkit]==0.9.3"');
+  assert.equal(select(manifest, {architecture: "amd64"}).toolkit, true);
+
+  manifest.python.distribution = "supermarioyl-uc-manager";
+  manifest.python.pypi.index_url = "https://test.pypi.org/simple";
+  assert.equal(select(manifest, {architecture: "amd64"}).pipCommand,
+    'pip install --index-url https://test.pypi.org/simple --extra-index-url https://pypi.org/simple "supermarioyl-uc-manager[cu130,toolkit]==0.9.3"');
+  manifest.python.pypi = null;
+  assert.equal(select(manifest, {architecture: "amd64"}).pipCommand,
+    'pip install "' + manifest.wheels[0].url + '" "' + manifest.toolkit.url + '"');
+  delete manifest.toolkit;
+  assert.equal(select(manifest, {architecture: "amd64"}).toolkit, false);
+  assert.equal(select(manifest, {architecture: "amd64"}).pipCommand,
+    'pip install "' + manifest.wheels[0].url + '"');
+});
+
 function ascendFixture() {
   const manifest = fixture();
   manifest.wheels = [];
