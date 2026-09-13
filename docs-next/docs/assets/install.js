@@ -70,13 +70,16 @@
 
   function wheelInstallCommand(wheel, manifest) {
     if (!wheel) return null;
-    if (!manifest.python.pypi) return 'pip install "' + wheel.url + '"';
+    if (!manifest.python.pypi) {
+      return 'pip install "' + wheel.url + '"' +
+        (manifest.toolkit ? ' "' + manifest.toolkit.url + '"' : "");
+    }
     var dependencyIndex = "https://pypi.org/simple";
     var indexOption = manifest.python.pypi.index_url !== dependencyIndex
       ? " --index-url " + manifest.python.pypi.index_url + " --extra-index-url " + dependencyIndex
       : "";
     return "pip install" + indexOption + ' "' + manifest.python.distribution +
-      "[" + wheel.extra + "]==" + manifest.python.version + '"';
+      "[" + wheel.extra + (manifest.toolkit ? ",toolkit" : "") + "]==" + manifest.python.version + '"';
   }
 
   function standardImageReference(image, repositories) {
@@ -180,6 +183,7 @@
       imageReference: combination ? combination.imageReference : null,
       standardImageReference: combination ? combination.standardImageReference : null,
       standard: !!(combination && combination.standardImageReference && combination.wheel),
+      toolkit: !!(combination && model.manifest.toolkit),
       pipCommand: combination ? wheelInstallCommand(combination.wheel, model.manifest) : null,
     };
   }

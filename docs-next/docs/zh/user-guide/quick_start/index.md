@@ -61,7 +61,7 @@ hide:
 
     #### 在容器内安装 UCM {#vllm-wheel}
 
-    上一步进入容器后，执行以下命令安装对应的 UCM 后端。仅安装这一个 backend extra。
+    上一步进入容器后，执行以下命令安装对应的 UCM 后端<span data-requires="toolkit" hidden>及 Toolkit</span>。工具用法见 [Toolkit 指南](../../toolkit/index.md)。
 
     <div data-command-template markdown="1">
 
@@ -261,7 +261,7 @@ curl --fail http://127.0.0.1:7800/metrics | grep '^ucm:'
 
     #### 在容器内安装 UCM {#vllm-ascend-wheel}
 
-    上一步进入容器后，执行以下命令安装对应的 UCM 后端。仅安装这一个 backend extra。
+    上一步进入容器后，执行以下命令安装对应的 UCM 后端<span data-requires="toolkit" hidden>及 Toolkit</span>。工具用法见 [Toolkit 指南](../../toolkit/index.md)。
 
     <div data-command-template markdown="1">
 

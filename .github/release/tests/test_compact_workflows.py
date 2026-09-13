@@ -17,6 +17,38 @@ def _load(name: str) -> dict[str, object]:
     return value
 
 
+def test_runtime_images_install_the_same_run_toolkit_wheel_by_default() -> None:
+    dockerfile = (ROOT / ".github/release/docker/Dockerfile.runtime").read_text(
+        encoding="utf-8"
+    )
+    assert "/tmp/${UCM_WHEEL} /tmp/${UCM_TOOLKIT_WHEEL}" in dockerfile
+    assert "&& ucm-toolkit list" in dockerfile
+    for name in ("_build-image.yml", "_build-release-image.yml"):
+        workflow = _load(name)
+        steps = next(iter(workflow["jobs"].values()))["steps"]
+        download = next(
+            step
+            for step in steps
+            if step.get("with", {}).get("path") == "input/toolkit"
+        )
+        assert download["with"]["name"] == "ucm-toolkit-run-${{ github.run_id }}"
+        build = next(
+            step["run"] for step in steps if "Dockerfile.runtime" in step.get("run", "")
+        )
+        assert 'cp "${toolkit_wheel}"' in build
+        assert '--build-arg "UCM_TOOLKIT_WHEEL=' in build
+    release = _load("release-ucm.yml")["jobs"]
+    assert "build-toolkit" in release["publish-release-artifacts"]["needs"]
+    bot = _load("ucm-build-bot.yml")["jobs"]
+    assert bot["build-toolkit"]["uses"] == "./.github/workflows/_build-toolkit.yml"
+    assert bot["build-toolkit"]["with"] == {
+        "source_ref": "${{ needs.select-plan.outputs.source_ref }}",
+        "plan_artifact": "${{ needs.select-plan.outputs.plan_artifact }}",
+    }
+    assert "build-toolkit" in bot["build-images"]["needs"]
+    assert "needs.build-toolkit.result == 'success'" in bot["build-images"]["if"]
+
+
 def test_nightly_schedule_creates_or_reuses_a_tag_then_calls_core_in_same_run() -> None:
     workflow = _load("release-nightly.yml")
     assert workflow["on"] == {
