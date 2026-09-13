@@ -1,82 +1,48 @@
-# precheck — UCM environment pre-check
+# Deployment precheck
 
-`precheck` runs **locally on the UCM deployment host** before UCM starts and
-verifies that the environment meets UCM's runtime requirements. It reports
-`PASS` / `WARN` / `FAIL` for each item and prints **remediation advice** for
-failing or borderline checks, so issues can be fixed before a deployment
-attempt fails.
+`precheck` inspects the host environment for a UCM deployment. It records software versions, checks accelerator drivers, the kernel, shared memory and AIO resources, and can benchmark storage bandwidth at a selected directory. This helps identify environment issues that may affect startup or cache I/O before running the service.
 
-It is the first item of the toolkit RFC (#1208): *UCM 部署前预检工具 — verify
-storage bandwidth, kernel version, driver version, shm-size, and other key
-configuration before running UCM*.
+Use it when:
 
-← Back to [UCM Toolkit](../index.md)
+- Deploying for the first time or moving to a new machine to check the host against precheck requirements.
+- Investigating engine startup failures or cache-loading problems that may involve drivers, shared memory or kernel resources.
+- Evaluating a cache directory with an initial bandwidth check of its read/write path.
+
+The tool reports each check with remediation advice and supports JSON output for saving and comparing environments. Informational checks record values such as versions; other checks produce `PASS`, `WARN` or `FAIL` against configured thresholds. Prepare the CLI through [toolkit installation](../index.md).
+
+## Run checks
 
 ```bash
-ucm-toolkit run precheck                           # all checks (bandwidth skipped w/o a mount path)
-ucm-toolkit run precheck --mount-path /mnt/ucm_cache
-ucm-toolkit run precheck --skip-bandwidth --json
+ucm-toolkit run precheck --skip-bandwidth
+ucm-toolkit run precheck --mount-path /mnt/ucm-cache-test
 ucm-toolkit run precheck --only kernel --only accelerator_driver
+ucm-toolkit run precheck --skip-bandwidth --json
 ```
 
-## Checks
+Bandwidth checks write and read the selected path. Use a dedicated test directory with space available. Without a mount path, that check is skipped. Environment checks use the Python standard library; bandwidth checks also require Linux, NumPy and loadable native UCM Posix Store.
 
-| Check | Severity | What it verifies | Threshold |
-| --- | --- | --- | --- |
-| `serving_stack` | INFO | installed `vllm` / `vllm-ascend` / `sglang` versions | display only |
-| `uc_manager` | INFO | installed `uc-manager` version | display only |
-| `accelerator_driver` | FAIL/WARN | NVIDIA `compute_cap` (via `nvidia-smi`) or Ascend `HDK` (via `npu-smi info`) | no driver → FAIL; CUDA `compute_cap >= 8.0`; Ascend `HDK > 25.2.0` (below → WARN) |
-| `kernel` | **FAIL** | running kernel major.minor (`uname -r`) | `>= 5.10` series |
-| `memory_shm` | WARN | `/dev/shm` size (`statvfs`); RAM is hidden | `/dev/shm` ≥ 512 GiB (below → WARN) |
-| `aio_resources` | INFO | kernel AIO pool (`/proc/sys/fs/aio-max-nr`, `aio-nr`); computes max concurrent aio workers | display only |
-| `bandwidth` | WARN | posix `psync`/`aio` matrix benchmarked against the real `ucm` C++ store | all metrics `>= 8 GB/s` |
+## Interpret results
 
-### Severity and exit codes
+| Check | Current default | Meaning |
+| --- | --- | --- |
+| Engine and `uc-manager` versions | INFO, display only | Record the installed environment |
+| Accelerator driver | Missing driver fails; CUDA compute capability at least 8.0; Ascend HDK above 25.2.0, otherwise warning | Read from device query commands |
+| Kernel | At least the 5.10 series | Compare major/minor versions |
+| `/dev/shm` | Warn below 512 GiB | A precheck threshold; actual UCM capacity depends on configuration and model |
+| AIO resources | INFO, display only | Read kernel limits and current usage |
+| Storage bandwidth | Warn when the best aggregate configuration is below 8 GB/s | Adjustable threshold, affected by caches and workload |
 
-- **INFO** — display only; never affects the exit code.
-- **WARN** — soft threshold; does not fail unless `--strict` is set.
-- **FAIL** — hard constraint; fails the run.
+INFO does not change the exit code. Warnings are allowed by default; `--strict` treats them as failures. Codes are `0` for pass, `1` for failure or strict warnings, and `2` for CLI usage errors. Passing precheck still requires engine startup and [external-cache verification](../../user-guide/observability/verify-cache.md).
 
-Exit codes: `0` all hard checks pass (warnings tolerated) · `1` a `FAIL`
-(or a `WARN` under `--strict`) · `2` CLI/usage error. `--only`/`--skip`
-select checks; `--skip-bandwidth` skips the (slow) benchmark.
+## Configure thresholds and load
 
-## Bandwidth benchmark
+Precedence is: fallback code values → `precheck.defaults.json` → `--config FILE` → CLI flags. JSON needs no extra parser; YAML requires PyYAML.
 
-The bandwidth check exercises the real `UcmPipelineStore`
-(`store_pipeline="Posix"`) — the same code path UCM uses to dump/load KV cache
-shards — across a configurable matrix and picks the best configuration.
-
-Default matrix (all configurable via `--shard-sizes`, `--workers`, `--engines`,
-`--modes`): shard sizes `{180 KiB, 8 MiB}` × worker counts `{1, 8, 16}` × IO
-engines `{psync, aio}`, and for each combo runs the phases selected by
-`--modes` (default `dump,read,mix`): a pure-dump (cold write) phase, a
-pure-read phase, and a read-heavy mixed phase (per epoch `1 dump + rw_ratio`
-loads, default `1:4`, mimicking the real KV-cache access pattern — write once,
-fetch many). Per phase it reports `mean ± std` and `min..max` across epoch
-samples plus the **aggregate** (per-worker × worker count). The combo with the
-highest **aggregate mixed** bandwidth (falling back to aggregate `mean(dump,
-load)`) is the recommended configuration; a warning fires when it is below
-`--threshold` (default `8 GB/s`). Defaults are lean (8 epochs/phase, block 32);
-`--quick` halves all epoch counts.
-
-`numpy` and the `ucm` package (with its built C++ `posix` store) are
-**lazy imports** — if `ucm` is not importable the bandwidth check is **skipped
-with a warning** rather than failing, so the rest of the pre-check still runs.
-
-## Configuration
-
-Every tunable value — thresholds (kernel, CUDA compute cap, Ascend HDK,
-`/dev/shm` min, bandwidth), the matrix (shard sizes, worker counts, engines,
-modes, epochs, `rw_ratio`, block number, barrier timeout) — lives in a single
-shipped file, `precheck.defaults.json` (next to this module). **A version
-update is a data-only change**: edit that file, no code edit needed. Layering,
-in increasing precedence: code constants (fallback if the JSON is absent) →
-`precheck.defaults.json` → a `--config FILE` user override → CLI flags.
+Example override file:
 
 ```json
 {
-  "mount_path": "/mnt/ucm_cache",
+  "mount_path": "/mnt/ucm-cache-test",
   "kernel_min": "5.10",
   "cuda_min_compute_cap": 8.0,
   "ascend_min_hdk": "25.2.0",
@@ -93,63 +59,38 @@ in increasing precedence: code constants (fallback if the JSON is absent) →
 }
 ```
 
-### Flags
+The override retains the original workload settings and leaves the shared-memory threshold at its configured default. Run without `--quick` to preserve the specified epoch counts:
 
-| Flag | Description |
+```bash
+ucm-toolkit run precheck --config /path/to/precheck.json
+```
+
+| Flag | Purpose |
 | --- | --- |
-| `--config FILE` | load thresholds/matrix from a JSON or YAML file |
-| `--mount-path PATH` | UCM storage mount point (required for the bandwidth benchmark) |
-| `--shard-sizes LIST` | comma-separated shard sizes, e.g. `180k,8m` |
-| `--workers LIST` | comma-separated worker counts, e.g. `1,8,16` |
-| `--engines LIST` | comma-separated IO engines, subset of `psync,aio` (default both) |
-| `--modes LIST` | comma-separated phases per combo: subset of `dump,read,mix` (default all; `mix` = read-heavy `1:rw_ratio`) |
-| `--threshold GB` | minimum best aggregate bandwidth in GB/s |
-| `--block-number` / `--dump-epochs` / `--load-epochs` / `--mixed-epochs` / `--rw-ratio` | matrix sweep parameters |
-| `--quick` | halve all epoch counts for a faster run |
-| `--skip-bandwidth` | skip the (slow) bandwidth benchmark |
-| `--kernel-min` / `--cuda-min-compute-cap` / `--ascend-min-hdk` | threshold overrides |
-| `--only CHECK` / `--skip CHECK` | select checks (repeatable) |
-| `--strict` | treat warnings as failures for the exit code |
-| `--no-color` / `--json` / `--verbose` | output control |
+| `--mount-path` | Bandwidth test directory |
+| `--only` / `--skip` | Include or exclude checks, repeatable |
+| `--skip-bandwidth` | Environment checks only |
+| `--shard-sizes` / `--workers` / `--engines` | Shard sizes, worker counts and I/O engines |
+| `--modes` | Select phases from `dump,read,mix` |
+| `--threshold` | Bandwidth warning threshold in GB/s |
+| `--block-number` / `--dump-epochs` / `--load-epochs` / `--mixed-epochs` / `--rw-ratio` | Test size and read/write ratio |
+| `--kernel-min` / `--cuda-min-compute-cap` / `--ascend-min-hdk` | Environment threshold overrides |
+| `--quick` | Reduce epoch counts |
+| `--strict` / `--json` / `--no-color` / `--verbose` | Exit status and output formatting |
 
-## Notes
+## Bandwidth interpretation
 
-- **`npu-smi info` HDK parsing** anchors on labels in priority order: an
-  explicit `HDK Version` label → a `Driver Version` label → the banner
-  `Version:` field. Validated against real openEuler firmware
-  (`npu-smi 25.5.2   Version: 25.5.2`, where the banner `Version` *is* the
-  HDK/driver version). The threshold is configurable via `--ascend-min-hdk`.
-- **Kernel `>= 5.10` is on the major.minor series**: `5.10.0-216` (an openEuler
-  5.10 LTS backport build) passes, `5.9` fails. Validated on a real UCM box.
-  Adjust `--kernel-min` otherwise.
-- **Bandwidth load reads can be inflated by the page cache** (the store default
-  is `io_direct=false`): measured load BW reflects cached reads while the dump
-  (cold write) is the disk-bound figure. The reported comprehensive
-  `mean(dump, load)` still reflects usable throughput; for pure disk bandwidth
-  enable `io_direct` in the store config.
-- The bandwidth benchmark is Linux/posix-only (anonymous `mmap` + the ucm
-  `.so`); it is skipped elsewhere with a note.
-- The tool sets `TORCH_DEVICE_BACKEND_AUTOLOAD=0` to prevent torch_npu from
-  loading (the posix store uses libaio directly and does not need the NPU).
-  This avoids FunctionLoader warnings and interference in container environments
-  where the NPU driver is only partially mounted. Worker stderr is also
-  redirected to `/dev/null` via `os.dup2`. A `combo_timeout` (default 300s,
-  configurable) is a backstop that terminates any worker that blocks.
-- Workers use **per-epoch barriers** (mirroring the original
-  `posixstore_aio_test.py`): all workers sync after each epoch so the kernel
-  aio queue is drained before the next burst. Without this, independent
-  workers can overflow `fs.aio-max-nr` at high worker counts, causing
-  `worker.wait(task)` to block in uninterruptible D state.
+Defaults sweep 180 KiB and 8 MiB shards, 1/8/16 workers, and psync/aio. Each combination runs dump, read and read-heavy mixed phases. The mixed ratio is one write to four reads, with eight epochs per phase.
 
-## Tests
+The tool reports sample means, variation and aggregates. Selection prefers mixed bandwidth and falls back to the dump/read mean when mixed data is absent. Non-Direct I/O reads may be served by the OS page cache; interpret results as throughput of that tested path. State I/O mode and cache state when measuring storage media.
+
+Unavailable native dependencies produce a skipped bandwidth check with a warning. The implementation manages timeouts and worker synchronization; the current default `combo_timeout` is 120 seconds. Sources are under `toolkit/ucm_toolkit/tools/precheck/`; use `ucm-toolkit run precheck --help` for exact flags.
+
+## Development checks
+
+The existing tests cover threshold/configuration handling and Toolkit dispatch; they do not run a hardware bandwidth acceptance test.
 
 ```bash
 cd toolkit
 python -m unittest tests.test_precheck tests.test_precheck_toolkit -v
 ```
-
-`test_precheck` covers the pure logic (version/size/SMI parsing, kernel
-boundary, config, bandwidth selection, reporter exit codes) plus the
-check-function decision logic with `subprocess`/`os` mocked, including the
-RFC #1208 remediation advice for `FAIL`. `test_precheck_toolkit` covers toolkit
-integration (registration, `list`, `run precheck` dispatch, `doctor`).

@@ -6,159 +6,53 @@ hide:
 
 <div align="center" markdown>
 
-![UCM](/assets/images/UCM-light.png#only-light){: style="height:120px;width:auto"}
-![UCM](/assets/images/UCM-dark.png#only-dark){: style="height:120px;width:auto"}
+![UCM](../assets/images/UCM-light.png#only-light){ style="height:96px;width:auto" }
+![UCM](../assets/images/UCM-dark.png#only-dark){ style="height:96px;width:auto" }
 
 </div>
 
 # Unified Cache Manager
 
-**Unified Cache Manager (UCM)** persists LLM KVCache to replace redundant computations.
-When integrated with vLLM, UCM achieves a **3-10x reduction** in inference latency across
-various scenarios, including multi-turn dialogue and long-context reasoning tasks.
+**Unified Cache Manager (UCM) is a KV Cache management and reuse system for LLM inference. It persists reusable KV Cache to external storage and shares it across requests and compatible inference instances, reducing repeated Prefill computation.**
 
-<div align="center" markdown>
+In multi-turn conversations, long-context reasoning, coding and multi-agent collaboration, project code, task instructions and conversation history often recur across successive requests. UCM reuses the KV Cache already generated for that context, reducing computation for repeated prefixes and lowering response latency.
 
-[![GitHub stars](https://img.shields.io/github/stars/ModelEngine-Group/unified-cache-management?style=social)](https://github.com/ModelEngine-Group/unified-cache-management)
-[![GitHub forks](https://img.shields.io/github/forks/ModelEngine-Group/unified-cache-management?style=social)](https://github.com/ModelEngine-Group/unified-cache-management)
-[![GitHub watch](https://img.shields.io/github/watchers/ModelEngine-Group/unified-cache-management?style=social)](https://github.com/ModelEngine-Group/unified-cache-management)
+Compared with KV Cache kept only within an inference process, UCM uses external storage to expand cache capacity. It supports **reuse across requests, persistence beyond process lifetimes and sharing between compatible instances**, so existing computation results remain reusable.
 
-</div>
+When integrated with vLLM, UCM achieves a **3–10x reduction in inference latency** in scenarios with substantial prefix repetition, including multi-turn conversations and long-context reasoning.
 
-## Capabilities
+## Start with your task
 
-<div class="grid cards" markdown>
+<div class="ucm-home-cards" markdown>
 
--   :material-database-clock-outline: **Prefix Cache**
+[<span class="ucm-home-card__icon" aria-hidden="true">:material-play-circle-outline:</span>
+<span class="ucm-home-card__title">Quickstart</span>
+<span class="ucm-home-card__description">Choose artifacts, configure your engine and run your first service with UCM.</span>
+<span class="ucm-home-card__arrow" aria-hidden="true">:material-arrow-right:</span>](user-guide/quick_start/index.md){ .ucm-home-card }
 
-    ---
+[<span class="ucm-home-card__icon" aria-hidden="true">:material-view-grid-outline:</span>
+<span class="ucm-home-card__title">Supported configurations</span>
+<span class="ucm-home-card__description">Check engine, model, device and feature support before choosing a deployment.</span>
+<span class="ucm-home-card__arrow" aria-hidden="true">:material-arrow-right:</span>](user-guide/support-matrix/index.md){ .ucm-home-card }
 
-    Persist KVCache across requests and reuse it to avoid redundant prefill for
-    multi-turn dialogue and shared prefixes. Supports non-HBM storage media including
-    DRAM, SSD, and remote storage with pipeline, NFS, DS3FS, Mooncake, and compress backends.
+[<span class="ucm-home-card__icon" aria-hidden="true">:material-layers-triple-outline:</span>
+<span class="ucm-home-card__title">Start with a model</span>
+<span class="ucm-home-card__description">Find official model guides and UCM examples for deployment and API calls.</span>
+<span class="ucm-home-card__arrow" aria-hidden="true">:material-arrow-right:</span>](user-guide/model-tour/index.md){ .ucm-home-card }
 
-    [:octicons-arrow-right-24: Learn more](user-guide/capabilities/prefix-cache/index.md)
-
--   :material-chart-line: **Observability**
-
-    ---
-
-    Export Prometheus metrics through the vLLM connector and visualize with Grafana
-    to monitor key performance metrics like KVCache hit rate, latency, and throughput in real-time.
-
-    [:octicons-arrow-right-24: Learn more](user-guide/observability/metrics.md)
-
--   :material-magnify: **Trace Mode**
-
-    ---
-
-    Lightweight diagnostic and evaluation mode that records request traces without
-    performing actual KV cache operations, used to simulate theoretical hit rates
-    and validate UCM deployment effectiveness.
-
-    [:octicons-arrow-right-24: Learn more](user-guide/diagnostics/trace-mode.md)
+[<span class="ucm-home-card__icon" aria-hidden="true">:material-code-braces:</span>
+<span class="ucm-home-card__title">Understand and extend UCM</span>
+<span class="ucm-home-card__description">Follow a request through the architecture, then add a storage backend or metrics.</span>
+<span class="ucm-home-card__arrow" aria-hidden="true">:material-arrow-right:</span>](developer-guide/index.md){ .ucm-home-card }
 
 </div>
 
-## Get Started
+## Operate and measure
 
-<div class="grid cards" markdown>
+[Operations](user-guide/observability/index.md) explains how to check cache reuse, backend health and time spent in each stage. The [toolkit](toolkit/index.md) provides deployment checks, storage tests and metric inspection; use the [KV Cache calculator](toolkit/kv-cache-calculator.md) for capacity estimates.
 
--   :material-tools: **Installation**
+## Supported integrations
 
-    ---
+UCM provides integration paths for vLLM, vLLM-Ascend, SGLang and MindIE. Check the [support matrix](user-guide/support-matrix/index.md) for model and platform coverage and [installation](user-guide/quick_start/index.md) for released engine/backend combinations.
 
-    Pick your UCM version, engine, device, OS, and install method, and get the
-    exact command to deploy.
-
-    [:octicons-arrow-right-24: Installation](user-guide/installation.md)
-
--   :material-engine: **Deployment**
-
-    ---
-
-    Integrate UCM with vLLM, vLLM Ascend, SGLang, and MindIE.
-
-    [:octicons-arrow-right-24: Deployment](user-guide/quick_start/index.md)
-
-    - [vLLM](user-guide/quick_start/quickstart_vllm.md)
-    - [vLLM Ascend](user-guide/quick_start/quickstart_vllm_ascend.md)
-    - [SGLang](user-guide/quick_start/quickstart_sglang.md)
-    - [MindIE](user-guide/quick_start/quickstart_mindie_llm.md)
-
--   :material-view-grid-plus: **Compatibility Matrix**
-
-    ---
-
-    Supported models, platforms, and feature coverage at a glance.
-
-    [:octicons-arrow-right-24: Matrix](user-guide/support-matrix/index.md)
-
-</div>
-
-## Tools
-
-<div class="grid cards" markdown>
-
--   :material-check-circle: **Precheck**
-
-    ---
-
-    Run environment pre-checks before UCM deployment to verify versions, drivers, 
-    kernel, and bandwidth.
-
-    [:octicons-arrow-right-24: Precheck](toolkit/user/precheck.md)
-
--   :material-harddisk: **POSIX AIO**
-
-    ---
-
-    Test POSIX AIO store dump/load performance for storage benchmarking.
-
-    [:octicons-arrow-right-24: POSIX AIO](toolkit/user/posix-aio.md)
-
--   :material-chart-box: **Metrics View**
-
-    ---
-
-    Collect Prometheus/OpenMetrics samples to SQLite and query aggregated metrics 
-    in the terminal.
-
-    [:octicons-arrow-right-24: Metrics View](toolkit/user/metrics-view.md)
-
--   :material-network: **NIC Monitor**
-
-    ---
-
-    Monitor physical NIC real-time traffic with background sampling and phase 
-    statistics.
-
-    [:octicons-arrow-right-24: NIC Monitor](toolkit/user/nic-monitor.md)
-
--   :material-test-tube: **Dev Sandbox**
-
-    ---
-
-    Measure host-to-device memory copy bandwidth and disk AIO throughput for 
-    performance testing.
-
-    [:octicons-arrow-right-24: Dev Sandbox](toolkit/user/dev-sandbox.md)
-
--   :material-calculator: **KV Cache Calculator**
-
-    ---
-
-    Estimate KV cache memory usage for your model configuration.
-
-    [:octicons-arrow-right-24: Calculator](toolkit/kv-cache-calculator.md)
-
-</div>
-
-**[About Us](about.md)** — Learn about the UCM team and our mission.
-
-## Version Compatibility
-
-| Branch | Status | vLLM version | vLLM-Ascend version |
-| --- | --- | --- | --- |
-| `main` | Maintained | v0.27.1 | nightly-0.26.0 |
-| `develop` | Maintained | v0.27.1 | nightly-0.26.0 |
+[Source on GitHub](https://github.com/ModelEngine-Group/unified-cache-management) · [Contribute](developer-guide/contribute.md) · [About UCM](about.md)

@@ -16,14 +16,7 @@ Trace Mode is enabled by setting two options to `true` in the UCM configuration 
 | `enable_record_traces` | `false` | Logs per-request traces (timestamp, input_length, output_length, hash_ids). Each hash_id takes 32 bytes. |
 | `use_lite` | `false` | Switches to the **UCM Lite Connector**, which works with a Fake Store that skips all actual KV dump/load operations. |
 
-When both are enabled, `UCMConnector` internally instantiates a `UCMLiteConnector` instead of the regular storage-backed
-connectors. The Lite connector:
-
-- Computes the same block hash IDs that a real UCM deployment would use.
-- Logs a trace record for every request on its first lookup.
-- Returns `0` external hit tokens (there is no real store to look up), so inference correctness is unaffected and no KV
-  data is persisted.
-- Implements all KV transfer hooks (`start_load_kv`, `save_kv_layer`, `wait_for_save`, etc.) as no-ops.
+This mode records request and block metadata without real KV I/O or avoided inference compute. Analysis estimates reuse opportunities; measure actual storage performance separately.
 
 ### Logged Trace Format
 
@@ -150,5 +143,3 @@ The analysis produces a comprehensive report including:
 
 These metrics help you evaluate whether UCM is suitable for your workload and how much capacity to allocate for each
 storage tier.
-
-For complete documentation, see the detailed Trace Mode guide in the original UCM documentation.

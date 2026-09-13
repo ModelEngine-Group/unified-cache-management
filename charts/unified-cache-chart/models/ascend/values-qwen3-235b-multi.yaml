@@ -1,3 +1,7 @@
+images:
+  # Ascend 配置须显式指定对应镜像；发布包 values.yaml 的候选注释列出可选地址。
+  image: ""
+
 # ============================================================
 # Qwen3-235B 双机部署（Ascend，kthena）
 # helm install qwen3-235b -n inference --create-namespace . -f values.yaml -f models/ascend/values-qwen3-235b-multi.yaml

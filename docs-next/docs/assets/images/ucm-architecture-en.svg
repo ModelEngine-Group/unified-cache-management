@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 992" width="1120" height="992" role="img" aria-labelledby="ucm-architecture-en-title ucm-architecture-en-desc">
+  <title id="ucm-architecture-en-title">UCM Connectors and Storage</title>
+  <desc id="ucm-architecture-en-desc">Five connectors extend vLLM KVConnectorBase_V1. UC Connector and the planned UC Connector2 use UcmKVStoreBase, with seven Store implementations connected to storage resources. Non-sparse KV cache manager classes remain on the left.</desc>
+  <defs>
+    <style>
+      text { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif; fill: #233c40; }
+      .title { font-size: 28px; font-weight: 600; }
+      .zone-label { font-size: 20px; font-weight: 600; }
+      .section-label { font-size: 16px; fill: #657b7e; }
+      .name { font-size: 20px; font-weight: 500; }
+      .interface-name { font-size: 24px; font-weight: 600; }
+      .store-name { font-size: 28px; font-weight: 600; fill: #fff; }
+      .store-caption { font-size: 16px; fill: #d4ebe6; }
+      .legend { font-size: 16px; fill: #526b70; }
+      .software-zone { fill: #f8faf9; stroke: #dbe5e2; stroke-width: 1.2; }
+      .resource-zone { fill: #f5f9fb; stroke: #dbe6ec; stroke-width: 1.2; }
+      .vllm { fill: #edf0f2; stroke: #aebcc0; stroke-width: 1.2; }
+      .ucm { fill: #e7f3ec; stroke: #76a28d; stroke-width: 1.2; }
+      .planned { fill: #f5faf6; stroke: #76a28d; stroke-width: 1.2; stroke-dasharray: 5 4; }
+      .connector-focus { fill: #d7eee3; stroke: #008775; stroke-width: 2; }
+      .store-focus { fill: #087c6c; stroke: #087c6c; stroke-width: 1.6; }
+      .resource { fill: #eaf2f7; stroke: #8daab9; stroke-width: 1.2; }
+      .inherit { fill: none; stroke: #7b9192; stroke-width: 1.4; }
+      .call { fill: none; stroke: #248b79; stroke-width: 1.6; stroke-dasharray: 6 5; }
+      .io { fill: none; stroke: #557e94; stroke-width: 1.6; }
+    </style>
+    <marker id="inheritance" markerWidth="10" markerHeight="10" refX="10" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L10 5 L0 10 Z" fill="#fff" stroke="#7b9192" stroke-width="1.2"/></marker>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L8 4 L0 8 Z" fill="#7b9192"/></marker>
+    <marker id="arrow-accent" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L8 4 L0 8 Z" fill="#248b79"/></marker>
+    <marker id="arrow-link" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L8 4 L0 8 Z" fill="#557e94"/></marker>
+  </defs>
+  <rect width="1120" height="992" fill="#fff"/>
+  <!-- Faithful redraw of idea.png: inheritance points toward the base class. -->
+    <text x="40" y="48" class="title" text-anchor="start">UCM Connectors and Storage</text>
+    <rect x="40" y="104" width="1040" height="680" rx="8" class="software-zone"/>
+    <text x="64" y="140" class="zone-label" text-anchor="start">vLLM / UCM</text>
+    <text x="64" y="180" class="section-label" text-anchor="start">KV Cache managers</text>
+    <text x="280" y="180" class="section-label" text-anchor="start">KV Connector extensions</text>
+    <rect x="40" y="800" width="1040" height="120" rx="8" class="resource-zone"/>
+    <text x="1056" y="828" class="section-label" text-anchor="end">Storage resources</text>
+  <g aria-label="Component relationships">
+    <path data-source="full-attention-manager" data-target="single-type-manager" d="M112 344 V280" class="inherit" marker-end="url(#inheritance)"/>
+    <path data-source="sliding-window-manager" data-target="single-type-manager" d="M208 448 V436 Q208 428 216 428 H256 Q264 428 264 420 V312 Q264 304 256 304 H216 Q208 304 208 296 V280" class="inherit" marker-end="url(#inheritance)"/>
+    <path data-source="uc-connector" data-target="kv-connector-base" d="M352 352 V280" class="inherit" marker-end="url(#inheritance)"/>
+    <path data-source="uc-connector2" data-target="kv-connector-base" d="M512 352 V280" class="inherit" marker-end="url(#inheritance)"/>
+    <path data-source="shared-storage-connector" data-target="kv-connector-base" d="M680 352 V280" class="inherit" marker-end="url(#inheritance)"/>
+    <path data-source="lmcache-connector" data-target="kv-connector-base" d="M856 352 V280" class="inherit" marker-end="url(#inheritance)"/>
+    <path data-source="nixl-connector" data-target="kv-connector-base" d="M1008 352 V280" class="inherit" marker-end="url(#inheritance)"/>
+    <path data-source="uc-connector" data-target="ucm-store-base" d="M352 432 V536" class="call" marker-end="url(#arrow-accent)"/>
+    <path data-source="uc-connector2" data-target="ucm-store-base" d="M512 432 V536" class="call" marker-end="url(#arrow-accent)"/>
+    <path data-source="local-store" data-target="ucm-store-base" d="M128 664 V608" class="inherit" marker-end="url(#inheritance)"/>
+    <path data-source="nfs-store" data-target="ucm-store-base" d="M272 664 V608" class="inherit" marker-end="url(#inheritance)"/>
+    <path data-source="external-store" data-target="ucm-store-base" d="M416 664 V608" class="inherit" marker-end="url(#inheritance)"/>
+    <path data-source="mooncake-store" data-target="ucm-store-base" d="M560 664 V608" class="inherit" marker-end="url(#inheritance)"/>
+    <path data-source="3fs-store" data-target="ucm-store-base" d="M704 664 V608" class="inherit" marker-end="url(#inheritance)"/>
+    <path data-source="dram-store" data-target="ucm-store-base" d="M848 664 V608" class="inherit" marker-end="url(#inheritance)"/>
+    <path data-source="x-store" data-target="ucm-store-base" d="M992 664 V608" class="inherit" marker-end="url(#inheritance)"/>
+    <path data-source="local-store" data-target="ucm-store-base" d="M64 700 H56 Q48 700 48 692 V580 Q48 572 56 572 H64" class="call" marker-end="url(#arrow-accent)"/>
+    <path data-source="local-store" data-target="local-dram" d="M128 736 V840" class="io" marker-end="url(#arrow-link)"/>
+    <path data-source="nfs-store" data-target="nfs-server" d="M248 736 V840" class="io" marker-end="url(#arrow-link)"/>
+    <path data-source="nfs-store" data-target="nas" d="M296 736 V780 Q296 788 304 788 H376 Q384 788 384 796 V840" class="io" marker-end="url(#arrow-link)"/>
+    <path data-source="external-store" data-target="nas" d="M440 736 V840" class="io" marker-end="url(#arrow-link)"/>
+    <path data-source="mooncake-store" data-target="mooncake" d="M560 736 V840" class="io" marker-end="url(#arrow-link)"/>
+    <path data-source="3fs-store" data-target="3fs" d="M704 736 V840" class="io" marker-end="url(#arrow-link)"/>
+    <path data-source="dram-store" data-target="dram" d="M848 736 V840" class="io" marker-end="url(#arrow-link)"/>
+  </g>
+  <rect x="368" y="464" width="128" height="32" rx="4" fill="#f8faf9"/>
+    <text x="432" y="488" class="section-label" text-anchor="middle">Store calls</text>
+  <g id="ucm-architecture-en-single-type-manager" data-node="single-type-manager">
+    <rect x="64" y="208" width="184" height="72" rx="8" class="vllm"/>
+    <text x="156" y="236" class="name" text-anchor="middle">SingleType</text>
+    <text x="156" y="264" class="name" text-anchor="middle">KVCacheManager</text>
+  </g>
+  <g id="ucm-architecture-en-full-attention-manager" data-node="full-attention-manager">
+    <rect x="64" y="344" width="184" height="72" rx="8" class="vllm"/>
+    <text x="156" y="372" class="name" text-anchor="middle">FullAttention</text>
+    <text x="156" y="400" class="name" text-anchor="middle">Manager</text>
+  </g>
+  <g id="ucm-architecture-en-sliding-window-manager" data-node="sliding-window-manager">
+    <rect x="64" y="448" width="184" height="72" rx="8" class="vllm"/>
+    <text x="156" y="476" class="name" text-anchor="middle">SlidingWindow</text>
+    <text x="156" y="504" class="name" text-anchor="middle">Manager</text>
+  </g>
+  <g id="ucm-architecture-en-kv-connector-base" data-node="kv-connector-base">
+    <rect x="280" y="208" width="784" height="72" rx="8" class="vllm"/>
+    <text x="672" y="252" class="interface-name" text-anchor="middle">KVConnectorBase_V1</text>
+  </g>
+  <g id="ucm-architecture-en-uc-connector" data-node="uc-connector">
+    <rect x="280" y="352" width="144" height="80" rx="8" class="connector-focus"/>
+    <text x="352" y="384" class="name" text-anchor="middle">UC</text>
+    <text x="352" y="412" class="name" text-anchor="middle">Connector</text>
+  </g>
+  <g id="ucm-architecture-en-uc-connector2" data-node="uc-connector2">
+    <rect x="440" y="352" width="144" height="80" rx="8" class="planned"/>
+    <text x="512" y="384" class="name" text-anchor="middle">UC</text>
+    <text x="512" y="412" class="name" text-anchor="middle">Connector2</text>
+  </g>
+  <g id="ucm-architecture-en-shared-storage-connector" data-node="shared-storage-connector">
+    <rect x="600" y="352" width="160" height="80" rx="8" class="vllm"/>
+    <text x="680" y="384" class="name" text-anchor="middle">SharedStorage</text>
+    <text x="680" y="412" class="name" text-anchor="middle">Connector</text>
+  </g>
+  <g id="ucm-architecture-en-lmcache-connector" data-node="lmcache-connector">
+    <rect x="776" y="352" width="160" height="80" rx="8" class="vllm"/>
+    <text x="856" y="384" class="name" text-anchor="middle">LMCache</text>
+    <text x="856" y="412" class="name" text-anchor="middle">ConnectorV1</text>
+  </g>
+  <g id="ucm-architecture-en-nixl-connector" data-node="nixl-connector">
+    <rect x="952" y="352" width="112" height="80" rx="8" class="vllm"/>
+    <text x="1008" y="384" class="name" text-anchor="middle">Nixl</text>
+    <text x="1008" y="412" class="name" text-anchor="middle">Connector</text>
+  </g>
+  <g id="ucm-architecture-en-ucm-store-base" data-node="ucm-store-base">
+    <rect x="64" y="536" width="992" height="72" rx="8" class="store-focus"/>
+    <text x="560" y="568" class="store-name" text-anchor="middle">UcmKVStoreBase</text>
+    <text x="560" y="592" class="store-caption" text-anchor="middle">Unified storage interface</text>
+  </g>
+  <g id="ucm-architecture-en-local-store" data-node="local-store">
+    <rect x="64" y="664" width="128" height="72" rx="8" class="ucm"/>
+    <text x="128" y="692" class="name" text-anchor="middle">Local</text>
+    <text x="128" y="720" class="name" text-anchor="middle">Store</text>
+  </g>
+  <g id="ucm-architecture-en-nfs-store" data-node="nfs-store">
+    <rect x="208" y="664" width="128" height="72" rx="8" class="ucm"/>
+    <text x="272" y="692" class="name" text-anchor="middle">NFS</text>
+    <text x="272" y="720" class="name" text-anchor="middle">Store</text>
+  </g>
+  <g id="ucm-architecture-en-external-store" data-node="external-store">
+    <rect x="352" y="664" width="128" height="72" rx="8" class="planned"/>
+    <text x="416" y="692" class="name" text-anchor="middle">External</text>
+    <text x="416" y="720" class="name" text-anchor="middle">Store</text>
+  </g>
+  <g id="ucm-architecture-en-mooncake-store" data-node="mooncake-store">
+    <rect x="496" y="664" width="128" height="72" rx="8" class="ucm"/>
+    <text x="560" y="692" class="name" text-anchor="middle">MoonCake</text>
+    <text x="560" y="720" class="name" text-anchor="middle">Store</text>
+  </g>
+  <g id="ucm-architecture-en-3fs-store" data-node="3fs-store">
+    <rect x="640" y="664" width="128" height="72" rx="8" class="planned"/>
+    <text x="704" y="708" class="name" text-anchor="middle">3fsStore</text>
+  </g>
+  <g id="ucm-architecture-en-dram-store" data-node="dram-store">
+    <rect x="784" y="664" width="128" height="72" rx="8" class="ucm"/>
+    <text x="848" y="692" class="name" text-anchor="middle">Dram</text>
+    <text x="848" y="720" class="name" text-anchor="middle">Store</text>
+  </g>
+  <g id="ucm-architecture-en-x-store" data-node="x-store">
+    <rect x="928" y="664" width="128" height="72" rx="8" class="planned"/>
+    <text x="992" y="708" class="name" text-anchor="middle">xStore</text>
+  </g>
+  <g id="ucm-architecture-en-local-dram" data-node="local-dram">
+    <rect x="64" y="840" width="128" height="64" rx="8" class="resource"/>
+    <text x="128" y="880" class="name" text-anchor="middle">DRAM</text>
+  </g>
+  <g id="ucm-architecture-en-nfs-server" data-node="nfs-server">
+    <rect x="208" y="840" width="128" height="64" rx="8" class="resource"/>
+    <text x="272" y="864" class="name" text-anchor="middle">NFS</text>
+    <text x="272" y="892" class="name" text-anchor="middle">Server</text>
+  </g>
+  <g id="ucm-architecture-en-nas" data-node="nas">
+    <rect x="352" y="840" width="128" height="64" rx="8" class="resource"/>
+    <text x="416" y="880" class="name" text-anchor="middle">NAS</text>
+  </g>
+  <g id="ucm-architecture-en-mooncake" data-node="mooncake">
+    <rect x="496" y="840" width="128" height="64" rx="8" class="resource"/>
+    <text x="560" y="880" class="name" text-anchor="middle">MoonCake</text>
+  </g>
+  <g id="ucm-architecture-en-3fs" data-node="3fs">
+    <rect x="640" y="840" width="128" height="64" rx="8" class="resource"/>
+    <text x="704" y="880" class="name" text-anchor="middle">3fs</text>
+  </g>
+  <g id="ucm-architecture-en-dram" data-node="dram">
+    <rect x="784" y="840" width="128" height="64" rx="8" class="resource"/>
+    <text x="848" y="880" class="name" text-anchor="middle">DRAM</text>
+  </g>
+  <g aria-label="Legend">
+    <line x1="40" y1="936" x2="1080" y2="936" stroke="#dbe5e2" stroke-width="1"/>
+    <rect x="64" y="952" width="24" height="16" rx="4" class="vllm"/>
+    <text x="100" y="968" class="legend" text-anchor="start">vLLM</text>
+    <rect x="240" y="952" width="24" height="16" rx="4" class="ucm"/>
+    <text x="276" y="968" class="legend" text-anchor="start">UCM</text>
+    <rect x="400" y="952" width="24" height="16" rx="4" class="planned"/>
+    <text x="436" y="968" class="legend" text-anchor="start">Planned</text>
+    <path d="M572 960 H604" class="inherit" marker-end="url(#inheritance)"/>
+    <text x="616" y="968" class="legend" text-anchor="start">Inherits</text>
+    <path d="M728 960 H760" class="call" marker-end="url(#arrow-accent)"/>
+    <text x="772" y="968" class="legend" text-anchor="start">Uses</text>
+    <path d="M872 960 H904" class="io" marker-end="url(#arrow-link)"/>
+    <text x="916" y="968" class="legend" text-anchor="start">Storage I/O</text>
+  </g>
+</svg>

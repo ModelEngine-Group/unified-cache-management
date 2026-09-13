@@ -1,219 +1,169 @@
-# Building and Installing UCM from Source
+# Build UCM from source
 
-This guide explains how to build Unified Cache Management (UCM) from source code for development or customization purposes.
+Use a source build for development or an engine/backend combination that is
+not published in [Installation](../user-guide/quick_start/index.md). Build inside
+the target inference environment: the compiler, device toolkit, Python,
+PyTorch, and engine must be compatible with one another.
 
-If you just want to use UCM, refer to the [Quickstart (vLLM)](../user-guide/quick_start/quickstart_vllm.md) or [Quickstart (vLLM-Ascend)](../user-guide/quick_start/quickstart_vllm_ascend.md), which describe installation via Docker images or pip.
+## Prepare a build environment with Docker {#docker-build-environment}
 
-## Step 1: Prepare the Framework Environment
-
-Before building UCM from source, prepare the inference framework environment that UCM integrates with.
-
-### vLLM (CUDA Platform)
-
-For the sake of environment isolation and simplicity, we recommend preparing the vLLM environment by pulling the official, pre-built vLLM Docker image.
+If a matching engine environment is already available, continue below. Otherwise select an official image containing the engine and CUDA toolchain on the Linux host. Replace `<vllm-version>` with the version required by your integration, or use `lmsysorg/sglang:v0.5.9` for SGLang. Replace `/srv/models` with your host model directory.
 
 ```bash
-docker pull vllm/vllm-openai:<vllm_version>
+mkdir -p ucm-build/{source,cache,config}
+
+docker run --rm -it --name ucm-build-env \
+  --gpus all --network=host --ipc=host \
+  -v "$PWD/ucm-build/source:/workspace" \
+  -v /srv/models:/models:ro \
+  -v "$PWD/ucm-build/cache:/mnt/ucm-cache" \
+  -v "$PWD/ucm-build/config:/etc/ucm" \
+  --workdir /workspace \
+  --entrypoint /bin/bash 'vllm/vllm-openai:<vllm-version>' -i
 ```
 
-Then run your own container:
+Run checkout, dependency installation and compilation below inside the container. The mounted source survives container exit. For Ascend, use a matching vLLM-Ascend image and the [Ascend device/driver mounts](../user-guide/quick_start/index.md#vllm-ascend-docker). A runtime-only image may lack compilers; prepare the target device development toolchain.
+
+## Prepare a checkout
+
+Select a UCM branch or tag explicitly and record the resulting commit:
 
 ```bash
-# Use `--ipc=host` to make sure the shared memory is large enough.
-docker run \
-    --gpus all \
-    --network=host \
-    --ipc=host \
-    -v <path_to_your_models>:/home/model \
-    -v <path_to_your_storage>:/home/storage \
-    --entrypoint /bin/bash \
-    --name <name_of_your_container> \
-    -it vllm/vllm-openai:<vllm_version>
-```
-
-Refer to [Set up using docker](https://docs.vllm.ai/en/latest/getting_started/installation/gpu.html#set-up-using-docker) for more information to run your own vLLM container.
-
-### vLLM-Ascend (Ascend Platform)
-
-Work in a ready vLLM-Ascend environment. Please refer to the [vLLM-Ascend Installation](https://vllm-ascend.readthedocs.io/en/latest/installation.html#requirements) guide to meet the required dependencies and prepare the corresponding version of the vLLM-Ascend environment.
-
-### SGLang (CUDA Platform)
-
-For the sake of environment isolation and simplicity, we recommend preparing the SGLang environment by pulling the official, pre-built SGLang Docker image.
-
-```bash
-docker pull lmsysorg/sglang:v0.5.9
-```
-
-Then run your own container:
-
-```bash
-# Use `--ipc=host` to make sure the shared memory is large enough.
-docker run \
-    --gpus all \
-    --network=host \
-    --ipc=host \
-    -v <path_to_your_models>:/home/model \
-    -v <path_to_your_storage>:/home/storage \
-    --entrypoint /bin/bash \
-    --name <name_of_your_container> \
-    -it lmsysorg/sglang:v0.5.9
-```
-
-Refer to [Using docker](https://docs.sglang.io/get_started/install.html#method-3-using-docker) for more information to run your own SGLang container.
-
-### MindIE-LLM (Ascend Platform)
-
-Prepare a MindIE-LLM 2.3.0 environment with the Ascend runtime/toolkit installed. For details, refer to the [MindIE-LLM official documentation](https://gitcode.com/Ascend/MindIE-LLM/blob/dev/docs/zh/user_guide/quick_start/quick_start.md).
-
-## Step 2: Build UCM from Source
-
-### CUDA Platform (vLLM)
-
-Follow the commands below to install unified-cache-management from source code:
-
-**Note:** The sparse module was not compiled by default. To enable it, set the environment variable `export ENABLE_SPARSE=TRUE` before you build.
-
-```bash
-# Replace <branch_or_tag_name> with the branch or tag name needed
-git clone --depth 1 --branch <branch_or_tag_name> https://github.com/ModelEngine-Group/unified-cache-management.git
+export UCM_REF=your-branch-or-tag
+git clone --branch "$UCM_REF" https://github.com/ModelEngine-Group/unified-cache-management.git
 cd unified-cache-management
+git rev-parse HEAD
+python --version
+python -m pip install "setuptools>=64" wheel "cmake>=3.18"
+```
+
+Python 3.10 or newer is required by this source tree. Install the engine and
+its device dependencies before building UCM. `--no-build-isolation` below
+uses that environment; it does not install a compatible engine/toolkit for you.
+
+## vLLM on CUDA { #vllm-cuda-platform }
+
+Prepare a vLLM environment for the model and CUDA device you use, then build:
+
+```bash
 export PLATFORM=cuda
-pip install -v -e . --no-build-isolation
-```
-
-### Ascend Platform (vLLM-Ascend)
-
-```bash
-# Replace <branch_or_tag_name> with the branch or tag name needed
-git clone --depth 1 --branch <branch_or_tag_name> https://github.com/ModelEngine-Group/unified-cache-management.git
-cd unified-cache-management
-export PLATFORM=ascend
-pip install -v -e . --no-build-isolation
-```
-
->**Note:** For the Atlas A3 series, the `PLATFORM` variable should be set to `ascend-a3`.
-
-### SGLang (CUDA Platform)
-
-Follow the commands below to install unified-cache-management:
-
-```bash
-# Replace <branch_or_tag_name> with the branch or tag name needed
-git clone --depth 1 --branch <branch_or_tag_name> https://github.com/ModelEngine-Group/unified-cache-management.git
-cd unified-cache-management
-export PLATFORM=cuda
-pip install -v -e . --no-build-isolation
-```
-
-### MindIE-LLM (Ascend Platform)
-
-Clone the repository and install UCM with MindIE-LLM support enabled:
-
-```bash
-git clone --depth 1 https://github.com/ModelEngine-Group/unified-cache-management.git
-cd unified-cache-management
-export PLATFORM=ascend
-export UCM_ENABLE_MINDIE=1
-export UCM_CXX11_ABI=1  # Or 0. This must match the target MindIE/PyTorch ABI.
-pip install -v -e . --no-build-isolation
-cd ..
-```
-
-> **Note:** Packages built without `UCM_ENABLE_MINDIE=1` do **not** contain MindIE-LLM integration code.
->
-> **ABI requirement:** When `UCM_ENABLE_MINDIE=1`, you must also set `UCM_CXX11_ABI=0` or `1`. The value must match the target MindIE/PyTorch ABI.
-
-## Step 3: Enable UCM Integration
-
-### vLLM / vLLM-Ascend
-
-UCM integrates with vLLM / vLLM-Ascend automatically at runtime — no manual patching of the source code is required.
-
-Enable the patch hook by setting the following environment variable before launching the inference service:
-
-```bash
+python -m pip install -v -e . --no-build-isolation
 export ENABLE_UCM_PATCH=1
 ```
 
->**Note:** To enable Sparse Attention (vLLM 0.11.0), also set `export ENABLE_SPARSE=1`.
+Continue with the [vLLM quickstart](../user-guide/quick_start/index.md#vllm)
+for configuration, service startup, and external-cache verification.
 
-### MindIE-LLM
+## vLLM-Ascend { #vllm-ascend-ascend-platform }
 
-No runtime environment variables are needed for MindIE-LLM. Once UCM is installed with MindIE support (`UCM_ENABLE_MINDIE=1`), the patch is applied automatically when `mindie_llm` is first imported.
-
-## Alternative: Build Docker Images from Source
-
-If you prefer to build the UCM Docker images from source code, use the Dockerfile provided under the `docker/` directory for the engine version you need. Each Dockerfile automatically invokes the corresponding build script to compile the wheel, installs from the built package, and (where applicable) applies the integration patch.
-
-### vLLM (CUDA Platform)
-
-Check the `docker/` directory for available Dockerfile versions (e.g. `v0.20.2`, `v0.18.0`, `v0.17.0`, `v0.11.0`), then build with the desired version:
+Prepare a matching vLLM-Ascend, PyTorch, CANN, and driver environment. Choose
+the platform for the actual target rather than relying on autodetection:
 
 ```bash
-git clone --depth 1 --branch <branch_or_tag_name> https://github.com/ModelEngine-Group/unified-cache-management.git
-cd unified-cache-management
-# Replace <vllm_version> with the version you need (e.g. v0.20.2)
-docker build -t ucm-vllm:latest -f ./docker/Dockerfile.ucm-vllm-cuda-<vllm_version> ./
+export PLATFORM=ascend
+# For Atlas A3, use: export PLATFORM=ascend-a3
+python -m pip install -v -e . --no-build-isolation
+export ENABLE_UCM_PATCH=1
 ```
 
-For vLLM (v0.11.0) with sparse attention support:
+Continue with the [vLLM-Ascend quickstart](../user-guide/quick_start/index.md#vllm-ascend).
+
+## SGLang on CUDA { #sglang-cuda-platform }
+
+The current HiCache adapter recipe targets SGLang 0.5.9 and its zero-copy V1
+storage interface. Build UCM in that engine environment:
 
 ```bash
-docker build -t ucm-vllm-sparse:latest -f ./docker/Dockerfile.ucm-vllm-cuda-v0.11.0 ./
+export PLATFORM=cuda
+python -m pip install -v -e . --no-build-isolation
 ```
 
-### vLLM-Ascend (Ascend Platform)
+Continue with the [SGLang quickstart](../user-guide/quick_start/index.md#sglang).
+The historical `Dockerfile.ucm-sglang-cuda-v0.5.5` targets a different engine
+and patch path; building it does not validate the 0.5.9 HiCache recipe.
 
-Check the `docker/` directory for available Dockerfile versions (e.g. `v0.20.2`, `v0.18.0`, `v0.17.0`, `v0.11.0`), then build with the desired version:
+## MindIE-LLM on Ascend { #mindie-llm-ascend-platform }
+
+Prepare MindIE-LLM 2.3.0 and its Ascend runtime. MindIE integration is included
+only when `UCM_ENABLE_MINDIE=1` is set during the build. Determine the target
+PyTorch C++ ABI in that same environment:
 
 ```bash
-git clone --depth 1 --branch <branch_or_tag_name> https://github.com/ModelEngine-Group/unified-cache-management.git
-cd unified-cache-management
-# Replace <vllm_ascend_version> with the version you need (e.g. v0.20.2)
-docker build -t ucm-vllm:latest -f ./docker/Dockerfile.ucm-vllm-ascend.a2-<vllm_ascend_version> ./
+python -c "import torch; print(int(torch._C._GLIBCXX_USE_CXX11_ABI))"
 ```
 
-For vLLM-Ascend (v0.11.0) with sparse attention support:
+Set `UCM_CXX11_ABI` to the reported `0` or `1` and confirm it also matches the
+MindIE distribution, then install:
 
 ```bash
-docker build -t ucm-vllm-sparse:latest -f ./docker/Dockerfile.ucm-vllm-ascend.a2-v0.11.0 ./
+export PLATFORM=ascend
+export UCM_ENABLE_MINDIE=1
+export UCM_CXX11_ABI=1  # Replace with the matching target ABI.
+python -m pip install -v -e . --no-build-isolation
 ```
 
-### SGLang (CUDA Platform)
+The installed hook patches MindIE's Python modules when `mindie_llm` is first
+imported. This modifies the installed engine package; use a dedicated engine
+environment. Use the documentation for the target MindIE release to configure and verify the service.
 
-Download the pre-built `lmsysorg/sglang:v0.5.9` docker image and build the unified-cache-management docker image by the commands below:
+
+## Build an image from the checkout
+
+List the actual Dockerfiles in the selected revision and inspect the one for
+your engine and accelerator:
 
 ```bash
-# Replace <branch_or_tag_name> with the branch or tag name needed
-git clone --depth 1 --branch <branch_or_tag_name> https://github.com/ModelEngine-Group/unified-cache-management.git
-cd unified-cache-management
-docker build -t ucm-sglang:latest -f ./docker/Dockerfile.ucm-sglang-cuda-v0.5.5 ./
+ls docker/Dockerfile.*
 ```
 
-### MindIE-LLM (Ascend Platform)
-
-Use the provided MindIE-LLM Dockerfile (Ascend base, MindIE-LLM 2.3.0):
+Its `FROM`/image arguments and build script determine the engine environment.
+Select a versioned file from that list, then build from the repository root:
 
 ```bash
-git clone --depth 1 https://github.com/ModelEngine-Group/unified-cache-management.git
-cd unified-cache-management
-docker build -t ucm-mindie:latest -f ./docker/Dockerfile.ucm-mindie-ascend.a2-v2 ./
+export UCM_DOCKERFILE=docker/your-selected-Dockerfile
+docker build -t ucm-local:dev -f "$UCM_DOCKERFILE" .
 ```
 
-This Dockerfile:
+### Build by engine
 
-* uses `swr.cn-south-1.myhuaweicloud.com/ascendhub/mindie:2.3.0-800I-A2-py311-openeuler24.03-lts`
-* sets `UCM_ENABLE_MINDIE=1`
-* sets `UCM_CXX11_ABI` (default `1`, override with `--build-arg UCM_CXX11_ABI=0|1` to match your target environment)
-* installs UCM with MindIE-LLM support
-* applies the patch during image build
+The original per-engine Docker build commands are shown below. Set the engine version to one of the actual filenames listed above; the version is selected by your target environment. Run from the repository root.
 
-### Docker Build Scripts
+**CUDA / vLLM**
 
-The Dockerfiles invoke the following build scripts to compile the wheel:
+```bash
+export VLLM_VERSION="<vllm_version>"
+docker build -t ucm-vllm:latest -f "./docker/Dockerfile.ucm-vllm-cuda-${VLLM_VERSION}" .
+```
 
-- `scripts/build_cuda.sh` — builds the wheel for the CUDA platform
-- `scripts/build_ascend.sh` — builds the wheel for the Ascend platform
-- `scripts/build_mindie.sh` — builds the wheel for MindIE
-- `scripts/build_sglang.sh` — builds the wheel for SGLang
+**Ascend A2 / vLLM-Ascend**
+
+```bash
+export VLLM_ASCEND_VERSION="<vllm_ascend_version>"
+docker build -t ucm-vllm:latest -f "./docker/Dockerfile.ucm-vllm-ascend.a2-${VLLM_ASCEND_VERSION}" .
+```
+
+For A3, select the matching `ascend.a3` Dockerfile from the same list; an A2 image is not an A3 build.
+
+**SGLang**
+
+```bash
+docker build -t ucm-sglang:latest -f ./docker/Dockerfile.ucm-sglang-cuda-v0.5.5 .
+```
+
+This restores the repository's 0.5.5 Dockerfile route. It does not build the 0.5.9 HiCache environment described above.
+
+**MindIE**
+
+```bash
+docker build -t ucm-mindie:latest -f ./docker/Dockerfile.ucm-mindie-ascend.a2-v2 .
+```
+
+For MindIE, this revision provides
+`docker/Dockerfile.ucm-mindie-ascend.a2-v2`, based on MindIE 2.3.0. It builds the
+MindIE integration and applies the patch during image construction;
+`--build-arg UCM_CXX11_ABI=0` overrides its ABI default when required.
+
+Repository Dockerfiles and local builds are development inputs. Only artifacts
+listed by [Installation](../user-guide/quick_start/index.md) have the corresponding
+release publication record. Building or importing UCM locally does not replace
+a service startup and external-cache check on the target hardware.

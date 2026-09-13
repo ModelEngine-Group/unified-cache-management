@@ -61,7 +61,7 @@ ucm-toolkit build dev-sandbox \
   --jobs 16
 ```
 
-`--build-dir` 构建成功后会写回 adapter 中的 `build_dir` 字段；之后 `ucm-toolkit run dev-sandbox ...` 会从该目录查找二进制。
+`--build-dir` 构建成功后保存到按安装位置和版本隔离的用户状态；后续 `run`、`doctor`、`clean` 使用同一路径，不修改安装包源文件。
 
 构建参数：
 
@@ -262,7 +262,7 @@ ucm-toolkit run dev-sandbox aio \
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `--workspace <path>` | 必填 | AIO 测试工作目录。 |
-| `--io-type mmap\|alloc` | `mmap` | host buffer 分配策略。 |
+| `--io-type mmap|alloc` | `mmap` | host buffer 分配策略。 |
 | `--io-size <bytes>` | `1048576` | 每个 I/O shard 大小，单位 bytes。 |
 | `--io-number <n>` | `512` | I/O shard 数量。 |
 | `--device-id <id>` | `0` | 使用的设备 ID。 |

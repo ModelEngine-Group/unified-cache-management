@@ -1,6 +1,14 @@
 # dev-sandbox
 
-dev-sandbox measures Ascend host-to-device memory copy bandwidth, covering normal memory, O_DIRECT, shared memory allocation modes and multi-stream CE, FFTS direct H2D SDMA transport engines, supporting both GQA (per-card local memory) and MLA (single shared memory distributed to all cards) topologies.
+`dev-sandbox` is a C++ tool for measuring data-movement performance independently through its `copy`, `trans` and `aio` test programs. When investigating slow KV loading, you can measure one transfer step involving host memory, device memory or storage, then compare it with loading behavior in the service.
+
+Use it when:
+
+- Storage read bandwidth is healthy but KV loading remains slow, so the host-to-device copy needs a separate measurement.
+- Comparing host-memory allocation methods, copy engines or multi-device data-distribution patterns.
+- Comparing timings and bandwidth at a fixed data size and test case after changing a low-level transfer implementation.
+
+The tool reports timings and bandwidth for the selected test case without loading a model or starting an inference service. Available cases depend on the compiled backend. This page focuses on Ascend H2D copies, covering normal memory, O_DIRECT and shared memory allocation modes, multi-stream CE and FFTS direct H2D SDMA engines, and GQA (per-card local memory) and MLA (one shared buffer distributed to all cards) topologies. See the [developer guide](../developer/dev-sandbox.md) for builds and other backends.
 
 ← Back to [UCM Toolkit](../index.md)
 

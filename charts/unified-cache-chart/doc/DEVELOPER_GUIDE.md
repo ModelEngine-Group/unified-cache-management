@@ -51,7 +51,7 @@ helm install <release> . \
 2. `models/cuda/*.yaml` 或 `models/ascend/*.yaml`：模型、平台运行时参数、资源量和拓扑。
 3. `local-overlay.yaml`：实际镜像、模型盘、StorageClass、节点名、网卡、Secret 与 ServiceAccount。
 
-Chart 不提供默认公共运行时镜像。`images.image` 为空时，部署必须在 overlay 中提供它，或者设置 `modelSpec.image`。
+源码 `images.image` 保持为空；发布流水线在打包副本中填写默认 CUDA 镜像，并在旁边生成全部运行时镜像的候选注释，优先 Docker Hub、其次 GHCR。`images.image` 为空时必须显式提供它，或者设置 `modelSpec.image`。Ascend 示例显式清空默认值，避免继承 CUDA 镜像。
 
 ## 2. 模型适配开发流程
 

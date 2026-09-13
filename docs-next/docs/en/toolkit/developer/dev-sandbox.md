@@ -61,7 +61,7 @@ ucm-toolkit build dev-sandbox \
   --jobs 16
 ```
 
-After a successful `--build-dir` build, the `build_dir` field in the adapter is updated; subsequent `ucm-toolkit run dev-sandbox ...` will look for binaries in that directory.
+`--build-dir` is saved to user state scoped to the installation and version after a successful build. Subsequent `run`, `doctor`, and `clean` use that path without editing installed source files.
 
 Build parameters:
 
@@ -262,7 +262,7 @@ Parameters:
 | Parameter | Default | Description |
 | --- | --- | --- |
 | `--workspace <path>` | Required | AIO test working directory. |
-| `--io-type mmap\|alloc` | `mmap` | Host buffer allocation strategy. |
+| `--io-type mmap|alloc` | `mmap` | Host buffer allocation strategy. |
 | `--io-size <bytes>` | `1048576` | Size of each I/O shard in bytes. |
 | `--io-number <n>` | `512` | Number of I/O shards. |
 | `--device-id <id>` | `0` | Device ID to use. |

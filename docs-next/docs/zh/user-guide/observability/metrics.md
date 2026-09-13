@@ -86,6 +86,26 @@ scrape_configs:
           - "<vllm-ip>:8000"
 ```
 
+将抓取目标替换为 Prometheus 容器可访问的引擎地址和实际端口，例如运行快速开始服务的宿主机 IP 与 7800 端口；这里不能用 Prometheus 容器自身的 `127.0.0.1`。
+
+在保存了 `prometheus.yml` 的宿主机目录中创建网络和持久卷，再启动 Prometheus：
+
+```bash
+docker network create ucm-monitoring
+docker volume create prometheus-data
+
+docker run -d \
+  --name prometheus \
+  --restart unless-stopped \
+  --network ucm-monitoring \
+  -p 9090:9090 \
+  -v "$PWD/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+  -v prometheus-data:/prometheus \
+  prom/prometheus
+```
+
+访问 `http://<prometheus-host>:9090/targets`，确认 `vllm` 抓取目标为 **UP**，并查询 `ucm:` 指标。已有 `ucm-monitoring` 网络时复用它，不必重复创建。
+
 ### 安装 Grafana
 
 创建持久卷并启动 Grafana：
@@ -96,6 +116,7 @@ docker volume create grafana-data
 docker run -d \
   --name grafana \
   --restart unless-stopped \
+  --network ucm-monitoring \
   -p 3000:3000 \
   -v grafana-data:/var/lib/grafana \
   grafana/grafana
@@ -111,6 +132,8 @@ docker run -d \
 - 身份验证：对于未认证的本地部署选择**无身份验证**
 - 选择**保存并测试**并验证 Grafana 可以查询 Prometheus
 
+`prometheus` 主机名由同一个 `ucm-monitoring` 网络解析。Grafana 在其他环境部署时，应填写它实际可访问的 Prometheus 地址。
+
 ### 导入 UCM 仪表板
 
 进入**仪表板** → **新建** → **导入**，上传所需的仪表板 JSON 文件，选择 Prometheus 数据源，然后点击**导入**。
@@ -120,7 +143,24 @@ UCM 提供这些仪表板：
 | 文件 | 用途 |
 | --- | --- |
 | `examples/metrics/grafana_vllm.json` | vLLM 请求延迟、令牌吞吐量、调度器状态和缓存状态 |
-| `examples/metrics/grafana_ucm_overview.json` | vLLM/UCM 概览、输入和输出令牌计数、Store 健康状态和探测趋势 |
+| `examples/metrics/grafana_store.json` | Store 查找、加载、写出、带宽和缓存活动 |
 | `examples/metrics/grafana_connector.json` | Connector 查找/加载/保存请求计数、块计数、持续时间、吞吐量和错误 |
 
-有关完整的指标文档，请参阅原始 UCM 文档中的详细指标指南。
+## 用终端查看指标
+
+不部署 Prometheus/Grafana 时，也可以直接查看引擎端点。在 UCM 源码根目录、能够访问该端点的终端中执行：
+
+```bash
+python3 -m pip install -e toolkit
+ucm-toolkit run metrics-view list-configs
+ucm-toolkit run metrics-view check \
+  --url http://127.0.0.1:7800/metrics \
+  --config store
+```
+
+以上查看当前快照；后台采集、时间窗口查询以及 MLA 的 TP 参数见 [metrics-view 完整操作](../../toolkit/user/metrics-view.md)。
+
+## 参考
+
+- [指标定义](metrics-reference.md)
+- [Store 健康指标](health-metrics.md)

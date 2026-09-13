@@ -33,7 +33,7 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - id: classify
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -81,3 +81,4 @@ jobs:
       TEST_PYPI_API_TOKEN: ${{ needs.classify-tag.outputs.publication_scope == 'fork' && secrets.TEST_PYPI_API_TOKEN || '' }}
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      RTD_API_TOKEN: ${{ secrets.RTD_API_TOKEN }}

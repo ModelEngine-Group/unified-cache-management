@@ -1,31 +1,16 @@
 #!/usr/bin/env python3
-"""Unified entry point for the UCM MkDocs documentation site.
-
-Mirrors the commands described in the UCM docs re-architecture technical review
-(section 5.3). This is a thin wrapper over ``mkdocs`` so that contributors have a
-single, documented entry point for serving, building, validating, translating,
-and generating content.
-
-Usage:
-    python tools/site.py serve
-    python tools/site.py build --lang en --strict
-    python tools/site.py build --lang zh-cn --strict
-    python tools/site.py validate
-    python tools/site.py translate --changed
-    python tools/site.py generate
-"""
+"""Build and preview UCM documentation."""
 
 from __future__ import annotations
 
 import argparse
-import os
-import shutil
+import logging
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-LANGS = ("en", "zh-cn")
+LANGS = ("en", "zh")
 
 
 def _run(cmd: list[str]) -> int:
@@ -34,7 +19,7 @@ def _run(cmd: list[str]) -> int:
 
 
 def _mkdocs(*args: str) -> int:
-    return _run(["mkdocs", *args])
+    return _run([sys.executable, "-m", "mkdocs", *args])
 
 
 def serve(args: argparse.Namespace) -> int:
@@ -43,75 +28,42 @@ def serve(args: argparse.Namespace) -> int:
 
 
 def build(args: argparse.Namespace) -> int:
-    """Build the site.
+    from site_build import build_site
 
-    The mkdocs-static-i18n plugin builds every language whose ``build`` flag is
-    true in a single ``mkdocs build`` invocation, so ``--lang`` is recorded for
-    review but does not gate a separate build. ``--strict`` turns warnings into
-    errors so missing pages/translations fail the build.
-    """
-    if args.lang not in LANGS:
-        print(f"error: --lang must be one of {LANGS}, got {args.lang!r}")
-        return 2
-    cmd = ["build"]
-    if args.strict:
-        cmd.append("--strict")
-    if args.clean:
-        cmd.append("--clean")
-    # Reconfigure the i18n plugin to build only the requested language by
-    # toggling the other languages off via an environment hook. mkdocs-static-i18n
-    # reads its config from mkdocs.yml, so we surface the requested language for
-    # CI logs rather than splitting builds.
-    print(f"[site] building language profile: {args.lang}")
-    return _mkdocs(*cmd)
-
-
-def validate(args: argparse.Namespace) -> int:
-    """Run a strict build across all enabled languages."""
-    return _mkdocs("build", "--strict")
-
-
-def translate(args: argparse.Namespace) -> int:
-    """Generate or update Chinese mirror content for changed English pages.
-
-    Not yet implemented: this is the AI Robot responsibility (review module 2).
-    It requires a CI-injected AI service endpoint and a writable GitHub App.
-    See docs/ucm-mkdocs-site-rearchitecture-technical-review.md section 4.7.2.
-    """
-    print("[site] translate --changed: AI Chinese generation is not wired up locally.")
-    print("       It runs in CI against changed English pages via an AI Robot.")
-    print("       For now, author Chinese mirror pages manually under docs/zh-cn/.")
+    build_site(
+        language=args.lang,
+        site_dir=args.site_dir or ROOT / "site" / args.lang,
+        site_url=args.site_url
+        or f"http://127.0.0.1:8000/{'zh-cn' if args.lang == 'zh' else 'en'}/latest/",
+        strict=args.strict,
+        repository=args.repository,
+        ref=args.ref,
+        manifest_path=args.manifest,
+    )
     return 0
 
 
-def generate(args: argparse.Namespace) -> int:
-    """Regenerate derived content from sources.
+def validate(args: argparse.Namespace) -> int:
+    from site_build import build_site
 
-    Planned to rebuild ``docs/source/getting-started/docker-recipes.generated.md``
-    from ``.github/release/release.yaml``. That file is currently missing from the
-    tree and has no regeneration script, so this step is a no-op placeholder until
-    the generator lands.
-    """
-    release_yaml = ROOT.parent / ".github" / "release" / "release.yaml"
-    target = ROOT / "docs" / "en" / "getting-started" / "docker-recipes.generated.md"
-    print("[site] generate: regenerate derived content from sources.")
-    if release_yaml.exists():
-        print(f"       source: {release_yaml}")
-    else:
-        print(f"       source not found: {release_yaml}")
-    print(f"       target: {target}")
-    print("       status: no generator implemented yet (placeholder).")
+    for language, slug in (("en", "en"), ("zh", "zh-cn")):
+        build_site(
+            language=language,
+            site_dir=ROOT / "site" / language,
+            site_url=f"https://docs.example.invalid/{slug}/latest/",
+            strict=True,
+        )
+    return 0
+
+
+def rtd(args: argparse.Namespace) -> int:
+    from site_build import build_readthedocs
+
+    build_readthedocs()
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    if shutil.which("mkdocs") is None and not (ROOT / ".venv").exists():
-        print(
-            "mkdocs is not on PATH. Create the environment first:\n"
-            "  python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt",
-            file=sys.stderr,
-        )
-
     parser = argparse.ArgumentParser(
         prog="site.py",
         description="UCM MkDocs documentation site entry point.",
@@ -126,35 +78,41 @@ def main(argv: list[str] | None = None) -> int:
 
     p_build = sub.add_parser("build", help="Build the site.")
     p_build.add_argument(
-        "--lang", default="en", choices=LANGS, help="Language profile to record."
+        "--lang", default="en", choices=LANGS, help="Build only this language."
     )
     p_build.add_argument(
         "--strict", action="store_true", help="Treat warnings as errors."
     )
+    p_build.add_argument("--site-dir", type=Path)
+    p_build.add_argument("--site-url")
     p_build.add_argument(
-        "--clean", action="store_true", help="Remove the site dir before building."
+        "--repository", help="Read completed installation releases from OWNER/REPO."
     )
+    p_build.add_argument("--ref", help="Git ref used for source/edit links.")
+    p_build.add_argument("--manifest", type=Path, help="Use a local Schema 9 manifest.")
     p_build.set_defaults(func=build)
+
+    p_rtd = sub.add_parser(
+        "rtd", help="Build the language and version selected by Read the Docs."
+    )
+    p_rtd.set_defaults(func=rtd)
 
     p_validate = sub.add_parser("validate", help="Strict build across all languages.")
     p_validate.set_defaults(func=validate)
 
-    p_translate = sub.add_parser(
-        "translate", help="AI-generate Chinese for changed English pages (CI only)."
-    )
-    p_translate.add_argument(
-        "--changed", action="store_true", help="Only translate changed pages."
-    )
-    p_translate.set_defaults(func=translate)
-
-    p_generate = sub.add_parser(
-        "generate", help="Regenerate derived content from sources."
-    )
-    p_generate.set_defaults(func=generate)
-
     args = parser.parse_args(argv)
-    return args.func(args)
+    from release_manifest import ManifestError, ReleasePending
+
+    try:
+        return args.func(args)
+    except ReleasePending as error:
+        print(f"[docs] {error}; waiting for release completion", file=sys.stderr)
+        return 183 if args.command == "rtd" else 2
+    except (ManifestError, OSError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
     raise SystemExit(main())

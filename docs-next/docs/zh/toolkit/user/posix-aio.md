@@ -1,5 +1,17 @@
 # posix-aio
 
+`posix-aio` 用于测量 UCM POSIX Store 保存和读取 KV 数据的性能。它在指定目录执行实际 dump/load 读写，无需启动推理服务，帮助判断存储路径在所选数据规模和并发下能达到什么带宽。
+
+适合在以下情况下使用：
+
+- 选择缓存存储目录时，在相同负载下比较不同磁盘或挂载路径。
+- KV 保存或读取较慢时，比较 I/O 引擎、并发数和 Direct I/O 设置的影响。
+- 需要贴近模型的 KV 块大小进行测试时，由模型配置生成测试数据规模。
+
+结果包含每轮 dump/load 的耗时与带宽，可用于比较存储参数。测量范围是 Store 读写路径，结果受页缓存和 I/O 模式影响；请求首 token 延迟仍需在推理服务中验证。
+
+## 测试方式
+
 调用仓库中的 `ucm/store/test/e2e/posixstore_aio_test.py`，通过 `UcmPipelineStore` 做 dump/load 性能测试，用于评估 UCM POSIX store 的磁盘读写带宽。IO 引擎（`posix_io_engine`，psync/aio）、传输并发（`posix_data_trans_concurrency`）、是否走 O_DIRECT（`io_direct`）均可通过 CLI 配置。
 
 支持两种用法：

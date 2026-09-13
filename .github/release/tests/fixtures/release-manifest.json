@@ -1,0 +1,95 @@
+{
+  "kind": "ucm-release-manifest",
+  "schema_version": 9,
+  "release": {
+    "tag": "v0.9.3",
+    "type": "stable",
+    "version": "0.9.3",
+    "url": "https://github.com/example/ucm/releases/tag/v0.9.3",
+    "actions_run_id": 33087700398
+  },
+  "wheels": [
+    {
+      "id": "placeholder",
+      "product": "vllm",
+      "accelerator": {
+        "runtime": "cuda-13.0",
+        "variant": "cuda",
+        "soc_version": "cuda"
+      },
+      "distribution": "uc-manager-cuda-cu130",
+      "version": "0.9.3",
+      "python_abi": "cp312",
+      "architecture": "amd64",
+      "filename": "uc_manager_cuda_cu130-0.9.3-cp312-cp312-manylinux_2_28_x86_64.whl",
+      "url": "https://github.com/example/ucm/releases/download/v0.9.3/uc_manager_cuda_cu130-0.9.3-cp312-cp312-manylinux_2_28_x86_64.whl",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "dependencies": [
+        "wrapt==1.17.2"
+      ],
+      "extra": "cu130",
+      "platform_tags": [
+        "manylinux_2_28_x86_64"
+      ]
+    }
+  ],
+  "images": [
+    {
+      "id": "vllm-v1-cu130",
+      "product": "vllm",
+      "upstream": {
+        "version": "1.0.0",
+        "channel": "stable"
+      },
+      "accelerator": {
+        "runtime": "cuda-13.0",
+        "variant": "cuda",
+        "soc_version": "cuda"
+      },
+      "os": {
+        "id": "ubuntu",
+        "version": "24.04"
+      },
+      "publications": {
+        "ghcr": {
+          "pull": "ghcr.io/example/vllm:v1-ucm-0.9.0",
+          "multi_arch": true,
+          "members": [
+            {
+              "architecture": "amd64",
+              "reference": "ghcr.io/example/vllm:v1-amd64-ucm-0.9.0"
+            },
+            {
+              "architecture": "arm64",
+              "reference": "ghcr.io/example/vllm:v1-arm64-ucm-0.9.0"
+            }
+          ]
+        },
+        "dockerhub": null
+      }
+    }
+  ],
+  "chart": {
+    "name": "unified-cache-chart",
+    "version": "0.9.3",
+    "filename": "unified-cache-chart-0.9.3.tgz",
+    "url": "https://github.com/example/ucm/releases/download/v0.9.3/chart.tgz",
+    "oci": "ghcr.io/example/charts/unified-cache-chart:0.9.3"
+  },
+  "github_release_assets": [
+    "release-manifest.json",
+    "uc_manager_cuda_cu130-0.9.3-cp312-cp312-manylinux_2_28_x86_64.whl",
+    "unified-cache-chart-0.9.3.tgz"
+  ],
+  "python": {
+    "distribution": "uc-manager",
+    "version": "0.9.3",
+    "extras": {
+      "cu130": "uc-manager-cuda-cu130"
+    },
+    "pypi": {
+      "index_url": "https://pypi.org/simple",
+      "project_url": "https://pypi.org/project/uc-manager/0.9.3/"
+    }
+  }
+}
