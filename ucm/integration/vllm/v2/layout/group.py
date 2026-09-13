@@ -232,17 +232,17 @@ class KVCacheGroupLayout:
             tiles.append((descriptor, len(descriptor.layers) * descriptor.layer_stride))
         tiles.sort(key=lambda item: item[0].offset)
         starts: dict[int, int] = {}
-        chain_offset = 0
+        block_offset = 0
         for descriptor, tile_bytes in tiles:
-            if descriptor.offset != chain_offset:
+            if descriptor.offset != block_offset:
                 return None, None  # offset chain must be gapless
-            starts[id(descriptor)] = chain_offset
-            chain_offset += tile_bytes
+            starts[id(descriptor)] = block_offset
+            block_offset += tile_bytes
         first_descriptor = tiles[0][0]
         span = BlockFirstSpan(
             base_ptr=views_by_name[first_descriptor.layers[0]][0].base_ptr,
             block_stride=first_descriptor.block_stride,
-            block_bytes=chain_offset,
+            block_bytes=block_offset,
         )
         return span, starts
 
