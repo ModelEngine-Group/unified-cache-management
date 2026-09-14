@@ -58,3 +58,23 @@ def test_clock_proof_rejects_missing_workers_or_different_namespaces():
     proof["processes"][-1]["time_namespace"] = "other"
     assert not same_clock(proof)
     assert not same_clock({})
+
+
+def test_owner_loads_join_pid_task_without_losing_layers_or_generations():
+    rows = records('''
+UCM_EARLY submitted key=A request=req dp=0 ns=1
+UCM_EARLY owner_assigned key=A attempt=attempt owner=w0.1 dp=0 domain_used_bytes=8192 ns=2
+UCM_EARLY owner_ready key=A attempt=attempt owner=w0.1 rank=1 ns=3000000
+UCM_EARLY ready key=A attempt=attempt owner=w0.1 dp=0 ns=5000000
+UCM_EARLY native_load_submitted key=A attempt=attempt consumer=w0.0 task=4 pid=10 ns=6000000
+UCM_EARLY native_load_completed key=A attempt=attempt consumer=w0.0 task=4 pid=10 completed_ns=7000000 layers=[0]
+UCM_EARLY native_load_completed key=A attempt=attempt consumer=w0.0 task=5 pid=10 completed_ns=8000000 layers=[1]
+UCM_EARLY native_load_completed key=B attempt=other consumer=w0.1 task=4 pid=11 completed_ns=9000000 layers=[0]
+UCM_EARLY stage=load_dispatch task=4 shards=78 native_get_fallback=78 load_l2_read_shards=0 [10,12]
+UCM_EARLY owner_released key=A attempt=attempt owner=w0.1 dp=0 domain_used_bytes=0 ns=10000000
+''')
+    report = summarize(rows, cross_process=True)
+    assert len(report["jobs"]["A"]["consumers"]["w0.0"]) == 3
+    assert report["jobs"]["A"]["ranks"]["1"]["rank_to_all_ready_ms"] == 2
+    assert report["native_load_dispatches"][0]["consumers"] == [("A", "attempt", "w0.0")]
+    assert len(report["owner_budget_events"]) == 2

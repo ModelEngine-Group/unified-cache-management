@@ -133,9 +133,11 @@ class BrokerState:
 
 
 class Control:
-    def __init__(self, endpoint, identity, callback, broker_config=None):
+    def __init__(self, endpoint, identity, callback, broker_config=None, hello=None):
         self.endpoint, self.identity, self.callback = endpoint, identity, callback
         self.broker_config = broker_config
+        import uuid
+        self.hello = dict(hello or {}, session=uuid.uuid4().hex)
         self.outbound = queue.SimpleQueue()
         self.reader, self.writer = socket.socketpair()
         self.writer.setblocking(False)
@@ -179,12 +181,13 @@ class Control:
                 def route(peer, message):
                     router.send_multipart([peer.encode(), encode(message)])
 
-                broker = BrokerState(route, **self.broker_config)
+                from .early_owner import OwnerBroker
+                broker = OwnerBroker(route, **self.broker_config)
                 poller.register(router, zmq.POLLIN)
             dealer.connect(self.endpoint)
             poller.register(dealer, zmq.POLLIN)
             poller.register(self.reader.fileno(), zmq.POLLIN)
-            dealer.send(encode({"op": "hello"}))
+            dealer.send(encode(dict(self.hello, op="hello")))
             heartbeat, last_reply = 0.0, None
             connecting_since = time.monotonic()
             connect_timeout = float(os.getenv("VLLM_ENGINE_READY_TIMEOUT_S", "3600"))
@@ -206,7 +209,7 @@ class Control:
                         self.callback(message)
                 now = time.monotonic()
                 if now - heartbeat >= 2:
-                    dealer.send(encode({"op": "ping"}))
+                    dealer.send(encode({"op": "ping", "session": self.hello["session"]}))
                     heartbeat = now
                     if router is not None:
                         broker.expire(now)

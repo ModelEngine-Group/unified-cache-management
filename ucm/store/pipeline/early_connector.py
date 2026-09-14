@@ -15,17 +15,39 @@ class _ReservedLoad:
     def __init__(self, pipeline):
         self.pipeline = pipeline
         self.reservations = ()
+        self.observer = None
+        self.receipts = {}
 
     def __getattr__(self, name):
         return getattr(self.pipeline, name)
 
     def Load(self, ids, indexes, addrs):
         reservations = self.reservations
-        if not reservations:
-            return self.pipeline.Load(ids, indexes, addrs)
-        return ucmpipelinestore.EarlyLoad(
-            self.pipeline, ids, indexes, addrs, reservations
-        )
+        receipt = self.observer.begin(ids, indexes) if self.observer else None
+        try:
+            if not reservations and receipt is None:
+                return self.pipeline.Load(ids, indexes, addrs)
+            task = ucmpipelinestore.EarlyLoad(self.pipeline, ids, indexes, addrs, reservations)
+            if receipt is not None:
+                self.receipts[task] = receipt
+                self.observer.submitted(receipt, task)
+            return task
+        except Exception:
+            if receipt is not None:
+                self.observer.complete(receipt, None, False)
+            raise
+
+    def Wait(self, task):
+        receipt = self.receipts.pop(task, None)
+        try:
+            result = self.pipeline.Wait(task)
+        except Exception:
+            if receipt is not None:
+                self.observer.complete(receipt, task, False)
+            raise
+        if receipt is not None:
+            self.observer.complete(receipt, task, True)
+        return result
 
 
 class _EarlyStack:
@@ -62,6 +84,7 @@ class EarlyPipelineStore(UcmPipelineStore):
             "EarlyReservePrefix", "EarlyPrefetchReserved", "EarlyReleaseReservation",
             "EarlyLoad",
             "EarlyBatch",
+            "EarlyDomainInfo",
         )
         if not all(callable(getattr(ucmpipelinestore, name, None)) for name in required):
             raise RuntimeError(
@@ -88,6 +111,12 @@ class EarlyPipelineStore(UcmPipelineStore):
         return ucmpipelinestore.EarlyReservePrefix(
             self._native_store, np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         )
+
+    def domain_info(self):
+        return dict(ucmpipelinestore.EarlyDomainInfo(self._native_store))
+
+    def set_consumer(self, observer):
+        self.store_.observer = observer
 
     def prefetch_reserved(self, handle: int) -> dict:
         return ucmpipelinestore.EarlyPrefetchReserved(self._native_store, handle)

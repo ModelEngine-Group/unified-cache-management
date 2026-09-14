@@ -52,6 +52,7 @@ def same_clock(proof):
 
 def summarize(rows, cross_process=False):
     jobs, associations, stages, joint_loads, dispatches = {}, {}, [], [], []
+    consumer_tasks, budget_events = {}, []
     seen = set()
     for row in rows:
         # A source may contain both live and final snapshots of the same line.
@@ -66,6 +67,19 @@ def summarize(rows, cross_process=False):
         if key is None:
             continue
         job = jobs.setdefault(key, {"events": {}, "ranks": {}})
+        if "owner" in row:
+            job["owner"] = row["owner"]
+        if "attempt" in row:
+            job["attempt"] = row["attempt"]
+        if row["event"] in ("owner_assigned", "owner_released", "owner_nospace"):
+            budget_events.append(row)
+        if "consumer" in row and row["event"].startswith("native_"):
+            consumer = job.setdefault("consumers", {}).setdefault(row["consumer"], [])
+            consumer.append(row)  # retain every layer/chunk/task; never overwrite with the last one
+            if "task" in row and "pid" in row:
+                members = consumer_tasks.setdefault((row["pid"], row["task"]), set())
+                members.add((key, row.get("attempt"), row["consumer"]))
+            continue
         if "request" in row:
             job["request"] = row["request"]
         if "dp" in row:
@@ -85,7 +99,8 @@ def summarize(rows, cross_process=False):
     unmatched = []
     for row in stages:
         if row["stage"] == "load_dispatch":
-            dispatches.append(row)  # actual native Get count, by PID/task
+            dispatches.append(dict(row, consumers=sorted(consumer_tasks.get(
+                (row.get("pid"), row.get("task")), ()))))
             continue
         if row["stage"] == "load_handles":
             handles = row.get("load_reservations", "").split(",")
@@ -111,7 +126,8 @@ def summarize(rows, cross_process=False):
         for rank in job["ranks"].values():
             e = rank["events"]
             rank["lookup_queue_ms"] = elapsed(e.get("lookup_enqueued", {}).get("ns"), e.get("lookup_start", {}).get("ns"))
-            rank["rank_to_all_ready_ms"] = elapsed(e.get("rank_ready", {}).get("ns"), ready) if cross_process else None
+            rank_ready = e.get("owner_ready", e.get("rank_ready", {})).get("ns")
+            rank["rank_to_all_ready_ms"] = elapsed(rank_ready, ready) if cross_process else None
             rank["submitted_to_enqueued_ms"] = elapsed(submitted, e.get("lookup_enqueued", {}).get("ns")) if cross_process else None
             first_io = []
             last_reserve = []
@@ -131,7 +147,7 @@ def summarize(rows, cross_process=False):
             rank["first_io_lead_over_reserve_done_ms"] = max(0, (max(last_reserve) - min(first_io)) / 1e6) if first_io and last_reserve else None
     return dict(cross_process_clock_verified=cross_process, jobs=jobs,
                 joint_loads=joint_loads, native_load_dispatches=dispatches,
-                unmatched_stages=unmatched)
+                unmatched_stages=unmatched, owner_budget_events=budget_events)
 
 
 def main():

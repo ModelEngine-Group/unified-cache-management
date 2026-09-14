@@ -21,6 +21,7 @@ from ucm.integration.vllm.early_connector import (
 )
 from ucm.integration.vllm.early_lookup import current_lookup
 from ucm.integration.vllm.early_prefetch import EarlyScheduler, Job
+from ucm.integration.vllm.early_owner_worker import OwnerWorker
 from ucm.integration.vllm.rank_consistency import RankConsistencyManager
 from ucm.store.pipeline import connector as native_store
 from ucm.store.pipeline import early_connector as early_store
@@ -341,6 +342,7 @@ def test_handoff_submit_error_keeps_native_exception(monkeypatch):
 
 def test_worker_bind_selects_only_ready_local_consumers():
     worker = object.__new__(early_prefetch.EarlyWorker)
+    worker.owner_protocol = OwnerWorker(worker, {}, "w0.0")
     worker.condition = threading.Condition()
     worker.store = Mock()
     worker.request_keys = {}
@@ -400,6 +402,7 @@ def test_submit_is_once_and_pending_never_waits_for_hash(connector, monkeypatch)
 @pytest.mark.parametrize("is_mla, rank", [(True, 3), (False, 0), (False, 3)])
 def test_worker_reservation_uses_native_mla_or_rank_local_identity(is_mla, rank):
     worker = object.__new__(early_prefetch.EarlyWorker)
+    worker.owner_protocol = OwnerWorker(worker, {}, f"w0.{rank}")
     worker.condition = threading.Condition()
     worker.closed = False
     worker.control = Mock()
@@ -429,3 +432,24 @@ def test_early_load_binding_preserves_native_dimension_errors():
     with pytest.raises(type(native.value)) as prepared:
         early_store.ucmpipelinestore.EarlyLoad(pipeline, ids, indexes, addresses, [7])
     assert str(prepared.value) == str(native.value)
+
+
+def test_owner_expected_plan_uses_native_hbm_and_missing_filter_without_relookup(connector):
+    request = Request(token_count=12)
+    job = prepare(connector, request, hit=3)
+    job.blocks.append(b"c" * 16)
+    job.owner, job.attempt, job.grant = "w0.1", "attempt", 1
+    connector._rank_consistency._tracker.mark_missing({job.blocks[2]})
+    assert connector.get_num_new_matched_tokens(request, 4) == (4, False)
+    assert job.expected == (job.blocks[1],)
+    assert connector._early.owner_metadata({request.request_id: job.key})[request.request_id]["expected"] == job.expected
+    connector.store.store_.LookupOnPrefix.assert_not_called()
+
+
+def test_owner_all_hbm_hit_does_not_require_native_metadata(connector):
+    request = Request()
+    job = prepare(connector, request)
+    job.owner, job.attempt, job.grant = "w0.0", "attempt", 1
+    assert connector.get_num_new_matched_tokens(request, 8) == (0, False)
+    assert job.expected == ()
+    connector.store.store_.LookupOnPrefix.assert_not_called()

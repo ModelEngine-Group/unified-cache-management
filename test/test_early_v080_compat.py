@@ -46,6 +46,7 @@ def test_background_hash_and_ready_reuse_keep_native_request_semantics(
 
     early = connector._early
     early.dp_rank = 0
+    early.sequence = 0
     job = Job(request, request.all_token_ids, early.identity(request))
     early.jobs[request.request_id] = job
     early.by_key[job.key] = job

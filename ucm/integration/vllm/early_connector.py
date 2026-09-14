@@ -19,6 +19,7 @@ from .ucm_connector import (
 @dataclass
 class EarlyConnectorMetadata(UCMConnectorMetadata):
     early_keys: dict[str, str] = field(default_factory=dict)
+    early_owners: dict[str, dict] = field(default_factory=dict)
 
 
 class _EarlyConnectorMixin:
@@ -86,7 +87,13 @@ class _EarlyConnectorMixin:
         )
         token = current_lookup.set(context)
         try:
-            return super().get_num_new_matched_tokens(request, num_computed_tokens)
+            result = super().get_num_new_matched_tokens(request, num_computed_tokens)
+            if job is not None and job.owner and job.state == "READY" and not job.dispatched:
+                meta = self.requests_meta.get(request.request_id)
+                job.expected = () if meta is None else tuple(meta.ucm_block_ids[
+                    meta.hbm_hit_block_num * self.cp_world_size:
+                    meta.total_hit_block_num * self.cp_world_size])
+            return result
         finally:
             current_lookup.reset(token)
 
@@ -124,9 +131,9 @@ class _EarlyConnectorMixin:
         metadata = super().build_connector_meta(scheduler_output)
         for request_id in metadata.preempted_req_ids:
             self._early.finish(request_id, cancelled=True)
-        return EarlyConnectorMetadata(
-            **vars(metadata), early_keys=self._early.scheduled(metadata.request_meta)
-        )
+        keys = self._early.scheduled(metadata.request_meta)
+        return EarlyConnectorMetadata(**vars(metadata), early_keys=keys,
+                                      early_owners=self._early.owner_metadata(keys))
 
     def request_finished(self, request, block_ids):
         self._early.finish(request, cancelled="ABORT" in str(request.status.name))
@@ -151,6 +158,7 @@ class _EarlyConnectorMixin:
             self._early.finished(request_ids)
 
     def start_load_kv(self, forward_context, **kwargs):
+        self._early.owner_protocol.check()
         super().start_load_kv(forward_context, **kwargs)
         if not self.use_layerwise:
             self._early_load_completed({
@@ -170,6 +178,7 @@ class _EarlyConnectorMixin:
             self._early.loaded(completed - failed)
 
     def wait_for_layer_load(self, layer_name):
+        self._early.owner_protocol.check()
         super().wait_for_layer_load(layer_name)
         if self.use_layerwise and self.has_connector_metadata():
             if self._failure_req_ids:
@@ -187,12 +196,15 @@ class _EarlyConnectorMixin:
         return result
 
     def shutdown(self):
+        fenced = False
         try:
             if self._early is not None:
                 early, self._early = self._early, None
                 early.close()
+                fenced = bool(getattr(getattr(early, "owner_protocol", None), "fatal", None))
         finally:
-            super().shutdown()
+            if not fenced:
+                super().shutdown()
 
 
 class EarlyDirectConnector(_EarlyConnectorMixin, UCMDirectConnector):

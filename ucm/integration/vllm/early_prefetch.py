@@ -26,6 +26,10 @@ class Job:
     blocks: list | None = None
     hit: int = 0
     dispatched: bool = False
+    owner: str | None = None
+    attempt: str | None = None
+    grant: int = 0
+    expected: tuple | None = None
 
 
 class EarlyScheduler:
@@ -37,6 +41,9 @@ class EarlyScheduler:
         self.seen = weakref.WeakSet()
         self.traced_requests = weakref.WeakSet()
         self.closed = False
+        self.fatal = None
+        self.sequence = 0
+        self.owner_domain_active = False
         self.pool = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="ucm-early-hash"
         )
@@ -44,7 +51,7 @@ class EarlyScheduler:
         # Dense engines reset communication DP rank to zero. The native index
         # retains the actual engine identity for both dense and MoE models.
         self.dp_rank = parallel.data_parallel_index
-        broker = dict(tp_size=connector.tp_size) if self.dp_rank == 0 else None
+        broker = dict(tp_size=connector.tp_size, dp_size=getattr(parallel, "data_parallel_size", 1)) if self.dp_rank == 0 else None
         self.control = control_factory(
             f"ipc:///dev/shm/ucm_early_{connector.unique_id}.sock",
             f"s{self.dp_rank}",
@@ -68,6 +75,7 @@ class EarlyScheduler:
 
     def submit(self, request):
         with self.lock:
+            self.check()
             if self.closed or request in self.seen:
                 return
             self.seen.add(request)
@@ -91,6 +99,7 @@ class EarlyScheduler:
                 job.blocks = blocks
                 self.trace_request(job.request, blocks)
                 submitted_ns = time.monotonic_ns()
+                self.sequence += 1
                 self.control.send(
                     {
                         "op": "job",
@@ -99,6 +108,7 @@ class EarlyScheduler:
                         "blocks": blocks,
                         "request": job.request.request_id,
                         "submitted_ns": submitted_ns,
+                        "sequence": self.sequence,
                     }
                 )
             log.info(
@@ -146,6 +156,7 @@ class EarlyScheduler:
 
     def probe(self, request):
         with self.lock:
+            self.check()
             job = self.jobs.get(request.request_id)
             if job is None:
                 return None
@@ -157,7 +168,15 @@ class EarlyScheduler:
 
     def receive(self, message):
         with self.lock:
+            if message["op"] == "domain_active":
+                self.owner_domain_active = True
+                return
+            if message["op"] == "domain_lost":
+                self.fatal = message["reason"]
+                return
             if message["op"] == "lost":
+                if self.owner_domain_active or any(job.owner for job in self.jobs.values()):
+                    self.fatal = "scheduler control lost with owner generations"
                 self.closed = True
                 for job in self.jobs.values():
                     job.state = "FAILED"
@@ -165,8 +184,14 @@ class EarlyScheduler:
             job = self.by_key.get(message.get("key"))
             if job is None or job.state not in ("PENDING", "READY"):
                 return
+            if message["op"] == "owner_assigned":
+                job.owner, job.attempt, job.grant = message["owner"], message["attempt"], message["grant"]
+                return
             job.hit = message.get("hit", 0)
             job.state = message["state"]
+            job.owner = message.get("owner")
+            job.attempt = message.get("attempt")
+            job.grant = message.get("grant", 0)
             log.info("UCM_EARLY scheduler_result key=%s dp=%s state=%s ns=%s",
                      job.key, self.dp_rank, job.state, time.monotonic_ns())
 
@@ -196,9 +221,25 @@ class EarlyScheduler:
                         self.control.send(
                             {"op": "handoff", "key": job.key, "request": request_id}
                         )
-                    else:
+                    elif not job.owner:
                         self.control.send({"op": "finish", "key": job.key})
         return keys
+
+    def check(self):
+        if getattr(self, "fatal", None):
+            raise RuntimeError("Early shared domain fenced; restart with fresh native L1: " + self.fatal)
+
+    def owner_metadata(self, keys):
+        with self.lock:
+            tickets = {}
+            for request_id, key in keys.items():
+                job = self.by_key.get(key)
+                if job is not None and job.owner and job.state == "READY":
+                    if job.expected is None:
+                        raise RuntimeError("owner result lacks native consumption plan")
+                    tickets[request_id] = dict(key=key, attempt=job.attempt, owner=job.owner,
+                                              grant=job.grant, expected=job.expected)
+            return tickets
 
     def finish(self, request, cancelled=False):
         request_id = request if isinstance(request, str) else request.request_id
@@ -244,6 +285,10 @@ class WorkerJob:
     cancelled: bool = False
     ready: bool = False
     loading: bool = False
+    owner: str | None = None
+    attempt: str | None = None
+    grant: int = 0
+    lookup_finished: bool = False
 
 
 @dataclass(eq=False)
@@ -272,10 +317,18 @@ class EarlyWorker:
             max_workers=4, thread_name_prefix="ucm-early-lookup"
         )
         dp_rank = connector._vllm_config.parallel_config.data_parallel_index
+        from .early_owner import worker_capability
+        from .early_owner_worker import OwnerWorker
+        peer = f"w{dp_rank}.{connector.tp_rank % connector.tp_size}"
+        capability = worker_capability(connector)
+        self.owner_protocol = OwnerWorker(self, capability, peer)
+        self.io_limit = 0
+        log.info("UCM_EARLY owner_capability peer=%s capability=%s", peer, capability)
         self.control = control_factory(
             f"ipc:///dev/shm/ucm_early_{connector.unique_id}.sock",
-            f"w{dp_rank}.{connector.tp_rank % connector.tp_size}",
+            peer,
             self.receive,
+            hello={"capability": capability},
         )
         self.data_thread = threading.Thread(
             target=self._data, name="ucm-early-data", daemon=True
@@ -283,6 +336,8 @@ class EarlyWorker:
         self.data_thread.start()
 
     def receive(self, message):
+        if self.owner_protocol.receive(message):
+            return
         op = message["op"]
         if op == "lost":
             with self.condition:
@@ -341,7 +396,7 @@ class EarlyWorker:
             begin, candidate_count = 0, 32
             while begin < len(blocks):
                 with self.condition:
-                    if job.cancelled or self.closed:
+                    if job.cancelled or self.closed or self.owner_protocol.fatal:
                         return
                 candidates = blocks[begin:begin + candidate_count]
                 reserving = time.monotonic_ns()
@@ -349,6 +404,9 @@ class EarlyWorker:
                 batch = WorkerBatch(len(job.batches), begin, reservation,
                                     done=reservation["remaining_l2_work"] == 0)
                 with self.condition:
+                    if self.owner_protocol.fatal:
+                        job.batches.append(batch)  # quarantine newly acquired pins too
+                        return
                     if job.cancelled or self.closed:
                         self.store.release_reservation(reservation["handle"])
                         return
@@ -381,6 +439,10 @@ class EarlyWorker:
                      (time.monotonic() - started) * 1000)
         except Exception as error:
             self._answer(job, str(error))
+        finally:
+            with self.condition:
+                job.lookup_finished = True
+                self.condition.notify_all()
 
     @staticmethod
     def ratio(batch, now):
@@ -447,6 +509,9 @@ class EarlyWorker:
         active, round_keys = [], set()
         window, peak = 0, 0
         while True:
+            if self.owner_protocol.fatal:
+                return  # Quarantine; native references are not death-recoverable.
+            self.owner_protocol.tick()
             advanced = False
             for job, batch in active:
                 if not batch.done:
@@ -468,6 +533,8 @@ class EarlyWorker:
                         job, batch = self.selected[0]
                         capability = batch.reservation["batch"]
                         window = min(window or capability.window_bytes, capability.window_bytes)
+                        if self.io_limit:
+                            window = min(window, self.io_limit)
                         if window - inflight >= capability.shard_bytes:
                             self.selected.pop(0)
                             round_keys.discard(job.key)
@@ -492,7 +559,7 @@ class EarlyWorker:
                 if not active and not self.preparing and not self.selected:
                     log.info("UCM_EARLY data_idle rank=%s ns=%s inflight_peak_bytes=%s window_bytes=%s",
                              self.connector.tp_rank, time.monotonic_ns(), peak, window)
-                    self.condition.wait_for(lambda: self.closed or self.preparing or self.selected)
+                    self.condition.wait(timeout=.1 if self.owner_protocol.release_requested else 2)
                 elif not advanced:
                     # Native Check offers no completion callback. Match the
                     # existing bounded readiness cadence, with one data thread.
@@ -500,6 +567,11 @@ class EarlyWorker:
 
     def _answer(self, job, error=None):
         with self.condition:
+            if self.owner_protocol.fatal:
+                return
+            if job.owner:
+                self.owner_protocol.answer(job, error)
+                return
             if job.cancelled or job.ready:
                 return
             if error is not None:
@@ -530,6 +602,7 @@ class EarlyWorker:
             )
 
     def bind(self, metadata):
+        self.owner_protocol.bind(metadata)
         with self.condition:
             self.request_keys.update(getattr(metadata, "early_keys", {}))
             loading = {
@@ -549,7 +622,7 @@ class EarlyWorker:
         with self.condition:
             keys = {self.request_keys.get(request_id) for request_id in request_ids}
             for key, job in list(self.jobs.items()):
-                if job.key in keys:
+                if job.key in keys and not job.owner:
                     self._release(job)
                     del self.jobs[key]
                     log.info(
@@ -561,12 +634,28 @@ class EarlyWorker:
                     )
 
     def finished(self, request_ids):
+        if self.owner_protocol.fatal:
+            return
         with self.condition:
+            # Native worker callbacks carry reusable request IDs, not a
+            # generation. Only the broker's generation-scoped retire can stop
+            # owner consumption; an old finish must not stop a new request.
             self.loaded(request_ids, reason="finish")
             for request_id in request_ids:
                 self.request_keys.pop(request_id, None)
 
     def close(self):
+        if any(job.owner for job in self.jobs.values()):
+            self.owner_protocol.shutdown()
+        if self.owner_protocol.fatal:
+            from .early_owner_worker import quarantine
+            quarantine.append(self)
+            self.closed = True
+            with self.condition:
+                self.condition.notify_all()
+            self.lookup_pool.shutdown(wait=False, cancel_futures=True)
+            self.control.close()
+            return
         self.finished(set(self.request_keys))
         with self.condition:
             self.closed = True

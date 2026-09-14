@@ -15,6 +15,8 @@ import weakref
 import numpy as np
 
 from ucm.store.pipeline import ucmpipelinestore as native
+from ucm.store.pipeline.early_connector import _ReservedLoad
+from ucm.integration.vllm.early_consumer import Consumer, load_scope
 
 
 def test_native_pipeline_batch_keeps_store_alive_and_hands_off_before_release(tmp_path):
@@ -47,6 +49,9 @@ def test_native_pipeline_batch_keeps_store_alive_and_hands_off_before_release(tm
                         waiting_queue_depth=8, running_queue_depth=16,
                         cache_stream_number=1))
     ref = weakref.ref(pipeline)
+    domain = native.EarlyDomainInfo(pipeline)
+    assert domain["backing"] == ""  # private buffer must never pass owner handshake
+    assert domain["block_bytes"] == shards * shard_bytes
     cold = native.EarlyReservePrefix(pipeline, one_id)
     assert cold["total_hit_blocks"] == 1
     assert cold["remaining_l2_work"] == shards
@@ -66,6 +71,7 @@ def test_native_pipeline_batch_keeps_store_alive_and_hands_off_before_release(tm
     assert progress["remaining_l2_work"] == 0
     assert progress["l2_read_shards"] == shards
     assert progress["l2_read_bytes"] == shards * shard_bytes
+    assert batch.snapshot()["completed_read_bytes"] == shards * shard_bytes
     assert batch.protected_bytes == shards * shard_bytes
     assert batch.protection_limit_bytes < (1 << 30)  # native load-exclusive area
 
@@ -78,11 +84,22 @@ def test_native_pipeline_batch_keeps_store_alive_and_hands_off_before_release(tm
 
     target = np.zeros_like(source)
     destinations = np.array([[row.ctypes.data] for row in target], dtype=np.uint64)
-    task = native.EarlyLoad(ref(), ids, indexes, destinations, [cold["handle"]])
+    messages = []
+    observer = Consumer("w0.1", messages.append, lambda reason: (_ for _ in ()).throw(AssertionError(reason)))
+    observer.bind({"request": dict(key="generation", attempt="attempt", expected=[block])}, list(range(shards)))
+    route = _ReservedLoad(ref())
+    route.reservations, route.observer = [cold["handle"]], observer
+    context = load_scope.set(observer.scope(["request"]))
+    try:
+        task = route.Load(ids, indexes, destinations)
+    finally:
+        load_scope.reset(context)
+    assert not messages  # submission/possibly fast native completion is not Wait
     native.EarlyReleaseReservation(ref(), cold["handle"])
     assert batch.protected_bytes == 0  # native load owns its own references now
-    ref().Wait(task)
+    route.Wait(task)
+    assert [m["op"] for m in messages] == ["consumed"]
     np.testing.assert_array_equal(source, target)
-    del cold, batch
+    del cold, batch, route
     gc.collect()
     assert ref() is None
