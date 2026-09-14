@@ -9,15 +9,22 @@
 #include <unordered_map>
 #include "buffer_manager.h"
 #include "early_stats.h"
+#include "early_buffer_pins.h"
 
 namespace UC::CacheStore {
 
 class ReservedPrefetch {
+    struct BlockPins {
+        std::vector<TransBuffer::Handle> pins;
+        bool ready{false};  // immutable once published in readyBlocks_
+    };
     struct Reservation {
         std::vector<std::shared_ptr<ReadLease>> leases;
         std::vector<Detail::BlockId> blocks;
         std::unordered_map<Detail::BlockId, size_t, Detail::BlockIdHasher> blockOffsets;
-        std::vector<TransBuffer::Handle> pins;
+        std::vector<std::shared_ptr<BlockPins>> groups;
+        TransBuffer::Handle& Pin(size_t i, size_t shards)
+        { return groups[i / shards]->pins[i % shards]; }
         std::mutex mutex;
         std::atomic<bool> cancelled{false};
         bool started{false};
@@ -29,6 +36,17 @@ class ReservedPrefetch {
     std::mutex mutex_;
     uint64_t next_{1};
     std::unordered_map<uint64_t, std::shared_ptr<Reservation>> reservations_;
+
+    std::unordered_map<Detail::BlockId, std::weak_ptr<BlockPins>, Detail::BlockIdHasher> readyBlocks_;
+
+    void PublishReady(const std::shared_ptr<Reservation>& r)
+    {
+        std::lock_guard guard(mutex_);
+        if (r->cancelled.load()) { return; }
+        for (size_t i = 0; i < r->blocks.size(); ++i) {
+            if (r->groups[i]->ready) { readyBlocks_[r->blocks[i]] = r->groups[i]; }
+        }
+    }
 
     static Status WaitReady(const TransBuffer::Handle& pin, size_t timeoutMs,
                             const std::atomic<bool>& cancelled)
@@ -57,51 +75,69 @@ public:
     {
         EarlyStats stats{"reserve"};
         if (!buffer_) { return Status::Error("Early requires a worker data buffer"); }
-        auto reservation = std::make_shared<Reservation>();
-        // Bound speculative pin/lease work after a short hit. Do not stop on an
-        // L2 miss alone: a complete, protected L1-only block remains a valid hit.
-        constexpr size_t candidateBatchBlocks = 32;
+        auto r = std::make_shared<Reservation>();
         size_t count = num;
-        for (size_t begin = 0; begin < num; begin += candidateBatchBlocks) {
-            const auto end = std::min(num, begin + candidateBatchBlocks);
+        size_t batchBlocks = 32;
+        for (size_t begin = 0; begin < num;) {
+            const auto end = std::min(num, begin + batchBlocks);
             {
-            EarlyStats::Phase phase{stats.leaseMs};
-            bool extended = false;
-            if (!reservation->leases.empty()) {
-                auto result = reservation->leases.back()->Extend(blocks + begin, end - begin);
-                if (!result) { return result.Error(); }
-                extended = result.Value();
+                EarlyStats::Phase phase{stats.leaseMs};
+                bool extended = false;
+                if (!r->leases.empty()) {
+                    auto result = r->leases.back()->Extend(blocks + begin, end - begin);
+                    if (!result) { return result.Error(); }
+                    extended = result.Value();
+                }
+                if (!extended) {
+                    auto lease = backend_->AcquireReadLease(blocks + begin, end - begin);
+                    if (!lease) { return lease.Error(); }
+                    r->leases.push_back(std::move(lease.Value()));
+                }
             }
-            if (!extended) {
-                auto lease = backend_->AcquireReadLease(blocks + begin, end - begin);
-                if (!lease) { return lease.Error(); }
-                reservation->leases.push_back(std::move(lease.Value()));
-            }
-            }
-            reservation->blocks.insert(reservation->blocks.end(), blocks + begin, blocks + end);
-            reservation->pins.resize(end * shardsPerBlock_);
+            r->blocks.insert(r->blocks.end(), blocks + begin, blocks + end);
+            r->groups.resize(end);
             std::vector<Detail::BlockId> needL2;
             std::vector<size_t> needL2Indices;
             {
-            EarlyStats::Phase phase{stats.pinMs};
-            for (size_t b = begin; b < end; ++b) {
-                bool complete = true;
-                for (size_t shard = 0; shard < shardsPerBlock_; ++shard) {
-                    auto& pin = reservation->pins[b * shardsPerBlock_ + shard];
-                    bool capacityConflict = false;
-                    ++stats.shards;
-                    ++stats.bucketLocks;
-                    pin = buffer_->PinReady(blocks[b], shard, &capacityConflict, true);
-                    if (capacityConflict) {
-                        return Status::Error("prefix occupies native load-exclusive buffer");
+                EarlyStats::Phase phase{stats.pinMs};
+                std::vector<Detail::BlockId> probe;
+                std::vector<size_t> offsets;
+                {
+                    std::lock_guard guard(mutex_);
+                    for (size_t b = begin; b < end; ++b) {
+                        auto found = readyBlocks_.find(blocks[b]);
+                        if (found != readyBlocks_.end()) { r->groups[b] = found->second.lock(); }
+                        if (r->groups[b]) {
+                            ++stats.reusedBlocks;
+                        } else {
+                            probe.push_back(blocks[b]);
+                            offsets.push_back(b);
+                        }
                     }
-                    if (!pin || !pin.Ready()) { complete = false; }
                 }
-                if (!complete) {
-                    needL2.push_back(blocks[b]);
-                    needL2Indices.push_back(b);
+                auto batch = EarlyBufferPins::PinBlocks(*buffer_, probe.data(), probe.size(), shardsPerBlock_);
+                stats.shards += batch.pins.size();
+                stats.bucketLocks += batch.bucketLocks;
+                if (batch.capacityConflict) {
+                    return Status::Error("prefix occupies native load-exclusive buffer");
                 }
-            }
+                for (size_t j = 0; j < offsets.size(); ++j) {
+                    auto group = std::make_shared<BlockPins>();
+                    group->pins.resize(shardsPerBlock_);
+                    group->ready = true;
+                    for (size_t shard = 0; shard < shardsPerBlock_; ++shard) {
+                        auto& pin = group->pins[shard];
+                        pin = std::move(batch.pins[j * shardsPerBlock_ + shard]);
+                        if (!pin || !pin.Ready()) { group->ready = false; }
+                    }
+                    r->groups[offsets[j]] = std::move(group);
+                }
+                for (size_t b = begin; b < end; ++b) {
+                    if (!r->groups[b]->ready) {
+                        needL2.push_back(blocks[b]);
+                        needL2Indices.push_back(b);
+                    }
+                }
             }
             if (!needL2.empty()) {
                 EarlyStats::Phase phase{stats.lookupMs};
@@ -114,20 +150,28 @@ public:
                     break;
                 }
             }
+            begin = end;
+            batchBlocks = std::min(batchBlocks * 2, size_t{256});
         }
-        reservation->blocks.resize(count);
-        reservation->pins.resize(count * shardsPerBlock_);
+        r->blocks.resize(count);
+        r->groups.resize(count);
         size_t missing = 0;
-        for (const auto& pin : reservation->pins) {
-            if (!pin || !pin.Ready()) { ++missing; }
+        for (const auto& group : r->groups) {
+            if (group->ready) { continue; }
+            size_t remaining = 0;
+            for (const auto& pin : group->pins) { if (!pin || !pin.Ready()) { ++remaining; } }
+            group->ready = remaining == 0;
+            missing += remaining;
         }
-        for (size_t i = 0; i < count; ++i) {
-            reservation->blockOffsets.emplace(reservation->blocks[i], i);
+        for (size_t i = 0; i < count; ++i) { r->blockOffsets.emplace(r->blocks[i], i); }
+        r->ready = missing == 0;
+        uint64_t handle;
+        {
+            std::lock_guard guard(mutex_);
+            handle = next_++;
+            reservations_.emplace(handle, r);
         }
-        reservation->ready = missing == 0;
-        std::lock_guard guard(mutex_);
-        const auto handle = next_++;
-        reservations_.emplace(handle, std::move(reservation));
+        PublishReady(r);
         stats.handle = handle;
         stats.success = true;
         return PrefixReservation{handle, count, missing};
@@ -165,7 +209,7 @@ public:
             auto status = backend_->Wait(transfer.handle);
             if (status.Success()) {
                 for (size_t i = transfer.first; i < transfer.first + transfer.count; ++i) {
-                    r.pins[owners[i]].MarkReady();
+                    r.Pin(owners[i], shardsPerBlock_).MarkReady();
                 }
             }
             transfers.pop_front();
@@ -200,12 +244,12 @@ public:
                 if (transfers.size() == inflightBatches) { return complete(); }
                 return Status::OK();
             };
-            for (size_t i = 0; i < r.pins.size(); ++i) {
+            for (size_t i = 0; i < r.blocks.size() * shardsPerBlock_; ++i) {
                 if (r.cancelled.load()) { return Status::Error("reserved prefetch cancelled"); }
                 // This Prefetch is the sole pin writer. LoadHandles only reads
                 // after ready is published; Release merely cancels and drops
                 // the map reference. No per-shard reservation mutex is needed.
-                auto& pin = r.pins[i];
+                auto& pin = r.Pin(i, shardsPerBlock_);
                 if (pin) {
                     if (!pin.Ready()) { ++result.coalescedShards; }
                     continue;  // reuse READY and live in-flight positions
@@ -235,7 +279,8 @@ public:
                 if (status.Failure()) { return status; }
             }
             EarlyStats::Phase phase{stats.waitMs};
-            for (auto& pin : r.pins) {
+            for (size_t i = 0; i < r.blocks.size() * shardsPerBlock_; ++i) {
+                auto& pin = r.Pin(i, shardsPerBlock_);
                 auto status = WaitReady(pin, timeoutMs_, r.cancelled);
                 if (status.Failure()) { return status; }
             }
@@ -254,10 +299,12 @@ public:
             auto drained = complete();
             if (status.Success() && drained.Failure()) { status = drained; }
         }
+        stats.pinMs = std::max(0.0, EarlyStats::Milliseconds(stats.elapsed) - stats.waitMs - stats.submitMs);
         if (status.Failure()) {
             // Also cover an allocation exception between TryGet and recording
             // that owner in the batch. Borrowed positions belong to other I/O.
-            for (auto& pin : r.pins) {
+            for (size_t i = 0; i < r.blocks.size() * shardsPerBlock_; ++i) {
+                auto& pin = r.Pin(i, shardsPerBlock_);
                 if (pin && pin.Owner() && !pin.Ready()) { pin.MarkFailed(status); }
             }
             return status;
@@ -265,8 +312,12 @@ public:
         {
             std::lock_guard guard(r.mutex);
             if (r.cancelled.load()) { return Status::Error("reserved prefetch cancelled"); }
+            for (const auto& group : r.groups) {
+                if (!group->ready) { group->ready = true; }
+            }
             r.ready = true;
         }
+        PublishReady(reservation);
         stats.success = true;
         return result;
     }
@@ -293,7 +344,7 @@ public:
                 if (shard.index >= shardsPerBlock_) { continue; }
                 auto found = reservation->blockOffsets.find(shard.owner);
                 if (found == reservation->blockOffsets.end()) { continue; }
-                const auto& pin = reservation->pins[found->second * shardsPerBlock_ + shard.index];
+                const auto& pin = reservation->groups[found->second]->pins[shard.index];
                 if (!pin || !pin.Ready()) { continue; }
                 if (handles.empty()) { handles.resize(task.size()); }
                 // Handle's native copy acquires a node reference without a hash
@@ -317,8 +368,16 @@ public:
             reservations_.erase(it);
         }
         reservation->cancelled.store(true);
-        std::lock_guard guard(reservation->mutex);
-        // A running Prefetch keeps the entire reservation alive until I/O ends.
+        {
+            std::lock_guard guard(reservation->mutex);
+            // A running Prefetch keeps the reservation alive until I/O ends.
+        }
+        reservation.reset();
+        std::lock_guard guard(mutex_);
+        for (auto it = readyBlocks_.begin(); it != readyBlocks_.end();) {
+            if (it->second.expired()) { it = readyBlocks_.erase(it); }
+            else { ++it; }
+        }
     }
 };
 }  // namespace UC::CacheStore

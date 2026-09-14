@@ -36,6 +36,7 @@ namespace UC::CacheStore {
 class BufferStrategy;
 
 class TransBuffer {
+    friend class EarlyBufferPins;
     using Index = std::size_t;
     static constexpr Index npos = std::numeric_limits<Index>::max();
     std::shared_ptr<BufferStrategy> strategy_{nullptr};
@@ -95,6 +96,7 @@ public:
 
     private:
         friend class TransBuffer;
+        friend class EarlyBufferPins;
         Handle(TransBuffer* buf, Index pos, bool owner) : buf_{buf}, pos_{pos}, owner_{owner} {};
         bool Valid() const { return buf_ && pos_ != npos; }
         void Swap(Handle& other) noexcept
@@ -113,8 +115,6 @@ public:
     Handle Get(const Detail::BlockId& blockId, size_t shardIdx, bool allowReserved = false,
                bool isLoad = false);
     Handle TryGet(const Detail::BlockId& blockId, size_t shardIdx);
-    Handle PinReady(const Detail::BlockId& blockId, size_t shardIdx,
-                    bool* capacityConflict = nullptr, bool includeLoading = false);
     void Prealloc(const Detail::BlockId& blockId, size_t shardIdx, bool allowReserved = false);
     bool Exist(const Detail::BlockId& blockId, size_t shardIdx);
 

@@ -1,0 +1,88 @@
+// Included once, after the native private BufferStrategy definitions.
+// Keep Early operations out of native methods; reuse native Hash and metadata/locks.
+#include "early_buffer_pins.h"
+#include <algorithm>
+
+namespace UC::CacheStore {
+TransBuffer::Handle EarlyBufferPins::PinNode(TransBuffer& buffer, size_t node,
+                                            bool* conflict, bool includeLoading)
+{
+    auto& strategy = *buffer.strategy_;
+    if (conflict && !strategy.CanReserve(node)) {
+        *conflict = true;
+        return {};
+    }
+    strategy.NodeLock(node);
+    auto* meta = strategy.MetaAt(node);
+    const auto state = meta->state.load(std::memory_order_acquire);
+    TransBuffer::Handle result;
+    if (state == TransBuffer::State::READY ||
+        (includeLoading && state == TransBuffer::State::LOADING && meta->reference != 0)) {
+        ++meta->reference;
+        strategy.MarkAccessed(node);
+        result = TransBuffer::Handle(&buffer, node, false);
+    }
+    strategy.NodeUnlock(node);
+    return result;
+}
+
+TransBuffer::Handle EarlyBufferPins::PinOne(TransBuffer& buffer, const Detail::BlockId& block,
+                                           size_t shard, bool* conflict, bool includeLoading)
+{
+    auto& strategy = *buffer.strategy_;
+    const auto bucket = Hash(block, shard);
+    strategy.BucketLock(bucket);
+    TransBuffer::Handle result;
+    for (auto node = strategy.FirstAt(bucket); node != invalidIndex;) {
+        const auto* meta = strategy.MetaAt(node);
+        if (meta->block == block && meta->shard == shard) {
+            result = PinNode(buffer, node, conflict, includeLoading);
+            break;
+        }
+        node = meta->next;
+    }
+    strategy.BucketUnlock(bucket);
+    return result;
+}
+
+EarlyBufferPins::Batch EarlyBufferPins::PinBlocks(TransBuffer& buffer,
+    const Detail::BlockId* blocks, size_t count, size_t shardsPerBlock)
+{
+    Batch result;
+    result.pins.resize(count * shardsPerBlock);
+    if (result.pins.empty()) { return result; }
+    // Temporary query grouping only; never store native positions after protection ends.
+    std::vector<size_t> heads(nHashTableBucket, invalidIndex), next(result.pins.size());
+    std::vector<size_t> used;
+    used.reserve(std::min(result.pins.size(), nHashTableBucket));
+    for (size_t q = 0; q < result.pins.size(); ++q) {
+        const auto bucket = Hash(blocks[q / shardsPerBlock], q % shardsPerBlock);
+        if (heads[bucket] == invalidIndex) { used.push_back(bucket); }
+        next[q] = heads[bucket];
+        heads[bucket] = q;
+    }
+    auto& strategy = *buffer.strategy_;
+    for (auto bucket : used) {
+        strategy.BucketLock(bucket);
+        ++result.bucketLocks;
+        auto remaining = heads[bucket];
+        for (auto node = strategy.FirstAt(bucket); node != invalidIndex && remaining != invalidIndex;) {
+            const auto* meta = strategy.MetaAt(node);
+            auto* link = &remaining;
+            while (*link != invalidIndex) {
+                const auto q = *link;
+                if (meta->block == blocks[q / shardsPerBlock] && meta->shard == q % shardsPerBlock) {
+                    result.pins[q] = PinNode(buffer, node, &result.capacityConflict, true);
+                    *link = next[q];
+                } else {
+                    link = &next[q];
+                }
+            }
+            node = meta->next;
+        }
+        strategy.BucketUnlock(bucket);
+        if (result.capacityConflict) { break; }
+    }
+    return result;
+}
+}  // namespace UC::CacheStore

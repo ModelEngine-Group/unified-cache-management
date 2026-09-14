@@ -611,39 +611,6 @@ TransBuffer::Handle TransBuffer::TryGet(const Detail::BlockId& blockId, size_t s
     return Handle{this, node, true};
 }
 
-TransBuffer::Handle TransBuffer::PinReady(const Detail::BlockId& blockId, size_t shardIdx,
-                                        bool* capacityConflict, bool includeLoading)
-{
-    auto bucket = Hash(blockId, shardIdx);
-    strategy_->BucketLock(bucket);
-    auto node = strategy_->FirstAt(bucket);
-    Handle result;
-    while (node != invalidIndex) {
-        auto meta = strategy_->MetaAt(node);
-        if (meta->block == blockId && meta->shard == shardIdx) {
-            if (capacityConflict && !strategy_->CanReserve(node)) {
-                *capacityConflict = true;
-                break;
-            }
-            strategy_->NodeLock(node);
-            const auto state = meta->state.load(std::memory_order_acquire);
-            // A live owner already protects the destination of its I/O. Borrow
-            // that same position without claiming ownership or allocating here.
-            if (state == State::READY ||
-                (includeLoading && state == State::LOADING && meta->reference != 0)) {
-                ++meta->reference;
-                strategy_->MarkAccessed(node);
-                result = Handle(this, node, false);
-            }
-            strategy_->NodeUnlock(node);
-            break;
-        }
-        node = meta->next;
-    }
-    strategy_->BucketUnlock(bucket);
-    return result;
-}
-
 void TransBuffer::Prealloc(const Detail::BlockId& blockId, size_t shardIdx, bool allowReserved)
 {
     auto iBucket = Hash(blockId, shardIdx);
@@ -825,3 +792,5 @@ void TransBuffer::MarkNotReady(Index pos)
 }
 
 }  // namespace UC::CacheStore
+
+#include "early_buffer_pins_impl.h"

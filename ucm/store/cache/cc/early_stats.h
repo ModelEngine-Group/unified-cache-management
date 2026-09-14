@@ -21,7 +21,7 @@ struct EarlyStats {
     static double Milliseconds(const StopWatch& timer) { return timer.Elapsed().count() * 1e3; }
     ~EarlyStats()
     {
-        UC_INFO("UCM_EARLY stage={} reservation={} success={} total_ms={:.3f} lease_ms={:.3f} "
+        UC_INFO_UNLIMITED("UCM_EARLY stage={} reservation={} success={} total_ms={:.3f} lease_ms={:.3f} "
                 "pin_ms={:.3f} l2_lookup_ms={:.3f} submit_ms={:.3f} wait_ms={:.3f} first_io_ms={:.3f} "
                 "shards={} l2_calls={} bucket_locks={} reused_blocks={} index_builds={} handles={}",
                 operation, handle, success, Milliseconds(elapsed), leaseMs, pinMs, lookupMs,

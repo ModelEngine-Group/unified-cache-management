@@ -156,7 +156,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
         running_.Push(std::move(shardTask));
     }
     if (!task->desc.loadReservations.empty()) {
-        UC_INFO("UCM_EARLY stage=load_dispatch task={} shards={} native_get_fallback={}",
+        UC_INFO_UNLIMITED("UCM_EARLY stage=load_dispatch task={} shards={} native_get_fallback={}",
                 task->id, nShard, nativeGetCount);
     }
     auto tpDispatch = NowTime::Now();

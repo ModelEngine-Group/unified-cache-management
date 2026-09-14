@@ -61,6 +61,108 @@ UC::CacheStore::Config BatchConfig(UC::StoreV1* backend)
 }
 }  // namespace
 
+TEST(UCCacheEarlyStoreTest, BatchPinPreservesSinglePinStatesAndCoalescesBuckets)
+{
+    Backend backend;
+    auto config = BatchConfig(&backend);
+    config.blockSize *= 4;
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(config).Success());
+    auto* buffer = manager.GetTransBuffer();
+    std::array<UC::Detail::BlockId, 12> blocks{};
+    std::vector<UC::CacheStore::TransBuffer::Handle> owners;
+    for (size_t b = 0; b < 6; ++b) {
+        blocks[b][0] = std::byte(b);
+        blocks[b + 6] = blocks[b];  // exercise identical queries in a bucket
+        for (size_t shard = 0; shard < 3; ++shard) {
+            auto pin = buffer->Get(blocks[b], shard);
+            if (shard == 0) { pin.MarkReady(); }
+            if (shard == 2) { pin.MarkFailed(UC::Status::Error("test failure")); }
+            owners.push_back(std::move(pin));
+        }
+    }
+    auto batch = UC::CacheStore::EarlyBufferPins::PinBlocks(*buffer, blocks.data(), blocks.size(), 4);
+    ASSERT_FALSE(batch.capacityConflict);
+    ASSERT_LE(batch.bucketLocks, 24);
+    for (size_t q = 0; q < batch.pins.size(); ++q) {
+        auto single = UC::CacheStore::EarlyBufferPins::PinOne(*buffer, blocks[q / 4], q % 4, nullptr, true);
+        EXPECT_EQ(bool(single), bool(batch.pins[q]));
+        if (single) {
+            EXPECT_EQ(single.Data(), batch.pins[q].Data());
+            EXPECT_EQ(single.Ready(), batch.pins[q].Ready());
+            EXPECT_FALSE(batch.pins[q].Owner());
+        }
+    }
+    for (auto& pin : owners) { pin.MarkReady(); }
+    owners.clear();
+    EXPECT_TRUE(batch.pins[1].Ready());
+    EXPECT_TRUE(batch.pins[25].Ready());
+}
+
+TEST(UCCacheEarlyStoreTest, LongL2PrefixGrowsCandidateBatchesWithoutChangingWork)
+{
+    Backend backend;
+    auto config = BatchConfig(&backend);
+    config.shardSize = 64;
+    config.blockSize = 78 * config.shardSize;
+    config.bufferCapacity = 512 * config.blockSize;
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(config).Success());
+    std::vector<UC::Detail::BlockId> blocks(512);
+    for (size_t i = 0; i < blocks.size(); ++i) { std::memcpy(blocks[i].data(), &i, sizeof(i)); }
+    std::vector<size_t> queries;
+    EXPECT_CALL(backend, LookupOnPrefix).Times(5).WillRepeatedly(testing::Invoke(
+        [&](const UC::Detail::BlockId*, size_t n) { queries.push_back(n); return ssize_t(n) - 1; }));
+    UC::CacheStore::ReservedPrefetch early(&manager, &backend, config.blockSize, config.shardSize, 1000);
+    auto result = early.Reserve(blocks.data(), blocks.size());
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result.Value().totalHitBlocks, 512);
+    EXPECT_EQ(result.Value().remainingL2Work, 512 * 78);
+    EXPECT_EQ(queries, (std::vector<size_t>{32, 64, 128, 256, 32}));
+    early.Release(result.Value().handle);
+}
+
+TEST(UCCacheEarlyStoreTest, ReusedReadyBlockLivesUntilLastConsumerAndExpiresBeforeEviction)
+{
+    Backend backend;
+    auto c = BatchConfig(&backend);
+    c.blockSize *= 2;
+    c.bufferCapacity = c.blockSize;
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(c).Success());
+    UC::Detail::BlockId block{}, other{};
+    other[0] = std::byte{17};
+    for (size_t shard = 0; shard < 2; ++shard) {
+        auto pin = manager.GetTransBuffer()->Get(block, shard);
+        std::memset(pin.Data(), 0x5b, c.shardSize);
+        pin.MarkReady();
+    }
+    UC::CacheStore::ReservedPrefetch early(&manager, &backend, c.blockSize, c.shardSize, 1000);
+    auto first = early.Reserve(&block, 1).Value();
+    auto second = early.Reserve(&block, 1).Value();
+    EXPECT_EQ(second.remainingL2Work, 0);
+    early.Release(first.handle);
+    EXPECT_FALSE(manager.GetTransBuffer()->TryGet(other, 0));
+    UC::Detail::TaskDesc task{{block, 1, {nullptr}}};
+    task.loadReservations = {second.handle};
+    auto handles = early.LoadHandles(task);
+    ASSERT_EQ(handles.size(), 1);
+    EXPECT_EQ(static_cast<unsigned char*>(handles[0].Data())[0], 0x5b);
+    early.Release(second.handle);
+    handles.clear();
+    std::vector<UC::CacheStore::TransBuffer::Handle> replacement;
+    for (size_t shard = 0; shard < 2; ++shard) {
+        auto pin = manager.GetTransBuffer()->TryGet(other, shard);
+        ASSERT_TRUE(pin);
+        pin.MarkReady();
+        replacement.push_back(std::move(pin));
+    }
+    EXPECT_CALL(backend, LookupOnPrefix).WillOnce(testing::Return(ssize_t{-1}));
+    auto expired = early.Reserve(&block, 1).Value();
+    EXPECT_EQ(expired.totalHitBlocks, 0);
+    early.Release(expired.handle);
+}
+
 TEST(UCCacheEarlyStoreTest, ReservedBytesUseNativeLoadAndRelease)
 {
     Backend backend;
@@ -281,7 +383,7 @@ TEST(UCCacheEarlyStoreTest, InflightPositionStaysPinnedAfterOwnerCompletes)
     auto prefetched = early.Prefetch(reserved.Value().handle);
     ASSERT_TRUE(prefetched);
     EXPECT_EQ(prefetched.Value().l2ReadShards, 0);
-    auto retained = buffer->PinReady(block, 0);
+    auto retained = UC::CacheStore::EarlyBufferPins::PinOne(*buffer, block, 0);
     ASSERT_TRUE(retained);
     EXPECT_EQ(static_cast<unsigned char*>(retained.Data())[0], 0x6b);
     early.Release(reserved.Value().handle);
@@ -478,7 +580,7 @@ TEST_P(UCCacheEarlyBatchFailureTest, DrainsAcceptedIoBeforeReleasingProtection)
     EXPECT_FALSE(prefetched);
     early.Release(reserved.Value().handle);
     EXPECT_TRUE(backend.lease.expired());
-    auto pin = manager.GetTransBuffer()->PinReady(blocks.back(), 0);
+    auto pin = UC::CacheStore::EarlyBufferPins::PinOne(*manager.GetTransBuffer(), blocks.back(), 0);
     EXPECT_FALSE(pin);  // later data was neither submitted nor declared READY
 }
 
