@@ -13,6 +13,7 @@ struct EarlyStats {
     bool success{false};
     double leaseMs{0}, pinMs{0}, lookupMs{0}, submitMs{0}, waitMs{0}, firstIoMs{-1};
     size_t shards{0}, lookups{0}, bucketLocks{0}, reusedBlocks{0}, indexBuilds{0}, matched{0}, blockLookups{0};
+    size_t recalledBlocks{0}, hintChecks{0}, hintEntries{0};
     struct Phase {
         double& milliseconds;
         StopWatch timer{};
@@ -23,10 +24,11 @@ struct EarlyStats {
     {
         UC_INFO_UNLIMITED("UCM_EARLY stage={} reservation={} success={} total_ms={:.3f} lease_ms={:.3f} "
                 "pin_ms={:.3f} l2_lookup_ms={:.3f} submit_ms={:.3f} wait_ms={:.3f} first_io_ms={:.3f} "
-                "shards={} l2_calls={} bucket_locks={} reused_blocks={} index_builds={} handles={} block_lookups={}",
+                "shards={} l2_calls={} bucket_locks={} reused_blocks={} index_builds={} handles={} block_lookups={} "
+                "recalled_blocks={} hint_checks={} hint_entries={}",
                 operation, handle, success, Milliseconds(elapsed), leaseMs, pinMs, lookupMs,
                 submitMs, waitMs, firstIoMs, shards, lookups, bucketLocks, reusedBlocks,
-                indexBuilds, matched, blockLookups);
+                indexBuilds, matched, blockLookups, recalledBlocks, hintChecks, hintEntries);
     }
 };
 }  // namespace UC::CacheStore

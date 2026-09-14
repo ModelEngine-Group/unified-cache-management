@@ -5,6 +5,7 @@
 #include <chrono>
 #include <deque>
 #include <mutex>
+#include <list>
 #include <thread>
 #include <unordered_map>
 #include "buffer_manager.h"
@@ -45,16 +46,51 @@ class ReservedPrefetch {
     uint64_t next_{1};
     std::unordered_map<uint64_t, std::shared_ptr<Reservation>> reservations_;
 
-    std::unordered_map<Detail::BlockId, std::weak_ptr<BlockPins>, Detail::BlockIdHasher> readyBlocks_;
+    struct ReadyHint {
+        std::weak_ptr<BlockPins> live;
+        std::shared_ptr<const std::vector<size_t>> locations;
+        std::list<Detail::BlockId>::iterator age;
+    };
+    // Bounds only disposable location hints, never request admission or KV capacity.
+    size_t hintBlockCapacity_;
+    std::list<Detail::BlockId> hintAge_;
+    std::unordered_map<Detail::BlockId, ReadyHint, Detail::BlockIdHasher> readyBlocks_;
 
-    void PublishReady(const std::shared_ptr<Reservation>& r)
+    size_t PublishReady(const std::shared_ptr<Reservation>& r)
     {
         std::lock_guard guard(mutex_);
-        if (r->cancelled.load()) { return; }
+        if (r->cancelled.load()) { return readyBlocks_.size(); }
         if (r->ready) { loadPlan_.reset(); }
-        for (size_t i = 0; i < r->blocks.size(); ++i) {
-            if (r->groups[i]->ready) { readyBlocks_[r->blocks[i]] = r->groups[i]; }
+        try {
+            for (size_t i = 0; i < r->blocks.size(); ++i) {
+                const auto& group = r->groups[i];
+                if (!group->ready || hintBlockCapacity_ == 0) { continue; }
+                auto found = readyBlocks_.find(r->blocks[i]);
+                if (found == readyBlocks_.end()) {
+                    auto locations = std::make_shared<const std::vector<size_t>>(
+                        EarlyBufferPins::Locations(group->pins));
+                    hintAge_.push_front(r->blocks[i]);
+                    readyBlocks_.emplace(r->blocks[i], ReadyHint{group, locations, hintAge_.begin()});
+                } else {
+                    if (found->second.live.lock() != group) {
+                        found->second.locations = std::make_shared<const std::vector<size_t>>(
+                            EarlyBufferPins::Locations(group->pins));
+                    }
+                    found->second.live = group;
+                    hintAge_.splice(hintAge_.begin(), hintAge_, found->second.age);
+                }
+                while (readyBlocks_.size() > hintBlockCapacity_) {
+                    readyBlocks_.erase(hintAge_.back());
+                    hintAge_.pop_back();
+                }
+            }
+        } catch (const std::bad_alloc&) {
+            // Optional hints must not turn a successful, already registered
+            // reservation into an exception with no handle returned to its owner.
+            readyBlocks_.clear();
+            hintAge_.clear();
         }
+        return readyBlocks_.size();
     }
 
     static Status WaitReady(const TransBuffer::Handle& pin, size_t timeoutMs,
@@ -78,7 +114,8 @@ public:
                      size_t shardSize, size_t timeoutMs)
         : backend_(backend), buffer_(manager->GetTransBuffer()),
           shardsPerBlock_(blockSize / shardSize), shardBytes_(shardSize),
-          timeoutMs_(timeoutMs) {}
+          timeoutMs_(timeoutMs),
+          hintBlockCapacity_(buffer_ ? EarlyBufferPins::HintBlockCapacity(*buffer_, shardsPerBlock_) : 0) {}
 
     Expected<PrefixReservation> Reserve(const Detail::BlockId* blocks, size_t num)
     {
@@ -111,18 +148,37 @@ public:
                 EarlyStats::Phase phase{stats.pinMs};
                 std::vector<Detail::BlockId> probe;
                 std::vector<size_t> offsets, reused;
+                std::vector<std::pair<size_t, std::shared_ptr<const std::vector<size_t>>>> hints;
                 {
                     std::lock_guard guard(mutex_);
                     for (size_t b = begin; b < end; ++b) {
                         auto found = readyBlocks_.find(blocks[b]);
-                        if (found != readyBlocks_.end()) { r->groups[b] = found->second.lock(); }
+                        if (found != readyBlocks_.end()) {
+                            r->groups[b] = found->second.live.lock();
+                            hintAge_.splice(hintAge_.begin(), hintAge_, found->second.age);
+                        }
                         if (r->groups[b]) {
                             ++stats.reusedBlocks;
                             reused.push_back(b);
+                        } else if (found != readyBlocks_.end() && found->second.locations->size() == shardsPerBlock_) {
+                            hints.emplace_back(b, found->second.locations);
                         } else {
                             probe.push_back(blocks[b]);
                             offsets.push_back(b);
                         }
+                    }
+                }
+                for (const auto& [b, locations] : hints) {
+                    auto pins = EarlyBufferPins::Recall(*buffer_, blocks[b], *locations, stats.hintChecks);
+                    if (pins.empty()) {
+                        probe.push_back(blocks[b]);
+                        offsets.push_back(b);
+                    } else {
+                        auto group = std::make_shared<BlockPins>();
+                        group->pins = std::move(pins);
+                        group->ready = true;
+                        r->groups[b] = std::move(group);
+                        ++stats.recalledBlocks;
                     }
                 }
                 for (auto b : reused) { EarlyBufferPins::Touch(*buffer_, r->groups[b]->pins); }
@@ -181,7 +237,7 @@ public:
             handle = next_++;
             reservations_.emplace(handle, r);
         }
-        PublishReady(r);
+        stats.hintEntries = PublishReady(r);
         stats.handle = handle;
         stats.success = true;
         return PrefixReservation{handle, count, missing};
@@ -327,7 +383,7 @@ public:
             }
             r.ready = true;
         }
-        PublishReady(reservation);
+        stats.hintEntries = PublishReady(reservation);
         stats.success = true;
         return result;
     }
@@ -411,11 +467,8 @@ public:
             // A running Prefetch keeps the reservation alive until I/O ends.
         }
         reservation.reset();
-        std::lock_guard guard(mutex_);
-        for (auto it = readyBlocks_.begin(); it != readyBlocks_.end();) {
-            if (it->second.expired()) { it = readyBlocks_.erase(it); }
-            else { ++it; }
-        }
+        // Only weak ownership and bounded node-number hints remain. A future
+        // consumer must atomically validate a hint and acquire new references.
     }
 };
 }  // namespace UC::CacheStore

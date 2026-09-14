@@ -114,6 +114,15 @@ TEST(UCCacheEarlyProcessTest, SharedShardHasOneReaderAndTwoLocalHandoffs)
         Require(bool(result), "prefetch failed");
         Require(result.Value().l2ReadShards == (child == 0 ? 0 : 2), "duplicate L2 reader");
         LoadAndRelease(early, manager, config, reservation.Value().handle, block);
+        // Each process now has only node-number hints, with no live reservation.
+        // Reacquire through its own native attachment; no L2 lookup or read is needed.
+        for (size_t repeat = 0; repeat < 2; ++repeat) {
+            auto hot = early.Reserve(&block, 1);
+            Require(bool(hot), "released hint reserve failed");
+            Require(hot.Value().totalHitBlocks == 1 && hot.Value().remainingL2Work == 0,
+                    "released hint did not reacquire READY protection");
+            LoadAndRelease(early, manager, config, hot.Value().handle, block);
+        }
         if (child > 0) {
             int status = 0;
             Require(::waitpid(child, &status, 0) == child, "wait child");

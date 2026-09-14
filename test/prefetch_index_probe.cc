@@ -74,5 +74,6 @@ int main()
         }
         for (auto r : reservations) { early.Release(r); }
         early.Release(held);
+        for (size_t i = 0; i < 4; ++i) { early.Release(measure("released_hot")); }
     }
 }

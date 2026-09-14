@@ -165,6 +165,146 @@ TEST(UCCacheEarlyStoreTest, ReusedReadyBlockLivesUntilLastConsumerAndExpiresBefo
     early.Release(expired.handle);
 }
 
+TEST(UCCacheEarlyStoreTest, LocationHintsRevalidateIdentityStateAndReleasePartialAcquisitions)
+{
+    for (bool shared : {false, true}) {
+        Backend backend;
+        auto c = BatchConfig(&backend);
+        c.blockSize *= 2;
+        c.bufferCapacity = c.blockSize;
+        c.shareBufferEnable = shared;
+        UC::CacheStore::BufferManager manager;
+        ASSERT_TRUE(manager.Setup(c).Success());
+        auto* buffer = manager.GetTransBuffer();
+        UC::Detail::BlockId block{}, other{};
+        other[0] = std::byte{27};
+        std::vector<UC::CacheStore::TransBuffer::Handle> seed;
+        for (size_t shard = 0; shard < 2; ++shard) {
+            auto pin = buffer->Get(block, shard);
+            std::memset(pin.Data(), 0x60 + shard, c.shardSize);
+            pin.MarkReady();
+            seed.push_back(std::move(pin));
+        }
+        auto positions = UC::CacheStore::EarlyBufferPins::Locations(seed);
+        seed.clear();  // snapshots alone must hold no native reference
+        size_t checks = 0;
+        auto recalled = UC::CacheStore::EarlyBufferPins::Recall(*buffer, block, positions, checks);
+        ASSERT_EQ(recalled.size(), 2);
+        EXPECT_EQ(checks, 2);
+        for (size_t shard = 0; shard < 2; ++shard) {
+            EXPECT_FALSE(recalled[shard].Owner());
+            EXPECT_EQ(static_cast<unsigned char*>(recalled[shard].Data())[0], 0x60 + shard);
+        }
+        recalled.clear();
+        EXPECT_TRUE(UC::CacheStore::EarlyBufferPins::Recall(*buffer, other, positions, checks).empty());
+        auto wrongShard = positions;
+        std::swap(wrongShard[0], wrongShard[1]);
+        EXPECT_TRUE(UC::CacheStore::EarlyBufferPins::Recall(*buffer, block, wrongShard, checks).empty());
+        auto invalid = positions;
+        invalid[1] = std::numeric_limits<size_t>::max();
+        EXPECT_TRUE(UC::CacheStore::EarlyBufferPins::Recall(*buffer, block, invalid, checks).empty());
+        {
+            auto failed = buffer->Get(block, 1);
+            failed.MarkFailed(UC::Status::Error("test invalidated second shard"));
+        }
+        checks = 0;
+        EXPECT_TRUE(UC::CacheStore::EarlyBufferPins::Recall(*buffer, block, positions, checks).empty());
+        EXPECT_EQ(checks, 2);  // shard 0 was acquired before shard 1 failed validation
+        std::vector<UC::CacheStore::TransBuffer::Handle> replacement;
+        for (size_t shard = 0; shard < 2; ++shard) {
+            auto pin = buffer->TryGet(other, shard);
+            ASSERT_TRUE(pin);  // both native slots are free, including the partial acquisition
+            pin.MarkReady();
+            replacement.push_back(std::move(pin));
+        }
+        EXPECT_TRUE(UC::CacheStore::EarlyBufferPins::Recall(*buffer, block, positions, checks).empty());
+    }
+}
+
+TEST(UCCacheEarlyStoreTest, LocationHintsStaySafeDuringNativeEviction)
+{
+    for (bool shared : {false, true}) {
+        Backend backend;
+        auto c = BatchConfig(&backend);
+        c.blockSize *= 2;
+        c.bufferCapacity = 2 * c.blockSize;
+        c.shareBufferEnable = shared;
+        UC::CacheStore::BufferManager manager;
+        ASSERT_TRUE(manager.Setup(c).Success());
+        auto* buffer = manager.GetTransBuffer();
+        UC::Detail::BlockId block{};
+        std::vector<UC::CacheStore::TransBuffer::Handle> seed;
+        for (size_t shard = 0; shard < 2; ++shard) {
+            auto pin = buffer->Get(block, shard);
+            std::memset(pin.Data(), 0x60 + shard, c.shardSize);
+            pin.MarkReady();
+            seed.push_back(std::move(pin));
+        }
+        auto positions = UC::CacheStore::EarlyBufferPins::Locations(seed);
+        seed.clear();
+        auto eviction = std::async(std::launch::async, [&] {
+            for (size_t i = 1; i < 512; ++i) {
+                UC::Detail::BlockId other{};
+                std::memcpy(other.data(), &i, sizeof(i));
+                auto pin = buffer->TryGet(other, i % 2);
+                if (pin) {
+                    std::memset(pin.Data(), 0x23, c.shardSize);
+                    pin.MarkReady();
+                }
+            }
+        });
+        for (size_t i = 0; i < 512; ++i) {
+            size_t checks = 0;
+            auto pins = UC::CacheStore::EarlyBufferPins::Recall(*buffer, block, positions, checks);
+            for (size_t shard = 0; shard < pins.size(); ++shard) {
+                EXPECT_EQ(static_cast<unsigned char*>(pins[shard].Data())[0], 0x60 + shard);
+            }
+        }
+        eviction.get();
+        std::vector<UC::CacheStore::TransBuffer::Handle> allCapacity;
+        for (size_t shard = 0; shard < 4; ++shard) {
+            auto pin = buffer->TryGet(block, shard);
+            ASSERT_TRUE(pin);
+            allCapacity.push_back(std::move(pin));
+        }
+    }
+}
+
+TEST(UCCacheEarlyStoreTest, SequentialReleasedReservationsRetainOnlyDisposableHints)
+{
+    Backend backend;
+    auto c = BatchConfig(&backend);
+    c.blockSize *= 2;
+    c.bufferCapacity = c.blockSize;
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(c).Success());
+    UC::CacheStore::ReservedPrefetch early(&manager, &backend, c.blockSize, c.shardSize, 1000);
+    EXPECT_CALL(backend, LookupOnPrefix).Times(0);
+    EXPECT_CALL(backend, Load).Times(0);
+    for (size_t generation = 1; generation < 32; ++generation) {
+        UC::Detail::BlockId block{};
+        block[0] = std::byte(generation);
+        for (size_t shard = 0; shard < 2; ++shard) {
+            auto pin = manager.GetTransBuffer()->TryGet(block, shard);
+            ASSERT_TRUE(pin);  // previous generations retain no protection or capacity
+            std::memset(pin.Data(), int(generation), c.shardSize);
+            pin.MarkReady();
+        }
+        for (size_t repeat = 0; repeat < 3; ++repeat) {
+            auto result = early.Reserve(&block, 1);
+            ASSERT_TRUE(result);
+            EXPECT_EQ(result.Value().totalHitBlocks, 1);
+            EXPECT_EQ(result.Value().remainingL2Work, 0);
+            UC::Detail::TaskDesc task{{block, 1, {nullptr}}};
+            task.loadReservations = {result.Value().handle};
+            auto handles = early.LoadHandles(task);
+            early.Release(result.Value().handle);
+            ASSERT_EQ(handles.size(), 1);
+            EXPECT_EQ(static_cast<unsigned char*>(handles[0].Data())[0], generation);
+        }
+    }
+}
+
 TEST(UCCacheEarlyStoreTest, LoadPlanIsScopedToExplicitReservationsAndInvalidatedOnRelease)
 {
     Backend backend;
