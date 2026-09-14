@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -61,9 +62,17 @@ public:
         size_t count = num;
         for (size_t begin = 0; begin < num; begin += candidateBatchBlocks) {
             const auto end = std::min(num, begin + candidateBatchBlocks);
-            auto lease = backend_->AcquireReadLease(blocks + begin, end - begin);
-            if (!lease) { return lease.Error(); }
-            reservation->leases.push_back(std::move(lease.Value()));
+            bool extended = false;
+            if (!reservation->leases.empty()) {
+                auto result = reservation->leases.back()->Extend(blocks + begin, end - begin);
+                if (!result) { return result.Error(); }
+                extended = result.Value();
+            }
+            if (!extended) {
+                auto lease = backend_->AcquireReadLease(blocks + begin, end - begin);
+                if (!lease) { return lease.Error(); }
+                reservation->leases.push_back(std::move(lease.Value()));
+            }
             reservation->blocks.insert(reservation->blocks.end(), blocks + begin, blocks + end);
             reservation->pins.resize(end * shardsPerBlock_);
             std::vector<Detail::BlockId> needL2;
@@ -126,13 +135,56 @@ public:
             r.started = true;
         }
         std::vector<size_t> owners;
+        struct Transfer {
+            Detail::TaskHandle handle{0};
+            size_t first, count;
+        };
+        std::deque<Transfer> transfers;
         PrefetchResult result;
+        auto complete = [&]() -> Status {
+            const auto transfer = transfers.front();
+            // Native Wait drains the backend even on failure. All destination
+            // pins and read leases remain owned by r until every batch drains.
+            auto status = backend_->Wait(transfer.handle);
+            if (status.Success()) {
+                for (size_t i = transfer.first; i < transfer.first + transfer.count; ++i) {
+                    r.pins[owners[i]].MarkReady();
+                }
+            }
+            transfers.pop_front();
+            return status;
+        };
         auto run = [&]() -> Status {
+            constexpr size_t batchShards = 64;
+            constexpr size_t inflightBatches = 2;
             Detail::TaskDesc task;
             task.brief = "EarlyL2ToL1";
+            size_t firstOwner = 0;
+            auto submit = [&]() -> Status {
+                if (task.empty()) { return Status::OK(); }
+                const auto count = task.size();
+                // Allocate bookkeeping before submission so an allocation
+                // failure cannot lose the handle of an already accepted I/O.
+                transfers.push_back({0, firstOwner, count});
+                auto transfer = backend_->Load(std::move(task));
+                if (!transfer) {
+                    transfers.pop_back();
+                    return transfer.Error();
+                }
+                transfers.back().handle = transfer.Value();
+                result.l2ReadShards += count;
+                result.l2ReadBytes += count * shardBytes_;
+                firstOwner += count;
+                task = Detail::TaskDesc{};
+                task.brief = "EarlyL2ToL1";
+                if (transfers.size() == inflightBatches) { return complete(); }
+                return Status::OK();
+            };
             for (size_t i = 0; i < r.pins.size(); ++i) {
                 if (r.cancelled.load()) { return Status::Error("reserved prefetch cancelled"); }
-                std::lock_guard guard(r.mutex);
+                // This Prefetch is the sole pin writer. LoadHandles only reads
+                // after ready is published; Release merely cancels and drops
+                // the map reference. No per-shard reservation mutex is needed.
                 auto& pin = r.pins[i];
                 if (pin) {
                     if (!pin.Ready()) { ++result.coalescedShards; }
@@ -150,17 +202,16 @@ public:
                 } else {
                     ++result.coalescedShards;
                 }
+                if (task.size() == batchShards) {
+                    auto status = submit();
+                    if (status.Failure()) { return status; }
+                }
             }
-            if (!task.empty()) {
-                result.l2ReadShards = task.size();
-                result.l2ReadBytes = task.size() * shardBytes_;
-                auto transfer = backend_->Load(std::move(task));
-                if (!transfer) { return transfer.Error(); }
-                // The native backend owns bounded I/O. Cancellation cannot unpin
-                // its destination until Wait has returned.
-                auto status = backend_->Wait(transfer.Value());
+            auto status = submit();
+            if (status.Failure()) { return status; }
+            while (!transfers.empty()) {
+                status = complete();
                 if (status.Failure()) { return status; }
-                for (auto index : owners) { r.pins[index].MarkReady(); }
             }
             for (auto& pin : r.pins) {
                 auto status = WaitReady(pin, timeoutMs_, r.cancelled);
@@ -171,9 +222,21 @@ public:
         auto status = Status::OK();
         try { status = run(); }
         catch (const std::exception& e) { status = Status::Error(fmt::format("prefetch exception: {}", e.what())); }
+        // Includes cancellation, a later submit failure, or an allocation
+        // failure while preparing the next batch. Never unpin in-flight I/O.
+        while (!transfers.empty()) {
+            if (transfers.front().handle == 0) {
+                transfers.pop_front();
+                continue;
+            }
+            auto drained = complete();
+            if (status.Success() && drained.Failure()) { status = drained; }
+        }
         if (status.Failure()) {
-            for (auto index : owners) {
-                if (!r.pins[index].Ready()) { r.pins[index].MarkFailed(status); }
+            // Also cover an allocation exception between TryGet and recording
+            // that owner in the batch. Borrowed positions belong to other I/O.
+            for (auto& pin : r.pins) {
+                if (pin && pin.Owner() && !pin.Ready()) { pin.MarkFailed(status); }
             }
             return status;
         }

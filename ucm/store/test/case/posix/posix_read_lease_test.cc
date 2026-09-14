@@ -33,6 +33,53 @@ size_t OpenFiles()
                          std::filesystem::directory_iterator{});
 }
 
+TEST_F(UCPosixReadLeaseTest, ExtensionReusesOneDescriptorAndProtectsNewBlocks)
+{
+    SpaceLayout layout;
+    ASSERT_EQ(layout.Setup(LayoutConfig(Path())), Status::OK());
+    std::array<BlockId, 96> blocks{};
+    for (size_t i = 0; i < blocks.size(); ++i) { blocks[i][0] = std::byte(i); }
+    std::ofstream(layout.DataFilePath(blocks.back(), false)) << "KV";
+    const auto before = OpenFiles();
+    auto lease = PosixReadLease::Acquire(layout, blocks.data(), 32);
+    ASSERT_TRUE(lease);
+    EXPECT_EQ(OpenFiles(), before + 1);
+    for (size_t begin : {32, 64}) {
+        auto extended = lease.Value()->Extend(blocks.data() + begin, 32);
+        ASSERT_TRUE(extended);
+        ASSERT_TRUE(extended.Value());
+        EXPECT_EQ(OpenFiles(), before + 1);
+    }
+    EXPECT_EQ(layout.RemoveFile(blocks.back()), Status::Retry());
+    lease.Value().reset();
+    EXPECT_EQ(OpenFiles(), before);
+    EXPECT_EQ(layout.RemoveFile(blocks.back()), Status::OK());
+}
+
+TEST_F(UCPosixReadLeaseTest, PartialExtensionFailureRetainsProtectionUntilRelease)
+{
+    SpaceLayout layout;
+    ASSERT_EQ(layout.Setup(LayoutConfig(Path())), Status::OK());
+    std::array<BlockId, 3> blocks{};
+    blocks[1][0] = std::byte{1};
+    blocks[2][0] = std::byte{2};
+    const auto before = OpenFiles();
+    auto writer = PosixReadLease::AcquireRemoveGuardForLayout(layout, blocks[2]);
+    ASSERT_TRUE(writer);
+    auto lease = PosixReadLease::Acquire(layout, blocks.data(), 1);
+    ASSERT_TRUE(lease);
+    auto extended = lease.Value()->Extend(blocks.data() + 1, 2);
+    ASSERT_FALSE(extended);
+    EXPECT_EQ(extended.Error(), Status::Retry());
+    EXPECT_FALSE(PosixReadLease::AcquireRemoveGuardForLayout(layout, blocks[0]));
+    EXPECT_FALSE(PosixReadLease::AcquireRemoveGuardForLayout(layout, blocks[1]));
+    lease.Value().reset();
+    EXPECT_TRUE(PosixReadLease::AcquireRemoveGuardForLayout(layout, blocks[0]));
+    EXPECT_TRUE(PosixReadLease::AcquireRemoveGuardForLayout(layout, blocks[1]));
+    writer.Value().reset();
+    EXPECT_EQ(OpenFiles(), before);
+}
+
 TEST_F(UCPosixReadLeaseTest, PartialFailureAndExceptionReleaseAllAcquiredFiles)
 {
     auto config = LayoutConfig(Path());

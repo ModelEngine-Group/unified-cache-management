@@ -5,6 +5,8 @@ setup, control transport and C++ I/O are replaced; this is not an NPU test.
 """
 
 import threading
+import time
+import array
 import weakref
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -359,3 +361,71 @@ def test_worker_bind_selects_only_ready_local_consumers():
     worker.store.set_load_reservations.assert_called_once_with([7])
     worker.bind(SimpleNamespace(early_keys={}, request_meta={}))
     worker.store.set_load_reservations.assert_called_with([])
+
+
+def test_submit_is_once_and_pending_never_waits_for_hash(connector, monkeypatch):
+    connector._vllm_config.parallel_config = SimpleNamespace(
+        data_parallel_index=0, data_parallel_size=1)
+    connector.unique_id, connector.tp_size = "unit-test", 1
+    gate = threading.Event()
+    entered = threading.Event()
+    control = Mock()
+
+    def hashing(*args):
+        entered.set()
+        assert gate.wait(3)
+        return [b"a" * 16, b"b" * 16]
+
+    hasher = Mock(side_effect=hashing)
+    monkeypatch.setattr(connector, "request_block_hasher", hasher)
+    scheduler = EarlyScheduler(connector, control_factory=lambda *a, **kw: control)
+    connector._early = scheduler
+    request = Request()
+    try:
+        start = time.monotonic()
+        scheduler.submit(request)
+        scheduler.submit(request)
+        assert time.monotonic() - start < 0.5
+        assert entered.wait(1)
+        for _ in range(100):
+            assert connector.get_num_new_matched_tokens(request, 0) == (None, False)
+        connector.store.store_.LookupOnPrefix.assert_not_called()
+        control.send.assert_not_called()
+    finally:
+        gate.set()
+        scheduler.close()
+    hasher.assert_called_once()
+
+
+@pytest.mark.parametrize("is_mla, rank", [(True, 3), (False, 0), (False, 3)])
+def test_worker_reservation_uses_native_mla_or_rank_local_identity(is_mla, rank):
+    worker = object.__new__(early_prefetch.EarlyWorker)
+    worker.condition = threading.Condition()
+    worker.closed = False
+    worker.control = Mock()
+    worker.store = Mock()
+    worker.store.reserve_prefix.return_value = {
+        "handle": 7, "total_hit_blocks": 1, "remaining_l2_work": 0}
+    worker.connector = SimpleNamespace(
+        is_mla=is_mla, tp_rank=rank, tp_size=8,
+        request_hasher=Mock(return_value=b"r" * 16))
+    job = early_prefetch.WorkerJob("job", [b"a" * 16])
+    worker._reserve(job)
+    expected = [b"r" * 16] if not is_mla and rank else job.blocks
+    worker.store.reserve_prefix.assert_called_once_with(expected)
+    worker.store.prefetch_reserved.assert_not_called()
+    assert job.ready
+
+
+def test_early_load_binding_preserves_native_dimension_errors():
+    # No Store/device is constructed: both calls must fail in the shared native
+    # argument converter before either could dereference a pipeline entry.
+    pipeline = early_store.ucmpipelinestore.PipelineStore()
+    ids = np.frombuffer(b"a" * 16, dtype=np.uint8)
+    indexes = array.array("Q")
+    addresses = np.zeros((1, 1), dtype=np.uint64)
+    with pytest.raises(RuntimeError) as native:
+        pipeline.Load(ids, indexes, addresses)
+    with pytest.raises(type(native.value)) as prepared:
+        early_store.ucmpipelinestore.EarlyLoad(pipeline, ids, indexes, addresses, [7])
+    assert str(prepared.value) == str(native.value)

@@ -45,6 +45,20 @@ UC::Detail::Dictionary Config(UC::StoreV1* backend)
     config.Set("io_direct", false);
     return config;
 }
+
+UC::CacheStore::Config BatchConfig(UC::StoreV1* backend)
+{
+    UC::CacheStore::Config config;
+    config.uniqueId = UC::Test::Detail::Random().RandomString(16);
+    config.deviceId = 0;
+    config.tensorSizes = {4096};
+    config.shardSize = config.blockSize = 4096;
+    config.bufferCapacity = 256 * config.shardSize;
+    config.loadExclusiveBufferNumber = 0;
+    config.shareBufferEnable = false;
+    config.storeBackend = backend;
+    return config;
+}
 }  // namespace
 
 TEST(UCCacheEarlyStoreTest, ReservedBytesUseNativeLoadAndRelease)
@@ -376,3 +390,96 @@ TEST(UCCacheEarlyStoreTest, HandoffIgnoresWrongIdentityAndUnreadyReservations)
     early.Release(reserved.Value().handle);
     EXPECT_TRUE(early.LoadHandles(desc).empty());
 }
+
+TEST(UCCacheEarlyStoreTest, SubmitsBoundedBatchesBeforeLocatingTheTail)
+{
+    Backend backend;
+    EXPECT_CALL(backend, LookupOnPrefix).WillRepeatedly(testing::Invoke(
+        [](const UC::Detail::BlockId*, size_t count) { return ssize_t(count) - 1; }));
+    auto config = BatchConfig(&backend);
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(config).Success());
+    auto* buffer = manager.GetTransBuffer();
+    std::array<UC::Detail::BlockId, 160> blocks{};
+    for (size_t i = 0; i < blocks.size(); ++i) { blocks[i][0] = std::byte(i); }
+    size_t submitted = 0, completed = 0, inflight = 0;
+    std::vector<size_t> sizes;
+    EXPECT_CALL(backend, Load).Times(3).WillRepeatedly(testing::Invoke(
+        [&](UC::Detail::TaskDesc task) {
+            if (submitted == 0) { EXPECT_FALSE(buffer->Exist(blocks.back(), 0)); }
+            sizes.push_back(task.size());
+            ++inflight;
+            EXPECT_LE(inflight, 2);
+            for (auto& shard : task) { std::memset(shard.addrs[0], 0x6b, 4096); }
+            return UC::Detail::TaskHandle{++submitted};
+        }));
+    EXPECT_CALL(backend, Wait).Times(3).WillRepeatedly(testing::Invoke(
+        [&](UC::Detail::TaskHandle handle) {
+            if (completed == 0) {
+                EXPECT_EQ(submitted, 2);  // the next batch overlaps the first I/O
+                EXPECT_FALSE(buffer->Exist(blocks.back(), 0));
+            }
+            EXPECT_EQ(handle, ++completed);
+            --inflight;
+            return UC::Status::OK();
+        }));
+    UC::CacheStore::ReservedPrefetch early(
+        &manager, &backend, config.blockSize, config.shardSize, config.timeoutMs);
+    auto reserved = early.Reserve(blocks.data(), blocks.size());
+    ASSERT_TRUE(reserved);
+    auto prefetched = early.Prefetch(reserved.Value().handle);
+    ASSERT_TRUE(prefetched);
+    EXPECT_EQ(sizes, (std::vector<size_t>{64, 64, 32}));
+    EXPECT_EQ(prefetched.Value().l2ReadShards, blocks.size());
+    EXPECT_EQ(prefetched.Value().l2ReadBytes, blocks.size() * config.shardSize);
+    EXPECT_EQ(inflight, 0);
+    early.Release(reserved.Value().handle);
+    EXPECT_TRUE(backend.lease.expired());
+}
+
+class UCCacheEarlyBatchFailureTest : public testing::TestWithParam<int> {};
+
+TEST_P(UCCacheEarlyBatchFailureTest, DrainsAcceptedIoBeforeReleasingProtection)
+{
+    // 0: second submit fails; 1: first Wait fails; 2: cancellation during Wait;
+    // 3: second submit throws before accepting I/O.
+    const auto mode = GetParam();
+    Backend backend;
+    EXPECT_CALL(backend, LookupOnPrefix).WillRepeatedly(testing::Invoke(
+        [](const UC::Detail::BlockId*, size_t count) { return ssize_t(count) - 1; }));
+    auto config = BatchConfig(&backend);
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(config).Success());
+    UC::CacheStore::ReservedPrefetch early(
+        &manager, &backend, config.blockSize, config.shardSize, config.timeoutMs);
+    std::array<UC::Detail::BlockId, 160> blocks{};
+    for (size_t i = 0; i < blocks.size(); ++i) { blocks[i][0] = std::byte(i); }
+    auto reserved = early.Reserve(blocks.data(), blocks.size());
+    ASSERT_TRUE(reserved);
+    size_t submitted = 0, completed = 0;
+    EXPECT_CALL(backend, Load).Times(2).WillRepeatedly(testing::Invoke(
+        [&](UC::Detail::TaskDesc) -> UC::Expected<UC::Detail::TaskHandle> {
+            ++submitted;
+            if (submitted == 2 && mode == 0) { return UC::Status::NotFound(); }
+            if (submitted == 2 && mode == 3) { throw std::runtime_error("submit failed"); }
+            return UC::Detail::TaskHandle{submitted};
+        }));
+    EXPECT_CALL(backend, Wait).Times(mode == 0 || mode == 3 ? 1 : 2)
+        .WillRepeatedly(testing::Invoke([&](UC::Detail::TaskHandle handle) {
+            EXPECT_FALSE(backend.lease.expired());
+            EXPECT_EQ(handle, ++completed);
+            if (mode == 2 && completed == 1) {
+                early.Release(reserved.Value().handle);
+                EXPECT_FALSE(backend.lease.expired());
+            }
+            return mode == 1 && completed == 1 ? UC::Status::NotFound() : UC::Status::OK();
+        }));
+    auto prefetched = early.Prefetch(reserved.Value().handle);
+    EXPECT_FALSE(prefetched);
+    early.Release(reserved.Value().handle);
+    EXPECT_TRUE(backend.lease.expired());
+    auto pin = manager.GetTransBuffer()->PinReady(blocks.back(), 0);
+    EXPECT_FALSE(pin);  // later data was neither submitted nor declared READY
+}
+
+INSTANTIATE_TEST_SUITE_P(AbnormalExit, UCCacheEarlyBatchFailureTest, testing::Values(0, 1, 2, 3));
