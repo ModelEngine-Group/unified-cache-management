@@ -346,7 +346,7 @@ def test_worker_bind_selects_only_ready_local_consumers():
     worker.request_keys = {}
     worker.jobs = {
         key: SimpleNamespace(key=key, ready=ready, cancelled=cancelled,
-                             loading=False, reservation={"handle": handle})
+                             loading=False, batches=[SimpleNamespace(reservation={"handle": handle})])
         for key, ready, cancelled, handle in (
             ("ready", True, False, 7), ("pending", False, False, 8),
             ("cancelled", True, True, 9), ("other", True, False, 10)

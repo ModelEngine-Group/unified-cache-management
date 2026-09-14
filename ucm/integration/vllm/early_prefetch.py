@@ -226,10 +226,20 @@ class WorkerJob:
     key: str
     blocks: list
     entered: float = field(default_factory=time.monotonic)
-    reservation: dict | None = None
+    batches: list = field(default_factory=list)
+    reserve_done: bool = False
     cancelled: bool = False
     ready: bool = False
     loading: bool = False
+
+
+@dataclass
+class WorkerBatch:
+    index: int
+    begin: int
+    reservation: dict
+    entered: float = field(default_factory=time.monotonic)
+    done: bool = False
 
 
 class EarlyWorker:
@@ -296,45 +306,67 @@ class EarlyWorker:
 
     def _release(self, job):
         job.cancelled = True
-        if job.reservation is not None:
-            self.store.release_reservation(job.reservation["handle"])
+        for batch in job.batches:
+            self.store.release_reservation(batch.reservation["handle"])
         self.condition.notify_all()
 
     def _reserve(self, job):
         started = time.monotonic()
-        log.info("UCM_EARLY lookup_start key=%s rank=%s queue_ms=%.3f",
-                 job.key, self.connector.tp_rank, (started - job.entered) * 1000)
+        c = self.connector
+        log.info("UCM_EARLY lookup_start key=%s rank=%s ns=%s queue_ms=%.3f",
+                 job.key, c.tp_rank, time.monotonic_ns(), (started - job.entered) * 1000)
         try:
             blocks = job.blocks
-            c = self.connector
             if not c.is_mla and c.tp_rank % c.tp_size:
                 blocks = [c.request_hasher(block) for block in blocks]
-            reservation = self.store.reserve_prefix(blocks)
-            log.info("UCM_EARLY lookup_done key=%s rank=%s reservation=%s elapsed_ms=%.3f",
-                     job.key, c.tp_rank, reservation["handle"],
-                     (time.monotonic() - started) * 1000)
-            with self.condition:
-                job.reservation = reservation
-                if job.cancelled or self.closed:
-                    self.store.release_reservation(reservation["handle"])
-                    return
-                if reservation["remaining_l2_work"] == 0:
+            begin, candidate_count = 0, 32
+            while begin < len(blocks):
+                with self.condition:
+                    if job.cancelled or self.closed:
+                        return
+                candidates = blocks[begin:begin + candidate_count]
+                reserving = time.monotonic_ns()
+                reservation = self.store.reserve_prefix(candidates)
+                batch = WorkerBatch(len(job.batches), begin, reservation,
+                                    done=reservation["remaining_l2_work"] == 0)
+                with self.condition:
+                    if job.cancelled or self.closed:
+                        self.store.release_reservation(reservation["handle"])
+                        return
+                    job.batches.append(batch)
                     log.info(
-                        "UCM_EARLY fast_path key=%s rank=%s total_hit_blocks=%s data_queue_wait=0 l2_read_shards=0",
-                        job.key,
-                        c.tp_rank,
-                        reservation["total_hit_blocks"],
+                        "UCM_EARLY batch_reserved key=%s rank=%s batch=%s begin=%s reservation=%s "
+                        "start_ns=%s end_ns=%s candidates=%s hit=%s remaining_l2_work=%s",
+                        job.key, c.tp_rank, batch.index, begin, reservation["handle"],
+                        reserving, time.monotonic_ns(), len(candidates),
+                        reservation["total_hit_blocks"], reservation["remaining_l2_work"],
                     )
+                    if not batch.done:
+                        # Publication precedes localization/lease of the next
+                        # batch. Its handles and lease stay in this reservation.
+                        self.preparing.append((job, batch))
+                        self.condition.notify_all()
+                hit = reservation["total_hit_blocks"]
+                if not 0 <= hit <= len(candidates):
+                    raise RuntimeError("invalid reserved prefix length")
+                if hit < len(candidates):
+                    break
+                begin += hit
+                candidate_count = min(candidate_count * 2, 256)
+            with self.condition:
+                job.reserve_done = True
+                if not job.cancelled and all(batch.done for batch in job.batches):
                     self._answer(job)
-                else:
-                    self.preparing.append(job)
-                    self.condition.notify()
+            log.info("UCM_EARLY lookup_done key=%s rank=%s ns=%s batches=%s elapsed_ms=%.3f",
+                     job.key, c.tp_rank, time.monotonic_ns(), len(job.batches),
+                     (time.monotonic() - started) * 1000)
         except Exception as error:
             self._answer(job, str(error))
 
     @staticmethod
-    def ratio(job, now):
-        return 1 + (now - job.entered) / max(job.reservation["remaining_l2_work"], 1)
+    def ratio(batch, now):
+        # Shards not READY at reserve, including peer-owned in-flight work.
+        return 1 + (now - batch.entered) / max(batch.reservation["remaining_l2_work"], 1)
 
     def _data(self):
         while True:
@@ -345,40 +377,34 @@ class EarlyWorker:
                 if self.closed:
                     return
                 if not self.selected:
-                    self.preparing = [
-                        job for job in self.preparing if not job.cancelled
-                    ]
+                    self.preparing = [item for item in self.preparing if not item[0].cancelled]
                     now = time.monotonic()
-                    self.preparing.sort(
-                        key=lambda job: self.ratio(job, now), reverse=True
-                    )
+                    self.preparing.sort(key=lambda item: self.ratio(item[1], now), reverse=True)
                     count = max(1, len(self.preparing) // 4)
-                    self.selected, self.preparing = (
-                        self.preparing[:count],
-                        self.preparing[count:],
-                    )
+                    self.selected, self.preparing = self.preparing[:count], self.preparing[count:]
                 if not self.selected:
                     continue
-                job = self.selected.pop(0)
+                job, batch = self.selected.pop(0)
                 if job.cancelled:
                     continue
             try:
-                stats = self.store.prefetch_reserved(job.reservation["handle"])
-                log.info(
-                    "UCM_EARLY prefetched key=%s rank=%s total_hit_blocks=%s remaining_l2_work=%s stats=%s",
-                    job.key,
-                    self.connector.tp_rank,
-                    job.reservation["total_hit_blocks"],
-                    job.reservation["remaining_l2_work"],
-                    stats,
-                )
-                self._answer(job)
+                log.info("UCM_EARLY batch_start key=%s rank=%s batch=%s reservation=%s ns=%s queue_ms=%.3f",
+                         job.key, self.connector.tp_rank, batch.index, batch.reservation["handle"],
+                         time.monotonic_ns(), (time.monotonic() - batch.entered) * 1000)
+                stats = self.store.prefetch_reserved(batch.reservation["handle"])
+                with self.condition:
+                    batch.done = True
+                    log.info("UCM_EARLY batch_done key=%s rank=%s batch=%s reservation=%s ns=%s stats=%s",
+                             job.key, self.connector.tp_rank, batch.index, batch.reservation["handle"],
+                             time.monotonic_ns(), stats)
+                    if job.reserve_done and all(part.done for part in job.batches):
+                        self._answer(job)
             except Exception as error:
                 self._answer(job, str(error))
 
     def _answer(self, job, error=None):
         with self.condition:
-            if job.cancelled:
+            if job.cancelled or job.ready:
                 return
             if error is not None:
                 self._release(job)
@@ -390,14 +416,16 @@ class EarlyWorker:
                 )
             else:
                 job.ready = True
+                fast = all(batch.reservation["remaining_l2_work"] == 0 for batch in job.batches)
+                log.info("UCM_EARLY rank_ready key=%s rank=%s ns=%s total_hit_blocks=%s fast_path=%s",
+                         job.key, self.connector.tp_rank, time.monotonic_ns(),
+                         sum(batch.reservation["total_hit_blocks"] for batch in job.batches), fast)
             self.control.send(
                 {
                     "op": "answer",
                     "key": job.key,
                     "state": "FAILED" if error else "READY",
-                    "hit": (
-                        job.reservation["total_hit_blocks"] if job.reservation else 0
-                    ),
+                    "hit": sum(batch.reservation["total_hit_blocks"] for batch in job.batches),
                     "reason": error,
                 }
             )
@@ -414,8 +442,8 @@ class EarlyWorker:
             for job in self.jobs.values():
                 if job.key in loading and not job.cancelled:
                     job.loading = True
-                    if job.ready and job.reservation is not None:
-                        handles.append(job.reservation["handle"])
+                    if job.ready:
+                        handles.extend(batch.reservation["handle"] for batch in job.batches)
             self.store.set_load_reservations(handles)
 
     def loaded(self, request_ids):
@@ -426,9 +454,10 @@ class EarlyWorker:
                     self._release(job)
                     del self.jobs[key]
                     log.info(
-                        "UCM_EARLY released key=%s rank=%s reason=handoff",
+                        "UCM_EARLY released key=%s rank=%s reason=handoff ns=%s",
                         job.key,
                         self.connector.tp_rank,
+                        time.monotonic_ns(),
                     )
 
     def finished(self, request_ids):
