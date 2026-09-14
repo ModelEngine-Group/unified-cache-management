@@ -1452,6 +1452,60 @@ class DispatcherLifecycleTest(unittest.TestCase):
         self.assertEqual(first.requests["r"].load_plans[0].token_end, 128)
         self.assertEqual(second.requests["r"].load_plans, ())
 
+    def test_boundary_chain_dumps_straddled_boundaries(self):
+        # A step may advance past a cache boundary without ending on it
+        # (eagle-style multi-token steps, odd chunked-prefill sizes): the
+        # boundary record must still be dumped -- the newest boundary the
+        # step completed -- and a step completing no new boundary dumps
+        # nothing.
+        parsed = parse_kv_cache_config(
+            config(
+                group(["model.layers.0.attn"], FullAttentionSpec(128)),
+                group(["model.layers.1.mixer"], MambaSpec(128)),
+            ),
+            scheduler_block_size=128,
+        )
+        dispatcher = UCMDispatcher(parsed)
+        request = FakeRequest("r", 2048)
+        fa_keys = tuple(bytes([index]) * 16 for index in range(16))
+        state_keys = tuple(bytes([index + 32]) * 16 for index in range(16))
+        dispatcher.record_lookup(
+            request, 0, UCMLookupResult(0, 0, (fa_keys, state_keys))
+        )
+        for request_id, state in dispatcher.requests.items():
+            state.group_vllm_block_ids = (list(range(16)), list(range(16)))
+
+        first = dispatcher.build_metadata({"r": 1000})
+        state_plan = next(
+            plan
+            for plan in first.requests["r"].dump_plans
+            if plan.hash_group == "State"
+        )
+        # [0, 1000) completes boundaries up to 896: the newest is 896's.
+        self.assertEqual(state_plan.keys, (state_keys[6],))
+
+        # [1000, 1100) straddles boundary 1024 without ending on it.
+        second = dispatcher.build_metadata({"r": 100})
+        state_plan = next(
+            plan
+            for plan in second.requests["r"].dump_plans
+            if plan.hash_group == "State"
+        )
+        self.assertEqual(state_plan.keys, (state_keys[7],))
+        self.assertEqual(state_plan.token_end, 1024)
+        # The snapshot block is the boundary's (1024th token's) block,
+        # not the step end's (1100th token's) block.
+        self.assertEqual(state_plan.vllm_blocks[0].block_ids, (7,))
+
+        # [1100, 1124) completes no new boundary: nothing more to record.
+        third = dispatcher.build_metadata({"r": 24})
+        self.assertFalse(
+            any(
+                plan.hash_group == "State"
+                for plan in third.requests["r"].dump_plans
+            )
+        )
+
     def test_dsv4_wa_dispatch_uses_only_final_boundary_and_real_tails(self):
         parsed = parse_kv_cache_config(
             config(

@@ -418,10 +418,23 @@ class UCMDispatcher:
         chains = self.spec.dispatch_chains()
         for chain_index, (hash_group, physical_groups) in enumerate(chains):
             keys_available = state.group_ucm_block_ids[chain_index]
-            if hash_group in ("WA", "State"):
-                # Boundary chains record the last complete cache block in
-                # the range; earlier boundaries were already recorded when
-                # they completed.
+            if hash_group in ("WA", "State") and is_dump:
+                # Chunk-wise boundary store (HMA's fetch_wa_block_wise=False):
+                # record only the tail/state at the newest boundary this
+                # step completed.  A step may straddle boundaries without
+                # ending on one, so completion is "token_end passed it",
+                # not "token_end equals it"; the step range (which starts
+                # where the previous step ended) keeps each boundary from
+                # being recorded twice.
+                start = token_start // unit
+                end = token_end // unit
+                if end <= start:
+                    continue
+                start = end - 1
+                end = start + 1
+            elif hash_group in ("WA", "State"):
+                # A load restores one boundary record: the latest complete
+                # one in the range (restore_end is always cache-aligned).
                 if token_end % unit:
                     continue
                 start = max(token_end // unit - 1, 0)
@@ -446,9 +459,11 @@ class UCMDispatcher:
                     block_end = math.ceil(boundary / group.token_block_size)
                 elif hash_group == "State":
                     # A state snapshot lives in the last complete block of
-                    # the boundary.
+                    # the boundary (end * unit, not the step's token_end --
+                    # a dump step may end past the boundary).
+                    boundary = end * unit
                     block_start = max(
-                        (token_end - 1) // group.token_block_size, 0
+                        (boundary - 1) // group.token_block_size, 0
                     )
                     block_end = block_start + 1
                 else:
