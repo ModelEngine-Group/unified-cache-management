@@ -99,7 +99,7 @@ Status ParseBlockProportions(const std::vector<std::string>& values,
     proportions.clear();
     proportions.reserve(values.size());
     for (const auto& value : values) {
-        std::uint32_t proportion;
+        std::uint32_t proportion = 0;
         if (Dram::ParseUint32(value, proportion).Failure()) {
             return Status::InvalidParam("invalid --kvcache-block-proportions value: {}", value);
         }

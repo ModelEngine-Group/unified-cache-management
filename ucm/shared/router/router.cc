@@ -196,10 +196,9 @@ void MaglevRouter::Build(const std::vector<NodeId>& nodeIds)
     lookupTable_.assign(config_.maglev.tableSize, kInvalidNodeId);
     std::vector<std::uint64_t> offsets;
     std::vector<std::uint64_t> skips;
-    std::vector<std::uint64_t> next;
+    std::vector<std::uint64_t> next(activeNodeIds.size(), 0);
     offsets.reserve(activeNodeIds.size());
     skips.reserve(activeNodeIds.size());
-    next.assign(activeNodeIds.size(), 0);
 
     for (auto nodeId : activeNodeIds) {
         auto value = std::to_string(nodeId);

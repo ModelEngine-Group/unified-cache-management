@@ -1,0 +1,50 @@
+{{- if and .Values.servingEngineSpec.enableEngine .Values.servingEngineSpec.serviceMonitor.enabled -}}
+{{- $modelSpec := .Values.servingEngineSpec.modelSpec -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: "{{ .Release.Name }}-{{ $modelSpec.name }}-engine-monitor"
+  namespace: {{ default .Release.Namespace .Values.servingEngineSpec.serviceMonitor.namespace }}
+  labels:
+  {{- with .Values.servingEngineSpec.labels }}
+  {{- toYaml . | nindent 4 }}
+  {{- else }}
+    {{ "" }}
+  {{- end }}
+  {{- with .Values.servingEngineSpec.serviceMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      uc-stack.io/service-role: "engine-service"
+      model: "{{ $modelSpec.name }}"
+      helm-release-name: "{{ .Release.Name }}"
+  {{- with .Values.servingEngineSpec.serviceMonitor.sampleLimit }}
+  sampleLimit: {{ . }}
+  {{- end }}
+  {{- with .Values.servingEngineSpec.serviceMonitor.targetLimit }}
+  targetLimit: {{ . }}
+  {{- end }}
+  {{- with .Values.servingEngineSpec.serviceMonitor.labelLimit }}
+  labelLimit: {{ . }}
+  {{- end }}
+  endpoints:
+    - port: {{ include "chart.container-port-name" . }}   {{/* 须与 service-engine.yaml 的端口名一致 */}}
+      path: {{ default "/metrics" .Values.servingEngineSpec.serviceMonitor.path | quote }}
+      interval: {{ default "30s" .Values.servingEngineSpec.serviceMonitor.interval | quote }}
+      scrapeTimeout: {{ default "10s" .Values.servingEngineSpec.serviceMonitor.scrapeTimeout | quote }}
+      scheme: {{ default "http" .Values.servingEngineSpec.serviceMonitor.scheme | quote }}
+      honorLabels: {{ default false .Values.servingEngineSpec.serviceMonitor.honorLabels }}
+      {{- with .Values.servingEngineSpec.serviceMonitor.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.servingEngineSpec.serviceMonitor.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

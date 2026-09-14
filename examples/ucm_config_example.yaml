@@ -1,8 +1,10 @@
 # UCM Configuration File Example
 # 
 # This file demonstrates how to configure UCM using YAML.
-# You can use this config file by setting the path to this file in kv_connector_extra_config in launch script or command line like this:
-# kv_connector_extra_config={"UCM_CONFIG_FILE": "/workspace/unified-cache-management/examples/ucm_config_example.yaml"}
+# Published UCM Runtime images include this example at /workspace/ucm_config_example.yaml.
+# In a source checkout, use examples/ucm_config_example.yaml instead.
+# You can use this config file by setting its path in kv_connector_extra_config:
+# kv_connector_extra_config={"UCM_CONFIG_FILE": "/workspace/ucm_config_example.yaml"}
 #
 # Alternatively, you can still use kv_connector_extra_config in KVTransferConfig
 # for backward compatibility.

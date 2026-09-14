@@ -1,0 +1,3 @@
+{{- $modelSpec := default (dict) .Values.servingEngineSpec.modelSpec -}}
+{{- include "chart.validateDataParallelMode" (list $modelSpec) -}}
+{{- include "chart.validateKvTransfer" (list $modelSpec $) -}}

@@ -1,0 +1,61 @@
+{{- if .Values.servingEngineSpec.enableEngine -}}
+{{- $modelSpec := .Values.servingEngineSpec.modelSpec -}}
+{{- include "chart.validateStorageConfig" (list $modelSpec $) -}}
+{{- include "chart.validateUcmConfigShape" (list $modelSpec) -}}
+{{- $ucmSpec := default (dict) $modelSpec.unifiedcacheConfig -}}
+{{- $explicitOn := false -}}
+{{- $switchKeyUsed := "enabled" -}}
+{{- if hasKey $ucmSpec "enabled" -}}
+{{- $explicitOn = $ucmSpec.enabled -}}
+{{- else if hasKey $ucmSpec "enable" -}}
+{{- $explicitOn = $ucmSpec.enable -}}
+{{- $switchKeyUsed = "enable" -}}
+{{- end -}}
+{{- $ucmConfigEnabled := eq (include "chart.ucmConfigEnabled" (list $modelSpec)) "true" -}}
+{{- if and $explicitOn (not $ucmConfigEnabled) -}}
+{{- fail (printf "servingEngineSpec.modelSpec.unifiedcacheConfig.%s is true but unifiedcacheConfig.config is empty; fill config.ucm_connectors or set %s: false" $switchKeyUsed $switchKeyUsed) -}}
+{{- end -}}
+{{- if $ucmConfigEnabled -}}
+{{- $storage := default (dict) $modelSpec.storage -}}
+{{- $unifiedStorage := default (list) $storage.unifiedcacheStorage -}}
+{{- if eq (len $unifiedStorage) 0 -}}
+{{- fail "servingEngineSpec.modelSpec.storage.unifiedcacheStorage must not be empty when unifiedcacheConfig.config is set" -}}
+{{- end -}}
+{{- $cfg := $modelSpec.unifiedcacheConfig.config -}}
+{{- if not (hasKey $cfg "ucm_connectors") -}}
+{{- fail "servingEngineSpec.modelSpec.unifiedcacheConfig.config.ucm_connectors is required" -}}
+{{- end -}}
+{{- if not (kindIs "slice" $cfg.ucm_connectors) -}}
+{{- fail "servingEngineSpec.modelSpec.unifiedcacheConfig.config.ucm_connectors must be a list" -}}
+{{- end -}}
+{{- if eq (len $cfg.ucm_connectors) 0 -}}
+{{- fail "servingEngineSpec.modelSpec.unifiedcacheConfig.config.ucm_connectors must contain at least one connector" -}}
+{{- end -}}
+{{- range $idx, $connector := $cfg.ucm_connectors -}}
+{{- if not (kindIs "map" $connector) -}}
+{{- fail (printf "servingEngineSpec.modelSpec.unifiedcacheConfig.config.ucm_connectors[%d] must be an object" $idx) -}}
+{{- end -}}
+{{- if and (hasKey $connector "ucm_connector_config") (not (kindIs "map" $connector.ucm_connector_config)) -}}
+{{- fail (printf "servingEngineSpec.modelSpec.unifiedcacheConfig.config.ucm_connectors[%d].ucm_connector_config must be an object" $idx) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if $ucmConfigEnabled -}}
+{{- $rawConfig := $modelSpec.unifiedcacheConfig.config -}}
+{{- $ucmConfig := fromYaml (toYaml $rawConfig) -}}
+{{- $storageBackends := include "chart.ucmStorageBackends" (list $modelSpec) -}}
+{{- range $connector := $ucmConfig.ucm_connectors -}}
+{{- $connectorConfig := default (dict) $connector.ucm_connector_config -}}
+{{- $_ := set $connectorConfig "storage_backends" $storageBackends -}}
+{{- $_ := set $connector "ucm_connector_config" $connectorConfig -}}
+{{- end -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $.Release.Name }}-ucm-config
+  namespace: {{ $.Release.Namespace }}
+data:
+  ucm_config.yaml: |
+{{ toYaml $ucmConfig | nindent 4 }}
+{{- end -}}
+{{- end -}}

@@ -1,0 +1,761 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modelengine-group.example/ucm/config.schema.json",
+  "$ref": "#/$defs/releaseDocument",
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "externalRequiredDependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dependency", "provider", "expected_mount_root", "relation", "required_at"],
+      "properties": {
+        "dependency": {"type": "string", "pattern": "^[A-Za-z0-9_.+-]+$"},
+        "provider": {"type": "string", "minLength": 1},
+        "expected_mount_root": {"type": "string", "pattern": "^/[^ ]+$"},
+        "relation": {"const": "transitive"},
+        "required_at": {"const": "device-runtime"}
+      }
+    },
+    "lockedWheel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filename", "sha256"],
+      "properties": {
+        "filename": {"type": "string", "pattern": "^[A-Za-z0-9_.+-]+\\.whl$"},
+        "sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "lockedPackage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "filename", "sha256"],
+      "properties": {
+        "version": {"type": "string", "minLength": 1},
+        "filename": {"type": "string", "pattern": "^[A-Za-z0-9_.+-]+\\.whl$"},
+        "sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "pythonAbiArtifacts": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"pattern": "^cp[0-9]{2,}$"},
+      "additionalProperties": {
+        "type": "object",
+        "minProperties": 1,
+        "maxProperties": 64,
+        "propertyNames": {"pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"},
+        "additionalProperties": {"$ref": "#/$defs/lockedWheel"}
+      }
+    },
+    "buildDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "tag", "index_digest", "manifest_digest", "config_digest"],
+      "properties": {
+        "repository": {"type": "string", "pattern": "^[a-z0-9.-]+/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$"},
+        "tag": {"type": "string", "minLength": 1},
+        "index_digest": {"$ref": "#/$defs/digest"},
+        "manifest_digest": {"$ref": "#/$defs/digest"},
+        "config_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "builderRoot": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repository", "tag"],
+          "properties": {
+            "repository": {"type": "string", "pattern": "^[a-z0-9.-]+/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$"},
+            "tag": {"type": "string", "minLength": 1}
+          }
+        },
+        {"$ref": "#/$defs/buildDescriptor"}
+      ]
+    },
+    "builderCheck": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "version", "abi"],
+          "properties": {
+            "kind": {"const": "python"},
+            "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
+            "abi": {"type": "string", "pattern": "^cp[0-9]+$"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "prefix"],
+          "properties": {
+            "kind": {"const": "python-soabi"},
+            "prefix": {"type": "string", "pattern": "^[a-z][a-z0-9_-]*$"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "name"],
+          "properties": {
+            "kind": {"const": "command"},
+            "name": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+-]*$"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "name", "arguments", "contains"],
+          "properties": {
+            "kind": {"const": "command-version"},
+            "name": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+-]*$"},
+            "arguments": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+            "contains": {"type": "string", "minLength": 1}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "path"],
+          "properties": {
+            "kind": {"enum": ["file", "directory", "library-cache", "shared-library-dependencies"]},
+            "path": {"type": "string", "pattern": "^/[^ ]+$"}
+          }
+        }
+      ]
+    },
+    "builder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sources", "copy_paths", "checks"],
+      "properties": {
+        "root": {"$ref": "#/$defs/builderRoot"},
+        "sources": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/buildDescriptor"}
+        },
+        "copy_paths": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^/[^ ]+$"}
+        },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/builderCheck"}
+        }
+      }
+    },
+    "builders": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 64,
+      "propertyNames": {"pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"},
+      "additionalProperties": {"$ref": "#/$defs/builder"}
+    },
+    "wheelProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "build", "accelerator", "accelerator_runtime", "npu_arch", "os",
+        "wheel_platform", "builder_manylinux", "binary_profile_id", "external_required_dependencies", "validation_targets"
+      ],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "build": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["docker_target", "platform_arg"],
+          "properties": {
+            "docker_target": {"const": "wheel"},
+            "platform_arg": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"}
+          }
+        },
+        "accelerator": {"type": "string", "minLength": 1},
+        "accelerator_runtime": {"type": "string", "minLength": 1},
+        "npu_arch": {
+          "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "os": {
+          "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "cpu_arch": {
+          "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"}
+        },
+        "python_version": {"type": "string", "minLength": 1},
+        "python_abi": {"type": "string", "minLength": 1},
+        "wheel_version": {"type": "string", "minLength": 1},
+        "dist_name": {"type": "string", "pattern": "^uc-manager(-[a-z0-9]+(-[a-z0-9]+)?)?$"},
+        "wheel_platform": {"type": "string", "minLength": 1},
+        "builder_manylinux": {"type": "string", "pattern": "^manylinux_[0-9]+_[0-9]+$"},
+        "binary_profile_id": {"type": "string", "minLength": 1},
+        "allowed_dt_needed": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[A-Za-z0-9_.+-]+$"}
+        },
+        "external_required_dependencies": {
+          "type": "array", "maxItems": 64, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/externalRequiredDependency"}
+        },
+        "validation_targets": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "required_native": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "forbidden_native": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "builders": {"$ref": "#/$defs/builders"}
+      }
+    },
+    "chartCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "values", "product_id", "variant", "expected_resource"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "values": {"type": "string", "minLength": 1},
+        "product_id": {"type": "string", "minLength": 1},
+        "variant": {"type": "string", "minLength": 1},
+        "expected_resource": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"}
+      }
+    },
+    "chart": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "name", "validation_cases"],
+      "properties": {
+        "source": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "app_version": {"type": "string", "minLength": 1},
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["remote", "commit", "tree_sha256"],
+          "properties": {
+            "remote": {"type": "string", "minLength": 1},
+            "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            "tree_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+          }
+        },
+        "validation_cases": {
+          "type": "array", "minItems": 1, "maxItems": 64,
+          "items": {"$ref": "#/$defs/chartCase"}
+        }
+      }
+    },
+    "publishPypi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested", "enabled", "disposition", "target", "index", "simple_index", "json_api", "dependency_index"],
+      "properties": {
+        "requested": {"type": "boolean"},
+        "enabled": {"type": "boolean"},
+        "disposition": {"enum": ["publish", "scope-skipped", "disabled"]},
+        "target": {"enum": ["pypi", "testpypi"]},
+        "index": {"type": "string", "pattern": "^https://[^ ]+/$"},
+        "simple_index": {"type": "string", "pattern": "^https://[^ ]+/$"},
+        "json_api": {"type": "string", "pattern": "^https://[^ ]+/$"},
+        "dependency_index": {"type": "string", "pattern": "^https://[^ ]+/$"}
+      }
+    },
+    "publishOci": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested", "enabled", "disposition", "namespace"],
+      "properties": {
+        "requested": {"type": "boolean"},
+        "enabled": {"type": "boolean"},
+        "disposition": {"enum": ["publish", "scope-skipped", "disabled"]},
+        "namespace": {"type": "string", "minLength": 1}
+      }
+    },
+    "publishDockerhub": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested", "enabled", "disposition"],
+      "properties": {
+        "requested": {"type": "boolean"},
+        "enabled": {"type": "boolean"},
+        "disposition": {"enum": ["publish", "scope-skipped", "disabled"]},
+        "namespace": {"type": "string", "minLength": 1}
+      }
+    },
+    "publishGithubRelease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested", "enabled", "disposition"],
+      "properties": {
+        "requested": {"type": "boolean"},
+        "enabled": {"type": "boolean"},
+        "disposition": {"enum": ["publish", "scope-skipped", "disabled"]}
+      }
+    },
+    "publish": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pypi", "ghcr", "dockerhub", "chart_oci", "github_release"],
+      "properties": {
+        "pypi": {"$ref": "#/$defs/publishPypi"},
+        "ghcr": {"$ref": "#/$defs/publishOci"},
+        "dockerhub": {"$ref": "#/$defs/publishDockerhub"},
+        "chart_oci": {"$ref": "#/$defs/publishOci"},
+        "github_release": {"$ref": "#/$defs/publishGithubRelease"}
+      }
+    },
+    "releasePolicyProduct": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "runtime_repository", "target_repository"
+      ],
+      "properties": {
+        "id": {"enum": ["vllm", "vllm-ascend"]},
+        "runtime_repository": {"type": "string", "pattern": "^[a-z0-9.-]+/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$"},
+        "target_repository": {"type": "string", "pattern": "^ghcr\\.io/(\\{owner\\}|[a-z0-9][a-z0-9-]{0,38})/[a-zA-Z0-9_.-]+$"}
+      }
+    },
+    "releasePolicyPypi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index"],
+      "properties": {
+        "index": {"type": "string", "minLength": 1}
+      }
+    },
+    "releasePolicyOci": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespace"],
+      "properties": {
+        "namespace": {"type": "string", "minLength": 1}
+      }
+    },
+    "releasePolicyDockerhub": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "releasePolicyGithubRelease": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "releasePolicyPublish": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pypi", "ghcr", "dockerhub", "chart_oci", "github_release"],
+      "properties": {
+        "pypi": {"$ref": "#/$defs/releasePolicyPypi"},
+        "ghcr": {"$ref": "#/$defs/releasePolicyOci"},
+        "dockerhub": {"$ref": "#/$defs/releasePolicyDockerhub"},
+        "chart_oci": {"$ref": "#/$defs/releasePolicyOci"},
+        "github_release": {"$ref": "#/$defs/releasePolicyGithubRelease"}
+      }
+    },
+    "releaseProfileLimit": {
+      "oneOf": [
+        {"type": "integer", "const": -1},
+        {"type": "integer", "minimum": 1}
+      ]
+    },
+    "releaseProfilePublish": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pypi", "ghcr", "dockerhub", "chart_oci", "github_release"],
+      "properties": {
+        "pypi": {"type": "boolean"},
+        "ghcr": {"type": "boolean"},
+        "dockerhub": {"type": "boolean"},
+        "chart_oci": {"type": "boolean"},
+        "github_release": {"type": "boolean"}
+      }
+    },
+    "releaseProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_count", "publish"],
+      "properties": {
+        "max_count": {"$ref": "#/$defs/releaseProfileLimit"},
+        "publish": {"$ref": "#/$defs/releaseProfilePublish"}
+      }
+    },
+    "releaseProfiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stable", "prerelease", "draft", "nightly"],
+      "properties": {
+        "stable": {"$ref": "#/$defs/releaseProfile"},
+        "prerelease": {"$ref": "#/$defs/releaseProfile"},
+        "draft": {"$ref": "#/$defs/releaseProfile"},
+        "nightly": {"$ref": "#/$defs/releaseProfile"}
+      }
+    },
+    "releasePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "schema_version", "runners", "products", "publish", "release_profiles", "chart"],
+      "properties": {
+        "kind": {"const": "ucm-release-policy"},
+        "schema_version": {"const": 6},
+        "runners": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["amd64", "arm64"],
+          "properties": {
+            "amd64": {"type": "string", "minLength": 1},
+            "arm64": {"type": "string", "minLength": 1}
+          }
+        },
+        "products": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {"$ref": "#/$defs/releasePolicyProduct"}
+        },
+        "publish": {"$ref": "#/$defs/releasePolicyPublish"},
+        "release_profiles": {"$ref": "#/$defs/releaseProfiles"},
+        "chart": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "smoke_values"],
+          "properties": {
+            "source": {"type": "string", "minLength": 1},
+            "smoke_values": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["vllm", "vllm-ascend"],
+              "properties": {
+                "vllm": {"type": "string", "minLength": 1},
+                "vllm-ascend": {"type": "string", "minLength": 1}
+              }
+            }
+          }
+        }
+      }
+    },
+    "platformBackend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "platform"],
+      "properties": {
+        "status": {"enum": ["supported", "blocked"]},
+        "platform": {"type": "string", "minLength": 1},
+        "distribution": {"type": "string", "pattern": "^uc-manager(?:-[a-z0-9]+)+$"},
+        "distribution_template": {"type": "string", "pattern": "^uc-manager(?:-[a-z0-9]+)*-\\{runtime_variant\\}$"},
+        "external_runtime_exclude_patterns": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "platformPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "schema_version", "excluded_upstream_variants", "builder_families", "backends"],
+      "properties": {
+        "kind": {"const": "ucm-platform-policy"},
+        "schema_version": {"const": 3},
+        "excluded_upstream_variants": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["vllm-ascend"],
+          "properties": {
+            "vllm-ascend": {
+              "type": "array", "minItems": 1, "maxItems": 1, "uniqueItems": true,
+              "items": {"const": "310p"}
+            }
+          }
+        },
+        "builder_families": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cuda", "ascend"],
+          "properties": {
+            "cuda": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["target_repository", "source_repositories", "manylinux", "required_commands"],
+              "properties": {
+                "target_repository": {"type": "string", "pattern": "^ghcr\\.io/(\\{owner\\}|[a-z0-9][a-z0-9-]{0,38})/[a-zA-Z0-9_.-]+$"},
+                "source_repositories": {
+                  "type": "object", "additionalProperties": false,
+                  "required": ["amd64", "arm64"],
+                  "properties": {
+                    "amd64": {"type": "string", "pattern": "^[a-z0-9.-]+/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$"},
+                    "arm64": {"type": "string", "pattern": "^[a-z0-9.-]+/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$"}
+                  }
+                },
+                "manylinux": {"type": "string", "pattern": "^manylinux_[0-9]+_[0-9]+$"},
+                "required_commands": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+              }
+            },
+            "ascend": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["target_repository", "source_repositories", "manylinux", "required_commands", "required_files", "variant_required_files"],
+              "properties": {
+                "target_repository": {"type": "string", "pattern": "^ghcr\\.io/(\\{owner\\}|[a-z0-9][a-z0-9-]{0,38})/[a-zA-Z0-9_.-]+$"},
+                "source_repositories": {
+                  "type": "object", "additionalProperties": false,
+                  "required": ["amd64", "arm64"],
+                  "properties": {
+                    "amd64": {"type": "string", "pattern": "^[a-z0-9.-]+/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$"},
+                    "arm64": {"type": "string", "pattern": "^[a-z0-9.-]+/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$"}
+                  }
+                },
+                "manylinux": {"type": "string", "pattern": "^manylinux_[0-9]+_[0-9]+$"},
+                "required_commands": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+                "required_files": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+                "variant_required_files": {
+                  "type": "object", "additionalProperties": false,
+                  "required": ["a3"],
+                  "properties": {
+                    "a3": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+                  }
+                }
+              }
+            }
+          }
+        },
+        "backends": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cuda", "cann-a2", "cann-a3", "cann-a5"],
+          "properties": {
+            "cuda": {"$ref": "#/$defs/platformBackend"},
+            "cann-a2": {"$ref": "#/$defs/platformBackend"},
+            "cann-a3": {"$ref": "#/$defs/platformBackend"},
+            "cann-a5": {"$ref": "#/$defs/platformBackend"}
+          }
+        }
+      }
+    },
+    "releaseDocument": {
+      "oneOf": [
+        {"$ref": "#/$defs/release"},
+        {"$ref": "#/$defs/releasePolicy"}
+      ]
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind", "schema_version", "image_revision", "source",
+        "lanes", "runner_map", "upstream_products", "chart", "publish"
+      ],
+      "properties": {
+        "kind": {"const": "release-config"},
+        "schema_version": {"type": "integer", "const": 4},
+        "ucm_version": {"type": "string", "minLength": 1},
+        "image_revision": {"type": "integer", "minimum": 1},
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["staging_repository", "default_branch", "protected_environment"],
+          "properties": {
+            "repository": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},
+            "staging_repository": {"type": "string", "pattern": "^[a-z0-9.-]+/[a-z0-9_.-]+(?:/[a-z0-9_.-]+)*$"},
+            "default_branch": {"type": "string", "minLength": 1},
+            "release_tag": {"type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+(?:rc[0-9]+)?(?:[a-z]+[0-9]*)?(?:\\.dev[0-9]+)?(?:\\+[a-z0-9.]+)?$"},
+            "protected_environment": {"type": "string", "minLength": 1}
+          }
+        },
+        "lanes": {
+          "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true,
+          "items": {"enum": ["feature-candidate", "protected-tag"]}
+        },
+        "runner_map": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 64,
+          "propertyNames": {"pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"},
+          "additionalProperties": {"type": "string", "minLength": 1}
+        },
+        "upstream_products": {
+          "type": "array", "minItems": 1,
+          "items": {"$ref": "#/$defs/upstreamProduct"}
+        },
+        "matrix_limits": {"$ref": "#/$defs/matrixLimits"},
+        "scan_limits": {"$ref": "#/$defs/scanLimits"},
+        "python_runtime_dependencies": {
+          "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true,
+          "items": {
+            "oneOf": [
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["requirement", "import_name", "wheel_artifacts"],
+              "properties": {
+                "requirement": {"type": "string", "minLength": 1},
+                "import_name": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_.]*$"},
+                "wheel_artifacts": {"$ref": "#/$defs/pythonAbiArtifacts"}
+              }
+            },
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["python_build_lock", "import_name"],
+              "properties": {
+                "python_build_lock": {"type": "string", "pattern": "^[A-Za-z0-9_.+-]+$"},
+                "import_name": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_.]*$"}
+              }
+            }
+            ]
+          }
+        },
+        "python_build_lock": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["install_flags", "packages", "pyyaml", "cmake"],
+          "properties": {
+            "install_flags": {
+              "type": "array", "minItems": 4, "maxItems": 4, "uniqueItems": true,
+              "items": {"enum": ["--no-index", "--find-links", "--require-hashes", "--only-binary=:all:"]}
+            },
+            "packages": {
+              "type": "object",
+              "minProperties": 1,
+              "maxProperties": 64,
+              "propertyNames": {"pattern": "^[A-Za-z0-9_.+-]+$"},
+              "additionalProperties": {"$ref": "#/$defs/lockedPackage"}
+            },
+            "pyyaml": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["version", "artifacts"],
+              "properties": {
+                "version": {"type": "string", "minLength": 1},
+                "artifacts": {"$ref": "#/$defs/pythonAbiArtifacts"}
+              }
+            },
+            "cmake": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["version", "artifacts"],
+              "properties": {
+                "version": {"type": "string", "minLength": 1},
+                "artifacts": {
+                  "type": "object",
+                  "minProperties": 1,
+                  "maxProperties": 64,
+                  "propertyNames": {"pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"},
+                  "additionalProperties": {"$ref": "#/$defs/lockedWheel"}
+                }
+              }
+            }
+          }
+        },
+        "wheel_build_requirements": {
+          "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[A-Za-z0-9_.+-]+==[^ ]+$"}
+        },
+        "wheel_runtime_requirements": {
+          "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[A-Za-z0-9_.+-]+==[^ ]+$"}
+        },
+        "backend_contracts": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {"pattern": "^[a-z0-9][a-z0-9-]*$"},
+          "additionalProperties": {"type": "object"}
+        },
+        "builder_checks": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {"type": "object"}
+        },
+        "chart": {"$ref": "#/$defs/chart"},
+        "publish": {"$ref": "#/$defs/publish"}
+      }
+    },
+    "upstreamVariant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "tag_suffix", "npu_arch"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "tag_suffix": {"type": "string", "pattern": "^(|-[a-z0-9][a-z0-9.-]*)$"},
+        "npu_arch": {"type": "string", "minLength": 1},
+        "soc_versions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "upstreamProduct": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "runtime_product", "runtime_repository", "target_repository", "version_specifier", "channels", "integration_python_abi"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "runtime_product": {"enum": ["vllm", "vllm-ascend"]},
+        "runtime_repository": {"type": "string", "pattern": "^[a-z0-9.-]+/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$"},
+        "target_repository": {"type": "string", "pattern": "^[a-z0-9.-]+/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$"},
+        "target_tag_suffix": {"type": "string", "pattern": "^-[A-Za-z0-9_.-]+$"},
+        "minimum_version": {"type": "string", "minLength": 1},
+        "maximum_version": {"type": "string", "minLength": 1},
+        "recent_minor_versions": {"type": "integer", "minimum": 1},
+        "channel_policy": {"const": "latest-stable-or-rc-or-nightly-per-minor"},
+        "version_specifier": {"type": "string", "minLength": 1},
+        "channels": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["stable", "rc", "nightly"]}},
+        "integration_python_abi": {"type": "string", "pattern": "^cp[0-9]+$"}
+      }
+    },
+    "catalogCompatibilityRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "upstream_products", "version_specifier", "variants", "accelerator", "accelerator_runtimes", "npu_architectures", "operating_systems", "cpu_architectures", "python_abis", "upstream_channels"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "upstream_products": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "version_specifier": {"type": "string", "minLength": 1},
+        "variants": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "accelerator": {"type": "string", "minLength": 1},
+        "accelerator_runtimes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "npu_architectures": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "operating_systems": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "cpu_architectures": {"type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"}},
+        "python_abis": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "upstream_channels": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["stable", "rc"]}}
+      }
+    },
+    "catalogCompatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rules", "excluded_upstream_patterns"],
+      "properties": {
+        "rules": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/catalogCompatibilityRule"}},
+        "excluded_upstream_patterns": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "matrixLimits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_wheel_tasks", "max_image_tasks", "max_family_tasks"],
+      "properties": {
+        "max_wheel_tasks": {"type": "integer", "minimum": 1},
+        "max_image_tasks": {"type": "integer", "minimum": 1},
+        "max_family_tasks": {"type": "integer", "minimum": 1}
+      }
+    },
+    "scanLimits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_tags_per_repository", "max_selected_upstreams"],
+      "properties": {
+        "max_tags_per_repository": {"type": "integer", "minimum": 1},
+        "max_selected_upstreams": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}
