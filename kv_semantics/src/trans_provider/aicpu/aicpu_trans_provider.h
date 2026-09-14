@@ -34,8 +34,7 @@ public:
     std::vector<Status> UnregisterMemory(
         const std::vector<UnregisterMemoryDesc>& memoryDescs) override;
 
-    Status AllocThread(uint32_t, const std::vector<uint32_t>&,
-                       std::vector<ThreadHandle>&) override
+    Status AllocThread(uint32_t, const std::vector<uint32_t>&, std::vector<ThreadHandle>&) override
     {
         return Status::OK();
     }

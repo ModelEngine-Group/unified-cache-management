@@ -3,22 +3,22 @@
 #ifdef UCM_ASU_ENABLE_AICPU_PROVIDER
 
 #if __has_include(<hcomm/hcomm_res.h>)
-#include <hcomm/hcomm_res.h>
 #include <hcomm/hcomm_primitives.h>
+#include <hcomm/hcomm_res.h>
 #elif __has_include(<hcomm_res.h>)
-#include <hcomm_res.h>
 #include <hcomm_primitives.h>
+#include <hcomm_res.h>
 #else
 #error "UCM_ASU_ENABLE_AICPU_PROVIDER requires hcomm_res.h and hcomm_primitives.h"
 #endif
 
 #include <acl/acl.h>
-#include <arpa/inet.h>
 #include <algorithm>
+#include <arpa/inet.h>
 #include <atomic>
-#include <chrono>
-#include <cerrno>
 #include <cctype>
+#include <cerrno>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -34,8 +34,8 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
-#include "logger.h"
 #include "ascend/ascend_buffer.h"
+#include "logger.h"
 
 #ifndef UCM_ASU_AICPU_USE_STAGED_CHANNEL_API
 #define UCM_ASU_AICPU_USE_STAGED_CHANNEL_API 1
@@ -57,8 +57,7 @@ constexpr std::uint32_t kKernelBlockDim = 1U;
 constexpr std::uint32_t kChannelStatusPollIntervalMs = 2U;
 constexpr std::uintptr_t kHostRegisterAlignment = 4096U;
 constexpr const char* kDefaultChannelName = "ucm_asu_aicpu";
-constexpr const char* kProviderSignature =
-    "UCM_ASU_AICPU_PROVIDER_UBC_CTP_UBG_HCOMM_HIXL_V10";
+constexpr const char* kProviderSignature = "UCM_ASU_AICPU_PROVIDER_UBC_CTP_UBG_HCOMM_HIXL_V10";
 constexpr const char* kBatchSendKernelName = "HixlBatchSend";
 constexpr const char* kDefaultAscendHome = "/usr/local/Ascend/cann";
 constexpr const char* kHixlKernelJsonSuffix =
@@ -186,7 +185,8 @@ struct MemoryRecord {
     std::unordered_set<std::string> stagedPublicationKeys;
 };
 
-Status HcommError(const std::string& op, HcommResult ret, StatusCode code = StatusCode::INTERNAL_ERROR)
+Status HcommError(const std::string& op, HcommResult ret,
+                  StatusCode code = StatusCode::INTERNAL_ERROR)
 {
     auto message = op + " failed ret=" + std::to_string(ret);
     KV_ERROR("AICPUTransProvider: {}", message);
@@ -208,9 +208,10 @@ Status WaitForHcommChannelReady(::ChannelHandle channel, std::uint32_t timeoutMs
             const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
                                        std::chrono::steady_clock::now() - start)
                                        .count();
-            KV_INFO("AICPUTransProvider: HCOMM device channel ready qp_index={} channel={} "
-                    "elapsed_us={}",
-                    qpIndex, channel, elapsedUs);
+            KV_INFO(
+                "AICPUTransProvider: HCOMM device channel ready qp_index={} channel={} "
+                "elapsed_us={}",
+                qpIndex, channel, elapsedUs);
             return Status::OK();
         }
         if (channelStatus == kHcommChannelFailed) {
@@ -226,9 +227,9 @@ Status WaitForHcommChannelReady(::ChannelHandle channel, std::uint32_t timeoutMs
                                  "HCOMM channel resource is unavailable");
         }
         if (channelStatus != kHcommChannelConnecting) {
-            return Status::Error(StatusCode::INTERNAL_ERROR,
-                                 "HCOMM channel returned unknown status " +
-                                     std::to_string(channelStatus));
+            return Status::Error(
+                StatusCode::INTERNAL_ERROR,
+                "HCOMM channel returned unknown status " + std::to_string(channelStatus));
         }
 
         if (timeoutMs != 0U &&
@@ -264,18 +265,20 @@ public:
     {
         const auto ret = aclrtGetCurrentContext(&savedContext_);
         if (ret != ACL_SUCCESS || savedContext_ == nullptr) {
-            KV_DEBUG("AICPUTransProvider: no ACL context to preserve stage={} "
-                     "aclrtGetCurrentContext_ret={}",
-                     stage_, static_cast<int>(ret));
+            KV_DEBUG(
+                "AICPUTransProvider: no ACL context to preserve stage={} "
+                "aclrtGetCurrentContext_ret={}",
+                stage_, static_cast<int>(ret));
             savedContext_ = nullptr;
             return;
         }
 
         const auto getDeviceRet = aclrtGetDevice(&savedDevice_);
-        KV_DEBUG("AICPUTransProvider: preserved caller ACL context stage={} context={} "
-                 "device_id={} aclrtGetDevice_ret={}",
-                 stage_, static_cast<const void*>(savedContext_), savedDevice_,
-                 static_cast<int>(getDeviceRet));
+        KV_DEBUG(
+            "AICPUTransProvider: preserved caller ACL context stage={} context={} "
+            "device_id={} aclrtGetDevice_ret={}",
+            stage_, static_cast<const void*>(savedContext_), savedDevice_,
+            static_cast<int>(getDeviceRet));
     }
 
     ~AclContextScope()
@@ -289,17 +292,19 @@ public:
         const auto setRet = aclrtSetCurrentContext(savedContext_);
         if (setRet != ACL_SUCCESS) {
             const char* recent = aclGetRecentErrMsg();
-            KV_ERROR("AICPUTransProvider: failed to restore caller ACL context stage={} "
-                     "context={} device_id={} ret={} msg={}",
-                     stage_, static_cast<const void*>(savedContext_), savedDevice_,
-                     static_cast<int>(setRet), recent == nullptr ? "" : recent);
+            KV_ERROR(
+                "AICPUTransProvider: failed to restore caller ACL context stage={} "
+                "context={} device_id={} ret={} msg={}",
+                stage_, static_cast<const void*>(savedContext_), savedDevice_,
+                static_cast<int>(setRet), recent == nullptr ? "" : recent);
             return;
         }
 
-        KV_DEBUG("AICPUTransProvider: restored caller ACL context stage={} context={} "
-                 "device_id={} previous_context={} aclrtGetCurrentContext_ret={}",
-                 stage_, static_cast<const void*>(savedContext_), savedDevice_,
-                 static_cast<const void*>(currentContext), static_cast<int>(getRet));
+        KV_DEBUG(
+            "AICPUTransProvider: restored caller ACL context stage={} context={} "
+            "device_id={} previous_context={} aclrtGetCurrentContext_ret={}",
+            stage_, static_cast<const void*>(savedContext_), savedDevice_,
+            static_cast<const void*>(currentContext), static_cast<int>(getRet));
     }
 
     AclContextScope(const AclContextScope&) = delete;
@@ -410,9 +415,7 @@ int HexNibble(char value)
 std::string NormalizeEidLiteral(const std::string& text)
 {
     std::string input = text;
-    if (input.size() > 4U && Normalize(input.substr(0, 4U)) == "eid:") {
-        input = input.substr(4U);
-    }
+    if (input.size() > 4U && Normalize(input.substr(0, 4U)) == "eid:") { input = input.substr(4U); }
     std::string normalized;
     normalized.reserve(input.size());
     std::size_t start = 0U;
@@ -420,9 +423,7 @@ std::string NormalizeEidLiteral(const std::string& text)
         start = 2U;
     }
     for (std::size_t index = start; index < input.size(); ++index) {
-        if (input[index] != ':' && input[index] != '-') {
-            normalized.push_back(input[index]);
-        }
+        if (input[index] != ':' && input[index] != '-') { normalized.push_back(input[index]); }
     }
     return normalized;
 }
@@ -459,9 +460,7 @@ LocalDeviceSelection ResolveConfiguredDevice(const TransportConfig& config)
     }
     const auto explicitDevice =
         GetConfigAttr(config, {"device_id", "deviceId", "logical_device_id"});
-    if (!explicitDevice.empty()) {
-        return {ParseUint32(explicitDevice, 0), nullptr, "config"};
-    }
+    if (!explicitDevice.empty()) { return {ParseUint32(explicitDevice, 0), nullptr, "config"}; }
 
     // endpoint.deviceId belongs to the remote ASU and must not select the local ACL device.
     return {0, nullptr, "default_device_0"};
@@ -474,9 +473,10 @@ LocalDeviceSelection ResolveLocalDevice(const TransportConfig& config)
     std::int32_t currentDevice = -1;
     const auto deviceRet = aclrtGetDevice(&currentDevice);
     if (deviceRet != ACL_SUCCESS || currentDevice < 0) {
-        KV_WARN("AICPUTransProvider: current ACL logical device unavailable ret={} device_id={}; "
-                "using fallback logical_device_id={} source={}",
-                static_cast<int>(deviceRet), currentDevice, fallback.deviceId, fallback.source);
+        KV_WARN(
+            "AICPUTransProvider: current ACL logical device unavailable ret={} device_id={}; "
+            "using fallback logical_device_id={} source={}",
+            static_cast<int>(deviceRet), currentDevice, fallback.deviceId, fallback.source);
         fallback.source = "current_acl_fallback_" + fallback.source;
         return fallback;
     }
@@ -484,25 +484,25 @@ LocalDeviceSelection ResolveLocalDevice(const TransportConfig& config)
     aclrtContext currentContext = nullptr;
     const auto contextRet = aclrtGetCurrentContext(&currentContext);
     if (contextRet != ACL_SUCCESS) {
-        KV_WARN("AICPUTransProvider: current ACL context unavailable for logical_device_id={} "
-                "ret={}; device binding will use aclrtSetDevice",
-                currentDevice, static_cast<int>(contextRet));
+        KV_WARN(
+            "AICPUTransProvider: current ACL context unavailable for logical_device_id={} "
+            "ret={}; device binding will use aclrtSetDevice",
+            currentDevice, static_cast<int>(contextRet));
         currentContext = nullptr;
     }
     return {static_cast<std::uint32_t>(currentDevice), currentContext, "current_acl"};
 }
 
-std::pair<std::string, std::string> ResolveLocalEndpointAddress(
-    const TransportConfig& config, std::uint32_t logicalDeviceId, const std::string& fallback,
-    CommProtocol protocol)
+std::pair<std::string, std::string> ResolveLocalEndpointAddress(const TransportConfig& config,
+                                                                std::uint32_t logicalDeviceId,
+                                                                const std::string& fallback,
+                                                                CommProtocol protocol)
 {
     const bool useEid = protocol == COMM_PROTOCOL_UBG;
     const std::string addressKey = useEid ? "aicpu_local_eid" : "aicpu_local_ip";
     const auto deviceKey = addressKey + "." + std::to_string(logicalDeviceId);
     auto it = config.attrs.find(deviceKey);
-    if (it != config.attrs.end() && !it->second.empty()) {
-        return {it->second, deviceKey};
-    }
+    if (it != config.attrs.end() && !it->second.empty()) { return {it->second, deviceKey}; }
 
     auto configured = GetConfigAttr(config, {addressKey.c_str()});
     if (!configured.empty()) { return {std::move(configured), addressKey}; }
@@ -514,7 +514,8 @@ std::pair<std::string, std::string> ResolveLocalEndpointAddress(
 
 std::uint32_t ResolveRemoteDeviceId(const NodeEndpoint* endpoint, std::uint32_t fallback)
 {
-    const auto explicitDevice = GetEndpointAttr(endpoint, {"device_id", "deviceId", "remote_device_id"});
+    const auto explicitDevice =
+        GetEndpointAttr(endpoint, {"device_id", "deviceId", "remote_device_id"});
     if (!explicitDevice.empty()) { return ParseUint32(explicitDevice, fallback); }
     return fallback;
 }
@@ -535,10 +536,9 @@ Status ResolveProtocol(const TransportConfig& config, const NodeEndpoint* endpoi
         protocol = COMM_PROTOCOL_UBC_CTP;
         return Status::OK();
     }
-    return Status::Error(
-        StatusCode::INVALID_ARGUMENT,
-        "AICPUTransProvider: unsupported or missing HCOMM protocol '" + value +
-            "'; supported values are UBG and UBC_CTP");
+    return Status::Error(StatusCode::INVALID_ARGUMENT,
+                         "AICPUTransProvider: unsupported or missing HCOMM protocol '" + value +
+                             "'; supported values are UBG and UBC_CTP");
 }
 
 #if UCM_ASU_AICPU_USE_STAGED_CHANNEL_API
@@ -555,7 +555,8 @@ std::string ResolveStagedOobHost(const TransportConfig& config, const NodeEndpoi
 std::uint16_t ResolveStagedOobPort(const TransportConfig& config, const NodeEndpoint* endpoint,
                                    std::uint32_t port)
 {
-    auto value = GetEndpointAttr(endpoint, {"aicpu_staged_oob_port", "staged_oob_port", "oob_port"});
+    auto value =
+        GetEndpointAttr(endpoint, {"aicpu_staged_oob_port", "staged_oob_port", "oob_port"});
     if (value.empty()) {
         value = GetConfigAttr(config, {"aicpu_staged_oob_port", "staged_oob_port", "oob_port"});
     }
@@ -564,7 +565,8 @@ std::uint16_t ResolveStagedOobPort(const TransportConfig& config, const NodeEndp
 
 std::uint32_t ResolveStagedClientId(const TransportConfig& config, const NodeEndpoint* endpoint)
 {
-    auto value = GetEndpointAttr(endpoint, {"aicpu_staged_client_id", "staged_client_id", "client_id"});
+    auto value =
+        GetEndpointAttr(endpoint, {"aicpu_staged_client_id", "staged_client_id", "client_id"});
     if (value.empty()) {
         value = GetConfigAttr(config, {"aicpu_staged_client_id", "staged_client_id", "client_id"});
     }
@@ -617,14 +619,14 @@ Status BuildEndpointDesc(const TransportConfig& config, const NodeEndpoint* endp
     auto status = FillCommAddr(addr, out.commAddr);
     if (!status.ok()) { return status; }
     if (protocol == COMM_PROTOCOL_UBG && out.commAddr.type != COMM_ADDR_TYPE_EID) {
-        return Status::Error(StatusCode::INVALID_ARGUMENT,
-                             std::string("AICPUTransProvider: UBG ") + role +
-                                 " endpoint must use an EID: " + addr);
+        return Status::Error(
+            StatusCode::INVALID_ARGUMENT,
+            std::string("AICPUTransProvider: UBG ") + role + " endpoint must use an EID: " + addr);
     }
-    KV_DEBUG("AICPUTransProvider: EndpointDesc resolved role={} addr={} addr_type={} "
-             "device_id={} protocol={}",
-             role, addr, CommAddrTypeName(out.commAddr.type), deviceId,
-             CommProtocolName(protocol));
+    KV_DEBUG(
+        "AICPUTransProvider: EndpointDesc resolved role={} addr={} addr_type={} "
+        "device_id={} protocol={}",
+        role, addr, CommAddrTypeName(out.commAddr.type), deviceId, CommProtocolName(protocol));
 
     out.loc.locType = ResolveLocType(config, endpoint);
     if (out.loc.locType == ENDPOINT_LOC_TYPE_DEVICE) {
@@ -661,8 +663,7 @@ std::string ResolveHixlKernelJsonPath(const TransportConfig& config)
 
 int32_t MakeAclSyncTimeoutMs(std::uint32_t hcommTimeoutMs)
 {
-    const std::uint32_t effective =
-        hcommTimeoutMs == 0U ? kDefaultSendTimeoutMs : hcommTimeoutMs;
+    const std::uint32_t effective = hcommTimeoutMs == 0U ? kDefaultSendTimeoutMs : hcommTimeoutMs;
     const std::uint64_t timeout = static_cast<std::uint64_t>(effective) + kAclSyncGraceMs;
     const auto max = static_cast<std::uint64_t>(std::numeric_limits<int32_t>::max());
     return static_cast<int32_t>(timeout > max ? max : timeout);
@@ -705,15 +706,13 @@ struct AICPUTransProvider::Impl {
         std::uint32_t* HostStatuses() const
         {
             auto* base = static_cast<std::uint8_t*>(owner.get());
-            return reinterpret_cast<std::uint32_t*>(
-                base + capacity * sizeof(UcmHixlSendIoBatch));
+            return reinterpret_cast<std::uint32_t*>(base + capacity * sizeof(UcmHixlSendIoBatch));
         }
 
         std::uint32_t* DeviceStatuses() const
         {
             auto* base = static_cast<std::uint8_t*>(deviceBase);
-            return reinterpret_cast<std::uint32_t*>(
-                base + capacity * sizeof(UcmHixlSendIoBatch));
+            return reinterpret_cast<std::uint32_t*>(base + capacity * sizeof(UcmHixlSendIoBatch));
         }
 
         void Reset()
@@ -731,18 +730,16 @@ struct AICPUTransProvider::Impl {
           ubSqDepth(ParseUint32(GetConfigAttr(configIn, {"aicpu_ub_sq_depth", "ub_sq_depth"}),
                                 kDefaultUbSqDepth)),
           qos(ParseUint32(GetConfigAttr(configIn, {"aicpu_qos", "qos"}), 0)),
-          sendTimeoutMs(ParseUint32(GetConfigAttr(configIn, {"aicpu_send_timeout_ms", "send_timeout_ms",
-                                                            "timeout"}),
-                                    kDefaultSendTimeoutMs)),
+          sendTimeoutMs(ParseUint32(
+              GetConfigAttr(configIn, {"aicpu_send_timeout_ms", "send_timeout_ms", "timeout"}),
+              kDefaultSendTimeoutMs)),
           channelName(GetConfigAttr(configIn, {"aicpu_channel_name", "channel_name"})),
           hixlKernelJsonPath(ResolveHixlKernelJsonPath(configIn)),
           stagedKato(ParseUint32(GetConfigAttr(configIn, {"aicpu_staged_kato", "staged_kato"}), 0)),
-          stagedRmUasid(ParseUint32(GetConfigAttr(configIn, {"aicpu_staged_rm_uasid",
-                                                             "staged_rm_uasid"}),
-                                    0)),
-          stagedMamiTag(ParseUint64(GetConfigAttr(configIn, {"aicpu_staged_mami_tag",
-                                                             "staged_mami_tag"}),
-                                    0))
+          stagedRmUasid(ParseUint32(
+              GetConfigAttr(configIn, {"aicpu_staged_rm_uasid", "staged_rm_uasid"}), 0)),
+          stagedMamiTag(
+              ParseUint64(GetConfigAttr(configIn, {"aicpu_staged_mami_tag", "staged_mami_tag"}), 0))
     {
         auto selection = ResolveLocalDevice(configIn);
         localDeviceId = selection.deviceId;
@@ -785,10 +782,9 @@ struct AICPUTransProvider::Impl {
                                    });
         if (byAddr != config.endpoints.end()) { return &*byAddr; }
 
-        byAddr = std::find_if(config.endpoints.begin(), config.endpoints.end(),
-                              [&](const NodeEndpoint& endpoint) {
-                                  return endpoint.ip == remoteIp;
-                              });
+        byAddr =
+            std::find_if(config.endpoints.begin(), config.endpoints.end(),
+                         [&](const NodeEndpoint& endpoint) { return endpoint.ip == remoteIp; });
         return byAddr == config.endpoints.end() ? nullptr : &*byAddr;
     }
 
@@ -798,11 +794,11 @@ struct AICPUTransProvider::Impl {
         const auto deviceRet = aclrtGetDevice(&currentDevice);
         if (deviceRet != ACL_SUCCESS || currentDevice < 0) {
             std::lock_guard<std::mutex> lock(mu);
-            KV_WARN("AICPUTransProvider: caller ACL device unavailable before "
-                    "CreateConnection ret={} device_id={}; keeping logical_device_id={} "
-                    "source={} and binding it explicitly",
-                    static_cast<int>(deviceRet), currentDevice, localDeviceId,
-                    deviceSelectionSource);
+            KV_WARN(
+                "AICPUTransProvider: caller ACL device unavailable before "
+                "CreateConnection ret={} device_id={}; keeping logical_device_id={} "
+                "source={} and binding it explicitly",
+                static_cast<int>(deviceRet), currentDevice, localDeviceId, deviceSelectionSource);
             if (endpoint == nullptr && connections.empty()) {
                 providerContext = nullptr;
                 deviceSelectionSource = "current_acl_create_connection_fallback";
@@ -813,10 +809,11 @@ struct AICPUTransProvider::Impl {
         aclrtContext currentContext = nullptr;
         const auto contextRet = aclrtGetCurrentContext(&currentContext);
         if (contextRet != ACL_SUCCESS) {
-            KV_WARN("AICPUTransProvider: cannot capture caller ACL context before "
-                    "CreateConnection logical_device_id={} ret={}; device binding will use "
-                    "aclrtSetDevice",
-                    currentDevice, static_cast<int>(contextRet));
+            KV_WARN(
+                "AICPUTransProvider: cannot capture caller ACL context before "
+                "CreateConnection logical_device_id={} ret={}; device binding will use "
+                "aclrtSetDevice",
+                currentDevice, static_cast<int>(contextRet));
             currentContext = nullptr;
         }
 
@@ -830,11 +827,12 @@ struct AICPUTransProvider::Impl {
             return Status::OK();
         }
 
-        KV_INFO("AICPUTransProvider: refreshed Provider ACL binding at CreateConnection "
-                "old_logical_device_id={} new_logical_device_id={} old_context={} "
-                "new_context={}",
-                localDeviceId, currentDevice, static_cast<const void*>(providerContext),
-                static_cast<const void*>(currentContext));
+        KV_INFO(
+            "AICPUTransProvider: refreshed Provider ACL binding at CreateConnection "
+            "old_logical_device_id={} new_logical_device_id={} old_context={} "
+            "new_context={}",
+            localDeviceId, currentDevice, static_cast<const void*>(providerContext),
+            static_cast<const void*>(currentContext));
         localDeviceId = static_cast<std::uint32_t>(currentDevice);
         providerContext = currentContext;
         deviceSelectionSource = "current_acl_create_connection";
@@ -845,9 +843,10 @@ struct AICPUTransProvider::Impl {
     {
         if (endpoint != nullptr) {
             if (endpointProtocol != protocol) {
-                KV_ERROR("AICPUTransProvider: mixed hcomm protocols are not supported "
-                         "existing_protocol={} requested_protocol={} endpoint_ip={}",
-                         CommProtocolName(endpointProtocol), CommProtocolName(protocol), endpointIp);
+                KV_ERROR(
+                    "AICPUTransProvider: mixed hcomm protocols are not supported "
+                    "existing_protocol={} requested_protocol={} endpoint_ip={}",
+                    CommProtocolName(endpointProtocol), CommProtocolName(protocol), endpointIp);
                 return Status::Error(StatusCode::INVALID_ARGUMENT,
                                      "AICPUTransProvider: mixed hcomm protocols are not supported");
             }
@@ -860,24 +859,28 @@ struct AICPUTransProvider::Impl {
             ResolveLocalEndpointAddress(config, localDeviceId, localIp, protocol);
         if (resolvedLocalIp.empty()) {
             const char* addressKind = protocol == COMM_PROTOCOL_UBG ? "UBG EID" : "UBC_CTP IP";
-            KV_ERROR("AICPUTransProvider: local {} is required for hcomm endpoint "
-                     "logical_device_id={}", addressKind, localDeviceId);
+            KV_ERROR(
+                "AICPUTransProvider: local {} is required for hcomm endpoint "
+                "logical_device_id={}",
+                addressKind, localDeviceId);
             return Status::Error(StatusCode::INVALID_ARGUMENT,
                                  std::string("AICPUTransProvider: local ") + addressKind +
                                      " is required for hcomm endpoint");
         }
 
-        KV_INFO("AICPUTransProvider: creating HCOMM endpoint local_addr={} address_source={} "
-                "logical_device_id={} device_source={} context={} protocol={}",
-                resolvedLocalIp, addressSource, localDeviceId, deviceSelectionSource,
-                static_cast<const void*>(providerContext), CommProtocolName(protocol));
+        KV_INFO(
+            "AICPUTransProvider: creating HCOMM endpoint local_addr={} address_source={} "
+            "logical_device_id={} device_source={} context={} protocol={}",
+            resolvedLocalIp, addressSource, localDeviceId, deviceSelectionSource,
+            static_cast<const void*>(providerContext), CommProtocolName(protocol));
         EndpointDesc localDesc{};
         auto status = BuildEndpointDesc(config, nullptr, resolvedLocalIp, localDeviceId, protocol,
                                         "local", localDesc);
         if (!status.ok()) {
-            KV_ERROR("AICPUTransProvider: local EndpointDesc build failed local_addr={} "
-                     "local_device_id={} protocol={} message={}",
-                     resolvedLocalIp, localDeviceId, CommProtocolName(protocol), status.message);
+            KV_ERROR(
+                "AICPUTransProvider: local EndpointDesc build failed local_addr={} "
+                "local_device_id={} protocol={} message={}",
+                resolvedLocalIp, localDeviceId, CommProtocolName(protocol), status.message);
             return status;
         }
 
@@ -888,9 +891,10 @@ struct AICPUTransProvider::Impl {
         endpoint = created;
         endpointIp = resolvedLocalIp;
         endpointProtocol = protocol;
-        KV_INFO("AICPUTransProvider: HCOMM endpoint created local_addr={} local_device_id={} "
-                "protocol={}",
-                endpointIp, localDeviceId, CommProtocolName(endpointProtocol));
+        KV_INFO(
+            "AICPUTransProvider: HCOMM endpoint created local_addr={} local_device_id={} "
+            "protocol={}",
+            endpointIp, localDeviceId, CommProtocolName(endpointProtocol));
         return Status::OK();
     }
 
@@ -898,9 +902,9 @@ struct AICPUTransProvider::Impl {
     Status EnsureAclDeviceBound(const char* stage)
     {
         if (localDeviceId > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
-            return Status::Error(StatusCode::INVALID_ARGUMENT,
-                                 "AICPUTransProvider: invalid local device id " +
-                                     std::to_string(localDeviceId));
+            return Status::Error(
+                StatusCode::INVALID_ARGUMENT,
+                "AICPUTransProvider: invalid local device id " + std::to_string(localDeviceId));
         }
 
         const auto deviceId = static_cast<std::int32_t>(localDeviceId);
@@ -926,10 +930,11 @@ struct AICPUTransProvider::Impl {
                     "AICPUTransProvider: captured ACL context resolved unexpected logical device " +
                         std::to_string(currentDevice) + " expected " + std::to_string(deviceId));
             }
-            KV_INFO("AICPUTransProvider: bound captured ACL context stage={} context={} "
-                    "logical_device_id={} previous_context={} aclrtGetCurrentContext_ret={}",
-                    stage, static_cast<const void*>(providerContext), deviceId,
-                    static_cast<const void*>(currentContext), static_cast<int>(getContextRet));
+            KV_INFO(
+                "AICPUTransProvider: bound captured ACL context stage={} context={} "
+                "logical_device_id={} previous_context={} aclrtGetCurrentContext_ret={}",
+                stage, static_cast<const void*>(providerContext), deviceId,
+                static_cast<const void*>(currentContext), static_cast<int>(getContextRet));
             return Status::OK();
         }
 
@@ -960,10 +965,10 @@ struct AICPUTransProvider::Impl {
                             setRet);
         }
 
-        KV_INFO("AICPUTransProvider: aclrtSetDevice bound logical_device_id={} stage={} "
-                "previous_device={} aclrtGetDevice_ret={} aclInit_ret={}",
-                deviceId, stage, currentDevice, static_cast<int>(getRet),
-                static_cast<int>(initRet));
+        KV_INFO(
+            "AICPUTransProvider: aclrtSetDevice bound logical_device_id={} stage={} "
+            "previous_device={} aclrtGetDevice_ret={} aclInit_ret={}",
+            deviceId, stage, currentDevice, static_cast<int>(getRet), static_cast<int>(initRet));
         readyDeviceId = deviceId;
         return Status::OK();
     }
@@ -974,24 +979,23 @@ struct AICPUTransProvider::Impl {
 
         HcommMemHandle memHandle = record.mem;
 #if UCM_ASU_AICPU_USE_STAGED_CHANNEL_API
-        KV_INFO("AICPUTransProvider: HcommChannelUpdateStagedLocalMemInfo begin "
-                "tag={} staged_mr_id={} channel={}",
-                record.tag, record.stagedMrId, connection.channel);
-        const auto ret =
-            HcommChannelUpdateStagedLocalMemInfo(&memHandle, 1U, connection.channel);
+        KV_INFO(
+            "AICPUTransProvider: HcommChannelUpdateStagedLocalMemInfo begin "
+            "tag={} staged_mr_id={} channel={}",
+            record.tag, record.stagedMrId, connection.channel);
+        const auto ret = HcommChannelUpdateStagedLocalMemInfo(&memHandle, 1U, connection.channel);
         constexpr const char* operation = "HcommChannelUpdateStagedLocalMemInfo";
 #else
-        KV_INFO("AICPUTransProvider: HcommChannelUpdateMemInfo begin tag={} channel={}",
-                record.tag, connection.channel);
+        KV_INFO("AICPUTransProvider: HcommChannelUpdateMemInfo begin tag={} channel={}", record.tag,
+                connection.channel);
         const auto ret = HcommChannelUpdateMemInfo(&memHandle, 1U, connection.channel);
         constexpr const char* operation = "HcommChannelUpdateMemInfo";
 #endif
         return ret == 0 ? Status::OK() : HcommConnectionError(operation, ret);
     }
 
-    Status PublishMemoryStaged(
-        MemoryRecord& record,
-        const std::vector<StagedPublishTarget>& additionalTargets = {})
+    Status PublishMemoryStaged(MemoryRecord& record,
+                               const std::vector<StagedPublishTarget>& additionalTargets = {})
     {
 #if !UCM_ASU_AICPU_USE_STAGED_CHANNEL_API
         // Standard Channel API mode assumes HCOMM owns peer MR exchange together with
@@ -1005,35 +1009,33 @@ struct AICPUTransProvider::Impl {
             std::lock_guard<std::mutex> lock(mu);
             for (auto* conn : connections) {
                 if (conn != nullptr) {
-                    targets.push_back(
-                        {conn->stagedOobHost, conn->stagedOobPort, conn->stagedInfo.clientId,
-                         conn->stagedInfo.controllerId});
+                    targets.push_back({conn->stagedOobHost, conn->stagedOobPort,
+                                       conn->stagedInfo.clientId, conn->stagedInfo.controllerId});
                 }
             }
         }
         targets.insert(targets.end(), additionalTargets.begin(), additionalTargets.end());
         std::sort(targets.begin(), targets.end());
         targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
-        targets.erase(
-            std::remove_if(targets.begin(), targets.end(),
-                           [&](const StagedPublishTarget& target) {
-                               return target.oobHost.empty() || target.oobPort == 0U ||
-                                      target.clientId == 0U || target.laneToken == 0U;
-                           }),
-            targets.end());
+        targets.erase(std::remove_if(targets.begin(), targets.end(),
+                                     [&](const StagedPublishTarget& target) {
+                                         return target.oobHost.empty() || target.oobPort == 0U ||
+                                                target.clientId == 0U || target.laneToken == 0U;
+                                     }),
+                      targets.end());
         if (targets.empty()) {
-            KV_DEBUG("AICPUTransProvider: defer staged MR publication tag={} until a "
-                     "connection target is available",
-                     record.tag);
+            KV_DEBUG(
+                "AICPUTransProvider: defer staged MR publication tag={} until a "
+                "connection target is available",
+                record.tag);
             return Status::OK();
         }
-        targets.erase(
-            std::remove_if(targets.begin(), targets.end(),
-                           [&](const StagedPublishTarget& target) {
-                               return record.stagedPublicationKeys.count(
-                                          StagedPublishTargetKey(target)) != 0U;
-                           }),
-            targets.end());
+        targets.erase(std::remove_if(targets.begin(), targets.end(),
+                                     [&](const StagedPublishTarget& target) {
+                                         return record.stagedPublicationKeys.count(
+                                                    StagedPublishTargetKey(target)) != 0U;
+                                     }),
+                      targets.end());
         if (targets.empty()) { return Status::OK(); }
 
         HcommStagedMrDesc mr{};
@@ -1041,11 +1043,11 @@ struct AICPUTransProvider::Impl {
         mr.mrId = record.stagedMrId;
 
         for (const auto& target : targets) {
-            KV_INFO("AICPUTransProvider: publishing staged MR tag={} mr_id={} original_addr={} "
-                    "transport_addr={} size={} oob={}:{} client_id={} lane_token={}",
-                    record.tag, record.stagedMrId, record.originalAddr, record.transportAddr,
-                    record.size, target.oobHost, target.oobPort, target.clientId,
-                    target.laneToken);
+            KV_INFO(
+                "AICPUTransProvider: publishing staged MR tag={} mr_id={} original_addr={} "
+                "transport_addr={} size={} oob={}:{} client_id={} lane_token={}",
+                record.tag, record.stagedMrId, record.originalAddr, record.transportAddr,
+                record.size, target.oobHost, target.oobPort, target.clientId, target.laneToken);
 
             HcommStagedMrPublishDesc publish{};
             const auto initRet = HcommStagedMrPublishDescInit(&publish, 1U);
@@ -1062,10 +1064,11 @@ struct AICPUTransProvider::Impl {
             if (ret != 0) { return HcommConnectionError("HcommMemPublishStaged", ret); }
             record.stagedPublicationKeys.insert(StagedPublishTargetKey(target));
         }
-        KV_INFO("AICPUTransProvider: staged MR published tag={} mr_id={} original_addr={} "
-                "transport_addr={} size={} token_id={} has_token={} client_count={}",
-                record.tag, record.stagedMrId, record.originalAddr, record.transportAddr,
-                record.size, record.tokenId, record.hasToken ? 1 : 0, targets.size());
+        KV_INFO(
+            "AICPUTransProvider: staged MR published tag={} mr_id={} original_addr={} "
+            "transport_addr={} size={} token_id={} has_token={} client_count={}",
+            record.tag, record.stagedMrId, record.originalAddr, record.transportAddr, record.size,
+            record.tokenId, record.hasToken ? 1 : 0, targets.size());
         return Status::OK();
 #endif
     }
@@ -1087,8 +1090,9 @@ struct AICPUTransProvider::Impl {
 
 #if UCM_ASU_AICPU_USE_STAGED_CHANNEL_API
         const std::vector<StagedPublishTarget> targets{
-            {connection.stagedOobHost, connection.stagedOobPort,
-             connection.stagedInfo.clientId, connection.stagedInfo.controllerId}};
+            {connection.stagedOobHost, connection.stagedOobPort, connection.stagedInfo.clientId,
+             connection.stagedInfo.controllerId}
+        };
         for (auto* record : records) {
             if (record == nullptr) { continue; }
             auto status = PublishMemoryStaged(*record, targets);
@@ -1119,28 +1123,29 @@ struct AICPUTransProvider::Impl {
             }
             ++iter->second.refCount;
             deviceAddr = iter->second.deviceAddr + offset;
-            KV_INFO("AICPUTransProvider: reused host mapping host_addr={} mapping_base={} "
-                    "device_addr={} mapping_size={} request_size={} ref_count={}",
-                    hostAddr, mappingBase, deviceAddr, iter->second.size, size,
-                    iter->second.refCount);
+            KV_INFO(
+                "AICPUTransProvider: reused host mapping host_addr={} mapping_base={} "
+                "device_addr={} mapping_size={} request_size={} ref_count={}",
+                hostAddr, mappingBase, deviceAddr, iter->second.size, size, iter->second.refCount);
             return Status::OK();
         }
 
         void* mapped = nullptr;
-        const auto mapStatus = runtime::RegisterHostBuffer(
-            reinterpret_cast<void*>(mappingBase), mappingSize, &mapped);
+        const auto mapStatus =
+            runtime::RegisterHostBuffer(reinterpret_cast<void*>(mappingBase), mappingSize, &mapped);
         if (!mapStatus.ok() || mapped == nullptr) {
-            return Status::Error(StatusCode::BUFFER_NOT_SUPPORTED,
-                                 "AICPUTransProvider: host mapping failed status=" +
-                                     mapStatus.message);
+            return Status::Error(
+                StatusCode::BUFFER_NOT_SUPPORTED,
+                "AICPUTransProvider: host mapping failed status=" + mapStatus.message);
         }
 
         const auto mappedBase = reinterpret_cast<std::uintptr_t>(mapped);
         deviceAddr = mappedBase + offset;
         hostMappings.emplace(mappingBase, HostMapping{mappingSize, mappedBase, 1});
-        KV_INFO("AICPUTransProvider: created host mapping host_addr={} mapping_base={} "
-                "mapped_base={} device_addr={} mapping_size={} request_size={} device_id={}",
-                hostAddr, mappingBase, mappedBase, deviceAddr, mappingSize, size, localDeviceId);
+        KV_INFO(
+            "AICPUTransProvider: created host mapping host_addr={} mapping_base={} "
+            "mapped_base={} device_addr={} mapping_size={} request_size={} device_id={}",
+            hostAddr, mappingBase, mappedBase, deviceAddr, mappingSize, size, localDeviceId);
         return Status::OK();
     }
 
@@ -1149,20 +1154,21 @@ struct AICPUTransProvider::Impl {
         std::lock_guard<std::mutex> lock(hostMappingMu);
         auto iter = hostMappings.find(mappingBase);
         if (iter == hostMappings.end()) {
-            KV_WARN("AICPUTransProvider: host mapping release missed mapping_base={}",
-                    mappingBase);
+            KV_WARN("AICPUTransProvider: host mapping release missed mapping_base={}", mappingBase);
             return;
         }
         if (--iter->second.refCount != 0) {
-            KV_INFO("AICPUTransProvider: retained host mapping mapping_base={} mapped_base={} "
-                    "ref_count={}",
-                    mappingBase, iter->second.deviceAddr, iter->second.refCount);
+            KV_INFO(
+                "AICPUTransProvider: retained host mapping mapping_base={} mapped_base={} "
+                "ref_count={}",
+                mappingBase, iter->second.deviceAddr, iter->second.refCount);
             return;
         }
         runtime::UnregisterHostBuffer(reinterpret_cast<void*>(mappingBase));
-        KV_INFO("AICPUTransProvider: released host mapping mapping_base={} mapped_base={} "
-                "mapping_size={}",
-                mappingBase, iter->second.deviceAddr, iter->second.size);
+        KV_INFO(
+            "AICPUTransProvider: released host mapping mapping_base={} mapped_base={} "
+            "mapping_size={}",
+            mappingBase, iter->second.deviceAddr, iter->second.size);
         hostMappings.erase(iter);
     }
 
@@ -1215,9 +1221,8 @@ struct AICPUTransProvider::Impl {
                                  "AICPUTransProvider: invalid mapped batch workspace capacity");
         }
 
-        std::size_t capacity = mappedBatchWorkspace.capacity == 0
-                                   ? requiredCapacity
-                                   : mappedBatchWorkspace.capacity;
+        std::size_t capacity =
+            mappedBatchWorkspace.capacity == 0 ? requiredCapacity : mappedBatchWorkspace.capacity;
         while (capacity < requiredCapacity) {
             if (capacity > kMaxSize / 2) {
                 capacity = requiredCapacity;
@@ -1243,10 +1248,11 @@ struct AICPUTransProvider::Impl {
         mappedBatchWorkspace.owner = std::move(owner);
         mappedBatchWorkspace.deviceBase = deviceBase;
         mappedBatchWorkspace.capacity = capacity;
-        KV_INFO("AICPUTransProvider: allocated mapped batch workspace host_addr={} device_addr={} "
-                "capacity={} bytes={}",
-                mappedBatchWorkspace.owner.get(), mappedBatchWorkspace.deviceBase, capacity,
-                capacity * kEntryBytes);
+        KV_INFO(
+            "AICPUTransProvider: allocated mapped batch workspace host_addr={} device_addr={} "
+            "capacity={} bytes={}",
+            mappedBatchWorkspace.owner.get(), mappedBatchWorkspace.deviceBase, capacity,
+            capacity * kEntryBytes);
         return Status::OK();
     }
 
@@ -1267,7 +1273,9 @@ struct AICPUTransProvider::Impl {
         }
 
         const auto getRet = aclrtBinaryGetFunction(hixlBin, kBatchSendKernelName, &func);
-        if (getRet != ACL_SUCCESS) { return AclError("aclrtBinaryGetFunction HixlBatchSend", getRet); }
+        if (getRet != ACL_SUCCESS) {
+            return AclError("aclrtBinaryGetFunction HixlBatchSend", getRet);
+        }
         return Status::OK();
     }
 
@@ -1299,10 +1307,12 @@ struct AICPUTransProvider::Impl {
                                      "AICPUTransProvider::Send: mixed AICPU threads in one batch "
                                      "are not supported by HixlBatchSend");
             }
-            batches.push_back(UcmHixlSendIoBatch{
-                conn->channel, io.sendBuffer, io.len, conn->immOverride, 0U});
-            KV_DEBUG("AICPUTransProvider: batch send entry channel={} thread={} addr={} len={} imm=0x{:x}",
-                     conn->channel, conn->thread, io.sendBuffer, io.len, conn->immOverride);
+            batches.push_back(
+                UcmHixlSendIoBatch{conn->channel, io.sendBuffer, io.len, conn->immOverride, 0U});
+            KV_DEBUG(
+                "AICPUTransProvider: batch send entry channel={} thread={} addr={} len={} "
+                "imm=0x{:x}",
+                conn->channel, conn->thread, io.sendBuffer, io.len, conn->immOverride);
         }
         if (thread == 0) {
             return Status::Error(StatusCode::CONNECTION_ERROR,
@@ -1350,18 +1360,17 @@ struct AICPUTransProvider::Impl {
         cfg.numAttrs = 1U;
         cfg.attrs = &attr;
         ret = aclrtLaunchKernelWithConfig(func, kKernelBlockDim, stream, &cfg, args, nullptr);
-        if (ret != ACL_SUCCESS) { return AclError("aclrtLaunchKernelWithConfig HixlBatchSend", ret); }
+        if (ret != ACL_SUCCESS) {
+            return AclError("aclrtLaunchKernelWithConfig HixlBatchSend", ret);
+        }
         ret = aclrtSynchronizeStreamWithTimeout(stream, MakeAclSyncTimeoutMs(sendTimeoutMs));
         if (ret != ACL_SUCCESS) {
             return AclError("aclrtSynchronizeStreamWithTimeout HixlBatchSend", ret);
         }
 
         std::atomic_thread_fence(std::memory_order_acquire);
-        auto* statuses = static_cast<volatile std::uint32_t*>(
-            mappedBatchWorkspace.HostStatuses());
-        for (std::size_t i = 0; i < hixlStatuses.size(); ++i) {
-            hixlStatuses[i] = statuses[i];
-        }
+        auto* statuses = static_cast<volatile std::uint32_t*>(mappedBatchWorkspace.HostStatuses());
+        for (std::size_t i = 0; i < hixlStatuses.size(); ++i) { hixlStatuses[i] = statuses[i]; }
         return Status::OK();
     }
 
@@ -1403,13 +1412,14 @@ struct AICPUTransProvider::Impl {
 AICPUTransProvider::AICPUTransProvider(const TransportConfig& config)
     : impl_(std::make_unique<Impl>(config))
 {
-    KV_INFO("AICPU_TRANSPORT_PROVIDER_SIGNATURE={} pid={} asu_id={} logical_device_id={} "
-            "device_source={} provider_context={} protocol=ubg channel_api={} "
-            "send_with_imm=1 complete_sender_cqe=1 publish_mrs=1 mapped_batch_io=1 "
-            "channel_name={}",
-            kProviderSignature, static_cast<long>(::getpid()), impl_->config.nodeId,
-            impl_->localDeviceId, impl_->deviceSelectionSource,
-            static_cast<const void*>(impl_->providerContext), kChannelApiMode, impl_->channelName);
+    KV_INFO(
+        "AICPU_TRANSPORT_PROVIDER_SIGNATURE={} pid={} asu_id={} logical_device_id={} "
+        "device_source={} provider_context={} protocol=ubg channel_api={} "
+        "send_with_imm=1 complete_sender_cqe=1 publish_mrs=1 mapped_batch_io=1 "
+        "channel_name={}",
+        kProviderSignature, static_cast<long>(::getpid()), impl_->config.nodeId,
+        impl_->localDeviceId, impl_->deviceSelectionSource,
+        static_cast<const void*>(impl_->providerContext), kChannelApiMode, impl_->channelName);
 }
 
 AICPUTransProvider::~AICPUTransProvider()
@@ -1434,8 +1444,8 @@ AICPUTransProvider::~AICPUTransProvider()
 }
 
 Status AICPUTransProvider::CreateConnection(const std::string& localIp, const std::string& remoteIp,
-                                       uint32_t port, uint32_t qpNum, uint32_t timeout,
-                                       std::vector<ConnectionHandle>& connectionHandles)
+                                            uint32_t port, uint32_t qpNum, uint32_t timeout,
+                                            std::vector<ConnectionHandle>& connectionHandles)
 {
     connectionHandles.clear();
     if (qpNum == 0) { return Status::OK(); }
@@ -1452,22 +1462,24 @@ Status AICPUTransProvider::CreateConnection(const std::string& localIp, const st
     status = ResolveProtocol(impl_->config, endpoint, protocol);
     if (!status.ok()) { return status; }
     const auto remoteDeviceId = ResolveRemoteDeviceId(endpoint, impl_->localDeviceId);
-    KV_INFO("AICPUTransProvider: CreateConnection start signature={} pid={} local_addr={} "
-            "remote_addr={} remote_port={} qp_num={} timeout_ms={} logical_device_id={} "
-            "device_source={} provider_context={} remote_device_id={} protocol={} "
-            "endpoint_matched={}",
-            kProviderSignature, static_cast<long>(::getpid()), localIp, remoteIp, port, qpNum,
-            timeout, impl_->localDeviceId, impl_->deviceSelectionSource,
-            static_cast<const void*>(impl_->providerContext), remoteDeviceId,
-            CommProtocolName(protocol), endpoint == nullptr ? 0 : 1);
+    KV_INFO(
+        "AICPUTransProvider: CreateConnection start signature={} pid={} local_addr={} "
+        "remote_addr={} remote_port={} qp_num={} timeout_ms={} logical_device_id={} "
+        "device_source={} provider_context={} remote_device_id={} protocol={} "
+        "endpoint_matched={}",
+        kProviderSignature, static_cast<long>(::getpid()), localIp, remoteIp, port, qpNum, timeout,
+        impl_->localDeviceId, impl_->deviceSelectionSource,
+        static_cast<const void*>(impl_->providerContext), remoteDeviceId,
+        CommProtocolName(protocol), endpoint == nullptr ? 0 : 1);
 
     EndpointDesc remoteDesc{};
     status = BuildEndpointDesc(impl_->config, endpoint, remoteIp, remoteDeviceId, protocol,
                                "remote", remoteDesc);
     if (!status.ok()) {
-        KV_ERROR("AICPUTransProvider: remote EndpointDesc build failed remote_addr={} "
-                 "remote_port={} remote_device_id={} protocol={} message={}",
-                 remoteIp, port, remoteDeviceId, CommProtocolName(protocol), status.message);
+        KV_ERROR(
+            "AICPUTransProvider: remote EndpointDesc build failed remote_addr={} "
+            "remote_port={} remote_device_id={} protocol={} message={}",
+            remoteIp, port, remoteDeviceId, CommProtocolName(protocol), status.message);
         return status;
     }
 
@@ -1475,9 +1487,10 @@ Status AICPUTransProvider::CreateConnection(const std::string& localIp, const st
         std::lock_guard<std::mutex> lock(impl_->mu);
         status = impl_->EnsureEndpointLocked(localIp, protocol);
         if (!status.ok()) {
-            KV_ERROR("AICPUTransProvider: EnsureEndpointLocked failed local_addr={} "
-                     "local_device_id={} protocol={} message={}",
-                     localIp, impl_->localDeviceId, CommProtocolName(protocol), status.message);
+            KV_ERROR(
+                "AICPUTransProvider: EnsureEndpointLocked failed local_addr={} "
+                "local_device_id={} protocol={} message={}",
+                localIp, impl_->localDeviceId, CommProtocolName(protocol), status.message);
             return status;
         }
     }
@@ -1488,23 +1501,26 @@ Status AICPUTransProvider::CreateConnection(const std::string& localIp, const st
     const std::string stagedOobHost = ResolveStagedOobHost(impl_->config, endpoint, remoteIp);
     const std::uint16_t stagedOobPort = ResolveStagedOobPort(impl_->config, endpoint, port);
     const std::uint32_t stagedClientId = ResolveStagedClientId(impl_->config, endpoint);
-    KV_INFO("AICPUTransProvider: CreateConnection resolved mode=staged_{} channel_api={} "
-            "staged_oob={}:{} staged_client_id={} notify_num={} ub_sq_depth={} qos={} "
-            "send_with_imm={} complete_sender_cqe={}",
-            CommProtocolName(protocol), kChannelApiMode, stagedOobHost, stagedOobPort,
-            stagedClientId, impl_->notifyNum, impl_->ubSqDepth, impl_->qos, 1, 0);
+    KV_INFO(
+        "AICPUTransProvider: CreateConnection resolved mode=staged_{} channel_api={} "
+        "staged_oob={}:{} staged_client_id={} notify_num={} ub_sq_depth={} qos={} "
+        "send_with_imm={} complete_sender_cqe={}",
+        CommProtocolName(protocol), kChannelApiMode, stagedOobHost, stagedOobPort, stagedClientId,
+        impl_->notifyNum, impl_->ubSqDepth, impl_->qos, 1, 0);
 #else
-    KV_INFO("AICPUTransProvider: CreateConnection resolved mode=staged_{} channel_api={} "
-            "notify_num={} ub_sq_depth={} qos={} send_with_imm={} complete_sender_cqe={}",
-            CommProtocolName(protocol), kChannelApiMode, impl_->notifyNum, impl_->ubSqDepth,
-            impl_->qos, 1, 0);
+    KV_INFO(
+        "AICPUTransProvider: CreateConnection resolved mode=staged_{} channel_api={} "
+        "notify_num={} ub_sq_depth={} qos={} send_with_imm={} complete_sender_cqe={}",
+        CommProtocolName(protocol), kChannelApiMode, impl_->notifyNum, impl_->ubSqDepth, impl_->qos,
+        1, 0);
 #endif
 
     for (std::uint32_t remaining = qpNum; remaining > 0; --remaining) {
         const std::uint32_t qpIndex = static_cast<std::uint32_t>(createdHandles.size());
-        KV_DEBUG("AICPUTransProvider: creating connection handle qp_index={} qp_num={} "
-                 "channel_api={}",
-                 qpIndex, qpNum, kChannelApiMode);
+        KV_DEBUG(
+            "AICPUTransProvider: creating connection handle qp_index={} qp_num={} "
+            "channel_api={}",
+            qpIndex, qpNum, kChannelApiMode);
         auto* record = new ConnectionRecord{};
         const std::uint32_t notify = impl_->notifyNum;
         const auto threadRet = HcommThreadAlloc(COMM_ENGINE_AICPU, 1U, &notify, &record->thread);
@@ -1520,9 +1536,10 @@ Status AICPUTransProvider::CreateConnection(const std::string& localIp, const st
             }
             const auto cleanupStatuses = DeleteConnections({record});
             if (cleanupStatuses.empty() || !cleanupStatuses.front().ok()) {
-                KV_WARN("AICPUTransProvider: retained partially initialized connection "
-                        "handle={} channel={} thread={} for later cleanup",
-                        static_cast<void*>(record), record->channel, record->thread);
+                KV_WARN(
+                    "AICPUTransProvider: retained partially initialized connection "
+                    "handle={} channel={} thread={} for later cleanup",
+                    static_cast<void*>(record), record->channel, record->thread);
             }
         };
 
@@ -1566,14 +1583,14 @@ Status AICPUTransProvider::CreateConnection(const std::string& localIp, const st
         stagedDesc.connMode = HCOMM_STAGED_CONN_MODE_RM;
         stagedDesc.rmUasid = impl_->stagedRmUasid;
         stagedDesc.mamiTag = impl_->stagedMamiTag;
-        KV_INFO("AICPUTransProvider: HcommChannelCreateStaged begin qp_index={} "
-                "oob={}:{} client_id={} timeout_ms={} rm_uasid={} "
-                "mami_tag={} channel_port={}",
-                qpIndex, stagedOobHost, stagedOobPort, stagedClientId, stagedDesc.timeoutMs,
-                stagedDesc.rmUasid, stagedDesc.mamiTag, desc.port);
-        const auto chanRet =
-            HcommChannelCreateStaged(hcommEndpoint, COMM_ENGINE_AICPU, &stagedDesc, 1U,
-                                     &record->channel);
+        KV_INFO(
+            "AICPUTransProvider: HcommChannelCreateStaged begin qp_index={} "
+            "oob={}:{} client_id={} timeout_ms={} rm_uasid={} "
+            "mami_tag={} channel_port={}",
+            qpIndex, stagedOobHost, stagedOobPort, stagedClientId, stagedDesc.timeoutMs,
+            stagedDesc.rmUasid, stagedDesc.mamiTag, desc.port);
+        const auto chanRet = HcommChannelCreateStaged(hcommEndpoint, COMM_ENGINE_AICPU, &stagedDesc,
+                                                      1U, &record->channel);
         if (chanRet != 0) {
             cleanupRecord();
             if (!createdHandles.empty()) { (void)DeleteConnections(createdHandles); }
@@ -1596,13 +1613,10 @@ Status AICPUTransProvider::CreateConnection(const std::string& localIp, const st
             return HcommConnectionError("HcommChannelGetStagedInfo", infoRet);
         }
         record->stagedInfo = stagedInfo;
-        if (record->stagedInfo.clientId == 0U) {
-            record->stagedInfo.clientId = stagedClientId;
-        }
+        if (record->stagedInfo.clientId == 0U) { record->stagedInfo.clientId = stagedClientId; }
 
         HcommStagedServerCapabilities hcommCapabilities{};
-        const auto capabilitiesInitRet =
-            HcommStagedServerCapabilitiesInit(&hcommCapabilities, 1U);
+        const auto capabilitiesInitRet = HcommStagedServerCapabilitiesInit(&hcommCapabilities, 1U);
         if (capabilitiesInitRet != 0) {
             cleanupRecord();
             if (!createdHandles.empty()) { (void)DeleteConnections(createdHandles); }
@@ -1617,8 +1631,7 @@ Status AICPUTransProvider::CreateConnection(const std::string& localIp, const st
         }
         record->serverCapabilities.queueNum = hcommCapabilities.queueNum;
         record->serverCapabilities.ioQueueDepth = hcommCapabilities.ioQueueDepth;
-        record->serverCapabilities.ioQueueKeyConcurrency =
-            hcommCapabilities.ioQueueKeyConcurrency;
+        record->serverCapabilities.ioQueueKeyConcurrency = hcommCapabilities.ioQueueKeyConcurrency;
         record->serverCapabilities.connectionKeyConcurrency =
             hcommCapabilities.connectionKeyConcurrency;
         record->serverCapabilities.singleValueMaxBytes = hcommCapabilities.singleValueMaxBytes;
@@ -1634,32 +1647,31 @@ Status AICPUTransProvider::CreateConnection(const std::string& localIp, const st
         record->immOverride = stagedInfo.sendImm;
         record->stagedOobHost = stagedOobHost;
         record->stagedOobPort = stagedOobPort;
-        KV_INFO("AICPUTransProvider: staged channel info qp_index={} controller_id={} "
-                "send_imm={} client_id={} configured_client_id={} remote_jetty_id={} "
-                "remote_token_value={}",
-                stagedInfo.qpIndex, stagedInfo.controllerId, stagedInfo.sendImm,
-                record->stagedInfo.clientId, stagedClientId, stagedInfo.remoteJettyId,
-                stagedInfo.remoteTokenValue);
-        KV_INFO("AICPUTransProvider: staged server capabilities qp_index={} queue_num={} "
-                "ioq_depth={} ioq_key_concurrency={} connection_key_concurrency={} "
-                "single_value_max_bytes={} batch_value_max_bytes={} batch_store_keys={} "
-                "batch_load_keys={} delete_keys={} query_keys={} key_length={} kv_capabilities=0x{:x}",
-                qpIndex, record->serverCapabilities.queueNum,
-                record->serverCapabilities.ioQueueDepth,
-                record->serverCapabilities.ioQueueKeyConcurrency,
-                record->serverCapabilities.connectionKeyConcurrency,
-                record->serverCapabilities.singleValueMaxBytes,
-                record->serverCapabilities.batchValueMaxBytes,
-                record->serverCapabilities.batchStoreKeys,
-                record->serverCapabilities.batchLoadKeys,
-                record->serverCapabilities.deleteKeys, record->serverCapabilities.queryKeys,
-                record->serverCapabilities.keyLength,
-                record->serverCapabilities.kvCapabilities);
+        KV_INFO(
+            "AICPUTransProvider: staged channel info qp_index={} controller_id={} "
+            "send_imm={} client_id={} configured_client_id={} remote_jetty_id={} "
+            "remote_token_value={}",
+            stagedInfo.qpIndex, stagedInfo.controllerId, stagedInfo.sendImm,
+            record->stagedInfo.clientId, stagedClientId, stagedInfo.remoteJettyId,
+            stagedInfo.remoteTokenValue);
+        KV_INFO(
+            "AICPUTransProvider: staged server capabilities qp_index={} queue_num={} "
+            "ioq_depth={} ioq_key_concurrency={} connection_key_concurrency={} "
+            "single_value_max_bytes={} batch_value_max_bytes={} batch_store_keys={} "
+            "batch_load_keys={} delete_keys={} query_keys={} key_length={} kv_capabilities=0x{:x}",
+            qpIndex, record->serverCapabilities.queueNum, record->serverCapabilities.ioQueueDepth,
+            record->serverCapabilities.ioQueueKeyConcurrency,
+            record->serverCapabilities.connectionKeyConcurrency,
+            record->serverCapabilities.singleValueMaxBytes,
+            record->serverCapabilities.batchValueMaxBytes,
+            record->serverCapabilities.batchStoreKeys, record->serverCapabilities.batchLoadKeys,
+            record->serverCapabilities.deleteKeys, record->serverCapabilities.queryKeys,
+            record->serverCapabilities.keyLength, record->serverCapabilities.kvCapabilities);
 #else
         // This mode is for the future standard HCOMM API after it owns the complete Staged URMA
         // negotiation contract. Until then it is not compatible with the current Staged Server.
-        KV_INFO("AICPUTransProvider: HcommChannelCreate begin qp_index={} channel_port={}",
-                qpIndex, desc.port);
+        KV_INFO("AICPUTransProvider: HcommChannelCreate begin qp_index={} channel_port={}", qpIndex,
+                desc.port);
         const auto chanRet =
             HcommChannelCreate(hcommEndpoint, COMM_ENGINE_AICPU, &desc, 1U, &record->channel);
         if (chanRet != 0) {
@@ -1676,9 +1688,10 @@ Status AICPUTransProvider::CreateConnection(const std::string& localIp, const st
         // Memory updates must not run against the context before that initialization.
         status = WaitForHcommChannelReady(record->channel, timeout, qpIndex);
         if (!status.ok()) {
-            KV_ERROR("AICPUTransProvider: HCOMM device channel initialization failed "
-                     "qp_index={} channel={} code={} message={}",
-                     qpIndex, record->channel, static_cast<int>(status.code), status.message);
+            KV_ERROR(
+                "AICPUTransProvider: HCOMM device channel initialization failed "
+                "qp_index={} channel={} code={} message={}",
+                qpIndex, record->channel, static_cast<int>(status.code), status.message);
             cleanupRecord();
             if (!createdHandles.empty()) { (void)DeleteConnections(createdHandles); }
             return status;
@@ -1686,9 +1699,10 @@ Status AICPUTransProvider::CreateConnection(const std::string& localIp, const st
 
         status = impl_->AttachExistingMemoriesToConnection(*record);
         if (!status.ok()) {
-            KV_ERROR("AICPUTransProvider: failed to attach existing memory to new channel "
-                     "qp_index={} channel={} code={} message={}",
-                     qpIndex, record->channel, static_cast<int>(status.code), status.message);
+            KV_ERROR(
+                "AICPUTransProvider: failed to attach existing memory to new channel "
+                "qp_index={} channel={} code={} message={}",
+                qpIndex, record->channel, static_cast<int>(status.code), status.message);
             cleanupRecord();
             if (!createdHandles.empty()) { (void)DeleteConnections(createdHandles); }
             return status;
@@ -1704,9 +1718,10 @@ Status AICPUTransProvider::CreateConnection(const std::string& localIp, const st
                 qpIndex, connectionHandles.size(), qpNum);
     }
 
-    KV_INFO("AICPUTransProvider: CreateConnection complete remote_addr={} remote_port={} "
-            "handles={}",
-            remoteIp, port, connectionHandles.size());
+    KV_INFO(
+        "AICPUTransProvider: CreateConnection complete remote_addr={} remote_port={} "
+        "handles={}",
+        remoteIp, port, connectionHandles.size());
     return Status::OK();
 }
 
@@ -1719,9 +1734,7 @@ std::vector<Status> AICPUTransProvider::DeleteConnections(
     AclContextScope contextScope("DeleteConnections");
     std::lock_guard<std::recursive_mutex> resourceLock(impl_->resourceMu);
     const auto deviceStatus = impl_->EnsureAclDeviceBound("DeleteConnections");
-    if (!deviceStatus.ok()) {
-        return std::vector<Status>(connectionHandles.size(), deviceStatus);
-    }
+    if (!deviceStatus.ok()) { return std::vector<Status>(connectionHandles.size(), deviceStatus); }
     for (std::size_t index = 0; index < connectionHandles.size(); ++index) {
         auto* record = ToConnectionRecord(connectionHandles[index]);
         {
@@ -1759,9 +1772,10 @@ std::vector<Status> AICPUTransProvider::DeleteConnections(
         } else {
             std::lock_guard<std::mutex> lock(impl_->mu);
             impl_->connections.insert(record);
-            KV_WARN("AICPUTransProvider: retained connection handle={} channel={} thread={} "
-                    "after delete failure for later cleanup",
-                    static_cast<void*>(record), record->channel, record->thread);
+            KV_WARN(
+                "AICPUTransProvider: retained connection handle={} channel={} thread={} "
+                "after delete failure for later cleanup",
+                static_cast<void*>(record), record->channel, record->thread);
         }
     }
     return results;
@@ -1786,7 +1800,7 @@ Status AICPUTransProvider::GetServerCapabilities(ConnectionHandle connectionHand
 }
 
 std::vector<Status> AICPUTransProvider::Send(const std::vector<SendIoBatch>& ioBatches,
-                                        uint32_t kernelCount, uint32_t quietCount)
+                                             uint32_t kernelCount, uint32_t quietCount)
 {
     (void)kernelCount;
     (void)quietCount;
@@ -1812,8 +1826,9 @@ std::vector<Status> AICPUTransProvider::Send(const std::vector<SendIoBatch>& ioB
             const auto& item = ioBatches[index];
             auto* conn = ToConnectionRecord(item.connectionHandle);
             if (conn == nullptr || impl_->connections.find(conn) == impl_->connections.end()) {
-                results[index] = Status::Error(StatusCode::INVALID_ARGUMENT,
-                                               "AICPUTransProvider::Send: invalid connection handle");
+                results[index] =
+                    Status::Error(StatusCode::INVALID_ARGUMENT,
+                                  "AICPUTransProvider::Send: invalid connection handle");
                 valid = false;
                 continue;
             }
@@ -1824,8 +1839,9 @@ std::vector<Status> AICPUTransProvider::Send(const std::vector<SendIoBatch>& ioB
                 continue;
             }
             if (conn->thread == 0U) {
-                results[index] = Status::Error(StatusCode::CONNECTION_ERROR,
-                                               "AICPUTransProvider::Send: Hcomm thread is not ready");
+                results[index] =
+                    Status::Error(StatusCode::CONNECTION_ERROR,
+                                  "AICPUTransProvider::Send: Hcomm thread is not ready");
                 valid = false;
                 continue;
             }
@@ -1844,8 +1860,8 @@ std::vector<Status> AICPUTransProvider::Send(const std::vector<SendIoBatch>& ioB
     if (!deviceStatus.ok()) { return std::vector<Status>(ioBatches.size(), deviceStatus); }
 
     for (const auto& group : groups) {
-        KV_DEBUG("AICPUTransProvider: launching HixlBatchSend thread={} entries={}",
-                 group.thread, group.batches.size());
+        KV_DEBUG("AICPUTransProvider: launching HixlBatchSend thread={} entries={}", group.thread,
+                 group.batches.size());
         std::vector<std::uint32_t> hixlStatuses;
         const auto launchStatus = impl_->LaunchBatchSendLocked(group.batches, hixlStatuses);
         if (!launchStatus.ok()) {
@@ -1855,9 +1871,8 @@ std::vector<Status> AICPUTransProvider::Send(const std::vector<SendIoBatch>& ioB
             continue;
         }
         if (hixlStatuses.size() != group.originalIndexes.size()) {
-            const auto status = Status::Error(
-                StatusCode::INTERNAL_ERROR,
-                "HixlBatchSend returned an unexpected status count");
+            const auto status = Status::Error(StatusCode::INTERNAL_ERROR,
+                                              "HixlBatchSend returned an unexpected status count");
             for (const auto originalIndex : group.originalIndexes) {
                 results[originalIndex] = status;
             }
@@ -1876,14 +1891,13 @@ std::vector<Status> AICPUTransProvider::Send(const std::vector<SendIoBatch>& ioB
 }
 
 Status AICPUTransProvider::RegisterMemory(const std::vector<RegisterMemoryDesc>& memoryDescs,
-                                     std::vector<MRHandle>& mrHandles)
+                                          std::vector<MRHandle>& mrHandles)
 {
-    return RegisterMemoryImpl(memoryDescs, RegistrationMode::REGISTER, "RegisterMemory",
-                              mrHandles);
+    return RegisterMemoryImpl(memoryDescs, RegistrationMode::REGISTER, "RegisterMemory", mrHandles);
 }
 
 Status AICPUTransProvider::BindMemory(const std::vector<BindMemoryDesc>& regions,
-                                 std::vector<MRHandle>& mrHandles)
+                                      std::vector<MRHandle>& mrHandles)
 {
     mrHandles.clear();
     std::vector<RegisterMemoryDesc> memoryDescs;
@@ -1892,9 +1906,10 @@ Status AICPUTransProvider::BindMemory(const std::vector<BindMemoryDesc>& regions
     expectedTokenIds.reserve(regions.size());
     for (const auto& region : regions) {
         if (region.memoryType != MemType::MEM_DEVICE) {
-            KV_ERROR("AICPUTransProvider: BindMemory rejected non-device memory addr={} size={} "
-                     "memory_type={}",
-                     region.addr, region.size, static_cast<int>(region.memoryType));
+            KV_ERROR(
+                "AICPUTransProvider: BindMemory rejected non-device memory addr={} size={} "
+                "memory_type={}",
+                region.addr, region.size, static_cast<int>(region.memoryType));
             return Status::Error(
                 StatusCode::BUFFER_NOT_SUPPORTED,
                 "AICPUTransProvider::BindMemory only supports ASCEND_DEVICE business memory");
@@ -1908,10 +1923,10 @@ Status AICPUTransProvider::BindMemory(const std::vector<BindMemoryDesc>& regions
                               &expectedTokenIds);
 }
 
-Status AICPUTransProvider::RegisterMemoryImpl(
-    const std::vector<RegisterMemoryDesc>& memoryDescs, RegistrationMode mode,
-    const char* operation, std::vector<MRHandle>& mrHandles,
-    const std::vector<std::uint32_t>* expectedTokenIds)
+Status AICPUTransProvider::RegisterMemoryImpl(const std::vector<RegisterMemoryDesc>& memoryDescs,
+                                              RegistrationMode mode, const char* operation,
+                                              std::vector<MRHandle>& mrHandles,
+                                              const std::vector<std::uint32_t>* expectedTokenIds)
 {
     mrHandles.clear();
     if (memoryDescs.empty()) { return Status::OK(); }
@@ -1948,8 +1963,7 @@ Status AICPUTransProvider::RegisterMemoryImpl(
                                  " failed to establish a local HCOMM endpoint");
     }
 
-    const char* registrationMode =
-        mode == RegistrationMode::REGISTER ? "register" : "bind";
+    const char* registrationMode = mode == RegistrationMode::REGISTER ? "register" : "bind";
     KV_INFO("AICPUTransProvider: {} begin registration_mode={} desc_count={}", operation,
             registrationMode, memoryDescs.size());
     std::vector<MRHandle> createdHandles;
@@ -1989,8 +2003,8 @@ Status AICPUTransProvider::RegisterMemoryImpl(
             const auto handle = impl_->InsertMemoryRecord(std::move(record));
             createdHandles.push_back(handle);
             mrHandles.push_back(handle);
-            KV_ERROR("AICPUTransProvider: retained mr_handle={} after rollback failure: {}",
-                     handle, releaseStatus.message);
+            KV_ERROR("AICPUTransProvider: retained mr_handle={} after rollback failure: {}", handle,
+                     releaseStatus.message);
         };
         {
             std::lock_guard<std::mutex> lock(impl_->mu);
@@ -2032,10 +2046,11 @@ Status AICPUTransProvider::RegisterMemoryImpl(
         const auto tokenRet = HcommMemGetTokenInfo(record->mem, &tokenInfo);
         if (tokenRet == 0) {
             if (tokenInfo.addr != record->transportAddr || tokenInfo.size != record->size) {
-                KV_ERROR("AICPUTransProvider: HCOMM token range mismatch tag={} "
-                         "transport_addr={} transport_size={} token_addr={} token_size={}",
-                         record->tag, record->transportAddr, record->size, tokenInfo.addr,
-                         tokenInfo.size);
+                KV_ERROR(
+                    "AICPUTransProvider: HCOMM token range mismatch tag={} "
+                    "transport_addr={} transport_size={} token_addr={} token_size={}",
+                    record->tag, record->transportAddr, record->size, tokenInfo.addr,
+                    tokenInfo.size);
                 releaseCurrent();
                 cleanupCreated();
                 return Status::Error(StatusCode::BUFFER_NOT_SUPPORTED,
@@ -2056,18 +2071,20 @@ Status AICPUTransProvider::RegisterMemoryImpl(
                 tokenInfo.tokenId, tokenInfo.tokenValue, tokenInfo.rkey, record->tokenId,
                 tokenInfo.addr, tokenInfo.size, record->hasToken ? 1 : 0);
         } else {
-            KV_WARN("AICPUTransProvider: HcommMemGetTokenInfo failed registration_mode={} tag={} "
-                    "hcomm_mem_handle={} ret={}",
-                    registrationMode, record->tag, record->mem, tokenRet);
+            KV_WARN(
+                "AICPUTransProvider: HcommMemGetTokenInfo failed registration_mode={} tag={} "
+                "hcomm_mem_handle={} ret={}",
+                registrationMode, record->tag, record->mem, tokenRet);
         }
 
         if (expectedTokenIds != nullptr) {
             const auto expectedToken = (*expectedTokenIds)[createdHandles.size()];
             if (!record->hasToken || record->tokenId != expectedToken) {
-                KV_ERROR("AICPUTransProvider: {} token mismatch registration_mode={} tag={} "
-                         "expected={} actual={} has_token={}",
-                         operation, registrationMode, record->tag, expectedToken,
-                         record->tokenId, record->hasToken ? 1 : 0);
+                KV_ERROR(
+                    "AICPUTransProvider: {} token mismatch registration_mode={} tag={} "
+                    "expected={} actual={} has_token={}",
+                    operation, registrationMode, record->tag, expectedToken, record->tokenId,
+                    record->hasToken ? 1 : 0);
                 releaseCurrent();
                 cleanupCreated();
                 return Status::Error(StatusCode::BUFFER_NOT_SUPPORTED,
@@ -2102,10 +2119,11 @@ Status AICPUTransProvider::RegisterMemoryImpl(
         const auto handle = impl_->InsertMemoryRecord(std::move(record));
         createdHandles.push_back(handle);
         mrHandles.push_back(handle);
-        KV_INFO("AICPUTransProvider: {} record ready registration_mode={} mr_handle={} "
-                "hcomm_mem_handle={} handles={}/{}",
-                operation, registrationMode, handle, hcommMemHandle, mrHandles.size(),
-                memoryDescs.size());
+        KV_INFO(
+            "AICPUTransProvider: {} record ready registration_mode={} mr_handle={} "
+            "hcomm_mem_handle={} handles={}/{}",
+            operation, registrationMode, handle, hcommMemHandle, mrHandles.size(),
+            memoryDescs.size());
     }
 
     KV_INFO("AICPUTransProvider: {} complete registration_mode={} handles={}", operation,
