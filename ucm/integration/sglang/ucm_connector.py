@@ -176,7 +176,7 @@ class SglangUcmConnector:
                 ucm_store_config.config,
                 ucm_store_config.module_path,
             )
-        return cls(
+        connector = cls(
             store,
             mem_pool_host,
             storage_config,
