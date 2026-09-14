@@ -51,7 +51,7 @@ def same_clock(proof):
 
 
 def summarize(rows, cross_process=False):
-    jobs, associations, stages, joint_loads = {}, {}, [], []
+    jobs, associations, stages, joint_loads, dispatches = {}, {}, [], [], []
     seen = set()
     for row in rows:
         # A source may contain both live and final snapshots of the same line.
@@ -84,12 +84,15 @@ def summarize(rows, cross_process=False):
 
     unmatched = []
     for row in stages:
+        if row["stage"] == "load_dispatch":
+            dispatches.append(row)  # actual native Get count, by PID/task
+            continue
         if row["stage"] == "load_handles":
             handles = row.get("load_reservations", "").split(",")
             members = [associations[(row.get("pid"), handle)] for handle in handles
                        if (row.get("pid"), handle) in associations]
             joint_loads.append(dict(row, members=members,
-                                    native_get_fallback_shards=int(row["shards"]) - int(row["handles"])))
+                                    unprepared_shards=int(row["shards"]) - int(row["handles"])))
             continue
         member = associations.get((row.get("pid"), row.get("reservation")))
         if member is None:
@@ -127,7 +130,8 @@ def summarize(rows, cross_process=False):
             # uninterrupted I/O interval between a batch's first/last transfer.
             rank["first_io_lead_over_reserve_done_ms"] = max(0, (max(last_reserve) - min(first_io)) / 1e6) if first_io and last_reserve else None
     return dict(cross_process_clock_verified=cross_process, jobs=jobs,
-                joint_loads=joint_loads, unmatched_stages=unmatched)
+                joint_loads=joint_loads, native_load_dispatches=dispatches,
+                unmatched_stages=unmatched)
 
 
 def main():

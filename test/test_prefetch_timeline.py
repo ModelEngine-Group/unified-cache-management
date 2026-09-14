@@ -37,12 +37,14 @@ def test_joint_handoff_is_not_counted_once_per_consumer_and_missing_records_stay
 UCM_EARLY batch_reserved key=A rank=0 batch=0 reservation=1 pid=10
 UCM_EARLY batch_reserved key=B rank=0 batch=0 reservation=2 pid=10
 UCM_EARLY stage=load_handles reservation=0 load_reservations=1,2 shards=78 handles=77 [10,10]
+UCM_EARLY stage=load_dispatch task=3 shards=78 native_get_fallback=1 [10,12]
 UCM_EARLY stage=reserve reservation=1 pin_ms=3 [12,12]
 """)
     report = summarize(rows)
     assert len(report["joint_loads"]) == 1
     assert len(report["joint_loads"][0]["members"]) == 2
-    assert report["joint_loads"][0]["native_get_fallback_shards"] == 1
+    assert report["joint_loads"][0]["unprepared_shards"] == 1
+    assert report["native_load_dispatches"][0]["native_get_fallback"] == "1"
     assert len(report["unmatched_stages"]) == 1
     assert elapsed(None, 4) is None
     assert elapsed(5, 4) is None
