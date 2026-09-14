@@ -403,6 +403,18 @@ class FakeProxy:
         self.lookup_calls.append(tuple(keys))
         return [key in self.present for key in keys]
 
+    def lookup_on_prefix(self, keys):
+        for index, key in enumerate(keys):
+            if key not in self.present:
+                return index - 1
+        return len(keys) - 1
+
+    def lookup_on_reverse(self, keys):
+        for index in range(len(keys) - 1, -1, -1):
+            if keys[index] in self.present:
+                return index
+        return -1
+
     def load(self, block_ids, offsets, ptrs, sizes):
         self.load_calls.append((block_ids, offsets, ptrs, sizes))
 
@@ -432,6 +444,18 @@ class InMemoryByteProxy(FakeProxy):
 
     def lookup(self, keys):
         return [key in self.records for key in keys]
+
+    def lookup_on_prefix(self, keys):
+        for index, key in enumerate(keys):
+            if key not in self.records:
+                return index - 1
+        return len(keys) - 1
+
+    def lookup_on_reverse(self, keys):
+        for index in range(len(keys) - 1, -1, -1):
+            if keys[index] in self.records:
+                return index
+        return -1
 
     def dump(self, block_ids, offsets, ptrs, sizes):
         pending = {}
@@ -848,7 +872,39 @@ class HashAndLookupTest(unittest.TestCase):
             "e60666fdcd359c82d9a369fc06bb3270",
         )
 
-    def test_custom_chunk_selects_h3_h7_from_base_chain(self):
+    def test_key_tag_bit_layout(self):
+        from ucm.integration.vllm.v2.ucm_scheduler import _key_tag
+
+        # type(2) group(2) tp_rank(5) pp_rank(4) reserved(3), big-endian.
+        self.assertEqual(_key_tag("FA"), b"\x00\x00")
+        self.assertEqual(_key_tag("WA"), b"\x40\x00")
+        self.assertEqual(_key_tag("State"), b"\x80\x00")
+        self.assertEqual(_key_tag("FA", tp_rank=1), b"\x00\x80")
+        self.assertEqual(_key_tag("FA", pp_rank=1), b"\x00\x08")
+        self.assertEqual(_key_tag("WA", tp_rank=31, pp_rank=15), b"\x4f\xf8")
+
+    def test_chain_keys_share_one_chain_and_differ_only_by_tag(self):
+        parsed = parse_kv_cache_config(
+            config(
+                group(["model.layers.0.attn"], FullAttentionSpec(128)),
+                group(["model.layers.1.mixer"], MambaSpec(128)),
+            ),
+            scheduler_block_size=128,
+        )
+        coordinator = UCMLookupCoordinator(
+            parsed, UCMProxyAdapter(FakeProxy()), self.hasher, b"seed"
+        )
+        request = FakeRequest("r", 512)
+        values = coordinator._chain(request.all_token_ids, 128, b"seed")
+        fa_keys, state_keys = coordinator._chain_keys(request.all_token_ids)
+
+        self.assertEqual(fa_keys[0][:14], values[0][:14])
+        self.assertEqual(state_keys[0][:14], values[0][:14])
+        self.assertEqual(fa_keys[0][14:], b"\x00\x00")
+        self.assertEqual(state_keys[0][14:], b"\x80\x00")
+        self.assertNotEqual(fa_keys[0], state_keys[0])
+
+    def test_custom_cache_block_chains_at_the_cache_block(self):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
             scheduler_block_size=128,
@@ -859,12 +915,12 @@ class HashAndLookupTest(unittest.TestCase):
             parsed, UCMProxyAdapter(proxy), self.hasher, b"seed", recompute_tokens=0
         )
         request = FakeRequest("r", 1024)
-        base_chain = coordinator._chain(request.all_token_ids, 128, b"seed")
-        proxy.present.update((base_chain[3], base_chain[7]))
+        (keys,) = coordinator._chain_keys(request.all_token_ids)
+        proxy.present.update(keys)
 
         result = coordinator.lookup(request, 0)
 
-        self.assertEqual(result.group_ucm_block_ids[0], (base_chain[3], base_chain[7]))
+        self.assertEqual(result.group_ucm_block_ids[0], keys)
         self.assertEqual(result.external_hit_tokens, 1024)
 
     def test_direct_prefix_stops_at_first_miss(self):
@@ -877,7 +933,7 @@ class HashAndLookupTest(unittest.TestCase):
             parsed, UCMProxyAdapter(proxy), self.hasher, b"seed", recompute_tokens=0
         )
         request = FakeRequest("r", 512)
-        keys = coordinator._legacy_attention_keys(request.all_token_ids)
+        (keys,) = coordinator._chain_keys(request.all_token_ids)
         proxy.present.update((keys[0], keys[2], keys[3]))
 
         result = coordinator.lookup(request, 0)
@@ -913,9 +969,8 @@ class HashAndLookupTest(unittest.TestCase):
             parsed, UCMProxyAdapter(proxy), self.hasher, b"seed"
         )
         request = FakeRequest("r", 512)
-        proxy.present.update(
-            coordinator._legacy_attention_keys(request.all_token_ids)
-        )
+        (keys,) = coordinator._chain_keys(request.all_token_ids)
+        proxy.present.update(keys)
 
         result = coordinator.lookup(request, 0)
 
@@ -935,14 +990,9 @@ class HashAndLookupTest(unittest.TestCase):
             parsed, UCMProxyAdapter(proxy), self.hasher, b"seed", recompute_tokens=0
         )
         request = FakeRequest("r", 1024)
-        fa_keys = coordinator._chain(
-            request.all_token_ids, 128, coordinator.hasher(b"FA_Block")
-        )
+        fa_keys, state_keys = coordinator._chain_keys(request.all_token_ids)
         proxy.present.update(fa_keys)
-        state_512 = coordinator._chain(
-            request.all_token_ids, 128, coordinator.hasher(b"State_Block")
-        )[3]
-        proxy.present.add(state_512)
+        proxy.present.add(state_keys[3])
 
         result = coordinator.lookup(request, 0)
 
@@ -962,12 +1012,7 @@ class HashAndLookupTest(unittest.TestCase):
             parsed, UCMProxyAdapter(proxy), self.hasher, b"seed"
         )
         request = FakeRequest("r", 1024)
-        fa_keys = coordinator._chain(
-            request.all_token_ids, 128, coordinator.hasher(b"FA_Block")
-        )
-        state_keys = coordinator._chain(
-            request.all_token_ids, 128, coordinator.hasher(b"State_Block")
-        )
+        fa_keys, state_keys = coordinator._chain_keys(request.all_token_ids)
         proxy.present.update((*fa_keys, *state_keys))
 
         result = coordinator.lookup(request, 0)
@@ -1014,12 +1059,7 @@ class HashAndLookupTest(unittest.TestCase):
             parsed, UCMProxyAdapter(proxy), self.hasher, b"seed", recompute_tokens=0
         )
         request = FakeRequest("r", 1536)
-        fa_keys = coordinator._chain(
-            request.all_token_ids, 512, self.hasher(b"FA_Block")
-        )
-        wa_keys = coordinator._chain(
-            request.all_token_ids, 512, self.hasher(b"WA_Block")
-        )
+        fa_keys, wa_keys = coordinator._chain_keys(request.all_token_ids)
         proxy.present.update(fa_keys)
         proxy.present.add(wa_keys[1])
 
@@ -1045,12 +1085,7 @@ class HashAndLookupTest(unittest.TestCase):
             parsed, UCMProxyAdapter(proxy), self.hasher, b"seed"
         )
         request = FakeRequest("r", 1536)
-        fa_keys = coordinator._chain(
-            request.all_token_ids, 512, self.hasher(b"FA_Block")
-        )
-        wa_keys = coordinator._chain(
-            request.all_token_ids, 512, self.hasher(b"WA_Block")
-        )
+        fa_keys, wa_keys = coordinator._chain_keys(request.all_token_ids)
         proxy.present.update((*fa_keys, *wa_keys))
 
         result = coordinator.lookup(request, 0)
@@ -1124,6 +1159,27 @@ class ProxyAdapterTest(unittest.TestCase):
         with self.assertRaises(UCMProxyError) as caught:
             UCMProxyAdapter(BrokenProxy()).lookup([b"x" * 16])
         self.assertIsInstance(caught.exception.__cause__, OSError)
+
+    def test_file_proxy_prefix_and_reverse_scans(self):
+        keys = [bytes([index]) * 16 for index in range(5)]
+        with tempfile.TemporaryDirectory() as directory:
+            proxy = SimpleFileUCMProxy(directory)
+            for key in (keys[0], keys[1], keys[3]):
+                (Path(directory) / f"{key.hex()}{proxy._SUFFIX}").write_bytes(b"x")
+            adapter = UCMProxyAdapter(proxy)
+
+            self.assertEqual(adapter.lookup_on_prefix(keys), 1)
+            self.assertEqual(adapter.lookup_on_reverse(keys), 3)
+            self.assertEqual(adapter.lookup_on_prefix(keys[2:]), -1)
+            self.assertEqual(adapter.lookup_on_reverse((keys[4],)), -1)
+
+    def test_scan_rejects_out_of_range_results(self):
+        class BadScanProxy(FakeProxy):
+            def lookup_on_prefix(self, keys):
+                return len(keys)
+
+        with self.assertRaisesRegex(UCMProxyError, "lookup_on_prefix"):
+            UCMProxyAdapter(BadScanProxy()).lookup_on_prefix((b"x" * 16,))
 
     def test_waits_for_async_load_and_dump_tasks(self):
         class AsyncProxy(FakeProxy):

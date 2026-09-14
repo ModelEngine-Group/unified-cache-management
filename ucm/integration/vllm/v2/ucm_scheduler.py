@@ -112,6 +112,26 @@ def _token_ids(request: "Request") -> tuple[int, ...]:
     return tuple(int(value) for value in values)
 
 
+_KEY_TYPE_BITS: Mapping[str, int] = {"FA": 0, "WA": 1, "State": 2}
+
+
+def _key_tag(chain: str, tp_rank: int = 0, pp_rank: int = 0) -> bytes:
+    """The 2-byte suffix of a UCM key, big-endian bit layout:
+
+    type(2) group(2) tp_rank(5) pp_rank(4) reserved(3).  Every group of a
+    chain shares one record, so no group bits are set today; the layout
+    keeps them for a future per-group split.  Ranks default to the
+    logical rank-0 key namespace the scheduler hashes in.
+    """
+
+    value = (
+        (_KEY_TYPE_BITS[chain] << 14)
+        | ((tp_rank & 0b11111) << 7)
+        | ((pp_rank & 0b1111) << 3)
+    )
+    return value.to_bytes(2, "big")
+
+
 class UCMLookupCoordinator:
     def __init__(
         self,
@@ -122,6 +142,8 @@ class UCMLookupCoordinator:
         *,
         load_threshold_tokens: int = 0,
         recompute_tokens: int = 1,
+        tp_rank: int = 0,
+        pp_rank: int = 0,
     ) -> None:
         self.spec = kv_cache_spec
         self.proxy = proxy
@@ -130,6 +152,9 @@ class UCMLookupCoordinator:
         self.load_threshold_tokens = max(int(load_threshold_tokens), 0)
         self.recompute_tokens = max(int(recompute_tokens), 0)
         self.chains = kv_cache_spec.dispatch_chains()
+        self._chain_tags = tuple(
+            (label, _key_tag(label, tp_rank, pp_rank)) for label, _ in self.chains
+        )
 
     def _chain(
         self, token_ids: Sequence[int], block_size: int, parent: bytes
@@ -143,21 +168,22 @@ class UCMLookupCoordinator:
             result.append(parent)
         return tuple(result)
 
-    def _legacy_attention_keys(
+    def _chain_keys(
         self, token_ids: Sequence[int]
-    ) -> tuple[bytes, ...]:
-        """Single-group chain at scheduler granularity, sampled per chunk.
+    ) -> tuple[tuple[bytes, ...], ...]:
+        """Per-chain keys: one shared hash chain, each chain's tag appended.
 
-        The historical key derivation for one-group models (GLM, MiniMax):
-        chain over scheduler blocks from the base seed, then take every
-        chunk-th entry as the cache-block keys.
+        The chain runs over hash_block_size token blocks from the base
+        seed; a key is the chain value's first 14 bytes plus the chain's
+        2-byte tag, so the FA and boundary keys at one boundary differ
+        only in their tag.
         """
 
-        base = self._chain(
-            token_ids, self.spec.scheduler_block_size, self.base_seed
+        values = self._chain(token_ids, self.spec.hash_block_size, self.base_seed)
+        return tuple(
+            tuple(value[:14] + tag for value in values)
+            for _label, tag in self._chain_tags
         )
-        multiple = self.spec.ucm_cache_block_size // self.spec.scheduler_block_size
-        return tuple(base[index] for index in range(multiple - 1, len(base), multiple))
 
     def _prefix_end(
         self,
@@ -166,32 +192,27 @@ class UCMLookupCoordinator:
         hbm_tokens: int,
         candidate_end: int,
     ) -> int:
+        """The FA prefix end, probed through the proxy's prefix scan.
+
+        The proxy scans the keys after the HBM boundary and stops at the
+        first miss.  A miss in the key that straddles an HBM-only prefix
+        means "no new external progress"; it must never reduce the
+        already computed HBM boundary to the previous key boundary.
+        """
+
         if candidate_end <= hbm_tokens:
             return hbm_tokens
         first = hbm_tokens // key_tokens
         last = candidate_end // key_tokens
-        candidates = tuple(keys[first:last])
-        if not candidates:
-            return hbm_tokens
-        hits = self.proxy.lookup(candidates)
-        count = 0
-        for hit in hits:
-            if not hit:
-                break
-            count += 1
-        # A miss in the key that straddles an HBM-only prefix means "no new
-        # external progress"; it must never reduce the already computed HBM
-        # boundary to the previous key boundary.
-        return min(max((first + count) * key_tokens, hbm_tokens), candidate_end)
+        hits = self.proxy.lookup_on_prefix(keys[first:last])
+        end = (first + hits + 1) * key_tokens if hits >= 0 else hbm_tokens
+        return min(max(end, hbm_tokens), candidate_end)
 
     def lookup(self, request: "Request", num_computed_tokens: int) -> UCMLookupResult:
         if num_computed_tokens < 0:
             raise ValueError("num_computed_tokens must not be negative")
         token_ids = _token_ids(request)
-        if len(self.spec.groups) == 1:
-            result = self._lookup_single(token_ids, num_computed_tokens)
-        else:
-            result = self._lookup_chained(token_ids, num_computed_tokens)
+        result = self._lookup(token_ids, num_computed_tokens)
         if result.external_hit_tokens <= self.load_threshold_tokens:
             return UCMLookupResult(0, num_computed_tokens, result.group_ucm_block_ids)
         return result
@@ -199,66 +220,63 @@ class UCMLookupCoordinator:
     def _cacheable_end(self, length: int, unit: int) -> int:
         return max(length - self.recompute_tokens, 0) // unit * unit
 
-    def _lookup_single(
+    def _lookup(
         self, token_ids: Sequence[int], hbm: int
     ) -> UCMLookupResult:
-        keys = self._legacy_attention_keys(token_ids)
-        unit = self.spec.ucm_cache_block_size
-        restore_end = self._prefix_end(keys, unit, hbm, len(token_ids))
-        visible_end = min(restore_end, max(len(token_ids) - self.recompute_tokens, 0))
-        return UCMLookupResult(max(visible_end - hbm, 0), restore_end, (keys,))
+        """FA prefix restore; WA/State additionally need their boundary.
 
-    def _lookup_chained(
-        self, token_ids: Sequence[int], hbm: int
-    ) -> UCMLookupResult:
-        """FA prefix plus the latest boundary where every WA/State key hits.
-
-        All chains work at ucm_cache_block_size. The FA chain is a
-        prefix requirement; the WA (window tail) and State (mamba
-        snapshot) chains are boundary records -- restoring requires a
-        complete FA prefix up to some boundary and that boundary's tail
-        or snapshot, so they are probed together, latest first.
+        All chains share one hash chain at hash_block_size, so every
+        chain has a key at the same boundaries.  The FA chain is a prefix
+        requirement; the WA (window tail) and State (mamba snapshot)
+        chains are boundary records -- restoring requires a complete FA
+        prefix up to some boundary and that boundary's tail or snapshot.
+        Each boundary chain is reverse-scanned to its latest hit; the
+        restore boundary is the earliest of those (the latest boundary
+        where every chain hits), never past the FA prefix.
         """
 
-        unit = self.spec.ucm_cache_block_size
-        keys_per_chain: list[tuple[bytes, ...]] = []
-        fa_keys: tuple[bytes, ...] = ()
-        for label, _groups in self.chains:
-            keys = self._chain(token_ids, unit, self.hasher(f"{label}_Block".encode()))
-            keys_per_chain.append(keys)
-            if label == "FA":
-                fa_keys = keys
-        boundary_chain_indexes = tuple(
-            index
-            for index, (label, _groups) in enumerate(self.chains)
-            if label in ("WA", "State")
+        unit = self.spec.hash_block_size
+        keys_per_chain = self._chain_keys(token_ids)
+        # A pure-FA restore may load the block the recompute margin sits
+        # in (its KV just gets overwritten); a boundary restore must stop
+        # one complete block earlier, leaving the margin's block to
+        # recompute against the restored boundary record.
+        has_boundary = any(label != "FA" for label, _tag in self._chain_tags)
+        candidate = (
+            self._cacheable_end(len(token_ids), unit)
+            if has_boundary
+            else len(token_ids)
         )
-        candidate = self._cacheable_end(len(token_ids), unit)
-        fa_end = self._prefix_end(fa_keys, unit, hbm, candidate)
+        fa_end = hbm
+        boundary_keys: list[tuple[bytes, ...]] = []
+        for (label, _tag), keys in zip(self._chain_tags, keys_per_chain):
+            if label == "FA":
+                fa_end = self._prefix_end(keys, unit, hbm, candidate)
+            else:
+                boundary_keys.append(keys)
         restore_end = fa_end
-        if boundary_chain_indexes:
-            # Restore only at a boundary where every WA/State chain hits --
-            # latest first, and never past the FA prefix.
+        if boundary_keys:
             restore_end = hbm
             first = max(math.ceil((hbm + 1) / unit), 1)
             last = fa_end // unit
             if last >= first:
-                indexes = tuple(range(first - 1, last))
-                lookup_keys: list[bytes] = []
-                for index in boundary_chain_indexes:
-                    lookup_keys.extend(keys_per_chain[index][i] for i in indexes)
-                hits = self.proxy.lookup(tuple(lookup_keys))
-                width = len(indexes)
-                for offset in reversed(range(width)):
-                    if all(
-                        hits[chain * width + offset]
-                        for chain in range(len(boundary_chain_indexes))
-                    ):
-                        restore_end = (indexes[offset] + 1) * unit
+                latest: int | None = None
+                for keys in boundary_keys:
+                    hit = self.proxy.lookup_on_reverse(keys[first - 1 : last])
+                    if hit < 0:
+                        latest = None
                         break
+                    boundary_index = first - 1 + hit
+                    latest = (
+                        boundary_index
+                        if latest is None
+                        else min(latest, boundary_index)
+                    )
+                if latest is not None:
+                    restore_end = (latest + 1) * unit
         visible_end = min(restore_end, max(len(token_ids) - self.recompute_tokens, 0))
         return UCMLookupResult(
-            max(visible_end - hbm, 0), restore_end, tuple(keys_per_chain)
+            max(visible_end - hbm, 0), restore_end, keys_per_chain
         )
 
 

@@ -93,12 +93,17 @@ class UCMKVCacheSpec:
     ``resolve_kv_cache_block_sizes`` reports for this engine -- the
     token-alignment invariant of the resident KV pool (single group:
     ``cache_config.block_size``; multiple groups: LCM).  ucm_cache_block_size
-    is the record/hash unit every chain works at.
+    is the record unit every chain works at; hash_block_size the key
+    granularity of the one shared hash chain -- today the same value (every
+    model's groups tile the cache block evenly), kept separate because a
+    model that breaks that tiling would key records at the cache block but
+    probe the FA prefix at the hash block.
     """
 
     groups: tuple[UCMKVCacheGroupInfo, ...]
     scheduler_block_size: int
     ucm_cache_block_size: int
+    hash_block_size: int
     device_type: str
 
     @property
@@ -510,6 +515,7 @@ def parse_kv_cache_config(
         groups=tuple(groups),
         scheduler_block_size=scheduler_block_size,
         ucm_cache_block_size=selected_block,
+        hash_block_size=selected_block,
         device_type=device_type,
     )
 

@@ -27,6 +27,10 @@ class UCMProxyError(RuntimeError):
 class UCMProxy(Protocol):
     def lookup(self, block_ids: Sequence[bytes]) -> Sequence[bool]: ...
 
+    def lookup_on_prefix(self, block_ids: Sequence[bytes]) -> int: ...
+
+    def lookup_on_reverse(self, block_ids: Sequence[bytes]) -> int: ...
+
     def load(
         self,
         block_ids: Sequence[bytes],
@@ -167,6 +171,22 @@ class SimpleFileUCMProxy:
     def lookup(self, block_ids: Sequence[bytes]) -> tuple[bool, ...]:
         return tuple(self._path(key).is_file() for key in block_ids)
 
+    def lookup_on_prefix(self, block_ids: Sequence[bytes]) -> int:
+        """Index of the last contiguous present key, -1 if none present."""
+
+        for index, key in enumerate(block_ids):
+            if not self._path(key).is_file():
+                return index - 1
+        return len(block_ids) - 1
+
+    def lookup_on_reverse(self, block_ids: Sequence[bytes]) -> int:
+        """Index of the rightmost present key, -1 if none present."""
+
+        for index in range(len(block_ids) - 1, -1, -1):
+            if self._path(block_ids[index]).is_file():
+                return index
+        return -1
+
     @staticmethod
     def _records(
         block_ids: Sequence[bytes],
@@ -296,6 +316,26 @@ class UCMProxyAdapter:
                 f"Proxy lookup returned {len(result)} results for {len(keys)} keys"
             )
         return result
+
+    def _scan(self, operation: str, block_ids: Sequence[bytes]) -> int:
+        keys = self._keys(block_ids)
+        try:
+            method = getattr(self._proxy, f"lookup_on_{operation}")
+            result = int(method(keys))
+        except Exception as exc:
+            raise UCMProxyError(f"Proxy lookup_on_{operation} failed") from exc
+        if not -1 <= result < len(keys):
+            raise UCMProxyError(
+                f"Proxy lookup_on_{operation} returned {result} "
+                f"for {len(keys)} keys"
+            )
+        return result
+
+    def lookup_on_prefix(self, block_ids: Sequence[bytes]) -> int:
+        return self._scan("prefix", block_ids)
+
+    def lookup_on_reverse(self, block_ids: Sequence[bytes]) -> int:
+        return self._scan("reverse", block_ids)
 
     def register_tensors(self, kv_caches: Mapping[str, KVCacheValue]) -> None:
         if isinstance(self._proxy, UCMProxyTensorRegistration):
