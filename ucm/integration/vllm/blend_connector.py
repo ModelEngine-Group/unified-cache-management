@@ -310,9 +310,9 @@ class UCMBlendConnector(UCMDirectConnector):
                 load_ucm_block_ids.extend(chunk_meta.hits_chunk_blks_hash)
                 load_vllm_block_ids.extend(chunk_meta.hits_vllm_blk_ids)
             return BlendRequestDispatchMeta(
-                (load_ucm_block_ids, load_vllm_block_ids),
-                (dump_ucm_block_ids, dump_vllm_block_ids),
-                req_meta.chunks_meta,
+                load_block_ids=(load_ucm_block_ids, load_vllm_block_ids),
+                dump_block_ids=(dump_ucm_block_ids, dump_vllm_block_ids),
+                chunks_meta=req_meta.chunks_meta,
             )
 
         # build cache stage
@@ -321,9 +321,9 @@ class UCMBlendConnector(UCMDirectConnector):
             vllm_block_ids[pc_hit_block_num : len(ucm_block_hashs)],
         )
         return BlendRequestDispatchMeta(
-            (load_ucm_block_ids, load_vllm_block_ids),
-            (dump_ucm_block_ids, dump_vllm_block_ids),
-            req_meta.chunks_meta,
+            load_block_ids=(load_ucm_block_ids, load_vllm_block_ids),
+            dump_block_ids=(dump_ucm_block_ids, dump_vllm_block_ids),
+            chunks_meta=req_meta.chunks_meta,
         )
 
     def _post_process_chunk_cache(self, k_cache, vllm_ids, positions) -> None:
