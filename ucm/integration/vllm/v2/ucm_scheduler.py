@@ -173,13 +173,15 @@ class UCMLookupCoordinator:
     ) -> tuple[tuple[bytes, ...], ...]:
         """Per-chain keys: one shared hash chain, each chain's tag appended.
 
-        The chain runs over hash_block_size token blocks from the base
-        seed; a key is the chain value's first 14 bytes plus the chain's
-        2-byte tag, so the FA and boundary keys at one boundary differ
-        only in their tag.
+        The chain runs over ucm_cache_block_size token blocks from the
+        base seed; a key is the chain value's first 14 bytes plus the
+        chain's 2-byte tag, so the FA and boundary keys at one boundary
+        differ only in their tag.
         """
 
-        values = self._chain(token_ids, self.spec.hash_block_size, self.base_seed)
+        values = self._chain(
+            token_ids, self.spec.ucm_cache_block_size, self.base_seed
+        )
         return tuple(
             tuple(value[:14] + tag for value in values)
             for _label, tag in self._chain_tags
@@ -225,7 +227,7 @@ class UCMLookupCoordinator:
     ) -> UCMLookupResult:
         """FA prefix restore; WA/State additionally need their boundary.
 
-        All chains share one hash chain at hash_block_size, so every
+        All chains share one hash chain at ucm_cache_block_size, so every
         chain has a key at the same boundaries.  The FA chain is a prefix
         requirement; the WA (window tail) and State (mamba snapshot)
         chains are boundary records -- restoring requires a complete FA
@@ -235,7 +237,7 @@ class UCMLookupCoordinator:
         where every chain hits), never past the FA prefix.
         """
 
-        unit = self.spec.hash_block_size
+        unit = self.spec.ucm_cache_block_size
         keys_per_chain = self._chain_keys(token_ids)
         # A pure-FA restore may load the block the recompute margin sits
         # in (its KV just gets overwritten); a boundary restore must stop

@@ -93,17 +93,15 @@ class UCMKVCacheSpec:
     ``resolve_kv_cache_block_sizes`` reports for this engine -- the
     token-alignment invariant of the resident KV pool (single group:
     ``cache_config.block_size``; multiple groups: LCM).  ucm_cache_block_size
-    is the record unit every chain works at; hash_block_size the key
-    granularity of the one shared hash chain -- today the same value (every
-    model's groups tile the cache block evenly), kept separate because a
-    model that breaks that tiling would key records at the cache block but
-    probe the FA prefix at the hash block.
+    is both the record unit and the shared hash chain's key granularity:
+    the smallest token_block_size across the full-attention groups
+    (token_block_size already folds compression), or the scheduler block
+    when the model has no full-attention group.
     """
 
     groups: tuple[UCMKVCacheGroupInfo, ...]
     scheduler_block_size: int
     ucm_cache_block_size: int
-    hash_block_size: int
     device_type: str
 
     @property
@@ -344,31 +342,18 @@ def parse_kv_cache_config(
             "custom ucm_cache_block_size is supported only for a single KV group"
         )
 
-    # ucm_cache_block_size defaults to a compressed group's token span: a
-    # group is compressed when any attention layer folds tokens
-    # (compress_ratio on 0.26 / tokens_per_state on 0.29).  With several
-    # compressed groups the finest ratio wins (DSV4: C4A 4 beats C128A
-    # 128); a ratio tie picks either group -- same-ratio groups normally
-    # share one token span anyway.
-    compressed: list[tuple[int, int]] = []  # (group ratio, token_block)
-    for raw_group, concrete, kinds in classified:
-        if KVCacheSpecKind.MAMBA in kinds or not kinds.isdisjoint(_SLIDING_KINDS):
-            continue
-        ratios = [_spec_tokens_per_state(spec) for _, spec in concrete]
-        if max(ratios, default=1) <= 1:
-            continue
-        representative = concrete[0][1] if concrete else raw_group.kv_cache_spec
-        block = int(getattr(representative, "block_size"))
-        ascend_ratio = getattr(representative, "compress_ratio", None)
-        token_block = block * int(ascend_ratio) if ascend_ratio else block
-        compressed.append((min(ratios), token_block))
-    has_compression = bool(compressed)
-    if has_compression:
-        canonical_size = min(compressed)[1]
-    else:
-        canonical_size = scheduler_block_size
+    # Compression detection drives only the per-layer ratio recovery in
+    # the group loop below (0.29's representative spec loses per-layer
+    # ratios); the cache block itself comes from the FA groups' token
+    # spans, which already fold compression.
+    has_compression = any(
+        max((_spec_tokens_per_state(spec) for _, spec in concrete), default=1) > 1
+        for _raw_group, concrete, kinds in classified
+        if KVCacheSpecKind.MAMBA not in kinds and kinds.isdisjoint(_SLIDING_KINDS)
+    )
 
     groups: list[UCMKVCacheGroupInfo] = []
+    fa_token_blocks: list[int] = []
     attention_tokens_per_state_by_layer: dict[int, int] = {}
     if has_compression:
         for _, concrete, kinds in classified:
@@ -398,6 +383,8 @@ def parse_kv_cache_config(
                 physical_block_size * int(ascend_ratio) if ascend_ratio
                 else physical_block_size
             )
+            if kinds.isdisjoint(_SLIDING_KINDS):
+                fa_token_blocks.append(token_block_size)
         layers: list[UCMLayerSpec] = []
         for index, (name, spec) in enumerate(concrete):
             # Normalize to the number of stored states one group block
@@ -485,15 +472,15 @@ def parse_kv_cache_config(
                 f"cache_config.block_size={scheduler_block_size}, got "
                 f"{mismatched_groups}"
             )
-    if has_compression:
-        selected_block = canonical_size
-    elif len(groups) == 1:
-        selected_block = ucm_cache_block_size or scheduler_block_size
+    if len(groups) == 1 and ucm_cache_block_size is not None:
+        selected_block = ucm_cache_block_size
         if selected_block < scheduler_block_size or selected_block % scheduler_block_size:
             raise ValueError(
                 "ucm_cache_block_size must be a positive multiple of "
                 "scheduler_block_size"
             )
+    elif fa_token_blocks:
+        selected_block = min(fa_token_blocks)
     else:
         selected_block = scheduler_block_size
 
@@ -515,7 +502,6 @@ def parse_kv_cache_config(
         groups=tuple(groups),
         scheduler_block_size=scheduler_block_size,
         ucm_cache_block_size=selected_block,
-        hash_block_size=selected_block,
         device_type=device_type,
     )
 
