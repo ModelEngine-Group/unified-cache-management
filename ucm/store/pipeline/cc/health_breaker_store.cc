@@ -202,7 +202,7 @@ void HealthBreakerStore::RecordHealth(bool healthy)
         }
     }
     if (oldEnabled != newEnabled) {
-        UC_WARN(
+        UC_WARN_UNLIMITED(
             "Store health breaker({}) transitioned to {}, window=[{}], samples={}, failures={}, "
             "threshold={}.",
             storeId_, newEnabled ? "HEALTHY" : "UNHEALTHY", healthWindow, sampleCount, failureCount,
