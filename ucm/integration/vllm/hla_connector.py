@@ -119,6 +119,11 @@ def participates_in_prefix_caching(spec: KVCacheSpec) -> bool:
             participates_in_prefix_caching(inner)
             for inner in spec.kv_cache_specs.values()
         )
+    if (
+        getattr(spec, "model_version", None) == "glm5_next"
+        and getattr(spec, "cache_role", None) == "indexer_state"
+    ):
+        return False
     return bool(getattr(spec, "participates_in_prefix_caching", True))
 
 
@@ -210,7 +215,7 @@ class KVCacheGroupManager:
             "kv_cache_config.kv_cache_groups."
         )
 
-        # Non-prefix groups (for example GLM-5.3 KpoolTail) have independent
+        # Non-prefix groups (for example GLM-5.3-Flash KpoolTail) have independent
         # lifetimes and must not constrain prefix-cache resume boundaries.
         cached_groups = self.full_attn_groups + self.state_groups
         all_block_sizes = [g.block_size for g in cached_groups]
@@ -535,11 +540,18 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         )
 
     def _has_glm53_shared_by_layout(self) -> bool:
-        """Detect GLM-5.3's transitional ``shared_by`` CUDA layout."""
+        """Detect GLM-5.3-Flash's transitional ``shared_by`` layout."""
         raw_tensors = self.kv_cache_config.kv_cache_tensors
-        if not current_platform.is_cuda_alike() or not raw_tensors:
+        if (
+            not (
+                current_platform.is_cuda_alike()
+                or current_platform.device_type == "npu"
+            )
+            or not raw_tensors
+        ):
             return False
-        if any(
+        is_npu = current_platform.device_type == "npu"
+        if not is_npu and any(
             not hasattr(raw_tensor, "shared_by")
             or int(getattr(raw_tensor, "offset", 0)) != 0
             or int(getattr(raw_tensor, "block_stride", 0)) != 0
@@ -558,7 +570,8 @@ class HybridLinearAttentionLayout(KVCacheLayout):
                 has_mamba = True
                 continue
             if isinstance(spec, UniformTypeKVCacheSpecs) and all(
-                type(inner) is MLAAttentionSpec
+                (isinstance(inner, MLAAttentionSpec) if is_npu
+                 else type(inner) is MLAAttentionSpec)
                 for inner in spec.kv_cache_specs.values()
             ):
                 ratios = [
@@ -568,6 +581,153 @@ class HybridLinearAttentionLayout(KVCacheLayout):
                 has_mla = any(ratio == 1 for ratio in ratios)
                 has_indexer = any(ratio > 1 for ratio in ratios)
         return has_mla and has_indexer and has_mamba
+
+    def _build_glm53_ascend_layout(self, kvcaches) -> None:
+        """Transfer live Ascend views with their own group block strides.
+
+        MLA and KDA alias component-major allocations, whereas the pooled
+        indexer has padded, block-major pages. Copying a raw allocation page
+        cannot describe both. Give each group its own columns and leave the
+        other columns null, as in the CUDA group layout. Rows are padded to
+        include standalone KDA layers as well as MLA/Indexer pairs.
+        """
+        descriptors = {
+            name: raw
+            for raw in self.kv_cache_config.kv_cache_tensors
+            for name in getattr(raw, "shared_by", getattr(raw, "layers", ()))
+        }
+        specs = layer_name_to_kv_cache_spec(self.kv_cache_config)
+        for raw in self.kv_cache_config.kv_cache_tensors:
+            names = getattr(raw, "shared_by", getattr(raw, "layers", ()))
+            stride = int(getattr(raw, "block_stride", 0))
+            if (
+                not names
+                or int(getattr(raw, "offset", 0)) != 0
+                or int(getattr(raw, "layer_stride", 0)) != 0
+                or (not hasattr(raw, "shared_by") and stride <= 0)
+                or (
+                    stride
+                    and (
+                        int(raw.size) != self.num_blocks * stride
+                        or any(
+                            specs[name][0].page_size_bytes != stride for name in names
+                        )
+                    )
+                )
+            ):
+                raise ValueError("Invalid Ascend GLM-5.3-Flash shared-slot descriptor.")
+        columns = []
+        self.layer_name_to_row = {}
+        # Group order describes allocation slots, not execution order. Load
+        # every row before the first KDA runs in the layerwise connector.
+        self.preload_all_rows = True
+        # A model-layer callback does not establish that every KDA/indexer
+        # view in this logical row has reached its final state. Keep row
+        # sharding, but take snapshots at the post-forward save boundary.
+        self.save_after_forward = True
+        for group_id, group in enumerate(self.kv_cache_config.kv_cache_groups):
+            if not participates_in_prefix_caching(group.kv_cache_spec):
+                continue
+            # Separate MLA from its compressed indexer within the same group.
+            families = defaultdict(list)
+            for name in group.layer_names:
+                spec = specs[name][0]
+                families[self._tokens_per_state(spec) > 1].append(name)
+            for names in families.values():
+                if not names:
+                    continue
+                rows = []
+                for row_id, name in enumerate(names):
+                    spec = specs[name][0]
+                    raw = descriptors[name]
+                    allocation_blocks, remainder = divmod(
+                        int(raw.size), spec.page_size_bytes
+                    )
+                    if remainder or allocation_blocks < self.num_blocks:
+                        raise ValueError(f"Invalid Ascend allocation for {name}.")
+                    value = kvcaches[name]
+                    tensors = (value,) if isinstance(value, torch.Tensor) else value
+                    if not isinstance(tensors, (list, tuple)) or not tensors:
+                        raise TypeError(f"Unsupported Ascend KV entry for {name}.")
+                    row = []
+                    for tensor in tensors:
+                        if not isinstance(tensor, torch.Tensor):
+                            raise TypeError(f"Unsupported Ascend KV component: {name}.")
+                        # A scheduler block can contain several kernel blocks.
+                        chunks, remainder = divmod(tensor.shape[0], allocation_blocks)
+                        inner_size = math.prod(tensor.shape[1:])
+                        expected_stride = 1
+                        for dim in range(tensor.dim() - 1, 0, -1):
+                            if (
+                                tensor.shape[dim] > 1
+                                and tensor.stride(dim) != expected_stride
+                            ):
+                                raise ValueError(
+                                    f"Non-contiguous Ascend KV block: {name}."
+                                )
+                            expected_stride *= tensor.shape[dim]
+                        if (
+                            remainder
+                            or chunks < 1
+                            or (chunks > 1 and tensor.stride(0) != inner_size)
+                        ):
+                            raise ValueError(
+                                f"Unsupported Ascend kernel block layout: {name}."
+                            )
+                        size = chunks * inner_size * tensor.element_size()
+                        stride = chunks * tensor.stride(0) * tensor.element_size()
+                        if size == 0:
+                            continue
+                        if stride < size:
+                            raise ValueError(f"Overlapping Ascend KV blocks: {name}.")
+                        row.append(
+                            KVCacheSegment(
+                                ptr=int(tensor.data_ptr()),
+                                copy_size=size,
+                                block_stride=stride,
+                                buffer_size=(self.num_blocks - 1) * stride + size,
+                            )
+                        )
+                    if not row:
+                        raise ValueError(f"Empty Ascend KV entry for {name}.")
+                    rows.append(row)
+                    self.layer_name_to_row[name] = row_id
+                sizes = [segment.copy_size for segment in rows[0]]
+                if any([segment.copy_size for segment in row] != sizes for row in rows):
+                    raise ValueError(
+                        "Ascend GLM-5.3-Flash cache family has unequal component sizes."
+                    )
+                columns.append((group_id, sizes, rows))
+
+        row_count = max(len(rows) for _, _, rows in columns)
+        width = sum(len(sizes) for _, sizes, _ in columns)
+        bases = [[0] * width for _ in range(row_count)]
+        buffers = [[0] * width for _ in range(row_count)]
+        strides = [[0] * width for _ in range(row_count)]
+        sizes = [size for _, family_sizes, _ in columns for size in family_sizes]
+        self.group_layouts = {}
+        offset = 0
+        for group_id, family_sizes, rows in columns:
+            group_bases, group_strides = self.group_layouts.setdefault(
+                group_id,
+                (
+                    np.zeros((row_count, width), dtype=np.uint64),
+                    np.zeros((row_count, width), dtype=np.uint64),
+                ),
+            )
+            for row_id, row in enumerate(rows):
+                for component, segment in enumerate(row, offset):
+                    bases[row_id][component] = segment.ptr
+                    buffers[row_id][component] = segment.buffer_size
+                    strides[row_id][component] = segment.block_stride
+                    group_bases[row_id, component] = segment.ptr
+                    group_strides[row_id, component] = segment.block_stride
+            offset += len(family_sizes)
+        self._finalize_layout_arrays(bases, buffers, [sizes] * row_count, strides)
+        self.group_layouts = {
+            group_id: (group_bases.reshape(-1), group_strides.reshape(-1))
+            for group_id, (group_bases, group_strides) in self.group_layouts.items()
+        }
 
     def _extract_group_addrs(
         self,
@@ -616,7 +776,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         if hasattr(self, "group_layouts"):
             if group_ids is None:
                 raise ValueError(
-                    "The GLM-5.3 hybrid layout requires a group id for "
+                    "The GLM-5.3-Flash hybrid layout requires a group id for "
                     "each vLLM block id."
                 )
             return self._extract_group_addrs(vllm_block_ids, group_ids)
@@ -640,7 +800,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         if hasattr(self, "group_layouts"):
             if group_ids is None:
                 raise ValueError(
-                    "The GLM-5.3 hybrid layout requires a group id for "
+                    "The GLM-5.3-Flash hybrid layout requires a group id for "
                     "each vLLM block id."
                 )
             return self._extract_group_addrs(
@@ -653,7 +813,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         )
 
     def _glm53_shared_by_segments(self, kvcaches) -> dict[str, KVCacheSegment]:
-        """Normalize image GLM-5.3 ``shared_by`` allocations into segments.
+        """Normalize image GLM-5.3-Flash ``shared_by`` allocations into segments.
 
         The transitional GLM image allocates one contiguous tensor per
         MLA/KDA slot and one per Indexer/Tail slot. Its descriptor stride is
@@ -667,7 +827,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
                 continue
             if int(raw_tensor.size) % self.num_blocks != 0:
                 raise ValueError(
-                    "Invalid legacy GLM-5.3 allocation size: "
+                    "Invalid legacy GLM-5.3-Flash allocation size: "
                     f"size={raw_tensor.size}, num_blocks={self.num_blocks}."
                 )
 
@@ -683,13 +843,13 @@ class HybridLinearAttentionLayout(KVCacheLayout):
                 )
                 if not tensors:
                     raise TypeError(
-                        "Unsupported legacy GLM-5.3 shared KV entry: "
+                        "Unsupported legacy GLM-5.3-Flash shared KV entry: "
                         f"layer={layer_name}, type={type(kv_layer)}."
                     )
                 for tensor in tensors:
                     if not isinstance(tensor, torch.Tensor):
                         raise TypeError(
-                            "GLM-5.3 shared_by KV component must be a tensor: "
+                            "GLM-5.3-Flash shared_by KV component must be a tensor: "
                             f"layer={layer_name}, type={type(tensor)}."
                         )
                     component_ptrs.append(int(tensor.data_ptr()))
@@ -699,7 +859,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
                         storage_ptrs.add(int(tensor.data_ptr()))
             if len(storage_ptrs) != 1:
                 raise ValueError(
-                    "GLM-5.3 shared_by layers do not alias one allocation: "
+                    "GLM-5.3-Flash shared_by layers do not alias one allocation: "
                     f"layers={shared_by}, storage_pointers={sorted(storage_ptrs)}."
                 )
 
@@ -707,7 +867,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             storage_end = storage_ptr + int(raw_tensor.size)
             if any(ptr < storage_ptr or ptr >= storage_end for ptr in component_ptrs):
                 raise ValueError(
-                    "GLM-5.3 shared_by KV component falls outside its allocation: "
+                    "GLM-5.3-Flash shared_by KV component falls outside its allocation: "
                     f"layers={shared_by}, allocation=[{storage_ptr}, {storage_end}), "
                     f"component_pointers={sorted(component_ptrs)}."
                 )
@@ -721,13 +881,13 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             for layer_name in shared_by:
                 if layer_name in segments:
                     raise ValueError(
-                        "Duplicate legacy GLM-5.3 tensor descriptor: " f"{layer_name}."
+                        "Duplicate legacy GLM-5.3-Flash tensor descriptor: " f"{layer_name}."
                     )
                 segments[layer_name] = segment
         return segments
 
-    def _build_glm53_shared_by_layout(self, kvcaches) -> None:
-        """Build the image GLM-5.3 [MLA/KDA, Indexer/ghost] rows."""
+    def _build_glm53_cuda_layout(self, kvcaches) -> None:
+        """Build the image GLM-5.3-Flash [MLA/KDA, Indexer/ghost] rows."""
         segments = self._glm53_shared_by_segments(kvcaches)
         attn_group = None
         mamba_groups: list[tuple[int, Any]] = []
@@ -744,18 +904,18 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             ):
                 if attn_group is not None:
                     raise ValueError(
-                        "GLM-5.3 shared_by layout has multiple MLA groups."
+                        "GLM-5.3-Flash shared_by layout has multiple MLA groups."
                     )
                 attn_group = (group_id, group)
             else:
                 raise ValueError(
-                    "Unsupported group in legacy GLM-5.3 HLA layout: "
+                    "Unsupported group in legacy GLM-5.3-Flash HLA layout: "
                     f"group_id={group_id}, spec={type(spec).__name__}."
                 )
 
         if attn_group is None or not mamba_groups:
             raise ValueError(
-                "GLM-5.3 shared_by HLA layout requires one MLA/Indexer group and "
+                "GLM-5.3-Flash shared_by HLA layout requires one MLA/Indexer group and "
                 "at least one mamba-align group."
             )
 
@@ -773,7 +933,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         ]
         if not mla_names or len(mla_names) != len(indexer_names):
             raise ValueError(
-                "GLM-5.3 shared_by HLA layout requires paired MLA and "
+                "GLM-5.3-Flash shared_by HLA layout requires paired MLA and "
                 f"Indexer layers, got mla={len(mla_names)}, "
                 f"indexer={len(indexer_names)}."
             )
@@ -793,7 +953,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
         indexer_sizes = {segments[name].copy_size for name in indexer_names}
         if len(mla_sizes) != 1 or len(indexer_sizes) != 1:
             raise ValueError(
-                "GLM-5.3 MLA and Indexer pages must each have a uniform size: "
+                "GLM-5.3-Flash MLA and Indexer pages must each have a uniform size: "
                 f"mla={sorted(mla_sizes)}, indexer={sorted(indexer_sizes)}."
             )
         mla_size = mla_sizes.pop()
@@ -817,7 +977,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             group_names = list(group.layer_names)
             if len(group_names) > row_count:
                 raise ValueError(
-                    "GLM-5.3 KDA group has more layers than physical MLA rows: "
+                    "GLM-5.3-Flash KDA group has more layers than physical MLA rows: "
                     f"group_id={group_id}, layers={len(group_names)}, "
                     f"rows={row_count}."
                 )
@@ -825,13 +985,13 @@ class HybridLinearAttentionLayout(KVCacheLayout):
                 segment = segments[layer_name]
                 if segment.copy_size != mla_size:
                     raise ValueError(
-                        "GLM-5.3 KDA page does not match its MLA slot: "
+                        "GLM-5.3-Flash KDA page does not match its MLA slot: "
                         f"group_id={group_id}, layer={layer_name}, "
                         f"kda_page={segment.copy_size}, mla_page={mla_size}."
                     )
                 if segment.ptr != segments[mla_names[row_id]].ptr:
                     raise ValueError(
-                        "GLM-5.3 KDA/MLA views do not alias the same physical "
+                        "GLM-5.3-Flash KDA/MLA views do not alias the same physical "
                         f"slot: group_id={group_id}, row={row_id}."
                     )
             bases = np.zeros_like(self.base_ptrs)
@@ -850,7 +1010,7 @@ class HybridLinearAttentionLayout(KVCacheLayout):
             )
 
         logger.info(
-            "GLM-5.3 shared_by image layout: rows=%s, mla_page=%s, "
+            "GLM-5.3-Flash shared_by image layout: rows=%s, mla_page=%s, "
             "indexer_page=%s, attention_group=%s, mamba_groups=%s, "
             "non_prefix_groups=%s",
             row_count,
@@ -1002,9 +1162,12 @@ class HybridLinearAttentionLayout(KVCacheLayout):
 
     def _build_layout(self, kvcaches):
         # TODO: Restore standardized vLLM KV-cache descriptor support after
-        # the upstream layout API and its GLM-5.3 representation stabilize.
+        # the upstream layout API and its GLM-5.3-Flash representation stabilize.
         if self._has_glm53_shared_by_layout():
-            self._build_glm53_shared_by_layout(kvcaches)
+            if current_platform.device_type == "npu":
+                self._build_glm53_ascend_layout(kvcaches)
+            else:
+                self._build_glm53_cuda_layout(kvcaches)
             return
 
         base_ptrs = []
@@ -2198,10 +2361,14 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
             # vLLM only calls wait_for_layer_load at full_attn (last layer of
             # each row), so row 0 must be loaded here before linear_attn begins.
             num_submit = min(self._load_prefetch_rows + 1, len(self.row_ids))
+            preload_all = getattr(self.kv_cache_layout, "preload_all_rows", False)
+            if preload_all:
+                num_submit = len(self.row_ids)
             for idx in range(num_submit):
                 self._submit_request_load_tasks_for_row_once(idx, metadata)
-            self._wait_row_load(0, metadata)
-            if len(self.row_ids) == 1:
+            for idx in range(num_submit if preload_all else 1):
+                self._wait_row_load(idx, metadata)
+            if preload_all or len(self.row_ids) == 1:
                 self._record_layerwise_load_bytes()
 
     def wait_for_layer_load(self, layer_name: str) -> None:
