@@ -89,10 +89,21 @@ class UnifiedCacheStoreConfig:
                 "Missing config: extra_config['kv_connector_extra_config']"
             )
 
-        page_size = mem_pool_host.page_size
-        page_bytes = page_size * mem_pool_host.get_size_per_token()
-        tensor_size = page_bytes if storage_config.is_mla_model else page_bytes // 2
-        block_size = tensor_size * (1 if storage_config.is_mla_model else 2)
+        is_logical_pool = getattr(mem_pool_host, "kv_buffer", None) is None
+        if is_logical_pool:
+            # DeepSeek V4 uses a LogicalHostPool as its KV anchor. It owns only
+            # allocation indices; physical data and sizes arrive later through
+            # register_mem_host_pool_v2(). These placeholders are never passed
+            # to a store factory and are overwritten by fixed_size_config().
+            tensor_size = 0
+            block_size = 0
+        else:
+            page_size = mem_pool_host.page_size
+            page_bytes = page_size * mem_pool_host.get_size_per_token()
+            tensor_size = (
+                page_bytes if storage_config.is_mla_model else page_bytes // 2
+            )
+            block_size = tensor_size * (1 if storage_config.is_mla_model else 2)
 
         ucm_cfg = kvc.get("ucm_connector_config")
         name = kvc.get("ucm_connector_name")
@@ -158,10 +169,14 @@ class SglangUcmConnector:
         ucm_store_config = UnifiedCacheStoreConfig.load_from_config(
             storage_config, mem_pool_host
         )
-        store = UcmConnectorFactoryV1.create_connector(
-            ucm_store_config.name, ucm_store_config.config, ucm_store_config.module_path
-        )
-        connector = cls(
+        store = None
+        if getattr(mem_pool_host, "kv_buffer", None) is not None:
+            store = UcmConnectorFactoryV1.create_connector(
+                ucm_store_config.name,
+                ucm_store_config.config,
+                ucm_store_config.module_path,
+            )
+        return cls(
             store,
             mem_pool_host,
             storage_config,

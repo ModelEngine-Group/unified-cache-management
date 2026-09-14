@@ -36,7 +36,7 @@ class UnifiedCacheStore(HiCacheStorage):
             self.register_mem_pool_host(context)
 
     def _ensure_initialized(self) -> SglangUcmConnector:
-        if self.connector is None or self.store is None or self.mem_pool_host is None:
+        if self.connector is None or self.mem_pool_host is None:
             raise RuntimeError(
                 "UnifiedCacheStore is not initialized yet. "
                 "SGLang should call register_mem_pool_host() before storage operations."
