@@ -404,9 +404,13 @@ class EarlyWorker:
                 for request_id, meta in metadata.request_meta.items()
                 if meta.load_block_ids[0]
             }
+            handles = []
             for job in self.jobs.values():
                 if job.key in loading and not job.cancelled:
                     job.loading = True
+                    if job.ready and job.reservation is not None:
+                        handles.append(job.reservation["handle"])
+            self.store.set_load_reservations(handles)
 
     def loaded(self, request_ids):
         with self.condition:

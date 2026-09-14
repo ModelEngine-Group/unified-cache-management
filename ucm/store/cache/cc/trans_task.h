@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <string>
 #include "status/status.h"
+#include "trans_buffer.h"
 #include "type/types.h"
 
 namespace UC::CacheStore {
@@ -40,6 +41,7 @@ public:
     Detail::TaskHandle id{0};
     Type type{Type::DUMP};
     Detail::TaskDesc desc;
+    std::vector<TransBuffer::Handle> loadHandles;
     std::atomic<int32_t> failureStatus{Status::OK().Underlying()};
 
 public:
@@ -48,6 +50,7 @@ public:
         : id{other.id},
           type{other.type},
           desc{std::move(other.desc)},
+          loadHandles{std::move(other.loadHandles)},
           failureStatus{other.failureStatus.load()}
     {
     }

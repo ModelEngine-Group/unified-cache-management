@@ -314,6 +314,18 @@ public:
     }
     void ReleaseReservation(uint64_t handle) override
     { if (early_) { early_->Release(handle); } }
+
+    Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
+    {
+        if (!early_ || task.loadReservations.empty()) {
+            return CacheStore::Load(std::move(task));
+        }
+        auto handles = early_->LoadHandles(task);
+        if (handles.empty()) { return CacheStore::Load(std::move(task)); }
+        TransTask prepared{TransTask::Type::LOAD, std::move(task)};
+        prepared.loadHandles = std::move(handles);
+        return transMgr_.Submit(std::move(prepared));
+    }
 };
 
 }  // namespace UC::CacheStore

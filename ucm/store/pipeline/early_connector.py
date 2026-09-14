@@ -9,6 +9,25 @@ from .connector import UcmPipelineStore, UcmPipelineStoreBuilder, ucmpipelinesto
 _EARLY_PIPELINE = "Early(Cache|Posix)"
 
 
+class _ReservedLoad:
+    """Route only Load; all conversions and other operations stay native."""
+
+    def __init__(self, pipeline):
+        self.pipeline = pipeline
+        self.reservations = ()
+
+    def __getattr__(self, name):
+        return getattr(self.pipeline, name)
+
+    def Load(self, ids, indexes, addrs):
+        reservations = self.reservations
+        if not reservations:
+            return self.pipeline.Load(ids, indexes, addrs)
+        return ucmpipelinestore.EarlyLoad(
+            self.pipeline, ids, indexes, addrs, reservations
+        )
+
+
 class _EarlyStack:
     """Adapt factory names while the native builder configures the same pipeline."""
 
@@ -40,13 +59,16 @@ class EarlyPipelineStore(UcmPipelineStore):
             )
 
         required = (
-            "EarlyReservePrefix", "EarlyPrefetchReserved", "EarlyReleaseReservation"
+            "EarlyReservePrefix", "EarlyPrefetchReserved", "EarlyReleaseReservation",
+            "EarlyLoad",
         )
         if not all(callable(getattr(ucmpipelinestore, name, None)) for name in required):
             raise RuntimeError(
                 "Early pipeline bindings are missing; rebuild UCM for this source"
             )
         super().__init__(dict(config, store_pipeline=_EARLY_PIPELINE))
+        self._native_store = self.store_
+        self.store_ = _ReservedLoad(self._native_store)
         # The internal builder key changes selection only, not the user's config.
         self.config = config
 
@@ -63,11 +85,17 @@ class EarlyPipelineStore(UcmPipelineStore):
 
     def reserve_prefix(self, block_ids: list[bytes]) -> dict:
         return ucmpipelinestore.EarlyReservePrefix(
-            self.store_, np.frombuffer(b"".join(block_ids), dtype=np.uint8)
+            self._native_store, np.frombuffer(b"".join(block_ids), dtype=np.uint8)
         )
 
     def prefetch_reserved(self, handle: int) -> dict:
-        return ucmpipelinestore.EarlyPrefetchReserved(self.store_, handle)
+        return ucmpipelinestore.EarlyPrefetchReserved(self._native_store, handle)
 
     def release_reservation(self, handle: int) -> None:
-        ucmpipelinestore.EarlyReleaseReservation(self.store_, handle)
+        self.store_.reservations = tuple(
+            active for active in self.store_.reservations if active != handle
+        )
+        ucmpipelinestore.EarlyReleaseReservation(self._native_store, handle)
+
+    def set_load_reservations(self, handles) -> None:
+        self.store_.reservations = tuple(handles)

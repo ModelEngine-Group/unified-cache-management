@@ -49,6 +49,7 @@ public:
 };
 
 class PipelineStore {
+    friend struct Early::LoadBinding;
     using StoreLoader = LibraryLoader<StoreV1>;
     template <typename T>
     struct BufferArrayView {

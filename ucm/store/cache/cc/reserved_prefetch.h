@@ -14,10 +14,12 @@ class ReservedPrefetch {
     struct Reservation {
         std::vector<std::shared_ptr<ReadLease>> leases;
         std::vector<Detail::BlockId> blocks;
+        std::unordered_map<Detail::BlockId, size_t, Detail::BlockIdHasher> blockOffsets;
         std::vector<TransBuffer::Handle> pins;
         std::mutex mutex;
         std::atomic<bool> cancelled{false};
         bool started{false};
+        bool ready{false};
     };
     StoreV1* backend_;
     TransBuffer* buffer_;
@@ -98,6 +100,10 @@ public:
         for (const auto& pin : reservation->pins) {
             if (!pin || !pin.Ready()) { ++missing; }
         }
+        for (size_t i = 0; i < count; ++i) {
+            reservation->blockOffsets.emplace(reservation->blocks[i], i);
+        }
+        reservation->ready = missing == 0;
         std::lock_guard guard(mutex_);
         const auto handle = next_++;
         reservations_.emplace(handle, std::move(reservation));
@@ -171,7 +177,43 @@ public:
             }
             return status;
         }
+        {
+            std::lock_guard guard(r.mutex);
+            if (r.cancelled.load()) { return Status::Error("reserved prefetch cancelled"); }
+            r.ready = true;
+        }
         return result;
+    }
+
+    std::vector<TransBuffer::Handle> LoadHandles(const Detail::TaskDesc& task)
+    {
+        std::vector<std::shared_ptr<Reservation>> candidates;
+        {
+            std::lock_guard guard(mutex_);
+            for (auto handle : task.loadReservations) {
+                auto it = reservations_.find(handle);
+                if (it != reservations_.end()) { candidates.push_back(it->second); }
+            }
+        }
+        std::vector<TransBuffer::Handle> handles;
+        for (const auto& reservation : candidates) {
+            std::lock_guard guard(reservation->mutex);
+            if (!reservation->ready || reservation->cancelled.load()) { continue; }
+            for (size_t i = 0; i < task.size(); ++i) {
+                if (!handles.empty() && handles[i]) { continue; }
+                const auto& shard = task[i];
+                if (shard.index >= shardsPerBlock_) { continue; }
+                auto found = reservation->blockOffsets.find(shard.owner);
+                if (found == reservation->blockOffsets.end()) { continue; }
+                const auto& pin = reservation->pins[found->second * shardsPerBlock_ + shard.index];
+                if (!pin || !pin.Ready()) { continue; }
+                if (handles.empty()) { handles.resize(task.size()); }
+                // Handle's native copy acquires a node reference without a hash
+                // lookup. It remains valid if Release runs before H2D completes.
+                handles[i] = pin;
+            }
+        }
+        return handles;
     }
 
     void Release(uint64_t handle)

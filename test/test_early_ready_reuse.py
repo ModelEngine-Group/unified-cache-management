@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+import numpy as np
 
 from ucm.integration.vllm import early_prefetch, ucm_connector
 from ucm.integration.vllm.early_connector import (
@@ -77,7 +78,8 @@ def connector(request, monkeypatch):
     c._vllm_config = SimpleNamespace(speculative_config=None)
     c._rank_consistency = RankConsistencyManager(is_scheduler=True)
     c.store = object.__new__(EarlyPipelineStore)
-    c.store.store_ = Mock()
+    c.store._native_store = Mock()
+    c.store.store_ = early_store._ReservedLoad(c.store._native_store)
     c.store.store_.LookupOnPrefix.return_value = 1
     c._early = object.__new__(EarlyScheduler)
     c._early.connector = c
@@ -224,12 +226,12 @@ def test_early_bindings_receive_the_existing_pipeline(connector, monkeypatch):
     store = connector.store
     blocks = [b"a" * 16, b"b" * 16]
     assert store.reserve_prefix(blocks)["handle"] == 7
-    assert reserve.call_args.args[0] is store.store_
+    assert reserve.call_args.args[0] is store._native_store
     assert reserve.call_args.args[1].tobytes() == b"".join(blocks)
     assert store.prefetch_reserved(7) == {"l2_read_shards": 0}
-    prefetch.assert_called_once_with(store.store_, 7)
+    prefetch.assert_called_once_with(store._native_store, 7)
     store.release_reservation(7)
-    release.assert_called_once_with(store.store_, 7)
+    release.assert_called_once_with(store._native_store, 7)
 
 
 def test_early_binding_error_is_not_replaced(connector, monkeypatch):
@@ -258,7 +260,7 @@ def test_pipeline_builder_preserves_native_config_and_instance(monkeypatch, earl
     store = cls(config)
     factory.assert_called_once_with()
     builder.assert_called_once()
-    assert store.store_ is pipeline
+    assert (store._native_store if early else store.store_) is pipeline
     assert store.config is config
     assert config == {
         "store_pipeline": "Cache|Posix", "device_id": 0, "shard_size": 4096
@@ -292,3 +294,68 @@ def test_missing_early_bindings_fail_before_pipeline_creation(monkeypatch):
     with pytest.raises(RuntimeError, match="bindings are missing"):
         EarlyPipelineStore({"store_pipeline": "Cache|Posix", "device_id": -1})
     factory.assert_not_called()
+
+
+@pytest.mark.parametrize("method", ["load", "load_data"])
+def test_handoff_uses_native_argument_conversion_and_same_pipeline(monkeypatch, method):
+    pipeline = Mock()
+    store = object.__new__(EarlyPipelineStore)
+    store._native_store = pipeline
+    store.store_ = early_store._ReservedLoad(pipeline)
+    addresses = np.array([[123, 456]], dtype=np.uint64)
+    store._tensor_normalize = Mock(return_value=addresses)
+    submit = Mock(return_value=19)
+    release = Mock()
+    monkeypatch.setattr(early_store.ucmpipelinestore, "EarlyLoad", submit)
+    monkeypatch.setattr(early_store.ucmpipelinestore, "EarlyReleaseReservation", release)
+    store.set_load_reservations([7, 9])
+    getattr(store, method)([b"a" * 16], [3], addresses)
+    owner, ids, indexes, addrs, reservations = submit.call_args.args
+    assert owner is pipeline
+    assert ids.tobytes() == b"a" * 16
+    assert list(indexes) == [3]
+    assert addrs is addresses
+    assert reservations == (7, 9)
+    pipeline.Load.assert_not_called()
+    store.release_reservation(7)
+    assert store.store_.reservations == (9,)
+    store.release_reservation(9)
+    getattr(store, method)([b"b" * 16], [0], addresses)
+    pipeline.Load.assert_called_once()
+    assert submit.call_count == 1
+
+
+def test_handoff_submit_error_keeps_native_exception(monkeypatch):
+    store = object.__new__(EarlyPipelineStore)
+    store._native_store = Mock()
+    store.store_ = early_store._ReservedLoad(store._native_store)
+    store.set_load_reservations([7])
+    error = RuntimeError("native HBM load failed")
+    monkeypatch.setattr(early_store.ucmpipelinestore, "EarlyLoad", Mock(side_effect=error))
+    with pytest.raises(RuntimeError) as raised:
+        store.load_data([b"a" * 16], [0], [[123]])
+    assert raised.value is error
+
+
+def test_worker_bind_selects_only_ready_local_consumers():
+    worker = object.__new__(early_prefetch.EarlyWorker)
+    worker.condition = threading.Condition()
+    worker.store = Mock()
+    worker.request_keys = {}
+    worker.jobs = {
+        key: SimpleNamespace(key=key, ready=ready, cancelled=cancelled,
+                             loading=False, reservation={"handle": handle})
+        for key, ready, cancelled, handle in (
+            ("ready", True, False, 7), ("pending", False, False, 8),
+            ("cancelled", True, True, 9), ("other", True, False, 10)
+        )
+    }
+    metadata = SimpleNamespace(
+        early_keys={"r1": "ready", "r2": "pending", "r3": "cancelled"},
+        request_meta={request: SimpleNamespace(load_block_ids=([b"a" * 16], []))
+                      for request in ("r1", "r2", "r3")},
+    )
+    worker.bind(metadata)
+    worker.store.set_load_reservations.assert_called_once_with([7])
+    worker.bind(SimpleNamespace(early_keys={}, request_meta={}))
+    worker.store.set_load_reservations.assert_called_with([])

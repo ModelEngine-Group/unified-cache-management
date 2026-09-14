@@ -112,11 +112,18 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
     const auto nShard = task->desc.size();
     size_t backendSubmitCount = 0;
     size_t waitShardCount = 0;
+    std::vector<bool> prepared(task->loadHandles.size() == nShard ? nShard : 0, false);
     const auto indexes = RearrangeIndex(nShard, deviceId_, localRankSize_);
     for (size_t i = 0; i < nShard; i++) {
         auto& shard = task->desc[indexes[i]];
         ShardTask shardTask;
-        shardTask.bufferHandle = buffer_->Get(shard.owner, shard.index, true, true);
+        if (!prepared.empty()) {
+            prepared[indexes[i]] = bool(task->loadHandles[indexes[i]]);
+            shardTask.bufferHandle = std::move(task->loadHandles[indexes[i]]);
+        }
+        if (!shardTask.bufferHandle) {
+            shardTask.bufferHandle = buffer_->Get(shard.owner, shard.index, true, true);
+        }
         shardTask.backendTaskHandle = 0;
         shardTask.fromPosix = !shardTask.bufferHandle.Ready();
         if (shardTask.fromPosix) { waitShardCount++; }
@@ -148,6 +155,9 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
     }
     auto tpDispatch = NowTime::Now();
     for (size_t i = 0; i < nShard; i++) {
+        // The reservation already located and pinned this block's full shard
+        // set. Leave native preallocation in place for every fallback shard.
+        if (!prepared.empty() && prepared[indexes[i]]) { continue; }
         auto& shard = task->desc[indexes[i]];
         if (shard.index + 1 != nShardPerBlock_) {
             buffer_->Prealloc(shard.owner, shard.index + 1, true);

@@ -5,6 +5,7 @@
 #include <future>
 #include <gtest/gtest.h>
 #include "cache/cc/reserved_prefetch.h"
+#include "cache/cc/load_queue.h"
 #include "detail/mock_store.h"
 #include "detail/random.h"
 
@@ -66,7 +67,9 @@ TEST(UCCacheEarlyStoreTest, ReservedBytesUseNativeLoadAndRelease)
     ASSERT_TRUE(prefetched);
     EXPECT_EQ(prefetched.Value().l2ReadShards, 1);
     std::array<unsigned char, 4096> destination{};
-    auto loaded = store->Load({{block, 0, {destination.data()}}});
+    UC::Detail::TaskDesc desc{{block, 0, {destination.data()}}};
+    desc.loadReservations = {reserved.Value().handle};
+    auto loaded = store->Load(std::move(desc));
     ASSERT_TRUE(loaded);
     ASSERT_TRUE(store->Wait(loaded.Value()).Success());
     for (auto byte : destination) { ASSERT_EQ(byte, 0x6b); }
@@ -269,4 +272,107 @@ TEST(UCCacheEarlyStoreTest, InflightPositionStaysPinnedAfterOwnerCompletes)
     EXPECT_EQ(static_cast<unsigned char*>(retained.Data())[0], 0x6b);
     early.Release(reserved.Value().handle);
     EXPECT_TRUE(backend.lease.expired());
+}
+
+TEST(UCCacheEarlyStoreTest, HandoffSurvivesReleaseAndUsesNativeTransferWithoutAnIndex)
+{
+    Backend backend;
+    EXPECT_CALL(backend, LookupOnPrefix).Times(0);
+    EXPECT_CALL(backend, Load).Times(0);
+    UC::CacheStore::Config config;
+    config.uniqueId = UC::Test::Detail::Random().RandomString(16);
+    config.deviceId = 0;
+    config.tensorSizes = {4096};
+    config.shardSize = 4096;
+    config.blockSize = 8192;
+    config.bufferCapacity = 4 * config.shardSize;
+    config.loadExclusiveBufferNumber = 0;
+    config.shareBufferEnable = false;
+    config.storeBackend = &backend;
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(config).Success());
+    auto* buffer = manager.GetTransBuffer();
+    UC::Detail::BlockId block{};
+    for (size_t shard = 0; shard < 2; ++shard) {
+        auto pin = buffer->Get(block, shard);
+        std::memset(pin.Data(), 0x50 + shard, config.shardSize);
+        pin.MarkReady();
+    }
+    UC::CacheStore::ReservedPrefetch early(
+        &manager, &backend, config.blockSize, config.shardSize, config.timeoutMs);
+    auto reserved = early.Reserve(&block, 1);
+    ASSERT_TRUE(reserved);
+    ASSERT_EQ(reserved.Value().remainingL2Work, 0);
+    std::array<unsigned char, 8192> destination{};
+    UC::Detail::TaskDesc desc{
+        {block, 1, {destination.data()}}, {block, 0, {destination.data() + 4096}}};
+    desc.loadReservations = {reserved.Value().handle};
+    auto first = early.LoadHandles(desc);
+    auto second = early.LoadHandles(desc);
+    ASSERT_EQ(first.size(), 2);
+    ASSERT_EQ(second.size(), 2);
+    early.Release(reserved.Value().handle);
+    EXPECT_TRUE(backend.lease.expired());
+    EXPECT_TRUE(early.LoadHandles(desc).empty());  // stale reservation falls back
+    first.clear();  // One consumer must not release another consumer's references.
+    for (size_t i = 1; i < 64; ++i) {
+        UC::Detail::BlockId other{};
+        other[0] = std::byte(i);
+        auto pin = buffer->Get(other, 0);
+        std::memset(pin.Data(), 0x31, config.shardSize);
+        pin.MarkReady();
+    }
+    auto task = std::make_shared<UC::CacheStore::TransTask>(
+        UC::CacheStore::TransTask::Type::LOAD, std::move(desc));
+    task->loadHandles = std::move(second);
+    UC::HashSet<UC::Detail::TaskHandle> failures;
+    UC::CacheStore::LoadQueue queue;
+    // A task whose handles are all supplied needs neither Get nor Prealloc.
+    // Deliberately supply no lookup index to catch either accidental revisit.
+    ASSERT_TRUE(queue.Setup(config, &failures, nullptr).Success());
+    auto waiter = std::make_shared<UC::Latch>();
+    queue.Submit(task, waiter);
+    ASSERT_TRUE(waiter->WaitForDuration(2000));
+    EXPECT_FALSE(failures.Contains(task->id));
+    for (size_t i = 0; i < destination.size(); ++i) {
+        ASSERT_EQ(destination[i], i < 4096 ? 0x51 : 0x50);
+    }
+}
+
+TEST(UCCacheEarlyStoreTest, HandoffIgnoresWrongIdentityAndUnreadyReservations)
+{
+    Backend backend;
+    EXPECT_CALL(backend, LookupOnPrefix).WillOnce(testing::Return(ssize_t{0}));
+    EXPECT_CALL(backend, Load).WillOnce(testing::Invoke([](UC::Detail::TaskDesc task) {
+        for (auto& shard : task) { std::memset(shard.addrs[0], 0x6b, 4096); }
+        return UC::Detail::TaskHandle{1};
+    }));
+    EXPECT_CALL(backend, Wait).WillOnce(testing::Return(UC::Status::OK()));
+    UC::CacheStore::Config config;
+    config.uniqueId = UC::Test::Detail::Random().RandomString(16);
+    config.deviceId = 0;
+    config.shardSize = config.blockSize = 4096;
+    config.bufferCapacity = 4 * config.shardSize;
+    config.loadExclusiveBufferNumber = 0;
+    config.shareBufferEnable = false;
+    config.storeBackend = &backend;
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(config).Success());
+    UC::CacheStore::ReservedPrefetch early(
+        &manager, &backend, config.blockSize, config.shardSize, config.timeoutMs);
+    UC::Detail::BlockId block{}, other{};
+    other[0] = std::byte{1};
+    auto reserved = early.Reserve(&block, 1);
+    ASSERT_TRUE(reserved);
+    UC::Detail::TaskDesc desc{{block, 0, {}}, {other, 0, {}}, {block, 1, {}}};
+    desc.loadReservations = {reserved.Value().handle};
+    EXPECT_TRUE(early.LoadHandles(desc).empty());
+    ASSERT_TRUE(early.Prefetch(reserved.Value().handle));
+    auto handles = early.LoadHandles(desc);
+    ASSERT_EQ(handles.size(), 3);
+    EXPECT_TRUE(handles[0]);
+    EXPECT_FALSE(handles[1]);
+    EXPECT_FALSE(handles[2]);
+    early.Release(reserved.Value().handle);
+    EXPECT_TRUE(early.LoadHandles(desc).empty());
 }

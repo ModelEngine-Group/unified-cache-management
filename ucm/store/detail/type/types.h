@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_STORE_DETAIL_TYPE_TYPES_H
 
 #include <array>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -64,6 +65,8 @@ struct TaskDesc : std::vector<Shard> {
     std::string brief;    /* Description of Task */
     /** Optional: prerequisite handle for dump. Cache stream waits before D2H. */
     uintptr_t prerequisiteHandle{0};
+    /** Optional worker-local reservations supplying already pinned load data. */
+    std::vector<uint64_t> loadReservations;
 };
 
 }  // namespace UC::Detail
