@@ -19,6 +19,7 @@ from ucm.integration.vllm.ucm_connector import (
     UCMDirectConnector,
     _check_shm_capacity,
     _use_ucm_connector_cpu_affinity,
+    validate_hybrid_kv_load_failure_policy,
 )
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmetrics
@@ -328,6 +329,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         role: KVConnectorRole,
         kv_cache_config: "KVCacheConfig",
     ):
+        validate_hybrid_kv_load_failure_policy(vllm_config)
         self._defer_scheduler_store = True
         super().__init__(vllm_config, role, kv_cache_config)
         self.hash_block_size = self.DEFAULT_HASH_BLOCK_SIZE
