@@ -82,7 +82,8 @@ python /absolute/ucm/test/build_prefetch_reuse.py \
 - 模型/NPU：以上均不能代替真实 GLM 请求、EP 启动和 TTFT 对照。
 
 开发过程的 C++ 74 项、完整 Python 88 项已通过；后续增加握手/失联等测试后，
-协议/流水/时序合计 46 项通过。最终构建、全部测试数及 GLM 运行结果放在管理
+协议/流水/时序合计 46 项通过。进一步补齐非 owner READY 的失联失效、停用域的新加入者拒绝、PP>1 拒绝和
+未调度取消的定向映射清理。最终构建、全部测试数及 GLM 运行结果放在管理
 仓库 `evidence/owner-protocol-20260914/` 和 `docs/OWNER_PROTOCOL_RESULTS_20260914.md`，
 以实际日志和 manifest 为准。首次 Python 收集因裸镜像缺 wrapt 失败；新 venv
 使用锁定 wheel 后解决。另有四个旧测试绕过 __init__，未初始化新增组合对象，

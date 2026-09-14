@@ -289,6 +289,7 @@ class WorkerJob:
     attempt: str | None = None
     grant: int = 0
     lookup_finished: bool = False
+    request_id: str | None = None
 
 
 @dataclass(eq=False)
@@ -642,7 +643,9 @@ class EarlyWorker:
             # owner consumption; an old finish must not stop a new request.
             self.loaded(request_ids, reason="finish")
             for request_id in request_ids:
-                self.request_keys.pop(request_id, None)
+                job = self.jobs.get(self.request_keys.get(request_id))
+                if job is None or not job.owner:
+                    self.request_keys.pop(request_id, None)
 
     def close(self):
         if any(job.owner for job in self.jobs.values()):

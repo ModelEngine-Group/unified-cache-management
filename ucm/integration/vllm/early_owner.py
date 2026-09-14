@@ -30,6 +30,8 @@ def worker_capability(connector):
             return {"reason": "not native MLA shared L1"}
         if connector.cp_world_size != 1 or not native["backing"]:
             return {"reason": "unverified shared mapping or CP layout"}
+        if getattr(connector._vllm_config.parallel_config, "pipeline_parallel_size", 1) != 1:
+            return {"reason": "PP consumer cohort is not supported by owner protocol"}
         shard, block = native["shard_bytes"], native["block_bytes"]
         if not shard or block % shard or shard != config["shard_size"] or block != config["block_size"]:
             return {"reason": "native/config layout mismatch"}
@@ -62,6 +64,7 @@ class OwnerBroker(BrokerState):
         self.capabilities, self.sessions, self.domains = {}, {}, {}
         self.cursor, self.last_sequence = {}, {}
         self.fenced = False
+        self.fence_reason = None
         self.next_grant = 0
 
     def cohort(self):
@@ -172,6 +175,7 @@ class OwnerBroker(BrokerState):
         if self.fenced:
             return
         self.fenced = True
+        self.fence_reason = reason
         # Non-robust native locks/refcounts have no owner-death recovery. Keep
         # credits charged; never authorize a new owner on this shared object.
         for peer in set(self.peers) | self.cohort():
@@ -190,6 +194,8 @@ class OwnerBroker(BrokerState):
 
     def receive(self, peer, message, now=None):
         op = message["op"]
+        if self.fenced and op in ("hello", "job"):
+            self.send(peer, dict(op="domain_lost", reason=self.fence_reason))
         if op == "domain_fault" and peer in self.cohort() and peer in self.sessions:
             self.poison(f"{peer}: {message.get('reason', 'unknown drain state')}")
             return
@@ -282,10 +288,7 @@ class OwnerBroker(BrokerState):
             if job.get("owner") and job["status"] == "PENDING" and now - job["created"] > self.timeout:
                 self.send(job["client"], dict(op="result", key=job["key"], state="FAILED", reason="owner timeout"))
                 self.retire(job, "owner timeout")
-        # Legacy jobs retain their previous fallback/timeout behavior.
-        for peer, seen in list(self.peers.items()):
-            if now - seen > 60:
-                self.peers.pop(peer, None)
-        for job in list(self.jobs.values()):
-            if not job.get("owner") and job["status"] == "PENDING" and now - job["created"] > self.timeout:
-                self.fail(job, "bounded pending timeout")
+        # Owner timeouts above are already retiring; a domain peer loss exits
+        # through poison. Reuse all native broker loss/timeout behavior for
+        # legacy jobs, including invalidating READY after a required peer loss.
+        super().expire(now)

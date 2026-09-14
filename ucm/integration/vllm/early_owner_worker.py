@@ -66,7 +66,8 @@ class OwnerWorker:
                 if key in self.worker.jobs:
                     return True
                 job = WorkerJob(key, message.get("blocks", []), owner=message["owner"],
-                                attempt=message["attempt"], grant=message["grant"])
+                                attempt=message["attempt"], grant=message["grant"],
+                                request_id=message.get("request"))
                 self.worker.jobs[key] = job
                 self.worker.io_limit = message["io_quota"]
                 if message.get("request"):
@@ -105,6 +106,8 @@ class OwnerWorker:
             elif op == "forget":
                 self.consumer.forget(key, attempt)
                 self.worker.jobs.pop(key, None)
+                if self.worker.request_keys.get(job.request_id) == key:
+                    self.worker.request_keys.pop(job.request_id, None)
             self.worker.condition.notify_all()
         return True
 

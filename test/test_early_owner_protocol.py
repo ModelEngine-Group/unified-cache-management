@@ -503,3 +503,51 @@ def test_control_loss_fences_even_rank_without_local_owner_jobs_after_domain_act
     with pytest.raises(RuntimeError):
         w.owner_protocol.consumer.begin(np.zeros(0, dtype=np.uint8), [])
     w.close()
+
+
+def test_unsupported_path_preserves_broker_ready_invalidation_on_peer_loss():
+    c = Cluster(capacity=False)
+    job = c.job()
+    for peer in c.b.workers(0):
+        c.b.receive(peer, dict(op="answer", key=job["key"], state="READY", hit=4))
+    assert job["status"] == "READY"
+    c.b.peers["w0.1"] = time.monotonic() - 61
+    c.b.expire()
+    assert job["status"] == "FAILED"
+    assert any(m["op"] == "result" and m["state"] == "FAILED" for _, m in c.out)
+
+
+def test_fenced_domain_rejects_late_hello_and_new_job_explicitly():
+    c = Cluster()
+    c.job()
+    c.b.poison("unrecoverable native references")
+    c.out.clear()
+    c.b.receive("s0", dict(op="hello", session="replacement-scheduler"))
+    c.b.receive("s0", dict(op="job", key="late-new-job", dp=0, blocks=blocks(2), sequence=10))
+    assert len([m for p, m in c.out if p == "s0" and m["op"] == "domain_lost"]) == 2
+    assert "late-new-job" not in c.b.jobs
+
+
+def test_worker_capability_rejects_unrepresented_pipeline_parallel_consumers():
+    info = dict(backing="native-backing", nodes=120, reservable_nodes=100, shard_bytes=4, block_bytes=8)
+    c = SimpleNamespace(store=SimpleNamespace(config=dict(share_buffer_enable=True), domain_info=lambda: info),
+        launch_config={}, is_mla=True, cp_world_size=1,
+        _vllm_config=SimpleNamespace(parallel_config=SimpleNamespace(pipeline_parallel_size=2)))
+    assert "PP consumer cohort" in owner.worker_capability(c)["reason"]
+
+
+def test_unscheduled_cancel_forget_clears_request_mapping_without_touching_reused_id():
+    w = make_worker(1)
+    try:
+        for grant, key in [(1, "old"), (2, "new")]:
+            w.receive(dict(op="observe", key=key, attempt="a-" + key, grant=grant, owner="w0.0",
+                           request="reused", io_quota=8))
+        w.receive(dict(op="retire", key="old", attempt="a-old"))
+        w.receive(dict(op="forget", key="old", attempt="a-old"))
+        w.finished(["reused"])
+        assert w.request_keys == {"reused": "new"}
+        w.receive(dict(op="retire", key="new", attempt="a-new"))
+        w.receive(dict(op="forget", key="new", attempt="a-new"))
+        assert not w.request_keys and not w.jobs
+    finally:
+        w.close()

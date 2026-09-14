@@ -189,7 +189,7 @@ fallback。vLLM 与 LMCache 不增加 Early 状态机、队列或接口。
 block/shard bytes、tensor sizes、layerwise、CP/block 分组及原生 hash 指纹。
 不传播地址、不重建索引、不凭 UUID 或同名文件确认物理共享。
 
-仅启用 MLA/shared L1、CP=1、可证明布局一致的完整 DP/TP cohort。每个 DP 的
+仅启用 MLA/shared L1、CP=1、PP=1、可证明布局一致的完整 DP/TP cohort。每个 DP 的
 必要消费者须共享同一个对象；跨 DP 若指向同一对象，统一计费。完整 cohort 的
 capability、协议版本、DP/rank 身份及心跳均须满足条件，且原广播模式任务已经
 退出，才能开启 owner。缺少握手、private L1、非 MLA 或布局不兼容时记录原因，
@@ -272,7 +272,9 @@ sequenceDiagram
 已经过滤且扣除 HBM 命中的完整计划。空计划可直接 consumed。正常 chunked
 prefill 的后续 metadata 不覆盖先前未完成层/块；一次 last-layer callback 不
 负责 owner 释放。只有 generation 级 broker retire 可以终止消费；原生 worker
-只携 request ID 的旧 finish/preempt 通知不能终止复用该 ID 的新请求。
+只携 request ID 的旧 finish/preempt 通知不能终止复用该 ID 的新请求。forget 按
+job 保存的 request ID 和当前映射值定向清理未调度取消的关联，不扫描全表，也
+不能删除后来复用该 request ID 的映射。
 retire 禁止未来加载，但必须等已经提交的原生任务成功完成才 quiesce。
 已退休票据可能再次出现在 decode metadata，绑定允许；尝试再次加载会拒绝。
 
