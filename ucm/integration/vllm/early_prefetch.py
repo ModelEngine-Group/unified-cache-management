@@ -89,6 +89,7 @@ class EarlyScheduler:
                     return
                 job.blocks = blocks
                 self.trace_request(job.request, blocks)
+                submitted_ns = time.monotonic_ns()
                 self.control.send(
                     {
                         "op": "job",
@@ -96,13 +97,16 @@ class EarlyScheduler:
                         "dp": self.dp_rank,
                         "blocks": blocks,
                         "request": job.request.request_id,
+                        "submitted_ns": submitted_ns,
                     }
                 )
             log.info(
-                "UCM_EARLY submitted key=%s request=%s blocks=%s",
+                "UCM_EARLY submitted key=%s request=%s blocks=%s ns=%s dp=%s",
                 job.key,
                 job.request.request_id,
                 len(blocks),
+                submitted_ns,
+                self.dp_rank,
             )
         except Exception:
             log.exception("UCM_EARLY prepare failed key=%s", job.key)
@@ -162,6 +166,8 @@ class EarlyScheduler:
                 return
             job.hit = message.get("hit", 0)
             job.state = message["state"]
+            log.info("UCM_EARLY scheduler_result key=%s dp=%s state=%s ns=%s",
+                     job.key, self.dp_rank, job.state, time.monotonic_ns())
 
     def _cancel(self, job):
         job.state = "CANCELLED"
@@ -178,6 +184,12 @@ class EarlyScheduler:
                 keys[request_id] = job.key
                 if not job.dispatched:
                     job.dispatched = True
+                    # Read the native event without consuming or changing it.
+                    scheduled_ns = next((int(event.timestamp * 1e9)
+                        for event in getattr(job.request, "events", ())
+                        if getattr(event.type, "name", None) == "SCHEDULED"), None)
+                    log.info("UCM_EARLY handoff key=%s request=%s dp=%s ns=%s native_scheduled_ns=%s",
+                             job.key, request_id, self.dp_rank, time.monotonic_ns(), scheduled_ns)
                     if meta.load_block_ids[0]:
                         # Ordered before finish/cancel on this control connection.
                         self.control.send(
@@ -221,7 +233,7 @@ class EarlyScheduler:
         self.control.close()
 
 
-@dataclass
+@dataclass(eq=False)
 class WorkerJob:
     key: str
     blocks: list
@@ -233,13 +245,17 @@ class WorkerJob:
     loading: bool = False
 
 
-@dataclass
+@dataclass(eq=False)
 class WorkerBatch:
     index: int
     begin: int
     reservation: dict
     entered: float = field(default_factory=time.monotonic)
     done: bool = False
+    started: bool = False
+    can_submit: bool = True
+    inflight_bytes: int = 0
+    stats: dict = field(default_factory=dict)
 
 
 class EarlyWorker:
@@ -282,6 +298,8 @@ class EarlyWorker:
                 if key in self.jobs:
                     return
                 job = WorkerJob(key, message["blocks"])
+                log.info("UCM_EARLY lookup_enqueued key=%s rank=%s ns=%s submitted_ns=%s",
+                         key, self.connector.tp_rank, time.monotonic_ns(), message.get("submitted_ns"))
                 self.jobs[key] = job
                 if message.get("request"):
                     self.request_keys[message["request"]] = job.key
@@ -368,39 +386,116 @@ class EarlyWorker:
         # Shards not READY at reserve, including peer-owned in-flight work.
         return 1 + (now - batch.entered) / max(batch.reservation["remaining_l2_work"], 1)
 
-    def _data(self):
-        while True:
-            with self.condition:
-                self.condition.wait_for(
-                    lambda: self.closed or self.preparing or self.selected
-                )
-                if self.closed:
-                    return
-                if not self.selected:
-                    self.preparing = [item for item in self.preparing if not item[0].cancelled]
-                    now = time.monotonic()
-                    self.preparing.sort(key=lambda item: self.ratio(item[1], now), reverse=True)
-                    count = max(1, len(self.preparing) // 4)
-                    self.selected, self.preparing = self.preparing[:count], self.preparing[count:]
-                if not self.selected:
-                    continue
-                job, batch = self.selected.pop(0)
-                if job.cancelled:
-                    continue
-            try:
+    def _choose(self, round_keys):
+        # Condition held; one pending batch per request participates in Stan
+        # HRRN selection. A request gets one quantum before any repeat while
+        # another eligible request has not had a turn.
+        self.preparing = [item for item in self.preparing
+                          if not item[0].cancelled and not item[1].done and item[1].can_submit]
+        heads = {}
+        for job, batch in self.preparing:
+            current = heads.get(job.key)
+            if current is None or batch.index < current[1].index:
+                heads[job.key] = (job, batch)
+        round_keys.intersection_update(heads)
+        if not round_keys:
+            round_keys.update(heads)
+        eligible = [heads[key] for key in round_keys]
+        now = time.monotonic()
+        eligible.sort(key=lambda item: self.ratio(item[1], now), reverse=True)
+        self.selected = eligible[:max(1, len(eligible) // 4)]
+        chosen = {batch for _, batch in self.selected}
+        self.preparing = [item for item in self.preparing if item[1] not in chosen]
+
+    def _step(self, job, batch, available):
+        # All backend calls are outside the worker condition. A Step either
+        # advances bounded work or checks completion; it never waits on healthy
+        # unfinished native I/O. Error returns have already drained accepted I/O.
+        capability = batch.reservation["batch"]
+        try:
+            if not batch.started:
+                batch.started = True
                 log.info("UCM_EARLY batch_start key=%s rank=%s batch=%s reservation=%s ns=%s queue_ms=%.3f",
                          job.key, self.connector.tp_rank, batch.index, batch.reservation["handle"],
                          time.monotonic_ns(), (time.monotonic() - batch.entered) * 1000)
-                stats = self.store.prefetch_reserved(batch.reservation["handle"])
-                with self.condition:
+            stats = capability.step(available)
+            with self.condition:
+                batch.stats = stats
+                batch.inflight_bytes = stats["inflight_bytes"]
+                batch.can_submit = stats["can_submit"]
+                # Conservative shard work: peer completions not yet observed
+                # may remain charged. This never substitutes total hit length.
+                batch.reservation["remaining_l2_work"] = stats["remaining_l2_work"]
+                if stats["done"]:
                     batch.done = True
-                    log.info("UCM_EARLY batch_done key=%s rank=%s batch=%s reservation=%s ns=%s stats=%s",
+                    log.info("UCM_EARLY batch_done key=%s rank=%s batch=%s reservation=%s ns=%s "
+                             "protected_claim_bytes=%s protection_limit_bytes=%s stats=%s",
                              job.key, self.connector.tp_rank, batch.index, batch.reservation["handle"],
-                             time.monotonic_ns(), stats)
+                             time.monotonic_ns(), capability.protected_bytes,
+                             capability.protection_limit_bytes, stats)
                     if job.reserve_done and all(part.done for part in job.batches):
                         self._answer(job)
-            except Exception as error:
+                return stats["advanced"]
+        except Exception as error:
+            with self.condition:
+                batch.done, batch.can_submit, batch.inflight_bytes = True, False, 0
                 self._answer(job, str(error))
+            return True
+
+    def _data(self):
+        active, round_keys = [], set()
+        window, peak = 0, 0
+        while True:
+            advanced = False
+            for job, batch in active:
+                if not batch.done:
+                    advanced = self._step(job, batch, 0) or advanced
+            active = [item for item in active if not item[1].done]
+            inflight = sum(batch.inflight_bytes for _, batch in active)
+            with self.condition:
+                if self.closed:
+                    self.preparing.clear()
+                    self.selected.clear()
+                    if not active:
+                        return
+                else:
+                    self.selected = [item for item in self.selected
+                                     if not item[0].cancelled and not item[1].done and item[1].can_submit]
+                    if not self.selected:
+                        self._choose(round_keys)
+                    if self.selected:
+                        job, batch = self.selected[0]
+                        capability = batch.reservation["batch"]
+                        window = min(window or capability.window_bytes, capability.window_bytes)
+                        if window - inflight >= capability.shard_bytes:
+                            self.selected.pop(0)
+                            round_keys.discard(job.key)
+                        else:
+                            job = batch = None
+                    else:
+                        job = batch = None
+                if self.closed:
+                    job = batch = None
+            if batch is not None:
+                if not batch.started:
+                    active.append((job, batch))
+                advanced = self._step(job, batch, window - inflight) or advanced
+                peak = max(peak, sum(part.inflight_bytes for _, part in active))
+                if peak > window:
+                    self._answer(job, "Early exceeded native-derived byte window")
+                with self.condition:
+                    if not job.cancelled and not batch.done and batch.can_submit:
+                        self.preparing.append((job, batch))
+                continue
+            with self.condition:
+                if not active and not self.preparing and not self.selected:
+                    log.info("UCM_EARLY data_idle rank=%s ns=%s inflight_peak_bytes=%s window_bytes=%s",
+                             self.connector.tp_rank, time.monotonic_ns(), peak, window)
+                    self.condition.wait_for(lambda: self.closed or self.preparing or self.selected)
+                elif not advanced:
+                    # Native Check offers no completion callback. Match the
+                    # existing bounded readiness cadence, with one data thread.
+                    self.condition.wait(timeout=.001)
 
     def _answer(self, job, error=None):
         with self.condition:
@@ -416,10 +511,13 @@ class EarlyWorker:
                 )
             else:
                 job.ready = True
-                fast = all(batch.reservation["remaining_l2_work"] == 0 for batch in job.batches)
+                fast = not any(batch.started for batch in job.batches)
                 log.info("UCM_EARLY rank_ready key=%s rank=%s ns=%s total_hit_blocks=%s fast_path=%s",
                          job.key, self.connector.tp_rank, time.monotonic_ns(),
                          sum(batch.reservation["total_hit_blocks"] for batch in job.batches), fast)
+                if fast:
+                    log.info("UCM_EARLY fast_path key=%s rank=%s data_queue_wait=0 l2_read_shards=0",
+                             job.key, self.connector.tp_rank)
             self.control.send(
                 {
                     "op": "answer",

@@ -37,6 +37,7 @@ class ReservedPrefetch::Batch final : public Early::Batch {
             else { pin.MarkFailed(status); }
         }
         progress_.inflightBytes -= transfer.owners.size() * shardBytes;
+        progress_.remainingL2Work -= std::min(progress_.remainingL2Work, transfer.owners.size());
         stats_->lastIoNs = EarlyStats::NowNs();
         transfers_.pop_front();
         progress_.advanced = true;
@@ -94,6 +95,7 @@ class ReservedPrefetch::Batch final : public Early::Batch {
                         pin = owner_.buffer_->TryGet(block, shard);
                         if (!pin) { Fail(Status::Error("no space for reserved prefetch")); break; }
                         allocated = pin.Owner() && !pin.Ready();
+                        if (pin.Ready() && progress_.remainingL2Work) { --progress_.remainingL2Work; }
                     }
                     if (allocated) {
                         owners.push_back(cursor_);
@@ -139,7 +141,10 @@ class ReservedPrefetch::Batch final : public Early::Batch {
                     const auto state = pin.GetState();
                     if (state == TransBuffer::State::FAILED) { Fail(pin.FailureStatus()); }
                     else if (state != TransBuffer::State::READY) { waiting_.push_back(index); }
-                    else { progress_.advanced = true; }
+                    else {
+                        progress_.advanced = true;
+                        if (progress_.remainingL2Work) { --progress_.remainingL2Work; }
+                    }
                 }
                 if (!waiting_.empty() && EarlyStats::Milliseconds(stats_->elapsed) >= owner_.timeoutMs_) {
                     Fail(Status::Error("shared shard readiness timeout"));
@@ -170,12 +175,15 @@ class ReservedPrefetch::Batch final : public Early::Batch {
             }
             if (status_.Success()) { stats_->hintEntries = owner_.PublishReady(r); }
             progress_.done = true;
+            progress_.remainingL2Work = 0;
             stats_->protectedBytes = owner_.budget_->used.load();
             stats_->protectionLimitBytes = owner_.budget_->limit;
             stats_->success = status_.Success();
             stats_.reset();
         }
         if (transfers_.empty()) { active_.reset(); }
+        progress_.canSubmit = status_.Success() && !progress_.done &&
+            cursor_ < r->blocks.size() * owner_.shardsPerBlock_;
         if (progress_.done && status_.Failure()) { return status_; }
         return Early::Progress{progress_};
     }
@@ -183,7 +191,8 @@ class ReservedPrefetch::Batch final : public Early::Batch {
 public:
     Batch(ReservedPrefetch& owner, const std::shared_ptr<Reservation>& r, uint64_t handle)
         : Early::Batch(owner.shardBytes_, 128 * owner.shardBytes_, owner.budget_->limit),
-          owner_(owner), reservation_(r), handle_(handle) {}
+          owner_(owner), reservation_(r), handle_(handle)
+    { progress_.remainingL2Work = r->initialMissing; }
 
     size_t ProtectedBytes() const override { return owner_.budget_->used.load(); }
 

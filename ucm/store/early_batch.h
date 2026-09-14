@@ -10,7 +10,9 @@ namespace UC::Early {
 struct Progress {
     bool done{false};
     bool advanced{false};
+    bool canSubmit{true};
     size_t inflightBytes{0};
+    size_t remainingL2Work{0};
     PrefetchResult result{};
 };
 

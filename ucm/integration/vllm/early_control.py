@@ -62,6 +62,7 @@ class BrokerState:
                     "key": job["key"],
                     "blocks": job["blocks"],
                     "request": job.get("request"),
+                    "submitted_ns": job.get("submitted_ns"),
                 },
             )
 
@@ -97,11 +98,12 @@ class BrokerState:
                 job["status"] = "READY"
                 hit = min(job["answers"].values())
                 log.info(
-                    "UCM_EARLY ready key=%s dp=%s ranks=%s total_hit_blocks=%s",
+                    "UCM_EARLY ready key=%s dp=%s ranks=%s total_hit_blocks=%s ns=%s",
                     job["key"],
                     job["dp"],
                     len(job["answers"]),
                     hit,
+                    time.monotonic_ns(),
                 )
                 self.send(
                     job["client"],

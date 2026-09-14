@@ -43,6 +43,7 @@ class ReservedPrefetch {
         TransBuffer::Handle& Pin(size_t i, size_t shards)
         { return groups[i / shards]->pins[i % shards]; }
         uint64_t handle{0};
+        size_t initialMissing{0};
         std::mutex mutex;
         std::atomic<bool> cancelled{false};
         std::weak_ptr<Early::Batch> batch;
@@ -197,6 +198,7 @@ public:
             missing += remaining;
         }
         r->ready = missing == 0;
+        r->initialMissing = missing;
         const auto handle = stats.handle;
         auto batch = MakeBatch(r, handle);
         r->batch = batch;

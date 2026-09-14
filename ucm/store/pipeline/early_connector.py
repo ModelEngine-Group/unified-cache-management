@@ -61,6 +61,7 @@ class EarlyPipelineStore(UcmPipelineStore):
         required = (
             "EarlyReservePrefix", "EarlyPrefetchReserved", "EarlyReleaseReservation",
             "EarlyLoad",
+            "EarlyBatch",
         )
         if not all(callable(getattr(ucmpipelinestore, name, None)) for name in required):
             raise RuntimeError(

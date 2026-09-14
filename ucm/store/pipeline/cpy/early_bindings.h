@@ -60,7 +60,9 @@ void BindOperations(pybind11::module_& module)
             py::dict out;
             out["done"] = progress.done;
             out["advanced"] = progress.advanced;
+            out["can_submit"] = progress.canSubmit;
             out["inflight_bytes"] = progress.inflightBytes;
+            out["remaining_l2_work"] = progress.remainingL2Work;
             out["l2_read_shards"] = progress.result.l2ReadShards;
             out["l2_read_bytes"] = progress.result.l2ReadBytes;
             out["coalesced_shards"] = progress.result.coalescedShards;
@@ -93,17 +95,26 @@ void BindOperations(pybind11::module_& module)
             result = ValueOrThrow<NotFoundError, UnhealthyError>(
                 store->ReservePrefix(blocks, count));
         }
-        py::dict out;
-        out["handle"] = result.handle;
-        out["total_hit_blocks"] = result.totalHitBlocks;
-        out["remaining_l2_work"] = result.remainingL2Work;
-        if (result.batch) {
-            auto owned = std::make_unique<BoundBatch>();
-            owned->pipeline = std::move(keeper);
-            owned->batch = std::move(result.batch);
-            out["batch"] = std::move(owned);
+        try {
+            py::dict out;
+            out["handle"] = result.handle;
+            out["total_hit_blocks"] = result.totalHitBlocks;
+            out["remaining_l2_work"] = result.remainingL2Work;
+            if (result.batch) {
+                auto owned = std::make_unique<BoundBatch>();
+                owned->pipeline = keeper;
+                owned->batch = std::move(result.batch);
+                out["batch"] = std::move(owned);
+            }
+            return out;
+        } catch (...) {
+            // No Python caller received ownership. Keep the exact pipeline
+            // alive while returning its registered reservation on conversion
+            // or allocation failure.
+            py::gil_scoped_release release;
+            store->ReleaseReservation(result.handle);
+            throw;
         }
-        return out;
     }, py::arg("pipeline"), py::arg("ids").noconvert());
 
     module.def("EarlyPrefetchReserved", [](Pipeline& pipeline, uint64_t handle) {

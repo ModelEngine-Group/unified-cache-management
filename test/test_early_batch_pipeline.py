@@ -48,8 +48,47 @@ def blocks(count):
     return [i.to_bytes(16, "little") for i in range(count)]
 
 
+class Capability:
+    shard_bytes = 1
+    window_bytes = 2
+    protection_limit_bytes = 10000
+    protected_bytes = 100
+
+    def __init__(self, work, submit=lambda: None, gate=None):
+        self.work, self.submit, self.gate = work, submit, gate
+        self.pending = self.reads = self.steps = 0
+        self.cancelled = False
+        self.drained = threading.Event()
+
+    def step(self, available):
+        self.steps += 1
+        advanced = False
+        if self.pending and (self.gate is None or self.gate.is_set()):
+            self.work -= self.pending
+            self.pending = 0
+            advanced = True
+        if self.cancelled and not self.pending:
+            self.protected_bytes = 0
+            self.drained.set()
+            raise RuntimeError("cancelled after draining")
+        if available and self.work > self.pending and not self.cancelled:
+            self.submit()
+            self.reads += 1
+            if self.gate is None or self.gate.is_set():
+                self.work -= 1
+            else:
+                self.pending += 1
+            advanced = True
+        done = self.work == 0
+        return dict(done=done, advanced=advanced, inflight_bytes=self.pending,
+                    can_submit=self.work > self.pending and not self.cancelled,
+                    remaining_l2_work=self.work, l2_read_bytes=self.reads,
+                    l2_read_shards=self.reads, coalesced_shards=0)
+
+
 def result(handle, hit, work):
-    return dict(handle=handle, total_hit_blocks=hit, remaining_l2_work=work)
+    return dict(handle=handle, total_hit_blocks=hit, remaining_l2_work=work,
+                batch=Capability(work))
 
 
 def test_first_batch_reads_before_next_reserve_finishes(worker):
@@ -64,10 +103,11 @@ def test_first_batch_reads_before_next_reserve_finishes(worker):
             second_entered.set()
             assert reading.wait(2), "reserve still precedes all reads"
             assert allow_second.wait(2)
-        return result(len(calls), len(ids), len(ids))
+        reservation = result(len(calls), len(ids), len(ids))
+        reservation["batch"].submit = reading.set
+        return reservation
 
     worker.store.reserve_prefix.side_effect = reserve
-    worker.store.prefetch_reserved.side_effect = lambda handle: (reading.set(), {"l2_read_shards": 1})[1]
     worker.receive(dict(op="reserve", key="overlap", request="r", blocks=blocks(96)))
     try:
         assert second_entered.wait(1)
@@ -147,3 +187,83 @@ def test_hrrn_service_estimate_is_remaining_shards_not_total_prefix():
     short = early.WorkerBatch(0, 0, result(2, 2, 4), entered=0)
     assert early.EarlyWorker.ratio(long, 10) == 11
     assert early.EarlyWorker.ratio(long, 10) > early.EarlyWorker.ratio(short, 10)
+
+
+def enqueue(worker, key, handle, capability, age=0):
+    reservation = result(handle, 32, capability.work)
+    reservation["batch"] = capability
+    batch = early.WorkerBatch(0, 0, reservation, entered=time.monotonic() - age)
+    job = early.WorkerJob(key, [], batches=[batch], reserve_done=True)
+    worker.jobs[key] = job
+    worker.preparing.append((job, batch))
+    return job, batch
+
+
+def test_pending_long_read_does_not_block_another_request(worker):
+    gate = threading.Event()
+    submitted = []
+    long = Capability(4, submit=lambda: submitted.append("long"), gate=gate)
+    short = Capability(1, submit=lambda: submitted.append("short"))
+    with worker.condition:
+        a, _ = enqueue(worker, "long", 1, long, age=100)
+        b, _ = enqueue(worker, "short", 2, short)
+        worker.condition.notify_all()
+    try:
+        wait(lambda: b.ready)
+        assert not a.ready
+        assert submitted[:2] == ["long", "short"]
+        assert long.pending + short.pending <= 2
+    finally:
+        gate.set()
+    wait(lambda: a.ready)
+    worker.store.prefetch_reserved.assert_not_called()  # no synchronous whole-job waits
+
+
+def test_window_is_shared_and_shutdown_drains_without_new_submissions(worker):
+    gates = [threading.Event(), threading.Event()]
+    submitted = []
+    capabilities = [Capability(4, submit=lambda i=i: submitted.append(i), gate=gates[i])
+                    for i in range(2)]
+    worker.store.release_reservation.side_effect = lambda handle: setattr(capabilities[handle - 1], "cancelled", True)
+    with worker.condition:
+        for i, cap in enumerate(capabilities):
+            enqueue(worker, str(i), i + 1, cap, age=20 - i)
+        worker.condition.notify_all()
+    closer = None
+    try:
+        wait(lambda: sum(cap.pending for cap in capabilities) == 2)
+        time.sleep(.02)
+        assert len(submitted) == 2  # the window is per worker, not per request
+        closer = threading.Thread(target=worker.close)
+        closer.start()
+        wait(lambda: all(cap.cancelled for cap in capabilities))
+        assert closer.is_alive()
+        assert all(cap.protected_bytes for cap in capabilities)
+        assert len(submitted) == 2
+    finally:
+        for gate in gates:
+            gate.set()
+        if closer is not None:
+            closer.join(2)
+    assert closer is not None and not closer.is_alive()
+    assert all(cap.drained.is_set() and cap.protected_bytes == 0 for cap in capabilities)
+    assert len(submitted) == 2
+
+
+def test_new_arrivals_cannot_keep_an_existing_request_out_of_later_rounds(worker):
+    # Exercise the scheduling rule independently of I/O timing: one old long
+    # request and newly arriving short requests participate in finite rounds.
+    with worker.condition:
+        _, old = enqueue(worker, "old", 1, Capability(100), age=20)
+        _, first = enqueue(worker, "first", 2, Capability(1), age=10)
+        remaining = set()
+        worker._choose(remaining)
+        key, batch = worker.selected.pop(0)
+        remaining.discard(key.key)
+        worker.preparing.append((key, batch))
+        for i in range(10):
+            enqueue(worker, "new" + str(i), i + 3, Capability(1), age=100)
+        worker._choose(remaining)
+        assert worker.selected[0][1] is old  # finish original round before arrivals
+        worker.preparing.clear()
+        worker.selected.clear()
