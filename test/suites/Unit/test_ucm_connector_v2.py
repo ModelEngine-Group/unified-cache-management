@@ -1,7 +1,6 @@
 import enum
 import inspect
 import json
-import math
 import os
 import sys
 import tempfile
@@ -211,31 +210,6 @@ for name, value in (
 ):
     setattr(vllm_kv_cache_interface, name, value)
 sys.modules[vllm_kv_cache_interface.__name__] = vllm_kv_cache_interface
-
-# The connector resolves its scheduler granularity through vLLM's
-# resolve_kv_cache_block_sizes; mirror its dcp=1 semantics (single group =
-# cache_config.block_size, multiple groups = LCM of group block sizes).
-vllm_v1_core = types.ModuleType("vllm.v1.core")
-vllm_v1_core.__path__ = []
-sys.modules.setdefault("vllm.v1.core", vllm_v1_core)
-vllm_kv_cache_utils = types.ModuleType("vllm.v1.core.kv_cache_utils")
-
-
-def resolve_kv_cache_block_sizes(kv_cache_config, vllm_config):
-    dcp = int(
-        getattr(vllm_config.parallel_config, "decode_context_parallel_size", 1)
-        or 1
-    )
-    groups = tuple(getattr(kv_cache_config, "kv_cache_groups", ()) or ())
-    if len(groups) <= 1:
-        size = int(vllm_config.cache_config.block_size) * dcp
-        return size, size
-    scheduler = math.lcm(*(int(g.kv_cache_spec.block_size) for g in groups))
-    return scheduler, scheduler
-
-
-vllm_kv_cache_utils.resolve_kv_cache_block_sizes = resolve_kv_cache_block_sizes
-sys.modules.setdefault(vllm_kv_cache_utils.__name__, vllm_kv_cache_utils)
 
 from ucm.integration.vllm.v2.ucm_kv_cache import (  # noqa: E402
     UCMKVCacheLayout,
@@ -511,7 +485,6 @@ class KVCacheSpecTest(unittest.TestCase):
     def test_direct_custom_chunk_keeps_base_hash_size(self):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
-            scheduler_block_size=128,
             ucm_cache_block_size=512,
         )
 
@@ -524,7 +497,6 @@ class KVCacheSpecTest(unittest.TestCase):
                 group(["model.layers.0.attn"], FullAttentionSpec(128)),
                 group(["model.layers.1.mixer"], MambaSpec(128)),
             ),
-            scheduler_block_size=128,
         )
 
         self.assertEqual(tuple(g.group_id for g in parsed.attn_groups), (0,))
@@ -540,7 +512,6 @@ class KVCacheSpecTest(unittest.TestCase):
                         MambaSpec(128, mamba_cache_mode="none"),
                     ),
                 ),
-                scheduler_block_size=128,
             )
 
     def test_hybrid_rejects_misaligned_mamba_block(self):
@@ -550,7 +521,6 @@ class KVCacheSpecTest(unittest.TestCase):
                     group(["model.layers.0.attn"], FullAttentionSpec(128)),
                     group(["model.layers.1.mixer"], MambaSpec(256)),
                 ),
-                scheduler_block_size=128,
             )
 
     def test_hybrid_rejects_misaligned_attention_block(self):
@@ -560,7 +530,6 @@ class KVCacheSpecTest(unittest.TestCase):
                     group(["model.layers.0.attn"], FullAttentionSpec(256)),
                     group(["model.layers.1.mixer"], MambaSpec(128)),
                 ),
-                scheduler_block_size=128,
             )
 
     def test_dsv4_derives_canonical_size_once(self):
@@ -576,7 +545,6 @@ class KVCacheSpecTest(unittest.TestCase):
                     AscendSlidingWindowMLASpec(128, 4, 4096),
                 ),
             ),
-            scheduler_block_size=16,
         )
 
         self.assertEqual(parsed.ucm_cache_block_size, 512)
@@ -596,7 +564,6 @@ class KVCacheSpecTest(unittest.TestCase):
                     FullAttentionSpec(128, sliding_window=4096),
                 )
             ),
-            scheduler_block_size=128,
         )
 
         self.assertEqual(
@@ -613,7 +580,6 @@ class KVCacheSpecTest(unittest.TestCase):
                     group(["model.layers.0.attn"], FullAttentionSpec(128)),
                     group(["model.layers.1.mixer"], MambaSpec(128)),
                 ),
-                scheduler_block_size=128,
                 ucm_cache_block_size=512,
             )
 
@@ -635,10 +601,10 @@ class KVCacheSpecTest(unittest.TestCase):
             self.skipTest("workspace Ascend runtime captures are unavailable")
 
         glm = parse_kv_cache_config(
-            captured_config(required["glm"]), scheduler_block_size=128
+            captured_config(required["glm"])
         )
         dsv4 = parse_kv_cache_config(
-            captured_config(required["dsv4"]), scheduler_block_size=8
+            captured_config(required["dsv4"])
         )
 
         self.assertEqual(len(glm.groups), 1)
@@ -658,7 +624,7 @@ class KVCacheSpecTest(unittest.TestCase):
         # be accepted as a production Kimi align layout.
         with self.assertRaisesRegex(ValueError, "mamba_cache_mode='align'"):
             parse_kv_cache_config(
-                captured_config(required["kimi"]), scheduler_block_size=768
+                captured_config(required["kimi"])
             )
 
     def test_real_cpu_dsv4_capture_uses_fa_and_wa_groups(self):
@@ -676,7 +642,6 @@ class KVCacheSpecTest(unittest.TestCase):
 
         parsed = parse_kv_cache_config(
             captured_config(path),
-            scheduler_block_size=256,
             device_type="cpu",
         )
 
@@ -706,7 +671,6 @@ class KVCacheSpecTest(unittest.TestCase):
             )
         scheduler_spec = parse_kv_cache_config(
             config(*scheduler_groups),
-            scheduler_block_size=256,
             device_type="cpu",
             attention_tokens_per_state=ratios,
         )
@@ -889,7 +853,6 @@ class HashAndLookupTest(unittest.TestCase):
                 group(["model.layers.0.attn"], FullAttentionSpec(128)),
                 group(["model.layers.1.mixer"], MambaSpec(128)),
             ),
-            scheduler_block_size=128,
         )
         coordinator = UCMLookupCoordinator(
             parsed, UCMProxyAdapter(FakeProxy()), self.hasher, b"seed"
@@ -907,7 +870,6 @@ class HashAndLookupTest(unittest.TestCase):
     def test_custom_cache_block_chains_at_the_cache_block(self):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
-            scheduler_block_size=128,
             ucm_cache_block_size=512,
         )
         proxy = FakeProxy()
@@ -926,7 +888,6 @@ class HashAndLookupTest(unittest.TestCase):
     def test_direct_prefix_stops_at_first_miss(self):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
-            scheduler_block_size=128,
         )
         proxy = FakeProxy()
         coordinator = UCMLookupCoordinator(
@@ -943,7 +904,6 @@ class HashAndLookupTest(unittest.TestCase):
     def test_direct_miss_never_moves_an_unaligned_hbm_boundary_backwards(self):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
-            scheduler_block_size=128,
             ucm_cache_block_size=512,
         )
         proxy = FakeProxy()
@@ -962,7 +922,6 @@ class HashAndLookupTest(unittest.TestCase):
     def test_direct_full_hit_loads_last_block_but_reports_one_less_token(self):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
-            scheduler_block_size=128,
         )
         proxy = FakeProxy()
         coordinator = UCMLookupCoordinator(
@@ -983,7 +942,6 @@ class HashAndLookupTest(unittest.TestCase):
                 group(["model.layers.0.attn"], FullAttentionSpec(128)),
                 group(["model.layers.1.mixer"], MambaSpec(128)),
             ),
-            scheduler_block_size=128,
         )
         proxy = FakeProxy()
         coordinator = UCMLookupCoordinator(
@@ -1005,7 +963,6 @@ class HashAndLookupTest(unittest.TestCase):
                 group(["model.layers.0.attn"], FullAttentionSpec(128)),
                 group(["model.layers.1.mixer"], MambaSpec(128)),
             ),
-            scheduler_block_size=128,
         )
         proxy = FakeProxy()
         coordinator = UCMLookupCoordinator(
@@ -1026,7 +983,6 @@ class HashAndLookupTest(unittest.TestCase):
                 group(["model.layers.0.attn"], FullAttentionSpec(128)),
                 group(["model.layers.1.mixer"], MambaSpec(128)),
             ),
-            scheduler_block_size=128,
         )
         coordinator = UCMLookupCoordinator(
             parsed,
@@ -1052,7 +1008,6 @@ class HashAndLookupTest(unittest.TestCase):
                 ),
                 num_blocks=4,
             ),
-            scheduler_block_size=16,
         )
         proxy = FakeProxy()
         coordinator = UCMLookupCoordinator(
@@ -1078,7 +1033,6 @@ class HashAndLookupTest(unittest.TestCase):
                 ),
                 num_blocks=4,
             ),
-            scheduler_block_size=16,
         )
         proxy = FakeProxy()
         coordinator = UCMLookupCoordinator(
@@ -1325,7 +1279,6 @@ class DispatcherLifecycleTest(unittest.TestCase):
     def setUp(self):
         self.parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
-            scheduler_block_size=128,
         )
         self.dispatcher = UCMDispatcher(self.parsed)
 
@@ -1409,7 +1362,6 @@ class DispatcherLifecycleTest(unittest.TestCase):
     def test_direct_custom_chunk_completes_once_across_steps(self):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
-            scheduler_block_size=128,
             ucm_cache_block_size=512,
         )
         dispatcher = UCMDispatcher(parsed)
@@ -1470,7 +1422,6 @@ class DispatcherLifecycleTest(unittest.TestCase):
                     AscendSlidingWindowMLASpec(32, 1, 128),
                 ),
             ),
-            scheduler_block_size=8,
         )
         dispatcher = UCMDispatcher(parsed)
         request = FakeRequest("dsv4", 1024)
@@ -1521,7 +1472,6 @@ class RaggedLayoutTest(unittest.TestCase):
                     FullAttentionSpec(256, tokens_per_state=4),
                 )
             ),
-            scheduler_block_size=256,
             device_type="cpu",
         )
         layout = UCMKVCacheLayout(
@@ -1560,7 +1510,6 @@ class RaggedLayoutTest(unittest.TestCase):
                     ),
                 ),
             ),
-            scheduler_block_size=4,
             device_type="cpu",
         )
         layout = UCMKVCacheLayout(
@@ -1621,7 +1570,6 @@ class RaggedLayoutTest(unittest.TestCase):
                     },
                 )
             ),
-            scheduler_block_size=4,
         )
         components = (
             FakeTensor(0x1000, (8, 4, 3), (12, 3, 1)),
@@ -1663,7 +1611,6 @@ class RaggedLayoutTest(unittest.TestCase):
     def test_unknown_5d_axis_order_fails_fast(self):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(4))),
-            scheduler_block_size=4,
         )
 
         with self.assertRaisesRegex(ValueError, "2-D, 3-D, or 4-D"):
@@ -1681,7 +1628,6 @@ class RaggedLayoutTest(unittest.TestCase):
     def test_partial_range_keeps_block_wise_entries(self):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
-            scheduler_block_size=128,
         )
         layout = UCMKVCacheLayout(
             parsed,
@@ -1728,7 +1674,6 @@ class RaggedLayoutTest(unittest.TestCase):
         # that silently zero-fills holes can hide incorrect file offsets.
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
-            scheduler_block_size=128,
         )
         layout = UCMKVCacheLayout(
             parsed,
@@ -1788,7 +1733,6 @@ class RaggedLayoutTest(unittest.TestCase):
         # them based on physical addresses.
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(8))),
-            scheduler_block_size=8,
         )
         layout = UCMKVCacheLayout(
             parsed,
@@ -1859,7 +1803,6 @@ class RaggedLayoutTest(unittest.TestCase):
                 group(["model.layers.3.self_attn.attn"], FullAttentionSpec(768)),
                 num_blocks=2,
             ),
-            scheduler_block_size=768,
         )
         caches = {
             "model.layers.3.self_attn.attn": (
@@ -1911,7 +1854,6 @@ class RaggedLayoutTest(unittest.TestCase):
                 ),
                 num_blocks=2,
             ),
-            scheduler_block_size=768,
         )
         num_blocks = 2
         conv_bytes = 27648
@@ -1976,7 +1918,6 @@ class RaggedLayoutTest(unittest.TestCase):
                     },
                 )
             ),
-            scheduler_block_size=128,
             ucm_cache_block_size=256,
         )
         caches = {
@@ -2064,7 +2005,6 @@ class RaggedLayoutTest(unittest.TestCase):
                 num_blocks=4,
                 tensors=declarations,
             ),
-            scheduler_block_size=256,
             device_type="cpu",
         )
         caches = {
@@ -2175,7 +2115,6 @@ class RaggedLayoutTest(unittest.TestCase):
                 num_blocks=num_blocks,
                 tensors=declarations,
             ),
-            scheduler_block_size=256,
             device_type="cpu",
         )
         caches = {
@@ -2255,7 +2194,6 @@ class RaggedLayoutTest(unittest.TestCase):
                     },
                 )
             ),
-            scheduler_block_size=4,
         )
         layout = UCMKVCacheLayout(
             parsed,
@@ -2349,7 +2287,6 @@ class RaggedLayoutTest(unittest.TestCase):
                     },
                 )
             ),
-            scheduler_block_size=128,
         )
         caches = {
             "model.layers.0.attn": (
@@ -2395,7 +2332,6 @@ class RaggedLayoutTest(unittest.TestCase):
             config(
                 group(["model.layers.0.indexer"], FullAttentionSpec(128)), num_blocks=4
             ),
-            scheduler_block_size=128,
         )
         num_blocks = 4
         k_base = 0x1000
@@ -2461,7 +2397,6 @@ class RaggedLayoutTest(unittest.TestCase):
                     ),
                 ),
             ),
-            scheduler_block_size=4,
             device_type="cpu",
         )
         caches = {
@@ -2576,7 +2511,6 @@ class RaggedLayoutTest(unittest.TestCase):
                 ),
                 num_blocks=4,
             ),
-            scheduler_block_size=16,
         )
         caches = {
             "model.layers.2.attn": FakeTensor(
@@ -2631,7 +2565,6 @@ class RaggedLayoutTest(unittest.TestCase):
                 group(["model.layers.0.attn"], FullAttentionSpec(128)),
                 group(["model.layers.1.mixer"], MambaSpec(128)),
             ),
-            scheduler_block_size=128,
         )
         caches = {
             "model.layers.0.attn": FakeTensor(0x1000, (8, 128, 4), (512, 4, 1)),
@@ -2664,7 +2597,6 @@ class RaggedLayoutTest(unittest.TestCase):
     def test_synchronous_proxy_dump_load_to_different_blocks_is_byte_exact(self):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(4))),
-            scheduler_block_size=4,
         )
         caches = {
             "model.layers.0.attn": (
@@ -2785,7 +2717,6 @@ class DeclaredLayoutModelTest(unittest.TestCase):
                 ),
                 tensors=declarations if tensors is None else tensors,
             ),
-            scheduler_block_size=4,
             device_type="cpu",
         )
         caches = {

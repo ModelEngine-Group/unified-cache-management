@@ -89,14 +89,16 @@ class UCMKVCacheGroupInfo:
 class UCMKVCacheSpec:
     """UCM policy sizes, all in tokens.
 
-    scheduler_block_size is what vLLM's
-    ``resolve_kv_cache_block_sizes`` reports for this engine -- the
-    token-alignment invariant of the resident KV pool (single group:
-    ``cache_config.block_size``; multiple groups: LCM).  ucm_cache_block_size
-    is both the record unit and the shared hash chain's key granularity:
-    the smallest token_block_size across the full-attention groups
-    (token_block_size already folds compression), or the scheduler block
-    when the model has no full-attention group.
+    scheduler_block_size is the LCM of every group's token_block_size (a
+    single group's own token span) -- the token alignment the resident
+    pool's block tables share.  It is derived from the group token spans,
+    not vLLM's resolve_kv_cache_block_sizes, because Ascend 0.26 specs
+    report the storage axis as block_size, which would put that LCM on
+    the wrong axis.  ucm_cache_block_size is both the record unit and the
+    shared hash chain's key granularity: the smallest token_block_size
+    across the full-attention groups (token_block_size already folds
+    compression), or the scheduler block when the model has no
+    full-attention group.
     """
 
     groups: tuple[UCMKVCacheGroupInfo, ...]
@@ -274,13 +276,18 @@ def _parse_descriptors(
 def parse_kv_cache_config(
     kv_cache_config: "KVCacheConfig",
     *,
-    scheduler_block_size: int,
     ucm_cache_block_size: int | None = None,
     device_type: str = "npu",
     attention_tokens_per_state: Mapping[int, int] | None = None,
     num_hidden_layers: int | None = None,
 ) -> UCMKVCacheSpec:
     """Describe logical groups and per-layer storage from KVCacheConfig.
+
+    scheduler_block_size (on the returned spec) is derived here as the LCM
+    of every group's token_block_size rather than read from vLLM's
+    resolve_kv_cache_block_sizes: Ascend 0.26 specs report the storage
+    axis as block_size, which would put that LCM on the wrong axis (DSV4
+    0.26: storage-axis LCM 128, token-axis LCM 16384).
 
     vLLM 0.29's scheduler replaces a UniformTypeKVCacheSpecs map with one
     representative spec. For DSV4 that loses C4/C128 per-layer ratios.
@@ -327,12 +334,6 @@ def parse_kv_cache_config(
                 raise ValueError(
                     "connector v2 supports Mamba state only with "
                     f"mamba_cache_mode='align', got {sorted(modes)}"
-                )
-            block_sizes = {int(getattr(spec, "block_size")) for _, spec in concrete}
-            if block_sizes != {scheduler_block_size}:
-                raise ValueError(
-                    "Mamba align block size must equal cache_config.block_size="
-                    f"{scheduler_block_size}, got {sorted(block_sizes)}"
                 )
         classified.append((raw_group, concrete, kinds))
 
@@ -454,6 +455,10 @@ def parse_kv_cache_config(
             )
         )
 
+    # The token alignment every group's blocks share: the LCM of the
+    # group token spans (a single group's own token_block_size).
+    scheduler_block = math.lcm(*(group.token_block_size for group in groups))
+
     state_groups = tuple(group for group in groups if group.is_state_snapshot)
     if state_groups:
         if not any(group.is_attention for group in groups):
@@ -464,17 +469,17 @@ def parse_kv_cache_config(
         mismatched_groups = {
             group.group_id: group.token_block_size
             for group in groups
-            if group.token_block_size != scheduler_block_size
+            if group.token_block_size != scheduler_block
         }
         if mismatched_groups:
             raise ValueError(
-                "Mamba align requires every KV group block size to equal "
-                f"cache_config.block_size={scheduler_block_size}, got "
-                f"{mismatched_groups}"
+                "Mamba align block size mismatch: every KV group block "
+                f"size must equal the shared token block {scheduler_block}, "
+                f"got {mismatched_groups}"
             )
     if len(groups) == 1 and ucm_cache_block_size is not None:
         selected_block = ucm_cache_block_size
-        if selected_block < scheduler_block_size or selected_block % scheduler_block_size:
+        if selected_block < scheduler_block or selected_block % scheduler_block:
             raise ValueError(
                 "ucm_cache_block_size must be a positive multiple of "
                 "scheduler_block_size"
@@ -482,7 +487,7 @@ def parse_kv_cache_config(
     elif fa_token_blocks:
         selected_block = min(fa_token_blocks)
     else:
-        selected_block = scheduler_block_size
+        selected_block = scheduler_block
 
     if LAYOUT_DEBUG:
         for group in groups:
@@ -493,14 +498,14 @@ def parse_kv_cache_config(
                 f"tail={group.tail_tokens}"
             )
         layout_debug(
-            f"spec scheduler_block={scheduler_block_size} "
+            f"spec scheduler_block={scheduler_block} "
             f"ucm_cache_block={selected_block} "
             f"device={device_type}"
         )
 
     return UCMKVCacheSpec(
         groups=tuple(groups),
-        scheduler_block_size=scheduler_block_size,
+        scheduler_block_size=scheduler_block,
         ucm_cache_block_size=selected_block,
         device_type=device_type,
     )
