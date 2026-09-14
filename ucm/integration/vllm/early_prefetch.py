@@ -301,12 +301,18 @@ class EarlyWorker:
         self.condition.notify_all()
 
     def _reserve(self, job):
+        started = time.monotonic()
+        log.info("UCM_EARLY lookup_start key=%s rank=%s queue_ms=%.3f",
+                 job.key, self.connector.tp_rank, (started - job.entered) * 1000)
         try:
             blocks = job.blocks
             c = self.connector
             if not c.is_mla and c.tp_rank % c.tp_size:
                 blocks = [c.request_hasher(block) for block in blocks]
             reservation = self.store.reserve_prefix(blocks)
+            log.info("UCM_EARLY lookup_done key=%s rank=%s reservation=%s elapsed_ms=%.3f",
+                     job.key, c.tp_rank, reservation["handle"],
+                     (time.monotonic() - started) * 1000)
             with self.condition:
                 job.reservation = reservation
                 if job.cancelled or self.closed:

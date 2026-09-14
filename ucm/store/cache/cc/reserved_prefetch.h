@@ -8,6 +8,7 @@
 #include <thread>
 #include <unordered_map>
 #include "buffer_manager.h"
+#include "early_stats.h"
 
 namespace UC::CacheStore {
 
@@ -54,6 +55,7 @@ public:
 
     Expected<PrefixReservation> Reserve(const Detail::BlockId* blocks, size_t num)
     {
+        EarlyStats stats{"reserve"};
         if (!buffer_) { return Status::Error("Early requires a worker data buffer"); }
         auto reservation = std::make_shared<Reservation>();
         // Bound speculative pin/lease work after a short hit. Do not stop on an
@@ -62,6 +64,8 @@ public:
         size_t count = num;
         for (size_t begin = 0; begin < num; begin += candidateBatchBlocks) {
             const auto end = std::min(num, begin + candidateBatchBlocks);
+            {
+            EarlyStats::Phase phase{stats.leaseMs};
             bool extended = false;
             if (!reservation->leases.empty()) {
                 auto result = reservation->leases.back()->Extend(blocks + begin, end - begin);
@@ -73,15 +77,20 @@ public:
                 if (!lease) { return lease.Error(); }
                 reservation->leases.push_back(std::move(lease.Value()));
             }
+            }
             reservation->blocks.insert(reservation->blocks.end(), blocks + begin, blocks + end);
             reservation->pins.resize(end * shardsPerBlock_);
             std::vector<Detail::BlockId> needL2;
             std::vector<size_t> needL2Indices;
+            {
+            EarlyStats::Phase phase{stats.pinMs};
             for (size_t b = begin; b < end; ++b) {
                 bool complete = true;
                 for (size_t shard = 0; shard < shardsPerBlock_; ++shard) {
                     auto& pin = reservation->pins[b * shardsPerBlock_ + shard];
                     bool capacityConflict = false;
+                    ++stats.shards;
+                    ++stats.bucketLocks;
                     pin = buffer_->PinReady(blocks[b], shard, &capacityConflict, true);
                     if (capacityConflict) {
                         return Status::Error("prefix occupies native load-exclusive buffer");
@@ -93,7 +102,10 @@ public:
                     needL2Indices.push_back(b);
                 }
             }
+            }
             if (!needL2.empty()) {
+                EarlyStats::Phase phase{stats.lookupMs};
+                ++stats.lookups;
                 auto hit = backend_->LookupOnPrefix(needL2.data(), needL2.size());
                 if (!hit) { return hit.Error(); }
                 const auto firstMiss = static_cast<size_t>(hit.Value() + 1);
@@ -116,11 +128,15 @@ public:
         std::lock_guard guard(mutex_);
         const auto handle = next_++;
         reservations_.emplace(handle, std::move(reservation));
+        stats.handle = handle;
+        stats.success = true;
         return PrefixReservation{handle, count, missing};
     }
 
     Expected<PrefetchResult> Prefetch(uint64_t handle)
     {
+        EarlyStats stats{"prefetch"};
+        stats.handle = handle;
         std::shared_ptr<Reservation> reservation;
         {
             std::lock_guard guard(mutex_);
@@ -145,6 +161,7 @@ public:
             const auto transfer = transfers.front();
             // Native Wait drains the backend even on failure. All destination
             // pins and read leases remain owned by r until every batch drains.
+            EarlyStats::Phase phase{stats.waitMs};
             auto status = backend_->Wait(transfer.handle);
             if (status.Success()) {
                 for (size_t i = transfer.first; i < transfer.first + transfer.count; ++i) {
@@ -166,7 +183,10 @@ public:
                 // Allocate bookkeeping before submission so an allocation
                 // failure cannot lose the handle of an already accepted I/O.
                 transfers.push_back({0, firstOwner, count});
+                if (stats.firstIoMs < 0) { stats.firstIoMs = EarlyStats::Milliseconds(stats.elapsed); }
+                const StopWatch submitting;
                 auto transfer = backend_->Load(std::move(task));
+                stats.submitMs += EarlyStats::Milliseconds(submitting);
                 if (!transfer) {
                     transfers.pop_back();
                     return transfer.Error();
@@ -193,6 +213,7 @@ public:
                 auto& block = r.blocks[i / shardsPerBlock_];
                 auto shard = i % shardsPerBlock_;
                 // Bounded capacity search; native load still uses its original policy.
+                ++stats.shards;
                 pin = buffer_->TryGet(block, shard);
                 if (!pin) { return Status::Error("no space for reserved prefetch"); }
                 if (pin.Ready()) { continue; }
@@ -213,6 +234,7 @@ public:
                 status = complete();
                 if (status.Failure()) { return status; }
             }
+            EarlyStats::Phase phase{stats.waitMs};
             for (auto& pin : r.pins) {
                 auto status = WaitReady(pin, timeoutMs_, r.cancelled);
                 if (status.Failure()) { return status; }
@@ -245,11 +267,14 @@ public:
             if (r.cancelled.load()) { return Status::Error("reserved prefetch cancelled"); }
             r.ready = true;
         }
+        stats.success = true;
         return result;
     }
 
     std::vector<TransBuffer::Handle> LoadHandles(const Detail::TaskDesc& task)
     {
+        EarlyStats stats{"load_handles"};
+        stats.shards = task.size();
         std::vector<std::shared_ptr<Reservation>> candidates;
         {
             std::lock_guard guard(mutex_);
@@ -274,8 +299,10 @@ public:
                 // Handle's native copy acquires a node reference without a hash
                 // lookup. It remains valid if Release runs before H2D completes.
                 handles[i] = pin;
+                ++stats.matched;
             }
         }
+        stats.success = true;
         return handles;
     }
 

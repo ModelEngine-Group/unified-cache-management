@@ -112,6 +112,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
     const auto nShard = task->desc.size();
     size_t backendSubmitCount = 0;
     size_t waitShardCount = 0;
+    size_t nativeGetCount = 0;
     std::vector<bool> prepared(task->loadHandles.size() == nShard ? nShard : 0, false);
     const auto indexes = RearrangeIndex(nShard, deviceId_, localRankSize_);
     for (size_t i = 0; i < nShard; i++) {
@@ -122,6 +123,7 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
             shardTask.bufferHandle = std::move(task->loadHandles[indexes[i]]);
         }
         if (!shardTask.bufferHandle) {
+            ++nativeGetCount;
             shardTask.bufferHandle = buffer_->Get(shard.owner, shard.index, true, true);
         }
         shardTask.backendTaskHandle = 0;
@@ -152,6 +154,10 @@ void LoadQueue::DispatchOneTask(TaskPair&& pair)
         shardTask.shard = std::move(shard);
         shardTask.waiter = (i + 1 < nShard) ? nullptr : waiter;
         running_.Push(std::move(shardTask));
+    }
+    if (!task->desc.loadReservations.empty()) {
+        UC_INFO("UCM_EARLY stage=load_dispatch task={} shards={} native_get_fallback={}",
+                task->id, nShard, nativeGetCount);
     }
     auto tpDispatch = NowTime::Now();
     for (size_t i = 0; i < nShard; i++) {
