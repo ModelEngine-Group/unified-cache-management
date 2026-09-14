@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include "buffer_manager.h"
 #include "early_stats.h"
+#include "early_batch.h"
 #include "early_buffer_pins.h"
 
 namespace UC::CacheStore {
@@ -27,9 +28,12 @@ class ReservedPrefetch {
         { return groups[i / shards]->pins[i % shards]; }
         std::mutex mutex;
         std::atomic<bool> cancelled{false};
+        std::weak_ptr<Early::Batch> batch;
         bool started{false};
         bool ready{false};
     };
+    class Batch;
+    std::shared_ptr<Early::Batch> MakeBatch(const std::shared_ptr<Reservation>& r, uint64_t handle);
     struct LoadEntry {
         std::weak_ptr<Reservation> reservation;
         size_t blockOffset;
@@ -93,21 +97,6 @@ class ReservedPrefetch {
         return readyBlocks_.size();
     }
 
-    static Status WaitReady(const TransBuffer::Handle& pin, size_t timeoutMs,
-                            const std::atomic<bool>& cancelled)
-    {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
-        for (;;) {
-            if (cancelled.load()) { return Status::Error("reserved prefetch cancelled"); }
-            const auto state = pin.GetState();
-            if (state == TransBuffer::State::READY) { return Status::OK(); }
-            if (state == TransBuffer::State::FAILED) { return pin.FailureStatus(); }
-            if (std::chrono::steady_clock::now() >= deadline) {
-                return Status::Error("shared shard readiness timeout");
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-    }
 
 public:
     ReservedPrefetch(BufferManager* manager, StoreV1* backend, size_t blockSize,
@@ -122,6 +111,10 @@ public:
         EarlyStats stats{"reserve"};
         if (!buffer_) { return Status::Error("Early requires a worker data buffer"); }
         auto r = std::make_shared<Reservation>();
+        {
+            std::lock_guard guard(mutex_);
+            stats.handle = next_++;
+        }
         size_t count = num;
         size_t batchBlocks = 32;
         for (size_t begin = 0; begin < num;) {
@@ -231,161 +224,35 @@ public:
             missing += remaining;
         }
         r->ready = missing == 0;
-        uint64_t handle;
+        const auto handle = stats.handle;
+        auto batch = MakeBatch(r, handle);
+        r->batch = batch;
         {
             std::lock_guard guard(mutex_);
-            handle = next_++;
             reservations_.emplace(handle, r);
         }
         stats.hintEntries = PublishReady(r);
         stats.handle = handle;
         stats.success = true;
-        return PrefixReservation{handle, count, missing};
+        return PrefixReservation{handle, count, missing, std::move(batch)};
     }
 
     Expected<PrefetchResult> Prefetch(uint64_t handle)
     {
-        EarlyStats stats{"prefetch"};
-        stats.handle = handle;
-        std::shared_ptr<Reservation> reservation;
+        std::shared_ptr<Reservation> r;
         {
             std::lock_guard guard(mutex_);
             auto it = reservations_.find(handle);
             if (it == reservations_.end()) { return Status::Error("unknown reservation"); }
-            reservation = it->second;
+            r = it->second;
         }
-        auto& r = *reservation;
+        std::shared_ptr<Early::Batch> batch;
         {
-            std::lock_guard guard(r.mutex);
-            if (r.started) { return Status::Error("reservation already prefetched"); }
-            r.started = true;
+            std::lock_guard guard(r->mutex);
+            batch = r->batch.lock();
+            if (!batch) { batch = MakeBatch(r, handle); r->batch = batch; }
         }
-        std::vector<size_t> owners;
-        struct Transfer {
-            Detail::TaskHandle handle{0};
-            size_t first, count;
-        };
-        std::deque<Transfer> transfers;
-        PrefetchResult result;
-        auto complete = [&]() -> Status {
-            const auto transfer = transfers.front();
-            // Native Wait drains the backend even on failure. All destination
-            // pins and read leases remain owned by r until every batch drains.
-            EarlyStats::Phase phase{stats.waitMs};
-            auto status = backend_->Wait(transfer.handle);
-            if (status.Success()) {
-                for (size_t i = transfer.first; i < transfer.first + transfer.count; ++i) {
-                    r.Pin(owners[i], shardsPerBlock_).MarkReady();
-                }
-            }
-            transfers.pop_front();
-            return status;
-        };
-        auto run = [&]() -> Status {
-            constexpr size_t batchShards = 64;
-            constexpr size_t inflightBatches = 2;
-            Detail::TaskDesc task;
-            task.brief = "EarlyL2ToL1";
-            size_t firstOwner = 0;
-            auto submit = [&]() -> Status {
-                if (task.empty()) { return Status::OK(); }
-                const auto count = task.size();
-                // Allocate bookkeeping before submission so an allocation
-                // failure cannot lose the handle of an already accepted I/O.
-                transfers.push_back({0, firstOwner, count});
-                if (stats.firstIoMs < 0) { stats.firstIoMs = EarlyStats::Milliseconds(stats.elapsed); }
-                const StopWatch submitting;
-                auto transfer = backend_->Load(std::move(task));
-                stats.submitMs += EarlyStats::Milliseconds(submitting);
-                if (!transfer) {
-                    transfers.pop_back();
-                    return transfer.Error();
-                }
-                transfers.back().handle = transfer.Value();
-                result.l2ReadShards += count;
-                result.l2ReadBytes += count * shardBytes_;
-                firstOwner += count;
-                task = Detail::TaskDesc{};
-                task.brief = "EarlyL2ToL1";
-                if (transfers.size() == inflightBatches) { return complete(); }
-                return Status::OK();
-            };
-            for (size_t i = 0; i < r.blocks.size() * shardsPerBlock_; ++i) {
-                if (r.cancelled.load()) { return Status::Error("reserved prefetch cancelled"); }
-                // This Prefetch is the sole pin writer. LoadHandles only reads
-                // after ready is published; Release merely cancels and drops
-                // the map reference. No per-shard reservation mutex is needed.
-                auto& pin = r.Pin(i, shardsPerBlock_);
-                if (pin) {
-                    if (!pin.Ready()) { ++result.coalescedShards; }
-                    continue;  // reuse READY and live in-flight positions
-                }
-                auto& block = r.blocks[i / shardsPerBlock_];
-                auto shard = i % shardsPerBlock_;
-                // Bounded capacity search; native load still uses its original policy.
-                ++stats.shards;
-                pin = buffer_->TryGet(block, shard);
-                if (!pin) { return Status::Error("no space for reserved prefetch"); }
-                if (pin.Ready()) { continue; }
-                if (pin.Owner()) {
-                    owners.push_back(i);
-                    task.push_back({block, shard, {pin.Data()}});
-                } else {
-                    ++result.coalescedShards;
-                }
-                if (task.size() == batchShards) {
-                    auto status = submit();
-                    if (status.Failure()) { return status; }
-                }
-            }
-            auto status = submit();
-            if (status.Failure()) { return status; }
-            while (!transfers.empty()) {
-                status = complete();
-                if (status.Failure()) { return status; }
-            }
-            EarlyStats::Phase phase{stats.waitMs};
-            for (size_t i = 0; i < r.blocks.size() * shardsPerBlock_; ++i) {
-                auto& pin = r.Pin(i, shardsPerBlock_);
-                auto status = WaitReady(pin, timeoutMs_, r.cancelled);
-                if (status.Failure()) { return status; }
-            }
-            return Status::OK();
-        };
-        auto status = Status::OK();
-        try { status = run(); }
-        catch (const std::exception& e) { status = Status::Error(fmt::format("prefetch exception: {}", e.what())); }
-        // Includes cancellation, a later submit failure, or an allocation
-        // failure while preparing the next batch. Never unpin in-flight I/O.
-        while (!transfers.empty()) {
-            if (transfers.front().handle == 0) {
-                transfers.pop_front();
-                continue;
-            }
-            auto drained = complete();
-            if (status.Success() && drained.Failure()) { status = drained; }
-        }
-        stats.pinMs = std::max(0.0, EarlyStats::Milliseconds(stats.elapsed) - stats.waitMs - stats.submitMs);
-        if (status.Failure()) {
-            // Also cover an allocation exception between TryGet and recording
-            // that owner in the batch. Borrowed positions belong to other I/O.
-            for (size_t i = 0; i < r.blocks.size() * shardsPerBlock_; ++i) {
-                auto& pin = r.Pin(i, shardsPerBlock_);
-                if (pin && pin.Owner() && !pin.Ready()) { pin.MarkFailed(status); }
-            }
-            return status;
-        }
-        {
-            std::lock_guard guard(r.mutex);
-            if (r.cancelled.load()) { return Status::Error("reserved prefetch cancelled"); }
-            for (const auto& group : r.groups) {
-                if (!group->ready) { group->ready = true; }
-            }
-            r.ready = true;
-        }
-        stats.hintEntries = PublishReady(reservation);
-        stats.success = true;
-        return result;
+        return batch->Run();
     }
 
     std::vector<TransBuffer::Handle> LoadHandles(const Detail::TaskDesc& task)
@@ -472,4 +339,5 @@ public:
     }
 };
 }  // namespace UC::CacheStore
+#include "reserved_batch_impl.h"
 #endif

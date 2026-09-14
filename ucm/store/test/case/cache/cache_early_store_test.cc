@@ -102,6 +102,126 @@ TEST(UCCacheEarlyStoreTest, BatchPinPreservesNativeDataAndStatesAndCoalescesBuck
     EXPECT_TRUE(batch.pins[25].Ready());
 }
 
+TEST(UCCacheEarlyStoreTest, BatchStepSubmitsAnotherRequestWhileFirstReadIsPending)
+{
+    Backend backend;
+    auto c = BatchConfig(&backend);
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(c).Success());
+    UC::CacheStore::ReservedPrefetch early(&manager, &backend, c.blockSize, c.shardSize, 1000);
+    UC::Detail::BlockId first{}, second{};
+    second[0] = std::byte{9};
+    EXPECT_CALL(backend, LookupOnPrefix).WillRepeatedly(testing::Invoke(
+        [](const UC::Detail::BlockId*, size_t) { return ssize_t{0}; }));
+    auto a = early.Reserve(&first, 1).Value();
+    auto b = early.Reserve(&second, 1).Value();
+    size_t submitted = 0, waited = 0;
+    bool complete = false;
+    EXPECT_CALL(backend, Load).Times(2).WillRepeatedly(testing::Invoke(
+        [&](UC::Detail::TaskDesc task) {
+            std::memset(task[0].addrs[0], int(0x40 + ++submitted), c.shardSize);
+            return UC::Detail::TaskHandle(submitted);
+        }));
+    EXPECT_CALL(backend, Check).WillRepeatedly(testing::Invoke(
+        [&](auto) { return complete; }));
+    EXPECT_CALL(backend, Wait).Times(2).WillRepeatedly(testing::Invoke(
+        [&](auto) { ++waited; return UC::Status::OK(); }));
+    auto pa = a.batch->Step(c.shardSize).Value();
+    EXPECT_FALSE(pa.done);
+    EXPECT_EQ(pa.inflightBytes, c.shardSize);
+    EXPECT_FALSE(a.batch->Step(0).Value().done);
+    auto pb = b.batch->Step(c.shardSize).Value();
+    EXPECT_EQ(submitted, 2);  // a's unfinished task did not monopolize submission
+    EXPECT_EQ(waited, 0);
+    EXPECT_FALSE(pb.done);
+    complete = true;
+    EXPECT_TRUE(b.batch->Step(0).Value().done);
+    EXPECT_TRUE(a.batch->Step(0).Value().done);
+    UC::Detail::TaskDesc task{{first, 0, {nullptr}}, {second, 0, {nullptr}}};
+    task.loadReservations = {a.handle, b.handle};
+    auto pins = early.LoadHandles(task);
+    ASSERT_EQ(pins.size(), 2);
+    early.Release(a.handle);
+    early.Release(b.handle);
+    EXPECT_EQ(static_cast<unsigned char*>(pins[0].Data())[0], 0x41);
+    EXPECT_EQ(static_cast<unsigned char*>(pins[1].Data())[0], 0x42);
+}
+
+TEST(UCCacheEarlyStoreTest, CancelledBatchStopsSubmissionButDrainsBeforeLeaseAndPinRelease)
+{
+    Backend backend;
+    auto c = BatchConfig(&backend);
+    c.blockSize *= 128;
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(c).Success());
+    UC::CacheStore::ReservedPrefetch early(&manager, &backend, c.blockSize, c.shardSize, 1000);
+    UC::Detail::BlockId block{};
+    EXPECT_CALL(backend, LookupOnPrefix).WillOnce(testing::Return(ssize_t{0}));
+    auto reservation = early.Reserve(&block, 1).Value();
+    bool complete = false;
+    EXPECT_CALL(backend, Load).Times(1).WillOnce(testing::Return(UC::Detail::TaskHandle{17}));
+    EXPECT_CALL(backend, Check).WillRepeatedly(testing::Invoke([&](auto) { return complete; }));
+    EXPECT_CALL(backend, Wait).Times(1).WillOnce(testing::Invoke([&](auto) {
+        EXPECT_FALSE(backend.lease.expired());
+        return UC::Status::OK();
+    }));
+    auto first = reservation.batch->Step(64 * c.shardSize).Value();
+    EXPECT_EQ(first.inflightBytes, 64 * c.shardSize);
+    early.Release(reservation.handle);
+    EXPECT_FALSE(backend.lease.expired());
+    auto pending = reservation.batch->Step(64 * c.shardSize);
+    ASSERT_TRUE(pending);
+    EXPECT_FALSE(pending.Value().done);
+    complete = true;
+    EXPECT_FALSE(reservation.batch->Step(0));
+    EXPECT_TRUE(backend.lease.expired());
+}
+
+TEST(UCCacheEarlyStoreTest, AbandonedBatchDrainsAcceptedNativeTask)
+{
+    Backend backend;
+    auto c = BatchConfig(&backend);
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(c).Success());
+    UC::CacheStore::ReservedPrefetch early(&manager, &backend, c.blockSize, c.shardSize, 1000);
+    UC::Detail::BlockId block{};
+    EXPECT_CALL(backend, LookupOnPrefix).WillOnce(testing::Return(ssize_t{0}));
+    auto reservation = early.Reserve(&block, 1).Value();
+    EXPECT_CALL(backend, Load).WillOnce(testing::Return(UC::Detail::TaskHandle{18}));
+    EXPECT_CALL(backend, Wait).WillOnce(testing::Invoke([&](auto) {
+        EXPECT_FALSE(backend.lease.expired());
+        return UC::Status::OK();
+    }));
+    EXPECT_FALSE(reservation.batch->Step(c.shardSize).Value().done);
+    early.Release(reservation.handle);
+    EXPECT_FALSE(backend.lease.expired());
+    reservation.batch.reset();
+    EXPECT_TRUE(backend.lease.expired());
+}
+
+TEST(UCCacheEarlyStoreTest, BatchRechecksMissingPositionAndDoesNotReadNewlyReadyData)
+{
+    Backend backend;
+    auto c = BatchConfig(&backend);
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(c).Success());
+    UC::CacheStore::ReservedPrefetch early(&manager, &backend, c.blockSize, c.shardSize, 1000);
+    UC::Detail::BlockId block{};
+    EXPECT_CALL(backend, LookupOnPrefix).WillOnce(testing::Return(ssize_t{0}));
+    auto reservation = early.Reserve(&block, 1).Value();
+    EXPECT_EQ(reservation.remainingL2Work, 1);
+    // Another consumer/native dump fills the position between reserve and Step.
+    auto native = manager.GetTransBuffer()->Get(block, 0);
+    native.MarkReady();
+    native = {};
+    EXPECT_CALL(backend, Load).Times(0);
+    EXPECT_CALL(backend, Wait).Times(0);
+    auto result = reservation.batch->Step(c.shardSize).Value();
+    EXPECT_TRUE(result.done);
+    EXPECT_EQ(result.result.l2ReadBytes, 0);
+    early.Release(reservation.handle);
+}
+
 TEST(UCCacheEarlyStoreTest, LongL2PrefixGrowsCandidateBatchesWithoutChangingWork)
 {
     Backend backend;

@@ -5,8 +5,19 @@
 #include <pybind11/stl.h>
 #include <stdexcept>
 #include "ucmstore_v1.h"
+#include "early_batch.h"
 
 namespace UC::PipelineStore::Early {
+
+struct BoundBatch {
+    pybind11::object pipeline;  // keep the exact native store and health wrapper alive
+    std::shared_ptr<UC::Early::Batch> batch;
+    ~BoundBatch()
+    {
+        pybind11::gil_scoped_release release;
+        batch.reset();  // abandoned accepted I/O drains before pipeline destruction
+    }
+};
 
 // Narrow access to the native argument conversion; it stays private and is
 // shared with the native Load entry instead of duplicating buffer parsing.
@@ -35,6 +46,24 @@ template <class Pipeline, class NotFoundError, class UnhealthyError>
 void BindOperations(pybind11::module_& module)
 {
     namespace py = pybind11;
+    py::class_<BoundBatch>(module, "EarlyBatch")
+        .def_property_readonly("window_bytes", [](const BoundBatch& b) { return b.batch->windowBytes; })
+        .def_property_readonly("shard_bytes", [](const BoundBatch& b) { return b.batch->shardBytes; })
+        .def("step", [](BoundBatch& b, size_t availableBytes) {
+            UC::Early::Progress progress;
+            {
+                py::gil_scoped_release release;
+                progress = ValueOrThrow<NotFoundError, UnhealthyError>(b.batch->Step(availableBytes));
+            }
+            py::dict out;
+            out["done"] = progress.done;
+            out["advanced"] = progress.advanced;
+            out["inflight_bytes"] = progress.inflightBytes;
+            out["l2_read_shards"] = progress.result.l2ReadShards;
+            out["l2_read_bytes"] = progress.result.l2ReadBytes;
+            out["coalesced_shards"] = progress.result.coalescedShards;
+            return out;
+        });
     module.def("EarlyLoad", [](Pipeline& pipeline, const py::buffer& ids,
                                 const py::buffer& indexes, const py::buffer& addrs,
                                 std::vector<uint64_t> reservations) {
@@ -49,7 +78,8 @@ void BindOperations(pybind11::module_& module)
 
     // The synchronous binding keeps the Python Pipeline argument alive. Self()
     // returns its existing entry, including the native health wrapper.
-    module.def("EarlyReservePrefix", [](Pipeline& pipeline, const py::buffer& ids) {
+    module.def("EarlyReservePrefix", [](py::object keeper, const py::buffer& ids) {
+        auto& pipeline = keeper.cast<Pipeline&>();
         const auto info = ids.request(false);
         const auto* blocks = static_cast<const Detail::BlockId*>(info.ptr);
         const auto scale = sizeof(Detail::BlockId) / info.itemsize;
@@ -65,6 +95,12 @@ void BindOperations(pybind11::module_& module)
         out["handle"] = result.handle;
         out["total_hit_blocks"] = result.totalHitBlocks;
         out["remaining_l2_work"] = result.remainingL2Work;
+        if (result.batch) {
+            auto owned = std::make_unique<BoundBatch>();
+            owned->pipeline = std::move(keeper);
+            owned->batch = std::move(result.batch);
+            out["batch"] = std::move(owned);
+        }
         return out;
     }, py::arg("pipeline"), py::arg("ids").noconvert());
 

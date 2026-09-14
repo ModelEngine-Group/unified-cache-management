@@ -30,6 +30,7 @@
 #include <memory>
 
 namespace UC {
+namespace Early { class Batch; }
 
 // An implementation owns the resource; destruction releases it, including on errors.
 struct ReadLease {
@@ -42,6 +43,7 @@ struct PrefixReservation {
     uint64_t handle{0};
     size_t totalHitBlocks{0};
     size_t remainingL2Work{0};  // shards not READY at reservation time (includes peer I/O)
+    std::shared_ptr<Early::Batch> batch;  // optional Early capability on this reservation
 };
 struct PrefetchResult {
     size_t l2ReadShards{0};

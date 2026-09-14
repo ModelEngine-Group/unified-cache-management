@@ -34,6 +34,7 @@
 #include "store_health_config.h"
 #include "store_health_state.h"
 #include "ucmstore_v1.h"
+#include "early_batch.h"
 
 namespace UC::PipelineStore {
 
@@ -64,7 +65,11 @@ public:
     Expected<PrefixReservation> ReservePrefix(const Detail::BlockId* blocks, size_t num) override
     {
         if (!Enabled()) { return Status::StoreUnhealthy(); }
-        return store_->ReservePrefix(blocks, num);
+        auto result = store_->ReservePrefix(blocks, num);
+        if (result && result.Value().batch) {
+            result.Value().batch->SetHealthGuard([this] { return Enabled(); });
+        }
+        return result;
     }
     Expected<PrefetchResult> PrefetchReserved(uint64_t handle) override
     {
