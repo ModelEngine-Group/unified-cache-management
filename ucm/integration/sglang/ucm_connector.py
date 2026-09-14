@@ -485,6 +485,17 @@ class SglangUcmConnector:
     def _get_physical_keys(self, logical_keys: List[str]) -> List[str]:
         return [self._get_physical_key(key) for key in logical_keys]
 
+    def _is_logical_anchor(self) -> bool:
+        return (
+            self.store is None
+            and getattr(self.mem_pool_host, "kv_buffer", None) is None
+        )
+
+    def _require_primary_store(self):
+        if self.store is None:
+            raise RuntimeError("UnifiedCache primary KV store is not initialized")
+        return self.store
+
     def _generate_task(
         self,
         encoded_keys: List[bytes],
@@ -511,15 +522,20 @@ class SglangUcmConnector:
     ) -> List[bool]:
         if not keys:
             return []
+        if self._is_logical_anchor():
+            # DeepSeek V4's KV anchor contains indices only. Physical payloads
+            # are restored by the accompanying batch_get_v2() transfers.
+            return [True] * len(keys)
 
         encoded_keys = self._encode_keys(self._get_physical_keys(keys))
         key_list, shard_index_list, ptr_list = self._generate_task(
             encoded_keys, host_indices
         )
 
-        task = self.store.load_data(key_list, shard_index_list, ptr_list)
+        store = self._require_primary_store()
+        task = store.load_data(key_list, shard_index_list, ptr_list)
         try:
-            self.store.wait(task)
+            store.wait(task)
         except RuntimeError as e:
             logger.error(f"UnifiedCache load KVCache failed: {e}")
             return [False] * len(keys)
@@ -534,15 +550,20 @@ class SglangUcmConnector:
     ) -> List[bool]:
         if not keys:
             return []
+        if self._is_logical_anchor():
+            # HybridCacheController still invokes the primary v1 path after
+            # writing v2 sidecars. The logical anchor has no bytes to persist.
+            return [True] * len(keys)
 
         encoded_keys = self._encode_keys(self._get_physical_keys(keys))
         key_list, shard_index_list, ptr_list = self._generate_task(
             encoded_keys, host_indices
         )
 
-        task = self.store.dump_data(key_list, shard_index_list, ptr_list)
+        store = self._require_primary_store()
+        task = store.dump_data(key_list, shard_index_list, ptr_list)
         try:
-            self.store.wait(task)
+            store.wait(task)
         except RuntimeError as e:
             logger.error(f"UnifiedCache dump KVCache failed: {e}")
             return [False] * len(keys)
@@ -550,10 +571,13 @@ class SglangUcmConnector:
         return [True] * len(keys)
 
     def exists(self, key: str) -> bool:
+        if self._is_logical_anchor():
+            return True
         if self.is_mla and self.tp_rank != 0:
             return True
 
-        result = self.store.lookup(self._encode_keys([self._get_physical_key(key)]))
+        store = self._require_primary_store()
+        result = store.lookup(self._encode_keys([self._get_physical_key(key)]))
         return result[0] == 1
 
     def batch_exists(
@@ -561,11 +585,13 @@ class SglangUcmConnector:
     ) -> int:
         if not keys:
             return 0
+        if self._is_logical_anchor():
+            return len(keys)
         if self.is_mla and self.tp_rank != 0:
             return len(keys)
 
         encoded_keys = self._encode_keys(self._get_physical_keys(keys))
-        return self.store.lookup_on_prefix(encoded_keys) + 1
+        return self._require_primary_store().lookup_on_prefix(encoded_keys) + 1
 
     def get_stats(self):
         return None
