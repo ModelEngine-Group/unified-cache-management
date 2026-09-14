@@ -12,9 +12,6 @@ public:
         size_t bucketLocks{0};
         bool capacityConflict{false};
     };
-    static TransBuffer::Handle PinOne(TransBuffer& buffer, const Detail::BlockId& block,
-                                     size_t shard, bool* capacityConflict = nullptr,
-                                     bool includeLoading = false);
     static Batch PinBlocks(TransBuffer& buffer, const Detail::BlockId* blocks,
                            size_t count, size_t shardsPerBlock);
     static void Touch(TransBuffer& buffer, const std::vector<TransBuffer::Handle>& pins);
@@ -24,7 +21,7 @@ public:
     static size_t HintBlockCapacity(TransBuffer& buffer, size_t shardsPerBlock);
 private:
     static TransBuffer::Handle PinNode(TransBuffer& buffer, size_t node,
-                                      bool* capacityConflict, bool includeLoading);
+                                      bool& capacityConflict);
 };
 }  // namespace UC::CacheStore
 #endif

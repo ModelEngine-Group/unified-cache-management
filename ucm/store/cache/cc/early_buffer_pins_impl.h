@@ -53,11 +53,11 @@ void EarlyBufferPins::Touch(TransBuffer& buffer, const std::vector<TransBuffer::
 }
 
 TransBuffer::Handle EarlyBufferPins::PinNode(TransBuffer& buffer, size_t node,
-                                            bool* conflict, bool includeLoading)
+                                            bool& conflict)
 {
     auto& strategy = *buffer.strategy_;
-    if (conflict && !strategy.CanReserve(node)) {
-        *conflict = true;
+    if (!strategy.CanReserve(node)) {
+        conflict = true;
         return {};
     }
     strategy.NodeLock(node);
@@ -65,31 +65,12 @@ TransBuffer::Handle EarlyBufferPins::PinNode(TransBuffer& buffer, size_t node,
     const auto state = meta->state.load(std::memory_order_acquire);
     TransBuffer::Handle result;
     if (state == TransBuffer::State::READY ||
-        (includeLoading && state == TransBuffer::State::LOADING && meta->reference != 0)) {
+        (state == TransBuffer::State::LOADING && meta->reference != 0)) {
         ++meta->reference;
         strategy.MarkAccessed(node);
         result = TransBuffer::Handle(&buffer, node, false);
     }
     strategy.NodeUnlock(node);
-    return result;
-}
-
-TransBuffer::Handle EarlyBufferPins::PinOne(TransBuffer& buffer, const Detail::BlockId& block,
-                                           size_t shard, bool* conflict, bool includeLoading)
-{
-    auto& strategy = *buffer.strategy_;
-    const auto bucket = Hash(block, shard);
-    strategy.BucketLock(bucket);
-    TransBuffer::Handle result;
-    for (auto node = strategy.FirstAt(bucket); node != invalidIndex;) {
-        const auto* meta = strategy.MetaAt(node);
-        if (meta->block == block && meta->shard == shard) {
-            result = PinNode(buffer, node, conflict, includeLoading);
-            break;
-        }
-        node = meta->next;
-    }
-    strategy.BucketUnlock(bucket);
     return result;
 }
 
@@ -120,7 +101,7 @@ EarlyBufferPins::Batch EarlyBufferPins::PinBlocks(TransBuffer& buffer,
             while (*link != invalidIndex) {
                 const auto q = *link;
                 if (meta->block == blocks[q / shardsPerBlock] && meta->shard == q % shardsPerBlock) {
-                    result.pins[q] = PinNode(buffer, node, &result.capacityConflict, true);
+                    result.pins[q] = PinNode(buffer, node, result.capacityConflict);
                     *link = next[q];
                 } else {
                     link = &next[q];

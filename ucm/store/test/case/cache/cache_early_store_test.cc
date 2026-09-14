@@ -63,7 +63,7 @@ UC::CacheStore::Config BatchConfig(UC::StoreV1* backend)
 }
 }  // namespace
 
-TEST(UCCacheEarlyStoreTest, BatchPinPreservesSinglePinStatesAndCoalescesBuckets)
+TEST(UCCacheEarlyStoreTest, BatchPinPreservesNativeDataAndStatesAndCoalescesBuckets)
 {
     Backend backend;
     auto config = BatchConfig(&backend);
@@ -87,11 +87,12 @@ TEST(UCCacheEarlyStoreTest, BatchPinPreservesSinglePinStatesAndCoalescesBuckets)
     ASSERT_FALSE(batch.capacityConflict);
     ASSERT_LE(batch.bucketLocks, 24);
     for (size_t q = 0; q < batch.pins.size(); ++q) {
-        auto single = UC::CacheStore::EarlyBufferPins::PinOne(*buffer, blocks[q / 4], q % 4, nullptr, true);
-        EXPECT_EQ(bool(single), bool(batch.pins[q]));
-        if (single) {
-            EXPECT_EQ(single.Data(), batch.pins[q].Data());
-            EXPECT_EQ(single.Ready(), batch.pins[q].Ready());
+        const auto shard = q % 4;
+        EXPECT_EQ(shard < 2, bool(batch.pins[q]));  // READY/live LOADING only
+        if (batch.pins[q]) {
+            auto& native = owners[(q / 4 % 6) * 3 + shard];
+            EXPECT_EQ(native.Data(), batch.pins[q].Data());
+            EXPECT_EQ(native.GetState(), batch.pins[q].GetState());
             EXPECT_FALSE(batch.pins[q].Owner());
         }
     }
@@ -624,7 +625,8 @@ TEST(UCCacheEarlyStoreTest, InflightPositionStaysPinnedAfterOwnerCompletes)
     auto prefetched = early.Prefetch(reserved.Value().handle);
     ASSERT_TRUE(prefetched);
     EXPECT_EQ(prefetched.Value().l2ReadShards, 0);
-    auto retained = UC::CacheStore::EarlyBufferPins::PinOne(*buffer, block, 0);
+    auto batch = UC::CacheStore::EarlyBufferPins::PinBlocks(*buffer, &block, 1, 1);
+    auto& retained = batch.pins[0];
     ASSERT_TRUE(retained);
     EXPECT_EQ(static_cast<unsigned char*>(retained.Data())[0], 0x6b);
     early.Release(reserved.Value().handle);
@@ -821,8 +823,8 @@ TEST_P(UCCacheEarlyBatchFailureTest, DrainsAcceptedIoBeforeReleasingProtection)
     EXPECT_FALSE(prefetched);
     early.Release(reserved.Value().handle);
     EXPECT_TRUE(backend.lease.expired());
-    auto pin = UC::CacheStore::EarlyBufferPins::PinOne(*manager.GetTransBuffer(), blocks.back(), 0);
-    EXPECT_FALSE(pin);  // later data was neither submitted nor declared READY
+    auto tail = UC::CacheStore::EarlyBufferPins::PinBlocks(*manager.GetTransBuffer(), &blocks.back(), 1, 1);
+    EXPECT_FALSE(tail.pins[0]);  // later data was neither submitted nor declared READY
 }
 
 INSTANTIATE_TEST_SUITE_P(AbnormalExit, UCCacheEarlyBatchFailureTest, testing::Values(0, 1, 2, 3));
