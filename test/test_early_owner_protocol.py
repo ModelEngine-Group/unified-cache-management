@@ -20,7 +20,8 @@ from test_early_batch_pipeline import Control, Capability, blocks, result, wait
 
 def capability(dp=0, rank=0, domain="native-object"):
     return dict(version=1, ready=True, dp=dp, rank=rank, domain=domain, layout="same-layout",
-                native=dict(nodes=120, reservable_nodes=100, shard_bytes=4, block_bytes=8),
+                native=dict(nodes=132, reservable_nodes=112, shard_bytes=4, block_bytes=8),
+                task_shards=2, dump_task_shards=6 if rank == 0 else 0,
                 max_jobs=4, max_candidates=0, layers=[0, 1])
 
 
@@ -483,14 +484,18 @@ def test_worker_capability_checks_actual_native_layout_and_configuration(field, 
     store = SimpleNamespace(config=dict(share_buffer_enable=True, shard_size=4, block_size=8,
                                         tensor_size_list=[4]), domain_info=lambda: info)
     c = SimpleNamespace(store=store, launch_config={}, is_mla=True, cp_world_size=1,
-        layer_ids=[0, 1], use_layerwise=True, unique_id="native", hash_block_size=4,
+        layer_ids=[0, 1], use_layerwise=True, unique_id="native", hash_block_size=4, block_size=4,
         blocks_per_chunk=1, generate_hash=lambda *a: [b"a" * 16], _seed=b"seed", tp_rank=1, tp_size=2,
-        _vllm_config=SimpleNamespace(parallel_config=SimpleNamespace(data_parallel_index=0)))
+        _vllm_config=SimpleNamespace(parallel_config=SimpleNamespace(data_parallel_index=0),
+            model_config=SimpleNamespace(max_model_len=32), scheduler_config=SimpleNamespace(max_num_seqs=3)))
     setattr(c, field, value)
     cap = owner.worker_capability(c)
     assert cap.get("ready", False) is ready
     if ready:
         assert (cap["dp"], cap["rank"], cap["native"]) == (0, 1, info)
+        assert (cap["task_shards"], cap["dump_task_shards"]) == (8, 0)
+        c.tp_rank = 0
+        assert owner.worker_capability(c)["dump_task_shards"] == 24
         c.launch_config["enable_early_owner"] = False
         assert not owner.worker_capability(c).get("ready", False)
 
@@ -551,3 +556,46 @@ def test_unscheduled_cancel_forget_clears_request_mapping_without_touching_reuse
         assert not w.request_keys and not w.jobs
     finally:
         w.close()
+
+
+@pytest.mark.parametrize("nodes,reservable,load,dump", [(132, 112, 2, 6), (132, 132, 16, 6), (8, 8, 4, 8)])
+def test_domain_budget_leaves_full_native_partial_task_headroom(nodes, reservable, load, dump):
+    c = Cluster(dp=2)
+    for cap in c.b.capabilities.values():
+        cap["native"].update(nodes=nodes, reservable_nodes=reservable)
+        cap.update(task_shards=load, dump_task_shards=dump if cap["rank"] == 0 else 0)
+    expected_slots = max(0, min(reservable - 2 * dump, nodes - 4 * load - 2 * dump))
+    job = c.job(count=max(1, expected_slots // 2))
+    budget = next(iter(c.b.domains.values()))
+    assert budget["limit"] == expected_slots * 4
+    assert budget["native_load_headroom_bytes"] == 4 * load * 4
+    assert budget["native_dump_headroom_bytes"] == 2 * dump * 4
+    assert budget["io_quota"] * 4 <= budget["io_limit"] <= budget["limit"]
+    if expected_slots < 2:
+        assert job["status"] == "FAILED" and "owner" not in job
+        assert not any(m["op"] in ("reserve", "owner_reserve") for _, m in c.out)
+    else:
+        assert job.get("owner")
+        assert c.job("overflow", count=1)["status"] == "FAILED"
+        c.drain(job)
+        assert budget["used"] == 0
+
+
+@pytest.mark.parametrize("operation,limit", [("load", 2), ("dump", 6), ("dump", 0)])
+def test_unscoped_native_io_cannot_exceed_advertised_headroom(operation, limit):
+    poison = Mock()
+    state = consumer.Consumer("w0.0", Mock(), poison)
+    # No owner job/request scope is needed: native fallback must obey the same
+    # physical-domain bound while another request's owner is holding pins.
+    state.max_task_shards = 2
+    state.max_dump_task_shards = limit if operation == "dump" else 6
+    state.check_task(operation, limit)
+    poison.assert_not_called()
+    with pytest.raises(RuntimeError, match="headroom"):
+        if operation == "load":
+            state.begin(np.zeros(0, dtype=np.uint8), [0] * (limit + 1))
+        else:
+            state.check_task(operation, limit + 1)
+    poison.assert_called_once()
+    with pytest.raises(RuntimeError, match="fenced"):
+        state.check_task("dump", 0)

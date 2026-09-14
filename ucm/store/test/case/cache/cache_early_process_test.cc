@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <gtest/gtest.h>
 #include "cache/cc/load_queue.h"
+#include "cache/cc/dump_queue.h"
 #include "cache/cc/reserved_prefetch.h"
 #include "detail/mock_store.h"
 #include "detail/random.h"
@@ -325,4 +326,89 @@ TEST(UCCacheEarlyProcessTest, ProcessDeathDoesNotRecoverNativeSharedReferences)
     for (auto fd : start) { ::close(fd); }
     for (auto fd : acquired) { ::close(fd); }
     // This test owns the unique backing; normal buffer destruction unlinks it.
+}
+
+
+TEST(UCCacheEarlyProcessTest, FullOwnerCreditLeavesTwoLoadsAndAggregateDumpRoomToDrain)
+{
+    auto config = SharedConfig();
+    Backend backend;
+    config.storeBackend = &backend;
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(config).Success());
+    auto* buffer = manager.GetTransBuffer();
+    const auto domain = UC::CacheStore::EarlyBufferPins::DescribeDomain(*buffer);
+    constexpr size_t loadTask = 8, dumpTask = 8;
+    ASSERT_GE(domain.nodes, 2 * loadTask + dumpTask);
+    ASSERT_GE(domain.reservable, dumpTask);
+    const auto slots = std::min(domain.reservable - dumpTask,
+                                domain.nodes - 2 * loadTask - dumpTask);
+    auto makeBlock = [](uint64_t value) {
+        UC::Detail::BlockId block{};
+        std::memcpy(&block, &value, sizeof(value));
+        return block;
+    };
+    std::vector<UC::Detail::BlockId> blocks;
+    for (size_t i = 0; i < slots / 2; ++i) { blocks.push_back(makeBlock(i)); }
+    EXPECT_CALL(backend, LookupOnPrefix).WillRepeatedly(testing::Invoke(
+        [](const UC::Detail::BlockId*, size_t count) { return ssize_t(count - 1); }));
+    EXPECT_CALL(backend, Load).WillRepeatedly(testing::Invoke(
+        [](UC::Detail::TaskDesc task) {
+            for (auto& shard : task) { std::memset(shard.addrs[0], 0x6b, 4096); }
+            return UC::Detail::TaskHandle{1};
+        }));
+    EXPECT_CALL(backend, Wait).WillRepeatedly(testing::Return(UC::Status::OK()));
+    UC::CacheStore::ReservedPrefetch early(&manager, &backend, config.blockSize,
+                                           config.shardSize, config.timeoutMs);
+    auto reservation = early.Reserve(blocks.data(), blocks.size());
+    ASSERT_TRUE(reservation);
+    ASSERT_TRUE(early.Prefetch(reservation.Value().handle));
+    UC::HashSet<UC::Detail::TaskHandle> failures;
+    UC::CacheStore::LoadQueue loads[2];
+    UC::CacheStore::DumpQueue dumps;
+    ASSERT_TRUE(dumps.Setup(config, &failures, buffer).Success());
+    for (auto& load : loads) { ASSERT_TRUE(load.Setup(config, &failures, buffer).Success()); }
+    std::array<std::array<unsigned char, loadTask * 4096>, 2> targets{};
+    std::array<unsigned char, dumpTask * 4096> source{};
+    source.fill(0x3c);
+    auto persisted = std::make_shared<UC::Latch>();
+    EXPECT_CALL(backend, Dump).WillOnce(testing::Invoke([&](UC::Detail::TaskDesc task) {
+        EXPECT_EQ(task.size(), dumpTask);
+        for (auto& shard : task) {
+            EXPECT_EQ(static_cast<unsigned char*>(shard.addrs[0])[0], 0x3c);
+        }
+        persisted->Done();
+        return UC::Detail::TaskHandle{2};
+    }));
+    std::array<std::shared_ptr<UC::Latch>, 3> waiters;
+    std::array<std::shared_ptr<UC::CacheStore::TransTask>, 3> tasks;
+    for (size_t q = 0; q < 3; ++q) {
+        UC::Detail::TaskDesc desc;
+        for (size_t i = 0; i < loadTask; ++i) {
+            void* address = q < 2 ? targets[q].data() + i * 4096 : source.data() + i * 4096;
+            desc.push_back({makeBlock(100000 + q * loadTask + i), 0, {address}});
+        }
+        tasks[q] = std::make_shared<UC::CacheStore::TransTask>(q < 2 ?
+            UC::CacheStore::TransTask::Type::LOAD : UC::CacheStore::TransTask::Type::DUMP, desc);
+        waiters[q] = std::make_shared<UC::Latch>();
+        if (q < 2) { loads[q].Submit(tasks[q], waiters[q]); }
+        else { dumps.Submit(tasks[q], waiters[q]); }
+    }
+    for (size_t q = 0; q < 3; ++q) {
+        ASSERT_TRUE(waiters[q]->WaitForDuration(5000));
+        ASSERT_FALSE(failures.Contains(tasks[q]->id));
+    }
+    ASSERT_TRUE(persisted->WaitForDuration(5000));
+    for (auto& target : targets) {
+        for (auto byte : target) { ASSERT_EQ(byte, 0x6b); }
+    }
+    // Every reserved shard remains protected throughout native Get/D2H/H2D.
+    auto handles = early.LoadHandles([&] {
+        UC::Detail::TaskDesc desc{{blocks[0], 0, {targets[0].data()}}};
+        desc.loadReservations = {reservation.Value().handle};
+        return desc;
+    }());
+    ASSERT_EQ(handles.size(), 1);
+    ASSERT_EQ(static_cast<unsigned char*>(handles[0].Data())[0], 0x6b);
+    early.Release(reservation.Value().handle);
 }

@@ -214,8 +214,19 @@ metadata 主流程。实际 allocation 前的重试可以刷新原生消费计�
 
 共享域按实际内核对象键统一记账，DP 间共享对象只计一份总量：
 
-- 保护上限为 native `ReservableSlots * shard_bytes`，排除原生 load-exclusive
-  区域。每个 job 在执行前一次扣除 `候选 blocks * block_bytes`，包含尚未
+- 从 native 节点总数 `N`、非 load-exclusive 可预留数 `R` 推导保护上限。
+  为每个成员的一项最大 native load 任务保留空间，合计 `L` 个 shard；为各
+  MLA dump owner 的一项最大聚合 dump 任务保留空间，合计 `D` 个 shard。
+  上限为 `max(0, min(R-D, N-L-D)) * shard_bytes`。load 每任务一个请求；
+  dump 可聚合当前 scheduler batch，所以 dump 任务界限还乘 `max_num_seqs`。
+  请求界限用锁定的 `max_model_len` 和原生 token/block 布局推导，direct 路径
+  计入其所有 shard。每个 worker 只有一条原生 load dispatcher 和一条 dump
+  dispatcher；已经完全提交的任务可以无需新增空间而排空。这个保留量确保
+  所有尚在定位的任务都有到达末尾同步点的空间；dump 只能使用非 exclusive 区。
+  不依赖重复 block 去重来缩小界限。实际 Load/Dump 提交前校验 shard 数，超出
+  握手宣告的界限则停用域，不能悄悄突破证明。未启用 owner 时不施加该校验。
+  上限为零时拒绝预取并回退原生，不切回无共享预算的广播模式。
+  每个 job 在执行前一次扣除 `候选 blocks * block_bytes`，包含尚未
   分配的位置；不同请求的重复 block 在 broker 层重复计费，宁可保守拒绝。
   底层同 worker 的 BlockPins 共享额度机制继续保留，不能抵消 broker 扣费。
 - 每个 owner 排队/执行 job 上限默认 4，可通过顶层 native 配置字典的

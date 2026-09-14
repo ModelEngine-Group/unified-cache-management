@@ -33,6 +33,8 @@ class Consumer:
         self.tasks = {}
         self.serial = 0
         self.fenced = None
+        self.max_task_shards = None
+        self.max_dump_task_shards = None
 
     def bind(self, tickets, layers):
         with self.lock:
@@ -56,8 +58,7 @@ class Consumer:
 
     def begin(self, ids, indexes):
         with self.lock:
-            if self.fenced:
-                raise RuntimeError("native load denied on fenced shared domain: " + self.fenced)
+            self.check_task("load", len(indexes))
             identities = load_scope.get()
             if not identities:
                 return None
@@ -78,6 +79,24 @@ class Consumer:
             for identity in identities:
                 self.generations[identity]["active"] += 1
             return token
+
+    def check_task(self, operation, shards):
+        with self.lock:
+            if self.fenced:
+                raise RuntimeError("native I/O denied on fenced shared domain: " + self.fenced)
+            limit = self.max_task_shards if operation == "load" else self.max_dump_task_shards
+            if limit is not None and shards > limit:
+                self.fenced = f"native {operation} exceeded the advertised allocation headroom bound"
+                self.poison(self.fenced)
+                raise RuntimeError(self.fenced)
+
+    def unscoped_failure(self):
+        with self.lock:
+            # A fallback load or native dump shares the same non-robust domain.
+            # Its failure matters even when it has no owner-generation receipt.
+            if self.max_task_shards is not None and not self.fenced:
+                self.fenced = "unscoped native I/O failed; drain state is not proven"
+                self.poison(self.fenced)
 
     def complete(self, token, task, success):
         if token is None:

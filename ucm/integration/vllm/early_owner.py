@@ -38,6 +38,20 @@ def worker_capability(connector):
         layers = list(connector.layer_ids) if connector.use_layerwise else [0]
         if not layers or len(set(layers)) != len(layers) or min(layers) < 0 or max(layers) >= block // shard:
             return {"reason": "unsupported consumer shard range"}
+        model_len = connector._vllm_config.model_config.max_model_len
+        sequences = connector._vllm_config.scheduler_config.max_num_seqs
+        if not isinstance(model_len, int) or model_len <= 0 or not isinstance(sequences, int) or sequences <= 0:
+            return {"reason": "native maximum task range is not bounded"}
+        # Native loads submit one request per task; dumps aggregate the current
+        # scheduler batch. TransManager owns one LoadQueue and one DumpQueue.
+        # Already fully dispatched tasks
+        # can drain without allocation, but each partial dispatcher task needs
+        # enough headroom to reach its terminal shard/synchronize boundary.
+        token_unit = min(connector.hash_block_size, connector.block_size)
+        task_shards = (model_len + token_unit - 1) // token_unit
+        if not connector.use_layerwise:
+            task_shards *= block // shard
+        dump_task_shards = task_shards * sequences if connector.tp_rank % connector.tp_size == 0 else 0
         # Actual object identity, physical host and namespace reachability.
         domain = [Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
                   os.readlink("/proc/self/ns/ipc"), os.readlink("/proc/self/ns/mnt"), native["backing"]]
@@ -48,6 +62,7 @@ def worker_capability(connector):
         return dict(version=VERSION, domain=json.dumps(domain),
                     layout=hashlib.sha256(json.dumps(layout, sort_keys=True).encode()).hexdigest(),
                     unique_id=str(connector.unique_id), native=native, layers=layers,
+                    task_shards=task_shards, dump_task_shards=dump_task_shards,
                     max_jobs=int(connector.launch_config.get("early_owner_max_jobs", 4)),
                     max_candidates=int(connector.launch_config.get("early_owner_max_candidate_blocks", 0)),
                     dp=connector._vllm_config.parallel_config.data_parallel_index,
@@ -86,6 +101,8 @@ class OwnerBroker(BrokerState):
                 return None, cap.get("reason", "worker not ready")
             if peer != f"w{cap.get('dp')}.{cap.get('rank')}" or cap.get("max_jobs", 0) < 1:
                 return None, "invalid worker membership/capacity"
+            if cap.get("task_shards", 0) <= 0 or cap.get("dump_task_shards", -1) < 0:
+                return None, "native maximum task range is not bounded"
         group = [self.capabilities[p] for p in sorted(self.workers(dp))]
         if len({(c["domain"], c["layout"]) for c in group}) != 1:
             return None, "DP consumers do not share one compatible native object"
@@ -97,13 +114,20 @@ class OwnerBroker(BrokerState):
             return None, "legacy reservations still belong to this cohort"
         if domain not in self.domains:
             native = group[0]["native"]
-            limit = native["reservable_nodes"] * native["shard_bytes"]
+            # No TP dedup assumption in this bound: allow one complete load
+            # task per member and one aggregate dump per native dump owner.
+            # Dumps cannot allocate from the native load-exclusive region.
+            load_slots = sum(self.capabilities[p]["task_shards"] for p in members)
+            dump_slots = sum(self.capabilities[p]["dump_task_shards"] for p in members)
+            slots = max(0, min(native["reservable_nodes"] - dump_slots,
+                               native["nodes"] - load_slots - dump_slots))
+            limit = slots * native["shard_bytes"]
             io = min(limit, len(members) * 128 * native["shard_bytes"])
             quota = io // len(members) // native["shard_bytes"] * native["shard_bytes"]
-            if quota == 0:
-                return None, "insufficient native load-exclusive headroom"
             self.domains[domain] = dict(limit=limit, used=0, peak=0, io_limit=io,
-                                        io_quota=quota, members=members, owners={})
+                                        io_quota=quota, members=members, owners={},
+                                        native_load_headroom_bytes=load_slots * native["shard_bytes"],
+                                        native_dump_headroom_bytes=dump_slots * native["shard_bytes"])
             for peer in self.peers:
                 self.send(peer, dict(op="domain_active"))
         return self.domains[domain], None
@@ -166,10 +190,12 @@ class OwnerBroker(BrokerState):
                   owner=owner, attempt=job["attempt"], grant=job["grant"]))
         log.info("UCM_EARLY owner_assigned key=%s attempt=%s dp=%s owner=%s candidates=%s "
                  "protected_charge_bytes=%s domain_used_bytes=%s domain_limit_bytes=%s domain_peak_bytes=%s "
-                 "io_quota_bytes=%s io_limit_bytes=%s assignments=%s ns=%s",
+                 "io_quota_bytes=%s io_limit_bytes=%s assignments=%s ns=%s "
+                 "native_load_headroom_bytes=%s native_dump_headroom_bytes=%s",
                  job["key"], job["attempt"], job["dp"], owner, work, charge, budget["used"],
                  budget["limit"], budget["peak"], budget["io_quota"], budget["io_limit"],
-                 load["assignments"], job["assigned_ns"])
+                 load["assignments"], job["assigned_ns"], budget["native_load_headroom_bytes"],
+                 budget["native_dump_headroom_bytes"])
 
     def poison(self, reason):
         if self.fenced:

@@ -10,7 +10,7 @@ _EARLY_PIPELINE = "Early(Cache|Posix)"
 
 
 class _ReservedLoad:
-    """Route only Load; all conversions and other operations stay native."""
+    """Observe native I/O without duplicating conversion, queues or resources."""
 
     def __init__(self, pipeline):
         self.pipeline = pipeline
@@ -35,6 +35,8 @@ class _ReservedLoad:
         except Exception:
             if receipt is not None:
                 self.observer.complete(receipt, None, False)
+            elif self.observer:
+                self.observer.unscoped_failure()
             raise
 
     def Wait(self, task):
@@ -44,10 +46,22 @@ class _ReservedLoad:
         except Exception:
             if receipt is not None:
                 self.observer.complete(receipt, task, False)
+            elif self.observer:
+                self.observer.unscoped_failure()
             raise
         if receipt is not None:
             self.observer.complete(receipt, task, True)
         return result
+
+    def Dump(self, ids, indexes, addrs, *args):
+        if self.observer:
+            self.observer.check_task("dump", len(indexes))
+        try:
+            return self.pipeline.Dump(ids, indexes, addrs, *args)
+        except Exception:
+            if self.observer:
+                self.observer.unscoped_failure()
+            raise
 
 
 class _EarlyStack:

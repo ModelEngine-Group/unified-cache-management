@@ -110,3 +110,28 @@ owner drain，再评估阶段/分位数。新队列额度没有上调底层并�
 历史 GLM OFF 曾有 EP/AICPU 初始化失败、HCCL 端口 bind 失败和启动可用 HBM
 不足，根因尚未闭环；本轮一次成功也不能关闭这些问题。read lease 只保护删除，
 原生 AIO dump 提交/可见性问题另行记录，不能归因于或宣称被本协议修复。
+
+
+## 原生队列推进空间
+
+`worker_capability` 读取同一 vLLM Config 的 `max_model_len/max_num_seqs`，
+区分每请求 load 与聚合 dump 的任务上界。共享域额度同时保留总节点中的
+load/dump 空间以及非 exclusive 节点中的 dump 空间。Early I/O 代理只在域
+启用后校验实际原生任务长度，然后调用同一个 native Pipeline 的 Load/Dump。
+没有复制原生队列方法、增加线程、修改原生 Config 或改变其可见性。
+
+新增回归：
+
+- 协议测试覆盖多个 DP 共享总预算、不同 exclusive 布局、零额度 native fallback、
+  超界任务在 I/O 提交前停用域、最后 drain 才归还额度。
+- C++ `FullOwnerCreditLeavesTwoLoadsAndAggregateDumpRoomToDrain` 将 owner pin
+  填至推导上限，同时运行两条真实 native LoadQueue 和一条 DumpQueue，验证
+  数据、完成通知及 reservation 仍受保护。复制运行时为 simu，无 NPU。
+- Python 原生绑定测试检查 Dump 的所有实参原样调用原对象，超界不提交。
+
+保守任务上界可能使极长上下文、大并发或很小 L1 配置更多地回退；它是本轮
+可证明的容量边界，不是新的性能默认值。真实 GLM 吞吐与 TTFT 仍须 NPU 对照。
+
+原生 fallback load 或 dump 即使没有 owner generation receipt，也共享同一
+物理域；owner 启用后遇到不能证明排空的原生异常，会传播原异常并停用域，
+不会因缺少 receipt 忽略潜在的存活引用。测试同时验证未启用时保持原异常语义。

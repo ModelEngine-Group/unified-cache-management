@@ -45,6 +45,8 @@ class OwnerWorker:
             return True
         if op == "domain_active":
             self.domain_active = True
+            self.consumer.max_task_shards = self.capability.get("task_shards")
+            self.consumer.max_dump_task_shards = self.capability.get("dump_task_shards")
             return True
         if op == "domain_lost":
             self.poison(message["reason"], announce=False)

@@ -103,3 +103,42 @@ def test_native_pipeline_batch_keeps_store_alive_and_hands_off_before_release(tm
     del cold, batch, route
     gc.collect()
     assert ref() is None
+
+
+def test_dump_guard_delegates_exact_native_arguments_and_rejects_before_io():
+    import pytest
+    from unittest.mock import Mock
+    pipeline = Mock()
+    route = _ReservedLoad(pipeline)
+    ids, indexes, addresses = object(), [0, 1], object()
+    assert route.Dump(ids, indexes, addresses, 17) is pipeline.Dump.return_value
+    pipeline.Dump.assert_called_once_with(ids, indexes, addresses, 17)
+    pipeline.reset_mock()
+    errors = []
+    route.observer = Consumer("w0.0", lambda message: None, errors.append)
+    route.observer.max_dump_task_shards = 1
+    with pytest.raises(RuntimeError, match="headroom"):
+        route.Dump(ids, indexes, addresses, 17)
+    pipeline.Dump.assert_not_called()
+    assert len(errors) == 1
+
+
+def test_failed_unscoped_native_io_fences_active_domain_only():
+    import pytest
+    from unittest.mock import Mock
+    for method in ("Load", "Dump", "Wait"):
+        for active in (False, True):
+            native = Mock()
+            failure = RuntimeError("native task error")
+            getattr(native, method).side_effect = failure
+            errors = []
+            route = _ReservedLoad(native)
+            route.observer = Consumer("w0.0", lambda message: None, errors.append)
+            if active:
+                route.observer.max_task_shards = route.observer.max_dump_task_shards = 2
+            args = (7,) if method == "Wait" else (np.zeros(0, dtype=np.uint8), [], object())
+            with pytest.raises(RuntimeError) as caught:
+                getattr(route, method)(*args)
+            assert caught.value is failure  # preserve the native exception
+            assert bool(errors) is active
+            getattr(native, method).assert_called_once_with(*args)
