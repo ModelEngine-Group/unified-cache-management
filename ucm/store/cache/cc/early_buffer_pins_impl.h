@@ -4,6 +4,19 @@
 #include <algorithm>
 
 namespace UC::CacheStore {
+size_t EarlyBufferPins::ReservableSlots(TransBuffer& buffer)
+{
+    // Native CanReserve is the contiguous prefix before its load-exclusive area.
+    auto& strategy = *buffer.strategy_;
+    size_t low = 0, high = strategy.NodeCount();
+    while (low < high) {
+        const auto middle = low + (high - low) / 2;
+        if (strategy.CanReserve(middle)) { low = middle + 1; }
+        else { high = middle; }
+    }
+    return low;
+}
+
 size_t EarlyBufferPins::HintBlockCapacity(TransBuffer& buffer, size_t shardsPerBlock)
 {
     return shardsPerBlock ? std::max(size_t{1}, buffer.strategy_->NodeCount() / shardsPerBlock) : 0;

@@ -222,7 +222,100 @@ TEST(UCCacheEarlyStoreTest, BatchRechecksMissingPositionAndDoesNotReadNewlyReady
     early.Release(reservation.handle);
 }
 
-TEST(UCCacheEarlyStoreTest, LongL2PrefixGrowsCandidateBatchesWithoutChangingWork)
+TEST(UCCacheEarlyStoreTest, ConcurrentLocalizationSharesOneBlockClaimUntilLastConsumer)
+{
+    Backend backend;
+    auto c = BatchConfig(&backend);
+    c.blockSize *= 64;
+    c.bufferCapacity = c.blockSize;
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(c).Success());
+    UC::CacheStore::ReservedPrefetch early(&manager, &backend, c.blockSize, c.shardSize, 1000);
+    UC::Detail::BlockId block{}, other{};
+    other[0] = std::byte{77};
+    for (size_t shard = 0; shard < 64; ++shard) {
+        auto pin = manager.GetTransBuffer()->Get(block, shard);
+        pin.MarkReady();
+    }
+    std::promise<void> start;
+    auto gate = start.get_future().share();
+    std::vector<std::future<UC::Expected<UC::PrefixReservation>>> pending;
+    for (size_t i = 0; i < 8; ++i) {
+        pending.push_back(std::async(std::launch::async, [&, gate] {
+            gate.wait();
+            return early.Reserve(&block, 1);
+        }));
+    }
+    start.set_value();
+    std::vector<UC::PrefixReservation> consumers;
+    for (auto& future : pending) {
+        ASSERT_EQ(future.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+        auto result = future.get();
+        ASSERT_TRUE(result);
+        EXPECT_EQ(result.Value().remainingL2Work, 0);
+        EXPECT_EQ(result.Value().batch->ProtectedBytes(), c.blockSize);
+        consumers.push_back(std::move(result.Value()));
+    }
+    // No request-count limit: eight consumers share one block's byte claim.
+    auto blocked = early.Reserve(&other, 1);
+    ASSERT_FALSE(blocked);
+    EXPECT_EQ(blocked.Error(), UC::Status::NoSpace());
+    for (size_t i = 0; i + 1 < consumers.size(); ++i) {
+        early.Release(consumers[i].handle);
+        EXPECT_FALSE(manager.GetTransBuffer()->TryGet(other, 0));
+        EXPECT_EQ(consumers.back().batch->ProtectedBytes(), c.blockSize);
+    }
+    early.Release(consumers.back().handle);
+    EXPECT_EQ(consumers.back().batch->ProtectedBytes(), 0);
+    EXPECT_TRUE(manager.GetTransBuffer()->TryGet(other, 0));
+    EXPECT_CALL(backend, LookupOnPrefix).WillOnce(testing::Return(ssize_t{0}));
+    // A failed localization leaves no unresolved promise or byte claim behind.
+    auto retry = early.Reserve(&other, 1);
+    ASSERT_TRUE(retry);
+    early.Release(retry.Value().handle);
+}
+
+TEST(UCCacheEarlyStoreTest, OppositeBlockOrderCannotCycleLocalizationWaits)
+{
+    Backend backend;
+    auto c = BatchConfig(&backend);
+    c.blockSize *= 64;
+    c.bufferCapacity = 2 * c.blockSize;
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(c).Success());
+    UC::CacheStore::ReservedPrefetch early(&manager, &backend, c.blockSize, c.shardSize, 1000);
+    std::array<UC::Detail::BlockId, 2> blocks{};
+    blocks[1][0] = std::byte{31};
+    for (const auto& block : blocks) {
+        for (size_t shard = 0; shard < 64; ++shard) {
+            auto pin = manager.GetTransBuffer()->Get(block, shard);
+            pin.MarkReady();
+        }
+    }
+    std::promise<void> start;
+    auto gate = start.get_future().share();
+    std::vector<std::future<UC::Expected<UC::PrefixReservation>>> pending;
+    for (size_t i = 0; i < 8; ++i) {
+        pending.push_back(std::async(std::launch::async, [&, gate, i] {
+            auto ordered = blocks;
+            if (i % 2) { std::swap(ordered[0], ordered[1]); }
+            gate.wait();
+            return early.Reserve(ordered.data(), ordered.size());
+        }));
+    }
+    start.set_value();
+    std::vector<UC::PrefixReservation> results;
+    for (auto& future : pending) {
+        ASSERT_EQ(future.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+        auto result = future.get();
+        ASSERT_TRUE(result);
+        results.push_back(std::move(result.Value()));
+    }
+    for (auto& result : results) { early.Release(result.handle); }
+    EXPECT_EQ(results.front().batch->ProtectedBytes(), 0);
+}
+
+TEST(UCCacheEarlyStoreTest, OneCandidateBatchUsesOneNativeL2PrefixQuery)
 {
     Backend backend;
     auto config = BatchConfig(&backend);
@@ -234,14 +327,14 @@ TEST(UCCacheEarlyStoreTest, LongL2PrefixGrowsCandidateBatchesWithoutChangingWork
     std::vector<UC::Detail::BlockId> blocks(512);
     for (size_t i = 0; i < blocks.size(); ++i) { std::memcpy(blocks[i].data(), &i, sizeof(i)); }
     std::vector<size_t> queries;
-    EXPECT_CALL(backend, LookupOnPrefix).Times(5).WillRepeatedly(testing::Invoke(
+    EXPECT_CALL(backend, LookupOnPrefix).Times(1).WillRepeatedly(testing::Invoke(
         [&](const UC::Detail::BlockId*, size_t n) { queries.push_back(n); return ssize_t(n) - 1; }));
     UC::CacheStore::ReservedPrefetch early(&manager, &backend, config.blockSize, config.shardSize, 1000);
     auto result = early.Reserve(blocks.data(), blocks.size());
     ASSERT_TRUE(result);
     EXPECT_EQ(result.Value().totalHitBlocks, 512);
     EXPECT_EQ(result.Value().remainingL2Work, 512 * 78);
-    EXPECT_EQ(queries, (std::vector<size_t>{32, 64, 128, 256, 32}));
+    EXPECT_EQ(queries, (std::vector<size_t>{512}));
     early.Release(result.Value().handle);
 }
 
@@ -697,7 +790,8 @@ TEST(UCCacheEarlyStoreTest, ShortHitStopsCandidateLeaseAndShardWork)
     ASSERT_TRUE(store->Setup(Config(&backend)).Success());
     std::array<UC::Detail::BlockId, 256> blocks{};
     for (size_t i = 0; i < blocks.size(); ++i) { blocks[i][0] = std::byte(i); }
-    auto reserved = store->ReservePrefix(blocks.data(), blocks.size());
+    // EarlyWorker owns adaptive growth and stops after this first miss batch.
+    auto reserved = store->ReservePrefix(blocks.data(), 32);
     ASSERT_TRUE(reserved);
     EXPECT_EQ(reserved.Value().totalHitBlocks, 0);
     EXPECT_EQ(reserved.Value().remainingL2Work, 0);

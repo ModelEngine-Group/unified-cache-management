@@ -305,6 +305,8 @@ public:
     Expected<PrefixReservation> ReservePrefix(const Detail::BlockId* blocks, size_t num) override
     {
         if (!early_) { return Status::Error("Early reservation disabled"); }
+        // EarlyWorker already publishes bounded candidate batches. Avoid
+        // splitting a confirmed batch into another series of L2 round trips.
         return early_->Reserve(blocks, num);
     }
     Expected<PrefetchResult> PrefetchReserved(uint64_t handle) override

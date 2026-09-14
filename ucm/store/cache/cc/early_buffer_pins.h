@@ -19,6 +19,7 @@ public:
     static std::vector<TransBuffer::Handle> Recall(TransBuffer& buffer,
         const Detail::BlockId& block, const std::vector<size_t>& locations, size_t& checks);
     static size_t HintBlockCapacity(TransBuffer& buffer, size_t shardsPerBlock);
+    static size_t ReservableSlots(TransBuffer& buffer);
 private:
     static TransBuffer::Handle PinNode(TransBuffer& buffer, size_t node,
                                       bool& capacityConflict);

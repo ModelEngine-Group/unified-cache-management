@@ -81,6 +81,8 @@ class ReservedPrefetch::Batch final : public Early::Batch {
                 const size_t end = std::min(total, cursor_ + size_t{64});
                 // Bound localization per turn as well as submitted bytes. A
                 // previous negative result is never trusted for allocation.
+                {
+                EarlyStats::Phase positioning{stats_->pinMs};
                 while (cursor_ < end && availableBytes >= shardBytes) {
                     if (r->cancelled.load()) { Fail(Status::Error("reserved prefetch cancelled")); break; }
                     auto& pin = r->Pin(cursor_, owner_.shardsPerBlock_);
@@ -103,6 +105,7 @@ class ReservedPrefetch::Batch final : public Early::Batch {
                     }
                     ++cursor_;
                     progress_.advanced = true;
+                }
                 }
                 if (!task.empty() && status_.Success() && !r->cancelled.load()) {
                     // All allocating bookkeeping precedes Load. The reservation
@@ -167,6 +170,8 @@ class ReservedPrefetch::Batch final : public Early::Batch {
             }
             if (status_.Success()) { stats_->hintEntries = owner_.PublishReady(r); }
             progress_.done = true;
+            stats_->protectedBytes = owner_.budget_->used.load();
+            stats_->protectionLimitBytes = owner_.budget_->limit;
             stats_->success = status_.Success();
             stats_.reset();
         }
@@ -177,8 +182,10 @@ class ReservedPrefetch::Batch final : public Early::Batch {
 
 public:
     Batch(ReservedPrefetch& owner, const std::shared_ptr<Reservation>& r, uint64_t handle)
-        : Early::Batch(owner.shardBytes_, 128 * owner.shardBytes_),
+        : Early::Batch(owner.shardBytes_, 128 * owner.shardBytes_, owner.budget_->limit),
           owner_(owner), reservation_(r), handle_(handle) {}
+
+    size_t ProtectedBytes() const override { return owner_.budget_->used.load(); }
 
     ~Batch() override
     {

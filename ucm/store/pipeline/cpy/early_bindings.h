@@ -49,6 +49,8 @@ void BindOperations(pybind11::module_& module)
     py::class_<BoundBatch>(module, "EarlyBatch")
         .def_property_readonly("window_bytes", [](const BoundBatch& b) { return b.batch->windowBytes; })
         .def_property_readonly("shard_bytes", [](const BoundBatch& b) { return b.batch->shardBytes; })
+        .def_property_readonly("protection_limit_bytes", [](const BoundBatch& b) { return b.batch->protectionLimitBytes; })
+        .def_property_readonly("protected_bytes", [](const BoundBatch& b) { return b.batch->ProtectedBytes(); })
         .def("step", [](BoundBatch& b, size_t availableBytes) {
             UC::Early::Progress progress;
             {

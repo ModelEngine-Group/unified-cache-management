@@ -18,11 +18,13 @@ class Batch {
 protected:
     std::function<bool()> healthy_ = [] { return true; };
 public:
-    const size_t shardBytes, windowBytes;
-    Batch(size_t shard, size_t window) : shardBytes(shard), windowBytes(window) {}
+    const size_t shardBytes, windowBytes, protectionLimitBytes;
+    Batch(size_t shard, size_t window, size_t protectionLimit)
+        : shardBytes(shard), windowBytes(window), protectionLimitBytes(protectionLimit) {}
     virtual ~Batch() = default;
     virtual Expected<Progress> Step(size_t availableBytes) = 0;
     virtual Expected<PrefetchResult> Run() = 0;
+    virtual size_t ProtectedBytes() const = 0;
     // Installed by the existing health wrapper before publication to Python.
     void SetHealthGuard(std::function<bool()> healthy) { healthy_ = std::move(healthy); }
 };
