@@ -27,6 +27,7 @@ from .ucm_scheduler import (
     UCMDispatcher,
     UCMLookupCoordinator,
 )
+from ucm.utils import Config
 
 if TYPE_CHECKING:
     import torch
@@ -95,21 +96,12 @@ class UCMWorkerMetadata(KVConnectorWorkerMetadata):
 
 
 def _load_launch_config(vllm_config: "VllmConfig") -> dict[str, Any]:
-    kv_transfer_config = vllm_config.kv_transfer_config
-    extra_config = getattr(kv_transfer_config, "kv_connector_extra_config", None)
-    if not extra_config:
-        return {}
-    if "UCM_CONFIG_FILE" not in extra_config:
-        return dict(extra_config)
+    """Resolve kv_connector_extra_config through the shared ucm.utils.Config.
 
-    import yaml
-
-    path = Path(str(extra_config["UCM_CONFIG_FILE"]))
-    with path.open("r", encoding="utf-8") as stream:
-        config = yaml.safe_load(stream) or {}
-    if not isinstance(config, dict):
-        raise ValueError(f"UCM config file must contain a mapping: {path}")
-    return config
+    The UCM_CONFIG_FILE yaml and terminal-input forms resolve exactly like
+    every other UCM connector; v2 adds no launch keys of its own.
+    """
+    return dict(Config(vllm_config.kv_transfer_config).get_config())
 
 
 def _storage_root(launch_config: dict[str, Any]) -> Path:
@@ -230,7 +222,7 @@ def _dump_raw_kv_cache_config(kv_cache_config: Any, rank: int | None) -> None:
 
 
 class UCMConnector(KVConnectorBase_V1, SupportsHMA):
-    """One v2 lifecycle facade for grouped caches and the DSV4 policy."""
+    """One v2 lifecycle facade for grouped caches."""
 
     def __init__(
         self,
@@ -244,8 +236,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         chunk_size = launch_config.get("chunk_size")
         if chunk_size is not None:
             chunk_size = int(chunk_size)
-        is_scheduler = role == KVConnectorRole.SCHEDULER
-        rank = None if is_scheduler else _worker_rank(vllm_config)
+        rank = None if role == KVConnectorRole.SCHEDULER else _worker_rank(vllm_config)
         _dump_raw_kv_cache_config(kv_cache_config, rank)
         hasher = RequestHasher(vllm_config, 0)
         base_seed = hasher("UCM_HASH_SEED")
@@ -273,9 +264,8 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             num_hidden_layers=num_layers,
         )
         dtype = str(vllm_config.model_config.dtype).rsplit(".", 1)[-1]
-        policy = "dsv4" if self.spec.is_dsv4 else "grouped"
         namespace = (
-            f"{self.context.device_type}-{dtype}-{policy}"
+            f"{self.context.device_type}-{dtype}"
             f"-b{self.spec.scheduler_block_size}-c{self.spec.chunk_size}"
         )
         root = _storage_root(launch_config) / ".ucm-v2" / namespace
@@ -283,7 +273,9 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         self.layout: UCMKVCacheLayout | None = None
         self._worker_metadata = UCMWorkerMetadata()
         self._invalid_block_ids: set[int] = set()
-        self.dispatcher = UCMDispatcher(self.spec) if is_scheduler else None
+        self.dispatcher = (
+            UCMDispatcher(self.spec) if role == KVConnectorRole.SCHEDULER else None
+        )
         self.lookup_coordinator = (
             UCMLookupCoordinator(
                 self.spec,
@@ -296,7 +288,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                     launch_config.get("load_tokens_threshold", 0)
                 ),
             )
-            if is_scheduler
+            if role == KVConnectorRole.SCHEDULER
             else None
         )
 

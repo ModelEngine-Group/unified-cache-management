@@ -2,14 +2,13 @@
 
 Physical placement -- where every layer's blocks and states sit -- lives in
 ``.layout``.  This module keeps the semantic layer (groups, cache kinds,
-block sizing, the DSV4 policy) and walks dispatch plans over the layout
-model to produce proxy batches with deterministic record offsets.
+block sizing) and walks dispatch plans over the layout model to produce
+proxy batches with deterministic record offsets.
 """
 
 from __future__ import annotations
 
 import math
-import os
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, NamedTuple
@@ -92,15 +91,13 @@ class UCMKVCacheSpec:
 
     scheduler_block_size is the historical name for CacheConfig.block_size,
     not vLLM's resolved scheduler granularity. chunk_size is UCM's
-    cache_block_size: the record/hash unit every chain works at. is_dsv4
-    is a key-namespace label only -- no behavior forks on it.
+    cache_block_size: the record/hash unit every chain works at.
     """
 
     groups: tuple[UCMKVCacheGroupInfo, ...]
     scheduler_block_size: int
     chunk_size: int
     device_type: str
-    is_dsv4: bool
 
     @property
     def alignment_block_size(self) -> int:
@@ -240,10 +237,9 @@ def _classify(
 
 def _parse_descriptors(
     kv_cache_tensors: "Sequence[object]",
-) -> tuple[tuple["TensorDescriptor", ...], dict[str, tuple["TensorDescriptor", int]]]:
-    """Mirror vLLM 0.29 kv_cache_tensors; undeclared configs yield ()."""
+) -> dict[str, tuple["TensorDescriptor", int]]:
+    """Mirror vLLM 0.29 kv_cache_tensors; undeclared configs yield {}."""
 
-    descriptors: list["TensorDescriptor"] = []
     declared_at: dict[str, tuple["TensorDescriptor", int]] = {}
     for entry in kv_cache_tensors:
         layers = tuple(str(name) for name in getattr(entry, "layers", ()) or ())
@@ -267,8 +263,7 @@ def _parse_descriptors(
                     f"Layer {name} is covered by more than one declared tensor"
                 )
             declared_at[name] = (descriptor, position)
-        descriptors.append(descriptor)
-    return tuple(descriptors), declared_at
+    return declared_at
 
 
 def parse_kv_cache_config(
@@ -291,22 +286,18 @@ def parse_kv_cache_config(
 
     attention_tokens_per_state = attention_tokens_per_state or {}
 
-    source = os.environ.get("UCM_V2_DESCRIPTOR_SOURCE", "auto").strip().lower()
-    source = source or "auto"
-    if source not in ("auto", "declared"):
-        raise ValueError(f"Unknown UCM_V2_DESCRIPTOR_SOURCE={source!r}")
+    # 0.29 kv_cache_tensors carry a layers placement per tensor; 0.26
+    # entries (size + shared_by) do not, so only the declared ones parse.
     kv_cache_tensors = tuple(getattr(kv_cache_config, "kv_cache_tensors", ()) or ())
-    has_declarations = bool(kv_cache_tensors) and all(
-        getattr(tensor, "layers", None) is not None for tensor in kv_cache_tensors
+    declared = tuple(
+        tensor
+        for tensor in kv_cache_tensors
+        if getattr(tensor, "layers", None) is not None
     )
-    if source == "declared" and not has_declarations:
-        raise ValueError("UCM_V2_DESCRIPTOR_SOURCE=declared requires declared tensors")
-    _, declared_at = _parse_descriptors(kv_cache_tensors if has_declarations else ())
+    declared_at = _parse_descriptors(declared)
     raw_groups = tuple(getattr(kv_cache_config, "kv_cache_groups", ()))
     if not raw_groups:
         raise ValueError("kv_cache_config.kv_cache_groups must not be empty")
-    if scheduler_block_size <= 0:
-        raise ValueError("scheduler_block_size must be positive")
 
     classified: list[
         tuple[
@@ -315,7 +306,6 @@ def parse_kv_cache_config(
             frozenset[KVCacheSpecKind],
         ]
     ] = []
-    dsv4 = False
     layer_indices: dict[str, int] = {}
     for raw_group in raw_groups:
         concrete = _concrete_specs(raw_group)
@@ -340,8 +330,6 @@ def parse_kv_cache_config(
                     f"{scheduler_block_size}, got {sorted(block_sizes)}"
                 )
         classified.append((raw_group, concrete, kinds))
-        if KVCacheSpecKind.SLIDING_WINDOW_MLA in kinds:
-            dsv4 = True
 
     device_type = str(device_type).lower()
     if len(raw_groups) != 1 and chunk_size is not None:
@@ -513,7 +501,7 @@ def parse_kv_cache_config(
         layout_debug(
             f"spec scheduler_block={scheduler_block_size} "
             f"chunk={selected_chunk} "
-            f"device={device_type} dsv4={dsv4}"
+            f"device={device_type}"
         )
 
     return UCMKVCacheSpec(
@@ -521,7 +509,6 @@ def parse_kv_cache_config(
         scheduler_block_size=scheduler_block_size,
         chunk_size=selected_chunk,
         device_type=device_type,
-        is_dsv4=dsv4,
     )
 
 

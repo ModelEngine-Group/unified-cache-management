@@ -41,6 +41,34 @@ for package_name in (
     package.__path__ = []
     sys.modules.setdefault(package_name, package)
 
+# The connector reuses ucm.utils.Config for launch-config parsing; that
+# module's logging backend is a compiled extension beside
+# ucm/shared/infra, absent in this environment.  Stub the backend so the
+# real Config code runs; its logs simply go nowhere.
+ucm_shared = types.ModuleType("ucm.shared")
+ucm_shared.__path__ = [str(REPO_ROOT / "ucm" / "shared")]
+sys.modules.setdefault("ucm.shared", ucm_shared)
+ucm_infra = types.ModuleType("ucm.shared.infra")
+ucmlogger_stub = types.ModuleType("ucm.shared.infra.ucmlogger")
+
+
+class _StubLevel(enum.IntEnum):
+    DEBUG = 10
+    INFO = 20
+    WARNING = 30
+    ERROR = 40
+    CRITICAL = 50
+
+
+ucmlogger_stub.Level = _StubLevel
+ucmlogger_stub.setup = lambda *args, **kwargs: None
+ucmlogger_stub.flush = lambda: None
+ucmlogger_stub.log = lambda *args, **kwargs: None
+ucmlogger_stub.log_rate_limit = lambda *args, **kwargs: None
+ucm_infra.ucmlogger = ucmlogger_stub
+sys.modules.setdefault("ucm.shared.infra", ucm_infra)
+sys.modules.setdefault("ucm.shared.infra.ucmlogger", ucmlogger_stub)
+
 vllm_base = types.ModuleType("vllm.distributed.kv_transfer.kv_connector.v1.base")
 
 
@@ -437,7 +465,6 @@ class KVCacheSpecTest(unittest.TestCase):
             chunk_size=512,
         )
 
-        self.assertFalse(parsed.is_dsv4)
         self.assertEqual(parsed.chunk_size, 512)
         self.assertEqual(parsed.layer_to_group["model.layers.0.attn"], 0)
 
@@ -450,7 +477,6 @@ class KVCacheSpecTest(unittest.TestCase):
             scheduler_block_size=128,
         )
 
-        self.assertFalse(parsed.is_dsv4)
         self.assertEqual(tuple(g.group_id for g in parsed.attn_groups), (0,))
         self.assertEqual(tuple(g.group_id for g in parsed.state_groups), (1,))
 
@@ -503,7 +529,6 @@ class KVCacheSpecTest(unittest.TestCase):
             scheduler_block_size=16,
         )
 
-        self.assertTrue(parsed.is_dsv4)
         self.assertEqual(parsed.chunk_size, 512)
         self.assertEqual(parsed.groups[2].token_block_size, 512)
         self.assertEqual(
@@ -530,7 +555,6 @@ class KVCacheSpecTest(unittest.TestCase):
         )
         self.assertTrue(parsed.groups[0].is_attention)
         self.assertFalse(parsed.groups[0].is_sliding_window)
-        self.assertFalse(parsed.is_dsv4)
 
     def test_hybrid_rejects_custom_chunk(self):
         with self.assertRaisesRegex(ValueError, "custom chunk_size"):
@@ -567,8 +591,8 @@ class KVCacheSpecTest(unittest.TestCase):
             captured_config(required["dsv4"]), scheduler_block_size=8
         )
 
-        self.assertEqual((glm.is_dsv4, len(glm.groups)), (False, 1))
-        self.assertEqual((dsv4.is_dsv4, len(dsv4.groups)), (True, 6))
+        self.assertEqual(len(glm.groups), 1)
+        self.assertEqual(len(dsv4.groups), 6)
         self.assertEqual(dsv4.chunk_size, 512)
         self.assertEqual(tuple(group.group_id for group in dsv4.fa_groups), (0, 1))
         self.assertEqual(
@@ -606,7 +630,6 @@ class KVCacheSpecTest(unittest.TestCase):
             device_type="cpu",
         )
 
-        self.assertTrue(parsed.is_dsv4)
         self.assertEqual(parsed.chunk_size, 256)
         # FA is the 256-token indexer+attention group; WA covers both SWA
         # groups and both compressor state groups.
@@ -2727,18 +2750,6 @@ class DeclaredLayoutModelTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "block stride"):
             UCMKVCacheLayout(*self._fixture(tensors=bad))
-
-    def test_assert_mode_is_retired(self):
-        previous = os.environ.get("UCM_V2_DESCRIPTOR_SOURCE")
-        os.environ["UCM_V2_DESCRIPTOR_SOURCE"] = "assert"
-        try:
-            with self.assertRaisesRegex(ValueError, "assert"):
-                UCMKVCacheLayout(*self._fixture())
-        finally:
-            if previous is None:
-                os.environ.pop("UCM_V2_DESCRIPTOR_SOURCE", None)
-            else:
-                os.environ["UCM_V2_DESCRIPTOR_SOURCE"] = previous
 
 
 class RawConfigDumpTest(unittest.TestCase):
