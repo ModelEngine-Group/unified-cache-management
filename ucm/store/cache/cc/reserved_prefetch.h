@@ -21,7 +21,6 @@ class ReservedPrefetch {
     struct Reservation {
         std::vector<std::shared_ptr<ReadLease>> leases;
         std::vector<Detail::BlockId> blocks;
-        std::unordered_map<Detail::BlockId, size_t, Detail::BlockIdHasher> blockOffsets;
         std::vector<std::shared_ptr<BlockPins>> groups;
         TransBuffer::Handle& Pin(size_t i, size_t shards)
         { return groups[i / shards]->pins[i % shards]; }
@@ -30,6 +29,15 @@ class ReservedPrefetch {
         bool started{false};
         bool ready{false};
     };
+    struct LoadEntry {
+        std::weak_ptr<Reservation> reservation;
+        size_t blockOffset;
+    };
+    struct LoadPlan {
+        std::vector<uint64_t> handles;
+        std::unordered_map<Detail::BlockId, LoadEntry, Detail::BlockIdHasher> blocks;
+    };
+    std::shared_ptr<const LoadPlan> loadPlan_;
     StoreV1* backend_;
     TransBuffer* buffer_;
     size_t shardsPerBlock_, shardBytes_, timeoutMs_;
@@ -43,6 +51,7 @@ class ReservedPrefetch {
     {
         std::lock_guard guard(mutex_);
         if (r->cancelled.load()) { return; }
+        if (r->ready) { loadPlan_.reset(); }
         for (size_t i = 0; i < r->blocks.size(); ++i) {
             if (r->groups[i]->ready) { readyBlocks_[r->blocks[i]] = r->groups[i]; }
         }
@@ -101,7 +110,7 @@ public:
             {
                 EarlyStats::Phase phase{stats.pinMs};
                 std::vector<Detail::BlockId> probe;
-                std::vector<size_t> offsets;
+                std::vector<size_t> offsets, reused;
                 {
                     std::lock_guard guard(mutex_);
                     for (size_t b = begin; b < end; ++b) {
@@ -109,12 +118,14 @@ public:
                         if (found != readyBlocks_.end()) { r->groups[b] = found->second.lock(); }
                         if (r->groups[b]) {
                             ++stats.reusedBlocks;
+                            reused.push_back(b);
                         } else {
                             probe.push_back(blocks[b]);
                             offsets.push_back(b);
                         }
                     }
                 }
+                for (auto b : reused) { EarlyBufferPins::Touch(*buffer_, r->groups[b]->pins); }
                 auto batch = EarlyBufferPins::PinBlocks(*buffer_, probe.data(), probe.size(), shardsPerBlock_);
                 stats.shards += batch.pins.size();
                 stats.bucketLocks += batch.bucketLocks;
@@ -163,7 +174,6 @@ public:
             group->ready = remaining == 0;
             missing += remaining;
         }
-        for (size_t i = 0; i < count; ++i) { r->blockOffsets.emplace(r->blocks[i], i); }
         r->ready = missing == 0;
         uint64_t handle;
         {
@@ -326,32 +336,59 @@ public:
     {
         EarlyStats stats{"load_handles"};
         stats.shards = task.size();
-        std::vector<std::shared_ptr<Reservation>> candidates;
+        std::shared_ptr<const LoadPlan> plan;
         {
             std::lock_guard guard(mutex_);
-            for (auto handle : task.loadReservations) {
-                auto it = reservations_.find(handle);
-                if (it != reservations_.end()) { candidates.push_back(it->second); }
+            if (!loadPlan_ || loadPlan_->handles != task.loadReservations) {
+                auto next = std::make_shared<LoadPlan>();
+                next->handles = task.loadReservations;
+                for (auto handle : task.loadReservations) {
+                    auto found = reservations_.find(handle);
+                    if (found == reservations_.end()) { continue; }
+                    const auto& r = found->second;
+                    std::lock_guard lock(r->mutex);
+                    if (!r->ready || r->cancelled.load()) { continue; }
+                    for (size_t b = 0; b < r->blocks.size(); ++b) {
+                        next->blocks.emplace(r->blocks[b], LoadEntry{r, b});
+                    }
+                }
+                loadPlan_ = std::move(next);
+                ++stats.indexBuilds;
             }
+            plan = loadPlan_;
         }
+        // Resolve each requested block once. Plans contain weak references and
+        // are invalidated on READY/release; they never keep a consumer alive.
+        std::unordered_map<Detail::BlockId, std::shared_ptr<BlockPins>, Detail::BlockIdHasher> selected;
+        const Detail::BlockId* previous = nullptr;
+        std::shared_ptr<BlockPins> group;
         std::vector<TransBuffer::Handle> handles;
-        for (const auto& reservation : candidates) {
-            std::lock_guard guard(reservation->mutex);
-            if (!reservation->ready || reservation->cancelled.load()) { continue; }
-            for (size_t i = 0; i < task.size(); ++i) {
-                if (!handles.empty() && handles[i]) { continue; }
-                const auto& shard = task[i];
-                if (shard.index >= shardsPerBlock_) { continue; }
-                auto found = reservation->blockOffsets.find(shard.owner);
-                if (found == reservation->blockOffsets.end()) { continue; }
-                const auto& pin = reservation->groups[found->second]->pins[shard.index];
-                if (!pin || !pin.Ready()) { continue; }
-                if (handles.empty()) { handles.resize(task.size()); }
-                // Handle's native copy acquires a node reference without a hash
-                // lookup. It remains valid if Release runs before H2D completes.
-                handles[i] = pin;
-                ++stats.matched;
+        for (size_t i = 0; i < task.size(); ++i) {
+            const auto& shard = task[i];
+            if (shard.index >= shardsPerBlock_) { continue; }
+            if (!previous || *previous != shard.owner) {
+                previous = &shard.owner;
+                auto [slot, inserted] = selected.try_emplace(shard.owner);
+                if (inserted) {
+                    ++stats.blockLookups;
+                    auto entry = plan->blocks.find(shard.owner);
+                    if (entry != plan->blocks.end()) {
+                        if (auto r = entry->second.reservation.lock()) {
+                            std::lock_guard lock(r->mutex);
+                            if (r->ready && !r->cancelled.load()) {
+                                slot->second = r->groups[entry->second.blockOffset];
+                            }
+                        }
+                    }
+                }
+                group = slot->second;
             }
+            if (!group) { continue; }
+            const auto& pin = group->pins[shard.index];
+            if (!pin || !pin.Ready()) { continue; }
+            if (handles.empty()) { handles.resize(task.size()); }
+            handles[i] = pin;  // native node reference, held until H2D completes
+            ++stats.matched;
         }
         stats.success = true;
         return handles;
@@ -366,6 +403,7 @@ public:
             if (it == reservations_.end()) { return; }
             reservation = std::move(it->second);
             reservations_.erase(it);
+            loadPlan_.reset();
         }
         reservation->cancelled.store(true);
         {

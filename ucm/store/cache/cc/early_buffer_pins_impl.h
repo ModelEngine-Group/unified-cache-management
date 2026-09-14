@@ -4,6 +4,15 @@
 #include <algorithm>
 
 namespace UC::CacheStore {
+void EarlyBufferPins::Touch(TransBuffer& buffer, const std::vector<TransBuffer::Handle>& pins)
+{
+    // Existing references protect each position. Preserve native CLOCK hotness
+    // without another bucket lookup, node lock or node-reference increment.
+    for (const auto& pin : pins) {
+        if (pin && pin.buf_ == &buffer) { buffer.strategy_->MarkAccessed(pin.pos_); }
+    }
+}
+
 TransBuffer::Handle EarlyBufferPins::PinNode(TransBuffer& buffer, size_t node,
                                             bool* conflict, bool includeLoading)
 {

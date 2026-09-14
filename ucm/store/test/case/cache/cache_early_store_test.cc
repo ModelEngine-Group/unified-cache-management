@@ -14,12 +14,14 @@ extern "C" UC::StoreV1* MakeEarlyCacheStore();
 
 namespace {
 class Backend : public testing::NiceMock<UC::Test::Detail::MockStore> {
+    std::mutex leaseMutex;
 public:
     std::weak_ptr<UC::ReadLease> lease;
     std::vector<size_t> leaseBlocks;
     UC::Expected<std::shared_ptr<UC::ReadLease>> AcquireReadLease(
         const UC::Detail::BlockId*, size_t count) override
     {
+        std::lock_guard guard(leaseMutex);
         leaseBlocks.push_back(count);
         auto owned = std::make_shared<UC::ReadLease>();
         lease = owned;
@@ -161,6 +163,105 @@ TEST(UCCacheEarlyStoreTest, ReusedReadyBlockLivesUntilLastConsumerAndExpiresBefo
     auto expired = early.Reserve(&block, 1).Value();
     EXPECT_EQ(expired.totalHitBlocks, 0);
     early.Release(expired.handle);
+}
+
+TEST(UCCacheEarlyStoreTest, LoadPlanIsScopedToExplicitReservationsAndInvalidatedOnRelease)
+{
+    Backend backend;
+    auto c = BatchConfig(&backend);
+    c.blockSize *= 2;
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(c).Success());
+    std::array<UC::Detail::BlockId, 16> blocks{};
+    for (size_t b = 0; b < blocks.size(); ++b) {
+        blocks[b][0] = std::byte(b);
+        for (size_t shard = 0; shard < 2; ++shard) {
+            auto pin = manager.GetTransBuffer()->Get(blocks[b], shard);
+            std::memset(pin.Data(), int(b), c.shardSize);
+            pin.MarkReady();
+        }
+    }
+    UC::CacheStore::ReservedPrefetch early(&manager, &backend, c.blockSize, c.shardSize, 1000);
+    UC::Detail::TaskDesc task;
+    for (const auto& block : blocks) { task.loadReservations.push_back(early.Reserve(&block, 1).Value().handle); }
+    // Revisit non-adjacent blocks and reverse the shard order.
+    for (size_t shard : {size_t(1), size_t(0)}) {
+        for (const auto& block : blocks) { task.push_back({block, shard, {nullptr}}); }
+    }
+    for (size_t layer = 0; layer < 3; ++layer) {
+        auto handles = early.LoadHandles(task);
+        ASSERT_EQ(handles.size(), task.size());
+        for (size_t i = 0; i < task.size(); ++i) {
+            ASSERT_TRUE(handles[i]);
+            EXPECT_EQ(static_cast<unsigned char*>(handles[i].Data())[0], i % 16);
+        }
+    }
+    auto sameBlock = early.Reserve(&blocks[0], 1).Value().handle;
+    early.Release(task.loadReservations[0]);
+    auto cancelled = early.LoadHandles(task);
+    ASSERT_EQ(cancelled.size(), task.size());
+    EXPECT_FALSE(cancelled[0]);
+    EXPECT_FALSE(cancelled[16]);  // another consumer is not authorization for this load
+    task.loadReservations[0] = sameBlock;
+    auto rebound = early.LoadHandles(task);
+    EXPECT_TRUE(rebound[0]);
+    for (auto handle : task.loadReservations) { early.Release(handle); }
+    EXPECT_TRUE(early.LoadHandles(task).empty());
+}
+
+TEST(UCCacheEarlyStoreTest, PendingLoadPlanCannotHideLaterReadyTransition)
+{
+    Backend backend;
+    auto c = BatchConfig(&backend);
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(c).Success());
+    EXPECT_CALL(backend, LookupOnPrefix).WillOnce(testing::Return(ssize_t{0}));
+    EXPECT_CALL(backend, Load).WillOnce(testing::Return(UC::Detail::TaskHandle{1}));
+    EXPECT_CALL(backend, Wait).WillOnce(testing::Return(UC::Status::OK()));
+    UC::CacheStore::ReservedPrefetch early(&manager, &backend, c.blockSize, c.shardSize, 1000);
+    UC::Detail::BlockId block{};
+    auto r = early.Reserve(&block, 1).Value();
+    UC::Detail::TaskDesc task{{block, 0, {nullptr}}};
+    task.loadReservations = {r.handle};
+    EXPECT_TRUE(early.LoadHandles(task).empty());
+    ASSERT_TRUE(early.Prefetch(r.handle));
+    auto handles = early.LoadHandles(task);
+    ASSERT_EQ(handles.size(), 1);
+    EXPECT_TRUE(handles[0].Ready());
+    early.Release(r.handle);
+}
+
+TEST(UCCacheEarlyStoreTest, ConcurrentConsumersShareReadyProtectionWithoutOwningIo)
+{
+    Backend backend;
+    auto c = BatchConfig(&backend);
+    c.blockSize *= 2;
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(c).Success());
+    UC::Detail::BlockId block{};
+    for (size_t shard = 0; shard < 2; ++shard) {
+        auto pin = manager.GetTransBuffer()->Get(block, shard);
+        pin.MarkReady();
+    }
+    EXPECT_CALL(backend, LookupOnPrefix).Times(0);
+    EXPECT_CALL(backend, Load).Times(0);
+    UC::CacheStore::ReservedPrefetch early(&manager, &backend, c.blockSize, c.shardSize, 1000);
+    auto held = early.Reserve(&block, 1).Value();
+    std::vector<std::future<bool>> readers;
+    for (size_t thread = 0; thread < 4; ++thread) {
+        readers.push_back(std::async(std::launch::async, [&] {
+            for (size_t i = 0; i < 8; ++i) {
+                auto r = early.Reserve(&block, 1);
+                if (!r || r.Value().remainingL2Work != 0) { return false; }
+                auto done = early.Prefetch(r.Value().handle);
+                if (!done || done.Value().l2ReadShards != 0) { return false; }
+                early.Release(r.Value().handle);
+            }
+            return true;
+        }));
+    }
+    for (auto& reader : readers) { EXPECT_TRUE(reader.get()); }
+    early.Release(held.handle);
 }
 
 TEST(UCCacheEarlyStoreTest, ReservedBytesUseNativeLoadAndRelease)

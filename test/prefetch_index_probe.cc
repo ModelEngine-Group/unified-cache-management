@@ -40,9 +40,8 @@ int main()
             UC::StopWatch timer;
             auto r = early.Reserve(blocks.data(), blocks.size());
             if (!r || r.Value().totalHitBlocks != blocks.size()) { std::abort(); }
-            std::cout << "PROBE shared=" << shared << " case=" << label
-                      << " ms=" << timer.Elapsed().count() * 1000
-                      << " l2_calls=" << backend.lookups << '\n';
+            fmt::print("PROBE shared={} case={} ms={:.6f} l2_calls={}\n", shared,
+                       label, timer.Elapsed().count() * 1000, backend.lookups);
             return r.Value().handle;
         };
         auto cold = measure("cold_l2");
@@ -70,8 +69,8 @@ int main()
             UC::StopWatch timer;
             auto handles = early.LoadHandles(task);
             if (handles.size() != task.size()) { return 3; }
-            std::cout << "PROBE shared=" << shared << " case=load_handles ms="
-                      << timer.Elapsed().count() * 1000 << '\n';
+            fmt::print("PROBE shared={} case=load_handles ms={:.6f}\n", shared,
+                       timer.Elapsed().count() * 1000);
         }
         for (auto r : reservations) { early.Release(r); }
         early.Release(held);

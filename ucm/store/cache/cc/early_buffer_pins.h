@@ -17,6 +17,7 @@ public:
                                      bool includeLoading = false);
     static Batch PinBlocks(TransBuffer& buffer, const Detail::BlockId* blocks,
                            size_t count, size_t shardsPerBlock);
+    static void Touch(TransBuffer& buffer, const std::vector<TransBuffer::Handle>& pins);
 private:
     static TransBuffer::Handle PinNode(TransBuffer& buffer, size_t node,
                                       bool* capacityConflict, bool includeLoading);
