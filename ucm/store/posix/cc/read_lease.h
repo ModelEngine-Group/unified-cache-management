@@ -47,28 +47,16 @@ class PosixReadLease final : public ReadLease {
         }
     };
     std::map<std::string, std::unique_ptr<File>> files_;
-    const SpaceLayout* layout_{nullptr};
 public:
     static Expected<std::shared_ptr<ReadLease>> Acquire(
         const SpaceLayout& layout, const Detail::BlockId* blocks, size_t num)
     try {
         auto lease = std::make_shared<PosixReadLease>();
-        lease->layout_ = &layout;
-        auto acquired = lease->Extend(blocks, num);
-        if (!acquired) { return acquired.Error(); }
-        return std::static_pointer_cast<ReadLease>(lease);
-    } catch (const std::bad_alloc&) {
-        return Status::OutOfMemory();
-    }
-
-    Expected<bool> Extend(const Detail::BlockId* blocks, size_t num) override
-    try {
-        if (!layout_) { return false; }
         for (size_t i = 0; i < num; ++i) {
-            auto status = Lock(layout_->StorageBackend(blocks[i]), blocks[i]);
+            auto status = lease->Lock(layout.StorageBackend(blocks[i]), blocks[i]);
             if (status.Failure()) { return status; }
         }
-        return true;
+        return std::static_pointer_cast<ReadLease>(lease);
     } catch (const std::bad_alloc&) {
         return Status::OutOfMemory();
     }

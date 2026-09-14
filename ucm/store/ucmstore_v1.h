@@ -35,9 +35,6 @@ namespace Early { class Batch; }
 // An implementation owns the resource; destruction releases it, including on errors.
 struct ReadLease {
     virtual ~ReadLease() = default;
-    // Optional extension by the reservation owner before publication. False
-    // means unsupported; callers may acquire another independently owned lease.
-    virtual Expected<bool> Extend(const Detail::BlockId*, size_t) { return false; }
 };
 struct PrefixReservation {
     uint64_t handle{0};

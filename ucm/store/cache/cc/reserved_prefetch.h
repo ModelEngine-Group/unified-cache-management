@@ -206,7 +206,12 @@ public:
             std::lock_guard guard(mutex_);
             reservations_.emplace(handle, r);
         }
-        stats.hintEntries = PublishReady(r);
+        try {
+            stats.hintEntries = PublishReady(r);
+        } catch (...) {
+            Release(handle);  // the caller has not received this handle yet
+            throw;
+        }
         stats.handle = handle;
         stats.protectedBytes = budget_->used.load();
         stats.protectionLimitBytes = budget_->limit;

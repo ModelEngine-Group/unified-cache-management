@@ -33,7 +33,7 @@ size_t OpenFiles()
                          std::filesystem::directory_iterator{});
 }
 
-TEST_F(UCPosixReadLeaseTest, ExtensionReusesOneDescriptorAndProtectsNewBlocks)
+TEST_F(UCPosixReadLeaseTest, OneBatchUsesOneDescriptorAndProtectsEveryBlock)
 {
     SpaceLayout layout;
     ASSERT_EQ(layout.Setup(LayoutConfig(Path())), Status::OK());
@@ -41,22 +41,16 @@ TEST_F(UCPosixReadLeaseTest, ExtensionReusesOneDescriptorAndProtectsNewBlocks)
     for (size_t i = 0; i < blocks.size(); ++i) { blocks[i][0] = std::byte(i); }
     std::ofstream(layout.DataFilePath(blocks.back(), false)) << "KV";
     const auto before = OpenFiles();
-    auto lease = PosixReadLease::Acquire(layout, blocks.data(), 32);
+    auto lease = PosixReadLease::Acquire(layout, blocks.data(), blocks.size());
     ASSERT_TRUE(lease);
     EXPECT_EQ(OpenFiles(), before + 1);
-    for (size_t begin : {32, 64}) {
-        auto extended = lease.Value()->Extend(blocks.data() + begin, 32);
-        ASSERT_TRUE(extended);
-        ASSERT_TRUE(extended.Value());
-        EXPECT_EQ(OpenFiles(), before + 1);
-    }
     EXPECT_EQ(layout.RemoveFile(blocks.back()), Status::Retry());
     lease.Value().reset();
     EXPECT_EQ(OpenFiles(), before);
     EXPECT_EQ(layout.RemoveFile(blocks.back()), Status::OK());
 }
 
-TEST_F(UCPosixReadLeaseTest, PartialExtensionFailureRetainsProtectionUntilRelease)
+TEST_F(UCPosixReadLeaseTest, FailedBatchDoesNotReleaseEarlierBatchProtection)
 {
     SpaceLayout layout;
     ASSERT_EQ(layout.Setup(LayoutConfig(Path())), Status::OK());
@@ -68,11 +62,11 @@ TEST_F(UCPosixReadLeaseTest, PartialExtensionFailureRetainsProtectionUntilReleas
     ASSERT_TRUE(writer);
     auto lease = PosixReadLease::Acquire(layout, blocks.data(), 1);
     ASSERT_TRUE(lease);
-    auto extended = lease.Value()->Extend(blocks.data() + 1, 2);
-    ASSERT_FALSE(extended);
-    EXPECT_EQ(extended.Error(), Status::Retry());
+    auto failed = PosixReadLease::Acquire(layout, blocks.data() + 1, 2);
+    ASSERT_FALSE(failed);
+    EXPECT_EQ(failed.Error(), Status::Retry());
     EXPECT_FALSE(PosixReadLease::AcquireRemoveGuardForLayout(layout, blocks[0]));
-    EXPECT_FALSE(PosixReadLease::AcquireRemoveGuardForLayout(layout, blocks[1]));
+    EXPECT_TRUE(PosixReadLease::AcquireRemoveGuardForLayout(layout, blocks[1]));
     lease.Value().reset();
     EXPECT_TRUE(PosixReadLease::AcquireRemoveGuardForLayout(layout, blocks[0]));
     EXPECT_TRUE(PosixReadLease::AcquireRemoveGuardForLayout(layout, blocks[1]));
