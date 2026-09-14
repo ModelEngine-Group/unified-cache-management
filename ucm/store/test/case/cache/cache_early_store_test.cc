@@ -167,6 +167,7 @@ TEST(UCCacheEarlyStoreTest, CancelledBatchStopsSubmissionButDrainsBeforeLeaseAnd
     }));
     auto first = reservation.batch->Step(64 * c.shardSize).Value();
     EXPECT_EQ(first.inflightBytes, 64 * c.shardSize);
+    EXPECT_EQ(reservation.batch->Snapshot().completedReadBytes, 0);
     early.Release(reservation.handle);
     EXPECT_FALSE(backend.lease.expired());
     auto pending = reservation.batch->Step(64 * c.shardSize);
@@ -174,6 +175,8 @@ TEST(UCCacheEarlyStoreTest, CancelledBatchStopsSubmissionButDrainsBeforeLeaseAnd
     EXPECT_FALSE(pending.Value().done);
     complete = true;
     EXPECT_FALSE(reservation.batch->Step(0));
+    EXPECT_EQ(reservation.batch->Snapshot().result.l2ReadBytes, 64 * c.shardSize);
+    EXPECT_EQ(reservation.batch->Snapshot().completedReadBytes, 64 * c.shardSize);
     EXPECT_TRUE(backend.lease.expired());
 }
 

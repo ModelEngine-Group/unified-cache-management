@@ -284,8 +284,9 @@ private:
 
 // Keep the native store's initialization, transfer queues and buffer ownership.
 // Reservations are destroyed before the base store releases those resources.
-class EarlyCacheStore final : public CacheStore {
+class EarlyCacheStore final : public CacheStore, public Early::DomainProvider {
     std::unique_ptr<ReservedPrefetch> early_;
+    size_t earlyBlockBytes_{0}, earlyShardBytes_{0};
 
 public:
     Status Setup(const Detail::Dictionary& config) override
@@ -294,12 +295,25 @@ public:
         if (status.Failure()) { return status; }
 
         const auto param = ParseConfig(config);
+        earlyBlockBytes_ = param.blockSize;
+        earlyShardBytes_ = param.shardSize;
         if (param.deviceId >= 0 && !param.cacheLoadBackendOnly) {
             early_ = std::make_unique<ReservedPrefetch>(
                 &bufferMgr_, param.storeBackend, param.blockSize, param.shardSize,
                 param.timeoutMs);
         }
         return Status::OK();
+    }
+
+    Early::Domain DescribeDomain() override
+    {
+        if (!early_) { return {}; }
+        auto* buffer = bufferMgr_.GetTransBuffer();
+        if (!buffer) { return {}; }
+        auto result = EarlyBufferPins::DescribeDomain(*buffer);
+        result.blockBytes = earlyBlockBytes_;
+        result.shardBytes = earlyShardBytes_;
+        return result;
     }
 
     Expected<PrefixReservation> ReservePrefix(const Detail::BlockId* blocks, size_t num) override

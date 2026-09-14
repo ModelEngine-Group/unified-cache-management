@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include "ucmstore_v1.h"
 #include "early_batch.h"
+#include "early_domain.h"
 
 namespace UC::PipelineStore::Early {
 
@@ -22,6 +23,19 @@ struct BoundBatch {
 // Narrow access to the native argument conversion; it stays private and is
 // shared with the native Load entry instead of duplicating buffer parsing.
 struct LoadBinding {
+    template <class Pipeline>
+    static UC::Early::Domain Domain(Pipeline& pipeline)
+    {
+        for (const auto& health : pipeline.healthBreakerStores_) {
+            if (!health->Enabled()) { return {}; }
+        }
+        for (const auto& store : pipeline.stores_) {
+            if (auto* provider = dynamic_cast<UC::Early::DomainProvider*>(store.get())) {
+                return provider->DescribeDomain();
+            }
+        }
+        return {};
+    }
     template <class Pipeline>
     static Detail::TaskDesc Describe(const pybind11::buffer& ids,
                                      const pybind11::buffer& indexes,
@@ -46,11 +60,29 @@ template <class Pipeline, class NotFoundError, class UnhealthyError>
 void BindOperations(pybind11::module_& module)
 {
     namespace py = pybind11;
+    module.def("EarlyDomainInfo", [](Pipeline& pipeline) {
+        auto domain = LoadBinding::Domain(pipeline);
+        py::dict out;
+        out["backing"] = domain.backing;
+        out["nodes"] = domain.nodes;
+        out["reservable_nodes"] = domain.reservable;
+        out["shard_bytes"] = domain.shardBytes;
+        out["block_bytes"] = domain.blockBytes;
+        return out;
+    });
     py::class_<BoundBatch>(module, "EarlyBatch")
         .def_property_readonly("window_bytes", [](const BoundBatch& b) { return b.batch->windowBytes; })
         .def_property_readonly("shard_bytes", [](const BoundBatch& b) { return b.batch->shardBytes; })
         .def_property_readonly("protection_limit_bytes", [](const BoundBatch& b) { return b.batch->protectionLimitBytes; })
         .def_property_readonly("protected_bytes", [](const BoundBatch& b) { return b.batch->ProtectedBytes(); })
+        .def("snapshot", [](BoundBatch& b) {
+            UC::Early::Progress progress;
+            { py::gil_scoped_release release; progress = b.batch->Snapshot(); }
+            py::dict out;
+            out["l2_read_bytes"] = progress.result.l2ReadBytes;
+            out["completed_read_bytes"] = progress.completedReadBytes;
+            return out;
+        })
         .def("step", [](BoundBatch& b, size_t availableBytes) {
             UC::Early::Progress progress;
             {
@@ -65,6 +97,7 @@ void BindOperations(pybind11::module_& module)
             out["remaining_l2_work"] = progress.remainingL2Work;
             out["l2_read_shards"] = progress.result.l2ReadShards;
             out["l2_read_bytes"] = progress.result.l2ReadBytes;
+            out["completed_read_bytes"] = progress.completedReadBytes;
             out["coalesced_shards"] = progress.result.coalescedShards;
             return out;
         });
@@ -73,6 +106,7 @@ void BindOperations(pybind11::module_& module)
                                 std::vector<uint64_t> reservations) {
         auto task = LoadBinding::Describe<Pipeline>(ids, indexes, addrs);
         task.loadReservations = std::move(reservations);
+        task.brief = "EarlyConsumer";
         auto* store = reinterpret_cast<StoreV1*>(pipeline.Self());
         py::gil_scoped_release release;
         return ValueOrThrow<NotFoundError, UnhealthyError>(store->Load(std::move(task)));

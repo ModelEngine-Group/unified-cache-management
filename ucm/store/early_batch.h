@@ -13,6 +13,7 @@ struct Progress {
     bool canSubmit{true};
     size_t inflightBytes{0};
     size_t remainingL2Work{0};
+    size_t completedReadBytes{0};
     PrefetchResult result{};
 };
 
@@ -25,6 +26,7 @@ public:
         : shardBytes(shard), windowBytes(window), protectionLimitBytes(protectionLimit) {}
     virtual ~Batch() = default;
     virtual Expected<Progress> Step(size_t availableBytes) = 0;
+    virtual Progress Snapshot() = 0;
     virtual Expected<PrefetchResult> Run() = 0;
     virtual size_t ProtectedBytes() const = 0;
     // Installed by the existing health wrapper before publication to Python.

@@ -2,8 +2,52 @@
 // Keep Early operations out of native methods; reuse native Hash and metadata/locks.
 #include "early_buffer_pins.h"
 #include <algorithm>
+#include <cstdio>
+#include <fstream>
+#include <sstream>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 
 namespace UC::CacheStore {
+Early::Domain EarlyBufferPins::DescribeDomain(TransBuffer& buffer)
+{
+    Early::Domain result;
+    auto& strategy = *buffer.strategy_;
+    result.nodes = strategy.NodeCount();
+    result.reservable = ReservableSlots(buffer);
+    if (!dynamic_cast<SharedBufferStrategy*>(&strategy) || !result.nodes) { return result; }
+    // Resolve addresses only inside their owning process. Export inode/offsets,
+    // never an address, filename-based guess, or a reconstructed shard layout.
+    const auto data = reinterpret_cast<uintptr_t>(strategy.DataAt(0));
+    const auto meta = reinterpret_cast<uintptr_t>(strategy.MetaAt(0));
+    std::ifstream maps("/proc/self/maps");
+    std::string line;
+    while (std::getline(maps, line)) {
+        unsigned long long start, end, offset, inode;
+        unsigned major, minor;
+        char permissions[5]{};
+        int consumed = 0;
+        if (std::sscanf(line.c_str(), "%llx-%llx %4s %llx %x:%x %llu %n",
+                        &start, &end, permissions, &offset, &major, &minor, &inode, &consumed) != 7) {
+            continue;
+        }
+        if (permissions[3] != 's' || !inode || data < start || data >= end || meta < start || meta >= end) {
+            continue;
+        }
+        auto path = line.substr(consumed);
+        struct stat stat{};
+        // An unlinked/replaced object is unsuitable for admitting a cohort.
+        if (::stat(path.c_str(), &stat) || static_cast<uint64_t>(stat.st_ino) != inode ||
+            ::major(stat.st_dev) != major || ::minor(stat.st_dev) != minor) { continue; }
+        std::ostringstream identity;
+        identity << major << ':' << minor << ':' << inode << ':' << stat.st_size
+                 << ':' << offset + meta - start << ':' << offset + data - start;
+        result.backing = identity.str();
+        break;
+    }
+    return result;
+}
+
 size_t EarlyBufferPins::ReservableSlots(TransBuffer& buffer)
 {
     // Native CanReserve is the contiguous prefix before its load-exclusive area.

@@ -31,6 +31,7 @@ class ReservedPrefetch::Batch final : public Early::Batch {
         // Check(true) is followed by native Wait to collect status and resources.
         // On abandonment/error Run/destruction also drains unfinished tasks here.
         auto status = owner_.backend_->Wait(transfer.handle);
+        if (status.Success()) { progress_.completedReadBytes += transfer.owners.size() * shardBytes; }
         for (auto index : transfer.owners) {
             auto& pin = r.Pin(index, owner_.shardsPerBlock_);
             if (status.Success()) { pin.MarkReady(); }
@@ -210,6 +211,12 @@ public:
     {
         std::lock_guard lock(mutex_);
         return Advance(std::min(availableBytes, windowBytes - progress_.inflightBytes), false);
+    }
+
+    Early::Progress Snapshot() override
+    {
+        std::lock_guard lock(mutex_);
+        return progress_;
     }
 
     Expected<PrefetchResult> Run() override

@@ -140,3 +140,189 @@ TEST(UCCacheEarlyProcessTest, SharedShardHasOneReaderAndTwoLocalHandoffs)
     ::close(reserved[0]);
     ::close(reserved[1]);
 }
+
+namespace {
+UC::CacheStore::Config SharedConfig()
+{
+    UC::CacheStore::Config config;
+    config.uniqueId = UC::Test::Detail::Random().RandomString(16);
+    config.deviceId = 0;
+    config.tensorSizes = {4096};
+    config.shardSize = 4096;
+    config.blockSize = 8192;
+    config.bufferCapacity = 4 << 20;
+    config.loadExclusiveBufferNumber = 16;
+    config.shareBufferEnable = true;
+    return config;
+}
+
+void SendText(int fd, const std::string& value)
+{
+    const auto size = value.size();
+    Require(::write(fd, &size, sizeof(size)) == sizeof(size), "send length");
+    Require(::write(fd, value.data(), size) == static_cast<ssize_t>(size), "send identity");
+}
+
+std::string ReceiveText(int fd)
+{
+    size_t size = 0;
+    Require(::read(fd, &size, sizeof(size)) == sizeof(size) && size < 1024, "receive length");
+    std::string value(size, '\0');
+    Require(::read(fd, value.data(), size) == static_cast<ssize_t>(size), "receive identity");
+    return value;
+}
+
+void NativeLoad(UC::CacheStore::BufferManager& manager,
+                const UC::CacheStore::Config& config, const UC::Detail::BlockId& block)
+{
+    std::array<unsigned char, 8192> destination{};
+    UC::HashSet<UC::Detail::TaskHandle> failures;
+    UC::CacheStore::LoadQueue queue;
+    Require(queue.Setup(config, &failures, manager.GetTransBuffer()).Success(), "native load setup");
+    for (size_t layer = 0; layer < 2; ++layer) {
+        UC::Detail::TaskDesc desc{{block, layer, {destination.data() + layer * 4096}}};
+        auto task = std::make_shared<UC::CacheStore::TransTask>(
+            UC::CacheStore::TransTask::Type::LOAD, desc);
+        Require(task->loadHandles.empty(), "consumer must use native Get");
+        auto waiter = std::make_shared<UC::Latch>();
+        queue.Submit(task, waiter);
+        Require(waiter->WaitForDuration(5000), "native simulated H2D timeout");
+        Require(!failures.Contains(task->id), "native simulated H2D failed");
+    }
+    for (auto byte : destination) { Require(byte == 0x6b, "consumer HBM target differs"); }
+}
+}
+
+TEST(UCCacheEarlyProcessTest, OneOwnerTwoNativeConsumersDelayedUnderEvictionPressure)
+{
+    auto config = SharedConfig();
+    std::array<std::array<int, 2>, 2> start{}, done{};
+    for (size_t i = 0; i < 2; ++i) {
+        ASSERT_EQ(::pipe(start[i].data()), 0);
+        ASSERT_EQ(::pipe(done[i].data()), 0);
+    }
+    std::array<pid_t, 2> children{};
+    int consumer = -1;
+    for (size_t i = 0; i < 2; ++i) {
+        children[i] = ::fork();  // no native threads or shared mappings before fork
+        ASSERT_GE(children[i], 0);
+        if (children[i] == 0) { consumer = i; break; }
+    }
+    auto run = [&] {
+        Backend backend;
+        config.storeBackend = &backend;
+        UC::Detail::BlockId block{};
+        if (consumer >= 0) {
+            Receive(start[consumer][0]);
+            const auto identity = ReceiveText(start[consumer][0]);
+            config.deviceId = consumer + 1;
+            UC::CacheStore::BufferManager manager;
+            Require(manager.Setup(config).Success(), "consumer attach");
+            auto domain = UC::CacheStore::EarlyBufferPins::DescribeDomain(*manager.GetTransBuffer());
+            Require(!domain.backing.empty() && domain.backing == identity, "different native backing");
+            EXPECT_CALL(backend, LookupOnPrefix).Times(0);
+            EXPECT_CALL(backend, Load).Times(0);
+            EXPECT_CALL(backend, Wait).Times(0);
+            NativeLoad(manager, config, block);  // no reserve/lease or cross-process handle
+            Send(done[consumer][1]);
+            Receive(start[consumer][0]);  // keep attachment alive until owner's validation ends
+            return;
+        }
+        UC::CacheStore::BufferManager manager;
+        Require(manager.Setup(config).Success(), "owner setup");
+        auto& buffer = *manager.GetTransBuffer();
+        auto domain = UC::CacheStore::EarlyBufferPins::DescribeDomain(buffer);
+        Require(!domain.backing.empty() && domain.nodes > domain.reservable, "shared budget/headroom");
+        UC::CacheStore::ReservedPrefetch early(&manager, &backend, config.blockSize,
+                                               config.shardSize, config.timeoutMs);
+        EXPECT_CALL(backend, LookupOnPrefix).WillOnce(testing::Return(ssize_t{0}));
+        EXPECT_CALL(backend, Load).WillOnce(testing::Invoke([](UC::Detail::TaskDesc task) {
+            for (auto& shard : task) { std::memset(shard.addrs[0], 0x6b, 4096); }
+            return UC::Detail::TaskHandle{1};
+        }));
+        EXPECT_CALL(backend, Wait).WillOnce(testing::Return(UC::Status::OK()));
+        auto reservation = early.Reserve(&block, 1);
+        Require(bool(reservation), "owner reserve");
+        auto handle = reservation.Value().handle;
+        Require(bool(early.Prefetch(handle)), "owner prefetch");
+        Send(start[0][1]);
+        SendText(start[0][1], domain.backing);
+        Receive(done[0][0]);
+        // Consumer 1 has not acquired any references. Evict many other shards.
+        for (size_t i = 1; i < domain.nodes * 2; ++i) {
+            UC::Detail::BlockId other{};
+            std::memcpy(&other, &i, sizeof(i));
+            auto pressure = buffer.TryGet(other, 0);
+            if (pressure) { pressure.MarkReady(); }
+        }
+        Require(reservation.Value().batch->ProtectedBytes() >= 8192, "owner released before late consumer");
+        Send(start[1][1]);
+        SendText(start[1][1], domain.backing);
+        Receive(done[1][0]);
+        // Conservative protocol: both native queues have completed all H2D.
+        early.Release(handle);
+        Require(reservation.Value().batch->ProtectedBytes() == 0, "protection not returned");
+        for (size_t i = 0; i < 2; ++i) { Send(start[i][1]); }
+        for (auto child : children) {
+            int status = 0;
+            Require(::waitpid(child, &status, 0) == child, "wait consumer");
+            Require(WIFEXITED(status) && WEXITSTATUS(status) == 0, "consumer failed");
+        }
+    };
+    if (consumer >= 0) {
+        try { run(); } catch (...) { ::_exit(1); }
+        ::_exit(testing::Test::HasFailure() ? 1 : 0);
+    }
+    EXPECT_NO_THROW(run());
+    for (size_t i = 0; i < 2; ++i) {
+        for (auto fd : start[i]) { ::close(fd); }
+        for (auto fd : done[i]) { ::close(fd); }
+    }
+}
+
+TEST(UCCacheEarlyProcessTest, ProcessDeathDoesNotRecoverNativeSharedReferences)
+{
+    auto config = SharedConfig();
+    int start[2], acquired[2];
+    ASSERT_EQ(::pipe(start), 0);
+    ASSERT_EQ(::pipe(acquired), 0);
+    const auto child = ::fork();
+    ASSERT_GE(child, 0);
+    UC::Detail::BlockId block{};
+    if (child == 0) {
+        try {
+            Receive(start[0]);
+            UC::CacheStore::TransBuffer buffer;
+            Require(buffer.Setup(config).Success(), "child attach");
+            auto held = buffer.Get(block, 0);
+            Require(bool(held) && held.Ready(), "child acquire native reference");
+            Send(acquired[1]);
+            ::_exit(0);  // no RAII: models unexpected process death outside a lock
+        } catch (...) { ::_exit(1); }
+    }
+    UC::CacheStore::TransBuffer buffer;
+    ASSERT_TRUE(buffer.Setup(config).Success());
+    auto held = buffer.Get(block, 0);
+    ASSERT_TRUE(held);
+    held.MarkReady();
+    Send(start[1]);
+    Receive(acquired[0]);
+    int status = 0;
+    ASSERT_EQ(::waitpid(child, &status, 0), child);
+    ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    held = {};
+    auto domain = UC::CacheStore::EarlyBufferPins::DescribeDomain(buffer);
+    std::vector<UC::CacheStore::TransBuffer::Handle> occupied;
+    for (size_t i = 1; i <= domain.reservable; ++i) {
+        UC::Detail::BlockId other{};
+        std::memcpy(&other, &i, sizeof(i));
+        auto pin = buffer.TryGet(other, 0);
+        if (!pin) { break; }
+        pin.MarkReady();
+        occupied.push_back(std::move(pin));
+    }
+    EXPECT_EQ(occupied.size(), domain.reservable - 1);  // dead reference is NOT recovered
+    for (auto fd : start) { ::close(fd); }
+    for (auto fd : acquired) { ::close(fd); }
+    // This test owns the unique backing; normal buffer destruction unlinks it.
+}
