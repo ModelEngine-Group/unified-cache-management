@@ -12,7 +12,7 @@ namespace UC::CacheStore {
 
 class ReservedPrefetch {
     struct Reservation {
-        std::shared_ptr<ReadLease> lease;
+        std::vector<std::shared_ptr<ReadLease>> leases;
         std::vector<Detail::BlockId> blocks;
         std::vector<TransBuffer::Handle> pins;
         std::mutex mutex;
@@ -52,45 +52,52 @@ public:
     Expected<PrefixReservation> Reserve(const Detail::BlockId* blocks, size_t num)
     {
         if (!buffer_) { return Status::Error("Early requires a worker data buffer"); }
-        // Protect the candidates before lookup, including the first missing block.
-        auto lease = backend_->AcquireReadLease(blocks, num);
-        if (!lease) { return lease.Error(); }
         auto reservation = std::make_shared<Reservation>();
-        reservation->lease = std::move(lease.Value());
-        reservation->blocks.assign(blocks, blocks + num);
-        reservation->pins.resize(num * shardsPerBlock_);
-        std::vector<Detail::BlockId> needL2;
-        std::vector<size_t> needL2Indices;
-        for (size_t b = 0; b < num; ++b) {
-            bool complete = true;
-            for (size_t shard = 0; shard < shardsPerBlock_; ++shard) {
-                auto& pin = reservation->pins[b * shardsPerBlock_ + shard];
-                bool capacityConflict = false;
-                pin = buffer_->PinReady(blocks[b], shard, &capacityConflict);
-                if (capacityConflict) {
-                    return Status::Error("prefix occupies native load-exclusive buffer");
-                }
-                if (!pin) { complete = false; }
-            }
-            if (!complete) {
-                needL2.push_back(blocks[b]);
-                needL2Indices.push_back(b);
-            }
-        }
-        // Native Cache lookup checks shard-0 existence, including pending dump
-        // entries. Only a complete pinned block can bypass the native L2 lookup.
-        // Missing KV is a short hit now, never a dependency on a future producer.
+        // Bound speculative pin/lease work after a short hit. Do not stop on an
+        // L2 miss alone: a complete, protected L1-only block remains a valid hit.
+        constexpr size_t candidateBatchBlocks = 32;
         size_t count = num;
-        if (!needL2.empty()) {
-            auto hit = backend_->LookupOnPrefix(needL2.data(), needL2.size());
-            if (!hit) { return hit.Error(); }
-            const auto firstMiss = static_cast<size_t>(hit.Value() + 1);
-            if (firstMiss < needL2.size()) { count = needL2Indices[firstMiss]; }
+        for (size_t begin = 0; begin < num; begin += candidateBatchBlocks) {
+            const auto end = std::min(num, begin + candidateBatchBlocks);
+            auto lease = backend_->AcquireReadLease(blocks + begin, end - begin);
+            if (!lease) { return lease.Error(); }
+            reservation->leases.push_back(std::move(lease.Value()));
+            reservation->blocks.insert(reservation->blocks.end(), blocks + begin, blocks + end);
+            reservation->pins.resize(end * shardsPerBlock_);
+            std::vector<Detail::BlockId> needL2;
+            std::vector<size_t> needL2Indices;
+            for (size_t b = begin; b < end; ++b) {
+                bool complete = true;
+                for (size_t shard = 0; shard < shardsPerBlock_; ++shard) {
+                    auto& pin = reservation->pins[b * shardsPerBlock_ + shard];
+                    bool capacityConflict = false;
+                    pin = buffer_->PinReady(blocks[b], shard, &capacityConflict, true);
+                    if (capacityConflict) {
+                        return Status::Error("prefix occupies native load-exclusive buffer");
+                    }
+                    if (!pin || !pin.Ready()) { complete = false; }
+                }
+                if (!complete) {
+                    needL2.push_back(blocks[b]);
+                    needL2Indices.push_back(b);
+                }
+            }
+            if (!needL2.empty()) {
+                auto hit = backend_->LookupOnPrefix(needL2.data(), needL2.size());
+                if (!hit) { return hit.Error(); }
+                const auto firstMiss = static_cast<size_t>(hit.Value() + 1);
+                if (firstMiss < needL2.size()) {
+                    count = needL2Indices[firstMiss];
+                    break;
+                }
+            }
         }
         reservation->blocks.resize(count);
         reservation->pins.resize(count * shardsPerBlock_);
         size_t missing = 0;
-        for (const auto& pin : reservation->pins) { if (!pin) { ++missing; } }
+        for (const auto& pin : reservation->pins) {
+            if (!pin || !pin.Ready()) { ++missing; }
+        }
         std::lock_guard guard(mutex_);
         const auto handle = next_++;
         reservations_.emplace(handle, std::move(reservation));
@@ -121,7 +128,10 @@ public:
                 if (r.cancelled.load()) { return Status::Error("reserved prefetch cancelled"); }
                 std::lock_guard guard(r.mutex);
                 auto& pin = r.pins[i];
-                if (pin) { continue; }  // already pinned READY, never invalidate it
+                if (pin) {
+                    if (!pin.Ready()) { ++result.coalescedShards; }
+                    continue;  // reuse READY and live in-flight positions
+                }
                 auto& block = r.blocks[i / shardsPerBlock_];
                 auto shard = i % shardsPerBlock_;
                 // Bounded capacity search; native load still uses its original policy.

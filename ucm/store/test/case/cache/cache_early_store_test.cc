@@ -15,9 +15,11 @@ namespace {
 class Backend : public testing::NiceMock<UC::Test::Detail::MockStore> {
 public:
     std::weak_ptr<UC::ReadLease> lease;
+    std::vector<size_t> leaseBlocks;
     UC::Expected<std::shared_ptr<UC::ReadLease>> AcquireReadLease(
-        const UC::Detail::BlockId*, size_t) override
+        const UC::Detail::BlockId*, size_t count) override
     {
+        leaseBlocks.push_back(count);
         auto owned = std::make_shared<UC::ReadLease>();
         lease = owned;
         return owned;
@@ -199,4 +201,72 @@ TEST(UCCacheEarlyStoreTest, BoundedAllocationPreservesPinnedNativeEntries)
     auto native = buffer->Get(missing, 0);
     EXPECT_TRUE(native);
     EXPECT_TRUE(native.Owner());
+}
+
+TEST(UCCacheEarlyStoreTest, ShortHitStopsCandidateLeaseAndShardWork)
+{
+    Backend backend;
+    EXPECT_CALL(backend, LookupOnPrefix).WillOnce(testing::Invoke(
+        [](const UC::Detail::BlockId*, size_t count) {
+            EXPECT_EQ(count, 32);
+            return ssize_t{-1};
+        }));
+    EXPECT_CALL(backend, Load).Times(0);
+    std::unique_ptr<UC::StoreV1> store(MakeEarlyCacheStore());
+    ASSERT_TRUE(store->Setup(Config(&backend)).Success());
+    std::array<UC::Detail::BlockId, 256> blocks{};
+    for (size_t i = 0; i < blocks.size(); ++i) { blocks[i][0] = std::byte(i); }
+    auto reserved = store->ReservePrefix(blocks.data(), blocks.size());
+    ASSERT_TRUE(reserved);
+    EXPECT_EQ(reserved.Value().totalHitBlocks, 0);
+    EXPECT_EQ(reserved.Value().remainingL2Work, 0);
+    EXPECT_EQ(backend.leaseBlocks, std::vector<size_t>{32});
+    store->ReleaseReservation(reserved.Value().handle);
+    EXPECT_TRUE(backend.lease.expired());
+}
+
+TEST(UCCacheEarlyStoreTest, InflightPositionStaysPinnedAfterOwnerCompletes)
+{
+    Backend backend;
+    EXPECT_CALL(backend, LookupOnPrefix).WillOnce(testing::Return(ssize_t{0}));
+    EXPECT_CALL(backend, Load).Times(0);
+    UC::CacheStore::Config config;
+    config.uniqueId = UC::Test::Detail::Random().RandomString(16);
+    config.deviceId = 0;
+    config.shardSize = config.blockSize = 4096;
+    config.bufferCapacity = 4 * config.shardSize;
+    config.loadExclusiveBufferNumber = 0;
+    config.shareBufferEnable = false;
+    config.storeBackend = &backend;
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(config).Success());
+    auto* buffer = manager.GetTransBuffer();
+    UC::Detail::BlockId block{};
+    auto owner = buffer->Get(block, 0);
+    ASSERT_TRUE(owner.Owner());
+    UC::CacheStore::ReservedPrefetch early(
+        &manager, &backend, config.blockSize, config.shardSize, config.timeoutMs);
+    auto reserved = early.Reserve(&block, 1);
+    ASSERT_TRUE(reserved);
+    EXPECT_EQ(reserved.Value().remainingL2Work, 1);
+    std::memset(owner.Data(), 0x6b, config.shardSize);
+    owner.MarkReady();
+    owner = {};
+    // Churn the same native buffer between reserve and prefetch. A borrowed
+    // in-flight position must survive its producer releasing the original pin.
+    for (size_t i = 1; i < 64; ++i) {
+        UC::Detail::BlockId other{};
+        other[0] = std::byte(i);
+        auto pin = buffer->Get(other, 0);
+        std::memset(pin.Data(), 0x31, config.shardSize);
+        pin.MarkReady();
+    }
+    auto prefetched = early.Prefetch(reserved.Value().handle);
+    ASSERT_TRUE(prefetched);
+    EXPECT_EQ(prefetched.Value().l2ReadShards, 0);
+    auto retained = buffer->PinReady(block, 0);
+    ASSERT_TRUE(retained);
+    EXPECT_EQ(static_cast<unsigned char*>(retained.Data())[0], 0x6b);
+    early.Release(reserved.Value().handle);
+    EXPECT_TRUE(backend.lease.expired());
 }

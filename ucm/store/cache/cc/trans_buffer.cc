@@ -612,7 +612,7 @@ TransBuffer::Handle TransBuffer::TryGet(const Detail::BlockId& blockId, size_t s
 }
 
 TransBuffer::Handle TransBuffer::PinReady(const Detail::BlockId& blockId, size_t shardIdx,
-                                        bool* capacityConflict)
+                                        bool* capacityConflict, bool includeLoading)
 {
     auto bucket = Hash(blockId, shardIdx);
     strategy_->BucketLock(bucket);
@@ -626,7 +626,11 @@ TransBuffer::Handle TransBuffer::PinReady(const Detail::BlockId& blockId, size_t
                 break;
             }
             strategy_->NodeLock(node);
-            if (meta->state.load(std::memory_order_acquire) == State::READY) {
+            const auto state = meta->state.load(std::memory_order_acquire);
+            // A live owner already protects the destination of its I/O. Borrow
+            // that same position without claiming ownership or allocating here.
+            if (state == State::READY ||
+                (includeLoading && state == State::LOADING && meta->reference != 0)) {
                 ++meta->reference;
                 strategy_->MarkAccessed(node);
                 result = Handle(this, node, false);

@@ -114,7 +114,7 @@ public:
                bool isLoad = false);
     Handle TryGet(const Detail::BlockId& blockId, size_t shardIdx);
     Handle PinReady(const Detail::BlockId& blockId, size_t shardIdx,
-                    bool* capacityConflict = nullptr);
+                    bool* capacityConflict = nullptr, bool includeLoading = false);
     void Prealloc(const Detail::BlockId& blockId, size_t shardIdx, bool allowReserved = false);
     bool Exist(const Detail::BlockId& blockId, size_t shardIdx);
 
