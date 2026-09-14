@@ -48,8 +48,10 @@ class UnifiedCacheStoreConfig:
     name: str
     config: Dict[str, Any]
 
-    def fixed_size_config(self, namespace: str, tensor_size: int) -> Dict[str, Any]:
-        """Build an isolated fixed-size Posix configuration for one v2 component."""
+    def fixed_size_config(
+        self, namespace: str, tensor_size: int, tensors_per_block: int = 1
+    ) -> Dict[str, Any]:
+        """Build an isolated fixed-size Posix configuration for one v2 pool."""
         cfg = dict(self.config)
         safe_namespace = re.sub(r"[^A-Za-z0-9_.-]", "_", namespace)
         storage_backends = []
@@ -61,8 +63,9 @@ class UnifiedCacheStoreConfig:
             storage_backends.append(str(component_path))
         cfg["storage_backends"] = storage_backends
         cfg["tensor_size"] = tensor_size
-        cfg["shard_size"] = tensor_size
-        cfg["block_size"] = tensor_size
+        block_size = tensor_size * tensors_per_block
+        cfg["shard_size"] = block_size
+        cfg["block_size"] = block_size
         return cfg
 
     @staticmethod
@@ -141,6 +144,7 @@ class SglangUcmConnector:
         self.ucm_store_config: Optional[UnifiedCacheStoreConfig] = None
         self.registered_pools: Dict[Any, Any] = {}
         self.pool_components: Dict[Any, List[tuple[Any, int]]] = {}
+        self.pool_component_sizes: Dict[Any, List[int]] = {}
         self.flattened_pools: set[Any] = set()
 
     @classmethod
@@ -212,7 +216,6 @@ class SglangUcmConnector:
         probe_indices = torch.arange(page_size, dtype=torch.int64)
         ptrs, sizes = host_pool.get_page_buffer_meta(probe_indices)
         _, page_sizes = self._flatten_page_meta(ptrs, sizes, 1)
-        components = []
         pool_value = self._pool_value(pool_name)
         if pool_value == "mamba":
             # Mamba owns heterogeneous temporal/SSM and convolution buffers.
@@ -230,24 +233,32 @@ class SglangUcmConnector:
                 self.ucm_store_config.module_path,
             )
             self.pool_components[pool_name] = [(store, total_size)]
+            self.pool_component_sizes[pool_name] = [total_size]
             self.flattened_pools.add(pool_name)
             return
 
-        for component_index, size in enumerate(page_sizes[0]):
-            size = int(size)
-            if size <= 0:
-                continue
-            namespace = f"{pool_value}_component_{component_index}_{size}"
-            cfg = self.ucm_store_config.fixed_size_config(namespace, size)
-            store = UcmConnectorFactoryV1.create_connector(
-                self.ucm_store_config.name,
-                cfg,
-                self.ucm_store_config.module_path,
-            )
-            components.append((store, size))
-        if not components:
+        component_sizes = [int(size) for size in page_sizes[0] if int(size) > 0]
+        if not component_sizes:
             raise ValueError(f"Hybrid pool {pool_value!r} has no non-empty components")
-        self.pool_components[pool_name] = components
+        if len(set(component_sizes)) != 1:
+            raise ValueError(
+                f"Hybrid pool {pool_value!r} contains unequal component sizes "
+                f"{component_sizes}; asymmetric pools are not supported"
+            )
+
+        component_size = component_sizes[0]
+        component_count = len(component_sizes)
+        namespace = f"{pool_value}_{component_size}x{component_count}"
+        cfg = self.ucm_store_config.fixed_size_config(
+            namespace, component_size, component_count
+        )
+        store = UcmConnectorFactoryV1.create_connector(
+            self.ucm_store_config.name,
+            cfg,
+            self.ucm_store_config.module_path,
+        )
+        self.pool_components[pool_name] = [(store, component_size)]
+        self.pool_component_sizes[pool_name] = component_sizes
 
     def _component_key(self, logical_key: str, pool_name: Any, index: int) -> bytes:
         physical = (
@@ -274,7 +285,7 @@ class SglangUcmConnector:
             )
         ptrs, sizes = host_pool.get_page_buffer_meta(transfer.host_indices)
         page_ptrs, page_sizes = self._flatten_page_meta(ptrs, sizes, len(keys))
-        expected = [size for _, size in self.pool_components[transfer.name]]
+        expected = self.pool_component_sizes[transfer.name]
         for sizes_for_page in page_sizes:
             actual = [int(size) for size in sizes_for_page if int(size) > 0]
             if actual != expected:
@@ -300,30 +311,23 @@ class SglangUcmConnector:
                 continue
             keys, page_ptrs, _ = self._transfer_meta(transfer)
             page_results = [True] * len(keys)
-            for component_index, (store, _) in enumerate(
-                self.pool_components[transfer.name]
-            ):
-                encoded = [
-                    self._component_key(key, transfer.name, component_index)
-                    for key in keys
-                ]
-                pointers = [[page[component_index]] for page in page_ptrs]
-                try:
-                    task = (
-                        store.dump_data(encoded, [0] * len(keys), pointers)
-                        if is_set
-                        else store.load_data(encoded, [0] * len(keys), pointers)
-                    )
-                    store.wait(task)
-                except RuntimeError as exc:
-                    logger.error(
-                        "UnifiedCache %s failed for pool %s component %d: %s",
-                        "dump" if is_set else "load",
-                        transfer.name,
-                        component_index,
-                        exc,
-                    )
-                    page_results = [False] * len(keys)
+            store, _ = self.pool_components[transfer.name][0]
+            encoded = [self._component_key(key, transfer.name, 0) for key in keys]
+            try:
+                task = (
+                    store.dump_data(encoded, [0] * len(keys), page_ptrs)
+                    if is_set
+                    else store.load_data(encoded, [0] * len(keys), page_ptrs)
+                )
+                store.wait(task)
+            except RuntimeError as exc:
+                logger.error(
+                    "UnifiedCache %s failed for pool %s: %s",
+                    "dump" if is_set else "load",
+                    transfer.name,
+                    exc,
+                )
+                page_results = [False] * len(keys)
             results[transfer.name] = page_results
         return results
 
@@ -406,15 +410,12 @@ class SglangUcmConnector:
             if components is None:
                 raise ValueError(f"Unregistered UCM hybrid pool: {transfer.name}")
             page_exists = [True] * kv_pages
-            for component_index, (store, _) in enumerate(components):
-                encoded = [
-                    self._component_key(key, transfer.name, component_index)
-                    for key in keys[:kv_pages]
-                ]
-                component_exists = [bool(value) for value in store.lookup(encoded)]
-                page_exists = [
-                    a and b for a, b in zip(page_exists, component_exists)
-                ]
+            store, _ = components[0]
+            encoded = [
+                self._component_key(key, transfer.name, 0)
+                for key in keys[:kv_pages]
+            ]
+            page_exists = [bool(value) for value in store.lookup(encoded)]
             pool_restorable = []
             boundary = 0
             if transfer.hit_policy == PoolHitPolicy.ALL_PAGES:
