@@ -153,17 +153,27 @@ class _EarlyConnectorMixin:
     def start_load_kv(self, forward_context, **kwargs):
         super().start_load_kv(forward_context, **kwargs)
         if not self.use_layerwise:
-            self._early.loaded({
+            self._early_load_completed({
                 request_id for request_id, meta in
                 self._get_connector_metadata().request_meta.items()
                 if not meta.load_async
             })
 
+    def _early_load_completed(self, request_ids):
+        # v0.8.0 records direct-load failures in worker metadata; the
+        # layerwise-only _failure_req_ids field is not present on direct workers.
+        completed = set(request_ids)
+        failed = completed & self._connector_worker_meta.load_failed_reqs
+        if failed:
+            self._early.loaded(failed, reason="load_failure")
+        if completed - failed:
+            self._early.loaded(completed - failed)
+
     def wait_for_layer_load(self, layer_name):
         super().wait_for_layer_load(layer_name)
         if self.use_layerwise and self.has_connector_metadata():
             if self._failure_req_ids:
-                self._early.loaded(self._failure_req_ids)
+                self._early.loaded(self._failure_req_ids, reason="load_failure")
             if self.layer_name_to_id[layer_name] == self.layer_ids[-1]:
                 self._early.loaded(self._get_connector_metadata().request_meta)
 
@@ -172,7 +182,7 @@ class _EarlyConnectorMixin:
         if result[1]:
             # Native polling has waited/reaped these tasks before releasing
             # their Early reservations, including failed async transfers.
-            self._early.loaded(result[1])
+            self._early_load_completed(result[1])
         self._early.finished(finished_req_ids)
         return result
 

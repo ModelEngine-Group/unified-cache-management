@@ -241,6 +241,7 @@ public:
     {
         EarlyStats stats{"load_handles"};
         stats.shards = task.size();
+        stats.loadReservations = task.loadReservations;
         std::shared_ptr<const LoadPlan> plan;
         {
             std::lock_guard guard(mutex_);

@@ -4,6 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from test_early_ready_reuse import Request, connector, prepare
+from test_ucm_request_hasher import _config, _mm_feature, _semantic_extra_keys
 
 import ucm.integration.vllm.request_hasher as hashing
 from ucm.integration.vllm.early_connector import EarlyDirectConnector
@@ -11,19 +13,22 @@ from ucm.integration.vllm.early_prefetch import Job
 from ucm.integration.vllm.ucm_connector import (
     PendingLoadTask,
     RequestDispatchMeta,
+    RequestStatus,
     UCMConnectorMetadata,
     UCMDirectConnector,
+    UCMWorkerMetadata,
 )
-from test_early_ready_reuse import Request, connector
-from test_ucm_request_hasher import _config, _mm_feature, _semantic_extra_keys
 
 
-@pytest.mark.parametrize("semantics", [
-    {"mm_features": [_mm_feature("image-a", 0, 3)]},
-    {"lora_request": SimpleNamespace(lora_name="adapter-a")},
-    {"cache_salt": "tenant-a"},
-    {"prompt_embeds": b"abcdefgh"},
-])
+@pytest.mark.parametrize(
+    "semantics",
+    [
+        {"mm_features": [_mm_feature("image-a", 0, 3)]},
+        {"lora_request": SimpleNamespace(lora_name="adapter-a")},
+        {"cache_salt": "tenant-a"},
+        {"prompt_embeds": b"abcdefgh"},
+    ],
+)
 def test_background_hash_and_ready_reuse_keep_native_request_semantics(
     connector, monkeypatch, semantics
 ):
@@ -59,8 +64,29 @@ def test_background_hash_and_ready_reuse_keep_native_request_semantics(
     connector.store.store_.LookupOnPrefix.assert_not_called()
 
 
+def test_native_preemption_clears_async_state_before_ready_reuse(connector):
+    request = Request()
+    job = prepare(connector, request)
+    stale_metadata = object()
+    connector.requests_meta[request.request_id] = stale_metadata
+    connector._async_load_req_ids.add(request.request_id)
+    connector._pending_async_load_dispatches[request.request_id] = object()
+    request.status = RequestStatus.PREEMPTED
+    expected_tokens = 6 if connector.use_layerwise else 7
+    assert connector.get_num_new_matched_tokens(request, 0) == (expected_tokens, False)
+    assert request.request_id not in connector._async_load_req_ids
+    assert request.request_id not in connector._pending_async_load_dispatches
+    metadata = connector.requests_meta[request.request_id]
+    assert metadata is not stale_metadata
+    assert metadata.ucm_block_ids is job.blocks
+    connector.request_hasher.assert_not_called()
+    connector.store.store_.LookupOnPrefix.assert_not_called()
+
+
 @pytest.mark.parametrize("failure", [False, True])
-def test_async_reservation_is_released_only_after_native_completion(monkeypatch, failure):
+def test_async_reservation_is_released_only_after_native_completion(
+    monkeypatch, failure
+):
     worker = object.__new__(EarlyDirectConnector)
     worker.use_layerwise = False
     worker._early = Mock()
@@ -69,7 +95,7 @@ def test_async_reservation_is_released_only_after_native_completion(monkeypatch,
     worker._async_dump_req_ids = set()
     worker._rank_consistency = Mock()
     worker._rank_consistency.check_load.side_effect = [False, True]
-    worker._connector_worker_meta = Mock()
+    worker._connector_worker_meta = UCMWorkerMetadata()
     worker._record_load_error = Mock()
     events = []
 
@@ -79,11 +105,16 @@ def test_async_reservation_is_released_only_after_native_completion(monkeypatch,
             raise RuntimeError("native async transfer failed")
 
     worker._rank_consistency.wait_load.side_effect = wait
-    worker._early.loaded.side_effect = lambda ids: events.append(set(ids))
-    metadata = UCMConnectorMetadata({
-        "sync": RequestDispatchMeta(([b"s"], [1]), ([], [])),
-        "async": RequestDispatchMeta(([b"a"], [2]), ([], []), load_async=True),
-    }, set())
+    worker._early.loaded.side_effect = lambda ids, reason="handoff": events.append(
+        (set(ids), reason)
+    )
+    metadata = UCMConnectorMetadata(
+        {
+            "sync": RequestDispatchMeta(([b"s"], [1]), ([], [])),
+            "async": RequestDispatchMeta(([b"a"], [2]), ([], []), load_async=True),
+        },
+        set(),
+    )
     worker._get_connector_metadata = lambda: metadata
 
     def submit(self, context, **kwargs):
@@ -93,13 +124,43 @@ def test_async_reservation_is_released_only_after_native_completion(monkeypatch,
 
     monkeypatch.setattr(UCMDirectConnector, "start_load_kv", submit)
     worker.start_load_kv(None)
-    assert events == [{"sync"}]
+    assert events == [({"sync"}, "handoff")]
     assert worker.get_finished(set()) == (None, None)
-    assert events == [{"sync"}]
+    assert events == [({"sync"}, "handoff")]
     assert worker.get_finished(set()) == (None, {"async"})
-    assert events == [{"sync"}, "wait", {"async"}]
+    reason = "load_failure" if failure else "handoff"
+    assert events == [({"sync"}, "handoff"), "wait", ({"async"}, reason)]
     assert not worker._pending_load_tasks
-    if failure:
-        worker._connector_worker_meta.mark_failed.assert_called_once_with("async")
-    else:
-        worker._connector_worker_meta.mark_failed.assert_not_called()
+    assert worker._connector_worker_meta.load_failed_reqs == (
+        {"async"} if failure else set()
+    )
+
+
+@pytest.mark.parametrize("connector", [EarlyDirectConnector], indirect=True)
+def test_native_async_dispatch_keeps_early_key_without_forward_tokens(connector):
+    request = Request()
+    job = prepare(connector, request)
+    connector.use_request_async_load = True
+    connector._async_dump_req_ids = set()
+    connector._early.dp_rank = 0
+    tokens, load_async = connector.get_num_new_matched_tokens(request, 0)
+    assert (tokens, load_async) == (7, True)
+    blocks = SimpleNamespace(get_block_ids=lambda: ([10, 11],))
+    connector.update_state_after_alloc(request, blocks, tokens)
+    output = SimpleNamespace(
+        scheduled_new_reqs=[],
+        scheduled_cached_reqs=[],
+        num_scheduled_tokens={},
+        finished_req_ids=set(),
+        preempted_req_ids=set(),
+    )
+    metadata = connector.build_connector_meta(output)
+    dispatch = metadata.request_meta[request.request_id]
+    assert dispatch.load_async
+    assert dispatch.load_block_ids == (job.blocks, [10, 11])
+    assert dispatch.dump_block_ids == ([], [])
+    assert metadata.early_keys == {request.request_id: job.key}
+    assert job.dispatched
+    assert not connector._pending_async_load_dispatches
+    connector.request_hasher.assert_not_called()
+    connector.store.store_.LookupOnPrefix.assert_not_called()

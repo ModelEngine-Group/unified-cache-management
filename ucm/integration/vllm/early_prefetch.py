@@ -5,6 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import logging
+import os
 import threading
 import time
 import uuid
@@ -354,10 +355,10 @@ class EarlyWorker:
                     job.batches.append(batch)
                     log.info(
                         "UCM_EARLY batch_reserved key=%s rank=%s batch=%s begin=%s reservation=%s "
-                        "start_ns=%s end_ns=%s candidates=%s hit=%s remaining_l2_work=%s",
+                        "start_ns=%s end_ns=%s candidates=%s hit=%s remaining_l2_work=%s pid=%s",
                         job.key, c.tp_rank, batch.index, begin, reservation["handle"],
                         reserving, time.monotonic_ns(), len(candidates),
-                        reservation["total_hit_blocks"], reservation["remaining_l2_work"],
+                        reservation["total_hit_blocks"], reservation["remaining_l2_work"], os.getpid(),
                     )
                     if not batch.done:
                         # Publication precedes localization/lease of the next
@@ -544,7 +545,7 @@ class EarlyWorker:
                         handles.extend(batch.reservation["handle"] for batch in job.batches)
             self.store.set_load_reservations(handles)
 
-    def loaded(self, request_ids):
+    def loaded(self, request_ids, *, reason="handoff"):
         with self.condition:
             keys = {self.request_keys.get(request_id) for request_id in request_ids}
             for key, job in list(self.jobs.items()):
@@ -552,15 +553,16 @@ class EarlyWorker:
                     self._release(job)
                     del self.jobs[key]
                     log.info(
-                        "UCM_EARLY released key=%s rank=%s reason=handoff ns=%s",
+                        "UCM_EARLY released key=%s rank=%s reason=%s ns=%s",
                         job.key,
                         self.connector.tp_rank,
+                        reason,
                         time.monotonic_ns(),
                     )
 
     def finished(self, request_ids):
         with self.condition:
-            self.loaded(request_ids)
+            self.loaded(request_ids, reason="finish")
             for request_id in request_ids:
                 self.request_keys.pop(request_id, None)
 

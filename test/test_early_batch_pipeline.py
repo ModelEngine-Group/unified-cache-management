@@ -267,3 +267,21 @@ def test_new_arrivals_cannot_keep_an_existing_request_out_of_later_rounds(worker
         assert worker.selected[0][1] is old  # finish original round before arrivals
         worker.preparing.clear()
         worker.selected.clear()
+
+
+def test_finish_and_load_failure_are_not_reported_as_completed_handoff(worker, monkeypatch):
+    logger = Mock()
+    monkeypatch.setattr(early, "log", logger)
+    with worker.condition:
+        for key, handle in [("finished", 1), ("failed", 2), ("loaded", 3)]:
+            worker.jobs[key] = early.WorkerJob(key, [], batches=[
+                early.WorkerBatch(0, 0, result(handle, 1, 0), done=True)])
+            worker.request_keys[key] = key
+    worker.finished(["finished"])
+    worker.loaded(["failed"], reason="load_failure")
+    worker.loaded(["loaded"])
+    releases = [call.args for call in logger.info.call_args_list
+                if call.args[0].startswith("UCM_EARLY released")]
+    assert [args[3] for args in releases] == ["finish", "load_failure", "handoff"]
+    assert not worker.jobs
+    assert worker.store.release_reservation.call_count == 3
