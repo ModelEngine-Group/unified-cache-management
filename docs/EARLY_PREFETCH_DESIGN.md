@@ -187,6 +187,9 @@ fallback。vLLM 与 LMCache 不增加 Early 状态机、队列或接口。
 映射核对设备号、inode、文件大小和映射内偏移，并核对当前路径仍指向该对象。
 握手还包含 boot ID、IPC/mount namespace、native unique_id、节点容量、
 block/shard bytes、tensor sizes、layerwise、CP/block 分组及原生 hash 指纹。
+MLA block identity 来自 scheduler 的 rank 0 RequestHasher；worker 握手复用该
+原生 hasher 类型与配置生成指纹，不读取仅 scheduler 初始化的 `_seed`，也不以
+worker 自己包含 TP rank 的 hasher 指纹判断跨 rank 一致性。
 不传播地址、不重建索引、不凭 UUID 或同名文件确认物理共享。
 
 仅启用 MLA/shared L1、CP=1、PP=1、可证明布局一致的完整 DP/TP cohort。每个 DP 的

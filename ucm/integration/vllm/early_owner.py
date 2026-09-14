@@ -55,10 +55,13 @@ def worker_capability(connector):
         # Actual object identity, physical host and namespace reachability.
         domain = [Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
                   os.readlink("/proc/self/ns/ipc"), os.readlink("/proc/self/ns/mnt"), native["backing"]]
+        # Native workers have no scheduler _seed, and their own RequestHasher
+        # includes the worker rank. MLA IDs arrive from the rank-0 scheduler
+        # hasher, so fingerprint that same native identity once at handshake.
+        scheduler_hasher = type(connector.request_hasher)(connector._vllm_config, 0)
         layout = [connector.unique_id, native, config["tensor_size_list"],
                   connector.use_layerwise, connector.hash_block_size, connector.blocks_per_chunk,
-                  connector.generate_hash(connector.hash_block_size,
-                                          [0] * connector.hash_block_size, connector._seed)[0].hex()]
+                  scheduler_hasher("UCM_HASH_SEED").hex()]
         return dict(version=VERSION, domain=json.dumps(domain),
                     layout=hashlib.sha256(json.dumps(layout, sort_keys=True).encode()).hexdigest(),
                     unique_id=str(connector.unique_id), native=native, layers=layers,

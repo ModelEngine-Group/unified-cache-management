@@ -22,6 +22,7 @@ from ucm.integration.vllm.early_connector import (
 from ucm.integration.vllm.early_lookup import current_lookup
 from ucm.integration.vllm.early_prefetch import EarlyScheduler, Job
 from ucm.integration.vllm.early_owner_worker import OwnerWorker
+from ucm.integration.vllm.early_owner import worker_capability
 from ucm.integration.vllm.rank_consistency import RankConsistencyManager
 from ucm.store.pipeline import connector as native_store
 from ucm.store.pipeline import early_connector as early_store
@@ -53,6 +54,42 @@ class Request:
         self.lora_request = None
         self.cache_salt = None
         self.prompt_embeds = None
+
+
+@pytest.mark.parametrize("cls", [EarlyDirectConnector, EarlyLayerWiseConnector])
+def test_native_worker_hash_identity_without_scheduler_seed(cls):
+    """Workers have rank-specific hashers, but MLA block IDs come from rank 0."""
+    caps = []
+    for rank in range(4):
+        c = object.__new__(cls)
+        config = SimpleNamespace(
+            model_config=SimpleNamespace(model="/models/glm-smoke", dtype="bfloat16", max_model_len=8192),
+            parallel_config=SimpleNamespace(tensor_parallel_size=4, data_parallel_index=0, pipeline_parallel_size=1),
+            scheduler_config=SimpleNamespace(max_num_seqs=4))
+        c._vllm_config = config
+        c.request_hasher = ucm_connector.RequestHasher(config, rank)
+        c.launch_config = {}
+        c.is_mla = True
+        c.cp_world_size = 1
+        c.tp_rank, c.tp_size = rank, 4
+        c.hash_block_size = c.block_size = 128
+        c.blocks_per_chunk = 1
+        c.layer_ids = list(range(8))
+        c.use_layerwise = cls is EarlyLayerWiseConnector
+        c.unique_id = "native-shared-object"
+        info = dict(backing="native-provider-object", nodes=100000, reservable_nodes=90000,
+                    shard_bytes=180224, block_bytes=8 * 180224)
+        c.store = SimpleNamespace(config=dict(share_buffer_enable=True, shard_size=180224,
+                    block_size=8 * 180224, tensor_size_list=[131072, 16384, 32768]), domain_info=lambda: info)
+        assert not hasattr(c, "_seed")
+        cap = worker_capability(c)
+        assert cap.get("ready"), cap
+        caps.append(cap)
+        assert not hasattr(c, "_seed"), "handshake must not add scheduler state to the native worker"
+        config.model_config.model = "/models/different-model"
+        changed = worker_capability(c)
+        assert changed["layout"] != cap["layout"], "different block identity must be rejected"
+    assert len({cap["layout"] for cap in caps}) == 1
 
 
 @pytest.fixture(params=[EarlyDirectConnector, EarlyLayerWiseConnector])
