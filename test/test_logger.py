@@ -1,6 +1,7 @@
 import ast
 import importlib.util
 import logging
+import os
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -82,3 +83,24 @@ def test_default_rate_limit_window_is_ten_seconds():
 
     assert "kDefaultRateLimitWindowMs = 10000" in header
     assert "default: 10000 = 10s" in logger_doc
+
+
+def test_after_fork_child_clears_once_caches(monkeypatch):
+    callbacks = {}
+    monkeypatch.setattr(
+        os,
+        "register_at_fork",
+        lambda **kwargs: callbacks.update(kwargs),
+        raising=False,
+    )
+    module, _ = _load_logger_module(monkeypatch)
+    logger = module.init_logger("fork-cache-test")
+
+    module._print_info_once(logger, "cached before fork")
+    assert module._print_info_once.cache_info().currsize == 1
+
+    callbacks["after_in_child"]()
+
+    assert module._print_debug_once.cache_info().currsize == 0
+    assert module._print_info_once.cache_info().currsize == 0
+    assert module._print_warning_once.cache_info().currsize == 0
