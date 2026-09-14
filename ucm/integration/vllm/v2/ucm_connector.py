@@ -232,10 +232,17 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
     ) -> None:
         super().__init__(vllm_config, role, kv_cache_config)
         launch_config = _load_launch_config(vllm_config)
-        cache_block_size = int(vllm_config.cache_config.block_size)
-        chunk_size = launch_config.get("chunk_size")
-        if chunk_size is not None:
-            chunk_size = int(chunk_size)
+        # vLLM's resolved scheduler granularity, not the raw CacheConfig
+        # page size: multiple groups hash the LCM of group block sizes (the
+        # resolve call is monkey-patched by vllm-ascend inside its process).
+        from vllm.v1.core.kv_cache_utils import resolve_kv_cache_block_sizes
+
+        scheduler_block_size, _ = resolve_kv_cache_block_sizes(
+            kv_cache_config, vllm_config
+        )
+        ucm_cache_block_size = launch_config.get("ucm_cache_block_size")
+        if ucm_cache_block_size is not None:
+            ucm_cache_block_size = int(ucm_cache_block_size)
         rank = None if role == KVConnectorRole.SCHEDULER else _worker_rank(vllm_config)
         _dump_raw_kv_cache_config(kv_cache_config, rank)
         hasher = RequestHasher(vllm_config, 0)
@@ -257,8 +264,8 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         }
         self.spec: UCMKVCacheSpec = parse_kv_cache_config(
             kv_cache_config,
-            scheduler_block_size=cache_block_size,
-            chunk_size=chunk_size,
+            scheduler_block_size=scheduler_block_size,
+            ucm_cache_block_size=ucm_cache_block_size,
             device_type=self.context.device_type,
             attention_tokens_per_state=attention_tokens_per_state,
             num_hidden_layers=num_layers,
@@ -266,7 +273,7 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         dtype = str(vllm_config.model_config.dtype).rsplit(".", 1)[-1]
         namespace = (
             f"{self.context.device_type}-{dtype}"
-            f"-b{self.spec.scheduler_block_size}-c{self.spec.chunk_size}"
+            f"-b{self.spec.scheduler_block_size}-c{self.spec.ucm_cache_block_size}"
         )
         root = _storage_root(launch_config) / ".ucm-v2" / namespace
         self._proxy = UCMProxyAdapter(SimpleFileUCMProxy(root))

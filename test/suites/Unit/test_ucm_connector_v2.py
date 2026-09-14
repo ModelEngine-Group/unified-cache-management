@@ -1,6 +1,7 @@
 import enum
 import inspect
 import json
+import math
 import os
 import sys
 import tempfile
@@ -210,6 +211,31 @@ for name, value in (
 ):
     setattr(vllm_kv_cache_interface, name, value)
 sys.modules[vllm_kv_cache_interface.__name__] = vllm_kv_cache_interface
+
+# The connector resolves its scheduler granularity through vLLM's
+# resolve_kv_cache_block_sizes; mirror its dcp=1 semantics (single group =
+# cache_config.block_size, multiple groups = LCM of group block sizes).
+vllm_v1_core = types.ModuleType("vllm.v1.core")
+vllm_v1_core.__path__ = []
+sys.modules.setdefault("vllm.v1.core", vllm_v1_core)
+vllm_kv_cache_utils = types.ModuleType("vllm.v1.core.kv_cache_utils")
+
+
+def resolve_kv_cache_block_sizes(kv_cache_config, vllm_config):
+    dcp = int(
+        getattr(vllm_config.parallel_config, "decode_context_parallel_size", 1)
+        or 1
+    )
+    groups = tuple(getattr(kv_cache_config, "kv_cache_groups", ()) or ())
+    if len(groups) <= 1:
+        size = int(vllm_config.cache_config.block_size) * dcp
+        return size, size
+    scheduler = math.lcm(*(int(g.kv_cache_spec.block_size) for g in groups))
+    return scheduler, scheduler
+
+
+vllm_kv_cache_utils.resolve_kv_cache_block_sizes = resolve_kv_cache_block_sizes
+sys.modules.setdefault(vllm_kv_cache_utils.__name__, vllm_kv_cache_utils)
 
 from ucm.integration.vllm.v2.ucm_kv_cache import (  # noqa: E402
     UCMKVCacheLayout,
@@ -462,10 +488,10 @@ class KVCacheSpecTest(unittest.TestCase):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
             scheduler_block_size=128,
-            chunk_size=512,
+            ucm_cache_block_size=512,
         )
 
-        self.assertEqual(parsed.chunk_size, 512)
+        self.assertEqual(parsed.ucm_cache_block_size, 512)
         self.assertEqual(parsed.layer_to_group["model.layers.0.attn"], 0)
 
     def test_hybrid_classifies_attention_and_state(self):
@@ -529,7 +555,7 @@ class KVCacheSpecTest(unittest.TestCase):
             scheduler_block_size=16,
         )
 
-        self.assertEqual(parsed.chunk_size, 512)
+        self.assertEqual(parsed.ucm_cache_block_size, 512)
         self.assertEqual(parsed.groups[2].token_block_size, 512)
         self.assertEqual(
             parsed.groups[2].kinds,
@@ -557,14 +583,14 @@ class KVCacheSpecTest(unittest.TestCase):
         self.assertFalse(parsed.groups[0].is_sliding_window)
 
     def test_hybrid_rejects_custom_chunk(self):
-        with self.assertRaisesRegex(ValueError, "custom chunk_size"):
+        with self.assertRaisesRegex(ValueError, "custom ucm_cache_block_size"):
             parse_kv_cache_config(
                 config(
                     group(["model.layers.0.attn"], FullAttentionSpec(128)),
                     group(["model.layers.1.mixer"], MambaSpec(128)),
                 ),
                 scheduler_block_size=128,
-                chunk_size=512,
+                ucm_cache_block_size=512,
             )
 
     def test_real_ascend_runtime_captures_classify_groups(self):
@@ -593,7 +619,7 @@ class KVCacheSpecTest(unittest.TestCase):
 
         self.assertEqual(len(glm.groups), 1)
         self.assertEqual(len(dsv4.groups), 6)
-        self.assertEqual(dsv4.chunk_size, 512)
+        self.assertEqual(dsv4.ucm_cache_block_size, 512)
         self.assertEqual(tuple(group.group_id for group in dsv4.fa_groups), (0, 1))
         self.assertEqual(
             tuple(group.group_id for group in dsv4.wa_groups), (2, 3, 4, 5)
@@ -630,7 +656,7 @@ class KVCacheSpecTest(unittest.TestCase):
             device_type="cpu",
         )
 
-        self.assertEqual(parsed.chunk_size, 256)
+        self.assertEqual(parsed.ucm_cache_block_size, 256)
         # FA is the 256-token indexer+attention group; WA covers both SWA
         # groups and both compressor state groups.
         self.assertEqual(tuple(group.group_id for group in parsed.fa_groups), (2,))
@@ -826,7 +852,7 @@ class HashAndLookupTest(unittest.TestCase):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
             scheduler_block_size=128,
-            chunk_size=512,
+            ucm_cache_block_size=512,
         )
         proxy = FakeProxy()
         coordinator = UCMLookupCoordinator(
@@ -862,7 +888,7 @@ class HashAndLookupTest(unittest.TestCase):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
             scheduler_block_size=128,
-            chunk_size=512,
+            ucm_cache_block_size=512,
         )
         proxy = FakeProxy()
         coordinator = UCMLookupCoordinator(
@@ -1328,7 +1354,7 @@ class DispatcherLifecycleTest(unittest.TestCase):
         parsed = parse_kv_cache_config(
             config(group(["model.layers.0.attn"], FullAttentionSpec(128))),
             scheduler_block_size=128,
-            chunk_size=512,
+            ucm_cache_block_size=512,
         )
         dispatcher = UCMDispatcher(parsed)
         request = FakeRequest("chunked", 1024)
@@ -1895,7 +1921,7 @@ class RaggedLayoutTest(unittest.TestCase):
                 )
             ),
             scheduler_block_size=128,
-            chunk_size=256,
+            ucm_cache_block_size=256,
         )
         caches = {
             "model.layers.0.attn": (

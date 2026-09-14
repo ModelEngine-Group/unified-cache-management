@@ -156,7 +156,7 @@ class UCMLookupCoordinator:
         base = self._chain(
             token_ids, self.spec.scheduler_block_size, self.base_seed
         )
-        multiple = self.spec.chunk_size // self.spec.scheduler_block_size
+        multiple = self.spec.ucm_cache_block_size // self.spec.scheduler_block_size
         return tuple(base[index] for index in range(multiple - 1, len(base), multiple))
 
     def _prefix_end(
@@ -203,7 +203,7 @@ class UCMLookupCoordinator:
         self, token_ids: Sequence[int], hbm: int
     ) -> UCMLookupResult:
         keys = self._legacy_attention_keys(token_ids)
-        unit = self.spec.chunk_size
+        unit = self.spec.ucm_cache_block_size
         restore_end = self._prefix_end(keys, unit, hbm, len(token_ids))
         visible_end = min(restore_end, max(len(token_ids) - self.recompute_tokens, 0))
         return UCMLookupResult(max(visible_end - hbm, 0), restore_end, (keys,))
@@ -213,14 +213,14 @@ class UCMLookupCoordinator:
     ) -> UCMLookupResult:
         """FA prefix plus the latest boundary where every WA/State key hits.
 
-        All chains work at cache_block_size (chunk). The FA chain is a
+        All chains work at ucm_cache_block_size. The FA chain is a
         prefix requirement; the WA (window tail) and State (mamba
         snapshot) chains are boundary records -- restoring requires a
         complete FA prefix up to some boundary and that boundary's tail
         or snapshot, so they are probed together, latest first.
         """
 
-        unit = self.spec.chunk_size
+        unit = self.spec.ucm_cache_block_size
         keys_per_chain: list[tuple[bytes, ...]] = []
         fa_keys: tuple[bytes, ...] = ()
         for label, _groups in self.chains:
@@ -394,7 +394,7 @@ class UCMDispatcher:
         plans: list[UCMGroupDispatchPlan] = []
         if token_end <= token_start:
             return ()
-        unit = self.spec.chunk_size
+        unit = self.spec.ucm_cache_block_size
         chains = self.spec.dispatch_chains()
         for chain_index, (hash_group, physical_groups) in enumerate(chains):
             keys_available = state.group_ucm_block_ids[chain_index]

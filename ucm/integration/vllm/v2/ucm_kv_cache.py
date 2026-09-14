@@ -89,14 +89,16 @@ class UCMKVCacheGroupInfo:
 class UCMKVCacheSpec:
     """UCM policy sizes, all in tokens.
 
-    scheduler_block_size is the historical name for CacheConfig.block_size,
-    not vLLM's resolved scheduler granularity. chunk_size is UCM's
-    cache_block_size: the record/hash unit every chain works at.
+    scheduler_block_size is what vLLM's
+    ``resolve_kv_cache_block_sizes`` reports for this engine -- the
+    token-alignment invariant of the resident KV pool (single group:
+    ``cache_config.block_size``; multiple groups: LCM).  ucm_cache_block_size
+    is the record/hash unit every chain works at.
     """
 
     groups: tuple[UCMKVCacheGroupInfo, ...]
     scheduler_block_size: int
-    chunk_size: int
+    ucm_cache_block_size: int
     device_type: str
 
     @property
@@ -110,7 +112,7 @@ class UCMKVCacheSpec:
         within it is whole or a measured fraction.
         """
 
-        return self.chunk_size
+        return self.ucm_cache_block_size
 
     @property
     def attn_groups(self) -> tuple[UCMKVCacheGroupInfo, ...]:
@@ -270,7 +272,7 @@ def parse_kv_cache_config(
     kv_cache_config: "KVCacheConfig",
     *,
     scheduler_block_size: int,
-    chunk_size: int | None = None,
+    ucm_cache_block_size: int | None = None,
     device_type: str = "npu",
     attention_tokens_per_state: Mapping[int, int] | None = None,
     num_hidden_layers: int | None = None,
@@ -332,10 +334,12 @@ def parse_kv_cache_config(
         classified.append((raw_group, concrete, kinds))
 
     device_type = str(device_type).lower()
-    if len(raw_groups) != 1 and chunk_size is not None:
-        raise ValueError("custom chunk_size is supported only for a single KV group")
+    if len(raw_groups) != 1 and ucm_cache_block_size is not None:
+        raise ValueError(
+            "custom ucm_cache_block_size is supported only for a single KV group"
+        )
 
-    # cache_block_size defaults to a compressed group's token span: a
+    # ucm_cache_block_size defaults to a compressed group's token span: a
     # group is compressed when any attention layer folds tokens
     # (compress_ratio on 0.26 / tokens_per_state on 0.29).  With several
     # compressed groups the finest ratio wins (DSV4: C4A 4 beats C128A
@@ -477,18 +481,16 @@ def parse_kv_cache_config(
                 f"{mismatched_groups}"
             )
     if has_compression:
-        selected_chunk = canonical_size
+        selected_block = canonical_size
     elif len(groups) == 1:
-        selected_chunk = chunk_size or scheduler_block_size
-        if (
-            selected_chunk < scheduler_block_size
-            or selected_chunk % scheduler_block_size
-        ):
+        selected_block = ucm_cache_block_size or scheduler_block_size
+        if selected_block < scheduler_block_size or selected_block % scheduler_block_size:
             raise ValueError(
-                "chunk_size must be a positive multiple of scheduler_block_size"
+                "ucm_cache_block_size must be a positive multiple of "
+                "scheduler_block_size"
             )
     else:
-        selected_chunk = scheduler_block_size
+        selected_block = scheduler_block_size
 
     if LAYOUT_DEBUG:
         for group in groups:
@@ -500,14 +502,14 @@ def parse_kv_cache_config(
             )
         layout_debug(
             f"spec scheduler_block={scheduler_block_size} "
-            f"chunk={selected_chunk} "
+            f"ucm_cache_block={selected_block} "
             f"device={device_type}"
         )
 
     return UCMKVCacheSpec(
         groups=tuple(groups),
         scheduler_block_size=scheduler_block_size,
-        chunk_size=selected_chunk,
+        ucm_cache_block_size=selected_block,
         device_type=device_type,
     )
 
