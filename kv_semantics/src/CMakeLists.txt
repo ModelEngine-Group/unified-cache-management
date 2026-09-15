@@ -40,6 +40,50 @@ target_link_libraries(kv_transport
 )
 
 if(BUILD_KV_CLIENT_PROVIDER_AICPU)
+    if(NOT DEFINED ASU_HCOMM_ROOT)
+        if(DEFINED ENV{ASU_HCOMM_ROOT})
+            set(ASU_HCOMM_ROOT "$ENV{ASU_HCOMM_ROOT}" CACHE PATH "Install prefix of hcomm")
+        elseif(DEFINED ENV{HCOMM_ROOT})
+            set(ASU_HCOMM_ROOT "$ENV{HCOMM_ROOT}" CACHE PATH "Install prefix of hcomm")
+        else()
+            set(ASU_HCOMM_ROOT "${ASCEND_ROOT}" CACHE PATH "Install prefix of hcomm")
+        endif()
+    endif()
+
+    find_path(ASU_HCOMM_INCLUDE_DIR
+        NAMES hcomm/hcomm_res.h hcomm_res.h
+        HINTS
+            ${ASU_HCOMM_ROOT}/include
+            ${ASU_HCOMM_ROOT}/include/hcomm
+            ${ASU_HCOMM_ROOT}/aarch64-linux/include
+            ${ASU_HCOMM_ROOT}/aarch64-linux/include/hcomm
+            ${ASU_HCOMM_ROOT}/arm64-linux/include
+            ${ASU_HCOMM_ROOT}/arm64-linux/include/hcomm
+        NO_DEFAULT_PATH
+    )
+    if(NOT ASU_HCOMM_INCLUDE_DIR)
+        message(FATAL_ERROR "Cannot find hcomm_res.h under ASU_HCOMM_ROOT=${ASU_HCOMM_ROOT}")
+    endif()
+
+    find_library(ASU_HCOMM_LIB
+        NAMES hcomm
+        HINTS
+            ${ASU_HCOMM_ROOT}/lib
+            ${ASU_HCOMM_ROOT}/lib64
+            ${ASU_HCOMM_ROOT}/aarch64-linux/lib
+            ${ASU_HCOMM_ROOT}/aarch64-linux/lib64
+            ${ASU_HCOMM_ROOT}/arm64-linux/lib
+            ${ASU_HCOMM_ROOT}/arm64-linux/lib64
+        NO_DEFAULT_PATH
+    )
+    if(NOT ASU_HCOMM_LIB)
+        message(FATAL_ERROR "Cannot find libhcomm under ASU_HCOMM_ROOT=${ASU_HCOMM_ROOT}")
+    endif()
+
+    message(STATUS "ASU HCOMM include: ${ASU_HCOMM_INCLUDE_DIR}")
+    message(STATUS "ASU HCOMM lib: ${ASU_HCOMM_LIB}")
+    target_include_directories(kv_transport PRIVATE ${ASU_HCOMM_INCLUDE_DIR})
+    target_link_libraries(kv_transport PRIVATE ${ASU_HCOMM_LIB} ${CMAKE_DL_LIBS})
     target_compile_definitions(kv_transport PRIVATE UCM_ASU_ENABLE_AICPU_PROVIDER=1)
 endif()
 
