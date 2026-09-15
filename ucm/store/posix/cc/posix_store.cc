@@ -340,6 +340,12 @@ private:
         UC_INFO("Set {}::CommitConcurrency to {}.", ns, config.commitConcurrency);
         UC_INFO("Set {}::TimeoutMs to {}.", ns, config.timeoutMs);
         UC_INFO("Set {}::DataDirShardBytes to {}.", ns, config.dataDirShardBytes);
+        if (config.posixGcEnable) {
+            UC_INFO("Set {}::PosixGcHeartbeatIntervalSec to {}.", ns,
+                    config.posixGcHeartbeatIntervalSec);
+            UC_INFO("Set {}::PosixGcStaleThresholdSec to {}.", ns,
+                    config.posixGcStaleThresholdSec);
+        }
         if (config.posixGcEnable && config.posixCapacityGb > 0) {
             UC_INFO("Set {}::PosixGcEnable to {}.", ns, config.posixGcEnable);
             UC_INFO("Set {}::PosixCapacityGb to {}.", ns, config.posixCapacityGb);
