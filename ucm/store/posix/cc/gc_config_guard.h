@@ -21,59 +21,57 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef UNIFIEDCACHE_POSIX_STORE_CC_GC_LEASE_H
-#define UNIFIEDCACHE_POSIX_STORE_CC_GC_LEASE_H
+#ifndef UNIFIEDCACHE_POSIX_STORE_CC_GC_CONFIG_GUARD_H
+#define UNIFIEDCACHE_POSIX_STORE_CC_GC_CONFIG_GUARD_H
 
 #include <atomic>
-#include <ctime>
+#include <map>
 #include <string>
+#include <utility>
+#include <vector>
 #include "gc_liveness.h"
 #include "global_config.h"
 #include "status/status.h"
 
 namespace UC::PosixStore {
 
-class GcLease {
+class GcConfigGuard {
 public:
-    enum class Acquisition {
-        Acquired,
-        HeldByPeer,
-        Unavailable,
-    };
+    GcConfigGuard() = default;
+    GcConfigGuard(const GcConfigGuard&) = delete;
+    GcConfigGuard& operator=(const GcConfigGuard&) = delete;
+    ~GcConfigGuard();
 
-    GcLease() = default;
-    GcLease(const GcLease&) = delete;
-    GcLease& operator=(const GcLease&) = delete;
-    ~GcLease();
+    Status Setup(const Config& config);
 
-    void Setup(const Config& config);
-
-    Acquisition TryAcquire();
-    void Release();
-    bool HoldsLock() const;
-    void RequestStop();
+    static std::vector<std::pair<std::string, std::string>> Entries(const Config& config);
+    static std::string Serialize(const Config& config);
+    static std::map<std::string, std::string> Parse(const std::string& content);
+    static std::vector<std::string> Diff(const std::string& mine, const std::string& published);
 
 private:
-    Status Claim();
-    bool EntryPresent() const;
-    Status ProbeHolder(bool& stale);
-    Status TakeOverStale();
-    void SweepParked() const;
-    void StopHeartbeat();
+    Status Join(const std::string& payload);
+    Status Publish(const std::string& payload) const;
+    Status Verify(const std::string& payload) const;
+    Status Compare(const std::string& payload, const std::string& published) const;
+    Expected<std::string> ReadPublished() const;
+    Status AcquireGate();
+    void ReleaseGate();
+    Expected<size_t> CountLiveMembers() const;
+    Status RegisterMember();
+    void UnregisterMember() const;
 
     std::string backend_;
-    std::string lockDir_;
+    std::string configPath_;
+    std::string gateDir_;
+    std::string membersDir_;
     std::string checkTimePath_;
-    std::string heartbeatPath_;
     std::string identity_;
+    std::string memberPath_;
     size_t heartbeatIntervalSec_{5};
-    size_t staleThresholdSec_{180};
-
-    std::string suspectHeartbeat_;
-    time_t suspectMtime_{0};
-    bool haveSuspect_{false};
-
-    std::atomic<bool> held_{false};
+    size_t staleThresholdSec_{60};
+    bool gateHeld_{false};
+    std::atomic<bool> registered_{false};
     GcHeartbeat heartbeat_;
 };
 
