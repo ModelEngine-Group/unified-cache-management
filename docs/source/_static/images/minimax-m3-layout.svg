@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="960" viewBox="0 0 1000 960" role="img" aria-labelledby="title desc">
+  <title id="title">MiniMax M3：输入 tensor 结构与 UCM tensor list</title>
+  <desc id="desc">左侧展示传给 UCM 的 kvcaches 字典，右侧展示按层构建的 segment 列表。CUDA 的 Attention 和 Indexer 分别是单个 Tensor，每层整理为 KV 与 Indexer 两段；Ascend 的 Attention 是 K、V 二元组，Indexer 是单元素元组，每层整理为 K、V、Indexer 三段。稠密层补 ghost。只组织元数据，不拼接或复制原始 Tensor。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10Z" fill="#64768a"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif; fill: #182c42; font-size: 18px; }
+    .title { font-size: 28px; font-weight: 600; }
+    .heading { font-size: 23px; font-weight: 600; }
+    .section { font-size: 18px; font-weight: 600; }
+    .small { font-size: 16px; }
+    .muted { fill: #526277; }
+    .mono { font-family: Consolas, 'Microsoft YaHei', monospace; font-size: 18px; }
+    .code { font-family: Consolas, 'Microsoft YaHei', monospace; font-size: 16px; }
+    .cell { text-anchor: middle; dominant-baseline: middle; }
+    .kv { fill: #deedff; stroke: #8eb9e9; }
+    .value { fill: #dcf2ec; stroke: #7cbaa8; }
+    .index { fill: #eee4fa; stroke: #b79ace; }
+    .ghost { fill: #f2f4f6; stroke: #9aa7b4; stroke-dasharray: 5 4; }
+    .line { stroke: #ced6df; fill: none; }
+    .arrow { stroke: #64768a; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+  </style>
+  <rect width="1000" height="960" fill="#ffffff"/>
+  <text x="32" y="43" class="title">MiniMax M3 · 输入 Tensor → UCM tensor list</text>
+  <text x="32" y="76" class="small muted">以稠密层 L0、稀疏层 L3 为例，其余层省略；字典 key 省略 model.layers 等公共前缀。</text>
+
+  <text x="32" y="126" class="heading">CUDA · vLLM 0.27.1</text>
+  <text x="32" y="168" class="section">输入：kvcaches 字典</text>
+  <text x="580" y="168" class="section">输出：按层排列的 segment list</text>
+
+  <text x="32" y="235" class="mono">L0.attn:</text>
+  <rect x="234" y="206" width="236" height="50" rx="5" class="kv"/>
+  <text x="352" y="232" class="mono cell">KV0 : Tensor</text>
+  <text x="32" y="300" class="mono">L3.attn:</text>
+  <rect x="234" y="271" width="236" height="50" rx="5" class="kv"/>
+  <text x="352" y="297" class="mono cell">KV3 : Tensor</text>
+  <text x="32" y="365" class="code">L3.attn.index_cache:</text>
+  <rect x="234" y="336" width="236" height="50" rx="5" class="index"/>
+  <text x="352" y="362" class="mono cell">I3 : Tensor</text>
+
+  <text x="525" y="259" class="small cell">按层聚合</text>
+  <path d="M486 297H562" class="arrow"/>
+  <text x="525" y="334" class="small cell">补 ghost</text>
+
+  <text x="742" y="203" class="small cell">slot 0 · KV</text>
+  <text x="899" y="203" class="small cell">slot 1 · Indexer</text>
+  <text x="580" y="245" class="small">L0 稠密</text>
+  <rect x="674" y="218" width="136" height="50" rx="5" class="kv"/>
+  <rect x="824" y="218" width="142" height="50" rx="5" class="ghost"/>
+  <text x="742" y="244" class="mono cell">seg(KV0)</text>
+  <text x="895" y="244" class="mono cell">ghost</text>
+  <text x="820" y="299" class="cell muted">⋮</text>
+  <text x="580" y="353" class="small">L3 稀疏</text>
+  <rect x="674" y="326" width="136" height="50" rx="5" class="kv"/>
+  <rect x="824" y="326" width="142" height="50" rx="5" class="index"/>
+  <text x="742" y="352" class="mono cell">seg(KV3)</text>
+  <text x="895" y="352" class="mono cell">seg(I3)</text>
+
+  <text x="32" y="416" class="code">KV*: [B, H, T, 2D]　 I*: [B, T, Di]</text>
+  <text x="580" y="416" class="code">tensor_size_list = [S_KV, S_I]</text>
+  <path d="M32 446H968" class="line"/>
+
+  <text x="32" y="487" class="heading">Ascend · vLLM-Ascend 0.26.0rc1</text>
+  <text x="32" y="529" class="section">输入：kvcaches 字典</text>
+  <text x="580" y="529" class="section">输出：按层排列的 segment list</text>
+
+  <text x="32" y="596" class="mono">L0.attn:</text>
+  <text x="220" y="596" class="mono">(</text>
+  <rect x="238" y="567" width="100" height="50" rx="5" class="kv"/>
+  <text x="288" y="593" class="mono cell">K0</text>
+  <text x="341" y="596" class="mono">,</text>
+  <rect x="360" y="567" width="100" height="50" rx="5" class="value"/>
+  <text x="410" y="593" class="mono cell">V0</text>
+  <text x="462" y="596" class="mono">)</text>
+
+  <text x="32" y="661" class="mono">L3.attn:</text>
+  <text x="220" y="661" class="mono">(</text>
+  <rect x="238" y="632" width="100" height="50" rx="5" class="kv"/>
+  <text x="288" y="658" class="mono cell">K3</text>
+  <text x="341" y="661" class="mono">,</text>
+  <rect x="360" y="632" width="100" height="50" rx="5" class="value"/>
+  <text x="410" y="658" class="mono cell">V3</text>
+  <text x="462" y="661" class="mono">)</text>
+
+  <text x="32" y="726" class="code">L3.attn.index_cache:</text>
+  <text x="220" y="726" class="mono">(</text>
+  <rect x="238" y="697" width="100" height="50" rx="5" class="index"/>
+  <text x="288" y="723" class="mono cell">I3</text>
+  <text x="341" y="726" class="mono">,)</text>
+  <text x="386" y="726" class="small muted">单元素 tuple</text>
+
+  <text x="525" y="620" class="small cell">按层聚合</text>
+  <path d="M486 658H562" class="arrow"/>
+  <text x="525" y="695" class="small cell">补 ghost</text>
+
+  <text x="719" y="564" class="small cell">slot 0 · K</text>
+  <text x="819" y="564" class="small cell">slot 1 · V</text>
+  <text x="919" y="564" class="small cell">slot 2 · I</text>
+  <text x="580" y="606" class="small">L0 稠密</text>
+  <rect x="672" y="579" width="94" height="50" rx="5" class="kv"/>
+  <rect x="772" y="579" width="94" height="50" rx="5" class="value"/>
+  <rect x="872" y="579" width="94" height="50" rx="5" class="ghost"/>
+  <text x="719" y="605" class="code cell">seg(K0)</text>
+  <text x="819" y="605" class="code cell">seg(V0)</text>
+  <text x="919" y="605" class="code cell">ghost</text>
+  <text x="820" y="660" class="cell muted">⋮</text>
+  <text x="580" y="714" class="small">L3 稀疏</text>
+  <rect x="672" y="687" width="94" height="50" rx="5" class="kv"/>
+  <rect x="772" y="687" width="94" height="50" rx="5" class="value"/>
+  <rect x="872" y="687" width="94" height="50" rx="5" class="index"/>
+  <text x="719" y="713" class="code cell">seg(K3)</text>
+  <text x="819" y="713" class="code cell">seg(V3)</text>
+  <text x="919" y="713" class="code cell">seg(I3)</text>
+
+  <text x="32" y="777" class="code">K*, V*: Tensor [B, T, H, D]</text>
+  <text x="32" y="803" class="code">I*: Tensor [B, T, Di]</text>
+  <text x="580" y="777" class="code">tensor_size_list = [S_K, S_V, S_I]</text>
+  <text x="580" y="803" class="small muted">S_*：相应缓存段每页的复制字节数。</text>
+
+  <path d="M32 826H968" class="line"/>
+  <text x="32" y="857" class="small">seg(T) 是 KVCacheSegment：记录 T 的基址、复制大小、步长和 buffer 大小；不生成新的 Tensor。</text>
+  <text x="32" y="886" class="small">ghost 没有真实 Tensor：基址、步长、buffer 大小均为 0；复制大小仍保留 S_I。</text>
+  <text x="32" y="915" class="small muted">右侧列表派生 base_ptrs、tensor_size_lists 等元数据数组，形状分别为 [L, 2] / [L, 3]。</text>
+  <text x="32" y="944" class="small muted">B：缓存 block 数；T：每 block 的 token 数；H：本 rank 的 KV head 数；D / Di：KV / Indexer head 维度。</text>
+</svg>
