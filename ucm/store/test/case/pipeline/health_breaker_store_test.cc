@@ -166,6 +166,36 @@ TEST(UCHealthBreakerStoreTest, ProbeLoopUsesUcmThreadName)
     EXPECT_EQ(count, before + 1);
 }
 
+TEST(UCHealthCheckExecutorTest, NamesWorkerAndInheritsMonitorAffinity)
+{
+    cpu_set_t allowed;
+    ASSERT_EQ(sched_getaffinity(0, sizeof(allowed), &allowed), 0);
+    int core = 0;
+    while (core < CPU_SETSIZE && !CPU_ISSET(core, &allowed)) { ++core; }
+    ASSERT_LT(core, CPU_SETSIZE);
+    cpu_set_t expected;
+    CPU_ZERO(&expected);
+    CPU_SET(core, &expected);
+    cpu_set_t actual;
+    CPU_ZERO(&actual);
+    std::array<char, 16> name{};
+    std::thread monitor([&] {
+        ASSERT_TRUE(CpuAffinity::SetCpuAffinity4CurrentThread(expected).Success());
+        UC::Detail::HealthCheckExecutor executor{std::chrono::seconds(3)};
+        EXPECT_TRUE(executor
+                        .Run([&] {
+                            EXPECT_EQ(pthread_getname_np(pthread_self(), name.data(), name.size()),
+                                      0);
+                            EXPECT_EQ(sched_getaffinity(0, sizeof(actual), &actual), 0);
+                            return Status::OK();
+                        })
+                        .Success());
+    });
+    monitor.join();
+    EXPECT_STREQ(name.data(), "ucm_health_io");
+    EXPECT_TRUE(CPU_EQUAL(&actual, &expected));
+}
+
 TEST(UCHealthBreakerStoreTest, LogsFailedProbeStatus)
 {
     StrictMock<Detail::MockStore> store;

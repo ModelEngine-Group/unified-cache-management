@@ -106,6 +106,37 @@ TEST_F(UCPosixSpaceManagerTest, RoundRobinUsesSharedBackendPaths)
     }
 }
 
+TEST_F(UCPosixSpaceManagerTest, BackendMonitorsUseHealthThreadNames)
+{
+    using namespace UC::PosixStore;
+    const auto shared = std::filesystem::absolute(std::filesystem::path{Path()} / "shared");
+    const auto mount = std::filesystem::path{Path()} / "mount";
+    std::filesystem::create_directory(shared);
+    std::filesystem::create_directory_symlink(shared, mount);
+    Config config;
+    config.dataDirShardBytes = 0;
+    config.storageBackends = {shared.string(), mount.string()};
+    auto countMonitors = [] {
+        size_t count = 0;
+        for (const auto& entry : std::filesystem::directory_iterator("/proc/self/task")) {
+            std::ifstream comm(entry.path() / "comm");
+            std::string name;
+            std::getline(comm, name);
+            if (name == "ucm_health_pmon") { ++count; }
+        }
+        return count;
+    };
+    const auto before = countMonitors();
+    SpaceLayout layout;
+    ASSERT_EQ(layout.Setup(config), UC::Status::OK());
+    auto count = before;
+    for (size_t i = 0; i < 100 && count != before + 2; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        count = countMonitors();
+    }
+    EXPECT_EQ(count, before + 2);
+}
+
 TEST_F(UCPosixSpaceManagerTest, BackendProbesRemoveAndRestoreRoutes)
 {
     using namespace UC::PosixStore;

@@ -223,7 +223,7 @@ Status SpaceLayout::CheckHealth() const
 
 void SpaceLayout::ProbeBackend(size_t index, const Detail::StoreHealthConfig& config)
 {
-    auto status = CpuAffinity::SetCurrentThreadName("ucm_posix_probe");
+    auto status = CpuAffinity::SetCurrentThreadName("ucm_health_pmon");
     if (status.Failure()) { UC_WARN("Failed to name backend health monitor: {}.", status); }
     Detail::HealthCheckExecutor executor{config.healthCheckTimeout};
     std::unique_lock<std::mutex> stopLock(stopMutex_);

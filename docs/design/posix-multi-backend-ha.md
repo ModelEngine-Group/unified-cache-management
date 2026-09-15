@@ -15,6 +15,10 @@
 
 健康窗口按**探测次数**统计，业务 I/O 的成败不会直接计入该窗口。例如窗口 8 次、失败阈值 2 次时，两次失败可以不连续；恢复则需要连续 8 次成功。
 
+**线程命名与绑核**
+
+Pipeline 健康监控线程名为 `ucm_health_mon`，逐后端监控线程名为 `ucm_health_pmon`，实际执行探测 I/O 的工作线程名为 `ucm_health_io`。启用 `VLLM_CPU_AFFINITY=1` 时，共用的 vLLM-Ascend 绑核补丁将全部 `ucm_health_*` 线程绑定到当前 NPU 的 `assign_ucm_health` 核心；后续创建的探测工作线程继承监控线程的 CPU affinity。沿用已有核心分配策略：从 UCM 核心中预留最后一个给健康检测；仅有一个 UCM 核心时共享该核心。
+
 **配置与默认值**
 
 后端探测与 Pipeline 健康检测共用 `StoreHealthConfig`，通过 `ucm_connector_config.store_health` 配置：
