@@ -162,7 +162,7 @@ void GcHeartbeat::Stop()
 
 void GcHeartbeat::Loop()
 {
-    auto nameStatus = CpuAffinity::SetCurrentThreadName(threadName_);
+    auto nameStatus = CpuAffinity::SetCurrentThreadName(threadName_.c_str());
     if (nameStatus.Failure()) {
         UC_WARN("Failed({}) to set GC heartbeat thread name({}).", nameStatus, threadName_);
     }
