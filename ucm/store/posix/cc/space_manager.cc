@@ -117,13 +117,16 @@ Expected<ssize_t> SpaceManager::LookupOnReverse(const Detail::BlockId* blocks, s
 
 uint8_t SpaceManager::Lookup(const Detail::BlockId* block)
 {
-    const auto& path = layout_.DataFilePath(*block, false);
-    PosixFile file{path};
+    auto path = layout_.DataFilePath(*block, false);
+    if (!path) { return false; }
+    PosixFile file{path.Value()};
     constexpr auto mode =
         PosixFile::AccessMode::EXIST | PosixFile::AccessMode::READ | PosixFile::AccessMode::WRITE;
     auto s = file.Access(mode);
     if (s.Failure()) {
-        if (s != Status::NotFound()) { UC_ERROR("Failed({}) to access file({}).", s, path); }
+        if (s != Status::NotFound()) {
+            UC_ERROR("Failed({}) to access file({}).", s, path.Value());
+        }
         return false;
     }
     return true;

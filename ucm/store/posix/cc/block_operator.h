@@ -171,12 +171,17 @@ private:
                 task = std::move(openQueue_.queue.front());
                 openQueue_.queue.pop_front();
             }
-            const auto path = layout_->DataFilePath(task.id, task.activated);
+            auto path = layout_->DataFilePath(task.id, task.activated);
+            if (!path) {
+                if (task.callback) { task.callback(OpenResult{-1, EHOSTDOWN}); }
+                continue;
+            }
 #ifdef UCM_ENABLE_TEST_HOOKS
             auto hook = TestHooks::GetOpenHook();
-            auto fd = hook ? hook(path, task.flags, mode) : ::open(path.c_str(), task.flags, mode);
+            auto fd = hook ? hook(path.Value(), task.flags, mode)
+                           : ::open(path.Value().c_str(), task.flags, mode);
 #else
-            auto fd = ::open(path.c_str(), task.flags, mode);
+            auto fd = ::open(path.Value().c_str(), task.flags, mode);
 #endif
             auto err = (fd < 0) ? errno : 0;
             if (task.callback) { task.callback(OpenResult{fd, err}); }

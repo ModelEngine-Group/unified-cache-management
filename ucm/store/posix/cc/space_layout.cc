@@ -23,15 +23,19 @@
  * */
 #include "space_layout.h"
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <dirent.h>
 #include <fmt/ranges.h>
 #include <random>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "detail/health_check_executor.h"
 #include "logger/logger.h"
 #include "posix_file.h"
 #include "template/topn_heap.h"
+#include "thread/cpu_affinity.h"
+#include "type/random_block_id.h"
 
 namespace UC::PosixStore {
 
@@ -69,32 +73,97 @@ std::vector<std::string> GenerateHexStrings(const size_t n)
     return result;
 }
 
+static Status CheckPathHealth(const std::string& path, bool ioDirect)
+{
+    constexpr size_t kHealthIoSize = 4096;
+    alignas(kHealthIoSize) std::array<uint8_t, kHealthIoSize> expected{};
+    alignas(kHealthIoSize) std::array<uint8_t, kHealthIoSize> actual{};
+    expected.fill(0x5a);
+
+    PosixFile file{path};
+    auto flags = PosixFile::OpenFlag::CREATE | PosixFile::OpenFlag::READ_WRITE;
+    if (ioDirect) { flags |= PosixFile::OpenFlag::DIRECT; }
+    auto status = file.Open(flags);
+    if (status.Failure()) { return status; }
+    status = file.Write(expected.data(), expected.size(), 0);
+    if (status.Success() && !ioDirect) { status = file.Sync(); }
+    if (status.Success()) { status = file.Read(actual.data(), actual.size(), 0); }
+    file.Close();
+    auto cleanup = file.Remove();
+    if (status.Success() && actual != expected) { status = Status::Error("health data mismatch"); }
+    return status.Failure() ? status : cleanup;
+}
+
+SpaceLayout::~SpaceLayout()
+{
+    {
+        std::lock_guard<std::mutex> lock(stopMutex_);
+        stop_ = true;
+    }
+    stopCv_.notify_all();
+    for (auto& thread : probeThreads_) {
+        if (thread.joinable()) { thread.join(); }
+    }
+}
+
 Status SpaceLayout::Setup(const Config& config)
 {
+    if (!storageBackends_.empty()) { return Status::InvalidParam("space layout already set up"); }
+    auto status = config.backendHealth.Validate();
+    if (status.Failure()) { return status; }
+    if (config.storageBackends.empty()) { return Status::InvalidParam("empty storage backends"); }
     dataDirShardBytes_ = config.dataDirShardBytes;
     dataDirShard_ = dataDirShardBytes_ > 0;
-    auto status = Status::OK();
-    for (auto& path : config.storageBackends) {
-        if ((status = AddStorageBackend(path)).Failure()) { return status; }
-    }
+    ioDirect_ = config.ioDirect;
     shards_ = RelativeRoots();
-    return status;
-}
-
-std::string SpaceLayout::DataFilePath(const Detail::BlockId& blockId, bool activated) const
-{
-    return DataFilePath(StorageBackend(blockId), blockId, activated);
-}
-
-std::vector<std::string> SpaceLayout::HealthCheckPaths(const Detail::BlockId& blockId,
-                                                       bool activated) const
-{
-    std::vector<std::string> paths;
-    paths.reserve(storageBackends_.size());
-    for (const auto& backend : storageBackends_) {
-        paths.emplace_back(DataFilePath(backend, blockId, activated));
+    for (const auto& path : config.storageBackends) {
+        if (path.empty()) { return Status::InvalidParam("empty storage backend path"); }
+        auto normalizedPath = path.back() == '/' ? path : path + '/';
+        if (std::find(storageBackends_.begin(), storageBackends_.end(), normalizedPath) !=
+            storageBackends_.end()) {
+            continue;
+        }
+        const auto index = storageBackends_.size();
+        storageBackends_.push_back(normalizedPath);
+        status = Status::OK();
+        for (const auto& root : shards_) {
+            PosixFile dir{normalizedPath + root};
+            if (availableBackends_.empty()) {
+                status = dir.MkDir();
+                if (status == Status::DuplicateKey()) { status = Status::OK(); }
+            } else {
+                status = dir.Access(PosixFile::AccessMode::READ | PosixFile::AccessMode::WRITE);
+            }
+            if (status.Failure()) { break; }
+        }
+        backendHealth_.emplace_back(config.backendHealth, status.Success());
+        if (status.Success()) {
+            availableBackends_.push_back(index);
+        } else {
+            UC_WARN("Storage backend({}) unavailable during setup: {}.", normalizedPath, status);
+        }
     }
-    return paths;
+    if (availableBackends_.empty()) { return status; }
+    if (storageBackends_.size() > 1) {
+        try {
+            for (size_t i = 0; i < storageBackends_.size(); ++i) {
+                probeThreads_.emplace_back(&SpaceLayout::ProbeBackend, this, i,
+                                           config.backendHealth);
+            }
+        } catch (const std::exception& e) {
+            return Status::Error(
+                fmt::format("failed to start backend health probes: {}", e.what()));
+        }
+    }
+    return Status::OK();
+}
+
+Expected<std::string> SpaceLayout::DataFilePath(const Detail::BlockId& blockId,
+                                                bool activated) const
+{
+    auto backend = StorageBackend();
+    if (!backend) { return backend.Error(); }
+    return DataFilePath(backend.Value(), blockId, activated);
 }
 
 std::string SpaceLayout::DataFilePath(const std::string& backend, const Detail::BlockId& blockId,
@@ -108,10 +177,13 @@ std::string SpaceLayout::DataFilePath(const std::string& backend, const Detail::
 
 Status SpaceLayout::CommitFile(const Detail::BlockId& blockId, bool success) const
 {
-    const auto& activated = DataFilePath(blockId, true);
+    auto backend = StorageBackend();
+    if (!backend) { return backend.Error(); }
+    // Both names must use one mount path: rename across aliases can fail with EXDEV.
+    const auto activated = DataFilePath(backend.Value(), blockId, true);
     auto s = Status::OK();
     if (success) {
-        const auto& archived = DataFilePath(blockId, false);
+        const auto archived = DataFilePath(backend.Value(), blockId, false);
         s = PosixFile{activated}.Rename(archived);
     }
     if (!success || s.Failure()) { PosixFile{activated}.Remove(); }
@@ -120,8 +192,9 @@ Status SpaceLayout::CommitFile(const Detail::BlockId& blockId, bool success) con
 
 Status SpaceLayout::RemoveFile(const Detail::BlockId& blockId) const
 {
-    PosixFile{DataFilePath(blockId, false)}.Remove();
-    return Status::OK();
+    auto path = DataFilePath(blockId, false);
+    if (!path) { return path.Error(); }
+    return PosixFile{path.Value()}.Remove();
 }
 
 std::vector<std::string> SpaceLayout::RelativeRoots() const
@@ -130,54 +203,61 @@ std::vector<std::string> SpaceLayout::RelativeRoots() const
     return {DATA_ROOT};
 }
 
-Status SpaceLayout::AddStorageBackend(const std::string& path)
+Expected<std::string> SpaceLayout::StorageBackend() const
 {
-    auto normalizedPath = path;
-    if (normalizedPath.back() != '/') { normalizedPath += '/'; }
-    auto status = Status::OK();
-    if (storageBackends_.empty()) {
-        status = AddFirstStorageBackend(normalizedPath);
-    } else {
-        status = AddSecondaryStorageBackend(normalizedPath);
-    }
-    if (status.Failure()) {
-        UC_ERROR("Failed({}) to add storage backend({}).", status, normalizedPath);
-    }
-    return status;
+    std::lock_guard<std::mutex> lock(backendMutex_);
+    if (availableBackends_.empty()) { return Status::StoreUnhealthy(); }
+    const auto index = availableBackends_[nextBackend_++ % availableBackends_.size()];
+    return std::string(storageBackends_[index]);
 }
 
-Status SpaceLayout::AddFirstStorageBackend(const std::string& path)
+Status SpaceLayout::CheckHealth() const
 {
-    for (const auto& root : RelativeRoots()) {
-        PosixFile dir{path + root};
-        auto status = dir.MkDir();
-        if (status == Status::DuplicateKey()) { status = Status::OK(); }
-        if (status.Failure()) { return status; }
+    if (storageBackends_.size() == 1) {
+        return CheckPathHealth(
+            DataFilePath(storageBackends_.front(), Detail::RandomBlockId(), true), ioDirect_);
     }
-    storageBackends_.emplace_back(path);
-    return Status::OK();
+    std::lock_guard<std::mutex> lock(backendMutex_);
+    return availableBackends_.empty() ? Status::StoreUnhealthy() : Status::OK();
 }
 
-Status SpaceLayout::AddSecondaryStorageBackend(const std::string& path)
+void SpaceLayout::ProbeBackend(size_t index, const Detail::StoreHealthConfig& config)
 {
-    auto iter = std::find(storageBackends_.begin(), storageBackends_.end(), path);
-    if (iter != storageBackends_.end()) { return Status::OK(); }
-    constexpr auto accessMode = PosixFile::AccessMode::READ | PosixFile::AccessMode::WRITE;
-    for (const auto& root : RelativeRoots()) {
-        PosixFile dir{path + root};
-        auto status = dir.Access(accessMode);
-        if (status.Failure()) { return status; }
+    auto status = CpuAffinity::SetCurrentThreadName("ucm_posix_probe");
+    if (status.Failure()) { UC_WARN("Failed to name backend health monitor: {}.", status); }
+    Detail::HealthCheckExecutor executor{config.healthCheckTimeout};
+    std::unique_lock<std::mutex> stopLock(stopMutex_);
+    auto delay = config.healthCheckInterval;
+    while (!stopCv_.wait_for(stopLock, delay, [this] { return stop_; })) {
+        stopLock.unlock();
+        const auto start = std::chrono::steady_clock::now();
+        // Timed-out probes may still run; each one owns its file name and captures no layout state.
+        const auto path = DataFilePath(storageBackends_[index], Detail::RandomBlockId(), true);
+        status =
+            executor.Run([path, ioDirect = ioDirect_] { return CheckPathHealth(path, ioDirect); });
+        {
+            std::lock_guard<std::mutex> lock(backendMutex_);
+            auto& health = backendHealth_[index];
+            const auto wasAvailable = health.Healthy();
+            health.Record(status.Success());
+            if (wasAvailable != health.Healthy()) {
+                availableBackends_.clear();
+                for (size_t i = 0; i < backendHealth_.size(); ++i) {
+                    if (backendHealth_[i].Healthy()) { availableBackends_.push_back(i); }
+                }
+                nextBackend_ = 0;
+                UC_WARN(
+                    "Storage backend({}) is {}, samples={}, failures={}, threshold={}, status={}.",
+                    storageBackends_[index], health.Healthy() ? "HEALTHY" : "UNHEALTHY",
+                    health.SampleCount(), health.FailureCount(), config.failureThreshold, status);
+            }
+        }
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start);
+        delay = elapsed < config.healthCheckInterval ? config.healthCheckInterval - elapsed
+                                                     : std::chrono::milliseconds{0};
+        stopLock.lock();
     }
-    storageBackends_.emplace_back(path);
-    return Status::OK();
-}
-
-std::string SpaceLayout::StorageBackend(const Detail::BlockId& blockId) const
-{
-    const auto number = storageBackends_.size();
-    if (number == 1) { return storageBackends_.front(); }
-    static Detail::BlockIdHasher hasher;
-    return storageBackends_[hasher(blockId) % number];
 }
 
 static Detail::BlockId HexToBlockId(const char* hexStr)
@@ -208,7 +288,9 @@ std::vector<std::string> SpaceLayout::SampleShards(double sampleRatio) const
 
 size_t SpaceLayout::CountFilesInShard(const std::string& shard) const
 {
-    std::string shardPath = storageBackends_.front();
+    auto backend = StorageBackend();
+    if (!backend) { return 0; }
+    std::string shardPath = backend.Value();
     shardPath += shard;
     DIR* dir = opendir(shardPath.c_str());
     if (!dir) { return 0; }
@@ -248,7 +330,9 @@ std::vector<Detail::BlockId> SpaceLayout::GetOldestFiles(const std::string& shar
                                                          double recyclePercent,
                                                          size_t maxRecycleCount) const
 {
-    std::string shardPath = storageBackends_.front();
+    auto backend = StorageBackend();
+    if (!backend) { return {}; }
+    std::string shardPath = backend.Value();
     shardPath += shard;
     auto heap = std::make_unique<TopNHeap<FileInfo, MtimeComparator>>(maxRecycleCount);
     size_t totalFiles = ScanFilesInShard(shardPath, *heap);
@@ -277,7 +361,9 @@ std::vector<FileInfo> SpaceLayout::GetColdestCandidates(const std::string& shard
                                                         double candidatePercent,
                                                         size_t maxCandidateCount) const
 {
-    std::string shardPath = storageBackends_.front();
+    auto backend = StorageBackend();
+    if (!backend) { return {}; }
+    std::string shardPath = backend.Value();
     shardPath += shard;
     auto heap = std::make_unique<TopNHeap<FileInfo, MtimeComparator>>(maxCandidateCount);
     size_t totalFiles = ScanFilesInShard(shardPath, *heap);

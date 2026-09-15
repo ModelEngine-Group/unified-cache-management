@@ -45,6 +45,33 @@ using testing::Invoke;
 using testing::Return;
 using testing::StrictMock;
 
+TEST(UCHealthWindowTest, InitiallyUnavailableNeedsAFullSuccessfulWindow)
+{
+    StoreHealthConfig config;
+    config.healthWindowSize = 4;
+    config.failureThreshold = 2;
+    UC::Detail::HealthWindow window(config, false);
+    for (size_t i = 0; i < 3; ++i) {
+        window.Record(true);
+        EXPECT_FALSE(window.Healthy());
+    }
+    window.Record(true);
+    EXPECT_TRUE(window.Healthy());
+    window.Record(false);
+    window.Record(true);
+    EXPECT_TRUE(window.Healthy());
+    window.Record(false);
+    EXPECT_FALSE(window.Healthy());
+    EXPECT_EQ(window.FailureCount(), 2);
+    for (size_t i = 0; i < 3; ++i) {
+        window.Record(true);
+        EXPECT_FALSE(window.Healthy());
+    }
+    window.Record(true);
+    EXPECT_TRUE(window.Healthy());
+    EXPECT_EQ(window.FailureCount(), 0);
+}
+
 TEST(UCHealthBreakerStoreTest, StoreV1ProvidesHealthyDefault)
 {
     Detail::MockStore store;

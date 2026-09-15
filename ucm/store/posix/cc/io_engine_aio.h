@@ -140,6 +140,7 @@ private:
             UC_ERROR("Failed({}) to do open on block({}).", result.error, shard.owner);
             if (result.error != ECANCELED) { IncrementOpenErrorMetric(); }
             auto status = !dump && result.error == ENOENT ? Status::NotFound() : Status::Error();
+            if (result.error == EHOSTDOWN) { status = Status::StoreUnhealthy(); }
             handleFailure(result.fd, status);
             return;
         }

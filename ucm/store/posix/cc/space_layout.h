@@ -24,7 +24,11 @@
 #ifndef UNIFIEDCACHE_POSIX_STORE_CC_SPACE_LAYOUT_H
 #define UNIFIEDCACHE_POSIX_STORE_CC_SPACE_LAYOUT_H
 
+#include <condition_variable>
 #include <ctime>
+#include <mutex>
+#include <thread>
+#include "detail/health_window.h"
 #include "global_config.h"
 #include "status/status.h"
 #include "type/types.h"
@@ -39,14 +43,25 @@ struct FileInfo {
 class SpaceLayout {
 private:
     std::vector<std::string> storageBackends_;
+    std::vector<Detail::HealthWindow> backendHealth_;
+    std::vector<size_t> availableBackends_;
+    mutable std::mutex backendMutex_;
+    mutable size_t nextBackend_{0};
+    std::mutex stopMutex_;
+    std::condition_variable stopCv_;
+    bool stop_{false};
+    std::vector<std::thread> probeThreads_;
     std::vector<std::string> shards_;
     bool dataDirShard_;
     size_t dataDirShardBytes_;
+    bool ioDirect_{true};
 
 public:
+    ~SpaceLayout();
     Status Setup(const Config& config);
-    std::string DataFilePath(const Detail::BlockId& blockId, bool activated) const;
-    std::vector<std::string> HealthCheckPaths(const Detail::BlockId& blockId, bool activated) const;
+    Expected<std::string> StorageBackend() const;
+    Expected<std::string> DataFilePath(const Detail::BlockId& blockId, bool activated) const;
+    Status CheckHealth() const;
     Status CommitFile(const Detail::BlockId& blockId, bool success) const;
     Status RemoveFile(const Detail::BlockId& blockId) const;
     std::vector<std::string> SampleShards(double sampleRatio) const;
@@ -59,10 +74,7 @@ public:
 
 private:
     std::vector<std::string> RelativeRoots() const;
-    Status AddStorageBackend(const std::string& path);
-    Status AddFirstStorageBackend(const std::string& path);
-    Status AddSecondaryStorageBackend(const std::string& path);
-    std::string StorageBackend(const Detail::BlockId& blockId) const;
+    void ProbeBackend(size_t index, const Detail::StoreHealthConfig& config);
     std::string DataFilePath(const std::string& backend, const Detail::BlockId& blockId,
                              bool activated) const;
     std::string FileShardName(const std::string& fileName) const

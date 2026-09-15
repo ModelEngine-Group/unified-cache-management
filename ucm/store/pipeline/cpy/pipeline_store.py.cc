@@ -158,6 +158,7 @@ public:
         const auto healthConfig = ParseHealthConfig(healthDict);
         Detail::Dictionary config;
         ThrowIfFailed(ConfigParser::Parse(config, storeDict));
+        config.Set("store_health", healthConfig);
         config.Set<StoreV1*>("store_backend", StoreBack());
         StoreLoader loader{path, "Make" + name + "Store"};
         ThrowIfFailed(loader.LoadLibrary());

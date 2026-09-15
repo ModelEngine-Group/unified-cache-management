@@ -277,7 +277,7 @@ TEST_F(UCPosixStoreTest, CheckHealthWithoutDirectIoOnTemporaryFilesystem)
     EXPECT_EQ(store.CheckHealth(), UC::Status::OK());
 }
 
-TEST_F(UCPosixStoreTest, CheckHealthCoversAllStorageBackends)
+TEST_F(UCPosixStoreTest, CheckHealthSucceedsWithEitherStorageBackend)
 {
     using namespace UC::PosixStore;
     const auto mount0 = std::filesystem::path{Path()} / "mount0";
@@ -299,8 +299,76 @@ TEST_F(UCPosixStoreTest, CheckHealthCoversAllStorageBackends)
         std::filesystem::rename(unavailable, mount);
         return status;
     };
-    EXPECT_TRUE(checkUnavailable(mount0).Failure());
-    EXPECT_TRUE(checkUnavailable(mount1).Failure());
+    EXPECT_TRUE(checkUnavailable(mount0).Success());
+    EXPECT_TRUE(checkUnavailable(mount1).Success());
+}
+
+TEST_F(UCPosixStoreTest, AioAndPsyncKeepDataAcrossBackendFailureAndRecovery)
+{
+    using namespace UC::PosixStore;
+    for (const auto& engine : {"aio", "psync"}) {
+        SCOPED_TRACE(engine);
+        const auto shared = std::filesystem::absolute(std::filesystem::path{Path()} /
+                                                      (std::string(engine) + "_shared"));
+        const auto mount0 = std::filesystem::path{Path()} / (std::string(engine) + "_mount0");
+        const auto mount1 = std::filesystem::path{Path()} / (std::string(engine) + "_mount1");
+        std::filesystem::create_directory(shared);
+        std::filesystem::create_directory_symlink(shared, mount0);
+        std::filesystem::create_directory_symlink(shared, mount1);
+        auto config = MakeAioConfig(mount0.string(), 3000);
+        config.Set("storage_backends", std::vector<std::string>{mount0.string(), mount1.string()});
+        config.Set("posix_io_engine", std::string(engine));
+        config.SetNumber("posix_data_trans_concurrency", 2);
+        UC::Detail::StoreHealthConfig health;
+        health.enabled = false;
+        health.healthCheckInterval = std::chrono::milliseconds(50);
+        health.healthCheckTimeout = std::chrono::milliseconds(40);
+        health.healthWindowSize = 4;
+        health.failureThreshold = 2;
+        config.Set("store_health", health);
+        PosixStore store;
+        ASSERT_EQ(store.Setup(config), UC::Status::OK());
+        auto buffer = MakeAlignedBuffer(0x12345678);
+        auto loaded = MakeAlignedBuffer(0);
+        ASSERT_NE(buffer.get(), nullptr);
+        ASSERT_NE(loaded.get(), nullptr);
+        const auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+        auto dump = store.Dump(MakeDumpDesc("initial dump", block, buffer.get()));
+        ASSERT_TRUE(dump.HasValue());
+        ASSERT_EQ(store.Wait(dump.Value()), UC::Status::OK());
+        auto waitUntil = [](auto condition) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (!condition()) {
+                if (std::chrono::steady_clock::now() >= deadline) { return false; }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            return true;
+        };
+        ASSERT_TRUE(waitUntil([&] { return store.LookupOnPrefix(&block, 1).Value() == 0; }));
+        std::filesystem::remove(mount0);
+        std::filesystem::remove(mount1);
+        ASSERT_TRUE(waitUntil([&] { return store.CheckHealth() == UC::Status::StoreUnhealthy(); }));
+        auto unavailable = store.Load(MakeDumpDesc("no backends", block, loaded.get()));
+        ASSERT_TRUE(unavailable.HasValue());
+        EXPECT_EQ(store.Wait(unavailable.Value()), UC::Status::StoreUnhealthy());
+
+        std::filesystem::create_directory_symlink(shared, mount1);
+        ASSERT_TRUE(waitUntil([&] { return store.CheckHealth().Success(); }));
+        auto load = store.Load(MakeDumpDesc("load through recovered mount", block, loaded.get()));
+        ASSERT_TRUE(load.HasValue());
+        ASSERT_EQ(store.Wait(load.Value()), UC::Status::OK());
+        EXPECT_EQ(std::memcmp(buffer.get(), loaded.get(), AIO_TEST_DATA_SIZE), 0);
+        const auto newBlock = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+        dump = store.Dump(MakeDumpDesc("dump through healthy mount", newBlock, buffer.get()));
+        ASSERT_TRUE(dump.HasValue());
+        ASSERT_EQ(store.Wait(dump.Value()), UC::Status::OK());
+        ASSERT_TRUE(waitUntil([&] { return store.LookupOnPrefix(&newBlock, 1).Value() == 0; }));
+        std::memset(loaded.get(), 0, AIO_TEST_DATA_SIZE);
+        load = store.Load(MakeDumpDesc("read new block", newBlock, loaded.get()));
+        ASSERT_TRUE(load.HasValue());
+        ASSERT_EQ(store.Wait(load.Value()), UC::Status::OK());
+        EXPECT_EQ(std::memcmp(buffer.get(), loaded.get(), AIO_TEST_DATA_SIZE), 0);
+    }
 }
 
 TEST_F(UCPosixStoreTest, DumpThenLoadWithIoDirect)
@@ -386,7 +454,7 @@ TEST_F(UCPosixStoreTest, PsyncTruncatedLoadReturnsNotFound)
     layoutConfig.dataDirShardBytes = 0;
     SpaceLayout layout;
     ASSERT_EQ(layout.Setup(layoutConfig), UC::Status::OK());
-    std::filesystem::resize_file(layout.DataFilePath(block, false), AIO_TEST_DATA_SIZE / 2);
+    std::filesystem::resize_file(layout.DataFilePath(block, false).Value(), AIO_TEST_DATA_SIZE / 2);
 
     auto load = store.Load(MakeDumpDesc("PsyncTruncatedLoad", block, target.get()));
     ASSERT_TRUE(load.HasValue());
@@ -413,7 +481,7 @@ TEST_F(UCPosixStoreTest, AioTruncatedLoadReturnsNotFound)
     layoutConfig.dataDirShardBytes = 0;
     SpaceLayout layout;
     ASSERT_EQ(layout.Setup(layoutConfig), UC::Status::OK());
-    std::filesystem::resize_file(layout.DataFilePath(block, false), AIO_TEST_DATA_SIZE / 2);
+    std::filesystem::resize_file(layout.DataFilePath(block, false).Value(), AIO_TEST_DATA_SIZE / 2);
 
     auto load = store.Load(MakeDumpDesc("AioTruncatedLoad", block, target.get()));
     ASSERT_TRUE(load.HasValue());

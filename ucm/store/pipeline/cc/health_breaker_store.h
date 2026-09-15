@@ -27,12 +27,12 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include "health_check_executor.h"
+#include "health_window.h"
 #include "store_health_config.h"
 #include "ucmstore_v1.h"
 
@@ -73,8 +73,7 @@ private:
     StoreHealthConfig config_{};
     std::atomic<bool> enabled_{true};
     mutable std::mutex healthMutex_;
-    std::deque<bool> healthResults_;
-    size_t failureCount_{0};
+    Detail::HealthWindow healthWindow_;
     std::mutex stopMutex_;
     std::condition_variable stopCv_;
     bool stop_{false};
