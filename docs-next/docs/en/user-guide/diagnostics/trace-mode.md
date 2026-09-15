@@ -9,47 +9,48 @@ to adopt UCM.
 
 ## Overview
 
-Trace Mode is enabled by setting two options to `true` in the UCM configuration file:
+Enable Trace Mode with `use_lite: true`. UCM chooses the Lite connector from the model's KV cache layout: `UCMLiteConnector` for standard models, `UCMHLALiteConnector` for hybrid linear-attention models, and `UCMFAWALiteConnector` for FAWA models.
 
 | Option | Default | Description |
 | :----- | :------ | :---------- |
-| `enable_record_traces` | `false` | Logs per-request traces (timestamp, input_length, output_length, hash_ids). Each hash_id takes 32 bytes. |
 | `use_lite` | `false` | Switches to the **UCM Lite Connector**, which works with a Fake Store that skips all actual KV dump/load operations. |
 
 This mode records request and block metadata without real KV I/O or avoided inference compute. Analysis estimates reuse opportunities; measure actual storage performance separately.
 
 ### Logged Trace Format
 
-Each request produces two log lines on first lookup:
+At startup the Lite connector writes a `UCMTraceMeta:` line with the model type, block dimensions and cache topology. Keep this line and the vLLM startup logs together with the request traces; the analyzer uses them to select the simulation engine and determine cache capacity.
 
 ```text
-[UC][I] timestamp: 1234567.890123, request_id: req-42, input_length: 8192, output_length: 128, ucm_block_ids: ['a1b2...', 'c3d4...', ...]
-[UC][I] request_id: req-42, hash_time_ms: 0.512, print_time_ms: 0.034
+UCMTraceMeta: type=standard, is_mla=False, vllm_hash_block_size=128, trace_hash_block_size=512, hbm_block_data_size=<bytes>
+UCMTrace: timestamp: 1234567.890123, request_id: req-42, input_length: 8192, output_length: 128, block_hashes: ['a1b2...', 'c3d4...', ...]
 ```
+
+The topology fields differ for `standard`, `mamba` and `fawa` models. The request line records:
 
 | Field | Description |
 | :---- | :---------- |
-| `timestamp` | `time.perf_counter()` value at lookup time, used to preserve request ordering during analysis. |
-| `request_id` | vLLM request identifier (present in Lite connector traces). |
-| `input_length` | Number of input tokens in the request (`request.num_tokens`). |
-| `output_length` | Maximum output tokens for the request (`request.max_tokens`). |
-| `ucm_block_ids` | List of hex-encoded block hash IDs. Each block corresponds to `block_size` tokens; each hash is 32 bytes. |
+| `timestamp` | Lookup time from `time.perf_counter()`, used to preserve request order. |
+| `request_id` | The vLLM request identifier. |
+| `input_length` | Input token count (`request.num_tokens`). |
+| `output_length` | Maximum output token count (`request.max_tokens`). |
+| `block_hashes` | Hex-encoded block hashes at the granularity reported by `trace_hash_block_size`. |
+
+The standard Lite connector records requests once they contain at least one complete trace block. Timing diagnostics may appear on a separate log line.
 
 ## Configuration
 
 You can start from the sample file at `unified-cache-management/examples/ucm_config_example.yaml`
 
-Trace Mode is enabled by setting two options to `true`:
+Enable Trace Mode with:
 
 ```yaml
-enable_record_traces: true
 use_lite: true
 ```
 
 ### Log Configuration (Optional)
 
-Trace line can be large because each hash_id is 32 bytes and a long request can contain many block IDs. Tune the following
-environment variables before launching the service:
+A long request can produce a large list of block hashes. Tune the following environment variables before launching the service:
 
 | Environment Variable | Default | Description |
 | :------------------- | :------ | :---------- |
@@ -96,7 +97,7 @@ vllm serve Qwen/Qwen2.5-14B-Instruct \
 
 **Replace the `UCM_CONFIG_FILE` path with the actual path to your trace-mode config file on your machine.**
 
-When the service starts, the following log confirms that the Lite connector is active:
+For a standard model, the following startup log confirms that the Lite connector is active:
 
 ```text
 [UC][I] Init UCMLiteConnector.
@@ -107,17 +108,11 @@ directory. No KV cache is dumped or loaded.
 
 ## Trace Analysis
 
-After collecting traces, run `benchmarks/auto_trace_analysis.py` to simulate the theoretical KV cache hit rate. The script
-parses trace lines **plus** the `available kv cache memory` (or `current kv cache memory`) and `tensor_parallel_size`
-values that vLLM/UCM emit at startup, then simulates an LRU multi-tier cache (HBM → DRAM → FS) to estimate the hit rate
-UCM would achieve.
+After collecting traces, run `benchmarks/auto_trace_analysis.py` to estimate KV cache hit rates. The script reads `UCMTraceMeta:` and the vLLM startup information to select the standard, mamba or fawa simulation engine and model HBM → DRAM → FS caching. Block sizes and model topology come from the logs.
 
 ```bash
 python benchmarks/auto_trace_analysis.py \
-  --service-url <ip:port of vllm service> \
-  --log-dir <path to log folder> \
-  --block-kv-cache-size <bytes_per_block> \
-  --is-mla <true|false> \
+  --log-dir /workspace/ucm-trace-logs \
   --dram-pool-size-gb <dram_gb> \
   --fs-pool-size-gb <fs_gb>
 ```
@@ -126,12 +121,21 @@ python benchmarks/auto_trace_analysis.py \
 
 | Argument | Description |
 | :------- | :---------- |
-| `--service-url` | vLLM `/metrics` endpoint (Prometheus). When set, the tool fetches the service's actual prefix-cache hit rate for comparison. |
-| `--log-dir` | Directory containing the UCM log files (scanned recursively for `*.log`, `*.log.*`, `*.log.gz`). It must include vLLM's startup logs so the available KV cache memory and tensor-parallel size can be parsed. |
-| `--block-kv-cache-size` | Size in bytes of a single KV cache block. Use the KV Cache Size Calculator to determine this value for your model. |
-| `--is-mla` | Whether the model uses Multi-Latent Attention (`true`/`false`). |
-| `--dram-pool-size-gb` | Simulated DRAM (host memory) pool size in GiB. |
-| `--fs-pool-size-gb` | Simulated filesystem (SSD/NFS) pool size in GiB. |
+| `--log-dir` | Directory scanned recursively for `*.log`, `*.log.*` and `*.log.gz`. Include the `UCMTraceMeta:` line and vLLM startup logs. |
+| `--dram-pool-size-gb` | Simulated DRAM pool capacity in GiB. |
+| `--fs-pool-size-gb` | Simulated filesystem pool capacity in GiB. |
+
+### Optional Arguments
+
+| Argument | Description |
+| :------- | :---------- |
+| `--service-url` | vLLM service address. Fetches `/metrics` to compare against the service's actual prefix-cache hit rate. |
+| `--num-nodes` | Physical node count; defaults to `1`. |
+| `--unified-memory-pool` | Simulate a shared DRAM pool across nodes instead of separate per-node pools. |
+| `--output` | Write the analysis summary to a JSON file. |
+| `--trace-output` | Write the parsed trace records to a JSON Lines file. |
+
+The current analyzer no longer accepts `--block-kv-cache-size` or `--is-mla`. Logs without `UCMTraceMeta:` must be collected again with the matching Lite connector.
 
 ## Analysis Report
 

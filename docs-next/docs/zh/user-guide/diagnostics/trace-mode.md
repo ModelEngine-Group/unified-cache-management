@@ -5,46 +5,48 @@ UCM Trace 模式是一种轻量级的诊断和评估模式，在推理过程中�
 
 ## 概述
 
-通过在 UCM 配置文件中将两个选项设置为 `true` 来启用 Trace 模式：
+设置 `use_lite: true` 后，UCM 根据模型的 KV cache 布局选择 Lite connector：标准模型使用 `UCMLiteConnector`，混合线性注意力模型使用 `UCMHLALiteConnector`，FAWA 模型使用 `UCMFAWALiteConnector`。
 
 | 选项 | 默认值 | 描述 |
 | :----- | :------ | :---------- |
-| `enable_record_traces` | `false` | 记录每个请求的跟踪（timestamp, input_length, output_length, hash_ids）。每个 hash_id 占用 32 字节。 |
 | `use_lite` | `false` | 切换到 **UCM Lite Connector**，它与 Fake Store 一起工作，跳过所有实际的 KV dump/load 操作。 |
 
 启用后只记录请求与块标识，不执行真实 KV 读写，也不减少本次推理计算。分析结果用于估计复用机会，实际存储收益需另行测量。
 
 ### 记录的跟踪格式
 
-每个请求在首次查找时产生两条日志行：
+Lite connector 在启动时输出一条 `UCMTraceMeta:` 日志，记录模型类型、块大小和缓存拓扑。采集时应同时保留这条日志、vLLM 启动日志和请求跟踪；分析器通过这些信息选择模拟引擎并确定缓存容量。
 
 ```text
-[UC][I] timestamp: 1234567.890123, request_id: req-42, input_length: 8192, output_length: 128, ucm_block_ids: ['a1b2...', 'c3d4...', ...]
-[UC][I] request_id: req-42, hash_time_ms: 0.512, print_time_ms: 0.034
+UCMTraceMeta: type=standard, is_mla=False, vllm_hash_block_size=128, trace_hash_block_size=512, hbm_block_data_size=<bytes>
+UCMTrace: timestamp: 1234567.890123, request_id: req-42, input_length: 8192, output_length: 128, block_hashes: ['a1b2...', 'c3d4...', ...]
 ```
+
+`standard`、`mamba` 和 `fawa` 模型的拓扑字段不同。请求日志包含以下字段：
 
 | 字段 | 描述 |
 | :---- | :---------- |
-| `timestamp` | 查找时的 `time.perf_counter()` 值，用于在分析期间保持请求顺序。 |
-| `request_id` | vLLM 请求标识符（存在于 Lite connector 跟踪中）。 |
-| `input_length` | 请求中的输入令牌数（`request.num_tokens`）。 |
-| `output_length` | 请求的最大输出令牌数（`request.max_tokens`）。 |
-| `ucm_block_ids` | 十六进制编码的块哈希 ID 列表。每个块对应 `block_size` 个令牌；每个哈希为 32 字节。 |
+| `timestamp` | 查找时的 `time.perf_counter()` 值，用于保持请求顺序。 |
+| `request_id` | vLLM 请求标识符。 |
+| `input_length` | 输入 token 数（`request.num_tokens`）。 |
+| `output_length` | 最大输出 token 数（`request.max_tokens`）。 |
+| `block_hashes` | 十六进制编码的块哈希列表，粒度由 `trace_hash_block_size` 指定。 |
+
+标准 Lite connector 在请求至少包含一个完整跟踪块后记录请求。耗时诊断可能另占一条日志。
 
 ## 配置
 
 您可以从 `unified-cache-management/examples/ucm_config_example.yaml` 的示例文件开始
 
-通过将两个选项设置为 `true` 来启用 Trace 模式：
+使用以下配置启用 Trace 模式：
 
 ```yaml
-enable_record_traces: true
 use_lite: true
 ```
 
 ### 日志配置（可选）
 
-跟踪行可能很大，因为每个 hash_id 为 32 字节，长请求可能包含许多块 ID。在启动服务之前调整以下环境变量：
+长请求可能生成较大的块哈希列表。在启动服务之前调整以下环境变量：
 
 | 环境变量 | 默认值 | 描述 |
 | :------------------- | :------ | :---------- |
@@ -90,7 +92,7 @@ vllm serve Qwen/Qwen2.5-14B-Instruct \
 
 **将 `UCM_CONFIG_FILE` 路径替换为您机器上跟踪模式配置文件的实际路径。**
 
-服务启动时，以下日志确认 Lite connector 处于活动状态：
+对于标准模型，以下启动日志确认 Lite connector 已启用：
 
 ```text
 [UC][I] Init UCMLiteConnector.
@@ -100,14 +102,11 @@ vllm serve Qwen/Qwen2.5-14B-Instruct \
 
 ## 跟踪分析
 
-收集跟踪后，运行 `benchmarks/auto_trace_analysis.py` 以模拟理论 KV cache 命中率。脚本解析跟踪行**加上** vLLM/UCM 在启动时发出的 `available kv cache memory`（或 `current kv cache memory`）和 `tensor_parallel_size` 值，然后模拟 LRU 多级缓存（HBM → DRAM → FS）以估计 UCM 将实现的命中率。
+收集跟踪后，运行 `benchmarks/auto_trace_analysis.py` 估算 KV cache 命中率。脚本从 `UCMTraceMeta:` 和 vLLM 启动信息中读取模型拓扑及块大小，自动选择 standard、mamba 或 fawa 模拟引擎，模拟 HBM → DRAM → FS 多级缓存。
 
 ```bash
 python benchmarks/auto_trace_analysis.py \
-  --service-url <ip:port of vllm service> \
-  --log-dir <path to log folder> \
-  --block-kv-cache-size <bytes_per_block> \
-  --is-mla <true|false> \
+  --log-dir /workspace/ucm-trace-logs \
   --dram-pool-size-gb <dram_gb> \
   --fs-pool-size-gb <fs_gb>
 ```
@@ -116,12 +115,21 @@ python benchmarks/auto_trace_analysis.py \
 
 | 参数 | 描述 |
 | :------- | :---------- |
-| `--service-url` | vLLM `/metrics` 端点（Prometheus）。设置后，工具获取服务的实际前缀缓存命中率以进行比较。 |
-| `--log-dir` | 包含 UCM 日志文件的目录（递归扫描 `*.log`、`*.log.*`、`*.log.gz`）。必须包括 vLLM 的启动日志，以便可以解析可用的 KV cache 内存和张量并行大小。 |
-| `--block-kv-cache-size` | 单个 KV cache 块的字节大小。使用 KV Cache 大小计算器确定模型的此值。 |
-| `--is-mla` | 模型是否使用多潜在注意力（`true`/`false`）。 |
-| `--dram-pool-size-gb` | 模拟的 DRAM（主机内存）池大小（GiB）。 |
-| `--fs-pool-size-gb` | 模拟的文件系统（SSD/NFS）池大小（GiB）。 |
+| `--log-dir` | 递归扫描 `*.log`、`*.log.*` 和 `*.log.gz` 的日志目录，必须包含 `UCMTraceMeta:` 和 vLLM 启动日志。 |
+| `--dram-pool-size-gb` | 模拟的 DRAM 池容量，单位为 GiB。 |
+| `--fs-pool-size-gb` | 模拟的文件系统池容量，单位为 GiB。 |
+
+### 可选参数
+
+| 参数 | 描述 |
+| :------- | :---------- |
+| `--service-url` | vLLM 服务地址。通过 `/metrics` 获取服务实际的前缀缓存命中率，用于对比。 |
+| `--num-nodes` | 物理节点数，默认为 `1`。 |
+| `--unified-memory-pool` | 模拟跨节点共享的 DRAM 池，而非各节点独立的池。 |
+| `--output` | 将分析摘要写入 JSON 文件。 |
+| `--trace-output` | 将解析后的跟踪记录写入 JSON Lines 文件。 |
+
+当前分析器不再接受 `--block-kv-cache-size` 和 `--is-mla`。缺少 `UCMTraceMeta:` 的旧日志需要使用匹配的 Lite connector 重新采集。
 
 ## 分析报告
 
