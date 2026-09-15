@@ -383,6 +383,9 @@ from ucm.default_metrics_config import DEFAULT_METRICS_CONFIG
 from ucm.integration.vllm.metrics import UCMConnectorStats, UCMPromMetrics
 from ucm.integration.vllm.ucm_connector import (
     PendingDumpTask,
+    PendingLoadTask,
+    RequestDispatchMeta,
+    RequestMeta,
     UCMConnector,
     UCMDirectConnector,
     UCMLayerWiseConnector,
@@ -1576,6 +1579,154 @@ def test_direct_connector_poll_records_zero_completion_wait_duration():
             "save_completion_wait_duration": 0.0,
         }
     ]
+
+
+def test_request_async_alloc_dispatches_load_without_scheduled_forward():
+    connector = object.__new__(UCMDirectConnector)
+    connector.use_request_async_load = True
+    connector.block_size = 16
+    connector.cp_world_size = 1
+    connector.requests_meta = {
+        "req-async": RequestMeta(
+            ucm_block_ids=[b"u0", b"u1", b"u2", b"u3", b"u4", b"u5"],
+            hbm_hit_block_num=2,
+            total_hit_block_num=5,
+            num_token_ids=96,
+            token_processed=80,
+        )
+    }
+    connector._pending_async_load_dispatches = {}
+    connector._async_load_req_ids = set()
+    connector._async_dump_req_ids = set()
+
+    blocks = SimpleNamespace(get_block_ids=lambda: ([10, 11, 40, 41, 42],))
+    connector.update_state_after_alloc(
+        SimpleNamespace(request_id="req-async"), blocks, 48
+    )
+
+    scheduler_output = SimpleNamespace(
+        scheduled_new_reqs=[],
+        scheduled_cached_reqs=[],
+        num_scheduled_tokens={},
+        finished_req_ids=set(),
+        preempted_req_ids=None,
+    )
+    metadata = connector.build_connector_meta(scheduler_output)
+
+    assert metadata.request_meta == {
+        "req-async": RequestDispatchMeta(
+            load_block_ids=([b"u2", b"u3", b"u4"], [40, 41, 42]),
+            dump_block_ids=([], []),
+            load_async=True,
+        )
+    }
+    assert connector._pending_async_load_dispatches == {}
+    assert connector._async_load_req_ids == {"req-async"}
+
+
+def test_request_dispatch_async_flag_preserves_subclass_positional_fields():
+    @dataclass
+    class SpecializedRequestDispatchMeta(RequestDispatchMeta):
+        required_value: int
+
+    dispatch = SpecializedRequestDispatchMeta(
+        ([b"u0"], [10]),
+        ([], []),
+        7,
+        load_async=True,
+    )
+
+    assert dispatch.required_value == 7
+    assert dispatch.load_async is True
+
+
+def test_request_async_reschedule_does_not_dispatch_duplicate_load():
+    connector = object.__new__(UCMDirectConnector)
+    connector.block_size = 16
+    connector.cp_world_size = 1
+    connector.requests_meta = {
+        "req-async": RequestMeta(
+            ucm_block_ids=[b"u0", b"u1", b"u2", b"u3", b"u4", b"u5"],
+            hbm_hit_block_num=2,
+            total_hit_block_num=5,
+            num_token_ids=96,
+            token_processed=80,
+        )
+    }
+    connector._pending_async_load_dispatches = {}
+    connector._async_load_req_ids = {"req-async"}
+    connector._async_dump_req_ids = set()
+
+    scheduler_output = SimpleNamespace(
+        scheduled_new_reqs=[
+            SimpleNamespace(req_id="req-async", block_ids=([10, 11, 40, 41, 42, 43],))
+        ],
+        scheduled_cached_reqs=[],
+        num_scheduled_tokens={"req-async": 16},
+        finished_req_ids=set(),
+        preempted_req_ids=None,
+    )
+    metadata = connector.build_connector_meta(scheduler_output)
+    dispatch = metadata.request_meta["req-async"]
+
+    assert dispatch.load_block_ids == ([], [])
+    assert dispatch.dump_block_ids == ([b"u5"], [43])
+    assert dispatch.load_async is False
+
+
+def test_request_async_poll_reports_only_completed_loads():
+    class RankConsistency:
+        def __init__(self):
+            self.ready = False
+            self.waited = []
+
+        def check_load(self, task):
+            return self.ready
+
+        def wait_load(self, task):
+            self.waited.append(task)
+
+    connector = object.__new__(UCMDirectConnector)
+    connector._rank_consistency = RankConsistency()
+    connector._pending_load_tasks = {
+        "req-async": PendingLoadTask(object(), "req-async", [40, 41])
+    }
+    connector._finished_async_load_req_ids = set()
+
+    assert connector._poll_pending_load_tasks() == set()
+    assert set(connector._pending_load_tasks) == {"req-async"}
+
+    connector._rank_consistency.ready = True
+    assert connector._poll_pending_load_tasks() == {"req-async"}
+    assert connector._pending_load_tasks == {}
+    assert len(connector._rank_consistency.waited) == 1
+
+
+def test_request_async_poll_failure_unblocks_and_invalidates_blocks():
+    class RankConsistency:
+        def check_load(self, task):
+            raise RuntimeError("load failed")
+
+    class WorkerMeta:
+        def __init__(self):
+            self.failed = set()
+
+        def mark_failed(self, request_id):
+            self.failed.add(request_id)
+
+    connector = object.__new__(UCMDirectConnector)
+    connector._rank_consistency = RankConsistency()
+    connector._connector_worker_meta = WorkerMeta()
+    connector._invalid_block_ids = set()
+    connector._pending_load_tasks = {
+        "req-async": PendingLoadTask(object(), "req-async", [40, 41])
+    }
+    connector._finished_async_load_req_ids = set()
+
+    assert connector._poll_pending_load_tasks() == {"req-async"}
+    assert connector._pending_load_tasks == {}
+    assert connector._connector_worker_meta.failed == {"req-async"}
+    assert connector._invalid_block_ids == {40, 41}
 
 
 def test_multiproc_logger_uses_prefix_and_dispatcher_snapshot(tmp_path):
