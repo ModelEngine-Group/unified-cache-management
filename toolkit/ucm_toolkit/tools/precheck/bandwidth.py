@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
+from ...resources import source_root
 from .config import PrecheckConfig
 from .reporter import STATUS_PASS, STATUS_SKIP, STATUS_WARN, WARN, CheckResult
 
@@ -761,9 +762,8 @@ def check_bandwidth(cfg: PrecheckConfig) -> CheckResult:
     # purge any cached ucm.* submodules (only if ucm is still importable
     # without the repo root), forcing a fresh import from site-packages.
     # Workers (forked) inherit the fix.
-    _repo_root = os.path.realpath(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), *([".."] * 4))
-    )
+    _source_root = source_root()
+    _repo_root = str(_source_root) if _source_root is not None else None
     _saved_path = sys.path[:]
     _clean_path = [
         p for p in sys.path if not _path_resolves_to_repo_root(p, _repo_root)

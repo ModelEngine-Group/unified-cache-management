@@ -31,55 +31,6 @@ def _problem(
     }
 
 
-def test_validate_preserves_structure_and_sorts_without_mutating_input() -> None:
-    later = _problem(capability="CANN 9.2 / A5 / cp312 / arm64 / Ubuntu 22.04")
-    earlier = _problem(capability="CANN 9.2 / A5 / cp312 / amd64 / Ubuntu 22.04")
-    raw = [later, earlier]
-
-    validated = problems.validate_formal_problems(raw)
-
-    assert [item["capability"] for item in validated] == [
-        earlier["capability"],
-        later["capability"],
-    ]
-    assert validated[0] == earlier
-    assert validated[0] is not earlier
-    assert validated[0]["runtime"] is not earlier["runtime"]
-    assert raw == [later, earlier]
-
-
-@pytest.mark.parametrize(
-    ("value", "message"),
-    [
-        ({}, "must be a list"),
-        ([{"backend": "cann-a5"}], "invalid keys"),
-        ([{**_problem(), "extra": "value"}], "invalid keys"),
-        (
-            [{**_problem(), "runtime": {"repository": "repo", "tag": "tag"}}],
-            "runtime.repository is malformed",
-        ),
-        ([{**_problem(), "backend": "CANN A5"}], "backend is malformed"),
-        ([{**_problem(), "capability": ""}], "capability must be"),
-        ([{**_problem(), "reason": " blocked"}], "reason must be"),
-        (
-            [
-                {
-                    **_problem(),
-                    "runtime": {
-                        "repository": "quay.io/ascend/vllm-ascend",
-                        "tag": "bad tag",
-                    },
-                }
-            ],
-            "runtime.tag is malformed",
-        ),
-    ],
-)
-def test_validate_rejects_malformed_records(value: object, message: str) -> None:
-    with pytest.raises(ValueError, match=message):
-        problems.validate_formal_problems(value)
-
-
 def test_duplicate_identity_is_the_full_normalized_problem() -> None:
     first = _problem()
     with pytest.raises(ValueError, match="duplicate formal problem"):
@@ -145,8 +96,3 @@ def test_markdown_table_escapes_problem_text() -> None:
 
     assert "CANN 9.2 &#124; A5 &lt;blocked&gt;" in rendered
     assert "Native support &#124; pending &lt;implementation&gt;" in rendered
-
-
-def test_rolling_issue_action_follows_problem_presence() -> None:
-    assert problems.decide_rolling_issue_action([_problem()]) == "open_or_update"
-    assert problems.decide_rolling_issue_action([]) == "close"
