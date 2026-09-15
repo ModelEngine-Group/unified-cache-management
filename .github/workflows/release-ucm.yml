@@ -1842,7 +1842,7 @@ jobs:
           RTD_PROJECT_ZH: ${{ vars.RTD_PROJECT_ZH }}
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
-          python docs-next/tools/trigger_rtd.py \
+          python docs/docs-site/tools/trigger_rtd.py \
             --repository "${GITHUB_REPOSITORY}" --source-sha "${SOURCE_SHA}" \
             --manifest input/release/release-manifest.json \
             --project "${RTD_PROJECT_EN}" --project "${RTD_PROJECT_ZH}" \

@@ -7,7 +7,7 @@
 使用 Python 3.12：
 
 ```bash
-cd docs-next
+cd docs/docs-site
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements-dev.txt
@@ -57,7 +57,7 @@ node --test tests/install-ui.test.cjs
 
 ## RTD 构建与安装清单
 
-根 `.readthedocs.yaml` 使用 Python 3.12，调用 `python docs-next/tools/site.py rtd`。构建读取 RTD 的语言、Git identifier、commit hash、canonical URL 和输出目录，生成一个语言/版本根。英文使用 `/en/<version>/`，中文 RTD 语言为 `zh-cn`，对应源码目录 `zh`。
+根 `.readthedocs.yaml` 使用 Python 3.12，调用 `python docs/docs-site/tools/site.py rtd`。构建读取 RTD 的语言、Git identifier、commit hash、canonical URL 和输出目录，生成一个语言/版本根。英文使用 `/en/<version>/`，中文 RTD 语言为 `zh-cn`，对应源码目录 `zh`。
 
 顶部沿用 Material 的版本和语言菜单，通过 RTD Addons 数据列出已构建的版本与翻译，切换时保留当前页面路径。顶部菜单就绪后隐藏默认悬浮菜单；线上搜索继续使用 RTD，本地保留 MkDocs 搜索。源码链接绑定实际仓库和 Git ref；PR 使用 commit hash，不使用 PR 编号作为分支名。
 
@@ -93,7 +93,7 @@ python tools/check_bilingual_docs.py
 2. 语言分别设置为 English 和 Simplified Chinese (`zh-cn`)，版本模式使用带翻译的多版本模式。启用 Addons 的版本/语言、搜索及 Preview 提示。
 3. 先验证中英文 Latest、真实 PR Preview、实际安装选择器、当前 URL、favicon 和计算器。记录 RTD build ID、源码 SHA 与公开 URL；取消构建不等于已部署。
 4. 验证中英文文件门控，将 `Docs · Bilingual files` 设置为目标分支的必需状态检查。
-5. Fork 验收后，通过官方开发分支集成切换 `ucm` 项目；英文父项目仍使用现有 `ucm`，关联中文项目。新内容只维护 `docs-next`。
+5. Fork 验收后，通过官方开发分支集成切换 `ucm` 项目；英文父项目仍使用现有 `ucm`，关联中文项目。新内容只维护 `docs/docs-site`。
 6. GitHub Repository Variables 设置 `RTD_PROJECT_EN`、`RTD_PROJECT_ZH`，Repository Secret 设置 `RTD_API_TOKEN`。项目仓库必须与当前 Release 仓库一致。Stable/Prerelease 发版必须配置两个项目和 Token；配置缺失会在构建前失败。
 7. 官方先切换 Latest。首个包含新配置、完整 Schema 9 Release 且 RTD Tag 构建通过后启用 Stable。旧 Git 标签仍按原配置构建，不改写历史标签。
 8. 验收通过后停止新 Pages 发布，保留原 `gh-pages` 内容及自定义域名，尤其历史下载索引；本轮不修改 DNS。若正式切换失败，恢复上一版 RTD 配置即可继续旧站构建。

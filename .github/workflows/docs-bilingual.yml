@@ -24,4 +24,4 @@ jobs:
         with:
           python-version: "3.12"
       - name: Require both language files for every page
-        run: python docs-next/tools/check_bilingual_docs.py
+        run: python docs/docs-site/tools/check_bilingual_docs.py

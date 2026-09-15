@@ -742,7 +742,7 @@ def test_public_manifest_is_exact_schema_v9_and_uses_published_targets(
 
     assert cleanup.validate_manifest(pypi_manifest) == pypi_manifest
     assert cleanup.registry_resources(pypi_manifest)
-    sys.path.insert(0, str(ROOT / "docs-next/tools"))
+    sys.path.insert(0, str(ROOT / "docs/docs-site/tools"))
     import release_manifest as docs_manifest
 
     published = json.loads(json.dumps(document))

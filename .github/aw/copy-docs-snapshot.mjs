@@ -7,8 +7,8 @@ if (!process.env.SOURCE_ROOT || !process.env.TARGET_ROOT || sourceRoot === targe
   throw new Error("distinct SOURCE_ROOT and TARGET_ROOT are required");
 }
 
-const directoryPaths = ["docs-next/docs/en", "docs-next/docs/zh"];
-const filePaths = ["docs-next/translation-state.json"];
+const directoryPaths = ["docs/docs-site/docs/en", "docs/docs-site/docs/zh"];
+const filePaths = ["docs/docs-site/translation-state.json"];
 
 async function collect(root, relative, output) {
   const absolute = path.join(root, ...relative.split("/"));

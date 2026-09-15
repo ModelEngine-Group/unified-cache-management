@@ -108,11 +108,11 @@ PR 标题使用以下前缀说明变更类型。涉及多个类别时，应包�
 
 ### 构建文档
 
-新文档位于 `docs-next/`，使用 MkDocs Material 构建。中英文页面保持相同相对路径，新增或移动页面时同步更新导航和链接。
+新文档位于 `docs/docs-site/`，使用 MkDocs Material 构建。中英文页面保持相同相对路径，新增或移动页面时同步更新导航和链接。
 
 ```shell
 # Install documentation dependencies.
-cd unified-cache-management/docs-next
+cd unified-cache-management/docs/docs-site
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt

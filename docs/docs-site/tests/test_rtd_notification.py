@@ -58,7 +58,7 @@ def test_rtd_project_must_belong_to_the_release_repository(monkeypatch, tmp_path
 
 
 def test_workflow_notifies_rtd_only_after_manifest_readback():
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[3]
     workflow = yaml.safe_load((root / ".github/workflows/release-ucm.yml").read_text())
     job = workflow["jobs"]["verify-release-docs"]
     assert job["needs"] == "update-release-images"

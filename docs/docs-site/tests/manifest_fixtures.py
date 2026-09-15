@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 FIXTURE = (
-    Path(__file__).resolve().parents[2]
+    Path(__file__).resolve().parents[3]
     / ".github/release/tests/fixtures/release-manifest.json"
 )
 

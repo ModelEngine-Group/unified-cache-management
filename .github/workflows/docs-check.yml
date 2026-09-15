@@ -3,7 +3,7 @@ name: UCM Documentation · Check RTD build
 on:
   pull_request:
     paths:
-      - docs-next/**
+      - docs/docs-site/**
       - .github/release/**
       - pyproject.toml
       - setup.py
@@ -17,7 +17,7 @@ on:
       - .github/workflows/docs-check.yml
   push:
     paths:
-      - docs-next/**
+      - docs/docs-site/**
       - .github/release/**
       - pyproject.toml
       - setup.py
@@ -66,24 +66,24 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install documentation and test dependencies
-        run: python -m pip install -r docs-next/requirements-dev.txt
+        run: python -m pip install -r docs/docs-site/requirements-dev.txt
       - name: Test documentation contracts
-        run: python -m pytest -q docs-next/tests
+        run: python -m pytest -q docs/docs-site/tests
       - name: Test installation renderer
-        run: node --test docs-next/tests/install-ui.test.cjs
+        run: node --test docs/docs-site/tests/install-ui.test.cjs
       - name: Build both RTD language roots with real published installation data
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          python docs-next/tools/site.py build --lang en --strict \
+          python docs/docs-site/tools/site.py build --lang en --strict \
             --repository "${GITHUB_REPOSITORY}" --ref "${GITHUB_SHA}" \
             --site-url https://docs.example.invalid/en/latest/
-          python docs-next/tools/site.py build --lang zh --strict \
+          python docs/docs-site/tools/site.py build --lang zh --strict \
             --repository "${GITHUB_REPOSITORY}" --ref "${GITHUB_SHA}" \
             --site-url https://docs.example.invalid/zh-cn/latest/
       - uses: actions/upload-artifact@v4.6.2
         with:
           name: ucm-docs-${{ github.sha }}
-          path: docs-next/site/
+          path: docs/docs-site/site/
           if-no-files-found: error
           retention-days: 14

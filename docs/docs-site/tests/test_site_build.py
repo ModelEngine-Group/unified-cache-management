@@ -39,7 +39,7 @@ def small_docs(tmp_path):
         "mkdocs.yml": """site_name: Fixture documentation
 site_url: https://docs.example.invalid/
 repo_url: https://github.com/example/ucm
-edit_uri: edit/develop/docs-next/docs/
+edit_uri: edit/develop/docs/docs-site/docs/
 theme:
   name: material
   favicon: assets/logo.svg
@@ -107,7 +107,7 @@ def test_single_language_build_preserves_sources_and_publishes_version_root(
     guide = (output / "guide/index.html").read_text()
     assert f'<link rel="canonical" href="{canonical}">' in home
     assert (
-        f"https://github.com/example/ucm/edit/v0.9.3/docs-next/docs/{language}/index.md"
+        f"https://github.com/example/ucm/edit/v0.9.3/docs/docs-site/docs/{language}/index.md"
         in home
     )
     assert "/en/en/" not in home and "/zh/zh/" not in home
@@ -117,7 +117,7 @@ def test_single_language_build_preserves_sources_and_publishes_version_root(
     assert urljoin(canonical + "guide/", image_url[1]) == canonical + "assets/logo.svg"
     expected = "中文指南" if language == "zh" else "English guide"
     assert expected in guide
-    assert f"edit/v0.9.3/docs-next/docs/{language}/guide.md" in guide
+    assert f"edit/v0.9.3/docs/docs-site/docs/{language}/guide.md" in guide
     search = json.loads((output / "search/search_index.json").read_text())
     assert any(expected in item["title"] + item["text"] for item in search["docs"])
 

@@ -87,7 +87,7 @@ def build_site(
         config.repo_url = f"https://github.com/{repository}"
         config.repo_name = repository
         config.edit_uri = (
-            f"edit/{quote(ref or current_ref(), safe='/')}/docs-next/docs/"
+            f"edit/{quote(ref or current_ref(), safe='/')}/docs/docs-site/docs/"
         )
     config.plugins.on_startup(command="build", dirty=False)
     try:

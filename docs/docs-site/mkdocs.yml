@@ -6,7 +6,7 @@ site_description: >-
 
 repo_url: https://github.com/ModelEngine-Group/unified-cache-management
 repo_name: ModelEngine-Group/ucm
-edit_uri: edit/develop/docs-next/docs/
+edit_uri: edit/develop/docs/docs-site/docs/
 
 docs_dir: docs
 

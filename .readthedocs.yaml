@@ -7,12 +7,12 @@ build:
   jobs:
     build:
       html:
-        - python docs-next/tools/site.py rtd
+        - python docs/docs-site/tools/site.py rtd
 
 mkdocs:
-  configuration: docs-next/mkdocs.yml
+  configuration: docs/docs-site/mkdocs.yml
   fail_on_warning: true
 
 python:
   install:
-    - requirements: docs-next/requirements.txt
+    - requirements: docs/docs-site/requirements.txt

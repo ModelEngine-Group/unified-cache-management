@@ -40,9 +40,9 @@ async function github(endpoint) {
 
 function isAllowed(relative) {
   return (
-    relative.startsWith("docs-next/docs/en/") ||
-    relative.startsWith("docs-next/docs/zh/") ||
-    relative === "docs-next/translation-state.json"
+    relative.startsWith("docs/docs-site/docs/en/") ||
+    relative.startsWith("docs/docs-site/docs/zh/") ||
+    relative === "docs/docs-site/translation-state.json"
   );
 }
 
@@ -121,15 +121,15 @@ for (const entry of tree.tree || []) {
 }
 
 const existing = [
-  ...(await collectExisting(path.join(workspace, "docs-next", "docs", "en"))),
-  ...(await collectExisting(path.join(workspace, "docs-next", "docs", "zh"))),
+  ...(await collectExisting(path.join(workspace, "docs", "docs-site", "docs", "en"))),
+  ...(await collectExisting(path.join(workspace, "docs", "docs-site", "docs", "zh"))),
 ];
 try {
-  const state = await fs.lstat(path.join(workspace, "docs-next", "translation-state.json"));
+  const state = await fs.lstat(path.join(workspace, "docs", "docs-site", "translation-state.json"));
   if (state.isSymbolicLink() || !state.isFile()) {
     throw new Error("trusted translation state is not a regular file");
   }
-  existing.push("docs-next/translation-state.json");
+  existing.push("docs/docs-site/translation-state.json");
 } catch (error) {
   if (error.code !== "ENOENT") throw error;
 }

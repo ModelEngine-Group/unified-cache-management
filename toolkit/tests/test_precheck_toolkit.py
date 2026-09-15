@@ -62,7 +62,7 @@ class PrecheckToolkitTest(unittest.TestCase):
         self.assertIn("precheck", text)
 
     def test_precheck_has_readme(self):
-        readme = ROOT.parent / "docs-next/docs/en/toolkit/user/precheck.md"
+        readme = ROOT.parent / "docs/docs-site/docs/en/toolkit/user/precheck.md"
         self.assertTrue(readme.exists())
 
 

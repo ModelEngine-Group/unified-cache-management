@@ -128,12 +128,12 @@ Once all requirements are satisfied, the “Squash and merge” button will beco
 
 ### Building the docs
 
-The new documentation site lives under `docs-next/` and is built with MkDocs
+The new documentation site lives under `docs/docs-site/` and is built with MkDocs
 Material. Keep matching English/Chinese paths and update navigation and links together.
 
 ```shell
 # Install documentation dependencies.
-cd unified-cache-management/docs-next
+cd unified-cache-management/docs/docs-site
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt

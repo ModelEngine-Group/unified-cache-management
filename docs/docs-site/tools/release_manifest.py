@@ -15,7 +15,7 @@ from urllib.request import Request, urlopen
 
 from packaging.version import InvalidVersion, Version
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / ".github" / "release"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / ".github" / "release"))
 from ucm_release.manifest import (
     RELEASE_MANIFEST_FILENAME,
     RELEASE_MANIFEST_KIND,
