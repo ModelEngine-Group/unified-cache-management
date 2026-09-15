@@ -213,6 +213,8 @@ def apply_all_patches() -> None:
 
         major, minor, *_ = version.split(".")
         if (int(major), int(minor)) >= (0, 18):
+            import ucm.integration.vllm.patch.idle_metrics_patch
+
             logger.info("UCM patching vllm for load-failure recovery...")
             import ucm.integration.vllm.patch.load_failure_patch
 

@@ -6,7 +6,7 @@ We recommend using Prometheus to scrape vLLM metrics and Grafana to visualize th
 
 Use a scrape and dashboard refresh interval of **at least 5 seconds** for UCM metrics. The Prometheus and Metrics-view examples in this guide both use 5 seconds. A shorter interval usually does not make UCM metrics update faster.
 
-The effective refresh frequency also depends on vLLM. UCM first accumulates metrics internally. New data is synchronized to the Prometheus metrics exposed by vLLM only after vLLM processes a request and calls the connector's `get_kv_connector_stats()` method. **When there are no inference requests, vLLM does not call this method and UCM metrics do not update.**
+The effective refresh frequency also depends on vLLM. UCM first accumulates metrics internally. During inference, vLLM synchronizes them through the connector's `get_kv_connector_stats()` method. With `ENABLE_UCM_PATCH=1` on vLLM 0.18 or later, UCM also collects these metrics periodically while the engine is idle, including when using vllm-ascend.
 
 ## Metrics workflow
 
@@ -49,7 +49,29 @@ sequenceDiagram
 
 UCM accumulates Counters, Gauges, and Histograms in the process that performs each Lookup, Load, Save, or health probe. While processing requests, vLLM obtains the accumulated UCM metrics from the worker and scheduler connectors. These metrics return with each DP's engine stats, and vLLM Prometheus metrics write them to the corresponding series with the `model_name`, `engine`, and `worker_rank` labels.
 
-The vLLM `/metrics` endpoint and Prometheus registry reside in the API Server process. Prometheus scrapes that endpoint directly; the API Server's HTTP route only returns data that has already been synchronized to the registry and does not call `get_kv_connector_stats()`. With no inference requests, UCM may still produce new data internally, but that data appears in `/metrics` only after the next vLLM request triggers synchronization.
+The vLLM `/metrics` endpoint and Prometheus registry reside in the API Server process. Prometheus scrapes that endpoint directly; the API Server's HTTP route only returns data that has already been synchronized to the registry and does not call `get_kv_connector_stats()`.
+
+### Idle collection
+
+The UCM patch extends the API Server's existing `AsyncLLM.do_log_stats()` task. Each tick sends a utility request to each DP engine. An engine collects only when its existing `has_work()` check is false: no scheduled requests, no queued batches, and no running DP wave. Busy engines skip collection and continue reporting metrics through the normal inference path.
+
+An idle engine calls the workers through the executor's existing collective RPC, collects its scheduler connector stats, and returns the combined data with its engine index. The API Server updates the existing connector Prometheus metrics, preserving the `engine` and `worker_rank` labels. This also supports UCM inside a MultiConnector and uses the worker RPC transport across nodes; it does not require sharing Prometheus files between worker nodes. Standard multiple API Server processes still require vLLM's shared Prometheus registry setup.
+
+Idle collection uses the connector stats' `to_dict()` interface when available and falls back to `data` on older vLLM versions, preserving each version's MultiConnector payload format.
+
+Enable `ENABLE_UCM_PATCH=1` in the API Server, engine, and worker environments. Idle collection requires enabled UCM metrics, the `vllm_connector` consumer, and vLLM's periodic stats logging task. `--disable-log-stats` disables that task. Offline `LLM` usage does not start this timer.
+
+Idle collection is enabled by default. To disable only idle collection, set this environment variable before starting the API Server:
+
+```bash
+export ENABLE_UCM_IDLE_METRICS=0
+```
+
+With this switch disabled, UCM leaves `AsyncLLM.do_log_stats()` unchanged and sends no periodic idle metrics RPCs. Health probes, normal inference-triggered connector metrics, the optional `multiproc` exporter, and other UCM patches remain enabled according to their existing settings. Set the same value in every API Server process in a multiple-API deployment; an API Server with idle collection enabled can still collect from all of its DP engines. Restart the API Servers after changing the setting. Unset the variable or set it to `1` to enable idle collection again; `true`, `yes`, and `on` are also accepted, case-insensitively.
+
+The metrics configuration's positive, finite `log_interval` sets the minimum interval between idle collections per engine in seconds (default: `5`). This existing setting also controls the optional `multiproc` exporter. The actual cadence is also limited by vLLM's `VLLM_LOG_STATS_INTERVAL` and how long the engine remains busy. Multiple API clients share the same per-engine throttle. The existing metrics dispatcher drains each delta once and retains an independent copy for any enabled `multiproc` consumer, so returning to inference does not count an idle snapshot again.
+
+The patch adds utility and worker methods and wraps `do_log_stats()`; it does not replace EngineCore's constructor, scheduling loop, or model execution methods. Collection is synchronous inside an idle engine. A request arriving after the idle check can wait for the metrics RPC to finish; this approach does not guarantee zero impact on request latency. Without the patch or its timer, metrics still synchronize on inference as before.
 
 ## 1. Enable or Disable Metrics
 
