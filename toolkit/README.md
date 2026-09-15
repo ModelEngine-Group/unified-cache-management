@@ -11,6 +11,7 @@
 | `nic-monitor` | `nic_monitor` | 可运行 | 监控物理网卡实时流量、后台采样落盘，并生成阶段统计。 | [nic-monitor README](ucm_toolkit/tools/nic_monitor/README.md) |
 | `metrics-view` | `metrics_view`, `terminal-metrics`, `terminal_metrics` | 可运行 | 采集 Prometheus/OpenMetrics 样本到 SQLite，并在终端查询聚合指标。 | [metrics-view README](ucm_toolkit/tools/metrics_view/README.md) |
 | `precheck` | `pre_check` | 可运行 | 在 UCM 部署前于宿主机本地运行环境预检，校验 serving-stack/uc-manager 版本、加速卡驱动（CUDA 算力或昇腾 HDK）、内核版本、`/dev/shm` 及 posix store 带宽，输出 `PASS`/`WARN`/`FAIL` 并对失败项给出修复建议（RFC #1208）。 | [precheck README](ucm_toolkit/tools/precheck/README.md) |
+| `ttft-analyze` | `ttft_analyze` | 可运行 | 估算 KV Cache 命中 UCM SSD/DRAM Prefix Cache 时的 TTFT，输出增益/损失与瓶颈拆分。 | [ttft-analyze README](ucm_toolkit/tools/ttft_analyze/README.md) |
 
 各子工具的依赖、参数、示例与常见问题都在各自 README 中说明。
 
