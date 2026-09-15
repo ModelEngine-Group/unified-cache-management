@@ -997,6 +997,11 @@ def test_builder_sync_consumes_selection_and_uses_digest_pinned_mirror_only() ->
     assert "docker image inspect" not in text
     assert "ucm-builder-verification-${{ matrix.id }}" in text
     assert "candidate-${GITHUB_RUN_ID}" in text
+    prefetch = 'docker buildx build --output type=oci,dest=/dev/null "${build_args[@]}"'
+    push = 'docker buildx build --push "${build_args[@]}"'
+    assert build.index(prefetch) < build.index(push)
+    assert "${RUNNER_TEMP}/ucm-builder-prefetch.log" in build
+    assert "${RUNNER_TEMP}/ucm-builder-push.log" in build
     promotion = 'docker buildx imagetools create --tag "${target}" "${candidate}"'
     promotion_index = build.index(promotion)
     retry_index = build.rfind("retry-registry-command.sh", 0, promotion_index)
@@ -1121,6 +1126,20 @@ def test_pypi_publication_is_backend_first_meta_last_and_read_back() -> None:
     assert "--extra-index-url" not in install
     assert "validate_wheel_runtime.py" in install
     assert "DEFERRED_EXTERNAL_LIBRARIES" in install
+
+
+def test_finalizer_downloads_pypi_receipt_only_when_publication_is_enabled() -> None:
+    jobs = _load("release-ucm.yml")["jobs"]
+    receipt = next(
+        step
+        for step in jobs["update-release-images"]["steps"]
+        if step.get("with", {}).get("name")
+        == "ucm-pypi-receipt-run-${{ github.run_id }}"
+    )
+    assert receipt["if"] == jobs["publish-pypi"]["if"]
+    assert "needs.plan.outputs.publish_pypi == 'true'" in receipt["if"]
+    # Failed publication still reaches finalization to record the failed channel.
+    assert receipt["continue-on-error"] is True
 
 
 def test_exact_wheels_pass_runtime_validation_before_publication() -> None:
@@ -1259,8 +1278,17 @@ def test_release_image_retries_each_enabled_profile_member_after_verification() 
     assert ".publish.dockerhub.enabled" in publish["run"]
     assert "targets:[{channel:" not in publish["run"]
     assert "for attempt in 1 2 3" not in build["run"]
+    assert "retry-registry-command.sh" in build["run"]
+    assert "--retry-quay-blob" in build["run"]
+    assert 'UCM_REGISTRY_RETRY_DELAYS="10 20"' in build["run"]
     assert "for setup_attempt in 1 2 3" in verify["run"]
-    assert "sudo apt-get update && sudo apt-get install --yes skopeo" in verify["run"]
+    assert "if ! command -v skopeo" in verify["run"]
+    assert (
+        "Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources" in verify["run"]
+    )
+    assert "Dir::Etc::sourceparts=-" in verify["run"]
+    assert 'sudo apt-get "${apt_options[@]}" update' in verify["run"]
+    assert 'sudo apt-get "${apt_options[@]}" install --yes skopeo' in verify["run"]
     assert "docker run --rm --entrypoint sh" in verify["run"]
 
 
