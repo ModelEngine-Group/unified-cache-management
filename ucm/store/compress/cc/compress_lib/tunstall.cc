@@ -426,7 +426,8 @@ static int ts_encode_dynamic(const ts_enc_state_item_t* p_enc_table, uint8_t** o
         uint32_t mark1 = ts_get_mark_by_input_stream(p_enc_table, &ip, ip_end, most_freq_symb);
         uint32_t mark2 = ts_get_mark_by_input_stream(p_enc_table, &ip, ip_end, most_freq_symb);
         RET_ERROR_IF(R_ERR_DST_OVERFLOW, (((*opp) + (TS_MARK_BITS * 2 / 8)) >= op_end));
-        *(uint32_t*)(*opp) = (mark2 << TS_MARK_BITS) | mark1;
+        const uint32_t packed_marks = (mark2 << TS_MARK_BITS) | mark1;
+        memcpy(*opp, &packed_marks, sizeof(packed_marks));
         (*opp) += (TS_MARK_BITS * 2 / 8);
         (*p_n_mark) += 2;
     }
@@ -462,7 +463,8 @@ static int ts_encode_predef(const ts_enc_state_item_t* p_enc_table, const uint8_
         uint32_t mark1 = ts_get_mark_by_input_stream_symb2idx(p_enc_table, p_symb2idx, &ip, ip_end);
         uint32_t mark2 = ts_get_mark_by_input_stream_symb2idx(p_enc_table, p_symb2idx, &ip, ip_end);
         RET_ERROR_IF(R_ERR_DST_OVERFLOW, (((*opp) + (TS_MARK_BITS * 2 / 8)) >= op_end));
-        *(uint32_t*)(*opp) = (mark2 << TS_MARK_BITS) | mark1;
+        const uint32_t packed_marks = (mark2 << TS_MARK_BITS) | mark1;
+        memcpy(*opp, &packed_marks, sizeof(packed_marks));
         (*opp) += (TS_MARK_BITS * 2 / 8);
         (*p_n_mark) += 2;
     }
@@ -503,9 +505,10 @@ int TunstallCompressDynamic(uint8_t* p_dst, size_t* p_dst_len, const uint8_t* p_
 #endif                                 //
 
     p_dst += ts_get_header_length(p_hdr);  // p_dst 跳过 header (在动态表模式 header 就是动LUT
+    uint32_t n_mark = 0;
     RET_WHEN_ERROR(ts_encode_dynamic(etree, &p_dst, (p_dst_base + *p_dst_len), p_src, src_len,
-                                     most_freq_symb,
-                                     &p_hdr->dynamic.n_mark));  // 执行 tunstall 编码
+                                     most_freq_symb, &n_mark));  // 执行 tunstall 编码
+    p_hdr->dynamic.n_mark = n_mark;
 
     *p_dst_len = p_dst - p_dst_base;  // 压缩流长 总长
 
@@ -545,9 +548,11 @@ int TunstallCompressPredef(uint8_t* p_dst, size_t* p_dst_len, const uint8_t* p_s
 #endif                     //
 
     p_dst += ts_get_header_length(p_hdr);  // p_dst 跳过 header
+    uint32_t n_mark = 0;
     RET_WHEN_ERROR(ts_encode_predef(p_predef_luts->etree[lambda], symb2idx, &p_dst,
                                     (p_dst_base + *p_dst_len), p_src, src_len,
-                                    &p_hdr->n_mark));  // 执行 tunstall 编码
+                                    &n_mark));  // 执行 tunstall 编码
+    p_hdr->n_mark = n_mark;
 
     *p_dst_len = p_dst - p_dst_base;  // 压缩流长 总长
 
@@ -628,7 +633,8 @@ int TunstallDecompress(uint8_t* p_dst, size_t* p_dst_len, const uint8_t* p_src,
         p_src += ts_get_header_length(p_hdr);
 
         for (uint32_t i_mark = 0; i_mark < n_mark; i_mark += 2) {
-            uint32_t mark21 = *(uint32_t*)p_src;
+            uint32_t mark21 = 0;
+            memcpy(&mark21, p_src, sizeof(mark21));
             uint32_t mark1 = mark21 & ((1 << TS_MARK_BITS) - 1);
             uint32_t mark2 = (mark21 >> TS_MARK_BITS) & ((1 << TS_MARK_BITS) - 1);
             p_src += (TS_MARK_BITS * 2 / 8);
