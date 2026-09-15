@@ -138,15 +138,6 @@ def pytest_sessionstart(session):
     print("-" * 60)
 
 
-def pytest_sessionfinish(session, exitstatus):
-    report_dir = getattr(session.config, "_report_dir", "reports")
-    print("")
-    print("-" * 60)
-    print(f"{'Reports at':<10} │ {report_dir}")
-    print("Test session ended")
-    print("-" * 60)
-
-
 # ---------------- Fixtures ----------------
 
 
@@ -321,21 +312,26 @@ def pytest_sessionfinish(session, exitstatus):
 
     if not backup_dir.exists():
         logger.warning(f"Backup directory not found: {backup_dir}, skipping conversion")
-        return
+    else:
+        jsonl_files = list(backup_dir.glob("*.jsonl"))
+        if not jsonl_files:
+            logger.warning(f"No JSONL files found in {backup_dir}, skipping conversion")
+        else:
+            success_count = 0
+            for jsonl_file in jsonl_files:
+                try:
+                    from common.capture_results.localFile import jsonl_to_csv
 
-    jsonl_files = list(backup_dir.glob("*.jsonl"))
-    if not jsonl_files:
-        logger.warning(f"No JSONL files found in {backup_dir}, skipping conversion")
-        return
+                    csv_file = jsonl_to_csv(jsonl_file, flatten=True)
+                    logger.debug(f"Converted: {jsonl_file.name} → {csv_file.name}")
+                    success_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to convert {jsonl_file.name}: {e}", exc_info=True)
+            logger.info(f"Converted {success_count} JSONL files to CSV")
 
-    success_count = 0
-    for jsonl_file in jsonl_files:
-        try:
-            from common.capture_results.localFile import jsonl_to_csv
-
-            csv_file = jsonl_to_csv(jsonl_file, flatten=True)
-            logger.debug(f"Converted: {jsonl_file.name} → {csv_file.name}")
-            success_count += 1
-        except Exception as e:
-            logger.error(f"Failed to convert {jsonl_file.name}: {e}", exc_info=True)
-    logger.info(f"Converted {success_count} JSONL files to CSV")
+    report_dir = getattr(session.config, "_report_dir", "reports")
+    print("")
+    print("-" * 60)
+    print(f"{'Reports at':<10} │ {report_dir}")
+    print("Test session ended")
+    print("-" * 60)
