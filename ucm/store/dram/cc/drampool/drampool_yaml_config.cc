@@ -50,17 +50,10 @@ struct YamlSection {
     std::string key;
 };
 
-struct EndpointEntry {
-    std::string twoSided;
-    std::string oneSided;
-    bool hasTwoSided{false};
-    bool hasOneSided{false};
-};
-
 constexpr const char* kRequiredRuntimeConfigKeys[] = {
     "transport.device_ids",
     "transport.hixl.listen_port",
-    "transport.hixl.enable_cs",
+    "transport.hixl.enable_hixl_cs",
     "queue.request_depth",
     "queue.completion_depth",
     "request_receiver.idle_wait_us",
@@ -79,16 +72,6 @@ constexpr const char* kRequiredRuntimeConfigKeys[] = {
     "logger.max_files",
     "logger.max_size_mb",
 };
-
-std::string BuildSectionPath(const std::vector<YamlSection>& sections)
-{
-    std::string path;
-    for (const auto& section : sections) {
-        if (!path.empty()) { path += '.'; }
-        path += section.key;
-    }
-    return path;
-}
 
 std::string StripYamlComment(const std::string& line)
 {
@@ -169,60 +152,6 @@ Status ParseEvictionPolicyValue(const std::string& key, const std::string& value
     return Status::InvalidParam("unsupported eviction policy for {}: {}", key, value);
 }
 
-Status ApplyEndpointEntryValue(EndpointEntry& entry, const std::string& key,
-                               const std::string& value, std::uint32_t lineNumber)
-{
-    if (key == "two_sided") {
-        if (entry.hasTwoSided) {
-            return Status::InvalidParam("duplicate transport endpoint two_sided at line {}",
-                                        lineNumber);
-        }
-        entry.twoSided = value;
-        entry.hasTwoSided = true;
-        return Status::OK();
-    }
-    if (key == "one_sided") {
-        if (entry.hasOneSided) {
-            return Status::InvalidParam("duplicate transport endpoint one_sided at line {}",
-                                        lineNumber);
-        }
-        entry.oneSided = value;
-        entry.hasOneSided = true;
-        return Status::OK();
-    }
-    return Status::InvalidParam("unknown transport endpoint key at line {}: {}", lineNumber, key);
-}
-
-Status CommitEndpointEntry(EndpointEntry& entry, DramPoolConfig& config,
-                           std::unordered_set<std::string>& oneSidedIds)
-{
-    if (!entry.hasTwoSided || !entry.hasOneSided) {
-        return Status::InvalidParam("each transport endpoint requires two_sided and one_sided");
-    }
-    transport::Endpoint twoSided;
-    transport::Endpoint oneSided;
-    if (auto status =
-            ParseDramPoolEndpoint("transport.endpoints.two_sided", entry.twoSided, twoSided);
-        status.Failure()) {
-        return status;
-    }
-    if (auto status =
-            ParseDramPoolEndpoint("transport.endpoints.one_sided", entry.oneSided, oneSided);
-        status.Failure()) {
-        return status;
-    }
-    const auto twoSidedId = twoSided.ToString();
-    const auto oneSidedId = oneSided.ToString();
-    if (!config.twoSidedToOneSided.emplace(twoSidedId, oneSidedId).second) {
-        return Status::InvalidParam("duplicate transport two_sided endpoint: {}", twoSidedId);
-    }
-    if (!oneSidedIds.insert(oneSidedId).second) {
-        return Status::InvalidParam("duplicate transport one_sided endpoint: {}", oneSidedId);
-    }
-    entry = EndpointEntry{};
-    return Status::OK();
-}
-
 using RuntimeConfigParser = std::function<Status(DramPoolConfig&, const std::string&)>;
 
 template <typename T>
@@ -256,7 +185,8 @@ const std::unordered_map<std::string_view, RuntimeConfigParser>& GetRuntimeConfi
         {"health.port", BindConfigParser(ParseUint16, &DramPoolConfig::healthPort)},
         {"transport.hixl.listen_port",
          BindConfigParser(ParseUint16, &DramPoolConfig::hixlListenPort)},
-        {"transport.hixl.enable_cs", BindConfigParser(ParseBool, &DramPoolConfig::enableHixlCs)},
+        {"transport.hixl.enable_hixl_cs",
+         BindConfigParser(ParseBool, &DramPoolConfig::enableHixlCs)},
         {"queue.request_depth", BindConfigParser(ParseUint32, &DramPoolConfig::requestQueueDepth)},
         {"queue.completion_depth",
          BindConfigParser(ParseUint32, &DramPoolConfig::completionQueueDepth)},
@@ -303,21 +233,6 @@ Status ApplyRuntimeConfigValue(DramPoolConfig& config, const std::string& key,
 
 Status ValidateRuntimeConfig(DramPoolConfig& config)
 {
-    if (config.twoSidedToOneSided.empty()) {
-        return Status::InvalidParam("transport.endpoints must not be empty");
-    }
-    const auto localControlId = config.addr.ToString();
-    const auto localEndpoint = config.twoSidedToOneSided.find(localControlId);
-    if (localEndpoint == config.twoSidedToOneSided.end()) {
-        return Status::InvalidParam("transport.endpoints has no two_sided entry for --addr {}",
-                                    localControlId);
-    }
-    for (const auto& endpoint : config.twoSidedToOneSided) {
-        if (config.twoSidedToOneSided.find(endpoint.second) != config.twoSidedToOneSided.end()) {
-            return Status::InvalidParam(
-                "transport endpoint cannot be both two_sided and one_sided: {}", endpoint.second);
-        }
-    }
     if (config.transportDeviceIds.empty()) {
         return Status::InvalidParam("transport.device_ids must not be empty");
     }
@@ -424,13 +339,8 @@ Status ParseYamlConfig(const std::string& path, DramPoolConfig& config)
     // Keep the caller's launch configuration intact if YAML parsing fails.
     DramPoolConfig loadedConfig = config;
     loadedConfig.transportDeviceIds.clear();
-    loadedConfig.twoSidedToOneSided.clear();
     std::vector<YamlSection> sections;
     std::unordered_set<std::string> configuredKeys;
-    std::unordered_set<std::string> oneSidedIds;
-    EndpointEntry endpointEntry;
-    bool endpointEntryActive = false;
-    bool endpointsSectionSeen = false;
     std::string line;
     std::uint32_t lineNumber = 0;
     while (std::getline(input, line)) {
@@ -445,28 +355,9 @@ Status ParseYamlConfig(const std::string& path, DramPoolConfig& config)
         const auto indent = firstContent == std::string::npos ? 0 : firstContent;
         auto content = Trim(line.substr(indent));
         while (!sections.empty() && sections.back().indent >= indent) { sections.pop_back(); }
-        auto sectionPath = BuildSectionPath(sections);
-        if (endpointEntryActive && sectionPath != "transport.endpoints") {
-            if (auto status = CommitEndpointEntry(endpointEntry, loadedConfig, oneSidedIds);
-                status.Failure()) {
-                return status;
-            }
-            endpointEntryActive = false;
-        }
 
         if (content.rfind("- ", 0) == 0) {
-            if (sectionPath != "transport.endpoints") {
-                return Status::InvalidParam("YAML sequence is unsupported at line {}", lineNumber);
-            }
-            if (endpointEntryActive) {
-                if (auto status = CommitEndpointEntry(endpointEntry, loadedConfig, oneSidedIds);
-                    status.Failure()) {
-                    return status;
-                }
-            }
-            endpointEntryActive = true;
-            endpointsSectionSeen = true;
-            content = Trim(content.substr(2));
+            return Status::InvalidParam("YAML sequence is unsupported at line {}", lineNumber);
         }
 
         const auto separator = content.find(':');
@@ -484,18 +375,8 @@ Status ParseYamlConfig(const std::string& path, DramPoolConfig& config)
         auto status = ParseYamlScalar(key, scalarToken, value);
         if (status.Failure()) { return status; }
 
-        if (sectionPath == "transport.endpoints") {
-            if (!endpointEntryActive || !hasScalar) {
-                return Status::InvalidParam("invalid transport endpoint at line {}", lineNumber);
-            }
-            status = ApplyEndpointEntryValue(endpointEntry, key, value, lineNumber);
-            if (status.Failure()) { return status; }
-            continue;
-        }
         if (!hasScalar) {
             sections.push_back(YamlSection{indent, key});
-            const auto newSectionPath = BuildSectionPath(sections);
-            if (newSectionPath == "transport.endpoints") { endpointsSectionSeen = true; }
             continue;
         }
 
@@ -515,15 +396,6 @@ Status ParseYamlConfig(const std::string& path, DramPoolConfig& config)
             status = ApplyRuntimeConfigValue(loadedConfig, fullKey, value);
         }
         if (status.Failure()) { return status; }
-    }
-    if (endpointEntryActive) {
-        if (auto status = CommitEndpointEntry(endpointEntry, loadedConfig, oneSidedIds);
-            status.Failure()) {
-            return status;
-        }
-    }
-    if (!endpointsSectionSeen) {
-        return Status::InvalidParam("DramPool runtime YAML is missing transport.endpoints");
     }
     if (const auto status = ValidateRequiredRuntimeConfigKeys(configuredKeys); status.Failure()) {
         return status;

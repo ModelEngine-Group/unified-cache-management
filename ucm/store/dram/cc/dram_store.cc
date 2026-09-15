@@ -107,10 +107,7 @@ private:
         const auto transferTimeout =
             std::max(config_->taskTimeouts.load, config_->taskTimeouts.dump);
         TransportManagerBackendOptions backendOpts{
-            config_->localControlHost,
-            config_->localControlPort,
-            config_->localTransportManagerId,
-            config_->localHost,
+            config_->localAddr,
             runtimeDeviceId,
             config_->hixlListenPort,
             config_->enableHixlCs,

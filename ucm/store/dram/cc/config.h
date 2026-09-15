@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "core/transport.h"
 #include "router/router.h"
 #include "status/status.h"
 #include "type/dictionary.h"
@@ -41,10 +42,7 @@ enum class Role {
 };
 
 struct DramConfig {
-    std::string localControlHost;
-    std::uint16_t localControlPort{0};
-    std::string localHost;
-    std::string localTransportManagerId;
+    transport::Endpoint localAddr;
     // Scheduler currently omits device_id and defaults to -1; an explicit scheduler deviceId must
     // be negative.
     std::int32_t deviceId{-1};

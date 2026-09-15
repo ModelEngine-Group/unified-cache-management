@@ -112,9 +112,7 @@ struct RequestToken {
 
 struct NodeEndpoint {
     NodeId nodeId{0};
-    std::string controlHost;
-    std::uint16_t controlPort{0};
-    std::string transportManagerId;
+    std::string peerAddr;
 };
 
 struct NodeLimits {

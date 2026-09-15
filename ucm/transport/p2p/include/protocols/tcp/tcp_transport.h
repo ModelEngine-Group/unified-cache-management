@@ -20,46 +20,46 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * */
+ */
+
 #pragma once
 
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
-#include <map>
-#include <memory>
-#include <string>
-#include "acl/acl.h"
+#include <functional>
+#include <thread>
 #include "core/transport.h"
-
-namespace hixl {
-class Hixl;
-}
 
 namespace transport {
 
-// Owns the resources of one HIXL engine. Calls into the engine are made by HixlTransport.
-class HixlInstance final {
+class TcpTransport final {
 public:
-    HixlInstance(Endpoint local_endpoint, int32_t device_id);
-    ~HixlInstance();
+    using Socket = int;
+    using AcceptHandler = std::function<void(Socket)>;
+    static constexpr Socket kInvalidSocket = -1;
 
-    HixlInstance(const HixlInstance&) = delete;
-    HixlInstance& operator=(const HixlInstance&) = delete;
+    TcpTransport() = default;
+    ~TcpTransport();
 
-    Status Initialize(const std::map<std::string, std::string>& options);
-    void Finalize();
+    TcpTransport(const TcpTransport&) = delete;
+    TcpTransport& operator=(const TcpTransport&) = delete;
 
-    hixl::Hixl& Engine();
-    aclrtContext Context() const;
-    const Endpoint& LocalEndpoint() const;
-    int32_t LogicalDeviceId() const;
-    int32_t PhysicalDeviceId() const;
+    Status StartAccepting(const Endpoint& endpoint, AcceptHandler handler);
+    Status Connect(const Endpoint& endpoint, Socket& socket) const;
+    Status Send(Socket socket, const void* data, std::size_t length) const;
+    Status Receive(Socket socket, void* data, std::size_t capacity, std::size_t& received) const;
+    void Stop();
+
+    static void Close(Socket socket);
 
 private:
-    Endpoint local_endpoint_;
-    int32_t device_id_ = -1;
-    int32_t physical_device_id_ = -1;
-    aclrtContext context_ = nullptr;
-    std::unique_ptr<hixl::Hixl> engine_;
+    void AcceptLoop();
+
+    Socket listen_socket_ = kInvalidSocket;
+    AcceptHandler accept_handler_;
+    std::thread accept_thread_;
+    std::atomic<bool> stopping_{false};
 };
 
 }  // namespace transport

@@ -44,6 +44,12 @@ Status Device::Reset(int32_t deviceId)
 
 Status Device::Finalize() { return Status::OK(); }
 
+Status Device::ResolvePhysicalDeviceId(int32_t logicalDeviceId, int32_t& physicalDeviceId)
+{
+    physicalDeviceId = logicalDeviceId;
+    return Status::OK();
+}
+
 std::unique_ptr<Stream> Device::MakeStream()
 {
     std::unique_ptr<Stream> stream = nullptr;
