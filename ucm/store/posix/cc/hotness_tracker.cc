@@ -78,7 +78,7 @@ void HotnessTracker::UtimeWorkerLoop()
         spinCount = 0;
         while (!consumeQueue.empty()) {
             auto filePath = layout_->DataFilePath(consumeQueue.front(), false);
-            utime(filePath.c_str(), nullptr);
+            if (filePath) { utime(filePath.Value().c_str(), nullptr); }
             consumeQueue.pop_front();
         }
     }

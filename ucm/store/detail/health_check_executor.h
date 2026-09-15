@@ -34,6 +34,7 @@
 #include <vector>
 #include "logger/logger.h"
 #include "status/status.h"
+#include "thread/cpu_affinity.h"
 
 namespace UC::Detail {
 
@@ -73,6 +74,10 @@ public:
                 // Linux threads inherit the creating monitor thread's CPU affinity.
                 workers_.push_back(Worker{
                     state, std::thread([state, check = std::move(check)]() mutable {
+                        auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_health_io");
+                        if (nameStatus.Failure()) {
+                            UC_WARN("Failed({}) to set UCM health I/O thread name.", nameStatus);
+                        }
                         auto status = Status::Error();
                         try {
                             status = check();

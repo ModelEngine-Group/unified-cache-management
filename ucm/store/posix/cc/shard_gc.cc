@@ -63,7 +63,7 @@ Status ShardGarbageCollector::Setup(const SpaceLayout* layout, const Config& con
     auto s = ValidateAndInitCapacity();
     if (s.Failure()) { return s; }
     leaseEnable_ = config_.posixGcCrossInstanceLock;
-    if (leaseEnable_) { lease_.Setup(config_); }
+    if (leaseEnable_) { lease_.Setup(config_, layout_); }
     auto success = gcPool_.SetWorkerFn([this](ShardTaskContext& ctx, auto&) { ProcessTask(ctx); })
                        .SetWorkerTimeoutFn(
                            [this](ShardTaskContext& ctx, ssize_t tid) { OnTaskTimeout(ctx, tid); },

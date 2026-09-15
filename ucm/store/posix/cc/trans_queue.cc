@@ -128,7 +128,8 @@ void TransQueue::DumpWorker(IoUnit& ios)
     }
     auto s = H2S(ios);
     if (ios.shard.index + 1 == nShardPerBlock_) {
-        layout_->CommitFile(ios.shard.owner, s.Success());
+        auto commitStatus = layout_->CommitFile(ios.shard.owner, s.Success());
+        if (s.Success()) { s = commitStatus; }
     }
     if (s.Failure()) [[unlikely]] {
         ios.task->Fail(s);
@@ -139,13 +140,14 @@ void TransQueue::DumpWorker(IoUnit& ios)
 
 Status TransQueue::H2S(IoUnit& ios)
 {
-    const auto& path = layout_->DataFilePath(ios.shard.owner, true);
-    PosixFile file{path};
+    auto path = layout_->DataFilePath(ios.shard.owner, true);
+    if (!path) { return path.Error(); }
+    PosixFile file{path.Value()};
     auto flags = PosixFile::OpenFlag::CREATE | PosixFile::OpenFlag::WRITE_ONLY;
     if (ioDirect_) { flags |= PosixFile::OpenFlag::DIRECT; }
     auto s = file.Open(flags);
     if (s.Failure()) [[unlikely]] {
-        UC_ERROR("Failed({}) to open file({}) with flags({}).", s, path, flags);
+        UC_ERROR("Failed({}) to open file({}) with flags({}).", s, path.Value(), flags);
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_open_errors_total"), 1.0);
         return s;
     }
@@ -153,7 +155,7 @@ Status TransQueue::H2S(IoUnit& ios)
     for (const auto& addr : ios.shard.addrs) {
         s = file.Write(addr, ioSize_, offset);
         if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to write file({}:{}).", s, path, offset);
+            UC_ERROR("Failed({}) to write file({}:{}).", s, path.Value(), offset);
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_io_errors_total"), 1.0);
             return s;
         }
@@ -164,13 +166,14 @@ Status TransQueue::H2S(IoUnit& ios)
 
 Status TransQueue::S2H(IoUnit& ios)
 {
-    const auto& path = layout_->DataFilePath(ios.shard.owner, false);
-    PosixFile file{path};
+    auto path = layout_->DataFilePath(ios.shard.owner, false);
+    if (!path) { return path.Error(); }
+    PosixFile file{path.Value()};
     auto flags = PosixFile::OpenFlag::READ_ONLY;
     if (ioDirect_) { flags |= PosixFile::OpenFlag::DIRECT; }
     auto s = file.Open(flags);
     if (s.Failure()) [[unlikely]] {
-        UC_ERROR("Failed({}) to open file({}) with flags({}).", s, path, flags);
+        UC_ERROR("Failed({}) to open file({}) with flags({}).", s, path.Value(), flags);
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_open_errors_total"), 1.0);
         return s;
     }
@@ -178,7 +181,7 @@ Status TransQueue::S2H(IoUnit& ios)
     for (const auto& addr : ios.shard.addrs) {
         s = file.Read(addr, ioSize_, offset);
         if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to read file({}:{}).", s, path, offset);
+            UC_ERROR("Failed({}) to read file({}:{}).", s, path.Value(), offset);
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_io_errors_total"), 1.0);
             return s;
         }

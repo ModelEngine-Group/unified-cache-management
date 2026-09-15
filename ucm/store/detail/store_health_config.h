@@ -21,15 +21,38 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-#ifndef UNIFIEDCACHE_PIPELINE_STORE_HEALTH_CONFIG_H
-#define UNIFIEDCACHE_PIPELINE_STORE_HEALTH_CONFIG_H
+#ifndef UNIFIEDCACHE_STORE_DETAIL_STORE_HEALTH_CONFIG_H
+#define UNIFIEDCACHE_STORE_DETAIL_STORE_HEALTH_CONFIG_H
 
-#include "detail/store_health_config.h"
+#include <chrono>
+#include <cstddef>
+#include "status/status.h"
 
-namespace UC::PipelineStore {
+namespace UC::Detail {
 
-using StoreHealthConfig = Detail::StoreHealthConfig;
+struct StoreHealthConfig {
+    bool enabled{true};
+    std::chrono::milliseconds healthCheckInterval{std::chrono::seconds(10)};
+    std::chrono::milliseconds healthCheckTimeout{std::chrono::seconds(3)};
+    size_t healthWindowSize{8};
+    size_t failureThreshold{2};
 
-}  // namespace UC::PipelineStore
+    Status Validate() const
+    {
+        if (healthCheckInterval.count() <= 0 || healthCheckTimeout.count() <= 0 ||
+            healthWindowSize == 0 || failureThreshold == 0) {
+            return Status::InvalidParam("store health values must be positive");
+        }
+        if (failureThreshold > healthWindowSize) {
+            return Status::InvalidParam("failure threshold exceeds health window");
+        }
+        if (healthCheckTimeout >= healthCheckInterval) {
+            return Status::InvalidParam("health timeout must be shorter than interval");
+        }
+        return Status::OK();
+    }
+};
+
+}  // namespace UC::Detail
 
 #endif
