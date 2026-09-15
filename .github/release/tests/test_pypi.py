@@ -471,3 +471,34 @@ def test_twine_uploader_resolves_one_file_and_keeps_token_out_of_args(
     assert uploader(CUDA_AMD64) == wheel
     assert invocation["env"]["TWINE_PASSWORD"] == "secret-token"
     assert "secret-token" not in " ".join(invocation["arguments"])
+
+
+def test_twine_upload_failure_preserves_diagnostics_on_stderr(
+    tmp_path: Path, monkeypatch, capfd
+) -> None:
+    wheel = tmp_path / CUDA_AMD64
+    wheel.write_bytes(b"wheel")
+    # Stand in for Twine without making an upload to a real package index.
+    (tmp_path / "twine.py").write_text(
+        "import sys\n"
+        "print('HTTPError: 429 Too Many Requests')\n"
+        "if '--verbose' in sys.argv:\n"
+        "    print('Too many new projects created')\n"
+        "sys.exit(1)\n"
+    )
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    uploader = pypi.make_twine_uploader(
+        roots=[tmp_path],
+        expected_sha256={CUDA_AMD64: "sha256:" + hashlib.sha256(b"wheel").hexdigest()},
+        repository_url="https://upload.pypi.org/legacy/",
+        token="secret-token",
+    )
+
+    with pytest.raises(pypi.PyPIUploadError, match="Twine upload failed"):
+        uploader(CUDA_AMD64)
+
+    captured = capfd.readouterr()
+    assert captured.out == ""
+    assert "HTTPError: 429 Too Many Requests" in captured.err
+    assert "Too many new projects created" in captured.err
+    assert "secret-token" not in captured.err

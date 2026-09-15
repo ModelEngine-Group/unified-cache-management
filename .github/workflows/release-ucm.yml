@@ -1557,6 +1557,7 @@ jobs:
           path: input/receipts
           merge-multiple: true
       - uses: actions/download-artifact@v4.3.0
+        if: ${{ needs.plan.outputs.publish_pypi == 'true' }}
         continue-on-error: true
         with:
           name: ucm-pypi-receipt-run-${{ github.run_id }}

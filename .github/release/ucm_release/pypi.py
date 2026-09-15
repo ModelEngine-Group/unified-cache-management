@@ -578,7 +578,7 @@ def make_twine_uploader(
     repository_url: str,
     token: str,
 ) -> UploadFile:
-    """Create the exact-file Twine uploader used by the workflow CLI."""
+    """Create an exact-file Twine uploader with verbose diagnostics on stderr."""
     if not repository_url.startswith("https://") or not token:
         raise ValueError("PyPI repository and token are required")
 
@@ -596,12 +596,15 @@ def make_twine_uploader(
                     "twine",
                     "upload",
                     "--non-interactive",
+                    "--verbose",
                     "--repository-url",
                     repository_url,
                     str(path),
                 ],
                 check=True,
                 env=environment,
+                # Reserve CLI stdout for JSON, even when Twine logs errors there.
+                stdout=sys.stderr,
             )
         except (OSError, subprocess.CalledProcessError) as error:
             raise PyPIUploadError(f"Twine upload failed for {filename!r}") from error
