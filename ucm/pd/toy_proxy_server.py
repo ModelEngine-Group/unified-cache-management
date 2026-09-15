@@ -250,6 +250,7 @@ async def _handle_completions(api: str, request: Request):
             prefill_req_data = req_data.copy()
             prefill_req_data["stream"] = False
             prefill_req_data["max_tokens"] = 1
+            prefill_req_data["min_tokens"] = 1
             if "stream_options" in prefill_req_data:
                 del prefill_req_data["stream_options"]
 
