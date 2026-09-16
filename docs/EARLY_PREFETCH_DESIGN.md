@@ -229,9 +229,10 @@ metadata 主流程。实际 allocation 前的重试可以刷新原生消费计�
   不依赖重复 block 去重来缩小界限。实际 Load/Dump 提交前校验 shard 数，超出
   握手宣告的界限则停用域，不能悄悄突破证明。未启用 owner 时不施加该校验。
   上限为零时拒绝预取并回退原生，不切回无共享预算的广播模式。
-  每个 job 在执行前一次扣除 `候选 blocks * block_bytes`，包含尚未
-  分配的位置；不同请求的重复 block 在 broker 层重复计费，宁可保守拒绝。
-  底层同 worker 的 BlockPins 共享额度机制继续保留，不能抵消 broker 扣费。
+  协议版本 2 在执行前按共享域内候选 block ID 并集预扣额度，包含尚未分配的位置。
+  同一兼容布局下，相同 block 的多个 job/attempt 各持声明，物理额度只收一份；
+  不同 DP 的任务仍独立路由，只有实际相同共享对象才共用额度。账本不是原生 pin，
+  不传递本地指针。底层同 worker 的 BlockPins 保守额度及原生引用继续保留。
 - 每个 owner 排队/执行 job 上限默认 4，可通过顶层 native 配置字典的
   `early_owner_max_jobs` 设置；候选工作上限 `early_owner_max_candidate_blocks`
   默认为 0，表示从共享域保护容量推导。两者限制的是本协议工作量，不恢复 H/R。
@@ -240,12 +241,15 @@ metadata 主流程。实际 allocation 前的重试可以刷新原生消费计�
   原生每 Step 64 shard / 每 worker 至多 128 shard 窗口继续生效。
 - 额度不足时尝试其他合格 owner；仍不足则在任何 I/O 之前 FAILED/native
   fallback。没有持有部分额度等待余量，没有等待额度时持有 bucket/global 锁。
-- 不因 READY、metadata、取消请求或超时立即返还额度。必须收到该 attempt 的
-  owner_drained，证明 lookup 已结束、已提交 I/O 全部回收、reservation 已释放，
-  才归还全部额度。重复确认幂等。域失联/死亡时不返还、不重分配。
+- 只有 owner READY 才能归还已截断尾部的声明：此时所有数据批已完成，Reserve
+  已销毁首个 miss 之后的 BlockPins，没有后续 I/O。连续命中部分继续保护。
+  零命中可归还全部内存声明，但 owner job/候选工作名额仍等待原释放协议结束。
+- 命中部分不能因 metadata、取消或超时返还；必须收到该 attempt 的 owner_drained，
+  证明 lookup、I/O 和消费引用已排空、reservation 已释放。只有该 block 的最后
+  一个声明退出才归还物理额度。失败任务也保留声明直到 drain；域失联时不归还。
 
-整请求预扣可能让长 prompt 的短命中提前 fallback，也会对跨 owner 重复 block
-多计费。这是有界实现的限制；不能把扣费峰值报告为实测物理 pin 字节。
+全候选预扣仍可能使超长短命中请求提前 fallback；HBM 命中部分也仍保守保护。
+不能把候选并集额度峰值当作实测 pin 字节。未引入 unpinned READY 或部分成功语义。
 
 ## 全部消费完成后的保守交接
 
@@ -262,11 +266,12 @@ sequenceDiagram
     participant O as 所选 owner
     participant C as 全部必要消费 rank
     participant Q as 各 rank 原生 LoadQueue
-    B->>B: 整请求预扣共享保护额度，选择 owner
+    B->>B: 候选并集预扣共享保护额度，选择 owner
     B->>O: owner_reserve(key, attempt, grant)
     B->>C: observe(key, attempt, owner)
     O->>O: reserve/read 批次流水，保留 pins/lease
     O-->>B: owner_answer(受保护连续 READY prefix)
+    B->>B: 归还已丢弃尾部声明，保留命中声明
     B-->>C: 经 Scheduler/native metadata 绑定完整消费计划
     C->>Q: owner 用本地 handles，其他 rank 原生 Get
     Q->>Q: H2D；成功 Wait
@@ -292,7 +297,7 @@ job 保存的 request ID 和当前映射值定向清理未调度取消的关联�
 retire 禁止未来加载，但必须等已经提交的原生任务成功完成才 quiesce。
 已退休票据可能再次出现在 decode metadata，绑定允许；尝试再次加载会拒绝。
 
-该策略不按层提前释放 owner pins；峰值寿命更长，由上述整请求共享额度约束。
+该策略不按层提前释放 owner pins；峰值寿命更长，由上述候选并集共享额度约束。
 在最后一个消费 rank 延迟时，其他 owner 仍不能淘汰它需要的数据。原生引用自身
 仍保护 H2D；保守策略在其完成后才释放 owner 保护，没有交接空档。
 

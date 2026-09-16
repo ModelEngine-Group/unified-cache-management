@@ -737,6 +737,36 @@ TEST(UCCacheEarlyStoreTest, PartialL1RequiresReadableL2AndKeepsOnlyContinuousPre
     EXPECT_TRUE(backend.lease.expired());
 }
 
+TEST(UCCacheEarlyStoreTest, ReadyShortPrefixHasNoPinsBeyondThePublishedHit)
+{
+    Backend backend;
+    auto config = BatchConfig(&backend);
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(config).Success());
+    auto* buffer = manager.GetTransBuffer();
+    std::array<UC::Detail::BlockId, 4> blocks{};
+    for (size_t i = 0; i < blocks.size(); ++i) { blocks[i][0] = std::byte(i); }
+    for (auto i : {0, 2, 3}) {
+        auto pin = buffer->Get(blocks[i], 0);
+        pin.MarkReady();
+    }
+    EXPECT_CALL(backend, LookupOnPrefix).WillOnce(testing::Return(ssize_t{-1}));
+    EXPECT_CALL(backend, Load).Times(0);
+    UC::CacheStore::ReservedPrefetch early(
+        &manager, &backend, config.blockSize, config.shardSize, config.timeoutMs);
+    auto reserved = early.Reserve(blocks.data(), blocks.size());
+    ASSERT_TRUE(reserved);
+    ASSERT_EQ(reserved.Value().totalHitBlocks, 1);
+    ASSERT_EQ(reserved.Value().remainingL2Work, 0);
+    // Native Owner() means this Get acquired the first live reference. The
+    // broker may refund this tail, but must retain the protected first block.
+    EXPECT_FALSE(buffer->Get(blocks[0], 0).Owner());
+    EXPECT_TRUE(buffer->Get(blocks[2], 0).Owner());
+    EXPECT_TRUE(buffer->Get(blocks[3], 0).Owner());
+    early.Release(reserved.Value().handle);
+    EXPECT_TRUE(buffer->Get(blocks[0], 0).Owner());
+}
+
 TEST(UCCacheEarlyStoreTest, BoundedAllocationPreservesPinnedNativeEntries)
 {
     Backend backend;

@@ -19,7 +19,7 @@ from test_early_batch_pipeline import Control, Capability, blocks, result, wait
 
 
 def capability(dp=0, rank=0, domain="native-object"):
-    return dict(version=1, ready=True, dp=dp, rank=rank, domain=domain, layout="same-layout",
+    return dict(version=owner.VERSION, ready=True, dp=dp, rank=rank, domain=domain, layout="same-layout",
                 native=dict(nodes=132, reservable_nodes=112, shard_bytes=4, block_bytes=8),
                 task_shards=2, dump_task_shards=6 if rank == 0 else 0,
                 max_jobs=4, max_candidates=0, layers=[0, 1])
@@ -37,9 +37,9 @@ class Cluster:
                 self.b.receive(f"w{d}.{r}", dict(op="hello", session="worker", capability=cap))
         self.out.clear()
 
-    def job(self, key="g1", dp=0, count=4):
+    def job(self, key="g1", dp=0, count=4, offset=0):
         self.sequence[dp] += 1
-        self.b.receive(f"s{dp}", dict(op="job", key=key, dp=dp, blocks=blocks(count),
+        self.b.receive(f"s{dp}", dict(op="job", key=key, dp=dp, blocks=blocks(count + offset)[offset:],
                                      request="reusable-id", sequence=self.sequence[dp]))
         return self.b.jobs[key]
 
@@ -84,9 +84,9 @@ def test_unverified_handshake_uses_unchanged_broadcast(change):
 
 def test_shared_capacity_charged_before_work_and_returned_after_drain_only():
     c = Cluster(dp=2)
-    a, b = c.job("a", 0, 30), c.job("b", 1, 20)
+    a, b = c.job("a", 0, 30), c.job("b", 1, 20, offset=30)
     assert a["budget"] is b["budget"] and a["budget"]["used"] == 400
-    rejected = c.job("c", 0, 1)
+    rejected = c.job("c", 0, 1, offset=50)
     assert rejected["status"] == "FAILED" and "owner" not in rejected
     c.b.receive(a["client"], dict(op="cancel", key="a"))
     c.message(a, "quiesced", "w0.0")
@@ -583,7 +583,7 @@ def test_domain_budget_leaves_full_native_partial_task_headroom(nodes, reservabl
         assert not any(m["op"] in ("reserve", "owner_reserve") for _, m in c.out)
     else:
         assert job.get("owner")
-        assert c.job("overflow", count=1)["status"] == "FAILED"
+        assert c.job("overflow", count=1, offset=expected_slots // 2)["status"] == "FAILED"
         c.drain(job)
         assert budget["used"] == 0
 

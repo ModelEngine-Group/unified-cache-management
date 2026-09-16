@@ -1,7 +1,8 @@
 """Single owner protocol on the existing control channel and job table.
 
-Credits cover whole candidates before work starts. They are returned only after
-an owner drain acknowledgement, never on a timer or a presumed process death.
+Credits cover the union of candidate blocks before work starts. READY can
+return discarded tail claims; live prefix claims remain until owner drain.
+This ledger never substitutes for native pins or guesses process-death recovery.
 """
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ import uuid
 from .early_control import BrokerState
 
 log = logging.getLogger(__name__)
-VERSION = 1
+VERSION = 2
 
 
 def worker_capability(connector):
@@ -128,7 +129,8 @@ class OwnerBroker(BrokerState):
             io = min(limit, len(members) * 128 * native["shard_bytes"])
             quota = io // len(members) // native["shard_bytes"] * native["shard_bytes"]
             self.domains[domain] = dict(limit=limit, used=0, peak=0, io_limit=io,
-                                        io_quota=quota, members=members, owners={},
+                                        io_quota=quota, members=members, owners={}, claims={},
+                                        block_bytes=native["block_bytes"],
                                         native_load_headroom_bytes=load_slots * native["shard_bytes"],
                                         native_dump_headroom_bytes=dump_slots * native["shard_bytes"])
             for peer in self.peers:
@@ -160,29 +162,41 @@ class OwnerBroker(BrokerState):
             return super().dispatch(job)
         cap = self.capabilities[next(iter(self.workers(job["dp"])))]
         work = len(job["blocks"])
-        charge = work * cap["native"]["block_bytes"]
+        claims = set(job["blocks"])
+        charge = sum(block not in budget["claims"] for block in claims) * budget["block_bytes"]
         candidates = []
+        job_limited = candidate_limited = 0
         for peer in self.workers(job["dp"]):
             load = budget["owners"].get(peer, dict(jobs=0, candidates=0))
             peer_cap = self.capabilities[peer]
             work_limit = peer_cap["max_candidates"] or budget["limit"] // cap["native"]["block_bytes"]
-            if peer in self.peers and load["jobs"] < peer_cap["max_jobs"] and load["candidates"] + work <= work_limit:
+            if load["jobs"] >= peer_cap["max_jobs"]:
+                job_limited += 1
+            elif load["candidates"] + work > work_limit:
+                candidate_limited += 1
+            elif peer in self.peers:
                 candidates.append(peer)
         owner = self.select_owner(candidates, job["dp"]) if budget["used"] + charge <= budget["limit"] else None
         if owner is None:
-            log.info("UCM_EARLY owner_nospace key=%s dp=%s candidates=%s protected=%s limit=%s wasted_read_bytes=0",
-                     job["key"], job["dp"], work, budget["used"], budget["limit"])
-            self.fail(job, "bounded owner capacity; native fallback")
+            reason = "domain_bytes" if budget["used"] + charge > budget["limit"] else "owner_work_limits"
+            log.info("UCM_EARLY owner_nospace key=%s dp=%s candidates=%s protected=%s limit=%s "
+                     "reason=%s incremental_bytes=%s job_limited=%s candidate_limited=%s wasted_read_bytes=0",
+                     job["key"], job["dp"], work, budget["used"], budget["limit"],
+                     reason, charge, job_limited, candidate_limited)
+            self.fail(job, "bounded owner capacity: " + reason + "; native fallback")
             return
         load = budget["owners"].setdefault(owner, dict(jobs=0, candidates=0, assignments=0))
         load["jobs"] += 1
         load["candidates"] += work
         load["assignments"] += 1
+        for block in claims:
+            budget["claims"][block] = budget["claims"].get(block, 0) + 1
         budget["used"] += charge
         budget["peak"] = max(budget["peak"], budget["used"])
         self.next_grant += 1
         job.update(owner=owner, attempt=uuid.uuid4().hex, grant=self.next_grant, running=True, budget=budget,
-                   charge=charge, consumers=set(), terminal=set(), assigned_ns=time.monotonic_ns())
+                   claims=claims, charge=len(claims) * budget["block_bytes"],
+                   consumers=set(), terminal=set(), assigned_ns=time.monotonic_ns())
         envelope = dict(key=job["key"], attempt=job["attempt"], grant=job["grant"], owner=owner, dp=job["dp"],
                         request=job.get("request"), candidate_blocks=work,
                         submitted_ns=job.get("submitted_ns"), io_quota=budget["io_quota"])
@@ -199,6 +213,28 @@ class OwnerBroker(BrokerState):
                  budget["limit"], budget["peak"], budget["io_quota"], budget["io_limit"],
                  load["assignments"], job["assigned_ns"], budget["native_load_headroom_bytes"],
                  budget["native_dump_headroom_bytes"])
+
+    def _return_claims(self, job, retained):
+        """Caller has a READY-tail or owner-drained proof; control thread only.
+
+        READY means Reserve has discarded its non-prefix groups and every data
+        batch completed. Only those tail claims can be returned before drain.
+        Overlapping jobs keep independent claims, including cancelled jobs
+        whose accepted I/O/native consumers have not drained yet.
+        """
+        budget = job["budget"]
+        released = 0
+        for block in job["claims"] - retained:
+            count = budget["claims"][block] - 1
+            if count:
+                budget["claims"][block] = count
+            else:
+                del budget["claims"][block]
+                released += budget["block_bytes"]
+        job["claims"] = retained
+        job["charge"] = len(retained) * budget["block_bytes"]
+        budget["used"] -= released
+        return released
 
     def poison(self, reason):
         if self.fenced:
@@ -267,7 +303,12 @@ class OwnerBroker(BrokerState):
                     self.send(job["client"], dict(op="result", key=job["key"], state="FAILED", reason=message.get("reason")))
                     self.retire(job, "owner failure")
                 else:
+                    refunded = self._return_claims(job, set(job["blocks"][:message["hit"]]))
                     job["status"] = "READY"
+                    log.info("UCM_EARLY owner_prefix_budget key=%s attempt=%s owner=%s hit=%s "
+                             "returned_bytes=%s retained_claim_bytes=%s domain_used_bytes=%s",
+                             job["key"], job["attempt"], job["owner"], message["hit"],
+                             refunded, job["charge"], job["budget"]["used"])
                     log.info("UCM_EARLY ready key=%s attempt=%s dp=%s owner=%s total_hit_blocks=%s ns=%s",
                              job["key"], job["attempt"], job["dp"], job["owner"], message["hit"], time.monotonic_ns())
                     self.send(job["client"], dict(op="result", key=job["key"], state="READY", hit=message["hit"],
@@ -287,7 +328,7 @@ class OwnerBroker(BrokerState):
                     self.send(job["owner"], dict(op="release_owner", key=job["key"], attempt=job["attempt"]))
             elif op == "owner_drained" and peer == job["owner"] and job.get("retiring") and job["terminal"] == self.workers(job["dp"]):
                 budget = job["budget"]
-                budget["used"] -= job["charge"]
+                released = self._return_claims(job, set())
                 load = budget["owners"][peer]
                 load["jobs"] -= 1
                 load["candidates"] -= len(job["blocks"])
@@ -296,7 +337,7 @@ class OwnerBroker(BrokerState):
                 log.info("UCM_EARLY owner_released key=%s attempt=%s dp=%s owner=%s bytes=%s "
                          "domain_used_bytes=%s protection_ms=%.3f completed_read_bytes=%s "
                          "submitted_read_bytes=%s wasted_read_upper_bound_bytes=%s ns=%s",
-                         job["key"], job["attempt"], job["dp"], peer, job["charge"], budget["used"],
+                         job["key"], job["attempt"], job["dp"], peer, released, budget["used"],
                          (time.monotonic_ns() - job["assigned_ns"]) / 1e6,
                          message.get("read_bytes"), message.get("submitted_read_bytes"),
                          message.get("wasted_read_upper_bound_bytes"), time.monotonic_ns())
