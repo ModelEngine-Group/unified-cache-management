@@ -1359,11 +1359,19 @@ struct AICPUTransProvider::Impl {
         aclrtLaunchKernelCfg cfg{};
         cfg.numAttrs = 1U;
         cfg.attrs = &attr;
+        KV_WARN("[SendTrace] launch_begin pid={} device={} stream={} thread={} batches={}",
+                getpid(), localDeviceId, stream, thread, batches.size());
         ret = aclrtLaunchKernelWithConfig(func, kKernelBlockDim, stream, &cfg, args, nullptr);
+        KV_WARN("[SendTrace] launch_end pid={} stream={} thread={} ret={}", getpid(), stream,
+                thread, static_cast<int>(ret));
         if (ret != ACL_SUCCESS) {
             return AclError("aclrtLaunchKernelWithConfig HixlBatchSend", ret);
         }
+        KV_WARN("[SendTrace] sync_begin pid={} stream={} thread={} timeout_ms={}", getpid(), stream,
+                thread, MakeAclSyncTimeoutMs(sendTimeoutMs));
         ret = aclrtSynchronizeStreamWithTimeout(stream, MakeAclSyncTimeoutMs(sendTimeoutMs));
+        KV_WARN("[SendTrace] sync_end pid={} stream={} thread={} ret={}", getpid(), stream, thread,
+                static_cast<int>(ret));
         if (ret != ACL_SUCCESS) {
             return AclError("aclrtSynchronizeStreamWithTimeout HixlBatchSend", ret);
         }
