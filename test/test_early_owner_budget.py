@@ -132,3 +132,46 @@ def test_previous_protocol_version_uses_legacy_path():
     job = c.job()
     assert "owner" not in job
     assert sum(m["op"] == "reserve" for _, m in c.out) == 2
+
+
+@pytest.mark.parametrize("hit", [0, 2])
+def test_worker_zero_hit_is_not_reported_as_l1_fast_path(hit, caplog):
+    from test_early_owner_protocol import make_worker, blocks, result, wait
+    w = make_worker(0)
+    def reserve(ids):
+        r = result(17, hit, 0)
+        r["batch"].snapshot = lambda: dict(l2_read_bytes=0, completed_read_bytes=0)
+        return r
+    w.store.reserve_prefix.side_effect = reserve
+    try:
+        with caplog.at_level(logging.INFO):
+            w.receive(dict(op="owner_reserve", key="g", attempt="a-g", grant=1,
+                           owner="w0.0", blocks=blocks(2), request="r", io_quota=8))
+            wait(lambda: any(m["op"] == "owner_answer" for m in w.control.messages))
+            # The answer is enqueued before the diagnostic record.
+            wait(lambda: "outcome=" in caplog.text)
+        assert ("UCM_EARLY fast_path " in caplog.text) == bool(hit)
+        assert ("outcome=l1_ready" if hit else "outcome=zero_hit") in caplog.text
+        w.receive(dict(op="retire", key="g", attempt="a-g"))
+        w.receive(dict(op="release_owner", key="g", attempt="a-g"))
+        wait(lambda: any(m["op"] == "owner_drained" for m in w.control.messages))
+        w.receive(dict(op="forget", key="g", attempt="a-g"))
+    finally:
+        w.close()
+
+
+@pytest.mark.parametrize("level", [logging.INFO, logging.DEBUG])
+def test_detailed_logging_does_not_change_native_completion_ack(level, caplog):
+    from test_early_owner_protocol import consumer, ticket, blocks, start_load
+    sent, faults = [], []
+    observer = consumer.Consumer("w0.0", sent.append, faults.append)
+    with caplog.at_level(level):
+        observer.bind({"r": ticket()}, [0, 1])
+        for layer in (0, 1):
+            token = start_load(observer, "r", blocks(2), layer)
+            observer.submitted(token, layer)
+            observer.complete(token, layer, True)
+    assert [m["op"] for m in sent] == ["consumed"]
+    assert not faults
+    assert ("native_load_submitted" in caplog.text) == (level == logging.DEBUG)
+    assert ("native_load_completed" in caplog.text) == (level == logging.DEBUG)

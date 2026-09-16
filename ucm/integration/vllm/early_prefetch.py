@@ -558,7 +558,7 @@ class EarlyWorker:
                 continue
             with self.condition:
                 if not active and not self.preparing and not self.selected:
-                    log.info("UCM_EARLY data_idle rank=%s ns=%s inflight_peak_bytes=%s window_bytes=%s",
+                    log.debug("UCM_EARLY data_idle rank=%s ns=%s inflight_peak_bytes=%s window_bytes=%s",
                              self.connector.tp_rank, time.monotonic_ns(), peak, window)
                     self.condition.wait(timeout=.1 if self.owner_protocol.release_requested else 2)
                 elif not advanced:
@@ -585,7 +585,8 @@ class EarlyWorker:
                 )
             else:
                 job.ready = True
-                fast = not any(batch.started for batch in job.batches)
+                hit = sum(batch.reservation["total_hit_blocks"] for batch in job.batches)
+                fast = hit > 0 and not any(batch.started for batch in job.batches)
                 log.info("UCM_EARLY rank_ready key=%s rank=%s ns=%s total_hit_blocks=%s fast_path=%s",
                          job.key, self.connector.tp_rank, time.monotonic_ns(),
                          sum(batch.reservation["total_hit_blocks"] for batch in job.batches), fast)

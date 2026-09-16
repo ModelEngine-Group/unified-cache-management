@@ -139,13 +139,15 @@ class OwnerWorker:
             self.worker._release(job)
         else:
             job.ready = True
+        hit = sum(b.reservation["total_hit_blocks"] for b in job.batches)
         self.send(dict(op="owner_answer", key=job.key, attempt=job.attempt,
                        state="FAILED" if error else "READY", reason=error,
-                       hit=sum(b.reservation["total_hit_blocks"] for b in job.batches)))
-        fast = error is None and not any(b.started for b in job.batches)
-        log.info("UCM_EARLY owner_ready key=%s attempt=%s owner=%s rank=%s success=%s hit=%s fast_path=%s ns=%s",
+                       hit=hit))
+        fast = error is None and hit > 0 and not any(b.started for b in job.batches)
+        outcome = "failed" if error else "zero_hit" if not hit else "l1_ready" if fast else "prefetched"
+        log.info("UCM_EARLY owner_ready key=%s attempt=%s owner=%s rank=%s success=%s hit=%s fast_path=%s outcome=%s ns=%s",
                  job.key, job.attempt, self.peer, self.worker.connector.tp_rank, error is None,
-                 sum(b.reservation["total_hit_blocks"] for b in job.batches), fast, time.monotonic_ns())
+                 hit, fast, outcome, time.monotonic_ns())
         if fast:
             log.info("UCM_EARLY fast_path key=%s attempt=%s rank=%s data_queue_wait=0 l2_read_shards=0",
                      job.key, job.attempt, self.worker.connector.tp_rank)

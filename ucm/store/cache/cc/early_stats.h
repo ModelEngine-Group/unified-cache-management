@@ -8,7 +8,8 @@
 #include <vector>
 
 namespace UC::CacheStore {
-// One record per operation, including failures; no clock or log in shard loops.
+// Optional DEBUG detail per operation; failure propagation is independent.
+// No clock or log in shard loops, and disabled detail avoids formatting.
 struct EarlyStats {
     const char* operation;
     explicit EarlyStats(const char* name) : operation(name) {}
@@ -46,7 +47,8 @@ struct EarlyStats {
     static double Milliseconds(const StopWatch& timer) { return timer.Elapsed().count() * 1e3; }
     ~EarlyStats()
     {
-        UC_INFO_UNLIMITED("UCM_EARLY stage={} reservation={} start_ns={} end_ns={} success={} total_ms={:.3f} lease_ms={:.3f} "
+        if (!UC::Logger::isEnabledFor(UC::Logger::Level::DEBUG)) { return; }
+        UC_DEBUG_UNLIMITED("UCM_EARLY stage={} reservation={} start_ns={} end_ns={} success={} total_ms={:.3f} lease_ms={:.3f} "
                 "pin_ms={:.3f} l2_lookup_ms={:.3f} submit_ms={:.3f} wait_ms={:.3f} first_io_ms={:.3f} "
                 "shards={} l2_calls={} bucket_locks={} reused_blocks={} index_builds={} handles={} block_lookups={} "
                 "recalled_blocks={} hint_checks={} hint_entries={} first_io_ns={} last_io_ns={} "

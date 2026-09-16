@@ -327,3 +327,9 @@ C++ Batch 仍遵守所选原生 backend 的 Load/Wait 契约：仅成功返回�
 取消时 wasted_read_upper_bound 是已完成读取的保守上界；submitted 与 completed
 分开。没有记录不计零；跨进程阶段差值需要同 boot/time namespace 的时钟证据，
 不以两个分位数相减推导阶段耗时。构建、测试和实测结果另见操作文档。
+
+详细 reserve/prefetch/load-handle 阶段记录及逐 native task 提交/完成记录使用原生 DEBUG 级别；
+格式化前检查是否启用。INFO 保留 job/batch 关联、额度、READY、消费完成和释放摘要。
+`fast_path` 只计正命中且无需数据批的结果；owner 的 `outcome` 区分 zero_hit、
+l1_ready、prefetched 和 failed。原生 Get 回退数不代表 SSD 读取数，实际读取需核对
+load_l2_read_shards 与 Early 已提交/已完成字节，缺失记录不能记作零。

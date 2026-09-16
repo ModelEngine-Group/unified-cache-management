@@ -112,11 +112,12 @@ class Consumer:
                 if success:
                     for shard, blocks in ranges.items():
                         state["completed"].setdefault(shard, set()).update(blocks)
-                log.info("UCM_EARLY native_load_completed key=%s attempt=%s consumer=%s task=%s "
-                         "layers=%s block_count=%s success=%s submitted_ns=%s completed_ns=%s "
-                         "reference_acquired_ns=unknown pid=%s",
-                         *identity, self.peer, task, sorted(ranges), sum(map(len, ranges.values())),
-                         success, submitted, time.monotonic_ns(), os.getpid())
+                if log.isEnabledFor(logging.DEBUG):
+                    log.debug("UCM_EARLY native_load_completed key=%s attempt=%s consumer=%s task=%s "
+                             "layers=%s block_count=%s success=%s submitted_ns=%s completed_ns=%s "
+                             "reference_acquired_ns=unknown pid=%s",
+                             *identity, self.peer, task, sorted(ranges), sum(map(len, ranges.values())),
+                             success, submitted, time.monotonic_ns(), os.getpid())
                 if success:
                     self._notify(state)
             if not success:
@@ -129,10 +130,11 @@ class Consumer:
         with self.lock:
             identities, ranges, started = self.tasks[token]
             for key, attempt in identities:
-                log.info("UCM_EARLY native_load_submitted key=%s attempt=%s consumer=%s task=%s "
-                         "layers=%s block_count=%s start_ns=%s ns=%s pid=%s",
-                         key, attempt, self.peer, task, sorted(ranges), sum(map(len, ranges.values())),
-                         started, time.monotonic_ns(), os.getpid())
+                if log.isEnabledFor(logging.DEBUG):
+                    log.debug("UCM_EARLY native_load_submitted key=%s attempt=%s consumer=%s task=%s "
+                             "layers=%s block_count=%s start_ns=%s ns=%s pid=%s",
+                             key, attempt, self.peer, task, sorted(ranges), sum(map(len, ranges.values())),
+                             started, time.monotonic_ns(), os.getpid())
 
     def _notify(self, state):
         if self.fenced:
