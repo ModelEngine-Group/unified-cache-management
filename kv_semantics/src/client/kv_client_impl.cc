@@ -23,11 +23,13 @@
  * */
 #include "kv_client_impl.h"
 #include <algorithm>
+#include <iterator>
 #include <limits>
 #include <thread>
 #include <utility>
 #include "device.h"
 #include "event.h"
+#include "kv_metrics/metrics.h"
 #include "kv_types.h"
 #include "logger.h"
 #include "router/config.h"
@@ -35,6 +37,55 @@
 #include "utils/config_utils.h"
 
 namespace kv {
+namespace {
+
+struct SubmissionMetrics {
+    metrics::CachedMetric* requests;
+    metrics::CachedMetric* entries;
+    metrics::CachedMetric* errors;
+    metrics::CachedMetric* duration;
+};
+
+enum class SubmissionKind { BATCH_LOAD, BATCH_STORE };
+
+const SubmissionMetrics& BatchLoadSubmissionMetrics()
+{
+    static const SubmissionMetrics metrics{
+        &KV_METRIC("kv_client_batch_load_requests_total"),
+        &KV_METRIC("kv_client_batch_load_entries_total"),
+        &KV_METRIC("kv_client_batch_load_errors_total"),
+        &KV_METRIC("kv_client_batch_load_submit_duration_seconds")};
+    return metrics;
+}
+
+const SubmissionMetrics& BatchStoreSubmissionMetrics()
+{
+    static const SubmissionMetrics metrics{
+        &KV_METRIC("kv_client_batch_store_requests_total"),
+        &KV_METRIC("kv_client_batch_store_entries_total"),
+        &KV_METRIC("kv_client_batch_store_errors_total"),
+        &KV_METRIC("kv_client_batch_store_submit_duration_seconds")};
+    return metrics;
+}
+
+void RecordSubmission(SubmissionKind kind, std::size_t entryCount, const Status& status,
+                      const metrics::MetricTimer& timer)
+{
+    if (!timer.enabled) { return; }
+    const auto& names = kind == SubmissionKind::BATCH_STORE ? BatchStoreSubmissionMetrics()
+                                                             : BatchLoadSubmissionMetrics();
+    const auto elapsed =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - timer.begin).count();
+    metrics::MetricUpdate updates[] = {
+        {names.requests, 1.0                           },
+        {names.entries,  static_cast<double>(entryCount)},
+        {names.duration, elapsed                       },
+        {names.errors,   1.0                           },
+    };
+    metrics::UpdateStats(updates, status.ok() ? std::size(updates) - 1 : std::size(updates));
+}
+
+}  // namespace
 
 constexpr std::uint32_t kMaxShutdownDrainAttempts = 64;
 
@@ -202,18 +253,24 @@ Status KvClientImpl::StoreAsync(const std::vector<KVBuffer>& entries, TaskId& ta
 
 Status KvClientImpl::BatchLoadAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
 {
-    return SubmitAsync(AsuOpType::BATCH_LOAD, entries, taskId);
+    const auto timer = metrics::StartMetricTimer();
+    auto status = SubmitAsync(AsuOpType::BATCH_LOAD, entries, taskId);
+    RecordSubmission(SubmissionKind::BATCH_LOAD, entries.size(), status, timer);
+    return status;
 }
 
 Status KvClientImpl::BatchStoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId,
                                      std::uintptr_t eventHandle)
 {
-    return SubmitAsync(AsuOpType::BATCH_STORE, entries, taskId, eventHandle);
+    const auto timer = metrics::StartMetricTimer();
+    auto status = SubmitAsync(AsuOpType::BATCH_STORE, entries, taskId, eventHandle);
+    RecordSubmission(SubmissionKind::BATCH_STORE, entries.size(), status, timer);
+    return status;
 }
 
 Status KvClientImpl::BatchStoreAsync(const std::vector<KVBuffer>& entries, TaskId& taskId)
 {
-    return SubmitAsync(AsuOpType::BATCH_STORE, entries, taskId);
+    return BatchStoreAsync(entries, taskId, 0);
 }
 
 Status KvClientImpl::DeleteAsync(const std::vector<CacheKey>& keys, TaskId& taskId)
