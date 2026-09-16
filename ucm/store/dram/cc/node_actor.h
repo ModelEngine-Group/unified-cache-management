@@ -43,6 +43,7 @@ public:
         NodeEndpoint endpoint;
         NodeLimits limits;
         std::chrono::milliseconds reconnectInterval{0};
+        std::chrono::microseconds pollInterval{50};
     };
 
     NodeActor(Config config, NodeDependencies dependencies);
@@ -92,8 +93,10 @@ private:
     void RetireRequest(RequestId requestId);
     void FinalizeRequests(TimePoint now);
     void ExpirePendingRequests(TimePoint now);
-    void DispatchPendingRequests();
+    void DispatchPendingRequests(TimePoint now);
     void FlushCompletions();
+    // Consumes the request unless its prerequisite is still pending.
+    bool TryStartRequest(Request& request, TimePoint now);
     void StartRequest(Request request);
 
     void Handle(TransmitCompleted event, TimePoint);
@@ -117,6 +120,8 @@ private:
 
     std::deque<Request> pendingRequests_;
     TimePoint pendingCheckAt_{TimePoint::max()};
+    // Retry time for the pending head; a new head can be queried immediately.
+    TimePoint nextPrerequisitePollAt_{TimePoint::min()};
 };
 
 }  // namespace UC::Dram

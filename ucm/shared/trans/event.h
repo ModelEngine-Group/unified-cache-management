@@ -40,6 +40,7 @@ public:
     explicit Event(std::uintptr_t nativeHandle = 0) noexcept : nativeHandle_{nativeHandle} {}
 
     Status Synchronize() const;
+    Expected<bool> Query() const;
     bool Valid() const noexcept { return nativeHandle_ != 0; }
     std::uintptr_t NativeHandle() const noexcept { return nativeHandle_; }
 

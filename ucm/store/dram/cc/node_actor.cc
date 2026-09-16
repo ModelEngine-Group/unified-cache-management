@@ -227,6 +227,7 @@ void NodeActor::ExpirePendingRequests(TimePoint now)
             ++it;
             continue;
         }
+        if (it == pendingRequests_.begin()) { nextPrerequisitePollAt_ = TimePoint::min(); }
         auto request = std::move(*it);
         it = pendingRequests_.erase(it);
         if (expiredCount == 0) {
@@ -245,14 +246,20 @@ void NodeActor::ExpirePendingRequests(TimePoint now)
     }
 }
 
-void NodeActor::DispatchPendingRequests()
+void NodeActor::DispatchPendingRequests(TimePoint now)
 {
     if (state_ != NodeState::ACTIVE) { return; }
     while (!pendingRequests_.empty() &&
            activeRequests_.size() < config_.limits.maxInflightRequests) {
-        auto request = std::move(pendingRequests_.front());
+        auto& request = pendingRequests_.front();
+        if (request.prerequisiteHandle != 0 && now < nextPrerequisitePollAt_) { break; }
+        if (!TryStartRequest(request, now)) {
+            nextPrerequisitePollAt_ = now + config_.pollInterval;
+            break;
+        }
         pendingRequests_.pop_front();
-        StartRequest(std::move(request));
+        nextPrerequisitePollAt_ = TimePoint::min();
+        if (state_ != NodeState::ACTIVE) { break; }
     }
     if (pendingRequests_.empty()) { pendingCheckAt_ = TimePoint::max(); }
 }
@@ -262,6 +269,31 @@ void NodeActor::FlushCompletions()
     if (completionBatch_.empty()) { return; }
     dependencies_.publishCompletion(completionBatch_);
     completionBatch_.clear();
+}
+
+bool NodeActor::TryStartRequest(Request& request, TimePoint now)
+{
+    if (request.deadline <= now) {
+        QueueCompletion(std::move(request), Status::Timeout());
+        return true;
+    }
+    if (request.prerequisiteHandle != 0) {
+        auto ready = [&]() -> Expected<bool> {
+            try {
+                return dependencies_.queryPrerequisite(request.prerequisiteHandle);
+            } catch (...) {
+                return Status::Error("prerequisite event query threw");
+            }
+        }();
+        if (!ready) {
+            QueueCompletion(std::move(request), ready.Error());
+            return true;
+        }
+        if (!ready.Value()) { return false; }
+        request.prerequisiteHandle = 0;
+    }
+    StartRequest(std::move(request));
+    return true;
 }
 
 void NodeActor::StartRequest(Request request)
@@ -546,13 +578,19 @@ void NodeActor::Advance(TimePoint now)
         }
     }
     ExpirePendingRequests(now);
-    DispatchPendingRequests();
+    DispatchPendingRequests(now);
     FlushCompletions();
 }
 
 NodeActor::TimePoint NodeActor::NextWakeup() const noexcept
 {
-    return std::min(nextActionAt_, pendingCheckAt_);
+    auto next = std::min(nextActionAt_, pendingCheckAt_);
+    if (state_ == NodeState::ACTIVE && !pendingRequests_.empty() &&
+        activeRequests_.size() < config_.limits.maxInflightRequests &&
+        pendingRequests_.front().prerequisiteHandle != 0) {
+        next = std::min(next, nextPrerequisitePollAt_);
+    }
+    return next;
 }
 
 }  // namespace UC::Dram

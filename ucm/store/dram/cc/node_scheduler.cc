@@ -87,7 +87,8 @@ Status NodeScheduler::Start()
         std::size_t index = 0;
         for (const auto& endpoint : config.nodes) {
             auto* runner = runners_[index % runnerCount].get();
-            NodeActor::Config actorConfig{endpoint, config.limits, config.reconnectInterval};
+            NodeActor::Config actorConfig{endpoint, config.limits, config.reconnectInterval,
+                                          config.pollInterval};
             auto actor = std::make_unique<NodeActor>(std::move(actorConfig), dependencies_);
             runner->actors.emplace(endpoint.nodeId, std::move(actor));
             nodes_.emplace(endpoint.nodeId, runner);

@@ -253,6 +253,12 @@ Expected<DramConfig> DramConfig::Parse(const Detail::Dictionary& dictionary)
         result.replySlotCount = result.nodeScheduler.nodes.size() * maxInflight;
         result.replySlotSize = static_cast<std::uint32_t>(MaxReplySize(maxBatch));
 
+        auto pollInterval = static_cast<std::size_t>(result.nodeScheduler.pollInterval.count());
+        status = OptionalSize(dictionary, "poll_interval_us", &pollInterval);
+        if (status.Failure()) { return status; }
+        result.nodeScheduler.pollInterval =
+            std::chrono::microseconds{static_cast<std::chrono::microseconds::rep>(pollInterval)};
+
         std::size_t lookupTimeout = 1000;
         std::size_t dumpTimeout = 3000;
         std::size_t loadTimeout = 3000;
@@ -334,6 +340,10 @@ Status DramConfig::Validate() const
     if (taskTimeouts.lookup.count() <= 0 || taskTimeouts.dump.count() <= 0 ||
         taskTimeouts.load.count() <= 0) {
         return Status::InvalidParam("DramStore timeouts must be positive");
+    }
+    const auto pollIntervalUs = nodeScheduler.pollInterval.count();
+    if (pollIntervalUs < 1 || pollIntervalUs > 10000) {
+        return Status::InvalidParam("DramStore poll_interval_us must be in [1, 10000]");
     }
     if (nodeScheduler.reconnectInterval.count() <= 0) {
         return Status::InvalidParam("DramStore reconnect interval must be positive");
