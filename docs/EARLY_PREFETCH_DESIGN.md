@@ -1,7 +1,10 @@
 # Early Prefetch：批次流水与原生引用交接
 
 Early 在 UCM 内提前准备当前可用的 KV。Scheduler 继续使用原生 waiting /
-skipped_waiting、block allocation 和 metadata；PENDING 返回 `(None, False)`。
+skipped_waiting、block allocation 和 metadata；仍需要外部 KV 的 PENDING 返回 `(None, False)`。
+若原生 HBM lookup 已覆盖所有完整 allocation block，则同步返回 `(0, False)`，
+取消无收益的后台 job。取消仍经原有排空协议释放，不把尚未 READY 的 L1 当作命中；
+保留已取消实例的 identity/hash 直到 finish，使 block allocation 重试无需重新扫描 tokens。
 READY 通过保存的 block IDs 和受保护命中结果进入原生 token 计算：已核验共享域由单 owner 给出，其余配置继续汇总所有 rank 的最小命中。
 不等待其他请求未来产出，不维护 producer prefix、持久化观察或 revalidation。
 
@@ -24,6 +27,30 @@ READY 通过保存的 block IDs 和受保护命中结果进入原生 token 计�
 
 `_ReservedLoad` 不创建 Store、buffer 或线程。C++ EarlyLoad 绑定调用原生私有
 MakeTaskDesc，通过原有 Self 入口及 health wrapper 提交；不复制参数解析。
+
+## 调度匹配与消费确认
+
+READY 已保存的 block IDs 和受保护命中数通过 Early 的 ContextVar / Store 子类
+进入原生匹配方法；不再次 reserve、hash 或执行 L2 lookup。原生继续扣除 HBM 命中、
+过滤已知缺失、处理 CP 和 full-hit recompute 并创建 metadata，返回 `(tokens, False)`。
+这不是 HBM 命中伪装：外部 KV 的 H2D 仍通过原生 layerwise/direct load 完成。
+
+owner generation 的 key/attempt/grant/expected 随原生 step metadata 传递。无需另发
+broker 不使用的 owner handoff 消息；兼容的非 owner 路径仍保留有序 handoff 消息。
+metadata 到达不释放保护，仍等每个必要消费者的实际成功 Wait 覆盖全部预期层、
+block 和 chunk，再执行 retire / quiesced / owner_drained。
+
+Consumer 按成功完成的 `(layer, block)` 增量扣除 remaining，并保留去重集合；
+每次完成只处理本次任务涉及的层和本 generation 的预期 blocks，不重复检查前面
+所有层。混合请求任务、重复 chunk 和重复 receipt 不多计；失败不扣额度，仍 fencing。
+step 重新绑定相同计划时复用已建立的 expected 集合；变化的计划仍拒绝。
+
+每个请求首次真正被调度时记录一次 `schedule_match` 汇总：generation key、DP、
+owner、READY 接收时刻、首次 PENDING、PENDING 次数、匹配调用数和总耗时、
+最后一次 HBM/external token 数以及原生 SCHEDULED 时刻。缺失时刻保留 None。
+`match_ms` 包含原生 Python token/metadata 处理，不是 C++ reserve 时间；它可能覆盖
+多次 allocation 重试，必须结合 match_calls 解读。日志不代表首 token 时间，
+需通过 request/key 与客户端流式首 token 记录关联；不相减不同指标的分位数。
 
 ## Reservation 与可用前缀
 

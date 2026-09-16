@@ -43,11 +43,14 @@ class Consumer:
                 identity = (ticket["key"], ticket["attempt"])
                 self.requests[request_id] = identity
                 state = self.generations.setdefault(identity, dict(ticket=ticket, expected=None,
-                    layers=set(layers), completed={}, active=0, stopped=False, consumed=False, quiesced=False))
-                expected = set(ticket["expected"])
+                    plan=None, remaining=None, layers=set(layers), completed={}, active=0,
+                    stopped=False, consumed=False, quiesced=False))
+                plan = tuple(ticket["expected"])
                 if state["expected"] is None:
-                    state["expected"] = expected
-                elif state["expected"] != expected:
+                    state["plan"] = plan
+                    state["expected"] = frozenset(plan)
+                    state["remaining"] = len(state["expected"]) * len(state["layers"])
+                elif state["plan"] != plan and state["expected"] != set(plan):
                     self.poison("generation changed its native consumption plan")
                     raise RuntimeError("owner consumption plan changed")
                 self._notify(state)
@@ -111,7 +114,15 @@ class Consumer:
                 state["active"] -= 1
                 if success:
                     for shard, blocks in ranges.items():
-                        state["completed"].setdefault(shard, set()).update(blocks)
+                        if shard not in state["layers"]:
+                            continue
+                        done = state["completed"].setdefault(shard, set())
+                        # A native task may batch several requests. Count only
+                        # this generation's newly completed expected range;
+                        # duplicate chunks/receipts cannot retire later layers.
+                        new = blocks.intersection(state["expected"]) - done
+                        done.update(new)
+                        state["remaining"] -= len(new)
                 if log.isEnabledFor(logging.DEBUG):
                     log.debug("UCM_EARLY native_load_completed key=%s attempt=%s consumer=%s task=%s "
                              "layers=%s block_count=%s success=%s submitted_ns=%s completed_ns=%s "
@@ -141,8 +152,9 @@ class Consumer:
             return
         ticket = state["ticket"]
         envelope = dict(key=ticket["key"], attempt=ticket["attempt"], consumer=self.peer)
-        expected = state["expected"]
-        complete = expected is not None and all(expected <= state["completed"].get(layer, set()) for layer in state["layers"])
+        # Completion is maintained by actual successful native Wait receipts.
+        # Do not rescan the entire prefix across all prior layers on each Wait.
+        complete = state["remaining"] == 0
         if not state["stopped"] and not state["consumed"] and complete and not state["active"]:
             state["consumed"] = True
             self.send(dict(envelope, op="consumed", ns=time.monotonic_ns()))
@@ -158,7 +170,8 @@ class Consumer:
         with self.lock:
             state = self.generations.setdefault((key, attempt), dict(
                 ticket=dict(key=key, attempt=attempt), expected=None, layers=set(),
-                completed={}, active=0, stopped=False, consumed=False, quiesced=False))
+                plan=None, remaining=None, completed={}, active=0, stopped=False,
+                consumed=False, quiesced=False))
             state["stopped"] = True
             self._notify(state)
 

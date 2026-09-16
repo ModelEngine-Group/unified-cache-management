@@ -606,3 +606,63 @@ def test_unscoped_native_io_cannot_exceed_advertised_headroom(operation, limit):
     poison.assert_called_once()
     with pytest.raises(RuntimeError, match="fenced"):
         state.check_task("dump", 0)
+
+
+
+def test_incremental_completion_never_rescans_prior_layers_and_waits_for_all_chunks():
+    class NoIteration(set):
+        def __iter__(self):
+            raise AssertionError("completed layer plan was rescanned")
+
+    sent, faults = [], []
+    observer = consumer.Consumer("w0.1", sent.append, faults.append)
+    t = ticket(expected=blocks(512))
+    observer.bind({"r": t}, list(range(78)))
+    state = observer.generations[(t["key"], t["attempt"])]
+    state["layers"] = NoIteration(range(78))
+    for layer in range(78):
+        first = start_load(observer, "r", t["expected"][:256], layer)
+        # An overlapping native task also carries unrelated blocks and an
+        # already completed chunk. Neither can count towards later layers.
+        rest = start_load(observer, "r", t["expected"] + [b"x" * 16], layer)
+        observer.complete(first, 1, True)
+        assert not sent
+        observer.complete(first, 1, True)  # duplicate receipt is idempotent
+        observer.complete(rest, 2, True)
+        assert state["remaining"] == (77 - layer) * 512
+        assert (len(sent) == 1) == (layer == 77)
+        assert len(state["completed"][layer]) == 512
+    assert [m["op"] for m in sent] == ["consumed"]
+    assert not faults
+
+
+def test_shared_task_counts_only_each_generations_expected_blocks():
+    observer = consumer.Consumer("w0.1", Mock(), Mock())
+    a, b = ticket(expected=blocks(1)), ticket("b", expected=blocks(3)[1:])
+    observer.bind({"a": a, "b": b}, [0, 1])
+    token = consumer.load_scope.set(observer.scope(["a", "b"]))
+    try:
+        receipt = observer.begin(np.frombuffer(b"".join(blocks(3)), dtype=np.uint8), np.zeros(3))
+    finally:
+        consumer.load_scope.reset(token)
+    observer.complete(receipt, 1, True)
+    for t in (a, b):
+        state = observer.generations[(t["key"], t["attempt"])]
+        assert state["completed"][0] == set(t["expected"])
+        assert state["remaining"] == len(t["expected"])
+    observer.send.assert_not_called()
+
+
+def test_rebound_plan_is_checked_without_losing_partial_completion():
+    observer = consumer.Consumer("w0.1", Mock(), Mock())
+    t = ticket()
+    observer.bind({"r": t}, [0, 1])
+    receipt = start_load(observer, "r", blocks(1), 0)
+    observer.complete(receipt, 1, True)
+    observer.bind({"r": dict(t)}, [0, 1])
+    state = observer.generations[(t["key"], t["attempt"])]
+    assert state["remaining"] == 3
+    with pytest.raises(RuntimeError, match="plan changed"):
+        observer.bind({"r": dict(t, expected=blocks(1))}, [0, 1])
+    observer.poison.assert_called_once()
+    observer.send.assert_not_called()
