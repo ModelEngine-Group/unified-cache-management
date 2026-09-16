@@ -490,3 +490,80 @@ def test_owner_all_hbm_hit_does_not_require_native_metadata(connector):
     assert connector.get_num_new_matched_tokens(request, 8) == (0, False)
     assert job.expected == ()
     connector.store.store_.LookupOnPrefix.assert_not_called()
+
+
+@pytest.mark.parametrize("tokens,computed", [(9, 8), (3, 0)])
+def test_pending_hbm_sufficient_cancels_without_any_external_work(connector, tokens, computed):
+    request = Request(token_count=tokens)
+    job = prepare(connector, request, state="PENDING")
+    # Native HBM already protects all complete allocation blocks. Even a
+    # queued hash/owner result must not hold up the uncached suffix compute.
+    assert connector.get_num_new_matched_tokens(request, computed) == (0, False)
+    assert job.state == "CANCELLED"
+    assert connector._early.jobs[request.request_id] is job
+    assert job.key not in connector._early.by_key
+    assert not connector.requests_meta
+    connector._early.control.send.assert_called_once_with({"op": "cancel", "key": job.key})
+    connector._early.receive(dict(op="result", key=job.key, state="READY", hit=2))
+    assert job.state == "CANCELLED"
+    assert connector.get_num_new_matched_tokens(request, computed) == (0, False)
+    assert not connector._early.scheduled({request.request_id: Mock()})
+    connector._early.control.send.assert_called_once()
+    connector.request_hasher.assert_not_called()
+    connector.store.store_.LookupOnPrefix.assert_not_called()
+
+
+def test_pending_partial_hbm_still_waits_and_preserves_protection(connector):
+    # Aligned full prompts need the last block: native HBM may only return n-1
+    # blocks to leave a recompute token. Do not bypass that external hit.
+    request = Request()
+    job = prepare(connector, request, state="PENDING")
+    for _ in range(3):
+        assert connector.get_num_new_matched_tokens(request, 4) == (None, False)
+    assert job.state == "PENDING"
+    assert job.pending_probes == 3 and job.first_pending_ns is not None
+    connector._early.control.send.assert_not_called()
+
+
+def test_pending_cp_partial_hashes_cannot_add_an_allocation_block(connector):
+    connector.block_size, connector.cp_world_size = 8, 2
+    request = Request(token_count=12)
+    prepare(connector, request, state="PENDING")
+    assert connector.get_num_new_matched_tokens(request, 8) == (0, False)
+    connector.store.store_.LookupOnPrefix.assert_not_called()
+
+
+def test_ready_match_and_owner_metadata_do_not_reserve_or_control_roundtrip(connector):
+    request = Request(token_count=12)
+    job = prepare(connector, request, hit=2)
+    job.owner, job.attempt, job.grant = "w0.1", "a", 2
+    connector._early.dp_rank = 0
+    connector.store.reserve_prefix = Mock(side_effect=AssertionError("schedule must not reserve"))
+    # A scheduler allocation retry can present a different native HBM hit.
+    assert connector.get_num_new_matched_tokens(request, 0) == (8, False)
+    assert connector.get_num_new_matched_tokens(request, 4) == (4, False)
+    assert job.expected == (job.blocks[1],)
+    meta = SimpleNamespace(load_block_ids=([job.blocks[1]], []))
+    for _ in range(2):
+        keys = connector._early.scheduled({request.request_id: meta})
+        ticket = connector._early.owner_metadata(keys)[request.request_id]
+        assert ticket["expected"] == (job.blocks[1],)
+        assert ticket["key"] == job.key and ticket["attempt"] == "a"
+    assert job.match_calls == 2 and job.match_ns > 0
+    assert (job.hbm_tokens, job.external_tokens) == (4, 4)
+    connector.store.reserve_prefix.assert_not_called()
+    connector.store.store_.LookupOnPrefix.assert_not_called()
+    connector._early.control.send.assert_not_called()
+    connector._early.finish(request)
+    connector._early.control.send.assert_called_once_with({"op": "finish", "key": job.key})
+
+
+def test_legacy_handoff_is_still_ordered_once_before_finish(connector):
+    request = Request()
+    job = prepare(connector, request)
+    connector._early.dp_rank = 0
+    meta = SimpleNamespace(load_block_ids=(job.blocks, []))
+    connector._early.scheduled({request.request_id: meta})
+    connector._early.scheduled({request.request_id: meta})
+    connector._early.finish(request)
+    assert [c.args[0]["op"] for c in connector._early.control.send.call_args_list] == ["handoff", "finish"]

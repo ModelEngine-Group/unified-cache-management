@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import time
 from dataclasses import dataclass, field
 
 from .early_lookup import LookupContext, current_lookup
@@ -77,8 +78,25 @@ class _EarlyConnectorMixin:
     def get_num_new_matched_tokens(self, request, num_computed_tokens):
         assert num_computed_tokens % self.block_size == 0
         job = self._early.probe(request)
+        if job is not None and job.state in ("PENDING", "CANCELLED"):
+            # Native HBM lookup ran before this callback. If it already covers
+            # every complete allocation block, no external result can add KV.
+            # Do not wait for a useless job (nor advertise any unready L1 KV).
+            if num_computed_tokens >= request.num_tokens // self.block_size * self.block_size:
+                if job.state != "CANCELLED":
+                    self._early.cancel_unused(job)
+                    logger.info(
+                        "UCM_EARLY hbm_sufficient key=%s request=%s hbm_tokens=%s "
+                        "tokens=%s ns=%s", job.key, request.request_id,
+                        num_computed_tokens, request.num_tokens, time.monotonic_ns(),
+                    )
+                return 0, False
         if job is not None and job.state == "PENDING":
+            job.pending_probes += 1
+            if job.first_pending_ns is None:
+                job.first_pending_ns = time.monotonic_ns()
             return None, False
+        started_ns = time.monotonic_ns()
         context = LookupContext(
             self,
             request,
@@ -88,6 +106,9 @@ class _EarlyConnectorMixin:
         token = current_lookup.set(context)
         try:
             result = super().get_num_new_matched_tokens(request, num_computed_tokens)
+            if job is not None:
+                job.match_calls += 1
+                job.hbm_tokens, job.external_tokens = num_computed_tokens, result[0]
             if job is not None and job.owner and job.state == "READY" and not job.dispatched:
                 meta = self.requests_meta.get(request.request_id)
                 job.expected = () if meta is None else tuple(meta.ucm_block_ids[
@@ -96,6 +117,8 @@ class _EarlyConnectorMixin:
             return result
         finally:
             current_lookup.reset(token)
+            if job is not None:
+                job.match_ns += time.monotonic_ns() - started_ns
 
     def _bind_request_block_hasher(self):
         super()._bind_request_block_hasher()

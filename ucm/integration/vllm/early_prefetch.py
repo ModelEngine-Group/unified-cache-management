@@ -30,6 +30,13 @@ class Job:
     attempt: str | None = None
     grant: int = 0
     expected: tuple | None = None
+    ready_received_ns: int | None = None
+    first_pending_ns: int | None = None
+    pending_probes: int = 0
+    match_calls: int = 0
+    match_ns: int = 0
+    hbm_tokens: int | None = None
+    external_tokens: int | None = None
 
 
 class EarlyScheduler:
@@ -189,6 +196,8 @@ class EarlyScheduler:
                 return
             job.hit = message.get("hit", 0)
             job.state = message["state"]
+            if job.state == "READY":
+                job.ready_received_ns = time.monotonic_ns()
             job.owner = message.get("owner")
             job.attempt = message.get("attempt")
             job.grant = message.get("grant", 0)
@@ -200,12 +209,19 @@ class EarlyScheduler:
         self.by_key.pop(job.key, None)
         self.control.send({"op": "cancel", "key": job.key})
 
+    def cancel_unused(self, job):
+        # Keep identity/hash state until request finish: an allocation retry
+        # must not hash again or revive an already cancelled background job.
+        with self.lock:
+            if self.jobs.get(job.request.request_id) is job and job.state != "CANCELLED":
+                self._cancel(job)
+
     def scheduled(self, request_meta):
         keys = {}
         with self.lock:
             for request_id, meta in request_meta.items():
                 job = self.jobs.get(request_id)
-                if job is None:
+                if job is None or job.state == "CANCELLED":
                     continue
                 keys[request_id] = job.key
                 if not job.dispatched:
@@ -216,13 +232,27 @@ class EarlyScheduler:
                         if getattr(event.type, "name", None) == "SCHEDULED"), None)
                     log.info("UCM_EARLY handoff key=%s request=%s dp=%s ns=%s native_scheduled_ns=%s",
                              job.key, request_id, self.dp_rank, time.monotonic_ns(), scheduled_ns)
-                    if meta.load_block_ids[0]:
-                        # Ordered before finish/cancel on this control connection.
-                        self.control.send(
-                            {"op": "handoff", "key": job.key, "request": request_id}
-                        )
-                    elif not job.owner:
-                        self.control.send({"op": "finish", "key": job.key})
+                    log.info(
+                        "UCM_EARLY schedule_match key=%s request=%s dp=%s owner=%s "
+                        "ready_received_ns=%s first_pending_ns=%s pending_probes=%s "
+                        "match_calls=%s match_ms=%.3f hbm_tokens=%s external_tokens=%s "
+                        "scheduled_ns=%s handoff_transport=%s",
+                        job.key, request_id, self.dp_rank, job.owner,
+                        job.ready_received_ns, job.first_pending_ns, job.pending_probes,
+                        job.match_calls, job.match_ns / 1e6, job.hbm_tokens,
+                        job.external_tokens, scheduled_ns,
+                        "metadata" if job.owner else "control",
+                    )
+                    # Owner tickets already travel in native step metadata. The
+                    # broker ignores owner handoff; it must not release pins.
+                    if not job.owner:
+                        if meta.load_block_ids[0]:
+                            # Keep legacy handoff ordered before finish/cancel.
+                            self.control.send(
+                                {"op": "handoff", "key": job.key, "request": request_id}
+                            )
+                        else:
+                            self.control.send({"op": "finish", "key": job.key})
         return keys
 
     def check(self):
