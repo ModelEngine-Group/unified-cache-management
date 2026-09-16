@@ -167,6 +167,19 @@ struct AsuRuntimeLibraryConfig {
     std::string transportLibraryPath;
 };
 
+struct MetricsServerConfig {
+    bool enabled{false};
+    std::string definitionPath;
+    std::string listenAddress{"127.0.0.1"};
+    std::uint16_t port{9108};
+    std::string path{"/metrics"};
+    std::string source{"kv-test"};
+    std::string modelName{"standalone"};
+    std::string workerId{"asu-0"};
+    std::uint32_t aggregationIntervalMs{500};
+    std::uint32_t shutdownGraceMs{0};
+};
+
 struct ToolBehaviorConfig {
     ConfigFormat configFormat{ConfigFormat::ASU_CLIENT_KEY_VALUE};
     HcommApiBoundary hcommApiBoundary{HcommApiBoundary::C_API};
@@ -194,6 +207,7 @@ struct KvTestConfig {
     OutputConfig output;
     KvTestFakeBackendConfig fakeBackend;
     AsuRuntimeLibraryConfig asuRuntime;
+    MetricsServerConfig metrics;
     std::string keyPrefix;
     std::uint64_t seed{0};
     std::uint64_t valueSize{0};

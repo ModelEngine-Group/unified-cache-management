@@ -1,0 +1,2 @@
+# Standalone defaults; embedded in default_metric_descriptors.h at build time.
+metric_prefix: "kv:"
