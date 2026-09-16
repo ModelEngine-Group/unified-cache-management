@@ -78,11 +78,16 @@ class _EarlyConnectorMixin:
     def get_num_new_matched_tokens(self, request, num_computed_tokens):
         assert num_computed_tokens % self.block_size == 0
         job = self._early.probe(request)
+        hbm_only = False
         if job is not None and job.state in ("PENDING", "CANCELLED"):
-            # Native HBM lookup ran before this callback. If it already covers
-            # every complete allocation block, no external result can add KV.
-            # Do not wait for a useless job (nor advertise any unready L1 KV).
-            if num_computed_tokens >= request.num_tokens // self.block_size * self.block_size:
+            # Native APC deliberately leaves the last token for logits and
+            # rounds down to full blocks. Prefer its <= one-block recompute
+            # over waiting for optional external KV when this maximum is met.
+            # Aligned prompts can NEVER get their whole length from APC.
+            max_hbm_tokens = (request.num_tokens - 1) // self.block_size * self.block_size
+            # Saved IDs are needed by native dump metadata. Never synchronously
+            # repeat a still-running background hash just to bypass PENDING.
+            if num_computed_tokens >= max_hbm_tokens and job.blocks is not None:
                 if job.state != "CANCELLED":
                     self._early.cancel_unused(job)
                     logger.info(
@@ -90,7 +95,7 @@ class _EarlyConnectorMixin:
                         "tokens=%s ns=%s", job.key, request.request_id,
                         num_computed_tokens, request.num_tokens, time.monotonic_ns(),
                     )
-                return 0, False
+                hbm_only = True
         if job is not None and job.state == "PENDING":
             job.pending_probes += 1
             if job.first_pending_ns is None:
@@ -102,6 +107,7 @@ class _EarlyConnectorMixin:
             request,
             job,
             num_computed_tokens // self.block_size * self.cp_world_size,
+            hbm_only,
         )
         token = current_lookup.set(context)
         try:
@@ -144,7 +150,7 @@ class _EarlyConnectorMixin:
     def _prefetch_direct_hit_key_hotness(self, hbm_hit_block_ids, all_hit_block_ids):
         context = self._lookup_context()
         if context is not None and context.job is not None:
-            if context.job.state == "READY":
+            if context.hbm_only or context.job.state == "READY":
                 return
         return super()._prefetch_direct_hit_key_hotness(
             hbm_hit_block_ids, all_hit_block_ids
@@ -154,7 +160,7 @@ class _EarlyConnectorMixin:
         metadata = super().build_connector_meta(scheduler_output)
         for request_id in metadata.preempted_req_ids:
             self._early.finish(request_id, cancelled=True)
-        keys = self._early.scheduled(metadata.request_meta)
+        keys = self._early.scheduled(metadata.request_meta, scheduler_output.num_scheduled_tokens)
         return EarlyConnectorMetadata(**vars(metadata), early_keys=keys,
                                       early_owners=self._early.owner_metadata(keys))
 

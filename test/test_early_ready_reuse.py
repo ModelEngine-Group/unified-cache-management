@@ -492,17 +492,27 @@ def test_owner_all_hbm_hit_does_not_require_native_metadata(connector):
     connector.store.store_.LookupOnPrefix.assert_not_called()
 
 
-@pytest.mark.parametrize("tokens,computed", [(9, 8), (3, 0)])
+@pytest.mark.parametrize("tokens,computed", [(9, 8), (8, 4), (3, 0)])
 def test_pending_hbm_sufficient_cancels_without_any_external_work(connector, tokens, computed):
     request = Request(token_count=tokens)
     job = prepare(connector, request, state="PENDING")
-    # Native HBM already protects all complete allocation blocks. Even a
+    job.blocks = job.blocks[:tokens // connector.hash_block_size]
+    # Native HBM already covers its maximum prefix (last block recomputes). A
     # queued hash/owner result must not hold up the uncached suffix compute.
     assert connector.get_num_new_matched_tokens(request, computed) == (0, False)
     assert job.state == "CANCELLED"
     assert connector._early.jobs[request.request_id] is job
     assert job.key not in connector._early.by_key
-    assert not connector.requests_meta
+    if tokens % connector.block_size == 0:
+        # Native metadata must persist the last block after recomputation.
+        meta = connector.requests_meta[request.request_id]
+        assert meta.hbm_hit_block_num == meta.total_hit_block_num == computed // 4
+        assert meta.ucm_block_ids is job.blocks
+        dispatch = connector._generate_dispatch_meta(meta, 4, [101, 102])
+        assert dispatch.load_block_ids == ([], [])
+        assert dispatch.dump_block_ids == ([job.blocks[-1]], [102])
+    else:
+        assert not connector.requests_meta
     connector._early.control.send.assert_called_once_with({"op": "cancel", "key": job.key})
     connector._early.receive(dict(op="result", key=job.key, state="READY", hit=2))
     assert job.state == "CANCELLED"
@@ -513,10 +523,21 @@ def test_pending_hbm_sufficient_cancels_without_any_external_work(connector, tok
     connector.store.store_.LookupOnPrefix.assert_not_called()
 
 
-def test_pending_partial_hbm_still_waits_and_preserves_protection(connector):
-    # Aligned full prompts need the last block: native HBM may only return n-1
-    # blocks to leave a recompute token. Do not bypass that external hit.
+def test_hbm_shortcut_does_not_wait_for_or_duplicate_an_unfinished_hash(connector):
     request = Request()
+    job = prepare(connector, request, state="PENDING")
+    job.blocks = None
+    for _ in range(3):
+        assert connector.get_num_new_matched_tokens(request, 4) == (None, False)
+    assert job.state == "PENDING"
+    connector.request_hasher.assert_not_called()
+    connector.store.store_.LookupOnPrefix.assert_not_called()
+    connector._early.control.send.assert_not_called()
+
+
+def test_pending_partial_hbm_still_waits_and_preserves_protection(connector):
+    # More than the final allocation block is missing: keep the READY gate.
+    request = Request(token_count=12)
     job = prepare(connector, request, state="PENDING")
     for _ in range(3):
         assert connector.get_num_new_matched_tokens(request, 4) == (None, False)

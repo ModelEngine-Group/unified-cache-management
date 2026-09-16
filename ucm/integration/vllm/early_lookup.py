@@ -12,6 +12,7 @@ class LookupContext:
     request: object
     job: object | None
     hbm_hit_hashes: int
+    hbm_only: bool = False
 
 
 # The native method and the existing Early Store see the same call context.

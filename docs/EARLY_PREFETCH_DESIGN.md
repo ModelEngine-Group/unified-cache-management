@@ -2,9 +2,14 @@
 
 Early 在 UCM 内提前准备当前可用的 KV。Scheduler 继续使用原生 waiting /
 skipped_waiting、block allocation 和 metadata；仍需要外部 KV 的 PENDING 返回 `(None, False)`。
-若原生 HBM lookup 已覆盖所有完整 allocation block，则同步返回 `(0, False)`，
-取消无收益的后台 job。取消仍经原有排空协议释放，不把尚未 READY 的 L1 当作命中；
+若原生 HBM lookup 已达到 `floor((num_tokens - 1) / block_size) * block_size`
+的最大完整前缀，则同步返回 `(0, False)`，沿用原生最后一个 block 内重算；取消后台
+job，不等待它可能补充的末块 KV。对齐 prompt 也必须保留最后 token 的原生边界。
+取消仍经原有排空协议释放，不把尚未 READY 的 L1 当作命中；
 保留已取消实例的 identity/hash 直到 finish，使 block allocation 重试无需重新扫描 tokens。
+此短路要求后台 hash 已完成：用已保存 IDs 继续执行原生 token / dump metadata
+生成，Early Store 只提供“外部命中为零”的本次结果。不能直接跳过 metadata，
+否则最后重算出的完整 block 会失去原生 dump。hash 未完成时保持非阻塞 PENDING。
 READY 通过保存的 block IDs 和受保护命中结果进入原生 token 计算：已核验共享域由单 owner 给出，其余配置继续汇总所有 rank 的最小命中。
 不等待其他请求未来产出，不维护 producer prefix、持久化观察或 revalidation。
 
@@ -47,7 +52,8 @@ step 重新绑定相同计划时复用已建立的 expected 集合；变化的�
 
 每个请求首次真正被调度时记录一次 `schedule_match` 汇总：generation key、DP、
 owner、READY 接收时刻、首次 PENDING、PENDING 次数、匹配调用数和总耗时、
-最后一次 HBM/external token 数以及原生 SCHEDULED 时刻。缺失时刻保留 None。
+最后一次 HBM/external token 数、prompt 总长、原生实际 scheduled token 数及
+原生 SCHEDULED 时刻。缺失时刻保留 None。
 `match_ms` 包含原生 Python token/metadata 处理，不是 C++ reserve 时间；它可能覆盖
 多次 allocation 重试，必须结合 match_calls 解读。日志不代表首 token 时间，
 需通过 request/key 与客户端流式首 token 记录关联；不相减不同指标的分位数。

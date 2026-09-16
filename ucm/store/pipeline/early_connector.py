@@ -113,6 +113,10 @@ class EarlyPipelineStore(UcmPipelineStore):
     def lookup_on_prefix(self, block_ids: list[bytes]) -> int:
         context = current_lookup.get()
         if context is not None and context.connector.store is self:
+            if context.hbm_only:
+                # Recompute the native APC suffix. Still let native token and
+                # dump-metadata generation run, without querying external KV.
+                return -1
             job = context.job
             if job is not None and job.state == "READY":
                 # Native rank-consistency filtering may shorten this prefix.

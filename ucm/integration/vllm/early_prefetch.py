@@ -216,9 +216,22 @@ class EarlyScheduler:
             if self.jobs.get(job.request.request_id) is job and job.state != "CANCELLED":
                 self._cancel(job)
 
-    def scheduled(self, request_meta):
+    def scheduled(self, request_meta, scheduled_tokens=None):
         keys = {}
         with self.lock:
+            # Native HBM-only requests may have no external dispatch metadata.
+            # Observe their actual budget charge from SchedulerOutput as well.
+            for request_id, count in (scheduled_tokens or {}).items():
+                job = self.jobs.get(request_id)
+                if job is not None and job.state == "CANCELLED" and not job.dispatched:
+                    job.dispatched = True
+                    log.info(
+                        "UCM_EARLY hbm_scheduled key=%s request=%s dp=%s "
+                        "request_tokens=%s hbm_tokens=%s external_tokens=%s "
+                        "scheduled_tokens=%s ns=%s",
+                        job.key, request_id, self.dp_rank, job.request.num_tokens,
+                        job.hbm_tokens, job.external_tokens, count, time.monotonic_ns(),
+                    )
             for request_id, meta in request_meta.items():
                 job = self.jobs.get(request_id)
                 if job is None or job.state == "CANCELLED":
@@ -236,11 +249,14 @@ class EarlyScheduler:
                         "UCM_EARLY schedule_match key=%s request=%s dp=%s owner=%s "
                         "ready_received_ns=%s first_pending_ns=%s pending_probes=%s "
                         "match_calls=%s match_ms=%.3f hbm_tokens=%s external_tokens=%s "
+                        "request_tokens=%s scheduled_tokens=%s "
                         "scheduled_ns=%s handoff_transport=%s",
                         job.key, request_id, self.dp_rank, job.owner,
                         job.ready_received_ns, job.first_pending_ns, job.pending_probes,
                         job.match_calls, job.match_ns / 1e6, job.hbm_tokens,
-                        job.external_tokens, scheduled_ns,
+                        job.external_tokens, job.request.num_tokens,
+                        None if scheduled_tokens is None else scheduled_tokens.get(request_id),
+                        scheduled_ns,
                         "metadata" if job.owner else "control",
                     )
                     # Owner tickets already travel in native step metadata. The
