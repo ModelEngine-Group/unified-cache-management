@@ -63,6 +63,11 @@ def test_installed_versions_normalize_suffixes(raw_version, expected):
         ("0.25.99", "0.25.99", False),
         ("0.26.0", "0.26.0", True),
         ("0.26.0rc1", "0.26.0rc1", True),
+        ("0.26.0+empty", "0.26.0rc1+build", True),
+        ("0.26.0", "0.26.0rc2", True),
+        ("0.26.0", None, False),
+        ("0.25.1", "0.26.0rc1", False),
+        ("0.27.1", "0.26.0rc1", True),
         ("0.26.0.post1+build", "0.26.0.post1+build", True),
         ("0.26.0.dev12", "0.26.0.dev12", True),
         ("0.26.1", "0.26.1", True),
@@ -95,7 +100,9 @@ def test_m3_patch_routing_uses_aligned_version_range(
         patch.object(module, "ENABLE_UCM_PATCH", enabled),
         patch.object(module, "_read_vllm_version_raw", return_value=vllm_version),
         patch.object(
-            module, "_read_vllm_ascend_version_raw", return_value=ascend_version
+            module,
+            "_read_vllm_ascend_version_raw",
+            return_value=(ascend_version.split("+", 1)[0] if ascend_version else None),
         ),
         patch("builtins.__import__", side_effect=capture_import),
     ):
@@ -108,6 +115,12 @@ def test_m3_patch_routing_uses_aligned_version_range(
     )
     assert (prefix + "v0260.vllm_ascend.cpu_binding_patch" in imported) is (
         enabled and expected
+    )
+    assert (prefix + "v0260.vllm_ascend.minimax_m3_prefill_patch" in imported) is (
+        enabled
+        and vllm_version.split("+", 1)[0].split("rc", 1)[0] == "0.26.0"
+        and ascend_version is not None
+        and ascend_version.split("+", 1)[0] == "0.26.0rc1"
     )
 
 
