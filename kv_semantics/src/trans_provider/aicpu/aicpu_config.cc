@@ -115,14 +115,9 @@ std::uint32_t ResolveRemoteDeviceId(const NodeEndpoint* endpoint, std::uint32_t 
     return fallback;
 }
 
-Status ResolveProtocol(const TransportConfig& config, const NodeEndpoint* endpoint,
-                       CommProtocol& protocol)
+Status ResolveProtocol(const TransportConfig& config, CommProtocol& protocol)
 {
-    auto value = GetConfigAttr(config, {"aicpu_hcomm_protocol", "hcomm_protocol"});
-    if (value.empty()) {
-        value = GetEndpointAttr(endpoint, {"aicpu_hcomm_protocol", "hcomm_protocol", "protocol"});
-    }
-    value = ToLower(std::move(value));
+    auto value = ToLower(GetConfigAttr(config, {"aicpu_hcomm_protocol"}));
     if (value == "ubg") {
         protocol = COMM_PROTOCOL_UBG;
         return Status::OK();
@@ -132,8 +127,8 @@ Status ResolveProtocol(const TransportConfig& config, const NodeEndpoint* endpoi
         return Status::OK();
     }
     return Status::Error(StatusCode::INVALID_ARGUMENT,
-                         "AICPUTransProvider: unsupported or missing HCOMM protocol '" + value +
-                             "'; supported values are UBG and UBC_CTP");
+                         "AICPUTransProvider: unsupported or missing aicpu_hcomm_protocol '" +
+                             value + "'; supported values are UBG and UBC_CTP");
 }
 
 #if UCM_ASU_AICPU_USE_STAGED_CHANNEL_API

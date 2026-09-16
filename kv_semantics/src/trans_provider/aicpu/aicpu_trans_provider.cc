@@ -1213,7 +1213,7 @@ Status AICPUTransProvider::CreateConnection(const std::string& localIp, const st
 
     const auto* endpoint = impl_->FindEndpoint(remoteIp, port);
     CommProtocol protocol = COMM_PROTOCOL_RESERVED;
-    status = ResolveProtocol(impl_->config, endpoint, protocol);
+    status = ResolveProtocol(impl_->config, protocol);
     if (!status.ok()) { return status; }
     const auto remoteDeviceId = ResolveRemoteDeviceId(endpoint, impl_->localDeviceId);
     KV_INFO(
@@ -1700,10 +1700,7 @@ Status AICPUTransProvider::RegisterMemoryImpl(const std::vector<RegisterMemoryDe
     {
         std::lock_guard<std::mutex> lock(impl_->mu);
         if (impl_->endpoint == nullptr) {
-            const auto* configuredEndpoint =
-                impl_->config.endpoints.empty() ? nullptr : &impl_->config.endpoints.front();
-            auto protocolStatus =
-                ResolveProtocol(impl_->config, configuredEndpoint, endpointProtocol);
+            auto protocolStatus = ResolveProtocol(impl_->config, endpointProtocol);
             if (!protocolStatus.ok()) { return protocolStatus; }
             auto endpointStatus = impl_->EnsureEndpointLocked({}, endpointProtocol);
             if (!endpointStatus.ok()) { return endpointStatus; }

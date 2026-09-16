@@ -30,8 +30,7 @@ std::pair<std::string, std::string> ResolveLocalEndpointAddress(const TransportC
                                                                 const std::string& fallback,
                                                                 CommProtocol protocol);
 std::uint32_t ResolveRemoteDeviceId(const NodeEndpoint* endpoint, std::uint32_t fallback);
-Status ResolveProtocol(const TransportConfig& config, const NodeEndpoint* endpoint,
-                       CommProtocol& protocol);
+Status ResolveProtocol(const TransportConfig& config, CommProtocol& protocol);
 #if UCM_ASU_AICPU_USE_STAGED_CHANNEL_API
 std::string ResolveStagedOobHost(const TransportConfig& config, const NodeEndpoint* endpoint,
                                  const std::string& remoteIp);
