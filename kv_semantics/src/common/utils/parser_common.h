@@ -24,6 +24,7 @@
 #pragma once
 
 #include <cstdint>
+#include <initializer_list>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -34,6 +35,10 @@ namespace kv {
 std::string TrimConfigValue(const std::string& value);
 std::vector<std::string> SplitConfigValue(const std::string& value, char delimiter);
 std::uint64_t ParseConfigUint64(const std::string& value);
+// Fallback overloads preserve the AICPU configuration's full-value/range checks.
+std::uint64_t ParseConfigUint64(const std::string& value, std::uint64_t fallback);
+std::uint32_t ParseConfigUint32(const std::string& value, std::uint32_t fallback);
+std::uint16_t ParseConfigUint16(const std::string& value, std::uint16_t fallback);
 Protocol ParseConfigProtocol(std::string value);
 TransProviderType ParseConfigTransProviderType(std::string value);
 
@@ -41,6 +46,11 @@ std::string NormalizeAttrValue(std::string value);
 std::string ToLower(std::string value);
 bool GetAttr(const std::unordered_map<std::string, std::string>& attrs, const std::string& key,
              std::string& value);
+// Return the first present key, including an explicitly empty value.
+std::string GetAttr(const std::unordered_map<std::string, std::string>& attrs,
+                    std::initializer_list<const char*> names);
+std::string GetConfigAttr(const TransportConfig& config, std::initializer_list<const char*> names);
+std::string GetEndpointAttr(const NodeEndpoint* endpoint, std::initializer_list<const char*> names);
 bool GetUint64Attr(const std::unordered_map<std::string, std::string>& attrs,
                    const std::string& key, std::uint64_t& value);
 bool GetBoolAttr(const std::unordered_map<std::string, std::string>& attrs, const std::string& key,

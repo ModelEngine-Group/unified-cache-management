@@ -1,4 +1,5 @@
 #include "aicpu_trans_provider.h"
+#include "aicpu_config.h"
 
 #ifdef UCM_ASU_ENABLE_AICPU_PROVIDER
 
@@ -14,16 +15,12 @@
 
 #include <acl/acl.h>
 #include <algorithm>
-#include <arpa/inet.h>
 #include <atomic>
-#include <cctype>
-#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -36,17 +33,25 @@
 #include <vector>
 #include "ascend/ascend_buffer.h"
 #include "logger.h"
-
-#ifndef UCM_ASU_AICPU_USE_STAGED_CHANNEL_API
-#define UCM_ASU_AICPU_USE_STAGED_CHANNEL_API 1
-#endif
-
-#if UCM_ASU_AICPU_USE_STAGED_CHANNEL_API != 0 && UCM_ASU_AICPU_USE_STAGED_CHANNEL_API != 1
-#error "UCM_ASU_AICPU_USE_STAGED_CHANNEL_API must be 0 or 1"
-#endif
+#include "parser_common.h"
 
 namespace kv {
 namespace {
+
+using aicpu_config::CommAddrTypeName;
+using aicpu_config::CommProtocolName;
+using aicpu_config::IsUbProtocol;
+using aicpu_config::ResolveLocalEndpointAddress;
+using aicpu_config::ResolveProtocol;
+using aicpu_config::ResolveRemoteDeviceId;
+#if UCM_ASU_AICPU_USE_STAGED_CHANNEL_API
+using aicpu_config::ResolveStagedClientId;
+using aicpu_config::ResolveStagedOobHost;
+using aicpu_config::ResolveStagedOobPort;
+#endif
+using aicpu_config::FillCommAddr;
+using aicpu_config::ResolveHixlKernelJsonPath;
+using aicpu_config::ResolveLocType;
 
 constexpr std::uint32_t kDefaultNotifyNum = 1;
 constexpr std::uint32_t kDefaultUbSqDepth = 0xFFFFFFFFU;
@@ -59,9 +64,6 @@ constexpr std::uintptr_t kHostRegisterAlignment = 4096U;
 constexpr const char* kDefaultChannelName = "ucm_asu_aicpu";
 constexpr const char* kProviderSignature = "UCM_ASU_AICPU_PROVIDER_UBC_CTP_UBG_HCOMM_HIXL_V10";
 constexpr const char* kBatchSendKernelName = "HixlBatchSend";
-constexpr const char* kDefaultAscendHome = "/usr/local/Ascend/cann";
-constexpr const char* kHixlKernelJsonSuffix =
-    "/opp/built-in/op_impl/aicpu/config/libcann_hixl_kernel.json";
 #if UCM_ASU_AICPU_USE_STAGED_CHANNEL_API
 constexpr const char* kChannelApiMode = "HcommChannelCreateStaged";
 #else
@@ -316,137 +318,6 @@ private:
     std::int32_t savedDevice_{-1};
 };
 
-std::string Normalize(std::string value)
-{
-    std::transform(value.begin(), value.end(), value.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-    return value;
-}
-
-std::string GetAttr(const std::unordered_map<std::string, std::string>& attrs,
-                    std::initializer_list<const char*> names)
-{
-    for (const auto* name : names) {
-        auto it = attrs.find(name);
-        if (it != attrs.end()) { return it->second; }
-    }
-    return {};
-}
-
-std::string GetConfigAttr(const TransportConfig& config, std::initializer_list<const char*> names)
-{
-    return GetAttr(config.attrs, names);
-}
-
-std::string GetEndpointAttr(const NodeEndpoint* endpoint, std::initializer_list<const char*> names)
-{
-    return endpoint == nullptr ? std::string{} : GetAttr(endpoint->attrs, names);
-}
-
-std::uint32_t ParseUint32(std::string value, std::uint32_t fallback)
-{
-    if (value.empty()) { return fallback; }
-    char* end = nullptr;
-    errno = 0;
-    const unsigned long parsed = std::strtoul(value.c_str(), &end, 0);
-    if (errno != 0 || end == value.c_str() || *end != '\0' ||
-        parsed > std::numeric_limits<std::uint32_t>::max()) {
-        return fallback;
-    }
-    return static_cast<std::uint32_t>(parsed);
-}
-
-std::uint64_t ParseUint64(std::string value, std::uint64_t fallback)
-{
-    if (value.empty()) { return fallback; }
-    char* end = nullptr;
-    errno = 0;
-    const unsigned long long parsed = std::strtoull(value.c_str(), &end, 0);
-    if (errno != 0 || end == value.c_str() || *end != '\0') { return fallback; }
-    return static_cast<std::uint64_t>(parsed);
-}
-
-std::uint16_t ParseUint16(std::string value, std::uint16_t fallback)
-{
-    const auto parsed = ParseUint32(std::move(value), fallback);
-    if (parsed > std::numeric_limits<std::uint16_t>::max()) { return fallback; }
-    return static_cast<std::uint16_t>(parsed);
-}
-
-const char* CommProtocolName(CommProtocol protocol)
-{
-    switch (protocol) {
-        case COMM_PROTOCOL_ROCE: return "roce";
-        case COMM_PROTOCOL_UBC_TP: return "ubc_tp";
-        case COMM_PROTOCOL_UB_MEM: return "ub_mem";
-        case COMM_PROTOCOL_UBOE: return "uboe";
-        case COMM_PROTOCOL_UBG: return "ubg";
-        case COMM_PROTOCOL_UBC_CTP: return "ubc_ctp";
-        default: return "unknown";
-    }
-}
-
-bool IsUbProtocol(CommProtocol protocol)
-{
-    return protocol == COMM_PROTOCOL_UBC_TP || protocol == COMM_PROTOCOL_UB_MEM ||
-           protocol == COMM_PROTOCOL_UBOE || protocol == COMM_PROTOCOL_UBC_CTP ||
-           protocol == COMM_PROTOCOL_UBG;
-}
-
-const char* CommAddrTypeName(CommAddrType type)
-{
-    switch (type) {
-        case COMM_ADDR_TYPE_IP_V4: return "ipv4";
-        case COMM_ADDR_TYPE_IP_V6: return "ipv6";
-        case COMM_ADDR_TYPE_ID: return "id";
-        case COMM_ADDR_TYPE_EID: return "eid";
-        default: return "unknown";
-    }
-}
-
-int HexNibble(char value)
-{
-    if (value >= '0' && value <= '9') { return value - '0'; }
-    if (value >= 'a' && value <= 'f') { return value - 'a' + 10; }
-    if (value >= 'A' && value <= 'F') { return value - 'A' + 10; }
-    return -1;
-}
-
-std::string NormalizeEidLiteral(const std::string& text)
-{
-    std::string input = text;
-    if (input.size() > 4U && Normalize(input.substr(0, 4U)) == "eid:") { input = input.substr(4U); }
-    std::string normalized;
-    normalized.reserve(input.size());
-    std::size_t start = 0U;
-    if (input.size() > 2U && input[0] == '0' && (input[1] == 'x' || input[1] == 'X')) {
-        start = 2U;
-    }
-    for (std::size_t index = start; index < input.size(); ++index) {
-        if (input[index] != ':' && input[index] != '-') { normalized.push_back(input[index]); }
-    }
-    return normalized;
-}
-
-bool TryFillEidCommAddr(const std::string& text, CommAddr& out)
-{
-    const std::string normalized = NormalizeEidLiteral(text);
-    if (normalized.size() != COMM_ADDR_EID_LEN * 2U) { return false; }
-
-    std::uint8_t eid[COMM_ADDR_EID_LEN]{};
-    for (std::size_t index = 0U; index < COMM_ADDR_EID_LEN; ++index) {
-        const int high = HexNibble(normalized[index * 2U]);
-        const int low = HexNibble(normalized[index * 2U + 1U]);
-        if (high < 0 || low < 0) { return false; }
-        eid[index] = static_cast<std::uint8_t>((high << 4U) | low);
-    }
-
-    out.type = COMM_ADDR_TYPE_EID;
-    std::memset(out.raws, 0, sizeof(out.raws));
-    std::memcpy(out.eid, eid, sizeof(eid));
-    return true;
-}
-
 struct LocalDeviceSelection {
     std::uint32_t deviceId{0};
     aclrtContext context{nullptr};
@@ -460,7 +331,9 @@ LocalDeviceSelection ResolveConfiguredDevice(const TransportConfig& config)
     }
     const auto explicitDevice =
         GetConfigAttr(config, {"device_id", "deviceId", "logical_device_id"});
-    if (!explicitDevice.empty()) { return {ParseUint32(explicitDevice, 0), nullptr, "config"}; }
+    if (!explicitDevice.empty()) {
+        return {ParseConfigUint32(explicitDevice, 0), nullptr, "config"};
+    }
 
     // endpoint.deviceId belongs to the remote ASU and must not select the local ACL device.
     return {0, nullptr, "default_device_0"};
@@ -493,121 +366,6 @@ LocalDeviceSelection ResolveLocalDevice(const TransportConfig& config)
     return {static_cast<std::uint32_t>(currentDevice), currentContext, "current_acl"};
 }
 
-std::pair<std::string, std::string> ResolveLocalEndpointAddress(const TransportConfig& config,
-                                                                std::uint32_t logicalDeviceId,
-                                                                const std::string& fallback,
-                                                                CommProtocol protocol)
-{
-    const bool useEid = protocol == COMM_PROTOCOL_UBG;
-    const std::string addressKey = useEid ? "aicpu_local_eid" : "aicpu_local_ip";
-    const auto deviceKey = addressKey + "." + std::to_string(logicalDeviceId);
-    auto it = config.attrs.find(deviceKey);
-    if (it != config.attrs.end() && !it->second.empty()) { return {it->second, deviceKey}; }
-
-    auto configured = GetConfigAttr(config, {addressKey.c_str()});
-    if (!configured.empty()) { return {std::move(configured), addressKey}; }
-    if (!fallback.empty()) { return {fallback, "localIp_argument"}; }
-
-    configured = GetConfigAttr(config, {"localIp", "local_ip"});
-    return {std::move(configured), "localIp"};
-}
-
-std::uint32_t ResolveRemoteDeviceId(const NodeEndpoint* endpoint, std::uint32_t fallback)
-{
-    const auto explicitDevice =
-        GetEndpointAttr(endpoint, {"device_id", "deviceId", "remote_device_id"});
-    if (!explicitDevice.empty()) { return ParseUint32(explicitDevice, fallback); }
-    return fallback;
-}
-
-Status ResolveProtocol(const TransportConfig& config, const NodeEndpoint* endpoint,
-                       CommProtocol& protocol)
-{
-    auto value = GetConfigAttr(config, {"aicpu_hcomm_protocol", "hcomm_protocol"});
-    if (value.empty()) {
-        value = GetEndpointAttr(endpoint, {"aicpu_hcomm_protocol", "hcomm_protocol", "protocol"});
-    }
-    value = Normalize(std::move(value));
-    if (value == "ubg") {
-        protocol = COMM_PROTOCOL_UBG;
-        return Status::OK();
-    }
-    if (value == "ub" || value == "ubc_ctp" || value == "ub_ctp") {
-        protocol = COMM_PROTOCOL_UBC_CTP;
-        return Status::OK();
-    }
-    return Status::Error(StatusCode::INVALID_ARGUMENT,
-                         "AICPUTransProvider: unsupported or missing HCOMM protocol '" + value +
-                             "'; supported values are UBG and UBC_CTP");
-}
-
-#if UCM_ASU_AICPU_USE_STAGED_CHANNEL_API
-std::string ResolveStagedOobHost(const TransportConfig& config, const NodeEndpoint* endpoint,
-                                 const std::string& remoteIp)
-{
-    auto host = GetEndpointAttr(endpoint, {"aicpu_staged_oob_host", "staged_oob_host", "oob_host"});
-    if (host.empty()) {
-        host = GetConfigAttr(config, {"aicpu_staged_oob_host", "staged_oob_host", "oob_host"});
-    }
-    return host.empty() ? remoteIp : host;
-}
-
-std::uint16_t ResolveStagedOobPort(const TransportConfig& config, const NodeEndpoint* endpoint,
-                                   std::uint32_t port)
-{
-    auto value =
-        GetEndpointAttr(endpoint, {"aicpu_staged_oob_port", "staged_oob_port", "oob_port"});
-    if (value.empty()) {
-        value = GetConfigAttr(config, {"aicpu_staged_oob_port", "staged_oob_port", "oob_port"});
-    }
-    return ParseUint16(value, static_cast<std::uint16_t>(port));
-}
-
-std::uint32_t ResolveStagedClientId(const TransportConfig& config, const NodeEndpoint* endpoint)
-{
-    auto value =
-        GetEndpointAttr(endpoint, {"aicpu_staged_client_id", "staged_client_id", "client_id"});
-    if (value.empty()) {
-        value = GetConfigAttr(config, {"aicpu_staged_client_id", "staged_client_id", "client_id"});
-    }
-    return ParseUint32(value, static_cast<std::uint32_t>(config.nodeId));
-}
-#endif
-
-EndpointLocType ResolveLocType(const TransportConfig& config, const NodeEndpoint* endpoint)
-{
-    auto value = GetEndpointAttr(endpoint, {"endpoint_loc", "placement", "loc"});
-    if (value.empty()) { value = GetConfigAttr(config, {"endpoint_loc", "placement", "loc"}); }
-    value = Normalize(std::move(value));
-    return value == "host" ? ENDPOINT_LOC_TYPE_HOST : ENDPOINT_LOC_TYPE_DEVICE;
-}
-
-Status FillCommAddr(const std::string& text, CommAddr& out)
-{
-    if (TryFillEidCommAddr(text, out)) {
-        KV_INFO("AICPUTransProvider: parsed HCOMM endpoint address as EID addr={}", text);
-        return Status::OK();
-    }
-    if (inet_pton(AF_INET, text.c_str(), &out.addr) == 1) {
-        out.type = COMM_ADDR_TYPE_IP_V4;
-        return Status::OK();
-    }
-    if (inet_pton(AF_INET6, text.c_str(), &out.addr6) == 1) {
-        out.type = COMM_ADDR_TYPE_IP_V6;
-        return Status::OK();
-    }
-    char* end = nullptr;
-    errno = 0;
-    const unsigned long parsed = std::strtoul(text.c_str(), &end, 0);
-    if (errno == 0 && end != text.c_str() && *end == '\0' &&
-        parsed <= std::numeric_limits<std::uint32_t>::max()) {
-        out.type = COMM_ADDR_TYPE_ID;
-        out.id = static_cast<std::uint32_t>(parsed);
-        return Status::OK();
-    }
-    return Status::Error(StatusCode::INVALID_ARGUMENT, "invalid hcomm endpoint address: " + text);
-}
-
 Status BuildEndpointDesc(const TransportConfig& config, const NodeEndpoint* endpoint,
                          const std::string& addr, std::uint32_t deviceId, CommProtocol protocol,
                          const char* role, EndpointDesc& out)
@@ -632,13 +390,13 @@ Status BuildEndpointDesc(const TransportConfig& config, const NodeEndpoint* endp
     if (out.loc.locType == ENDPOINT_LOC_TYPE_DEVICE) {
         out.loc.device.devPhyId = deviceId;
         out.loc.device.superDevId =
-            ParseUint32(GetEndpointAttr(endpoint, {"super_device_id", "superDevId"}), 0);
+            ParseConfigUint32(GetEndpointAttr(endpoint, {"super_device_id", "superDevId"}), 0);
         out.loc.device.serverIdx =
-            ParseUint32(GetEndpointAttr(endpoint, {"server_idx", "serverIdx"}), 0);
+            ParseConfigUint32(GetEndpointAttr(endpoint, {"server_idx", "serverIdx"}), 0);
         out.loc.device.superPodIdx =
-            ParseUint32(GetEndpointAttr(endpoint, {"super_pod_idx", "superPodIdx"}), 0);
+            ParseConfigUint32(GetEndpointAttr(endpoint, {"super_pod_idx", "superPodIdx"}), 0);
     } else {
-        out.loc.host.id = ParseUint32(GetEndpointAttr(endpoint, {"host_id", "hostId"}), 0);
+        out.loc.host.id = ParseConfigUint32(GetEndpointAttr(endpoint, {"host_id", "hostId"}), 0);
     }
     return Status::OK();
 }
@@ -646,19 +404,6 @@ Status BuildEndpointDesc(const TransportConfig& config, const NodeEndpoint* endp
 CommMemType ToHcommMemType(TransProvider::MemType type)
 {
     return type == TransProvider::MemType::MEM_HOST ? COMM_MEM_TYPE_HOST : COMM_MEM_TYPE_DEVICE;
-}
-
-std::string ResolveHixlKernelJsonPath(const TransportConfig& config)
-{
-    auto path = GetConfigAttr(config, {"hixl_kernel_json", "aicpu_hixl_kernel_json"});
-    if (!path.empty()) { return path; }
-    if (const char* env = std::getenv("HIXL_KERNEL_JSON"); env != nullptr && env[0] != '\0') {
-        return env;
-    }
-    const char* ascendHome = std::getenv("ASCEND_HOME_PATH");
-    path = (ascendHome == nullptr || ascendHome[0] == '\0') ? kDefaultAscendHome : ascendHome;
-    path += kHixlKernelJsonSuffix;
-    return path;
 }
 
 int32_t MakeAclSyncTimeoutMs(std::uint32_t hcommTimeoutMs)
@@ -725,21 +470,22 @@ struct AICPUTransProvider::Impl {
 
     explicit Impl(const TransportConfig& configIn)
         : config(configIn),
-          notifyNum(ParseUint32(GetConfigAttr(configIn, {"aicpu_notify_num", "notify_num"}),
-                                kDefaultNotifyNum)),
-          ubSqDepth(ParseUint32(GetConfigAttr(configIn, {"aicpu_ub_sq_depth", "ub_sq_depth"}),
-                                kDefaultUbSqDepth)),
-          qos(ParseUint32(GetConfigAttr(configIn, {"aicpu_qos", "qos"}), 0)),
-          sendTimeoutMs(ParseUint32(
+          notifyNum(ParseConfigUint32(GetConfigAttr(configIn, {"aicpu_notify_num", "notify_num"}),
+                                      kDefaultNotifyNum)),
+          ubSqDepth(ParseConfigUint32(GetConfigAttr(configIn, {"aicpu_ub_sq_depth", "ub_sq_depth"}),
+                                      kDefaultUbSqDepth)),
+          qos(ParseConfigUint32(GetConfigAttr(configIn, {"aicpu_qos", "qos"}), 0)),
+          sendTimeoutMs(ParseConfigUint32(
               GetConfigAttr(configIn, {"aicpu_send_timeout_ms", "send_timeout_ms", "timeout"}),
               kDefaultSendTimeoutMs)),
           channelName(GetConfigAttr(configIn, {"aicpu_channel_name", "channel_name"})),
           hixlKernelJsonPath(ResolveHixlKernelJsonPath(configIn)),
-          stagedKato(ParseUint32(GetConfigAttr(configIn, {"aicpu_staged_kato", "staged_kato"}), 0)),
-          stagedRmUasid(ParseUint32(
+          stagedKato(
+              ParseConfigUint32(GetConfigAttr(configIn, {"aicpu_staged_kato", "staged_kato"}), 0)),
+          stagedRmUasid(ParseConfigUint32(
               GetConfigAttr(configIn, {"aicpu_staged_rm_uasid", "staged_rm_uasid"}), 0)),
-          stagedMamiTag(
-              ParseUint64(GetConfigAttr(configIn, {"aicpu_staged_mami_tag", "staged_mami_tag"}), 0))
+          stagedMamiTag(ParseConfigUint64(
+              GetConfigAttr(configIn, {"aicpu_staged_mami_tag", "staged_mami_tag"}), 0))
     {
         auto selection = ResolveLocalDevice(configIn);
         localDeviceId = selection.deviceId;
@@ -1562,8 +1308,8 @@ Status AICPUTransProvider::CreateConnection(const std::string& localIp, const st
         desc.notifyNum = notify;
         desc.exchangeAllMems = true;
         desc.role = HCOMM_SOCKET_ROLE_CLIENT;
-        desc.port = ParseUint16(GetEndpointAttr(endpoint, {"aicpu_port", "hcomm_port"}),
-                                static_cast<std::uint16_t>(port));
+        desc.port = ParseConfigUint16(GetEndpointAttr(endpoint, {"aicpu_port", "hcomm_port"}),
+                                      static_cast<std::uint16_t>(port));
         desc.ubAttr.sqDepth = impl_->ubSqDepth;
         desc.qos = impl_->qos;
         SetHcommChannelNameIfSupported(desc, impl_->channelName.c_str(), 0);

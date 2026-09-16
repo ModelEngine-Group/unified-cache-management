@@ -24,11 +24,18 @@
 #include "parser_common.h"
 #include <algorithm>
 #include <cctype>
+#include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
 
 namespace kv {
 namespace {
+
+std::uint64_t ParseUnsignedConfigValue(const std::string& value, std::size_t* consumed)
+{
+    return std::stoull(value, consumed, 0);
+}
 
 void ApplyTransportEndpointField(NodeEndpoint& endpoint, const std::string& key,
                                  const std::string& value)
@@ -72,7 +79,67 @@ std::vector<std::string> SplitConfigValue(const std::string& value, char delimit
     return parts;
 }
 
-std::uint64_t ParseConfigUint64(const std::string& value) { return std::stoull(value, nullptr, 0); }
+std::uint64_t ParseConfigUint64(const std::string& value)
+{
+    return ParseUnsignedConfigValue(value, nullptr);
+}
+
+std::uint64_t ParseConfigUint64(const std::string& value, std::uint64_t fallback)
+{
+    try {
+        std::size_t consumed = 0;
+        const auto parsed = ParseUnsignedConfigValue(value, &consumed);
+        // Match the previous strtoull end-pointer check, including embedded NULs.
+        return value.c_str()[consumed] == '\0' ? parsed : fallback;
+    } catch (const std::invalid_argument&) {
+        return fallback;
+    } catch (const std::out_of_range&) {
+        return fallback;
+    }
+}
+
+std::uint32_t ParseConfigUint32(const std::string& value, std::uint32_t fallback)
+{
+    const auto parsed = ParseConfigUint64(value, fallback);
+    return parsed > std::numeric_limits<std::uint32_t>::max() ? fallback
+                                                              : static_cast<std::uint32_t>(parsed);
+}
+
+std::uint16_t ParseConfigUint16(const std::string& value, std::uint16_t fallback)
+{
+    const auto parsed = ParseConfigUint32(value, fallback);
+    return parsed > std::numeric_limits<std::uint16_t>::max() ? fallback
+                                                              : static_cast<std::uint16_t>(parsed);
+}
+
+bool GetAttr(const std::unordered_map<std::string, std::string>& attrs, const std::string& key,
+             std::string& value)
+{
+    const auto it = attrs.find(key);
+    if (it == attrs.end()) { return false; }
+    value = it->second;
+    return true;
+}
+
+std::string GetAttr(const std::unordered_map<std::string, std::string>& attrs,
+                    std::initializer_list<const char*> names)
+{
+    std::string value;
+    for (const auto* name : names) {
+        if (GetAttr(attrs, name, value)) { return value; }
+    }
+    return {};
+}
+
+std::string GetConfigAttr(const TransportConfig& config, std::initializer_list<const char*> names)
+{
+    return GetAttr(config.attrs, names);
+}
+
+std::string GetEndpointAttr(const NodeEndpoint* endpoint, std::initializer_list<const char*> names)
+{
+    return endpoint == nullptr ? std::string{} : GetAttr(endpoint->attrs, names);
+}
 
 Protocol ParseConfigProtocol(std::string value)
 {
