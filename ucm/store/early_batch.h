@@ -11,6 +11,7 @@ struct Progress {
     bool done{false};
     bool advanced{false};
     bool canSubmit{true};
+    bool discarded{false};  // explicit suffix retirement, after drain; not an I/O failure
     size_t inflightBytes{0};
     size_t remainingL2Work{0};
     size_t completedReadBytes{0};
@@ -27,6 +28,7 @@ public:
     virtual ~Batch() = default;
     virtual Expected<Progress> Step(size_t availableBytes) = 0;
     virtual Progress Snapshot() = 0;
+    virtual void Discard() = 0;  // stop new suffix I/O; Step still collects submitted I/O
     virtual Expected<PrefetchResult> Run() = 0;
     virtual size_t ProtectedBytes() const = 0;
     // Installed by the existing health wrapper before publication to Python.

@@ -46,6 +46,8 @@ struct PrefetchResult {
     size_t l2ReadShards{0};
     size_t l2ReadBytes{0};
     size_t coalescedShards{0};
+    size_t totalHitBlocks{0};  // final complete, protected prefix (valid when done)
+    bool capacityTruncated{false};  // successful partial result, never an I/O error
 };
 
 /**

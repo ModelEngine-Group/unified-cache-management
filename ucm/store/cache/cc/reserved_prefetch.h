@@ -17,23 +17,7 @@
 namespace UC::CacheStore {
 
 class ReservedPrefetch {
-    // Per-worker conservative byte claims, including still-missing shards.
-    // Actual cross-process exclusion remains the native buffer's CanReserve,
-    // node references and bounded TryGet, not this local accounting.
-    struct Budget {
-        size_t limit;
-        std::atomic<size_t> used{0};
-        explicit Budget(size_t bytes) : limit(bytes) {}
-    };
-    struct Charge {
-        std::shared_ptr<Budget> budget;
-        size_t bytes{0};
-        std::mutex mutex;
-        ~Charge() { if (budget) { budget->used.fetch_sub(bytes); } }
-    };
     struct BlockPins {
-        std::shared_ptr<Charge> charge;  // pins destruct before their claim is returned
-
         std::vector<TransBuffer::Handle> pins;
         bool ready{false};  // immutable once published in readyBlocks_
     };
@@ -60,11 +44,8 @@ class ReservedPrefetch {
         std::shared_future<ProbeOutcome> future{promise.get_future().share()};
     };
     std::unordered_map<Detail::BlockId, std::shared_ptr<ProbeFlight>, Detail::BlockIdHasher> locating_;
-    std::shared_ptr<Budget> budget_;
     Expected<std::vector<std::shared_ptr<BlockPins>>> Locate(
         const Detail::BlockId* blocks, size_t count, EarlyStats& stats);
-    Expected<std::shared_ptr<BlockPins>> NewGroup();
-    Status ChargeConfirmed(const std::shared_ptr<BlockPins>& group);
     class Batch;
     std::shared_ptr<Early::Batch> MakeBatch(const std::shared_ptr<Reservation>& r, uint64_t handle);
     struct LoadEntry {
@@ -128,6 +109,16 @@ class ReservedPrefetch {
         }
     }
 
+    // Per-reservation reference footprint, not an admission/union ledger.
+    size_t ProtectedBytes(const Reservation& r) const
+    {
+        size_t pins = 0;
+        for (const auto& group : r.groups) {
+            for (const auto& pin : group->pins) { pins += static_cast<bool>(pin); }
+        }
+        return pins * shardBytes_;
+    }
+
     size_t PublishReady(const std::shared_ptr<Reservation>& r)
     {
         std::lock_guard guard(mutex_);
@@ -144,9 +135,7 @@ public:
           shardsPerBlock_(blockSize / shardSize), shardBytes_(shardSize),
           timeoutMs_(timeoutMs),
           hintBlockCapacity_(buffer_ ? EarlyBufferPins::HintBlockCapacity(*buffer_, shardsPerBlock_) : 0)
-    {
-        budget_ = std::make_shared<Budget>(buffer_ ? EarlyBufferPins::ReservableSlots(*buffer_) * shardBytes_ : 0);
-    }
+    {}
 
     Expected<PrefixReservation> Reserve(const Detail::BlockId* blocks, size_t num)
     {
@@ -157,7 +146,7 @@ public:
             std::lock_guard guard(mutex_);
             stats.handle = r->handle = next_++;
         }
-        stats.protectionLimitBytes = budget_->limit;
+        stats.protectionLimitBytes = EarlyBufferPins::ReservableSlots(*buffer_) * shardBytes_;
         size_t count = num;
         if (num) {
             EarlyStats::Phase phase{stats.leaseMs, stats.leaseStartNs, stats.leaseEndNs};
@@ -171,7 +160,6 @@ public:
         {
             EarlyStats::Phase phase{stats.pinMs, stats.pinStartNs, stats.pinEndNs};
             auto located = Locate(blocks, num, stats);
-            stats.protectedBytes = budget_->used.load();
             if (!located) { return located.Error(); }
             r->groups = std::move(located.Value());
             for (size_t b = 0; b < num; ++b) {
@@ -193,8 +181,6 @@ public:
         r->groups.resize(count);
         size_t missing = 0;
         for (const auto& group : r->groups) {
-            const auto charged = ChargeConfirmed(group);
-            if (charged.Failure()) { return charged; }
             if (group->ready) { continue; }
             size_t remaining = 0;
             for (const auto& pin : group->pins) { if (!pin || !pin.Ready()) { ++remaining; } }
@@ -217,8 +203,8 @@ public:
             throw;
         }
         stats.handle = handle;
-        stats.protectedBytes = budget_->used.load();
-        stats.protectionLimitBytes = budget_->limit;
+        stats.protectedBytes = ProtectedBytes(*r);
+        stats.protectionLimitBytes = EarlyBufferPins::ReservableSlots(*buffer_) * shardBytes_;
         stats.success = true;
         return PrefixReservation{handle, count, missing, std::move(batch)};
     }

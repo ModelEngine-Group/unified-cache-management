@@ -82,10 +82,16 @@ void BindOperations(pybind11::module_& module)
         .def_property_readonly("shard_bytes", [](const BoundBatch& b) { return b.batch->shardBytes; })
         .def_property_readonly("protection_limit_bytes", [](const BoundBatch& b) { return b.batch->protectionLimitBytes; })
         .def_property_readonly("protected_bytes", [](const BoundBatch& b) { return b.batch->ProtectedBytes(); })
+        .def("discard", [](BoundBatch& b) {
+            py::gil_scoped_release release;
+            b.batch->Discard();
+        })
         .def("snapshot", [](BoundBatch& b) {
             UC::Early::Progress progress;
             { py::gil_scoped_release release; progress = b.batch->Snapshot(); }
             py::dict out;
+            out["total_hit_blocks"] = progress.result.totalHitBlocks;
+            out["capacity_truncated"] = progress.result.capacityTruncated;
             out["l2_read_bytes"] = progress.result.l2ReadBytes;
             out["completed_read_bytes"] = progress.completedReadBytes;
             return out;
@@ -98,11 +104,14 @@ void BindOperations(pybind11::module_& module)
             }
             py::dict out;
             out["done"] = progress.done;
+            out["discarded"] = progress.discarded;
             out["advanced"] = progress.advanced;
             out["can_submit"] = progress.canSubmit;
             out["inflight_bytes"] = progress.inflightBytes;
             out["remaining_l2_work"] = progress.remainingL2Work;
             out["l2_read_shards"] = progress.result.l2ReadShards;
+            out["total_hit_blocks"] = progress.result.totalHitBlocks;
+            out["capacity_truncated"] = progress.result.capacityTruncated;
             out["l2_read_bytes"] = progress.result.l2ReadBytes;
             out["completed_read_bytes"] = progress.completedReadBytes;
             out["coalesced_shards"] = progress.result.coalescedShards;
@@ -192,6 +201,8 @@ void BindOperations(pybind11::module_& module)
         out["l2_read_shards"] = result.l2ReadShards;
         out["l2_read_bytes"] = result.l2ReadBytes;
         out["coalesced_shards"] = result.coalescedShards;
+        out["total_hit_blocks"] = result.totalHitBlocks;
+        out["capacity_truncated"] = result.capacityTruncated;
         return out;
     }, py::arg("pipeline"), py::arg("handle"));
 

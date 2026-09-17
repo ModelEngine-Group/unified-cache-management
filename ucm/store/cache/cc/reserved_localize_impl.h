@@ -1,32 +1,6 @@
 #ifndef UCM_RESERVED_LOCALIZE_IMPL_H
 #define UCM_RESERVED_LOCALIZE_IMPL_H
 namespace UC::CacheStore {
-inline Expected<std::shared_ptr<ReservedPrefetch::BlockPins>> ReservedPrefetch::NewGroup()
-{
-    auto group = std::make_shared<BlockPins>();
-    group->charge = std::make_shared<Charge>();
-    group->charge->budget = budget_;
-    return group;
-}
-
-inline Status ReservedPrefetch::ChargeConfirmed(const std::shared_ptr<BlockPins>& group)
-{
-    std::lock_guard guard(group->charge->mutex);
-    if (group->charge->bytes) { return Status::OK(); }
-    const auto bytes = shardsPerBlock_ * shardBytes_;
-    auto used = budget_->used.load();
-    for (;;) {
-        if (bytes > budget_->limit - used) {
-            // Fail instead of waiting while other partial requests hold the
-            // credits needed to complete this one. Native fallback can compute.
-            return Status::NoSpace();
-        }
-        if (budget_->used.compare_exchange_weak(used, used + bytes)) { break; }
-    }
-    group->charge->bytes = bytes;
-    return Status::OK();
-}
-
 inline Expected<std::vector<std::shared_ptr<ReservedPrefetch::BlockPins>>>
 ReservedPrefetch::Locate(const Detail::BlockId* blocks, size_t count, EarlyStats& stats)
 {
@@ -73,10 +47,8 @@ ReservedPrefetch::Locate(const Detail::BlockId* blocks, size_t count, EarlyStats
         std::vector<Detail::BlockId> probe;
         std::vector<size_t> offsets;
         for (const auto& leader : leaders) {
-            auto created = NewGroup();
-            if (!created) { return created.Error(); }
             auto& group = groups[leader.offset];
-            group = std::move(created.Value());
+            group = std::make_shared<BlockPins>();
             if (leader.hint && leader.hint->size() == shardsPerBlock_) {
                 group->pins = EarlyBufferPins::Recall(*buffer_, blocks[leader.offset], *leader.hint, stats.hintChecks);
                 if (!group->pins.empty()) {
@@ -91,7 +63,6 @@ ReservedPrefetch::Locate(const Detail::BlockId* blocks, size_t count, EarlyStats
         auto batch = EarlyBufferPins::PinBlocks(*buffer_, probe.data(), probe.size(), shardsPerBlock_);
         stats.shards += batch.pins.size();
         stats.bucketLocks += batch.bucketLocks;
-        if (batch.capacityConflict) { return Status::Error("prefix occupies native load-exclusive buffer"); }
         for (size_t j = 0; j < offsets.size(); ++j) {
             auto& group = groups[offsets[j]];
             group->pins.resize(shardsPerBlock_);
@@ -138,9 +109,8 @@ ReservedPrefetch::Locate(const Detail::BlockId* blocks, size_t count, EarlyStats
         if (!group->ready && group.use_count() > 1) {
             // Published localization is immutable. Each data task owns its
             // missing positions; TryGet revalidates negatives and coalesces I/O.
-            // Known handles and the block's byte claim remain shared/protected.
+            // Known handles keep native references; no separate byte claim.
             auto copy = std::make_shared<BlockPins>();
-            copy->charge = group->charge;
             copy->pins = group->pins;
             group = std::move(copy);
         }

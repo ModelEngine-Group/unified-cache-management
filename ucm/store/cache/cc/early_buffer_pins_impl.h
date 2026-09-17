@@ -19,7 +19,7 @@ TransBuffer::Handle EarlyBufferPins::Acquire(TransBuffer& buffer,
     bool owner = false;
     strategy.BucketLock(bucket);
     auto node = buffer.FindAt(bucket, block, shard, owner);
-    if (node == invalidIndex) {
+    if (node == invalidIndex && (load ? strategy.NodeCount() : ReservableSlots(buffer)) != 0) {
         node = buffer.Alloc(block, shard, bucket, load, 2 * strategy.NodeCount());
         owner = true;
     } else if (load && buffer.bypassHitOnLoad_ && owner && buffer.Ready(node)) {
@@ -187,7 +187,6 @@ EarlyBufferPins::Batch EarlyBufferPins::PinBlocks(TransBuffer& buffer,
             node = meta->next;
         }
         strategy.BucketUnlock(bucket);
-        if (result.capacityConflict) { break; }
     }
     return result;
 }
