@@ -21,7 +21,7 @@ from test_early_batch_pipeline import Control, Capability, blocks, result, wait
 def capability(dp=0, rank=0, domain="native-object"):
     return dict(version=owner.VERSION, ready=True, dp=dp, rank=rank, domain=domain, layout="same-layout",
                 native=dict(nodes=132, reservable_nodes=112, shard_bytes=4, block_bytes=8),
-                task_shards=2, dump_task_shards=6 if rank == 0 else 0,
+                task_shards=128, dump_task_shards=6 if rank == 0 else 0,
                 max_jobs=4, max_candidates=0, layers=[0, 1])
 
 
@@ -37,11 +37,18 @@ class Cluster:
                 self.b.receive(f"w{d}.{r}", dict(op="hello", session="worker", capability=cap))
         self.out.clear()
 
-    def job(self, key="g1", dp=0, count=4, offset=0):
+    def job(self, key="g1", dp=0, count=4, offset=0, confirm=True):
         self.sequence[dp] += 1
         self.b.receive(f"s{dp}", dict(op="job", key=key, dp=dp, blocks=blocks(count + offset)[offset:],
                                      request="reusable-id", sequence=self.sequence[dp]))
-        return self.b.jobs[key]
+        job = self.b.jobs[key]
+        if confirm and job.get("owner"):
+            self.confirm(job, count)
+        return job
+
+    def confirm(self, job, count, begin=0, index=0):
+        self.message(job, "confirm_batch", batch=index, begin=begin, count=count)
+        return job["batch_grants"][index][2]
 
     def message(self, job, op, peer=None, **kwargs):
         self.b.receive(peer or job["owner"], dict(op=op, key=job["key"], attempt=job["attempt"], **kwargs))
@@ -82,12 +89,14 @@ def test_unverified_handshake_uses_unchanged_broadcast(change):
     assert len([m for _, m in c.out if m["op"] == "reserve"]) == 2
 
 
-def test_shared_capacity_charged_before_work_and_returned_after_drain_only():
+def test_confirmed_capacity_returned_after_drain_only():
     c = Cluster(dp=2)
     a, b = c.job("a", 0, 30), c.job("b", 1, 20, offset=30)
     assert a["budget"] is b["budget"] and a["budget"]["used"] == 400
-    rejected = c.job("c", 0, 1, offset=50)
-    assert rejected["status"] == "FAILED" and "owner" not in rejected
+    rejected = c.job("c", 0, 7, offset=50, confirm=False)
+    assert not c.confirm(rejected, 7)
+    assert rejected["claims"] == set()
+    c.drain(rejected)
     c.b.receive(a["client"], dict(op="cancel", key="a"))
     c.message(a, "quiesced", "w0.0")
     c.message(a, "owner_drained")  # other consumer not quiescent
@@ -242,6 +251,7 @@ def test_task_scope_wraps_same_native_consistency_and_preserves_errors():
 
 def make_worker(rank):
     store = Mock()
+    store.config = {"timeout_ms": 1000}
     connector = SimpleNamespace(store=store, tp_rank=rank, tp_size=2, is_mla=True,
         _rank_consistency=Mock(), unique_id="owner-test",
         _vllm_config=SimpleNamespace(parallel_config=SimpleNamespace(data_parallel_index=0)))
@@ -257,6 +267,13 @@ def make_worker(rank):
         r["batch"].snapshot = lambda: dict(l2_read_bytes=0, completed_read_bytes=0)
         return r
     w.store.reserve_prefix.side_effect = reserve
+    original_send = w.control.send
+    def grant(message):
+        original_send(message)
+        if message["op"] == "confirm_batch":
+            w.receive(dict(op="batch_grant", key=message["key"], attempt=message["attempt"],
+                           batch=message["batch"], granted=True))
+    w.control.send = grant
     return w
 
 
@@ -305,8 +322,12 @@ def _transport_worker(endpoint, dp, rank, commands, events):
         events.put((f"w{dp}.{rank}", message))
         if message["op"] == "owner_reserve":
             connected.wait(5)
+            holder["hit"] = len(message["blocks"])
+            holder["control"].send(dict(op="confirm_batch", key=message["key"], attempt=message["attempt"],
+                                        batch=0, begin=0, count=holder["hit"]))
+        elif message["op"] == "batch_grant":
             holder["control"].send(dict(op="owner_answer", key=message["key"], attempt=message["attempt"],
-                                        state="READY", hit=len(message["blocks"])))
+                                        state="READY", hit=holder["hit"]))
         elif message["op"] == "retire":
             holder["control"].send(dict(op="quiesced", key=message["key"], attempt=message["attempt"]))
         elif message["op"] == "release_owner":
@@ -565,48 +586,22 @@ def test_unscheduled_cancel_forget_clears_request_mapping_without_touching_reuse
         w.close()
 
 
-@pytest.mark.parametrize("nodes,reservable,load,dump", [(132, 112, 2, 6), (132, 132, 16, 6), (8, 8, 4, 8)])
-def test_domain_budget_leaves_full_native_partial_task_headroom(nodes, reservable, load, dump):
+@pytest.mark.parametrize("nodes,reservable,load,dump", [(132, 112, 2, 6), (132, 132, 1600, 6000), (8, 8, 4, 8), (8, 0, 4, 8)])
+def test_budget_uses_actual_native_pool_not_maximum_task_subtraction(nodes, reservable, load, dump):
     c = Cluster(dp=2)
     for cap in c.b.capabilities.values():
         cap["native"].update(nodes=nodes, reservable_nodes=reservable)
         cap.update(task_shards=load, dump_task_shards=dump if cap["rank"] == 0 else 0)
-    expected_slots = max(0, min(reservable - 2 * dump, nodes - 4 * load - 2 * dump))
-    job = c.job(count=max(1, expected_slots // 2))
-    budget = next(iter(c.b.domains.values()))
-    assert budget["limit"] == expected_slots * 4
-    assert budget["native_load_headroom_bytes"] == 4 * load * 4
-    assert budget["native_dump_headroom_bytes"] == 2 * dump * 4
+    job = c.job(count=1, confirm=False)
+    budget = job["budget"]
+    assert budget["used"] == 0
+    assert budget["limit"] == reservable * 4
+    assert budget["native_load_headroom_bytes"] == (nodes - reservable) * 4
+    assert budget["native_dump_headroom_bytes"] == 0
     assert budget["io_quota"] * 4 <= budget["io_limit"] <= budget["limit"]
-    if expected_slots < 2:
-        assert job["status"] == "FAILED" and "owner" not in job
-        assert not any(m["op"] in ("reserve", "owner_reserve") for _, m in c.out)
-    else:
-        assert job.get("owner")
-        assert c.job("overflow", count=1, offset=expected_slots // 2)["status"] == "FAILED"
-        c.drain(job)
-        assert budget["used"] == 0
-
-
-@pytest.mark.parametrize("operation,limit", [("load", 2), ("dump", 6), ("dump", 0)])
-def test_unscoped_native_io_cannot_exceed_advertised_headroom(operation, limit):
-    poison = Mock()
-    state = consumer.Consumer("w0.0", Mock(), poison)
-    # No owner job/request scope is needed: native fallback must obey the same
-    # physical-domain bound while another request's owner is holding pins.
-    state.max_task_shards = 2
-    state.max_dump_task_shards = limit if operation == "dump" else 6
-    state.check_task(operation, limit)
-    poison.assert_not_called()
-    with pytest.raises(RuntimeError, match="headroom"):
-        if operation == "load":
-            state.begin(np.zeros(0, dtype=np.uint8), [0] * (limit + 1))
-        else:
-            state.check_task(operation, limit + 1)
-    poison.assert_called_once()
-    with pytest.raises(RuntimeError, match="fenced"):
-        state.check_task("dump", 0)
-
+    assert c.confirm(job, 1) == bool(reservable)
+    c.drain(job)
+    assert budget["used"] == 0
 
 
 def test_incremental_completion_never_rescans_prior_layers_and_waits_for_all_chunks():

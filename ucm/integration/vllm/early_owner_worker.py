@@ -45,8 +45,7 @@ class OwnerWorker:
             return True
         if op == "domain_active":
             self.domain_active = True
-            self.consumer.max_task_shards = self.capability.get("task_shards")
-            self.consumer.max_dump_task_shards = self.capability.get("dump_task_shards")
+            self.consumer.domain_active = True
             return True
         if op == "domain_lost":
             self.poison(message["reason"], announce=False)
@@ -87,6 +86,13 @@ class OwnerWorker:
                 else:
                     job.lookup_finished = True
                 self.worker.condition.notify_all()
+            return True
+        if op == "batch_grant":
+            with self.worker.condition:
+                job = self.worker.jobs.get(message["key"])
+                if job and job.attempt == message["attempt"] and job.owner == self.peer:
+                    job.batch_grants[message["batch"]] = message["granted"]
+                    self.worker.condition.notify_all()
             return True
         if op not in ("retire", "release_owner", "forget"):
             return False

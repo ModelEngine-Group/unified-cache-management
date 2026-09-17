@@ -33,8 +33,7 @@ class Consumer:
         self.tasks = {}
         self.serial = 0
         self.fenced = None
-        self.max_task_shards = None
-        self.max_dump_task_shards = None
+        self.domain_active = False
 
     def bind(self, tickets, layers):
         with self.lock:
@@ -87,17 +86,12 @@ class Consumer:
         with self.lock:
             if self.fenced:
                 raise RuntimeError("native I/O denied on fenced shared domain: " + self.fenced)
-            limit = self.max_task_shards if operation == "load" else self.max_dump_task_shards
-            if limit is not None and shards > limit:
-                self.fenced = f"native {operation} exceeded the advertised allocation headroom bound"
-                self.poison(self.fenced)
-                raise RuntimeError(self.fenced)
 
     def unscoped_failure(self):
         with self.lock:
             # A fallback load or native dump shares the same non-robust domain.
             # Its failure matters even when it has no owner-generation receipt.
-            if self.max_task_shards is not None and not self.fenced:
+            if self.domain_active and not self.fenced:
                 self.fenced = "unscoped native I/O failed; drain state is not proven"
                 self.poison(self.fenced)
 
@@ -136,6 +130,22 @@ class Consumer:
                 # references and accelerator work drained. Quarantine the domain.
                 self.fenced = "native consumer load failed; drain state is not proven"
                 self.poison(self.fenced)
+
+    def rejected(self, token):
+        """The C++ capacity rejection guarantees no I/O was submitted for this receipt."""
+        with self.lock:
+            receipt = self.tasks.pop(token, None)
+            if receipt is None:
+                return
+            identities, _, _ = receipt
+            for identity in identities:
+                state = self.generations[identity]
+                state["active"] -= 1
+                # Other tasks of the same generation may still own H2D buffers.
+                # Retire through the normal all-consumer/drain protocol.
+                self.send(dict(op="worker_retire", key=identity[0], attempt=identity[1],
+                               reason="capacity rejection before I/O"))
+                self._notify(state)
 
     def submitted(self, token, task):
         with self.lock:

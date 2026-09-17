@@ -361,8 +361,9 @@ def test_handoff_uses_native_argument_conversion_and_same_pipeline(monkeypatch, 
     assert store.store_.reservations == (9,)
     store.release_reservation(9)
     getattr(store, method)([b"b" * 16], [0], addresses)
-    pipeline.Load.assert_called_once()
-    assert submit.call_count == 1
+    pipeline.Load.assert_not_called()
+    assert submit.call_count == 2
+    assert submit.call_args.args[-1] == ()
 
 
 def test_handoff_submit_error_keeps_native_exception(monkeypatch):
@@ -588,3 +589,57 @@ def test_legacy_handoff_is_still_ordered_once_before_finish(connector):
     connector._early.scheduled({request.request_id: meta})
     connector._early.finish(request)
     assert [c.args[0]["op"] for c in connector._early.control.send.call_args_list] == ["handoff", "finish"]
+
+
+@pytest.mark.parametrize("operation", ["load", "dump"])
+def test_capacity_rejection_uses_native_consistency_without_claiming_persistence(monkeypatch, operation):
+    pipeline, observer = Mock(), Mock()
+    proxy = early_store._ReservedLoad(pipeline)
+    proxy.observer = observer
+    observer.begin.return_value = 73
+    binding = "EarlyLoad" if operation == "load" else "EarlyDump"
+    error = early_store.ucmpipelinestore.EarlyCapacityRejected("NoSpace before I/O")
+    monkeypatch.setattr(early_store.ucmpipelinestore, binding, Mock(side_effect=error))
+    store = object.__new__(EarlyPipelineStore)
+    store.store_ = proxy
+    consistency = RankConsistencyManager(is_scheduler=False)
+    block = b"a" * 16
+    addresses = np.zeros((1, 1), dtype=np.uint64)
+    with pytest.raises(native_store.StoreNotFoundError):
+        if operation == "load":
+            consistency.submit_load(store, {"r": [block]}, [block], [0], addresses)
+        else:
+            consistency.submit_dump(store, {"r": {block}}, [block], [0], addresses, 0)
+    observer.complete.assert_not_called()
+    observer.unscoped_failure.assert_not_called()
+    if operation == "load":
+        observer.rejected.assert_called_once_with(73)
+        assert consistency._missing_blocks == {block}
+    else:
+        consistency.finish_dump({"r"})
+        assert not consistency._dump_succeeded_blocks
+        pipeline.Dump.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_direct_completion_uses_native_method_without_layerwise_failure_attribute(monkeypatch, failure):
+    from ucm.integration.vllm.hla_connector import UCMDirectConnector
+    connector = object.__new__(EarlyDirectConnector)
+    connector.use_layerwise = False
+    connector._early = Mock()
+    connector._connector_worker_meta = ucm_connector.UCMWorkerMetadata()
+    if failure:
+        connector._connector_worker_meta.mark_failed("r")
+    metadata = ucm_connector.UCMConnectorMetadata(
+        {"r": ucm_connector.RequestDispatchMeta(([], []), ([], []))}, set()
+    )
+    connector._get_connector_metadata = Mock(return_value=metadata)
+    native = Mock()
+    monkeypatch.setattr(UCMDirectConnector, "start_load_kv", native)
+    connector.start_load_kv(None)
+    native.assert_called_once_with(None)
+    assert not hasattr(connector, "_failure_req_ids")
+    if failure:
+        connector._early.loaded.assert_called_once_with({"r"}, reason="load_failure")
+    else:
+        connector._early.loaded.assert_called_once_with({"r"})

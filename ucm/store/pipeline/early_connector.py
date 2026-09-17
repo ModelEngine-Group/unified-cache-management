@@ -25,13 +25,15 @@ class _ReservedLoad:
         reservations = self.reservations
         receipt = self.observer.begin(ids, indexes) if self.observer else None
         try:
-            if not reservations and receipt is None:
-                return self.pipeline.Load(ids, indexes, addrs)
             task = ucmpipelinestore.EarlyLoad(self.pipeline, ids, indexes, addrs, reservations)
             if receipt is not None:
                 self.receipts[task] = receipt
                 self.observer.submitted(receipt, task)
             return task
+        except ucmpipelinestore.EarlyCapacityRejected:
+            if receipt is not None:
+                self.observer.rejected(receipt)
+            raise
         except Exception:
             if receipt is not None:
                 self.observer.complete(receipt, None, False)
@@ -57,7 +59,9 @@ class _ReservedLoad:
         if self.observer:
             self.observer.check_task("dump", len(indexes))
         try:
-            return self.pipeline.Dump(ids, indexes, addrs, *args)
+            return ucmpipelinestore.EarlyDump(self.pipeline, ids, indexes, addrs, *args)
+        except ucmpipelinestore.EarlyCapacityRejected:
+            raise  # native rank consistency records a failed, never a saved dump
         except Exception:
             if self.observer:
                 self.observer.unscoped_failure()
@@ -96,7 +100,7 @@ class EarlyPipelineStore(UcmPipelineStore):
 
         required = (
             "EarlyReservePrefix", "EarlyPrefetchReserved", "EarlyReleaseReservation",
-            "EarlyLoad",
+            "EarlyLoad", "EarlyDump", "EarlyCapacityRejected",
             "EarlyBatch",
             "EarlyDomainInfo",
         )

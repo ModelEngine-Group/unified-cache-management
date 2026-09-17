@@ -1181,6 +1181,28 @@ TEST(UCCacheEarlyStoreTest, CapacityPressureRejectsUnsubmittedDumpAndLoadThenRec
     // A consumer of protected data still makes progress under a full pool.
     UC::Detail::TaskDesc hit{{blocks[0], 0, {target.data()}}};
     hit.loadReservations = {r.Value().handle};
+    std::vector<std::future<void>> clients;
+    for (size_t i = 0; i < 8; ++i) {
+        clients.push_back(std::async(std::launch::async, [&, i] {
+            if (i % 2) {
+                auto dump = store->Dump(absent);
+                ASSERT_FALSE(dump);
+                EXPECT_EQ(dump.Error(), UC::Status::NoSpace());
+            } else {
+                std::array<unsigned char, 4096> output{};
+                auto task = hit;
+                task[0].addrs = {output.data()};
+                auto load = store->Load(std::move(task));
+                ASSERT_TRUE(load);
+                ASSERT_TRUE(store->Wait(load.Value()).Success());
+                EXPECT_EQ(output[0], 0x36);
+            }
+        }));
+    }
+    for (auto& client : clients) {
+        ASSERT_EQ(client.wait_for(std::chrono::seconds(3)), std::future_status::ready);
+        client.get();
+    }
     auto load = store->Load(hit);
     ASSERT_TRUE(load);
     store->ReleaseReservation(r.Value().handle);

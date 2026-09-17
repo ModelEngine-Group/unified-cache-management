@@ -324,6 +324,7 @@ class EarlyScheduler:
 @dataclass(eq=False)
 class WorkerJob:
     key: str
+    batch_grants: dict = field(default_factory=dict, init=False)
     blocks: list
     entered: float = field(default_factory=time.monotonic)
     batches: list = field(default_factory=list)
@@ -448,6 +449,10 @@ class EarlyWorker:
                 candidates = blocks[begin:begin + candidate_count]
                 reserving = time.monotonic_ns()
                 reservation = self.store.reserve_prefix(candidates)
+                hit = reservation["total_hit_blocks"]
+                if not 0 <= hit <= len(candidates):
+                    self.store.release_reservation(reservation["handle"])
+                    raise RuntimeError("invalid reserved prefix length")
                 batch = WorkerBatch(len(job.batches), begin, reservation,
                                     done=reservation["remaining_l2_work"] == 0)
                 with self.condition:
@@ -465,6 +470,18 @@ class EarlyWorker:
                         reserving, time.monotonic_ns(), len(candidates),
                         reservation["total_hit_blocks"], reservation["remaining_l2_work"], os.getpid(),
                     )
+                    if job.owner:
+                        self.owner_protocol.send(dict(op="confirm_batch", key=job.key,
+                            attempt=job.attempt, batch=batch.index, begin=begin, count=hit))
+                        # Condition.wait_for releases the condition. Native bucket
+                        # locks are gone; no data allocation or I/O precedes grant.
+                        timeout = self.store.config.get("timeout_ms", 30000) / 1000
+                        answered = self.condition.wait_for(lambda: batch.index in job.batch_grants
+                            or job.cancelled or self.closed or self.owner_protocol.fatal, timeout)
+                        if job.cancelled or self.closed or self.owner_protocol.fatal:
+                            return
+                        if not answered or not job.batch_grants[batch.index]:
+                            raise RuntimeError("confirmed prefix capacity denied or timed out")
                     if not batch.done:
                         # Publication precedes localization/lease of the next
                         # batch. Its handles and lease stay in this reservation.

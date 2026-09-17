@@ -165,7 +165,7 @@ sequenceDiagram
 ## 容量与保护
 
 共享 BlockPins 持有一份字节额度；同 worker 的多个消费者共享该额度，最后一个
-释放时返还。额度包含缺失位置，以保守约束将要保护的 buffer。上限来自同一原生
+释放时返还。额度仅覆盖确认命中的 block，包含其中缺失位置，以约束将要保护的 buffer。上限来自同一原生
 buffer 的 CanReserve 范围，排除原生 load-exclusive 区域；不在 Python 复制布局。
 额度不足直接返回原生 NoSpace 并回退，不持有部分 pin 等待额度，避免整请求
 READY 语义下发生容量等待死锁。这不是 H/R admission；owner 层另有限制排队任务和候选工作的安全配额。
@@ -185,7 +185,7 @@ sequenceDiagram
     E->>R: 用 block identity 和 shard index 取得已持有 Handle
     R-->>E: 复制原生 Handle 引用
     E->>Q: 原生任务携带 Handle
-    Q->>Q: 移入 ShardTask；缺失部分走原生 Get
+    Q->>Q: 移入 ShardTask；Early 子类已通过有界原生分配补齐引用
     Q->>H: 原生 H2D / layerwise 执行
     H-->>Q: 原生 stream 完成
     Q->>Q: 释放 ShardTask / holder 引用
@@ -248,41 +248,44 @@ metadata 主流程。实际 allocation 前的重试可以刷新原生消费计�
 
 ## 共享额度
 
-共享域按实际内核对象键统一记账，DP 间共享对象只计一份总量：
+协议版本 3 按实际内核对象键统一记账。同一布局、同一共享对象的已确认 block
+在所有存活 job/attempt 中只收一份额度，计数归零才退款；DP 的任务路由仍独立。
 
-- 从 native 节点总数 `N`、非 load-exclusive 可预留数 `R` 推导保护上限。
-  为每个成员的一项最大 native load 任务保留空间，合计 `L` 个 shard；为各
-  MLA dump owner 的一项最大聚合 dump 任务保留空间，合计 `D` 个 shard。
-  上限为 `max(0, min(R-D, N-L-D)) * shard_bytes`。load 每任务一个请求；
-  dump 可聚合当前 scheduler batch，所以 dump 任务界限还乘 `max_num_seqs`。
-  请求界限用锁定的 `max_model_len` 和原生 token/block 布局推导，direct 路径
-  计入其所有 shard。每个 worker 只有一条原生 load dispatcher 和一条 dump
-  dispatcher；已经完全提交的任务可以无需新增空间而排空。这个保留量确保
-  所有尚在定位的任务都有到达末尾同步点的空间；dump 只能使用非 exclusive 区。
-  不依赖重复 block 去重来缩小界限。实际 Load/Dump 提交前校验 shard 数，超出
-  握手宣告的界限则停用域，不能悄悄突破证明。未启用 owner 时不施加该校验。
-  上限为零时拒绝预取并回退原生，不切回无共享预算的广播模式。
-  协议版本 2 在执行前按共享域内候选 block ID 并集预扣额度，包含尚未分配的位置。
-  同一兼容布局下，相同 block 的多个 job/attempt 各持声明，物理额度只收一份；
-  不同 DP 的任务仍独立路由，只有实际相同共享对象才共用额度。账本不是原生 pin，
-  不传递本地指针。底层同 worker 的 BlockPins 保守额度及原生引用继续保留。
-- 每个 owner 排队/执行 job 上限默认 4，可通过顶层 native 配置字典的
-  `early_owner_max_jobs` 设置；候选工作上限 `early_owner_max_candidate_blocks`
-  默认为 0，表示从共享域保护容量推导。两者限制的是本协议工作量，不恢复 H/R。
-- 域 I/O 上限为 `min(保护上限, 成员数 * 128 * shard_bytes)`。按成员数向下取整
-  成 shard 对齐的固定 worker 配额；每个 worker 所有 active 批次共享此配额。
-  原生每 Step 64 shard / 每 worker 至多 128 shard 窗口继续生效。
-- 额度不足时尝试其他合格 owner；仍不足则在任何 I/O 之前 FAILED/native
-  fallback。没有持有部分额度等待余量，没有等待额度时持有 bucket/global 锁。
-- 只有 owner READY 才能归还已截断尾部的声明：此时所有数据批已完成，Reserve
-  已销毁首个 miss 之后的 BlockPins，没有后续 I/O。连续命中部分继续保护。
-  零命中可归还全部内存声明，但 owner job/候选工作名额仍等待原释放协议结束。
-- 命中部分不能因 metadata、取消或超时返还；必须收到该 attempt 的 owner_drained，
-  证明 lookup、I/O 和消费引用已排空、reservation 已释放。只有该 block 的最后
-  一个声明退出才归还物理额度。失败任务也保留声明直到 drain；域失联时不归还。
+- 上限为原生 `CanReserve` 节点数乘 `shard_bytes`。原生 load-exclusive 区继续保留。
+  不按 `max_model_len` 或 `max_num_seqs` 扣除最大 load/dump 任务。
+- 候选批次先取得 read lease 并定位已有 L1 引用，结合 L2 lookup 确认连续前缀。
+  此阶段不分配数据槽位、不提交数据 I/O；首 miss 后的临时引用立即销毁。
+  L1-only block 仍可命中。每个 lookup 线程最多持有一个待授权批次。
+- 本地 BlockPins 只对确认前缀计费。owner 发送带 key/attempt/batch/range 的
+  `confirm_batch`，broker 原子增加唯一 block 声明后回复 `batch_grant`。
+  等待控制回复不持有 bucket/global 锁；condition 等待会释放 condition。
+  探测阶段的已有节点引用是暂态物理保护，不等于已获共享预算；物理占用始终
+  受原生有限节点池约束。未获授权批次不会创建缺失节点或进入数据队列。
+- 授权后按原有批次流水、跨请求推进和 I/O 窗口预取。额度不足立即拒绝，
+  不等待其他持部分额度的 job 释放，避免整请求 READY 下的环形等待。
+  当前批次及前序已提交 I/O 走既有取消/drain，再退款；不发布 unpinned READY。
+- 每 owner 默认至多 4 个 job；候选工作默认界限改为最大请求范围乘 job 上限，
+  与物理预算解耦。显式 `early_owner_max_candidate_blocks` 仍作为 CPU 工作量界限。
+- 域 I/O 上限仍为 `min(保护上限, 成员数 * 128 * shard_bytes)`，按成员向下取整
+  为 shard 对齐的 worker 配额。配额无法容纳一个 shard 时不放行正命中数据批。
+- 取消、超时或失败不直接退款。收到所有消费者 quiesced，owner 释放 reservation，
+  已接受 I/O 排空并发出 owner_drained 后才退款。域失联保留额度并 fencing。
 
-全候选预扣仍可能使超长短命中请求提前 fallback；HBM 命中部分也仍保守保护。
-不能把候选并集额度峰值当作实测 pin 字节。未引入 unpinned READY 或部分成功语义。
+`EarlyCacheStore` 在原生完整任务入队前复用 reservation handles，并用
+`EarlyBufferPins::Acquire` 补齐缺失 handles。后者经现有 friend 入口调用原生
+FindAt/Alloc 和引用机制，仅设置已有 Alloc 的有限尝试次数。原生私有访问属性不变。
+load 允许使用 native exclusive 区，dump 仍不允许。所有位置取得后仍提交一个
+原生任务；LoadQueue/DumpQueue 继续负责原粒度的 I/O、同步与完成，不拆小任务。
+
+容量不足返回原生 NoSpace，且保证该任务未提交 I/O。EarlyTaskPins RAII 对放弃的
+LOADING owner 标记失败再释放，不能将不完整数据标 READY。binding 将提交前
+NoSpace 转成继承原生 NotFound 的 EarlyCapacityRejected；load 走原生 missing
+上报/重算，dump 走原生失败账本，不上报保存成功。拒绝 receipt 不等于成功接管，
+仍须等同 generation 的其他在途加载完成。未知提交/Wait 失败仍隔离共享域。
+
+完整任务预取引用会把其缺失位置的定位前移到入队前。这避免原生无限 Get 与
+部分任务占用形成容量死锁，但并非免费优化；大型 fallback 任务可能增加提交开销，
+且大于当前可分配池的 dump 会被跳过。实际性能需同版本测量。
 
 ## 全部消费完成后的保守交接
 
@@ -299,7 +302,7 @@ sequenceDiagram
     participant O as 所选 owner
     participant C as 全部必要消费 rank
     participant Q as 各 rank 原生 LoadQueue
-    B->>B: 候选并集预扣共享保护额度，选择 owner
+    B->>B: 选择 owner；候选不预扣保护额度
     B->>O: owner_reserve(key, attempt, grant)
     B->>C: observe(key, attempt, owner)
     O->>O: reserve/read 批次流水，保留 pins/lease
@@ -330,7 +333,7 @@ job 保存的 request ID 和当前映射值定向清理未调度取消的关联�
 retire 禁止未来加载，但必须等已经提交的原生任务成功完成才 quiesce。
 已退休票据可能再次出现在 decode metadata，绑定允许；尝试再次加载会拒绝。
 
-该策略不按层提前释放 owner pins；峰值寿命更长，由上述候选并集共享额度约束。
+该策略不按层提前释放 owner pins；峰值寿命更长，由上述确认前缀共享额度及原生有限节点池约束。
 在最后一个消费 rank 延迟时，其他 owner 仍不能淘汰它需要的数据。原生引用自身
 仍保护 H2D；保守策略在其完成后才释放 owner 保护，没有交接空档。
 
