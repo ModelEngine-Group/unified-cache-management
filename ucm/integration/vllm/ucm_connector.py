@@ -93,6 +93,20 @@ def _has_shared_indexer_layers(vllm_config: "VllmConfig") -> bool:
     return False
 
 
+def _is_minimax_m3(vllm_config: "VllmConfig") -> bool:
+    model_config = getattr(vllm_config, "model_config", None)
+    configs = (
+        getattr(model_config, "hf_text_config", None),
+        getattr(model_config, "hf_config", None),
+        getattr(getattr(model_config, "hf_config", None), "text_config", None),
+    )
+    for config in configs:
+        model_type = str(getattr(config, "model_type", "")).lower()
+        if model_type.startswith("minimax_m3"):
+            return True
+    return False
+
+
 def _short_list(values: list[int], limit: int = 12) -> list[int]:
     return values[:limit]
 
@@ -1017,6 +1031,277 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
         )
 
 
+class MiniMaxM3KVCacheLayout(KVCacheLayout):
+    """Describe the MiniMax M3 KV cache exposed to UCM.
+
+    MiniMax M3 has two independently allocated cache roles per transformer
+    layer. Every layer has an Attention cache, while only sparse-attention
+    layers have an Indexer cache. In the released M3 configuration, layers
+    0-2 are dense and layers 3-59 are sparse. vLLM passes both roles through
+    the connector's ``kvcaches`` mapping as separate entries. The
+    ``index_cache`` path component is the stable discriminator between them.
+
+    The Attention entry differs by backend and vLLM generation:
+
+    * CUDA v0.24 uses one block-first 5D tensor with logical shape
+      ``[num_blocks, 2, ...]``. K and V are adjacent inside each block, so the
+      complete page is one UCM segment rather than two independent segments.
+    * Newer CUDA vLLM packs K and V into the final content dimension and
+      exposes one block-first 4D tensor. HND and NHD may have different inner
+      strides, but both still expose one contiguous page per block.
+    * vLLM-Ascend hands the connector ``(K, V)`` as two block-first 4D
+      tensors, so UCM must describe two segments for every Attention page.
+
+    The Indexer entry is a block-first 3D tensor. CUDA exposes the tensor
+    directly; vLLM-Ascend wraps it in a singleton tuple. The Indexer remains a
+    separate UCM segment because it has its own allocation and block stride.
+
+    Layerwise UCM operations require a rectangular ``[layer, slot]`` metadata
+    matrix. Dense layers have no physical Indexer allocation, so their Indexer
+    slot is represented by a ghost segment: a null pointer and zero stride,
+    but the same logical copy size as a real sparse-layer Indexer. Direct mode
+    flattens only real segments and therefore drops those ghost entries.
+
+    All released M3 implementations allocate each exposed tensor as tightly
+    packed pages. CUDA creates a contiguous raw buffer and changes only the
+    page-internal dimension order; Ascend may align the allocation's base
+    address, but then slices it to the exact byte count before applying a
+    contiguous view. Consequently one page's byte size is also the distance
+    to the next page. This layout intentionally does not implement the padded
+    page mechanisms used by unrelated hybrid-cache models.
+    """
+
+    @classmethod
+    def supports(cls, vllm_config: "VllmConfig") -> bool:
+        return getattr(current_platform, "device_type", None) in (
+            "cuda",
+            "npu",
+        ) and _is_minimax_m3(vllm_config)
+
+    @staticmethod
+    def _is_indexer(layer_name: str) -> bool:
+        # Match a complete path component instead of a substring so an unrelated
+        # module whose name merely contains "index_cache" cannot be misclassified.
+        components = layer_name.lower().split(".")
+        return "index_cache" in components
+
+    def _segment(self, layer_name: str, tensor: torch.Tensor) -> KVCacheSegment:
+        # All supported M3 tensors are block-first. Dimension zero is therefore
+        # both the number of physically allocated pages and the dimension UCM
+        # advances when selecting page i.
+        num_blocks = int(tensor.shape[0])
+        if num_blocks < self.num_blocks:
+            raise ValueError(
+                "MiniMax M3 KV cache has fewer physical blocks than configured: "
+                f"layer={layer_name}, minimum={self.num_blocks}, "
+                f"actual={num_blocks}, shape={tuple(tensor.shape)}."
+            )
+        element_size = int(tensor.element_size())
+        # The logical page contains every element below dimension zero. Inner
+        # HND/NHD order does not change this product, so no backend-specific
+        # shape decoding is needed to obtain the bytes UCM should copy.
+        copy_size = math.prod(int(value) for value in tensor.shape[1:]) * element_size
+        # Use the physical block count here rather than kv_cache_config.num_blocks.
+        # vLLM may expose an allocation with spare pages; UCM must keep the whole
+        # addressable span valid even if the current cache configuration uses less.
+        return KVCacheSegment(
+            ptr=int(tensor.data_ptr()),
+            copy_size=copy_size,
+            block_stride=copy_size,
+            buffer_size=num_blocks * copy_size,
+        )
+
+    @staticmethod
+    def _require_tensor(layer_name: str, value) -> torch.Tensor:
+        if not isinstance(value, torch.Tensor):
+            raise TypeError(
+                "Unsupported MiniMax M3 KV cache value: "
+                f"layer={layer_name}, type={type(value)}."
+            )
+        return value
+
+    def _attention_segments(self, layer_name: str, value) -> tuple[KVCacheSegment, ...]:
+        device_type = getattr(current_platform, "device_type", None)
+        if device_type == "cuda":
+            # CUDA owns one allocation per layer in both supported generations.
+            # Do not split the legacy [N, 2, ...] tensor into K and V: axis 1 is
+            # inside each page, and splitting would produce the wrong block stride.
+            tensor = self._require_tensor(layer_name, value)
+            if tensor.dim() == 5 and int(tensor.shape[1]) != 2:
+                raise ValueError(
+                    "MiniMax M3 CUDA 5D KV cache must use [num_blocks, 2, ...]: "
+                    f"layer={layer_name}, shape={tuple(tensor.shape)}."
+                )
+            if tensor.dim() not in (4, 5):
+                raise ValueError(
+                    "MiniMax M3 CUDA KV cache must be a block-first 4D or 5D "
+                    f"tensor: layer={layer_name}, shape={tuple(tensor.shape)}."
+                )
+            return (self._segment(layer_name, tensor),)
+
+        # Ascend's model runner splits its internal K/V storage before invoking
+        # the connector. Consequently the connector contract here is exactly a
+        # two-tensor tuple, with one independently addressable UCM segment each.
+        if not isinstance(value, tuple) or len(value) != 2:
+            raise ValueError(
+                "MiniMax M3 Ascend KV cache must contain separate K and V tensors: "
+                f"layer={layer_name}, type={type(value)}."
+            )
+        segments = []
+        for tensor in value:
+            tensor = self._require_tensor(layer_name, tensor)
+            if tensor.dim() != 4:
+                raise ValueError(
+                    "MiniMax M3 Ascend K and V caches must be 4D: "
+                    f"layer={layer_name}, shape={tuple(tensor.shape)}."
+                )
+            segments.append(self._segment(layer_name, tensor))
+        return tuple(segments)
+
+    def _indexer_segment(self, layer_name: str, value) -> KVCacheSegment:
+        if getattr(current_platform, "device_type", None) == "npu":
+            # vLLM-Ascend keeps the general multi-tensor cache-entry interface
+            # even though an M3 Indexer entry contains exactly one tensor.
+            if not isinstance(value, tuple) or len(value) != 1:
+                raise ValueError(
+                    "MiniMax M3 Ascend Indexer cache must contain one tensor: "
+                    f"layer={layer_name}, type={type(value)}."
+                )
+            value = value[0]
+        tensor = self._require_tensor(layer_name, value)
+        if tensor.dim() != 3:
+            raise ValueError(
+                "MiniMax M3 Indexer cache must be 3D: "
+                f"layer={layer_name}, shape={tuple(tensor.shape)}."
+            )
+        return self._segment(layer_name, tensor)
+
+    def _collect_layers(self, kvcaches):
+        # Attention and Indexer arrive as separate mapping entries but share the
+        # same transformer layer id. Group them before building the rectangular
+        # layerwise matrix so dictionary iteration order is irrelevant.
+        layers: dict[int, dict[str, Optional[tuple[KVCacheSegment, ...]]]] = {}
+        for layer_name, value in kvcaches.items():
+            layer_id = self.layer_name_to_id[layer_name]
+            role = "indexer" if self._is_indexer(layer_name) else "attention"
+            layer = layers.setdefault(layer_id, {"attention": None, "indexer": None})
+            if layer[role] is not None:
+                raise ValueError(
+                    f"Duplicate MiniMax M3 {role} cache for layer {layer_id}."
+                )
+            layer[role] = (
+                (self._indexer_segment(layer_name, value),)
+                if role == "indexer"
+                else self._attention_segments(layer_name, value)
+            )
+        return layers
+
+    @staticmethod
+    def _ghost(size: int) -> KVCacheSegment:
+        # The non-zero copy_size preserves a uniform logical slot schema across
+        # layers. A null pointer plus zero stride ensures every block address for
+        # this absent slot remains null and no backing allocation is claimed.
+        return KVCacheSegment(ptr=0, copy_size=size, block_stride=0, buffer_size=0)
+
+    def _build_layout(self, kvcaches) -> None:
+        collected = self._collect_layers(kvcaches)
+        layer_ids = sorted(collected)
+        if not layer_ids:
+            raise ValueError("MiniMax M3 KV cache layout is empty.")
+        self.first_layer_id = layer_ids[0]
+        layers = []
+        for layer_id in layer_ids:
+            attention = collected[layer_id]["attention"]
+            if not attention:
+                raise ValueError(
+                    f"MiniMax M3 layer {layer_id} has no Attention KV cache."
+                )
+            indexer = collected[layer_id]["indexer"]
+            layers.append((attention, indexer[0] if indexer else None))
+
+        attention_sizes = [segment.copy_size for segment in layers[0][0]]
+        # UCM uses the first row's slot sizes as the layerwise schema. Requiring
+        # identical Attention slot counts and sizes prevents later layers from
+        # being interpreted using metadata belonging to a different shape.
+        for layer_id, (attention, _) in zip(layer_ids, layers):
+            sizes = [segment.copy_size for segment in attention]
+            if sizes != attention_sizes:
+                raise ValueError(
+                    "MiniMax M3 layers use incompatible Attention layouts: "
+                    f"expected={attention_sizes}, layer={layer_id}, actual={sizes}."
+                )
+
+        indexers = [indexer for _, indexer in layers if indexer is not None]
+        if not indexers:
+            # Direct mode can still describe a partial cache mapping containing
+            # only Attention entries. Layerwise M3 mode cannot manufacture its
+            # Indexer slot size without observing at least one sparse layer.
+            if self.use_layerwise:
+                raise ValueError(
+                    "MiniMax M3 KV cache layout did not find an Indexer cache."
+                )
+            indexer_size = None
+        else:
+            indexer_sizes = {indexer.copy_size for indexer in indexers}
+            if len(indexer_sizes) != 1:
+                raise ValueError(
+                    f"MiniMax M3 Indexer block sizes differ: {sorted(indexer_sizes)}."
+                )
+            indexer_size = indexers[0].copy_size
+
+        rows = []
+        for attention, indexer in layers:
+            row = list(attention)
+            if indexer_size is not None:
+                # Sparse layers contribute their real Indexer; dense layers get
+                # a same-sized ghost so every row has the same slot positions.
+                row.append(indexer or self._ghost(indexer_size))
+            rows.append(row)
+        if self.use_layerwise:
+            # Preserve the two-dimensional [layer, slot] form consumed by
+            # layerwise address extraction. Ghost slots intentionally remain.
+            self.base_ptrs = np.asarray(
+                [[segment.ptr for segment in row] for row in rows], dtype=np.uint64
+            )
+            self.tensor_size_lists = np.asarray(
+                [[segment.copy_size for segment in row] for row in rows],
+                dtype=np.uint64,
+            )
+            self.block_stride_lists = np.asarray(
+                [[segment.block_stride for segment in row] for row in rows],
+                dtype=np.uint64,
+            )
+            self.buffer_sizes = np.asarray(
+                [[segment.buffer_size for segment in row] for row in rows],
+                dtype=np.uint64,
+            )
+        else:
+            # Direct operations treat all real per-layer allocations as one
+            # flat shard. Ghosts must be omitted because they are schema padding,
+            # not memory that should participate in a direct transfer.
+            segments = [segment for row in rows for segment in row if segment.ptr]
+            self.base_ptrs = np.asarray(
+                [segment.ptr for segment in segments], dtype=np.uint64
+            )
+            self.tensor_size_lists = np.asarray(
+                [segment.copy_size for segment in segments], dtype=np.uint64
+            )
+            self.block_stride_lists = np.asarray(
+                [segment.block_stride for segment in segments], dtype=np.uint64
+            )
+            self.buffer_sizes = np.asarray(
+                [segment.buffer_size for segment in segments], dtype=np.uint64
+            )
+        logger.info(
+            "MiniMax M3 KV cache layout: device=%s, slot_sizes=%s, "
+            "indexer_layers=%s/%s",
+            getattr(current_platform, "device_type", None),
+            attention_sizes + ([indexer_size] if indexer_size is not None else []),
+            len(indexers),
+            len(layers),
+        )
+
+
 @dataclass
 class UCMConnectorMetadata(KVConnectorMetadata):
     request_meta: dict[str, RequestDispatchMeta] = field(default_factory=dict)
@@ -1419,13 +1704,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
             # vllm_ascend >= 0.10.0 uses Tuple for kvcaches
             for i, tensor in enumerate(sample_kv_layer):
                 logger.info(f"kv cache shape {i}: {tensor.shape}")
-        layout_cls = (
-            SharedIndexerKVCacheLayout
-            if SharedIndexerKVCacheLayout.supports(
-                self._vllm_config, self.launch_config
-            )
-            else KVCacheLayout
-        )
+        if MiniMaxM3KVCacheLayout.supports(self._vllm_config):
+            layout_cls = MiniMaxM3KVCacheLayout
+        elif SharedIndexerKVCacheLayout.supports(self._vllm_config, self.launch_config):
+            layout_cls = SharedIndexerKVCacheLayout
+        else:
+            layout_cls = KVCacheLayout
         self.kv_cache_layout = layout_cls(
             self.kv_caches,
             self.launch_config,
