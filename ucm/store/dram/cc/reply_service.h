@@ -98,6 +98,7 @@ private:
     std::size_t ReplyPayloadSize(OpType op, std::size_t entryCount) const noexcept;
     bool CompletionReady(const Lease& lease) const noexcept;
     Status DecodeReply(const Lease& lease, std::vector<EntryResult>* entryResults);
+    void RecordCapacityMetrics(std::size_t usedSlots);
     void Run() noexcept;
 
     Options options_;
@@ -109,6 +110,7 @@ private:
     std::vector<std::size_t> activeLeaseIndices_;
     std::vector<std::size_t> activeLeasePositions_;
     std::uint64_t activeLeaseVersion_{0};
+    double nextMetricsAt_{0.0};
     std::thread worker_;
     // False rejects new leases and asks the polling worker to stop.
     std::atomic<bool> acceptingLeases_{false};
