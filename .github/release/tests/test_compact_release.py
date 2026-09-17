@@ -90,8 +90,13 @@ def _all_keys(value: object) -> set[str]:
     return set()
 
 
-def test_pr_plan_can_build_directly_from_pinned_upstream_builders() -> None:
-    formal, selection, _finalized_catalog = _inputs()
+@pytest.mark.parametrize(
+    ("route", "release_type"), [("pr", "stable"), ("release", "nightly")]
+)
+def test_wheel_plan_can_build_directly_from_pinned_upstream_builders(
+    route: str, release_type: str
+) -> None:
+    formal, selection, _finalized_catalog = _inputs(release_type)
     desired = builders.catalog_from_selection(
         selection,
         owner="release-org",
@@ -102,7 +107,7 @@ def test_pr_plan_can_build_directly_from_pinned_upstream_builders() -> None:
         formal,
         runtime_selection=selection,
         builder_catalog=builders.bind_source_catalog(desired),
-        route="pr",
+        route=route,
     )
 
     builds = {item["id"]: item for item in selection["wheel_builds"]}

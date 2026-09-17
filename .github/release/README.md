@@ -110,13 +110,24 @@ versions, target commit, requested source SHA, and checked-out commit. A Draft
 Tag always remains Draft. Exact Releases API lookup requires one Release for the
 Tag; duplicate Release records fail closed.
 
-At 02:00 Asia/Shanghai (`18:00` UTC), `release-nightly.yml` reads the `X.Y.Z`
+At 02:00 and 13:00 Asia/Shanghai (`18:00` and `05:00` UTC),
+`release-nightly.yml` reads the `X.Y.Z`
 base from `version.ini` and creates the next dated Nightly Tag from `develop`.
 An incomplete same-SHA Nightly Tag is reused; an existing Tag is never moved.
 Because a `GITHUB_TOKEN` Tag creation does not
 recursively trigger another workflow, the same scheduled Run calls the common
 `release-ucm.yml` reusable core directly. Manual `nightly/*` Tag pushes use the
 same core through `release-tag.yml`.
+
+Nightly publishes backend Wheels to GitHub Release, followed by the cleanup
+manifest. It builds directly from digest-pinned upstream Builders without
+syncing or pushing Builder images to GHCR. Runtime image builds, Chart packaging,
+and PyPI, GHCR, Docker Hub, and Chart OCI publication are disabled. Native Wheel
+builds and matching-Runtime installation checks still run before publication.
+These decisions follow the selected Profile's channel switches: disabling
+`ghcr` bypasses Builder synchronization, and disabling `chart_oci` skips Chart
+packaging and its GitHub Release asset. The plan retains Chart metadata for
+every release type.
 
 Supported Release Tags in both the official repository and Forks invoke that
 same Release Core through one caller. The caller passes the repository-derived
@@ -136,7 +147,8 @@ stages:
 2. `release-open` records the in-progress Release;
 3. every repaired Wheel passes one matching native-architecture Runtime before
    any Release asset or PyPI upload;
-4. backend Wheels, the example config, and the Chart are uploaded and the state
+4. backend Wheels (plus the example config and Chart when `chart_oci` is enabled)
+   are uploaded and the state
    is `artifacts-ready` while any enabled channel remains; the empty meta Wheel
    remains an internal Actions artifact;
 5. image members/indexes, PyPI, and Chart OCI complete and are read back;

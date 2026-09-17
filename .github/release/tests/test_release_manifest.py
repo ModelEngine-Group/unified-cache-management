@@ -219,7 +219,8 @@ def _asset_urls(manifest: dict[str, object]) -> dict[str, str]:
     filenames = {
         str(item["filename"]) for item in manifest["wheels"]  # type: ignore[index]
     }
-    filenames.add(str(manifest["chart"]["filename"]))  # type: ignore[index]
+    if manifest.get("chart") is not None:
+        filenames.add(str(manifest["chart"]["filename"]))  # type: ignore[index]
     if "meta_package" in manifest:
         filenames.add(str(manifest["meta_package"]["filename"]))  # type: ignore[index]
     return {
@@ -638,6 +639,66 @@ def test_disabled_image_publication_completes_with_wheels_and_chart(
     assert "Images are still building" not in notes
     assert "Images:" not in notes
     assert "pkgs/container" not in notes
+
+    skipped_chart = release.finalize_manifest(
+        manifest,
+        tmp_path / "missing-receipts",
+        build_outcome="skipped",
+        member_outcome="skipped",
+        index_outcome="skipped",
+        chart_oci_outcome="skipped",
+    )
+    assert skipped_chart["release"]["status"] == "publication-failed"
+
+
+@pytest.mark.parametrize("release_type", ["prerelease", "nightly"])
+def test_disabled_channels_finalize_with_wheels_only_regardless_of_release_type(
+    tmp_path: Path,
+    release_type: str,
+) -> None:
+    wheels, _, _, filename = _write_artifact_inputs(tmp_path)
+    plan = _plan()
+    plan["release_type"] = release_type
+    if release_type == "nightly":
+        plan["git_tag"] = "nightly/v0.7.62-20260917-1"
+    for channel in ("ghcr", "chart_oci"):
+        plan["publish"][channel].update(
+            requested=False, enabled=False, disposition="disabled"
+        )
+
+    state, checksums = release.build_artifacts_manifest(
+        plan, wheels, tmp_path / "missing-chart", actions_run_id=123
+    )
+    assert state["chart"] is None
+    assert [name for _, name in checksums] == [filename]
+    final = release.finalize_manifest(
+        state,
+        tmp_path / "missing-receipts",
+        build_outcome="skipped",
+        member_outcome="skipped",
+        index_outcome="skipped",
+        chart_oci_outcome="skipped",
+    )
+    assert final["release"]["status"] == "complete"
+    asset_urls = _asset_urls(final)
+    release_document = {
+        "tag_name": plan["git_tag"],
+        "assets": [
+            {"name": name, "browser_download_url": url}
+            for name, url in asset_urls.items()
+        ],
+    }
+    assert release._github_asset_urls(final, release_document) == asset_urls
+    notes = release.render_notes(final, repository="example/ucm", asset_urls=asset_urls)
+    assert asset_urls[filename] in notes
+    public = release.build_public_manifest(final, release_document)
+    assert public["chart_oci"] is None
+    assert public["runtime_images"] == {
+        channel: {"members": [], "indexes": []} for channel in ("ghcr", "dockerhub")
+    }
+    assert public["github_release_assets"] == sorted(
+        [filename, "release-manifest.json"]
+    )
 
 
 def test_public_manifest_is_exact_schema_v6_and_uses_published_targets(

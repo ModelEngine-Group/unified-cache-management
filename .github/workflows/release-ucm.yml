@@ -65,6 +65,7 @@ jobs:
     outputs:
       enabled: ${{ steps.profile.outputs.enabled }}
       fork_test_pypi: ${{ steps.profile.outputs.fork_test_pypi }}
+      publish_ghcr: ${{ steps.profile.outputs.publish_ghcr }}
     permissions:
       contents: read
     env:
@@ -163,6 +164,7 @@ jobs:
           {
             echo "enabled=${enabled}"
             echo "fork_test_pypi=${fork_test_pypi}"
+            echo "publish_ghcr=$(jq -r '.publish.ghcr.enabled' <<<"${resolved}")"
           } >>"${GITHUB_OUTPUT}"
   select-runtime-candidates:
     name: Select Runtime Registry Tags
@@ -482,7 +484,8 @@ jobs:
 
   sync-builders:
     name: Prepare immutable Wheel Builders
-    needs: resolve-upstreams
+    needs: [release-preflight, resolve-upstreams]
+    if: ${{ needs.release-preflight.outputs.publish_ghcr == 'true' }}
     permissions:
       contents: read
       packages: write
@@ -493,6 +496,16 @@ jobs:
   plan:
     name: Plan Wheels, Images, and Chart
     needs: [release-preflight, open-release, resolve-upstreams, sync-builders]
+    if: >-
+      ${{
+        !cancelled() &&
+        needs.release-preflight.result == 'success' &&
+        needs.open-release.result == 'success' &&
+        needs.resolve-upstreams.result == 'success' &&
+        (needs.sync-builders.result == 'success' ||
+         (needs.release-preflight.outputs.publish_ghcr == 'false' &&
+          needs.sync-builders.result == 'skipped'))
+      }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
@@ -500,6 +513,7 @@ jobs:
       release_kind: ${{ steps.plan.outputs.release_kind }}
       publish_images: ${{ steps.plan.outputs.publish_images }}
       publish_pypi: ${{ steps.plan.outputs.publish_pypi }}
+      publish_chart_oci: ${{ steps.plan.outputs.publish_chart_oci }}
       pypi_disposition: ${{ steps.plan.outputs.pypi_disposition }}
       dockerhub_disposition: ${{ steps.plan.outputs.dockerhub_disposition }}
       plan_artifact: ${{ steps.plan.outputs.plan_artifact }}
@@ -525,9 +539,21 @@ jobs:
           name: ${{ needs.resolve-upstreams.outputs.runtime_selection_artifact }}
           path: input/upstreams
       - uses: actions/download-artifact@v4.3.0
+        if: ${{ needs.release-preflight.outputs.publish_ghcr == 'true' }}
         with:
           name: ${{ needs.sync-builders.outputs.builder_catalog_artifact }}
           path: input/builders
+      - name: Bind Wheels to upstream Builders when GHCR publication is disabled
+        if: ${{ needs.release-preflight.outputs.publish_ghcr == 'false' }}
+        run: |
+          set -euo pipefail
+          mkdir -p input/builders
+          PYTHONPATH=.github/release python -m ucm_release builders discover \
+            --selection input/upstreams/runtime-selection.json \
+            --output input/builders/builder-catalog.desired.json >/dev/null
+          PYTHONPATH=.github/release python -m ucm_release builders bind-source \
+            --catalog input/builders/builder-catalog.desired.json \
+            --output input/builders/builder-catalog.json >/dev/null
       - id: plan
         name: Generate final build matrices
         env:
@@ -604,6 +630,7 @@ jobs:
             echo "release_kind=${RELEASE_KIND}"
             echo "publish_images=${publish_images}"
             echo "publish_pypi=${publish_pypi}"
+            echo "publish_chart_oci=$(jq -r '.publish.chart_oci.enabled' out/plan/release-plan.json)"
             echo "pypi_disposition=${pypi_disposition}"
             echo "dockerhub_disposition=${dockerhub_disposition}"
             echo "plan_artifact=${artifact}"
@@ -842,6 +869,7 @@ jobs:
   package-chart:
     name: Chart · Helm package
     needs: plan
+    if: ${{ needs.plan.outputs.publish_chart_oci == 'true' }}
     permissions:
       contents: read
     uses: ./.github/workflows/_build-chart.yml
@@ -902,7 +930,8 @@ jobs:
             (needs.build-wheels.result != 'success' ||
              needs.build-meta.result != 'success' ||
              needs.validate-wheel-runtimes.result != 'success' ||
-             needs.package-chart.result != 'success')
+             (needs.plan.outputs.publish_chart_oci == 'true' &&
+              needs.package-chart.result != 'success'))
           }}
         env:
           WHEEL_OUTCOME: ${{ needs.build-wheels.result }}
@@ -957,6 +986,7 @@ jobs:
           name: ucm-meta-run-${{ github.run_id }}
           path: input/meta
       - uses: actions/download-artifact@v4.3.0
+        if: ${{ needs.plan.outputs.publish_chart_oci == 'true' }}
         with:
           name: ucm-chart-run-${{ github.run_id }}
           path: input/chart
@@ -1008,14 +1038,13 @@ jobs:
           release_id="$(jq -er '.[0].id' <<<"${releases}")"
           release_json="${RUNNER_TEMP}/github-release-${release_id}.json"
           shopt -s nullglob
-          artifacts=(
-            input/wheels/*/*.whl
-            input/chart/*.tgz
-            examples/ucm_config_example.yaml
-          )
+          artifacts=(input/wheels/*/*.whl)
+          test "${#artifacts[@]}" -gt 0
+          if [ "$(jq -r '.publish.chart_oci.enabled' "${plan}")" = true ]; then
+            artifacts+=(input/chart/*.tgz examples/ucm_config_example.yaml)
+          fi
           meta_artifacts=(input/meta/*.whl)
           test "${#meta_artifacts[@]}" = 1
-          test "${#artifacts[@]}" -gt 2
           gh api --method PATCH "/repos/${GH_REPO}/releases/${release_id}" \
             -f "tag_name=${tag}" >/dev/null
           gh release upload "${tag}" --clobber "${artifacts[@]}"
@@ -1024,8 +1053,10 @@ jobs:
           gh api "/repos/${GH_REPO}/releases/${release_id}" >"${release_json}"
           jq -e --arg tag "${tag}" '.tag_name == $tag' \
             "${release_json}" >/dev/null
-          jq -e '[.assets[].name] | index("ucm_config_example.yaml") != null' \
-            "${release_json}" >/dev/null
+          if [ "$(jq -r '.publish.chart_oci.enabled' "${plan}")" = true ]; then
+            jq -e '[.assets[].name] | index("ucm_config_example.yaml") != null' \
+              "${release_json}" >/dev/null
+          fi
           python .github/release/ucm_release/release.py notes \
             --manifest out/release/release-state.json \
             --release "${release_json}" --repository "${GH_REPO}" \
@@ -1443,6 +1474,7 @@ jobs:
   publish-chart-oci:
     name: Publish · Chart OCI
     needs: [plan, publish-release-artifacts]
+    if: ${{ needs.plan.outputs.publish_chart_oci == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: ${{ inputs.publication_scope == 'official' && 'release-production' || 'fork-preview' }}
@@ -1557,6 +1589,7 @@ jobs:
           path: input/receipts
           merge-multiple: true
       - uses: actions/download-artifact@v4.3.0
+        if: ${{ needs.plan.outputs.publish_pypi == 'true' }}
         continue-on-error: true
         with:
           name: ucm-pypi-receipt-run-${{ github.run_id }}
