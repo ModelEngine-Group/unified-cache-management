@@ -24,29 +24,97 @@
 #ifndef UNIFIEDCACHE_POSIX_STORE_CC_IO_ENGINE_PSYNC_H
 #define UNIFIEDCACHE_POSIX_STORE_CC_IO_ENGINE_PSYNC_H
 
+#include <atomic>
+#include <thread>
 #include "logger/logger.h"
 #include "metrics_api.h"
+#include "template/spsc_ring_queue.h"
 #include "template/task_wrapper.h"
+#include "thread/cpu_affinity.h"
+#include "thread/lock.h"
 #include "trans_queue.h"
 
 namespace UC::PosixStore {
 
 class IoEnginePsync : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
+    static constexpr size_t kDispatchQueueDepth = 8192;
+
     TransQueue queue_;
     size_t shardSize_;
+    SpscRingQueue<TaskPair> waiting_;
+    alignas(64) std::atomic_bool stop_{false};
+    SpinLock pushLock_;
+    std::thread dispatcher_;
 
 public:
     Status Setup(const Config& config, const SpaceLayout* layout)
     {
         timeoutMs_ = config.timeoutMs;
         shardSize_ = config.shardSize;
-        return queue_.Setup(config, &failureSet_, layout);
+        auto s = queue_.Setup(config, &failureSet_, layout);
+        if (s.Failure()) [[unlikely]] { return s; }
+        waiting_.Setup(kDispatchQueueDepth);
+        dispatcher_ = std::thread(&IoEnginePsync::DispatchStage, this);
+        return Status::OK();
+    }
+    ~IoEnginePsync() { Close(); }
+    void Close()
+    {
+        if (stop_.exchange(true)) { return; }
+        if (dispatcher_.joinable()) { dispatcher_.join(); }
+        TaskPair pair;
+        SpinLockGuard guard(pushLock_);
+        while (waiting_.TryPop(pair)) {
+            if (pair.first) { failureSet_.Insert(pair.first->id); }
+            if (pair.second) { pair.second->Done(); }
+        }
     }
 
 protected:
     Status FailureStatus(const TaskPtr& task) const override { return task->FailureStatus(); }
     void Dispatch(TaskPtr t, WaiterPtr w) override
     {
+        if (t->type != TransTask::Type::LOAD) {
+            DispatchOne({t, w});
+            return;
+        }
+        w->Up();
+        bool pushed = false;
+        {
+            SpinLockGuard guard(pushLock_);
+            while (!stop_.load(std::memory_order_acquire)) {
+                if (waiting_.TryPush({t, w})) {
+                    pushed = true;
+                    break;
+                }
+                std::this_thread::yield();
+            }
+        }
+        if (!pushed) [[unlikely]] {
+            UC_ERROR("Posix load task({}) dispatch aborted, engine stopped.", t->id);
+            failureSet_.Insert(t->id);
+            w->Done();
+        }
+    }
+    void Cancel(TaskPtr t) override { queue_.Cancel(t); }
+
+private:
+    void DispatchStage()
+    {
+        auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_psync_disp");
+        if (nameStatus.Failure()) {
+            UC_WARN("Failed({}) to set psync dispatcher name.", nameStatus);
+        }
+        waiting_.ConsumerLoop(stop_, &IoEnginePsync::DispatchOne, this);
+    }
+    void DispatchOne(TaskPair&& pair)
+    {
+        auto& t = pair.first;
+        auto& w = pair.second;
+        if (failureSet_.Contains(t->id)) {
+            w->Done();
+            return;
+        }
         const auto id = t->id;
         const auto& brief = t->desc.brief;
         const auto num = t->desc.size();
@@ -72,7 +140,6 @@ protected:
         });
         queue_.Push(t, w);
     }
-    void Cancel(TaskPtr t) override { queue_.Cancel(t); }
 };
 
 }  // namespace UC::PosixStore

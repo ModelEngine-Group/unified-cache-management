@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_DRAM_STORE_CC_NODE_SCHEDULER_H
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -54,6 +55,8 @@ private:
 
     Runner& GetRunner(NodeId nodeId) const noexcept;
     void RunActors(Runner& runner) noexcept;
+    std::chrono::steady_clock::time_point RecordQueueMetrics(
+        Runner& runner, std::chrono::steady_clock::time_point nextWakeup);
     void JoinAll();
 
     NodeSchedulerConfig config_;
