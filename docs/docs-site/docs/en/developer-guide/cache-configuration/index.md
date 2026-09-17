@@ -30,4 +30,4 @@ SGLang owns its host cache; use the storage configuration from the [SGLang quick
 
 Use only fields accepted by that backend; see the [configuration reference](../../reference/config-parameters.md). Then [verify external reuse](../../user-guide/observability/verify-cache.md) before comparing read and recomputation cost.
 
-For block matching and transfer completion, see [how caching works](../capability-principles.md). For separate Prefill and Decode instances, continue with [PD deployment](../../user-guide/capabilities/pd-disaggregation/index.md).
+For block matching and transfer completion, see [how caching works](../capability-principles.md). For separate Prefill and Decode instances, continue with [PD Disaggregation](../../user-guide/capabilities/pd-disaggregation/index.md).

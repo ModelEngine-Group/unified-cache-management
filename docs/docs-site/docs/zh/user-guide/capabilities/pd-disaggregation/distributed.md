@@ -1,11 +1,13 @@
-# Ascend 上的传输连接器与 UCM 组合
+# 传输连接器与 UCM 组合
 
-这里的 Ascend 传输路径在 Prefill 侧组合两个 connector：Mooncake 将当前请求的 KV 发送给 Decode，UCM 从外部存储加载并保存可复用的前缀块。Decode 只运行传输 consumer。这样，Prefill 可以复用前缀，而不要求 Decode 读取 UCM 存储。
+本页介绍 [PD 分离部署](index.md)中的传输连接器交接方案。手工示例使用 Ascend；Helm 配置也适用于 CUDA，需选用对应平台的模型配置。
+
+这里的传输路径在 Prefill 侧组合两个 connector：Mooncake 将当前请求的 KV 发送给 Decode，UCM 从外部存储加载并保存可复用的前缀块。Decode 只运行传输 consumer。这样，Prefill 可以复用前缀，而不要求 Decode 读取 UCM 存储。
 
 请求顺序与初始化标识的原理见[PD 集成原理](../../../developer-guide/pd-integration.md)。
 
 
-## 手工部署
+## Ascend 手工部署
 
 这条路径恢复原 Ascend 部署脚本，与 Helm 独立。启动前准备匹配的 vLLM-Ascend、Mooncake、模型权重、集合通信网络及共享存储。`/vllm-workspace` 下的路径对应部署环境中的源码目录。这些脚本依赖对应引擎版本，本次文档恢复未在加速设备上重跑。
 
@@ -470,7 +472,7 @@ vllm bench serve \
 
 ### 选择部署配置
 
-从解压后 Chart 中的 `models/ascend/values-qwen3-0p6b-1p1-1d1.yaml` 开始。它定义一个 Prefill 角色、一个 Decode 角色、Mooncake master 和路由资源。按 [Helm 部署](../../frameworks/kubernetes/deploy.md)准备集群和站点 values，完成渲染和安装。
+根据目标平台，从解压后 Chart 中的 `models/ascend/values-qwen3-0p6b-1p1-1d1.yaml` 或 `models/cuda/values-qwen3-0p6b-1p1-1d1.yaml` 开始。它定义一个 Prefill 角色、一个 Decode 角色、Mooncake master 和路由资源。按 [Helm 部署](../../frameworks/kubernetes/deploy.md)准备集群和站点 values，完成渲染和安装。
 
 该文件是配置示例。需要根据[安装](../../quick_start/index.md)替换引擎镜像，挂载目标模型，并为目标集群设置资源、存储、网络和调度器参数。必须替换示例中的 StorageClass 占位值；主机挂载和 RDMA 资源名也需要实际集群支持。
 
@@ -511,4 +513,4 @@ vllm bench serve \
 | 冷 PD 请求正常，但重复提示词没有 UCM 命中 | Prefill connector 组合、持久化阈值、缓存内容和 key 兼容性 |
 | 命中增加，但 TTFT 没有改善 | 成功加载的延迟、节省的 Prefill 计算量、传输时间、路由器与引擎排队 |
 
-多节点角色实例或 MoE 模型可继续阅读[并行与扩展](large-scale-ep.md)。不要在同一步同时更换模型、并行布局和缓存后端，因为解释结果时，它们分别需要不同的验证证据。
+多节点角色实例或 MoE 模型可继续阅读[PD 部署扩容](large-scale-ep.md)。不要在同一步同时更换模型、并行布局和缓存后端，因为解释结果时，它们分别需要不同的验证证据。

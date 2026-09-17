@@ -8,7 +8,7 @@ PD disaggregation divides a request into Prefill and Decode. Prefill produces KV
 
 The shared object is the storage namespace. Instances require compatible models, tokenizers, cache identifiers and tensor layouts, and writes must be visible before Decode lookup. Incomplete writes or layout mismatches affect external hits. The proxy's request ordering does not replace write-completion and read verification.
 
-Start with [shared-store PD](../user-guide/capabilities/pd-disaggregation/centralized.md). The example does not provide production-router scheduling, fault tolerance or transparent request migration.
+Start with [Shared-store PD](../user-guide/capabilities/pd-disaggregation/centralized.md). The example does not provide production-router scheduling, fault tolerance or transparent request migration.
 
 ## Transport connector combined with UCM
 
@@ -33,4 +33,4 @@ At Pod startup, `files/resolve-kv-transfer-config.py` resolves logical instance 
 
 Replicas represent independent serving instances; workers represent execution processes within an instance. Engine settings control DP, TP and EP. More Pods do not automatically yield a compatible KV layout. Changes to P/D parallelism require verification of supported transport-layout conversions and resource budgets.
 
-For shared storage, check Prefill save, Decode matching and loading. For transport, check producer/consumer handoff, then separately verify Prefill's UCM reuse. Both require output and request-continuity checks. See [PD deployment](../user-guide/capabilities/pd-disaggregation/index.md) for operation and [request lifecycle](request-lifecycle.md) for cache completion semantics.
+For shared storage, check Prefill save, Decode matching and loading. For transport, check producer/consumer handoff, then separately verify Prefill's UCM reuse. Both require output and request-continuity checks. See [PD Disaggregation](../user-guide/capabilities/pd-disaggregation/index.md) for operation and [request lifecycle](request-lifecycle.md) for cache completion semantics.

@@ -34,7 +34,7 @@
 
 ## 跨节点与 PD
 
-跨节点共享时，在另一实例上重放，确认它访问同一存储且使用兼容布局。共享存储 PD 还需观察 Prefill 保存结果对 Decode 的可见性；传输连接器组合则分别检查 P/D 交接与 Prefill 的 UCM 复用。参见[PD 部署](../capabilities/pd-disaggregation/index.md)。
+跨节点共享时，在另一实例上重放，确认它访问同一存储且使用兼容布局。共享存储 PD 分离部署 还需观察 Prefill 保存结果对 Decode 的可见性；传输连接器与 UCM 组合则分别检查 P/D 交接与 Prefill 的 UCM 复用。参见[PD 分离部署](../capabilities/pd-disaggregation/index.md)。
 
 ## 结果不符合预期时
 

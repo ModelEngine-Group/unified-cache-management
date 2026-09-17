@@ -111,7 +111,7 @@ Prepare two available devices for `--tensor-parallel-size 2` and a matching host
 
     <div data-artifact-missing="image" markdown="1">
 
-    No UCM image is published for this environment. Use a [source build](../../developer-guide/build_from_source.md).
+    The release data does not identify a UCM image for this environment. Use a [source build](../../developer-guide/build_from_source.md).
 
     </div>
 
@@ -324,7 +324,7 @@ Prepare two available devices for `--tensor-parallel-size 2` and a matching host
 
     <div data-artifact-missing="image" markdown="1">
 
-    No UCM image is published for this environment. Use a [source build](../../developer-guide/build_from_source.md).
+    The release data does not identify a UCM image for this environment. Use a [source build](../../developer-guide/build_from_source.md).
 
     </div>
 

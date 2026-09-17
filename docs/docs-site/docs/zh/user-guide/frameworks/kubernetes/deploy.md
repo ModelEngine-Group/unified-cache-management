@@ -1,8 +1,8 @@
 # Helm 部署
 
-使用 `unified-cache-chart` 在 Kubernetes 中部署 vLLM + UCM。一个 Helm Release 管理一个模型；模型、设备、存储和部署形态统一写在所选的 `models/` 模型配置中。下面从单节点 Qwen3-0.6B 开始，依次完成准备、配置、安装和请求验证，多节点与 PD 部署使用同一套命令。
+使用 `unified-cache-chart` 在 Kubernetes 中部署 vLLM + UCM。一个 Helm Release 管理一个模型；模型、设备、存储和部署形态统一写在所选的 `models/` 模型配置中。下面从单节点 Qwen3-0.6B 开始，依次完成准备、配置、安装和请求验证，多节点与 PD 分离部署使用同一套命令。
 
-Helm 创建 `ModelServing` 和配套资源，已有的 kthena controller 根据角色配置创建引擎 Pod。PD 部署还会创建路由声明，通过已有的 kthena-router 接收请求。
+Helm 创建 `ModelServing` 和配套资源，已有的 kthena controller 根据角色配置创建引擎 Pod。PD 分离部署还会创建路由声明，通过已有的 kthena-router 接收请求。
 
 ## 1. 准备集群 {#prerequisites}
 
@@ -115,7 +115,7 @@ servingEngineSpec:
 ```
 
 - 发布包的 CUDA 默认镜像无需在模型配置中重复填写。Ascend、源码部署或需要其他版本时，在所选模型配置中设置 `images.image`；候选地址位于包内 `values.yaml`，优先 Docker Hub，未发布到 Docker Hub 时使用 GHCR。地址已包含仓库域名，`images.registry` 可留空。若设置 `servingEngineSpec.modelSpec.image`，模型级镜像优先。
-- `model-weights`：替换为与 Release 同命名空间的已有 PVC。该卷根目录应包含 `Qwen3-0.6B/` 权重目录，挂载后对应 `modelPath`；Chart 不会自动下载权重。多节点和 PD 部署需保证模型卷可被所有引擎节点挂载读取。
+- `model-weights`：替换为与 Release 同命名空间的已有 PVC。该卷根目录应包含 `Qwen3-0.6B/` 权重目录，挂载后对应 `modelPath`；Chart 不会自动下载权重。多节点和 PD 分离部署需保证模型卷可被所有引擎节点挂载读取。
 - `storageClass`：替换为集群真实支持 `ReadWriteMany` 的存储类。`1Ti` 是示例容量，可按缓存需求调整。
 - 模型卷和缓存卷也支持 `hostPath`、NFS、CSI、静态 PV/PVC 或已有 PVC。具体字段见 Chart 中的 `values.yaml` 和 `README.md`。
 
@@ -209,7 +209,7 @@ curl --fail-with-body "$UCM_BASE_URL/v1/chat/completions" \
 
 多节点配置使用相同访问方式，将 Service 名后缀换成自己的 `modelSpec.name`；API 请求中的模型名对应 `modelSpec.modelName`。
 
-### PD 部署 {#pd-resources}
+### PD 分离部署 {#pd-resources}
 
 安装后检查路由和 Mooncake master：
 

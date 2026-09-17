@@ -1,6 +1,6 @@
 # PD 集成原理
 
-PD 分离把一次推理请求分为 Prefill 和 Decode 两段。Prefill 生成 Decode 所需的 KV，因此分离部署既需要请求协调，也需要数据交接。UCM 的前缀复用可以减少 Prefill 的重复计算；两阶段之间如何交接，则由所选部署决定。
+PD 分离部署把一次推理请求分为 Prefill 和 Decode 两段。Prefill 生成 Decode 所需的 KV，因此分离部署既需要请求协调，也需要数据交接。UCM 的前缀复用可以减少 Prefill 的重复计算；两阶段之间如何交接，则由所选部署决定。
 
 ## 共享存储交接
 
@@ -8,7 +8,7 @@ PD 分离把一次推理请求分为 Prefill 和 Decode 两段。Prefill 生成 
 
 这里跨实例共享的是存储命名空间。两个实例必须使用兼容的模型、tokenizer、缓存标识和张量布局，而且保存结果在 Decode 查询时已经可见。写入尚未完成或块布局不匹配，都会影响 Decode 的外部命中。示例代理的请求顺序不能替代实际写入完成与读取验证。
 
-操作从[共享存储 PD](../user-guide/capabilities/pd-disaggregation/centralized.md)开始。该示例不承担生产路由器的调度、容错或透明请求迁移职责。
+操作从[共享存储 PD 分离部署](../user-guide/capabilities/pd-disaggregation/centralized.md)开始。该示例不承担生产路由器的调度、容错或透明请求迁移职责。
 
 ## 独立传输连接器与 UCM 组合
 
@@ -33,4 +33,4 @@ Chart 用 `ModelServing` 描述角色和 worker，用 `ModelServer` 声明路由
 
 副本数描述独立的服务实例，worker 数描述一个实例内部的执行进程。DP、TP 和 EP 由引擎执行配置控制；增加 Pod 数不会自动生成兼容的缓存布局。改变 P/D 并行度时，需要验证传输连接器支持的布局转换和资源预算。
 
-共享存储路径检查 Prefill 保存、Decode 匹配和加载；传输路径检查 producer/consumer 交接，再单独检查 Prefill 的 UCM 复用。两者都需要生成结果与请求连续性的验证。部署步骤见[PD 部署](../user-guide/capabilities/pd-disaggregation/index.md)，缓存操作的完成语义见[请求生命周期](request-lifecycle.md)。
+共享存储路径检查 Prefill 保存、Decode 匹配和加载；传输路径检查 producer/consumer 交接，再单独检查 Prefill 的 UCM 复用。两者都需要生成结果与请求连续性的验证。部署步骤见[PD 分离部署](../user-guide/capabilities/pd-disaggregation/index.md)，缓存操作的完成语义见[请求生命周期](request-lifecycle.md)。

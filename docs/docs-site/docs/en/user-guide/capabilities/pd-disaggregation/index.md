@@ -1,15 +1,18 @@
-# PD deployment
+# PD Disaggregation
 
-Prefill computes prompt KV and Decode continues generation from it. Separating them requires routing the request to the correct instances and delivering compatible KV to Decode. Choose a deployment by its KV handoff path.
+PD Disaggregation runs Prefill and Decode on separate serving instances. Prefill computes the prompt's KV cache; Decode uses it to generate tokens. The deployment must route requests to the correct instances and deliver compatible KV to Decode. UCM provides external prefix reuse and, in the shared-store path, also supplies the store used for KV handoff. See [PD integration](../../../developer-guide/pd-integration.md) for responsibilities and request ordering.
 
-## Choose the handoff
+## Choose the handoff and deployment size
 
-| Path | How KV reaches Decode | Deployment guide |
+First choose one of two KV handoff paths: shared storage or a transport connector. Then choose the deployment size. The scaling guide extends the transport path after a basic P/D group works.
+
+| Guide | How KV reaches Decode | Deployment size |
 | --- | --- | --- |
-| Shared storage | Prefill saves blocks; Decode looks up and loads them from the same store | [Shared-store PD](centralized.md), starting with the repository's example proxy |
-| Transport connector with UCM | A connector transfers the current request's KV; UCM supplies external prefix reuse to Prefill | [Transport composition](distributed.md), with Kubernetes routing and model deployment |
+| [Shared-store PD](centralized.md) | Prefill saves blocks through UCM; Decode looks up and loads them from the same store | Start with one Prefill and one Decode instance and the repository's example proxy |
+| [Transport with UCM](distributed.md) | A transport connector transfers the current request's KV; UCM supplies external prefix reuse to Prefill | Establish a working P/D group using manual Ascend deployment or Helm on CUDA/Ascend |
+| [Scaling PD Deployments](large-scale-ep.md) | Uses the same transport handoff as Transport with UCM | Extend a working transport deployment with replicas, workers, DP, TP or EP |
 
-Shared-store blocks must be visible before Decode lookup. The transport path requires a working producer/consumer connection. See [PD integration](../../../developer-guide/pd-integration.md) for responsibilities and request ordering.
+Shared-store blocks must be visible before Decode lookup. The transport path requires a working producer/consumer connection. Scaling changes instance counts and model parallelism while retaining the chosen handoff.
 
 ## Prepare and deploy
 
@@ -22,4 +25,4 @@ Shared-store blocks must be visible before Decode lookup. The transport path req
 
 Use uncached prompts to verify P/D handoff and generated output, then repeated prefixes to verify UCM reuse. Check transfer and cache reuse separately using [external-cache verification](../../observability/verify-cache.md).
 
-After one P/D group works, adjust replicas, workers, DP, TP or EP with the [multi-node guide](large-scale-ep.md). Record each change under the same workload.
+After one transport-based P/D group works, continue with [Scaling PD Deployments](large-scale-ep.md). Record each change under the same workload.

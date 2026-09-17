@@ -111,7 +111,7 @@ hide:
 
     <div data-artifact-missing="image" markdown="1">
 
-    当前环境没有已发布的 UCM 镜像。请使用[源码构建](../../developer-guide/build_from_source.md)。
+    发布数据中没有可用于当前环境的 UCM 镜像信息。请使用[源码构建](../../developer-guide/build_from_source.md)。
 
     </div>
 
@@ -320,7 +320,7 @@ curl --fail http://127.0.0.1:7800/metrics | grep '^ucm:'
 
     <div data-artifact-missing="image" markdown="1">
 
-    当前环境没有已发布的 UCM 镜像。请使用[源码构建](../../developer-guide/build_from_source.md)。
+    发布数据中没有可用于当前环境的 UCM 镜像信息。请使用[源码构建](../../developer-guide/build_from_source.md)。
 
     </div>
 

@@ -1,6 +1,8 @@
-# Transport with UCM on Ascend
+# Transport with UCM
 
-The Ascend transport path shown here composes two connectors on prefill:
+This guide covers the transport-connector handoff path in [PD Disaggregation](index.md). The manual examples use Ascend; the Helm configuration also applies to CUDA with the corresponding model profile.
+
+The transport path shown here composes two connectors on prefill:
 Mooncake sends the request's KV to decode, while UCM loads and saves reusable
 prefix blocks in external storage. Decode runs the transport consumer alone.
 This allows prefix reuse on prefill without making decode read the UCM store.
@@ -8,7 +10,7 @@ This allows prefix reuse on prefill without making decode read the UCM store.
 See [PD integration](../../../developer-guide/pd-integration.md) for request ordering and initialization identifiers.
 
 
-## Manual deployment
+## Manual deployment on Ascend
 
 This path restores the original Ascend deployment scripts. It is independent of Helm: prepare matching vLLM-Ascend and Mooncake binaries, the model weights, collective networking, and shared storage before starting. Paths under `/vllm-workspace` refer to your installed source checkouts. These version-dependent scripts have not been rerun on accelerator hardware in this documentation update.
 
@@ -473,7 +475,7 @@ The following Chart path is independent of the manual scripts above. Its bundled
 
 ### Choose a profile
 
-Start from `models/ascend/values-qwen3-0p6b-1p1-1d1.yaml` in the unpacked Chart.
+Start from `models/ascend/values-qwen3-0p6b-1p1-1d1.yaml` or `models/cuda/values-qwen3-0p6b-1p1-1d1.yaml` in the unpacked Chart, matching the target platform.
 It defines one prefill and one decode role, a Mooncake master, and routing
 resources. Use the [Helm deployment guide](../../frameworks/kubernetes/deploy.md) to prepare
 site values, render, and install.
@@ -540,6 +542,6 @@ throughput, and store/transport timings.
 | Hits increase but TTFT does not improve | Successful load latency, prefill compute saved, transfer time, router/engine queueing |
 
 For multi-node role instances or MoE models, continue with
-[parallelism and scaling](large-scale-ep.md). Avoid changing the model,
+[Scaling PD Deployments](large-scale-ep.md). Avoid changing the model,
 parallel layout, and cache backend in one step; each changes a different part
 of the evidence needed to explain a result.

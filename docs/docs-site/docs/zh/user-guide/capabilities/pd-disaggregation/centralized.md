@@ -1,4 +1,6 @@
-# 基于共享存储的 PD 分离
+# 共享存储 PD 分离部署
+
+本页介绍 [PD 分离部署](index.md)中的共享存储交接方案，从一个 Prefill 和一个 Decode 实例开始。
 
 共享存储部署中，Prefill 和 Decode 通过 UCM 使用同一份外部缓存。请求先经过 Prefill，计算并保存提示词块，再携带原始提示词进入 Decode。Decode 通过查找发现可复用块，UCM 不会向它提供对端实例地址。
 

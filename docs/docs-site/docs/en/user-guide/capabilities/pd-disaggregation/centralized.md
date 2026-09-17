@@ -1,4 +1,6 @@
-# Shared-store PD Disaggregation
+# Shared-store PD
+
+This guide covers the shared-storage handoff path in [PD Disaggregation](index.md), starting with one Prefill and one Decode instance.
 
 In a shared-store setup, prefill and decode run UCM against the same external
 cache. The request first visits prefill to compute and save prompt blocks, then

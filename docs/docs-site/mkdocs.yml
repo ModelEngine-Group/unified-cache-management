@@ -90,10 +90,10 @@ plugins:
             KV Compression: KV 压缩
             Deployment: 部署
             Helm Deployment: Helm 部署
-            PD Deployment: PD 分离部署
-            Shared-store PD: 共享存储 PD
-            Transport with UCM: 传输连接器与 UCM
-            Multi-node Parallelism: 多节点并行
+            PD Disaggregation: PD 分离部署
+            Shared-store PD: 共享存储 PD 分离部署
+            Transport with UCM: 传输连接器与 UCM 组合
+            Scaling PD Deployments: PD 部署扩容
             Model Tour: 模型教程
             Operations: 运行与排障
             Verify External Cache: 验证外部缓存
@@ -181,11 +181,11 @@ nav:
           - user-guide/frameworks/index.md
           - Helm Deployment: user-guide/frameworks/kubernetes/deploy.md
           - pyMotor: user-guide/frameworks/pyMotor.md
-          - PD Deployment:
+          - PD Disaggregation:
               - user-guide/capabilities/pd-disaggregation/index.md
               - Shared-store PD: user-guide/capabilities/pd-disaggregation/centralized.md
               - Transport with UCM: user-guide/capabilities/pd-disaggregation/distributed.md
-              - Multi-node Parallelism: user-guide/capabilities/pd-disaggregation/large-scale-ep.md
+              - Scaling PD Deployments: user-guide/capabilities/pd-disaggregation/large-scale-ep.md
       - Operations:
           - user-guide/observability/index.md
           - Verify External Cache: user-guide/observability/verify-cache.md

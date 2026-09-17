@@ -209,7 +209,7 @@ curl --fail-with-body "$UCM_BASE_URL/v1/chat/completions" \
 
 Multi-node profiles use the same access path. Replace the Service suffix with your `modelSpec.name`; the API model name is `modelSpec.modelName`.
 
-### PD deployment {#pd-resources}
+### PD Disaggregation {#pd-resources}
 
 After installation, check routing and Mooncake master resources:
 

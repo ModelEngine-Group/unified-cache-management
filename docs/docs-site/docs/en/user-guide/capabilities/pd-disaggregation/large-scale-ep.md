@@ -1,4 +1,6 @@
-# PD with Multi-node Parallelism
+# Scaling PD Deployments
+
+This guide extends [Transport with UCM](distributed.md) to larger deployments. Establish a working P/D group first; the KV handoff continues to use the transport connector.
 
 Scaling a PD deployment involves two separate choices: how many independent
 prefill/decode instances to run, and how each instance distributes its model
@@ -6,7 +8,6 @@ across devices and nodes. UCM provides prefix reuse within the selected engine
 integration. It does not choose the model's expert partition or coordinate
 collective communication.
 
-Start with a functioning [transport-based PD deployment](distributed.md).
 This guide gives the manual deployment steps and a separate Chart topology path,
 followed by the checks needed to assess performance.
 

@@ -34,7 +34,7 @@ For vLLM with `Cache|Posix`, use these observations together:
 
 ## Cross-node and PD checks
 
-For sharing, replay on another instance with the same store and a compatible layout. Shared-store PD also requires Prefill writes to be visible to Decode. Transport composition requires separate checks for P/D handoff and Prefill UCM reuse. See [PD deployment](../capabilities/pd-disaggregation/index.md).
+For sharing, replay on another instance with the same store and a compatible layout. Shared-store PD also requires Prefill writes to be visible to Decode. Transport with UCM requires separate checks for P/D handoff and Prefill UCM reuse. See [PD Disaggregation](../capabilities/pd-disaggregation/index.md).
 
 ## Investigate unexpected results
 

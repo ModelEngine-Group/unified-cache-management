@@ -30,4 +30,4 @@ SGLang 的主机缓存由引擎管理，应采用 [SGLang 快速开始](../../us
 
 只填写所选后端接受的字段，详细归属见[配置参数](../../reference/config-parameters.md)。完成配置后执行[外部缓存验证](../../user-guide/observability/verify-cache.md)，确认复用有效后，再比较读取与重新计算的开销。
 
-缓存块如何匹配、引擎如何等待传输，见[缓存工作原理](../capability-principles.md)。需要把 Prefill 和 Decode 放在不同实例上时，继续阅读 [PD 部署](../../user-guide/capabilities/pd-disaggregation/index.md)。
+缓存块如何匹配、引擎如何等待传输，见[缓存工作原理](../capability-principles.md)。需要把 Prefill 和 Decode 放在不同实例上时，继续阅读 [PD 分离部署](../../user-guide/capabilities/pd-disaggregation/index.md)。
