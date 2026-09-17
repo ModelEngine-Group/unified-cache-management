@@ -275,7 +275,11 @@ def build_artifacts_manifest(
     *,
     actions_run_id: int,
 ) -> tuple[dict[str, Any], list[tuple[str, str]]]:
-    """Validate Wheel/Chart outputs and return the artifacts-ready manifest."""
+    """Validate planned artifacts and return release state plus checksums.
+
+    The Chart OCI publication flag controls whether Chart outputs are required.
+    Plans always retain Chart metadata, even when no Chart artifact is built.
+    """
     tasks = {
         str(item["id"]): _mapping(item, "release plan Wheel")
         for item in _list(plan.get("wheels"), "release plan Wheels")
@@ -330,7 +334,13 @@ def build_artifacts_manifest(
         raise ValueError("Wheel result filenames must be unique")
 
     meta_result, meta_wheel_path = _meta_artifact(plan, meta_root)
-    chart_path = _one(sorted(chart_root.rglob("*.tgz")), "Chart package")
+    publish = copy.deepcopy(_mapping(plan.get("publish"), "release plan publish"))
+    chart_oci = _mapping(publish.get("chart_oci"), "release plan Chart OCI")
+    chart_path = (
+        _one(sorted(chart_root.rglob("*.tgz")), "Chart package")
+        if chart_oci.get("enabled") is True
+        else None
+    )
     checksums: list[tuple[str, str]] = []
     wheels: list[dict[str, Any]] = []
     for task_id in sorted(results):
@@ -352,8 +362,9 @@ def build_artifacts_manifest(
         wheels.append(result)
         checksums.append((digest, str(result["filename"])))
 
-    chart_digest = _sha256(chart_path)
-    checksums.append((chart_digest, chart_path.name))
+    if chart_path is not None:
+        chart_digest = _sha256(chart_path)
+        checksums.append((chart_digest, chart_path.name))
     if meta_result is not None and meta_wheel_path is not None:
         checksums.append((_sha256(meta_wheel_path), str(meta_result["filename"])))
     families = _family_map(plan)
@@ -400,7 +411,6 @@ def build_artifacts_manifest(
                 "targets": [],
             }
         )
-    publish = copy.deepcopy(_mapping(plan.get("publish"), "release plan publish"))
     publication_requested = any(
         item["expected_targets"] for item in [*images, *family_records]
     ) or any(
@@ -409,12 +419,18 @@ def build_artifacts_manifest(
     )
     if isinstance(actions_run_id, bool) or actions_run_id < 1:
         raise ValueError("Actions run ID must be a positive integer")
-    chart_oci = _mapping(publish.get("chart_oci"), "release plan Chart OCI")
-    chart_oci_reference = (
-        f"{chart_oci['namespace']}/{plan['chart']['name']}:{plan['chart']['version']}"
-        if chart_oci.get("enabled") is True
-        else None
-    )
+    chart = None
+    if chart_path is not None:
+        chart = {
+            "name": plan["chart"]["name"],
+            "version": plan["chart"]["version"],
+            "app_version": plan["chart"]["app_version"],
+            "filename": chart_path.name,
+            "sha256": chart_digest,
+            "oci_reference": (
+                f"{chart_oci['namespace']}/{plan['chart']['name']}:{plan['chart']['version']}"
+            ),
+        }
     manifest = {
         "kind": STATE_KIND,
         "schema_version": STATE_SCHEMA_VERSION,
@@ -428,14 +444,7 @@ def build_artifacts_manifest(
             "actions_run_id": actions_run_id,
             "status": "artifacts-ready" if publication_requested else "complete",
         },
-        "chart": {
-            "name": plan["chart"]["name"],
-            "version": plan["chart"]["version"],
-            "app_version": plan["chart"]["app_version"],
-            "filename": chart_path.name,
-            "sha256": chart_digest,
-            "oci_reference": chart_oci_reference,
-        },
+        "chart": chart,
         "wheels": wheels,
         "images": sorted(images, key=lambda item: str(item["id"])),
         "families": family_records,
@@ -688,6 +697,12 @@ def finalize_manifest(
     pypi_failed = planned_pypi.get("enabled") is True and (
         pypi_outcome != "success" or pypi_install_outcome != "success"
     )
+    chart_oci_skipped = (
+        chart_oci_outcome == "skipped"
+        and isinstance(publish_contract, dict)
+        and publish_contract.get("chart_oci", {}).get("enabled") is False
+    )
+    chart_oci_failed = chart_oci_outcome != "success" and not chart_oci_skipped
 
     publication_items = [*result["images"], *result["families"]]
     publication_not_requested = all(
@@ -712,7 +727,7 @@ def finalize_manifest(
             item["targets"] = []
         result["release"]["status"] = (
             "complete"
-            if not pypi_failed and chart_oci_outcome == "success"
+            if not pypi_failed and not chart_oci_failed
             else "publication-failed"
         )
         return result
@@ -772,7 +787,7 @@ def finalize_manifest(
 
     if failed:
         result["release"]["status"] = "images-failed"
-    elif pypi_failed or chart_oci_outcome != "success":
+    elif pypi_failed or chart_oci_failed:
         result["release"]["status"] = "publication-failed"
     else:
         result["release"]["status"] = "complete"
@@ -828,8 +843,12 @@ def build_public_manifest(
         for item in _list(state.get("families"), "release state families")
     ]
     indexes = [item for item in families if item.get("create_index") is True]
-    chart = _mapping(state.get("chart"), "release state Chart")
-    chart_oci = chart.get("oci_reference")
+    chart = state.get("chart")
+    chart_oci = (
+        _mapping(chart, "release state Chart").get("oci_reference")
+        if chart is not None
+        else None
+    )
     if chart_oci is not None and (not isinstance(chart_oci, str) or not chart_oci):
         raise ValueError("release state Chart OCI reference is invalid")
     return {
@@ -880,8 +899,9 @@ def _github_asset_urls(
         str(item["filename"])
         for item in _list(manifest.get("wheels"), "release manifest Wheels")
     }
-    chart = _mapping(manifest.get("chart"), "release manifest Chart")
-    required.add(str(chart.get("filename", "")))
+    if manifest.get("chart") is not None:
+        chart = _mapping(manifest["chart"], "release manifest Chart")
+        required.add(str(chart.get("filename", "")))
     missing = sorted(required - urls.keys())
     if missing:
         raise ValueError(f"GitHub Release is missing required assets: {missing}")
@@ -1245,20 +1265,23 @@ def render_notes(
         lines.append("Release artifacts are building.")
         return "\n".join(lines) + "\n"
 
-    chart = _mapping(manifest.get("chart"), "release manifest Chart")
-    chart_filename = str(chart.get("filename", ""))
-    chart_url = asset_urls.get(chart_filename)
-    if not chart_filename or not chart_url:
-        raise ValueError("Release notes require a Chart URL")
     artifact_lines = [f"Backend Wheels: {len(manifest.get('wheels', []))}"]
-    chart_line = (
-        f"Chart: [{chart_filename}]({chart_url})"
-        if link_assets
-        else f"Chart: `{chart_filename}`"
-    )
-    artifact_lines.extend([chart_line, ""])
+    available_artifacts = "Backend"
+    if manifest.get("chart") is not None:
+        chart = _mapping(manifest["chart"], "release manifest Chart")
+        chart_filename = str(chart.get("filename", ""))
+        chart_url = asset_urls.get(chart_filename)
+        if not chart_filename or not chart_url:
+            raise ValueError("Release notes require a Chart URL")
+        chart_line = (
+            f"Chart: [{chart_filename}]({chart_url})"
+            if link_assets
+            else f"Chart: `{chart_filename}`"
+        )
+        artifact_lines.append(chart_line)
+        available_artifacts = "Backend and Chart"
+    artifact_lines.append("")
     lines.extend(artifact_lines)
-    available_artifacts = "Backend and Chart"
     if release["status"] == "artifacts-ready":
         lines.extend(
             [

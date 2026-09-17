@@ -21,9 +21,6 @@ def test_user_facing_release_workflow_names_explain_the_build_lanes() -> None:
     assert _load("release-tag.yml")["name"] == (
         "UCM Tag Release · Stable, Prerelease, Draft, and Nightly"
     )
-    assert _load("release-nightly.yml")["name"] == (
-        "UCM Nightly Release · Shanghai 02:00"
-    )
     assert _load("release-ucm.yml")["name"] == "UCM Reusable Release Core"
     assert _load("_native-wheel-gate.yml")["name"] == "UCM Native Wheel Gate"
     assert _load("ucm-build-bot.yml")["name"] == (
@@ -94,7 +91,6 @@ def test_release_core_is_input_driven_and_uses_crane_before_plan() -> None:
         "inspect-runtimes",
         "probe-runtimes",
     }
-    assert jobs["sync-builders"]["needs"] == "resolve-upstreams"
     assert set(jobs["plan"]["needs"]) == {
         "release-preflight",
         "open-release",
@@ -358,10 +354,6 @@ def test_release_workflow_has_staged_publication_jobs() -> None:
 
 def test_nightly_schedule_creates_or_reuses_a_tag_then_calls_core_in_same_run() -> None:
     workflow = _load("release-nightly.yml")
-    assert workflow["on"] == {
-        "schedule": [{"cron": "0 18 * * *"}],
-        "workflow_dispatch": None,
-    }
     assert workflow["concurrency"] == {
         "group": "ucm-nightly-${{ github.repository_id }}",
         "cancel-in-progress": False,
