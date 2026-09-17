@@ -501,9 +501,9 @@ def test_worker_capability_checks_actual_native_layout_and_configuration(field, 
     assert cap.get("ready", False) is ready
     if ready:
         assert (cap["dp"], cap["rank"], cap["native"]) == (0, 1, info)
-        assert (cap["task_shards"], cap["dump_task_shards"]) == (8, 0)
+        assert cap["task_shards"] == 8 and "dump_task_shards" not in cap
         c.tp_rank = 0
-        assert owner.worker_capability(c)["dump_task_shards"] == 24
+        assert "dump_task_shards" not in owner.worker_capability(c)
         c.launch_config["enable_early_owner"] = False
         assert not owner.worker_capability(c).get("ready", False)
 
