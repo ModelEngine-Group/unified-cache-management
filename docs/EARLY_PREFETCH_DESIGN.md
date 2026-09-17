@@ -22,8 +22,8 @@ READY 通过保存的 block IDs 和受保护命中结果进入原生 token 计�
 | OwnerBroker : BrokerState | 在既有 broker/job table 上扩展原生共享对象握手、每 generation 单 owner、共享域额度、接管及排空确认 |
 | OwnerWorker / Consumer / LoadConsistency | 组合现有 worker 和同一个原生 RankConsistencyManager；关联真实任务完成、消费范围及 generation，不创建另一套加载队列 |
 | Early::DomainProvider | EarlyCacheStore 的只读能力接口；通过已创建 buffer 的映射取得内核对象身份和原生容量 |
-| EarlyPipelineStore | 继承原生 builder、load/load_data 参数转换、任务对象和完成检查；组合 `_ReservedLoad` 路由同一个 C++ PipelineStore 的 Load/Wait，并观察成功完成 |
-| EarlyCacheStore | 继承 CacheStore；使用父类已创建的 BufferManager、TransManager；为原生加载任务附加已有 Handle |
+| EarlyPipelineStore | 继承原生 builder、load/load_data 参数转换、任务对象和完成检查；组合 `_ReservedLoad` 路由同一个 C++ PipelineStore 的 Load/Dump/Wait，并观察成功完成 |
+| EarlyCacheStore | 继承 CacheStore；使用父类已创建的 BufferManager、TransManager；为完整原生 load/dump 任务取得有界引用；复用已有 Handle |
 | ReservedPrefetch | 每批连续命中、reservation、定位合并、受保护 block 引用复用、有界位置提示和 worker 内的引用交接 |
 | ReservedPrefetch::Batch / Early::Batch | Early 专用的有界推进能力；保存原生 task handle，复用同一 backend 的 Load、Check、Wait；不另建 I/O 线程 |
 | BoundBatch | Python 能力对象；保持创建它的原生 Pipeline 与 health wrapper 存活，析构前排空已提交 I/O |
@@ -47,7 +47,8 @@ block 和 chunk，再执行 retire / quiesced / owner_drained。
 
 Consumer 按成功完成的 `(layer, block)` 增量扣除 remaining，并保留去重集合；
 每次完成只处理本次任务涉及的层和本 generation 的预期 blocks，不重复检查前面
-所有层。混合请求任务、重复 chunk 和重复 receipt 不多计；失败不扣额度，仍 fencing。
+所有层。混合请求任务、重复 chunk 和重复 receipt 不多计。未知 I/O 失败不扣额度并
+fencing；已证明未提交 I/O 的容量拒绝走终止/排空协议，不当作成功消费。
 step 重新绑定相同计划时复用已建立的 expected 集合；变化的计划仍拒绝。
 
 每个请求首次真正被调度时记录一次 `schedule_match` 汇总：generation key、DP、
@@ -120,6 +121,7 @@ HRRN 保持 `1 + waiting_time / max(remaining_l2_work, 1)`。
 sequenceDiagram
     participant W as EarlyWorker lookup executor
     participant D as EarlyWorker data thread
+    participant O as 既有 owner broker
     participant R as ReservedPrefetch
     participant B as 原生共享或私有 Buffer
     participant P as 原生 Posix backend
@@ -130,7 +132,11 @@ sequenceDiagram
     R->>B: 对剩余 block 批量 pin READY 或活跃 LOADING 位置
     R->>P: LookupOnPrefix(未完整命中 L1 的 block)
     R-->>W: reservation、Batch 能力、命中量与剩余工作
-    W->>D: 发布已确认批次
+    opt 已核验 owner 模式
+        W->>O: confirm_batch(key, attempt, batch, 连续命中范围)
+        O-->>W: 唯一 block 计费的 batch_grant
+    end
+    W->>D: 获得额度后发布批次；拒绝则释放探测并排空前批
     par 继续确认后续连续前缀
         W->>R: 下一批 ReservePrefix
     and 在有界窗口内推进读取
@@ -202,7 +208,9 @@ reservation 及 block offset；不再为每个候选 reservation 遍历整个 lo
 
 原生 Handle 的复制通过既有节点引用计数取得保护，避免重新查找共享哈希桶。
 加载队列接管该引用，继续使用原生 H2D 与完成清理；已有完整 block reservation
-的 shard 无需再执行下一 shard 的 Prealloc。未交接的 shard 完整保留原生路径。
+的 shard 无需再执行下一 shard 的 Prealloc。没有 reservation handle 的 shard 在
+Early 子类中用同一 native 索引做有界定位，随后同样进入原生传输队列；不再调用
+队列里的无限 Get 或可无限分配的下一 shard Prealloc。Early 关闭不进入此路径。
 即使 reservation 在任务排队期间释放，任务引用仍保护数据直到传输完成。
 
 所有地址与 Handle 只在持有它们的 worker 内使用。MLA shared L1 的创建/挂接、
@@ -279,13 +287,18 @@ load 允许使用 native exclusive 区，dump 仍不允许。所有位置取得�
 
 容量不足返回原生 NoSpace，且保证该任务未提交 I/O。EarlyTaskPins RAII 对放弃的
 LOADING owner 标记失败再释放，不能将不完整数据标 READY。binding 将提交前
-NoSpace 转成继承原生 NotFound 的 EarlyCapacityRejected；load 走原生 missing
-上报/重算，dump 走原生失败账本，不上报保存成功。拒绝 receipt 不等于成功接管，
+NoSpace 转成继承原生 NotFound 的 EarlyCapacityRejected。load 沿用原生 missing/错误
+上报，最终失败或重算由原生 kv_load_failure_policy 决定，不自动改变该配置；
+dump 沿用原生错误处理，不上报保存成功。拒绝 receipt 不等于成功接管，
 仍须等同 generation 的其他在途加载完成。未知提交/Wait 失败仍隔离共享域。
 
 完整任务预取引用会把其缺失位置的定位前移到入队前。这避免原生无限 Get 与
 部分任务占用形成容量死锁，但并非免费优化；大型 fallback 任务可能增加提交开销，
 且大于当前可分配池的 dump 会被跳过。实际性能需同版本测量。
+
+`native_get_fallback` 只统计 LoadQueue 内的 Get。Early 子类可能已经为非 owner
+执行了有界索引/分配，因此该值为零不代表没有索引工作或跨 rank 复用了 owner
+handle；实际 SSD 读量应使用独立 read 计数。
 
 ## 全部消费完成后的保守交接
 
