@@ -54,10 +54,9 @@ def _norm_version(v: Optional[str]) -> Optional[str]:
     v = _strip_build(v)
     if not v:
         return None
-    # common suffixes: 0.11.0.post1 / 0.11.0rc1 / 0.11.0.dev1
+    # common suffixes: 0.11.0.post1 / 0.11.0rc1
     v = v.split(".post", 1)[0]
     v = v.split("rc", 1)[0]
-    v = v.split(".dev", 1)[0]
     return v
 
 
