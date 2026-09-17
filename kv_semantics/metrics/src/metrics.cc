@@ -66,8 +66,8 @@ bool IsEnabled() noexcept { return LoadBackendFast() != nullptr; }
 
 MetricTimer StartMetricTimer() noexcept
 {
-    if (!IsEnabled()) { return {}; }
-    return {std::chrono::steady_clock::now(), true};
+    if (!IsEnabled()) { return std::nullopt; }
+    return std::chrono::steady_clock::now();
 }
 
 void UpdateStats(CachedMetric& metric, double value) noexcept

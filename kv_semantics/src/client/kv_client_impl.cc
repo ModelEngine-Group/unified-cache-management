@@ -46,8 +46,6 @@ struct SubmissionMetrics {
     metrics::CachedMetric* duration;
 };
 
-enum class SubmissionKind { BATCH_LOAD, BATCH_STORE };
-
 const SubmissionMetrics& BatchLoadSubmissionMetrics()
 {
     static const SubmissionMetrics metrics{
@@ -68,19 +66,22 @@ const SubmissionMetrics& BatchStoreSubmissionMetrics()
     return metrics;
 }
 
-void RecordSubmission(SubmissionKind kind, std::size_t entryCount, const Status& status,
+void RecordSubmission(AsuOpType opType, std::size_t entryCount, const Status& status,
                       const metrics::MetricTimer& timer)
 {
-    if (!timer.enabled) { return; }
-    const auto& names = kind == SubmissionKind::BATCH_STORE ? BatchStoreSubmissionMetrics()
-                                                             : BatchLoadSubmissionMetrics();
-    const auto elapsed =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - timer.begin).count();
+    const auto elapsed = metrics::ElapsedSeconds(timer);
+    if (!elapsed) { return; }
+    const SubmissionMetrics* names = nullptr;
+    switch (opType) {
+        case AsuOpType::BATCH_LOAD: names = &BatchLoadSubmissionMetrics(); break;
+        case AsuOpType::BATCH_STORE: names = &BatchStoreSubmissionMetrics(); break;
+        default: return;
+    }
     metrics::MetricUpdate updates[] = {
-        {names.requests, 1.0                           },
-        {names.entries,  static_cast<double>(entryCount)},
-        {names.duration, elapsed                       },
-        {names.errors,   1.0                           },
+        {names->requests, 1.0                            },
+        {names->entries,  static_cast<double>(entryCount)},
+        {names->duration, *elapsed                       },
+        {names->errors,   1.0                            },
     };
     metrics::UpdateStats(updates, status.ok() ? std::size(updates) - 1 : std::size(updates));
 }
@@ -255,7 +256,7 @@ Status KvClientImpl::BatchLoadAsync(const std::vector<KVBuffer>& entries, TaskId
 {
     const auto timer = metrics::StartMetricTimer();
     auto status = SubmitAsync(AsuOpType::BATCH_LOAD, entries, taskId);
-    RecordSubmission(SubmissionKind::BATCH_LOAD, entries.size(), status, timer);
+    RecordSubmission(AsuOpType::BATCH_LOAD, entries.size(), status, timer);
     return status;
 }
 
@@ -264,7 +265,7 @@ Status KvClientImpl::BatchStoreAsync(const std::vector<KVBuffer>& entries, TaskI
 {
     const auto timer = metrics::StartMetricTimer();
     auto status = SubmitAsync(AsuOpType::BATCH_STORE, entries, taskId, eventHandle);
-    RecordSubmission(SubmissionKind::BATCH_STORE, entries.size(), status, timer);
+    RecordSubmission(AsuOpType::BATCH_STORE, entries.size(), status, timer);
     return status;
 }
 

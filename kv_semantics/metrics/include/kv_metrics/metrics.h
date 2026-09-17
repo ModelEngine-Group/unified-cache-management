@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -49,10 +50,7 @@ struct MetricUpdate {
     MetricUpdate(CachedMetric* metric, double value) : metric(metric), value(value) {}
 };
 
-struct MetricTimer {
-    std::chrono::steady_clock::time_point begin{};
-    bool enabled{false};
-};
+using MetricTimer = std::optional<std::chrono::steady_clock::time_point>;
 
 class KvMetricsBackend {
 public:
@@ -68,6 +66,11 @@ void Shutdown();
 void Flush();
 bool IsEnabled() noexcept;
 MetricTimer StartMetricTimer() noexcept;
+inline std::optional<double> ElapsedSeconds(const MetricTimer& timer) noexcept
+{
+    if (!timer) { return std::nullopt; }
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - *timer).count();
+}
 
 void UpdateStats(CachedMetric& metric, double value) noexcept;
 void UpdateStats(const MetricUpdate* updates, std::size_t count) noexcept;

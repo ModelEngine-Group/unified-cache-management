@@ -175,7 +175,7 @@ struct MetricsServerConfig {
     std::string path{"/metrics"};
     std::string source{"kv-test"};
     std::string modelName{"standalone"};
-    std::string workerId{"asu-0"};
+    std::string workerId{"endpoint-0"};
     std::uint32_t aggregationIntervalMs{500};
     std::uint32_t shutdownGraceMs{0};
 };

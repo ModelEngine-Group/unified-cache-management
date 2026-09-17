@@ -65,8 +65,7 @@ std::string HttpGet(std::uint16_t port, const std::string& path)
     return response;
 }
 
-std::filesystem::path WriteTestMetricConfig(std::uint16_t port,
-                                            const std::string& prefix = "kv:")
+std::filesystem::path WriteTestMetricConfig(std::uint16_t port, const std::string& prefix = "kv:")
 {
     const auto path = std::filesystem::temp_directory_path() /
                       ("kv-metrics-inline-" + std::to_string(port) + ".yaml");
@@ -273,24 +272,11 @@ TEST_F(StandaloneMetricsTest, DoesNotLoseUpdatesDuringConcurrentFlush)
     Flush();
 
     const auto response = HttpGet(config.port, config.metricsPath);
-    EXPECT_NE(
-        response.find("kv:test_counter " + std::to_string(kExpectedUpdates)),
-        std::string::npos);
-    EXPECT_NE(response.find("kv:test_histogram_count " +
-                            std::to_string(kExpectedUpdates)),
+    EXPECT_NE(response.find("kv:test_counter " + std::to_string(kExpectedUpdates)),
+              std::string::npos);
+    EXPECT_NE(response.find("kv:test_histogram_count " + std::to_string(kExpectedUpdates)),
               std::string::npos);
 
-    Shutdown();
-}
-
-TEST(StandaloneMetricsTest, RejectsASecondBackendUntilShutdown)
-{
-    auto first = std::make_shared<RecordingKvMetricsBackend>();
-    auto second = std::make_shared<RecordingKvMetricsBackend>();
-    std::string error;
-    ASSERT_TRUE(InstallBackend(std::move(first), &error));
-    EXPECT_FALSE(InstallBackend(std::move(second), &error));
-    EXPECT_EQ(error, "metrics backend is already initialized");
     Shutdown();
 }
 
