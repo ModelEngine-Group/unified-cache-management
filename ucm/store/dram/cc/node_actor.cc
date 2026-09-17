@@ -27,6 +27,7 @@
 #include <cstring>
 #include <utility>
 #include "logger/logger.h"
+#include "time/now_time.h"
 
 namespace UC::Dram {
 namespace {
@@ -59,6 +60,19 @@ void FillTransferEntries(const std::vector<IoEntry>& entries,
         target.len = static_cast<std::uint32_t>(source.buffer.length);
         target.idx = source.shardId;
     }
+}
+
+void RecordRequestCompletionMetrics(OpType op, const Status& status, double started)
+{
+    UC::Metrics::UpdateStats(DRAMSTORE_OP_METRIC(op, "requests_completed_total"), 1.0);
+    if (status.Failure()) {
+        UC::Metrics::UpdateStats(DRAMSTORE_OP_METRIC(op, "requests_failed_total"), 1.0);
+    }
+    if (status == Status::Timeout()) {
+        UC::Metrics::UpdateStats(DRAMSTORE_OP_METRIC(op, "request_timeouts_total"), 1.0);
+    }
+    UC::Metrics::UpdateStats(DRAMSTORE_OP_METRIC(op, "request_duration_ms"),
+                             (NowTime::Now() - started) * 1e3);
 }
 
 }  // namespace
@@ -128,6 +142,7 @@ Status NodeActor::EncodeRequest(const ReplySlot& replySlot, RequestId requestId,
 void NodeActor::QueueCompletion(Request request, Status status,
                                 std::vector<EntryResult> entryResults)
 {
+    RecordRequestCompletionMetrics(request.op, status, request.metricsStarted);
     for (std::size_t index = 0; index < entryResults.size(); ++index) {
         entryResults[index].originalIndex = request.entries[index].originalIndex;
     }
@@ -195,6 +210,7 @@ void NodeActor::FinalizeRequests(TimePoint now)
     }
 
     if (needsFence) {
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_fence_timeout_triggers_total"), 1.0);
         std::size_t affectedCount = 0;
         state_ = NodeState::FENCING;
         for (auto& entry : activeRequests_) {
@@ -230,6 +246,8 @@ void NodeActor::ExpirePendingRequests(TimePoint now)
         if (it == pendingRequests_.begin()) { nextPrerequisitePollAt_ = TimePoint::min(); }
         auto request = std::move(*it);
         it = pendingRequests_.erase(it);
+        UC::Metrics::UpdateStats(DRAMSTORE_OP_METRIC(request.op, "request_pending_duration_ms"),
+                                 (NowTime::Now() - request.metricsPendingStarted) * 1e3);
         if (expiredCount == 0) {
             firstTaskId = request.taskId;
             firstRequestId = request.requestId;
@@ -298,6 +316,9 @@ bool NodeActor::TryStartRequest(Request& request, TimePoint now)
 
 void NodeActor::StartRequest(Request request)
 {
+    const auto prepareStarted = NowTime::Now();
+    UC::Metrics::UpdateStats(DRAMSTORE_OP_METRIC(request.op, "request_pending_duration_ms"),
+                             (prepareStarted - request.metricsPendingStarted) * 1e3);
     const auto requestId = request.requestId;
     RequestRecord record{std::move(request)};
     record.token = RequestToken{config_.endpoint.nodeId, kDefaultLaneId, epoch_, requestId};
@@ -313,6 +334,9 @@ void NodeActor::StartRequest(Request request)
     auto acquired = dependencies_.acquireReplySlot(active.token, active.request.op,
                                                    active.request.entries.size());
     if (!acquired) {
+        if (acquired.Error() == Status::NoSpace()) {
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_reply_slot_nospace_total"), 1.0);
+        }
         UC_WARN(
             "DramStore reply slot acquisition failed, task_id={} request_id={} op={} "
             "node_id={} epoch={} entries={} status={}",
@@ -339,8 +363,11 @@ void NodeActor::StartRequest(Request request)
     }
 
     const auto payloadSize = payload.size();
+    const auto transportQueuedAt = NowTime::Now();
+    UC::Metrics::UpdateStats(DRAMSTORE_OP_METRIC(active.request.op, "request_setup_duration_ms"),
+                             (transportQueuedAt - prepareStarted) * 1e3);
     TransportCommand command{
-        Transmit{active.token, std::move(payload)}
+        Transmit{active.token, active.request.op, std::move(payload), transportQueuedAt}
     };
     status = dependencies_.submitTransport(command);
     if (status.Success()) {
@@ -364,6 +391,10 @@ void NodeActor::StartRequest(Request request)
 
 void NodeActor::Handle(Request request, TimePoint now)
 {
+    const auto metricsNow = NowTime::Now();
+    UC::Metrics::UpdateStats(DRAMSTORE_OP_METRIC(request.op, "request_queue_duration_ms"),
+                             (metricsNow - request.metricsStarted) * 1e3);
+    request.metricsPendingStarted = metricsNow;
     if (request.deadline <= now) {
         UC_WARN(
             "DramStore request expired before node admission, task_id={} request_id={} op={} "
@@ -379,6 +410,7 @@ void NodeActor::Handle(Request request, TimePoint now)
 
 void NodeActor::TryFence(TimePoint now)
 {
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_fence_attempts_total"), 1.0);
     TransportCommand command{
         FenceEpoch{config_.endpoint.nodeId, kDefaultLaneId, epoch_}
     };
@@ -388,6 +420,7 @@ void NodeActor::TryFence(TimePoint now)
         return;
     }
     // Submission failure leaves the runtime recovery fence pending.
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_fence_failures_total"), 1.0);
     UC_WARN(
         "DramStore node recovery fence submission failed, node_id={} epoch={} "
         "active_requests={} pending_requests={} status={} retry_after_ms={}",
@@ -406,6 +439,7 @@ void NodeActor::Handle(FenceCompleted event, TimePoint now)
         return;
     }
     if (event.status.Failure()) {
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_fence_failures_total"), 1.0);
         // A failed fence means the remote peer was unreachable (e.g. the
         // DramPool was killed). An unreachable peer cannot access local
         // registered memory, so the safety property a successful Disconnect
@@ -434,6 +468,7 @@ void NodeActor::Handle(FenceCompleted event, TimePoint now)
 
 void NodeActor::TryConnect(TimePoint now)
 {
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_connect_attempts_total"), 1.0);
     TransportCommand command{
         Connect{config_.endpoint.nodeId, kDefaultLaneId, epoch_,
                 config_.endpoint.transportManagerId}
@@ -445,6 +480,7 @@ void NodeActor::TryConnect(TimePoint now)
         return;
     }
     // Connect submission failures are operational failures; retry while disconnected.
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_connect_failures_total"), 1.0);
     UC_WARN(
         "DramStore node connect submission failed, node_id={} epoch={} status={} "
         "retry_after_ms={}",
@@ -462,7 +498,15 @@ void NodeActor::Handle(ReplyObserved event, TimePoint now)
             "current_epoch={} node_state={}",
             config_.endpoint.nodeId, event.token.requestId, event.token.epoch, epoch_,
             NodeStateName(state_));
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_stale_replies_total"), 1.0);
         return;
+    }
+    // ReplyObserved and TransmitCompleted are published by different threads. A fast reply may
+    // therefore be handled first, in which case the remote phase has no valid start time yet.
+    if (found->second.remoteStarted != 0.0) {
+        UC::Metrics::UpdateStats(
+            DRAMSTORE_OP_METRIC(found->second.request.op, "request_remote_duration_ms"),
+            (NowTime::Now() - found->second.remoteStarted) * 1e3);
     }
     if (found->second.failure == Status::Timeout() || found->second.request.deadline <= now) {
         UC_WARN(
@@ -522,6 +566,7 @@ void NodeActor::Handle(TransmitCompleted event, TimePoint)
     }
     if (event.status.Success()) {
         found->second.state = RequestState::INFLIGHT;
+        found->second.remoteStarted = event.metricsCompletedAt;
         return;
     }
     UC_WARN(
@@ -553,6 +598,7 @@ void NodeActor::Handle(ConnectCompleted event, TimePoint now)
             config_.endpoint.controlPort, pendingRequests_.size());
     } else {
         state_ = NodeState::DISCONNECTED;
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_connect_failures_total"), 1.0);
         nextActionAt_ = now + config_.reconnectInterval;
         UC_WARN(
             "DramStore node connect failed, node_id={} epoch={} endpoint={}:{} status={} "

@@ -197,6 +197,70 @@ counter:
   - name: "connector_dump_wait_errors_total"
     documentation: "Number of connector dump wait failures"
 
+  # -- DramStore client observability -----------------------------------------
+  - name: "dramstore_lookup_tasks_submitted_total"
+    documentation: "DramStore lookup: tasks submitted"
+  - name: "dramstore_lookup_tasks_rejected_total"
+    documentation: "DramStore lookup: tasks rejected"
+  - name: "dramstore_lookup_tasks_succeeded_total"
+    documentation: "DramStore lookup: tasks succeeded"
+  - name: "dramstore_lookup_tasks_failed_total"
+    documentation: "DramStore lookup: tasks failed"
+  - name: "dramstore_lookup_task_timeouts_total"
+    documentation: "DramStore lookup: task timeouts"
+  - name: "dramstore_lookup_requests_completed_total"
+    documentation: "DramStore lookup: requests completed"
+  - name: "dramstore_lookup_requests_failed_total"
+    documentation: "DramStore lookup: requests failed"
+  - name: "dramstore_lookup_request_timeouts_total"
+    documentation: "DramStore lookup: requests completed with Timeout status"
+  - name: "dramstore_dump_tasks_submitted_total"
+    documentation: "DramStore dump: tasks submitted"
+  - name: "dramstore_dump_tasks_rejected_total"
+    documentation: "DramStore dump: tasks rejected"
+  - name: "dramstore_dump_tasks_succeeded_total"
+    documentation: "DramStore dump: tasks succeeded"
+  - name: "dramstore_dump_tasks_failed_total"
+    documentation: "DramStore dump: tasks failed"
+  - name: "dramstore_dump_task_timeouts_total"
+    documentation: "DramStore dump: task timeouts"
+  - name: "dramstore_dump_requests_completed_total"
+    documentation: "DramStore dump: requests completed"
+  - name: "dramstore_dump_requests_failed_total"
+    documentation: "DramStore dump: requests failed"
+  - name: "dramstore_dump_request_timeouts_total"
+    documentation: "DramStore dump: requests completed with Timeout status"
+  - name: "dramstore_load_tasks_submitted_total"
+    documentation: "DramStore load: tasks submitted"
+  - name: "dramstore_load_tasks_rejected_total"
+    documentation: "DramStore load: tasks rejected"
+  - name: "dramstore_load_tasks_succeeded_total"
+    documentation: "DramStore load: tasks succeeded"
+  - name: "dramstore_load_tasks_failed_total"
+    documentation: "DramStore load: tasks failed"
+  - name: "dramstore_load_task_timeouts_total"
+    documentation: "DramStore load: task timeouts"
+  - name: "dramstore_load_requests_completed_total"
+    documentation: "DramStore load: requests completed"
+  - name: "dramstore_load_requests_failed_total"
+    documentation: "DramStore load: requests failed"
+  - name: "dramstore_load_request_timeouts_total"
+    documentation: "DramStore load: requests completed with Timeout status"
+  - name: "dramstore_connect_attempts_total"
+    documentation: "DramStore connect attempts"
+  - name: "dramstore_connect_failures_total"
+    documentation: "DramStore connect failures"
+  - name: "dramstore_fence_attempts_total"
+    documentation: "DramStore fence attempts"
+  - name: "dramstore_fence_failures_total"
+    documentation: "DramStore fence failures"
+  - name: "dramstore_fence_timeout_triggers_total"
+    documentation: "DramStore node fencing episodes triggered by request timeouts; excludes fence retries"
+  - name: "dramstore_reply_slot_nospace_total"
+    documentation: "DramStore reply slot acquisition failures due to exhausted capacity"
+  - name: "dramstore_stale_replies_total"
+    documentation: "DramStore stale replies"
+
 # Gauge metrics configuration
 gauge:
   - name: "yuanrong_dram_used_bytes"
@@ -241,6 +305,50 @@ gauge:
   - name: "posix_gc_running"
     documentation: "Posix garbage collection state, where 1 is running and 0 is idle"
     multiprocess_mode: "livemostrecent"
+
+  # -- DramStore client observability -----------------------------------------
+  - name: "dramstore_scheduler_request_queue_size"
+    documentation: "Sampled queued Requests across scheduler runners, excluding batches already dequeued"
+    multiprocess_mode: livemostrecent
+  - name: "dramstore_scheduler_event_queue_size"
+    documentation: "Sampled queued NodeEvents across scheduler runners, excluding batches already dequeued"
+    multiprocess_mode: livemostrecent
+  - name: "dramstore_task_queue_size"
+    documentation: "Sampled TaskManager submission queue occupancy (tasks)"
+    multiprocess_mode: livemostrecent
+  - name: "dramstore_task_queue_capacity"
+    documentation: "TaskManager submission queue capacity (tasks)"
+    multiprocess_mode: livemostrecent
+  - name: "dramstore_completion_queue_size"
+    documentation: "Sampled TaskManager completion queue occupancy (request completions)"
+    multiprocess_mode: livemostrecent
+  - name: "dramstore_completion_queue_capacity"
+    documentation: "TaskManager completion queue capacity (request completions)"
+    multiprocess_mode: livemostrecent
+  - name: "dramstore_tasks_active"
+    documentation: "Sampled tasks awaiting completion, excluding queued submissions and retained results"
+    multiprocess_mode: livemostrecent
+  - name: "dramstore_io_entries_used"
+    documentation: "Sampled entries reserved by active tasks"
+    multiprocess_mode: livemostrecent
+  - name: "dramstore_io_entries_capacity"
+    documentation: "Maximum entries reserved by active tasks"
+    multiprocess_mode: livemostrecent
+  - name: "dramstore_reply_buffer_used_bytes"
+    documentation: "Sampled leased reply slot bytes including alignment, not payload bytes"
+    multiprocess_mode: livemostrecent
+  - name: "dramstore_transport_queue_size"
+    documentation: "Sampled aggregate queued Transmit and Connect admission occupancy"
+    multiprocess_mode: livemostrecent
+  - name: "dramstore_transport_queue_capacity"
+    documentation: "Aggregate Transmit and Connect admission capacity"
+    multiprocess_mode: livemostrecent
+  - name: "dramstore_transport_fence_queue_size"
+    documentation: "Sampled aggregate queued Fence admission occupancy"
+    multiprocess_mode: livemostrecent
+  - name: "dramstore_transport_fence_queue_capacity"
+    documentation: "Aggregate reserved Fence admission capacity"
+    multiprocess_mode: livemostrecent
 
 # Histogram metrics configuration
 histogram:
@@ -464,3 +572,98 @@ histogram:
   - name: "layerwise_batch_load_duration_sum_ms"
     documentation: "Sum of per-layer load durations within one Layerwise batch (ms)"
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+
+  # -- DramStore client observability -----------------------------------------
+  - name: "dramstore_lookup_duration_ms"
+    documentation: "End-to-end DramStore lookup duration (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  - name: "dramstore_lookup_task_queue_duration_ms"
+    documentation: "DramStore lookup task queue duration (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+  - name: "dramstore_lookup_task_to_request_duration_ms"
+    documentation: "DramStore lookup duration from task admission through request construction (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+  - name: "dramstore_lookup_request_duration_ms"
+    documentation: "DramStore lookup request duration (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  - name: "dramstore_lookup_request_queue_duration_ms"
+    documentation: "DramStore lookup request NodeScheduler queue duration (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+  - name: "dramstore_lookup_request_pending_duration_ms"
+    documentation: "DramStore lookup request NodeActor pending duration (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  - name: "dramstore_lookup_request_setup_duration_ms"
+    documentation: "DramStore lookup request successful setup duration including reply-slot allocation and encoding (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+  - name: "dramstore_lookup_request_transport_queue_duration_ms"
+    documentation: "DramStore lookup request TransportExecutor queue duration (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+  - name: "dramstore_lookup_request_transport_send_duration_ms"
+    documentation: "DramStore lookup request TCP send duration (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000]
+  - name: "dramstore_lookup_request_remote_duration_ms"
+    documentation: "DramStore lookup request remote processing and reply duration (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  - name: "dramstore_dump_duration_ms"
+    documentation: "End-to-end DramStore dump duration (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  - name: "dramstore_dump_task_queue_duration_ms"
+    documentation: "DramStore dump task queue duration (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+  - name: "dramstore_dump_task_to_request_duration_ms"
+    documentation: "DramStore dump duration from task admission through request construction (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+  - name: "dramstore_dump_request_duration_ms"
+    documentation: "DramStore dump request duration (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  - name: "dramstore_dump_request_queue_duration_ms"
+    documentation: "DramStore dump request NodeScheduler queue duration (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+  - name: "dramstore_dump_request_pending_duration_ms"
+    documentation: "DramStore dump request NodeActor pending duration (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  - name: "dramstore_dump_request_setup_duration_ms"
+    documentation: "DramStore dump request successful setup duration including reply-slot allocation and encoding (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+  - name: "dramstore_dump_request_transport_queue_duration_ms"
+    documentation: "DramStore dump request TransportExecutor queue duration (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+  - name: "dramstore_dump_request_transport_send_duration_ms"
+    documentation: "DramStore dump request TCP send duration (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000]
+  - name: "dramstore_dump_request_remote_duration_ms"
+    documentation: "DramStore dump request remote processing and reply duration (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  - name: "dramstore_load_duration_ms"
+    documentation: "End-to-end DramStore load duration (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  - name: "dramstore_load_task_queue_duration_ms"
+    documentation: "DramStore load task queue duration (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+  - name: "dramstore_load_task_to_request_duration_ms"
+    documentation: "DramStore load duration from task admission through request construction (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+  - name: "dramstore_load_request_duration_ms"
+    documentation: "DramStore load request duration (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  - name: "dramstore_load_request_queue_duration_ms"
+    documentation: "DramStore load request NodeScheduler queue duration (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+  - name: "dramstore_load_request_pending_duration_ms"
+    documentation: "DramStore load request NodeActor pending duration (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  - name: "dramstore_load_request_setup_duration_ms"
+    documentation: "DramStore load request successful setup duration including reply-slot allocation and encoding (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+  - name: "dramstore_load_request_transport_queue_duration_ms"
+    documentation: "DramStore load request TransportExecutor queue duration (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+  - name: "dramstore_load_request_transport_send_duration_ms"
+    documentation: "DramStore load request TCP send duration (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000]
+  - name: "dramstore_load_request_remote_duration_ms"
+    documentation: "DramStore load request remote processing and reply duration (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  - name: "dramstore_dump_prerequisite_duration_ms"
+    documentation: "DUMP prerequisite event wait before task admission (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
