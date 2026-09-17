@@ -48,6 +48,5 @@ Scheduler 调用 `request_finished()` 时，Connector 检查请求是否涉及�
 | --- | --- |
 | MLA、CP、hybrid attention 等 | Connector 选择、rank 间匹配、分片布局及模型专用保存规则；不能仅根据 `use_layerwise` 推断整个执行路径 |
 | SGLang | HiCache 提供主机缓冲，存储适配器对接 Posix；使用其存储接口调用链 |
-| MindIE | mempool 适配和补丁连接引擎缓存操作；不使用这里的 vLLM 调度元数据协议 |
 
 源码从 `ucm/integration/vllm/ucm_connector.py` 的 `UCMConnector` 进入，再沿 `UCMDirectConnector`、`UCMLayerWiseConnector` 和所选模型 Connector 阅读。Store 的完成与错误语义见[扩展 Store](extending-store.md)。

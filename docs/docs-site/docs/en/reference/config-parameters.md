@@ -2,7 +2,7 @@
 
 This page documents field ownership, types, defaults and value constraints, grouped by the component that reads them. For backend selection and configuration methods, see [Cache Configuration](../developer-guide/cache-configuration/index.md) in the developer guide.
 
-This structure is for vLLM UCM YAML. SGLang and MindIE entry formats are in their [quickstarts](../user-guide/quick_start/index.md).
+This structure is for vLLM UCM YAML. The SGLang entry format is in its [quickstart](../user-guide/quick_start/index.md#sglang).
 
 ```yaml
 ucm_connectors:

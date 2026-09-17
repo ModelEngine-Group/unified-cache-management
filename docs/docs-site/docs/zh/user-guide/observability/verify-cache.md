@@ -7,7 +7,7 @@
 - 使用独立测试命名空间，避免清理共享的业务缓存。
 - 固定模型和 tokenizer 修订、KV dtype、并行设置、块大小及 UCM 配置。
 - 准备完全相同的提示词，使长度超过几个完整块。固定采样参数，并保留请求与输出。
-- 开启指标并确认采集路径。[指标设置](metrics.md)说明 vLLM 的导出方式；SGLang 和 MindIE 按各自快速开始观察。
+- 开启指标并确认采集路径。[指标设置](metrics.md)说明 vLLM 的导出方式；SGLang 按 [SGLang 快速开始](../quick_start/index.md#sglang)观察。
 
 ## 首次请求：生成并保存
 

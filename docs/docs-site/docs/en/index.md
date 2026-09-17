@@ -53,6 +53,6 @@ When integrated with vLLM, UCM achieves a **3–10x reduction in inference laten
 
 ## Supported integrations
 
-UCM provides integration paths for vLLM, vLLM-Ascend, SGLang and MindIE. Check the [support matrix](user-guide/support-matrix/index.md) for model and platform coverage and [installation](user-guide/quick_start/index.md) for released engine/backend combinations.
+UCM provides integration paths for vLLM, vLLM-Ascend and SGLang. Check the [support matrix](user-guide/support-matrix/index.md) for model and platform coverage and [installation](user-guide/quick_start/index.md) for released engine/backend combinations.
 
 [Source on GitHub](https://github.com/ModelEngine-Group/unified-cache-management) · [Contribute](developer-guide/contribute.md) · [About UCM](about.md)

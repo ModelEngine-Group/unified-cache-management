@@ -82,31 +82,6 @@ Continue with the [SGLang quickstart](../user-guide/quick_start/index.md#sglang)
 The historical `Dockerfile.ucm-sglang-cuda-v0.5.5` targets a different engine
 and patch path; building it does not validate the 0.5.9 HiCache recipe.
 
-## MindIE-LLM on Ascend { #mindie-llm-ascend-platform }
-
-Prepare MindIE-LLM 2.3.0 and its Ascend runtime. MindIE integration is included
-only when `UCM_ENABLE_MINDIE=1` is set during the build. Determine the target
-PyTorch C++ ABI in that same environment:
-
-```bash
-python -c "import torch; print(int(torch._C._GLIBCXX_USE_CXX11_ABI))"
-```
-
-Set `UCM_CXX11_ABI` to the reported `0` or `1` and confirm it also matches the
-MindIE distribution, then install:
-
-```bash
-export PLATFORM=ascend
-export UCM_ENABLE_MINDIE=1
-export UCM_CXX11_ABI=1  # Replace with the matching target ABI.
-python -m pip install -v -e . --no-build-isolation
-```
-
-The installed hook patches MindIE's Python modules when `mindie_llm` is first
-imported. This modifies the installed engine package; use a dedicated engine
-environment. Use the documentation for the target MindIE release to configure and verify the service.
-
-
 ## Build an image from the checkout
 
 List the actual Dockerfiles in the selected revision and inspect the one for
@@ -151,17 +126,6 @@ docker build -t ucm-sglang:latest -f ./docker/Dockerfile.ucm-sglang-cuda-v0.5.5 
 ```
 
 This restores the repository's 0.5.5 Dockerfile route. It does not build the 0.5.9 HiCache environment described above.
-
-**MindIE**
-
-```bash
-docker build -t ucm-mindie:latest -f ./docker/Dockerfile.ucm-mindie-ascend.a2-v2 .
-```
-
-For MindIE, this revision provides
-`docker/Dockerfile.ucm-mindie-ascend.a2-v2`, based on MindIE 2.3.0. It builds the
-MindIE integration and applies the patch during image construction;
-`--build-arg UCM_CXX11_ABI=0` overrides its ABI default when required.
 
 Repository Dockerfiles and local builds are development inputs. Only artifacts
 listed by [Installation](../user-guide/quick_start/index.md) have the corresponding

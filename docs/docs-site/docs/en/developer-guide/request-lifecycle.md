@@ -48,6 +48,5 @@ This feedback ends transfer ownership; failed tasks also need a completed resour
 | --- | --- |
 | MLA, CP and hybrid attention | Connector selection, rank consistency, shard layouts and model-specific save rules; `use_layerwise` alone does not identify the full path |
 | SGLang | HiCache provides host buffers and the storage adapter uses Posix; follow its storage calls |
-| MindIE | Mempool adaptation and patches connect cache operations, without this vLLM scheduling metadata protocol |
 
 Start at `UCMConnector` in `ucm/integration/vllm/ucm_connector.py`, then follow `UCMDirectConnector`, `UCMLayerWiseConnector` and the selected model Connector. See [Store extension](extending-store.md) for task and error semantics.

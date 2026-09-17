@@ -72,26 +72,6 @@ python -m pip install -v -e . --no-build-isolation
 
 继续阅读 [SGLang 快速开始](../user-guide/quick_start/index.md#sglang)。历史文件 `Dockerfile.ucm-sglang-cuda-v0.5.5` 对应另一引擎版本和补丁路径，成功构建它不代表验证了 0.5.9 的 HiCache 接入方式。
 
-## MindIE-LLM（昇腾） { #mindie-llm-ascend-platform }
-
-准备 MindIE-LLM 2.3.0 和对应的 Ascend runtime。只有在构建时设置 `UCM_ENABLE_MINDIE=1` 才会包含 MindIE 集成。在同一环境中检查目标 PyTorch 的 C++ ABI：
-
-```bash
-python -c "import torch; print(int(torch._C._GLIBCXX_USE_CXX11_ABI))"
-```
-
-将 `UCM_CXX11_ABI` 设为输出的 `0` 或 `1`，并确认它也匹配 MindIE 发行包，再执行安装：
-
-```bash
-export PLATFORM=ascend
-export UCM_ENABLE_MINDIE=1
-export UCM_CXX11_ABI=1  # Replace with the matching target ABI.
-python -m pip install -v -e . --no-build-isolation
-```
-
-安装后的 hook 在首次导入 `mindie_llm` 时为 MindIE Python 模块应用补丁。此操作会修改已安装的引擎包，因此请使用专门的引擎环境。配置和验证服务时，请使用目标 MindIE 发行版对应的文档。
-
-
 ## 从当前源码构建镜像
 
 列出所选修订版本中实际存在的 Dockerfile，检查与目标引擎和加速器对应的文件：
@@ -134,13 +114,5 @@ docker build -t ucm-sglang:latest -f ./docker/Dockerfile.ucm-sglang-cuda-v0.5.5 
 ```
 
 这里恢复仓库中 0.5.5 Dockerfile 的构建路径，不把它描述为上方 0.5.9 HiCache 环境的构建方式。
-
-**MindIE**
-
-```bash
-docker build -t ucm-mindie:latest -f ./docker/Dockerfile.ucm-mindie-ascend.a2-v2 .
-```
-
-当前修订提供基于 MindIE 2.3.0 的 `docker/Dockerfile.ucm-mindie-ascend.a2-v2`。它构建 MindIE 集成，并在镜像构建时应用补丁；需要时可用 `--build-arg UCM_CXX11_ABI=0` 覆盖默认 ABI。
 
 仓库 Dockerfile 和本地构建用于开发。只有[安装](../user-guide/quick_start/index.md)中列出的制品才有对应的发布记录。本地构建成功或成功导入 UCM，仍需在目标硬件上完成服务启动和外部缓存验证。

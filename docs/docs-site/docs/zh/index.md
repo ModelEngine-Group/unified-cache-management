@@ -53,6 +53,6 @@ hide:
 
 ## 支持范围
 
-UCM 提供 vLLM、vLLM-Ascend、SGLang 和 MindIE 的集成路径。模型和平台范围见[支持矩阵](user-guide/support-matrix/index.md)；具体可安装的引擎与后端组合以[安装页面](user-guide/quick_start/index.md)中的发布制品为准。
+UCM 提供 vLLM、vLLM-Ascend 和 SGLang 的集成路径。模型和平台范围见[支持矩阵](user-guide/support-matrix/index.md)；具体可安装的引擎与后端组合以[安装页面](user-guide/quick_start/index.md)中的发布制品为准。
 
 [GitHub 源码](https://github.com/ModelEngine-Group/unified-cache-management) · [参与贡献](developer-guide/contribute.md) · [关于 UCM](about.md)

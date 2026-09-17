@@ -10,6 +10,9 @@ edit_uri: edit/develop/docs/docs-site/docs/
 
 docs_dir: docs
 
+exclude_docs: |
+  **/benchmark/**
+
 hooks:
   - tools/shared_assets.py
   - tools/navigation.py
@@ -116,7 +119,6 @@ plugins:
             Configuration Parameters: 配置参数
             Metrics Reference: 指标清单
             Error Codes: 错误码
-            Benchmark: 性能评测
             Toolkit: 工具集
             Precheck: 环境预检
             POSIX AIO: 存储读写测试
@@ -217,7 +219,6 @@ nav:
       - Configuration Parameters: reference/config-parameters.md
       - Metrics Reference: user-guide/observability/metrics-reference.md
       - Error Codes: reference/error-codes.md
-  - Benchmark: benchmark/index.md
   - Toolkit:
       - toolkit/index.md
       - Precheck: toolkit/user/precheck.md

@@ -38,6 +38,5 @@
 | --- | --- | --- |
 | vLLM / vLLM-Ascend | `ucm/integration/vllm/ucm_connector.py` | Scheduler/Worker 分工；根据布局选择 direct、layerwise 或模型专用 Connector |
 | SGLang | `ucm/integration/sglang/unifiedcache_store.py` | HiCache 已管理主机缓存，适配器直接使用 Posix 阶段 |
-| MindIE | `ucm/integration/mindie/unifiedcache_mempool.py` | 通过 mempool 适配与引擎补丁连接缓存操作 |
 
 共享 Store 接口不代表三个引擎具有相同的 hook 时序或配置格式。新增后端应在 Store 内处理后端资源；新增引擎或缓存布局应在集成层处理。接下来阅读[缓存工作原理](capability-principles.md)和[扩展 Store](extending-store.md)。

@@ -7,7 +7,7 @@ After starting the service, confirm that an initial request saves reusable block
 - Use a dedicated test namespace instead of clearing shared production cache.
 - Fix model/tokenizer revisions, KV dtype, parallel settings, block size and UCM configuration.
 - Use identical prompts spanning several complete blocks. Fix sampling settings and retain requests and outputs.
-- Enable metrics and verify collection. [Metrics setup](metrics.md) covers vLLM; use engine quickstarts for SGLang and MindIE observations.
+- Enable metrics and verify collection. [Metrics setup](metrics.md) covers vLLM; use the [SGLang quickstart](../quick_start/index.md#sglang) for SGLang observations.
 
 ## First request: compute and save
 

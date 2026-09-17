@@ -2,7 +2,7 @@
 
 本页按读取配置的组件说明字段归属、类型、默认值和取值约束。后端选择与配置方法见开发者指南的[缓存配置](../developer-guide/cache-configuration/index.md)。
 
-下面的结构用于 vLLM UCM YAML；SGLang 与 MindIE 的入口格式见对应[快速开始](../user-guide/quick_start/index.md)。
+下面的结构用于 vLLM UCM YAML；SGLang 的入口格式见 [SGLang 快速开始](../user-guide/quick_start/index.md#sglang)。
 
 ```yaml
 ucm_connectors:
