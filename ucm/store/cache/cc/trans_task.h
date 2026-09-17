@@ -28,7 +28,7 @@
 #include <cstdint>
 #include <string>
 #include "status/status.h"
-#include "trans_buffer.h"
+#include "early_task_pins.h"
 #include "type/types.h"
 
 namespace UC::CacheStore {
@@ -41,7 +41,7 @@ public:
     Detail::TaskHandle id{0};
     Type type{Type::DUMP};
     Detail::TaskDesc desc;
-    std::vector<TransBuffer::Handle> loadHandles;
+    EarlyTaskPins loadHandles;  // optional pre-acquired handles for either native task kind
     std::atomic<int32_t> failureStatus{Status::OK().Underlying()};
 
 public:

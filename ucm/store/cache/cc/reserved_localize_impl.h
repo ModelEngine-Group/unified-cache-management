@@ -6,6 +6,13 @@ inline Expected<std::shared_ptr<ReservedPrefetch::BlockPins>> ReservedPrefetch::
     auto group = std::make_shared<BlockPins>();
     group->charge = std::make_shared<Charge>();
     group->charge->budget = budget_;
+    return group;
+}
+
+inline Status ReservedPrefetch::ChargeConfirmed(const std::shared_ptr<BlockPins>& group)
+{
+    std::lock_guard guard(group->charge->mutex);
+    if (group->charge->bytes) { return Status::OK(); }
     const auto bytes = shardsPerBlock_ * shardBytes_;
     auto used = budget_->used.load();
     for (;;) {
@@ -17,7 +24,7 @@ inline Expected<std::shared_ptr<ReservedPrefetch::BlockPins>> ReservedPrefetch::
         if (budget_->used.compare_exchange_weak(used, used + bytes)) { break; }
     }
     group->charge->bytes = bytes;
-    return group;
+    return Status::OK();
 }
 
 inline Expected<std::vector<std::shared_ptr<ReservedPrefetch::BlockPins>>>

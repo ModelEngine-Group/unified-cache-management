@@ -9,6 +9,26 @@
 #include <sys/sysmacros.h>
 
 namespace UC::CacheStore {
+// Same native identity, reference and allocation operations as Get, with the
+// existing Alloc attempt bound. No waiting for another task to return capacity.
+TransBuffer::Handle EarlyBufferPins::Acquire(TransBuffer& buffer,
+    const Detail::BlockId& block, size_t shard, bool load)
+{
+    auto& strategy = *buffer.strategy_;
+    const auto bucket = Hash(block, shard);
+    bool owner = false;
+    strategy.BucketLock(bucket);
+    auto node = buffer.FindAt(bucket, block, shard, owner);
+    if (node == invalidIndex) {
+        node = buffer.Alloc(block, shard, bucket, load, 2 * strategy.NodeCount());
+        owner = true;
+    } else if (load && buffer.bypassHitOnLoad_ && owner && buffer.Ready(node)) {
+        buffer.MarkNotReady(node);
+    }
+    strategy.BucketUnlock(bucket);
+    return TransBuffer::Handle(&buffer, node, owner);
+}
+
 Early::Domain EarlyBufferPins::DescribeDomain(TransBuffer& buffer)
 {
     Early::Domain result;

@@ -333,15 +333,39 @@ public:
 
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
-        if (!early_ || task.loadReservations.empty()) {
-            return CacheStore::Load(std::move(task));
+        if (!early_) { return CacheStore::Load(std::move(task)); }
+        return SubmitBounded(TransTask::Type::LOAD, std::move(task));
+    }
+    Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override
+    {
+        if (!early_) { return CacheStore::Dump(std::move(task)); }
+        return SubmitBounded(TransTask::Type::DUMP, std::move(task));
+    }
+
+private:
+    Expected<Detail::TaskHandle> SubmitBounded(TransTask::Type type, Detail::TaskDesc task)
+    {
+        TransTask prepared{type, std::move(task)};
+        if (type == TransTask::Type::LOAD && !prepared.desc.loadReservations.empty()) {
+            prepared.loadHandles = early_->LoadHandles(prepared.desc);
         }
-        auto handles = early_->LoadHandles(task);
-        if (handles.empty()) { return CacheStore::Load(std::move(task)); }
-        TransTask prepared{TransTask::Type::LOAD, std::move(task)};
-        prepared.loadHandles = std::move(handles);
+        prepared.loadHandles.resize(prepared.desc.size());
+        auto& buffer = *bufferMgr_.GetTransBuffer();
+        for (size_t i = 0; i < prepared.desc.size(); ++i) {
+            if (prepared.loadHandles[i]) { continue; }
+            const auto& shard = prepared.desc[i];
+            prepared.loadHandles[i] = EarlyBufferPins::Acquire(
+                buffer, shard.owner, shard.index, type == TransTask::Type::LOAD);
+            if (!prepared.loadHandles[i]) {
+                // Nothing has entered a native queue or touched an I/O stream.
+                // EarlyTaskPins rolls back only allocation owners; shared readers
+                // retain their references. Never report this dump as persisted.
+                return Status::NoSpace();
+            }
+        }
         return transMgr_.Submit(std::move(prepared));
     }
+
 };
 
 }  // namespace UC::CacheStore

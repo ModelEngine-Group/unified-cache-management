@@ -13,6 +13,8 @@ public:
         size_t bucketLocks{0};
         bool capacityConflict{false};
     };
+    static TransBuffer::Handle Acquire(TransBuffer& buffer, const Detail::BlockId& block,
+                                       size_t shard, bool load);
     static Batch PinBlocks(TransBuffer& buffer, const Detail::BlockId* blocks,
                            size_t count, size_t shardsPerBlock);
     static void Touch(TransBuffer& buffer, const std::vector<TransBuffer::Handle>& pins);

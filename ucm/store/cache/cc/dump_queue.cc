@@ -137,7 +137,8 @@ Status DumpQueue::DumpOneTask(CopyStream& stream, TaskPtr task)
     size_t copiedShards = 0;
     for (size_t i = 0; i < nShard; i++) {
         auto& shard = task->desc[i];
-        auto handle = buffer_->Get(shard.owner, shard.index);
+        auto handle = task->loadHandles.size() == nShard
+            ? std::move(task->loadHandles[i]) : buffer_->Get(shard.owner, shard.index);
         if (!handle.Owner()) { continue; }
         if (!handle.Ready()) {
             auto* host = cacheSdmaDirect_ ? handle.DeviceData() : handle.Data();

@@ -28,6 +28,7 @@ class ReservedPrefetch {
     struct Charge {
         std::shared_ptr<Budget> budget;
         size_t bytes{0};
+        std::mutex mutex;
         ~Charge() { if (budget) { budget->used.fetch_sub(bytes); } }
     };
     struct BlockPins {
@@ -63,6 +64,7 @@ class ReservedPrefetch {
     Expected<std::vector<std::shared_ptr<BlockPins>>> Locate(
         const Detail::BlockId* blocks, size_t count, EarlyStats& stats);
     Expected<std::shared_ptr<BlockPins>> NewGroup();
+    Status ChargeConfirmed(const std::shared_ptr<BlockPins>& group);
     class Batch;
     std::shared_ptr<Early::Batch> MakeBatch(const std::shared_ptr<Reservation>& r, uint64_t handle);
     struct LoadEntry {
@@ -191,6 +193,8 @@ public:
         r->groups.resize(count);
         size_t missing = 0;
         for (const auto& group : r->groups) {
+            const auto charged = ChargeConfirmed(group);
+            if (charged.Failure()) { return charged; }
             if (group->ready) { continue; }
             size_t remaining = 0;
             for (const auto& pin : group->pins) { if (!pin || !pin.Ready()) { ++remaining; } }

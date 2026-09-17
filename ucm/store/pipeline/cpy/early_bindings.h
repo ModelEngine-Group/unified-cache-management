@@ -10,6 +10,11 @@
 
 namespace UC::PipelineStore::Early {
 
+class CapacityRejected : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
 struct BoundBatch {
     pybind11::object pipeline;  // keep the exact native store and health wrapper alive
     std::shared_ptr<UC::Early::Batch> batch;
@@ -60,6 +65,8 @@ template <class Pipeline, class NotFoundError, class UnhealthyError>
 void BindOperations(pybind11::module_& module)
 {
     namespace py = pybind11;
+    py::register_exception<CapacityRejected>(module, "EarlyCapacityRejected",
+                                             module.attr("StoreNotFoundError").ptr());
     module.def("EarlyDomainInfo", [](Pipeline& pipeline) {
         auto domain = LoadBinding::Domain(pipeline);
         py::dict out;
@@ -109,10 +116,32 @@ void BindOperations(pybind11::module_& module)
         task.brief = "EarlyConsumer";
         auto* store = reinterpret_cast<StoreV1*>(pipeline.Self());
         py::gil_scoped_release release;
-        return ValueOrThrow<NotFoundError, UnhealthyError>(store->Load(std::move(task)));
+        auto result = store->Load(std::move(task));
+        if (!result && result.Error() == Status::NoSpace()) {
+            throw CapacityRejected{"Early load rejected before I/O: NoSpace"};
+        }
+        return ValueOrThrow<NotFoundError, UnhealthyError>(std::move(result));
     }, py::arg("pipeline"), py::arg("ids").noconvert(),
        py::arg("indexes").noconvert(), py::arg("addrs").noconvert(),
        py::arg("reservations"));
+
+    module.def("EarlyDump", [](Pipeline& pipeline, const py::buffer& ids,
+                                const py::buffer& indexes, const py::buffer& addrs,
+                                uintptr_t prerequisite) {
+        auto task = LoadBinding::Describe<Pipeline>(ids, indexes, addrs);
+        task.brief = "EarlyDump";
+        task.prerequisiteHandle = prerequisite;
+        auto* store = reinterpret_cast<StoreV1*>(pipeline.Self());
+        py::gil_scoped_release release;
+        auto result = store->Dump(std::move(task));
+        if (!result && result.Error() == Status::NoSpace()) {
+            throw CapacityRejected{"Early dump rejected before I/O: NoSpace"};
+        }
+        if (!result && result.Error() == Status::StoreUnhealthy()) { return Detail::TaskHandle{0}; }
+        return ValueOrThrow<NotFoundError, UnhealthyError>(std::move(result));
+    }, py::arg("pipeline"), py::arg("ids").noconvert(),
+       py::arg("indexes").noconvert(), py::arg("addrs").noconvert(),
+       py::arg("prerequisite") = 0);
 
     // The synchronous binding keeps the Python Pipeline argument alive. Self()
     // returns its existing entry, including the native health wrapper.

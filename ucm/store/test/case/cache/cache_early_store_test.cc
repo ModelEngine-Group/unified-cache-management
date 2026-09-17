@@ -260,6 +260,8 @@ TEST(UCCacheEarlyStoreTest, ConcurrentLocalizationSharesOneBlockClaimUntilLastCo
         consumers.push_back(std::move(result.Value()));
     }
     // No request-count limit: eight consumers share one block's byte claim.
+    // Confirm the L2 hit before applying capacity; a miss would need no claim.
+    EXPECT_CALL(backend, LookupOnPrefix).WillOnce(testing::Return(ssize_t{0}));
     auto blocked = early.Reserve(&other, 1);
     ASSERT_FALSE(blocked);
     EXPECT_EQ(blocked.Error(), UC::Status::NoSpace());
@@ -1075,3 +1077,124 @@ TEST_P(UCCacheEarlyBatchFailureTest, DrainsAcceptedIoBeforeReleasingProtection)
 }
 
 INSTANTIATE_TEST_SUITE_P(AbnormalExit, UCCacheEarlyBatchFailureTest, testing::Values(0, 1, 2, 3));
+
+
+TEST(UCCacheEarlyStoreTest, ShortHitChargesOnlyConfirmedPrefixDespiteLargeCandidateBatch)
+{
+    Backend backend;
+    auto c = BatchConfig(&backend);
+    c.bufferCapacity = 2 * c.shardSize;
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(c).Success());
+    UC::CacheStore::ReservedPrefetch early(&manager, &backend, c.blockSize, c.shardSize, 1000);
+    std::array<UC::Detail::BlockId, 64> blocks{};
+    for (size_t i = 0; i < blocks.size(); ++i) { blocks[i][0] = std::byte(i); }
+    // 64 candidates exceed capacity, but the actual one-block prefix fits.
+    EXPECT_CALL(backend, LookupOnPrefix).WillOnce(testing::Return(ssize_t{0}));
+    auto result = early.Reserve(blocks.data(), blocks.size());
+    ASSERT_TRUE(result);
+    auto r = std::move(result.Value());
+    EXPECT_EQ(r.totalHitBlocks, 1);
+    EXPECT_EQ(r.batch->ProtectedBytes(), c.blockSize);
+    early.Release(r.handle);
+    EXPECT_EQ(r.batch->ProtectedBytes(), 0);
+    EXPECT_TRUE(backend.lease.expired());
+    EXPECT_CALL(backend, LookupOnPrefix).WillOnce(testing::Return(ssize_t{-1}));
+    auto miss = early.Reserve(blocks.data(), blocks.size());
+    ASSERT_TRUE(miss);
+    EXPECT_EQ(miss.Value().totalHitBlocks, 0);
+    EXPECT_EQ(miss.Value().batch->ProtectedBytes(), 0);
+    early.Release(miss.Value().handle);
+}
+
+TEST(UCCacheEarlyStoreTest, BoundedTaskAllocationRollsBackWithoutWaitingOrFalseReady)
+{
+    Backend backend;
+    auto c = BatchConfig(&backend);
+    c.bufferCapacity = 2 * c.shardSize;
+    c.loadExclusiveBufferNumber = 1;
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(c).Success());
+    auto& buffer = *manager.GetTransBuffer();
+    UC::Detail::BlockId a{}, b{}, missing{};
+    b[0] = std::byte{1}; missing[0] = std::byte{2};
+    auto protectedPin = buffer.TryGet(a, 0);
+    ASSERT_TRUE(protectedPin);
+    protectedPin.MarkReady();
+    // Dump cannot consume the native load-exclusive slot.
+    EXPECT_FALSE(UC::CacheStore::EarlyBufferPins::Acquire(buffer, b, 0, false));
+    UC::CacheStore::TransBuffer::Handle follower;
+    {
+        UC::CacheStore::EarlyTaskPins pins;
+        pins.push_back(UC::CacheStore::EarlyBufferPins::Acquire(buffer, b, 0, true));
+        ASSERT_TRUE(pins.back());
+        follower = UC::CacheStore::EarlyBufferPins::Acquire(buffer, b, 0, true);
+        ASSERT_TRUE(follower);
+        EXPECT_FALSE(follower.Owner());
+        EXPECT_FALSE(UC::CacheStore::EarlyBufferPins::Acquire(buffer, missing, 0, true));
+    }
+    EXPECT_EQ(follower.GetState(), UC::CacheStore::TransBuffer::State::FAILED);
+    EXPECT_EQ(follower.FailureStatus(), UC::Status::NotFound());
+    EXPECT_TRUE(protectedPin.Ready());
+    follower = {};
+    auto retry = UC::CacheStore::EarlyBufferPins::Acquire(buffer, b, 0, true);
+    ASSERT_TRUE(retry);
+    EXPECT_TRUE(retry.Owner());
+    EXPECT_FALSE(retry.Ready());
+    retry.MarkReady();
+}
+
+TEST(UCCacheEarlyStoreTest, CapacityPressureRejectsUnsubmittedDumpAndLoadThenRecovers)
+{
+    Backend backend;
+    auto config = Config(&backend);
+    // 1024 actual nodes, each block holds one 4KB tensor in a 1MB slot.
+    config.SetNumber("tensor_size", 0);
+    config.Set("tensor_size_list", std::vector<ssize_t>{4096});
+    config.SetNumber("shard_size", 1 << 20);
+    config.SetNumber("block_size", 1 << 20);
+    std::unique_ptr<UC::StoreV1> store(MakeEarlyCacheStore());
+    ASSERT_TRUE(store->Setup(config).Success());
+    std::vector<UC::Detail::BlockId> blocks(1024);
+    for (size_t i = 0; i < blocks.size(); ++i) { std::memcpy(&blocks[i], &i, sizeof(i)); }
+    EXPECT_CALL(backend, LookupOnPrefix).WillOnce(testing::Return(ssize_t{1023}));
+    EXPECT_CALL(backend, Load).WillRepeatedly(testing::Invoke([](UC::Detail::TaskDesc desc) {
+        for (auto& shard : desc) { std::memset(shard.addrs[0], 0x36, 4096); }
+        return UC::Detail::TaskHandle{1};
+    }));
+    EXPECT_CALL(backend, Check).WillRepeatedly(testing::Invoke([](auto) { return true; }));
+    EXPECT_CALL(backend, Wait).WillRepeatedly(testing::Return(UC::Status::OK()));
+    auto r = store->ReservePrefix(blocks.data(), blocks.size());
+    ASSERT_TRUE(r);
+    ASSERT_TRUE(store->PrefetchReserved(r.Value().handle));
+    std::array<unsigned char, 4096> target{};
+    UC::Detail::BlockId missing{};
+    missing[0] = std::byte{0x7f}; missing[2] = std::byte{0x7f};
+    UC::Detail::TaskDesc absent{{missing, 0, {target.data()}}};
+    EXPECT_CALL(backend, Dump).Times(0);
+    auto rejectedDump = store->Dump(absent);
+    ASSERT_FALSE(rejectedDump);
+    EXPECT_EQ(rejectedDump.Error(), UC::Status::NoSpace());
+    auto rejectedLoad = store->Load(absent);
+    ASSERT_FALSE(rejectedLoad);
+    EXPECT_EQ(rejectedLoad.Error(), UC::Status::NoSpace());
+    // A consumer of protected data still makes progress under a full pool.
+    UC::Detail::TaskDesc hit{{blocks[0], 0, {target.data()}}};
+    hit.loadReservations = {r.Value().handle};
+    auto load = store->Load(hit);
+    ASSERT_TRUE(load);
+    store->ReleaseReservation(r.Value().handle);
+    ASSERT_TRUE(store->Wait(load.Value()).Success());
+    EXPECT_EQ(target[0], 0x36);
+    // Failed capacity did not persist the absent block. A later real dump can.
+    testing::Mock::VerifyAndClearExpectations(&backend);
+    EXPECT_CALL(backend, Dump).WillOnce(testing::Invoke([](UC::Detail::TaskDesc desc) {
+        EXPECT_EQ(desc.size(), 1);
+        EXPECT_EQ(static_cast<unsigned char*>(desc[0].addrs[0])[0], 0x36);
+        return UC::Detail::TaskHandle{2};
+    }));
+    EXPECT_CALL(backend, Wait).WillRepeatedly(testing::Return(UC::Status::OK()));
+    auto dump = store->Dump(absent);
+    ASSERT_TRUE(dump);
+    ASSERT_TRUE(store->Wait(dump.Value()).Success());
+}
