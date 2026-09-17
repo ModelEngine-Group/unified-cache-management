@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import importlib.resources
+import os
 import shutil
 from pathlib import Path
 
-from ... import registry
 from ...errors import (
     BinaryNotFoundError,
     BuildDirNotFoundError,
@@ -44,19 +45,28 @@ def _parse_bool(value: str) -> bool:
 
 
 class DevSandboxTool(ToolAdapter):
-    """Build adapter for toolkit/src/dev-sandbox."""
+    """Build adapter for the dev-sandbox CMake project (shipped in the wheel)."""
 
     name = "dev-sandbox"
     aliases = ("dev_sandbox",)
     description = "Build the CMake-based dev-sandbox test project."
     buildable = True
-    source_dir = "toolkit/src/dev-sandbox"
-    build_dir = "toolkit/src/dev-sandbox/build"
     subcommands = {
         "copy": "module/copy/copy",
         "trans": "module/trans/trans",
         "aio": "module/aio/aio",
     }
+
+    def _source_dir(self) -> Path:
+        """Installed location of the dev-sandbox CMake sources (package data)."""
+        return Path(importlib.resources.files("ucm_toolkit._native.dev_sandbox"))
+
+    def _build_dir(self) -> Path:
+        """Default build output dir (env override > in-package native/build)."""
+        override = os.environ.get("UCM_TOOLKIT_DEV_SANDBOX_BUILD_DIR")
+        if override:
+            return Path(override)
+        return self._source_dir() / "build"
 
     def add_build_args(self, parser: argparse.ArgumentParser) -> None:
         """Register dev-sandbox build arguments."""
@@ -79,9 +89,17 @@ class DevSandboxTool(ToolAdapter):
         if not command_exists("cmake"):
             raise CommandNotFoundError("cmake")
 
-        source_dir = registry.resolve_repo_path(self.source_dir or "")
-        build_dir_value = args.build_dir or self.build_dir
-        build_dir = registry.resolve_repo_path(build_dir_value or "")
+        source_dir = self._source_dir()
+        build_dir = Path(args.build_dir) if args.build_dir else self._build_dir()
+        # Wheel installs land in a read-only site-packages; fail early with a
+        # hint instead of letting cmake error out on an unwritable -B path.
+        try:
+            build_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError as exc:
+            raise ToolkitError(
+                f"cannot create build directory {build_dir} (read-only install? "
+                f"pass --build-dir <writable path>)"
+            ) from exc
         cmake_args = [
             "cmake",
             "-S",
@@ -97,9 +115,6 @@ class DevSandboxTool(ToolAdapter):
         if args.jobs:
             build_cmd.extend(["-j", str(args.jobs)])
         check_command(build_cmd)
-
-        if args.build_dir:
-            registry.update_tool_field(self.name, "build_dir", args.build_dir)
         return 0
 
     def run(self, tool_args: list[str]) -> int:
@@ -154,8 +169,8 @@ class DevSandboxTool(ToolAdapter):
 
     def doctor(self, args: argparse.Namespace | None = None) -> int:
         """Inspect dev-sandbox source/build availability."""
-        source_dir = registry.resolve_repo_path(self.source_dir or "")
-        build_dir = registry.resolve_repo_path(self.build_dir or "")
+        source_dir = self._source_dir()
+        build_dir = self._build_dir()
         ok = True
         print(f"{self.name}:")
         print(
@@ -174,7 +189,7 @@ class DevSandboxTool(ToolAdapter):
 
     def clean(self, args: argparse.Namespace | None = None) -> int:
         """Clean dev-sandbox build artifacts."""
-        build_dir = registry.resolve_repo_path(self.build_dir or "")
+        build_dir = self._build_dir()
         dry_run = bool(getattr(args, "dry_run", False))
         if dry_run:
             print(f"would remove: {build_dir}")
@@ -196,7 +211,7 @@ class DevSandboxTool(ToolAdapter):
                 f"available subcommands: {choices}"
             ) from exc
 
-        build_dir = registry.resolve_repo_path(self.build_dir or "")
+        build_dir = self._build_dir()
         if not build_dir.exists():
             raise BuildDirNotFoundError(str(build_dir))
         binary = build_dir / relpath

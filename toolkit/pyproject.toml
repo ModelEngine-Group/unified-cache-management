@@ -11,9 +11,26 @@ requires-python = ">=3.9"
 [project.scripts]
 ucm-toolkit = "ucm_toolkit.cli:main"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["ucm_toolkit*"]
+[tool.setuptools]
+include-package-data = true
+# Map the ucm_toolkit._native namespace onto toolkit/src so the C++/shell sources
+# ship inside the wheel without being moved into the ucm_toolkit tree.
+# dev_sandbox is mapped explicitly because its on-disk dir uses a hyphen.
+package-dir = { "ucm_toolkit._native" = "src", "ucm_toolkit._native.dev_sandbox" = "src/dev-sandbox" }
+packages = [
+    "ucm_toolkit",
+    "ucm_toolkit.commands",
+    "ucm_toolkit.tools",
+    "ucm_toolkit.tools.dev_sandbox",
+    "ucm_toolkit.tools.metrics_view",
+    "ucm_toolkit.tools.metrics_view.terminal_view_metrics",
+    "ucm_toolkit.tools.nic_monitor",
+    "ucm_toolkit.tools.posix_aio",
+    "ucm_toolkit.tools.precheck",
+    "ucm_toolkit._native",
+    "ucm_toolkit._native.dev_sandbox",
+    "ucm_toolkit._native.nic_monitor",
+]
 
 [tool.setuptools.package-data]
 "ucm_toolkit.tools.metrics_view" = ["configs/*.json"]
