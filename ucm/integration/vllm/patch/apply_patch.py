@@ -51,6 +51,7 @@ def _strip_build(v: Optional[str]) -> Optional[str]:
 
 
 def _norm_version(v: Optional[str]) -> Optional[str]:
+    v = _strip_build(v)
     if not v:
         return None
     # common suffixes: 0.11.0.post1 / 0.11.0rc1
@@ -136,6 +137,7 @@ def get_supported_versions() -> list[str]:
         "0.25.1",
         "0.26.0",
         "0.27.0",
+        "0.27.1",
         "0.28.0",
     ]
 
@@ -296,6 +298,9 @@ def apply_all_patches() -> None:
             case _:
                 pass
 
+        if ascend_version and tuple(map(int, ascend_version.split(".")[:2])) >= (0, 26):
+            import ucm.integration.vllm.patch.v0260.vllm_ascend.minimax_m3_kv_transfer_patch
+
         # Fix: vllm-ascend >= 0.21.0 defers do_mamba_copy_block to after
         # start_load_kv, overwriting UCM-loaded data. @when_imported is
         # self-guarding (only fires when the module exists).
@@ -305,6 +310,7 @@ def apply_all_patches() -> None:
         # so wait_for_layer_load/save_kv_layer are never called. @when_imported
         # only fires when vllm.models.kimi_k3.nvidia.mla is imported.
         import ucm.integration.vllm.patch.v0270.vllm.models.kimi_k3.nvidia.kimi_k3_mla_kv_hook_patch
+        import ucm.integration.vllm.patch.v0271.vllm.minimax_m3_kv_transfer_patch
 
         logger.info("UCM patch initialization completed!")
 

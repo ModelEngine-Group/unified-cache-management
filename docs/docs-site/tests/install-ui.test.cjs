@@ -382,3 +382,16 @@ test("Toolkit install commands use this release's namespace, version and index",
   manifest.python.pypi = null;
   assert.deepEqual(Selector.toolkitInstallCommands(manifest), ['pip install "https://github.com/example/toolkit.whl"']);
 });
+
+
+test("releases without a Chart retain Wheel commands and omit Helm downloads", () => {
+  const manifest = fixture();
+  manifest.github_release_assets = manifest.github_release_assets.filter(
+    (name) => name !== manifest.chart.filename
+  );
+  manifest.chart = null;
+  assert.equal(Manifest.validateManifest(manifest), manifest);
+  assert.equal(select(manifest, {architecture: "amd64"}).pipCommand,
+    'pip install "uc-manager[cu130]==0.9.3"');
+  assert.equal(Selector.chartDownloadCommand(manifest), null);
+});

@@ -23,6 +23,7 @@
  * */
 #include <cstdint>
 #include <gtest/gtest.h>
+#include <limits>
 #include <string>
 #include <vector>
 #include "config.h"
@@ -104,6 +105,37 @@ TEST(UCDramConfigTest, ParsesFixedReconnectInterval)
     auto parsed = DramConfig::Parse(input);
     ASSERT_TRUE(parsed);
     EXPECT_EQ(parsed.Value().nodeScheduler.reconnectInterval.count(), 37);
+}
+
+TEST(UCDramConfigTest, ParsesOptionalSharedPollInterval)
+{
+    auto input = BaseConfig();
+    auto defaults = DramConfig::Parse(input);
+    ASSERT_TRUE(defaults);
+    EXPECT_EQ(defaults.Value().nodeScheduler.pollInterval, std::chrono::microseconds{50});
+    for (const auto interval : {1, 175, 10000}) {
+        input.SetNumber("poll_interval_us", interval);
+        auto parsed = DramConfig::Parse(input);
+        ASSERT_TRUE(parsed);
+        EXPECT_EQ(parsed.Value().nodeScheduler.pollInterval, std::chrono::microseconds{interval});
+    }
+}
+
+TEST(UCDramConfigTest, RejectsInvalidPollInterval)
+{
+    for (const auto interval :
+         {ssize_t{-1}, ssize_t{0}, ssize_t{10001}, std::numeric_limits<ssize_t>::max()}) {
+        auto input = BaseConfig();
+        input.SetNumber("poll_interval_us", interval);
+        auto parsed = DramConfig::Parse(input);
+        ASSERT_FALSE(parsed);
+        EXPECT_EQ(parsed.Error(), Status::InvalidParam());
+    }
+    auto input = BaseConfig();
+    input.Set("poll_interval_us", std::string{"175"});
+    auto parsed = DramConfig::Parse(input);
+    ASSERT_FALSE(parsed);
+    EXPECT_EQ(parsed.Error(), Status::InvalidParam());
 }
 
 TEST(UCDramConfigTest, RequiresTensorSizes) { EXPECT_FALSE(DramConfig::Parse(BaseConfig(false))); }

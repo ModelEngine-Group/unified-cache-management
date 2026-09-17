@@ -735,8 +735,13 @@ def test_wheel_result_rejects_backend_dependency_drift(tmp_path: Path) -> None:
         wheel_ops.record_wheel_result(task, wheel)
 
 
-def test_pr_plan_can_build_directly_from_pinned_upstream_builders() -> None:
-    formal, selection, _finalized_catalog = _inputs()
+@pytest.mark.parametrize(
+    ("route", "release_type"), [("pr", "stable"), ("release", "nightly")]
+)
+def test_wheel_plan_can_build_directly_from_pinned_upstream_builders(
+    route: str, release_type: str
+) -> None:
+    formal, selection, _finalized_catalog = _inputs(release_type)
     desired = builders.catalog_from_builds(
         selection["wheel_builds"],
         owner="release-org",
@@ -747,7 +752,7 @@ def test_pr_plan_can_build_directly_from_pinned_upstream_builders() -> None:
         formal,
         runtime_selection=selection,
         builder_catalog=builders.bind_source_catalog(desired),
-        route="pr",
+        route=route,
     )
 
     builds = {item["id"]: item for item in selection["wheel_builds"]}

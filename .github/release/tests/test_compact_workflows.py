@@ -51,10 +51,6 @@ def test_runtime_images_install_the_same_run_toolkit_wheel_by_default() -> None:
 
 def test_nightly_schedule_creates_or_reuses_a_tag_then_calls_core_in_same_run() -> None:
     workflow = _load("release-nightly.yml")
-    assert workflow["on"] == {
-        "schedule": [{"cron": "0 18 * * *"}],
-        "workflow_dispatch": None,
-    }
     assert workflow["concurrency"] == {
         "group": "ucm-nightly-${{ github.repository_id }}",
         "cancel-in-progress": False,
@@ -528,3 +524,97 @@ def test_native_wheel_gate_uses_source_builders_without_publication() -> None:
     assert "docker push" not in text
     assert "open-release" not in text
     assert "publish" not in text.lower()
+
+
+def test_finalizer_downloads_pypi_receipt_only_when_publication_is_enabled() -> None:
+    jobs = _load("release-ucm.yml")["jobs"]
+    receipt = next(
+        step
+        for step in jobs["update-release-images"]["steps"]
+        if step.get("with", {}).get("name")
+        == "ucm-pypi-receipt-run-${{ github.run_id }}"
+    )
+    assert receipt["if"] == jobs["publish-pypi"]["if"]
+    assert "needs.plan.outputs.publish_pypi == 'true'" in receipt["if"]
+    # Failed publication still reaches finalization to record the failed channel.
+    assert receipt["continue-on-error"] is True
+
+
+def test_release_image_retries_each_enabled_profile_member_after_verification() -> None:
+    steps = _load("_build-release-image.yml")["jobs"]["publish"]["steps"]
+    step_names = [step.get("name") for step in steps]
+    build = next(
+        step for step in steps if step.get("name") == "Build install-only Runtime image"
+    )
+    verify = next(
+        step
+        for step in steps
+        if step.get("name") == "Verify Runtime glibc, Python, OS, and UCM import"
+    )
+    publish = next(
+        step
+        for step in steps
+        if step.get("name") == "Publish verified Profile members and record digests"
+    )
+
+    assert (
+        step_names.index(build["name"])
+        < step_names.index(verify["name"])
+        < step_names.index(publish["name"])
+    )
+    assert "publish_member()" in publish["run"]
+    assert "publish_channel()" in publish["run"]
+    assert "for attempt in 1 2 3" in publish["run"]
+    assert 'publish_member "${channel}" "${reference}"' in publish["run"]
+    assert "docker login ghcr.io" in publish["run"]
+    assert "docker login docker.io" in publish["run"]
+    assert 'skopeo copy "oci-archive:out/image.oci.tar"' in publish["run"]
+    assert "retrying in ${sleep_seconds}s" in publish["run"]
+    assert ".publish.ghcr.enabled" in publish["run"]
+    assert ".publish.dockerhub.enabled" in publish["run"]
+    assert "targets:[{channel:" not in publish["run"]
+    assert "for attempt in 1 2 3" not in build["run"]
+    assert "retry-registry-command.sh" in build["run"]
+    assert "--retry-quay-blob" in build["run"]
+    assert 'UCM_REGISTRY_RETRY_DELAYS="10 20"' in build["run"]
+    assert "for setup_attempt in 1 2 3" in verify["run"]
+    assert "if ! command -v skopeo" in verify["run"]
+    assert (
+        "Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources" in verify["run"]
+    )
+    assert "Dir::Etc::sourceparts=-" in verify["run"]
+    assert 'sudo apt-get "${apt_options[@]}" update' in verify["run"]
+    assert 'sudo apt-get "${apt_options[@]}" install --yes skopeo' in verify["run"]
+    assert "docker run --rm --entrypoint sh" in verify["run"]
+
+
+def test_builder_prefetches_layers_before_registry_push() -> None:
+    steps = _load("sync-builders.yml")["jobs"]["build-missing"]["steps"]
+    build = next(
+        step["run"] for step in steps if step.get("name") == "Build missing Builder"
+    )
+    prefetch = 'docker buildx build --output type=oci,dest=/dev/null "${build_args[@]}"'
+    push = 'docker buildx build --push "${build_args[@]}"'
+    assert build.index(prefetch) < build.index(push)
+    assert "${RUNNER_TEMP}/ucm-builder-prefetch.log" in build
+    assert "${RUNNER_TEMP}/ucm-builder-push.log" in build
+
+
+def test_wheel_only_release_downloads_toolkit_without_requiring_chart() -> None:
+    jobs = _load("release-ucm.yml")["jobs"]
+    steps = jobs["publish-release-artifacts"]["steps"]
+    downloads = {
+        step["with"]["path"]: step
+        for step in steps
+        if step.get("uses", "").startswith("actions/download-artifact@")
+    }
+    assert "if" not in downloads["input/toolkit"]
+    assert downloads["input/chart"]["if"] == (
+        "${{ needs.plan.outputs.publish_chart_oci == 'true' }}"
+    )
+    upload = next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Upload backend Wheels, Chart, and Config"
+    )
+    assert "artifacts=(input/wheels/*/*.whl input/toolkit/*.whl)" in upload

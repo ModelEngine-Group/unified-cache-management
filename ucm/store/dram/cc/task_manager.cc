@@ -238,6 +238,10 @@ void TaskManager::ProcessSubmission(Submission submission)
         return;
     }
 
+    std::uintptr_t prerequisiteHandle = 0;
+    if (const auto* transfer = std::get_if<Detail::TaskDesc>(&submission.input)) {
+        if (submission.op == OpType::DUMP) { prerequisiteHandle = transfer->prerequisiteHandle; }
+    }
     auto entries =
         std::holds_alternative<Detail::TaskDesc>(submission.input)
             ? NormalizeTransfer(std::get<Detail::TaskDesc>(submission.input))
@@ -263,6 +267,7 @@ void TaskManager::ProcessSubmission(Submission submission)
     if (task.op == OpType::LOOKUP) { task.lookupResults.resize(entryCount); }
 
     for (auto& request : requests) {
+        request.prerequisiteHandle = prerequisiteHandle;
         request.taskId = submission.taskId;
         request.requestId = nextRequestId_++;
     }
@@ -359,6 +364,10 @@ void TaskManager::Run() noexcept
         {
             std::lock_guard lock(workMutex_);
             accepting_ = false;
+        }
+        dependencies_.shutdownNodes();
+        {
+            std::lock_guard lock(workMutex_);
             while (!submissions_.Empty()) {
                 auto submission = submissions_.Pop();
                 submission.promise.set_value(

@@ -384,21 +384,29 @@ def validate_manifest(
         if all(publication is None for publication in published):
             raise ManifestError(f"{context} must have at least one publication")
 
-    chart = _mapping(manifest.get("chart"), "release manifest chart")
-    _exact_keys(
-        chart, {"name", "version", "filename", "url", "oci"}, "release manifest chart"
-    )
-    for field in ("name", "version", "filename", "url"):
-        _nonempty_string(chart.get(field), f"release manifest chart {field}")
-    chart_filename = chart["filename"]
-    if Path(chart_filename).name != chart_filename:
-        raise ManifestError("release manifest Chart filename must not contain a path")
-    if chart_filename in wheel_filenames:
-        raise ManifestError("release manifest Chart and Wheel files must be unique")
-    if chart.get("oci") is not None:
-        _tagged_oci_reference(
-            chart.get("oci"), "release manifest chart oci", registry="ghcr.io"
+    chart = manifest["chart"]
+    required_assets = set(wheel_filenames)
+    if chart is not None:
+        chart = _mapping(chart, "release manifest chart")
+        _exact_keys(
+            chart,
+            {"name", "version", "filename", "url", "oci"},
+            "release manifest chart",
         )
+        for field in ("name", "version", "filename", "url"):
+            _nonempty_string(chart.get(field), f"release manifest chart {field}")
+        chart_filename = chart["filename"]
+        if Path(chart_filename).name != chart_filename:
+            raise ManifestError(
+                "release manifest Chart filename must not contain a path"
+            )
+        if chart_filename in wheel_filenames:
+            raise ManifestError("release manifest Chart and Wheel files must be unique")
+        if chart.get("oci") is not None:
+            _tagged_oci_reference(
+                chart.get("oci"), "release manifest chart oci", registry="ghcr.io"
+            )
+        required_assets.add(chart_filename)
 
     assets = _string_array(
         manifest.get("github_release_assets"),
@@ -410,7 +418,6 @@ def validate_manifest(
         raise ManifestError(
             "release manifest must list itself as a GitHub Release asset"
         )
-    required_assets = {chart_filename} | wheel_filenames
     if toolkit_package is not None:
         required_assets.add(toolkit_package["filename"])
     missing_assets = sorted(required_assets - set(assets))
@@ -911,15 +918,28 @@ def build_manifest(
         )
     projected_images.sort(key=lambda item: str(item["id"]))
 
-    chart = _mapping(state.get("chart"), "release state Chart")
-    chart_filename = chart.get("filename")
-    chart_oci = chart.get("oci_reference")
-    if (
-        not isinstance(chart_filename, str)
-        or chart_filename not in urls
-        or (chart_oci is not None and (not isinstance(chart_oci, str) or not chart_oci))
-    ):
-        raise ValueError("release state Chart cannot be projected into schema 9")
+    chart = state.get("chart")
+    chart_document = None
+    if chart is not None:
+        chart = _mapping(chart, "release state Chart")
+        chart_filename = chart.get("filename")
+        chart_oci = chart.get("oci_reference")
+        if (
+            not isinstance(chart_filename, str)
+            or chart_filename not in urls
+            or (
+                chart_oci is not None
+                and (not isinstance(chart_oci, str) or not chart_oci)
+            )
+        ):
+            raise ValueError("release state Chart cannot be projected into schema 9")
+        chart_document = {
+            "name": chart["name"],
+            "version": chart["version"],
+            "filename": chart_filename,
+            "url": urls[chart_filename],
+            "oci": chart_oci,
+        }
     asset_names = {
         str(_mapping(asset, "GitHub Release asset").get("name", ""))
         for asset in _list(release_document.get("assets"), "GitHub Release assets")
@@ -941,13 +961,7 @@ def build_manifest(
         "python": python_package,
         "wheels": wheels,
         "images": projected_images,
-        "chart": {
-            "name": chart["name"],
-            "version": chart["version"],
-            "filename": chart_filename,
-            "url": urls[chart_filename],
-            "oci": chart_oci,
-        },
+        "chart": chart_document,
         "github_release_assets": sorted(asset_names),
     }
 
@@ -993,8 +1007,9 @@ def asset_urls(
         str(item["filename"])
         for item in _list(manifest.get("wheels"), "release manifest Wheels")
     }
-    chart = _mapping(manifest.get("chart"), "release manifest Chart")
-    required.add(str(chart.get("filename", "")))
+    if manifest.get("chart") is not None:
+        chart = _mapping(manifest["chart"], "release manifest Chart")
+        required.add(str(chart.get("filename", "")))
     if manifest.get("toolkit_package") is not None:
         required.add(manifest["toolkit_package"]["filename"])
     missing = sorted(required - urls.keys())

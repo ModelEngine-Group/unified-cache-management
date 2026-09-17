@@ -82,7 +82,9 @@ def _release_manifest(
     if set(manifest["github_release_assets"]) != published_assets:
         raise ManifestError(f"Release {tag} assets differ from its completed manifest")
     urls = {a["name"]: a["browser_download_url"] for a in release["assets"]}
-    artifacts = [*manifest["wheels"], manifest["chart"]]
+    artifacts = list(manifest["wheels"])
+    if manifest["chart"] is not None:
+        artifacts.append(manifest["chart"])
     if manifest.get("toolkit") is not None:
         artifacts.append(manifest["toolkit"])
     for artifact in artifacts:

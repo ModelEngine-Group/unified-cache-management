@@ -18,7 +18,7 @@
     if (!value || value.kind !== KIND || value.schema_version !== SCHEMA_VERSION) {
       throw new TypeError("release manifest schema_version must be " + SCHEMA_VERSION);
     }
-    if (!value.release || !value.python || !value.chart ||
+    if (!value.release || !value.python || !("chart" in value) ||
         !Array.isArray(value.wheels) || !Array.isArray(value.images)) {
       throw new TypeError("release manifest is incomplete");
     }

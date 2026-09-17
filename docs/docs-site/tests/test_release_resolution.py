@@ -157,3 +157,16 @@ def test_exact_unsupported_manifest_is_an_error_not_pending(monkeypatch):
     ) as error:
         releases.resolve_manifest(REPOSITORY, tag="v0.9.3")
     assert not isinstance(error.value, releases.ReleasePending)
+
+
+def test_release_without_chart_keeps_its_wheel_installation_data(monkeypatch):
+    metadata, manifest = published_release()
+    filename = manifest["chart"]["filename"]
+    manifest["chart"] = None
+    manifest["github_release_assets"].remove(filename)
+    metadata["assets"] = [
+        asset for asset in metadata["assets"] if asset["name"] != filename
+    ]
+    install_responses(monkeypatch, [(metadata, manifest)])
+
+    assert releases.resolve_manifest(REPOSITORY, tag="v0.9.3") == manifest

@@ -156,7 +156,7 @@ def registry_resources(manifest: object) -> list[Resource]:
                 member["reference"] for member in publication["members"]
             )
     ghcr_resources: list[tuple[str, str]] = []
-    if validated["chart"]["oci"] is not None:
+    if validated["chart"] is not None and validated["chart"]["oci"] is not None:
         ghcr_resources.append(("chart-oci", validated["chart"]["oci"]))
     ghcr_resources.extend(
         ("ghcr-index", ref) for ref in sorted(images["ghcr"]["indexes"])

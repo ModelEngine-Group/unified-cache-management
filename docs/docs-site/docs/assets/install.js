@@ -33,6 +33,7 @@
       release: "Release", engine: "Engine", engineVersion: "Engine Version",
       runtime: "CUDA / CANN", variant: "Ascend Device", os: "OS", architecture: "Architecture",
       copy: "Copy", copied: "Copied", copyFailed: "Copy failed",
+      noChart: "This release does not include a Helm Chart.",
       noToolkit: "This release has no Toolkit package. Use the source installation command below.",
     },
     zh: {
@@ -42,6 +43,7 @@
       release: "Release", engine: "推理引擎", engineVersion: "引擎版本",
       runtime: "CUDA / CANN", variant: "昇腾设备", os: "操作系统", architecture: "CPU 架构",
       copy: "复制", copied: "已复制", copyFailed: "复制失败",
+      noChart: "本次发布未提供 Helm Chart。",
       noToolkit: "本次发布未提供 Toolkit 包，请使用下方的源码安装命令。",
     },
   };
@@ -300,6 +302,7 @@
   }
 
   function chartDownloadCommand(manifest) {
+    if (!manifest.chart) return null;
     return 'helm pull "' + manifest.chart.url + '" --untar\ncd ' + manifest.chart.name;
   }
 
@@ -309,9 +312,14 @@
     app.dataset.manifestLoading = "1";
     var messages = TEXT[app.dataset.locale === "zh" ? "zh" : "en"];
     Manifest.loadManifest().then(function (manifest) {
+      var command = chartDownloadCommand(manifest);
+      if (!command) {
+        app.textContent = messages.noChart;
+        return;
+      }
       app.replaceChildren(
         directLink(manifest.chart.url, manifest.chart.filename),
-        commandBlock(chartDownloadCommand(manifest), messages)
+        commandBlock(command, messages)
       );
       app.dataset.manifestReady = "1";
     }).catch(function () { app.textContent = messages.unavailable; });
