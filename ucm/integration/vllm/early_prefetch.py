@@ -30,6 +30,7 @@ class Job:
     attempt: str | None = None
     grant: int = 0
     expected: tuple | None = None
+    capacity_truncated: bool = False
     ready_received_ns: int | None = None
     first_pending_ns: int | None = None
     pending_probes: int = 0
@@ -195,6 +196,7 @@ class EarlyScheduler:
                 job.owner, job.attempt, job.grant = message["owner"], message["attempt"], message["grant"]
                 return
             job.hit = message.get("hit", 0)
+            job.capacity_truncated = message.get("capacity_truncated", False)
             job.state = message["state"]
             if job.state == "READY":
                 job.ready_received_ns = time.monotonic_ns()
@@ -284,7 +286,8 @@ class EarlyScheduler:
                     if job.expected is None:
                         raise RuntimeError("owner result lacks native consumption plan")
                     tickets[request_id] = dict(key=key, attempt=job.attempt, owner=job.owner,
-                                              grant=job.grant, expected=job.expected)
+                                              grant=job.grant, expected=job.expected,
+                                              protected_hit=job.hit, capacity_truncated=job.capacity_truncated)
             return tickets
 
     def finish(self, request, cancelled=False):
@@ -324,7 +327,6 @@ class EarlyScheduler:
 @dataclass(eq=False)
 class WorkerJob:
     key: str
-    batch_grants: dict = field(default_factory=dict, init=False)
     blocks: list
     entered: float = field(default_factory=time.monotonic)
     batches: list = field(default_factory=list)
@@ -335,6 +337,7 @@ class WorkerJob:
     owner: str | None = None
     attempt: str | None = None
     grant: int = 0
+    capacity_end: int | None = None
     lookup_finished: bool = False
     request_id: str | None = None
 
@@ -350,6 +353,7 @@ class WorkerBatch:
     can_submit: bool = True
     inflight_bytes: int = 0
     stats: dict = field(default_factory=dict)
+    discarded: bool = False
 
 
 class EarlyWorker:
@@ -446,6 +450,8 @@ class EarlyWorker:
                 with self.condition:
                     if job.cancelled or self.closed or self.owner_protocol.fatal:
                         return
+                    if job.capacity_end is not None:
+                        break
                 candidates = blocks[begin:begin + candidate_count]
                 reserving = time.monotonic_ns()
                 reservation = self.store.reserve_prefix(candidates)
@@ -459,7 +465,7 @@ class EarlyWorker:
                     if self.owner_protocol.fatal:
                         job.batches.append(batch)  # quarantine newly acquired pins too
                         return
-                    if job.cancelled or self.closed:
+                    if job.cancelled or self.closed or job.capacity_end is not None:
                         self.store.release_reservation(reservation["handle"])
                         return
                     job.batches.append(batch)
@@ -470,18 +476,6 @@ class EarlyWorker:
                         reserving, time.monotonic_ns(), len(candidates),
                         reservation["total_hit_blocks"], reservation["remaining_l2_work"], os.getpid(),
                     )
-                    if job.owner:
-                        self.owner_protocol.send(dict(op="confirm_batch", key=job.key,
-                            attempt=job.attempt, batch=batch.index, begin=begin, count=hit))
-                        # Condition.wait_for releases the condition. Native bucket
-                        # locks are gone; no data allocation or I/O precedes grant.
-                        timeout = self.store.config.get("timeout_ms", 30000) / 1000
-                        answered = self.condition.wait_for(lambda: batch.index in job.batch_grants
-                            or job.cancelled or self.closed or self.owner_protocol.fatal, timeout)
-                        if job.cancelled or self.closed or self.owner_protocol.fatal:
-                            return
-                        if not answered or not job.batch_grants[batch.index]:
-                            raise RuntimeError("confirmed prefix capacity denied or timed out")
                     if not batch.done:
                         # Publication precedes localization/lease of the next
                         # batch. Its handles and lease stay in this reservation.
@@ -496,8 +490,6 @@ class EarlyWorker:
                 candidate_count = min(candidate_count * 2, 256)
             with self.condition:
                 job.reserve_done = True
-                if not job.cancelled and all(batch.done for batch in job.batches):
-                    self._answer(job)
             log.info("UCM_EARLY lookup_done key=%s rank=%s ns=%s batches=%s elapsed_ms=%.3f",
                      job.key, c.tp_rank, time.monotonic_ns(), len(job.batches),
                      (time.monotonic() - started) * 1000)
@@ -506,7 +498,43 @@ class EarlyWorker:
         finally:
             with self.condition:
                 job.lookup_finished = True
+                if job.capacity_end is not None:
+                    job.reserve_done = True
+                self._maybe_answer(job)
                 self.condition.notify_all()
+
+    def _truncate(self, job, end):
+        # Condition held. Capacity is a successful prefix result, never a retry
+        # through native lookup for the unprotected suffix.
+        job.capacity_end = end if job.capacity_end is None else min(end, job.capacity_end)
+        for part in job.batches:
+            if part.begin < job.capacity_end or part.discarded:
+                continue
+            part.discarded, part.can_submit = True, False
+            if part.started and not part.done:
+                part.reservation["batch"].discard()  # only stops submission, no wait
+            else:
+                part.done = True
+                self.store.release_reservation(part.reservation["handle"])
+        self.condition.notify_all()
+
+    @staticmethod
+    def _hit(job):
+        # Batches are appended in prefix order. Final lengths replace lookup
+        # lengths only after completion; a partial block is never counted.
+        hit = 0
+        for part in job.batches:
+            if part.discarded:
+                break
+            if part.begin != hit:
+                raise RuntimeError("non-contiguous completed prefix")
+            hit += part.reservation["total_hit_blocks"]
+        return hit
+
+    def _maybe_answer(self, job):
+        if (job.reserve_done and job.lookup_finished
+                and all(part.done for part in job.batches)):
+            self._answer(job)
 
     @staticmethod
     def ratio(batch, now):
@@ -518,7 +546,7 @@ class EarlyWorker:
         # HRRN selection. A request gets one quantum before any repeat while
         # another eligible request has not had a turn.
         self.preparing = [item for item in self.preparing
-                          if not item[0].cancelled and not item[1].done and item[1].can_submit]
+                          if not item[0].cancelled and not item[1].done and not item[1].discarded and item[1].can_submit]
         heads = {}
         for job, batch in self.preparing:
             current = heads.get(job.key)
@@ -549,19 +577,27 @@ class EarlyWorker:
             with self.condition:
                 batch.stats = stats
                 batch.inflight_bytes = stats["inflight_bytes"]
-                batch.can_submit = stats["can_submit"]
+                batch.can_submit = stats["can_submit"] and not batch.discarded
                 # Conservative shard work: peer completions not yet observed
                 # may remain charged. This never substitutes total hit length.
                 batch.reservation["remaining_l2_work"] = stats["remaining_l2_work"]
                 if stats["done"]:
                     batch.done = True
+                    if batch.discarded:
+                        self.store.release_reservation(batch.reservation["handle"])
+                    else:
+                        hit = stats["total_hit_blocks"]
+                        if type(hit) is not int or not 0 <= hit <= batch.reservation["total_hit_blocks"]:
+                            raise RuntimeError("invalid completed prefix length")
+                        batch.reservation["total_hit_blocks"] = hit
+                        if stats["capacity_truncated"]:
+                            self._truncate(job, batch.begin + hit)
                     log.info("UCM_EARLY batch_done key=%s rank=%s batch=%s reservation=%s ns=%s "
-                             "protected_claim_bytes=%s protection_limit_bytes=%s stats=%s",
+                             "protected_reference_bytes=%s physical_reservable_bytes=%s stats=%s",
                              job.key, self.connector.tp_rank, batch.index, batch.reservation["handle"],
                              time.monotonic_ns(), capability.protected_bytes,
                              capability.protection_limit_bytes, stats)
-                    if job.reserve_done and all(part.done for part in job.batches):
-                        self._answer(job)
+                    self._maybe_answer(job)
                 return stats["advanced"]
         except Exception as error:
             with self.condition:
@@ -590,7 +626,7 @@ class EarlyWorker:
                         return
                 else:
                     self.selected = [item for item in self.selected
-                                     if not item[0].cancelled and not item[1].done and item[1].can_submit]
+                                     if not item[0].cancelled and not item[1].done and not item[1].discarded and item[1].can_submit]
                     if not self.selected:
                         self._choose(round_keys)
                     if self.selected:
@@ -616,7 +652,7 @@ class EarlyWorker:
                 if peak > window:
                     self._answer(job, "Early exceeded native-derived byte window")
                 with self.condition:
-                    if not job.cancelled and not batch.done and batch.can_submit:
+                    if not job.cancelled and not batch.discarded and not batch.done and batch.can_submit:
                         self.preparing.append((job, batch))
                 continue
             with self.condition:
@@ -648,11 +684,11 @@ class EarlyWorker:
                 )
             else:
                 job.ready = True
-                hit = sum(batch.reservation["total_hit_blocks"] for batch in job.batches)
+                hit = self._hit(job)
                 fast = hit > 0 and not any(batch.started for batch in job.batches)
                 log.info("UCM_EARLY rank_ready key=%s rank=%s ns=%s total_hit_blocks=%s fast_path=%s",
                          job.key, self.connector.tp_rank, time.monotonic_ns(),
-                         sum(batch.reservation["total_hit_blocks"] for batch in job.batches), fast)
+                         self._hit(job), fast)
                 if fast:
                     log.info("UCM_EARLY fast_path key=%s rank=%s data_queue_wait=0 l2_read_shards=0",
                              job.key, self.connector.tp_rank)
@@ -661,7 +697,7 @@ class EarlyWorker:
                     "op": "answer",
                     "key": job.key,
                     "state": "FAILED" if error else "READY",
-                    "hit": sum(batch.reservation["total_hit_blocks"] for batch in job.batches),
+                    "hit": self._hit(job),
                     "reason": error,
                 }
             )
@@ -680,7 +716,7 @@ class EarlyWorker:
                 if job.key in loading and not job.cancelled:
                     job.loading = True
                     if job.ready:
-                        handles.extend(batch.reservation["handle"] for batch in job.batches)
+                        handles.extend(batch.reservation["handle"] for batch in job.batches if not batch.discarded)
             self.store.set_load_reservations(handles)
 
     def loaded(self, request_ids, *, reason="handoff"):

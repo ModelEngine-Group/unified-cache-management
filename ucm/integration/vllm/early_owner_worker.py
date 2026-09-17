@@ -87,13 +87,6 @@ class OwnerWorker:
                     job.lookup_finished = True
                 self.worker.condition.notify_all()
             return True
-        if op == "batch_grant":
-            with self.worker.condition:
-                job = self.worker.jobs.get(message["key"])
-                if job and job.attempt == message["attempt"] and job.owner == self.peer:
-                    job.batch_grants[message["batch"]] = message["granted"]
-                    self.worker.condition.notify_all()
-            return True
         if op not in ("retire", "release_owner", "forget"):
             return False
         key, attempt = message["key"], message["attempt"]
@@ -145,12 +138,12 @@ class OwnerWorker:
             self.worker._release(job)
         else:
             job.ready = True
-        hit = sum(b.reservation["total_hit_blocks"] for b in job.batches)
+        hit = self.worker._hit(job)
         self.send(dict(op="owner_answer", key=job.key, attempt=job.attempt,
                        state="FAILED" if error else "READY", reason=error,
-                       hit=hit))
+                       hit=hit, capacity_truncated=job.capacity_end is not None))
         fast = error is None and hit > 0 and not any(b.started for b in job.batches)
-        outcome = "failed" if error else "zero_hit" if not hit else "l1_ready" if fast else "prefetched"
+        outcome = "failed" if error else "capacity_truncated" if job.capacity_end is not None else "zero_hit" if not hit else "l1_ready" if fast else "prefetched"
         log.info("UCM_EARLY owner_ready key=%s attempt=%s owner=%s rank=%s success=%s hit=%s fast_path=%s outcome=%s ns=%s",
                  job.key, job.attempt, self.peer, self.worker.connector.tp_rank, error is None,
                  hit, fast, outcome, time.monotonic_ns())
@@ -171,11 +164,15 @@ class OwnerWorker:
                 snapshots = [b.reservation["batch"].snapshot() for b in job.batches]
                 submitted = sum(s["l2_read_bytes"] for s in snapshots)
                 completed = sum(s["completed_read_bytes"] for s in snapshots)
+                # Conservative upper bound: a truncated batch can contain both
+                # useful prefix reads and drained, unused partial-block reads.
+                discarded = sum(s["completed_read_bytes"] for b, s in zip(job.batches, snapshots)
+                                if b.discarded or b.stats.get("capacity_truncated", False))
                 job.batches.clear()
                 self.release_requested.remove(key)
                 self.send(dict(op="owner_drained", key=key, attempt=job.attempt,
                                submitted_read_bytes=submitted, read_bytes=completed,
-                               wasted_read_upper_bound_bytes=(0 if getattr(job, "release_reason", None)
+                               wasted_read_upper_bound_bytes=(discarded if getattr(job, "release_reason", None)
                                    == "all native loads completed" else completed)))
 
     def shutdown(self):

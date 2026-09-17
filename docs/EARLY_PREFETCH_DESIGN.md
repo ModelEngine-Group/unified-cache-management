@@ -132,11 +132,7 @@ sequenceDiagram
     R->>B: 对剩余 block 批量 pin READY 或活跃 LOADING 位置
     R->>P: LookupOnPrefix(未完整命中 L1 的 block)
     R-->>W: reservation、Batch 能力、命中量与剩余工作
-    opt 已核验 owner 模式
-        W->>O: confirm_batch(key, attempt, batch, 连续命中范围)
-        O-->>W: 唯一 block 计费的 batch_grant
-    end
-    W->>D: 获得额度后发布批次；拒绝则释放探测并排空前批
+    W->>D: 发布已确认连续命中的批次，无容量审批往返
     par 继续确认后续连续前缀
         W->>R: 下一批 ReservePrefix
     and 在有界窗口内推进读取
@@ -149,7 +145,12 @@ sequenceDiagram
         R->>P: 原生 Check；已完成后 Wait 回收
         R->>B: MarkReady
     end
-    Note over W,D: reserve 结束且本请求所有批次完成，才发本 rank READY
+    opt 原生分配无法完成当前 block
+        R-->>D: capacity_truncated，完整受保护前缀长度
+        D->>R: 后缀 Batch.Discard，仅停止新提交
+        D->>R: Step 排空所有已提交的后缀 I/O
+    end
+    Note over W,D: lookup 已退出且全部批次完成或排空，才发最终前缀 READY
     Note over W: owner 模式仅此 worker 执行 reserve；否则仍收齐全部 rank READY
 ```
 
@@ -170,13 +171,25 @@ sequenceDiagram
 
 ## 容量与保护
 
-共享 BlockPins 持有一份字节额度；同 worker 的多个消费者共享该额度，最后一个
-释放时返还。额度仅覆盖确认命中的 block，包含其中缺失位置，以约束将要保护的 buffer。上限来自同一原生
-buffer 的 CanReserve 范围，排除原生 load-exclusive 区域；不在 Python 复制布局。
-额度不足直接返回原生 NoSpace 并回退，不持有部分 pin 等待额度，避免整请求
-READY 语义下发生容量等待死锁。这不是 H/R admission；owner 层另有限制排队任务和候选工作的安全配额。
+不存在独立容量账本。BlockPins 只持原生引用；同一共享对象中所有进程的节点
+分配、引用计数、CanReserve 和有限次 TryGet 是物理容量边界。原生 load-exclusive
+区域不可用于预取；零可预取节点直接得到零长度容量截断，不进入原生零模数分配。
 
-这一底层额度仍按 worker 管理。owner 模式在它之上使用同一 broker 的共享域总预算；不能把每个 worker 的底层上限分别当作整份 L1 的可用额度。原生共享节点引用、CanReserve 与 TryGet 继续决定物理安全性。两种额度都是保守计费，不是物理占用采样。
+Reserve 只定位现有节点并确认 L1/L2 连续命中；不按候选或确认 block 申请额度。
+数据阶段重新检查未找到的位置，有限次分配失败时停在该 block。此前完整 block
+保留，当前不完整 block 及后缀不属于 READY；已提交目标的 I/O 全部 drain 后才
+释放尾部引用。成功读取的尾部可以成为原生可淘汰 DRAM 缓存，不主动删除数据。
+定位提示仍在原生锁内核验身份，重复 block 复用实际节点而非重复收费。
+
+`PrefetchResult.totalHitBlocks` 是完成后的受保护连续前缀；
+`capacityTruncated` 是成功的部分结果。它与取消、健康失效及真实 I/O 错误分离，
+错误仍走原生 Status/Expected。显式 `Batch.Discard` 停止后缀新 I/O，Step 继续回收；
+后缀真实读取故障不会被它转成成功。批次之间取最早截断点，停止后续 reserve；
+在途 lookup 晚返回的 reservation 立即释放。lookup 退出、所有批次完成或 drain 后
+Python 才发布最终 READY，零命中合法。READY 路径复用该长度，不重新查询后缀。
+
+`protected_bytes` 仅为该 reservation 当前引用覆盖的字节数；重复 block/其他
+reservation 可能重复计数，不能相加当物理占用或容量准入账本。
 
 ## 原生加载交接
 
@@ -254,30 +267,20 @@ metadata 主流程。实际 allocation 前的重试可以刷新原生消费计�
 后冻结该 generation 的预期 external blocks。失败恢复原生 lookup/load，而不
 使用旧 READY 地址。没有运行中迁移或自动换 owner；需要重新处理时由原生重算。
 
-## 共享额度
+## 共享域与有界推进
 
-协议版本 3 按实际内核对象键统一记账。同一布局、同一共享对象的已确认 block
-在所有存活 job/attempt 中只收一份额度，计数归零才退款；DP 的任务路由仍独立。
+协议版本 4 保留内核对象/布局/成员握手和单 owner，不再维护 confirmed claims、
+used 或 batch grant。broker 校验 owner、generation/attempt、最终命中范围及类型，
+接受容量截断 READY；Scheduler metadata 消费计划由该前缀与原生 HBM 扣除结果生成。
 
-- 上限为原生 `CanReserve` 节点数乘 `shard_bytes`。原生 load-exclusive 区继续保留。
-  不按 `max_model_len` 或 `max_num_seqs` 扣除最大 load/dump 任务。
-- 候选批次先取得 read lease 并定位已有 L1 引用，结合 L2 lookup 确认连续前缀。
-  此阶段不分配数据槽位、不提交数据 I/O；首 miss 后的临时引用立即销毁。
-  L1-only block 仍可命中。每个 lookup 线程最多持有一个待授权批次。
-- 本地 BlockPins 只对确认前缀计费。owner 发送带 key/attempt/batch/range 的
-  `confirm_batch`，broker 原子增加唯一 block 声明后回复 `batch_grant`。
-  等待控制回复不持有 bucket/global 锁；condition 等待会释放 condition。
-  探测阶段的已有节点引用是暂态物理保护，不等于已获共享预算；物理占用始终
-  受原生有限节点池约束。未获授权批次不会创建缺失节点或进入数据队列。
-- 授权后按原有批次流水、跨请求推进和 I/O 窗口预取。额度不足立即拒绝，
-  不等待其他持部分额度的 job 释放，避免整请求 READY 下的环形等待。
-  当前批次及前序已提交 I/O 走既有取消/drain，再退款；不发布 unpinned READY。
-- 每 owner 默认至多 4 个 job；候选工作默认界限改为最大请求范围乘 job 上限，
-  与物理预算解耦。显式 `early_owner_max_candidate_blocks` 仍作为 CPU 工作量界限。
-- 域 I/O 上限仍为 `min(保护上限, 成员数 * 128 * shard_bytes)`，按成员向下取整
-  为 shard 对齐的 worker 配额。配额无法容纳一个 shard 时不放行正命中数据批。
-- 取消、超时或失败不直接退款。收到所有消费者 quiesced，owner 释放 reservation，
-  已接受 I/O 排空并发出 owner_drained 后才退款。域失联保留额度并 fencing。
+- 每 owner 默认至多 4 个 job；候选上限只约束 CPU 排队工作，不能审批容量。
+- 同 worker 所有批次共用既有 128 shard I/O 窗口；域聚合提交上界为成员数乘该
+  窗口。实际持有的独立目的节点还受同一原生物理池约束，无每 worker 整池额度。
+  窗口不随零可预取节点变成无法运行 Step 的死锁；Step 有机会返回零截断。
+- 分配不足不等待额度：立即得到前缀结果，再 drain 尾部。不持有部分引用等待
+  其他请求归还容量。I/O/peer LOADING 等待仍有原生完成与超时边界。
+- 保护释放仍等全部消费者 quiesced 和 owner I/O drain。删除账本不提前释放引用。
+  失联保留原生引用并 fencing，禁止猜测性扣减非 robust 的共享引用。
 
 `EarlyCacheStore` 在原生完整任务入队前复用 reservation handles，并用
 `EarlyBufferPins::Acquire` 补齐缺失 handles。后者经现有 friend 入口调用原生

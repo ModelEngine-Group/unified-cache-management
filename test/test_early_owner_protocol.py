@@ -37,20 +37,15 @@ class Cluster:
                 self.b.receive(f"w{d}.{r}", dict(op="hello", session="worker", capability=cap))
         self.out.clear()
 
-    def job(self, key="g1", dp=0, count=4, offset=0, confirm=True):
+    def job(self, key="g1", dp=0, count=4, offset=0):
         self.sequence[dp] += 1
         self.b.receive(f"s{dp}", dict(op="job", key=key, dp=dp, blocks=blocks(count + offset)[offset:],
                                      request="reusable-id", sequence=self.sequence[dp]))
-        job = self.b.jobs[key]
-        if confirm and job.get("owner"):
-            self.confirm(job, count)
-        return job
-
-    def confirm(self, job, count, begin=0, index=0):
-        self.message(job, "confirm_batch", batch=index, begin=begin, count=count)
-        return job["batch_grants"][index][2]
+        return self.b.jobs[key]
 
     def message(self, job, op, peer=None, **kwargs):
+        if op == "owner_answer":
+            kwargs.setdefault("capacity_truncated", False)
         self.b.receive(peer or job["owner"], dict(op=op, key=job["key"], attempt=job["attempt"], **kwargs))
 
     def ready(self, job):
@@ -89,26 +84,22 @@ def test_unverified_handshake_uses_unchanged_broadcast(change):
     assert len([m for _, m in c.out if m["op"] == "reserve"]) == 2
 
 
-def test_confirmed_capacity_returned_after_drain_only():
+def test_owner_work_slot_returns_after_all_consumers_and_io_drain_only():
     c = Cluster(dp=2)
     a, b = c.job("a", 0, 30), c.job("b", 1, 20, offset=30)
-    assert a["budget"] is b["budget"] and a["budget"]["used"] == 400
-    rejected = c.job("c", 0, 7, offset=50, confirm=False)
-    assert not c.confirm(rejected, 7)
-    assert rejected["claims"] == set()
-    c.drain(rejected)
+    assert a["domain"] is b["domain"]
+    load = a["domain"]["owners"][a["owner"]]
     c.b.receive(a["client"], dict(op="cancel", key="a"))
     c.message(a, "quiesced", "w0.0")
-    c.message(a, "owner_drained")  # other consumer not quiescent
-    assert a["budget"]["used"] == 400
-    c.message(a, "quiesced", "w0.1")
-    assert a["budget"]["used"] == 400
     c.message(a, "owner_drained")
-    assert b["budget"]["used"] == 160
-    c.message(a, "owner_drained")  # replay cannot decrement twice
+    assert load["jobs"] == 1
+    c.message(a, "quiesced", "w0.1")
+    assert load["jobs"] == 1
+    c.message(a, "owner_drained")
+    assert load["jobs"] == 0
+    c.message(a, "owner_drained")
+    assert load["jobs"] == 0
     c.drain(b)
-    assert b["budget"]["used"] == 0
-    assert c.job("new", count=50).get("owner")
 
 
 def test_owner_job_and_candidate_limits_choose_another_owner_or_fallback():
@@ -151,7 +142,7 @@ def test_stale_attempt_reused_request_id_and_out_of_order_confirmation():
     c.b.receive(new["owner"], dict(op="consumed", key="new", attempt=old["attempt"]))
     c.message(old, "quiesced")
     c.message(old, "owner_drained")
-    assert not new["consumers"] and new["budget"]["used"] == new["charge"]
+    assert not new["consumers"] and new["domain"]["owners"][new["owner"]]["jobs"] == 1
     c.b.receive("s1", dict(op="cancel", key="new"))
     assert new["status"] == "READY"
 
@@ -173,7 +164,7 @@ def test_domain_loss_never_returns_credits_or_reassigns(failure):
         c.b.receive("w0.1", dict(op="domain_fault", reason="failed native Wait"))
     assert c.b.fenced
     c.drain(job)
-    assert job["budget"]["used"] == job["charge"]
+    assert job["domain"]["owners"][job["owner"]]["jobs"] == 1
     assert any(m["op"] == "domain_lost" for _, m in c.out)
 
 
@@ -267,13 +258,6 @@ def make_worker(rank):
         r["batch"].snapshot = lambda: dict(l2_read_bytes=0, completed_read_bytes=0)
         return r
     w.store.reserve_prefix.side_effect = reserve
-    original_send = w.control.send
-    def grant(message):
-        original_send(message)
-        if message["op"] == "confirm_batch":
-            w.receive(dict(op="batch_grant", key=message["key"], attempt=message["attempt"],
-                           batch=message["batch"], granted=True))
-    w.control.send = grant
     return w
 
 
@@ -322,12 +306,8 @@ def _transport_worker(endpoint, dp, rank, commands, events):
         events.put((f"w{dp}.{rank}", message))
         if message["op"] == "owner_reserve":
             connected.wait(5)
-            holder["hit"] = len(message["blocks"])
-            holder["control"].send(dict(op="confirm_batch", key=message["key"], attempt=message["attempt"],
-                                        batch=0, begin=0, count=holder["hit"]))
-        elif message["op"] == "batch_grant":
             holder["control"].send(dict(op="owner_answer", key=message["key"], attempt=message["attempt"],
-                                        state="READY", hit=holder["hit"]))
+                                        state="READY", hit=len(message["blocks"]), capacity_truncated=False))
         elif message["op"] == "retire":
             holder["control"].send(dict(op="quiesced", key=message["key"], attempt=message["attempt"]))
         elif message["op"] == "release_owner":
@@ -592,16 +572,15 @@ def test_budget_uses_actual_native_pool_not_maximum_task_subtraction(nodes, rese
     for cap in c.b.capabilities.values():
         cap["native"].update(nodes=nodes, reservable_nodes=reservable)
         cap.update(task_shards=load, dump_task_shards=dump if cap["rank"] == 0 else 0)
-    job = c.job(count=1, confirm=False)
-    budget = job["budget"]
-    assert budget["used"] == 0
-    assert budget["limit"] == reservable * 4
-    assert budget["native_load_headroom_bytes"] == (nodes - reservable) * 4
-    assert budget["native_dump_headroom_bytes"] == 0
-    assert budget["io_quota"] * 4 <= budget["io_limit"] <= budget["limit"]
-    assert c.confirm(job, 1) == bool(reservable)
+    job = c.job(count=1)
+    domain = job["domain"]
+    assert "used" not in domain and "claims" not in domain
+    assert domain["limit"] == reservable * 4
+    assert domain["native_load_headroom_bytes"] == (nodes - reservable) * 4
+    assert domain["io_quota"] * 4 == domain["io_limit"] == 4 * 128 * 4
+    c.message(job, "owner_answer", state="READY", hit=int(bool(reservable)), capacity_truncated=not bool(reservable))
+    assert job["status"] == "READY"
     c.drain(job)
-    assert budget["used"] == 0
 
 
 def test_incremental_completion_never_rescans_prior_layers_and_waits_for_all_chunks():

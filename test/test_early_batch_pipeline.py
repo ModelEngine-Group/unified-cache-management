@@ -58,6 +58,8 @@ class Capability:
         self.work, self.submit, self.gate = work, submit, gate
         self.pending = self.reads = self.steps = 0
         self.cancelled = False
+        self.discarded = False
+        self.hit = work
         self.drained = threading.Event()
 
     def step(self, available):
@@ -71,7 +73,7 @@ class Capability:
             self.protected_bytes = 0
             self.drained.set()
             raise RuntimeError("cancelled after draining")
-        if available and self.work > self.pending and not self.cancelled:
+        if available and self.work > self.pending and not self.cancelled and not self.discarded:
             self.submit()
             self.reads += 1
             if self.gate is None or self.gate.is_set():
@@ -79,16 +81,24 @@ class Capability:
             else:
                 self.pending += 1
             advanced = True
-        done = self.work == 0
+        done = self.work == 0 or (self.discarded and not self.pending)
         return dict(done=done, advanced=advanced, inflight_bytes=self.pending,
-                    can_submit=self.work > self.pending and not self.cancelled,
+                    can_submit=self.work > self.pending and not self.cancelled and not self.discarded,
                     remaining_l2_work=self.work, l2_read_bytes=self.reads,
-                    l2_read_shards=self.reads, coalesced_shards=0)
+                    l2_read_shards=self.reads, coalesced_shards=0, total_hit_blocks=self.hit if done else 0,
+                    capacity_truncated=False, discarded=self.discarded)
+
+    def discard(self):
+        self.discarded = True
+
+    def snapshot(self):
+        return dict(l2_read_bytes=self.reads, completed_read_bytes=self.reads - self.pending)
 
 
 def result(handle, hit, work):
-    return dict(handle=handle, total_hit_blocks=hit, remaining_l2_work=work,
-                batch=Capability(work))
+    cap = Capability(work)
+    cap.hit = hit
+    return dict(handle=handle, total_hit_blocks=hit, remaining_l2_work=work, batch=cap)
 
 
 def test_first_batch_reads_before_next_reserve_finishes(worker):
@@ -193,7 +203,7 @@ def enqueue(worker, key, handle, capability, age=0):
     reservation = result(handle, 32, capability.work)
     reservation["batch"] = capability
     batch = early.WorkerBatch(0, 0, reservation, entered=time.monotonic() - age)
-    job = early.WorkerJob(key, [], batches=[batch], reserve_done=True)
+    job = early.WorkerJob(key, [], batches=[batch], reserve_done=True, lookup_finished=True)
     worker.jobs[key] = job
     worker.preparing.append((job, batch))
     return job, batch
@@ -285,3 +295,110 @@ def test_finish_and_load_failure_are_not_reported_as_completed_handoff(worker, m
     assert [args[3] for args in releases] == ["finish", "load_failure", "handoff"]
     assert not worker.jobs
     assert worker.store.release_reservation.call_count == 3
+
+class TruncatingCapability(Capability):
+    def __init__(self, hit, gate):
+        super().__init__(1, gate=gate)
+        self.hit = hit
+
+    def step(self, available):
+        result = super().step(available)
+        result['capacity_truncated'] = result['done'] and not self.discarded
+        return result
+
+
+@pytest.mark.parametrize('retained', [0, 7])
+def test_capacity_cutoff_waits_for_submitted_tail_drain_and_never_requeries(worker, retained):
+    first_gate, tail_gate = threading.Event(), threading.Event()
+    first, tail = TruncatingCapability(retained, first_gate), Capability(4, gate=tail_gate)
+    first_result, tail_result = result(1, 32, 1), result(2, 64, 4)
+    first_result['batch'], tail_result['batch'] = first, tail
+    worker.store.reserve_prefix.side_effect = [first_result, tail_result]
+    worker.receive(dict(op='reserve', key='cut', request='r', blocks=blocks(96)))
+    try:
+        wait(lambda: first.pending and tail.pending)
+        first_gate.set()
+        wait(lambda: worker.jobs['cut'].capacity_end is not None)
+        assert not worker.jobs['cut'].ready
+        assert tail.discarded and not tail.drained.is_set()
+        before = tail.reads
+        tail_gate.set()
+        wait(lambda: worker.jobs['cut'].ready)
+        assert tail.reads == before
+        assert worker.control.messages[-1]['hit'] == retained
+        assert worker.store.reserve_prefix.call_count == 2
+        worker.bind(SimpleNamespace(early_keys={'r': 'cut'}, request_meta={
+            'r': SimpleNamespace(load_block_ids=(blocks(retained), []))}))
+        worker.store.set_load_reservations.assert_called_with([1] if retained else [])
+        assert any(c.args == (2,) for c in worker.store.release_reservation.call_args_list)
+    finally:
+        first_gate.set()
+        tail_gate.set()
+
+
+def test_capacity_in_later_batch_preserves_completed_earlier_prefix(worker):
+    gate = threading.Event()
+    gate.set()
+    last = result(2, 10, 1)
+    last['batch'] = TruncatingCapability(3, gate)
+    worker.store.reserve_prefix.side_effect = [result(1, 32, 0), last]
+    worker.receive(dict(op='reserve', key='later', blocks=blocks(100)))
+    wait(lambda: worker.jobs['later'].ready)
+    assert worker.control.messages[-1]['hit'] == 35
+    worker.store.release_reservation.assert_not_called()
+
+
+def test_late_reserve_after_capacity_cutoff_releases_without_publishing(worker):
+    entered, finish, gate = threading.Event(), threading.Event(), threading.Event()
+    calls = []
+    def reserve(ids):
+        calls.append(ids)
+        if len(calls) == 1:
+            r = result(1, 32, 1)
+            r['batch'] = TruncatingCapability(2, gate)
+            return r
+        entered.set()
+        assert finish.wait(2)
+        return result(2, len(ids), 0)
+    worker.store.reserve_prefix.side_effect = reserve
+    worker.receive(dict(op='reserve', key='race', blocks=blocks(512)))
+    try:
+        assert entered.wait(1)
+        gate.set()
+        wait(lambda: worker.jobs['race'].capacity_end == 2)
+        assert not worker.jobs['race'].ready
+        finish.set()
+        wait(lambda: worker.jobs['race'].ready)
+        assert worker.control.messages[-1]['hit'] == 2
+        assert len(worker.jobs['race'].batches) == 1
+        worker.store.release_reservation.assert_called_once_with(2)
+    finally:
+        gate.set()
+        finish.set()
+
+
+def test_real_io_error_in_discarded_tail_is_failure_not_successful_capacity(worker):
+    first_gate, tail_gate = threading.Event(), threading.Event()
+    first = TruncatingCapability(7, first_gate)
+    tail = Capability(4, gate=tail_gate)
+    original = tail.step
+    def faulty_step(available):
+        result = original(available)
+        if result['done'] and tail.discarded:
+            raise OSError('backend fault after accepted tail I/O drain')
+        return result
+    tail.step = faulty_step
+    a, b = result(1, 32, 1), result(2, 64, 4)
+    a['batch'], b['batch'] = first, tail
+    worker.store.reserve_prefix.side_effect = [a, b]
+    worker.receive(dict(op='reserve', key='fault', blocks=blocks(96)))
+    try:
+        wait(lambda: first.pending and tail.pending)
+        first_gate.set()
+        wait(lambda: tail.discarded)
+        tail_gate.set()
+        wait(lambda: worker.jobs['fault'].cancelled)
+        assert worker.control.messages[-1]['state'] == 'FAILED'
+    finally:
+        first_gate.set()
+        tail_gate.set()
