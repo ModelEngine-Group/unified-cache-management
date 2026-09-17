@@ -348,6 +348,130 @@ _COUNTER_METRICS = [
         "connector_dump_wait_errors_total",
         "Number of connector dump wait failures",
     ),
+    (
+        "dramstore_lookup_tasks_submitted_total",
+        "DramStore lookup: tasks submitted",
+    ),
+    (
+        "dramstore_lookup_tasks_rejected_total",
+        "DramStore lookup: tasks rejected",
+    ),
+    (
+        "dramstore_lookup_tasks_succeeded_total",
+        "DramStore lookup: tasks succeeded",
+    ),
+    (
+        "dramstore_lookup_tasks_failed_total",
+        "DramStore lookup: tasks failed",
+    ),
+    (
+        "dramstore_lookup_task_timeouts_total",
+        "DramStore lookup: task timeouts",
+    ),
+    (
+        "dramstore_lookup_requests_completed_total",
+        "DramStore lookup: requests completed",
+    ),
+    (
+        "dramstore_lookup_requests_failed_total",
+        "DramStore lookup: requests failed",
+    ),
+    (
+        "dramstore_lookup_request_timeouts_total",
+        "DramStore lookup: requests completed with Timeout status",
+    ),
+    (
+        "dramstore_dump_tasks_submitted_total",
+        "DramStore dump: tasks submitted",
+    ),
+    (
+        "dramstore_dump_tasks_rejected_total",
+        "DramStore dump: tasks rejected",
+    ),
+    (
+        "dramstore_dump_tasks_succeeded_total",
+        "DramStore dump: tasks succeeded",
+    ),
+    (
+        "dramstore_dump_tasks_failed_total",
+        "DramStore dump: tasks failed",
+    ),
+    (
+        "dramstore_dump_task_timeouts_total",
+        "DramStore dump: task timeouts",
+    ),
+    (
+        "dramstore_dump_requests_completed_total",
+        "DramStore dump: requests completed",
+    ),
+    (
+        "dramstore_dump_requests_failed_total",
+        "DramStore dump: requests failed",
+    ),
+    (
+        "dramstore_dump_request_timeouts_total",
+        "DramStore dump: requests completed with Timeout status",
+    ),
+    (
+        "dramstore_load_tasks_submitted_total",
+        "DramStore load: tasks submitted",
+    ),
+    (
+        "dramstore_load_tasks_rejected_total",
+        "DramStore load: tasks rejected",
+    ),
+    (
+        "dramstore_load_tasks_succeeded_total",
+        "DramStore load: tasks succeeded",
+    ),
+    (
+        "dramstore_load_tasks_failed_total",
+        "DramStore load: tasks failed",
+    ),
+    (
+        "dramstore_load_task_timeouts_total",
+        "DramStore load: task timeouts",
+    ),
+    (
+        "dramstore_load_requests_completed_total",
+        "DramStore load: requests completed",
+    ),
+    (
+        "dramstore_load_requests_failed_total",
+        "DramStore load: requests failed",
+    ),
+    (
+        "dramstore_load_request_timeouts_total",
+        "DramStore load: requests completed with Timeout status",
+    ),
+    (
+        "dramstore_connect_attempts_total",
+        "DramStore connect attempts",
+    ),
+    (
+        "dramstore_connect_failures_total",
+        "DramStore connect failures",
+    ),
+    (
+        "dramstore_fence_attempts_total",
+        "DramStore fence attempts",
+    ),
+    (
+        "dramstore_fence_failures_total",
+        "DramStore fence failures",
+    ),
+    (
+        "dramstore_fence_timeout_triggers_total",
+        "DramStore node fencing episodes triggered by request timeouts; excludes fence retries",
+    ),
+    (
+        "dramstore_reply_slot_nospace_total",
+        "DramStore reply slot acquisition failures due to exhausted capacity",
+    ),
+    (
+        "dramstore_stale_replies_total",
+        "DramStore stale replies",
+    ),
 ]
 _GAUGE_METRICS = [
     (
@@ -419,6 +543,76 @@ _GAUGE_METRICS = [
         "posix_gc_running",
         "Posix garbage collection state, where 1 is running and 0 is idle",
         {"multiprocess_mode": 'livemostrecent'},
+    ),
+    (
+        "dramstore_scheduler_request_queue_size",
+        "Sampled queued Requests across scheduler runners, excluding batches already dequeued",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
+    (
+        "dramstore_scheduler_event_queue_size",
+        "Sampled queued NodeEvents across scheduler runners, excluding batches already dequeued",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
+    (
+        "dramstore_task_queue_size",
+        "Sampled TaskManager submission queue occupancy (tasks)",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
+    (
+        "dramstore_task_queue_capacity",
+        "TaskManager submission queue capacity (tasks)",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
+    (
+        "dramstore_completion_queue_size",
+        "Sampled TaskManager completion queue occupancy (request completions)",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
+    (
+        "dramstore_completion_queue_capacity",
+        "TaskManager completion queue capacity (request completions)",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
+    (
+        "dramstore_tasks_active",
+        "Sampled tasks awaiting completion, excluding queued submissions and retained results",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
+    (
+        "dramstore_io_entries_used",
+        "Sampled entries reserved by active tasks",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
+    (
+        "dramstore_io_entries_capacity",
+        "Maximum entries reserved by active tasks",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
+    (
+        "dramstore_reply_buffer_used_bytes",
+        "Sampled leased reply slot bytes including alignment, not payload bytes",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
+    (
+        "dramstore_transport_queue_size",
+        "Sampled aggregate queued Transmit and Connect admission occupancy",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
+    (
+        "dramstore_transport_queue_capacity",
+        "Aggregate Transmit and Connect admission capacity",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
+    (
+        "dramstore_transport_fence_queue_size",
+        "Sampled aggregate queued Fence admission occupancy",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
+    (
+        "dramstore_transport_fence_queue_capacity",
+        "Aggregate reserved Fence admission capacity",
+        {"multiprocess_mode": "livemostrecent"},
     ),
 ]
 _CONNECTOR_INTERFACE_METHODS = [
@@ -714,6 +908,161 @@ _HISTOGRAM_METRICS = [
         "layerwise_batch_load_duration_sum_ms",
         "Sum of per-layer load durations within one Layerwise batch (ms)",
         [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+    ),
+    (
+        "dramstore_lookup_duration_ms",
+        "End-to-end DramStore lookup duration (ms)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "dramstore_lookup_task_queue_duration_ms",
+        "DramStore lookup task queue duration (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+    ),
+    (
+        "dramstore_lookup_task_to_request_duration_ms",
+        "DramStore lookup duration from task admission through request construction (ms)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500],
+    ),
+    (
+        "dramstore_lookup_request_duration_ms",
+        "DramStore lookup request duration (ms)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "dramstore_lookup_request_queue_duration_ms",
+        "DramStore lookup request NodeScheduler queue duration (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+    ),
+    (
+        "dramstore_lookup_request_pending_duration_ms",
+        "DramStore lookup request NodeActor pending duration (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "dramstore_lookup_request_setup_duration_ms",
+        "DramStore lookup request successful setup duration including reply-slot allocation and encoding (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500],
+    ),
+    (
+        "dramstore_lookup_request_transport_queue_duration_ms",
+        "DramStore lookup request TransportExecutor queue duration (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+    ),
+    (
+        "dramstore_lookup_request_transport_send_duration_ms",
+        "DramStore lookup request TCP send duration (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000],
+    ),
+    (
+        "dramstore_lookup_request_remote_duration_ms",
+        "DramStore lookup request remote processing and reply duration (ms)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "dramstore_dump_duration_ms",
+        "End-to-end DramStore dump duration (ms)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "dramstore_dump_task_queue_duration_ms",
+        "DramStore dump task queue duration (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+    ),
+    (
+        "dramstore_dump_task_to_request_duration_ms",
+        "DramStore dump duration from task admission through request construction (ms)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500],
+    ),
+    (
+        "dramstore_dump_request_duration_ms",
+        "DramStore dump request duration (ms)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "dramstore_dump_request_queue_duration_ms",
+        "DramStore dump request NodeScheduler queue duration (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+    ),
+    (
+        "dramstore_dump_request_pending_duration_ms",
+        "DramStore dump request NodeActor pending duration (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "dramstore_dump_request_setup_duration_ms",
+        "DramStore dump request successful setup duration including reply-slot allocation and encoding (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500],
+    ),
+    (
+        "dramstore_dump_request_transport_queue_duration_ms",
+        "DramStore dump request TransportExecutor queue duration (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+    ),
+    (
+        "dramstore_dump_request_transport_send_duration_ms",
+        "DramStore dump request TCP send duration (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000],
+    ),
+    (
+        "dramstore_dump_request_remote_duration_ms",
+        "DramStore dump request remote processing and reply duration (ms)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "dramstore_load_duration_ms",
+        "End-to-end DramStore load duration (ms)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "dramstore_load_task_queue_duration_ms",
+        "DramStore load task queue duration (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+    ),
+    (
+        "dramstore_load_task_to_request_duration_ms",
+        "DramStore load duration from task admission through request construction (ms)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500],
+    ),
+    (
+        "dramstore_load_request_duration_ms",
+        "DramStore load request duration (ms)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "dramstore_load_request_queue_duration_ms",
+        "DramStore load request NodeScheduler queue duration (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+    ),
+    (
+        "dramstore_load_request_pending_duration_ms",
+        "DramStore load request NodeActor pending duration (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "dramstore_load_request_setup_duration_ms",
+        "DramStore load request successful setup duration including reply-slot allocation and encoding (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500],
+    ),
+    (
+        "dramstore_load_request_transport_queue_duration_ms",
+        "DramStore load request TransportExecutor queue duration (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+    ),
+    (
+        "dramstore_load_request_transport_send_duration_ms",
+        "DramStore load request TCP send duration (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000],
+    ),
+    (
+        "dramstore_load_request_remote_duration_ms",
+        "DramStore load request remote processing and reply duration (ms)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "dramstore_dump_prerequisite_duration_ms",
+        "DUMP prerequisite event wait before task admission (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500],
     ),
 ]
 

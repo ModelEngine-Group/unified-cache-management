@@ -30,6 +30,7 @@
 #include <limits>
 #include <string>
 #include <vector>
+#include "metrics_api.h"
 #include "pool/buffer_pool.h"
 #include "type/types.h"
 
@@ -52,6 +53,12 @@ enum class OpType : std::uint8_t {
     DUMP,
     LOAD,
 };
+
+// Literal names preserve NAME_TO_METRIC_ID's call-site-local CachedMetric.
+#define DRAMSTORE_OP_METRIC(op, suffix)                                                 \
+    ((op) == ::UC::Dram::OpType::LOOKUP ? NAME_TO_METRIC_ID("dramstore_lookup_" suffix) \
+     : (op) == ::UC::Dram::OpType::DUMP ? NAME_TO_METRIC_ID("dramstore_dump_" suffix)   \
+                                        : NAME_TO_METRIC_ID("dramstore_load_" suffix))
 
 enum class RequestState : std::uint8_t {
     TRANSMITTING = 0,
@@ -92,6 +99,9 @@ struct Request {
     std::vector<IoEntry> entries;
     std::chrono::steady_clock::time_point deadline;
     std::uintptr_t prerequisiteHandle{0};
+    // NowTime seconds for client metrics only; never serialized into a KV request.
+    double metricsStarted{0.0};
+    double metricsPendingStarted{0.0};
 };
 
 struct RequestToken {
