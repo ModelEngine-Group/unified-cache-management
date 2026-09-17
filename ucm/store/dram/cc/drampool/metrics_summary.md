@@ -207,62 +207,55 @@ RequestReceiver ─TryPush─▶ requestQueue ─TryPop─▶ TaskWorker ─Push
 
 归因速查：request_size 持续增长而 completion_full 平 → B1（TaskWorker 消费不足）；completion_full ↑ 且 request_full 随后连锁 ↑（completion_size 先增）→ B3（Poller 消费不足，反压传导）；retry ↑ + inflight 贴满 + `flag_pool_usage_ratio` 逼近 1 → B2（flag 池扩容，flag 池为独立 region 与数据池无关）；全为 0 但吞吐低 → 转向 §4 阶段归因与 I 组批次总耗时分析。
 
-### 4.3 Histogram 观测示意图（13 个全景）
+### 4.3 Histogram 观测甘特图（13 个全景）
 
-> 一条请求的服务端生命周期，时间自左向右，13 个 Histogram 按观测时刻就位。配色：**DUMP 橙 / LOAD 蓝 / LOOKUP 绿 / GC 紫**，灰 = 三类 opcode 共用。
+> **原生甘特图（mermaid `gantt`）**：**顶部表头行 = 事件时间区间**（compact 模式将 7 个顺序区间条压缩为一条横贯时间线的表头带，GC 为其下全程平行条），下方每个 section 的 Histogram 横条与表头区间**垂直对齐**；时间刻度轴整体移至顶部且刻度文字置空，**底部无时间概念**。**I 组批次总耗时为跨区间长条**（TaskWorker 出队 02:00 → CompletionPoller 响应提交完成 06:00）；requestQueue / completionQueue 排队区间无 Histogram（仅 H 组 Gauge 直测），以灰色占位条标明。
 
 ```mermaid
-flowchart LR
-    subgraph T1["入队"]
-        direction TB
-        W["queue_request_enqueue_wait_ms"]
-    end
-    subgraph T2["本地准备"]
-        direction TB
-        DP["dump_prepare_duration_ms"]
-        LP["load_prepare_duration_ms"]
-        KS["lookup_scan_duration_ms"]
-    end
-    subgraph T3["数据传输"]
-        direction TB
-        DT["dump_transfer_duration_ms"]
-        LT["load_transfer_duration_ms"]
-    end
-    subgraph T4["终态结算"]
-        direction TB
-        SE["metadata_storeend_duration_ms"]
-        LE["metadata_loadend_duration_ms"]
-    end
-    subgraph T5["响应提交"]
-        direction TB
-        ID["dump_batch_total_duration_ms"]
-        IL["load_batch_total_duration_ms"]
-        IK["lookup_batch_total_duration_ms"]
-    end
-    subgraph T6["响应写回"]
-        direction TB
-        RT["response_rtt_ms"]
-    end
-    subgraph T7["后台 GC · 每轮 gcIntervalMs"]
-        direction LR
-        GC["metadata_evict_gc_duration_ms"]
-        GC --> GC
-    end
-
-    T1 --> T2 --> T3 --> T4 --> T5 --> T6
-
-    classDef dump fill:#FFE0B2,stroke:#E65100,color:#1a1a1a
-    classDef load fill:#BBDEFB,stroke:#1565C0,color:#1a1a1a
-    classDef lookup fill:#C8E6C9,stroke:#2E7D32,color:#1a1a1a
-    classDef gc fill:#E1BEE7,stroke:#6A1B9A,color:#1a1a1a
-    classDef shared fill:#ECEFF1,stroke:#607D8B,color:#1a1a1a
-
-    class W,RT shared
-    class DP,DT,SE,ID dump
-    class LP,LT,LE,IL load
-    class KS,IK lookup
-    class GC gc
+%%{init: {'theme':'base','gantt': {'displayMode':'compact','topAxis':true,'axisFormat':' ','fontSize':12},'themeVariables': {'sectionBkgColor':'#ECEFF1','altSectionBkgColor':'#FFFFFF','sectionBkgColor2':'#ECEFF1','taskBkgColor':'#CFD8DC','taskBorderColor':'#607D8B','activeTaskBkgColor':'#90CAF9','activeTaskBorderColor':'#1565C0','doneTaskBkgColor':'#A5D6A7','doneTaskBorderColor':'#2E7D32','critBkgColor':'#FFB74D','critBorderColor':'#E65100','taskTextColor':'#1a1a1a','taskTextOutsideColor':'#1a1a1a','taskTextDarkColor':'#1a1a1a','gridColor':'#B0BEC5'}}}%%
+gantt
+    title DramPool Histogram 观测甘特图（13 个全景 · 横轴为区间示意）
+    dateFormat HH:mm:ss
+    section 事件区间（顶部表头带）
+    RequestReceiveLoop                :00:00:00, 1h
+    requestQueue                      :01:00:00, 1h
+    TaskWorker                        :02:00:00, 1h
+    数据传输                          :03:00:00, 1h
+    completionQueue                   :04:00:00, 1h
+    CompletionPoller                  :05:00:00, 1h
+    响应写回                          :06:00:00, 1h
+    section GCThreadLoop（独立线程循环）
+    metadata_evict_gc_duration_ms     :00:00:00, 7h
+    section RequestReceiveLoop（接收线程入队）
+    queue_request_enqueue_wait_ms（共用） :00:00:00, 1h
+    section requestQueue（排队等待）
+    —（仅 Gauge 观测 queue_request_size） :01:00:00, 1h
+    section TaskWorker（本地准备）
+    dump_prepare_duration_ms          :crit, 02:00:00, 1h
+    load_prepare_duration_ms          :active, 02:00:00, 1h
+    lookup_scan_duration_ms           :done, 02:00:00, 1h
+    section 数据传输（异步 · 与完成链并行）
+    dump_transfer_duration_ms         :crit, 03:00:00, 1h
+    load_transfer_duration_ms         :active, 03:00:00, 1h
+    section completionQueue（完成记录排队）
+    —（仅 Gauge 观测 completion_size） :04:00:00, 1h
+    section CompletionPoller（终态结算 · 响应提交）
+    metadata_storeend_duration_ms     :crit, 05:00:00, 1h
+    metadata_loadend_duration_ms      :active, 05:00:00, 1h
+    section 响应写回（客户端内存）
+    response_rtt_ms（共用）           :06:00:00, 1h
+    section I 组 批次总耗时（跨区间）
+    dump_batch_total_duration_ms      :crit, 02:00:00, 4h
+    load_batch_total_duration_ms      :active, 02:00:00, 4h
+    lookup_batch_total_duration_ms    :done, 02:00:00, 4h
 ```
+
+配色（mermaid `gantt` 任务色仅 4 类，经主题变量映射到原配色方案）：
+
+- **DUMP 橙**（`:crit`）：`dump_prepare` / `dump_transfer` / `storeend` / `dump_batch_total`
+- **LOAD 蓝**（`:active`）：`load_prepare` / `load_transfer` / `loadend` / `load_batch_total`
+- **LOOKUP 绿**（`:done`）：`lookup_scan` / `lookup_batch_total`
+- **灰**（默认色）：共用观测（`enqueue_wait`、`response_rtt`）、GC 独立线程条、顶部表头带的 7 个事件区间条、requestQueue / completionQueue 的 Gauge 占位条
 
 ---
 
