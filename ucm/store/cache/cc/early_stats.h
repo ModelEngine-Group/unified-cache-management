@@ -53,7 +53,7 @@ struct EarlyStats {
                 "shards={} l2_calls={} bucket_locks={} reused_blocks={} index_builds={} handles={} block_lookups={} "
                 "recalled_blocks={} hint_checks={} hint_entries={} first_io_ns={} last_io_ns={} "
                 "inflight_peak_bytes={} io_batches={} joined_blocks={} join_ms={:.3f} "
-                "protected_claim_bytes={} protection_limit_bytes={} lease_start_ns={} lease_end_ns={} "
+                "protected_reference_bytes={} physical_reservable_bytes={} lease_start_ns={} lease_end_ns={} "
                 "pin_start_ns={} pin_end_ns={} l2_start_ns={} l2_end_ns={} load_reservations={}",
                 operation, handle, startNs, NowNs(), success, Milliseconds(elapsed), leaseMs, pinMs, lookupMs,
                 submitMs, waitMs, firstIoMs, shards, lookups, bucketLocks, reusedBlocks,

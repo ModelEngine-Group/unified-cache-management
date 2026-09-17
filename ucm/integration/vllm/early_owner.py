@@ -1,8 +1,7 @@
 """Single owner protocol on the existing control channel and job table.
 
-Credits cover confirmed prefix batches before their data work is published.
 Native allocation and references enforce capacity; only owner work and I/O windows are bounded here.
-This ledger never substitutes for native pins or guesses process-death recovery.
+No capacity approval ledger or guessed process-death reference recovery.
 """
 from __future__ import annotations
 
@@ -40,15 +39,13 @@ def worker_capability(connector):
         if not layers or len(set(layers)) != len(layers) or min(layers) < 0 or max(layers) >= block // shard:
             return {"reason": "unsupported consumer shard range"}
         model_len = connector._vllm_config.model_config.max_model_len
-        sequences = connector._vllm_config.scheduler_config.max_num_seqs
-        if not isinstance(model_len, int) or model_len <= 0 or not isinstance(sequences, int) or sequences <= 0:
+        if not isinstance(model_len, int) or model_len <= 0:
             return {"reason": "native maximum task range is not bounded"}
         # Bound queued lookup work, not memory reserved for hypothetical tasks.
         token_unit = min(connector.hash_block_size, connector.block_size)
         task_shards = (model_len + token_unit - 1) // token_unit
         if not connector.use_layerwise:
             task_shards *= block // shard
-        dump_task_shards = task_shards * sequences if connector.tp_rank % connector.tp_size == 0 else 0
         # Actual object identity, physical host and namespace reachability.
         domain = [Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
                   os.readlink("/proc/self/ns/ipc"), os.readlink("/proc/self/ns/mnt"), native["backing"]]
@@ -62,7 +59,7 @@ def worker_capability(connector):
         return dict(version=VERSION, domain=json.dumps(domain),
                     layout=hashlib.sha256(json.dumps(layout, sort_keys=True).encode()).hexdigest(),
                     unique_id=str(connector.unique_id), native=native, layers=layers,
-                    task_shards=task_shards, dump_task_shards=dump_task_shards,
+                    task_shards=task_shards,
                     max_jobs=int(connector.launch_config.get("early_owner_max_jobs", 4)),
                     max_candidates=int(connector.launch_config.get("early_owner_max_candidate_blocks", 0)),
                     dp=connector._vllm_config.parallel_config.data_parallel_index,
@@ -101,7 +98,7 @@ class OwnerBroker(BrokerState):
                 return None, cap.get("reason", "worker not ready")
             if peer != f"w{cap.get('dp')}.{cap.get('rank')}" or cap.get("max_jobs", 0) < 1:
                 return None, "invalid worker membership/capacity"
-            if cap.get("task_shards", 0) <= 0 or cap.get("dump_task_shards", -1) < 0:
+            if cap.get("task_shards", 0) <= 0:
                 return None, "native maximum task range is not bounded"
         group = [self.capabilities[p] for p in sorted(self.workers(dp))]
         if len({(c["domain"], c["layout"]) for c in group}) != 1:
@@ -125,9 +122,7 @@ class OwnerBroker(BrokerState):
             io = len(members) * quota
             self.domains[domain] = dict(limit=limit, io_limit=io,
                                         io_quota=quota, members=members, owners={},
-                                        block_bytes=native["block_bytes"],
-                                        native_load_headroom_bytes=(native["nodes"] - slots) * native["shard_bytes"],
-                                        native_dump_headroom_bytes=0)
+                                        native_load_headroom_bytes=(native["nodes"] - slots) * native["shard_bytes"])
             for peer in self.peers:
                 self.send(peer, dict(op="domain_active"))
         return self.domains[domain], None

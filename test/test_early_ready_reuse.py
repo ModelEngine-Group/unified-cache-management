@@ -386,7 +386,7 @@ def test_worker_bind_selects_only_ready_local_consumers():
     worker.request_keys = {}
     worker.jobs = {
         key: SimpleNamespace(key=key, ready=ready, cancelled=cancelled,
-                             loading=False, batches=[SimpleNamespace(reservation={"handle": handle})])
+                             loading=False, batches=[SimpleNamespace(reservation={"handle": handle}, discarded=False)])
         for key, ready, cancelled, handle in (
             ("ready", True, False, 7), ("pending", False, False, 8),
             ("cancelled", True, True, 9), ("other", True, False, 10)
@@ -643,3 +643,17 @@ def test_direct_completion_uses_native_method_without_layerwise_failure_attribut
         connector._early.loaded.assert_called_once_with({"r"}, reason="load_failure")
     else:
         connector._early.loaded.assert_called_once_with({"r"})
+
+
+@pytest.mark.parametrize("hit", [0, 1])
+def test_capacity_ready_never_recovers_unprotected_suffix_in_native_metadata(connector, hit):
+    request = Request()
+    job = prepare(connector, request, hit=hit)
+    job.owner, job.attempt, job.grant = "w0.0", "attempt", 1
+    job.capacity_truncated = True
+    connector.get_num_new_matched_tokens(request, 0)
+    assert job.expected == tuple(job.blocks[:hit])
+    ticket = connector._early.owner_metadata({request.request_id: job.key})[request.request_id]
+    assert ticket["protected_hit"] == hit and ticket["capacity_truncated"]
+    assert ticket["expected"] == tuple(job.blocks[:hit])
+    connector.store.store_.LookupOnPrefix.assert_not_called()
