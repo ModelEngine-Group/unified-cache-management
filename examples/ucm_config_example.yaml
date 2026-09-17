@@ -17,3 +17,26 @@ ucm_connectors:
       posix_capacity_gb: 10240
       posix_io_engine: "psync"
       posix_data_trans_concurrency: 128
+
+# ---- Online runtime-mode control ------------------------------------------
+# Toggle UCM behavior at runtime without restarting the engine. The control
+# file is polled by every connector process; write one of the mode strings
+# below into it to switch:
+#   echo '{"mode": "disabled"}' > /tmp/ucm_runtime_control_<engine_id>.json
+#   echo lite > /tmp/ucm_runtime_control_<engine_id>.json
+#
+# runtime_mode: initial mode; one of "enabled" | "lite" | "disabled"
+#   enabled  - full behavior: external lookup + KV load/dump (default)
+#   lite     - shadow mode: hash + metadata lookup still run and record
+#              as-if hit rates, but no KV data is loaded or dumped
+#   disabled - bypass: external lookups return a miss immediately and no
+#              dump/load is planned; the engine keeps its original compute
+# runtime_control_file: control file to poll. Defaults to
+#   /tmp/ucm_runtime_control_<engine_id>.json (UCM_RUNTIME_CONTROL_FILE env
+#   var is honored when this key is absent). Set to "" to disable polling.
+# runtime_control_enabled: set to false to pin the startup mode (default true)
+# runtime_control_poll_interval_s: poll interval in seconds (default 1.0)
+runtime_mode: "enabled"
+# runtime_control_file: "/tmp/ucm_runtime_control_<engine_id>.json"
+# runtime_control_enabled: true
+# runtime_control_poll_interval_s: 1.0

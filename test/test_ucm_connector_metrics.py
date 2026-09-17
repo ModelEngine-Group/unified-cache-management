@@ -350,6 +350,7 @@ def _install_stubs():
         KVCacheConfig=type("KVCacheConfig", (), {}),
         KVCacheSpec=type("KVCacheSpec", (), {}),
         MambaSpec=type("MambaSpec", (), {}),
+        MLAAttentionSpec=type("MLAAttentionSpec", (), {}),
         SlidingWindowSpec=type("SlidingWindowSpec", (), {}),
         UniformTypeKVCacheSpecs=type("UniformTypeKVCacheSpecs", (), {}),
     )
@@ -360,6 +361,7 @@ def _install_stubs():
     _install_module(
         "ucm.integration.vllm.device",
         create_device=lambda *args, **kwargs: None,
+        get_current_device_id=lambda: 0,
     )
     _install_module("ucm.logger", init_logger=lambda name: _Logger())
     _install_module(
@@ -1255,7 +1257,10 @@ def test_ucm_connector_prefers_lite_when_lite_and_fawa_are_both_enabled(monkeypa
     monkeypatch.setitem(
         sys.modules,
         "ucm.integration.vllm.hma_connector",
-        SimpleNamespace(UCMFAWAConnector=FakeFawaConnector),
+        SimpleNamespace(
+            UCMFAWAConnector=FakeFawaConnector,
+            UCMFAWALiteConnector=FakeInnerConnector,
+        ),
     )
 
     connector = UCMConnector(

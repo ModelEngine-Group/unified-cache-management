@@ -323,6 +323,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     ASCEND_SUPPORTED_VLLM_BLOCK_SIZES = frozenset({32, 64, 128})
     ASCEND_C4_COMPRESS_RATIO = 4
 
+    # Overrides get_num_new_matched_tokens without delegating to
+    # UCMDirectConnector, so the online runtime mode switch does not apply.
+    supports_runtime_mode_control = False
+
     def __init__(
         self,
         vllm_config: "VllmConfig",

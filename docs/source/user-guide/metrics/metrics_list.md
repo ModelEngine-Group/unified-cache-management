@@ -2,7 +2,7 @@
 
 ## 1. Metrics Exported by Default
 
-The tables below use the default `ucm:` prefix. The default configuration contains 78 Counters, 14 Gauges, and 64 Histograms.
+The tables below use the default `ucm:` prefix. The default configuration contains 84 Counters, 15 Gauges, and 64 Histograms.
 
 See [UCM Health Metrics](health_metrics.md) for Store health metrics and recommended aggregation.
 
@@ -19,10 +19,18 @@ See [UCM Health Metrics](health_metrics.md) for Store health metrics and recomme
 | `ucm:ucm_hit_tokens_total`            | Prefix tokens hit by the UCM Connector                            |
 | `ucm:total_prefix_query_blocks_total` | Total complete prefix blocks queried by the UCM Connector         |
 | `ucm:gpu_hbm_hit_blocks_total`        | Complete prefix blocks already found in GPU/HBM before UCM Lookup |
+| `ucm:connector_runtime_mode_bypassed_requests_total` | Requests answered as full external misses because online runtime mode is disabled |
+| `ucm:connector_runtime_mode_lite_requests_total` | Requests evaluated in lite (shadow) runtime mode without load/dump IO |
+| `ucm:connector_runtime_mode_transitions_total` | Online runtime mode transitions observed by this connector |
+| `ucm:connector_runtime_mode_control_read_errors_total` | Failures reading the online runtime-mode control file |
+| `ucm:lite_shadow_lookup_blocks_total` | Block-hash lookups issued in lite (shadow) runtime mode |
+| `ucm:lite_shadow_external_hit_tokens_total` | As-if hit tokens recorded in lite (shadow) runtime mode |
 
 #### Gauges
 
-No Connector-specific Gauges are exported by default.
+| Metric                                  | Description                                                       |
+| --------------------------------------- | ----------------------------------------------------------------- |
+| `ucm:connector_runtime_mode`          | Current online runtime mode, where 0 is enabled, 1 is lite and 2 is disabled |
 
 #### Histograms
 
