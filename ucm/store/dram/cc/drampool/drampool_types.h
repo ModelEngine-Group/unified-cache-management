@@ -52,6 +52,13 @@ inline std::uint64_t SteadyNowMs()
         std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
 }
 
+inline std::uint64_t SteadyNowUs()
+{
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(now).count());
+}
+
 using RequestPtr = std::unique_ptr<KvRequest>;
 
 // Receiver keeps transport identity beside the parsed KV request.
@@ -98,6 +105,9 @@ struct CompletionRecord {
     TransportHandle data_handle{transport::kInvalidTransferHandle};
     std::vector<TransferItem> transfer_items;
     std::uint64_t submit_ms{0};
+    // Batch dequeue time (us). Doubles as a one-shot sentinel: zero after the
+    // batch-level metrics have been reported by CompletionPoller.
+    std::uint64_t begin_us{0};
     bool timeout_reported{false};
 
     // State needed to construct the request's sole response.

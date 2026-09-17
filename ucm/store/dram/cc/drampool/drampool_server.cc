@@ -30,6 +30,7 @@
 #include <utility>
 #include "channels/tcp/tcp_message_channel.h"
 #include "core/transport_manager.h"
+#include "drampool_metrics.h"
 #include "logger/logger.h"
 #include "metadata.h"
 #include "pool/buffer_pool.h"
@@ -518,10 +519,15 @@ void DramPoolServer::RequestReceiveLoop()
                  task->request->request_id, static_cast<int>(task->request->opcode), controlPeerId,
                  task->peer_one_sided_id);
         // This bounded handoff keeps transport I/O separate from potentially slow request handling.
+        ScopedTimer enqueueWaitTimer(kQueueRequestEnqueueWaitMs);
         bool queueFullLogged = false;
         while (!requestReceiverStop_.load(std::memory_order_acquire)) {
-            if (requestQueue_.TryPush(std::move(task))) { break; }
+            if (requestQueue_.TryPush(std::move(task))) {
+                g_requestQueueLen.fetch_add(1, std::memory_order_relaxed);
+                break;
+            }
             if (!queueFullLogged) {
+                MetricsCount(kQueueRequestFullTotal, 1);
                 UC_WARN("RequestReceiver queue is full, request_id={}, depth={}, retry_wait_us={}",
                         task->request->request_id, g_config.requestQueueDepth,
                         g_config.requestReceiverIdleWaitUs);
@@ -557,6 +563,12 @@ void DramPoolServer::GCThreadLoop()
     while (true) {
         std::unique_lock<std::mutex> waitLock(stopWaitMutex_);
         if (stopWaitCv_.wait_for(waitLock, interval, stopRequested)) { break; }
+        MetricsSet(kMetadataEntryCount, static_cast<double>(metadataManager_->GetKeyCnt()));
+        for (const auto slotSize : g_config.poolBlockSizes) {
+            MetricsSet(BufferPoolUsageRatioName(slotSize),
+                       bufferManager_->GetUsedSlotRatio(slotSize));
+        }
+        ScopedTimer evictTimer(kMetadataEvictGcDurationMs);
         metadataManager_->PerformEvict();
     }
     UC_INFO_UNLIMITED("DramPool GCThread stopped");

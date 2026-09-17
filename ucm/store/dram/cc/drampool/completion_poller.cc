@@ -22,10 +22,12 @@
  * SOFTWARE.
  * */
 #include "completion_poller.h"
+#include <algorithm>
 #include <thread>
 #include <utility>
 #include "core/transport_manager.h"
 #include "drampool_config.h"
+#include "drampool_metrics.h"
 #include "logger/logger.h"
 #include "metadata.h"
 
@@ -69,6 +71,8 @@ void CompletionPoller::FillPendingWindow()
     while (pending_.size() < g_config.pollerPendingDepth) {
         CompletionRecord record;
         if (!runtime_.completionQueue.TryPop(record)) { break; }
+        g_completionQueueLen.fetch_sub(1, std::memory_order_relaxed);
+        MetricsSet(kQueueCompletionSize, static_cast<double>(g_completionQueueLen.load()));
         pending_.emplace_back(std::move(record));
     }
 }
@@ -115,6 +119,14 @@ void CompletionPoller::PollPendingCompletions()
                 break;
         }
     }
+
+    // Round-tail gauges (metrics_design.md F/H groups): overwrite-write is safe here
+    // because the CompletionPoller thread is the sole writer of both names.
+    MetricsSet(kQueueCompletionInflight, static_cast<double>(pending_.size()));
+    if (g_config.flagBufferSlotCount > 0) {
+        MetricsSet(kFlagPoolUsageRatio,
+                   static_cast<double>(flagUsed_) / g_config.flagBufferSlotCount);
+    }
 }
 
 bool CompletionPoller::PollDataTransfer(CompletionRecord& record)
@@ -159,11 +171,40 @@ bool CompletionPoller::PollDataTransfer(CompletionRecord& record)
 
 bool CompletionPoller::SubmitResponse(CompletionRecord& record)
 {
+    // Batch statistics point (metrics_design.md §4.7): every record passes here exactly
+    // once thanks to the begin_us sentinel, so flag-pool NoSpace retries that re-enter
+    // this function do not double-report.
+    if (record.begin_us != 0) {
+        const auto elapsedMs = (SteadyNowUs() - record.begin_us) / 1000.0;
+        switch (record.opcode) {
+            case KvOpcode::Dump:
+                MetricsObserve(kDumpBatchTotalDurationMs, elapsedMs);
+                break;
+            case KvOpcode::Load:
+                MetricsObserve(kLoadBatchTotalDurationMs, elapsedMs);
+                break;
+            case KvOpcode::Lookup:
+                MetricsObserve(kLookupBatchTotalDurationMs, elapsedMs);
+                break;
+            default:
+                break;
+        }
+        if (record.opcode == KvOpcode::Dump) {
+            const auto failedEntries = std::count(record.results.begin(), record.results.end(),
+                                                  static_cast<std::uint8_t>(DumpLoadResult::Failed));
+            MetricsCount(kDumpFailedEntriesTotal, static_cast<std::uint64_t>(failedEntries));
+        }
+        record.begin_us = 0;
+    }
+
     const auto packedSize =
         runtime_.protocol.GetPackedResponseSize(record.opcode, record.results.size());
     auto allocateStatus = runtime_.flagBufferPool.Allocate(record.local_resp_slot);
     if (allocateStatus.Failure()) {
         if (allocateStatus.Underlying() == Status::NoSpace().Underlying()) {
+            // Flag pool full: the record stays pending and is retried next round
+            // (blocking chain B2), not counted as a response failure.
+            MetricsCount(kQueueResponseBufferRetryTotal, 1);
             UC_WARN(
                 "CompletionPoller flag buffer pool full, request_id={}, opcode={}, error={}, "
                 "retrying next round",
@@ -171,11 +212,13 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
             return false;
         }
 
+        MetricsCount(kResponseFailuresTotal, 1);
         UC_ERROR(
             "CompletionPoller flag buffer allocation failed, request_id={}, opcode={}, error={}",
             record.request_id, static_cast<int>(record.opcode), allocateStatus);
         return true;
     }
+    ++flagUsed_;
     UC_DEBUG("CompletionPoller allocated response slot, request_id={}, slot={}", record.request_id,
              record.local_resp_slot.slotIndex);
 
@@ -185,7 +228,9 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
         runtime_.protocol.PackResponse(record.local_resp_slot.localAddr, record.opcode,
                                        KvResponse{record.request_id, record.results});
     if (protocolStatus.Failure()) {
+        --flagUsed_;
         ReleaseResponseBuffer(runtime_.flagBufferPool, record);
+        MetricsCount(kResponseFailuresTotal, 1);
         UC_ERROR("CompletionPoller SubmitResponse pack failed, request_id={}, opcode={}, error={}",
                  record.request_id, static_cast<int>(record.opcode), protocolStatus);
         return true;
@@ -203,7 +248,9 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
     TransportHandle handle = transport::kInvalidTransferHandle;
     const auto submitStatus = runtime_.transport.ExecuteAsync(operation, handle);
     if (submitStatus.Failure() || handle == transport::kInvalidTransferHandle) {
+        --flagUsed_;
         ReleaseResponseBuffer(runtime_.flagBufferPool, record);
+        MetricsCount(kResponseFailuresTotal, 1);
         UC_ERROR(
             "CompletionPoller SubmitResponse ExecuteAsync failed, request_id={}, opcode={}, "
             "handle={}, error={}",
@@ -229,7 +276,10 @@ bool CompletionPoller::PollResponseTransfer(CompletionRecord& record)
         // GetStatus removes failed handles, so the response source buffer is no longer in use.
         UC_ERROR("CompletionPoller response GetStatus failed, request_id={}, handle={}, error={}",
                  record.request_id, record.response_handle, queryStatus);
+        --flagUsed_;
         ReleaseResponseBuffer(runtime_.flagBufferPool, record);
+        MetricsCount(kResponseFailuresTotal, 1);
+        MetricsObserve(kResponseRttMs, static_cast<double>(SteadyNowMs() - record.submit_ms));
         return true;
     }
     if (transportStatus == transport::TransferStatus::Waiting) {
@@ -248,11 +298,19 @@ bool CompletionPoller::PollResponseTransfer(CompletionRecord& record)
     if (transportStatus != transport::TransferStatus::Completed) {
         UC_ERROR("CompletionPoller response transfer failed, request_id={}, handle={}, status={}",
                  record.request_id, record.response_handle, static_cast<int>(transportStatus));
+        --flagUsed_;
         ReleaseResponseBuffer(runtime_.flagBufferPool, record);
+        MetricsCount(kResponseFailuresTotal, 1);
+        MetricsObserve(kResponseRttMs, static_cast<double>(SteadyNowMs() - record.submit_ms));
         return true;
     }
 
+    --flagUsed_;
     ReleaseResponseBuffer(runtime_.flagBufferPool, record);
+    // Response RTT terminal exit (metrics_design.md E group): observed on every terminal
+    // path (Completed / GetStatus failure / Failed) from the response-transfer submission
+    // (submit_ms, set in SubmitResponse) to the terminal state.
+    MetricsObserve(kResponseRttMs, static_cast<double>(SteadyNowMs() - record.submit_ms));
     UC_DEBUG("CompletionPoller response transfer finished, request_id={}, handle={}, status={}",
              record.request_id, record.response_handle, static_cast<int>(transportStatus));
 
@@ -263,6 +321,20 @@ bool CompletionPoller::PollResponseTransfer(CompletionRecord& record)
 void CompletionPoller::SettleDataTransfer(CompletionRecord& record,
                                           transport::TransferStatus terminalStatus)
 {
+    // Data-transfer terminal observation (metrics_design.md E group): this single exit
+    // covers the GetStatus-failure / Failed / Completed terminal paths. submit_ms still
+    // holds the data-transfer submission time; SubmitResponse overwrites it afterwards.
+    if (record.opcode == KvOpcode::Dump) {
+        MetricsObserve(kDumpTransferDurationMs,
+                       static_cast<double>(SteadyNowMs() - record.submit_ms));
+    } else if (record.opcode == KvOpcode::Load) {
+        MetricsObserve(kLoadTransferDurationMs,
+                       static_cast<double>(SteadyNowMs() - record.submit_ms));
+    }
+    if (terminalStatus != transport::TransferStatus::Completed) {
+        MetricsCount(kTransferFailuresTotal, 1);
+    }
+
     for (const auto& item : record.transfer_items) {
         DumpLoadResult result = DumpLoadResult::Failed;
 
