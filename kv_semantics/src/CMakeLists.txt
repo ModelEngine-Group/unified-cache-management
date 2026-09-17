@@ -34,7 +34,7 @@ target_include_directories(kv_transport
 target_compile_definitions(kv_transport PRIVATE SPDLOG_FMT_EXTERNAL)
 target_link_libraries(kv_transport
     PUBLIC
-        pthread fmt spdlog zlibstatic
+        pthread fmt spdlog zlibstatic kv_metrics
     PRIVATE
         kv_buffer_runtime
 )
@@ -87,6 +87,7 @@ target_include_directories(kv_client
         ${CMAKE_CURRENT_SOURCE_DIR}/client
 )
 target_link_libraries(kv_client PUBLIC kv_transport pthread)
+target_link_libraries(kv_client PRIVATE kv_metrics)
 target_compile_definitions(kv_client PRIVATE SPDLOG_FMT_EXTERNAL)
 
 set(INSTALL_REL_PATH "kv_semantics/src")
