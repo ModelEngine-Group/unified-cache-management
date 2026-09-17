@@ -21,6 +21,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <atomic>
+#include <future>
 #include "detail/data_generator.h"
 #include "detail/path_base.h"
 #include "detail/types_helper.h"
@@ -28,6 +30,56 @@
 #include "space_layout.h"
 
 class UCPosixTransManagerTest : public UC::Test::Detail::PathBase {};
+
+TEST_F(UCPosixTransManagerTest, EngineCallbacksReclaimCompletedTasks)
+{
+    using namespace UC::PosixStore;
+    Config config;
+    config.tensorSize = 4096;
+    config.shardSize = config.tensorSize;
+    config.blockSize = config.shardSize;
+    config.storageBackends = {Path()};
+    config.dataDirShardBytes = 0;
+    config.openConcurrency = 2;
+    config.commitConcurrency = 1;
+    config.dataTransConcurrency = 2;
+    config.timeoutMs = 3000;
+    SpaceLayout layout;
+    ASSERT_EQ(layout.Setup(config), UC::Status::OK());
+    UC::Test::Detail::DataGenerator data{1, config.blockSize};
+    data.GenerateRandom();
+    auto checkCallback = [&](auto& engine) {
+        ASSERT_EQ(engine.Setup(config, &layout, layout.Backends().front()), UC::Status::OK());
+        const auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+        for (size_t round = 0; round < 3; ++round) {
+            SCOPED_TRACE(round);
+            const auto id =
+                round == 2 ? UC::Test::Detail::TypesHelper::MakeBlockIdRandomly() : block;
+            UC::Detail::TaskDesc desc;
+            desc.push_back({id, 0, {data.Buffer()}});
+            TransTask task{round == 0 ? TransTask::Type::DUMP : TransTask::Type::LOAD,
+                           std::move(desc)};
+            auto done = std::make_shared<std::promise<UC::Status>>();
+            auto result = done->get_future();
+            auto calls = std::make_shared<std::atomic<size_t>>(0);
+            task.onComplete = [done, calls](UC::Status status) {
+                if (calls->fetch_add(1) == 0) { done->set_value(status); }
+            };
+            auto submitted = engine.Submit(std::move(task));
+            ASSERT_TRUE(submitted.HasValue());
+            ASSERT_EQ(result.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+            EXPECT_EQ(result.get(), round == 2 ? UC::Status::NotFound() : UC::Status::OK());
+            auto checked = engine.Check(submitted.Value());
+            ASSERT_FALSE(checked.HasValue());
+            EXPECT_EQ(checked.Error(), UC::Status::NotFound());
+            EXPECT_EQ(calls->load(), 1);
+        }
+    };
+    IoEngineAio aio;
+    checkCallback(aio);
+    IoEnginePsync psync;
+    checkCallback(psync);
+}
 
 TEST_F(UCPosixTransManagerTest, TransBlock)
 {
@@ -49,18 +101,18 @@ TEST_F(UCPosixTransManagerTest, TransBlock)
     UC::Detail::TaskDesc desc1;
     desc1.brief = "Dump";
     desc1.push_back(UC::Detail::Shard{block, 0, {data1.Buffer()}});
-    auto handle1 = transMgr.GetIoEngine()->Submit({TransTask::Type::DUMP, desc1});
+    auto handle1 = transMgr.Submit({TransTask::Type::DUMP, desc1});
     ASSERT_TRUE(handle1.HasValue());
-    s = transMgr.GetIoEngine()->Wait(handle1.Value());
+    s = transMgr.Wait(handle1.Value());
     ASSERT_EQ(s, UC::Status::OK());
     UC::Test::Detail::DataGenerator data2{nBlocks, config.blockSize};
     data2.Generate();
     UC::Detail::TaskDesc desc2;
     desc2.brief = "Load";
     desc2.push_back(UC::Detail::Shard{block, 0, {data2.Buffer()}});
-    auto handle2 = transMgr.GetIoEngine()->Submit({TransTask::Type::LOAD, desc2});
+    auto handle2 = transMgr.Submit({TransTask::Type::LOAD, desc2});
     ASSERT_TRUE(handle2.HasValue());
-    s = transMgr.GetIoEngine()->Wait(handle2.Value());
+    s = transMgr.Wait(handle2.Value());
     ASSERT_EQ(s, UC::Status::OK());
     ASSERT_EQ(data1.Compare(data2), 0);
 }
@@ -89,9 +141,9 @@ TEST_F(UCPosixTransManagerTest, TransBlockLayerWise)
         d.GenerateRandom();
         desc1.push_back(UC::Detail::Shard{block, i, {d.Buffer()}});
     }
-    auto handle1 = transMgr.GetIoEngine()->Submit({TransTask::Type::DUMP, desc1});
+    auto handle1 = transMgr.Submit({TransTask::Type::DUMP, desc1});
     ASSERT_TRUE(handle1.HasValue());
-    s = transMgr.GetIoEngine()->Wait(handle1.Value());
+    s = transMgr.Wait(handle1.Value());
     ASSERT_EQ(s, UC::Status::OK());
     auto data2 = UC::Test::Detail::TypesHelper::MakeArray<UC::Test::Detail::DataGenerator, nShards>(
         size_t(1), config.tensorSize);
@@ -102,9 +154,9 @@ TEST_F(UCPosixTransManagerTest, TransBlockLayerWise)
         d.Generate();
         desc2.push_back(UC::Detail::Shard{block, i, {d.Buffer()}});
     }
-    auto handle2 = transMgr.GetIoEngine()->Submit({TransTask::Type::LOAD, desc2});
+    auto handle2 = transMgr.Submit({TransTask::Type::LOAD, desc2});
     ASSERT_TRUE(handle2.HasValue());
-    s = transMgr.GetIoEngine()->Wait(handle2.Value());
+    s = transMgr.Wait(handle2.Value());
     ASSERT_EQ(s, UC::Status::OK());
     for (size_t i = 0; i < nShards; i++) { ASSERT_EQ(data1[i].Compare(data2[i]), 0); }
 }

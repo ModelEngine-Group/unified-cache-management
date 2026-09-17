@@ -27,13 +27,13 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
-#include "health_check_executor.h"
-#include "store_health_config.h"
+#include "common/health_check_executor.h"
+#include "common/health_window.h"
+#include "common/store_health_config.h"
 #include "ucmstore_v1.h"
 
 namespace UC::PipelineStore {
@@ -43,7 +43,7 @@ public:
     HealthBreakerStore() = default;
     ~HealthBreakerStore() override;
 
-    Status Setup(StoreV1* store, std::string storeId, const StoreHealthConfig& config);
+    Status Setup(StoreV1* store, std::string storeId, const Common::StoreHealthConfig& config);
     Status Start();
     void Stop();
     bool Enabled() const { return enabled_.load(std::memory_order_acquire); }
@@ -70,16 +70,15 @@ private:
 
     StoreV1* store_{nullptr};
     std::string storeId_;
-    StoreHealthConfig config_{};
+    Common::StoreHealthConfig config_{};
     std::atomic<bool> enabled_{true};
     mutable std::mutex healthMutex_;
-    std::deque<bool> healthResults_;
-    size_t failureCount_{0};
+    Common::HealthWindow healthWindow_;
     std::mutex stopMutex_;
     std::condition_variable stopCv_;
     bool stop_{false};
     std::thread probeThread_;
-    std::unique_ptr<Detail::HealthCheckExecutor> healthCheck_;
+    std::unique_ptr<Common::HealthCheckExecutor> healthCheck_;
 };
 
 }  // namespace UC::PipelineStore

@@ -31,6 +31,7 @@
 #include <string>
 #include <thread>
 #include "global_config.h"
+#include "space_layout.h"
 #include "status/status.h"
 
 namespace UC::PosixStore {
@@ -48,7 +49,7 @@ public:
     GcLease& operator=(const GcLease&) = delete;
     ~GcLease();
 
-    void Setup(const Config& config);
+    void Setup(const Config& config, const SpaceLayout* layout);
 
     Acquisition TryAcquire();
     void Release();
@@ -56,19 +57,23 @@ public:
     void RequestStop();
 
 private:
-    Status Claim();
-    bool EntryPresent() const;
-    Status ProbeHolder(bool& stale);
-    Status TakeOverStale();
-    void SweepParked() const;
+    struct Paths {
+        std::string backend;
+        std::string lockDir;
+        std::string checkTime;
+        std::string heartbeat;
+    };
+    Expected<Paths> SelectPaths() const;
+    Status Claim(const Paths& paths);
+    bool EntryPresent(const Paths& paths) const;
+    Status ProbeHolder(const Paths& paths, bool& stale);
+    Status TakeOverStale(const Paths& paths);
+    void SweepParked(const Paths& paths) const;
     void HeartbeatLoop();
     void StopHeartbeat();
     Status Touch(const std::string& path, time_t& stamp, bool create) const;
 
-    std::string backend_;
-    std::string lockDir_;
-    std::string checkTimePath_;
-    std::string heartbeatPath_;
+    const SpaceLayout* layout_{nullptr};
     std::string identity_;
     size_t heartbeatIntervalSec_{5};
     size_t staleThresholdSec_{180};

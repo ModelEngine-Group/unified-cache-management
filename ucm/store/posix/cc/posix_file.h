@@ -25,9 +25,42 @@
 #define UNIFIEDCACHE_POSIX_STORE_CC_POSIX_FILE_H
 
 #include <fcntl.h>
+#include <functional>
+#include <mutex>
 #include "status/status.h"
 
 namespace UC::PosixStore {
+
+#ifdef UCM_ENABLE_TEST_HOOKS
+namespace TestHooks {
+using OpenHook = std::function<int32_t(const std::string&, int32_t, mode_t)>;
+inline std::mutex& OpenHookMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+inline OpenHook& OpenHookSlot()
+{
+    static OpenHook hook;
+    return hook;
+}
+inline void SetOpenHook(OpenHook hook)
+{
+    std::lock_guard<std::mutex> lock{OpenHookMutex()};
+    OpenHookSlot() = std::move(hook);
+}
+inline void ClearOpenHook()
+{
+    std::lock_guard<std::mutex> lock{OpenHookMutex()};
+    OpenHookSlot() = nullptr;
+}
+inline OpenHook GetOpenHook()
+{
+    std::lock_guard<std::mutex> lock{OpenHookMutex()};
+    return OpenHookSlot();
+}
+}  // namespace TestHooks
+#endif
 
 class PosixFile {
 public:
@@ -60,7 +93,7 @@ public:
     Status Rename(const std::string& newName);
     Status Access(const int32_t mode);
     Status Open(const uint32_t flags);
-    void Close();
+    Status Close();
     Status Remove();
     Status Read(void* buffer, size_t size, off64_t offset);
     Status Write(const void* buffer, size_t size, off64_t offset);

@@ -77,8 +77,12 @@ void HotnessTracker::UtimeWorkerLoop()
         }
         spinCount = 0;
         while (!consumeQueue.empty()) {
-            auto filePath = layout_->DataFilePath(consumeQueue.front(), false);
-            utime(filePath.c_str(), nullptr);
+            layout_->RunOnAvailableBackend(consumeQueue.front(), [&](const std::string& backend) {
+                const auto path = layout_->DataFilePath(backend, consumeQueue.front(), false);
+                if (utime(path.c_str(), nullptr) == 0) { return Status::OK(); }
+                const auto error = errno;
+                return error == ENOENT ? Status::NotFound() : Status::OsApiError(error);
+            });
             consumeQueue.pop_front();
         }
     }

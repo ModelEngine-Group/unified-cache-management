@@ -117,16 +117,13 @@ Expected<ssize_t> SpaceManager::LookupOnReverse(const Detail::BlockId* blocks, s
 
 uint8_t SpaceManager::Lookup(const Detail::BlockId* block)
 {
-    const auto& path = layout_.DataFilePath(*block, false);
-    PosixFile file{path};
-    constexpr auto mode =
-        PosixFile::AccessMode::EXIST | PosixFile::AccessMode::READ | PosixFile::AccessMode::WRITE;
-    auto s = file.Access(mode);
-    if (s.Failure()) {
-        if (s != Status::NotFound()) { UC_ERROR("Failed({}) to access file({}).", s, path); }
-        return false;
-    }
-    return true;
+    const auto status = layout_.RunOnAvailableBackend(*block, [&](const std::string& backend) {
+        PosixFile file{layout_.DataFilePath(backend, *block, false)};
+        constexpr auto mode = PosixFile::AccessMode::EXIST | PosixFile::AccessMode::READ |
+                              PosixFile::AccessMode::WRITE;
+        return file.Access(mode);
+    });
+    return status.Success();
 }
 
 void SpaceManager::Prefetch(const Detail::BlockId* blocks, size_t num)
