@@ -25,14 +25,15 @@ from vllm.v1.kv_cache_interface import (
 )
 
 from ucm.integration.vllm.device import create_device
+from ucm.integration.vllm.request_hasher import RequestHasher
 from ucm.integration.vllm.ucm_connector import (
     KVCacheLayout,
     PendingDumpTask,
     RequestDispatchMeta,
-    RequestHasher,
     RequestMeta,
     UCMConnectorMetadata,
     UCMDirectConnector,
+    UCMLiteConnector,
     _record_counter,
     _scheduler_read_block_size,
     _short_list,
@@ -141,6 +142,7 @@ class GroupInfo:
     # Independent hash chain seed per group (see ``KVCacheGroupManager``).
     seed: bytes
     is_mamba_align: bool = False
+    block_hasher: Optional[Callable[["Request"], list[bytes]]] = None
 
     @property
     def is_full_attention(self) -> bool:
@@ -173,6 +175,10 @@ class KVCacheGroupManager:
                 seed=seed,
                 is_mamba_align=is_mamba_align,
             )
+            if not is_mamba_align:
+                info.block_hasher = request_hasher.make_request_block_hasher(
+                    block_size, seed
+                )
             self.groups_by_id.append(info)
             if info.is_full_attention:
                 self.full_attn_groups.append(info)
@@ -213,30 +219,18 @@ class KVCacheGroupManager:
     def num_groups(self) -> int:
         return len(self.groups_by_id)
 
-    def compute_block_hashes(
-        self, group: GroupInfo, token_ids: list[int]
-    ) -> list[bytes]:
-        """Hash ``token_ids`` into per-block ids using ``group``'s chain seed."""
+    def compute_block_hashes(self, group: GroupInfo, request: "Request") -> list[bytes]:
+        """Hash a request at one group's block boundaries and chain seed."""
         if group.is_mamba_align:
             # mamba-align pads block table with null blocks; no per-block hash.
-            return [b""] * (len(token_ids) // group.block_size)
+            return [b""] * (len(request.all_token_ids) // group.block_size)
 
-        ret: list[bytes] = []
-        parent = group.seed
-        block_size = group.block_size
-        for start in range(0, len(token_ids), block_size):
-            end = start + block_size
-            block_token_ids = token_ids[start:end]
-            if len(block_token_ids) < block_size:
-                break
-            hash_value = self.request_hasher((parent, tuple(block_token_ids)))
-            parent = hash_value
-            ret.append(hash_value)
-        return ret
+        assert group.block_hasher is not None
+        return group.block_hasher(request)
 
-    def compute_all_group_block_ids(self, token_ids: list[int]) -> list[list[bytes]]:
+    def compute_all_group_block_ids(self, request: "Request") -> list[list[bytes]]:
         """Compute full block hashes for every group, indexed by group_id."""
-        return [self.compute_block_hashes(g, token_ids) for g in self.groups_by_id]
+        return [self.compute_block_hashes(g, request) for g in self.groups_by_id]
 
     def compute_mamba_align_state_hash(
         self,
@@ -811,6 +805,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             lcm_block_size = self.group_manager.lcm_block_size
             self.block_size = lcm_block_size
             self.hash_block_size = lcm_block_size
+            self._bind_request_block_hasher()
 
         logger.info(f"{type(self).__name__} initialized")
 
@@ -958,9 +953,15 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             )
             return 0, False
 
-        group_ucm_block_ids = self.group_manager.compute_all_group_block_ids(
-            request.all_token_ids
-        )
+        try:
+            group_ucm_block_ids = self.group_manager.compute_all_group_block_ids(
+                request
+            )
+        except Exception as e:
+            logger.error(
+                f"request {request.request_id} hash error. " f"{type(e).__name__}: {e}"
+            )
+            return 0, False
         primary_full_attn = self.group_manager.full_attn_groups[0]
         primary_block_ids = group_ucm_block_ids[primary_full_attn.group_id]
 
@@ -1243,10 +1244,10 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         req_meta.token_processed += new_tokens
 
         return HLARequestDispatchMeta(
-            (load_ucm_block_ids, load_vllm_block_ids),
-            (dump_ucm_block_ids, dump_vllm_block_ids),
-            load_full_attn_count,
-            dump_full_attn_count,
+            load_block_ids=(load_ucm_block_ids, load_vllm_block_ids),
+            dump_block_ids=(dump_ucm_block_ids, dump_vllm_block_ids),
+            load_full_attn_count=load_full_attn_count,
+            dump_full_attn_count=dump_full_attn_count,
         )
 
     def build_connector_meta(
@@ -1934,3 +1935,157 @@ class UCMHybridLinearAttentionLayerWiseConnector(UCMHybridLinearAttentionConnect
         self.is_save = False
         if self.enable_event_sync:
             self.device.destroy_event_handles()
+
+
+class UCMHLALiteConnector(UCMLiteConnector, SupportsHMA):
+    """UCM Lite connector for full-attention + linear-attention hybrids.
+
+    A thin subclass of :class:`UCMLiteConnector`: reuses the full-attention
+    prefix-chain logging (``ucm_block_ids``) and all no-op I/O hooks, and only
+    adds a :class:`KVCacheGroupManager` so the startup
+    ``KVCacheGroupManager initialized:`` line records the HLA topology (LCM,
+    group block sizes, mamba-group count) for the offline hit-rate simulator.
+    The simulator derives mamba state keys from the prefix chain (state sharing
+    == prefix sharing), so this connector logs **only** the prefix chain per
+    request — no per-request state hashes.
+    """
+
+    def __init__(
+        self,
+        vllm_config: "VllmConfig",
+        role: KVConnectorRole,
+        kv_cache_config: Optional["KVCacheConfig"] = None,
+    ) -> None:
+        if kv_cache_config is None:
+            raise RuntimeError("UCMHLALiteConnector requires kv_cache_config.")
+        super().__init__(vllm_config, role, kv_cache_config)
+        self.group_manager = KVCacheGroupManager(
+            kv_cache_config=kv_cache_config,
+            request_hasher=self.request_hasher,
+            base_seed=self._seed,
+        )
+        self.block_size = self.group_manager.lcm_block_size
+        self.hash_block_size = self.group_manager.lcm_block_size
+        self.trace_hash_block_size = self.hash_block_size
+        is_mla = getattr(vllm_config.model_config, "is_deepseek_mla", False)
+        hbm_data_size = self._compute_hla_block_data_size(
+            vllm_config, kv_cache_config, is_mla
+        )
+        logger.info(
+            f"UCMTraceMeta: type=mamba, "
+            f"is_mla={is_mla}, "
+            f"vllm_hash_block_size={self.hash_block_size}, "
+            f"trace_hash_block_size={self.trace_hash_block_size}, "
+            f"hbm_block_data_size={hbm_data_size}, "
+            f"lcm_block_size={self.group_manager.lcm_block_size}, "
+            f"mamba_groups={len(self.group_manager.state_groups)}"
+        )
+        logger.info("Init UCMHLALiteConnector.")
+
+    @staticmethod
+    def _compute_hla_block_data_size(
+        vllm_config: "VllmConfig", kv_cache_config: "KVCacheConfig", is_mla: bool
+    ) -> int:
+        """Compute hbm_block_data_size for HLA models from model config.
+
+        Mirrors the calculator's deriveLinearHybridParams: derives block_size
+        from mamba state alignment, computes page_size (FA per-token × block_size
+        + conv on Ascend), then block_data_size = num_tensors × page_size.
+        """
+        mc = vllm_config.model_config
+        hf = mc.hf_text_config
+        tp = vllm_config.parallel_config.tensor_parallel_size
+
+        num_full = getattr(hf, "num_full_attn_layers", None)
+        num_linear = getattr(hf, "num_linear_layers", None)
+        if num_full is None or num_linear is None:
+            layer_types = getattr(hf, "layer_types", None)
+            if layer_types and isinstance(layer_types, list):
+                num_full = sum(1 for t in layer_types if t == "full_attention")
+                num_linear = sum(1 for t in layer_types if t != "full_attention")
+            else:
+                return 0
+
+        has_mtp = (
+            vllm_config.speculative_config is not None
+            and vllm_config.speculative_config.num_speculative_tokens > 0
+        )
+        num_full_eff = num_full + (1 if has_mtp else 0)
+        num_tensors = min(num_full_eff, num_linear)
+        if num_tensors <= 0:
+            return 0
+
+        dt_map = {"bfloat16": 2, "float16": 2, "float32": 4, "int8": 1}
+        model_dt = dt_map.get(str(getattr(mc, "dtype", "bfloat16")), 2)
+        ssm_dt = dt_map.get(
+            str(getattr(hf, "mamba_ssm_dtype", getattr(mc, "dtype", "float32"))), 4
+        )
+
+        lin_kh = getattr(hf, "linear_num_key_heads", 0)
+        lin_vh = getattr(hf, "linear_num_value_heads", 0)
+        lin_kd = getattr(hf, "linear_key_head_dim", 0)
+        lin_vd = getattr(hf, "linear_value_head_dim", 0)
+        conv_k = getattr(hf, "linear_conv_kernel_dim", 4)
+
+        v_heads_per_rank = lin_vh / tp if tp else lin_vh
+        ssm_size = int(v_heads_per_rank * lin_vd * lin_kd * ssm_dt)
+        conv_dim = lin_kd * lin_kh * 2 + lin_vd * lin_vh
+        conv_dim_per_rank = conv_dim / tp if tp else conv_dim
+        conv_size = int((conv_k - 1) * conv_dim_per_rank * model_dt)
+        mamba_total = conv_size + ssm_size
+
+        if is_mla:
+            kv_lora = getattr(hf, "kv_lora_rank", 0)
+            qk_rope = getattr(hf, "qk_rope_head_dim", 0)
+            attn_per_tok = (kv_lora + qk_rope) * 1 * model_dt
+            attn_single_k = kv_lora * 1 * model_dt
+        else:
+            head_dim = getattr(hf, "head_dim", 0) or (
+                getattr(hf, "hidden_size", 0)
+                // max(getattr(hf, "num_attention_heads", 1), 1)
+            )
+            kv_heads = getattr(
+                hf, "num_key_value_heads", getattr(hf, "num_attention_heads", 0)
+            )
+            kv_heads_per_rank = kv_heads / tp if tp else kv_heads
+            attn_per_tok = 2 * head_dim * int(kv_heads_per_rank) * model_dt
+            attn_single_k = head_dim * int(kv_heads_per_rank) * model_dt
+
+        if not attn_per_tok or not attn_single_k:
+            return 0
+
+        is_ascend = current_platform.device_type == "npu"
+
+        bs = 0
+        for g in kv_cache_config.kv_cache_groups:
+            bs = max(bs, block_size_from_kv_cache_spec(g.kv_cache_spec))
+
+        if not bs:
+            if is_ascend:
+                kernel = 128
+                ratio = -(-ssm_size // (kernel * attn_single_k)) if attn_single_k else 1
+                bs = kernel * ratio
+            else:
+                kernel = 16
+                ratio = (
+                    -(-mamba_total // (kernel * attn_per_tok)) if attn_per_tok else 1
+                )
+                bs = kernel * ratio
+
+        if is_ascend:
+            page_size = bs * attn_per_tok + conv_size
+        else:
+            page_size = bs * attn_per_tok
+
+        return num_tensors * page_size
+
+    def get_block_size(self) -> int:
+        return self.group_manager.lcm_block_size
+
+    def request_finished_all_groups(
+        self,
+        request: "Request",
+        block_ids: tuple[list[int], ...],
+    ) -> tuple[bool, dict[str, object] | None]:
+        self.requests_meta.pop(request.request_id, None)
+        return False, None
