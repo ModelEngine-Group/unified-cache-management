@@ -91,6 +91,7 @@ struct Request {
     OpType op{OpType::LOOKUP};
     std::vector<IoEntry> entries;
     std::chrono::steady_clock::time_point deadline;
+    std::uintptr_t prerequisiteHandle{0};
 };
 
 struct RequestToken {
@@ -134,6 +135,7 @@ struct NodeSchedulerConfig {
     std::chrono::milliseconds reconnectInterval{0};
     std::size_t runnerCount{1};
     std::int32_t deviceId{0};
+    std::chrono::microseconds pollInterval{50};
 };
 
 struct TransportRuntimeConfig {

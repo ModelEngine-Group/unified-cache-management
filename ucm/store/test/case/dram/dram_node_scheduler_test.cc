@@ -303,12 +303,14 @@ TEST(UCDramNodeActorTest, ExposedTimeoutFencesActiveRequests)
         [](const RequestToken&, const ReplySlot&) { return Status::OK(); },
     };
     NodeActor actor(ActorConfig(2, 1ms), std::move(dependencies));
-    const auto now = std::chrono::steady_clock::now();
+    const auto now = NodeActor::TimePoint{};
     ConnectActor(actor, now);
 
     SubmitToActor(actor, MakeRequest(1, 1, 1, 1, now + 1ms), now);
     SubmitToActor(actor, MakeRequest(2, 2, 1, 1, now + 1h), now);
     actor.Advance(now);
+    ASSERT_EQ(transmitted, (std::vector<RequestId>{1, 2}));
+    ASSERT_TRUE(completions.empty());
     actor.Advance(now + 2ms);
 
     EXPECT_TRUE(completions.empty());

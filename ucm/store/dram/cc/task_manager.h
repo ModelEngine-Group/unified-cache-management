@@ -26,6 +26,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -54,6 +55,7 @@ struct TaskManagerConfig {
 struct TaskManagerDependencies {
     std::shared_ptr<const UC::Router::Router> router;
     RequestSubmitter submitRequest;
+    std::function<void()> shutdownNodes;
 };
 
 // A single-worker task actor. Submission planning and completion aggregation are
