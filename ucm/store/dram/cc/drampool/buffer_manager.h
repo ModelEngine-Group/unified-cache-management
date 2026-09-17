@@ -24,6 +24,7 @@
 #ifndef UNIFIEDCACHE_DRAM_STORE_CC_BUFFER_MANAGER_H
 #define UNIFIEDCACHE_DRAM_STORE_CC_BUFFER_MANAGER_H
 
+#include <atomic>
 #include <cstddef>
 #include <memory>
 #include <stdexcept>
@@ -68,6 +69,9 @@ public:
             region.type = transport::MemoryType::Host;
             memoryRegions_.push_back(region);
             pools_.emplace(slotSize, std::move(pool));
+            slotCounts_.emplace(slotSize, slotNum);
+            used_.emplace(std::piecewise_construct, std::forward_as_tuple(slotSize),
+                          std::forward_as_tuple(0));
             UC_DEBUG(
                 "BufferManager initialized BufferPool, slot_size={}, slot_count={}, total_bytes={}",
                 slotSize, slotNum, region.length);
@@ -89,6 +93,8 @@ public:
             if (pool != nullptr) { pool->Reset(); }
         }
         pools_.clear();
+        slotCounts_.clear();
+        used_.clear();
         memoryRegions_.clear();
     }
 
@@ -129,6 +135,9 @@ public:
         BufferPool::Slot slot;
         auto st = pool->Allocate(slot);
         if (!st.Success()) { return st; }
+        if (auto* used = FindUsed(size)) {
+            used->fetch_add(1, std::memory_order_relaxed);
+        }
         buf.length = slot.length;
         buf.slot = slot.slotIndex;
         buf.addr = slot.localAddr;
@@ -151,11 +160,40 @@ public:
             UC_ERROR("BufferManager::Free: no pool registered for size {}.", size);
             return Status::NotFound();
         }
-        return pool->Free(slot);
+        auto st = pool->Free(slot);
+        if (st.Success()) {
+            if (auto* used = FindUsed(size)) {
+                used->fetch_sub(1, std::memory_order_relaxed);
+            }
+        }
+        return st;
+    }
+
+    /**
+     * @brief Ratio of currently used slots to total slots for the given size.
+     * @return used / slot_count; 0.0 if the size was not registered or the
+     *         pool has no slots.
+     */
+    double GetUsedSlotRatio(std::size_t size) const
+    {
+        const auto countIt = slotCounts_.find(size);
+        if (countIt == slotCounts_.end() || countIt->second == 0) { return 0.0; }
+        const auto usedIt = used_.find(size);
+        const auto used =
+            usedIt == used_.end() ? 0ULL : usedIt->second.load(std::memory_order_relaxed);
+        return static_cast<double>(used) / static_cast<double>(countIt->second);
     }
 
 private:
+    std::atomic<std::uint64_t>* FindUsed(std::size_t size)
+    {
+        auto it = used_.find(size);
+        return it == used_.end() ? nullptr : &it->second;
+    }
+
     std::unordered_map<std::size_t, std::unique_ptr<BufferPool>> pools_;
+    std::unordered_map<std::size_t, std::size_t> slotCounts_;
+    std::unordered_map<std::size_t, std::atomic<std::uint64_t>> used_;
     std::vector<transport::MemoryRegion> memoryRegions_;
 };
 

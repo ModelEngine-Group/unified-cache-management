@@ -28,6 +28,7 @@
 #include <string>
 #include <thread>
 #include "drampool_config.h"
+#include "drampool_metrics.h"
 #include "drampool_server.h"
 #include "health_server.h"
 #include "logger/logger.h"
@@ -45,6 +46,10 @@ int DramPoolDaemon::Run(int argc, char** argv)
         std::cerr << status.ToString() << "\n";
         return 1;
     }
+
+    // One-shot metrics registration (C2: unregistered names are dropped).
+    SetupDrampoolMetrics();
+
     status = SetupLogger();
     if (status.Failure()) {
         std::cerr << status.ToString() << "\n";
