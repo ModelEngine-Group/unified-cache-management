@@ -1,9 +1,7 @@
 ﻿import copy
 import glob
-import hashlib
 import math
 import os
-import pickle
 import re
 import shutil
 import time
@@ -43,6 +41,7 @@ from ucm.integration.vllm.metrics import (
     UCMPromMetrics,
 )
 from ucm.integration.vllm.rank_consistency import RankConsistencyManager
+from ucm.integration.vllm.request_hasher import RequestHasher
 from ucm.logger import init_logger
 from ucm.metrics_config import (
     MULTIPROC_CONSUMER,
@@ -90,6 +89,20 @@ def _has_shared_indexer_layers(vllm_config: "VllmConfig") -> bool:
             isinstance(indexer_type, str) and indexer_type.lower() == "shared"
             for indexer_type in indexer_types
         ):
+            return True
+    return False
+
+
+def _is_minimax_m3(vllm_config: "VllmConfig") -> bool:
+    model_config = getattr(vllm_config, "model_config", None)
+    configs = (
+        getattr(model_config, "hf_text_config", None),
+        getattr(model_config, "hf_config", None),
+        getattr(getattr(model_config, "hf_config", None), "text_config", None),
+    )
+    for config in configs:
+        model_type = str(getattr(config, "model_type", "")).lower()
+        if model_type.startswith("minimax_m3"):
             return True
     return False
 
@@ -340,6 +353,9 @@ class RequestDispatchMeta:
         list[bytes], list[int]
     ]  # [0] mean ucm_block_ids, [1] means vllm_block_ids
     dump_block_ids: tuple[list[bytes], list[int]]
+    # Keep this keyword-only so adding the optional async flag does not change
+    # positional constructor semantics for connector-specific subclasses.
+    load_async: bool = field(default=False, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -1015,6 +1031,277 @@ class SharedIndexerKVCacheLayout(KVCacheLayout):
         )
 
 
+class MiniMaxM3KVCacheLayout(KVCacheLayout):
+    """Describe the MiniMax M3 KV cache exposed to UCM.
+
+    MiniMax M3 has two independently allocated cache roles per transformer
+    layer. Every layer has an Attention cache, while only sparse-attention
+    layers have an Indexer cache. In the released M3 configuration, layers
+    0-2 are dense and layers 3-59 are sparse. vLLM passes both roles through
+    the connector's ``kvcaches`` mapping as separate entries. The
+    ``index_cache`` path component is the stable discriminator between them.
+
+    The Attention entry differs by backend and vLLM generation:
+
+    * CUDA v0.24 uses one block-first 5D tensor with logical shape
+      ``[num_blocks, 2, ...]``. K and V are adjacent inside each block, so the
+      complete page is one UCM segment rather than two independent segments.
+    * Newer CUDA vLLM packs K and V into the final content dimension and
+      exposes one block-first 4D tensor. HND and NHD may have different inner
+      strides, but both still expose one contiguous page per block.
+    * vLLM-Ascend hands the connector ``(K, V)`` as two block-first 4D
+      tensors, so UCM must describe two segments for every Attention page.
+
+    The Indexer entry is a block-first 3D tensor. CUDA exposes the tensor
+    directly; vLLM-Ascend wraps it in a singleton tuple. The Indexer remains a
+    separate UCM segment because it has its own allocation and block stride.
+
+    Layerwise UCM operations require a rectangular ``[layer, slot]`` metadata
+    matrix. Dense layers have no physical Indexer allocation, so their Indexer
+    slot is represented by a ghost segment: a null pointer and zero stride,
+    but the same logical copy size as a real sparse-layer Indexer. Direct mode
+    flattens only real segments and therefore drops those ghost entries.
+
+    All released M3 implementations allocate each exposed tensor as tightly
+    packed pages. CUDA creates a contiguous raw buffer and changes only the
+    page-internal dimension order; Ascend may align the allocation's base
+    address, but then slices it to the exact byte count before applying a
+    contiguous view. Consequently one page's byte size is also the distance
+    to the next page. This layout intentionally does not implement the padded
+    page mechanisms used by unrelated hybrid-cache models.
+    """
+
+    @classmethod
+    def supports(cls, vllm_config: "VllmConfig") -> bool:
+        return getattr(current_platform, "device_type", None) in (
+            "cuda",
+            "npu",
+        ) and _is_minimax_m3(vllm_config)
+
+    @staticmethod
+    def _is_indexer(layer_name: str) -> bool:
+        # Match a complete path component instead of a substring so an unrelated
+        # module whose name merely contains "index_cache" cannot be misclassified.
+        components = layer_name.lower().split(".")
+        return "index_cache" in components
+
+    def _segment(self, layer_name: str, tensor: torch.Tensor) -> KVCacheSegment:
+        # All supported M3 tensors are block-first. Dimension zero is therefore
+        # both the number of physically allocated pages and the dimension UCM
+        # advances when selecting page i.
+        num_blocks = int(tensor.shape[0])
+        if num_blocks < self.num_blocks:
+            raise ValueError(
+                "MiniMax M3 KV cache has fewer physical blocks than configured: "
+                f"layer={layer_name}, minimum={self.num_blocks}, "
+                f"actual={num_blocks}, shape={tuple(tensor.shape)}."
+            )
+        element_size = int(tensor.element_size())
+        # The logical page contains every element below dimension zero. Inner
+        # HND/NHD order does not change this product, so no backend-specific
+        # shape decoding is needed to obtain the bytes UCM should copy.
+        copy_size = math.prod(int(value) for value in tensor.shape[1:]) * element_size
+        # Use the physical block count here rather than kv_cache_config.num_blocks.
+        # vLLM may expose an allocation with spare pages; UCM must keep the whole
+        # addressable span valid even if the current cache configuration uses less.
+        return KVCacheSegment(
+            ptr=int(tensor.data_ptr()),
+            copy_size=copy_size,
+            block_stride=copy_size,
+            buffer_size=num_blocks * copy_size,
+        )
+
+    @staticmethod
+    def _require_tensor(layer_name: str, value) -> torch.Tensor:
+        if not isinstance(value, torch.Tensor):
+            raise TypeError(
+                "Unsupported MiniMax M3 KV cache value: "
+                f"layer={layer_name}, type={type(value)}."
+            )
+        return value
+
+    def _attention_segments(self, layer_name: str, value) -> tuple[KVCacheSegment, ...]:
+        device_type = getattr(current_platform, "device_type", None)
+        if device_type == "cuda":
+            # CUDA owns one allocation per layer in both supported generations.
+            # Do not split the legacy [N, 2, ...] tensor into K and V: axis 1 is
+            # inside each page, and splitting would produce the wrong block stride.
+            tensor = self._require_tensor(layer_name, value)
+            if tensor.dim() == 5 and int(tensor.shape[1]) != 2:
+                raise ValueError(
+                    "MiniMax M3 CUDA 5D KV cache must use [num_blocks, 2, ...]: "
+                    f"layer={layer_name}, shape={tuple(tensor.shape)}."
+                )
+            if tensor.dim() not in (4, 5):
+                raise ValueError(
+                    "MiniMax M3 CUDA KV cache must be a block-first 4D or 5D "
+                    f"tensor: layer={layer_name}, shape={tuple(tensor.shape)}."
+                )
+            return (self._segment(layer_name, tensor),)
+
+        # Ascend's model runner splits its internal K/V storage before invoking
+        # the connector. Consequently the connector contract here is exactly a
+        # two-tensor tuple, with one independently addressable UCM segment each.
+        if not isinstance(value, tuple) or len(value) != 2:
+            raise ValueError(
+                "MiniMax M3 Ascend KV cache must contain separate K and V tensors: "
+                f"layer={layer_name}, type={type(value)}."
+            )
+        segments = []
+        for tensor in value:
+            tensor = self._require_tensor(layer_name, tensor)
+            if tensor.dim() != 4:
+                raise ValueError(
+                    "MiniMax M3 Ascend K and V caches must be 4D: "
+                    f"layer={layer_name}, shape={tuple(tensor.shape)}."
+                )
+            segments.append(self._segment(layer_name, tensor))
+        return tuple(segments)
+
+    def _indexer_segment(self, layer_name: str, value) -> KVCacheSegment:
+        if getattr(current_platform, "device_type", None) == "npu":
+            # vLLM-Ascend keeps the general multi-tensor cache-entry interface
+            # even though an M3 Indexer entry contains exactly one tensor.
+            if not isinstance(value, tuple) or len(value) != 1:
+                raise ValueError(
+                    "MiniMax M3 Ascend Indexer cache must contain one tensor: "
+                    f"layer={layer_name}, type={type(value)}."
+                )
+            value = value[0]
+        tensor = self._require_tensor(layer_name, value)
+        if tensor.dim() != 3:
+            raise ValueError(
+                "MiniMax M3 Indexer cache must be 3D: "
+                f"layer={layer_name}, shape={tuple(tensor.shape)}."
+            )
+        return self._segment(layer_name, tensor)
+
+    def _collect_layers(self, kvcaches):
+        # Attention and Indexer arrive as separate mapping entries but share the
+        # same transformer layer id. Group them before building the rectangular
+        # layerwise matrix so dictionary iteration order is irrelevant.
+        layers: dict[int, dict[str, Optional[tuple[KVCacheSegment, ...]]]] = {}
+        for layer_name, value in kvcaches.items():
+            layer_id = self.layer_name_to_id[layer_name]
+            role = "indexer" if self._is_indexer(layer_name) else "attention"
+            layer = layers.setdefault(layer_id, {"attention": None, "indexer": None})
+            if layer[role] is not None:
+                raise ValueError(
+                    f"Duplicate MiniMax M3 {role} cache for layer {layer_id}."
+                )
+            layer[role] = (
+                (self._indexer_segment(layer_name, value),)
+                if role == "indexer"
+                else self._attention_segments(layer_name, value)
+            )
+        return layers
+
+    @staticmethod
+    def _ghost(size: int) -> KVCacheSegment:
+        # The non-zero copy_size preserves a uniform logical slot schema across
+        # layers. A null pointer plus zero stride ensures every block address for
+        # this absent slot remains null and no backing allocation is claimed.
+        return KVCacheSegment(ptr=0, copy_size=size, block_stride=0, buffer_size=0)
+
+    def _build_layout(self, kvcaches) -> None:
+        collected = self._collect_layers(kvcaches)
+        layer_ids = sorted(collected)
+        if not layer_ids:
+            raise ValueError("MiniMax M3 KV cache layout is empty.")
+        self.first_layer_id = layer_ids[0]
+        layers = []
+        for layer_id in layer_ids:
+            attention = collected[layer_id]["attention"]
+            if not attention:
+                raise ValueError(
+                    f"MiniMax M3 layer {layer_id} has no Attention KV cache."
+                )
+            indexer = collected[layer_id]["indexer"]
+            layers.append((attention, indexer[0] if indexer else None))
+
+        attention_sizes = [segment.copy_size for segment in layers[0][0]]
+        # UCM uses the first row's slot sizes as the layerwise schema. Requiring
+        # identical Attention slot counts and sizes prevents later layers from
+        # being interpreted using metadata belonging to a different shape.
+        for layer_id, (attention, _) in zip(layer_ids, layers):
+            sizes = [segment.copy_size for segment in attention]
+            if sizes != attention_sizes:
+                raise ValueError(
+                    "MiniMax M3 layers use incompatible Attention layouts: "
+                    f"expected={attention_sizes}, layer={layer_id}, actual={sizes}."
+                )
+
+        indexers = [indexer for _, indexer in layers if indexer is not None]
+        if not indexers:
+            # Direct mode can still describe a partial cache mapping containing
+            # only Attention entries. Layerwise M3 mode cannot manufacture its
+            # Indexer slot size without observing at least one sparse layer.
+            if self.use_layerwise:
+                raise ValueError(
+                    "MiniMax M3 KV cache layout did not find an Indexer cache."
+                )
+            indexer_size = None
+        else:
+            indexer_sizes = {indexer.copy_size for indexer in indexers}
+            if len(indexer_sizes) != 1:
+                raise ValueError(
+                    f"MiniMax M3 Indexer block sizes differ: {sorted(indexer_sizes)}."
+                )
+            indexer_size = indexers[0].copy_size
+
+        rows = []
+        for attention, indexer in layers:
+            row = list(attention)
+            if indexer_size is not None:
+                # Sparse layers contribute their real Indexer; dense layers get
+                # a same-sized ghost so every row has the same slot positions.
+                row.append(indexer or self._ghost(indexer_size))
+            rows.append(row)
+        if self.use_layerwise:
+            # Preserve the two-dimensional [layer, slot] form consumed by
+            # layerwise address extraction. Ghost slots intentionally remain.
+            self.base_ptrs = np.asarray(
+                [[segment.ptr for segment in row] for row in rows], dtype=np.uint64
+            )
+            self.tensor_size_lists = np.asarray(
+                [[segment.copy_size for segment in row] for row in rows],
+                dtype=np.uint64,
+            )
+            self.block_stride_lists = np.asarray(
+                [[segment.block_stride for segment in row] for row in rows],
+                dtype=np.uint64,
+            )
+            self.buffer_sizes = np.asarray(
+                [[segment.buffer_size for segment in row] for row in rows],
+                dtype=np.uint64,
+            )
+        else:
+            # Direct operations treat all real per-layer allocations as one
+            # flat shard. Ghosts must be omitted because they are schema padding,
+            # not memory that should participate in a direct transfer.
+            segments = [segment for row in rows for segment in row if segment.ptr]
+            self.base_ptrs = np.asarray(
+                [segment.ptr for segment in segments], dtype=np.uint64
+            )
+            self.tensor_size_lists = np.asarray(
+                [segment.copy_size for segment in segments], dtype=np.uint64
+            )
+            self.block_stride_lists = np.asarray(
+                [segment.block_stride for segment in segments], dtype=np.uint64
+            )
+            self.buffer_sizes = np.asarray(
+                [segment.buffer_size for segment in segments], dtype=np.uint64
+            )
+        logger.info(
+            "MiniMax M3 KV cache layout: device=%s, slot_sizes=%s, "
+            "indexer_layers=%s/%s",
+            getattr(current_platform, "device_type", None),
+            attention_sizes + ([indexer_size] if indexer_size is not None else []),
+            len(indexers),
+            len(layers),
+        )
+
+
 @dataclass
 class UCMConnectorMetadata(KVConnectorMetadata):
     request_meta: dict[str, RequestDispatchMeta] = field(default_factory=dict)
@@ -1029,36 +1316,11 @@ class PendingDumpTask:
     wait_for_save_start_ms: float = 0.0
 
 
-class RequestHasher:
-    """hash(md5) request to generate ucm block id"""
-
-    def __init__(self, vllm_config, rank_id):
-        speculative_config = getattr(vllm_config, "speculative_config", None)
-        spec_info = ""
-        if speculative_config is not None:
-            spec_method = getattr(speculative_config, "method", "") or ""
-            spec_tokens = getattr(speculative_config, "num_speculative_tokens", 0)
-            spec_info = f":{spec_method}:{spec_tokens}"
-        additional_config = getattr(vllm_config, "additional_config", None) or {}
-        sparse_sfa_c8 = bool(additional_config.get("enable_sparse_sfa_c8", False))
-        sparse_li_c8 = bool(additional_config.get("enable_sparse_li_c8", False))
-        sparse_c8_info = f":sfa_c8={int(sparse_sfa_c8)}:li_c8={int(sparse_li_c8)}"
-        model_name = vllm_config.model_config.model.rstrip("/").split("/")[-1]
-        meta = (
-            f"{model_name}:"
-            f"{vllm_config.parallel_config.tensor_parallel_size}:"
-            f"{vllm_config.model_config.dtype}:{rank_id}{spec_info}{sparse_c8_info}"
-        )
-        self.meta_bytes = meta.encode("utf-8")
-
-    def __call__(self, input_data) -> bytes:
-        if isinstance(input_data, bytes):
-            input_bytes = input_data
-        else:
-            input_bytes = pickle.dumps(input_data, protocol=pickle.HIGHEST_PROTOCOL)
-
-        h = hashlib.md5(self.meta_bytes + input_bytes)
-        return h.digest()
+@dataclass
+class PendingLoadTask:
+    task: Task
+    request_id: str
+    vllm_block_ids: list[int]
 
 
 @dataclass
@@ -1205,7 +1467,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if role == KVConnectorRole.SCHEDULER:
             self.request_hasher = RequestHasher(vllm_config, 0)
             self._other_rank_hashers = self._make_other_rank_hashers(vllm_config)
-            self._seed = self.request_hasher("UCM_HASH_SEED")
+            self._seed = self.request_hasher.seed
             # init scheduler-side connector
             if not defer_scheduler_store:
                 self.store = self._create_store(None)
@@ -1231,9 +1493,33 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self._invalid_block_ids: set[int] = set()
         self._async_dump_req_ids: set[str] = set()
         self._pending_dump_tasks: list[PendingDumpTask] = []
+        request_async_configured = bool(
+            self.launch_config.get("use_request_async_load", False)
+        )
+        # Keep the first implementation deliberately scoped to the direct
+        # connector. Layerwise, CP and HMA connectors have different task and
+        # block-layout semantics and must opt in separately.
+        self.use_request_async_load = (
+            request_async_configured and type(self) is UCMDirectConnector
+        )
+        if request_async_configured and not self.use_request_async_load:
+            logger.warning(
+                "Request-async loading is currently supported only by "
+                "UCMDirectConnector; disabling it for %s.",
+                type(self).__name__,
+            )
+        # Scheduler-side plans waiting to be included in connector metadata.
+        self._pending_async_load_dispatches: dict[str, RequestDispatchMeta] = {}
+        # Scheduler-side requests whose external load has already been dispatched.
+        self._async_load_req_ids: set[str] = set()
+        # Worker-side tasks that outlive the metadata step that submitted them.
+        self._pending_load_tasks: dict[str, PendingLoadTask] = {}
+        self._finished_async_load_req_ids: set[str] = set()
         self.cp_world_size = 1
         self.hash_block_size = self.block_size
         self.block_size *= self.cp_world_size
+        self.request_block_hasher = None
+        self._bind_request_block_hasher()
 
     def get_block_size(self) -> int:
         return self.block_size
@@ -1282,25 +1568,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
             }
         )
 
-    def generate_hash(
-        self, block_size: int, token_ids: List[int], parent_block_hash_value: bytes
-    ) -> list[bytes]:
-        ret = []
-        for start in range(0, len(token_ids), block_size):
-            end = start + block_size
-            block_token_ids = token_ids[start:end]
-            # Do not hash the block if it is not full.
-            if len(block_token_ids) < block_size:
-                break
-
-            block_token_ids_tuple = tuple(block_token_ids)
-            hash_value = self.request_hasher(
-                (parent_block_hash_value, block_token_ids_tuple)
+    def _bind_request_block_hasher(self) -> None:
+        if self._role == KVConnectorRole.SCHEDULER:
+            self.request_block_hasher = self.request_hasher.make_request_block_hasher(
+                self.hash_block_size, self._seed
             )
-            parent_block_hash_value = hash_value
-            ret.append(hash_value)
-
-        return ret
 
     def _set_default_shm_buffer_capacity(self, config: dict[str, Any]) -> None:
         if not bool(config.get("share_buffer_enable", False)):
@@ -1335,6 +1607,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             backends = [path for path in config["storage_backends"].split(":")]
             config["storage_backends"] = backends
         config["unique_id"] = f"{self.unique_id}"
+        config["tensor_layout"] = "mla" if self.is_mla else "gqa"
         if self._role == KVConnectorRole.WORKER:
             config["device_id"] = self.device_id
             tensor_size_list = kv_cache_layout.tensor_size_list * self.blocks_per_chunk
@@ -1431,13 +1704,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
             # vllm_ascend >= 0.10.0 uses Tuple for kvcaches
             for i, tensor in enumerate(sample_kv_layer):
                 logger.info(f"kv cache shape {i}: {tensor.shape}")
-        layout_cls = (
-            SharedIndexerKVCacheLayout
-            if SharedIndexerKVCacheLayout.supports(
-                self._vllm_config, self.launch_config
-            )
-            else KVCacheLayout
-        )
+        if MiniMaxM3KVCacheLayout.supports(self._vllm_config):
+            layout_cls = MiniMaxM3KVCacheLayout
+        elif SharedIndexerKVCacheLayout.supports(self._vllm_config, self.launch_config):
+            layout_cls = SharedIndexerKVCacheLayout
+        else:
+            layout_cls = KVCacheLayout
         self.kv_cache_layout = layout_cls(
             self.kv_caches,
             self.launch_config,
@@ -1519,12 +1791,21 @@ class UCMDirectConnector(KVConnectorBase_V1):
         request: "Request",
         num_computed_tokens: int,
     ) -> tuple[int, bool]:
+        # A request can be queried again after preemption. Drop scheduler-side
+        # state from its previous load attempt before recording a new one.
+        self._pending_async_load_dispatches.pop(request.request_id, None)
+        self._async_load_req_ids.discard(request.request_id)
         assert num_computed_tokens % self.block_size == 0
         hbm_hit_block_num = num_computed_tokens // self.block_size
 
-        ucm_block_ids = self.generate_hash(
-            self.hash_block_size, request.all_token_ids, self._seed
-        )
+        assert self.request_block_hasher is not None
+        try:
+            ucm_block_ids = self.request_block_hasher(request)
+        except Exception as e:
+            logger.error(
+                f"request {request.request_id} hash error. {type(e).__name__}: {e}"
+            )
+            return 0, False
 
         if (
             self.enable_record_traces
@@ -1623,12 +1904,57 @@ class UCMDirectConnector(KVConnectorBase_V1):
             token_processed=hbm_hit_block_num * self.block_size + external_hit_tokens,
         )
 
-        return external_hit_tokens, False
+        load_async = self.use_request_async_load and external_hit_tokens > 0
+        return external_hit_tokens, load_async
 
     def update_state_after_alloc(
         self, request: "Request", blocks: "KVCacheBlocks", num_external_tokens: int
     ):
-        pass
+        if not self.use_request_async_load or num_external_tokens <= 0:
+            return
+
+        request_id = request.request_id
+        req_meta = self.requests_meta.get(request_id)
+        if req_meta is None:
+            raise RuntimeError(
+                f"Request {request_id} has external tokens but no UCM metadata."
+            )
+
+        block_ids_by_group = blocks.get_block_ids()
+        if not block_ids_by_group:
+            raise RuntimeError(f"Request {request_id} has no allocated KV blocks.")
+
+        # Match the existing direct connector path, which uses the first KV
+        # cache group. Other layouts are intentionally excluded from opt-in.
+        vllm_block_ids = block_ids_by_group[0]
+        external_start = req_meta.hbm_hit_block_num
+        num_external_blocks = math.ceil(num_external_tokens / self.block_size)
+        external_end = external_start + num_external_blocks
+        load_vllm_block_ids = list(vllm_block_ids[external_start:external_end])
+        load_ucm_block_ids = list(
+            req_meta.ucm_block_ids[
+                external_start * self.cp_world_size : external_end * self.cp_world_size
+            ]
+        )
+
+        if len(load_vllm_block_ids) != num_external_blocks:
+            raise RuntimeError(
+                f"Request {request_id} allocated {len(load_vllm_block_ids)} "
+                f"external blocks, expected {num_external_blocks}."
+            )
+        expected_ucm_blocks = num_external_blocks * self.cp_world_size
+        if len(load_ucm_block_ids) != expected_ucm_blocks:
+            raise RuntimeError(
+                f"Request {request_id} has {len(load_ucm_block_ids)} UCM blocks, "
+                f"expected {expected_ucm_blocks}."
+            )
+
+        self._pending_async_load_dispatches[request_id] = RequestDispatchMeta(
+            load_block_ids=(load_ucm_block_ids, load_vllm_block_ids),
+            dump_block_ids=([], []),
+            load_async=True,
+        )
+        self._async_load_req_ids.add(request_id)
 
     def _generate_dispatch_meta(
         self,
@@ -1699,6 +2025,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     req_meta,
                     scheduler_output.num_scheduled_tokens[request_id],
                     vllm_block_ids,
+                    need_load=request_id not in self._async_load_req_ids,
                 )
 
         # for cached request, there are 3 situation:
@@ -1726,7 +2053,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
                         req_meta,
                         scheduler_output.num_scheduled_tokens[request_id],
                         new_block_ids,
-                        resumed_from_preemption,
+                        resumed_from_preemption
+                        and request_id not in self._async_load_req_ids,
                     )
         else:
             for request in scheduled_cached_reqs:
@@ -1737,12 +2065,20 @@ class UCMDirectConnector(KVConnectorBase_V1):
                         req_meta,
                         scheduler_output.num_scheduled_tokens[request_id],
                         request.new_block_ids[0],
-                        request.resumed_from_preemption,
+                        request.resumed_from_preemption
+                        and request_id not in self._async_load_req_ids,
                     )
 
         # clear finished request
         for request_id in scheduler_output.finished_req_ids:
             self.requests_meta.pop(request_id, None)
+            self._pending_async_load_dispatches.pop(request_id, None)
+            self._async_load_req_ids.discard(request_id)
+
+        # Async loads are intentionally absent from scheduled request lists.
+        # Dispatch their transfer plans independently of model-forward work.
+        requests_dispatch_meta.update(self._pending_async_load_dispatches)
+        self._pending_async_load_dispatches = {}
 
         self._track_async_dump_requests(requests_dispatch_meta)
 
@@ -1772,8 +2108,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
         for request_id, request in metadata.request_meta.items():
             if len(request.load_block_ids[0]) == 0:
                 continue
-            is_load = True
-            num_loaded_block += len(request.load_block_ids[0])
+            sync_load = not request.load_async
+            if sync_load:
+                is_load = True
+                num_loaded_block += len(request.load_block_ids[0])
 
             ucm_block_ids, vllm_block_ids = request.load_block_ids
             if self._skip_null_vllm_blocks:
@@ -1783,14 +2121,25 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     f"UCM load request {request_id}",
                 )
                 if len(ucm_block_ids) == 0:
-                    num_loaded_block -= len(request.load_block_ids[0])
+                    if sync_load:
+                        num_loaded_block -= len(request.load_block_ids[0])
+                    if request.load_async:
+                        self._finished_async_load_req_ids.add(request_id)
                     continue
-                num_loaded_block -= len(request.load_block_ids[0]) - len(ucm_block_ids)
+                if sync_load:
+                    num_loaded_block -= len(request.load_block_ids[0]) - len(
+                        ucm_block_ids
+                    )
             store_block_ids = ucm_block_ids
             if self.tp_rank != 0 and not self.is_mla:
                 store_block_ids = [
                     self.request_hasher(block_id) for block_id in ucm_block_ids
                 ]
+            if request.load_async and request_id in self._pending_load_tasks:
+                logger.warning(
+                    "Ignore duplicate async load metadata for request %s.", request_id
+                )
+                continue
             try:
                 total_ptrs = self.kv_cache_layout.extract_block_addrs(vllm_block_ids)
                 total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
@@ -1802,8 +2151,15 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     shard_indexs,
                     total_ptrs,
                 )
-                request_to_task[request_id] = task
-                request_to_load_blocks[request_id] = len(ucm_block_ids)
+                if request.load_async:
+                    self._pending_load_tasks[request_id] = PendingLoadTask(
+                        task=task,
+                        request_id=request_id,
+                        vllm_block_ids=list(vllm_block_ids),
+                    )
+                else:
+                    request_to_task[request_id] = task
+                    request_to_load_blocks[request_id] = len(ucm_block_ids)
             except Exception as e:
                 logger.error(
                     f"request {request_id} submit load task error. "
@@ -1815,7 +2171,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     + metadata.request_meta[request_id].dump_block_ids[1],
                 )
                 self._connector_worker_meta.mark_failed(request_id)
-                num_loaded_block -= len(ucm_block_ids)
+                if sync_load:
+                    num_loaded_block -= len(ucm_block_ids)
+                if request.load_async:
+                    self._finished_async_load_req_ids.add(request_id)
 
         for request_id, task in request_to_task.items():
             try:
@@ -2097,10 +2456,46 @@ class UCMDirectConnector(KVConnectorBase_V1):
             return self.request_finished(request, block_ids[0])
         return self.request_finished(request, [])
 
+    def _poll_pending_load_tasks(self) -> set[str]:
+        finished_recving = set(getattr(self, "_finished_async_load_req_ids", set()))
+        if hasattr(self, "_finished_async_load_req_ids"):
+            self._finished_async_load_req_ids.clear()
+
+        pending_load_tasks = getattr(self, "_pending_load_tasks", {})
+        for request_id, pending in list(pending_load_tasks.items()):
+            completed = False
+            try:
+                if not self._rank_consistency.check_load(pending.task):
+                    continue
+                completed = True
+                # A completed poll is followed by wait_load() to surface any
+                # deferred Store error and release the task context.
+                self._rank_consistency.wait_load(pending.task)
+            except Exception as e:
+                completed = True
+                logger.error(
+                    f"request {request_id} async load task failed. "
+                    f"{type(e).__name__}: {e}"
+                )
+                self._record_load_error(
+                    "connector_load_wait_errors_total",
+                    pending.vllm_block_ids,
+                )
+                self._connector_worker_meta.mark_failed(request_id)
+            finally:
+                if completed:
+                    pending_load_tasks.pop(request_id, None)
+                    # Failed loads must also report completion so vLLM can
+                    # leave WAITING_FOR_REMOTE_KVS and recompute or fail.
+                    finished_recving.add(request_id)
+
+        return finished_recving
+
     def get_finished(
         self,
         finished_req_ids: set[str],
     ) -> tuple[Optional[set[str]], Optional[set[str]]]:
+        finished_recving = self._poll_pending_load_tasks()
         async_finished_req_ids = finished_req_ids & self._async_dump_req_ids
 
         if async_finished_req_ids:
@@ -2120,7 +2515,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self._rank_consistency.finish_dump(async_finished_req_ids)
         self._async_dump_req_ids.difference_update(async_finished_req_ids)
 
-        return async_finished_req_ids or None, None
+        return async_finished_req_ids or None, finished_recving or None
 
 
 class UCMLayerWiseConnector(UCMDirectConnector):
@@ -2485,13 +2880,14 @@ class UCMCPConnector(UCMLayerWiseConnector):
         if role == KVConnectorRole.SCHEDULER:
             self.request_hasher = RequestHasher(vllm_config, 0)
             self._other_rank_hashers = self._make_other_rank_hashers(vllm_config)
-            self._seed = self.request_hasher("UCM_HASH_SEED")
+            self._seed = self.request_hasher.seed
             # init scheduler-side connector
             self.store = self._create_store(None)
         else:
             self.request_hasher = RequestHasher(vllm_config, self.tp_rank)
         vllm_config.parallel_config.tensor_parallel_size = old_tp_size
         self.block_size *= self.cp_world_size
+        self._bind_request_block_hasher()
         logger.info("Init UCMCPConnector.")
 
     def bind_connector_metadata(self, connector_metadata: KVConnectorMetadata) -> None:
@@ -2627,27 +3023,74 @@ class UCMLiteConnector(KVConnectorBase_V1):
     ):
         self.block_size = vllm_config.cache_config.block_size
         self.hash_block_size = self.block_size
+        self.trace_hash_block_size = max(512, self.hash_block_size)
         self.requests_meta: dict[str, RequestMeta] = {}
         self.total_block_nums = 0
 
         self.request_hasher = RequestHasher(vllm_config, 0)
-        self._seed = self.request_hasher("UCM_HASH_SEED")
+        self._seed = self.request_hasher.seed
+        self.request_block_hasher = self.request_hasher.make_request_block_hasher(
+            self.hash_block_size, self._seed
+        )
 
         super().__init__(vllm_config, role, kv_cache_config)
 
+        if type(self) is not UCMLiteConnector:
+            return
+
+        is_mla = getattr(vllm_config.model_config, "is_deepseek_mla", False)
+        hbm_data_size = self._compute_block_data_size(vllm_config)
+        logger.info(
+            f"UCMTraceMeta: type=standard, "
+            f"is_mla={is_mla}, "
+            f"vllm_hash_block_size={self.hash_block_size}, "
+            f"trace_hash_block_size={self.trace_hash_block_size}, "
+            f"hbm_block_data_size={hbm_data_size}"
+        )
         logger.info("Init UCMLiteConnector.")
+
+    @staticmethod
+    def _compute_block_data_size(vllm_config) -> int:
+        """Compute hbm_block_data_size from model config (standard models)."""
+        mc = vllm_config.model_config
+        hf = mc.hf_text_config
+        bs = vllm_config.cache_config.block_size
+        num_layers = getattr(hf, "num_hidden_layers", 0)
+        dtype_map = {"bfloat16": 2, "float16": 2, "float32": 4, "int8": 1}
+        dt = dtype_map.get(getattr(mc, "dtype", "bfloat16"), 2)
+
+        kv_lora = getattr(hf, "kv_lora_rank", None)
+        qk_rope = getattr(hf, "qk_rope_head_dim", None)
+        index_hd = getattr(hf, "index_head_dim", None)
+
+        if kv_lora and qk_rope and index_hd:
+            per_tok = (kv_lora + qk_rope + index_hd) * dt
+        elif kv_lora and qk_rope:
+            per_tok = (kv_lora + qk_rope) * dt
+        else:
+            kv_heads = getattr(
+                hf, "num_key_value_heads", getattr(hf, "num_attention_heads", 0)
+            )
+            tp = vllm_config.parallel_config.tensor_parallel_size
+            head_dim = getattr(hf, "head_dim", 0) or (
+                getattr(hf, "hidden_size", 0)
+                // max(getattr(hf, "num_attention_heads", 1), 1)
+            )
+            per_tok = 2 * head_dim * (kv_heads // tp) * dt
+
+        return num_layers * bs * per_tok
 
     def get_block_size(self) -> int:
         return self.block_size
 
     def get_num_new_matched_tokens(self, request, num_computed_tokens):
-        req_blocks_num = len(request.all_token_ids) // self.hash_block_size
+        req_blocks_num = len(request.all_token_ids) // self.trace_hash_block_size
         if req_blocks_num < 1:
             return 0, False
         if request.request_id not in self.requests_meta:
             hash_start = time.perf_counter()
             ucm_block_ids = self.generate_hash(
-                self.hash_block_size, request.all_token_ids, self._seed
+                self.trace_hash_block_size, request.all_token_ids, self._seed
             )
             hash_end = time.perf_counter()
             hash_time_ms = (hash_end - hash_start) * 1000.0
@@ -2655,11 +3098,11 @@ class UCMLiteConnector(KVConnectorBase_V1):
             print_start = time.perf_counter()
             hex_ucm_block_ids = [b.hex() for b in ucm_block_ids]
             logger.info(
-                f"timestamp: {time.perf_counter()}, "
+                f"UCMTrace: timestamp: {time.perf_counter()}, "
                 f"request_id: {request.request_id}, "
                 f"input_length: {request.num_tokens}, "
                 f"output_length: {request.max_tokens}, "
-                f"ucm_block_ids: {hex_ucm_block_ids}"
+                f"block_hashes: {hex_ucm_block_ids}"
             )
             print_time_ms = (time.perf_counter() - print_start) * 1000.0
             logger.info(
@@ -2719,29 +3162,6 @@ class UCMLiteConnector(KVConnectorBase_V1):
     def wait_for_save(self):
         pass
 
-    def generate_hash(
-        self,
-        block_size: int,
-        token_ids: List[int],
-        parent_block_hash_value: bytes,
-    ) -> list[bytes]:
-        ret = []
-        for start in range(0, len(token_ids), block_size):
-            end = start + block_size
-            block_token_ids = token_ids[start:end]
-            # Do not hash the block if it is not full.
-            if len(block_token_ids) < block_size:
-                break
-
-            block_token_ids_tuple = tuple(block_token_ids)
-            hash_value = self.request_hasher(
-                (parent_block_hash_value, block_token_ids_tuple)
-            )
-            parent_block_hash_value = hash_value
-            ret.append(hash_value)
-
-        return ret
-
 
 class UCMConnector(KVConnectorBase_V1, SupportsHMA):
     @classmethod
@@ -2799,7 +3219,25 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         )
 
         if use_lite:
-            self.connector = UCMLiteConnector(vllm_config, role, kv_cache_config)
+            from ucm.integration.vllm.hla_connector import (
+                UCMHLALiteConnector,
+                UCMHybridLinearAttentionConnector,
+            )
+            from ucm.integration.vllm.hma_connector import (
+                UCMFAWAConnector,
+                UCMFAWALiteConnector,
+            )
+
+            if UCMFAWAConnector.can_handle_kv_cache_config(kv_cache_config):
+                self.connector = UCMFAWALiteConnector(
+                    vllm_config, role, kv_cache_config
+                )
+            elif UCMHybridLinearAttentionConnector.supports_kv_cache_layout(
+                kv_cache_config
+            ):
+                self.connector = UCMHLALiteConnector(vllm_config, role, kv_cache_config)
+            else:
+                self.connector = UCMLiteConnector(vllm_config, role, kv_cache_config)
             return
 
         use_inference_duration_monitor = (
@@ -3211,3 +3649,11 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
             Empty set if no load errors occurred.
         """
         return self.connector.get_block_ids_with_load_errors()
+
+    @_record_connector_interface_duration
+    def set_xfer_handshake_metadata_pp_aware(self, metadata) -> None:
+        logger.info(
+            "UCMConnector ignores PP-disaggregated handshake metadata: %s",
+            list(metadata.keys()),
+        )
+        return

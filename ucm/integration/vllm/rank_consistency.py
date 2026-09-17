@@ -189,6 +189,25 @@ class RankConsistencyManager:
                 self._mark_load_context_missing(request_context)
             raise
 
+    def check_load(self, task: Any) -> bool:
+        """Poll a load task without blocking and retain its wait context.
+
+        A successful poll does not remove the context. The caller must invoke
+        wait_load() once after completion so the Store can surface deferred
+        errors and release task resources.
+        """
+        task_key = id(task)
+        if task_key not in self._load_task_contexts:
+            raise RuntimeError("Load task was not submitted through submit_load().")
+        store, request_context = self._load_task_contexts[task_key]
+        try:
+            return store.check(task)
+        except Exception as error:
+            self._load_task_contexts.pop(task_key, None)
+            if self.enabled and isinstance(error, StoreNotFoundError):
+                self._mark_load_context_missing(request_context)
+            raise
+
     def submit_dump(
         self,
         store: UcmKVStoreBaseV1,
