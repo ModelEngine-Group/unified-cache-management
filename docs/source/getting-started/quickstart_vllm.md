@@ -97,7 +97,7 @@ docker build --build-arg INSTALL_MODE=package \
 
 3. Apply vLLM Integration Patches
 
-    To integrate UCM with vLLM, you can choose between a dynamic **monkey patch** (recommended) and a manual **git patch**.
+    To integrate UCM with vLLM, use the dynamic **monkey patch** (recommended).
 
     >**Recommendation**: We highly recommend the Monkey Patch approach for its non-invasive nature and ease of use.
 
@@ -105,67 +105,9 @@ docker build --build-arg INSTALL_MODE=package \
 
     This method enables UCM features dynamically at runtime via environment variables, requiring no source code modifications.
     It automatically detects the vLLM version and applies patches only when needed — you can safely keep it enabled regardless of your vLLM version.
-    Available for vLLM ≥ 0.11.0 (not supported on 0.9.2, which requires Manual Git Patch).
+    Available for vLLM ≥ 0.11.0.
 
-    1. Enable Monkey Patch:
-    ```bash
-    export ENABLE_UCM_PATCH=1
-    ```
-
-    2. Enable Sparse Attention (Optional, vLLM 0.11.0 only):
-    ```bash
-    export ENABLE_SPARSE=1
-    ```
-
-    **Note:**
-    - ReRoPE support is currently only available via the Git Patch method.
-
-    #### Option B: Manual Git Patch (Legacy/Alternative, only available for vLLM 0.9.2 and 0.11.0)
-
-    If you prefer modifying the source code directly, follow these steps:
-    
-    ##### 1. Navigate to the vLLM source directory:
-    ```bash
-    cd <path_to_vllm>
-    ```
-    ##### 2. Apply the patch that corresponds to your vLLM version and requirements:
-    
-    ###### vLLM 0.9.2
-    - Full UCM integration (recommended):
-    ```bash
-    git apply <path_to_ucm>/ucm/integration/vllm/patch/0.9.2/vllm-adapt.patch
-    ```
-
-    - Sparse attention only:
-    ```bash
-    git apply <path_to_ucm>/ucm/integration/vllm/patch/0.9.2/vllm-adapt-sparse.patch
-    ```
-
-    - ReRoPE support only:
-    ```bash
-    git apply <path_to_ucm>/ucm/integration/vllm/patch/0.9.2/vllm-adapt-rerope.patch
-    ```
-
-    ###### vLLM 0.11.0
-
-    - Full UCM integration (recommended):
-    ```bash
-    git apply <path_to_ucm>/ucm/integration/vllm/patch/0.11.0/vllm-adapt.patch
-    ```
-
-    - Sparse attention only:
-    ```bash
-    git apply <path_to_ucm>/ucm/integration/vllm/patch/0.11.0/vllm-adapt-sparse.patch
-    ```
-
-    - ReRoPE support only:
-    ```bash
-    git apply <path_to_ucm>/ucm/integration/vllm/patch/0.11.0/vllm-adapt-rerope.patch
-    ```
-
-    Choose the patch according to your development needs.
-    If you are working on **sparse attention** or **ReRoPE** independently, applying only the corresponding patch is sufficient.
-
+    The environment variables (`ENABLE_UCM_PATCH`, `ENABLE_SPARSE`) are set at **runtime** when launching inference (see Step 3 below), not during installation.
 
 ### Option 3: Install by pip
 1. Prepare vLLM Environment
@@ -203,6 +145,15 @@ You may directly edit the example file at `unified-cache-management/examples/ucm
 The sparse module was not compiled by default. To enable it, set the environment variable `export ENABLE_SPARSE=TRUE` and re-compile the code you built. And uncomment `ucm_sparse_config` code block in `unified-cache-management/examples/ucm_config_example.yaml`.
 
 ## Step 3: Launching Inference
+
+Before starting vLLM, set the following **runtime** environment variables to enable UCM via monkey patch (no source modifications, effective on `import vllm`):
+
+```bash
+# Enable UCM monkey patch (required)
+export ENABLE_UCM_PATCH=1
+# Enable sparse attention (optional, vLLM 0.11.0 only; requires the sparse module compiled at build time)
+export ENABLE_SPARSE=1
+```
 
 <details open>
 <summary><b>Offline Inference</b></summary>

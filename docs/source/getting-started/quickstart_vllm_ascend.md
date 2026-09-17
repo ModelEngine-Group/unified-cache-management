@@ -27,52 +27,15 @@ cd ..
 
 2、Apply vLLM and vLLM-Ascend Integration Patches
 
-To enable Unified Cache Management (UCM) integration, you need to apply patches to both vLLM and vLLM-Ascend source trees.
+To enable Unified Cache Management (UCM) integration, use the Monkey Patch below (no source code modifications required).
 
 #### Option A: Monkey Patch (Recommended)
 
 This method enables UCM features dynamically at runtime via environment variables, requiring no source code modifications.
 It automatically detects the vLLM version and applies patches only when needed — you can safely keep it enabled regardless of your vLLM version.
-Available for vLLM ≥ 0.11.0 (not supported on 0.9.2, which requires Manual Git Patch).
+Available for vLLM ≥ 0.11.0.
 
-1. Enable Monkey Patch:
-```bash
-export ENABLE_UCM_PATCH=1
-```
-
-2. Enable Sparse Attention (supported on v0.11.0):
-```bash
-export ENABLE_SPARSE=1
-```
-
-#### Option B: Manual Git Patch (Legacy/Alternative, only supported for v0.9.2 and v0.11.0)
-
-If you prefer modifying the source code directly, follow these steps:
-
-**Step 1:** Apply the vLLM Patch
-
-First, apply the standard vLLM integration patch in the vLLM source directory:
-    
-```bash
-cd <path_to_vllm>
-# Replace <vLLM_VERSION> with 0.9.2 or 0.11.0
-git apply <patch_to_ucm>/ucm/integration/vllm/patch/<vLLM_VERSION>/vllm-adapt.patch
-```
-    
-**Step 2:** Apply the vLLM-Ascend Patch
-
-Then, switch to the vLLM-Ascend source directory and apply the Ascend-specific patch:
-
-```bash
-cd <path_to_vllm_ascend>
-# Replace <vLLM_VERSION> with 0.9.2 or 0.11.0
-git apply <patch_to_ucm>/ucm/integration/vllm/patch/<vLLM_VERSION>/vllm-ascend-adapt.patch
-```
-
->**Note:**
-    The ReRoPE algorithm is not supported on Ascend at the moment.
-    Only the standard UCM integration is applicable for vLLM-Ascend.
-
+The environment variables (`ENABLE_UCM_PATCH`, `ENABLE_SPARSE`) are set at **runtime** when launching inference (see Step 3 below), not during installation.
 
 ### Option 2: Install by pip
 Install by pip or find the pre-build wheels on [Pypi](https://pypi.org/project/uc-manager/).
@@ -159,6 +122,15 @@ You may directly edit the example file at `unified-cache-management/examples/ucm
 The sparse module was not compiled by default. To enable it, set the environment variable `export ENABLE_SPARSE=TRUE` and re-compile the code you built. And uncomment `ucm_sparse_config` code block in `unified-cache-management/examples/ucm_config_example.yaml`. Additionally, if you want to run GSA, you also need to set the environment variable `export VLLM_HASH_ATTENTION=1`.
 
 ## Step 3: Launching Inference
+
+Before starting vLLM, set the following **runtime** environment variables to enable UCM via monkey patch (no source modifications, effective on `import vllm`):
+
+```bash
+# Enable UCM monkey patch (required)
+export ENABLE_UCM_PATCH=1
+# Enable sparse attention (supported on v0.11.0; requires the sparse module compiled at build time)
+export ENABLE_SPARSE=1
+```
 
 <details open>
 <summary><b>Offline Inference</b></summary>
