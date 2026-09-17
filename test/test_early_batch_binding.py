@@ -105,40 +105,84 @@ def test_native_pipeline_batch_keeps_store_alive_and_hands_off_before_release(tm
     assert ref() is None
 
 
-def test_dump_guard_delegates_exact_native_arguments_and_rejects_before_io():
+def test_dump_guard_delegates_exact_native_arguments_and_rejects_before_io(monkeypatch):
     import pytest
     from unittest.mock import Mock
     pipeline = Mock()
     route = _ReservedLoad(pipeline)
     ids, indexes, addresses = object(), [0, 1], object()
-    assert route.Dump(ids, indexes, addresses, 17) is pipeline.Dump.return_value
-    pipeline.Dump.assert_called_once_with(ids, indexes, addresses, 17)
-    pipeline.reset_mock()
+    submit = Mock(return_value=19)
+    monkeypatch.setattr(native, "EarlyDump", submit)
+    assert route.Dump(ids, indexes, addresses, 17) == 19
+    submit.assert_called_once_with(pipeline, ids, indexes, addresses, 17)
+    pipeline.Dump.assert_not_called()
     errors = []
     route.observer = Consumer("w0.0", lambda message: None, errors.append)
-    route.observer.max_dump_task_shards = 1
-    with pytest.raises(RuntimeError, match="headroom"):
+    route.observer.domain_active = True
+    submit.side_effect = native.EarlyCapacityRejected("before I/O")
+    with pytest.raises(native.StoreNotFoundError):
         route.Dump(ids, indexes, addresses, 17)
-    pipeline.Dump.assert_not_called()
-    assert len(errors) == 1
+    assert not errors
 
 
-def test_failed_unscoped_native_io_fences_active_domain_only():
+def test_failed_unscoped_native_io_fences_active_domain_only(monkeypatch):
     import pytest
     from unittest.mock import Mock
     for method in ("Load", "Dump", "Wait"):
         for active in (False, True):
-            native = Mock()
+            pipeline = Mock()
             failure = RuntimeError("native task error")
-            getattr(native, method).side_effect = failure
+            submit = Mock(side_effect=failure)
+            if method == "Wait":
+                pipeline.Wait = submit
+            else:
+                monkeypatch.setattr(native, "Early" + method, submit)
             errors = []
-            route = _ReservedLoad(native)
+            route = _ReservedLoad(pipeline)
             route.observer = Consumer("w0.0", lambda message: None, errors.append)
-            if active:
-                route.observer.max_task_shards = route.observer.max_dump_task_shards = 2
+            route.observer.domain_active = active
             args = (7,) if method == "Wait" else (np.zeros(0, dtype=np.uint8), [], object())
             with pytest.raises(RuntimeError) as caught:
                 getattr(route, method)(*args)
-            assert caught.value is failure  # preserve the native exception
+            assert caught.value is failure
             assert bool(errors) is active
-            getattr(native, method).assert_called_once_with(*args)
+            expected = args if method == "Wait" else (pipeline, *args, *( [()] if method == "Load" else []))
+            submit.assert_called_once_with(*expected)
+
+
+def test_real_no_space_binding_rejects_without_writing_and_retry_succeeds(tmp_path):
+    import pytest
+    store_dir = Path(native.__file__).resolve().parent.parent
+    config = dict(storage_backends=[str(tmp_path)], device_id=0,
+                  tensor_size=1 << 20, shard_size=1 << 20, block_size=1 << 20,
+                  data_dir_shard_bytes=1, posix_data_trans_concurrency=1,
+                  posix_lookup_concurrency=1, posix_io_engine="psync", io_direct=False,
+                  store_health={"enabled": False})
+    pipeline = native.PipelineStore()
+    pipeline.Stack("EarlyPosix", str(store_dir / "posix/libposixstore.so"), config)
+    pipeline.Stack("EarlyCache", str(store_dir / "cache/libcachestore.so"),
+                   dict(config, unique_id=uuid.uuid4().hex,
+                        cache_buffer_capacity_gb=1, share_buffer_enable=False,
+                        cache_load_exclusive_buffer_number=128,
+                        waiting_queue_depth=8, running_queue_depth=16,
+                        cache_stream_number=1))
+    ids = np.frombuffer(b"".join(i.to_bytes(16, "little") for i in range(1025)), dtype=np.uint8)
+    indexes = array.array("Q", [0] * 1025)
+    data = np.full(1 << 20, 0x56, dtype=np.uint8)
+    addresses = np.full((1025, 1), data.ctypes.data, dtype=np.uint64)
+    # v0.8.0 creates POSIX GC control files during Setup. Capacity rejection
+    # must leave that initial file set unchanged and create no KV data files.
+    setup_files = {p.relative_to(tmp_path) for p in tmp_path.rglob("*") if p.is_file()}
+    for operation in (lambda: native.EarlyLoad(pipeline, ids, indexes, addresses, []),
+                      lambda: native.EarlyDump(pipeline, ids, indexes, addresses, 0)):
+        with pytest.raises(native.EarlyCapacityRejected):
+            operation()
+        assert {p.relative_to(tmp_path) for p in tmp_path.rglob("*") if p.is_file()} == setup_files
+    # The failed task left no permanent LOADING owner or byte claim.
+    task = native.EarlyDump(pipeline, ids[:16], array.array("Q", [0]), addresses[:1], 0)
+    pipeline.Wait(task)
+    destination = np.zeros_like(data)
+    task = native.EarlyLoad(pipeline, ids[:16], array.array("Q", [0]),
+                            np.array([[destination.ctypes.data]], dtype=np.uint64), [])
+    pipeline.Wait(task)
+    np.testing.assert_array_equal(data, destination)
