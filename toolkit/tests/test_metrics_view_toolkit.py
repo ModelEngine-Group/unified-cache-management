@@ -54,7 +54,7 @@ class MetricsViewToolkitTest(unittest.TestCase):
 
     def test_metrics_view_readme_documents_dashboard_configs(self):
         standalone_readme = (
-            ROOT / "ucm_toolkit" / "tools" / "metrics_view" / "README.md"
+            ROOT.parent / "docs/docs-site/docs/en/toolkit/user/metrics-view.md"
         )
 
         readme = standalone_readme.read_text(encoding="utf-8")

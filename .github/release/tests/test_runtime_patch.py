@@ -59,6 +59,7 @@ def test_dispatcher_owns_version_routing_without_generated_manifest(
         "0.25.1",
         "0.26.0",
         "0.27.0",
+        "0.27.1",
         "0.28.0",
     ]
     source = PATCH_SOURCE.read_text(encoding="utf-8")
@@ -76,6 +77,7 @@ def test_enabled_source_dispatcher_does_not_read_generated_files(
         "ucm.integration.vllm.patch.bind_memory_patch": {},
         "ucm.integration.vllm.patch.v0210.vllm_ascend.mamba_copy_order_patch": {},
         "ucm.integration.vllm.patch.v0270.vllm.models.kimi_k3.nvidia.kimi_k3_mla_kv_hook_patch": {},
+        "ucm.integration.vllm.patch.v0271.vllm.minimax_m3_kv_transfer_patch": {},
     }
     for name, attributes in modules.items():
         fake = types.ModuleType(name)
@@ -101,6 +103,7 @@ def test_representative_ascend_dispatch_preserves_connector_and_import_order(
         "ucm.integration.vllm.patch.v0230.vllm_ascend.sfa_kv_transfer_patch",
         "ucm.integration.vllm.patch.v0210.vllm_ascend.mamba_copy_order_patch",
         "ucm.integration.vllm.patch.v0270.vllm.models.kimi_k3.nvidia.kimi_k3_mla_kv_hook_patch",
+        "ucm.integration.vllm.patch.v0271.vllm.minimax_m3_kv_transfer_patch",
     ]
     for name in expected:
         fake = types.ModuleType(name)

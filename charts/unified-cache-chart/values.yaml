@@ -6,7 +6,8 @@ images:
   registry: ""
   # pullPolicy：镜像拉取策略
   pullPolicy: ""
-  # image：vLLM/UCM 推理引擎镜像；安装时必须显式设置，也可被 modelSpec.image 按模型覆盖
+  # image：vLLM/UCM 推理引擎镜像；发布包填写默认 CUDA 镜像，并在此列出其他候选。
+  # 源码安装或默认值为空时须显式设置；modelSpec.image 可按模型覆盖。
   image: ""
   # mooncakeMasterImage：自创建 Mooncake master 镜像；留空复用 images.image
   mooncakeMasterImage: ""
