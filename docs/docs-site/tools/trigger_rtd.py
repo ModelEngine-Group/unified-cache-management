@@ -1,4 +1,4 @@
-"""Notify Read the Docs only after a release manifest has been published and read back."""
+"""Build and verify bilingual latest docs or a completed release on Read the Docs."""
 
 from __future__ import annotations
 
@@ -35,20 +35,8 @@ def request(path: str, *, method: str = "GET", data=None):
         return json.loads(raw) if raw else None
 
 
-def notify_release(
-    repository: str, manifest_path: Path, projects: list[str]
-) -> list[dict]:
-    manifest = load_manifest(manifest_path)
-    release = manifest["release"]
-    tag = release["tag"]
-    expected_url = f"https://github.com/{repository}/releases/tag/{quote(tag, safe='')}"
-    if release["url"].casefold() != expected_url.casefold():
-        raise ManifestError(
-            "RTD release notification must use this repository's manifest"
-        )
-    if release["type"] not in {"stable", "prerelease"}:
-        raise ManifestError("RTD release notification requires a published release")
-    triggered = []
+def validate_projects(repository: str, projects: list[str]) -> None:
+    """Validate both publication targets before triggering either language build."""
     for index, project in enumerate(projects):
         if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", project):
             raise ValueError("RTD project slug is missing or invalid")
@@ -62,11 +50,49 @@ def notify_release(
             raise ValueError(
                 f"RTD project {project} has the wrong documentation language"
             )
+        if metadata["default_branch"] != "develop":
+            raise ValueError(f"RTD project {project} must track the develop branch")
     translations = request(f"/projects/{projects[0]}/translations/")["results"]
     if projects[1] not in {item["slug"] for item in translations}:
         raise ValueError(
             "Chinese RTD project is not a translation of the English project"
         )
+
+
+def notify_latest(repository: str, projects: list[str]) -> list[dict]:
+    validate_projects(repository, projects)
+    triggered = []
+    for project, language in zip(projects, ("en", "zh-cn")):
+        build = request(f"/projects/{project}/versions/latest/builds/", method="POST")[
+            "build"
+        ]
+        triggered.append(
+            {
+                "project": project,
+                "language": language,
+                "version": "latest",
+                "build_id": build["id"],
+            }
+        )
+        print(f"[rtd] Build triggered: {project}/{build['id']}", flush=True)
+    return triggered
+
+
+def notify_release(
+    repository: str, manifest_path: Path, projects: list[str]
+) -> list[dict]:
+    manifest = load_manifest(manifest_path)
+    release = manifest["release"]
+    tag = release["tag"]
+    expected_url = f"https://github.com/{repository}/releases/tag/{quote(tag, safe='')}"
+    if release["url"].casefold() != expected_url.casefold():
+        raise ManifestError(
+            "RTD release notification must use this repository's manifest"
+        )
+    if release["type"] not in {"stable", "prerelease"}:
+        raise ManifestError("RTD release notification requires a published release")
+    validate_projects(repository, projects)
+    triggered = []
     for index, project in enumerate(projects):
         prefix = f"/projects/{project}"
         language = ("en", "zh-cn")[index]
@@ -165,7 +191,7 @@ def wait_for_builds(
                 or (item["version"] != "latest" and build["commit"] != source_sha)
             ):
                 raise RuntimeError(
-                    f"RTD build source differs from the release: {project}/{build_id}"
+                    f"RTD build source differs from the requested version: {project}/{build_id}"
                 )
             version = request(
                 f"/projects/{project}/versions/{quote(item['version'], safe='')}/"
@@ -199,7 +225,9 @@ def read_public(url: str) -> bytes:
         return response.read()
 
 
-def verify_public_docs(builds: list[dict], manifest: dict, repository: str) -> None:
+def verify_public_docs(
+    builds: list[dict], manifest: dict | None, repository: str
+) -> None:
     latest_manifest = resolve_manifest(repository)
     for build in builds:
         root = build["url"].rstrip("/") + "/"
@@ -239,7 +267,9 @@ def verify_public_docs(builds: list[dict], manifest: dict, repository: str) -> N
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", required=True)
-    parser.add_argument("--manifest", type=Path, required=True)
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--manifest", type=Path, help="Completed release manifest")
+    target.add_argument("--latest", action="store_true", help="Rebuild develop docs")
     parser.add_argument("--project", action="append", required=True)
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -247,14 +277,19 @@ def main() -> None:
     if len(args.project) != 2 or len(set(args.project)) != 2:
         raise ValueError("English and Chinese RTD projects must both be configured")
     if not re.fullmatch(r"[0-9a-f]{40}", args.source_sha):
-        raise ValueError("RTD validation requires the exact release source SHA")
-    builds = notify_release(args.repository, args.manifest, args.project)
+        raise ValueError("RTD validation requires the workflow source SHA")
+    builds = (
+        notify_latest(args.repository, args.project)
+        if args.latest
+        else notify_release(args.repository, args.manifest, args.project)
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps({"status": "pending", "builds": builds}, indent=2)
     )
     completed = wait_for_builds(builds, args.source_sha)
-    verify_public_docs(completed, load_manifest(args.manifest), args.repository)
+    manifest = load_manifest(args.manifest) if args.manifest else None
+    verify_public_docs(completed, manifest, args.repository)
     args.output.write_text(
         json.dumps(
             {"status": "complete", "source_sha": args.source_sha, "builds": completed},

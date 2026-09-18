@@ -59,7 +59,7 @@ node --test tests/install-ui.test.cjs
 
 根 `.readthedocs.yaml` 使用 Python 3.12，调用 `python docs/docs-site/tools/site.py rtd`。构建读取 RTD 的语言、Git identifier、commit hash、canonical URL 和输出目录，生成一个语言/版本根。英文使用 `/en/<version>/`，中文 RTD 语言为 `zh-cn`，对应源码目录 `zh`。
 
-顶部沿用 Material 的版本和语言菜单，通过 RTD Addons 数据列出已构建的版本与翻译，切换时保留当前页面路径。顶部菜单就绪后隐藏默认悬浮菜单；线上搜索继续使用 RTD，本地保留 MkDocs 搜索。源码链接绑定实际仓库和 Git ref；PR 使用 commit hash，不使用 PR 编号作为分支名。
+顶部沿用 Material 的版本和语言菜单，通过 RTD Addons 数据列出已构建的版本与翻译，切换时保留当前页面路径。顶部菜单就绪后隐藏默认悬浮菜单；线上搜索继续使用 RTD，本地保留 MkDocs 搜索。源码链接绑定实际仓库和 Git ref。
 
 快速开始按引擎、真实引擎版本、CUDA/CANN、Ascend 设备、操作系统和 CPU 架构选择环境。同一选择同时决定“标准引擎镜像”和“UCM 镜像”两个页签的制品与命令：前者在容器中安装 UCM，后者已包含 UCM。两者统一使用 `/workspace/model`、`/workspace/storage` 和 `/workspace/ucm.yaml`，不在正文重复选择环境。标准镜像仓库从 `.github/release/release.yaml` 注入，完整上游标签来自发布清单的镜像 family ID，不从 UCM 发布标签猜测。SGLang 直接展示现有指南。Helm 下载只在 Helm 部署页的“获取 Chart”中提供。 系统元数据未报告发行版时，仅保留镜像 ID 显式声明的 `ubuntuNNNN` 标签来区分变体，不推断默认 Linux 镜像的发行版。
 
@@ -68,12 +68,18 @@ node --test tests/install-ui.test.cjs
 | 构建类型 | 清单来源 |
 | --- | --- |
 | Tag / Stable | 同仓库、对应 Git 标签的完整 Schema 9 Release；支持正式版和 RC |
-| Latest / PR | 优先使用同仓库最高版本、已完成且具有有效 Schema 9 清单的 Stable Release；没有合格正式版时，使用最高版本的已完成预发布 Release |
+| Latest | 优先使用同仓库最高版本、已完成且具有有效 Schema 9 清单的 Stable Release；没有合格正式版时，使用最高版本的已完成预发布 Release |
 | 没有合格 Release | 页面明确显示安装数据不可用，提供源码构建入口 |
 
 公开清单的生成和校验由 `.github/release/ucm_release/manifest.py` 统一负责，使用 Schema 9，新增可选 `toolkit` 制品字段；旧清单没有该字段时仍可读取。枚举时跳过不支持的格式；精确指定不支持的 Release 时直接报错，不作为待发布重试。已有清单损坏、标签/仓库不匹配、文件集合或下载 URL 与 Release 不一致时构建失败。Latest 页面显示实际安装制品的版本，避免把开发文档版本当作发布版本。
 
 RTD 可能在 Tag 推送时先于产物完成启动构建；此时返回 RTD 的取消码 `183`，不发布不完整页面。Release 流水线完成清单上传、回读及保留策略后，再触发中英文项目的对应 Tag 和 Latest，等待构建成功、核对源码 SHA 并回读公开页面及清单；仅在 RTD 当前 active Stable 对应该 Tag 时重建 Stable，重建旧标签不会回退别名。
+
+日常更新由 `docs-check.yml` 负责：文档、站点配置或发布构建相关路径的变更推送到 `develop` 后，先运行发布契约检查和中英文文档构建，再用 `RTD_API_TOKEN` 调用两个项目的 Latest 构建 API。在 `develop` 上手动运行该 workflow 也会执行同一路径。PR、其他分支和 Tag 不执行 Latest 发布任务。
+
+发布前校验两个项目的仓库、语言、翻译关系及默认分支 `develop`，Fork 必须使用绑定自身仓库的 RTD 项目。任务等待 RTD 构建完成，回读公开页面和安装清单，将实际 build ID、commit 和 URL 保存到 `ucm-docs-latest-receipt-run-<run_id>`。Latest 跟随 RTD 构建时的 `develop`，实际 commit 可能晚于触发 workflow 的提交；`source_sha` 记录触发提交，`builds[].commit` 记录实际构建提交。失败或超时会使 Actions 失败，API 接受触发不等于发布成功。
+
+这条路径不需要 GitHub App，也不依赖旧 webhook。旧 webhook 若保留，仍可能额外触发构建。RTD PR 在线预览和预览提示应关闭，PR 的生成检查和双语门控继续由 GitHub Actions 执行，构建结果在 Actions 中查看。
 
 ## PR 中英文文件门控
 
@@ -89,12 +95,12 @@ python tools/check_bilingual_docs.py
 
 ## Fork 验收及官方切换
 
-1. 在 RTD 创建英文父项目及中文 Translation 项目，均绑定 Fork；预览阶段默认分支设为 `feature/docs-rtd`，使用本分支的根 RTD 配置，启用 PR Preview。
-2. 语言分别设置为 English 和 Simplified Chinese (`zh-cn`)，版本模式使用带翻译的多版本模式。启用 Addons 的版本/语言、搜索及 Preview 提示。
-3. 先验证中英文 Latest、真实 PR Preview、实际安装选择器、当前 URL、favicon 和计算器。记录 RTD build ID、源码 SHA 与公开 URL；取消构建不等于已部署。
+1. 在 RTD 创建英文父项目及中文 Translation 项目，均绑定 Fork，默认分支设为 `develop`，使用该分支的根 RTD 配置。无需连接 GitHub App；关闭两个项目的 Pull request builds 和 PR 预览提示。界面无法编辑时，可通过项目更新 API 将 `external_builds_enabled` 设为 `false`。
+2. 语言分别设置为 English 和 Simplified Chinese (`zh-cn`)，版本模式使用带翻译的多版本模式。启用 Addons 的版本/语言和搜索。
+3. 将候选修改同步到 Fork `develop`，验证 push 自动更新和手动补跑、中英文 Latest、实际安装选择器、当前 URL、favicon 和计算器。记录 RTD build ID、源码 SHA 与公开 URL；取消构建不等于已部署。
 4. 验证中英文文件门控，将 `Docs · Bilingual files` 设置为目标分支的必需状态检查。
 5. Fork 验收后，通过官方开发分支集成切换 `ucm` 项目；英文父项目仍使用现有 `ucm`，关联中文项目。新内容只维护 `docs/docs-site`。
-6. GitHub Repository Variables 设置 `RTD_PROJECT_EN`、`RTD_PROJECT_ZH`，Repository Secret 设置 `RTD_API_TOKEN`。项目仓库必须与当前 Release 仓库一致。官方 Stable/Prerelease 发版必须配置两个项目和 Token。Fork 三项均未配置时跳过 RTD 发布；配置齐全后执行文档发布及验证，只配置部分参数会在构建前失败。
+6. GitHub Repository Variables 设置 `RTD_PROJECT_EN`、`RTD_PROJECT_ZH`，Repository Secret 设置 `RTD_API_TOKEN`。项目仓库必须与当前发布仓库一致。官方 Latest 和 Stable/Prerelease 发布必须配置两个项目和 Token。Fork 三项均未配置时跳过 RTD 发布；配置齐全后执行文档发布及验证，只配置部分参数会在触发 RTD 构建前失败。
 7. 官方先切换 Latest。首个包含新配置、完整 Schema 9 Release 且 RTD Tag 构建通过后启用 Stable。旧 Git 标签仍按原配置构建，不改写历史标签。
 8. 验收通过后停止新 Pages 发布，保留原 `gh-pages` 内容及自定义域名，尤其历史下载索引；本轮不修改 DNS。若正式切换失败，恢复上一版 RTD 配置即可继续旧站构建。
 

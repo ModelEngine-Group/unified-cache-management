@@ -25,11 +25,17 @@ ROOT = Path(__file__).resolve().parents[3]
         ("fork", ("docs-en", "docs-zh"), "", None),
     ],
 )
-def test_release_docs_configuration(tmp_path, scope, projects, token, enabled):
-    workflow = yaml.safe_load((ROOT / ".github/workflows/release-ucm.yml").read_text())
+@pytest.mark.parametrize(
+    "workflow_name,job_name",
+    [("release-ucm.yml", "release-preflight"), ("docs-check.yml", "publish-latest")],
+)
+def test_docs_configuration(
+    tmp_path, scope, projects, token, enabled, workflow_name, job_name
+):
+    workflow = yaml.safe_load((ROOT / ".github/workflows" / workflow_name).read_text())
     step = next(
         step
-        for step in workflow["jobs"]["release-preflight"]["steps"]
+        for step in workflow["jobs"][job_name]["steps"]
         if "RTD_PROJECT_EN" in step.get("env", {})
     )
     output = tmp_path / "output"
@@ -38,6 +44,11 @@ def test_release_docs_configuration(tmp_path, scope, projects, token, enabled):
         env={
             **os.environ,
             "PUBLICATION_SCOPE": scope,
+            "GITHUB_REPOSITORY": (
+                "ModelEngine-Group/unified-cache-management"
+                if scope == "official"
+                else "example/ucm"
+            ),
             "RTD_PROJECT_EN": projects[0],
             "RTD_PROJECT_ZH": projects[1],
             "RTD_API_TOKEN": token,
@@ -127,6 +138,7 @@ def test_release_rebuild_does_not_move_stable_alias(
             return {
                 "repository": {"url": "https://github.com/example/ucm.git"},
                 "language": {"code": "zh-cn" if "docs-zh" in path else "en"},
+                "default_branch": "develop",
             }
         if path.endswith("/translations/"):
             return {"results": [{"slug": "docs-zh"}]}
@@ -281,3 +293,120 @@ def test_public_readback_identifies_client_without_sending_api_credentials(monke
     headers = dict(captured[0].header_items())
     assert headers["User-agent"] == "ucm-docs-readback/1"
     assert "Authorization" not in headers
+
+
+@pytest.mark.parametrize(
+    "invalid", [None, "repository", "language", "branch", "translation"]
+)
+def test_latest_validates_both_projects_before_triggering(monkeypatch, invalid):
+    calls = []
+
+    def request(path, *, method="GET", data=None):
+        calls.append((path, method))
+        if method == "POST":
+            return {"build": {"id": len(calls)}}
+        if path.endswith("/translations/"):
+            return {
+                "results": [] if invalid == "translation" else [{"slug": "docs-zh"}]
+            }
+        chinese = "docs-zh" in path
+        return {
+            "repository": {
+                "url": (
+                    "https://github.com/other/ucm"
+                    if chinese and invalid == "repository"
+                    else "https://github.com/example/ucm"
+                )
+            },
+            "language": {
+                "code": "en" if not chinese or invalid == "language" else "zh-cn"
+            },
+            "default_branch": (
+                "old-branch" if chinese and invalid == "branch" else "develop"
+            ),
+        }
+
+    monkeypatch.setattr(trigger_rtd, "request", request)
+    if invalid:
+        with pytest.raises(ValueError):
+            trigger_rtd.notify_latest("example/ucm", ["docs-en", "docs-zh"])
+        assert not any(method == "POST" for _, method in calls)
+    else:
+        builds = trigger_rtd.notify_latest("example/ucm", ["docs-en", "docs-zh"])
+        assert [
+            (item["project"], item["language"], item["version"]) for item in builds
+        ] == [
+            ("docs-en", "en", "latest"),
+            ("docs-zh", "zh-cn", "latest"),
+        ]
+        assert [path for path, method in calls if method == "POST"] == [
+            "/projects/docs-en/versions/latest/builds/",
+            "/projects/docs-zh/versions/latest/builds/",
+        ]
+
+
+@pytest.mark.parametrize("state", ["building", "cancelled"])
+def test_latest_does_not_succeed_on_timeout_or_cancellation(monkeypatch, state):
+    monkeypatch.setattr(trigger_rtd, "request", lambda path: {"state": {"code": state}})
+    with pytest.raises(TimeoutError if state == "building" else RuntimeError):
+        trigger_rtd.wait_for_builds(
+            [{"project": "docs-en", "version": "latest", "build_id": 1}],
+            "a" * 40,
+            timeout=0,
+        )
+
+
+def test_latest_cli_writes_verified_build_receipt(monkeypatch, tmp_path):
+    output = tmp_path / "receipt.json"
+    builds = [{"project": "docs-en", "version": "latest", "build_id": 1}]
+    completed = [{**builds[0], "commit": "b" * 40, "status": "complete"}]
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "trigger_rtd.py",
+            "--latest",
+            "--repository",
+            "example/ucm",
+            "--project",
+            "docs-en",
+            "--project",
+            "docs-zh",
+            "--source-sha",
+            "a" * 40,
+            "--output",
+            str(output),
+        ],
+    )
+    monkeypatch.setattr(trigger_rtd, "notify_latest", lambda *args: builds)
+    monkeypatch.setattr(trigger_rtd, "wait_for_builds", lambda *args: completed)
+    verified = []
+    monkeypatch.setattr(
+        trigger_rtd, "verify_public_docs", lambda *args: verified.append(args)
+    )
+    trigger_rtd.main()
+    assert verified == [(completed, None, "example/ucm")]
+    assert json.loads(output.read_text()) == {
+        "status": "complete",
+        "source_sha": "a" * 40,
+        "builds": completed,
+    }
+    monkeypatch.setattr(sys, "argv", [*sys.argv, "--manifest", "release.json"])
+    with pytest.raises(SystemExit) as error:
+        trigger_rtd.main()
+    assert error.value.code == 2
+
+
+def test_latest_publication_waits_for_checks_and_keeps_secrets_out_of_pr_jobs():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/docs-check.yml").read_text())
+    job = workflow["jobs"]["publish-latest"]
+    assert set(job["needs"]) == {"release", "check"}
+    assert job["if"].strip() == (
+        "${{ github.ref == 'refs/heads/develop' &&\n"
+        "    (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}"
+    )
+    for name in ("release", "check"):
+        assert "RTD_API_TOKEN" not in json.dumps(workflow["jobs"][name])
+    assert any(
+        "trigger_rtd.py --latest" in step.get("run", "") for step in job["steps"]
+    )

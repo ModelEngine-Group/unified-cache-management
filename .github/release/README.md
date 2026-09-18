@@ -140,6 +140,9 @@ At 02:00 Asia/Shanghai (`18:00` UTC),
 `release-nightly.yml` reads the `X.Y.Z`
 base from `version.ini` and creates the next dated Nightly Tag from `develop`.
 An incomplete same-SHA Nightly Tag is reused; an existing Tag is never moved.
+Scheduled runs are restricted to the official repository. Maintainers can also
+dispatch the workflow on a Fork's `develop` branch to validate the same Nightly
+path; publication scope is derived from the repository and stays `fork` there.
 Because a `GITHUB_TOKEN` Tag creation does not
 recursively trigger another workflow, the same scheduled Run calls the common
 `release-ucm.yml` reusable core directly. Manual `nightly/*` Tag pushes use the
