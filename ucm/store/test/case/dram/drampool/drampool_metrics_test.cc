@@ -23,6 +23,7 @@
  * */
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <string>
 #include <thread>
 #include <gtest/gtest.h>
@@ -184,10 +185,14 @@ TEST_F(UCDrampoolMetricsTest, HistogramObservationsAccumulate)
     const auto& histogram = std::get<2>(stats).at(kDumpPrepareDurationMs);
     EXPECT_EQ(HistogramCount(histogram), 2);
     EXPECT_DOUBLE_EQ(histogram.sum, 4.0);
-    // SetupDrampoolMetrics registers histograms without explicit buckets, so
-    // every observation falls into the single catch-all (infinity) bucket.
-    ASSERT_EQ(histogram.bucketCounts.size(), std::size_t{1});
-    EXPECT_EQ(histogram.bucketCounts[0], 2);
+    // SetupDrampoolMetrics registers kDumpPrepareDurationMs with the shared
+    // kMsBucketsPrepare boundaries plus the catch-all (infinity) bucket that
+    // CreateStats appends; each observation lands in the single bucket whose
+    // upper bound is the first boundary >= value.
+    ASSERT_EQ(histogram.bucketCounts.size(), std::size(kMsBucketsPrepare) + 1);
+    // 1.5 lands in the (1, 2] bucket, 2.5 in the (2, 5] bucket.
+    EXPECT_EQ(histogram.bucketCounts[3], 1);
+    EXPECT_EQ(histogram.bucketCounts[4], 1);
 }
 
 TEST_F(UCDrampoolMetricsTest, ScopedTimerRecordsDurationOnScopeExit)
