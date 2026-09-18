@@ -6,6 +6,26 @@ select the five publication channels and retention limits. The pipeline never
 reads vLLM or vLLM-Ascend source branches to decide versions or Builder
 capabilities.
 
+
+## Module ownership
+
+`version_config` owns version parsing, Tag classification and materialization;
+`policy` loads the current release/platform configuration and resolves publication
+channels. `registry` reads OCI facts, `runtime` owns probe contracts and image
+coordinates, `upstream` selects Runtime versions, and `builders` resolves raw
+Builders and synchronizes checked mirrors. `plan` only combines these results
+into build tasks. `wheel` and `meta` prepare and record their own artifacts.
+
+`release` aggregates publication state and renders release notes. `manifest`
+owns the public Schema 9 contract shared with documentation and cleanup;
+`cleanup` projects resources directly from it. The package import has no CLI
+side effects; `python -m ucm_release` dispatches through `__main__`.
+
+Use `plan create/select/retag-pr`, `wheel prepare-source/record-result`, and
+`meta materialize-source/record-result`. The Catalog planner, old Wheel authority
+commands and parameter aliases are not supported. Existing Sphinx documentation,
+manual `scripts/build_*.sh` packaging and root Dockerfiles remain independent.
+
 ## Maintained policy
 
 The human-maintained release authorities are:
@@ -16,8 +36,14 @@ The human-maintained release authorities are:
   four fully expanded Release Profiles, retention, and Chart smoke inputs;
 - `platforms.yaml`: raw Builder registries, excluded variants, Builder checks,
   and supported or blocked UCM backends;
-- `requirements/wheel-build.txt` and `requirements/wheel-runtime.txt`: exact
-  Python dependencies.
+- Root `pyproject.toml`: package runtime dependencies and build-system requirements;
+- Root `requirements-build.txt`: exact Wheel Builder tool versions, validated
+  against `build-system.requires` before creating the release plan;
+- `.github/release/requirements.txt`: release script dependencies. Workflows
+  install this file; shared build tool pins come from `requirements-build.txt`.
+
+The release plan reads runtime dependencies directly from `project.dependencies`.
+The built Wheel metadata must match those declarations before publication.
 
 Each product selector is a canonical `X.Y` Minor range or an exact `X.Y.Z`
 Patch range. Every range is resolved independently from parsed Registry tags:
@@ -110,13 +136,24 @@ versions, target commit, requested source SHA, and checked-out commit. A Draft
 Tag always remains Draft. Exact Releases API lookup requires one Release for the
 Tag; duplicate Release records fail closed.
 
-At 02:00 Asia/Shanghai (`18:00` UTC), `release-nightly.yml` reads the `X.Y.Z`
+At 02:00 and 13:00 Asia/Shanghai (`18:00` and `05:00` UTC),
+`release-nightly.yml` reads the `X.Y.Z`
 base from `version.ini` and creates the next dated Nightly Tag from `develop`.
 An incomplete same-SHA Nightly Tag is reused; an existing Tag is never moved.
 Because a `GITHUB_TOKEN` Tag creation does not
 recursively trigger another workflow, the same scheduled Run calls the common
 `release-ucm.yml` reusable core directly. Manual `nightly/*` Tag pushes use the
 same core through `release-tag.yml`.
+
+Nightly publishes backend Wheels to GitHub Release, followed by the cleanup
+manifest. It builds directly from digest-pinned upstream Builders without
+syncing or pushing Builder images to GHCR. Runtime image builds, Chart packaging,
+and PyPI, GHCR, Docker Hub, and Chart OCI publication are disabled. Native Wheel
+builds and matching-Runtime installation checks still run before publication.
+These decisions follow the selected Profile's channel switches: disabling
+`ghcr` bypasses Builder synchronization, and disabling `chart_oci` skips Chart
+packaging and its GitHub Release asset. The plan retains Chart metadata for
+every release type.
 
 Supported Release Tags in both the official repository and Forks invoke that
 same Release Core through one caller. The caller passes the repository-derived
@@ -136,18 +173,37 @@ stages:
 2. `release-open` records the in-progress Release;
 3. every repaired Wheel passes one matching native-architecture Runtime before
    any Release asset or PyPI upload;
-4. backend Wheels, the example config, and the Chart are uploaded and the state
+4. backend Wheels (plus the example config and Chart when `chart_oci` is enabled)
+   are uploaded and the state
    is `artifacts-ready` while any enabled channel remains; the empty meta Wheel
    remains an internal Actions artifact;
 5. image members/indexes, PyPI, and Chart OCI complete and are read back;
 6. the final state becomes `complete`, `images-failed`, or
    `publication-failed`.
 
+Chart packaging runs `python -m ucm_release chart prepare` against the release
+plan. It copies the source Chart, fills `images.image` with the latest stable
+vLLM CUDA image, and adds commented alternatives for every runtime family and
+architecture beside that setting. The upstream default CUDA tag is preferred;
+otherwise the highest CUDA and OS versions break ties. Both the default and
+alternatives prefer Docker Hub when enabled, then GHCR, using the same address
+mapping as publication. The source values and their comments are preserved.
+Without stable CUDA candidates the default remains empty; PR and image-disabled
+plans leave the source values unchanged. Packaging reads the values back from
+the archive and renders the CUDA profile without an image override. Planned
+addresses become usable only after their existing publication checks succeed.
+
 `release-state.json` remains the rich internal staging file in the
 `ucm-release-stage-run-<run>` Actions artifact. Only after all enabled channels
-succeed, a compact public `release-manifest.json` schema 6 is uploaded and read
-back. It records only the Tag/type/Actions Run, Chart OCI reference, Runtime
-member/index references, and GitHub Release asset names needed for cleanup.
+succeed, a public `release-manifest.json` Schema 9 is uploaded and read back.
+The pure `ucm_release.manifest` module generates and validates this contract
+for publication, cleanup and documentation. It records Python package identity,
+extras and published index URLs, backend Wheels, Runtime image families, Chart
+and exact GitHub Release assets. When Chart publication is disabled, `chart` is
+`null`; publication, cleanup and documentation omit Chart operations while
+retaining the published Wheels. Meta Wheels and publication receipts remain
+internal; neither is required as a public Release attachment. Enumeration skips
+unsupported manifests; exact unsupported Tag operations fail without migration.
 
 If image publication is disabled while other channels remain enabled, the image
 stages are skipped and publication continues only through those enabled
@@ -165,17 +221,23 @@ Missing backend Wheels are uploaded and read back first, the meta Wheel is
 uploaded last, and exact extras metadata plus all filenames, versions, and
 SHA256 digests are persisted in the internal `pypi-receipt.json` Actions
 artifact. It is not attached to the public GitHub Release. Fresh-environment
-install validation downloads the exact receipt-bound meta/backend URLs,
-verifies their SHA256 digests, and uses production PyPI only for ordinary
-dependencies; index ordering never chooses the UCM distributions. GitHub
+install validation resolves the requested extra through pip, then checks the
+selected UCM filenames and SHA256 digests against the receipt. Fork installs
+use TestPyPI for the UCM packages and enable production PyPI for ordinary
+dependencies. GitHub
 Release notes show version-pinned installation commands only after a complete
 Python-index publication receipt is available. Each Runtime capability then
 shows one meta-package extra in the Wheel column. Official PyPI commands use the
-default index; Fork commands name the frozen TestPyPI simple index. Package
+default index; Fork commands include both index URLs. Package
 names, versions, and extras come from the receipt. Without a complete receipt,
-the Wheel column keeps its architecture-specific GitHub Release links. The
-strict publication check still downloads exact receipt-bound files before
-installing ordinary dependencies from production PyPI.
+the Wheel column keeps its architecture-specific GitHub Release links.
+
+Release notes preserve the existing body and append pipeline status and artifact
+tables in a section delimited by `<!-- ucm-release:begin -->` and
+`<!-- ucm-release:end -->`. Later stages, failure reports, and reruns replace only
+that section, preserving manual notes before and after it. Existing text without
+these markers is kept as-is; it is never inferred to be disposable pipeline output.
+Keep manually maintained content outside the markers.
 
 Python distribution names are repository-owned and deterministic. The official
 repository publishes canonical `uc-manager*` names. A Fork always prefixes the
@@ -427,9 +489,9 @@ After completion, verify all of the following:
 ## Retention and cleanup
 
 `max_count: -1` disables retention. Finite retention considers only successful
-same-type Releases carrying an exact schema-v6 manifest, never the current Tag;
-old Releases without that manifest are skipped rather than guessed. When PyPI
-is enabled for a finite Profile, retention is skipped with an explicit reason.
+same-type Releases carrying an exact supported manifest, never the current
+Tag; old Releases without one are skipped rather than guessed. When PyPI is
+enabled for a finite Profile, retention is skipped with an explicit reason.
 
 Cleanup is manifest-driven and retryable through
 `cleanup-ucm-release.yml(tag=...)`. Each resource is probed before up to three
@@ -530,3 +592,28 @@ git diff --check
 Local checks are preflight only. Forward-compatible matrix and staged Release
 acceptance must be demonstrated by GitHub Actions on `feature/cicd_v5`, with
 run URL/SHA/job/artifact evidence and Registry/Release readback.
+
+## Toolkit and complete release delivery
+
+The same release plan now includes a portable `ucm-toolkit` Wheel and the exact
+`toolkit` extra on the meta package. Forks use the existing owner prefix on both
+packages and publish to TestPyPI. Toolkit sources and runtime resources are
+bundled; dev-sandbox compilation remains an explicit user action.
+
+`_build-toolkit.yml` is shared by PR checks and releases. Index verification
+checks standalone Toolkit, the Toolkit-only meta extra and each backend combined
+with Toolkit. Pip reports must identify files from the publication receipt.
+
+Stable and prerelease runs require `RTD_PROJECT_EN`, `RTD_PROJECT_ZH` and
+`RTD_API_TOKEN` before building. The projects must use the release repository,
+English and Simplified Chinese respectively, and the Chinese project must be a
+translation of the English project. For Fork validation, both projects' default
+branch is `feature/docs_v2`. The workflow waits for RC and Latest
+builds, requires the RC build to match the release source SHA, and verifies public
+version roots and manifests. Latest keeps the project default-branch source.
+
+The published Chart is downloaded from GitHub Release and OCI and compared with
+the original package digest. Every packaged default/candidate image is checked
+against publication receipts and Registry architecture metadata. Final acceptance
+is stored only as `ucm-release-acceptance-run-<run_id>` in Actions artifacts. A docs
+or delivery-check failure can be retried without rebuilding published packages.

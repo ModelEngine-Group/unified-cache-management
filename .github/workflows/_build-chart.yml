@@ -43,7 +43,7 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - uses: ./.github/actions/download-artifact-retry
         with:
           name: ${{ inputs.plan_artifact }}
@@ -56,12 +56,15 @@ jobs:
           python scripts/materialize_version.py \
             --version "$(jq -er '.version' "${plan}")" >/dev/null
           app_version="$(PYTHONPATH=.github/release python -c \
-            'from ucm_release.core import read_version; print(read_version())')"
+            'from ucm_release.version_config import read_version; print(read_version())')"
           chart_version="$(jq -er '.chart.version' "${plan}")"
           test "$(jq -r '.chart.app_version' "${plan}")" = "${app_version}"
           test "$(jq -r '.chart.version' "${plan}")" = "${chart_version}"
-          source="$(jq -r '.chart.source' "${plan}")"
           mkdir -p out/rendered out/chart
+          source=out/chart-source
+          PYTHONPATH=.github/release python -m ucm_release chart prepare \
+            --plan "${plan}" --output "${source}" >out/chart-preparation.json
+          cat out/chart-preparation.json
           helm lint "${source}"
           while IFS=$'\t' read -r product variant repository tag; do
             values="$(jq -er --arg product "${product}" \
@@ -79,6 +82,18 @@ jobs:
             --version "${chart_version}" \
             --app-version "${app_version}" \
             --destination out/chart
+          chart_name="$(jq -r '.chart.name' "${plan}")"
+          chart_package="out/chart/${chart_name}-${chart_version}.tgz"
+          tar -xOf "${chart_package}" "${chart_name}/values.yaml" \
+            >out/packaged-values.yaml
+          cmp "${source}/values.yaml" out/packaged-values.yaml
+          default_image="$(jq -r '.image' out/chart-preparation.json)"
+          if [ -n "${default_image}" ]; then
+            helm template ucm-default "${chart_package}" \
+              --values "$(jq -r '.chart.smoke_values.vllm' "${plan}")" \
+              >out/rendered/default.yaml
+            grep -Fq "${default_image}" out/rendered/default.yaml
+          fi
           test "$(find out/chart -maxdepth 1 -type f -name '*.tgz' | wc -l | tr -d ' ')" = 1
           echo "chart_artifact=ucm-chart-run-${GITHUB_RUN_ID}" \
             >>"${GITHUB_OUTPUT}"

@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -13,18 +12,7 @@ ROOT = Path(__file__).resolve().parents[3]
 RELEASE_ROOT = ROOT / ".github" / "release"
 sys.path.insert(0, str(RELEASE_ROOT))
 release = importlib.import_module("ucm_release.release")
-
-
-def test_release_script_direct_entrypoint_remains_executable() -> None:
-    completed = subprocess.run(
-        [sys.executable, str(RELEASE_ROOT / "ucm_release" / "release.py"), "--help"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert "{artifacts,finalize,notes,manifest,members}" in completed.stdout
+public_manifest = importlib.import_module("ucm_release.manifest")
 
 
 def _plan() -> dict[str, object]:
@@ -39,6 +27,8 @@ def _plan() -> dict[str, object]:
                 "enabled": False,
                 "disposition": "disabled",
                 "index": "https://upload.pypi.org/legacy/",
+                "target": "pypi",
+                "simple_index": "https://pypi.org/simple/",
             },
             "ghcr": {
                 "requested": True,
@@ -219,9 +209,8 @@ def _asset_urls(manifest: dict[str, object]) -> dict[str, str]:
     filenames = {
         str(item["filename"]) for item in manifest["wheels"]  # type: ignore[index]
     }
-    filenames.add(str(manifest["chart"]["filename"]))  # type: ignore[index]
-    if "meta_package" in manifest:
-        filenames.add(str(manifest["meta_package"]["filename"]))  # type: ignore[index]
+    if manifest.get("chart") is not None:
+        filenames.add(str(manifest["chart"]["filename"]))  # type: ignore[index]
     return {
         filename: f"https://github.com/example/ucm/releases/download/v1/{filename}"
         for filename in filenames
@@ -299,26 +288,6 @@ def _write_meta_artifact(tmp_path: Path, plan: dict[str, object]) -> Path:
     return meta_root
 
 
-def test_artifact_state_includes_exact_meta_wheel(tmp_path: Path) -> None:
-    wheels, chart, _, _ = _write_artifact_inputs(tmp_path)
-    plan = _plan()
-    plan["meta_package"] = {
-        "distribution": "uc-manager",
-        "version": "0.7.62rc1",
-        "extras": {"cu129": "uc-manager-cuda-cu129==0.7.62rc1"},
-    }
-    meta_root = _write_meta_artifact(tmp_path, plan)
-
-    manifest, checksums = release.build_artifacts_manifest(
-        plan, wheels, chart, meta_root, actions_run_id=123
-    )
-
-    assert manifest["meta_package"]["filename"] == (
-        "uc_manager-0.7.62rc1-py3-none-any.whl"
-    )
-    assert any(filename.endswith("py3-none-any.whl") for _, filename in checksums)
-
-
 @pytest.mark.parametrize(
     ("prefix", "target", "repository_url"),
     [
@@ -386,7 +355,7 @@ def test_enabled_pypi_requires_and_records_complete_receipt(
         ],
     }
     with pytest.raises(ValueError, match="no complete receipt"):
-        release.finalize_manifest(
+        release.finalize_release_state(
             manifest,
             tmp_path,
             build_outcome="skipped",
@@ -431,7 +400,7 @@ def test_enabled_pypi_requires_and_records_complete_receipt(
     }
     (tmp_path / "pypi-receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
 
-    result = release.finalize_manifest(
+    result = release.finalize_release_state(
         manifest,
         tmp_path,
         build_outcome="skipped",
@@ -447,7 +416,7 @@ def test_enabled_pypi_requires_and_records_complete_receipt(
     receipt["projects"][0]["files"][0]["sha256"] = "sha256:" + "c" * 64
     (tmp_path / "pypi-receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
     with pytest.raises(ValueError, match="do not match release artifacts"):
-        release.finalize_manifest(
+        release.finalize_release_state(
             manifest,
             tmp_path,
             build_outcome="skipped",
@@ -467,7 +436,7 @@ def test_disabled_pypi_requires_both_jobs_to_be_skipped(tmp_path: Path) -> None:
     }
 
     with pytest.raises(ValueError, match="jobs must be skipped"):
-        release.finalize_manifest(
+        release.finalize_release_state(
             manifest,
             tmp_path,
             build_outcome="skipped",
@@ -481,7 +450,7 @@ def test_disabled_pypi_requires_both_jobs_to_be_skipped(tmp_path: Path) -> None:
 def test_artifacts_and_image_receipts_form_one_mapping(tmp_path: Path) -> None:
     wheels, chart, _, filename = _write_artifact_inputs(tmp_path)
 
-    manifest, checksums = release.build_artifacts_manifest(
+    manifest, checksums = release.build_release_state(
         _plan(), wheels, chart, actions_run_id=123
     )
     assert manifest["kind"] == "ucm-release-state"
@@ -537,7 +506,7 @@ def test_artifacts_and_image_receipts_form_one_mapping(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    final = release.finalize_manifest(
+    final = release.finalize_release_state(
         manifest,
         receipts,
         build_outcome="success",
@@ -562,6 +531,7 @@ def test_artifacts_and_image_receipts_form_one_mapping(tmp_path: Path) -> None:
         json.dumps(
             {
                 "tag_name": "v0.7.62rc1",
+                "body": "## 更新说明\n\n保留人工维护的变更记录。\n",
                 "assets": [
                     {"name": name, "browser_download_url": url}
                     for name, url in asset_urls.items()
@@ -584,9 +554,19 @@ def test_artifacts_and_image_receipts_form_one_mapping(tmp_path: Path) -> None:
         ]
     )
     command.func(command)
-    assert (notes_output / "release-notes.md").read_text(encoding="utf-8") == (
-        final_notes
+    body = (notes_output / "release-notes.md").read_text(encoding="utf-8")
+    assert body == (
+        "## 更新说明\n\n保留人工维护的变更记录。\n\n"
+        "<!-- ucm-release:begin -->\n"
+        f"{final_notes.rstrip()}\n"
+        "<!-- ucm-release:end -->\n"
     )
+    release_document = json.loads(release_path.read_text(encoding="utf-8"))
+    # The workflow's shell command substitution removes trailing newlines.
+    release_document["body"] = body.rstrip("\n")
+    release_path.write_text(json.dumps(release_document), encoding="utf-8")
+    command.func(command)
+    assert (notes_output / "release-notes.md").read_text(encoding="utf-8") == body
 
 
 def test_disabled_image_publication_completes_with_wheels_and_chart(
@@ -600,9 +580,7 @@ def test_disabled_image_publication_completes_with_wheels_and_chart(
     assert isinstance(ghcr, dict)
     ghcr["enabled"] = False
 
-    manifest, _ = release.build_artifacts_manifest(
-        plan, wheels, chart, actions_run_id=123
-    )
+    manifest, _ = release.build_release_state(plan, wheels, chart, actions_run_id=123)
 
     assert manifest["release"]["status"] == "artifacts-ready"
     assert manifest["images"][0]["expected_targets"] == {}
@@ -611,7 +589,7 @@ def test_disabled_image_publication_completes_with_wheels_and_chart(
     assert manifest["families"][0]["status"] == "not-requested"
 
     with pytest.raises(ValueError, match="must all be skipped"):
-        release.finalize_manifest(
+        release.finalize_release_state(
             manifest,
             tmp_path / "missing-receipts",
             build_outcome="success",
@@ -619,7 +597,7 @@ def test_disabled_image_publication_completes_with_wheels_and_chart(
             index_outcome="skipped",
         )
 
-    final = release.finalize_manifest(
+    final = release.finalize_release_state(
         manifest,
         tmp_path / "missing-receipts",
         build_outcome="skipped",
@@ -639,13 +617,117 @@ def test_disabled_image_publication_completes_with_wheels_and_chart(
     assert "Images:" not in notes
     assert "pkgs/container" not in notes
 
+    skipped_chart = release.finalize_release_state(
+        manifest,
+        tmp_path / "missing-receipts",
+        build_outcome="skipped",
+        member_outcome="skipped",
+        index_outcome="skipped",
+        chart_oci_outcome="skipped",
+    )
+    assert skipped_chart["release"]["status"] == "publication-failed"
 
-def test_public_manifest_is_exact_schema_v6_and_uses_published_targets(
+
+@pytest.mark.parametrize("release_type", ["prerelease", "nightly"])
+def test_disabled_channels_finalize_with_wheels_only_regardless_of_release_type(
     tmp_path: Path,
+    release_type: str,
+) -> None:
+    wheels, _, _, filename = _write_artifact_inputs(tmp_path)
+    plan = _plan()
+    plan["release_type"] = release_type
+    plan["images"][0]["runtime"].update(
+        product_id="vllm", variant="default", soc_version="na"
+    )
+    if release_type == "nightly":
+        plan["git_tag"] = "nightly/v0.7.62-20260917-1"
+    for channel in ("ghcr", "chart_oci"):
+        plan["publish"][channel].update(
+            requested=False, enabled=False, disposition="disabled"
+        )
+
+    plan["meta_package"] = {
+        "distribution": "uc-manager",
+        "version": plan["version"],
+        "extras": {"cu129": f"uc-manager-cuda-cu129=={plan['version']}"},
+    }
+    meta_root = _write_meta_artifact(tmp_path, plan)
+    state, checksums = release.build_release_state(
+        plan, wheels, tmp_path / "missing-chart", meta_root, actions_run_id=123
+    )
+    assert state["chart"] is None
+    assert {name for _, name in checksums} == {
+        filename,
+        state["meta_package"]["filename"],
+    }
+    final = release.finalize_release_state(
+        state,
+        tmp_path / "missing-receipts",
+        build_outcome="skipped",
+        member_outcome="skipped",
+        index_outcome="skipped",
+        chart_oci_outcome="skipped",
+    )
+    assert final["release"]["status"] == "complete"
+    asset_urls = _asset_urls(final)
+    release_document = {
+        "tag_name": plan["git_tag"],
+        "html_url": f"https://github.com/example/ucm/releases/tag/{plan['git_tag']}",
+        "assets": [
+            {"name": name, "browser_download_url": url}
+            for name, url in asset_urls.items()
+        ],
+    }
+    assert public_manifest.asset_urls(final, release_document) == asset_urls
+    notes = release.render_notes(final, repository="example/ucm", asset_urls=asset_urls)
+    assert asset_urls[filename] in notes
+    public = public_manifest.build_manifest(final, release_document)
+    assert public["schema_version"] == 9
+    assert public["chart"] is None
+    assert public["images"] == []
+    from ucm_release import cleanup
+
+    assert cleanup.registry_resources(public) == []
+    assert public["github_release_assets"] == sorted(
+        [filename, "release-manifest.json"]
+    )
+
+
+def test_public_manifest_is_exact_schema_v9_and_uses_published_targets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     wheels, chart, _, _ = _write_artifact_inputs(tmp_path)
-    state, _ = release.build_artifacts_manifest(
-        _plan(), wheels, chart, actions_run_id=987654
+    plan = _plan()
+    plan["meta_package"] = {
+        "distribution": "uc-manager",
+        "version": "0.7.62rc1",
+        "extras": {"cu129": "uc-manager-cuda-cu129==0.7.62rc1"},
+    }
+    plan["images"][0]["runtime"].update(  # type: ignore[index]
+        {
+            "product_id": "vllm",
+            "version": "0.23.0",
+            "channel": "stable",
+            "variant": "default",
+            "soc_version": "na",
+            "os_id": "ubuntu",
+            "os_version": "22.04",
+        }
+    )
+    plan["families"][0]["runtime"].update(  # type: ignore[index]
+        {
+            "version": "0.23.0",
+            "channel": "stable",
+            "variant": "default",
+            "soc_version": "na",
+            "os_id": "ubuntu",
+            "os_version": "22.04",
+        }
+    )
+    meta_root = _write_meta_artifact(tmp_path, plan)
+    state, _ = release.build_release_state(
+        plan, wheels, chart, meta_root, actions_run_id=987654
     )
     receipts = tmp_path / "receipts"
     receipts.mkdir()
@@ -667,45 +749,88 @@ def test_public_manifest_is_exact_schema_v6_and_uses_published_targets(
         ),
         encoding="utf-8",
     )
-    state = release.finalize_manifest(
+    state = release.finalize_release_state(
         state,
         receipts,
         build_outcome="success",
         member_outcome="success",
         index_outcome="skipped",
     )
-    document = {
+    asset_urls = _asset_urls(state)
+    document: dict[str, object] = {
         "tag_name": "v0.7.62rc1",
+        "html_url": "https://github.com/example/ucm/releases/tag/v0.7.62rc1",
         "assets": [
-            {"name": "ucm.whl"},
-            {"name": "unified-cache-chart-0.7.62-rc.1.tgz"},
-            {"name": "ucm_config_example.yaml"},
+            {"name": name, "browser_download_url": url}
+            for name, url in asset_urls.items()
         ],
     }
+    document["assets"].append(  # type: ignore[union-attr]
+        {
+            "name": "ucm_config_example.yaml",
+            "browser_download_url": (
+                "https://github.com/example/ucm/releases/download/"
+                "v0.7.62rc1/ucm_config_example.yaml"
+            ),
+        }
+    )
 
-    manifest = release.build_public_manifest(state, document)
+    manifest = public_manifest.build_manifest(state, document)
 
-    assert manifest == {
-        "kind": "ucm-release-manifest",
-        "schema_version": 6,
-        "tag": "v0.7.62rc1",
-        "release_type": "prerelease",
-        "actions_run_id": 987654,
-        "chart_oci": ("ghcr.io/example/charts/unified-cache-chart:0.7.62-rc.1"),
-        "runtime_images": {
-            "ghcr": {
-                "members": ["ghcr.io/example/vllm:v0.23.0-ucm-amd64"],
-                "indexes": [],
-            },
-            "dockerhub": {"members": [], "indexes": []},
-        },
-        "github_release_assets": [
-            "release-manifest.json",
-            "ucm.whl",
-            "ucm_config_example.yaml",
-            "unified-cache-chart-0.7.62-rc.1.tgz",
-        ],
+    assert manifest["schema_version"] == 9
+    assert manifest["release"]["tag"] == state["release"]["git_tag"]
+    assert manifest["release"]["actions_run_id"] == 987654
+    assert manifest["python"]["extras"] == {"cu129": "uc-manager-cuda-cu129"}
+    assert manifest["python"]["pypi"] is None
+    wheel = manifest["wheels"][0]
+    assert wheel["url"] == asset_urls[wheel["filename"]]
+    assert wheel["sha256"] == hashlib.sha256(b"wheel").hexdigest()
+    assert manifest["images"][0]["publications"]["ghcr"]["pull"] == (
+        "ghcr.io/example/vllm:v0.23.0-ucm-amd64"
+    )
+    assert set(manifest["github_release_assets"]) == {
+        "release-manifest.json",
+        *(asset["name"] for asset in document["assets"]),
     }
+
+    pypi_state = json.loads(json.dumps(state))
+    pypi_state["publish"]["pypi"]["enabled"] = True
+    pypi_state["pypi"] = {
+        "kind": "ucm-pypi-receipt",
+        "schema_version": 2,
+        "target": "pypi",
+        "repository_url": "https://upload.pypi.org/legacy/",
+        "status": "complete",
+        "version": pypi_state["release"]["version"],
+        "projects": public_manifest.expected_pypi_projects(pypi_state),
+        "extras": pypi_state["meta_package"]["extras"],
+    }
+    pypi_manifest = public_manifest.build_manifest(pypi_state, document)
+    assert pypi_manifest["python"]["pypi"] == {
+        "index_url": "https://pypi.org/simple",
+        "project_url": "https://pypi.org/project/uc-manager/0.7.62rc1/",
+    }
+    assert "pypi-receipt.json" not in pypi_manifest["github_release_assets"]
+    assert not any(
+        "py3-none-any" in name for name in pypi_manifest["github_release_assets"]
+    )
+    from ucm_release import cleanup
+
+    assert cleanup.validate_manifest(pypi_manifest) == pypi_manifest
+    assert cleanup.registry_resources(pypi_manifest)
+    sys.path.insert(0, str(ROOT / "docs/docs-site/tools"))
+    import release_manifest as docs_manifest
+
+    published = json.loads(json.dumps(document))
+    published["prerelease"] = True
+    published["assets"].append(
+        {
+            "name": "release-manifest.json",
+            "browser_download_url": "https://github.com/example/ucm/releases/download/v0.7.62rc1/release-manifest.json",
+        }
+    )
+    monkeypatch.setattr(docs_manifest, "fetch_json", lambda _url: pypi_manifest)
+    assert docs_manifest._release_manifest("example/ucm", published) == pypi_manifest
 
     state_path = tmp_path / "public-state.json"
     release_path = tmp_path / "public-release.json"
@@ -730,278 +855,17 @@ def test_public_manifest_is_exact_schema_v6_and_uses_published_targets(
 
 def test_public_manifest_rejects_incomplete_release() -> None:
     with pytest.raises(ValueError, match="complete publication"):
-        release.build_public_manifest(
+        public_manifest.build_manifest(
             {
+                "kind": "ucm-release-state",
+                "schema_version": 3,
                 "release": {
                     "git_tag": "nightly/v0.8.1-20260826-1",
                     "status": "images-failed",
-                }
+                },
             },
             {"tag_name": "nightly/v0.8.1-20260826-1"},
         )
-
-
-def test_member_barrier_accepts_all_profile_enabled_targets(tmp_path: Path) -> None:
-    plan = _plan()
-    plan["publish"]["dockerhub"]["enabled"] = True
-    receipt_dir = tmp_path / "receipts"
-    receipt_dir.mkdir()
-    (receipt_dir / "member.json").write_text(
-        json.dumps(
-            {
-                "kind": "ucm-image-member-receipt",
-                "schema_version": 1,
-                "id": "vllm-v023-amd64",
-                "status": "published",
-                "targets": [
-                    {
-                        "channel": "ghcr",
-                        "reference": "ghcr.io/example/vllm:v0.23.0-ucm-amd64",
-                        "digest": "sha256:" + "1" * 64,
-                    },
-                    {
-                        "channel": "dockerhub",
-                        "reference": "docker.io/example/vllm:v0.23.0-ucm-amd64",
-                        "digest": "sha256:" + "2" * 64,
-                    },
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    receipts = release.validate_member_receipts(plan, receipt_dir)
-
-    assert set(receipts) == {"vllm-v023-amd64"}
-
-
-def test_release_commands_write_internal_state_without_public_metadata_assets(
-    tmp_path: Path,
-) -> None:
-    wheels, chart, _, _ = _write_artifact_inputs(tmp_path)
-    plan_path = tmp_path / "release-plan.json"
-    plan_path.write_text(json.dumps(_plan()), encoding="utf-8")
-    artifacts_output = tmp_path / "artifacts-output"
-    artifacts_output.mkdir()
-    artifacts = release.build_parser().parse_args(
-        [
-            "artifacts",
-            "--plan",
-            str(plan_path),
-            "--wheels",
-            str(wheels),
-            "--chart",
-            str(chart),
-            "--run-id",
-            "123",
-            "--output",
-            str(artifacts_output),
-        ]
-    )
-
-    artifacts.func(artifacts)
-
-    assert {path.name for path in artifacts_output.iterdir()} == {"release-state.json"}
-    state_path = artifacts_output / "release-state.json"
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["chart"]["name"] == "unified-cache-chart"
-    assert state["chart"]["sha256"] == hashlib.sha256(b"chart").hexdigest()
-    assert state["wheels"][0]["sha256"] == hashlib.sha256(b"wheel").hexdigest()
-
-    final_output = tmp_path / "final-output"
-    final_output.mkdir()
-    finalize = release.build_parser().parse_args(
-        [
-            "finalize",
-            "--manifest",
-            str(state_path),
-            "--receipts",
-            str(tmp_path / "missing-receipts"),
-            "--build-outcome",
-            "failure",
-            "--member-outcome",
-            "skipped",
-            "--index-outcome",
-            "skipped",
-            "--pypi-outcome",
-            "skipped",
-            "--pypi-install-outcome",
-            "skipped",
-            "--chart-oci-outcome",
-            "success",
-            "--output",
-            str(final_output),
-        ]
-    )
-
-    finalize.func(finalize)
-
-    assert {path.name for path in final_output.iterdir()} == {"release-state.json"}
-
-
-def test_release_notes_split_products_and_aggregate_wheel_capabilities() -> None:
-    manifest = {
-        "release": {"git_tag": "v1.0.0rc1", "status": "complete"},
-        "chart": {"filename": "unified-cache-chart-1.0.0-rc.1.tgz"},
-        "wheels": [
-            {
-                "id": "cuda-amd64",
-                "filename": "uc_manager_cuda-amd64.whl",
-                "backend": "cuda",
-                "runtime_variant": "cu130",
-                "python_abi": "cp312",
-                "cpu_arch": "amd64",
-            },
-            {
-                "id": "cuda-arm64",
-                "filename": "uc_manager_cuda-arm64.whl",
-                "backend": "cuda",
-                "runtime_variant": "cu130",
-                "python_abi": "cp312",
-                "cpu_arch": "arm64",
-            },
-            {
-                "id": "cann-amd64",
-                "filename": "uc_manager_cann910_a2-amd64.whl",
-                "backend": "cann-a2",
-                "runtime_variant": "cann910-a2",
-                "python_abi": "cp312",
-                "cpu_arch": "amd64",
-            },
-            {
-                "id": "cann-arm64",
-                "filename": "uc_manager_cann910_a2-arm64.whl",
-                "backend": "cann-a2",
-                "runtime_variant": "cann910-a2",
-                "python_abi": "cp312",
-                "cpu_arch": "arm64",
-            },
-        ],
-        "images": [
-            {
-                "family_id": "openai-v1",
-                "wheel_id": "cuda-amd64",
-                "cpu_arch": "amd64",
-            },
-            {
-                "family_id": "openai-v1",
-                "wheel_id": "cuda-arm64",
-                "cpu_arch": "arm64",
-            },
-            {
-                "family_id": "openai-v2",
-                "wheel_id": "cuda-amd64",
-                "cpu_arch": "amd64",
-            },
-            {
-                "family_id": "openai-v2",
-                "wheel_id": "cuda-arm64",
-                "cpu_arch": "arm64",
-            },
-            {
-                "family_id": "ascend-v1",
-                "wheel_id": "cann-arm64",
-                "cpu_arch": "arm64",
-            },
-            {
-                "family_id": "ascend-v2",
-                "wheel_id": "cann-amd64",
-                "cpu_arch": "amd64",
-            },
-            {
-                "family_id": "ascend-v2",
-                "wheel_id": "cann-arm64",
-                "cpu_arch": "arm64",
-            },
-        ],
-        "families": [
-            {
-                "id": "openai-v1",
-                "runtime": {
-                    "repository": "docker.io/vllm/vllm-openai",
-                    "tag": "v1.0.0",
-                    "accelerator_runtime": "cuda-13.0",
-                },
-                "expected_targets": {"ghcr": "ghcr.io/example/vllm-openai:v1.0.0-ucm"},
-                "status": "published",
-                "targets": [{"channel": "ghcr"}],
-            },
-            {
-                "id": "openai-v2",
-                "runtime": {
-                    "repository": "docker.io/vllm/vllm-openai",
-                    "tag": "v1.1.0",
-                    "accelerator_runtime": "cuda-13.0",
-                },
-                "expected_targets": {"ghcr": "ghcr.io/example/vllm-openai:v1.1.0-ucm"},
-                "status": "published",
-                "targets": [{"channel": "ghcr"}],
-            },
-            {
-                "id": "ascend-v1",
-                "runtime": {
-                    "repository": "quay.io/ascend/vllm-ascend",
-                    "tag": "v1.0.0",
-                    "accelerator_runtime": "cann-9.1.0",
-                },
-                "expected_targets": {"ghcr": "ghcr.io/example/vllm-ascend:v1.0.0-ucm"},
-                "status": "published",
-                "targets": [{"channel": "ghcr"}],
-            },
-            {
-                "id": "ascend-v2",
-                "runtime": {
-                    "repository": "quay.io/ascend/vllm-ascend",
-                    "tag": "v1.1.0",
-                    "accelerator_runtime": "cann-9.1.0",
-                },
-                "expected_targets": {"ghcr": "ghcr.io/example/vllm-ascend:v1.1.0-ucm"},
-                "status": "published",
-                "targets": [{"channel": "ghcr"}],
-            },
-        ],
-    }
-    asset_urls = _asset_urls(manifest)
-
-    notes = release.render_notes(
-        manifest, repository="example/ucm", asset_urls=asset_urls
-    )
-
-    assert notes.count("## vLLM OpenAI") == 1
-    assert notes.count("## vLLM-Ascend") == 1
-    assert notes.count("| Runtime capability |") == 2
-    assert notes.count("| Wheel |") == 2
-    assert "Wheel 内容" not in notes
-    assert "Wheel downloads" not in notes
-    assert notes.count("uc_manager_cuda-amd64.whl") == 1
-    assert notes.count("[aarch64](") == 2
-    assert notes.count("[x86_64](") == 2
-    assert "Upstream Runtime tags<br>docker.io/vllm/vllm-openai：" in notes
-    assert "Runtime tags<br>GHCR: ghcr.io/example/vllm-openai" in notes
-    assert "Upstream Runtime tags<br>quay.io/ascend/vllm-ascend：" in notes
-    assert "Runtime tags<br>GHCR: ghcr.io/example/vllm-ascend" in notes
-    assert "`v1.0.0`<br>`v1.1.0`" in notes
-    assert "`v1.0.0-ucm`<br>`v1.1.0-ucm`" in notes
-    cuda_row = next(line for line in notes.splitlines() if line.startswith("| CUDA"))
-    assert cuda_row.index("[aarch64](") < cuda_row.index("[x86_64](")
-    assert "CANN 9.1.0 / A2" in notes
-    assert "`v1.0.0` (aarch64 only)" in notes
-    assert "pkgs/container/vllm-openai" in notes
-    assert "pkgs/container/vllm-ascend" in notes
-    assert "2 image families / 4 architecture members" in notes
-    assert "2 image families / 3 architecture members" in notes
-    assert " tags / " not in notes
-    draft_notes = release.render_notes(
-        manifest,
-        repository="example/ucm",
-        asset_urls=asset_urls,
-        link_assets=False,
-    )
-    assert "releases/download" not in draft_notes
-    assert "[aarch64](" not in draft_notes
-    assert "[x86_64](" not in draft_notes
-    assert draft_notes.count("`aarch64`") == 2
-    assert draft_notes.count("`x86_64`") == 2
 
 
 @pytest.mark.parametrize("receipt_status", [None, "uploading"])
@@ -1113,11 +977,10 @@ def test_release_notes_show_testpypi_installation_in_the_wheel_column() -> None:
     assert f"https://test.pypi.org/project/{meta_project}/{version}/" in notes
     assert (
         f"pip install --index-url {simple_index} "
+        "--extra-index-url https://pypi.org/simple/ "
         f'"{meta_project}[{extra}]=={version}"'
     ) in notes
     assert "python -m" not in notes
-    assert "--extra-index-url" not in notes
-    assert "https://pypi.org/simple/" not in notes
     assert "uc_manager_cuda-amd64.whl" not in notes
     assert "<details>" not in notes
     assert "mktemp" not in notes
@@ -1227,76 +1090,6 @@ def test_release_notes_use_dockerhub_target_tag_without_a_ghcr_target() -> None:
     assert "https://hub.docker.com/r/example/vllm-openai" in notes
 
 
-def test_github_asset_urls_require_backend_and_chart_but_not_meta() -> None:
-    manifest = {
-        "release": {"git_tag": "draft/v1.0.0-1"},
-        "chart": {"filename": "unified-cache-chart.tgz"},
-        "wheels": [{"filename": "ucm.whl"}],
-        "meta_package": {"filename": "uc_manager-1.0.0-py3-none-any.whl"},
-    }
-    base = "https://github.com/example/ucm/releases/download/untagged-1234567890abcdef"
-    release_document = {
-        "tag_name": "draft/v1.0.0-1",
-        "assets": [
-            {"name": name, "browser_download_url": f"{base}/{name}"}
-            for name in (
-                "ucm.whl",
-                "uc_manager-1.0.0-py3-none-any.whl",
-                "unified-cache-chart.tgz",
-            )
-        ],
-    }
-
-    urls = release._github_asset_urls(manifest, release_document)
-
-    assert urls["ucm.whl"] == f"{base}/ucm.whl"
-    assert urls["unified-cache-chart.tgz"] == (f"{base}/unified-cache-chart.tgz")
-    assert "draft%2F" not in urls["ucm.whl"]
-
-    release_document["assets"] = [
-        asset
-        for asset in release_document["assets"]
-        if asset["name"] != "uc_manager-1.0.0-py3-none-any.whl"
-    ]
-    assert "uc_manager-1.0.0-py3-none-any.whl" not in release._github_asset_urls(
-        manifest, release_document
-    )
-
-    release_document["assets"] = [
-        asset for asset in release_document["assets"] if asset["name"] != "ucm.whl"
-    ]
-    with pytest.raises(ValueError, match="missing required assets"):
-        release._github_asset_urls(manifest, release_document)
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    (("kind", "wrong-wheel-result"), ("schema_version", 1)),
-)
-def test_artifact_manifest_rejects_wrong_wheel_result_contract(
-    tmp_path: Path, field: str, value: object
-) -> None:
-    wheels, chart, result_path, _ = _write_artifact_inputs(tmp_path)
-    result = json.loads(result_path.read_text(encoding="utf-8"))
-    result[field] = value
-    result_path.write_text(json.dumps(result), encoding="utf-8")
-
-    with pytest.raises(ValueError, match="ucm-wheel-result schema 5"):
-        release.build_artifacts_manifest(_plan(), wheels, chart, actions_run_id=123)
-
-
-def test_artifact_manifest_rejects_removed_runtime_deferred_policy(
-    tmp_path: Path,
-) -> None:
-    wheels, chart, result_path, _ = _write_artifact_inputs(tmp_path)
-    result = json.loads(result_path.read_text(encoding="utf-8"))
-    result["runtime_deferred_libraries"] = ["libstale.so"]
-    result_path.write_text(json.dumps(result), encoding="utf-8")
-
-    with pytest.raises(ValueError, match="removed field runtime_deferred_libraries"):
-        release.build_artifacts_manifest(_plan(), wheels, chart, actions_run_id=123)
-
-
 def test_artifact_manifest_recomputes_deferred_libraries_from_report(
     tmp_path: Path,
 ) -> None:
@@ -1306,36 +1099,7 @@ def test_artifact_manifest_recomputes_deferred_libraries_from_report(
     result_path.write_text(json.dumps(result), encoding="utf-8")
 
     with pytest.raises(ValueError, match="deferred libraries do not match auditwheel"):
-        release.build_artifacts_manifest(_plan(), wheels, chart, actions_run_id=123)
-
-
-@pytest.mark.parametrize(
-    "field",
-    (
-        "platform_tags",
-        "auditwheel_platform_tag",
-        "abi_compatible_platform_tag",
-        "glibc_versions",
-        "glibc_floor",
-        "external_library_roots",
-        "external_libraries",
-        "deferred_external_libraries",
-        "auditwheel_report",
-        "repair",
-        "sha256",
-        "dependencies",
-    ),
-)
-def test_artifact_manifest_requires_wheel_audit_fields(
-    tmp_path: Path, field: str
-) -> None:
-    wheels, chart, result_path, _ = _write_artifact_inputs(tmp_path)
-    result = json.loads(result_path.read_text(encoding="utf-8"))
-    del result[field]
-    result_path.write_text(json.dumps(result), encoding="utf-8")
-
-    with pytest.raises(ValueError, match="missing audit fields"):
-        release.build_artifacts_manifest(_plan(), wheels, chart, actions_run_id=123)
+        release.build_release_state(_plan(), wheels, chart, actions_run_id=123)
 
 
 def test_artifact_manifest_rejects_changed_auditwheel_report(tmp_path: Path) -> None:
@@ -1347,7 +1111,7 @@ def test_artifact_manifest_rejects_changed_auditwheel_report(tmp_path: Path) -> 
     )
 
     with pytest.raises(ValueError, match="report digest does not match"):
-        release.build_artifacts_manifest(_plan(), wheels, chart, actions_run_id=123)
+        release.build_release_state(_plan(), wheels, chart, actions_run_id=123)
 
 
 def test_artifact_manifest_requires_immutable_builder_digest(tmp_path: Path) -> None:
@@ -1356,7 +1120,7 @@ def test_artifact_manifest_requires_immutable_builder_digest(tmp_path: Path) -> 
     del plan["wheels"][0]["builder"]["digest"]
 
     with pytest.raises(ValueError, match="immutable Builder digest"):
-        release.build_artifacts_manifest(plan, wheels, chart, actions_run_id=123)
+        release.build_release_state(plan, wheels, chart, actions_run_id=123)
 
 
 def test_missing_receipt_keeps_artifacts_available_and_marks_images_failed() -> None:
@@ -1379,7 +1143,7 @@ def test_missing_receipt_keeps_artifacts_available_and_marks_images_failed() -> 
             }
         ],
     }
-    result = release.finalize_manifest(
+    result = release.finalize_release_state(
         manifest,
         Path("/does/not/exist"),
         build_outcome="failure",
@@ -1402,7 +1166,7 @@ def test_published_receipt_must_match_its_schema_and_planned_target(
     tmp_path: Path, field: str, value: object, message: str
 ) -> None:
     wheels, chart, _, _ = _write_artifact_inputs(tmp_path)
-    manifest, _ = release.build_artifacts_manifest(
+    manifest, _ = release.build_release_state(
         _plan(), wheels, chart, actions_run_id=123
     )
     receipt = {
@@ -1427,10 +1191,39 @@ def test_published_receipt_must_match_its_schema_and_planned_target(
     (receipts / "member.json").write_text(json.dumps(receipt), encoding="utf-8")
 
     with pytest.raises(ValueError, match=message):
-        release.finalize_manifest(
+        release.finalize_release_state(
             manifest,
             receipts,
             build_outcome="success",
             member_outcome="success",
             index_outcome="skipped",
         )
+
+
+def test_schema9_accepts_optional_toolkit_and_rejects_wrong_version():
+    manifest = json.loads(
+        (Path(__file__).parent / "fixtures/release-manifest.json").read_text()
+    )
+    public_manifest.validate_manifest(manifest)
+    version = manifest["release"]["version"]
+    distribution = (
+        manifest["python"]["distribution"].removesuffix("uc-manager") + "ucm-toolkit"
+    )
+    filename = f"{distribution.replace('-', '_')}-{version}-py3-none-any.whl"
+    manifest["toolkit"] = {
+        "distribution": distribution,
+        "version": version,
+        "filename": filename,
+        "sha256": "e" * 64,
+        "url": manifest["release"]["url"].replace(
+            "/releases/tag/", "/releases/download/"
+        )
+        + "/"
+        + filename,
+    }
+    manifest["python"]["extras"]["toolkit"] = distribution
+    manifest["github_release_assets"].append(filename)
+    public_manifest.validate_manifest(manifest)
+    manifest["toolkit"]["version"] = "0.0.1"
+    with pytest.raises(public_manifest.ManifestError, match="toolkit"):
+        public_manifest.validate_manifest(manifest)

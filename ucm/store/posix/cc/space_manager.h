@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_POSIX_STORE_CC_SPACE_MANAGER_H
 
 #include "backend_manager.h"
+#include "gc_config_guard.h"
 #include "global_config.h"
 #include "hotness_tracker.h"
 #include "lookup_manager.h"
@@ -49,6 +50,7 @@ private:
     SpaceLayout layout_;
     BackendManager backendMgr_;
     HotnessTracker hotnessTracker_;
+    GcConfigGuard gcConfigGuard_;
     ShardGarbageCollector gcMgr_;
     bool hotnessTrackerEnable_{false};
     bool gcEnable_{false};

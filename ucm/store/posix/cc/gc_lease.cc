@@ -23,18 +23,15 @@
  * */
 #include "gc_lease.h"
 #include <cerrno>
-#include <climits>
 #include <cstring>
 #include <dirent.h>
 #include <fmt/format.h>
-#include <random>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <utime.h>
 #include <vector>
+#include "gc_liveness.h"
 #include "logger/logger.h"
 #include "posix_file.h"
-#include "thread/cpu_affinity.h"
 
 namespace UC::PosixStore {
 
@@ -65,23 +62,6 @@ Status RemoveDirTree(const std::string& path)
     return PosixFile{path}.RmDir();
 }
 
-std::string LocalHostName()
-{
-    char buffer[HOST_NAME_MAX + 1] = {};
-    if (gethostname(buffer, sizeof(buffer) - 1) != 0) { return "unknown"; }
-    std::string name{buffer};
-    for (auto& c : name) {
-        if (c == '/' || c == '.') { c = '_'; }
-    }
-    return name.empty() ? "unknown" : name;
-}
-
-uint32_t Nonce()
-{
-    std::random_device rd;
-    return std::uniform_int_distribution<uint32_t>{}(rd);
-}
-
 }  // namespace
 
 GcLease::~GcLease() { Release(); }
@@ -89,8 +69,8 @@ GcLease::~GcLease() { Release(); }
 void GcLease::Setup(const Config& config, const BackendManager* backendMgr)
 {
     backendMgr_ = backendMgr;
-    identity_ = fmt::format("{}{}.{}.{:08x}", kHeartbeatPrefix, LocalHostName(),
-                            static_cast<long>(getpid()), Nonce());
+    identity_ = fmt::format("{}{}.{}.{:08x}", kHeartbeatPrefix, GcClock::LocalHostName(),
+                            static_cast<long>(getpid()), GcClock::Nonce());
     heartbeatIntervalSec_ = config.posixGcHeartbeatIntervalSec;
     staleThresholdSec_ = config.posixGcStaleThresholdSec;
 }
@@ -104,24 +84,6 @@ Expected<GcLease::Paths> GcLease::SelectPaths() const
                  lockDir + "/" + identity_};
 }
 
-Status GcLease::Touch(const std::string& path, time_t& stamp, bool create) const
-{
-    if (utime(path.c_str(), nullptr) != 0) {
-        auto eno = errno;
-        if (eno != ENOENT) { return Status::OsApiError(eno); }
-        if (!create) { return Status::NotFound(); }
-        PosixFile file{path};
-        auto s = file.Open(PosixFile::OpenFlag::CREATE | PosixFile::OpenFlag::WRITE_ONLY);
-        if (s.Failure()) { return s; }
-        file.Close();
-        if (utime(path.c_str(), nullptr) != 0) { return Status::OsApiError(errno); }
-    }
-    struct stat st{};
-    if (stat(path.c_str(), &st) != 0) { return Status::OsApiError(errno); }
-    stamp = st.st_mtime;
-    return Status::OK();
-}
-
 Status GcLease::Claim(const Paths& paths)
 {
     PosixFile dir{paths.lockDir};
@@ -129,7 +91,7 @@ Status GcLease::Claim(const Paths& paths)
     if (s.Failure()) { return s; }
 
     time_t ignored = 0;
-    auto hb = Touch(paths.heartbeat, ignored, true);
+    auto hb = GcClock::Touch(paths.heartbeat, ignored, true);
     if (hb.Failure()) {
         UC_WARN("Failed({}) to write GC heartbeat({}); releasing lock.", hb, paths.heartbeat);
         dir.RmDir();
@@ -138,18 +100,20 @@ Status GcLease::Claim(const Paths& paths)
 
     haveSuspect_ = false;
     held_.store(true, std::memory_order_release);
-    {
-        std::lock_guard<std::mutex> lock(stopMtx_);
-        stopHeartbeat_ = false;
-    }
-    try {
-        heartbeatWorker_ = std::thread(&GcLease::HeartbeatLoop, this);
-    } catch (const std::exception& e) {
-        UC_ERROR("Failed({}) to start GC heartbeat thread; releasing lock.", e.what());
+    heartbeat_.Setup(
+        [this]() -> Expected<std::string> {
+            auto selected = SelectPaths();
+            if (!selected) { return selected.Error(); }
+            return std::move(selected.Value().heartbeat);
+        },
+        "ucm_posix_gclk", heartbeatIntervalSec_, GcHeartbeat::OnMissing::Stop);
+    auto started = heartbeat_.Start();
+    if (started.Failure()) {
+        UC_ERROR("Failed({}) to start GC heartbeat thread; releasing lock.", started);
         held_.store(false, std::memory_order_release);
         PosixFile{paths.heartbeat}.Remove();
         dir.RmDir();
-        return Status::OutOfMemory();
+        return started;
     }
     UC_INFO("Acquired GC lock({}) as {}.", paths.lockDir, identity_);
     return Status::OK();
@@ -217,7 +181,7 @@ Status GcLease::ProbeHolder(const Paths& paths, bool& stale)
     }
 
     time_t serverNow = 0;
-    auto s = Touch(paths.checkTime, serverNow, true);
+    auto s = GcClock::Touch(paths.checkTime, serverNow, true);
     if (s.Failure()) {
         UC_WARN("Failed({}) to stamp GC check time({}).", s, paths.checkTime);
         return s;
@@ -265,7 +229,7 @@ Status GcLease::TakeOverStale(const Paths& paths)
     haveSuspect_ = false;
     SweepParked(paths);
     const auto parked =
-        fmt::format("{}{}{}.{:08x}", paths.backend, kStalePrefix, identity_, Nonce());
+        fmt::format("{}{}{}.{:08x}", paths.backend, kStalePrefix, identity_, GcClock::Nonce());
     auto s = PosixFile{paths.lockDir}.Rename(parked);
     if (s.Failure()) {
         UC_INFO("Failed({}) to claim stale GC lock({}); another instance won.", s, paths.lockDir);
@@ -299,20 +263,9 @@ bool GcLease::HoldsLock() const
     return paths && EntryPresent(paths.Value());
 }
 
-void GcLease::RequestStop()
-{
-    {
-        std::lock_guard<std::mutex> lock(stopMtx_);
-        stopHeartbeat_ = true;
-    }
-    stopCv_.notify_all();
-}
+void GcLease::RequestStop() { heartbeat_.RequestStop(); }
 
-void GcLease::StopHeartbeat()
-{
-    RequestStop();
-    if (heartbeatWorker_.joinable()) { heartbeatWorker_.join(); }
-}
+void GcLease::StopHeartbeat() { heartbeat_.Stop(); }
 
 void GcLease::Release()
 {
@@ -332,35 +285,6 @@ void GcLease::Release()
         return;
     }
     UC_INFO("Released GC lock({}).", paths.lockDir);
-}
-
-void GcLease::HeartbeatLoop()
-{
-    auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_posix_gclk");
-    if (nameStatus.Failure()) {
-        UC_WARN("Failed({}) to set UCM GC lease heartbeat thread name.", nameStatus);
-    }
-    std::unique_lock<std::mutex> lock(stopMtx_);
-    const auto interval = std::chrono::seconds(heartbeatIntervalSec_);
-    while (!stopCv_.wait_for(lock, interval, [this] { return stopHeartbeat_; })) {
-        lock.unlock();
-        auto selected = SelectPaths();
-        if (!selected) {
-            lock.lock();
-            continue;
-        }
-        const auto& paths = selected.Value();
-        time_t ignored = 0;
-        auto s = Touch(paths.heartbeat, ignored, false);
-        if (s == Status::NotFound()) {
-            UC_WARN("GC heartbeat({}) is gone; the lock was taken over. Stopping heartbeat.",
-                    paths.heartbeat);
-            lock.lock();
-            break;
-        }
-        if (s.Failure()) { UC_WARN("Failed({}) to refresh GC heartbeat({}).", s, paths.heartbeat); }
-        lock.lock();
-    }
 }
 
 }  // namespace UC::PosixStore

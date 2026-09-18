@@ -357,7 +357,7 @@ TEST_F(UCPosixSpaceManagerTest, StartupProbesEveryBackendAndCleansUp)
     }
 }
 
-TEST_F(UCPosixSpaceManagerTest, GcLeaseSurvivesBackendFailover)
+TEST_F(UCPosixSpaceManagerTest, GcLeaseAndMembershipSurviveBackendFailover)
 {
     using namespace UC::PosixStore;
     const auto shared = std::filesystem::absolute(std::filesystem::path{Path()} / "shared");
@@ -380,6 +380,10 @@ TEST_F(UCPosixSpaceManagerTest, GcLeaseSurvivesBackendFailover)
     ASSERT_EQ(layout.Setup(config), UC::Status::OK());
     BackendManager backendMgr;
     ASSERT_EQ(backendMgr.Setup(config, &layout), UC::Status::OK());
+    auto guard = std::make_unique<GcConfigGuard>();
+    ASSERT_EQ(guard->Setup(config, &backendMgr), UC::Status::OK());
+    const auto membersDir = shared / ".ucm_gc.members";
+    const auto memberHeartbeat = std::filesystem::directory_iterator(membersDir)->path();
     std::filesystem::remove(mount0);
     backendMgr.RecordIoResult(mount0.string() + "/", UC::Status::OsApiError());
     backendMgr.RecordIoResult(mount0.string() + "/", UC::Status::OsApiError());
@@ -397,6 +401,10 @@ TEST_F(UCPosixSpaceManagerTest, GcLeaseSurvivesBackendFailover)
         }
         return false;
     };
+    auto staleMemberStamp = std::filesystem::file_time_type::clock::now() - std::chrono::seconds(5);
+    std::filesystem::last_write_time(memberHeartbeat, staleMemberStamp);
+    ASSERT_TRUE(waitUntil(
+        [&] { return std::filesystem::last_write_time(memberHeartbeat) > staleMemberStamp; }));
     std::filesystem::create_directory_symlink(shared, mount0);
     ASSERT_TRUE(waitUntil([&] {
         return backendMgr.StorageBackend(BlockForBackend(0, 2)).Value() == mount0.string() + "/";
@@ -420,6 +428,8 @@ TEST_F(UCPosixSpaceManagerTest, GcLeaseSurvivesBackendFailover)
     EXPECT_TRUE(peer.HoldsLock());
     peer.Release();
     EXPECT_FALSE(std::filesystem::exists(lockDir));
+    guard.reset();
+    EXPECT_TRUE(std::filesystem::is_empty(membersDir));
 }
 
 TEST_F(UCPosixSpaceManagerTest, UsesTotalBackendCountForTimeoutAndIgnoresMissingFiles)

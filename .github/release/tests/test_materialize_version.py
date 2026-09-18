@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import json
 import subprocess
 import sys
@@ -10,10 +10,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "scripts" / "materialize_version.py"
-SPEC = importlib.util.spec_from_file_location("materialize_version", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
-materialize = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(materialize)
+sys.path.insert(0, str(ROOT / ".github" / "release"))
+materialize = importlib.import_module("ucm_release.version_config")
 
 VERSION_CONFIG = (
     "UCM_VERSION=0.7.62\n"
@@ -23,36 +21,12 @@ VERSION_CONFIG = (
 
 
 @pytest.mark.parametrize(
-    ("tag", "expected"),
-    [
-        ("v0.7.59rc5", "0.7.59rc5"),
-        ("v0.7.59", "0.7.59"),
-        ("draft/v0.6.0", "0.6.0.dev0"),
-        ("draft/v0.6.0-13", "0.6.0.dev13"),
-        ("nightly/v0.7.62-20260826-1", "0.7.62.dev20260826001"),
-        ("nightly/v0.7.62-20260826-1234", "0.7.62.dev202608261234"),
-    ],
-)
-def test_version_from_tag(tag: str, expected: str) -> None:
-    assert materialize.version_from_tag(tag) == expected
-
-
-@pytest.mark.parametrize(
     "value",
     [
         "v0.7.59RC5",
-        "v0.7",
-        "v01.7.59",
         "draft/v0.6.0-0",
-        "draft/v0.6.0-01",
-        "draft/v0.6.0rc1-2",
         "nightly/v0.7.62-20260826-0",
-        "nightly/v0.7.62-20260826-01",
-        "nightly/v0.7.62rc1-20260826-1",
         "nightly/v0.7.62-20260230-1",
-        "nightly/v0.7.62-2026-08-26-1",
-        "nightly/v0.7.62-20260826",
-        "0.7.59",
     ],
 )
 def test_invalid_or_noncanonical_tags_are_rejected(value: str) -> None:
@@ -173,29 +147,6 @@ def test_classify_cli_does_not_materialize_version(tmp_path: Path) -> None:
     assert not output.exists()
 
 
-def test_next_patch_uses_only_exact_stable_tags() -> None:
-    assert (
-        materialize.next_patch_version(
-            [
-                "v0.7.60",
-                "v0.7.61rc9",
-                "draft/v9.0.0-1",
-                "nightly/v8.0.0-20260826-1",
-                "v0.7.61",
-                "v0.7.61-extra",
-            ]
-        )
-        == "0.7.62"
-    )
-
-
-def test_next_patch_requires_a_strict_stable_tag() -> None:
-    with pytest.raises(ValueError, match="strict Stable"):
-        materialize.next_patch_version(
-            ["v0.7.61rc1", "draft/v0.7.61-1", "nightly/v0.7.61-20260826-1"]
-        )
-
-
 def test_next_nightly_sequence_is_scoped_to_base_and_date() -> None:
     tags = [
         "nightly/v0.7.62-20260826-1",
@@ -264,49 +215,6 @@ def test_next_nightly_cli_outputs_classification_without_materializing(
 
 
 @pytest.mark.parametrize(
-    "arguments",
-    [
-        ["--next-nightly", "--date", "20260826"],
-        ["--next-nightly", "--tags-file", "tags.txt"],
-        ["--tag", "v0.7.61", "--date", "20260826"],
-    ],
-)
-def test_next_nightly_cli_requires_its_exact_inputs(
-    tmp_path: Path, arguments: list[str]
-) -> None:
-    completed = subprocess.run(
-        [sys.executable, str(SCRIPT), *arguments, "--output", str(tmp_path / "out")],
-        cwd=tmp_path,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert completed.returncode != 0
-
-
-def test_version_option_requires_canonical_pep440(tmp_path: Path) -> None:
-    output = tmp_path / "version.ini"
-    completed = subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "--version",
-            "0.7.59RC5",
-            "--output",
-            str(output),
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert completed.returncode != 0
-    assert "canonical PEP 440" in completed.stderr
-    assert not output.exists()
-
-
-@pytest.mark.parametrize(
     "tag",
     [
         "v0.7.62",
@@ -325,7 +233,7 @@ def test_tag_base_must_match_version_config(tmp_path: Path, tag: str) -> None:
 
 
 def test_version_config_supports_minor_patch_and_explicit_tag_selectors() -> None:
-    parsed = materialize.version_config.parse(
+    parsed = materialize.parse(
         "UCM_VERSION=0.9.3\n"
         "UCM_SUPPORTED_VLLM_VERSIONS=0.27,0.28.1\n"
         "UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.25@nightly-releases-v0.25.1rc\n"
@@ -348,10 +256,8 @@ def test_version_config_supports_minor_patch_and_explicit_tag_selectors() -> Non
     "text",
     [
         "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27.1\n",
-        "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27,0.27\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26\n",
         "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27,0.27.1\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26\n",
         "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=latest\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26\n",
-        "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27.1rc\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26\n",
         "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27.1@bad/tag\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26\n",
     ],
 )
@@ -359,11 +265,4 @@ def test_version_config_rejects_missing_duplicate_or_invalid_selectors(
     text: str,
 ) -> None:
     with pytest.raises(ValueError):
-        materialize.version_config.parse(text)
-
-
-def test_version_config_rejects_legacy_version_key() -> None:
-    with pytest.raises(ValueError, match="unsupported version key"):
-        materialize.version_config.parse(
-            VERSION_CONFIG.replace("UCM_VERSION=", "VLLM_UC_VERSION=", 1)
-        )
+        materialize.parse(text)

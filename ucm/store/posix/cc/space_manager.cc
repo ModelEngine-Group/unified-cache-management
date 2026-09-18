@@ -37,6 +37,10 @@ Status SpaceManager::Setup(const Config& config)
     if (s.Failure()) [[unlikely]] { return s; }
     s = backendMgr_.Setup(config, &layout_);
     if (s.Failure()) { return s; }
+    if (config.posixGcEnable) {
+        s = gcConfigGuard_.Setup(config, &backendMgr_);
+        if (s.Failure()) [[unlikely]] { return s; }
+    }
     if (hotnessTrackerEnable_) {
         s = hotnessTracker_.Setup(&layout_, &backendMgr_);
         if (s.Failure()) [[unlikely]] { return s; }
