@@ -1767,9 +1767,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
     ) -> None:
         """Best-effort GC hotness update for keys skipped by scheduler lookup.
 
-        Rank 0 external keys are already touched by ``lookup_on_prefix``. The
-        local-HBM prefix is not part of that lookup, while other TP ranks do not
-        perform scheduler-side lookup at all, so update those two sets here.
+        The resume lookup only touches rank-0 keys from its start block onward,
+        and the local-HBM prefix is never part of it, while other TP ranks do
+        not perform scheduler-side lookup at all. Refresh the full hit range
+        on every rank so GC keeps blocks the connector still trusts.
         """
 
         if hbm_hit_block_ids:
@@ -1842,8 +1843,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
         # previously-hit block only when this request is already in
         # requests_meta AND hbm_hit_block_num did not decrease. Otherwise (first
         # lookup, or HBM hit boundary moved) do a full prefix lookup from
-        # hbm_hit_block_num. If the last previously-hit block is gone, fall
-        # back to that same full lookup.
+        # hbm_hit_block_num. If the last previously-hit block is no longer
+        # fully present (a partial cross-rank hit cannot be loaded either),
+        # fall back to that same full lookup.
         lookup_start_block_num = hbm_hit_block_num
         resume_from_last_hit = False
         if request.request_id in self.requests_meta:
@@ -1867,7 +1869,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     )
                     + 1
                 )
-                if resume_from_last_hit and external_hit_hashes == 0:
+                found_blocks = external_hit_hashes // self.cp_world_size
+                if resume_from_last_hit and found_blocks == 0:
                     lookup_start_block_num = hbm_hit_block_num
                     external_block_ids = ucm_block_ids[
                         hbm_hit_block_num * self.cp_world_size :
@@ -1881,7 +1884,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                         )
                     else:
                         external_hit_hashes = 0
-                found_blocks = external_hit_hashes // self.cp_world_size
+                    found_blocks = external_hit_hashes // self.cp_world_size
                 external_hit_blocks = (
                     lookup_start_block_num - hbm_hit_block_num
                 ) + found_blocks
@@ -3238,6 +3241,33 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                 f"device_type={getattr(current_platform, 'device_type', None)!r}, "
                 f"role={role}, pid={os.getpid()}"
             )
+        # Hybrid multi-group KV + load-failure recompute is unsupported: UCM
+        # reports invalid block ids on load failure, and the vLLM scheduler
+        # cannot recompute them across multiple KV cache groups.
+        if kv_cache_config is not None:
+            kv_cache_groups = kv_cache_config.kv_cache_groups
+            if (
+                kv_cache_groups
+                and len(kv_cache_groups) > 1
+                and not getattr(
+                    vllm_config.scheduler_config,
+                    "disable_hybrid_kv_cache_manager",
+                    False,
+                )
+                and getattr(
+                    vllm_config.kv_transfer_config,
+                    "kv_load_failure_policy",
+                    "fail",
+                )
+                == "recompute"
+            ):
+                raise RuntimeError(
+                    "UCMConnector does not support "
+                    "kv_load_failure_policy='recompute' with hybrid multi-group "
+                    f"KV cache ({len(kv_cache_groups)} groups): load-failure "
+                    "recompute is not implemented for multi-group models. "
+                    "Use the default kv_load_failure_policy='fail'."
+                )
         self.connector: KVConnectorBase_V1
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id.rsplit("_dp", 1)[0]
