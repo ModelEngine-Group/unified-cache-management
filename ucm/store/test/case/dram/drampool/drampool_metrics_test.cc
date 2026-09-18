@@ -193,7 +193,7 @@ TEST_F(UCDrampoolMetricsTest, HistogramObservationsAccumulate)
 TEST_F(UCDrampoolMetricsTest, ScopedTimerRecordsDurationOnScopeExit)
 {
     {
-        ScopedTimer timer(kLoadPrepareDurationMs);
+        ScopedTimer timer(NAME_TO_METRIC_ID(kLoadPrepareDurationMs));
     }
 
     const auto stats = Metrics::GetAllStatsAndClear();
@@ -205,7 +205,7 @@ TEST_F(UCDrampoolMetricsTest, ScopedTimerRecordsDurationOnScopeExit)
 TEST_F(UCDrampoolMetricsTest, ScopedTimerDisarmSkipsObservation)
 {
     {
-        ScopedTimer timer(kLoadPrepareDurationMs);
+        ScopedTimer timer(NAME_TO_METRIC_ID(kLoadPrepareDurationMs));
         timer.Disarm();
     }
 

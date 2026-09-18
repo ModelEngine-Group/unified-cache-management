@@ -519,7 +519,7 @@ void DramPoolServer::RequestReceiveLoop()
                  task->request->request_id, static_cast<int>(task->request->opcode), controlPeerId,
                  task->peer_one_sided_id);
         // This bounded handoff keeps transport I/O separate from potentially slow request handling.
-        ScopedTimer enqueueWaitTimer(kQueueRequestEnqueueWaitMs);
+        ScopedTimer enqueueWaitTimer(NAME_TO_METRIC_ID(kQueueRequestEnqueueWaitMs));
         bool queueFullLogged = false;
         while (!requestReceiverStop_.load(std::memory_order_acquire)) {
             if (requestQueue_.TryPush(std::move(task))) {
@@ -527,7 +527,7 @@ void DramPoolServer::RequestReceiveLoop()
                 break;
             }
             if (!queueFullLogged) {
-                UC::Metrics::UpdateStats(kQueueRequestFullTotal, 1);
+                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kQueueRequestFullTotal), 1);
                 UC_WARN("RequestReceiver queue is full, request_id={}, depth={}, retry_wait_us={}",
                         task->request->request_id, g_config.requestQueueDepth,
                         g_config.requestReceiverIdleWaitUs);
@@ -563,13 +563,13 @@ void DramPoolServer::GCThreadLoop()
     while (true) {
         std::unique_lock<std::mutex> waitLock(stopWaitMutex_);
         if (stopWaitCv_.wait_for(waitLock, interval, stopRequested)) { break; }
-        UC::Metrics::UpdateStats(kMetadataEntryCount,
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kMetadataEntryCount),
                                  static_cast<double>(metadataManager_->GetKeyCnt()));
         for (const auto slotSize : g_config.poolBlockSizes) {
             UC::Metrics::UpdateStats(BufferPoolUsageRatioName(slotSize),
                                      bufferManager_->GetUsedSlotRatio(slotSize));
         }
-        ScopedTimer evictTimer(kMetadataEvictGcDurationMs);
+        ScopedTimer evictTimer(NAME_TO_METRIC_ID(kMetadataEvictGcDurationMs));
         metadataManager_->PerformEvict();
     }
     UC_INFO_UNLIMITED("DramPool GCThread stopped");

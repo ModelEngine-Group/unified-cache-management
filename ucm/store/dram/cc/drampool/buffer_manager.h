@@ -69,9 +69,6 @@ public:
             region.type = transport::MemoryType::Host;
             memoryRegions_.push_back(region);
             pools_.emplace(slotSize, std::move(pool));
-            slotCounts_.emplace(slotSize, slotNum);
-            used_.emplace(std::piecewise_construct, std::forward_as_tuple(slotSize),
-                          std::forward_as_tuple(0));
             UC_DEBUG(
                 "BufferManager initialized BufferPool, slot_size={}, slot_count={}, total_bytes={}",
                 slotSize, slotNum, region.length);
@@ -93,8 +90,6 @@ public:
             if (pool != nullptr) { pool->Reset(); }
         }
         pools_.clear();
-        slotCounts_.clear();
-        used_.clear();
         memoryRegions_.clear();
     }
 
@@ -135,9 +130,6 @@ public:
         BufferPool::Slot slot;
         auto st = pool->Allocate(slot);
         if (!st.Success()) { return st; }
-        if (auto* used = FindUsed(size)) {
-            used->fetch_add(1, std::memory_order_relaxed);
-        }
         buf.length = slot.length;
         buf.slot = slot.slotIndex;
         buf.addr = slot.localAddr;
@@ -160,13 +152,8 @@ public:
             UC_ERROR("BufferManager::Free: no pool registered for size {}.", size);
             return Status::NotFound();
         }
-        auto st = pool->Free(slot);
-        if (st.Success()) {
-            if (auto* used = FindUsed(size)) {
-                used->fetch_sub(1, std::memory_order_relaxed);
-            }
-        }
-        return st;
+        // BufferPool::Free updates its own used-slot count on success.
+        return pool->Free(slot);
     }
 
     /**
@@ -176,24 +163,16 @@ public:
      */
     double GetUsedSlotRatio(std::size_t size) const
     {
-        const auto countIt = slotCounts_.find(size);
-        if (countIt == slotCounts_.end() || countIt->second == 0) { return 0.0; }
-        const auto usedIt = used_.find(size);
-        const auto used =
-            usedIt == used_.end() ? 0ULL : usedIt->second.load(std::memory_order_relaxed);
-        return static_cast<double>(used) / static_cast<double>(countIt->second);
+        const auto it = pools_.find(size);
+        if (it == pools_.end() || it->second == nullptr || it->second->GetSlotCount() == 0) {
+            return 0.0;
+        }
+        return static_cast<double>(it->second->GetUsedCount()) /
+               static_cast<double>(it->second->GetSlotCount());
     }
 
 private:
-    std::atomic<std::uint64_t>* FindUsed(std::size_t size)
-    {
-        auto it = used_.find(size);
-        return it == used_.end() ? nullptr : &it->second;
-    }
-
     std::unordered_map<std::size_t, std::unique_ptr<BufferPool>> pools_;
-    std::unordered_map<std::size_t, std::size_t> slotCounts_;
-    std::unordered_map<std::size_t, std::atomic<std::uint64_t>> used_;
     std::vector<transport::MemoryRegion> memoryRegions_;
 };
 
