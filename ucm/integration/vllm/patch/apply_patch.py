@@ -218,6 +218,12 @@ def apply_all_patches() -> None:
             logger.info("UCM patching vllm for load-failure recovery...")
             import ucm.integration.vllm.patch.load_failure_patch
 
+        if (int(major), int(minor)) >= (0, 24):
+            logger.info(
+                "UCM patching vllm for EngineCore startup-failure worker shutdown..."
+            )
+            import ucm.integration.vllm.patch.engine_core_startup_shutdown_patch
+
         # vllm_ascend patches
         # Disable CpuAlloc.bind_memory BEFORE any cpu_binding_patch so that
         # bind_memory is a no-op before bind_threads replacement is installed.
