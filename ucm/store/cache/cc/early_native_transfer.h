@@ -76,7 +76,14 @@ class EarlyNativeTransfer final : public Detail::TaskWrapper<EarlyNativeTask, De
         // Inspect every accepted read: no FIFO dependency between owners.
         for (auto it = t.reads.begin(); it != t.reads.end();) {
             auto check = backend_.Check(it->id);
-            if (!check) { t.Fail(check.Error()); ++it; continue; }
+            if (!check) {
+                if (t.status.Success()) {
+                    UC_ERROR("UCM_EARLY completion_unknown task={} read={}; "
+                             "retaining pins/lease until proven completion or domain recovery",
+                             t.id, it->id);
+                }
+                t.Fail(check.Error()); ++it; continue;
+            }
             if (!check.Value()) { ++it; continue; }
             auto status = CompleteEarlyRead(backend_, it->id, it->indices,
                 [&](size_t i) -> TransBuffer::Handle& { return t.guards[i]; });
@@ -136,13 +143,18 @@ class EarlyNativeTransfer final : public Detail::TaskWrapper<EarlyNativeTask, De
             }
         }
         // Followers never obstruct submission or completion of our own reads.
-        for (auto it = t.followers.begin(); it != t.followers.end();) {
-            const auto state = t.guards[*it].GetState();
+        for (size_t i = 0; i < t.followers.size();) {
+            const auto index = t.followers[i];
+            const auto state = t.guards[index].GetState();
             if (state == TransBuffer::State::FAILED) {
-                t.Fail(t.guards[*it].FailureStatus()); break;
+                t.Fail(t.guards[index].FailureStatus()); break;
             }
-            if (state == TransBuffer::State::READY) { it = t.followers.erase(it); }
-            else { ++it; }
+            if (state == TransBuffer::State::READY) {
+                // Observation order has no transfer/ownership semantics. Avoid
+                // quadratic tail moves as a long shared prefix becomes READY.
+                t.followers[i] = t.followers.back();
+                t.followers.pop_back();
+            } else { ++i; }
         }
         if (t.status.Failure()) { return t.reads.empty(); }
         if (t.cursor == t.owners.size() && t.reads.empty() && t.followers.empty()) {

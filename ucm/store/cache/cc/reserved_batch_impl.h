@@ -70,7 +70,13 @@ class ReservedPrefetch::Batch final : public Early::Batch {
                 if (!check) {
                     // Unknown completion must not block the data executor or
                     // release destinations. Retain this batch for later drain.
+                    if (status_.Success()) {
+                        UC_ERROR("UCM_EARLY completion_unknown reservation={} read={}; "
+                                 "retaining pins/lease until proven completion or domain recovery",
+                                 handle_, transfers_.front().handle);
+                    }
                     Fail(check.Error());
+                    progress_.canSubmit = false;
                     return Early::Progress{progress_};
                 }
             }
