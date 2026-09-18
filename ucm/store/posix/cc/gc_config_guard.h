@@ -29,6 +29,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "backend_manager.h"
 #include "gc_liveness.h"
 #include "global_config.h"
 #include "status/status.h"
@@ -42,7 +43,7 @@ public:
     GcConfigGuard& operator=(const GcConfigGuard&) = delete;
     ~GcConfigGuard();
 
-    Status Setup(const Config& config);
+    Status Setup(const Config& config, const BackendManager* backendMgr);
 
 private:
     static std::vector<std::pair<std::string, std::string>> Entries(const Config& config);
@@ -60,7 +61,9 @@ private:
     Expected<size_t> CountLiveMembers() const;
     Status RegisterMember();
     void UnregisterMember() const;
+    Expected<std::string> SelectMemberPath() const;
 
+    const BackendManager* backendMgr_{nullptr};
     std::string backend_;
     std::string configPath_;
     std::string gateDir_;

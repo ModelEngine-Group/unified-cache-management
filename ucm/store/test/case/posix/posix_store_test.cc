@@ -278,7 +278,7 @@ TEST_F(UCPosixStoreTest, CheckHealthWithoutDirectIoOnTemporaryFilesystem)
     EXPECT_EQ(store.CheckHealth(), UC::Status::OK());
 }
 
-TEST_F(UCPosixStoreTest, CheckHealthCoversAllStorageBackends)
+TEST_F(UCPosixStoreTest, CheckHealthReportsAvailableBackends)
 {
     using namespace UC::PosixStore;
     const auto mount0 = std::filesystem::path{Path()} / "mount0";
@@ -300,8 +300,8 @@ TEST_F(UCPosixStoreTest, CheckHealthCoversAllStorageBackends)
         std::filesystem::rename(unavailable, mount);
         return status;
     };
-    EXPECT_TRUE(checkUnavailable(mount0).Failure());
-    EXPECT_TRUE(checkUnavailable(mount1).Failure());
+    EXPECT_TRUE(checkUnavailable(mount0).Success());
+    EXPECT_TRUE(checkUnavailable(mount1).Success());
 }
 
 TEST_F(UCPosixStoreTest, DumpThenLoadWithIoDirect)
@@ -387,7 +387,9 @@ TEST_F(UCPosixStoreTest, PsyncTruncatedLoadReturnsNotFound)
     layoutConfig.dataDirShardBytes = 0;
     SpaceLayout layout;
     ASSERT_EQ(layout.Setup(layoutConfig), UC::Status::OK());
-    std::filesystem::resize_file(layout.DataFilePath(block, false), AIO_TEST_DATA_SIZE / 2);
+    std::filesystem::resize_file(
+        layout.DataFilePath(layoutConfig.storageBackends.front() + "/", block, false),
+        AIO_TEST_DATA_SIZE / 2);
 
     auto load = store.Load(MakeDumpDesc("PsyncTruncatedLoad", block, target.get()));
     ASSERT_TRUE(load.HasValue());
@@ -518,7 +520,9 @@ TEST_F(UCPosixStoreTest, AioTruncatedLoadReturnsNotFound)
     layoutConfig.dataDirShardBytes = 0;
     SpaceLayout layout;
     ASSERT_EQ(layout.Setup(layoutConfig), UC::Status::OK());
-    std::filesystem::resize_file(layout.DataFilePath(block, false), AIO_TEST_DATA_SIZE / 2);
+    std::filesystem::resize_file(
+        layout.DataFilePath(layoutConfig.storageBackends.front() + "/", block, false),
+        AIO_TEST_DATA_SIZE / 2);
 
     auto load = store.Load(MakeDumpDesc("AioTruncatedLoad", block, target.get()));
     ASSERT_TRUE(load.HasValue());
@@ -603,7 +607,7 @@ TEST_F(UCPosixStoreTest, AioCheckFinishesLostCompletionAfterDeadline)
     }
 
     ASSERT_TRUE(finished);
-    ASSERT_EQ(store.Wait(handle.Value()), UC::Status::Error());
+    ASSERT_EQ(store.Wait(handle.Value()), UC::Status::Timeout());
 }
 
 TEST(UCAioImplTest, SubmitEagainHonorsDeadline)

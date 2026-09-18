@@ -22,7 +22,6 @@
  * SOFTWARE.
  * */
 #include <algorithm>
-#include <array>
 #include <cstdint>
 #include <fmt/ranges.h>
 #include "logger/logger.h"
@@ -30,41 +29,14 @@
 #include "posix_file.h"
 #include "space_manager.h"
 #include "trans_manager.h"
-#include "type/random_block_id.h"
 #include "ucmstore_v1.h"
 
 namespace UC::PosixStore {
 
 class PosixStore : public StoreV1 {
-    static constexpr size_t kHealthIoSize = 4096;
-
     SpaceManager spaceMgr_;
     TransManager transMgr_;
     bool transEnable_{false};
-    bool ioDirect_{false};
-    const Detail::BlockId healthBlockId_{Detail::RandomBlockId()};
-
-    Status CheckPathHealth(const std::string& path)
-    {
-        alignas(kHealthIoSize) std::array<uint8_t, kHealthIoSize> expected{};
-        alignas(kHealthIoSize) std::array<uint8_t, kHealthIoSize> actual{};
-        expected.fill(0x5a);
-
-        PosixFile file{path};
-        auto flags = PosixFile::OpenFlag::CREATE | PosixFile::OpenFlag::READ_WRITE;
-        if (ioDirect_) { flags |= PosixFile::OpenFlag::DIRECT; }
-        auto status = file.Open(flags);
-        if (status.Failure()) { return status; }
-        status = file.Write(expected.data(), expected.size(), 0);
-        if (status.Success() && !ioDirect_) { status = file.Sync(); }
-        if (status.Success()) { status = file.Read(actual.data(), actual.size(), 0); }
-        file.Close();
-        auto cleanup = file.Remove();
-        if (status.Success() && actual != expected) {
-            status = Status::Error("health data mismatch");
-        }
-        return status.Failure() ? status : cleanup;
-    }
 
 public:
     Status Setup(const Detail::Dictionary& inConfig) override
@@ -78,12 +50,14 @@ public:
         s = spaceMgr_.Setup(config);
         if (s.Failure()) [[unlikely]] { return s; }
         transEnable_ = config.deviceId >= 0;
-        ioDirect_ = config.ioDirect;
         if (transEnable_) {
-            s = transMgr_.Setup(config, spaceMgr_.GetLayout());
+            s = transMgr_.Setup(config, spaceMgr_.GetLayout(), spaceMgr_.GetBackendManager());
             if (s.Failure()) [[unlikely]] { return s; }
         }
         ShowConfig(config);
+        UC_INFO("Set PosixStore::BackendIoTimeout to {}ms across {} backends.",
+                spaceMgr_.GetBackendManager()->IoTimeoutMs(),
+                spaceMgr_.GetBackendManager()->BackendCount());
         return Status::OK();
     }
     std::string Readme() const override { return "PosixStore"; }
@@ -126,19 +100,11 @@ public:
     {
         spaceMgr_.Prefetch(blocks, num);
     }
-    Status CheckHealth() override
-    {
-        auto result = Status::OK();
-        for (const auto& path : spaceMgr_.GetLayout()->HealthCheckPaths(healthBlockId_, true)) {
-            auto status = CheckPathHealth(path);
-            if (result.Success() && status.Failure()) { result = status; }
-        }
-        return result;
-    }
+    Status CheckHealth() override { return spaceMgr_.GetBackendManager()->CheckHealth(); }
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
         if (!transEnable_) { return Status::Error("transfer is not enable"); }
-        auto res = transMgr_.GetIoEngine()->Submit({TransTask::Type::LOAD, std::move(task)});
+        auto res = transMgr_.Submit({TransTask::Type::LOAD, std::move(task)});
         if (!res) [[unlikely]] {
             UC_ERROR("Failed({}) to submit load task({}).", res.Error(), task.brief);
         }
@@ -147,7 +113,7 @@ public:
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override
     {
         if (!transEnable_) { return Status::Error("transfer is not enable"); }
-        auto res = transMgr_.GetIoEngine()->Submit({TransTask::Type::DUMP, std::move(task)});
+        auto res = transMgr_.Submit({TransTask::Type::DUMP, std::move(task)});
         if (!res) [[unlikely]] {
             UC_ERROR("Failed({}) to submit dump task({}).", res.Error(), task.brief);
         }
@@ -155,13 +121,13 @@ public:
     }
     Expected<bool> Check(Detail::TaskHandle taskId) override
     {
-        auto res = transMgr_.GetIoEngine()->Check(taskId);
+        auto res = transMgr_.Check(taskId);
         if (!res) [[unlikely]] { UC_ERROR("Failed({}) to check task({}).", res.Error(), taskId); }
         return res;
     }
     Status Wait(Detail::TaskHandle taskId) override
     {
-        auto s = transMgr_.GetIoEngine()->Wait(taskId);
+        auto s = transMgr_.Wait(taskId);
         if (s.Failure()) [[unlikely]] { UC_ERROR("Failed({}) to wait task({}).", s, taskId); }
         return s;
     }
@@ -183,6 +149,7 @@ private:
     {
         Config config;
         inConfig.Get("storage_backends", config.storageBackends);
+        inConfig.Get("store_health", config.backendHealth);
         inConfig.GetNumber("device_id", config.deviceId);
         inConfig.GetNumber("tensor_size", config.tensorSize);
         inConfig.GetNumber("shard_size", config.shardSize);
@@ -327,6 +294,10 @@ private:
         if (buildType.empty()) { buildType = "Release"; }
         UC_INFO("{}-{}({}).", ns, UCM_COMMIT_ID, buildType);
         UC_INFO("Set {}::StorageBackends to {}.", ns, config.storageBackends);
+        UC_INFO("Set {}::BackendHealth to interval={}ms, timeout={}ms, window={}, threshold={}.",
+                ns, config.backendHealth.healthCheckInterval.count(),
+                config.backendHealth.healthCheckTimeout.count(),
+                config.backendHealth.healthWindowSize, config.backendHealth.failureThreshold);
         UC_INFO("Set {}::DeviceId to {}.", ns, config.deviceId);
         UC_INFO("Set {}::TensorSize to {}.", ns, config.tensorSize);
         UC_INFO("Set {}::ShardSize to {}.", ns, config.shardSize);
