@@ -170,7 +170,7 @@ std::tuple<counter表, gauge表, histogram原始值向量表> GetAllStatsAndClea
 | 指标名 | 类型 | 功能（测什么 / 反映什么 / 怎么用） | 埋点位置 |
 |---|---|---|---|
 | `drampool_dump_nospace_failures_total` | Counter | 累计 StoreBegin 中**缓冲分配最终失败且原因为 NoSpace** 的 entry 数——两次驱逐重试后仍 `Status::NoSpace()` 才计数，注册失败不计。**内存压力的精确归因**：持续增长 = 数据池容量不足或驱逐策略不足以释放空间；与 `buffer_pool_usage_ratio_*` 交叉验证。行动入口：扩容 / 调整驱逐比例 | `metadata.cc` `MetadataManager::StoreBegin()` 第二次深度驱逐重试后、最终 `return Error` 前（L193 附近，`st == Status::NoSpace()` 判定点） |
-| `drampool_dump_failed_entries_total` | Counter | 累计**结果为 Failed** 的 DUMP entry 数（StoreBegin 失败短路标记 / 提交失败标记 / 传输失败结算 / StoreEnd 失败结算四条路径合并，`record.results` 定稿值）。测写入失败总规模；速率 >0 持续 = 写入链路异常，结合 `nospace_failures`（元数据侧）与 `transfer/submit_failures`（传输/提交侧）区分根因。重复性分析：与上述 Counter 维度不同、无重复 | `completion_poller.cc` `SubmitResponse()` Pack 前（`record.results` 定稿处——四条失败路径的唯一汇合点），哨兵块内对 Failed 结果计数 `MetricsCount(+N)`，条件 `opcode == Dump` |
+| `drampool_dump_failed_entries_total` | Counter | 累计**结果为 Failed** 的 DUMP entry 数（StoreBegin 失败短路标记 / 提交失败标记 / 传输失败结算 / StoreEnd 失败结算四条路径合并，`record.results` 定稿值）。测写入失败总规模；速率 >0 持续 = 写入链路异常，结合 `nospace_failures`（元数据侧）与 `transfer/submit_failures`（传输/提交侧）区分根因。重复性分析：与上述 Counter 维度不同、无重复 | `completion_poller.cc` `SubmitResponse()` Pack 前（`record.results` 定稿处——四条失败路径的唯一汇合点），哨兵块内对 Failed 结果计数 `UpdateStats(+N)`，条件 `opcode == Dump` |
 | `drampool_dump_prepare_duration_ms` | Histogram **[批次]** | 每请求一次观测：DUMP 从开始处理到数据传输提交完成的**本地准备耗时**（逐 entry StoreBegin + 缓冲分配 + 可能的驱逐重试 + 提交），**不含**数据传输本身。测写入路径的服务端 CPU 侧开销。P99 高说明准备阶段拖慢写入，结合 `nospace_failures` 与 `buffer_pool_usage_ratio_*` 归因（§4.5） | 入口 L95 构造 `ScopedTimer`，L159-168 失败分支 Disarm（§4.1） |
 
 > 注：重复 key entry 在循环内 `continue`（L129-132），不进入失败计数口径；`nospace_failures` 在 metadata 层直测、天然不受 DuplicateKey 影响。`failed_entries_total` 统计 `record.results` 定稿值——失败短路标记（`mark_remaining_failed`）的剩余 entry 一并计入，反映批次最终实况；NoSpace 重试再入时哨兵挡住重复计数。
@@ -195,10 +195,10 @@ std::tuple<counter表, gauge表, histogram原始值向量表> GetAllStatsAndClea
 
 | 指标名 | 类型 | 功能（测什么 / 反映什么 / 怎么用） | 埋点位置 |
 |---|---|---|---|
-| `drampool_dump_transfer_duration_ms` | Histogram **[批次]** | DUMP 数据传输从提交（`submit_ms`，TaskWorker 写入）到**终态**（Completed / Failed / GetStatus 异常）的异步耗时，涵盖网络与对端读取。反映实际搬运能力；与 prepare 相加 ≈ DUMP 服务端处理主体 | `completion_poller.cc` `SettleDataTransfer()` 统一出口（L263 入口，一处覆盖 GetStatus 异常 / Failed / Completed 三条终态路径），`MetricsObserve(now − submit_ms)` |
+| `drampool_dump_transfer_duration_ms` | Histogram **[批次]** | DUMP 数据传输从提交（`submit_ms`，TaskWorker 写入）到**终态**（Completed / Failed / GetStatus 异常）的异步耗时，涵盖网络与对端读取。反映实际搬运能力；与 prepare 相加 ≈ DUMP 服务端处理主体 | `completion_poller.cc` `SettleDataTransfer()` 统一出口（L263 入口，一处覆盖 GetStatus 异常 / Failed / Completed 三条终态路径），`UpdateStats(now − submit_ms)` |
 | `drampool_load_transfer_duration_ms` | Histogram **[批次]** | 同上，LOAD 侧（池 → 客户端方向搬运时长）。反映读取侧搬运能力 | 同上，按 opcode 二选一 |
 | `drampool_transfer_failures_total` | Counter | 数据传输以**非 Completed 终态**结束的请求数（DUMP/LOAD 合并大类；Failed 或 GetStatus 异常均计）。测传输失败强度；增长需排查对端网络 / 连接状态（与 opcode 无关，低频不细分） | 同上统一出口（`terminalStatus != Completed` 合并计数） |
-| `drampool_response_rtt_ms` | Histogram **[批次]** | 响应从本地提交（响应写回传输发起，`submit_ms` 于 SubmitResponse 成功后更新，L215）到**写回客户端内存完成**的端到端耗时（含响应传输本身）。测客户端感知的"结果返回"时延；P99 高 = 对端写入慢（flag 池等待由 I 组批次总耗时覆盖，不在此重复计入） | `completion_poller.cc` `PollResponseTransfer()` 终态出口（L224-260，Completed / 异常 / Failed 三路径统一），`MetricsObserve(now − submit_ms)` |
+| `drampool_response_rtt_ms` | Histogram **[批次]** | 响应从本地提交（响应写回传输发起，`submit_ms` 于 SubmitResponse 成功后更新，L215）到**写回客户端内存完成**的端到端耗时（含响应传输本身）。测客户端感知的"结果返回"时延；P99 高 = 对端写入慢（flag 池等待由 I 组批次总耗时覆盖，不在此重复计入） | `completion_poller.cc` `PollResponseTransfer()` 终态出口（L224-260，Completed / 异常 / Failed 三路径统一），`UpdateStats(now − submit_ms)` |
 | `drampool_response_failures_total` | Counter | 响应返回链路失败计数（**本地提交** Allocate 非 NoSpace 失败 / Pack 失败 / ExecuteAsync 失败 + **写回传输**失败，DUMP/LOAD 合并大类；flag 池 NoSpace 属重试不算失败）。测结果返回通道健康度；增长锁定响应链路故障域，结合 WARN/ERROR 日志定位提交 / 写回哪一环 | `SubmitResponse()` L174-177、L187-192、L205-212 + `PollResponseTransfer()` L228-233、L248-253 五点合并 |
 | `drampool_submit_failures_total` | Counter | 数据传输**提交失败**的请求数（DUMP/LOAD 合并大类；ExecuteAsync 失败或 handle 无效；LOAD 侧整批已 LoadEnd 释放引用）。测传输子系统提交路径健康度；增长指向传输子系统初始化 / 资源异常，客户端整批失败 | `task_worker.cc` `ProcessDump()` L160-169 + `ProcessLoad()` L241-250 两点合并 |
 
@@ -206,7 +206,7 @@ std::tuple<counter表, gauge表, histogram原始值向量表> GetAllStatsAndClea
 
 | 指标名 | 类型 | 功能（测什么 / 反映什么 / 怎么用） | 埋点位置 |
 |---|---|---|---|
-| `drampool_metadata_entry_count` | Gauge **[覆盖]** | 当前池内缓存条目（block）总数（1024 分片求和）。反映元数据规模容量水位；增长斜率反映写入 / 驱逐平衡，配合 usage_ratio 判断驱逐压力区 | `drampool_server.cc` `GCThreadLoop()`（L552-561），`MetricsSet(GetKeyCnt())`（接口已存在） |
+| `drampool_metadata_entry_count` | Gauge **[覆盖]** | 当前池内缓存条目（block）总数（1024 分片求和）。反映元数据规模容量水位；增长斜率反映写入 / 驱逐平衡，配合 usage_ratio 判断驱逐压力区 | `drampool_server.cc` `GCThreadLoop()`（L552-561），`UpdateStats(GetKeyCnt())`（接口已存在） |
 | `drampool_buffer_pool_usage_ratio_<slot_size>` | Gauge **[覆盖]**（动态注册，每 block size 一个） | 各 block 尺寸数据池**已用槽位占比**（used / slot count）。反映分尺寸内存水位；逼近 1 = 该尺寸池即将触发驱逐重试（DUMP prepare 抖动与 `nospace_failures` 的前兆），容量规划第一信号 | `GCThreadLoop()` 遍历 `poolBlockSizes`（L552-561）；启动期按尺寸动态 `CreateStats` + `BufferManager.GetUsedSlotRatio()`（新增原子记账） |
 | `drampool_flag_pool_usage_ratio` | Gauge **[覆盖]** | flag 响应缓冲池**已用槽位占比**（used / flagBufferSlotCount）。反映响应回填缓冲水位；逼近 1 = B2 链（flag 池 NoSpace → `response_buffer_retry`）前兆信号，且为"flag 池扩容"决策提供交叉验证（此前无水位指标可查） | `completion_poller.cc` 调用点记账（§4.3）：`SubmitResponse()` Allocate 成功（L164）+1、`ReleaseResponseBuffer()` Free 成功（L38）−1、`PollPendingCompletions()` 每轮尾部上报 |
 
@@ -228,10 +228,10 @@ std::tuple<counter表, gauge表, histogram原始值向量表> GetAllStatsAndClea
 |---|---|---|---|
 | `drampool_queue_request_full_total` | Counter | requestQueue **满、TryPush 失败**事件数（每次失败 +1 按次计）。测接收线程被阻塞强度（阻塞时长 ≈ full 数 × `requestReceiverIdleWaitUs` 100µs）；阻塞链 B1；高概率压力场景的核心告警信号 | `drampool_server.cc` TryPush 失败分支（L518-523 WARN 处） |
 | `drampool_queue_request_enqueue_wait_ms` | Histogram **[批次]** | 每请求从准备入队到 TryPush 成功的**入队前等待时长**（含满重试 sleep，未排队 ≈ 0）。测客户端可感知的接收背压延迟；P99 抬高必伴随 `full_total` 增长 | `drampool_server.cc` 入队重试循环外 `ScopedTimer`（L516 前构造） |
-| `drampool_queue_request_size` | Gauge **[覆盖]**（六次修改：替代原 enqueued/dequeued ×2 Counter） | requestQueue **当前排队中的请求数**（TryPush 成功后与 TryPop 成功后覆盖写，最新值生效）。测接收侧待处理积压；持续增长 = TaskWorker 消费跟不上到达速率或下游反压传导（B1/B3 定位，§4.6） | `drampool_server.cc` `RequestReceiveLoop()` TryPush 成功后（L517）+ `task_worker.cc` `Run()` TryPop 成功后（L49）两点 `MetricsSet(队列当前长度)` |
+| `drampool_queue_request_size` | Gauge **[覆盖]**（六次修改：替代原 enqueued/dequeued ×2 Counter） | requestQueue **当前排队中的请求数**（TryPush 成功后与 TryPop 成功后覆盖写，最新值生效）。测接收侧待处理积压；持续增长 = TaskWorker 消费跟不上到达速率或下游反压传导（B1/B3 定位，§4.6） | `drampool_server.cc` `RequestReceiveLoop()` TryPush 成功后（L517）+ `task_worker.cc` `Run()` TryPop 成功后（L49）两点 `UpdateStats(队列当前长度)` |
 | `drampool_queue_completion_full_total` | Counter | completionQueue **满、SubmitCompletion 被迫自旋等待**事件数（Push 前 TryPush 探测，失败 +1 后退回 Push——探测不改行为）。测 TaskWorker **停摆**位置与强度（既不取新请求也不响应停止指令）；阻塞链 B3，**停摆无日志兜底，此指标是唯一观测手段** | `task_worker.cc` `SubmitCompletion()` TryPush 探测失败分支（L320-328 微改造，§10） |
-| `drampool_queue_completion_inflight` | Gauge **[覆盖]** | CompletionPoller pending 窗口内在途完成记录数（等终态 / 等响应提交 / 等写回，每轮覆盖写）。测完成链路第二级缓冲占用；持续逼近 `pollerPendingDepth`（默认 64）= 拉取停摆，与 `completion_full` 互相印证 | `completion_poller.cc` `PollPendingCompletions()` 每轮尾部（L117 后），`MetricsSet(pending_.size())` |
-| `drampool_queue_completion_size` | Gauge **[覆盖]**（六次修改：替代原 enqueued/dequeued ×2 Counter） | completionQueue **当前排队的完成记录数**（Push 成功后与 TryPop 成功后覆盖写，最新值生效）。测完成流第二级缓冲积压；持续增长 = Poller 消费不足，随后 `request_full` 连锁 ↑（B3 反压传导的前置信号） | `task_worker.cc` `SubmitCompletion()` Push 成功后（L326）+ `completion_poller.cc` `FillPendingWindow()` TryPop 成功后（L71-72）两点 `MetricsSet(队列当前长度)` |
+| `drampool_queue_completion_inflight` | Gauge **[覆盖]** | CompletionPoller pending 窗口内在途完成记录数（等终态 / 等响应提交 / 等写回，每轮覆盖写）。测完成链路第二级缓冲占用；持续逼近 `pollerPendingDepth`（默认 64）= 拉取停摆，与 `completion_full` 互相印证 | `completion_poller.cc` `PollPendingCompletions()` 每轮尾部（L117 后），`UpdateStats(pending_.size())` |
+| `drampool_queue_completion_size` | Gauge **[覆盖]**（六次修改：替代原 enqueued/dequeued ×2 Counter） | completionQueue **当前排队的完成记录数**（Push 成功后与 TryPop 成功后覆盖写，最新值生效）。测完成流第二级缓冲积压；持续增长 = Poller 消费不足，随后 `request_full` 连锁 ↑（B3 反压传导的前置信号） | `task_worker.cc` `SubmitCompletion()` Push 成功后（L326）+ `completion_poller.cc` `FillPendingWindow()` TryPop 成功后（L71-72）两点 `UpdateStats(队列当前长度)` |
 | `drampool_queue_response_buffer_retry_total` | Counter | 响应 flag 缓冲池 **NoSpace、SubmitResponse 留 pending 下轮重试**事件数。测响应缓冲供给不足（不阻塞 Poller 线程，但阻塞该请求响应提交、推高 I 组批次总耗时）；缓冲链 B2，与 `flag_pool_usage_ratio` 联动 | `completion_poller.cc` `SubmitResponse()` NoSpace 分支（L166-172 WARN 处） |
 
 #### I. 批次总耗时（3，本次新增）
@@ -265,7 +265,7 @@ std::tuple<counter表, gauge表, histogram原始值向量表> GetAllStatsAndClea
 
 ### 4.3 flag 池记账（flag_pool_usage_ratio）
 
-CompletionPoller 单线程访问 flag 池，用普通 `size_t` 记账（无需 atomic）：`SubmitResponse()` Allocate 成功 +1（L164）、`ReleaseResponseBuffer()` Free 成功 −1（L38）；`PollPendingCompletions()` 每轮尾部 `MetricsSet(used / slotCount)`。与 `response_buffer_retry_total`（B2 信号）构成"水位前兆 + 事件确认"组合。
+CompletionPoller 单线程访问 flag 池，用普通 `size_t` 记账（无需 atomic）：`SubmitResponse()` Allocate 成功 +1（L164）、`ReleaseResponseBuffer()` Free 成功 −1（L38）；`PollPendingCompletions()` 每轮尾部 `UpdateStats(used / slotCount)`。与 `response_buffer_retry_total`（B2 信号）构成"水位前兆 + 事件确认"组合。
 
 ### 4.4 命中率推导
 
@@ -348,14 +348,16 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record) {
     if (record.begin_us != 0) {                  // 哨兵：本批次尚未上报
         const auto elapsedMs = (SteadyNowUs() - record.begin_us) / 1000.0;
         switch (record.opcode) {                 // I 组：批次总耗时
-            case Dump:   Observe(kDumpBatchTotalMs, elapsedMs);   break;
-            case Load:   Observe(kLoadBatchTotalMs, elapsedMs);   break;
-            case Lookup: Observe(kLookupBatchTotalMs, elapsedMs); break;
+            case Dump:   UpdateStats(kDumpBatchTotalMs, elapsedMs);   break;
+            case Load:   UpdateStats(kLoadBatchTotalMs, elapsedMs);   break;
+            case Lookup: UpdateStats(kLookupBatchTotalMs, elapsedMs); break;
         }
         if (record.opcode == Dump) {             // B 组 failed_entries（三次修改后：批次 Gauge ×2 改 Counter）
             const auto failedN = std::count(record.results.begin(), record.results.end(),
                                             static_cast<std::uint8_t>(DumpLoadResult::Failed));
-            MetricsCount(kDumpFailedEntries, static_cast<std::uint64_t>(failedN));
+            if (failedN != 0) {   // aggregated-count call site guards zero locally
+                UpdateStats(kDumpFailedEntriesTotal, static_cast<double>(failedN));
+            }
         }
         record.begin_us = 0;                     // 置哨兵：NoSpace 重试再入不重复上报
     }
@@ -438,11 +440,11 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record) {
 | 推导类（首轮裁剪，维持） | dump/load_bandwidth_gbps、batch_entries、dump_ttl_ms、interval_lookup_hit_rate | 带宽/批量推导已随四次修改取消（§3.1 注）；命中率推导已随五次修改取消（§4.4 注） |
 | 非业务类（16 项，维持不涉及） | 接入层协议错误、内部调度、低频异常分类、传输超时、GC 诊断等 | UC_WARN/UC_ERROR 日志兜底 |
 | 失败类合并（维持） | submit / transfer / response_failures 三大类 | 需按 opcode 细分时在同一统计点按 opcode 拆名即可 |
-| **本次删除** | ~~`drampool_dump_storebegin_failures_total`~~ | 在 `task_worker.cc` `ProcessDump()` `storeStatus.Failure()` 分支（L134-141）恢复 `MetricsCount`；若需"分配失败 vs 注册失败"细分，在 metadata 层 StoreBegin 返回前按 Status 类别分别计数 |
+| **本次删除** | ~~`drampool_dump_storebegin_failures_total`~~ | 在 `task_worker.cc` `ProcessDump()` `storeStatus.Failure()` 分支（L134-141）以 `UpdateStats` 累加恢复；若需"分配失败 vs 注册失败"细分，在 metadata 层 StoreBegin 返回前按 Status 类别分别计数 |
 | **二次删除（本修改）** | 6 个 [首条] 直方图：D 组 `lookup_first_exist_duration_ms` + G 组 storebegin / allocate / shard_register / evict_sync / loadbegin；thread_local 首条门控（`tl_batch_first_pending`，原 §4.7.1）随之整体移除 | 单 key 成本回退"scan 均值 ÷ 平均 batch_size"推导（§3.2 D 组注）；批次内阶段归因由 B/C 组 prepare（[批次]）与 I 组批次总耗时承载；entry 级阶段归因需恢复时，在 metadata.cc 对应观测点（StoreBegin / Allocate / ShardRegister / EvictSync / LoadBegin）以无条件 `ScopedTimer` 直测（无需门控） |
-| **三次修改（本修改）** | 批次 Gauge ×4：`dump_batch_failed_entries` / `dump_batch_failure_ratio` / `lookup_batch_hits` / `lookup_batch_hit_ratio` 停用——`dump_failed_entries` 改造为 Counter `dump_failed_entries_total`（§4.7 同一统计点 `MetricsSet`→`MetricsCount`）；`lookup_batch_hits` 与 `lookup_hit_entries_total` 同点重复、两个比率 Gauge 可由 §4.4 公式推导且比率语义非 Counter 所能承载，均直接删除 | 恢复覆盖写实况：在 `SubmitResponse()` 哨兵块内（`record.results` 定稿处）重新 `MetricsSet` 对应 Gauge 名即可，统计点与哨兵机制原样保留 |
-| **四次修改（本修改）** | 吞吐字节 Counter ×2：`dump_bytes_total` / `load_bytes_total` 删除——吞吐/带宽推导（原 §4.2）随之取消，LOAD 命中率精确式暂不可算（§4.4 注），"平均批量"近似（requests + bytes）随之取消；传输侧观测由 E 组 `transfer_duration_ms` 直测承载 | 恢复方式：在 `task_worker.cc` `ProcessDump()` entries 循环内 StoreBegin 成功处 / `ProcessLoad()` entries 循环内 LoadBegin 成功处累加 Σ `entry.len`，循环外一次 `MetricsCount`（§3.2 B/C 组原行） |
-| **五次修改（本修改）** | 归因/分子 Counter ×2：`load_initialized_entries_total`（miss 的 INITIALIZED 子类归因，写读竞态窗口观测）与 `lookup_hit_entries_total`（LOOKUP 命中数，命中率分子）删除——LOAD 命中率精确式维持不可算（四次修改起），LOOKUP 命中率推导随之取消（§4.4 注），单 key 查询成本分母（hit + miss）暂不可由指标表达（§3.2 D 组注）；两侧均以 miss 绝对速率与突增监控为主 | 恢复方式：`load_initialized_entries_total` 在 `metadata.cc` `ShardMetadata::LoadBegin()` `TryIncRef` 失败分支 + `existingEntry->status == INITIALIZED` 判定处恢复 `MetricsCount`（§3.2 C 组原行）；`lookup_hit_entries_total` 在 `task_worker.cc` `ProcessLookup()` 扫描循环内恢复 hits 累计上报、循环外一次 `MetricsCount`（§3.2 D 组原行） |
-| **六次修改（本修改）** | 队列累计 Counter ×4：`queue_request_enqueued/dequeued_total` 与 `queue_completion_enqueued/dequeued_total` 删除，替代为当前长度直测 Gauge ×2：`queue_request_size`（TryPush / TryPop 成功后覆盖写）与 `queue_completion_size`（Push / TryPop 成功后覆盖写）——SPSC 无丢弃恒等式（排队数 = 入队 − 出队，原 §4.6）改为直测，用户要求"只需统计当前队列中有多少"；入口/消费速率观测随之取消（如需恢复见恢复方式） | 恢复方式：原 4 个 Counter 统计点与本修改 Gauge 埋点完全同位（`drampool_server.cc` L517 / `task_worker.cc` L49、L326 / `completion_poller.cc` L71-72），将 `MetricsSet` 改回 `MetricsCount` 即恢复；排队数推导退化为速率差（enqueued − dequeued） |
+| **三次修改（本修改）** | 批次 Gauge ×4：`dump_batch_failed_entries` / `dump_batch_failure_ratio` / `lookup_batch_hits` / `lookup_batch_hit_ratio` 停用——`dump_failed_entries` 改造为 Counter `dump_failed_entries_total`（§4.7 同一统计点由覆盖写改为累加 `UpdateStats`）；`lookup_batch_hits` 与 `lookup_hit_entries_total` 同点重复、两个比率 Gauge 可由 §4.4 公式推导且比率语义非 Counter 所能承载，均直接删除 | 恢复覆盖写实况：在 `SubmitResponse()` 哨兵块内（`record.results` 定稿处）重新以 `UpdateStats` 覆盖写对应 Gauge 名即可，统计点与哨兵机制原样保留 |
+| **四次修改（本修改）** | 吞吐字节 Counter ×2：`dump_bytes_total` / `load_bytes_total` 删除——吞吐/带宽推导（原 §4.2）随之取消，LOAD 命中率精确式暂不可算（§4.4 注），"平均批量"近似（requests + bytes）随之取消；传输侧观测由 E 组 `transfer_duration_ms` 直测承载 | 恢复方式：在 `task_worker.cc` `ProcessDump()` entries 循环内 StoreBegin 成功处 / `ProcessLoad()` entries 循环内 LoadBegin 成功处累加 Σ `entry.len`，循环外一次 `UpdateStats` 累加（§3.2 B/C 组原行） |
+| **五次修改（本修改）** | 归因/分子 Counter ×2：`load_initialized_entries_total`（miss 的 INITIALIZED 子类归因，写读竞态窗口观测）与 `lookup_hit_entries_total`（LOOKUP 命中数，命中率分子）删除——LOAD 命中率精确式维持不可算（四次修改起），LOOKUP 命中率推导随之取消（§4.4 注），单 key 查询成本分母（hit + miss）暂不可由指标表达（§3.2 D 组注）；两侧均以 miss 绝对速率与突增监控为主 | 恢复方式：`load_initialized_entries_total` 在 `metadata.cc` `ShardMetadata::LoadBegin()` `TryIncRef` 失败分支 + `existingEntry->status == INITIALIZED` 判定处以 `UpdateStats` 累加恢复（§3.2 C 组原行）；`lookup_hit_entries_total` 在 `task_worker.cc` `ProcessLookup()` 扫描循环内恢复 hits 累计上报、循环外一次 `UpdateStats` 累加（§3.2 D 组原行） |
+| **六次修改（本修改）** | 队列累计 Counter ×4：`queue_request_enqueued/dequeued_total` 与 `queue_completion_enqueued/dequeued_total` 删除，替代为当前长度直测 Gauge ×2：`queue_request_size`（TryPush / TryPop 成功后覆盖写）与 `queue_completion_size`（Push / TryPop 成功后覆盖写）——SPSC 无丢弃恒等式（排队数 = 入队 − 出队，原 §4.6）改为直测，用户要求"只需统计当前队列中有多少"；入口/消费速率观测随之取消（如需恢复见恢复方式） | 恢复方式：原 4 个 Counter 统计点与本修改 Gauge 埋点完全同位（`drampool_server.cc` L517 / `task_worker.cc` L49、L326 / `completion_poller.cc` L71-72），将覆盖写 `UpdateStats` 改回累加 `UpdateStats` 即恢复；排队数推导退化为速率差（enqueued − dequeued） |
 | 维持 entry / 轮级 | storeend / loadend / evict_gc | 无变更 |
 

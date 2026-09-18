@@ -72,7 +72,8 @@ void CompletionPoller::FillPendingWindow()
         CompletionRecord record;
         if (!runtime_.completionQueue.TryPop(record)) { break; }
         g_completionQueueLen.fetch_sub(1, std::memory_order_relaxed);
-        MetricsSet(kQueueCompletionSize, static_cast<double>(g_completionQueueLen.load()));
+        UC::Metrics::UpdateStats(kQueueCompletionSize,
+                                 static_cast<double>(g_completionQueueLen.load()));
         pending_.emplace_back(std::move(record));
     }
 }
@@ -122,10 +123,10 @@ void CompletionPoller::PollPendingCompletions()
 
     // Round-tail gauges (metrics_design.md F/H groups): overwrite-write is safe here
     // because the CompletionPoller thread is the sole writer of both names.
-    MetricsSet(kQueueCompletionInflight, static_cast<double>(pending_.size()));
+    UC::Metrics::UpdateStats(kQueueCompletionInflight, static_cast<double>(pending_.size()));
     if (g_config.flagBufferSlotCount > 0) {
-        MetricsSet(kFlagPoolUsageRatio,
-                   static_cast<double>(flagUsed_) / g_config.flagBufferSlotCount);
+        UC::Metrics::UpdateStats(kFlagPoolUsageRatio,
+                                 static_cast<double>(flagUsed_) / g_config.flagBufferSlotCount);
     }
 }
 
@@ -178,13 +179,13 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
         const auto elapsedMs = (SteadyNowUs() - record.begin_us) / 1000.0;
         switch (record.opcode) {
             case KvOpcode::Dump:
-                MetricsObserve(kDumpBatchTotalDurationMs, elapsedMs);
+                UC::Metrics::UpdateStats(kDumpBatchTotalDurationMs, elapsedMs);
                 break;
             case KvOpcode::Load:
-                MetricsObserve(kLoadBatchTotalDurationMs, elapsedMs);
+                UC::Metrics::UpdateStats(kLoadBatchTotalDurationMs, elapsedMs);
                 break;
             case KvOpcode::Lookup:
-                MetricsObserve(kLookupBatchTotalDurationMs, elapsedMs);
+                UC::Metrics::UpdateStats(kLookupBatchTotalDurationMs, elapsedMs);
                 break;
             default:
                 break;
@@ -192,7 +193,10 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
         if (record.opcode == KvOpcode::Dump) {
             const auto failedEntries = std::count(record.results.begin(), record.results.end(),
                                                   static_cast<std::uint8_t>(DumpLoadResult::Failed));
-            MetricsCount(kDumpFailedEntriesTotal, static_cast<std::uint64_t>(failedEntries));
+            if (failedEntries != 0) {
+                UC::Metrics::UpdateStats(kDumpFailedEntriesTotal,
+                                         static_cast<double>(failedEntries));
+            }
         }
         record.begin_us = 0;
     }
@@ -204,7 +208,7 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
         if (allocateStatus.Underlying() == Status::NoSpace().Underlying()) {
             // Flag pool full: the record stays pending and is retried next round
             // (blocking chain B2), not counted as a response failure.
-            MetricsCount(kQueueResponseBufferRetryTotal, 1);
+            UC::Metrics::UpdateStats(kQueueResponseBufferRetryTotal, 1);
             UC_WARN(
                 "CompletionPoller flag buffer pool full, request_id={}, opcode={}, error={}, "
                 "retrying next round",
@@ -212,7 +216,7 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
             return false;
         }
 
-        MetricsCount(kResponseFailuresTotal, 1);
+        UC::Metrics::UpdateStats(kResponseFailuresTotal, 1);
         UC_ERROR(
             "CompletionPoller flag buffer allocation failed, request_id={}, opcode={}, error={}",
             record.request_id, static_cast<int>(record.opcode), allocateStatus);
@@ -230,7 +234,7 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
     if (protocolStatus.Failure()) {
         --flagUsed_;
         ReleaseResponseBuffer(runtime_.flagBufferPool, record);
-        MetricsCount(kResponseFailuresTotal, 1);
+        UC::Metrics::UpdateStats(kResponseFailuresTotal, 1);
         UC_ERROR("CompletionPoller SubmitResponse pack failed, request_id={}, opcode={}, error={}",
                  record.request_id, static_cast<int>(record.opcode), protocolStatus);
         return true;
@@ -250,7 +254,7 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
     if (submitStatus.Failure() || handle == transport::kInvalidTransferHandle) {
         --flagUsed_;
         ReleaseResponseBuffer(runtime_.flagBufferPool, record);
-        MetricsCount(kResponseFailuresTotal, 1);
+        UC::Metrics::UpdateStats(kResponseFailuresTotal, 1);
         UC_ERROR(
             "CompletionPoller SubmitResponse ExecuteAsync failed, request_id={}, opcode={}, "
             "handle={}, error={}",
@@ -278,8 +282,9 @@ bool CompletionPoller::PollResponseTransfer(CompletionRecord& record)
                  record.request_id, record.response_handle, queryStatus);
         --flagUsed_;
         ReleaseResponseBuffer(runtime_.flagBufferPool, record);
-        MetricsCount(kResponseFailuresTotal, 1);
-        MetricsObserve(kResponseRttMs, static_cast<double>(SteadyNowMs() - record.submit_ms));
+        UC::Metrics::UpdateStats(kResponseFailuresTotal, 1);
+        UC::Metrics::UpdateStats(kResponseRttMs,
+                                 static_cast<double>(SteadyNowMs() - record.submit_ms));
         return true;
     }
     if (transportStatus == transport::TransferStatus::Waiting) {
@@ -300,8 +305,9 @@ bool CompletionPoller::PollResponseTransfer(CompletionRecord& record)
                  record.request_id, record.response_handle, static_cast<int>(transportStatus));
         --flagUsed_;
         ReleaseResponseBuffer(runtime_.flagBufferPool, record);
-        MetricsCount(kResponseFailuresTotal, 1);
-        MetricsObserve(kResponseRttMs, static_cast<double>(SteadyNowMs() - record.submit_ms));
+        UC::Metrics::UpdateStats(kResponseFailuresTotal, 1);
+        UC::Metrics::UpdateStats(kResponseRttMs,
+                                 static_cast<double>(SteadyNowMs() - record.submit_ms));
         return true;
     }
 
@@ -310,7 +316,8 @@ bool CompletionPoller::PollResponseTransfer(CompletionRecord& record)
     // Response RTT terminal exit (metrics_design.md E group): observed on every terminal
     // path (Completed / GetStatus failure / Failed) from the response-transfer submission
     // (submit_ms, set in SubmitResponse) to the terminal state.
-    MetricsObserve(kResponseRttMs, static_cast<double>(SteadyNowMs() - record.submit_ms));
+    UC::Metrics::UpdateStats(kResponseRttMs,
+                             static_cast<double>(SteadyNowMs() - record.submit_ms));
     UC_DEBUG("CompletionPoller response transfer finished, request_id={}, handle={}, status={}",
              record.request_id, record.response_handle, static_cast<int>(transportStatus));
 
@@ -325,14 +332,14 @@ void CompletionPoller::SettleDataTransfer(CompletionRecord& record,
     // covers the GetStatus-failure / Failed / Completed terminal paths. submit_ms still
     // holds the data-transfer submission time; SubmitResponse overwrites it afterwards.
     if (record.opcode == KvOpcode::Dump) {
-        MetricsObserve(kDumpTransferDurationMs,
-                       static_cast<double>(SteadyNowMs() - record.submit_ms));
+        UC::Metrics::UpdateStats(kDumpTransferDurationMs,
+                                 static_cast<double>(SteadyNowMs() - record.submit_ms));
     } else if (record.opcode == KvOpcode::Load) {
-        MetricsObserve(kLoadTransferDurationMs,
-                       static_cast<double>(SteadyNowMs() - record.submit_ms));
+        UC::Metrics::UpdateStats(kLoadTransferDurationMs,
+                                 static_cast<double>(SteadyNowMs() - record.submit_ms));
     }
     if (terminalStatus != transport::TransferStatus::Completed) {
-        MetricsCount(kTransferFailuresTotal, 1);
+        UC::Metrics::UpdateStats(kTransferFailuresTotal, 1);
     }
 
     for (const auto& item : record.transfer_items) {

@@ -105,9 +105,9 @@ protected:
 
 TEST_F(UCDrampoolMetricsTest, SetupRegistersEveryStaticMetricName)
 {
-    for (const auto* name : kCounterNames) { MetricsCount(name, 1); }
-    for (const auto* name : kGaugeNames) { MetricsSet(name, 0.5); }
-    for (const auto* name : kHistogramNames) { MetricsObserve(name, 1.0); }
+    for (const auto* name : kCounterNames) { Metrics::UpdateStats(name, 1); }
+    for (const auto* name : kGaugeNames) { Metrics::UpdateStats(name, 0.5); }
+    for (const auto* name : kHistogramNames) { Metrics::UpdateStats(name, 1.0); }
 
     const auto stats = Metrics::GetAllStatsAndClear();
     const auto& counters = std::get<0>(stats);
@@ -123,10 +123,10 @@ TEST_F(UCDrampoolMetricsTest, SetupRegistersEveryStaticMetricName)
 TEST_F(UCDrampoolMetricsTest, SetupRegistersBufferPoolUsageGaugePerSlotSize)
 {
     EXPECT_EQ(BufferPoolUsageRatioName(4096), "drampool_buffer_pool_usage_ratio_4096");
-    MetricsSet(BufferPoolUsageRatioName(512), 0.25);
-    MetricsSet(BufferPoolUsageRatioName(4096), 0.25);
+    Metrics::UpdateStats(BufferPoolUsageRatioName(512), 0.25);
+    Metrics::UpdateStats(BufferPoolUsageRatioName(4096), 0.25);
     // Slot sizes absent from g_config.poolBlockSizes are never registered (C2).
-    MetricsSet(BufferPoolUsageRatioName(8192), 0.9);
+    Metrics::UpdateStats(BufferPoolUsageRatioName(8192), 0.9);
 
     const auto stats = Metrics::GetAllStatsAndClear();
     const auto& gauges = std::get<1>(stats);
@@ -138,10 +138,7 @@ TEST_F(UCDrampoolMetricsTest, SetupRegistersBufferPoolUsageGaugePerSlotSize)
 TEST_F(UCDrampoolMetricsTest, UnregisteredNamesAreSilentlyDropped)
 {
     const std::string unregistered = "drampool_unregistered_metric";
-    MetricsCount(unregistered, 1);
-    MetricsSet(unregistered, 1.0);
-    MetricsObserve(unregistered, 1.0);
-    Metrics::UpdateStats(unregistered, 2.0);
+    Metrics::UpdateStats(unregistered, 1.0);
 
     const auto stats = Metrics::GetAllStatsAndClear();
     EXPECT_TRUE(std::get<0>(stats).empty());
@@ -149,31 +146,28 @@ TEST_F(UCDrampoolMetricsTest, UnregisteredNamesAreSilentlyDropped)
     EXPECT_TRUE(std::get<2>(stats).empty());
 }
 
-TEST_F(UCDrampoolMetricsTest, MetricsCountAccumulatesAndSkipsZero)
+TEST_F(UCDrampoolMetricsTest, CounterUpdatesAccumulate)
 {
-    MetricsCount(kDumpRequestsTotal, 0);
-    const auto skipped = Metrics::GetAllStatsAndClear();
-    EXPECT_TRUE(std::get<0>(skipped).empty());
-
-    MetricsCount(kDumpRequestsTotal, 3);
-    MetricsCount(kDumpRequestsTotal, 4);
+    // Aggregated-count call sites guard count != 0 locally before updating.
+    Metrics::UpdateStats(kDumpRequestsTotal, 3);
+    Metrics::UpdateStats(kDumpRequestsTotal, 4);
     const auto stats = Metrics::GetAllStatsAndClear();
     const auto& counters = std::get<0>(stats);
     EXPECT_EQ(counters.size(), std::size_t{1});
     EXPECT_EQ(counters.at(kDumpRequestsTotal), 7);
 }
 
-TEST_F(UCDrampoolMetricsTest, MetricsSetOverwritesGaugeWithLatestValue)
+TEST_F(UCDrampoolMetricsTest, GaugeOverwritesWithLatestValue)
 {
     // Mirrors the queue-length gauges maintained by task_worker and
     // completion_poller from the atomic queue length accountings.
     g_requestQueueLen.store(11);
-    MetricsSet(kQueueRequestSize, static_cast<double>(g_requestQueueLen.load()));
+    Metrics::UpdateStats(kQueueRequestSize, static_cast<double>(g_requestQueueLen.load()));
     g_requestQueueLen.store(3);
-    MetricsSet(kQueueRequestSize, static_cast<double>(g_requestQueueLen.load()));
+    Metrics::UpdateStats(kQueueRequestSize, static_cast<double>(g_requestQueueLen.load()));
 
     g_completionQueueLen.store(7);
-    MetricsSet(kQueueCompletionSize, static_cast<double>(g_completionQueueLen.load()));
+    Metrics::UpdateStats(kQueueCompletionSize, static_cast<double>(g_completionQueueLen.load()));
 
     const auto stats = Metrics::GetAllStatsAndClear();
     const auto& gauges = std::get<1>(stats);
@@ -181,10 +175,10 @@ TEST_F(UCDrampoolMetricsTest, MetricsSetOverwritesGaugeWithLatestValue)
     EXPECT_EQ(gauges.at(kQueueCompletionSize), 7);
 }
 
-TEST_F(UCDrampoolMetricsTest, MetricsObserveAccumulatesHistogramSamples)
+TEST_F(UCDrampoolMetricsTest, HistogramObservationsAccumulate)
 {
-    MetricsObserve(kDumpPrepareDurationMs, 1.5);
-    MetricsObserve(kDumpPrepareDurationMs, 2.5);
+    Metrics::UpdateStats(kDumpPrepareDurationMs, 1.5);
+    Metrics::UpdateStats(kDumpPrepareDurationMs, 2.5);
 
     const auto stats = Metrics::GetAllStatsAndClear();
     const auto& histogram = std::get<2>(stats).at(kDumpPrepareDurationMs);
@@ -221,9 +215,9 @@ TEST_F(UCDrampoolMetricsTest, ScopedTimerDisarmSkipsObservation)
 
 TEST_F(UCDrampoolMetricsTest, GetAllStatsAndClearReturnsIncrementAndResets)
 {
-    MetricsCount(kLookupRequestsTotal, 2);
-    MetricsSet(kMetadataEntryCount, 5);
-    MetricsObserve(kResponseRttMs, 1.0);
+    Metrics::UpdateStats(kLookupRequestsTotal, 2);
+    Metrics::UpdateStats(kMetadataEntryCount, 5);
+    Metrics::UpdateStats(kResponseRttMs, 1.0);
 
     const auto first = Metrics::GetAllStatsAndClear();
     EXPECT_EQ(std::get<0>(first).at(kLookupRequestsTotal), 2);
@@ -243,7 +237,7 @@ TEST_F(UCDrampoolMetricsTest, UpdatesFromMultipleThreadsAggregate)
     constexpr std::uint64_t kUpdatesPerThread = 100;
     const auto worker = [] {
         for (std::uint64_t index = 0; index < kUpdatesPerThread; ++index) {
-            MetricsCount(kDumpRequestsTotal, 1);
+            Metrics::UpdateStats(kDumpRequestsTotal, 1);
         }
     };
     std::thread first(worker);
@@ -258,7 +252,7 @@ TEST_F(UCDrampoolMetricsTest, UpdatesFromMultipleThreadsAggregate)
 TEST_F(UCDrampoolMetricsTest, SetupDrampoolMetricsIsIdempotent)
 {
     EXPECT_NO_THROW(SetupDrampoolMetrics());
-    MetricsCount(kDumpRequestsTotal, 2);
+    Metrics::UpdateStats(kDumpRequestsTotal, 2);
 
     const auto stats = Metrics::GetAllStatsAndClear();
     const auto& counters = std::get<0>(stats);

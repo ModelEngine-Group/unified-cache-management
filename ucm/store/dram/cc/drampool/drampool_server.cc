@@ -527,7 +527,7 @@ void DramPoolServer::RequestReceiveLoop()
                 break;
             }
             if (!queueFullLogged) {
-                MetricsCount(kQueueRequestFullTotal, 1);
+                UC::Metrics::UpdateStats(kQueueRequestFullTotal, 1);
                 UC_WARN("RequestReceiver queue is full, request_id={}, depth={}, retry_wait_us={}",
                         task->request->request_id, g_config.requestQueueDepth,
                         g_config.requestReceiverIdleWaitUs);
@@ -563,10 +563,11 @@ void DramPoolServer::GCThreadLoop()
     while (true) {
         std::unique_lock<std::mutex> waitLock(stopWaitMutex_);
         if (stopWaitCv_.wait_for(waitLock, interval, stopRequested)) { break; }
-        MetricsSet(kMetadataEntryCount, static_cast<double>(metadataManager_->GetKeyCnt()));
+        UC::Metrics::UpdateStats(kMetadataEntryCount,
+                                 static_cast<double>(metadataManager_->GetKeyCnt()));
         for (const auto slotSize : g_config.poolBlockSizes) {
-            MetricsSet(BufferPoolUsageRatioName(slotSize),
-                       bufferManager_->GetUsedSlotRatio(slotSize));
+            UC::Metrics::UpdateStats(BufferPoolUsageRatioName(slotSize),
+                                     bufferManager_->GetUsedSlotRatio(slotSize));
         }
         ScopedTimer evictTimer(kMetadataEvictGcDurationMs);
         metadataManager_->PerformEvict();
