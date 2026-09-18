@@ -42,6 +42,7 @@ class EarlyNativeTransfer final : public Detail::TaskWrapper<EarlyNativeTask, De
     TransManager& native_;
     const size_t shardBytes_;
     std::mutex pendingMutex_;
+    std::mutex nativeSubmitMutex_;
     std::condition_variable wake_;
     std::deque<TaskPair> pending_;
     std::vector<TaskPtr> quarantined_;
@@ -65,6 +66,10 @@ class EarlyNativeTransfer final : public Detail::TaskWrapper<EarlyNativeTask, De
 
     void SubmitNative(EarlyNativeTask& t)
     {
+        // Native load/dump ingress is SPSC. The READY caller and preparation
+        // thread share its producer; serialize only the nonblocking enqueue,
+        // never SSD completion or H2D/D2H execution.
+        std::lock_guard producer(nativeSubmitMutex_);
         auto submitted = native_.Submit(std::move(t.task));
         if (!submitted) { t.Fail(submitted.Error()); }
         else { t.submitted = true; }
