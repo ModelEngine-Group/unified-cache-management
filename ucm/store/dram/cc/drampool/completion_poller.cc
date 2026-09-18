@@ -178,19 +178,19 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
     if (record.begin_us != 0) {
         const auto elapsedMs = (SteadyNowUs() - record.begin_us) / 1000.0;
         switch (record.opcode) {
-            case KvOpcode::Dump:
+            case OpType::DUMP:
                 UC::Metrics::UpdateStats(kDumpBatchTotalDurationMs, elapsedMs);
                 break;
-            case KvOpcode::Load:
+            case OpType::LOAD:
                 UC::Metrics::UpdateStats(kLoadBatchTotalDurationMs, elapsedMs);
                 break;
-            case KvOpcode::Lookup:
+            case OpType::LOOKUP:
                 UC::Metrics::UpdateStats(kLookupBatchTotalDurationMs, elapsedMs);
                 break;
             default:
                 break;
         }
-        if (record.opcode == KvOpcode::Dump) {
+        if (record.opcode == OpType::DUMP) {
             const auto failedEntries = std::count(record.results.begin(), record.results.end(),
                                                   static_cast<std::uint8_t>(DumpLoadResult::Failed));
             if (failedEntries != 0) {
@@ -331,10 +331,10 @@ void CompletionPoller::SettleDataTransfer(CompletionRecord& record,
     // Data-transfer terminal observation (metrics_design.md E group): this single exit
     // covers the GetStatus-failure / Failed / Completed terminal paths. submit_ms still
     // holds the data-transfer submission time; SubmitResponse overwrites it afterwards.
-    if (record.opcode == KvOpcode::Dump) {
+    if (record.opcode == OpType::DUMP) {
         UC::Metrics::UpdateStats(kDumpTransferDurationMs,
                                  static_cast<double>(SteadyNowMs() - record.submit_ms));
-    } else if (record.opcode == KvOpcode::Load) {
+    } else if (record.opcode == OpType::LOAD) {
         UC::Metrics::UpdateStats(kLoadTransferDurationMs,
                                  static_cast<double>(SteadyNowMs() - record.submit_ms));
     }
