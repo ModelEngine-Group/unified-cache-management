@@ -286,7 +286,8 @@ used 或 batch grant。broker 校验 owner、generation/attempt、最终命中�
 `EarlyBufferPins::Acquire` 补齐缺失 handles。后者经现有 friend 入口调用原生
 FindAt/Alloc 和引用机制，仅设置已有 Alloc 的有限尝试次数。原生私有访问属性不变。
 load 允许使用 native exclusive 区，dump 仍不允许。所有位置取得后仍提交一个
-原生任务；LoadQueue/DumpQueue 继续负责原粒度的 I/O、同步与完成，不拆小任务。
+原生任务。缺失回读先由 Early 独立完成，LoadQueue/DumpQueue 继续负责原粒度的
+H2D/D2H 与原生 dump，正式任务不拆分；具体时序见下文。
 
 容量不足返回原生 NoSpace，且保证该任务未提交 I/O。EarlyTaskPins RAII 对放弃的
 LOADING owner 标记失败再释放，不能将不完整数据标 READY。binding 将提交前
@@ -302,6 +303,73 @@ dump 沿用原生错误处理，不上报保存成功。拒绝 receipt 不等于
 `native_get_fallback` 只统计 LoadQueue 内的 Get。Early 子类可能已经为非 owner
 执行了有界索引/分配，因此该值为零不代表没有索引工作或跨 rank 复用了 owner
 handle；实际 SSD 读量应使用独立 read 计数。
+
+### 有限分配后的读取责任与原生传输交接
+
+`EarlyNativeTransfer` 继承现有 `TaskWrapper`，组合调用同一个原生
+`TransManager` 和 backend。它不创建第二个 buffer、共享身份或 H2D/D2H 队列。
+`EarlyNativeTask` 保存本次已取得的 handles：LOADING owner 必须提交并回收读取；
+LOADING follower 只观察节点状态；READY handle 可直接交给原生。
+这里的 shard owner 与 broker 为请求选择的 reserve owner 是两个不同层次。
+
+每轮最多提交 64 个 owner shard，executor 合计最多 128 个 shard 在途。完成检查
+不依赖 H2D FIFO；同任务的多个读取及不同任务交错推进。失败或取消停止新的读取，
+已接受的读取继续独立检查完成。只有当前整个 native load 所需 handles 都 READY，
+才向原生提交原尺寸任务。这里的小批次只用于 backend 读取，没有拆分原生 load/dump。
+已有 reservation handle、LOADING ownership 均直接沿用，不再次 reserve、定位或读取。
+保留原有 reserve/read 批次流水、HRRN 与跨请求推进。
+
+```mermaid
+sequenceDiagram
+    participant E as EarlyCacheStore
+    participant P as EarlyNativeTransfer
+    participant B as Posix backend
+    participant N as 原生 TransManager/H2D
+    E->>P: 已取得 handles 的完整任务
+    par 独立读取推进
+        P->>B: 自有 LOADING 节点，最多 64 shard/批
+        B-->>P: Check 完成证据 + 唯一一次 Wait 回收
+        P->>P: 标记对应 READY/FAILED
+    and 其他任务
+        P->>B: 推进其他任务的有界批次
+    end
+    P->>N: 全部 READY 后提交同一完整任务及 handles
+    N-->>P: 原生引用持有至 H2D 同步成功
+    P->>P: 释放额外保护，完成 native receipt
+```
+
+这种保守交接用于 Early 开启后的正式缺失回读。它减少该 native task 的
+SSD/H2D 重叠：H2D 等该 task 的全部数据就绪；不同 task 的 SSD 与 H2D 仍可重叠。
+全 READY 路径在 Dispatch 中立即原生提交。额外 guard 引用覆盖原生失败分支，
+会增加引用计数操作和短暂保护寿命；不能仅根据消除等待环宣称性能提升。
+
+### I/O 完成证据与异常边界
+
+`CompleteEarlyRead` 是 reserve 批次与正式读取准备共同使用的完成入口。
+只有 backend Check 成功且为 true，才由提交方唯一一次 Wait 回收并发布节点状态。
+Check 错误不是完成：保留该批次的引用与 lease，异步 Step 不阻塞其他批次。
+无法确认完成时，清理/销毁必须等待外部恢复，不能用 TTL 或任务结束推断安全。
+
+原生 Posix AIO 的取消保留完成计数：只有未提交 open 的失败、成功取消回调或
+kernel 完成事件能 Done。取消失败的 iocb、fd、callback 与目标引用保持有效。
+IoEngineAio 销毁先排空仍在注册的任务，再销毁 open/completion workers。
+Harvest 以非阻塞 getevents 回收当前事件，避免取消导致事件数量变化时卡住
+唯一完成线程。此处不改变 AIO dump 的异步 rename 或多 shard 提交时序；
+read lease 只保护删除，不保证 KV 已写完整，也不恢复 producer 等待。
+
+正式 load 的 SSD 读取不再进入原生 H2D FIFO，因此原生错误分支跳过尾项不会
+丢掉这些 SSD 读取的回收责任。EarlyNativeTransfer 对尚有 I/O 的任务保留 handles
+和 lease；对 H2D/D2H 失败且无法证明 stream drain 的任务额外保留 guards，
+对上报错，由现有消费者协议 fence 共享域，销毁被阻止。必须停止整个域的 workers
+并按设备/runtime 恢复流程建立新域；没有猜测性减引用、进程死亡自动恢复或续跑承诺。
+Early 关闭仍使用原生队列；原生队列自身失败后的尾项/加速器 drain 保证并未扩展。
+
+容量承诺仍分两阶段：调度前按完成且受保护的连续整块前缀返回；已承诺后的
+正式任务只有在全部节点有限获取成功时才接受。提交前 NoSpace 保持现有
+EarlyCapacityRejected → 原生缺失 block/失败策略，dump 不记录保存成功。
+其他 READY 请求的 pin 不会被强制撤销；默认 fail 策略仍可能使该请求失败，
+不能把有限等待解释为任意压力下总能重算或总能成功。
+
 
 ## 全部消费完成后的保守交接
 

@@ -75,6 +75,17 @@ def load(reservations=()):
     task = native.EarlyLoad(pipe, ids, indexes, addresses, reservations) if a.mode == 'early' else pipe.Load(ids, indexes, addresses)
     pipe.Wait(task)
 if a.mode == 'early':
+    # Fresh L1 and no reservation exercise Early-owned fallback reads, not
+    # only the already-READY reservation handoff.
+    fallback = native.PipelineStore()
+    fallback.Stack('EarlyPosix', str(store_dir / 'posix/libposixstore.so'), config)
+    fallback.Stack('EarlyCache', str(store_dir / 'cache/libcachestore.so'),
+                   dict({k:v for k,v in config.items() if k != 'tensor_size'}, unique_id=uuid.uuid4().hex))
+    fallback.Wait(native.EarlyLoad(fallback, ids, indexes, addresses, ()))
+    check('cold_l1_no_reservation_prepared_read')
+    del fallback
+    clear()
+if a.mode == 'early':
     cold = native.EarlyReservePrefix(pipe, ids)
     assert cold['total_hit_blocks'] == blocks
     assert cold['remaining_l2_work'] == blocks
