@@ -122,8 +122,4 @@ if(BUILD_UCM_DRAMPOOL)
         COMPONENT ucm
     )
 
-    if(BUILD_UNIT_TESTS)
-        add_subdirectory(${DRAMPOOL_SOURCE_DIR}/test)
-    endif()
-
 endif()
