@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include "buffer_manager.h"
 #include "early_stats.h"
+#include "early_read_completion.h"
 #include "early_batch.h"
 #include "early_buffer_pins.h"
 

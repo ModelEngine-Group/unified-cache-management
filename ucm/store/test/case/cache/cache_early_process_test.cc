@@ -14,6 +14,8 @@
 namespace {
 class Backend : public testing::NiceMock<UC::Test::Detail::MockStore> {
 public:
+    Backend() { ON_CALL(*this, Check).WillByDefault(testing::Invoke([](auto) { return true; })); }
+
     UC::Expected<std::shared_ptr<UC::ReadLease>> AcquireReadLease(
         const UC::Detail::BlockId*, size_t) override
     { return std::make_shared<UC::ReadLease>(); }

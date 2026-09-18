@@ -32,13 +32,9 @@ class ReservedPrefetch::Batch final : public Early::Batch {
         EarlyStats::Phase phase{stats_->waitMs};
         // Check(true) is followed by native Wait to collect status and resources.
         // On abandonment/error Run/destruction also drains unfinished tasks here.
-        auto status = owner_.backend_->Wait(transfer.handle);
+        auto status = CompleteEarlyRead(*owner_.backend_, transfer.handle, transfer.owners,
+            [&](size_t index) -> TransBuffer::Handle& { return r.Pin(index, owner_.shardsPerBlock_); });
         if (status.Success()) { progress_.completedReadBytes += transfer.owners.size() * shardBytes; }
-        for (auto index : transfer.owners) {
-            auto& pin = r.Pin(index, owner_.shardsPerBlock_);
-            if (status.Success()) { pin.MarkReady(); }
-            else { pin.MarkFailed(status); }
-        }
         progress_.inflightBytes -= transfer.owners.size() * shardBytes;
         progress_.remainingL2Work -= std::min(progress_.remainingL2Work, transfer.owners.size());
         stats_->lastIoNs = EarlyStats::NowNs();
@@ -71,7 +67,12 @@ class ReservedPrefetch::Batch final : public Early::Batch {
             if (!blocking) {
                 auto check = owner_.backend_->Check(transfers_.front().handle);
                 if (check && !check.Value()) { break; }
-                if (!check) { Fail(check.Error()); }  // Wait still owns drain on error
+                if (!check) {
+                    // Unknown completion must not block the data executor or
+                    // release destinations. Retain this batch for later drain.
+                    Fail(check.Error());
+                    return Early::Progress{progress_};
+                }
             }
             Complete(*r);
             if (blocking) { break; }

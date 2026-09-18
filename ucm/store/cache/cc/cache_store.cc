@@ -29,6 +29,7 @@
 #include "trans/cuda/gdr/gdr_config.h"
 #include "trans_manager.h"
 #include "reserved_prefetch.h"
+#include "early_native_transfer.h"
 
 #ifndef UCM_RUNTIME_ASCEND_IO_AGGREGATION
 #define UCM_RUNTIME_ASCEND_IO_AGGREGATION 0
@@ -286,6 +287,7 @@ private:
 // Reservations are destroyed before the base store releases those resources.
 class EarlyCacheStore final : public CacheStore, public Early::DomainProvider {
     std::unique_ptr<ReservedPrefetch> early_;
+    std::unique_ptr<EarlyNativeTransfer> transfers_;
     size_t earlyBlockBytes_{0}, earlyShardBytes_{0};
 
 public:
@@ -301,6 +303,7 @@ public:
             early_ = std::make_unique<ReservedPrefetch>(
                 &bufferMgr_, param.storeBackend, param.blockSize, param.shardSize,
                 param.timeoutMs);
+            transfers_ = std::make_unique<EarlyNativeTransfer>(*param.storeBackend, transMgr_, param);
         }
         return Status::OK();
     }
@@ -342,6 +345,11 @@ public:
         return SubmitBounded(TransTask::Type::DUMP, std::move(task));
     }
 
+    Expected<bool> Check(Detail::TaskHandle task) override
+    { return transfers_ ? transfers_->Check(task) : CacheStore::Check(task); }
+    Status Wait(Detail::TaskHandle task) override
+    { return transfers_ ? transfers_->Wait(task) : CacheStore::Wait(task); }
+
 private:
     Expected<Detail::TaskHandle> SubmitBounded(TransTask::Type type, Detail::TaskDesc task)
     {
@@ -363,7 +371,7 @@ private:
                 return Status::NoSpace();
             }
         }
-        return transMgr_.Submit(std::move(prepared));
+        return transfers_->Submit(EarlyNativeTask{std::move(prepared)});
     }
 
 };

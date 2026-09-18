@@ -744,3 +744,32 @@ TEST_F(UCPosixStoreTest, AioUncancellableTimeoutRetainsBufferUntilKernelCompleti
     EXPECT_EQ(syscall(SYS_io_submit, ctx, 1, &cb), 1);
     EXPECT_EQ(wait.get(), UC::Status::Timeout());
 }
+
+TEST_F(UCPosixStoreTest, AioPartialSubmissionFailureStillDrainsAcceptedOperation)
+{
+    using namespace UC::PosixStore;
+    PosixStore store;
+    ASSERT_EQ(store.Setup(MakeAioConfig(Path(), 50, 1, 2)), UC::Status::OK());
+    ScopedAioHooks hooks;
+    std::promise<std::pair<aio_context_t, iocb*>> accepted;
+    std::atomic<int> submits{0};
+    TestHooks::SetAioSubmitHook([&](aio_context_t ctx, int64_t nr, iocb** cb) {
+        if (++submits == 1) { accepted.set_value({ctx, *cb}); return int32_t(nr); }
+        errno = EIO;
+        return int32_t{-1};
+    });
+    TestHooks::SetAioCancelHook([](aio_context_t, iocb*, io_event*) {
+        errno = EAGAIN; return -1;
+    });
+    auto first = MakeAlignedBuffer(42), second = MakeAlignedBuffer(43);
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    UC::Detail::TaskDesc desc{{block, 0, {first.get()}}, {block, 1, {second.get()}}};
+    auto handle = store.Dump(std::move(desc));
+    ASSERT_TRUE(handle);
+    auto [ctx, cb] = accepted.get_future().get();
+    auto wait = std::async(std::launch::async, [&] { return store.Wait(handle.Value()); });
+    EXPECT_EQ(wait.wait_for(std::chrono::milliseconds(150)), std::future_status::timeout);
+    EXPECT_EQ(submits, 2);
+    EXPECT_EQ(syscall(SYS_io_submit, ctx, 1, &cb), 1);
+    EXPECT_EQ(wait.get(), UC::Status::Timeout());
+}

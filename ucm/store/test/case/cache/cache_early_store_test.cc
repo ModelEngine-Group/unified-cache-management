@@ -16,6 +16,8 @@ namespace {
 class Backend : public testing::NiceMock<UC::Test::Detail::MockStore> {
     std::mutex leaseMutex;
 public:
+    Backend() { ON_CALL(*this, Check).WillByDefault(testing::Invoke([](auto) { return true; })); }
+
     std::weak_ptr<UC::ReadLease> lease;
     std::vector<size_t> leaseBlocks;
     UC::Expected<std::shared_ptr<UC::ReadLease>> AcquireReadLease(
