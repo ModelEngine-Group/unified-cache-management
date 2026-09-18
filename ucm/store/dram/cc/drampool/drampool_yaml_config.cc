@@ -254,6 +254,11 @@ const std::unordered_map<std::string_view, RuntimeConfigParser>& GetRuntimeConfi
 {
     static const std::unordered_map<std::string_view, RuntimeConfigParser> parsers = {
         {"health.port", BindConfigParser(ParseUint16, &DramPoolConfig::healthPort)},
+        {"metrics.enabled", BindConfigParser(ParseBool, &DramPoolConfig::metricsEnabled)},
+        {"metrics.output_dir",
+         BindConfigParser(ParseStringValue, &DramPoolConfig::metricsOutputDir)},
+        {"metrics.interval_ms",
+         BindConfigParser(ParseUint32, &DramPoolConfig::metricsIntervalMs)},
         {"transport.hixl.listen_port",
          BindConfigParser(ParseUint16, &DramPoolConfig::hixlListenPort)},
         {"transport.hixl.enable_cs", BindConfigParser(ParseBool, &DramPoolConfig::enableHixlCs)},
@@ -390,6 +395,10 @@ Status ValidateRuntimeConfig(DramPoolConfig& config)
     }
     if (config.opTimeoutMs == 0) {
         return Status::InvalidParam("operation.timeout_ms must be greater than zero");
+    }
+    if (config.metricsEnabled && config.metricsIntervalMs == 0) {
+        return Status::InvalidParam(
+            "metrics.interval_ms must be greater than zero when metrics are enabled");
     }
     if (Trim(config.logDir).empty()) {
         return Status::InvalidParam("logger.dir must not be empty");

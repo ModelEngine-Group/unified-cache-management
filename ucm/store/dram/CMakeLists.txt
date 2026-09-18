@@ -76,6 +76,7 @@ if(BUILD_UCM_DRAMPOOL)
         ${DRAMPOOL_SOURCE_DIR}/drampool_yaml_config.cc
         ${DRAMPOOL_SOURCE_DIR}/health_server.cc
         ${DRAMPOOL_SOURCE_DIR}/metadata.cc
+        ${DRAMPOOL_SOURCE_DIR}/metrics_reporter.cc
         ${DRAMPOOL_SOURCE_DIR}/task_worker.cc
     )
 
