@@ -68,6 +68,7 @@ jobs:
       enabled: ${{ steps.profile.outputs.enabled }}
       fork_test_pypi: ${{ steps.profile.outputs.fork_test_pypi }}
       publish_ghcr: ${{ steps.profile.outputs.publish_ghcr }}
+      publish_docs: ${{ steps.docs.outputs.enabled }}
     permissions:
       contents: read
     env:
@@ -87,17 +88,25 @@ jobs:
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
       DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
     steps:
-      - name: Require both documentation projects for published releases
+      - id: docs
+        name: Resolve documentation publication
         if: ${{ inputs.release_type == 'stable' || inputs.release_type == 'prerelease' }}
         env:
           RTD_PROJECT_EN: ${{ vars.RTD_PROJECT_EN }}
           RTD_PROJECT_ZH: ${{ vars.RTD_PROJECT_ZH }}
           RTD_API_TOKEN: ${{ secrets.RTD_API_TOKEN }}
         run: |
+          if [ "${PUBLICATION_SCOPE}" = fork ] && \
+             [ -z "${RTD_PROJECT_EN}${RTD_PROJECT_ZH}${RTD_API_TOKEN}" ]; then
+            echo "RTD is not configured for this fork; skipping documentation publication."
+            echo "enabled=false" >>"${GITHUB_OUTPUT}"
+            exit 0
+          fi
           if [ -z "${RTD_PROJECT_EN}" ] || [ -z "${RTD_PROJECT_ZH}" ] || [ -z "${RTD_API_TOKEN}" ]; then
             echo "::error::Configure RTD_PROJECT_EN, RTD_PROJECT_ZH and RTD_API_TOKEN before releasing."
             exit 1
           fi
+          echo "enabled=true" >>"${GITHUB_OUTPUT}"
 
       - uses: actions/checkout@v4.2.2
         with:
@@ -759,6 +768,8 @@ jobs:
   build-wheels:
     name: Wheel · ${{ matrix.label }}
     needs: plan
+    # Nightly skips sync-builders; do not inherit that skip after a valid plan.
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.wheel_matrix) }}
@@ -776,6 +787,7 @@ jobs:
   build-toolkit:
     name: Wheel · Toolkit
     needs: plan
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     uses: ./.github/workflows/_build-toolkit.yml
     with:
       source_ref: ${{ inputs.source_sha }}
@@ -784,6 +796,7 @@ jobs:
   build-meta:
     name: Wheel · uc-manager meta package
     needs: plan
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -831,6 +844,12 @@ jobs:
   validate-wheel-runtimes:
     name: Validate Wheel Runtime · ${{ matrix.label }}
     needs: [plan, build-wheels]
+    if: >-
+      ${{
+        !cancelled() &&
+        needs.plan.result == 'success' &&
+        needs.build-wheels.result == 'success'
+      }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.pypi_test_matrix) }}
@@ -1841,8 +1860,8 @@ jobs:
 
   verify-release-docs:
     name: Verify · Published bilingual documentation
-    needs: update-release-images
-    if: ${{ inputs.release_type == 'stable' || inputs.release_type == 'prerelease' }}
+    needs: [release-preflight, update-release-images]
+    if: ${{ needs.release-preflight.outputs.publish_docs == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment: ${{ inputs.publication_scope == 'official' && 'release-production' || 'fork-preview' }}
@@ -1957,8 +1976,20 @@ jobs:
 
   verify-release-delivery:
     name: Verify · Complete RC delivery
-    needs: [verify-release-docs, verify-chart-delivery, verify-pypi-toolkit, verify-pypi-installs]
-    if: ${{ inputs.release_type == 'stable' || inputs.release_type == 'prerelease' }}
+    needs: [release-preflight, verify-release-docs, verify-chart-delivery, verify-pypi-toolkit, verify-pypi-installs]
+    # A fork without RTD still participates in the remaining delivery checks.
+    if: >-
+      ${{
+        !cancelled() &&
+        (inputs.release_type == 'stable' || inputs.release_type == 'prerelease') &&
+        needs.release-preflight.result == 'success' &&
+        needs.verify-chart-delivery.result == 'success' &&
+        needs.verify-pypi-toolkit.result == 'success' &&
+        needs.verify-pypi-installs.result == 'success' &&
+        (needs.verify-release-docs.result == 'success' ||
+         (needs.release-preflight.outputs.publish_docs == 'false' &&
+          needs.verify-release-docs.result == 'skipped'))
+      }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -1969,6 +2000,7 @@ jobs:
           name: ucm-release-final-run-${{ github.run_id }}
           path: input/final
       - uses: actions/download-artifact@v4.3.0
+        if: ${{ needs.release-preflight.outputs.publish_docs == 'true' }}
         with:
           name: ucm-docs-receipt-run-${{ github.run_id }}
           path: input/docs
@@ -1983,6 +2015,7 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_sha }}
           RELEASE_TAG: ${{ inputs.git_tag }}
           EXPECTED_PRERELEASE: ${{ inputs.is_prerelease }}
+          PUBLISH_DOCS: ${{ needs.release-preflight.outputs.publish_docs }}
         run: |
           set -euo pipefail
           gh release view "$RELEASE_TAG" --json tagName,isDraft,isPrerelease,url > input/github-release.json
@@ -1996,10 +2029,14 @@ jobs:
           assert release['isDraft'] is False
           assert release['isPrerelease'] is (os.environ['EXPECTED_PRERELEASE'] == 'true')
           state = load('input/final/release-state.json')
-          docs = load('input/docs/docs-receipt.json')
           chart = load('input/chart/chart-delivery.json')
-          assert state['release']['status'] == docs['status'] == chart['status'] == 'complete'
-          assert docs['source_sha'] == os.environ['SOURCE_SHA']
+          assert state['release']['status'] == chart['status'] == 'complete'
+          if os.environ['PUBLISH_DOCS'] == 'true':
+              docs = load('input/docs/docs-receipt.json')
+              assert docs['status'] == 'complete'
+              assert docs['source_sha'] == os.environ['SOURCE_SHA']
+          else:
+              docs = {'status':'skipped', 'reason':'RTD is not configured for this fork'}
           result = {'status':'complete', 'repository':os.environ['GH_REPO'],
                     'source_sha':os.environ['SOURCE_SHA'], 'tag':os.environ['RELEASE_TAG'],
                     'actions_run_id':int(os.environ['GITHUB_RUN_ID']), 'release':release,

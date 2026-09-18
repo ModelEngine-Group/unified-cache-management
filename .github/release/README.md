@@ -136,7 +136,7 @@ versions, target commit, requested source SHA, and checked-out commit. A Draft
 Tag always remains Draft. Exact Releases API lookup requires one Release for the
 Tag; duplicate Release records fail closed.
 
-At 02:00 and 13:00 Asia/Shanghai (`18:00` and `05:00` UTC),
+At 02:00 Asia/Shanghai (`18:00` UTC),
 `release-nightly.yml` reads the `X.Y.Z`
 base from `version.ini` and creates the next dated Nightly Tag from `develop`.
 An incomplete same-SHA Nightly Tag is reused; an existing Tag is never moved.

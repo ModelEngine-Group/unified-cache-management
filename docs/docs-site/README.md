@@ -94,10 +94,10 @@ python tools/check_bilingual_docs.py
 3. 先验证中英文 Latest、真实 PR Preview、实际安装选择器、当前 URL、favicon 和计算器。记录 RTD build ID、源码 SHA 与公开 URL；取消构建不等于已部署。
 4. 验证中英文文件门控，将 `Docs · Bilingual files` 设置为目标分支的必需状态检查。
 5. Fork 验收后，通过官方开发分支集成切换 `ucm` 项目；英文父项目仍使用现有 `ucm`，关联中文项目。新内容只维护 `docs/docs-site`。
-6. GitHub Repository Variables 设置 `RTD_PROJECT_EN`、`RTD_PROJECT_ZH`，Repository Secret 设置 `RTD_API_TOKEN`。项目仓库必须与当前 Release 仓库一致。Stable/Prerelease 发版必须配置两个项目和 Token；配置缺失会在构建前失败。
+6. GitHub Repository Variables 设置 `RTD_PROJECT_EN`、`RTD_PROJECT_ZH`，Repository Secret 设置 `RTD_API_TOKEN`。项目仓库必须与当前 Release 仓库一致。官方 Stable/Prerelease 发版必须配置两个项目和 Token。Fork 三项均未配置时跳过 RTD 发布；配置齐全后执行文档发布及验证，只配置部分参数会在构建前失败。
 7. 官方先切换 Latest。首个包含新配置、完整 Schema 9 Release 且 RTD Tag 构建通过后启用 Stable。旧 Git 标签仍按原配置构建，不改写历史标签。
 8. 验收通过后停止新 Pages 发布，保留原 `gh-pages` 内容及自定义域名，尤其历史下载索引；本轮不修改 DNS。若正式切换失败，恢复上一版 RTD 配置即可继续旧站构建。
 
 RTD 管理和 API Token 通过对应后台配置，不能写入源码或日志。
 
-联合验收在 `verify-release-delivery` 任务汇总 Toolkit 安装、Chart/镜像回读和中英文 RTD 结果。`ucm-release-acceptance-run-<run_id>` 是内部 Actions artifact，不上传到 GitHub Release。
+联合验收在 `verify-release-delivery` 任务汇总 Toolkit 安装、Chart/镜像回读和中英文 RTD 结果。Fork 未配置 RTD 时，验收记录中的 `docs.status` 为 `skipped`，不要求文档回执；其余验收条件保持不变。`ucm-release-acceptance-run-<run_id>` 是内部 Actions artifact，不上传到 GitHub Release。

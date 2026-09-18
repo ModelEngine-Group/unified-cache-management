@@ -1,9 +1,9 @@
-name: UCM Nightly Release · Shanghai 02:00 and 13:00
+name: UCM Nightly Release · Shanghai 02:00
 
 on:
   schedule:
-    # GitHub cron 使用 UTC；05:00、18:00 对应上海 13:00、次日 02:00。
-    - cron: "0 5,18 * * *"
+    # GitHub cron 使用 UTC；18:00 对应上海次日 02:00。
+    - cron: "0 18 * * *"
   workflow_dispatch:
 
 concurrency:

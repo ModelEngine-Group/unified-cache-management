@@ -1,12 +1,116 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 import trigger_rtd
 import yaml
 from manifest_fixtures import manifest_fixture
+
+ROOT = Path(__file__).resolve().parents[3]
+
+
+@pytest.mark.parametrize(
+    "scope,projects,token,enabled",
+    [
+        ("fork", ("", ""), "", False),
+        ("fork", ("docs-en", "docs-zh"), "test-token", True),
+        ("official", ("docs-en", "docs-zh"), "test-token", True),
+        ("official", ("", ""), "", None),
+        ("fork", ("docs-en", ""), "test-token", None),
+        ("fork", ("docs-en", "docs-zh"), "", None),
+    ],
+)
+def test_release_docs_configuration(tmp_path, scope, projects, token, enabled):
+    workflow = yaml.safe_load((ROOT / ".github/workflows/release-ucm.yml").read_text())
+    step = next(
+        step
+        for step in workflow["jobs"]["release-preflight"]["steps"]
+        if "RTD_PROJECT_EN" in step.get("env", {})
+    )
+    output = tmp_path / "output"
+    result = subprocess.run(
+        ["bash", "-e", "-c", step["run"]],
+        env={
+            **os.environ,
+            "PUBLICATION_SCOPE": scope,
+            "RTD_PROJECT_EN": projects[0],
+            "RTD_PROJECT_ZH": projects[1],
+            "RTD_API_TOKEN": token,
+            "GITHUB_OUTPUT": str(output),
+        },
+        capture_output=True,
+        text=True,
+    )
+    if enabled is None:
+        assert result.returncode != 0
+        assert "::error::Configure RTD_PROJECT_EN" in result.stdout
+        assert not output.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert output.read_text().strip() == f"enabled={str(enabled).lower()}"
+
+
+@pytest.mark.parametrize("publish_docs", [False, True])
+def test_release_acceptance_only_requires_enabled_docs(tmp_path, publish_docs):
+    workflow = yaml.safe_load((ROOT / ".github/workflows/release-ucm.yml").read_text())
+    step = next(
+        step
+        for step in workflow["jobs"]["verify-release-delivery"]["steps"]
+        if "run" in step
+    )
+    # Execute the workflow's actual receipt logic without contacting GitHub or RTD.
+    script = step["run"].split("python - <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+    source_sha = "a" * 40
+    documents = {
+        "input/github-release.json": {
+            "tagName": "v0.8.0rc1",
+            "isDraft": False,
+            "isPrerelease": True,
+        },
+        "input/final/release-state.json": {
+            "release": {"status": "complete"},
+            "pypi": {},
+            "toolkit_package": {},
+        },
+        "input/chart/chart-delivery.json": {"status": "complete"},
+    }
+    if publish_docs:
+        documents["input/docs/docs-receipt.json"] = {
+            "status": "complete",
+            "source_sha": source_sha,
+        }
+    for name, document in documents.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(document))
+    (tmp_path / "out").mkdir()
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "GH_REPO": "example/ucm",
+            "SOURCE_SHA": source_sha,
+            "RELEASE_TAG": "v0.8.0rc1",
+            "EXPECTED_PRERELEASE": "true",
+            "GITHUB_RUN_ID": "123",
+            "PUBLISH_DOCS": str(publish_docs).lower(),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    acceptance = json.loads((tmp_path / "out/acceptance.json").read_text())
+    assert acceptance["status"] == "complete"
+    if publish_docs:
+        assert acceptance["docs"] == documents["input/docs/docs-receipt.json"]
+    else:
+        assert acceptance["docs"]["status"] == "skipped"
 
 
 @pytest.mark.parametrize("current_stable", ["v0.9.0", "v0.9.1"])
@@ -58,10 +162,9 @@ def test_rtd_project_must_belong_to_the_release_repository(monkeypatch, tmp_path
 
 
 def test_workflow_notifies_rtd_only_after_manifest_readback():
-    root = Path(__file__).resolve().parents[3]
-    workflow = yaml.safe_load((root / ".github/workflows/release-ucm.yml").read_text())
+    workflow = yaml.safe_load((ROOT / ".github/workflows/release-ucm.yml").read_text())
     job = workflow["jobs"]["verify-release-docs"]
-    assert job["needs"] == "update-release-images"
+    assert "update-release-images" in job["needs"]
     steps = job["steps"]
     readback = next(
         i
