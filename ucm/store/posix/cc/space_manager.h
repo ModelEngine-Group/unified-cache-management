@@ -28,6 +28,7 @@
 #include "gc_config_guard.h"
 #include "global_config.h"
 #include "hotness_tracker.h"
+#include "lookup_manager.h"
 #include "shard_gc.h"
 #include "space_layout.h"
 #include "thread/latch.h"
@@ -42,19 +43,19 @@ class SpaceManager {
         size_t end;
         size_t nWorker;
         std::shared_ptr<std::atomic<ssize_t>> firstFail;
-        std::shared_ptr<std::atomic<int32_t>> status;
         std::shared_ptr<Latch> waiter;
     };
 
 private:
     SpaceLayout layout_;
     BackendManager backendMgr_;
-    ThreadPool<PrefixLookupContext> prefixLookupSrv_;
     HotnessTracker hotnessTracker_;
-    ShardGarbageCollector gcMgr_;
     GcConfigGuard gcConfigGuard_;
+    ShardGarbageCollector gcMgr_;
     bool hotnessTrackerEnable_{false};
     bool gcEnable_{false};
+    std::vector<std::unique_ptr<LookupManager>> lookupManagers_;
+    ThreadPool<PrefixLookupContext> prefixLookupSrv_;
 
 public:
     Status Setup(const Config& config);
@@ -68,7 +69,6 @@ public:
 private:
     uint8_t Lookup(const Detail::BlockId* block);
     void OnLookupPrefix(PrefixLookupContext& ctx);
-    void OnLookupPrefixTimeout(PrefixLookupContext& ctx);
 };
 
 }  // namespace UC::PosixStore
