@@ -485,13 +485,10 @@ class VidLangKVCache(PivotKVCache):
 
         position_ids = cache_kwargs.pop("position_ids", None)
         compression_ratio = self.budget_allocation(layer_idx)
+        no_compression = math.isclose(compression_ratio, 1.0, rel_tol=1e-9)
         # print('compression_ratio of layer %d: %.4f' % (layer_idx, compression_ratio))
 
-        if (
-            self.kvcache_compression
-            and self.compression_ratio < 1.0
-            and compression_ratio == 1.0
-        ):
+        if self.kvcache_compression and self.compression_ratio < 1.0 and no_compression:
             # Truncate the prompts directly when no compression
             key_states = key_states[:, :, : -self.prompt_length]
             value_states = value_states[:, :, : -self.prompt_length]
@@ -503,7 +500,7 @@ class VidLangKVCache(PivotKVCache):
         )
 
         if (
-            self.kvcache_compression and compression_ratio < 1.0
+            self.kvcache_compression and compression_ratio < 1.0 and not no_compression
         ):  # when compression is enabled
             query_states = cache_kwargs.pop("query_states")
             rotary_emb_fn = cache_kwargs.pop("rotary_emb")

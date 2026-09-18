@@ -1,8 +1,8 @@
 #ifndef __TUNSTALL_BF16_H__
 #define __TUNSTALL_BF16_H__
 
-#include <stddef.h>
-#include <stdint.h>
+#include <cstddef>
+#include <cstdint>
 #include "tunstall.h"
 
 // p_src 里有 n_bf16 个 BF16

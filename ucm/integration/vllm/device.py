@@ -13,7 +13,7 @@ import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from itertools import accumulate
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 from vllm.platforms import current_platform
@@ -25,7 +25,7 @@ logger = init_logger(__name__)
 
 class Device(ABC):
     def __init__(self):
-        self.events = []
+        self.events = {}
 
     @abstractmethod
     def get_event_handle(self) -> int:
@@ -37,7 +37,21 @@ class Device(ABC):
         pass
 
     @abstractmethod
+    def record_timing_event(self) -> Any:
+        """Record a timing-enabled event on the current device stream."""
+        pass
+
+    @abstractmethod
+    def elapsed_time_ms(self, start_event: Any, end_event: Any) -> float:
+        """Return elapsed device time between two timing events in milliseconds."""
+        pass
+
+    @abstractmethod
     def destroy_event_handles(self):
+        pass
+
+    @abstractmethod
+    def destroy_event_handle(self, event_handle: int):
         pass
 
     @abstractmethod
@@ -104,9 +118,7 @@ class CudaDevice(Device):
             stream = torch.cuda.current_stream()
             cuda_event.record(stream)
             handle = int(cuda_event.cuda_event)
-            if handle is None or handle == 0:
-                return 0
-            self.events.append(cuda_event)
+            self.events[handle] = cuda_event
             return handle
         except Exception as e:
             logger.error(f"get cuda event handle failed. {e}")
@@ -115,8 +127,19 @@ class CudaDevice(Device):
     def synchronize(self):
         torch.cuda.current_stream().synchronize()
 
+    def record_timing_event(self) -> Any:
+        event = torch.cuda.Event(enable_timing=True)
+        event.record()
+        return event
+
+    def elapsed_time_ms(self, start_event: Any, end_event: Any) -> float:
+        return float(start_event.elapsed_time(end_event))
+
     def destroy_event_handles(self):
         self.events.clear()
+
+    def destroy_event_handle(self, event_handle: int):
+        self.events.pop(event_handle, None)
 
     def get_cpu_affinity(self, local_rank: int) -> Optional[str]:
         """
@@ -231,31 +254,48 @@ class NpuDevice(Device):
             if ret != 0:
                 logger.error(f"acl create_event failed: {ret}")
                 return 0
-            self.events.append(event)
             ret = acl.rt.record_event(event, stream)
             if ret != 0:
                 logger.error(f"acl record_event failed: {ret}")
+                acl.rt.destroy_event(event)
                 return 0
             handle = int(event)
-            if not handle:
-                return 0
+            self.events[handle] = event
             return handle
         except Exception as e:
             logger.error(f"get npu event handle failed. {e}")
             return 0
 
     def synchronize(self):
-        torch.npu.current_stream().synchronize()
+        torch.npu.synchronize()
+
+    def record_timing_event(self) -> Any:
+        event = torch.npu.Event(enable_timing=True)
+        event.record()
+        return event
+
+    def elapsed_time_ms(self, start_event: Any, end_event: Any) -> float:
+        return float(start_event.elapsed_time(end_event))
 
     def destroy_event_handles(self):
         import acl
 
-        for event in self.events:
+        for event in self.events.values():
             try:
                 acl.rt.destroy_event(event)
             except Exception as e:
                 logger.error(f"destroy npu event failed. {e}")
         self.events.clear()
+
+    def destroy_event_handle(self, event_handle: int):
+        import acl
+
+        event = self.events.pop(event_handle, None)
+        if event is not None:
+            try:
+                acl.rt.destroy_event(event)
+            except Exception as e:
+                logger.error(f"destroy npu event failed. {e}")
 
     def _execute_command(self, cmd_list: List[str]) -> str:
         try:
@@ -664,3 +704,14 @@ def create_device() -> Optional[Device]:
         return NpuDevice()
 
     return None
+
+
+def get_current_device_id() -> int:
+    """Return the current process-visible accelerator device ordinal."""
+    if current_platform.is_cuda_alike():
+        return int(torch.cuda.current_device())
+
+    if current_platform.device_type == "npu":
+        return int(torch.npu.current_device())
+
+    raise RuntimeError("Unsupported device platform for UCM connector.")

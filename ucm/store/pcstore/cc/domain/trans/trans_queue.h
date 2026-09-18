@@ -53,7 +53,7 @@ public:
     Status Setup(const int32_t deviceId, const size_t streamNumber, const size_t blockSize,
                  const size_t ioSize, const bool ioDirect, const size_t bufferNumber,
                  const SpaceLayout* layout, TaskSet* failureSet_, const bool scatterGatherEnable,
-                 const size_t timeoutMs);
+                 const bool useGdr, const size_t timeoutMs);
     void Dispatch(TaskPtr task, WaiterPtr waiter);
     void DispatchDump(TaskPtr task, WaiterPtr waiter);
     void DispatchSatterGatherDump(TaskPtr task, WaiterPtr waiter);

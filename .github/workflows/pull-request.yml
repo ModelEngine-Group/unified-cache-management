@@ -2,7 +2,7 @@ name: 'Pull Request Gate'
 
 on:
   pull_request:
-    branches: [ "dev*", "main", "*release", "feature*" ]
+    branches: [ "dev*", "main", "*release", "feature/**" ]
 
 permissions:
   contents: read
@@ -11,6 +11,8 @@ permissions:
 jobs:
   pre-check:
     runs-on: ubuntu-latest
+    outputs:
+      native_wheel_required: ${{ steps.build-impact.outputs.required }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -18,20 +20,24 @@ jobs:
 
       - id: fetch_base_and_pr_branches
         env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_CLONE_URL: ${{ github.event.pull_request.head.repo.clone_url }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          git fetch origin ${{ github.base_ref }}
+          git fetch origin "${BASE_REF}"
 
-          if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
+          if [ "${HEAD_REPOSITORY}" != "${REPOSITORY}" ]; then
             echo "PR is from a fork, adding remote."
-            git remote add fork ${{ github.event.pull_request.head.repo.clone_url }}
-            git fetch fork $HEAD_REF
-            HEAD_BRANCH_NAME=fork/$HEAD_REF
-            echo "HEAD_BRANCH_NAME=$HEAD_BRANCH_NAME" >> $GITHUB_OUTPUT
+            git remote add fork "${HEAD_CLONE_URL}"
+            git fetch fork "${HEAD_REF}"
+            HEAD_BRANCH_NAME="fork/${HEAD_REF}"
+            echo "HEAD_BRANCH_NAME=${HEAD_BRANCH_NAME}" >>"${GITHUB_OUTPUT}"
           else
-            git fetch origin $HEAD_REF
-            HEAD_BRANCH_NAME=origin/$HEAD_REF
-            echo "HEAD_BRANCH_NAME=$HEAD_BRANCH_NAME" >> $GITHUB_OUTPUT
+            git fetch origin "${HEAD_REF}"
+            HEAD_BRANCH_NAME="origin/${HEAD_REF}"
+            echo "HEAD_BRANCH_NAME=${HEAD_BRANCH_NAME}" >>"${GITHUB_OUTPUT}"
           fi
 
       # protect the workflows dir, only allow specific users to modify
@@ -47,7 +53,7 @@ jobs:
             exit 0
           fi
 
-          ALLOWED_USERS=("dante159753" "mag1c-h" "yuanzhg078")
+          ALLOWED_USERS=("dante159753" "mag1c-h" "yuanzhg078" "SuperMarioYL")
 
           echo ".github changes detected, check if user is allowed..."
           ACTOR="${{ github.actor }}"
@@ -73,9 +79,67 @@ jobs:
             exit 1
           fi
 
+      - id: build-impact
+        name: Detect native Wheel build inputs
+        run: |
+          set -euo pipefail
+          required=false
+          while IFS= read -r path; do
+            case "${path}" in
+              CMakeLists.txt|cmake/*|ucm/*|setup.py|pyproject.toml|MANIFEST.in|version.ini|ucm_patch.pth|README.md|LICENSE|scripts/materialize_version.py|.github/release/ucm_release/*|.github/release/docker/*|.github/release/requirements/*|.github/release/requirements*.txt|requirements-build.txt|.github/release/release.yaml|.github/release/platforms.yaml|.github/actions/download-artifact-retry/*|.github/workflows/_build-wheel.yml|.github/workflows/_probe-runtime.yml|.github/workflows/_native-wheel-gate.yml|.github/workflows/release-ucm.yml|.github/workflows/pull-request.yml)
+                required=true
+                break
+                ;;
+            esac
+          done < <(git diff --name-only \
+            "origin/${{ github.base_ref }}...${{ steps.fetch_base_and_pr_branches.outputs.HEAD_BRANCH_NAME }}")
+          echo "required=${required}" >>"${GITHUB_OUTPUT}"
+
   lint-and-unit-tests:
     needs: pre-check
     uses: ./.github/workflows/lint-and-test.yml
+
+  native-wheel-build:
+    name: Native Wheel Matrix
+    needs: pre-check
+    if: needs.pre-check.outputs.native_wheel_required == 'true'
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/_native-wheel-gate.yml
+    with:
+      source_ref: ${{ github.sha }}
+      retention_days: 7
+
+  native-wheel-compile:
+    name: native-wheel-compile
+    needs: [pre-check, native-wheel-build]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Require the applicable native Wheel build
+        env:
+          PRE_CHECK_RESULT: ${{ needs.pre-check.result }}
+          BUILD_REQUIRED: ${{ needs.pre-check.outputs.native_wheel_required }}
+          BUILD_RESULT: ${{ needs.native-wheel-build.result }}
+        run: |
+          set -euo pipefail
+          if [ "${PRE_CHECK_RESULT}" != success ]; then
+            echo "Native Wheel Gate cannot pass because pre-check did not succeed" >&2
+            exit 1
+          fi
+          if [ "${BUILD_REQUIRED}" != true ]; then
+            echo "Native Wheel Gate is not required for this PR"
+            exit 0
+          fi
+          if [ "${BUILD_RESULT}" != success ]; then
+            echo "Native Wheel Gate failed: ${BUILD_RESULT}" >&2
+            exit 1
+          fi
+          echo "All planned native Wheels compiled successfully"
 
   test-build-vllm-ascend:
     timeout-minutes: 25
@@ -92,18 +156,18 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./docker/Dockerfile.ucm-vllm-ascend.a2-v0.17.0
+          file: ./docker/Dockerfile.ucm-vllm-ascend.a2-v0.20.2rc1
           build-args: |
             PIP_INDEX_URL=https://pypi.org/simple
           tags: ucm-npu:latest
           push: false
           load: false
           cache-from: type=gha,scope=npu
-          cache-to: type=gha,mode=max,scope=npu
+          cache-to: type=gha,mode=max,scope=npu,ignore-error=true
 
-  test-build-vllm-ascend-sparse:
+  test-build-vllm-cuda-v0-20-2:
     timeout-minutes: 25
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -116,14 +180,14 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./docker/Dockerfile.ucm-vllm-ascend.a2-v0.11.0
+          file: ./docker/Dockerfile.ucm-vllm-cuda-v0.20.2
           build-args: |
             PIP_INDEX_URL=https://pypi.org/simple
-          tags: ucm-npu-sparse:latest
+          tags: ucm-gpu-v0.20.2:latest
           push: false
           load: false
-          cache-from: type=gha,scope=npu
-          cache-to: type=gha,mode=max,scope=npu
+          cache-from: type=gha,scope=gpu-v0.20.2
+          cache-to: type=gha,mode=max,scope=gpu-v0.20.2,ignore-error=true
 
   test-build-sglang:
     timeout-minutes: 25
@@ -147,7 +211,7 @@ jobs:
           push: false
           load: false
           cache-from: type=gha,scope=gpu
-          cache-to: type=gha,mode=max,scope=gpu
+          cache-to: type=gha,mode=max,scope=gpu,ignore-error=true
 
   test-build-mindie:
     timeout-minutes: 25
@@ -171,4 +235,128 @@ jobs:
           push: false
           load: false
           cache-from: type=gha,scope=npu
-          cache-to: type=gha,mode=max,scope=npu
+          cache-to: type=gha,mode=max,scope=npu,ignore-error=true
+
+  test-e2e-pc-a2:
+    timeout-minutes: 20
+    runs-on: [self-hosted, npu, a2]
+    needs: lint-and-unit-tests
+    if: github.repository == 'ModelEngine-Group/unified-cache-management'
+    permissions:
+      checks: write
+      pull-requests: write
+    steps:
+      - name: Clean repo
+        run: |
+          if [ -d "${{ github.workspace }}" ]; then
+            cd ${{ github.workspace }}
+            rm -rf ./*
+            rm -rf .[!.]*
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Install Docker CLI
+        run: |
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ]; then
+            if command -v sudo &> /dev/null; then
+              SUDO="sudo"
+            else
+              echo "Docker CLI installation requires root or sudo"
+              exit 1
+            fi
+          fi
+          if ! command -v docker &> /dev/null; then
+            echo "Docker CLI not found, installing..."
+            ${SUDO} apt-get update
+            ${SUDO} apt-get install -y docker.io
+          else
+            echo "Docker CLI already installed"
+          fi
+          if ! ${SUDO} docker info >/dev/null 2>&1; then
+            echo "Docker daemon is not reachable from the runner."
+            echo "Mount /var/run/docker.sock into the runner container so this job can build and run test images on the host Docker daemon."
+            exit 1
+          fi
+
+      - name: Generate Docker Image Version
+        id: version
+        run: |
+          DATE=$(date +%Y%m%d)
+          SHORT_SHA=$(echo '${{ github.sha }}' | cut -c1-7)
+          REF_NAME=$(echo '${{ github.ref_name }}' | tr '/' '-')
+          VERSION="${REF_NAME}-${DATE}-${{ github.run_number }}-${SHORT_SHA}"
+          echo "version=${VERSION}" >>"${GITHUB_OUTPUT}"
+          echo "Docker image version: ${VERSION}"
+
+      - name: Build
+        run: |
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ] && command -v sudo &> /dev/null; then
+            SUDO="sudo"
+          fi
+          cd ${{ github.workspace }}
+          ${SUDO} docker build \
+            --build-arg http_proxy="${http_proxy:-}" \
+            --build-arg https_proxy="${https_proxy:-}" \
+            --build-arg no_proxy="repo.huaweicloud.com,${no_proxy:-}" \
+            --build-arg PIP_INDEX_URL=https://repo.huaweicloud.com/repository/pypi/simple \
+            -t ucm-e2etest-pc-a2:${{ steps.version.outputs.version }} \
+            -f ./docker/Dockerfile.ucm-vllm-ascend.a2-v0.18.0 ./
+
+      - name: Test E2E Online Inference in Docker
+        run: |
+          RESULT_DIR="${{ github.workspace }}/test_results"
+          RESULT_FILE="${{ steps.version.outputs.version }}-online-inference.xml"
+          CONTAINER_NAME="ucm-e2etest-pc-a2-${{ steps.version.outputs.version }}"
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ] && command -v sudo &> /dev/null; then
+            SUDO="sudo"
+          fi
+          A2_E2E_HOST_DEVICE="${A2_E2E_HOST_DEVICE:-/dev/vdavinci212}"
+          echo "Using Ascend host device: ${A2_E2E_HOST_DEVICE}"
+          mkdir -p "${RESULT_DIR}"
+          rm -f "${RESULT_DIR}/${RESULT_FILE}"
+          ${SUDO} docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+          set +e
+          ${SUDO} docker run --name "${CONTAINER_NAME}" \
+            --ipc=host \
+            --device "${A2_E2E_HOST_DEVICE}:/dev/davinci0" \
+            --device /dev/davinci_manager \
+            --device /dev/devmm_svm \
+            --device /dev/hisi_hdc \
+            -v /usr/local/dcmi:/usr/local/dcmi \
+            -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
+            -v /usr/local/Ascend/driver/lib64/:/usr/local/Ascend/driver/lib64/ \
+            -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info \
+            -v /etc/ascend_install.info:/etc/ascend_install.info \
+            -v /home/huangmy/models:/home/models:ro \
+            -e http_proxy="${http_proxy:-}" \
+            -e https_proxy="${https_proxy:-}" \
+            -e no_proxy="${no_proxy:-}" \
+            --entrypoint /bin/bash \
+            ucm-e2etest-pc-a2:${{ steps.version.outputs.version }} \
+            -lc "mkdir -p /workspace/test_results && cd /workspace/unified-cache-management/test && pip install -r requirements.txt && python3 -m pytest -x --stage=1 --feature=online_inference --platform=npu -k 'test_online_accuracy_hbm_ssd_mixed_a2_pc' --junitxml=/workspace/test_results/${RESULT_FILE}"
+          TEST_RC=$?
+          ${SUDO} docker cp "${CONTAINER_NAME}:/workspace/test_results/${RESULT_FILE}" "${RESULT_DIR}/${RESULT_FILE}" >/dev/null 2>&1 || true
+          ${SUDO} docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+          exit "${TEST_RC}"
+
+      - name: Cleanup Docker Image
+        if: ${{ always() && steps.version.outputs.version != '' }}
+        run: |
+          SUDO=""
+          if [ "$(id -u)" -ne 0 ] && command -v sudo &> /dev/null; then
+            SUDO="sudo"
+          fi
+          ${SUDO} docker rm -f "ucm-e2etest-pc-a2-${{ steps.version.outputs.version }}" >/dev/null 2>&1 || true
+          ${SUDO} docker rmi ucm-e2etest-pc-a2:${{ steps.version.outputs.version }} || true
+
+      - name: Cleanup Test Results
+        if: ${{ always() && steps.version.outputs.version != '' }}
+        run: |
+          rm -f "${{ github.workspace }}/test_results/${{ steps.version.outputs.version }}-online-inference.xml" || true

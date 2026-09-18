@@ -69,16 +69,16 @@ graph TD
 
 ### 2️⃣ Load Parameter Configuration (`test_uc_performance.py`)
 
-Defines **performance test load matrix**, supporting Cartesian product combinations of multiple parameter sets:
+Defines **performance test load matrix**, The test cases are the same for each list at the corresponding positions:
 
 | Parameter | Type | Description | Example |
 |------|------|------|------|
 | `mean_input_tokens` | list[int] | Average input length distribution | `[512, 2048, 4096]` |
-| `mean_output_tokens` | list[int] | Average output length distribution | `[128, 512]` |
-| `concurrent_requests` | list[int] | Concurrent request count gradient | `[1, 4, 8, 16]` |
-| `max_num_completed_requests` | list[int] | Maximum completed requests per round | `[100, 50]` |
+| `mean_output_tokens` | list[int] | Average output length distribution | `[128, 512, 1024]` |
+| `concurrent_requests` | list[int] | Concurrent request count gradient | `[1, 4, 8]` |
+| `max_num_completed_requests` | list[int] | Maximum completed requests per round | `[100, 50, 50]` |
 | `hit_rate` | list[int] | Cache hit rate (%) | `[0, 50, 90]` |
-| `random_seed` | list[int] | Random seed | `[42, 0]` |
+| `random_seed` | list[int] | Random seed | `[42, 0, 0]` |
 
 #### 🎲 Random Seed Strategy
 

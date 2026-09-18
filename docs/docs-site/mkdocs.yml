@@ -1,0 +1,229 @@
+site_name: Unified Cache Manager
+site_url: !ENV [UCM_DOCS_SITE_URL, "https://ucm.readthedocs.io/"]
+site_description: >-
+  Unified Cache Manager (UCM) persists LLM KVCache and replaces redundant
+  computations through multiple retrieval mechanisms.
+
+repo_url: https://github.com/ModelEngine-Group/unified-cache-management
+repo_name: ModelEngine-Group/ucm
+edit_uri: edit/develop/docs/docs-site/docs/
+
+docs_dir: docs
+
+exclude_docs: |
+  **/benchmark/**
+
+hooks:
+  - tools/shared_assets.py
+  - tools/navigation.py
+  - tools/runtime_images.py
+
+extra_css:
+  - assets/stylesheets/extra.css
+  - assets/install.css
+
+extra_javascript:
+  - assets/manifest.js
+  - assets/install.js
+  - assets/readthedocs.js
+
+theme:
+  name: material
+  custom_dir: overrides
+  language: en
+  logo: assets/images/UCM-light.png
+  favicon: assets/images/ucm-favicon.png
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - content.action.edit
+    - content.action.view
+  font:
+    text: Inter
+    code: JetBrains Mono
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: cyan
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: cyan
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - i18n:
+      docs_structure: folder
+      fallback_to_default: false
+      reconfigure_material: true
+      reconfigure_search: true
+      languages:
+        - locale: en
+          name: English
+          default: true
+          build: true
+        - locale: zh
+          name: 简体中文
+          build: true
+          site_name: Unified Cache Manager 中文站点
+          nav_translations:
+            Home: 首页
+            User Guide: 用户指南
+            Support Matrix: 支持范围
+            Quickstart: 快速开始
+            Cache Configuration: 缓存配置
+            Filesystem Pipeline: 文件系统流水线
+            NFS Connector: NFS Connector
+            KV Compression: KV 压缩
+            Deployment: 部署
+            Helm Deployment: Helm 部署
+            PD Disaggregation: PD 分离部署
+            Shared-store PD: 共享存储 PD 分离部署
+            Transport with UCM: 传输连接器与 UCM 组合
+            Scaling PD Deployments: PD 部署扩容
+            Model Tour: 模型教程
+            Operations: 运行与排障
+            Verify External Cache: 验证外部缓存
+            Metrics Setup: 接入指标监控
+            Storage Health: 存储健康检查
+            Trace Mode: Trace 模式
+            Troubleshooting: 故障排查
+            Developer Guide: 开发者指南
+            Architecture: 总体架构
+            How Caching Works: 缓存工作原理
+            Request Lifecycle: 请求生命周期
+            PD Integration: PD 集成原理
+            Build from Source: 源码构建
+            Extending Store: 扩展 Store
+            Add Metrics: 指标开发
+            Toolkit Development: Toolkit 开发
+            Toolkit Architecture: Toolkit 架构
+            Contribute: 参与贡献
+            Reference: 参考
+            Configuration Parameters: 配置参数
+            Metrics Reference: 指标清单
+            Error Codes: 错误码
+            Toolkit: 工具集
+            Precheck: 环境预检
+            POSIX AIO: 存储读写测试
+            Metrics View: 指标查看
+            NIC Monitor: 网卡监控
+            Dev Sandbox: 开发沙箱
+            KV Cache Calculator: KV Cache 计算器
+  - search:
+      separator: '[\s\u200b\-]'
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - def_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.mark
+  - pymdownx.caret
+  - pymdownx.tilde
+  - pymdownx.keys
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.snippets
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/ModelEngine-Group/unified-cache-management
+    - icon: fontawesome/brands/docker
+      link: https://github.com/ModelEngine-Group/unified-cache-management/pkgs/container/unified-cache-manager
+
+nav:
+  - Home: index.md
+  - User Guide:
+      - user-guide/index.md
+      - Quickstart: user-guide/quick_start/index.md
+      - Support Matrix: user-guide/support-matrix/index.md
+      - Model Tour:
+          - user-guide/model-tour/index.md
+          - GLM: user-guide/model-tour/glm/index.md
+          - Qwen: user-guide/model-tour/qwen3/index.md
+          - DeepSeek: user-guide/model-tour/deepseek/index.md
+          - MiniMax: user-guide/model-tour/minimax/index.md
+          - Kimi: user-guide/model-tour/kimi/index.md
+      - Deployment:
+          - user-guide/frameworks/index.md
+          - Helm Deployment: user-guide/frameworks/kubernetes/deploy.md
+          - pyMotor: user-guide/frameworks/pyMotor.md
+          - PD Disaggregation:
+              - user-guide/capabilities/pd-disaggregation/index.md
+              - Shared-store PD: user-guide/capabilities/pd-disaggregation/centralized.md
+              - Transport with UCM: user-guide/capabilities/pd-disaggregation/distributed.md
+              - Scaling PD Deployments: user-guide/capabilities/pd-disaggregation/large-scale-ep.md
+      - Operations:
+          - user-guide/observability/index.md
+          - Verify External Cache: user-guide/observability/verify-cache.md
+          - Metrics Setup: user-guide/observability/metrics.md
+          - Storage Health: user-guide/observability/health-metrics.md
+          - Trace Mode: user-guide/diagnostics/trace-mode.md
+          - Troubleshooting: reference/troubleshooting.md
+  - Developer Guide:
+      - developer-guide/index.md
+      - Architecture: developer-guide/architecture.md
+      - How Caching Works: developer-guide/capability-principles.md
+      - Request Lifecycle: developer-guide/request-lifecycle.md
+      - PD Integration: developer-guide/pd-integration.md
+      - Build from Source: developer-guide/build_from_source.md
+      - Cache Configuration:
+          - developer-guide/cache-configuration/index.md
+          - Filesystem Pipeline: developer-guide/cache-configuration/pipeline.md
+          - NFS Connector: developer-guide/cache-configuration/nfs.md
+          - 3FS: developer-guide/cache-configuration/ds3fs.md
+          - Mooncake: developer-guide/cache-configuration/mooncake.md
+          - KV Compression: developer-guide/cache-configuration/compress.md
+      - Extending Store: developer-guide/extending-store.md
+      - Add Metrics: developer-guide/add-metrics.md
+      - Toolkit Development:
+          - Toolkit Architecture: toolkit/developer/design.md
+          - Dev Sandbox: toolkit/developer/dev-sandbox.md
+      - Contribute: developer-guide/contribute.md
+  - Reference:
+      - Configuration Parameters: reference/config-parameters.md
+      - Metrics Reference: user-guide/observability/metrics-reference.md
+      - Error Codes: reference/error-codes.md
+  - Toolkit:
+      - toolkit/index.md
+      - Precheck: toolkit/user/precheck.md
+      - POSIX AIO: toolkit/user/posix-aio.md
+      - Metrics View: toolkit/user/metrics-view.md
+      - NIC Monitor: toolkit/user/nic-monitor.md
+      - Dev Sandbox: toolkit/user/dev-sandbox.md
+      - KV Cache Calculator: toolkit/kv-cache-calculator.md

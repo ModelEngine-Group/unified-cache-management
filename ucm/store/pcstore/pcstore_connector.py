@@ -55,6 +55,9 @@ class UcmPcStore(UcmKVStoreBase):
             param.transferBufferNumber = config.get("buffer_number", 4096)
             param.transferLocalRankSize = config.get("local_rank_size", 1)
             param.transferScatterGatherEnable = config.get("use_scatter_gatter", False)
+            param.transferUseGdr = config.get("use_gdr", False)
+            param.gpuKvBufferAddrs = config.get("gpu_kv_buffer_addrs", [])
+            param.gpuKvBufferSizes = config.get("gpu_kv_buffer_sizes", [])
         ret = self.store.Setup(param)
         if ret != 0:
             msg = f"Failed to initialize ucmpcstore, errcode: {ret}."

@@ -50,22 +50,26 @@ getting-started/quickstart_vllm
 getting-started/quickstart_vllm_ascend
 getting-started/quickstart_sglang
 getting-started/kv_cache_calculator
+getting-started/troubleshooting
 :::
 
 :::{toctree}
 :caption: User Guide
 :maxdepth: 1
 user-guide/support-matrix/support_matrix
+user-guide/best-practices/index
 user-guide/prefix-cache/index
 user-guide/sparse-attention/index
 user-guide/pd-disaggregation/index
 user-guide/metrics/metrics
 user-guide/rerope/rerope
+user-guide/trace_mode
 :::
 
 :::{toctree}
 :caption: Developer Guide
 :maxdepth: 1
+developer-guide/build_from_source
 developer-guide/contribute
 developer-guide/deepdive_ucm
 developer-guide/add_metrics

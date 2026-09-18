@@ -62,7 +62,10 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
             "buffer_number": "transferBufferNumber",
             "timeout_ms": "transferTimeoutMs",
             "use_scatter_gather": "transferScatterGatherEnable",
+            "use_gdr": "transferUseGdr",
             "shard_data_dir": "shardDataDir",
+            "gpu_kv_buffer_addrs": "gpuKvBufferAddrs",
+            "gpu_kv_buffer_sizes": "gpuKvBufferSizes",
         }
         for key, value in config.items():
             attr = key_mapping.get(key)
@@ -109,6 +112,25 @@ class UcmPcStoreV1(UcmKVStoreBaseV1):
             if not result:
                 return i - 1
         return len(res) - 1
+
+    def lookup_on_reverse(self, block_ids: List[bytes]) -> int:
+        """Check presence of blocks in external storage (reverse scan).
+
+        Scans from the last block down to the first, stopping at the first
+        block that exists in storage.
+
+        Args:
+            block_ids: List of vLLM block hashes (raw bytes).
+
+        Returns:
+            The index of the rightmost block present in storage.
+            Returns -1 if none of the blocks are found.
+        """
+        res = self.lookup(block_ids)
+        for i in range(len(res) - 1, -1, -1):
+            if res[i]:
+                return i
+        return -1
 
     def prefetch(self, block_ids: List[bytes]) -> None:
         """Asynchronously prefetch blocks into high-speed cache.

@@ -27,8 +27,14 @@
 #include "detail/types_helper.h"
 #include "posix/cc/posix_file.h"
 #include "posix/cc/space_manager.h"
+#include "type/random_block_id.h"
 
 class UCPosixSpaceManagerTest : public UC::Test::Detail::PathBase {};
+
+TEST(RandomBlockIdTest, GeneratesDistinctIds)
+{
+    EXPECT_NE(UC::Detail::RandomBlockId(), UC::Detail::RandomBlockId());
+}
 
 TEST_F(UCPosixSpaceManagerTest, SetStorageBackends)
 {
@@ -126,6 +132,8 @@ TEST_F(UCPosixSpaceManagerTest, Lookup)
     {
         auto foundIdx = spaceMgr.LookupOnPrefix(blocks.data(), blocks.size()).Value();
         ASSERT_EQ(foundIdx, -1);
+        auto ReverseIdx = spaceMgr.LookupOnReverse(blocks.data(), blocks.size()).Value();
+        ASSERT_EQ(ReverseIdx, -1);
         auto founds = spaceMgr.Lookup(blocks.data(), blocks.size()).Value();
         ASSERT_EQ(founds.size(), blocks.size());
         std::for_each(founds.begin(), founds.end(), [](auto found) { ASSERT_FALSE(found); });
@@ -137,6 +145,8 @@ TEST_F(UCPosixSpaceManagerTest, Lookup)
     {
         auto foundIdx = spaceMgr.LookupOnPrefix(blocks.data(), blocks.size()).Value();
         ASSERT_EQ(foundIdx, 2);
+        auto ReverseIdx = spaceMgr.LookupOnReverse(blocks.data(), blocks.size()).Value();
+        ASSERT_EQ(ReverseIdx, 2);
         auto founds = spaceMgr.Lookup(blocks.data(), blocks.size()).Value();
         ASSERT_EQ(founds.size(), blocks.size());
         std::for_each(founds.begin(), founds.end(), [](auto found) { ASSERT_TRUE(found); });
@@ -147,6 +157,8 @@ TEST_F(UCPosixSpaceManagerTest, Lookup)
     {
         auto foundIdx = spaceMgr.LookupOnPrefix(blocks.data(), blocks.size()).Value();
         ASSERT_EQ(foundIdx, 1);
+        auto ReverseIdx = spaceMgr.LookupOnReverse(blocks.data(), blocks.size()).Value();
+        ASSERT_EQ(ReverseIdx, 3);
         auto founds = spaceMgr.Lookup(blocks.data(), blocks.size()).Value();
         ASSERT_EQ(founds.size(), blocks.size());
         std::vector<uint8_t> expected{true, true, false, false};

@@ -7,4 +7,5 @@ sphinx-togglebutton
 myst-parser
 msgspec
 sphinx-substitution-extensions
+sphinxcontrib-mermaid
 sphinx-intl

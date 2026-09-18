@@ -9,14 +9,21 @@ import torch
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorMetadata,
     KVConnectorRole,
-    KVConnectorWorkerMetadata,
+    SupportsHMA,
 )
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.v1.core.sched.output import SchedulerOutput
 
 from ucm.integration.vllm.device import create_device
-from ucm.integration.vllm.ucm_connector import UCMDirectConnector
+from ucm.integration.vllm.ucm_connector import (
+    UCMDirectConnector,
+    UCMLiteConnector,
+    _check_shm_capacity,
+    _use_ucm_connector_cpu_affinity,
+)
 from ucm.logger import init_logger
+from ucm.shared.metrics import ucmmetrics
+from ucm.sparse.utils import round_up
 from ucm.store.factory_v1 import UcmConnectorFactoryV1
 from ucm.store.ucmstore_v1 import Task, UcmKVStoreBaseV1
 
@@ -31,21 +38,13 @@ logger = init_logger(__name__)
 
 
 @dataclass(frozen=True)
-class KVCacheSegment:
-    block_id: int
-    offset: int = 0
-    length: int = 0
+class KVCacheGroupMeta:
+    """Logical storage shape for one vLLM KV-cache group."""
 
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, int):
-            return self.block_id == other and self.offset == 0
-        if not isinstance(other, KVCacheSegment):
-            return False
-        return (
-            self.block_id == other.block_id
-            and self.offset == other.offset
-            and self.length == other.length
-        )
+    group_id: int
+    token_block_size: int
+    tail_blocks: int
+    tail_tokens: int
 
 
 class KVCacheGroupLayout:
@@ -53,17 +52,24 @@ class KVCacheGroupLayout:
 
     The cache views belonging to one KV group are not necessarily contiguous by
     layer id, so this layout flattens all registered tensors in a deterministic
-    order.
+    order and records enough stride metadata to address arbitrary block rows.
     """
 
-    def __init__(self, kvcaches: dict[str, torch.Tensor]) -> None:
+    def __init__(
+        self,
+        kvcaches: dict[str, torch.Tensor],
+        *,
+        is_ascend_layout: bool = False,
+        expected_block_size: Optional[int] = None,
+    ) -> None:
         self.kvcaches = dict(sorted(kvcaches.items(), key=self._sort_key))
+        self.is_ascend_layout = is_ascend_layout
+        self.expected_block_size = expected_block_size
         self.base_ptrs: np.ndarray
         self.block_strides: np.ndarray
-        self.token_strides: np.ndarray
-        self.tensor_size_lists: np.ndarray
-        self.tensor_size_per_token_lists: np.ndarray
-        self.view_tensor_block_sizes: np.ndarray
+        self.tensor_token_strides: np.ndarray
+        self.tensor_sizes_per_token: np.ndarray
+        self.tensor_block_sizes: np.ndarray
         self._build_layout()
 
     @staticmethod
@@ -71,14 +77,44 @@ class KVCacheGroupLayout:
         name, _ = item
         return (extract_layer_index(name), name)
 
+    def _is_combined_kv_4d(
+        self,
+        shape: Sequence[int],
+        layer_name: str,
+    ) -> bool:
+        """Classify a 4-D cache without confusing block_size=2 with K/V."""
+
+        if self.is_ascend_layout:
+            if (
+                self.expected_block_size is not None
+                and shape[1] != self.expected_block_size
+            ):
+                raise ValueError(
+                    f"Ascend KV cache tensor block size mismatch for {layer_name}: "
+                    f"shape={tuple(shape)}, expected={self.expected_block_size}."
+                )
+            return False
+
+        is_combined_kv = shape[1] == 2
+        token_dim = 2 if is_combined_kv else 1
+        if (
+            self.expected_block_size is not None
+            and shape[token_dim] != self.expected_block_size
+        ):
+            raise ValueError(
+                f"GPU KV cache tensor block size mismatch for {layer_name}: "
+                f"shape={tuple(shape)}, expected={self.expected_block_size}."
+            )
+        return is_combined_kv
+
     def _build_layout(self) -> None:
+        """Flatten registered KV tensors into store-compatible pointer rows."""
+
         ptrs: list[int] = []
         strides: list[int] = []
-        token_strides: list[int] = []
-        tensor_sizes: list[int] = []
+        tensor_token_strides: list[int] = []
         tensor_sizes_per_token: list[int] = []
-        view_tensor_block_sizes: list[int] = []
-        view_tensors: list[torch.Tensor] = []
+        tensor_block_sizes: list[int] = []
         view_meta: list[tuple[str, tuple[int, ...], tuple[int, ...], str, int]] = []
 
         def handle_tensor(
@@ -89,24 +125,18 @@ class KVCacheGroupLayout:
             ptrs.append(t[0].data_ptr())
             strides.append(t.stride(0) * t.element_size())
             tensor_size = math.prod([t.shape[i] for i in size_dims]) * t.element_size()
-            tensor_sizes.append(tensor_size)
             token_dim = 1
-            view_tensor_block_size = int(t.shape[token_dim])
-            if view_tensor_block_size <= 0:
-                raise ValueError(
-                    f"KV cache tensor has empty block dimension: {t.shape}"
-                )
-            token_strides.append(t.stride(token_dim) * t.element_size())
-            tensor_sizes_per_token.append(tensor_size // view_tensor_block_size)
-            view_tensor_block_sizes.append(view_tensor_block_size)
-            view_tensors.append(t)
+            tensor_block_size = int(t.shape[token_dim])
+            tensor_token_strides.append(t.stride(token_dim) * t.element_size())
+            tensor_sizes_per_token.append(tensor_size // tensor_block_size)
+            tensor_block_sizes.append(tensor_block_size)
             view_meta.append(
                 (
                     layer_name,
                     tuple(t.shape),
                     tuple(t.stride()),
                     str(t.dtype),
-                    view_tensor_block_size,
+                    tensor_block_size,
                 )
             )
 
@@ -116,9 +146,9 @@ class KVCacheGroupLayout:
                 handle_tensor(tensor[0], (-3, -2, -1), layer_name)
                 handle_tensor(tensor[1], (-3, -2, -1), layer_name)
             elif tensor.dim() == 4:
-                if tensor.shape[1] == 2:
-                    # GPU kernels may register [num_blocks, 2, block_size, ...].
-                    # Split the K/V axis before reading the token dimension.
+                if self._is_combined_kv_4d(tensor.shape, layer_name):
+                    # GPU kernels may register [num_blocks, 2, block_size, ...];
+                    # split the K/V axis before reading the token dimension.
                     handle_tensor(tensor[:, 0], (-2, -1), layer_name)
                     handle_tensor(tensor[:, 1], (-2, -1), layer_name)
                 else:
@@ -151,518 +181,136 @@ class KVCacheGroupLayout:
 
         self.base_ptrs = np.asarray(ptrs, dtype=np.uint64)
         self.block_strides = np.asarray(strides, dtype=np.uint64)
-        self.token_strides = np.asarray(token_strides, dtype=np.uint64)
-        self.tensor_size_lists = np.asarray(tensor_sizes, dtype=np.uint64)
-        self.tensor_size_per_token_lists = np.asarray(
+        self.tensor_token_strides = np.asarray(tensor_token_strides, dtype=np.uint64)
+        self.tensor_sizes_per_token = np.asarray(
             tensor_sizes_per_token, dtype=np.uint64
         )
-        self.view_tensor_block_sizes = np.asarray(
-            view_tensor_block_sizes, dtype=np.uint64
-        )
-        self.view_tensors = view_tensors
+        self.tensor_block_sizes = np.asarray(tensor_block_sizes, dtype=np.uint64)
         self.view_meta = [
             {
                 "name": name,
                 "shape": shape,
                 "stride": stride,
                 "dtype": dtype,
-                "view_tensor_block_size": view_tensor_block_size,
+                "tensor_block_size": tensor_block_size,
             }
-            for name, shape, stride, dtype, view_tensor_block_size in view_meta
+            for name, shape, stride, dtype, tensor_block_size in view_meta
         ]
         logger.info(
             f"KV cache group layout: views={len(self.kvcaches)}, "
-            f"ptrs={len(ptrs)}, tensor_block_bytes={self.tensor_block_bytes}, "
-            f"view_tensor_block_sizes={sorted(set(view_tensor_block_sizes))}"
+            f"ptrs={len(ptrs)}, "
+            f"tensor_block_sizes={sorted(set(tensor_block_sizes))}"
         )
 
-    def extract_block_addrs(self, vllm_block_ids: list[int]) -> np.ndarray:
-        vllm_block_ids_np = np.array(vllm_block_ids, np.uint64)
-        return (
-            vllm_block_ids_np[:, None] * self.block_strides[None, :]
-            + self.base_ptrs[None, :]
-        )
-
-    def _logical_to_tensor_tokens(
+    def extract_addrs_with_offsets(
         self,
-        logical_tokens: int,
-        group_tensor_block_size: int,
-        view_tensor_block_size: int,
-    ) -> int:
-        scaled = logical_tokens * view_tensor_block_size
-        if scaled % group_tensor_block_size != 0:
-            raise ValueError(
-                f"Logical segment of {logical_tokens} tokens does not align with "
-                f"view tensor block size={view_tensor_block_size} and group "
-                f"tensor block size={group_tensor_block_size}."
-            )
-        return scaled // group_tensor_block_size
-
-    def extract_segment_addrs(
-        self,
-        segments: list[KVCacheSegment],
-        group_tensor_block_size: int,
+        block_ids: np.ndarray,
+        group_token_block_size: int,
+        offsets: np.ndarray,
     ) -> np.ndarray:
-        block_ids_np = np.array([segment.block_id for segment in segments], np.uint64)
-        offsets_np = np.array(
-            [
-                [
-                    self._logical_to_tensor_tokens(
-                        segment.offset,
-                        group_tensor_block_size,
-                        int(view_tensor_block_size),
-                    )
-                    for view_tensor_block_size in self.view_tensor_block_sizes
-                ]
-                for segment in segments
-            ],
-            np.uint64,
+        """Return per-view addresses for logical blocks with token offsets."""
+
+        physical_token_offsets = (
+            offsets[:, None]
+            * self.tensor_block_sizes[None, :]
+            // group_token_block_size
         )
+
         return (
-            block_ids_np[:, None] * self.block_strides[None, :]
-            + offsets_np * self.token_strides[None, :]
+            block_ids[:, None] * self.block_strides[None, :]
+            + physical_token_offsets * self.tensor_token_strides[None, :]
             + self.base_ptrs[None, :]
-        )
+        ).astype(np.uint64, copy=False)
+
+    def extract_addrs(
+        self,
+        block_ids: np.ndarray,
+    ) -> np.ndarray:
+        """Return per-view base addresses for complete tensor blocks."""
+
+        return (
+            block_ids[:, None] * self.block_strides[None, :] + self.base_ptrs[None, :]
+        ).astype(np.uint64, copy=False)
 
     def segment_tensor_size_list(
         self,
         logical_tokens: int,
-        group_tensor_block_size: int,
+        group_token_block_size: int,
     ) -> list[int]:
-        tensor_tokens = np.array(
-            [
-                self._logical_to_tensor_tokens(
-                    logical_tokens,
-                    group_tensor_block_size,
-                    int(view_tensor_block_size),
-                )
-                for view_tensor_block_size in self.view_tensor_block_sizes
-            ],
-            np.uint64,
+        """Return byte sizes for one logical segment across all tensor views."""
+
+        tensor_tokens = (
+            self.tensor_block_sizes * logical_tokens // group_token_block_size
         )
-        return (self.tensor_size_per_token_lists * tensor_tokens).tolist()
-
-    def extract_block_tensor_views(
-        self, vllm_block_ids: list[int]
-    ) -> list[torch.Tensor]:
-        tensors: list[torch.Tensor] = []
-
-        for block_id in vllm_block_ids:
-            for tensor in self.view_tensors:
-                tensors.append(tensor[block_id])
-        return tensors
-
-    def extract_segment_tensor_views(
-        self,
-        segments: list[KVCacheSegment],
-        group_tensor_block_size: int,
-    ) -> list[torch.Tensor]:
-        tensors: list[torch.Tensor] = []
-
-        for segment in segments:
-            for tensor, view_tensor_block_size in zip(
-                self.view_tensors, self.view_tensor_block_sizes
-            ):
-                tensor_offset = self._logical_to_tensor_tokens(
-                    segment.offset,
-                    group_tensor_block_size,
-                    int(view_tensor_block_size),
-                )
-                tensor_length = self._logical_to_tensor_tokens(
-                    segment.length,
-                    group_tensor_block_size,
-                    int(view_tensor_block_size),
-                )
-                tensors.append(
-                    tensor[segment.block_id].narrow(0, tensor_offset, tensor_length)
-                )
-        return tensors
-
-    @property
-    def tensor_size_list(self) -> list[int]:
-        return self.tensor_size_lists.tolist()
-
-    @property
-    def shard_size(self) -> int:
-        return int(self.tensor_size_lists.sum())
-
-    @property
-    def tensor_block_bytes(self) -> int:
-        return self.shard_size
+        return (self.tensor_sizes_per_token * tensor_tokens).tolist()
 
     @property
     def tensor_block_size(self) -> int:
-        if len(set(self.view_tensor_block_sizes.tolist())) != 1:
+        if len(set(self.tensor_block_sizes.tolist())) != 1:
             raise ValueError(
                 "KV cache group layout has mixed view tensor block sizes: "
-                f"{self.view_tensor_block_sizes.tolist()}"
+                f"{self.tensor_block_sizes.tolist()}"
             )
-        return int(self.view_tensor_block_sizes[0])
-
-
-# One canonical hash block mapped to segment spans for each vLLM KV cache group.
-KVCacheGroupRow = tuple[list[KVCacheSegment], ...]
-# Multiple canonical hash blocks, each represented as one KVCacheGroupRow.
-KVCacheGroupRows = list[KVCacheGroupRow]
-# Full HMA allocation snapshot by kv-cache group.
-KVCacheGroupAllocation = tuple[list[int], ...]
-
-
-class FAWABlockSpanLayout:
-    """Maps FAWA canonical hash blocks to per-group KV cache spans."""
-
-    ASCEND_HASH_BLOCK_SIZE = 512
-    ASCEND_REQUIRED_SPECS = frozenset(
-        {"Compress4AttentionSpec", "C4IndexerSpec", "Compress128AttentionSpec"}
-    )
-    ASCEND_TENSOR_BLOCK_SPECS = {
-        "Compress4AttentionSpec": 512,
-        "C4IndexerSpec": 4096,
-        "Compress128AttentionSpec": 16384,
-    }
-    ASCEND_MULTI_TENSOR_SPECS = {
-        # vllm-ascend _reshape_kv_cache_tensors() extends C4 indexer as
-        # [indexer_kv_cache, indexer_scale_cache]. Other DSV4 specs append one
-        # tensor each in kv-cache-group order.
-        "C4IndexerSpec": 2,
-    }
-    ASCEND_STATE_COMPRESS_RATIOS = {
-        "C4AttnKVStateSpec": 4,
-        "C4AttnScoreStateSpec": 4,
-        "C4IndexerKVStateSpec": 4,
-        "C4IndexerScoreStateSpec": 4,
-        "C128AttnKVStateSpec": 128,
-        "C128AttnScoreStateSpec": 128,
-    }
-
-    def __init__(
-        self,
-        kv_cache_config: "KVCacheConfig",
-        fa_group_ids: tuple[int, ...],
-    ) -> None:
-        self.kv_cache_config = kv_cache_config
-        self.fa_group_ids = fa_group_ids
-        self.is_ascend = self._detect_ascend_layout()
-        self.hash_block_size = self._get_hash_block_size()
-        self.group_token_block_sizes = self._get_group_token_block_sizes()
-        self.group_tensor_block_sizes = self._get_group_tensor_block_sizes()
-        self.group_layer_tensor_indices = self._get_group_layer_tensor_indices()
-
-    @staticmethod
-    def group_specs(group_spec) -> tuple[object, ...]:
-        nested_specs = getattr(group_spec.kv_cache_spec, "kv_cache_specs", None)
-        return (
-            tuple(nested_specs.values())
-            if nested_specs
-            else (group_spec.kv_cache_spec,)
-        )
-
-    @staticmethod
-    def group_layer_specs(group_spec, layer_name: str) -> tuple[object, ...]:
-        nested_specs = getattr(group_spec.kv_cache_spec, "kv_cache_specs", None)
-        if nested_specs:
-            return (nested_specs[layer_name],)
-        return (group_spec.kv_cache_spec,)
-
-    @staticmethod
-    def group_spec_items(group_spec) -> tuple[tuple[str, object], ...]:
-        nested_specs = getattr(group_spec.kv_cache_spec, "kv_cache_specs", None)
-        if nested_specs:
-            return tuple(nested_specs.items())
-        return tuple(
-            (layer_name, group_spec.kv_cache_spec)
-            for layer_name in group_spec.layer_names
-        )
-
-    @staticmethod
-    def spec_window_tokens(spec: object) -> Optional[int]:
-        window_size = getattr(spec, "sliding_window", None) or getattr(
-            spec, "attention_chunk_size", None
-        )
-        return int(window_size) if window_size is not None else None
-
-    @classmethod
-    def group_window_tokens(cls, group_spec) -> Optional[int]:
-        window_sizes = {
-            window_tokens
-            for spec in cls.group_specs(group_spec)
-            if (window_tokens := cls.spec_window_tokens(spec)) is not None
-        }
-        if not window_sizes:
-            return None
-        if len(window_sizes) != 1:
-            raise RuntimeError(
-                "FAWA KV cache group has mixed window sizes: " f"{sorted(window_sizes)}"
-            )
-        return window_sizes.pop()
-
-    @classmethod
-    def group_has_window(cls, group_spec) -> bool:
-        return cls.group_window_tokens(group_spec) is not None
-
-    @classmethod
-    def is_ascend_kv_cache_config(
-        cls, kv_cache_config: Optional["KVCacheConfig"]
-    ) -> bool:
-        if kv_cache_config is None:
-            return False
-        groups = kv_cache_config.kv_cache_groups
-        if not any(type(group).__name__.startswith("Ascend") for group in groups):
-            return False
-        spec_names = {
-            type(spec).__name__ for group in groups for spec in cls.group_specs(group)
-        }
-        return cls.ASCEND_REQUIRED_SPECS.issubset(spec_names)
-
-    @staticmethod
-    def spec_token_block_size(spec: object) -> int:
-        block_size = getattr(spec, "block_size", None)
-        if block_size is None:
-            raise RuntimeError(
-                f"FAWA KV cache spec {type(spec).__name__} has no block_size."
-            )
-        return int(block_size)
-
-    @classmethod
-    def spec_tensor_block_size(cls, spec: object) -> Optional[int]:
-        spec_name = type(spec).__name__
-        fixed_size = cls.ASCEND_TENSOR_BLOCK_SPECS.get(spec_name)
-        if fixed_size is not None:
-            return fixed_size
-        compress_ratio = int(getattr(spec, "compress_ratio", 1))
-        if compress_ratio <= 1:
-            return None
-        return cls.spec_token_block_size(spec) * compress_ratio
-
-    def _detect_ascend_layout(self) -> bool:
-        return self.is_ascend_kv_cache_config(self.kv_cache_config)
-
-    def state_compress_ratio(self, group_id: int) -> Optional[int]:
-        ratios = set()
-        group = self.kv_cache_config.kv_cache_groups[group_id]
-        for spec in self.group_specs(group):
-            spec_name = type(spec).__name__
-            ratio = getattr(spec, "compress_ratio", None)
-            if ratio is None:
-                ratio = self.ASCEND_STATE_COMPRESS_RATIOS.get(spec_name)
-            if ratio is not None and int(ratio) > 1:
-                ratios.add(int(ratio))
-        if len(ratios) > 1:
-            raise RuntimeError(
-                f"FAWA Ascend group {group_id} has mixed compress ratios: "
-                f"{sorted(ratios)}."
-            )
-        return ratios.pop() if ratios else None
-
-    def is_swa_group(self, group_id: int) -> bool:
-        group = self.kv_cache_config.kv_cache_groups[group_id]
-        return any(
-            type(spec).__name__ == "SWAAttentionSpec"
-            for spec in self.group_specs(group)
-        )
-
-    def _get_hash_block_size(self) -> int:
-        if self.is_ascend:
-            return self.ASCEND_HASH_BLOCK_SIZE
-        fa_block_sizes = {
-            self.spec_token_block_size(
-                self.kv_cache_config.kv_cache_groups[group_id].kv_cache_spec
-            )
-            for group_id in self.fa_group_ids
-        }
-        if len(fa_block_sizes) != 1:
-            raise RuntimeError(
-                "FAWA connector requires one FA token block size, got "
-                f"{sorted(fa_block_sizes)}."
-            )
-        return fa_block_sizes.pop()
-
-    def _ascend_group_token_block_size(self, group_spec) -> int:
-        # Ascend DeepSeek V4 stores selected compressed groups at a 512-token
-        # canonical segment inside larger tensor pages. Other groups keep the
-        # token block size advertised by the KV cache spec.
-        if any(
-            self.spec_tensor_block_size(spec) is not None
-            for spec in self.group_specs(group_spec)
-        ):
-            return self.hash_block_size
-        return self.spec_token_block_size(group_spec.kv_cache_spec)
-
-    def _get_group_token_block_sizes(self) -> tuple[int, ...]:
-        groups = self.kv_cache_config.kv_cache_groups
-        if self.is_ascend:
-            group_token_block_sizes = tuple(
-                self._ascend_group_token_block_size(group) for group in groups
-            )
-        else:
-            raw_group_token_block_sizes = tuple(
-                self.spec_token_block_size(group.kv_cache_spec) for group in groups
-            )
-            if not raw_group_token_block_sizes:
-                raise RuntimeError("FAWA connector found no KV cache groups.")
-            mutable_sizes = list(raw_group_token_block_sizes)
-            for group_id in self.fa_group_ids:
-                mutable_sizes[group_id] = self.hash_block_size
-            group_token_block_sizes = tuple(mutable_sizes)
-
-        for group_id, group_token_block_size in enumerate(group_token_block_sizes):
-            if group_token_block_size <= 0:
-                raise RuntimeError(
-                    f"FAWA group {group_id} block size must be positive, "
-                    f"got {group_token_block_size}."
-                )
-            if self.hash_block_size % group_token_block_size != 0:
-                raise RuntimeError(
-                    f"FAWA group {group_id} block size {group_token_block_size} "
-                    f"must divide {self.hash_block_size}."
-                )
-        return group_token_block_sizes
-
-    def _get_group_tensor_block_sizes(self) -> tuple[int, ...]:
-        tensor_block_sizes: list[int] = []
-        for group_id, group in enumerate(self.kv_cache_config.kv_cache_groups):
-            detected = {
-                tensor_block_size
-                for spec in self.group_specs(group)
-                if (tensor_block_size := self.spec_tensor_block_size(spec)) is not None
-            }
-            if len(detected) > 1:
-                raise RuntimeError(
-                    f"FAWA Ascend group {group_id} has mixed tensor "
-                    f"block sizes: {sorted(detected)}."
-                )
-            tensor_block_sizes.append(
-                detected.pop() if detected else self.group_token_block_sizes[group_id]
-            )
-        return tuple(tensor_block_sizes)
-
-    @classmethod
-    def spec_tensor_count(cls, spec: object) -> int:
-        return cls.ASCEND_MULTI_TENSOR_SPECS.get(type(spec).__name__, 1)
-
-    def _get_group_layer_tensor_indices(
-        self,
-    ) -> dict[int, dict[str, tuple[int, ...]]]:
-        if not self.is_ascend:
-            return {}
-
-        mapping: dict[int, dict[str, tuple[int, ...]]] = {}
-        next_tensor_index_by_layer: dict[str, int] = {}
-        for group_id, group in enumerate(self.kv_cache_config.kv_cache_groups):
-            group_mapping: dict[str, tuple[int, ...]] = {}
-            for layer_name in group.layer_names:
-                tensor_count = sum(
-                    self.spec_tensor_count(spec)
-                    for spec in self.group_layer_specs(group, layer_name)
-                )
-                start = next_tensor_index_by_layer.get(layer_name, 0)
-                end = start + tensor_count
-                group_mapping[layer_name] = tuple(range(start, end))
-                next_tensor_index_by_layer[layer_name] = end
-            mapping[group_id] = group_mapping
-        return mapping
-
-    def group_tensor_indices(
-        self, group_id: int, layer_name: str
-    ) -> Optional[tuple[int, ...]]:
-        if not self.is_ascend:
-            return None
-        try:
-            return self.group_layer_tensor_indices[group_id][layer_name]
-        except KeyError as exc:
-            raise RuntimeError(
-                f"FAWA Ascend layout has no tensor index mapping for "
-                f"group {group_id}, layer {layer_name}."
-            ) from exc
-
-    def block_index_to_segment(
-        self,
-        group_id: int,
-        group_block_idx: int,
-        block_id: int,
-    ) -> KVCacheSegment:
-        group_token_block_size = self.group_token_block_sizes[group_id]
-        group_tensor_block_size = self.group_tensor_block_sizes[group_id]
-        if group_tensor_block_size % group_token_block_size != 0:
-            raise RuntimeError(
-                f"FAWA group {group_id} logical block size {group_token_block_size} "
-                f"must divide tensor block size {group_tensor_block_size}."
-            )
-        token_blocks_per_tensor_block = (
-            group_tensor_block_size // group_token_block_size
-        )
-        tensor_block_idx = group_block_idx // token_blocks_per_tensor_block
-        if tensor_block_idx != block_id:
-            logger.debug(
-                f"FAWA group {group_id} logical block idx {group_block_idx} "
-                f"maps to tensor block idx {tensor_block_idx}, "
-                f"allocated id {block_id}."
-            )
-        return KVCacheSegment(
-            block_id=block_id,
-            offset=(group_block_idx % token_blocks_per_tensor_block)
-            * group_token_block_size,
-            length=group_token_block_size,
-        )
-
-    def allocation_index(self, group_id: int, group_block_idx: int) -> int:
-        return (
-            group_block_idx
-            * self.group_token_block_sizes[group_id]
-            // self.group_tensor_block_sizes[group_id]
-        )
+        return int(self.tensor_block_sizes[0])
 
 
 @dataclass
 class FAWARequestMeta:
-    # Canonical per-hash-block remote keys before _block_key() namespacing.
+    """Scheduler-side state accumulated for one request."""
+
     ucm_block_ids: list[bytes] = field(default_factory=list)
-    # Number of 256-token hash blocks already hit in vLLM's HBM prefix cache.
     hbm_hit_block_num: int = 0
-    # Total prefix hit in hash blocks, including HBM and external UCM hits.
     total_hit_block_num: int = 0
-    # Logical request token count; persistence is capped by this, not allocation.
     num_token_ids: int = 0
-    # Number of logical tokens already accounted for by scheduler progress.
+    vllm_block_ids: tuple[list[int], ...] = field(default_factory=tuple)
     token_processed: int = 0
-    # First canonical hash block that has not yet been emitted to store.
-    store_block_cursor: int = 0
-    # canonical block idx -> per-kv-cache-group block ids needed to load/store it.
-    group_block_ids: dict[int, KVCacheGroupRow] = field(default_factory=dict)
-    # Full HMA allocation snapshot by kv-cache group, updated on alloc/chunk alloc.
-    allocated_group_block_ids: KVCacheGroupAllocation = field(default_factory=tuple)
 
 
 @dataclass
 class FAWARequestDispatchMeta:
-    load_block_ids: tuple[list[bytes], KVCacheGroupRows]
-    dump_block_ids: tuple[list[bytes], KVCacheGroupRows]
+    """Per-step load and dump plan sent from scheduler to workers."""
+
+    load_keys: list[bytes] = field(default_factory=list)
+    load_hash_start: int = 0
+    load_hash_end: int = 0
+    load_vllm_block_ids: tuple[list[int], ...] = field(default_factory=tuple)
+    dump_keys: list[bytes] = field(default_factory=list)
+    dump_hash_start: int = 0
+    dump_hash_end: int = 0
+    dump_vllm_block_ids: tuple[list[int], ...] = field(default_factory=tuple)
 
 
 @dataclass
 class UCMFAWAConnectorMetadata(KVConnectorMetadata):
+    """Connector metadata carrying FAWA dispatch plans for this step."""
+
     request_meta: dict[str, FAWARequestDispatchMeta] = field(default_factory=dict)
+    preempted_req_ids: set[str] = field(default_factory=set)
 
 
 @dataclass
 class FAWALoadTask:
+    """Outstanding FAWA load task plus scheduler-visible failure anchors."""
+
     request_id: str
     label: str
     store: UcmKVStoreBaseV1
     task: Task
     key_count: int
-    anchor_vllm_block_ids: set[int] = field(default_factory=set)
 
 
 @dataclass
 class FAWADumpTask:
+    """Outstanding FAWA dump task submitted to one backing store."""
+
     label: str
     store: UcmKVStoreBaseV1
     task: Task
     key_count: int
+    event_handle: int
 
 
-class UCMFAWAConnector(UCMDirectConnector):
+class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     """UCM connector for mixed full-attention and window KV cache groups.
 
     Full-attention groups are stored once per reusable prefix block and are
@@ -672,125 +320,274 @@ class UCMFAWAConnector(UCMDirectConnector):
     """
 
     DEFAULT_HASH_BLOCK_SIZE = 256
+    ASCEND_SUPPORTED_VLLM_BLOCK_SIZES = frozenset({32, 64, 128})
+    ASCEND_C4_COMPRESS_RATIO = 4
 
     def __init__(
         self,
         vllm_config: "VllmConfig",
         role: KVConnectorRole,
-        kv_cache_config: Optional["KVCacheConfig"] = None,
+        kv_cache_config: "KVCacheConfig",
     ):
         self._defer_scheduler_store = True
         super().__init__(vllm_config, role, kv_cache_config)
         self.hash_block_size = self.DEFAULT_HASH_BLOCK_SIZE
-        self.block_size = self.DEFAULT_HASH_BLOCK_SIZE
         self.group_layouts: dict[int, KVCacheGroupLayout] = {}
-        self._window_scratch_views: dict[tuple[int, int], list[torch.Tensor]] = {}
-        self.fa_group_ids, self.window_group_ids = self._partition_kv_cache_groups()
         if self._kv_cache_config is None:
             raise RuntimeError("FAWA connector requires kv_cache_config.")
-        self.block_span_layout = self._create_block_span_layout()
-        self._ascend_layout = False
-        self.hash_block_size = self._get_hash_block_size()
-        self.block_size = self.hash_block_size
-        self.group_token_block_sizes = self._get_group_token_block_sizes()
-        self.group_tensor_block_sizes = self._get_group_tensor_block_sizes()
-        self.group_tail_blocks = self._get_group_tail_blocks()
-        self.group_window_spans = self._get_group_window_spans()
+
+        self.is_ascend_layout = False
+        self.ascend_base_block_size: Optional[int] = None
+        self.fa_group_ids, self.window_group_ids = [], []
+        self.group_metas: dict[int, KVCacheGroupMeta] = {}
+        self.file_size = {}
+
+        # The maximum token block size across all groups, used for aligning the number of computed tokens in the scheduler.
+        self.max_token_block_size = 0
+        self._init_group_metas()
+        self._bind_request_block_hasher()
         self.fa_store: Optional[UcmKVStoreBaseV1] = None
         self.wa_store: Optional[UcmKVStoreBaseV1] = None
         self.requests_meta: dict[str, FAWARequestMeta] = {}
+        self.tp_dump_tasks: dict[tuple, list[FAWADumpTask]] = {}
+        self.wa_dump_block_wise = self.launch_config.get("wa_dump_block_wise", True)
+
+        # If the number of external hit blocks is small, it's possible that the load overhead is larger than the compute of a few blocks.
+        # In that case, we can skip loading and directly compute the missed blocks, which can be faster.
+        # This threshold can be tuned based on the performance characteristics of the system.
+        self.load_tokens_threshold = self.launch_config.get(
+            "load_tokens_threshold", 2048
+        )
+
         if role == KVConnectorRole.SCHEDULER:
-            self.store = self._create_fa_store(None)
-            self.fa_store = self.store
+            self.fa_store = self._create_fa_store(None)
             self.wa_store = self._create_wa_store(None)
+
+        group_meta_summary = tuple(
+            {
+                "group_id": meta.group_id,
+                "token_block_size": meta.token_block_size,
+                "tail_blocks": meta.tail_blocks,
+                "tail_tokens": meta.tail_tokens,
+            }
+            for _, meta in sorted(self.group_metas.items())
+        )
         logger.info(
             f"FAWA KV group config: fa_groups={self.fa_group_ids}, "
             f"window_groups={self.window_group_ids}, "
-            f"ascend_layout={self._ascend_layout}, "
-            f"token_block_sizes={self.group_token_block_sizes}, "
-            f"group_tensor_block_sizes={self.group_tensor_block_sizes}, "
-            f"tail_blocks={self.group_tail_blocks}, "
-            f"window_spans={self.group_window_spans}"
+            f"hash_block_size={self.hash_block_size}, "
+            f"ascend_base_block_size={self.ascend_base_block_size}, "
+            f"is_ascend_layout={self.is_ascend_layout}, "
+            f"group_metas={group_meta_summary}"
         )
         logger.info("Init UCM FAWA connector.")
+
+    def get_block_size(self) -> int:
+        return self.hash_block_size
 
     @classmethod
     def can_handle_kv_cache_config(
         cls, kv_cache_config: Optional["KVCacheConfig"]
     ) -> bool:
+        """Return whether this connector supports the given hybrid KV layout."""
+
         if kv_cache_config is None:
             return False
-        if cls.can_handle_ascend_kv_cache_config(kv_cache_config):
-            return False
-        fa_groups, window_groups = cls._partition_group_specs(
-            kv_cache_config.kv_cache_groups
-        )
-        return bool(fa_groups and window_groups)
+
+        kv_cache_groups = kv_cache_config.kv_cache_groups
+        spec_names = set()
+        for group_spec in kv_cache_groups:
+            nested_specs = getattr(group_spec.kv_cache_spec, "kv_cache_specs", None)
+            spec = (
+                next(iter(nested_specs.values()))
+                if nested_specs
+                else group_spec.kv_cache_spec
+            )
+            spec_names.add(type(spec).__name__)
+        # GPU FAWA is currently selected for DeepSeek-V4 style MLA+SWA layouts.
+        DS_V4_REQUIRED_SPECS = frozenset({"SlidingWindowMLASpec"})
+        gpu_support = DS_V4_REQUIRED_SPECS.issubset(spec_names)
+        if gpu_support:
+            return True
+        return cls.can_handle_ascend_kv_cache_config(kv_cache_config)
 
     @classmethod
     def can_handle_ascend_kv_cache_config(
         cls, kv_cache_config: Optional["KVCacheConfig"]
     ) -> bool:
-        return FAWABlockSpanLayout.is_ascend_kv_cache_config(kv_cache_config)
+        """Return whether the KV config matches the supported Ascend FAWA layout."""
 
-    def _create_block_span_layout(self) -> Optional[FAWABlockSpanLayout]:
-        return None
-
-    def _get_hash_block_size(self) -> int:
-        fa_block_sizes = {
-            self._spec_token_block_size(
-                self._kv_cache_config.kv_cache_groups[group_id].kv_cache_spec
+        if kv_cache_config is None:
+            return False
+        kv_cache_groups = kv_cache_config.kv_cache_groups
+        spec_names = set()
+        for group_spec in kv_cache_groups:
+            nested_specs = getattr(group_spec.kv_cache_spec, "kv_cache_specs", None)
+            spec = (
+                next(iter(nested_specs.values()))
+                if nested_specs
+                else group_spec.kv_cache_spec
             )
-            for group_id in self.fa_group_ids
-        }
-        if len(fa_block_sizes) != 1:
-            raise RuntimeError(
-                "FAWA connector requires one FA token block size, got "
-                f"{sorted(fa_block_sizes)}."
+            spec_names.add(type(spec).__name__)
+        ASCEND_REQUIRED_SPECS = frozenset({"AscendSlidingWindowMLASpec"})
+        npu_support = ASCEND_REQUIRED_SPECS.issubset(spec_names)
+        return npu_support
+
+    @classmethod
+    def _get_ascend_base_block_size(cls, kv_cache_config: "KVCacheConfig") -> int:
+        """Read the user-scale block size from the Ascend C4 FA group.
+
+        The scheduler mutates ``vllm_config.cache_config.block_size`` to the
+        smallest hybrid-group block size, while workers retain the configured
+        value. The C4 full-attention group is present in both roles and keeps
+        the original 32/64/128 block size, so it is the stable source here.
+        """
+
+        c4_block_sizes = set()
+        for group in kv_cache_config.kv_cache_groups:
+            kv_cache_spec = group.kv_cache_spec
+            nested_specs = getattr(kv_cache_spec, "kv_cache_specs", None)
+            spec = next(iter(nested_specs.values())) if nested_specs else kv_cache_spec
+            if (
+                getattr(spec, "sliding_window", None) is None
+                and getattr(spec, "compress_ratio", 1) == cls.ASCEND_C4_COMPRESS_RATIO
+            ):
+                c4_block_sizes.add(kv_cache_spec.block_size)
+
+        if len(c4_block_sizes) != 1:
+            raise ValueError(
+                "Expected exactly one Ascend C4 full-attention block size, "
+                f"got {sorted(c4_block_sizes)}."
             )
-        return fa_block_sizes.pop()
+        block_size = c4_block_sizes.pop()
 
-    @staticmethod
-    def _spec_token_block_size(spec: object) -> int:
-        return FAWABlockSpanLayout.spec_token_block_size(spec)
+        if block_size not in cls.ASCEND_SUPPORTED_VLLM_BLOCK_SIZES:
+            supported = sorted(cls.ASCEND_SUPPORTED_VLLM_BLOCK_SIZES)
+            raise ValueError(
+                f"Unsupported DeepSeek V4 Ascend block size {block_size}; "
+                f"expected one of {supported}."
+            )
+        return block_size
 
-    def _get_group_token_block_sizes(self) -> tuple[int, ...]:
-        raw_group_token_block_sizes = tuple(
-            self._spec_token_block_size(group.kv_cache_spec)
-            for group in self._kv_cache_config.kv_cache_groups
+    def _init_group_metas(self) -> None:
+        """Classify FA/WA groups and compute their logical segment sizes."""
+
+        if self.can_handle_ascend_kv_cache_config(self._kv_cache_config):
+            self.is_ascend_layout = True
+            self.ascend_base_block_size = self._get_ascend_base_block_size(
+                self._kv_cache_config
+            )
+            self.hash_block_size = (
+                self.ascend_base_block_size * self.ASCEND_C4_COMPRESS_RATIO
+            )
+
+        groups = self._kv_cache_config.kv_cache_groups
+        self.fa_group_ids, self.window_group_ids = [], []
+        layer_compress_ratios = getattr(
+            self._vllm_config.model_config.hf_config,
+            "compress_ratios",
+            None,
         )
-        if not raw_group_token_block_sizes:
-            raise RuntimeError("FAWA connector found no KV cache groups.")
-        mutable_sizes = list(raw_group_token_block_sizes)
-        for group_id in self.fa_group_ids:
-            mutable_sizes[group_id] = self.hash_block_size
-        group_token_block_sizes = tuple(mutable_sizes)
-        self._validate_group_token_block_sizes(group_token_block_sizes)
-        return group_token_block_sizes
+        if layer_compress_ratios is None:
+            raise ValueError("current only support DSV4")
+        for group_id, group in enumerate(groups):
+            kv_cache_spec = group.kv_cache_spec
+            # Use the representative spec when vLLM wraps multiple layer specs.
+            nested_specs = getattr(kv_cache_spec, "kv_cache_specs", None)
+            spec = next(iter(nested_specs.values())) if nested_specs else kv_cache_spec
+            window_size = getattr(spec, "sliding_window", None)
+            compress_ratio = getattr(spec, "compress_ratio", 1)
+            token_block_size = kv_cache_spec.block_size
+            if self.is_ascend_layout:
+                # Ascend compressed groups expose a logical block span scaled by
+                # the compression ratio.
+                token_block_size = kv_cache_spec.block_size * compress_ratio
 
-    def _get_group_tensor_block_sizes(self) -> tuple[int, ...]:
-        return self.group_token_block_sizes
+            if window_size is None:
+                # FA groups store one canonical hash block per row.
+                tail_tokens = self.hash_block_size
+                self.fa_group_ids.append(group_id)
+            else:
+                tensor_name = group.layer_names[0]
+                if tensor_name.split(".")[-1] in ["swa_cache"]:
+                    # SWA caches keep the full sliding-window tail.
+                    tail_tokens = window_size
+                else:
+                    # Compressor state caches keep only the uncompressed tail.
+                    layer_index = extract_layer_index(tensor_name)
+                    tail_tokens = window_size - layer_compress_ratios[layer_index]
 
-    def _validate_group_token_block_sizes(
-        self, group_token_block_sizes: tuple[int, ...]
-    ) -> None:
-        for group_id, group_token_block_size in enumerate(group_token_block_sizes):
-            if group_token_block_size <= 0:
-                raise RuntimeError(
-                    f"FAWA group {group_id} block size must be positive, "
-                    f"got {group_token_block_size}."
-                )
-            if self.hash_block_size % group_token_block_size != 0:
-                raise RuntimeError(
-                    f"FAWA group {group_id} block size {group_token_block_size} "
-                    f"must divide {self.hash_block_size}."
-                )
+                tail_blocks = tail_tokens // token_block_size
+                self.window_group_ids.append(group_id)
+
+            tail_blocks = max(tail_tokens // token_block_size, 1)
+            self.max_token_block_size = max(self.max_token_block_size, token_block_size)
+            self.group_metas[group_id] = KVCacheGroupMeta(
+                group_id=group_id,
+                token_block_size=token_block_size,
+                tail_blocks=tail_blocks,
+                tail_tokens=tail_tokens,
+            )
+        logger.info_once(
+            f"max token_block_size of all groups: {self.max_token_block_size}"
+        )
+        if self.max_token_block_size % self.hash_block_size != 0:
+            raise ValueError(
+                f"Maximum token block size {self.max_token_block_size} must be "
+                f"divisible by hash block size {self.hash_block_size}."
+            )
+        # get file size for block gc
+        if len(layer_compress_ratios) < 61:
+            # for dsv4 flash
+            num_c4a_layers = 21
+            num_c128a_layers = 20
+            # TODO only support for dp tp
+            num_total_layers = 43
+        else:
+            # for dsv4 pro
+            num_c4a_layers = 30
+            num_c128a_layers = 31
+            num_total_layers = 61
+
+        if (
+            self._vllm_config.speculative_config is not None
+            and self._vllm_config.speculative_config.num_speculative_tokens > 0
+        ):
+            num_total_layers += 1
+
+        # TODO we should get file size in worker thread
+        if self.is_ascend_layout:
+            if self.ascend_base_block_size is None:
+                raise RuntimeError("Ascend base block size was not initialized.")
+            # One C4 row consumes a complete physical block. One C128 row
+            # consumes block_size / 32 physical tokens, so both contributions
+            # scale linearly with the configured vLLM block size.
+            c4a_bytes_per_block_token = 1024 + 128 + 2
+            c128a_bytes_per_block_token = 32
+            self.file_size["FA"] = self.ascend_base_block_size * (
+                c4a_bytes_per_block_token * num_c4a_layers
+                + c128a_bytes_per_block_token * num_c128a_layers
+            )
+            self.file_size["WA"] = (
+                131072 * num_total_layers + (32768 + 8192) * num_c4a_layers
+            )
+        else:
+            self.file_size["FA"] = (
+                37376 + 8448
+            ) * num_c4a_layers + 1168 * num_c128a_layers
+            self.file_size["WA"] = (37376 * 2) * num_total_layers + (
+                8192 + 32768
+            ) * num_c4a_layers
+        self.file_size["FA"] = round_up(self.file_size["FA"], 4096)
+        self.file_size["WA"] = round_up(self.file_size["WA"], 4096)
 
     def _create_fa_store(
         self,
         group_layouts: Optional[dict[int, KVCacheGroupLayout]],
         cpu_affinity_cores: Optional[list[int]] = None,
     ) -> UcmKVStoreBaseV1:
+        """Create the backing store used for full-attention rows."""
+
         tensor_size_list = None
         if self._role == KVConnectorRole.WORKER:
             if group_layouts is None:
@@ -800,10 +597,10 @@ class UCMFAWAConnector(UCMDirectConnector):
                 self.fa_group_ids,
             )
         return self._create_store(
-            "FA",
-            "fa",
-            tensor_size_list,
-            cpu_affinity_cores,
+            label="FA",
+            store_suffix="fa",
+            tensor_size_list=tensor_size_list,
+            cpu_affinity_cores=cpu_affinity_cores,
         )
 
     def _create_wa_store(
@@ -811,6 +608,8 @@ class UCMFAWAConnector(UCMDirectConnector):
         group_layouts: Optional[dict[int, KVCacheGroupLayout]],
         cpu_affinity_cores: Optional[list[int]] = None,
     ) -> UcmKVStoreBaseV1:
+        """Create the backing store used for window-tail rows."""
+
         tensor_size_list = None
         if self._role == KVConnectorRole.WORKER:
             if group_layouts is None:
@@ -820,16 +619,18 @@ class UCMFAWAConnector(UCMDirectConnector):
                 self.window_group_ids,
             )
         return self._create_store(
-            "WA",
-            "wa",
-            tensor_size_list,
-            cpu_affinity_cores,
+            label="WA",
+            store_suffix="wa",
+            tensor_size_list=tensor_size_list,
+            cpu_affinity_cores=cpu_affinity_cores,
         )
 
     def _base_store_config(
         self,
         store_suffix: str,
     ) -> tuple[str, Optional[str], dict[str, object]]:
+        """Build a namespaced UCM store config for either FA or WA data."""
+
         if len(self.connector_configs) != 1:
             raise RuntimeError(
                 f"Expected exactly one connector config, "
@@ -841,25 +642,50 @@ class UCMFAWAConnector(UCMDirectConnector):
         module_path = self.connector_configs[0].get("ucm_connector_module_path", None)
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
         config.setdefault("store_pipeline", "Cache|Empty")
+        config["tensor_layout"] = "hma"
         # MLA ranks share one logical store buffer; non-MLA stores are per rank.
         config.setdefault("share_buffer_enable", self.is_mla)
         if isinstance(config.get("storage_backends"), str):
             config["storage_backends"] = [
                 path for path in config["storage_backends"].split(":")
             ]
-        config["unique_id"] = f"{self.engine_id}_fawa_{store_suffix}"
+        config["unique_id"] = f"{self.unique_id}_fawa_{store_suffix}"
         self._namespace_storage_backends(config, store_suffix)
         dp_rank = self._vllm_config.parallel_config.data_parallel_rank
         config["posix_gc_enable"] = (
             self._role != KVConnectorRole.WORKER and dp_rank == 0
         )
+        if config.get("posix_capacity_gb", None) is not None:
+            config["posix_capacity_gb"] = int(config["posix_capacity_gb"]) // 2
         return name, module_path, config
+
+    def _set_default_shm_buffer_capacity(self, config: dict[str, object]) -> None:
+        if not bool(config.get("share_buffer_enable", False)):
+            return
+
+        # HMA creates two shared-buffer stores, FA and WA, so split the
+        # shared-buffer capacity evenly between them, whether user-set or the
+        # 128GB direct-connector default.
+        if config.get("cache_buffer_capacity_gb") is None:
+            config["cache_buffer_capacity_gb"] = 128
+        capacity = int(config["cache_buffer_capacity_gb"])
+        config["cache_buffer_capacity_gb"] = max(capacity // 2, 1)
+        logger.info(
+            f"Set FAWA cache_buffer_capacity_gb to "
+            f"{config['cache_buffer_capacity_gb']}GB by splitting the "
+            f"{capacity}GB shared-buffer capacity across FA/WA stores."
+        )
+        # The shared buffer is allocated via shm_open in /dev/shm; fail early
+        # (before store creation) if the tmpfs cannot hold the FA+WA total.
+        _check_shm_capacity(capacity)
 
     @staticmethod
     def _namespace_storage_backends(
         config: dict[str, object],
         store_suffix: str,
     ) -> None:
+        """Place FA and WA store files in separate backend subdirectories."""
+
         backends = config.get("storage_backends")
         if not isinstance(backends, list):
             return
@@ -877,18 +703,35 @@ class UCMFAWAConnector(UCMDirectConnector):
         tensor_size_list: Optional[list[int]],
         cpu_affinity_cores: Optional[list[int]] = None,
     ) -> UcmKVStoreBaseV1:
+        """Instantiate one UCM store with worker tensor layout metadata."""
+
         name, module_path, config = self._base_store_config(store_suffix)
+        self._set_default_shm_buffer_capacity(config)
+        if label == "FA":
+            config.setdefault("cache_io_aggregation", True)
+        else:
+            config["cache_io_aggregation"] = False
         if self._role == KVConnectorRole.WORKER:
             if tensor_size_list is None:
                 raise RuntimeError(f"Worker FAWA {label} store needs tensor sizes.")
-            config["device_id"] = self.local_rank
+            config["device_id"] = self.device_id
             config["tensor_size_list"] = tensor_size_list
-            config["shard_size"] = int(sum(tensor_size_list))
-            config["block_size"] = int(sum(tensor_size_list))
+            # io_direct requires shard and block sizes to be 4KB aligned.
+            aligned_size = 4096
+            padded_size = round_up(sum(tensor_size_list), aligned_size)
+            config["shard_size"] = padded_size
+            config["block_size"] = padded_size
+            if self.file_size[label] != padded_size:
+                logger.info_once(
+                    f"GC file size of {label} does not match real file size. "
+                    f"Worker: {padded_size}, Scheduler: {self.file_size[label]}"
+                )
             # MLA stores aggregate TP shards under one logical rank group.
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
             if cpu_affinity_cores:
                 config["cpu_affinity_cores"] = list(cpu_affinity_cores)
+        else:
+            config["block_size"] = self.file_size[label]
         logger.info(
             f"create FAWA {label} {name} with config: "
             f"{self._summarize_store_config(config)}"
@@ -897,7 +740,11 @@ class UCMFAWAConnector(UCMDirectConnector):
 
     @staticmethod
     def _summarize_store_config(config: dict[str, object]) -> dict[str, object]:
+        """Return a log-friendly store config without dumping large size lists."""
+
         summary = dict(config)
+        # CacheStore initialization logs the runtime IO aggregation configuration.
+        summary.pop("cache_io_aggregation", None)
         tensor_size_list = summary.pop("tensor_size_list", None)
         if tensor_size_list is not None:
             tensor_sizes = [int(size) for size in tensor_size_list]
@@ -905,242 +752,32 @@ class UCMFAWAConnector(UCMDirectConnector):
             summary["tensor_bytes"] = sum(tensor_sizes)
         return summary
 
-    @staticmethod
-    def _partition_group_specs(
-        group_specs,
-    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
-        fa_group_ids: list[int] = []
-        window_group_ids: list[int] = []
-        for group_id, group_spec in enumerate(group_specs):
-            if FAWABlockSpanLayout.group_has_window(group_spec):
-                window_group_ids.append(group_id)
-            else:
-                fa_group_ids.append(group_id)
-        return tuple(fa_group_ids), tuple(window_group_ids)
-
-    def _partition_kv_cache_groups(self) -> tuple[tuple[int, ...], tuple[int, ...]]:
-        if self._kv_cache_config is None:
-            raise RuntimeError("FAWA connector requires kv_cache_config.")
-        fa_group_ids, window_group_ids = self._partition_group_specs(
-            self._kv_cache_config.kv_cache_groups
-        )
-        if not fa_group_ids:
-            raise RuntimeError("FAWA connector found no full-attention groups.")
-        if not window_group_ids:
-            raise RuntimeError("FAWA connector found no window groups.")
-        return fa_group_ids, window_group_ids
-
-    def _get_group_tail_blocks(self) -> tuple[Optional[int], ...]:
-        tail_blocks: list[Optional[int]] = [None] * len(self.group_token_block_sizes)
-        if self._kv_cache_config is None:
-            raise RuntimeError("FAWA connector requires kv_cache_config.")
-        for group_id in self.window_group_ids:
-            group_spec = self._kv_cache_config.kv_cache_groups[group_id]
-            group_token_block_size = self.group_token_block_sizes[group_id]
-            window_tokens = FAWABlockSpanLayout.group_window_tokens(group_spec)
-            if window_tokens is None:
-                tail_blocks[group_id] = self.hash_block_size // group_token_block_size
-                continue
-            if self._is_compressor_state_group(group_id):
-                tail_blocks[group_id] = self._compressor_state_tail_blocks(
-                    group_id,
-                    window_tokens,
-                    group_token_block_size,
-                )
-                continue
-            tail_blocks[group_id] = max(
-                1, math.ceil(window_tokens / group_token_block_size)
-            )
-        return tuple(tail_blocks)
-
-    def _get_group_window_spans(self) -> tuple[tuple[int, ...], ...]:
-        spans: list[tuple[int, ...]] = []
-        for group_id, tail_blocks in enumerate(self.group_tail_blocks):
-            if tail_blocks is None:
-                spans.append((self.group_token_block_sizes[group_id],))
-            else:
-                spans.append((self.group_token_block_sizes[group_id],) * tail_blocks)
-        return tuple(spans)
-
-    @staticmethod
-    def _is_compressor_state_name(layer_name: str) -> bool:
-        return ".compressor.state_cache" in layer_name
-
-    @staticmethod
-    def _compressor_state_prefix(layer_name: str) -> str:
-        suffix = ".compressor.state_cache"
-        if layer_name.endswith(suffix):
-            return layer_name[: -len(suffix)]
-        return layer_name.split(suffix, 1)[0]
-
-    def _is_compressor_state_group(self, group_id: int) -> bool:
-        if self._kv_cache_config is None:
-            raise RuntimeError("FAWA connector requires kv_cache_config.")
-        group_spec = self._kv_cache_config.kv_cache_groups[group_id]
-        layer_names = tuple(group_spec.layer_names)
-        return bool(layer_names) and all(
-            self._is_compressor_state_name(name) for name in layer_names
-        )
-
-    def _group_compress_ratio(self, group_id: int) -> Optional[int]:
-        if self._kv_cache_config is None:
-            raise RuntimeError("FAWA connector requires kv_cache_config.")
-        group_spec = self._kv_cache_config.kv_cache_groups[group_id]
-        ratios = {
-            int(ratio)
-            for spec in FAWABlockSpanLayout.group_specs(group_spec)
-            if (ratio := getattr(spec, "compress_ratio", 1)) and int(ratio) > 1
-        }
-        if len(ratios) > 1:
-            raise RuntimeError(
-                f"FAWA KV cache group {group_id} has mixed compress ratios: "
-                f"{sorted(ratios)}"
-            )
-        if ratios:
-            return ratios.pop()
-
-        if not self._is_compressor_state_group(group_id):
-            return None
-
-        config_ratios = getattr(
-            self._vllm_config.model_config.hf_config,
-            "compress_ratios",
-            None,
-        )
-        if config_ratios:
-            for layer_name in group_spec.layer_names:
-                layer_index = extract_layer_index(layer_name)
-                if layer_index < len(config_ratios):
-                    ratio = int(config_ratios[layer_index])
-                    if ratio > 1:
-                        ratios.add(ratio)
-            if len(ratios) > 1:
-                raise RuntimeError(
-                    f"FAWA compressor state group {group_id} maps to mixed "
-                    f"model config compress ratios: {sorted(ratios)}"
-                )
-            if ratios:
-                return ratios.pop()
-
-        prefixes = tuple(
-            self._compressor_state_prefix(layer_name)
-            for layer_name in group_spec.layer_names
-        )
-        for other_group in self._kv_cache_config.kv_cache_groups:
-            for layer_name, spec in FAWABlockSpanLayout.group_spec_items(other_group):
-                ratio = getattr(spec, "compress_ratio", 1)
-                if not ratio or int(ratio) <= 1:
-                    continue
-                if any(
-                    layer_name == prefix or layer_name.startswith(prefix + ".")
-                    for prefix in prefixes
-                ):
-                    ratios.add(int(ratio))
-
-        if len(ratios) > 1:
-            raise RuntimeError(
-                f"FAWA compressor state group {group_id} maps to mixed "
-                f"compress ratios: {sorted(ratios)}"
-            )
-        return ratios.pop() if ratios else None
-
-    def _compressor_state_tail_blocks(
-        self,
-        group_id: int,
-        window_tokens: int,
-        group_token_block_size: int,
-    ) -> int:
-        compress_ratio = self._group_compress_ratio(group_id)
-        if compress_ratio is None:
-            return max(1, math.ceil(window_tokens / group_token_block_size))
-        if compress_ratio <= 0:
-            raise RuntimeError(
-                f"FAWA group {group_id} compress ratio must be positive, "
-                f"got {compress_ratio}."
-            )
-        if window_tokens <= compress_ratio:
-            return 0
-        return math.ceil((window_tokens - compress_ratio) / group_token_block_size)
-
-    def _split_kv_caches_by_vllm_groups(
-        self, kv_caches: dict[str, torch.Tensor]
-    ) -> dict[int, dict[str, torch.Tensor]]:
-        if self._kv_cache_config is None:
-            raise RuntimeError("FAWA connector requires kv_cache_config.")
-        groups: dict[int, dict[str, torch.Tensor]] = {}
-        used_names: set[str] = set()
-        for group_id, group_spec in enumerate(self._kv_cache_config.kv_cache_groups):
-            group_caches: dict[str, torch.Tensor] = {}
-            for name in group_spec.layer_names:
-                if name not in kv_caches:
-                    continue
-                kv_cache = kv_caches[name]
-                tensor_indices = (
-                    self.block_span_layout.group_tensor_indices(group_id, name)
-                    if self.block_span_layout is not None
-                    else None
-                )
-                if tensor_indices is None:
-                    group_caches[name] = kv_cache
-                else:
-                    if not isinstance(kv_cache, (list, tuple)):
-                        raise TypeError(
-                            f"FAWA Ascend KV cache {name} must be tuple/list-like, "
-                            f"got {type(kv_cache)}."
-                        )
-                    missing = [
-                        tensor_index
-                        for tensor_index in tensor_indices
-                        if tensor_index >= len(kv_cache)
-                    ]
-                    if missing:
-                        raise RuntimeError(
-                            f"FAWA Ascend KV cache {name} has {len(kv_cache)} "
-                            f"tensors, missing indices {missing} for group "
-                            f"{group_id}."
-                        )
-                    selected = tuple(
-                        kv_cache[tensor_index] for tensor_index in tensor_indices
-                    )
-                    group_caches[name] = selected[0] if len(selected) == 1 else selected
-            if group_caches:
-                groups[group_id] = group_caches
-                used_names.update(group_caches)
-
-        missing_names = set(kv_caches) - used_names
-        if missing_names:
-            raise RuntimeError(
-                "KV cache config did not include registered caches: "
-                f"{sorted(missing_names)}"
-            )
-
-        return groups
-
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]):
         self.kv_caches = kv_caches
         self.device = create_device()
 
-        enable_affinity = os.getenv("VLLM_CPU_AFFINITY") == "1"
+        enable_affinity = _use_ucm_connector_cpu_affinity()
         worker_cores, store_cores = (
-            self.device.split_cores(self.local_rank)
-            if enable_affinity
-            else (None, None)
+            self.device.split_cores(self.device_id) if enable_affinity else (None, None)
         )
 
-        grouped = self._split_kv_caches_by_vllm_groups(kv_caches)
-        for group_id, group_caches in grouped.items():
-            if not group_caches:
-                logger.warning(f"KV cache group {group_id} is empty.")
-                continue
-            layout = KVCacheGroupLayout(group_caches)
+        for group_id, group_spec in enumerate(self._kv_cache_config.kv_cache_groups):
+            group_caches: dict[str, torch.Tensor] = {}
+            for layer_name in group_spec.layer_names:
+                if isinstance(kv_caches[layer_name], torch.Tensor):
+                    group_caches[layer_name] = kv_caches[layer_name]
+                else:
+                    group_caches[layer_name] = tuple(kv_caches[layer_name])
+            layout = KVCacheGroupLayout(
+                group_caches,
+                is_ascend_layout=self.is_ascend_layout,
+                expected_block_size=group_spec.kv_cache_spec.block_size,
+            )
             self.group_layouts[group_id] = layout
 
         self.store = self._create_fa_store(self.group_layouts, store_cores)
         self.fa_store = self.store
-        self.wa_store = self._create_wa_store(
-            self.group_layouts,
-            store_cores,
-        )
+        self.wa_store = self._create_wa_store(self.group_layouts, store_cores)
 
         if worker_cores:
             try:
@@ -1149,26 +786,29 @@ class UCMFAWAConnector(UCMDirectConnector):
             except Exception as e:
                 logger.warning(f"Failed to bind worker: {e}")
 
-    def _block_key(self, canonical_hash: bytes) -> bytes:
-        return self.request_hasher((b"fawa", canonical_hash))
-
     def _store_tensor_size_list(
         self,
         group_layouts: dict[int, KVCacheGroupLayout],
         group_ids: tuple[int, ...],
     ) -> list[int]:
+        """Build the per-tensor byte-size vector expected by UCM stores."""
+
         tensor_size_list: list[int] = []
         for group_id in group_ids:
             layout = group_layouts.get(group_id)
             if layout is None:
                 continue
-            repeat = self.group_tail_blocks[group_id]
-            if repeat is None:
-                repeat = 1
-            for segment_tokens in self.group_window_spans[group_id][:repeat]:
+            meta = self.group_metas[group_id]
+
+            if not meta.tail_tokens:
+                continue
+
+            segment_tokens = meta.tail_tokens // meta.tail_blocks
+
+            for _ in range(meta.tail_blocks):
                 segment_sizes = layout.segment_tensor_size_list(
                     segment_tokens,
-                    self.group_tensor_block_sizes[group_id],
+                    meta.token_block_size,
                 )
                 tensor_size_list.extend(segment_sizes)
         if not tensor_size_list:
@@ -1180,386 +820,146 @@ class UCMFAWAConnector(UCMDirectConnector):
             raise RuntimeError(f"Worker FAWA {group_label} layout is empty.")
         return tensor_size_list
 
-    def _select_rows(
-        self,
-        group_rows: KVCacheGroupRows,
-        group_ids: tuple[int, ...],
-    ) -> KVCacheGroupRows:
-        return [
-            tuple(list(group_row[group_id]) for group_id in group_ids)
-            for group_row in group_rows
-        ]
-
-    def _group_block_range(self, group_id: int, computed_end_token: int) -> range:
-        # The block row is determined by the logical token boundary, not by
-        # how many tensor blocks vLLM has already allocated.
-        if self.group_tail_blocks[group_id] is None:
-            canonical_block_idx = computed_end_token // self.hash_block_size - 1
-            return range(canonical_block_idx, canonical_block_idx + 1)
-
-        total_group_blocks = (
-            computed_end_token // self.group_token_block_sizes[group_id]
-        )
-        tail_blocks = self.group_tail_blocks[group_id]
-        # Some compressor-state groups need no window tail for a prefix hit.
-        if not tail_blocks:
-            return range(total_group_blocks, total_group_blocks)
-        start = max(0, total_group_blocks - tail_blocks)
-        return range(start, total_group_blocks)
-
-    def _expected_group_row_segments(self, group_id: int) -> int:
-        tail_blocks = self.group_tail_blocks[group_id]
-        return 1 if tail_blocks is None else int(tail_blocks)
-
-    def _block_index_to_segment(
-        self,
-        group_id: int,
-        group_block_idx: int,
-        block_id: int,
-        computed_end_token: Optional[int] = None,
-    ) -> KVCacheSegment:
-        if self.block_span_layout is None:
-            token_blocks_per_tensor_block = (
-                self.group_tensor_block_sizes[group_id]
-                // self.group_token_block_sizes[group_id]
-            )
-            return KVCacheSegment(
-                block_id=block_id,
-                offset=(group_block_idx % token_blocks_per_tensor_block)
-                * self.group_token_block_sizes[group_id],
-                length=self.group_token_block_sizes[group_id],
-            )
-        return self.block_span_layout.block_index_to_segment(
-            group_id,
-            group_block_idx,
-            block_id,
-        )
-
-    def _make_missing_segment(
-        self,
-        group_id: int,
-        group_block_idx: int,
-        computed_end_token: Optional[int] = None,
-    ) -> KVCacheSegment:
-        return KVCacheSegment(
-            block_id=-1,
-            offset=0,
-            length=self.group_token_block_sizes[group_id],
-        )
-
-    def _scratch_block_tensor_views(
-        self,
-        group_id: int,
-        block_pos: int,
-    ) -> list[torch.Tensor]:
-        key = (group_id, block_pos)
-        scratch_views = self._window_scratch_views.get(key)
-        if scratch_views is None:
-            layout = self.group_layouts[group_id]
-            scratch_views = [
-                torch.empty_like(tensor)
-                for tensor in layout.extract_segment_tensor_views(
-                    [
-                        KVCacheSegment(
-                            block_id=0,
-                            offset=0,
-                            length=self._window_segment_length(group_id, block_pos),
-                        )
-                    ],
-                    self.group_tensor_block_sizes[group_id],
-                )
-            ]
-            self._window_scratch_views[key] = scratch_views
-        return scratch_views
-
-    def _scratch_block_addrs(self, group_id: int, block_pos: int) -> np.ndarray:
-        return np.asarray(
-            [
-                tensor.data_ptr()
-                for tensor in self._scratch_block_tensor_views(group_id, block_pos)
-            ],
-            dtype=np.uint64,
-        )
-
-    def _window_segment_length(self, group_id: int, block_pos: int) -> int:
-        spans = self.group_window_spans[group_id]
-        if not spans:
-            return self.group_token_block_sizes[group_id]
-        return spans[min(block_pos, len(spans) - 1)]
-
-    def _extract_group_addrs(
-        self,
-        group_rows: KVCacheGroupRows,
-        group_ids: tuple[int, ...],
-        scratch_for_missing: bool = False,
-    ) -> np.ndarray:
-        rows: list[np.ndarray] = []
-        for group_row in group_rows:
-            row_parts: list[np.ndarray] = []
-            for row_group_id, selected_ids in enumerate(group_row):
-                group_id = group_ids[row_group_id]
-                layout = self.group_layouts.get(group_id)
-                if layout is None:
-                    continue
-                if not selected_ids:
-                    continue
-                for block_pos, segment in enumerate(selected_ids):
-                    if segment.block_id < 0:
-                        if not scratch_for_missing:
-                            raise ValueError(
-                                f"KV cache group {group_id} block "
-                                f"position {block_pos} needs a scratch target."
-                            )
-                        row_parts.append(self._scratch_block_addrs(group_id, block_pos))
-                    else:
-                        row_parts.append(
-                            layout.extract_segment_addrs(
-                                [segment],
-                                self.group_tensor_block_sizes[group_id],
-                            ).reshape(-1)
-                        )
-            if not row_parts:
-                raise ValueError("KV cache pointer row is empty.")
-            rows.append(np.concatenate(row_parts).astype(np.uint64, copy=False))
-        if not rows:
-            return np.empty((0, 0), dtype=np.uint64)
-        return np.vstack(rows)
-
-    def _try_select_group_block_ids(
-        self,
-        allocated_group_block_ids: KVCacheGroupAllocation,
-        computed_end_token: int,
-        allow_null_tail: bool = False,
-    ) -> Optional[KVCacheGroupRow]:
-        selected: list[list[KVCacheSegment]] = []
-        for group_id in range(len(self.group_token_block_sizes)):
-            group_indices = self._group_block_range(group_id, computed_end_token)
-            group_selected: list[KVCacheSegment] = []
-            if group_id >= len(allocated_group_block_ids):
-                if group_indices:
-                    return None
-                selected.append(group_selected)
-                continue
-
-            group_blocks = allocated_group_block_ids[group_id]
-            for group_block_idx in group_indices:
-                if self.block_span_layout is not None:
-                    tensor_block_idx = self.block_span_layout.allocation_index(
-                        group_id,
-                        group_block_idx,
-                    )
-                else:
-                    tensor_block_idx = (
-                        group_block_idx
-                        * self.group_token_block_sizes[group_id]
-                        // self.group_tensor_block_sizes[group_id]
-                    )
-                if tensor_block_idx >= len(group_blocks):
-                    return None
-                block_id = group_blocks[tensor_block_idx]
-                if block_id < 0:
-                    # A skipped WA tail before the final external-hit boundary is
-                    # loaded into scratch, because only the final WA row is used.
-                    if allow_null_tail and group_id in self.window_group_ids:
-                        group_selected.append(
-                            self._make_missing_segment(
-                                group_id,
-                                group_block_idx,
-                                computed_end_token,
-                            )
-                        )
-                        continue
-                    raise ValueError(
-                        f"KV cache group {group_id} block index "
-                        f"{group_block_idx} maps to a null HBM block for "
-                        f"computed end token {computed_end_token}."
-                    )
-                group_selected.append(
-                    self._block_index_to_segment(
-                        group_id,
-                        group_block_idx,
-                        block_id,
-                        computed_end_token,
-                    )
-                )
-            expected_segments = self._expected_group_row_segments(group_id)
-            if len(group_selected) < expected_segments:
-                padding_start_idx = group_indices.start - (
-                    expected_segments - len(group_selected)
-                )
-                group_selected = [
-                    self._make_missing_segment(
-                        group_id,
-                        padding_start_idx + pad_idx,
-                        computed_end_token,
-                    )
-                    for pad_idx in range(expected_segments - len(group_selected))
-                ] + group_selected
-            selected.append(group_selected)
-        return tuple(selected)
-
-    def _record_allocated_group_block_ids(
-        self,
-        req_meta: FAWARequestMeta,
-        group_block_ids: tuple[list[int], ...] | None,
-        replace: bool = False,
-    ) -> None:
-        if group_block_ids is None:
-            return
-        # cached.new_block_ids contains only blocks allocated in this scheduler
-        # step. Append it for chunk prefill; replace it for resumed requests.
-        new_group_block_ids = tuple(list(group) for group in group_block_ids)
-        if replace or not req_meta.allocated_group_block_ids:
-            req_meta.allocated_group_block_ids = new_group_block_ids
-        else:
-            if len(req_meta.allocated_group_block_ids) != len(new_group_block_ids):
-                raise RuntimeError(
-                    "FAWA cached allocation update has mismatched group count: "
-                    f"current={len(req_meta.allocated_group_block_ids)}, "
-                    f"new={len(new_group_block_ids)}."
-                )
-            req_meta.allocated_group_block_ids = tuple(
-                current + new
-                for current, new in zip(
-                    req_meta.allocated_group_block_ids,
-                    new_group_block_ids,
-                )
-            )
-        self._record_ready_group_block_ids(req_meta)
-
-    def _replace_allocated_blocks(
-        self,
-        req_meta: FAWARequestMeta,
-        blocks: "KVCacheBlocks",
-    ) -> None:
-        req_meta.allocated_group_block_ids = tuple(
-            [-1 if block.is_null else block.block_id for block in group_blocks]
-            for group_blocks in blocks.blocks
-        )
-        self._record_ready_group_block_ids(req_meta)
-
-    def _summarize_request_meta(self, req_meta: FAWARequestMeta) -> dict[str, object]:
-        recorded_blocks = sorted(req_meta.group_block_ids)
-        recorded_range = (
-            (recorded_blocks[0], recorded_blocks[-1] + 1) if recorded_blocks else (0, 0)
-        )
-        sample_rows = {
-            block_idx: [
-                len(group_segments)
-                for group_segments in req_meta.group_block_ids[block_idx]
-            ]
-            for block_idx in recorded_blocks[:3]
-        }
-        if len(recorded_blocks) > 3:
-            last_block_idx = recorded_blocks[-1]
-            sample_rows[last_block_idx] = [
-                len(group_segments)
-                for group_segments in req_meta.group_block_ids[last_block_idx]
-            ]
-        return {
-            "ucm_blocks": len(req_meta.ucm_block_ids),
-            "hbm_hit_blocks": req_meta.hbm_hit_block_num,
-            "total_hit_blocks": req_meta.total_hit_block_num,
-            "num_token_ids": req_meta.num_token_ids,
-            "token_processed": req_meta.token_processed,
-            "store_block_cursor": req_meta.store_block_cursor,
-            "allocated_group_lens": [
-                len(group_blocks) for group_blocks in req_meta.allocated_group_block_ids
-            ],
-            "recorded_block_count": len(recorded_blocks),
-            "recorded_block_range": recorded_range,
-            "sample_row_segment_lens": sample_rows,
-        }
-
-    def _record_ready_group_block_ids(
-        self,
-        req_meta: FAWARequestMeta,
-    ) -> None:
-        allocated_group_block_ids = req_meta.allocated_group_block_ids
-        if not allocated_group_block_ids:
-            return
-        max_full_blocks = req_meta.num_token_ids // self.hash_block_size
-        start_block = self._get_contiguous_recorded_end_block(
-            req_meta,
-            0,
-            max_full_blocks,
-        )
-        # Continue from the first unrecorded canonical block. Later chunk
-        # prefill steps may append enough group blocks to complete more rows.
-        for canonical_block_idx in range(start_block, max_full_blocks):
-            allow_null_tail = canonical_block_idx < req_meta.total_hit_block_num - 1
-            group_block_ids = self._try_select_group_block_ids(
-                allocated_group_block_ids,
-                (canonical_block_idx + 1) * self.hash_block_size,
-                allow_null_tail=allow_null_tail,
-            )
-            if group_block_ids is None:
-                break
-            req_meta.group_block_ids[canonical_block_idx] = group_block_ids
-
     def _lookup_external_hit_blocks(self, external_keys: list[bytes]) -> int:
+        """Find the longest reusable prefix present in both FA and WA stores."""
+
         if self.fa_store is None:
             raise RuntimeError("FA store is not initialized.")
         if self.wa_store is None:
             raise RuntimeError("WA store is not initialized.")
-        fa_hit_blocks = self.fa_store.lookup_on_prefix(external_keys) + 1
-        window_hit_blocks = self.wa_store.lookup_on_prefix(external_keys) + 1
-        return min(fa_hit_blocks, window_hit_blocks)
+        fa_hit_blocks = (
+            self._rank_consistency.lookup_on_prefix(self.fa_store, external_keys) + 1
+        )
+        if fa_hit_blocks <= 0:
+            return 0
+
+        # WA rows represent window boundary state, so they are not required to
+        # form a prefix. Search only inside the FA-contiguous hit range and use
+        # the latest boundary that exists.
+        wa_keys = external_keys[:fa_hit_blocks]
+        reverse_idx = self._rank_consistency.lookup_on_reverse(self.wa_store, wa_keys)
+        if reverse_idx < 0:
+            return 0
+        return reverse_idx + 1
+
+    def _prefetch_hit_key_hotness(
+        self,
+        fa_hbm_hit_keys: list[bytes],
+        all_hit_keys: list[bytes],
+    ) -> None:
+        """Best-effort GC hotness update for FAWA's two backing stores.
+
+        External FA keys are already touched by ``lookup_on_prefix``, so the
+        FA store only needs the local-HBM prefix that lookup did not inspect.
+        WA uses ``lookup_on_reverse``, which touches only the selected boundary;
+        update every reusable boundary key so sparse WA snapshots age together
+        with the corresponding FA prefix. Missing sparse WA files are harmless:
+        store ``prefetch`` is a hint and Posix simply ignores a failed ``utime``.
+        """
+
+        if self.fa_store is None:
+            raise RuntimeError("FA store is not initialized.")
+        if self.wa_store is None:
+            raise RuntimeError("WA store is not initialized.")
+
+        updates = (
+            ("FA", self.fa_store, fa_hbm_hit_keys),
+            ("WA", self.wa_store, all_hit_keys),
+        )
+        for label, store, keys in updates:
+            if not keys:
+                continue
+            try:
+                store.prefetch(keys)
+            except Exception as e:
+                # Prefetch is only a GC hotness hint. A failure must not turn a
+                # valid cache hit into a scheduler-side miss.
+                logger.warning(
+                    f"FAWA {label} hotness update failed. " f"{type(e).__name__}: {e}"
+                )
 
     def get_num_new_matched_tokens(
         self,
         request: "Request",
         num_computed_tokens: int,
     ) -> tuple[int, bool]:
-        if num_computed_tokens % self.hash_block_size != 0:
-            raise RuntimeError(
-                f"FAWA requires aligned computed tokens, got "
-                f"{num_computed_tokens} with block size {self.hash_block_size}."
-            )
-        hbm_hit_block_num = num_computed_tokens // self.hash_block_size
-        canonical_hashes = self.generate_hash(
-            self.hash_block_size, request.all_token_ids, self._seed
+        wa_hbm_hit_block_num = num_computed_tokens // self.hash_block_size
+        wa_computed_tokens = wa_hbm_hit_block_num * self.hash_block_size
+
+        if request.num_tokens <= self.persist_token_threshold:
+            return 0, False
+        skip_external_load = request.num_tokens <= (
+            wa_computed_tokens + self.load_tokens_threshold
         )
-
-        if self.persist_token_threshold > request.num_tokens:
+        if skip_external_load and wa_hbm_hit_block_num <= 0:
             return 0, False
 
-        external_keys = [
-            self._block_key(block_hash)
-            for block_hash in canonical_hashes[hbm_hit_block_num:]
-        ]
-        if not external_keys:
-            return 0, False
-
+        assert self.request_block_hasher is not None
         try:
-            external_hit_blocks = self._lookup_external_hit_blocks(external_keys)
+            canonical_hashes = self.request_block_hasher(request)
         except Exception as e:
-            external_hit_blocks = 0
             logger.error(
-                f"request {request.request_id} FAWA lookup error. "
-                f"{type(e).__name__}: {e}"
+                f"request {request.request_id} hash error. " f"{type(e).__name__}: {e}"
             )
+            return 0, False
+        fa_hbm_hit_keys = canonical_hashes[:wa_hbm_hit_block_num]
 
-        total_hit_block_num = hbm_hit_block_num + external_hit_blocks
-        external_hit_tokens = external_hit_blocks * self.hash_block_size
-        num_total_hit_tokens = total_hit_block_num * self.hash_block_size
+        # Even when no external load is worthwhile, the local-HBM prefix is a
+        # cache hit and should remain hot in both FAWA backing stores.
+        if skip_external_load:
+            self._prefetch_hit_key_hotness(fa_hbm_hit_keys, fa_hbm_hit_keys)
+            return 0, False
+
+        external_keys = canonical_hashes[wa_hbm_hit_block_num:]
+        if not external_keys:
+            self._prefetch_hit_key_hotness(fa_hbm_hit_keys, fa_hbm_hit_keys)
+            return 0, False
+
+        external_hit_blocks = 0
+        if external_keys:
+            try:
+                external_hit_blocks = self._lookup_external_hit_blocks(external_keys)
+            except Exception as e:
+                logger.error(
+                    f"request {request.request_id} FAWA lookup error. "
+                    f"{type(e).__name__}: {e}"
+                )
+                self._record_counter("connector_lookup_errors_total")
+
+        total_hit_block_num = wa_hbm_hit_block_num + external_hit_blocks
+        self._prefetch_hit_key_hotness(
+            fa_hbm_hit_keys,
+            canonical_hashes[:total_hit_block_num],
+        )
+        num_total_hit_tokens = (
+            external_hit_blocks * self.hash_block_size + wa_computed_tokens
+        )
+        external_hit_tokens = num_total_hit_tokens - num_computed_tokens
+
         if num_total_hit_tokens == request.num_tokens:
             external_hit_tokens -= 1
 
+        if external_hit_blocks * self.hash_block_size <= self.load_tokens_threshold:
+            external_hit_tokens = 0
+            num_total_hit_tokens = num_computed_tokens
+            # let wa_hbm_hit_block_num equal to total_hit_block_num,so no need to load external blocks
+            wa_hbm_hit_block_num += external_hit_blocks
+
+        # TODO :for HMA, vllm should offer all kv group's prefix block hits，so that more FA blocks can be reused
         self.requests_meta[request.request_id] = FAWARequestMeta(
             ucm_block_ids=canonical_hashes,
-            hbm_hit_block_num=hbm_hit_block_num,
+            hbm_hit_block_num=wa_hbm_hit_block_num,
             total_hit_block_num=total_hit_block_num,
-            num_token_ids=len(request.all_token_ids),
+            num_token_ids=request.num_tokens,
             token_processed=num_total_hit_tokens,
-            store_block_cursor=total_hit_block_num,
         )
-
         logger.info_once(
             f"FAWA request_id: {request.request_id}, "
-            f"total_blocks_num: {len(canonical_hashes)}, "
-            f"hit hbm: {hbm_hit_block_num}, "
-            f"hit external: {external_hit_blocks}"
+            f"total tokens: {request.num_tokens}, "
+            f"hit hbm tokens: {num_computed_tokens}, "
+            f"hit external tokens: {external_hit_tokens}, "
+            f"load blocks: {total_hit_block_num - wa_hbm_hit_block_num}, "
+            f"dump blocks: {len(canonical_hashes) - total_hit_block_num}, "
         )
         return external_hit_tokens, False
 
@@ -1569,172 +969,182 @@ class UCMFAWAConnector(UCMDirectConnector):
         blocks: "KVCacheBlocks",
         num_external_tokens: int,
     ) -> None:
-        req_meta = self.requests_meta.get(request.request_id)
-        if req_meta is None:
-            return
+        pass
 
-        try:
-            self._replace_allocated_blocks(req_meta, blocks)
-            logger.info(
-                f"request {request.request_id} FAWA req_meta after "
-                f"replace_allocated_blocks: "
-                f"{self._summarize_request_meta(req_meta)}"
-            )
-        except Exception as e:
-            logger.error(
-                f"request {request.request_id} record FAWA HBM-aligned "
-                f"block ids failed. {type(e).__name__}: {e}"
-            )
-            raise
-
-    def _make_dispatch_meta(
+    def _slice_group_block_ids(
         self,
-        request_id: str,
+        group_id: int,
+        group_block_ids: list[int],
+        window_boundary_token_idx: np.ndarray,
+        fetch_wa_block_wise: bool,
+    ) -> list[int]:
+        """Select the physical group blocks needed for FA or WA store rows."""
+
+        is_window_group = group_id in self.window_group_ids
+        group_meta = self.group_metas[group_id]
+        if is_window_group:
+            if not group_meta.tail_tokens:
+                return []
+            if fetch_wa_block_wise:
+                # Block-wise WA stores one tail row for each canonical boundary.
+                boundary_block_indices = (
+                    window_boundary_token_idx // group_meta.token_block_size
+                )
+                offsets = np.arange(group_meta.tail_blocks - 1, -1, -1, dtype=np.int64)
+                boundary_block_indices = (
+                    boundary_block_indices[:, None] - offsets[None, :]
+                )
+                return np.array(group_block_ids)[
+                    boundary_block_indices.flatten()
+                ].tolist()
+            else:
+                # Chunk-wise WA stores only the tail for the final boundary.
+                boundary_block_idx = (
+                    window_boundary_token_idx[-1] // group_meta.token_block_size
+                ) + 1
+                return group_block_ids[
+                    boundary_block_idx - group_meta.tail_blocks : boundary_block_idx
+                ]
+        # FA rows map each canonical hash block to its containing group block.
+        return np.array(group_block_ids)[
+            window_boundary_token_idx // group_meta.token_block_size
+        ].tolist()
+
+    def _generate_dispatch_meta(
+        self,
         req_meta: FAWARequestMeta,
         new_tokens: int,
-        need_load: bool,
+        new_vllm_block_ids: tuple[list[int], ...],
+        need_load: bool = True,
     ) -> FAWARequestDispatchMeta:
-        load_keys: list[bytes] = []
-        load_group_block_ids: KVCacheGroupRows = []
-        if need_load and req_meta.total_hit_block_num > req_meta.hbm_hit_block_num:
-            # External-hit loads must have a complete contiguous plan; vLLM has
-            # already treated these tokens as computed.
-            load_end_block = self._get_contiguous_recorded_end_block(
-                req_meta,
-                req_meta.hbm_hit_block_num,
-                req_meta.total_hit_block_num,
-            )
-            if load_end_block < req_meta.total_hit_block_num:
-                raise RuntimeError(
-                    f"request {request_id} FAWA load plan is missing group block "
-                    f"ids for canonical blocks "
-                    f"[{load_end_block}, {req_meta.total_hit_block_num})."
-                )
-            load_keys, load_group_block_ids = self._block_keys_and_rows(
-                req_meta,
-                range(req_meta.hbm_hit_block_num, load_end_block),
-            )
+        """Build one request's worker-side load and dump plan.
 
-        dump_keys: list[bytes] = []
-        dump_group_block_ids: KVCacheGroupRows = []
+        Canonical hash blocks are split into:
+
+        - `[0, hbm_hit_block_num)`: already resident in local HBM.
+        - `[hbm_hit_block_num, total_hit_block_num)`: external hit to load.
+        - `[token_processed, token_processed + new_tokens)`: newly computed
+          tokens whose complete canonical blocks should be dumped.
+
+        `new_vllm_block_ids` is appended to the accumulated per-group block
+        rows before slicing FA/WA rows for this step.
+        """
+
+        if not req_meta.vllm_block_ids:
+            req_meta.vllm_block_ids = tuple([] for _ in self.group_metas)
+        if len(new_vllm_block_ids) != len(req_meta.vllm_block_ids):
+            raise RuntimeError(
+                f"FAWA dispatch metadata expected {len(req_meta.vllm_block_ids)} "
+                f"KV cache groups, got {len(new_vllm_block_ids)}."
+            )
+        for group_id, block_ids in enumerate(new_vllm_block_ids):
+            req_meta.vllm_block_ids[group_id].extend(block_ids)
+
+        all_group_block_ids = req_meta.vllm_block_ids
+        load_block_keys: list[bytes] = []
+        load_start, load_end = 0, 0
+        load_vllm_block_ids: list[list[int]] = []
+        if need_load and req_meta.total_hit_block_num > req_meta.hbm_hit_block_num:
+            load_start = req_meta.hbm_hit_block_num
+            load_end = req_meta.total_hit_block_num
+            load_block_keys = req_meta.ucm_block_ids[load_start:load_end]
+            window_boundary_token_idx = (
+                np.arange(load_start + 1, load_end + 1) * self.hash_block_size - 1
+            )
+            for group_id, group_block_ids in enumerate(all_group_block_ids):
+                load_vllm_block_ids.append(
+                    self._slice_group_block_ids(
+                        group_id,
+                        group_block_ids,
+                        window_boundary_token_idx,
+                        fetch_wa_block_wise=False,  # always fetch the full WA tail on load to simplify logic
+                    )
+                )
+
         computed_end_token = min(
             req_meta.num_token_ids,
             req_meta.token_processed + new_tokens,
         )
-        if req_meta.store_block_cursor < req_meta.num_token_ids // self.hash_block_size:
-            start_block = req_meta.store_block_cursor
-            candidate_end_block = computed_end_token // self.hash_block_size
-            # Store only full canonical blocks whose group rows are available.
-            end_block = self._get_contiguous_recorded_end_block(
-                req_meta,
-                start_block,
-                candidate_end_block,
+        dump_start = max(
+            req_meta.total_hit_block_num,
+            req_meta.token_processed // self.hash_block_size,
+        )
+        dump_end = computed_end_token // self.hash_block_size
+        dump_block_keys: list[bytes] = []
+        dump_vllm_block_ids: list[list[int]] = []
+        if dump_end > dump_start:
+            dump_block_keys = req_meta.ucm_block_ids[dump_start:dump_end]
+            window_boundary_token_idx = (
+                np.arange(dump_start + 1, dump_end + 1) * self.hash_block_size - 1
             )
-            if end_block > start_block:
-                dump_keys, dump_group_block_ids = self._block_keys_and_rows(
-                    req_meta,
-                    range(start_block, end_block),
+            for group_id, group_block_ids in enumerate(all_group_block_ids):
+                dump_vllm_block_ids.append(
+                    self._slice_group_block_ids(
+                        group_id,
+                        group_block_ids,
+                        window_boundary_token_idx,
+                        fetch_wa_block_wise=self.wa_dump_block_wise,
+                    )
                 )
-                req_meta.store_block_cursor = end_block
-            req_meta.token_processed = computed_end_token
+        req_meta.token_processed = computed_end_token
 
         return FAWARequestDispatchMeta(
-            (load_keys, load_group_block_ids),
-            (dump_keys, dump_group_block_ids),
+            load_keys=load_block_keys,
+            load_hash_start=load_start,
+            load_hash_end=load_end,
+            load_vllm_block_ids=tuple(load_vllm_block_ids),
+            dump_keys=dump_block_keys,
+            dump_hash_start=dump_start,
+            dump_hash_end=dump_end,
+            dump_vllm_block_ids=tuple(dump_vllm_block_ids),
         )
-
-    def _get_contiguous_recorded_end_block(
-        self,
-        req_meta: FAWARequestMeta,
-        start_block: int,
-        stop_block: int,
-    ) -> int:
-        end_block = start_block
-        for block_idx in range(start_block, stop_block):
-            if block_idx not in req_meta.group_block_ids:
-                break
-            end_block = block_idx + 1
-        return end_block
-
-    def _block_keys_and_rows(
-        self,
-        req_meta: FAWARequestMeta,
-        block_indices: range,
-    ) -> tuple[list[bytes], KVCacheGroupRows]:
-        indices = list(block_indices)
-        return (
-            [self._block_key(req_meta.ucm_block_ids[idx]) for idx in indices],
-            [req_meta.group_block_ids[idx] for idx in indices],
-        )
-
-    @staticmethod
-    def _scheduled_cached_new_block_ids(
-        cached,
-        index: int,
-    ) -> tuple[list[int], ...] | None:
-        if index >= len(cached.new_block_ids):
-            return None
-        return cached.new_block_ids[index]
 
     def build_connector_meta(
         self, scheduler_output: SchedulerOutput
-    ) -> KVConnectorMetadata:
+    ) -> UCMFAWAConnectorMetadata:
         requests_dispatch_meta: dict[str, FAWARequestDispatchMeta] = {}
-
+        # New requests may need both external-prefix load and new-block dump.
         for request in scheduler_output.scheduled_new_reqs:
-            req_meta = self.requests_meta.get(request.req_id)
+            request_id, vllm_block_ids = request.req_id, request.block_ids
+            req_meta = self.requests_meta.get(request_id)
             if req_meta:
-                requests_dispatch_meta[request.req_id] = self._make_dispatch_meta(
-                    request.req_id,
+                requests_dispatch_meta[request_id] = self._generate_dispatch_meta(
                     req_meta,
-                    scheduler_output.num_scheduled_tokens[request.req_id],
-                    True,
+                    scheduler_output.num_scheduled_tokens[request_id],
+                    tuple(vllm_block_ids),
                 )
 
-        cached = scheduler_output.scheduled_cached_reqs
-        for i, request_id in enumerate(cached.req_ids):
+        scheduled_cached_reqs = scheduler_output.scheduled_cached_reqs
+        for i, request_id in enumerate(scheduled_cached_reqs.req_ids):
             req_meta = self.requests_meta.get(request_id)
-            if not req_meta:
-                continue
-            resumed = request_id in cached.resumed_req_ids
-            # Running chunk-prefill requests receive later allocations through
-            # scheduled_cached_reqs.new_block_ids, not update_state_after_alloc().
-            self._record_allocated_group_block_ids(
-                req_meta,
-                self._scheduled_cached_new_block_ids(cached, i),
-                replace=resumed,
-            )
-            requests_dispatch_meta[request_id] = self._make_dispatch_meta(
-                request_id,
-                req_meta,
-                scheduler_output.num_scheduled_tokens[request_id],
-                resumed,
-            )
+            if req_meta:
+                new_block_ids = scheduled_cached_reqs.new_block_ids[i]
+                if new_block_ids is None:
+                    new_block_ids = tuple([] for _ in self.group_metas)
+                else:
+                    new_block_ids = tuple(new_block_ids)
+                if hasattr(scheduled_cached_reqs, "resumed_from_preemption"):
+                    resumed_from_preemption = (
+                        scheduled_cached_reqs.resumed_from_preemption[i]
+                    )
+                else:
+                    resumed_from_preemption = (
+                        request_id in scheduled_cached_reqs.resumed_req_ids
+                    )
+                if resumed_from_preemption:
+                    req_meta.vllm_block_ids = tuple([] for _ in self.group_metas)
+                requests_dispatch_meta[request_id] = self._generate_dispatch_meta(
+                    req_meta,
+                    scheduler_output.num_scheduled_tokens[request_id],
+                    new_block_ids,
+                    need_load=resumed_from_preemption,
+                )
 
         for request_id in scheduler_output.finished_req_ids:
             self.requests_meta.pop(request_id, None)
 
-        return UCMFAWAConnectorMetadata(requests_dispatch_meta)
-
-    def update_connector_output(self, connector_output) -> None:
-        return None
-
-    def get_finished(
-        self,
-        finished_req_ids: set[str],
-    ) -> tuple[set[str] | None, set[str] | None]:
-        return None, None
-
-    def build_connector_worker_meta(self) -> KVConnectorWorkerMetadata | None:
-        return None
-
-    def request_finished_all_groups(
-        self,
-        request: "Request",
-        block_ids: tuple[list[int], ...],
-    ) -> tuple[bool, dict[str, object] | None]:
-        self.requests_meta.pop(request.request_id, None)
-        return False, None
+        preempted_req_ids = set(scheduler_output.preempted_req_ids or ())
+        return UCMFAWAConnectorMetadata(requests_dispatch_meta, preempted_req_ids)
 
     def _submit_load_task(
         self,
@@ -1743,59 +1153,51 @@ class UCMFAWAConnector(UCMDirectConnector):
         store: UcmKVStoreBaseV1,
         keys: list[bytes],
         ptrs: np.ndarray,
-        anchor_vllm_block_ids: set[int],
     ) -> FAWALoadTask:
+        """Submit one store load and retain block ids for failure reporting."""
+
         shard_indices = [0] * len(keys)
-        task = store.load_data(keys, shard_indices, ptrs)
+        task = self._rank_consistency.submit_load(
+            store,
+            {request_id: keys},
+            keys,
+            shard_indices,
+            ptrs,
+        )
         return FAWALoadTask(
             request_id=request_id,
             label=label,
             store=store,
             task=task,
             key_count=len(keys),
-            anchor_vllm_block_ids=anchor_vllm_block_ids,
         )
+
+    def _handle_load_err(self, request_id: str):
+        affected_block_ids = self._get_request_all_block_ids(request_id)
+        self._record_load_error(
+            "connector_load_wait_errors_total",
+            affected_block_ids,
+        )
+        self._connector_worker_meta.mark_failed(request_id)
 
     def _wait_load_task(
         self,
         load_task: FAWALoadTask,
-    ) -> None:
+    ) -> bool:
+        """Wait a load task and mark its anchor blocks invalid on failure."""
+
         try:
-            load_task.store.wait(load_task.task)
-            logger.info(
-                f"request {load_task.request_id} FAWA load "
-                f"task label={load_task.label} succeeded, "
-                f"blocks={load_task.key_count}"
-            )
+            self._rank_consistency.wait_load(load_task.task)
         except Exception as e:
             logger.error(
                 f"request {load_task.request_id} wait FAWA load "
                 f"task label={load_task.label} error. {type(e).__name__}: {e}"
             )
-            self._invalid_block_ids.update(load_task.anchor_vllm_block_ids)
-
-    @staticmethod
-    def _row_anchor_vllm_block_ids(group_rows: KVCacheGroupRows) -> set[int]:
-        anchor_block_ids: set[int] = set()
-        for group_row in group_rows:
-            if not group_row:
-                continue
-            # vLLM currently handles load failures by matching block ids
-            # against the first KV-cache group. Report that anchor block id
-            # even when a non-anchor FAWA group load fails.
-            for segment in group_row[0]:
-                if segment.block_id >= 0:
-                    anchor_block_ids.add(segment.block_id)
-        return anchor_block_ids
+            self._handle_load_err(load_task.request_id)
+            return False
+        return True
 
     def get_block_ids_with_load_errors(self) -> set[int]:
-        """
-        Get vLLM block IDs that failed to load through FAWA stores.
-
-        Returns:
-            Set of vLLM/HMA block IDs that encountered load errors.
-            Empty set if no load errors occurred.
-        """
         res = self._invalid_block_ids
         self._invalid_block_ids = set()
         return res
@@ -1806,23 +1208,103 @@ class UCMFAWAConnector(UCMDirectConnector):
         store: UcmKVStoreBaseV1,
         keys: list[bytes],
         ptrs: np.ndarray,
-        event_handle,
+        event_handle: int,
+        block_ids_by_request: dict[str, set[bytes]],
     ) -> FAWADumpTask:
+        """Submit one store dump for FA or WA rows."""
+
         shard_indices = [0] * len(keys)
-        task = store.dump_data(keys, shard_indices, ptrs, event_handle)
+        task = self._rank_consistency.submit_dump(
+            store,
+            block_ids_by_request,
+            keys,
+            shard_indices,
+            ptrs,
+            event_handle,
+        )
         return FAWADumpTask(
             label=label,
             store=store,
             task=task,
             key_count=len(keys),
+            event_handle=event_handle,
         )
 
-    def _wait_dump_task(self, dump_task: FAWADumpTask) -> None:
-        dump_task.store.wait(dump_task.task)
-        logger.info(
-            f"FAWA dump task label={dump_task.label} succeeded, "
-            f"blocks={dump_task.key_count}"
-        )
+    def _extract_fa_ptr(self, store_keys, hash_start, hash_end, candidate_vllm_ids):
+        """Build store pointer rows for full-attention cache segments."""
+
+        all_ptrs = []
+        for group_id in self.fa_group_ids:
+            layout = self.group_layouts.get(group_id)
+            if layout is None:
+                continue
+            meta = self.group_metas[group_id]
+            block_ids = np.asarray(candidate_vllm_ids[group_id], dtype=np.uint64)
+            # GPU layouts usually use one tensor block per hash block. Ascend
+            # layouts may pack several canonical hash blocks in one tensor
+            # block, so the row starts at a token offset inside the block.
+            if self.hash_block_size == meta.token_block_size:
+                group_ptrs = layout.extract_addrs(block_ids)
+            else:
+                token_start = np.arange(hash_start, hash_end) * self.hash_block_size
+                token_offsets = token_start % meta.token_block_size
+                group_ptrs = layout.extract_addrs_with_offsets(
+                    block_ids, meta.token_block_size, token_offsets
+                )
+            all_ptrs.append(group_ptrs)
+
+        return np.concatenate(all_ptrs, axis=1)
+
+    def _extract_wa_ptr(self, store_keys, vllm_ids):
+        """Build store pointer rows for window-attention tail segments."""
+
+        all_ptrs = []
+        for group_id in self.window_group_ids:
+            layout = self.group_layouts.get(group_id)
+            if layout is None:
+                continue
+            meta = self.group_metas[group_id]
+            if not meta.tail_tokens:
+                continue
+
+            block_ids = np.asarray(vllm_ids[group_id], dtype=np.uint64)
+            if meta.tail_blocks == 1 and meta.token_block_size > meta.tail_tokens:
+                # A short tail stored inside a larger group block starts near
+                # the end of the physical tensor block.
+                token_offsets = np.ones_like(block_ids) * (
+                    meta.token_block_size - meta.tail_tokens
+                )
+                group_ptrs = layout.extract_addrs_with_offsets(
+                    block_ids, meta.token_block_size, token_offsets
+                )
+            else:
+                token_offsets = np.zeros_like(block_ids)
+                group_ptrs = layout.extract_addrs(block_ids)
+                # Multi-block WA tails are flattened into one store row per
+                # canonical boundary key.
+                group_ptrs = group_ptrs.reshape(len(store_keys), -1)
+
+            all_ptrs.append(group_ptrs)
+
+        return np.concatenate(all_ptrs, axis=1)
+
+    def _get_request_all_block_ids(self, request_id: str) -> set[int]:
+        """Get all VLLM block ids referenced by one request's load and dump plan."""
+        metadata = self._get_connector_metadata()
+        request = metadata.request_meta.get(request_id, None)
+        if request is None:
+            return set()
+        all_group_vllm_block_ids = {
+            block_id
+            for block_ids in request.load_vllm_block_ids
+            for block_id in block_ids
+        }
+        all_group_vllm_block_ids |= {
+            block_id
+            for block_ids in request.dump_vllm_block_ids
+            for block_id in block_ids
+        }
+        return all_group_vllm_block_ids
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
         metadata = self._get_connector_metadata()
@@ -1831,279 +1313,473 @@ class UCMFAWAConnector(UCMDirectConnector):
 
         tasks: list[FAWALoadTask] = []
         for request_id, request in metadata.request_meta.items():
-            keys, group_rows = request.load_block_ids
-            if not keys:
+            if not request.load_keys:
                 continue
+
             try:
                 if self.fa_store is None:
                     raise RuntimeError("FA store is not initialized.")
-                # FA groups are loaded for every external-hit canonical block.
-                fa_ptrs = self._extract_group_addrs(
-                    self._select_rows(group_rows, self.fa_group_ids),
-                    self.fa_group_ids,
-                )
-                tasks.append(
-                    self._submit_load_task(
-                        request_id,
-                        "FA",
-                        self.fa_store,
-                        keys,
-                        fa_ptrs,
-                        self._row_anchor_vllm_block_ids(group_rows),
-                    )
-                )
-
                 if self.wa_store is None:
                     raise RuntimeError("WA store is not initialized.")
+
+                # FA groups are loaded for every external-hit canonical block.
+                fa_ptrs = self._extract_fa_ptr(
+                    request.load_keys,
+                    request.load_hash_start,
+                    request.load_hash_end,
+                    request.load_vllm_block_ids,
+                )
+                fa_task = self._submit_load_task(
+                    request_id,
+                    "FA",
+                    self.fa_store,
+                    request.load_keys,
+                    fa_ptrs,
+                )
+                tasks.append(fa_task)
+
                 # WA groups only need the final matched boundary.
-                window_keys = keys[-1:]
-                window_rows = self._select_rows(group_rows[-1:], self.window_group_ids)
-                window_ptrs = self._extract_group_addrs(
-                    window_rows,
-                    self.window_group_ids,
-                    scratch_for_missing=True,
+                window_keys = request.load_keys[-1:]
+                window_ptrs = self._extract_wa_ptr(
+                    window_keys,
+                    request.load_vllm_block_ids,
                 )
-                tasks.append(
-                    self._submit_load_task(
-                        request_id,
-                        "WA",
-                        self.wa_store,
-                        window_keys,
-                        window_ptrs,
-                        self._row_anchor_vllm_block_ids(group_rows[-1:]),
-                    )
+                wa_task = self._submit_load_task(
+                    request_id,
+                    "WA",
+                    self.wa_store,
+                    window_keys,
+                    window_ptrs,
                 )
+                tasks.append(wa_task)
             except Exception as e:
                 logger.error(
                     f"request {request_id} submit FAWA load task "
                     f"error. {type(e).__name__}: {e}"
                 )
-                self._invalid_block_ids.update(
-                    self._row_anchor_vllm_block_ids(group_rows)
-                )
+                self._handle_load_err(request_id)
 
+        self._wait_all_load_task(tasks)
+
+    def _wait_all_load_task(self, tasks: list[FAWALoadTask]):
+        load_bytes = 0
         for load_task in tasks:
-            self._wait_load_task(load_task)
+            if self._wait_load_task(load_task):
+                load_bytes += load_task.key_count * self.file_size[load_task.label]
+        if tasks:
+            ucmmetrics.update_stats({"load_bytes_total": load_bytes})
 
     def wait_for_save(self) -> None:
         metadata = self._get_connector_metadata()
         if not isinstance(metadata, UCMFAWAConnectorMetadata):
             raise RuntimeError(f"Unexpected FAWA metadata type: {type(metadata)}")
 
-        if self.tp_rank != 0:
-            return
+        if self.fa_store is None:
+            raise RuntimeError("FA store is not initialized.")
+        if self.wa_store is None:
+            raise RuntimeError("WA store is not initialized.")
 
-        try:
+        self._poll_completed_dump_tasks()
+
+        fa_dump_keys: list[bytes] = []
+        wa_dump_keys: list[bytes] = []
+        fa_ptr_rows: list[np.ndarray] = []
+        wa_ptr_rows: list[np.ndarray] = []
+        dump_request_ids: tuple[str] = ()
+        fa_dump_blocks_by_request: dict[str, set[bytes]] = {}
+        wa_dump_blocks_by_request: dict[str, set[bytes]] = {}
+        save_bytes = 0
+        if self.tp_size > 1:
+            # Split FA rows by canonical block index. Block-wise WA follows the same
+            # TP key slice; chunk-wise WA assigns one final boundary per request.
+            wa_dump_ring_idx = 0
+            for request_id, request in metadata.request_meta.items():
+                if not request.dump_keys:
+                    continue
+                dump_request_ids += (request_id,)
+                num_keys = len(request.dump_keys)
+                tp_block_start = num_keys * self.tp_rank // self.tp_size
+                tp_block_end = num_keys * (self.tp_rank + 1) // self.tp_size
+                tp_dump_keys = request.dump_keys[tp_block_start:tp_block_end]
+                if tp_dump_keys:
+                    fa_dump_blocks_by_request[request_id] = set(tp_dump_keys)
+                    fa_dump_vllm_block_ids = tuple(
+                        (
+                            group_block_ids[tp_block_start:tp_block_end]
+                            if group_id in self.fa_group_ids
+                            else group_block_ids
+                        )
+                        for group_id, group_block_ids in enumerate(
+                            request.dump_vllm_block_ids
+                        )
+                    )
+
+                    fa_dump_keys.extend(tp_dump_keys)
+                    fa_ptr_rows.append(
+                        self._extract_fa_ptr(
+                            tp_dump_keys,
+                            request.dump_hash_start + tp_block_start,
+                            request.dump_hash_start + tp_block_end,
+                            fa_dump_vllm_block_ids,
+                        )
+                    )
+                if self.wa_dump_block_wise:
+                    if tp_dump_keys:
+                        wa_dump_blocks_by_request[request_id] = set(tp_dump_keys)
+                        wa_dump_vllm_block_ids = tuple(
+                            (
+                                group_block_ids[
+                                    tp_block_start
+                                    * self.group_metas[
+                                        group_id
+                                    ].tail_blocks : tp_block_end
+                                    * self.group_metas[group_id].tail_blocks
+                                ]
+                                if group_id in self.window_group_ids
+                                else group_block_ids
+                            )
+                            for group_id, group_block_ids in enumerate(
+                                request.dump_vllm_block_ids
+                            )
+                        )
+                        wa_dump_keys.extend(tp_dump_keys)
+                        wa_ptr_rows.append(
+                            self._extract_wa_ptr(
+                                tp_dump_keys,
+                                wa_dump_vllm_block_ids,
+                            )
+                        )
+                elif wa_dump_ring_idx % self.tp_size == self.tp_rank:
+                    request_wa_dump_keys = request.dump_keys[-1:]
+                    wa_dump_blocks_by_request[request_id] = set(request_wa_dump_keys)
+                    wa_dump_keys.extend(request_wa_dump_keys)
+                    wa_ptr_rows.append(
+                        self._extract_wa_ptr(
+                            request_wa_dump_keys,
+                            request.dump_vllm_block_ids,
+                        )
+                    )
+                wa_dump_ring_idx += 1
+        else:
+            for request_id, request in metadata.request_meta.items():
+                if not request.dump_keys:
+                    continue
+                dump_request_ids += (request_id,)
+                fa_dump_blocks_by_request[request_id] = set(request.dump_keys)
+                fa_dump_keys.extend(request.dump_keys)
+                fa_ptr_rows.append(
+                    self._extract_fa_ptr(
+                        request.dump_keys,
+                        request.dump_hash_start,
+                        request.dump_hash_end,
+                        request.dump_vllm_block_ids,
+                    )
+                )
+                if self.wa_dump_block_wise:
+                    wa_dump_blocks_by_request[request_id] = set(request.dump_keys)
+                    wa_dump_keys.extend(request.dump_keys)
+                    wa_ptr_rows.append(
+                        self._extract_wa_ptr(
+                            request.dump_keys,
+                            request.dump_vllm_block_ids,
+                        )
+                    )
+                else:
+                    request_wa_dump_keys = request.dump_keys[-1:]
+                    wa_dump_blocks_by_request[request_id] = set(request_wa_dump_keys)
+                    wa_dump_keys.extend(request_wa_dump_keys)
+                    wa_ptr_rows.append(
+                        self._extract_wa_ptr(
+                            request_wa_dump_keys,
+                            request.dump_vllm_block_ids,
+                        )
+                    )
+
+        if fa_dump_keys:
             event_handle = self._get_dump_event_handle()
-            if self.fa_store is None:
-                raise RuntimeError("FA store is not initialized.")
-            if self.wa_store is None:
-                raise RuntimeError("WA store is not initialized.")
+            fa_ptrs = np.vstack(fa_ptr_rows)
+            try:
+                fa_dump_task = self._submit_dump_task(
+                    "FA",
+                    self.fa_store,
+                    fa_dump_keys,
+                    fa_ptrs,
+                    event_handle,
+                    fa_dump_blocks_by_request,
+                )
+                self.tp_dump_tasks.setdefault(dump_request_ids, []).append(fa_dump_task)
+                save_bytes += fa_dump_task.key_count * self.file_size["FA"]
+            except Exception as e:
+                self.device.destroy_event_handle(event_handle)
+                logger.error(f"dump FAWA kv cache failed. {type(e).__name__}: {e}")
+                self._record_counter("connector_dump_submit_errors_total")
+        if wa_dump_keys:
+            event_handle = self._get_dump_event_handle()
+            window_ptrs = np.vstack(wa_ptr_rows)
+            try:
+                wa_dump_task = self._submit_dump_task(
+                    "WA",
+                    self.wa_store,
+                    wa_dump_keys,
+                    window_ptrs,
+                    event_handle,
+                    wa_dump_blocks_by_request,
+                )
+                self.tp_dump_tasks.setdefault(dump_request_ids, []).append(wa_dump_task)
+                save_bytes += wa_dump_task.key_count * self.file_size["WA"]
+            except Exception as e:
+                self.device.destroy_event_handle(event_handle)
+                logger.error(f"dump FAWA WA kv cache failed. {type(e).__name__}: {e}")
+                self._record_counter("connector_dump_submit_errors_total")
+        if fa_dump_keys or wa_dump_keys:
+            ucmmetrics.update_stats({"save_bytes_total": save_bytes})
 
-            for request in metadata.request_meta.values():
-                req_keys, req_group_rows = request.dump_block_ids
-                if not req_keys:
+    def _poll_completed_dump_tasks(self) -> None:
+        """Reap completed FAWA dump tasks without waiting for in-flight tasks."""
+
+        for request_ids, dump_tasks in list(self.tp_dump_tasks.items()):
+            in_flight_tasks = []
+            for dump_task in dump_tasks:
+                task_finished = False
+
+                try:
+                    task_finished = dump_task.store.check(dump_task.task)
+                except Exception as e:
+                    logger.error(
+                        "Check FAWA dump task failed; external cache may miss. "
+                        f"label={dump_task.label}, keys={dump_task.key_count}, "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    in_flight_tasks.append(dump_task)
                     continue
 
-                tasks: list[FAWADumpTask] = []
-                # Dump the same canonical keys to both stores with different rows.
-                fa_ptrs = self._extract_group_addrs(
-                    self._select_rows(req_group_rows, self.fa_group_ids),
-                    self.fa_group_ids,
-                )
-                tasks.append(
-                    self._submit_dump_task(
-                        "FA",
-                        self.fa_store,
-                        req_keys,
-                        fa_ptrs,
-                        event_handle,
-                    )
-                )
-                window_ptrs = self._extract_group_addrs(
-                    self._select_rows(req_group_rows, self.window_group_ids),
-                    self.window_group_ids,
-                    scratch_for_missing=True,
-                )
-                tasks.append(
-                    self._submit_dump_task(
-                        "WA",
-                        self.wa_store,
-                        req_keys,
-                        window_ptrs,
-                        event_handle,
-                    )
-                )
-                for dump_task in tasks:
-                    self._wait_dump_task(dump_task)
-        except Exception as e:
-            logger.error(f"dump FAWA kv cache failed. {type(e).__name__}: {e}")
+                if task_finished:
+                    try:
+                        self._rank_consistency.wait_dump(dump_task.task)
+                    except Exception as e:
+                        logger.error(
+                            "Best-effort FAWA dump task failed; external cache may miss. "
+                            f"label={dump_task.label}, keys={dump_task.key_count}, "
+                            f"{type(e).__name__}: {e}"
+                        )
+                    finally:
+                        self.device.destroy_event_handle(dump_task.event_handle)
+                else:
+                    in_flight_tasks.append(dump_task)
 
-
-class UCMAscendFAWAConnector(UCMFAWAConnector):
-    """Ascend FAWA connector with segmented tensor KV block mapping."""
-
-    def _create_block_span_layout(self) -> Optional[FAWABlockSpanLayout]:
-        return FAWABlockSpanLayout(self._kv_cache_config, self.fa_group_ids)
-
-    def _get_hash_block_size(self) -> int:
-        if self.block_span_layout is None:
-            raise RuntimeError("Ascend FAWA connector requires block span layout.")
-        return self.block_span_layout.hash_block_size
-
-    def _get_group_token_block_sizes(self) -> tuple[int, ...]:
-        if self.block_span_layout is None:
-            raise RuntimeError("Ascend FAWA connector requires block span layout.")
-        self._ascend_layout = self.block_span_layout.is_ascend
-        group_token_block_sizes = self.block_span_layout.group_token_block_sizes
-        self._validate_group_token_block_sizes(group_token_block_sizes)
-        return group_token_block_sizes
-
-    def _get_group_tensor_block_sizes(self) -> tuple[int, ...]:
-        if self.block_span_layout is None:
-            raise RuntimeError("Ascend FAWA connector requires block span layout.")
-        return self.block_span_layout.group_tensor_block_sizes
-
-    def _ascend_window_tail_tokens(self, group_id: int) -> Optional[int]:
-        group_spec = self._kv_cache_config.kv_cache_groups[group_id]
-        window_tokens = FAWABlockSpanLayout.group_window_tokens(group_spec)
-        if window_tokens is None or self.block_span_layout.is_swa_group(group_id):
-            return window_tokens
-        compress_ratio = self.block_span_layout.state_compress_ratio(group_id)
-        if compress_ratio is None:
-            return window_tokens
-        return max(0, window_tokens - compress_ratio)
-
-    def _get_group_tail_blocks(self) -> tuple[Optional[int], ...]:
-        tail_blocks: list[Optional[int]] = [None] * len(self.group_token_block_sizes)
-        for group_id in self.window_group_ids:
-            group_token_block_size = self.group_token_block_sizes[group_id]
-            window_tail_tokens = self._ascend_window_tail_tokens(group_id)
-            if window_tail_tokens is None:
-                tail_blocks[group_id] = self.hash_block_size // group_token_block_size
-            elif window_tail_tokens == 0:
-                tail_blocks[group_id] = 0
-            elif self.block_span_layout.is_swa_group(group_id):
-                tail_blocks[group_id] = max(
-                    1,
-                    math.ceil(window_tail_tokens / group_token_block_size),
-                )
+            if in_flight_tasks:
+                self.tp_dump_tasks[request_ids] = in_flight_tasks
             else:
-                tail_blocks[group_id] = math.ceil(
-                    window_tail_tokens / group_token_block_size
-                )
-        return tuple(tail_blocks)
+                self.tp_dump_tasks.pop(request_ids, None)
 
-    def _get_group_window_spans(self) -> tuple[tuple[int, ...], ...]:
-        spans: list[tuple[int, ...]] = []
-        for group_id, tail_blocks in enumerate(self.group_tail_blocks):
-            if tail_blocks is None:
-                spans.append((self.group_token_block_sizes[group_id],))
-                continue
-            if tail_blocks == 0:
-                spans.append(())
-                continue
-            window_tail_tokens = self._ascend_window_tail_tokens(group_id)
-            if window_tail_tokens is None or self.block_span_layout.is_swa_group(
-                group_id
-            ):
-                spans.append((self.group_token_block_sizes[group_id],) * tail_blocks)
-                continue
-            group_token_block_size = self.group_token_block_sizes[group_id]
-            group_spans: list[int] = []
-            while window_tail_tokens > 0:
-                segment_tokens = min(group_token_block_size, window_tail_tokens)
-                group_spans.append(segment_tokens)
-                window_tail_tokens -= segment_tokens
-            spans.append(tuple(reversed(group_spans)))
-        return tuple(spans)
+    def _drain_best_effort_dump_tasks(
+        self, request_ids: Optional[set[str]] = None
+    ) -> None:
+        """Best-effort wait for FAWA dump tasks.
 
-    def _group_block_range(self, group_id: int, computed_end_token: int) -> range:
-        if (
-            self.group_tail_blocks[group_id] is None
-            or self.group_tail_blocks[group_id] == 0
-            or self.block_span_layout.is_swa_group(group_id)
-        ):
-            return super()._group_block_range(group_id, computed_end_token)
+        Dump failures only mean the external cache may miss later. They must not
+        block vLLM from releasing HBM blocks, so failed tasks are logged and then
+        removed from tracking. If ``request_ids`` is None, drain every pending
+        task; otherwise drain only task batches containing one of those requests.
+        """
+        if request_ids is not None and not request_ids:
+            return
 
-        window_tail_tokens = self._ascend_window_tail_tokens(group_id)
-        if window_tail_tokens is None:
-            return super()._group_block_range(group_id, computed_end_token)
-        if window_tail_tokens == 0:
-            return range(0, 0)
+        finished_chunk_req_ids = []
+        for chunk_request_ids, dump_tasks in self.tp_dump_tasks.items():
+            if request_ids is None or request_ids.intersection(chunk_request_ids):
+                finished_chunk_req_ids.append(chunk_request_ids)
+                for dump_task in dump_tasks:
+                    try:
+                        self._rank_consistency.wait_dump(dump_task.task)
+                    except Exception as e:
+                        logger.error(
+                            "Best-effort FAWA dump task failed; external cache may miss. "
+                            f"label={dump_task.label}, keys={dump_task.key_count}, "
+                            f"{type(e).__name__}: {e}"
+                        )
+                        self._record_counter("connector_dump_wait_errors_total")
+                    finally:
+                        self.device.destroy_event_handle(dump_task.event_handle)
 
-        group_token_block_size = self.group_token_block_sizes[group_id]
-        tail_end_token = computed_end_token
-        tail_start_token = max(0, tail_end_token - window_tail_tokens)
-        start_block = tail_start_token // group_token_block_size
-        end_block = math.ceil(tail_end_token / group_token_block_size)
-        return range(start_block, end_block)
+        for request_ids in finished_chunk_req_ids:
+            self.tp_dump_tasks.pop(request_ids, None)
 
-    def _block_index_to_segment(
+    def handle_preemptions(self, kv_connector_metadata: UCMFAWAConnectorMetadata):
+        # Worker side method
+        # This hook runs before the next load/forward can overwrite cache data.
+        # Drain all previous-step dumps, not only explicitly preempted requests:
+        # a running request's sliding-window blocks may also be recycled by the
+        # next allocate_slots() call.
+        self._drain_best_effort_dump_tasks()
+
+    def get_finished(
         self,
-        group_id: int,
-        group_block_idx: int,
-        block_id: int,
-        computed_end_token: Optional[int] = None,
-    ) -> KVCacheSegment:
-        segment = super()._block_index_to_segment(group_id, group_block_idx, block_id)
-        return self._trim_window_segment(
-            group_id,
-            group_block_idx,
-            computed_end_token,
-            segment,
-        )
+        finished_req_ids: set[str],
+    ) -> tuple[set[str] | None, set[str] | None]:
+        # Worker side method
+        self._drain_best_effort_dump_tasks(finished_req_ids)
+        self._rank_consistency.finish_dump(finished_req_ids)
+        return finished_req_ids, None
 
-    def _make_missing_segment(
+    def request_finished_all_groups(
         self,
-        group_id: int,
-        group_block_idx: int,
-        computed_end_token: Optional[int] = None,
-    ) -> KVCacheSegment:
-        segment = super()._make_missing_segment(group_id, group_block_idx)
-        return self._trim_window_segment(
-            group_id,
-            group_block_idx,
-            computed_end_token,
-            segment,
-        )
+        request: "Request",
+        block_ids: tuple[list[int], ...],
+    ) -> tuple[bool, dict[str, object] | None]:
+        # Scheduler side method
+        return True, None
 
-    def _trim_window_segment(
+
+class UCMFAWALiteConnector(UCMLiteConnector):
+    """UCM Lite connector for DS V4 (FAWA) models.
+
+    Logs the FAWA topology (UCMTraceMeta) and per-request block_hashes
+    (UCMTrace) for offline hit-rate simulation. No actual I/O.
+    """
+
+    @staticmethod
+    def _approximate_gcd(sizes: list[int], lb: int) -> int:
+        best_d, best_pad = lb, float("inf")
+        hi = max(sizes) if sizes else lb
+        for d in range(lb, hi + 1):
+            pad = sum(-(-s // d) * d - s for s in sizes)
+            if pad < best_pad:
+                best_pad, best_d = pad, d
+        return best_d
+
+    @classmethod
+    def _compute_fawa_sizes(
+        cls,
+        vllm_config: "VllmConfig",
+        kv_cache_config: "KVCacheConfig",
+        is_ascend: bool,
+        bs: int,
+    ) -> tuple[int, int, int]:
+        """Compute (hbm_block_data_size, fa_file_size, wa_file_size).
+
+        Mirrors UCMFAWAConnector._init_group_metas file_size logic and
+        the calculator's deriveDSv4Params hbm formula.
+        """
+        hf = vllm_config.model_config.hf_text_config
+        ratios = getattr(hf, "compress_ratios", None)
+        if ratios is None:
+            return 0, 0, 0
+        decoder = ratios[:-1] if ratios and ratios[-1] == 0 else ratios
+        num_c4a = sum(1 for r in decoder if r == 4)
+        num_c128a = sum(1 for r in decoder if r == 128)
+        num_total = len(decoder)
+        has_mtp = (
+            vllm_config.speculative_config is not None
+            and vllm_config.speculative_config.num_speculative_tokens > 0
+        )
+        num_total_layers = num_total + (1 if has_mtp else 0)
+
+        # num_layer_tuples (for both Ascend hbm and CUDA swa sub-group split)
+        buckets = [num_c4a, num_c128a, num_total, num_c4a, num_c128a]
+        lb = min(num_c4a, num_c128a) or 1
+        num_tuples = cls._approximate_gcd(buckets, lb)
+
+        # file_size (same as _init_group_metas)
+        c4a_per_blk_tok = 1024 + 128 + 2  # mla + indexer + scale
+        c128a_per_blk_tok = 32
+        if is_ascend:
+            fa_raw = bs * (c4a_per_blk_tok * num_c4a + c128a_per_blk_tok * num_c128a)
+            wa_raw = 131072 * num_total_layers + (32768 + 8192) * num_c4a
+        else:
+            fa_raw = (37376 + 8448) * num_c4a + 1168 * num_c128a
+            wa_raw = (37376 * 2) * num_total_layers + (8192 + 32768) * num_c4a
+        fa_size = -(-fa_raw // 4096) * 4096  # round_up
+        wa_size = -(-wa_raw // 4096) * 4096
+
+        # hbm_block_data_size
+        if is_ascend:
+            tuple_bytes = bs * c4a_per_blk_tok  # bs × 1154
+            hbm = num_tuples * tuple_bytes + (bs * 1024 if has_mtp else 0)
+        else:
+            # fp8_ds_mla layout (default): 584B/token MLA/SWA, 132B/token indexer, align=576
+            mla_per_tok = 584
+            idx_per_tok = 132
+            align = 576
+            g0 = (
+                num_c4a * round_up(bs // 4 * mla_per_tok, align)
+                + num_c128a * round_up(bs // 128 * mla_per_tok, align)
+                + num_c4a * round_up(bs // 4 * idx_per_tok, align)
+            )
+            swa_subgroups = -(-num_total // num_tuples) if num_tuples else 1
+            swa_sub1 = -(-num_total // swa_subgroups) if swa_subgroups else num_total
+            g1 = swa_sub1 * round_up(64 * mla_per_tok, align)
+            g3 = num_c4a * round_up(32768, align) + num_c4a * round_up(8192, align)
+            g4 = num_c128a * round_up(32768, align)
+            hbm = max(g0, g1, g3, g4)
+
+        return hbm, fa_size, wa_size
+
+    def __init__(
         self,
-        group_id: int,
-        group_block_idx: int,
-        computed_end_token: Optional[int],
-        segment: KVCacheSegment,
-    ) -> KVCacheSegment:
-        if (
-            group_id not in self.window_group_ids
-            or self.group_tail_blocks[group_id] is None
-            or self.group_tail_blocks[group_id] == 0
-            or self.block_span_layout.is_swa_group(group_id)
-        ):
-            return segment
+        vllm_config: "VllmConfig",
+        role: KVConnectorRole,
+        kv_cache_config: Optional["KVCacheConfig"] = None,
+    ) -> None:
+        if kv_cache_config is None:
+            raise RuntimeError("UCMFAWALiteConnector requires kv_cache_config.")
+        super().__init__(vllm_config, role, kv_cache_config)
 
-        window_tail_tokens = self._ascend_window_tail_tokens(group_id)
-        if window_tail_tokens is None:
-            return segment
-        if window_tail_tokens == 0:
-            return segment
+        groups = kv_cache_config.kv_cache_groups
+        is_ascend = UCMFAWAConnector.can_handle_ascend_kv_cache_config(kv_cache_config)
 
-        group_token_block_size = self.group_token_block_sizes[group_id]
-        tail_end_token = (
-            computed_end_token
-            if computed_end_token is not None
-            else (group_block_idx + 1) * group_token_block_size
+        if is_ascend:
+            bs = UCMFAWAConnector._get_ascend_base_block_size(kv_cache_config)
+            ucm_hash_bs = bs * UCMFAWAConnector.ASCEND_C4_COMPRESS_RATIO
+        else:
+            bs = vllm_config.cache_config.block_size
+            ucm_hash_bs = UCMFAWAConnector.DEFAULT_HASH_BLOCK_SIZE
+
+        group_specs = []
+        block_sizes_for_gcd = []
+        effective_block_sizes = []
+        for gid, group in enumerate(groups):
+            spec = group.kv_cache_spec
+            nested = getattr(spec, "kv_cache_specs", None)
+            inner = next(iter(nested.values())) if nested else spec
+            window = getattr(inner, "sliding_window", None)
+            cr = getattr(inner, "compress_ratio", 1) or 1
+            cr = max(cr, 1)
+            bs_g = spec.block_size
+            block_sizes_for_gcd.append(bs_g)
+            lbs = bs_g * cr if (is_ascend and window is None) else bs_g
+            effective_block_sizes.append(lbs)
+            mtype = (
+                "compress"
+                if (is_ascend and window is None)
+                else ("full_attention" if window is None else "sliding_window")
+            )
+            group_specs.append((f"G{gid}", lbs, mtype, window, cr))
+
+        from functools import reduce
+        from math import gcd, lcm
+
+        vllm_hash_bs = reduce(gcd, block_sizes_for_gcd) if block_sizes_for_gcd else 1
+        alignment = reduce(lcm, effective_block_sizes) if effective_block_sizes else 1
+
+        hbm_data_size, fa_file, wa_file = self._compute_fawa_sizes(
+            vllm_config, kv_cache_config, is_ascend, bs
         )
-        tail_start_token = max(0, tail_end_token - window_tail_tokens)
-        block_start_token = group_block_idx * group_token_block_size
-        segment_start_in_block = max(0, tail_start_token - block_start_token)
-        segment_end_in_block = min(
-            group_token_block_size, tail_end_token - block_start_token
+
+        self.hash_block_size = vllm_hash_bs
+        self.ucm_hash_block_size = ucm_hash_bs
+        self.trace_hash_block_size = max(512, vllm_hash_bs)
+
+        logger.info(
+            f"UCMTraceMeta: type=fawa, "
+            f"is_mla=true, "
+            f"vllm_hash_block_size={vllm_hash_bs}, "
+            f"trace_hash_block_size={self.trace_hash_block_size}, "
+            f"ucm_hash_block_size={ucm_hash_bs}, "
+            f"hbm_block_data_size={hbm_data_size}, "
+            f"fa_file_size={fa_file}, "
+            f"wa_file_size={wa_file}, "
+            f"alignment_tokens={alignment}, "
+            f"groups={group_specs}"
         )
-        length = max(0, segment_end_in_block - segment_start_in_block)
-        return KVCacheSegment(
-            block_id=segment.block_id,
-            offset=segment.offset + segment_start_in_block,
-            length=length,
-        )
+        logger.info("Init UCMFAWALiteConnector.")

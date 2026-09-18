@@ -60,6 +60,20 @@ public:
         if (this->counter_ == 0) { return; }
         this->cv_.wait(lk, [this] { return this->counter_ == 0; });
     }
+    // Abort may race with Done(); only the thread moving counter_ to zero runs finish_.
+    void Abort() noexcept
+    {
+        auto prev = this->counter_.exchange(0, std::memory_order_acq_rel);
+        if (prev == 0) {
+            std::lock_guard<std::mutex> lg(this->mutex_);
+            this->cv_.notify_all();
+            return;
+        }
+        if (this->finish_) { this->finish_(); }
+        std::lock_guard<std::mutex> lg(this->mutex_);
+        this->cv_.notify_all();
+    }
+    size_t Pending() const noexcept { return this->counter_.load(std::memory_order_relaxed); }
     bool IsTimeout(size_t timeoutMs) noexcept
     {
         using namespace std::chrono;

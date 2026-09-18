@@ -1,3 +1,5 @@
+import mmap
+import multiprocessing
 import os
 import re
 import secrets
@@ -9,7 +11,10 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import yaml
+
+from ucm.store.factory_v1 import UcmConnectorFactoryV1, UcmKVStoreBaseV1
 
 CODE_ROOT = Path(__file__).resolve().parent
 Custom_SSH_DIR = (CODE_ROOT / "ssh_keys").resolve()
@@ -31,9 +36,12 @@ with open(config_file, "r", encoding="utf-8") as f:
     HF_MODEL_NAME = config.get("Env_preCheck", {}).get("hf_model_name", "")
     MIDDLE_PAGE = config.get("Env_preCheck", {}).get("middle_page", "")
 
-    KVCACHE_BLOCK_NUMBER = config.get("Env_preCheck", {}).get(
-        "kvCache_block_number", ""
-    )
+    WORKER_NUMBER = config.get("Env_preCheck", {}).get("worker_number", 1)
+    SHARD_SIZE = config.get("Env_preCheck", {}).get("shard_size", 1 * 1024 * 1024)
+    SHARD_NUMBER = config.get("Env_preCheck", {}).get("shard_number", 1)
+    BLOCK_NUMBER = config.get("Env_preCheck", {}).get("block_number", 64)
+    DUMP_EPOCH_NUMBER = config.get("Env_preCheck", {}).get("dump_epoch_number", 32)
+    LOAD_EPOCH_NUMBER = config.get("Env_preCheck", {}).get("load_epoch_number", 32)
     STORAGE_BACKENDS = config.get("Env_preCheck", {}).get("storage_backends", "")
 
 
@@ -476,7 +484,6 @@ run_check "for i in $(echo \"$ASCEND_RT_VISIBLE_DEVICES\" | tr ',' ' ' | xargs);
 run_check "for i in $(echo \"$ASCEND_RT_VISIBLE_DEVICES\" | tr ',' ' ' | xargs); do hccn_tool -i \$i -link -g; done" "physical_link_status"
 run_check "for i in $(echo \"$ASCEND_RT_VISIBLE_DEVICES\" | tr ',' ' ' | xargs); do hccn_tool -i \$i -net_health -g; done" "network_health_status"
 run_check "for i in $(echo \"$ASCEND_RT_VISIBLE_DEVICES\" | tr ',' ' ' | xargs); do hccn_tool -i \$i -ip -g; done" "gpu_ip_config"
-run_check "for i in $(echo \"$ASCEND_RT_VISIBLE_DEVICES\" | tr ',' ' ' | xargs); do hccn_tool -i \$i -gateway -g; done" "gateway_config"
 """
     print("\n----------------------------------------\n")
     print(f"[UC] Starting to check the Ascend card status, node IP: {MASTER_IP}")
@@ -489,6 +496,12 @@ run_check "for i in $(echo \"$ASCEND_RT_VISIBLE_DEVICES\" | tr ',' ' ' | xargs);
 
     # Parsing Output
     result_dict = parse_hccn_output(output)
+
+    overall_status = all(
+        v.get("status", False) for v in result_dict.values() if isinstance(v, dict)
+    )
+
+    result_dict["device_status_check"] = {"status": overall_status}
 
     return result_dict
 
@@ -690,33 +703,46 @@ def remote_local_hccn_cards_ping_test(
     :param dst_ip: destination IP
     :return: dict -> { "card_X_to_card_Y": {"status": True/False, "output": "..."}, "global_status": {...} }
     """
+    HCCN_TOOL = "/usr/local/Ascend/driver/tools/hccn_tool"
+
     if src_type == "local":
-        print(f"[TEST] LOCAL card {src_card} → REMOTE {dst_ip}")
+        print(f"[TEST] LOCAL card {src_card} to REMOTE {dst_ip}")
         pair_key = f"local_card_{src_card} to remote_{dst_ip.replace('.', '_')}"
-        cmd = f"hccn_tool -i {src_card} -ping -g address {dst_ip}"
+
+        cmd = (
+            f"ssh -q -o LogLevel=ERROR "
+            f"-o StrictHostKeyChecking=no "
+            f"-o UserKnownHostsFile=/dev/null "
+            f'-i "{str(LOCAL_SSH_KEY)}" '
+            f"root@{MASTER_IP} {HCCN_TOOL} -i {src_card} -ping -g address {dst_ip}"
+        )
     else:
-        print(f"[TEST] REMOTE {src_ip} card {src_card} → LOCAL {dst_ip}")
+        print(f"[TEST] REMOTE {src_ip} card {src_card} to LOCAL {dst_ip}")
         pair_key = f"remote_card_{src_card} to local_{dst_ip.replace('.', '_')}"
-        cmd = f'ssh -i "{str(LOCAL_SSH_KEY)}" root@{src_ip} hccn_tool -i {src_card} -ping -g address {dst_ip}'
+
+        cmd = (
+            f"ssh -q -o LogLevel=ERROR "
+            f"-o StrictHostKeyChecking=no "
+            f"-o UserKnownHostsFile=/dev/null "
+            f'-i "{str(LOCAL_SSH_KEY)}" '
+            f"root@{src_ip} {HCCN_TOOL} -i {src_card} -ping -g address {dst_ip}"
+        )
 
     result_dict = {pair_key: {"status": False, "output": ""}}
     try:
         completed = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        if completed.returncode == 0 and src_type == "local":
-            print(f"[RESULT] LOCAL card {src_card} → REMOTE {dst_ip}: Success")
-        elif completed.returncode == 0 and src_type == "remote":
-            print(f"[RESULT] REMOTE {src_ip} card {src_card} → LOCAL {dst_ip}: Success")
-        elif src_type == "local":
-            print(f"[RESULT] LOCAL card {src_card} → REMOTE {dst_ip}: Failed")
-        elif src_type == "remote":
-            print(f"[RESULT] REMOTE {src_ip} card {src_card} → LOCAL {dst_ip}: Failed")
+
+        if completed.returncode == 0:
+            print(f"[RESULT] {pair_key}: SUCCESS")
+        else:
+            print(f"[RESULT] {pair_key}: FAILED")
 
         result_dict[pair_key]["status"] = completed.returncode == 0
 
     except Exception as e:
+        print(f"[ERROR] Ping test failed: {e}", file=sys.stderr)
         result_dict[pair_key]["status"] = False
 
-    # Calculate global status (only one ping here, caller can aggregate multiple pings)
     result_dict["global_status"] = {
         "status": result_dict[pair_key]["status"],
         "output": "HCCN local/remote ping global status",
@@ -1119,282 +1145,133 @@ def run_check_model_weight():
     return result_dict
 
 
-class StdoutInterceptor:
-    """
-    Intercepts all stdout and stderr output from both C++ and Python code,
-    and prevents it from being printed directly to the console.
+def create_worker(device_id: int) -> UcmKVStoreBaseV1:
+    module_path = "ucm.store.pipeline.connector"
+    class_name = "UcmPipelineStore"
+    config = {}
+    config["store_pipeline"] = "Posix"
+    config["posix_io_engine"] = "aio"
+    config["storage_backends"] = STORAGE_BACKENDS
+    config["tensor_size"] = SHARD_SIZE
+    config["shard_size"] = SHARD_SIZE
+    config["device_id"] = device_id
+    return UcmConnectorFactoryV1.create_connector(class_name, config, module_path)
 
-    This is useful for capturing logs programmatically for filtering or analysis.
-    """
 
-    def __enter__(self):
-        # Save original stdout and stderr file descriptors
-        self.original_stdout = os.dup(1)
-        self.original_stderr = os.dup(2)
+def make_array(size, alignment=262144, dtype=np.uint8) -> tuple[np.ndarray, mmap.mmap]:
+    itemsize = np.dtype(dtype).itemsize
+    total_bytes = size * itemsize
+    mm = mmap.mmap(-1, total_bytes + alignment)
+    raw_array = np.frombuffer(mm, dtype=np.uint8, count=total_bytes + alignment)
+    raw_ptr = raw_array.__array_interface__["data"][0]
+    aligned_addr = (raw_ptr + alignment - 1) & ~(alignment - 1)
+    offset = aligned_addr - raw_ptr
+    array = raw_array[offset : offset + total_bytes].view(dtype=dtype)
+    return array, mm
 
-        # Create a pipe to capture output
-        self.pipe_out_r, self.pipe_out_w = os.pipe()
 
-        # Redirect stdout and stderr to the pipe
-        os.dup2(self.pipe_out_w, 1)
-        os.dup2(self.pipe_out_w, 2)
-        os.close(self.pipe_out_w)
+def dump(epoch, device_id, worker, block_ids, block_ptr, dump_bw_list):
+    total_size = SHARD_SIZE * SHARD_NUMBER * BLOCK_NUMBER
+    costs = []
+    for i in range(SHARD_NUMBER):
+        idxes = [i for _ in range(BLOCK_NUMBER)]
+        ptrs = [[ptr + i * SHARD_SIZE] for ptr in block_ptr]
+        tp = time.perf_counter()
+        task = worker.dump_data(block_ids, idxes, ptrs)
+        worker.wait(task)
+        costs.append(time.perf_counter() - tp)
+    total_cost = np.sum(costs)
+    bw = total_size / total_cost / 1e9
 
-        self.logs = []
-        self._stop_thread = False
+    dump_bw_list.append(bw)
 
-        # Start a background thread to read from the pipe continuously
-        self.thread = threading.Thread(target=self._read_pipe)
-        self.thread.daemon = True
-        self.thread.start()
-        return self
+    print(
+        f"epoch={epoch:03}, worker={device_id:02}, "
+        f"dump=[{SHARD_SIZE} x {BLOCK_NUMBER} x {SHARD_NUMBER}], "
+        f"avg_cost={np.average(costs) * 1e3:.3f}ms, "
+        f"p99_cost={np.percentile(costs, 99) * 1e3:.3f}ms, "
+        f"total_cost={total_cost * 1e3:.3f}ms, "
+        f"bw={bw:.3f}GB/s."
+    )
 
-    def _read_pipe(self):
-        # Continuously read from the pipe until stopped
-        while not self._stop_thread:
-            try:
-                chunk = os.read(self.pipe_out_r, 4096)
-                if chunk:
-                    text = chunk.decode()
-                    self.logs.append(text)
-                    # Do not print to terminal; logs are kept internally
-                else:
-                    time.sleep(0.01)
-            except OSError:
-                break
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        # Stop background thread and restore stdout/stderr
-        self._stop_thread = True
-        time.sleep(0.05)
+def load(epoch, device_id, worker, block_ids, block_ptr, load_bw_list):
+    total_size = SHARD_SIZE * SHARD_NUMBER * BLOCK_NUMBER
+    costs = []
+    for i in range(SHARD_NUMBER):
+        idxes = [i for _ in range(BLOCK_NUMBER)]
+        ptrs = [[ptr + i * SHARD_SIZE] for ptr in block_ptr]
+        tp = time.perf_counter()
+        task = worker.load_data(block_ids, idxes, ptrs)
+        worker.wait(task)
+        costs.append(time.perf_counter() - tp)
+    total_cost = np.sum(costs)
+    bw = total_size / total_cost / 1e9
+
+    load_bw_list.append(bw)
+
+    print(
+        f"epoch={epoch:03}, worker={device_id:02}, "
+        f"load=[{SHARD_SIZE} x {BLOCK_NUMBER} x {SHARD_NUMBER}], "
+        f"avg_cost={np.average(costs) * 1e3:.3f}ms, "
+        f"p99_cost={np.percentile(costs, 99) * 1e3:.3f}ms, "
+        f"total_cost={total_cost * 1e3:.3f}ms, "
+        f"bw={bw:.3f}GB/s."
+    )
+
+
+def worker_loop(device_id, barrier, dump_bw_list, load_bw_list):
+    store = create_worker(device_id)
+    block_ids = [secrets.token_bytes(16) for _ in range(BLOCK_NUMBER)]
+
+    mmap_handles = []
+    block_data = []
+    for _ in range(BLOCK_NUMBER):
+        arr, mm = make_array(SHARD_SIZE * SHARD_NUMBER)
+        block_data.append(arr)
+        mmap_handles.append(mm)
+
+    block_ptr = [block.ctypes.data for block in block_data]
+    barrier.wait()
+
+    for epoch in range(DUMP_EPOCH_NUMBER):
+        dump(epoch, device_id, store, block_ids, block_ptr, dump_bw_list)
+        barrier.wait()
+
+    for epoch in range(LOAD_EPOCH_NUMBER):
+        load(epoch, device_id, store, block_ids, block_ptr, load_bw_list)
+        barrier.wait()
+
+    for mm in mmap_handles:
         try:
-            os.close(self.pipe_out_r)
-        except OSError:
+            mm.close()
+        except Exception:
             pass
-        os.dup2(self.original_stdout, 1)
-        os.dup2(self.original_stderr, 2)
-        os.close(self.original_stdout)
-        os.close(self.original_stderr)
-
-    def read(self):
-        """Return all captured logs as a single string."""
-        return "".join(self.logs)
 
 
-def setup_uc(block_size):
-    """
-    Initialize UC (Unified Cache) with a given block size.
-
-    Args:
-        block_size (int): Total block size in bytes for UC setup.
-
-    Raises:
-        RuntimeError: if ucmstore.Setup returns a non-zero value.
-    """
-    import ucmstore
-
-    param = ucmstore.SetupParam(STORAGE_BACKENDS, block_size, True)
-    ret = ucmstore.Setup(param)
-    if ret != 0:
-        raise RuntimeError(f"ucmstore.Setup failed: ret={ret}")
-
-
-def filter_task_logs(logs):
-    """
-    Filter UC output logs to extract only lines containing Task information,
-    including task_id and bandwidth.
-
-    Args:
-        logs (str): Raw UC logs.
-
-    Returns:
-        str: Filtered log lines, suitable for printing.
-    """
-    filtered_lines = []
-    for line in logs.splitlines():
-        m = re.search(r"(Task\(\d+,[^\)]*\).*?bw=[\d\.]+GB/s)", line)
-        if m:
-            filtered_lines.append(m.group(1))
-    return "\n".join(filtered_lines)
-
-
-def embed(hashes, block_layer_size, block_layer):
-    """
-    Execute UC embedding (writing KVCache blocks) operation and measure bandwidth.
-
-    Args:
-        hashes (list[str]): List of block hashes to embed.
-        block_layer_size (int): Size of each block layer in bytes.
-        block_layer (int): Number of layers per block.
-
-    Returns:
-        float | None: Average bandwidth in GB/s, or None if no valid bw found.
-
-    Raises:
-        RuntimeError: If any UC operation fails.
-    """
-    import ucmstore
-
-    with StdoutInterceptor() as cap:
-        # Allocate blocks in UC
-        ret = ucmstore.AllocBatch(hashes)
-        if sum(ret) != 0:
-            raise RuntimeError(f"ucmstore.AllocBatch failed: sum(ret)={sum(ret)} != 0")
-
-        block_number = len(hashes)
-        buffers = ucmstore.MakeHostBuffers(block_layer_size, block_layer * block_number)
-        if len(buffers) == 0:
-            raise RuntimeError("ucmstore.MakeHostBuffers failed: no buffers allocated")
-
-        # Prepare data for DumpFromHost
-        data_id, data_off, data_addr, data_len = [], [], [], []
-        for block_idx in range(block_number):
-            offset = 0
-            for layer_idx in range(block_layer):
-                data_id.append(hashes[block_idx])
-                data_off.append(offset)
-                data_addr.append(buffers[block_idx * block_layer + layer_idx])
-                data_len.append(block_layer_size)
-                offset += block_layer_size
-
-        # Dump data to UC
-        task_id = ucmstore.DumpFromHost(data_id, data_off, data_addr, data_len)
-        if task_id <= 0:
-            raise RuntimeError(
-                f"ucmstore.DumpFromHost failed: invalid task_id={task_id}"
-            )
-
-        # Wait for completion
-        ret = ucmstore.Wait(task_id)
-        if ret != 0:
-            raise RuntimeError(
-                f"ucmstore.Wait failed for embed task_id={task_id}, ret={ret}"
-            )
-
-        # Release host buffers and commit
-        ucmstore.ReleaseHostBuffers(buffers)
-        ucmstore.CommitBatch(hashes, True)
-
-    logs = cap.read()
-    print(filter_task_logs(logs))
-
-    # Extract average bandwidth
-    bw_list = [float(x) for x in re.findall(r"bw=([\d\.]+)GB/s", logs)]
-    avg_bw = sum(bw_list) / len(bw_list) if bw_list else None
-    return avg_bw
-
-
-def fetch(hashes, block_layer_size, block_layer):
-    """
-    Execute UC fetching (reading KVCache blocks) operation and measure bandwidth.
-
-    Args:
-        hashes (list[str]): List of block hashes to fetch.
-        block_layer_size (int): Size of each block layer in bytes.
-        block_layer (int): Number of layers per block.
-
-    Returns:
-        float | None: Average bandwidth in GB/s, or None if no valid bw found.
-
-    Raises:
-        RuntimeError: If any UC operation fails.
-    """
-    import ucmstore
-
-    with StdoutInterceptor() as cap:
-        block_number = len(hashes)
-        results = ucmstore.LookupBatch(hashes)
-        if not all(results):
-            raise RuntimeError("ucmstore.LookupBatch failed: some blocks not found")
-
-        buffers = ucmstore.MakeHostBuffers(block_layer_size, block_layer * block_number)
-        if len(buffers) == 0:
-            raise RuntimeError("ucmstore.MakeHostBuffers failed: no buffers allocated")
-
-        # Prepare data for LoadToHost
-        data_id, data_off, data_addr, data_len = [], [], [], []
-        for block_idx in range(block_number):
-            offset = 0
-            for layer_idx in range(block_layer):
-                data_id.append(hashes[block_idx])
-                data_off.append(offset)
-                data_addr.append(buffers[block_idx * block_layer + layer_idx])
-                data_len.append(block_layer_size)
-                offset += block_layer_size
-
-        # Load data from UC
-        task_id = ucmstore.LoadToHost(data_id, data_off, data_addr, data_len)
-        if task_id <= 0:
-            raise RuntimeError("ucmstore.LoadToHost failed: invalid task_id")
-
-        # Wait for completion
-        ret = ucmstore.Wait(task_id)
-        if ret != 0:
-            raise RuntimeError(
-                f"ucmstore.Wait failed for fetch task_id={task_id}, ret={ret}"
-            )
-
-        # Release buffers
-        ucmstore.ReleaseHostBuffers(buffers)
-
-    logs = cap.read()
-    print(filter_task_logs(logs))
-
-    # Extract average bandwidth
-    bw_list = [float(x) for x in re.findall(r"bw=([\d\.]+)GB/s", logs)]
-    avg_bw = sum(bw_list) / len(bw_list) if bw_list else None
-    return avg_bw
-
-
-# ========= Bandwidth Check =========
 def run_bandwidth_check():
-    """
-    Run UC embedding and fetching operations on KVCache blocks,
-    measure bandwidth for each batch, and calculate overall average.
+    manager = multiprocessing.Manager()
+    dump_bw_list = manager.list()
+    load_bw_list = manager.list()
 
-    Returns:
-        dict: Summary of average bandwidth for 'embed' and 'fetch' in GB/s.
-    """
-    # UC block and layer configuration
-    block_dim = 576
-    block_len = 128
-    block_elem_size = 2
-    block_layer = 61
-    block_layer_size = block_dim * block_len * block_elem_size
-    block_size = block_layer_size * block_layer
-    batch_size = 256
+    barrier = multiprocessing.Barrier(WORKER_NUMBER)
+    workers = []
 
-    setup_uc(block_size)
-    hashes = [secrets.token_hex(16) for _ in range(KVCACHE_BLOCK_NUMBER)]
-    total_batches = (KVCACHE_BLOCK_NUMBER + batch_size - 1) // batch_size
+    for i in range(WORKER_NUMBER):
+        p = multiprocessing.Process(
+            target=worker_loop, args=(i, barrier, dump_bw_list, load_bw_list)
+        )
+        workers.append(p)
+        p.start()
 
-    bw_summary = {"embed": [], "fetch": []}
+    for w in workers:
+        w.join()
 
-    print("\n----------------------------------------")
-    print("[UC] Start embed batch and fetch batch. Processing KVCache blocks...")
+    avg_dump = np.mean(dump_bw_list) if len(dump_bw_list) > 0 else 0.0
+    avg_load = np.mean(load_bw_list) if len(load_bw_list) > 0 else 0.0
 
-    # Embed batches
-    for batch in range(total_batches):
-        start = batch_size * batch
-        end = min(start + batch_size, KVCACHE_BLOCK_NUMBER)
-        avg_bw = embed(hashes[start:end], block_layer_size, block_layer)
-        if avg_bw:
-            bw_summary["embed"].append(avg_bw)
+    print(f"\n==== FINAL AVERAGE BANDWIDTH ====")
+    print(f" Dump BW (avg): {avg_dump:.3f} GB/s")
+    print(f" Load BW (avg): {avg_load:.3f} GB/s")
 
-    print("[UC] Start fetch batch. Processing KVCache blocks...")
-    # Fetch batches
-    for batch in range(total_batches):
-        start = batch_size * batch
-        end = min(start + batch_size, KVCACHE_BLOCK_NUMBER)
-        avg_bw = fetch(hashes[start:end], block_layer_size, block_layer)
-        if avg_bw:
-            bw_summary["fetch"].append(avg_bw)
-
-    # Calculate overall average bandwidth
-    for key in bw_summary:
-        if bw_summary[key]:
-            bw_summary[key] = sum(bw_summary[key]) / len(bw_summary[key])
-        else:
-            bw_summary[key] = None
-
-    return bw_summary
+    return {"dump": round(avg_dump, 3), "load": round(avg_load, 3)}

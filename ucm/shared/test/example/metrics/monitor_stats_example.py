@@ -40,14 +40,14 @@ def test_wrap(func):
 
 @test_wrap
 def metrics_with_update_stats():
-    ucmmetrics.set_up(100)
+    ucmmetrics.set_up()
     ucmmetrics.create_stats("counter_1", "counter")
     ucmmetrics.update_stats("counter_1", 1.2)
 
     ucmmetrics.create_stats("gauge_1", "gauge")
     ucmmetrics.update_stats("gauge_1", 2.2)
 
-    ucmmetrics.create_stats("histogram_1", "histogram")
+    ucmmetrics.create_stats("histogram_1", "histogram", [1.0, 5.0, float("inf")])
     ucmmetrics.update_stats("histogram_1", 1)
 
     counters, gauges, histograms = ucmmetrics.get_all_stats_and_clear()
@@ -56,7 +56,8 @@ def metrics_with_update_stats():
     )
     assert counters["counter_1"] == 1.2
     assert gauges["gauge_1"] == 2.2
-    assert histograms["histogram_1"][-1] == 1.0
+    assert histograms["histogram_1"][0] == [1, 0, 0]
+    assert histograms["histogram_1"][1] == 1.0
 
     ucmmetrics.update_stats(
         {
@@ -76,7 +77,8 @@ def metrics_with_update_stats():
     counters, gauges, histograms = ucmmetrics.get_all_stats_and_clear()
     assert counters["counter_1"] == 10.0
     assert gauges["gauge_1"] == 6.6
-    assert len(histograms["histogram_1"]) == 2
+    assert histograms["histogram_1"][0] == [0, 1, 1]
+    assert histograms["histogram_1"][1] == 15.0
     print(
         f"After clear then get counters: {counters}, gauges: {gauges}, histograms: {histograms}"
     )

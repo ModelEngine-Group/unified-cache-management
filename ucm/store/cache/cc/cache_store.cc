@@ -21,10 +21,21 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <algorithm>
+#include <memory>
 #include <numeric>
 #include "buffer_manager.h"
 #include "logger/logger.h"
+#include "trans/cuda/gdr/gdr_config.h"
 #include "trans_manager.h"
+
+#ifndef UCM_RUNTIME_ASCEND_IO_AGGREGATION
+#define UCM_RUNTIME_ASCEND_IO_AGGREGATION 0
+#endif
+
+#ifndef UCM_RUNTIME_ASCEND_SDMA_DIRECT
+#define UCM_RUNTIME_ASCEND_SDMA_DIRECT 0
+#endif
 
 namespace UC::CacheStore {
 
@@ -32,6 +43,7 @@ class CacheStore : public StoreV1 {
     BufferManager bufferMgr_;
     bool transEnable_{false};
     TransManager transMgr_;
+    std::unique_ptr<Trans::GdrKVBufferConfig> gpuKvBufferRegistrations_{nullptr};
 
 public:
     Status Setup(const Detail::Dictionary& inConfig) override
@@ -41,6 +53,15 @@ public:
         if (s.Failure()) [[unlikely]] {
             UC_ERROR("Failed to check config params: {}.", s);
             return s;
+        }
+        if (config.deviceId >= 0 && !config.gpuKvBufferAddrs.empty()) {
+            gpuKvBufferRegistrations_ = std::make_unique<Trans::GdrKVBufferConfig>();
+            s = gpuKvBufferRegistrations_->Register(config.gpuKvBufferAddrs,
+                                                    config.gpuKvBufferSizes);
+            if (s.Failure()) [[unlikely]] {
+                UC_ERROR("Failed({}) to register GPU KV buffers.", s);
+                return s;
+            }
         }
         s = bufferMgr_.Setup(config);
         if (s.Failure()) [[unlikely]] {
@@ -68,7 +89,16 @@ public:
         if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
         return res;
     }
-    void Prefetch(const Detail::BlockId* blocks, size_t num) override {}
+    Expected<ssize_t> LookupOnReverse(const Detail::BlockId* blocks, size_t num) override
+    {
+        auto res = bufferMgr_.LookupOnReverse(blocks, num);
+        if (!res) [[unlikely]] { UC_ERROR("Failed({}) to lookup blocks({}).", res.Error(), num); }
+        return res;
+    }
+    void Prefetch(const Detail::BlockId* blocks, size_t num) override
+    {
+        bufferMgr_.Prefetch(blocks, num);
+    }
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
         if (!transEnable_) { return Status::Error("transfer is not enable"); }
@@ -96,7 +126,9 @@ public:
     Status Wait(Detail::TaskHandle taskId) override
     {
         auto s = transMgr_.Wait(taskId);
-        if (s.Failure()) [[unlikely]] { UC_ERROR("Failed({}) to wait task({}).", s, taskId); }
+        if (s.Failure() && s != Status::StoreUnhealthy()) [[unlikely]] {
+            UC_ERROR("Failed({}) to wait task({}).", s, taskId);
+        }
         return s;
     }
 
@@ -130,6 +162,13 @@ private:
         config.GetNumber("timeout_ms", param.timeoutMs);
         config.GetNumber("cache_stream_number", param.streamNumber);
         config.GetNumber("cache_load_exclusive_buffer_number", param.loadExclusiveBufferNumber);
+        config.GetNumbers("gpu_kv_buffer_addrs", param.gpuKvBufferAddrs);
+        config.GetNumbers("gpu_kv_buffer_sizes", param.gpuKvBufferSizes);
+        config.Get("use_gdr", param.useGdr);
+        config.Get("cache_io_aggregation", param.cacheIOAggregation);
+        param.cacheIOAggregation = param.cacheIOAggregation && UCM_RUNTIME_ASCEND_IO_AGGREGATION;
+        config.Get("cache_sdma_direct", param.cacheSdmaDirect);
+        config.GetNumber("local_rank_size", param.localRankSize);
         return param;
     }
     Status CheckSizeConfig(const Config& config)
@@ -137,7 +176,7 @@ private:
         if (config.tensorSizes.empty()) { return Status::InvalidParam("invalid tensor size"); }
         if (config.shardSize == 0) { return Status::InvalidParam("invalid shard size"); }
         if (config.blockSize == 0) { return Status::InvalidParam("invalid block size"); }
-        if (std::accumulate(config.tensorSizes.begin(), config.tensorSizes.end(), size_t(0)) !=
+        if (std::accumulate(config.tensorSizes.begin(), config.tensorSizes.end(), size_t(0)) >
             config.shardSize) {
             return Status::InvalidParam("invalid shard size({})", config.shardSize);
         }
@@ -153,25 +192,44 @@ private:
             return Status::InvalidParam("invalid device({})", config.deviceId);
         }
         if (config.uniqueId.empty()) { return Status::InvalidParam("invalid unique id"); }
+        auto s =
+            Trans::GdrKVBufferConfig::Validate(config.gpuKvBufferAddrs, config.gpuKvBufferSizes);
+        if (s.Failure()) { return s; }
         for (const auto core : config.cpuAffinityCores) {
             if (core < 0 || core >= CPU_SETSIZE) {
                 return Status::InvalidParam("invalid cpu core({})", core);
             }
         }
         if (config.deviceId == -1) { return Status::OK(); }
-        auto s = CheckSizeConfig(config);
+        s = CheckSizeConfig(config);
         if (s.Failure()) { return s; }
+#if !UCM_RUNTIME_ASCEND_SDMA_DIRECT
+        if (config.cacheSdmaDirect) {
+            return Status::InvalidParam("Cache SDMA Direct requires RUNTIME_ENVIRONMENT=ascend-a3");
+        }
+#endif
         auto bufferNumber = config.bufferCapacity / config.shardSize;
-        if (bufferNumber < 1024 || bufferNumber < config.loadExclusiveBufferNumber * 2) {
-            return Status::InvalidParam("too small buffer({}) on shard({})", config.bufferCapacity,
-                                        config.shardSize);
+        const size_t minBufferNumber = std::max(size_t(1024), config.loadExclusiveBufferNumber * 2);
+        if (bufferNumber < minBufferNumber) {
+            const size_t minBufferCapacityGb =
+                (minBufferNumber * config.shardSize + (size_t(1) << 30) - 1) >> 30;
+            return Status::InvalidParam(
+                "too small buffer({}) on shard({}), please set cache_buffer_capacity_gb >= {}GB",
+                config.bufferCapacity, config.shardSize, minBufferCapacityGb);
         }
         if (config.waitingQueueDepth <= 1 || config.runningQueueDepth <= 1) {
             return Status::InvalidParam("invalid queue depth({},{})", config.waitingQueueDepth,
                                         config.runningQueueDepth);
         }
+        if (config.cacheIOAggregation && config.cacheSdmaDirect) {
+            return Status::InvalidParam(
+                "Cache IO aggregation is incompatible with Cache SDMA Direct");
+        }
         if (config.streamNumber < 1 || config.streamNumber > 32) {
             return Status::InvalidParam("invalid stream number({})", config.streamNumber);
+        }
+        if (config.localRankSize == 0) {
+            return Status::InvalidParam("invalid local rank size({})", config.localRankSize);
         }
         return Status::OK();
     }
@@ -199,11 +257,25 @@ private:
         UC_INFO("Set {}::CpuAffinityCores to {}.", ns, config.cpuAffinityCores);
         UC_INFO("Set {}::BufferCapacity to {}GB.", ns, config.bufferCapacity >> 30);
         UC_INFO("Set {}::ShareBufferEnable to {}.", ns, config.shareBufferEnable);
+        UC_INFO("Set {}::CacheIOAggregation to {}.", ns, config.cacheIOAggregation);
+        if (config.cacheIOAggregation) {
+            UC_INFO("Set {}::AggregationObject to CacheStoreShard.", ns);
+        }
         UC_INFO("Set {}::WaitingQueueDepth to {}.", ns, config.waitingQueueDepth);
         UC_INFO("Set {}::RunningQueueDepth to {}.", ns, config.runningQueueDepth);
         UC_INFO("Set {}::TimeoutMs to {}.", ns, config.timeoutMs);
-        UC_INFO("Set {}::StreamNumber to {}.", ns, config.streamNumber);
+        if (config.cacheSdmaDirect) {
+            UC_INFO(
+                "Set {}::StreamNumber to {} (configured={}, Cache SDMA Direct uses one stream).",
+                ns, config.EffectiveStreamNumber(), config.streamNumber);
+        } else {
+            UC_INFO("Set {}::StreamNumber to {}.", ns, config.EffectiveStreamNumber());
+        }
+        UC_INFO("Set {}::CacheSdmaDirect to {}.", ns, config.cacheSdmaDirect);
         UC_INFO("Set {}::LoadExclusiveBufferNumber to {}.", ns, config.loadExclusiveBufferNumber);
+        UC_INFO("Set {}::GpuKvBufferNumber to {}.", ns, config.gpuKvBufferAddrs.size());
+        UC_INFO("Set {}::UseGdr to {}.", ns, config.useGdr);
+        UC_INFO("Set {}::LocalRankSize to {}.", ns, config.localRankSize);
     }
 };
 

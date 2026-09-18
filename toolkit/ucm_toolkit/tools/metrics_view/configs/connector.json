@@ -1,0 +1,1003 @@
+{
+  "title": "Connector Dashboard",
+  "metrics": [
+    {
+      "name": "Connector Aggregate Bandwidth: Load",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:load_bytes_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / 1e9",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "gbytes"
+    },
+    {
+      "name": "Connector Aggregate Bandwidth: Save",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:save_bytes_total{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) / 1e9",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "gbytes"
+    },
+    {
+      "name": "Connector method duration: wait_for_save: avg",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:connector_wait_for_save_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:connector_wait_for_save_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Connector method duration: wait_for_save: p50",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:connector_wait_for_save_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Connector method duration: wait_for_save: p90",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:connector_wait_for_save_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Connector method duration: wait_for_save: p99",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:connector_wait_for_save_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Connector method duration: get_num_new_matched_tokens: avg",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:connector_get_num_new_matched_tokens_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:connector_get_num_new_matched_tokens_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Connector method duration: get_num_new_matched_tokens: p50",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:connector_get_num_new_matched_tokens_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Connector method duration: get_num_new_matched_tokens: p90",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:connector_get_num_new_matched_tokens_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Connector method duration: get_num_new_matched_tokens: p99",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:connector_get_num_new_matched_tokens_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Connector method duration: start_load_kv: avg",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:connector_start_load_kv_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:connector_start_load_kv_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Connector method duration: start_load_kv: p50",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:connector_start_load_kv_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Connector method duration: start_load_kv: p90",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:connector_start_load_kv_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Connector method duration: start_load_kv: p99",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:connector_start_load_kv_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Connector method duration: wait_for_layer_load: avg",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:connector_wait_for_layer_load_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:connector_wait_for_layer_load_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Connector method duration: wait_for_layer_load: p50",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:connector_wait_for_layer_load_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Connector method duration: wait_for_layer_load: p90",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:connector_wait_for_layer_load_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Connector method duration: wait_for_layer_load: p99",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:connector_wait_for_layer_load_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Connector method duration: save_kv_layer: avg",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:connector_save_kv_layer_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:connector_save_kv_layer_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Connector method duration: save_kv_layer: p50",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:connector_save_kv_layer_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Connector method duration: save_kv_layer: p90",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:connector_save_kv_layer_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Connector method duration: save_kv_layer: p99",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:connector_save_kv_layer_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (Avg): get_block_size",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:connector_get_block_size_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:connector_get_block_size_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (Avg): get_kv_connector_stats",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:connector_get_kv_connector_stats_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:connector_get_kv_connector_stats_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (Avg): update_state_after_alloc",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:connector_update_state_after_alloc_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:connector_update_state_after_alloc_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (Avg): register_kv_caches",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:connector_register_kv_caches_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:connector_register_kv_caches_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (Avg): build_connector_meta",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:connector_build_connector_meta_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:connector_build_connector_meta_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (Avg): bind_connector_metadata",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:connector_bind_connector_metadata_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:connector_bind_connector_metadata_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (Avg): handle_preemptions",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:connector_handle_preemptions_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:connector_handle_preemptions_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (Avg): has_connector_metadata",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:connector_has_connector_metadata_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:connector_has_connector_metadata_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (Avg): request_finished_all_groups",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:connector_request_finished_all_groups_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:connector_request_finished_all_groups_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (Avg): request_finished",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:connector_request_finished_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:connector_request_finished_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (Avg): get_finished",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:connector_get_finished_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:connector_get_finished_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (Avg): build_connector_worker_meta",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:connector_build_connector_worker_meta_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:connector_build_connector_worker_meta_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (Avg): update_connector_output",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:connector_update_connector_output_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:connector_update_connector_output_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (Avg): clear_connector_metadata",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:connector_clear_connector_metadata_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:connector_clear_connector_metadata_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (Avg): get_block_ids_with_load_errors",
+      "type": "promql",
+      "expr": "sum by (model_name) (rate(ucm:connector_get_block_ids_with_load_errors_duration_ms_sum{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))\n/\nsum by (model_name) (rate(ucm:connector_get_block_ids_with_load_errors_duration_ms_count{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval]))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P50): get_block_size",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:connector_get_block_size_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P50): get_kv_connector_stats",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:connector_get_kv_connector_stats_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P50): update_state_after_alloc",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:connector_update_state_after_alloc_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P50): register_kv_caches",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:connector_register_kv_caches_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P50): build_connector_meta",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:connector_build_connector_meta_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P50): bind_connector_metadata",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:connector_bind_connector_metadata_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P50): handle_preemptions",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:connector_handle_preemptions_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P50): has_connector_metadata",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:connector_has_connector_metadata_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P50): request_finished_all_groups",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:connector_request_finished_all_groups_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P50): request_finished",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:connector_request_finished_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P50): get_finished",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:connector_get_finished_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P50): build_connector_worker_meta",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:connector_build_connector_worker_meta_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P50): update_connector_output",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:connector_update_connector_output_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P50): clear_connector_metadata",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:connector_clear_connector_metadata_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P50): get_block_ids_with_load_errors",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:connector_get_block_ids_with_load_errors_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P90): get_block_size",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:connector_get_block_size_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P90): get_kv_connector_stats",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:connector_get_kv_connector_stats_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P90): update_state_after_alloc",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:connector_update_state_after_alloc_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P90): register_kv_caches",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:connector_register_kv_caches_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P90): build_connector_meta",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:connector_build_connector_meta_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P90): bind_connector_metadata",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:connector_bind_connector_metadata_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P90): handle_preemptions",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:connector_handle_preemptions_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P90): has_connector_metadata",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:connector_has_connector_metadata_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P90): request_finished_all_groups",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:connector_request_finished_all_groups_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P90): request_finished",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:connector_request_finished_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P90): get_finished",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:connector_get_finished_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P90): build_connector_worker_meta",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:connector_build_connector_worker_meta_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P90): update_connector_output",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:connector_update_connector_output_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P90): clear_connector_metadata",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:connector_clear_connector_metadata_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P90): get_block_ids_with_load_errors",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:connector_get_block_ids_with_load_errors_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P99): get_block_size",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:connector_get_block_size_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P99): get_kv_connector_stats",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:connector_get_kv_connector_stats_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P99): update_state_after_alloc",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:connector_update_state_after_alloc_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P99): register_kv_caches",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:connector_register_kv_caches_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P99): build_connector_meta",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:connector_build_connector_meta_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P99): bind_connector_metadata",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:connector_bind_connector_metadata_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P99): handle_preemptions",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:connector_handle_preemptions_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P99): has_connector_metadata",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:connector_has_connector_metadata_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P99): request_finished_all_groups",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:connector_request_finished_all_groups_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P99): request_finished",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:connector_request_finished_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P99): get_finished",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:connector_get_finished_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P99): build_connector_worker_meta",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:connector_build_connector_worker_meta_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P99): update_connector_output",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:connector_update_connector_output_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P99): clear_connector_metadata",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:connector_clear_connector_metadata_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Other Connector Interfaces (P99): get_block_ids_with_load_errors",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:connector_get_block_ids_with_load_errors_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Layerwise Per-Layer Load Duration: p50",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:layerwise_layer_load_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Layerwise Per-Layer Load Duration: p90",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:layerwise_layer_load_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Layerwise Per-Layer Load Duration: p99",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:layerwise_layer_load_duration_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Layerwise All-Layer Load Duration Sum: p50",
+      "type": "promql",
+      "expr": "histogram_quantile(0.5, sum by (le, model_name) (rate(ucm:layerwise_batch_load_duration_sum_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Layerwise All-Layer Load Duration Sum: p90",
+      "type": "promql",
+      "expr": "histogram_quantile(0.9, sum by (le, model_name) (rate(ucm:layerwise_batch_load_duration_sum_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Layerwise All-Layer Load Duration Sum: p99",
+      "type": "promql",
+      "expr": "histogram_quantile(0.99, sum by (le, model_name) (rate(ucm:layerwise_batch_load_duration_sum_ms_bucket{model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "model_name"
+      ],
+      "unit": "ms"
+    },
+    {
+      "name": "Failure Counts by Type: {failure_type}",
+      "type": "promql",
+      "expr": "sort_desc(label_replace(sum by (__name__) (increase({__name__=~\"ucm:.*(errors|failure_events)_total\", model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__range])), \"failure_type\", \"$1\", \"__name__\", \"ucm:(.*)\"))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "failure_type"
+      ],
+      "unit": "short"
+    },
+    {
+      "name": "Failure Ratio by Type: {failure_type}",
+      "type": "promql",
+      "expr": "sort_desc(label_replace(sum by (__name__) (increase({__name__=~\"ucm:.*(errors|failure_events)_total\", model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__range])), \"failure_type\", \"$1\", \"__name__\", \"ucm:(.*)\"))",
+      "value": "value",
+      "aggregate": "sum",
+      "group_by": [
+        "failure_type"
+      ],
+      "unit": "short"
+    },
+    {
+      "name": "Failure Count Over Time",
+      "type": "promql",
+      "expr": "sum(increase({__name__=~\"ucm:.*(errors|failure_events)_total\", model_name=\"$model_name\", job=~\"$job\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}[$__rate_interval])) or vector(0)",
+      "value": "value",
+      "aggregate": "sum",
+      "unit": "ops"
+    }
+  ]
+}

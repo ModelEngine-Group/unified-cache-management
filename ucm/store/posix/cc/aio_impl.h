@@ -25,12 +25,26 @@
 #define UNIFIEDCACHE_POSIX_STORE_CC_AIO_IMPL_H
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <linux/aio_abi.h>
+#include <mutex>
 #include <thread>
+#include <unordered_map>
+#include <vector>
 #include "status/status.h"
 
 namespace UC::PosixStore {
+
+#ifdef UCM_ENABLE_TEST_HOOKS
+namespace TestHooks {
+using AioSubmitHook = std::function<int32_t(aio_context_t, int64_t, iocb**)>;
+using AioCancelHook = std::function<int32_t(aio_context_t, struct iocb*, io_event*)>;
+void SetAioSubmitHook(AioSubmitHook hook);
+void SetAioCancelHook(AioCancelHook hook);
+void ClearAioHooks();
+}  // namespace TestHooks
+#endif
 
 class AioImpl {
 public:
@@ -45,26 +59,40 @@ public:
         uint32_t length;
         void* buffer;
         Callback callback;
+        uint64_t tag{0};
     };
+    using SweepFn = std::function<void()>;
 
     ~AioImpl();
-    Status Setup();
+    Status Setup(size_t timeoutMs);
     Status ReadAsync(Io&& io);
     Status WriteAsync(Io&& io);
+    void SetSweepFn(SweepFn fn) { sweepFn_ = std::move(fn); }
+    void CancelTask(uint64_t tag);
 
 private:
     void CompletionLoop();
+    void MaybeSweep();
     void HarvestCompletions(std::vector<io_event>& events);
     Status SubmitIo(struct iocb* cb);
+    void Track(uint64_t tag, struct iocb* cb);
+    void Untrack(struct iocb* cb);
 
     size_t queueDepth_{4096};
-    size_t epollTimeoutMs{10};
+    size_t epollTimeoutMs_{10};
+    size_t sweepIntervalMs_{100};
+    size_t submitTimeoutMs_{0};
     size_t batchCompleteSize{512};
     aio_context_t ctx_{0};
     int32_t eventFd_{-1};
     int32_t epollFd_{-1};
     std::atomic_bool stop_{false};
     std::thread eventThread_;
+    SweepFn sweepFn_{nullptr};
+    double lastSweepTp_{0};
+    std::mutex tableMutex_;
+    std::unordered_map<uint64_t, std::vector<struct iocb*>> iocbTable_;
+    std::unordered_map<struct iocb*, uint64_t> iocbToTag_;
 };
 
 }  // namespace UC::PosixStore

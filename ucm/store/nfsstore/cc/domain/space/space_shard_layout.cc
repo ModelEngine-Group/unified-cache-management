@@ -64,15 +64,17 @@ struct SpaceShardLayout::DataIterator : public SpaceLayout::DataIterator {
             this->stk.pop();
         }
     }
-    Status Setup(const SpaceLayout* layout, const std::string& root) {
-        this->layout = layout;
-        this->root = root;
-        auto dir = OpenDir(root);
+    Status Setup(const SpaceLayout* newLayout, const std::string& newRoot)
+    {
+        this->layout = newLayout;
+        this->root = newRoot;
+        auto dir = OpenDir(newRoot);
         if (!dir) { return Status::OsApiError(); }
-        this->stk.emplace(dir, root);
+        this->stk.emplace(dir, newRoot);
         return Status::OK();
     }
-    Status Next() {
+    Status Next()
+    {
         this->current.clear();
         while (!this->stk.empty()) {
             auto entry = ::readdir64(this->stk.top().first);

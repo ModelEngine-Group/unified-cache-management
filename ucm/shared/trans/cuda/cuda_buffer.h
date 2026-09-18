@@ -34,6 +34,6 @@ public:
     std::shared_ptr<void> MakeHostBuffer(size_t size) override;
 };
 
-} // namespace UC::Trans
+}  // namespace UC::Trans
 
 #endif

@@ -30,16 +30,16 @@ Status TransManager::Setup(const size_t rankSize, const int32_t deviceId, const 
                            const size_t blockSize, const size_t ioSize, const bool ioDirect,
                            const size_t bufferNumber, const SpaceLayout* layout,
                            const size_t timeoutMs, const bool scatterGatherEnable,
-                           const std::string& uniqueId)
+                           const bool useGdr, const std::string& uniqueId)
 {
     auto s = Status::OK();
     if (rankSize > 1) {
         s = this->shareQueue_.Setup(deviceId, streamNumber, blockSize, ioSize, ioDirect,
-                                    bufferNumber, layout, &this->failureSet_, uniqueId);
+                                    bufferNumber, layout, &this->failureSet_, uniqueId, useGdr);
         if (s.Failure()) { return s; }
     }
     s = this->queue_.Setup(deviceId, streamNumber, blockSize, ioSize, ioDirect, bufferNumber,
-                           layout, &this->failureSet_, scatterGatherEnable, timeoutMs);
+                           layout, &this->failureSet_, scatterGatherEnable, useGdr, timeoutMs);
     if (s.Failure()) { return s; }
     this->rankSize_ = rankSize;
     this->timeoutMs_ = timeoutMs;

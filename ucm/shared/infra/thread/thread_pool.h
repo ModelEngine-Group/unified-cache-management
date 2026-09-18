@@ -36,6 +36,7 @@
 #include <unistd.h>
 #include <vector>
 #include "cpu_affinity.h"
+#include "logger/logger.h"
 
 namespace UC {
 
@@ -132,8 +133,9 @@ public:
             taskPending_.splice(taskPending_.end(), tasks);
             return;
         }
+        const auto n = tasks.size() < this->nWorker_ ? tasks.size() : this->nWorker_;
         this->taskQ_.splice(this->taskQ_.end(), tasks);
-        this->cv_.notify_all();
+        for (size_t i = 0; i < n; ++i) { this->cv_.notify_one(); }
     }
     void Push(Task&& task)
     {
@@ -198,6 +200,10 @@ private:
     }
     void WorkerLoop(std::promise<bool>& prom, std::shared_ptr<Worker> worker)
     {
+        auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_pool_work");
+        if (nameStatus.Failure()) {
+            UC_WARN("Failed({}) to set UCM worker thread name.", nameStatus);
+        }
         worker->tid = syscall(SYS_gettid);
         WorkerArgs args = nullptr;
         auto success = true;
@@ -207,7 +213,7 @@ private:
             CpuAffinity::SetCpuAffinity4CurrentThread(cpuAffinityCores_);
         }
         while (success) {
-            std::shared_ptr<Task> task = nullptr;
+            std::list<Task> slot;
             {
                 std::unique_lock<std::mutex> lock(this->taskMtx_);
                 this->cv_.wait(lock, [this, worker] {
@@ -215,9 +221,10 @@ private:
                 });
                 if (this->stop_ || worker->stop.StopRequested()) { break; }
                 if (this->taskQ_.empty()) { continue; }
-                task = std::make_shared<Task>(std::move(this->taskQ_.front()));
-                this->taskQ_.pop_front();
+                slot.splice(slot.end(), this->taskQ_, this->taskQ_.begin());
             }
+            auto task = std::make_shared<Task>(std::move(slot.front()));
+            slot.pop_front();
             worker->current = task;
             worker->tp.store(std::chrono::steady_clock::now(), std::memory_order_relaxed);
             this->fn_(*task, args);
@@ -230,6 +237,10 @@ private:
 
     void MonitorLoop()
     {
+        auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_pool_mon");
+        if (nameStatus.Failure()) {
+            UC_WARN("Failed({}) to set UCM monitor thread name.", nameStatus);
+        }
         if (!cpuAffinityCores_.empty()) {
             CpuAffinity::SetCpuAffinity4CurrentThread(cpuAffinityCores_);
         }

@@ -15,7 +15,7 @@ function(find_reachable_git_url OUT_REACHABLE_URL IN_URL_LIST)
             COMMAND ${GIT_EXECUTABLE} ls-remote --heads "${GIT_URL}"
             RESULT_VARIABLE GIT_RESULT
             OUTPUT_QUIET ERROR_QUIET
-            TIMEOUT 5
+            TIMEOUT 20
         )
         if(GIT_RESULT EQUAL 0)
             set(${OUT_REACHABLE_URL} ${GIT_URL} PARENT_SCOPE)

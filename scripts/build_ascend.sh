@@ -40,7 +40,7 @@ if [ ! -f "${VERSION_FILE}" ]; then
     exit 1
 fi
 . ${VERSION_FILE}
-VERSION=$VLLM_UC_VERSION
+VERSION=$UCM_VERSION
 
 source "$ASCEND_HOME/ascend-toolkit/set_env.sh" || echo "0"
 source "$ASCEND_HOME/nnal/atb/set_env.sh" || echo "0"
@@ -73,6 +73,7 @@ function build_wheels()
 
     cd ${KVCACHE_PROJECT_ROOT}
     export ENABLE_SPARSE=${ENABLE_SPARSE:-TRUE}
+    export BUILD_UCM_ASU=${BUILD_UCM_ASU:-ON}
     python3 -m build --no-isolation --wheel
 
     if [ $? -eq 0 ]; then
@@ -91,10 +92,10 @@ function delete_redundant_files() {
     rm -f version.ini
     rm -rf deployments/
     rm -rf docker/
-    rm -f ucm_config.yaml
-    rm -f metrics_configs.yaml
+    rm -rf deploy
     rm -f *.run
     rm -f *.patch
+    rm -f install.sh
     rm -f install_ascend_ops.sh
 }
 
@@ -102,11 +103,15 @@ function collect_artifacts()
 {
     cd ${PACKAGE_DIR}
     cp ${VERSION_FILE} .
+    mkdir -p deploy/script
+    cp "${KVCACHE_PROJECT_ROOT}/install.sh" .
     cp -r "${KVCACHE_PROJECT_ROOT}/docker" .
     cp -r "${KVCACHE_PROJECT_ROOT}/examples/deployments" .
-    cp -r "${KVCACHE_PROJECT_ROOT}/examples/ucm_config_example.yaml" ucm_config.yaml
-    cp -r "${KVCACHE_PROJECT_ROOT}/examples/metrics/metrics_configs.yaml" metrics_configs.yaml
+    cp -r "${KVCACHE_PROJECT_ROOT}/examples/ucm_config_example.yaml" deploy/script/ucm_config.yaml
+    cp -r "${KVCACHE_PROJECT_ROOT}/examples/ucm_config_asu.yaml" deploy/script/ucm_config_asu.yaml
+    cp -r "${KVCACHE_PROJECT_ROOT}/examples/metrics/metrics_configs.yaml" deploy/script/metrics_configs.yaml
     cp -r "${KVCACHE_PROJECT_ROOT}/test" .
+    cp "${KVCACHE_PROJECT_ROOT}/ucm/store/test/e2e/posixstore_aio_test.py" ./test/
     cp "${KVCACHE_PROJECT_ROOT}/ucm/integration/vllm/patch/0.11.0/vllm-adapt.patch" .
     cp "${KVCACHE_PROJECT_ROOT}/ucm/integration/vllm/patch/0.11.0/vllm-ascend-adapt.patch" .
     cp "${KVCACHE_PROJECT_ROOT}/ucm/sparse/gsa_on_device/csrc/ascend/install.sh" install_ascend_ops.sh

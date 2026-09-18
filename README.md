@@ -38,7 +38,7 @@ Sparse KV cache have many different choices. Recently paper point out that there
 and all models. So better to build a common framework then different sparse algorithms can be plugin to it like KV
 connector for PC.
 
-![architecture.png](https://raw.githubusercontent.com/ModelEngine-Group/unified-cache-management/main/docs/source/_static/images/idea.png)
+![architecture.png](./docs/source/_static/images/idea.png)
 
 All gray boxes in the diagram represent existing classes in vLLM version 0.9.2, while the green boxes indicate newly added components by UCM. 
 The light green boxes demonstrate potential future subclass extensions based on this framework.
@@ -80,10 +80,10 @@ please refer to [Quick Start for vLLM](https://ucm.readthedocs.io/en/latest/gett
 
 ## Branch
 
-| **Branch** |     Status | vLLM version |
-|-----------:|-----------:|-------------:|
-|       main | Maintained |       v0.17.0 |
-|    develop | Maintained |       v0.17.0 |
+| **Branch**   |     Status   | vLLM version | vLLM-Ascend version |
+|-----------:|-----------:|----------:|-----------------:|
+|       main | Maintained     |   v0.27.1 | nightly-0.26.0   |
+|    develop | Maintained     |   v0.27.1 | nightly-0.26.0   |
 
 ---
 

@@ -38,11 +38,6 @@ namespace UC::PosixStore {
 static const std::string DATA_ROOT = "data";
 static const std::string ACTIVATED_FILE_EXTENSION = ".tmp";
 
-struct FileInfo {
-    Detail::BlockId blockId;
-    time_t mtime;
-};
-
 struct MtimeComparator {
     bool operator()(const FileInfo& lhs, const FileInfo& rhs) const
     {
@@ -88,7 +83,23 @@ Status SpaceLayout::Setup(const Config& config)
 
 std::string SpaceLayout::DataFilePath(const Detail::BlockId& blockId, bool activated) const
 {
-    const auto& backend = StorageBackend(blockId);
+    return DataFilePath(StorageBackend(blockId), blockId, activated);
+}
+
+std::vector<std::string> SpaceLayout::HealthCheckPaths(const Detail::BlockId& blockId,
+                                                       bool activated) const
+{
+    std::vector<std::string> paths;
+    paths.reserve(storageBackends_.size());
+    for (const auto& backend : storageBackends_) {
+        paths.emplace_back(DataFilePath(backend, blockId, activated));
+    }
+    return paths;
+}
+
+std::string SpaceLayout::DataFilePath(const std::string& backend, const Detail::BlockId& blockId,
+                                      bool activated) const
+{
     const auto& file = DataFileName(blockId);
     const auto& shard = dataDirShard_ ? FileShardName(file) : DATA_ROOT;
     if (!activated) { return fmt::format("{}{}/{}", backend, shard, file); }
@@ -251,6 +262,35 @@ std::vector<Detail::BlockId> SpaceLayout::GetOldestFiles(const std::string& shar
     result.reserve(recycleNum);
     while (!heap->Empty()) {
         result.push_back(heap->Top().blockId);
+        heap->Pop();
+    }
+    return result;
+}
+
+std::string SpaceLayout::ShardOf(const Detail::BlockId& blockId) const
+{
+    if (!dataDirShard_) { return DATA_ROOT; }
+    return FileShardName(DataFileName(blockId));
+}
+
+std::vector<FileInfo> SpaceLayout::GetColdestCandidates(const std::string& shard,
+                                                        double candidatePercent,
+                                                        size_t maxCandidateCount) const
+{
+    std::string shardPath = storageBackends_.front();
+    shardPath += shard;
+    auto heap = std::make_unique<TopNHeap<FileInfo, MtimeComparator>>(maxCandidateCount);
+    size_t totalFiles = ScanFilesInShard(shardPath, *heap);
+    if (totalFiles == 0) { return {}; }
+    size_t candidateNum = static_cast<size_t>(totalFiles * candidatePercent);
+    if (candidateNum == 0) { return {}; }
+    candidateNum = std::min(candidateNum, maxCandidateCount);
+    size_t skipCount = heap->Size() - std::min<size_t>(candidateNum, heap->Size());
+    for (size_t i = 0; i < skipCount; ++i) { heap->Pop(); }
+    std::vector<FileInfo> result;
+    result.reserve(heap->Size());
+    while (!heap->Empty()) {
+        result.push_back(heap->Top());
         heap->Pop();
     }
     return result;

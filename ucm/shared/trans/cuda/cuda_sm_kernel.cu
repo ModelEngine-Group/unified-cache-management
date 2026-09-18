@@ -113,4 +113,4 @@ cudaError_t CudaSMCopyAsync(void* src, void* dst[], size_t size, size_t number, 
     return cudaGetLastError();
 }
 
-} // namespace UC::Trans
+}  // namespace UC::Trans

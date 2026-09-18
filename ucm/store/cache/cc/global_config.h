@@ -24,8 +24,20 @@
 #ifndef UNIFIEDCACHE_CACHE_STORE_CC_GLOBAL_CONFIG_H
 #define UNIFIEDCACHE_CACHE_STORE_CC_GLOBAL_CONFIG_H
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <string>
+#include <vector>
 #include "ucmstore_v1.h"
+
+#ifndef UCM_RUNTIME_ASCEND_IO_AGGREGATION
+#define UCM_RUNTIME_ASCEND_IO_AGGREGATION 0
+#endif
+
+#ifndef UCM_RUNTIME_ASCEND_SDMA_DIRECT
+#define UCM_RUNTIME_ASCEND_SDMA_DIRECT 0
+#endif
 
 namespace UC::CacheStore {
 
@@ -36,7 +48,7 @@ struct Config {
     std::vector<size_t> tensorSizes{};
     size_t shardSize{0};
     size_t blockSize{0};
-    bool ioDirect{false};
+    bool ioDirect{true};
     std::vector<ssize_t> cpuAffinityCores{};
     size_t bufferCapacity{256ULL << 30};
     size_t loadExclusiveBufferNumber{1024};
@@ -46,6 +58,14 @@ struct Config {
     size_t timeoutMs{30000};
     size_t streamNumber{4};
     bool cacheLoadBackendOnly{false};
+    std::vector<uintptr_t> gpuKvBufferAddrs{};
+    std::vector<size_t> gpuKvBufferSizes{};
+    bool useGdr{false};
+    bool cacheIOAggregation{false};
+    bool cacheSdmaDirect{UCM_RUNTIME_ASCEND_SDMA_DIRECT};
+    size_t localRankSize{8};
+
+    size_t EffectiveStreamNumber() const noexcept { return cacheSdmaDirect ? 1 : streamNumber; }
 };
 
 }  // namespace UC::CacheStore

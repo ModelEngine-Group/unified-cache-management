@@ -3,7 +3,11 @@ name: 'Lint and Unit Tests'
 on:
   workflow_call:
 
+
 jobs:
+  toolkit-package:
+    uses: ./.github/workflows/_build-toolkit.yml
+
   cpp-linter:
     runs-on: ubuntu-latest
     steps:
@@ -91,7 +95,7 @@ jobs:
     - uses: actions/checkout@v4
 
     - name: Configure CMake
-      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DBUILD_UCM_SPARSE=OFF -DBUILD_UNIT_TESTS=ON -DRUNTIME_ENVIRONMENT=simu
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DBUILD_UCM_SPARSE=OFF -DBUILD_UNIT_TESTS=ON -DRUNTIME_ENVIRONMENT=simu -DBUILD_UCM_ASU=ON
 
     - name: Build
       run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} -j

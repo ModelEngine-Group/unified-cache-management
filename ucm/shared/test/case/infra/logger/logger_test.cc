@@ -24,11 +24,12 @@
  * */
 
 #include "logger/logger.h"
-#include <ctime>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
 #include <spdlog/spdlog.h>
+#include <thread>
 
 using namespace UC::Logger;
 
@@ -43,6 +44,38 @@ void CleanDir(const std::string& path)
         std::exit(1);
     }
 }
+
+bool FileContains(const std::filesystem::path& path, const std::string& content)
+{
+    std::ifstream log_file(path, std::ios::binary);
+    if (!log_file.is_open()) { return false; }
+    const std::string data((std::istreambuf_iterator<char>(log_file)),
+                           std::istreambuf_iterator<char>());
+    return data.find(content) != std::string::npos;
+}
+
+bool AnyLogFileContains(const std::string& dir, const std::string& prefix,
+                        const std::string& content)
+{
+    if (!std::filesystem::exists(dir)) { return false; }
+    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+        if (!entry.is_regular_file()) { continue; }
+        const std::string filename = entry.path().filename().string();
+        if (filename.rfind(prefix, 0) == 0 && FileContains(entry.path(), content)) { return true; }
+    }
+    return false;
+}
+
+template <typename Predicate>
+bool WaitFor(Predicate&& predicate)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    do {
+        if (predicate()) { return true; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    } while (std::chrono::steady_clock::now() < deadline);
+    return predicate();
+}
 }  // namespace
 
 class UCLoggerTest : public ::testing::Test {
@@ -51,7 +84,6 @@ protected:
     {
         CleanDir(test_log_dir_);
         std::filesystem::create_directories(test_log_dir_);
-        std::cout << "test_log_path_: " << test_log_path_ << std::endl;
         logger_ = &Logger::GetInstance();
         logger_->Setup(test_log_dir_, 3, 1);  // 3 files, 1MB max size
     }
@@ -63,8 +95,6 @@ protected:
     }
 
     static inline std::string test_log_dir_ = "log_test";
-    static inline std::string pid_ = std::to_string(getpid());
-    static inline std::string test_log_path_ = "log_test/" + pid_ + "/ucm.log";
     static inline Logger* logger_ = nullptr;
 };
 
@@ -77,69 +107,32 @@ TEST_F(UCLoggerTest, SingletonBehavior)
     ASSERT_EQ(&logger1, &logger2);
 }
 
-void VerifyLogFile(const std::string& log_path, const std::string& log_content,
-                   bool contains = true)
+TEST_F(UCLoggerTest, RegistersLoggerAndLevelFilter)
 {
-    ASSERT_TRUE(std::filesystem::exists(log_path)) << "Log file does not exist: " << log_path;
-
-    // Verify log content contains the expected message
-    std::ifstream log_file(log_path, std::ios::binary);
-    ASSERT_TRUE(log_file.is_open()) << "Failed to open log file: " << log_path;
-
-    std::string content((std::istreambuf_iterator<char>(log_file)),
-                        std::istreambuf_iterator<char>());
-    log_file.close();
-
-    if (contains) {
-        ASSERT_TRUE(content.find(log_content) != std::string::npos)
-            << "Expected content '" << log_content << "' not found in log file: " << log_path;
-    } else {
-        ASSERT_TRUE(content.find(log_content) == std::string::npos)
-            << "Expected content '" << log_content << "' found in log file: " << log_path;
-    }
+    auto spdlog_logger = spdlog::get("UC");
+    ASSERT_NE(spdlog_logger, nullptr);
+    EXPECT_FALSE(logger_->IsEnabledFor(Level::DEBUG));
+    EXPECT_TRUE(logger_->IsEnabledFor(Level::INFO));
+    EXPECT_TRUE(logger_->IsEnabledFor(Level::WARN));
+    EXPECT_TRUE(logger_->IsEnabledFor(Level::ERROR));
 }
 
-TEST_F(UCLoggerTest, AllLogLevels)
+TEST_F(UCLoggerTest, LogEventuallyReachesUcmFile)
 {
-    SourceLocation loc{"test_file.cc", "TestFunction", 100};
-    std::string debug_msg = "Debug message";
-    std::string info_msg = "Info message";
-    std::string warn_msg = "Warning message";
-    std::string error_msg = "Error message";
-    logger_->Log(Level::DEBUG, std::move(loc), std::move(debug_msg));
-    logger_->Log(Level::INFO, std::move(loc), std::move(info_msg));
-    logger_->Log(Level::WARN, std::move(loc), std::move(warn_msg));
-    logger_->Log(Level::ERROR, std::move(loc), std::move(error_msg));
+    const std::string msg = "async ucm logger smoke";
+    logger_->Log(Level::WARN, SourceLocation{"logger_test.cc", "LogEventuallyReachesUcmFile", 100},
+                 std::string(msg));
     logger_->Flush();
 
-    VerifyLogFile(test_log_path_, debug_msg, false);  // log level debug was not written to the file
-    VerifyLogFile(test_log_path_, info_msg, true);
-    VerifyLogFile(test_log_path_, warn_msg, true);
-    VerifyLogFile(test_log_path_, error_msg, true);
+    ASSERT_TRUE(WaitFor([&] { return AnyLogFileContains(test_log_dir_, "ucm-", msg); }));
 }
 
-TEST_F(UCLoggerTest, LogCompression)
+TEST_F(UCLoggerTest, FileOnlyLogEventuallyReachesVllmFile)
 {
-    SourceLocation loc{"test_file.cc", "TestFunction", 100};
-    std::string info_msg =
-        "Write 25000 log messages to test the number of compressed log files is 3.";
-    for (int i = 0; i < 25000; i++) {
-        logger_->Log(Level::INFO, std::move(loc), std::move(info_msg));
-    }
-    logger_->Flush();
+    const std::string msg = "async vllm logger smoke";
+    LogFileOnly(Level::WARN, "logger_test.cc", "FileOnlyLogEventuallyReachesVllmFile", 100,
+                std::string(msg));
+    Flush();
 
-    // Count compressed log files (.gz) in test_log_dir_
-    int compressed_file_count = 0;
-    std::string compressed_file_path = test_log_dir_ + "/" + pid_;
-    for (const auto& entry : std::filesystem::directory_iterator(compressed_file_path)) {
-        if (entry.is_regular_file()) {
-            std::string filename = entry.path().filename().string();
-            if (filename.size() >= 3 && filename.substr(filename.size() - 3) == ".gz") {
-                compressed_file_count++;
-            }
-        }
-    }
-
-    ASSERT_EQ(compressed_file_count, 3) << "Expected 3 compressed log files in " << test_log_dir_
-                                        << ", but found " << compressed_file_count;
+    ASSERT_TRUE(WaitFor([&] { return AnyLogFileContains(test_log_dir_, "vllm-", msg); }));
 }

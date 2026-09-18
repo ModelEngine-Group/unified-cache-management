@@ -22,7 +22,9 @@
  * SOFTWARE.
  * */
 #include "space_manager.h"
+#include <atomic>
 #include "logger/logger.h"
+#include "metrics_api.h"
 #include "posix_file.h"
 
 namespace UC::PosixStore {
@@ -31,8 +33,13 @@ Status SpaceManager::Setup(const Config& config)
 {
     hotnessTrackerEnable_ = config.deviceId == -1;
     gcEnable_ = config.posixGcEnable && config.posixCapacityGb > 0;
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_gc_running"), 0.0);
     auto s = layout_.Setup(config);
     if (s.Failure()) [[unlikely]] { return s; }
+    if (config.posixGcEnable) {
+        s = gcConfigGuard_.Setup(config);
+        if (s.Failure()) [[unlikely]] { return s; }
+    }
     if (hotnessTrackerEnable_) {
         s = hotnessTracker_.Setup(&layout_);
         if (s.Failure()) [[unlikely]] { return s; }
@@ -100,6 +107,18 @@ Expected<ssize_t> SpaceManager::LookupOnPrefix(const Detail::BlockId* blocks, si
     return firstFail->load() - 1;
 }
 
+Expected<ssize_t> SpaceManager::LookupOnReverse(const Detail::BlockId* blocks, size_t num)
+{
+    if (num == 0) { return static_cast<ssize_t>(-1); }
+    for (ssize_t i = static_cast<ssize_t>(num) - 1; i >= 0; --i) {
+        if (Lookup(blocks + i)) {
+            if (hotnessTrackerEnable_) { hotnessTracker_.Touch(*(blocks + i)); }
+            return i;
+        }
+    }
+    return static_cast<ssize_t>(-1);
+}
+
 uint8_t SpaceManager::Lookup(const Detail::BlockId* block)
 {
     const auto& path = layout_.DataFilePath(*block, false);
@@ -112,6 +131,13 @@ uint8_t SpaceManager::Lookup(const Detail::BlockId* block)
         return false;
     }
     return true;
+}
+
+void SpaceManager::Prefetch(const Detail::BlockId* blocks, size_t num)
+{
+    if (!hotnessTrackerEnable_) { return; }
+
+    for (size_t i = 0; i < num; i++) { hotnessTracker_.Touch(blocks[i]); }
 }
 
 void SpaceManager::OnLookupPrefix(PrefixLookupContext& ctx)

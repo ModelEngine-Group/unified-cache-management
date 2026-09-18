@@ -57,5 +57,9 @@ Env_preCheck:
   middle_page: ""
   expected_embed_bandwidth: 10
   expected_fetch_bandwidth: 10
-  kvCache_block_number: 1024
+  worker_number: 1
+  shard_size: 1 * 1024 * 1024
+  block_number: 64
+  dump_epoch_number: 32
+  load_epoch_number: 32
   storage_backends: [""]

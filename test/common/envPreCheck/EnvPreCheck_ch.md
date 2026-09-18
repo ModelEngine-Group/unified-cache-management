@@ -1,4 +1,3 @@
-我来帮你重新润色这份技术文档，让它更加专业且富有视觉层次：
 
 ---
 
@@ -13,10 +12,9 @@
 
 - [🌟 核心特性](#-核心特性)
 - [🎯 功能概述](#-功能概述)
-- [🚀 快速开始](#-快速开始)
-- [📁 项目结构](#-项目结构)
-- [🧪 测试用例详解](#-测试用例详解)
 - [⚙️ 配置说明](#️-配置说明)
+- [🚀 快速开始](#-快速开始)
+- [🧪 测试用例详解](#-测试用例详解)
 
 ---
 
@@ -51,7 +49,23 @@
 
 ### ⚡ 性能基线层
 
-- **存储带宽压测**：Embedding/Fetch 操作实测带宽对比预期阈值（< 85% 触发告警）
+- **存储带宽压测**：Dump/Load 操作实测带宽对比预期阈值（< 85% 触发告警）
+
+---
+## ⚙️ 配置说明（`config.yaml`）
+
+| 配置项 | 类型 | 说明 | 示例值 |
+|--------|------|------|--------|
+| `master_ip` | string | Master 节点 SSH IP | `192.168.1.10` |
+| `worker_ip` | list | Worker 节点 IP 列表（若不填则表示单节点自测） | `["192.168.1.11", "192.168.1.12"]` |
+| `ascend_rt_visible_devices` | string | NPU 可见设备序号 | `"0,1,2,3,4,5,6,7"` |
+| `node_num` | int | master和worker总节点数 | `2` |
+| `model_path` | string | 模型权重根目录 | `/data/models/llama-7b` |
+| `hf_model_name` | string | HuggingFace 模型标识 | `meta-llama/Llama-2-7b` |
+| `middle_page` | string | 模型中间页/组织名称 | `model_storage` |
+| `expected_embed_bandwidth` | float | 预期 Dump 带宽 (GB/s) | `12.0` |
+| `expected_fetch_bandwidth` | float | 预期 Load 带宽 (GB/s) | `8.0` |
+| `storage_backends` | list | 当前容器所在环境的挂载点路径 | `["/mnt/nfs"]` |
 
 ---
 
@@ -63,7 +77,6 @@
 tests/
 ├── common/envPreCheck/
 │   ├── run_env_preCheck.py      # 核心检测引擎
-│   └── utils/                   # 辅助工具集
 ├── suites/E2E/
 │   └── test_environment_precheck.py  # 测试入口
 └── config.yaml                  # 预检阈值配置文件
@@ -75,16 +88,16 @@ tests/
 # 进入测试目录
 cd tests/
 
-# 1️⃣ 执行完整预检（阶段 2）
-pytest --stage=2
-
-# 2️⃣ 按硬件平台执行
+# 1️⃣ 按硬件平台执行
 pytest --platform=npu    # Ascend NPU 环境
 pytest --platform=gpu    # NVIDIA GPU 环境
 
-# 3️⃣ 按特性单独执行
+# 2️⃣ 按特性单独执行
 pytest --feature=test_ssh_login
 pytest --feature=test_check_bandwidth
+
+# 3️⃣ 执行完整预检（阶段 2）
+pytest --stage=2
 
 # 4️⃣ 直接运行特定文件
 pytest suites/E2E/test_environment_precheck.py -v
@@ -163,40 +176,5 @@ test_check_bandwidth()
   if actual_bandwidth < expected_threshold * 0.85:
       raise PerformanceWarning("存储带宽不足，可能影响训练效率")
   ```
-
----
-
-## ⚙️ 配置说明（`config.yaml`）
-
-| 配置项 | 类型 | 说明 | 示例值 |
-|--------|------|------|--------|
-| `master_ip` | string | Master 节点 SSH IP | `192.168.1.10` |
-| `worker_ip` | list | Worker 节点 IP 列表 | `["192.168.1.11", "192.168.1.12"]` |
-| `ascend_rt_visible_devices` | string | NPU 可见设备序号 | `"0,1,2,3,4,5,6,7"` |
-| `node_num` | int | 集群总节点数 | `2` |
-| `model_path` | string | 模型权重根目录 | `/data/models/llama-7b` |
-| `hf_model_name` | string | HuggingFace 模型标识 | `meta-llama/Llama-2-7b` |
-| `middle_page` | string | 中间页/组织名称 | `model_storage` |
-| `expected_embed_bandwidth` | float | 预期 Embedding 带宽 (GB/s) | `12.0` |
-| `expected_fetch_bandwidth` | float | 预期 Fetch 带宽 (GB/s) | `8.0` |
-| `kvCache_block_number` | int | KV Cache 预分配块数 | `4096` |
-| `storage_backends` | list | 存储后端挂载路径 | `["/data", "/mnt/nfs"]` |
-
----
-
-## 🎨 输出示例
-
-```diff
-🚀 启动环境预检套件 (Platform: NPU)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✅ [PASS] SSH 免密登录 (2/2 nodes)
-✅ [PASS] NPU 设备状态 (8/8 cards online)
-✅ [PASS] HCCN 链路连通性 (56/56 links)
-⚠️  [WARN] TLS 配置 (card_3: tls_switch=1, expected=0)
-✅ [PASS] 模型权重完整性 (hash verified)
-❌ [FAIL] 存储带宽检测 (6.5 GB/s < 12.0 GB/s * 0.85)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔴 预检未通过，请修复高优问题后再启动训练任务
-```
 
 ---

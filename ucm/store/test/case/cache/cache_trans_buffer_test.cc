@@ -25,6 +25,7 @@
 #include "cache/cc/trans_buffer.h"
 #include "detail/random.h"
 #include "detail/types_helper.h"
+#include "metrics_api.h"
 
 class UCCacheTransBufferTest : public testing::TestWithParam<bool> {
 public:
@@ -143,6 +144,70 @@ TEST_P(UCCacheTransBufferTest, BackendOnlyLoadCoalescesInFlightEntry)
     ASSERT_EQ(owner.Data(), waiter.Data());
 }
 
+TEST_P(UCCacheTransBufferTest, SharesFailureAndRetriesAfterHandlesAreReleased)
+{
+    using UC::CacheStore::TransBuffer;
+    TransBuffer transBuffer;
+    UC::CacheStore::Config config;
+    config.uniqueId = rd.RandomString(10);
+    config.shardSize = 32768;
+    config.bufferCapacity = config.shardSize * 32768;
+    config.shareBufferEnable = GetParam();
+    config.deviceId = 0;
+    config.loadExclusiveBufferNumber = 0;
+    auto s = transBuffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
+    constexpr size_t shardIdx = 0;
+    void* failedAddr = nullptr;
+    {
+        auto owner = transBuffer.Get(blockId, shardIdx, true, true);
+        auto waiter = transBuffer.Get(blockId, shardIdx, true, true);
+        failedAddr = owner.Data();
+
+        owner.MarkFailed(UC::Status::NotFound());
+
+        ASSERT_EQ(owner.GetState(), TransBuffer::State::FAILED);
+        ASSERT_EQ(waiter.GetState(), TransBuffer::State::FAILED);
+        ASSERT_EQ(waiter.FailureStatus(), UC::Status::NotFound());
+        ASSERT_FALSE(waiter.Ready());
+    }
+
+    auto retry = transBuffer.Get(blockId, shardIdx, true, true);
+    ASSERT_TRUE(retry.Owner());
+    ASSERT_EQ(retry.GetState(), TransBuffer::State::LOADING);
+    ASSERT_EQ(retry.Data(), failedAddr);
+}
+
+TEST(UCCacheTransBufferSharedTest, SharesFailureAcrossMappings)
+{
+    using UC::CacheStore::TransBuffer;
+    UC::Test::Detail::Random rd;
+    UC::CacheStore::Config config;
+    config.uniqueId = rd.RandomString(10);
+    config.shardSize = 32768;
+    config.bufferCapacity = config.shardSize * 32768;
+    config.shareBufferEnable = true;
+    config.deviceId = 0;
+    config.loadExclusiveBufferNumber = 0;
+    TransBuffer ownerBuffer;
+    auto s = ownerBuffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    TransBuffer waiterBuffer;
+    s = waiterBuffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    auto blockId = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
+    constexpr size_t shardIdx = 0;
+    auto owner = ownerBuffer.Get(blockId, shardIdx, true, true);
+    auto waiter = waiterBuffer.Get(blockId, shardIdx, true, true);
+
+    owner.MarkFailed(UC::Status::NotFound());
+
+    ASSERT_FALSE(waiter.Owner());
+    ASSERT_EQ(waiter.GetState(), TransBuffer::State::FAILED);
+    ASSERT_EQ(waiter.FailureStatus(), UC::Status::NotFound());
+}
+
 TEST_P(UCCacheTransBufferTest, GetReservedNode)
 {
     UC::CacheStore::TransBuffer transBuffer;
@@ -219,4 +284,63 @@ TEST_P(UCCacheTransBufferTest, InsertDifferentDataRepeatedly)
             });
         }
     }
+}
+
+TEST_P(UCCacheTransBufferTest, ClockSparesRecentlyTouchedBlock)
+{
+    constexpr size_t nNode = 4;
+    UC::CacheStore::TransBuffer transBuffer;
+    UC::CacheStore::Config config;
+    config.uniqueId = rd.RandomString(10);
+    config.shardSize = 32768;
+    config.bufferCapacity = config.shardSize * nNode;
+    config.shareBufferEnable = GetParam();
+    config.deviceId = 0;
+    config.loadExclusiveBufferNumber = 0;
+    auto s = transBuffer.Setup(config);
+    ASSERT_EQ(s, UC::Status::OK());
+    auto b1 = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto b2 = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto b3 = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto b4 = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto b5 = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto b6 = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    constexpr size_t shardIdx = 0;
+
+    {
+        auto h = transBuffer.Get(b1, shardIdx);
+        h.MarkReady();
+    }
+    {
+        auto h = transBuffer.Get(b2, shardIdx);
+        h.MarkReady();
+    }
+    {
+        auto h = transBuffer.Get(b3, shardIdx);
+        h.MarkReady();
+    }
+    {
+        auto h = transBuffer.Get(b4, shardIdx);
+        h.MarkReady();
+    }
+
+    {
+        auto h = transBuffer.Get(b5, shardIdx);
+        h.MarkReady();
+    }
+    ASSERT_FALSE(transBuffer.Exist(b1, shardIdx));
+    ASSERT_TRUE(transBuffer.Exist(b5, shardIdx));
+
+    {
+        auto h = transBuffer.Get(b2, shardIdx);
+        ASSERT_TRUE(h.Ready());
+    }
+
+    {
+        auto h = transBuffer.Get(b6, shardIdx);
+        h.MarkReady();
+    }
+    ASSERT_TRUE(transBuffer.Exist(b2, shardIdx));
+    ASSERT_TRUE(transBuffer.Exist(b5, shardIdx));
+    ASSERT_FALSE(transBuffer.Exist(b3, shardIdx));
 }

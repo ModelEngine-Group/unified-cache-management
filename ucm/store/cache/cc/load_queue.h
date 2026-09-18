@@ -26,6 +26,7 @@
 
 #include <future>
 #include <thread>
+#include <vector>
 #include "copy_stream.h"
 #include "template/hashset.h"
 #include "template/spsc_ring_queue.h"
@@ -42,11 +43,12 @@ class LoadQueue {
     using TaskPair = std::pair<TaskPtr, WaiterPtr>;
     using TaskIdSet = HashSet<Detail::TaskHandle>;
     struct ShardTask {
-        Detail::TaskHandle taskHandle;
+        TaskPtr task;
         Detail::Shard shard;
         TransBuffer::Handle bufferHandle;
         Detail::TaskHandle backendTaskHandle;
         WaiterPtr waiter;
+        bool fromPosix{false};
     };
 
 private:
@@ -56,8 +58,13 @@ private:
     StoreV1* backend_{nullptr};
     int32_t deviceId_{-1};
     std::vector<size_t> tensorSizes_{};
+    size_t nShardPerBlock_{0};
     size_t streamNumber_{1};
+    bool useGdr_{false};
+    bool cacheIOAggregation_{false};
+    bool cacheSdmaDirect_{false};
     std::vector<ssize_t> cpuAffinityCores_{};
+    size_t localRankSize_{};
     SpscRingQueue<TaskPair> waiting_;
     SpscRingQueue<ShardTask> running_;
     std::thread dispatcher_;
@@ -75,8 +82,12 @@ private:
     void TransferStage(std::promise<Status>& started);
     void TransferOneTask(CopyStream& stream, ShardTask&& task);
     Status WaitBackendTaskReady(ShardTask& task);
-    Status HostToDeviceScatterAsync(std::shared_ptr<Trans::Stream> stream, void* host,
-                                    void** device);
+    Status HostToDeviceAsync(CopyStream& stream, void* host, void** device);
+    void RecordShardResults(const std::vector<ShardTask>& tasks, const ShardTask* extra,
+                            bool success) const;
+    void RecordLoadSourceShards(size_t total, size_t wait) const;
+    void RecordFailedShards(size_t count) const;
+    void RecordH2dSyncMetrics(double h2dSyncMs) const;
 };
 
 }  // namespace UC::CacheStore

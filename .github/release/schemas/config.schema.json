@@ -1,0 +1,239 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://modelengine-group.example/ucm/config.schema.json",
+  "oneOf": [
+    {"$ref": "#/$defs/releasePolicy"},
+    {"$ref": "#/$defs/platformPolicy"}
+  ],
+  "$defs": {
+    "releasePolicyProduct": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "runtime_repository", "target_repository"
+      ],
+      "properties": {
+        "id": {"enum": ["vllm", "vllm-ascend"]},
+        "runtime_repository": {"type": "string", "pattern": "^[a-z0-9.-]+/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$"},
+        "target_repository": {"type": "string", "pattern": "^ghcr\\.io/(\\{owner\\}|[a-z0-9][a-z0-9-]{0,38})/[a-zA-Z0-9_.-]+$"}
+      }
+    },
+    "releasePolicyPypi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index"],
+      "properties": {
+        "index": {"type": "string", "minLength": 1}
+      }
+    },
+    "releasePolicyOci": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespace"],
+      "properties": {
+        "namespace": {"type": "string", "minLength": 1}
+      }
+    },
+    "releasePolicyDockerhub": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "releasePolicyGithubRelease": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "releasePolicyPublish": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pypi", "ghcr", "dockerhub", "chart_oci", "github_release"],
+      "properties": {
+        "pypi": {"$ref": "#/$defs/releasePolicyPypi"},
+        "ghcr": {"$ref": "#/$defs/releasePolicyOci"},
+        "dockerhub": {"$ref": "#/$defs/releasePolicyDockerhub"},
+        "chart_oci": {"$ref": "#/$defs/releasePolicyOci"},
+        "github_release": {"$ref": "#/$defs/releasePolicyGithubRelease"}
+      }
+    },
+    "releaseProfileLimit": {
+      "oneOf": [
+        {"type": "integer", "const": -1},
+        {"type": "integer", "minimum": 1}
+      ]
+    },
+    "releaseProfilePublish": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pypi", "ghcr", "dockerhub", "chart_oci", "github_release"],
+      "properties": {
+        "pypi": {"type": "boolean"},
+        "ghcr": {"type": "boolean"},
+        "dockerhub": {"type": "boolean"},
+        "chart_oci": {"type": "boolean"},
+        "github_release": {"type": "boolean"}
+      }
+    },
+    "releaseProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_count", "publish"],
+      "properties": {
+        "max_count": {"$ref": "#/$defs/releaseProfileLimit"},
+        "publish": {"$ref": "#/$defs/releaseProfilePublish"}
+      }
+    },
+    "releaseProfiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stable", "prerelease", "draft", "nightly"],
+      "properties": {
+        "stable": {"$ref": "#/$defs/releaseProfile"},
+        "prerelease": {"$ref": "#/$defs/releaseProfile"},
+        "draft": {"$ref": "#/$defs/releaseProfile"},
+        "nightly": {"$ref": "#/$defs/releaseProfile"}
+      }
+    },
+    "releasePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "schema_version", "runners", "products", "publish", "release_profiles", "chart"],
+      "properties": {
+        "kind": {"const": "ucm-release-policy"},
+        "schema_version": {"const": 6},
+        "runners": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["amd64", "arm64"],
+          "properties": {
+            "amd64": {"type": "string", "minLength": 1},
+            "arm64": {"type": "string", "minLength": 1}
+          }
+        },
+        "products": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {"$ref": "#/$defs/releasePolicyProduct"}
+        },
+        "publish": {"$ref": "#/$defs/releasePolicyPublish"},
+        "release_profiles": {"$ref": "#/$defs/releaseProfiles"},
+        "chart": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "smoke_values"],
+          "properties": {
+            "source": {"type": "string", "minLength": 1},
+            "smoke_values": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["vllm", "vllm-ascend"],
+              "properties": {
+                "vllm": {"type": "string", "minLength": 1},
+                "vllm-ascend": {"type": "string", "minLength": 1}
+              }
+            }
+          }
+        }
+      }
+    },
+    "platformBackend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "platform"],
+      "properties": {
+        "status": {"enum": ["supported", "blocked"]},
+        "platform": {"type": "string", "minLength": 1},
+        "distribution": {"type": "string", "pattern": "^uc-manager(?:-[a-z0-9]+)+$"},
+        "distribution_template": {"type": "string", "pattern": "^uc-manager(?:-[a-z0-9]+)*-\\{runtime_variant\\}$"},
+        "external_runtime_exclude_patterns": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "platformPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "schema_version", "excluded_upstream_variants", "builder_families", "backends"],
+      "properties": {
+        "kind": {"const": "ucm-platform-policy"},
+        "schema_version": {"const": 3},
+        "excluded_upstream_variants": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["vllm-ascend"],
+          "properties": {
+            "vllm-ascend": {
+              "type": "array", "minItems": 1, "maxItems": 1, "uniqueItems": true,
+              "items": {"const": "310p"}
+            }
+          }
+        },
+        "builder_families": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cuda", "ascend"],
+          "properties": {
+            "cuda": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["target_repository", "source_repositories", "manylinux", "required_commands"],
+              "properties": {
+                "target_repository": {"type": "string", "pattern": "^ghcr\\.io/(\\{owner\\}|[a-z0-9][a-z0-9-]{0,38})/[a-zA-Z0-9_.-]+$"},
+                "source_repositories": {
+                  "type": "object", "additionalProperties": false,
+                  "required": ["amd64", "arm64"],
+                  "properties": {
+                    "amd64": {"type": "string", "pattern": "^[a-z0-9.-]+/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$"},
+                    "arm64": {"type": "string", "pattern": "^[a-z0-9.-]+/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$"}
+                  }
+                },
+                "manylinux": {"type": "string", "pattern": "^manylinux_[0-9]+_[0-9]+$"},
+                "required_commands": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+              }
+            },
+            "ascend": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["target_repository", "source_repositories", "manylinux", "required_commands", "required_files", "variant_required_files"],
+              "properties": {
+                "target_repository": {"type": "string", "pattern": "^ghcr\\.io/(\\{owner\\}|[a-z0-9][a-z0-9-]{0,38})/[a-zA-Z0-9_.-]+$"},
+                "source_repositories": {
+                  "type": "object", "additionalProperties": false,
+                  "required": ["amd64", "arm64"],
+                  "properties": {
+                    "amd64": {"type": "string", "pattern": "^[a-z0-9.-]+/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$"},
+                    "arm64": {"type": "string", "pattern": "^[a-z0-9.-]+/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$"}
+                  }
+                },
+                "manylinux": {"type": "string", "pattern": "^manylinux_[0-9]+_[0-9]+$"},
+                "required_commands": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+                "required_files": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+                "variant_required_files": {
+                  "type": "object", "additionalProperties": false,
+                  "required": ["a3"],
+                  "properties": {
+                    "a3": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+                  }
+                }
+              }
+            }
+          }
+        },
+        "backends": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cuda", "cann-a2", "cann-a3", "cann-a5"],
+          "properties": {
+            "cuda": {"$ref": "#/$defs/platformBackend"},
+            "cann-a2": {"$ref": "#/$defs/platformBackend"},
+            "cann-a3": {"$ref": "#/$defs/platformBackend"},
+            "cann-a5": {"$ref": "#/$defs/platformBackend"}
+          }
+        }
+      }
+    }
+  }
+}

@@ -242,12 +242,17 @@ def setup_gpu_resource(request):
     gpu_count_marker = request.node.get_closest_marker("gpu_count")
 
     if not gpu_mem_marker and not gpu_count_marker:
-        # No GPU markers, skip GPU resource setup
+        yield
+        return
+
+    platform_marker = request.node.get_closest_marker("platform")
+    if platform_marker and any(
+        str(arg).lower() in ("npu", "ascend") for arg in platform_marker.args
+    ):
         yield
         return
 
     if gpu_count_marker:
-        # Handle gpu_count marker - allocate multiple GPUs
         gpu_count = gpu_count_marker.args[0]
         mem_needed = gpu_mem_marker.args[0] if gpu_mem_marker else 0
         allocated_gpus = []
@@ -279,7 +284,6 @@ def setup_gpu_resource(request):
                 fcntl.flock(lock_file, fcntl.LOCK_UN)
                 lock_file.close()
     else:
-        # Handle gpu_mem marker - allocate single GPU with memory requirement
         mem_needed = gpu_mem_marker.args[0]
         gpu_id, free_in_mb, gpu_utilization, lock_file = get_free_gpu(mem_needed)
         if gpu_id is None:

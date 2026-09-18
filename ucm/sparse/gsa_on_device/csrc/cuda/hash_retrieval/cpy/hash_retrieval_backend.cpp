@@ -241,7 +241,7 @@ public:
         for (size_t i = 0; i < n_requests; ++i) {
             for (size_t j = 0; j < max_index_number; ++j) {
                 int index = idx_ptr[i * max_index_number + j];
-                if (index != -1) idxvec[i].push_back(index);
+                if (index != -1) { idxvec[i].push_back(index); }
             }
         }
 

@@ -1,0 +1,89 @@
+name: UCM Documentation · Check RTD build
+
+on:
+  pull_request:
+    paths:
+      - docs/docs-site/**
+      - .github/release/**
+      - pyproject.toml
+      - setup.py
+      - requirements-build.txt
+      - .github/workflows/release*.yml
+      - .github/workflows/_build*.yml
+      - .github/workflows/sync-builders.yml
+      - .github/workflows/ucm-build-bot.yml
+      - scripts/materialize_version.py
+      - .readthedocs.yaml
+      - .github/workflows/docs-check.yml
+  push:
+    paths:
+      - docs/docs-site/**
+      - .github/release/**
+      - pyproject.toml
+      - setup.py
+      - requirements-build.txt
+      - .github/workflows/release*.yml
+      - .github/workflows/_build*.yml
+      - .github/workflows/sync-builders.yml
+      - .github/workflows/ucm-build-bot.yml
+      - scripts/materialize_version.py
+      - .readthedocs.yaml
+      - .github/workflows/docs-check.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-check-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: Release · Contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Install release test dependencies
+        run: python -m pip install -r .github/release/requirements-dev.txt
+      - name: Test release behavior
+        run: python -m pytest -q .github/release/tests
+  check:
+    name: Docs · Build and contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Install documentation and test dependencies
+        run: python -m pip install -r docs/docs-site/requirements-dev.txt
+      - name: Test documentation contracts
+        run: python -m pytest -q docs/docs-site/tests
+      - name: Test installation renderer
+        run: node --test docs/docs-site/tests/install-ui.test.cjs
+      - name: Build both RTD language roots with real published installation data
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python docs/docs-site/tools/site.py build --lang en --strict \
+            --repository "${GITHUB_REPOSITORY}" --ref "${GITHUB_SHA}" \
+            --site-url https://docs.example.invalid/en/latest/
+          python docs/docs-site/tools/site.py build --lang zh --strict \
+            --repository "${GITHUB_REPOSITORY}" --ref "${GITHUB_SHA}" \
+            --site-url https://docs.example.invalid/zh-cn/latest/
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ucm-docs-${{ github.sha }}
+          path: docs/docs-site/site/
+          if-no-files-found: error
+          retention-days: 14

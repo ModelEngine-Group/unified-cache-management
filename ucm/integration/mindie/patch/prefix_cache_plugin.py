@@ -24,7 +24,6 @@ from .prefix_cache_preprocess import PrefixCachePreprocess
 from ..plugin import Plugin
 from ..plugin_manager import MemPoolType
 from ....modeling.backend_type import BackendType
-from ....utils.env import ENV
 from ....utils.log.logging import logger, print_log
 
 from ucm.integration.mindie import uc_hash_ext
@@ -54,13 +53,20 @@ def cpp_style_hash(value):
 
 
 def hash_combine(seed, token_id):
-    seed ^= (cpp_style_hash(token_id) + 0x9e3779b97f4a7c15 + (seed << HASH_SHIFT_LEFT) + (seed >> HASH_SHIFT_RIGHT))
+    seed ^= cpp_style_hash(token_id) + 0x9e3779b97f4a7c15 + (seed << HASH_SHIFT_LEFT) + (seed >> HASH_SHIFT_RIGHT)
     seed = 1 if seed == INVALID_HASH_VALUE else seed
     return seed % 2**64
 
 
 class PrefixCachePlugin(Plugin):
-    def __init__(self, generator_backend, kvcache_settings, infer_context, plugin_data_param, **kwargs):
+    def __init__(
+        self,
+        generator_backend,
+        kvcache_settings,
+        infer_context,
+        plugin_data_param,
+        **kwargs,
+    ):
         super().__init__()
         self.generator_backend = generator_backend
         self.model_wrapper = self.generator_backend.model_wrapper
@@ -93,8 +99,6 @@ class PrefixCachePlugin(Plugin):
         self.total_local_matched_token_num = 0
         self.total_remote_matched_token_num = 0
 
-        ## for mindspore
-        self.attention_mask = AttentionMask(None)
         self.model_name = self.generator_backend.model_name
         self.is_300i = False
         if self.generator_backend.backend_type == BackendType.ATB:
@@ -104,15 +108,16 @@ class PrefixCachePlugin(Plugin):
         self.mempool_type = MemPoolType.DISABLED
         self.num_put_layers = self.kvcache_settings.num_layers
         if len(self.generator_backend.kv_pool_backend) != 0 and len(self.generator_backend.kv_pool_config_path) != 0:
-            self.mempool_type = \
+            self.mempool_type = (
                 MemPoolType.ASYNC_WRITE if self.generator_backend.kv_pool_async_write else MemPoolType.SYNC_WRITE
+            )
             from mindie_llm.text_generator.mempool import MemPool
             self.m_store = MemPool.create_pool(
                 backend=self.generator_backend.kv_pool_backend,
                 config_path=self.generator_backend.kv_pool_config_path,
                 role=MEM_POOL_ROLE_KEY,
                 device_id=self.device_id,
-                kv_caches=self.generator_backend.cache_pool.npu_cache
+                kv_caches=self.generator_backend.cache_pool.npu_cache,
             )
             if self.m_store is None:
                 self.mempool_type = MemPoolType.DISABLED
@@ -144,10 +149,18 @@ class PrefixCachePlugin(Plugin):
         return input_metadata.is_prefill and input_metadata.remote_computed_blocks is not None
 
     # 第一个插件类函数：输入构造
-    def model_inputs_update(self, model_inputs, input_metadata, sampling_metadata, cache_ids, input_len_mask, **kwargs):
+    def model_inputs_update(
+        self,
+        model_inputs,
+        input_metadata,
+        sampling_metadata,
+        cache_ids,
+        input_len_mask,
+        **kwargs,
+    ):
         (q_len, spec_mask) = input_len_mask
 
-        if input_metadata.batch_is_prefill is not None: # prefix_cache + splitfuse
+        if input_metadata.batch_is_prefill is not None:  # prefix_cache + splitfuse
             batch_size = input_metadata.batch_is_prefill.shape[0]
         else:
             batch_size = input_metadata.batch_size
@@ -175,21 +188,29 @@ class PrefixCachePlugin(Plugin):
             remote_cache_hit_rate = remote_matched_token_num / input_metadata.total_seq_num * 100
             total_local_cache_hit_rate = self.total_local_matched_token_num / self.total_token_num * 100
             total_remote_cache_hit_rate = self.total_remote_matched_token_num / self.total_token_num * 100
-            print_log(self.rank, logger.info, f'Prefix Cache Reporter: '
-                      f'#batchsize: {batch_size}, '
-                      f'#batched-tokens: {input_metadata.total_seq_num}, '
-                      f'#local cached-tokens: {local_matched_token_num}, '
-                      f'#local cached hit rate: {round(local_cache_hit_rate, 3)}%, '
-                      f'#remote cached-tokens: {remote_matched_token_num}, '
-                      f'#remote cached hit rate: {round(remote_cache_hit_rate, 3)}%, '
-                      f'#cached hit rate: {round(local_cache_hit_rate + remote_cache_hit_rate, 3)}%')
-            print_log(self.rank, logger.info, f'Prefix Cache Global Reporter: '
-                      f'#total prefill tokens: {self.total_token_num}, '
-                      f'#total local matched tokens: {self.total_local_matched_token_num}, '
-                      f'#total local cached hit rate: {round(total_local_cache_hit_rate, 3)}%, '
-                      f'#total remote matched tokens: {self.total_remote_matched_token_num}, '
-                      f'#total remote cached hit rate: {round(total_remote_cache_hit_rate, 3)}%, '
-                      f'#total cached hit rate: {round(total_local_cache_hit_rate + total_remote_cache_hit_rate, 3)}%')
+            print_log(
+                self.rank,
+                logger.info,
+                f'Prefix Cache Reporter: '
+                f'#batchsize: {batch_size}, '
+                f'#batched-tokens: {input_metadata.total_seq_num}, '
+                f'#local cached-tokens: {local_matched_token_num}, '
+                f'#local cached hit rate: {round(local_cache_hit_rate, 3)}%, '
+                f'#remote cached-tokens: {remote_matched_token_num}, '
+                f'#remote cached hit rate: {round(remote_cache_hit_rate, 3)}%, '
+                f'#cached hit rate: {round(local_cache_hit_rate + remote_cache_hit_rate, 3)}%',
+            )
+            print_log(
+                self.rank,
+                logger.info,
+                f'Prefix Cache Global Reporter: '
+                f'#total prefill tokens: {self.total_token_num}, '
+                f'#total local matched tokens: {self.total_local_matched_token_num}, '
+                f'#total local cached hit rate: {round(total_local_cache_hit_rate, 3)}%, '
+                f'#total remote matched tokens: {self.total_remote_matched_token_num}, '
+                f'#total remote cached hit rate: {round(total_remote_cache_hit_rate, 3)}%, '
+                f'#total cached hit rate: {round(total_local_cache_hit_rate + total_remote_cache_hit_rate, 3)}%',
+            )
 
         input_len_mask = (q_len, spec_mask)
 
@@ -197,7 +218,6 @@ class PrefixCachePlugin(Plugin):
 
     def get_extra_infer_input(self, model_inputs, batch_size, q_len, attention_mask):
         q_lens_list = q_len
-        attention_mask = attention_mask
         if model_inputs.is_prefill:  # decode并行解码模式，需要构造q_lens和spec_mask参数
             if model_inputs.query_length is not None:
                 q_lens_list = model_inputs.query_length.tolist()
@@ -205,15 +225,12 @@ class PrefixCachePlugin(Plugin):
                 q_lens_list = [1] * batch_size
 
             kv_dtype = self.kvcache_settings.dtype
-            if self.generator_backend.backend_type == BackendType.MS:
-                if model_inputs.query_length is None:
-                    return q_lens_list, [[0]] * batch_size
-                seq_len = model_inputs.max_seq_len
-                atten_mask = self.attention_mask.get_attn_mask(seq_len)
-            elif self.is_300i: # In 300I, the construction of mask is different from A2 and A3
+
+            if self.is_300i:  # In 300I, the construction of mask is different from A2 and A3
                 kv_device = self.model_wrapper.device
-                atten_mask = self.model_wrapper.model_runner.attn_mask.get_attn_mask(model_inputs.max_seq_len,
-                                                                                    kv_dtype, kv_device)
+                atten_mask = self.model_wrapper.model_runner.attn_mask.get_attn_mask(
+                    model_inputs.max_seq_len, kv_dtype, kv_device
+                )
                 if atten_mask[0][1] > 0:
                     atten_mask = atten_mask * -10000.0
             else:
@@ -225,17 +242,18 @@ class PrefixCachePlugin(Plugin):
                 start = model_inputs.context_length[i] - q_lens_list[i]
                 end = model_inputs.context_length[i]
                 req_mask_list.append(atten_mask[start:end])
-            if self.generator_backend.backend_type == BackendType.MS:
-                attention_mask = np.concatenate(req_mask_list, axis=0)
-            else:
-                import torch
-                attention_mask = torch.cat(req_mask_list, 0)
+            import torch
+
+            attention_mask = torch.cat(req_mask_list, 0)
         return q_lens_list, attention_mask
 
     def sample_preprocess(self, logits, result, sampling_metadata, input_metadata):
         return logits
 
     def plugin_verify(self, sampling_output, cache_ids, result):
+        pass
+
+    def plugin_verify_exp(self, sampling_output, cache_ids, result):
         pass
 
     def plugin_cache_update(self, cache_ids, sampling_output, la_cache_input, is_prefill=False):
@@ -278,11 +296,11 @@ class PrefixCachePlugin(Plugin):
                 computed_blocks = np.zeros(input_metadata.batch_size, dtype=np.int64)
 
         if self.scp_size > 1:
-            computed_blocks = np.sum(computed_blocks, axis=1)                   # shape: [batch_size]
-            remote_computed_blocks = np.sum(remote_computed_blocks, axis=1)     # shape: [batch_size]
+            computed_blocks = np.sum(computed_blocks, axis=1)  # shape: [batch_size]
+            remote_computed_blocks = np.sum(remote_computed_blocks, axis=1)  # shape: [batch_size]
 
         batch_input_ids_offset = 0  # 每个请求的input ids开始索引
-        prefix_keys = []        # shape： [all_requests_kyes_num] 
+        prefix_keys = []  # shape： [all_requests_kyes_num]
         req_block_ids = []
         for i in range(input_metadata.batch_size):
             seq_len = int(input_metadata.batch_seq_len[i])
@@ -348,8 +366,11 @@ class PrefixCachePlugin(Plugin):
             self.put_task_queue.put((layer_id == 0, layer_id == (self.num_put_layers - 1), only_save_kv))
 
     def put_prefix_kvcache_to_mempool(self, input_metadata, cache_ids):
-        if self.mempool_type == MemPoolType.DISABLED or not input_metadata.is_prefill or \
-            sum(input_metadata.batch_dp_rank_ids == self.generator_backend.mapping.attn_dp.rank) <= 0:
+        if (
+            self.mempool_type == MemPoolType.DISABLED
+            or not input_metadata.is_prefill
+            or sum(input_metadata.batch_dp_rank_ids == self.generator_backend.mapping.attn_dp.rank) <= 0
+        ):
             return
 
         attn_dp_rank = self.generator_backend.mapping.attn_dp.rank
@@ -367,11 +388,11 @@ class PrefixCachePlugin(Plugin):
                 remote_computed_blocks = np.zeros(input_metadata.batch_size, dtype=np.int64)
 
         if self.scp_size > 1:
-            remote_computed_blocks = np.sum(remote_computed_blocks, axis=1)     # shape: [batch_size]
+            remote_computed_blocks = np.sum(remote_computed_blocks, axis=1)  # shape: [batch_size]
 
         max_block_size = input_metadata.max_block_size
         batch_block_tables = input_metadata.batch_block_tables
-        prefix_keys = []        # shape： [all_requests_kyes_num]
+        prefix_keys = []  # shape： [all_requests_kyes_num]
         req_block_ids = []
         for i in range(input_metadata.batch_size):
             if batch_dp_rank_ids[i] != attn_dp_rank:
@@ -410,6 +431,7 @@ class PrefixCachePlugin(Plugin):
 
     def _put_prefix_kvcache_thread(self):
         import torch
+
         torch.npu.set_device(f"npu:{self.device_id}")
         stream = torch.npu.Stream()
         torch.npu.set_stream(stream)
@@ -426,22 +448,3 @@ class PrefixCachePlugin(Plugin):
                 if is_last:
                     self.put_prefix_kvcache_to_mempool(input_metadata, cache_ids)
                     self.save_event.set()  # True
-
-
-class AttentionMask:
-    def __init__(self, atten_mask):
-        self._seq_len_cache = 0
-        self.atten_mask_cache = atten_mask
-
-    def update_attn_cache(self, seq_len):
-        if seq_len > self._seq_len_cache:
-            self._seq_len_cache = seq_len
-            bias_cache = np.tril(np.ones((seq_len, seq_len), dtype=np.bool_))
-            bias_cache = ~bias_cache
-            mask_value = np.finfo(np.float32).min
-            atten_mask = np.ma.masked_array(np.zeros((seq_len, seq_len)), mask=bias_cache).filled(mask_value)
-            self.atten_mask_cache = atten_mask
-
-    def get_attn_mask(self, max_s: int):
-        self.update_attn_cache(max_s)
-        return self.atten_mask_cache[:max_s, :max_s]

@@ -23,9 +23,11 @@
  * */
 #include "pcstore.h"
 #include <fmt/ranges.h>
+#include <memory>
 #include "logger/logger.h"
 #include "space/space_manager.h"
 #include "status/status.h"
+#include "trans/cuda/gdr/gdr_config.h"
 #include "trans/trans_manager.h"
 
 namespace UC {
@@ -34,8 +36,17 @@ class PcStoreImpl : public PcStore {
 public:
     int32_t Setup(const Config& config)
     {
-        auto status = this->spaceMgr_.Setup(config.storageBackends, config.kvcacheBlockSize,
-                                            config.shardDataDir);
+        auto status =
+            Trans::GdrKVBufferConfig::Validate(config.gpuKvBufferAddrs, config.gpuKvBufferSizes);
+        if (status.Failure()) { return status.Underlying(); }
+        if (config.transferEnable && !config.gpuKvBufferAddrs.empty()) {
+            gpuKvBufferRegistrations_ = std::make_unique<Trans::GdrKVBufferConfig>();
+            status = gpuKvBufferRegistrations_->Register(config.gpuKvBufferAddrs,
+                                                         config.gpuKvBufferSizes);
+            if (status.Failure()) { return status.Underlying(); }
+        }
+        status = this->spaceMgr_.Setup(config.storageBackends, config.kvcacheBlockSize,
+                                       config.shardDataDir);
         if (status.Failure()) { return status.Underlying(); }
         if (config.transferEnable) {
             if (config.uniqueId.empty()) {
@@ -46,7 +57,8 @@ public:
                 config.transferLocalRankSize, config.transferDeviceId, config.transferStreamNumber,
                 config.kvcacheBlockSize, config.transferIoSize, config.transferIoDirect,
                 config.transferBufferNumber, this->spaceMgr_.GetSpaceLayout(),
-                config.transferTimeoutMs, config.transferScatterGatherEnable, config.uniqueId);
+                config.transferTimeoutMs, config.transferScatterGatherEnable, config.transferUseGdr,
+                config.uniqueId);
             if (status.Failure()) { return status.Underlying(); }
         }
         this->ShowConfig(config);
@@ -99,12 +111,15 @@ private:
         UC_INFO("Set UC::BufferNumber to {}.", config.transferBufferNumber);
         UC_INFO("Set UC::TimeoutMs to {}.", config.transferTimeoutMs);
         UC_INFO("Set UC::ScatterGatherEnable to {}.", config.transferScatterGatherEnable);
+        UC_INFO("Set UC::UseGdr to {}.", config.transferUseGdr);
         UC_INFO("Set UC::ShardDataDir to {}.", config.shardDataDir);
+        UC_INFO("Set UC::GpuKvBufferNumber to {}.", config.gpuKvBufferAddrs.size());
     }
 
 private:
     SpaceManager spaceMgr_;
     TransManager transMgr_;
+    std::unique_ptr<Trans::GdrKVBufferConfig> gpuKvBufferRegistrations_{nullptr};
 };
 
 int32_t PcStore::Setup(const Config& config)

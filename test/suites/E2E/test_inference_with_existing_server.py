@@ -35,7 +35,7 @@ class TestBasicOnlineInference:
 
     @pytest.mark.stage(1)
     @pytest.mark.feature("fvt_test")
-    @pytest.mark.parametrize("max_tokens", [200])
+    @pytest.mark.parametrize("max_tokens", [1000])
     @pytest.mark.parametrize("prompt_split_ratio", [0.5])
     def test_online_accuracy_hbm_ssd_mixed(
         self,

@@ -24,6 +24,7 @@
 #include "hotness_tracker.h"
 #include <utime.h>
 #include "logger/logger.h"
+#include "thread/cpu_affinity.h"
 
 namespace UC::PosixStore {
 
@@ -53,6 +54,10 @@ void HotnessTracker::Touch(const Detail::BlockId& blockId)
 
 void HotnessTracker::UtimeWorkerLoop()
 {
+    auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_posix_hot");
+    if (nameStatus.Failure()) {
+        UC_WARN("Failed({}) to set UCM posix hotness worker name.", nameStatus);
+    }
     std::deque<Detail::BlockId> consumeQueue;
     constexpr size_t kSpinLimit = 16;
     size_t spinCount = 0;

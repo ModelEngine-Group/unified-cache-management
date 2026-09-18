@@ -24,7 +24,10 @@
 #ifndef UNIFIEDCACHE_TRANS_STREAM_H
 #define UNIFIEDCACHE_TRANS_STREAM_H
 
+#include <cstdint>
 #include <functional>
+#include <vector>
+#include "event.h"
 #include "status/status.h"
 
 namespace UC::Trans {
@@ -48,9 +51,49 @@ public:
     virtual Status HostToDeviceAsync(void* host[], void* device[], size_t size, size_t number) = 0;
     virtual Status HostToDeviceAsync(void* host, void* device[], size_t size, size_t number) = 0;
 
+    virtual Status DeviceToDevice(void* source, void* destination, size_t size) = 0;
+    virtual Status DeviceToDevice(void* source[], void* destination[], size_t size,
+                                  size_t number) = 0;
+    virtual Status DeviceToDevice(void* source[], void* destination, size_t size,
+                                  size_t number) = 0;
+    virtual Status DeviceToDeviceAsync(void* source, void* destination, size_t size) = 0;
+    virtual Status DeviceToDeviceAsync(void* source[], void* destination[], size_t size,
+                                       size_t number) = 0;
+    virtual Status DeviceToDeviceAsync(void* source[], void* destination, size_t size,
+                                       size_t number) = 0;
+    virtual Status HostToDeviceAsync(void* host, void* device[], const std::vector<size_t>& sizes)
+    {
+        size_t offset = 0;
+        for (size_t i = 0; i < sizes.size(); ++i) {
+            auto* pHost = static_cast<void*>(static_cast<int8_t*>(host) + offset);
+            // skip zero-padded ghost slots (addr==nullptr or size==0) but
+            // still advance offset so the host layout matches tensorSizes_.
+            if (sizes[i] != 0 && device[i] != nullptr) {
+                auto s = HostToDeviceAsync(pHost, device[i], sizes[i]);
+                if (s.Failure()) [[unlikely]] { return s; }
+            }
+            offset += sizes[i];
+        }
+        return Status::OK();
+    }
+    virtual Status DeviceToHostAsync(void* device[], void* host, const std::vector<size_t>& sizes)
+    {
+        size_t offset = 0;
+        for (size_t i = 0; i < sizes.size(); ++i) {
+            auto* pHost = static_cast<void*>(static_cast<int8_t*>(host) + offset);
+            // skip zero-padded ghost slots (addr==nullptr or size==0) but
+            // still advance offset so the host layout matches tensorSizes_.
+            if (sizes[i] != 0 && device[i] != nullptr) {
+                auto s = DeviceToHostAsync(device[i], pHost, sizes[i]);
+                if (s.Failure()) [[unlikely]] { return s; }
+            }
+            offset += sizes[i];
+        }
+        return Status::OK();
+    }
     virtual Status AppendCallback(std::function<void(bool)> cb) = 0;
     virtual Status Synchronized() = 0;
-    virtual Status WaitEvent(void* event) = 0;
+    virtual Status WaitEvent(const Event& event) = 0;
 };
 
 }  // namespace UC::Trans

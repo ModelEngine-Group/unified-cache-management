@@ -1,185 +1,340 @@
-# Observability
+# UCM Metrics Observability
 
-UCM (Unified Cache Management) provides detailed metrics monitoring through Prometheus endpoints, allowing in-depth monitoring of cache performance and behavior. This document describes how to enable and configure observability from the embedded vLLM `/metrics` API endpoint.
+UCM exports metrics through the vLLM connector and reuses vLLM's Prometheus `/metrics` endpoint. No separate exporter, export mode, or service port is required.
 
----
+We recommend using Prometheus to scrape vLLM metrics and Grafana to visualize the collected data.
 
-## Quick Start Guide
+Use a scrape and dashboard refresh interval of **at least 5 seconds** for UCM metrics. The Prometheus and Metrics-view examples in this guide both use 5 seconds. A shorter interval usually does not make UCM metrics update faster.
 
-### 1) On UCM Side
+The effective refresh frequency also depends on vLLM. UCM first accumulates metrics internally. New data is synchronized to the Prometheus metrics exposed by vLLM only after vLLM processes a request and calls the connector's `get_kv_connector_stats()` method. **When there are no inference requests, vLLM does not call this method and UCM metrics do not update.**
 
-First, set the `PROMETHEUS_MULTIPROC_DIR` environment variable.
+## Metrics workflow
 
-```bash
-export PROMETHEUS_MULTIPROC_DIR=/vllm-workspace
+The following example uses DP=2 and TP=1. Each DP contains one worker Store and one scheduler Store, and the two DPs process their own requests or batches.
+
+```{mermaid}
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant A as vLLM API Server
+    participant S0 as DP 0 Scheduler
+    participant W0 as DP 0 Worker
+    participant S1 as DP 1 Scheduler
+    participant W1 as DP 1 Worker
+    participant M as vLLM /metrics Endpoint<br/>(hosted by API Server)
+    participant P as Prometheus
+
+    C->>A: Send inference requests
+    par Request or batch assigned to DP 0
+        A->>S0: Schedule batch A
+        S0->>W0: Run the model and UCM Lookup/Load/Save
+        W0->>W0: Accumulate metrics inside UCM
+        W0->>W0: vLLM calls get_kv_connector_stats() to collect accumulated UCM metrics
+        W0-->>S0: Return worker metrics (worker_rank=0)
+        S0->>S0: Return scheduler metrics (worker_rank=scheduler)
+        S0-->>A: Report connector stats (engine=engine-0)
+    and Request or batch assigned to DP 1
+        A->>S1: Schedule batch B
+        S1->>W1: Run the model and UCM Lookup/Load/Save
+        W1->>W1: Accumulate metrics inside UCM
+        W1->>W1: vLLM calls get_kv_connector_stats() to collect accumulated UCM metrics
+        W1-->>S1: Return worker metrics (worker_rank=1)
+        S1->>S1: Return scheduler metrics (worker_rank=scheduler)
+        S1-->>A: Report connector stats (engine=engine-1)
+    end
+    A->>M: Update ucm:* series by metric type
+    P->>M: GET /metrics
+    M-->>P: Return vllm:* and ucm:* metrics
 ```
 
-Then, you should uncomment `metrics_config_path` in ucm's config.yaml—this path specifies which metrics need to be collected.
+UCM accumulates Counters, Gauges, and Histograms in the process that performs each Lookup, Load, Save, or health probe. While processing requests, vLLM obtains the accumulated UCM metrics from the worker and scheduler connectors. These metrics return with each DP's engine stats, and vLLM Prometheus metrics write them to the corresponding series with the `model_name`, `engine`, and `worker_rank` labels.
 
-After completing the two steps above, you can start the service to collect metrics.
+The vLLM `/metrics` endpoint and Prometheus registry reside in the API Server process. Prometheus scrapes that endpoint directly; the API Server's HTTP route only returns data that has already been synchronized to the registry and does not call `get_kv_connector_stats()`. With no inference requests, UCM may still produce new data internally, but that data appears in `/metrics` only after the next vLLM request triggers synchronization.
 
-```bash
-export CUDA_VISIBLE_DEVICES=0
-vllm serve /home/models/Qwen2.5-14B-Instruct  \
-    --max-model-len 5000 \
-    --tensor-parallel-size 1 \
-    --gpu_memory_utilization 0.87 \
-    --trust-remote-code \
-    --disable-log-requests \
-    --no-enable-prefix-caching \
-    --enforce-eager \
-    --max-num-batched-tokens 40000 \
-    --max-num-seqs 10 \
-    --host 0.0.0.0 \
-    --port 8000 \
-    --kv-transfer-config \
-    '{
-        "kv_connector": "UCMConnector",
-        "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
-        "kv_role": "kv_both",
-        "kv_connector_extra_config": {
-            "UCM_CONFIG_FILE": "/vllm-workspace/unified-cache-management/examples/ucm_config.yaml"
-        }
-    }'
-```
+## 1. Enable or Disable Metrics
 
-You can use the `vllm bench serve` command to run benchmarks:
+### 1.1 Use the Built-in Configuration
 
-```bash
-vllm bench serve \
-    --backend vllm \
-    --model /home/models/Qwen2.5-14B-Instruct \
-    --host 127.0.0.1 \
-    --port 8000 \
-    --dataset-name random \
-    --num-prompts 20 \
-    --random-input-len 200 \
-    --random-output-len 10 \
-    --request-rate 1 \
-    --ignore-eos
-```
-
-Once the HTTP server is running, you can access the UCM metrics at the `/metrics` endpoint.
-
-```bash
-curl http://$<vllm-worker-ip>:8000/metrics | grep ucm:
-```
-
-You will also find some `.db` files in the `$PROMETHEUS_MULTIPROC_DIR` directory, which are temporary files used by Prometheus.
-
-### 2) Start Prometheus and Grafana with Docker Compose
-
-#### Create Docker Compose Configuration Files
-
-First, create the `docker-compose.yaml` file:
+UCM metrics are **enabled by default**. When `metrics_config_path` is omitted, UCM uses the complete built-in metric set. Metrics can also be enabled explicitly:
 
 ```yaml
-# docker-compose.yaml
-version: "3"
-
-services:
-  prometheus:
-    image: prom/prometheus:latest
-    extra_hosts:
-      - "host.docker.internal:host-gateway"     
-    ports:
-      - "9090:9090"   
-    volumes:
-      - ${PWD}/prometheus.yaml:/etc/prometheus/prometheus.yml 
-
-  grafana:
-    image: grafana/grafana:latest
-    depends_on:
-      - prometheus
-    ports:
-      - "3000:3000" 
+enable_metrics: true
 ```
 
-Then, create the `prometheus.yaml` configuration file:
+To disable all UCM metrics:
 
 ```yaml
-# prometheus.yaml
+enable_metrics: false
+```
+
+### 1.2 Use a Custom Configuration
+
+To restrict the exported metric set or customize Histogram buckets, set the following top-level UCM options:
+
+```yaml
+enable_metrics: true
+metrics_config_path: "/workspace/unified-cache-management/examples/metrics/metrics_configs.yaml"
+```
+
+Once `metrics_config_path` is set, the file becomes the metric enable-list. Only metrics defined in that file are registered.
+
+The metrics file must exist and be readable by the vLLM process. Otherwise, UCM metrics are not exposed.
+
+## 2. Access Metrics
+
+Start vLLM with the UCM connector and send at least one inference request. Then verify that UCM metrics are available:
+
+```bash
+curl http://<vllm-ip>:<vllm-port>/metrics | grep '^ucm:'
+```
+
+Most UCM metrics appear only after their corresponding code path has run. When there is no external-storage hit, only a small subset of metrics may be present.
+
+### 2.1 UCM Metric Labels
+
+Each metric exported through the vLLM connector carries these labels:
+
+| Label | Meaning | Example |
+| --- | --- | --- |
+| `model_name` | Model name served by vLLM, taken from the vLLM model configuration | `Qwen3-32B` |
+| `engine` | vLLM engine that produced the metric; distinguishes DP instances in the same service | `engine-0` |
+| `worker_rank` | UCM process that produced the metric, corresponding to a TP instance; workers use their distributed rank and the scheduler uses `scheduler` | `0`, `1`, `scheduler` |
+
+For example:
+
+```text
+ucm:cache_load_bytes_total{model_name="Qwen3-32B",engine="engine-0",worker_rank="0"} 1.048576e+08
+```
+
+Prometheus adds the following target labels when it scrapes the endpoint:
+
+| Label | Source | Meaning |
+| --- | --- | --- |
+| `job` | `job_name` in `prometheus.yml` | Scrape job name; `vllm` in this guide |
+| `instance` | Prometheus scrape target | Scraped vLLM address and port, such as `10.0.0.8:8000` |
+
+Because Prometheus adds `job` and `instance`, they are normally absent from the raw output of `curl /metrics`. Histogram `_bucket` series also carry the `le` label, which represents the bucket upper bound and is not a UCM business label.
+
+## 3. Prometheus and Grafana
+
+Prometheus and Grafana are the recommended combination for observing UCM. Prometheus periodically scrapes the vLLM metrics endpoint, stores historical time-series data, and provides a query interface. Grafana queries Prometheus and displays the metrics as dashboards.
+
+### 3.1 Install and Configure Prometheus
+
+If Prometheus already scrapes vLLM's `/metrics` endpoint, no additional scrape job is needed for UCM because both vLLM and UCM metrics are exposed through the same endpoint.
+
+The following example installs Prometheus with Docker. For other installation methods, see the [Prometheus installation documentation](https://prometheus.io/docs/prometheus/latest/installation/).
+
+Create `prometheus.yml` and configure Prometheus to scrape the vLLM service:
+
+```yaml
 global:
   scrape_interval: 5s
   evaluation_interval: 30s
 
 scrape_configs:
   - job_name: vllm
+    metrics_path: /metrics
     static_configs:
       - targets:
-          - 'host.docker.internal:8000'  
+          - "<vllm-ip>:8000"
 ```
 
-**Note**: Make sure the port number in `prometheus.yaml` matches the port number used when starting the vLLM service.
+Replace `<vllm-ip>:8000` with an address and port reachable from the Prometheus container. Do not use the container's own `127.0.0.1:8000`. If vLLM runs on the host, use the host's actual IP address. Docker Desktop users can also use `host.docker.internal:8000`.
 
-#### Start Services
-
-Run the following command in the directory containing `docker-compose.yaml` and `prometheus.yaml`:
+Create a network and a persistent Prometheus volume:
 
 ```bash
-docker compose up
+docker network create ucm-monitoring
+docker volume create prometheus-data
 ```
 
-This will start Prometheus and Grafana services.
+From the directory containing `prometheus.yml`, start Prometheus:
 
-### 3) Configure Grafana Dashboard
+```bash
+docker run -d \
+  --name prometheus \
+  --restart unless-stopped \
+  --network ucm-monitoring \
+  -p 9090:9090 \
+  -v "$(pwd)/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+  -v prometheus-data:/prometheus \
+  prom/prometheus
+```
 
-#### Access Grafana
+Open `http://<prometheus-ip>:9090/targets` and verify that the `vllm` target is **UP**. Then search for `vllm:` and `ucm:` on the Prometheus query page to verify that both metric families are available.
 
-Navigate to `http://<your-host>:3000`. Log in with the default username (`admin`) and password (`admin`). You will be prompted to change the password on first login.
+### 3.2 Install Grafana
 
-#### Add Prometheus Data Source
+The following example uses the official Grafana Docker image. For other installation methods, see the [Grafana installation documentation](https://grafana.com/docs/grafana/latest/setup-grafana/installation/).
 
-1. Navigate to `http://<your-host>:3000/connections/datasources/new` and select **Prometheus**.
+Create a persistent volume and start Grafana:
 
-2. On the Prometheus configuration page, add the Prometheus server URL in the **Connection** section. For this Docker Compose setup, Grafana and Prometheus run in separate containers, but Docker creates DNS names for each container. You can directly use `http://prometheus:9090`.
+```bash
+docker volume create grafana-data
 
-3. Click **Save & Test**. You should see a green checkmark showing "Successfully queried the Prometheus API."
+docker run -d \
+  --name grafana \
+  --restart unless-stopped \
+  --network ucm-monitoring \
+  -p 3000:3000 \
+  -v grafana-data:/var/lib/grafana \
+  grafana/grafana
+```
 
-#### Import Dashboard
+Open `http://<grafana-ip>:3000`. On the first login, use `admin` for both the username and password, then change the password when prompted.
 
-1. Navigate to `http://<your-host>:3000/dashboard/import`.
+### 3.3 Add the Prometheus Data Source
 
-2. Click **Upload JSON file**, then upload the `unified-cache-management/examples/metrics/grafana.json` file.
+In Grafana, go to **Connections** → **Add new connection**, search for **Prometheus**, and configure:
 
-3. Select the Prometheus data source configured earlier.
+- Prometheus server URL: `http://prometheus:9090`
+- Authentication: **No authentication** for an unauthenticated local deployment
+- Select **Save & test** and verify that Grafana can query Prometheus
 
-4. Click **Import** to complete the import.
+The hostname `prometheus` works because both containers joined the `ucm-monitoring` network. For other deployment layouts, use the Prometheus URL reachable from the Grafana service. The Prometheus data source is built into Grafana and requires no additional plugin.
 
-You should now be able to see the UCM monitoring dashboard with real-time visualization of all 9 metrics.
+### 3.4 Import UCM Dashboards
 
-## Available Metrics
+Go to **Dashboards** → **New** → **Import**, upload the required dashboard JSON file, select the Prometheus data source, and click **Import**.
 
-UCM exposes various metrics to monitor its performance. The following table lists all available metrics organized by category:
+UCM provides these dashboards:
 
-| Metric Name | Type | Description |
-|------------|------|-------------|
-| **Load Operation Metrics** | | |
-| `ucm:load_requests_num` | Histogram | Number of requests loaded per `start_load_kv` call |
-| `ucm:load_blocks_num` | Histogram | Number of blocks loaded per `start_load_kv` call |
-| `ucm:load_duration` | Histogram | Time to load KV cache from UCM (milliseconds) |
-| `ucm:load_speed` | Histogram | Speed of loading from UCM (GB/s) |
-| **Save Operation Metrics** | | |
-| `ucm:save_requests_num` | Histogram | Number of requests saved per `wait_for_save` call |
-| `ucm:save_blocks_num` | Histogram | Number of blocks saved per `wait_for_save` call |
-| `ucm:save_duration` | Histogram | Time to save to UCM (milliseconds) |
-| `ucm:save_speed` | Histogram | Speed of saving to UCM (GB/s) |
-| **Lookup Hit Rate Metrics** | | |
-| `ucm:interval_lookup_hit_rates` | Histogram | Hit rate of UCM lookup requests |
+| File | Purpose |
+| --- | --- |
+| `examples/metrics/grafana_vllm.json` | vLLM request latency, token throughput, scheduler state, cache state, Store health, and probe trends |
+| `examples/metrics/grafana_connector.json` | Connector aggregate bandwidth, common interface duration, and Layerwise load duration |
+| `examples/metrics/grafana_store.json` | Cache, Mooncake, and Posix Store performance metrics grouped by Store |
 
-## Prometheus Configuration
+The `job` selector defaults to **All**. UCM dashboards also provide Aggregated/Per Worker views and a `worker_rank` filter.
+In the Store dashboard, Cache and Posix are expanded by default, while Mooncake is collapsed.
 
-Metrics configuration is defined in the `unified-cache-management/examples/metrics/metrics_configs.yaml` file:
+Use these aggregation rules:
 
-```yaml
-log_interval: 5  # Interval in seconds for logging metrics
+- For Counters, apply `rate()` or `increase()` to each series over the same time window, then sum across workers.
+- For ratios, divide the aggregated numerator by the aggregated denominator. Do not calculate per-worker ratios and then take their arithmetic mean.
+- Display Gauges by worker or aggregate them with `min`/`max`, depending on their semantics.
+- For Histograms, aggregate `_bucket` series across workers before calculating percentiles.
 
-multiproc_dir: "/vllm-workspace"  # Prometheus directory
-metric_prefix: "ucm:"  # Metric name prefix
+## 4. Metrics-view
 
-histograms:
-  - name: "load_requests_num"
-    documentation: "Number of requests loaded from ucm"
-    buckets: [1, 5, 10, 20, 50, 100, 200, 500, 1000]
-  # ... other metric configurations
+When Prometheus/Grafana or a graphical environment is unavailable, use the Metrics-view command-line tool from the UCM toolkit.
+
+Metrics-view can inspect a single `/metrics` snapshot or collect samples in the background into SQLite and query a selected time window. It does not depend on Prometheus or Grafana.
+
+Install the toolkit:
+
+```bash
+cd unified-cache-management
+pip install -e toolkit
+```
+
+List built-in configurations:
+
+```bash
+ucm-toolkit run metrics-view list-configs
+```
+
+The built-in configurations correspond to the Grafana dashboards:
+
+| Metrics View configuration | Grafana dashboard |
+| --- | --- |
+| `vllm` | `examples/metrics/grafana_vllm.json` |
+| `connector` | `examples/metrics/grafana_connector.json` |
+| `store` | `examples/metrics/grafana_store.json` |
+| `metrics_lite` | A compact selection of commonly used metrics |
+
+The `vllm`, `connector`, and `store` configurations expose every query shown by
+the corresponding dashboard. A panel with one data series uses the panel title
+as its name. For a panel with multiple series, the name is
+`<panel title>: <series name>`.
+
+### 4.1 Inspect the Current Snapshot
+
+`check` fetches the current `/metrics` snapshot and displays cumulative results since service startup:
+
+```bash
+ucm-toolkit run metrics-view check \
+  --url http://127.0.0.1:8000/metrics \
+  --config vllm
+```
+
+GQA/MHA models use the default parameters. For MLA models, pass the actual service TP size. For example, for TP=8:
+
+```bash
+ucm-toolkit run metrics-view check \
+  --url http://127.0.0.1:8000/metrics \
+  --config metrics_lite \
+  --config-param tp_size=8
+```
+
+The GB/s value reported by `check` is cumulative bytes divided by cumulative service uptime. It is not suitable for instantaneous bandwidth analysis; use background collection for bandwidth analysis.
+
+### 4.2 Background Collection and Queries
+
+Background collection does not require a query configuration. Pass `--url` multiple times to collect from multiple endpoints:
+
+```bash
+ucm-toolkit run metrics-view start \
+  --url http://prefill:8000/metrics \
+  --url http://decode:8000/metrics \
+  --interval 5s
+```
+
+Each sample receives a `url=<full metrics URL>` label so that instances in a disaggregated prefill/decode deployment can be distinguished. A failure to scrape one URL does not block other URLs.
+
+Check collection status or stop collection:
+
+```bash
+ucm-toolkit run metrics-view status
+ucm-toolkit run metrics-view stop
+```
+
+Query the last 10 minutes and aggregate into one-minute intervals. Continue to pass the actual TP size for MLA models:
+
+```bash
+ucm-toolkit run metrics-view query \
+  --window 10m \
+  --aggr-by 1m \
+  --config metrics_lite \
+  --config-param tp_size=8
+```
+
+Filter by Prometheus labels:
+
+```bash
+ucm-toolkit run metrics-view query \
+  --window 10m \
+  --tag url=http://prefill:8000/metrics \
+  --tag model_name=qwen
+```
+
+The default database, PID, and log files are `/tmp/ucm_metrics.db`, `/tmp/ucm_metrics.pid`, and `/tmp/terminal_metrics.log`. To clear the database:
+
+```bash
+ucm-toolkit run metrics-view clean
+```
+
+## 5. FAQ
+
+### 5.1 No `ucm:` Metrics Appear in `/metrics`
+
+Check the following:
+
+1. `enable_metrics` is not set to false.
+2. A custom `metrics_config_path` exists, is readable, and contains the required metrics.
+3. vLLM has processed a request that exercises the corresponding UCM path.
+4. `curl http://<vllm-ip>:<vllm-port>/metrics` can reach the service endpoint.
+
+## Related Documentation
+
+- [UCM Health Metrics](health_metrics.md): health probes, circuit-breaker state, and aggregation.
+- [UCM Metrics Reference](metrics_list.md): metric names, types, semantics, and raw usage.
+
+```{toctree}
+:maxdepth: 1
+:hidden:
+
+health_metrics
+metrics_list
 ```
