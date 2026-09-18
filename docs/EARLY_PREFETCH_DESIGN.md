@@ -340,7 +340,10 @@ sequenceDiagram
 
 这种保守交接用于 Early 开启后的正式缺失回读。它减少该 native task 的
 SSD/H2D 重叠：H2D 等该 task 的全部数据就绪；不同 task 的 SSD 与 H2D 仍可重叠。
-全 READY 路径在 Dispatch 中立即原生提交。额外 guard 引用覆盖原生失败分支，
+全 READY 路径在 Dispatch 中立即原生提交。READY 调用方与后台准备线程共用
+原生 SPSC 入队端，Early 侧仅在非阻塞 Submit 期间持有每 store 的 producer mutex，
+保持单生产者约束；不持该锁执行 SSD、H2D/D2H 或等待完成。
+额外 guard 引用覆盖原生失败分支，
 会增加引用计数操作和短暂保护寿命；不能仅根据消除等待环宣称性能提升。
 
 ### I/O 完成证据与异常边界
