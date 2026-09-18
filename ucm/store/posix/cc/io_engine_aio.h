@@ -57,6 +57,27 @@ class IoEngineAio : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
     AioImpl aio_;
 
 public:
+    ~IoEngineAio()
+    {
+        // Open workers and the completion engine must outlive every callback.
+        // Cancellation failure is not permission to release an I/O buffer.
+        for (;;) {
+            std::vector<std::pair<Detail::TaskHandle, WaiterPtr>> pending;
+            {
+                std::lock_guard<std::mutex> lock(regMutex_);
+                for (auto& [id, task] : registry_) { pending.emplace_back(id, task.w); }
+            }
+            if (pending.empty()) { break; }
+            for (auto& [id, waiter] : pending) {
+                ForceComplete(id, waiter);
+                while (!waiter->WaitForDuration(2000)) {
+                    UC_ERROR("AIO shutdown awaiting physical completion of task({}).", id);
+                }
+            }
+            // Done publishes zero before invoking the registry epilog.
+            std::this_thread::yield();
+        }
+    }
     Status Setup(const Config& config, const SpaceLayout* layout)
     {
         timeoutMs_ = config.timeoutMs;
@@ -259,7 +280,7 @@ private:
             auto pending = w->Pending();
             IncrementAioTimeoutMetric();
             UC_ERROR(
-                "AIO task({}) timed out after {:.1f}ms; force-draining latch ({} of {} "
+                "AIO task({}) timed out after {:.1f}ms; cancelling; awaiting physical completion ({} of {} "
                 "shard(s) outstanding).",
                 id, stuckMs, pending, shardCount);
             ForceComplete(id, w);
@@ -276,18 +297,20 @@ private:
             it->second.aborted = true;
             w = it->second.w;
         }
-        UC_ERROR("AIO task({}) cancelled on wait timeout; force-draining latch.", t->id);
+        UC_ERROR("AIO task({}) cancelled on wait timeout; awaiting physical completion.", t->id);
         IncrementAioTimeoutMetric();
         ForceComplete(t->id, w);
     }
     void ForceComplete(Detail::TaskHandle id, const WaiterPtr& w)
     {
         auto pending = w ? w->Pending() : 0;
-        UC_WARN("AIO task({}) force-completing; pending latch count before abort={}.", id, pending);
+        UC_WARN("AIO task({}) requesting cancellation; outstanding callbacks={}.", id, pending);
         failureSet_.Insert(id);
         aio_.CancelTask(id);
         blockOperator_.CancelQueued(id);
-        if (w) { w->Abort(); }
+        // Only an open failure, io_cancel success, or a kernel completion event
+        // may decrement the waiter. An uncancellable operation still uses its
+        // buffer, even when the request's deadline has expired.
     }
 };
 

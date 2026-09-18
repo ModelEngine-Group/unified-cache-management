@@ -1,3 +1,5 @@
+#include <future>
+#include <sys/syscall.h>
 /**
  * MIT License
  *
@@ -116,13 +118,17 @@ public:
                 return Run(path, flags, mode);
             });
     }
-    ~StallingOpenHook()
+    void Release()
     {
         {
             std::lock_guard<std::mutex> lock{mutex_};
             release_ = true;
         }
         cv_.notify_all();
+    }
+    ~StallingOpenHook()
+    {
+        Release();
         std::unique_lock<std::mutex> lock{mutex_};
         cv_.wait(lock, [this] { return active_ == 0; });
         UC::PosixStore::TestHooks::ClearOpenHook();
@@ -518,6 +524,13 @@ TEST_F(UCPosixStoreTest, AioTruncatedLoadReturnsNotFound)
     layoutConfig.dataDirShardBytes = 0;
     SpaceLayout layout;
     ASSERT_EQ(layout.Setup(layoutConfig), UC::Status::OK());
+    // Native dump completion precedes its asynchronous rename callback.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!std::filesystem::exists(layout.DataFilePath(block, false)) &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(std::filesystem::exists(layout.DataFilePath(block, false)));
     std::filesystem::resize_file(layout.DataFilePath(block, false), AIO_TEST_DATA_SIZE / 2);
 
     auto load = store.Load(MakeDumpDesc("AioTruncatedLoad", block, target.get()));
@@ -539,12 +552,10 @@ TEST_F(UCPosixStoreTest, AioWaitTimesOutWhenOpenStalls)
     ASSERT_TRUE(handle.HasValue());
     ASSERT_TRUE(hook.WaitEntered());
 
-    auto start = std::chrono::steady_clock::now();
-    auto status = store.Wait(handle.Value());
-    auto elapsed = std::chrono::steady_clock::now() - start;
-
-    ASSERT_EQ(status, UC::Status::Timeout());
-    ASSERT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 1000);
+    auto wait = std::async(std::launch::async, [&] { return store.Wait(handle.Value()); });
+    EXPECT_EQ(wait.wait_for(std::chrono::milliseconds(150)), std::future_status::timeout);
+    hook.Release();
+    EXPECT_EQ(wait.get(), UC::Status::Timeout());
     ASSERT_GE(ReadCounter("posix_aio_timeout_total"), 1.0);
 }
 
@@ -660,7 +671,10 @@ TEST_F(UCPosixStoreTest, AioQueuedTasksTimeOutWhileOpenWorkerIsStuck)
     auto start = std::chrono::steady_clock::now();
     ASSERT_EQ(store.Wait(handle2.Value()), UC::Status::Timeout());
     ASSERT_EQ(store.Wait(handle3.Value()), UC::Status::Timeout());
-    ASSERT_EQ(store.Wait(handle1.Value()), UC::Status::Timeout());
+    auto wait = std::async(std::launch::async, [&] { return store.Wait(handle1.Value()); });
+    EXPECT_EQ(wait.wait_for(std::chrono::milliseconds(150)), std::future_status::timeout);
+    hook.Release();
+    EXPECT_EQ(wait.get(), UC::Status::Timeout());
     auto elapsed = std::chrono::steady_clock::now() - start;
 
     ASSERT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 1500);
@@ -687,7 +701,10 @@ TEST_F(UCPosixStoreTest, AioTimedOutMultiShardDumpDoesNotCommitAfterLateOpen)
         ASSERT_TRUE(handle.HasValue());
         ASSERT_TRUE(hook.WaitEntered());
 
-        ASSERT_EQ(store.Wait(handle.Value()), UC::Status::Timeout());
+        auto wait = std::async(std::launch::async, [&] { return store.Wait(handle.Value()); });
+        EXPECT_EQ(wait.wait_for(std::chrono::milliseconds(150)), std::future_status::timeout);
+        hook.Release();
+        EXPECT_EQ(wait.get(), UC::Status::Timeout());
     }
 
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
@@ -697,4 +714,33 @@ TEST_F(UCPosixStoreTest, AioTimedOutMultiShardDumpDoesNotCommitAfterLateOpen)
         ASSERT_EQ(founds.Value(), std::vector<uint8_t>{false});
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
+}
+
+// Delay the accepted operation, then submit that very iocb to the real kernel.
+// Unlike a forced latch completion, its event proves that the buffer is unused.
+TEST_F(UCPosixStoreTest, AioUncancellableTimeoutRetainsBufferUntilKernelCompletion)
+{
+    using namespace UC::PosixStore;
+    PosixStore store;
+    ASSERT_EQ(store.Setup(MakeAioConfig(Path(), 50)), UC::Status::OK());
+    ScopedAioHooks hooks;
+    std::promise<std::pair<aio_context_t, iocb*>> accepted;
+    TestHooks::SetAioSubmitHook([&](aio_context_t ctx, int64_t nr, iocb** cb) {
+        accepted.set_value({ctx, *cb});
+        return static_cast<int32_t>(nr);
+    });
+    TestHooks::SetAioCancelHook([](aio_context_t, iocb*, io_event*) {
+        errno = EAGAIN;
+        return -1;
+    });
+    auto buffer = MakeAlignedBuffer(42);
+    auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
+    auto handle = store.Dump(MakeDumpDesc("uncancellable", block, buffer.get()));
+    ASSERT_TRUE(handle.HasValue());
+    auto [ctx, cb] = accepted.get_future().get();
+    auto wait = std::async(std::launch::async, [&] { return store.Wait(handle.Value()); });
+    EXPECT_EQ(wait.wait_for(std::chrono::milliseconds(150)), std::future_status::timeout);
+    // The iocb and its fd, callback, and buffer remain live after the deadline.
+    EXPECT_EQ(syscall(SYS_io_submit, ctx, 1, &cb), 1);
+    EXPECT_EQ(wait.get(), UC::Status::Timeout());
 }

@@ -307,7 +307,10 @@ void AioImpl::HarvestCompletions(std::vector<io_event>& events)
 {
     auto batchSize = static_cast<int>(events.size());
     while (!stop_) {
-        auto num = AioGetEvents(ctx_, 1, batchSize, events.data(), nullptr);
+        // eventfd counts may include already-cancelled operations. Never block
+        // the completion/watchdog thread waiting for a future event here.
+        timespec timeout{};
+        auto num = AioGetEvents(ctx_, 0, batchSize, events.data(), &timeout);
         for (auto i = 0; i < num; i++) {
             auto* iocbPtr = reinterpret_cast<struct iocb*>(events[i].obj);
             auto cb = (Callback*)(void*)events[i].data;
