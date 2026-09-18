@@ -1750,6 +1750,12 @@ jobs:
             >out/release/release-manifest-readback.json
           cmp out/release/release-manifest.json \
             out/release/release-manifest-readback.json
+          # Compare against the published Release metadata, not only our uploaded bytes.
+          python .github/release/ucm_release/release.py manifest \
+            --state "${state}" --release "${release_json}" \
+            --output out/release/public-readback
+          cmp out/release/release-manifest.json \
+            out/release/public-readback/release-manifest.json
           jq -e --slurpfile manifest out/release/release-manifest.json \
             '([.assets[].name] | sort) == $manifest[0].github_release_assets' \
             "${release_json}" >/dev/null

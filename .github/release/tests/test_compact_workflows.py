@@ -150,6 +150,8 @@ def test_schema_v9_manifest_is_uploaded_only_after_complete_and_read_back() -> N
         manifest["run"]
     )
     assert "release-manifest-readback.json" in manifest["run"]
+    assert "--output out/release/public-readback" in manifest["run"]
+    assert "out/release/public-readback/release-manifest.json" in manifest["run"]
     assert "Accept: application/octet-stream" in manifest["run"]
     assert "cmp out/release/release-manifest.json" in manifest["run"]
     assert "github_release_assets" in manifest["run"]

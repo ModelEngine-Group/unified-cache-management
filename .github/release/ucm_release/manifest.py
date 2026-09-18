@@ -524,6 +524,13 @@ def _release_page_url(release_document: dict[str, Any]) -> str:
         or not parsed.path
     ):
         raise ValueError("GitHub Release has an invalid page URL")
+    if release_document.get("draft") is True:
+        # GitHub can report an untagged-* URL while a Nightly is still a Draft.
+        # The manifest is uploaded before publication, but must use the final Tag.
+        repository_url, separator, _ = url.partition("/releases/tag/")
+        if not separator:
+            raise ValueError("GitHub Release has an invalid page URL")
+        return f"{repository_url}/releases/tag/{quote(release_document['tag_name'], safe='/')}"
     return url
 
 
@@ -1001,6 +1008,11 @@ def asset_urls(
             or parsed.netloc != "github.com"
         ):
             raise ValueError("GitHub Release assets contain an invalid entry")
+        if release_document.get("draft") is True:
+            download_root = _release_page_url(release_document).replace(
+                "/releases/tag/", "/releases/download/"
+            )
+            url = f"{download_root}/{quote(name, safe='')}"
         urls[name] = url
 
     required = {
