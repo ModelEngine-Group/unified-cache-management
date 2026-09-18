@@ -38,15 +38,15 @@ Status SpaceManager::Setup(const Config& config)
     s = backendMgr_.Setup(config, &layout_);
     if (s.Failure()) { return s; }
     if (config.posixGcEnable) {
-        s = gcConfigGuard_.Setup(config);
+        s = gcConfigGuard_.Setup(config, &backendMgr_);
         if (s.Failure()) [[unlikely]] { return s; }
     }
     if (hotnessTrackerEnable_) {
-        s = hotnessTracker_.Setup(&layout_);
+        s = hotnessTracker_.Setup(&layout_, &backendMgr_);
         if (s.Failure()) [[unlikely]] { return s; }
     }
     if (gcEnable_) {
-        s = gcMgr_.Setup(&layout_, config);
+        s = gcMgr_.Setup(&layout_, &backendMgr_, config);
         if (s.Failure()) [[unlikely]] { return s; }
     }
     auto backendConfig = config;

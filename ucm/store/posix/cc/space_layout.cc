@@ -26,10 +26,10 @@
 #include <cstring>
 #include <dirent.h>
 #include <fmt/ranges.h>
+#include <memory>
 #include <random>
 #include <sys/stat.h>
 #include <unistd.h>
-#include "logger/logger.h"
 #include "posix_file.h"
 #include "template/topn_heap.h"
 
@@ -74,14 +74,6 @@ Status SpaceLayout::Setup(const Config& config)
     dataDirShardBytes_ = config.dataDirShardBytes;
     dataDirShard_ = dataDirShardBytes_ > 0;
     shards_ = RelativeRoots();
-    for (const auto& path : config.storageBackends) {
-        if (path.empty()) { return Status::InvalidParam("empty storage backend path"); }
-        auto normalized = path.back() == '/' ? path : path + '/';
-        if (std::find(storageBackends_.begin(), storageBackends_.end(), normalized) ==
-            storageBackends_.end()) {
-            storageBackends_.push_back(std::move(normalized));
-        }
-    }
     return Status::OK();
 }
 
@@ -98,22 +90,6 @@ Status SpaceLayout::InitBackend(const std::string& backend, bool create) const
     return Status::OK();
 }
 
-std::string SpaceLayout::DataFilePath(const Detail::BlockId& blockId, bool activated) const
-{
-    return DataFilePath(StorageBackend(blockId), blockId, activated);
-}
-
-std::vector<std::string> SpaceLayout::HealthCheckPaths(const Detail::BlockId& blockId,
-                                                       bool activated) const
-{
-    std::vector<std::string> paths;
-    paths.reserve(storageBackends_.size());
-    for (const auto& backend : storageBackends_) {
-        paths.emplace_back(DataFilePath(backend, blockId, activated));
-    }
-    return paths;
-}
-
 std::string SpaceLayout::DataFilePath(const std::string& backend, const Detail::BlockId& blockId,
                                       bool activated) const
 {
@@ -121,18 +97,6 @@ std::string SpaceLayout::DataFilePath(const std::string& backend, const Detail::
     const auto& shard = dataDirShard_ ? FileShardName(file) : DATA_ROOT;
     if (!activated) { return fmt::format("{}{}/{}", backend, shard, file); }
     return fmt::format("{}{}/{}{}", backend, shard, file, ACTIVATED_FILE_EXTENSION);
-}
-
-Status SpaceLayout::CommitFile(const Detail::BlockId& blockId, bool success) const
-{
-    const auto& activated = DataFilePath(blockId, true);
-    auto s = Status::OK();
-    if (success) {
-        const auto& archived = DataFilePath(blockId, false);
-        s = PosixFile{activated}.Rename(archived);
-    }
-    if (!success || s.Failure()) { PosixFile{activated}.Remove(); }
-    return s;
 }
 
 Status SpaceLayout::CommitFile(const std::string& backend, const Detail::BlockId& blockId,
@@ -143,66 +107,15 @@ Status SpaceLayout::CommitFile(const std::string& backend, const Detail::BlockId
     return PosixFile{activated}.Rename(DataFilePath(backend, blockId, false));
 }
 
-Status SpaceLayout::RemoveFile(const Detail::BlockId& blockId) const
+Status SpaceLayout::RemoveFile(const std::string& backend, const Detail::BlockId& blockId) const
 {
-    PosixFile{DataFilePath(blockId, false)}.Remove();
-    return Status::OK();
+    return PosixFile{DataFilePath(backend, blockId, false)}.Remove();
 }
 
 std::vector<std::string> SpaceLayout::RelativeRoots() const
 {
     if (dataDirShard_) { return GenerateHexStrings(dataDirShardBytes_); }
     return {DATA_ROOT};
-}
-
-Status SpaceLayout::AddStorageBackend(const std::string& path)
-{
-    auto normalizedPath = path;
-    if (normalizedPath.back() != '/') { normalizedPath += '/'; }
-    auto status = Status::OK();
-    if (storageBackends_.empty()) {
-        status = AddFirstStorageBackend(normalizedPath);
-    } else {
-        status = AddSecondaryStorageBackend(normalizedPath);
-    }
-    if (status.Failure()) {
-        UC_ERROR("Failed({}) to add storage backend({}).", status, normalizedPath);
-    }
-    return status;
-}
-
-Status SpaceLayout::AddFirstStorageBackend(const std::string& path)
-{
-    for (const auto& root : RelativeRoots()) {
-        PosixFile dir{path + root};
-        auto status = dir.MkDir();
-        if (status == Status::DuplicateKey()) { status = Status::OK(); }
-        if (status.Failure()) { return status; }
-    }
-    storageBackends_.emplace_back(path);
-    return Status::OK();
-}
-
-Status SpaceLayout::AddSecondaryStorageBackend(const std::string& path)
-{
-    auto iter = std::find(storageBackends_.begin(), storageBackends_.end(), path);
-    if (iter != storageBackends_.end()) { return Status::OK(); }
-    constexpr auto accessMode = PosixFile::AccessMode::READ | PosixFile::AccessMode::WRITE;
-    for (const auto& root : RelativeRoots()) {
-        PosixFile dir{path + root};
-        auto status = dir.Access(accessMode);
-        if (status.Failure()) { return status; }
-    }
-    storageBackends_.emplace_back(path);
-    return Status::OK();
-}
-
-std::string SpaceLayout::StorageBackend(const Detail::BlockId& blockId) const
-{
-    const auto number = storageBackends_.size();
-    if (number == 1) { return storageBackends_.front(); }
-    static Detail::BlockIdHasher hasher;
-    return storageBackends_[hasher(blockId) % number];
 }
 
 static Detail::BlockId HexToBlockId(const char* hexStr)
@@ -231,9 +144,9 @@ std::vector<std::string> SpaceLayout::SampleShards(double sampleRatio) const
     return shards;
 }
 
-size_t SpaceLayout::CountFilesInShard(const std::string& shard) const
+size_t SpaceLayout::CountFilesInShard(const std::string& backend, const std::string& shard) const
 {
-    std::string shardPath = storageBackends_.front();
+    std::string shardPath = backend;
     shardPath += shard;
     DIR* dir = opendir(shardPath.c_str());
     if (!dir) { return 0; }
@@ -269,11 +182,12 @@ static size_t ScanFilesInShard(const std::string& shardPath,
     return totalFiles;
 }
 
-std::vector<Detail::BlockId> SpaceLayout::GetOldestFiles(const std::string& shard,
+std::vector<Detail::BlockId> SpaceLayout::GetOldestFiles(const std::string& backend,
+                                                         const std::string& shard,
                                                          double recyclePercent,
                                                          size_t maxRecycleCount) const
 {
-    std::string shardPath = storageBackends_.front();
+    std::string shardPath = backend;
     shardPath += shard;
     auto heap = std::make_unique<TopNHeap<FileInfo, MtimeComparator>>(maxRecycleCount);
     size_t totalFiles = ScanFilesInShard(shardPath, *heap);
@@ -298,11 +212,12 @@ std::string SpaceLayout::ShardOf(const Detail::BlockId& blockId) const
     return FileShardName(DataFileName(blockId));
 }
 
-std::vector<FileInfo> SpaceLayout::GetColdestCandidates(const std::string& shard,
+std::vector<FileInfo> SpaceLayout::GetColdestCandidates(const std::string& backend,
+                                                        const std::string& shard,
                                                         double candidatePercent,
                                                         size_t maxCandidateCount) const
 {
-    std::string shardPath = storageBackends_.front();
+    std::string shardPath = backend;
     shardPath += shard;
     auto heap = std::make_unique<TopNHeap<FileInfo, MtimeComparator>>(maxCandidateCount);
     size_t totalFiles = ScanFilesInShard(shardPath, *heap);

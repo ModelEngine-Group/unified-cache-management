@@ -56,14 +56,16 @@ Status ShardGarbageCollector::ValidateAndInitCapacity()
     return Status::OK();
 }
 
-Status ShardGarbageCollector::Setup(const SpaceLayout* layout, const Config& config)
+Status ShardGarbageCollector::Setup(const SpaceLayout* layout, const BackendManager* backendMgr,
+                                    const Config& config)
 {
     layout_ = layout;
+    backendMgr_ = backendMgr;
     config_ = config;
     auto s = ValidateAndInitCapacity();
     if (s.Failure()) { return s; }
     leaseEnable_ = config_.posixGcCrossInstanceLock;
-    if (leaseEnable_) { lease_.Setup(config_); }
+    if (leaseEnable_) { lease_.Setup(config_, backendMgr_); }
     auto success = gcPool_.SetWorkerFn([this](ShardTaskContext& ctx, auto&) { ProcessTask(ctx); })
                        .SetWorkerTimeoutFn(
                            [this](ShardTaskContext& ctx, ssize_t tid) { OnTaskTimeout(ctx, tid); },
@@ -262,30 +264,42 @@ void ShardGarbageCollector::OnTaskTimeout(const ShardTaskContext& ctx, ssize_t t
 
 void ShardGarbageCollector::ProcessTask(ShardTaskContext& ctx)
 {
+    auto backend = backendMgr_->StorageBackend({});
+    if (!backend) {
+        ctx.waiter->Done();
+        return;
+    }
+    const auto removeFile = [this](const Detail::BlockId& blockId) {
+        backendMgr_->RunOnAvailableBackend(blockId, [&](size_t backendIndex) {
+            return layout_->RemoveFile(backendMgr_->Backends()[backendIndex], blockId);
+        });
+    };
     switch (ctx.type) {
         case ShardTaskContext::Type::SAMPLE: {
-            size_t count = layout_->CountFilesInShard(ctx.shard);
+            size_t count = layout_->CountFilesInShard(backend.Value(), ctx.shard);
             ctx.sampledFiles->fetch_add(count, std::memory_order_relaxed);
             break;
         }
         case ShardTaskContext::Type::COLLECT: {
             const auto candidatePercent =
                 config_.posixGcRecyclePercent + config_.posixGcCandidateExtraPercent;
-            *ctx.candidates = layout_->GetColdestCandidates(ctx.shard, candidatePercent,
-                                                            config_.posixGcMaxRecycleCountPerShard);
+            *ctx.candidates =
+                layout_->GetColdestCandidates(backend.Value(), ctx.shard, candidatePercent,
+                                              config_.posixGcMaxRecycleCountPerShard);
             if (ctx.candidates->size() >= config_.posixGcMaxRecycleCountPerShard) {
                 ctx.gcLimited->store(true, std::memory_order_relaxed);
             }
             break;
         }
         case ShardTaskContext::Type::DELETE: {
-            for (const auto& blockId : *ctx.victims) { layout_->RemoveFile(blockId); }
+            for (const auto& blockId : *ctx.victims) { removeFile(blockId); }
             break;
         }
         case ShardTaskContext::Type::GC: {
-            auto filesToDelete = layout_->GetOldestFiles(ctx.shard, config_.posixGcRecyclePercent,
-                                                         config_.posixGcMaxRecycleCountPerShard);
-            for (const auto& blockId : filesToDelete) { layout_->RemoveFile(blockId); }
+            auto filesToDelete =
+                layout_->GetOldestFiles(backend.Value(), ctx.shard, config_.posixGcRecyclePercent,
+                                        config_.posixGcMaxRecycleCountPerShard);
+            for (const auto& blockId : filesToDelete) { removeFile(blockId); }
             if (filesToDelete.size() >= config_.posixGcMaxRecycleCountPerShard) {
                 ctx.gcLimited->store(true, std::memory_order_relaxed);
             }

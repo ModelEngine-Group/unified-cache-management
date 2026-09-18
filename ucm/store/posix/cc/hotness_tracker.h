@@ -28,7 +28,7 @@
 #include <deque>
 #include <mutex>
 #include <thread>
-#include "space_layout.h"
+#include "backend_manager.h"
 #include "type/types.h"
 
 namespace UC::PosixStore {
@@ -39,12 +39,13 @@ public:
     HotnessTracker(const HotnessTracker&) = delete;
     HotnessTracker& operator=(const HotnessTracker&) = delete;
     ~HotnessTracker();
-    Status Setup(const SpaceLayout* layout);
+    Status Setup(const SpaceLayout* layout, const BackendManager* backendMgr);
     void Touch(const Detail::BlockId& blockId);
 
 private:
     void UtimeWorkerLoop();
     const SpaceLayout* layout_{nullptr};
+    const BackendManager* backendMgr_{nullptr};
     std::deque<Detail::BlockId> produceQueue_;
     std::mutex queueMtx_;
     std::atomic<bool> stop_{false};
