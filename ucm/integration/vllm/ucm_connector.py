@@ -1744,10 +1744,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if self.device is None:
             raise RuntimeError(f"Unsupported device platform for UCMDirectConnector.")
 
-    def _prefetch_other_rank_hashes(self, rank0_block_ids: list[bytes]) -> None:
-        if not self._other_rank_hashers or not rank0_block_ids:
+    def _prefetch_all_rank_hashes(self, rank0_block_ids: list[bytes]) -> None:
+        if not rank0_block_ids:
             return
+        self.store.prefetch(rank0_block_ids)
 
+        if not self._other_rank_hashers:
+            return
         other_rank_block_ids = [
             rank_hasher(block_id)
             for rank_hasher in self._other_rank_hashers
@@ -1779,12 +1782,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         if all_hit_block_ids:
             try:
-                self._prefetch_other_rank_hashes(all_hit_block_ids)
+                self._prefetch_all_rank_hashes(all_hit_block_ids)
             except Exception as e:
                 # Prefetch is only a GC hotness hint. A failure must not turn a
                 # valid cache hit into a scheduler-side miss.
                 logger.warning(
-                    "UCM other-rank hotness update failed. " f"{type(e).__name__}: {e}"
+                    "UCM all-rank hotness update failed. " f"{type(e).__name__}: {e}"
                 )
 
     def get_num_new_matched_tokens(
@@ -1811,8 +1814,8 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 )
                 return 0, False
         else:
-            request_mata = self.requests_meta[request.request_id]
-            ucm_block_ids = request_mata.ucm_block_ids
+            request_meta = self.requests_meta[request.request_id]
+            ucm_block_ids = request_meta.ucm_block_ids
 
         if (
             self.enable_record_traces
