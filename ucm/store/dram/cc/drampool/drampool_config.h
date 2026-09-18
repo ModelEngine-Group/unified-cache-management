@@ -66,6 +66,13 @@ struct DramPoolConfig {
     // Zero disables the HTTP health endpoint.
     std::uint16_t healthPort{0};
 
+    // Periodic Prometheus textfile export (see MetricsReporter): the C++
+    // counterpart of the Python-side multiproc consumer, off by default.
+    bool metricsEnabled{false};
+    // Empty falls back to logDir.
+    std::string metricsOutputDir{};
+    std::uint32_t metricsIntervalMs{10000};
+
     // Bounded handoff from RequestReceiveLoop to TaskWorker.
     std::uint32_t requestQueueDepth{65536};
     // Bounded handoff from TaskWorker to CompletionPoller.

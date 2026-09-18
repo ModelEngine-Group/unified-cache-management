@@ -20,6 +20,15 @@ transport:
 health:
   port: 0
 
+# Periodic Prometheus textfile export of DramPool metrics (mirrors the UCM
+# Python multiproc consumer). When enabled, <output_dir>/drampool_metrics.prom
+# is atomically replaced every interval_ms with the Prometheus text format.
+metrics:
+  enabled: false
+  # Empty falls back to the logger directory.
+  output_dir: ./logs
+  interval_ms: 10000
+
 queue:
   request_depth: 65536
   completion_depth: 65536
