@@ -56,19 +56,19 @@ void ReportBatchMetrics(CompletionRecord& record)
 
     const auto elapsedMs = (SteadyNowUs() - record.begin_us) / 1000.0;
     switch (record.opcode) {
-        case KvOpcode::Dump:
+        case OpType::DUMP:
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kDumpBatchTotalDurationMs), elapsedMs);
             break;
-        case KvOpcode::Load:
+        case OpType::LOAD:
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kLoadBatchTotalDurationMs), elapsedMs);
             break;
-        case KvOpcode::Lookup:
+        case OpType::LOOKUP:
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kLookupBatchTotalDurationMs), elapsedMs);
             break;
         default:
             break;
     }
-    if (record.opcode == KvOpcode::Dump) {
+    if (record.opcode == OpType::DUMP) {
         const auto failedEntries = std::count(record.results.begin(), record.results.end(),
                                               static_cast<std::uint8_t>(DumpLoadResult::Failed));
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kDumpFailedEntriesTotal),
@@ -83,10 +83,10 @@ void ReportBatchMetrics(CompletionRecord& record)
 void ReportDataTransferMetrics(const CompletionRecord& record,
                                transport::TransferStatus terminalStatus)
 {
-    if (record.opcode == KvOpcode::Dump) {
+    if (record.opcode == OpType::DUMP) {
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kDumpTransferDurationMs),
                                  static_cast<double>(SteadyNowMs() - record.submit_ms));
-    } else if (record.opcode == KvOpcode::Load) {
+    } else if (record.opcode == OpType::LOAD) {
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kLoadTransferDurationMs),
                                  static_cast<double>(SteadyNowMs() - record.submit_ms));
     }
