@@ -50,10 +50,6 @@ private:
 
     DramPoolRuntime& runtime_;
     std::deque<CompletionRecord> pending_;
-    // Used flag-pool slots, maintained at the ReleaseResponseBuffer call sites
-    // (the anonymous-namespace helper cannot reach this member) and reported as
-    // drampool_flag_pool_usage_ratio at the end of each poll round (metrics_design.md §4.3).
-    std::size_t flagUsed_{0};
 };
 
 }  // namespace UC::DramPool

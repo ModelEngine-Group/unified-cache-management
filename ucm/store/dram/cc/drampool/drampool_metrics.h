@@ -24,9 +24,10 @@
 #pragma once
 
 #include <atomic>
-#include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <string>
+#include <vector>
 #include "drampool_config.h"
 #include "drampool_types.h"
 #include "metrics_api.h"
@@ -39,10 +40,6 @@ namespace UC::DramPool {
 // consumer maintain these counters and each consumer thread reports the value.
 inline std::atomic<std::uint64_t> g_requestQueueLen{0};
 inline std::atomic<std::uint64_t> g_completionQueueLen{0};
-
-// Histogram observation capacity per thread (UC::Metrics C3 cap). Sized to
-// hold at least two 10s reporter windows of batch-level observations.
-inline constexpr std::size_t kMetricsMaxVectorLen = 10000;
 
 // ---- metric names (grouped as in metrics_design.md §3.2) ----
 // A. Request volume
@@ -88,22 +85,29 @@ inline constexpr char kLoadBatchTotalDurationMs[] = "drampool_load_batch_total_d
 inline constexpr char kLookupBatchTotalDurationMs[] = "drampool_lookup_batch_total_duration_ms";
 
 // Dynamic per-slot-size gauge: drampool_buffer_pool_usage_ratio_<slot_size>.
+// Names are built at runtime, so call sites keep the string-based UpdateStats
+// overload; the only caller is the low-frequency GC report loop.
 inline std::string BufferPoolUsageRatioName(std::uint64_t slotSize)
 {
     return std::string("drampool_buffer_pool_usage_ratio_") + std::to_string(slotSize);
 }
 
 // RAII duration observer: measures with SteadyNowUs() and records the elapsed
-// time in ms on scope exit. Call Disarm() on paths that must not be observed
-// (e.g. failed preparations, see metrics_design.md §4.1).
+// time in ms on scope exit. Takes a NAME_TO_METRIC_ID() reference so the metric
+// id is resolved once per call site instead of a string lookup per observation.
+// Call Disarm() on paths that must not be observed (e.g. failed preparations,
+// see metrics_design.md §4.1).
 class ScopedTimer {
 public:
-    explicit ScopedTimer(const std::string& name) : name_(name), startUs_(SteadyNowUs()) {}
+    explicit ScopedTimer(UC::Metrics::CachedMetric& metric)
+        : metric_(metric), startUs_(SteadyNowUs())
+    {
+    }
 
     ~ScopedTimer()
     {
         if (armed_) {
-            UC::Metrics::UpdateStats(name_,
+            UC::Metrics::UpdateStats(metric_,
                                      static_cast<double>(SteadyNowUs() - startUs_) / 1000.0);
         }
     }
@@ -114,16 +118,36 @@ public:
     void Disarm() { armed_ = false; }
 
 private:
-    std::string name_;
+    UC::Metrics::CachedMetric& metric_;
     std::uint64_t startUs_;
     bool armed_{true};
 };
 
-// Registers every metric name once at startup (C2: unregistered names are
-// silently dropped by UpdateStats). Call after the runtime config is parsed.
+// Hot-path metric updates resolve the metric id once per call site via the
+// NAME_TO_METRIC_ID() cached reference (same pattern as DramStore), falling
+// back to the string-based overload only for the dynamic per-slot-size gauges.
+
+// Histogram bucket sets shared by metrics with the same latency envelope.
+// The values mirror examples/metrics/metrics_configs.yaml, which is the single
+// source of truth for metric names, types, and buckets (the Python side
+// registers the same set via ucmmetrics.create_stats); keep both in sync.
+inline constexpr double kMsBucketsSettlement[] = {0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500};
+inline constexpr double kMsBucketsPrepare[] = {0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000};
+inline constexpr double kMsBucketsTransfer[] = {0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000};
+inline constexpr double kMsBucketsScan[] = {0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500};
+inline constexpr double kMsBucketsLookupBatch[] = {0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500, 1000};
+inline constexpr double kMsBucketsGc[] = {1, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000};
+
+// One-shot metrics registration for the DramPool daemon. The daemon is a pure
+// C++ process without the Python binding, so it creates the same names, types,
+// and buckets as the UCM Python side (setup_ucm_metrics -> ucmmetrics) does
+// from examples/metrics/metrics_configs.yaml. CreateStats is idempotent and
+// first registration wins; unregistered names are silently dropped by
+// UpdateStats (C2). Call after the runtime config is parsed so the dynamic
+// per-slot-size gauges follow g_config.poolBlockSizes.
 inline void SetupDrampoolMetrics()
 {
-    UC::Metrics::SetUp(kMetricsMaxVectorLen);
+    UC::Metrics::SetUp();
     // A. Request volume
     UC::Metrics::CreateStats(kDumpRequestsTotal, "counter");
     UC::Metrics::CreateStats(kLoadRequestsTotal, "counter");
@@ -131,40 +155,53 @@ inline void SetupDrampoolMetrics()
     // B. Dump business
     UC::Metrics::CreateStats(kDumpNospaceFailuresTotal, "counter");
     UC::Metrics::CreateStats(kDumpFailedEntriesTotal, "counter");
-    UC::Metrics::CreateStats(kDumpPrepareDurationMs, "histogram");
+    UC::Metrics::CreateStats(kDumpPrepareDurationMs, "histogram",
+                             {std::begin(kMsBucketsPrepare), std::end(kMsBucketsPrepare)});
     // C. Load business
     UC::Metrics::CreateStats(kLoadMissEntriesTotal, "counter");
-    UC::Metrics::CreateStats(kLoadPrepareDurationMs, "histogram");
+    UC::Metrics::CreateStats(kLoadPrepareDurationMs, "histogram",
+                             {std::begin(kMsBucketsPrepare), std::end(kMsBucketsPrepare)});
     // D. Lookup business
     UC::Metrics::CreateStats(kLookupMissEntriesTotal, "counter");
-    UC::Metrics::CreateStats(kLookupScanDurationMs, "histogram");
+    UC::Metrics::CreateStats(kLookupScanDurationMs, "histogram",
+                             {std::begin(kMsBucketsScan), std::end(kMsBucketsScan)});
     // E. Transfer and response
-    UC::Metrics::CreateStats(kDumpTransferDurationMs, "histogram");
-    UC::Metrics::CreateStats(kLoadTransferDurationMs, "histogram");
+    UC::Metrics::CreateStats(kDumpTransferDurationMs, "histogram",
+                             {std::begin(kMsBucketsTransfer), std::end(kMsBucketsTransfer)});
+    UC::Metrics::CreateStats(kLoadTransferDurationMs, "histogram",
+                             {std::begin(kMsBucketsTransfer), std::end(kMsBucketsTransfer)});
     UC::Metrics::CreateStats(kTransferFailuresTotal, "counter");
-    UC::Metrics::CreateStats(kResponseRttMs, "histogram");
+    UC::Metrics::CreateStats(kResponseRttMs, "histogram",
+                             {std::begin(kMsBucketsTransfer), std::end(kMsBucketsTransfer)});
     UC::Metrics::CreateStats(kResponseFailuresTotal, "counter");
     UC::Metrics::CreateStats(kSubmitFailuresTotal, "counter");
-    // F. Resource usage (data pools are registered dynamically below)
+    // F. Resource usage
     UC::Metrics::CreateStats(kMetadataEntryCount, "gauge");
     UC::Metrics::CreateStats(kFlagPoolUsageRatio, "gauge");
     // G. Metadata settlement duration
-    UC::Metrics::CreateStats(kMetadataStoreendDurationMs, "histogram");
-    UC::Metrics::CreateStats(kMetadataLoadendDurationMs, "histogram");
-    UC::Metrics::CreateStats(kMetadataEvictGcDurationMs, "histogram");
+    UC::Metrics::CreateStats(kMetadataStoreendDurationMs, "histogram",
+                             {std::begin(kMsBucketsSettlement), std::end(kMsBucketsSettlement)});
+    UC::Metrics::CreateStats(kMetadataLoadendDurationMs, "histogram",
+                             {std::begin(kMsBucketsSettlement), std::end(kMsBucketsSettlement)});
+    UC::Metrics::CreateStats(kMetadataEvictGcDurationMs, "histogram",
+                             {std::begin(kMsBucketsGc), std::end(kMsBucketsGc)});
     // H. Queues and blocking
     UC::Metrics::CreateStats(kQueueRequestFullTotal, "counter");
-    UC::Metrics::CreateStats(kQueueRequestEnqueueWaitMs, "histogram");
+    UC::Metrics::CreateStats(kQueueRequestEnqueueWaitMs, "histogram",
+                             {std::begin(kMsBucketsSettlement), std::end(kMsBucketsSettlement)});
     UC::Metrics::CreateStats(kQueueRequestSize, "gauge");
     UC::Metrics::CreateStats(kQueueCompletionFullTotal, "counter");
     UC::Metrics::CreateStats(kQueueCompletionInflight, "gauge");
     UC::Metrics::CreateStats(kQueueCompletionSize, "gauge");
     UC::Metrics::CreateStats(kQueueResponseBufferRetryTotal, "counter");
     // I. Batch total duration
-    UC::Metrics::CreateStats(kDumpBatchTotalDurationMs, "histogram");
-    UC::Metrics::CreateStats(kLoadBatchTotalDurationMs, "histogram");
-    UC::Metrics::CreateStats(kLookupBatchTotalDurationMs, "histogram");
-    // F. Dynamic data-pool usage gauges, one per block size.
+    UC::Metrics::CreateStats(kDumpBatchTotalDurationMs, "histogram",
+                             {std::begin(kMsBucketsTransfer), std::end(kMsBucketsTransfer)});
+    UC::Metrics::CreateStats(kLoadBatchTotalDurationMs, "histogram",
+                             {std::begin(kMsBucketsTransfer), std::end(kMsBucketsTransfer)});
+    UC::Metrics::CreateStats(kLookupBatchTotalDurationMs, "histogram",
+                             {std::begin(kMsBucketsLookupBatch), std::end(kMsBucketsLookupBatch)});
+    // F-supplement: dynamic data-pool usage gauges, one per block size.
     for (const auto slotSize : g_config.poolBlockSizes) {
         UC::Metrics::CreateStats(BufferPoolUsageRatioName(slotSize), "gauge");
     }
