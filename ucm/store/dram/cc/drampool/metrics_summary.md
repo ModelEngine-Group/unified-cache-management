@@ -14,7 +14,7 @@
 > - **LOOKUP**：hit / miss 累计 Counter（命中率经 §3 公式推导）
 > - **整批总耗时**：新增 I 组 3 个 Histogram（TaskWorker 出队 → 响应提交完成，跨线程经 `CompletionRecord.begin_us`（µs，兼一次性上报哨兵）传递）
 > - **二次修改（按需求删除首条数据时间指标）**：删除全部 [首条] 粒度观测——G 组 storebegin / allocate / shard_register / evict_sync / loadbegin 5 个直方图 + D 组 `lookup_first_exist_duration_ms`，thread_local 首条门控机制随之移除；批次内阶段归因由 prepare（[批次]）与 I 组批次总耗时承载，单 key 成本回退 scan 均值 ÷ 平均 batch_size 推导
-> - **三次修改（批次 Gauge → Counter）**：4 个批次观测 Gauge 停用——`dump_batch_failed_entries` / `dump_batch_failure_ratio` 改造为 Counter `dump_failed_entries_total`（同一统计点 `MetricsSet`→`MetricsCount`，对 `record.results` 定稿的 Failed 计数）；`lookup_batch_hits`（与 `lookup_hit_entries_total` 同点累计，完全重复）、`lookup_batch_hit_ratio`（§3 公式可推导且比率语义非 Counter 所能承载）直接删除；41 → 38
+> - **三次修改（批次 Gauge → Counter）**：4 个批次观测 Gauge 停用——`dump_batch_failed_entries` / `dump_batch_failure_ratio` 改造为 Counter `dump_failed_entries_total`（同一统计点由覆盖写改为累加 `UpdateStats`，对 `record.results` 定稿的 Failed 计数）；`lookup_batch_hits`（与 `lookup_hit_entries_total` 同点累计，完全重复）、`lookup_batch_hit_ratio`（§3 公式可推导且比率语义非 Counter 所能承载）直接删除；41 → 38
 > - **四次修改（删除吞吐字节指标）**：删除 `dump_bytes_total` / `load_bytes_total` ×2 Counter——吞吐/带宽推导随之取消，LOAD 命中率精确式暂不可算（以 miss 绝对速率与突增监控为主）；38 → 36
 > - **五次修改（删除归因/分子指标）**：删除 `load_initialized_entries_total`（miss 的 INITIALIZED 子类归因）与 `lookup_hit_entries_total`（LOOKUP 命中数、命中率分子）×2 Counter——两侧命中率均暂不可由指标推导，以 miss 绝对速率与突增监控为主（§3 / design §10 留痕）；36 → 34
 > - **六次修改（队列累计改直测）**：删除 `queue_request_enqueued/dequeued_total` 与 `queue_completion_enqueued/dequeued_total` ×4 Counter，替代为当前长度直测 Gauge ×2：`queue_request_size` / `queue_completion_size`（入队、出队成功后覆盖写）——SPSC 恒等推导（排队数 = 入队 − 出队）改为直测，入口/消费速率观测随之取消；34 → 32

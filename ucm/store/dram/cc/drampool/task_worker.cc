@@ -49,7 +49,8 @@ void TaskWorker::Run(const std::atomic_bool& stop)
         RequestTaskPtr task;
         if (runtime_.requestQueue.TryPop(task)) {
             g_requestQueueLen.fetch_sub(1, std::memory_order_relaxed);
-            MetricsSet(kQueueRequestSize, static_cast<double>(g_requestQueueLen.load()));
+            UC::Metrics::UpdateStats(kQueueRequestSize,
+                                     static_cast<double>(g_requestQueueLen.load()));
             const auto processStatus = ProcessOneRequest(std::move(task));
             if (processStatus.Failure()) {
                 UC_ERROR("TaskWorker ProcessOneRequest failed: {}", processStatus);
@@ -78,19 +79,19 @@ Status TaskWorker::ProcessOneRequest(RequestTaskPtr task)
              request->request_id, static_cast<int>(request->opcode), peerOneSidedId);
     switch (request->opcode) {
         case OpType::DUMP: {
-            MetricsCount(kDumpRequestsTotal, 1);
+            UC::Metrics::UpdateStats(kDumpRequestsTotal, 1);
             const auto* dump = dynamic_cast<const KvDumpRequest*>(request.get());
             return dump == nullptr ? Status::InvalidParam("DUMP request type does not match opcode")
                                    : ProcessDump(*dump, peerOneSidedId, beginUs);
         }
         case OpType::LOAD: {
-            MetricsCount(kLoadRequestsTotal, 1);
+            UC::Metrics::UpdateStats(kLoadRequestsTotal, 1);
             const auto* load = dynamic_cast<const KvLoadRequest*>(request.get());
             return load == nullptr ? Status::InvalidParam("LOAD request type does not match opcode")
                                    : ProcessLoad(*load, peerOneSidedId, beginUs);
         }
         case OpType::LOOKUP: {
-            MetricsCount(kLookupRequestsTotal, 1);
+            UC::Metrics::UpdateStats(kLookupRequestsTotal, 1);
             const auto* lookup = dynamic_cast<const KvLookupRequest*>(request.get());
             return lookup == nullptr
                        ? Status::InvalidParam("LOOKUP request type does not match opcode")
@@ -172,7 +173,7 @@ Status TaskWorker::ProcessDump(const KvDumpRequest& request,
         UC_ERROR("Dump SubmitAsync failed, request_id={}, items={}, error={}", request.request_id,
                  transfer_items.size(), submit_status);
         prepareTimer.Disarm();
-        MetricsCount(kSubmitFailuresTotal, 1);
+        UC::Metrics::UpdateStats(kSubmitFailuresTotal, 1);
         DeleteItemsMetadata(transfer_items);
         for (const auto& item : transfer_items) {
             results[item.index_in_request] = static_cast<std::uint8_t>(DumpLoadResult::Failed);
@@ -248,18 +249,15 @@ Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
             transport::Segment{metadataEntry->buffer.addr, entry.addr, entry.len});
     }
 
-    MetricsCount(kLoadMissEntriesTotal, missEntries);
+    if (missEntries != 0) {
+        UC::Metrics::UpdateStats(kLoadMissEntriesTotal, static_cast<double>(missEntries));
+    }
     if (transfer_items.empty()) {
         UC_DEBUG("LOAD skips data transfer, request_id={}, batch_size={}", request.request_id,
                  request.batch_size);
-<<<<<<< HEAD
-        return QueueResponse(OpType::LOAD, request.resp_addr, peerOneSidedId, std::move(results),
-                             request.request_id, beginUs);
-=======
         prepareTimer.Disarm();
         return QueueResponse(OpType::LOAD, request.resp_addr, peerOneSidedId, std::move(results),
                              request.request_id, beginUs);
->>>>>>> 4a7a46f (implement DramPool metrics)
     }
 
     UC_DEBUG("LOAD submits data transfer, request_id={}, items={}, peer={}", request.request_id,
@@ -270,18 +268,13 @@ Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
         UC_ERROR("Load SubmitAsync failed, request_id={}, items={}, error={}", request.request_id,
                  transfer_items.size(), submit_status);
         prepareTimer.Disarm();
-        MetricsCount(kSubmitFailuresTotal, 1);
+        UC::Metrics::UpdateStats(kSubmitFailuresTotal, 1);
         LoadEndItems(transfer_items);
         for (const auto& item : transfer_items) {
             results[item.index_in_request] = static_cast<std::uint8_t>(DumpLoadResult::Failed);
         }
-<<<<<<< HEAD
         return QueueResponse(OpType::LOAD, request.resp_addr, peerOneSidedId, std::move(results),
                              request.request_id, beginUs);
-=======
-        return QueueResponse(OpType::LOAD, request.resp_addr, peerOneSidedId, std::move(results),
-                             request.request_id, beginUs);
->>>>>>> 4a7a46f (implement DramPool metrics)
     }
 
     CompletionRecord record;
@@ -320,7 +313,9 @@ Status TaskWorker::ProcessLookup(const KvLookupRequest& request,
                 ++missEntries;
             }
         }
-        MetricsCount(kLookupMissEntriesTotal, missEntries);
+        if (missEntries != 0) {
+            UC::Metrics::UpdateStats(kLookupMissEntriesTotal, static_cast<double>(missEntries));
+        }
     }
 
     UC_DEBUG("LOOKUP metadata scan completed, request_id={}, batch_size={}", request.request_id,
@@ -373,11 +368,12 @@ Status TaskWorker::SubmitCompletion(CompletionRecord&& record)
     // Non-mutating probe: TryPush leaves the record untouched on failure (spsc_ring_queue.h),
     // so a full queue (B3 spin in Push below) is counted without changing behavior.
     if (!runtime_.completionQueue.TryPush(std::move(record))) {
-        MetricsCount(kQueueCompletionFullTotal, 1);
+        UC::Metrics::UpdateStats(kQueueCompletionFullTotal, 1);
         runtime_.completionQueue.Push(std::move(record));
     }
     g_completionQueueLen.fetch_add(1, std::memory_order_relaxed);
-    MetricsSet(kQueueCompletionSize, static_cast<double>(g_completionQueueLen.load()));
+    UC::Metrics::UpdateStats(kQueueCompletionSize,
+                             static_cast<double>(g_completionQueueLen.load()));
     return Status::OK();
 }
 

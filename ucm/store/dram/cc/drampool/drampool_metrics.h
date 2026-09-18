@@ -93,27 +93,6 @@ inline std::string BufferPoolUsageRatioName(std::uint64_t slotSize)
     return std::string("drampool_buffer_pool_usage_ratio_") + std::to_string(slotSize);
 }
 
-// ---- update helpers (thin wrappers over UC::Metrics::UpdateStats) ----
-// Accumulates a count (COUNTER semantics: value += count); zero is skipped.
-inline void MetricsCount(const std::string& name, std::uint64_t count)
-{
-    if (count != 0) {
-        UC::Metrics::UpdateStats(name, static_cast<double>(count));
-    }
-}
-
-// Records one duration sample (HISTOGRAM semantics: push_back, in ms).
-inline void MetricsObserve(const std::string& name, double valueMs)
-{
-    UC::Metrics::UpdateStats(name, valueMs);
-}
-
-// Overwrites the latest value (GAUGE semantics: value = v).
-inline void MetricsSet(const std::string& name, double value)
-{
-    UC::Metrics::UpdateStats(name, value);
-}
-
 // RAII duration observer: measures with SteadyNowUs() and records the elapsed
 // time in ms on scope exit. Call Disarm() on paths that must not be observed
 // (e.g. failed preparations, see metrics_design.md §4.1).
@@ -124,7 +103,8 @@ public:
     ~ScopedTimer()
     {
         if (armed_) {
-            MetricsObserve(name_, static_cast<double>(SteadyNowUs() - startUs_) / 1000.0);
+            UC::Metrics::UpdateStats(name_,
+                                     static_cast<double>(SteadyNowUs() - startUs_) / 1000.0);
         }
     }
 
