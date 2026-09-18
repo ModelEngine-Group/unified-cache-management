@@ -14,9 +14,11 @@ from ...runner import run_command
 from .config import (
     ADDITIONAL_CONFIG_ENV,
     BLOCK_SIZE_ENV,
+    CONNECTOR_MODULE_PATH_ENV,
     DEVICE_ENV,
     DTYPE_ENV,
     KV_CACHE_DTYPE_ENV,
+    LEGACY_CONNECTOR_MODULE,
     MODEL_ENV,
     STORAGE_BACKENDS_ENV,
     STORE_PIPELINE_ENV,
@@ -43,6 +45,7 @@ def _detect_platform() -> str:
     if importlib.util.find_spec("vllm") is not None:
         try:
             from importlib.metadata import version as _pkg_version
+
             if "+cpu" in _pkg_version("vllm"):
                 return "cpu"
         except Exception:
@@ -97,6 +100,11 @@ class ModelCheckTool(ToolAdapter):
         )
         parser.add_argument("--dtype", help="vLLM model dtype")
         parser.add_argument("--kv-cache-dtype", help="vLLM KV-cache dtype")
+        parser.add_argument(
+            "--connector-module-path",
+            default=LEGACY_CONNECTOR_MODULE,
+            help="module containing the UCMConnector facade",
+        )
 
     def _build_run_parser(self) -> argparse.ArgumentParser:
         parser = argparse.ArgumentParser(
@@ -135,6 +143,7 @@ class ModelCheckTool(ToolAdapter):
         if args.layerwise is not None:
             env[USE_LAYERWISE_ENV] = str(args.layerwise).lower()
         env[DEVICE_ENV] = args.device_id
+        env[CONNECTOR_MODULE_PATH_ENV] = args.connector_module_path
         if platform == "cuda":
             env["CUDA_VISIBLE_DEVICES"] = args.device_id
         elif platform == "ascend":

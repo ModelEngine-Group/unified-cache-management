@@ -10,6 +10,7 @@ cache stream waits for event before D2H. This avoids blocking the CPU.
 import os
 import re
 import subprocess
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from itertools import accumulate
@@ -703,6 +704,9 @@ def create_device() -> Optional[Device]:
     if current_platform.device_type == "npu":
         return NpuDevice()
 
+    if current_platform.device_type == "cpu":
+        return CpuDevice()
+
     return None
 
 
@@ -714,4 +718,51 @@ def get_current_device_id() -> int:
     if current_platform.device_type == "npu":
         return int(torch.npu.current_device())
 
+    if current_platform.device_type == "cpu":
+        return 0
+
     raise RuntimeError("Unsupported device platform for UCM connector.")
+
+
+class CpuDevice(Device):
+    """Minimal CPU device implementation for the simu/CPU runtime.
+
+    No real accelerator: events are wall-clock timestamps, synchronize is a
+    no-op, and CPU affinity falls back to the shared split_cores helper.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._next_handle: int = 1
+        self._events: dict[int, float] = {}
+
+    def get_event_handle(self) -> int:
+        handle = self._next_handle
+        self._next_handle += 1
+        self._events[handle] = time.monotonic()
+        return handle
+
+    def synchronize(self) -> None:
+        return None
+
+    def record_timing_event(self):
+        return time.monotonic()
+
+    def elapsed_time_ms(self, start_event, end_event) -> float:
+        if isinstance(start_event, (int, float)) and start_event in self._events:
+            start = self._events.pop(start_event, start_event)
+        else:
+            start = start_event
+        return max(0.0, (float(end_event) - float(start)) * 1000.0)
+
+    def destroy_event_handles(self) -> None:
+        self._events.clear()
+
+    def destroy_event_handle(self, event_handle: int) -> None:
+        self._events.pop(event_handle, None)
+
+    def get_cpu_affinity(self, local_rank: int) -> Optional[str]:
+        try:
+            return self._fallback_cpu_affinity(local_rank)
+        except Exception:
+            return None

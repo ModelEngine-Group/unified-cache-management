@@ -1162,6 +1162,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
             logger.info("NPU device is available.")
             torch_dev = torch.npu
             dev_name = "npu"
+        elif current_platform.device_type == "cpu":
+            logger.info("CPU device is available.")
+            torch_dev = torch
+            dev_name = "cpu"
         else:
             raise RuntimeError("Unsupported device platform for UCMDirectConnector.")
 
@@ -2212,7 +2216,8 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             return True
         except Exception as e:
             logger.error(
-                f"submit dump task for layer {layer_id} failed. {type(e).__name__}: {e}"
+                f"submit dump task for layer {layer_id} failed. {type(e).__name__}: {e}",
+                exc_info=True,
             )
             self._record_counter("connector_dump_submit_errors_total")
             if self.enable_event_sync and event_handle and self.device is not None:

@@ -79,6 +79,7 @@ storage_backends = config.storage_backends
 visible_devices = config.visible_devices
 dtype = config.dtype
 kv_cache_dtype = config.kv_cache_dtype
+connector_module_path = config.connector_module_path
 trust_remote_code = True
 request_token_salt = time.time_ns() ^ os.getpid()
 
@@ -117,6 +118,7 @@ def make_config() -> Any:
         storage_backends,
         use_layerwise,
         "npu",
+        connector_module_path,
     )
 
 
@@ -325,7 +327,7 @@ def main() -> int:
         # the worker-published id, so initialize the worker before Scheduler.
         worker = make_worker(fixture)
         torch.npu.set_device(active_device)
-        dispatch = schedule(fixture, tokens, request_token_salt, patch_groups)
+        dispatch = schedule(fixture, tokens, request_token_salt, patch_groups, worker)
         verify(fixture, dispatch, worker, torch.npu.synchronize)
         return 0
     finally:

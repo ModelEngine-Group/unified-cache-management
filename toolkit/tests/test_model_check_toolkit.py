@@ -53,6 +53,7 @@ class ModelCheckToolkitTest(unittest.TestCase):
         self.assertIn("--device-id", output.getvalue())
         self.assertIn("--tokens", output.getvalue())
         self.assertIn("--additional-config", output.getvalue())
+        self.assertIn("--connector-module-path", output.getvalue())
         self.assertNotIn("ucm_toolkit.tools.model_check.cuda", sys.modules)
         self.assertNotIn("ucm_toolkit.tools.model_check.ascend", sys.modules)
 
@@ -68,6 +69,9 @@ class ModelCheckToolkitTest(unittest.TestCase):
             "UCM_MODEL_CHECK_DEVICE_ID": "5",
             "UCM_MODEL_CHECK_DTYPE": "float16",
             "UCM_MODEL_CHECK_KV_CACHE_DTYPE": "auto",
+            "UCM_MODEL_CHECK_CONNECTOR_MODULE_PATH": (
+                "ucm.integration.vllm.v2.ucm_connector"
+            ),
         }
         with patch.dict(os.environ, values, clear=True):
             config = load_config()
@@ -82,6 +86,10 @@ class ModelCheckToolkitTest(unittest.TestCase):
         self.assertEqual(config.visible_devices, "5")
         self.assertEqual(config.dtype, "float16")
         self.assertEqual(config.kv_cache_dtype, "auto")
+        self.assertEqual(
+            config.connector_module_path,
+            "ucm.integration.vllm.v2.ucm_connector",
+        )
 
     def test_cuda_runs_as_child_module(self):
         tool = ModelCheckTool()
@@ -116,6 +124,8 @@ class ModelCheckToolkitTest(unittest.TestCase):
                     "bfloat16",
                     "--kv-cache-dtype",
                     "fp8",
+                    "--connector-module-path",
+                    "ucm.integration.vllm.v2.ucm_connector",
                 ]
             )
 
@@ -127,14 +137,15 @@ class ModelCheckToolkitTest(unittest.TestCase):
                 "UCM_MODEL_CHECK_TOKENS": "8192",
                 "UCM_MODEL_CHECK_BLOCK_SIZE": "128",
                 "UCM_MODEL_CHECK_USE_LAYERWISE": "false",
-                "UCM_MODEL_CHECK_ADDITIONAL_CONFIG": (
-                    '{"enable_sparse_sfa_c8": true}'
-                ),
+                "UCM_MODEL_CHECK_ADDITIONAL_CONFIG": ('{"enable_sparse_sfa_c8": true}'),
                 "UCM_MODEL_CHECK_STORE_PIPELINE": "Cache|Posix",
                 "UCM_MODEL_CHECK_STORAGE_BACKENDS": "/data/0:/data/1",
                 "UCM_MODEL_CHECK_DEVICE_ID": "7",
                 "UCM_MODEL_CHECK_DTYPE": "bfloat16",
                 "UCM_MODEL_CHECK_KV_CACHE_DTYPE": "fp8",
+                "UCM_MODEL_CHECK_CONNECTOR_MODULE_PATH": (
+                    "ucm.integration.vllm.v2.ucm_connector"
+                ),
                 "CUDA_VISIBLE_DEVICES": "7",
             },
         )
@@ -145,17 +156,13 @@ class ModelCheckToolkitTest(unittest.TestCase):
             patch.dict(os.environ, {}, clear=True),
             patch(
                 "ucm_toolkit.tools.model_check.adapter.importlib.util.find_spec",
-                side_effect=lambda name: (
-                    object() if name == "vllm_ascend" else None
-                ),
+                side_effect=lambda name: (object() if name == "vllm_ascend" else None),
             ),
             patch(
                 "ucm_toolkit.tools.model_check.adapter.run_command", return_value=8
             ) as run,
         ):
-            result = tool.run(
-                ["--model", "org/model", "--device-id", "3"]
-            )
+            result = tool.run(["--model", "org/model", "--device-id", "3"])
 
         self.assertEqual(result, 8)
         run.assert_called_once_with(
@@ -163,6 +170,9 @@ class ModelCheckToolkitTest(unittest.TestCase):
             env={
                 "UCM_MODEL_CHECK_MODEL": "org/model",
                 "UCM_MODEL_CHECK_DEVICE_ID": "3",
+                "UCM_MODEL_CHECK_CONNECTOR_MODULE_PATH": (
+                    "ucm.integration.vllm.ucm_connector"
+                ),
                 "ASCEND_RT_VISIBLE_DEVICES": "3",
             },
         )
