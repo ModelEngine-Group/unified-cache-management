@@ -81,6 +81,19 @@ Status SpaceLayout::Setup(const Config& config)
     return status;
 }
 
+Status SpaceLayout::InitBackend(const std::string& backend, bool create) const
+{
+    for (const auto& root : shards_) {
+        PosixFile dir{backend + root};
+        auto status = create
+                          ? dir.MkDir()
+                          : dir.Access(PosixFile::AccessMode::READ | PosixFile::AccessMode::WRITE);
+        if (create && status == Status::DuplicateKey()) { status = Status::OK(); }
+        if (status.Failure()) { return status; }
+    }
+    return Status::OK();
+}
+
 std::string SpaceLayout::DataFilePath(const Detail::BlockId& blockId, bool activated) const
 {
     return DataFilePath(StorageBackend(blockId), blockId, activated);
