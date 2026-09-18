@@ -3238,6 +3238,33 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
                 f"device_type={getattr(current_platform, 'device_type', None)!r}, "
                 f"role={role}, pid={os.getpid()}"
             )
+        # Hybrid multi-group KV + load-failure recompute is unsupported: UCM
+        # reports invalid block ids on load failure, and the vLLM scheduler
+        # cannot recompute them across multiple KV cache groups.
+        if kv_cache_config is not None:
+            kv_cache_groups = kv_cache_config.kv_cache_groups
+            if (
+                kv_cache_groups
+                and len(kv_cache_groups) > 1
+                and not getattr(
+                    vllm_config.scheduler_config,
+                    "disable_hybrid_kv_cache_manager",
+                    False,
+                )
+                and getattr(
+                    vllm_config.kv_transfer_config,
+                    "kv_load_failure_policy",
+                    "fail",
+                )
+                == "recompute"
+            ):
+                raise RuntimeError(
+                    "UCMConnector does not support "
+                    "kv_load_failure_policy='recompute' with hybrid multi-group "
+                    f"KV cache ({len(kv_cache_groups)} groups): load-failure "
+                    "recompute is not implemented for multi-group models. "
+                    "Use the default kv_load_failure_policy='fail'."
+                )
         self.connector: KVConnectorBase_V1
         ucm_config = Config(vllm_config.kv_transfer_config)
         self.engine_id = vllm_config.kv_transfer_config.engine_id.rsplit("_dp", 1)[0]
