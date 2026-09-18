@@ -33,6 +33,7 @@ from vllm.model_executor.models.utils import extract_layer_index
 from vllm.platforms import current_platform
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.outputs import KVConnectorOutput
+from vllm.v1.request import RequestStatus
 
 from ucm.integration.vllm.device import create_device, get_current_device_id
 from ucm.integration.vllm.metrics import (
@@ -1743,10 +1744,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if self.device is None:
             raise RuntimeError(f"Unsupported device platform for UCMDirectConnector.")
 
-    def _prefetch_other_rank_hashes(self, rank0_block_ids: list[bytes]) -> None:
-        if not self._other_rank_hashers or not rank0_block_ids:
+    def _prefetch_all_rank_hashes(self, rank0_block_ids: list[bytes]) -> None:
+        if not rank0_block_ids:
             return
+        self.store.prefetch(rank0_block_ids)
 
+        if not self._other_rank_hashers:
+            return
         other_rank_block_ids = [
             rank_hasher(block_id)
             for rank_hasher in self._other_rank_hashers
@@ -1778,12 +1782,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         if all_hit_block_ids:
             try:
-                self._prefetch_other_rank_hashes(all_hit_block_ids)
+                self._prefetch_all_rank_hashes(all_hit_block_ids)
             except Exception as e:
                 # Prefetch is only a GC hotness hint. A failure must not turn a
                 # valid cache hit into a scheduler-side miss.
                 logger.warning(
-                    "UCM other-rank hotness update failed. " f"{type(e).__name__}: {e}"
+                    "UCM all-rank hotness update failed. " f"{type(e).__name__}: {e}"
                 )
 
     def get_num_new_matched_tokens(
@@ -1797,15 +1801,21 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self._async_load_req_ids.discard(request.request_id)
         assert num_computed_tokens % self.block_size == 0
         hbm_hit_block_num = num_computed_tokens // self.block_size
+        if request.status == RequestStatus.PREEMPTED:
+            self.requests_meta.pop(request.request_id, None)
 
-        assert self.request_block_hasher is not None
-        try:
-            ucm_block_ids = self.request_block_hasher(request)
-        except Exception as e:
-            logger.error(
-                f"request {request.request_id} hash error. {type(e).__name__}: {e}"
-            )
-            return 0, False
+        if request.request_id not in self.requests_meta:
+            assert self.request_block_hasher is not None
+            try:
+                ucm_block_ids = self.request_block_hasher(request)
+            except Exception as e:
+                logger.error(
+                    f"request {request.request_id} hash error. {type(e).__name__}: {e}"
+                )
+                return 0, False
+        else:
+            request_meta = self.requests_meta[request.request_id]
+            ucm_block_ids = request_meta.ucm_block_ids
 
         if (
             self.enable_record_traces
@@ -1828,7 +1838,26 @@ class UCMDirectConnector(KVConnectorBase_V1):
             )
             return 0, False
 
-        external_block_ids = ucm_block_ids[hbm_hit_block_num * self.cp_world_size :]
+        # Waiting-queue requests are re-checked often. Resume from the last
+        # previously-hit block only when this request is already in
+        # requests_meta AND hbm_hit_block_num did not decrease. Otherwise (first
+        # lookup, or HBM hit boundary moved) do a full prefix lookup from
+        # hbm_hit_block_num. If the last previously-hit block is gone, fall
+        # back to that same full lookup.
+        lookup_start_block_num = hbm_hit_block_num
+        resume_from_last_hit = False
+        if request.request_id in self.requests_meta:
+            req_meta = self.requests_meta[request.request_id]
+            if (
+                req_meta.hbm_hit_block_num <= hbm_hit_block_num
+                and req_meta.total_hit_block_num > hbm_hit_block_num
+            ):
+                lookup_start_block_num = req_meta.total_hit_block_num - 1
+                resume_from_last_hit = True
+
+        external_block_ids = ucm_block_ids[
+            lookup_start_block_num * self.cp_world_size :
+        ]
         external_hit_blocks = 0
         if external_block_ids:
             try:
@@ -1838,7 +1867,24 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     )
                     + 1
                 )
-                external_hit_blocks = external_hit_hashes // self.cp_world_size
+                if resume_from_last_hit and external_hit_hashes == 0:
+                    lookup_start_block_num = hbm_hit_block_num
+                    external_block_ids = ucm_block_ids[
+                        hbm_hit_block_num * self.cp_world_size :
+                    ]
+                    if external_block_ids:
+                        external_hit_hashes = (
+                            self._rank_consistency.lookup_on_prefix(
+                                self.store, external_block_ids
+                            )
+                            + 1
+                        )
+                    else:
+                        external_hit_hashes = 0
+                found_blocks = external_hit_hashes // self.cp_world_size
+                external_hit_blocks = (
+                    lookup_start_block_num - hbm_hit_block_num
+                ) + found_blocks
             except Exception as e:
                 logger.error(
                     f"request {request.request_id} look up error. {type(e).__name__}: {e}"
