@@ -47,11 +47,11 @@ class IoEnginePsync : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> 
     std::thread dispatcher_;
 
 public:
-    Status Setup(const Config& config, const SpaceLayout* layout)
+    Status Setup(const Config& config, const SpaceLayout* layout, const std::string& backend)
     {
         timeoutMs_ = config.timeoutMs;
         shardSize_ = config.shardSize;
-        auto s = queue_.Setup(config, &failureSet_, layout);
+        auto s = queue_.Setup(config, &failureSet_, layout, backend);
         if (s.Failure()) [[unlikely]] { return s; }
         waiting_.Setup(kDispatchQueueDepth);
         dispatcher_ = std::thread(&IoEnginePsync::DispatchStage, this);

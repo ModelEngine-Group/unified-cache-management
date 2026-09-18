@@ -109,9 +109,11 @@ public:
             if (worker.joinable()) { worker.join(); }
         }
     }
-    void Setup(const SpaceLayout* layout, const size_t nOpenWorker, const size_t nCommitWorker)
+    void Setup(const SpaceLayout* layout, const std::string& backend, const size_t nOpenWorker,
+               const size_t nCommitWorker)
     {
         layout_ = layout;
+        backend_ = backend;
         for (size_t i = 0; i < nOpenWorker; ++i) {
             workers_.push_back(std::thread{[this] { OpenWorkerLoop(); }});
         }
@@ -173,7 +175,7 @@ private:
                 task = std::move(openQueue_.queue.front());
                 openQueue_.queue.pop_front();
             }
-            const auto path = layout_->DataFilePath(task.id, task.activated);
+            const auto path = layout_->DataFilePath(backend_, task.id, task.activated);
 #ifdef UCM_ENABLE_TEST_HOOKS
             auto hook = TestHooks::GetOpenHook();
             auto fd = hook ? hook(path, task.flags, mode) : ::open(path.c_str(), task.flags, mode);
@@ -200,7 +202,7 @@ private:
                 task = std::move(commitQueue_.queue.front());
                 commitQueue_.queue.pop_front();
             }
-            auto status = layout_->CommitFile(task.id, task.success);
+            auto status = layout_->CommitFile(backend_, task.id, task.success);
             task.callback(status);
         }
     }
@@ -214,6 +216,7 @@ private:
 
     std::atomic_bool stop_{false};
     const SpaceLayout* layout_;
+    std::string backend_;
     std::list<std::thread> workers_;
     TaskQueue<OpenTask> openQueue_;
     TaskQueue<CommitTask> commitQueue_;

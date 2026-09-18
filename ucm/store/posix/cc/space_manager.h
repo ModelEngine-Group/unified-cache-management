@@ -24,6 +24,7 @@
 #ifndef UNIFIEDCACHE_POSIX_STORE_CC_SPACE_MANAGER_H
 #define UNIFIEDCACHE_POSIX_STORE_CC_SPACE_MANAGER_H
 
+#include "backend_manager.h"
 #include "gc_config_guard.h"
 #include "global_config.h"
 #include "hotness_tracker.h"
@@ -47,6 +48,7 @@ class SpaceManager {
 
 private:
     SpaceLayout layout_;
+    BackendManager backendMgr_;
     ThreadPool<PrefixLookupContext> prefixLookupSrv_;
     HotnessTracker hotnessTracker_;
     ShardGarbageCollector gcMgr_;
@@ -61,6 +63,7 @@ public:
     Expected<ssize_t> LookupOnReverse(const Detail::BlockId* blocks, size_t num);
     void Prefetch(const Detail::BlockId* blocks, size_t num);
     const SpaceLayout* GetLayout() const { return &layout_; }
+    const BackendManager* GetBackendManager() const { return &backendMgr_; }
 
 private:
     uint8_t Lookup(const Detail::BlockId* block);

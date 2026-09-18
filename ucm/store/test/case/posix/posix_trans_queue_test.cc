@@ -42,8 +42,9 @@ TEST_F(UCPosixTransQueueTest, TransBlock)
     UC::HashSet<UC::Detail::TaskHandle> failureSet;
     UC::PosixStore::SpaceLayout layout;
     ASSERT_TRUE(layout.Setup(config).Success());
+    ASSERT_TRUE(layout.InitBackend(Path(), true).Success());
     TransQueue queue;
-    auto s = queue.Setup(config, &failureSet, &layout);
+    auto s = queue.Setup(config, &failureSet, &layout, Path());
     ASSERT_EQ(s, UC::Status::OK());
     auto block = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
     constexpr size_t nBlocks = 1;
@@ -80,8 +81,9 @@ TEST_F(UCPosixTransQueueTest, TransBlockLayerWise)
     UC::HashSet<UC::Detail::TaskHandle> failureSet;
     UC::PosixStore::SpaceLayout layout;
     ASSERT_TRUE(layout.Setup(config).Success());
+    ASSERT_TRUE(layout.InitBackend(Path(), true).Success());
     TransQueue queue;
-    auto s = queue.Setup(config, &failureSet, &layout);
+    auto s = queue.Setup(config, &failureSet, &layout, Path());
     ASSERT_EQ(s, UC::Status::OK());
     auto block = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
     auto data1 = UC::Test::Detail::TypesHelper::MakeArray<UC::Test::Detail::DataGenerator, nShards>(

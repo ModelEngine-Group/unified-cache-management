@@ -56,12 +56,12 @@ class IoEngineAio : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
 
 public:
     ~IoEngineAio() { blockOperator_.Stop(); }
-    Status Setup(const Config& config, const SpaceLayout* layout)
+    Status Setup(const Config& config, const SpaceLayout* layout, const std::string& backend)
     {
         timeoutMs_ = config.timeoutMs;
         shardSize_ = config.shardSize;
         nShardPerBlock_ = config.blockSize / config.shardSize;
-        blockOperator_.Setup(layout, config.openConcurrency, config.commitConcurrency);
+        blockOperator_.Setup(layout, backend, config.openConcurrency, config.commitConcurrency);
         aio_.SetSweepFn([this] { SweepDeadlines(); });
         UC_INFO(
             "AIO engine setup: timeoutMs={}, "

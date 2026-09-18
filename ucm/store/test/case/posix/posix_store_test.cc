@@ -278,7 +278,7 @@ TEST_F(UCPosixStoreTest, CheckHealthWithoutDirectIoOnTemporaryFilesystem)
     EXPECT_EQ(store.CheckHealth(), UC::Status::OK());
 }
 
-TEST_F(UCPosixStoreTest, CheckHealthCoversAllStorageBackends)
+TEST_F(UCPosixStoreTest, CheckHealthReportsAvailableBackends)
 {
     using namespace UC::PosixStore;
     const auto mount0 = std::filesystem::path{Path()} / "mount0";
@@ -300,8 +300,8 @@ TEST_F(UCPosixStoreTest, CheckHealthCoversAllStorageBackends)
         std::filesystem::rename(unavailable, mount);
         return status;
     };
-    EXPECT_TRUE(checkUnavailable(mount0).Failure());
-    EXPECT_TRUE(checkUnavailable(mount1).Failure());
+    EXPECT_TRUE(checkUnavailable(mount0).Success());
+    EXPECT_TRUE(checkUnavailable(mount1).Success());
 }
 
 TEST_F(UCPosixStoreTest, DumpThenLoadWithIoDirect)

@@ -28,10 +28,12 @@
 
 namespace UC::PosixStore {
 
-Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const SpaceLayout* layout)
+Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const SpaceLayout* layout,
+                         const std::string& backend)
 {
     failureSet_ = failureSet;
     layout_ = layout;
+    backend_ = backend;
     ioSize_ = config.tensorSize;
     shardSize_ = config.shardSize;
     nShardPerBlock_ = config.blockSize / config.shardSize;
@@ -128,7 +130,7 @@ void TransQueue::DumpWorker(IoUnit& ios)
     }
     auto s = H2S(ios);
     if (s.Success() && ios.shard.index + 1 == nShardPerBlock_) {
-        s = layout_->CommitFile(ios.shard.owner, true);
+        s = layout_->CommitFile(backend_, ios.shard.owner, true);
     }
     if (s.Failure()) [[unlikely]] {
         ios.task->SetFirstFail(s);
@@ -139,7 +141,7 @@ void TransQueue::DumpWorker(IoUnit& ios)
 
 Status TransQueue::H2S(IoUnit& ios)
 {
-    const auto& path = layout_->DataFilePath(ios.shard.owner, true);
+    const auto& path = layout_->DataFilePath(backend_, ios.shard.owner, true);
     PosixFile file{path};
     auto flags = PosixFile::OpenFlag::CREATE | PosixFile::OpenFlag::WRITE_ONLY;
     if (ioDirect_) { flags |= PosixFile::OpenFlag::DIRECT; }
@@ -164,7 +166,7 @@ Status TransQueue::H2S(IoUnit& ios)
 
 Status TransQueue::S2H(IoUnit& ios)
 {
-    const auto& path = layout_->DataFilePath(ios.shard.owner, false);
+    const auto& path = layout_->DataFilePath(backend_, ios.shard.owner, false);
     PosixFile file{path};
     auto flags = PosixFile::OpenFlag::READ_ONLY;
     if (ioDirect_) { flags |= PosixFile::OpenFlag::DIRECT; }
