@@ -26,6 +26,7 @@
 #include "detail/data_generator.h"
 #include "detail/path_base.h"
 #include "detail/types_helper.h"
+#include "posix/cc/backend_manager.h"
 #include "posix/cc/trans_manager.h"
 #include "space_layout.h"
 
@@ -46,10 +47,12 @@ TEST_F(UCPosixTransManagerTest, EngineCallbacksReclaimCompletedTasks)
     config.timeoutMs = 3000;
     SpaceLayout layout;
     ASSERT_EQ(layout.Setup(config), UC::Status::OK());
+    UC::PosixStore::BackendManager backendMgr;
+    ASSERT_TRUE(backendMgr.Setup(config, &layout).Success());
     UC::Test::Detail::DataGenerator data{1, config.blockSize};
     data.GenerateRandom();
     auto checkCallback = [&](auto& engine) {
-        ASSERT_EQ(engine.Setup(config, &layout, layout.Backends().front()), UC::Status::OK());
+        ASSERT_EQ(engine.Setup(config, &layout, backendMgr.Backends().front()), UC::Status::OK());
         const auto block = UC::Test::Detail::TypesHelper::MakeBlockIdRandomly();
         for (size_t round = 0; round < 3; ++round) {
             SCOPED_TRACE(round);
@@ -91,8 +94,10 @@ TEST_F(UCPosixTransManagerTest, TransBlock)
     config.storageBackends.push_back(Path());
     UC::PosixStore::SpaceLayout layout;
     ASSERT_TRUE(layout.Setup(config).Success());
+    UC::PosixStore::BackendManager backendMgr;
+    ASSERT_TRUE(backendMgr.Setup(config, &layout).Success());
     TransManager transMgr;
-    auto s = transMgr.Setup(config, &layout);
+    auto s = transMgr.Setup(config, &layout, &backendMgr);
     ASSERT_EQ(s, UC::Status::OK());
     auto block = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
     constexpr size_t nBlocks = 1;
@@ -128,8 +133,10 @@ TEST_F(UCPosixTransManagerTest, TransBlockLayerWise)
     config.storageBackends.push_back(Path());
     UC::PosixStore::SpaceLayout layout;
     ASSERT_TRUE(layout.Setup(config).Success());
+    UC::PosixStore::BackendManager backendMgr;
+    ASSERT_TRUE(backendMgr.Setup(config, &layout).Success());
     TransManager transMgr;
-    auto s = transMgr.Setup(config, &layout);
+    auto s = transMgr.Setup(config, &layout, &backendMgr);
     ASSERT_EQ(s, UC::Status::OK());
     auto block = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
     auto data1 = UC::Test::Detail::TypesHelper::MakeArray<UC::Test::Detail::DataGenerator, nShards>(

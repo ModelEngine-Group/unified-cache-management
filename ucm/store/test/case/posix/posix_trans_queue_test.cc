@@ -24,6 +24,7 @@
 #include "detail/data_generator.h"
 #include "detail/path_base.h"
 #include "detail/types_helper.h"
+#include "posix/cc/backend_manager.h"
 #include "posix/cc/global_config.h"
 #include "posix/cc/space_layout.h"
 #include "posix/cc/trans_queue.h"
@@ -42,8 +43,10 @@ TEST_F(UCPosixTransQueueTest, TransBlock)
     UC::HashSet<UC::Detail::TaskHandle> failureSet;
     UC::PosixStore::SpaceLayout layout;
     ASSERT_TRUE(layout.Setup(config).Success());
+    UC::PosixStore::BackendManager backendMgr;
+    ASSERT_TRUE(backendMgr.Setup(config, &layout).Success());
     TransQueue queue;
-    auto s = queue.Setup(config, &failureSet, &layout, layout.Backends().front());
+    auto s = queue.Setup(config, &failureSet, &layout, backendMgr.Backends().front());
     ASSERT_EQ(s, UC::Status::OK());
     auto block = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
     constexpr size_t nBlocks = 1;
@@ -80,8 +83,10 @@ TEST_F(UCPosixTransQueueTest, TransBlockLayerWise)
     UC::HashSet<UC::Detail::TaskHandle> failureSet;
     UC::PosixStore::SpaceLayout layout;
     ASSERT_TRUE(layout.Setup(config).Success());
+    UC::PosixStore::BackendManager backendMgr;
+    ASSERT_TRUE(backendMgr.Setup(config, &layout).Success());
     TransQueue queue;
-    auto s = queue.Setup(config, &failureSet, &layout, layout.Backends().front());
+    auto s = queue.Setup(config, &failureSet, &layout, backendMgr.Backends().front());
     ASSERT_EQ(s, UC::Status::OK());
     auto block = UC::Test::Detail::TypesHelper::MakeBlockId("a1b2c3d4e5f6789012345678901234ab");
     auto data1 = UC::Test::Detail::TypesHelper::MakeArray<UC::Test::Detail::DataGenerator, nShards>(

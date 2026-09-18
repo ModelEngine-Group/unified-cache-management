@@ -34,9 +34,10 @@ HotnessTracker::~HotnessTracker()
     if (utimeWorker_.joinable()) { utimeWorker_.join(); }
 }
 
-Status HotnessTracker::Setup(const SpaceLayout* layout)
+Status HotnessTracker::Setup(const SpaceLayout* layout, const BackendManager* backendMgr)
 {
     layout_ = layout;
+    backendMgr_ = backendMgr;
     try {
         utimeWorker_ = std::thread(&HotnessTracker::UtimeWorkerLoop, this);
     } catch (const std::exception& e) {
@@ -77,8 +78,9 @@ void HotnessTracker::UtimeWorkerLoop()
         }
         spinCount = 0;
         while (!consumeQueue.empty()) {
-            layout_->RunOnAvailableBackend(consumeQueue.front(), [&](const std::string& backend) {
-                const auto path = layout_->DataFilePath(backend, consumeQueue.front(), false);
+            backendMgr_->RunOnAvailableBackend(consumeQueue.front(), [&](size_t backendIndex) {
+                const auto path = layout_->DataFilePath(backendMgr_->Backends()[backendIndex],
+                                                        consumeQueue.front(), false);
                 if (utime(path.c_str(), nullptr) == 0) { return Status::OK(); }
                 const auto error = errno;
                 return error == ENOENT ? Status::NotFound() : Status::OsApiError(error);

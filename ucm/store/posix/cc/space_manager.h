@@ -24,8 +24,10 @@
 #ifndef UNIFIEDCACHE_POSIX_STORE_CC_SPACE_MANAGER_H
 #define UNIFIEDCACHE_POSIX_STORE_CC_SPACE_MANAGER_H
 
+#include "backend_manager.h"
 #include "global_config.h"
 #include "hotness_tracker.h"
+#include "lookup_manager.h"
 #include "shard_gc.h"
 #include "space_layout.h"
 #include "thread/latch.h"
@@ -40,17 +42,18 @@ class SpaceManager {
         size_t end;
         size_t nWorker;
         std::shared_ptr<std::atomic<ssize_t>> firstFail;
-        std::shared_ptr<std::atomic<int32_t>> status;
         std::shared_ptr<Latch> waiter;
     };
 
 private:
     SpaceLayout layout_;
-    ThreadPool<PrefixLookupContext> prefixLookupSrv_;
+    BackendManager backendMgr_;
     HotnessTracker hotnessTracker_;
     ShardGarbageCollector gcMgr_;
     bool hotnessTrackerEnable_{false};
     bool gcEnable_{false};
+    std::vector<std::unique_ptr<LookupManager>> lookupManagers_;
+    ThreadPool<PrefixLookupContext> prefixLookupSrv_;
 
 public:
     Status Setup(const Config& config);
@@ -59,11 +62,11 @@ public:
     Expected<ssize_t> LookupOnReverse(const Detail::BlockId* blocks, size_t num);
     void Prefetch(const Detail::BlockId* blocks, size_t num);
     const SpaceLayout* GetLayout() const { return &layout_; }
+    const BackendManager* GetBackendManager() const { return &backendMgr_; }
 
 private:
     uint8_t Lookup(const Detail::BlockId* block);
     void OnLookupPrefix(PrefixLookupContext& ctx);
-    void OnLookupPrefixTimeout(PrefixLookupContext& ctx);
 };
 
 }  // namespace UC::PosixStore

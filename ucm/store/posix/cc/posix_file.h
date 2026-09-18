@@ -59,6 +59,22 @@ inline OpenHook GetOpenHook()
     std::lock_guard<std::mutex> lock{OpenHookMutex()};
     return OpenHookSlot();
 }
+using AccessHook = std::function<int32_t(const std::string&, int32_t)>;
+inline AccessHook& AccessHookSlot()
+{
+    static AccessHook hook;
+    return hook;
+}
+inline void SetAccessHook(AccessHook hook)
+{
+    std::lock_guard<std::mutex> lock{OpenHookMutex()};
+    AccessHookSlot() = std::move(hook);
+}
+inline AccessHook GetAccessHook()
+{
+    std::lock_guard<std::mutex> lock{OpenHookMutex()};
+    return AccessHookSlot();
+}
 }  // namespace TestHooks
 #endif
 

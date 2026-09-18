@@ -1182,7 +1182,9 @@ TEST_F(UCPosixStoreTest, PsyncTruncatedLoadReturnsNotFound)
     layoutConfig.dataDirShardBytes = 0;
     SpaceLayout layout;
     ASSERT_EQ(layout.Setup(layoutConfig), UC::Status::OK());
-    std::filesystem::resize_file(layout.DataFilePath(block, false).Value(), AIO_TEST_DATA_SIZE / 2);
+    std::filesystem::resize_file(
+        layout.DataFilePath(layoutConfig.storageBackends.front() + "/", block, false),
+        AIO_TEST_DATA_SIZE / 2);
 
     auto load = store.Load(MakeDumpDesc("PsyncTruncatedLoad", block, target.get()));
     ASSERT_TRUE(load.HasValue());
@@ -1209,7 +1211,9 @@ TEST_F(UCPosixStoreTest, AioTruncatedLoadReturnsNotFound)
     layoutConfig.dataDirShardBytes = 0;
     SpaceLayout layout;
     ASSERT_EQ(layout.Setup(layoutConfig), UC::Status::OK());
-    std::filesystem::resize_file(layout.DataFilePath(block, false).Value(), AIO_TEST_DATA_SIZE / 2);
+    std::filesystem::resize_file(
+        layout.DataFilePath(layoutConfig.storageBackends.front() + "/", block, false),
+        AIO_TEST_DATA_SIZE / 2);
 
     auto load = store.Load(MakeDumpDesc("AioTruncatedLoad", block, target.get()));
     ASSERT_TRUE(load.HasValue());

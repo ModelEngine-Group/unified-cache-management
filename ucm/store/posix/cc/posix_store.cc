@@ -51,12 +51,13 @@ public:
         if (s.Failure()) [[unlikely]] { return s; }
         transEnable_ = config.deviceId >= 0;
         if (transEnable_) {
-            s = transMgr_.Setup(config, spaceMgr_.GetLayout());
+            s = transMgr_.Setup(config, spaceMgr_.GetLayout(), spaceMgr_.GetBackendManager());
             if (s.Failure()) [[unlikely]] { return s; }
         }
         ShowConfig(config);
         UC_INFO("Set PosixStore::BackendIoTimeout to {}ms across {} backends.",
-                spaceMgr_.GetLayout()->IoTimeoutMs(), spaceMgr_.GetLayout()->BackendCount());
+                spaceMgr_.GetBackendManager()->IoTimeoutMs(),
+                spaceMgr_.GetBackendManager()->BackendCount());
         return Status::OK();
     }
     std::string Readme() const override { return "PosixStore"; }
@@ -99,7 +100,7 @@ public:
     {
         spaceMgr_.Prefetch(blocks, num);
     }
-    Status CheckHealth() override { return spaceMgr_.GetLayout()->CheckHealth(); }
+    Status CheckHealth() override { return spaceMgr_.GetBackendManager()->CheckHealth(); }
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
         if (!transEnable_) { return Status::Error("transfer is not enable"); }

@@ -30,8 +30,8 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include "backend_manager.h"
 #include "global_config.h"
-#include "space_layout.h"
 #include "status/status.h"
 
 namespace UC::PosixStore {
@@ -49,7 +49,7 @@ public:
     GcLease& operator=(const GcLease&) = delete;
     ~GcLease();
 
-    void Setup(const Config& config, const SpaceLayout* layout);
+    void Setup(const Config& config, const BackendManager* backendMgr);
 
     Acquisition TryAcquire();
     void Release();
@@ -73,7 +73,7 @@ private:
     void StopHeartbeat();
     Status Touch(const std::string& path, time_t& stamp, bool create) const;
 
-    const SpaceLayout* layout_{nullptr};
+    const BackendManager* backendMgr_{nullptr};
     std::string identity_;
     size_t heartbeatIntervalSec_{5};
     size_t staleThresholdSec_{180};

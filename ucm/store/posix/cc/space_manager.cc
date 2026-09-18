@@ -25,7 +25,6 @@
 #include <atomic>
 #include "logger/logger.h"
 #include "metrics_api.h"
-#include "posix_file.h"
 
 namespace UC::PosixStore {
 
@@ -36,26 +35,31 @@ Status SpaceManager::Setup(const Config& config)
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_gc_running"), 0.0);
     auto s = layout_.Setup(config);
     if (s.Failure()) [[unlikely]] { return s; }
+    s = backendMgr_.Setup(config, &layout_);
+    if (s.Failure()) { return s; }
     if (hotnessTrackerEnable_) {
-        s = hotnessTracker_.Setup(&layout_);
+        s = hotnessTracker_.Setup(&layout_, &backendMgr_);
         if (s.Failure()) [[unlikely]] { return s; }
     }
     if (gcEnable_) {
-        s = gcMgr_.Setup(&layout_, config);
+        s = gcMgr_.Setup(&layout_, &backendMgr_, config);
         if (s.Failure()) [[unlikely]] { return s; }
     }
-    auto prefixSuccess =
+    auto backendConfig = config;
+    backendConfig.timeoutMs = backendMgr_.IoTimeoutMs();
+    for (const auto& backend : backendMgr_.Backends()) {
+        auto manager = std::make_unique<LookupManager>();
+        s = manager->Setup(backendConfig, &layout_, backend);
+        if (s.Failure()) { return s; }
+        lookupManagers_.push_back(std::move(manager));
+    }
+    auto success =
         prefixLookupSrv_
             .SetWorkerFn([this](PrefixLookupContext& ctx, auto&) { OnLookupPrefix(ctx); })
-            .SetWorkerTimeoutFn(
-                [this](PrefixLookupContext& ctx, auto) { OnLookupPrefixTimeout(ctx); },
-                config.timeoutMs)
             .SetNWorker(config.lookupConcurrency)
             .SetCpuAffinity(config.cpuAffinityCores)
             .Run();
-    if (!prefixSuccess) [[unlikely]] {
-        return Status::Error("failed to run prefix lookup service thread pool");
-    }
+    if (!success) { return Status::Error("failed to run prefix lookup service thread pool"); }
     return Status::OK();
 }
 
@@ -74,14 +78,10 @@ Expected<ssize_t> SpaceManager::LookupOnPrefix(const Detail::BlockId* blocks, si
     if (num == 0) { return static_cast<ssize_t>(-1); }
 
     std::shared_ptr<std::atomic<ssize_t>> firstFail;
-    std::shared_ptr<std::atomic<int32_t>> status;
     std::shared_ptr<Latch> waiter;
-
-    const auto ok = Status::OK().Underlying();
 
     try {
         firstFail = std::make_shared<std::atomic<ssize_t>>(static_cast<ssize_t>(num));
-        status = std::make_shared<std::atomic<int32_t>>(ok);
         waiter = std::make_shared<Latch>();
     } catch (const std::exception& e) {
         UC_ERROR("Failed({}) to allocate prefix lookup context.", e.what());
@@ -92,13 +92,10 @@ Expected<ssize_t> SpaceManager::LookupOnPrefix(const Detail::BlockId* blocks, si
     waiter->Set(nWorker);
 
     for (size_t begin = 0; begin < nWorker; begin++) {
-        prefixLookupSrv_.Push({blocks, begin, num, nWorker, firstFail, status, waiter});
+        prefixLookupSrv_.Push({blocks, begin, num, nWorker, firstFail, waiter});
     }
 
     waiter->Wait();
-
-    auto s = status->load();
-    if (s != ok) [[unlikely]] { return Status{s, "failed to lookup some blocks"}; }
 
     return firstFail->load() - 1;
 }
@@ -117,12 +114,8 @@ Expected<ssize_t> SpaceManager::LookupOnReverse(const Detail::BlockId* blocks, s
 
 uint8_t SpaceManager::Lookup(const Detail::BlockId* block)
 {
-    const auto status = layout_.RunOnAvailableBackend(*block, [&](const std::string& backend) {
-        PosixFile file{layout_.DataFilePath(backend, *block, false)};
-        constexpr auto mode = PosixFile::AccessMode::EXIST | PosixFile::AccessMode::READ |
-                              PosixFile::AccessMode::WRITE;
-        return file.Access(mode);
-    });
+    const auto status = backendMgr_.RunOnAvailableBackend(
+        *block, [&](size_t backendIndex) { return lookupManagers_[backendIndex]->Lookup(*block); });
     return status.Success();
 }
 
@@ -136,11 +129,7 @@ void SpaceManager::Prefetch(const Detail::BlockId* blocks, size_t num)
 void SpaceManager::OnLookupPrefix(PrefixLookupContext& ctx)
 {
     for (size_t i = ctx.begin; i < ctx.end; i += ctx.nWorker) {
-        if (ctx.status->load() != Status::OK().Underlying()) { break; }
-
-        auto curFail = ctx.firstFail->load();
-        if (curFail >= 0 && static_cast<size_t>(curFail) < i) { break; }
-
+        if (i >= static_cast<size_t>(ctx.firstFail->load())) { break; }
         if (!Lookup(ctx.blocks + i)) {
             ssize_t cur = ctx.firstFail->load();
             while (static_cast<ssize_t>(i) < cur) {
@@ -153,14 +142,6 @@ void SpaceManager::OnLookupPrefix(PrefixLookupContext& ctx)
         }
         if (hotnessTrackerEnable_) { hotnessTracker_.Touch(*(ctx.blocks + i)); }
     }
-    ctx.waiter->Done();
-}
-
-void SpaceManager::OnLookupPrefixTimeout(PrefixLookupContext& ctx)
-{
-    auto ok = Status::OK().Underlying();
-    auto timeout = Status::Timeout().Underlying();
-    ctx.status->compare_exchange_weak(ok, timeout, std::memory_order_acq_rel);
     ctx.waiter->Done();
 }
 }  // namespace UC::PosixStore

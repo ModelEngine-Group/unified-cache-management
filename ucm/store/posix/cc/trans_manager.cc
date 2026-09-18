@@ -22,7 +22,6 @@
  * SOFTWARE.
  * */
 #include "trans_manager.h"
-#include <algorithm>
 
 namespace UC::PosixStore {
 
@@ -37,16 +36,17 @@ TransManager::~TransManager()
     psyncEngines_.clear();
 }
 
-Status TransManager::Setup(const Config& config, const SpaceLayout* layout)
+Status TransManager::Setup(const Config& config, const SpaceLayout* layout,
+                           const BackendManager* backendMgr)
 {
     if (config.ioEngine != "aio" && config.ioEngine != "psync") {
         return Status::InvalidParam("invalid io engine({})", config.ioEngine);
     }
-    layout_ = layout;
+    backendMgr_ = backendMgr;
     timeoutMs_ = config.timeoutMs;
     auto backendConfig = config;
-    backendConfig.timeoutMs = layout->IoTimeoutMs();
-    for (const auto& backend : layout->Backends()) {
+    backendConfig.timeoutMs = backendMgr->IoTimeoutMs();
+    for (const auto& backend : backendMgr->Backends()) {
         Status status = Status::OK();
         if (config.ioEngine == "aio") {
             auto engine = std::make_unique<IoEngineAio>();
@@ -126,15 +126,13 @@ void TransManager::TryNextBackend(const std::shared_ptr<Request>& request, Shard
             shardTask.result = Status::Timeout();
             break;
         }
-        auto backend = layout_->StorageBackend(shardTask.shard.owner, shardTask.attempted);
-        if (!backend) {
-            if (shardTask.attempted.empty()) { shardTask.result = backend.Error(); }
+        auto backendIndex =
+            backendMgr_->SelectNextBackend(shardTask.shard.owner, shardTask.attempted);
+        if (!backendIndex) {
+            if (shardTask.attempted.empty()) { shardTask.result = backendIndex.Error(); }
             break;
         }
-        const auto& backends = layout_->Backends();
-        shardTask.backendIndex =
-            std::find(backends.begin(), backends.end(), backend.Value()) - backends.begin();
-        shardTask.attempted.push_back(backend.Value());
+        shardTask.backendIndex = backendIndex.Value();
         Detail::TaskDesc desc{shardTask.shard};
         desc.brief = request->task.desc.brief;
         TransTask task{request->task.type, std::move(desc)};
@@ -142,8 +140,7 @@ void TransManager::TryNextBackend(const std::shared_ptr<Request>& request, Shard
             std::shared_lock<std::shared_mutex> lock(callbacks->mutex);
             if (callbacks->stopped) { return; }
             shardTask.result = status;
-            layout_->RecordIoResult(layout_->Backends()[shardTask.backendIndex], status);
-            if (status.Success() || status == Status::NotFound()) {
+            if (!backendMgr_->ShouldRetry(shardTask.backendIndex, status)) {
                 request->waiter.Done();
             } else {
                 TryNextBackend(request, shardTask);
@@ -154,8 +151,7 @@ void TransManager::TryNextBackend(const std::shared_ptr<Request>& request, Shard
 
         // error handling
         shardTask.result = submitted.Error();
-        layout_->RecordIoResult(backend.Value(), shardTask.result);
-        if (shardTask.result == Status::NotFound()) { break; }
+        if (!backendMgr_->ShouldRetry(shardTask.backendIndex, shardTask.result)) { break; }
     }
     request->waiter.Done();
 }

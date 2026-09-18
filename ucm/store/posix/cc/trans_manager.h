@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_POSIX_STORE_CC_TRANS_MANAGER_H
 
 #include <shared_mutex>
+#include "backend_manager.h"
 #include "io_engine_aio.h"
 #include "io_engine_psync.h"
 
@@ -56,7 +57,7 @@ class TransManager {
 
 public:
     ~TransManager();
-    Status Setup(const Config& config, const SpaceLayout* layout);
+    Status Setup(const Config& config, const SpaceLayout* layout, const BackendManager* backendMgr);
     Expected<Detail::TaskHandle> Submit(TransTask task);
     Expected<bool> Check(Detail::TaskHandle handle);
     Status Wait(Detail::TaskHandle handle);
@@ -64,7 +65,7 @@ public:
 private:
     void TryNextBackend(const std::shared_ptr<Request>& request, ShardTask& shardTask);
 
-    const SpaceLayout* layout_{nullptr};
+    const BackendManager* backendMgr_{nullptr};
     size_t timeoutMs_{0};
     std::vector<std::unique_ptr<IoEngineAio>> aioEngines_;
     std::vector<std::unique_ptr<IoEnginePsync>> psyncEngines_;

@@ -86,9 +86,9 @@ uint32_t Nonce()
 
 GcLease::~GcLease() { Release(); }
 
-void GcLease::Setup(const Config& config, const SpaceLayout* layout)
+void GcLease::Setup(const Config& config, const BackendManager* backendMgr)
 {
-    layout_ = layout;
+    backendMgr_ = backendMgr;
     identity_ = fmt::format("{}{}.{}.{:08x}", kHeartbeatPrefix, LocalHostName(),
                             static_cast<long>(getpid()), Nonce());
     heartbeatIntervalSec_ = config.posixGcHeartbeatIntervalSec;
@@ -97,7 +97,7 @@ void GcLease::Setup(const Config& config, const SpaceLayout* layout)
 
 Expected<GcLease::Paths> GcLease::SelectPaths() const
 {
-    auto backend = layout_->StorageBackend({});
+    auto backend = backendMgr_->StorageBackend({});
     if (!backend) { return backend.Error(); }
     const auto lockDir = backend.Value() + kLockDirName;
     return Paths{backend.Value(), lockDir, backend.Value() + kCheckTimeName,

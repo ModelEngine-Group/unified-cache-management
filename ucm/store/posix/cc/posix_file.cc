@@ -79,7 +79,12 @@ Status PosixFile::Rename(const std::string& newName)
 
 Status PosixFile::Access(const int32_t mode)
 {
+#ifdef UCM_ENABLE_TEST_HOOKS
+    auto hook = TestHooks::GetAccessHook();
+    auto ret = hook ? hook(path_, mode) : access(path_.c_str(), mode);
+#else
     auto ret = access(path_.c_str(), mode);
+#endif
     auto eno = errno;
     if (ret != 0) [[unlikely]] {
         if (eno == ENOENT) { return FileError("access", path_, eno, Status::NotFound()); }
