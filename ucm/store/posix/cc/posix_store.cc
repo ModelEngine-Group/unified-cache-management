@@ -183,6 +183,7 @@ private:
     {
         Config config;
         inConfig.Get("storage_backends", config.storageBackends);
+        inConfig.Get("store_health", config.backendHealth);
         inConfig.GetNumber("device_id", config.deviceId);
         inConfig.GetNumber("tensor_size", config.tensorSize);
         inConfig.GetNumber("shard_size", config.shardSize);
@@ -327,6 +328,10 @@ private:
         if (buildType.empty()) { buildType = "Release"; }
         UC_INFO("{}-{}({}).", ns, UCM_COMMIT_ID, buildType);
         UC_INFO("Set {}::StorageBackends to {}.", ns, config.storageBackends);
+        UC_INFO("Set {}::BackendHealth to interval={}ms, timeout={}ms, window={}, threshold={}.",
+                ns, config.backendHealth.healthCheckInterval.count(),
+                config.backendHealth.healthCheckTimeout.count(),
+                config.backendHealth.healthWindowSize, config.backendHealth.failureThreshold);
         UC_INFO("Set {}::DeviceId to {}.", ns, config.deviceId);
         UC_INFO("Set {}::TensorSize to {}.", ns, config.tensorSize);
         UC_INFO("Set {}::ShardSize to {}.", ns, config.shardSize);

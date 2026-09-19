@@ -8,7 +8,7 @@ from vllm.logger import logger
 from ucm.integration.vllm.patch.utils import patch_or_inject
 
 _UCM_THREAD_PREFIX = "ucm_"
-_UCM_HEALTH_THREAD_NAME = "ucm_health_mon"
+_UCM_HEALTH_THREAD_PREFIX = "ucm_health_"
 _TASK_ROOT = Path("/proc/self/task")
 
 
@@ -93,7 +93,7 @@ def _split_health_cores(ucm_cores: list[int]) -> tuple[list[int], list[int]]:
 def _ucm_thread_cores(
     name: str, ucm_cores: list[int], health_cores: list[int]
 ) -> list[int]:
-    if name == _UCM_HEALTH_THREAD_NAME and health_cores:
+    if name.startswith(_UCM_HEALTH_THREAD_PREFIX) and health_cores:
         return health_cores
     return ucm_cores
 
@@ -115,7 +115,7 @@ def _bind_ucm_threads(self) -> None:
         if not cores:
             continue
         self.bind(str(tid), cores, False)
-        if name == _UCM_HEALTH_THREAD_NAME:
+        if name.startswith(_UCM_HEALTH_THREAD_PREFIX):
             bound_health += 1
         else:
             bound_ucm += 1
