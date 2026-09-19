@@ -52,7 +52,7 @@ struct Connect {
     NodeId nodeId{0};
     LaneId laneId{kDefaultLaneId};
     ConnectionEpoch epoch{0};
-    std::string transportManagerId;
+    std::string peerAddr;
 };
 
 struct FenceEpoch {
