@@ -38,16 +38,19 @@ public:
 
 private:
     Status ProcessOneRequest(RequestTaskPtr task);
-    Status ProcessDump(const KvDumpRequest& request, const transport::ManagerID& peerOneSidedId);
-    Status ProcessLoad(const KvLoadRequest& request, const transport::ManagerID& peerOneSidedId);
+    Status ProcessDump(const KvDumpRequest& request, const transport::ManagerID& peerOneSidedId,
+                       std::uint64_t beginUs);
+    Status ProcessLoad(const KvLoadRequest& request, const transport::ManagerID& peerOneSidedId,
+                       std::uint64_t beginUs);
     Status ProcessLookup(const KvLookupRequest& request,
-                         const transport::ManagerID& peerOneSidedId);
+                         const transport::ManagerID& peerOneSidedId, std::uint64_t beginUs);
 
     void DeleteItemsMetadata(const std::vector<TransferItem>& items);
     void LoadEndItems(const std::vector<TransferItem>& items);
     Status QueueResponse(OpType opcode, std::uint64_t responseAddr,
                          const transport::ManagerID& peerOneSidedId,
-                         std::vector<std::uint8_t>&& results, std::uint64_t requestId);
+                         std::vector<std::uint8_t>&& results, std::uint64_t requestId,
+                         std::uint64_t beginUs);
     Status SubmitCompletion(CompletionRecord&& record);
 
     DramPoolRuntime& runtime_;

@@ -28,9 +28,11 @@
 #include <string>
 #include <thread>
 #include "drampool_config.h"
+#include "drampool_metrics.h"
 #include "drampool_server.h"
 #include "health_server.h"
 #include "logger/logger.h"
+#include "metrics_reporter.h"
 
 namespace UC::DramPool {
 int DramPoolDaemon::Run(int argc, char** argv)
@@ -45,6 +47,10 @@ int DramPoolDaemon::Run(int argc, char** argv)
         std::cerr << status.ToString() << "\n";
         return 1;
     }
+
+    // One-shot metrics registration (C2: unregistered names are dropped).
+    SetupDrampoolMetrics();
+
     status = SetupLogger();
     if (status.Failure()) {
         std::cerr << status.ToString() << "\n";
@@ -58,6 +64,7 @@ int DramPoolDaemon::Run(int argc, char** argv)
 
     DramPoolServer server;
     HealthServer healthServer;
+    MetricsReporter metricsReporter;
     status = server.Init();
     if (status.Failure()) {
         UC_ERROR_UNLIMITED("DramPool server init failed: {}", status);
@@ -76,9 +83,18 @@ int DramPoolDaemon::Run(int argc, char** argv)
         return 1;
     }
 
+    status = metricsReporter.Start();
+    if (status.Failure()) {
+        UC_ERROR_UNLIMITED("DramPool metrics reporter start failed: {}", status);
+        healthServer.Stop();
+        server.Stop();
+        return 1;
+    }
+
     UC_INFO_UNLIMITED("DramPool service ready, addr={}", g_config.addr.ToString());
     WaitForShutdown();
     UC_INFO_UNLIMITED("DramPool shutdown requested");
+    metricsReporter.Stop();
     healthServer.Stop();
     server.Stop();
     UC::Logger::Flush();
