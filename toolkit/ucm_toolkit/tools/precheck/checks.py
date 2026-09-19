@@ -13,7 +13,7 @@ import platform
 import re
 import shutil
 import subprocess
-from importlib.metadata import PackageNotFoundError
+from importlib.metadata import PackageNotFoundError, distributions
 from importlib.metadata import version as pkg_version
 from typing import List, Optional, Tuple
 
@@ -124,27 +124,30 @@ def check_serving_stack() -> CheckResult:
 # ---------------------------------------------------------------------------
 
 
+def installed_ucm_distributions() -> dict[str, str]:
+    """Return names and versions matching uc-manager, including Forks and variants."""
+    installed = {}
+    for dist in distributions():
+        name = dist.metadata["Name"] or ""
+        normalized = re.sub(r"[-_.]+", "-", name).lower()
+        if re.search(r"(?:^|-)uc-manager(?:-|$)", normalized):
+            installed[name] = dist.version
+    return dict(sorted(installed.items()))
+
+
 def check_uc_manager_version() -> CheckResult:
-    """Print installed uc-manager version. Never fails."""
-    raw: dict = {}
-    ver = _dist_version("uc-manager") or _dist_version("uc_manager")
-    if ver is None:
-        ver = _module_version("uc_manager")
-    if ver is None:
-        # Last resort: pip show (covers non-importable installs).
-        rc, out, _ = _run([sys_python(), "-m", "pip", "show", "uc-manager"])
-        if rc == 0:
-            m = re.search(r"^Version:\s*(\S+)", out, re.M)
-            if m:
-                ver = m.group(1)
-    if ver:
-        raw["version"] = ver
+    """Report installed UCM package names and versions without importing UCM."""
+    installed = installed_ucm_distributions()
+    raw: dict = {"distributions": installed}
+    if installed:
+        if len(installed) == 1:
+            raw["version"] = next(iter(installed.values()))
         return CheckResult(
             name="uc_manager",
             severity=INFO,
             status=STATUS_INFO,
-            value=ver,
-            detail="uc-manager package version",
+            value=", ".join(f"{name}={version}" for name, version in installed.items()),
+            detail="installed UCM packages",
             raw=raw,
         )
     return CheckResult(
@@ -152,13 +155,9 @@ def check_uc_manager_version() -> CheckResult:
         severity=INFO,
         status=STATUS_INFO,
         value="-",
-        detail="uc-manager not installed",
+        detail="ucm package not installed",
         raw=raw,
     )
-
-
-def sys_python() -> str:
-    return os.environ.get("PRECHECK_PYTHON") or "python3"
 
 
 # ---------------------------------------------------------------------------
