@@ -40,7 +40,7 @@ public:
     {
         timeoutMs_ = config.timeoutMs;
         shardSize_ = config.shardSize;
-        return compress_action.Setup(config);
+        return compress_action.Setup(config, &failureSet_);
     }
 
 protected:
