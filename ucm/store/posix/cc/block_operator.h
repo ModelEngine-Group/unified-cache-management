@@ -36,42 +36,12 @@
 #include <sys/stat.h>
 #include <thread>
 #include "logger/logger.h"
+#include "posix_file.h"
 #include "space_layout.h"
 #include "thread/cpu_affinity.h"
 #include "type/types.h"
 
 namespace UC::PosixStore {
-
-#ifdef UCM_ENABLE_TEST_HOOKS
-namespace TestHooks {
-using OpenHook = std::function<int32_t(const std::string&, int32_t, mode_t)>;
-inline std::mutex& OpenHookMutex()
-{
-    static std::mutex mutex;
-    return mutex;
-}
-inline OpenHook& OpenHookSlot()
-{
-    static OpenHook hook;
-    return hook;
-}
-inline void SetOpenHook(OpenHook hook)
-{
-    std::lock_guard<std::mutex> lock{OpenHookMutex()};
-    OpenHookSlot() = std::move(hook);
-}
-inline void ClearOpenHook()
-{
-    std::lock_guard<std::mutex> lock{OpenHookMutex()};
-    OpenHookSlot() = nullptr;
-}
-inline OpenHook GetOpenHook()
-{
-    std::lock_guard<std::mutex> lock{OpenHookMutex()};
-    return OpenHookSlot();
-}
-}  // namespace TestHooks
-#endif
 
 class BlockOperator {
 public:
@@ -90,9 +60,11 @@ public:
     struct CommitTask {
         Detail::BlockId id;
         bool success;
+        std::function<void(Status)> callback;
     };
 
-    ~BlockOperator()
+    ~BlockOperator() { Stop(); }
+    void Stop()
     {
         stop_ = true;
         {
@@ -107,9 +79,11 @@ public:
             if (worker.joinable()) { worker.join(); }
         }
     }
-    void Setup(const SpaceLayout* layout, const size_t nOpenWorker, const size_t nCommitWorker)
+    void Setup(const SpaceLayout* layout, const std::string& backend, const size_t nOpenWorker,
+               const size_t nCommitWorker)
     {
         layout_ = layout;
+        backend_ = backend;
         for (size_t i = 0; i < nOpenWorker; ++i) {
             workers_.push_back(std::thread{[this] { OpenWorkerLoop(); }});
         }
@@ -171,7 +145,7 @@ private:
                 task = std::move(openQueue_.queue.front());
                 openQueue_.queue.pop_front();
             }
-            const auto path = layout_->DataFilePath(task.id, task.activated);
+            const auto path = layout_->DataFilePath(backend_, task.id, task.activated);
 #ifdef UCM_ENABLE_TEST_HOOKS
             auto hook = TestHooks::GetOpenHook();
             auto fd = hook ? hook(path, task.flags, mode) : ::open(path.c_str(), task.flags, mode);
@@ -198,7 +172,8 @@ private:
                 task = std::move(commitQueue_.queue.front());
                 commitQueue_.queue.pop_front();
             }
-            layout_->CommitFile(task.id, task.success);
+            auto status = layout_->CommitFile(backend_, task.id, task.success);
+            task.callback(status);
         }
     }
 
@@ -211,6 +186,7 @@ private:
 
     std::atomic_bool stop_{false};
     const SpaceLayout* layout_;
+    std::string backend_;
     std::list<std::thread> workers_;
     TaskQueue<OpenTask> openQueue_;
     TaskQueue<CommitTask> commitQueue_;

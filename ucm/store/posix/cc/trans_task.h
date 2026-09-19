@@ -25,6 +25,8 @@
 #define UNIFIEDCACHE_POSIX_STORE_CC_TRANS_TASK_H
 
 #include <atomic>
+#include <functional>
+#include <mutex>
 #include "status/status.h"
 #include "type/types.h"
 
@@ -36,29 +38,40 @@ public:
     Detail::TaskHandle id{0};
     Type type{Type::DUMP};
     Detail::TaskDesc desc;
-    std::atomic<int32_t> failureStatus{Status::OK().Underlying()};
+    // When set, the engine reclaims the handle before invoking this callback.
+    std::function<void(Status)> onComplete;
 
 public:
     TransTask(Type type, Detail::TaskDesc desc) : id{NextId()}, type{type}, desc{std::move(desc)} {}
-    TransTask(TransTask&& other) noexcept
+    TransTask(TransTask&& other)
         : id{other.id},
           type{other.type},
           desc{std::move(other.desc)},
-          failureStatus{other.failureStatus.load()}
+          onComplete{std::move(other.onComplete)},
+          result_{other.Result()}
     {
     }
-    void Fail(const Status& status)
+    bool SetFirstFail(const Status& status)
     {
-        auto expected = Status::OK().Underlying();
-        failureStatus.compare_exchange_strong(expected, status.Underlying());
+        std::lock_guard<std::mutex> lock(resultMutex_);
+        if (result_.Failure()) { return false; }
+        result_ = status;
+        return true;
     }
     Status FailureStatus() const
     {
-        const auto status = failureStatus.load();
-        return status == Status::OK().Underlying() ? Status::Error() : Status{status, {}};
+        const auto status = Result();
+        return status.Success() ? Status::Error() : status;
+    }
+    Status Result() const
+    {
+        std::lock_guard<std::mutex> lock(resultMutex_);
+        return result_;
     }
 
 private:
+    mutable std::mutex resultMutex_;
+    Status result_{Status::OK()};
     static size_t NextId() noexcept
     {
         static std::atomic<size_t> id{1};

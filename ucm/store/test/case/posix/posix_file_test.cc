@@ -22,8 +22,10 @@
  * SOFTWARE.
  * */
 #include "posix/cc/posix_file.h"
+#include <cerrno>
 #include "detail/data_generator.h"
 #include "detail/path_base.h"
+#include "posix/cc/trans_task.h"
 
 class UCPosixFileTest : public UC::Test::Detail::PathBase {};
 
@@ -58,6 +60,24 @@ TEST_F(UCPosixFileTest, FileCreateAndRemove)
     ASSERT_EQ(file.Access(PosixFile::AccessMode::WRITE), UC::Status::OK());
     ASSERT_EQ(file.Remove(), UC::Status::OK());
     ASSERT_EQ(file.Access(PosixFile::AccessMode::EXIST), UC::Status::NotFound());
+}
+
+TEST_F(UCPosixFileTest, PreservesSystemErrorAndFirstTaskFailure)
+{
+    using namespace UC::PosixStore;
+    PosixFile file{Path() + "/missing"};
+    char buffer{};
+    const auto status = file.Read(&buffer, 1, 0);
+    EXPECT_EQ(status, UC::Status::OsApiError());
+    EXPECT_EQ(status.SystemError(), EBADF);
+    EXPECT_NE(status.ToString().find("pread"), std::string::npos);
+    TransTask task{TransTask::Type::LOAD, {}};
+    EXPECT_EQ(task.Result().SystemError(), 0);
+    EXPECT_TRUE(task.SetFirstFail(status));
+    EXPECT_FALSE(task.SetFirstFail(UC::Status::Timeout()));
+    TransTask moved{std::move(task)};
+    EXPECT_EQ(moved.FailureStatus().SystemError(), EBADF);
+    EXPECT_EQ(moved.FailureStatus().ToString(), status.ToString());
 }
 
 TEST_F(UCPosixFileTest, FileWriteAndRead)

@@ -21,38 +21,49 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-#ifndef UNIFIEDCACHE_PIPELINE_STORE_HEALTH_CONFIG_H
-#define UNIFIEDCACHE_PIPELINE_STORE_HEALTH_CONFIG_H
+#ifndef UNIFIEDCACHE_STORE_COMMON_HEALTH_WINDOW_H
+#define UNIFIEDCACHE_STORE_COMMON_HEALTH_WINDOW_H
 
-#include <chrono>
-#include <cstddef>
-#include "status/status.h"
+#include <deque>
+#include "common/store_health_config.h"
 
-namespace UC::PipelineStore {
+namespace UC::Common {
 
-struct StoreHealthConfig {
-    bool enabled{true};
-    std::chrono::milliseconds healthCheckInterval{std::chrono::seconds(10)};
-    std::chrono::milliseconds healthCheckTimeout{std::chrono::seconds(3)};
-    size_t healthWindowSize{8};
-    size_t failureThreshold{2};
-
-    Status Validate() const
+class HealthWindow {
+public:
+    explicit HealthWindow(const StoreHealthConfig& config = {}, bool healthy = true)
+        : capacity_(config.healthWindowSize), threshold_(config.failureThreshold), healthy_(healthy)
     {
-        if (healthCheckInterval.count() <= 0 || healthCheckTimeout.count() <= 0 ||
-            healthWindowSize == 0 || failureThreshold == 0) {
-            return Status::InvalidParam("store health values must be positive");
-        }
-        if (failureThreshold > healthWindowSize) {
-            return Status::InvalidParam("failure threshold exceeds health window");
-        }
-        if (healthCheckTimeout >= healthCheckInterval) {
-            return Status::InvalidParam("health timeout must be shorter than interval");
-        }
-        return Status::OK();
     }
+
+    void Record(bool healthy)
+    {
+        if (results_.size() == capacity_) {
+            if (!results_.front()) { --failures_; }
+            results_.pop_front();
+        }
+        results_.push_back(healthy);
+        if (!healthy) { ++failures_; }
+        if (healthy_ && failures_ >= threshold_) {
+            healthy_ = false;
+        } else if (!healthy_ && results_.size() == capacity_ && failures_ == 0) {
+            healthy_ = true;
+        }
+    }
+
+    bool Healthy() const { return healthy_; }
+    size_t FailureCount() const { return failures_; }
+    size_t SampleCount() const { return results_.size(); }
+    const std::deque<bool>& Results() const { return results_; }
+
+private:
+    size_t capacity_;
+    size_t threshold_;
+    bool healthy_;
+    std::deque<bool> results_;
+    size_t failures_{0};
 };
 
-}  // namespace UC::PipelineStore
+}  // namespace UC::Common
 
 #endif

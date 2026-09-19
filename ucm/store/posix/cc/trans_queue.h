@@ -47,6 +47,7 @@ private:
     };
     TaskIdSet* failureSet_;
     const SpaceLayout* layout_;
+    std::string backend_;
     ThreadPool<IoUnit> loadPool_;
     ThreadPool<IoUnit> dumpPool_;
     size_t ioSize_;
@@ -56,7 +57,8 @@ private:
     size_t timeoutMs_;
 
 public:
-    Status Setup(const Config& config, TaskIdSet* failureSet, const SpaceLayout* layout);
+    Status Setup(const Config& config, TaskIdSet* failureSet, const SpaceLayout* layout,
+                 const std::string& backend);
     void Push(TaskPtr task, WaiterPtr waiter);
     void Cancel(TaskPtr task);
 

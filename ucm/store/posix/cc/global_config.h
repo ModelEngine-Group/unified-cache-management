@@ -26,11 +26,13 @@
 
 #include <string>
 #include <vector>
+#include "common/store_health_config.h"
 
 namespace UC::PosixStore {
 
 struct Config {
     std::vector<std::string> storageBackends{};
+    Common::StoreHealthConfig backendHealth{};
     int32_t deviceId{-1};
     size_t tensorSize{0};
     size_t shardSize{0};

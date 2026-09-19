@@ -23,6 +23,7 @@
  */
 #include "health_breaker_store.h"
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
@@ -31,8 +32,11 @@
 #include <gtest/gtest.h>
 #include <mutex>
 #include <string>
+#include <sys/syscall.h>
 #include <thread>
+#include <unistd.h>
 #include <vector>
+#include "common/store_health_config.h"
 #include "detail/mock_store.h"
 #include "logger/logger.h"
 #include "metrics_api.h"
@@ -40,10 +44,37 @@
 namespace UC::Test {
 
 using PipelineStore::HealthBreakerStore;
-using PipelineStore::StoreHealthConfig;
 using testing::Invoke;
 using testing::Return;
 using testing::StrictMock;
+using UC::Common::StoreHealthConfig;
+
+TEST(UCHealthWindowTest, InitiallyUnavailableNeedsAFullSuccessfulWindow)
+{
+    StoreHealthConfig config;
+    config.healthWindowSize = 4;
+    config.failureThreshold = 2;
+    UC::Common::HealthWindow window(config, false);
+    for (size_t i = 0; i < 3; ++i) {
+        window.Record(true);
+        EXPECT_FALSE(window.Healthy());
+    }
+    window.Record(true);
+    EXPECT_TRUE(window.Healthy());
+    window.Record(false);
+    window.Record(true);
+    EXPECT_TRUE(window.Healthy());
+    window.Record(false);
+    EXPECT_FALSE(window.Healthy());
+    EXPECT_EQ(window.FailureCount(), 2);
+    for (size_t i = 0; i < 3; ++i) {
+        window.Record(true);
+        EXPECT_FALSE(window.Healthy());
+    }
+    window.Record(true);
+    EXPECT_TRUE(window.Healthy());
+    EXPECT_EQ(window.FailureCount(), 0);
+}
 
 TEST(UCHealthBreakerStoreTest, StoreV1ProvidesHealthyDefault)
 {
@@ -137,6 +168,106 @@ TEST(UCHealthBreakerStoreTest, ProbeLoopUsesUcmThreadName)
     breaker.Stop();
 
     EXPECT_EQ(count, before + 1);
+}
+
+TEST(UCHealthCheckExecutorTest, NamesWorkerAndInheritsMonitorAffinity)
+{
+    cpu_set_t allowed;
+    ASSERT_EQ(sched_getaffinity(0, sizeof(allowed), &allowed), 0);
+    int core = 0;
+    while (core < CPU_SETSIZE && !CPU_ISSET(core, &allowed)) { ++core; }
+    ASSERT_LT(core, CPU_SETSIZE);
+    cpu_set_t expected;
+    CPU_ZERO(&expected);
+    CPU_SET(core, &expected);
+    cpu_set_t actual;
+    CPU_ZERO(&actual);
+    std::array<char, 16> name{};
+    std::thread monitor([&] {
+        ASSERT_TRUE(CpuAffinity::SetCpuAffinity4CurrentThread(expected).Success());
+        UC::Common::HealthCheckExecutor executor{std::chrono::seconds(3)};
+        EXPECT_TRUE(executor
+                        .Run([&] {
+                            EXPECT_EQ(pthread_getname_np(pthread_self(), name.data(), name.size()),
+                                      0);
+                            EXPECT_EQ(sched_getaffinity(0, sizeof(actual), &actual), 0);
+                            return Status::OK();
+                        })
+                        .Success());
+    });
+    monitor.join();
+    EXPECT_STREQ(name.data(), "ucm_health_io");
+    EXPECT_TRUE(CPU_EQUAL(&actual, &expected));
+}
+
+TEST(UCHealthCheckExecutorTest, ReusesOneWorkerBetweenChecks)
+{
+    const auto before = CountThreadsNamed("ucm_health_io");
+    UC::Common::HealthCheckExecutor executor{std::chrono::seconds(1)};
+    pid_t first = 0;
+    for (size_t i = 0; i < 8; ++i) {
+        pid_t current = 0;
+        ASSERT_TRUE(executor
+                        .Run([&] {
+                            current = static_cast<pid_t>(syscall(SYS_gettid));
+                            return Status::OK();
+                        })
+                        .Success());
+        if (i == 0) { first = current; }
+        EXPECT_EQ(current, first);
+        EXPECT_EQ(CountThreadsNamed("ucm_health_io"), before + 1);
+    }
+    executor.Stop();
+    EXPECT_EQ(CountThreadsNamed("ucm_health_io"), before);
+}
+
+TEST(UCHealthCheckExecutorTest, ReplacesTimedOutWorkerAndIgnoresLateSuccess)
+{
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool release = false;
+    bool returned = false;
+    std::atomic<pid_t> first{0};
+    UC::Common::HealthCheckExecutor executor{std::chrono::milliseconds(100), 0};
+    struct ReleaseWorker {
+        std::mutex& mutex;
+        std::condition_variable& cv;
+        bool& release;
+        ~ReleaseWorker()
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            release = true;
+            cv.notify_all();
+        }
+    } cleanup{mutex, cv, release};
+    ASSERT_EQ(executor.Run([&] {
+        first = static_cast<pid_t>(syscall(SYS_gettid));
+        std::unique_lock<std::mutex> lock(mutex);
+        cv.wait(lock, [&] { return release; });
+        returned = true;
+        cv.notify_all();
+        return Status::OK();
+    }),
+              Status::Timeout());
+    ASSERT_NE(first.load(), 0);
+    pid_t replacement = 0;
+    EXPECT_EQ(executor.Run([&] {
+        replacement = static_cast<pid_t>(syscall(SYS_gettid));
+        std::unique_lock<std::mutex> lock(mutex);
+        release = true;
+        cv.notify_all();
+        cv.wait(lock, [&] { return returned; });
+        return Status::OsApiError("replacement result");
+    }),
+              Status::OsApiError());
+    EXPECT_NE(replacement, first.load());
+    pid_t next = 0;
+    EXPECT_EQ(executor.Run([&] {
+        next = static_cast<pid_t>(syscall(SYS_gettid));
+        return Status::OK();
+    }),
+              Status::OK());
+    EXPECT_EQ(next, replacement);
 }
 
 TEST(UCHealthBreakerStoreTest, LogsFailedProbeStatus)
