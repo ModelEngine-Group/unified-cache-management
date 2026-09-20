@@ -35,7 +35,6 @@
 #include "pool/buffer_pool.h"
 #include "status/status.h"
 #include "template/spsc_ring_queue.h"
-#include "time/now_time.h"
 
 namespace transport {
 class TransportManager;
@@ -46,17 +45,18 @@ class MetadataManager;
 
 inline constexpr auto kThreadIdleSleepDuration = std::chrono::microseconds(100);
 
-// Unit adapters over the shared NowTime::Now() steady clock (the same source DramStore
-// uses), so time measurement stays consistent across DramStore and DramPool. DramPool
-// keeps integer ms/us timestamps internally, hence the conversions here.
 inline std::uint64_t SteadyNowMs()
 {
-    return static_cast<std::uint64_t>(NowTime::Now() * 1e3);
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(now).count());
 }
 
 inline std::uint64_t SteadyNowUs()
 {
-    return static_cast<std::uint64_t>(NowTime::Now() * 1e6);
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(now).count());
 }
 
 using RequestPtr = std::unique_ptr<KvRequest>;
