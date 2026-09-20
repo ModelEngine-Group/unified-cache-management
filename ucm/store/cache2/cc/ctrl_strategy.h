@@ -84,12 +84,9 @@ private:
         /* A5 has one data partition per local worker. The public configuration
          * describes node-wide capacity; the control layout divides it evenly. */
         if (cfg.localRankSize == 0 || cfg.localRankSize > kMaxRanks) {
-            return Status::InvalidParam("invalid cache2 local rank size({})",
-                                        cfg.localRankSize);
+            return Status::InvalidParam("invalid cache2 local rank size({})", cfg.localRankSize);
         }
-        if (cfg.shardSize == 0) {
-            return Status::InvalidParam("invalid cache2 shard size(0)");
-        }
+        if (cfg.shardSize == 0) { return Status::InvalidParam("invalid cache2 shard size(0)"); }
         auto slotCount = cfg.bufferCapacity / cfg.shardSize;
         if (slotCount < cfg.localRankSize) {
             return Status::InvalidParam(
@@ -164,8 +161,8 @@ private:
         auto slotsPerRank = header->slotsPerRank;
         auto bucketCount = header->bucketCount;
         auto lockCount = header->lockStripeCount;
-        if (rankCount == 0 || rankCount > kMaxRanks || slotsPerRank == 0 ||
-            header->slotSize == 0 || bucketCount == 0 || bucketCount > kMaxBuckets ||
+        if (rankCount == 0 || rankCount > kMaxRanks || slotsPerRank == 0 || header->slotSize == 0 ||
+            bucketCount == 0 || bucketCount > kMaxBuckets ||
             (bucketCount & (bucketCount - 1)) != 0 ||
             lockCount != CtrlLayout::LockStripeCount(bucketCount) ||
             slotsPerRank > std::numeric_limits<size_t>::max() / rankCount) {

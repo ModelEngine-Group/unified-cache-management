@@ -3,11 +3,11 @@
  *
  * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
  */
+#include "../../../cache2/cc/ctrl_layout.h"
 #include <cstddef>
 #include <cstdint>
-#include <new>
 #include <gtest/gtest.h>
-#include "../../../cache2/cc/ctrl_layout.h"
+#include <new>
 
 namespace UC::Cache2 {
 namespace {
@@ -19,7 +19,7 @@ protected:
     static constexpr size_t kBuckets{8};
     static constexpr size_t kLocks{4};
 
-    size_t bytes_{CtrlLayout::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank)};
+    size_t bytes_{CtrlLayout::TotalSize(kBuckets, kLocks, kRanks* kSlotsPerRank)};
     void* memory_{::operator new(bytes_, std::align_val_t{64})};
     CtrlLayout layout_;
 
@@ -40,8 +40,7 @@ TEST_F(CtrlLayoutTest, BindsSharedArraysAtAlignedOffsets)
     EXPECT_EQ(layout_.BucketCount(), kBuckets);
     EXPECT_EQ(layout_.LockCount(), kLocks);
     EXPECT_EQ(layout_.SlotSize(), 4096);
-    EXPECT_EQ(reinterpret_cast<uintptr_t>(layout_.SlotMetaArr()) %
-                  alignof(CtrlLayout::SlotMeta),
+    EXPECT_EQ(reinterpret_cast<uintptr_t>(layout_.SlotMetaArr()) % alignof(CtrlLayout::SlotMeta),
               0);
     for (size_t i = 0; i < kBuckets; ++i) {
         EXPECT_EQ(layout_.Buckets()[i].load(std::memory_order_relaxed), kInvalid);

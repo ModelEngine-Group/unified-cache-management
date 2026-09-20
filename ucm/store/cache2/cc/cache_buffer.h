@@ -127,13 +127,12 @@ public:
     Status Setup(const Config& cfg)
     {
         if (cfg.localRankSize == 0 || cfg.localRankSize > kMaxRanks) {
-            return Status::InvalidParam("invalid cache2 local rank size({})",
-                                        cfg.localRankSize);
+            return Status::InvalidParam("invalid cache2 local rank size({})", cfg.localRankSize);
         }
         if (cfg.deviceId < -1 ||
             (cfg.deviceId >= 0 && static_cast<size_t>(cfg.deviceId) >= cfg.localRankSize)) {
-            return Status::InvalidParam("cache2 device/rank({}) must be in [0, {})",
-                                        cfg.deviceId, cfg.localRankSize);
+            return Status::InvalidParam("cache2 device/rank({}) must be in [0, {})", cfg.deviceId,
+                                        cfg.localRankSize);
         }
         if (cfg.loadExclusiveBufferNumber % cfg.localRankSize != 0) {
             return Status::InvalidParam(
@@ -319,9 +318,8 @@ private:
         return iNode != kInvalid;
     }
 
-    bool PinHit(CtrlLayout& layout, size_t iNode, size_t iBucket,
-                const Detail::BlockId& blockId, size_t offset, size_t spinBudget, bool& owner,
-                bool takeOwnership = true)
+    bool PinHit(CtrlLayout& layout, size_t iNode, size_t iBucket, const Detail::BlockId& blockId,
+                size_t offset, size_t spinBudget, bool& owner, bool takeOwnership = true)
     {
         auto* meta = &layout.SlotMetaArr()[iNode];
         for (size_t spin = 0; spin < spinBudget;) {
@@ -361,8 +359,7 @@ private:
     {
         auto iNode = layout.Buckets()[iBucket].load(Order);
         size_t walked = 0;
-        while (iNode != kInvalid && iNode < layout.SlotCount() &&
-               walked++ < layout.SlotCount()) {
+        while (iNode != kInvalid && iNode < layout.SlotCount() && walked++ < layout.SlotCount()) {
             auto* meta = &layout.SlotMetaArr()[iNode];
             if (MatchKey(*meta, iBucket, blockId, offset)) { return iNode; }
             iNode = meta->next.load(Order);
@@ -370,20 +367,19 @@ private:
         return kInvalid;
     }
 
-    size_t Lookup(CtrlLayout& layout, size_t iBucket, const Detail::BlockId& blockId,
-                  size_t offset)
+    size_t Lookup(CtrlLayout& layout, size_t iBucket, const Detail::BlockId& blockId, size_t offset)
     {
         return LookupT<std::memory_order_relaxed>(layout, iBucket, blockId, offset);
     }
 
-    size_t LookupOptimistic(CtrlLayout& layout, size_t iBucket,
-                            const Detail::BlockId& blockId, size_t offset)
+    size_t LookupOptimistic(CtrlLayout& layout, size_t iBucket, const Detail::BlockId& blockId,
+                            size_t offset)
     {
         return LookupT<std::memory_order_acquire>(layout, iBucket, blockId, offset);
     }
 
-    size_t Alloc(CtrlLayout& layout, const Detail::BlockId& blockId, size_t offset,
-                 size_t iBucket, bool allowReserved, size_t attempts, size_t initialReference)
+    size_t Alloc(CtrlLayout& layout, const Detail::BlockId& blockId, size_t offset, size_t iBucket,
+                 bool allowReserved, size_t attempts, size_t initialReference)
     {
         for (size_t scan = 0; scan < attempts; ++scan) {
             auto iNode = FetchNode(layout, allowReserved);
@@ -469,8 +465,7 @@ private:
 
     void Release(size_t slotIdx)
     {
-        ctrl_.Layout().SlotMetaArr()[slotIdx].reference.fetch_sub(1,
-                                                                  std::memory_order_release);
+        ctrl_.Layout().SlotMetaArr()[slotIdx].reference.fetch_sub(1, std::memory_order_release);
     }
 
     State GetState(size_t slotIdx) const
@@ -480,14 +475,12 @@ private:
 
     void MarkReady(size_t slotIdx)
     {
-        ctrl_.Layout().SlotMetaArr()[slotIdx].state.store(State::Ready,
-                                                          std::memory_order_release);
+        ctrl_.Layout().SlotMetaArr()[slotIdx].state.store(State::Ready, std::memory_order_release);
     }
 
     void MarkFailed(size_t slotIdx)
     {
-        ctrl_.Layout().SlotMetaArr()[slotIdx].state.store(State::Failed,
-                                                          std::memory_order_release);
+        ctrl_.Layout().SlotMetaArr()[slotIdx].state.store(State::Failed, std::memory_order_release);
     }
 };
 

@@ -269,7 +269,7 @@ private:
     BucketLock* LockArr() const
     {
         return reinterpret_cast<BucketLock*>(static_cast<std::byte*>(base_) +
-                                              LocksOffset(bucketCount_));
+                                             LocksOffset(bucketCount_));
     }
 };
 
