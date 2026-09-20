@@ -24,6 +24,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <thread>
 #include <unistd.h>
@@ -591,13 +592,14 @@ struct AICPUTransProvider::Impl {
         std::int32_t currentDevice = -1;
         const auto deviceRet = aclrtGetDevice(&currentDevice);
         if (deviceRet != ACL_SUCCESS || currentDevice < 0) {
-            std::lock_guard<std::mutex> lock(mu);
+            const bool hasConnections = HasConnections();
+            std::lock_guard<std::mutex> lock(stateMu);
             KV_WARN(
                 "AICPUTransProvider: caller ACL device unavailable before "
                 "CreateConnection ret={} device_id={}; keeping logical_device_id={} "
                 "source={} and binding it explicitly",
                 static_cast<int>(deviceRet), currentDevice, localDeviceId, deviceSelectionSource);
-            if (endpoint == nullptr && connections.empty()) {
+            if (endpoint == nullptr && !hasConnections) {
                 providerContext = nullptr;
                 deviceSelectionSource = "current_acl_create_connection_fallback";
             }
@@ -615,8 +617,9 @@ struct AICPUTransProvider::Impl {
             currentContext = nullptr;
         }
 
-        std::lock_guard<std::mutex> lock(mu);
-        if (endpoint != nullptr || !connections.empty()) {
+        const bool hasConnections = HasConnections();
+        std::lock_guard<std::mutex> lock(stateMu);
+        if (endpoint != nullptr || hasConnections) {
             if (localDeviceId != static_cast<std::uint32_t>(currentDevice)) {
                 return Status::Error(
                     StatusCode::INVALID_ARGUMENT,
@@ -635,6 +638,18 @@ struct AICPUTransProvider::Impl {
         providerContext = currentContext;
         deviceSelectionSource = "current_acl_create_connection";
         return Status::OK();
+    }
+
+    bool HasConnections() const
+    {
+        std::shared_lock<std::shared_mutex> lock(connectionMu);
+        return !connections.empty();
+    }
+
+    std::pair<std::uint32_t, aclrtContext> GetAclDeviceBinding() const
+    {
+        std::lock_guard<std::mutex> lock(stateMu);
+        return {localDeviceId, providerContext};
     }
 
     Status EnsureEndpointLocked(const std::string& localIp, CommProtocol protocol)
@@ -729,7 +744,7 @@ struct AICPUTransProvider::Impl {
 #else
         std::vector<StagedPublishTarget> targets;
         {
-            std::lock_guard<std::mutex> lock(mu);
+            std::shared_lock<std::shared_mutex> lock(connectionMu);
             for (const auto& item : connections) {
                 const auto& conn = item.second;
                 if (conn != nullptr) {
@@ -801,7 +816,7 @@ struct AICPUTransProvider::Impl {
     {
         std::vector<MemoryRecord*> records;
         {
-            std::lock_guard<std::mutex> lock(mu);
+            std::lock_guard<std::mutex> lock(stateMu);
             records.reserve(memories.size());
             for (const auto& item : memories) { records.push_back(item.second.get()); }
         }
@@ -914,7 +929,7 @@ struct AICPUTransProvider::Impl {
 
     MRHandle InsertMemoryRecord(std::unique_ptr<MemoryRecord> record)
     {
-        std::lock_guard<std::mutex> lock(mu);
+        std::lock_guard<std::mutex> lock(stateMu);
         MRHandle handle = kInvalidMRHandle;
         do {
             handle = nextMemoryHandle++;
@@ -1136,7 +1151,7 @@ struct AICPUTransProvider::Impl {
     std::uint64_t stagedMamiTag{0};
     std::uint32_t nextStagedMrId{0};
 
-    std::mutex mu;
+    mutable std::mutex stateMu;
     // Channel creation and MR mutation must observe one another atomically. Rollback paths call
     // the public release helpers while retaining this lock, hence the recursive mutex.
     std::recursive_mutex resourceMu;
@@ -1144,6 +1159,7 @@ struct AICPUTransProvider::Impl {
     std::string endpointIp;
     CommProtocol endpointProtocol{COMM_PROTOCOL_RESERVED};
     // The raw key is the public handle; shared ownership keeps an in-flight Send alive after erase.
+    mutable std::shared_mutex connectionMu;
     std::unordered_map<ConnectionRecord*, std::shared_ptr<ConnectionRecord>> connections;
     std::unordered_map<MRHandle, std::unique_ptr<MemoryRecord>> memories;
     MRHandle nextMemoryHandle{1};
@@ -1177,9 +1193,12 @@ AICPUTransProvider::~AICPUTransProvider()
     std::vector<MRHandle> memoryHandles;
     std::vector<ConnectionHandle> connHandles;
     {
-        std::lock_guard<std::mutex> lock(impl_->mu);
+        std::lock_guard<std::mutex> lock(impl_->stateMu);
         memoryHandles.reserve(impl_->memories.size());
         for (const auto& item : impl_->memories) { memoryHandles.push_back(item.first); }
+    }
+    {
+        std::shared_lock<std::shared_mutex> lock(impl_->connectionMu);
         connHandles.reserve(impl_->connections.size());
         for (const auto& item : impl_->connections) { connHandles.push_back(item.first); }
     }
@@ -1233,7 +1252,7 @@ Status AICPUTransProvider::CreateConnection(const std::string& localIp, const st
     }
 
     {
-        std::lock_guard<std::mutex> lock(impl_->mu);
+        std::lock_guard<std::mutex> lock(impl_->stateMu);
         status = impl_->EnsureEndpointLocked(localIp, protocol);
         if (!status.ok()) {
             KV_ERROR(
@@ -1280,7 +1299,7 @@ Status AICPUTransProvider::CreateConnection(const std::string& localIp, const st
         }
         const auto cleanupRecord = [&]() {
             {
-                std::lock_guard<std::mutex> lock(impl_->mu);
+                std::unique_lock<std::shared_mutex> lock(impl_->connectionMu);
                 impl_->connections.emplace(record, recordOwner);
             }
             const auto cleanupStatuses = DeleteConnections({record});
@@ -1311,7 +1330,7 @@ Status AICPUTransProvider::CreateConnection(const std::string& localIp, const st
 
         EndpointHandle hcommEndpoint = nullptr;
         {
-            std::lock_guard<std::mutex> lock(impl_->mu);
+            std::lock_guard<std::mutex> lock(impl_->stateMu);
             hcommEndpoint = impl_->endpoint;
         }
 #if UCM_ASU_AICPU_USE_STAGED_CHANNEL_API
@@ -1458,7 +1477,7 @@ Status AICPUTransProvider::CreateConnection(const std::string& localIp, const st
         }
 
         {
-            std::lock_guard<std::mutex> lock(impl_->mu);
+            std::unique_lock<std::shared_mutex> lock(impl_->connectionMu);
             impl_->connections.emplace(record, recordOwner);
         }
         createdHandles.push_back(record);
@@ -1489,7 +1508,7 @@ std::vector<Status> AICPUTransProvider::DeleteConnections(
         auto* record = ToConnectionRecord(connectionHandles[index]);
         std::shared_ptr<ConnectionRecord> recordOwner;
         {
-            std::lock_guard<std::mutex> lock(impl_->mu);
+            std::unique_lock<std::shared_mutex> lock(impl_->connectionMu);
             const auto iter = impl_->connections.find(record);
             if (record == nullptr || iter == impl_->connections.end()) {
                 results[index] = Status::Error(StatusCode::INVALID_ARGUMENT,
@@ -1524,7 +1543,7 @@ std::vector<Status> AICPUTransProvider::DeleteConnections(
         if (status.ok()) {
             impl_->ResetConnectionSendResources(*recordOwner);
         } else {
-            std::lock_guard<std::mutex> lock(impl_->mu);
+            std::unique_lock<std::shared_mutex> lock(impl_->connectionMu);
             impl_->connections.emplace(record, recordOwner);
             KV_WARN(
                 "AICPUTransProvider: retained connection handle={} channel={} thread={} "
@@ -1540,16 +1559,25 @@ Status AICPUTransProvider::GetServerCapabilities(ConnectionHandle connectionHand
 {
     capabilities = {};
     auto* record = ToConnectionRecord(connectionHandle);
-    std::lock_guard<std::mutex> lock(impl_->mu);
-    if (record == nullptr || impl_->connections.find(record) == impl_->connections.end()) {
+    std::shared_ptr<ConnectionRecord> recordOwner;
+    {
+        std::shared_lock<std::shared_mutex> lock(impl_->connectionMu);
+        const auto iter = impl_->connections.find(record);
+        if (record == nullptr || iter == impl_->connections.end()) {
+            return Status::Error(StatusCode::INVALID_ARGUMENT,
+                                 "AICPUTransProvider: invalid connection handle");
+        }
+        recordOwner = iter->second;
+    }
+    if (recordOwner == nullptr) {
         return Status::Error(StatusCode::INVALID_ARGUMENT,
                              "AICPUTransProvider: invalid connection handle");
     }
-    if (!record->hasServerCapabilities) {
+    if (!recordOwner->hasServerCapabilities) {
         return Status::Error(StatusCode::UNSUPPORTED,
                              "AICPUTransProvider: server capability query is not available");
     }
-    capabilities = record->serverCapabilities;
+    capabilities = recordOwner->serverCapabilities;
     return Status::OK();
 }
 
@@ -1567,14 +1595,14 @@ std::vector<Status> AICPUTransProvider::Send(const std::vector<SendIoBatch>& ioB
     };
 
     std::vector<Status> results(ioBatches.size(), Status::OK());
+    std::vector<std::shared_ptr<ConnectionRecord>> connectionOwners(ioBatches.size());
     std::vector<ConnectionBatchGroup> groups;
     std::unordered_map<ConnectionRecord*, std::size_t> groupIndexByConnection;
     bool valid = true;
     {
-        std::lock_guard<std::mutex> lock(impl_->mu);
+        std::shared_lock<std::shared_mutex> lock(impl_->connectionMu);
         for (std::size_t index = 0; index < ioBatches.size(); ++index) {
-            const auto& item = ioBatches[index];
-            auto* conn = ToConnectionRecord(item.connectionHandle);
+            auto* conn = ToConnectionRecord(ioBatches[index].connectionHandle);
             const auto connIter = impl_->connections.find(conn);
             if (conn == nullptr || connIter == impl_->connections.end()) {
                 results[index] =
@@ -1583,30 +1611,32 @@ std::vector<Status> AICPUTransProvider::Send(const std::vector<SendIoBatch>& ioB
                 valid = false;
                 continue;
             }
-            if (item.sendBuffer == nullptr || item.len == 0) {
-                results[index] = Status::Error(StatusCode::INVALID_ARGUMENT,
-                                               "AICPUTransProvider::Send: empty send buffer");
-                valid = false;
-                continue;
-            }
-            if (conn->thread == 0U) {
-                results[index] =
-                    Status::Error(StatusCode::CONNECTION_ERROR,
-                                  "AICPUTransProvider::Send: Hcomm thread is not ready");
-                valid = false;
-                continue;
-            }
-
-            auto [groupIt, inserted] = groupIndexByConnection.emplace(conn, groups.size());
-            if (inserted) { groups.push_back(ConnectionBatchGroup{connIter->second, {}, {}}); }
-            auto& group = groups[groupIt->second];
-            group.originalIndexes.push_back(index);
-            group.batches.push_back(item);
+            connectionOwners[index] = connIter->second;
         }
+    }
+
+    for (std::size_t index = 0; index < ioBatches.size(); ++index) {
+        const auto& item = ioBatches[index];
+        const auto& connection = connectionOwners[index];
+        if (connection == nullptr) { continue; }
+        if (item.sendBuffer == nullptr || item.len == 0) {
+            results[index] = Status::Error(StatusCode::INVALID_ARGUMENT,
+                                           "AICPUTransProvider::Send: empty send buffer");
+            valid = false;
+            continue;
+        }
+
+        auto* conn = connection.get();
+        auto [groupIt, inserted] = groupIndexByConnection.emplace(conn, groups.size());
+        if (inserted) { groups.push_back(ConnectionBatchGroup{connection, {}, {}}); }
+        auto& group = groups[groupIt->second];
+        group.originalIndexes.push_back(index);
+        group.batches.push_back(item);
     }
     if (!valid) { return results; }
 
-    ScopedAclDeviceContext deviceScope("Send", impl_->localDeviceId, impl_->providerContext);
+    const auto [deviceId, providerContext] = impl_->GetAclDeviceBinding();
+    ScopedAclDeviceContext deviceScope("Send", deviceId, providerContext);
     const auto& deviceStatus = deviceScope.status();
     if (!deviceStatus.ok()) { return std::vector<Status>(ioBatches.size(), deviceStatus); }
 
@@ -1697,7 +1727,7 @@ Status AICPUTransProvider::RegisterMemoryImpl(const std::vector<RegisterMemoryDe
     EndpointHandle endpoint = nullptr;
     CommProtocol endpointProtocol = COMM_PROTOCOL_RESERVED;
     {
-        std::lock_guard<std::mutex> lock(impl_->mu);
+        std::lock_guard<std::mutex> lock(impl_->stateMu);
         if (impl_->endpoint == nullptr) {
             auto protocolStatus = ResolveProtocol(impl_->config, endpointProtocol);
             if (!protocolStatus.ok()) { return protocolStatus; }
@@ -1757,7 +1787,7 @@ Status AICPUTransProvider::RegisterMemoryImpl(const std::vector<RegisterMemoryDe
                      releaseStatus.message);
         };
         {
-            std::lock_guard<std::mutex> lock(impl_->mu);
+            std::lock_guard<std::mutex> lock(impl_->stateMu);
             record->tag = impl_->channelName + ":mem:" + std::to_string(impl_->nextMemTag++);
             record->stagedMrId = impl_->nextStagedMrId++;
         }
@@ -1845,7 +1875,7 @@ Status AICPUTransProvider::RegisterMemoryImpl(const std::vector<RegisterMemoryDe
 
         std::vector<std::shared_ptr<ConnectionRecord>> connections;
         {
-            std::lock_guard<std::mutex> lock(impl_->mu);
+            std::shared_lock<std::shared_mutex> lock(impl_->connectionMu);
             connections.reserve(impl_->connections.size());
             for (const auto& item : impl_->connections) { connections.push_back(item.second); }
         }
@@ -1910,7 +1940,7 @@ std::vector<Status> AICPUTransProvider::ReleaseMemory(const std::vector<MRHandle
         const auto handle = mrHandles[index];
         if (handle == kInvalidMRHandle) { continue; }
 
-        std::lock_guard<std::mutex> lock(impl_->mu);
+        std::lock_guard<std::mutex> lock(impl_->stateMu);
         auto iter = impl_->memories.find(handle);
         if (iter == impl_->memories.end()) {
             KV_DEBUG("AICPUTransProvider: {} ignored released handle={}", operation, handle);
@@ -1925,7 +1955,7 @@ std::vector<Status> AICPUTransProvider::ReleaseMemory(const std::vector<MRHandle
 Status AICPUTransProvider::GetMemTokenId(MRHandle mrHandle, uint32_t& tokenId)
 {
     tokenId = 0;
-    std::lock_guard<std::mutex> lock(impl_->mu);
+    std::lock_guard<std::mutex> lock(impl_->stateMu);
     auto iter = impl_->memories.find(mrHandle);
     if (iter == impl_->memories.end()) {
         return Status::Error(StatusCode::BUFFER_NOT_REGISTERED,
