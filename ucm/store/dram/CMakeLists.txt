@@ -96,7 +96,6 @@ target_link_libraries(drampool_core
         metrics
         ucm_p2p_transport
         trans
-        dramstore
 )
 add_executable(drampool
     ${DRAMPOOL_SOURCE_DIR}/main.cc
