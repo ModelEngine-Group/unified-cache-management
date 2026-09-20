@@ -1,12 +1,9 @@
-"""Read addressing facts straight off the runtime views.
+"""Compile registered logical views into contiguous source-memory segments.
 
-The views vLLM hands over at ``register_kv_caches`` are the addressing
-source of truth -- each view's data_ptr/shape/stride already encodes
-where its layer's blocks sit (0.26: one allocation per view; 0.29: one
-packed backing, views strided per the declarations).  This module turns
-a view into a :class:`TensorView`; the spec contributes the only two
-facts views cannot express: the token->state compression ratio and the
-state-page component layout.
+LayerView groups a layer name's components; components can share physical
+storage. Backend axis conventions and runtime shape/stride define addressing.
+The spec supplies logical block sizes, compression ratios and state-page
+semantics. No KV storage is allocated or copied here.
 """
 
 from __future__ import annotations
@@ -35,10 +32,10 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
-class TensorView:
-    """One tensor's addressing facts, read straight off its runtime view.
+class MemorySegment:
+    """One contiguous token/state segment within each logical block.
 
-    ``base_ptr`` is the view's block-0 address; block ``b`` starts at
+    ``base_ptr`` is this segment's block-0 address; block ``b`` starts at
     ``base_ptr + b * block_stride_bytes`` and holds ``payload_bytes`` of
     content as ``states_per_block`` states of ``bytes_per_state`` bytes,
     evenly spaced (dense-row views; the row geometry is a derivation
@@ -50,6 +47,123 @@ class TensorView:
     states_per_block: int
     bytes_per_state: int
     payload_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class ComponentView:
+    """One registered tensor view, potentially split into head segments.
+
+    No storage is allocated. Segment bases include the view's storage offset
+    already, because they are derived from tensor.data_ptr().
+    """
+
+    shape: tuple[int, ...]
+    strides: tuple[int, ...]
+    segments: tuple[MemorySegment, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LayerView:
+    """Logical layer-name view; components may alias the same storage."""
+
+    layer_name: str
+    layer_id: int
+    components: tuple[ComponentView, ...]
+
+    @property
+    def segments(self) -> tuple[MemorySegment, ...]:
+        return tuple(s for component in self.components for s in component.segments)
+
+
+def build_layer_view(
+    value: "torch.Tensor | tuple[torch.Tensor, ...] | list[torch.Tensor]",
+    layer: "UCMLayerSpec",
+    *,
+    state_snapshot: bool,
+    device_type: str,
+) -> LayerView:
+    """Normalize the two supported runtime ABIs, not dimension-size guesses.
+
+    Official 0.29 attention views are logically BHNC regardless of physical
+    stride order. Ascend 0.26 attention views are BNHC. MLA may expose BNC;
+    either ABI may tile a logical block with multiple kernel rows. State
+    components retain their explicit spec/page interpretation.
+    """
+    tensors = tuple(value) if isinstance(value, (tuple, list)) else (value,)
+    if state_snapshot:
+        segments = _state_tensor_views(tensors, layer)
+        return LayerView(
+            layer.layer_name,
+            layer.layer_index,
+            tuple(
+                ComponentView(
+                    tuple(t.shape),
+                    tuple(t.stride(i) for i in range(len(t.shape))),
+                    (s,),
+                )
+                for t, s in zip(tensors, segments, strict=True)
+            ),
+        )
+    components = []
+    for tensor in tensors:
+        shape = tuple(int(x) for x in tensor.shape)
+        strides = tuple(int(tensor.stride(i)) for i in range(len(shape)))
+        if len(shape) == 4:
+            token_axis, head_axis = (1, 2) if device_type == "npu" else (2, 1)
+            segments = _attention_segments(tensor, layer, token_axis, head_axis)
+        else:
+            segments = (build_tensor_view(tensor, layer),)
+        components.append(ComponentView(shape, strides, segments))
+    return LayerView(layer.layer_name, layer.layer_index, tuple(components))
+
+
+def _attention_segments(
+    tensor: "torch.Tensor",
+    layer: "UCMLayerSpec",
+    token_axis: int,
+    head_axis: int,
+) -> tuple[MemorySegment, ...]:
+    """Keep NHC contiguous; split HNC into independently addressable heads.
+
+    Head fragments keep the original whole-page byte order for compact HNC.
+    Cross-block/cross-layer head strides (LHBNC/BHLNC) use the same formula.
+    Multiple kernel rows with separated heads require a ragged range mapping
+    and are rejected rather than silently copied as contiguous token data.
+    """
+    shape = tuple(int(x) for x in tensor.shape)
+    strides = tuple(int(tensor.stride(i)) for i in range(4))
+    if layer.num_blocks <= 0 or shape[0] % layer.num_blocks:
+        raise ValueError("Attention view does not tile logical blocks")
+    rows = shape[0] // layer.num_blocks
+    states, heads, channels = shape[token_axis], shape[head_axis], shape[3]
+    if rows <= 0 or rows * states != layer.storage_block_size:
+        raise ValueError("Attention token axis disagrees with storage_block_size")
+    if strides[3] != 1 or any(s <= 0 for s in strides):
+        raise ValueError(
+            "Attention components require positive strides and dense channels"
+        )
+    # NHC (or a singleton head) keeps one segment for the entire token range.
+    if strides[token_axis] == heads * channels and (
+        heads == 1 or strides[head_axis] == channels
+    ):
+        return (build_tensor_view(tensor, layer),)
+    if strides[token_axis] != channels or strides[head_axis] < states * channels:
+        raise ValueError("Unsupported attention token/head strides")
+    if rows != 1:
+        raise ValueError(
+            "Multi-row head-separated attention requires a ragged range mapping"
+        )
+    element = int(tensor.element_size())
+    return tuple(
+        MemorySegment(
+            base_ptr=int(tensor.data_ptr()) + head * strides[head_axis] * element,
+            block_stride_bytes=strides[0] * element,
+            states_per_block=states,
+            bytes_per_state=channels * element,
+            payload_bytes=states * channels * element,
+        )
+        for head in range(heads)
+    )
 
 
 def row_payload_bytes(
@@ -87,7 +201,7 @@ def build_tensor_view(
     tensor: "torch.Tensor",
     layer: "UCMLayerSpec",
     state_snapshot: bool = False,
-) -> TensorView:
+) -> MemorySegment:
     """Derive one component's placement from its runtime view.
 
     The layer spec carries the two facts the view cannot express: the
@@ -141,8 +255,8 @@ def build_tensor_view(
         # (Kimi MLA: one logical block as dense kernel rows) and the
         # vLLM 0.29 permuted [B, H, N, C] views (N counts stored states)
         # identically for whole blocks. Partial-token IO requires states
-        # to be contiguous in memory (NHC, or H=1 as in DSV4). General
-        # H>1 HNC slicing is not represented by this addressing model.
+        # to be contiguous in memory (NHC, or H=1 as in DSV4). Head-separated
+        # HNC is split by _attention_segments before reaching this helper.
         states_per_row, remainder = divmod(expected_block_size, rows_per_block)
         if remainder or states_per_row <= 0 or payload % states_per_row:
             raise ValueError(
@@ -154,7 +268,7 @@ def build_tensor_view(
             )
         states_per_block = expected_block_size
         bytes_per_state = payload // states_per_row
-    return TensorView(
+    return MemorySegment(
         base_ptr=int(tensor.data_ptr()),
         block_stride_bytes=rows_per_block * row_stride,
         states_per_block=states_per_block,
@@ -163,30 +277,10 @@ def build_tensor_view(
     )
 
 
-def build_tensor_views(
-    value: "torch.Tensor | tuple[torch.Tensor, ...] | list[torch.Tensor]",
-    layer: "UCMLayerSpec",
-    *,
-    state_snapshot: bool,
-) -> tuple[TensorView, ...]:
-    """Resolve one layer name's tensor views (attention or state snapshot).
-
-    ``value`` is whatever ``register_kv_caches`` handed over -- one view
-    (0.29 packed layouts) or a tuple of views (0.26 k/v, latent+rope,
-    indexer k+scale, mamba states); normalized to a tuple up front.  The
-    group layout flattens these into its per-view columns in layer order.
-    """
-
-    tensors = tuple(value) if isinstance(value, (tuple, list)) else (value,)
-    if state_snapshot:
-        return _state_tensor_views(tensors, layer)
-    return tuple(build_tensor_view(tensor, layer) for tensor in tensors)
-
-
 def _state_tensor_views(
     tensors: tuple["torch.Tensor", ...],
     layer: "UCMLayerSpec",
-) -> tuple[TensorView, ...]:
+) -> tuple[MemorySegment, ...]:
     """Resolve an explicit component tuple or one combined raw state page.
 
     The combined page stays a single component: whole-block state IO is
@@ -249,7 +343,7 @@ def _state_tensor_views(
             f"({payload}B) for {layer.layer_name}"
         )
     return (
-        TensorView(
+        MemorySegment(
             base_ptr=int(raw.data_ptr()),
             block_stride_bytes=page_stride,
             states_per_block=1,

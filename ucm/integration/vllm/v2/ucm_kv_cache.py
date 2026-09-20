@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
+from itertools import chain, repeat
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
@@ -22,7 +23,8 @@ from vllm.v1.kv_cache_interface import (
 from .layout import build_group_layouts
 from .layout.group import TensorDescriptor
 from .layout.view import LAYOUT_DEBUG, layout_debug
-from .ucm_proxy import KVCacheValue, UCMProxyBatch
+from .record_layout import GroupRecordLayout
+from .ucm_proxy import KVCacheValue, UCMProxyBatch, UCMProxyTransfer
 
 if TYPE_CHECKING:
     from vllm.v1.kv_cache_interface import (
@@ -145,7 +147,9 @@ class UCMKVCacheSpec:
 
     def dispatch_routes(
         self,
-    ) -> tuple[tuple[Literal["FA", "WA", "State"], tuple["UCMKVCacheGroupInfo", ...]], ...]:
+    ) -> tuple[
+        tuple[Literal["FA", "WA", "State"], tuple["UCMKVCacheGroupInfo", ...]], ...
+    ]:
         """The routing table every dump/load works over: key kind -> groups.
 
         FA holds the full-attention groups; WA the sliding groups that
@@ -177,9 +181,7 @@ class UCMKVCacheSpec:
         }
 
 
-def _group_tail_blocks(
-    group: UCMKVCacheGroupInfo, ucm_block_size: int
-) -> int:
+def _group_tail_blocks(group: UCMKVCacheGroupInfo, ucm_block_size: int) -> int:
     """vLLM blocks one ucm key's window spans (0 = the group stores nothing).
 
     HMA's ``tail_blocks`` with the one generalization v2 needs: a tail
@@ -404,7 +406,8 @@ def parse_kv_cache_config(
             # already the token span.
             ascend_ratio = getattr(representative, "compress_ratio", None)
             token_block_size = (
-                physical_block_size * int(ascend_ratio) if ascend_ratio
+                physical_block_size * int(ascend_ratio)
+                if ascend_ratio
                 else physical_block_size
             )
             if kinds.isdisjoint(_SLIDING_KINDS):
@@ -498,7 +501,10 @@ def parse_kv_cache_config(
             )
     if len(groups) == 1 and ucm_cache_block_size is not None:
         selected_block = ucm_cache_block_size
-        if selected_block < scheduler_block_size or selected_block % scheduler_block_size:
+        if (
+            selected_block < scheduler_block_size
+            or selected_block % scheduler_block_size
+        ):
             raise ValueError(
                 "ucm_cache_block_size must be a positive multiple of "
                 "scheduler_block_size"
@@ -576,6 +582,12 @@ class UCMKVCacheLayout:
         self.group_layouts: Mapping[int, "KVCacheGroupLayout"] = build_group_layouts(
             spec, kv_caches
         )
+        self.record_layouts = {
+            group.group_id: GroupRecordLayout.build(
+                group, self.group_layouts[group.group_id], spec.ucm_cache_block_size
+            )
+            for group in spec.groups
+        }
         # Per-kind participating groups, in dispatch_routes() order -- the
         # plan's windows array is positional over this order.
         self._routes_by_kind: Mapping[str, tuple["UCMKVCacheGroupInfo", ...]] = {
@@ -603,6 +615,63 @@ class UCMKVCacheLayout:
         if layer_id is not None:
             return self.layer_names_by_id[layer_id]
         return None if layer_name is None else frozenset((layer_name,))
+
+    def build_load_transfers(
+        self,
+        metadata: "UCMConnectorMetadata",
+        layer_name: str | None = None,
+        *,
+        layer_id: int | None = None,
+    ) -> tuple[UCMProxyTransfer, ...]:
+        return self._build_transfers(
+            (p for r in metadata.requests.values() for p in r.load_plans),
+            self._selected_layer_names(layer_name, layer_id),
+        )
+
+    def build_dump_transfers(
+        self,
+        metadata: "UCMConnectorMetadata",
+        layer_name: str | None = None,
+        *,
+        layer_id: int | None = None,
+    ) -> tuple[UCMProxyTransfer, ...]:
+        return self._build_transfers(
+            (p for r in metadata.requests.values() for p in r.dump_plans),
+            self._selected_layer_names(layer_name, layer_id),
+        )
+
+    def _build_transfers(
+        self,
+        plans: Iterable["UCMGroupDispatchPlan"],
+        layer_names: frozenset[str] | None,
+    ) -> tuple[UCMProxyTransfer, ...]:
+        transfers = []
+        for plan in plans:
+            groups = [
+                g
+                for g in self._iter_plan_segments(plan, layer_names, matrices=True)
+                if g[2].shape[1]
+            ]
+            if not groups:
+                continue
+            ptrs = (
+                groups[0][2]
+                if len(groups) == 1
+                else np.concatenate([g[2] for g in groups], axis=1)
+            )
+            if len(groups) == 1:
+                offsets, sizes = groups[0][1], groups[0][3]
+            else:
+                offsets = np.broadcast_to(
+                    np.concatenate([g[1][0] for g in groups]), ptrs.shape
+                )
+                sizes = np.broadcast_to(
+                    np.concatenate([g[3][0] for g in groups]), ptrs.shape
+                )
+            # Each plan belongs to one request's hash chain, so keys are unique.
+            # Keep requests separate: shared-prefix keys may have distinct targets.
+            transfers.append(UCMProxyTransfer(plan.keys, ptrs, sizes, offsets))
+        return tuple(transfers)
 
     def build_load_batches(
         self,
@@ -653,9 +722,12 @@ class UCMKVCacheLayout:
         ptrs: list[np.ndarray] = []
         sizes: list[np.ndarray] = []
         for plan in plans:
-            for group_keys, group_offsets, group_ptrs, group_sizes in (
-                self._iter_plan_segments(plan, layer_names)
-            ):
+            for (
+                group_keys,
+                group_offsets,
+                group_ptrs,
+                group_sizes,
+            ) in self._iter_plan_segments(plan, layer_names):
                 keys.extend(group_keys)
                 offsets.append(group_offsets)
                 ptrs.append(group_ptrs)
@@ -669,23 +741,25 @@ class UCMKVCacheLayout:
             )
         return UCMProxyBatch(
             tuple(keys),
-            np.concatenate(offsets),
-            np.concatenate(ptrs),
-            np.concatenate(sizes),
+            offsets[0] if len(offsets) == 1 else np.concatenate(offsets),
+            ptrs[0] if len(ptrs) == 1 else np.concatenate(ptrs),
+            sizes[0] if len(sizes) == 1 else np.concatenate(sizes),
         )
 
     def _iter_plan_segments(
         self,
         plan: "UCMGroupDispatchPlan",
         layer_names: frozenset[str] | None,
-    ) -> Iterator[tuple[list[bytes], np.ndarray, np.ndarray, np.ndarray]]:
+        *,
+        matrices: bool = False,
+    ) -> Iterator[tuple[Sequence[bytes], np.ndarray, np.ndarray, np.ndarray]]:
         """One plan's records as per-group arrays, straight off templates.
 
         The scheduler sends keys and window block ids; each group's
         static template (compiled at layout init -- the offsets/sizes
         grids of one key's window, block-major: block 0's views, block
         1's views, ...) places them inside the key's record, and group
-        g's contribution starts at the running group_base.  All keys of
+        g's contribution starts at group_record_offset.  All keys of
         a plan resolve in one vectorized pass per group; only the block
         ids (and full-attention sub-span heads) vary per call.  Block
         First groups with whole unfiltered windows take the
@@ -708,13 +782,14 @@ class UCMKVCacheLayout:
                 f"groups={[group.group_id for group in physical_groups]}"
             )
         key_count = len(plan.keys)
-        group_base = 0
+        group_record_offset = 0
         for group, blocks in zip(physical_groups, plan.windows):
             group_layout = self.group_layouts[group.group_id]
             # Normalize at the pickle boundary: int64 ids mixed into the
             # uint64 stride arithmetic below would silently promote.
             blocks = np.asarray(blocks, dtype=np.uint64)
-            per_key = group_layout.tail_blocks
+            record_layout = self.record_layouts[group.group_id]
+            per_key = record_layout.blocks_per_key
             total = key_count * per_key
             if len(blocks) != total:
                 raise ValueError(
@@ -725,75 +800,52 @@ class UCMKVCacheLayout:
             mask = (
                 None
                 if layer_names is None
-                else group_layout.view_mask(layer_names=layer_names)
+                else group_layout.segment_mask(layer_names=layer_names)
             )
-            block_first = group_layout.block_first
-            if (
-                block_first is not None
-                and mask is None
-                and group_layout.window_span == 0
-            ):
-                # Fast path: whole blocks on a Block First layout are one
-                # IO span each (a zero span also means zero head offsets).
-                ptrs = (
-                    block_first.base_ptr + blocks * block_first.block_stride
+            token_offsets = None
+            if record_layout.dynamic_token_offsets:
+                first_key = plan.token_start // self.spec.ucm_cache_block_size
+                token_offsets = (
+                    np.arange(first_key, first_key + key_count, dtype=np.uint64)
+                    * self.spec.ucm_cache_block_size
+                    % group_layout.token_block_size
                 )
-                sizes = np.full(
-                    total, block_first.block_size_bytes, dtype=np.uint64
+            if matrices:
+                offsets, ptrs, sizes = record_layout.resolve_matrices(
+                    blocks, key_count, token_offsets=token_offsets, segment_mask=mask
                 )
-                offsets = (
-                    np.arange(total, dtype=np.uint64) % per_key
-                ) * block_first.block_size_bytes + group_base
-                entries_per_key = per_key
-            else:
-                offsets = (
-                    np.tile(group_layout.template_offsets, (key_count, 1))
-                    + group_base
-                )
-                sizes = np.tile(group_layout.template_sizes, (key_count, 1))
-                ptrs = (
-                    group_layout.base_ptrs[None, :]
-                    + blocks[:, None] * group_layout.block_strides[None, :]
-                )
-                if (
-                    not group_layout.is_sliding_window
-                    and group_layout.window_span
-                ):
-                    # FA sub-span: every key sits at an arithmetic offset
-                    # inside its shared block.
-                    first_key = (
-                        plan.token_start // self.spec.ucm_cache_block_size
+                if group_record_offset:
+                    offsets = np.broadcast_to(
+                        offsets[0] + group_record_offset, offsets.shape
                     )
-                    heads = (
-                        np.arange(
-                            first_key, first_key + key_count, dtype=np.uint64
-                        )
-                        * self.spec.ucm_cache_block_size
-                        % group_layout.token_block_size
-                    )
-                    ptrs = ptrs + group_layout.tokens_to_view_bytes(heads)
-                else:
-                    ptrs = ptrs + np.tile(
-                        group_layout.template_ptr_extras, (key_count, 1)
-                    )
-                if mask is not None:
-                    offsets = offsets[:, mask]
-                    sizes = sizes[:, mask]
-                    ptrs = ptrs[:, mask]
-                offsets = offsets.reshape(-1)
-                sizes = sizes.reshape(-1)
-                ptrs = ptrs.reshape(-1)
-                entries_per_key = per_key * group_layout.view_count(mask)
+                yield plan.keys, offsets, ptrs, sizes
+                group_record_offset += record_layout.record_bytes
+                continue
+            offsets, ptrs, sizes, entries_per_key = record_layout.resolve(
+                blocks, key_count, token_offsets=token_offsets, segment_mask=mask
+            )
+            # resolve returns fresh arrays, so this cannot modify a template
+            # or a previously submitted batch.
+            if group_record_offset:
+                offsets += group_record_offset
             if LAYOUT_DEBUG:
                 layout_debug(
                     f"record group={group.group_id} keys={key_count} "
                     f"blocks={total} entries={len(ptrs)} "
-                    f"record_size={group_base + group_layout.window_record_bytes}"
+                    f"record_size={group_record_offset + record_layout.record_bytes}"
                 )
             yield (
-                [key for key in plan.keys for _ in range(entries_per_key)],
+                (
+                    list(plan.keys)
+                    if entries_per_key == 1
+                    else list(
+                        chain.from_iterable(
+                            repeat(key, entries_per_key) for key in plan.keys
+                        )
+                    )
+                ),
                 offsets,
                 ptrs,
                 sizes,
             )
-            group_base += group_layout.window_record_bytes
+            group_record_offset += record_layout.record_bytes

@@ -28,7 +28,7 @@ def build_group_layouts(
 
     return {
         group.group_id: KVCacheGroupLayout(
-            group, kv_caches, spec.ucm_cache_block_size
+            group, kv_caches, device_type=spec.device_type
         )
         for group in spec.groups
     }

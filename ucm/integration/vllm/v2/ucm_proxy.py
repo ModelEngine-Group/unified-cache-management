@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypeAlias, runtime_checkable
@@ -27,6 +27,12 @@ class UCMProxyError(RuntimeError):
 
 
 class UCMProxy(Protocol):
+    """Native load/dump receive unique keys and matching [K,S] arrays.
+
+    Read-only, non-contiguous arrays are valid. Returning a task requires wait;
+    the adapter currently waits synchronously before releasing descriptors.
+    """
+
     def lookup(self, block_ids: Sequence[bytes]) -> Sequence[bool]: ...
 
     def lookup_on_prefix(self, block_ids: Sequence[bytes]) -> int: ...
@@ -198,13 +204,30 @@ class SimpleFileUCMProxy:
         offsets: np.ndarray,
         ptrs: np.ndarray,
         sizes: np.ndarray,
-    ) -> dict[bytes, list[tuple[int, int, int]]]:
+    ) -> Iterable[tuple[bytes, Iterable[tuple[int, int, int]]]]:
+        if np.ndim(ptrs) == 2:
+            if np.shape(offsets) != np.shape(ptrs) or np.shape(sizes) != np.shape(ptrs):
+                raise ValueError("Transfer arrays must have identical [K, S] shapes")
+            if ptrs.shape[1] == 1:
+                # A single segment needs no row views or three map iterators.
+                # Column views also work for strided/broadcast matrices.
+                return (
+                    (bytes(key), ((int(o), int(p), int(s)),))
+                    for key, o, p, s in zip(
+                        block_ids, offsets[:, 0], ptrs[:, 0], sizes[:, 0], strict=True
+                    )
+                )
+            return (
+                (bytes(key), zip(map(int, o), map(int, p), map(int, s)))
+                for key, o, p, s in zip(block_ids, offsets, ptrs, sizes, strict=True)
+            )
+        # Compatibility for the legacy flat test/toolkit API only.
         records: dict[bytes, list[tuple[int, int, int]]] = {}
         for key, offset, ptr, size in zip(block_ids, offsets, ptrs, sizes, strict=True):
             records.setdefault(bytes(key), []).append(
                 (int(offset), int(ptr), int(size))
             )
-        return records
+        return records.items()
 
     @staticmethod
     def _record_size(key: bytes, segments: list[tuple[int, int, int]]) -> int:
@@ -230,7 +253,8 @@ class SimpleFileUCMProxy:
     ) -> None:
         records = self._records(block_ids, offsets, ptrs, sizes)
         self.byte_access.synchronize()
-        for key, segments in records.items():
+        for key, segments in records:
+            segments = list(segments)
             record_size = self._record_size(key, segments)
             record = bytearray(record_size)
             for offset, ptr, size in segments:
@@ -256,7 +280,7 @@ class SimpleFileUCMProxy:
         sizes: np.ndarray,
     ) -> None:
         records = self._records(block_ids, offsets, ptrs, sizes)
-        for key, segments in records.items():
+        for key, segments in records:
             path = self._path(key)
             try:
                 record = path.read_bytes()
@@ -278,6 +302,24 @@ class SimpleFileUCMProxy:
 
 
 @dataclass(frozen=True)
+class UCMProxyTransfer:
+    """Unique keys [K] and byte descriptors [K,S]; arrays may be read-only.
+
+    Offsets address the complete UCM block. Backends retain arrays through
+    completion and never mutate them or require contiguous input.
+    """
+
+    keys: tuple[bytes, ...]
+    ptrs: np.ndarray
+    sizes: np.ndarray
+    ucm_block_offsets: np.ndarray
+
+    @property
+    def total_bytes(self) -> int:
+        return int(self.sizes.sum())
+
+
+@dataclass(frozen=True)
 class UCMProxyBatch:
     block_ids: tuple[bytes, ...]
     offsets: np.ndarray
@@ -290,7 +332,7 @@ class UCMProxyBatch:
 
 
 class UCMProxyAdapter:
-    """Validate and normalize calls without knowing the backing Store."""
+    """Forward native transfers; normalize legacy calls and handle completion."""
 
     def __init__(
         self,
@@ -302,6 +344,12 @@ class UCMProxyAdapter:
 
     @staticmethod
     def _keys(block_ids: Sequence[bytes]) -> tuple[bytes, ...]:
+        # Native transfers already carry bytes: validate in one pass and
+        # preserve identity for subsequent layer callbacks.
+        if type(block_ids) is tuple and all(
+            type(key) is bytes and len(key) == 16 for key in block_ids
+        ):
+            return block_ids
         keys = tuple(bytes(key) for key in block_ids)
         invalid = [index for index, key in enumerate(keys) if len(key) != 16]
         if invalid:
@@ -444,3 +492,26 @@ class UCMProxyAdapter:
             if isinstance(exc, UCMProxyError):
                 raise
             raise UCMProxyError("Proxy dump failed") from exc
+
+    def submit(self, operation: str, transfer: UCMProxyTransfer) -> None:
+        """Forward layout-owned descriptors unchanged, retaining them through wait.
+
+        The builder owns the key/shape/dtype/range contract. Submission does
+        not rescan, normalize or copy its arrays.
+        """
+        if operation not in ("load", "dump"):
+            raise ValueError(f"Unknown transfer operation: {operation}")
+        if not transfer.keys:
+            return
+        try:
+            task = getattr(self._proxy, operation)(
+                transfer.keys,
+                transfer.ucm_block_offsets,
+                transfer.ptrs,
+                transfer.sizes,
+            )
+            self._wait(operation, task)
+        except Exception as exc:
+            if isinstance(exc, UCMProxyError):
+                raise
+            raise UCMProxyError(f"Proxy {operation} failed") from exc

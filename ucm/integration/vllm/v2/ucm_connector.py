@@ -335,11 +335,10 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         assert self.layout is not None
         for request_id, request in metadata.requests.items():
             request_metadata = UCMConnectorMetadata(requests={request_id: request})
-            batch = self.layout.build_load_batches(request_metadata)
+            batches = self.layout.build_load_transfers(request_metadata)
             try:
-                self._proxy.load(
-                    batch.block_ids, batch.offsets, batch.ptrs, batch.sizes
-                )
+                for batch in batches:
+                    self._proxy.submit("load", batch)
             except UCMProxyError:
                 self._worker_metadata.mark_failed(request_id)
                 self._invalid_block_ids.update(
@@ -369,8 +368,8 @@ class UCMConnector(KVConnectorBase_V1, SupportsHMA):
         metadata = self._get_connector_metadata()
         assert isinstance(metadata, UCMConnectorMetadata)
         assert self.layout is not None
-        batch = self.layout.build_dump_batches(metadata)
-        self._proxy.dump(batch.block_ids, batch.offsets, batch.ptrs, batch.sizes)
+        for batch in self.layout.build_dump_transfers(metadata):
+            self._proxy.submit("dump", batch)
 
     def build_connector_worker_meta(self) -> UCMWorkerMetadata | None:
         if not self._worker_metadata.load_failed_reqs:

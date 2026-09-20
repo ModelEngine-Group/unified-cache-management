@@ -73,6 +73,8 @@ class RequestState:
 
 @dataclass(frozen=True)
 class UCMGroupDispatchPlan:
+    """One request's hash-chain slice; keys are unique within this plan."""
+
     hash_group: Literal["FA", "WA", "State"]
     keys: tuple[bytes, ...]
     token_start: int
