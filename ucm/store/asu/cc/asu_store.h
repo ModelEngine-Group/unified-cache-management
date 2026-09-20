@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -36,6 +37,9 @@ struct Config {
     std::int32_t deviceId{-1};
     std::string tensorLayout;
     kv::TransProviderType transProviderType{kv::TransProviderType::AICPU};
+    std::string aicpuHcommProtocol;
+    std::vector<std::string> aicpuLocalAddrs;
+    std::optional<std::uint64_t> aicpuSendTimeoutMs;
     std::string fakeBackendPath;
     std::uint64_t fakeBackendLatencyMs{1};
     std::uint64_t fakeBackendWorkerThreads{4};

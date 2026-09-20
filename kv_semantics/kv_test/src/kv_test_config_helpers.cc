@@ -57,6 +57,11 @@ bool IsAivProviderMode(const KvTestConfig& config)
     return HasProvider(config, kv::TransProviderType::AIV);
 }
 
+bool IsAicpuProviderMode(const KvTestConfig& config)
+{
+    return HasProvider(config, kv::TransProviderType::AICPU);
+}
+
 DeviceAllocationPolicy AllocationPolicyForConfig(const KvTestConfig& config)
 {
     return IsAivProviderMode(config) ? DeviceAllocationPolicy::AIV_REGISTERABLE
