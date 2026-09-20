@@ -1,9 +1,9 @@
-name: UCM Nightly Release · Shanghai 02:00 and 13:00
+name: UCM Nightly Release · Shanghai 02:00
 
 on:
   schedule:
-    # GitHub cron 使用 UTC；05:00、18:00 对应上海 13:00、次日 02:00。
-    - cron: "0 5,18 * * *"
+    # GitHub cron 使用 UTC；18:00 对应上海次日 02:00。
+    - cron: "0 18 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -19,7 +19,8 @@ jobs:
     if: >-
       ${{
         github.ref == 'refs/heads/develop' &&
-        github.repository == 'ModelEngine-Group/unified-cache-management'
+        (github.event_name == 'workflow_dispatch' ||
+         github.repository == 'ModelEngine-Group/unified-cache-management')
       }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -123,5 +124,5 @@ jobs:
       release_kind: ${{ needs.prepare-nightly.outputs.release_kind }}
       is_prerelease: ${{ needs.prepare-nightly.outputs.is_prerelease == 'true' }}
       source_sha: ${{ needs.prepare-nightly.outputs.source_sha }}
-      publication_scope: official
+      publication_scope: ${{ github.repository == 'ModelEngine-Group/unified-cache-management' && 'official' || 'fork' }}
     secrets: inherit
