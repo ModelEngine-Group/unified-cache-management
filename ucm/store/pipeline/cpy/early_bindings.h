@@ -107,6 +107,10 @@ void BindOperations(pybind11::module_& module)
             out["remaining_l2_work"] = progress.remainingL2Work;
             return out;
         })
+        .def("defer", [](BoundBatch& b) {
+            py::gil_scoped_release release;
+            b.batch->Defer();
+        })
         .def("limit", [](BoundBatch& b, size_t count) { b.batch->Limit(count); })
         .def("cutoff", [](BoundBatch& b) { b.batch->Cutoff(); })
         .def_property_readonly("window_bytes", [](const BoundBatch& b) { return b.batch->windowBytes; })

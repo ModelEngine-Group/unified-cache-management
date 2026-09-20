@@ -1414,6 +1414,32 @@ TEST(UCCacheEarlyStoreTest, DeferredL1OnlyFastPathProtectsWithoutDataExecution)
     EXPECT_TRUE(buffer->TryGet(other, 0));
 }
 
+TEST(UCCacheEarlyStoreTest, LateActivationReturnsOnlyUnsubmittedReferences)
+{
+    Backend backend;
+    auto c = BatchConfig(&backend);
+    c.bufferCapacity = c.shardSize;
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(c).Success());
+    auto* buffer = manager.GetTransBuffer();
+    UC::CacheStore::ReservedPrefetch early(&manager, &backend, c.blockSize, c.shardSize, 1000);
+    UC::Detail::BlockId block{}, other{}; other[0] = std::byte{9};
+    { auto pin = buffer->TryGet(block, 0); ASSERT_TRUE(pin); pin.MarkReady(); }
+    EXPECT_CALL(backend, Load).Times(0);
+    auto r = early.Reserve(&block, 1, true).Value();
+    ASSERT_TRUE(r.batch->Activate().Value().done);
+    EXPECT_FALSE(buffer->TryGet(other, 0));
+    r.batch->Defer();
+    EXPECT_EQ(r.batch->ProtectedBytes(), 0);
+    auto replacement = buffer->TryGet(other, 0);
+    ASSERT_TRUE(replacement); replacement.MarkReady();
+    EXPECT_CALL(backend, LookupOnPrefix).WillOnce(testing::Return(ssize_t{-1}));
+    auto p = r.batch->Activate().Value();
+    EXPECT_TRUE(p.done);
+    EXPECT_EQ(p.result.totalHitBlocks, 0);  // the old unpinned hint is never trusted
+    early.Release(r.handle);
+}
+
 TEST(UCCacheEarlyStoreTest, DeferredCapacityWaitResumesFullHitAfterConsumersRelease)
 {
     Backend backend;
@@ -1445,6 +1471,7 @@ TEST(UCCacheEarlyStoreTest, DeferredCapacityWaitResumesFullHitAfterConsumersRele
     ASSERT_TRUE(r.batch->Activate());
     auto p = r.batch->Step(r.batch->windowBytes).Value();
     ASSERT_TRUE(p.waitingCapacity);
+    EXPECT_THROW(r.batch->Defer(), std::runtime_error);  // submitted I/O still owns its target
     EXPECT_FALSE(p.result.capacityTruncated);
     EXPECT_EQ(p.inflightBytes, c.shardSize);
     for (int i = 0; i < 10; ++i) { EXPECT_FALSE(r.batch->Step(r.batch->windowBytes).Value().advanced); }
@@ -1456,6 +1483,10 @@ TEST(UCCacheEarlyStoreTest, DeferredCapacityWaitResumesFullHitAfterConsumersRele
     consumers.clear();
     // Notification preceding registration cannot be lost.
     EXPECT_NE(UC::CacheStore::EarlyBufferPins::WaitRelease(*buffer, epoch, 1000), epoch);
+    p = r.batch->Step(0).Value();
+    EXPECT_TRUE(p.waitingCapacity);  // notification is not physical allocation
+    EXPECT_TRUE(p.canSubmit);
+    EXPECT_EQ(r.batch->ProtectedBytes(), c.shardSize);
     p = r.batch->Step(r.batch->windowBytes).Value();
     EXPECT_FALSE(p.waitingCapacity);
     p = r.batch->Step(0).Value();

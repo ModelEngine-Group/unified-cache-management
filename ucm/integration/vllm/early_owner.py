@@ -198,6 +198,27 @@ class OwnerBroker(BrokerState):
                  domain["io_quota"], domain["io_limit"], load["assignments"], job["assigned_ns"],
                  domain["native_load_headroom_bytes"])
 
+    def capacity_wait(self, job, token, waiting, now=None):
+        now = time.monotonic() if now is None else now
+        waits = job.setdefault("capacity_waits", set())
+        if waiting:
+            if not waits:
+                job["capacity_wait_since"] = now
+            waits.add(token)
+        else:
+            waits.discard(token)
+            if not waits and job.get("capacity_wait_since") is not None:
+                job["capacity_wait_credit"] = job.get("capacity_wait_credit", 0) + now - job["capacity_wait_since"]
+                job["capacity_wait_since"] = None
+
+    def pending_expired(self, job, now):
+        if not job.get("owner"):
+            return super().pending_expired(job, now)
+        # Resource waiting is not a lookup/I/O timeout. Heartbeats, native I/O
+        # deadlines and domain fencing remain live while this clock is paused.
+        paused = now - job["capacity_wait_since"] if job.get("capacity_wait_since") is not None else 0
+        return now - job["created"] - job.get("capacity_wait_credit", 0) - paused > self.timeout
+
     def advance_execution(self, domain):
         window = domain["execution"]
         for job in list(self.jobs.values()):
@@ -222,12 +243,14 @@ class OwnerBroker(BrokerState):
                 end = min(end, maximum)
                 blocks = job["blocks"][begin:end]
                 if not window.acquire(job["key"], blocks):
+                    self.capacity_wait(job, ("eligibility", index), True)
                     if not request.get("wait_logged"):
                         log.info("UCM_EARLY execution_wait key=%s attempt=%s batch=%s "
                                  "reason=unsafe_partial_hold ns=%s",
                                  job["key"], job["attempt"], index, time.monotonic_ns())
                         request["wait_logged"] = True
                     continue
+                self.capacity_wait(job, ("eligibility", index), False)
                 reply = dict(op="execution_grant", key=job["key"], attempt=job["attempt"],
                              batch=index, count=max(0, end - begin), end=maximum,
                              exceptional=job.get("oversized", False), storage_hit=job.get("storage_hit"))
@@ -333,6 +356,11 @@ class OwnerBroker(BrokerState):
                 return  # metadata carries the generation; submission is no acknowledgement
             if peer not in self.workers(job["dp"]) or message.get("attempt") != job["attempt"]:
                 return
+            if op == "resource_wait" and peer == job["owner"]:
+                if (type(message.get("waiting")) is bool and type(message.get("batch")) is int
+                        and message["batch"] in job["execution_grants"]):
+                    self.capacity_wait(job, ("physical", message["batch"]), message["waiting"])
+                return
             if op in ("execution_request", "lookup_complete") and peer == job["owner"]:
                 self.execution_message(job, message)
                 return
@@ -396,7 +424,7 @@ class OwnerBroker(BrokerState):
             self.poison("participant heartbeat lost; death/refcount state unknown")
             return
         for job in list(self.jobs.values()):
-            if job.get("owner") and job["status"] == "PENDING" and now - job["created"] > self.timeout:
+            if job.get("owner") and job["status"] == "PENDING" and self.pending_expired(job, now):
                 self.send(job["client"], dict(op="result", key=job["key"], state="FAILED", reason="owner timeout"))
                 self.retire(job, "owner timeout")
         # Owner timeouts above are already retiring; a domain peer loss exits

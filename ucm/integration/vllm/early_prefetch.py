@@ -435,8 +435,18 @@ class EarlyWorker:
                                batch=batch.index, begin=batch.begin,
                                count=batch.reservation["total_hit_blocks"]))
 
+    @staticmethod
+    def _resource_eligible(job, batch):
+        waiting = [part for part in job.batches if part.waiting_capacity and not part.done]
+        return not waiting or batch is min(waiting, key=lambda part: part.index)
+
     def _activate(self, job, batch):
         try:
+            with self.condition:
+                if not self._resource_eligible(job, batch):
+                    batch.activating, batch.can_submit = False, True
+                    self.preparing.append((job, batch))
+                    return
             started_ns = time.monotonic_ns()
             stats = batch.reservation["batch"].activate()
             log.info("UCM_EARLY batch_activated key=%s attempt=%s rank=%s batch=%s reservation=%s "
@@ -446,31 +456,49 @@ class EarlyWorker:
                      stats["total_hit_blocks"], stats["remaining_l2_work"],
                      batch.reservation["batch"].protected_bytes)
             with self.condition:
-                batch.activating = False
-                if job.cancelled or batch.discarded:
-                    self.store.release_reservation(batch.reservation["handle"])
-                    batch.done = True
-                    return
-                batch.activated = True
-                old = batch.reservation["total_hit_blocks"]
-                batch.reservation.update(total_hit_blocks=stats["total_hit_blocks"],
-                                         remaining_l2_work=stats["remaining_l2_work"])
-                if stats["total_hit_blocks"] < old:
-                    # Actual L1-only data disappeared; distinguish from NoSpace.
-                    log.info("UCM_EARLY revalidation_miss key=%s batch=%s lost_blocks=%s",
-                             job.key, batch.index, old - stats["total_hit_blocks"])
-                    self._truncate(job, batch.begin + stats["total_hit_blocks"], reason="revalidation_miss")
-                batch.done = stats["done"]
-                batch.can_submit = not batch.done
-                if not batch.done:
-                    self.preparing.append((job, batch))
-                self._maybe_answer(job)
-                self.condition.notify_all()
+                postpone = not self._resource_eligible(job, batch)
+                if not postpone:
+                    self._accept_activation(job, batch, stats)
+            if postpone:
+                # Keep activation in flight until its unsubmitted pins have
+                # actually been returned outside this mutex.
+                batch.reservation["batch"].defer()
+                with self.condition:
+                    batch.activating = False
+                    if not job.cancelled and not batch.discarded:
+                        batch.can_submit = True
+                        self.preparing.append((job, batch))
+                    else:
+                        batch.done = True
+                    self.condition.notify_all()
         except Exception as error:
             with self.condition:
                 batch.activating = False
                 batch.done = True
                 self._answer(job, str(error))
+
+    def _accept_activation(self, job, batch, stats):
+        # Called under condition: resource eligibility and READY publication
+        # are one decision relative to another batch entering capacity wait.
+        batch.activating = False
+        if job.cancelled or batch.discarded:
+            self.store.release_reservation(batch.reservation["handle"])
+            batch.done = True
+            return
+        batch.activated = True
+        old = batch.reservation["total_hit_blocks"]
+        batch.reservation.update(total_hit_blocks=stats["total_hit_blocks"],
+                                 remaining_l2_work=stats["remaining_l2_work"])
+        if stats["total_hit_blocks"] < old:
+            log.info("UCM_EARLY revalidation_miss key=%s batch=%s lost_blocks=%s",
+                     job.key, batch.index, old - stats["total_hit_blocks"])
+            self._truncate(job, batch.begin + stats["total_hit_blocks"], reason="revalidation_miss")
+        batch.done = stats["done"]
+        batch.can_submit = not batch.done
+        if not batch.done:
+            self.preparing.append((job, batch))
+        self._maybe_answer(job)
+        self.condition.notify_all()
 
     def receive(self, message):
         if self.owner_protocol.receive(message):
@@ -598,7 +626,7 @@ class EarlyWorker:
             self._answer(job, str(error))
         finally:
             with self.condition:
-                job.lookup_finished = not paused or job.cancelled or self.closed
+                job.lookup_finished = not paused or job.cancelled or self.closed or job.capacity_end is not None
                 job.lookup_paused = paused and not job.lookup_finished
                 if job.lookup_paused and not any(b.waiting_capacity for b in job.batches):
                     # Release may precede publication of the paused continuation.
@@ -613,6 +641,9 @@ class EarlyWorker:
         # Exceptional capacity or an actually missing revalidated L1-only tail.
         # Normal resource waits never call this method.
         job.truncate_reason = reason
+        if job.lookup_paused:
+            job.lookup_paused = False
+            job.lookup_finished = job.reserve_done = True
         job.capacity_end = end if job.capacity_end is None else min(end, job.capacity_end)
         for part in job.batches:
             if part.begin < job.capacity_end or part.discarded:
@@ -658,6 +689,8 @@ class EarlyWorker:
                           if not item[0].cancelled and not item[1].done and not item[1].discarded and item[1].can_submit]
         heads = {}
         for job, batch in self.preparing:
+            if not self._resource_eligible(job, batch):
+                continue
             current = heads.get(job.key)
             if current is None or batch.index < current[1].index:
                 heads[job.key] = (job, batch)
@@ -696,16 +729,21 @@ class EarlyWorker:
                              job.key, job.attempt, batch.index,
                              (time.monotonic() - batch.wait_started) * 1000, time.monotonic_ns())
                 was_waiting = batch.waiting_capacity
+                if job.deferred and waiting != was_waiting:
+                    self.control.send(dict(op="resource_wait", key=job.key, attempt=job.attempt,
+                                           batch=batch.index, waiting=waiting))
                 batch.waiting_capacity = waiting
                 batch.wait_epoch = stats.get("wait_epoch", 0)
                 batch.inflight_bytes = stats["inflight_bytes"]
                 batch.can_submit = stats["can_submit"] and not batch.discarded
-                if was_waiting and not waiting and batch.can_submit:
+                if was_waiting and batch.can_submit:
+                    # Check(0) can observe an epoch and enable a retry, but only
+                    # a successful allocator turn ends resource waiting.
                     if (job, batch) not in self.preparing:
                         self.preparing.append((job, batch))
-                    if job.lookup_paused and not job.cancelled:
-                        job.lookup_paused = False
-                        self.lookup_pool.submit(self._reserve, job)
+                if was_waiting and not waiting and job.lookup_paused and not job.cancelled:
+                    job.lookup_paused = False
+                    self.lookup_pool.submit(self._reserve, job)
                 # Conservative shard work: peer completions not yet observed
                 # may remain charged. This never substitutes total hit length.
                 batch.reservation["remaining_l2_work"] = stats["remaining_l2_work"]
@@ -755,6 +793,9 @@ class EarlyWorker:
                     if not active:
                         return
                 else:
+                    blocked = [item for item in self.selected if not self._resource_eligible(*item)]
+                    self.preparing.extend(blocked)
+                    self.selected = [item for item in self.selected if item not in blocked]
                     self.selected = [item for item in self.selected
                                      if not item[0].cancelled and not item[1].done and not item[1].discarded and item[1].can_submit]
                     if not self.selected:
@@ -777,7 +818,11 @@ class EarlyWorker:
             if batch is not None:
                 if job.deferred and not batch.activated:
                     with self.condition:
-                        self._request_execution(job, batch)
+                        if batch.eligible and not batch.activating:
+                            batch.activating, batch.can_submit = True, False
+                            self.activation_pool.submit(self._activate, job, batch)
+                        else:
+                            self._request_execution(job, batch)
                     continue
                 if not batch.started:
                     active.append((job, batch))

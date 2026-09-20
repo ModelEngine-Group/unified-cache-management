@@ -45,6 +45,15 @@ handles，c50 独立完成线程不依赖该等待者或 H2D FIFO 的缺失分�
 通知只提示重试；TryGet 重新检查身份、状态、并发创建和物理容量。等待不持 bucket
 锁、全局锁或 GIL。完成轮询保留 c50 既有节奏，容量重试不依赖高频轮询。
 
+观察到 epoch 变化只开放一次有限分配机会；实际取得引用前仍处于资源等待，不恢复
+后续查询。若后续批次正在激活而此前批次进入等待，归还该批尚未提交 I/O 的引用，
+保留 identity/lease 后重新排队；正在执行的 I/O 继续独立回收。接受激活结果与资格
+检查在同一 worker condition 内完成，不将迟到激活误发布成 READY。
+
+资源等待通过带 generation/attempt/batch 的通知暂停 broker 的普通 PENDING 计时，
+恢复后只扣除实际等待时长。此暂停不改变参与者 heartbeat、native I/O deadline 或
+隔离判断；不能用固定时限把正常等待改成 miss，也不能用控制超时推断 I/O 已排空。
+
 取消未启动批次直接释放 lease；正在 Activate 的调用结束后才报告 drained；已提交
 I/O 继续持有 active Reservation，Check 真完成后唯一一次 Wait 回收。任务 latch、
 控制超时或 TTL 不授权释放。未提交的失败 native 任务仍由 EarlyTaskPins RAII
@@ -52,8 +61,8 @@ I/O 继续持有 active Reservation，Check 真完成后唯一一次 Wait 回收
 
 ## 接口和构建
 
-新增接口均在 Early 类/绑定：ReserveDeferred、Batch.Activate/Limit/Cutoff、
-ReleaseEpoch/WaitRelease、execution_request/grant、lookup_complete。
+新增接口均在 Early 类/绑定：ReserveDeferred、Batch.Activate/Defer/Limit/Cutoff、
+ReleaseEpoch/WaitRelease、execution_request/grant、lookup_complete、resource_wait。
 原生文件仅 trans_buffer.cc 增加同一映射内释放事件、初始化/挂接与最后引用通知；
 没有改变任何原生私有成员访问属性，没有给 TransBuffer 增加 Early 方法。
 BufferStrategy 使用现有共享映射中的事件指针；不是第二个 allocator/共享协议。

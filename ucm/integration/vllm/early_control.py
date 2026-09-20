@@ -120,13 +120,16 @@ class BrokerState:
                 job["status"] = "CANCELLED"
                 self.release(job)
 
+    def pending_expired(self, job, now):
+        return now - job["created"] > self.timeout
+
     def expire(self, now=None):
         now = time.monotonic() if now is None else now
         dead = {peer for peer, seen in self.peers.items() if now - seen > 60}
         for peer in dead:
             self.peers.pop(peer, None)
         for job in self.jobs.values():
-            if job["status"] == "PENDING" and now - job["created"] > self.timeout:
+            if job["status"] == "PENDING" and self.pending_expired(job, now):
                 self.fail(job, "bounded pending timeout")
             elif dead.intersection(self.workers(job["dp"]) | {job["client"]}):
                 self.fail(job, "control peer lost")

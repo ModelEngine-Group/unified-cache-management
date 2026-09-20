@@ -32,6 +32,7 @@ public:
     virtual Progress Snapshot() = 0;
     // Deferred query owns identities/lease only; execution revalidates L1.
     virtual Expected<Progress> Activate() { return Status::Error("not deferred"); }
+    virtual void Defer() {}  // return an activated, unsubmitted batch to identity-only
     virtual void Limit(size_t) {}  // before activation, intrinsic oversize only
     virtual void Cutoff() {}  // exceptional unsafe/impossible wait, never normal NoSpace
     virtual void Discard() = 0;  // stop new suffix I/O; Step still collects submitted I/O

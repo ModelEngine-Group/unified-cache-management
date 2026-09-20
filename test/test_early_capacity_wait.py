@@ -115,6 +115,9 @@ class DeferredCapability:
         self.activated = True
         return dict(done=not self.work, total_hit_blocks=self.hit, remaining_l2_work=self.work)
 
+    def defer(self):
+        self.activated = False
+
     def step(self, available):
         assert self.activated
         return self.inner.step(available)
@@ -211,6 +214,9 @@ def test_worker_capacity_wait_yields_and_event_resumes_without_shortening():
         if not state["free"]:
             return dict(done=False, advanced=False, can_submit=False, waiting_capacity=True,
                         wait_epoch=state["epoch"], inflight_bytes=0, remaining_l2_work=3)
+        if not available and not blocked.inner.reads:
+            return dict(done=False, advanced=False, can_submit=True, waiting_capacity=True,
+                        wait_epoch=0, inflight_bytes=0, remaining_l2_work=3)
         return original_step(available)
     blocked.step = step
     caps = iter([blocked, ordinary])
@@ -277,4 +283,74 @@ def test_release_before_lookup_pause_publication_resumes_once():
         with worker.condition:
             worker._release(job)
             worker.jobs.clear()
+        worker.close()
+
+
+def test_exceptional_end_finishes_paused_lookup_without_waiting_for_another_release():
+    from test_early_owner_protocol import make_worker, early, blocks
+    worker = make_worker(0)
+    r = dict(handle=1, total_hit_blocks=3, remaining_l2_work=3,
+             batch=DeferredCapability(3, 3))
+    batch = early.WorkerBatch(0, 0, r)
+    job = early.WorkerJob("oversize", blocks(3), deferred=True,
+                          lookup_paused=True, batches=[batch])
+    worker.jobs[job.key] = job
+    try:
+        with worker.condition:
+            worker._truncate(job, 0, reason="intrinsic_oversize")
+            worker._maybe_answer(job)
+        assert job.lookup_finished and job.reserve_done and not job.lookup_paused
+        assert job.ready and worker.control.messages[-1]["hit"] == 0
+        assert r["batch"].steps == 0
+    finally:
+        with worker.condition:
+            worker._release(job)
+            worker.jobs.clear()
+        worker.close()
+
+
+def test_resource_wait_pauses_pending_clock_but_not_peer_loss_or_drain():
+    c = small_cluster(); j = c.job(count=3)
+    request(c, j, 0, 0, 3)
+    entered = j["created"] + 1
+    c.b.capacity_wait(j, ("physical", 0), True, entered)
+    c.b.capacity_wait(j, ("physical", 0), True, entered + 100)  # duplicate
+    later = entered + c.b.timeout + 100
+    c.b.peers = {peer: later for peer in c.b.peers}
+    c.b.expire(later)
+    assert j["status"] == "PENDING" and not c.b.fenced
+    c.b.capacity_wait(j, ("physical", 0), False, later)
+    assert not c.b.pending_expired(j, later + 1)
+    assert c.b.pending_expired(j, later + c.b.timeout)
+    # Lost participant still fences immediately; no guessed credit/ref recovery.
+    c.b.peers[j["owner"]] = later - 61
+    c.b.expire(later)
+    assert c.b.fenced and j["key"] in j["domain"]["execution"].claims
+
+
+def test_late_activation_returns_unsubmitted_pins_and_does_not_run_ahead_of_wait():
+    from test_early_owner_protocol import make_worker, early, blocks
+    worker = make_worker(0)
+    first = early.WorkerBatch(0, 0, dict(handle=1, total_hit_blocks=3, batch=DeferredCapability(3, 3)))
+    capability = DeferredCapability(3, 0)
+    second = early.WorkerBatch(1, 3, dict(handle=2, total_hit_blocks=3, remaining_l2_work=0, batch=capability),
+                               eligible=True, activating=True)
+    job = early.WorkerJob("late", blocks(6), deferred=True, batches=[first, second])
+    original = capability.activate
+    def activate():
+        result = original()
+        first.waiting_capacity = True  # NoSpace discovered during this CPU lookup
+        return result
+    capability.activate = activate
+    try:
+        worker._activate(job, second)
+        assert not capability.activated and not second.done and not second.activating
+        assert (job, second) in worker.preparing
+        with worker.condition:
+            worker._choose(set())
+            assert not worker.selected  # paused job does not pin its next batch
+            first.waiting_capacity = False
+            worker._choose(set())
+            assert worker.selected == [(job, second)]
+    finally:
         worker.close()

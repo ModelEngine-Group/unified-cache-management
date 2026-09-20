@@ -67,10 +67,8 @@ class ReservedPrefetch::Batch final : public Early::Batch {
             progress_.result.capacityTruncated = true;
             progress_.waitingCapacity = false;
         }
-        if (progress_.waitingCapacity &&
-            EarlyBufferPins::ReleaseEpoch(*owner_.buffer_) != progress_.waitEpoch) {
-            progress_.waitingCapacity = false;
-        }
+        bool retryCapacity = progress_.waitingCapacity &&
+            EarlyBufferPins::ReleaseEpoch(*owner_.buffer_) != progress_.waitEpoch;
         if (r->cancelled.load()) { Fail(Status::Error("reserved prefetch cancelled")); }
         if (!healthy_()) { Fail(Status::StoreUnhealthy()); }
         while (!transfers_.empty()) {
@@ -106,7 +104,7 @@ class ReservedPrefetch::Batch final : public Early::Batch {
                 // previous negative result is never trusted for allocation.
                 {
                 EarlyStats::Phase positioning{stats_->pinMs};
-                while (!progress_.waitingCapacity && cursor_ < end && availableBytes >= shardBytes) {
+                while ((!progress_.waitingCapacity || retryCapacity) && cursor_ < end && availableBytes >= shardBytes) {
                     if (r->cancelled.load()) { Fail(Status::Error("reserved prefetch cancelled")); break; }
                     auto& pin = r->Pin(cursor_, owner_.shardsPerBlock_);
                     const auto& block = r->blocks[cursor_ / owner_.shardsPerBlock_];
@@ -128,6 +126,10 @@ class ReservedPrefetch::Batch final : public Early::Batch {
                             }
                             break;
                         }
+                        // An epoch change alone did not acquire anything.
+                        // End the wait only after a native reference is real.
+                        progress_.waitingCapacity = false;
+                        retryCapacity = false;
                         allocated = pin.Owner() && !pin.Ready();
                         if (pin.Ready() && progress_.remainingL2Work) { --progress_.remainingL2Work; }
                     }
@@ -224,7 +226,8 @@ class ReservedPrefetch::Batch final : public Early::Batch {
         }
         if (transfers_.empty()) { active_.reset(); }
         progress_.canSubmit = status_.Success() && !discard_ && !progress_.done &&
-            !progress_.waitingCapacity && cursor_ < prefixShards_;
+            (!progress_.waitingCapacity ||
+             EarlyBufferPins::ReleaseEpoch(*owner_.buffer_) != progress_.waitEpoch) && cursor_ < prefixShards_;
         if (progress_.done && status_.Failure()) { return status_; }
         return Early::Progress{progress_};
     }
@@ -285,6 +288,20 @@ public:
             owner_.PublishReady(r);
         }
         return Early::Progress{progress_};
+    }
+    void Defer() override
+    {
+        std::lock_guard lock(mutex_);
+        auto r = reservation_.lock();
+        if (!r) { return; }
+        if (!r->deferred || started_ || !transfers_.empty()) {
+            throw std::runtime_error("cannot defer submitted I/O");
+        }
+        r->groups.clear();
+        r->ready = false;
+        activated_ = false;
+        progress_.done = false;
+        progress_.canSubmit = true;
     }
     void Limit(size_t count) override
     {
