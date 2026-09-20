@@ -261,6 +261,10 @@ counter:
   - name: "dramstore_stale_replies_total"
     documentation: "DramStore stale replies"
 
+  # -- DramPool resource reporter -----------------------------------------
+  - name: "drampool_resource_log_read_errors_total"
+    documentation: "Number of failures opening, reading, or parsing the DramPool resource log"
+
 # Gauge metrics configuration
 gauge:
   - name: "yuanrong_dram_used_bytes"
