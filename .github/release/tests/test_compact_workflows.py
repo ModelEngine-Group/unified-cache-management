@@ -51,6 +51,7 @@ def test_runtime_images_install_the_same_run_toolkit_wheel_by_default() -> None:
 
 def test_nightly_schedule_creates_or_reuses_a_tag_then_calls_core_in_same_run() -> None:
     workflow = _load("release-nightly.yml")
+    assert workflow["on"]["schedule"] == [{"cron": "0 18 * * *"}]
     assert workflow["concurrency"] == {
         "group": "ucm-nightly-${{ github.repository_id }}",
         "cancel-in-progress": False,
@@ -99,8 +100,24 @@ def test_nightly_schedule_creates_or_reuses_a_tag_then_calls_core_in_same_run() 
     assert release["with"]["source_sha"] == (
         "${{ needs.prepare-nightly.outputs.source_sha }}"
     )
-    assert release["with"]["publication_scope"] == "official"
+    assert "github.event_name == 'workflow_dispatch'" in prepare["if"]
+    assert release["with"]["publication_scope"] == (
+        "${{ github.repository == 'ModelEngine-Group/unified-cache-management' "
+        "&& 'official' || 'fork' }}"
+    )
     assert release["secrets"] == "inherit"
+
+
+def test_nightly_wheels_do_not_inherit_the_skipped_builder_sync() -> None:
+    jobs = _load("release-ucm.yml")["jobs"]
+    for name in ("build-wheels", "build-toolkit", "build-meta"):
+        assert (
+            jobs[name]["if"] == "${{ !cancelled() && needs.plan.result == 'success' }}"
+        )
+    validation = jobs["validate-wheel-runtimes"]
+    assert "!cancelled()" in validation["if"]
+    assert "needs.plan.result == 'success'" in validation["if"]
+    assert "needs.build-wheels.result == 'success'" in validation["if"]
 
 
 def test_schema_v9_manifest_is_uploaded_only_after_complete_and_read_back() -> None:
@@ -133,6 +150,8 @@ def test_schema_v9_manifest_is_uploaded_only_after_complete_and_read_back() -> N
         manifest["run"]
     )
     assert "release-manifest-readback.json" in manifest["run"]
+    assert "--output out/release/public-readback" in manifest["run"]
+    assert "out/release/public-readback/release-manifest.json" in manifest["run"]
     assert "Accept: application/octet-stream" in manifest["run"]
     assert "cmp out/release/release-manifest.json" in manifest["run"]
     assert "github_release_assets" in manifest["run"]

@@ -1027,7 +1027,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         per_rank_hashes = mamba_prefetch_hashes
         if not self.is_mla:
             per_rank_hashes = all_hit_full_attn + mamba_prefetch_hashes
-        self._prefetch_other_rank_hashes(per_rank_hashes)
+        self._prefetch_all_rank_hashes(per_rank_hashes)
 
         if len(primary_block_ids) > 0:
             ucmmetrics.update_stats(
