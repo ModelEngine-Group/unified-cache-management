@@ -338,8 +338,13 @@ class WorkerJob:
     attempt: str | None = None
     grant: int = 0
     capacity_end: int | None = None
+    truncate_reason: str | None = None
     lookup_finished: bool = False
     request_id: str | None = None
+    deferred: bool = False
+    lookup_cursor: int = 0
+    lookup_count: int = 32
+    lookup_paused: bool = False
 
 
 @dataclass(eq=False)
@@ -354,19 +359,33 @@ class WorkerBatch:
     inflight_bytes: int = 0
     stats: dict = field(default_factory=dict)
     discarded: bool = False
+    eligibility_requested: bool = False
+    eligible: bool = False
+    activating: bool = False
+    activated: bool = False
+    waiting_capacity: bool = False
+    wait_epoch: int = 0
+    wait_started: float | None = None
+
 
 
 class EarlyWorker:
     def __init__(self, connector, control_factory=Control):
         self.connector, self.store = connector, connector.store
         self.condition = threading.Condition()
+        self.release_serial = 0
         self.jobs = {}
         self.preparing = []
         self.selected = []
         self.request_keys = {}
         self.closed = False
         self.lookup_pool = ThreadPoolExecutor(
-            max_workers=4, thread_name_prefix="ucm-early-lookup"
+            max_workers=2, thread_name_prefix="ucm-early-lookup"
+        )
+        # Keep four background execution slots in total. Activation must not
+        # sit behind whole-prefix queries or the first-read pipeline is lost.
+        self.activation_pool = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="ucm-early-activate"
         )
         dp_rank = connector._vllm_config.parallel_config.data_parallel_index
         from .early_owner import worker_capability
@@ -386,6 +405,71 @@ class EarlyWorker:
             target=self._data, name="ucm-early-data", daemon=True
         )
         self.data_thread.start()
+        self.release_thread = None
+        if capability.get("ready") and callable(getattr(type(self.store), "wait_release", None)):
+            self.release_thread = threading.Thread(target=self._release_events,
+                name="ucm-early-release", daemon=True)
+            self.release_thread.start()
+
+    def _release_events(self):
+        try:
+            epoch = self.store.release_epoch()
+            while not self.closed and not self.owner_protocol.fatal:
+                current = self.store.wait_release(epoch, 250)
+                if current == epoch:
+                    continue  # shutdown heartbeat only; no capacity retry
+                epoch = current
+                with self.condition:
+                    self.release_serial += 1
+                    self.condition.notify_all()
+        except Exception as error:
+            self.owner_protocol.poison(f"release event unavailable: {error}")
+
+    def _request_execution(self, job, batch):
+        if batch.eligibility_requested:
+            return
+        batch.eligibility_requested = True
+        batch.can_submit = False
+        self.control.send(dict(op="execution_request", key=job.key, attempt=job.attempt,
+                               batch=batch.index, begin=batch.begin,
+                               count=batch.reservation["total_hit_blocks"]))
+
+    def _activate(self, job, batch):
+        try:
+            started_ns = time.monotonic_ns()
+            stats = batch.reservation["batch"].activate()
+            log.info("UCM_EARLY batch_activated key=%s attempt=%s rank=%s batch=%s reservation=%s "
+                     "pin_start_ns=%s pin_end_ns=%s hit=%s remaining_l2_work=%s protected_bytes=%s",
+                     job.key, job.attempt, self.connector.tp_rank, batch.index,
+                     batch.reservation["handle"], started_ns, time.monotonic_ns(),
+                     stats["total_hit_blocks"], stats["remaining_l2_work"],
+                     batch.reservation["batch"].protected_bytes)
+            with self.condition:
+                batch.activating = False
+                if job.cancelled or batch.discarded:
+                    self.store.release_reservation(batch.reservation["handle"])
+                    batch.done = True
+                    return
+                batch.activated = True
+                old = batch.reservation["total_hit_blocks"]
+                batch.reservation.update(total_hit_blocks=stats["total_hit_blocks"],
+                                         remaining_l2_work=stats["remaining_l2_work"])
+                if stats["total_hit_blocks"] < old:
+                    # Actual L1-only data disappeared; distinguish from NoSpace.
+                    log.info("UCM_EARLY revalidation_miss key=%s batch=%s lost_blocks=%s",
+                             job.key, batch.index, old - stats["total_hit_blocks"])
+                    self._truncate(job, batch.begin + stats["total_hit_blocks"], reason="revalidation_miss")
+                batch.done = stats["done"]
+                batch.can_submit = not batch.done
+                if not batch.done:
+                    self.preparing.append((job, batch))
+                self._maybe_answer(job)
+                self.condition.notify_all()
+        except Exception as error:
+            with self.condition:
+                batch.activating = False
+                batch.done = True
+                self._answer(job, str(error))
 
     def receive(self, message):
         if self.owner_protocol.receive(message):
@@ -432,6 +516,9 @@ class EarlyWorker:
 
     def _release(self, job):
         job.cancelled = True
+        if job.lookup_paused:
+            job.lookup_paused = False
+            job.lookup_finished = True
         for batch in job.batches:
             self.store.release_reservation(batch.reservation["handle"])
         self.condition.notify_all()
@@ -441,26 +528,31 @@ class EarlyWorker:
         c = self.connector
         log.info("UCM_EARLY lookup_start key=%s rank=%s ns=%s queue_ms=%.3f",
                  job.key, c.tp_rank, time.monotonic_ns(), (started - job.entered) * 1000)
+        paused = False
         try:
             blocks = job.blocks
             if not c.is_mla and c.tp_rank % c.tp_size:
                 blocks = [c.request_hasher(block) for block in blocks]
-            begin, candidate_count = 0, 32
+            begin, candidate_count = job.lookup_cursor, job.lookup_count
             while begin < len(blocks):
                 with self.condition:
                     if job.cancelled or self.closed or self.owner_protocol.fatal:
                         return
                     if job.capacity_end is not None:
                         break
+                    if job.deferred and any(b.waiting_capacity for b in job.batches):
+                        paused = job.lookup_paused = True
+                        return
                 candidates = blocks[begin:begin + candidate_count]
                 reserving = time.monotonic_ns()
-                reservation = self.store.reserve_prefix(candidates)
+                reservation = (self.store.reserve_prefix(candidates, deferred=True) if job.deferred
+                               else self.store.reserve_prefix(candidates))
                 hit = reservation["total_hit_blocks"]
                 if not 0 <= hit <= len(candidates):
                     self.store.release_reservation(reservation["handle"])
                     raise RuntimeError("invalid reserved prefix length")
                 batch = WorkerBatch(len(job.batches), begin, reservation,
-                                    done=reservation["remaining_l2_work"] == 0)
+                                    done=not job.deferred and reservation["remaining_l2_work"] == 0)
                 with self.condition:
                     if self.owner_protocol.fatal:
                         job.batches.append(batch)  # quarantine newly acquired pins too
@@ -476,7 +568,11 @@ class EarlyWorker:
                         reserving, time.monotonic_ns(), len(candidates),
                         reservation["total_hit_blocks"], reservation["remaining_l2_work"], os.getpid(),
                     )
-                    if not batch.done:
+                    if job.deferred and reservation["remaining_l2_work"] == 0:
+                        # L1 fast path acquires execution eligibility and pins
+                        # outside the SSD data queue, including L1-only blocks.
+                        self._request_execution(job, batch)
+                    elif not batch.done:
                         # Publication precedes localization/lease of the next
                         # batch. Its handles and lease stay in this reservation.
                         self.preparing.append((job, batch))
@@ -488,8 +584,12 @@ class EarlyWorker:
                     break
                 begin += hit
                 candidate_count = min(candidate_count * 2, 256)
+                job.lookup_cursor, job.lookup_count = begin, candidate_count
             with self.condition:
                 job.reserve_done = True
+                if job.deferred:
+                    self.control.send(dict(op="lookup_complete", key=job.key, attempt=job.attempt,
+                                           hit=sum(b.reservation["total_hit_blocks"] for b in job.batches)))
             log.info("UCM_EARLY lookup_done key=%s rank=%s ns=%s batches=%s elapsed_ms=%.3f",
                      job.key, c.tp_rank, time.monotonic_ns(), len(job.batches),
                      (time.monotonic() - started) * 1000)
@@ -497,21 +597,24 @@ class EarlyWorker:
             self._answer(job, str(error))
         finally:
             with self.condition:
-                job.lookup_finished = True
+                job.lookup_finished = not paused
                 if job.capacity_end is not None:
                     job.reserve_done = True
                 self._maybe_answer(job)
                 self.condition.notify_all()
 
-    def _truncate(self, job, end):
-        # Condition held. Capacity is a successful prefix result, never a retry
-        # through native lookup for the unprotected suffix.
+    def _truncate(self, job, end, reason="capacity"):
+        # Exceptional capacity or an actually missing revalidated L1-only tail.
+        # Normal resource waits never call this method.
+        job.truncate_reason = reason
         job.capacity_end = end if job.capacity_end is None else min(end, job.capacity_end)
         for part in job.batches:
             if part.begin < job.capacity_end or part.discarded:
                 continue
             part.discarded, part.can_submit = True, False
-            if part.started and not part.done:
+            if part.activating:
+                self.store.release_reservation(part.reservation["handle"])
+            elif part.started and not part.done:
                 part.reservation["batch"].discard()  # only stops submission, no wait
             else:
                 part.done = True
@@ -576,8 +679,27 @@ class EarlyWorker:
             stats = capability.step(available)
             with self.condition:
                 batch.stats = stats
+                waiting = stats.get("waiting_capacity", False)
+                if waiting and not batch.waiting_capacity:
+                    batch.wait_started = time.monotonic()
+                    log.info("UCM_EARLY capacity_wait key=%s attempt=%s batch=%s reservation=%s epoch=%s ns=%s",
+                             job.key, job.attempt, batch.index, batch.reservation["handle"],
+                             stats["wait_epoch"], time.monotonic_ns())
+                elif batch.waiting_capacity and not waiting:
+                    log.info("UCM_EARLY capacity_resumed key=%s attempt=%s batch=%s wait_ms=%.3f ns=%s",
+                             job.key, job.attempt, batch.index,
+                             (time.monotonic() - batch.wait_started) * 1000, time.monotonic_ns())
+                was_waiting = batch.waiting_capacity
+                batch.waiting_capacity = waiting
+                batch.wait_epoch = stats.get("wait_epoch", 0)
                 batch.inflight_bytes = stats["inflight_bytes"]
                 batch.can_submit = stats["can_submit"] and not batch.discarded
+                if was_waiting and not waiting and batch.can_submit:
+                    if (job, batch) not in self.preparing:
+                        self.preparing.append((job, batch))
+                    if job.lookup_paused and not job.cancelled:
+                        job.lookup_paused = False
+                        self.lookup_pool.submit(self._reserve, job)
                 # Conservative shard work: peer completions not yet observed
                 # may remain charged. This never substitutes total hit length.
                 batch.reservation["remaining_l2_work"] = stats["remaining_l2_work"]
@@ -612,6 +734,8 @@ class EarlyWorker:
             if self.owner_protocol.fatal:
                 return  # Quarantine; native references are not death-recoverable.
             self.owner_protocol.tick()
+            with self.condition:
+                observed_release = self.release_serial
             advanced = False
             for job, batch in active:
                 if not batch.done:
@@ -645,6 +769,10 @@ class EarlyWorker:
                 if self.closed:
                     job = batch = None
             if batch is not None:
+                if job.deferred and not batch.activated:
+                    with self.condition:
+                        self._request_execution(job, batch)
+                    continue
                 if not batch.started:
                     active.append((job, batch))
                 advanced = self._step(job, batch, window - inflight) or advanced
@@ -663,7 +791,10 @@ class EarlyWorker:
                 elif not advanced:
                     # Native Check offers no completion callback. Match the
                     # existing bounded readiness cadence, with one data thread.
-                    self.condition.wait(timeout=.001)
+                    only_resource_wait = active and all(
+                        b.waiting_capacity and not b.inflight_bytes for _, b in active)
+                    if self.release_serial == observed_release:
+                        self.condition.wait(timeout=2 if only_resource_wait else .001)
 
     def _answer(self, job, error=None):
         with self.condition:
@@ -757,6 +888,7 @@ class EarlyWorker:
             with self.condition:
                 self.condition.notify_all()
             self.lookup_pool.shutdown(wait=False, cancel_futures=True)
+            self.activation_pool.shutdown(wait=False, cancel_futures=True)
             self.control.close()
             return
         self.finished(set(self.request_keys))
@@ -767,5 +899,8 @@ class EarlyWorker:
             self.jobs.clear()
             self.condition.notify_all()
         self.lookup_pool.shutdown(wait=True, cancel_futures=True)
+        self.activation_pool.shutdown(wait=True, cancel_futures=True)
         self.data_thread.join()  # native I/O timeout bounds an in-flight transfer
+        if self.release_thread is not None:
+            self.release_thread.join()
         self.control.close()

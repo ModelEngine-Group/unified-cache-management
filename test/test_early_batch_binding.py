@@ -13,13 +13,15 @@ import uuid
 import weakref
 
 import numpy as np
+import pytest
 
 from ucm.store.pipeline import ucmpipelinestore as native
 from ucm.store.pipeline.early_connector import _ReservedLoad
 from ucm.integration.vllm.early_consumer import Consumer, load_scope
 
 
-def test_native_pipeline_batch_keeps_store_alive_and_hands_off_before_release(tmp_path):
+@pytest.mark.parametrize("deferred", [False, True])
+def test_native_pipeline_batch_keeps_store_alive_and_hands_off_before_release(tmp_path, deferred):
     store_dir = Path(native.__file__).resolve().parent.parent
     shard_bytes, shards = 4096, 128
     config = dict(storage_backends=[str(tmp_path)], device_id=0,
@@ -52,10 +54,13 @@ def test_native_pipeline_batch_keeps_store_alive_and_hands_off_before_release(tm
     domain = native.EarlyDomainInfo(pipeline)
     assert domain["backing"] == ""  # private buffer must never pass owner handshake
     assert domain["block_bytes"] == shards * shard_bytes
-    cold = native.EarlyReservePrefix(pipeline, one_id)
+    cold = native.EarlyReservePrefix(pipeline, one_id, deferred)
     assert cold["total_hit_blocks"] == 1
     assert cold["remaining_l2_work"] == shards
     batch = cold["batch"]
+    if deferred:
+        assert batch.protected_bytes == 0
+        assert not batch.activate()["done"]
     del pipeline
     gc.collect()
     assert ref() is not None  # the capability owns the exact creating pipeline
@@ -75,8 +80,11 @@ def test_native_pipeline_batch_keeps_store_alive_and_hands_off_before_release(tm
     assert batch.protected_bytes == shards * shard_bytes
     assert batch.protection_limit_bytes < (1 << 30)  # native load-exclusive area
 
-    warm = native.EarlyReservePrefix(ref(), one_id)
+    warm = native.EarlyReservePrefix(ref(), one_id, deferred)
     assert warm["remaining_l2_work"] == 0
+    if deferred:
+        assert warm["batch"].protected_bytes == 0
+        assert warm["batch"].activate()["done"]
     assert batch.protected_bytes == shards * shard_bytes  # shared block claim
     native.EarlyReleaseReservation(ref(), warm["handle"])
     assert batch.protected_bytes == shards * shard_bytes

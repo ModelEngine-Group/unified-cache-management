@@ -1,7 +1,7 @@
 """Single owner protocol on the existing control channel and job table.
 
-Native allocation and references enforce capacity; only owner work and I/O windows are bounded here.
-No capacity approval ledger or guessed process-death reference recovery.
+Native allocation enforces physical capacity. Selected batches pass a shared-domain
+safe-state eligibility check; no candidate-wide reservation or death recovery.
 """
 from __future__ import annotations
 
@@ -14,9 +14,10 @@ import time
 import uuid
 
 from .early_control import BrokerState
+from .early_capacity import ExecutionWindow
 
 log = logging.getLogger(__name__)
-VERSION = 4
+VERSION = 5
 
 
 def worker_capability(connector):
@@ -120,7 +121,7 @@ class OwnerBroker(BrokerState):
             # including zero reservable slots; no per-worker capacity division.
             quota = 128 * native["shard_bytes"]
             io = len(members) * quota
-            self.domains[domain] = dict(limit=limit, io_limit=io,
+            self.domains[domain] = dict(execution=ExecutionWindow(limit // native["block_bytes"]), limit=limit, io_limit=io,
                                         io_quota=quota, members=members, owners={},
                                         native_load_headroom_bytes=(native["nodes"] - slots) * native["shard_bytes"])
             for peer in self.peers:
@@ -178,9 +179,13 @@ class OwnerBroker(BrokerState):
         self.next_grant += 1
         job.update(owner=owner, attempt=uuid.uuid4().hex, grant=self.next_grant, running=True, domain=domain,
                    consumers=set(), terminal=set(), assigned_ns=time.monotonic_ns())
+        job["execution_pending"] = {}
+        job["execution_grants"] = {}
+        domain["execution"].add(job["key"], job["blocks"])
         envelope = dict(key=job["key"], attempt=job["attempt"], grant=job["grant"], owner=owner, dp=job["dp"],
                         request=job.get("request"), candidate_blocks=work,
-                        submitted_ns=job.get("submitted_ns"), io_quota=domain["io_quota"])
+                        submitted_ns=job.get("submitted_ns"), io_quota=domain["io_quota"],
+                        deferred=True)
         for peer in self.workers(job["dp"]):
             self.send(peer, dict(envelope, op="owner_reserve", blocks=job["blocks"]) if peer == owner
                       else dict(envelope, op="observe"))
@@ -192,6 +197,79 @@ class OwnerBroker(BrokerState):
                  job["key"], job["attempt"], job["dp"], owner, work, domain["limit"],
                  domain["io_quota"], domain["io_limit"], load["assignments"], job["assigned_ns"],
                  domain["native_load_headroom_bytes"])
+
+    def advance_execution(self, domain):
+        window = domain["execution"]
+        for job in list(self.jobs.values()):
+            if job.get("domain") is not domain or job.get("retiring"):
+                continue
+            for index, request in list(job["execution_pending"].items()):
+                begin, count = request["begin"], request["count"]
+                end = begin + count
+                maximum = job.get("execution_end", len(job["blocks"]))
+                # A too-large candidate bound is not a proven oversized hit.
+                # Unpinned lookup is allowed to finish and narrow it first.
+                if len(window.claims[job["key"]].maximum) > window.capacity:
+                    reason = "unconfirmed_completion_bound"
+                else:
+                    reason = None
+                if reason is not None:
+                    if not request.get("wait_logged"):
+                        log.info("UCM_EARLY execution_wait key=%s attempt=%s batch=%s reason=%s ns=%s",
+                                 job["key"], job["attempt"], index, reason, time.monotonic_ns())
+                        request["wait_logged"] = True
+                    continue
+                end = min(end, maximum)
+                blocks = job["blocks"][begin:end]
+                if not window.acquire(job["key"], blocks):
+                    if not request.get("wait_logged"):
+                        log.info("UCM_EARLY execution_wait key=%s attempt=%s batch=%s "
+                                 "reason=unsafe_partial_hold ns=%s",
+                                 job["key"], job["attempt"], index, time.monotonic_ns())
+                        request["wait_logged"] = True
+                    continue
+                reply = dict(op="execution_grant", key=job["key"], attempt=job["attempt"],
+                             batch=index, count=max(0, end - begin), end=maximum,
+                             exceptional=job.get("oversized", False), storage_hit=job.get("storage_hit"))
+                job["execution_grants"][index] = reply
+                job["execution_pending"].pop(index)
+                self.send(job["owner"], reply)
+                log.info("UCM_EARLY execution_grant key=%s attempt=%s owner=%s batch=%s "
+                         "begin=%s count=%s protected_unique_blocks=%s capacity_blocks=%s eligibility_wait_ms=%.3f ns=%s",
+                         job["key"], job["attempt"], job["owner"], index, begin,
+                         reply["count"], window.used, window.capacity,
+                         (time.monotonic_ns() - request["entered_ns"]) / 1e6, time.monotonic_ns())
+
+    def execution_message(self, job, message):
+        op = message["op"]
+        if job.get("retiring") or job["status"] != "PENDING":
+            return
+        window = job["domain"]["execution"]
+        if op == "lookup_complete":
+            hit = message["hit"]
+            if type(hit) is not int or not 0 <= hit <= len(job["blocks"]):
+                self.poison("invalid lookup completion bound")
+                return
+            unique, end = set(), 0
+            for block in job["blocks"][:hit]:
+                if block not in unique and len(unique) == window.capacity:
+                    break
+                unique.add(block)
+                end += 1
+            job["storage_hit"] = hit
+            job["execution_end"] = end
+            job["oversized"] = end < hit
+            window.narrow(job["key"], job["blocks"][:end])
+        elif op == "execution_request":
+            index, begin, count = message["batch"], message["begin"], message["count"]
+            if any(type(v) is not int or v < 0 for v in (index, begin, count)) or begin + count > len(job["blocks"]):
+                self.poison("invalid execution range")
+                return
+            if index in job["execution_grants"]:
+                self.send(job["owner"], job["execution_grants"][index])
+                return
+            job["execution_pending"].setdefault(index, dict(message, entered_ns=time.monotonic_ns()))
+        self.advance_execution(job["domain"])
 
     def poison(self, reason):
         if self.fenced:
@@ -255,6 +333,9 @@ class OwnerBroker(BrokerState):
                 return  # metadata carries the generation; submission is no acknowledgement
             if peer not in self.workers(job["dp"]) or message.get("attempt") != job["attempt"]:
                 return
+            if op in ("execution_request", "lookup_complete") and peer == job["owner"]:
+                self.execution_message(job, message)
+                return
             if op == "owner_answer" and peer == job["owner"] and job["status"] == "PENDING":
                 hit = message.get("hit")
                 valid = (type(hit) is int and 0 <= hit <= len(job["blocks"])
@@ -263,7 +344,9 @@ class OwnerBroker(BrokerState):
                     self.send(job["client"], dict(op="result", key=job["key"], state="FAILED", reason=message.get("reason")))
                     self.retire(job, "owner failure")
                 else:
+                    job["domain"]["execution"].complete(job["key"])
                     job["status"], job["hit"] = "READY", hit
+                    self.advance_execution(job["domain"])
                     job["capacity_truncated"] = message["capacity_truncated"]
                     log.info("UCM_EARLY ready key=%s attempt=%s dp=%s owner=%s total_hit_blocks=%s ns=%s",
                              job["key"], job["attempt"], job["dp"], job["owner"], message["hit"], time.monotonic_ns())
@@ -297,7 +380,9 @@ class OwnerBroker(BrokerState):
                          (time.monotonic_ns() - job["assigned_ns"]) / 1e6,
                          message.get("read_bytes"), message.get("submitted_read_bytes"),
                          message.get("wasted_read_upper_bound_bytes"), time.monotonic_ns())
+                domain["execution"].release(job["key"])
                 self.jobs.pop(job["key"])
+                self.advance_execution(domain)
             return
         if op in ("owner_answer", "consumed", "quiesced", "owner_drained", "consumer_failed", "worker_retire"):
             return

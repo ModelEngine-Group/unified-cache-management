@@ -68,7 +68,7 @@ class OwnerWorker:
                     return True
                 job = WorkerJob(key, message.get("blocks", []), owner=message["owner"],
                                 attempt=message["attempt"], grant=message["grant"],
-                                request_id=message.get("request"))
+                                request_id=message.get("request"), deferred=message.get("deferred", False))
                 self.worker.jobs[key] = job
                 self.worker.io_limit = message["io_quota"]
                 if message.get("request"):
@@ -86,6 +86,34 @@ class OwnerWorker:
                 else:
                     job.lookup_finished = True
                 self.worker.condition.notify_all()
+            return True
+        if op == "execution_grant":
+            with self.worker.condition:
+                job = self.worker.jobs.get(message["key"])
+                if (job is None or job.attempt != message["attempt"] or job.cancelled
+                        or job.owner != self.peer):
+                    return True
+                index = message["batch"]
+                if not 0 <= index < len(job.batches):
+                    self.poison("execution grant has no batch")
+                    return True
+                batch = job.batches[index]
+                if batch.eligible or batch.discarded:
+                    return True
+                batch.eligible = True
+                if message["exceptional"]:
+                    end = message["end"]
+                    log.warning("UCM_EARLY capacity_exception key=%s attempt=%s reason=intrinsic_oversize "
+                                "safe_end=%s lost_hit_blocks=%s", job.key, job.attempt,
+                                end, message["storage_hit"] - end)
+                    self.worker._truncate(job, end, reason="intrinsic_oversize")
+                    if batch.discarded:
+                        self.worker._maybe_answer(job)
+                        return True
+                batch.reservation["batch"].limit(message["count"])
+                batch.reservation["total_hit_blocks"] = message["count"]
+                batch.activating = True
+                self.worker.activation_pool.submit(self.worker._activate, job, batch)
             return True
         if op not in ("retire", "release_owner", "forget"):
             return False
@@ -141,9 +169,9 @@ class OwnerWorker:
         hit = self.worker._hit(job)
         self.send(dict(op="owner_answer", key=job.key, attempt=job.attempt,
                        state="FAILED" if error else "READY", reason=error,
-                       hit=hit, capacity_truncated=job.capacity_end is not None))
+                       hit=hit, capacity_truncated=job.capacity_end is not None and job.truncate_reason != "revalidation_miss"))
         fast = error is None and hit > 0 and not any(b.started for b in job.batches)
-        outcome = "failed" if error else "capacity_truncated" if job.capacity_end is not None else "zero_hit" if not hit else "l1_ready" if fast else "prefetched"
+        outcome = "failed" if error else (job.truncate_reason or "capacity_truncated") if job.capacity_end is not None else "zero_hit" if not hit else "l1_ready" if fast else "prefetched"
         log.info("UCM_EARLY owner_ready key=%s attempt=%s owner=%s rank=%s success=%s hit=%s fast_path=%s outcome=%s ns=%s",
                  job.key, job.attempt, self.peer, self.worker.connector.tp_rank, error is None,
                  hit, fast, outcome, time.monotonic_ns())
@@ -159,7 +187,7 @@ class OwnerWorker:
                 job = self.worker.jobs.get(key)
                 if job is None or not job.lookup_finished:
                     continue
-                if any(b.started and not b.done for b in job.batches):
+                if any(b.activating or (b.started and not b.done) for b in job.batches):
                     continue  # the existing data thread still owns accepted I/O
                 snapshots = [b.reservation["batch"].snapshot() for b in job.batches]
                 submitted = sum(s["l2_read_bytes"] for s in snapshots)
