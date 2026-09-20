@@ -11,7 +11,7 @@ job，不等待它可能补充的末块 KV。对齐 prompt 也必须保留最后
 生成，Early Store 只提供“外部命中为零”的本次结果。不能直接跳过 metadata，
 否则最后重算出的完整 block 会失去原生 dump。hash 未完成时保持非阻塞 PENDING。
 READY 通过保存的 block IDs 和受保护命中结果进入原生 token 计算：已核验共享域由单 owner 给出，其余配置继续汇总所有 rank 的最小命中。
-不等待其他请求未来产出，不维护 producer prefix、持久化观察或 revalidation。
+不等待其他请求未来产出，不维护 producer prefix、持久化观察或 producer revalidation。未保护的 L1 位置仍须在执行前重新核验。
 
 ## 职责与复用
 
@@ -21,7 +21,7 @@ READY 通过保存的 block IDs 和受保护命中结果进入原生 token 计�
 | EarlyScheduler / EarlyWorker / Control | 请求实例 identity、异步提交、PENDING/READY/FAILED/CANCELLED、Stan HRRN、既有批次线程及传输；非 owner 模式保留 rank 汇总 |
 | OwnerBroker : BrokerState | 在既有 broker/job table 上扩展原生共享对象握手、每 generation 单 owner、共享域额度、接管及排空确认 |
 | OwnerWorker / Consumer / LoadConsistency | 组合现有 worker 和同一个原生 RankConsistencyManager；关联真实任务完成、消费范围及 generation，不创建另一套加载队列 |
-| Early::DomainProvider | EarlyCacheStore 的只读能力接口；通过已创建 buffer 的映射取得内核对象身份和原生容量 |
+| Early::DomainProvider | EarlyCacheStore 的可选能力接口；查询已创建 buffer 的身份/容量，提交延后 pin 查询并等待同一 buffer 的释放事件 |
 | EarlyPipelineStore | 继承原生 builder、load/load_data 参数转换、任务对象和完成检查；组合 `_ReservedLoad` 路由同一个 C++ PipelineStore 的 Load/Dump/Wait，并观察成功完成 |
 | EarlyCacheStore | 继承 CacheStore；使用父类已创建的 BufferManager、TransManager；为完整原生 load/dump 任务取得有界引用；复用已有 Handle |
 | ReservedPrefetch | 每批连续命中、reservation、定位合并、受保护 block 引用复用、有界位置提示和 worker 内的引用交接 |
@@ -60,6 +60,16 @@ owner、READY 接收时刻、首次 PENDING、PENDING 次数、匹配调用数�
 需通过 request/key 与客户端流式首 token 记录关联；不相减不同指标的分位数。
 
 ## Reservation 与可用前缀
+
+已核验 owner 域使用 `ReserveDeferred`：查询期间只临时取得现有节点引用以确认
+连续 L1/L2 命中，返回前释放这些引用；排队的 reservation 只留 block identity、
+read lease 和 L2-positive 信息。它不分配缺失节点，也不把候选命中当成 READY。
+HRRN 选中批次、共享域资格检查通过后，`Batch.Activate` 复用 Locate/位置提示，
+在原生锁内重新取得引用。L2-positive 由原 lease 保护；原 L1-only block 若被淘汰，
+再查当前 L2，真正缺失才截断。分配仍在 Step 提交 SSD 读取之前执行。
+全 L1 在执行资格通过并重新取得全部引用后直接 READY，不进入 SSD 数据队列。
+下面的定位/共享保护机制在 Activate 与兼容的非 owner 路径复用。
+
 
 候选段从 32 block 开始，连续命中时扩大到 64、128、256 block，随后保持上限。
 按段获取 read lease，然后检查该段的 shard。只有全部 shard 已 READY
@@ -119,39 +129,32 @@ HRRN 保持 `1 + waiting_time / max(remaining_l2_work, 1)`。
 
 ```mermaid
 sequenceDiagram
-    participant W as EarlyWorker lookup executor
-    participant D as EarlyWorker data thread
-    participant O as 既有 owner broker
+    participant W as 后台查询
+    participant D as HRRN / data thread
+    participant O as 同一 owner broker
     participant R as ReservedPrefetch
-    participant B as 原生共享或私有 Buffer
-    participant P as 原生 Posix backend
-    W->>R: ReservePrefix(第一候选批)
-    R->>P: 本批 AcquireReadLease
-    R->>R: 复用仍受保护的完整 READY block
-    R->>B: 已释放位置提示：节点锁内核验身份与 READY 后取得引用
-    R->>B: 对剩余 block 批量 pin READY 或活跃 LOADING 位置
-    R->>P: LookupOnPrefix(未完整命中 L1 的 block)
-    R-->>W: reservation、Batch 能力、命中量与剩余工作
-    W->>D: 发布已确认连续命中的批次，无容量审批往返
-    par 继续确认后续连续前缀
-        W->>R: 下一批 ReservePrefix
-    and 在有界窗口内推进读取
-        D->>R: Batch.Step(可用字节)
-        R->>B: 复用已有 Handle；缺失位置用原生 TryGet 重新检查
-        R->>P: 原生 Load(本进程 owner shard)
-        R-->>D: 返回在途字节、剩余工作和提交能力
-        D->>D: 选择其他请求的批次
-        D->>R: Batch.Step(0) 检查完成
-        R->>P: 原生 Check；已完成后 Wait 回收
-        R->>B: MarkReady
+    participant B as 原生共享 L1
+    W->>R: ReserveDeferred(当前候选批)
+    R-->>W: identity / lease / 候选命中；不保留 pin
+    W->>D: 发布当前批次；继续查询后段
+    D->>O: execution_request(key, attempt, batch)
+    O->>O: 唯一 block 计费 + 安全完成顺序检查
+    O-->>W: execution_grant
+    W->>R: Activate；锁内重新定位并 pin
+    alt 全部 L1 READY
+        R-->>W: 完成本批，不调用数据预取
+    else 需要读取
+        D->>R: Step(窗口剩余字节)
+        R->>B: TryGet；读取前保护目标
+        R->>R: 同一 backend 提交/回收有界读取
+        opt 暂时 NoSpace
+            R-->>D: waiting_capacity(epoch)，保留进度及在途保护
+            D->>D: 推进其他批次、完成通知与消费
+            B-->>D: 最后引用释放；共享 epoch/futex 通知
+            D->>R: 再次有限分配；通知不是额度
+        end
     end
-    opt 原生分配无法完成当前 block
-        R-->>D: capacity_truncated，完整受保护前缀长度
-        D->>R: 后缀 Batch.Discard，仅停止新提交
-        D->>R: Step 排空所有已提交的后缀 I/O
-    end
-    Note over W,D: lookup 已退出且全部批次完成或排空，才发最终前缀 READY
-    Note over W: owner 模式仅此 worker 执行 reserve；否则仍收齐全部 rank READY
+    Note over W,D: 查询结束且所有批次真正完成后才发布整个连续前缀 READY
 ```
 
 仅 owner 提交读取；READY shard 和其他 owner 的在途 shard 不重复读。
@@ -171,25 +174,48 @@ sequenceDiagram
 
 ## 容量与保护
 
-不存在独立容量账本。BlockPins 只持原生引用；同一共享对象中所有进程的节点
-分配、引用计数、CanReserve 和有限次 TryGet 是物理容量边界。原生 load-exclusive
-区域不可用于预取；零可预取节点直接得到零长度容量截断，不进入原生零模数分配。
+物理边界仍是同一个原生节点池、引用计数、CanReserve 和有限次 TryGet；原生
+load-exclusive 区不用于 Early。协议 5 只在已核验共享域增加执行资格检查，
+不在请求到达时扣整个候选前缀，也不代替原生分配。
 
-Reserve 只定位现有节点并确认 L1/L2 连续命中；不按候选或确认 block 申请额度。
-数据阶段重新检查未找到的位置，有限次分配失败时停在该 block。此前完整 block
-保留，当前不完整 block 及后缀不属于 READY；已提交目标的 I/O 全部 drain 后才
-释放尾部引用。成功读取的尾部可以成为原生可淘汰 DRAM 缓存，不主动删除数据。
-定位提示仍在原生锁内核验身份，重复 block 复用实际节点而非重复收费。
+`ExecutionWindow` 保存每个 generation 的保守完成范围和已获准执行的唯一 blocks。
+批准一个批次前，模拟持有者逐个完成、消费、释放：当前唯一占用加某个持有者的
+剩余最大需求必须可装入可预取区；删除该持有者后，对剩余持有者重复检查。
+所有持有者存在这样的顺序才允许新增保护。重复 block 按并集计费；某个消费者
+退出不释放其他持有者的声明。READY 的剩余分配需求为零，但实际声明仍等全部
+必要消费者 quiesced、I/O drain、引用释放后才归还。
 
-`PrefetchResult.totalHitBlocks` 是完成后的受保护连续前缀；
-`capacityTruncated` 是成功的部分结果。它与取消、健康失效及真实 I/O 错误分离，
-错误仍走原生 Status/Expected。显式 `Batch.Discard` 停止后缀新 I/O，Step 继续回收；
-后缀真实读取故障不会被它转成成功。批次之间取最早截断点，停止后续 reserve；
-在途 lookup 晚返回的 reservation 立即释放。lookup 退出、所有批次完成或 drain 后
-Python 才发布最终 READY，零命中合法。READY 路径复用该长度，不重新查询后缀。
+这会影响哪些候选可执行，HRRN 公式不变。候选最大范围超过池容量时，不把它
+当作真实超容量：允许无 pin 查询完成，再用实际连续命中收窄需求。此类请求的
+首批 I/O 会等待该查询结束；其余可执行请求保留边查边读流水。若确认命中本身
+超过整池，以可容纳的连续唯一 blocks 为明确上限，记录 intrinsic_oversize 和
+损失命中量；它与普通 NoSpace 分开。
 
-`protected_bytes` 仅为该 reservation 当前引用覆盖的字节数；重复 block/其他
-reservation 可能重复计数，不能相加当物理占用或容量准入账本。
+已获资格的批次若物理 TryGet 暂时失败，保持 PENDING 和 cursor，停止新分配，
+继续回收自己的已提交 I/O。后续查询在下一批入口暂停并让出 lookup worker。
+数据线程继续服务其他任务。通知来自原生 TransBuffer 最后一个引用释放：节点
+锁内减引用，解锁后更新共享 epoch 并 FUTEX_WAKE；本地 buffer 使用同一类型的
+本地事件。单独通知线程释放 GIL 后 FUTEX_WAIT，超时只用于检查关闭，不触发
+分配重试。失败前读取 epoch、内核比较等待、Python condition 序号共同处理
+通知先于等待的竞争。
+
+安全等待依赖完整兼容 cohort：所有 Early 部分分配均通过同域资格检查；已接受
+原生 load/dump 已取得完整任务引用，其独立 I/O/传输完成路径不再申请剩余节点。
+因而它们可以释放，而等待者不阻塞其完成。未知进程死亡、失联或无法证明 I/O
+完成仍 fence 并保留保护，不能用超时猜测性归还额度。未核验 owner 域继续使用
+原有兼容路径，本轮不对非 owner/private L1 宣称事件等待推进保证。
+
+`Batch.Cutoff` 是已确认无法安全继续时的异常能力，不由普通 NoSpace 调用。
+停止新提交后必须排空已提交尾部，再只保留完整、READY 且持续受保护的前缀。
+尚未提交的失败分配用既有 RAII 标记失败并释放；不撤销已经给 Scheduler 的承诺。
+4 块池中两个各需 3 块的部分占用环由资格检查提前阻止，不依赖超时解环。
+单任务确实超容量则在 Activate 之前限长；取消/错误时原有 Discard/drain 保留。
+
+`protected_bytes` 是 reservation 引用覆盖量，重复 block 可重复计数；broker
+`protected_unique_blocks` 是保守执行声明；两者都不等于原生实际物理占用。
+资格等待、物理等待恢复、intrinsic_oversize 和 revalidation_miss 分别记录。
+READY 仍只覆盖真正完成且受保护的连续前缀。详细状态和证明见
+[延后 pin 协议](DEFERRED_PIN_WAIT_PROTOCOL.md)。
 
 ## 原生加载交接
 
@@ -257,8 +283,8 @@ broker 为请求实例生成的 UUID key 保存独立 attempt 和单调 grant。
 只用于原生 metadata 关联，不能授权释放。调度器发送序号防重放；进程 session
 变化不允许接续旧任务。owner 从本 DP 的健康合格 rank 轮询选择；select_owner
 是策略扩展点。非 owner 只收到 generation/owner 通知，不收到完整候选数组，
-不执行 reserve、lease、候选扫描或预取。owner 使用既有四个 lookup worker、
-一个 data worker 及原生 I/O 并发，继续自适应批次、reserve/read 重叠和跨请求
+不执行 reserve、lease、候选扫描或预取。owner 保持四个后台执行槽位，分为两个 query 与两个 activation worker，避免
+activation 排在完整前缀查询之后；仍使用一个 data worker 及原生 I/O 并发，继续自适应批次、reserve/read 重叠和跨请求
 有限轮次 HRRN。无需跨 rank 的 handle、reservation ID、节点目录或读取分片。
 
 owner reserve 完成且所有已发布批次 READY 后，broker 发布受保护的连续前缀。
@@ -269,18 +295,14 @@ metadata 主流程。实际 allocation 前的重试可以刷新原生消费计�
 
 ## 共享域与有界推进
 
-协议版本 4 保留内核对象/布局/成员握手和单 owner，不再维护 confirmed claims、
-used 或 batch grant。broker 校验 owner、generation/attempt、最终命中范围及类型，
-接受容量截断 READY；Scheduler metadata 消费计划由该前缀与原生 HBM 扣除结果生成。
+协议版本 5 保留内核对象/布局/成员握手和单 owner，执行资格以确认批次为单位。
+申请携 key/attempt/batch/begin/count，迟到或重复授权不作用于新 generation。
+共享内存事件使用同一原生映射，header magic 为 3；所有成员须全量重建、重启到
+同版库，不能挂接旧布局或混用协议版本。不增加另一套共享 identity 或节点索引。
 
-- 每 owner 默认至多 4 个 job；候选上限只约束 CPU 排队工作，不能审批容量。
-- 同 worker 所有批次共用既有 128 shard I/O 窗口；域聚合提交上界为成员数乘该
-  窗口。实际持有的独立目的节点还受同一原生物理池约束，无每 worker 整池额度。
-  窗口不随零可预取节点变成无法运行 Step 的死锁；Step 有机会返回零截断。
-- 分配不足不等待额度：立即得到前缀结果，再 drain 尾部。不持有部分引用等待
-  其他请求归还容量。I/O/peer LOADING 等待仍有原生完成与超时边界。
-- 保护释放仍等全部消费者 quiesced 和 owner I/O drain。删除账本不提前释放引用。
-  失联保留原生引用并 fencing，禁止猜测性扣减非 robust 的共享引用。
+owner 轮询、原有任务数/候选工作量限制、128-shard I/O 窗口不变。资格检查和
+物理分配分开；没有固定最大 load/dump 任务余量，也不强行把零容量变为正数。
+只有完整 quiesce + drain 才删除执行声明。原生正式任务的容量拒绝语义保持如下。
 
 `EarlyCacheStore` 在原生完整任务入队前复用 reservation handles，并用
 `EarlyBufferPins::Acquire` 补齐缺失 handles。后者经现有 friend 入口调用原生
