@@ -25,6 +25,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include "mutex/shared_mutex.h"
 #include "status/status.h"
@@ -36,7 +37,33 @@ inline constexpr size_t kInvalid{std::numeric_limits<size_t>::max()};
 class CtrlLayout {
 public:
     using BucketLock = SharedMutex;
-    struct SlotMeta {};
+    struct SlotMeta {
+        enum class State : uint8_t { Loading, Ready, Failed };
+        /* Hot line: CAS contention point of the pin protocol. */
+        alignas(64) std::atomic<size_t> reference{0};
+        /* Cache key snapshot: key[0]/key[1] = BlockId (16B), key[2] = offset. */
+        alignas(8) std::atomic<size_t> key[3]{0, 0, 0};
+        /* Owning bucket index; kInvalid while unlinked / being reconfigured. */
+        std::atomic<size_t> hash{kInvalid};
+        std::atomic<size_t> prev{kInvalid};
+        std::atomic<size_t> next{kInvalid};
+        alignas(64) std::atomic<State> state{State::Loading};
+        /* Hot line: CLOCK second-chance bit. */
+        alignas(64) std::atomic<uint8_t> accessed{0};
+
+        void Init()
+        {
+            reference.store(0, std::memory_order_relaxed);
+            key[0].store(0, std::memory_order_relaxed);
+            key[1].store(0, std::memory_order_relaxed);
+            key[2].store(0, std::memory_order_relaxed);
+            hash.store(kInvalid, std::memory_order_relaxed);
+            prev.store(kInvalid, std::memory_order_relaxed);
+            next.store(kInvalid, std::memory_order_relaxed);
+            state.store(State::Loading, std::memory_order_relaxed);
+            accessed.store(0, std::memory_order_relaxed);
+        }
+    };
     struct RankDataDesc {
         std::atomic<size_t> handle{kInvalid};
 
