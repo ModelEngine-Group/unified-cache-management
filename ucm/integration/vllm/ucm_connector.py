@@ -1586,6 +1586,15 @@ class UCMDirectConnector(KVConnectorBase_V1):
         # (before store creation) if the tmpfs cannot hold it.
         _check_shm_capacity(int(config["cache_buffer_capacity_gb"]))
 
+    def _get_world_size(self) -> int:
+        parallel = self._vllm_config.parallel_config
+        world_size = int(parallel.world_size)
+        if world_size <= 0:
+            logger.error("world_size must be positive, got %s.", world_size)
+            raise ValueError(f"world_size must be positive, got {world_size}.")
+
+        return world_size
+
     def _create_store(
         self,
         kv_cache_layout: Optional[KVCacheLayout],
@@ -1601,6 +1610,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         name = self.connector_configs[0]["ucm_connector_name"]
         module_path = self.connector_configs[0].get("ucm_connector_module_path", None)
         config = copy.deepcopy(self.connector_configs[0]["ucm_connector_config"])
+        config["local_rank_size"] = self._get_world_size()
         config.setdefault("share_buffer_enable", self.is_mla)
         self._set_default_shm_buffer_capacity(config)
         if "storage_backends" in config:
@@ -1635,7 +1645,6 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     f"logical_block_size={logical_block_size}, "
                     f"store_block_size={store_block_size}."
                 )
-            config["local_rank_size"] = self.tp_size if self.is_mla else 1
             buffer_addrs = kv_cache_layout.base_ptrs.reshape(-1).tolist()
             buffer_sizes = kv_cache_layout.buffer_sizes.reshape(-1).tolist()
             gpu_kv_buffer_set = set()

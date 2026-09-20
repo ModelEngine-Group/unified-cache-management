@@ -706,6 +706,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
         """Instantiate one UCM store with worker tensor layout metadata."""
 
         name, module_path, config = self._base_store_config(store_suffix)
+        config["local_rank_size"] = self._get_world_size()
         self._set_default_shm_buffer_capacity(config)
         if label == "FA":
             config.setdefault("cache_io_aggregation", True)
@@ -726,8 +727,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     f"GC file size of {label} does not match real file size. "
                     f"Worker: {padded_size}, Scheduler: {self.file_size[label]}"
                 )
-            # MLA stores aggregate TP shards under one logical rank group.
-            config["local_rank_size"] = self.tp_size if self.is_mla else 1
             if cpu_affinity_cores:
                 config["cpu_affinity_cores"] = list(cpu_affinity_cores)
         else:
