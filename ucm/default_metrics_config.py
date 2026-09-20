@@ -472,6 +472,10 @@ _COUNTER_METRICS = [
         "dramstore_stale_replies_total",
         "DramStore stale replies",
     ),
+    (
+        "drampool_resource_log_read_errors_total",
+        "Number of failures opening, reading, or parsing the DramPool resource log",
+    ),
 ]
 _GAUGE_METRICS = [
     (
