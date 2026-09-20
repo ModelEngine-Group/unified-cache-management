@@ -29,6 +29,7 @@
 #include <string>
 #include <vector>
 #include "logger/logger.h"
+#include "status/status.h"
 #include "type/dictionary.h"
 #include "ucmstore_v1.h"
 
@@ -75,63 +76,40 @@ struct Config {
         dict.GetNumber("local_rank_size", config.localRankSize);
         return config;
     }
-    bool Validate() const
+    Status Validate() const
     {
-        constexpr const char* ns = "CacheStore";
-        if (deviceId < -1) {
-            UC_ERROR("Invalid {} config: device({}).", ns, deviceId);
-            return false;
-        }
-        if (uniqueId.empty()) {
-            UC_ERROR("Invalid {} config: unique id is empty.", ns);
-            return false;
-        }
-        if (deviceId == -1) { return true; }
-        if (tensorSizes.empty()) {
-            UC_ERROR("Invalid {} config: tensor sizes is empty.", ns);
-            return false;
-        }
-        if (shardSize == 0) {
-            UC_ERROR("Invalid {} config: shard size({}).", ns, shardSize);
-            return false;
-        }
-        if (blockSize == 0) {
-            UC_ERROR("Invalid {} config: block size({}).", ns, blockSize);
-            return false;
-        }
+        if (deviceId < -1) { return Status::InvalidParam("invalid device({})", deviceId); }
+        if (uniqueId.empty()) { return Status::InvalidParam("invalid unique id"); }
+        if (deviceId == -1) { return Status::OK(); }
+        if (tensorSizes.empty()) { return Status::InvalidParam("invalid tensor size"); }
+        if (shardSize == 0) { return Status::InvalidParam("invalid shard size"); }
+        if (blockSize == 0) { return Status::InvalidParam("invalid block size"); }
         if (std::accumulate(tensorSizes.begin(), tensorSizes.end(), size_t(0)) > shardSize) {
-            UC_ERROR("Invalid {} config: shard size({}).", ns, shardSize);
-            return false;
+            return Status::InvalidParam("invalid shard size({})", shardSize);
         }
         if (blockSize % shardSize != 0) {
-            UC_ERROR("Invalid {} config: block size({}).", ns, blockSize);
-            return false;
+            return Status::InvalidParam("invalid block size({})", blockSize);
         }
         const auto bufferNumber = bufferCapacity / shardSize;
         const size_t minBufferNumber = std::max(size_t(1024), loadExclusiveBufferNumber * 2);
         if (bufferNumber < minBufferNumber) {
             const size_t minBufferCapacityGb =
                 (minBufferNumber * shardSize + (size_t(1) << 30) - 1) >> 30;
-            UC_ERROR(
-                "Invalid {} config: too small buffer({}) on shard({}), please set "
-                "cache_buffer_capacity_gb >= {}GB.",
-                ns, bufferCapacity, shardSize, minBufferCapacityGb);
-            return false;
+            return Status::InvalidParam(
+                "too small buffer({}) on shard({}), please set cache_buffer_capacity_gb >= {}GB",
+                bufferCapacity, shardSize, minBufferCapacityGb);
         }
         if (waitingQueueDepth <= 1 || runningQueueDepth <= 1) {
-            UC_ERROR("Invalid {} config: queue depth({},{}).", ns, waitingQueueDepth,
-                     runningQueueDepth);
-            return false;
+            return Status::InvalidParam("invalid queue depth({},{})", waitingQueueDepth,
+                                        runningQueueDepth);
         }
         if (streamNumber < 1 || streamNumber > 32) {
-            UC_ERROR("Invalid {} config: stream number({}).", ns, streamNumber);
-            return false;
+            return Status::InvalidParam("invalid stream number({})", streamNumber);
         }
         if (localRankSize == 0) {
-            UC_ERROR("Invalid {} config: local rank size({}).", ns, localRankSize);
-            return false;
+            return Status::InvalidParam("invalid local rank size({})", localRankSize);
         }
-        return true;
+        return Status::OK();
     }
     void Show() const
     {

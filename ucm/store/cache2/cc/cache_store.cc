@@ -27,7 +27,10 @@
 #include <sys/types.h>
 #include <vector>
 #include "buffer_manager.h"
+#include "global_config.h"
+#include "logger/logger.h"
 #include "trans_manager.h"
+#include "trans_task.h"
 #include "ucmstore_v1.h"
 
 namespace UC::Cache2 {
@@ -37,31 +40,48 @@ class Store : public StoreV1 {
     TransManager transMgr_;
 
 public:
-    Status Setup(const Detail::Dictionary& inConfig) override { return Status::Unsupported(); }
-    std::string Readme() const override { return "Cache2Store"; }
+    Status Setup(const Detail::Dictionary& inConfig) override
+    {
+        auto config = Config::From(inConfig);
+        auto s = config.Validate();
+        if (s.Failure()) {
+            UC_ERROR("Failed to check config: {}.", s);
+            return s;
+        }
+        config.Show();
+        if (s = bufferMgr_.Setup(config); s.Failure()) { return s; }
+        if (config.deviceId >= 0) {
+            if (s = transMgr_.Setup(config, bufferMgr_.GetTransBuffer()); s.Failure()) { return s; }
+        }
+        return Status::OK();
+    }
+    std::string Readme() const override { return "CacheStore"; }
     Expected<std::vector<uint8_t>> Lookup(const Detail::BlockId* blocks, size_t num) override
     {
         return Status::Unsupported();
     }
     Expected<ssize_t> LookupOnPrefix(const Detail::BlockId* blocks, size_t num) override
     {
-        return Status::Unsupported();
+        return bufferMgr_.LookupOnPrefix(blocks, num);
     }
     Expected<ssize_t> LookupOnReverse(const Detail::BlockId* blocks, size_t num) override
     {
-        return Status::Unsupported();
+        return bufferMgr_.LookupOnReverse(blocks, num);
     }
-    void Prefetch(const Detail::BlockId* blocks, size_t num) override {}
+    void Prefetch(const Detail::BlockId* blocks, size_t num) override
+    {
+        bufferMgr_.Prefetch(blocks, num);
+    }
     Expected<Detail::TaskHandle> Load(Detail::TaskDesc task) override
     {
-        return Status::Unsupported();
+        return transMgr_.Submit({Task::Type::LOAD, std::move(task)});
     }
     Expected<Detail::TaskHandle> Dump(Detail::TaskDesc task) override
     {
-        return Status::Unsupported();
+        return transMgr_.Submit({Task::Type::DUMP, std::move(task)});
     }
-    Expected<bool> Check(Detail::TaskHandle taskId) override { return Status::Unsupported(); }
-    Status Wait(Detail::TaskHandle taskId) override { return Status::Unsupported(); }
+    Expected<bool> Check(Detail::TaskHandle taskId) override { return transMgr_.Check(taskId); }
+    Status Wait(Detail::TaskHandle taskId) override { return transMgr_.Wait(taskId); }
 };
 
 }  // namespace UC::Cache2

@@ -24,6 +24,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include "template/hashset.h"
 #include "thread/latch.h"
@@ -32,13 +33,17 @@
 namespace UC::Cache2 {
 
 struct Task {
-    Task() : id{NextId()} {}
+    enum class Type : uint8_t { LOAD, DUMP };
+
+    Task(Type type, Detail::TaskDesc desc) : id{NextId()}, type{type}, desc{std::move(desc)} {}
     Task(const Task&) = delete;
     Task& operator=(const Task&) = delete;
     Task(Task&&) = default;
     Task& operator=(Task&&) = default;
 
     Detail::TaskHandle id{};
+    Type type{Type::DUMP};
+    Detail::TaskDesc desc;
 
 private:
     static Detail::TaskHandle NextId() noexcept
