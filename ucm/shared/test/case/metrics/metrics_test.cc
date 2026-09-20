@@ -50,6 +50,7 @@ protected:
             CreateStats("stats1", "counter");
             CreateStats("stats2", "gauge");
             CreateStats("stats3", "histogram");
+            CreateStats("import_histogram", "histogram", {100.0, 500.0, 1000.0});
         } catch (const std::exception& e) {
             throw;
         }
@@ -225,6 +226,55 @@ TEST_F(UCMetricsUT, HistogramAggregatesConfiguredBuckets)
     stats = GetAllStatsAndClear();
     const auto& empty_histogram_iter = std::get<2>(stats);
     ASSERT_EQ(empty_histogram_iter.find("bucket_histogram_stats"), empty_histogram_iter.end());
+}
+
+TEST_F(UCMetricsUT, MergeHistogramStatsAccumulatesImportedBuckets)
+{
+    GetAllStatsAndClear();
+
+    MergeHistogramStats({
+        {"import_histogram", {{2, 3, 1, 0}, 1900.0}},
+    });
+    MergeHistogramStats({
+        {"import_histogram", {{1, 0, 2, 1}, 2100.0}},
+    });
+
+    const auto stats = GetAllStatsAndClear();
+    const auto& histogram = std::get<2>(stats).at("import_histogram");
+    EXPECT_EQ(histogram.bucketCounts, (std::vector<uint64_t>{3, 3, 3, 1}));
+    EXPECT_EQ(histogram.sum, 4000.0);
+}
+
+TEST_F(UCMetricsUT, MergeHistogramStatsRejectsInvalidBatchAtomically)
+{
+    GetAllStatsAndClear();
+    MergeHistogramStats({
+        {"import_histogram", {{1, 0, 0, 0}, 50.0}},
+    });
+
+    EXPECT_THROW(MergeHistogramStats({
+                     {"import_histogram", {{2, 0, 0, 0}, 100.0}},
+                     {"stats3",           {{1, 0}, 5.0}        },
+    }),
+                 std::invalid_argument);
+
+    const auto stats = GetAllStatsAndClear();
+    const auto& histogram = std::get<2>(stats).at("import_histogram");
+    EXPECT_EQ(histogram.bucketCounts, (std::vector<uint64_t>{1, 0, 0, 0}));
+    EXPECT_EQ(histogram.sum, 50.0);
+}
+
+TEST_F(UCMetricsUT, MergeHistogramStatsIgnoresUnregisteredMetrics)
+{
+    GetAllStatsAndClear();
+    EXPECT_NO_THROW(MergeHistogramStats({
+        {"unregistered_histogram", {{1, 0}, 50.0}      },
+        {"import_histogram",       {{1, 0, 0, 0}, 50.0}},
+    }));
+
+    const auto histograms = std::get<2>(GetAllStatsAndClear());
+    EXPECT_EQ(histograms.count("unregistered_histogram"), 0);
+    EXPECT_EQ(histograms.at("import_histogram").bucketCounts, (std::vector<uint64_t>{1, 0, 0, 0}));
 }
 
 TEST_F(UCMetricsUT, ConcurrentUpdateAndCollect)

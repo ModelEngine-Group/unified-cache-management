@@ -362,7 +362,11 @@ def _install_stubs():
         create_device=lambda *args, **kwargs: None,
     )
     _install_module("ucm.logger", init_logger=lambda name: _Logger())
-    _install_module("ucm.shared.metrics", ucmmetrics=fake_ucmmetrics)
+    _install_module(
+        "ucm.shared.metrics",
+        __path__=[str(REPO_ROOT / "ucm/shared/metrics")],
+        ucmmetrics=fake_ucmmetrics,
+    )
     _install_module(
         "ucm.store.factory_v1",
         UcmConnectorFactoryV1=type("UcmConnectorFactoryV1", (), {}),
