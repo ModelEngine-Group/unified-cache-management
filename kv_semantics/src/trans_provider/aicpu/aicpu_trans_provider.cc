@@ -298,10 +298,12 @@ Status AclError(const std::string& op, aclError ret, StatusCode code = StatusCod
     return Status::Error(code, std::move(message));
 }
 
-// Executes provider work on its ACL device while preserving an existing caller context.
-class AclDeviceScope final {
+// Switches provider work to its ACL device and restores an existing caller context on exit.
+class ScopedAclDeviceContext final {
 public:
-    explicit AclDeviceScope(const char* stage) : stage_(stage)
+    ScopedAclDeviceContext(const char* stage, std::uint32_t targetDevice,
+                           aclrtContext targetContext)
+        : stage_(stage)
     {
         getContextRet_ = aclrtGetCurrentContext(&callerContext_);
         if (getContextRet_ != ACL_SUCCESS || callerContext_ == nullptr) {
@@ -311,9 +313,10 @@ public:
                 stage_, static_cast<int>(getContextRet_));
             callerContext_ = nullptr;
         }
+        status_ = SwitchTo(targetDevice, targetContext);
     }
 
-    ~AclDeviceScope()
+    ~ScopedAclDeviceContext()
     {
         if (!contextChanged_ || callerContext_ == nullptr) { return; }
 
@@ -332,7 +335,15 @@ public:
                  stage_, static_cast<const void*>(callerContext_), callerDevice_);
     }
 
-    Status Bind(std::uint32_t targetDevice, aclrtContext targetContext)
+    const Status& status() const { return status_; }
+
+    ScopedAclDeviceContext(const ScopedAclDeviceContext&) = delete;
+    ScopedAclDeviceContext& operator=(const ScopedAclDeviceContext&) = delete;
+    ScopedAclDeviceContext(ScopedAclDeviceContext&&) = delete;
+    ScopedAclDeviceContext& operator=(ScopedAclDeviceContext&&) = delete;
+
+private:
+    Status SwitchTo(std::uint32_t targetDevice, aclrtContext targetContext)
     {
         if (targetDevice > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
             return Status::Error(
@@ -361,11 +372,8 @@ public:
             return Status::OK();
         }
 
-        std::int32_t currentDevice = -1;
-        aclError getDeviceRet = ACL_SUCCESS;
-        if (GetCallerDevice(currentDevice, getDeviceRet) && currentDevice == deviceId) {
-            return Status::OK();
-        }
+        getDeviceRet_ = aclrtGetDevice(&callerDevice_);
+        if (getDeviceRet_ == ACL_SUCCESS && callerDevice_ == deviceId) { return Status::OK(); }
 
         const auto initRet = aclInit(nullptr);
         if (initRet != ACL_SUCCESS && initRet != ACL_ERROR_REPEAT_INITIALIZE) {
@@ -383,38 +391,18 @@ public:
         KV_INFO(
             "AICPUTransProvider: aclrtSetDevice bound logical_device_id={} stage={} "
             "previous_device={} aclrtGetDevice_ret={} aclInit_ret={}",
-            deviceId, stage_, currentDevice, static_cast<int>(getDeviceRet),
+            deviceId, stage_, callerDevice_, static_cast<int>(getDeviceRet_),
             static_cast<int>(initRet));
         return Status::OK();
     }
 
-    bool GetCallerDevice(std::int32_t& device, aclError& ret)
-    {
-        if (!deviceQueried_) {
-            getDeviceRet_ = aclrtGetDevice(&callerDevice_);
-            deviceQueried_ = true;
-        }
-        device = callerDevice_;
-        ret = getDeviceRet_;
-        return getDeviceRet_ == ACL_SUCCESS && callerDevice_ >= 0;
-    }
-
-    aclrtContext GetCallerContext() const { return callerContext_; }
-    aclError GetCallerContextResult() const { return getContextRet_; }
-
-    AclDeviceScope(const AclDeviceScope&) = delete;
-    AclDeviceScope& operator=(const AclDeviceScope&) = delete;
-    AclDeviceScope(AclDeviceScope&&) = delete;
-    AclDeviceScope& operator=(AclDeviceScope&&) = delete;
-
-private:
     const char* stage_{nullptr};
     aclrtContext callerContext_{nullptr};
     aclError getContextRet_{ACL_SUCCESS};
-    bool deviceQueried_{false};
     std::int32_t callerDevice_{-1};
     aclError getDeviceRet_{ACL_SUCCESS};
     bool contextChanged_{false};
+    Status status_;
 };
 
 struct LocalDeviceSelection {
@@ -560,13 +548,12 @@ struct AICPUTransProvider::Impl {
 
     ~Impl()
     {
-        AclDeviceScope deviceScope("AICPUTransProvider cleanup");
-        if (!connections.empty() || hixlBin != nullptr || endpoint != nullptr) {
-            const auto deviceStatus = deviceScope.Bind(localDeviceId, providerContext);
-            if (!deviceStatus.ok()) {
-                KV_WARN("AICPUTransProvider: cleanup continuing after device bind failure: {}",
-                        deviceStatus.message);
-            }
+        ScopedAclDeviceContext deviceScope("AICPUTransProvider cleanup", localDeviceId,
+                                           providerContext);
+        if ((!connections.empty() || hixlBin != nullptr || endpoint != nullptr) &&
+            !deviceScope.status().ok()) {
+            KV_WARN("AICPUTransProvider: cleanup continuing after device bind failure: {}",
+                    deviceScope.status().message);
         }
         for (const auto& item : connections) {
             const auto& connection = item.second;
@@ -599,11 +586,11 @@ struct AICPUTransProvider::Impl {
         return byAddr == config.endpoints.end() ? nullptr : &*byAddr;
     }
 
-    Status RefreshLocalDeviceFromCaller(AclDeviceScope& deviceScope)
+    Status RefreshLocalDeviceFromCaller()
     {
         std::int32_t currentDevice = -1;
-        aclError deviceRet = ACL_SUCCESS;
-        if (!deviceScope.GetCallerDevice(currentDevice, deviceRet)) {
+        const auto deviceRet = aclrtGetDevice(&currentDevice);
+        if (deviceRet != ACL_SUCCESS || currentDevice < 0) {
             std::lock_guard<std::mutex> lock(mu);
             KV_WARN(
                 "AICPUTransProvider: caller ACL device unavailable before "
@@ -617,9 +604,9 @@ struct AICPUTransProvider::Impl {
             return Status::OK();
         }
 
-        auto currentContext = deviceScope.GetCallerContext();
-        const auto contextRet = deviceScope.GetCallerContextResult();
-        if (contextRet != ACL_SUCCESS) {
+        aclrtContext currentContext = nullptr;
+        const auto contextRet = aclrtGetCurrentContext(&currentContext);
+        if (contextRet != ACL_SUCCESS || currentContext == nullptr) {
             KV_WARN(
                 "AICPUTransProvider: cannot capture caller ACL context before "
                 "CreateConnection logical_device_id={} ret={}; device binding will use "
@@ -1211,11 +1198,12 @@ Status AICPUTransProvider::CreateConnection(const std::string& localIp, const st
     connectionHandles.clear();
     if (qpNum == 0) { return Status::OK(); }
 
-    AclDeviceScope deviceScope("CreateConnection");
     std::lock_guard<std::recursive_mutex> resourceLock(impl_->resourceMu);
-    auto status = impl_->RefreshLocalDeviceFromCaller(deviceScope);
+    auto status = impl_->RefreshLocalDeviceFromCaller();
     if (!status.ok()) { return status; }
-    status = deviceScope.Bind(impl_->localDeviceId, impl_->providerContext);
+    ScopedAclDeviceContext deviceScope("CreateConnection", impl_->localDeviceId,
+                                       impl_->providerContext);
+    status = deviceScope.status();
     if (!status.ok()) { return status; }
 
     const auto* endpoint = impl_->FindEndpoint(remoteIp, port);
@@ -1492,9 +1480,10 @@ std::vector<Status> AICPUTransProvider::DeleteConnections(
     std::vector<Status> results(connectionHandles.size(), Status::OK());
     if (connectionHandles.empty()) { return results; }
 
-    AclDeviceScope deviceScope("DeleteConnections");
     std::lock_guard<std::recursive_mutex> resourceLock(impl_->resourceMu);
-    const auto deviceStatus = deviceScope.Bind(impl_->localDeviceId, impl_->providerContext);
+    ScopedAclDeviceContext deviceScope("DeleteConnections", impl_->localDeviceId,
+                                       impl_->providerContext);
+    const auto& deviceStatus = deviceScope.status();
     if (!deviceStatus.ok()) { return std::vector<Status>(connectionHandles.size(), deviceStatus); }
     for (std::size_t index = 0; index < connectionHandles.size(); ++index) {
         auto* record = ToConnectionRecord(connectionHandles[index]);
@@ -1617,8 +1606,8 @@ std::vector<Status> AICPUTransProvider::Send(const std::vector<SendIoBatch>& ioB
     }
     if (!valid) { return results; }
 
-    AclDeviceScope deviceScope("Send");
-    const auto deviceStatus = deviceScope.Bind(impl_->localDeviceId, impl_->providerContext);
+    ScopedAclDeviceContext deviceScope("Send", impl_->localDeviceId, impl_->providerContext);
+    const auto& deviceStatus = deviceScope.status();
     if (!deviceStatus.ok()) { return std::vector<Status>(ioBatches.size(), deviceStatus); }
 
     for (const auto& group : groups) {
@@ -1700,9 +1689,9 @@ Status AICPUTransProvider::RegisterMemoryImpl(const std::vector<RegisterMemoryDe
                                  ": token count does not match memory count");
     }
 
-    AclDeviceScope deviceScope(operation);
     std::lock_guard<std::recursive_mutex> resourceLock(impl_->resourceMu);
-    auto bindStatus = deviceScope.Bind(impl_->localDeviceId, impl_->providerContext);
+    ScopedAclDeviceContext deviceScope(operation, impl_->localDeviceId, impl_->providerContext);
+    const auto& bindStatus = deviceScope.status();
     if (!bindStatus.ok()) { return bindStatus; }
 
     EndpointHandle endpoint = nullptr;
@@ -1909,9 +1898,9 @@ std::vector<Status> AICPUTransProvider::ReleaseMemory(const std::vector<MRHandle
     std::vector<Status> results(mrHandles.size(), Status::OK());
     if (mrHandles.empty()) { return results; }
 
-    AclDeviceScope deviceScope(operation);
     std::lock_guard<std::recursive_mutex> resourceLock(impl_->resourceMu);
-    const auto deviceStatus = deviceScope.Bind(impl_->localDeviceId, impl_->providerContext);
+    ScopedAclDeviceContext deviceScope(operation, impl_->localDeviceId, impl_->providerContext);
+    const auto& deviceStatus = deviceScope.status();
     if (!deviceStatus.ok()) { return std::vector<Status>(mrHandles.size(), deviceStatus); }
 
     // The caller normally preserves registration order. Reverse release keeps HCOMM aliases
