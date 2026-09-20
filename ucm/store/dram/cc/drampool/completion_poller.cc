@@ -47,7 +47,7 @@ void ReleaseResponseBuffer(BufferPool& flagBufferPool, CompletionRecord& record)
     }
 }
 
-// Batch statistics point (metrics_design.md §4.7): every record passes here exactly
+// Batch statistics point: every record passes here exactly
 // once thanks to the begin_us sentinel, so flag-pool NoSpace retries that re-enter
 // SubmitResponse do not double-report.
 void ReportBatchMetrics(CompletionRecord& record)
@@ -77,7 +77,7 @@ void ReportBatchMetrics(CompletionRecord& record)
     record.begin_us = 0;
 }
 
-// Data-transfer terminal observation (metrics_design.md E group): covers the
+// Data-transfer terminal observation: covers the
 // GetStatus-failure / Failed / Completed terminal paths. submit_ms still holds the
 // data-transfer submission time; SubmitResponse overwrites it afterwards.
 void ReportDataTransferMetrics(const CompletionRecord& record,
@@ -95,8 +95,8 @@ void ReportDataTransferMetrics(const CompletionRecord& record,
     }
 }
 
-// Response-buffer release and RTT terminal exit shared by every terminal path
-// (metrics_design.md E group): observed from the response-transfer submission
+// Response-buffer release and RTT terminal exit shared by every terminal path:
+// observed from the response-transfer submission
 // (submit_ms, set in SubmitResponse) to the terminal state.
 void SettleResponseTransfer(BufferPool& flagBufferPool, CompletionRecord& record, bool failed)
 {
@@ -180,7 +180,7 @@ void CompletionPoller::PollPendingCompletions()
         }
     }
 
-    // Round-tail gauges (metrics_design.md F/H groups): overwrite-write is safe here
+    // Round-tail gauges: overwrite-write is safe here
     // because the CompletionPoller thread is the sole writer of both names.
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kQueueCompletionInflight),
                              static_cast<double>(pending_.size()));

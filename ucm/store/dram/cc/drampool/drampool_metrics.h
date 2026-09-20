@@ -36,12 +36,12 @@ namespace UC::DramPool {
 
 // Queue length accountings backing the queue_request_size / queue_completion_size
 // gauges. The SPSC queues expose no size query, and a gauge can only be written
-// from a single thread (thread-local buffers, C5), so the producer and the
+// from a single thread (thread-local buffers), so the producer and the
 // consumer maintain these counters and each consumer thread reports the value.
 inline std::atomic<std::uint64_t> g_requestQueueLen{0};
 inline std::atomic<std::uint64_t> g_completionQueueLen{0};
 
-// ---- metric names (grouped as in metrics_design.md §3.2) ----
+// ---- metric names ----
 // A. Request volume
 inline constexpr char kDumpRequestsTotal[] = "drampool_dump_requests_total";
 inline constexpr char kLoadRequestsTotal[] = "drampool_load_requests_total";
@@ -95,8 +95,7 @@ inline std::string BufferPoolUsageRatioName(std::uint64_t slotSize)
 // RAII duration observer: measures with SteadyNowUs() and records the elapsed
 // time in ms on scope exit. Takes a NAME_TO_METRIC_ID() reference so the metric
 // id is resolved once per call site instead of a string lookup per observation.
-// Call Disarm() on paths that must not be observed (e.g. failed preparations,
-// see metrics_design.md §4.1).
+// Call Disarm() on paths that must not be observed (e.g. failed preparations).
 class ScopedTimer {
 public:
     explicit ScopedTimer(UC::Metrics::CachedMetric& metric)
@@ -210,8 +209,8 @@ inline const std::vector<DrampoolMetricDef>& DrampoolMetricDefs()
 // from examples/metrics/metrics_configs.yaml: like the Python loop over the
 // config, every entry of DrampoolMetricDefs() is passed to CreateStats, plus
 // the dynamic per-slot-size gauges below. CreateStats is idempotent and first
-// registration wins; unregistered names are silently dropped by UpdateStats
-// (C2). Call after the runtime config is parsed so the dynamic per-slot-size
+// registration wins; unregistered names are silently dropped by UpdateStats.
+// Call after the runtime config is parsed so the dynamic per-slot-size
 // gauges follow g_config.poolBlockSizes.
 inline void SetupDrampoolMetrics()
 {

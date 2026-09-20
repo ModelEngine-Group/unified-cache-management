@@ -48,7 +48,7 @@ int DramPoolDaemon::Run(int argc, char** argv)
         return 1;
     }
 
-    // One-shot metrics registration (C2: unregistered names are dropped).
+    // One-shot metrics registration; unregistered names are dropped.
     SetupDrampoolMetrics();
 
     status = SetupLogger();

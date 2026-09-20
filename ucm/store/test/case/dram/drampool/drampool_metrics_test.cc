@@ -43,7 +43,6 @@ std::uint64_t HistogramCount(const Metrics::HistogramStat& histogram)
 
 // Every static name registered by SetupDrampoolMetrics(), grouped by metric
 // type so the completeness probe below updates each name with matching
-// semantics (metrics_design.md §3.2 and §8 case 1).
 constexpr const char* kCounterNames[] = {
     kDumpRequestsTotal,
     kLoadRequestsTotal,
@@ -99,7 +98,7 @@ protected:
 
     static void TearDownTestSuite() { g_config = std::move(g_savedConfig); }
 
-    // GetAllStatsAndClear() is read-and-clear (C4): draining here gives every
+    // GetAllStatsAndClear() is read-and-clear: draining here gives every
     // test a clean baseline, so assertions below cover the increment only.
     void SetUp() override { Metrics::GetAllStatsAndClear(); }
 };
@@ -126,7 +125,7 @@ TEST_F(UCDrampoolMetricsTest, SetupRegistersBufferPoolUsageGaugePerSlotSize)
     EXPECT_EQ(BufferPoolUsageRatioName(4096), "drampool_buffer_pool_usage_ratio_4096");
     Metrics::UpdateStats(BufferPoolUsageRatioName(512), 0.25);
     Metrics::UpdateStats(BufferPoolUsageRatioName(4096), 0.25);
-    // Slot sizes absent from g_config.poolBlockSizes are never registered (C2).
+    // Slot sizes absent from g_config.poolBlockSizes are never registered.
     Metrics::UpdateStats(BufferPoolUsageRatioName(8192), 0.9);
 
     const auto stats = Metrics::GetAllStatsAndClear();

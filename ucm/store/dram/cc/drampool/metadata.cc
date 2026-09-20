@@ -194,7 +194,7 @@ Status MetadataManager::StoreBegin(const BlockId& key, EntryPtr entry)
         UC_ERROR("StoreBegin: Allocate for size {} failed, status {}.", entry->size, st.ToString());
         if (st == Status::NoSpace()) {
             // Both the periodic and the deep eviction retries have run; still NoSpace
-            // means real memory pressure (B group direct measurement).
+            // means real memory pressure.
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kDumpNospaceFailuresTotal), 1);
         }
         return Status::Error();

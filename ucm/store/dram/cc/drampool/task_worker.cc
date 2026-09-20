@@ -66,7 +66,7 @@ void TaskWorker::Run(const std::atomic_bool& stop)
 
 Status TaskWorker::ProcessOneRequest(RequestTaskPtr task)
 {
-    // Batch dequeue instant; flows into CompletionRecord.begin_us (metrics_design.md §4.7).
+    // Batch dequeue instant; flows into CompletionRecord.begin_us.
     const auto beginUs = SteadyNowUs();
     if (!task || !task->request || task->peer_one_sided_id.empty()) {
         return Status::InvalidParam("TaskWorker got an invalid request task");
@@ -211,7 +211,7 @@ Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
                                       static_cast<std::uint8_t>(DumpLoadResult::Ok));
     std::vector<TransferItem> transfer_items;
     transfer_items.reserve(request.entries.size());
-    // LoadBegin failure and len-over-stored both mean "entry not fetched" (C group).
+    // LoadBegin failure and len-over-stored both mean "entry not fetched".
     std::uint64_t missEntries = 0;
     transport::Operation operation;
     operation.opcode = transport::Opcode::Write;
@@ -305,7 +305,7 @@ Status TaskWorker::ProcessLookup(const KvLookupRequest& request,
                                       static_cast<std::uint8_t>(LookupResult::NotFound));
     std::uint64_t missEntries = 0;
     {
-        // Scan-only observation: the timer ends before the response is enqueued (D group).
+        // Scan-only observation: the timer ends before the response is enqueued.
         ScopedTimer scanTimer(NAME_TO_METRIC_ID(kLookupScanDurationMs));
         for (std::uint16_t index = 0; index < request.batch_size; ++index) {
             if (runtime_.metadata.Exist(request.entries[index].key)) {
