@@ -22,7 +22,7 @@ ucm_connectors:
         - "eid:00112233445566778899aabbccddeeff"
         - "eid:00112233445566778899aabbccddee00"
       # No-current-device fallback (e.g. EngineCore); workers inject their device IDs.
-      device_id: 1
+      # device_id: 1
       asu_shared_provider: 0
       kv_ns_ids: [1]
       asu_sc: false
