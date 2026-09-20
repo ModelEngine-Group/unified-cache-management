@@ -379,19 +379,20 @@ class EarlyWorker:
         self.selected = []
         self.request_keys = {}
         self.closed = False
-        self.lookup_pool = ThreadPoolExecutor(
-            max_workers=2, thread_name_prefix="ucm-early-lookup"
-        )
-        # Keep four background execution slots in total. Activation must not
-        # sit behind whole-prefix queries or the first-read pipeline is lost.
-        self.activation_pool = ThreadPoolExecutor(
-            max_workers=2, thread_name_prefix="ucm-early-activate"
-        )
         dp_rank = connector._vllm_config.parallel_config.data_parallel_index
         from .early_owner import worker_capability
         from .early_owner_worker import OwnerWorker
         peer = f"w{dp_rank}.{connector.tp_rank % connector.tp_size}"
         capability = worker_capability(connector)
+        # Split the existing four slots only where deferred owner execution is
+        # supported. Private/non-MLA keeps the original four lookup workers.
+        self.lookup_pool = ThreadPoolExecutor(
+            max_workers=2 if capability.get("ready") else 4,
+            thread_name_prefix="ucm-early-lookup"
+        )
+        self.activation_pool = (ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="ucm-early-activate"
+        ) if capability.get("ready") else None)
         self.owner_protocol = OwnerWorker(self, capability, peer)
         self.io_limit = 0
         log.info("UCM_EARLY owner_capability peer=%s capability=%s", peer, capability)
@@ -893,7 +894,8 @@ class EarlyWorker:
             with self.condition:
                 self.condition.notify_all()
             self.lookup_pool.shutdown(wait=False, cancel_futures=True)
-            self.activation_pool.shutdown(wait=False, cancel_futures=True)
+            if self.activation_pool is not None:
+                self.activation_pool.shutdown(wait=False, cancel_futures=True)
             self.control.close()
             return
         self.finished(set(self.request_keys))
@@ -904,7 +906,8 @@ class EarlyWorker:
             self.jobs.clear()
             self.condition.notify_all()
         self.lookup_pool.shutdown(wait=True, cancel_futures=True)
-        self.activation_pool.shutdown(wait=True, cancel_futures=True)
+        if self.activation_pool is not None:
+            self.activation_pool.shutdown(wait=True, cancel_futures=True)
         self.data_thread.join()  # native I/O timeout bounds an in-flight transfer
         if self.release_thread is not None:
             self.release_thread.join()
