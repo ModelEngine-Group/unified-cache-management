@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 from ...resources import source_root
+from .checks import installed_ucm_distributions
 from .config import PrecheckConfig
 from .reporter import STATUS_PASS, STATUS_SKIP, STATUS_WARN, WARN, CheckResult
 
@@ -781,14 +782,7 @@ def check_bandwidth(cfg: PrecheckConfig) -> CheckResult:
         # Distinguish "ucm not installed" from "installed but import fails"
         # (e.g. the source tree shadows site-packages, or a dependency like
         # wrapt is missing).
-        ucm_installed = True
-        try:
-            from importlib.metadata import version as _pkg_version
-
-            _pkg_version("uc-manager")
-        except Exception:
-            ucm_installed = False
-        if ucm_installed:
+        if installed_ucm_distributions():
             detail = (
                 f"ucm is installed (site-packages) but import failed "
                 f"({type(exc).__name__}: {exc}); "
