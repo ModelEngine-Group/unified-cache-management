@@ -21,8 +21,7 @@ ucm_connectors:
       asu_aicpu_local_addrs:
         - "eid:00112233445566778899aabbccddeeff"
         - "eid:00112233445566778899aabbccddee00"
-      # No-current-device fallback (e.g. EngineCore); workers inject their device IDs.
-      # device_id: 1
+      # Do not set device_id here; each TP worker uses its current ACL logical device.
       asu_shared_provider: 0
       kv_ns_ids: [1]
       asu_sc: false
