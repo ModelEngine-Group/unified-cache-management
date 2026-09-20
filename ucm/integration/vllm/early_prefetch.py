@@ -541,7 +541,7 @@ class EarlyWorker:
                     if job.capacity_end is not None:
                         break
                     if job.deferred and any(b.waiting_capacity for b in job.batches):
-                        paused = job.lookup_paused = True
+                        paused = True
                         return
                 candidates = blocks[begin:begin + candidate_count]
                 reserving = time.monotonic_ns()
@@ -597,7 +597,12 @@ class EarlyWorker:
             self._answer(job, str(error))
         finally:
             with self.condition:
-                job.lookup_finished = not paused
+                job.lookup_finished = not paused or job.cancelled or self.closed
+                job.lookup_paused = paused and not job.lookup_finished
+                if job.lookup_paused and not any(b.waiting_capacity for b in job.batches):
+                    # Release may precede publication of the paused continuation.
+                    job.lookup_paused = False
+                    self.lookup_pool.submit(self._reserve, job)
                 if job.capacity_end is not None:
                     job.reserve_done = True
                 self._maybe_answer(job)

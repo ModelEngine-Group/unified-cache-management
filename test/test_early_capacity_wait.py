@@ -245,3 +245,36 @@ def test_worker_capacity_wait_yields_and_event_resumes_without_shortening():
                 worker._release(job)
             worker.jobs.clear()
         worker.close()
+
+
+def test_release_before_lookup_pause_publication_resumes_once():
+    from types import SimpleNamespace
+    from test_early_owner_protocol import make_worker, early, blocks
+    from test_early_batch_pipeline import wait
+    worker = make_worker(0)
+    observations = iter([True, False])
+    class RacingBatch:
+        @property
+        def waiting_capacity(self):
+            return next(observations, False)
+        done = True
+        started = False
+        discarded = False
+        reservation = dict(total_hit_blocks=32, handle=1)
+    job = early.WorkerJob("pause", blocks(96), deferred=True,
+                          lookup_cursor=32, lookup_count=64, batches=[RacingBatch()])
+    worker.jobs[job.key] = job
+    worker.store.reserve_prefix.side_effect = lambda ids, **kwargs: dict(
+        handle=2, total_hit_blocks=0, remaining_l2_work=0, batch=DeferredCapability(0, 0))
+    try:
+        # First capacity observation says wait, release occurs before finally
+        # publishes the continuation. No later notification is necessary.
+        worker._reserve(job)
+        wait(lambda: job.lookup_finished)
+        worker.store.reserve_prefix.assert_called_once()
+        assert not job.lookup_paused
+    finally:
+        with worker.condition:
+            worker._release(job)
+            worker.jobs.clear()
+        worker.close()
