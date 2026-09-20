@@ -23,6 +23,7 @@
  * */
 #include "metrics_reporter.h"
 #include <cerrno>
+#include <cmath>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
@@ -36,10 +37,26 @@
 namespace UC::DramPool {
 namespace {
 
-constexpr char kMetricsFileName[] = "drampool_metrics.prom";
+constexpr char kMetricsFileName[] = "drampool_metrics.json";
+// Single-line JSON snapshot event name, matching the DramPool resource
+constexpr char kSnapshotEvent[] = "drampool_metrics_snapshot";
 // Wake-up granularity while waiting for the next interval, so Stop() does not
 // block for a full interval (same pattern as HealthServer's poll interval).
 constexpr auto kStopPollInterval = std::chrono::milliseconds(100);
+
+double FindValue(const std::unordered_map<std::string, double>& values, const std::string& name)
+{
+    const auto it = values.find(name);
+    return it == values.end() ? 0.0 : it->second;
+}
+
+// The snapshot parser rejects non-finite numbers, so clamp them to zero to
+// keep one bad observation from invalidating the whole record.
+void AppendNumber(std::ostringstream& output, const std::string& name, double value)
+{
+    if (!std::isfinite(value)) { value = 0.0; }
+    output << '"' << name << "\":" << value;
+}
 
 }  // namespace
 
@@ -130,52 +147,83 @@ void MetricsReporter::CollectAndWrite() noexcept
 
 std::string MetricsReporter::Render() const
 {
-    // Render in registration order (DrampoolMetricDefs() plus the dynamic
-    // per-slot-size gauges) so the file layout is stable across snapshots.
+    // One single-line JSON record per the DramPool resource snapshot contract
+    // (#1396): the full cumulative state (the reader deltas consecutive
+    // snapshots, so counter/histogram resets are detected on its side)
+    // grouped into counters/gauges/histograms. Rendered in registration order
+    // (DrampoolMetricDefs() plus the dynamic per-slot-size gauges) so the
+    // layout is stable across snapshots. The record must end with a newline:
+    // the reader treats a trailing line without one as incomplete and drops
+    // it.
     std::ostringstream output;
     output << std::setprecision(17);
+    output << "{\"event\":\"" << kSnapshotEvent << "\",\"timestamp\":"
+           << std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch())
+                  .count();
+    output << ",\"counters\":{";
+    bool first = true;
     for (const auto& def : DrampoolMetricDefs()) {
-        output << "# TYPE " << def.name << ' ' << def.type << '\n';
-        const std::string_view type{def.type};
-        if (type == "histogram") {
-            RenderHistogram(output, def);
-            continue;
-        }
-        const auto& values = type == "counter" ? counterValues_ : gaugeValues_;
-        const auto it = values.find(def.name);
-        output << def.name << ' ' << (it == values.end() ? 0.0 : it->second) << '\n';
+        if (std::string_view{def.type} != "counter") { continue; }
+        if (!first) { output << ','; }
+        first = false;
+        AppendNumber(output, def.name, FindValue(counterValues_, def.name));
+    }
+    output << "},\"gauges\":{";
+    first = true;
+    for (const auto& def : DrampoolMetricDefs()) {
+        if (std::string_view{def.type} != "gauge") { continue; }
+        if (!first) { output << ','; }
+        first = false;
+        AppendNumber(output, def.name, FindValue(gaugeValues_, def.name));
     }
     for (const auto slotSize : g_config.poolBlockSizes) {
-        const auto name = BufferPoolUsageRatioName(slotSize);
-        output << "# TYPE " << name << " gauge\n";
-        const auto it = gaugeValues_.find(name);
-        output << name << ' ' << (it == gaugeValues_.end() ? 0.0 : it->second) << '\n';
+        if (!first) { output << ','; }
+        first = false;
+        AppendNumber(output, BufferPoolUsageRatioName(slotSize),
+                     FindValue(gaugeValues_, BufferPoolUsageRatioName(slotSize)));
     }
+    output << "},\"histograms\":{";
+    first = true;
+    for (const auto& def : DrampoolMetricDefs()) {
+        if (std::string_view{def.type} != "histogram") { continue; }
+        if (!first) { output << ','; }
+        first = false;
+        output << '"' << def.name << "\":";
+        RenderHistogram(output, def);
+    }
+    output << "}}\n";
     return output.str();
 }
 
 void MetricsReporter::RenderHistogram(std::ostringstream& output,
                                       const DrampoolMetricDef& def) const
 {
+    // Per the snapshot contract: upper_bounds holds the finite bucket bounds,
+    // bucket_counts holds the raw (non-cumulative) per-bucket counts plus the
+    // trailing +Inf bucket, so bucket_counts.size() == upper_bounds.size() +
+    // 1, count == sum(bucket_counts), and the parser requires count == 0 to
+    // imply sum == 0 and rejects non-finite or negative sums.
     const auto it = histogramValues_.find(def.name);
-    // UC::Metrics appends the +Inf bucket to every histogram, so a drained
-    // delta holds one count per finite bucket plus the +Inf bucket. Buckets
-    // are exposed cumulatively, matching the Prometheus exposition format.
-    std::uint64_t cumulative = 0;
+    std::uint64_t count = 0;
     double sum = 0.0;
     if (it != histogramValues_.end()) {
-        const auto& counts = it->second.bucketCounts;
-        for (std::size_t index = 0; index < def.bucketCount && index < counts.size(); ++index) {
-            cumulative += counts[index];
-            output << def.name << "_bucket{le=\"" << def.buckets[index] << "\"} " << cumulative
-                   << '\n';
-        }
-        if (counts.size() > def.bucketCount) { cumulative += counts[def.bucketCount]; }
+        for (const auto bucketCount : it->second.bucketCounts) { count += bucketCount; }
         sum = it->second.sum;
     }
-    output << def.name << "_bucket{le=\"+Inf\"} " << cumulative << '\n';
-    output << def.name << "_sum " << sum << '\n';
-    output << def.name << "_count " << cumulative << '\n';
+    if (count == 0 || !std::isfinite(sum) || sum < 0.0) { sum = 0.0; }
+    output << "{\"upper_bounds\":[";
+    for (std::size_t index = 0; index < def.bucketCount; ++index) {
+        if (index != 0) { output << ','; }
+        output << def.buckets[index];
+    }
+    output << "],\"bucket_counts\":[";
+    for (std::size_t index = 0; index <= def.bucketCount; ++index) {
+        if (index != 0) { output << ','; }
+        output << (it != histogramValues_.end() && index < it->second.bucketCounts.size()
+                       ? it->second.bucketCounts[index]
+                       : 0U);
+    }
+    output << "],\"count\":" << count << ",\"sum\":" << sum << "}";
 }
 
 void MetricsReporter::WriteFile(const std::string& content) const

@@ -65,62 +65,51 @@ install(TARGETS dramstore
 
 set(DRAMPOOL_SOURCE_DIR ${DRAM_SOURCE_DIR}/drampool)
 
-if(BUILD_UCM_DRAMPOOL)
 
-    set(DRAMPOOL_SOURCE_FILES
-        ${DRAM_SOURCE_DIR}/kv_protocol.cc
-        ${DRAMPOOL_SOURCE_DIR}/completion_poller.cc
-        ${DRAMPOOL_SOURCE_DIR}/drampool_daemon.cc
-        ${DRAMPOOL_SOURCE_DIR}/drampool_launch_config.cc
-        ${DRAMPOOL_SOURCE_DIR}/drampool_server.cc
-        ${DRAMPOOL_SOURCE_DIR}/drampool_yaml_config.cc
-        ${DRAMPOOL_SOURCE_DIR}/health_server.cc
-        ${DRAMPOOL_SOURCE_DIR}/metadata.cc
-        ${DRAMPOOL_SOURCE_DIR}/metrics_reporter.cc
-        ${DRAMPOOL_SOURCE_DIR}/task_worker.cc
-    )
-
-    add_library(drampool_core STATIC ${DRAMPOOL_SOURCE_FILES})
-
-    target_include_directories(drampool_core
-        PUBLIC
-            ${DRAMPOOL_SOURCE_DIR}
-            ${DRAM_SOURCE_DIR}
-            ${CMAKE_SOURCE_DIR}/ucm/shared
-            ${CMAKE_SOURCE_DIR}/ucm/store/detail
-    )
-
-    target_link_libraries(drampool_core
-        PUBLIC
-            infra_status
-            infra_logger
-            infra_template
-            infra_thread
-            buffer_pool
-            metrics
-            ucm_p2p_transport
-            trans
-            dramstore
-    )
-
-    add_executable(drampool
-        ${DRAMPOOL_SOURCE_DIR}/main.cc
-    )
-
-    target_link_libraries(drampool PRIVATE drampool_core)
-
-    if(UCM_RUNTIME_ASCEND_FAMILY)
-        # CANN DSOs depend on driver libraries supplied by the runtime host.
-        target_link_options(drampool PRIVATE "LINKER:--allow-shlib-undefined")
-    endif()
-
-    set_target_properties(drampool PROPERTIES
-        INSTALL_RPATH "$ORIGIN/../ucm/transport/p2p;$ORIGIN/../ucm/shared/metrics"
-    )
-
-    install(TARGETS drampool
-        RUNTIME DESTINATION bin
-        COMPONENT ucm
-    )
-
+set(DRAMPOOL_SOURCE_FILES
+    ${DRAM_SOURCE_DIR}/kv_protocol.cc
+    ${DRAMPOOL_SOURCE_DIR}/completion_poller.cc
+    ${DRAMPOOL_SOURCE_DIR}/drampool_daemon.cc
+    ${DRAMPOOL_SOURCE_DIR}/drampool_launch_config.cc
+    ${DRAMPOOL_SOURCE_DIR}/drampool_server.cc
+    ${DRAMPOOL_SOURCE_DIR}/drampool_yaml_config.cc
+    ${DRAMPOOL_SOURCE_DIR}/health_server.cc
+    ${DRAMPOOL_SOURCE_DIR}/metadata.cc
+    ${DRAMPOOL_SOURCE_DIR}/metrics_reporter.cc
+    ${DRAMPOOL_SOURCE_DIR}/task_worker.cc
+)
+add_library(drampool_core STATIC ${DRAMPOOL_SOURCE_FILES})
+target_include_directories(drampool_core
+    PUBLIC
+        ${DRAMPOOL_SOURCE_DIR}
+        ${DRAM_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/ucm/shared
+        ${CMAKE_SOURCE_DIR}/ucm/store/detail
+)
+target_link_libraries(drampool_core
+    PUBLIC
+        infra_status
+        infra_logger
+        infra_template
+        infra_thread
+        buffer_pool
+        metrics
+        ucm_p2p_transport
+        trans
+        dramstore
+)
+add_executable(drampool
+    ${DRAMPOOL_SOURCE_DIR}/main.cc
+)
+target_link_libraries(drampool PRIVATE drampool_core)
+if(UCM_RUNTIME_ASCEND_FAMILY)
+    # CANN DSOs depend on driver libraries supplied by the runtime host.
+    target_link_options(drampool PRIVATE "LINKER:--allow-shlib-undefined")
 endif()
+set_target_properties(drampool PROPERTIES
+    INSTALL_RPATH "$ORIGIN/../ucm/transport/p2p;$ORIGIN/../ucm/shared/metrics"
+)
+install(TARGETS drampool
+    RUNTIME DESTINATION bin
+    COMPONENT ucm
+)

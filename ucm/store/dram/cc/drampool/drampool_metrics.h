@@ -141,7 +141,7 @@ inline constexpr double kMsBucketsGc[] = {1, 5, 10, 20, 50, 100, 200, 500, 1000,
 // One metric definition: name, type, and histogram buckets. It mirrors one
 // entry of examples/metrics/metrics_configs.yaml and is consumed by both
 // SetupDrampoolMetrics() (CreateStats registration) and MetricsReporter
-// (Prometheus text rendering), so the daemon keeps a single registration
+// (JSON snapshot rendering), so the daemon keeps a single registration
 // source just like the Python side looping over the YAML config. Keep the
 // values in sync with the YAML.
 struct DrampoolMetricDef {

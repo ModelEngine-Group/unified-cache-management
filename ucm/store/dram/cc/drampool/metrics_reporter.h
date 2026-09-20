@@ -36,14 +36,16 @@
 
 namespace UC::DramPool {
 
-// Periodic Prometheus textfile exporter for the DramPool metrics. The daemon
-// is a pure C++ process without the Python binding, so this component mirrors
-// the Python-side multiproc consumer (PrometheusStatsLogger in
-// ucm/observability.py): a background thread drains the UC::Metrics delta via
+// Periodic JSON snapshot exporter for the DramPool metrics, following the
+// DramPool resource snapshot contract consumed by the UCM-side file reporter
+// (ucm/store/dram/resource_reporter.py, #1396). The daemon is a pure C++
+// process without the Python binding, so this component plays the writer
+// role: a background thread drains the UC::Metrics delta via
 // GetAllStatsAndClear() every interval, accumulates counter deltas, keeps the
 // latest gauge values, and merges histogram per-bucket counts and sums, then
-// renders the Prometheus text exposition format and atomically replaces
-// <output_dir>/drampool_metrics.prom (tmp file + rename). The exposed metric
+// renders one single-line JSON record (event/timestamp plus the cumulative
+// counters/gauges/histograms) and atomically replaces
+// <output_dir>/drampool_metrics.json (tmp file + rename). The exposed metric
 // set is DrampoolMetricDefs() plus the dynamic per-slot-size gauges, i.e.
 // exactly the names registered by SetupDrampoolMetrics().
 class MetricsReporter final {
