@@ -414,3 +414,75 @@ TEST(UCCacheEarlyProcessTest, FullOwnerCreditLeavesTwoLoadsAndAggregateDumpRoomT
     ASSERT_EQ(static_cast<unsigned char*>(handles[0].Data())[0], 0x6b);
     early.Release(reservation.Value().handle);
 }
+
+TEST(UCCacheEarlyProcessTest, DeferredWaitWakesAfterOtherProcessNativeLoadReleases)
+{
+    int mapped[2], waiting[2], finished[2];
+    ASSERT_EQ(::pipe(mapped), 0); ASSERT_EQ(::pipe(waiting), 0); ASSERT_EQ(::pipe(finished), 0);
+    UC::CacheStore::Config c;
+    c.uniqueId = UC::Test::Detail::Random().RandomString(16);
+    c.deviceId = 0; c.tensorSizes = {4096}; c.blockSize = c.shardSize = 4096;
+    c.bufferCapacity = 4 * c.shardSize; c.loadExclusiveBufferNumber = 0;
+    c.shareBufferEnable = true; c.timeoutMs = 5000;
+    const auto child = ::fork();
+    ASSERT_GE(child, 0);
+    int result = 0;
+    try {
+        Backend backend; c.storeBackend = &backend;
+        if (child == 0) { c.deviceId = 1; Receive(mapped[0]); }
+        UC::CacheStore::BufferManager manager;
+        Require(manager.Setup(c).Success(), "mapping setup");
+        auto* buffer = manager.GetTransBuffer();
+        std::array<UC::Detail::BlockId, 3> blocks{};
+        for (size_t i = 0; i < 3; ++i) { blocks[i][0] = std::byte(i + (child == 0 ? 10 : 0)); }
+        if (child == 0) {
+            UC::CacheStore::ReservedPrefetch early(&manager, &backend, c.blockSize, c.shardSize, 5000);
+            EXPECT_CALL(backend, LookupOnPrefix).WillOnce(testing::Return(ssize_t{2}));
+            EXPECT_CALL(backend, Load).Times(2).WillRepeatedly(testing::Invoke([&](UC::Detail::TaskDesc task) {
+                for (auto& shard : task) { std::memset(shard.addrs[0], 0x53, c.shardSize); }
+                return UC::Detail::TaskHandle{1};
+            }));
+            EXPECT_CALL(backend, Wait).Times(2).WillRepeatedly(testing::Return(UC::Status::OK()));
+            auto r = early.Reserve(blocks.data(), 3, true).Value();
+            Require(r.batch->ProtectedBytes() == 0, "query retained references");
+            Require(bool(r.batch->Activate()), "activate");
+            auto p = r.batch->Step(r.batch->windowBytes).Value();
+            Require(p.waitingCapacity && !p.result.capacityTruncated, "normal resource wait");
+            Send(waiting[1]);
+            const auto changed = UC::CacheStore::EarlyBufferPins::WaitRelease(*buffer, p.waitEpoch, 4000);
+            Require(changed != p.waitEpoch, "cross-process release did not wake");
+            for (int i = 0; i < 10 && !p.done; ++i) { p = r.batch->Step(r.batch->windowBytes).Value(); }
+            Require(p.done && p.result.totalHitBlocks == 3 && !p.result.capacityTruncated, "lost full hit");
+            early.Release(r.handle);
+            Send(finished[1]);
+        } else {
+            std::array<std::array<unsigned char, 4096>, 3> target{};
+            UC::Detail::TaskDesc desc;
+            std::vector<UC::CacheStore::TransBuffer::Handle> pins;
+            for (size_t i = 0; i < 3; ++i) {
+                auto pin = buffer->TryGet(blocks[i], 0); Require(bool(pin), "initial capacity");
+                std::memset(pin.Data(), 0x49, c.shardSize); pin.MarkReady();
+                pins.push_back(std::move(pin)); desc.push_back({blocks[i], 0, {target[i].data()}});
+            }
+            Send(mapped[1]); Receive(waiting[0]);
+            auto task = std::make_shared<UC::CacheStore::TransTask>(UC::CacheStore::TransTask::Type::LOAD, desc);
+            task->loadHandles = std::move(pins);
+            UC::HashSet<UC::Detail::TaskHandle> failures;
+            UC::CacheStore::LoadQueue queue;
+            Require(queue.Setup(c, &failures, buffer).Success(), "native load setup");
+            auto waiter = std::make_shared<UC::Latch>();
+            queue.Submit(task, waiter);
+            Require(waiter->WaitForDuration(4000), "native consumer stalled");
+            Require(!failures.Contains(task->id), "native consumer failed");
+            task.reset();
+            for (auto& bytes : target) { for (auto byte : bytes) { Require(byte == 0x49, "consumer data corrupt"); } }
+            Receive(finished[0]);
+        }
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << std::endl; result = 1;
+    }
+    if (child == 0) { _exit(result || testing::Test::HasFailure() ? 1 : 0); }
+    int status = 0; ASSERT_EQ(::waitpid(child, &status, 0), child);
+    EXPECT_EQ(result, 0); ASSERT_TRUE(WIFEXITED(status)); EXPECT_EQ(WEXITSTATUS(status), 0);
+    for (int fd : {mapped[0], mapped[1], waiting[0], waiting[1], finished[0], finished[1]}) { ::close(fd); }
+}

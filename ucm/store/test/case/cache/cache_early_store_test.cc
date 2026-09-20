@@ -1358,3 +1358,140 @@ TEST(UCCacheEarlyStoreTest, ExplicitSuffixDiscardDrainsAndDoesNotHideReadFailure
         EXPECT_TRUE(backend.lease.expired());
     }
 }
+
+TEST(UCCacheEarlyStoreTest, DeferredQueryReleasesPinsAndRevalidatesEvictedL1Only)
+{
+    Backend backend;
+    auto c = BatchConfig(&backend);
+    c.bufferCapacity = c.shardSize;
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(c).Success());
+    auto* buffer = manager.GetTransBuffer();
+    UC::CacheStore::ReservedPrefetch early(&manager, &backend, c.blockSize, c.shardSize, 1000);
+    UC::Detail::BlockId block{}, other{}; other[0] = std::byte{9};
+    { auto pin = buffer->TryGet(block, 0); ASSERT_TRUE(pin); pin.MarkReady(); }
+    EXPECT_CALL(backend, Load).Times(0);
+    // Initial query is L1-only. It must not turn into a false protected promise.
+    auto r = early.Reserve(&block, 1, true).Value();
+    EXPECT_EQ(r.totalHitBlocks, 1);
+    EXPECT_EQ(r.batch->ProtectedBytes(), 0);
+    auto replacement = buffer->TryGet(other, 0);
+    ASSERT_TRUE(replacement); replacement.MarkReady();
+    EXPECT_CALL(backend, LookupOnPrefix).WillOnce(testing::Return(ssize_t{-1}));
+    auto activated = r.batch->Activate();
+    ASSERT_TRUE(activated);
+    EXPECT_TRUE(activated.Value().done);
+    EXPECT_EQ(activated.Value().result.totalHitBlocks, 0);
+    early.Release(r.handle);
+}
+
+TEST(UCCacheEarlyStoreTest, DeferredL1OnlyFastPathProtectsWithoutDataExecution)
+{
+    Backend backend;
+    auto c = BatchConfig(&backend);
+    c.bufferCapacity = c.shardSize;
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(c).Success());
+    auto* buffer = manager.GetTransBuffer();
+    UC::CacheStore::ReservedPrefetch early(&manager, &backend, c.blockSize, c.shardSize, 1000);
+    UC::Detail::BlockId block{}, other{}; other[0] = std::byte{9};
+    { auto pin = buffer->TryGet(block, 0); ASSERT_TRUE(pin); pin.MarkReady(); }
+    EXPECT_CALL(backend, LookupOnPrefix).Times(0);
+    EXPECT_CALL(backend, Load).Times(0);
+    auto r = early.Reserve(&block, 1, true).Value();
+    EXPECT_EQ(r.batch->ProtectedBytes(), 0);
+    auto p = r.batch->Activate().Value();
+    ASSERT_TRUE(p.done);
+    EXPECT_EQ(p.result.totalHitBlocks, 1);
+    EXPECT_EQ(r.batch->ProtectedBytes(), c.shardSize);
+    EXPECT_FALSE(buffer->TryGet(other, 0));
+    UC::Detail::TaskDesc desc{{block, 0, {nullptr}}}; desc.loadReservations = {r.handle};
+    auto consumer = early.LoadHandles(desc);
+    ASSERT_TRUE(consumer[0]);
+    early.Release(r.handle);
+    EXPECT_FALSE(buffer->TryGet(other, 0));
+    consumer.clear();
+    EXPECT_TRUE(buffer->TryGet(other, 0));
+}
+
+TEST(UCCacheEarlyStoreTest, DeferredCapacityWaitResumesFullHitAfterConsumersRelease)
+{
+    Backend backend;
+    auto c = BatchConfig(&backend);
+    c.bufferCapacity = 4 * c.shardSize;
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(c).Success());
+    auto* buffer = manager.GetTransBuffer();
+    UC::CacheStore::ReservedPrefetch early(&manager, &backend, c.blockSize, c.shardSize, 1000);
+    std::array<UC::Detail::BlockId, 3> blocks{};
+    std::vector<UC::CacheStore::TransBuffer::Handle> consumers;
+    for (size_t i = 0; i < 3; ++i) {
+        UC::Detail::BlockId resident{}; resident[0] = std::byte(i + 10);
+        auto pin = buffer->TryGet(resident, 0); ASSERT_TRUE(pin); pin.MarkReady();
+        consumers.push_back(std::move(pin)); blocks[i][0] = std::byte(i);
+    }
+    EXPECT_CALL(backend, LookupOnPrefix).WillOnce(testing::Return(ssize_t{2}));
+    bool complete = false;
+    size_t reads = 0;
+    EXPECT_CALL(backend, Load).Times(2).WillRepeatedly(testing::Invoke([&](UC::Detail::TaskDesc task) {
+        reads += task.size();
+        for (auto& shard : task) { std::memset(shard.addrs[0], 42, c.shardSize); }
+        return UC::Detail::TaskHandle(reads);
+    }));
+    EXPECT_CALL(backend, Check).WillRepeatedly(testing::Invoke([&](auto) { return complete; }));
+    EXPECT_CALL(backend, Wait).Times(2).WillRepeatedly(testing::Return(UC::Status::OK()));
+    auto r = early.Reserve(blocks.data(), 3, true).Value();
+    EXPECT_EQ(r.batch->ProtectedBytes(), 0);
+    ASSERT_TRUE(r.batch->Activate());
+    auto p = r.batch->Step(r.batch->windowBytes).Value();
+    ASSERT_TRUE(p.waitingCapacity);
+    EXPECT_FALSE(p.result.capacityTruncated);
+    EXPECT_EQ(p.inflightBytes, c.shardSize);
+    for (int i = 0; i < 10; ++i) { EXPECT_FALSE(r.batch->Step(r.batch->windowBytes).Value().advanced); }
+    EXPECT_EQ(reads, 1);  // wait does not submit/spin-allocate
+    complete = true;
+    p = r.batch->Step(0).Value();
+    EXPECT_EQ(p.inflightBytes, 0); EXPECT_TRUE(p.waitingCapacity); EXPECT_FALSE(p.done);
+    const auto epoch = p.waitEpoch;
+    consumers.clear();
+    // Notification preceding registration cannot be lost.
+    EXPECT_NE(UC::CacheStore::EarlyBufferPins::WaitRelease(*buffer, epoch, 1000), epoch);
+    p = r.batch->Step(r.batch->windowBytes).Value();
+    EXPECT_FALSE(p.waitingCapacity);
+    p = r.batch->Step(0).Value();
+    ASSERT_TRUE(p.done);
+    EXPECT_EQ(p.result.totalHitBlocks, 3);
+    EXPECT_FALSE(p.result.capacityTruncated);
+    EXPECT_EQ(reads, 3);
+    early.Release(r.handle);
+}
+
+TEST(UCCacheEarlyStoreTest, UnsafePartialCutoffDrainsIoBeforeReturningSlots)
+{
+    Backend backend;
+    auto c = BatchConfig(&backend);
+    c.bufferCapacity = 4 * c.shardSize;
+    UC::CacheStore::BufferManager manager;
+    ASSERT_TRUE(manager.Setup(c).Success());
+    auto* buffer = manager.GetTransBuffer();
+    UC::CacheStore::ReservedPrefetch early(&manager, &backend, c.blockSize, c.shardSize, 1000);
+    std::array<UC::Detail::BlockId, 6> blocks{};
+    for (size_t i = 0; i < 6; ++i) { blocks[i][0] = std::byte(i); }
+    EXPECT_CALL(backend, LookupOnPrefix).WillOnce(testing::Return(ssize_t{5}));
+    bool completed = false;
+    EXPECT_CALL(backend, Load).WillOnce(testing::Return(UC::Detail::TaskHandle{1}));
+    EXPECT_CALL(backend, Check).WillRepeatedly(testing::Invoke([&](auto) { return completed; }));
+    EXPECT_CALL(backend, Wait).WillOnce(testing::Return(UC::Status::OK()));
+    auto r = early.Reserve(blocks.data(), blocks.size(), true).Value();
+    ASSERT_TRUE(r.batch->Activate());
+    auto p = r.batch->Step(r.batch->windowBytes).Value();
+    ASSERT_TRUE(p.waitingCapacity);
+    r.batch->Cutoff();  // caller has established an exceptional unsafe completion bound
+    p = r.batch->Step(0).Value();
+    EXPECT_FALSE(p.done); EXPECT_EQ(p.inflightBytes, 4 * c.shardSize);
+    early.Release(r.handle);  // cancellation still cannot release accepted I/O
+    EXPECT_FALSE(buffer->TryGet(blocks[5], 0));
+    completed = true;
+    EXPECT_FALSE(r.batch->Step(0));
+    EXPECT_TRUE(buffer->TryGet(blocks[5], 0));
+}

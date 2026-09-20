@@ -13,6 +13,9 @@ class DomainProvider {
 public:
     virtual ~DomainProvider() = default;
     virtual Domain DescribeDomain() = 0;
+    virtual Expected<PrefixReservation> ReserveDeferred(const Detail::BlockId*, size_t) = 0;
+    virtual uint32_t ReleaseEpoch() = 0;
+    virtual uint32_t WaitRelease(uint32_t epoch, unsigned milliseconds) = 0;
 };
 }  // namespace UC::Early
 #endif

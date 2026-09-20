@@ -14,6 +14,8 @@ class ReservedPrefetch::Batch final : public Early::Batch {
     Early::Progress progress_;
     bool started_{false};
     bool discard_{false};
+    bool activated_{false};
+    bool cutoff_{false};
     size_t cursor_{0};
     size_t prefixShards_{0};  // capacity cutoff, kept separate until accepted I/O drains
     std::deque<size_t> waiting_;
@@ -59,6 +61,16 @@ class ReservedPrefetch::Batch final : public Early::Batch {
             stats_->handle = handle_;
             r->started = started_ = true;
         }
+        if (r->deferred && !activated_) { return Status::Error("deferred batch not activated"); }
+        if (cutoff_) {
+            prefixShards_ = cursor_ / owner_.shardsPerBlock_ * owner_.shardsPerBlock_;
+            progress_.result.capacityTruncated = true;
+            progress_.waitingCapacity = false;
+        }
+        if (progress_.waitingCapacity &&
+            EarlyBufferPins::ReleaseEpoch(*owner_.buffer_) != progress_.waitEpoch) {
+            progress_.waitingCapacity = false;
+        }
         if (r->cancelled.load()) { Fail(Status::Error("reserved prefetch cancelled")); }
         if (!healthy_()) { Fail(Status::StoreUnhealthy()); }
         while (!transfers_.empty()) {
@@ -94,7 +106,7 @@ class ReservedPrefetch::Batch final : public Early::Batch {
                 // previous negative result is never trusted for allocation.
                 {
                 EarlyStats::Phase positioning{stats_->pinMs};
-                while (cursor_ < end && availableBytes >= shardBytes) {
+                while (!progress_.waitingCapacity && cursor_ < end && availableBytes >= shardBytes) {
                     if (r->cancelled.load()) { Fail(Status::Error("reserved prefetch cancelled")); break; }
                     auto& pin = r->Pin(cursor_, owner_.shardsPerBlock_);
                     const auto& block = r->blocks[cursor_ / owner_.shardsPerBlock_];
@@ -102,12 +114,18 @@ class ReservedPrefetch::Batch final : public Early::Batch {
                     bool allocated = false;
                     if (!pin) {
                         ++stats_->shards;
+                        const auto epoch = EarlyBufferPins::ReleaseEpoch(*owner_.buffer_);
                         // Native zero reservable slots must not reach FetchNode's modulo.
                         if (protectionLimitBytes) { pin = owner_.buffer_->TryGet(block, shard); }
                         if (!pin) {
-                            prefixShards_ = cursor_ / owner_.shardsPerBlock_ * owner_.shardsPerBlock_;
-                            progress_.result.capacityTruncated = true;
-                            progress_.advanced = true;
+                            if (r->deferred && !cutoff_) {
+                                progress_.waitingCapacity = true;
+                                progress_.waitEpoch = epoch;
+                            } else {
+                                prefixShards_ = cursor_ / owner_.shardsPerBlock_ * owner_.shardsPerBlock_;
+                                progress_.result.capacityTruncated = true;
+                                progress_.advanced = true;
+                            }
                             break;
                         }
                         allocated = pin.Owner() && !pin.Ready();
@@ -206,7 +224,7 @@ class ReservedPrefetch::Batch final : public Early::Batch {
         }
         if (transfers_.empty()) { active_.reset(); }
         progress_.canSubmit = status_.Success() && !discard_ && !progress_.done &&
-            cursor_ < prefixShards_;
+            !progress_.waitingCapacity && cursor_ < prefixShards_;
         if (progress_.done && status_.Failure()) { return status_; }
         return Early::Progress{progress_};
     }
@@ -220,6 +238,69 @@ public:
         prefixShards_ = r->blocks.size() * owner.shardsPerBlock_;
         progress_.remainingL2Work = r->initialMissing;
         if (r->ready) { progress_.result.totalHitBlocks = r->blocks.size(); }
+    }
+
+    Expected<Early::Progress> Activate() override
+    {
+        std::lock_guard lock(mutex_);
+        auto r = reservation_.lock();
+        if (!r || r->cancelled.load()) { return Status::Error("reservation cancelled"); }
+        if (!r->deferred || activated_ || started_) { return Status::Error("invalid activation"); }
+        if (!healthy_()) { return Status::StoreUnhealthy(); }
+        EarlyStats stats{"activate"};
+        auto located = owner_.Locate(r->blocks.data(), r->blocks.size(), stats);
+        if (!located) { return located.Error(); }
+        auto groups = std::move(located.Value());
+        // A formerly L1-only block may have been evicted. L2-positive results
+        // remain protected by the existing lease, negative locations do not.
+        std::vector<Detail::BlockId> uncertain;
+        std::vector<size_t> indices;
+        for (size_t i = 0; i < groups.size(); ++i) {
+            if (!groups[i]->ready && !r->inL2[i]) {
+                uncertain.push_back(r->blocks[i]); indices.push_back(i);
+            }
+        }
+        if (!uncertain.empty()) {
+            auto hit = owner_.backend_->LookupOnPrefix(uncertain.data(), uncertain.size());
+            if (!hit) { return hit.Error(); }
+            const auto miss = static_cast<size_t>(hit.Value() + 1);
+            if (miss < indices.size()) {
+                groups.resize(indices[miss]); r->blocks.resize(indices[miss]);
+            }
+        }
+        if (r->cancelled.load()) { return Status::Error("reservation cancelled"); }
+        r->groups = std::move(groups);
+        r->initialMissing = 0;
+        for (auto& group : r->groups) {
+            for (auto& pin : group->pins) { if (!pin || !pin.Ready()) { ++r->initialMissing; } }
+        }
+        activated_ = true;
+        prefixShards_ = r->blocks.size() * owner_.shardsPerBlock_;
+        progress_.remainingL2Work = r->initialMissing;
+        progress_.result.totalHitBlocks = r->blocks.size();
+        r->ready = r->initialMissing == 0;
+        if (r->ready) {
+            progress_.done = true;
+            progress_.canSubmit = false;
+            owner_.PublishReady(r);
+        }
+        return Early::Progress{progress_};
+    }
+    void Limit(size_t count) override
+    {
+        std::lock_guard lock(mutex_);
+        auto r = reservation_.lock();
+        if (!r || !r->deferred || activated_ || started_ || count > r->blocks.size()) {
+            throw std::runtime_error("invalid deferred prefix limit");
+        }
+        r->blocks.resize(count);
+        r->inL2.resize(count);
+        prefixShards_ = count * owner_.shardsPerBlock_;
+    }
+    void Cutoff() override
+    {
+        std::lock_guard lock(mutex_);
+        cutoff_ = true;
     }
 
     size_t ProtectedBytes() const override

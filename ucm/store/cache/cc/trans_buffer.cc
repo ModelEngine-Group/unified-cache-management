@@ -22,6 +22,7 @@
  * SOFTWARE.
  * */
 #include "trans_buffer.h"
+#include "buffer_release_event.h"
 #include <atomic>
 #include <filesystem>
 #include <thread>
@@ -69,7 +70,11 @@ static_assert(std::atomic<TransBuffer::State>::is_always_lock_free, "state must 
 static_assert(std::atomic<int32_t>::is_always_lock_free, "errorCode must be lock-free");
 
 class BufferStrategy {
+    friend class TransBuffer;
+    friend class EarlyBufferPins;
 protected:
+    BufferReleaseEvent localRelease_;
+    BufferReleaseEvent* releaseEvent_{&localRelease_};
     struct BaseConfig {
         int32_t deviceId{-1};
         size_t nodeSize{0};
@@ -279,12 +284,13 @@ protected:
         bool TryLock() { return pthread_spin_trylock(&lock) == 0; }
         void Unlock() { pthread_spin_unlock(&lock); }
     };
-    static constexpr size_t sharedBufferMagic = (('S' << 16) | ('b' << 8) | 2);
+    static constexpr size_t sharedBufferMagic = (('S' << 16) | ('b' << 8) | 3);
     struct BufferHeader {
         std::atomic<size_t> magic;
         size_t nNode;
         alignas(64) std::atomic<size_t> nodeCursor;
-        char nodeCursorPad[64 - sizeof(std::atomic<size_t>)];
+        BufferReleaseEvent releaseEvent;
+        char nodeCursorPad[64 - sizeof(std::atomic<size_t>) - sizeof(BufferReleaseEvent)];
         size_t buckets[nHashTableBucket];
         ShareMutex bucketLocks[nHashTableBucket];
         ShareLock nodeLocks[0];
@@ -388,11 +394,14 @@ protected:
         auto s = MmapShmFile(shmFile, totalSize_, addrress_);
         if (s.Failure()) [[unlikely]] { return s; }
         header_ = static_cast<BufferHeader*>(addrress_);
+        releaseEvent_ = &header_->releaseEvent;
         meta_ = (BufferMetaNode*)(static_cast<std::byte*>(addrress_) + MetaOffset());
         accessed_ = reinterpret_cast<std::atomic<uint8_t>*>(static_cast<std::byte*>(addrress_) +
                                                             AccessedOffset());
         header_->nNode = nNode_;
         header_->nodeCursor.store(0, std::memory_order_relaxed);
+        new (&header_->releaseEvent) BufferReleaseEvent;
+        releaseEvent_ = &header_->releaseEvent;
         for (size_t i = 0; i < nHashTableBucket; i++) {
             header_->buckets[i] = invalidIndex;
             header_->bucketLocks[i].Init();
@@ -420,6 +429,7 @@ protected:
             UC_ERROR("Shm file({}) not ready.", shmFile.ShmName());
             return s;
         }
+        releaseEvent_ = &header_->releaseEvent;
         meta_ = (BufferMetaNode*)(static_cast<std::byte*>(addrress_) + MetaOffset());
         accessed_ = reinterpret_cast<std::atomic<uint8_t>*>(static_cast<std::byte*>(addrress_) +
                                                             AccessedOffset());
@@ -543,6 +553,7 @@ public:
         s = MmapShmFile(shmFile, totalSize_, addrress_, false);
         if (s.Failure()) [[unlikely]] { return s; }
         header_ = static_cast<BufferHeader*>(addrress_);
+        releaseEvent_ = &header_->releaseEvent;
         meta_ = (BufferMetaNode*)(static_cast<std::byte*>(addrress_) + MetaOffset());
         accessed_ = reinterpret_cast<std::atomic<uint8_t>*>(static_cast<std::byte*>(addrress_) +
                                                             AccessedOffset());
@@ -752,8 +763,9 @@ void TransBuffer::Acquire(Index pos)
 void TransBuffer::Release(Index pos)
 {
     strategy_->NodeLock(pos);
-    --strategy_->MetaAt(pos)->reference;
+    const bool released = --strategy_->MetaAt(pos)->reference == 0;
     strategy_->NodeUnlock(pos);
+    if (released) { strategy_->releaseEvent_->Notify(); }
 }
 
 bool TransBuffer::Ready(Index pos) { return GetState(pos) == State::READY; }

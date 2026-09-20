@@ -33,6 +33,8 @@ class ReservedPrefetch {
         std::mutex mutex;
         std::atomic<bool> cancelled{false};
         std::weak_ptr<Early::Batch> batch;
+        bool deferred{false};
+        std::vector<bool> inL2;
         bool started{false};
         bool ready{false};
     };
@@ -125,7 +127,7 @@ class ReservedPrefetch {
         std::lock_guard guard(mutex_);
         if (r->cancelled.load()) { return readyBlocks_.size(); }
         if (r->ready) { InvalidateLoadPlan(r->handle); }
-        for (size_t i = 0; i < r->blocks.size(); ++i) { Remember(r->blocks[i], r->groups[i]); }
+        for (size_t i = 0; i < r->groups.size(); ++i) { Remember(r->blocks[i], r->groups[i]); }
         return readyBlocks_.size();
     }
 
@@ -138,7 +140,7 @@ public:
           hintBlockCapacity_(buffer_ ? EarlyBufferPins::HintBlockCapacity(*buffer_, shardsPerBlock_) : 0)
     {}
 
-    Expected<PrefixReservation> Reserve(const Detail::BlockId* blocks, size_t num)
+    Expected<PrefixReservation> Reserve(const Detail::BlockId* blocks, size_t num, bool deferred = false)
     {
         EarlyStats stats{"reserve"};
         if (!buffer_) { return Status::Error("Early requires a worker data buffer"); }
@@ -178,6 +180,8 @@ public:
             const auto firstMiss = static_cast<size_t>(hit.Value() + 1);
             if (firstMiss < needL2.size()) { count = needL2Indices[firstMiss]; }
         }
+        r->inL2.resize(count, false);
+        for (auto index : needL2Indices) { if (index < count) { r->inL2[index] = true; } }
         r->blocks.resize(count);
         r->groups.resize(count);
         size_t missing = 0;
@@ -190,6 +194,13 @@ public:
         }
         r->ready = missing == 0;
         r->initialMissing = missing;
+        r->deferred = deferred;
+        if (deferred) {
+            // Preserve verified hints, never references while waiting for HRRN.
+            if (r->ready) { PublishReady(r); }
+            r->groups.clear();
+            r->ready = count == 0;
+        }
         const auto handle = stats.handle;
         auto batch = MakeBatch(r, handle);
         r->batch = batch;

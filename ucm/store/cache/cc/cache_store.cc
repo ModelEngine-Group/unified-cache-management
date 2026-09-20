@@ -319,6 +319,16 @@ public:
         return result;
     }
 
+    Expected<PrefixReservation> ReserveDeferred(const Detail::BlockId* blocks, size_t num) override
+    {
+        if (!early_) { return Status::Error("Early reservation disabled"); }
+        return early_->Reserve(blocks, num, true);
+    }
+    uint32_t ReleaseEpoch() override
+    { return EarlyBufferPins::ReleaseEpoch(*bufferMgr_.GetTransBuffer()); }
+    uint32_t WaitRelease(uint32_t epoch, unsigned milliseconds) override
+    { return EarlyBufferPins::WaitRelease(*bufferMgr_.GetTransBuffer(), epoch, milliseconds); }
+
     Expected<PrefixReservation> ReservePrefix(const Detail::BlockId* blocks, size_t num) override
     {
         if (!early_) { return Status::Error("Early reservation disabled"); }

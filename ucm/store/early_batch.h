@@ -8,6 +8,8 @@ namespace UC::Early {
 // A capability of an existing reservation, not another Store or I/O executor.
 // Step never waits for unfinished I/O. Run retains the synchronous API.
 struct Progress {
+    bool waitingCapacity{false};
+    uint32_t waitEpoch{0};
     bool done{false};
     bool advanced{false};
     bool canSubmit{true};
@@ -28,6 +30,10 @@ public:
     virtual ~Batch() = default;
     virtual Expected<Progress> Step(size_t availableBytes) = 0;
     virtual Progress Snapshot() = 0;
+    // Deferred query owns identities/lease only; execution revalidates L1.
+    virtual Expected<Progress> Activate() { return Status::Error("not deferred"); }
+    virtual void Limit(size_t) {}  // before activation, intrinsic oversize only
+    virtual void Cutoff() {}  // exceptional unsafe/impossible wait, never normal NoSpace
     virtual void Discard() = 0;  // stop new suffix I/O; Step still collects submitted I/O
     virtual Expected<PrefetchResult> Run() = 0;
     virtual size_t ProtectedBytes() const = 0;

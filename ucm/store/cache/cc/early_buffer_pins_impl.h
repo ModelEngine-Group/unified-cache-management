@@ -9,6 +9,11 @@
 #include <sys/sysmacros.h>
 
 namespace UC::CacheStore {
+uint32_t EarlyBufferPins::ReleaseEpoch(TransBuffer& buffer)
+{ return buffer.strategy_->releaseEvent_->epoch.load(std::memory_order_seq_cst); }
+uint32_t EarlyBufferPins::WaitRelease(TransBuffer& buffer, uint32_t epoch, unsigned milliseconds)
+{ return buffer.strategy_->releaseEvent_->Wait(epoch, milliseconds); }
+
 // Same native identity, reference and allocation operations as Get, with the
 // existing Alloc attempt bound. No waiting for another task to return capacity.
 TransBuffer::Handle EarlyBufferPins::Acquire(TransBuffer& buffer,

@@ -29,6 +29,17 @@ struct BoundBatch {
 // shared with the native Load entry instead of duplicating buffer parsing.
 struct LoadBinding {
     template <class Pipeline>
+    static UC::Early::DomainProvider& Provider(Pipeline& pipeline)
+    {
+        for (const auto& health : pipeline.healthBreakerStores_) {
+            if (!health->Enabled()) { throw std::runtime_error("Early store unhealthy"); }
+        }
+        for (const auto& store : pipeline.stores_) {
+            if (auto* provider = dynamic_cast<UC::Early::DomainProvider*>(store.get())) { return *provider; }
+        }
+        throw std::runtime_error("Early deferred capability unavailable");
+    }
+    template <class Pipeline>
     static UC::Early::Domain Domain(Pipeline& pipeline)
     {
         for (const auto& health : pipeline.healthBreakerStores_) {
@@ -77,7 +88,27 @@ void BindOperations(pybind11::module_& module)
         out["block_bytes"] = domain.blockBytes;
         return out;
     });
+    module.def("EarlyReleaseEpoch", [](Pipeline& pipeline) {
+        return LoadBinding::Provider(pipeline).ReleaseEpoch();
+    });
+    module.def("EarlyWaitRelease", [](Pipeline& pipeline, uint32_t epoch, unsigned milliseconds) {
+        auto& provider = LoadBinding::Provider(pipeline);
+        py::gil_scoped_release release;
+        return provider.WaitRelease(epoch, std::min(milliseconds, 1000u));
+    });
     py::class_<BoundBatch>(module, "EarlyBatch")
+        .def("activate", [](BoundBatch& b) {
+            UC::Early::Progress progress;
+            { py::gil_scoped_release release;
+              progress = ValueOrThrow<NotFoundError, UnhealthyError>(b.batch->Activate()); }
+            py::dict out;
+            out["done"] = progress.done;
+            out["total_hit_blocks"] = progress.result.totalHitBlocks;
+            out["remaining_l2_work"] = progress.remainingL2Work;
+            return out;
+        })
+        .def("limit", [](BoundBatch& b, size_t count) { b.batch->Limit(count); })
+        .def("cutoff", [](BoundBatch& b) { b.batch->Cutoff(); })
         .def_property_readonly("window_bytes", [](const BoundBatch& b) { return b.batch->windowBytes; })
         .def_property_readonly("shard_bytes", [](const BoundBatch& b) { return b.batch->shardBytes; })
         .def_property_readonly("protection_limit_bytes", [](const BoundBatch& b) { return b.batch->protectionLimitBytes; })
@@ -103,6 +134,8 @@ void BindOperations(pybind11::module_& module)
                 progress = ValueOrThrow<NotFoundError, UnhealthyError>(b.batch->Step(availableBytes));
             }
             py::dict out;
+            out["waiting_capacity"] = progress.waitingCapacity;
+            out["wait_epoch"] = progress.waitEpoch;
             out["done"] = progress.done;
             out["discarded"] = progress.discarded;
             out["advanced"] = progress.advanced;
@@ -154,7 +187,7 @@ void BindOperations(pybind11::module_& module)
 
     // The synchronous binding keeps the Python Pipeline argument alive. Self()
     // returns its existing entry, including the native health wrapper.
-    module.def("EarlyReservePrefix", [](py::object keeper, const py::buffer& ids) {
+    module.def("EarlyReservePrefix", [](py::object keeper, const py::buffer& ids, bool deferred) {
         auto& pipeline = keeper.cast<Pipeline&>();
         const auto info = ids.request(false);
         const auto* blocks = static_cast<const Detail::BlockId*>(info.ptr);
@@ -165,10 +198,18 @@ void BindOperations(pybind11::module_& module)
         {
             py::gil_scoped_release release;
             result = ValueOrThrow<NotFoundError, UnhealthyError>(
-                store->ReservePrefix(blocks, count));
+                deferred ? LoadBinding::Provider(pipeline).ReserveDeferred(blocks, count)
+                         : store->ReservePrefix(blocks, count));
+            if (deferred && result.batch) {
+                result.batch->SetHealthGuard([&pipeline] {
+                    try { (void)LoadBinding::Provider(pipeline); return true; }
+                    catch (...) { return false; }
+                });
+            }
         }
         try {
             py::dict out;
+            out["deferred"] = deferred;
             out["handle"] = result.handle;
             out["total_hit_blocks"] = result.totalHitBlocks;
             out["remaining_l2_work"] = result.remainingL2Work;
@@ -187,7 +228,7 @@ void BindOperations(pybind11::module_& module)
             store->ReleaseReservation(result.handle);
             throw;
         }
-    }, py::arg("pipeline"), py::arg("ids").noconvert());
+    }, py::arg("pipeline"), py::arg("ids").noconvert(), py::arg("deferred") = false);
 
     module.def("EarlyPrefetchReserved", [](Pipeline& pipeline, uint64_t handle) {
         auto* store = reinterpret_cast<StoreV1*>(pipeline.Self());

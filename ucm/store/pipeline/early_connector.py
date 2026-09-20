@@ -102,7 +102,7 @@ class EarlyPipelineStore(UcmPipelineStore):
             "EarlyReservePrefix", "EarlyPrefetchReserved", "EarlyReleaseReservation",
             "EarlyLoad", "EarlyDump", "EarlyCapacityRejected",
             "EarlyBatch",
-            "EarlyDomainInfo",
+            "EarlyDomainInfo", "EarlyWaitRelease", "EarlyReleaseEpoch",
         )
         if not all(callable(getattr(ucmpipelinestore, name, None)) for name in required):
             raise RuntimeError(
@@ -129,10 +129,16 @@ class EarlyPipelineStore(UcmPipelineStore):
                 return count - 1
         return super().lookup_on_prefix(block_ids)
 
-    def reserve_prefix(self, block_ids: list[bytes]) -> dict:
+    def reserve_prefix(self, block_ids: list[bytes], *, deferred=False) -> dict:
         return ucmpipelinestore.EarlyReservePrefix(
-            self._native_store, np.frombuffer(b"".join(block_ids), dtype=np.uint8)
+            self._native_store, np.frombuffer(b"".join(block_ids), dtype=np.uint8), deferred
         )
+
+    def release_epoch(self):
+        return ucmpipelinestore.EarlyReleaseEpoch(self._native_store)
+
+    def wait_release(self, epoch, milliseconds=250):
+        return ucmpipelinestore.EarlyWaitRelease(self._native_store, epoch, milliseconds)
 
     def domain_info(self):
         return dict(ucmpipelinestore.EarlyDomainInfo(self._native_store))
