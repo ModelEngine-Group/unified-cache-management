@@ -1,0 +1,337 @@
+{
+  "active_session_sensitivity_sweep": {},
+  "interleaving": {
+    "active_sessions": 32,
+    "algorithm": "stochastic causal renewal-process merge",
+    "arrival_time_field_emitted": false,
+    "primer_included": false,
+    "prompt_salt_label": "swe-rebench-w32-noprimer-seed-20260725",
+    "runtime_requirement": "A request must wait for depends_on completion; max request concurrency is a separate replay parameter.",
+    "seed": 20260725,
+    "session_namespace_assumption": "Tier model treats each trajectory as uniquely salted, so only within-session prefix reuse is counted.",
+    "timestamps_are_synthetic": true,
+    "virtual_delay": {
+      "lognormal_median": 1.0,
+      "lognormal_sigma": 0.6,
+      "minimum": 0.5
+    }
+  },
+  "interpretation_limits": {
+    "capacity_coverage": "Intervening distinct-prefix tokens are an access-footprint proxy, not an observed LMCache eviction event.",
+    "physical_ssd": "L2_USE_ODIRECT=false permits filesystem page-cache hits; this analysis cannot establish physical SSD reads.",
+    "tier_model": "Predicted L1/L2/cold rates come from the declared simplified LRU model and require service-log validation.",
+    "virtual_time": "The source has no production timestamps. Virtual ready times only generate a reproducible, irregular causal order."
+  },
+  "interval_analysis": {
+    "all_measured": {
+      "capacity_threshold_coverage": {
+        "cpu_hard_capacity_tokens": 1881556,
+        "cpu_watermark_tokens": 1505244.8,
+        "fraction_ge_cpu_hard_capacity": 0.5837145471180238,
+        "fraction_ge_cpu_watermark": 0.7932296431838975,
+        "fraction_ge_ssd_hard_capacity": 0.0,
+        "fraction_ge_ssd_watermark": 0.0,
+        "ssd_hard_capacity_tokens": 9407784,
+        "ssd_watermark_tokens": 7526227.2
+      },
+      "gap_requests": {
+        "count": 3279,
+        "maximum": 211,
+        "mean": 28.874,
+        "minimum": 0,
+        "p10": 14.0,
+        "p25": 19.0,
+        "p50": 26.0,
+        "p75": 35.0,
+        "p90": 47.0,
+        "p95": 55.0,
+        "p99": 82.0
+      },
+      "gap_virtual_time": {
+        "count": 3279,
+        "maximum": 11.679135424,
+        "mean": 1.707,
+        "minimum": 0.613496935,
+        "p10": 0.976,
+        "p25": 1.183,
+        "p50": 1.505,
+        "p75": 2.004,
+        "p90": 2.643,
+        "p95": 3.178,
+        "p99": 4.672
+      },
+      "intervening_distinct_prefix_tokens": {
+        "count": 3279,
+        "maximum": 3596800,
+        "mean": 1937369.979,
+        "minimum": 0,
+        "p10": 1173401.6,
+        "p25": 1610752.0,
+        "p50": 2002944.0,
+        "p75": 2352896.0,
+        "p90": 2620160.0,
+        "p95": 2743116.8,
+        "p99": 2934220.8
+      },
+      "intervening_query_tokens": {
+        "count": 3279,
+        "maximum": 17713664,
+        "mean": 2491641.598,
+        "minimum": 0,
+        "p10": 1234636.8,
+        "p25": 1673728.0,
+        "p50": 2246912.0,
+        "p75": 3019392.0,
+        "p90": 4059955.2,
+        "p95": 4752819.2,
+        "p99": 6910095.36
+      },
+      "intervening_sessions": {
+        "count": 3279,
+        "maximum": 39,
+        "mean": 22.403,
+        "minimum": 0,
+        "p10": 13.0,
+        "p25": 19.0,
+        "p50": 24.0,
+        "p75": 27.0,
+        "p90": 30.0,
+        "p95": 31.0,
+        "p99": 33.0
+      },
+      "reuse_upper_bound": {
+        "count": 3279,
+        "maximum": 1.0,
+        "mean": 0.985,
+        "minimum": 0.8141592920353983,
+        "p10": 0.964,
+        "p25": 0.985,
+        "p50": 0.992,
+        "p75": 0.996,
+        "p90": 0.997,
+        "p95": 0.998,
+        "p99": 1.0
+      },
+      "transitions": 3279
+    },
+    "all_transitions": 3279,
+    "drain_tail_measured_transitions": 685,
+    "steady_state_definition": "Current event was emitted while the configured active-session pool was still full.",
+    "steady_state_measured": {
+      "capacity_threshold_coverage": {
+        "cpu_hard_capacity_tokens": 1881556,
+        "cpu_watermark_tokens": 1505244.8,
+        "fraction_ge_cpu_hard_capacity": 0.6638396299151889,
+        "fraction_ge_cpu_watermark": 0.8716268311488049,
+        "fraction_ge_ssd_hard_capacity": 0.0,
+        "fraction_ge_ssd_watermark": 0.0,
+        "ssd_hard_capacity_tokens": 9407784,
+        "ssd_watermark_tokens": 7526227.2
+      },
+      "gap_requests": {
+        "count": 2594,
+        "maximum": 211,
+        "mean": 31.082,
+        "minimum": 8,
+        "p10": 17.0,
+        "p25": 22.0,
+        "p50": 28.0,
+        "p75": 37.0,
+        "p90": 48.0,
+        "p95": 56.35,
+        "p99": 85.07
+      },
+      "gap_virtual_time": {
+        "count": 2594,
+        "maximum": 11.679135424,
+        "mean": 1.693,
+        "minimum": 0.613496935,
+        "p10": 0.97,
+        "p25": 1.181,
+        "p50": 1.505,
+        "p75": 1.973,
+        "p90": 2.569,
+        "p95": 3.102,
+        "p99": 4.588
+      },
+      "intervening_distinct_prefix_tokens": {
+        "count": 2594,
+        "maximum": 3596800,
+        "mean": 2070695.377,
+        "minimum": 666368,
+        "p10": 1425561.6,
+        "p25": 1730432.0,
+        "p50": 2107776.0,
+        "p75": 2425088.0,
+        "p90": 2665395.2,
+        "p95": 2780006.4,
+        "p99": 2953807.36
+      },
+      "intervening_query_tokens": {
+        "count": 2594,
+        "maximum": 17713664,
+        "mean": 2652870.76,
+        "minimum": 666368,
+        "p10": 1466240.0,
+        "p25": 1809280.0,
+        "p50": 2363136.0,
+        "p75": 3141184.0,
+        "p90": 4146099.2,
+        "p95": 4864025.6,
+        "p99": 7020730.88
+      },
+      "intervening_sessions": {
+        "count": 2594,
+        "maximum": 39,
+        "mean": 24.199,
+        "minimum": 8,
+        "p10": 17.0,
+        "p25": 21.0,
+        "p50": 25.0,
+        "p75": 28.0,
+        "p90": 30.0,
+        "p95": 31.0,
+        "p99": 33.0
+      },
+      "reuse_upper_bound": {
+        "count": 2594,
+        "maximum": 1.0,
+        "mean": 0.984,
+        "minimum": 0.8141592920353983,
+        "p10": 0.961,
+        "p25": 0.985,
+        "p50": 0.992,
+        "p75": 0.996,
+        "p90": 0.997,
+        "p95": 0.998,
+        "p99": 1.0
+      },
+      "transitions": 2594
+    }
+  },
+  "outputs": {
+    "intervals": {
+      "path": "/data/datasets/glm51-vllm-lmcache/processed/swe_rebench_openhands_trajectories/subset100_w32_noprimer/causal_w32_noprimer.seed-20260725.intervals.jsonl",
+      "sha256": "53f682c6af766a9ebe6cd5a49521b35f2d8541556232b7cf13239b0ad6d56ffc",
+      "size_bytes": 1146794
+    },
+    "order": {
+      "path": "/data/datasets/glm51-vllm-lmcache/processed/swe_rebench_openhands_trajectories/subset100_w32_noprimer/causal_w32_noprimer.seed-20260725.order.jsonl",
+      "sha256": "9cf0b970efa0bc4bb1c755f0ab0cf6d8dfea67eb216c894603064f280eb99392",
+      "size_bytes": 1772033
+    },
+    "profiles": {
+      "path": "/data/datasets/glm51-vllm-lmcache/processed/swe_rebench_openhands_trajectories/subset100_w32_noprimer/causal_w32_noprimer.seed-20260725.profiles.jsonl",
+      "sha256": "653e1c563af4b7cb8a91b21a7a4b04c06b25d38f0a9ec7d47e1ff7b4fde0c996",
+      "size_bytes": 417730
+    },
+    "tier_model_events": {
+      "path": "/data/datasets/glm51-vllm-lmcache/processed/swe_rebench_openhands_trajectories/subset100_w32_noprimer/causal_w32_noprimer.seed-20260725.tier-model.jsonl",
+      "sha256": "46bf037fccf4055e707db0a4e7240df395b89b32c39fc59969f4197c7e9db75e",
+      "size_bytes": 338469
+    }
+  },
+  "profile_summary": {
+    "measured_prompt_tokens": {
+      "count": 3379,
+      "maximum": 121887,
+      "mean": 87225.76,
+      "minimum": 64015,
+      "p10": 68409.0,
+      "p25": 75206.0,
+      "p50": 86610.0,
+      "p75": 98677.0,
+      "p90": 106349.8,
+      "p95": 111131.0,
+      "p99": 116980.18
+    },
+    "measured_requests": 3379,
+    "measured_requests_per_trajectory": {
+      "count": 100,
+      "maximum": 60,
+      "mean": 33.79,
+      "minimum": 5,
+      "p10": 19.0,
+      "p25": 27.0,
+      "p50": 34.0,
+      "p75": 42.0,
+      "p90": 48.1,
+      "p95": 56.0,
+      "p99": 58.02
+    },
+    "primer_included": false,
+    "primer_requests": 0,
+    "trajectories": 100
+  },
+  "schema_version": 1,
+  "source": {
+    "candidate_trajectories": 100,
+    "candidates": "/data/datasets/glm51-vllm-lmcache/processed/swe_rebench_openhands_trajectories/subset100_w46/subset100.seed-20260726.candidates.jsonl",
+    "candidates_sha256": "48dfacdc9ca9740a05cf2ff80bad3b4e9a31e9b046ae5553427273fbdb6ba0a2",
+    "parquet": "/data/datasets/glm51-vllm-lmcache/raw/swe_rebench_openhands_trajectories/trajectories.parquet",
+    "parquet_sha256": "14048dd1fcd22ce094b6e85f8a38f223a9ef1327031aaaad052804870212efa1",
+    "repo_id": "nebius/SWE-rebench-openhands-trajectories",
+    "reused_profiles": {
+      "path": "/data/datasets/glm51-vllm-lmcache/processed/swe_rebench_openhands_trajectories/subset100_w46/causal_w46.seed-20260725.profiles.jsonl",
+      "sha256": "75371096b69c36398df52aff2ccc8278b53a6e0befb3fb8bf1b896121c31b665"
+    },
+    "revision": "35455389ab51bf5e2306bfd436ef72d0f98bf882"
+  },
+  "tier_model": {
+    "l1": {
+      "capacity_chunks": 7349,
+      "evicted_objects": 986112,
+      "eviction_events": 814,
+      "final_objects": 5300,
+      "maximum_objects_before_eviction": 6324,
+      "trigger_chunks": 5880
+    },
+    "l2": {
+      "capacity_chunks": 36749,
+      "evicted_objects": 17704,
+      "eviction_events": 3,
+      "final_objects": 24996,
+      "maximum_objects_before_eviction": 29563,
+      "trigger_chunks": 29400
+    },
+    "measured": {
+      "cold_tokens": 10931200,
+      "compulsory_new_tokens": 10931200,
+      "l1_hit_tokens": 40507392,
+      "l2_hit_tokens": 242870272,
+      "query_tokens": 294308864,
+      "request_rates": {
+        "with_any_cold": 0.9559041136430897,
+        "with_any_l1": 0.14205386208937557,
+        "with_any_l2": 0.8514353358981948
+      },
+      "requests": 3379,
+      "requests_with_any_cold": 3230,
+      "requests_with_any_l1_hit": 480,
+      "requests_with_any_l2_hit": 2877,
+      "reusable_cold_tokens": 0,
+      "reusable_token_rates": {
+        "cold": 0.0,
+        "l1": 0.14294490055504164,
+        "l2": 0.8570550994449584
+      },
+      "reusable_tokens": 283377664,
+      "token_rates": {
+        "cold": 0.03714193263305858,
+        "l1": 0.137635650688387,
+        "l2": 0.8252224166785544
+      }
+    },
+    "model": "Session-salted chunk-level LRU approximation. Each request touches all aligned prefix chunks; eviction removes the oldest configured fraction when the tier reaches its watermark."
+  },
+  "tokenization": {
+    "chat_template_sha256": "03b1bbff20331e54647c68167e8ac7f0b5b7ceb40ead372f44826624a9ad79cd",
+    "chunk_size_tokens": 256,
+    "enable_thinking": false,
+    "target_max_tokens_exclusive": 128000,
+    "target_min_tokens_inclusive": 64000,
+    "tokenizer": "/data/models/GLM-5.1-FP8-12L",
+    "tokenizer_json_sha256": "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d",
+    "tools_sha256": "d13c473da05d5cd18f6d2fb23146015585f4159fb64cb819fdc9dd8948caae9d"
+  }
+}

@@ -1,0 +1,8 @@
+# Preserve audited bytes, including CSV CRLF and rendered SVG whitespace.
+# Input snapshots and bulky generated data are reviewed by their checksums.
+inputs/** -text -diff
+inputs/SOURCE-LOCK.json text diff
+generated/analysis/** -text -diff
+generated/figures/** -text -diff
+generated/closed-loop-w17-64k128k/*.jsonl -text -diff
+generated/validation/prompt-token-hashes.jsonl -text -diff

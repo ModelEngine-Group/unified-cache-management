@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "purpose": "UCM closed-loop completion-driven C16/C32 replay",
+  "lmcache_runtime_included": false,
+  "method_mapping": {
+    "no_prefetch": "UCM native-staging",
+    "ours": "UCM ours"
+  },
+  "client_protocol": {
+    "allowed_concurrency": [16, 32],
+    "active_session_pool": 32,
+    "active_session_pool_is_client_concurrency": false,
+    "arrival_schedule": null,
+    "offered_rate_rps": null,
+    "send_order": "strict_manifest_order",
+    "dependency_policy": "wait_for_depends_on_completion",
+    "historical_global_hol_semantics_preserved": true,
+    "seed": 20260725,
+    "primer_included": false,
+    "max_output_tokens": 1
+  },
+  "workload": {
+    "requests": 3379,
+    "trajectories": 100,
+    "body_tokens": {
+      "minimum": 64015,
+      "mean": 87225.759988,
+      "p50": 86610.0,
+      "p95": 111131.0,
+      "maximum": 121887
+    },
+    "salted_tokens": {
+      "minimum": 64067,
+      "mean": 87278.024268,
+      "p50": 86662.0,
+      "p95": 111185.5,
+      "maximum": 121939
+    }
+  },
+  "integrity": {
+    "order_sha256": "9cf0b970efa0bc4bb1c755f0ab0cf6d8dfea67eb216c894603064f280eb99392",
+    "manifest_file_sha256": "5abf18bed88f6fb948c14f137f6b25fde1b2189968a22ce467b0c770d3175341",
+    "profiles_sha256": "653e1c563af4b7cb8a91b21a7a4b04c06b25d38f0a9ec7d47e1ff7b4fde0c996",
+    "intervals_sha256": "53f682c6af766a9ebe6cd5a49521b35f2d8541556232b7cf13239b0ad6d56ffc",
+    "tier_model_sha256": "46bf037fccf4055e707db0a4e7240df395b89b32c39fc59969f4197c7e9db75e",
+    "compact_parquet_sha256": "14741b8eed207ff91436a49f4e707df9f708a2a2fe60befa713dc64f1b0d2416",
+    "tokenizer_json_sha256": "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d",
+    "chat_template_sha256": "03b1bbff20331e54647c68167e8ac7f0b5b7ceb40ead372f44826624a9ad79cd",
+    "full_submit_order_sha256": "29262f6715561ee083f5733efcaece4b97d725d0c5ec879ea98b49c9c51fec97"
+  }
+}

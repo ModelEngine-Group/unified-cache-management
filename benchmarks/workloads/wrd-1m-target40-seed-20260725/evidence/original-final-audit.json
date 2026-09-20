@@ -1,0 +1,14 @@
+{
+  "success": true,
+  "selected_W": 17,
+  "only_candidate_in_target": true,
+  "finite_reuses": 3279,
+  "numerator_le_1000000": 1332,
+  "original_inputs_unchanged": true,
+  "fixtures_max_not_last_and_real_zero_passed": true,
+  "manifest_paths_and_hashes_valid": true,
+  "second_process_output_identical": true,
+  "http_requests_sent": 0,
+  "models_started": 0,
+  "services_modified": 0
+}

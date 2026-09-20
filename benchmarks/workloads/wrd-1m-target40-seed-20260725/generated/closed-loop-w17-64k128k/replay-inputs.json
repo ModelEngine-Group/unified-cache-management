@@ -1,0 +1,18 @@
+{
+  "dependency_policy": "wait_for_depends_on_completion",
+  "manifest": "generated/closed-loop-w17-64k128k/causal_w17_noprimer.seed-20260725.manifest.json",
+  "max_concurrency": 32,
+  "max_model_len": 200000,
+  "max_output_tokens": 1,
+  "order": "generated/closed-loop-w17-64k128k/causal_w17_noprimer.seed-20260725.order.jsonl",
+  "parquet": "inputs/source-metadata/trajectories.selected100.sparse-index.parquet",
+  "profile": "generated/closed-loop-w17-64k128k/causal_w17_noprimer.seed-20260725.profiles.jsonl",
+  "prompt_salt_prefix": "swe-rebench-w32-noprimer-seed-20260725",
+  "request_timeout": 3600,
+  "runner": "vendor/benchmark_swe_rebench_closed_loop.py",
+  "seed": 20260725,
+  "send_order": "strict_manifest_order",
+  "session_pool": 17,
+  "tokenizer": "inputs/tokenizer",
+  "tools": "inputs/source-metadata/tools.json"
+}

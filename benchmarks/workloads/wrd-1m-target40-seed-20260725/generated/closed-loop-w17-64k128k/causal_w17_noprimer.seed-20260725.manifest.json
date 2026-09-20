@@ -1,0 +1,172 @@
+{
+  "active_session_sensitivity_sweep": {
+    "path": "generated/analysis/search-all-w.csv",
+    "sha256": "5e7400b87a4d5b053d2adc0f77e0408a1c3a514d3cbc42d0f7149e949bac22a7",
+    "size_bytes": 42109
+  },
+  "generator": {
+    "baseline_order_byte_reproduced": true,
+    "entrypoint": "causal_merge(profiles, BuildConfig(active_sessions=W))",
+    "path": "vendor/build_swe_rebench_long_context.py",
+    "sha256": "0fec5d50328db5f539cf090d2eb6a240a5f64b15a531b1e30e57808bed87ac4b",
+    "size_bytes": 57534
+  },
+  "interleaving": {
+    "active_sessions": 17,
+    "algorithm": "stochastic causal renewal-process merge",
+    "arrival_time_field_emitted": false,
+    "primer_included": false,
+    "prompt_salt_label": "swe-rebench-w32-noprimer-seed-20260725",
+    "runtime_requirement": "A request must wait for depends_on completion; max request concurrency is a separate replay parameter.",
+    "seed": 20260725,
+    "session_namespace_assumption": "Tier model treats each trajectory as uniquely salted, so only within-session prefix reuse is counted.",
+    "timestamps_are_synthetic": true,
+    "virtual_delay": {
+      "lognormal_median": 1.0,
+      "lognormal_sigma": 0.6,
+      "minimum": 0.5
+    }
+  },
+  "interpretation_limits": {
+    "concurrency": "C32 unchanged; W is an active-session pool and reduced W can reduce effective runnable concurrency.",
+    "virtual_time": "Synthetic ready times only determine order; replay waits for dependencies and has no arrival schedule.",
+    "wrd": "Global submission-order session-prefix footprint proxy; not DP block/shard reuse distance, cache hit rate, or Early speedup."
+  },
+  "interval_analysis": {
+    "cdf_weight": "one per finite reuse; first visits excluded; real zero included",
+    "definition": "sum of maximum aligned unsalted prompt tokens per intervening trajectory, between consecutive visits to the same trajectory, excluding endpoints",
+    "full_pool_definition": "current event active_sessions_at_emit == W",
+    "quantiles": "linear interpolation at (n-1)*p",
+    "summary": {
+      "W": 17,
+      "all_cdf_1000000": 0.4062214089661482,
+      "all_count_le_1000000": 1332,
+      "all_finite_count": 3279,
+      "all_first_visits": 100,
+      "all_max_tokens": 1842432,
+      "all_mean_tokens": 1040838.0701433364,
+      "all_min_tokens": 0,
+      "all_p50_tokens": 1075200.0,
+      "all_p90_tokens": 1397401.6,
+      "all_p95_tokens": 1446656.0,
+      "all_p99_tokens": 1542681.5999999996,
+      "all_requests": 3379,
+      "all_zero_count": 3,
+      "difference_from_target_pp": 0.6221408966148201,
+      "first_visits": 100,
+      "full_pool_cdf_1000000": 0.36831415030467163,
+      "full_pool_count_le_1000000": 1088,
+      "full_pool_finite_count": 2954,
+      "full_pool_first_visits": 99,
+      "full_pool_max_tokens": 1842432,
+      "full_pool_mean_tokens": 1079579.211916046,
+      "full_pool_min_tokens": 186624,
+      "full_pool_p50_tokens": 1100416.0,
+      "full_pool_p90_tokens": 1407744.0,
+      "full_pool_p95_tokens": 1452032.0,
+      "full_pool_p99_tokens": 1545848.3199999998,
+      "full_pool_requests": 3053,
+      "full_pool_zero_count": 0,
+      "requests": 3379,
+      "tail_cdf_1000000": 0.7507692307692307,
+      "tail_count_le_1000000": 244,
+      "tail_effect_pp": 3.7907258661476595,
+      "tail_finite_count": 325,
+      "tail_finite_share": 0.09911558401951814,
+      "tail_first_visits": 1,
+      "tail_max_tokens": 1570560,
+      "tail_mean_tokens": 688710.8923076923,
+      "tail_min_tokens": 0,
+      "tail_p50_tokens": 647424.0,
+      "tail_p90_tokens": 1239142.4000000001,
+      "tail_p95_tokens": 1319731.2000000002,
+      "tail_p99_tokens": 1365708.7999999998,
+      "tail_requests": 326,
+      "tail_start_ordinal": 3053,
+      "tail_zero_count": 3
+    },
+    "tail_definition": "current event active_sessions_at_emit < W"
+  },
+  "outputs": {
+    "intervals": {
+      "path": "generated/closed-loop-w17-64k128k/causal_w17_noprimer.seed-20260725.intervals.jsonl",
+      "sha256": "7eabe2cf258ac580140e88df99dc48f3d83d4b95b2a770fcf56eeafe1dbb454b",
+      "size_bytes": 1143668
+    },
+    "order": {
+      "path": "generated/closed-loop-w17-64k128k/causal_w17_noprimer.seed-20260725.order.jsonl",
+      "sha256": "9e45168e61f540331525edb23738099ca4dee10374c317a33e9b0b3bb012de01",
+      "size_bytes": 1773242
+    },
+    "profiles": {
+      "path": "generated/closed-loop-w17-64k128k/causal_w17_noprimer.seed-20260725.profiles.jsonl",
+      "sha256": "653e1c563af4b7cb8a91b21a7a4b04c06b25d38f0a9ec7d47e1ff7b4fde0c996",
+      "size_bytes": 417730
+    }
+  },
+  "profile_summary": {
+    "measured_prompt_tokens": {
+      "count": 3379,
+      "maximum": 121887,
+      "mean": 87225.76,
+      "minimum": 64015,
+      "p10": 68409.0,
+      "p25": 75206.0,
+      "p50": 86610.0,
+      "p75": 98677.0,
+      "p90": 106349.8,
+      "p95": 111131.0,
+      "p99": 116980.18
+    },
+    "measured_requests": 3379,
+    "measured_requests_per_trajectory": {
+      "count": 100,
+      "maximum": 60,
+      "mean": 33.79,
+      "minimum": 5,
+      "p10": 19.0,
+      "p25": 27.0,
+      "p50": 34.0,
+      "p75": 42.0,
+      "p90": 48.1,
+      "p95": 56.0,
+      "p99": 58.02
+    },
+    "primer_included": false,
+    "primer_requests": 0,
+    "trajectories": 100
+  },
+  "schema_version": 1,
+  "source": {
+    "baseline_manifest": {
+      "path": "inputs/baseline/causal_w32_noprimer.seed-20260725.manifest.json",
+      "sha256": "5abf18bed88f6fb948c14f137f6b25fde1b2189968a22ce467b0c770d3175341",
+      "size_bytes": 10984
+    },
+    "parquet": "inputs/source-metadata/trajectories.selected100.sparse-index.parquet",
+    "parquet_sha256": "14741b8eed207ff91436a49f4e707df9f708a2a2fe60befa713dc64f1b0d2416",
+    "repo_id": "nebius/SWE-rebench-openhands-trajectories",
+    "reused_profiles": {
+      "path": "inputs/baseline/causal_w32_noprimer.seed-20260725.profiles.jsonl",
+      "sha256": "653e1c563af4b7cb8a91b21a7a4b04c06b25d38f0a9ec7d47e1ff7b4fde0c996",
+      "size_bytes": 417730
+    },
+    "revision": "35455389ab51bf5e2306bfd436ef72d0f98bf882",
+    "source_lock": "inputs/SOURCE-LOCK.json",
+    "tools": "inputs/source-metadata/tools.json"
+  },
+  "tier_model": {
+    "included": false,
+    "reason": "No tier prediction was computed; original W32 model is retained only as a provenance input."
+  },
+  "tokenization": {
+    "chat_template_sha256": "03b1bbff20331e54647c68167e8ac7f0b5b7ceb40ead372f44826624a9ad79cd",
+    "chunk_size_tokens": 256,
+    "enable_thinking": false,
+    "target_max_tokens_exclusive": 128000,
+    "target_min_tokens_inclusive": 64000,
+    "tokenizer": "inputs/tokenizer",
+    "tokenizer_json_sha256": "19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d",
+    "tools_sha256": "d13c473da05d5cd18f6d2fb23146015585f4159fb64cb819fdc9dd8948caae9d"
+  }
+}

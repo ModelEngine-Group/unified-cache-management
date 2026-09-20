@@ -1,0 +1,12 @@
+{
+  "byte_identical": true,
+  "files": {
+    "closed-loop-w17-64k128k/causal_w17_noprimer.seed-20260725.order.jsonl": "9e45168e61f540331525edb23738099ca4dee10374c317a33e9b0b3bb012de01",
+    "closed-loop-w17-64k128k/causal_w17_noprimer.seed-20260725.profiles.jsonl": "653e1c563af4b7cb8a91b21a7a4b04c06b25d38f0a9ec7d47e1ff7b4fde0c996",
+    "closed-loop-w17-64k128k/causal_w17_noprimer.seed-20260725.intervals.jsonl": "7eabe2cf258ac580140e88df99dc48f3d83d4b95b2a770fcf56eeafe1dbb454b",
+    "analysis/search-all-w.csv": "5e7400b87a4d5b053d2adc0f77e0408a1c3a514d3cbc42d0f7149e949bac22a7",
+    "analysis/w17-per-request-wrd.csv": "9c5223b77ca378f8b4d0f3207e107bcc756861c8f8e7e27f205f2f40df778ccd",
+    "analysis/w17-per-request-wrd.json": "3c5425d756966f376f31fb794d2fd43ec7e4bac8ba007373a08496e1144a10d6",
+    "analysis/comparison.json": "8def30a2e08e53ec4e9b75b6efaf572bb32c5799b085347047c1846a6dd4a1fb"
+  }
+}

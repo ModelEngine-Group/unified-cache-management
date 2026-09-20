@@ -1,0 +1,14 @@
+{
+  "active_session_pool": 17,
+  "client_concurrency": 32,
+  "http_requests_sent": 0,
+  "models_started": 0,
+  "order_profiles_intervals_analysis_figures_unchanged": true,
+  "order_sha256": "9e45168e61f540331525edb23738099ca4dee10374c317a33e9b0b3bb012de01",
+  "portable_replay_cli_parsed": true,
+  "source_base_commit": "c7274da22771b247fa57d8147a872db3792c326b",
+  "success": true,
+  "target_branch": "codex/ucm-deferred-pin-wait-c50dfab",
+  "target_remote": "https://github.com/yhli-ml/glm51-vllm-ascend-ucm-clean.git",
+  "ucm_code_changes": false
+}
