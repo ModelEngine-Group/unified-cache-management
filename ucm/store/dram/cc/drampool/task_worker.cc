@@ -17,353 +17,366 @@
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
  * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * DEALINGS IN THE SOFTWARE.
  * */
-#include <chrono>
-#include <cstddef>
-#include <cstdint>
-#include <gtest/gtest.h>
-#include <memory>
-#include <utility>
-#include <vector>
-#include "buffer_manager.h"
-#include "core/transport_manager.h"
-#include "dram/dram_test_common.h"
-#include "drampool_config.h"
-#include "drampool_types.h"
-#include "kv_protocol.h"
-#include "metadata.h"
-#include "status/status.h"
-#include "trans/device.h"
-
-// Keep white-box access entirely in the test translation unit. Production code uses the real
-// TransportManager directly and exposes no test-only interface.
-#define private public
 #include "task_worker.h"
-#undef private
+#include <algorithm>
+#include <chrono>
+#include <thread>
+#include <utility>
+#include "core/transport_manager.h"
+#include "drampool_config.h"
+#include "drampool_metrics.h"
+#include "logger/logger.h"
+#include "metadata.h"
 
 namespace UC::DramPool {
 namespace {
 
-constexpr std::size_t kQueueCapacity = 16;
-constexpr std::uint32_t kValueLength = 16;
-constexpr std::uint64_t kResponseAddress = 0x9000;
-constexpr char kTargetManager[] = "127.0.0.1:29000";
-
-using UC::Test::Dram::Clock;
-using UC::Test::Dram::KeyFromHex;
-using UC::Test::Dram::MakeBufferManager;
-using UC::Test::Dram::MakeEntry;
-
-std::uint8_t DumpLoadCode(DumpLoadResult result) { return static_cast<std::uint8_t>(result); }
-
-std::uint8_t LookupCode(LookupResult result) { return static_cast<std::uint8_t>(result); }
-
-class TaskWorkerTest : public ::testing::Test {
-protected:
-    static constexpr std::uint64_t kRequestId = 42;
-
-    static void SetUpTestSuite()
-    {
-        auto status = device_.Init();
-        deviceRuntimeOwned_ = status.Success();
-        ASSERT_TRUE(deviceRuntimeOwned_ || status == Status::DuplicateKey()) << status.ToString();
-        status = device_.Setup(0);
-        ASSERT_TRUE(status.Success()) << status.ToString();
-    }
-
-    static void TearDownTestSuite()
-    {
-        if (!deviceRuntimeOwned_) { return; }
-        EXPECT_TRUE(device_.Reset(0).Success());
-        EXPECT_TRUE(device_.Finalize().Success());
-        deviceRuntimeOwned_ = false;
-    }
-
-    inline static UC::Trans::Device device_;
-    inline static bool deviceRuntimeOwned_{false};
-
-    void SetUp() override
-    {
-        savedConfig_ = g_config;
-        g_config.flagBufferSlotSizeBytes = 64;
-        g_config.defaultDumpTtlMs = 60'000;
-
-        requestQueue_.Setup(kQueueCapacity);
-        completionQueue_.Setup(kQueueCapacity);
-        bufferManager_ = MakeBufferManager({
-            {kValueLength, kQueueCapacity}
-        });
-        const MetadataConfig metadataConfig{EvictionPolicyType::TTL, EvictionPolicyType::POSITION,
-                                            std::chrono::milliseconds(100), 0.0};
-        metadata_ = std::make_unique<MetadataManager>(metadataConfig, *bufferManager_);
-        runtime_ = std::make_unique<DramPoolRuntime>(*metadata_, flagBufferPool_, manager_,
-                                                     protocols_, requestQueue_, completionQueue_);
-    }
-
-    void TearDown() override
-    {
-        runtime_.reset();
-        metadata_.reset();
-        bufferManager_.reset();
-        g_config = std::move(savedConfig_);
-    }
-
-    EntryPtr PublishEntry(const BlockId& key)
-    {
-        auto entry = MakeEntry(key, 0, Clock::now() + std::chrono::hours(1),
-                               EntryStatus::INITIALIZED, 0, {}, kValueLength);
-        EXPECT_TRUE(metadata_->StoreBegin(key, entry).Success());
-        EXPECT_TRUE(metadata_->StoreEnd(key).Success());
-        return entry;
-    }
-
-    Status ProcessDump(KvDumpRequest& request)
-    {
-        TaskWorker worker(*runtime_);
-        return worker.ProcessDump(request, kTargetManager, SteadyNowUs());
-    }
-
-    Status ProcessLoad(KvLoadRequest& request)
-    {
-        TaskWorker worker(*runtime_);
-        return worker.ProcessLoad(request, kTargetManager, SteadyNowUs());
-    }
-
-    Status ProcessLookup(KvLookupRequest& request)
-    {
-        TaskWorker worker(*runtime_);
-        return worker.ProcessLookup(request, kTargetManager, SteadyNowUs());
-    }
-
-    CompletionRecord PopCompletion()
-    {
-        CompletionRecord record;
-        EXPECT_TRUE(completionQueue_.TryPop(record));
-        return record;
-    }
-
-    void ExpectNoCompletion()
-    {
-        CompletionRecord record;
-        EXPECT_FALSE(completionQueue_.TryPop(record));
-    }
-
-    RequestQueue requestQueue_;
-    CompletionQueue completionQueue_;
-    std::unique_ptr<BufferManager> bufferManager_;
-    std::unique_ptr<MetadataManager> metadata_;
-    BufferPool flagBufferPool_;
-    ProtocolManager protocols_;
-    transport::TransportManager manager_{"127.0.0.1:28000"};
-    std::unique_ptr<DramPoolRuntime> runtime_;
-    DramPoolConfig savedConfig_;
-};
-
-TEST_F(TaskWorkerTest, RejectsMalformedTasksBeforeTransport)
+std::chrono::system_clock::time_point LifeTimeout(std::uint64_t ttlMs)
 {
-    TaskWorker worker(*runtime_);
-    EXPECT_TRUE(worker.ProcessOneRequest(nullptr).Failure());
-
-    auto missingRequest = std::make_unique<RequestTask>();
-    missingRequest->peer_one_sided_id = kTargetManager;
-    EXPECT_TRUE(worker.ProcessOneRequest(std::move(missingRequest)).Failure());
-
-    auto missingPeer = std::make_unique<RequestTask>();
-    missingPeer->request = std::make_unique<KvLookupRequest>();
-    EXPECT_TRUE(worker.ProcessOneRequest(std::move(missingPeer)).Failure());
-    ExpectNoCompletion();
-}
-
-TEST_F(TaskWorkerTest, ProcessesRequestWithoutInitiatingPeerConnection)
-{
-    TaskWorker worker(*runtime_);
-    auto task = std::make_unique<RequestTask>();
-    task->peer_one_sided_id = kTargetManager;
-    task->request = std::make_unique<KvLookupRequest>();
-    task->request->opcode = OpType::LOOKUP;
-    task->request->request_id = kRequestId;
-
-    EXPECT_TRUE(worker.ProcessOneRequest(std::move(task)).Success());
-    const auto record = PopCompletion();
-    EXPECT_EQ(record.peer_one_sided_id, kTargetManager);
-    EXPECT_EQ(record.request_id, kRequestId);
-}
-
-TEST_F(TaskWorkerTest, LookupReturnsHitAndMiss)
-{
-    const auto hitKey = KeyFromHex("a1");
-    PublishEntry(hitKey);
-
-    KvLookupRequest request;
-    request.opcode = OpType::LOOKUP;
-    request.request_id = kRequestId;
-    request.resp_addr = kResponseAddress;
-    request.entries = {{hitKey}, {KeyFromHex("a2")}};
-    request.batch_size = static_cast<std::uint16_t>(request.entries.size());
-    ASSERT_TRUE(ProcessLookup(request).Success());
-
-    const auto record = PopCompletion();
-    EXPECT_EQ(record.stage, CompletionStage::SubmitResponse);
-    EXPECT_EQ(record.opcode, OpType::LOOKUP);
-    EXPECT_EQ(record.results, (std::vector<std::uint8_t>{LookupCode(LookupResult::Exists),
-                                                         LookupCode(LookupResult::NotFound)}));
-}
-
-TEST_F(TaskWorkerTest, DuplicateDumpIsIdempotent)
-{
-    const auto key = KeyFromHex("a1");
-    PublishEntry(key);
-
-    KvDumpRequest request;
-    request.opcode = OpType::DUMP;
-    request.request_id = kRequestId;
-    request.resp_addr = kResponseAddress;
-    request.entries = {
-        {key, 0x1000, kValueLength, 0}
-    };
-    request.batch_size = static_cast<std::uint16_t>(request.entries.size());
-    ASSERT_TRUE(ProcessDump(request).Success());
-
-    const auto record = PopCompletion();
-    EXPECT_EQ(record.stage, CompletionStage::SubmitResponse);
-    EXPECT_EQ(record.results, (std::vector<std::uint8_t>{DumpLoadCode(DumpLoadResult::Ok)}));
-    EXPECT_TRUE(metadata_->Exist(key));
-}
-
-TEST_F(TaskWorkerTest, DumpStopsAfterFirstStoreBeginFailure)
-{
-    const auto duplicateKey = KeyFromHex("a1");
-    const auto failedKey = KeyFromHex("a2");
-    const auto skippedKey = KeyFromHex("a3");
-    PublishEntry(duplicateKey);
-
-    KvDumpRequest request;
-    request.opcode = OpType::DUMP;
-    request.request_id = kRequestId;
-    request.resp_addr = kResponseAddress;
-    request.entries = {
-        {duplicateKey, 0x1000, kValueLength,     0},
-        {failedKey,    0x2000, kValueLength * 2, 1},
-        {skippedKey,   0x3000, kValueLength,     2},
-    };
-    request.batch_size = static_cast<std::uint16_t>(request.entries.size());
-    ASSERT_TRUE(ProcessDump(request).Success());
-
-    const auto record = PopCompletion();
-    EXPECT_EQ(record.stage, CompletionStage::SubmitResponse);
-    EXPECT_EQ(record.results, (std::vector<std::uint8_t>{DumpLoadCode(DumpLoadResult::Ok),
-                                                         DumpLoadCode(DumpLoadResult::Failed),
-                                                         DumpLoadCode(DumpLoadResult::Failed)}));
-    EXPECT_TRUE(metadata_->Exist(duplicateKey));
-    EXPECT_FALSE(metadata_->Query(failedKey));
-    EXPECT_FALSE(metadata_->Query(skippedKey));
-}
-
-TEST_F(TaskWorkerTest, DumpSubmitFailureDeletesReservedMetadata)
-{
-    const auto key = KeyFromHex("a1");
-
-    KvDumpRequest request;
-    request.opcode = OpType::DUMP;
-    request.request_id = kRequestId;
-    request.resp_addr = kResponseAddress;
-    request.entries = {
-        {key, 0x1000, kValueLength, 0}
-    };
-    request.batch_size = static_cast<std::uint16_t>(request.entries.size());
-    ASSERT_TRUE(ProcessDump(request).Success());
-
-    const auto record = PopCompletion();
-    EXPECT_EQ(record.stage, CompletionStage::SubmitResponse);
-    EXPECT_EQ(record.results, (std::vector<std::uint8_t>{DumpLoadCode(DumpLoadResult::Failed)}));
-    EXPECT_FALSE(metadata_->Query(key));
-}
-
-TEST_F(TaskWorkerTest, LoadReportsMissingAndOversizedItems)
-{
-    const auto missingKey = KeyFromHex("a1");
-    const auto oversizedKey = KeyFromHex("a2");
-    const auto oversizedEntry = PublishEntry(oversizedKey);
-
-    KvLoadRequest request;
-    request.opcode = OpType::LOAD;
-    request.request_id = kRequestId;
-    request.resp_addr = kResponseAddress;
-    request.entries = {
-        {missingKey,   0x1000, kValueLength,     0},
-        {oversizedKey, 0x2000, kValueLength + 1, 1},
-    };
-    request.batch_size = static_cast<std::uint16_t>(request.entries.size());
-    ASSERT_TRUE(ProcessLoad(request).Success());
-
-    const auto record = PopCompletion();
-    EXPECT_EQ(record.stage, CompletionStage::SubmitResponse);
-    EXPECT_EQ(record.results, (std::vector<std::uint8_t>{DumpLoadCode(DumpLoadResult::Failed),
-                                                         DumpLoadCode(DumpLoadResult::Failed)}));
-    EXPECT_EQ(oversizedEntry->refCnt, 0U);
-}
-
-TEST_F(TaskWorkerTest, LoadSubmitFailureEndsAllPinnedItems)
-{
-    const auto firstKey = KeyFromHex("a1");
-    const auto secondKey = KeyFromHex("a2");
-    const auto firstEntry = PublishEntry(firstKey);
-    const auto secondEntry = PublishEntry(secondKey);
-
-    KvLoadRequest request;
-    request.opcode = OpType::LOAD;
-    request.request_id = kRequestId;
-    request.resp_addr = kResponseAddress;
-    request.entries = {
-        {firstKey,  0x1000, kValueLength, 0},
-        {secondKey, 0x2000, kValueLength, 1},
-    };
-    request.batch_size = static_cast<std::uint16_t>(request.entries.size());
-    ASSERT_TRUE(ProcessLoad(request).Success());
-
-    const auto record = PopCompletion();
-    EXPECT_EQ(record.stage, CompletionStage::SubmitResponse);
-    EXPECT_EQ(record.results, (std::vector<std::uint8_t>{DumpLoadCode(DumpLoadResult::Failed),
-                                                         DumpLoadCode(DumpLoadResult::Failed)}));
-    EXPECT_EQ(firstEntry->refCnt, 0U);
-    EXPECT_EQ(secondEntry->refCnt, 0U);
-    EXPECT_TRUE(metadata_->Exist(firstKey));
-    EXPECT_TRUE(metadata_->Exist(secondKey));
-}
-
-TEST_F(TaskWorkerTest, RejectsResponsesLargerThanFlagBufferSlot)
-{
-    g_config.flagBufferSlotSizeBytes = 0;
-
-    KvDumpRequest dump;
-    dump.opcode = OpType::DUMP;
-    dump.request_id = kRequestId;
-    dump.batch_size = 1;
-    dump.entries = {
-        {KeyFromHex("a1"), 0x1000, kValueLength, 0}
-    };
-    EXPECT_TRUE(ProcessDump(dump).Failure());
-
-    KvLoadRequest load;
-    load.opcode = OpType::LOAD;
-    load.request_id = kRequestId;
-    load.batch_size = 1;
-    load.entries = {
-        {KeyFromHex("a2"), 0x2000, kValueLength, 0}
-    };
-    EXPECT_TRUE(ProcessLoad(load).Failure());
-
-    KvLookupRequest lookup;
-    lookup.opcode = OpType::LOOKUP;
-    lookup.request_id = kRequestId;
-    lookup.batch_size = 1;
-    lookup.entries = {{KeyFromHex("a3")}};
-    EXPECT_TRUE(ProcessLookup(lookup).Failure());
-    ExpectNoCompletion();
+    return ttlMs == 0 ? std::chrono::system_clock::time_point{}
+                      : std::chrono::system_clock::now() + std::chrono::milliseconds(ttlMs);
 }
 
 }  // namespace
+
+TaskWorker::TaskWorker(DramPoolRuntime& runtime) : runtime_(runtime) {}
+
+void TaskWorker::Run(const std::atomic_bool& stop)
+{
+    while (true) {
+        RequestTaskPtr task;
+        if (runtime_.requestQueue.TryPop(task)) {
+            g_requestQueueLen.fetch_sub(1, std::memory_order_relaxed);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kQueueRequestSize),
+                                     static_cast<double>(g_requestQueueLen.load()));
+            const auto processStatus = ProcessOneRequest(std::move(task));
+            if (processStatus.Failure()) {
+                UC_ERROR("TaskWorker ProcessOneRequest failed: {}", processStatus);
+            }
+            continue;
+        }
+
+        // Stop is requested only after RequestReceiveLoop has exited, so an empty queue is drained.
+        if (stop.load(std::memory_order_acquire)) { break; }
+        std::this_thread::sleep_for(kThreadIdleSleepDuration);
+    }
+}
+
+Status TaskWorker::ProcessOneRequest(RequestTaskPtr task)
+{
+    // Batch dequeue instant; flows into CompletionRecord.begin_us (metrics_design.md §4.7).
+    const auto beginUs = SteadyNowUs();
+    if (!task || !task->request || task->peer_one_sided_id.empty()) {
+        return Status::InvalidParam("TaskWorker got an invalid request task");
+    }
+    // By the time a request reaches DramPool, the store-initiated Connect control request
+    // must already have established the local route.
+    const auto& peerOneSidedId = task->peer_one_sided_id;
+    const auto& request = task->request;
+    UC_DEBUG("TaskWorker processing request, request_id={}, opcode={}, peer={}",
+             request->request_id, static_cast<int>(request->opcode), peerOneSidedId);
+    switch (request->opcode) {
+        case OpType::DUMP: {
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kDumpRequestsTotal), 1);
+            const auto* dump = dynamic_cast<const KvDumpRequest*>(request.get());
+            return dump == nullptr ? Status::InvalidParam("DUMP request type does not match opcode")
+                                   : ProcessDump(*dump, peerOneSidedId, beginUs);
+        }
+        case OpType::LOAD: {
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kLoadRequestsTotal), 1);
+            const auto* load = dynamic_cast<const KvLoadRequest*>(request.get());
+            return load == nullptr ? Status::InvalidParam("LOAD request type does not match opcode")
+                                   : ProcessLoad(*load, peerOneSidedId, beginUs);
+        }
+        case OpType::LOOKUP: {
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kLookupRequestsTotal), 1);
+            const auto* lookup = dynamic_cast<const KvLookupRequest*>(request.get());
+            return lookup == nullptr
+                       ? Status::InvalidParam("LOOKUP request type does not match opcode")
+                       : ProcessLookup(*lookup, peerOneSidedId, beginUs);
+        }
+    }
+    return Status::InvalidParam("TaskWorker got invalid opcode");
+}
+
+Status TaskWorker::ProcessDump(const KvDumpRequest& request,
+                               const transport::ManagerID& peerOneSidedId,
+                               std::uint64_t beginUs)
+{
+    ScopedTimer prepareTimer(NAME_TO_METRIC_ID(kDumpPrepareDurationMs));
+    if (runtime_.protocol.GetPackedResponseSize(OpType::DUMP, request.batch_size) >
+        g_config.flagBufferSlotSizeBytes) {
+        prepareTimer.Disarm();
+        return Status::InvalidParam("DUMP response exceeds configured flag buffer slot size");
+    }
+    const std::uint64_t ttl_ms =
+        request.ttl != 0 ? static_cast<std::uint64_t>(request.ttl) : g_config.defaultDumpTtlMs;
+    const auto lifeTimeout = LifeTimeout(ttl_ms);
+    std::vector<std::uint8_t> results(request.batch_size,
+                                      static_cast<std::uint8_t>(DumpLoadResult::Ok));
+    const auto mark_remaining_failed = [&results](std::size_t first) {
+        std::fill(results.begin() + first, results.end(),
+                  static_cast<std::uint8_t>(DumpLoadResult::Failed));
+    };
+    std::vector<TransferItem> transfer_items;
+    transfer_items.reserve(request.entries.size());
+    transport::Operation operation;
+    operation.opcode = transport::Opcode::Read;
+    operation.direct = transport::OperationDirect::RemoteDeviceHost;
+    operation.target_manager = peerOneSidedId;
+    operation.ops.reserve(request.entries.size());
+
+    for (std::uint16_t index = 0; index < request.batch_size; ++index) {
+        const auto& entry = request.entries[index];
+
+        auto metadataEntry = std::make_shared<UC::DramPool::Entry>();
+        metadataEntry->key = entry.key;
+        metadataEntry->size = entry.len;
+        metadataEntry->lifeTimeout = lifeTimeout;
+        metadataEntry->position = entry.idx;
+
+        const auto storeStatus = runtime_.metadata.StoreBegin(entry.key, metadataEntry);
+        if (storeStatus == Status::DuplicateKey()) {
+            results[index] = static_cast<std::uint8_t>(DumpLoadResult::Ok);
+            continue;
+        }
+        if (storeStatus.Failure()) {
+            UC_ERROR("Dump[{}] StoreBegin failed, request_id={}, error={}", index,
+                     request.request_id, storeStatus);
+            // StoreBegin failures are typically resource-related after eviction retries.
+            // Stop here to avoid costly allocation attempts for the remaining items.
+            mark_remaining_failed(index);
+            break;
+        }
+
+        // INITIALIZED entries are not eviction candidates while the DUMP is in flight.
+        transfer_items.emplace_back(TransferItem{index, entry.key});
+        operation.ops.emplace_back(
+            transport::Segment{metadataEntry->buffer.addr, entry.addr, entry.len});
+    }
+
+    if (transfer_items.empty()) {
+        UC_DEBUG("DUMP skips data transfer, request_id={}, batch_size={}", request.request_id,
+                 request.batch_size);
+        prepareTimer.Disarm();
+        return QueueResponse(OpType::DUMP, request.resp_addr, peerOneSidedId, std::move(results),
+                             request.request_id, beginUs);
+    }
+
+    UC_DEBUG("DUMP submits data transfer, request_id={}, items={}, peer={}", request.request_id,
+             transfer_items.size(), peerOneSidedId);
+    TransportHandle handle = transport::kInvalidTransferHandle;
+    const auto submit_status = runtime_.transport.ExecuteAsync(operation, handle);
+    if (submit_status.Failure() || handle == transport::kInvalidTransferHandle) {
+        UC_ERROR("Dump SubmitAsync failed, request_id={}, items={}, error={}", request.request_id,
+                 transfer_items.size(), submit_status);
+        prepareTimer.Disarm();
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kSubmitFailuresTotal), 1);
+        DeleteItemsMetadata(transfer_items);
+        for (const auto& item : transfer_items) {
+            results[item.index_in_request] = static_cast<std::uint8_t>(DumpLoadResult::Failed);
+        }
+        return QueueResponse(OpType::DUMP, request.resp_addr, peerOneSidedId, std::move(results),
+                             request.request_id, beginUs);
+    }
+
+    CompletionRecord record;
+    record.stage = CompletionStage::PollDataTransfer;
+    record.request_id = request.request_id;
+    record.opcode = OpType::DUMP;
+    record.data_handle = handle;
+    record.remote_resp_addr = request.resp_addr;
+    record.peer_one_sided_id = peerOneSidedId;
+    record.results = std::move(results);
+    record.transfer_items = std::move(transfer_items);
+    record.submit_ms = SteadyNowMs();
+    record.begin_us = beginUs;
+    UC_DEBUG("DUMP data transfer submitted, request_id={}, handle={}", request.request_id, handle);
+    return SubmitCompletion(std::move(record));
+}
+
+Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
+                               const transport::ManagerID& peerOneSidedId,
+                               std::uint64_t beginUs)
+{
+    ScopedTimer prepareTimer(NAME_TO_METRIC_ID(kLoadPrepareDurationMs));
+    if (runtime_.protocol.GetPackedResponseSize(OpType::LOAD, request.batch_size) >
+        g_config.flagBufferSlotSizeBytes) {
+        prepareTimer.Disarm();
+        return Status::InvalidParam("LOAD response exceeds configured flag buffer slot size");
+    }
+    std::vector<std::uint8_t> results(request.batch_size,
+                                      static_cast<std::uint8_t>(DumpLoadResult::Ok));
+    std::vector<TransferItem> transfer_items;
+    transfer_items.reserve(request.entries.size());
+    // LoadBegin failure and len-over-stored both mean "entry not fetched" (C group).
+    std::uint64_t missEntries = 0;
+    transport::Operation operation;
+    operation.opcode = transport::Opcode::Write;
+    operation.direct = transport::OperationDirect::RemoteDeviceHost;
+    operation.target_manager = peerOneSidedId;
+    operation.ops.reserve(request.entries.size());
+
+    for (std::uint16_t index = 0; index < request.batch_size; ++index) {
+        const auto& entry = request.entries[index];
+        UC::DramPool::EntryPtr metadataEntry;
+        const auto loadStatus = runtime_.metadata.LoadBegin(entry.key, metadataEntry);
+        if (loadStatus.Failure() || !metadataEntry) {
+            results[index] = static_cast<std::uint8_t>(DumpLoadResult::Failed);
+            UC_ERROR("Load[{}] LoadBegin failed, request_id={}, error={}", index,
+                     request.request_id, loadStatus);
+            ++missEntries;
+            continue;
+        }
+        if (entry.len > metadataEntry->size) {
+            const auto releaseStatus = runtime_.metadata.LoadEnd(entry.key);
+            if (releaseStatus.Failure()) {
+                UC_ERROR("Load[{}] LoadEnd after len mismatch failed, request_id={}, error={}",
+                         index, request.request_id, releaseStatus);
+            }
+            UC_ERROR("Load[{}] invalid len, request_id={}, requested={}, stored={}", index,
+                     request.request_id, entry.len, metadataEntry->size);
+            results[index] = static_cast<std::uint8_t>(DumpLoadResult::Failed);
+            ++missEntries;
+            continue;
+        }
+
+        // The LOAD pin keeps metadata and buffer alive through async transport.
+        transfer_items.emplace_back(TransferItem{index, entry.key});
+        operation.ops.emplace_back(
+            transport::Segment{metadataEntry->buffer.addr, entry.addr, entry.len});
+    }
+
+    if (missEntries != 0) {
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kLoadMissEntriesTotal),
+                                 static_cast<double>(missEntries));
+    }
+    if (transfer_items.empty()) {
+        UC_DEBUG("LOAD skips data transfer, request_id={}, batch_size={}", request.request_id,
+                 request.batch_size);
+        prepareTimer.Disarm();
+        return QueueResponse(OpType::LOAD, request.resp_addr, peerOneSidedId, std::move(results),
+                             request.request_id, beginUs);
+    }
+
+    UC_DEBUG("LOAD submits data transfer, request_id={}, items={}, peer={}", request.request_id,
+             transfer_items.size(), peerOneSidedId);
+    TransportHandle handle = transport::kInvalidTransferHandle;
+    const auto submit_status = runtime_.transport.ExecuteAsync(operation, handle);
+    if (submit_status.Failure() || handle == transport::kInvalidTransferHandle) {
+        UC_ERROR("Load SubmitAsync failed, request_id={}, items={}, error={}", request.request_id,
+                 transfer_items.size(), submit_status);
+        prepareTimer.Disarm();
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kSubmitFailuresTotal), 1);
+        LoadEndItems(transfer_items);
+        for (const auto& item : transfer_items) {
+            results[item.index_in_request] = static_cast<std::uint8_t>(DumpLoadResult::Failed);
+        }
+        return QueueResponse(OpType::LOAD, request.resp_addr, peerOneSidedId, std::move(results),
+                             request.request_id, beginUs);
+    }
+
+    CompletionRecord record;
+    record.stage = CompletionStage::PollDataTransfer;
+    record.request_id = request.request_id;
+    record.opcode = OpType::LOAD;
+    record.data_handle = handle;
+    record.remote_resp_addr = request.resp_addr;
+    record.peer_one_sided_id = peerOneSidedId;
+    record.results = std::move(results);
+    record.transfer_items = std::move(transfer_items);
+    record.submit_ms = SteadyNowMs();
+    record.begin_us = beginUs;
+    UC_DEBUG("LOAD data transfer submitted, request_id={}, handle={}", request.request_id, handle);
+    return SubmitCompletion(std::move(record));
+}
+
+Status TaskWorker::ProcessLookup(const KvLookupRequest& request,
+                                 const transport::ManagerID& peerOneSidedId,
+                                 std::uint64_t beginUs)
+{
+    if (runtime_.protocol.GetPackedResponseSize(OpType::LOOKUP, request.batch_size) >
+        g_config.flagBufferSlotSizeBytes) {
+        return Status::InvalidParam("LOOKUP response exceeds configured flag buffer slot size");
+    }
+    std::vector<std::uint8_t> results(request.batch_size,
+                                      static_cast<std::uint8_t>(LookupResult::NotFound));
+    std::uint64_t missEntries = 0;
+    {
+        // Scan-only observation: the timer ends before the response is enqueued (D group).
+        ScopedTimer scanTimer(NAME_TO_METRIC_ID(kLookupScanDurationMs));
+        for (std::uint16_t index = 0; index < request.batch_size; ++index) {
+            if (runtime_.metadata.Exist(request.entries[index].key)) {
+                results[index] = static_cast<std::uint8_t>(LookupResult::Exists);
+            } else {
+                ++missEntries;
+            }
+        }
+        if (missEntries != 0) {
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kLookupMissEntriesTotal),
+                                     static_cast<double>(missEntries));
+        }
+    }
+
+    UC_DEBUG("LOOKUP metadata scan completed, request_id={}, batch_size={}", request.request_id,
+             request.batch_size);
+    return QueueResponse(OpType::LOOKUP, request.resp_addr, peerOneSidedId, std::move(results),
+                         request.request_id, beginUs);
+}
+
+void TaskWorker::DeleteItemsMetadata(const std::vector<TransferItem>& items)
+{
+    for (const auto& item : items) {
+        // Remove metadata first so no index can retain a freed buffer address.
+        const auto abortStatus = runtime_.metadata.Delete(item.key);
+        if (abortStatus.Failure()) {
+            UC_ERROR("DeleteItemsMetadata Delete reserved DUMP failed: {}", abortStatus);
+        }
+    }
+}
+
+void TaskWorker::LoadEndItems(const std::vector<TransferItem>& items)
+{
+    for (const auto& item : items) {
+        const auto status = runtime_.metadata.LoadEnd(item.key);
+        if (status.Failure()) { UC_ERROR("LoadEndItems LoadEnd failed: {}", status); }
+    }
+}
+
+Status TaskWorker::QueueResponse(OpType opcode, std::uint64_t responseAddr,
+                                 const transport::ManagerID& peerOneSidedId,
+                                 std::vector<std::uint8_t>&& results, std::uint64_t requestId,
+                                 std::uint64_t beginUs)
+{
+    CompletionRecord record;
+    record.stage = CompletionStage::SubmitResponse;
+    record.request_id = requestId;
+    record.opcode = opcode;
+    record.remote_resp_addr = responseAddr;
+    record.peer_one_sided_id = peerOneSidedId;
+    record.results = std::move(results);
+    record.begin_us = beginUs;
+    return SubmitCompletion(std::move(record));
+}
+
+Status TaskWorker::SubmitCompletion(CompletionRecord&& record)
+{
+    // TaskWorker is the sole producer; CompletionPoller is the sole consumer.
+    UC_DEBUG("TaskWorker queues completion, request_id={}, opcode={}, stage={}, handle={}",
+             record.request_id, static_cast<int>(record.opcode), static_cast<int>(record.stage),
+             record.data_handle);
+    // Non-mutating probe: TryPush leaves the record untouched on failure (spsc_ring_queue.h),
+    // so a full queue (B3 spin in Push below) is counted without changing behavior.
+    if (!runtime_.completionQueue.TryPush(std::move(record))) {
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kQueueCompletionFullTotal), 1);
+        runtime_.completionQueue.Push(std::move(record));
+    }
+    g_completionQueueLen.fetch_add(1, std::memory_order_relaxed);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kQueueCompletionSize),
+                             static_cast<double>(g_completionQueueLen.load()));
+    return Status::OK();
+}
+
 }  // namespace UC::DramPool
