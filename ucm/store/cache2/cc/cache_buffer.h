@@ -23,8 +23,10 @@
  * */
 #pragma once
 
+#include <atomic>
 #include <cstddef>
-#include <memory>
+#include <utility>
+#include "ctrl_layout.h"
 #include "ctrl_strategy.h"
 #include "data_strategy.h"
 #include "global_config.h"
@@ -34,15 +36,78 @@
 namespace UC::Cache2 {
 
 class Buffer {
-    std::unique_ptr<CtrlStrategy> ctrl_;
-    std::unique_ptr<DataStrategy> data_;
+    CtrlStrategy ctrl_;
+    DataStrategy data_;
 
 public:
-    class Handle {};
+    class Handle {
+        friend class Buffer;
+        Buffer* buf_{nullptr};
+        size_t slotIdx_{kInvalid};
+        bool owner_{false};
+
+        Handle(Buffer* buf, size_t slotIdx, bool owner)
+            : buf_(buf), slotIdx_(slotIdx), owner_(owner)
+        {
+        }
+
+    public:
+        Handle(const Handle&) = delete;
+        Handle& operator=(const Handle&) = delete;
+        Handle(Handle&& o) noexcept : buf_(o.buf_), slotIdx_(o.slotIdx_), owner_(o.owner_)
+        {
+            o.buf_ = nullptr;
+            o.slotIdx_ = kInvalid;
+            o.owner_ = false;
+        }
+        Handle& operator=(Handle&& o) noexcept
+        {
+            Handle tmp(std::move(o));
+            Swap(tmp);
+            return *this;
+        }
+        ~Handle()
+        {
+            if (buf_ != nullptr && slotIdx_ != kInvalid) {
+                buf_->ctrl_.Layout().SlotMetaArr()[slotIdx_].reference.fetch_sub(
+                    1, std::memory_order_release);
+            }
+        }
+        bool Owner() const { return owner_; }
+        void* Data() { return buf_->data_.DataAt(slotIdx_); }
+        void* DeviceData() { return buf_->data_.DeviceDataAt(slotIdx_); }
+        CtrlLayout::SlotMeta::State GetState() const
+        {
+            return buf_->ctrl_.Layout().SlotMetaArr()[slotIdx_].state.load(
+                std::memory_order_acquire);
+        }
+        void MarkReady()
+        {
+            if (Owner()) {
+                buf_->ctrl_.Layout().SlotMetaArr()[slotIdx_].state.store(
+                    CtrlLayout::SlotMeta::State::Ready, std::memory_order_release);
+            }
+        }
+        void MarkFailed()
+        {
+            if (Owner()) {
+                buf_->ctrl_.Layout().SlotMetaArr()[slotIdx_].state.store(
+                    CtrlLayout::SlotMeta::State::Failed, std::memory_order_release);
+            }
+        }
+
+    private:
+        void Swap(Handle& o) noexcept
+        {
+            std::swap(buf_, o.buf_);
+            std::swap(slotIdx_, o.slotIdx_);
+            std::swap(owner_, o.owner_);
+        }
+    };
     Status Setup(const Config& cfg) { return Status::Unsupported(); }
     Handle Get(const Detail::BlockId& blockId, size_t offset, bool allowReserved = false)
     {
-        return {};
+        return Handle{this, 0, true};
     }
     void Prealloc(const Detail::BlockId& blockId, size_t offset, bool allowReserved = false) {}
     bool Exist(const Detail::BlockId& blockId, size_t offset) { return false; }
