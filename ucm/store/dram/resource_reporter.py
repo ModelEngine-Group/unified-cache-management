@@ -125,15 +125,13 @@ def snapshot_deltas(
     current: DramPoolResourceSnapshot, previous: DramPoolResourceSnapshot | None
 ):
     """Compute metric deltas, treating decreases as source resets."""
-    counters = counter_deltas(
-        current.counters, previous.counters if previous is not None else None
-    )
+    if previous is None:
+        previous = current
+    counters = counter_deltas(current.counters, previous.counters)
     histograms = {}
     for name, value in current.histograms.items():
-        old = previous.histograms.get(name) if previous is not None else None
-        if previous is None:
-            counts, total = [0] * len(value.bucket_counts), 0.0
-        elif old is None:
+        old = previous.histograms.get(name)
+        if old is None:
             counts, total = list(value.bucket_counts), value.sum
         else:
             if old.upper_bounds != value.upper_bounds:
