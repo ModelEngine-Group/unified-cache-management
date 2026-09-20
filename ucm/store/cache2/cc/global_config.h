@@ -23,8 +23,144 @@
  * */
 #pragma once
 
+#include <algorithm>
+#include <cstddef>
+#include <numeric>
+#include <string>
+#include <vector>
+#include "logger/logger.h"
+#include "type/dictionary.h"
+#include "ucmstore_v1.h"
+
 namespace UC::Cache2 {
 
-class Config {};
+struct Config {
+    StoreV1* storeBackend{};
+    std::string uniqueId{};
+    int32_t deviceId{-1};
+    std::vector<size_t> tensorSizes{};
+    size_t shardSize{0};
+    size_t blockSize{0};
+    size_t bufferCapacity{256ULL << 30};
+    size_t loadExclusiveBufferNumber{1024};
+    size_t waitingQueueDepth{8192};
+    size_t runningQueueDepth{524288};
+    size_t timeoutMs{30000};
+    size_t streamNumber{4};
+    size_t localRankSize{8};
+
+    static Config From(const Detail::Dictionary& dict)
+    {
+        Config config;
+        dict.Get("store_backend", config.storeBackend);
+        dict.Get("unique_id", config.uniqueId);
+        dict.GetNumber("device_id", config.deviceId);
+        size_t tensorSize = 0;
+        dict.GetNumber("tensor_size", tensorSize);
+        dict.GetNumber("shard_size", config.shardSize);
+        if (tensorSize != 0) {
+            config.tensorSizes.assign(config.shardSize / tensorSize, tensorSize);
+        } else {
+            dict.GetNumbers("tensor_size_list", config.tensorSizes);
+        }
+        dict.GetNumber("block_size", config.blockSize);
+        size_t bufferCapacityGb = 0;
+        dict.GetNumber("cache_buffer_capacity_gb", bufferCapacityGb);
+        if (bufferCapacityGb != 0) { config.bufferCapacity = bufferCapacityGb << 30; }
+        dict.GetNumber("cache_load_exclusive_buffer_number", config.loadExclusiveBufferNumber);
+        dict.GetNumber("waiting_queue_depth", config.waitingQueueDepth);
+        dict.GetNumber("running_queue_depth", config.runningQueueDepth);
+        dict.GetNumber("timeout_ms", config.timeoutMs);
+        dict.GetNumber("cache_stream_number", config.streamNumber);
+        dict.GetNumber("local_rank_size", config.localRankSize);
+        return config;
+    }
+    bool Validate() const
+    {
+        constexpr const char* ns = "CacheStore";
+        if (deviceId < -1) {
+            UC_ERROR("Invalid {} config: device({}).", ns, deviceId);
+            return false;
+        }
+        if (uniqueId.empty()) {
+            UC_ERROR("Invalid {} config: unique id is empty.", ns);
+            return false;
+        }
+        if (deviceId == -1) { return true; }
+        if (tensorSizes.empty()) {
+            UC_ERROR("Invalid {} config: tensor sizes is empty.", ns);
+            return false;
+        }
+        if (shardSize == 0) {
+            UC_ERROR("Invalid {} config: shard size({}).", ns, shardSize);
+            return false;
+        }
+        if (blockSize == 0) {
+            UC_ERROR("Invalid {} config: block size({}).", ns, blockSize);
+            return false;
+        }
+        if (std::accumulate(tensorSizes.begin(), tensorSizes.end(), size_t(0)) > shardSize) {
+            UC_ERROR("Invalid {} config: shard size({}).", ns, shardSize);
+            return false;
+        }
+        if (blockSize % shardSize != 0) {
+            UC_ERROR("Invalid {} config: block size({}).", ns, blockSize);
+            return false;
+        }
+        const auto bufferNumber = bufferCapacity / shardSize;
+        const size_t minBufferNumber = std::max(size_t(1024), loadExclusiveBufferNumber * 2);
+        if (bufferNumber < minBufferNumber) {
+            const size_t minBufferCapacityGb =
+                (minBufferNumber * shardSize + (size_t(1) << 30) - 1) >> 30;
+            UC_ERROR(
+                "Invalid {} config: too small buffer({}) on shard({}), please set "
+                "cache_buffer_capacity_gb >= {}GB.",
+                ns, bufferCapacity, shardSize, minBufferCapacityGb);
+            return false;
+        }
+        if (waitingQueueDepth <= 1 || runningQueueDepth <= 1) {
+            UC_ERROR("Invalid {} config: queue depth({},{}).", ns, waitingQueueDepth,
+                     runningQueueDepth);
+            return false;
+        }
+        if (streamNumber < 1 || streamNumber > 32) {
+            UC_ERROR("Invalid {} config: stream number({}).", ns, streamNumber);
+            return false;
+        }
+        if (localRankSize == 0) {
+            UC_ERROR("Invalid {} config: local rank size({}).", ns, localRankSize);
+            return false;
+        }
+        return true;
+    }
+    void Show() const
+    {
+        constexpr const char* ns = "CacheStore";
+        std::string buildType = UCM_BUILD_TYPE;
+        if (buildType.empty()) { buildType = "Release"; }
+        UC_INFO("{}-{}({}).", ns, UCM_COMMIT_ID, buildType);
+        UC_INFO("Set {}::StoreBackend to {}.", ns,
+                storeBackend ? storeBackend->Readme() : "nullptr");
+        UC_INFO("Set {}::UniqueId to {}.", ns, uniqueId);
+        UC_INFO("Set {}::DeviceId to {}.", ns, deviceId);
+        const auto& v = tensorSizes;
+        if (v.empty()) {
+            UC_INFO("Set {}::TensorSizes to [].", ns);
+        } else if (std::all_of(v.begin(), v.end(), [&](auto d) { return d == v[0]; })) {
+            UC_INFO("Set {}::TensorSizes to {}(*{}).", ns, v[0], v.size());
+        } else {
+            UC_INFO("Set {}::TensorSizes to {}.", ns, v);
+        }
+        UC_INFO("Set {}::ShardSize to {}.", ns, shardSize);
+        UC_INFO("Set {}::BlockSize to {}.", ns, blockSize);
+        UC_INFO("Set {}::BufferCapacity to {}GB.", ns, bufferCapacity >> 30);
+        UC_INFO("Set {}::LoadExclusiveBufferNumber to {}.", ns, loadExclusiveBufferNumber);
+        UC_INFO("Set {}::WaitingQueueDepth to {}.", ns, waitingQueueDepth);
+        UC_INFO("Set {}::RunningQueueDepth to {}.", ns, runningQueueDepth);
+        UC_INFO("Set {}::TimeoutMs to {}.", ns, timeoutMs);
+        UC_INFO("Set {}::StreamNumber to {}.", ns, streamNumber);
+        UC_INFO("Set {}::LocalRankSize to {}.", ns, localRankSize);
+    }
+};
 
 }  // namespace UC::Cache2
