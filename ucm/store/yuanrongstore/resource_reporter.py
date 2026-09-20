@@ -4,13 +4,7 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
 #
 
-import atexit
-import hashlib
 import json
-import os
-import tempfile
-import threading
-import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +12,10 @@ from typing import Any
 
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmetrics
+from ucm.shared.metrics.resource_reporter import (
+    FileResourceMetricsReporter,
+    counter_deltas,
+)
 
 logger = init_logger(__name__)
 
@@ -84,21 +82,6 @@ def parse_yuanrong_resource_snapshot(line: str) -> YuanRongResourceSnapshot:
     return YuanRongResourceSnapshot(counters, gauges, timestamp)
 
 
-def counter_deltas(
-    current: dict[str, float], previous: dict[str, float] | None
-) -> dict[str, float]:
-    if previous is None:
-        return {name: 0.0 for name in current}
-    return {
-        name: (
-            value - previous.get(name, 0.0)
-            if value >= previous.get(name, 0.0)
-            else value
-        )
-        for name, value in current.items()
-    }
-
-
 def _nonnegative_number(value: Any, name: str) -> float:
     number = float(value)
     if number < 0:
@@ -117,7 +100,7 @@ def _parse_timestamp(value: Any) -> float:
     return datetime.fromisoformat(normalized).timestamp()
 
 
-class YuanRongResourceReporter:
+class YuanRongResourceReporter(FileResourceMetricsReporter):
     def __init__(
         self,
         log_path: str,
@@ -125,88 +108,25 @@ class YuanRongResourceReporter:
         interval_sec: float = 15.0,
         shared_memory_dir: str = "/dev/shm",
     ):
-        self.log_path = Path(log_path)
-        self.interval_sec = max(float(interval_sec), 1.0)
-        shared_dir = Path(shared_memory_dir)
-        if not shared_dir.is_dir():
-            shared_dir = Path(tempfile.gettempdir())
-        identity = hashlib.sha256(
-            f"{endpoint}|{self.log_path.resolve()}".encode()
-        ).hexdigest()[:24]
-        self.lock_path = shared_dir / f"ucm_yuanrong_metrics_{identity}.lock"
-        self.state_path = shared_dir / f"ucm_yuanrong_metrics_{identity}.json"
-        self._stop_event = threading.Event()
-        self._lock_file = None
-        self._thread = threading.Thread(
-            target=self._run,
-            name="yuanrong-resource-reporter",
-            daemon=True,
+        super().__init__(
+            log_path=log_path,
+            reporter_name="YuanRong",
+            identity=f"{endpoint}|{Path(log_path).resolve()}",
+            interval_sec=interval_sec,
+            shared_memory_dir=shared_memory_dir,
         )
-        atexit.register(self.stop)
 
-    def start(self) -> None:
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop_event.set()
-        if self._thread.is_alive() and threading.current_thread() is not self._thread:
-            self._thread.join(timeout=min(self.interval_sec + 1.0, 5.0))
-        self._release_leadership()
-
-    def _run(self) -> None:
-        if self._stop_event.is_set():
-            return
+    def _read_previous_counters(self) -> dict[str, float] | None:
         try:
-            if not self._try_become_leader():
-                return
-        except Exception as error:
-            logger.warning(f"Failed to elect YuanRong resource reporter: {error}")
-            ucmmetrics.update_stats({"yuanrong_resource_log_read_errors_total": 1.0})
-            return
-
-        while not self._stop_event.is_set():
-            try:
-                self._collect_once()
-            except Exception as error:
-                logger.warning(f"Failed to collect YuanRong resource metrics: {error}")
-                ucmmetrics.update_stats(
-                    {"yuanrong_resource_log_read_errors_total": 1.0}
-                )
-            self._stop_event.wait(self.interval_sec)
-
-    def _try_become_leader(self) -> bool:
-        if self._lock_file is not None:
-            return True
-        try:
-            import fcntl
-        except ImportError:
-            logger.warning(
-                "YuanRong resource reporter requires fcntl for host election"
-            )
-            self._stop_event.set()
-            return False
-
-        lock_file = open(self.lock_path, "a+")
-        try:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            lock_file.close()
-            return False
-        self._lock_file = lock_file
-        logger.info(f"Became YuanRong resource metrics reporter for {self.log_path}")
-        return True
-
-    def _release_leadership(self) -> None:
-        if self._lock_file is None:
-            return
-        try:
-            import fcntl
-
-            fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
-        except (ImportError, OSError):
-            pass
-        self._lock_file.close()
-        self._lock_file = None
+            state = self._read_previous_state()
+            if state is None:
+                return None
+            return {
+                name: float(value) for name, value in state.get("counters", {}).items()
+            }
+        except (OSError, ValueError, TypeError) as error:
+            logger.warning(f"Ignoring invalid YuanRong reporter state: {error}")
+            return None
 
     def _collect_once(self) -> None:
         line = self._read_latest_complete_line()
@@ -214,49 +134,7 @@ class YuanRongResourceReporter:
         previous = self._read_previous_counters()
         updates = snapshot.gauges | counter_deltas(snapshot.counters, previous)
         ucmmetrics.update_stats(updates)
-        self._write_previous_counters(snapshot.counters)
-
-    def _read_latest_complete_line(self) -> str:
-        with open(self.log_path, "rb") as log_file:
-            log_file.seek(0, os.SEEK_END)
-            end = log_file.tell()
-            if end == 0:
-                raise ValueError("YuanRong resource log is empty")
-            position = end
-            data = b""
-            while position > 0:
-                chunk_size = min(position, 64 * 1024)
-                position -= chunk_size
-                log_file.seek(position)
-                data = log_file.read(chunk_size) + data
-                ends_with_newline = data.endswith((b"\n", b"\r"))
-                complete = data.splitlines()
-                if not ends_with_newline and complete:
-                    complete.pop()
-                if complete:
-                    for candidate in reversed(complete):
-                        if candidate.strip():
-                            return candidate.decode("utf-8")
-            raise ValueError("YuanRong resource log has no complete JSON record")
-
-    def _read_previous_counters(self) -> dict[str, float] | None:
-        try:
-            with open(self.state_path, "r", encoding="utf-8") as state_file:
-                state = json.load(state_file)
-            return {
-                name: float(value) for name, value in state.get("counters", {}).items()
-            }
-        except FileNotFoundError:
-            return None
-        except (OSError, ValueError, TypeError) as error:
-            logger.warning(f"Ignoring invalid YuanRong reporter state: {error}")
-            return None
-
-    def _write_previous_counters(self, counters: dict[str, float]) -> None:
-        temporary_path = self.state_path.with_suffix(f".{os.getpid()}.tmp")
-        with open(temporary_path, "w", encoding="utf-8") as state_file:
-            json.dump({"version": 1, "counters": counters}, state_file)
-        os.replace(temporary_path, self.state_path)
+        self._write_previous_state({"version": 1, "counters": snapshot.counters})
 
 
 def start_yuanrong_resource_reporter(

@@ -86,7 +86,7 @@ jobs:
           required=false
           while IFS= read -r path; do
             case "${path}" in
-              CMakeLists.txt|cmake/*|ucm/*|setup.py|pyproject.toml|MANIFEST.in|version.ini|ucm_patch.pth|README.md|LICENSE|scripts/materialize_version.py|.github/release/ucm_release/*|.github/release/docker/*|.github/release/requirements/*|.github/release/release.yaml|.github/release/platforms.yaml|.github/actions/download-artifact-retry/*|.github/workflows/_build-wheel.yml|.github/workflows/_probe-runtime.yml|.github/workflows/_native-wheel-gate.yml|.github/workflows/release-ucm.yml|.github/workflows/pull-request.yml)
+              CMakeLists.txt|cmake/*|ucm/*|setup.py|pyproject.toml|MANIFEST.in|version.ini|ucm_patch.pth|README.md|LICENSE|scripts/materialize_version.py|.github/release/ucm_release/*|.github/release/docker/*|.github/release/requirements/*|.github/release/requirements*.txt|requirements-build.txt|.github/release/release.yaml|.github/release/platforms.yaml|.github/actions/download-artifact-retry/*|.github/workflows/_build-wheel.yml|.github/workflows/_probe-runtime.yml|.github/workflows/_native-wheel-gate.yml|.github/workflows/release-ucm.yml|.github/workflows/pull-request.yml)
                 required=true
                 break
                 ;;

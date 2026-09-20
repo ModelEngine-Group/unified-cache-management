@@ -1,0 +1,27 @@
+name: UCM Documentation · Check bilingual files
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-bilingual-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  bilingual:
+    name: Docs · Bilingual files
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Require both language files for every page
+        run: python docs/docs-site/tools/check_bilingual_docs.py

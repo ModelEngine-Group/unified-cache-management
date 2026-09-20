@@ -8,6 +8,13 @@ import pytest
 
 RELEASE_ROOT = Path(__file__).resolve().parents[1]
 RETRY = RELEASE_ROOT / "retry-registry-command.sh"
+QUAY_BLOB_URL = (
+    "https://quay.io/v2/ascend/vllm-ascend/blobs/sha256:"
+    "43fb28be3dcbd7fb3ad28be98625645ad928161bc2a501869b02d688bc51646b"
+)
+QUAY_BLOB_UNAUTHORIZED = (
+    f"unexpected status from GET request to {QUAY_BLOB_URL}: 401 Unauthorized"
+)
 FAKE_COMMAND = r"""
 count_file="$1"
 failures="$2"
@@ -34,6 +41,7 @@ def _run_retry(
     message: str,
     failure_status: int = 75,
     retry_transport: bool = False,
+    retry_quay_blob: bool = False,
     rate_limit_marker: Path | None = None,
     rate_limit_scope: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], int]:
@@ -43,6 +51,8 @@ def _run_retry(
     command = ["bash", str(RETRY), str(tmp_path / "command.log")]
     if retry_transport:
         command.append("--retry-transport")
+    if retry_quay_blob:
+        command.append("--retry-quay-blob")
     if rate_limit_marker is not None:
         command.extend(["--rate-limit-marker", str(rate_limit_marker)])
     if rate_limit_scope is not None:
@@ -102,6 +112,110 @@ def test_registry_connection_reset_retries_until_the_command_succeeds(
     assert completed.returncode == 0
     assert attempts == 3
     assert completed.stderr.count("transient transport error; retrying") == 2
+
+
+def test_quay_blob_unauthorized_retries_until_the_command_succeeds(
+    tmp_path: Path,
+) -> None:
+    completed, attempts = _run_retry(
+        tmp_path,
+        failures=2,
+        message=f"#9 ERROR: failed to copy: {QUAY_BLOB_UNAUTHORIZED}",
+        retry_quay_blob=True,
+    )
+
+    assert completed.returncode == 0
+    assert attempts == 3
+    assert completed.stderr.count("retrying") == 2
+
+
+def test_quay_blob_unauthorized_stops_at_the_bounded_attempt_count(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "rate-limit.marker"
+    completed, attempts = _run_retry(
+        tmp_path,
+        failures=10,
+        message=QUAY_BLOB_UNAUTHORIZED,
+        failure_status=71,
+        retry_transport=True,
+        retry_quay_blob=True,
+        rate_limit_marker=marker,
+    )
+
+    assert completed.returncode == 71
+    assert attempts == 5
+    assert "failed after 5 attempts" in completed.stderr
+    assert not marker.exists()
+
+
+def test_quay_blob_unauthorized_requires_explicit_retry(tmp_path: Path) -> None:
+    completed, attempts = _run_retry(
+        tmp_path,
+        failures=10,
+        message=QUAY_BLOB_UNAUTHORIZED,
+        failure_status=42,
+        retry_transport=True,
+    )
+
+    assert completed.returncode == 42
+    assert attempts == 1
+    assert "non-retryable error" in completed.stderr
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        pytest.param(
+            QUAY_BLOB_UNAUTHORIZED.replace(
+                QUAY_BLOB_URL,
+                "https://quay.io/v2/ascend/vllm-ascend/manifests/v0.24.0rc",
+            ),
+            id="manifest",
+        ),
+        pytest.param(
+            QUAY_BLOB_UNAUTHORIZED.replace(QUAY_BLOB_URL, "https://quay.io/v2/auth"),
+            id="token",
+        ),
+        pytest.param("docker login quay.io: 401 Unauthorized", id="login"),
+        pytest.param(
+            QUAY_BLOB_UNAUTHORIZED.replace("GET request", "PUT request"),
+            id="push",
+        ),
+        pytest.param(
+            QUAY_BLOB_UNAUTHORIZED.replace("quay.io", "ghcr.io"),
+            id="other-registry",
+        ),
+        pytest.param(
+            QUAY_BLOB_UNAUTHORIZED.replace("401 Unauthorized", "403 Forbidden"),
+            id="forbidden",
+        ),
+        pytest.param(
+            QUAY_BLOB_UNAUTHORIZED.replace("401 Unauthorized", "400 Bad Request"),
+            id="bad-request",
+        ),
+        pytest.param(
+            QUAY_BLOB_UNAUTHORIZED.replace(QUAY_BLOB_URL, QUAY_BLOB_URL[:-1]),
+            id="invalid-digest",
+        ),
+    ],
+)
+def test_quay_blob_retry_does_not_retry_other_registry_failures(
+    tmp_path: Path,
+    message: str,
+) -> None:
+    completed, attempts = _run_retry(
+        tmp_path,
+        failures=10,
+        message=message,
+        failure_status=42,
+        retry_transport=True,
+        retry_quay_blob=True,
+    )
+
+    assert completed.returncode == 42
+    assert attempts == 1
+    assert "non-retryable error" in completed.stderr
 
 
 @pytest.mark.parametrize("message", ["EOF", "unexpected EOF", "retrying EOF"])
@@ -199,23 +313,6 @@ def test_registry_rate_limit_stops_at_the_bounded_attempt_count(
     assert marker.read_text(encoding="utf-8") == "rate-limit-exhausted\n"
 
 
-def test_registry_marker_is_absent_for_a_non_rate_limit_failure(
-    tmp_path: Path,
-) -> None:
-    marker = tmp_path / "rate-limit.marker"
-    completed, attempts = _run_retry(
-        tmp_path,
-        failures=10,
-        message="manifest unknown",
-        failure_status=42,
-        rate_limit_marker=marker,
-    )
-
-    assert completed.returncode == 42
-    assert attempts == 1
-    assert not marker.exists()
-
-
 def test_registry_marker_requires_the_rate_limit_to_match_its_scope(
     tmp_path: Path,
 ) -> None:
@@ -249,19 +346,6 @@ def test_registry_marker_accepts_a_rate_limit_in_its_scope(tmp_path: Path) -> No
     assert completed.returncode == 75
     assert attempts == 5
     assert marker.read_text(encoding="utf-8") == "rate-limit-exhausted\n"
-
-
-def test_unrelated_number_containing_429_is_not_a_rate_limit(tmp_path: Path) -> None:
-    completed, attempts = _run_retry(
-        tmp_path,
-        failures=10,
-        message="blob 1429 is unavailable",
-        failure_status=42,
-    )
-
-    assert completed.returncode == 42
-    assert attempts == 1
-    assert "non-retryable error" in completed.stderr
 
 
 def test_layer_size_containing_429_is_not_a_rate_limit(tmp_path: Path) -> None:

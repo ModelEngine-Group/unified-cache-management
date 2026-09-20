@@ -32,7 +32,7 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - name: Download the formal run's exact Runtime selection
         run: |
           set -euo pipefail

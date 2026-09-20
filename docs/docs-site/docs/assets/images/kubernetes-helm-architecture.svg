@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="kubernetes-helm-architecture-title kubernetes-helm-architecture-desc">
+  <title id="kubernetes-helm-architecture-title">Kubernetes Helm ownership architecture</title>
+  <desc id="kubernetes-helm-architecture-desc">The Helm chart renders one model declaration and its support resources, the preinstalled kthena controller reconciles vLLM entry and worker Pods, and cluster services remain external prerequisites.</desc>
+  <defs>
+    <style>@import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&amp;family=Inter:wght@400;500;600;700&amp;display=swap');</style>
+    <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#616161"/>
+    </marker>
+    <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#009485"/>
+    </marker>
+    <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#007a6c"/>
+    </marker>
+  </defs>
+
+  <rect width="1280" height="720" fill="#fafaf7"/>
+
+  <!-- Diagram heading -->
+  <text x="40" y="40" fill="#007a6c" font-size="12" font-weight="600" font-family="'Geist Mono', monospace" letter-spacing="0.16em">KUBERNETES · HELM OWNERSHIP</text>
+  <text x="40" y="72" fill="#212121" font-size="24" font-weight="700" font-family="'Inter', sans-serif">Helm renders one model declaration and support resources.</text>
+  <text x="40" y="100" fill="#616161" font-size="12" font-weight="400" font-family="'Inter', sans-serif">kthena reconciles vLLM role Pods; cluster services remain preinstalled.</text>
+
+  <!-- Ownership zones -->
+  <rect x="264" y="132" width="336" height="468" rx="8" fill="rgba(0,148,133,0.02)" stroke="rgba(0,148,133,0.28)" stroke-width="0.8"/>
+  <rect x="280" y="136" width="104" height="16" rx="4" fill="#fafaf7"/>
+  <text x="332" y="148" fill="#007a6c" font-size="10" font-weight="600" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.12em">HELM RELEASE</text>
+
+  <rect x="640" y="132" width="256" height="468" rx="8" fill="rgba(33,33,33,0.02)" stroke="rgba(33,33,33,0.18)" stroke-width="0.8"/>
+  <rect x="656" y="136" width="152" height="16" rx="4" fill="#fafaf7"/>
+  <text x="732" y="148" fill="#6b6b6b" font-size="10" font-weight="600" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.12em">PREINSTALLED CLUSTER</text>
+
+  <rect x="936" y="132" width="304" height="468" rx="8" fill="rgba(33,33,33,0.015)" stroke="rgba(33,33,33,0.12)" stroke-width="0.8"/>
+  <rect x="952" y="136" width="144" height="16" rx="4" fill="#fafaf7"/>
+  <text x="1024" y="148" fill="#6b6b6b" font-size="10" font-weight="600" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.12em">RUNTIME WORKLOAD</text>
+
+  <!-- Connectors: drawn before nodes -->
+  <line x1="224" y1="336" x2="292" y2="336" stroke="#009485" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+
+  <line x1="572" y1="232" x2="664" y2="232" stroke="#009485" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+
+  <path d="M 872,232 H 912 Q 920,232 920,240 V 260 Q 920,268 928,268 H 968" fill="none" stroke="#616161" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+  <path d="M 572,360 H 612 Q 620,360 620,368 V 380 Q 620,388 628,388 H 664" fill="none" stroke="#009485" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow-accent)"/>
+
+  <path d="M 872,388 H 912 Q 920,388 920,380 V 368 Q 920,360 928,360 H 968" fill="none" stroke="#007a6c" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+
+  <path d="M 432,556 V 572 Q 432,580 440,580 H 1144 Q 1152,580 1152,572 V 416" fill="none" stroke="#007a6c" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow-link)"/>
+
+  <path d="M 872,516 H 1064 Q 1072,516 1072,508 V 416" fill="none" stroke="#616161" stroke-width="1" marker-end="url(#arrow)"/>
+
+  <!-- Connector labels: opaque masks retain traceable gaps -->
+  <rect x="232" y="304" width="56" height="16" rx="4" fill="#fafaf7"/>
+  <text x="260" y="316" fill="#007a6c" font-size="12" font-weight="500" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">VALUES</text>
+
+  <rect x="584" y="200" width="72" height="16" rx="4" fill="#fafaf7"/>
+  <text x="620" y="212" fill="#007a6c" font-size="12" font-weight="500" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">MODEL CR</text>
+
+  <rect x="880" y="200" width="80" height="16" rx="4" fill="#fafaf7"/>
+  <text x="920" y="212" fill="#616161" font-size="12" font-weight="500" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">RECONCILE</text>
+
+  <rect x="576" y="328" width="56" height="16" rx="4" fill="#fafaf7"/>
+  <text x="604" y="340" fill="#007a6c" font-size="12" font-weight="500" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">PD CRS</text>
+
+  <rect x="876" y="328" width="88" height="16" rx="4" fill="#fafaf7"/>
+  <text x="920" y="340" fill="#007a6c" font-size="12" font-weight="500" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">PD TRAFFIC</text>
+
+  <rect x="896" y="540" width="88" height="16" rx="4" fill="#fafaf7"/>
+  <text x="940" y="552" fill="#007a6c" font-size="12" font-weight="500" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">KV CONTROL</text>
+
+  <rect x="932" y="480" width="120" height="16" rx="4" fill="#fafaf7"/>
+  <text x="992" y="492" fill="#616161" font-size="12" font-weight="500" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">SCHED · DEVICE</text>
+
+  <!-- Input node -->
+  <rect x="40" y="280" width="184" height="112" rx="8" fill="#fafaf7"/>
+  <rect x="40" y="280" width="184" height="112" rx="8" fill="#f5f5f5" stroke="#6b6b6b" stroke-width="1"/>
+  <rect x="52" y="292" width="56" height="16" rx="4" fill="transparent" stroke="rgba(97,97,97,0.45)" stroke-width="0.8"/>
+  <text x="80" y="304" fill="#616161" font-size="10" font-weight="600" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">PROFILE</text>
+  <text x="132" y="340" fill="#212121" font-size="16" font-weight="600" font-family="'Inter', sans-serif" text-anchor="middle">Helm input</text>
+  <text x="132" y="368" fill="#616161" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">chart + model values</text>
+
+  <!-- Helm-owned resource bundle -->
+  <rect x="292" y="184" width="280" height="228" rx="8" fill="#fafaf7"/>
+  <rect x="292" y="184" width="280" height="228" rx="8" fill="rgba(0,148,133,0.08)" stroke="#009485" stroke-width="1.2"/>
+  <rect x="304" y="196" width="64" height="16" rx="4" fill="transparent" stroke="rgba(0,148,133,0.55)" stroke-width="0.8"/>
+  <text x="336" y="208" fill="#007a6c" font-size="10" font-weight="600" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">CREATED</text>
+  <text x="432" y="244" fill="#212121" font-size="20" font-weight="700" font-family="'Inter', sans-serif" text-anchor="middle">Helm-owned resources</text>
+  <line x1="316" y1="264" x2="548" y2="264" stroke="rgba(0,148,133,0.18)" stroke-width="0.8"/>
+  <text x="432" y="292" fill="#212121" font-size="16" font-weight="600" font-family="'Inter', sans-serif" text-anchor="middle">ModelServing</text>
+  <text x="432" y="320" fill="#616161" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">optional ModelServer · ModelRoute</text>
+  <text x="432" y="348" fill="#616161" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">Service · ConfigMap · Secret</text>
+  <text x="432" y="376" fill="#616161" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">PVC/PV · ServiceMonitor</text>
+  <text x="432" y="392" fill="#007a6c" font-size="10" font-weight="600" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">ONE MODEL DECLARATION</text>
+
+  <!-- Optional Helm-owned Mooncake master -->
+  <rect x="312" y="460" width="240" height="96" rx="8" fill="#fafaf7"/>
+  <rect x="312" y="460" width="240" height="96" rx="8" fill="rgba(0,148,133,0.03)" stroke="#009485" stroke-width="1" stroke-dasharray="4,3"/>
+  <rect x="324" y="472" width="64" height="16" rx="4" fill="transparent" stroke="rgba(0,148,133,0.45)" stroke-width="0.8"/>
+  <text x="356" y="484" fill="#007a6c" font-size="10" font-weight="600" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">OPTIONAL</text>
+  <text x="432" y="520" fill="#212121" font-size="16" font-weight="600" font-family="'Inter', sans-serif" text-anchor="middle">Mooncake Master</text>
+  <text x="432" y="544" fill="#616161" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">Deployment + Service</text>
+
+  <!-- Preinstalled kthena controller -->
+  <rect x="664" y="184" width="208" height="96" rx="8" fill="#fafaf7"/>
+  <rect x="664" y="184" width="208" height="96" rx="8" fill="#f5f5f5" stroke="rgba(33,33,33,0.35)" stroke-width="1"/>
+  <rect x="676" y="196" width="88" height="16" rx="4" fill="transparent" stroke="rgba(97,97,97,0.40)" stroke-width="0.8"/>
+  <text x="720" y="208" fill="#616161" font-size="10" font-weight="600" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">PREINSTALLED</text>
+  <text x="768" y="244" fill="#212121" font-size="16" font-weight="600" font-family="'Inter', sans-serif" text-anchor="middle">kthena controller</text>
+  <text x="768" y="268" fill="#616161" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">watches ModelServing CR</text>
+
+  <!-- Preinstalled PD gateway -->
+  <rect x="664" y="340" width="208" height="96" rx="8" fill="#fafaf7"/>
+  <rect x="664" y="340" width="208" height="96" rx="8" fill="#f5f5f5" stroke="rgba(33,33,33,0.35)" stroke-width="1"/>
+  <rect x="676" y="352" width="88" height="16" rx="4" fill="transparent" stroke="rgba(97,97,97,0.40)" stroke-width="0.8"/>
+  <text x="720" y="364" fill="#616161" font-size="10" font-weight="600" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">PREINSTALLED</text>
+  <text x="768" y="400" fill="#212121" font-size="16" font-weight="600" font-family="'Inter', sans-serif" text-anchor="middle">kthena-router</text>
+  <text x="768" y="424" fill="#616161" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">PD gateway · profiles</text>
+
+  <!-- External cluster prerequisites -->
+  <rect x="664" y="452" width="208" height="112" rx="8" fill="#fafaf7"/>
+  <rect x="664" y="452" width="208" height="112" rx="8" fill="rgba(33,33,33,0.02)" stroke="rgba(33,33,33,0.28)" stroke-width="1"/>
+  <rect x="676" y="464" width="72" height="16" rx="4" fill="transparent" stroke="rgba(97,97,97,0.35)" stroke-width="0.8"/>
+  <text x="712" y="476" fill="#616161" font-size="10" font-weight="600" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">EXTERNAL</text>
+  <text x="768" y="500" fill="#212121" font-size="16" font-weight="600" font-family="'Inter', sans-serif" text-anchor="middle">Cluster prerequisites</text>
+  <text x="768" y="524" fill="#616161" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">Kubernetes · kthena CRDs</text>
+  <text x="768" y="544" fill="#616161" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">Volcano · Prometheus CRD</text>
+  <text x="768" y="560" fill="#616161" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">devices · storage · RDMA</text>
+
+  <!-- kthena-reconciled runtime workload -->
+  <rect x="968" y="232" width="240" height="184" rx="8" fill="#fafaf7"/>
+  <rect x="968" y="232" width="240" height="184" rx="8" fill="#ffffff" stroke="#212121" stroke-width="1.2"/>
+  <rect x="980" y="244" width="88" height="16" rx="4" fill="transparent" stroke="rgba(33,33,33,0.42)" stroke-width="0.8"/>
+  <text x="1024" y="256" fill="#616161" font-size="10" font-weight="600" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">RECONCILED</text>
+  <text x="1088" y="292" fill="#212121" font-size="20" font-weight="700" font-family="'Inter', sans-serif" text-anchor="middle">vLLM role Pods</text>
+  <line x1="992" y1="316" x2="1184" y2="316" stroke="rgba(33,33,33,0.12)" stroke-width="0.8"/>
+  <text x="1040" y="344" fill="#212121" font-size="16" font-weight="600" font-family="'Inter', sans-serif" text-anchor="middle">Entry</text>
+  <text x="1040" y="368" fill="#616161" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">HTTP :8000</text>
+  <line x1="1088" y1="328" x2="1088" y2="380" stroke="rgba(33,33,33,0.12)" stroke-width="0.8"/>
+  <text x="1140" y="344" fill="#212121" font-size="16" font-weight="600" font-family="'Inter', sans-serif" text-anchor="middle">Workers</text>
+  <text x="1140" y="368" fill="#616161" font-size="12" font-family="'Geist Mono', monospace" text-anchor="middle">×N · headless</text>
+  <text x="1088" y="400" fill="#007a6c" font-size="10" font-weight="600" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">CREATED BY KTHENA, NOT HELM</text>
+
+  <!-- Legend strip -->
+  <line x1="40" y1="624" x2="1240" y2="624" stroke="rgba(33,33,33,0.12)" stroke-width="0.8"/>
+  <text x="40" y="656" fill="#616161" font-size="12" font-weight="600" font-family="'Geist Mono', monospace" letter-spacing="0.16em">OWNERSHIP</text>
+
+  <rect x="152" y="640" width="20" height="16" rx="4" fill="rgba(0,148,133,0.08)" stroke="#009485" stroke-width="1"/>
+  <text x="184" y="656" fill="#616161" font-size="12" font-family="'Inter', sans-serif">Helm-created</text>
+
+  <rect x="320" y="640" width="20" height="16" rx="4" fill="#ffffff" stroke="#212121" stroke-width="1"/>
+  <text x="352" y="656" fill="#616161" font-size="12" font-family="'Inter', sans-serif">kthena-reconciled</text>
+
+  <rect x="520" y="640" width="20" height="16" rx="4" fill="#fafaf7" stroke="#009485" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="552" y="656" fill="#616161" font-size="12" font-family="'Inter', sans-serif">Optional</text>
+
+  <rect x="752" y="640" width="20" height="16" rx="4" fill="rgba(33,33,33,0.02)" stroke="rgba(33,33,33,0.28)" stroke-width="1"/>
+  <text x="784" y="656" fill="#616161" font-size="12" font-family="'Inter', sans-serif">Preinstalled</text>
+
+  <line x1="1020" y1="648" x2="1052" y2="648" stroke="#007a6c" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+  <text x="1064" y="656" fill="#616161" font-size="12" font-family="'Inter', sans-serif">Traffic</text>
+</svg>

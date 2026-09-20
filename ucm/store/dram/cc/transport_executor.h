@@ -25,10 +25,12 @@
 #define UNIFIEDCACHE_DRAM_STORE_CC_TRANSPORT_EXECUTOR_H
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <vector>
 #include "bounded_queue.h"
@@ -87,10 +89,12 @@ private:
         std::condition_variable wake;
         BoundedQueue<TransportCommand> queue;
         std::thread thread;
+        double nextMetricsAt{0.0};
     };
 
     void Execute(TransportCommand command) noexcept;
     void Run(Worker& worker) noexcept;
+    std::optional<std::chrono::duration<double>> RecordCapacityMetrics(Worker& worker);
 
     Options options_;
     std::size_t commandQueueCapacity_{0};

@@ -43,7 +43,9 @@ struct RequestCompleted {
 
 struct Transmit {
     RequestToken token;
+    OpType op{OpType::LOOKUP};
     std::vector<std::uint8_t> payload;
+    double metricsQueuedAt{0.0};
 };
 
 struct Connect {
@@ -64,6 +66,7 @@ using TransportCommand = std::variant<Transmit, Connect, FenceEpoch>;
 struct TransmitCompleted {
     RequestToken token;
     Status status{Status::OK()};
+    double metricsCompletedAt{0.0};
 };
 
 struct ConnectCompleted {
@@ -104,11 +107,14 @@ using ReplySlotAcquirer =
     std::function<Expected<ReplySlot>(const RequestToken&, OpType, std::size_t)>;
 using ReplySlotReleaser = std::function<Status(const RequestToken&, const ReplySlot&)>;
 
+using PrerequisiteQuery = std::function<Expected<bool>(std::uintptr_t)>;
+
 struct NodeDependencies {
     TaskCompletionPublisher publishCompletion;
     TransportCommandSubmitter submitTransport;
     ReplySlotAcquirer acquireReplySlot;
     ReplySlotReleaser releaseReplySlot;
+    PrerequisiteQuery queryPrerequisite;
 };
 
 }  // namespace UC::Dram

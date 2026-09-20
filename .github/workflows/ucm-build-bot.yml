@@ -167,7 +167,7 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - name: Install crane
         run: |
           set -euo pipefail
@@ -255,7 +255,7 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - name: Install crane
         run: |
           set -euo pipefail
@@ -317,7 +317,7 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - name: Install crane
         run: |
           set -euo pipefail
@@ -409,7 +409,7 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - name: Install crane
         run: |
           set -euo pipefail
@@ -501,7 +501,7 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - uses: actions/download-artifact@v4.3.0
         with:
           name: ${{ needs.resolve-formal.outputs.selection_artifact }}
@@ -516,12 +516,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          PYTHONPATH=.github/release python -m ucm_release compact plan \
+          PYTHONPATH=.github/release python -m ucm_release plan create \
             --runtime-selection input/selection/runtime-selection.json \
             --builder-catalog input/builders/builder-catalog.json --route pr \
             --output out/release-plan.json >/dev/null
           if [ "${SUBCOMMAND}" = all ]; then
-            PYTHONPATH=.github/release python -m ucm_release compact retag-pr \
+            PYTHONPATH=.github/release python -m ucm_release plan retag-pr \
               --plan out/release-plan.json \
               --pr-number "${{ needs.permission-check.outputs.pr-number }}" \
               --author "${{ needs.permission-check.outputs.pr-author }}" \
@@ -602,7 +602,7 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - uses: actions/download-artifact@v4.3.0
         with:
           name: ${{ needs.resolve-pr-runtimes.outputs.selection_artifact }}
@@ -615,7 +615,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          PYTHONPATH=.github/release python -m ucm_release compact plan \
+          PYTHONPATH=.github/release python -m ucm_release plan create \
             --runtime-selection input/selection/runtime-selection.json \
             --builder-catalog input/builders/builder-catalog.json --route pr \
             --output out/release-plan.json >/dev/null
@@ -695,13 +695,25 @@ jobs:
       runner: ${{ matrix.runner }}
       plan_artifact: ${{ needs.select-plan.outputs.plan_artifact }}
 
+  build-toolkit:
+    name: Wheel · Toolkit
+    needs: select-plan
+    if: ${{ always() && needs.select-plan.result == 'success' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_build-toolkit.yml
+    with:
+      source_ref: ${{ needs.select-plan.outputs.source_ref }}
+      plan_artifact: ${{ needs.select-plan.outputs.plan_artifact }}
+
   build-images:
     name: Image · ${{ matrix.label }}
-    needs: [permission-check, select-plan, build-wheels]
+    needs: [permission-check, select-plan, build-wheels, build-toolkit]
     if: >-
       ${{
         always() && needs.select-plan.result == 'success' &&
-        needs.build-wheels.result == 'success'
+        needs.build-wheels.result == 'success' &&
+        needs.build-toolkit.result == 'success'
       }}
     strategy:
       fail-fast: false
@@ -859,7 +871,7 @@ jobs:
       - if: needs.permission-check.outputs.subcommand == 'image'
         run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - if: needs.inspect-runtimes.result == 'success' || needs.inspect-runtimes.result == 'failure'
         continue-on-error: true
         uses: actions/download-artifact@v4.3.0

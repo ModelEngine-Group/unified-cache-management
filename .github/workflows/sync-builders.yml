@@ -38,7 +38,7 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - uses: docker/setup-buildx-action@v3.11.1
       - uses: actions/download-artifact@v4.3.0
         with:
@@ -170,11 +170,20 @@ jobs:
               "ghcr.io/${owner}/"*:*) ;;
               *) echo "Builder candidate is outside current owner namespace" >&2; exit 2 ;;
             esac
-            docker buildx build --push \
-              --platform "linux/${CPU_ARCH}" \
-              --file .github/release/docker/Dockerfile.builder-mirror \
-              --build-arg "BASE_IMAGE=${pinned_source}" \
+            build_args=(
+              --platform "linux/${CPU_ARCH}"
+              --file .github/release/docker/Dockerfile.builder-mirror
+              --build-arg "BASE_IMAGE=${pinned_source}"
               "${label_args[@]}" --tag "${candidate}" .
+            )
+            # Cache source layers before opening a GHCR upload session. Otherwise
+            # a slow upstream download can exhaust the registry upload timeout.
+            bash .github/release/retry-registry-command.sh \
+              "${RUNNER_TEMP}/ucm-builder-prefetch.log" --retry-transport \
+              docker buildx build --output type=oci,dest=/dev/null "${build_args[@]}"
+            bash .github/release/retry-registry-command.sh \
+              "${RUNNER_TEMP}/ucm-builder-push.log" --retry-transport \
+              docker buildx build --push "${build_args[@]}"
           fi
           docker buildx imagetools inspect "${candidate}" >/dev/null
           if [ "${candidate}" != "${target}" ]; then
@@ -301,7 +310,7 @@ jobs:
           python-version: "3.12"
       - run: >-
           python -m pip install --disable-pip-version-check --no-cache-dir
-          --only-binary=:all: PyYAML==6.0.2 packaging==24.2
+          --only-binary=:all: -r .github/release/requirements.txt
       - uses: actions/download-artifact@v4.3.0
         with:
           name: ${{ needs.prepare.outputs.prepared_catalog_artifact }}
