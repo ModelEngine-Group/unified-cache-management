@@ -198,9 +198,28 @@ The mental model for users: **the model is served as if it had been told
 
 ### The request interface
 
-Agent-facing surface (vLLM OpenAI-compatible server via `extra_body`; offline  
-engine via the equivalent request field; SGLang via its own extra-params path —  
-same schema).
+Agent-facing surface: **`vllm_xargs`** — vLLM's declared extension namespace  
+for custom request parameters. It is a first-class protocol field (never  
+silently dropped the way unknown fields are) and is mapped onto  
+`SamplingParams.extra_args` under the hood, so the online OpenAI-compatible  
+server, the offline engine, and SGLang (via its own extra-params path) all  
+consume the same schema. OpenAI SDK users reach it through `extra_body`:
+
+```jsonc
+client.chat.completions.create(
+    /* …model, messages, sampling parameters… */
+    extra_body={ "vllm_xargs": { "kv_edit": { /* edit plan — see below */ } } }
+);
+```
+
+All pruning-related parameters live under the single namespaced key  
+**`kv_edit`** inside `vllm_xargs`; the rest of the request body (`messages`,  
+sampling parameters, …) is untouched, and a request without the key is an  
+ordinary request — zero overhead, nothing to validate. Wire note: stock vLLM  
+types `vllm_xargs` values as scalars or lists of scalars; UCM's patch layer  
+widens the field to accept the nested plan object below (the same widening is  
+proposed upstream), and on strictly-stock schemas the plan can be  
+JSON-encoded as a string under the same key.
 
 The interface is deliberately expressed in **message space, not token space**:  
 the agent owns the payload (the `messages` list) and its text; token IDs only  
@@ -214,36 +233,97 @@ Two granularities are offered:
 **Coarse-grained — whole messages.** The agent prunes whole messages by  
 **global index** — the absolute position in this request's `messages` list, in  
 which system, user, assistant, and tool messages are interleaved — asserting  
-each message's role via `type`:
+each message's role via `type`. A complete request: a coding agent has just  
+consumed the two file-read results at indices 3 and 5 and marks them dead,  
+while every other message of the session stays in place — the history itself  
+is sent byte-identical to how it was originally assembled:
 
 ```jsonc
 {
-  "messages": [ /* full, unmodified history — byte-stable across turns */ ],
-    
+  "model": "Qwen/Qwen3-32B",
+  "messages": [
+    { "role": "system",    "content": "You are a coding agent…" },            // 0
+    { "role": "user",      "content": "Fix the failing test in utils.py" },   // 1
+    { "role": "assistant", "content": "Reading the file first…",
+      "tool_calls": [ { "id": "call_1", "function": { "name": "read_file",
+        "arguments": "{\"path\": \"utils.py\"}" } } ] },                      // 2
+    { "role": "tool",      "tool_call_id": "call_1",
+      "content": "def add(a, b):\n    return a + b\n… 38 KB of file body …" }, // 3 — consumed
+    { "role": "assistant", "content": "Now the test file…",
+      "tool_calls": [ { "id": "call_2", "function": { "name": "read_file",
+        "arguments": "{\"path\": \"test_utils.py\"}" } } ] },                 // 4
+    { "role": "tool",      "tool_call_id": "call_2",
+      "content": "def test_add():\n    assert add(1, 2) == 3\n… 21 KB …" },  // 5 — consumed
+    { "role": "assistant", "content": "The test imports a missing helper…" }  // 6
+  ],
+  "vllm_xargs": {
+    "kv_edit": {
+      "messages": [
+        { "type": "tool", "indices": [3, 5] }   // prune tool results 3 and 5, whole-message
+      ]
+    }
   }
 }
 ```
 
+The plan says: *messages 3 and 5 are semantically dead — stop allocating,  
+loading, and attending to them; everything else keeps its exact reuse.* Note  
+the assistant turns carrying the `tool_calls` (indices 2 and 4) are **not**  
+pruned: the model still sees its own decision trail, only the bulky payloads  
+die.
+
 **Fine-grained — character spans within one message.** When only part of a  
 message is dead (e.g., the file body of a large tool result whose header is  
 still useful), the agent narrows the hole to `[start, end)` character offsets  
-in that message's text — mixing freely with coarse entries in the same plan:
+in that message's text — mixing freely with coarse entries in the same plan.  
+Here the agent prunes the whole obsolete grep result at index 3, but for the  
+still-current one at index 5 keeps the one-line summary header alive and  
+declares only its 12 KB of raw matches dead:
 
 ```jsonc
-"prune": {
+{
+  "model": "Qwen/Qwen3-32B",
   "messages": [
-    { "type": "tool", "indices": [4, 7] },
-    {
-      "type": "tool",
-      "index": 7,                                    // global index, one message
-      "spans": [ { "start": 410, "end": 9800 } ]     // char ranges in its text
+    { "role": "system",    "content": "You are a coding agent…" },            // 0
+    { "role": "user",      "content": "Find all callers of retry()" },        // 1
+    { "role": "assistant", "content": "Grepping the codebase…",
+      "tool_calls": [ { "id": "call_1", "function": { "name": "grep",
+        "arguments": "{\"pattern\": \"retry\"}" } } ] },                      // 2
+    { "role": "tool",      "tool_call_id": "call_1",
+      "content": "3 matches in 2 files:\n… superseded output …" },            // 3 — obsolete: prune whole
+    { "role": "assistant", "content": "Pattern was too loose, retrying…",
+      "tool_calls": [ { "id": "call_2", "function": { "name": "grep",
+        "arguments": "{\"pattern\": \"def retry\"}" } } ] },               // 4
+    { "role": "tool",      "tool_call_id": "call_2",
+      "content": "grep: 2 matches in 2 files:\nclient.py:12:  retry();\n… 12 KB of raw matches …" } // 5
+  ],
+  "vllm_xargs": {
+    "kv_edit": {
+      "messages": [
+        { "type": "tool", "indices": [3] },          // coarse: whole message 3
+        {
+          "type": "tool",                            // fine: message 5, char spans in its text
+          "index": 5,
+          "spans": [
+            { "start": 28, "end": 12483 }            // raw match list, dead; header [0,28) stays live
+          ]
+        }
+      ]
     }
-  ]
+  }
 }
 ```
 
+The two entry kinds compose into a single set of holes (semantics below):  
+message 3 vanishes entirely; message 5 survives with its first 28 characters  
+(the summary line) still participating in attention.
+
 Semantics:
 
+- All pruning parameters live under `vllm_xargs.kv_edit` — one namespaced  
+  key, one validation pass, and a request without it is an ordinary request.  
+  `messages` is the only top-level field of the plan; each entry is either  
+  coarse (`indices`) or fine (`index` + `spans`).
 - `indices` / `index` are **global**: they address the request's `messages`  
   list directly — the same interleaved list (system / user / assistant / tool)  
   the agent already owns and assembles. There is no per-type numbering.
@@ -420,7 +500,7 @@ afterthought:
 | Component                         | Change                                                                                                                                                                                                                                                                                                   |
 | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `RequestHasher`                   | Unchanged — the plan never participates in hash computation; chains are identical with or without edits.                                                                                                                                                                                                 |
-| New `EditPlanManager`             | Parses/validates `kv_edit` (coarse + fine entries, merge, dedup, guardrails); resolves message-space entries to token ranges during prompt construction; produces the **allocation plan** (block-level skip + token-level mask) and the **load plan** filter; exposes them to connector and patch hooks. |
+| New `EditPlanManager`             | Parses/validates `vllm_xargs.kv_edit` (coarse + fine entries, merge, dedup, guardrails); resolves message-space entries to token ranges during prompt construction; produces the **allocation plan** (block-level skip + token-level mask) and the **load plan** filter; exposes them to connector and patch hooks. |
 | `KVStoreConnector` / store layer  | Plan-filtered lookup/load; plan-filtered dump; GC-on-edit directive with refcount-aware reclaim.                                                                                                                                                                                                         |
 | Sparse compute-mask path          | Token-granular participation masks for boundary blocks ride the existing mask machinery (`UcmSparseBase` hooks in scheduler + layer forward).                                                                                                                                                            |
 | `UCMConnector` (Direct/LayerWise) | Thread the allocation/load plan through `get_num_new_matched_tokens` / async load / save lifecycle.                                                                                                                                                                                                      |
@@ -510,7 +590,7 @@ death annotations" corpus; we will contribute ours.
 | Phase                               | Scope                                                                                                                                                    | Exit criterion                                                                                            |
 | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | **P0 — PoC (UCM patch layer only)** | Edit plan via monkey-patched scheduler/attention-metadata hooks on pinned vLLM; hole blocks skipped in alloc & load; block-table omission.               | End-to-end demo on a real agent transcript; 3-arm quality harness running; numbers feed the upstream RFC. |
-| **P1 — GA**                         | EditPlanManager, store filtering, GC-on-edit, metrics, `extra_body` surface hardened.                                                                    | Feature-flagged default-off release; docs page (this document) published.                                 |
+| **P1 — GA**                         | EditPlanManager, store filtering, GC-on-edit, metrics, `vllm_xargs.kv_edit` surface hardened.                                                                    | Feature-flagged default-off release; docs page (this document) published.                                 |
 | **P2 — Upstream co-design**         | Land the engine-side contract in vLLM per the upstream RFC (allocation plan + participation mask); UCM connector migrates from patches to native hooks. | RFC merged; patch layer retired for this feature.                                                         |
 | **P3 — Ecosystem**                  | SGLang parity; client SDK helpers that track message-space plans; compose with retention-priority RFCs (#37003-style) as documented patterns.            | —                                                                                                         |
 
@@ -548,7 +628,7 @@ This document is the UCM-side design. The upstream proposal —
 **`[KVBridge] KV Context Editing — Relaxed Prefix Alignment for KV Allocation and
 Reuse`** — will carry the engine-side contract to the vLLM community:
 
-- the `kv_edit` request surface and its scheduling semantics,
+- the `vllm_xargs.kv_edit` request surface and its scheduling semantics,
 - the allocation-plan hook (scheduler-level block allocation skipping),
 - the participation-mask surface in attention metadata,
 - and the KVConnectorBase_V1 extension points that let connector-managed  
