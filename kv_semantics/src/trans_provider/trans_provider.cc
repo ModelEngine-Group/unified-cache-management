@@ -21,12 +21,12 @@ Status CreateTransProvider(const TransportConfig& config,
     switch (config.providerType) {
         case TransProviderType::AICPU:
 #ifdef UCM_ASU_ENABLE_AICPU_PROVIDER
-            transProvider = std::make_shared<AICPUTransProvider>();
+            transProvider = std::make_shared<AICPUTransProvider>(config);
             return Status::OK();
 #else
             return Status::Error(
                 StatusCode::UNSUPPORTED,
-                "AICPU trans provider is not built; enable BUILD_KV_CLIENT_PROVIDER_AICPU");
+                "AICPUTransProvider is not built; enable BUILD_KV_CLIENT_PROVIDER_AICPU");
 #endif
         case TransProviderType::FAKE:
 #ifdef UCM_ASU_ENABLE_FAKE_PROVIDER
