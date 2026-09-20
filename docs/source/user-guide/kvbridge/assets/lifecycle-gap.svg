@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="400" viewBox="0 0 880 400" role="img">
+<title>The lifecycle gap</title>
+<desc>Each tool result is semantically dead soon after it is consumed, but its KV is computed, stored, and attended until the end of the session. The shaded tails are the gap: semantically dead, yet still paid for.</desc>
+<defs>
+<marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+<style>
+text{font-family:'Segoe UI',Arial,sans-serif}
+.w5{font-weight:500}
+</style>
+<rect width="880" height="400" fill="#FFFFFF"/>
+
+<text x="40" y="34" font-size="16" class="w5" fill="#2C2C2A">The lifecycle gap</text>
+<text x="40" y="56" font-size="12.5" fill="#5F5E5A">each tool result is semantically dead soon after it is consumed — but its KV is computed, stored, and attended until the session ends</text>
+
+<g>
+<rect x="90" y="86" width="24" height="12" rx="3" fill="#5DCAA5"/>
+<text x="122" y="97" font-size="11.5" fill="#0F6E56">semantic lifetime — still needed by the agent</text>
+<rect x="90" y="106" width="24" height="12" rx="3" fill="none" stroke="#E24B4A" stroke-dasharray="4 3"/>
+<text x="122" y="117" font-size="11.5" fill="#A32D2D">inference lifetime — resident &amp; attended until session end</text>
+<rect x="90" y="126" width="24" height="12" rx="3" fill="#F09595" fill-opacity="0.35" stroke="#E24B4A" stroke-width="0.5"/>
+<text x="122" y="137" font-size="11.5" fill="#A32D2D">the gap — semantically dead, but still paid for</text>
+</g>
+
+<line x1="90" y1="170" x2="850" y2="170" stroke="#888780" stroke-width="1.4" marker-end="url(#arr)"/>
+<text x="90" y="164" font-size="11" fill="#5F5E5A">session timeline</text>
+
+<g>
+<text x="44" y="206" font-size="12" fill="#444441">tool R1</text>
+<rect x="130" y="192" width="80" height="18" rx="4" fill="#5DCAA5"/>
+<rect x="210" y="192" width="638" height="18" rx="4" fill="#F09595" fill-opacity="0.35"/>
+<rect x="130" y="192" width="718" height="18" rx="4" fill="none" stroke="#E24B4A" stroke-dasharray="4 3"/>
+<text x="222" y="206" font-size="10.5" fill="#5F5E5A">consumed → dead</text>
+</g>
+<g>
+<text x="44" y="254" font-size="12" fill="#444441">tool R2</text>
+<rect x="278" y="240" width="80" height="18" rx="4" fill="#5DCAA5"/>
+<rect x="358" y="240" width="490" height="18" rx="4" fill="#F09595" fill-opacity="0.35"/>
+<rect x="278" y="240" width="570" height="18" rx="4" fill="none" stroke="#E24B4A" stroke-dasharray="4 3"/>
+<text x="370" y="254" font-size="10.5" fill="#5F5E5A">consumed → dead</text>
+</g>
+<g>
+<text x="44" y="302" font-size="12" fill="#444441">tool R3</text>
+<rect x="426" y="288" width="80" height="18" rx="4" fill="#5DCAA5"/>
+<rect x="506" y="288" width="342" height="18" rx="4" fill="#F09595" fill-opacity="0.35"/>
+<rect x="426" y="288" width="422" height="18" rx="4" fill="none" stroke="#E24B4A" stroke-dasharray="4 3"/>
+<text x="518" y="302" font-size="10.5" fill="#5F5E5A">consumed → dead</text>
+</g>
+<g>
+<text x="44" y="350" font-size="12" fill="#444441">tool R4</text>
+<rect x="574" y="336" width="80" height="18" rx="4" fill="#5DCAA5"/>
+<rect x="654" y="336" width="194" height="18" rx="4" fill="#F09595" fill-opacity="0.35"/>
+<rect x="574" y="336" width="274" height="18" rx="4" fill="none" stroke="#E24B4A" stroke-dasharray="4 3"/>
+<text x="666" y="350" font-size="10.5" fill="#5F5E5A">consumed → dead</text>
+</g>
+
+<text x="848" y="374" text-anchor="end" font-size="11" fill="#5F5E5A">session end</text>
+<text x="464" y="390" text-anchor="middle" font-size="12" fill="#444441">the shaded tails are the waste: KV still stored, loaded, and attended — for content the agent has already discarded</text>
+</svg>

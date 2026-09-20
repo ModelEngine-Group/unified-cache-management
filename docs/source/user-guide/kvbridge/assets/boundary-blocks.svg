@@ -1,0 +1,146 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="470" viewBox="0 0 880 470" role="img">
+<title>How a hole maps onto the block grid</title>
+<desc>A pruned span starts and ends mid-block: the head and tail boundary blocks are retained, loaded, and partially masked; only fully-covered interior blocks are skipped.</desc>
+<style>
+text{font-family:'Segoe UI',Arial,sans-serif}
+.w5{font-weight:500}
+</style>
+<rect width="880" height="470" fill="#FFFFFF"/>
+
+<text x="40" y="34" font-size="16" class="w5" fill="#2C2C2A">How a hole maps onto the block grid</text>
+<text x="40" y="56" font-size="12.5" fill="#5F5E5A">a whole-message prune starts and ends mid-block — head and tail blocks are retained and partially masked; only fully-covered interior blocks are skipped</text>
+
+<text x="40" y="116" font-size="11.5" fill="#5F5E5A">request tokens</text>
+<rect x="130" y="100" width="151" height="24" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+<rect x="281" y="100" width="385" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="1"/>
+<rect x="666" y="100" width="124" height="24" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+<text x="473" y="112" text-anchor="middle" dominant-baseline="central" font-size="11" fill="#633806">pruned tool result — tokens 22–77</text>
+<text x="287" y="92" font-size="10.5" fill="#854F0B">hole start — token 22, inside B1</text>
+<text x="660" y="92" text-anchor="end" font-size="10.5" fill="#854F0B">hole end — token 78, inside B4</text>
+
+<line x1="281" y1="124" x2="281" y2="186" stroke="#BA7517" stroke-width="1" stroke-dasharray="4 3"/>
+<line x1="666" y1="124" x2="666" y2="186" stroke="#BA7517" stroke-width="1" stroke-dasharray="4 3"/>
+
+<text x="40" y="166" font-size="11.5" fill="#5F5E5A">blocks</text>
+<text x="40" y="180" font-size="10" fill="#5F5E5A">16 tokens each</text>
+
+<rect x="130" y="150" width="110" height="36" rx="7" fill="#9FE1CB" stroke="#1D9E75"/>
+<rect x="240" y="150" width="110" height="36" rx="7" fill="#9FE1CB" stroke="#1D9E75"/>
+<rect x="281" y="150" width="66" height="36" rx="3" fill="#FAEEDA" fill-opacity="0.75"/>
+<rect x="350" y="150" width="110" height="36" rx="7" fill="none" stroke="#BA7517" stroke-dasharray="5 3"/>
+<rect x="460" y="150" width="110" height="36" rx="7" fill="none" stroke="#BA7517" stroke-dasharray="5 3"/>
+<rect x="570" y="150" width="110" height="36" rx="7" fill="#9FE1CB" stroke="#1D9E75"/>
+<rect x="573" y="150" width="90" height="36" rx="3" fill="#FAEEDA" fill-opacity="0.75"/>
+<rect x="680" y="150" width="110" height="36" rx="7" fill="#9FE1CB" stroke="#1D9E75"/>
+
+<text x="185" y="168" text-anchor="middle" dominant-baseline="central" font-size="12.5" class="w5" fill="#04342C">B0</text>
+<text x="295" y="168" text-anchor="middle" dominant-baseline="central" font-size="12.5" class="w5" fill="#04342C">B1</text>
+<text x="405" y="168" text-anchor="middle" dominant-baseline="central" font-size="12.5" class="w5" fill="#854F0B">B2</text>
+<text x="515" y="168" text-anchor="middle" dominant-baseline="central" font-size="12.5" class="w5" fill="#854F0B">B3</text>
+<text x="625" y="168" text-anchor="middle" dominant-baseline="central" font-size="12.5" class="w5" fill="#04342C">B4</text>
+<text x="735" y="168" text-anchor="middle" dominant-baseline="central" font-size="12.5" class="w5" fill="#04342C">B5</text>
+
+<text x="185" y="202" text-anchor="middle" font-size="10" fill="#0F6E56">load</text>
+<text x="295" y="202" text-anchor="middle" font-size="10" fill="#854F0B">boundary —</text>
+<text x="295" y="216" text-anchor="middle" font-size="10" fill="#854F0B">load · mask 10 tok</text>
+<text x="405" y="202" text-anchor="middle" font-size="10" fill="#5F5E5A">no alloc</text>
+<text x="405" y="216" text-anchor="middle" font-size="10" fill="#5F5E5A">no load · no lookup</text>
+<text x="515" y="202" text-anchor="middle" font-size="10" fill="#5F5E5A">no alloc</text>
+<text x="515" y="216" text-anchor="middle" font-size="10" fill="#5F5E5A">no load · no lookup</text>
+<text x="625" y="202" text-anchor="middle" font-size="10" fill="#854F0B">boundary —</text>
+<text x="625" y="216" text-anchor="middle" font-size="10" fill="#854F0B">load · mask 14 tok</text>
+<text x="735" y="202" text-anchor="middle" font-size="10" fill="#0F6E56">load</text>
+
+<line x1="295" y1="220" x2="282" y2="248" stroke="#888780" stroke-width="1" stroke-dasharray="3 3"/>
+<line x1="625" y1="220" x2="662" y2="248" stroke="#888780" stroke-width="1" stroke-dasharray="3 3"/>
+
+<rect x="90" y="250" width="380" height="112" rx="10" fill="#F1EFE8" stroke="#D3D1C7"/>
+<text x="280" y="268" text-anchor="middle" font-size="12.5" class="w5" fill="#444441">B1 — head boundary block (tokens 16–31)</text>
+<rect x="106" y="278" width="22" height="24" fill="#9FE1CB" stroke="#1D9E75" stroke-width="0.5"/>
+<rect x="128" y="278" width="22" height="24" fill="#9FE1CB" stroke="#1D9E75" stroke-width="0.5"/>
+<rect x="150" y="278" width="22" height="24" fill="#9FE1CB" stroke="#1D9E75" stroke-width="0.5"/>
+<rect x="172" y="278" width="22" height="24" fill="#9FE1CB" stroke="#1D9E75" stroke-width="0.5"/>
+<rect x="194" y="278" width="22" height="24" fill="#9FE1CB" stroke="#1D9E75" stroke-width="0.5"/>
+<rect x="216" y="278" width="22" height="24" fill="#9FE1CB" stroke="#1D9E75" stroke-width="0.5"/>
+<rect x="238" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<rect x="260" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<rect x="282" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<rect x="304" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<rect x="326" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<rect x="348" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<rect x="370" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<rect x="392" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<rect x="414" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<rect x="436" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<text x="249" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<text x="271" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<text x="293" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<text x="315" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<text x="337" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<text x="359" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<text x="381" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<text x="403" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<text x="425" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<text x="447" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<line x1="106" y1="310" x2="238" y2="310" stroke="#1D9E75" stroke-width="1"/>
+<line x1="106" y1="306" x2="106" y2="310" stroke="#1D9E75" stroke-width="1"/>
+<line x1="238" y1="306" x2="238" y2="310" stroke="#1D9E75" stroke-width="1"/>
+<text x="172" y="324" text-anchor="middle" font-size="10.5" fill="#0F6E56">tokens 16–21 · attend</text>
+<line x1="238" y1="310" x2="458" y2="310" stroke="#BA7517" stroke-width="1"/>
+<line x1="238" y1="306" x2="238" y2="310" stroke="#BA7517" stroke-width="1"/>
+<line x1="458" y1="306" x2="458" y2="310" stroke="#BA7517" stroke-width="1"/>
+<text x="348" y="324" text-anchor="middle" font-size="10.5" fill="#854F0B">tokens 22–31 · masked (hole)</text>
+<text x="280" y="348" text-anchor="middle" font-size="11" fill="#444441">allocated · loaded · 10 of 16 tokens masked</text>
+
+<rect x="480" y="250" width="380" height="112" rx="10" fill="#F1EFE8" stroke="#D3D1C7"/>
+<text x="670" y="268" text-anchor="middle" font-size="12.5" class="w5" fill="#444441">B4 — tail boundary block (tokens 64–79)</text>
+<rect x="496" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<rect x="518" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<rect x="540" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<rect x="562" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<rect x="584" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<rect x="606" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<rect x="628" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<rect x="650" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<rect x="672" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<rect x="694" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<rect x="716" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<rect x="738" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<rect x="760" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<rect x="782" y="278" width="22" height="24" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<rect x="804" y="278" width="22" height="24" fill="#9FE1CB" stroke="#1D9E75" stroke-width="0.5"/>
+<rect x="826" y="278" width="22" height="24" fill="#9FE1CB" stroke="#1D9E75" stroke-width="0.5"/>
+<text x="507" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<text x="529" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<text x="551" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<text x="573" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<text x="595" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<text x="617" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<text x="639" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<text x="661" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<text x="683" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<text x="705" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<text x="727" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<text x="749" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<text x="771" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<text x="793" y="290" text-anchor="middle" dominant-baseline="central" font-size="13" fill="#854F0B">×</text>
+<line x1="496" y1="310" x2="804" y2="310" stroke="#BA7517" stroke-width="1"/>
+<line x1="496" y1="306" x2="496" y2="310" stroke="#BA7517" stroke-width="1"/>
+<line x1="804" y1="306" x2="804" y2="310" stroke="#BA7517" stroke-width="1"/>
+<text x="650" y="324" text-anchor="middle" font-size="10.5" fill="#854F0B">tokens 64–77 · masked (hole)</text>
+<line x1="804" y1="310" x2="848" y2="310" stroke="#1D9E75" stroke-width="1"/>
+<line x1="804" y1="306" x2="804" y2="310" stroke="#1D9E75" stroke-width="1"/>
+<line x1="848" y1="306" x2="848" y2="310" stroke="#1D9E75" stroke-width="1"/>
+<text x="848" y="324" text-anchor="end" font-size="10.5" fill="#0F6E56">78–79 · attend</text>
+<text x="670" y="348" text-anchor="middle" font-size="11" fill="#444441">allocated · loaded · 14 of 16 tokens masked</text>
+
+<rect x="90" y="388" width="18" height="12" fill="#9FE1CB" stroke="#1D9E75"/>
+<text x="114" y="398" font-size="10.5" fill="#444441">kept — allocated · loaded · attended</text>
+<rect x="340" y="388" width="18" height="12" fill="#FAEEDA" stroke="#BA7517"/>
+<text x="364" y="398" font-size="10.5" fill="#444441">in-block hole tokens — masked from attention</text>
+<rect x="650" y="388" width="18" height="12" fill="none" stroke="#BA7517" stroke-dasharray="4 3"/>
+<text x="674" y="398" font-size="10.5" fill="#444441">fully covered — skipped</text>
+
+<text x="440" y="428" text-anchor="middle" font-size="12" fill="#444441">Only fully-covered interior blocks are skipped. The head and tail blocks of a hole are retained, loaded, and masked at token granularity.</text>
+<text x="440" y="448" text-anchor="middle" font-size="12" fill="#5F5E5A">For a multi-block tool result, boundary overhead is at most two blocks — everything in between is pure savings.</text>
+</svg>

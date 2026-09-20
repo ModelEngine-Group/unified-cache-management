@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="470" viewBox="0 0 880 470" role="img">
+<title>Turn N+1 with an edit plan</title>
+<desc>A follow-up request declares tool2 a hole: prefix matching still covers all blocks, hole blocks get no allocation and no load, the suffix runs as usual, and the store marks the hole blocks for GC.</desc>
+<defs>
+<marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+<style>
+text{font-family:'Segoe UI',Arial,sans-serif}
+.w5{font-weight:500}
+</style>
+<rect width="880" height="470" fill="#FFFFFF"/>
+
+<text x="40" y="34" font-size="16" class="w5" fill="#2C2C2A">Worked example — turn N+1 with an edit plan</text>
+<text x="40" y="56" font-size="12.5" fill="#5F5E5A">the agent has consumed tool₂; the new request declares it a hole — nothing else changes</text>
+
+<text x="40" y="100" font-size="12" fill="#5F5E5A">request tokens</text>
+<g text-anchor="middle">
+<rect x="40" y="108" width="80" height="40" rx="7" fill="#F1EFE8" stroke="#B4B2A9"/>
+<text x="80" y="128" font-size="11.5" fill="#444441">sys</text>
+<rect x="128" y="108" width="80" height="40" rx="7" fill="#F1EFE8" stroke="#B4B2A9"/>
+<text x="168" y="128" font-size="11.5" fill="#444441">usr</text>
+<rect x="216" y="108" width="80" height="40" rx="7" fill="#F1EFE8" stroke="#B4B2A9"/>
+<text x="256" y="128" font-size="11.5" fill="#444441">asst₁</text>
+<rect x="304" y="108" width="80" height="40" rx="7" fill="#E6F1FB" stroke="#378ADD"/>
+<text x="344" y="121" font-size="11.5" fill="#0C447C">tool₁</text>
+<text x="344" y="137" font-size="9.5" fill="#185FA5">retained</text>
+<rect x="392" y="108" width="80" height="40" rx="7" fill="#E6F1FB" stroke="#378ADD"/>
+<text x="432" y="128" font-size="11.5" fill="#0C447C">asst₂</text>
+<rect x="480" y="108" width="80" height="40" rx="7" fill="#FAC775" stroke="#BA7517" stroke-dasharray="5 3"/>
+<text x="520" y="121" font-size="11.5" fill="#633806">tool₂</text>
+<text x="520" y="137" font-size="9.5" fill="#854F0B">hole</text>
+<rect x="568" y="108" width="80" height="40" rx="7" fill="#E6F1FB" stroke="#378ADD"/>
+<text x="608" y="128" font-size="11.5" fill="#0C447C">tool₃</text>
+<rect x="656" y="108" width="80" height="40" rx="7" fill="#E6F1FB" stroke="#378ADD"/>
+<text x="696" y="128" font-size="11.5" fill="#0C447C">asst₃</text>
+<rect x="744" y="108" width="96" height="40" rx="7" fill="#C0DD97" stroke="#639922"/>
+<text x="792" y="121" font-size="11.5" fill="#27500A">new turn</text>
+<text x="792" y="137" font-size="9.5" fill="#3B6D11">prefill</text>
+</g>
+<text x="520" y="168" text-anchor="middle" font-size="11" fill="#854F0B">agent hint: "tool₂ result is semantically dead"</text>
+
+<line x1="80" y1="206" x2="816" y2="206" stroke="#1D9E75" stroke-width="1.6"/>
+<g text-anchor="middle">
+<circle cx="80" cy="206" r="3.5" fill="#1D9E75"/><text x="80" y="228" font-size="10.5" fill="#0F6E56">b0</text>
+<circle cx="168" cy="206" r="3.5" fill="#1D9E75"/><text x="168" y="228" font-size="10.5" fill="#0F6E56">b1</text>
+<circle cx="256" cy="206" r="3.5" fill="#1D9E75"/><text x="256" y="228" font-size="10.5" fill="#0F6E56">b2</text>
+<circle cx="344" cy="206" r="3.5" fill="#1D9E75"/><text x="344" y="228" font-size="10.5" fill="#0F6E56">b3</text>
+<circle cx="432" cy="206" r="3.5" fill="#1D9E75"/><text x="432" y="228" font-size="10.5" fill="#0F6E56">b4</text>
+<circle cx="520" cy="206" r="3.5" fill="none" stroke="#BA7517" stroke-width="1.6"/><text x="520" y="228" font-size="10.5" fill="#854F0B">b5</text>
+<circle cx="608" cy="206" r="3.5" fill="#1D9E75"/><text x="608" y="228" font-size="10.5" fill="#0F6E56">b6</text>
+<circle cx="696" cy="206" r="3.5" fill="#1D9E75"/><text x="696" y="228" font-size="10.5" fill="#0F6E56">b7</text>
+<circle cx="792" cy="206" r="3.5" fill="#639922"/><text x="792" y="228" font-size="10.5" fill="#3B6D11">b8</text>
+</g>
+<text x="40" y="206" font-size="12" fill="#5F5E5A">chain</text>
+<text x="40" y="222" font-size="12" fill="#5F5E5A">&amp; match</text>
+<text x="455" y="250" text-anchor="middle" font-size="11.5" fill="#0F6E56">block-hash chain unchanged → prefix match covers b0–b7, identical to the no-plan request (G2)</text>
+
+<text x="40" y="286" font-size="12" fill="#5F5E5A">HBM</text>
+<text x="40" y="302" font-size="12" fill="#5F5E5A">blocks</text>
+<g text-anchor="middle">
+<rect x="80" y="272" width="80" height="36" rx="7" fill="#B5D4F4" stroke="#378ADD"/>
+<text x="120" y="294" font-size="10.5" fill="#0C447C">load</text>
+<rect x="168" y="272" width="80" height="36" rx="7" fill="#B5D4F4" stroke="#378ADD"/>
+<text x="208" y="294" font-size="10.5" fill="#0C447C">load</text>
+<rect x="256" y="272" width="80" height="36" rx="7" fill="#B5D4F4" stroke="#378ADD"/>
+<text x="296" y="294" font-size="10.5" fill="#0C447C">load</text>
+<rect x="344" y="272" width="80" height="36" rx="7" fill="#B5D4F4" stroke="#378ADD"/>
+<text x="384" y="294" font-size="10.5" fill="#0C447C">load</text>
+<rect x="480" y="272" width="80" height="36" rx="7" fill="none" stroke="#BA7517" stroke-dasharray="5 3"/>
+<text x="520" y="294" font-size="10.5" fill="#854F0B">no alloc</text>
+<rect x="568" y="272" width="80" height="36" rx="7" fill="#B5D4F4" stroke="#378ADD"/>
+<text x="608" y="294" font-size="10.5" fill="#0C447C">load</text>
+<rect x="656" y="272" width="80" height="36" rx="7" fill="#B5D4F4" stroke="#378ADD"/>
+<text x="696" y="294" font-size="10.5" fill="#0C447C">load</text>
+<rect x="744" y="272" width="96" height="36" rx="7" fill="#97C459" stroke="#639922"/>
+<text x="792" y="294" font-size="10.5" fill="#173404">compute</text>
+</g>
+
+<text x="40" y="360" font-size="12" fill="#5F5E5A">external</text>
+<text x="40" y="376" font-size="12" fill="#5F5E5A">store</text>
+<g text-anchor="middle">
+<rect x="80" y="346" width="80" height="36" rx="7" fill="#B5D4F4" stroke="#378ADD"/>
+<text x="120" y="368" font-size="10.5" fill="#0C447C">fetch</text>
+<rect x="168" y="346" width="80" height="36" rx="7" fill="#B5D4F4" stroke="#378ADD"/>
+<text x="208" y="368" font-size="10.5" fill="#0C447C">fetch</text>
+<rect x="256" y="346" width="80" height="36" rx="7" fill="#B5D4F4" stroke="#378ADD"/>
+<text x="296" y="368" font-size="10.5" fill="#0C447C">fetch</text>
+<rect x="344" y="346" width="80" height="36" rx="7" fill="#B5D4F4" stroke="#378ADD"/>
+<text x="384" y="368" font-size="10.5" fill="#0C447C">fetch</text>
+<rect x="480" y="346" width="80" height="36" rx="7" fill="none" stroke="#BA7517" stroke-dasharray="5 3"/>
+<text x="520" y="362" font-size="10.5" fill="#854F0B">no lookup</text>
+<text x="520" y="376" font-size="10.5" fill="#854F0B">GC cand.</text>
+<rect x="568" y="346" width="80" height="36" rx="7" fill="#B5D4F4" stroke="#378ADD"/>
+<text x="608" y="368" font-size="10.5" fill="#0C447C">fetch</text>
+<rect x="656" y="346" width="80" height="36" rx="7" fill="#B5D4F4" stroke="#378ADD"/>
+<text x="696" y="368" font-size="10.5" fill="#0C447C">fetch</text>
+<rect x="744" y="346" width="96" height="36" rx="7" fill="#C0DD97" stroke="#639922"/>
+<text x="792" y="362" font-size="10.5" fill="#27500A">dump</text>
+<text x="792" y="376" font-size="10.5" fill="#27500A">afterwards</text>
+</g>
+
+<line x1="120" y1="310" x2="120" y2="342" stroke="#378ADD" stroke-width="1" stroke-dasharray="3 3" marker-end="url(#arr)"/>
+<line x1="208" y1="310" x2="208" y2="342" stroke="#378ADD" stroke-width="1" stroke-dasharray="3 3" marker-end="url(#arr)"/>
+<line x1="296" y1="310" x2="296" y2="342" stroke="#378ADD" stroke-width="1" stroke-dasharray="3 3" marker-end="url(#arr)"/>
+<line x1="384" y1="310" x2="384" y2="342" stroke="#378ADD" stroke-width="1" stroke-dasharray="3 3" marker-end="url(#arr)"/>
+<line x1="608" y1="310" x2="608" y2="342" stroke="#378ADD" stroke-width="1" stroke-dasharray="3 3" marker-end="url(#arr)"/>
+<line x1="696" y1="310" x2="696" y2="342" stroke="#378ADD" stroke-width="1" stroke-dasharray="3 3" marker-end="url(#arr)"/>
+
+<rect x="40" y="402" width="800" height="48" rx="10" fill="#E1F5EE" stroke="#5DCAA5"/>
+<text x="440" y="421" text-anchor="middle" font-size="12.5" class="w5" fill="#0F6E56">what the agent saved: the HBM footprint of tool₂, the load bandwidth of tool₂, and every future attention read of tool₂ —</text>
+<text x="440" y="440" text-anchor="middle" font-size="12.5" class="w5" fill="#0F6E56">while every other block of the session hit exactly as before</text>
+</svg>
