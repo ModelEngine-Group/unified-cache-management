@@ -628,10 +628,14 @@ def test_disabled_image_publication_completes_with_wheels_and_chart(
     assert skipped_chart["release"]["status"] == "publication-failed"
 
 
-@pytest.mark.parametrize("release_type", ["prerelease", "nightly"])
+@pytest.mark.parametrize(
+    "release_type,draft_placeholder",
+    [("prerelease", False), ("nightly", False), ("nightly", True)],
+)
 def test_disabled_channels_finalize_with_wheels_only_regardless_of_release_type(
     tmp_path: Path,
     release_type: str,
+    draft_placeholder: bool,
 ) -> None:
     wheels, _, _, filename = _write_artifact_inputs(tmp_path)
     plan = _plan()
@@ -678,10 +682,28 @@ def test_disabled_channels_finalize_with_wheels_only_regardless_of_release_type(
             for name, url in asset_urls.items()
         ],
     }
+    if draft_placeholder:
+        release_document["draft"] = True
+        release_document["html_url"] = (
+            "https://github.com/example/ucm/releases/tag/untagged-123"
+        )
+        for asset in release_document["assets"]:
+            asset["browser_download_url"] = asset["browser_download_url"].replace(
+                "/download/v1/", "/download/untagged-123/"
+            )
+        asset_urls = {
+            name: f"https://github.com/example/ucm/releases/download/{plan['git_tag']}/{name}"
+            for name in asset_urls
+        }
     assert public_manifest.asset_urls(final, release_document) == asset_urls
     notes = release.render_notes(final, repository="example/ucm", asset_urls=asset_urls)
     assert asset_urls[filename] in notes
     public = public_manifest.build_manifest(final, release_document)
+    assert (
+        public["release"]["url"]
+        == f"https://github.com/example/ucm/releases/tag/{plan['git_tag']}"
+    )
+    assert public["wheels"][0]["url"] == asset_urls[filename]
     assert public["schema_version"] == 9
     assert public["chart"] is None
     assert public["images"] == []
