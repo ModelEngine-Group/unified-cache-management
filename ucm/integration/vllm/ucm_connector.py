@@ -5,7 +5,6 @@ import os
 import re
 import shutil
 import time
-import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from functools import wraps
@@ -236,45 +235,6 @@ def _use_ucm_connector_cpu_affinity() -> bool:
     return (
         os.getenv("VLLM_CPU_AFFINITY") == "1"
         and getattr(current_platform, "device_type", None) != "npu"
-    )
-
-
-def _worker_generate_unique_id() -> str:
-    """Worker-side: broadcast a uuid and write to a per-instance file."""
-    world_group = get_world_group()
-    if world_group.rank_in_group == 0:
-        now = time.time()
-        for f in glob.glob("/dev/shm/ucm_uniqueid_*"):
-            try:
-                if now - os.path.getmtime(f) > 600:
-                    os.remove(f)
-            except OSError:
-                pass
-        local_uid = uuid.uuid4().hex
-    else:
-        local_uid = None
-    uid = world_group.broadcast_object(local_uid, src=0)
-    path = f"/dev/shm/ucm_uniqueid_{os.getppid()}"
-    tmp = f"{path}.tmp.{os.getpid()}"
-    with open(tmp, "w") as f:
-        f.write(uid)
-    os.replace(tmp, path)
-    return uid
-
-
-def _scheduler_read_unique_id() -> str:
-    """Scheduler-side: read the uuid from the per-instance file."""
-    for pid in (os.getpid(), os.getppid()):
-        path = f"/dev/shm/ucm_uniqueid_{pid}"
-        try:
-            with open(path) as f:
-                uid = f.read().strip()
-            if uid:
-                return uid
-        except FileNotFoundError:
-            continue
-    raise RuntimeError(
-        "scheduler-side UCM initialization failed: unique_id file not found"
     )
 
 
@@ -1437,22 +1397,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
         self.requests_meta: dict[str, RequestMeta] = {}
 
         ucm_config = Config(vllm_config.kv_transfer_config)
-        self.engine_id = vllm_config.kv_transfer_config.engine_id.rsplit("_dp", 1)[0]
+        self.engine_id = vllm_config.kv_transfer_config.engine_id
         self.launch_config = ucm_config.get_config()
         self.connector_configs = self.launch_config.get("ucm_connectors", [])
         assert len(self.connector_configs) > 0, "no storage connector name in config."
-        share_buffer_enable = (
-            self.connector_configs[0]
-            .get("ucm_connector_config", {})
-            .get("share_buffer_enable", self.is_mla)
-        )
-        if share_buffer_enable:
-            if role == KVConnectorRole.WORKER:
-                self.unique_id = _worker_generate_unique_id()
-            else:
-                self.unique_id = _scheduler_read_unique_id()
-        else:
-            self.unique_id = self.engine_id
+        self.unique_id = self.engine_id
         self.enable_event_sync = self.launch_config.get("enable_event_sync", True)
         self.enable_record_traces = self.launch_config.get(
             "enable_record_traces", False
