@@ -1,5 +1,6 @@
 if(NOT (RUNTIME_ENVIRONMENT STREQUAL "ascend"
         OR RUNTIME_ENVIRONMENT STREQUAL "ascend-a3"
+        OR RUNTIME_ENVIRONMENT STREQUAL "ascend-a5"
         OR RUNTIME_ENVIRONMENT STREQUAL "simu"))
     return()
 endif()

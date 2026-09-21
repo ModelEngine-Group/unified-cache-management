@@ -116,12 +116,16 @@ def _parsed_runtime_tag(product_id: str, tag: str) -> dict[str, object] | None:
             or sum(token.startswith("ubuntu") for token in tokens) > 1
         ):
             return None
+        variant = "default"
+        backend = "cuda"
     elif product_id == "vllm-ascend":
         if any(token not in {"310p", "a3", "a5", "openeuler"} for token in tokens):
             return None
         accelerator_tokens = set(tokens) & {"310p", "a3", "a5"}
         if len(accelerator_tokens) > 1 or tokens.count("openeuler") > 1:
             return None
+        variant = next(iter(accelerator_tokens), "a2")
+        backend = f"cann-{variant}"
     else:
         raise ValueError(f"unsupported runtime product {product_id!r}")
     try:
@@ -140,19 +144,9 @@ def _parsed_runtime_tag(product_id: str, tag: str) -> dict[str, object] | None:
         "channel": channel,
         "suffix": suffix,
         "tokens": tokens,
+        "variant": variant,
+        "backend": backend,
     }
-
-
-def _runtime_variant(product_id: str, parsed: Mapping[str, object]) -> str:
-    tokens = set(parsed["tokens"])
-    if product_id == "vllm":
-        return "default"
-    if product_id == "vllm-ascend":
-        return next(
-            (token for token in ("310p", "a3", "a5") if token in tokens),
-            "a2",
-        )
-    raise ValueError(f"unsupported runtime product {product_id!r}")
 
 
 def _version_is_in_selector(version: Version, selector: Version) -> bool:
@@ -233,7 +227,7 @@ def _select_runtime_tags(
                 raise ValueError(
                     f"{context}: explicit Runtime tag is outside its version range"
                 )
-            if _runtime_variant(product_id, parsed) in excluded_variants:
+            if parsed["variant"] in excluded_variants:
                 raise ValueError(f"{context}: explicit Runtime tag is excluded")
             values = [parsed]
         else:
@@ -244,9 +238,7 @@ def _select_runtime_tags(
             ]
             winners = _preferred_runtime_tags(matching)
             values = [
-                item
-                for item in winners
-                if _runtime_variant(product_id, item) not in excluded_variants
+                item for item in winners if item["variant"] not in excluded_variants
             ]
             if not values:
                 reason = (
@@ -325,7 +317,7 @@ def resolve_runtime_candidates(
                 }
                 for tag in repository_tags
                 if (item := _parsed_runtime_tag(product_id, tag)) is not None
-                and _runtime_variant(product_id, item) not in excluded
+                and item["variant"] not in excluded
             ]
         else:
             selected = _select_runtime_tags(
@@ -340,16 +332,17 @@ def resolve_runtime_candidates(
         product_runtime_count = len(runtimes)
         for item in selected:
             tag = item["runtime_tag"]
-            parsed = _parsed_runtime_tag(product_id, tag)
-            tokens = set(parsed["tokens"]) if parsed is not None else set()
-            if product_id == "vllm-ascend" and "a5" in tokens:
-                backend = "cann-a5"
-                backend_policy = _mapping(backends.get(backend), f"backend {backend}")
+            parsed = _mapping(
+                _parsed_runtime_tag(product_id, tag), f"selected Runtime tag {tag}"
+            )
+            backend = str(parsed["backend"])
+            backend_policy = _mapping(backends.get(backend), f"backend {backend}")
+            if backend_policy.get("status") == "blocked":
                 problems.append(
                     _blocked_problem(
                         backend=backend,
-                        capability="Ascend A5 runtime",
-                        reason=str(backend_policy.get("reason", "backend is blocked")),
+                        capability=f"{backend} runtime",
+                        reason=str(backend_policy["reason"]),
                         repository=repository,
                         tag=tag,
                     )

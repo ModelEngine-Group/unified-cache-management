@@ -22,6 +22,116 @@ def _release_policy() -> dict[str, object]:
     return yaml.safe_load((RELEASE_ROOT / "release.yaml").read_text(encoding="utf-8"))
 
 
+def _platform_policy() -> dict[str, object]:
+    return yaml.safe_load((RELEASE_ROOT / "platforms.yaml").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize(
+    ("product_ids", "message"),
+    [
+        (["vllm", "vllm"], "duplicate IDs"),
+        (["vllm"], "missing=.*vllm-ascend"),
+        (["vllm", "unknown-product"], "unknown=.*unknown-product"),
+    ],
+)
+def test_product_ids_match_version_authority(tmp_path, product_ids, message):
+    policy = importlib.import_module("ucm_release.policy")
+    release = _release_policy()
+    product = release["products"][0]
+    release["products"] = [{**product, "id": name} for name in product_ids]
+    path = tmp_path / "release.yaml"
+    path.write_text(yaml.safe_dump(release), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        policy.load(path)
+
+
+@pytest.mark.parametrize("product_ids", [["vllm"], ["vllm", "unknown-product"]])
+def test_chart_smoke_values_match_products(tmp_path, product_ids):
+    policy = importlib.import_module("ucm_release.policy")
+    release = _release_policy()
+    release["chart"]["smoke_values"] = {name: "values.yaml" for name in product_ids}
+    path = tmp_path / "release.yaml"
+    path.write_text(yaml.safe_dump(release), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="release.chart.smoke_values.*missing="):
+        policy.load(path)
+
+
+def test_exclusions_reject_unknown_product_references(tmp_path):
+    policy = importlib.import_module("ucm_release.policy")
+    platforms = _platform_policy()
+    platforms["excluded_upstream_variants"]["unknown-product"] = []
+    path = tmp_path / "platforms.yaml"
+    path.write_text(yaml.safe_dump(platforms), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="excluded_upstream_variants.*unknown-product"):
+        policy.load(platforms_path=path)
+
+
+@pytest.mark.parametrize("replacement", [None, "unknown-backend"])
+def test_backend_policy_requires_the_runtime_supported_set(tmp_path, replacement):
+    policy = importlib.import_module("ucm_release.policy")
+    platforms = _platform_policy()
+    backend = next(iter(platforms["backends"]))
+    entry = platforms["backends"].pop(backend)
+    if replacement is not None:
+        platforms["backends"][replacement] = entry
+    path = tmp_path / "platforms.yaml"
+    path.write_text(yaml.safe_dump(platforms), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=f"platforms.backends.*missing=.*{backend}"):
+        policy.load(platforms_path=path)
+
+
+@pytest.mark.parametrize("excluded", ["a3", [""], ["a3", "a3"]])
+def test_exclusion_lists_reject_invalid_values(tmp_path, excluded):
+    policy = importlib.import_module("ucm_release.policy")
+    platforms = _platform_policy()
+    platforms["excluded_upstream_variants"]["vllm-ascend"] = excluded
+    path = tmp_path / "platforms.yaml"
+    path.write_text(yaml.safe_dump(platforms), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="excluded_upstream_variants"):
+        policy.load(platforms_path=path)
+
+
+@pytest.mark.parametrize(
+    "requirements",
+    [
+        {"a2": "libruntime.so"},
+        {"a2": []},
+        {"a2": [""]},
+        {"a2": ["libruntime.so", "libruntime.so"]},
+        {"": ["libruntime.so"]},
+    ],
+)
+def test_variant_file_lists_reject_invalid_values(tmp_path, requirements):
+    policy = importlib.import_module("ucm_release.policy")
+    platforms = _platform_policy()
+    platforms["builder_families"]["ascend"]["variant_required_files"] = requirements
+    path = tmp_path / "platforms.yaml"
+    path.write_text(yaml.safe_dump(platforms), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="variant_required_files"):
+        policy.load(platforms_path=path)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"), [("staus", "supported"), ("status", "enabled")]
+)
+def test_backend_fields_and_status_remain_strict(tmp_path, field, value):
+    policy = importlib.import_module("ucm_release.policy")
+    platforms = _platform_policy()
+    backend = next(iter(platforms["backends"]))
+    platforms["backends"][backend][field] = value
+    path = tmp_path / "platforms.yaml"
+    path.write_text(yaml.safe_dump(platforms), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=f"backends.{backend}"):
+        policy.load(platforms_path=path)
+
+
 def test_package_metadata_and_release_plan_read_the_same_dependencies(tmp_path):
     policy = importlib.import_module("ucm_release.policy")
     source = tmp_path / "source"
