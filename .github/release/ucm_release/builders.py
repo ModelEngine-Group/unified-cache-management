@@ -16,6 +16,9 @@ from typing import Iterable
 from . import registry, runtime, serialization
 
 _BUILDER_LABEL_PREFIX = "io.ucm.builder."
+_SHARED_BUILDER_LEGACY_PRODUCT_IDS = frozenset(
+    {"vllm", "vllm-ascend", "sglang"}
+)
 _BUILDER_METADATA_FIELDS = (
     "id",
     "product_id",
@@ -306,7 +309,15 @@ def finalize_catalog(catalog: object, observations: object) -> dict[str, object]
                 f"Builder observation {builder_id} is not checked schema 2"
             )
         for field in _BUILDER_METADATA_FIELDS:
-            if record.get(field) != expected.get(field):
+            observed_value = record.get(field)
+            expected_value = expected.get(field)
+            if (
+                field == "product_id"
+                and expected_value == "shared"
+                and observed_value in _SHARED_BUILDER_LEGACY_PRODUCT_IDS
+            ):
+                continue
+            if observed_value != expected_value:
                 raise ValueError(
                     f"Builder observation {builder_id} label {field} differs"
                 )

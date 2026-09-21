@@ -680,6 +680,50 @@ def test_final_catalog_binds_checked_labels_and_target_digests() -> None:
         builders.compute_sync_plan(finalized, {})
 
 
+@pytest.mark.parametrize("legacy_product_id", ["vllm", "vllm-ascend", "sglang"])
+def test_final_catalog_accepts_legacy_product_label_for_shared_builder(
+    legacy_product_id: str,
+) -> None:
+    catalog = _catalog()
+    first = catalog["builders"][0]
+    observations = {}
+    for index, item in enumerate(catalog["builders"]):
+        labels = builders.builder_labels(item)
+        if item["id"] == first["id"]:
+            labels["io.ucm.builder.product_id"] = legacy_product_id
+        observations[item["id"]] = {
+            "target_digest": f"sha256:{index + 1:064x}",
+            "config": {
+                "created": "2026-08-24T00:00:00Z",
+                "config": {"Labels": labels},
+            },
+        }
+
+    finalized = builders.finalize_catalog(catalog, observations)
+
+    assert finalized["builders"][0]["product_id"] == "shared"
+
+
+def test_final_catalog_rejects_unknown_product_label_for_shared_builder() -> None:
+    catalog = _catalog()
+    first = catalog["builders"][0]
+    observations = {}
+    for index, item in enumerate(catalog["builders"]):
+        labels = builders.builder_labels(item)
+        if item["id"] == first["id"]:
+            labels["io.ucm.builder.product_id"] = "unrelated-product"
+        observations[item["id"]] = {
+            "target_digest": f"sha256:{index + 1:064x}",
+            "config": {
+                "created": "2026-08-24T00:00:00Z",
+                "config": {"Labels": labels},
+            },
+        }
+
+    with pytest.raises(ValueError, match="label product_id differs"):
+        builders.finalize_catalog(catalog, observations)
+
+
 def test_final_catalog_rejects_stale_builder_labels() -> None:
     catalog = _catalog()
     item = catalog["builders"][0]
