@@ -10,6 +10,7 @@
 #include <cstring>
 #include <gtest/gtest.h>
 #include <new>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -40,6 +41,31 @@ struct BufferTestAccess {
         return iNode == kInvalid
                    ? kInvalid
                    : layout.SlotMetaArr()[iNode].reference.load(std::memory_order_acquire);
+    }
+
+    static void InitRank(Buffer& buffer, size_t rank)
+    {
+        buffer.ctrl_.Layout().InitSlotRange(rank);
+        buffer.myRank_ = rank;
+    }
+
+    static Buffer::Handle TryGet(Buffer& buffer, const Detail::BlockId& blockId, size_t offset,
+                                 size_t attempts)
+    {
+        return buffer.TryGet(blockId, offset, false, attempts);
+    }
+
+    static CtrlLayout& Layout(Buffer& buffer) { return buffer.ctrl_.Layout(); }
+
+    static size_t BucketOf(Buffer& buffer, const Detail::BlockId& blockId)
+    {
+        return buffer.HashKey(blockId);
+    }
+
+    static size_t FindSlot(Buffer& buffer, const Detail::BlockId& blockId, size_t offset)
+    {
+        auto iBucket = buffer.HashKey(blockId);
+        return buffer.Lookup(buffer.ctrl_.Layout(), iBucket, blockId, offset);
     }
 };
 
@@ -159,6 +185,185 @@ TEST_F(Cache2BufferTest, AbandonedOwnerPublishesFailureAndCanRetry)
     EXPECT_EQ(retry.GetState(), CtrlLayout::SlotMeta::State::Loading);
     retry.MarkReady();
     EXPECT_TRUE(retry.Ready());
+}
+
+TEST(Cache2BufferPartitionTest, ClockEvictsOnlyInsideLocalRankAndHonorsSecondChanceAndPins)
+{
+    constexpr size_t kRanks{2};
+    constexpr size_t kSlotsPerRank{4};
+    constexpr size_t kBuckets{16};
+    constexpr size_t kLocks{8};
+    auto bytes = CtrlLayout::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank);
+    auto* memory = ::operator new(bytes, std::align_val_t{64});
+    Buffer buffer;
+    BufferTestAccess::Init(buffer, memory, kRanks, kSlotsPerRank, kBuckets, kLocks);
+    BufferTestAccess::InitRank(buffer, 1);
+
+    std::optional<Buffer::Handle> pinned;
+    for (uint32_t value = 1; value <= kSlotsPerRank; ++value) {
+        auto handle = buffer.Get(MakeBlockId(value), 0);
+        ASSERT_TRUE(handle);
+        EXPECT_GE(handle.SlotIndex(), kSlotsPerRank);
+        EXPECT_LT(handle.SlotIndex(), kRanks * kSlotsPerRank);
+        EXPECT_TRUE(handle.Owner());
+        handle.MarkReady();
+        if (value == 1) { pinned.emplace(std::move(handle)); }
+    }
+
+    auto replacement = buffer.Get(MakeBlockId(100), 0);
+    ASSERT_TRUE(replacement);
+    EXPECT_EQ(replacement.SlotIndex(), kSlotsPerRank + 1);
+    EXPECT_TRUE(replacement.Owner());
+    replacement.MarkReady();
+    EXPECT_FALSE(buffer.Exist(MakeBlockId(2), 0));
+
+    ASSERT_TRUE(pinned.has_value());
+    EXPECT_EQ(pinned->SlotIndex(), kSlotsPerRank);
+    EXPECT_TRUE(pinned->Ready());
+    EXPECT_TRUE(buffer.Exist(MakeBlockId(1), 0));
+    for (size_t i = 0; i < kSlotsPerRank; ++i) {
+        auto& meta = BufferTestAccess::Layout(buffer).SlotMetaArr()[i];
+        EXPECT_EQ(meta.reference.load(std::memory_order_relaxed), 0);
+        EXPECT_EQ(meta.hash.load(std::memory_order_relaxed), kInvalid);
+    }
+
+    pinned.reset();
+    replacement = {};
+    ::operator delete(memory, std::align_val_t{64});
+}
+
+TEST(Cache2BufferLockTest, CrossStripeMigrationRollsBackAndCanRetry)
+{
+    constexpr size_t kRanks{1};
+    constexpr size_t kSlotsPerRank{1};
+    constexpr size_t kBuckets{8};
+    constexpr size_t kLocks{4};
+    auto bytes = CtrlLayout::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank);
+    auto* memory = ::operator new(bytes, std::align_val_t{64});
+    Buffer buffer;
+    BufferTestAccess::Init(buffer, memory, kRanks, kSlotsPerRank, kBuckets, kLocks);
+
+    auto oldBlock = MakeBlockId(1);
+    auto oldBucket = BufferTestAccess::BucketOf(buffer, oldBlock);
+    auto& layout = BufferTestAccess::Layout(buffer);
+    Detail::BlockId newBlock;
+    bool foundDifferentStripe = false;
+    for (uint32_t value = 2; value < 4096; ++value) {
+        auto candidate = MakeBlockId(value);
+        if (layout.LockOf(BufferTestAccess::BucketOf(buffer, candidate)) !=
+            layout.LockOf(oldBucket)) {
+            newBlock = candidate;
+            foundDifferentStripe = true;
+            break;
+        }
+    }
+    ASSERT_TRUE(foundDifferentStripe);
+
+    auto old = buffer.Get(oldBlock, 0);
+    ASSERT_TRUE(old);
+    old.MarkReady();
+    auto slot = old.SlotIndex();
+    old = {};
+    layout.SlotMetaArr()[slot].accessed.store(0, std::memory_order_relaxed);
+
+    auto* oldLock = layout.LockOf(oldBucket);
+    oldLock->Lock();
+    auto failed = BufferTestAccess::TryGet(buffer, newBlock, 0, 1);
+    EXPECT_FALSE(failed);
+    EXPECT_EQ(layout.SlotMetaArr()[slot].reference.load(std::memory_order_acquire), 0);
+    EXPECT_EQ(layout.SlotMetaArr()[slot].hash.load(std::memory_order_acquire), oldBucket);
+    EXPECT_EQ(BufferTestAccess::FindSlot(buffer, oldBlock, 0), slot);
+    oldLock->Unlock();
+
+    layout.SlotMetaArr()[slot].accessed.store(0, std::memory_order_relaxed);
+    auto replacement = BufferTestAccess::TryGet(buffer, newBlock, 0, 1);
+    ASSERT_TRUE(replacement);
+    EXPECT_TRUE(replacement.Owner());
+    EXPECT_EQ(replacement.SlotIndex(), slot);
+    replacement.MarkReady();
+    EXPECT_EQ(BufferTestAccess::FindSlot(buffer, oldBlock, 0), kInvalid);
+    EXPECT_EQ(BufferTestAccess::FindSlot(buffer, newBlock, 0), slot);
+
+    replacement = {};
+    ::operator delete(memory, std::align_val_t{64});
+}
+
+TEST(Cache2BufferOptimisticTest, ReadyHitSucceedsWhileBucketStripeIsLocked)
+{
+    constexpr size_t kRanks{1};
+    constexpr size_t kSlotsPerRank{4};
+    constexpr size_t kBuckets{8};
+    constexpr size_t kLocks{4};
+    auto bytes = CtrlLayout::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank);
+    auto* memory = ::operator new(bytes, std::align_val_t{64});
+    Buffer buffer;
+    BufferTestAccess::Init(buffer, memory, kRanks, kSlotsPerRank, kBuckets, kLocks);
+
+    auto block = MakeBlockId(200);
+    auto owner = buffer.Get(block, 0);
+    ASSERT_TRUE(owner);
+    owner.MarkReady();
+    auto slot = owner.SlotIndex();
+    owner = {};
+
+    auto& layout = BufferTestAccess::Layout(buffer);
+    auto* lock = layout.LockOf(BufferTestAccess::BucketOf(buffer, block));
+    lock->Lock();
+    auto hit = BufferTestAccess::TryGet(buffer, block, 0, 1);
+    auto valid = static_cast<bool>(hit);
+    if (valid) {
+        EXPECT_FALSE(hit.Owner());
+        EXPECT_TRUE(hit.Ready());
+        EXPECT_EQ(hit.SlotIndex(), slot);
+    }
+    lock->Unlock();
+    ASSERT_TRUE(valid);
+
+    hit = {};
+    ::operator delete(memory, std::align_val_t{64});
+}
+
+TEST(Cache2BufferOptimisticTest, PinnedHitPreventsSlotReconfigurationUntilRelease)
+{
+    constexpr size_t kRanks{1};
+    constexpr size_t kSlotsPerRank{1};
+    constexpr size_t kBuckets{8};
+    constexpr size_t kLocks{4};
+    auto bytes = CtrlLayout::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank);
+    auto* memory = ::operator new(bytes, std::align_val_t{64});
+    Buffer buffer;
+    BufferTestAccess::Init(buffer, memory, kRanks, kSlotsPerRank, kBuckets, kLocks);
+
+    auto oldBlock = MakeBlockId(300);
+    auto newBlock = MakeBlockId(301);
+    auto owner = buffer.Get(oldBlock, 0);
+    ASSERT_TRUE(owner);
+    owner.MarkReady();
+    owner = {};
+
+    auto pinned = BufferTestAccess::TryGet(buffer, oldBlock, 0, 1);
+    ASSERT_TRUE(pinned);
+    EXPECT_FALSE(pinned.Owner());
+    auto& meta = BufferTestAccess::Layout(buffer).SlotMetaArr()[pinned.SlotIndex()];
+    meta.accessed.store(0, std::memory_order_relaxed);
+    auto blocked = BufferTestAccess::TryGet(buffer, newBlock, 0, 2);
+    EXPECT_FALSE(blocked);
+    EXPECT_NE(BufferTestAccess::FindSlot(buffer, oldBlock, 0), kInvalid);
+    EXPECT_EQ(BufferTestAccess::FindSlot(buffer, newBlock, 0), kInvalid);
+
+    auto slot = pinned.SlotIndex();
+    pinned = {};
+    meta.accessed.store(0, std::memory_order_relaxed);
+    auto replacement = BufferTestAccess::TryGet(buffer, newBlock, 0, 1);
+    ASSERT_TRUE(replacement);
+    EXPECT_TRUE(replacement.Owner());
+    EXPECT_EQ(replacement.SlotIndex(), slot);
+    replacement.MarkReady();
+    EXPECT_EQ(BufferTestAccess::FindSlot(buffer, oldBlock, 0), kInvalid);
+    EXPECT_EQ(BufferTestAccess::FindSlot(buffer, newBlock, 0), slot);
+
+    replacement = {};
+    ::operator delete(memory, std::align_val_t{64});
 }
 
 }  // namespace

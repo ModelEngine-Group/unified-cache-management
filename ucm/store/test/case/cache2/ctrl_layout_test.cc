@@ -55,6 +55,24 @@ TEST_F(CtrlLayoutTest, MapsBucketsOntoLockStripes)
     EXPECT_EQ(layout_.LockOf(kBuckets), nullptr);
 }
 
+TEST(CtrlLayoutStripeTest, ProductionLockCountCapsAndSharesStripes)
+{
+    constexpr size_t kBuckets{1ULL << 17};
+    constexpr size_t kLocks{kMaxLockStripes};
+    ASSERT_EQ(CtrlLayout::LockStripeCount(kBuckets), kLocks);
+    auto bytes = CtrlLayout::TotalSize(kBuckets, kLocks, 1);
+    auto* memory = ::operator new(bytes, std::align_val_t{64});
+    CtrlLayout layout;
+    layout.Bind(memory, 1, 1, kBuckets, kLocks);
+    layout.InitHeader(4096);
+
+    EXPECT_EQ(layout.LockOf(0), layout.LockOf(kLocks));
+    EXPECT_EQ(layout.LockOf(1), layout.LockOf(kLocks + 1));
+    EXPECT_NE(layout.LockOf(0), layout.LockOf(1));
+    EXPECT_EQ(layout.LockOf(kBuckets), nullptr);
+    ::operator delete(memory, std::align_val_t{64});
+}
+
 TEST_F(CtrlLayoutTest, InitializesOnlyRequestedRankRange)
 {
     layout_.InitSlotRange(1);
