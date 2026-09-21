@@ -74,6 +74,7 @@ public:
             }
         }
         bool Owner() const { return owner_; }
+        bool HostAccessible() const { return buf_->data_.HostAccessibleOf(slotIdx_); }
         void* Data() { return buf_->data_.DataAt(slotIdx_); }
         void* DeviceData() { return buf_->data_.DeviceDataAt(slotIdx_); }
         CtrlLayout::SlotMeta::State GetState() const
