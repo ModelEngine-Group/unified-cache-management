@@ -75,7 +75,14 @@ public:
             if (sizes[i] != 0 && dst[i] != nullptr) {
                 auto* pSrc = static_cast<void*>(static_cast<int8_t*>(src) + offset);
                 auto s = stream->DeviceToDeviceAsync(pSrc, dst[i], sizes[i]);
-                if (s.Failure()) { return s; }
+                if (s.Failure()) {
+                    auto syncS = stream->Synchronized();
+                    if (syncS.Failure()) {
+                        UC_ERROR("Failed({}) to synchronize stream on device({}).", syncS,
+                                 deviceId_);
+                    }
+                    return s;
+                }
             }
             offset += sizes[i];
         }
@@ -92,7 +99,14 @@ public:
             if (sizes[i] != 0 && src[i] != nullptr) {
                 auto* pDst = static_cast<void*>(static_cast<int8_t*>(dst) + offset);
                 auto s = stream->DeviceToDeviceAsync(src[i], pDst, sizes[i]);
-                if (s.Failure()) { return s; }
+                if (s.Failure()) {
+                    auto syncS = stream->Synchronized();
+                    if (syncS.Failure()) {
+                        UC_ERROR("Failed({}) to synchronize stream on device({}).", syncS,
+                                 deviceId_);
+                    }
+                    return s;
+                }
             }
             offset += sizes[i];
         }
@@ -109,7 +123,14 @@ public:
             if (sizes[i] != 0 && dst[i] != nullptr) {
                 auto* pSrc = static_cast<void*>(static_cast<int8_t*>(src) + offset);
                 auto s = stream->HostToDeviceAsync(pSrc, dst[i], sizes[i]);
-                if (s.Failure()) { return s; }
+                if (s.Failure()) {
+                    auto syncS = stream->Synchronized();
+                    if (syncS.Failure()) {
+                        UC_ERROR("Failed({}) to synchronize stream on device({}).", syncS,
+                                 deviceId_);
+                    }
+                    return s;
+                }
             }
             offset += sizes[i];
         }
@@ -126,7 +147,14 @@ public:
             if (sizes[i] != 0 && src[i] != nullptr) {
                 auto* pDst = static_cast<void*>(static_cast<int8_t*>(dst) + offset);
                 auto s = stream->DeviceToHostAsync(src[i], pDst, sizes[i]);
-                if (s.Failure()) { return s; }
+                if (s.Failure()) {
+                    auto syncS = stream->Synchronized();
+                    if (syncS.Failure()) {
+                        UC_ERROR("Failed({}) to synchronize stream on device({}).", syncS,
+                                 deviceId_);
+                    }
+                    return s;
+                }
             }
             offset += sizes[i];
         }
