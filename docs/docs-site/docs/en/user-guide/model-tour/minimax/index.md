@@ -1,155 +1,289 @@
 # MiniMax Model Family
 
-Deploy [MiniMax-M2.7-w8a8-QuaRot](https://www.modelscope.ai/models/vllm-ascend/MiniMax-M2.7-w8a8-QuaRot) with UCM on vLLM-Ascend using a prebuilt Docker image on Atlas 800 A2.
+=== "A2"
 
-## 1. Start the Docker container
+    Deploy [MiniMax-M2.7-w8a8-QuaRot](https://www.modelscope.ai/models/vllm-ascend/MiniMax-M2.7-w8a8-QuaRot) with UCM on vLLM-Ascend using a prebuilt Docker image on Atlas 800 A2.
 
-Set `MODEL_PATH` to the local model directory and copy a **UCM image** reference supporting MiniMax-M2.7 and your Ascend hardware from [Quickstart](../../quick_start/index.md#vllm-ascend) into `IMAGE`. Run on the **host**; the `sysctl` commands require root privileges and change host kernel settings:
+    ## 1. Start the Docker container
 
-```bash
-export MODEL_PATH=/data/weights/MiniMax-M2.7-w8a8-QuaRot
-export IMAGE='<full Ascend UCM image reference from Quickstart>'
-export CONTAINER_NAME=minimax27-ucm
+    Set `MODEL_PATH` to the local model directory and copy a **UCM image** reference supporting MiniMax-M2.7 and your Ascend hardware from [Quickstart](../../quick_start/index.md#vllm-ascend) into `IMAGE`. Run on the **host**; the `sysctl` commands require root privileges and change host kernel settings:
 
-sysctl -w vm.swappiness=0
-sysctl -w kernel.numa_balancing=0
-sysctl -w kernel.sched_migration_cost_ns=50000
+    ```bash
+    export MODEL_PATH=/data/weights/MiniMax-M2.7-w8a8-QuaRot
+    export IMAGE='<full Ascend UCM image reference from Quickstart>'
+    export CONTAINER_NAME=minimax27-ucm
 
-mkdir -p /data/ucm/cache /data/ucm/log
-docker pull "$IMAGE"
+    sysctl -w vm.swappiness=0
+    sysctl -w kernel.numa_balancing=0
+    sysctl -w kernel.sched_migration_cost_ns=50000
 
-docker run --rm -it \
-    --name "$CONTAINER_NAME" \
-    --network host \
-    --ipc=host \
-    --device /dev/davinci0 \
-    --device /dev/davinci1 \
-    --device /dev/davinci2 \
-    --device /dev/davinci3 \
-    --device /dev/davinci4 \
-    --device /dev/davinci5 \
-    --device /dev/davinci6 \
-    --device /dev/davinci7 \
-    --device /dev/davinci_manager \
-    --device /dev/devmm_svm \
-    --device /dev/hisi_hdc \
-    -v /usr/local/dcmi:/usr/local/dcmi:ro \
-    -v /usr/local/Ascend/driver/tools/hccn_tool:/usr/local/Ascend/driver/tools/hccn_tool:ro \
-    -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi:ro \
-    -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro \
-    -v /etc/ascend_install.info:/etc/ascend_install.info:ro \
-    -v /etc/hccn.conf:/etc/hccn.conf:ro \
-    -v "$MODEL_PATH:/data/weights/MiniMax-M2.7-w8a8-QuaRot:ro" \
-    -v /data/ucm:/data/ucm \
-    -e ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
-    -e ENABLE_UCM_PATCH=1 \
-    -e UCM_LOG_PATH=/data/ucm/log \
-    --workdir /data/ucm \
-    --entrypoint /bin/bash \
-    "$IMAGE"
-```
+    mkdir -p /data/ucm/cache /data/ucm/log
+    docker pull "$IMAGE"
 
-## 2. Configure UCM
+    docker run --rm -it \
+        --name "$CONTAINER_NAME" \
+        --network host \
+        --ipc=host \
+        --device /dev/davinci0 \
+        --device /dev/davinci1 \
+        --device /dev/davinci2 \
+        --device /dev/davinci3 \
+        --device /dev/davinci4 \
+        --device /dev/davinci5 \
+        --device /dev/davinci6 \
+        --device /dev/davinci7 \
+        --device /dev/davinci_manager \
+        --device /dev/devmm_svm \
+        --device /dev/hisi_hdc \
+        -v /usr/local/dcmi:/usr/local/dcmi:ro \
+        -v /usr/local/Ascend/driver/tools/hccn_tool:/usr/local/Ascend/driver/tools/hccn_tool:ro \
+        -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi:ro \
+        -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro \
+        -v /etc/ascend_install.info:/etc/ascend_install.info:ro \
+        -v /etc/hccn.conf:/etc/hccn.conf:ro \
+        -v "$MODEL_PATH:/data/weights/MiniMax-M2.7-w8a8-QuaRot:ro" \
+        -v /data/ucm:/data/ucm \
+        -e ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
+        -e ENABLE_UCM_PATCH=1 \
+        -e UCM_LOG_PATH=/data/ucm/log \
+        --workdir /workspace \
+        --entrypoint /bin/bash \
+        "$IMAGE"
+    ```
 
-Run **inside the container** to create `/data/ucm/ucm_config.yaml`:
+    ## 2. Configure UCM
 
-```bash
-cat > /data/ucm/ucm_config.yaml <<'EOF'
-ucm_connectors:
-  - ucm_connector_name: "UcmPipelineStore"
-    ucm_connector_config:
-      store_pipeline: "Cache|Posix"
-      storage_backends: "/data/ucm/cache"
-      io_direct: false
-      cache_buffer_capacity_gb: 64
-      posix_capacity_gb: 0
-      use_gdr: false
+    Run **inside the container** to create `/workspace/ucm_config_example.yaml`:
 
-enable_event_sync: true
-use_layerwise: true
-enable_record_traces: false
-use_lite: false
-persist_token_threshold: 0
-EOF
-```
+    ```bash
+    cat > /workspace/ucm_config_example.yaml <<'EOF'
+    ucm_connectors:
+      - ucm_connector_name: "UcmPipelineStore"
+        ucm_connector_config:
+          store_pipeline: "Cache|Posix"
+          storage_backends: "/data/ucm/cache"
+          io_direct: false
+          cache_buffer_capacity_gb: 64
+          posix_capacity_gb: 0
+          use_gdr: false
 
-`Cache|Posix` transfers KV data through host memory and persists it under `/data/ucm/cache`. `cache_buffer_capacity_gb: 64` sets the host cache buffer budget. `posix_capacity_gb: 0` disables capacity-based Posix garbage collection; it does not disable filesystem writes.
+    enable_event_sync: true
+    use_layerwise: true
+    enable_record_traces: false
+    use_lite: false
+    persist_token_threshold: 0
+    EOF
+    ```
 
-For parameter definitions, see [Configuration Parameters](../../../reference/config-parameters.md).
+    - `Cache|Posix` transfers KV data through host memory and persists it under `/data/ucm/cache`.
+    - `cache_buffer_capacity_gb: 64` sets the host cache buffer budget.
+    - `posix_capacity_gb: 0` disables capacity-based Posix garbage collection; it does not disable filesystem writes.
 
-## 3. Launch the service
+    For parameter definitions, see [Configuration Parameters](../../../reference/config-parameters.md).
 
-For serving parameters, refer to the [official vLLM-Ascend guide](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/MiniMax-M2.html).
+    ## 3. Launch the service
 
-Run **inside the container**:
+    For serving parameters, refer to the [official vLLM-Ascend guide](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/MiniMax-M2.html).
 
-```bash
-export MODEL_PATH=/data/weights/MiniMax-M2.7-w8a8-QuaRot
+    Run **inside the container**:
 
-export HCCL_BUFFSIZE=512
-export HCCL_OP_EXPANSION_MODE=AIV
-export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+    ```bash
+    export MODEL_PATH=/data/weights/MiniMax-M2.7-w8a8-QuaRot
 
-export ENABLE_UCM_PATCH=1
-export UCM_LOG_PATH=/data/ucm/log
-export UC_LOGGER_LEVEL=info
+    export HCCL_BUFFSIZE=512
+    export HCCL_OP_EXPANSION_MODE=AIV
+    export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 
-vllm serve "$MODEL_PATH" \
-    --served-model-name MiniMax-M2.7 \
-    --host 0.0.0.0 \
-    --port 8000 \
-    --trust-remote-code \
-    --tensor-parallel-size 8 \
-    --quantization ascend \
-    --enable-expert-parallel \
-    --max-num-seqs 32 \
-    --seed 1024 \
-    --max-num-batched-tokens 32768 \
-    --gpu-memory-utilization 0.85 \
-    --enable-prefix-caching \
-    --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}' \
-    --additional-config '{"enable_cpu_binding":true}' \
-    --model-loader-extra-config '{"enable_multithread_load":true,"num_threads":16}' \
-    --kv-transfer-config '{
-        "kv_connector": "UCMConnector",
-        "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
-        "kv_role": "kv_both",
-        "kv_connector_extra_config": {
-            "UCM_CONFIG_FILE": "/data/ucm/ucm_config.yaml"
-        }
-    }'
-```
+    export ENABLE_UCM_PATCH=1
+    export UCM_LOG_PATH=/data/ucm/log
+    export UC_LOGGER_LEVEL=info
 
-`--kv-transfer-config` connects vLLM to UCM and specifies the configuration file created above:
-
-| Field | Purpose |
-| --- | --- |
-| `kv_connector` | Selects `UCMConnector`. |
-| `kv_connector_module_path` | Specifies the connector module: `ucm.integration.vllm.ucm_connector`. |
-| `kv_role` | `kv_both` enables both cache loading and saving. |
-| `kv_connector_extra_config.UCM_CONFIG_FILE` | Points to `/data/ucm/ucm_config.yaml`. |
-
-## 4. Call the API
-
-Once the service is ready, open a **second host terminal**:
-
-```bash
-curl --fail http://127.0.0.1:8000/health
-curl --fail http://127.0.0.1:8000/v1/models
-
-curl --fail-with-body http://127.0.0.1:8000/v1/chat/completions \
-    -H 'Content-Type: application/json' \
-    -d '{
-        "model": "MiniMax-M2.7",
-        "messages": [
-            {
-                "role": "user",
-                "content": "Explain the role of KV cache in large language model inference."
+    vllm serve "$MODEL_PATH" \
+        --served-model-name MiniMax-M2.7 \
+        --host 0.0.0.0 \
+        --port 7800 \
+        --trust-remote-code \
+        --tensor-parallel-size 8 \
+        --quantization ascend \
+        --enable-expert-parallel \
+        --max-num-seqs 32 \
+        --seed 1024 \
+        --max-num-batched-tokens 32768 \
+        --gpu-memory-utilization 0.85 \
+        --enable-prefix-caching \
+        --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}' \
+        --additional-config '{"enable_cpu_binding":true}' \
+        --model-loader-extra-config '{"enable_multithread_load":true,"num_threads":16}' \
+        --kv-transfer-config '{
+            "kv_connector": "UCMConnector",
+            "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
+            "kv_role": "kv_both",
+            "kv_connector_extra_config": {
+                "UCM_CONFIG_FILE": "/workspace/ucm_config_example.yaml"
             }
-        ],
-        "max_completion_tokens": 1024,
-        "temperature": 0
-    }'
-```
+        }'
+    ```
 
-Expect HTTP 200, `MiniMax-M2.7` in the model list, and a chat completion response containing the `choices` field.
+    `--kv-transfer-config` connects vLLM to UCM and specifies the configuration file created above:
+
+    | Field | Purpose |
+    | --- | --- |
+    | `kv_connector` | Selects `UCMConnector`. |
+    | `kv_connector_module_path` | Specifies the connector module: `ucm.integration.vllm.ucm_connector`. |
+    | `kv_role` | `kv_both` enables both cache loading and saving. |
+    | `kv_connector_extra_config.UCM_CONFIG_FILE` | Points to `/workspace/ucm_config_example.yaml`. |
+
+    ## 4. Call the API
+
+    Once the service is ready, open a **second host terminal**:
+
+    ```bash
+    curl --fail http://127.0.0.1:7800/health
+    curl --fail http://127.0.0.1:7800/v1/models
+
+    curl --fail-with-body http://127.0.0.1:7800/v1/chat/completions \
+        -H 'Content-Type: application/json' \
+        -d '{
+            "model": "MiniMax-M2.7",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Explain the role of KV cache in large language model inference."
+                }
+            ],
+            "max_completion_tokens": 1024,
+            "temperature": 0
+        }'
+    ```
+
+    Expect HTTP 200, `MiniMax-M2.7` in the model list, and a chat completion response containing the `choices` field.
+
+=== "H100"
+
+    Deploy `MiniMax-M2.7` with UCM on vLLM using a prebuilt Docker image on NVIDIA H100.
+
+    ## 1. Start the Docker container
+
+    Set `MODEL_DIR` to the host directory containing `MiniMax-M2.7` (the example uses `/mnt/model-2/MiniMax-M2.7`). Copy a CUDA **UCM image** reference supporting this model and H100 from [Quickstart](../../quick_start/index.md#vllm) into `IMAGE`. Run on the **host**:
+
+    ```bash
+    export MODEL_DIR=/mnt/model-2
+    export IMAGE='<full CUDA UCM image reference from Quickstart>'
+    export CONTAINER_NAME=minimax27-ucm-h100
+
+    mkdir -p /data/ucm/cache /data/ucm/log
+    docker pull "$IMAGE"
+
+    docker run --rm -it \
+        --name "$CONTAINER_NAME" \
+        --gpus '"device=0,1,2,3,4,5,6,7"' \
+        --ipc=host \
+        --network=host \
+        -v "$MODEL_DIR:/data/weights:ro" \
+        -v /data/ucm:/data/ucm \
+        --workdir /workspace \
+        --entrypoint /bin/bash \
+        "$IMAGE"
+    ```
+
+    ## 2. Configure UCM
+
+    Run **inside the container** to create `/workspace/ucm_config_example.yaml`:
+
+    ```bash
+    mkdir -p /data/ucm/cache /data/ucm/log
+
+    cat > /workspace/ucm_config_example.yaml <<'EOF'
+    ucm_connectors:
+      - ucm_connector_name: "UcmPipelineStore"
+        ucm_connector_config:
+          store_pipeline: "Cache|Posix"
+          storage_backends: "/data/ucm/cache"
+          io_direct: false
+          cache_buffer_capacity_gb: 64
+          posix_capacity_gb: 0
+          use_gdr: false
+
+    enable_event_sync: true
+    use_layerwise: true
+    enable_record_traces: false
+    use_lite: false
+    persist_token_threshold: 0
+    EOF
+    ```
+
+    - `Cache|Posix` transfers KV data through host memory and persists it under `/data/ucm/cache`.
+    - `cache_buffer_capacity_gb: 64` sets the host cache buffer budget.
+    - `posix_capacity_gb: 0` disables capacity-based Posix garbage collection; it does not disable filesystem writes.
+
+    For parameter definitions, see [Configuration Parameters](../../../reference/config-parameters.md).
+
+    ## 3. Launch the service
+
+    Run **inside the container**:
+
+    ```bash
+    export MODEL_PATH=/data/weights/MiniMax-M2.7
+    export ENABLE_UCM_PATCH=1
+    export UCM_LOG_PATH=/data/ucm/log
+
+    vllm serve "$MODEL_PATH" \
+        --host 0.0.0.0 \
+        --port 7800 \
+        --data-parallel-size 1 \
+        --tensor-parallel-size 4 \
+        --served-model-name minimax-m2.7 \
+        --trust-remote-code \
+        --max-model-len 32768 \
+        --max-num-seqs 8 \
+        --max-num-batched-tokens 8192 \
+        --gpu-memory-utilization 0.90 \
+        --enable-prefix-caching \
+        --block-size 128 \
+        --enable-auto-tool-choice \
+        --tool-call-parser minimax_m2 \
+        --reasoning-parser minimax_m2 \
+        --enforce-eager \
+        --kv-transfer-config '{
+            "kv_connector": "UCMConnector",
+            "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
+            "kv_role": "kv_both",
+            "kv_connector_extra_config": {
+                "UCM_CONFIG_FILE": "/workspace/ucm_config_example.yaml"
+            }
+        }'
+    ```
+
+    `--kv-transfer-config` connects vLLM to UCM and specifies the configuration file created above:
+
+    | Field | Purpose |
+    | --- | --- |
+    | `kv_connector` | Selects `UCMConnector`. |
+    | `kv_connector_module_path` | Specifies the connector module: `ucm.integration.vllm.ucm_connector`. |
+    | `kv_role` | `kv_both` enables both cache loading and saving. |
+    | `kv_connector_extra_config.UCM_CONFIG_FILE` | Points to `/workspace/ucm_config_example.yaml`. |
+
+    ## 4. Call the API
+
+    Once the service is ready, open a **second host terminal**:
+
+    ```bash
+    curl --fail http://127.0.0.1:7800/health
+    curl --fail http://127.0.0.1:7800/v1/models
+
+    curl --fail-with-body http://127.0.0.1:7800/v1/chat/completions \
+        -H 'Content-Type: application/json' \
+        -d '{
+            "model": "minimax-m2.7",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Explain the role of KV cache in large language model inference."
+                }
+            ],
+            "max_completion_tokens": 1024,
+            "temperature": 0
+        }'
+    ```
+
+    Expect HTTP 200, `minimax-m2.7` in the model list, and a chat completion response containing the `choices` field.
