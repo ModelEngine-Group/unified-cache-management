@@ -25,7 +25,10 @@ from vllm.v1.kv_cache_interface import (
 )
 
 from ucm.integration.vllm.device import create_device
-from ucm.integration.vllm.request_hasher import RequestHasher
+from ucm.integration.vllm.request_hasher import (
+    RequestHasher,
+    encode_block_key,
+)
 from ucm.integration.vllm.ucm_connector import (
     KVCacheLayout,
     PendingDumpTask,
@@ -51,6 +54,12 @@ if TYPE_CHECKING:
     from vllm.v1.core.kv_cache_manager import KVCacheBlocks
     from vllm.v1.kv_cache_interface import KVCacheConfig
     from vllm.v1.request import Request
+
+try:
+    from vllm.v1.core.kv_cache_utils import resolve_kv_cache_block_sizes
+except ImportError:  # Older vLLM releases do not expose the resolver.
+    resolve_kv_cache_block_sizes = None
+
 
 logger = init_logger(__name__)
 
@@ -138,11 +147,7 @@ class GroupInfo:
 
     group_id: int
     block_size: int
-    layer_names: tuple[str, ...]
-    # Independent hash chain seed per group (see ``KVCacheGroupManager``).
-    seed: bytes
     is_mamba_align: bool = False
-    block_hasher: Optional[Callable[["Request"], list[bytes]]] = None
 
     @property
     def is_full_attention(self) -> bool:
@@ -156,9 +161,8 @@ class KVCacheGroupManager:
         self,
         kv_cache_config: "KVCacheConfig",
         request_hasher: "RequestHasher",
-        base_seed: bytes,
+        hash_block_size: Optional[int] = None,
     ) -> None:
-        self.request_hasher = request_hasher
         self.groups_by_id: list[GroupInfo] = []
         self.full_attn_groups: list[GroupInfo] = []
         self.state_groups: list[GroupInfo] = []
@@ -167,18 +171,11 @@ class KVCacheGroupManager:
             spec = group.kv_cache_spec
             block_size = block_size_from_kv_cache_spec(spec)
             is_mamba_align = is_mamba_align_kv_cache_spec(spec)
-            seed = request_hasher((b"UCM_GROUP_SEED", base_seed, group_id))
             info = GroupInfo(
                 group_id=group_id,
                 block_size=block_size,
-                layer_names=tuple(group.layer_names),
-                seed=seed,
                 is_mamba_align=is_mamba_align,
             )
-            if not is_mamba_align:
-                info.block_hasher = request_hasher.make_request_block_hasher(
-                    block_size, seed
-                )
             self.groups_by_id.append(info)
             if info.is_full_attention:
                 self.full_attn_groups.append(info)
@@ -193,22 +190,23 @@ class KVCacheGroupManager:
         # Resume points must align to the LCM of all group block_sizes.
         all_block_sizes = [g.block_size for g in self.groups_by_id]
         self.lcm_block_size: int = math.lcm(*all_block_sizes)
-
-        for g in self.groups_by_id:
-            assert self.lcm_block_size % g.block_size == 0, (
-                f"group {g.group_id} block_size={g.block_size} does not "
-                f"divide LCM={self.lcm_block_size}"
+        self.hash_block_size = (
+            math.gcd(*all_block_sizes) if hash_block_size is None else hash_block_size
+        )
+        if self.hash_block_size <= 0 or any(
+            size % self.hash_block_size for size in all_block_sizes
+        ):
+            raise ValueError(
+                "Every group block size must be divisible by hash_block_size."
             )
-        for sg in self.state_groups:
-            assert sg.is_mamba_align, (
-                f"state group {sg.group_id} is not mamba-align; "
-                f"UCMHybridLinearAttentionConnector only supports mamba-align "
-                f"state groups."
-            )
+        self.base_block_hasher = request_hasher.make_request_block_hasher(
+            self.hash_block_size
+        )
 
         logger.info(
             "KVCacheGroupManager initialized: "
             f"lcm_block_size={self.lcm_block_size}, "
+            f"hash_block_size={self.hash_block_size}, "
             f"full_attn_groups="
             f"{[(g.group_id, g.block_size) for g in self.full_attn_groups]}, "
             f"state_groups="
@@ -219,18 +217,22 @@ class KVCacheGroupManager:
     def num_groups(self) -> int:
         return len(self.groups_by_id)
 
-    def compute_block_hashes(self, group: GroupInfo, request: "Request") -> list[bytes]:
-        """Hash a request at one group's block boundaries and chain seed."""
-        if group.is_mamba_align:
-            # mamba-align pads block table with null blocks; no per-block hash.
-            return [b""] * (len(request.all_token_ids) // group.block_size)
-
-        assert group.block_hasher is not None
-        return group.block_hasher(request)
-
     def compute_all_group_block_ids(self, request: "Request") -> list[list[bytes]]:
         """Compute full block hashes for every group, indexed by group_id."""
-        return [self.compute_block_hashes(g, request) for g in self.groups_by_id]
+        base_hashes = self.base_block_hasher(request)
+        result = []
+        for group in self.groups_by_id:
+            if group.is_mamba_align:
+                result.append([b""] * (len(request.all_token_ids) // group.block_size))
+                continue
+            stride = group.block_size // self.hash_block_size
+            result.append(
+                [
+                    encode_block_key(key, group.group_id)
+                    for key in base_hashes[stride - 1 :: stride]
+                ]
+            )
+        return result
 
     def compute_mamba_align_state_hash(
         self,
@@ -259,9 +261,7 @@ class KVCacheGroupManager:
             return None
         if not prefix_hash:
             return None
-        return self.request_hasher(
-            (group.seed, b"UCM_MAMBA_ALIGN_STATE", seq_len, prefix_hash)
-        )
+        return encode_block_key(prefix_hash, group.group_id)
 
     def lookup_external_hit_tokens(
         self,
@@ -783,6 +783,8 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
         return False
 
+    _rank_scoped_mla_states = True
+
     def __init__(
         self,
         vllm_config: "VllmConfig",
@@ -797,14 +799,21 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         # and ``self.request_hasher`` are populated by the parent ctor.
         self.group_manager: Optional[KVCacheGroupManager] = None
         if role == KVConnectorRole.SCHEDULER:
+            if resolve_kv_cache_block_sizes is not None:
+                _, hash_block_size = resolve_kv_cache_block_sizes(
+                    kv_cache_config, vllm_config
+                )
+            else:
+                hash_block_size = getattr(
+                    vllm_config.cache_config, "prefix_match_unit", None
+                )
             self.group_manager = KVCacheGroupManager(
                 kv_cache_config=kv_cache_config,
                 request_hasher=self.request_hasher,
-                base_seed=self._seed,
+                hash_block_size=hash_block_size,
             )
-            lcm_block_size = self.group_manager.lcm_block_size
-            self.block_size = lcm_block_size
-            self.hash_block_size = lcm_block_size
+            self.block_size = self.group_manager.lcm_block_size
+            self.hash_block_size = self.group_manager.hash_block_size
             self._bind_request_block_hasher()
 
         logger.info(f"{type(self).__name__} initialized")
@@ -1014,14 +1023,13 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
         # GC heat update for all hit blocks across ranks.
         total_hit_tokens = total_hit_block_num * lcm_block_size
-        hbm_hit_full_attn = num_computed_tokens // primary_full_attn.block_size
-        total_hit_full_attn = total_hit_tokens // primary_full_attn.block_size
-        all_hit_full_attn = primary_block_ids[0:total_hit_full_attn]
-        hbm_full_attn = primary_block_ids[0:hbm_hit_full_attn]
-        if hbm_full_attn:
-            self.store.prefetch(hbm_full_attn)
-        if mamba_prefetch_hashes:
-            self.store.prefetch(mamba_prefetch_hashes)
+        all_hit_full_attn = []
+        for group in self.group_manager.full_attn_groups:
+            group_keys = group_ucm_block_ids[group.group_id]
+            hbm_keys = group_keys[: num_computed_tokens // group.block_size]
+            if self.is_mla and hbm_keys:
+                self.store.prefetch(hbm_keys)
+            all_hit_full_attn.extend(group_keys[: total_hit_tokens // group.block_size])
         # MLA full-attn is TP-replicated (shared hash), no per-rank entries to prefetch.
         # Only mamba blocks have per-rank entries needing heat update.
         per_rank_hashes = mamba_prefetch_hashes
@@ -1342,7 +1350,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         if is_rank0:
             kda_scoped = kda_ucm
         else:
-            kda_scoped = [self.request_hasher(b) for b in kda_ucm]
+            kda_scoped = [self._rank_key(b) for b in kda_ucm]
         if is_dump and not is_rank0:
             return kda_ucm, kda_scoped, kda_vllm
         return mla_ucm + kda_ucm, mla_ucm + kda_scoped, mla_vllm + kda_vllm
@@ -1359,7 +1367,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             return self._mla_split_scope(ucm_ids, vllm_ids, n, is_dump)
         if self.tp_rank % self.tp_size == 0:
             return ucm_ids, ucm_ids, vllm_ids
-        scoped = [self.request_hasher(b) for b in ucm_ids]
+        scoped = [self._rank_key(b) for b in ucm_ids]
         return ucm_ids, scoped, vllm_ids
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs) -> None:
@@ -1962,7 +1970,6 @@ class UCMHLALiteConnector(UCMLiteConnector, SupportsHMA):
         self.group_manager = KVCacheGroupManager(
             kv_cache_config=kv_cache_config,
             request_hasher=self.request_hasher,
-            base_seed=self._seed,
         )
         self.block_size = self.group_manager.lcm_block_size
         self.hash_block_size = self.group_manager.lcm_block_size

@@ -15,11 +15,18 @@ from vllm.model_executor.models.utils import extract_layer_index
 from vllm.v1.core.sched.output import SchedulerOutput
 
 from ucm.integration.vllm.device import create_device
+from ucm.integration.vllm.fawa_layout import (
+    ascend_block_geometry,
+    select_transfer_views,
+)
 from ucm.integration.vllm.ucm_connector import (
     UCMDirectConnector,
     UCMLiteConnector,
     _check_shm_capacity,
+    _get_store_gc_block_size,
+    _scheduler_read_block_size,
     _use_ucm_connector_cpu_affinity,
+    _worker_publish_block_size,
 )
 from ucm.logger import init_logger
 from ucm.shared.metrics import ucmmetrics
@@ -65,6 +72,7 @@ class KVCacheGroupLayout:
         self.kvcaches = dict(sorted(kvcaches.items(), key=self._sort_key))
         self.is_ascend_layout = is_ascend_layout
         self.expected_block_size = expected_block_size
+        self.requires_full_page = False
         self.base_ptrs: np.ndarray
         self.block_strides: np.ndarray
         self.tensor_token_strides: np.ndarray
@@ -169,8 +177,14 @@ class KVCacheGroupLayout:
             if isinstance(kv_layer, torch.Tensor):
                 handle_kv_layer_tensor(kv_layer, layer_name)
             elif isinstance(kv_layer, Tuple):
-                for tensor in kv_layer:
+                selected, full_page = (
+                    select_transfer_views(kv_layer)
+                    if self.is_ascend_layout
+                    else (kv_layer, False)
+                )
+                for tensor in selected:
                     handle_kv_layer_tensor(tensor, layer_name)
+                self.requires_full_page |= full_page
             else:
                 raise TypeError(
                     f"Unsupported KV cache type for " f"{layer_name}: {type(kv_layer)}"
@@ -210,6 +224,8 @@ class KVCacheGroupLayout:
     ) -> np.ndarray:
         """Return per-view addresses for logical blocks with token offsets."""
 
+        # Store initialization validates segment geometry; callers derive offsets
+        # from those segments (FA boundaries or WA tails).
         physical_token_offsets = (
             offsets[:, None]
             * self.tensor_block_sizes[None, :]
@@ -239,6 +255,10 @@ class KVCacheGroupLayout:
     ) -> list[int]:
         """Return byte sizes for one logical segment across all tensor views."""
 
+        if self.requires_full_page and logical_tokens != group_token_block_size:
+            raise ValueError("Packed full views require complete-page transfers.")
+        if np.any((self.tensor_block_sizes * logical_tokens) % group_token_block_size):
+            raise ValueError("Logical segment does not align to physical cache tokens.")
         tensor_tokens = (
             self.tensor_block_sizes * logical_tokens // group_token_block_size
         )
@@ -318,6 +338,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     needed at each prefix boundary, and only the final matched boundary is
     loaded.
     """
+
+    # FA/WA rows aggregate groups in separate stores; both use group/rank 0.
 
     DEFAULT_HASH_BLOCK_SIZE = 256
     ASCEND_SUPPORTED_VLLM_BLOCK_SIZES = frozenset({32, 64, 128})
@@ -437,10 +459,9 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
     def _get_ascend_base_block_size(cls, kv_cache_config: "KVCacheConfig") -> int:
         """Read the user-scale block size from the Ascend C4 FA group.
 
-        The scheduler mutates ``vllm_config.cache_config.block_size`` to the
-        smallest hybrid-group block size, while workers retain the configured
-        value. The C4 full-attention group is present in both roles and keeps
-        the original 32/64/128 block size, so it is the stable source here.
+        The scheduler may mutate cache_config.block_size. Normalize the C4
+        spec instead: old Ascend specs store physical B in block_size, while
+        newer ones expose logical 4B and physical storage_block_size=B.
         """
 
         c4_block_sizes = set()
@@ -452,7 +473,7 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 getattr(spec, "sliding_window", None) is None
                 and getattr(spec, "compress_ratio", 1) == cls.ASCEND_C4_COMPRESS_RATIO
             ):
-                c4_block_sizes.add(kv_cache_spec.block_size)
+                c4_block_sizes.add(ascend_block_geometry(kv_cache_spec).physical)
 
         if len(c4_block_sizes) != 1:
             raise ValueError(
@@ -496,12 +517,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             nested_specs = getattr(kv_cache_spec, "kv_cache_specs", None)
             spec = next(iter(nested_specs.values())) if nested_specs else kv_cache_spec
             window_size = getattr(spec, "sliding_window", None)
-            compress_ratio = getattr(spec, "compress_ratio", 1)
             token_block_size = kv_cache_spec.block_size
             if self.is_ascend_layout:
-                # Ascend compressed groups expose a logical block span scaled by
-                # the compression ratio.
-                token_block_size = kv_cache_spec.block_size * compress_ratio
+                # Normalize old physical-size and new logical-size specs.
+                token_block_size = ascend_block_geometry(kv_cache_spec).logical
 
             if window_size is None:
                 # FA groups store one canonical hash block per row.
@@ -517,7 +536,6 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                     layer_index = extract_layer_index(tensor_name)
                     tail_tokens = window_size - layer_compress_ratios[layer_index]
 
-                tail_blocks = tail_tokens // token_block_size
                 self.window_group_ids.append(group_id)
 
             tail_blocks = max(tail_tokens // token_block_size, 1)
@@ -536,50 +554,8 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
                 f"Maximum token block size {self.max_token_block_size} must be "
                 f"divisible by hash block size {self.hash_block_size}."
             )
-        # get file size for block gc
-        if len(layer_compress_ratios) < 61:
-            # for dsv4 flash
-            num_c4a_layers = 21
-            num_c128a_layers = 20
-            # TODO only support for dp tp
-            num_total_layers = 43
-        else:
-            # for dsv4 pro
-            num_c4a_layers = 30
-            num_c128a_layers = 31
-            num_total_layers = 61
-
-        if (
-            self._vllm_config.speculative_config is not None
-            and self._vllm_config.speculative_config.num_speculative_tokens > 0
-        ):
-            num_total_layers += 1
-
-        # TODO we should get file size in worker thread
-        if self.is_ascend_layout:
-            if self.ascend_base_block_size is None:
-                raise RuntimeError("Ascend base block size was not initialized.")
-            # One C4 row consumes a complete physical block. One C128 row
-            # consumes block_size / 32 physical tokens, so both contributions
-            # scale linearly with the configured vLLM block size.
-            c4a_bytes_per_block_token = 1024 + 128 + 2
-            c128a_bytes_per_block_token = 32
-            self.file_size["FA"] = self.ascend_base_block_size * (
-                c4a_bytes_per_block_token * num_c4a_layers
-                + c128a_bytes_per_block_token * num_c128a_layers
-            )
-            self.file_size["WA"] = (
-                131072 * num_total_layers + (32768 + 8192) * num_c4a_layers
-            )
-        else:
-            self.file_size["FA"] = (
-                37376 + 8448
-            ) * num_c4a_layers + 1168 * num_c128a_layers
-            self.file_size["WA"] = (37376 * 2) * num_total_layers + (
-                8192 + 32768
-            ) * num_c4a_layers
-        self.file_size["FA"] = round_up(self.file_size["FA"], 4096)
-        self.file_size["WA"] = round_up(self.file_size["WA"], 4096)
+        # Store record byte sizes are published by the registered worker layout.
+        # Scheduler token geometry must not be inferred from those byte sizes.
 
     def _create_fa_store(
         self,
@@ -721,17 +697,34 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             padded_size = round_up(sum(tensor_size_list), aligned_size)
             config["shard_size"] = padded_size
             config["block_size"] = padded_size
-            if self.file_size[label] != padded_size:
-                logger.info_once(
-                    f"GC file size of {label} does not match real file size. "
-                    f"Worker: {padded_size}, Scheduler: {self.file_size[label]}"
-                )
+            self.file_size[label] = padded_size
+            gc_size = _get_store_gc_block_size(
+                str(config.get("store_pipeline", "")),
+                tensor_size_list,
+                padded_size,
+                padded_size,
+            )
+            _worker_publish_block_size(
+                gc_size,
+                self._dp_rank,
+                store_suffix=store_suffix,
+            )
             # MLA stores aggregate TP shards under one logical rank group.
             config["local_rank_size"] = self.tp_size if self.is_mla else 1
             if cpu_affinity_cores:
                 config["cpu_affinity_cores"] = list(cpu_affinity_cores)
-        else:
-            config["block_size"] = self.file_size[label]
+        elif self._gc_owner:
+            size = _scheduler_read_block_size(
+                store_suffix=store_suffix,
+            )
+            if size is None:
+                raise RuntimeError(
+                    f"FAWA {label} requires worker-published record size before "
+                    "scheduler store initialization; check worker registration "
+                    "order and shared /dev/shm visibility."
+                )
+            self.file_size[label] = size
+            config["block_size"] = size
         logger.info(
             f"create FAWA {label} {name} with config: "
             f"{self._summarize_store_config(config)}"
@@ -771,7 +764,11 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             layout = KVCacheGroupLayout(
                 group_caches,
                 is_ascend_layout=self.is_ascend_layout,
-                expected_block_size=group_spec.kv_cache_spec.block_size,
+                expected_block_size=(
+                    ascend_block_geometry(group_spec.kv_cache_spec).physical
+                    if self.is_ascend_layout
+                    else group_spec.kv_cache_spec.block_size
+                ),
             )
             self.group_layouts[group_id] = layout
 
@@ -806,10 +803,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             segment_tokens = meta.tail_tokens // meta.tail_blocks
 
             for _ in range(meta.tail_blocks):
-                segment_sizes = layout.segment_tensor_size_list(
-                    segment_tokens,
-                    meta.token_block_size,
-                )
+            segment_sizes = layout.segment_tensor_size_list(
+                segment_tokens,
+                meta.token_block_size,
+            )
                 tensor_size_list.extend(segment_sizes)
         if not tensor_size_list:
             group_label = (
