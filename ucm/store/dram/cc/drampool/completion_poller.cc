@@ -58,21 +58,32 @@ void ReportBatchMetrics(CompletionRecord& record)
     switch (record.opcode) {
         case OpType::DUMP:
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kDumpBatchTotalDurationMs), elapsedMs);
+            {
+                const auto failedEntries = std::count(record.results.begin(),
+                                                      record.results.end(),
+                                                      static_cast<std::uint8_t>(
+                                                          DumpLoadResult::Failed));
+                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kDumpFailedEntriesTotal),
+                                         static_cast<double>(failedEntries));
+            }
             break;
         case OpType::LOAD:
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kLoadBatchTotalDurationMs), elapsedMs);
             break;
         case OpType::LOOKUP:
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kLookupBatchTotalDurationMs), elapsedMs);
+            // Misses are derived from the response vector (every slot starts as NotFound),
+            // keeping the lookup scan and its scan-duration timer free of bookkeeping.
+            {
+                const auto missEntries = std::count(record.results.begin(), record.results.end(),
+                                                    static_cast<std::uint8_t>(
+                                                        LookupResult::NotFound));
+                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kLookupMissEntriesTotal),
+                                         static_cast<double>(missEntries));
+            }
             break;
         default:
             break;
-    }
-    if (record.opcode == OpType::DUMP) {
-        const auto failedEntries = std::count(record.results.begin(), record.results.end(),
-                                              static_cast<std::uint8_t>(DumpLoadResult::Failed));
-        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kDumpFailedEntriesTotal),
-                                 static_cast<double>(failedEntries));
     }
     record.begin_us = 0;
 }
@@ -97,11 +108,15 @@ void ReportDataTransferMetrics(const CompletionRecord& record,
 
 // Response-buffer release and RTT terminal exit shared by every terminal path:
 // observed from the response-transfer submission
-// (submit_ms, set in SubmitResponse) to the terminal state.
+// (submit_ms, set in SubmitResponse) to the terminal state. Failed responses only
+// bump the failure counter: their latency is not a meaningful RTT observation.
 void SettleResponseTransfer(BufferPool& flagBufferPool, CompletionRecord& record, bool failed)
 {
     ReleaseResponseBuffer(flagBufferPool, record);
-    if (failed) { UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kResponseFailuresTotal), 1); }
+    if (failed) {
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kResponseFailuresTotal), 1);
+        return;
+    }
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kResponseRttMs),
                              static_cast<double>(SteadyNowMs() - record.submit_ms));
 }

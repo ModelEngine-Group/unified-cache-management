@@ -520,6 +520,7 @@ void DramPoolServer::RequestReceiveLoop()
                  task->peer_one_sided_id);
         // This bounded handoff keeps transport I/O separate from potentially slow request handling.
         ScopedTimer enqueueWaitTimer(NAME_TO_METRIC_ID(kQueueRequestEnqueueWaitMs));
+        enqueueWaitTimer.Arm();
         bool queueFullLogged = false;
         while (!requestReceiverStop_.load(std::memory_order_acquire)) {
             if (requestQueue_.TryPush(std::move(task))) {
@@ -570,6 +571,7 @@ void DramPoolServer::GCThreadLoop()
                                      bufferManager_->GetUsedSlotRatio(slotSize));
         }
         ScopedTimer evictTimer(NAME_TO_METRIC_ID(kMetadataEvictGcDurationMs));
+        evictTimer.Arm();
         metadataManager_->PerformEvict();
     }
     UC_INFO_UNLIMITED("DramPool GCThread stopped");

@@ -60,6 +60,11 @@ void TaskWorker::Run(const std::atomic_bool& stop)
 
         // Stop is requested only after RequestReceiveLoop has exited, so an empty queue is drained.
         if (stop.load(std::memory_order_acquire)) { break; }
+        // The producer only maintains the atomic counter, so the gauge would stay
+        // stale while a backlog grows without any pop. Refresh it from this sole
+        // writer on each idle poll to keep the queue depth visible.
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kQueueRequestSize),
+                                 static_cast<double>(g_requestQueueLen.load()));
         std::this_thread::sleep_for(kThreadIdleSleepDuration);
     }
 }
@@ -108,7 +113,6 @@ Status TaskWorker::ProcessDump(const KvDumpRequest& request,
     ScopedTimer prepareTimer(NAME_TO_METRIC_ID(kDumpPrepareDurationMs));
     if (runtime_.protocol.GetPackedResponseSize(OpType::DUMP, request.batch_size) >
         g_config.flagBufferSlotSizeBytes) {
-        prepareTimer.Disarm();
         return Status::InvalidParam("DUMP response exceeds configured flag buffer slot size");
     }
     const std::uint64_t ttl_ms =
@@ -160,7 +164,6 @@ Status TaskWorker::ProcessDump(const KvDumpRequest& request,
     if (transfer_items.empty()) {
         UC_DEBUG("DUMP skips data transfer, request_id={}, batch_size={}", request.request_id,
                  request.batch_size);
-        prepareTimer.Disarm();
         return QueueResponse(OpType::DUMP, request.resp_addr, peerOneSidedId, std::move(results),
                              request.request_id, beginUs);
     }
@@ -172,7 +175,6 @@ Status TaskWorker::ProcessDump(const KvDumpRequest& request,
     if (submit_status.Failure() || handle == transport::kInvalidTransferHandle) {
         UC_ERROR("Dump SubmitAsync failed, request_id={}, items={}, error={}", request.request_id,
                  transfer_items.size(), submit_status);
-        prepareTimer.Disarm();
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kSubmitFailuresTotal), 1);
         DeleteItemsMetadata(transfer_items);
         for (const auto& item : transfer_items) {
@@ -182,6 +184,7 @@ Status TaskWorker::ProcessDump(const KvDumpRequest& request,
                              request.request_id, beginUs);
     }
 
+    prepareTimer.Arm();
     CompletionRecord record;
     record.stage = CompletionStage::PollDataTransfer;
     record.request_id = request.request_id;
@@ -204,7 +207,6 @@ Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
     ScopedTimer prepareTimer(NAME_TO_METRIC_ID(kLoadPrepareDurationMs));
     if (runtime_.protocol.GetPackedResponseSize(OpType::LOAD, request.batch_size) >
         g_config.flagBufferSlotSizeBytes) {
-        prepareTimer.Disarm();
         return Status::InvalidParam("LOAD response exceeds configured flag buffer slot size");
     }
     std::vector<std::uint8_t> results(request.batch_size,
@@ -256,7 +258,6 @@ Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
     if (transfer_items.empty()) {
         UC_DEBUG("LOAD skips data transfer, request_id={}, batch_size={}", request.request_id,
                  request.batch_size);
-        prepareTimer.Disarm();
         return QueueResponse(OpType::LOAD, request.resp_addr, peerOneSidedId, std::move(results),
                              request.request_id, beginUs);
     }
@@ -268,7 +269,6 @@ Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
     if (submit_status.Failure() || handle == transport::kInvalidTransferHandle) {
         UC_ERROR("Load SubmitAsync failed, request_id={}, items={}, error={}", request.request_id,
                  transfer_items.size(), submit_status);
-        prepareTimer.Disarm();
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kSubmitFailuresTotal), 1);
         LoadEndItems(transfer_items);
         for (const auto& item : transfer_items) {
@@ -278,6 +278,7 @@ Status TaskWorker::ProcessLoad(const KvLoadRequest& request,
                              request.request_id, beginUs);
     }
 
+    prepareTimer.Arm();
     CompletionRecord record;
     record.stage = CompletionStage::PollDataTransfer;
     record.request_id = request.request_id;
@@ -303,20 +304,16 @@ Status TaskWorker::ProcessLookup(const KvLookupRequest& request,
     }
     std::vector<std::uint8_t> results(request.batch_size,
                                       static_cast<std::uint8_t>(LookupResult::NotFound));
-    std::uint64_t missEntries = 0;
     {
-        // Scan-only observation: the timer ends before the response is enqueued.
+        // Scan-only observation: the timer ends before the response is enqueued. Lookup
+        // misses are counted in ReportBatchMetrics() from record.results, matching the
+        // dump failures, so this timer excludes metrics bookkeeping.
         ScopedTimer scanTimer(NAME_TO_METRIC_ID(kLookupScanDurationMs));
+        scanTimer.Arm();
         for (std::uint16_t index = 0; index < request.batch_size; ++index) {
             if (runtime_.metadata.Exist(request.entries[index].key)) {
                 results[index] = static_cast<std::uint8_t>(LookupResult::Exists);
-            } else {
-                ++missEntries;
             }
-        }
-        if (missEntries != 0) {
-            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kLookupMissEntriesTotal),
-                                     static_cast<double>(missEntries));
         }
     }
 
@@ -368,7 +365,7 @@ Status TaskWorker::SubmitCompletion(CompletionRecord&& record)
              record.request_id, static_cast<int>(record.opcode), static_cast<int>(record.stage),
              record.data_handle);
     // Non-mutating probe: TryPush leaves the record untouched on failure (spsc_ring_queue.h),
-    // so a full queue (B3 spin in Push below) is counted without changing behavior.
+    // so a full queue (spin in Push below) is counted without changing behavior.
     if (!runtime_.completionQueue.TryPush(std::move(record))) {
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kQueueCompletionFullTotal), 1);
         runtime_.completionQueue.Push(std::move(record));

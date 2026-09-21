@@ -37,7 +37,9 @@ namespace UC::DramPool {
 // Queue length accountings backing the queue_request_size / queue_completion_size
 // gauges. The SPSC queues expose no size query, and a gauge can only be written
 // from a single thread (thread-local buffers), so the producer and the
-// consumer maintain these counters and each consumer thread reports the value.
+// consumer maintain these counters while the reporting threads refresh the
+// gauge on their queue events; the request-queue consumer also refreshes it on
+// each idle poll, keeping a growing backlog visible between pops.
 inline std::atomic<std::uint64_t> g_requestQueueLen{0};
 inline std::atomic<std::uint64_t> g_completionQueueLen{0};
 
@@ -95,7 +97,8 @@ inline std::string BufferPoolUsageRatioName(std::uint64_t slotSize)
 // RAII duration observer: measures with SteadyNowUs() and records the elapsed
 // time in ms on scope exit. Takes a NAME_TO_METRIC_ID() reference so the metric
 // id is resolved once per call site instead of a string lookup per observation.
-// Call Disarm() on paths that must not be observed (e.g. failed preparations).
+// Disarmed by default: call Arm() on the path that must be observed (e.g. the
+// successful preparation), so abnormal branches need no bookkeeping.
 class ScopedTimer {
 public:
     explicit ScopedTimer(UC::Metrics::CachedMetric& metric)
@@ -114,12 +117,12 @@ public:
     ScopedTimer(const ScopedTimer&) = delete;
     ScopedTimer& operator=(const ScopedTimer&) = delete;
 
-    void Disarm() { armed_ = false; }
+    void Arm() { armed_ = true; }
 
 private:
     UC::Metrics::CachedMetric& metric_;
     std::uint64_t startUs_;
-    bool armed_{true};
+    bool armed_{false};
 };
 
 // Hot-path metric updates resolve the metric id once per call site via the

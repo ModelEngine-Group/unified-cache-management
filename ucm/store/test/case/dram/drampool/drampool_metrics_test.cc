@@ -198,6 +198,7 @@ TEST_F(UCDrampoolMetricsTest, ScopedTimerRecordsDurationOnScopeExit)
 {
     {
         ScopedTimer timer(NAME_TO_METRIC_ID(kLoadPrepareDurationMs));
+        timer.Arm();
     }
 
     const auto stats = Metrics::GetAllStatsAndClear();
@@ -206,11 +207,10 @@ TEST_F(UCDrampoolMetricsTest, ScopedTimerRecordsDurationOnScopeExit)
     EXPECT_GE(histogram.sum, 0.0);
 }
 
-TEST_F(UCDrampoolMetricsTest, ScopedTimerDisarmSkipsObservation)
+TEST_F(UCDrampoolMetricsTest, ScopedTimerDisarmedByDefaultSkipsObservation)
 {
     {
         ScopedTimer timer(NAME_TO_METRIC_ID(kLoadPrepareDurationMs));
-        timer.Disarm();
     }
 
     const auto stats = Metrics::GetAllStatsAndClear();
