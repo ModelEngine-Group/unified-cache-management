@@ -23,6 +23,7 @@ from packaging.utils import canonicalize_name, parse_wheel_filename
 from packaging.version import InvalidVersion, Version
 
 from . import policy as release_policy
+from . import toolkit
 
 PUBLICATION_KIND = "ucm-pypi-publication"
 RECEIPT_KIND = "ucm-pypi-receipt"
@@ -160,6 +161,7 @@ def build_publication(
     release_plan: Mapping[str, Any],
     backend_results: Sequence[Mapping[str, Any]],
     meta_result: Mapping[str, Any],
+    toolkit_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Bind exact built files into one backend-first publication contract."""
     plan = _mapping(release_plan, "release plan")
@@ -270,9 +272,16 @@ def build_publication(
         or meta_version != version
     ):
         raise ValueError("meta Wheel result has unexpected coordinates")
-    extras = _validate_extras(
-        planned_meta.get("extras"), {item["project"] for item in backends}, version
-    )
+    packages = {item["project"] for item in backends}
+    toolkit_package = toolkit.planned_package(dict(plan))
+    toolkit_record = None
+    if toolkit_package is not None:
+        toolkit.validate_result(toolkit_package, toolkit_result)
+        toolkit_record = toolkit.publication_record(toolkit_result)
+        packages.add(toolkit_record["project"])
+    elif toolkit_result is not None:
+        raise ValueError("unplanned toolkit result")
+    extras = _validate_extras(planned_meta.get("extras"), packages, version)
     if meta.get("extras") != extras:
         raise ValueError("meta Wheel extras differ from the release plan")
     meta_project_record = {
@@ -296,6 +305,7 @@ def build_publication(
         "json_api": target["json_api"],
         "dependency_index": target["dependency_index"],
         "backends": backends,
+        **({"toolkit": toolkit_record} if toolkit_record else {}),
         "meta": meta_project_record,
         "extras": extras,
     }
@@ -499,7 +509,9 @@ def publish(
         or not isinstance(publication.get("repository_url"), str)
     ):
         raise ValueError("invalid PyPI publication contract")
-    backends = publication["backends"]
+    backends = list(publication["backends"])
+    if publication.get("toolkit") is not None:
+        backends.append(publication["toolkit"])
     meta = publication["meta"]
     if not isinstance(backends, list) or not backends or not isinstance(meta, Mapping):
         raise ValueError("invalid PyPI publication contract")
@@ -578,7 +590,7 @@ def make_twine_uploader(
     repository_url: str,
     token: str,
 ) -> UploadFile:
-    """Create the exact-file Twine uploader used by the workflow CLI."""
+    """Create an exact-file Twine uploader with verbose diagnostics on stderr."""
     if not repository_url.startswith("https://") or not token:
         raise ValueError("PyPI repository and token are required")
 
@@ -596,12 +608,15 @@ def make_twine_uploader(
                     "twine",
                     "upload",
                     "--non-interactive",
+                    "--verbose",
                     "--repository-url",
                     repository_url,
                     str(path),
                 ],
                 check=True,
                 env=environment,
+                # Reserve CLI stdout for JSON, even when Twine logs errors there.
+                stdout=sys.stderr,
             )
         except (OSError, subprocess.CalledProcessError) as error:
             raise PyPIUploadError(f"Twine upload failed for {filename!r}") from error

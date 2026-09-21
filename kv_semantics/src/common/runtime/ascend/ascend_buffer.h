@@ -28,6 +28,9 @@
 
 namespace kv::runtime {
 
+Status RegisterHostBuffer(void* host, size_t size, void** pDevice);
+void UnregisterHostBuffer(void* host);
+
 class AscendBuffer : public Buffer {
 public:
     std::shared_ptr<void> MakeDeviceBuffer(size_t size) override;

@@ -383,8 +383,11 @@ def _yuanrong_posix_pipeline_builder(
 def _dram_pipeline_builder(
     config: Dict[str, object], pipeline: ucmpipelinestore.PipelineStore
 ):
+    from ucm.store.dram.resource_reporter import start_drampool_resource_reporter
+
     store_dir = Path(__file__).resolve().parent.parent
     pipeline.Stack("Dram", str(store_dir / "dram/libdramstore.so"), config)
+    start_drampool_resource_reporter(config)
 
 
 UcmPipelineStoreBuilder.register("Cache|Ds3fs", _cache_ds3fs_pipeline_builder)

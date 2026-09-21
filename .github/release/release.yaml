@@ -26,6 +26,7 @@ publish:
   # 此处只声明渠道；是否发布仍由 Release Profile 决定。
   dockerhub: {}
   # Chart OCI 固定命名空间，是否发布由 Release Profile 决定。
+  # Release 关闭此渠道时，同时跳过 Chart 打包和 GitHub Release Chart 附件。
   chart_oci:
     namespace: ghcr.io/{owner}/charts
   # GitHub Release 使用当前仓库，没有额外地址配置。
@@ -65,12 +66,13 @@ release_profiles:
 
   nightly:
     # 最多保留 7 个 Nightly。
+    # 仅向 GitHub Release 发布 Wheel。
     max_count: 7
     publish:
       pypi: false
-      ghcr: true
+      ghcr: false
       dockerhub: false
-      chart_oci: true
+      chart_oci: false
       github_release: true
 
 chart:

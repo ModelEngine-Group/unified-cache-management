@@ -21,6 +21,8 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
+from ...resources import source_root
+from .checks import installed_ucm_distributions
 from .config import PrecheckConfig
 from .reporter import STATUS_PASS, STATUS_SKIP, STATUS_WARN, WARN, CheckResult
 
@@ -761,9 +763,8 @@ def check_bandwidth(cfg: PrecheckConfig) -> CheckResult:
     # purge any cached ucm.* submodules (only if ucm is still importable
     # without the repo root), forcing a fresh import from site-packages.
     # Workers (forked) inherit the fix.
-    _repo_root = os.path.realpath(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), *([".."] * 4))
-    )
+    _source_root = source_root()
+    _repo_root = str(_source_root) if _source_root is not None else None
     _saved_path = sys.path[:]
     _clean_path = [
         p for p in sys.path if not _path_resolves_to_repo_root(p, _repo_root)
@@ -781,14 +782,7 @@ def check_bandwidth(cfg: PrecheckConfig) -> CheckResult:
         # Distinguish "ucm not installed" from "installed but import fails"
         # (e.g. the source tree shadows site-packages, or a dependency like
         # wrapt is missing).
-        ucm_installed = True
-        try:
-            from importlib.metadata import version as _pkg_version
-
-            _pkg_version("uc-manager")
-        except Exception:
-            ucm_installed = False
-        if ucm_installed:
+        if installed_ucm_distributions():
             detail = (
                 f"ucm is installed (site-packages) but import failed "
                 f"({type(exc).__name__}: {exc}); "
