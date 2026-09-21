@@ -170,10 +170,10 @@
 
     ## 1. Start the Docker container
 
-    Set `MODEL_DIR` to the host directory containing `DeepSeek-V4-Flash` (the example uses `/mnt/model-2/DeepSeek-V4-Flash`). Copy a CUDA **UCM image** reference supporting this model and H100 from [Quickstart](../../quick_start/index.md#vllm) into `IMAGE`. Run on the **host**:
+    Set `MODEL_PATH` to the local model directory and copy a CUDA **UCM image** reference supporting this model and H100 from [Quickstart](../../quick_start/index.md#vllm) into `IMAGE`. Run on the **host**:
 
     ```bash
-    export MODEL_DIR=/mnt/model-2
+    export MODEL_PATH=/data/weights/DeepSeek-V4-Flash
     export IMAGE='<full CUDA UCM image reference from Quickstart>'
     export CONTAINER_NAME=deepseekv4-ucm-h100
 
@@ -185,7 +185,7 @@
         --gpus '"device=0,1,2,3,4,5,6,7"' \
         --ipc=host \
         --network=host \
-        -v "$MODEL_DIR:/data/weights:ro" \
+        -v "$MODEL_PATH:/data/weights/DeepSeek-V4-Flash:ro" \
         -v /data/ucm:/data/ucm \
         --workdir /workspace \
         --entrypoint /bin/bash \
