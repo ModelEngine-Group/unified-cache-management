@@ -53,8 +53,8 @@ bool ReadMappingIdentity(const void* header, ParticipantReport& report)
         unsigned long long begin{}, end{}, offset{}, inode{};
         unsigned int major{}, minor{};
         char permissions[5]{};
-        auto fields = std::sscanf(line.c_str(), "%llx-%llx %4s %llx %x:%x %llu", &begin,
-                                  &end, permissions, &offset, &major, &minor, &inode);
+        auto fields = std::sscanf(line.c_str(), "%llx-%llx %4s %llx %x:%x %llu", &begin, &end,
+                                  permissions, &offset, &major, &minor, &inode);
         if (fields != 7 || address < begin || address >= end) { continue; }
         if (permissions[3] != 's' || inode == 0 ||
             line.find("memfd:ucm_cache2_ctrl") == std::string::npos) {
@@ -188,16 +188,14 @@ TEST(Cache2CtrlStrategyProcessTest, TwoDpEightTpShareExactlyTwoControlRegions)
     ASSERT_EQ(::pipe(releasePipe), 0);
     ASSERT_EQ(::pipe(reportPipe), 0);
 
-    auto* state = static_cast<ProcessState*>(
-        ::mmap(nullptr, sizeof(ProcessState), PROT_READ | PROT_WRITE,
-               MAP_SHARED | MAP_ANONYMOUS, -1, 0));
+    auto* state = static_cast<ProcessState*>(::mmap(
+        nullptr, sizeof(ProcessState), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0));
     ASSERT_NE(state, MAP_FAILED);
     ::new (state) ProcessState();
 
     auto nonce = std::to_string(::getpid()) + "_" +
                  std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
-    std::array<std::string, kGroups> uniqueIds = {"cache2_dp0_" + nonce,
-                                                   "cache2_dp1_" + nonce};
+    std::array<std::string, kGroups> uniqueIds = {"cache2_dp0_" + nonce, "cache2_dp1_" + nonce};
     std::vector<pid_t> children;
     children.reserve(kParticipants);
     for (size_t group = 0; group < kGroups; ++group) {
@@ -285,9 +283,9 @@ TEST(Cache2CtrlStrategyProcessTest, TwoDpEightTpShareExactlyTwoControlRegions)
     }
     EXPECT_TRUE(groupDevice[0] != groupDevice[1] || groupInode[0] != groupInode[1]);
     std::cout << "DP0 control=(dev " << groupDevice[0] << ", inode " << groupInode[0]
-              << "), participants=9, rankCount=8; DP1 control=(dev " << groupDevice[1]
-              << ", inode " << groupInode[1]
-              << "), participants=9, rankCount=8; distinct controls=2" << std::endl;
+              << "), participants=9, rankCount=8; DP1 control=(dev " << groupDevice[1] << ", inode "
+              << groupInode[1] << "), participants=9, rankCount=8; distinct controls=2"
+              << std::endl;
 
     state->~ProcessState();
     EXPECT_EQ(::munmap(state, sizeof(ProcessState)), 0);
@@ -300,8 +298,8 @@ TEST(Cache2CtrlLayoutProcessTest, BucketStripeLockSerializesAcrossProcesses)
     constexpr size_t kBuckets{8};
     constexpr size_t kLocks{4};
     auto bytes = CtrlLayout::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank);
-    auto* memory = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
-                          MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    auto* memory =
+        ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     ASSERT_NE(memory, MAP_FAILED);
     CtrlLayout layout;
     layout.Bind(memory, kRanks, kSlotsPerRank, kBuckets, kLocks);
