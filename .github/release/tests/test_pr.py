@@ -198,32 +198,18 @@ def test_single_arch_publication_and_compact_plan_share_the_bare_tag() -> None:
     )
 
 
-def test_blocked_a5_stops_before_raw_builder_resolution() -> None:
-    formal, _fixture, _selection, _catalog = _inputs()
-    probe = _cuda_probe()
-    item = probe["probes"][0]
-    item.update(
-        {
-            "product_id": "vllm-ascend",
-            "runtime_ref": "quay.io/ascend/vllm-ascend:v0.26.0rc-a5",
-            "repository": "quay.io/ascend/vllm-ascend",
-            "tag": "v0.26.0rc-a5",
-            "target_repository": "ghcr.io/release-org/vllm-ascend",
-            "backend": "cann-a5",
-            "accelerator_runtime": "cann-9.1.0",
-            "soc_version": "ascend950dt_9582",
-        }
+def test_blocked_backend_stops_before_raw_builder_resolution(runtime_probe) -> None:
+    formal = _fixture_policy()
+    formal["backends"][runtime_probe["backend"]].update(
+        status="blocked", reason="Disabled by platform policy"
     )
-    called = False
 
     def raw_resolver(_probes):
-        nonlocal called
-        called = True
-        return []
+        pytest.fail("Blocked backends must not resolve Builders")
 
     result = pr.resolve_pr_request(
         formal,
-        probe,
+        {"kind": "ucm-runtime-probe", "schema_version": 2, "probes": [runtime_probe]},
         {"kind": "ucm-builder-registry", "schema_version": 1, "builders": []},
         pr_number=30,
         author="SuperMarioYL",
@@ -233,7 +219,7 @@ def test_blocked_a5_stops_before_raw_builder_resolution() -> None:
 
     assert result["ok"] is False
     assert result["problems"][0]["reason"] == "blocked-backend"
-    assert called is False
+    assert result["problems"][0]["detail"] == "Disabled by platform policy"
 
 
 def test_image_command_rejects_multiple_runtime_requests() -> None:

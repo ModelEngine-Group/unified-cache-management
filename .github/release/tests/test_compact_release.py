@@ -202,22 +202,34 @@ def _write_auditwheel_report(
     return report
 
 
-def test_blocked_a5_projects_only_runtime_referenced_wheel_union() -> None:
-    plan = _plan()
-
-    assert (len(plan["wheels"]), len(plan["images"]), len(plan["families"])) == (
-        4,
-        4,
-        3,
+def test_plan_projects_only_runtime_referenced_wheel_union() -> None:
+    formal, selection, catalog = _inputs()
+    plan = planner.resolve_plan(
+        formal,
+        runtime_selection=selection,
+        builder_catalog=catalog,
+        route="release",
     )
-    assert sum(bool(item["create_index"]) for item in plan["families"]) == 1
-    assert sorted(len(item["members"]) for item in plan["families"]) == [1, 1, 2]
+    runtimes = selection["runtimes"]
+    assert {wheel["id"] for wheel in plan["wheels"]} == {
+        wheel_id
+        for runtime in runtimes
+        for wheel_id in runtime["wheel_build_ids"].values()
+    }
+    assert len(plan["images"]) == sum(
+        len(runtime["architectures"]) for runtime in runtimes
+    )
+    assert len(plan["families"]) == len(runtimes)
+    assert sum(bool(item["create_index"]) for item in plan["families"]) == sum(
+        len(runtime["architectures"]) > 1 for runtime in runtimes
+    )
+    assert sorted(len(item["members"]) for item in plan["families"]) == sorted(
+        len(runtime["architectures"]) for runtime in runtimes
+    )
     assert len({item["id"] for item in plan["families"]}) == len(plan["families"])
     assert len(
         {(item["target_repository"], item["target_tag"]) for item in plan["families"]}
     ) == len(plan["families"])
-    assert not any("a5" in item["id"] for item in plan["wheels"])
-    assert not any("a5" in item["id"] for item in plan["families"])
     assert all(
         item["builder"]["digest"].startswith("sha256:") for item in plan["wheels"]
     )
@@ -229,6 +241,7 @@ def test_plan_projects_runtime_referenced_distributions_from_platform_policy() -
     assert plan["publish"]["pypi"]["distributions"] == [
         "release-org-uc-manager-cann901-a2",
         "release-org-uc-manager-cann901-a3",
+        "release-org-uc-manager-cann901-a5",
         "release-org-uc-manager-cuda-cu129",
         "release-org-ucm-toolkit",
     ]
@@ -244,6 +257,7 @@ def test_plan_projects_runtime_referenced_distributions_from_platform_policy() -
         "extras": {
             "cann901-a2": "release-org-uc-manager-cann901-a2==0.7.60rc1",
             "cann901-a3": "release-org-uc-manager-cann901-a3==0.7.60rc1",
+            "cann901-a5": "release-org-uc-manager-cann901-a5==0.7.60rc1",
             "cu129": "release-org-uc-manager-cuda-cu129==0.7.60rc1",
             "toolkit": "release-org-ucm-toolkit==0.7.60rc1",
         },
@@ -757,8 +771,13 @@ def test_wheel_plan_can_build_directly_from_pinned_upstream_builders(
 
     builds = {item["id"]: item for item in selection["wheel_builds"]}
     assert len(plan["wheels"]) == len(builds)
+    assert {wheel["id"] for wheel in plan["wheels"]} == {
+        item["id"] for item in plan["wheel_matrix"]["include"]
+    }
     for wheel in plan["wheels"]:
         build = builds[wheel["id"]]
+        backend = formal["backends"][build["backend"]]
         source_repository, _source_tag = build["source_image"].rsplit(":", 1)
         assert wheel["builder"]["repository"] == source_repository
         assert wheel["builder"]["digest"] == build["source_image_digest"]
+        assert wheel["build"]["platform_arg"] == backend["platform"]

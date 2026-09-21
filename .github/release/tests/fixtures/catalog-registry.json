@@ -36,7 +36,8 @@
           "tags": [
             "9.0.0-310p-manylinux_2_28-py3.12",
             "9.0.1-910b-manylinux_2_34-py3.12",
-            "9.0.1-a3-manylinux_2_34-py3.12"
+            "9.0.1-a3-manylinux_2_34-py3.12",
+            "9.0.1-950-manylinux_2_34-py3.12"
           ]
         }
       ]
@@ -54,6 +55,10 @@
     },
     "quay.io/ascend/manylinux:9.0.1-a3-manylinux_2_34-py3.12": {
       "arm64": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    },
+    "quay.io/ascend/manylinux:9.0.1-950-manylinux_2_34-py3.12": {
+      "amd64": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "arm64": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
     }
   },
   "runtime_probe": {
@@ -142,6 +147,50 @@
         "backend": "cann-a3",
         "accelerator_runtime": "cann-9.0.1",
         "soc_version": "ascend910_9391",
+        "python_version": "3.12",
+        "python_abi": "cp312",
+        "os_id": "ubuntu",
+        "os_version": "22.04",
+        "glibc_version": "2.35"
+      },
+      {
+        "probe_id": "runtime-004-amd64",
+        "request_id": "runtime-004",
+        "product_id": "vllm-ascend",
+        "runtime_ref": "quay.io/ascend/vllm-ascend:v0.22.1rc1-a5",
+        "repository": "quay.io/ascend/vllm-ascend",
+        "tag": "v0.22.1rc1-a5",
+        "target_repository": "ghcr.io/release-org/vllm-ascend",
+        "runtime_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "cpu_arch": "amd64",
+        "platform": "linux/amd64",
+        "runner": "ubuntu-24.04",
+        "image_reference": "quay.io/ascend/vllm-ascend@sha256:ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd1",
+        "backend": "cann-a5",
+        "accelerator_runtime": "cann-9.0.1",
+        "soc_version": "ascend950dt_9582",
+        "python_version": "3.12",
+        "python_abi": "cp312",
+        "os_id": "ubuntu",
+        "os_version": "22.04",
+        "glibc_version": "2.35"
+      },
+      {
+        "probe_id": "runtime-004-arm64",
+        "request_id": "runtime-004",
+        "product_id": "vllm-ascend",
+        "runtime_ref": "quay.io/ascend/vllm-ascend:v0.22.1rc1-a5",
+        "repository": "quay.io/ascend/vllm-ascend",
+        "tag": "v0.22.1rc1-a5",
+        "target_repository": "ghcr.io/release-org/vllm-ascend",
+        "runtime_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "cpu_arch": "arm64",
+        "platform": "linux/arm64",
+        "runner": "ubuntu-24.04-arm",
+        "image_reference": "quay.io/ascend/vllm-ascend@sha256:ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd2",
+        "backend": "cann-a5",
+        "accelerator_runtime": "cann-9.0.1",
+        "soc_version": "ascend950dt_9582",
         "python_version": "3.12",
         "python_abi": "cp312",
         "os_id": "ubuntu",

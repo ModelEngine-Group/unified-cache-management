@@ -344,18 +344,20 @@ def test_excluded_winner_does_not_fall_back_to_an_older_runtime() -> None:
         )
 
 
-def test_product_with_only_blocked_variants_fails_selection() -> None:
+def test_product_with_only_blocked_variants_fails_selection(runtime_probe) -> None:
     release = _policy()
-    for product in release["products"]:
-        product["runtime_selectors"] = [_selector("0.27")]
-    tags = {
-        "docker.io/vllm/vllm-openai": ["v0.27.0"],
-        "quay.io/ascend/vllm-ascend": ["v0.27.0", "v0.27.1-a5"],
-    }
+    release["backends"][runtime_probe["backend"]].update(
+        status="blocked", reason="Disabled by platform policy"
+    )
+    release["products"] = [
+        product
+        for product in release["products"]
+        if product["id"] == runtime_probe["product_id"]
+    ]
 
-    with pytest.raises(ValueError, match="vllm-ascend: no publishable Runtime"):
+    with pytest.raises(ValueError, match="no publishable Runtime"):
         upstream.resolve_runtime_candidates(
-            release, tag_loader=lambda repository: tags[repository]
+            release, tag_loader=lambda repository: [runtime_probe["tag"]]
         )
 
 

@@ -215,7 +215,8 @@
                   "type": "object", "additionalProperties": false,
                   "required": ["a3"],
                   "properties": {
-                    "a3": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+                    "a3": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+                    "a5": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
                   }
                 }
               }

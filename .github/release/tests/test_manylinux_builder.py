@@ -1,8 +1,36 @@
 from __future__ import annotations
 
+import runpy
+import subprocess
 from pathlib import Path
 
+import pytest
+import setuptools
+
 ROOT = Path(__file__).resolve().parents[3]
+
+
+@pytest.mark.parametrize(
+    "platform", ["cuda", "ascend", "ascend-a3", "ascend-a5", "musa", "maca"]
+)
+def test_wheel_setup_passes_native_platform_to_cmake(
+    platform, monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("PLATFORM", platform)
+    monkeypatch.setattr(setuptools, "setup", lambda **kwargs: None)
+    configuration = runpy.run_path(str(ROOT / "setup.py"))
+    build = configuration["CMakeBuild"](setuptools.Distribution())
+    build.build_temp = str(tmp_path / "temp")
+    build.build_lib = str(tmp_path / "lib")
+    commands = []
+    monkeypatch.setattr(
+        subprocess, "check_call", lambda args, **kwargs: commands.append(args)
+    )
+
+    build.build_cmake(configuration["CMakeExtension"]("ucm", str(ROOT)))
+
+    assert f"-DRUNTIME_ENVIRONMENT={platform}" in commands[0]
+    assert "-DRUNTIME_ENVIRONMENT=simu" not in commands[0]
 
 
 def test_wheel_builder_repairs_to_the_planned_manylinux_tag() -> None:
