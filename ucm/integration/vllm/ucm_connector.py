@@ -1762,7 +1762,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             raise RuntimeError(f"Unsupported device platform for UCMDirectConnector.")
 
     def _prefetch_other_rank_hashes(self, rank0_block_ids: list[bytes]) -> None:
-        if not self._other_rank_hashers or not rank0_block_ids:
+        if not rank0_block_ids:
             return
 
         if self.is_mla and not self._rank_scoped_mla_states:
