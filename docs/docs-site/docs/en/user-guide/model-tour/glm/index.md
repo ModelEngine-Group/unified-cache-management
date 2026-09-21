@@ -165,10 +165,10 @@
 
     ## 1. Start the Docker container
 
-    Set `MODEL_DIR` to the host directory containing `GLM-4.7-FP8` (the example uses `/mnt/model-2/GLM-4.7-FP8`). Copy a CUDA **UCM image** reference supporting this model and H100 from [Quickstart](../../quick_start/index.md#vllm) into `IMAGE`. Run on the **host**:
+    Set `MODEL_PATH` to the local model directory and copy a CUDA **UCM image** reference supporting this model and H100 from [Quickstart](../../quick_start/index.md#vllm) into `IMAGE`. Run on the **host**:
 
     ```bash
-    export MODEL_DIR=/mnt/model-2
+    export MODEL_PATH=/data/weights/GLM-4.7-FP8
     export IMAGE='<full CUDA UCM image reference from Quickstart>'
     export CONTAINER_NAME=glm47-ucm-h100
 
@@ -180,7 +180,7 @@
         --gpus '"device=0,1,2,3,4,5,6,7"' \
         --ipc=host \
         --network=host \
-        -v "$MODEL_DIR:/data/weights:ro" \
+        -v "$MODEL_PATH:/data/weights/GLM-4.7-FP8:ro" \
         -v /data/ucm:/data/ucm \
         --workdir /workspace \
         --entrypoint /bin/bash \

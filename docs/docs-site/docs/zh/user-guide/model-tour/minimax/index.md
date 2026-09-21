@@ -164,10 +164,10 @@
 
     ## 1. 启动 Docker 容器
 
-    将 `MODEL_DIR` 设为宿主机上存放 `MiniMax-M2.7` 的父目录（示例模型路径为 `/mnt/model-2/MiniMax-M2.7`），从[快速开始](../../quick_start/index.md#vllm)复制支持该模型和 H100 的 CUDA **UCM 镜像**地址到 `IMAGE`，在**宿主机**执行：
+    将 `MODEL_PATH` 设为本地模型目录，从[快速开始](../../quick_start/index.md#vllm)复制支持该模型和 H100 的 CUDA **UCM 镜像**地址到 `IMAGE`，在**宿主机**执行：
 
     ```bash
-    export MODEL_DIR=/mnt/model-2
+    export MODEL_PATH=/data/weights/MiniMax-M2.7
     export IMAGE='<full CUDA UCM image reference from Quickstart>'
     export CONTAINER_NAME=minimax27-ucm-h100
 
@@ -179,7 +179,7 @@
         --gpus '"device=0,1,2,3,4,5,6,7"' \
         --ipc=host \
         --network=host \
-        -v "$MODEL_DIR:/data/weights:ro" \
+        -v "$MODEL_PATH:/data/weights/MiniMax-M2.7:ro" \
         -v /data/ucm:/data/ucm \
         --workdir /workspace \
         --entrypoint /bin/bash \
