@@ -17,7 +17,7 @@ while getopts "b:p:" arg; do
             ASCEND_PLATFORM=$OPTARG
             ;;
         ?)
-            echo "Usage: $0 [-b <build_type>] [-p <ascend/ascend-a3>]"
+            echo "Usage: $0 [-b <build_type>] [-p <ascend/ascend-a3/ascend-a5>]"
             exit 0
             ;;
     esac

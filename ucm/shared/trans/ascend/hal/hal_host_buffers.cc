@@ -23,7 +23,6 @@
  * */
 #include "hal_host_buffers.h"
 #include <ascend_hal.h>
-#include <numa.h>
 #include <stdexcept>
 #include <string>
 #include "logger/logger.h"
@@ -86,14 +85,6 @@ void HalHostBuffers::Setup(int32_t deviceId, size_t dataBytes, size_t nRanks, si
     owner_ = rank;
     deviceId_ = deviceId;
     try {
-        if (numa_available() < 0) { throw std::runtime_error("Host NUMA is not available"); }
-        const int numaCount = numa_num_configured_nodes();
-        if (numaCount <= 0) {
-            throw std::runtime_error(fmt::format("invalid Host NUMA node count: {}", numaCount));
-        }
-        const int32_t numaNode = static_cast<int32_t>(owner_ % static_cast<size_t>(numaCount));
-        UC_INFO("HAL NUMA assignment: owner={} numa_count={} numa_node={}", owner_, numaCount,
-                numaNode);
         Device device;
         Status status = device.Setup(deviceId_);
         if (status.Failure()) {
@@ -101,14 +92,14 @@ void HalHostBuffers::Setup(int32_t deviceId, size_t dataBytes, size_t nRanks, si
                 "Device::Setup failed: owner={} device={} status={}", owner_, deviceId_, status));
         }
         try {
-            LocalSetup(dataBytes, nRanks, numaNode, MEM_HUGE_PAGE_TYPE);
+            LocalSetup(dataBytes, nRanks, MEM_HUGE_PAGE_TYPE);
         } catch (const std::runtime_error& error) {
             UC_WARN(
                 "Huge-page allocation failed: owner={} device={} error={}; retrying with "
                 "MEM_NORMAL_PAGE_TYPE",
                 owner_, deviceId_, error.what());
             Reset();
-            LocalSetup(dataBytes, nRanks, numaNode, MEM_NORMAL_PAGE_TYPE);
+            LocalSetup(dataBytes, nRanks, MEM_NORMAL_PAGE_TYPE);
         }
     } catch (...) {
         Reset();
@@ -116,7 +107,7 @@ void HalHostBuffers::Setup(int32_t deviceId, size_t dataBytes, size_t nRanks, si
     }
 }
 
-void HalHostBuffers::LocalSetup(size_t dataBytes, size_t nRanks, int32_t numaNode, uint32_t pgType)
+void HalHostBuffers::LocalSetup(size_t dataBytes, size_t nRanks, uint32_t pgType)
 {
     // halMemAddressReserve requires 1GB alignment if allocation > 512MB
     constexpr size_t vaAlignment = size_t(1) << 30;
@@ -128,8 +119,8 @@ void HalHostBuffers::LocalSetup(size_t dataBytes, size_t nRanks, int32_t numaNod
     };
 
     drv_mem_prop prop{};
-    prop.side = MEM_HOST_NUMA_SIDE;
-    prop.devid = static_cast<uint32_t>(numaNode);
+    prop.side = MEM_HOST_SIDE;
+    prop.devid = 0;
     prop.pg_type = pgType;
     prop.mem_type = MEM_DDR_TYPE;
     size_t allocGranularity = 0;
@@ -145,9 +136,9 @@ void HalHostBuffers::LocalSetup(size_t dataBytes, size_t nRanks, int32_t numaNod
     const size_t reserveBytes =
         (rankStride_ * nRanks + vaAlignment - 1) / vaAlignment * vaAlignment;
     UC_INFO(
-        "HAL host allocation: owner={} device={} numa={} ranks={} data_bytes={} "
+        "HAL host allocation: owner={} device={} ranks={} data_bytes={} "
         "rank_stride={} reserve_bytes={} page_type={} alloc_granularity={}",
-        owner_, deviceId_, numaNode, nRanks, dataBytes, rankStride_, reserveBytes,
+        owner_, deviceId_, nRanks, dataBytes, rankStride_, reserveBytes,
         static_cast<int>(prop.pg_type), allocGranularity);
 
     ret = halMemAddressReserve(&base_, reserveBytes, 0, nullptr, 0);

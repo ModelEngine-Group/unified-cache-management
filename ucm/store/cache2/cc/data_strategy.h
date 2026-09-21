@@ -37,7 +37,7 @@ namespace UC::Cache2 {
 class DataStrategy {
     size_t slotSize_{};
     size_t nSlotsPerRank_{};
-#if UCM_RUNTIME_ASCEND_FAMILY
+#if UCM_RUNTIME_ASCEND_HAL
     std::unique_ptr<Trans::HalHostBuffers> hostBuffers_;
 #endif
 

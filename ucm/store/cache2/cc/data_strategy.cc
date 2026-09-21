@@ -28,7 +28,7 @@
 #include <stdexcept>
 #include <thread>
 
-#if UCM_RUNTIME_ASCEND_FAMILY
+#if UCM_RUNTIME_ASCEND_HAL
 #include "trans/ascend/hal/hal_host_buffers.h"
 #endif
 
@@ -57,7 +57,7 @@ void DataStrategy::Setup(CtrlLayout& ctrl, int32_t deviceId, size_t slotSize, si
         slotSize_ = slotSize;
         nSlotsPerRank_ = nSlotsPerRank;
     } catch (...) {
-#if UCM_RUNTIME_ASCEND_FAMILY
+#if UCM_RUNTIME_ASCEND_HAL
         hostBuffers_.reset();
 #endif
         throw;
@@ -66,17 +66,17 @@ void DataStrategy::Setup(CtrlLayout& ctrl, int32_t deviceId, size_t slotSize, si
 
 void DataStrategy::LocalSetup(int32_t deviceId, size_t dataBytes, size_t nRanks, size_t rank)
 {
-#if UCM_RUNTIME_ASCEND_FAMILY
+#if UCM_RUNTIME_ASCEND_HAL
     hostBuffers_ = std::make_unique<Trans::HalHostBuffers>();
     hostBuffers_->Setup(deviceId, dataBytes, nRanks, rank);
 #else
-    throw std::runtime_error("cache2 HAL data strategy requires Ascend runtime");
+    throw std::runtime_error("cache2 HAL data strategy requires ascend-a5 runtime");
 #endif
 }
 
 void DataStrategy::CrossRankSetup(CtrlLayout& ctrl, size_t timeoutMs)
 {
-#if UCM_RUNTIME_ASCEND_FAMILY
+#if UCM_RUNTIME_ASCEND_HAL
     const std::chrono::steady_clock::time_point deadline =
         std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
     CtrlLayout::RankDataDesc desc;
@@ -107,13 +107,13 @@ void DataStrategy::CrossRankSetup(CtrlLayout& ctrl, size_t timeoutMs)
         hostBuffers_->ImportHandle(rank, peerHandle);
     }
 #else
-    throw std::runtime_error("cache2 HAL data strategy requires Ascend runtime");
+    throw std::runtime_error("cache2 HAL data strategy requires ascend-a5 runtime");
 #endif
 }
 
 void* DataStrategy::DataAt(size_t slotIdx)
 {
-#if UCM_RUNTIME_ASCEND_FAMILY
+#if UCM_RUNTIME_ASCEND_HAL
     if (nSlotsPerRank_ == 0) { return nullptr; }
     std::byte* data = static_cast<std::byte*>(hostBuffers_->HostData(slotIdx / nSlotsPerRank_));
     return data ? data + (slotIdx % nSlotsPerRank_) * slotSize_ : nullptr;
@@ -124,7 +124,7 @@ void* DataStrategy::DataAt(size_t slotIdx)
 
 void* DataStrategy::DeviceDataAt(size_t slotIdx)
 {
-#if UCM_RUNTIME_ASCEND_FAMILY
+#if UCM_RUNTIME_ASCEND_HAL
     if (nSlotsPerRank_ == 0) { return nullptr; }
     std::byte* data = static_cast<std::byte*>(hostBuffers_->DeviceData(slotIdx / nSlotsPerRank_));
     return data ? data + (slotIdx % nSlotsPerRank_) * slotSize_ : nullptr;

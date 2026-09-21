@@ -9,21 +9,20 @@ add_library(trans STATIC
     ascend_buffer.cc
     ascend_event.cc
     ascend_stream.cc
-    hal/hal_host_buffers.cc
 )
-set(ASCEND_DRIVER_ROOT "/usr/local/Ascend/driver" CACHE PATH "Path to Ascend driver")
-find_path(UCM_TRANS_HAL_INCLUDE_DIR ascend_hal.h
-    HINTS "${ASCEND_ROOT}/include/driver" "${ASCEND_DRIVER_ROOT}/include"
-    REQUIRED)
-find_library(UCM_TRANS_HAL_LIBRARY ascend_hal
-    HINTS "${ASCEND_DRIVER_ROOT}/lib64/driver" "${ASCEND_DRIVER_ROOT}/lib64"
-          "${ASCEND_ROOT}/lib64" "${ASCEND_ROOT}/lib64/stub"
-    REQUIRED)
-find_path(UCM_TRANS_NUMA_INCLUDE_DIR numa.h REQUIRED)
-find_library(UCM_TRANS_NUMA_LIBRARY numa REQUIRED)
-target_include_directories(trans SYSTEM PRIVATE
-    ${UCM_TRANS_HAL_INCLUDE_DIR} ${UCM_TRANS_NUMA_INCLUDE_DIR})
-target_link_libraries(trans PRIVATE ${UCM_TRANS_HAL_LIBRARY} ${UCM_TRANS_NUMA_LIBRARY})
+if(UCM_RUNTIME_ASCEND_HAL)
+    target_sources(trans PRIVATE hal/hal_host_buffers.cc)
+    set(ASCEND_DRIVER_ROOT "/usr/local/Ascend/driver" CACHE PATH "Path to Ascend driver")
+    find_path(UCM_TRANS_HAL_INCLUDE_DIR ascend_hal.h
+        HINTS "${ASCEND_ROOT}/include/driver" "${ASCEND_DRIVER_ROOT}/include"
+        REQUIRED)
+    find_library(UCM_TRANS_HAL_LIBRARY ascend_hal
+        HINTS "${ASCEND_DRIVER_ROOT}/lib64/driver" "${ASCEND_DRIVER_ROOT}/lib64"
+              "${ASCEND_ROOT}/lib64" "${ASCEND_ROOT}/lib64/stub"
+        REQUIRED)
+    target_include_directories(trans SYSTEM PRIVATE ${UCM_TRANS_HAL_INCLUDE_DIR})
+    target_link_libraries(trans PRIVATE ${UCM_TRANS_HAL_LIBRARY})
+endif()
 
 if(ASCEND_SUPPORTS_REGISTER_PIN)
     target_compile_definitions(trans PRIVATE ASCEND_SUPPORTS_REGISTER_PIN=1)

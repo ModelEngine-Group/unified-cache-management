@@ -37,7 +37,7 @@ class HalHostBuffers {
     int32_t deviceId_{-1};
     size_t rankStride_{};
 
-    void LocalSetup(size_t dataBytes, size_t nRanks, int32_t numaNode, uint32_t pgType);
+    void LocalSetup(size_t dataBytes, size_t nRanks, uint32_t pgType);
     void Reset();
 
 public:
