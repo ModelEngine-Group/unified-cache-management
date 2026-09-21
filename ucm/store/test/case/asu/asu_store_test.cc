@@ -502,6 +502,22 @@ TEST(UCAsuStoreTest, PropagatesFakeBackendWorkerThreads)
     EXPECT_EQ(transportConfig.attrs.at("fake_backend.complete_immediately"), "false");
 }
 
+TEST(UCAsuStoreTest, ConvertsFakeBackendLatencyToMicroseconds)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_trans_provider_backend", std::string{"fake"});
+    config.SetNumber("asu_fake_backend_latency_ms", std::uint64_t{2});
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+
+    const auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+    EXPECT_EQ(transportConfig.attrs.at("fake_backend.latency_us"), "2000");
+}
+
 TEST(UCAsuStoreTest, PropagatesFakeBackendCompleteImmediately)
 {
     UC::AsuStore::AsuStore store;
