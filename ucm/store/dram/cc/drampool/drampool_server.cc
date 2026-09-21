@@ -566,10 +566,8 @@ void DramPoolServer::GCThreadLoop()
         if (stopWaitCv_.wait_for(waitLock, interval, stopRequested)) { break; }
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kMetadataEntryCount),
                                  static_cast<double>(metadataManager_->GetKeyCnt()));
-        for (const auto slotSize : g_config.poolBlockSizes) {
-            UC::Metrics::UpdateStats(BufferPoolUsageRatioName(slotSize),
-                                     bufferManager_->GetUsedSlotRatio(slotSize));
-        }
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kBufferPoolUsageRatio),
+                                 bufferManager_->GetTotalUsedSlotRatio());
         ScopedTimer evictTimer(NAME_TO_METRIC_ID(kMetadataEvictGcDurationMs));
         evictTimer.Arm();
         metadataManager_->PerformEvict();

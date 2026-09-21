@@ -171,6 +171,23 @@ public:
                static_cast<double>(it->second->GetSlotCount());
     }
 
+    /**
+     * @brief Aggregate ratio of used slots to total slots across all pools.
+     * @return sum(used) / sum(slot_count) over every registered pool; 0.0 if
+     *         no pool has slots.
+     */
+    double GetTotalUsedSlotRatio() const
+    {
+        std::size_t used = 0;
+        std::size_t total = 0;
+        for (const auto& [_, pool] : pools_) {
+            if (pool == nullptr) { continue; }
+            used += pool->GetUsedCount();
+            total += pool->GetSlotCount();
+        }
+        return total == 0 ? 0.0 : static_cast<double>(used) / static_cast<double>(total);
+    }
+
 private:
     std::unordered_map<std::size_t, std::unique_ptr<BufferPool>> pools_;
     std::vector<transport::MemoryRegion> memoryRegions_;

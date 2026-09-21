@@ -68,6 +68,7 @@ inline constexpr char kSubmitFailuresTotal[] = "drampool_submit_failures_total";
 // F. Resource usage
 inline constexpr char kMetadataEntryCount[] = "drampool_metadata_entry_count";
 inline constexpr char kFlagPoolUsageRatio[] = "drampool_flag_pool_usage_ratio";
+inline constexpr char kBufferPoolUsageRatio[] = "drampool_buffer_pool_usage_ratio";
 // G. Metadata settlement duration
 inline constexpr char kMetadataStoreendDurationMs[] = "drampool_metadata_storeend_duration_ms";
 inline constexpr char kMetadataLoadendDurationMs[] = "drampool_metadata_loadend_duration_ms";
@@ -85,14 +86,6 @@ inline constexpr char kQueueResponseBufferRetryTotal[] =
 inline constexpr char kDumpBatchTotalDurationMs[] = "drampool_dump_batch_total_duration_ms";
 inline constexpr char kLoadBatchTotalDurationMs[] = "drampool_load_batch_total_duration_ms";
 inline constexpr char kLookupBatchTotalDurationMs[] = "drampool_lookup_batch_total_duration_ms";
-
-// Dynamic per-slot-size gauge: drampool_buffer_pool_usage_ratio_<slot_size>.
-// Names are built at runtime, so call sites keep the string-based UpdateStats
-// overload; the only caller is the low-frequency GC report loop.
-inline std::string BufferPoolUsageRatioName(std::uint64_t slotSize)
-{
-    return std::string("drampool_buffer_pool_usage_ratio_") + std::to_string(slotSize);
-}
 
 // RAII duration observer: measures with SteadyNowUs() and records the elapsed
 // time in ms on scope exit. Takes a NAME_TO_METRIC_ID() reference so the metric
@@ -126,8 +119,7 @@ private:
 };
 
 // Hot-path metric updates resolve the metric id once per call site via the
-// NAME_TO_METRIC_ID() cached reference (same pattern as DramStore), falling
-// back to the string-based overload only for the dynamic per-slot-size gauges.
+// NAME_TO_METRIC_ID() cached reference (same pattern as DramStore).
 
 // Histogram bucket sets shared by metrics with the same latency envelope.
 // The values mirror examples/metrics/metrics_configs.yaml, which is the single
@@ -180,6 +172,7 @@ inline const std::vector<DrampoolMetricDef>& DrampoolMetricDefs()
         // F. Resource usage
         {kMetadataEntryCount, "gauge"},
         {kFlagPoolUsageRatio, "gauge"},
+        {kBufferPoolUsageRatio, "gauge"},
         // G. Metadata settlement duration
         {kMetadataStoreendDurationMs, "histogram", kMsBucketsSettlement,
          std::size(kMsBucketsSettlement)},
@@ -210,11 +203,9 @@ inline const std::vector<DrampoolMetricDef>& DrampoolMetricDefs()
 // C++ process without the Python binding, so it creates the same names, types,
 // and buckets as the UCM Python side (setup_ucm_metrics -> ucmmetrics) does
 // from examples/metrics/metrics_configs.yaml: like the Python loop over the
-// config, every entry of DrampoolMetricDefs() is passed to CreateStats, plus
-// the dynamic per-slot-size gauges below. CreateStats is idempotent and first
-// registration wins; unregistered names are silently dropped by UpdateStats.
-// Call after the runtime config is parsed so the dynamic per-slot-size
-// gauges follow g_config.poolBlockSizes.
+// config, every entry of DrampoolMetricDefs() is passed to CreateStats.
+// CreateStats is idempotent and first registration wins; unregistered names
+// are silently dropped by UpdateStats.
 inline void SetupDrampoolMetrics()
 {
     UC::Metrics::SetUp();
@@ -225,10 +216,6 @@ inline void SetupDrampoolMetrics()
         } else {
             UC::Metrics::CreateStats(def.name, def.type);
         }
-    }
-    // F-supplement: dynamic data-pool usage gauges, one per block size.
-    for (const auto slotSize : g_config.poolBlockSizes) {
-        UC::Metrics::CreateStats(BufferPoolUsageRatioName(slotSize), "gauge");
     }
 }
 

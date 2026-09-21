@@ -151,10 +151,9 @@ std::string MetricsReporter::Render() const
     // (#1396): the full cumulative state (the reader deltas consecutive
     // snapshots, so counter/histogram resets are detected on its side)
     // grouped into counters/gauges/histograms. Rendered in registration order
-    // (DrampoolMetricDefs() plus the dynamic per-slot-size gauges) so the
-    // layout is stable across snapshots. The record must end with a newline:
-    // the reader treats a trailing line without one as incomplete and drops
-    // it.
+    // (DrampoolMetricDefs()) so the layout is stable across snapshots. The
+    // record must end with a newline: the reader treats a trailing line
+    // without one as incomplete and drops it.
     std::ostringstream output;
     output << std::setprecision(17);
     output << "{\"event\":\"" << kSnapshotEvent << "\",\"timestamp\":"
@@ -175,12 +174,6 @@ std::string MetricsReporter::Render() const
         if (!first) { output << ','; }
         first = false;
         AppendNumber(output, def.name, FindValue(gaugeValues_, def.name));
-    }
-    for (const auto slotSize : g_config.poolBlockSizes) {
-        if (!first) { output << ','; }
-        first = false;
-        AppendNumber(output, BufferPoolUsageRatioName(slotSize),
-                     FindValue(gaugeValues_, BufferPoolUsageRatioName(slotSize)));
     }
     output << "},\"histograms\":{";
     first = true;
