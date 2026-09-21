@@ -40,6 +40,8 @@
 namespace UC::Cache2 {
 
 class Buffer {
+    friend struct BufferTestAccess;
+
     using SlotMeta = CtrlLayout::SlotMeta;
     using State = SlotMeta::State;
 
@@ -85,7 +87,10 @@ public:
         }
         ~Handle()
         {
-            if (Valid()) { buf_->Release(slotIdx_); }
+            if (Valid()) {
+                if (owner_ && GetState() == State::Loading) { buf_->MarkFailed(slotIdx_); }
+                buf_->Release(slotIdx_);
+            }
         }
         explicit operator bool() const { return Valid(); }
         bool Owner() const { return owner_; }
