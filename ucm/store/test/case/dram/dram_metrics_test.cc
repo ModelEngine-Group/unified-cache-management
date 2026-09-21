@@ -110,8 +110,8 @@ TEST_F(UCDramMetricsTest, NodeActorRecordsCompletedFailedAndStaleRequest)
     };
     NodeActor actor(
         {
-            {1, "127.0.0.1", 12345, "127.0.0.1:23456"},
-            {4, 8},
+            {1, "127.0.0.1:23456"},
+            {4, 8                },
             1ms
     },
         std::move(dependencies));
@@ -202,8 +202,8 @@ TEST_F(UCDramMetricsTest, ReplySlotNoSpaceExcludesOtherAcquisitionFailures)
         };
         NodeActor actor(
             {
-                {1, "127.0.0.1", 12345, "127.0.0.1:23456"},
-                {4, 8},
+                {1, "127.0.0.1:23456"},
+                {4, 8                },
                 1ms
         },
             std::move(dependencies));
@@ -250,8 +250,8 @@ TEST_F(UCDramMetricsTest, RequestTimeoutsCountOnceAtAdmissionAndWhilePending)
         };
         NodeActor actor(
             {
-                {1, "127.0.0.1", 12345, "127.0.0.1:23456"},
-                {4, 8},
+                {1, "127.0.0.1:23456"},
+                {4, 8                },
                 1ms
         },
             std::move(dependencies));
