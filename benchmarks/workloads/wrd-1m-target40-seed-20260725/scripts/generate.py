@@ -128,13 +128,31 @@ def file_record(path):
     return {"path": str(path.resolve()), "sha256": sha(path), "size_bytes": path.stat().st_size}
 
 
+def portable_metadata(value):
+    if isinstance(value, dict):
+        return {key: portable_metadata(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [portable_metadata(item) for item in value]
+    if isinstance(value, str) and value.startswith(str(ROOT) + "/"):
+        return value[len(str(ROOT)) + 1:]
+    return value
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--active-sessions", type=int, choices=range(1, 101),
+                        help="Use this fixed W instead of selecting the closest CDF to 40%%")
+    parser.add_argument("--portable-paths", action="store_true",
+                        help="Store bundle-contained metadata paths relative to the bundle root")
     args = parser.parse_args()
     out = args.output_dir.resolve()
     if out.exists():
         raise SystemExit(f"Refusing to overwrite {out}")
+
+    def write_metadata(path, value):
+        write_json(path, portable_metadata(value) if args.portable_paths else value)
+
     profiles = read_jsonl(BASE / f"{STEM}.profiles.jsonl")
     baseline = read_jsonl(BASE / f"{STEM}.order.jsonl")
     original_manifest = json.loads((BASE / f"{STEM}.manifest.json").read_text())
@@ -159,6 +177,8 @@ def main():
         assert (row["requests"], row["first_visits"], row["all_finite_count"]) == (3379, 100, 3279)
         results.append(row)
     best = min(results, key=lambda r: (abs(r["difference_from_target_pp"]), r["W"]))
+    if args.active_sessions is not None:
+        best = next(row for row in results if row["W"] == args.active_sessions)
     w = best["W"]
     events = causal_merge(profiles, BuildConfig(active_sessions=w))
     intervals, rows = compute_intervals(events, w)
@@ -185,7 +205,11 @@ def main():
         "baseline": baseline_summary, "selected": best,
         "target_cdf": .4, "target_interval": [.38, .42],
         "within_target": .38 <= best["all_cdf_1000000"] <= .42,
-        "selection": "minimum absolute full-data CDF error; ties use smaller integer W",
+        "selection": (f"explicitly requested fixed W={w}; no CDF optimization"
+                      if args.active_sessions is not None
+                      else "minimum absolute full-data CDF error; ties use smaller integer W"),
+        "selection_mode": "fixed_W" if args.active_sessions is not None else "target_CDF",
+        "target_is_acceptance_requirement": args.active_sessions is None,
         "nonmonotone_adjacent_steps": nonmonotone,
         "neighbors": [r for r in results if abs(r["W"] - w) <= 1],
     }
@@ -223,7 +247,8 @@ def main():
         },
         "generator": {**file_record(ROOT / "vendor/build_swe_rebench_long_context.py"), "entrypoint": "causal_merge(profiles, BuildConfig(active_sessions=W))", "baseline_order_byte_reproduced": True},
     }
-    write_json(paths["manifest"], manifest)
+    manifest["interleaving"]["selection_mode"] = comparison["selection_mode"]
+    write_metadata(paths["manifest"], manifest)
     # The old W32 salt is intentionally unchanged: renaming it would change tokens.
     bundle = {
         "schema_version": 1, "purpose": "Closed-loop C32 replay with WRD-targeted fixed W",
@@ -243,7 +268,8 @@ def main():
         },
         "paths": {k: str(p) for k, p in paths.items()},
     }
-    write_json(dataset / "BUNDLE-IDENTITY.json", bundle)
+    bundle["path_base"] = "bundle root for relative paths; absolute paths otherwise"
+    write_metadata(dataset / "BUNDLE-IDENTITY.json", bundle)
     replay = {
         "runner": str(ROOT / "vendor/benchmark_swe_rebench_closed_loop.py"),
         "order": str(paths["order"]), "manifest": str(paths["manifest"]), "profile": str(paths["profiles"]),
@@ -254,9 +280,10 @@ def main():
         "max_model_len": 200000, "max_output_tokens": 1, "request_timeout": 3600,
         "dependency_policy": "wait_for_depends_on_completion", "send_order": "strict_manifest_order",
     }
-    write_json(dataset / "replay-inputs.json", replay)
-    write_json(out / "generation.json", {
+    write_metadata(dataset / "replay-inputs.json", replay)
+    write_metadata(out / "generation.json", {
         "dataset": str(dataset), "selected_W": w, "baseline_summary": baseline_summary,
+        "selection_mode": comparison["selection_mode"],
         "selected_summary": best, "baseline_exact_order_sha256": EXPECTED_ORDER,
         "baseline_intervals_exact_match": True, "repeat_generation_identical": True,
         "tier_model_generated": False, "http_requests_sent": 0,

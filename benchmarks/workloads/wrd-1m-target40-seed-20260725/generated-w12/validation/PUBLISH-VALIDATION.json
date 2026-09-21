@@ -1,0 +1,14 @@
+{
+  "W17_original_artifacts_unchanged": true,
+  "all_request_token_hashes_equal_W17": true,
+  "client_concurrency": 32,
+  "default_mode_still_generates_W17": true,
+  "fixed_W": 12,
+  "http_requests_sent": 0,
+  "invalid_W_rejected_before_writing": true,
+  "models_started": 0,
+  "portable_replay_parser_passed": true,
+  "source_base_commit": "2a071c621035f9da58c7535adf211f38c5111038",
+  "stats_match_previous_W12_sweep": true,
+  "success": true
+}

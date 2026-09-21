@@ -1,0 +1,17 @@
+{
+  "W": 12,
+  "byte_identical_files": {
+    "analysis/comparison.json": "efa40934c742f3aac4a6e389b1077dfe038eece58543d98bd41824199b946df2",
+    "analysis/search-all-w.csv": "5e7400b87a4d5b053d2adc0f77e0408a1c3a514d3cbc42d0f7149e949bac22a7",
+    "analysis/w12-per-request-wrd.csv": "c2693e6eb829402e06d66ecbb4afe13d70bda47791af032cad7dfd57745294cc",
+    "analysis/w12-per-request-wrd.json": "93e5149f3492148d320820c0aa9e7c7fbe84c714693cc1bf4f137ec859795af8",
+    "analysis/w32-per-request-wrd.csv": "d43d0b5e97c7efcaaa1dfe71e06641a05fbaba31f7d88d5fe584d6bb7cc26fdd",
+    "analysis/w32-per-request-wrd.json": "5593705146635e5943cef3622c3e8011ccbdc2b73a6d93d64780f31f173886d7",
+    "closed-loop-w12-64k128k/causal_w12_noprimer.seed-20260725.intervals.jsonl": "b2fd1e6f281224f4e71dbfed0a60d1d39afa565e084438ef049abee27db3a2c6",
+    "closed-loop-w12-64k128k/causal_w12_noprimer.seed-20260725.order.jsonl": "1d21beb3b6fd9732df1369839a1b8599dbd3b49a42c34e0f2d8781dcd8fb3e73",
+    "closed-loop-w12-64k128k/causal_w12_noprimer.seed-20260725.profiles.jsonl": "653e1c563af4b7cb8a91b21a7a4b04c06b25d38f0a9ec7d47e1ff7b4fde0c996"
+  },
+  "independent_process": true,
+  "seed": 20260725,
+  "success": true
+}

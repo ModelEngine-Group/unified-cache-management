@@ -1,0 +1,57 @@
+{
+  "all_100_candidates_independently_verified": true,
+  "all_request_metadata_unchanged": true,
+  "content_tokenization": {
+    "all_3379_prompts_equal": true,
+    "hash_encoding": "token IDs as little-endian unsigned 32-bit integers",
+    "source_summary": {
+      "body_prompt_tokens": {
+        "count": 3379,
+        "maximum": 121887,
+        "mean": 87225.759988,
+        "minimum": 64015,
+        "p50": 86610.0,
+        "p95": 111131.0,
+        "p99": 116980.18
+      },
+      "prompt_salt_scope": "trajectory",
+      "salted_prompt_tokens": {
+        "count": 3379,
+        "maximum": 121939,
+        "mean": 87278.024268,
+        "minimum": 64067,
+        "p50": 86662.0,
+        "p95": 111185.5,
+        "p99": 117032.3
+      },
+      "tokenizer": "/data/liyuhang/glm51-vllm-ascend-ucm-w17-dataset-sync/benchmarks/workloads/wrd-1m-target40-seed-20260725/inputs/tokenizer",
+      "trajectory_count": 100
+    }
+  },
+  "finite_wrd": 3279,
+  "first_visits": 100,
+  "http_requests_sent": 0,
+  "independent_streaming_wrd_matches_all_intervals": true,
+  "input_originals_unchanged": null,
+  "mock_dispatch": {
+    "client_concurrency": 32,
+    "meaning": "CPU-only dependency/order validation; not a timing or effective-concurrency measurement",
+    "mock_peak_inflight": 1,
+    "requests": 3379
+  },
+  "network_forbidden": true,
+  "only_changed_order_fields": {
+    "active_sessions_at_emit": 3357,
+    "ordinal": 3375,
+    "unactivated_sessions_remaining": 3047,
+    "virtual_ready_time": 3367
+  },
+  "original_replayer_parser_passed": true,
+  "profiles_byte_identical": true,
+  "regeneration_byte_identical": true,
+  "requests": 3379,
+  "selected_W": 12,
+  "session_sequence_dependencies_and_pool_verified": true,
+  "source_snapshots_verified": true,
+  "success": true
+}

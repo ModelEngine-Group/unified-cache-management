@@ -6,3 +6,7 @@ generated/analysis/** -text -diff
 generated/figures/** -text -diff
 generated/closed-loop-w17-64k128k/*.jsonl -text -diff
 generated/validation/prompt-token-hashes.jsonl -text -diff
+generated-w12/analysis/** -text -diff
+generated-w12/figures/** -text -diff
+generated-w12/closed-loop-w12-64k128k/*.jsonl -text -diff
+generated-w12/validation/prompt-token-hashes.jsonl -text -diff

@@ -1,0 +1,59 @@
+Loading all 100 original prompt sources using the unchanged replay tokenizer path
+PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+{
+  "success": true,
+  "requests": 3379,
+  "first_visits": 100,
+  "finite_wrd": 3279,
+  "selected_W": 12,
+  "only_changed_order_fields": {
+    "active_sessions_at_emit": 3357,
+    "ordinal": 3375,
+    "unactivated_sessions_remaining": 3047,
+    "virtual_ready_time": 3367
+  },
+  "input_originals_unchanged": null,
+  "source_snapshots_verified": true,
+  "profiles_byte_identical": true,
+  "all_request_metadata_unchanged": true,
+  "session_sequence_dependencies_and_pool_verified": true,
+  "independent_streaming_wrd_matches_all_intervals": true,
+  "all_100_candidates_independently_verified": true,
+  "regeneration_byte_identical": true,
+  "original_replayer_parser_passed": true,
+  "network_forbidden": true,
+  "http_requests_sent": 0,
+  "mock_dispatch": {
+    "requests": 3379,
+    "client_concurrency": 32,
+    "mock_peak_inflight": 1,
+    "meaning": "CPU-only dependency/order validation; not a timing or effective-concurrency measurement"
+  },
+  "content_tokenization": {
+    "all_3379_prompts_equal": true,
+    "source_summary": {
+      "trajectory_count": 100,
+      "body_prompt_tokens": {
+        "count": 3379,
+        "minimum": 64015,
+        "mean": 87225.759988,
+        "p50": 86610.0,
+        "p95": 111131.0,
+        "p99": 116980.18,
+        "maximum": 121887
+      },
+      "salted_prompt_tokens": {
+        "count": 3379,
+        "minimum": 64067,
+        "mean": 87278.024268,
+        "p50": 86662.0,
+        "p95": 111185.5,
+        "p99": 117032.3,
+        "maximum": 121939
+      },
+      "tokenizer": "/data/liyuhang/glm51-vllm-ascend-ucm-w17-dataset-sync/benchmarks/workloads/wrd-1m-target40-seed-20260725/inputs/tokenizer",
+      "prompt_salt_scope": "trajectory"
+    },
+    "hash_encoding": "token IDs as little-endian unsigned 32-bit integers"
+  }
+}
