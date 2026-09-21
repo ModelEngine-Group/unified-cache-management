@@ -60,6 +60,9 @@ public:
     Status Disconnect(const std::string& remote_engine, int32_t timeout_ms);
     Status TransferSync(const std::string& remote_engine, Opcode opcode,
                         const std::vector<Segment>& segments, int32_t timeout_ms);
+    Status QueueTransferSync(const std::string& remote_engine, Opcode opcode,
+                             const std::vector<Segment>& segments, int32_t timeout_ms,
+                             std::shared_future<Status>& result);
     Status TransferAsync(const std::string& remote_engine, Opcode opcode,
                          const std::vector<Segment>& segments, hixl::TransferReq& request);
     Status GetTransferStatus(hixl::TransferReq request, TransferStatus& status);

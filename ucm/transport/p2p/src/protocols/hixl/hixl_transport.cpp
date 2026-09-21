@@ -23,6 +23,7 @@
  * */
 #include "protocols/hixl/hixl_transport.h"
 #include <arpa/inet.h>
+#include <chrono>
 #include <limits>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -549,13 +550,15 @@ Status HixlTransport::Disconnect(const ManagerID& manager_id)
     return status;
 }
 
-Status HixlTransport::ValidateTransferLocked(const Operation& batch, size_t instance_index) const
+Status HixlTransport::ValidateTransferLocked(const Operation& batch, size_t instance_index,
+                                             bool* uses_host_memory) const
 {
     if (batch.target_manager.empty() || batch.ops.empty() || instance_index >= instances_.size()) {
         UC_ERROR("[Transport][HIXL] invalid transfer: peer={} segments={} instance={} instances={}",
                  batch.target_manager, batch.ops.size(), instance_index, instances_.size());
         return Status::InvalidParam();
     }
+    if (uses_host_memory != nullptr) { *uses_host_memory = false; }
     for (const auto& item : batch.ops) {
         if (item.local_addr == nullptr || item.length == 0 || item.remote_addr == 0) {
             UC_ERROR(
@@ -577,6 +580,10 @@ Status HixlTransport::ValidateTransferLocked(const Operation& batch, size_t inst
                 memory.second->native_handles.find(instance_index) !=
                     memory.second->native_handles.end()) {
                 registered = true;
+                if (uses_host_memory != nullptr &&
+                    memory.second->region.type == MemoryType::Host) {
+                    *uses_host_memory = true;
+                }
                 break;
             }
         }
@@ -670,14 +677,33 @@ Status HixlTransport::ExecuteAsync(const Operation& batch, TransferHandle& handl
         remote_engine = peer_state.instances.front().endpoint.ToString();
     }
 
+    bool uses_host_memory = false;
     {
         std::shared_lock<std::shared_mutex> memory_lock(memories_mutex_);
-        const auto transfer_status = ValidateTransferLocked(batch, local_index);
+        const auto transfer_status =
+            ValidateTransferLocked(batch, local_index, &uses_host_memory);
         if (transfer_status != Status::OK()) {
             UC_ERROR("[Transport][HIXL] asynchronous transfer validation failed: peer={} status={}",
                      batch.target_manager, transfer_status);
             return transfer_status;
         }
+    }
+
+    // Ascend A2 with HIXL 8.5.1 cannot execute Host-memory transfers through
+    // the native async path. Queue the working synchronous API on the instance
+    // worker while preserving the upper-layer async handle and polling lifecycle.
+    if (uses_host_memory) {
+        std::shared_future<Status> queued_sync;
+        const auto status = instances_[local_index]->QueueTransferSync(
+            remote_engine, batch.opcode, batch.ops, transfer_timeout_ms_, queued_sync);
+        if (status != Status::OK()) { return status; }
+
+        std::lock_guard<std::mutex> pending_lock(pending_mutex_);
+        handle = next_transfer_handle_++;
+        if (handle == kInvalidTransferHandle) { handle = next_transfer_handle_++; }
+        pending_transfers_.emplace(
+            handle, PendingTransfer{local_index, nullptr, std::move(queued_sync)});
+        return Status::OK();
     }
 
     hixl::TransferReq request = nullptr;
@@ -693,7 +719,7 @@ Status HixlTransport::ExecuteAsync(const Operation& batch, TransferHandle& handl
         std::lock_guard<std::mutex> pending_lock(pending_mutex_);
         handle = next_transfer_handle_++;
         if (handle == kInvalidTransferHandle) { handle = next_transfer_handle_++; }
-        pending_transfers_.emplace(handle, PendingTransfer{local_index, request});
+        pending_transfers_.emplace(handle, PendingTransfer{local_index, request, {}});
     }
     UC_DEBUG(
         "[Transport][HIXL] asynchronous transfer tracked: peer={} opcode={} segments={} "
@@ -721,6 +747,23 @@ Status HixlTransport::GetStatus(TransferHandle handle, TransferStatus& status)
             return Status::Error();
         }
         pending = it->second;
+    }
+
+    if (pending.queued_sync.valid()) {
+        if (pending.queued_sync.wait_for(std::chrono::seconds(0)) !=
+            std::future_status::ready) {
+            status = TransferStatus::Waiting;
+            return Status::OK();
+        }
+        try {
+            status = pending.queued_sync.get() == Status::OK() ? TransferStatus::Completed
+                                                               : TransferStatus::Failed;
+        } catch (...) {
+            status = TransferStatus::Failed;
+        }
+        std::lock_guard<std::mutex> pending_lock(pending_mutex_);
+        pending_transfers_.erase(handle);
+        return Status::OK();
     }
 
     TransferStatus transfer_status = TransferStatus::Waiting;

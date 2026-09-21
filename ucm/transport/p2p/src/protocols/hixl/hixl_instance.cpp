@@ -45,6 +45,23 @@ std::vector<hixl::TransferOpDesc> BuildTransferOpDesc(const std::vector<Segment>
     return descs;
 }
 
+Status ExecuteTransferSync(hixl::Hixl& engine, const std::string& remote_engine, Opcode opcode,
+                           const std::vector<Segment>& segments, int32_t timeout_ms)
+{
+    const auto descs = BuildTransferOpDesc(segments);
+    const auto operation = opcode == Opcode::Read ? hixl::READ : hixl::WRITE;
+    const auto native_status =
+        engine.TransferSync(remote_engine.c_str(), operation, descs, timeout_ms);
+    if (native_status != hixl::SUCCESS) {
+        UC_ERROR(
+            "[Transport][HIXL] operation failed: TransferSync(\"{}\", ops={}, timeout_ms={}) "
+            "returned {}",
+            remote_engine, descs.size(), timeout_ms, static_cast<int>(native_status));
+        return Status::Error();
+    }
+    return Status::OK();
+}
+
 }  // namespace
 
 HixlInstance::HixlInstance(Endpoint local_endpoint, int32_t device_id)
@@ -265,23 +282,28 @@ Status HixlInstance::TransferSync(const std::string& remote_engine, Opcode opcod
                                   const std::vector<Segment>& segments, int32_t timeout_ms)
 {
     return Run([&](hixl::Hixl& engine) {
-        const auto descs = BuildTransferOpDesc(segments);
-        const auto operation = opcode == Opcode::Read ? hixl::READ : hixl::WRITE;
-        const auto native_status =
-            engine.TransferSync(remote_engine.c_str(), operation, descs, timeout_ms);
-        if (native_status != hixl::SUCCESS) {
-            UC_ERROR(
-                "[Transport][HIXL] operation failed: TransferSync(\"{}\", ops={}, timeout_ms={}) "
-                "returned {}",
-                remote_engine, descs.size(), timeout_ms, static_cast<int>(native_status));
-            return Status::Error();
-        }
-        UC_DEBUG(
-            "[Transport][HIXL] synchronous transfer completed: engine={} remote_engine={} "
-            "opcode={} segments={}",
-            local_endpoint_.ToString(), remote_engine, static_cast<int>(opcode), descs.size());
-        return Status::OK();
+        return ExecuteTransferSync(engine, remote_engine, opcode, segments, timeout_ms);
     });
+}
+
+Status HixlInstance::QueueTransferSync(const std::string& remote_engine, Opcode opcode,
+                                       const std::vector<Segment>& segments, int32_t timeout_ms,
+                                       std::shared_future<Status>& result)
+{
+    result = {};
+    QueuedTask queued(
+        [remote_engine, opcode, segments, timeout_ms](hixl::Hixl& engine) {
+            return ExecuteTransferSync(engine, remote_engine, opcode, segments, timeout_ms);
+        });
+    auto future = queued.get_future().share();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!initialized_ || stopping_) { return Status::Error(); }
+        tasks_.push_back(std::move(queued));
+    }
+    result = std::move(future);
+    cv_.notify_one();
+    return Status::OK();
 }
 
 Status HixlInstance::TransferAsync(const std::string& remote_engine, Opcode opcode,
