@@ -41,7 +41,12 @@ from ucm.integration.vllm.metrics import (
     UCMPromMetrics,
 )
 from ucm.integration.vllm.rank_consistency import RankConsistencyManager
-from ucm.integration.vllm.request_hasher import RequestHasher
+from ucm.integration.vllm.request_hasher import (
+    RequestHasher,
+    encode_block_key,
+    kv_layout_namespace,
+    set_block_key_rank,
+)
 from ucm.logger import init_logger
 from ucm.metrics_config import (
     MULTIPROC_CONSUMER,
@@ -278,7 +283,11 @@ def _scheduler_read_unique_id() -> str:
     )
 
 
-def _worker_publish_block_size(block_size: int, dp_rank: int) -> None:
+def _worker_publish_block_size(
+    block_size: int,
+    dp_rank: int,
+    store_suffix: str = "",
+) -> None:
     if dp_rank != 0 or get_world_group().rank_in_group != 0:
         return
 
@@ -290,7 +299,8 @@ def _worker_publish_block_size(block_size: int, dp_rank: int) -> None:
         except OSError:
             pass
 
-    path = f"/dev/shm/ucm_blocksize_{os.getppid()}"
+    suffix = f"_{store_suffix}" if store_suffix else ""
+    path = f"/dev/shm/ucm_blocksize_{os.getppid()}{suffix}"
     tmp = f"{path}.tmp.{os.getpid()}"
     with open(tmp, "w") as f:
         f.write(str(int(block_size)))
@@ -301,9 +311,10 @@ def _worker_publish_block_size(block_size: int, dp_rank: int) -> None:
     )
 
 
-def _scheduler_read_block_size() -> int | None:
+def _scheduler_read_block_size(store_suffix: str = "") -> int | None:
+    suffix = f"_{store_suffix}" if store_suffix else ""
     for pid in (os.getpid(), os.getppid()):
-        path = f"/dev/shm/ucm_blocksize_{pid}"
+        path = f"/dev/shm/ucm_blocksize_{pid}{suffix}"
         try:
             with open(path) as f:
                 content = f.read().strip()
@@ -314,13 +325,13 @@ def _scheduler_read_block_size() -> int | None:
         except ValueError:
             logger.warning(
                 f"block_size file {path} holds a non-integer value "
-                f"{content!r}, fall back to manual estimate"
+                f"{content!r}; no valid published size available"
             )
             return None
         if block_size <= 0:
             logger.warning(
                 f"block_size file {path} holds a non-positive value "
-                f"{block_size}, fall back to manual estimate"
+                f"{block_size}; no valid published size available"
             )
             return None
         logger.info(
@@ -330,8 +341,8 @@ def _scheduler_read_block_size() -> int | None:
         return block_size
     logger.warning(
         "block_size file not found "
-        f"(looked for /dev/shm/ucm_blocksize_{os.getpid()} and "
-        f"/dev/shm/ucm_blocksize_{os.getppid()}), fall back to manual estimate"
+        f"(store_suffix={store_suffix!r}, pid={os.getpid()}, ppid={os.getppid()}); "
+        "no valid published size available"
     )
     return None
 
@@ -1461,21 +1472,15 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
         self.chunk_size = self.block_size
         self.blocks_per_chunk = self.chunk_size // self.block_size
-        self._other_rank_hashers: list[RequestHasher] = []
 
         defer_scheduler_store = getattr(self, "_defer_scheduler_store", False)
+        self.request_hasher = self._make_request_hasher(vllm_config)
         if role == KVConnectorRole.SCHEDULER:
-            self.request_hasher = RequestHasher(vllm_config, 0)
-            self._other_rank_hashers = self._make_other_rank_hashers(vllm_config)
             self._seed = self.request_hasher.seed
             # init scheduler-side connector
             if not defer_scheduler_store:
                 self.store = self._create_store(None)
         else:
-            self.request_hasher = RequestHasher(
-                vllm_config,
-                self.tp_rank % self.tp_size,
-            )
             self._connector_worker_meta = UCMWorkerMetadata(is_mla=self.is_mla)
 
         self._rank_consistency = RankConsistencyManager(
@@ -1550,11 +1555,21 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def _record_counter(name: str, value: float = 1.0) -> None:
         _record_counter(name, value)
 
-    def _make_other_rank_hashers(self, vllm_config) -> list[RequestHasher]:
-        if self.is_mla:
-            return []
-        tp_size = vllm_config.parallel_config.tensor_parallel_size
-        return [RequestHasher(vllm_config, rank_id) for rank_id in range(1, tp_size)]
+    _rank_scoped_mla_states = False
+
+    def _make_request_hasher(self, vllm_config):
+        if not 1 <= vllm_config.parallel_config.tensor_parallel_size <= 16:
+            raise ValueError("Group/rank keys support TP sizes from 1 to 16.")
+        if len(getattr(self._kv_cache_config, "kv_cache_groups", ())) > 16:
+            raise ValueError("Group/rank keys support at most 16 KV cache groups.")
+        return RequestHasher(
+            vllm_config,
+            0,
+            namespace=kv_layout_namespace(vllm_config, self._kv_cache_config),
+        )
+
+    def _rank_key(self, key: bytes) -> bytes:
+        return set_block_key_rank(key, self.tp_rank % self.tp_size)
 
     def _record_load_error(self, metric_name: str, block_ids: Any) -> None:
         invalid_blocks = set(block_ids)
@@ -1570,9 +1585,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
     def _bind_request_block_hasher(self) -> None:
         if self._role == KVConnectorRole.SCHEDULER:
-            self.request_block_hasher = self.request_hasher.make_request_block_hasher(
+            base_hasher = self.request_hasher.make_request_block_hasher(
                 self.hash_block_size, self._seed
             )
+            self.request_block_hasher = lambda request: [
+                encode_block_key(h) for h in base_hasher(request)
+            ]
 
     def _set_default_shm_buffer_capacity(self, config: dict[str, Any]) -> None:
         if not bool(config.get("share_buffer_enable", False)):
@@ -1747,14 +1765,11 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if not self._other_rank_hashers or not rank0_block_ids:
             return
 
-        other_rank_block_ids = [
-            rank_hasher(block_id)
-            for rank_hasher in self._other_rank_hashers
-            for block_id in rank0_block_ids
-        ]
-
-        if other_rank_block_ids:
-            self.store.prefetch(other_rank_block_ids)
+        if self.is_mla and not self._rank_scoped_mla_states:
+            return
+        for rank in range(1, self.tp_size):
+            keys = [set_block_key_rank(key, rank) for key in rank0_block_ids]
+            self.store.prefetch(keys)
 
     def _prefetch_direct_hit_key_hotness(
         self,
@@ -2133,7 +2148,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             store_block_ids = ucm_block_ids
             if self.tp_rank != 0 and not self.is_mla:
                 store_block_ids = [
-                    self.request_hasher(block_id) for block_id in ucm_block_ids
+                    self._rank_key(block_id) for block_id in ucm_block_ids
                 ]
             if request.load_async and request_id in self._pending_load_tasks:
                 logger.warning(
@@ -2340,7 +2355,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
             store_block_ids = ucm_block_ids
             if self.tp_rank != 0:
                 store_block_ids = [
-                    self.request_hasher(block_id) for block_id in ucm_block_ids
+                    self._rank_key(block_id) for block_id in ucm_block_ids
                 ]
             total_ucm_block_ids.extend(store_block_ids)
             total_vllm_block_ids.extend(vllm_block_ids)
@@ -2682,7 +2697,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             store_block_ids = ucm_block_ids
             if self.tp_rank % self.tp_size != 0 and not self.is_mla:
                 store_block_ids = [
-                    self.request_hasher(block_id) for block_id in ucm_block_ids
+                    self._rank_key(block_id) for block_id in ucm_block_ids
                 ]
             total_ptrs = self.kv_cache_layout.extract_block_addrs(
                 vllm_block_ids, layer_first=True
@@ -2787,7 +2802,7 @@ class UCMLayerWiseConnector(UCMDirectConnector):
             store_block_ids = ucm_block_ids
             if self.tp_rank % self.tp_size != 0:
                 store_block_ids = [
-                    self.request_hasher(block_id) for block_id in ucm_block_ids
+                    self._rank_key(block_id) for block_id in ucm_block_ids
                 ]
             total_ucm_block_ids.extend(store_block_ids)
             total_vllm_block_ids.extend(vllm_block_ids)
@@ -2875,16 +2890,15 @@ class UCMCPConnector(UCMLayerWiseConnector):
         self.tp_rank %= self.tp_size
         self.tp_rank //= self.dcp_world_size
         if not self.is_mla:
-            vllm_config.parallel_config.tensor_parallel_size //= self.dcp_world_size
+            # Match the DCP-normalized tp_rank and number of distinct KV shards.
+            self.tp_size //= self.dcp_world_size
+            vllm_config.parallel_config.tensor_parallel_size = self.tp_size
 
+        self.request_hasher = self._make_request_hasher(vllm_config)
         if role == KVConnectorRole.SCHEDULER:
-            self.request_hasher = RequestHasher(vllm_config, 0)
-            self._other_rank_hashers = self._make_other_rank_hashers(vllm_config)
             self._seed = self.request_hasher.seed
             # init scheduler-side connector
             self.store = self._create_store(None)
-        else:
-            self.request_hasher = RequestHasher(vllm_config, self.tp_rank)
         vllm_config.parallel_config.tensor_parallel_size = old_tp_size
         self.block_size *= self.cp_world_size
         self._bind_request_block_hasher()

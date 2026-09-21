@@ -12,7 +12,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.base import (
 from vllm.v1.core.sched.output import SchedulerOutput
 from vllm.v1.request import Request
 
-from ucm.integration.vllm.request_hasher import RequestHashError
+from ucm.integration.vllm.request_hasher import RequestHashError, encode_block_key
 from ucm.integration.vllm.ucm_connector import (
     RequestDispatchMeta,
     UCMConnectorMetadata,
@@ -167,7 +167,7 @@ class UCMBlendConnector(UCMDirectConnector):
             if end > len(token_ids):
                 break
             parent = self.request_hasher((parent, tuple(token_ids[start:end]), None))
-            hashes.append(parent)
+            hashes.append(encode_block_key(parent))
         return hashes
 
     @staticmethod

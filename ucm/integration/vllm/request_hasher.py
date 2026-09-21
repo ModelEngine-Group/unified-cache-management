@@ -62,7 +62,7 @@ def _generate_extra_keys(
 class RequestHasher:
     """Generate stable, namespaced UCM request and block identifiers."""
 
-    def __init__(self, vllm_config, rank_id):
+    def __init__(self, vllm_config, rank_id, *, namespace=None):
         speculative_config = getattr(vllm_config, "speculative_config", None)
         spec_info = ""
         if speculative_config is not None:
@@ -80,6 +80,8 @@ class RequestHasher:
             f"{vllm_config.model_config.dtype}:{rank_id}{spec_info}{sparse_c8_info}"
         )
         self.meta_bytes = meta.encode("utf-8")
+        if namespace is not None:
+            self.meta_bytes += pickle.dumps(namespace, protocol=4)
         self.seed = self("UCM_HASH_SEED")
 
     def __call__(self, input_data) -> bytes:
@@ -134,4 +136,78 @@ class RequestHasher:
         return hash_request
 
 
-__all__ = ["RequestHashError", "RequestHasher"]
+def encode_block_key(digest: bytes, group_id: int = 0) -> bytes:
+    """Create a rank-0 key: 112 digest bits, reserved=0, group:4, rank:4."""
+    if len(digest) != 16:
+        raise ValueError("A block digest/key must contain exactly 16 bytes.")
+    if not isinstance(group_id, int) or not 0 <= group_id < 16:
+        raise ValueError("group_id must be an integer in [0, 15].")
+    return digest[:14] + bytes((0, group_id << 4))
+
+
+def set_block_key_rank(key: bytes, rank_id: int) -> bytes:
+    """Replace only the rank nibble of an encoded key; preserve all other bits."""
+    if len(key) != 16:
+        raise ValueError("A block key must contain exactly 16 bytes.")
+    if not isinstance(rank_id, int) or not 0 <= rank_id < 16:
+        raise ValueError("rank_id must be an integer in [0, 15].")
+    return key[:15] + bytes(((key[15] & 0xF0) | rank_id,))
+
+
+def kv_layout_namespace(vllm_config, kv_cache_config=None) -> tuple:
+    """Describe serialization, without addresses or allocated block counts.
+
+    Use resolved per-layer specs when available: model dtype alone does not
+    distinguish FP8 KV from BF16 KV, or FP16 scales from FP32 scales.
+    """
+    fields = (
+        "block_size",
+        "storage_block_size",
+        "num_kv_heads",
+        "head_size",
+        "dtype",
+        "scale_dim",
+        "scale_dtype",
+        "compress_ratio",
+        "sliding_window",
+        "shapes",
+        "dtypes",
+        "mamba_cache_mode",
+        "page_size_padded",
+        "cache_sparse_sfa_c8",
+    )
+    groups = []
+    for group in getattr(kv_cache_config, "kv_cache_groups", ()):
+        spec = group.kv_cache_spec
+        nested = getattr(spec, "kv_cache_specs", None)
+        members = []
+        for name in sorted(group.layer_names):
+            member = nested[name] if nested else spec
+            members.append(
+                (
+                    name,
+                    type(member).__name__,
+                    tuple(
+                        (field, str(getattr(member, field)))
+                        for field in fields
+                        if hasattr(member, field)
+                    ),
+                )
+            )
+        groups.append(tuple(members))
+    if groups:
+        return tuple(groups)
+    cache_config = getattr(vllm_config, "cache_config", None)
+    return (
+        "config-fallback",
+        str(getattr(cache_config, "cache_dtype", "auto")),
+        getattr(cache_config, "block_size", None),
+    )
+
+
+__all__ = [
+    "RequestHashError",
+    "RequestHasher",
+    "encode_block_key",
+    "set_block_key_rank",
+]
