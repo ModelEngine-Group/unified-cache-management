@@ -59,6 +59,11 @@ _ASCEND_BACKEND_BY_SOC = {
     "ascend910_9391": "cann-a3",
     "ascend950dt_9582": "cann-a5",
 }
+_SGLANG_CANN_TAG_SOC = {
+    "910b": "ascend910b1",
+    "a3": "ascend910_9391",
+}
+_SGLANG_CANN_TAG = re.compile(r"-cann\d+(?:\.\d+){2}-(910b|a3)$", re.IGNORECASE)
 _UNREPORTED = "unreported"
 
 JsonLoader = Callable[[str], object]
@@ -384,6 +389,9 @@ def _config_facts(
         config, env, accelerator, f"{context}.{accelerator}_version"
     )
     os_id = "openeuler" if "openeuler" in tag.casefold() else "linux"
+    soc_version = env.get("SOC_VERSION", "").strip().casefold()
+    if soc_version == "na":
+        soc_version = ""
     facts = {
         "python_version": python_version or "",
         "os_id": os_id,
@@ -394,9 +402,7 @@ def _config_facts(
         "cann_version": (
             runtime_version if accelerator == "ascend" and runtime_version else ""
         ),
-        "soc_version": (
-            "na" if accelerator == "cuda" else env.get("SOC_VERSION", "").casefold()
-        ),
+        "soc_version": "na" if accelerator == "cuda" else soc_version,
     }
     sources = {"os": "tag:openeuler" if os_id == "openeuler" else "oci"}
     if python_source:
@@ -663,6 +669,25 @@ def _unquote(value: object, context: str) -> str:
     return value.strip().strip("'\"")
 
 
+def _sglang_cann_soc_from_tag(request: Mapping[str, object]) -> str | None:
+    """Infer the canonical Ascend SOC for SGLang CANN tags.
+
+    SGLang publishes the device family in the tag, but its CANN images do not
+    consistently expose ``SOC_VERSION``. GitHub-hosted runners also cannot
+    discover it natively because they have no Ascend device.
+    """
+
+    if request.get("product_id") != "sglang":
+        return None
+    tag = request.get("tag")
+    if not isinstance(tag, str):
+        return None
+    match = _SGLANG_CANN_TAG.search(tag.strip())
+    if match is None:
+        return None
+    return _SGLANG_CANN_TAG_SOC[match.group(1).casefold()]
+
+
 def aggregate_runtime_probes(
     inspection: Mapping[str, object], raw_probes: Sequence[Mapping[str, object]]
 ) -> dict[str, Any]:
@@ -737,9 +762,22 @@ def aggregate_runtime_probes(
             )
             if raw.get("cuda_version") not in (None, ""):
                 raise ValueError(f"{context}: Ascend probe cannot report CUDA")
-            soc_version = _unquote(
-                raw.get("soc_version"), f"{context}.soc_version"
-            ).casefold()
+            raw_soc_version = raw.get("soc_version")
+            inferred_soc_version = _sglang_cann_soc_from_tag(request)
+            if (
+                fallback
+                and inferred_soc_version is not None
+                and (
+                    not isinstance(raw_soc_version, str)
+                    or not raw_soc_version.strip()
+                    or raw_soc_version.strip().casefold() == "na"
+                )
+            ):
+                soc_version = inferred_soc_version
+            else:
+                soc_version = _unquote(
+                    raw_soc_version, f"{context}.soc_version"
+                ).casefold()
             backend_by_soc = _mapping(
                 request.get("backend_by_soc"), f"{context}.backend_by_soc"
             )

@@ -552,6 +552,71 @@ def test_raw_builder_selection_honors_configured_manylinux_policy() -> None:
     assert build["source_image"].endswith("9.0.1-910b-manylinux_2_34-py3.12")
 
 
+def test_ascend_builder_floor_can_vary_by_runtime() -> None:
+    fixture = _fixture()
+    repository = "quay.io/ascend/manylinux"
+    source_members = fixture["source_image_members"]
+    tags = fixture["repositories"][repository]["pages"][0]["tags"]
+    probes = []
+    cases = (
+        ("cann-a2", "ascend910b1", "910b", "amd64", "5"),
+        ("cann-a3", "ascend910_9391", "a3", "arm64", "6"),
+    )
+    for index, (backend, soc, token, architecture, digest_digit) in enumerate(
+        cases, start=1
+    ):
+        tag = f"9.0.0-{token}-manylinux_2_28-py3.11"
+        if tag not in tags:
+            tags.append(tag)
+        reference = f"{repository}:{tag}"
+        source_members.setdefault(reference, {})[architecture] = (
+            "sha256:" + digest_digit * 64
+        )
+        probe = copy.deepcopy(fixture["runtime_probe"]["probes"][index + 1])
+        probe.update(
+            {
+                "product_id": "sglang",
+                "runtime_ref": (
+                    "docker.io/lmsysorg/sglang:v0.5.19-cann9.0.0-" + token
+                ),
+                "backend": backend,
+                "accelerator_runtime": "cann-9.0.0",
+                "soc_version": soc,
+                "python_version": "3.11",
+                "python_abi": "cp311",
+                "cpu_arch": architecture,
+            }
+        )
+        probes.append(probe)
+
+    builds = builders.resolve_probe_builds(
+        _policy(), probes, tag_fixture=fixture
+    )
+
+    assert {
+        (
+            build["backend"],
+            build["cpu_arch"],
+            build["manylinux"],
+            build["source_image"],
+        )
+        for build in builds
+    } == {
+        (
+            "cann-a2",
+            "amd64",
+            "manylinux_2_28",
+            f"{repository}:9.0.0-910b-manylinux_2_28-py3.11",
+        ),
+        (
+            "cann-a3",
+            "arm64",
+            "manylinux_2_28",
+            f"{repository}:9.0.0-a3-manylinux_2_28-py3.11",
+        ),
+    }
+
+
 def test_runtime_glibc_is_not_required_for_wheel_or_builder_planning() -> None:
     fixture = _fixture()
     for probe in fixture["runtime_probe"]["probes"]:

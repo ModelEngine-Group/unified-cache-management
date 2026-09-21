@@ -814,6 +814,25 @@ def _raw_builder_candidates(
     ascend_repositories = _source_repositories(ascend, "Ascend Builder family")
     ascend_manylinux = _require_string(ascend, "manylinux", "Ascend Builder family")
     _manylinux_floor(ascend_manylinux)
+    raw_manylinux_by_runtime = ascend.get("manylinux_by_runtime", {})
+    manylinux_by_runtime = _require_mapping(
+        raw_manylinux_by_runtime, "Ascend Builder family manylinux_by_runtime"
+    )
+    for configured_runtime, configured_manylinux in manylinux_by_runtime.items():
+        if (
+            not isinstance(configured_runtime, str)
+            or re.fullmatch(r"cann-[0-9]+\.[0-9]+\.[0-9]+", configured_runtime)
+            is None
+        ):
+            raise ValueError(
+                "Ascend Builder family manylinux_by_runtime has invalid runtime"
+            )
+        if not isinstance(configured_manylinux, str):
+            raise ValueError(
+                f"Ascend Builder family manylinux_by_runtime[{configured_runtime!r}] "
+                "must be a string"
+            )
+        _manylinux_floor(configured_manylinux)
     seen_ascend: set[tuple[str, str]] = set()
     variant_by_token = {"910b": "a2", "a3": "a3", "950": "a5"}
     for architecture, repository in ascend_repositories.items():
@@ -821,9 +840,12 @@ def _raw_builder_candidates(
             match = _ASCEND_BUILDER_TAG.fullmatch(tag)
             if match is None or match.group("variant") == "310p":
                 continue
-            if match.group("manylinux") != ascend_manylinux:
-                continue
             runtime = f"cann-{match.group('runtime')}"
+            selected_manylinux = str(
+                manylinux_by_runtime.get(runtime, ascend_manylinux)
+            )
+            if match.group("manylinux") != selected_manylinux:
+                continue
             variant = variant_by_token[match.group("variant")]
             python_abi = "cp" + match.group("python").replace(".", "")
             if (

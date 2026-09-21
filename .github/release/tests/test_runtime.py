@@ -313,6 +313,79 @@ def test_sglang_dynamic_product_uses_tag_only_to_schedule_native_fallback() -> N
     ]
 
 
+def test_sglang_cann_na_config_soc_schedules_native_fallback() -> None:
+    reference = "docker.io/lmsysorg/sglang:v0.5.19-cann9.0.0-910b"
+    inspection = runtime.inspect_runtime_references(
+        [reference],
+        products=PRODUCTS,
+        runners=RUNNERS,
+        manifest_loader=lambda _reference: _index("amd64"),
+        config_loader=lambda _reference: _config(
+            "amd64",
+            env=(
+                "PATH=/usr/local/python3.11/bin:/usr/bin",
+                "CANN_VERSION=9.0.0",
+                "SOC_VERSION=na",
+            ),
+        ),
+        digest_loader=lambda _reference: "sha256:" + "9" * 64,
+    )
+
+    fallback = inspection["probe_matrix"]["include"]
+    assert len(fallback) == 1
+    assert fallback[0]["missing_required_fields"] == ["soc_version"]
+    assert fallback[0]["config_facts"]["soc_version"] == ""
+
+
+@pytest.mark.parametrize(
+    ("tag", "native_soc_version", "expected_soc_version", "expected_backend"),
+    [
+        ("v0.5.18-cann9.0.0-910b", "na", "ascend910b1", "cann-a2"),
+        ("v0.5.18-cann9.0.0-a3", "", "ascend910_9391", "cann-a3"),
+    ],
+)
+def test_sglang_cann_tag_fills_missing_native_soc(
+    tag: str,
+    native_soc_version: str,
+    expected_soc_version: str,
+    expected_backend: str,
+) -> None:
+    reference = f"docker.io/lmsysorg/sglang:{tag}"
+    inspection = runtime.inspect_runtime_references(
+        [reference],
+        products=PRODUCTS,
+        runners=RUNNERS,
+        manifest_loader=lambda _reference: _index("amd64"),
+        config_loader=lambda _reference: _config(
+            "amd64",
+            env=(
+                "PATH=/usr/local/python3.11/bin:/usr/bin",
+                "CANN_VERSION=9.0.0",
+            ),
+        ),
+        digest_loader=lambda _reference: "sha256:" + "9" * 64,
+    )
+    assert inspection["probe_matrix"]["include"]
+
+    probe = runtime.aggregate_runtime_probes(
+        inspection,
+        [
+            {
+                "probe_id": "runtime-001-amd64",
+                "python_version": "3.11.11",
+                "os_id": "Ubuntu",
+                "os_version": "24.04",
+                "glibc_version": "2.39",
+                "cann_version": "CANN 9.0.0",
+                "soc_version": native_soc_version,
+            }
+        ],
+    )["probes"][0]
+
+    assert probe["soc_version"] == expected_soc_version
+    assert probe["backend"] == expected_backend
+
+
 def test_missing_crane_fact_schedules_only_that_member_for_fallback() -> None:
     reference = "quay.io/ascend/vllm-ascend:v0.23.0"
     complete = _config(
