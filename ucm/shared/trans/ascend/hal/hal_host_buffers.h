@@ -25,40 +25,39 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <memory>
-#include "ctrl_layout.h"
+#include <vector>
 
 namespace UC::Trans {
-class HalHostBuffers;
-}
 
-namespace UC::Cache2 {
+class HalHostBuffers {
+    struct Mapping;
+    std::vector<Mapping> mappings_;
+    void* base_{nullptr};
+    size_t owner_{};
+    int32_t deviceId_{-1};
+    size_t rankStride_{};
 
-class DataStrategy {
-    size_t slotSize_{};
-    size_t nSlotsPerRank_{};
-#if UCM_RUNTIME_ASCEND_FAMILY
-    std::unique_ptr<Trans::HalHostBuffers> hostBuffers_;
-#endif
-
-    void LocalSetup(int32_t deviceId, size_t dataBytes, size_t nRanks, size_t rank);
-    void CrossRankSetup(CtrlLayout& ctrl, size_t timeoutMs);
+    void LocalSetup(size_t dataBytes, size_t nRanks, int32_t numaNode, uint32_t pgType);
+    void Reset();
 
 public:
-    DataStrategy();
-    ~DataStrategy();
-    DataStrategy(const DataStrategy&) = delete;
-    DataStrategy& operator=(const DataStrategy&) = delete;
+    HalHostBuffers();
+    ~HalHostBuffers();
+    HalHostBuffers(const HalHostBuffers&) = delete;
+    HalHostBuffers& operator=(const HalHostBuffers&) = delete;
 
-    // Throws on failure after releasing resources acquired by this call.
-    // All peer handles share timeoutMs; zero allows one read attempt per peer.
-    void Setup(CtrlLayout& ctrl, int32_t deviceId, size_t slotSize, size_t nSlotsPerRank,
-               size_t rank, size_t timeoutMs);
+    // Allocates the owner's Host slice; leaves peer slices reserved for Device imports.
+    // Throws on failure and releases resources acquired by this call.
+    void Setup(int32_t deviceId, size_t dataBytes, size_t nRanks, size_t rank);
+    uint64_t ExportHandle();
+    void ImportHandle(size_t rank, uint64_t peerHandle);
 
-    // Only locally allocated slots have a CPU/IO-accessible address.
-    void* DataAt(size_t slotIdx);
-    // Only peer slots have a Device mapping; local slots use DataAt with H2D/D2H.
-    void* DeviceDataAt(size_t slotIdx);
+    size_t Owner() const { return owner_; }
+    int32_t DeviceId() const { return deviceId_; }
+    size_t RankCount() const;
+    // Returns only mapped slices of the requested address kind; otherwise nullptr.
+    void* HostData(size_t rank) const;
+    void* DeviceData(size_t rank) const;
 };
 
-}  // namespace UC::Cache2
+}  // namespace UC::Trans
