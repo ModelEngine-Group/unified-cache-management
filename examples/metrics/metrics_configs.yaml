@@ -261,6 +261,34 @@ counter:
   - name: "dramstore_stale_replies_total"
     documentation: "DramStore stale replies"
 
+  # -- DramPool server observability ------------------------------------------
+  - name: "drampool_dump_requests_total"
+    documentation: "Total DUMP requests received and processed by DramPool"
+  - name: "drampool_load_requests_total"
+    documentation: "Total LOAD requests received and processed by DramPool"
+  - name: "drampool_lookup_requests_total"
+    documentation: "Total LOOKUP requests received and processed by DramPool"
+  - name: "drampool_dump_nospace_failures_total"
+    documentation: "DUMP entries whose buffer allocation finally failed with NoSpace after eviction retries (registration failures excluded)"
+  - name: "drampool_dump_failed_entries_total"
+    documentation: "Total DUMP entries that settled with a Failed result (all failure paths merged)"
+  - name: "drampool_load_miss_entries_total"
+    documentation: "LOAD entries that missed stored data (LoadBegin failure or request longer than stored length)"
+  - name: "drampool_lookup_miss_entries_total"
+    documentation: "LOOKUP entries that do not exist or are not READY"
+  - name: "drampool_transfer_failures_total"
+    documentation: "Data transfers that ended in a non-Completed terminal state (DUMP and LOAD merged)"
+  - name: "drampool_response_failures_total"
+    documentation: "Response return-path failures (local submit failures plus write-back transfer failures, DUMP and LOAD merged)"
+  - name: "drampool_submit_failures_total"
+    documentation: "Data transfer submission failures (ExecuteAsync failure or invalid handle)"
+  - name: "drampool_queue_request_full_total"
+    documentation: "requestQueue TryPush failures because the queue was full"
+  - name: "drampool_queue_completion_full_total"
+    documentation: "completionQueue full events that forced SubmitCompletion to spin-wait"
+  - name: "drampool_queue_response_buffer_retry_total"
+    documentation: "Response flag-buffer NoSpace events where SubmitResponse parked the request for retry"
+
   # -- DramPool resource reporter -----------------------------------------
   - name: "drampool_resource_log_read_errors_total"
     documentation: "Number of failures opening, reading, or parsing the DramPool resource log"
@@ -352,6 +380,26 @@ gauge:
     multiprocess_mode: livemostrecent
   - name: "dramstore_transport_fence_queue_capacity"
     documentation: "Aggregate reserved Fence admission capacity"
+    multiprocess_mode: livemostrecent
+
+  # -- DramPool server observability ------------------------------------------
+  - name: "drampool_metadata_entry_count"
+    documentation: "Current number of cached entries (blocks) in the pool, summed over all shards"
+    multiprocess_mode: livemostrecent
+  - name: "drampool_buffer_pool_usage_ratio_<slot_size>"
+    documentation: "Used-slot ratio of the data pool per block size; registered dynamically at startup as drampool_buffer_pool_usage_ratio_<slot_size> for each configured block size"
+    multiprocess_mode: livemostrecent
+  - name: "drampool_flag_pool_usage_ratio"
+    documentation: "Used-slot ratio of the flag response-buffer pool"
+    multiprocess_mode: livemostrecent
+  - name: "drampool_queue_request_size"
+    documentation: "Current number of requests queued in requestQueue"
+    multiprocess_mode: livemostrecent
+  - name: "drampool_queue_completion_size"
+    documentation: "Current number of completion records queued in completionQueue"
+    multiprocess_mode: livemostrecent
+  - name: "drampool_queue_completion_inflight"
+    documentation: "Completion records currently in flight in the Poller pending window"
     multiprocess_mode: livemostrecent
 
 # Histogram metrics configuration
@@ -671,3 +719,44 @@ histogram:
   - name: "dramstore_dump_prerequisite_duration_ms"
     documentation: "DUMP prerequisite event wait before task admission (ms)"
     buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+
+  # -- DramPool server observability ------------------------------------------
+  - name: "drampool_dump_prepare_duration_ms"
+    documentation: "DUMP local preparation duration per batch: StoreBegin per entry, buffer allocation, eviction retries, and transfer submission (ms, successful path only)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  - name: "drampool_load_prepare_duration_ms"
+    documentation: "LOAD local preparation duration per batch: LoadBegin per entry, length validation, and transfer submission (ms, successful path only)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  - name: "drampool_lookup_scan_duration_ms"
+    documentation: "Per-batch LOOKUP metadata scan duration: per-entry existence checks plus result filling (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+  - name: "drampool_dump_transfer_duration_ms"
+    documentation: "DUMP data transfer duration from submission to terminal state, covering network and peer read (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "drampool_load_transfer_duration_ms"
+    documentation: "LOAD data transfer duration from submission to terminal state, covering network and peer read (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "drampool_response_rtt_ms"
+    documentation: "Response round-trip duration from local submission to write-back completion in client memory (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "drampool_metadata_storeend_duration_ms"
+    documentation: "Per-entry StoreEnd settlement duration after DUMP transfer completion (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+  - name: "drampool_metadata_loadend_duration_ms"
+    documentation: "Per-entry LoadEnd reference-release duration (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+  - name: "drampool_metadata_evict_gc_duration_ms"
+    documentation: "Duration of one background GC eviction sweep across all shards (ms)"
+    buckets: [1, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "drampool_queue_request_enqueue_wait_ms"
+    documentation: "Per-request wait from preparation to successful requestQueue TryPush, including full-queue retries (ms)"
+    buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
+  - name: "drampool_dump_batch_total_duration_ms"
+    documentation: "End-to-end DUMP batch duration from TaskWorker dequeue to response submission completion, including transfer terminal-state wait and Poller settlement (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "drampool_load_batch_total_duration_ms"
+    documentation: "End-to-end LOAD batch duration from TaskWorker dequeue to response submission completion, including transfer terminal-state wait and Poller settlement (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "drampool_lookup_batch_total_duration_ms"
+    documentation: "End-to-end LOOKUP batch duration from TaskWorker dequeue to response submission completion, including Poller settlement (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500, 1000]

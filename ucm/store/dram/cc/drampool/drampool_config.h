@@ -66,6 +66,13 @@ struct DramPoolConfig {
     // Zero disables the HTTP health endpoint.
     std::uint16_t healthPort{0};
 
+    // Periodic JSON snapshot export (see MetricsReporter): the writer side of
+    // the DramPool resource snapshot contract, off by default.
+    bool metricsEnabled{false};
+    // Empty falls back to logDir.
+    std::string metricsOutputDir{};
+    std::uint32_t metricsIntervalMs{10000};
+
     // Bounded handoff from RequestReceiveLoop to TaskWorker.
     std::uint32_t requestQueueDepth{65536};
     // Bounded handoff from TaskWorker to CompletionPoller.
