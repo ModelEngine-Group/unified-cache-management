@@ -1,5 +1,7 @@
 # v2 KV 寻址与 UCM block 排布
 
+完整设计见 [UCM Connector v2 详细设计](../../../../../docs/connector-v2-detailed-design.md)，包含 scheduler、hash/窗口规则、worker 生命周期和验证边界。本文件保留布局接口与数值示例。
+
 ## 当前 worker 主路径：二维 Transfer
 
 ```python
