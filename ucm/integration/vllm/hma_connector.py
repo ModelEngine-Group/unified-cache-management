@@ -803,10 +803,10 @@ class UCMFAWAConnector(UCMDirectConnector, SupportsHMA):
             segment_tokens = meta.tail_tokens // meta.tail_blocks
 
             for _ in range(meta.tail_blocks):
-            segment_sizes = layout.segment_tensor_size_list(
-                segment_tokens,
-                meta.token_block_size,
-            )
+                segment_sizes = layout.segment_tensor_size_list(
+                    segment_tokens,
+                    meta.token_block_size,
+                )
                 tensor_size_list.extend(segment_sizes)
         if not tensor_size_list:
             group_label = (
