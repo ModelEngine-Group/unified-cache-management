@@ -191,6 +191,7 @@ jobs:
             -e EXPECTED_EXTERNAL_LIBRARIES="$(jq -c '.external_libraries' input/wheel/wheel-result.json)" \
             -e EXPECTED_RUNTIME_REQUIREMENTS="${runtime_requirements}" \
             -e EXPECTED_UCM_CONFIG_SHA256="${config_sha256}" \
+            -e EXPECTED_PRODUCT="$(jq -r '.runtime.product_id' out/image-task.json)" \
             -v "${PWD}/.github/release/validate_wheel_runtime.py:/tmp/validate_wheel_runtime.py:ro" \
             "${local_tag}" -c '
               set -eu
@@ -219,6 +220,9 @@ jobs:
                 "${ID}" "${VERSION_ID}" "${EXPECTED_OS_ID}" "${EXPECTED_OS_VERSION}"
               python3 -c "import hashlib, os, pathlib; path=pathlib.Path(\"/workspace/ucm_config_example.yaml\"); actual=hashlib.sha256(path.read_bytes()).hexdigest(); assert actual == os.environ[\"EXPECTED_UCM_CONFIG_SHA256\"], actual"
               python3 /tmp/validate_wheel_runtime.py
+              if [ "${EXPECTED_PRODUCT}" = sglang ]; then
+                python3 -c "import sglang; from ucm.integration.sglang.unifiedcache_store import UnifiedCacheStore"
+              fi
             '
       - name: Publish verified Profile members and record digests
         env:

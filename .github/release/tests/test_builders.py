@@ -40,6 +40,9 @@ def _policy(release_type: str = "stable") -> dict[str, object]:
         "vllm": [_selector("0.22.1")],
         "vllm-ascend": [_selector("0.22.1")],
     }
+    resolved["products"] = [
+        product for product in resolved["products"] if product["id"] in selectors
+    ]
     resolved["runtime_selectors"] = copy.deepcopy(selectors)
     for product in resolved["products"]:
         product["runtime_selectors"] = copy.deepcopy(selectors[product["id"]])
@@ -102,6 +105,62 @@ def test_registry_tag_selection_uses_version_ranges_and_all_winner_variants() ->
             "channel": "nightly",
         },
     ]
+
+
+@pytest.mark.parametrize("version", ("0.5.18", "0.5.19", "0.5.20"))
+def test_sglang_selector_keeps_cuda_runtime_and_cann_variants(
+    version: str,
+) -> None:
+    product = {"id": "sglang", "runtime_selectors": [_selector(version)]}
+
+    selected = upstream._select_runtime_tags(  # noqa: SLF001
+        product,
+        [
+            f"v{version}-cu129",
+            f"v{version}-cu130",
+            f"v{version}-cu129-runtime",
+            f"v{version}-cu130-runtime",
+            f"v{version}-cann9.0.0-910b",
+            f"v{version}-cann9.0.0-a3",
+            f"v{version}-cu129-aarch64",
+            "v0.5.21-cu130",
+        ],
+    )
+
+    assert selected == [
+        {"runtime_tag": f"v{version}-cann9.0.0-910b", "version": version, "channel": "stable"},
+        {"runtime_tag": f"v{version}-cann9.0.0-a3", "version": version, "channel": "stable"},
+        {"runtime_tag": f"v{version}-cu129", "version": version, "channel": "stable"},
+        {"runtime_tag": f"v{version}-cu129-runtime", "version": version, "channel": "stable"},
+        {"runtime_tag": f"v{version}-cu130", "version": version, "channel": "stable"},
+        {"runtime_tag": f"v{version}-cu130-runtime", "version": version, "channel": "stable"},
+    ]
+
+
+def test_wheel_build_reuses_one_capability_across_runtime_products() -> None:
+    probe = next(
+        item
+        for item in _fixture()["runtime_probe"]["probes"]
+        if item["product_id"] == "vllm" and item["cpu_arch"] == "amd64"
+    )
+    sglang_probe = copy.deepcopy(probe)
+    sglang_probe.update(
+        {
+            "product_id": "sglang",
+            "runtime_ref": "docker.io/lmsysorg/sglang:v0.5.19-cu129",
+            "repository": "docker.io/lmsysorg/sglang",
+            "tag": "v0.5.19-cu129",
+            "target_repository": "ghcr.io/release-org/sglang",
+        }
+    )
+
+    builds = builders.resolve_probe_builds(
+        _policy(), [probe, sglang_probe], tag_fixture=_fixture()
+    )
+
+    assert len(builds) == 1
+    assert builds[0]["id"] == "cu129-cp312-amd64"
+    assert builds[0]["product_id"] == "shared"
 
 
 def test_explicit_runtime_tag_flows_through_candidate_contract() -> None:

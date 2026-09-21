@@ -122,6 +122,20 @@ def _parsed_runtime_tag(product_id: str, tag: str) -> dict[str, object] | None:
         accelerator_tokens = set(tokens) & {"310p", "a3", "a5"}
         if len(accelerator_tokens) > 1 or tokens.count("openeuler") > 1:
             return None
+    elif product_id == "sglang":
+        is_cuda = all(re.fullmatch(r"cu[0-9]+|runtime", token) for token in tokens)
+        is_cann = (
+            len(tokens) == 2
+            and re.fullmatch(r"cann[0-9]+\.[0-9]+\.[0-9]+", tokens[0]) is not None
+            and tokens[1] in {"910b", "a3"}
+        )
+        if not is_cuda and not is_cann:
+            return None
+        if is_cuda and (
+            sum(token.startswith("cu") for token in tokens) != 1
+            or tokens.count("runtime") > 1
+        ):
+            return None
     else:
         raise ValueError(f"unsupported runtime product {product_id!r}")
     try:
@@ -152,6 +166,8 @@ def _runtime_variant(product_id: str, parsed: Mapping[str, object]) -> str:
             (token for token in ("310p", "a3", "a5") if token in tokens),
             "a2",
         )
+    if product_id == "sglang":
+        return "a3" if "a3" in tokens else "a2" if "910b" in tokens else "default"
     raise ValueError(f"unsupported runtime product {product_id!r}")
 
 

@@ -3,6 +3,7 @@ schema_version: 3
 
 excluded_upstream_variants:
   vllm-ascend: [310p]
+  sglang: []
 
 builder_families:
   cuda:

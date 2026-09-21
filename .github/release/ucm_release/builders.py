@@ -922,7 +922,10 @@ def _build_for_probe(
     required = required_files(family, variant)
     build: dict[str, object] = {
         "id": f"{build_group}-{python_abi}-{architecture}",
-        "product_id": _require_string(probe, "product_id", "runtime probe"),
+        # A UCM Wheel is determined by its native capability, not the Runtime
+        # product consuming it.  Keeping this value product-neutral lets vLLM
+        # and SGLang share an identical CUDA/CANN build task.
+        "product_id": "shared",
         "build_group": build_group,
         "backend": _require_string(probe, "backend", "runtime probe"),
         "accelerator": accelerator,

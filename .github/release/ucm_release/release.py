@@ -762,6 +762,7 @@ def _product_title(runtime_repository: str) -> tuple[int, str]:
     known = {
         "vllm-openai": (0, "vLLM OpenAI"),
         "vllm-ascend": (1, "vLLM-Ascend"),
+        "sglang": (2, "SGLang"),
     }
     return known.get(name, (2, name))
 

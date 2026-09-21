@@ -39,6 +39,9 @@ def _fixture_policy(
         "vllm": [{"raw": "0.22.1", "version": "0.22.1", "tag": None}],
         "vllm-ascend": [{"raw": "0.22.1", "version": "0.22.1", "tag": None}],
     }
+    resolved["products"] = [
+        product for product in resolved["products"] if product["id"] in selectors
+    ]
     resolved["runtime_selectors"] = copy.deepcopy(selectors)
     for product in resolved["products"]:
         product["runtime_selectors"] = copy.deepcopy(selectors[product["id"]])
