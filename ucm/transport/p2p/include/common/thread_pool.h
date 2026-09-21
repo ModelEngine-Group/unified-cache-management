@@ -20,28 +20,35 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
- * */
+ */
+
 #pragma once
 
-#include "acl/acl.h"
-#include "core/transport.h"
+#include <cstddef>
+#include <functional>
+#include <memory>
+#include "status/status.h"
 
 namespace transport {
 
-class WithAclRuntimeContext {
+class ThreadPool final {
 public:
-    explicit WithAclRuntimeContext(aclrtContext context);
-    ~WithAclRuntimeContext();
+    using Task = std::function<void()>;
 
-    WithAclRuntimeContext(const WithAclRuntimeContext&) = delete;
-    WithAclRuntimeContext& operator=(const WithAclRuntimeContext&) = delete;
+    explicit ThreadPool(std::size_t max_threads = 0);
+    ~ThreadPool();
 
-    Status status() const { return status_; }
+    ThreadPool(const ThreadPool&) = delete;
+    ThreadPool& operator=(const ThreadPool&) = delete;
+
+    UC::Status Submit(Task task);
+    void Shutdown();
 
 private:
-    aclrtContext context_ = nullptr;
-    aclrtContext previous_ = nullptr;
-    Status status_ = Status::OK();
+    struct State;
+    static void RunWorker(const std::shared_ptr<State>& state);
+
+    std::shared_ptr<State> state_;
 };
 
 }  // namespace transport

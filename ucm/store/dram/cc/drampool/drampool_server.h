@@ -40,10 +40,6 @@
 #include "status/status.h"
 #include "trans/device.h"
 
-namespace transport {
-class TcpMessageChannel;
-}
-
 namespace UC::DramPool {
 
 class TaskWorker;
@@ -79,13 +75,11 @@ private:
 
     Status StartTransportService();
     Status RegisterBufferPools();
-    Status StartTcpMessageChannel();
     Status StartCompletionPoller();
     Status StartTaskWorker();
     Status StartRequestReceiver();
     Status StartGCThread();
 
-    void StopTcpMessageChannel();
     void StopRequestReceiver();
     void StopTaskWorker();
     void StopCompletionPoller();
@@ -93,7 +87,6 @@ private:
     void StopTransportService();
 
     void RequestReceiveLoop();
-    bool WaitForChannelReady();
     void TaskWorkerLoop();
     void CompletionPollerLoop();
     void GCThreadLoop();
@@ -103,7 +96,6 @@ private:
     std::atomic_bool taskWorkerStop_{true};
     std::atomic_bool completionPollerStop_{true};
     std::atomic_bool gcThreadStop_{true};
-    bool tcpMessageChannelReady_{false};
 
     std::thread requestReceiverThread_;
     std::thread taskWorkerThread_;
@@ -113,7 +105,6 @@ private:
     RequestQueue requestQueue_;
     CompletionQueue completionQueue_;
     std::unique_ptr<transport::TransportManager> transportManager_;
-    std::unique_ptr<transport::TcpMessageChannel> tcpMessageChannel_;
     std::unique_ptr<BufferManager> bufferManager_;
     std::unique_ptr<UC::BufferPool> flagBufferPool_;
     std::unique_ptr<MetadataManager> metadataManager_;
@@ -126,8 +117,6 @@ private:
     bool deviceRuntimeOwned_{false};
 
     ServerState state_{ServerState::New};
-    std::mutex requestReceiverWaitMutex_;
-    std::condition_variable requestReceiverWaitCv_;
     std::mutex stopWaitMutex_;
     std::condition_variable stopWaitCv_;
 };
