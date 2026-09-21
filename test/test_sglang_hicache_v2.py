@@ -97,9 +97,7 @@ def connector(monkeypatch, tmp_path):
         model_name="org/model", is_mla_model=False, tp_rank=1, tp_size=2
     )
     main_store = FakeStore({})
-    value = SglangUcmConnector(
-        main_store, main_pool, storage_config, [str(tmp_path)]
-    )
+    value = SglangUcmConnector(main_store, main_pool, storage_config, [str(tmp_path)])
     value.ucm_store_config = UnifiedCacheStoreConfig(
         module_path="fake.module",
         name="FakePosix",
@@ -123,9 +121,7 @@ def test_v2_rejects_unequal_non_mamba_components(connector):
     value, _ = connector
 
     with pytest.raises(ValueError, match="asymmetric pools are not supported"):
-        value.register_pool_v2(
-            FakeHostPool(2, [64, 96]), sglang_hicache.PoolName.SWA
-        )
+        value.register_pool_v2(FakeHostPool(2, [64, 96]), sglang_hicache.PoolName.SWA)
 
 
 def test_logical_anchor_defers_store_creation_to_v2_pool(monkeypatch, tmp_path):
@@ -183,9 +179,7 @@ def test_store_unwraps_host_pool_group_to_physical_kv_anchor(monkeypatch):
         connector.mem_pool_host = mem_pool_host
         return connector
 
-    monkeypatch.setattr(
-        SglangUcmConnector, "from_hicache", classmethod(from_hicache)
-    )
+    monkeypatch.setattr(SglangUcmConnector, "from_hicache", classmethod(from_hicache))
     value = UnifiedCacheStore(storage_config=SimpleNamespace())
 
     value.register_mem_pool_host(host_pool_group)
@@ -205,18 +199,14 @@ def test_v2_round_trip_groups_component_results_by_logical_page(connector):
         host_indices=torch.tensor([0, 1, 2, 3]),
     )
 
-    assert value.batch_io_v2([transfer], is_set=True) == {
-        pool_name: [True, True]
-    }
+    assert value.batch_io_v2([transfer], is_set=True) == {pool_name: [True, True]}
     assert len(stores[0].dump_calls[0][2]) == 2
     assert len(stores) == 1
     assert stores[0].dump_calls[0][2] == [
         [10_000, 10_100],
         [11_000, 11_100],
     ]
-    assert value.batch_io_v2([transfer], is_set=False) == {
-        pool_name: [True, True]
-    }
+    assert value.batch_io_v2([transfer], is_set=False) == {pool_name: [True, True]}
 
 
 def test_mamba_uses_one_flattened_store_and_restores_pages(connector):
@@ -232,13 +222,9 @@ def test_mamba_uses_one_flattened_store_and_restores_pages(connector):
 
     assert len(stores) == 1
     assert stores[0].config["tensor_size"] == 160
-    assert value.batch_io_v2([transfer], is_set=True) == {
-        pool_name: [True, True]
-    }
+    assert value.batch_io_v2([transfer], is_set=True) == {pool_name: [True, True]}
     assert len(stores[0].dump_calls[0][2]) == 2
-    assert value.batch_io_v2([transfer], is_set=False) == {
-        pool_name: [True, True]
-    }
+    assert value.batch_io_v2([transfer], is_set=False) == {pool_name: [True, True]}
     assert [offset for offset, _ in host_pool.restored_pages] == [0, 2]
 
 

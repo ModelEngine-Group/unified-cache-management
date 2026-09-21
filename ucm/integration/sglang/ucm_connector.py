@@ -100,9 +100,7 @@ class UnifiedCacheStoreConfig:
         else:
             page_size = mem_pool_host.page_size
             page_bytes = page_size * mem_pool_host.get_size_per_token()
-            tensor_size = (
-                page_bytes if storage_config.is_mla_model else page_bytes // 2
-            )
+            tensor_size = page_bytes if storage_config.is_mla_model else page_bytes // 2
             block_size = tensor_size * (1 if storage_config.is_mla_model else 2)
 
         ucm_cfg = kvc.get("ucm_connector_config")
@@ -196,8 +194,10 @@ class SglangUcmConnector:
         """Normalize HostKVCache metadata into one component list per page."""
         if page_count == 0:
             return [], []
-        if len(ptr_list) == page_count and ptr_list and isinstance(
-            ptr_list[0], (list, tuple)
+        if (
+            len(ptr_list) == page_count
+            and ptr_list
+            and isinstance(ptr_list[0], (list, tuple))
         ):
             page_ptrs = [list(values) for values in ptr_list]
             page_sizes = [list(values) for values in size_list]
@@ -208,12 +208,10 @@ class SglangUcmConnector:
                 )
             width = len(ptr_list) // page_count
             page_ptrs = [
-                list(ptr_list[i * width : (i + 1) * width])
-                for i in range(page_count)
+                list(ptr_list[i * width : (i + 1) * width]) for i in range(page_count)
             ]
             page_sizes = [
-                list(size_list[i * width : (i + 1) * width])
-                for i in range(page_count)
+                list(size_list[i * width : (i + 1) * width]) for i in range(page_count)
             ]
         if any(len(p) != len(s) for p, s in zip(page_ptrs, page_sizes)):
             raise ValueError("Host pool returned mismatched pointer and size metadata")
@@ -320,9 +318,7 @@ class SglangUcmConnector:
         results: Dict[str, List[bool]] = {}
         for transfer in transfers:
             if transfer.name in self.flattened_pools:
-                results[transfer.name] = self._batch_io_flattened_pool(
-                    transfer, is_set
-                )
+                results[transfer.name] = self._batch_io_flattened_pool(transfer, is_set)
                 continue
             keys, page_ptrs, _ = self._transfer_meta(transfer)
             page_results = [True] * len(keys)
@@ -370,9 +366,7 @@ class SglangUcmConnector:
                 host_pool.get_data_page(offset, flat=True) for offset in page_offsets
             ]
         else:
-            staging_pages = [
-                host_pool.get_dummy_flat_data_page() for _ in page_offsets
-            ]
+            staging_pages = [host_pool.get_dummy_flat_data_page() for _ in page_offsets]
 
         store, expected_size = self.pool_components[transfer.name][0]
         actual_sizes = [page.numel() * page.element_size() for page in staging_pages]
@@ -427,8 +421,7 @@ class SglangUcmConnector:
             page_exists = [True] * kv_pages
             store, _ = components[0]
             encoded = [
-                self._component_key(key, transfer.name, 0)
-                for key in keys[:kv_pages]
+                self._component_key(key, transfer.name, 0) for key in keys[:kv_pages]
             ]
             page_exists = [bool(value) for value in store.lookup(encoded)]
             pool_restorable = []
