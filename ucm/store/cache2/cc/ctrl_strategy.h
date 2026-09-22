@@ -23,17 +23,176 @@
  * */
 #pragma once
 
+#include <chrono>
+#include <cstddef>
+#include <limits>
+#include <string>
+#include <thread>
 #include "ctrl_layout.h"
+#include "global_config.h"
+#include "ipc/fd_socket.h"
+#include "ipc/mem_fd.h"
 #include "status/status.h"
 
 namespace UC::Cache2 {
 
 class CtrlStrategy {
+    struct Dimensions {
+        size_t rankCount{0};
+        size_t slotsPerRank{0};
+        size_t slotSize{0};
+        size_t bucketCount{0};
+    };
+
+    MemFd ctrlMem_;
+    FdSocket socket_;
+    std::thread acceptThread_;
     CtrlLayout layout_;
+    std::string socketName_;
 
 public:
-    Status Setup() { return Status::Unsupported(); }
+    ~CtrlStrategy()
+    {
+        socket_.Close();
+        if (acceptThread_.joinable()) { acceptThread_.join(); }
+    }
+
+    CtrlStrategy() = default;
+    CtrlStrategy(const CtrlStrategy&) = delete;
+    CtrlStrategy& operator=(const CtrlStrategy&) = delete;
+
+    Status Setup(const Config& cfg)
+    {
+        if (cfg.uniqueId.empty()) { return Status::InvalidParam("cache2 uniqueId is empty"); }
+        socketName_ = "ucm_cache2_" + cfg.uniqueId + "_ctrl";
+        auto s = socket_.Listen(socketName_);
+        if (s.Success()) {
+            auto result = SetupCreator(cfg);
+            if (result.Failure()) { socket_.Close(); }
+            return result;
+        }
+        if (s != Status::DuplicateKey()) { return s; }
+        return SetupJoiner(cfg);
+    }
+
     CtrlLayout& Layout() { return layout_; }
+    const CtrlLayout& Layout() const { return layout_; }
+
+private:
+    static Status ResolveDimensions(const Config& cfg, Dimensions& dims)
+    {
+        /* A5 has one data partition per local worker. The public configuration
+         * describes node-wide capacity; the control layout divides it evenly. */
+        if (cfg.localRankSize == 0 || cfg.localRankSize > kMaxRanks) {
+            return Status::InvalidParam("invalid cache2 local rank size({})",
+                                        cfg.localRankSize);
+        }
+        if (cfg.shardSize == 0) {
+            return Status::InvalidParam("invalid cache2 shard size(0)");
+        }
+        auto slotCount = cfg.bufferCapacity / cfg.shardSize;
+        if (slotCount < cfg.localRankSize) {
+            return Status::InvalidParam(
+                "cache2 buffer capacity({}) is too small for shard size({}) and ranks({})",
+                cfg.bufferCapacity, cfg.shardSize, cfg.localRankSize);
+        }
+        dims.rankCount = cfg.localRankSize;
+        dims.slotsPerRank = slotCount / dims.rankCount;
+        dims.slotSize = cfg.shardSize;
+        slotCount = dims.rankCount * dims.slotsPerRank;
+        dims.bucketCount = CtrlLayout::RecommendBucketCount(slotCount);
+        if (dims.bucketCount == 0 || dims.bucketCount > kMaxBuckets ||
+            (dims.bucketCount & (dims.bucketCount - 1)) != 0) {
+            return Status::InvalidParam("invalid cache2 bucket count({})", dims.bucketCount);
+        }
+        return Status::OK();
+    }
+
+    Status SetupCreator(const Config& cfg)
+    {
+        Dimensions dims;
+        auto s = ResolveDimensions(cfg, dims);
+        if (s.Failure()) { return s; }
+        if (dims.slotsPerRank > std::numeric_limits<size_t>::max() / dims.rankCount) {
+            return Status::InvalidParam("cache2 slot count overflow");
+        }
+        auto slotCount = dims.rankCount * dims.slotsPerRank;
+        auto lockCount = CtrlLayout::LockStripeCount(dims.bucketCount);
+        auto prefixSize = CtrlLayout::SlotMetaOffset(dims.bucketCount, lockCount);
+        if (slotCount >
+            (std::numeric_limits<size_t>::max() - prefixSize) / sizeof(CtrlLayout::SlotMeta)) {
+            return Status::InvalidParam("cache2 control layout too large");
+        }
+        auto totalSize = CtrlLayout::TotalSize(dims.bucketCount, lockCount, slotCount);
+        s = ctrlMem_.Create("ucm_cache2_ctrl", totalSize);
+        if (s.Failure()) { return s; }
+        layout_.Bind(ctrlMem_.Addr(), dims.rankCount, dims.slotsPerRank, dims.bucketCount,
+                     lockCount);
+        layout_.InitHeader(dims.slotSize);
+        layout_.MarkReady();
+        acceptThread_ = std::thread([this] { AcceptLoop(); });
+        return Status::OK();
+    }
+
+    Status SetupJoiner(const Config& cfg)
+    {
+        Dimensions expected;
+        auto s = ResolveDimensions(cfg, expected);
+        if (s.Failure()) { return s; }
+        constexpr auto backoff = std::chrono::milliseconds(10);
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(cfg.timeoutMs);
+        for (;;) {
+            auto s = socket_.Connect(socketName_);
+            if (s.Success()) { break; }
+            if (cfg.timeoutMs > 0 && std::chrono::steady_clock::now() >= deadline) {
+                return Status::Retry();
+            }
+            std::this_thread::sleep_for(backoff);
+        }
+
+        int32_t fd = -1;
+        s = socket_.RecvFd(fd);
+        socket_.Close();
+        if (s.Failure()) { return s; }
+        s = ctrlMem_.Adopt(fd, sizeof(CtrlLayout::Header));
+        if (s.Failure()) { return s; }
+        layout_.Bind(ctrlMem_.Addr(), 0, 0, 0, 0);
+        if (!layout_.WaitReady(cfg.timeoutMs)) { return Status::Retry(); }
+
+        auto* header = layout_.Hdr();
+        auto rankCount = header->rankCount;
+        auto slotsPerRank = header->slotsPerRank;
+        auto bucketCount = header->bucketCount;
+        auto lockCount = header->lockStripeCount;
+        if (rankCount == 0 || rankCount > kMaxRanks || slotsPerRank == 0 ||
+            header->slotSize == 0 || bucketCount == 0 || bucketCount > kMaxBuckets ||
+            (bucketCount & (bucketCount - 1)) != 0 ||
+            lockCount != CtrlLayout::LockStripeCount(bucketCount) ||
+            slotsPerRank > std::numeric_limits<size_t>::max() / rankCount) {
+            return Status::InvalidParam("invalid cache2 control header");
+        }
+        if (expected.rankCount != rankCount || expected.slotsPerRank != slotsPerRank ||
+            expected.slotSize != header->slotSize || expected.bucketCount != bucketCount) {
+            return Status::InvalidParam("cache2 participants disagree on control layout");
+        }
+
+        auto slotCount = rankCount * slotsPerRank;
+        auto prefixSize = CtrlLayout::SlotMetaOffset(bucketCount, lockCount);
+        if (slotCount >
+            (std::numeric_limits<size_t>::max() - prefixSize) / sizeof(CtrlLayout::SlotMeta)) {
+            return Status::InvalidParam("cache2 control layout too large");
+        }
+        s = ctrlMem_.Remap(CtrlLayout::TotalSize(bucketCount, lockCount, slotCount));
+        if (s.Failure()) { return s; }
+        layout_.Bind(ctrlMem_.Addr(), rankCount, slotsPerRank, bucketCount, lockCount);
+        return Status::OK();
+    }
+
+    void AcceptLoop()
+    {
+        while (socket_.AcceptAndSend(ctrlMem_.Fd()).Success()) {}
+        socket_.Close();
+    }
 };
 
 }  // namespace UC::Cache2
