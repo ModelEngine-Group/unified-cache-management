@@ -37,7 +37,7 @@ namespace UC::Cache2 {
 
 class Store : public StoreV1 {
     BufferManager<> bufferMgr_;
-    TransManager transMgr_;
+    TransManager<> transMgr_;
 
 public:
     Status Setup(const Detail::Dictionary& inConfig) override
