@@ -36,8 +36,9 @@ public:
     {
         return Status::Unsupported();
     }
-    void* DataAt(size_t slotIdx) { return nullptr; }
-    void* DeviceDataAt(size_t slotIdx) { return nullptr; }
+    bool HostAccessibleOf(size_t slotIdx) const { return false; }
+    void* DataAt(size_t slotIdx) const { return nullptr; }
+    void* DeviceDataAt(size_t slotIdx) const { return nullptr; }
 };
 
 }  // namespace UC::Cache2
