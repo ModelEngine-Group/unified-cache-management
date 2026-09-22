@@ -22,9 +22,20 @@
  * SOFTWARE.
  * */
 #include "hal_memory.h"
+#include <ascend_hal.h>
 
 namespace UC::Trans::Hal {
 namespace {
+
+drv_mem_prop HostMemoryProp(PageType pageType)
+{
+    drv_mem_prop prop{};
+    prop.side = MEM_HOST_SIDE;
+    prop.devid = 0;
+    prop.pg_type = pageType == PageType::Huge ? MEM_HUGE_PAGE_TYPE : MEM_NORMAL_PAGE_TYPE;
+    prop.mem_type = MEM_DDR_TYPE;
+    return prop;
+}
 
 Status FromHalError(const char* api, drvError_t ret)
 {
@@ -35,17 +46,17 @@ Status FromHalError(const char* api, drvError_t ret)
 
 }  // namespace
 
-Status MemGetAllocationGranularity(const drv_mem_prop* prop, drv_mem_granularity_options option,
-                                   size_t* granularity)
+Status MemGetAllocationGranularity(PageType pageType, size_t* granularity)
 {
-    return FromHalError("halMemGetAllocationGranularity",
-                        halMemGetAllocationGranularity(prop, option, granularity));
+    const drv_mem_prop prop = HostMemoryProp(pageType);
+    return FromHalError(
+        "halMemGetAllocationGranularity",
+        halMemGetAllocationGranularity(&prop, MEM_ALLOC_GRANULARITY_RECOMMENDED, granularity));
 }
 
-Status MemAddressReserve(void** ptr, size_t size, size_t alignment, void* addr, uint64_t flags)
+Status MemAddressReserve(void** ptr, size_t size)
 {
-    return FromHalError("halMemAddressReserve",
-                        halMemAddressReserve(ptr, size, alignment, addr, flags));
+    return FromHalError("halMemAddressReserve", halMemAddressReserve(ptr, size, 0, nullptr, 0));
 }
 
 Status MemAddressFree(void* ptr)
@@ -53,42 +64,52 @@ Status MemAddressFree(void* ptr)
     return FromHalError("halMemAddressFree", halMemAddressFree(ptr));
 }
 
-Status MemCreate(drv_mem_handle_t** handle, size_t size, const drv_mem_prop* prop, uint64_t flags)
+Status MemCreate(MemHandle* handle, size_t size, PageType pageType)
 {
-    return FromHalError("halMemCreate", halMemCreate(handle, size, prop, flags));
+    const drv_mem_prop prop = HostMemoryProp(pageType);
+    drv_mem_handle_t* nativeHandle = nullptr;
+    Status status = FromHalError("halMemCreate", halMemCreate(&nativeHandle, size, &prop, 0));
+    if (status.Success()) { *handle = nativeHandle; }
+    return status;
 }
 
-Status MemRelease(drv_mem_handle_t* handle)
+Status MemRelease(MemHandle handle)
 {
-    return FromHalError("halMemRelease", halMemRelease(handle));
+    return FromHalError("halMemRelease", halMemRelease(static_cast<drv_mem_handle_t*>(handle)));
 }
 
-Status MemMap(void* ptr, size_t size, size_t offset, drv_mem_handle_t* handle, uint64_t flags)
+Status MemMap(void* ptr, size_t size, MemHandle handle)
 {
-    return FromHalError("halMemMap", halMemMap(ptr, size, offset, handle, flags));
+    return FromHalError("halMemMap",
+                        halMemMap(ptr, size, 0, static_cast<drv_mem_handle_t*>(handle), 0));
 }
 
 Status MemUnmap(void* ptr) { return FromHalError("halMemUnmap", halMemUnmap(ptr)); }
 
-Status MemExportToShareableHandle(drv_mem_handle_t* handle, drv_mem_handle_type type,
-                                  uint64_t flags, uint64_t* shareHandle)
+Status MemExportToShareableHandle(MemHandle handle, uint64_t* shareHandle)
 {
     return FromHalError("halMemExportToShareableHandle",
-                        halMemExportToShareableHandle(handle, type, flags, shareHandle));
+                        halMemExportToShareableHandle(static_cast<drv_mem_handle_t*>(handle),
+                                                      MEM_HANDLE_TYPE_NONE, 0, shareHandle));
 }
 
-Status MemShareHandleSetAttribute(uint64_t shareHandle, ShareHandleAttrType type,
-                                  ShareHandleAttr attr)
+Status MemShareHandleDisableWhitelist(uint64_t shareHandle)
 {
-    return FromHalError("halMemShareHandleSetAttribute",
-                        halMemShareHandleSetAttribute(shareHandle, type, attr));
+    ShareHandleAttr attr{};
+    attr.enableFlag = SHR_HANDLE_NO_WLIST_ENABLE;
+    return FromHalError(
+        "halMemShareHandleSetAttribute",
+        halMemShareHandleSetAttribute(shareHandle, SHR_HANDLE_ATTR_NO_WLIST_IN_SERVER, attr));
 }
 
-Status MemImportFromShareableHandle(uint64_t shareHandle, uint32_t deviceId,
-                                    drv_mem_handle_t** handle)
+Status MemImportFromShareableHandle(uint64_t shareHandle, uint32_t deviceId, MemHandle* handle)
 {
-    return FromHalError("halMemImportFromShareableHandle",
-                        halMemImportFromShareableHandle(shareHandle, deviceId, handle));
+    drv_mem_handle_t* nativeHandle = nullptr;
+    Status status =
+        FromHalError("halMemImportFromShareableHandle",
+                     halMemImportFromShareableHandle(shareHandle, deviceId, &nativeHandle));
+    if (status.Success()) { *handle = nativeHandle; }
+    return status;
 }
 
 }  // namespace UC::Trans::Hal

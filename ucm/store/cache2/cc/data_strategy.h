@@ -28,6 +28,9 @@
 #include <vector>
 #include "ctrl_layout.h"
 #include "status/status.h"
+#if UCM_RUNTIME_ASCEND_HAL
+#include "trans/ascend/hal/hal_memory.h"
+#endif
 
 namespace UC::Cache2 {
 
@@ -42,7 +45,7 @@ class DataStrategy {
     int32_t deviceId_{-1};
     size_t rankStride_{};
 
-    Status LocalSetup(size_t dataBytes, size_t nRanks, uint32_t pgType);
+    Status LocalSetup(size_t dataBytes, size_t nRanks, Trans::Hal::PageType pageType);
     Status CrossRankSetup(CtrlLayout& ctrl, size_t timeoutMs);
     void Reset();
 #endif

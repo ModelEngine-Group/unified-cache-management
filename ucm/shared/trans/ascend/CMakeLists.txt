@@ -20,7 +20,7 @@ if(UCM_RUNTIME_ASCEND_HAL)
         HINTS "${ASCEND_DRIVER_ROOT}/lib64/driver" "${ASCEND_DRIVER_ROOT}/lib64"
               "${ASCEND_ROOT}/lib64" "${ASCEND_ROOT}/lib64/stub"
         REQUIRED)
-    target_include_directories(trans SYSTEM PUBLIC ${UCM_TRANS_HAL_INCLUDE_DIR})
+    target_include_directories(trans SYSTEM PRIVATE ${UCM_TRANS_HAL_INCLUDE_DIR})
     target_link_libraries(trans PRIVATE ${UCM_TRANS_HAL_LIBRARY})
 endif()
 

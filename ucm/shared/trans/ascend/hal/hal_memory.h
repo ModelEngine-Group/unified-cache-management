@@ -23,27 +23,30 @@
  * */
 #pragma once
 
-#include <ascend_hal.h>
 #include <cstddef>
 #include <cstdint>
 #include "status/status.h"
 
 namespace UC::Trans::Hal {
 
+using MemHandle = void*;
+
+enum class PageType : uint32_t { Normal, Huge };
+
+// HAL reservations larger than 512 MiB require 1 GiB alignment.
+inline constexpr size_t kAddressAlignment = size_t{1} << 30;
+
 // Each wrapper forwards one HAL call and preserves the driver error code.
-Status MemGetAllocationGranularity(const drv_mem_prop* prop, drv_mem_granularity_options option,
-                                   size_t* granularity);
-Status MemAddressReserve(void** ptr, size_t size, size_t alignment, void* addr, uint64_t flags);
+// Allocations use host DDR; the granularity query returns the recommended size.
+Status MemGetAllocationGranularity(PageType pageType, size_t* granularity);
+Status MemAddressReserve(void** ptr, size_t size);
 Status MemAddressFree(void* ptr);
-Status MemCreate(drv_mem_handle_t** handle, size_t size, const drv_mem_prop* prop, uint64_t flags);
-Status MemRelease(drv_mem_handle_t* handle);
-Status MemMap(void* ptr, size_t size, size_t offset, drv_mem_handle_t* handle, uint64_t flags);
+Status MemCreate(MemHandle* handle, size_t size, PageType pageType);
+Status MemRelease(MemHandle handle);
+Status MemMap(void* ptr, size_t size, MemHandle handle);
 Status MemUnmap(void* ptr);
-Status MemExportToShareableHandle(drv_mem_handle_t* handle, drv_mem_handle_type type,
-                                  uint64_t flags, uint64_t* shareHandle);
-Status MemShareHandleSetAttribute(uint64_t shareHandle, ShareHandleAttrType type,
-                                  ShareHandleAttr attr);
-Status MemImportFromShareableHandle(uint64_t shareHandle, uint32_t deviceId,
-                                    drv_mem_handle_t** handle);
+Status MemExportToShareableHandle(MemHandle handle, uint64_t* shareHandle);
+Status MemShareHandleDisableWhitelist(uint64_t shareHandle);
+Status MemImportFromShareableHandle(uint64_t shareHandle, uint32_t deviceId, MemHandle* handle);
 
 }  // namespace UC::Trans::Hal
