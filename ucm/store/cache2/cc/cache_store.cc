@@ -36,7 +36,7 @@
 namespace UC::Cache2 {
 
 class Store : public StoreV1 {
-    BufferManager bufferMgr_;
+    BufferManager<> bufferMgr_;
     TransManager transMgr_;
 
 public:
