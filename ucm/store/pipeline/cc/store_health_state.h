@@ -76,7 +76,7 @@ private:
         std::atomic<uint64_t> value_{0};
     };
 
-    struct alignas(64) Bucket {
+    struct Bucket {
         AtomicSecondCounter total;
         AtomicSecondCounter failures;
     };
