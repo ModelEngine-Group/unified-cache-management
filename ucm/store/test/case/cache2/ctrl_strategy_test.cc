@@ -25,6 +25,21 @@
 
 namespace UC::Cache2 {
 
+struct CtrlStrategyTestAccess {
+    static const void* HeaderAddress(const CtrlLayout& layout) { return layout.Hdr(); }
+    static size_t RankCount(const CtrlLayout& layout) { return layout.RankCount(); }
+    static size_t SlotsPerRank(const CtrlLayout& layout) { return layout.SlotsPerRank(); }
+    static size_t TotalSize(size_t bucketCount, size_t lockCount, size_t slotCount)
+    {
+        return CtrlLayout::TotalSize(bucketCount, lockCount, slotCount);
+    }
+    static void Bind(CtrlLayout& layout, void* base, size_t rankCount, size_t slotsPerRank,
+                     size_t bucketCount, size_t lockCount)
+    {
+        layout.Bind(base, rankCount, slotsPerRank, bucketCount, lockCount);
+    }
+};
+
 namespace {
 
 struct ProcessState {
@@ -140,9 +155,11 @@ Config MakeControlConfig(const std::string& uniqueId, int rank)
         report.setupOk = setup.Success();
         if (setup.Success()) {
             auto& layout = strategy.Layout();
-            if (!ReadMappingIdentity(layout.Hdr(), report)) { report.setupOk = 0; }
-            report.rankCount = layout.RankCount();
-            report.slotsPerRank = layout.SlotsPerRank();
+            if (!ReadMappingIdentity(CtrlStrategyTestAccess::HeaderAddress(layout), report)) {
+                report.setupOk = 0;
+            }
+            report.rankCount = CtrlStrategyTestAccess::RankCount(layout);
+            report.slotsPerRank = CtrlStrategyTestAccess::SlotsPerRank(layout);
             state->setupCount.fetch_add(1, std::memory_order_acq_rel);
 
             if (WaitFor(state->setupCount, 18)) {
@@ -297,12 +314,12 @@ TEST(Cache2CtrlLayoutProcessTest, BucketStripeLockSerializesAcrossProcesses)
     constexpr size_t kSlotsPerRank{1};
     constexpr size_t kBuckets{8};
     constexpr size_t kLocks{4};
-    auto bytes = CtrlLayout::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank);
+    auto bytes = CtrlStrategyTestAccess::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank);
     auto* memory =
         ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     ASSERT_NE(memory, MAP_FAILED);
     CtrlLayout layout;
-    layout.Bind(memory, kRanks, kSlotsPerRank, kBuckets, kLocks);
+    CtrlStrategyTestAccess::Bind(layout, memory, kRanks, kSlotsPerRank, kBuckets, kLocks);
     layout.InitHeader(4096);
     layout.InitSlotRange(0);
     ASSERT_EQ(layout.LockOf(0), layout.LockOf(4));

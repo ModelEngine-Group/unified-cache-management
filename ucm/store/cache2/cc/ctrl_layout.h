@@ -86,6 +86,13 @@ public:
         }
     };
 
+private:
+    friend class Buffer;
+    friend class CtrlStrategy;
+    friend struct BufferTestAccess;
+    friend struct CtrlLayoutTestAccess;
+    friend struct CtrlStrategyTestAccess;
+
     struct Header {
         std::atomic<uint32_t> magic{0};
         size_t rankCount{0};
@@ -97,7 +104,6 @@ public:
         alignas(64) std::atomic<size_t> clockHands[kMaxRanks];
     };
 
-private:
     void* base_{nullptr};
     size_t rankCount_{0};
     size_t slotsPerRank_{0};
@@ -105,7 +111,6 @@ private:
     size_t lockStripeCount_{0};
     size_t slotCount_{0};
 
-public:
     static size_t AlignUp(size_t value, size_t alignment)
     {
         return (value + alignment - 1) & ~(alignment - 1);
@@ -157,6 +162,7 @@ public:
 
     Header* Hdr() const { return static_cast<Header*>(base_); }
 
+public:
     void InitHeader(size_t slotSize)
     {
         auto* header = ::new (base_) Header();
@@ -244,6 +250,10 @@ public:
                                            SlotMetaOffset(bucketCount_, lockStripeCount_));
     }
 
+    size_t BucketCount() const { return bucketCount_; }
+    size_t SlotCount() const { return slotCount_; }
+
+private:
     std::atomic<size_t>* ClockHand(size_t rank) const
     {
         return rank < rankCount_ ? &Hdr()->clockHands[rank] : nullptr;
@@ -261,11 +271,8 @@ public:
     size_t RankCount() const { return rankCount_; }
     size_t SlotsPerRank() const { return slotsPerRank_; }
     size_t SlotSize() const { return Hdr()->slotSize; }
-    size_t BucketCount() const { return bucketCount_; }
     size_t LockCount() const { return lockStripeCount_; }
-    size_t SlotCount() const { return slotCount_; }
 
-private:
     BucketLock* LockArr() const
     {
         return reinterpret_cast<BucketLock*>(static_cast<std::byte*>(base_) +

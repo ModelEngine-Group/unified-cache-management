@@ -17,6 +17,11 @@
 namespace UC::Cache2 {
 
 struct BufferTestAccess {
+    static size_t TotalSize(size_t bucketCount, size_t lockCount, size_t slotCount)
+    {
+        return CtrlLayout::TotalSize(bucketCount, lockCount, slotCount);
+    }
+
     static void Init(Buffer& buffer, void* memory, size_t rankCount, size_t slotsPerRank,
                      size_t bucketCount, size_t lockCount)
     {
@@ -85,7 +90,7 @@ protected:
     static constexpr size_t kBuckets{128};
     static constexpr size_t kLocks{64};
 
-    size_t bytes_{CtrlLayout::TotalSize(kBuckets, kLocks, kRanks* kSlotsPerRank)};
+    size_t bytes_{BufferTestAccess::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank)};
     void* memory_{::operator new(bytes_, std::align_val_t{64})};
     Buffer buffer_;
 
@@ -192,7 +197,7 @@ TEST(Cache2BufferPartitionTest, ClockEvictsOnlyInsideLocalRankAndHonorsSecondCha
     constexpr size_t kSlotsPerRank{4};
     constexpr size_t kBuckets{16};
     constexpr size_t kLocks{8};
-    auto bytes = CtrlLayout::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank);
+    auto bytes = BufferTestAccess::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank);
     auto* memory = ::operator new(bytes, std::align_val_t{64});
     Buffer buffer;
     BufferTestAccess::Init(buffer, memory, kRanks, kSlotsPerRank, kBuckets, kLocks);
@@ -237,7 +242,7 @@ TEST(Cache2BufferLockTest, CrossStripeMigrationRollsBackAndCanRetry)
     constexpr size_t kSlotsPerRank{1};
     constexpr size_t kBuckets{8};
     constexpr size_t kLocks{4};
-    auto bytes = CtrlLayout::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank);
+    auto bytes = BufferTestAccess::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank);
     auto* memory = ::operator new(bytes, std::align_val_t{64});
     Buffer buffer;
     BufferTestAccess::Init(buffer, memory, kRanks, kSlotsPerRank, kBuckets, kLocks);
@@ -293,7 +298,7 @@ TEST(Cache2BufferOptimisticTest, ReadyHitSucceedsWhileBucketStripeIsLocked)
     constexpr size_t kSlotsPerRank{4};
     constexpr size_t kBuckets{8};
     constexpr size_t kLocks{4};
-    auto bytes = CtrlLayout::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank);
+    auto bytes = BufferTestAccess::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank);
     auto* memory = ::operator new(bytes, std::align_val_t{64});
     Buffer buffer;
     BufferTestAccess::Init(buffer, memory, kRanks, kSlotsPerRank, kBuckets, kLocks);
@@ -328,7 +333,7 @@ TEST(Cache2BufferOptimisticTest, PinnedHitPreventsSlotReconfigurationUntilReleas
     constexpr size_t kSlotsPerRank{1};
     constexpr size_t kBuckets{8};
     constexpr size_t kLocks{4};
-    auto bytes = CtrlLayout::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank);
+    auto bytes = BufferTestAccess::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank);
     auto* memory = ::operator new(bytes, std::align_val_t{64});
     Buffer buffer;
     BufferTestAccess::Init(buffer, memory, kRanks, kSlotsPerRank, kBuckets, kLocks);
