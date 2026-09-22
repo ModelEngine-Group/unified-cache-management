@@ -256,6 +256,7 @@ Status AsuTransportImpl::SubmitTask(const TransportTaskPtr& task)
     }
 
     TaskId taskId = kInvalidTaskId;
+    task->submittedAt = std::chrono::steady_clock::now();
     auto status = taskManager_.Submit(task, taskId);
     if (!status.ok()) { return status; }
 
