@@ -58,10 +58,11 @@ public:
     Status Setup(CtrlLayout& ctrl, int32_t deviceId, size_t slotSize, size_t nSlotsPerRank,
                  size_t rank, size_t timeoutMs = 600 * 1000);
 
+    bool HostAccessibleOf(size_t slotIdx) const;
     // Only locally allocated slots have a CPU/IO-accessible address.
-    void* DataAt(size_t slotIdx);
+    void* DataAt(size_t slotIdx) const;
     // Only peer slots have a Device mapping; local slots use DataAt with H2D/D2H.
-    void* DeviceDataAt(size_t slotIdx);
+    void* DeviceDataAt(size_t slotIdx) const;
 };
 
 }  // namespace UC::Cache2

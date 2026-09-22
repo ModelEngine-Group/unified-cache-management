@@ -295,7 +295,16 @@ Status DataStrategy::CrossRankSetup(CtrlLayout& ctrl, size_t timeoutMs)
 }
 #endif
 
-void* DataStrategy::DataAt(size_t slotIdx)
+bool DataStrategy::HostAccessibleOf(size_t slotIdx) const
+{
+#if UCM_RUNTIME_ASCEND_HAL
+    return nSlotsPerRank_ != 0 && slotIdx / nSlotsPerRank_ == owner_;
+#else
+    return false;
+#endif
+}
+
+void* DataStrategy::DataAt(size_t slotIdx) const
 {
 #if UCM_RUNTIME_ASCEND_HAL
     if (nSlotsPerRank_ == 0) { return nullptr; }
@@ -308,7 +317,7 @@ void* DataStrategy::DataAt(size_t slotIdx)
 #endif
 }
 
-void* DataStrategy::DeviceDataAt(size_t slotIdx)
+void* DataStrategy::DeviceDataAt(size_t slotIdx) const
 {
 #if UCM_RUNTIME_ASCEND_HAL
     if (nSlotsPerRank_ == 0) { return nullptr; }
