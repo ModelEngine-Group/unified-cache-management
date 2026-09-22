@@ -25,10 +25,10 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <stdexcept>
+#include "common/store_health_config.h"
 #include "config_parser.h"
 #include "health_breaker_store.h"
 #include "library_loader.h"
-#include "store_health_config.h"
 #include "ucmstore_v1.h"
 
 namespace py = pybind11;
@@ -94,9 +94,9 @@ class PipelineStore {
         if (s.Success()) { return; }
         ThrowError(s);
     }
-    static StoreHealthConfig ParseHealthConfig(const py::dict& config)
+    static Common::StoreHealthConfig ParseHealthConfig(const py::dict& config)
     {
-        StoreHealthConfig result;
+        Common::StoreHealthConfig result;
         auto readSeconds = [&config](const char* name, auto defaultValue) {
             if (!config.contains(name)) { return defaultValue; }
             auto seconds = py::cast<double>(config[name]);
@@ -158,6 +158,7 @@ public:
         const auto healthConfig = ParseHealthConfig(healthDict);
         Detail::Dictionary config;
         ThrowIfFailed(ConfigParser::Parse(config, storeDict));
+        config.Set("store_health", healthConfig);
         config.Set<StoreV1*>("store_backend", StoreBack());
         StoreLoader loader{path, "Make" + name + "Store"};
         ThrowIfFailed(loader.LoadLibrary());

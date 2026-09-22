@@ -21,7 +21,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-#include "health_check_executor.h"
+#include "common/health_check_executor.h"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -34,14 +34,14 @@ namespace UC::Test {
 
 TEST(UCHealthCheckExecutorTest, ReturnsStoreResult)
 {
-    Detail::HealthCheckExecutor executor{std::chrono::milliseconds(100)};
+    Common::HealthCheckExecutor executor{std::chrono::milliseconds(100)};
 
     EXPECT_EQ(executor.Run([] { return Status::NotFound(); }), Status::NotFound());
 }
 
 TEST(UCHealthCheckExecutorTest, CapsConcurrentTimedOutProbesAt64)
 {
-    Detail::HealthCheckExecutor executor{std::chrono::milliseconds(100)};
+    Common::HealthCheckExecutor executor{std::chrono::milliseconds(100)};
 
     std::mutex mutex;
     std::condition_variable cv;
@@ -102,7 +102,7 @@ TEST(UCHealthCheckExecutorTest, CapsConcurrentTimedOutProbesAt64)
 
 TEST(UCHealthCheckExecutorTest, ZeroTimeoutReturnsImmediately)
 {
-    Detail::HealthCheckExecutor executor{std::chrono::milliseconds(0)};
+    Common::HealthCheckExecutor executor{std::chrono::milliseconds(0)};
 
     const auto start = std::chrono::steady_clock::now();
     EXPECT_EQ(executor.Run([] {

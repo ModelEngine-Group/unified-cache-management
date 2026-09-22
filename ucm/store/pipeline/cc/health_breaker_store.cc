@@ -77,13 +77,13 @@ void HealthBreakerStore::Stop()
 size_t HealthBreakerStore::FailureCount() const
 {
     std::lock_guard<std::mutex> lock(healthMutex_);
-    return failureCount_;
+    return healthWindow_.FailureCount();
 }
 
 size_t HealthBreakerStore::SampleCount() const
 {
     std::lock_guard<std::mutex> lock(healthMutex_);
-    return healthResults_.size();
+    return healthWindow_.SampleCount();
 }
 
 Status HealthBreakerStore::Setup(const Detail::Dictionary&)
@@ -92,7 +92,7 @@ Status HealthBreakerStore::Setup(const Detail::Dictionary&)
 }
 
 Status HealthBreakerStore::Setup(StoreV1* store, std::string storeId,
-                                 const StoreHealthConfig& config)
+                                 const Common::StoreHealthConfig& config)
 {
     if (healthCheck_ || probeThread_.joinable()) {
         return Status::InvalidParam("health breaker store is already set up");
@@ -104,7 +104,8 @@ Status HealthBreakerStore::Setup(StoreV1* store, std::string storeId,
     store_ = store;
     storeId_ = std::move(storeId);
     config_ = config;
-    healthCheck_ = std::make_unique<Detail::HealthCheckExecutor>(config_.healthCheckTimeout);
+    healthWindow_ = Common::HealthWindow(config);
+    healthCheck_ = std::make_unique<Common::HealthCheckExecutor>(config_.healthCheckTimeout);
     return Status::OK();
 }
 
@@ -176,26 +177,14 @@ void HealthBreakerStore::RecordHealth(bool healthy)
     std::string healthWindow;
     {
         std::lock_guard<std::mutex> lock(healthMutex_);
-        if (healthResults_.size() == config_.healthWindowSize) {
-            if (!healthResults_.front()) { --failureCount_; }
-            healthResults_.pop_front();
-        }
-        healthResults_.push_back(healthy);
-        if (!healthy) { ++failureCount_; }
-
         oldEnabled = enabled_.load(std::memory_order_relaxed);
-        newEnabled = oldEnabled;
-        if (oldEnabled && failureCount_ >= config_.failureThreshold) {
-            newEnabled = false;
-        } else if (!oldEnabled && healthResults_.size() == config_.healthWindowSize &&
-                   failureCount_ == 0) {
-            newEnabled = true;
-        }
+        healthWindow_.Record(healthy);
+        newEnabled = healthWindow_.Healthy();
         enabled_.store(newEnabled, std::memory_order_release);
-        failureCount = failureCount_;
-        sampleCount = healthResults_.size();
+        failureCount = healthWindow_.FailureCount();
+        sampleCount = healthWindow_.SampleCount();
         if (oldEnabled != newEnabled) {
-            for (bool result : healthResults_) {
+            for (bool result : healthWindow_.Results()) {
                 if (!healthWindow.empty()) { healthWindow += ", "; }
                 healthWindow += result ? "success" : "failure";
             }

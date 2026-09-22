@@ -40,7 +40,6 @@
 namespace UC::PosixStore {
 
 class IoEngineAio : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
-    static constexpr size_t kWatchdogGraceMs = 2000;
     struct Inflight {
         TaskPtr t;
         WaiterPtr w;
@@ -50,25 +49,24 @@ class IoEngineAio : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> {
     };
     size_t shardSize_;
     size_t nShardPerBlock_;
-    const SpaceLayout* layout_;
     std::mutex regMutex_;
     std::unordered_map<Detail::TaskHandle, Inflight> registry_;
     BlockOperator blockOperator_;
     AioImpl aio_;
 
 public:
-    Status Setup(const Config& config, const SpaceLayout* layout)
+    ~IoEngineAio() { blockOperator_.Stop(); }
+    Status Setup(const Config& config, const SpaceLayout* layout, const std::string& backend)
     {
         timeoutMs_ = config.timeoutMs;
         shardSize_ = config.shardSize;
         nShardPerBlock_ = config.blockSize / config.shardSize;
-        layout_ = layout;
-        blockOperator_.Setup(layout, config.openConcurrency, config.commitConcurrency);
+        blockOperator_.Setup(layout, backend, config.openConcurrency, config.commitConcurrency);
         aio_.SetSweepFn([this] { SweepDeadlines(); });
         UC_INFO(
-            "AIO engine setup: timeoutMs={}, watchdogGraceMs={}, "
+            "AIO engine setup: timeoutMs={}, "
             "openConcurrency={}, commitConcurrency={}.",
-            timeoutMs_, kWatchdogGraceMs, config.openConcurrency, config.commitConcurrency);
+            timeoutMs_, config.openConcurrency, config.commitConcurrency);
         return aio_.Setup(timeoutMs_);
     }
 
@@ -97,10 +95,6 @@ private:
         static UC::Metrics::CachedMetric ioErrors{"posix_io_errors_total"};
         UC::Metrics::UpdateStats(ioErrors, 1.0);
     }
-    void CommitBlock(Detail::BlockId id, bool success)
-    {
-        blockOperator_.Submit(BlockOperator::CommitTask{std::move(id), success});
-    }
     template <bool dump>
     void OnIoCallback(const TaskPtr& task, WaiterPtr w, int32_t fd, bool last,
                       const Detail::BlockId& id, const AioImpl::Result& result)
@@ -111,12 +105,24 @@ private:
             UC_ERROR("Failed(error={}, bytes={}/{}) to do io on block({}).", result.error,
                      result.nBytes, shardSize_, id);
             if (result.error != ECANCELED) { IncrementIoErrorMetric(); }
-            task->Fail(!dump && shortIo ? Status::NotFound() : Status::Error());
-            failureSet_.Insert(tid);
+            const auto status = (!dump && shortIo) || result.error == ENOENT
+                                    ? Status::NotFound()
+                                    : Status::OsApiError(result.error);
+            if (task->SetFirstFail(status)) { failureSet_.Insert(tid); }
         }
         ::close(fd);
         if constexpr (dump) {
-            if (last) { CommitBlock(id, !failureSet_.Contains(tid)); }
+            if (last && task->Result().Success()) {
+                // for last layer, commit the file, and set task done after commit success
+                blockOperator_.Submit(BlockOperator::CommitTask{
+                    id, true, [this, task, w](Status status) {
+                        if (status.Failure() && task->SetFirstFail(status)) {
+                            failureSet_.Insert(task->id);
+                        }
+                        w->Done();
+                    }});
+                return;
+            }
         }
         w->Done();
     }
@@ -127,27 +133,21 @@ private:
         const auto tid = task->id;
         const auto last = shard.index + 1 == nShardPerBlock_;
         const auto& id = shard.owner;
-        auto handleFailure = [this, task, tid, w, last, id](int32_t fd, Status status) {
-            task->Fail(status);
-            failureSet_.Insert(tid);
+        auto handleFailure = [this, task, tid, w](int32_t fd, Status status) {
+            if (task->SetFirstFail(status)) { failureSet_.Insert(tid); }
             if (fd >= 0) { ::close(fd); }
-            if constexpr (dump) {
-                if (last) { CommitBlock(id, false); }
-            }
             w->Done();
         };
         if (result.error != 0) {
             UC_ERROR("Failed({}) to do open on block({}).", result.error, shard.owner);
             if (result.error != ECANCELED) { IncrementOpenErrorMetric(); }
-            auto status = !dump && result.error == ENOENT ? Status::NotFound() : Status::Error();
+            auto status =
+                result.error == ENOENT ? Status::NotFound() : Status::OsApiError(result.error);
             handleFailure(result.fd, status);
             return;
         }
-        if (failureSet_.Contains(tid)) {
+        if (task->Result().Failure()) {
             if (result.fd >= 0) { ::close(result.fd); }
-            if constexpr (dump) {
-                if (last) { CommitBlock(id, false); }
-            }
             w->Done();
             return;
         }
@@ -201,7 +201,7 @@ private:
         const auto isDump = (t->type == TransTask::Type::DUMP);
         UC_DEBUG("Posix task({},{},{},{}) dispatching.", id, brief, num, size);
         const auto wait = NowTime::Now() - tp;
-        w->SetEpilog([this, id, brief = std::move(brief), num, size, tp, isDump] {
+        w->SetEpilog([this, t, id, brief = std::move(brief), num, size, tp, isDump] {
             auto cost = NowTime::Now() - tp;
             auto costMs = cost * 1e3;
             auto bwGbps = cost > 0 ? static_cast<double>(size) / cost / 1e9 : 0.0;
@@ -216,19 +216,25 @@ private:
             UC::Metrics::UpdateStats(isDump ? dumpDuration : loadDuration, costMs);
             UC::Metrics::UpdateStats(isDump ? dumpBandwidth : loadBandwidth, bwGbps);
             UC::Metrics::UpdateStats(isDump ? dumpBytes : loadBytes, static_cast<double>(size));
-            std::lock_guard<std::mutex> lk(regMutex_);
-            registry_.erase(id);
+            {
+                std::lock_guard<std::mutex> lk(regMutex_);
+                registry_.erase(id);
+            }
+            if (t->onComplete) {
+                auto onComplete = std::move(t->onComplete);
+                // The latch is complete, so Wait only reclaims the task and its status.
+                onComplete(Wait(id));
+            }
         });
         {
             std::lock_guard<std::mutex> lk(regMutex_);
-            auto deadline = timeoutMs_ > 0
-                                ? NowTime::Now() + (timeoutMs_ + kWatchdogGraceMs) / 1000.0
-                                : std::numeric_limits<double>::max();
+            auto deadline = timeoutMs_ > 0 ? NowTime::Now() + timeoutMs_ / 1000.0
+                                           : std::numeric_limits<double>::max();
             registry_[id] = Inflight{t, w, deadline, num, false};
         }
         if (timeoutMs_ > 0) {
             UC_DEBUG("AIO task({}) registered: type={}, shardCount={}, deadlineMs={}.", id,
-                     isDump ? "dump" : "load", num, timeoutMs_ + kWatchdogGraceMs);
+                     isDump ? "dump" : "load", num, timeoutMs_);
         } else {
             UC_DEBUG("AIO task({}) registered: type={}, shardCount={}, deadline=disabled.", id,
                      isDump ? "dump" : "load", num);
@@ -250,6 +256,7 @@ private:
             for (auto& [id, inf] : registry_) {
                 if (!inf.aborted && now >= inf.deadlineTp) {
                     inf.aborted = true;
+                    inf.t->SetFirstFail(Status::Timeout());
                     due.emplace_back(id, inf.w, inf.shardCount);
                 }
             }
@@ -278,6 +285,7 @@ private:
         }
         UC_ERROR("AIO task({}) cancelled on wait timeout; force-draining latch.", t->id);
         IncrementAioTimeoutMetric();
+        t->SetFirstFail(Status::Timeout());
         ForceComplete(t->id, w);
     }
     void ForceComplete(Detail::TaskHandle id, const WaiterPtr& w)

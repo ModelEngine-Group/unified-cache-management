@@ -43,16 +43,16 @@ Status Touch(const std::string& path, time_t& stamp, bool create)
 {
     if (utime(path.c_str(), nullptr) != 0) {
         auto eno = errno;
-        if (eno != ENOENT) { return Status::OsApiError(std::to_string(eno)); }
+        if (eno != ENOENT) { return Status::OsApiError(eno); }
         if (!create) { return Status::NotFound(); }
         PosixFile file{path};
         auto s = file.Open(PosixFile::OpenFlag::CREATE | PosixFile::OpenFlag::WRITE_ONLY);
         if (s.Failure()) { return s; }
         file.Close();
-        if (utime(path.c_str(), nullptr) != 0) { return Status::OsApiError(std::to_string(errno)); }
+        if (utime(path.c_str(), nullptr) != 0) { return Status::OsApiError(errno); }
     }
     struct stat st{};
-    if (stat(path.c_str(), &st) != 0) { return Status::OsApiError(std::to_string(errno)); }
+    if (stat(path.c_str(), &st) != 0) { return Status::OsApiError(errno); }
     stamp = st.st_mtime;
     return Status::OK();
 }
@@ -120,10 +120,10 @@ Expected<std::vector<GcMemberInfo>> ScanMembers(const std::string& dir, const st
 
 GcHeartbeat::~GcHeartbeat() { Stop(); }
 
-void GcHeartbeat::Setup(std::string path, std::string threadName, size_t intervalSec,
-                        OnMissing onMissing)
+void GcHeartbeat::Setup(std::function<Expected<std::string>()> selectPath, std::string threadName,
+                        size_t intervalSec, OnMissing onMissing)
 {
-    path_ = std::move(path);
+    selectPath_ = std::move(selectPath);
     threadName_ = std::move(threadName);
     intervalSec_ = intervalSec == 0 ? 1 : intervalSec;
     onMissing_ = onMissing;
@@ -138,7 +138,7 @@ Status GcHeartbeat::Start()
     try {
         worker_ = std::thread(&GcHeartbeat::Loop, this);
     } catch (const std::exception& e) {
-        UC_ERROR("Failed({}) to start GC heartbeat thread for {}.", e.what(), path_);
+        UC_ERROR("Failed({}) to start GC heartbeat thread for {}.", e.what(), threadName_);
         return Status::OutOfMemory();
     }
     return Status::OK();
@@ -170,15 +170,20 @@ void GcHeartbeat::Loop()
     const bool create = onMissing_ == OnMissing::Recreate;
     while (!cv_.wait_for(lock, interval, [this] { return stop_; })) {
         lock.unlock();
+        auto selected = selectPath_();
+        if (!selected) {
+            lock.lock();
+            continue;
+        }
+        const auto& path = selected.Value();
         time_t ignored = 0;
-        auto s = GcClock::Touch(path_, ignored, create);
+        auto s = GcClock::Touch(path, ignored, create);
         if (s == Status::NotFound() && !create) {
-            UC_WARN("GC heartbeat({}) is gone; the lock was taken over. Stopping heartbeat.",
-                    path_);
+            UC_WARN("GC heartbeat({}) is gone; the lock was taken over. Stopping heartbeat.", path);
             lock.lock();
             break;
         }
-        if (s.Failure()) { UC_WARN("Failed({}) to refresh GC heartbeat({}).", s, path_); }
+        if (s.Failure()) { UC_WARN("Failed({}) to refresh GC heartbeat({}).", s, path); }
         lock.lock();
     }
 }

@@ -53,6 +53,7 @@ class Status {
     static constexpr int32_t ETIMEOUT_ = __MakeStatusCode<10>();
     static constexpr int32_t ESTOREUNHEALTHY_ = __MakeStatusCode<11>();
     int32_t code_;
+    int32_t systemError_{0};
     std::string message_;
     explicit Status(int32_t code) : code_(code) {}
 
@@ -60,17 +61,23 @@ public:
     bool operator==(const Status& other) const noexcept { return code_ == other.code_; }
     bool operator!=(const Status& other) const noexcept { return !(*this == other); }
     int32_t Underlying() const { return code_; }
+    int32_t SystemError() const { return systemError_; }
     std::string ToString() const
     {
         auto str = std::to_string(code_);
-        if (message_.empty()) { return str; }
+        if (message_.empty()) {
+            return systemError_ == 0 ? str : fmt::format("{}, errno={}", str, systemError_);
+        }
         return fmt::format("{}, {}", str, message_);
     }
     constexpr bool Success() const noexcept { return code_ == OK_; }
     constexpr bool Failure() const noexcept { return !Success(); }
 
 public:
-    Status(int32_t code, std::string message) : code_{code}, message_{std::move(message)} {}
+    Status(int32_t code, std::string message, int32_t systemError = 0)
+        : code_{code}, systemError_{systemError}, message_{std::move(message)}
+    {
+    }
     static Status OK() { return Status{OK_}; }
     static Status Error(std::string message) { return {ERROR_, std::move(message)}; }
     static Status Error() { return Status{ERROR_}; }
@@ -84,6 +91,10 @@ public:
     static Status OutOfMemory() { return Status{EOOM_}; }
     static Status OsApiError() { return Status{EOSERROR_}; }
     static Status OsApiError(std::string message) { return Status{EOSERROR_, std::move(message)}; }
+    static Status OsApiError(int32_t error, std::string message = {})
+    {
+        return Status{EOSERROR_, std::move(message), error};
+    }
     static Status DuplicateKey() { return Status{EDUPLICATE_}; }
     static Status Retry() { return Status{ERETRY_}; }
     static Status NotFound() { return Status{ENOOBJ_}; }
