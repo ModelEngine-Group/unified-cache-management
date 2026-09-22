@@ -24,7 +24,6 @@
 #pragma once
 
 #include <atomic>
-#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <limits>
@@ -53,7 +52,6 @@ class Buffer {
     size_t slotSize_{0};
     size_t bucketCount_{0};
     size_t reservedSlots_{0};
-    size_t timeoutMs_{30000};
 
     static constexpr size_t kPinSpinFast{64};
 
@@ -144,7 +142,6 @@ public:
                 "cache2 load exclusive buffer number({}) must be divisible by ranks({})",
                 cfg.loadExclusiveBufferNumber, cfg.localRankSize);
         }
-        timeoutMs_ = cfg.timeoutMs;
         auto s = ctrl_.Setup(cfg);
         if (s.Failure()) { return s; }
         auto& layout = ctrl_.Layout();
@@ -174,13 +171,11 @@ public:
         auto attempts = usable > std::numeric_limits<size_t>::max() / 2
                             ? std::numeric_limits<size_t>::max()
                             : 2 * usable;
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs_);
-        do {
+        for (;;) {
             auto handle = TryGet(blockId, offset, allowReserved, attempts);
             if (handle) { return handle; }
             std::this_thread::yield();
-        } while (timeoutMs_ == 0 || std::chrono::steady_clock::now() < deadline);
-        return Handle{};
+        }
     }
 
     void Prealloc(const Detail::BlockId& blockId, size_t offset, bool allowReserved = false)

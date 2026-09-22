@@ -30,7 +30,6 @@ struct BufferTestAccess {
         buffer.slotSize_ = 4096;
         buffer.bucketCount_ = bucketCount;
         buffer.reservedSlots_ = 0;
-        buffer.timeoutMs_ = 1000;
     }
 
     static size_t ReferenceCount(Buffer& buffer, const Detail::BlockId& blockId, size_t offset)
