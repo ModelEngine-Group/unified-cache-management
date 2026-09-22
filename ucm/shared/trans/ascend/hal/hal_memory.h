@@ -23,41 +23,27 @@
  * */
 #pragma once
 
+#include <ascend_hal.h>
 #include <cstddef>
 #include <cstdint>
-#include <vector>
+#include "status/status.h"
 
-namespace UC::Trans {
+namespace UC::Trans::Hal {
 
-class HalHostBuffers {
-    struct Mapping;
-    std::vector<Mapping> mappings_;
-    void* base_{nullptr};
-    size_t owner_{};
-    int32_t deviceId_{-1};
-    size_t rankStride_{};
+// Each wrapper forwards one HAL call and preserves the driver error code.
+Status MemGetAllocationGranularity(const drv_mem_prop* prop, drv_mem_granularity_options option,
+                                   size_t* granularity);
+Status MemAddressReserve(void** ptr, size_t size, size_t alignment, void* addr, uint64_t flags);
+Status MemAddressFree(void* ptr);
+Status MemCreate(drv_mem_handle_t** handle, size_t size, const drv_mem_prop* prop, uint64_t flags);
+Status MemRelease(drv_mem_handle_t* handle);
+Status MemMap(void* ptr, size_t size, size_t offset, drv_mem_handle_t* handle, uint64_t flags);
+Status MemUnmap(void* ptr);
+Status MemExportToShareableHandle(drv_mem_handle_t* handle, drv_mem_handle_type type,
+                                  uint64_t flags, uint64_t* shareHandle);
+Status MemShareHandleSetAttribute(uint64_t shareHandle, ShareHandleAttrType type,
+                                  ShareHandleAttr attr);
+Status MemImportFromShareableHandle(uint64_t shareHandle, uint32_t deviceId,
+                                    drv_mem_handle_t** handle);
 
-    void LocalSetup(size_t dataBytes, size_t nRanks, uint32_t pgType);
-    void Reset();
-
-public:
-    HalHostBuffers();
-    ~HalHostBuffers();
-    HalHostBuffers(const HalHostBuffers&) = delete;
-    HalHostBuffers& operator=(const HalHostBuffers&) = delete;
-
-    // Allocates the owner's Host slice; leaves peer slices reserved for Device imports.
-    // Throws on failure and releases resources acquired by this call.
-    void Setup(int32_t deviceId, size_t dataBytes, size_t nRanks, size_t rank);
-    uint64_t ExportHandle();
-    void ImportHandle(size_t rank, uint64_t peerHandle);
-
-    size_t Owner() const { return owner_; }
-    int32_t DeviceId() const { return deviceId_; }
-    size_t RankCount() const;
-    // Returns only mapped slices of the requested address kind; otherwise nullptr.
-    void* HostData(size_t rank) const;
-    void* DeviceData(size_t rank) const;
-};
-
-}  // namespace UC::Trans
+}  // namespace UC::Trans::Hal

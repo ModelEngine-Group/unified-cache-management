@@ -25,12 +25,9 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <memory>
+#include <vector>
 #include "ctrl_layout.h"
-
-namespace UC::Trans {
-class HalHostBuffers;
-}
+#include "status/status.h"
 
 namespace UC::Cache2 {
 
@@ -38,11 +35,17 @@ class DataStrategy {
     size_t slotSize_{};
     size_t nSlotsPerRank_{};
 #if UCM_RUNTIME_ASCEND_HAL
-    std::unique_ptr<Trans::HalHostBuffers> hostBuffers_;
-#endif
+    struct Mapping;
+    std::vector<Mapping> mappings_;
+    void* base_{nullptr};
+    size_t owner_{};
+    int32_t deviceId_{-1};
+    size_t rankStride_{};
 
-    void LocalSetup(int32_t deviceId, size_t dataBytes, size_t nRanks, size_t rank);
-    void CrossRankSetup(CtrlLayout& ctrl, size_t timeoutMs);
+    Status LocalSetup(size_t dataBytes, size_t nRanks, uint32_t pgType);
+    Status CrossRankSetup(CtrlLayout& ctrl, size_t timeoutMs);
+    void Reset();
+#endif
 
 public:
     DataStrategy();
@@ -50,10 +53,10 @@ public:
     DataStrategy(const DataStrategy&) = delete;
     DataStrategy& operator=(const DataStrategy&) = delete;
 
-    // Throws on failure after releasing resources acquired by this call.
+    // Returns a failure status after releasing resources acquired by this call.
     // All peer handles share timeoutMs; zero allows one read attempt per peer.
-    void Setup(CtrlLayout& ctrl, int32_t deviceId, size_t slotSize, size_t nSlotsPerRank,
-               size_t rank, size_t timeoutMs = 1800 * 1000);
+    Status Setup(CtrlLayout& ctrl, int32_t deviceId, size_t slotSize, size_t nSlotsPerRank,
+                 size_t rank, size_t timeoutMs = 600 * 1000);
 
     // Only locally allocated slots have a CPU/IO-accessible address.
     void* DataAt(size_t slotIdx);
