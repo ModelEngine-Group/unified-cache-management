@@ -82,10 +82,9 @@ void RecordClientTaskCompletion(ClientTask& task)
         task.enqueuedAt == std::chrono::steady_clock::time_point{}) {
         return;
     }
-    const metrics::MetricUpdate update{
+    metrics::UpdateStats(
         KV_METRIC("kv_client_task_e2e_duration_seconds"),
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - task.submittedAt).count()};
-    metrics::UpdateStats(&update, 1);
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - task.submittedAt).count());
 }
 
 }  // namespace
@@ -146,12 +145,10 @@ Status ClientTaskManager::Process(const ClientTaskPtr& task)
     }
     const auto dispatchStatus = DispatchTask(task);
     if (dispatchStatus.ok()) {
-        const metrics::MetricUpdate update{
-            KV_METRIC("kv_client_task_process_duration_seconds"),
-            std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                          task->processingStartedAt)
-                .count()};
-        metrics::UpdateStats(&update, 1);
+        metrics::UpdateStats(KV_METRIC("kv_client_task_process_duration_seconds"),
+                             std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                                           task->processingStartedAt)
+                                 .count());
     }
     return dispatchStatus;
 }
@@ -334,12 +331,10 @@ Status ClientTaskManager::DispatchTask(const ClientTaskPtr& task)
             auto task = clientTask.lock();
             if (!task) { return; }
             if (task->remainingTransportSendTasks.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                const metrics::MetricUpdate update{
-                    KV_METRIC("kv_client_task_send_duration_seconds"),
-                    std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                                  task->submittedAt)
-                        .count()};
-                metrics::UpdateStats(&update, 1);
+                metrics::UpdateStats(KV_METRIC("kv_client_task_send_duration_seconds"),
+                                     std::chrono::duration<double>(
+                                         std::chrono::steady_clock::now() - task->submittedAt)
+                                         .count());
             }
         };
         transportTask->opType = task->opType;

@@ -485,10 +485,8 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<KVBuffer>& 
         }
     }
     workerCv_.notify_one();
-    const metrics::MetricUpdate enqueueUpdate{
-        KV_METRIC("kv_client_task_enqueue_duration_seconds"),
-        std::chrono::duration<double>(enqueuedAt - taskStart).count()};
-    metrics::UpdateStats(&enqueueUpdate, 1);
+    metrics::UpdateStats(KV_METRIC("kv_client_task_enqueue_duration_seconds"),
+                         std::chrono::duration<double>(enqueuedAt - taskStart).count());
     return Status::OK();
 }
 
@@ -542,10 +540,8 @@ Status KvClientImpl::SubmitAsync(AsuOpType opType, const std::vector<CacheKey>& 
         }
     }
     workerCv_.notify_one();
-    const metrics::MetricUpdate enqueueUpdate{
-        KV_METRIC("kv_client_task_enqueue_duration_seconds"),
-        std::chrono::duration<double>(enqueuedAt - taskStart).count()};
-    metrics::UpdateStats(&enqueueUpdate, 1);
+    metrics::UpdateStats(KV_METRIC("kv_client_task_enqueue_duration_seconds"),
+                         std::chrono::duration<double>(enqueuedAt - taskStart).count());
     return Status::OK();
 }
 
@@ -556,10 +552,9 @@ void KvClientImpl::WorkerLoop()
     const auto deviceStatus = deviceId >= 0 ? device.Setup(deviceId) : Status::OK();
     auto processTask = [this, &deviceStatus](ClientTaskPtr ctx) {
         ctx->processingStartedAt = std::chrono::steady_clock::now();
-        const metrics::MetricUpdate queueUpdate{
+        metrics::UpdateStats(
             KV_METRIC("kv_client_task_queue_duration_seconds"),
-            std::chrono::duration<double>(ctx->processingStartedAt - ctx->enqueuedAt).count()};
-        metrics::UpdateStats(&queueUpdate, 1);
+            std::chrono::duration<double>(ctx->processingStartedAt - ctx->enqueuedAt).count());
         auto status = deviceStatus;
         if (status.ok() && ctx->prerequisiteEventHandle != 0) {
             status = runtime::SynchronizeEvent(ctx->prerequisiteEventHandle);

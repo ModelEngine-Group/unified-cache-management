@@ -289,9 +289,7 @@ Status TransportTaskExecutor::AssignSubBatchConnections(
     for (auto& subBatchContext : subBatchContexts) {
         auto channel = connManager_->SelectConnection();
         if (!channel) {
-            const metrics::MetricUpdate update{
-                KV_METRIC("kv_transport_task_connection_errors_total"), 1.0};
-            metrics::UpdateStats(&update, 1);
+            metrics::UpdateStats(KV_METRIC("kv_transport_task_connection_errors_total"), 1.0);
             const auto subBatchStatus =
                 Status::Error(StatusCode::CONNECTION_ERROR, "no available connection channel");
             std::fill(subBatchContext.entryStatus.begin(), subBatchContext.entryStatus.end(),
@@ -391,9 +389,7 @@ bool TransportTaskExecutor::Poll(const TransportTaskPtr& task)
         if (task->subBatchContexts->empty()) { return false; }
 
         if (std::chrono::steady_clock::now() >= task->deadline) {
-            const metrics::MetricUpdate update{
-                KV_METRIC("kv_transport_task_completion_timeouts_total"), 1.0};
-            metrics::UpdateStats(&update, 1);
+            metrics::UpdateStats(KV_METRIC("kv_transport_task_completion_timeouts_total"), 1.0);
             const auto timeoutStatus =
                 Status::Error(StatusCode::TIMEOUT, "transport task execution timeout");
             std::fill(task->entryStatus.begin(), task->entryStatus.end(), timeoutStatus);
@@ -450,9 +446,7 @@ bool TransportTaskExecutor::Poll(const TransportTaskPtr& task)
                 if (status.code == StatusCode::CQE_INTERNAL_ERROR ||
                     status.code == StatusCode::CQE_IO_TIMEOUT) {
                     if (status.code == StatusCode::CQE_IO_TIMEOUT) {
-                        const metrics::MetricUpdate update{
-                            KV_METRIC("kv_transport_task_io_timeouts_total"), 1.0};
-                        metrics::UpdateStats(&update, 1);
+                        metrics::UpdateStats(KV_METRIC("kv_transport_task_io_timeouts_total"), 1.0);
                     }
                     connManager_->ReportFailure(subBatchContext.channel);
                 } else {
