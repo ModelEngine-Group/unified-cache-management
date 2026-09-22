@@ -83,4 +83,10 @@ void UpdateStats(const MetricUpdate* updates, std::size_t count) noexcept
     if (backend) { backend->UpdateStats(updates, count); }
 }
 
+bool RegisterMetricLabels(const std::string& name, const MetricLabels& labels) noexcept
+{
+    auto* backend = LoadBackendFast();
+    return backend != nullptr && backend->RegisterMetricLabels(name, labels);
+}
+
 }  // namespace kv::metrics
