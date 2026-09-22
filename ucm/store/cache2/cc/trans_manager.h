@@ -27,20 +27,59 @@
 #include "dump_queue.h"
 #include "global_config.h"
 #include "load_queue.h"
+#include "metrics_api.h"
 #include "template/task_wrapper.h"
+#include "time/now_time.h"
 #include "trans_task.h"
 
 namespace UC::Cache2 {
 
+template <typename LoadQT = LoadQ, typename DumpQT = DumpQ<>>
 class TransManager : public Detail::TaskWrapper<Task, Detail::TaskHandle> {
-    LoadQ loadQ_;
-    DumpQ dumpQ_;
+    size_t shardSize_{0};
+    LoadQT loadQ_;
+    DumpQT dumpQ_;
 
 public:
-    Status Setup(const Config& config, Buffer* buffer) { return Status::Unsupported(); }
+    Status Setup(const Config& config, Buffer* buffer)
+    {
+        timeoutMs_ = config.timeoutMs;
+        shardSize_ = config.shardSize;
+        auto s = loadQ_.Setup(config, &failureSet_, buffer);
+        if (s.Failure()) [[unlikely]] { return s; }
+        return dumpQ_.Setup(config, &failureSet_, buffer);
+    }
 
 protected:
-    void Dispatch(TaskPtr t, WaiterPtr w) override {}
+    void Dispatch(TaskPtr t, WaiterPtr w) override
+    {
+        const auto isLoad = t->type == Task::Type::LOAD;
+        const auto shards = t->desc.size();
+        const auto bytes = shardSize_ * shards;
+        w->SetEpilog([isLoad, shards, bytes, tp = w->startTp] {
+            auto cost = NowTime::Now() - tp;
+            auto costMs = cost * 1e3;
+            auto bwGbps = cost > 0 ? static_cast<double>(bytes) / cost / 1e9 : 0.0;
+            if (isLoad) {
+                Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_duration_ms"), costMs);
+                Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_bandwidth_gbps"), bwGbps);
+                Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_load_bytes_total"),
+                                     static_cast<double>(bytes));
+            } else {
+                Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_duration_ms"), costMs);
+                Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_bandwidth_gbps"), bwGbps);
+                Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_shards_total"),
+                                     static_cast<double>(shards));
+                Metrics::UpdateStats(NAME_TO_METRIC_ID("cache_dump_bytes_total"),
+                                     static_cast<double>(bytes));
+            }
+        });
+        if (isLoad) {
+            loadQ_.Submit(t, w);
+        } else {
+            dumpQ_.Submit(t, w);
+        }
+    }
 };
 
 }  // namespace UC::Cache2
