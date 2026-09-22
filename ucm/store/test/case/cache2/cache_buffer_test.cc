@@ -90,7 +90,7 @@ protected:
     static constexpr size_t kBuckets{128};
     static constexpr size_t kLocks{64};
 
-    size_t bytes_{BufferTestAccess::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank)};
+    size_t bytes_{BufferTestAccess::TotalSize(kBuckets, kLocks, kRanks* kSlotsPerRank)};
     void* memory_{::operator new(bytes_, std::align_val_t{64})};
     Buffer buffer_;
 

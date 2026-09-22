@@ -48,8 +48,7 @@ protected:
     static constexpr size_t kBuckets{8};
     static constexpr size_t kLocks{4};
 
-    size_t bytes_{
-        CtrlLayoutTestAccess::TotalSize(kBuckets, kLocks, kRanks * kSlotsPerRank)};
+    size_t bytes_{CtrlLayoutTestAccess::TotalSize(kBuckets, kLocks, kRanks* kSlotsPerRank)};
     void* memory_{::operator new(bytes_, std::align_val_t{64})};
     CtrlLayout layout_;
 

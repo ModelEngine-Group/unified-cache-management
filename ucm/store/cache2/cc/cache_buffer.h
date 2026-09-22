@@ -92,10 +92,7 @@ public:
         }
         explicit operator bool() const { return Valid(); }
         bool Owner() const { return owner_; }
-        bool HostAccessible() const
-        {
-            return Valid() && buf_->data_.HostAccessibleOf(slotIdx_);
-        }
+        bool HostAccessible() const { return Valid() && buf_->data_.HostAccessibleOf(slotIdx_); }
         size_t SlotIndex() const { return Valid() ? slotIdx_ : kInvalid; }
         void* Data() { return Valid() ? buf_->data_.DataAt(slotIdx_) : nullptr; }
         void* DeviceData() { return Valid() ? buf_->data_.DeviceDataAt(slotIdx_) : nullptr; }
