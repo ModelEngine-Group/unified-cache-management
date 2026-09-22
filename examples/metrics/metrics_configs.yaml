@@ -196,6 +196,12 @@ counter:
     documentation: "Number of connector dump submit failures"
   - name: "connector_dump_wait_errors_total"
     documentation: "Number of connector dump wait failures"
+  - name: "direct_async_load_dispatched_total"
+    documentation: "Number of Direct request-async load dispatch attempts (per-rank worker metric; successful and failed submits both count)"
+  - name: "direct_async_load_completed_total"
+    documentation: "Number of Direct request-async load tasks that completed successfully (per-rank worker metric)"
+  - name: "direct_async_load_failed_total"
+    documentation: "Number of Direct request-async load tasks that failed, including submit and wait failures (per-rank worker metric)"
 
   # -- DramStore client observability -----------------------------------------
   - name: "dramstore_lookup_tasks_submitted_total"
@@ -309,6 +315,9 @@ gauge:
   - name: "posix_gc_running"
     documentation: "Posix garbage collection state, where 1 is running and 0 is idle"
     multiprocess_mode: "livemostrecent"
+  - name: "direct_async_load_pending"
+    documentation: "Current number of pending Direct request-async load tasks in this worker (per-rank worker metric)"
+    multiprocess_mode: "livemostrecent"
 
   # -- DramStore client observability -----------------------------------------
   - name: "dramstore_scheduler_request_queue_size"
@@ -357,6 +366,27 @@ gauge:
 # Histogram metrics configuration
 histogram:
   # -- End-to-end connector metrics -----------------------------------------
+  - name: "direct_sync_load_duration_ms"
+    documentation: "Direct synchronous load wall-clock duration per attempted request load, from submission preparation through wait completion or failure (ms)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "direct_async_load_duration_ms"
+    documentation: "Direct request-async load wall-clock duration per task, from dispatch through completion or failure (ms; worker-side)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "direct_load_tokens"
+    documentation: "Direct load payload token count per successfully submitted request load (one observation per request load)"
+    buckets: [1, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+  - name: "direct_load_bytes"
+    documentation: "Direct load payload bytes per successfully submitted request load (one observation per request load)"
+    buckets: [1024, 4096, 16384, 65536, 262144, 1048576, 4194304, 16777216, 67108864, 268435456, 1073741824]
+  - name: "direct_step_interval_ms"
+    documentation: "Scheduler-visible interval between active Direct connector build_connector_meta calls (interval proxy, not execute_model duration; scheduler-side only; an interval may include connector-invisible idle time and should be filtered by experiment warm-up/time window)"
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+  - name: "direct_step_scheduled_tokens"
+    documentation: "Total tokens in one scheduler output step observed by Direct connector (scheduler-side only)"
+    buckets: [1, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+  - name: "direct_step_scheduled_requests"
+    documentation: "Number of requests in one scheduler output step observed by Direct connector (scheduler-side only)"
+    buckets: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
   - name: "save_duration"
     documentation: "Time from UCM connector wait_for_save entry to async dump task completion (ms)"
     buckets: [0, 50, 100, 150, 200, 250, 300, 350, 400, 550, 600, 750, 800, 850, 900, 950, 1000]

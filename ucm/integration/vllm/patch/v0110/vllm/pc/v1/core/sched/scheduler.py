@@ -211,8 +211,12 @@ class Scheduler(SchedulerInterface):
             is_affected = False
             marked_invalid_block = False
             req_id = request.request_id
-            # TODO (davidb): add support for hybrid memory allocator
-            (req_block_ids,) = self.kv_cache_manager.get_block_ids(req_id)
+            # Connector load failures are reported as a flat set of block IDs.
+            # Use the full-attention/anchor group for recovery; this preserves
+            # the existing single-group protocol while avoiding a tuple
+            # unpack crash for HLA/FAWA multi-group allocations.
+            req_block_groups = self.kv_cache_manager.get_block_ids(req_id)
+            req_block_ids = req_block_groups[0] if req_block_groups else []
             # We iterate only over blocks that may contain externally computed
             # tokens
             if request.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
@@ -628,7 +632,8 @@ class Scheduler(SchedulerInterface):
             failed_recving_kv_req_ids.discard(request.request_id)
         else:
             # Now that the blocks are ready, actually cache them.
-            (block_ids,) = self.kv_cache_manager.get_block_ids(request.request_id)
+            block_groups = self.kv_cache_manager.get_block_ids(request.request_id)
+            block_ids = block_groups[0] if block_groups else []
             num_computed_tokens = len(block_ids) * self.block_size
             # Handle the case where num request tokens less than one block.
             num_computed_tokens = min(num_computed_tokens, request.num_tokens)

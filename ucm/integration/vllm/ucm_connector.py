@@ -1322,6 +1322,9 @@ class PendingLoadTask:
     task: Task
     request_id: str
     vllm_block_ids: list[int]
+    # perf_counter timestamp for request-async duration observability.
+    # Defaults preserve the existing three-argument construction sites.
+    start_time: float = 0.0
 
 
 @dataclass
@@ -1369,6 +1372,10 @@ class UCMDirectConnector(KVConnectorBase_V1):
     RankConsistencyManager. It owns StoreNotFoundError classification and
     cross-rank consistency metadata.
     """
+
+    @classmethod
+    def _supports_request_async_load(cls) -> bool:
+        return cls is UCMDirectConnector
 
     @staticmethod
     def _consistency_manager_enabled(launch_config: dict, is_mla: bool) -> bool:
@@ -1497,18 +1504,24 @@ class UCMDirectConnector(KVConnectorBase_V1):
         request_async_configured = bool(
             self.launch_config.get("use_request_async_load", False)
         )
-        # Keep the first implementation deliberately scoped to the direct
-        # connector. Layerwise, CP and HMA connectors have different task and
-        # block-layout semantics and must opt in separately.
         self.use_request_async_load = (
-            request_async_configured and type(self) is UCMDirectConnector
+            request_async_configured and self._supports_request_async_load()
         )
         if request_async_configured and not self.use_request_async_load:
             logger.warning(
-                "Request-async loading is currently supported only by "
-                "UCMDirectConnector; disabling it for %s.",
+                "Request-async loading is not supported by %s; disabling it.",
                 type(self).__name__,
             )
+        effective_load_mode = "request_async" if self.use_request_async_load else "sync"
+        role_name = getattr(role, "name", str(role))
+        logger.info(
+            "UCM connector load mode: connector=%s, role=%s, "
+            "request_async_configured=%s, effective_mode=%s",
+            type(self).__name__,
+            role_name,
+            request_async_configured,
+            effective_load_mode,
+        )
         # Scheduler-side plans waiting to be included in connector metadata.
         self._pending_async_load_dispatches: dict[str, RequestDispatchMeta] = {}
         # Scheduler-side requests whose external load has already been dispatched.
@@ -1516,6 +1529,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
         # Worker-side tasks that outlive the metadata step that submitted them.
         self._pending_load_tasks: dict[str, PendingLoadTask] = {}
         self._finished_async_load_req_ids: set[str] = set()
+        # Direct-only metrics are emitted by the scheduler/worker connector
+        # lifecycle below.  Subclasses intentionally do not contribute to
+        # these names because their load semantics are layer-wise or hybrid.
+        self._direct_metrics_enabled = type(self) is UCMDirectConnector
+        self._direct_async_load_pending = 0
+        self._direct_step_last_start: float | None = None
         self.cp_world_size = 1
         self.hash_block_size = self.block_size
         self.block_size *= self.cp_world_size
@@ -2064,6 +2083,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
     def build_connector_meta(
         self, scheduler_output: SchedulerOutput
     ) -> KVConnectorMetadata:
+        self._record_direct_step_interval(scheduler_output)
         requests_dispatch_meta = {}
         # for new request, we need to load and dump
         for request in scheduler_output.scheduled_new_reqs:
@@ -2136,6 +2156,55 @@ class UCMDirectConnector(KVConnectorBase_V1):
             scheduler_output.preempted_req_ids or set(),
         )
 
+    def _record_direct_step_interval(self, scheduler_output: SchedulerOutput) -> None:
+        """Record scheduler-visible step intervals and scheduled load.
+
+        The connector is not on the engine's execute-model timing boundary, so
+        this is deliberately named ``step_interval``: it is the wall-clock
+        interval between scheduler calls to ``build_connector_meta``.  Counts
+        are recorded on every call from the values in ``SchedulerOutput`` for
+        the current scheduling step.  An empty step resets the active-step
+        timestamp and does not produce an interval.  If no empty callback is
+        visible during idle, the next active interval can include that idle
+        time and should be excluded by the experiment's warm-up/time window.
+        Only the single scheduler process records them, avoiding TP
+        double-counting.
+        """
+        if not getattr(self, "_direct_metrics_enabled", False):
+            return
+        if getattr(self, "_role", None) != KVConnectorRole.SCHEDULER:
+            return
+        scheduled_tokens_by_request = (
+            getattr(scheduler_output, "num_scheduled_tokens", None) or {}
+        )
+        scheduled_tokens = sum(
+            max(int(value), 0) for value in scheduled_tokens_by_request.values()
+        )
+        scheduled_requests = sum(
+            1 for value in scheduled_tokens_by_request.values() if int(value) > 0
+        )
+        if not scheduled_tokens_by_request:
+            self._direct_step_last_start = None
+            ucmmetrics.update_stats(
+                {
+                    "direct_step_scheduled_tokens": 0,
+                    "direct_step_scheduled_requests": 0,
+                }
+            )
+            return
+        now = time.perf_counter()
+        previous = getattr(self, "_direct_step_last_start", None)
+        self._direct_step_last_start = now
+        stats = {
+            "direct_step_scheduled_tokens": scheduled_tokens,
+            "direct_step_scheduled_requests": scheduled_requests,
+        }
+        if previous is not None:
+            stats["direct_step_interval_ms"] = self._non_negative_ms(
+                (now - previous) * 1e3
+            )
+        ucmmetrics.update_stats(stats)
+
     def _track_async_dump_requests(
         self,
         requests_dispatch_meta: dict[str, RequestDispatchMeta],
@@ -2151,6 +2220,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         assert isinstance(metadata, UCMConnectorMetadata)
 
         request_to_task: dict[str, Task] = {}
+        sync_load_starts: dict[str, float] = {}
         is_load = False
         num_loaded_block = 0
         request_to_load_blocks: dict[str, int] = {}
@@ -2189,10 +2259,17 @@ class UCMDirectConnector(KVConnectorBase_V1):
                     "Ignore duplicate async load metadata for request %s.", request_id
                 )
                 continue
+            load_start = time.perf_counter()
+            async_dispatch_attempted = False
             try:
                 total_ptrs = self.kv_cache_layout.extract_block_addrs(vllm_block_ids)
                 total_ptrs = total_ptrs.reshape(total_ptrs.shape[0], -1)
                 shard_indexs = [0] * len(ucm_block_ids)
+                if request.load_async:
+                    # Count one dispatch attempt immediately before invoking
+                    # Store, so submit failures reconcile with failed_total.
+                    async_dispatch_attempted = True
+                    self._record_direct_counter("direct_async_load_dispatched_total")
                 task = self._rank_consistency.submit_load(
                     self.store,
                     {request_id: ucm_block_ids},
@@ -2205,10 +2282,21 @@ class UCMDirectConnector(KVConnectorBase_V1):
                         task=task,
                         request_id=request_id,
                         vllm_block_ids=list(vllm_block_ids),
+                        start_time=load_start,
                     )
+                    self._record_direct_load_observation(
+                        len(ucm_block_ids) * self.block_size,
+                        len(ucm_block_ids) * self.block_data_size,
+                    )
+                    self._record_direct_async_pending(1)
                 else:
                     request_to_task[request_id] = task
                     request_to_load_blocks[request_id] = len(ucm_block_ids)
+                    sync_load_starts[request_id] = load_start
+                    self._record_direct_load_observation(
+                        len(ucm_block_ids) * self.block_size,
+                        len(ucm_block_ids) * self.block_data_size,
+                    )
             except Exception as e:
                 logger.error(
                     f"request {request_id} submit load task error. "
@@ -2221,8 +2309,12 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 )
                 self._connector_worker_meta.mark_failed(request_id)
                 if sync_load:
+                    self._record_direct_sync_load_duration(load_start)
                     num_loaded_block -= len(ucm_block_ids)
                 if request.load_async:
+                    if async_dispatch_attempted:
+                        self._record_direct_counter("direct_async_load_failed_total")
+                        self._record_direct_async_duration(load_start)
                     self._finished_async_load_req_ids.add(request_id)
 
         for request_id, task in request_to_task.items():
@@ -2240,10 +2332,65 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 )
                 self._connector_worker_meta.mark_failed(request_id)
                 num_loaded_block -= request_to_load_blocks.get(request_id, 0)
+            finally:
+                self._record_direct_sync_load_duration(
+                    sync_load_starts.pop(request_id, None)
+                )
 
         load_bytes = num_loaded_block * self.block_data_size
         if is_load:
             ucmmetrics.update_stats({"load_bytes_total": load_bytes})
+
+    def _record_direct_load_observation(
+        self, load_tokens: int, load_bytes: int
+    ) -> None:
+        """Record one successfully submitted Direct load payload.
+
+        Values are per submitted request load, not per block or per scheduler
+        step.  Failed waits remain represented because a payload was submitted
+        and its duration/error counters describe the eventual outcome.
+        """
+        if not getattr(self, "_direct_metrics_enabled", False):
+            return
+        ucmmetrics.update_stats(
+            {
+                "direct_load_tokens": max(int(load_tokens), 0),
+                "direct_load_bytes": max(int(load_bytes), 0),
+            }
+        )
+
+    def _record_direct_sync_load_duration(self, start_time: float | None) -> None:
+        if not getattr(self, "_direct_metrics_enabled", False) or start_time is None:
+            return
+        ucmmetrics.update_stats(
+            {
+                "direct_sync_load_duration_ms": self._non_negative_ms(
+                    (time.perf_counter() - start_time) * 1e3
+                )
+            }
+        )
+
+    def _record_direct_async_pending(self, delta: int) -> None:
+        if not getattr(self, "_direct_metrics_enabled", False):
+            return
+        pending = max(getattr(self, "_direct_async_load_pending", 0) + delta, 0)
+        self._direct_async_load_pending = pending
+        ucmmetrics.update_stats({"direct_async_load_pending": pending})
+
+    def _record_direct_counter(self, name: str) -> None:
+        if getattr(self, "_direct_metrics_enabled", False):
+            ucmmetrics.update_stats({name: 1.0})
+
+    def _record_direct_async_duration(self, start_time: float | None) -> None:
+        if not getattr(self, "_direct_metrics_enabled", False) or start_time is None:
+            return
+        ucmmetrics.update_stats(
+            {
+                "direct_async_load_duration_ms": self._non_negative_ms(
+                    (time.perf_counter() - start_time) * 1e3
+                )
+            }
+        )
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         pass
@@ -2513,6 +2660,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         pending_load_tasks = getattr(self, "_pending_load_tasks", {})
         for request_id, pending in list(pending_load_tasks.items()):
             completed = False
+            succeeded = False
             try:
                 if not self._rank_consistency.check_load(pending.task):
                     continue
@@ -2520,6 +2668,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
                 # A completed poll is followed by wait_load() to surface any
                 # deferred Store error and release the task context.
                 self._rank_consistency.wait_load(pending.task)
+                succeeded = True
             except Exception as e:
                 completed = True
                 logger.error(
@@ -2534,6 +2683,14 @@ class UCMDirectConnector(KVConnectorBase_V1):
             finally:
                 if completed:
                     pending_load_tasks.pop(request_id, None)
+                    if succeeded:
+                        self._record_direct_counter("direct_async_load_completed_total")
+                    else:
+                        self._record_direct_counter("direct_async_load_failed_total")
+                    self._record_direct_async_pending(-1)
+                    start_time = getattr(pending, "start_time", 0.0)
+                    if start_time > 0:
+                        self._record_direct_async_duration(start_time)
                     # Failed loads must also report completion so vLLM can
                     # leave WAITING_FOR_REMOTE_KVS and recompute or fail.
                     finished_recving.add(request_id)
