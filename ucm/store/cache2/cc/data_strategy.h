@@ -53,7 +53,7 @@ public:
     // Throws on failure after releasing resources acquired by this call.
     // All peer handles share timeoutMs; zero allows one read attempt per peer.
     void Setup(CtrlLayout& ctrl, int32_t deviceId, size_t slotSize, size_t nSlotsPerRank,
-               size_t rank, size_t timeoutMs);
+               size_t rank, size_t timeoutMs = 1800 * 1000);
 
     // Only locally allocated slots have a CPU/IO-accessible address.
     void* DataAt(size_t slotIdx);
