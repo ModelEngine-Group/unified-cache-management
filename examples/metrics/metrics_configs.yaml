@@ -345,6 +345,9 @@ gauge:
   - name: "dramstore_reply_buffer_used_bytes"
     documentation: "Sampled leased reply slot bytes including alignment, not payload bytes"
     multiprocess_mode: livemostrecent
+  - name: "dramstore_reply_buffer_capacity_bytes"
+    documentation: "Total reply slot bytes including alignment"
+    multiprocess_mode: livemostrecent
   - name: "dramstore_transport_queue_size"
     documentation: "Sampled aggregate queued Transmit and Connect admission occupancy"
     multiprocess_mode: livemostrecent
@@ -584,7 +587,7 @@ histogram:
   # -- DramStore client observability -----------------------------------------
   - name: "dramstore_lookup_duration_ms"
     documentation: "End-to-end DramStore lookup duration (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
   - name: "dramstore_lookup_task_queue_duration_ms"
     documentation: "DramStore lookup task queue duration (ms)"
     buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
@@ -614,7 +617,7 @@ histogram:
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
   - name: "dramstore_dump_duration_ms"
     documentation: "End-to-end DramStore dump duration (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
   - name: "dramstore_dump_task_queue_duration_ms"
     documentation: "DramStore dump task queue duration (ms)"
     buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
@@ -644,7 +647,7 @@ histogram:
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
   - name: "dramstore_load_duration_ms"
     documentation: "End-to-end DramStore load duration (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
   - name: "dramstore_load_task_queue_duration_ms"
     documentation: "DramStore load task queue duration (ms)"
     buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
