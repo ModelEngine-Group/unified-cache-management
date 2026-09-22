@@ -28,9 +28,11 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <vector>
+#include "kv_metrics/metrics.h"
 #include "kv_types.h"
 #include "trans_types.h"
 
@@ -100,6 +102,11 @@ struct TransportTask {
     std::chrono::steady_clock::time_point deadline{std::chrono::steady_clock::time_point::max()};
     TaskCompletionCallback onComplete;
     std::atomic<bool> completionNotified{false};
+    std::chrono::steady_clock::time_point submittedAt{};
+    std::chrono::steady_clock::time_point sendCompletedAt{};
+    std::function<void()> onSendComplete;
+    std::atomic<bool> sendReturned{false};
+    metrics::CachedMetric* asuCompletionMetric{nullptr};
 
     std::atomic<TransportTaskState> state{TransportTaskState::PENDING};
     Status finalStatus{Status::OK()};
@@ -127,6 +134,11 @@ struct ClientTask {
     QueryResult queryResult;
 
     std::atomic<std::size_t> remainingTransportTasks{0};
+    std::atomic<std::size_t> remainingTransportSendTasks{0};
+    std::chrono::steady_clock::time_point submittedAt{};
+    std::chrono::steady_clock::time_point enqueuedAt{};
+    std::chrono::steady_clock::time_point processingStartedAt{};
+    std::atomic<bool> completionMetricRecorded{false};
     std::atomic<ClientTaskState> state{ClientTaskState::PENDING};
     Status finalStatus{Status::OK()};
 
