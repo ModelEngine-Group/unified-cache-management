@@ -9,31 +9,43 @@ class BlockGeometry:
     physical: int
 
 
-def ascend_block_geometry(spec) -> BlockGeometry:
-    """Old specs expose physical block_size; new specs expose logical size.
+def ascend_block_geometry(
+    spec, *, block_size_is_logical: bool | None = None
+) -> BlockGeometry:
+    """Follow Ascend's block convention, not the inherited storage property.
 
-    Some old sliding specs already have storage_block_size, equal to block_size.
-    Check the relationship, rather than the presence of that property alone.
+    Old v1 runners allocate block_size rows even if vLLM exposes an inherited
+    storage_block_size = block_size // compress_ratio property. The newer
+    logical-block implementation exposes get_storage_block_size in Ascend.
+    Detection assumes that helper and the runner's logical-block convention
+    are introduced together; partial cherry-picks must explicitly provide
+    block_size_is_logical to match their runner.
     """
+    if block_size_is_logical is None:
+        try:
+            from vllm_ascend.core.kv_cache_interface import get_storage_block_size
+        except ImportError:
+            block_size_is_logical = False
+        else:
+            block_size_is_logical = True
     nested = getattr(spec, "kv_cache_specs", None)
     if nested:
-        geometries = {ascend_block_geometry(member) for member in nested.values()}
+        geometries = {
+            ascend_block_geometry(member, block_size_is_logical=block_size_is_logical)
+            for member in nested.values()
+        }
         if len(geometries) != 1:
             raise ValueError(f"Inconsistent Ascend group block geometry: {geometries}")
         return geometries.pop()
     size = int(spec.block_size)
     ratio = int(getattr(spec, "compress_ratio", 1))
-    physical = int(getattr(spec, "storage_block_size", size))
-    if min(size, ratio, physical) <= 0:
+    if min(size, ratio) <= 0:
         raise ValueError("Ascend block size and compress ratio must be positive.")
-    if size == physical * ratio:
-        return BlockGeometry(size, physical)
-    if size == physical:
-        return BlockGeometry(size * ratio, physical)
-    raise ValueError(
-        f"Unsupported Ascend block geometry: block_size={size}, "
-        f"storage_block_size={physical}, compress_ratio={ratio}."
-    )
+    if block_size_is_logical:
+        if size % ratio:
+            raise ValueError("Logical block size must be divisible by compress ratio.")
+        return BlockGeometry(size, size // ratio)
+    return BlockGeometry(size * ratio, size)
 
 
 def select_transfer_views(tensors):

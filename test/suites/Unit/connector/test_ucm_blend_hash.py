@@ -31,7 +31,7 @@ def _plain_text_request():
 def _connector_for_hash_test():
     connector = UCMBlendConnector.__new__(UCMBlendConnector)
     connector.block_size = 4
-    connector.request_hasher = RequestHasher(_config(), 0)
+    connector.request_hasher = RequestHasher(repr(_config()).encode())
     connector._seed = connector.request_hasher.seed
     connector.request_block_hasher = connector.request_hasher.make_request_block_hasher(
         connector.block_size, connector._seed

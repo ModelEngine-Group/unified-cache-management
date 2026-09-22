@@ -27,7 +27,7 @@ from vllm.v1.kv_cache_interface import (
 from ucm.integration.vllm.device import create_device
 from ucm.integration.vllm.request_hasher import (
     RequestHasher,
-    encode_block_key,
+    set_group_id,
 )
 from ucm.integration.vllm.ucm_connector import (
     KVCacheLayout,
@@ -228,7 +228,7 @@ class KVCacheGroupManager:
             stride = group.block_size // self.hash_block_size
             result.append(
                 [
-                    encode_block_key(key, group.group_id)
+                    set_group_id(key, group.group_id)
                     for key in base_hashes[stride - 1 :: stride]
                 ]
             )
@@ -261,7 +261,7 @@ class KVCacheGroupManager:
             return None
         if not prefix_hash:
             return None
-        return encode_block_key(prefix_hash, group.group_id)
+        return set_group_id(prefix_hash, group.group_id)
 
     def lookup_external_hit_tokens(
         self,
@@ -783,6 +783,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
         return False
 
+    # MLA attention is shared, but Mamba/KDA state keys still differ by TP rank.
     _rank_scoped_mla_states = True
 
     def __init__(

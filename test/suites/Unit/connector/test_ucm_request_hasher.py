@@ -75,7 +75,7 @@ def _install_extra_key_helper(monkeypatch):
 
 
 def test_multimodal_identifier_changes_covering_and_following_blocks():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(repr(_config()).encode()).make_request_block_hasher(4)
     tokens = range(16)
     small_image = _request(
         tokens, mm_features=[_mm_feature("small-image", offset=4, length=5)]
@@ -93,7 +93,7 @@ def test_multimodal_identifier_changes_covering_and_following_blocks():
 
 
 def test_multimodal_position_is_part_of_block_semantics():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(repr(_config()).encode()).make_request_block_hasher(4)
     tokens = range(12)
 
     at_boundary = _request(
@@ -121,7 +121,7 @@ def test_multimodal_position_is_part_of_block_semantics():
     ],
 )
 def test_other_request_semantics_change_hashes(left, right):
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(repr(_config()).encode()).make_request_block_hasher(4)
     tokens = range(8)
     assert block_hasher(_request(tokens, **left)) != block_hasher(
         _request(tokens, **right)
@@ -129,7 +129,7 @@ def test_other_request_semantics_change_hashes(left, right):
 
 
 def test_closure_resets_parent_and_multimodal_cursor_for_each_request():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(repr(_config()).encode()).make_request_block_hasher(4)
     request = _request(
         range(12), mm_features=[_mm_feature("image", offset=3, length=6)]
     )
@@ -138,7 +138,7 @@ def test_closure_resets_parent_and_multimodal_cursor_for_each_request():
 
 
 def test_partial_tail_is_not_hashed_and_new_tuple_breaks_old_keys():
-    hasher = RequestHasher(_config(), 0)
+    hasher = RequestHasher(repr(_config()).encode())
     block_hasher = hasher.make_request_block_hasher(4)
     request = _request(range(6))
 
@@ -151,7 +151,7 @@ def test_partial_tail_is_not_hashed_and_new_tuple_breaks_old_keys():
 
 def test_helper_unavailable_allows_only_token_only_requests(monkeypatch):
     monkeypatch.setattr(request_hasher_module, "generate_block_hash_extra_keys", None)
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(repr(_config()).encode()).make_request_block_hasher(4)
 
     assert len(block_hasher(_request(range(4)))) == 1
     with pytest.raises(RequestHashError):
@@ -168,7 +168,7 @@ def test_helper_unavailable_allows_only_token_only_requests(monkeypatch):
 
 
 def test_missing_multimodal_identifier_fails_closed():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(repr(_config()).encode()).make_request_block_hasher(4)
     request = _request(range(4), mm_features=[_mm_feature(None, offset=0, length=4)])
 
     with pytest.raises(RequestHashError):
@@ -176,7 +176,7 @@ def test_missing_multimodal_identifier_fails_closed():
 
 
 def test_unhashed_tail_does_not_prevalidate_multimodal_identifier():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(repr(_config()).encode()).make_request_block_hasher(4)
     request = _request(range(2), mm_features=[_mm_feature(None, offset=0, length=2)])
 
     assert block_hasher(request) == []
@@ -199,7 +199,7 @@ config = SimpleNamespace(
     speculative_config=None,
     additional_config={{}},
 )
-hasher = module.RequestHasher(config, 0)
+hasher = module.RequestHasher(repr(config).encode())
 print(hasher((b"parent", (1, 2, 3), None)).hex())
 """
 
@@ -237,7 +237,7 @@ def _shared_prefix_len(hashes_a, hashes_b):
 def test_different_image_shares_only_text_prefix_before_image():
     """Core anti-false-hit property: same text prefix + different image must
     hit only up to the last text block before the image, then diverge."""
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(repr(_config()).encode()).make_request_block_hasher(4)
     tokens = range(16)
     req_a = _request(tokens, mm_features=[_mm_feature("img-a", offset=4, length=4)])
     req_b = _request(tokens, mm_features=[_mm_feature("img-b", offset=4, length=4)])
@@ -250,14 +250,14 @@ def test_different_image_shares_only_text_prefix_before_image():
 
 
 def test_identical_request_shares_full_prefix():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(repr(_config()).encode()).make_request_block_hasher(4)
     request = _request(range(16), mm_features=[_mm_feature("img", offset=4, length=4)])
     hashes = block_hasher(request)
     assert _shared_prefix_len(hashes, block_hasher(request)) == len(hashes)
 
 
 def test_image_position_change_moves_hit_boundary():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(repr(_config()).encode()).make_request_block_hasher(4)
     tokens = range(16)
     early = _request(tokens, mm_features=[_mm_feature("img", offset=4, length=4)])
     late = _request(tokens, mm_features=[_mm_feature("img", offset=8, length=4)])
@@ -277,7 +277,7 @@ def test_multimodal_cursor_advances_monotonically_across_blocks(monkeypatch):
     monkeypatch.setattr(
         request_hasher_module, "generate_block_hash_extra_keys", recording_helper
     )
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(repr(_config()).encode()).make_request_block_hasher(4)
     request = _request(
         range(16),
         mm_features=[
@@ -295,7 +295,7 @@ def test_multimodal_cursor_advances_monotonically_across_blocks(monkeypatch):
 def test_second_image_change_diverges_only_at_second_image_block():
     """Changing only the second image keeps image-1 blocks reusable and
     diverges from image 2's block onward."""
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(repr(_config()).encode()).make_request_block_hasher(4)
     tokens = range(16)
     both = _request(
         tokens,
@@ -318,7 +318,7 @@ def test_second_image_change_diverges_only_at_second_image_block():
 
 
 def test_pure_image_requests_diverge_from_block_zero():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(repr(_config()).encode()).make_request_block_hasher(4)
     tokens = range(16)
     req_a = _request(tokens, mm_features=[_mm_feature("img-a", offset=0, length=16)])
     req_b = _request(tokens, mm_features=[_mm_feature("img-b", offset=0, length=16)])
@@ -326,30 +326,32 @@ def test_pure_image_requests_diverge_from_block_zero():
 
 
 def test_identical_pure_image_request_shares_all_blocks():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(repr(_config()).encode()).make_request_block_hasher(4)
     request = _request(range(16), mm_features=[_mm_feature("img", offset=0, length=16)])
     hashes = block_hasher(request)
     assert _shared_prefix_len(hashes, block_hasher(request)) == len(hashes)
 
 
 def test_pure_image_partial_tail_not_hashed():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(repr(_config()).encode()).make_request_block_hasher(4)
     request = _request(range(10), mm_features=[_mm_feature("img", offset=0, length=10)])
     assert len(block_hasher(request)) == 2
 
 
 def test_empty_token_list_returns_empty():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(4)
+    block_hasher = RequestHasher(repr(_config()).encode()).make_request_block_hasher(4)
     assert block_hasher(_request([])) == []
 
 
 def test_block_size_larger_than_sequence_returns_empty():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(100)
+    block_hasher = RequestHasher(repr(_config()).encode()).make_request_block_hasher(
+        100
+    )
     assert block_hasher(_request(range(4))) == []
 
 
 def test_block_size_one_hashes_every_token():
-    block_hasher = RequestHasher(_config(), 0).make_request_block_hasher(1)
+    block_hasher = RequestHasher(repr(_config()).encode()).make_request_block_hasher(1)
     base = _request(range(8))
     changed = _request(range(8))
     changed_tokens = list(changed.all_token_ids)
@@ -392,8 +394,8 @@ def test_namespace_isolation_and_reproducibility_across_instances(
 ):
     """Same deployment config across two hasher instances yields identical
     block IDs; rank/parallelism/model differences do not."""
-    left = RequestHasher(_config(), 0).make_request_block_hasher(4)
-    right = RequestHasher(right_config(), 0).make_request_block_hasher(4)
+    left = RequestHasher(repr(_config()).encode()).make_request_block_hasher(4)
+    right = RequestHasher(repr(right_config()).encode()).make_request_block_hasher(4)
     request = _request(range(16))
     result = left(request) == right(request)
     assert result is expect_equal

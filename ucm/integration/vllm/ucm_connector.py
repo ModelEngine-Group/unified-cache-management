@@ -2,6 +2,7 @@
 import glob
 import math
 import os
+import pickle
 import re
 import shutil
 import time
@@ -43,9 +44,7 @@ from ucm.integration.vllm.metrics import (
 from ucm.integration.vllm.rank_consistency import RankConsistencyManager
 from ucm.integration.vllm.request_hasher import (
     RequestHasher,
-    encode_block_key,
-    kv_layout_namespace,
-    set_block_key_rank,
+    set_rank_id,
 )
 from ucm.logger import init_logger
 from ucm.metrics_config import (
@@ -281,6 +280,77 @@ def _scheduler_read_unique_id() -> str:
     raise RuntimeError(
         "scheduler-side UCM initialization failed: unique_id file not found"
     )
+
+
+def kv_layout_namespace(vllm_config, kv_cache_config=None) -> tuple:
+    """Describe serialization, without addresses or allocated block counts.
+
+    Use resolved per-layer specs when available: model dtype alone does not
+    distinguish FP8 KV from BF16 KV, or FP16 scales from FP32 scales.
+    """
+    fields = (
+        "block_size",
+        "storage_block_size",
+        "num_kv_heads",
+        "head_size",
+        "dtype",
+        "scale_dim",
+        "scale_dtype",
+        "compress_ratio",
+        "sliding_window",
+        "shapes",
+        "dtypes",
+        "mamba_cache_mode",
+        "page_size_padded",
+        "cache_sparse_sfa_c8",
+    )
+    groups = []
+    for group in getattr(kv_cache_config, "kv_cache_groups", ()):
+        spec = group.kv_cache_spec
+        nested = getattr(spec, "kv_cache_specs", None)
+        members = []
+        for name in sorted(group.layer_names):
+            member = nested[name] if nested else spec
+            members.append(
+                (
+                    name,
+                    type(member).__name__,
+                    tuple(
+                        (field, str(getattr(member, field)))
+                        for field in fields
+                        if hasattr(member, field)
+                    ),
+                )
+            )
+        groups.append(tuple(members))
+    if groups:
+        return tuple(groups)
+    cache_config = getattr(vllm_config, "cache_config", None)
+    return (
+        "config-fallback",
+        str(getattr(cache_config, "cache_dtype", "auto")),
+        getattr(cache_config, "block_size", None),
+    )
+
+
+def build_request_fingerprint(vllm_config, rank_id=0) -> bytes:
+    speculative_config = getattr(vllm_config, "speculative_config", None)
+    spec_info = ""
+    if speculative_config is not None:
+        spec_method = getattr(speculative_config, "method", "") or ""
+        spec_tokens = getattr(speculative_config, "num_speculative_tokens", 0)
+        spec_info = f":{spec_method}:{spec_tokens}"
+    additional_config = getattr(vllm_config, "additional_config", None) or {}
+    sparse_sfa_c8 = bool(additional_config.get("enable_sparse_sfa_c8", False))
+    sparse_li_c8 = bool(additional_config.get("enable_sparse_li_c8", False))
+    sparse_c8_info = f":sfa_c8={int(sparse_sfa_c8)}:li_c8={int(sparse_li_c8)}"
+    model_name = vllm_config.model_config.model.rstrip("/").split("/")[-1]
+    meta = (
+        f"{model_name}:"
+        f"{vllm_config.parallel_config.tensor_parallel_size}:"
+        f"{vllm_config.model_config.dtype}:{rank_id}{spec_info}{sparse_c8_info}"
+    )
+    return meta.encode("utf-8")
 
 
 def _worker_publish_block_size(
@@ -1562,14 +1632,13 @@ class UCMDirectConnector(KVConnectorBase_V1):
             raise ValueError("Group/rank keys support TP sizes from 1 to 16.")
         if len(getattr(self._kv_cache_config, "kv_cache_groups", ())) > 16:
             raise ValueError("Group/rank keys support at most 16 KV cache groups.")
-        return RequestHasher(
-            vllm_config,
-            0,
-            namespace=kv_layout_namespace(vllm_config, self._kv_cache_config),
+        fingerprint = build_request_fingerprint(vllm_config) + pickle.dumps(
+            kv_layout_namespace(vllm_config, self._kv_cache_config), protocol=4
         )
+        return RequestHasher(fingerprint)
 
     def _rank_key(self, key: bytes) -> bytes:
-        return set_block_key_rank(key, self.tp_rank % self.tp_size)
+        return set_rank_id(key, self.tp_rank % self.tp_size)
 
     def _record_load_error(self, metric_name: str, block_ids: Any) -> None:
         invalid_blocks = set(block_ids)
@@ -1585,12 +1654,9 @@ class UCMDirectConnector(KVConnectorBase_V1):
 
     def _bind_request_block_hasher(self) -> None:
         if self._role == KVConnectorRole.SCHEDULER:
-            base_hasher = self.request_hasher.make_request_block_hasher(
+            self.request_block_hasher = self.request_hasher.make_request_block_hasher(
                 self.hash_block_size, self._seed
             )
-            self.request_block_hasher = lambda request: [
-                encode_block_key(h) for h in base_hasher(request)
-            ]
 
     def _set_default_shm_buffer_capacity(self, config: dict[str, Any]) -> None:
         if not bool(config.get("share_buffer_enable", False)):
@@ -1768,7 +1834,7 @@ class UCMDirectConnector(KVConnectorBase_V1):
         if self.is_mla and not self._rank_scoped_mla_states:
             return
         for rank in range(1, self.tp_size):
-            keys = [set_block_key_rank(key, rank) for key in rank0_block_ids]
+            keys = [set_rank_id(key, rank) for key in rank0_block_ids]
             self.store.prefetch(keys)
 
     def _prefetch_direct_hit_key_hotness(
@@ -3041,7 +3107,7 @@ class UCMLiteConnector(KVConnectorBase_V1):
         self.requests_meta: dict[str, RequestMeta] = {}
         self.total_block_nums = 0
 
-        self.request_hasher = RequestHasher(vllm_config, 0)
+        self.request_hasher = RequestHasher(build_request_fingerprint(vllm_config))
         self._seed = self.request_hasher.seed
         self.request_block_hasher = self.request_hasher.make_request_block_hasher(
             self.hash_block_size, self._seed
