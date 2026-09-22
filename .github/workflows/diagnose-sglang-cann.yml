@@ -1,0 +1,177 @@
+name: Diagnose SGLang CANN Runtime Library
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      runtime_image:
+        description: SGLang CANN image to inspect
+        type: string
+        required: true
+        default: docker.io/lmsysorg/sglang:v0.5.18-cann9.0.0-910b
+      library:
+        description: Runtime library soname to resolve
+        type: string
+        required: true
+        default: libascend_hal.so
+      architecture:
+        description: Image architecture and matching GitHub runner
+        type: choice
+        required: true
+        default: amd64
+        options:
+          - amd64
+          - arm64
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' ||
+        github.event.label.name == 'diagnose-sglang-cann'
+      }}
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ github.event_name == 'pull_request' && fromJSON('["0.5.18", "0.5.19"]') || fromJSON('["manual"]') }}
+    name: >-
+      ${{
+        github.event_name == 'workflow_dispatch' && inputs.architecture || 'amd64'
+      }} · ${{
+        github.event_name == 'workflow_dispatch' && inputs.runtime_image ||
+        format('docker.io/lmsysorg/sglang:v{0}-cann9.0.0-910b', matrix.version)
+      }}
+    runs-on: >-
+      ${{
+        github.event_name == 'workflow_dispatch' && inputs.architecture == 'arm64' &&
+        'ubuntu-24.04-arm' || 'ubuntu-24.04'
+      }}
+    timeout-minutes: 30
+    steps:
+      - name: Pull the selected Runtime image
+        env:
+          RUNTIME_IMAGE: >-
+            ${{
+              github.event_name == 'workflow_dispatch' && inputs.runtime_image ||
+              format('docker.io/lmsysorg/sglang:v{0}-cann9.0.0-910b', matrix.version)
+            }}
+        run: |
+          set -euo pipefail
+          docker pull "${RUNTIME_IMAGE}"
+          docker image inspect "${RUNTIME_IMAGE}" \
+            --format 'image={{.Id}} architecture={{.Architecture}} os={{.Os}}'
+
+      - name: Inspect the library and loader resolution
+        env:
+          RUNTIME_IMAGE: >-
+            ${{
+              github.event_name == 'workflow_dispatch' && inputs.runtime_image ||
+              format('docker.io/lmsysorg/sglang:v{0}-cann9.0.0-910b', matrix.version)
+            }}
+          LIBRARY: ${{ github.event_name == 'workflow_dispatch' && inputs.library || 'libascend_hal.so' }}
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint bash \
+            -e LIBRARY="${LIBRARY}" \
+            "${RUNTIME_IMAGE}" -c '
+              set -u
+
+              section() {
+                printf "\n===== %s =====\n" "$1"
+              }
+
+              section "Runtime identity"
+              uname -a
+              printf "LD_LIBRARY_PATH=%s\n" "${LD_LIBRARY_PATH:-<unset>}"
+              command -v python3 >/dev/null 2>&1 && python3 --version || true
+              command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | head -n 1 || true
+
+              section "Dynamic loader configuration"
+              if [ -f /etc/ld.so.conf ]; then
+                printf "%s\n" "--- /etc/ld.so.conf"
+                cat /etc/ld.so.conf
+              fi
+              if [ -d /etc/ld.so.conf.d ]; then
+                for config in /etc/ld.so.conf.d/*; do
+                  [ -f "${config}" ] || continue
+                  printf "%s\n" "--- ${config}"
+                  cat "${config}"
+                done
+              fi
+              command -v ldconfig >/dev/null 2>&1 && \
+                ldconfig -p 2>/dev/null | grep -F "${LIBRARY}" || true
+
+              section "All matching files under /usr/local/Ascend"
+              matches=/tmp/ucm-library-matches.txt
+              find /usr/local/Ascend \( -type f -o -type l \) \
+                -name "${LIBRARY}*" -print 2>/dev/null | sort -u >"${matches}" || true
+              if [ ! -s "${matches}" ]; then
+                printf "No matching file found for %s\n" "${LIBRARY}"
+              fi
+              while IFS= read -r candidate; do
+                [ -n "${candidate}" ] || continue
+                printf "\n--- candidate: %s\n" "${candidate}"
+                ls -l "${candidate}" || true
+                resolved="$(readlink -f "${candidate}" 2>/dev/null || true)"
+                printf "resolved=%s\n" "${resolved:-<broken-or-unresolved>}"
+                if [ -n "${resolved}" ] && [ -e "${resolved}" ]; then
+                  command -v file >/dev/null 2>&1 && file -L "${candidate}" || true
+                  command -v readelf >/dev/null 2>&1 && \
+                    readelf -h "${resolved}" 2>/dev/null | \
+                      grep -E "Class:|Data:|Machine:" || true
+                  command -v readelf >/dev/null 2>&1 && \
+                    readelf -d "${resolved}" 2>/dev/null | \
+                      grep -E "SONAME|RPATH|RUNPATH|NEEDED" || true
+                fi
+              done <"${matches}"
+
+              section "Direct loader test"
+              if command -v python3 >/dev/null 2>&1; then
+                python3 - "${LIBRARY}" <<"PY"
+          import ctypes
+          import sys
+
+          library = sys.argv[1]
+          try:
+              loaded = ctypes.CDLL(library)
+          except OSError as error:
+              print(f"FAILED: ctypes.CDLL({library!r}): {error}")
+          else:
+              print(f"OK: ctypes.CDLL({library!r}) -> {loaded._name}")
+          PY
+              fi
+
+              section "Loader search trace"
+              if command -v python3 >/dev/null 2>&1; then
+                LD_DEBUG=libs python3 - "${LIBRARY}" 2>/tmp/ucm-loader-trace.log <<"PY" || true
+          import ctypes
+          import sys
+
+          ctypes.CDLL(sys.argv[1])
+          PY
+                grep -E "find library=|search path=|trying file=|${LIBRARY}" \
+                  /tmp/ucm-loader-trace.log | tail -n 250 || true
+              fi
+
+              section "Likely CANN consumers"
+              consumers=/tmp/ucm-library-consumers.txt
+              find /usr/local/Ascend -type f \
+                \( -name "libruntime.so*" -o -name "libascendcl.so*" \
+                   -o -name "libcann_hixl.so*" \) \
+                -print 2>/dev/null | sort -u >"${consumers}" || true
+              while IFS= read -r consumer; do
+                [ -n "${consumer}" ] || continue
+                printf "\n--- consumer: %s\n" "${consumer}"
+                command -v file >/dev/null 2>&1 && file -L "${consumer}" || true
+                command -v readelf >/dev/null 2>&1 && \
+                  readelf -d "${consumer}" 2>/dev/null | \
+                    grep -E "${LIBRARY}|RPATH|RUNPATH" || true
+                command -v ldd >/dev/null 2>&1 && \
+                  ldd "${consumer}" 2>&1 | \
+                    grep -E "${LIBRARY}|not found" || true
+              done <"${consumers}"
+            '
