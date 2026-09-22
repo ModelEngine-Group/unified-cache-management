@@ -42,7 +42,6 @@ class CopyStream {
 public:
     Status Setup(const int32_t deviceId, const size_t streamNumber)
     {
-        if (streamNumber == 0) { return Status::InvalidParam("invalid stream number"); }
         Trans::Device device;
         auto s = device.Setup(deviceId);
         if (s.Failure()) {
@@ -69,7 +68,6 @@ public:
                                       const std::vector<size_t>& sizes) noexcept
     {
         auto stream = NextStream();
-        if (!stream) { return Status::Error("copy stream is not setup"); }
         size_t offset = 0;
         for (size_t i = 0; i < sizes.size(); ++i) {
             if (sizes[i] != 0 && dst[i] != nullptr) {
@@ -93,7 +91,6 @@ public:
                                      const std::vector<size_t>& sizes) noexcept
     {
         auto stream = NextStream();
-        if (!stream) { return Status::Error("copy stream is not setup"); }
         size_t offset = 0;
         for (size_t i = 0; i < sizes.size(); ++i) {
             if (sizes[i] != 0 && src[i] != nullptr) {
@@ -117,7 +114,6 @@ public:
                                     const std::vector<size_t>& sizes) noexcept
     {
         auto stream = NextStream();
-        if (!stream) { return Status::Error("copy stream is not setup"); }
         size_t offset = 0;
         for (size_t i = 0; i < sizes.size(); ++i) {
             if (sizes[i] != 0 && dst[i] != nullptr) {
@@ -141,7 +137,6 @@ public:
                                    const std::vector<size_t>& sizes) noexcept
     {
         auto stream = NextStream();
-        if (!stream) { return Status::Error("copy stream is not setup"); }
         size_t offset = 0;
         for (size_t i = 0; i < sizes.size(); ++i) {
             if (sizes[i] != 0 && src[i] != nullptr) {
@@ -188,7 +183,6 @@ public:
 private:
     std::shared_ptr<Trans::Stream> NextStream() noexcept
     {
-        if (streamNumber_ == 0) { return nullptr; }
         auto& stream = streams_[streamIndex_];
         streamIndex_ = (streamIndex_ + 1) % streamNumber_;
         return stream;
