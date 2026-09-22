@@ -197,7 +197,6 @@ public:
             ::new (&slots[i]) SlotMeta();
             slots[i].Init();
         }
-        Hdr()->clockHands[rank].store(0, std::memory_order_relaxed);
     }
 
     void MarkReady() { Hdr()->magic.store(kCtrlMagic, std::memory_order_release); }
