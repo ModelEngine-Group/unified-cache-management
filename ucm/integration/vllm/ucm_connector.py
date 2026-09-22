@@ -2956,9 +2956,7 @@ class UCMCPConnector(UCMLayerWiseConnector):
         self.tp_rank %= self.tp_size
         self.tp_rank //= self.dcp_world_size
         if not self.is_mla:
-            # Match the DCP-normalized tp_rank and number of distinct KV shards.
-            self.tp_size //= self.dcp_world_size
-            vllm_config.parallel_config.tensor_parallel_size = self.tp_size
+            vllm_config.parallel_config.tensor_parallel_size //= self.dcp_world_size
 
         self.request_hasher = self._make_request_hasher(vllm_config)
         if role == KVConnectorRole.SCHEDULER:

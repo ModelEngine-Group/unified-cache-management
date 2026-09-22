@@ -43,6 +43,7 @@ def _manager_with_groups(full_attention_block_sizes):
         group = GroupInfo(
             group_id=group_id,
             block_size=block_size,
+            layer_names=(f"fa.{group_id}",),
         )
         manager.groups_by_id.append(group)
         manager.full_attn_groups.append(group)
@@ -51,6 +52,7 @@ def _manager_with_groups(full_attention_block_sizes):
     state_group = GroupInfo(
         group_id=state_id,
         block_size=8,
+        layer_names=("mamba.0",),
         is_mamba_align=True,
     )
     manager.groups_by_id.append(state_group)

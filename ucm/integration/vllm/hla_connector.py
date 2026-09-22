@@ -147,6 +147,7 @@ class GroupInfo:
 
     group_id: int
     block_size: int
+    layer_names: tuple[str, ...]
     is_mamba_align: bool = False
 
     @property
@@ -174,6 +175,7 @@ class KVCacheGroupManager:
             info = GroupInfo(
                 group_id=group_id,
                 block_size=block_size,
+                layer_names=tuple(group.layer_names),
                 is_mamba_align=is_mamba_align,
             )
             self.groups_by_id.append(info)
@@ -202,6 +204,18 @@ class KVCacheGroupManager:
         self.base_block_hasher = request_hasher.make_request_block_hasher(
             self.hash_block_size
         )
+
+        for g in self.groups_by_id:
+            assert self.lcm_block_size % g.block_size == 0, (
+                f"group {g.group_id} block_size={g.block_size} does not "
+                f"divide LCM={self.lcm_block_size}"
+            )
+        for sg in self.state_groups:
+            assert sg.is_mamba_align, (
+                f"state group {sg.group_id} is not mamba-align; "
+                f"UCMHybridLinearAttentionConnector only supports mamba-align "
+                f"state groups."
+            )
 
         logger.info(
             "KVCacheGroupManager initialized: "
@@ -813,7 +827,8 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 request_hasher=self.request_hasher,
                 hash_block_size=hash_block_size,
             )
-            self.block_size = self.group_manager.lcm_block_size
+            lcm_block_size = self.group_manager.lcm_block_size
+            self.block_size = lcm_block_size
             self.hash_block_size = self.group_manager.hash_block_size
             self._bind_request_block_hasher()
 
@@ -1024,13 +1039,14 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
 
         # GC heat update for all hit blocks across ranks.
         total_hit_tokens = total_hit_block_num * lcm_block_size
-        all_hit_full_attn = []
-        for group in self.group_manager.full_attn_groups:
-            group_keys = group_ucm_block_ids[group.group_id]
-            hbm_keys = group_keys[: num_computed_tokens // group.block_size]
-            if self.is_mla and hbm_keys:
-                self.store.prefetch(hbm_keys)
-            all_hit_full_attn.extend(group_keys[: total_hit_tokens // group.block_size])
+        hbm_hit_full_attn = num_computed_tokens // primary_full_attn.block_size
+        total_hit_full_attn = total_hit_tokens // primary_full_attn.block_size
+        all_hit_full_attn = primary_block_ids[0:total_hit_full_attn]
+        hbm_full_attn = primary_block_ids[0:hbm_hit_full_attn]
+        if hbm_full_attn:
+            self.store.prefetch(hbm_full_attn)
+        if mamba_prefetch_hashes:
+            self.store.prefetch(mamba_prefetch_hashes)
         # MLA full-attn is TP-replicated (shared hash), no per-rank entries to prefetch.
         # Only mamba blocks have per-rank entries needing heat update.
         per_rank_hashes = mamba_prefetch_hashes
