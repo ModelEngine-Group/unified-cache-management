@@ -29,13 +29,12 @@
 #include <cstdint>
 #include <deque>
 #include <optional>
-#include <vector>
 #include "store_health_config.h"
 
 namespace UC::PipelineStore {
 
 // I/O recording and passive queries are concurrent.
-// The caller serializes probe updates and UpdatePassiveHealth transitions.
+// The caller serializes probe updates, window sampling and health transitions.
 class StoreHealthState {
 public:
     using Clock = std::chrono::steady_clock;
@@ -48,37 +47,25 @@ public:
 
     explicit StoreHealthState(const StoreHealthConfig& config);
     bool RecordProbe(bool healthy, uint64_t generation, Time started, Time now);
-    void RecordIo(bool healthy, uint64_t generation, Time now);
-    bool PassiveThresholdExceeded(uint64_t generation, Time now) const;
+    void RecordIo(bool healthy, uint64_t generation);
+    void SamplePassiveWindow(Time now);
+    bool PassiveThresholdExceeded(uint64_t generation) const;
     // Requires a positive threshold observation and the caller's transition lock.
     bool UpdatePassiveHealth(uint64_t generation, Time now);
-    PassiveWindowStats GetPassiveWindowStats(Time now) const;
+    PassiveWindowStats GetPassiveWindowStats() const;
 
     bool Enabled() const { return enabled_.load(); }
     uint64_t Generation() const { return generation_.load(); }
     size_t FailureCount() const { return failureCount_; }
     size_t SampleCount() const { return probeResults_.size(); }
     std::chrono::milliseconds Cooldown() const { return cooldown_; }
+    std::chrono::milliseconds CooldownRemaining(Time now) const;
 
 private:
-    class AtomicSecondCounter {
-    public:
-        // Ignores older or out-of-range seconds; counts saturate at UINT32_MAX.
-        void Increment(std::chrono::seconds second);
-        // Returns zero outside [now - window + 1s, now].
-        uint32_t Count(std::chrono::seconds now, std::chrono::seconds window) const;
-        // Concurrent increments may fall on either side of a reset.
-        void Reset() { value_.store(0, std::memory_order_relaxed); }
-
-    private:
-        static constexpr uint64_t kCountMask = UINT32_MAX;
-        // High 32 bits: monotonic second; low 32 bits: count.
-        std::atomic<uint64_t> value_{0};
-    };
-
-    struct Bucket {
-        AtomicSecondCounter total;
-        AtomicSecondCounter failures;
+    struct PassiveSnapshot {
+        Time time;
+        uint64_t successes;
+        uint64_t failures;
     };
 
     bool ToHealthy(Time now);
@@ -87,11 +74,13 @@ private:
     StoreHealthConfig config_;
     std::atomic<bool> enabled_{true};
     std::atomic<uint64_t> generation_{0};
-    // Avoid scanning the window when no failures are recent.
-    AtomicSecondCounter recentFailures_;
+    std::atomic<uint64_t> ioSuccesses_{0};
+    std::atomic<uint64_t> ioFailures_{0};
+    std::atomic<uint64_t> windowStartSuccesses_{0};
+    std::atomic<uint64_t> windowStartFailures_{0};
+    std::deque<PassiveSnapshot> passiveSnapshots_;
     std::deque<bool> probeResults_;
     size_t failureCount_{0};
-    std::vector<Bucket> buckets_;
     std::chrono::milliseconds cooldown_{0};
     Time recoverAfter_{};
     std::optional<Time> recoveredAt_;

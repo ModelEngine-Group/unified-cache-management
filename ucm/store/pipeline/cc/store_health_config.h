@@ -40,7 +40,7 @@ struct StoreHealthConfig {
     bool passiveEnabled{true};
     std::chrono::seconds passiveWindow{60};
     size_t passiveFailureThreshold{2};
-    std::chrono::milliseconds initialCooldown{std::chrono::seconds(60)};
+    std::chrono::milliseconds initialCooldown{std::chrono::minutes(5)};
     std::chrono::milliseconds maxCooldown{std::chrono::seconds(3600)};
     double backoffFactor{2.0};
     std::chrono::milliseconds stableResetAfter{std::chrono::seconds(3600)};

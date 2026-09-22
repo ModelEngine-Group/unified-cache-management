@@ -26,44 +26,22 @@
 
 namespace UC::PipelineStore {
 
-void StoreHealthState::AtomicSecondCounter::Increment(std::chrono::seconds second)
-{
-    const auto stamp = static_cast<uint64_t>(second.count());
-    if (stamp > kCountMask) { return; }
-    auto value = value_.load(std::memory_order_relaxed);
-    for (;;) {
-        const auto previousSecond = value >> 32;
-        if (previousSecond > stamp) { return; }
-        const auto count = previousSecond == stamp ? value & kCountMask : 0;
-        if (count == kCountMask) { return; }
-        const auto next = (stamp << 32) | (count + 1);
-        if (value_.compare_exchange_weak(value, next, std::memory_order_relaxed)) { return; }
-    }
-}
+StoreHealthState::StoreHealthState(const StoreHealthConfig& config) : config_(config) {}
 
-uint32_t StoreHealthState::AtomicSecondCounter::Count(std::chrono::seconds now,
-                                                      std::chrono::seconds window) const
+std::chrono::milliseconds StoreHealthState::CooldownRemaining(Time now) const
 {
-    const auto value = value_.load(std::memory_order_relaxed);
-    const auto age = now.count() - static_cast<int64_t>(value >> 32);
-    if (age < 0 || age >= window.count()) { return 0; }
-    return static_cast<uint32_t>(value & kCountMask);
-}
-
-StoreHealthState::StoreHealthState(const StoreHealthConfig& config)
-    : config_(config), buckets_(config.passiveWindow.count())
-{
+    return !Enabled() && now < recoverAfter_
+               ? std::chrono::ceil<std::chrono::milliseconds>(recoverAfter_ - now)
+               : std::chrono::milliseconds{0};
 }
 
 bool StoreHealthState::ToHealthy(Time now)
 {
     ++generation_;
-    // In-flight increments may overlap the reset; passive counts are approximate.
-    for (auto& bucket : buckets_) {
-        bucket.total.Reset();
-        bucket.failures.Reset();
-    }
-    recentFailures_.Reset();
+    // In-flight increments may cross this baseline; passive counts are approximate.
+    windowStartSuccesses_.store(ioSuccesses_.load(std::memory_order_relaxed));
+    windowStartFailures_.store(ioFailures_.load(std::memory_order_relaxed));
+    passiveSnapshots_.clear();
     recoveredAt_ = now;
     enabled_.store(true);
     return true;
@@ -104,24 +82,32 @@ bool StoreHealthState::RecordProbe(bool healthy, uint64_t generation, Time start
     return false;
 }
 
-void StoreHealthState::RecordIo(bool healthy, uint64_t generation, Time now)
+void StoreHealthState::RecordIo(bool healthy, uint64_t generation)
 {
     if (!config_.passiveEnabled || !Enabled() || generation != Generation()) { return; }
-    const auto second = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch());
-    auto& bucket = buckets_[second.count() % buckets_.size()];
-    bucket.total.Increment(second);
-    if (!healthy) {
-        bucket.failures.Increment(second);
-        recentFailures_.Increment(second);
+    auto& counter = healthy ? ioSuccesses_ : ioFailures_;
+    counter.fetch_add(1, std::memory_order_relaxed);
+}
+
+void StoreHealthState::SamplePassiveWindow(Time now)
+{
+    if (!config_.passiveEnabled) { return; }
+    passiveSnapshots_.push_back({now, ioSuccesses_.load(std::memory_order_relaxed),
+                                 ioFailures_.load(std::memory_order_relaxed)});
+    const auto cutoff = now - config_.passiveWindow;
+    while (!passiveSnapshots_.empty() && passiveSnapshots_.front().time <= cutoff) {
+        const auto& snapshot = passiveSnapshots_.front();
+        windowStartSuccesses_.store(snapshot.successes);
+        windowStartFailures_.store(snapshot.failures);
+        passiveSnapshots_.pop_front();
     }
 }
 
-bool StoreHealthState::PassiveThresholdExceeded(uint64_t generation, Time now) const
+bool StoreHealthState::PassiveThresholdExceeded(uint64_t generation) const
 {
     if (!config_.passiveEnabled || generation != Generation() || !Enabled()) { return false; }
-    const auto second = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch());
-    if (recentFailures_.Count(second, config_.passiveWindow) == 0) { return false; }
-    return GetPassiveWindowStats(now).failures >= config_.passiveFailureThreshold;
+    const auto start = windowStartFailures_.load();
+    return ioFailures_.load(std::memory_order_relaxed) - start >= config_.passiveFailureThreshold;
 }
 
 bool StoreHealthState::UpdatePassiveHealth(uint64_t generation, Time now)
@@ -130,17 +116,14 @@ bool StoreHealthState::UpdatePassiveHealth(uint64_t generation, Time now)
     return ToUnhealthy(now);
 }
 
-StoreHealthState::PassiveWindowStats StoreHealthState::GetPassiveWindowStats(Time now) const
+StoreHealthState::PassiveWindowStats StoreHealthState::GetPassiveWindowStats() const
 {
-    const auto second = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch());
-    PassiveWindowStats stats;
-    for (const auto& sample : buckets_) {
-        const auto failures = sample.failures.Count(second, config_.passiveWindow);
-        const auto total = sample.total.Count(second, config_.passiveWindow);
-        stats.total += total;
-        stats.failures += std::min(failures, total);
-    }
-    return stats;
+    // Read baselines first so a concurrent sample cannot cause unsigned underflow.
+    const auto startSuccesses = windowStartSuccesses_.load();
+    const auto startFailures = windowStartFailures_.load();
+    const auto successes = ioSuccesses_.load(std::memory_order_relaxed) - startSuccesses;
+    const auto failures = ioFailures_.load(std::memory_order_relaxed) - startFailures;
+    return {successes + failures, failures};
 }
 
 }  // namespace UC::PipelineStore

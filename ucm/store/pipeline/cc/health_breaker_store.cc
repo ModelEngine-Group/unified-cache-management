@@ -147,9 +147,19 @@ Status HealthBreakerStore::CheckHealth()
         UC_WARN("Store health check({}) failed({}).", storeId_, status);
     }
     std::lock_guard<std::mutex> lock(healthMutex_);
-    UpdateState(healthState_->RecordProbe(status.Success(), generation, started,
-                                          StoreHealthState::Clock::now()),
+    const auto now = StoreHealthState::Clock::now();
+    UpdateState(healthState_->RecordProbe(status.Success(), generation, started, now),
                 "active_probe");
+    if (generation == healthState_->Generation() && healthState_->FailureCount() == 0 &&
+        healthState_->SampleCount() == config_.healthWindowSize) {
+        const auto remaining = healthState_->CooldownRemaining(now);
+        if (remaining.count() > 0) {
+            UC_INFO_UNLIMITED(
+                "Store health breaker({}) has a healthy probe window; waiting for "
+                "cooldown, remaining_ms={}.",
+                storeId_, remaining.count());
+        }
+    }
     RecordProbeMetrics(status.Success());
     return status;
 }
@@ -187,9 +197,8 @@ Status HealthBreakerStore::Wait(Detail::TaskHandle taskId)
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_passive_failures_total"), 1.0);
         }
     }
-    const auto now = StoreHealthState::Clock::now();
-    healthState_->RecordIo(status.Success(), generation, now);
-    if (healthState_->PassiveThresholdExceeded(generation, now)) {
+    healthState_->RecordIo(status.Success(), generation);
+    if (healthState_->PassiveThresholdExceeded(generation)) {
         // only lock and set state when need to switch to unhealthy
         std::lock_guard<std::mutex> lock(healthMutex_);
         const auto changed =
@@ -247,7 +256,12 @@ void HealthBreakerStore::ProbeLoop()
         lock.unlock();
         const auto start = std::chrono::steady_clock::now();
         if (config_.passiveEnabled) {
-            const auto stats = healthState_->GetPassiveWindowStats(StoreHealthState::Clock::now());
+            StoreHealthState::PassiveWindowStats stats;
+            {
+                std::lock_guard<std::mutex> healthLock(healthMutex_);
+                healthState_->SamplePassiveWindow(start);
+                stats = healthState_->GetPassiveWindowStats();
+            }
             if (stats.failures > 0) {
                 UC_INFO_UNLIMITED(
                     "Store passive health window({}): window_s={}, samples={}, failures={}, "

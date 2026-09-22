@@ -6,6 +6,8 @@
 
 启用健康检查后，Pipeline 为每个加载的阶段包装 `HealthBreakerStore`。包装器初始允许操作，并保留一个滚动探测结果窗口。默认情况下，窗口内出现两次失败就阻止新的操作；恢复则要求完整窗口中的八次结果全部成功。
 
+Posix 和 Mooncake 还会根据实际 I/O 失败触发被动熔断，与主动探测独立统计。恢复须等待冷却结束；恢复后短期内再次故障会延长冷却时间，持续稳定后重置退避。日志记录包含失败的被动窗口，以及探测已正常但仍在冷却时的剩余时间。
+
 | 被阻止期间的操作 | 结果 |
 | --- | --- |
 | `Lookup` | 返回所有请求块均未命中 |
@@ -70,6 +72,8 @@ enable_metrics: true
 
 Gauge 为 1 表示包装器允许操作，为 0 表示阻止操作。Counter 记录探测成功、失败及超时，不记录状态迁移次数。一次成功探测不一定会使被阻止的 Gauge 恢复为 1。
 
+`ucm:posix_passive_failures_total` 和 `ucm:mooncake_passive_failures_total` 单独统计观察到的 I/O 失败次数，不与主动探测混算。
+
 先查看保留完整标签的各条序列：
 
 ```promql
@@ -89,9 +93,9 @@ increase(ucm:posix_unhealthy_count_total{job="vllm"}[5m])
 ## 定位故障并确认恢复
 
 1. 检查抓取目标，根据标签找到对应进程。
-2. 在其日志中查找 `Store health check` 失败和 `transitioned to UNHEALTHY`；日志会给出流水线阶段标识及探测结果窗口。
+2. 在其日志中查找 `Store health check` 失败和 `transitioned to UNHEALTHY`；日志会给出流水线阶段标识、触发原因及冷却时间。
 3. Posix 检查该进程的挂载、权限、可用容量及读写删除错误；Mooncake 检查客户端、metadata/master 连接和具体操作错误。
-4. 修复依赖后，观察成功探测逐步替换失败窗口，并确认 `transitioned to HEALTHY` 及对应 Gauge 更新。
+4. 修复依赖后，观察成功探测逐步替换失败窗口，在冷却结束后确认 `transitioned to HEALTHY` 及对应 Gauge 更新。
 5. 单独重做[外部缓存验证](../quick_start/index.md#vllm-verify-the-service-and-external-cache)。探测恢复不能证明某个请求的缓存恢复。
 
 指标单位和导出路径见[指标参考](metrics-reference.md)。策略和操作行为分别定义在
