@@ -129,6 +129,10 @@ _COUNTER_METRICS = [
         "Number of failed Posix health probes",
     ),
     (
+        "posix_passive_failures_total",
+        "Number of failed Posix IO tasks observed by passive health detection",
+    ),
+    (
         "posix_aio_timeout_total",
         "Number of Posix AIO task or submit timeouts",
     ),
@@ -199,6 +203,10 @@ _COUNTER_METRICS = [
     (
         "mooncake_unhealthy_count_total",
         "Number of failed Mooncake health probes",
+    ),
+    (
+        "mooncake_passive_failures_total",
+        "Number of failed Mooncake IO tasks observed by passive health detection",
     ),
     (
         "mooncake_load_bytes_total",
