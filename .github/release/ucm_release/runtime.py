@@ -59,6 +59,8 @@ _ASCEND_BACKEND_BY_SOC = {
     "ascend910_9391": "cann-a3",
     "ascend950dt_9582": "cann-a5",
 }
+# Policy validation must cover the same backend identities that probes emit.
+SUPPORTED_BACKENDS = frozenset(("cuda", *_ASCEND_BACKEND_BY_SOC.values()))
 _UNREPORTED = "unreported"
 
 JsonLoader = Callable[[str], object]
