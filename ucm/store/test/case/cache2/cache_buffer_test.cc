@@ -5,13 +5,16 @@
  */
 #include "../../../cache2/cc/cache_buffer.h"
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <future>
 #include <gtest/gtest.h>
 #include <new>
 #include <optional>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 namespace UC::Cache2 {
@@ -53,11 +56,15 @@ struct BufferTestAccess {
         buffer.myRank_ = rank;
     }
 
-    static Buffer::Handle TryGet(Buffer& buffer, const Detail::BlockId& blockId, size_t offset,
-                                 size_t attempts)
+    static size_t TryAcquireSlot(Buffer& buffer, const Detail::BlockId& blockId, size_t offset,
+                                 size_t attempts, bool& owner)
     {
-        return buffer.TryGet(blockId, offset, false, attempts);
+        return buffer.TryAcquireSlot(blockId, offset, false, attempts, owner);
     }
+
+    static void Release(Buffer& buffer, size_t slot) { buffer.Release(slot); }
+
+    static void MarkReady(Buffer& buffer, size_t slot) { buffer.MarkReady(slot); }
 
     static CtrlLayout& Layout(Buffer& buffer) { return buffer.ctrl_.Layout(); }
 
@@ -74,6 +81,13 @@ struct BufferTestAccess {
 };
 
 namespace {
+
+static_assert(!std::is_default_constructible_v<Buffer::Handle>);
+static_assert(!std::is_constructible_v<Buffer::Handle, Buffer*, size_t, bool>);
+static_assert(!std::is_constructible_v<bool, Buffer::Handle>);
+static_assert(!std::is_copy_constructible_v<Buffer::Handle>);
+static_assert(std::is_nothrow_move_constructible_v<Buffer::Handle>);
+static_assert(std::is_nothrow_move_assignable_v<Buffer::Handle>);
 
 Detail::BlockId MakeBlockId(uint32_t value)
 {
@@ -109,12 +123,10 @@ TEST_F(Cache2BufferTest, PreallocLeavesOwnerElectionForDemandGet)
     EXPECT_EQ(BufferTestAccess::ReferenceCount(buffer_, block, 0), 0);
 
     auto owner = buffer_.Get(block, 0);
-    ASSERT_TRUE(owner);
     EXPECT_TRUE(owner.Owner());
     EXPECT_EQ(owner.GetState(), CtrlLayout::SlotMeta::State::Loading);
 
     auto reader = buffer_.Get(block, 0);
-    ASSERT_TRUE(reader);
     EXPECT_FALSE(reader.Owner());
     owner.MarkReady();
     EXPECT_TRUE(reader.Ready());
@@ -129,7 +141,7 @@ TEST_F(Cache2BufferTest, ConcurrentPreallocAndDemandElectExactlyOneOwner)
         auto block = MakeBlockId(static_cast<uint32_t>(round + 100));
         std::atomic<bool> start{false};
         std::atomic<size_t> owners{0};
-        std::atomic<size_t> valid{0};
+        std::atomic<size_t> acquired{0};
         std::thread prealloc([&] {
             while (!start.load(std::memory_order_acquire)) { std::this_thread::yield(); }
             buffer_.Prealloc(block, 0);
@@ -140,8 +152,7 @@ TEST_F(Cache2BufferTest, ConcurrentPreallocAndDemandElectExactlyOneOwner)
             loads.emplace_back([&] {
                 while (!start.load(std::memory_order_acquire)) { std::this_thread::yield(); }
                 auto handle = buffer_.Get(block, 0);
-                if (!handle) { return; }
-                valid.fetch_add(1, std::memory_order_relaxed);
+                acquired.fetch_add(1, std::memory_order_relaxed);
                 if (handle.Owner()) {
                     owners.fetch_add(1, std::memory_order_relaxed);
                     handle.MarkReady();
@@ -151,7 +162,7 @@ TEST_F(Cache2BufferTest, ConcurrentPreallocAndDemandElectExactlyOneOwner)
         start.store(true, std::memory_order_release);
         prealloc.join();
         for (auto& load : loads) { load.join(); }
-        EXPECT_EQ(valid.load(std::memory_order_relaxed), kThreads) << "round " << round;
+        EXPECT_EQ(acquired.load(std::memory_order_relaxed), kThreads) << "round " << round;
         EXPECT_EQ(owners.load(std::memory_order_relaxed), 1) << "round " << round;
     }
 }
@@ -164,7 +175,6 @@ TEST_F(Cache2BufferTest, ExistDoesNotStealPreallocatedOwner)
     EXPECT_EQ(BufferTestAccess::ReferenceCount(buffer_, block, 0), 0);
 
     auto owner = buffer_.Get(block, 0);
-    ASSERT_TRUE(owner);
     EXPECT_TRUE(owner.Owner());
     owner.MarkReady();
 }
@@ -172,23 +182,91 @@ TEST_F(Cache2BufferTest, ExistDoesNotStealPreallocatedOwner)
 TEST_F(Cache2BufferTest, AbandonedOwnerPublishesFailureAndCanRetry)
 {
     auto block = MakeBlockId(3);
-    auto owner = buffer_.Get(block, 0);
-    auto reader = buffer_.Get(block, 0);
-    ASSERT_TRUE(owner);
-    ASSERT_TRUE(reader);
-    EXPECT_TRUE(owner.Owner());
-    EXPECT_FALSE(reader.Owner());
-
-    owner = {};
-    EXPECT_EQ(reader.GetState(), CtrlLayout::SlotMeta::State::Failed);
-    reader = {};
+    {
+        std::optional<Buffer::Handle> reader;
+        {
+            auto owner = buffer_.Get(block, 0);
+            reader.emplace(buffer_.Get(block, 0));
+            EXPECT_TRUE(owner.Owner());
+            EXPECT_FALSE(reader->Owner());
+        }
+        EXPECT_EQ(reader->GetState(), CtrlLayout::SlotMeta::State::Failed);
+    }
 
     auto retry = buffer_.Get(block, 0);
-    ASSERT_TRUE(retry);
     EXPECT_TRUE(retry.Owner());
     EXPECT_EQ(retry.GetState(), CtrlLayout::SlotMeta::State::Loading);
     retry.MarkReady();
     EXPECT_TRUE(retry.Ready());
+}
+
+TEST_F(Cache2BufferTest, MoveTransfersReferenceWithoutAbandoningOwner)
+{
+    auto block = MakeBlockId(4);
+    {
+        auto source = buffer_.Get(block, 0);
+        {
+            auto moved = std::move(source);
+            EXPECT_TRUE(moved.Owner());
+            EXPECT_EQ(moved.GetState(), CtrlLayout::SlotMeta::State::Loading);
+            EXPECT_EQ(BufferTestAccess::ReferenceCount(buffer_, block, 0), 1);
+            moved.MarkReady();
+        }
+        EXPECT_EQ(BufferTestAccess::ReferenceCount(buffer_, block, 0), 0);
+    }
+    EXPECT_EQ(BufferTestAccess::ReferenceCount(buffer_, block, 0), 0);
+    auto reader = buffer_.Get(block, 0);
+    EXPECT_FALSE(reader.Owner());
+    EXPECT_TRUE(reader.Ready());
+}
+
+TEST_F(Cache2BufferTest, MoveAssignmentAbandonsOldOwnerAndTransfersNewReference)
+{
+    auto oldBlock = MakeBlockId(5);
+    auto newBlock = MakeBlockId(6);
+    auto reader = [&] {
+        auto destination = buffer_.Get(oldBlock, 0);
+        auto observer = buffer_.Get(oldBlock, 0);
+        auto source = buffer_.Get(newBlock, 0);
+        destination = std::move(source);
+        EXPECT_EQ(observer.GetState(), CtrlLayout::SlotMeta::State::Failed);
+        EXPECT_EQ(BufferTestAccess::ReferenceCount(buffer_, oldBlock, 0), 1);
+        EXPECT_EQ(BufferTestAccess::ReferenceCount(buffer_, newBlock, 0), 1);
+        EXPECT_TRUE(destination.Owner());
+        destination.MarkReady();
+        return observer;
+    }();
+    EXPECT_EQ(BufferTestAccess::ReferenceCount(buffer_, newBlock, 0), 0);
+    EXPECT_EQ(reader.GetState(), CtrlLayout::SlotMeta::State::Failed);
+}
+
+TEST_F(Cache2BufferTest, GetWaitsForPinnedSlotAndReturnsAnAcquiredHandle)
+{
+    std::vector<Buffer::Handle> pinned;
+    pinned.reserve(kSlotsPerRank);
+    for (uint32_t value = 0; value < kSlotsPerRank; ++value) {
+        pinned.push_back(buffer_.Get(MakeBlockId(value), 0));
+        pinned.back().MarkReady();
+    }
+
+    auto releasedSlot = pinned.back().SlotIndex();
+    auto block = MakeBlockId(1000);
+    std::promise<void> started;
+    auto entered = started.get_future();
+    auto pending = std::async(std::launch::async, [&] {
+        started.set_value();
+        return buffer_.Get(block, 0);
+    });
+    entered.wait();
+    EXPECT_EQ(pending.wait_for(std::chrono::milliseconds(20)), std::future_status::timeout);
+    pinned.pop_back();
+
+    auto handle = pending.get();
+    EXPECT_EQ(handle.SlotIndex(), releasedSlot);
+    EXPECT_TRUE(handle.Owner());
+    EXPECT_EQ(handle.GetState(), CtrlLayout::SlotMeta::State::Loading);
+    EXPECT_EQ(BufferTestAccess::ReferenceCount(buffer_, block, 0), 1);
+    handle.MarkReady();
 }
 
 TEST(Cache2BufferPartitionTest, ClockEvictsOnlyInsideLocalRankAndHonorsSecondChanceAndPins)
@@ -203,36 +281,33 @@ TEST(Cache2BufferPartitionTest, ClockEvictsOnlyInsideLocalRankAndHonorsSecondCha
     BufferTestAccess::Init(buffer, memory, kRanks, kSlotsPerRank, kBuckets, kLocks);
     BufferTestAccess::InitRank(buffer, 1);
 
-    std::optional<Buffer::Handle> pinned;
-    for (uint32_t value = 1; value <= kSlotsPerRank; ++value) {
-        auto handle = buffer.Get(MakeBlockId(value), 0);
-        ASSERT_TRUE(handle);
-        EXPECT_GE(handle.SlotIndex(), kSlotsPerRank);
-        EXPECT_LT(handle.SlotIndex(), kRanks * kSlotsPerRank);
-        EXPECT_TRUE(handle.Owner());
-        handle.MarkReady();
-        if (value == 1) { pinned.emplace(std::move(handle)); }
+    {
+        std::optional<Buffer::Handle> pinned;
+        for (uint32_t value = 1; value <= kSlotsPerRank; ++value) {
+            auto handle = buffer.Get(MakeBlockId(value), 0);
+            EXPECT_GE(handle.SlotIndex(), kSlotsPerRank);
+            EXPECT_LT(handle.SlotIndex(), kRanks * kSlotsPerRank);
+            EXPECT_TRUE(handle.Owner());
+            handle.MarkReady();
+            if (value == 1) { pinned.emplace(std::move(handle)); }
+        }
+
+        auto replacement = buffer.Get(MakeBlockId(100), 0);
+        EXPECT_EQ(replacement.SlotIndex(), kSlotsPerRank + 1);
+        EXPECT_TRUE(replacement.Owner());
+        replacement.MarkReady();
+        EXPECT_FALSE(buffer.Exist(MakeBlockId(2), 0));
+
+        ASSERT_TRUE(pinned.has_value());
+        EXPECT_EQ(pinned->SlotIndex(), kSlotsPerRank);
+        EXPECT_TRUE(pinned->Ready());
+        EXPECT_TRUE(buffer.Exist(MakeBlockId(1), 0));
+        for (size_t i = 0; i < kSlotsPerRank; ++i) {
+            auto& meta = BufferTestAccess::Layout(buffer).SlotMetaArr()[i];
+            EXPECT_EQ(meta.reference.load(std::memory_order_relaxed), 0);
+            EXPECT_EQ(meta.hash.load(std::memory_order_relaxed), kInvalid);
+        }
     }
-
-    auto replacement = buffer.Get(MakeBlockId(100), 0);
-    ASSERT_TRUE(replacement);
-    EXPECT_EQ(replacement.SlotIndex(), kSlotsPerRank + 1);
-    EXPECT_TRUE(replacement.Owner());
-    replacement.MarkReady();
-    EXPECT_FALSE(buffer.Exist(MakeBlockId(2), 0));
-
-    ASSERT_TRUE(pinned.has_value());
-    EXPECT_EQ(pinned->SlotIndex(), kSlotsPerRank);
-    EXPECT_TRUE(pinned->Ready());
-    EXPECT_TRUE(buffer.Exist(MakeBlockId(1), 0));
-    for (size_t i = 0; i < kSlotsPerRank; ++i) {
-        auto& meta = BufferTestAccess::Layout(buffer).SlotMetaArr()[i];
-        EXPECT_EQ(meta.reference.load(std::memory_order_relaxed), 0);
-        EXPECT_EQ(meta.hash.load(std::memory_order_relaxed), kInvalid);
-    }
-
-    pinned.reset();
-    replacement = {};
     ::operator delete(memory, std::align_val_t{64});
 }
 
@@ -263,32 +338,34 @@ TEST(Cache2BufferLockTest, CrossStripeMigrationRollsBackAndCanRetry)
     }
     ASSERT_TRUE(foundDifferentStripe);
 
-    auto old = buffer.Get(oldBlock, 0);
-    ASSERT_TRUE(old);
-    old.MarkReady();
-    auto slot = old.SlotIndex();
-    old = {};
+    size_t slot;
+    {
+        auto old = buffer.Get(oldBlock, 0);
+        old.MarkReady();
+        slot = old.SlotIndex();
+    }
     layout.SlotMetaArr()[slot].accessed.store(0, std::memory_order_relaxed);
 
     auto* oldLock = layout.LockOf(oldBucket);
     oldLock->Lock();
-    auto failed = BufferTestAccess::TryGet(buffer, newBlock, 0, 1);
-    EXPECT_FALSE(failed);
+    bool owner = false;
+    auto failed = BufferTestAccess::TryAcquireSlot(buffer, newBlock, 0, 1, owner);
+    EXPECT_EQ(failed, kInvalid);
     EXPECT_EQ(layout.SlotMetaArr()[slot].reference.load(std::memory_order_acquire), 0);
     EXPECT_EQ(layout.SlotMetaArr()[slot].hash.load(std::memory_order_acquire), oldBucket);
     EXPECT_EQ(BufferTestAccess::FindSlot(buffer, oldBlock, 0), slot);
     oldLock->Unlock();
 
     layout.SlotMetaArr()[slot].accessed.store(0, std::memory_order_relaxed);
-    auto replacement = BufferTestAccess::TryGet(buffer, newBlock, 0, 1);
-    ASSERT_TRUE(replacement);
-    EXPECT_TRUE(replacement.Owner());
-    EXPECT_EQ(replacement.SlotIndex(), slot);
-    replacement.MarkReady();
+    auto replacement = BufferTestAccess::TryAcquireSlot(buffer, newBlock, 0, 1, owner);
+    ASSERT_NE(replacement, kInvalid);
+    EXPECT_TRUE(owner);
+    EXPECT_EQ(replacement, slot);
+    BufferTestAccess::MarkReady(buffer, replacement);
     EXPECT_EQ(BufferTestAccess::FindSlot(buffer, oldBlock, 0), kInvalid);
     EXPECT_EQ(BufferTestAccess::FindSlot(buffer, newBlock, 0), slot);
 
-    replacement = {};
+    BufferTestAccess::Release(buffer, replacement);
     ::operator delete(memory, std::align_val_t{64});
 }
 
@@ -304,26 +381,26 @@ TEST(Cache2BufferOptimisticTest, ReadyHitSucceedsWhileBucketStripeIsLocked)
     BufferTestAccess::Init(buffer, memory, kRanks, kSlotsPerRank, kBuckets, kLocks);
 
     auto block = MakeBlockId(200);
-    auto owner = buffer.Get(block, 0);
-    ASSERT_TRUE(owner);
-    owner.MarkReady();
-    auto slot = owner.SlotIndex();
-    owner = {};
+    size_t slot;
+    {
+        auto owner = buffer.Get(block, 0);
+        owner.MarkReady();
+        slot = owner.SlotIndex();
+    }
 
     auto& layout = BufferTestAccess::Layout(buffer);
     auto* lock = layout.LockOf(BufferTestAccess::BucketOf(buffer, block));
     lock->Lock();
-    auto hit = BufferTestAccess::TryGet(buffer, block, 0, 1);
-    auto valid = static_cast<bool>(hit);
-    if (valid) {
-        EXPECT_FALSE(hit.Owner());
-        EXPECT_TRUE(hit.Ready());
-        EXPECT_EQ(hit.SlotIndex(), slot);
-    }
+    bool owner = true;
+    auto hit = BufferTestAccess::TryAcquireSlot(buffer, block, 0, 1, owner);
     lock->Unlock();
-    ASSERT_TRUE(valid);
+    ASSERT_NE(hit, kInvalid);
+    EXPECT_FALSE(owner);
+    EXPECT_EQ(hit, slot);
+    EXPECT_EQ(layout.SlotMetaArr()[hit].state.load(std::memory_order_acquire),
+              CtrlLayout::SlotMeta::State::Ready);
 
-    hit = {};
+    BufferTestAccess::Release(buffer, hit);
     ::operator delete(memory, std::align_val_t{64});
 }
 
@@ -340,33 +417,34 @@ TEST(Cache2BufferOptimisticTest, PinnedHitPreventsSlotReconfigurationUntilReleas
 
     auto oldBlock = MakeBlockId(300);
     auto newBlock = MakeBlockId(301);
-    auto owner = buffer.Get(oldBlock, 0);
-    ASSERT_TRUE(owner);
-    owner.MarkReady();
-    owner = {};
+    {
+        auto owner = buffer.Get(oldBlock, 0);
+        owner.MarkReady();
+    }
 
-    auto pinned = BufferTestAccess::TryGet(buffer, oldBlock, 0, 1);
-    ASSERT_TRUE(pinned);
-    EXPECT_FALSE(pinned.Owner());
-    auto& meta = BufferTestAccess::Layout(buffer).SlotMetaArr()[pinned.SlotIndex()];
+    bool owner = true;
+    auto pinned = BufferTestAccess::TryAcquireSlot(buffer, oldBlock, 0, 1, owner);
+    ASSERT_NE(pinned, kInvalid);
+    EXPECT_FALSE(owner);
+    auto& meta = BufferTestAccess::Layout(buffer).SlotMetaArr()[pinned];
     meta.accessed.store(0, std::memory_order_relaxed);
-    auto blocked = BufferTestAccess::TryGet(buffer, newBlock, 0, 2);
-    EXPECT_FALSE(blocked);
+    auto blocked = BufferTestAccess::TryAcquireSlot(buffer, newBlock, 0, 2, owner);
+    EXPECT_EQ(blocked, kInvalid);
     EXPECT_NE(BufferTestAccess::FindSlot(buffer, oldBlock, 0), kInvalid);
     EXPECT_EQ(BufferTestAccess::FindSlot(buffer, newBlock, 0), kInvalid);
 
-    auto slot = pinned.SlotIndex();
-    pinned = {};
+    auto slot = pinned;
+    BufferTestAccess::Release(buffer, pinned);
     meta.accessed.store(0, std::memory_order_relaxed);
-    auto replacement = BufferTestAccess::TryGet(buffer, newBlock, 0, 1);
-    ASSERT_TRUE(replacement);
-    EXPECT_TRUE(replacement.Owner());
-    EXPECT_EQ(replacement.SlotIndex(), slot);
-    replacement.MarkReady();
+    auto replacement = BufferTestAccess::TryAcquireSlot(buffer, newBlock, 0, 1, owner);
+    ASSERT_NE(replacement, kInvalid);
+    EXPECT_TRUE(owner);
+    EXPECT_EQ(replacement, slot);
+    BufferTestAccess::MarkReady(buffer, replacement);
     EXPECT_EQ(BufferTestAccess::FindSlot(buffer, oldBlock, 0), kInvalid);
     EXPECT_EQ(BufferTestAccess::FindSlot(buffer, newBlock, 0), slot);
 
-    replacement = {};
+    BufferTestAccess::Release(buffer, replacement);
     ::operator delete(memory, std::align_val_t{64});
 }
 

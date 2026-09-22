@@ -24,6 +24,7 @@
 #pragma once
 
 #include <atomic>
+#include <cassert>
 #include <cstddef>
 #include <cstring>
 #include <limits>
@@ -58,9 +59,9 @@ class Buffer {
 public:
     class Handle {
         friend class Buffer;
-        Buffer* buf_{nullptr};
-        size_t slotIdx_{kInvalid};
-        bool owner_{false};
+        Buffer* buf_;
+        size_t slotIdx_;
+        bool owner_;
 
         Handle(Buffer* buf, size_t slotIdx, bool owner)
             : buf_(buf), slotIdx_(slotIdx), owner_(owner)
@@ -68,7 +69,7 @@ public:
         }
 
     public:
-        Handle() = default;
+        Handle() = delete;
         Handle(const Handle&) = delete;
         Handle& operator=(const Handle&) = delete;
         Handle(Handle&& o) noexcept : buf_(o.buf_), slotIdx_(o.slotIdx_), owner_(o.owner_)
@@ -85,33 +86,30 @@ public:
         }
         ~Handle()
         {
-            if (Valid()) {
+            // A moved-from handle no longer owns a slot reference.
+            if (buf_ != nullptr) {
                 if (owner_ && GetState() == State::Loading) { buf_->MarkFailed(slotIdx_); }
                 buf_->Release(slotIdx_);
             }
         }
-        explicit operator bool() const { return Valid(); }
+        // Accessors require a handle that has not been moved from.
         bool Owner() const { return owner_; }
-        bool HostAccessible() const { return Valid() && buf_->data_.HostAccessibleOf(slotIdx_); }
-        size_t SlotIndex() const { return Valid() ? slotIdx_ : kInvalid; }
-        void* Data() { return Valid() ? buf_->data_.DataAt(slotIdx_) : nullptr; }
-        void* DeviceData() { return Valid() ? buf_->data_.DeviceDataAt(slotIdx_) : nullptr; }
-        CtrlLayout::SlotMeta::State GetState() const
-        {
-            return Valid() ? buf_->GetState(slotIdx_) : State::Failed;
-        }
+        bool HostAccessible() const { return buf_->data_.HostAccessibleOf(slotIdx_); }
+        size_t SlotIndex() const { return slotIdx_; }
+        void* Data() { return buf_->data_.DataAt(slotIdx_); }
+        void* DeviceData() { return buf_->data_.DeviceDataAt(slotIdx_); }
+        CtrlLayout::SlotMeta::State GetState() const { return buf_->GetState(slotIdx_); }
         bool Ready() const { return GetState() == State::Ready; }
         void MarkReady()
         {
-            if (Valid() && Owner()) { buf_->MarkReady(slotIdx_); }
+            if (Owner()) { buf_->MarkReady(slotIdx_); }
         }
         void MarkFailed()
         {
-            if (Valid() && Owner()) { buf_->MarkFailed(slotIdx_); }
+            if (Owner()) { buf_->MarkFailed(slotIdx_); }
         }
 
     private:
-        bool Valid() const { return buf_ != nullptr && slotIdx_ != kInvalid; }
         void Swap(Handle& o) noexcept
         {
             std::swap(buf_, o.buf_);
@@ -160,17 +158,20 @@ public:
         return data_.Setup(layout, cfg.deviceId, slotSize_, slotsPerRank_);
     }
 
+    // Requires successful worker-side Setup; observers must not call Get.
+    // Waits for a slot reference and always returns a valid handle, not necessarily Ready.
     Handle Get(const Detail::BlockId& blockId, size_t offset, bool allowReserved = false)
     {
-        if (myRank_ == kInvalid) { return Handle{}; }
+        assert(myRank_ < rankCount_);
+        assert(reservedSlots_ < slotsPerRank_);
         auto usable = slotsPerRank_ - (allowReserved ? 0 : reservedSlots_);
-        if (usable == 0) { return Handle{}; }
         auto attempts = usable > std::numeric_limits<size_t>::max() / 2
                             ? std::numeric_limits<size_t>::max()
                             : 2 * usable;
         for (;;) {
-            auto handle = TryGet(blockId, offset, allowReserved, attempts);
-            if (handle) { return handle; }
+            bool owner = false;
+            auto slot = TryAcquireSlot(blockId, offset, allowReserved, attempts, owner);
+            if (slot != kInvalid) { return Handle{this, slot, owner}; }
             std::this_thread::yield();
         }
     }
@@ -270,31 +271,32 @@ private:
                meta.key[2].load(std::memory_order_acquire) == offset;
     }
 
-    Handle TryGet(const Detail::BlockId& blockId, size_t offset, bool allowReserved,
-                  size_t attempts)
+    // On success, the caller owns one reference and must transfer it into a Handle.
+    // kInvalid means retry; owner is only meaningful on success.
+    size_t TryAcquireSlot(const Detail::BlockId& blockId, size_t offset, bool allowReserved,
+                          size_t attempts, bool& owner)
     {
         auto iBucket = HashKey(blockId);
         auto& layout = ctrl_.Layout();
         auto iNode = LookupOptimistic(layout, iBucket, blockId, offset);
         if (iNode != kInvalid) {
-            bool owner = false;
             if (PinHit(layout, iNode, iBucket, blockId, offset, kPinSpinFast, owner)) {
-                return Handle{this, iNode, owner};
+                return iNode;
             }
         }
 
         auto* targetLock = layout.LockOf(iBucket);
-        if (!targetLock->TryLock()) { return Handle{}; }
+        if (!targetLock->TryLock()) { return kInvalid; }
         iNode = Lookup(layout, iBucket, blockId, offset);
         if (iNode != kInvalid) {
-            bool owner = false;
             auto pinned = PinHit(layout, iNode, iBucket, blockId, offset, kPinSpinFast, owner);
             targetLock->Unlock();
-            return pinned ? Handle{this, iNode, owner} : Handle{};
+            return pinned ? iNode : kInvalid;
         }
         iNode = Alloc(layout, blockId, offset, iBucket, allowReserved, attempts, 1);
         targetLock->Unlock();
-        return iNode == kInvalid ? Handle{} : Handle{this, iNode, true};
+        if (iNode != kInvalid) { owner = true; }
+        return iNode;
     }
 
     bool TryPrealloc(const Detail::BlockId& blockId, size_t offset, bool allowReserved,
