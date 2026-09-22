@@ -6,6 +6,28 @@
     {"$ref": "#/$defs/platformPolicy"}
   ],
   "$defs": {
+    "uniqueStringList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "runtimeRepository": {
+      "type": "string",
+      "pattern": "^[a-z0-9.-]+/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$"
+    },
+    "targetRepository": {
+      "type": "string",
+      "pattern": "^ghcr\\.io/(\\{owner\\}|[a-z0-9][a-z0-9-]{0,38})/[a-zA-Z0-9_.-]+$"
+    },
+    "builderSourceRepositories": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["amd64", "arm64"],
+      "properties": {
+        "amd64": {"$ref": "#/$defs/runtimeRepository"},
+        "arm64": {"$ref": "#/$defs/runtimeRepository"}
+      }
+    },
     "releasePolicyProduct": {
       "type": "object",
       "additionalProperties": false,
@@ -13,9 +35,9 @@
         "id", "runtime_repository", "target_repository"
       ],
       "properties": {
-        "id": {"enum": ["vllm", "vllm-ascend"]},
-        "runtime_repository": {"type": "string", "pattern": "^[a-z0-9.-]+/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$"},
-        "target_repository": {"type": "string", "pattern": "^ghcr\\.io/(\\{owner\\}|[a-z0-9][a-z0-9-]{0,38})/[a-zA-Z0-9_.-]+$"}
+        "id": {"type": "string", "minLength": 1},
+        "runtime_repository": {"$ref": "#/$defs/runtimeRepository"},
+        "target_repository": {"$ref": "#/$defs/targetRepository"}
       }
     },
     "releasePolicyPypi": {
@@ -110,8 +132,7 @@
         },
         "products": {
           "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
+          "minItems": 1,
           "items": {"$ref": "#/$defs/releasePolicyProduct"}
         },
         "publish": {"$ref": "#/$defs/releasePolicyPublish"},
@@ -124,12 +145,8 @@
             "source": {"type": "string", "minLength": 1},
             "smoke_values": {
               "type": "object",
-              "additionalProperties": false,
-              "required": ["vllm", "vllm-ascend"],
-              "properties": {
-                "vllm": {"type": "string", "minLength": 1},
-                "vllm-ascend": {"type": "string", "minLength": 1}
-              }
+              "propertyNames": {"type": "string", "minLength": 1},
+              "additionalProperties": {"type": "string", "minLength": 1}
             }
           }
         }
@@ -145,10 +162,8 @@
         "distribution": {"type": "string", "pattern": "^uc-manager(?:-[a-z0-9]+)+$"},
         "distribution_template": {"type": "string", "pattern": "^uc-manager(?:-[a-z0-9]+)*-\\{runtime_variant\\}$"},
         "external_runtime_exclude_patterns": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {"type": "string", "minLength": 1}
+          "$ref": "#/$defs/uniqueStringList",
+          "minItems": 1
         },
         "reason": {"type": "string", "minLength": 1}
       }
@@ -162,14 +177,8 @@
         "schema_version": {"const": 3},
         "excluded_upstream_variants": {
           "type": "object",
-          "additionalProperties": false,
-          "required": ["vllm-ascend"],
-          "properties": {
-            "vllm-ascend": {
-              "type": "array", "minItems": 1, "maxItems": 1, "uniqueItems": true,
-              "items": {"const": "310p"}
-            }
-          }
+          "propertyNames": {"type": "string", "minLength": 1},
+          "additionalProperties": {"$ref": "#/$defs/uniqueStringList"}
         },
         "builder_families": {
           "type": "object",
@@ -181,17 +190,10 @@
               "additionalProperties": false,
               "required": ["target_repository", "source_repositories", "manylinux", "required_commands"],
               "properties": {
-                "target_repository": {"type": "string", "pattern": "^ghcr\\.io/(\\{owner\\}|[a-z0-9][a-z0-9-]{0,38})/[a-zA-Z0-9_.-]+$"},
-                "source_repositories": {
-                  "type": "object", "additionalProperties": false,
-                  "required": ["amd64", "arm64"],
-                  "properties": {
-                    "amd64": {"type": "string", "pattern": "^[a-z0-9.-]+/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$"},
-                    "arm64": {"type": "string", "pattern": "^[a-z0-9.-]+/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$"}
-                  }
-                },
+                "target_repository": {"$ref": "#/$defs/targetRepository"},
+                "source_repositories": {"$ref": "#/$defs/builderSourceRepositories"},
                 "manylinux": {"type": "string", "pattern": "^manylinux_[0-9]+_[0-9]+$"},
-                "required_commands": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+                "required_commands": {"$ref": "#/$defs/uniqueStringList", "minItems": 1}
               }
             },
             "ascend": {
@@ -199,24 +201,15 @@
               "additionalProperties": false,
               "required": ["target_repository", "source_repositories", "manylinux", "required_commands", "required_files", "variant_required_files"],
               "properties": {
-                "target_repository": {"type": "string", "pattern": "^ghcr\\.io/(\\{owner\\}|[a-z0-9][a-z0-9-]{0,38})/[a-zA-Z0-9_.-]+$"},
-                "source_repositories": {
-                  "type": "object", "additionalProperties": false,
-                  "required": ["amd64", "arm64"],
-                  "properties": {
-                    "amd64": {"type": "string", "pattern": "^[a-z0-9.-]+/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$"},
-                    "arm64": {"type": "string", "pattern": "^[a-z0-9.-]+/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$"}
-                  }
-                },
+                "target_repository": {"$ref": "#/$defs/targetRepository"},
+                "source_repositories": {"$ref": "#/$defs/builderSourceRepositories"},
                 "manylinux": {"type": "string", "pattern": "^manylinux_[0-9]+_[0-9]+$"},
-                "required_commands": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
-                "required_files": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+                "required_commands": {"$ref": "#/$defs/uniqueStringList", "minItems": 1},
+                "required_files": {"$ref": "#/$defs/uniqueStringList", "minItems": 1},
                 "variant_required_files": {
-                  "type": "object", "additionalProperties": false,
-                  "required": ["a3"],
-                  "properties": {
-                    "a3": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
-                  }
+                  "type": "object",
+                  "propertyNames": {"type": "string", "minLength": 1},
+                  "additionalProperties": {"$ref": "#/$defs/uniqueStringList", "minItems": 1}
                 }
               }
             }
@@ -224,14 +217,8 @@
         },
         "backends": {
           "type": "object",
-          "additionalProperties": false,
-          "required": ["cuda", "cann-a2", "cann-a3", "cann-a5"],
-          "properties": {
-            "cuda": {"$ref": "#/$defs/platformBackend"},
-            "cann-a2": {"$ref": "#/$defs/platformBackend"},
-            "cann-a3": {"$ref": "#/$defs/platformBackend"},
-            "cann-a5": {"$ref": "#/$defs/platformBackend"}
-          }
+          "propertyNames": {"type": "string", "minLength": 1},
+          "additionalProperties": {"$ref": "#/$defs/platformBackend"}
         }
       }
     }

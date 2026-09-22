@@ -23,6 +23,7 @@ builder_families:
     required_files: [acl.h]
     variant_required_files:
       a3: [libruntime.so]
+      a5: [libruntime.so]
 
 backends:
   cuda:
@@ -46,7 +47,7 @@ backends:
     external_runtime_exclude_patterns: ["/usr/local/Ascend/*"]
 
   cann-a5:
-    status: blocked
+    status: supported
     platform: ascend-a5
     distribution_template: uc-manager-{runtime_variant}
-    reason: A5 requires a dedicated UCM native implementation
+    external_runtime_exclude_patterns: ["/usr/local/Ascend/*"]
