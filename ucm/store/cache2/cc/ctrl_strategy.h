@@ -127,7 +127,8 @@ private:
                      lockCount);
         layout_.InitHeader(dims.slotSize);
         layout_.MarkReady();
-        acceptThread_ = std::thread([this] { AcceptLoop(); });
+        acceptThread_ =
+            std::thread([this, joinerCount = dims.rankCount] { AcceptLoop(joinerCount); });
         return Status::OK();
     }
 
@@ -185,9 +186,11 @@ private:
         return Status::OK();
     }
 
-    void AcceptLoop()
+    void AcceptLoop(size_t joinerCount)
     {
-        while (socket_.AcceptAndSend(ctrlMem_.Fd()).Success()) {}
+        for (size_t joined = 0; joined < joinerCount; ++joined) {
+            if (socket_.AcceptAndSend(ctrlMem_.Fd()).Failure()) { break; }
+        }
         socket_.Close();
     }
 };
