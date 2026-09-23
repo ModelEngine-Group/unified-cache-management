@@ -46,6 +46,9 @@ RUN python_scripts="$(ucm-python -c \
     test -n "${UCM_TARGET_PLATFORM_TAG}" && \
     test "${SOURCE_DATE_EPOCH}" -ge 315532800 && \
     mkdir -p /tmp/ucm-raw-wheel /out && \
+    if [[ "${PLATFORM}" == ascend* ]]; then \
+      export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}:/usr/local/Ascend/ascend-toolkit/latest/$(uname -m)-linux/devlib"; \
+    fi && \
     if [[ "${PLATFORM}" == ascend* && \
           "${UCM_CPU_ARCH}" == "amd64" && \
           "${UCM_TARGET_PLATFORM_TAG}" == "manylinux_2_34_x86_64" ]]; then \

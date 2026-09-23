@@ -19,6 +19,7 @@ if(UCM_RUNTIME_ASCEND_HAL)
     find_library(UCM_TRANS_HAL_LIBRARY ascend_hal
         HINTS "${ASCEND_DRIVER_ROOT}/lib64/driver" "${ASCEND_DRIVER_ROOT}/lib64"
               "${ASCEND_ROOT}/lib64" "${ASCEND_ROOT}/lib64/stub"
+              "${ASCEND_ROOT}/devlib" "${ASCEND_ROOT}/${CMAKE_SYSTEM_PROCESSOR}-linux/devlib"
         REQUIRED)
     target_include_directories(trans SYSTEM PRIVATE ${UCM_TRANS_HAL_INCLUDE_DIR})
     target_link_libraries(trans PRIVATE ${UCM_TRANS_HAL_LIBRARY})
