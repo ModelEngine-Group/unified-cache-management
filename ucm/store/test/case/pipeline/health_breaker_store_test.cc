@@ -40,10 +40,10 @@
 namespace UC::Test {
 
 using PipelineStore::HealthBreakerStore;
-using PipelineStore::StoreHealthConfig;
 using testing::Invoke;
 using testing::Return;
 using testing::StrictMock;
+using UC::Detail::StoreHealthConfig;
 
 TEST(UCHealthBreakerStoreTest, StoreV1ProvidesHealthyDefault)
 {
