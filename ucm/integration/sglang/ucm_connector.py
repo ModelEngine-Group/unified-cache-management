@@ -428,25 +428,37 @@ class SglangUcmConnector:
             components = self.pool_components.get(transfer.name)
             if components is None:
                 raise ValueError(f"Unregistered UCM hybrid pool: {transfer.name}")
-            page_exists = [True] * kv_pages
             store, _ = components[0]
-            encoded = [
-                self._component_key(key, transfer.name, 0) for key in keys[:kv_pages]
-            ]
-            page_exists = [bool(value) for value in store.lookup(encoded)]
             pool_restorable = []
             boundary = 0
             if transfer.hit_policy == PoolHitPolicy.ALL_PAGES:
+                encoded = [
+                    self._component_key(key, transfer.name, 0)
+                    for key in keys[:kv_pages]
+                ]
+                page_exists = [bool(value) for value in store.lookup(encoded)]
                 boundary = (
                     page_exists.index(False) if False in page_exists else kv_pages
                 )
                 pool_restorable = list(range(1, boundary + 1))
             elif transfer.hit_policy == PoolHitPolicy.TRAILING_PAGES:
-                trailing = max(1, len(transfer.keys or []) or 1)
-                for prefix_len in range(kv_pages, 0, -1):
-                    if all(page_exists[max(0, prefix_len - trailing) : prefix_len]):
-                        pool_restorable.append(prefix_len)
-                        boundary = max(boundary, prefix_len)
+                # Trailing pools persist only the state window named by the
+                # transfer (for example one SWA/state page).  Those logical
+                # keys are not required to be the same as the primary KV page
+                # hashes, so querying keys[:kv_pages] can never find them.
+                # A complete requested tail makes the current KV candidate
+                # restorable; an incomplete tail contributes no candidate.
+                trailing_keys = list(transfer.keys or [])
+                if not trailing_keys and kv_pages:
+                    trailing_keys = [keys[kv_pages - 1]]
+                encoded = [
+                    self._component_key(key, transfer.name, 0)
+                    for key in trailing_keys
+                ]
+                page_exists = [bool(value) for value in store.lookup(encoded)]
+                if trailing_keys and all(page_exists):
+                    boundary = kv_pages
+                    pool_restorable = [kv_pages]
             else:
                 raise ValueError(f"Unsupported pool hit policy: {transfer.hit_policy}")
             if boundary:
