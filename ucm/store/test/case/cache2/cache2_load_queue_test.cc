@@ -661,17 +661,18 @@ TEST_F(UCCache2LoadQueueTest, SubmitFailsWhenWaitingQueueFull)
     config.waitingQueueDepth = 4;
     ASSERT_TRUE(loadQ.Setup(config, &failureSet_, &buffer_).Success());
 
-    std::atomic<bool> scatterEntered{false};
+    std::atomic<bool> loadEntered{false};
     UC::Latch release;
     release.Up();
-    FakeStream::onScatter = [&](const FakeStream::ScatterCall&) {
-        scatterEntered.store(true);
-        release.WaitFor(kWaitMs);
-        return UC::Status::OK();
-    };
-    EXPECT_CALL(backend_, Load).WillRepeatedly(testing::Invoke([](UC::Detail::TaskDesc) {
-        return UC::Expected<UC::Detail::TaskHandle>(NextBackendHandle());
-    }));
+    EXPECT_CALL(backend_, Load)
+        .WillOnce(testing::Invoke([&](UC::Detail::TaskDesc) {
+            loadEntered.store(true);
+            release.WaitFor(kWaitMs);
+            return UC::Expected<UC::Detail::TaskHandle>(NextBackendHandle());
+        }))
+        .WillRepeatedly(testing::Invoke([](UC::Detail::TaskDesc) {
+            return UC::Expected<UC::Detail::TaskHandle>(NextBackendHandle());
+        }));
     EXPECT_CALL(backend_, Wait).WillRepeatedly(testing::Invoke([this](UC::Detail::TaskHandle) {
         backendWaits_.fetch_add(1, std::memory_order_relaxed);
         return UC::Status::OK();
@@ -685,7 +686,7 @@ TEST_F(UCCache2LoadQueueTest, SubmitFailsWhenWaitingQueueFull)
         loadQ.Submit(task, waiter);
         tasks.emplace_back(std::move(task), std::move(waiter));
         if (i == 0) {
-            ASSERT_TRUE(AwaitTrue([&] { return scatterEntered.load(); }));
+            ASSERT_TRUE(AwaitTrue([&] { return loadEntered.load(); }));
         }
     }
     const auto& rejected = tasks.back();
