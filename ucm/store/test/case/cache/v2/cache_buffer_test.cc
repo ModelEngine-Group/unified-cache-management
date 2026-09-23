@@ -3,7 +3,7 @@
  *
  * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
  */
-#include "../../../cache2/cc/cache_buffer.h"
+#include "cache/v2/cache_buffer.h"
 #include <atomic>
 #include <chrono>
 #include <cstddef>

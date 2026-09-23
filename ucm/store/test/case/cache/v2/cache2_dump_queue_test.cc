@@ -34,7 +34,7 @@
 #include <thread>
 #include <utility>
 #include <vector>
-#include "cache2/cc/dump_queue.h"
+#include "cache/v2/dump_queue.h"
 #include "detail/mock_store.h"
 #include "detail/types_helper.h"
 #include "metrics_api.h"

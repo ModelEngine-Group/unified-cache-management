@@ -56,6 +56,7 @@ else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${FLAGS_PUBLIC} ${FLAGS_RELEASE}")
 endif()
 if(BUILD_UNIT_TESTS)
+    add_compile_definitions(UCM_BUILD_TESTS=1)
     enable_testing()
 endif()
 

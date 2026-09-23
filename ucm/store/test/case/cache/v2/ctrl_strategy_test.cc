@@ -3,7 +3,7 @@
  *
  * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
  */
-#include "../../../cache2/cc/ctrl_strategy.h"
+#include "cache/v2/ctrl_strategy.h"
 #include <array>
 #include <atomic>
 #include <cerrno>
