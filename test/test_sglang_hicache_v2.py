@@ -332,7 +332,7 @@ def test_trailing_pool_miss_rejects_current_prefix(connector):
     assert result.restorable_prefix_pages == []
 
 
-def test_trailing_pool_placeholder_scans_primary_candidate_keys(connector):
+def test_trailing_pool_placeholders_use_the_candidate_end_checkpoint(connector):
     value, stores = connector
     pool_name = sglang_hicache.PoolName.SWA
     value.register_pool_v2(FakeHostPool(1, [64]), pool_name)
@@ -340,7 +340,7 @@ def test_trailing_pool_placeholder_scans_primary_candidate_keys(connector):
     keys = ["page-0", "page-1", "page-2"]
     transfer = sglang_hicache.PoolTransfer(
         name=pool_name,
-        keys=["__placeholder__"],
+        keys=["__placeholder__", "__placeholder__", "__placeholder__"],
         hit_policy=sglang_hicache.PoolHitPolicy.TRAILING_PAGES,
     )
     stores[0].objects.add(value._component_key(keys[-1], pool_name, 0))

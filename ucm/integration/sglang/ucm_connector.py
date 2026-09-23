@@ -446,15 +446,22 @@ class SglangUcmConnector:
                 # transfer (for example one SWA/state page).  Those logical
                 # keys are normally the exact keys to query.  SGLang's
                 # prefetch builder intentionally supplies ``__placeholder__``
-                # values before it knows the actual tail hashes, however; in
-                # that case they encode only the window length.  Probe the
-                # primary candidate hashes and scan that many trailing pages.
+                # values before it knows the actual tail hashes.  Until UCM
+                # implements that prefetch transfer, validate the persisted
+                # checkpoint at each primary candidate prefix end instead.
                 trailing_keys = list(transfer.keys or [])
                 has_placeholders = any(
                     key == "__placeholder__" for key in trailing_keys
                 )
                 if has_placeholders or not trailing_keys:
-                    window_size = max(1, len(trailing_keys))
+                    # ``__placeholder__`` is an allocation sentinel, not a
+                    # persisted storage key.  UCM does not yet implement the
+                    # matching prefetch window transfer, so it can only
+                    # validate the checkpoint associated with a candidate
+                    # prefix end.  In particular, a 16-page placeholder
+                    # buffer must not make a single persisted state checkpoint
+                    # look like a 16-page cache miss.
+                    window_size = 1
                     lookup_keys = list(keys[:kv_pages])
                     encoded = [
                         self._component_key(key, transfer.name, 0)
