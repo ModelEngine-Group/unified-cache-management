@@ -247,6 +247,73 @@ def test_v2_exists_intersects_all_required_components(connector):
     assert result.restorable_prefix_pages == [1]
 
 
+def test_logical_anchor_v2_keys_are_shared_across_tp_ranks(tmp_path):
+    logical_pool = FakeHostPool(page_size=2, component_sizes=[])
+    logical_pool.kv_buffer = None
+    pool_name = sglang_hicache.PoolName.DEEPSEEK_V4_C4
+
+    def make_connector(tp_rank):
+        storage_config = SimpleNamespace(
+            model_name="org/hybrid-model",
+            is_mla_model=True,
+            tp_rank=tp_rank,
+            tp_size=4,
+        )
+        return SglangUcmConnector(
+            None, logical_pool, storage_config, [str(tmp_path)]
+        )
+
+    tp0 = make_connector(0)
+    tp3 = make_connector(3)
+
+    assert tp0._component_key("page-0", pool_name, 0) == tp3._component_key(
+        "page-0", pool_name, 0
+    )
+
+
+def test_physical_anchor_v2_keys_remain_isolated_by_tp_rank(tmp_path):
+    physical_pool = FakeHostPool(page_size=2, component_sizes=[64])
+    pool_name = sglang_hicache.PoolName.SWA
+
+    def make_connector(tp_rank):
+        storage_config = SimpleNamespace(
+            model_name="org/hybrid-model",
+            is_mla_model=False,
+            tp_rank=tp_rank,
+            tp_size=4,
+        )
+        return SglangUcmConnector(
+            FakeStore({}), physical_pool, storage_config, [str(tmp_path)]
+        )
+
+    tp0 = make_connector(0)
+    tp3 = make_connector(3)
+
+    assert tp0._component_key("page-0", pool_name, 0) != tp3._component_key(
+        "page-0", pool_name, 0
+    )
+
+
+def test_trailing_pool_restores_prefix_from_persisted_tail_window(connector):
+    value, stores = connector
+    pool_name = sglang_hicache.PoolName.SWA
+    value.register_pool_v2(FakeHostPool(1, [64]), pool_name)
+    value.mem_pool_host.kv_buffer = None  # logical anchor: v2 pools own the payload
+    keys = ["page-0", "page-1", "page-2"]
+    transfer = sglang_hicache.PoolTransfer(
+        name=pool_name,
+        keys=[keys[-1]],
+        hit_policy=sglang_hicache.PoolHitPolicy.TRAILING_PAGES,
+    )
+    stores[0].objects.add(value._component_key(keys[-1], pool_name, 0))
+
+    result = value.batch_exists_v2(keys, [transfer])
+
+    assert result.kv_hit_pages == 3
+    assert result.extra_pool_hit_pages[pool_name] == 3
+    assert result.restorable_prefix_pages == [3]
+
+
 def test_close_closes_primary_and_all_dynamic_stores(connector):
     value, stores = connector
     value.register_pool_v2(FakeHostPool(1, [64, 64]), sglang_hicache.PoolName.SWA)

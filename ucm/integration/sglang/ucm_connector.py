@@ -274,9 +274,19 @@ class SglangUcmConnector:
         self.pool_component_sizes[pool_name] = component_sizes
 
     def _component_key(self, logical_key: str, pool_name: Any, index: int) -> bytes:
+        # A logical primary anchor means the physical payload is wholly owned
+        # by the v2 pools.  Such layouts follow SGLang's replicated-MLA owner
+        # semantics: TP0 persists one copy and every rank queries/loads that
+        # same object.  A physical primary anchor can have rank-sharded hybrid
+        # sidecars, so keep the TP rank in that case.
+        tp_suffix = (
+            ""
+            if self._is_logical_anchor()
+            else f"__v2_tp_{self.tp_rank}_{self.tp_size}"
+        )
         physical = (
             f"{logical_key}{self.config_suffix}"
-            f"__v2_tp_{self.tp_rank}_{self.tp_size}"
+            f"{tp_suffix}"
             f"__pool_{self._pool_value(pool_name)}__component_{index}"
         )
         return self._encode_key(physical)
