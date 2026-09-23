@@ -25,7 +25,6 @@
 
 #include <chrono>
 #include <cstddef>
-#include <limits>
 #include <string>
 #include <thread>
 #include "ctrl_layout.h"
@@ -61,6 +60,7 @@ public:
     CtrlStrategy(const CtrlStrategy&) = delete;
     CtrlStrategy& operator=(const CtrlStrategy&) = delete;
 
+    // Requires localRankSize in [1, kMaxRanks], checked by Buffer::Setup.
     Status Setup(const Config& cfg)
     {
         if (cfg.uniqueId.empty()) { return Status::InvalidParam("cache2 uniqueId is empty"); }
@@ -83,9 +83,6 @@ private:
     {
         /* A5 has one data partition per local worker. The public configuration
          * describes node-wide capacity; the control layout divides it evenly. */
-        if (cfg.localRankSize == 0 || cfg.localRankSize > kMaxRanks) {
-            return Status::InvalidParam("invalid cache2 local rank size({})", cfg.localRankSize);
-        }
         if (cfg.shardSize == 0) { return Status::InvalidParam("invalid cache2 shard size(0)"); }
         auto slotCount = cfg.bufferCapacity / cfg.shardSize;
         if (slotCount < cfg.localRankSize) {
@@ -98,10 +95,6 @@ private:
         dims.slotSize = cfg.shardSize;
         slotCount = dims.rankCount * dims.slotsPerRank;
         dims.bucketCount = CtrlLayout::RecommendBucketCount(slotCount);
-        if (dims.bucketCount == 0 || dims.bucketCount > kMaxBuckets ||
-            (dims.bucketCount & (dims.bucketCount - 1)) != 0) {
-            return Status::InvalidParam("invalid cache2 bucket count({})", dims.bucketCount);
-        }
         return Status::OK();
     }
 
@@ -110,16 +103,8 @@ private:
         Dimensions dims;
         auto s = ResolveDimensions(cfg, dims);
         if (s.Failure()) { return s; }
-        if (dims.slotsPerRank > std::numeric_limits<size_t>::max() / dims.rankCount) {
-            return Status::InvalidParam("cache2 slot count overflow");
-        }
         auto slotCount = dims.rankCount * dims.slotsPerRank;
         auto lockCount = CtrlLayout::LockStripeCount(dims.bucketCount);
-        auto prefixSize = CtrlLayout::SlotMetaOffset(dims.bucketCount, lockCount);
-        if (slotCount >
-            (std::numeric_limits<size_t>::max() - prefixSize) / sizeof(CtrlLayout::SlotMeta)) {
-            return Status::InvalidParam("cache2 control layout too large");
-        }
         auto totalSize = CtrlLayout::TotalSize(dims.bucketCount, lockCount, slotCount);
         s = ctrlMem_.Create("ucm_cache2_ctrl", totalSize);
         if (s.Failure()) { return s; }
@@ -162,24 +147,13 @@ private:
         auto slotsPerRank = header->slotsPerRank;
         auto bucketCount = header->bucketCount;
         auto lockCount = header->lockStripeCount;
-        if (rankCount == 0 || rankCount > kMaxRanks || slotsPerRank == 0 || header->slotSize == 0 ||
-            bucketCount == 0 || bucketCount > kMaxBuckets ||
-            (bucketCount & (bucketCount - 1)) != 0 ||
-            lockCount != CtrlLayout::LockStripeCount(bucketCount) ||
-            slotsPerRank > std::numeric_limits<size_t>::max() / rankCount) {
-            return Status::InvalidParam("invalid cache2 control header");
-        }
         if (expected.rankCount != rankCount || expected.slotsPerRank != slotsPerRank ||
-            expected.slotSize != header->slotSize || expected.bucketCount != bucketCount) {
+            expected.slotSize != header->slotSize || expected.bucketCount != bucketCount ||
+            lockCount != CtrlLayout::LockStripeCount(expected.bucketCount)) {
             return Status::InvalidParam("cache2 participants disagree on control layout");
         }
 
         auto slotCount = rankCount * slotsPerRank;
-        auto prefixSize = CtrlLayout::SlotMetaOffset(bucketCount, lockCount);
-        if (slotCount >
-            (std::numeric_limits<size_t>::max() - prefixSize) / sizeof(CtrlLayout::SlotMeta)) {
-            return Status::InvalidParam("cache2 control layout too large");
-        }
         s = ctrlMem_.Remap(CtrlLayout::TotalSize(bucketCount, lockCount, slotCount));
         if (s.Failure()) { return s; }
         layout_.Bind(ctrlMem_.Addr(), rankCount, slotsPerRank, bucketCount, lockCount);

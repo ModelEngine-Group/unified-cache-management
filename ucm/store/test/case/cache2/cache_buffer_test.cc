@@ -129,7 +129,7 @@ TEST_F(Cache2BufferTest, PreallocLeavesOwnerElectionForDemandGet)
     auto reader = buffer_.Get(block, 0);
     EXPECT_FALSE(reader.Owner());
     owner.MarkReady();
-    EXPECT_TRUE(reader.Ready());
+    EXPECT_EQ(reader.GetState(), CtrlLayout::SlotMeta::State::Ready);
 }
 
 TEST_F(Cache2BufferTest, ConcurrentPreallocAndDemandElectExactlyOneOwner)
@@ -197,7 +197,7 @@ TEST_F(Cache2BufferTest, AbandonedOwnerPublishesFailureAndCanRetry)
     EXPECT_TRUE(retry.Owner());
     EXPECT_EQ(retry.GetState(), CtrlLayout::SlotMeta::State::Loading);
     retry.MarkReady();
-    EXPECT_TRUE(retry.Ready());
+    EXPECT_EQ(retry.GetState(), CtrlLayout::SlotMeta::State::Ready);
 }
 
 TEST_F(Cache2BufferTest, MoveTransfersReferenceWithoutAbandoningOwner)
@@ -217,7 +217,7 @@ TEST_F(Cache2BufferTest, MoveTransfersReferenceWithoutAbandoningOwner)
     EXPECT_EQ(BufferTestAccess::ReferenceCount(buffer_, block, 0), 0);
     auto reader = buffer_.Get(block, 0);
     EXPECT_FALSE(reader.Owner());
-    EXPECT_TRUE(reader.Ready());
+    EXPECT_EQ(reader.GetState(), CtrlLayout::SlotMeta::State::Ready);
 }
 
 TEST_F(Cache2BufferTest, MoveAssignmentAbandonsOldOwnerAndTransfersNewReference)
@@ -300,7 +300,7 @@ TEST(Cache2BufferPartitionTest, ClockEvictsOnlyInsideLocalRankAndHonorsSecondCha
 
         ASSERT_TRUE(pinned.has_value());
         EXPECT_EQ(pinned->SlotIndex(), kSlotsPerRank);
-        EXPECT_TRUE(pinned->Ready());
+        EXPECT_EQ(pinned->GetState(), CtrlLayout::SlotMeta::State::Ready);
         EXPECT_TRUE(buffer.Exist(MakeBlockId(1), 0));
         for (size_t i = 0; i < kSlotsPerRank; ++i) {
             auto& meta = BufferTestAccess::Layout(buffer).SlotMetaArr()[i];

@@ -99,7 +99,6 @@ public:
         void* Data() { return buf_->data_.DataAt(slotIdx_); }
         void* DeviceData() { return buf_->data_.DeviceDataAt(slotIdx_); }
         CtrlLayout::SlotMeta::State GetState() const { return buf_->GetState(slotIdx_); }
-        bool Ready() const { return GetState() == State::Ready; }
         void MarkReady()
         {
             if (Owner()) { buf_->MarkReady(slotIdx_); }
