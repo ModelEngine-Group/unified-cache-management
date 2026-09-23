@@ -37,6 +37,40 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
+def select_transfer_views(tensors):
+    """Replace the A5 (K, scale, full) alias triple with its full-page view.
+
+    Do not change the original runner tensors. The full view reinterprets the
+    page's planar K/scale bytes, so it is only valid for complete-page
+    transfers; callers must not request sub-page segments for groups whose
+    views were packed this way.
+    """
+    tensors = tuple(tensors)
+    if len(tensors) != 3:
+        return tensors
+    key, scale, full = tensors
+    if key.dim() != 4 or scale.dim() != 4 or full.dim() != 4:
+        return tensors
+    if key.data_ptr() != full.data_ptr():
+        return tensors
+    page_bytes = [t[0].numel() * t.element_size() for t in tensors]
+    strides = [t.stride(0) * t.element_size() for t in tensors]
+    same_storage = (
+        len({(str(t.device), t.untyped_storage().data_ptr()) for t in tensors}) == 1
+    )
+    if not (
+        same_storage
+        and key.shape[:3] == scale.shape[:3] == full.shape[:3]
+        and all(t[0].is_contiguous() for t in tensors)
+        and len(set(strides)) == 1
+        and strides[0] >= page_bytes[2]
+        and scale.data_ptr() == key.data_ptr() + page_bytes[0]
+        and page_bytes[0] + page_bytes[1] == page_bytes[2]
+    ):
+        raise ValueError("Invalid overlapping Ascend K/scale/full cache views.")
+    return (full,)
+
+
 @dataclass(frozen=True)
 class KVCacheGroupMeta:
     """Logical storage shape for one vLLM KV-cache group."""
@@ -169,7 +203,12 @@ class KVCacheGroupLayout:
             if isinstance(kv_layer, torch.Tensor):
                 handle_kv_layer_tensor(kv_layer, layer_name)
             elif isinstance(kv_layer, Tuple):
-                for tensor in kv_layer:
+                selected = (
+                    select_transfer_views(kv_layer)
+                    if self.is_ascend_layout
+                    else kv_layer
+                )
+                for tensor in selected:
                     handle_kv_layer_tensor(tensor, layer_name)
             else:
                 raise TypeError(
