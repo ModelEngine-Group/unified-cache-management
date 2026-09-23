@@ -34,6 +34,7 @@
 #include <vector>
 #include "logger/logger.h"
 #include "status/status.h"
+#include "thread/cpu_affinity.h"
 
 namespace UC::Detail {
 
@@ -43,8 +44,11 @@ class HealthCheckExecutor {
     struct State {
         std::mutex mutex;
         std::condition_variable cv;
+        std::function<Status()> check;
         Status status{Status::Error()};
         bool done{false};
+        bool stop{false};
+        bool exited{false};
     };
     struct Worker {
         std::shared_ptr<State> state;
@@ -52,55 +56,93 @@ class HealthCheckExecutor {
     };
 
 public:
-    explicit HealthCheckExecutor(std::chrono::milliseconds timeout) : timeout_(timeout) {}
+    // A zero limit allows replacement workers while timed-out I/O is still running.
+    explicit HealthCheckExecutor(std::chrono::milliseconds timeout,
+                                 size_t maxInFlight = kMaxInFlight)
+        : timeout_(timeout), maxInFlight_(maxInFlight)
+    {
+    }
     ~HealthCheckExecutor() { Stop(); }
 
     Status Run(std::function<Status()> check)
     {
-        auto state = std::make_shared<State>();
+        std::shared_ptr<State> state;
         {
             std::lock_guard<std::mutex> runLock(runMutex_);
             ReapFinished();
-            if (workers_.size() >= kMaxInFlight) {
-                UC_WARN(
-                    "Health check executor reached max threads, rejecting probe with Timeout, "
-                    "in-flight={}.",
-                    workers_.size());
-                return Status::Timeout();
+            state = std::move(current_);
+            if (!state) {
+                if (maxInFlight_ != 0 && workers_.size() >= maxInFlight_) {
+                    UC_WARN(
+                        "Health check executor reached max threads, rejecting probe with Timeout, "
+                        "in-flight={}.",
+                        workers_.size());
+                    return Status::Timeout();
+                }
+                try {
+                    workers_.reserve(workers_.size() + 1);
+                    state = std::make_shared<State>();
+                    // Linux threads inherit the creating monitor thread's CPU affinity.
+                    workers_.push_back(Worker{
+                        state, std::thread([state] {
+                            auto nameStatus = CpuAffinity::SetCurrentThreadName("ucm_health_io");
+                            if (nameStatus.Failure()) {
+                                UC_WARN("Failed({}) to set UCM health I/O thread name.",
+                                        nameStatus);
+                            }
+                            std::unique_lock<std::mutex> lock(state->mutex);
+                            while (true) {
+                                state->cv.wait(lock, [&] { return state->stop || state->check; });
+                                if (state->stop) { break; }
+                                auto work = std::move(state->check);
+                                state->check = nullptr;
+                                lock.unlock();
+                                auto status = Status::Error();
+                                try {
+                                    status = work();
+                                } catch (const std::exception& e) {
+                                    status = Status::Error(e.what());
+                                } catch (...) {
+                                    status =
+                                        Status::Error("health check threw an unknown exception");
+                                }
+                                lock.lock();
+                                state->status = std::move(status);
+                                state->done = true;
+                                state->cv.notify_all();
+                            }
+                            state->exited = true;
+                        })});
+                } catch (const std::exception& e) {
+                    return Status::Error(e.what());
+                }
             }
-            try {
-                if (workers_.capacity() < kMaxInFlight) { workers_.reserve(kMaxInFlight); }
-                // Linux threads inherit the creating monitor thread's CPU affinity.
-                workers_.push_back(Worker{
-                    state, std::thread([state, check = std::move(check)]() mutable {
-                        auto status = Status::Error();
-                        try {
-                            status = check();
-                        } catch (const std::exception& e) {
-                            status = Status::Error(e.what());
-                        } catch (...) {
-                            status = Status::Error("health check threw an unknown exception");
-                        }
-                        {
-                            std::lock_guard<std::mutex> lock(state->mutex);
-                            state->status = std::move(status);
-                            state->done = true;
-                        }
-                        state->cv.notify_all();
-                    })});
-            } catch (const std::exception& e) {
-                return Status::Error(e.what());
-            }
+            std::lock_guard<std::mutex> stateLock(state->mutex);
+            state->check = std::move(check);
+            state->done = false;
+            state->cv.notify_all();
         }
 
         std::unique_lock<std::mutex> stateLock(state->mutex);
         const auto finished = state->cv.wait_for(stateLock, timeout_, [&] { return state->done; });
-        if (!finished) { return Status::Timeout(); }
+        if (!finished) {
+            // Retire this worker; its late result must never satisfy a later probe.
+            state->stop = true;
+            state->cv.notify_all();
+            return Status::Timeout();
+        }
         auto status = state->status;
         stateLock.unlock();
         {
             std::lock_guard<std::mutex> runLock(runMutex_);
-            ReapFinished();
+            std::lock_guard<std::mutex> lock(state->mutex);
+            // Concurrent callers may create extra workers; keep only one idle worker.
+            if (!state->stop && !current_) {
+                current_ = state;
+            } else {
+                state->stop = true;
+                state->cv.notify_all();
+            }
         }
         return status;
     }
@@ -108,6 +150,14 @@ public:
     void Stop()
     {
         std::lock_guard<std::mutex> lock(runMutex_);
+        current_.reset();
+        for (auto& worker : workers_) {
+            {
+                std::lock_guard<std::mutex> stateLock(worker.state->mutex);
+                worker.state->stop = true;
+            }
+            worker.state->cv.notify_all();
+        }
         for (auto& worker : workers_) {
             if (worker.thread.joinable()) { worker.thread.join(); }
         }
@@ -119,12 +169,12 @@ private:
     {
         auto worker = workers_.begin();
         while (worker != workers_.end()) {
-            bool done = false;
+            bool exited = false;
             {
                 std::lock_guard<std::mutex> stateLock(worker->state->mutex);
-                done = worker->state->done;
+                exited = worker->state->exited;
             }
-            if (!done) {
+            if (!exited) {
                 ++worker;
                 continue;
             }
@@ -133,7 +183,9 @@ private:
         }
     }
     std::chrono::milliseconds timeout_;
+    size_t maxInFlight_;
     std::mutex runMutex_;
+    std::shared_ptr<State> current_;
     std::vector<Worker> workers_;
 };
 

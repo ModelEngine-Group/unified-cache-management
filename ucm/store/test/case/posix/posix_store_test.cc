@@ -603,7 +603,7 @@ TEST_F(UCPosixStoreTest, AioCheckFinishesLostCompletionAfterDeadline)
     }
 
     ASSERT_TRUE(finished);
-    ASSERT_EQ(store.Wait(handle.Value()), UC::Status::Error());
+    ASSERT_EQ(store.Wait(handle.Value()), UC::Status::Timeout());
 }
 
 TEST(UCAioImplTest, SubmitEagainHonorsDeadline)

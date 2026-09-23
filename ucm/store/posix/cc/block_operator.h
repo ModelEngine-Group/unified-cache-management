@@ -90,9 +90,11 @@ public:
     struct CommitTask {
         Detail::BlockId id;
         bool success;
+        std::function<void(Status)> callback;
     };
 
-    ~BlockOperator()
+    ~BlockOperator() { Stop(); }
+    void Stop()
     {
         stop_ = true;
         {
@@ -198,7 +200,8 @@ private:
                 task = std::move(commitQueue_.queue.front());
                 commitQueue_.queue.pop_front();
             }
-            layout_->CommitFile(task.id, task.success);
+            auto status = layout_->CommitFile(task.id, task.success);
+            task.callback(status);
         }
     }
 
