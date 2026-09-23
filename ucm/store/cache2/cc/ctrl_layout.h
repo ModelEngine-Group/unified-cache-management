@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -189,7 +190,7 @@ public:
 
     void InitSlotRange(size_t rank)
     {
-        if (rank >= rankCount_) { return; }
+        assert(rank < rankCount_);
         auto begin = rank * slotsPerRank_;
         auto end = begin + slotsPerRank_;
         auto* slots = SlotMetaArr();
