@@ -10,6 +10,18 @@ add_library(trans STATIC
     ascend_event.cc
     ascend_stream.cc
 )
+if(UCM_RUNTIME_ASCEND_HAL)
+    target_sources(trans PRIVATE hal/hal_memory.cc)
+    find_path(UCM_TRANS_HAL_INCLUDE_DIR ascend_hal.h
+        PATHS "${ASCEND_ROOT}/include/driver"
+        NO_DEFAULT_PATH REQUIRED)
+    find_library(UCM_TRANS_HAL_LIBRARY ascend_hal
+        PATHS "${ASCEND_ROOT}/devlib" "${ASCEND_ROOT}/${CMAKE_SYSTEM_PROCESSOR}-linux/devlib"
+        NO_DEFAULT_PATH REQUIRED)
+    target_include_directories(trans SYSTEM PRIVATE ${UCM_TRANS_HAL_INCLUDE_DIR})
+    target_link_libraries(trans PRIVATE ${UCM_TRANS_HAL_LIBRARY})
+endif()
+
 if(ASCEND_SUPPORTS_REGISTER_PIN)
     target_compile_definitions(trans PRIVATE ASCEND_SUPPORTS_REGISTER_PIN=1)
 endif()

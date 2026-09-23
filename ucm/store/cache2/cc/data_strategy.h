@@ -25,20 +25,47 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 #include "ctrl_layout.h"
 #include "status/status.h"
+#if UCM_RUNTIME_ASCEND_HAL
+#include "trans/ascend/hal/hal_memory.h"
+#endif
 
 namespace UC::Cache2 {
 
 class DataStrategy {
+    size_t slotSize_{};
+    size_t nSlotsPerRank_{};
+#if UCM_RUNTIME_ASCEND_HAL
+    struct Mapping;
+    std::vector<Mapping> mappings_;
+    void* base_{nullptr};
+    size_t owner_{};
+    int32_t deviceId_{-1};
+    size_t rankStride_{};
+
+    Status LocalSetup(size_t dataBytes, size_t nRanks, Trans::Hal::PageType pageType);
+    Status CrossRankSetup(CtrlLayout& ctrl, size_t timeoutMs);
+    void Reset();
+#endif
+
 public:
-    Status Setup(CtrlLayout& ctrl, int32_t deviceId, size_t slotSize, size_t nSlotsPerRank)
-    {
-        return Status::Unsupported();
-    }
-    bool HostAccessibleOf(size_t slotIdx) const { return false; }
-    void* DataAt(size_t slotIdx) const { return nullptr; }
-    void* DeviceDataAt(size_t slotIdx) const { return nullptr; }
+    DataStrategy();
+    ~DataStrategy();
+    DataStrategy(const DataStrategy&) = delete;
+    DataStrategy& operator=(const DataStrategy&) = delete;
+
+    // Returns a failure status after releasing resources acquired by this call.
+    // All peer handles share timeoutMs; zero allows one read attempt per peer.
+    Status Setup(CtrlLayout& ctrl, int32_t deviceId, size_t myRank, size_t slotSize,
+                 size_t nSlotsPerRank, size_t timeoutMs = 600 * 1000);
+
+    bool HostAccessibleOf(size_t slotIdx) const;
+    // Only locally allocated slots have a CPU/IO-accessible address.
+    void* DataAt(size_t slotIdx) const;
+    // Only peer slots have a Device mapping; local slots use DataAt with H2D/D2H.
+    void* DeviceDataAt(size_t slotIdx) const;
 };
 
 }  // namespace UC::Cache2

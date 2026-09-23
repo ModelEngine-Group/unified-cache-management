@@ -126,11 +126,6 @@ public:
         if (cfg.localRankSize == 0 || cfg.localRankSize > kMaxRanks) {
             return Status::InvalidParam("invalid cache2 local rank size({})", cfg.localRankSize);
         }
-        if (cfg.deviceId < -1 ||
-            (cfg.deviceId >= 0 && static_cast<size_t>(cfg.deviceId) >= cfg.localRankSize)) {
-            return Status::InvalidParam("cache2 device/rank({}) must be in [0, {})", cfg.deviceId,
-                                        cfg.localRankSize);
-        }
         if (cfg.loadExclusiveBufferNumber % cfg.localRankSize != 0) {
             return Status::InvalidParam(
                 "cache2 load exclusive buffer number({}) must be divisible by ranks({})",
@@ -153,8 +148,9 @@ public:
         }
         /* Cache2 currently identifies the worker-local partition by deviceId. */
         myRank_ = static_cast<size_t>(cfg.deviceId);
+        myRank_ = myRank_ % rankCount_;
         layout.InitSlotRange(myRank_);
-        return data_.Setup(layout, cfg.deviceId, slotSize_, slotsPerRank_);
+        return data_.Setup(layout, cfg.deviceId, myRank_, slotSize_, slotsPerRank_);
     }
 
     // Requires successful worker-side Setup; observers must not call Get.
