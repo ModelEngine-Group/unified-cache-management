@@ -34,7 +34,7 @@
 
 namespace UC::Cache2 {
 
-template <typename LoadQT = LoadQ, typename DumpQT = DumpQ<>>
+template <typename LoadQT = LoadQ<>, typename DumpQT = DumpQ<>>
 class TransManager : public Detail::TaskWrapper<Task, Detail::TaskHandle> {
     size_t shardSize_{0};
     LoadQT loadQ_;
