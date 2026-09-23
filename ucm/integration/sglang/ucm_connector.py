@@ -349,6 +349,16 @@ class SglangUcmConnector:
                     exc,
                 )
                 page_results = [False] * len(keys)
+            if getattr(transfer.hit_policy, "name", None) == "TRAILING_PAGES":
+                logger.info(
+                    "UnifiedCache %s trailing pool=%s logical_keys=%s encoded_keys=%s "
+                    "results=%s",
+                    "dump" if is_set else "load",
+                    transfer.name,
+                    keys,
+                    [key.hex() for key in encoded],
+                    page_results,
+                )
             results[transfer.name] = page_results
         return results
 
@@ -456,6 +466,14 @@ class SglangUcmConnector:
                     for key in trailing_keys
                 ]
                 page_exists = [bool(value) for value in store.lookup(encoded)]
+                logger.info(
+                    "UnifiedCache lookup trailing pool=%s logical_keys=%s "
+                    "encoded_keys=%s exists=%s",
+                    transfer.name,
+                    trailing_keys,
+                    [key.hex() for key in encoded],
+                    page_exists,
+                )
                 if trailing_keys and all(page_exists):
                     boundary = kv_pages
                     pool_restorable = [kv_pages]
