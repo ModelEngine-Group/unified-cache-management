@@ -66,75 +66,88 @@ Status RemoveDirTree(const std::string& path)
 
 GcLease::~GcLease() { Release(); }
 
-void GcLease::Setup(const Config& config)
+void GcLease::Setup(const Config& config, const BackendManager* backendMgr)
 {
-    backend_ = config.storageBackends.front();
-    if (backend_.back() != '/') { backend_ += '/'; }
-    lockDir_ = backend_ + kLockDirName;
-    checkTimePath_ = backend_ + kCheckTimeName;
+    backendMgr_ = backendMgr;
     identity_ = fmt::format("{}{}.{}.{:08x}", kHeartbeatPrefix, GcClock::LocalHostName(),
                             static_cast<long>(getpid()), GcClock::Nonce());
-    heartbeatPath_ = lockDir_ + "/" + identity_;
     heartbeatIntervalSec_ = config.posixGcHeartbeatIntervalSec;
     staleThresholdSec_ = config.posixGcStaleThresholdSec;
 }
 
-Status GcLease::Claim()
+Expected<GcLease::Paths> GcLease::SelectPaths() const
 {
-    PosixFile dir{lockDir_};
+    auto backend = backendMgr_->StorageBackend({});
+    if (!backend) { return backend.Error(); }
+    const auto lockDir = backend.Value() + kLockDirName;
+    return Paths{backend.Value(), lockDir, backend.Value() + kCheckTimeName,
+                 lockDir + "/" + identity_};
+}
+
+Status GcLease::Claim(const Paths& paths)
+{
+    PosixFile dir{paths.lockDir};
     auto s = dir.MkDir();
     if (s.Failure()) { return s; }
 
     time_t ignored = 0;
-    auto hb = GcClock::Touch(heartbeatPath_, ignored, true);
+    auto hb = GcClock::Touch(paths.heartbeat, ignored, true);
     if (hb.Failure()) {
-        UC_WARN("Failed({}) to write GC heartbeat({}); releasing lock.", hb, heartbeatPath_);
+        UC_WARN("Failed({}) to write GC heartbeat({}); releasing lock.", hb, paths.heartbeat);
         dir.RmDir();
         return hb;
     }
 
     haveSuspect_ = false;
     held_.store(true, std::memory_order_release);
-    heartbeat_.Setup(heartbeatPath_, "ucm_posix_gclk", heartbeatIntervalSec_,
-                     GcHeartbeat::OnMissing::Stop);
+    heartbeat_.Setup(
+        [this]() -> Expected<std::string> {
+            auto selected = SelectPaths();
+            if (!selected) { return selected.Error(); }
+            return std::move(selected.Value().heartbeat);
+        },
+        "ucm_posix_gclk", heartbeatIntervalSec_, GcHeartbeat::OnMissing::Stop);
     auto started = heartbeat_.Start();
     if (started.Failure()) {
         UC_ERROR("Failed({}) to start GC heartbeat thread; releasing lock.", started);
         held_.store(false, std::memory_order_release);
-        PosixFile{heartbeatPath_}.Remove();
+        PosixFile{paths.heartbeat}.Remove();
         dir.RmDir();
         return started;
     }
-    UC_INFO("Acquired GC lock({}) as {}.", lockDir_, identity_);
+    UC_INFO("Acquired GC lock({}) as {}.", paths.lockDir, identity_);
     return Status::OK();
 }
 
 GcLease::Acquisition GcLease::TryAcquire()
 {
-    auto s = Claim();
+    auto selected = SelectPaths();
+    if (!selected) { return Acquisition::Unavailable; }
+    const auto& paths = selected.Value();
+    auto s = Claim(paths);
     if (s.Success()) { return Acquisition::Acquired; }
     if (s != Status::DuplicateKey()) { return Acquisition::Unavailable; }
 
     bool stale = false;
-    if (ProbeHolder(stale).Failure()) { return Acquisition::HeldByPeer; }
+    if (ProbeHolder(paths, stale).Failure()) { return Acquisition::HeldByPeer; }
     if (!stale) { return Acquisition::HeldByPeer; }
-    if (TakeOverStale().Failure()) { return Acquisition::HeldByPeer; }
+    if (TakeOverStale(paths).Failure()) { return Acquisition::HeldByPeer; }
 
-    s = Claim();
+    s = Claim(paths);
     if (s.Success()) { return Acquisition::Acquired; }
     return s == Status::DuplicateKey() ? Acquisition::HeldByPeer : Acquisition::Unavailable;
 }
 
-Status GcLease::ProbeHolder(bool& stale)
+Status GcLease::ProbeHolder(const Paths& paths, bool& stale)
 {
     stale = false;
     std::string holder;
-    DIR* dir = opendir(lockDir_.c_str());
+    DIR* dir = opendir(paths.lockDir.c_str());
     if (!dir) {
         auto eno = errno;
         if (eno == ENOENT) { return Status::OK(); }
         auto s = Status::OsApiError(std::to_string(eno));
-        UC_WARN("Failed({}) to open GC lock dir({}).", s, lockDir_);
+        UC_WARN("Failed({}) to open GC lock dir({}).", s, paths.lockDir);
         return s;
     }
     struct dirent* entry = nullptr;
@@ -149,18 +162,18 @@ Status GcLease::ProbeHolder(bool& stale)
     if (holder.empty()) {
         if (haveSuspect_ && suspectHeartbeat_ == kNoHolderMarker) {
             stale = true;
-            UC_WARN("GC lock({}) has no heartbeat on two consecutive checks.", lockDir_);
+            UC_WARN("GC lock({}) has no heartbeat on two consecutive checks.", paths.lockDir);
         } else {
             haveSuspect_ = true;
             suspectHeartbeat_ = kNoHolderMarker;
             suspectMtime_ = 0;
-            UC_INFO("GC lock({}) has no heartbeat; will confirm next check.", lockDir_);
+            UC_INFO("GC lock({}) has no heartbeat; will confirm next check.", paths.lockDir);
         }
         return Status::OK();
     }
 
     struct stat st{};
-    const auto holderPath = lockDir_ + "/" + holder;
+    const auto holderPath = paths.lockDir + "/" + holder;
     if (stat(holderPath.c_str(), &st) != 0) {
         auto eno = errno;
         if (eno == ENOENT) { return Status::OK(); }
@@ -168,9 +181,9 @@ Status GcLease::ProbeHolder(bool& stale)
     }
 
     time_t serverNow = 0;
-    auto s = GcClock::Touch(checkTimePath_, serverNow, true);
+    auto s = GcClock::Touch(paths.checkTime, serverNow, true);
     if (s.Failure()) {
-        UC_WARN("Failed({}) to stamp GC check time({}).", s, checkTimePath_);
+        UC_WARN("Failed({}) to stamp GC check time({}).", s, paths.checkTime);
         return s;
     }
 
@@ -183,19 +196,19 @@ Status GcLease::ProbeHolder(bool& stale)
         haveSuspect_ = true;
         suspectHeartbeat_ = holder;
         suspectMtime_ = st.st_mtime;
-        UC_INFO("GC lock({}) holder {} looks idle for {}s; will confirm next check.", lockDir_,
+        UC_INFO("GC lock({}) holder {} looks idle for {}s; will confirm next check.", paths.lockDir,
                 holder, lag);
         return Status::OK();
     }
     stale = true;
-    UC_WARN("GC lock({}) holder {} idle for {}s on two consecutive checks; taking over.", lockDir_,
-            holder, lag);
+    UC_WARN("GC lock({}) holder {} idle for {}s on two consecutive checks; taking over.",
+            paths.lockDir, holder, lag);
     return Status::OK();
 }
 
-void GcLease::SweepParked() const
+void GcLease::SweepParked(const Paths& paths) const
 {
-    DIR* dir = opendir(backend_.c_str());
+    DIR* dir = opendir(paths.backend.c_str());
     if (!dir) { return; }
     std::vector<std::string> parked;
     struct dirent* entry = nullptr;
@@ -206,20 +219,20 @@ void GcLease::SweepParked() const
     }
     closedir(dir);
     for (const auto& name : parked) {
-        const auto path = backend_ + name;
+        const auto path = paths.backend + name;
         if (RemoveDirTree(path).Success()) { UC_INFO("Swept leaked parked GC lock({}).", path); }
     }
 }
 
-Status GcLease::TakeOverStale()
+Status GcLease::TakeOverStale(const Paths& paths)
 {
     haveSuspect_ = false;
-    SweepParked();
+    SweepParked(paths);
     const auto parked =
-        fmt::format("{}{}{}.{:08x}", backend_, kStalePrefix, identity_, GcClock::Nonce());
-    auto s = PosixFile{lockDir_}.Rename(parked);
+        fmt::format("{}{}{}.{:08x}", paths.backend, kStalePrefix, identity_, GcClock::Nonce());
+    auto s = PosixFile{paths.lockDir}.Rename(parked);
     if (s.Failure()) {
-        UC_INFO("Failed({}) to claim stale GC lock({}); another instance won.", s, lockDir_);
+        UC_INFO("Failed({}) to claim stale GC lock({}); another instance won.", s, paths.lockDir);
         return s;
     }
     auto rm = RemoveDirTree(parked);
@@ -227,9 +240,9 @@ Status GcLease::TakeOverStale()
     return Status::OK();
 }
 
-bool GcLease::EntryPresent() const
+bool GcLease::EntryPresent(const Paths& paths) const
 {
-    DIR* dir = opendir(lockDir_.c_str());
+    DIR* dir = opendir(paths.lockDir.c_str());
     if (!dir) { return false; }
     bool mine = false;
     struct dirent* entry = nullptr;
@@ -246,7 +259,8 @@ bool GcLease::EntryPresent() const
 bool GcLease::HoldsLock() const
 {
     if (!held_.load(std::memory_order_acquire)) { return false; }
-    return EntryPresent();
+    auto paths = SelectPaths();
+    return paths && EntryPresent(paths.Value());
 }
 
 void GcLease::RequestStop() { heartbeat_.RequestStop(); }
@@ -257,17 +271,20 @@ void GcLease::Release()
 {
     if (!held_.exchange(false, std::memory_order_acq_rel)) { return; }
     StopHeartbeat();
-    if (!EntryPresent()) {
-        UC_WARN("GC lock({}) is no longer ours; leaving it to its current holder.", lockDir_);
+    auto selected = SelectPaths();
+    if (!selected) { return; }
+    const auto& paths = selected.Value();
+    if (!EntryPresent(paths)) {
+        UC_WARN("GC lock({}) is no longer ours; leaving it to its current holder.", paths.lockDir);
         return;
     }
-    PosixFile{heartbeatPath_}.Remove();
-    auto s = PosixFile{lockDir_}.RmDir();
+    PosixFile{paths.heartbeat}.Remove();
+    auto s = PosixFile{paths.lockDir}.RmDir();
     if (s.Failure()) {
-        UC_WARN("Failed({}) to remove GC lock dir({}) on release.", s, lockDir_);
+        UC_WARN("Failed({}) to remove GC lock dir({}) on release.", s, paths.lockDir);
         return;
     }
-    UC_INFO("Released GC lock({}).", lockDir_);
+    UC_INFO("Released GC lock({}).", paths.lockDir);
 }
 
 }  // namespace UC::PosixStore
