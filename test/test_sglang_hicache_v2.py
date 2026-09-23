@@ -332,6 +332,26 @@ def test_trailing_pool_miss_rejects_current_prefix(connector):
     assert result.restorable_prefix_pages == []
 
 
+def test_trailing_pool_placeholder_scans_primary_candidate_keys(connector):
+    value, stores = connector
+    pool_name = sglang_hicache.PoolName.SWA
+    value.register_pool_v2(FakeHostPool(1, [64]), pool_name)
+    value.mem_pool_host.kv_buffer = None
+    keys = ["page-0", "page-1", "page-2"]
+    transfer = sglang_hicache.PoolTransfer(
+        name=pool_name,
+        keys=["__placeholder__"],
+        hit_policy=sglang_hicache.PoolHitPolicy.TRAILING_PAGES,
+    )
+    stores[0].objects.add(value._component_key(keys[-1], pool_name, 0))
+
+    result = value.batch_exists_v2(keys, [transfer])
+
+    assert result.kv_hit_pages == 3
+    assert result.extra_pool_hit_pages[pool_name] == 3
+    assert result.restorable_prefix_pages == [3]
+
+
 def test_close_closes_primary_and_all_dynamic_stores(connector):
     value, stores = connector
     value.register_pool_v2(FakeHostPool(1, [64, 64]), sglang_hicache.PoolName.SWA)

@@ -349,16 +349,6 @@ class SglangUcmConnector:
                     exc,
                 )
                 page_results = [False] * len(keys)
-            if getattr(transfer.hit_policy, "name", None) == "TRAILING_PAGES":
-                logger.info(
-                    "UnifiedCache %s trailing pool=%s logical_keys=%s encoded_keys=%s "
-                    "results=%s",
-                    "dump" if is_set else "load",
-                    transfer.name,
-                    keys,
-                    [key.hex() for key in encoded],
-                    page_results,
-                )
             results[transfer.name] = page_results
         return results
 
@@ -454,29 +444,41 @@ class SglangUcmConnector:
             elif transfer.hit_policy == PoolHitPolicy.TRAILING_PAGES:
                 # Trailing pools persist only the state window named by the
                 # transfer (for example one SWA/state page).  Those logical
-                # keys are not required to be the same as the primary KV page
-                # hashes, so querying keys[:kv_pages] can never find them.
-                # A complete requested tail makes the current KV candidate
-                # restorable; an incomplete tail contributes no candidate.
+                # keys are normally the exact keys to query.  SGLang's
+                # prefetch builder intentionally supplies ``__placeholder__``
+                # values before it knows the actual tail hashes, however; in
+                # that case they encode only the window length.  Probe the
+                # primary candidate hashes and scan that many trailing pages.
                 trailing_keys = list(transfer.keys or [])
-                if not trailing_keys and kv_pages:
-                    trailing_keys = [keys[kv_pages - 1]]
-                encoded = [
-                    self._component_key(key, transfer.name, 0)
-                    for key in trailing_keys
-                ]
-                page_exists = [bool(value) for value in store.lookup(encoded)]
-                logger.info(
-                    "UnifiedCache lookup trailing pool=%s logical_keys=%s "
-                    "encoded_keys=%s exists=%s",
-                    transfer.name,
-                    trailing_keys,
-                    [key.hex() for key in encoded],
-                    page_exists,
+                has_placeholders = any(
+                    key == "__placeholder__" for key in trailing_keys
                 )
-                if trailing_keys and all(page_exists):
-                    boundary = kv_pages
-                    pool_restorable = [kv_pages]
+                if has_placeholders or not trailing_keys:
+                    window_size = max(1, len(trailing_keys))
+                    lookup_keys = list(keys[:kv_pages])
+                    encoded = [
+                        self._component_key(key, transfer.name, 0)
+                        for key in lookup_keys
+                    ]
+                    page_exists = [bool(value) for value in store.lookup(encoded)]
+                    for prefix_len in range(kv_pages, 0, -1):
+                        if all(
+                            page_exists[
+                                max(0, prefix_len - window_size) : prefix_len
+                            ]
+                        ):
+                            pool_restorable.append(prefix_len)
+                    if pool_restorable:
+                        boundary = pool_restorable[0]
+                else:
+                    encoded = [
+                        self._component_key(key, transfer.name, 0)
+                        for key in trailing_keys
+                    ]
+                    page_exists = [bool(value) for value in store.lookup(encoded)]
+                    if all(page_exists):
+                        boundary = kv_pages
+                        pool_restorable = [kv_pages]
             else:
                 raise ValueError(f"Unsupported pool hit policy: {transfer.hit_policy}")
             if boundary:
