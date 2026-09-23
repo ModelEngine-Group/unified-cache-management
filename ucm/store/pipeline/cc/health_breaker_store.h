@@ -24,16 +24,15 @@
 #ifndef UNIFIEDCACHE_PIPELINE_HEALTH_BREAKER_STORE_H
 #define UNIFIEDCACHE_PIPELINE_HEALTH_BREAKER_STORE_H
 
-#include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include "health_check_executor.h"
 #include "store_health_config.h"
+#include "store_health_state.h"
 #include "ucmstore_v1.h"
 
 namespace UC::PipelineStore {
@@ -46,7 +45,7 @@ public:
     Status Setup(StoreV1* store, std::string storeId, const StoreHealthConfig& config);
     Status Start();
     void Stop();
-    bool Enabled() const { return enabled_.load(std::memory_order_acquire); }
+    bool Enabled() const { return !healthState_ || healthState_->Enabled(); }
     size_t FailureCount() const;
     size_t SampleCount() const;
 
@@ -63,7 +62,7 @@ public:
     Status Wait(Detail::TaskHandle taskId) override;
 
 private:
-    void RecordHealth(bool healthy);
+    void UpdateState(bool changed, const char* source);
     void RecordProbeMetrics(bool healthy);
     void RecordEffectiveHealth();
     void ProbeLoop();
@@ -71,10 +70,8 @@ private:
     StoreV1* store_{nullptr};
     std::string storeId_;
     StoreHealthConfig config_{};
-    std::atomic<bool> enabled_{true};
     mutable std::mutex healthMutex_;
-    std::deque<bool> healthResults_;
-    size_t failureCount_{0};
+    std::unique_ptr<StoreHealthState> healthState_;
     std::mutex stopMutex_;
     std::condition_variable stopCv_;
     bool stop_{false};

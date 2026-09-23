@@ -77,13 +77,13 @@ void HealthBreakerStore::Stop()
 size_t HealthBreakerStore::FailureCount() const
 {
     std::lock_guard<std::mutex> lock(healthMutex_);
-    return failureCount_;
+    return healthState_ ? healthState_->FailureCount() : 0;
 }
 
 size_t HealthBreakerStore::SampleCount() const
 {
     std::lock_guard<std::mutex> lock(healthMutex_);
-    return healthResults_.size();
+    return healthState_ ? healthState_->SampleCount() : 0;
 }
 
 Status HealthBreakerStore::Setup(const Detail::Dictionary&)
@@ -104,6 +104,7 @@ Status HealthBreakerStore::Setup(StoreV1* store, std::string storeId,
     store_ = store;
     storeId_ = std::move(storeId);
     config_ = config;
+    healthState_ = std::make_unique<StoreHealthState>(config_);
     healthCheck_ = std::make_unique<Detail::HealthCheckExecutor>(config_.healthCheckTimeout);
     return Status::OK();
 }
@@ -136,6 +137,8 @@ void HealthBreakerStore::Prefetch(const Detail::BlockId* blocks, size_t num)
 Status HealthBreakerStore::CheckHealth()
 {
     if (!healthCheck_) { return Status::InvalidParam("health breaker store is not set up"); }
+    const auto generation = healthState_->Generation();
+    const auto started = StoreHealthState::Clock::now();
     auto status = healthCheck_->Run([this] { return store_->CheckHealth(); });
     if (status == Status::Timeout()) {
         UC_WARN("Store health check({}) timed out after {} ms.", storeId_,
@@ -143,7 +146,20 @@ Status HealthBreakerStore::CheckHealth()
     } else if (status.Failure()) {
         UC_WARN("Store health check({}) failed({}).", storeId_, status);
     }
-    RecordHealth(status.Success());
+    std::lock_guard<std::mutex> lock(healthMutex_);
+    const auto now = StoreHealthState::Clock::now();
+    UpdateState(healthState_->RecordProbe(status.Success(), generation, started, now),
+                "active_probe");
+    if (generation == healthState_->Generation() && healthState_->FailureCount() == 0 &&
+        healthState_->SampleCount() == config_.healthWindowSize) {
+        const auto remaining = healthState_->CooldownRemaining(now);
+        if (remaining.count() > 0) {
+            UC_INFO_UNLIMITED(
+                "Store health breaker({}) has a healthy probe window; waiting for "
+                "cooldown, remaining_ms={}.",
+                storeId_, remaining.count());
+        }
+    }
     RecordProbeMetrics(status.Success());
     return status;
 }
@@ -165,49 +181,44 @@ Expected<bool> HealthBreakerStore::Check(Detail::TaskHandle taskId)
     return store_->Check(taskId);
 }
 
-Status HealthBreakerStore::Wait(Detail::TaskHandle taskId) { return store_->Wait(taskId); }
-
-void HealthBreakerStore::RecordHealth(bool healthy)
+Status HealthBreakerStore::Wait(Detail::TaskHandle taskId)
 {
-    bool oldEnabled = false;
-    bool newEnabled = false;
-    size_t failureCount = 0;
-    size_t sampleCount = 0;
-    std::string healthWindow;
-    {
+    const auto generation = healthState_->Generation();
+    auto status = store_->Wait(taskId);
+    if (!config_.passiveEnabled || status == Status::NotFound() ||
+        status == Status::StoreUnhealthy() || status == Status::InvalidParam() ||
+        status == Status::DuplicateKey() || status == Status::Unsupported()) {
+        return status;
+    }
+    if (status.Failure()) {
+        if (storeId_.find(":PosixStore") != std::string::npos) {
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_passive_failures_total"), 1.0);
+        } else if (storeId_.find(":MooncakeStore") != std::string::npos) {
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("mooncake_passive_failures_total"), 1.0);
+        }
+    }
+    healthState_->RecordIo(status.Success(), generation);
+    if (healthState_->PassiveThresholdExceeded(generation)) {
+        // only lock and set state when need to switch to unhealthy
         std::lock_guard<std::mutex> lock(healthMutex_);
-        if (healthResults_.size() == config_.healthWindowSize) {
-            if (!healthResults_.front()) { --failureCount_; }
-            healthResults_.pop_front();
-        }
-        healthResults_.push_back(healthy);
-        if (!healthy) { ++failureCount_; }
+        const auto changed =
+            healthState_->UpdatePassiveHealth(generation, StoreHealthState::Clock::now());
+        UpdateState(changed, "passive_io");
+    }
+    if (status.Failure()) {
+        return Status::StoreUnhealthy(fmt::format("{}: {}", storeId_, status));
+    }
+    return status;
+}
 
-        oldEnabled = enabled_.load(std::memory_order_relaxed);
-        newEnabled = oldEnabled;
-        if (oldEnabled && failureCount_ >= config_.failureThreshold) {
-            newEnabled = false;
-        } else if (!oldEnabled && healthResults_.size() == config_.healthWindowSize &&
-                   failureCount_ == 0) {
-            newEnabled = true;
-        }
-        enabled_.store(newEnabled, std::memory_order_release);
-        failureCount = failureCount_;
-        sampleCount = healthResults_.size();
-        if (oldEnabled != newEnabled) {
-            for (bool result : healthResults_) {
-                if (!healthWindow.empty()) { healthWindow += ", "; }
-                healthWindow += result ? "success" : "failure";
-            }
-        }
-    }
-    if (oldEnabled != newEnabled) {
-        UC_WARN(
-            "Store health breaker({}) transitioned to {}, window=[{}], samples={}, failures={}, "
-            "threshold={}.",
-            storeId_, newEnabled ? "HEALTHY" : "UNHEALTHY", healthWindow, sampleCount, failureCount,
-            config_.failureThreshold);
-    }
+void HealthBreakerStore::UpdateState(bool changed, const char* source)
+{
+    if (!changed) { return; }
+    RecordEffectiveHealth();
+    UC_WARN_UNLIMITED(
+        "Store health breaker({}) transitioned to {}, source={}, cooldown_ms={}, generation={}.",
+        storeId_, healthState_->Enabled() ? "HEALTHY" : "UNHEALTHY", source,
+        healthState_->Cooldown().count(), healthState_->Generation());
 }
 
 void HealthBreakerStore::RecordProbeMetrics(bool healthy)
@@ -244,6 +255,21 @@ void HealthBreakerStore::ProbeLoop()
     while (!stopCv_.wait_for(lock, delay, [this] { return stop_; })) {
         lock.unlock();
         const auto start = std::chrono::steady_clock::now();
+        if (config_.passiveEnabled) {
+            StoreHealthState::PassiveWindowStats stats;
+            {
+                std::lock_guard<std::mutex> healthLock(healthMutex_);
+                healthState_->SamplePassiveWindow(start);
+                stats = healthState_->GetPassiveWindowStats();
+            }
+            if (stats.failures > 0) {
+                UC_INFO_UNLIMITED(
+                    "Store passive health window({}): window_s={}, samples={}, failures={}, "
+                    "failure_threshold={}.",
+                    storeId_, config_.passiveWindow.count(), stats.total, stats.failures,
+                    config_.passiveFailureThreshold);
+            }
+        }
         CheckHealth();
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start);
