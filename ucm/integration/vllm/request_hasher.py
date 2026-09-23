@@ -119,16 +119,40 @@ class RequestHasher:
         sparse_sfa_c8 = bool(additional_config.get("enable_sparse_sfa_c8", False))
         sparse_li_c8 = bool(additional_config.get("enable_sparse_li_c8", False))
         sparse_c8_info = f":sfa_c8={int(sparse_sfa_c8)}:li_c8={int(sparse_li_c8)}"
+        hf_config = getattr(vllm_config.model_config, "hf_config", None)
+        compress_ratios = getattr(hf_config, "compress_ratios", None)
+        is_v41_layout = bool(
+            getattr(hf_config, "kv_source_layer_ids", None)
+            or getattr(hf_config, "index_source_layer_ids", None)
+            or (
+                compress_ratios is not None
+                and {int(ratio) for ratio in compress_ratios}.issubset({0, 1, 2})
+                and bool({int(ratio) for ratio in compress_ratios} & {1, 2})
+            )
+        )
+        layout_info = ""
+        if is_v41_layout:
+            cache_config = getattr(vllm_config, "cache_config", None)
+            if cache_config is None:
+                raise ValueError("DeepSeek V4.1 cache namespace needs cache_config.")
+            ratios = ",".join(str(int(ratio)) for ratio in compress_ratios or ())
+            layout_info = (
+                ":kv_layout=v41_packed_v3"
+                f":cache_dtype={cache_config.cache_dtype}"
+                f":block_size={cache_config.block_size}"
+                f":compress_ratios={ratios}"
+            )
         model_name = vllm_config.model_config.model.rstrip("/").split("/")[-1]
         dcp_size = getattr(
             vllm_config.parallel_config, "decode_context_parallel_size", 1
         )
         dcp_info = f":dcp={dcp_size}"
-        layout_info = f":layout={_layout_source_digest()}"
+        layout_source_info = f":layout={_layout_source_digest()}"
         meta = (
             f"{model_name}:"
             f"{vllm_config.parallel_config.tensor_parallel_size}:"
-            f"{vllm_config.model_config.dtype}:{rank_id}{spec_info}{sparse_c8_info}{dcp_info}{layout_info}"
+            f"{vllm_config.model_config.dtype}:{rank_id}{spec_info}"
+            f"{sparse_c8_info}{dcp_info}{layout_source_info}{layout_info}"
         )
         self.meta_bytes = meta.encode("utf-8")
         self.seed = self("UCM_HASH_SEED")
