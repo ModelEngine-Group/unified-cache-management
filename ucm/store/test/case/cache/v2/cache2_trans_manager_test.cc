@@ -30,7 +30,7 @@
 #include <thread>
 #include <utility>
 #include <vector>
-#include "cache2/cc/trans_manager.h"
+#include "cache/v2/trans_manager.h"
 #include "detail/types_helper.h"
 #include "metrics_api.h"
 

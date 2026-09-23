@@ -1,6 +1,14 @@
 file(GLOB_RECURSE UCM_CACHE_STORE_CC_SOURCE_FILES "./cc/*.cc")
-add_library(cachestore SHARED ${UCM_CACHE_STORE_CC_SOURCE_FILES})
-target_include_directories(cachestore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cc)
+file(GLOB_RECURSE UCM_CACHE_STORE_V2_CC_SOURCE_FILES "./v2/*.cc")
+if(RUNTIME_ENVIRONMENT STREQUAL "ascend-a5")
+    add_library(cachestore SHARED ${UCM_CACHE_STORE_V2_CC_SOURCE_FILES})
+elseif(RUNTIME_ENVIRONMENT STREQUAL "simu")
+    add_library(cachestore SHARED ${UCM_CACHE_STORE_CC_SOURCE_FILES} ${UCM_CACHE_STORE_V2_CC_SOURCE_FILES})
+    target_include_directories(cachestore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cc)
+else()
+    add_library(cachestore SHARED ${UCM_CACHE_STORE_CC_SOURCE_FILES})
+    target_include_directories(cachestore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cc)
+endif()
 target_link_libraries(cachestore PUBLIC storeintf trans infra_logger metrics)
 set_target_properties(cachestore PROPERTIES
     INSTALL_RPATH "$ORIGIN/../../shared/metrics"
