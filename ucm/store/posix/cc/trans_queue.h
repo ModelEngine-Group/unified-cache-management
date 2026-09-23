@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_POSIX_STORE_CC_TRANS_QUEUE_H
 
 #include "global_config.h"
+#include "handle_cache.h"
 #include "space_layout.h"
 #include "template/hashset.h"
 #include "thread/latch.h"
@@ -47,6 +48,7 @@ private:
     };
     TaskIdSet* failureSet_;
     const SpaceLayout* layout_;
+    LoadHandleCache loadHandles_;
     ThreadPool<IoUnit> loadPool_;
     ThreadPool<IoUnit> dumpPool_;
     size_t ioSize_;

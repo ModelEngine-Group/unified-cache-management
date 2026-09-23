@@ -131,7 +131,7 @@ Parameters inside `ucm_connector_config`:
   and will recycle disk space when the threshold is reached.  
   When set to 0 (default), no capacity limit or GC is applied.
 
-* **posix_io_engine** *(optional, default: "psync")*  
+* **posix_io_engine** *(optional, default: "aio")*  
   I/O engine type for the Posix Store. Supported values: `"psync"` (pread/pwrite), `"aio"` (libaio).
 
 * **use_gdr** *(optional, default: false)*  

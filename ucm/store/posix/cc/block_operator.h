@@ -35,6 +35,7 @@
 #include <string>
 #include <sys/stat.h>
 #include <thread>
+#include "handle_cache.h"
 #include "logger/logger.h"
 #include "space_layout.h"
 #include "thread/cpu_affinity.h"
@@ -42,42 +43,12 @@
 
 namespace UC::PosixStore {
 
-#ifdef UCM_ENABLE_TEST_HOOKS
-namespace TestHooks {
-using OpenHook = std::function<int32_t(const std::string&, int32_t, mode_t)>;
-inline std::mutex& OpenHookMutex()
-{
-    static std::mutex mutex;
-    return mutex;
-}
-inline OpenHook& OpenHookSlot()
-{
-    static OpenHook hook;
-    return hook;
-}
-inline void SetOpenHook(OpenHook hook)
-{
-    std::lock_guard<std::mutex> lock{OpenHookMutex()};
-    OpenHookSlot() = std::move(hook);
-}
-inline void ClearOpenHook()
-{
-    std::lock_guard<std::mutex> lock{OpenHookMutex()};
-    OpenHookSlot() = nullptr;
-}
-inline OpenHook GetOpenHook()
-{
-    std::lock_guard<std::mutex> lock{OpenHookMutex()};
-    return OpenHookSlot();
-}
-}  // namespace TestHooks
-#endif
-
 class BlockOperator {
 public:
     struct OpenResult {
         int32_t fd;
         int32_t error;
+        LoadHandleCache::BorrowedFd borrowed;
     };
     using OpenCallback = std::function<void(OpenResult)>;
     struct OpenTask {
@@ -86,6 +57,7 @@ public:
         int32_t flags;
         OpenCallback callback;
         uint64_t tag{0};
+        bool useHandleCache{false};
     };
     struct CommitTask {
         Detail::BlockId id;
@@ -107,9 +79,11 @@ public:
             if (worker.joinable()) { worker.join(); }
         }
     }
-    void Setup(const SpaceLayout* layout, const size_t nOpenWorker, const size_t nCommitWorker)
+    void Setup(const SpaceLayout* layout, const size_t nOpenWorker, const size_t nCommitWorker,
+               LoadHandleCache* loadHandles = nullptr)
     {
         layout_ = layout;
+        loadHandles_ = loadHandles;
         for (size_t i = 0; i < nOpenWorker; ++i) {
             workers_.push_back(std::thread{[this] { OpenWorkerLoop(); }});
         }
@@ -149,7 +123,7 @@ public:
             UC_WARN("AIO task({}) cancelled {} queued open task(s).", tag, purged.size());
         }
         for (auto& task : purged) {
-            if (task.callback) { task.callback(OpenResult{-1, ECANCELED}); }
+            if (task.callback) { task.callback(OpenResult{-1, ECANCELED, {}}); }
         }
     }
 
@@ -172,14 +146,27 @@ private:
                 openQueue_.queue.pop_front();
             }
             const auto path = layout_->DataFilePath(task.id, task.activated);
+            OpenResult result{-1, 0, {}};
+            if (task.useHandleCache && loadHandles_) {
+                result.borrowed = loadHandles_->GetOrOpen(task.id, path);
+                if (result.borrowed.Valid()) {
+                    result.fd = result.borrowed.Fd();
+                    result.error = 0;
+                } else {
+                    result.fd = -1;
+                    result.error = result.borrowed.Error();
+                }
+            } else {
 #ifdef UCM_ENABLE_TEST_HOOKS
-            auto hook = TestHooks::GetOpenHook();
-            auto fd = hook ? hook(path, task.flags, mode) : ::open(path.c_str(), task.flags, mode);
+                auto hook = TestHooks::GetOpenHook();
+                result.fd =
+                    hook ? hook(path, task.flags, mode) : ::open(path.c_str(), task.flags, mode);
 #else
-            auto fd = ::open(path.c_str(), task.flags, mode);
+                result.fd = ::open(path.c_str(), task.flags, mode);
 #endif
-            auto err = (fd < 0) ? errno : 0;
-            if (task.callback) { task.callback(OpenResult{fd, err}); }
+                result.error = (result.fd < 0) ? errno : 0;
+            }
+            if (task.callback) { task.callback(std::move(result)); }
         }
     }
     void CommitWorkerLoop()
@@ -211,6 +198,7 @@ private:
 
     std::atomic_bool stop_{false};
     const SpaceLayout* layout_;
+    LoadHandleCache* loadHandles_{nullptr};
     std::list<std::thread> workers_;
     TaskQueue<OpenTask> openQueue_;
     TaskQueue<CommitTask> commitQueue_;
