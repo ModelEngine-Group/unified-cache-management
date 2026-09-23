@@ -36,6 +36,25 @@ void bind_monitor(py::module_& m)
     m.def("update_stats", py::overload_cast<const std::string&, double>(&UpdateStats));
     m.def("update_stats",
           py::overload_cast<const std::unordered_map<std::string, double>&>(&UpdateStats));
+    m.def("merge_histogram_stats", [](const py::dict& values) {
+        HistogramStatsMap batch;
+        for (const auto& item : values) {
+            const auto name = py::cast<std::string>(item.first);
+            const auto pair = py::cast<py::tuple>(item.second);
+            if (pair.size() != 2) { throw py::value_error("Expected (bucket_counts, sum)"); }
+            HistogramStat histogram;
+            for (const auto count : py::cast<py::list>(pair[0])) {
+                if (!py::isinstance<py::int_>(count) || py::isinstance<py::bool_>(count)) {
+                    throw py::value_error("Bucket counts must be nonnegative uint64 integers");
+                }
+                histogram.bucketCounts.push_back(py::cast<uint64_t>(count));
+            }
+            histogram.sum = py::cast<double>(pair[1]);
+            batch.emplace(name, std::move(histogram));
+        }
+        py::gil_scoped_release releaseGil;
+        MergeHistogramStats(batch);
+    });
     m.def("get_all_stats_and_clear", []() {
         decltype(GetAllStatsAndClear()) stats;
         {

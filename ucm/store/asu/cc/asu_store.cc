@@ -181,6 +181,21 @@ kv::TransportConfig BuildTransportConfig(const Config& config, std::size_t index
     if (!config.localIp.empty()) { transportConfig.attrs["localIp"] = config.localIp; }
     transportConfig.attrs["sc"] = config.sc ? "true" : "false";
 
+    if (config.transProviderType == kv::TransProviderType::AICPU) {
+        transportConfig.attrs["aicpu_hcomm_protocol"] = config.aicpuHcommProtocol;
+        const std::string addressPrefix =
+            config.aicpuHcommProtocol == "ubg" ? "aicpu_local_eid." : "aicpu_local_ip.";
+        // Keep every logical device entry: the provider may use the caller's ACL device.
+        for (std::size_t device = 0; device < config.aicpuLocalAddrs.size(); ++device) {
+            transportConfig.attrs[addressPrefix + std::to_string(device)] =
+                config.aicpuLocalAddrs[device];
+        }
+        if (config.aicpuSendTimeoutMs.has_value()) {
+            transportConfig.attrs["aicpu_send_timeout_ms"] =
+                std::to_string(*config.aicpuSendTimeoutMs);
+        }
+    }
+
     if (!config.asuIps.empty()) {
         kv::NodeEndpoint endpoint;
         endpoint.ip = config.asuIps[index];
@@ -195,8 +210,8 @@ kv::TransportConfig BuildTransportConfig(const Config& config, std::size_t index
         transportConfig.attrs.try_emplace("dspec", "0");
         transportConfig.attrs.try_emplace("lr", "false");
         transportConfig.attrs["fake_backend.path"] = config.fakeBackendPath;
-        transportConfig.attrs["fake_backend.latency_ms"] =
-            std::to_string(config.fakeBackendLatencyMs);
+        transportConfig.attrs["fake_backend.latency_us"] =
+            std::to_string(config.fakeBackendLatencyMs * 1000);
         transportConfig.attrs["fake_backend.worker_threads"] =
             std::to_string(config.fakeBackendWorkerThreads);
         transportConfig.attrs["fake_backend.complete_immediately"] =
@@ -455,6 +470,18 @@ private:
         if (TryGetStringLike(inConfig, "asu_trans_provider_backend", providerBackend)) {
             config.transProviderType = ParseTransProviderBackend(providerBackend);
         }
+        if (config.transProviderType == kv::TransProviderType::AICPU && config.configPath.empty()) {
+            inConfig.Get("asu_aicpu_hcomm_protocol", config.aicpuHcommProtocol);
+            std::transform(config.aicpuHcommProtocol.begin(), config.aicpuHcommProtocol.end(),
+                           config.aicpuHcommProtocol.begin(),
+                           [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+            inConfig.Get("asu_aicpu_local_addrs", config.aicpuLocalAddrs);
+            if (inConfig.Contains("asu_aicpu_send_timeout_ms")) {
+                std::uint64_t timeoutMs = 0;
+                inConfig.GetNumber("asu_aicpu_send_timeout_ms", timeoutMs);
+                config.aicpuSendTimeoutMs = timeoutMs;
+            }
+        }
         inConfig.Get("asu_fake_backend_path", config.fakeBackendPath);
         inConfig.GetNumber("asu_fake_backend_latency_ms", config.fakeBackendLatencyMs);
         inConfig.GetNumber("asu_fake_backend_worker_threads", config.fakeBackendWorkerThreads);
@@ -570,6 +597,29 @@ private:
         }
         if (config.transProviderType == kv::TransProviderType::UNSUPPORTED) {
             return Status::Unsupported();
+        }
+        if (config.transProviderType == kv::TransProviderType::AICPU && config.configPath.empty()) {
+            const auto& protocol = config.aicpuHcommProtocol;
+            if (protocol != "ubg" && protocol != "ubc_ctp" && protocol != "ub" &&
+                protocol != "ub_ctp") {
+                return Status::InvalidParam(
+                    "asu_aicpu_hcomm_protocol must be ubg or ubc_ctp (ub/ub_ctp are CTP aliases)");
+            }
+            if (config.asuIps.empty() ||
+                std::any_of(config.asuIps.begin(), config.asuIps.end(),
+                            [](const std::string& address) { return address.empty(); })) {
+                return Status::InvalidParam("AICPU requires a nonempty asu_ips entry for each ASU");
+            }
+            if (config.localIp.empty() &&
+                std::all_of(config.aicpuLocalAddrs.begin(), config.aicpuLocalAddrs.end(),
+                            [](const std::string& address) { return address.empty(); })) {
+                return Status::InvalidParam("AICPU requires asu_aicpu_local_addrs or asu_local_ip");
+            }
+            if (config.aicpuSendTimeoutMs.has_value() &&
+                (*config.aicpuSendTimeoutMs == 0 ||
+                 *config.aicpuSendTimeoutMs > std::numeric_limits<std::uint32_t>::max())) {
+                return Status::InvalidParam("asu_aicpu_send_timeout_ms must be in [1, UINT32_MAX]");
+            }
         }
         if (config.transProviderType == kv::TransProviderType::FAKE && !config.configPath.empty()) {
             return Status::InvalidParam(

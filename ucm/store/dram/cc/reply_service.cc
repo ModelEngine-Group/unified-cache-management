@@ -26,6 +26,8 @@
 #include <limits>
 #include <system_error>
 #include "logger/logger.h"
+#include "metrics_api.h"
+#include "time/now_time.h"
 #include "trans/device.h"
 namespace UC::Dram {
 
@@ -122,6 +124,7 @@ Status ReplyService::Start()
     if (acceptingLeases_.exchange(true, std::memory_order_acq_rel)) {
         return Status::DuplicateKey();
     }
+    nextMetricsAt_ = 0.0;
     try {
         worker_ = std::thread([this] { Run(); });
         return Status::OK();
@@ -129,6 +132,18 @@ Status ReplyService::Start()
         acceptingLeases_.store(false, std::memory_order_release);
         return Status::Error(fmt::format("failed to start ReplyService: {}", error.what()));
     }
+}
+
+void ReplyService::RecordCapacityMetrics(std::size_t usedSlots)
+{
+    const auto now = NowTime::Now();
+    if (now < nextMetricsAt_) { return; }
+    nextMetricsAt_ = now + 1.0;
+
+    // The observer is the sole Gauge writer; include delivered leases until release.
+    const auto stride = buffers_.GetTotalSize() / options_.slotCount;
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_reply_buffer_used_bytes"),
+                             usedSlots * stride);
 }
 
 Expected<ReplySlot> ReplyService::Acquire(const RequestToken& token, OpType op,
@@ -238,6 +253,7 @@ void ReplyService::Run() noexcept
                 activeLeaseSnapshot.assign(activeLeaseIndices_.begin(), activeLeaseIndices_.end());
                 observedActiveLeaseVersion = activeLeaseVersion_;
             }
+            RecordCapacityMetrics(activeLeaseSnapshot.size());
             bool progress = false;
             for (const auto index : activeLeaseSnapshot) {
                 std::optional<ReplyObserved> observed;

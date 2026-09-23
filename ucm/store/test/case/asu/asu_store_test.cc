@@ -261,6 +261,7 @@ UC::Detail::Dictionary MakeBaseConfig()
     config.SetNumber("asu_query_timeout_ms", std::uint64_t{500});
     config.SetNumber("asu_client_max_inflight_tasks", std::uint64_t{16});
     config.SetNumber("asu_transport_max_inflight_tasks", std::uint64_t{16});
+    config.Set("asu_trans_provider_backend", std::string{"fake"});
     config.Set("kv_ns_ids", std::vector<ssize_t>{100});
     return config;
 }
@@ -501,6 +502,22 @@ TEST(UCAsuStoreTest, PropagatesFakeBackendWorkerThreads)
     EXPECT_EQ(transportConfig.attrs.at("fake_backend.complete_immediately"), "false");
 }
 
+TEST(UCAsuStoreTest, ConvertsFakeBackendLatencyToMicroseconds)
+{
+    UC::AsuStore::AsuStore store;
+    auto state = UseFakeClient(store);
+    auto config = MakeBaseConfig();
+    config.Set("asu_ids", std::vector<ssize_t>{1001});
+    config.Set("asu_trans_provider_backend", std::string{"fake"});
+    config.SetNumber("asu_fake_backend_latency_ms", std::uint64_t{2});
+
+    ASSERT_TRUE(store.Setup(config).Success());
+    ASSERT_FALSE(state->initConfigs.empty());
+
+    const auto transportConfig = UC::AsuStore::BuildTransportConfig(state->initConfigs.back(), 0);
+    EXPECT_EQ(transportConfig.attrs.at("fake_backend.latency_us"), "2000");
+}
+
 TEST(UCAsuStoreTest, PropagatesFakeBackendCompleteImmediately)
 {
     UC::AsuStore::AsuStore store;
@@ -666,6 +683,9 @@ TEST(UCAsuStoreTest, SchedulerTransportsUseDeviceZero)
         auto config = MakeBaseConfig();
         config.Set("asu_ids", std::vector<ssize_t>{1001});
         config.Set("asu_trans_provider_backend", backend);
+        config.Set("asu_ips", std::vector<std::string>{"127.0.0.1"});
+        config.Set("asu_aicpu_hcomm_protocol", std::string{"ubg"});
+        config.Set("asu_aicpu_local_addrs", std::vector<std::string>{"127.0.0.2"});
         config.SetNumber("device_id", -1);
 
         ASSERT_TRUE(store.Setup(config).Success());
@@ -961,6 +981,7 @@ TEST(UCAsuStoreTest, ClientModeConfigPathSmoke)
     UC::AsuStore::AsuStore store;
     UseFakeClient(store);
     auto config = MakeBaseConfig();
+    config.Set("asu_trans_provider_backend", std::string{"aicpu"});
     config.Set("asu_config_path", std::string{kConfigPath});
     std::array<std::byte, kv::kAlignmentBytes> buffer{};
     RegisterPersistentRanges(config, {
@@ -990,6 +1011,7 @@ TEST(UCAsuStoreTest, TransportModeConfigPathSmoke)
     UC::AsuStore::AsuStore store;
     UseFakeClient(store);
     auto config = MakeBaseConfig();
+    config.Set("asu_trans_provider_backend", std::string{"aicpu"});
     config.Set("asu_mode", std::string{"transport"});
     config.Set("asu_config_path", std::string{kConfigPath});
     std::array<std::byte, kv::kAlignmentBytes> buffer{};

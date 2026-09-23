@@ -22,35 +22,38 @@ Chart 只渲染 Kthena `ModelServing`，在需要路由时额外渲染 `ModelSer
 - CUDA 节点已安装兼容的 NVIDIA 驱动与 device plugin；Ascend 节点已安装兼容驱动与 device plugin，镜像提供与节点驱动匹配的 CANN toolkit、HCCL 和 vLLM Ascend。
 - 多机或 PD 场景已经配置所需网络、RDMA 设备和调度器。
 - `servingEngineSpec.serviceMonitor.enabled=true` 时，集群已安装 Prometheus Operator 的 `ServiceMonitor` CRD；否则应将其关闭。
-- 已准备与所选平台匹配的 vLLM + UCM 镜像。项目不提供默认公共镜像，安装时必须设置 `images.image` 或 `modelSpec.image`。
+- 发布包的 `values.yaml` 填写本次最新稳定 vLLM 的默认 CUDA 镜像，旁边的注释列出全部运行时镜像及架构。Ascend 或源码安装须显式设置匹配的 `images.image` 或 `modelSpec.image`。
 
-先在 `local-overlay.yaml` 中提供模型挂载，并把 profile 中的 `replace-with-your-rwx-storage-class` 换成真实 StorageClass，再检查 Chart 是否能渲染：
+直接编辑 `models/cuda/values-qwen3-0p6b-1e1.yaml`，提供模型挂载，并把 `replace-with-your-rwx-storage-class` 换成真实 StorageClass，再检查 Chart 是否能渲染。以下命令使用发布包的默认 CUDA 镜像：
 
 ```bash
 helm lint . \
-  --set images.image=example.com/your-vllm-ucm:tag \
-  -f models/cuda/values-qwen3-0p6b-1e1.yaml \
-  -f local-overlay.yaml
+  -f models/cuda/values-qwen3-0p6b-1e1.yaml
 
 helm template qwen . \
   --namespace inference \
-  --set images.image=example.com/your-vllm-ucm:tag \
-  -f models/cuda/values-qwen3-0p6b-1e1.yaml \
-  -f local-overlay.yaml
+  -f models/cuda/values-qwen3-0p6b-1e1.yaml
 ```
 
 确认输出后再安装：
 
 ```bash
-helm install qwen . \
+helm upgrade --install qwen . \
   --namespace inference \
   --create-namespace \
-  --set images.image=example.com/your-vllm-ucm:tag \
-  -f models/cuda/values-qwen3-0p6b-1e1.yaml \
-  -f local-overlay.yaml
+  --reset-values \
+  -f models/cuda/values-qwen3-0p6b-1e1.yaml
 ```
 
 Helm 渲染只能验证模板契约。StorageClass、RWX、CSI 挂载、GPU/NPU、CANN/HCCL、RDMA 与模型服务可用性仍需在目标集群验证。
+
+### 镜像与发布版本
+
+流水线在打包副本中更新 Chart `version`、`appVersion`、默认镜像和候选镜像注释；源码 `values.yaml` 保持空镜像。默认选择本次产物中最新稳定 vLLM 的上游默认 CUDA 变体；没有该变体时，依次按 CUDA 和操作系统版本取最高。没有稳定 CUDA 候选时默认留空。候选覆盖 CUDA、Ascend、多架构主 tag 和独立架构 tag。
+
+默认值及候选地址优先使用本次发布的 Docker Hub 地址，未启用 Docker Hub 发布时使用 GHCR。完整地址已包含域名，`images.registry` 可留空；替换镜像时复制候选地址到 `images.image`，或通过 `modelSpec.image` 覆盖。Ascend 示例将 `images.image` 显式留空，必须填写对应 Ascend 镜像。未发布运行时镜像的流程与 PR 验证包不注入默认值或候选清单。
+
+升级使用 `--reset-values` 加上已有模型配置，从新包加载默认值并重新应用模型配置；所需集群设置应保留在该配置中。显式填写镜像时会保持该地址，未填写时跟随新包默认镜像。源码部署请额外设置 `images.image`。镜像可拉取以发布流水线整体成功为准。
 
 ## 模型示例
 
@@ -115,7 +118,7 @@ helm install qwen-ascend . -n inference \
 
 ### 配置归属
 
-- `images.image`：全局 vLLM + UCM 镜像；为空时必须由安装参数或 `modelSpec.image` 提供。
+- `images.image`：全局 vLLM + UCM 镜像；发布包默认 CUDA，其他候选见该字段旁的注释。源码或空默认值时由安装参数或 `modelSpec.image` 提供。
 - `servingEngineSpec.configs`：所有模型共享的环境变量。
 - `servingEngineSpec.modelSpec.env`：当前模型的环境变量。
 - `nodeTopologyConfig`：按 Kubernetes 节点名覆盖网络变量。

@@ -22,10 +22,12 @@
  * SOFTWARE.
  * */
 #include "transport_executor.h"
+#include <chrono>
 #include <exception>
 #include <limits>
 #include <optional>
 #include <type_traits>
+#include "time/now_time.h"
 
 namespace UC::Dram {
 namespace {
@@ -65,7 +67,13 @@ void TransportExecutor::Execute(TransportCommand command) noexcept
                 NodeEvent event;
                 if constexpr (std::is_same_v<Command, Transmit>) {
                     nodeId = value.token.nodeId;
-                    event = NodeEvent{options_.backend->Transmit(value)};
+                    const auto transmitStarted = NowTime::Now();
+                    auto completed = options_.backend->Transmit(value);
+                    completed.metricsCompletedAt = NowTime::Now();
+                    UC::Metrics::UpdateStats(
+                        DRAMSTORE_OP_METRIC(value.op, "request_transport_send_duration_ms"),
+                        (completed.metricsCompletedAt - transmitStarted) * 1e3);
+                    event = NodeEvent{std::move(completed)};
                 } else if constexpr (std::is_same_v<Command, Connect>) {
                     nodeId = value.nodeId;
                     event = NodeEvent{
@@ -88,19 +96,56 @@ void TransportExecutor::Execute(TransportCommand command) noexcept
     }
 }
 
+std::optional<std::chrono::duration<double>> TransportExecutor::RecordCapacityMetrics(
+    Worker& worker)
+{
+    if (&worker != workers_.front().get()) { return std::nullopt; }
+    const auto now = NowTime::Now();
+    if (now >= worker.nextMetricsAt) {
+        worker.nextMetricsAt = now + 1.0;
+
+        std::size_t commands, fences;
+        {
+            std::lock_guard lock(admissionMutex_);
+            commands = queuedCommands_;
+            fences = queuedFences_;
+        }
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_transport_queue_size"), commands);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_transport_queue_capacity"),
+                                 commandQueueCapacity_);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_transport_fence_queue_size"), fences);
+        UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_transport_fence_queue_capacity"),
+                                 fenceQueueCapacity_);
+    }
+
+    return std::chrono::duration<double>(worker.nextMetricsAt - NowTime::Now());
+}
+
 void TransportExecutor::Run(Worker& worker) noexcept
 {
     for (;;) {
+        const auto metricsDelay = RecordCapacityMetrics(worker);
         std::optional<TransportCommand> command;
         {
             std::unique_lock lock(worker.mutex);
-            worker.wake.wait(lock, [this, &worker] {
+            const auto ready = [this, &worker] {
                 return !worker.queue.Empty() || !acceptingCommands_.load(std::memory_order_acquire);
-            });
-            if (worker.queue.Empty() && !acceptingCommands_.load(std::memory_order_acquire)) {
-                return;
+            };
+            if (metricsDelay.has_value()) {
+                worker.wake.wait_for(lock, *metricsDelay, ready);
+            } else {
+                worker.wake.wait(lock, ready);
+            }
+            if (worker.queue.Empty()) {
+                if (!acceptingCommands_.load(std::memory_order_acquire)) { return; }
+                continue;
             }
             command.emplace(worker.queue.Pop());
+        }
+        if (auto* transmit = std::get_if<Transmit>(&*command)) {
+            UC::Metrics::UpdateStats(
+                DRAMSTORE_OP_METRIC(transmit->op, "request_transport_queue_duration_ms"),
+                (NowTime::Now() - transmit->metricsQueuedAt) * 1e3);
         }
         {
             std::lock_guard lock(admissionMutex_);

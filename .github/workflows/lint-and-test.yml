@@ -5,6 +5,9 @@ on:
 
 
 jobs:
+  toolkit-package:
+    uses: ./.github/workflows/_build-toolkit.yml
+
   cpp-linter:
     runs-on: ubuntu-latest
     steps:

@@ -30,6 +30,7 @@
 #include <vector>
 #include "buffer/buffer_manager.h"
 #include "conn/connection_manager.h"
+#include "kv_metrics/metrics.h"
 #include "proto/kv_protocol.h"
 #include "task/io_scheduler.h"
 #include "task/trans_task_manager.h"
@@ -105,6 +106,8 @@ private:
     ProtocolManager protocolManager_;
     const std::unique_ptr<ConnectionManager>& connManager_;
     std::atomic<std::uint16_t> nextRequestCid_{1};
+    metrics::CachedMetric asuSendMetric_;
+    metrics::CachedMetric asuCompletionMetric_;
 };
 
 }  // namespace kv

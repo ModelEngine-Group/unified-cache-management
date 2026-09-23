@@ -23,13 +23,32 @@
  * */
 #include "task_manager.h"
 #include <algorithm>
+#include <chrono>
 #include <fmt/format.h>
 #include <string>
 #include <system_error>
 #include "logger/logger.h"
 #include "router/router.h"
+#include "time/now_time.h"
 
 namespace UC::Dram {
+namespace {
+
+void RecordTaskCompletionMetrics(OpType op, const Status& status, double started)
+{
+    if (status.Success()) {
+        UC::Metrics::UpdateStats(DRAMSTORE_OP_METRIC(op, "tasks_succeeded_total"), 1.0);
+    } else {
+        UC::Metrics::UpdateStats(DRAMSTORE_OP_METRIC(op, "tasks_failed_total"), 1.0);
+    }
+    if (status == Status::Timeout()) {
+        UC::Metrics::UpdateStats(DRAMSTORE_OP_METRIC(op, "task_timeouts_total"), 1.0);
+    }
+    UC::Metrics::UpdateStats(DRAMSTORE_OP_METRIC(op, "duration_ms"),
+                             (NowTime::Now() - started) * 1e3);
+}
+
+}  // namespace
 
 TaskManager::TaskManager(TaskManagerConfig config, TaskManagerDependencies dependencies)
     : config_(std::move(config)),
@@ -47,6 +66,7 @@ Status TaskManager::Start()
 {
     std::lock_guard lock(workMutex_);
     accepting_ = true;
+    nextMetricsAt_ = 0.0;
     try {
         worker_ = std::thread([this] { Run(); });
         return Status::OK();
@@ -84,6 +104,7 @@ Expected<TaskId> TaskManager::EnqueueTask(OpType op, TaskInput input)
     const auto timeout = op == OpType::LOOKUP ? config_.timeouts.lookup
                          : op == OpType::DUMP ? config_.timeouts.dump
                                               : config_.timeouts.load;
+    const auto metricsStarted = NowTime::Now();
     const auto deadline = Clock::now() + timeout;
 
     TaskId taskId = 0;
@@ -93,7 +114,9 @@ Expected<TaskId> TaskManager::EnqueueTask(OpType op, TaskInput input)
         taskResults_.emplace(taskId, std::move(future));
     }
 
-    Submission submission{taskId, op, deadline, std::move(input), std::move(promise)};
+    Submission submission{
+        taskId, op, deadline, std::move(input), std::move(promise), metricsStarted,
+    };
     auto enqueued = Status::OK();
     {
         std::lock_guard lock(workMutex_);
@@ -104,6 +127,7 @@ Expected<TaskId> TaskManager::EnqueueTask(OpType op, TaskInput input)
         }
     }
     if (enqueued.Failure()) {
+        UC::Metrics::UpdateStats(DRAMSTORE_OP_METRIC(op, "tasks_rejected_total"), 1.0);
         UC_WARN("DramStore task rejected, task_id={} op={} status={}", taskId,
                 static_cast<unsigned>(op), enqueued);
         std::lock_guard lock(taskMutex_);
@@ -111,6 +135,7 @@ Expected<TaskId> TaskManager::EnqueueTask(OpType op, TaskInput input)
         return enqueued;
     }
 
+    UC::Metrics::UpdateStats(DRAMSTORE_OP_METRIC(op, "tasks_submitted_total"), 1.0);
     workReady_.notify_one();
     return taskId;
 }
@@ -223,6 +248,7 @@ std::vector<Request> TaskManager::BuildRequests(OpType op, std::vector<IoEntry> 
                 request.entries.push_back(std::move(entries[indexes[offset]]));
             }
             request.deadline = deadline;
+            request.metricsStarted = NowTime::Now();
             requests.push_back(std::move(request));
         }
     }
@@ -231,13 +257,21 @@ std::vector<Request> TaskManager::BuildRequests(OpType op, std::vector<IoEntry> 
 
 void TaskManager::ProcessSubmission(Submission submission)
 {
+    UC::Metrics::UpdateStats(DRAMSTORE_OP_METRIC(submission.op, "task_queue_duration_ms"),
+                             (NowTime::Now() - submission.metricsStarted) * 1e3);
     if (submission.deadline <= Clock::now()) {
         UC_WARN("DramStore task expired before processing, task_id={} op={}", submission.taskId,
                 static_cast<unsigned>(submission.op));
-        submission.promise.set_value(TaskResult{Status::Timeout(), {}});
+        auto status = Status::Timeout();
+        RecordTaskCompletionMetrics(submission.op, status, submission.metricsStarted);
+        submission.promise.set_value(TaskResult{std::move(status), {}});
         return;
     }
 
+    std::uintptr_t prerequisiteHandle = 0;
+    if (const auto* transfer = std::get_if<Detail::TaskDesc>(&submission.input)) {
+        if (submission.op == OpType::DUMP) { prerequisiteHandle = transfer->prerequisiteHandle; }
+    }
     auto entries =
         std::holds_alternative<Detail::TaskDesc>(submission.input)
             ? NormalizeTransfer(std::get<Detail::TaskDesc>(submission.input))
@@ -249,10 +283,14 @@ void TaskManager::ProcessSubmission(Submission submission)
             "used_entries={} capacity={}",
             submission.taskId, static_cast<unsigned>(submission.op), entryCount, usedIoEntries_,
             config_.maxIoEntries);
-        submission.promise.set_value(TaskResult{Status::NoSpace(), {}});
+        auto status = Status::NoSpace();
+        RecordTaskCompletionMetrics(submission.op, status, submission.metricsStarted);
+        submission.promise.set_value(TaskResult{std::move(status), {}});
         return;
     }
     auto requests = BuildRequests(submission.op, std::move(entries), submission.deadline);
+    UC::Metrics::UpdateStats(DRAMSTORE_OP_METRIC(submission.op, "task_to_request_duration_ms"),
+                             (NowTime::Now() - submission.metricsStarted) * 1e3);
     usedIoEntries_ += entryCount;
 
     ActiveTask task;
@@ -260,9 +298,11 @@ void TaskManager::ProcessSubmission(Submission submission)
     task.remainingRequests = requests.size();
     task.entryCount = entryCount;
     task.promise = std::move(submission.promise);
+    task.metricsStarted = submission.metricsStarted;
     if (task.op == OpType::LOOKUP) { task.lookupResults.resize(entryCount); }
 
     for (auto& request : requests) {
+        request.prerequisiteHandle = prerequisiteHandle;
         request.taskId = submission.taskId;
         request.requestId = nextRequestId_++;
     }
@@ -314,6 +354,7 @@ void TaskManager::CompleteRequest(TaskId taskId, Status status, std::vector<Entr
     auto lookupResults =
         taskStatus.Success() ? std::move(task.lookupResults) : std::vector<std::uint8_t>{};
     usedIoEntries_ -= task.entryCount;
+    RecordTaskCompletionMetrics(task.op, taskStatus, task.metricsStarted);
     activeTasks_.erase(found);
     promise.set_value(TaskResult{std::move(taskStatus), std::move(lookupResults)});
 }
@@ -323,10 +364,35 @@ void TaskManager::ProcessCompletion(RequestCompleted event)
     CompleteRequest(event.taskId, std::move(event.status), std::move(event.entryResults));
 }
 
+void TaskManager::RecordCapacityMetrics()
+{
+    const auto now = NowTime::Now();
+    if (now < nextMetricsAt_) { return; }
+    nextMetricsAt_ = now + 1.0;
+
+    std::size_t submissions, completions;
+    {
+        std::lock_guard lock(workMutex_);
+        submissions = config_.maxIoEntries - submissions_.Available();
+        completions = config_.maxIoEntries - completions_.Available();
+    }
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_task_queue_size"), submissions);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_task_queue_capacity"),
+                             config_.maxIoEntries);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_completion_queue_size"), completions);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_completion_queue_capacity"),
+                             config_.maxIoEntries);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_tasks_active"), activeTasks_.size());
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_io_entries_used"), usedIoEntries_);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("dramstore_io_entries_capacity"),
+                             config_.maxIoEntries);
+}
+
 void TaskManager::Run() noexcept
 {
     try {
         for (;;) {
+            RecordCapacityMetrics();
             std::optional<Submission> submission;
             std::optional<RequestCompleted> completion;
 
@@ -335,9 +401,12 @@ void TaskManager::Run() noexcept
                 const auto workReady = [this] {
                     return !accepting_ || !completions_.Empty() || !submissions_.Empty();
                 };
-                workReady_.wait(lock, workReady);
+                const auto metricsDelay =
+                    std::chrono::duration<double>(nextMetricsAt_ - NowTime::Now());
+                workReady_.wait_for(lock, metricsDelay, workReady);
 
                 if (!accepting_) { return; }
+                if (completions_.Empty() && submissions_.Empty()) { continue; }
                 if (!completions_.Empty()) {
                     completion.emplace(completions_.Pop());
                 } else {
@@ -359,15 +428,21 @@ void TaskManager::Run() noexcept
         {
             std::lock_guard lock(workMutex_);
             accepting_ = false;
+        }
+        dependencies_.shutdownNodes();
+        {
+            std::lock_guard lock(workMutex_);
             while (!submissions_.Empty()) {
                 auto submission = submissions_.Pop();
-                submission.promise.set_value(
-                    TaskResult{Status::Error("TaskManager stopped unexpectedly"), {}});
+                auto status = Status::Error("TaskManager stopped unexpectedly");
+                RecordTaskCompletionMetrics(submission.op, status, submission.metricsStarted);
+                submission.promise.set_value(TaskResult{std::move(status), {}});
             }
         }
         for (auto& [taskId, task] : activeTasks_) {
-            task.promise.set_value(
-                TaskResult{Status::Error("TaskManager stopped unexpectedly"), {}});
+            auto status = Status::Error("TaskManager stopped unexpectedly");
+            RecordTaskCompletionMetrics(task.op, status, task.metricsStarted);
+            task.promise.set_value(TaskResult{std::move(status), {}});
         }
         activeTasks_.clear();
         usedIoEntries_ = 0;

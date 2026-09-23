@@ -1,0 +1,7 @@
+# Build output
+site/
+
+# Virtual env
+.venv/
+__pycache__/
+*.pyc

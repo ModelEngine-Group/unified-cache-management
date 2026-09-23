@@ -157,7 +157,7 @@ struct OutputConfig {
 
 struct KvTestFakeBackendConfig {
     std::string storePath;
-    std::uint64_t latencyMs{1};
+    std::uint64_t latencyUs{1000};
     std::uint64_t workerThreads{4};
     bool completeImmediately{false};
 };
@@ -165,6 +165,19 @@ struct KvTestFakeBackendConfig {
 struct AsuRuntimeLibraryConfig {
     std::string clientLibraryPath;
     std::string transportLibraryPath;
+};
+
+struct MetricsServerConfig {
+    bool enabled{false};
+    std::string definitionPath;
+    std::string listenAddress{"127.0.0.1"};
+    std::uint16_t port{9108};
+    std::string path{"/metrics"};
+    std::string source{"kv-test"};
+    std::string modelName{"standalone"};
+    std::string workerId{"endpoint-0"};
+    std::uint32_t aggregationIntervalMs{500};
+    std::uint32_t shutdownGraceMs{0};
 };
 
 struct ToolBehaviorConfig {
@@ -194,6 +207,7 @@ struct KvTestConfig {
     OutputConfig output;
     KvTestFakeBackendConfig fakeBackend;
     AsuRuntimeLibraryConfig asuRuntime;
+    MetricsServerConfig metrics;
     std::string keyPrefix;
     std::uint64_t seed{0};
     std::uint64_t valueSize{0};
