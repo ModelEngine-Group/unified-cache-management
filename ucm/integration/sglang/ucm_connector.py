@@ -422,72 +422,87 @@ class SglangUcmConnector:
             if getattr(self.mem_pool_host, "kv_buffer", None) is None
             else self.batch_exists(keys, extra_info)
         )
-        restorable = list(range(1, kv_pages + 1))
         hit_counts = {"kv": kv_pages} if kv_pages else {}
+
+        # First find the common continuous prefix provided by pools whose pages
+        # correspond 1:1 with primary KV pages.  A trailing pool cannot choose
+        # its real key window until this boundary is known.
+        all_page_transfers = []
+        trailing_transfers = []
         for transfer in pool_transfers or []:
+            if transfer.hit_policy == PoolHitPolicy.ALL_PAGES:
+                all_page_transfers.append(transfer)
+            elif transfer.hit_policy == PoolHitPolicy.TRAILING_PAGES:
+                trailing_transfers.append(transfer)
+            else:
+                raise ValueError(f"Unsupported pool hit policy: {transfer.hit_policy}")
+
+        primary_boundary = kv_pages
+        for transfer in all_page_transfers:
             components = self.pool_components.get(transfer.name)
             if components is None:
                 raise ValueError(f"Unregistered UCM hybrid pool: {transfer.name}")
             store, _ = components[0]
-            pool_restorable = []
-            boundary = 0
-            if transfer.hit_policy == PoolHitPolicy.ALL_PAGES:
+            encoded = [
+                self._component_key(key, transfer.name, 0)
+                for key in keys[:primary_boundary]
+            ]
+            page_exists = [bool(value) for value in store.lookup(encoded)]
+            boundary = (
+                page_exists.index(False) if False in page_exists else primary_boundary
+            )
+            if boundary:
+                hit_counts[transfer.name] = boundary
+
+            # ALL_PAGES pools have continuous-prefix semantics, so their
+            # intersection is represented by a single shared boundary.
+            primary_boundary = min(primary_boundary, boundary)
+
+        # The ALL_PAGES intersection is now known.  SGLang's later
+        # _sync_trailing_keys() derives exactly the same real tail hashes from
+        # this boundary before batch_get_v2().
+        restorable = list(range(1, primary_boundary + 1))
+        for transfer in trailing_transfers:
+            components = self.pool_components.get(transfer.name)
+            if components is None:
+                raise ValueError(f"Unregistered UCM hybrid pool: {transfer.name}")
+            store, _ = components[0]
+            trailing_keys = list(transfer.keys or [])
+            has_placeholders = any(
+                key == "__placeholder__" for key in trailing_keys
+            )
+
+            if has_placeholders or not trailing_keys:
+                # Placeholder values are only a count of pages to load.  Once
+                # the primary boundary is known, the real keys are the last N
+                # primary hashes ending at each candidate prefix boundary.
+                window_size = max(1, len(trailing_keys))
+                lookup_keys = list(keys[:primary_boundary])
                 encoded = [
                     self._component_key(key, transfer.name, 0)
-                    for key in keys[:kv_pages]
+                    for key in lookup_keys
                 ]
                 page_exists = [bool(value) for value in store.lookup(encoded)]
-                boundary = (
-                    page_exists.index(False) if False in page_exists else kv_pages
-                )
-                pool_restorable = list(range(1, boundary + 1))
-            elif transfer.hit_policy == PoolHitPolicy.TRAILING_PAGES:
-                # Trailing pools persist only the state window named by the
-                # transfer (for example one SWA/state page).  Those logical
-                # keys are normally the exact keys to query.  SGLang's
-                # prefetch builder intentionally supplies ``__placeholder__``
-                # values before it knows the actual tail hashes.  Until UCM
-                # implements that prefetch transfer, validate the persisted
-                # checkpoint at each primary candidate prefix end instead.
-                trailing_keys = list(transfer.keys or [])
-                has_placeholders = any(
-                    key == "__placeholder__" for key in trailing_keys
-                )
-                if has_placeholders or not trailing_keys:
-                    # ``__placeholder__`` is an allocation sentinel, not a
-                    # persisted storage key.  UCM does not yet implement the
-                    # matching prefetch window transfer, so it can only
-                    # validate the checkpoint associated with a candidate
-                    # prefix end.  In particular, a 16-page placeholder
-                    # buffer must not make a single persisted state checkpoint
-                    # look like a 16-page cache miss.
-                    window_size = 1
-                    lookup_keys = list(keys[:kv_pages])
-                    encoded = [
-                        self._component_key(key, transfer.name, 0)
-                        for key in lookup_keys
-                    ]
-                    page_exists = [bool(value) for value in store.lookup(encoded)]
-                    for prefix_len in range(kv_pages, 0, -1):
-                        if all(
-                            page_exists[
-                                max(0, prefix_len - window_size) : prefix_len
-                            ]
-                        ):
-                            pool_restorable.append(prefix_len)
-                    if pool_restorable:
-                        boundary = pool_restorable[0]
-                else:
-                    encoded = [
-                        self._component_key(key, transfer.name, 0)
-                        for key in trailing_keys
-                    ]
-                    page_exists = [bool(value) for value in store.lookup(encoded)]
-                    if all(page_exists):
-                        boundary = kv_pages
-                        pool_restorable = [kv_pages]
+                pool_restorable = [
+                    prefix_len
+                    for prefix_len in range(primary_boundary, 0, -1)
+                    if all(
+                        page_exists[
+                            max(0, prefix_len - window_size) : prefix_len
+                        ]
+                    )
+                ]
             else:
-                raise ValueError(f"Unsupported pool hit policy: {transfer.hit_policy}")
+                # A component supplied concrete state keys.  They are already
+                # the exact trailing window to restore for primary_boundary.
+                encoded = [
+                    self._component_key(key, transfer.name, 0)
+                    for key in trailing_keys
+                ]
+                page_exists = [bool(value) for value in store.lookup(encoded)]
+                pool_restorable = [primary_boundary] if all(page_exists) else []
+
+            boundary = pool_restorable[0] if pool_restorable else 0
             if boundary:
                 hit_counts[transfer.name] = boundary
             allowed = set(pool_restorable)
