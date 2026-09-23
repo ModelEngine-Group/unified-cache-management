@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 RELEASE_ROOT = ROOT / ".github" / "release"
@@ -28,12 +29,15 @@ def _selector(version: str, tag: str | None = None) -> dict[str, str | None]:
     }
 
 
-def _policy(release_type: str = "stable") -> dict[str, object]:
+def _policy(
+    release_type: str = "stable", *, platforms_path: Path | None = None
+) -> dict[str, object]:
     resolved = copy.deepcopy(
         policy.resolve(
             repository="release-org/unified-cache-management",
             version_override="0.7.60rc1",
             release_type=release_type,
+            platforms_path=platforms_path,
         )
     )
     selectors = {
@@ -319,14 +323,49 @@ def test_candidate_resolution_selects_each_minor_independently() -> None:
     }
 
 
-def test_excluded_variant_policy_is_the_runtime_filter_authority() -> None:
-    release = _policy()
-    release["excluded_upstream_variants"]["vllm-ascend"] = ["310p", "a3"]
+@pytest.mark.parametrize("excluded", [[], ["310p", "a3"]])
+def test_excluded_variant_policy_is_the_runtime_filter_authority(
+    tmp_path: Path, excluded: list[str]
+) -> None:
+    platforms = yaml.safe_load((RELEASE_ROOT / "platforms.yaml").read_text())
+    platforms["excluded_upstream_variants"]["vllm-ascend"] = excluded
+    path = tmp_path / "platforms.yaml"
+    path.write_text(yaml.safe_dump(platforms), encoding="utf-8")
+    release = _policy(platforms_path=path)
+    probes = _fixture()["runtime_probe"]["probes"]
 
-    candidates = upstream.resolve_runtime_candidates(release, tag_fixture=_fixture())
+    # Use implemented Runtime members so this test isolates policy filtering.
+    candidates = upstream.resolve_runtime_candidates(
+        release,
+        tag_loader=lambda repository: [
+            probe["tag"] for probe in probes if probe["repository"] == repository
+        ],
+    )
 
-    assert all("-a3" not in reference for reference in candidates["references"])
-    assert all("-310p" not in reference for reference in candidates["references"])
+    for probe in probes:
+        expected = not (probe["backend"] == "cann-a3" and "a3" in excluded)
+        assert (probe["runtime_ref"] in candidates["references"]) == expected
+
+
+@pytest.mark.parametrize("variant_files", [{}, {"a2": ["libruntime.so"]}])
+def test_variant_file_policy_reaches_builder_checks(
+    tmp_path: Path, variant_files: dict[str, list[str]]
+) -> None:
+    platforms = yaml.safe_load((RELEASE_ROOT / "platforms.yaml").read_text())
+    platforms["builder_families"]["ascend"]["variant_required_files"] = variant_files
+    path = tmp_path / "platforms.yaml"
+    path.write_text(yaml.safe_dump(platforms), encoding="utf-8")
+    release = _policy(platforms_path=path)
+    selection = upstream.resolve_upstreams(release, tag_fixture=_fixture())
+
+    catalog = builders.catalog_from_builds(
+        selection["wheel_builds"], owner="release-org", formal_policy=release
+    )
+
+    for builder in catalog["builders"]:
+        if builder["accelerator"] == "ascend":
+            expected = {"acl.h", *variant_files.get(builder["variant"], [])}
+            assert set(builder["checks"]["required_files"]) == expected
 
 
 def test_excluded_winner_does_not_fall_back_to_an_older_runtime() -> None:
@@ -344,18 +383,20 @@ def test_excluded_winner_does_not_fall_back_to_an_older_runtime() -> None:
         )
 
 
-def test_product_with_only_blocked_variants_fails_selection() -> None:
+def test_product_with_only_blocked_variants_fails_selection(runtime_probe) -> None:
     release = _policy()
-    for product in release["products"]:
-        product["runtime_selectors"] = [_selector("0.27")]
-    tags = {
-        "docker.io/vllm/vllm-openai": ["v0.27.0"],
-        "quay.io/ascend/vllm-ascend": ["v0.27.0", "v0.27.1-a5"],
-    }
+    release["backends"][runtime_probe["backend"]].update(
+        status="blocked", reason="Disabled by platform policy"
+    )
+    release["products"] = [
+        product
+        for product in release["products"]
+        if product["id"] == runtime_probe["product_id"]
+    ]
 
-    with pytest.raises(ValueError, match="vllm-ascend: no publishable Runtime"):
+    with pytest.raises(ValueError, match="no publishable Runtime"):
         upstream.resolve_runtime_candidates(
-            release, tag_loader=lambda repository: tags[repository]
+            release, tag_loader=lambda repository: [runtime_probe["tag"]]
         )
 
 

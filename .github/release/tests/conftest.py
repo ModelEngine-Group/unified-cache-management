@@ -11,9 +11,27 @@ asserted.
 
 from __future__ import annotations
 
+import copy
+import json
+from pathlib import Path
+
 import pytest
 
 TEST_REPOSITORY = "release-org/unified-cache-management"
+CATALOG_REGISTRY = json.loads(
+    (Path(__file__).parent / "fixtures" / "catalog-registry.json").read_text(
+        encoding="utf-8"
+    )
+)
+
+
+@pytest.fixture(
+    params=CATALOG_REGISTRY["runtime_probe"]["probes"],
+    ids=lambda probe: f"{probe['backend']}-{probe['cpu_arch']}",
+)
+def runtime_probe(request: pytest.FixtureRequest) -> dict:
+    """Exercise each Registry member with independent, internally consistent data."""
+    return copy.deepcopy(request.param)
 
 
 @pytest.fixture(autouse=True)
