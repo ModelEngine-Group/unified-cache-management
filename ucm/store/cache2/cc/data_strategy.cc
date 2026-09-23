@@ -54,14 +54,14 @@ DataStrategy::~DataStrategy()
 }
 
 Status DataStrategy::Setup(CtrlLayout& ctrl, int32_t deviceId, size_t slotSize,
-                           size_t nSlotsPerRank, size_t rank, size_t timeoutMs)
+                           size_t nSlotsPerRank, size_t timeoutMs)
 {
     if (nSlotsPerRank_ != 0) {
         return Status::Error("cache2 data strategy is already initialized");
     }
 #if UCM_RUNTIME_ASCEND_HAL
     const size_t totalSlots = ctrl.SlotCount();
-    owner_ = rank;
+    owner_ = static_cast<size_t>(deviceId);
     deviceId_ = deviceId;
     Status status = Status::OK();
     try {
