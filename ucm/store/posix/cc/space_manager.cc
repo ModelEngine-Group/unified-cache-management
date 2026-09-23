@@ -36,6 +36,8 @@ Status SpaceManager::Setup(const Config& config)
     UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_gc_running"), 0.0);
     auto s = layout_.Setup(config);
     if (s.Failure()) [[unlikely]] { return s; }
+    s = backendMgr_.Setup(config, &layout_);
+    if (s.Failure()) { return s; }
     if (config.posixGcEnable) {
         s = gcConfigGuard_.Setup(config);
         if (s.Failure()) [[unlikely]] { return s; }

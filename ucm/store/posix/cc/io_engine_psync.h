@@ -47,11 +47,11 @@ class IoEnginePsync : public Detail::TaskWrapper<TransTask, Detail::TaskHandle> 
     std::thread dispatcher_;
 
 public:
-    Status Setup(const Config& config, const SpaceLayout* layout)
+    Status Setup(const Config& config, const SpaceLayout* layout, const std::string& backend)
     {
         timeoutMs_ = config.timeoutMs;
         shardSize_ = config.shardSize;
-        auto s = queue_.Setup(config, &failureSet_, layout);
+        auto s = queue_.Setup(config, &failureSet_, layout, backend);
         if (s.Failure()) [[unlikely]] { return s; }
         waiting_.Setup(kDispatchQueueDepth);
         dispatcher_ = std::thread(&IoEnginePsync::DispatchStage, this);
@@ -122,7 +122,7 @@ private:
         const auto tp = w->startTp;
         const auto isDump = (t->type == TransTask::Type::DUMP);
         UC_DEBUG("Posix task({},{},{},{}) dispatching.", id, brief, num, size);
-        w->SetEpilog([id, brief = std::move(brief), num, size, tp, isDump] {
+        w->SetEpilog([this, t, id, brief = std::move(brief), num, size, tp, isDump] {
             auto cost = NowTime::Now() - tp;
             auto costMs = cost * 1e3;
             auto bwGbps = cost > 0 ? static_cast<double>(size) / cost / 1e9 : 0.0;
@@ -137,6 +137,11 @@ private:
             UC::Metrics::UpdateStats(isDump ? dumpDuration : loadDuration, costMs);
             UC::Metrics::UpdateStats(isDump ? dumpBandwidth : loadBandwidth, bwGbps);
             UC::Metrics::UpdateStats(isDump ? dumpBytes : loadBytes, static_cast<double>(size));
+            if (t->onComplete) {
+                auto onComplete = std::move(t->onComplete);
+                // The latch is complete, so Wait only reclaims the task and its status.
+                onComplete(Wait(id));
+            }
         });
         queue_.Push(t, w);
     }

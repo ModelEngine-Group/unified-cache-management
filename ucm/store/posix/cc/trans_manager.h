@@ -24,33 +24,55 @@
 #ifndef UNIFIEDCACHE_POSIX_STORE_CC_TRANS_MANAGER_H
 #define UNIFIEDCACHE_POSIX_STORE_CC_TRANS_MANAGER_H
 
+#include <shared_mutex>
+#include "backend_manager.h"
 #include "io_engine_aio.h"
 #include "io_engine_psync.h"
 
 namespace UC::PosixStore {
 
 class TransManager {
-public:
     using IoEngine = Detail::TaskWrapper<TransTask, Detail::TaskHandle>;
+    struct ShardTask {
+        Detail::Shard shard;
+        std::vector<std::string> attempted;
+        size_t backendIndex{0};
+        Status result{Status::OK()};
+    };
+    struct Request {
+        explicit Request(TransTask source) : task{std::move(source)}
+        {
+            waiter.Set(task.desc.size());
+        }
+        TransTask task;
+        double startTp{NowTime::Now()};
+        // Each shard has one active attempt; waiter publishes all final results.
+        std::vector<ShardTask> shardTasks;
+        Latch waiter;
+    };
+    struct CallbackState {
+        std::shared_mutex mutex;
+        bool stopped{false};
+    };
 
-    Status Setup(const Config& config, const SpaceLayout* layout)
-    {
-        if (config.ioEngine == "aio") {
-            ioEngine_ = &ioEngineAio_;
-            return ioEngineAio_.Setup(config, layout);
-        }
-        if (config.ioEngine == "psync") {
-            ioEngine_ = &ioEnginePsync_;
-            return ioEnginePsync_.Setup(config, layout);
-        }
-        return Status::InvalidParam("invalid io engine({})", config.ioEngine);
-    }
-    IoEngine* GetIoEngine() const { return ioEngine_; }
+public:
+    ~TransManager();
+    Status Setup(const Config& config, const SpaceLayout* layout, const BackendManager* backendMgr);
+    Expected<Detail::TaskHandle> Submit(TransTask task);
+    Expected<bool> Check(Detail::TaskHandle handle);
+    Status Wait(Detail::TaskHandle handle);
 
 private:
-    IoEngineAio ioEngineAio_;
-    IoEnginePsync ioEnginePsync_;
-    IoEngine* ioEngine_{nullptr};
+    void TryNextBackend(const std::shared_ptr<Request>& request, ShardTask& shardTask);
+
+    const BackendManager* backendMgr_{nullptr};
+    size_t timeoutMs_{0};
+    std::vector<std::unique_ptr<IoEngineAio>> aioEngines_;
+    std::vector<std::unique_ptr<IoEnginePsync>> psyncEngines_;
+    std::vector<IoEngine*> engines_;
+    std::unordered_map<Detail::TaskHandle, std::shared_ptr<Request>> requests_;
+    std::shared_mutex mutex_;
+    std::shared_ptr<CallbackState> callbacks_{std::make_shared<CallbackState>()};
 };
 
 }  // namespace UC::PosixStore

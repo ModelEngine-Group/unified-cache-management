@@ -73,12 +73,29 @@ Status SpaceLayout::Setup(const Config& config)
 {
     dataDirShardBytes_ = config.dataDirShardBytes;
     dataDirShard_ = dataDirShardBytes_ > 0;
-    auto status = Status::OK();
-    for (auto& path : config.storageBackends) {
-        if ((status = AddStorageBackend(path)).Failure()) { return status; }
-    }
     shards_ = RelativeRoots();
-    return status;
+    for (const auto& path : config.storageBackends) {
+        if (path.empty()) { return Status::InvalidParam("empty storage backend path"); }
+        auto normalized = path.back() == '/' ? path : path + '/';
+        if (std::find(storageBackends_.begin(), storageBackends_.end(), normalized) ==
+            storageBackends_.end()) {
+            storageBackends_.push_back(std::move(normalized));
+        }
+    }
+    return Status::OK();
+}
+
+Status SpaceLayout::InitBackend(const std::string& backend, bool create) const
+{
+    for (const auto& root : shards_) {
+        PosixFile dir{backend + root};
+        auto status = create
+                          ? dir.MkDir()
+                          : dir.Access(PosixFile::AccessMode::READ | PosixFile::AccessMode::WRITE);
+        if (create && status == Status::DuplicateKey()) { status = Status::OK(); }
+        if (status.Failure()) { return status; }
+    }
+    return Status::OK();
 }
 
 std::string SpaceLayout::DataFilePath(const Detail::BlockId& blockId, bool activated) const
@@ -116,6 +133,14 @@ Status SpaceLayout::CommitFile(const Detail::BlockId& blockId, bool success) con
     }
     if (!success || s.Failure()) { PosixFile{activated}.Remove(); }
     return s;
+}
+
+Status SpaceLayout::CommitFile(const std::string& backend, const Detail::BlockId& blockId,
+                               bool success) const
+{
+    const auto activated = DataFilePath(backend, blockId, true);
+    if (!success) { return PosixFile{activated}.Remove(); }
+    return PosixFile{activated}.Rename(DataFilePath(backend, blockId, false));
 }
 
 Status SpaceLayout::RemoveFile(const Detail::BlockId& blockId) const
