@@ -189,7 +189,7 @@ public:
 
     void InitSlotRange(size_t rank)
     {
-        if (rank >= rankCount_) { return; }
+        assert(rank < rankCount_);
         auto begin = rank * slotsPerRank_;
         auto end = begin + slotsPerRank_;
         auto* slots = SlotMetaArr();

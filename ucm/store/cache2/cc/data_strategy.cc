@@ -53,7 +53,7 @@ DataStrategy::~DataStrategy()
 #endif
 }
 
-Status DataStrategy::Setup(CtrlLayout& ctrl, int32_t deviceId, size_t slotSize,
+Status DataStrategy::Setup(CtrlLayout& ctrl, int32_t deviceId, size_t myRank, size_t slotSize,
                            size_t nSlotsPerRank, size_t timeoutMs)
 {
     if (nSlotsPerRank_ != 0) {
@@ -61,20 +61,19 @@ Status DataStrategy::Setup(CtrlLayout& ctrl, int32_t deviceId, size_t slotSize,
     }
 #if UCM_RUNTIME_ASCEND_HAL
     const size_t totalSlots = ctrl.SlotCount();
-    owner_ = static_cast<size_t>(deviceId);
-    deviceId_ = deviceId;
+    owner_ = myRank;
     Status status = Status::OK();
     try {
         Trans::Device device;
-        status = device.Setup(deviceId_);
+        status = device.Setup(deviceId);
         if (status.Success()) {
             status = LocalSetup(slotSize * nSlotsPerRank, totalSlots / nSlotsPerRank,
                                 Hal::PageType::Huge);
             if (status.Failure()) {
                 UC_WARN(
-                    "Huge-page allocation failed: owner={} device={} status={}; retrying "
+                    "Huge-page allocation failed: owner={} status={}; retrying "
                     "with normal pages",
-                    owner_, deviceId_, status);
+                    owner_, deviceId, status);
                 Reset();
                 status = LocalSetup(slotSize * nSlotsPerRank, totalSlots / nSlotsPerRank,
                                     Hal::PageType::Normal);
@@ -87,8 +86,7 @@ Status DataStrategy::Setup(CtrlLayout& ctrl, int32_t deviceId, size_t slotSize,
         status = Status::Error(error.what());
     }
     if (status.Failure()) {
-        UC_ERROR("cache2 data setup failed: owner={} device={} status={}", owner_, deviceId_,
-                 status);
+        UC_ERROR("cache2 data setup failed: owner={} status={}", owner_, deviceId, status);
         Reset();
         return status;
     }
@@ -110,16 +108,15 @@ void DataStrategy::Reset()
         std::byte* addr = static_cast<std::byte*>(base_) + rank * rankStride_;
         Status status = Hal::MemUnmap(addr);
         if (status.Failure()) {
-            UC_ERROR("HAL unmap failed: owner={} device={} rank={} addr={} status={}", owner_,
-                     deviceId_, rank, static_cast<void*>(addr), status);
+            UC_ERROR("HAL unmap failed: owner={} rank={} addr={} status={}", owner_, rank,
+                     static_cast<void*>(addr), status);
         }
     }
     auto release = [&](size_t rank) {
         if (mappings_[rank].handle == nullptr) { return; }
         Status status = Hal::MemRelease(mappings_[rank].handle);
         if (status.Failure()) {
-            UC_ERROR("HAL release failed: owner={} device={} rank={} status={}", owner_, deviceId_,
-                     rank, status);
+            UC_ERROR("HAL release failed: owner={} rank={} status={}", owner_, rank, status);
         }
     };
     // for other rank, MemRelease is used to cancel the handle import, it won't release the physical
@@ -132,8 +129,7 @@ void DataStrategy::Reset()
     if (base_ != nullptr) {
         Status status = Hal::MemAddressFree(base_);
         if (status.Failure()) {
-            UC_ERROR("HAL address free failed: owner={} device={} addr={} status={}", owner_,
-                     deviceId_, base_, status);
+            UC_ERROR("HAL address free failed: owner={} addr={} status={}", owner_, base_, status);
         }
     }
     mappings_.clear();
@@ -148,16 +144,16 @@ Status DataStrategy::LocalSetup(size_t dataBytes, size_t nRanks, Hal::PageType p
     Status status = Hal::MemGetAllocationGranularity(pageType, &allocGranularity);
     if (status.Failure()) {
         UC_ERROR(
-            "halMemGetAllocationGranularity failed: owner={} device={} page_type={} "
+            "halMemGetAllocationGranularity failed: owner={} page_type={} "
             "data_bytes={} status={}",
-            owner_, deviceId_, static_cast<uint32_t>(pageType), dataBytes, status);
+            owner_, static_cast<uint32_t>(pageType), dataBytes, status);
         return status;
     }
     if (allocGranularity == 0) {
         UC_ERROR(
-            "Invalid HAL allocation granularity: owner={} device={} page_type={} "
+            "Invalid HAL allocation granularity: owner={} page_type={} "
             "alloc_granularity={} data_bytes={}",
-            owner_, deviceId_, static_cast<uint32_t>(pageType), allocGranularity, dataBytes);
+            owner_, static_cast<uint32_t>(pageType), allocGranularity, dataBytes);
         return Status::Error(fmt::format("invalid HAL granularity({}) for data size({})",
                                          allocGranularity, dataBytes));
     }
@@ -166,44 +162,42 @@ Status DataStrategy::LocalSetup(size_t dataBytes, size_t nRanks, Hal::PageType p
     const size_t reserveBytes =
         (rankStride_ * nRanks + vaAlignment - 1) / vaAlignment * vaAlignment;
     UC_INFO(
-        "HAL host allocation: owner={} device={} ranks={} data_bytes={} "
+        "HAL host allocation: owner={} ranks={} data_bytes={} "
         "rank_stride={} reserve_bytes={} page_type={} alloc_granularity={}",
-        owner_, deviceId_, nRanks, dataBytes, rankStride_, reserveBytes,
-        static_cast<uint32_t>(pageType), allocGranularity);
+        owner_, nRanks, dataBytes, rankStride_, reserveBytes, static_cast<uint32_t>(pageType),
+        allocGranularity);
 
     status = Hal::MemAddressReserve(&base_, reserveBytes);
     if (status.Failure()) {
         UC_ERROR(
-            "halMemAddressReserve failed: owner={} device={} page_type={} ranks={} "
+            "halMemAddressReserve failed: owner={} page_type={} ranks={} "
             "rank_stride={} reserve_bytes={} status={}",
-            owner_, deviceId_, static_cast<uint32_t>(pageType), nRanks, rankStride_, reserveBytes,
-            status);
+            owner_, static_cast<uint32_t>(pageType), nRanks, rankStride_, reserveBytes, status);
         return status;
     }
     if (base_ == nullptr) {
         UC_ERROR(
-            "Invalid HAL VA reservation: owner={} device={} page_type={} addr={} "
+            "Invalid HAL VA reservation: owner={} page_type={} addr={} "
             "va_alignment={} reserve_bytes={}",
-            owner_, deviceId_, static_cast<uint32_t>(pageType), base_, vaAlignment, reserveBytes);
+            owner_, static_cast<uint32_t>(pageType), base_, vaAlignment, reserveBytes);
         return Status::Error("HAL did not return a valid ptr");
     }
     status = Hal::MemCreate(&mappings_[owner_].handle, rankStride_, pageType);
     if (status.Failure()) {
         UC_ERROR(
-            "halMemCreate failed: owner={} device={} page_type={} rank_stride={} "
+            "halMemCreate failed: owner={} page_type={} rank_stride={} "
             "alloc_granularity={} status={}",
-            owner_, deviceId_, static_cast<uint32_t>(pageType), rankStride_, allocGranularity,
-            status);
+            owner_, static_cast<uint32_t>(pageType), rankStride_, allocGranularity, status);
         return status;
     }
     std::byte* local = static_cast<std::byte*>(base_) + owner_ * rankStride_;
     status = Hal::MemMap(local, rankStride_, mappings_[owner_].handle);
     if (status.Failure()) {
         UC_ERROR(
-            "halMemMap failed: owner={} device={} page_type={} addr={} rank_stride={} "
+            "halMemMap failed: owner={} page_type={} addr={} rank_stride={} "
             "status={}",
-            owner_, deviceId_, static_cast<uint32_t>(pageType), static_cast<void*>(local),
-            rankStride_, status);
+            owner_, static_cast<uint32_t>(pageType), static_cast<void*>(local), rankStride_,
+            status);
         return status;
     }
     mappings_[owner_].mapped = true;
@@ -217,16 +211,15 @@ Status DataStrategy::CrossRankSetup(CtrlLayout& ctrl, size_t timeoutMs)
     uint64_t shareHandle = 0;
     Status status = Hal::MemExportToShareableHandle(mappings_[owner_].handle, &shareHandle);
     if (status.Failure()) {
-        UC_ERROR("halMemExportToShareableHandle failed: owner={} device={} status={}", owner_,
-                 deviceId_, status);
+        UC_ERROR("halMemExportToShareableHandle failed: owner={} status={}", owner_, status);
         return status;
     }
     status = Hal::MemShareHandleDisableWhitelist(shareHandle);
     if (status.Failure()) {
         UC_ERROR(
-            "halMemShareHandleSetAttribute failed: owner={} device={} share_handle={} "
+            "halMemShareHandleSetAttribute failed: owner={} share_handle={} "
             "status={}",
-            owner_, deviceId_, shareHandle, status);
+            owner_, shareHandle, status);
         return status;
     }
 
@@ -234,10 +227,10 @@ Status DataStrategy::CrossRankSetup(CtrlLayout& ctrl, size_t timeoutMs)
     desc.handle.store(shareHandle, std::memory_order_relaxed);
     status = ctrl.SetRankDesc(owner_, desc);
     if (status.Failure()) {
-        UC_ERROR("SetRankDesc failed: owner={} device={} share_handle={} status={}", owner_,
-                 deviceId_, shareHandle, status);
-        return {status.Underlying(), fmt::format("SetRankDesc failed: owner={} device={} status={}",
-                                                 owner_, deviceId_, status)};
+        UC_ERROR("SetRankDesc failed: owner={} share_handle={} status={}", owner_, shareHandle,
+                 status);
+        return {status.Underlying(),
+                fmt::format("SetRankDesc failed: owner={} status={}", owner_, status)};
     }
     for (size_t rank = 0; rank < mappings_.size(); ++rank) {
         if (rank == owner_) { continue; }
@@ -250,21 +243,21 @@ Status DataStrategy::CrossRankSetup(CtrlLayout& ctrl, size_t timeoutMs)
             peerDesc = ctrl.GetRankDesc(rank);
         }
         if (!peerDesc) {
-            UC_ERROR("GetRankDesc timed out: owner={} device={} rank={} timeout_ms={} status={}",
-                     owner_, deviceId_, rank, timeoutMs, peerDesc.Error());
+            UC_ERROR("GetRankDesc timed out: owner={} rank={} timeout_ms={} status={}", owner_,
+                     rank, timeoutMs, peerDesc.Error());
             return {Status::Timeout().Underlying(),
-                    fmt::format("GetRankDesc timed out: owner={} device={} rank={} timeout_ms={} "
+                    fmt::format("GetRankDesc timed out: owner={} rank={} timeout_ms={} "
                                 "status={}",
-                                owner_, deviceId_, rank, timeoutMs, peerDesc.Error())};
+                                owner_, rank, timeoutMs, peerDesc.Error())};
         }
         const uint64_t peerHandle = peerDesc.Value().handle.load(std::memory_order_relaxed);
         status = Hal::MemImportFromShareableHandle(peerHandle, static_cast<uint32_t>(deviceId_),
                                                    &mappings_[rank].handle);
         if (status.Failure()) {
             UC_ERROR(
-                "halMemImportFromShareableHandle failed: owner={} device={} rank={} "
+                "halMemImportFromShareableHandle failed: owner={} rank={} "
                 "peer_handle={} status={}",
-                owner_, deviceId_, rank, peerHandle, status);
+                owner_, rank, peerHandle, status);
             return {status.Underlying(),
                     fmt::format("HAL peer import failed: rank={} status={}", rank, status)};
         }
@@ -272,15 +265,15 @@ Status DataStrategy::CrossRankSetup(CtrlLayout& ctrl, size_t timeoutMs)
         status = Hal::MemMap(addr, rankStride_, mappings_[rank].handle);
         if (status.Failure()) {
             UC_ERROR(
-                "halMemMap failed: owner={} device={} rank={} addr={} rank_stride={} "
+                "halMemMap failed: owner={} rank={} addr={} rank_stride={} "
                 "peer_handle={} status={}",
-                owner_, deviceId_, rank, static_cast<void*>(addr), rankStride_, peerHandle, status);
+                owner_, rank, static_cast<void*>(addr), rankStride_, peerHandle, status);
             return {status.Underlying(),
                     fmt::format("HAL peer map failed: rank={} status={}", rank, status)};
         }
         mappings_[rank].mapped = true;
-        UC_INFO("HAL peer mapping: owner={} device={} rank={} addr={} bytes={}", owner_, deviceId_,
-                rank, static_cast<void*>(addr), rankStride_);
+        UC_INFO("HAL peer mapping: owner={} rank={} addr={} bytes={}", owner_, deviceId_, rank,
+                static_cast<void*>(addr), rankStride_);
     }
     return Status::OK();
 }

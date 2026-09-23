@@ -58,8 +58,8 @@ public:
 
     // Returns a failure status after releasing resources acquired by this call.
     // All peer handles share timeoutMs; zero allows one read attempt per peer.
-    Status Setup(CtrlLayout& ctrl, int32_t deviceId, size_t slotSize, size_t nSlotsPerRank,
-                 size_t timeoutMs = 600 * 1000);
+    Status Setup(CtrlLayout& ctrl, int32_t deviceId, size_t myRank, size_t slotSize,
+                 size_t nSlotsPerRank, size_t timeoutMs = 600 * 1000);
 
     bool HostAccessibleOf(size_t slotIdx) const;
     // Only locally allocated slots have a CPU/IO-accessible address.
