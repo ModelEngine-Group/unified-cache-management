@@ -79,22 +79,23 @@ public:
         void* DeviceData() { return buf_->data_.DeviceDataAt(slotIdx_); }
         CtrlLayout::SlotMeta::State GetState() const
         {
-            return buf_->ctrl_.Layout().SlotMetaArr()[slotIdx_].state.load(
-                std::memory_order_acquire);
+            return CtrlLayout::SlotMeta::State::Loading;
+            // return buf_->ctrl_.Layout().SlotMetaArr()[slotIdx_].state.load(
+            //     std::memory_order_acquire);
         }
         void MarkReady()
         {
-            if (Owner()) {
-                buf_->ctrl_.Layout().SlotMetaArr()[slotIdx_].state.store(
-                    CtrlLayout::SlotMeta::State::Ready, std::memory_order_release);
-            }
+            // if (Owner()) {
+            //     buf_->ctrl_.Layout().SlotMetaArr()[slotIdx_].state.store(
+            //         CtrlLayout::SlotMeta::State::Ready, std::memory_order_release);
+            // }
         }
         void MarkFailed()
         {
-            if (Owner()) {
-                buf_->ctrl_.Layout().SlotMetaArr()[slotIdx_].state.store(
-                    CtrlLayout::SlotMeta::State::Failed, std::memory_order_release);
-            }
+            // if (Owner()) {
+            //     buf_->ctrl_.Layout().SlotMetaArr()[slotIdx_].state.store(
+            //         CtrlLayout::SlotMeta::State::Failed, std::memory_order_release);
+            // }
         }
 
     private:
