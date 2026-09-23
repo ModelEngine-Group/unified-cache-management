@@ -300,7 +300,7 @@ def test_trailing_pool_restores_prefix_from_persisted_tail_window(connector):
     value.register_pool_v2(FakeHostPool(1, [64]), pool_name)
     value.mem_pool_host.kv_buffer = None  # logical anchor: v2 pools own the payload
     keys = ["page-0", "page-1", "page-2"]
-    tail_key = "swa-state-at-page-2"
+    tail_key = keys[-1]
     transfer = sglang_hicache.PoolTransfer(
         name=pool_name,
         keys=[tail_key],
