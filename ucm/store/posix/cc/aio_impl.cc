@@ -192,10 +192,11 @@ AioImpl::~AioImpl()
     }
 }
 
-Status AioImpl::Setup(size_t timeoutMs)
+Status AioImpl::Setup(size_t timeoutMs, size_t queueDepth)
 {
     constexpr size_t defaultSweepIntervalMs = 100;
     constexpr size_t defaultEpollTimeoutMs = 10;
+    queueDepth_ = queueDepth;
     sweepIntervalMs_ = defaultSweepIntervalMs;
     epollTimeoutMs_ = defaultEpollTimeoutMs;
     submitTimeoutMs_ = timeoutMs;

@@ -22,6 +22,8 @@
  * SOFTWARE.
  * */
 #include "trans_queue.h"
+#include <cerrno>
+#include <unistd.h>
 #include "logger/logger.h"
 #include "metrics_api.h"
 #include "posix_file.h"
@@ -37,6 +39,8 @@ Status TransQueue::Setup(const Config& config, TaskIdSet* failureSet, const Spac
     nShardPerBlock_ = config.blockSize / config.shardSize;
     ioDirect_ = config.ioDirect;
     timeoutMs_ = config.timeoutMs;
+    auto cacheStatus = loadHandles_.Setup(config.loadHandleCacheSize, config.ioDirect);
+    if (cacheStatus.Failure()) [[unlikely]] { return cacheStatus; }
     auto success =
         loadPool_.SetNWorker(config.dataTransConcurrency)
             .SetWorkerFn([this](auto& ios, auto&) { LoadWorker(ios); })
@@ -165,22 +169,26 @@ Status TransQueue::H2S(IoUnit& ios)
 Status TransQueue::S2H(IoUnit& ios)
 {
     const auto& path = layout_->DataFilePath(ios.shard.owner, false);
-    PosixFile file{path};
-    auto flags = PosixFile::OpenFlag::READ_ONLY;
-    if (ioDirect_) { flags |= PosixFile::OpenFlag::DIRECT; }
-    auto s = file.Open(flags);
-    if (s.Failure()) [[unlikely]] {
-        UC_ERROR("Failed({}) to open file({}) with flags({}).", s, path, flags);
+    auto borrowed = loadHandles_.GetOrOpen(ios.shard.owner, path);
+    if (!borrowed.Valid()) [[unlikely]] {
+        UC_ERROR("Failed({}) to open file({}) for load.", borrowed.Error(), path);
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_open_errors_total"), 1.0);
-        return s;
+        return borrowed.Error() == ENOENT ? Status::NotFound()
+                                          : Status::OsApiError(std::to_string(borrowed.Error()));
     }
     auto offset = shardSize_ * ios.shard.index;
     for (const auto& addr : ios.shard.addrs) {
-        s = file.Read(addr, ioSize_, offset);
-        if (s.Failure()) [[unlikely]] {
-            UC_ERROR("Failed({}) to read file({}:{}).", s, path, offset);
+        auto nBytes = ::pread(borrowed.Fd(), addr, ioSize_, offset);
+        auto eno = errno;
+        if (nBytes < 0) [[unlikely]] {
+            UC_ERROR("Failed({}) to read file({}:{}).", eno, path, offset);
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_io_errors_total"), 1.0);
-            return s;
+            return Status::OsApiError(std::to_string(eno));
+        }
+        if (nBytes != static_cast<ssize_t>(ioSize_)) [[unlikely]] {
+            UC_ERROR("Failed({}) to read file({}:{}).", nBytes, path, offset);
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID("posix_io_errors_total"), 1.0);
+            return Status::NotFound();
         }
         offset += ioSize_;
     }
