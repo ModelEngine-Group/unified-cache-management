@@ -12,15 +12,12 @@ add_library(trans STATIC
 )
 if(UCM_RUNTIME_ASCEND_HAL)
     target_sources(trans PRIVATE hal/hal_memory.cc)
-    set(ASCEND_DRIVER_ROOT "/usr/local/Ascend/driver" CACHE PATH "Path to Ascend driver")
     find_path(UCM_TRANS_HAL_INCLUDE_DIR ascend_hal.h
-        HINTS "${ASCEND_ROOT}/include/driver" "${ASCEND_DRIVER_ROOT}/include"
-        REQUIRED)
+        PATHS "${ASCEND_ROOT}/include/driver"
+        NO_DEFAULT_PATH REQUIRED)
     find_library(UCM_TRANS_HAL_LIBRARY ascend_hal
-        HINTS "${ASCEND_DRIVER_ROOT}/lib64/driver" "${ASCEND_DRIVER_ROOT}/lib64"
-              "${ASCEND_ROOT}/lib64" "${ASCEND_ROOT}/lib64/stub"
-              "${ASCEND_ROOT}/devlib" "${ASCEND_ROOT}/${CMAKE_SYSTEM_PROCESSOR}-linux/devlib"
-        REQUIRED)
+        PATHS "${ASCEND_ROOT}/devlib" "${ASCEND_ROOT}/${CMAKE_SYSTEM_PROCESSOR}-linux/devlib"
+        NO_DEFAULT_PATH REQUIRED)
     target_include_directories(trans SYSTEM PRIVATE ${UCM_TRANS_HAL_INCLUDE_DIR})
     target_link_libraries(trans PRIVATE ${UCM_TRANS_HAL_LIBRARY})
 endif()
