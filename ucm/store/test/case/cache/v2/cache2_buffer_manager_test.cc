@@ -29,7 +29,7 @@
 #include <set>
 #include <sys/types.h>
 #include <vector>
-#include "cache2/cc/buffer_manager.h"
+#include "cache/v2/buffer_manager.h"
 #include "detail/mock_store.h"
 #include "detail/types_helper.h"
 #include "metrics_api.h"

@@ -17,7 +17,7 @@ if(BUILD_UNIT_TESTS)
     endif()
     target_include_directories(ucmstore.test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/case)
     target_link_libraries(ucmstore.test PRIVATE
-        posixstore cachestore cachestore2 fakestore pcstore healthbreakerstore
+        posixstore cachestore fakestore pcstore healthbreakerstore
         gtest_main gtest gmock
     )
     if(TARGET dramstore AND TARGET drampool_core)

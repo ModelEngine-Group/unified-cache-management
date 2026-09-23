@@ -3,7 +3,7 @@
  *
  * Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
  */
-#include "../../../cache2/cc/ctrl_layout.h"
+#include "cache/v2/ctrl_layout.h"
 #include <cstddef>
 #include <cstdint>
 #include <gtest/gtest.h>
