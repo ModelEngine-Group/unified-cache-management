@@ -49,7 +49,7 @@ def match_session_key(all_token_ids) -> str:
 
     If the request shares at least ``MIN_LCP_TO_MATCH`` prefix tokens with a 
     previously registered session, the existing session key is returned and the 
-    registered token squence is refreshed to the current round. Otherwise a 
+    registered token sequence is refreshed to the current round. Otherwise a 
     brand-new session key is derived from the full token sequence.
 
     The returned key is stable across rounds of the same session, allowing the 
