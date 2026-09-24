@@ -16,7 +16,8 @@ from ucm_release import toolkit as toolkit_ops
 
 RELEASE_MANIFEST_FILENAME = "release-manifest.json"
 RELEASE_MANIFEST_KIND = "ucm-release-manifest"
-RELEASE_MANIFEST_SCHEMA_VERSION = 9
+RELEASE_MANIFEST_SCHEMA_VERSION = 10
+SUPPORTED_RELEASE_MANIFEST_SCHEMA_VERSIONS = frozenset({9, 10})
 _PATH_COMPONENT = re.compile(r"[a-z0-9][a-z0-9.+-]*")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
@@ -155,15 +156,15 @@ def _publication(value: object, context: str, channel: str) -> dict[str, Any] | 
 def validate_manifest(
     value: object, *, expected_tag: str | None = None
 ) -> dict[str, Any]:
-    """Validate the exact public Schema 9 installation contract."""
+    """Validate the exact public Schema 10 installation contract."""
 
     manifest = _mapping(value, "release manifest")
     if manifest.get("kind") != RELEASE_MANIFEST_KIND:
         raise ManifestError(f"release manifest kind must be {RELEASE_MANIFEST_KIND}")
     schema_version = manifest.get("schema_version")
-    if schema_version != RELEASE_MANIFEST_SCHEMA_VERSION:
+    if schema_version not in SUPPORTED_RELEASE_MANIFEST_SCHEMA_VERSIONS:
         raise ManifestError(
-            "release manifest schema_version must be "
+            "release manifest schema_version must be 9 or "
             f"{RELEASE_MANIFEST_SCHEMA_VERSION}"
         )
     _exact_keys(
@@ -285,9 +286,8 @@ def validate_manifest(
         raise ManifestError("release manifest wheels must be an array")
     wheel_keys = {
         "id",
-        "product",
         "extra",
-        "accelerator",
+        *({"product", "accelerator"} if schema_version == 9 else {"capabilities"}),
         "distribution",
         "version",
         "python_abi",
@@ -305,7 +305,12 @@ def validate_manifest(
         context = f"release manifest wheels[{index}]"
         wheel = _mapping(raw_wheel, context)
         _exact_keys(wheel, wheel_keys, context)
-        for field in wheel_keys - {"accelerator", "dependencies", "platform_tags"}:
+        for field in wheel_keys - {
+            "capabilities",
+            "accelerator",
+            "dependencies",
+            "platform_tags",
+        }:
             _nonempty_string(wheel.get(field), f"{context} {field}")
         wheel_id = wheel["id"]
         filename = wheel["filename"]
@@ -315,7 +320,43 @@ def validate_manifest(
             )
         wheel_ids.add(wheel_id)
         wheel_filenames.add(filename)
-        _accelerator(wheel.get("accelerator"), f"{context} accelerator")
+        capability_keys: list[tuple[str, str, str, str]] = []
+        if schema_version == 9:
+            legacy_accelerator = _accelerator(
+                wheel.get("accelerator"), f"{context} accelerator"
+            )
+            capability_keys = [
+                (
+                    wheel["product"],
+                    legacy_accelerator["runtime"],
+                    legacy_accelerator["variant"],
+                    legacy_accelerator["soc_version"],
+                )
+            ]
+        else:
+            raw_capabilities = wheel.get("capabilities")
+            if not isinstance(raw_capabilities, list) or not raw_capabilities:
+                raise ManifestError(f"{context} capabilities must be a non-empty array")
+            for capability_index, raw_capability in enumerate(raw_capabilities):
+                capability_context = f"{context} capabilities[{capability_index}]"
+                capability = _mapping(raw_capability, capability_context)
+                _exact_keys(capability, {"product", "accelerator"}, capability_context)
+                product = _nonempty_string(
+                    capability.get("product"), f"{capability_context} product"
+                )
+                accelerator = _accelerator(
+                    capability.get("accelerator"), f"{capability_context} accelerator"
+                )
+                capability_keys.append(
+                    (
+                        product,
+                        accelerator["runtime"],
+                        accelerator["variant"],
+                        accelerator["soc_version"],
+                    )
+                )
+            if capability_keys != sorted(set(capability_keys)):
+                raise ManifestError(f"{context} capabilities must be sorted and unique")
         if _PATH_COMPONENT.fullmatch(wheel["extra"]) is None:
             raise ManifestError("Wheel extra is not path-safe")
         if (
@@ -557,9 +598,9 @@ def _publication_references(record: dict[str, Any], context: str) -> dict[str, s
     return {channel: references[channel] for channel in sorted(references)}
 
 
-def _wheel_capability(
+def _wheel_capabilities(
     wheel_id: str, images: list[dict[str, Any]]
-) -> tuple[str, dict[str, str]]:
+) -> list[dict[str, Any]]:
     capabilities: set[tuple[str, str, str, str]] = set()
     for image in images:
         if image.get("wheel_id") != wheel_id:
@@ -579,14 +620,17 @@ def _wheel_capability(
         capabilities.add(values)  # type: ignore[arg-type]
     if not capabilities:
         raise ValueError(f"Wheel {wheel_id} is not linked to an Image family")
-    if len(capabilities) != 1:
-        raise ValueError(f"Wheel {wheel_id} maps to conflicting Runtime capabilities")
-    product, accelerator_runtime, variant, soc_version = capabilities.pop()
-    return product, {
-        "runtime": accelerator_runtime,
-        "variant": variant,
-        "soc_version": soc_version,
-    }
+    return [
+        {
+            "product": product,
+            "accelerator": {
+                "runtime": accelerator_runtime,
+                "variant": variant,
+                "soc_version": soc_version,
+            },
+        }
+        for product, accelerator_runtime, variant, soc_version in sorted(capabilities)
+    ]
 
 
 def _project_image_publications(
@@ -771,7 +815,7 @@ def _project_python_package(
 def build_manifest(
     state: dict[str, Any], release_document: dict[str, Any]
 ) -> dict[str, Any]:
-    """Project one complete Final Release State into exact public schema 9."""
+    """Project one complete Final Release State into exact public schema 10."""
     if state.get("kind") != "ucm-release-state" or state.get("schema_version") != 3:
         raise ValueError(
             "public release manifest requires Final Release State schema 3"
@@ -821,7 +865,7 @@ def build_manifest(
             or any(not isinstance(value, str) or not value for value in platform_tags)
             or sorted(set(platform_tags)) != platform_tags
         ):
-            raise ValueError("release state Wheel cannot be projected into schema 9")
+            raise ValueError("release state Wheel cannot be projected into schema 10")
         wheel_id = wheel.get("id")
         if not isinstance(wheel_id, str) or not wheel_id:
             raise ValueError("release state Wheel has no ID")
@@ -834,13 +878,12 @@ def build_manifest(
             or not python_abi
         ):
             raise ValueError("release state Wheel platform differs from its identity")
-        product, accelerator = _wheel_capability(wheel_id, images)
+        capabilities = _wheel_capabilities(wheel_id, images)
         wheels.append(
             {
                 "id": wheel_id,
-                "product": product,
                 "extra": extra,
-                "accelerator": accelerator,
+                "capabilities": capabilities,
                 "distribution": distribution,
                 "version": python_package["version"],
                 "python_abi": python_abi,
@@ -939,7 +982,7 @@ def build_manifest(
                 and (not isinstance(chart_oci, str) or not chart_oci)
             )
         ):
-            raise ValueError("release state Chart cannot be projected into schema 9")
+            raise ValueError("release state Chart cannot be projected into schema 10")
         chart_document = {
             "name": chart["name"],
             "version": chart["version"],

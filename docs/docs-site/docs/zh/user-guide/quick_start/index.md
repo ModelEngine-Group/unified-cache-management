@@ -416,56 +416,173 @@ curl --fail http://127.0.0.1:7800/metrics | grep '^ucm:'
 
 <section data-quickstart-guide="sglang" markdown="1">
 
-## SGLang（CUDA） {#sglang}
+## SGLang {#sglang}
 
-本指南介绍如何在 CUDA 平台上安装 UCM，并接入 SGLang。
+<ul data-environment-summary hidden>
+<li>引擎：<span data-env-value="engine_version"></span></li>
+<li>CUDA / CANN：<span data-env-value="runtime"></span></li>
+<li>操作系统：<span data-env-value="os"></span></li>
+<li>CPU 架构：<span data-env-value="architecture"></span></li>
+<li>镜像 Python：<span data-env-value="python_version"></span></li>
+</ul>
 
-### 安装 UCM {#sglang-ucm}
+### 环境与前置条件 {#sglang-environment}
 
-#### 方式一：使用 Docker {#sglang-docker}
+为 `--tensor-parallel-size 2` 准备两个可用设备和匹配的宿主机驱动。将
+`Qwen/Qwen2.5-14B-Instruct` 模型文件放在宿主机的 `<path_to_your_models>`，并准备可写的
+`<path_to_your_storage>` 缓存目录。两个镜像都会将它们分别挂载到 `/workspace/model` 和
+`/workspace/storage`，并将 `/workspace` 作为工作目录。
 
-##### SGLang 镜像 {#sglang-sglang}
+### 选择镜像 {#sglang-image}
 
-当前 [UCM Release](https://github.com/ModelEngine-Group/unified-cache-management/releases)未提供 SGLang 镜像。使用下面的官方 SGLang 镜像，进入容器后按下一节从 PyPI 安装 UCM。
+=== "标准 SGLang 镜像"
 
-```bash
-docker pull lmsysorg/sglang:v0.5.9
-```
+    #### 启动标准镜像 {#sglang-sglang}
 
-然后使用以下命令启动容器。
-```bash
-# Use `--ipc=host` to make sure the shared memory is large enough.
-docker run --rm \
-    --gpus all \
-    --network=host \
-    --ipc=host \
-    -v "<path_to_your_models>:/home/model" \
-    -v "<path_to_your_storage>:/home/storage" \
-    --name "<name_of_your_container>" \
-    -it lmsysorg/sglang:v0.5.9
-```
+    请使用上方 Quickstart 选择器根据发布清单选择 SGLang 镜像和 UCM 安装包。
 
-从源码构建 UCM Docker 镜像，参见[从源码构建和安装 UCM](../../developer-guide/build_from_source.md)。
+    <div data-requires="standard" hidden markdown="1">
+    <div data-runtime="cuda" hidden markdown="1">
+    <div data-command-template markdown="1">
 
-#### 方式二：使用 pip 安装 {#sglang-wheel}
+    ```bash
+    docker pull --platform {{ docker_platform }} "{{ standard_image }}"
+    docker run --rm -it \
+        --platform {{ docker_platform }} \
+        --entrypoint /bin/bash \
+        --workdir /workspace \
+        --gpus all \
+        --ipc=host \
+        -v "<path_to_your_models>:/workspace/model" \
+        -v "<path_to_your_storage>:/workspace/storage" \
+        --name ucm-quickstart "{{ standard_image }}"
+    ```
 
-从 [PyPI](https://pypi.org/project/uc-manager/) 安装 `uc-manager`：
+    </div>
 
-```bash
-export PLATFORM=cuda
-pip install uc-manager
-```
+    <div data-runtime="cann" hidden markdown="1">
+    <div data-runtime="cann" hidden markdown="1">
+    <div data-command-template markdown="1">
+    ```bash
+    docker pull --platform {{ docker_platform }} "{{ standard_image }}"
+    docker run --rm -it \
+        --platform {{ docker_platform }} \
+        --entrypoint /bin/bash \
+        --workdir /workspace \
+        --device /dev/davinci0 \
+        --device /dev/davinci1 \
+        --device /dev/davinci_manager \
+        --device /dev/devmm_svm \
+        --device /dev/hisi_hdc \
+        -v /usr/local/dcmi:/usr/local/dcmi \
+        -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
+        -v /usr/local/Ascend/driver/lib64:/usr/local/Ascend/driver/lib64 \
+        -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info \
+        -v /etc/ascend_install.info:/etc/ascend_install.info \
+        --network=host \
+        --ipc=host \
+        -v "<path_to_your_models>:/workspace/model" \
+        -v "<path_to_your_storage>:/workspace/storage" \
+        --name ucm-quickstart "{{ standard_image }}"
+    ```
+    </div>
+    </div>
+    ```bash
+    docker pull --platform {{ docker_platform }} "{{ standard_image }}"
+    docker run --rm -it --platform {{ docker_platform }} --entrypoint /bin/bash --workdir /workspace \
+        --device /dev/davinci0 \
+        --device /dev/davinci1 \
+        --device /dev/davinci_manager \
+        --device /dev/devmm_svm \
+        --device /dev/hisi_hdc \
+        -v /usr/local/dcmi:/usr/local/dcmi \
+        -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
+        -v /usr/local/Ascend/driver/lib64:/usr/local/Ascend/driver/lib64 \
+        -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info \
+        -v /etc/ascend_install.info:/etc/ascend_install.info \
+        --network=host \
+        --ipc=host \
+        -v "<path_to_your_models>:/workspace/model" \
+        -v "<path_to_your_storage>:/workspace/storage" \
+        --name ucm-quickstart "{{ standard_image }}"
+    ```
+    </div>
+    </div>
 
-先准备 SGLang 0.5.9 环境。PyPI 当前提供 UCM 0.5.0 源码包，安装时需要 CUDA 编译环境。
+    #### 在容器内安装 UCM {#sglang-wheel}
 
-安装后按下面的步骤创建配置文件。需要从仓库构建时，参见[源码构建](../../developer-guide/build_from_source.md)。
+    进入容器后安装匹配的 UCM backend：
+
+    <div data-command-template markdown="1">
+    ```bash
+    {{ pip_install }}
+    python{{ python_version }} -c "import ucm; print(ucm.__file__)"
+    ```
+    </div>
+
+    </div>
+
+    <div data-artifact-missing="standard" markdown="1">
+    当前环境没有匹配的标准镜像和 UCM Wheel，请使用[源码构建](../../developer-guide/build_from_source.md)。
+    </div>
+
+    </div>
+
+=== "UCM 镜像"
+
+    #### 启动 UCM 镜像 {#sglang-ucm-image}
+
+    该镜像已经包含 UCM，进入容器后直接执行下面的配置步骤。
+
+    <div data-requires="image" hidden markdown="1">
+    <div data-command-template markdown="1">
+
+    ```bash
+    docker pull --platform {{ docker_platform }} "{{ image }}"
+    docker run --rm -it \
+        --platform {{ docker_platform }} \
+        --entrypoint /bin/bash \
+        --workdir /workspace \
+        --gpus all \
+        --ipc=host \
+        -v "<path_to_your_models>:/workspace/model" \
+        -v "<path_to_your_storage>:/workspace/storage" \
+        --name ucm-quickstart "{{ image }}"
+    ```
+
+    </div>
+    </div>
+
+    <div data-runtime="cann" hidden markdown="1">
+    <div data-command-template markdown="1">
+    ```bash
+    docker pull --platform {{ docker_platform }} "{{ image }}"
+    docker run --rm -it \
+        --platform {{ docker_platform }} \
+        --entrypoint /bin/bash \
+        --workdir /workspace \
+        --device /dev/davinci0 --device /dev/davinci1 --device /dev/davinci_manager \
+        --device /dev/devmm_svm --device /dev/hisi_hdc \
+        -v /usr/local/dcmi:/usr/local/dcmi \
+        -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
+        -v /usr/local/Ascend/driver/lib64:/usr/local/Ascend/driver/lib64 \
+        -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info \
+        -v /etc/ascend_install.info:/etc/ascend_install.info \
+        --network=host \
+        --ipc=host \
+        -v "<path_to_your_models>:/workspace/model" \
+        -v "<path_to_your_storage>:/workspace/storage" \
+        --name ucm-quickstart "{{ image }}"
+    ```
+    </div>
+    </div>
 
 ### 配置 HiCache {#sglang-hicache}
 
-创建可写的持久目录 `/home/storage`。适配器要求 `page_first` 主机内存布局和 `interface_v1`，请勿改成旧版需要拷贝的存储 API。
+创建可写的持久目录 `/workspace/storage`。适配器要求 `page_first` 主机内存布局和 `interface_v1`，请勿改成旧版需要拷贝的存储 API。
 
 ```bash
-export MODEL_ID=Qwen/Qwen2.5-14B-Instruct
+export MODEL_ID=/workspace/model
 HICACHE_CONFIG='{
   "backend_name": "unifiedcache",
   "module_path": "ucm.integration.sglang.unifiedcache_store",
@@ -474,13 +591,16 @@ HICACHE_CONFIG='{
   "kv_connector_extra_config": {
     "ucm_connector_name": "UcmPipelineStore",
     "ucm_connector_config": {
-      "storage_backends": "/home/storage"
+      "storage_backends": "/workspace/storage"
     }
   }
 }'
 ```
 
-### 启动在线服务 {#sglang-online-inference}
+### 启动服务 {#sglang-start-the-server}
+
+示例使用挂载到 `/workspace/model` 的 Qwen2.5-14B-Instruct 模型。请求使用与服务相同的
+模型路径。更换模型时，还需要检查并行度、上下文长度和模型专用参数。
 
 ```bash
 python3 -m sglang.launch_server \
@@ -501,14 +621,22 @@ python3 -m sglang.launch_server \
 
 ### 验证服务与外部缓存 {#sglang-verify-the-service-and-external-cache}
 
+健康检查和模型接口只能确认 SGLang 服务已经启动，不能证明已经发生了外部缓存读取。
+
 ```bash
 curl --fail http://127.0.0.1:7800/health
 curl --fail http://127.0.0.1:7800/v1/models
+```
+
+在另一个宿主机终端中发送可重复的请求，提示词长度应超过多个 128-token block：
+
+```bash
 python3 - <<'PYREQUEST'
 import json
+import os
 from pathlib import Path
 Path('/tmp/ucm-request.json').write_text(json.dumps({
-    "model": "Qwen/Qwen2.5-14B-Instruct",
+    "model": os.environ["MODEL_ID"],
     "prompt": "Explain how a shared external cache reuses previous computation. " * 128,
     "max_tokens": 64,
     "temperature": 0,
@@ -518,32 +646,6 @@ curl --fail http://127.0.0.1:7800/v1/completions \
   -H 'Content-Type: application/json' --data-binary @/tmp/ucm-request.json
 ```
 
-等待 HiCache write-through 任务完成，结合引擎存储写入日志，检查配置目录中的持久化 KV 块文件。正常停止服务并保留目录，再使用相同的模型、tokenizer、page size 和并行度重启。重放相同请求，确认 HiCache 报告从存储预取的 token，或报告已完成的 UCM 存储读取。通过重启，可以区分外部存储复用和进程内 HiCache 命中。该 UCM 适配器未实现 `clear()`，因此本项验证应通过重启清除易失状态。
-
-如果没有存储读取记录，检查 HiCache 预取与写入错误、目录权限和提示词长度。不能只用请求延迟缩短判断缓存有效。参见[故障排查](../../reference/troubleshooting.md)和 [Pipeline Store](../../developer-guide/cache-configuration/pipeline.md)。UCM 的 vLLM `/metrics` 示例不表示 SGLang 提供同名指标。
-
-验证完成后停止服务，并按存储策略保留或删除本次专用测试缓存目录。
-
-### 离线批量推理 {#sglang-offline-inference}
-
-也可以在同一环境中使用 SGLang 的 [v0.5.9 离线示例](https://github.com/sgl-project/sglang/blob/v0.5.9/examples/runtime/engine/offline_batch_inference.py)。它通过 `ServerArgs` 接收与在线服务相同的 HiCache 参数。先停止占用这些设备的在线服务，在上面定义过 `MODEL_ID` 和 `HICACHE_CONFIG` 的 Shell 中执行：
-
-```bash
-curl --fail --location \
-  https://raw.githubusercontent.com/sgl-project/sglang/v0.5.9/examples/runtime/engine/offline_batch_inference.py \
-  --output /tmp/sglang-offline-batch.py
-python3 /tmp/sglang-offline-batch.py \
-  --model-path "$MODEL_ID" \
-  --tensor-parallel-size 2 --page-size 128 \
-  --trust-remote-code \
-  --enable-hierarchical-cache \
-  --hicache-mem-layout page_first \
-  --hicache-write-policy write_through \
-  --hicache-storage-backend dynamic \
-  --hicache-storage-prefetch-policy wait_complete \
-  --hicache-storage-backend-extra-config "$HICACHE_CONFIG"
-```
-
-示例打印每个提示词的生成结果。自带短提示词用于检查离线调用；验证外部缓存时，将其替换为覆盖多个完整块的重复长前缀，并按本页验证步骤检查读写。
+等待写入完成后正常停止服务，保留缓存目录，再使用相同的模型、page size 和并行度重启。重放请求并确认 HiCache 报告从存储预取。没有外部读取记录时，参见[故障排查](../../reference/troubleshooting.md)。
 
 </section>

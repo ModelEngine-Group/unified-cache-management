@@ -153,7 +153,7 @@ def test_exact_unsupported_manifest_is_an_error_not_pending(monkeypatch):
     pair[1]["schema_version"] = 8
     install_responses(monkeypatch, [pair])
     with pytest.raises(
-        releases.ManifestError, match="schema_version must be 9"
+        releases.ManifestError, match="schema_version must be 9 or 10"
     ) as error:
         releases.resolve_manifest(REPOSITORY, tag="v0.9.3")
     assert not isinstance(error.value, releases.ReleasePending)
