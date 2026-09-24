@@ -461,7 +461,6 @@ curl --fail http://127.0.0.1:7800/metrics | grep '^ucm:'
     </div>
 
     <div data-runtime="cann" hidden markdown="1">
-    <div data-runtime="cann" hidden markdown="1">
     <div data-command-template markdown="1">
     ```bash
     docker pull --platform {{ docker_platform }} "{{ standard_image }}"
@@ -486,26 +485,6 @@ curl --fail http://127.0.0.1:7800/metrics | grep '^ucm:'
         --name ucm-quickstart "{{ standard_image }}"
     ```
     </div>
-    </div>
-    ```bash
-    docker pull --platform {{ docker_platform }} "{{ standard_image }}"
-    docker run --rm -it --platform {{ docker_platform }} --entrypoint /bin/bash --workdir /workspace \
-        --device /dev/davinci0 \
-        --device /dev/davinci1 \
-        --device /dev/davinci_manager \
-        --device /dev/devmm_svm \
-        --device /dev/hisi_hdc \
-        -v /usr/local/dcmi:/usr/local/dcmi \
-        -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
-        -v /usr/local/Ascend/driver/lib64:/usr/local/Ascend/driver/lib64 \
-        -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info \
-        -v /etc/ascend_install.info:/etc/ascend_install.info \
-        --network=host \
-        --ipc=host \
-        -v "<path_to_your_models>:/workspace/model" \
-        -v "<path_to_your_storage>:/workspace/storage" \
-        --name ucm-quickstart "{{ standard_image }}"
-    ```
     </div>
     </div>
 
@@ -575,6 +554,8 @@ curl --fail http://127.0.0.1:7800/metrics | grep '^ucm:'
         --name ucm-quickstart "{{ image }}"
     ```
     </div>
+    </div>
+
     </div>
 
 ### 配置 HiCache {#sglang-hicache}

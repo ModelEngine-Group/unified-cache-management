@@ -11,7 +11,7 @@ from __future__ import annotations
 import copy
 import re
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from packaging.version import InvalidVersion, Version
@@ -452,11 +452,14 @@ def resolve_runtime_candidates(
                 if tag.startswith("main-cann"):
                     try:
                         created_by_tag[tag] = registry.created_at(repository, tag)
-                    except ValueError:
+                    except ValueError as error:
                         # Some registries do not expose config metadata for a tag.
-                        # Keep SGLang release generation alive with a timestamp from
-                        # this run; formal tags and the other products are unchanged.
-                        created_by_tag[tag] = datetime.now(timezone.utc)
+                        # Do not replace the upstream creation time with the current
+                        # time: that would make selection depend on this run.
+                        print(
+                            f"warning: cannot read creation time for {repository}:{tag}: "
+                            f"{error}; selecting by tag"
+                        )
         if pr_default:
             selected = [
                 {
@@ -515,16 +518,19 @@ def resolve_runtime_candidates(
                     )
                 )
                 continue
-            runtimes.append(
-                {
-                    "product_id": product_id,
-                    "runtime_repository": repository,
-                    "runtime_tag": tag,
-                    "runtime_ref": f"{repository}:{tag}",
-                    "version": item["version"],
-                    "channel": item["channel"],
-                }
-            )
+            candidate = {
+                "product_id": product_id,
+                "runtime_repository": repository,
+                "runtime_tag": tag,
+                "runtime_ref": f"{repository}:{tag}",
+                "version": item["version"],
+                "channel": item["channel"],
+            }
+            created_at = created_by_tag.get(tag)
+            if product_id == "sglang" and tag.startswith("main-cann"):
+                if created_at is not None:
+                    candidate["created_at"] = created_at.isoformat()
+            runtimes.append(candidate)
         if len(runtimes) == product_runtime_count:
             raise ValueError(
                 f"{product_id}: no publishable Runtime Registry tags satisfy policy"
@@ -589,6 +595,8 @@ def validate_runtime_candidates(value: object) -> dict[str, object]:
     seen: set[str] = set()
     for index, raw in enumerate(runtimes):
         item = _mapping(raw, f"runtime candidates[{index}]")
+        product_id = _string(item, "product_id", f"runtime candidates[{index}]")
+        runtime_tag = _string(item, "runtime_tag", f"runtime candidates[{index}]")
         fields = {
             "product_id",
             "runtime_repository",
@@ -597,7 +605,13 @@ def validate_runtime_candidates(value: object) -> dict[str, object]:
             "version",
             "channel",
         }
-        if set(item) != fields:
+        allowed_fields = {frozenset(fields)}
+        if (
+            product_id == "sglang"
+            and _SGLANG_MAIN_TAG.fullmatch(runtime_tag) is not None
+        ):
+            allowed_fields.add(frozenset((*fields, "created_at")))
+        if frozenset(item) not in allowed_fields:
             raise ValueError(f"runtime candidates[{index}] fields must be exact")
         reference = _string(item, "runtime_ref", f"runtime candidates[{index}]")
         expected_ref = (
@@ -611,8 +625,6 @@ def validate_runtime_candidates(value: object) -> dict[str, object]:
         if reference in seen:
             raise ValueError(f"duplicate runtime candidate {reference}")
         seen.add(reference)
-        product_id = _string(item, "product_id", reference)
-        runtime_tag = _string(item, "runtime_tag", reference)
         parsed = _parsed_runtime_tag(product_id, runtime_tag)
         # Accept candidate documents produced before SGLang main versions
         # became tag-based. New documents use the main tag and channel above.
@@ -634,6 +646,11 @@ def validate_runtime_candidates(value: object) -> dict[str, object]:
             raise ValueError(f"{reference}: Runtime version differs from its tag")
         if item.get("channel") != parsed["channel"]:
             raise ValueError(f"{reference}: Runtime channel differs from its tag")
+        if "created_at" in item:
+            try:
+                datetime.fromisoformat(_string(item, "created_at", reference))
+            except ValueError as error:
+                raise ValueError(f"{reference}: invalid creation timestamp") from error
         expected_refs.append(reference)
     if sorted(references) != sorted(expected_refs):
         raise ValueError("runtime candidate references do not match runtimes")
@@ -783,9 +800,17 @@ def resolve_upstreams(
         if product_id == "sglang" and tag.startswith("main-cann"):
             # Preserve the upstream main tag shape and add a collision-resistant
             # UCM timestamp, instead of projecting it to dev.0.0.0.
-            stamp_match = re.search(r"\.dev(\d{14})$", str(candidate["version"]))
-            if stamp_match is not None:
-                image_suffix += f"-{stamp_match.group(1)}"
+            created_at = candidate.get("created_at")
+            if created_at:
+                try:
+                    stamp = datetime.fromisoformat(str(created_at)).strftime(
+                        "%Y%m%d%H%M%S"
+                    )
+                except ValueError as error:
+                    raise ValueError(
+                        f"{reference}: invalid SGLang main creation timestamp"
+                    ) from error
+                image_suffix += f"-{stamp}"
         target_tag = runtime_contract.project_runtime_image_tag(
             tag + image_suffix,
             tag_prefix=str(release.get("runtime_image_tag_prefix", "")),

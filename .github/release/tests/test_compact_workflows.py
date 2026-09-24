@@ -49,21 +49,19 @@ def test_runtime_images_install_the_same_run_toolkit_wheel_by_default() -> None:
     assert "needs.build-toolkit.result == 'success'" in bot["build-images"]["if"]
 
 
-def test_chart_receives_a_filtered_plan_with_the_standard_plan_filename() -> None:
+def test_chart_filters_families_without_a_second_plan_artifact() -> None:
     release = _load("release-ucm.yml")["jobs"]
     plan = release["plan"]
-    assert plan["outputs"]["chart_plan_artifact"] == (
-        "${{ steps.plan.outputs.chart_plan_artifact }}"
-    )
-    chart_upload = next(
-        step
-        for step in plan["steps"]
-        if step.get("with", {}).get("name")
-        == "${{ steps.plan.outputs.chart_plan_artifact }}"
-    )
-    assert chart_upload["with"]["path"] == "out/chart-plan/release-plan.json"
+    assert "chart_plan_artifact" not in plan["outputs"]
     assert release["package-chart"]["with"]["plan_artifact"] == (
-        "${{ needs.plan.outputs.chart_plan_artifact }}"
+        "${{ needs.plan.outputs.plan_artifact }}"
+    )
+    chart = _load("_build-chart.yml")["jobs"]["package"]
+    package_step = next(step for step in chart["steps"] if step.get("id") == "package")
+    assert "plan=input/plan/release-plan.json" in package_step["run"]
+    assert (
+        'select(.product_id == "vllm" or .product_id == "vllm-ascend")'
+        in package_step["run"]
     )
 
 
