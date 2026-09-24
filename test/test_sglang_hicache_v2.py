@@ -45,6 +45,12 @@ class FakeStore:
             last = index
         return last
 
+    def lookup_on_reverse(self, keys):
+        for index in range(len(keys) - 1, -1, -1):
+            if keys[index] in self.objects:
+                return index
+        return -1
+
     def close(self):
         self.closed = True
 
@@ -330,6 +336,49 @@ def test_trailing_pool_miss_rejects_current_prefix(connector):
 
     assert result.kv_hit_pages == 0
     assert result.restorable_prefix_pages == []
+
+
+def test_trailing_pool_reverse_lookup_falls_back_to_older_checkpoint(connector):
+    value, stores = connector
+    pool_name = sglang_hicache.PoolName.SWA
+    value.register_pool_v2(FakeHostPool(1, [64]), pool_name)
+    value.mem_pool_host.kv_buffer = None
+    keys = ["page-0", "page-1", "page-2", "page-3"]
+    stores[0].objects.add(value._component_key("page-1", pool_name, 0))
+    transfer = sglang_hicache.PoolTransfer(
+        name=pool_name,
+        keys=["__placeholder__"],
+        hit_policy=sglang_hicache.PoolHitPolicy.TRAILING_PAGES,
+    )
+
+    result = value.batch_exists_v2(keys, [transfer])
+
+    assert result.kv_hit_pages == 2
+    assert result.extra_pool_hit_pages[pool_name] == 2
+    assert result.restorable_prefix_pages == [2]
+
+
+def test_trailing_pool_requires_complete_multi_page_window(connector):
+    value, stores = connector
+    pool_name = sglang_hicache.PoolName.SWA
+    value.register_pool_v2(FakeHostPool(1, [64]), pool_name)
+    value.mem_pool_host.kv_buffer = None
+    keys = ["page-0", "page-1", "page-2", "page-3"]
+    # Page 3 is a candidate endpoint, but page 2 is absent.  The older
+    # two-page window ending at page 1 is the latest complete one.
+    for key in ("page-0", "page-1", "page-3"):
+        stores[0].objects.add(value._component_key(key, pool_name, 0))
+    transfer = sglang_hicache.PoolTransfer(
+        name=pool_name,
+        keys=["__placeholder__", "__placeholder__"],
+        hit_policy=sglang_hicache.PoolHitPolicy.TRAILING_PAGES,
+    )
+
+    result = value.batch_exists_v2(keys, [transfer])
+
+    assert result.kv_hit_pages == 2
+    assert result.extra_pool_hit_pages[pool_name] == 2
+    assert result.restorable_prefix_pages == [1, 2]
 
 
 def test_trailing_pool_placeholders_use_the_candidate_end_checkpoint(connector):

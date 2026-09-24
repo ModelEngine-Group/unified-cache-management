@@ -446,26 +446,37 @@ class SglangUcmConnector:
                 )
                 pool_restorable = list(range(1, boundary + 1))
             elif transfer.hit_policy == PoolHitPolicy.TRAILING_PAGES:
-                # Match Mooncake's v2 contract: query every primary-page
-                # candidate, then keep precisely the prefix ends whose tail
-                # window is complete.  Placeholder values carry only N, never
-                # a storage key.  Concrete trailing keys are used by I/O after
-                # SGLang has synchronized them; they do not alter this
-                # existence-query mapping.
+                # Trailing pools are sparse: an object marks a candidate
+                # prefix end instead of contributing to a contiguous prefix.
+                # Discover candidates with UCM's native reverse lookup, then
+                # validate the complete trailing window for multi-page pools.
+                # Placeholder values carry only N and are never storage keys.
                 encoded = [
                     self._component_key(key, transfer.name, 0)
                     for key in keys[:kv_pages]
                 ]
-                page_exists = [bool(value) for value in store.lookup(encoded)]
                 trailing = max(1, len(trailing_keys))
                 pool_restorable = []
                 boundary = 0
-                for prefix_len in range(kv_pages, 0, -1):
-                    if all(
-                        page_exists[
-                            max(0, prefix_len - trailing) : prefix_len
+                reverse_index = store.lookup_on_reverse(encoded)
+                if reverse_index >= 0:
+                    # Reverse lookup gives the latest checkpoint directly.
+                    # Query only its left side once to retain older legal
+                    # positions needed by cross-pool/cross-rank intersection.
+                    page_exists = (
+                        [
+                            bool(value)
+                            for value in store.lookup(encoded[:reverse_index])
                         ]
-                    ):
+                        if reverse_index > 0
+                        else []
+                    ) + [True]
+                    for prefix_len in range(reverse_index + 1, 0, -1):
+                        if not page_exists[prefix_len - 1]:
+                            continue
+                        window_start = max(0, prefix_len - trailing)
+                        if not all(page_exists[window_start:prefix_len]):
+                            continue
                         pool_restorable.append(prefix_len)
                         if boundary == 0:
                             boundary = prefix_len
