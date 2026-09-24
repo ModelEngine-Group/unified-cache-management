@@ -24,13 +24,16 @@
 #ifndef UNIFIEDCACHE_CACHE_STORE_CC_LOAD_QUEUE_H
 #define UNIFIEDCACHE_CACHE_STORE_CC_LOAD_QUEUE_H
 
+#include <atomic>
 #include <future>
+#include <list>
 #include <thread>
 #include <vector>
 #include "copy_stream.h"
 #include "template/hashset.h"
 #include "template/spsc_ring_queue.h"
 #include "thread/latch.h"
+#include "trans/host/host_copy_executor.h"
 #include "trans_buffer.h"
 #include "trans_task.h"
 #include "ucmstore_v1.h"
@@ -42,12 +45,20 @@ class LoadQueue {
     using WaiterPtr = std::shared_ptr<Latch>;
     using TaskPair = std::pair<TaskPtr, WaiterPtr>;
     using TaskIdSet = HashSet<Detail::TaskHandle>;
+    struct H2HLoadContext {
+        TaskPtr task;
+        WaiterPtr waiter;
+        std::atomic<size_t> pending{0};
+        std::atomic<bool> failed{false};
+    };
+    using H2HLoadContextPtr = std::shared_ptr<H2HLoadContext>;
     struct ShardTask {
         TaskPtr task;
         Detail::Shard shard;
         TransBuffer::Handle bufferHandle;
-        Detail::TaskHandle backendTaskHandle;
+        Detail::TaskHandle backendTaskHandle{0};
         WaiterPtr waiter;
+        H2HLoadContextPtr h2hContext;
         bool fromPosix{false};
     };
 
@@ -63,6 +74,7 @@ private:
     bool useGdr_{false};
     bool cacheIOAggregation_{false};
     bool cacheSdmaDirect_{false};
+    bool useHostBuffer_{false};
     std::vector<ssize_t> cpuAffinityCores_{};
     size_t localRankSize_{};
     SpscRingQueue<TaskPair> waiting_;
@@ -70,6 +82,7 @@ private:
     std::thread dispatcher_;
     std::thread transfer_;
     std::vector<ShardTask> holder_;
+    Trans::HostCopyExecutor hostCopyExecutor_;
 
 public:
     ~LoadQueue();
@@ -79,10 +92,16 @@ public:
 private:
     void DispatchStage();
     void DispatchOneTask(TaskPair&& pair);
+    void DispatchOneH2HTask(TaskPair&& pair);
     void TransferStage(std::promise<Status>& started);
     void TransferOneTask(CopyStream& stream, ShardTask&& task);
     Status WaitBackendTaskReady(ShardTask& task);
     Status HostToDeviceAsync(CopyStream& stream, void* host, void** device);
+    std::vector<Trans::HostCopyExecutor::Segment> MakeH2HSegments(
+        const Detail::Shard& shard) const;
+    void CompleteH2HLoad(const std::shared_ptr<ShardTask>& task,
+                         const Trans::HostCopyExecutor::Result& result);
+    void FinishH2HLoadShard(const H2HLoadContextPtr& context, bool success);
     void RecordShardResults(const std::vector<ShardTask>& tasks, const ShardTask* extra,
                             bool success) const;
     void RecordLoadSourceShards(size_t total, size_t wait) const;
