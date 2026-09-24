@@ -120,8 +120,11 @@ private:
     Status SetupJoiner(const Config& cfg)
     {
         Dimensions expected;
-        auto s = ResolveDimensions(cfg, expected);
-        if (s.Failure()) { return s; }
+        const bool discoverSlotSize = cfg.deviceId < 0 && cfg.shardSize == 0;
+        if (!discoverSlotSize) {
+            auto s = ResolveDimensions(cfg, expected);
+            if (s.Failure()) { return s; }
+        }
         constexpr auto backoff = std::chrono::milliseconds(10);
         auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(cfg.timeoutMs);
         for (;;) {
@@ -134,7 +137,7 @@ private:
         }
 
         int32_t fd = -1;
-        s = socket_.RecvFd(fd);
+        auto s = socket_.RecvFd(fd);
         socket_.Close();
         if (s.Failure()) { return s; }
         s = ctrlMem_.Adopt(fd, sizeof(CtrlLayout::Header));
@@ -143,6 +146,13 @@ private:
         if (!layout_.WaitReady(cfg.timeoutMs)) { return Status::Retry(); }
 
         auto* header = layout_.Hdr();
+        if (discoverSlotSize) {
+            // Keep the scheduler's capacity and rank checks; only the shard size is unknown.
+            auto resolved = cfg;
+            resolved.shardSize = header->slotSize;
+            s = ResolveDimensions(resolved, expected);
+            if (s.Failure()) { return s; }
+        }
         auto rankCount = header->rankCount;
         auto slotsPerRank = header->slotsPerRank;
         auto bucketCount = header->bucketCount;
