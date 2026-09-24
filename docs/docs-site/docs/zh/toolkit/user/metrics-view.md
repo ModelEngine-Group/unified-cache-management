@@ -54,7 +54,6 @@ ucm-toolkit run metrics-view list-configs
 ucm-toolkit run metrics-view check \
   --url http://127.0.0.1:35325/metrics \
   --config metrics_lite \
-  --config-param tp_size=8
 ```
 
 输出示例：
@@ -106,7 +105,6 @@ ucm-toolkit run metrics-view query \
   --window 10m \
   --aggr-by 1m \
   --config metrics_lite \
-  --config-param tp_size=8
 ```
 
 `query` 也支持使用 `--tag` 按 Prometheus label 过滤：
