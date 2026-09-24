@@ -52,16 +52,25 @@ inline constexpr char kLookupRequestsTotal[] = "drampool_lookup_requests_total";
 inline constexpr char kDumpNospaceFailuresTotal[] = "drampool_dump_nospace_failures_total";
 inline constexpr char kDumpFailedEntriesTotal[] = "drampool_dump_failed_entries_total";
 inline constexpr char kDumpPrepareDurationMs[] = "drampool_dump_prepare_duration_ms";
+inline constexpr char kDumpMetadataDurationMs[] = "drampool_dump_metadata_duration_ms";
+inline constexpr char kDumpSubmitDurationMs[] = "drampool_dump_submit_duration_ms";
 // C. Load business
 inline constexpr char kLoadMissEntriesTotal[] = "drampool_load_miss_entries_total";
 inline constexpr char kLoadPrepareDurationMs[] = "drampool_load_prepare_duration_ms";
+inline constexpr char kLoadMetadataDurationMs[] = "drampool_load_metadata_duration_ms";
+inline constexpr char kLoadSubmitDurationMs[] = "drampool_load_submit_duration_ms";
 // D. Lookup business
 inline constexpr char kLookupMissEntriesTotal[] = "drampool_lookup_miss_entries_total";
 inline constexpr char kLookupScanDurationMs[] = "drampool_lookup_scan_duration_ms";
-// E. Transfer and response
+// E. Transfer and response. The transfer/RTT histograms run from submission to
+// the terminal observation, so they mix the actual HiXL transfer, the Poller
+// polling delay, and the terminal GetStatus() execution; the GetStatus and
+// submit histograms isolate the components that are measurable client-side.
 inline constexpr char kDumpTransferDurationMs[] = "drampool_dump_transfer_duration_ms";
 inline constexpr char kLoadTransferDurationMs[] = "drampool_load_transfer_duration_ms";
 inline constexpr char kTransferFailuresTotal[] = "drampool_transfer_failures_total";
+inline constexpr char kGetStatusDurationMs[] = "drampool_get_status_duration_ms";
+inline constexpr char kResponseSubmitDurationMs[] = "drampool_response_submit_duration_ms";
 inline constexpr char kResponseRttMs[] = "drampool_response_rtt_ms";
 inline constexpr char kResponseFailuresTotal[] = "drampool_response_failures_total";
 inline constexpr char kSubmitFailuresTotal[] = "drampool_submit_failures_total";
@@ -73,16 +82,26 @@ inline constexpr char kBufferPoolUsageRatio[] = "drampool_buffer_pool_usage_rati
 inline constexpr char kMetadataStoreendDurationMs[] = "drampool_metadata_storeend_duration_ms";
 inline constexpr char kMetadataLoadendDurationMs[] = "drampool_metadata_loadend_duration_ms";
 inline constexpr char kMetadataEvictGcDurationMs[] = "drampool_metadata_evict_gc_duration_ms";
-// H. Queues and blocking
+// H. Queues and blocking. enqueue_wait_ms covers only the TryPush wait;
+// residence_ms covers the remaining queue stay until the TaskWorker dequeue.
+// The capacity gauges mirror the configured queue depths so queue utilization
+// (size / capacity) can be computed reliably.
 inline constexpr char kQueueRequestFullTotal[] = "drampool_queue_request_full_total";
 inline constexpr char kQueueRequestEnqueueWaitMs[] = "drampool_queue_request_enqueue_wait_ms";
+inline constexpr char kQueueRequestResidenceMs[] = "drampool_queue_request_residence_ms";
 inline constexpr char kQueueRequestSize[] = "drampool_queue_request_size";
+inline constexpr char kQueueRequestCapacity[] = "drampool_queue_request_capacity";
 inline constexpr char kQueueCompletionFullTotal[] = "drampool_queue_completion_full_total";
 inline constexpr char kQueueCompletionInflight[] = "drampool_queue_completion_inflight";
 inline constexpr char kQueueCompletionSize[] = "drampool_queue_completion_size";
+inline constexpr char kQueueCompletionCapacity[] = "drampool_queue_completion_capacity";
 inline constexpr char kQueueResponseBufferRetryTotal[] =
     "drampool_queue_response_buffer_retry_total";
-// I. Batch total duration
+// I. Batch end-to-end duration: the full server-side request lifecycle, from
+// the requestQueue push to the response transfer terminal state (or the record
+// leaving the Poller on a permanent response failure). Covers queue residence,
+// worker processing, transfer terminal-state wait, response-buffer waits,
+// response packing/submission, and response transfer completion.
 inline constexpr char kDumpBatchTotalDurationMs[] = "drampool_dump_batch_total_duration_ms";
 inline constexpr char kLoadBatchTotalDurationMs[] = "drampool_load_batch_total_duration_ms";
 inline constexpr char kLookupBatchTotalDurationMs[] = "drampool_lookup_batch_total_duration_ms";
@@ -156,9 +175,15 @@ inline const std::vector<DrampoolMetricDef>& DrampoolMetricDefs()
         {kDumpNospaceFailuresTotal, "counter"},
         {kDumpFailedEntriesTotal, "counter"},
         {kDumpPrepareDurationMs, "histogram", kMsBucketsPrepare, std::size(kMsBucketsPrepare)},
+        {kDumpMetadataDurationMs, "histogram", kMsBucketsPrepare, std::size(kMsBucketsPrepare)},
+        {kDumpSubmitDurationMs, "histogram", kMsBucketsSettlement,
+         std::size(kMsBucketsSettlement)},
         // C. Load business
         {kLoadMissEntriesTotal, "counter"},
         {kLoadPrepareDurationMs, "histogram", kMsBucketsPrepare, std::size(kMsBucketsPrepare)},
+        {kLoadMetadataDurationMs, "histogram", kMsBucketsPrepare, std::size(kMsBucketsPrepare)},
+        {kLoadSubmitDurationMs, "histogram", kMsBucketsSettlement,
+         std::size(kMsBucketsSettlement)},
         // D. Lookup business
         {kLookupMissEntriesTotal, "counter"},
         {kLookupScanDurationMs, "histogram", kMsBucketsScan, std::size(kMsBucketsScan)},
@@ -166,6 +191,10 @@ inline const std::vector<DrampoolMetricDef>& DrampoolMetricDefs()
         {kDumpTransferDurationMs, "histogram", kMsBucketsTransfer, std::size(kMsBucketsTransfer)},
         {kLoadTransferDurationMs, "histogram", kMsBucketsTransfer, std::size(kMsBucketsTransfer)},
         {kTransferFailuresTotal, "counter"},
+        {kGetStatusDurationMs, "histogram", kMsBucketsSettlement,
+         std::size(kMsBucketsSettlement)},
+        {kResponseSubmitDurationMs, "histogram", kMsBucketsSettlement,
+         std::size(kMsBucketsSettlement)},
         {kResponseRttMs, "histogram", kMsBucketsTransfer, std::size(kMsBucketsTransfer)},
         {kResponseFailuresTotal, "counter"},
         {kSubmitFailuresTotal, "counter"},
@@ -183,12 +212,15 @@ inline const std::vector<DrampoolMetricDef>& DrampoolMetricDefs()
         {kQueueRequestFullTotal, "counter"},
         {kQueueRequestEnqueueWaitMs, "histogram", kMsBucketsSettlement,
          std::size(kMsBucketsSettlement)},
+        {kQueueRequestResidenceMs, "histogram", kMsBucketsPrepare, std::size(kMsBucketsPrepare)},
         {kQueueRequestSize, "gauge"},
+        {kQueueRequestCapacity, "gauge"},
         {kQueueCompletionFullTotal, "counter"},
         {kQueueCompletionInflight, "gauge"},
         {kQueueCompletionSize, "gauge"},
+        {kQueueCompletionCapacity, "gauge"},
         {kQueueResponseBufferRetryTotal, "counter"},
-        // I. Batch total duration
+        // I. Batch end-to-end duration
         {kDumpBatchTotalDurationMs, "histogram", kMsBucketsTransfer,
          std::size(kMsBucketsTransfer)},
         {kLoadBatchTotalDurationMs, "histogram", kMsBucketsTransfer,

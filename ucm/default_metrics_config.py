@@ -702,6 +702,16 @@ _GAUGE_METRICS = [
         "Completion records currently in flight in the Poller pending window",
         {"multiprocess_mode": "livemostrecent"},
     ),
+    (
+        "drampool_queue_request_capacity",
+        "Configured requestQueue depth (requests)",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
+    (
+        "drampool_queue_completion_capacity",
+        "Configured completionQueue depth (records)",
+        {"multiprocess_mode": "livemostrecent"},
+    ),
 ]
 _CONNECTOR_INTERFACE_METHODS = [
     "get_block_size",
@@ -1155,13 +1165,33 @@ _HISTOGRAM_METRICS = [
     # -- DramPool server observability ----------------------------------------
     (
         "drampool_dump_prepare_duration_ms",
-        "DUMP local preparation duration per batch: StoreBegin per entry, buffer allocation, eviction retries, and transfer submission (ms, successful path only)",
+        "DUMP local preparation duration per batch: StoreBegin per entry, buffer allocation, eviction retries, and transfer submission (ms, successful path only; split into dump_metadata and dump_submit)",
         [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
     ),
     (
-        "drampool_load_prepare_duration_ms",
-        "LOAD local preparation duration per batch: LoadBegin per entry, length validation, and transfer submission (ms, successful path only)",
+        "drampool_dump_metadata_duration_ms",
+        "DUMP metadata-processing segment per batch: StoreBegin per entry, buffer allocation, eviction retries, and transfer-item building, excluding the ExecuteAsync submission (ms, successful path only)",
         [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "drampool_dump_submit_duration_ms",
+        "DUMP data-transfer ExecuteAsync submission duration (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+    ),
+    (
+        "drampool_load_prepare_duration_ms",
+        "LOAD local preparation duration per batch: LoadBegin per entry, length validation, and transfer submission (ms, successful path only; split into load_metadata and load_submit)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "drampool_load_metadata_duration_ms",
+        "LOAD metadata-processing segment per batch: LoadBegin per entry, length validation, and transfer-item building, excluding the ExecuteAsync submission (ms, successful path only)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
+        "drampool_load_submit_duration_ms",
+        "LOAD data-transfer ExecuteAsync submission duration (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
     ),
     (
         "drampool_lookup_scan_duration_ms",
@@ -1170,17 +1200,27 @@ _HISTOGRAM_METRICS = [
     ),
     (
         "drampool_dump_transfer_duration_ms",
-        "DUMP data transfer duration from submission to terminal state, covering network and peer read (ms)",
+        "DUMP data transfer duration from ExecuteAsync return to terminal-state observation, including HiXL transfer, polling delay, and GetStatus (ms)",
         [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
     ),
     (
         "drampool_load_transfer_duration_ms",
-        "LOAD data transfer duration from submission to terminal state, covering network and peer read (ms)",
+        "LOAD data transfer duration from ExecuteAsync return to terminal-state observation, including HiXL transfer, polling delay, and GetStatus (ms)",
         [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
     ),
     (
+        "drampool_get_status_duration_ms",
+        "GetStatus() execution duration when the Poller queries data or response transfers (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+    ),
+    (
+        "drampool_response_submit_duration_ms",
+        "Response write-back ExecuteAsync submission duration (ms)",
+        [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
+    ),
+    (
         "drampool_response_rtt_ms",
-        "Response round-trip duration from local submission to write-back completion in client memory (ms)",
+        "Response round-trip duration from response-transfer ExecuteAsync return to write-back completion in client memory, including polling delay and GetStatus but excluding the submission itself (ms)",
         [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
     ),
     (
@@ -1204,18 +1244,23 @@ _HISTOGRAM_METRICS = [
         [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500],
     ),
     (
+        "drampool_queue_request_residence_ms",
+        "Per-request residence in requestQueue from the successful TryPush to the TaskWorker dequeue, excluding the TryPush wait (ms)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+    ),
+    (
         "drampool_dump_batch_total_duration_ms",
-        "End-to-end DUMP batch duration from TaskWorker dequeue to response submission completion, including transfer terminal-state wait and Poller settlement (ms)",
+        "End-to-end DUMP batch duration across the full server-side request lifecycle: from requestQueue push to response-transfer terminal state, or the record leaving the Poller on a permanent response failure (ms)",
         [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
     ),
     (
         "drampool_load_batch_total_duration_ms",
-        "End-to-end LOAD batch duration from TaskWorker dequeue to response submission completion, including transfer terminal-state wait and Poller settlement (ms)",
+        "End-to-end LOAD batch duration across the full server-side request lifecycle: from requestQueue push to response-transfer terminal state, or the record leaving the Poller on a permanent response failure (ms)",
         [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
     ),
     (
         "drampool_lookup_batch_total_duration_ms",
-        "End-to-end LOOKUP batch duration from TaskWorker dequeue to response submission completion, including Poller settlement (ms)",
+        "End-to-end LOOKUP batch duration across the full server-side request lifecycle: from requestQueue push to response-transfer terminal state, or the record leaving the Poller on a permanent response failure (ms)",
         [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500, 1000],
     ),
 ]

@@ -47,45 +47,65 @@ void ReleaseResponseBuffer(BufferPool& flagBufferPool, CompletionRecord& record)
     }
 }
 
-// Batch statistics point: every record passes here exactly
-// once thanks to the begin_us sentinel, so flag-pool NoSpace retries that re-enter
-// SubmitResponse do not double-report.
+// Batch outcome counters, reported once at the first SubmitResponse entry
+// thanks to the batch_outcome_reported flag, so flag-pool NoSpace retries that
+// re-enter SubmitResponse do not double-report. The batch end-to-end duration
+// is reported separately on the terminal paths (see ReportBatchEndToEnd).
 void ReportBatchMetrics(CompletionRecord& record)
 {
-    if (record.begin_us == 0) { return; }
+    if (record.batch_outcome_reported) { return; }
+    record.batch_outcome_reported = true;
 
-    const auto elapsedMs = (SteadyNowUs() - record.begin_us) / 1000.0;
+    switch (record.opcode) {
+        case OpType::DUMP: {
+            const auto failedEntries = std::count(record.results.begin(), record.results.end(),
+                                                  static_cast<std::uint8_t>(
+                                                      DumpLoadResult::Failed));
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kDumpFailedEntriesTotal),
+                                     static_cast<double>(failedEntries));
+            break;
+        }
+        case OpType::LOOKUP: {
+            // Misses are derived from the response vector (every slot starts as
+            // NotFound), keeping the lookup scan and its scan-duration timer free
+            // of bookkeeping.
+            const auto missEntries = std::count(record.results.begin(), record.results.end(),
+                                                static_cast<std::uint8_t>(
+                                                    LookupResult::NotFound));
+            UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kLookupMissEntriesTotal),
+                                     static_cast<double>(missEntries));
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+// Batch end-to-end duration: the full server-side request lifecycle, from the
+// requestQueue push instant (enqueue_us, stamped by the RequestReceiver) to the
+// terminal observation — the response transfer reaching a terminal state, or
+// the record leaving the Poller on a permanent response failure. Covers queue
+// residence, worker processing, transfer wait, response-buffer waits, response
+// packing/submission, and response transfer completion. Reported once per
+// record via the enqueue_us sentinel (zeroed after reporting).
+void ReportBatchEndToEnd(CompletionRecord& record)
+{
+    if (record.enqueue_us == 0) { return; }
+    const auto elapsedMs = (SteadyNowUs() - record.enqueue_us) / 1000.0;
     switch (record.opcode) {
         case OpType::DUMP:
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kDumpBatchTotalDurationMs), elapsedMs);
-            {
-                const auto failedEntries = std::count(record.results.begin(),
-                                                      record.results.end(),
-                                                      static_cast<std::uint8_t>(
-                                                          DumpLoadResult::Failed));
-                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kDumpFailedEntriesTotal),
-                                         static_cast<double>(failedEntries));
-            }
             break;
         case OpType::LOAD:
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kLoadBatchTotalDurationMs), elapsedMs);
             break;
         case OpType::LOOKUP:
             UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kLookupBatchTotalDurationMs), elapsedMs);
-            // Misses are derived from the response vector (every slot starts as NotFound),
-            // keeping the lookup scan and its scan-duration timer free of bookkeeping.
-            {
-                const auto missEntries = std::count(record.results.begin(), record.results.end(),
-                                                    static_cast<std::uint8_t>(
-                                                        LookupResult::NotFound));
-                UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kLookupMissEntriesTotal),
-                                         static_cast<double>(missEntries));
-            }
             break;
         default:
             break;
     }
-    record.begin_us = 0;
+    record.enqueue_us = 0;
 }
 
 // Data-transfer terminal observation: covers the
@@ -110,8 +130,11 @@ void ReportDataTransferMetrics(const CompletionRecord& record,
 // observed from the response-transfer submission
 // (submit_ms, set in SubmitResponse) to the terminal state. Failed responses only
 // bump the failure counter: their latency is not a meaningful RTT observation.
+// Reaching this settle point means the response transfer is terminal, so the
+// batch end-to-end duration is also reported here.
 void SettleResponseTransfer(BufferPool& flagBufferPool, CompletionRecord& record, bool failed)
 {
+    ReportBatchEndToEnd(record);
     ReleaseResponseBuffer(flagBufferPool, record);
     if (failed) {
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kResponseFailuresTotal), 1);
@@ -209,7 +232,10 @@ void CompletionPoller::PollPendingCompletions()
 bool CompletionPoller::PollDataTransfer(CompletionRecord& record)
 {
     transport::TransferStatus transportStatus = transport::TransferStatus::Failed;
+    const auto getStatusStartUs = SteadyNowUs();
     const auto queryStatus = runtime_.transport.GetStatus(record.data_handle, transportStatus);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kGetStatusDurationMs),
+                             static_cast<double>(SteadyNowUs() - getStatusStartUs) / 1000.0);
     if (queryStatus.Failure()) {
         // GetStatus removes failed handles, so an API failure is also terminal.
         UC_ERROR(
@@ -269,6 +295,9 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
         UC_ERROR(
             "CompletionPoller flag buffer allocation failed, request_id={}, opcode={}, error={}",
             record.request_id, static_cast<int>(record.opcode), allocateStatus);
+        // Permanent failure: the record leaves the Poller without a response
+        // transfer, so report the batch end-to-end duration here.
+        ReportBatchEndToEnd(record);
         return true;
     }
     UC_DEBUG("CompletionPoller allocated response slot, request_id={}, slot={}", record.request_id,
@@ -284,6 +313,7 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kResponseFailuresTotal), 1);
         UC_ERROR("CompletionPoller SubmitResponse pack failed, request_id={}, opcode={}, error={}",
                  record.request_id, static_cast<int>(record.opcode), protocolStatus);
+        ReportBatchEndToEnd(record);
         return true;
     }
     UC_DEBUG("CompletionPoller packed response, request_id={}, response_len={}", record.request_id,
@@ -297,7 +327,10 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
         transport::Segment{record.local_resp_slot.localAddr, record.remote_resp_addr, len});
 
     TransportHandle handle = transport::kInvalidTransferHandle;
+    const auto submitStartUs = SteadyNowUs();
     const auto submitStatus = runtime_.transport.ExecuteAsync(operation, handle);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kResponseSubmitDurationMs),
+                             static_cast<double>(SteadyNowUs() - submitStartUs) / 1000.0);
     if (submitStatus.Failure() || handle == transport::kInvalidTransferHandle) {
         ReleaseResponseBuffer(runtime_.flagBufferPool, record);
         UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kResponseFailuresTotal), 1);
@@ -305,6 +338,7 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
             "CompletionPoller SubmitResponse ExecuteAsync failed, request_id={}, opcode={}, "
             "handle={}, error={}",
             record.request_id, static_cast<int>(record.opcode), handle, submitStatus);
+        ReportBatchEndToEnd(record);
         return true;
     }
 
@@ -321,7 +355,10 @@ bool CompletionPoller::SubmitResponse(CompletionRecord& record)
 bool CompletionPoller::PollResponseTransfer(CompletionRecord& record)
 {
     transport::TransferStatus transportStatus = transport::TransferStatus::Failed;
+    const auto getStatusStartUs = SteadyNowUs();
     const auto queryStatus = runtime_.transport.GetStatus(record.response_handle, transportStatus);
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kGetStatusDurationMs),
+                             static_cast<double>(SteadyNowUs() - getStatusStartUs) / 1000.0);
     if (queryStatus.Failure()) {
         // GetStatus removes failed handles, so the response source buffer is no longer in use.
         UC_ERROR("CompletionPoller response GetStatus failed, request_id={}, handle={}, error={}",

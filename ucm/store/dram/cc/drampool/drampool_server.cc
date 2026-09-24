@@ -223,6 +223,12 @@ Status DramPoolServer::InitQueues()
 {
     requestQueue_.Setup(g_config.requestQueueDepth);
     completionQueue_.Setup(g_config.completionQueueDepth);
+    // The depths are constant, but every reporter sweep clears gauges, so the
+    // TaskWorker loop also refreshes both capacity gauges periodically.
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kQueueRequestCapacity),
+                             static_cast<double>(g_config.requestQueueDepth));
+    UC::Metrics::UpdateStats(NAME_TO_METRIC_ID(kQueueCompletionCapacity),
+                             static_cast<double>(g_config.completionQueueDepth));
     return Status::OK();
 }
 
@@ -523,6 +529,11 @@ void DramPoolServer::RequestReceiveLoop()
         enqueueWaitTimer.Arm();
         bool queueFullLogged = false;
         while (!requestReceiverStop_.load(std::memory_order_acquire)) {
+            // Stamp immediately before each TryPush attempt: the successful push
+            // is the queue entry instant, so the queue residence metric excludes
+            // the TryPush wait (covered by enqueue_wait_ms). TryPush leaves the
+            // task untouched on failure, so the stamp is restamped on retry.
+            task->enqueue_us = SteadyNowUs();
             if (requestQueue_.TryPush(std::move(task))) {
                 g_requestQueueLen.fetch_add(1, std::memory_order_relaxed);
                 break;

@@ -65,6 +65,10 @@ using RequestPtr = std::unique_ptr<KvRequest>;
 struct RequestTask {
     RequestPtr request;
     transport::ManagerID peer_one_sided_id;
+    // requestQueue push instant (us). Restamped on every full-queue retry, so
+    // the successful TryPush marks the queue entry instant and the queue
+    // residence excludes the TryPush wait.
+    std::uint64_t enqueue_us{0};
 };
 
 using RequestTaskPtr = std::unique_ptr<RequestTask>;
@@ -105,9 +109,14 @@ struct CompletionRecord {
     TransportHandle data_handle{transport::kInvalidTransferHandle};
     std::vector<TransferItem> transfer_items;
     std::uint64_t submit_ms{0};
-    // Batch dequeue time (us). Doubles as a one-shot sentinel: zero after the
-    // batch-level metrics have been reported by CompletionPoller.
-    std::uint64_t begin_us{0};
+    // requestQueue enqueue instant (us), carried over from RequestTask. Doubles
+    // as a one-shot sentinel: zero after the batch-level end-to-end duration
+    // has been reported by CompletionPoller.
+    std::uint64_t enqueue_us{0};
+    // One-shot guard for the batch outcome counters (failed/miss entries): the
+    // flag-pool NoSpace retries re-enter SubmitResponse, which must not
+    // double-count them.
+    bool batch_outcome_reported{false};
     bool timeout_reported{false};
 
     // State needed to construct the request's sole response.

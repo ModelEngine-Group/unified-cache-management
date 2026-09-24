@@ -25,7 +25,7 @@ health:
 # enabled, <output_dir>/drampool_metrics.json is atomically replaced every
 # interval_ms with one single-line cumulative snapshot record.
 metrics:
-  enabled: false
+  enabled: true
   # Empty falls back to the logger directory.
   output_dir: ./logs
   interval_ms: 10000
