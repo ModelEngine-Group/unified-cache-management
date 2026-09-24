@@ -265,9 +265,7 @@ def test_logical_anchor_v2_keys_are_shared_across_tp_ranks(tmp_path):
             tp_rank=tp_rank,
             tp_size=4,
         )
-        return SglangUcmConnector(
-            None, logical_pool, storage_config, [str(tmp_path)]
-        )
+        return SglangUcmConnector(None, logical_pool, storage_config, [str(tmp_path)])
 
     tp0 = make_connector(0)
     tp3 = make_connector(3)
