@@ -54,7 +54,6 @@ Example, using an MLA model with tp=8:
 ucm-toolkit run metrics-view check \
   --url http://127.0.0.1:35325/metrics \
   --config metrics_lite \
-  --config-param tp_size=8
 ```
 
 Output example:
@@ -106,7 +105,6 @@ ucm-toolkit run metrics-view query \
   --window 10m \
   --aggr-by 1m \
   --config metrics_lite \
-  --config-param tp_size=8
 ```
 
 `query` also supports filtering by Prometheus label using `--tag`:

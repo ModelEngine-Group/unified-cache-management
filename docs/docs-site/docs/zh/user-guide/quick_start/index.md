@@ -123,11 +123,11 @@ hide:
 
 ### 配置缓存 {#vllm-_1}
 
-创建可写的 `/workspace/storage` 目录；使用容器时将其挂载到持久存储。把以下配置保存为引擎可读取的 `/workspace/ucm.yaml`：
+创建可写的 `/workspace/storage` 目录；使用容器时将其挂载到持久存储。把以下配置保存为引擎可读取的 `/workspace/ucm_config_example.yaml`：
 
 ```bash
 mkdir -p /workspace/storage
-cat > /workspace/ucm.yaml <<'YAML'
+cat > /workspace/ucm_config_example.yaml <<'YAML'
 ucm_connectors:
   - ucm_connector_name: UcmPipelineStore
     ucm_connector_config:
@@ -161,7 +161,7 @@ vllm serve "$MODEL_ID" \
     "kv_connector": "UCMConnector",
     "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
     "kv_role": "kv_both",
-    "kv_connector_extra_config": {"UCM_CONFIG_FILE": "/workspace/ucm.yaml"}
+    "kv_connector_extra_config": {"UCM_CONFIG_FILE": "/workspace/ucm_config_example.yaml"}
   }'
 ```
 
@@ -333,11 +333,11 @@ curl --fail http://127.0.0.1:7800/metrics | grep '^ucm:'
 
 ### 配置缓存 {#vllm-ascend-_2}
 
-创建可写的 `/workspace/storage` 目录；使用容器时将其挂载到持久存储。把以下配置保存为引擎可读取的 `/workspace/ucm.yaml`：
+创建可写的 `/workspace/storage` 目录；使用容器时将其挂载到持久存储。把以下配置保存为引擎可读取的 `/workspace/ucm_config_example.yaml`：
 
 ```bash
 mkdir -p /workspace/storage
-cat > /workspace/ucm.yaml <<'YAML'
+cat > /workspace/ucm_config_example.yaml <<'YAML'
 ucm_connectors:
   - ucm_connector_name: UcmPipelineStore
     ucm_connector_config:
@@ -371,7 +371,7 @@ vllm serve "$MODEL_ID" \
     "kv_connector": "UCMConnector",
     "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
     "kv_role": "kv_both",
-    "kv_connector_extra_config": {"UCM_CONFIG_FILE": "/workspace/ucm.yaml"}
+    "kv_connector_extra_config": {"UCM_CONFIG_FILE": "/workspace/ucm_config_example.yaml"}
   }'
 ```
 

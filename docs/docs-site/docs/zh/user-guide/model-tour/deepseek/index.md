@@ -1,189 +1,298 @@
-# DeepSeek
+# DeepSeek 系列模型
 
-DeepSeek 系列模型的 [vLLM Ascend 官方教程](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/index.html)。接入 UCM 可直接查看下方的 [DeepSeek-V4-Flash 部署与调用示例](#deepseek-v4-flash-ucm)。
+=== "A2"
 
-## vLLM Ascend 模型指南
+    本教程使用预构建 Docker 镜像，在 Atlas 800 A2 上通过 vLLM-Ascend 部署 [DeepSeek-V4-Flash-w8a8-mtp](https://www.modelscope.cn/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp) 并接入 UCM。
 
-| 模型 | vLLM Ascend latest 指南 |
-| --- | --- |
-| DeepSeek-V3 & 3.1 | [官方指南](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/DeepSeek-V3.1.html) |
-| DeepSeek-V3.2 | [官方指南](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/DeepSeek-V3.2.html) |
-| DeepSeek-V4-Flash | [官方指南](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/DeepSeek-V4-Flash.html) |
-| DeepSeek-V4-Flash-Vision-Exp (Experimental) | [官方指南](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/DeepSeek-V4-Flash-Vision.html) |
-| DeepSeek-V4.1-Flash | [官方指南](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/DeepSeek-V4.1-Flash.html) |
-| DeepSeek-V4-Pro | [官方指南](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/DeepSeek-V4-Pro.html) |
-| DeepSeek-R1 | [官方指南](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/DeepSeek-R1.html) |
-| DeepSeek-OCR-2 | [官方指南](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/DeepSeekOCR2.html) |
+    ## 1. 启动 Docker 容器
 
-## DeepSeek-V4-Flash UCM 示例 { #deepseek-v4-flash-ucm }
-
-在一个 Docker 容器中部署 DeepSeek-V4-Flash，并接入 UCM Prefix Cache。
-按硬件选择下方标签；CUDA 和 Ascend 使用不同格式的权重。
-这些启动命令需要在目标加速卡上验证模型输出与外部缓存。
-
-### 部署
-
-准备 Linux、Docker 和可用的宿主机加速卡驱动。CUDA 需要 NVIDIA Container Toolkit；
-Ascend 的宿主机驱动、设备文件应与所选运行时匹配。
-通过对应平台标签中的链接下载完整模型，包括 tokenizer 和配置文件。
-
-打开[安装页](../../quick_start/index.md)，选择 **Image**，将已发布的 UCM 运行时镜像坐标
-填入 `UCM_IMAGE`。下方命令分别使用 CUDA 上的 vLLM **0.28.0** 和 Ascend 上的
-vLLM-Ascend **0.25.1rc0 / A2**。同时选择匹配的架构和后端；如果当前发布没有
-该组合，请切换到提供该组合的版本。
-
-在宿主机准备 UCM 配置：
-
-```bash
-export UCM_WORKDIR="$PWD/ucm-deepseek-v4"
-mkdir -p "$UCM_WORKDIR/cache/cuda" "$UCM_WORKDIR/cache/ascend"
-cat > "$UCM_WORKDIR/ucm.yaml" <<'YAML'
-use_layerwise: false
-load_tokens_threshold: 2048
-ucm_connectors:
-  - ucm_connector_name: UcmPipelineStore
-    ucm_connector_config:
-      store_pipeline: "Cache|Posix"
-      storage_backends: /mnt/ucm-cache
-      cache_buffer_capacity_gb: 128
-      io_direct: false
-YAML
-```
-
-为 UCM 预留 128 GiB 主机内存，平分给两个 64 GiB Store，并为引擎和模型加载
-另留内存。容器共享内存上限设为 160 GiB，缓存保存在宿主机挂载目录中。
-下方两个容器选择一个运行，避免占用同一服务端口。
-
-=== "CUDA / vLLM"
-
-    使用单节点 **8 张 B200 或 B300 GPU**，拓扑依据官方
-    [单节点 TP 配方](https://github.com/vllm-project/recipes/blob/main/models/deepseek-ai/DeepSeek-V4-Flash.yaml)。
-    下载 [deepseek-ai/DeepSeek-V4-Flash](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash)，
-    将 `MODEL_DIR` 设为模型所在的绝对路径。这里使用原始 FP4 专家权重与 FP8 权重
-    混合检查点；命令不覆盖 Hopper，也不适用于单独发布的 `0731` / DSpark 检查点。
+    将 `MODEL_PATH` 设为本地模型目录，从[快速开始](../../quick_start/index.md#vllm-ascend)复制支持 DeepSeek V4 的 A2 兼容 **UCM 镜像**地址到 `IMAGE`，在**宿主机**执行：
 
     ```bash
-    export UCM_IMAGE='<CUDA UCM image copied from Installation>'
-    export MODEL_DIR=/absolute/path/DeepSeek-V4-Flash
+    export MODEL_PATH=/data/weights/DeepSeek-V4-Flash-w8a8-mtp
+    export IMAGE='<full A2 UCM image reference from Quickstart>'
+    export CONTAINER_NAME=deepseekv4-ucm
 
-    docker run -d --name ucm-deepseek-cuda \
-      --gpus all --shm-size 160g \
-      -p 127.0.0.1:8000:8000 \
-      -e ENABLE_UCM_PATCH=1 \
-      -v "$MODEL_DIR:/models/DeepSeek-V4-Flash:ro" \
-      -v "$UCM_WORKDIR/ucm.yaml:/etc/ucm/ucm.yaml:ro" \
-      -v "$UCM_WORKDIR/cache/cuda:/mnt/ucm-cache" \
-      --entrypoint vllm "$UCM_IMAGE" \
-      serve /models/DeepSeek-V4-Flash \
-      --served-model-name deepseek-v4-flash \
-      --host 0.0.0.0 --port 8000 \
-      --tensor-parallel-size 8 \
-      --data-parallel-size 1 \
-      --pipeline-parallel-size 1 \
-      --distributed-executor-backend mp \
-      --tokenizer-mode deepseek_v4 \
-      --trust-remote-code \
-      --kv-cache-dtype fp8 \
-      --block-size 256 \
-      --max-model-len 8192 \
-      --max-num-seqs 1 \
-      --gpu-memory-utilization 0.9 \
-      --enforce-eager \
-      --kv-transfer-config '{
-        "kv_connector": "UCMConnector",
-        "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
-        "kv_role": "kv_both",
-        "kv_connector_extra_config": {"UCM_CONFIG_FILE": "/etc/ucm/ucm.yaml"}
-      }'
+    mkdir -p /data/ucm/cache /data/ucm/log
+    docker pull "$IMAGE"
 
-    docker logs -f ucm-deepseek-cuda
+    docker run --rm -it \
+        --name "$CONTAINER_NAME" \
+        --network host \
+        --ipc=host \
+        --device /dev/davinci0 \
+        --device /dev/davinci1 \
+        --device /dev/davinci2 \
+        --device /dev/davinci3 \
+        --device /dev/davinci4 \
+        --device /dev/davinci5 \
+        --device /dev/davinci6 \
+        --device /dev/davinci7 \
+        --device /dev/davinci_manager \
+        --device /dev/devmm_svm \
+        --device /dev/hisi_hdc \
+        -v /usr/local/dcmi:/usr/local/dcmi:ro \
+        -v /usr/local/Ascend/driver/tools/hccn_tool:/usr/local/Ascend/driver/tools/hccn_tool:ro \
+        -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi:ro \
+        -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro \
+        -v /etc/ascend_install.info:/etc/ascend_install.info:ro \
+        -v /etc/hccn.conf:/etc/hccn.conf:ro \
+        -v "$MODEL_PATH:/data/weights/DeepSeek-V4-Flash-w8a8-mtp:ro" \
+        -v /data/ucm:/data/ucm \
+        -e ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
+        -e ENABLE_UCM_PATCH=1 \
+        -e UCM_LOG_PATH=/data/ucm/log \
+        --workdir /workspace \
+        --entrypoint /bin/bash \
+        "$IMAGE"
     ```
 
-=== "Ascend A2 / vLLM-Ascend"
+    ## 2. 配置 UCM
 
-    使用一台 **Atlas 800 A2，配置 8 × 64 GB NPU**，下载量化后的
-    [DeepSeek-V4-Flash-w8a8-mtp 权重](https://www.modelscope.cn/models/Eco-Tech/DeepSeek-V4-Flash-w8a8-mtp)。
-    将 `MODEL_DIR` 设为模型所在的绝对路径。权重包含 MTP head，本例不启用推测解码。
-    命令采用 [Ascend 部署指南](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/DeepSeek-V4-Flash.html)
-    中的标准设备和驱动路径。
+    在**容器内**执行，创建 `/workspace/ucm_config_example.yaml`：
 
     ```bash
-    export UCM_IMAGE='<Ascend A2 UCM image copied from Installation>'
-    export MODEL_DIR=/absolute/path/DeepSeek-V4-Flash-w8a8-mtp
+    cat > /workspace/ucm_config_example.yaml <<'EOF'
+    ucm_connectors:
+      - ucm_connector_name: "UcmPipelineStore"
+        ucm_connector_config:
+          store_pipeline: "Cache|Posix"
+          storage_backends: "/data/ucm/cache"
+          io_direct: false
+          cache_buffer_capacity_gb: 64
+          posix_capacity_gb: 0
+          use_gdr: false
 
-    docker run -d --name ucm-deepseek-ascend \
-      --network host --shm-size 160g --privileged \
-      --device /dev/davinci0 --device /dev/davinci1 \
-      --device /dev/davinci2 --device /dev/davinci3 \
-      --device /dev/davinci4 --device /dev/davinci5 \
-      --device /dev/davinci6 --device /dev/davinci7 \
-      --device /dev/davinci_manager \
-      --device /dev/devmm_svm --device /dev/hisi_hdc \
-      -v /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro \
-      -v /usr/local/dcmi:/usr/local/dcmi:ro \
-      -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi:ro \
-      -v /etc/ascend_install.info:/etc/ascend_install.info:ro \
-      -v /etc/hccn.conf:/etc/hccn.conf:ro \
-      -e ASCEND_RT_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
-      -e ENABLE_UCM_PATCH=1 \
-      -e OMP_PROC_BIND=false -e OMP_NUM_THREADS=10 \
-      -e PYTORCH_NPU_ALLOC_CONF=expandable_segments:True \
-      -e HCCL_BUFFSIZE=1024 -e HCCL_OP_EXPANSION_MODE=AIV \
-      -e TASK_QUEUE_ENABLE=1 \
-      -v "$MODEL_DIR:/models/DeepSeek-V4-Flash-w8a8-mtp:ro" \
-      -v "$UCM_WORKDIR/ucm.yaml:/etc/ucm/ucm.yaml:ro" \
-      -v "$UCM_WORKDIR/cache/ascend:/mnt/ucm-cache" \
-      --entrypoint vllm "$UCM_IMAGE" \
-      serve /models/DeepSeek-V4-Flash-w8a8-mtp \
-      --served-model-name deepseek-v4-flash \
-      --host 127.0.0.1 --port 8000 \
-      --tensor-parallel-size 8 \
-      --data-parallel-size 1 \
-      --pipeline-parallel-size 1 \
-      --enable-expert-parallel \
-      --distributed-executor-backend mp \
-      --tokenizer-mode deepseek_v4 \
-      --trust-remote-code \
-      --quantization ascend \
-      --block-size 128 \
-      --max-model-len 8192 \
-      --max-num-seqs 1 \
-      --gpu-memory-utilization 0.9 \
-      --enforce-eager \
-      --kv-transfer-config '{
-        "kv_connector": "UCMConnector",
-        "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
-        "kv_role": "kv_both",
-        "kv_connector_extra_config": {"UCM_CONFIG_FILE": "/etc/ucm/ucm.yaml"}
-      }'
-
-    docker logs -f ucm-deepseek-ascend
+    enable_event_sync: true
+    use_layerwise: true
+    enable_record_traces: false
+    use_lite: false
+    persist_token_threshold: 0
+    EOF
     ```
 
-等待模型加载完成。UCM 启动日志应包含 `Init UCM FAWA connector`，以及
-`FAWA FA` / `FAWA WA` 两套 Store 配置。
-按 Ctrl+C 退出 `docker logs`；后台容器会继续运行。
+    - `Cache|Posix` 通过主机内存传输 KV 数据，并将其持久化到 `/data/ucm/cache`。
+    - `cache_buffer_capacity_gb: 64` 设置主机缓存缓冲区预算。
+    - `posix_capacity_gb: 0` 关闭基于容量的 Posix 垃圾回收，不会关闭文件系统写入。
 
-### 调用
+    参数定义见[配置参数](../../../reference/config-parameters.md)。
 
-在同一宿主机检查服务就绪状态，再发送一次文本续写请求：
+    ## 3. 启动在线服务
 
-```bash
-curl --fail http://127.0.0.1:8000/health
+    服务参数参考 [vLLM-Ascend 官方指南](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/DeepSeek-V4-Flash.html)。
 
-curl --fail http://127.0.0.1:8000/v1/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "deepseek-v4-flash",
-    "prompt": "A KV cache speeds up language model inference by",
-    "max_tokens": 128,
-    "temperature": 0
-  }'
-```
+    在**容器内**执行：
 
-服务就绪时，`/health` 返回 HTTP 200。续写响应在 `choices[0].text` 中返回
-生成文本，在 `usage` 中返回 token 用量。这条短请求只验证 API 调用成功，
-不能证明发生了外部缓存命中。
+    ```bash
+    export MODEL_PATH=/data/weights/DeepSeek-V4-Flash-w8a8-mtp
 
-其他硬件拓扑可参考 [vLLM 配方](https://recipes.vllm.ai/deepseek-ai/DeepSeek-V4-Flash)
-和 [Ascend 模型指南](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/DeepSeek-V4-Flash.html)。
+    export OMP_PROC_BIND=false
+    export OMP_NUM_THREADS=10
+    export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
+
+    export HCCL_BUFFSIZE=1024
+    export TASK_QUEUE_ENABLE=1
+    export HCCL_OP_EXPANSION_MODE=AIV
+
+    export ENABLE_UCM_PATCH=1
+    export UCM_LOG_PATH=/data/ucm/log
+    export UC_LOGGER_LEVEL=info
+
+    vllm serve "$MODEL_PATH" \
+        --host 0.0.0.0 \
+        --port 7800 \
+        --max-model-len 133120 \
+        --max-num-batched-tokens 8192 \
+        --served-model-name dsv4 \
+        --gpu-memory-utilization 0.9 \
+        --max-num-seqs 32 \
+        --data-parallel-size 1 \
+        --tensor-parallel-size 8 \
+        --enable-expert-parallel \
+        --tokenizer-mode deepseek_v4 \
+        --tool-call-parser deepseek_v4 \
+        --enable-auto-tool-choice \
+        --reasoning-parser deepseek_v4 \
+        --no-enable-prefix-caching \
+        --model-loader-extra-config '{"enable_multithread_load":true,"num_threads":128}' \
+        --quantization ascend \
+        --block-size 128 \
+        --speculative-config '{"num_speculative_tokens":1,"method":"mtp","enforce_eager":true}' \
+        --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}' \
+        --additional-config '{"ascend_compilation_config":{"enable_npugraph_ex":true,"enable_static_kernel":false},"enable_cpu_binding":true,"enable_dsa_cp":true,"enable_flashcomm1":true,"multistream_overlap_shared_expert":true}' \
+        --kv-transfer-config '{
+            "kv_connector": "UCMConnector",
+            "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
+            "kv_role": "kv_both",
+            "kv_connector_extra_config": {
+                "UCM_CONFIG_FILE": "/workspace/ucm_config_example.yaml"
+            }
+        }'
+    ```
+
+    `--kv-transfer-config` 用于将 vLLM 接入 UCM，并指定上一步创建的配置文件：
+
+    | 字段 | 作用 |
+    | --- | --- |
+    | `kv_connector` | 选择 `UCMConnector`。 |
+    | `kv_connector_module_path` | 指定 Connector 模块：`ucm.integration.vllm.ucm_connector`。 |
+    | `kv_role` | `kv_both` 同时启用缓存加载和保存。 |
+    | `kv_connector_extra_config.UCM_CONFIG_FILE` | 指向 `/workspace/ucm_config_example.yaml`。 |
+
+    ## 4. 调用 API
+
+    服务就绪后，打开**第二个宿主机终端**：
+
+    ```bash
+    curl --fail http://127.0.0.1:7800/health
+    curl --fail http://127.0.0.1:7800/v1/models
+
+    curl --fail-with-body http://127.0.0.1:7800/v1/chat/completions \
+        -H 'Content-Type: application/json' \
+        -d '{
+            "model": "dsv4",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Explain the role of KV cache in large language model inference."
+                }
+            ],
+            "max_completion_tokens": 1024,
+            "temperature": 0
+        }'
+    ```
+
+    预期返回 HTTP 200，模型列表包含 `dsv4`，Chat Completions 响应包含 `choices` 字段。
+
+=== "H100"
+
+    本教程使用预构建 Docker 镜像，在 NVIDIA H100 上通过 vLLM 部署 `DeepSeek-V4-Flash` 并接入 UCM。
+
+    ## 1. 启动 Docker 容器
+
+    将 `MODEL_PATH` 设为本地模型目录，从[快速开始](../../quick_start/index.md#vllm)复制支持该模型和 H100 的 CUDA **UCM 镜像**地址到 `IMAGE`，在**宿主机**执行：
+
+    ```bash
+    export MODEL_PATH=/data/weights/DeepSeek-V4-Flash
+    export IMAGE='<full CUDA UCM image reference from Quickstart>'
+    export CONTAINER_NAME=deepseekv4-ucm-h100
+
+    mkdir -p /data/ucm/cache /data/ucm/log
+    docker pull "$IMAGE"
+
+    docker run --rm -it \
+        --name "$CONTAINER_NAME" \
+        --gpus '"device=0,1,2,3,4,5,6,7"' \
+        --ipc=host \
+        --network=host \
+        -v "$MODEL_PATH:/data/weights/DeepSeek-V4-Flash:ro" \
+        -v /data/ucm:/data/ucm \
+        --workdir /workspace \
+        --entrypoint /bin/bash \
+        "$IMAGE"
+    ```
+
+    ## 2. 配置 UCM
+
+    在**容器内**执行，创建 `/workspace/ucm_config_example.yaml`：
+
+    ```bash
+    mkdir -p /data/ucm/cache /data/ucm/log
+
+    cat > /workspace/ucm_config_example.yaml <<'EOF'
+    ucm_connectors:
+      - ucm_connector_name: "UcmPipelineStore"
+        ucm_connector_config:
+          store_pipeline: "Cache|Posix"
+          storage_backends: "/data/ucm/cache"
+          io_direct: false
+          cache_buffer_capacity_gb: 64
+          posix_capacity_gb: 0
+          use_gdr: false
+
+    enable_event_sync: true
+    use_layerwise: true
+    enable_record_traces: false
+    use_lite: false
+    persist_token_threshold: 0
+    EOF
+    ```
+
+    - `Cache|Posix` 通过主机内存传输 KV 数据，并将其持久化到 `/data/ucm/cache`。
+    - `cache_buffer_capacity_gb: 64` 设置主机缓存缓冲区预算。
+    - `posix_capacity_gb: 0` 关闭基于容量的 Posix 垃圾回收，不会关闭文件系统写入。
+
+    参数定义见[配置参数](../../../reference/config-parameters.md)。
+
+    ## 3. 启动在线服务
+
+    在**容器内**执行：
+
+    ```bash
+    export MODEL_PATH=/data/weights/DeepSeek-V4-Flash
+    export ENABLE_UCM_PATCH=1
+    export UCM_LOG_PATH=/data/ucm/log
+
+    vllm serve "$MODEL_PATH" \
+        --host 0.0.0.0 \
+        --port 7800 \
+        --data-parallel-size 1 \
+        --tensor-parallel-size 8 \
+        --pipeline-parallel-size 1 \
+        --distributed-executor-backend mp \
+        --served-model-name dsv4 \
+        --tokenizer-mode deepseek_v4 \
+        --trust-remote-code \
+        --kv-cache-dtype fp8 \
+        --block-size 256 \
+        --max-model-len 8192 \
+        --max-num-seqs 1 \
+        --gpu-memory-utilization 0.9 \
+        --tool-call-parser deepseek_v4 \
+        --enable-auto-tool-choice \
+        --reasoning-parser deepseek_v4 \
+        --enforce-eager \
+        --speculative-config '{"method":"mtp","num_speculative_tokens":1}' \
+        --kv-transfer-config '{
+            "kv_connector": "UCMConnector",
+            "kv_connector_module_path": "ucm.integration.vllm.ucm_connector",
+            "kv_role": "kv_both",
+            "kv_connector_extra_config": {
+                "UCM_CONFIG_FILE": "/workspace/ucm_config_example.yaml"
+            }
+        }'
+    ```
+
+    `--kv-transfer-config` 用于将 vLLM 接入 UCM，并指定上一步创建的配置文件：
+
+    | 字段 | 作用 |
+    | --- | --- |
+    | `kv_connector` | 选择 `UCMConnector`。 |
+    | `kv_connector_module_path` | 指定 Connector 模块：`ucm.integration.vllm.ucm_connector`。 |
+    | `kv_role` | `kv_both` 同时启用缓存加载和保存。 |
+    | `kv_connector_extra_config.UCM_CONFIG_FILE` | 指向 `/workspace/ucm_config_example.yaml`。 |
+
+    ## 4. 调用 API
+
+    服务就绪后，打开**第二个宿主机终端**：
+
+    ```bash
+    curl --fail http://127.0.0.1:7800/health
+    curl --fail http://127.0.0.1:7800/v1/models
+
+    curl --fail-with-body http://127.0.0.1:7800/v1/chat/completions \
+        -H 'Content-Type: application/json' \
+        -d '{
+            "model": "dsv4",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Explain the role of KV cache in large language model inference."
+                }
+            ],
+            "max_completion_tokens": 1024,
+            "temperature": 0
+        }'
+    ```
+
+    预期返回 HTTP 200，模型列表包含 `dsv4`，Chat Completions 响应包含 `choices` 字段。
