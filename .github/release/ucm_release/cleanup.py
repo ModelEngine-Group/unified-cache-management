@@ -582,7 +582,7 @@ class ProductionRemote:
             is not None
         ]
         if not manifests:
-            raise CleanupError(f"Tag {tag} has no exact schema 9 manifest")
+            raise CleanupError(f"Tag {tag} has no supported release manifest")
         if any(manifest != manifests[0] for manifest in manifests[1:]):
             raise CleanupError(f"Tag {tag} has conflicting release manifests")
         return manifests[0]

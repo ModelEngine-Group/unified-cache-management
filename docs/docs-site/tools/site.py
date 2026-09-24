@@ -89,7 +89,9 @@ def main(argv: list[str] | None = None) -> int:
         "--repository", help="Read completed installation releases from OWNER/REPO."
     )
     p_build.add_argument("--ref", help="Git ref used for source/edit links.")
-    p_build.add_argument("--manifest", type=Path, help="Use a local Schema 9 manifest.")
+    p_build.add_argument(
+        "--manifest", type=Path, help="Use a local validated release manifest."
+    )
     p_build.set_defaults(func=build)
 
     p_rtd = sub.add_parser(

@@ -20,6 +20,7 @@ from ucm_release.manifest import (
     RELEASE_MANIFEST_FILENAME,
     RELEASE_MANIFEST_KIND,
     RELEASE_MANIFEST_SCHEMA_VERSION,
+    SUPPORTED_RELEASE_MANIFEST_SCHEMA_VERSIONS,
     ManifestError,
 )
 from ucm_release.manifest import load_manifest as load_manifest
@@ -64,7 +65,7 @@ def _release_manifest(
         raise ManifestError(f"Release {tag} manifest must be an object")
     if skip_unsupported and (
         value.get("kind") != RELEASE_MANIFEST_KIND
-        or value.get("schema_version") != RELEASE_MANIFEST_SCHEMA_VERSION
+        or value.get("schema_version") not in SUPPORTED_RELEASE_MANIFEST_SCHEMA_VERSIONS
     ):
         return None
     manifest = validate_manifest(value)
@@ -113,7 +114,7 @@ def resolve_manifest(
             raise ReleasePending(f"Release {tag} is still a draft")
         manifest = _release_manifest(repository, release)
         if manifest is None:
-            raise ReleasePending(f"Release {tag} has no completed Schema 9 manifest")
+            raise ReleasePending(f"Release {tag} has no completed supported manifest")
         return manifest
 
     stable_releases = []

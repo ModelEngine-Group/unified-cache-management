@@ -29,9 +29,11 @@ function wheel({ id, product, extra, runtime, variant, soc, architecture }) {
     ".whl";
   return {
     id,
-    product,
     extra,
-    accelerator: { runtime, variant, soc_version: soc },
+    capabilities: [{
+      product,
+      accelerator: { runtime, variant, soc_version: soc },
+    }],
     distribution,
     version: "0.9.3",
     python_abi: "cp312",
@@ -84,7 +86,7 @@ function refreshPythonAssets(manifest) {
 function fixture({ pypi = true } = {}) {
   const manifest = {
     kind: "ucm-release-manifest",
-    schema_version: 9,
+    schema_version: 10,
     release: {
       tag: "v0.9.3",
       type: "stable",
@@ -161,10 +163,10 @@ function select(manifest, state = {}) {
   return Selector.deriveSelection(Selector.buildSelectorModel(manifest), state);
 }
 
-test("loader accepts Schema 9 and rejects unsupported or incomplete data", () => {
+test("loader accepts Schemas 9 and 10 and rejects unsupported or incomplete data", () => {
   const manifest = fixture();
   assert.equal(Manifest.validateManifest(manifest), manifest);
-  assert.throws(() => Manifest.validateManifest({...manifest, schema_version: 8}), /must be 9/);
+  assert.throws(() => Manifest.validateManifest({...manifest, schema_version: 8}), /schema_version/);
   assert.throws(() => Manifest.validateManifest({...manifest, wheels: null}), /incomplete/);
 });
 
@@ -216,6 +218,32 @@ test("Quickstart installs Toolkit together with the selected backend when publis
     'pip install "' + manifest.wheels[0].url + '"');
 });
 
+test("a shared Wheel is selectable for every declared Runtime capability", () => {
+  const manifest = fixture({pypi: false});
+  const sharedWheel = manifest.wheels[0];
+  const secondCapability = {
+    product: "vllm",
+    accelerator: {
+      runtime: "cuda-13.1",
+      variant: "default",
+      soc_version: "na",
+    },
+  };
+  sharedWheel.capabilities.push(secondCapability);
+  manifest.images.push(image({
+    id: "vllm-cuda-131",
+    product: "vllm",
+    runtime: "cuda-13.1",
+    variant: "default",
+    soc: "na",
+    architectures: ["amd64"],
+  }));
+
+  const result = select(manifest, {engine: "vllm", runtime: "cuda-13.1"});
+  assert.equal(result.wheel, sharedWheel);
+  assert.equal(result.image, manifest.images[2]);
+});
+
 function ascendFixture() {
   const manifest = fixture();
   manifest.wheels = [];
@@ -243,8 +271,9 @@ test("Ascend keeps runtime, device, OS and CPU distinct and matches both artifac
   for (const combination of model.combinations) {
     const result = Selector.deriveSelection(model, combination);
     assert.equal(result.image, combination.image);
-    assert.equal(result.wheel.accelerator.runtime, result.state.runtime);
-    assert.equal(result.wheel.accelerator.variant, result.state.variant);
+    const capability = result.wheel.capabilities.find(item => item.product === result.image.product);
+    assert.equal(capability.accelerator.runtime, result.state.runtime);
+    assert.equal(capability.accelerator.variant, result.state.variant);
     assert.equal(result.wheel.architecture, result.state.architecture);
     assert.equal(result.image.os.id + "|" + result.image.os.version, result.state.os);
     assert.ok(result.pipCommand.includes(result.wheel.extra));
@@ -266,7 +295,7 @@ test("changing engine version preserves valid choices and resets incompatible ru
   assert.equal(next.state.os, "linux|unreported");
   assert.equal(next.state.variant, "a3");
   assert.equal(next.state.architecture, "arm64");
-  assert.equal(next.wheel.accelerator.runtime, "cann-9.0.1");
+  assert.equal(next.wheel.capabilities[0].accelerator.runtime, "cann-9.0.1");
   assert.equal(option(next.rows.runtime, "cann-9.1.0").disabled, true);
   assert.equal(option(next.rows.os, "openeuler|unreported").disabled, true);
 });

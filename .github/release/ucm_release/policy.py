@@ -268,8 +268,10 @@ def _resolve_release_profile(
 def _validate_release_semantics(release: dict[str, Any]) -> None:
     products = release["products"]
     product_ids = [product["id"] for product in products]
-    if set(product_ids) != {"vllm", "vllm-ascend"} or len(product_ids) != 2:
-        raise ValueError("release policy requires exactly vllm and vllm-ascend")
+    if set(product_ids) != {"vllm", "vllm-ascend", "sglang"} or len(product_ids) != 3:
+        raise ValueError(
+            "release policy requires exactly vllm, vllm-ascend, and sglang"
+        )
     for release_type in RELEASE_TYPES:
         profile_publish = release["release_profiles"][release_type]["publish"]
         if (

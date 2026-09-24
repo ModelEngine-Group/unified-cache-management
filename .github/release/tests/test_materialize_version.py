@@ -17,6 +17,7 @@ VERSION_CONFIG = (
     "UCM_VERSION=0.7.62\n"
     "UCM_SUPPORTED_VLLM_VERSIONS=0.27.1\n"
     "UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26\n"
+    "UCM_SUPPORTED_SGLANG_VERSIONS=0.5.19\n"
 )
 
 
@@ -237,6 +238,7 @@ def test_version_config_supports_minor_patch_and_explicit_tag_selectors() -> Non
         "UCM_VERSION=0.9.3\n"
         "UCM_SUPPORTED_VLLM_VERSIONS=0.27,0.28.1\n"
         "UCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.25@nightly-releases-v0.25.1rc\n"
+        "UCM_SUPPORTED_SGLANG_VERSIONS=0.5.19@v0.5.19-cu129\n"
     )
 
     assert parsed["supported_runtimes"]["vllm"] == [
@@ -250,15 +252,22 @@ def test_version_config_supports_minor_patch_and_explicit_tag_selectors() -> Non
             "tag": "nightly-releases-v0.25.1rc",
         }
     ]
+    assert parsed["supported_runtimes"]["sglang"] == [
+        {
+            "raw": "0.5.19@v0.5.19-cu129",
+            "version": "0.5.19",
+            "tag": "v0.5.19-cu129",
+        }
+    ]
 
 
 @pytest.mark.parametrize(
     "text",
     [
         "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27.1\n",
-        "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27,0.27.1\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26\n",
-        "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=latest\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26\n",
-        "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27.1@bad/tag\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26\n",
+        "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27,0.27.1\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26\nUCM_SUPPORTED_SGLANG_VERSIONS=0.5.19\n",
+        "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=latest\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26\nUCM_SUPPORTED_SGLANG_VERSIONS=0.5.19\n",
+        "UCM_VERSION=0.9.3\nUCM_SUPPORTED_VLLM_VERSIONS=0.27.1@bad/tag\nUCM_SUPPORTED_VLLM_ASCEND_VERSIONS=0.26\nUCM_SUPPORTED_SGLANG_VERSIONS=0.5.19\n",
     ],
 )
 def test_version_config_rejects_missing_duplicate_or_invalid_selectors(
