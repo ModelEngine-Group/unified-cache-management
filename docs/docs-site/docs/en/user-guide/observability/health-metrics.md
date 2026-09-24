@@ -12,6 +12,11 @@ is enabled. The wrapper starts enabled and records a rolling window of probe
 results. With the defaults, two failures in the window block the stage; recovery
 requires a full window of eight successful results.
 
+Posix and Mooncake also trigger circuit breaking on actual I/O failures,
+independently of active probes. Recovery requires an elapsed cooldown; repeated
+failures shortly after recovery extend it, while sustained health resets the backoff.
+Logs report passive windows with failures and remaining cooldown when probes are healthy.
+
 | Operation while blocked | Result |
 | --- | --- |
 | `Lookup` | A miss for every requested block |
@@ -96,6 +101,9 @@ The Gauge is 1 while the wrapper accepts work and 0 while it is blocked. Counter
 record probe outcomes, including timeouts, rather than breaker transitions.
 A single successful probe need not change a blocked Gauge back to 1.
 
+`ucm:posix_passive_failures_total` and `ucm:mooncake_passive_failures_total`
+count observed I/O failures separately from active probes.
+
 Start with individual series and their labels:
 
 ```promql
@@ -123,12 +131,12 @@ a repeated value or a missing series as the current backend state.
 
 1. Check the scrape target and identify the affected process from the labels.
 2. Find `Store health check` failures and `transitioned to UNHEALTHY` in its log;
-   the log includes the pipeline stage identifier and probe result window.
+   the log includes the pipeline stage identifier, cause and cooldown.
 3. For Posix, inspect that process's mount, permissions, available capacity and
    read/write/remove errors. For Mooncake, inspect its configured client and
    metadata/master connectivity and the reported operation error.
 4. Restore the failed dependency, then watch successful probes replace the failing
-   window. Confirm `transitioned to HEALTHY` and the corresponding Gauge update.
+   window. After cooldown, confirm `transitioned to HEALTHY` and the corresponding Gauge update.
 5. Separately repeat the [external-cache verification](../quick_start/index.md#vllm-verify-the-service-and-external-cache).
    Recovery of a probe does not prove recovery of a particular request's cache.
 

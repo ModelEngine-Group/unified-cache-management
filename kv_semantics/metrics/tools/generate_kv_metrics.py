@@ -93,9 +93,12 @@ namespace kv::metrics {{
 
 inline std::vector<MetricDescriptor> DefaultKvMetricDescriptors()
 {{
+    // Keep generated descriptors compact and deterministic across clang-format versions.
+    // clang-format off
     return {{
 {body}
     }};
+    // clang-format on
 }}
 
 }}  // namespace kv::metrics

@@ -114,6 +114,22 @@ class PipelineStore {
         if (config.contains("failure_threshold")) {
             result.failureThreshold = py::cast<size_t>(config["failure_threshold"]);
         }
+        if (config.contains("passive_enabled")) {
+            result.passiveEnabled = py::cast<bool>(config["passive_enabled"]);
+        }
+        if (config.contains("passive_window_s")) {
+            result.passiveWindow =
+                std::chrono::seconds{py::cast<int64_t>(config["passive_window_s"])};
+        }
+        if (config.contains("passive_failure_threshold")) {
+            result.passiveFailureThreshold = py::cast<size_t>(config["passive_failure_threshold"]);
+        }
+        result.initialCooldown = readSeconds("initial_cooldown_s", result.initialCooldown);
+        result.maxCooldown = readSeconds("max_cooldown_s", result.maxCooldown);
+        result.stableResetAfter = readSeconds("stable_reset_after_s", result.stableResetAfter);
+        if (config.contains("backoff_factor")) {
+            result.backoffFactor = py::cast<double>(config["backoff_factor"]);
+        }
         ThrowIfFailed(result.Validate());
         return result;
     }
@@ -155,7 +171,8 @@ public:
         if (storeDict.contains("store_health")) {
             healthDict = py::cast<py::dict>(storeDict["store_health"]);
         }
-        const auto healthConfig = ParseHealthConfig(healthDict);
+        auto healthConfig = ParseHealthConfig(healthDict);
+        if (name != "Posix" && name != "Mooncake") { healthConfig.passiveEnabled = false; }
         Detail::Dictionary config;
         ThrowIfFailed(ConfigParser::Parse(config, storeDict));
         config.Set<StoreV1*>("store_backend", StoreBack());

@@ -25,10 +25,13 @@
 #define UNIFIEDCACHE_INFRA_SPSC_RING_QUEUE_H
 
 #include <atomic>
+#include <chrono>
 #include <climits>
+#include <condition_variable>
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <thread>
 
 namespace kv {
@@ -95,6 +98,8 @@ public:
         constexpr size_t kTaskBatch = 64;
         size_t spinCount = 0;
         size_t taskCount = 0;
+        std::mutex waitMutex;
+        std::condition_variable waitCondition;
         while (!stop.load(std::memory_order_relaxed)) {
             T task;
             if (TryPop(task)) {
@@ -109,9 +114,45 @@ public:
                 std::this_thread::yield();
             } else {
                 if (stop.load(std::memory_order_acquire)) { break; }
-                std::this_thread::sleep_for(std::chrono::microseconds(50));
+                std::unique_lock<std::mutex> lock(waitMutex);
+                waitCondition.wait_for(lock, std::chrono::microseconds(50));
                 spinCount = 0;
             }
+        }
+    }
+
+    template <typename ConsumerHandler, typename... Args>
+    void ConsumerLoop(const std::atomic_bool& stop, std::mutex& waitMutex,
+                      std::condition_variable& waitCondition, ConsumerHandler&& handler,
+                      Args&&... args)
+    {
+        // Producers must hold waitMutex while publishing tasks or updating stop.
+        constexpr size_t kSpinLimit = 16;
+        constexpr size_t kTaskBatch = 64;
+        size_t spinCount = 0;
+        size_t taskCount = 0;
+        while (!stop.load(std::memory_order_relaxed)) {
+            T task;
+            if (TryPop(task)) {
+                spinCount = 0;
+                std::invoke(handler, std::forward<Args>(args)..., std::move(task));
+                if (++taskCount % kTaskBatch == 0) {
+                    if (stop.load(std::memory_order_acquire)) { break; }
+                }
+                continue;
+            }
+            if (++spinCount < kSpinLimit) {
+                std::this_thread::yield();
+                continue;
+            }
+
+            std::unique_lock<std::mutex> lock(waitMutex);
+            waitCondition.wait_for(lock, std::chrono::microseconds(50), [this, &stop] {
+                return stop.load(std::memory_order_acquire) ||
+                       head_.load(std::memory_order_acquire) !=
+                           tail_.load(std::memory_order_relaxed);
+            });
+            spinCount = 0;
         }
     }
 };

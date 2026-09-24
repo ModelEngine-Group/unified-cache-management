@@ -15,6 +15,7 @@ struct MetricDescriptor {
     MetricType type{MetricType::COUNTER};
     std::string documentation;
     std::vector<double> buckets;
+    MetricLabels labels;
 };
 
 struct StandaloneMetricsConfig {

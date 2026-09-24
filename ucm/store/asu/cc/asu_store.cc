@@ -210,8 +210,8 @@ kv::TransportConfig BuildTransportConfig(const Config& config, std::size_t index
         transportConfig.attrs.try_emplace("dspec", "0");
         transportConfig.attrs.try_emplace("lr", "false");
         transportConfig.attrs["fake_backend.path"] = config.fakeBackendPath;
-        transportConfig.attrs["fake_backend.latency_ms"] =
-            std::to_string(config.fakeBackendLatencyMs);
+        transportConfig.attrs["fake_backend.latency_us"] =
+            std::to_string(config.fakeBackendLatencyMs * 1000);
         transportConfig.attrs["fake_backend.worker_threads"] =
             std::to_string(config.fakeBackendWorkerThreads);
         transportConfig.attrs["fake_backend.complete_immediately"] =
