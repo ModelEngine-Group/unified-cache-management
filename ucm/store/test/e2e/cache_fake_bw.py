@@ -504,16 +504,16 @@ def load(
     return cost
 
 
-def wait_backend_ready(scheduler, block_ids, timeout_s=60, poll_interval_s=0.001):
+def wait_blocks_available(scheduler, block_ids, timeout_s=60, poll_interval_s=0.001):
+    """Wait for a full prefix hit; Cache v2 may satisfy hits from Cache or backend."""
     deadline = time.perf_counter() + timeout_s
     while True:
-        founds = scheduler.lookup(block_ids)
-        if bool(founds.all()):
+        last_hit = scheduler.lookup_on_prefix(block_ids)
+        if last_hit == len(block_ids) - 1:
             return
         if time.perf_counter() >= deadline:
-            ready_count = int(founds.sum())
             raise TimeoutError(
-                f"backend ready timeout: ready={ready_count}/{len(block_ids)}"
+                f"block availability timeout: prefix_hits={last_hit + 1}/{len(block_ids)}"
             )
         time.sleep(poll_interval_s)
 
@@ -643,7 +643,7 @@ def worker_loop(
             time.sleep(epoch_interval_ms / 1000)
 
     if device_id == 0:
-        wait_backend_ready(scheduler, backend_block_ids)
+        wait_blocks_available(scheduler, backend_block_ids)
     barrier.wait()
 
     total_load_epoch_number = warmup_epoch_number + load_epoch_number
