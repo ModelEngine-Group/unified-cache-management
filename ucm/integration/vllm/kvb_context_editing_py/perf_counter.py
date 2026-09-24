@@ -87,7 +87,7 @@ class PerfCounters(object):
         sys.exit(0)
 
     def get_model_forward_time(self):
-        now = time.montonic()
+        now = time.monotonic()
         if now < self.next_log_time:
             return 0
         counter_name = "forward"
