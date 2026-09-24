@@ -82,7 +82,7 @@ write_fake_backend_config() {
         echo "wait_timeout_ms=5000"
         echo
         echo "fake_backend.path=${store_path}"
-        echo "fake_backend.latency_ms=1"
+        echo "fake_backend.latency_us=1000"
         echo
         echo "view.config_path=${view_path}"
         echo "hash_table.type=RING_HASH"

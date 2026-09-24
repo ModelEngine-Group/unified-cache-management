@@ -192,6 +192,14 @@ def test_histogram_decrease_resets_entire_distribution():
     )
 
 
+def test_histogram_same_counts_with_changed_sum_is_a_reset():
+    current = parse(record(counts=[10, 20, 5, 1], total=12001))
+    assert reporter.snapshot_deltas(current, parse(record()))[2][NAME] == (
+        [10, 20, 5, 1],
+        12001,
+    )
+
+
 def make_reporter(tmp_path, monkeypatch):
     reader = reporter.DramPoolResourceReporter(
         str(tmp_path / "metrics.log"), shared_memory_dir=str(tmp_path)
@@ -219,6 +227,26 @@ def test_file_baseline_partial_tail_rotation_and_state(tmp_path, monkeypatch):
     assert reader._read_state() == parse(
         record(43, counts=[12, 23, 6, 1], total=13900, counter=42)
     )
+
+
+def test_restart_with_same_histogram_counts_advances_state(tmp_path, monkeypatch):
+    reader = make_reporter(tmp_path, monkeypatch)
+    previous = record()
+    write_record(reader, previous)
+    reader._collect_once()
+    native.get_all_stats_and_clear()
+
+    current = record(43, total=12001)
+    write_record(reader, current)
+    reader._collect_once()
+    assert native.get_all_stats_and_clear()[2][NAME] == (
+        current["histograms"][NAME]["bucket_counts"],
+        current["histograms"][NAME]["sum"],
+    )
+    assert reader._read_state() == parse(current)
+
+    reader._collect_once()
+    assert native.get_all_stats_and_clear()[2][NAME] == ([0, 0, 0, 0], 0)
 
 
 def test_state_write_failure_reuses_persisted_baseline(tmp_path, monkeypatch):

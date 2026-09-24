@@ -3,6 +3,7 @@ include(GoogleTest)
 file(GLOB KV_TEST_SOURCE_FILES CONFIGURE_DEPENDS
     *.cc
     client/*.cc
+    common/*.cc
     metrics/*.cc
     transport/*.cc
 )

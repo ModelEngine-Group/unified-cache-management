@@ -24,6 +24,7 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -71,6 +72,7 @@ private:
     TransportTaskManager taskManager_;
     kv::SpscRingQueue<TransportTaskPtr> executeQueue_;
     std::mutex producerMu_;
+    std::condition_variable workerCv_;
 
     std::thread worker_;
     std::thread completionWorker_;

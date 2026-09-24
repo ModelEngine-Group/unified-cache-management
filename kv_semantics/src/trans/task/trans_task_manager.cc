@@ -1,5 +1,7 @@
 #include "trans_task_manager.h"
+#include <chrono>
 #include <utility>
+#include "kv_metrics/metrics.h"
 #include "utils/trans_task_utils.h"
 
 namespace kv {
@@ -62,6 +64,19 @@ void TransportTask::TryFinalizeFromSubBatches()
 
 void TransportTaskManager::NotifyCompletion(const TransportTaskPtr& task)
 {
+    const bool sendReturned = task->sendReturned.load(std::memory_order_acquire);
+    const auto completedAt = std::chrono::steady_clock::now();
+    const metrics::MetricUpdate updates[] = {
+        {KV_METRIC("kv_transport_task_e2e_duration_seconds"),
+         std::chrono::duration<double>(completedAt - task->submittedAt).count()},
+        {KV_METRIC("kv_transport_task_completion_duration_seconds"),
+         sendReturned ? std::chrono::duration<double>(completedAt - task->sendCompletedAt).count()
+                      : 0.0                                                    },
+        {task->asuCompletionMetric,
+         sendReturned ? std::chrono::duration<double>(completedAt - task->sendCompletedAt).count()
+                      : 0.0                                                    },
+    };
+    metrics::UpdateStats(updates, sendReturned ? std::size_t{3} : std::size_t{1});
     TaskResult result;
     BuildResult(*task, result);
     (void)task->NotifyCompletion(std::move(result));

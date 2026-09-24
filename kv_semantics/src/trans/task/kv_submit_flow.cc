@@ -22,9 +22,11 @@
  * SOFTWARE.
  * */
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <utility>
 #include "conn/connection_internal.h"
+#include "kv_metrics/metrics.h"
 #include "logger.h"
 #include "trans_task_executor.h"
 
@@ -133,7 +135,11 @@ void TransportTaskExecutor::SendSubBatchBuffers(
 
     const auto kernelCount = GetSendCountAttr(config_.attrs, "kernel_count");
     const auto quietCount = GetSendCountAttr(config_.attrs, "quiet_count");
+    const auto sendStartedAt = std::chrono::steady_clock::now();
     const auto sendStatuses = transProvider_->Send(ioBatches, kernelCount, quietCount);
+    metrics::UpdateStats(
+        KV_METRIC("kv_transport_task_send_call_duration_seconds"),
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - sendStartedAt).count());
     if (sendStatuses.size() != ioBatches.size()) {
         const auto status = Status::Error(StatusCode::INTERNAL_ERROR,
                                           "transport send returned unexpected status count");

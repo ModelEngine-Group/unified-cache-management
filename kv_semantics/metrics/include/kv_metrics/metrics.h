@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -11,10 +12,16 @@
 
 namespace kv::metrics {
 
+using MetricLabels = std::map<std::string, std::string>;
+
 class CachedMetric {
 public:
-    explicit CachedMetric(std::string name) : name_(std::move(name)) {}
+    explicit CachedMetric(std::string name, MetricLabels labels = {})
+        : name_(std::move(name)), labels_(std::move(labels))
+    {
+    }
     const std::string& Name() const noexcept { return name_; }
+    const MetricLabels& Labels() const noexcept { return labels_; }
 
     struct Binding {
         virtual ~Binding() = default;
@@ -37,6 +44,7 @@ public:
 
 private:
     const std::string name_;
+    const MetricLabels labels_;
     std::mutex mutex_;
     std::unique_ptr<Binding> owner_;
     std::atomic<Binding*> binding_{nullptr};
@@ -57,6 +65,7 @@ public:
     virtual ~KvMetricsBackend() = default;
     virtual void UpdateStats(CachedMetric& metric, double value) noexcept = 0;
     virtual void UpdateStats(const MetricUpdate* updates, std::size_t count) noexcept = 0;
+    virtual bool RegisterMetricLabels(const std::string&, const MetricLabels&) { return false; }
     virtual void Flush() {}
     virtual void Stop() {}
 };
@@ -74,6 +83,7 @@ inline std::optional<double> ElapsedSeconds(const MetricTimer& timer) noexcept
 
 void UpdateStats(CachedMetric& metric, double value) noexcept;
 void UpdateStats(const MetricUpdate* updates, std::size_t count) noexcept;
+bool RegisterMetricLabels(const std::string& name, const MetricLabels& labels) noexcept;
 
 }  // namespace kv::metrics
 

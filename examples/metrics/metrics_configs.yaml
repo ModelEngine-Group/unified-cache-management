@@ -86,6 +86,8 @@ counter:
     documentation: "Number of successful Posix health probes"
   - name: "posix_unhealthy_count_total"
     documentation: "Number of failed Posix health probes"
+  - name: "posix_passive_failures_total"
+    documentation: "Number of failed Posix IO tasks observed by passive health detection"
   - name: "posix_aio_timeout_total"
     documentation: "Number of Posix AIO task or submit timeouts"
   - name: "posix_io_timeout_total"
@@ -126,6 +128,8 @@ counter:
     documentation: "Number of successful Mooncake health probes"
   - name: "mooncake_unhealthy_count_total"
     documentation: "Number of failed Mooncake health probes"
+  - name: "mooncake_passive_failures_total"
+    documentation: "Number of failed Mooncake IO tasks observed by passive health detection"
   - name: "mooncake_load_bytes_total"
     documentation: "Total bytes loaded through the Mooncake stage"
   - name: "mooncake_dump_bytes_total"
@@ -340,6 +344,9 @@ gauge:
     multiprocess_mode: livemostrecent
   - name: "dramstore_reply_buffer_used_bytes"
     documentation: "Sampled leased reply slot bytes including alignment, not payload bytes"
+    multiprocess_mode: livemostrecent
+  - name: "dramstore_reply_buffer_capacity_bytes"
+    documentation: "Total reply slot bytes including alignment"
     multiprocess_mode: livemostrecent
   - name: "dramstore_transport_queue_size"
     documentation: "Sampled aggregate queued Transmit and Connect admission occupancy"
@@ -580,7 +587,7 @@ histogram:
   # -- DramStore client observability -----------------------------------------
   - name: "dramstore_lookup_duration_ms"
     documentation: "End-to-end DramStore lookup duration (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
   - name: "dramstore_lookup_task_queue_duration_ms"
     documentation: "DramStore lookup task queue duration (ms)"
     buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
@@ -610,7 +617,7 @@ histogram:
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
   - name: "dramstore_dump_duration_ms"
     documentation: "End-to-end DramStore dump duration (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
   - name: "dramstore_dump_task_queue_duration_ms"
     documentation: "DramStore dump task queue duration (ms)"
     buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]
@@ -640,7 +647,7 @@ histogram:
     buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
   - name: "dramstore_load_duration_ms"
     documentation: "End-to-end DramStore load duration (ms)"
-    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+    buckets: [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
   - name: "dramstore_load_task_queue_duration_ms"
     documentation: "DramStore load task queue duration (ms)"
     buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 500]

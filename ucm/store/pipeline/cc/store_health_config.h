@@ -25,6 +25,7 @@
 #define UNIFIEDCACHE_PIPELINE_STORE_HEALTH_CONFIG_H
 
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include "status/status.h"
 
@@ -36,6 +37,13 @@ struct StoreHealthConfig {
     std::chrono::milliseconds healthCheckTimeout{std::chrono::seconds(3)};
     size_t healthWindowSize{8};
     size_t failureThreshold{2};
+    bool passiveEnabled{true};
+    std::chrono::seconds passiveWindow{60};
+    size_t passiveFailureThreshold{2};
+    std::chrono::milliseconds initialCooldown{std::chrono::minutes(5)};
+    std::chrono::milliseconds maxCooldown{std::chrono::seconds(3600)};
+    double backoffFactor{2.0};
+    std::chrono::milliseconds stableResetAfter{std::chrono::seconds(3600)};
 
     Status Validate() const
     {
@@ -48,6 +56,13 @@ struct StoreHealthConfig {
         }
         if (healthCheckTimeout >= healthCheckInterval) {
             return Status::InvalidParam("health timeout must be shorter than interval");
+        }
+        if (passiveWindow.count() <= 0 || passiveFailureThreshold == 0) {
+            return Status::InvalidParam("invalid passive health window or failure threshold");
+        }
+        if (initialCooldown.count() < 0 || maxCooldown < initialCooldown ||
+            stableResetAfter.count() <= 0 || !std::isfinite(backoffFactor) || backoffFactor < 1) {
+            return Status::InvalidParam("invalid health cooldown or backoff");
         }
         return Status::OK();
     }

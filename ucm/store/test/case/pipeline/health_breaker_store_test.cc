@@ -61,6 +61,7 @@ StoreHealthConfig TestConfig()
     config.healthWindowSize = 5;
     config.failureThreshold = 3;
     config.healthCheckInterval = std::chrono::hours(1);
+    config.initialCooldown = std::chrono::milliseconds(0);
     return config;
 }
 
@@ -165,8 +166,8 @@ TEST(UCHealthBreakerStoreTest, TripsEarlyAndRecoversAfterFullSuccessWindow)
     ASSERT_TRUE(SetupBreaker(breaker, &store, "cache-0", TestConfig()).Success());
 
     Trip(breaker, store);
-    EXPECT_EQ(breaker.FailureCount(), 3);
-    EXPECT_EQ(breaker.SampleCount(), 3);
+    EXPECT_EQ(breaker.FailureCount(), 0);
+    EXPECT_EQ(breaker.SampleCount(), 0);
 
     EXPECT_CALL(store, CheckHealth()).Times(5).WillRepeatedly(Return(Status::OK()));
     for (size_t i = 0; i < 4; ++i) {
@@ -179,7 +180,7 @@ TEST(UCHealthBreakerStoreTest, TripsEarlyAndRecoversAfterFullSuccessWindow)
     EXPECT_EQ(breaker.SampleCount(), 5);
 }
 
-TEST(UCHealthBreakerStoreTest, LogsWindowOnEveryStateTransition)
+TEST(UCHealthBreakerStoreTest, LogsCauseAndCooldownOnEveryStateTransition)
 {
     StrictMock<Detail::MockStore> store;
     auto config = TestConfig();
@@ -203,9 +204,9 @@ TEST(UCHealthBreakerStoreTest, LogsWindowOnEveryStateTransition)
     const auto output = testing::internal::GetCapturedStdout();
 
     EXPECT_THAT(output, testing::HasSubstr("transitioned to UNHEALTHY"));
-    EXPECT_THAT(output, testing::HasSubstr("window=[failure, failure]"));
+    EXPECT_THAT(output, testing::HasSubstr("source=active_probe"));
     EXPECT_THAT(output, testing::HasSubstr("transitioned to HEALTHY"));
-    EXPECT_THAT(output, testing::HasSubstr("window=[success, success, success]"));
+    EXPECT_THAT(output, testing::HasSubstr("cooldown_ms=0"));
 }
 
 TEST(UCHealthBreakerStoreTest, SlidingWindowEvictsOldFailure)

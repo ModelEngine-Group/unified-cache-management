@@ -25,9 +25,11 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <string>
 #include <utility>
 #include "conn/connection_internal.h"
+#include "kv_metrics/metrics.h"
 #include "logger.h"
 #include "utils/trans_task_utils.h"
 
@@ -39,7 +41,13 @@ TransportTaskExecutor::TransportTaskExecutor(
     : config_(config),
       ioScheduler_(config),
       transProvider_(transProvider),
-      connManager_(connectionManager)
+      connManager_(connectionManager),
+      asuSendMetric_("kv_transport_node_task_send_duration_seconds",
+                     {
+                         {"node_id", std::to_string(config.nodeId)}
+}),
+      asuCompletionMetric_("kv_transport_node_task_completion_duration_seconds",
+                           {{"node_id", std::to_string(config.nodeId)}})
 {
 }
 
@@ -54,6 +62,8 @@ TransportTaskExecutor::~TransportTaskExecutor()
 
 Status TransportTaskExecutor::Init()
 {
+    (void)metrics::RegisterMetricLabels(asuSendMetric_.Name(), asuSendMetric_.Labels());
+    (void)metrics::RegisterMetricLabels(asuCompletionMetric_.Name(), asuCompletionMetric_.Labels());
     auto status = sendBufferManager_.Init("asu send buffer", MemoryType::HOST_PINNED,
                                           config_.sendBufferSlotSize, config_.sendBufferSlotNum);
     if (!status.ok()) {
@@ -279,6 +289,7 @@ Status TransportTaskExecutor::AssignSubBatchConnections(
     for (auto& subBatchContext : subBatchContexts) {
         auto channel = connManager_->SelectConnection();
         if (!channel) {
+            metrics::UpdateStats(KV_METRIC("kv_transport_task_connection_errors_total"), 1.0);
             const auto subBatchStatus =
                 Status::Error(StatusCode::CONNECTION_ERROR, "no available connection channel");
             std::fill(subBatchContext.entryStatus.begin(), subBatchContext.entryStatus.end(),
@@ -300,6 +311,8 @@ bool TransportTaskExecutor::Execute(const TransportTaskPtr& task)
                                              std::memory_order_acq_rel)) {
         return false;
     }
+    const auto processingStartedAt = std::chrono::steady_clock::now();
+    task->asuCompletionMetric = &asuCompletionMetric_;
 
     std::vector<TransportSubBatchContext> subBatchContexts;
     auto status = PrepareTaskSubBatches(*task, subBatchContexts);
@@ -312,8 +325,28 @@ bool TransportTaskExecutor::Execute(const TransportTaskPtr& task)
     if (!status.ok()) {
         KV_ERROR("Abort transport task before send task_id={} code={} message={}", task->taskId,
                  static_cast<int>(status.code), status.message);
-    } else {
+    } else if (!ioBatches.empty()) {
+        const auto preSendAt = std::chrono::steady_clock::now();
+        const metrics::MetricUpdate preSendUpdates[] = {
+            {KV_METRIC("kv_transport_task_pre_send_duration_seconds"),
+             std::chrono::duration<double>(preSendAt - task->submittedAt).count()          },
+            {KV_METRIC("kv_transport_task_queue_duration_seconds"),
+             std::chrono::duration<double>(processingStartedAt - task->submittedAt).count()},
+            {KV_METRIC("kv_transport_task_process_duration_seconds"),
+             std::chrono::duration<double>(preSendAt - processingStartedAt).count()        },
+        };
+        metrics::UpdateStats(preSendUpdates, std::size(preSendUpdates));
         SendSubBatchBuffers(subBatchContexts, ioBatches);
+        task->sendCompletedAt = std::chrono::steady_clock::now();
+        task->sendReturned.store(true, std::memory_order_release);
+        const metrics::MetricUpdate sendUpdates[] = {
+            {KV_METRIC("kv_transport_task_send_duration_seconds"),
+             std::chrono::duration<double>(task->sendCompletedAt - task->submittedAt).count()},
+            {asuSendMetric_,
+             std::chrono::duration<double>(task->sendCompletedAt - task->submittedAt).count()},
+        };
+        metrics::UpdateStats(sendUpdates, std::size(sendUpdates));
+        if (task->onSendComplete) { task->onSendComplete(); }
     }
 
     bool done = false;
@@ -356,6 +389,7 @@ bool TransportTaskExecutor::Poll(const TransportTaskPtr& task)
         if (task->subBatchContexts->empty()) { return false; }
 
         if (std::chrono::steady_clock::now() >= task->deadline) {
+            metrics::UpdateStats(KV_METRIC("kv_transport_task_completion_timeouts_total"), 1.0);
             const auto timeoutStatus =
                 Status::Error(StatusCode::TIMEOUT, "transport task execution timeout");
             std::fill(task->entryStatus.begin(), task->entryStatus.end(), timeoutStatus);
@@ -411,6 +445,9 @@ bool TransportTaskExecutor::Poll(const TransportTaskPtr& task)
                                         : subBatchContext.status;
                 if (status.code == StatusCode::CQE_INTERNAL_ERROR ||
                     status.code == StatusCode::CQE_IO_TIMEOUT) {
+                    if (status.code == StatusCode::CQE_IO_TIMEOUT) {
+                        metrics::UpdateStats(KV_METRIC("kv_transport_task_io_timeouts_total"), 1.0);
+                    }
                     connManager_->ReportFailure(subBatchContext.channel);
                 } else {
                     connManager_->ReportSuccess(subBatchContext.channel);
