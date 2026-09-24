@@ -265,7 +265,6 @@ GQA/MHA models use the default parameters. For MLA models, pass the actual servi
 ucm-toolkit run metrics-view check \
   --url http://127.0.0.1:8000/metrics \
   --config metrics_lite \
-  --config-param tp_size=8
 ```
 
 The GB/s value reported by `check` is cumulative bytes divided by cumulative service uptime. It is not suitable for instantaneous bandwidth analysis; use background collection for bandwidth analysis.
@@ -297,7 +296,6 @@ ucm-toolkit run metrics-view query \
   --window 10m \
   --aggr-by 1m \
   --config metrics_lite \
-  --config-param tp_size=8
 ```
 
 Filter by Prometheus labels:
