@@ -338,7 +338,7 @@ def test_trailing_pool_miss_rejects_current_prefix(connector):
     assert result.restorable_prefix_pages == []
 
 
-def test_trailing_pool_reverse_lookup_falls_back_to_older_checkpoint(connector):
+def test_trailing_pool_sparse_lookup_falls_back_to_older_checkpoint(connector):
     value, stores = connector
     pool_name = sglang_hicache.PoolName.SWA
     value.register_pool_v2(FakeHostPool(1, [64]), pool_name)

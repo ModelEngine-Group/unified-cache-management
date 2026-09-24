@@ -489,9 +489,10 @@ class SglangUcmConnector:
             elif transfer.hit_policy == PoolHitPolicy.TRAILING_PAGES:
                 # Trailing pools are sparse: an object marks a candidate
                 # prefix end instead of contributing to a contiguous prefix.
-                # Discover candidates with UCM's native reverse lookup, then
-                # validate the complete trailing window for multi-page pools.
-                # Placeholder values carry only N and are never storage keys.
+                # Lookup returns an independent existence bit for every
+                # candidate, so all legal trailing windows can be validated in
+                # one request. Placeholder values carry only the window size
+                # and are never storage keys.
                 encoded = [
                     self._component_key(key, transfer.name, 0)
                     for key in keys[:kv_pages]
@@ -499,42 +500,23 @@ class SglangUcmConnector:
                 trailing = max(1, len(trailing_keys))
                 pool_restorable = []
                 boundary = 0
-                page_exists = []
-                reverse_index = store.lookup_on_reverse(encoded)
-                if reverse_index >= 0:
-                    # Reverse lookup gives the latest checkpoint directly.
-                    # Query only its left side once to retain older legal
-                    # positions needed by cross-pool/cross-rank intersection.
-                    page_exists = (
-                        [
-                            bool(value)
-                            for value in store.lookup(encoded[:reverse_index])
-                        ]
-                        if reverse_index > 0
-                        else []
-                    ) + [True]
-                    for prefix_len in range(reverse_index + 1, 0, -1):
-                        if not page_exists[prefix_len - 1]:
-                            continue
-                        window_start = max(0, prefix_len - trailing)
-                        if not all(page_exists[window_start:prefix_len]):
-                            continue
-                        pool_restorable.append(prefix_len)
-                        if boundary == 0:
-                            boundary = prefix_len
+                page_exists = [bool(value) for value in store.lookup(encoded)]
+                for prefix_len in range(kv_pages, 0, -1):
+                    window_start = max(0, prefix_len - trailing)
+                    if not all(page_exists[window_start:prefix_len]):
+                        continue
+                    pool_restorable.append(prefix_len)
+                    if boundary == 0:
+                        boundary = prefix_len
                 logger.info(
                     "UCM v2 trailing lookup pool=%s kv_pages=%d window=%d "
-                    "logical_keys=%s encoded_keys=%s reverse_index=%d "
-                    "logical_hit=%s encoded_hit=%s exists_through_hit=%s "
+                    "logical_keys=%s encoded_keys=%s exists=%s "
                     "pool_restorable=%s",
                     transfer.name,
                     kv_pages,
                     trailing,
                     list(keys[:kv_pages]),
                     [key.hex() for key in encoded],
-                    reverse_index,
-                    keys[reverse_index] if reverse_index >= 0 else None,
-                    encoded[reverse_index].hex() if reverse_index >= 0 else None,
                     page_exists,
                     pool_restorable,
                 )
