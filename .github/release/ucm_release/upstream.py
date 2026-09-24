@@ -924,6 +924,7 @@ def validate_selection(value: object) -> dict[str, object]:
             "stable",
             "rc",
             "nightly",
+            "main",
             "pinned",
         }:
             raise ValueError(f"{runtime_id}: unsupported runtime channel")
