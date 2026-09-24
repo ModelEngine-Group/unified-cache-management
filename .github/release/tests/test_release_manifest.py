@@ -704,7 +704,7 @@ def test_disabled_channels_finalize_with_wheels_only_regardless_of_release_type(
         == f"https://github.com/example/ucm/releases/tag/{plan['git_tag']}"
     )
     assert public["wheels"][0]["url"] == asset_urls[filename]
-    assert public["schema_version"] == 9
+    assert public["schema_version"] == 10
     assert public["chart"] is None
     assert public["images"] == []
     from ucm_release import cleanup
@@ -715,7 +715,7 @@ def test_disabled_channels_finalize_with_wheels_only_regardless_of_release_type(
     )
 
 
-def test_public_manifest_is_exact_schema_v9_and_uses_published_targets(
+def test_public_manifest_is_exact_schema_v10_and_uses_published_targets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -799,7 +799,7 @@ def test_public_manifest_is_exact_schema_v9_and_uses_published_targets(
 
     manifest = public_manifest.build_manifest(state, document)
 
-    assert manifest["schema_version"] == 9
+    assert manifest["schema_version"] == 10
     assert manifest["release"]["tag"] == state["release"]["git_tag"]
     assert manifest["release"]["actions_run_id"] == 987654
     assert manifest["python"]["extras"] == {"cu129": "uc-manager-cuda-cu129"}
@@ -873,6 +873,42 @@ def test_public_manifest_is_exact_schema_v9_and_uses_published_targets(
     )
     command.func(command)
     assert json.loads((output / "release-manifest.json").read_text()) == manifest
+
+
+def test_wheel_capabilities_include_every_linked_image_runtime() -> None:
+    from ucm_release.manifest import _wheel_capabilities
+
+    images = [
+        {
+            "wheel_id": "shared-wheel",
+            "runtime": {
+                "product_id": "sglang",
+                "accelerator_runtime": runtime,
+                "variant": "default",
+                "soc_version": "ascend910",
+            },
+        }
+        for runtime in ("cann-9.0", "cann-9.1")
+    ]
+
+    assert _wheel_capabilities("shared-wheel", images) == [
+        {
+            "product": "sglang",
+            "accelerator": {
+                "runtime": "cann-9.0",
+                "variant": "default",
+                "soc_version": "ascend910",
+            },
+        },
+        {
+            "product": "sglang",
+            "accelerator": {
+                "runtime": "cann-9.1",
+                "variant": "default",
+                "soc_version": "ascend910",
+            },
+        },
+    ]
 
 
 def test_public_manifest_rejects_incomplete_release() -> None:

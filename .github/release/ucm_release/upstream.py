@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import re
 from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime, timezone
 from typing import Any
 
 from packaging.version import InvalidVersion, Version
@@ -35,6 +36,10 @@ _NIGHTLY_TAG = re.compile(
     r"^nightly-releases-v(?P<version>[0-9]+\.[0-9]+\.[0-9]+rc(?:[0-9]+)?)"
     r"(?P<suffix>(?:-[A-Za-z0-9_.]+)*)$"
 )
+_SGLANG_MAIN_TAG = re.compile(
+    r"^main-(?P<cann>cann[0-9]+\.[0-9]+\.[0-9]+)-(?P<soc>910b|a3)$"
+)
+_SGLANG_CANN_SUFFIX = re.compile(r"^cann[0-9]+\.[0-9]+\.[0-9]+-(?:910b|a3)$")
 
 _WHEEL_BUILD_FIELDS = {
     "id",
@@ -96,7 +101,64 @@ def _string(mapping: Mapping[str, object], key: str, context: str) -> str:
     return value.strip()
 
 
-def _parsed_runtime_tag(product_id: str, tag: str) -> dict[str, object] | None:
+def _parsed_sglang_tag(
+    tag: str, *, created_at: datetime | None = None
+) -> dict[str, object] | None:
+    """Parse SGLang's CUDA, CANN and main image tag families."""
+
+    main = _SGLANG_MAIN_TAG.fullmatch(tag)
+    if main is not None:
+        # Keep a sortable synthetic version internally when registry creation
+        # metadata is available, but publish the upstream tag as the version.
+        internal_version = Version("0.0.0")
+        if created_at is not None:
+            stamp = created_at.strftime("%Y%m%d%H%M%S")
+            internal_version = Version(f"0.0.0.dev{stamp}")
+        return {
+            "tag": tag,
+            "version": internal_version,
+            "version_text": tag,
+            "channel": "main",
+            "suffix": f"-{main.group('cann')}-{main.group('soc')}",
+            "tokens": [main.group("cann"), main.group("soc")],
+        }
+
+    match = _FORMAL_TAG.fullmatch(tag)
+    if match is None:
+        return None
+    suffix = match.group("suffix")
+    tokens = [token for token in suffix.removeprefix("-").split("-") if token]
+    is_cuda = all(re.fullmatch(r"cu[0-9]+|runtime", token) for token in tokens)
+    is_cann = (
+        len(tokens) == 2 and _SGLANG_CANN_SUFFIX.fullmatch("-".join(tokens)) is not None
+    )
+    if not is_cuda and not is_cann:
+        return None
+    if is_cuda and (
+        sum(token.startswith("cu") for token in tokens) != 1
+        or tokens.count("runtime") > 1
+    ):
+        return None
+    try:
+        version = Version(match.group("version"))
+    except InvalidVersion:
+        return None
+    channel = "rc" if version.is_prerelease else "stable"
+    return {
+        "tag": tag,
+        "version": version,
+        "version_text": match.group("version"),
+        "channel": channel,
+        "suffix": suffix,
+        "tokens": tokens,
+    }
+
+
+def _parsed_runtime_tag(
+    product_id: str, tag: str, *, created_at: datetime | None = None
+) -> dict[str, object] | None:
+    if product_id == "sglang":
+        return _parsed_sglang_tag(tag, created_at=created_at)
     nightly = _NIGHTLY_TAG.fullmatch(tag) if product_id == "vllm-ascend" else None
     formal = _FORMAL_TAG.fullmatch(tag)
     match = nightly or formal
@@ -152,7 +214,69 @@ def _runtime_variant(product_id: str, parsed: Mapping[str, object]) -> str:
             (token for token in ("310p", "a3", "a5") if token in tokens),
             "a2",
         )
+    if product_id == "sglang":
+        return "a3" if "a3" in tokens else "a2" if "910b" in tokens else "default"
     raise ValueError(f"unsupported runtime product {product_id!r}")
+
+
+def _is_sglang_runtime_variant(product_id: str, parsed: Mapping[str, object]) -> bool:
+    """SGLang publishes CUDA ``-runtime`` tags, which are not UCM build inputs."""
+
+    return product_id == "sglang" and "runtime" in set(parsed.get("tokens", ()))
+
+
+def _without_sglang_runtime_tags(
+    product_id: str, selected: Sequence[Mapping[str, str]]
+) -> list[dict[str, str]]:
+    """Drop SGLang's image-only CUDA runtime tags from build candidates."""
+
+    if product_id != "sglang":
+        return [dict(item) for item in selected]
+    return [
+        dict(item)
+        for item in selected
+        if not str(item.get("runtime_tag", "")).endswith("-runtime")
+    ]
+
+
+def _select_sglang_main_tags(
+    tags: Sequence[str],
+    *,
+    excluded_variants: Sequence[str],
+    created_by_tag: Mapping[str, datetime],
+    selected: Sequence[Mapping[str, str]],
+) -> list[dict[str, str]]:
+    """Add the newest published CANN main image for each SGLang SOC."""
+
+    selected_tags = {str(item["runtime_tag"]) for item in selected}
+    parsed_main = []
+    for tag in tags:
+        parsed = _parsed_sglang_tag(tag, created_at=created_by_tag.get(tag))
+        if (
+            parsed is not None
+            and parsed["channel"] == "main"
+            and _runtime_variant("sglang", parsed) not in excluded_variants
+        ):
+            parsed_main.append(parsed)
+
+    additions: list[dict[str, str]] = []
+    for variant in ("a2", "a3"):
+        candidates = [
+            item for item in parsed_main if _runtime_variant("sglang", item) == variant
+        ]
+        if not candidates:
+            continue
+        newest = max(candidates, key=lambda item: (item["version"], item["tag"]))
+        if str(newest["tag"]) in selected_tags:
+            continue
+        additions.append(
+            {
+                "runtime_tag": str(newest["tag"]),
+                "version": str(newest["version_text"]),
+                "channel": "main",
+            }
+        )
+    return additions
 
 
 def _version_is_in_selector(version: Version, selector: Version) -> bool:
@@ -188,6 +312,7 @@ def _select_runtime_tags(
     tags: Sequence[str],
     *,
     excluded_variants: Sequence[str] = (),
+    created_by_tag: Mapping[str, datetime] | None = None,
 ) -> list[dict[str, str]]:
     """Resolve version.ini ranges to one published Runtime version per selector."""
 
@@ -199,7 +324,12 @@ def _select_runtime_tags(
     parsed_by_tag = {
         tag: parsed
         for tag in available_tags
-        if (parsed := _parsed_runtime_tag(product_id, tag)) is not None
+        if (
+            parsed := _parsed_runtime_tag(
+                product_id, tag, created_at=(created_by_tag or {}).get(tag)
+            )
+        )
+        is not None
     }
     selected: list[dict[str, str]] = []
     selected_tags: set[str] = set()
@@ -316,6 +446,17 @@ def resolve_runtime_candidates(
         repository_tags = registry.repository_tags(
             repository, tag_fixture=tag_fixture, tag_loader=tag_loader
         )
+        created_by_tag: dict[str, datetime] = {}
+        if product_id == "sglang" and tag_fixture is None and tag_loader is None:
+            for tag in repository_tags:
+                if tag.startswith("main-cann"):
+                    try:
+                        created_by_tag[tag] = registry.created_at(repository, tag)
+                    except ValueError:
+                        # Some registries do not expose config metadata for a tag.
+                        # Keep SGLang release generation alive with a timestamp from
+                        # this run; formal tags and the other products are unchanged.
+                        created_by_tag[tag] = datetime.now(timezone.utc)
         if pr_default:
             selected = [
                 {
@@ -324,15 +465,32 @@ def resolve_runtime_candidates(
                     "channel": str(item["channel"]),
                 }
                 for tag in repository_tags
-                if (item := _parsed_runtime_tag(product_id, tag)) is not None
+                if (
+                    item := _parsed_runtime_tag(
+                        product_id, tag, created_at=created_by_tag.get(tag)
+                    )
+                )
+                is not None
                 and _runtime_variant(product_id, item) not in excluded
+                and not _is_sglang_runtime_variant(product_id, item)
             ]
         else:
             selected = _select_runtime_tags(
                 product,
                 repository_tags,
                 excluded_variants=excluded,
+                created_by_tag=created_by_tag,
             )
+            selected = _without_sglang_runtime_tags(product_id, selected)
+            if product_id == "sglang":
+                selected.extend(
+                    _select_sglang_main_tags(
+                        repository_tags,
+                        excluded_variants=excluded,
+                        created_by_tag=created_by_tag,
+                        selected=selected,
+                    )
+                )
         if not selected:
             raise ValueError(
                 f"{product_id}: no Runtime Registry tags satisfy the selection windows"
@@ -340,7 +498,9 @@ def resolve_runtime_candidates(
         product_runtime_count = len(runtimes)
         for item in selected:
             tag = item["runtime_tag"]
-            parsed = _parsed_runtime_tag(product_id, tag)
+            parsed = _parsed_runtime_tag(
+                product_id, tag, created_at=created_by_tag.get(tag)
+            )
             tokens = set(parsed["tokens"]) if parsed is not None else set()
             if product_id == "vllm-ascend" and "a5" in tokens:
                 backend = "cann-a5"
@@ -454,6 +614,20 @@ def validate_runtime_candidates(value: object) -> dict[str, object]:
         product_id = _string(item, "product_id", reference)
         runtime_tag = _string(item, "runtime_tag", reference)
         parsed = _parsed_runtime_tag(product_id, runtime_tag)
+        # Accept candidate documents produced before SGLang main versions
+        # became tag-based. New documents use the main tag and channel above.
+        if (
+            product_id == "sglang"
+            and re.fullmatch(
+                r"main-cann[0-9]+\.[0-9]+\.[0-9]+-(?:910b|a3)", runtime_tag
+            )
+            and str(item.get("version", "")).startswith("0.0.0.dev")
+            and item.get("channel") == "nightly"
+        ):
+            parsed = {
+                "version_text": str(item["version"]),
+                "channel": "nightly",
+            }
         if parsed is None:
             raise ValueError(f"{reference}: Runtime tag does not match product grammar")
         if item.get("version") != parsed["version_text"]:
@@ -553,9 +727,6 @@ def resolve_upstreams(
         str(item["id"]): _mapping(item, "release product")
         for item in release["products"]  # type: ignore[index]
     }
-    image_suffix = (
-        f"-ucm-{runtime_contract.oci_tag_version(str(release['ucm_version']))}"
-    )
     runtimes: list[dict[str, object]] = []
     for reference, group in sorted(grouped.items()):
         candidate = candidate_by_ref[reference]
@@ -606,6 +777,15 @@ def resolve_upstreams(
         runtime_id = re.sub(r"[^a-z0-9._-]+", "-", f"{product_id}-{tag}".lower()).strip(
             ".-"
         )
+        image_suffix = (
+            f"-ucm-{runtime_contract.oci_tag_version(str(release['ucm_version']))}"
+        )
+        if product_id == "sglang" and tag.startswith("main-cann"):
+            # Preserve the upstream main tag shape and add a collision-resistant
+            # UCM timestamp, instead of projecting it to dev.0.0.0.
+            stamp_match = re.search(r"\.dev(\d{14})$", str(candidate["version"]))
+            if stamp_match is not None:
+                image_suffix += f"-{stamp_match.group(1)}"
         target_tag = runtime_contract.project_runtime_image_tag(
             tag + image_suffix,
             tag_prefix=str(release.get("runtime_image_tag_prefix", "")),
