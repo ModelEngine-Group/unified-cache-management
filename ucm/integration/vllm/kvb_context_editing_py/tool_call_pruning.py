@@ -1,5 +1,6 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All Rights Reserved.
 #
+
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -14,6 +15,7 @@
 # This file is a part of the vllm-ascend project.
 #
 """Utilities for tool-call aware KV Cache pruning.
+
 
 The API side should keep sending the *original* prompt tokens to VLLM's prefix
 hashing and physical KV cache allocation continue to use the stable, complete
