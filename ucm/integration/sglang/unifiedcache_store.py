@@ -6,6 +6,8 @@ from sglang.srt.mem_cache.hicache_storage import (
     HiCacheStorage,
     HiCacheStorageConfig,
     HiCacheStorageExtraInfo,
+    PoolTransfer,
+    PoolTransferResult,
 )
 from sglang.srt.mem_cache.memory_pool_host import HostKVCache
 
@@ -34,7 +36,7 @@ class UnifiedCacheStore(HiCacheStorage):
             self.register_mem_pool_host(context)
 
     def _ensure_initialized(self) -> SglangUcmConnector:
-        if self.connector is None or self.store is None or self.mem_pool_host is None:
+        if self.connector is None or self.mem_pool_host is None:
             raise RuntimeError(
                 "UnifiedCacheStore is not initialized yet. "
                 "SGLang should call register_mem_pool_host() before storage operations."
@@ -42,21 +44,60 @@ class UnifiedCacheStore(HiCacheStorage):
         return self.connector
 
     def register_mem_pool_host(self, mem_pool_host: HostKVCache):
-        super().register_mem_pool_host(mem_pool_host)
-        if mem_pool_host.layout != "page_first":
+        # HybridCacheController registers the HostPoolGroup allocation facade,
+        # while the v1 storage path must operate on its physical KV anchor.
+        # The group deliberately does not expose HostKVCache data APIs such as
+        # get_size_per_token() or get_page_buffer_meta().
+        anchor_entry = getattr(mem_pool_host, "anchor_entry", None)
+        storage_host_pool = (
+            anchor_entry.host_pool if anchor_entry is not None else mem_pool_host
+        )
+
+        super().register_mem_pool_host(storage_host_pool)
+        if storage_host_pool.layout != "page_first":
             raise ValueError(
                 "UnifiedCacheStore currently requires --hicache-mem-layout page_first, "
-                f"got {mem_pool_host.layout!r}."
+                f"got {storage_host_pool.layout!r}."
             )
 
-        self.mem_pool_host = mem_pool_host
+        self.mem_pool_host = storage_host_pool
         if self.connector is None:
             self.connector = SglangUcmConnector.from_hicache(
-                self.storage_config, mem_pool_host
+                self.storage_config, storage_host_pool
             )
             self.store = self.connector.store
         else:
-            self.connector.mem_pool_host = mem_pool_host
+            self.connector.mem_pool_host = storage_host_pool
+
+    def register_mem_host_pool_v2(self, host_pool: HostKVCache, host_pool_name):
+        # SGLang registers the KV anchor through both APIs; v1 already owns it.
+        if str(getattr(host_pool_name, "value", host_pool_name)) == "kv":
+            return
+        self._ensure_initialized().register_pool_v2(host_pool, host_pool_name)
+
+    def batch_exists_v2(
+        self,
+        keys: List[str],
+        pool_transfers: Optional[List[PoolTransfer]] = None,
+        extra_info: Optional[HiCacheStorageExtraInfo] = None,
+    ) -> PoolTransferResult:
+        return self._ensure_initialized().batch_exists_v2(
+            keys, pool_transfers, extra_info
+        )
+
+    def batch_get_v2(
+        self,
+        transfers: List[PoolTransfer],
+        extra_info: Optional[HiCacheStorageExtraInfo] = None,
+    ) -> dict[str, List[bool]]:
+        return self._ensure_initialized().batch_io_v2(transfers, is_set=False)
+
+    def batch_set_v2(
+        self,
+        transfers: List[PoolTransfer],
+        extra_info: Optional[HiCacheStorageExtraInfo] = None,
+    ) -> dict[str, List[bool]]:
+        return self._ensure_initialized().batch_io_v2(transfers, is_set=True)
 
     def batch_get_v1(
         self,
@@ -129,9 +170,8 @@ class UnifiedCacheStore(HiCacheStorage):
         return False
 
     def close(self) -> None:
-        close = getattr(self.store, "close", None)
-        if callable(close):
-            close()
+        if self.connector is not None:
+            self.connector.close()
 
     def get_stats(self):
         connector = self.connector
