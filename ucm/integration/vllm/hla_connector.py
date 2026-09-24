@@ -29,6 +29,7 @@ from ucm.integration.vllm.request_hasher import RequestHasher
 from ucm.integration.vllm.ucm_connector import (
     KVCacheLayout,
     PendingDumpTask,
+    PendingLoadTask,
     RequestDispatchMeta,
     RequestMeta,
     UCMConnectorMetadata,
@@ -756,6 +757,10 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
     """
 
     @classmethod
+    def _supports_request_async_load(cls) -> bool:
+        return cls is UCMHybridLinearAttentionConnector
+
+    @classmethod
     def supports_kv_cache_layout(cls, kv_cache_config) -> bool:
         if kv_cache_config is None:
             return False
@@ -933,6 +938,10 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
     def get_num_new_matched_tokens(
         self, request: "Request", num_computed_tokens: int
     ) -> tuple[int, bool]:
+        # A re-query follows preemption/rescheduling; discard the previous
+        # attempt before any early return.
+        self._pending_async_load_dispatches.pop(request.request_id, None)
+        self._async_load_req_ids.discard(request.request_id)
         assert self.group_manager is not None, (
             "get_num_new_matched_tokens must be called on the scheduler-side "
             "connector, where the group manager is initialized."
@@ -1061,7 +1070,9 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
             group_vllm_block_ids=[[] for _ in range(self.group_manager.num_groups)],
         )
 
-        return external_hit_tokens, False
+        return external_hit_tokens, (
+            self.use_request_async_load and external_hit_tokens > 0
+        )
 
     def update_state_after_alloc(
         self, request: "Request", blocks: "KVCacheBlocks", num_external_tokens: int
@@ -1077,6 +1088,19 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 f"HLA group count {self.group_manager.num_groups}"
             )
         req_meta.group_vllm_block_ids = [list(group) for group in block_ids]
+        if not self.use_request_async_load or num_external_tokens <= 0:
+            return
+        async_meta = self._generate_hla_dispatch_meta(
+            req_meta,
+            0,
+            tuple(req_meta.group_vllm_block_ids),
+            need_load=True,
+            request_id=request.request_id,
+            incoming_block_ids_are_full=True,
+        )
+        async_meta.load_async = True
+        self._pending_async_load_dispatches[request.request_id] = async_meta
+        self._async_load_req_ids.add(request.request_id)
 
     def _append_mamba_align_state_block(
         self,
@@ -1271,6 +1295,7 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                 request.block_ids,
                 request_id=request_id,
                 incoming_block_ids_are_full=True,
+                need_load=request_id not in self._async_load_req_ids,
             )
 
         # Same three situations as the parent: chunked prefill (dump only),
@@ -1298,9 +1323,10 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     req_meta,
                     scheduler_output.num_scheduled_tokens[request_id],
                     new_block_ids,
-                    resumed_from_preemption,
                     request_id=request_id,
                     incoming_block_ids_are_full=resumed_from_preemption,
+                    need_load=resumed_from_preemption
+                    and request_id not in self._async_load_req_ids,
                 )
         else:
             for request in scheduled_cached_reqs:
@@ -1313,13 +1339,19 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     req_meta,
                     scheduler_output.num_scheduled_tokens[request_id],
                     request.new_block_ids,
-                    request.resumed_from_preemption,
                     request_id=request_id,
                     incoming_block_ids_are_full=request.resumed_from_preemption,
+                    need_load=request.resumed_from_preemption
+                    and request_id not in self._async_load_req_ids,
                 )
 
         for request_id in scheduler_output.finished_req_ids:
             self.requests_meta.pop(request_id, None)
+            self._pending_async_load_dispatches.pop(request_id, None)
+            self._async_load_req_ids.discard(request_id)
+
+        requests_dispatch_meta.update(self._pending_async_load_dispatches)
+        self._pending_async_load_dispatches = {}
 
         return UCMConnectorMetadata(
             requests_dispatch_meta,
@@ -1384,18 +1416,28 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
         for request_id, request in metadata.request_meta.items():
             if len(request.load_block_ids[0]) == 0:
                 continue
-            is_load = True
-            num_loaded_block += len(request.load_block_ids[0])
-            num_loaded_request += 1
+            if request.load_async and request_id in self._pending_load_tasks:
+                logger.warning(
+                    "Ignore duplicate async load metadata for request %s.", request_id
+                )
+                continue
+            if not request.load_async:
+                is_load = True
+                num_loaded_block += len(request.load_block_ids[0])
+                num_loaded_request += 1
             n = getattr(request, "load_full_attn_count", 0)
             _, scoped_ucm, scoped_vllm = self._scope_blocks(
                 request.load_block_ids[0], request.load_block_ids[1], n, is_dump=False
             )
             if not scoped_ucm:
-                num_loaded_block -= len(request.load_block_ids[0])
-                num_loaded_request -= 1
+                if request.load_async:
+                    self._finished_async_load_req_ids.add(request_id)
+                else:
+                    num_loaded_block -= len(request.load_block_ids[0])
+                    num_loaded_request -= 1
                 continue
-            num_loaded_block -= len(request.load_block_ids[0]) - len(scoped_ucm)
+            if not request.load_async:
+                num_loaded_block -= len(request.load_block_ids[0]) - len(scoped_ucm)
             try:
                 ptrs = self.kv_cache_layout.extract_block_addrs(scoped_vllm)
                 ptrs = ptrs.reshape(ptrs.shape[0], -1)
@@ -1407,8 +1449,15 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     shard_indexs,
                     ptrs,
                 )
-                request_to_task[request_id] = task
-                request_to_load_blocks[request_id] = len(scoped_ucm)
+                if request.load_async:
+                    self._pending_load_tasks[request_id] = PendingLoadTask(
+                        task=task,
+                        request_id=request_id,
+                        vllm_block_ids=list(scoped_vllm),
+                    )
+                else:
+                    request_to_task[request_id] = task
+                    request_to_load_blocks[request_id] = len(scoped_ucm)
             except Exception as e:
                 logger.error(
                     f"request {request_id} submit load task error. "
@@ -1420,7 +1469,10 @@ class UCMHybridLinearAttentionConnector(UCMDirectConnector, SupportsHMA):
                     + metadata.request_meta[request_id].dump_block_ids[1],
                 )
                 self._connector_worker_meta.mark_failed(request_id)
-                num_loaded_block -= len(scoped_ucm)
+                if not request.load_async:
+                    num_loaded_block -= len(scoped_ucm)
+                if request.load_async:
+                    self._finished_async_load_req_ids.add(request_id)
 
         for request_id, task in request_to_task.items():
             try:

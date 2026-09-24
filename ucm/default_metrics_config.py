@@ -357,6 +357,18 @@ _COUNTER_METRICS = [
         "Number of connector dump wait failures",
     ),
     (
+        "direct_async_load_dispatched_total",
+        "Number of Direct request-async load dispatch attempts (per-rank worker metric; successful and failed submits both count)",
+    ),
+    (
+        "direct_async_load_completed_total",
+        "Number of Direct request-async load tasks that completed successfully (per-rank worker metric)",
+    ),
+    (
+        "direct_async_load_failed_total",
+        "Number of Direct request-async load tasks that failed, including submit and wait failures (per-rank worker metric)",
+    ),
+    (
         "dramstore_lookup_tasks_submitted_total",
         "DramStore lookup: tasks submitted",
     ),
@@ -557,6 +569,11 @@ _GAUGE_METRICS = [
         {"multiprocess_mode": 'livemostrecent'},
     ),
     (
+        "direct_async_load_pending",
+        "Current number of pending Direct request-async load tasks in this worker (per-rank worker metric)",
+        {"multiprocess_mode": 'livemostrecent'},
+    ),
+    (
         "dramstore_scheduler_request_queue_size",
         "Sampled queued Requests across scheduler runners, excluding batches already dequeued",
         {"multiprocess_mode": "livemostrecent"},
@@ -659,6 +676,41 @@ _CONNECTOR_INTERFACE_DURATION_BUCKETS = [
     2000, 5000, 10000,
 ]
 _HISTOGRAM_METRICS = [
+    (
+        "direct_sync_load_duration_ms",
+        "Direct synchronous load wall-clock duration per attempted request load, from submission preparation through wait completion or failure (ms)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+    ),
+    (
+        "direct_async_load_duration_ms",
+        "Direct request-async load wall-clock duration per task, from dispatch through completion or failure (ms; worker-side)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+    ),
+    (
+        "direct_load_tokens",
+        "Direct load payload token count per successfully submitted request load (one observation per request load)",
+        [1, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384],
+    ),
+    (
+        "direct_load_bytes",
+        "Direct load payload bytes per successfully submitted request load (one observation per request load)",
+        [1024, 4096, 16384, 65536, 262144, 1048576, 4194304, 16777216, 67108864, 268435456, 1073741824],
+    ),
+    (
+        "direct_step_interval_ms",
+        "Scheduler-visible interval between active Direct connector build_connector_meta calls (interval proxy, not execute_model duration; scheduler-side only; an interval may include connector-invisible idle time and should be filtered by experiment warm-up/time window)",
+        [0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+    ),
+    (
+        "direct_step_scheduled_tokens",
+        "Total tokens in one scheduler output step observed by Direct connector (scheduler-side only)",
+        [1, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768],
+    ),
+    (
+        "direct_step_scheduled_requests",
+        "Number of requests in one scheduler output step observed by Direct connector (scheduler-side only)",
+        [1, 2, 4, 8, 16, 32, 64, 128, 256, 512],
+    ),
     (
         "save_duration",
         "Time from UCM connector wait_for_save entry to async dump task completion (ms)",
