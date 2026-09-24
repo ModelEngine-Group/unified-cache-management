@@ -546,6 +546,7 @@ jobs:
       pypi_disposition: ${{ steps.plan.outputs.pypi_disposition }}
       dockerhub_disposition: ${{ steps.plan.outputs.dockerhub_disposition }}
       plan_artifact: ${{ steps.plan.outputs.plan_artifact }}
+      chart_plan_artifact: ${{ steps.plan.outputs.chart_plan_artifact }}
       wheel_matrix: ${{ steps.plan.outputs.wheel_matrix }}
       image_matrix: ${{ steps.plan.outputs.image_matrix }}
       pypi_test_matrix: ${{ steps.plan.outputs.pypi_test_matrix }}
@@ -636,6 +637,13 @@ jobs:
              ([.wheels[].wheel_version] | all(. == $version))' \
             out/plan/release-plan.json >/dev/null
           artifact="ucm-release-plan-run-${GITHUB_RUN_ID}"
+          chart_artifact="ucm-chart-plan-run-${GITHUB_RUN_ID}"
+          mkdir -p out/chart-plan
+          jq '
+            .families |= map(
+              select(.product_id == "vllm" or .product_id == "vllm-ascend")
+            )
+          ' out/plan/release-plan.json >out/chart-plan/release-plan.json
           index_matrix="$(jq -ce \
             '{include:[.families[]|select(.create_index)|
               {id,label,target_repository,target_tag,members:[.members[].reference]}]}' \
@@ -663,6 +671,7 @@ jobs:
             echo "pypi_disposition=${pypi_disposition}"
             echo "dockerhub_disposition=${dockerhub_disposition}"
             echo "plan_artifact=${artifact}"
+            echo "chart_plan_artifact=${chart_artifact}"
             echo "wheel_matrix=$(jq -c '.wheel_matrix' out/plan/release-plan.json)"
             echo "image_matrix=$(jq -c '.image_matrix' out/plan/release-plan.json)"
             echo "pypi_test_matrix=$(jq -c '.pypi_test_matrix' out/plan/release-plan.json)"
@@ -700,6 +709,13 @@ jobs:
         with:
           name: ${{ steps.plan.outputs.plan_artifact }}
           path: out/plan/release-plan.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 90
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ${{ steps.plan.outputs.chart_plan_artifact }}
+          path: out/chart-plan/release-plan.json
           if-no-files-found: error
           overwrite: true
           retention-days: 90
@@ -925,7 +941,7 @@ jobs:
       contents: read
     uses: ./.github/workflows/_build-chart.yml
     with:
-      plan_artifact: ${{ needs.plan.outputs.plan_artifact }}
+      plan_artifact: ${{ needs.plan.outputs.chart_plan_artifact }}
       source_ref: ${{ inputs.source_sha }}
       retention_days: 90
 
@@ -940,6 +956,7 @@ jobs:
       }}
     strategy:
       fail-fast: false
+      max-parallel: 20
       matrix: ${{ fromJSON(needs.plan.outputs.image_matrix) }}
     permissions:
       contents: read

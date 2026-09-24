@@ -17,7 +17,7 @@ Builders and synchronizes checked mirrors. `plan` only combines these results
 into build tasks. `wheel` and `meta` prepare and record their own artifacts.
 
 `release` aggregates publication state and renders release notes. `manifest`
-owns the public Schema 9 contract shared with documentation and cleanup;
+owns the public Schema 10 contract shared with documentation and cleanup, while retaining Schema 9 compatibility;
 `cleanup` projects resources directly from it. The package import has no CLI
 side effects; `python -m ucm_release` dispatches through `__main__`.
 
@@ -198,7 +198,7 @@ addresses become usable only after their existing publication checks succeed.
 
 `release-state.json` remains the rich internal staging file in the
 `ucm-release-stage-run-<run>` Actions artifact. Only after all enabled channels
-succeed, a public `release-manifest.json` Schema 9 is uploaded and read back.
+succeed, a public `release-manifest.json` Schema 10 is uploaded and read back.
 The pure `ucm_release.manifest` module generates and validates this contract
 for publication, cleanup and documentation. It records Python package identity,
 extras and published index URLs, backend Wheels, Runtime image families, Chart

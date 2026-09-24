@@ -16,6 +16,7 @@ from typing import Iterable
 from . import registry, runtime, serialization
 
 _BUILDER_LABEL_PREFIX = "io.ucm.builder."
+_SHARED_BUILDER_LEGACY_PRODUCT_IDS = frozenset({"vllm", "vllm-ascend", "sglang"})
 _BUILDER_METADATA_FIELDS = (
     "id",
     "product_id",
@@ -306,7 +307,15 @@ def finalize_catalog(catalog: object, observations: object) -> dict[str, object]
                 f"Builder observation {builder_id} is not checked schema 2"
             )
         for field in _BUILDER_METADATA_FIELDS:
-            if record.get(field) != expected.get(field):
+            observed_value = record.get(field)
+            expected_value = expected.get(field)
+            if (
+                field == "product_id"
+                and expected_value == "shared"
+                and observed_value in _SHARED_BUILDER_LEGACY_PRODUCT_IDS
+            ):
+                continue
+            if observed_value != expected_value:
                 raise ValueError(
                     f"Builder observation {builder_id} label {field} differs"
                 )
@@ -814,6 +823,24 @@ def _raw_builder_candidates(
     ascend_repositories = _source_repositories(ascend, "Ascend Builder family")
     ascend_manylinux = _require_string(ascend, "manylinux", "Ascend Builder family")
     _manylinux_floor(ascend_manylinux)
+    raw_manylinux_by_runtime = ascend.get("manylinux_by_runtime", {})
+    manylinux_by_runtime = _require_mapping(
+        raw_manylinux_by_runtime, "Ascend Builder family manylinux_by_runtime"
+    )
+    for configured_runtime, configured_manylinux in manylinux_by_runtime.items():
+        if (
+            not isinstance(configured_runtime, str)
+            or re.fullmatch(r"cann-[0-9]+\.[0-9]+\.[0-9]+", configured_runtime) is None
+        ):
+            raise ValueError(
+                "Ascend Builder family manylinux_by_runtime has invalid runtime"
+            )
+        if not isinstance(configured_manylinux, str):
+            raise ValueError(
+                f"Ascend Builder family manylinux_by_runtime[{configured_runtime!r}] "
+                "must be a string"
+            )
+        _manylinux_floor(configured_manylinux)
     seen_ascend: set[tuple[str, str]] = set()
     variant_by_token = {"910b": "a2", "a3": "a3", "950": "a5"}
     for architecture, repository in ascend_repositories.items():
@@ -821,9 +848,12 @@ def _raw_builder_candidates(
             match = _ASCEND_BUILDER_TAG.fullmatch(tag)
             if match is None or match.group("variant") == "310p":
                 continue
-            if match.group("manylinux") != ascend_manylinux:
-                continue
             runtime = f"cann-{match.group('runtime')}"
+            selected_manylinux = str(
+                manylinux_by_runtime.get(runtime, ascend_manylinux)
+            )
+            if match.group("manylinux") != selected_manylinux:
+                continue
             variant = variant_by_token[match.group("variant")]
             python_abi = "cp" + match.group("python").replace(".", "")
             if (
@@ -922,7 +952,10 @@ def _build_for_probe(
     required = required_files(family, variant)
     build: dict[str, object] = {
         "id": f"{build_group}-{python_abi}-{architecture}",
-        "product_id": _require_string(probe, "product_id", "runtime probe"),
+        # A UCM Wheel is determined by its native capability, not the Runtime
+        # product consuming it.  Keeping this value product-neutral lets vLLM
+        # and SGLang share an identical CUDA/CANN build task.
+        "product_id": "shared",
         "build_group": build_group,
         "backend": _require_string(probe, "backend", "runtime probe"),
         "accelerator": accelerator,
