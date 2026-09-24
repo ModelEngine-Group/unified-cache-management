@@ -330,21 +330,6 @@ class SglangUcmConnector:
             if transfer.name in self.flattened_pools:
                 page_results = self._batch_io_flattened_pool(transfer, is_set)
                 results[transfer.name] = page_results
-                keys = list(transfer.keys or [])
-                encoded_keys = [
-                    self._component_key(key, transfer.name, 0).hex() for key in keys
-                ]
-                logger.info(
-                    "UCM v2 %s pool=%s policy=%s keys=%d logical_keys=%s "
-                    "encoded_keys=%s results=%s",
-                    "dump" if is_set else "load",
-                    transfer.name,
-                    transfer.hit_policy,
-                    len(keys),
-                    keys,
-                    encoded_keys,
-                    page_results,
-                )
                 continue
             keys, page_ptrs, _ = self._transfer_meta(transfer)
             page_results = [True] * len(keys)
@@ -366,17 +351,6 @@ class SglangUcmConnector:
                 )
                 page_results = [False] * len(keys)
             results[transfer.name] = page_results
-            logger.info(
-                "UCM v2 %s pool=%s policy=%s keys=%d logical_keys=%s "
-                "encoded_keys=%s results=%s",
-                "dump" if is_set else "load",
-                transfer.name,
-                transfer.hit_policy,
-                len(keys),
-                keys,
-                [key.hex() for key in encoded],
-                page_results,
-            )
         return results
 
     def _batch_io_flattened_pool(
@@ -462,7 +436,6 @@ class SglangUcmConnector:
                 raise ValueError(f"Unregistered UCM hybrid pool: {transfer.name}")
             store, _ = components[0]
             trailing_keys = list(transfer.keys or [])
-            incoming_restorable = list(restorable)
             if transfer.hit_policy == PoolHitPolicy.ALL_PAGES:
                 encoded = [
                     self._component_key(key, transfer.name, 0)
@@ -473,19 +446,6 @@ class SglangUcmConnector:
                     page_exists.index(False) if False in page_exists else kv_pages
                 )
                 pool_restorable = list(range(1, boundary + 1))
-                logger.info(
-                    "UCM v2 lookup pool=%s policy=%s kv_pages=%d "
-                    "transfer_keys=%d logical_keys=%s encoded_keys=%s "
-                    "exists=%s boundary=%d",
-                    transfer.name,
-                    transfer.hit_policy,
-                    kv_pages,
-                    len(trailing_keys),
-                    list(keys[:kv_pages]),
-                    [key.hex() for key in encoded],
-                    page_exists,
-                    boundary,
-                )
             elif transfer.hit_policy == PoolHitPolicy.TRAILING_PAGES:
                 # Trailing pools are sparse: an object marks a candidate
                 # prefix end instead of contributing to a contiguous prefix.
@@ -508,18 +468,6 @@ class SglangUcmConnector:
                     pool_restorable.append(prefix_len)
                     if boundary == 0:
                         boundary = prefix_len
-                logger.info(
-                    "UCM v2 trailing lookup pool=%s kv_pages=%d window=%d "
-                    "logical_keys=%s encoded_keys=%s exists=%s "
-                    "pool_restorable=%s",
-                    transfer.name,
-                    kv_pages,
-                    trailing,
-                    list(keys[:kv_pages]),
-                    [key.hex() for key in encoded],
-                    page_exists,
-                    pool_restorable,
-                )
             else:
                 raise ValueError(f"Unsupported pool hit policy: {transfer.hit_policy}")
 
@@ -527,22 +475,7 @@ class SglangUcmConnector:
                 hit_counts[transfer.name] = boundary
             allowed = set(pool_restorable)
             restorable = [value for value in restorable if value in allowed]
-            logger.info(
-                "UCM v2 lookup intersection pool=%s before=%s allowed=%s after=%s",
-                transfer.name,
-                incoming_restorable,
-                pool_restorable,
-                restorable,
-            )
         final_pages = restorable[-1] if restorable else 0
-        logger.info(
-            "UCM v2 lookup result kv_pages=%d hit_counts=%s restorable=%s "
-            "final_pages=%d",
-            kv_pages,
-            hit_counts,
-            restorable,
-            final_pages,
-        )
         return PoolTransferResult(final_pages, hit_counts, restorable)
 
     def close(self) -> None:
