@@ -418,6 +418,8 @@ curl --fail http://127.0.0.1:7800/metrics | grep '^ucm:'
 
 ## SGLang {#sglang}
 
+### 环境与前置条件 {#sglang-environment}
+
 <ul data-environment-summary hidden>
 <li>引擎：<span data-env-value="engine_version"></span></li>
 <li>CUDA / CANN：<span data-env-value="runtime"></span></li>
@@ -425,8 +427,6 @@ curl --fail http://127.0.0.1:7800/metrics | grep '^ucm:'
 <li>CPU 架构：<span data-env-value="architecture"></span></li>
 <li>镜像 Python：<span data-env-value="python_version"></span></li>
 </ul>
-
-### 环境与前置条件 {#sglang-environment}
 
 为 `--tensor-parallel-size 2` 准备两个可用设备和匹配的宿主机驱动。将
 `Qwen/Qwen2.5-14B-Instruct` 模型文件放在宿主机的 `<path_to_your_models>`，并准备可写的
@@ -437,7 +437,7 @@ curl --fail http://127.0.0.1:7800/metrics | grep '^ucm:'
 
 === "标准 SGLang 镜像"
 
-    #### 启动标准镜像 {#sglang-sglang}
+    #### 启动标准镜像 {#sglang-sglang-image}
 
     请使用上方 Quickstart 选择器根据发布清单选择 SGLang 镜像和 UCM 安装包。
 
@@ -486,7 +486,6 @@ curl --fail http://127.0.0.1:7800/metrics | grep '^ucm:'
     ```
     </div>
     </div>
-    </div>
 
     #### 在容器内安装 UCM {#sglang-wheel}
 
@@ -514,6 +513,7 @@ curl --fail http://127.0.0.1:7800/metrics | grep '^ucm:'
     该镜像已经包含 UCM，进入容器后直接执行下面的配置步骤。
 
     <div data-requires="image" hidden markdown="1">
+    <div data-runtime="cuda" hidden markdown="1">
     <div data-command-template markdown="1">
 
     ```bash
